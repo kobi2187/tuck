@@ -367,10 +367,24 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   else:
     "discard"
 
+# Pending stub: logs on invocation, returns the zero value (Nim zero-inits result).
+# The walking skeleton runs; the compile-time PENDING report nags until implemented.
+proc genPendingStub(d: Decl): string =
+  # Tuck call sites pass one whole payload struct; the Tuck checker already
+  # verified its shape against the pending signature. The Nim stub is generic
+  # so any payload representation is absorbed.
+  let fnNameSanitized = d.name.replace(".", "_")
+  let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
+  let paramStr = if d.fnParams.len > 0: "[T](payload: T)" else: "()"
+  return "proc " & fnNameSanitized & "*" & paramStr & ": " & retTypeStr &
+         " =\n  stderr.writeLine(\"TUCK PENDING: " & d.name & " invoked (not implemented)\")\n"
+
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   if d == nil: return ""
   case d.kind
   of dkFn:
+    if d.isPending:
+      return genPendingStub(d)
     let fnNameSanitized = d.name.replace(".", "_")
     if d.isDecisionTable():
       var params: seq[string]
@@ -625,6 +639,15 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return enumStr & typeStr & "\n" & globalVarStr & fwdDeclsStr & raiseProcsStr
   of dkStaticAssert:
     return "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
+  of dkMixin:
+    # Pending blocks parse as a mixin named "pending"; emit stubs for its members.
+    var res = ""
+    for m in d.mixinMembers:
+      if m.kind == dkFn and m.isPending:
+        res.add(genPendingStub(m) & "\n")
+    if res == "":
+      return "# [codegen] ignored decl kind " & $d.kind & "\n"
+    return res
   else:
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
 

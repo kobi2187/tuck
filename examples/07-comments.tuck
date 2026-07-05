@@ -1,6 +1,9 @@
 # Comments use hash markers and extend to the end of the line
 # This is a configuration-style comment.
 
+pending:
+  fn fetch({url: str}) -> {status: int}
+
 let config = {url: "https://api.example.com", timeout: 100}
 let result = config fetch  # inline comment after a flow expression
 

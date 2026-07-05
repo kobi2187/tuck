@@ -238,6 +238,7 @@ type
       fnReturnType*: Type
       fnEffects*: seq[EffectMarker]
       fnBody*: Expr
+      isPending*: bool  # declared in a `pending:` block; body is nil
     of dkMixin:
       mixinMembers*: seq[Decl]
     of dkActor:

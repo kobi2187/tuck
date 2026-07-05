@@ -1002,7 +1002,7 @@ proc parseDecl*(p: var Parser): Decl =
       if p.current().kind == tkArrow:
         discard p.advance()
         retType = p.parseType()
-      decls.add(Decl(span: spDecl, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: @[], fnBody: nil))
+      decls.add(Decl(span: spDecl, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: @[], fnBody: nil, isPending: true))
       if p.current().kind == tkNewline:
         discard p.advance()
     discard p.expect(tkDedent)

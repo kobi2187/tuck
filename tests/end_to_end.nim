@@ -72,6 +72,13 @@ proc runEndToEnd() =
   # Step 2.4: Type checking
   typecheckModule(m)
 
+  # Step 2.5: Compile-time TODO report
+  let pend = pendingReport(m)
+  if pend.len > 0:
+    echo "PENDING (", pend.len, " unimplemented):"
+    for entry in pend:
+      echo "  ", entry
+
   # Step 2.5: AST Lowering Pass
   lowerModule(m)
   

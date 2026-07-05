@@ -1,4 +1,15 @@
 # Named structs and postfix data flow
+
+# Walking skeleton: these are declared but not yet implemented.
+# The compiler prints them as a TODO list on every debug build and
+# generates runnable stubs (log + zero value) so the program still runs.
+pending:
+  fn fetch({url: str}) -> {hasNew: bool, episodes: int, metadata: str}
+  fn parse({hasNew: bool, episodes: int, metadata: str}) -> {episodes: int}
+  fn episodes({episodes: int}) -> {episodes: int}
+  fn process({episodes: int}) -> void
+  fn log({metadata: str}) -> void
+  fn playTrack({id: int, name: str, length: int}) -> void
 let request = {url: "example.com", timeout: 5.ms}  # 5.ms produces {value: 5}, so the timeout is always a single struct value
 let response = request fetch parse episodes
 

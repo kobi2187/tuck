@@ -20,7 +20,9 @@ const
 # deliberately-undeclared sketch functions (fetch, merge, ...) and cannot.
 # When a new example goes green, add it here so regressions are caught.
 const nimCheckExpected = [
+  "01-data-flow",
   "05-actors-effects",
+  "07-comments",
   "06-transitions-example",
   "08-actors_isolated_state",
   "10-invariants",
@@ -64,6 +66,13 @@ proc compileExample(path: string) =
 
   # Step 2.4: Type checking (before lowering — lowering rewrites call args)
   typecheckModule(m)
+
+  # Step 2.5: Compile-time TODO report
+  let pend = pendingReport(m)
+  if pend.len > 0:
+    echo "  PENDING (", pend.len, " unimplemented) in ", filename, ":"
+    for entry in pend:
+      echo "    ", entry
 
   # Step 3: Lowering
   lowerModule(m)

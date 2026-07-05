@@ -87,6 +87,31 @@ fn f({a: int, b: str}) -> int:
   return a + b
 """, "arithmetic"
 
+# ---------- pending feature ----------
+
+expectError "pending sig strictly checked at call site", """
+pending:
+  fn fetchFeed({url: str}) -> {feed: int}
+
+let x = {url: 42} fetchFeed
+""", "field 'url'"
+
+expectError "implemented fn still in pending block", """
+fn fetchFeed({url: str}) -> int:
+  return 1
+
+pending:
+  fn fetchFeed({url: str}) -> int
+""", "remove it from the pending block"
+
+expectOk "correct call to pending fn", """
+pending:
+  fn fetchFeed({url: str}) -> {feed: int}
+
+let x = {url: "https://x"} fetchFeed
+let y = x.feed
+"""
+
 # ---------- positive cases ----------
 
 expectOk "subset matching: extra fields ignored", """

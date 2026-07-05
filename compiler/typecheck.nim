@@ -36,6 +36,8 @@ type
     scopes: seq[Table[string, Binding]]
     currentRet: Type
     currentFn: string
+    pendingFns: Table[string, Span]
+    implementedFns: HashSet[string]
 
 proc pushScope(tc: var TypeChecker) = tc.scopes.add(initTable[string, Binding]())
 proc popScope(tc: var TypeChecker) = discard tc.scopes.pop()
@@ -333,7 +335,17 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
   for d in decls:
     if d == nil: continue
     case d.kind
-    of dkFn: tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType)
+    of dkFn:
+      tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType)
+      # Stale-pending check, order-independent: implemented + still pending = error
+      if d.isPending:
+        if d.name in tc.implementedFns:
+          fail("Pending Error: '" & d.name & "' is implemented — remove it from the pending block", d.span)
+        tc.pendingFns[d.name] = d.span
+      elif d.fnBody != nil:
+        if tc.pendingFns.hasKey(d.name):
+          fail("Pending Error: '" & d.name & "' is implemented — remove it from the pending block", d.span)
+        tc.implementedFns.incl(d.name)
     of dkTask: tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType)
     of dkType:
       if d.typeBody != nil: tc.typeDecls[d.name] = d.typeBody
@@ -375,6 +387,30 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     tc.popScope()
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
   else: discard
+
+proc sigStr(d: Decl): string =
+  var parts: seq[string]
+  for p in d.fnParams:
+    parts.add(p.name & ": " & typeName(p.typ))
+  result = d.name & "({" & parts.join(", ") & "})"
+  if d.fnReturnType != nil:
+    result.add(" -> " & typeName(d.fnReturnType))
+
+proc collectPending(decls: seq[Decl], acc: var seq[string]) =
+  for d in decls:
+    if d == nil: continue
+    case d.kind
+    of dkFn:
+      if d.isPending:
+        acc.add(sigStr(d) & "   line " & $d.span.line)
+    of dkObject: collectPending(d.objMembers, acc)
+    of dkMixin: collectPending(d.mixinMembers, acc)
+    of dkActor: collectPending(d.handlers, acc)
+    else: discard
+
+# The compile-time TODO list: every debug build prints what is still unimplemented.
+proc pendingReport*(m: Module): seq[string] =
+  collectPending(m.decls, result)
 
 proc typecheckModule*(m: Module) =
   var tc = TypeChecker(module: m,

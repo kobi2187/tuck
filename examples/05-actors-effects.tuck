@@ -1,4 +1,8 @@
 # Actor model, lifecycle, and effect markers
+type Feed:
+  title: str
+  episodeCount: int
+
 actor Counter:
   count: int = 0
 

@@ -36,11 +36,27 @@
   wrapping/trapping — `u16 [big_endian]` no longer misparsed as generics (m15).
 - nim-check gate now 7/20: 05, 06, 08, 10, 13, 15, 19.
 
+## 2026-07-05 — `pending` feature (language-level TODO)
+- Semantics (user-defined, supersedes spec 5.4 wording): compile prints TODO
+  list of unimplemented fns every debug build (doesn't block); stubs are noops
+  that log on invocation + return zero value so the skeleton RUNS; implemented
+  fn still in pending block = compile error.
+- ast: isPending on dkFn. parser already parsed pending blocks (dkMixin
+  "pending" wrapper) — just sets the flag now.
+- typecheck: pending sigs strictly checked at call sites (were already in
+  fnSigs via mixin recursion); stale-pending check both directions;
+  pendingReport*() returns the TODO list; drivers print it.
+- codegen: pending stub = `proc name*[T](payload: T): Ret` — generic payload
+  because Tuck passes one whole struct and lowering never explodes pending
+  calls; logs to stderr, Nim zero-inits result. dkMixin("pending") emits stubs.
+- examples: 01 + 07 gained pending blocks; 05 gained Feed type decl.
+- Verified end-to-end: generated 07 binary runs, prints TUCK PENDING line, exit 0.
+- nim-check gate now 9/20 (added 01, 05, 07). Tests 15/15.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
-   restructuring (blocks m18; needs typechecker info flowing into lowering).
-2. `pending:` blocks with typed signatures → stubs for sketch symbols (fetch,
-   Feed...) → most remaining examples could go green.
-3. `on select` lowering to task state machines (spec 9.2; blocks m14, m16).
-4. Top-level `or return` semantics — implicit main? (blocks m11).
-5. Extend checker: match exhaustiveness, distinct/unit types, generics.
+   restructuring (blocks 18, 04, 12; needs typechecker info in lowering).
+2. `on select` lowering to task state machines (spec 9.2; blocks 14, 16).
+3. Top-level `or return` semantics — implicit main? (blocks 11).
+4. Extend checker: match exhaustiveness, distinct/unit types, generics.
+5. Qualified pending names (http.get) so 14-task can stub module calls.
