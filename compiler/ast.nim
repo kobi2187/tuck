@@ -122,6 +122,7 @@ type
     uoNeg
     uoNot
     uoComposition
+    uoPropagate  # expr? — pass the error upward; enclosing fn must return !T
 
   ChainOp* = enum
     coDot

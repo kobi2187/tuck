@@ -186,6 +186,61 @@ decision route({priority: Priority, encrypted: bool}) -> int:
   | High  true  -> 3
 """, "unreachable"
 
+# ---------- errors as values: !T / ?T / or / ? ----------
+
+expectError "unhandled !T in arithmetic", """
+fn mightFail({n: int}) -> !{value: int}:
+  return {value: n}
+
+fn use({n: int}) -> int:
+  return {n} mightFail + 1
+""", "unhandled"
+
+expectError "unhandled !T field access", """
+fn mightFail({n: int}) -> !{value: int}:
+  return {value: n}
+
+fn use({n: int}) -> int:
+  let r = {n} mightFail
+  return r.value
+""", "unhandled"
+
+expectError "propagation outside ! function", """
+fn mightFail({n: int}) -> !{value: int}:
+  return {value: n}
+
+fn use({n: int}) -> int:
+  let r = {n} mightFail?
+  return r.value
+""", "must declare a !T return type"
+
+expectError "or fallback wrong type", """
+fn mightFail({n: int}) -> !{value: int}:
+  return {value: n}
+
+fn use({n: int}) -> int:
+  let r = {n} mightFail or "nope"
+  return r.value
+""", "fallback must be"
+
+expectOk "or with matching fallback", """
+fn mightFail({n: int}) -> !{value: int}:
+  return {value: n}
+
+fn use({n: int}) -> int:
+  let r = {n} mightFail or {value: 0}
+  return r.value
+"""
+
+expectOk "propagation inside ! function", """
+fn mightFail({n: int}) -> !{value: int}:
+  return {value: n}
+
+fn use({n: int}) -> !{value: int}:
+  let r = {n} mightFail?
+  return {value: r.value}
+"""
+
 # ---------- sealed construction (spec 4.4) ----------
 
 expectError "sealed non-initial construction rejected", """

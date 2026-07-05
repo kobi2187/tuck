@@ -67,6 +67,9 @@ proc toString*(e: Expr): string =
                 of uoNeg: "-"
                 of uoNot: "not "
                 of uoComposition: "+ "
+                of uoPropagate: ""
+    if e.unaryOp == uoPropagate:
+      return e.operand.toString() & "?"
     return opStr & e.operand.toString()
   of exkBlock:
     return "block"
@@ -471,6 +474,9 @@ proc parseChainExpr(p: var Parser): Expr =
       var steps: seq[ChainStep]
       steps.add(ChainStep(op: coDotDot, target: Expr(span: sp, kind: exkVar, name: fieldName), arg: arg, span: sp))
       expr = Expr(span: sp, kind: exkChain, base: expr, steps: steps)
+    elif p.current().kind == tkQuestion:
+      discard p.advance()
+      expr = Expr(span: sp, kind: exkUnary, unaryOp: uoPropagate, operand: expr)
     elif p.current().kind == tkColonColon:
       discard p.advance()
       let name = p.expect(tkIdent, "Expected identifier after '::'").value

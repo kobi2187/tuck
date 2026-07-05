@@ -59,9 +59,12 @@ proc resolve(tc: TypeChecker, t: Type, depth = 0): Type =
   return t
 
 # `!T` / `?T` / `!?T` parse as tkApp with a tkNamed base of "!", "?" or "!?".
+proc isWrapper(t: Type): bool =
+  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+    t.base.name in ["!", "?", "!?"] and t.args.len == 1
+
 proc unwrapEffect(t: Type): Type =
-  if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
-     t.base.name in ["!", "?", "!?"] and t.args.len == 1:
+  if isWrapper(t):
     return unwrapEffect(t.args[0])
   return t
 
@@ -90,8 +93,19 @@ proc typeName(t: Type): string =
   else: "<type>"
 
 proc compatible(tc: TypeChecker, actual, expected: Type): bool =
-  let a = unwrapEffect(actual)
-  let e = unwrapEffect(expected)
+  # Wrapper discipline: a bare T may flow where !T is expected (auto-wrap on
+  # return), and !T matches !T — but a !T/?T value where bare T is expected is
+  # an UNHANDLED error and never compatible. `or` / `?` unwrap explicitly.
+  var a = actual
+  var e = expected
+  if isWrapper(a):
+    if isWrapper(e):
+      a = unwrapEffect(a)
+      e = unwrapEffect(e)
+    elif not isUnknown(e):
+      return false
+  else:
+    e = unwrapEffect(e)
   if isUnknown(a) or isUnknown(e): return true
   if e.kind == tkNamed and e.name in ["void", "unit", "Self", "fn"]: return true
   if a.kind == tkNamed and a.name in ["void", "unit", "Self", "fn"]: return true
@@ -226,7 +240,11 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
                  declared.variants[0].name & "'; reach '" & e.fieldName &
                  "' via transitions, or mark [unsafe] for deserialization", e.span)
           return Type(span: e.span, kind: tkNamed, name: e.receiver.name)
-    let recvT = tc.resolve(tc.synthesize(e.receiver))
+    let rawT = tc.synthesize(e.receiver)
+    if isWrapper(rawT):
+      fail("Type Error: unhandled " & typeName(rawT) &
+           " — handle with 'or' or propagate with '?' before accessing fields", e.span)
+    let recvT = tc.resolve(rawT)
     let fields = tc.fieldsOf(recvT)
     if fields.len > 0:
       for f in fields:
@@ -265,7 +283,28 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     calleeT
   of exkBinary:
     let lt = tc.synthesize(e.left)
+    if e.binOp == boOr:
+      # `or` is Zig's catch/orelse: unwrap !T/?T with a fallback or early return
+      if isWrapper(lt):
+        let payload = unwrapEffect(lt)
+        if e.right != nil and e.right.kind == exkReturn:
+          discard tc.synthesize(e.right)
+          return payload
+        let rt = tc.synthesize(e.right)
+        if not tc.compatible(rt, payload):
+          fail("Type Error: 'or' fallback must be " & typeName(payload) &
+               " but got " & typeName(rt), e.right.span)
+        return payload
+      if e.right != nil and e.right.kind == exkReturn and not isUnknown(lt):
+        fail("Type Error: 'X or return' requires X to be !T or ?T, got " &
+             typeName(lt), e.span)
+      discard tc.synthesize(e.right)
+      return Type(span: e.span, kind: tkNamed, name: "bool")
     let rt = tc.synthesize(e.right)
+    for (t, side) in [(lt, e.left), (rt, e.right)]:
+      if isWrapper(t):
+        fail("Type Error: unhandled " & typeName(t) &
+             " — handle with 'or' or propagate with '?'", side.span)
     case e.binOp
     of boAdd, boSub, boMul, boDiv, boMod:
       if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
@@ -277,9 +316,18 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
         fail("Type Error: comparison between " & typeName(lt) & " and " &
              typeName(rt), e.span)
       Type(span: e.span, kind: tkNamed, name: "bool")
-    of boAnd, boOr, boXor:
+    else:
       Type(span: e.span, kind: tkNamed, name: "bool")
   of exkUnary:
+    if e.unaryOp == uoPropagate:
+      let t = tc.synthesize(e.operand)
+      if not isWrapper(t) and not isUnknown(t):
+        fail("Type Error: '?' propagation needs a !T or ?T value, got " &
+             typeName(t), e.span)
+      if tc.currentRet == nil or not isWrapper(tc.currentRet):
+        fail("Type Error: '?' propagates the error upward, so '" & tc.currentFn &
+             "' must declare a !T return type", e.span)
+      return unwrapEffect(t)
     let t = tc.synthesize(e.operand)
     if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
   of exkBlock:
@@ -291,6 +339,9 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     last
   of exkIf:
     let condT = tc.synthesize(e.cond)
+    if isWrapper(condT):
+      fail("Type Error: unhandled " & typeName(condT) &
+           " in condition — handle with 'or' or propagate with '?'", e.cond.span)
     if not isUnknown(condT) and not tc.compatible(condT,
         Type(span: e.span, kind: tkNamed, name: "bool")):
       fail("Type Error: if condition must be bool, got " & typeName(condT), e.cond.span)

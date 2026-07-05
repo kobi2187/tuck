@@ -46,6 +46,39 @@ macro registerMMIO*(name: untyped, address: static[int], body: untyped): untyped
                 p[] = p[] and not(1'u32 shl `bitIndex`)
           result.add(setterNode)
 
+# --- Errors and absence: !T / ?T lower to one value type (no alloc, no nil) ---
+type
+  TuckResult*[T] = object
+    ok*: bool
+    err*: uint16   # app-wide error code; 0 = absence (?T)
+    val*: T
+
+proc errCode*(name: static string): uint16 =
+  # compile-time FNV-1a, folded to 16 bits; stable across builds, no tables
+  var h = 2166136261'u32
+  for c in name:
+    h = (h xor uint32(c)) * 16777619'u32
+  result = uint16((h xor (h shr 16)) and 0xFFFF'u32)
+  if result == 0: result = 1  # 0 is reserved for absence
+
+proc tok*[T](v: T): TuckResult[T] {.inline.} =
+  TuckResult[T](ok: true, val: v)
+
+proc tokVoid*(): TuckResult[tuple[]] {.inline.} =
+  TuckResult[tuple[]](ok: true)
+
+proc terr*[T](code: uint16): TuckResult[T] {.inline.} =
+  TuckResult[T](ok: false, err: code)
+
+proc tnone*[T](): TuckResult[T] {.inline.} =
+  TuckResult[T](ok: false, err: 0)
+
+template tuckOr*(a, b: bool): bool = a or b
+template tuckOr*[T](r: TuckResult[T], d: T): T =
+  block:
+    let tmp = r
+    if tmp.ok: tmp.val else: d
+
 type
   BumpArena*[Size: static int] = object
     buffer*: array[Size, byte]

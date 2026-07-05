@@ -144,7 +144,7 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
     let opStr = case e.unaryOp
                 of uoNeg: "-"
                 of uoNot: "!"
-                of uoComposition: ""
+                else: ""
     return opStr & ctx.genBeefExpr(e.operand)
   of exkBlock:
     var lines: seq[string]

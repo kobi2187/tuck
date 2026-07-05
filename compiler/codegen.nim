@@ -8,6 +8,9 @@ type
     indent: int
     module: Module
     hoisted: seq[string]  # named decls hoisted out of field positions (inline enums)
+    retWrapped: bool      # current fn returns !T/?T → returns auto-wrap
+    retInnerNim: string   # Nim type of the payload (for terr[T])
+    tmpCounter: int
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -59,9 +62,10 @@ proc genType*(t: Type): string =
   of tkApp:
     if t.base.kind == tkNamed and t.base.name == "*":
       return "array[" & genType(t.args[1]) & ", " & genType(t.args[0]) & "]"
-    # !T / ?T / !?T: v1 erases the wrapper and emits the payload type
+    # !T / ?T / !?T lower to TuckResult[T] — errors are first-class values
     if t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"] and t.args.len == 1:
-      return genType(t.args[0])
+      let inner = genType(t.args[0])
+      return "TuckResult[" & (if inner == "void": "tuple[]" else: inner) & "]"
     var parts: seq[string]
     for a in t.args: parts.add(genType(a))
     genType(t.base) & "[" & parts.join(", ") & "]"
@@ -178,7 +182,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     let opStr = case e.unaryOp
                 of uoNeg: "-"
                 of uoNot: "not "
-                of uoComposition: ""
+                else: ""
     opStr & ctx.genExpr(e.operand, m)
   of exkBlock:
     var lines: seq[string]
@@ -229,6 +233,13 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     return res
   else:
     "discard"
+
+proc bangInfo(t: Type): tuple[wrapped: bool, inner: string] =
+  if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+     t.base.name in ["!", "?", "!?"] and t.args.len == 1:
+    let inner = genType(t.args[0])
+    return (true, if inner == "void": "tuple[]" else: inner)
+  return (false, "")
 
 proc isDecisionTable(d: Decl): bool =
   if d.kind != dkFn or d.fnBody == nil or d.fnBody.kind != exkBlock: return false
@@ -296,15 +307,27 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
                 of boAnd: "and"
                 of boOr: "or"
                 of boXor: "xor"
-    if e.binOp == boOr and e.right.kind == exkReturn:
-      let tmpName = "or_tmp_" & $ctx.definedVars.len
-      return "(block: let " & tmpName & " = " & ctx.genExpr(e.left) & "; if not " & tmpName & ": " & ctx.genExpr(e.right) & "; " & tmpName & ")"
+    if e.binOp == boOr:
+      # `or` = Zig catch/orelse: unwrap with fallback or early return.
+      # tuckOr's bool overload keeps plain boolean `or` working unchanged.
+      ctx.tmpCounter.inc
+      let tn = "tuckTmp" & $ctx.tmpCounter
+      if e.right.kind == exkReturn:
+        return "(let " & tn & " = " & ctx.genExpr(e.left) &
+               "; (if " & tn & ".ok: " & tn & ".val else: " & ctx.genExpr(e.right) & "))"
+      return "tuckOr(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
     return "(" & ctx.genExpr(e.left) & " " & opStr & " " & ctx.genExpr(e.right) & ")"
   of exkUnary:
+    if e.unaryOp == uoPropagate:
+      ctx.tmpCounter.inc
+      let tn = "tuckTmp" & $ctx.tmpCounter
+      return "(let " & tn & " = " & ctx.genExpr(e.operand) &
+             "; (if " & tn & ".ok: " & tn & ".val else: return terr[" &
+             ctx.retInnerNim & "](" & tn & ".err)))"
     let opStr = case e.unaryOp
                 of uoNeg: "-"
                 of uoNot: "not "
-                of uoComposition: ""
+                else: ""
     opStr & ctx.genExpr(e.operand)
   of exkBlock:
     var lines: seq[string]
@@ -313,7 +336,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     for s in e.stmts:
       let stmtCode = ctx.genExpr(s)
       if stmtCode != "":
-        lines.add(ind & "  " & stmtCode)
+        if s.kind in {exkIf, exkBlock}:
+          lines.add(stmtCode)  # these nodes carry their own indentation
+        else:
+          lines.add(ind & "  " & stmtCode)
     ctx.indent = oldIndent
     if lines.len == 0:
       return ind & "discard"
@@ -350,7 +376,17 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     else:
       return "discard"
   of exkReturn:
-    if e.returnVal == nil: "return"
+    if e.returnVal == nil:
+      if ctx.retWrapped and ctx.retInnerNim == "tuple[]": "return tokVoid()"
+      else: "return"
+    elif ctx.retWrapped:
+      let v = e.returnVal
+      if v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
+         v.receiver.name == "Error":
+        # Error.name → app-wide 16-bit code, hashed at Nim compile time
+        "return terr[" & ctx.retInnerNim & "](errCode(\"" & v.fieldName & "\"))"
+      else:
+        "return tok(" & ctx.genExpr(v) & ")"
     else: "return " & ctx.genExpr(e.returnVal)
   of exkRaise:
     "raise " & ctx.genExpr(e.raiseVal)
@@ -488,9 +524,13 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     for p in d.fnParams:
       ctx.definedVars.incl(p.name)
     let oldIndent = ctx.indent
+    let (bw, binner) = bangInfo(d.fnReturnType)
+    ctx.retWrapped = bw
+    ctx.retInnerNim = binner
     ctx.indent += 1
     let bodyStr = ctx.genExpr(d.fnBody)
     ctx.indent = oldIndent
+    ctx.retWrapped = false
     ctx.definedVars = oldVars
     return header & "\n" & bodyStr & "\n"
   of dkType:
@@ -670,9 +710,13 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     for p in d.taskParams:
       ctx.definedVars.incl(p.name)
     let oldIndent = ctx.indent
+    let (bw, binner) = bangInfo(d.taskReturnType)
+    ctx.retWrapped = bw
+    ctx.retInnerNim = binner
     ctx.indent += 1
     let bodyStr = ctx.genExpr(d.taskBody)
     ctx.indent = oldIndent
+    ctx.retWrapped = false
     ctx.definedVars = oldVars
     return header & "\n" & bodyStr & "\n"
 

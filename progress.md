@@ -103,6 +103,26 @@
   produce reachable variants) remains on backlog — type system catches what it
   can via the kind enum; matrix guards the rest at runtime.
 
+## 2026-07-05 — errors as first-class values (!T / ?T / or / ?)
+- Mapping confirmed with user: !T ≈ Zig error union, expr? ≈ try, or ≈
+  catch/orelse unified. Philosophy locked: TUCK checker rejects everything —
+  the user must never read a Nim diagnostic; nim-check gate exists to catch
+  OUR emitter bugs only. Runtime errors = separate category (TuckResult, matrix).
+- rt: TuckResult[T] {ok, err: uint16, val} — err 0 reserved for absence (?T);
+  errCode("name") = compile-time FNV-1a→16bit (no compiler-side code table);
+  tok/tokVoid/terr/tnone; tuckOr templates (bool overload keeps boolean `or`).
+- checker: wrapper discipline — !T consumed w/o handling (args, arith, field
+  access, condition) = error; `?` requires !-returning fn; or-fallback must
+  match payload; bare T where !T expected = OK (auto-wrap on return).
+- codegen: wrappers → TuckResult[T] (void→tuple[]); returns auto-wrap
+  (tok/terr/tokVoid); Error.name → errCode; `x?` → paren stmt-list unwrap with
+  early return; `x or fallback` → tuckOr; `x or return e` → unwrap-or-return.
+- Nim gotchas found: one-line `block: let ...` invalid in expr position → use
+  paren statement-list `(let t = e; ...)`; exkIf double-indent inside exkBlock
+  fixed (self-indenting nodes no longer re-prefixed).
+- Runtime-verified: propagation carries code (errCode("tooBig")), or-fallback
+  recovers, ok-path unwraps. 36 checker tests green, gate 10/10.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).
