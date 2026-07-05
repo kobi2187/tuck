@@ -393,24 +393,84 @@ proc checkDecisionTable(tc: var TypeChecker, d: Decl) =
            " columns but the table declares " & $d.fnParams.len & " inputs", s.span)
     rows.add((pats, s.span))
     discard tc.synthesize(s.arms[0].body)
-  # Unreachable: an earlier row covers this one in every column
-  for j in 1 ..< rows.len:
-    for i in 0 ..< j:
-      var covered = true
-      for c in 0 ..< rows[j].pats.len:
-        if not patCovers(rows[i].pats[c], rows[j].pats[c]):
-          covered = false
+  # Enumerable domains (bool / fieldless sum types) get EXACT analysis:
+  # every input combination is enumerated, so gaps and unreachable rows are
+  # proven, not approximated. Open domains fall back to pairwise checks +
+  # a mandatory catch-all row.
+  var domains: seq[seq[string]]
+  var allEnum = true
+  var comboCount = 1
+  for p in d.fnParams:
+    let dom = enumDomain(tc.module, p.typ)
+    if dom.len == 0: allEnum = false
+    domains.add(dom)
+    comboCount *= max(dom.len, 1)
+
+  proc patValue(p: Pattern): string =
+    if p == nil: return "_"
+    case p.kind
+    of pkWild: "_"
+    of pkVar: p.name
+    of pkLit: p.litValue
+    else: "_"
+
+  if allEnum and comboCount <= 4096:
+    # Symbols in rows must be actual values of the column type
+    for r in rows:
+      for c in 0 ..< r.pats.len:
+        let v = patValue(r.pats[c])
+        if v != "_" and v notin domains[c]:
+          fail("Decision Error: '" & v & "' is not a value of " &
+               typeName(d.fnParams[c].typ) & " in table '" & d.name & "'", r.span)
+    var rowUsed = newSeq[bool](rows.len)
+    for combo in 0 ..< comboCount:
+      # decode mixed-radix combo into one value per column
+      var rem = combo
+      var vals: seq[string]
+      for c in countdown(domains.high, 0):
+        vals.insert(domains[c][rem mod domains[c].len], 0)
+        rem = rem div domains[c].len
+      var hit = -1
+      for i, r in rows:
+        var matches = true
+        for c in 0 ..< r.pats.len:
+          let v = patValue(r.pats[c])
+          if v != "_" and v != vals[c]:
+            matches = false
+            break
+        if matches:
+          hit = i
           break
-      if covered:
-        fail("Decision Error: row " & $(j+1) & " of '" & d.name &
-             "' is unreachable — row " & $(i+1) & " already covers it", rows[j].span)
-  # Completeness (v1): require a catch-all row; full domain analysis comes later
-  var lastAllWild = true
-  for p in rows[^1].pats:
-    if p != nil and p.kind != pkWild: lastAllWild = false
-  if not lastAllWild:
-    fail("Decision Error: '" & d.name & "' cannot be proven complete — " &
-         "end the table with a catch-all row (all _)", d.span)
+      if hit == -1:
+        var desc: seq[string]
+        for c in 0 ..< vals.len:
+          desc.add(d.fnParams[c].name & ": " & vals[c])
+        fail("Decision Error: '" & d.name & "' has a gap — no row matches (" &
+             desc.join(", ") & ")", d.span)
+      rowUsed[hit] = true
+    for i, used in rowUsed:
+      if not used:
+        fail("Decision Error: row " & $(i+1) & " of '" & d.name &
+             "' is unreachable — earlier rows cover all its inputs", rows[i].span)
+  else:
+    # Unreachable: an earlier row covers this one in every column
+    for j in 1 ..< rows.len:
+      for i in 0 ..< j:
+        var covered = true
+        for c in 0 ..< rows[j].pats.len:
+          if not patCovers(rows[i].pats[c], rows[j].pats[c]):
+            covered = false
+            break
+        if covered:
+          fail("Decision Error: row " & $(j+1) & " of '" & d.name &
+               "' is unreachable — row " & $(i+1) & " already covers it", rows[j].span)
+    # Open domains: completeness can't be proven, so require a catch-all row
+    var lastAllWild = true
+    for p in rows[^1].pats:
+      if p != nil and p.kind != pkWild: lastAllWild = false
+    if not lastAllWild:
+      fail("Decision Error: '" & d.name & "' cannot be proven complete — " &
+           "end the table with a catch-all row (all _)", d.span)
 
 # --- Transition tables (spec 4.4): endpoints exist; sealed graph reachable ---
 

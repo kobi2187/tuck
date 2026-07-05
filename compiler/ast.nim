@@ -263,3 +263,19 @@ type
     path*: seq[string]
     decls*: seq[Decl]
     span*: Span
+
+proc enumDomain*(m: Module, t: Type): seq[string] =
+  ## Values of an enumerable decision-table column: bool, or a fieldless sum
+  ## type declared in the module. Empty result = not enumerable (open domain).
+  if t == nil: return @[]
+  if t.kind == tkNamed:
+    if t.name == "bool": return @["false", "true"]
+    for d in m.decls:
+      if d.kind == dkType and d.name == t.name and d.typeBody != nil and
+         d.typeBody.kind == tkSum:
+        var vals: seq[string]
+        for v in d.typeBody.variants:
+          if v.fields.len > 0: return @[]  # payload variants: not a flat enum
+          vals.add(v.name)
+        return vals
+  return @[]

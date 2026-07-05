@@ -142,6 +142,50 @@ decision route({priority: int, encrypted: bool}) -> int:
   | _     _     -> 3
 """
 
+# ---------- decision tables: exact analysis over enumerable domains ----------
+
+expectOk "enum-domain table complete without catch-all", """
+type Priority:
+  | High
+  | Low
+
+decision route({priority: Priority, encrypted: bool}) -> int:
+  | High  true  -> 1
+  | High  false -> 2
+  | Low   _     -> 3
+"""
+
+expectError "enum-domain table gap found exactly", """
+type Priority:
+  | High
+  | Low
+
+decision route({priority: Priority, encrypted: bool}) -> int:
+  | High  true  -> 1
+  | Low   _     -> 3
+""", "has a gap"
+
+expectError "enum-domain symbol typo", """
+type Priority:
+  | High
+  | Low
+
+decision route({priority: Priority, encrypted: bool}) -> int:
+  | Hgih  true  -> 1
+  | _     _     -> 2
+""", "not a value of"
+
+expectError "enum-domain unreachable row proven", """
+type Priority:
+  | High
+  | Low
+
+decision route({priority: Priority, encrypted: bool}) -> int:
+  | High  _     -> 1
+  | Low   _     -> 2
+  | High  true  -> 3
+""", "unreachable"
+
 # ---------- effect markers ----------
 
 expectError "pure fn calling io fn", """
