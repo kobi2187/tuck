@@ -65,6 +65,20 @@
 - tests/cli_smoke.sh builds CLI, runs all commands, asserts fail-fast exit code
   and file:line:col prefix.
 
+## 2026-07-05 — correctness checks round: transitions, decisions, effects
+- Transition tables (spec 4.4): endpoints must be declared variants (typo
+  check); [sealed] types verify every variant reachable from initial variant
+  via graph walk.
+- Decision tables (spec 6.1): isDecision flag on dkFn (parser sets it; codegen
+  heuristic can move over later); checks: row width == declared inputs,
+  unreachable rows (earlier row covers later, per-column wildcard/equality),
+  completeness v1 = mandatory catch-all row (full domain analysis later).
+- Effects: found + fixed parser bug — `-> void [io]` parsed [io] as GENERIC
+  args on void (same class as big_endian bug); effect names added to attr
+  allowlist and harvested from return-type attrs into fnEffects. `-> !{...} [io]`
+  worked already (separate path). Effect tests now in typecheck_tests.
+- Suite: 22 typecheck tests green, gate 9/9, cli smoke OK.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

@@ -239,6 +239,7 @@ type
       fnEffects*: seq[EffectMarker]
       fnBody*: Expr
       isPending*: bool  # declared in a `pending:` block; body is nil
+      isDecision*: bool # parsed from a `decision` table; body is match rows
     of dkMixin:
       mixinMembers*: seq[Decl]
     of dkActor:

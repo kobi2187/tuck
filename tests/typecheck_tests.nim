@@ -17,6 +17,7 @@ proc checkSource(src: string): string =
   var p = Parser(source: src, tokens: tokens, cursor: 0)
   let m = p.parseModule()
   try:
+    verifyModuleEffects(m)
     typecheckModule(m)
     return ""
   except SemanticError as err:
@@ -86,6 +87,78 @@ expectError "arithmetic type clash", """
 fn f({a: int, b: str}) -> int:
   return a + b
 """, "arithmetic"
+
+# ---------- transition tables ----------
+
+expectError "transition endpoint typo", """
+type Light:
+  | Red
+  | Green
+  transitions:
+    Red -> Grean
+""", "not a variant"
+
+expectError "sealed variant unreachable", """
+type Session [sealed]:
+  | Disconnected
+  | Connecting({host: str})
+  | Zombie
+  transitions:
+    Disconnected -> Connecting
+    Connecting -> Disconnected
+""", "unreachable from initial"
+
+expectOk "valid sealed transition graph", """
+type Session [sealed]:
+  | Disconnected
+  | Connecting({host: str})
+  | Connected({keepalive: int})
+  transitions:
+    Disconnected -> Connecting
+    Connecting -> Connected
+    Connecting -> Disconnected
+    Connected -> Disconnected
+"""
+
+# ---------- decision tables ----------
+
+expectError "decision row unreachable", """
+decision route({priority: int, encrypted: bool}) -> int:
+  | high  _     -> 1
+  | high  true  -> 2
+  | _     _     -> 3
+""", "unreachable"
+
+expectError "decision missing catch-all", """
+decision route({priority: int, encrypted: bool}) -> int:
+  | high  true  -> 1
+  | low   false -> 2
+""", "catch-all"
+
+expectOk "valid decision table", """
+decision route({priority: int, encrypted: bool}) -> int:
+  | high  true  -> 1
+  | high  false -> 2
+  | _     _     -> 3
+"""
+
+# ---------- effect markers ----------
+
+expectError "pure fn calling io fn", """
+fn writeLog({msg: str}) -> void [io]:
+  return
+
+fn doWork({msg: str}) -> void:
+  {msg} writeLog
+""", "requires effect [io]"
+
+expectOk "io propagation declared", """
+fn writeLog({msg: str}) -> void [io]:
+  return
+
+fn doWork({msg: str}) -> void [io]:
+  {msg} writeLog
+"""
 
 # ---------- pending feature ----------
 

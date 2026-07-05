@@ -234,7 +234,8 @@ proc parsePrimaryType(p: var Parser): Type =
       let isAttr = first.kind == tkIdent and (first.value in [
         "saturating", "sealed", "queue", "irq_safe", "no_alloc", "invariant",
         "packed", "align", "wrapping", "trapping",
-        "big_endian", "little_endian", "volatile"])  # spec 4.6 type + field attrs
+        "big_endian", "little_endian", "volatile",       # spec 4.6 type + field attrs
+        "io", "unsafe", "may_block", "stack", "priority"])  # effect markers after a return type
       discard p.advance() # eat "["
       if isAttr:
         var tAttrs: seq[TypeAttr]
@@ -862,7 +863,7 @@ proc parseDecl*(p: var Parser): Decl =
     let retType = p.parseType()
     discard p.expect(tkColon)
     let body = p.parseDecisionBody()
-    return Decl(span: sp, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: @[], fnBody: body)
+    return Decl(span: sp, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: @[], fnBody: body, isDecision: true)
 
   of tkFn, tkOn:
     if curr.kind == tkOn and p.peek(1).kind == tkSelect:
@@ -928,6 +929,20 @@ proc parseDecl*(p: var Parser): Decl =
       discard p.advance()
       retType = p.parseType()
     var effects: seq[EffectMarker]
+    # `-> T [io]` parses the markers as attrs on T; harvest them into effects
+    if retType != nil:
+      var kept: seq[TypeAttr]
+      for a in retType.attrs:
+        case a.name
+        of "io": effects.add(emIo)
+        of "no_alloc": effects.add(emNoAlloc)
+        of "irq_safe": effects.add(emIrqSafe)
+        of "unsafe": effects.add(emUnsafe)
+        of "may_block": effects.add(emMayBlock)
+        of "stack": effects.add(emStack)
+        of "priority": effects.add(emPriority)
+        else: kept.add(a)
+      retType.attrs = kept
     if p.current().kind == tkLBracket:
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
@@ -1192,6 +1207,20 @@ proc parseDecl*(p: var Parser): Decl =
       discard p.advance()
       retType = p.parseType()
     var effects: seq[EffectMarker]
+    # `-> T [io]` parses the markers as attrs on T; harvest them into effects
+    if retType != nil:
+      var kept: seq[TypeAttr]
+      for a in retType.attrs:
+        case a.name
+        of "io": effects.add(emIo)
+        of "no_alloc": effects.add(emNoAlloc)
+        of "irq_safe": effects.add(emIrqSafe)
+        of "unsafe": effects.add(emUnsafe)
+        of "may_block": effects.add(emMayBlock)
+        of "stack": effects.add(emStack)
+        of "priority": effects.add(emPriority)
+        else: kept.add(a)
+      retType.attrs = kept
     if p.current().kind == tkLBracket:
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:

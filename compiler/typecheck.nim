@@ -367,10 +367,89 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   tc.currentFn = ""
   tc.popScope()
 
+# --- Decision tables (spec 6.1): row width, unreachable rows, completeness ---
+
+proc patCovers(a, b: Pattern): bool =
+  # Does pattern a match everything pattern b matches? (per column)
+  if a == nil or a.kind == pkWild: return true
+  if b == nil or b.kind == pkWild: return false
+  if a.kind != b.kind: return false
+  case a.kind
+  of pkVar: a.name == b.name
+  of pkLit: a.litKind == b.litKind and a.litValue == b.litValue
+  else: false
+
+proc checkDecisionTable(tc: var TypeChecker, d: Decl) =
+  if d.fnBody == nil or d.fnBody.kind != exkBlock or d.fnBody.stmts.len == 0:
+    fail("Decision Error: decision table '" & d.name & "' has no rows", d.span)
+  var rows: seq[tuple[pats: seq[Pattern], span: Span]]
+  for s in d.fnBody.stmts:
+    if s.kind != exkMatch or s.arms.len == 0: continue
+    let pat = s.arms[0].pattern
+    let pats = if pat != nil and pat.kind == pkTuple: pat.elems
+               else: @[pat]
+    if pats.len != d.fnParams.len:
+      fail("Decision Error: row in '" & d.name & "' has " & $pats.len &
+           " columns but the table declares " & $d.fnParams.len & " inputs", s.span)
+    rows.add((pats, s.span))
+    discard tc.synthesize(s.arms[0].body)
+  # Unreachable: an earlier row covers this one in every column
+  for j in 1 ..< rows.len:
+    for i in 0 ..< j:
+      var covered = true
+      for c in 0 ..< rows[j].pats.len:
+        if not patCovers(rows[i].pats[c], rows[j].pats[c]):
+          covered = false
+          break
+      if covered:
+        fail("Decision Error: row " & $(j+1) & " of '" & d.name &
+             "' is unreachable — row " & $(i+1) & " already covers it", rows[j].span)
+  # Completeness (v1): require a catch-all row; full domain analysis comes later
+  var lastAllWild = true
+  for p in rows[^1].pats:
+    if p != nil and p.kind != pkWild: lastAllWild = false
+  if not lastAllWild:
+    fail("Decision Error: '" & d.name & "' cannot be proven complete — " &
+         "end the table with a catch-all row (all _)", d.span)
+
+# --- Transition tables (spec 4.4): endpoints exist; sealed graph reachable ---
+
+proc checkTransitions(tc: var TypeChecker, d: Decl) =
+  let t = d.typeBody
+  if t == nil or t.kind != tkSum or t.transitions.len == 0: return
+  var variantNames = initHashSet[string]()
+  for v in t.variants: variantNames.incl(v.name)
+  for tr in t.transitions:
+    if tr.`from` notin variantNames:
+      fail("Transition Error: '" & tr.`from` & "' is not a variant of " & d.name, tr.span)
+    if tr.to notin variantNames:
+      fail("Transition Error: '" & tr.to & "' is not a variant of " & d.name, tr.span)
+  var isSealed = false
+  for a in t.attrs:
+    if a.name == "sealed": isSealed = true
+  if isSealed and t.variants.len > 0:
+    # Every variant must be reachable from the initial (first) variant
+    var reachable = [t.variants[0].name].toHashSet
+    var grew = true
+    while grew:
+      grew = false
+      for tr in t.transitions:
+        if tr.`from` in reachable and tr.to notin reachable:
+          reachable.incl(tr.to)
+          grew = true
+    for v in t.variants:
+      if v.name notin reachable:
+        fail("Transition Error: sealed type " & d.name & " variant '" & v.name &
+             "' is unreachable from initial variant '" & t.variants[0].name & "'", v.span)
+
 proc checkDecl(tc: var TypeChecker, d: Decl) =
   if d == nil: return
   case d.kind
-  of dkFn: tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody)
+  of dkFn:
+    if d.isDecision:
+      tc.checkDecisionTable(d)
+      return
+    tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody)
   of dkTask: tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)
   of dkExpr: discard tc.synthesize(d.expr)
   of dkObject:
@@ -386,6 +465,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     for h in d.handlers: tc.checkDecl(h)
     tc.popScope()
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
+  of dkType: tc.checkTransitions(d)
   else: discard
 
 proc sigStr(d: Decl): string =
