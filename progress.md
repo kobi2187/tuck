@@ -88,6 +88,21 @@
   zero comparison chains. enumDomain helper lives in ast.nim (shared).
 - Example 21-decision-bitmask; runtime-verified all 4 combos. Gate 10/21.
 
+## 2026-07-05 — transition-table codegen: real tagged unions
+- Sum types now emit by shape: fieldless+no-transitions → plain enum
+  (decision tables key over these); payload variants → Nim object variant
+  (kind enum + per-variant payload TUPLE field named after variant — dodges
+  Nim's cross-branch field-name collision, e.g. config in 3 variants of 06);
+  transitions add canTransition (pure matrix, set-membership per case arm) +
+  transitionTo (checked assign, raises ValueError naming frm -> to).
+- Old emission dropped payload fields entirely (06 only passed because Config/
+  Feed vanished). 06 gained skeleton Config/Feed decls; payloads now carried.
+- Runtime-verified: Unloaded->Loading->Ready with payloads, Ready->Loading
+  raises "Invalid transition Ready -> Loading".
+- The compile-time half (sealed flow analysis: fns returning sealed types only
+  produce reachable variants) remains on backlog — type system catches what it
+  can via the kind enum; matrix guards the rest at runtime.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

@@ -495,31 +495,62 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return header & "\n" & bodyStr & "\n"
   of dkType:
     if d.typeBody != nil:
-      if d.typeBody.kind == tkSum and d.typeBody.transitions.len > 0:
-        let stateEnumName = d.name & "State"
-        var states: seq[string]
+      if d.typeBody.kind == tkSum:
+        var hasPayload = false
         for v in d.typeBody.variants:
-          states.add(v.name)
-        var res = "type " & stateEnumName & "* = enum " & states.join(", ") & "\n"
-        res.add("type " & d.name & "* = ref object\n  state*: " & stateEnumName & "\n")
-        var casesStr: seq[string]
-        casesStr.add("proc transitionTo*(self: " & d.name & ", target: " & stateEnumName & ") =")
-        casesStr.add("  case self.state")
-        for v in d.typeBody.variants:
-          casesStr.add("  of " & v.name & ":")
-          var allowed: seq[string]
-          for tr in d.typeBody.transitions:
-            if tr.`from` == v.name:
-              allowed.add(tr.to)
-          if allowed.len > 0:
-            var conds: seq[string]
-            for a in allowed:
-              conds.add("target != " & a)
-            casesStr.add("    if " & conds.join(" and ") & ": raise newException(ValueError, \"Invalid transition\")")
-          else:
-            casesStr.add("    raise newException(ValueError, \"No outgoing transitions\")")
-        casesStr.add("  self.state = target")
-        res.add(casesStr.join("\n") & "\n")
+          if v.fields.len > 0: hasPayload = true
+        let hasTransitions = d.typeBody.transitions.len > 0
+        if not hasPayload and not hasTransitions:
+          # plain enum (also what decision tables key over)
+          var tags: seq[string]
+          for v in d.typeBody.variants: tags.add(v.name)
+          return "type " & d.name & "* = enum " & tags.join(", ") & "\n"
+
+        var res = ""
+        var kindName = d.name
+        if hasPayload:
+          # tagged union: kind enum + object variant; each variant's payload is
+          # a tuple field named after the variant (no cross-branch name clashes)
+          kindName = d.name & "Kind"
+          var tags: seq[string]
+          for v in d.typeBody.variants: tags.add(v.name)
+          res.add("type " & kindName & "* = enum " & tags.join(", ") & "\n")
+          res.add("type " & d.name & "* = object\n  case kind*: " & kindName & "\n")
+          for v in d.typeBody.variants:
+            if v.fields.len == 0:
+              res.add("  of " & v.name & ": discard\n")
+            else:
+              var parts: seq[string]
+              for f in v.fields:
+                parts.add(f.name & ": " & genType(f.typ))
+              res.add("  of " & v.name & ": " & v.name.toLowerAscii() &
+                      "*: tuple[" & parts.join(", ") & "]\n")
+        else:
+          res.add("type " & d.name & "* = enum ")
+          var tags: seq[string]
+          for v in d.typeBody.variants: tags.add(v.name)
+          res.add(tags.join(", ") & "\n")
+
+        if hasTransitions:
+          # transition matrix: pure predicate + checked assignment
+          var canLines: seq[string]
+          canLines.add("proc canTransition*(frm, to: " & kindName & "): bool =")
+          canLines.add("  case frm")
+          for v in d.typeBody.variants:
+            var allowed: seq[string]
+            for tr in d.typeBody.transitions:
+              if tr.`from` == v.name: allowed.add(tr.to)
+            if allowed.len > 0:
+              canLines.add("  of " & v.name & ": to in {" & allowed.join(", ") & "}")
+            else:
+              canLines.add("  of " & v.name & ": false")
+          res.add(canLines.join("\n") & "\n")
+          let kindOf = if hasPayload: ".kind" else: ""
+          res.add("proc transitionTo*(self: var " & d.name & ", target: " & d.name & ") =\n" &
+                  "  if not canTransition(self" & kindOf & ", target" & kindOf & "):\n" &
+                  "    raise newException(ValueError, \"Invalid transition \" & $self" & kindOf &
+                  " & \" -> \" & $target" & kindOf & ")\n" &
+                  "  self = target\n")
         return res
       elif d.typeBody.kind == tkRecord:
         var fieldsStr: seq[string]

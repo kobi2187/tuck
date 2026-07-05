@@ -1,5 +1,11 @@
 # transitions_example.tuck
 
+type Config:
+  url: str
+
+type Feed:
+  title: str
+
 type PodcastPlayerLifecycle:
   | Unloaded({config: Config})
   | Loading({config: Config, progress: int})
