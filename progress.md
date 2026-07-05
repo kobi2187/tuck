@@ -79,6 +79,15 @@
   worked already (separate path). Effect tests now in typecheck_tests.
 - Suite: 22 typecheck tests green, gate 9/9, cli smoke OK.
 
+## 2026-07-05 — decision tables: exact analysis + packed-key codegen
+- Enumerable columns (bool / fieldless sum types): checker enumerates all
+  combinations — exact gap reports ("no row matches (priority: High,
+  encrypted: false)"), proven unreachable rows, symbol validation, no
+  catch-all needed. Open domains keep pairwise + catch-all + if-elif.
+- Codegen emits `case ord(a) * stride + ord(b)` packed key, outcomes grouped —
+  zero comparison chains. enumDomain helper lives in ast.nim (shared).
+- Example 21-decision-bitmask; runtime-verified all 4 combos. Gate 10/21.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).
