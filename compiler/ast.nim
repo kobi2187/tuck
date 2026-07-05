@@ -164,6 +164,7 @@ type
     of exkField:
       receiver*: Expr
       fieldName*: string
+      ctorUnsafe*: bool  # Type.Variant [unsafe] — sealed-construction escape hatch
     of exkQualified:
       modulePath*: seq[string]
       qualName*: string

@@ -186,6 +186,49 @@ decision route({priority: Priority, encrypted: bool}) -> int:
   | High  true  -> 3
 """, "unreachable"
 
+# ---------- sealed construction (spec 4.4) ----------
+
+expectError "sealed non-initial construction rejected", """
+type Session [sealed]:
+  | Disconnected
+  | Connected({keepalive: int})
+  transitions:
+    Disconnected -> Connected
+    Connected -> Disconnected
+
+let s = Session.Connected {keepalive: 60}
+""", "cannot be constructed directly"
+
+expectOk "sealed initial construction allowed", """
+type Session [sealed]:
+  | Disconnected
+  | Connected({keepalive: int})
+  transitions:
+    Disconnected -> Connected
+    Connected -> Disconnected
+
+let s = Session.Disconnected
+"""
+
+expectOk "sealed non-initial with unsafe escape", """
+type Session [sealed]:
+  | Disconnected
+  | Connected({keepalive: int})
+  transitions:
+    Disconnected -> Connected
+    Connected -> Disconnected
+
+let s = Session.Connected [unsafe] {keepalive: 60}
+"""
+
+expectOk "unsealed type constructs any variant", """
+type State:
+  | Idle
+  | Busy({job: int})
+
+let s = State.Busy {job: 1}
+"""
+
 # ---------- effect markers ----------
 
 expectError "pure fn calling io fn", """

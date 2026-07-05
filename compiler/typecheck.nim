@@ -206,6 +206,26 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     let (found, b) = tc.lookup(e.name)
     if found: b.typ else: unknownType(e.span)
   of exkField:
+    # Variant construction: Type.Variant — sealed types only allow the
+    # initial (first) variant directly; [unsafe] is the deserialization escape
+    if e.receiver != nil and e.receiver.kind == exkVar and
+       tc.typeDecls.hasKey(e.receiver.name):
+      let declared = tc.typeDecls[e.receiver.name]
+      if declared.kind == tkSum:
+        var isVariant = false
+        for v in declared.variants:
+          if v.name == e.fieldName: isVariant = true
+        if isVariant:
+          var isSealed = false
+          for a in declared.attrs:
+            if a.name == "sealed": isSealed = true
+          if isSealed and declared.variants.len > 0 and
+             e.fieldName != declared.variants[0].name and not e.ctorUnsafe:
+            fail("Sealed Error: " & e.receiver.name & "." & e.fieldName &
+                 " cannot be constructed directly — sealed types start at '" &
+                 declared.variants[0].name & "'; reach '" & e.fieldName &
+                 "' via transitions, or mark [unsafe] for deserialization", e.span)
+          return Type(span: e.span, kind: tkNamed, name: e.receiver.name)
     let recvT = tc.resolve(tc.synthesize(e.receiver))
     let fields = tc.fieldsOf(recvT)
     if fields.len > 0:
@@ -238,10 +258,11 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
       let sig = tc.fnSigs[calleeName]
       tc.checkCallArgs(calleeName, sig, e)
       return sig.ret
+    var calleeT = unknownType(e.span)
     if e.callee != nil and e.callee.kind != exkVar:
-      discard tc.synthesize(e.callee)
+      calleeT = tc.synthesize(e.callee)  # variant constructions carry their type
     for a in e.args: discard tc.synthesize(a)
-    unknownType(e.span)
+    calleeT
   of exkBinary:
     let lt = tc.synthesize(e.left)
     let rt = tc.synthesize(e.right)

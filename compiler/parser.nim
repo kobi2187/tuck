@@ -455,6 +455,13 @@ proc parseChainExpr(p: var Parser): Expr =
       discard p.advance()
       let fieldName = p.expect(tkIdent, "Expected field name after '.'").value
       expr = Expr(span: sp, kind: exkField, receiver: expr, fieldName: fieldName)
+      # Type.Variant [unsafe] — escape hatch for sealed construction (spec 4.4)
+      if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+         p.peek(1).value == "unsafe" and p.peek(2).kind == tkRBracket:
+        discard p.advance()  # [
+        discard p.advance()  # unsafe
+        discard p.advance()  # ]
+        expr.ctorUnsafe = true
     elif p.current().kind == tkDotDot:
       discard p.advance()
       let fieldName = p.expect(tkIdent, "Expected builder field name after '..'").value

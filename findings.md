@@ -18,6 +18,15 @@
   "Successfully compiled 20 examples" only means AST→string emission succeeded.
 - No git repo. No AGENTS.md/VISION.md etc.
 
+## Open design decisions (user to rule)
+- **Empty init / no defaults** (raised 2026-07-05): spec already has the
+  "invisible option" — `?T` (one char), `or` for defaults, no nil (Appendix B).
+  NOT specified: what `Foo {}` (empty construction) means. Options:
+  (a) compile error — every field required at construction; absence must be
+  explicit `?T` (recommended: matches no-defaults, nothing invisible);
+  (b) empty construction implicitly produces `?Foo`.
+  Decide + add to spec §4.8 when settled.
+
 ## Spec deltas (spec §11 vs reality)
 Spec claims npeg parser + flat IR + Merkle cache; reality is recursive-descent
 parser + ref-AST + no cache. Checker deliberately built on reality.
