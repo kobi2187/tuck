@@ -1,0 +1,14 @@
+# Comments use hash markers and extend to the end of the line
+# This is a configuration-style comment.
+
+let config = {url: "https://api.example.com", timeout: 100}
+let result = config fetch  # inline comment after a flow expression
+
+# Comments also appear inside transitions and declarations
+type LightState:
+  | Off
+  | On
+
+  transitions:
+    Off -> On  # switch on
+    On  -> Off # switch off

@@ -1,0 +1,16 @@
+# Actor model, lifecycle, and effect markers
+actor Counter:
+  count: int = 0
+
+  on increment({n: int}):
+    count += n
+
+  on get() -> {count: int}:
+    result = {count}
+
+fn readSensor({port: u8}) -> !{value: u16} [io]:
+  ...
+
+object PodcastApp:
+  pending:
+    fn fetchFeed({url: str}) -> !{feed: Feed}

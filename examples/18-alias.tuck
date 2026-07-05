@@ -1,0 +1,14 @@
+# Explicit aliasing for field name mismatches in chained data flow
+# External APIs may produce one field naming scheme, while our local functions
+# expect a different shape. alias() makes the handoff explicit.
+
+fn playTrack({id: int, name: str, length: int}) -> void:
+  # The body is omitted here for illustration.
+  # In a real program this would start playback with the normalized fields.
+  ...
+
+let externalTrack = {trackId: 42, title: "Slow Jam", durationMs: 215000}
+let playerInput = externalTrack alias(trackId: id, title: name, durationMs: length)
+
+# Now the local function can consume the normalized struct shape.
+playerInput playTrack

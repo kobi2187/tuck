@@ -1,0 +1,13 @@
+type EthernetFrame [packed, align: 2]:
+  dst:       Array[6, u8]
+  src:       Array[6, u8]
+  ethertype: u16 [big_endian]   # field-level annotation, same brackets
+
+type Temperature [invariant: celsius >= -273.15]:
+  celsius: f32
+
+actor UartDriver [queue: 8, priority: high]:
+  ...
+
+fn readSensor({port: u8}) -> !{value: u16} [io, irq_safe]:
+  ...

@@ -1,0 +1,22 @@
+type SafeRPM    = u16 [saturating]   # clamps at 65535, never wraps
+type PacketSeq  = u8  [wrapping]     # intentional wraparound for seq numbers  
+type ErrorCount = u32 [trapping]     # panic in debug, defined behavior in release
+
+
+register RCC_CR at 0x40021000:
+  HSION:  bit 0  [read, write]
+  HSIRDY: bit 1  [read]          # read-only, compiler enforces
+  HSITRIM: bits 3..7 [read, write]
+
+
+fn processISR({event: SensorEvent}) -> void [irq_safe, stack: 128]:
+  # compiler verifies: worst-case stack usage of this fn and all callees ≤ 128 bytes
+  # if you call something that blows the budget: compile error
+
+
+pool UartBuffer: Array[64, u8] * 8   # 8 buffers of 64 bytes, statically allocated
+                                      # known at compile time: 512 bytes, period
+
+let buf = UartBuffer.acquire or return Error.NoBuffer
+# ... use buf ...
+buf.release  

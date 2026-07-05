@@ -1,0 +1,74 @@
+# Systems & Embedded MP3 Player Example
+# Demonstrates hardware registers, events, tasks, actors, and memory pools.
+
+distinct Hz = u32
+distinct Milliseconds = u32
+
+# 1. Global Event Registry
+registry SystemEvents:
+  | PlaybackStarted
+  | PlaybackStopped
+  | HardwareError({code: u8})
+
+# 2. Hardware Register Mapping (MMIO)
+register DAC_CR at 0x40007400:
+  EN: bit 0 [read, write]
+  BOFF: bit 1 [read, write]
+
+register DMA1_CH3 at 0x40020030:
+  EN: bit 0 [read, write]
+  TCIE: bit 1 [read, write]
+
+# 3. Sealed Lifecycle State Machine
+type PlayerState [sealed]:
+  | Idle
+  | Decoding({sampleRate: Hz})
+  | Paused
+  transitions:
+    Idle -> Decoding
+    Decoding -> Paused
+    Paused -> Decoding
+    Decoding -> Idle
+    Paused -> Idle
+
+# 4. Static Zero-Allocation Memory Pool
+pool BufferPool: Array[512, u8] * 4
+
+# 5. Type Invariant
+type Volume [invariant: level <= 100]:
+  level: u8
+
+# 6. Cooperative StreamReader Task
+task streamReader({streamId: u8, chunks: Seq[u32]}) -> !void [io]:
+  for i in chunks:
+    let buf = BufferPool.acquire or return
+    # Implicitly yields control back to scheduler while waiting on DMA read
+    # buf.data = dmaRead {streamId}
+    DMA1_CH3 ..EN {true}
+    buf.release
+
+# 7. Isolated Decoder Actor
+actor Decoder [queue: 8]:
+  state: PlayerState = PlayerState.Idle
+  vol: Volume = Volume {level: 80}
+
+  on play({rate: Hz}) -> void:
+    # State transitions must conform to the transition matrix
+    state = state transitionTo PlayerState.Decoding {sampleRate: rate}
+    SystemEvents.raise PlaybackStarted
+    DAC_CR ..EN {true}
+
+  on pause() -> void:
+    state = state transitionTo PlayerState.Paused
+    DAC_CR ..EN {false}
+
+  on stop() -> void:
+    state = state transitionTo PlayerState.Idle
+    SystemEvents.raise PlaybackStopped
+    DAC_CR ..EN {false}
+
+static_assert sizeof(Volume) == 1
+
+# 8. Main Application Controller
+fn main() -> void:
+  discard

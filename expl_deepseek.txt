@@ -1,0 +1,216 @@
+The most pragmatic approach when writing the compiler **in Nim** is to lean on the language’s strengths: expressive macros for AST definitions, fast string processing for a scannerless parser, a robust parser‑combinator library for immediate error feedback, and a hand‑crafted semantic analysis with constraint‑based type checking. We’ll target two backends:
+
+* **Nim** – emit idiomatic Nim source code; the user compiles it with the existing Nim compiler.  
+* **Haxe / HashLink** – emit Haxe source code, then run `haxe --hl output.hl` to get HashLink bytecode. (Emitting HL bytecode directly is not worth it.)
+
+The whole pipeline is designed to **stop at the first error** and show a precise, colourful diagnostic pointing to the exact source location.
+
+---
+
+## 1. Scannerless parsing with `combparser`
+
+[combparser](https://github.com/PMunch/combparser) is a parser‑combinator library that consumes a string and returns a typed AST with positional information. It has excellent error labels and fails on the first mismatched token – perfect for a fast feedback loop.
+
+Instead of a separate lexer, you build token‑level parsers that directly consume characters. Every AST node gets a `Pos` (line, column, offset).
+
+**Token parsers** – define small functions that match keywords, identifiers, numbers, etc.
+
+```nim
+import combparser
+
+# A simple integer token.
+let integer = many1(digit).map(proc(s: string): Node =
+  result = newInteger(parseInt(s))
+).withName("integer")
+```
+
+**Example AST node type** – use Nim’s case objects (variant) with position:
+
+```nim
+type
+  NodeKind = enum nkIntLit, nkIdent, nkCall, nkIf, nkFn, ...
+  Node = ref object
+    pos: Pos          # line, column, offset from combparser
+    case kind: NodeKind
+    of nkIntLit: intVal: int
+    of nkIdent: name: string
+    of nkCall: funcExpr, args: Node
+    # ...
+```
+
+Every parser attaches the position using `pos()`:
+
+```nim
+let exprWithPos = expr.map(proc(n: Node, pos: Pos): Node =
+  n.pos = pos
+  return n
+)
+```
+
+**Grammar building** – use `choice`, `seq`, `optional`, `sepBy`, and custom Pratt parser for binary expressions. `combparser`’s `withName` gives clear error messages about what was expected.
+
+```nim
+let expression = prattParser(atom, operators)  # built using combparser’s primitives
+let statement = choice(ifStmt, returnStmt, varDecl, exprStmt)
+```
+
+No backtracking beyond what combinators naturally provide – if the first alternative fails, it tries the next, but once all alternatives fail, the parser stops with a precise error, giving you **fail‑on‑first‑error** behaviour. The error includes the furthest consumed position and the label (e.g., `"expected 'if', identifier, or 'return'"`).
+
+---
+
+## 2. Semantic analysis – symbol tables and type checking
+
+### a) Name resolution
+Build a stack of `Table[string, Symbol]`. Each symbol stores its kind, type (initially `Type`), and definition span.  
+On block entry push a new scope, on block exit pop. Two‑pass strategy: first gather all function and type signatures, then resolve bodies.
+
+### b) Type system with generics – constraint generation + unification
+This gives you full inference in function bodies and excellent error localisation.
+
+**Types representation:**
+
+```nim
+type
+  TypeKind = enum tkInt, tkBool, tkTyVar, tkGeneric, tkFunc, tkAdt
+  Type = ref object
+    case kind: TypeKind
+    of tkTyVar: id: int
+    of tkGeneric: name: string
+    of tkFunc: paramTypes: seq[Type], returnType: Type
+    of tkAdt: name: string, typeArgs: seq[Type]
+    # ...
+```
+
+**Algorithm:**
+
+1. Traverse the AST and assign a fresh type variable (`tkTyVar` with a unique id) to every expression.
+2. For each expression, generate equality constraints.  
+   Example: `a + b` (if `+` expects two `Int` and returns `Int`):  
+   `constraint( typeof(a), tkInt )`, `constraint( typeof(b), tkInt )`, `typeof(expr) = tkInt`.  
+   Each constraint is a pair `(Type, Type, nodeSpan)` so we can later point to the problematic sub‑expression.
+3. Store all constraints in a list and then solve with a **union‑find** (disjoint‑set) that merges type variables.
+   ```nim
+   var uf = initUnionFind()
+   for (t1, t2, loc) in constraints:
+     try:
+       unify(t1, t2, uf, loc)
+     except UnificationError as e:
+       error("type mismatch", e.loc1, e.loc2)
+   ```
+4. **Generics** – when a generic function is called, create fresh type variables for each generic parameter, unify the argument types, then substitute the resolved types into the return type. This is simple monomorphisation; we can later instantiate specialised versions before emission.
+
+Because every constraint carries the source location of the node that generated it, a unification failure immediately yields two precise spans – exactly what is needed for a great error report.
+
+---
+
+## 3. Error reporting that pinpoints
+
+The whole pipeline uses `raise` with a custom `CompilerError` exception that carries a message and one or two `Pos` values.
+
+```nim
+type
+  CompilerError = ref object of CatchableError
+    msg: string
+    span1, span2: Pos
+```
+
+At the top level, catch this exception, extract the source line(s) using the offset into the original source string, and print a coloured diagnostic. Use Nim’s `terminal` module for styling:
+
+```nim
+proc reportError(e: CompilerError, src: string) =
+  styledEcho(fgRed, "Error: ", e.msg)
+  let line = getLineContaining(src, e.span1)
+  styledEcho(line)
+  styledEcho(fgYellow, "^".repeat(colPos), " here")
+```
+
+Because you fail on the first error, the user sees exactly one such message before the compiler exits.
+
+---
+
+## 4. Transformations (lowering) passes
+
+Before code emission, apply a series of tree‑walking transformations:
+
+- **Pattern matching** to `if` / `switch`
+- **For loops** to `while`
+- **Generics monomorphisation** – scan for all concrete generic calls and create specialised functions with type parameters substituted. This makes the backend emit monomorphic code (essential for Nim or Haxe that don’t directly support your language’s generics).
+
+Each pass returns a modified AST or raises an `CompilerError` if something is inconsistent. They run in order, so the first problem stops the pipeline.
+
+---
+
+## 5. Code emission
+
+Emit source code by recursively pretty‑printing the AST into a `string` buffer.
+
+### Nim backend
+Nim is indentation‑sensitive. Keep a `depth` counter and emit `"  "` per level.
+
+```nim
+proc emitNim(n: Node, dst: var string, depth: int) =
+  let indent = "  ".repeat(depth)
+  case n.kind:
+  of nkIntLit: dst.add($n.intVal)
+  of nkIf:
+    dst.add(indent & "if "); emitNim(n.cond, dst, depth+1); dst.add(":\n")
+    emitNimBlock(n.thenBranch, dst, depth+1)
+    if n.elseBranch != nil:
+      dst.add(indent & "else:\n")
+      emitNimBlock(n.elseBranch, dst, depth+1)
+  # ...
+```
+
+Map your types to Nim ones (`Int` → `int`, `Bool` → `bool`, ADT enums → Nim’s `object` variants with a tag field, or use `case` objects).  
+
+### Haxe / HashLink backend
+Emit Haxe source code (braces, semicolons) and then let the user run `haxe --hl output.hl -main MyMain -cp output_dir`. This is far more maintainable than writing HL bytecode directly.
+
+---
+
+## 6. Putting it all together – single‑pass, fail‑fast pipeline
+
+```nim
+import combparser
+
+proc main() =
+  let src = readFile("input.my")
+  # 1. Parse with scannerless combinator parser
+  let ast = parseProgram(src)  # raises CompilerError on first mismatch
+  # 2. Resolve names
+  resolveNames(ast)
+  # 3. Type check & infer generics
+  typeCheck(ast)
+  # 4. Lower & monomorphise
+  let lowered = transform(ast)
+  # 5. Emit
+  let output = emitNim(lowered)
+  writeFile("output.nim", output)
+
+when isMainModule:
+  try:
+    main()
+  except CompilerError as e:
+    reportError(e, originalSource)
+    quit(1)
+```
+
+Every step either succeeds or raises a `CompilerError` that contains the exact location(s). This gives a sub‑second feedback loop even for larger projects, because parser combinators in Nim are fast and the whole pipeline is linear in terms of passes.
+
+---
+
+## Summary of the Nim‑native toolkit
+
+| Stage | Library / Technique | Why |
+|-------|---------------------|-----|
+| Parsing (scannerless) | `combparser` | Fails on first mismatch, good error labels, returns AST with positions, fast |
+| AST | Nim `ref object` with case variants | Zero‑cost abstraction, full control, pattern matching |
+| Position tracking | `combparser`’s `Pos` (line, column, offset) | Used for pinpoint errors |
+| Name resolution | Stack of `Table[string, Symbol]` | Classic, trivially fast |
+| Type checking | Constraint generation + union‑find unification | Linear‑time, pinpoints mismatches |
+| Generics | Fresh type variables + substitution | Avoids higher‑kinded complexity, keeps backend simple |
+| Error display | `terminal` module + manual source snippet extraction | No extra dependency, immediate colourful output |
+| CLI | `parseopt` or `cligen` | Lightweight argument handling |
+| Backend (Nim/Haxe) | Hand‑rolled pretty‑printer | Full control, no dependencies |
+
+This approach gives you a fast, single‑error‑reporting compiler that is built entirely in Nim, using only one external library (`combparser`), and yields production‑quality diagnostics. The scannerless parsing removes the need for a separate lexer, and the transform passes make it easy to target both Nim and Haxe without dealing with language‑specific type system quirks.

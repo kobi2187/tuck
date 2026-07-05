@@ -1,0 +1,21 @@
+# Actor — implicit infinite loop, persistent state
+actor UartDriver [queue: 8]:
+  txBuf: Array[256, u8]          # persistent state
+
+  on send({data: Seq[u8]}) -> void:     # handles one message, loops back
+    txBuf.copyFrom {data}
+    uart.flush {txBuf} [io]
+
+  on select:                            # wait for any of these
+    | timer.1s  -> {}:  self.heartbeat
+    | shutdown  -> {}:  return          # only way to exit an actor
+
+
+# Task — runs to completion, returns a value
+task fetchFeed({url: str}) -> !{feed: Feed}:
+  let resp = http.get {url}     # [io] → implicit yield
+
+  on select:                    # wait for any of these inside a task too
+    | resp.ok   -> {body}: body parse
+    | resp.err  -> {e}:    return Error {e}
+    | timeout.5s -> {}:    return Error.timeout

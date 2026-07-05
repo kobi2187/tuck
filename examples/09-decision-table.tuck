@@ -1,0 +1,6 @@
+decision classifyPacket({priority: u2, size: u12, encrypted: bool}) -> Action:
+  | high    big   true  -> QueueSecure
+  | high    big   false -> QueueFast
+  | high    small _     -> QueueImmediate
+  | low     _     _     -> QueueDefer
+  | _       _     _     -> Drop

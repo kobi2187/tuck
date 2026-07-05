@@ -1,0 +1,12 @@
+# transitions_example.tuck
+
+type PodcastPlayerLifecycle:
+  | Unloaded({config: Config})
+  | Loading({config: Config, progress: int})
+  | Ready({config: Config, feed: Feed})
+  
+  transitions:
+    Unloaded  -> Loading
+    Loading   -> Ready
+    Loading   -> Unloaded  # cancel/timeout
+    Ready     -> Unloaded  # reset

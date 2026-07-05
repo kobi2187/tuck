@@ -1,0 +1,126 @@
+# tests/typecheck_tests.nim
+# Positive and negative cases for the bidirectional type checker.
+import strutils
+import ../lexer
+import ../compiler/parser
+import ../compiler/semantics
+import ../compiler/typecheck
+
+proc checkSource(src: string): string =
+  ## Returns "" on success, or the SemanticError message.
+  var lex = Lexer(source: src, position: 0, line: 1, column: 1, indentStack: @[0])
+  var tokens: seq[Token]
+  while true:
+    let t = lex.nextToken()
+    tokens.add(t)
+    if t.kind == tkEOF: break
+  var p = Parser(source: src, tokens: tokens, cursor: 0)
+  let m = p.parseModule()
+  try:
+    typecheckModule(m)
+    return ""
+  except SemanticError as err:
+    return err.msg
+
+var failures = 0
+
+proc expectOk(name, src: string) =
+  let msg = checkSource(src)
+  if msg == "":
+    echo "PASS (ok)     ", name
+  else:
+    echo "FAIL          ", name, " — unexpected error: ", msg
+    failures.inc
+
+proc expectError(name, src, needle: string) =
+  let msg = checkSource(src)
+  if msg.len > 0 and needle in msg:
+    echo "PASS (error)  ", name, " — ", msg
+  else:
+    echo "FAIL          ", name, " — expected error containing '", needle,
+         "' but got: ", (if msg == "": "<no error>" else: msg)
+    failures.inc
+
+# ---------- negative cases ----------
+
+expectError "wrong field type in call", """
+fn f({a: int}) -> int:
+  return a
+
+let x = {a: "oops"} f
+""", "field 'a'"
+
+expectError "missing required field", """
+fn send({email: str, name: str}) -> int:
+  return 1
+
+let x = {email: "a@b.c"} send
+""", "missing required field 'name"
+
+expectError "mutation of let binding", """
+let cfg = {port: 80}
+cfg ..port {8080}
+""", "declared with 'let'"
+
+expectError "return type mismatch", """
+fn f({a: int}) -> int:
+  return "nope"
+""", "return value"
+
+expectError "unknown field on known record", """
+fn f({a: int}) -> int:
+  return a
+
+fn g({p: {a: int}}) -> int:
+  return p.bogus
+""", "no field 'bogus'"
+
+expectError "scalar arg type mismatch", """
+fn addOne(x: int) -> int:
+  return x + 1
+
+let y = "hello" addOne
+""", "expects int"
+
+expectError "arithmetic type clash", """
+fn f({a: int, b: str}) -> int:
+  return a + b
+""", "arithmetic"
+
+# ---------- positive cases ----------
+
+expectOk "subset matching: extra fields ignored", """
+fn send({email: str}) -> int:
+  return 1
+
+let x = {id: 5, email: "a@b.c", name: "Bo"} send
+"""
+
+expectOk "unknown callee flows through", """
+let feed = {url: "https://x"} fetch parse
+"""
+
+expectOk "var mutation allowed", """
+var cfg = {port: 80}
+cfg ..port {8080}
+"""
+
+expectOk "mutual recursion via pre-collected sigs", """
+fn isEven(n: int) -> bool:
+  return isOdd(n)
+
+fn isOdd(n: int) -> bool:
+  return isEven(n)
+"""
+
+expectOk "numeric widening int literal to u8", """
+fn setPort({port: u8}) -> int:
+  return 1
+
+let x = {port: 80} setPort
+"""
+
+if failures > 0:
+  echo failures, " test(s) failed"
+  quit(1)
+echo "All typecheck tests passed"

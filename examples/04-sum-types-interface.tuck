@@ -1,0 +1,21 @@
+# Sum types, interfaces, mixins, and object composition
+type PodcastPlayerLifecycle:
+  | Unloaded({config: Config})
+  | Loading({config: Config, progress: int})
+  | Ready({config: Config, feed: Feed, audio: AudioPlayer})
+  | Error({config: Config, reason: str})
+
+interface Storable:
+  fn save({item: Self}) -> !void
+
+mixin bulkOperations:
+  fn setMany(self, {pairs: Seq[Pair]}) -> !void:
+    ...
+
+object PodcastApp:
+  + AudioPlayer
+  + NetworkClient
+  + bulkOperations
+
+  fn play({episode: Episode}) -> void:
+    self ..loadEpisode(episode) ..startAudio

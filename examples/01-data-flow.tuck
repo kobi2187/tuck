@@ -1,0 +1,14 @@
+# Named structs and postfix data flow
+let request = {url: "example.com", timeout: 5.ms}  # 5.ms produces {value: 5}, so the timeout is always a single struct value
+let response = request fetch parse episodes
+
+var feed = {url: "https://example.com/feed"} fetch
+if feed.hasNew:
+  feed.episodes process
+else:
+  feed.metadata log
+
+# Alias example: map an external field layout to the local call shape.
+let externalTrack = {trackId: 101, title: "Deep Dive", durationMs: 212000}
+let normalizedTrack = externalTrack alias(trackId: id, title: name, durationMs: length)
+normalizedTrack playTrack

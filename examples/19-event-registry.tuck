@@ -1,0 +1,17 @@
+# Application-wide Event Registry example
+# The registry defines events, which are raised globally and handled deterministically.
+
+registry AppEvents:
+  | SensorFailure({port: u8, reason: str})
+  | LowMemory({remaining: u32})
+
+fn triggerEvent() -> void:
+  # Raise an event globally
+  AppEvents.raise SensorFailure {port: 1, reason: "timeout"}
+
+on AppEvents.SensorFailure({port: u8, reason: str}):
+  # Handle the global event
+  let x = port
+  let y = reason
+
+static_assert 1 == 1

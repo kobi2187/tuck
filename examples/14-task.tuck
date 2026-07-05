@@ -1,0 +1,3 @@
+task fetchFeed({url: str}) -> !{feed: Feed}:
+  let resp = http.get {url}    # [io] → compiler inserts yield here automatically
+  resp.body parse              # pure → no yield, runs immediately

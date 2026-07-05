@@ -1,0 +1,7 @@
+arena ScratchSpace [size: 2048]:
+  # allocate freely inside here
+  let buf   = ScratchSpace.alloc Array[128, u8]
+  let frame = ScratchSpace.alloc EthernetFrame
+  # process...
+  ScratchSpace.reset   # entire arena gone in one instruction
+                       # no per-object free, no fragmentation

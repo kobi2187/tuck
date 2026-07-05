@@ -1,0 +1,6 @@
+# Field update and higher-order function flow
+fn applyOperation({a: int, b: int, op: fn}) -> {result: int}:
+  result = op invoke {a b}
+
+let x = {a: 5, b: 10, someFunc}
+let y = x bake {someFunc: :add}
