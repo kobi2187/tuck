@@ -53,6 +53,18 @@
 - Verified end-to-end: generated 07 binary runs, prints TUCK PENDING line, exit 0.
 - nim-check gate now 9/20 (added 01, 05, 07). Tests 15/15.
 
+## 2026-07-05 — tuck CLI
+- tuck.nim at repo root: `tuck lex|l`, `parse|p` (--ast for JSON), `check|ch`,
+  `compile|c` (-o:DIR, --beef). Fail fast: first error printed as
+  file:line:col + message, exit 1. Timing printed per command (~1-2 ms/file).
+- check = parse + effects + typecheck + PENDING report — the fast dev loop.
+- emitNim gained rtImport param; CLI computes relative path from output dir to
+  compiler/tuck_rt so emitted Nim compiles from anywhere.
+- Gotcha logged: strutils.tokenize iterator shadowed local proc in for-loop —
+  renamed to lexTokens.
+- tests/cli_smoke.sh builds CLI, runs all commands, asserts fail-fast exit code
+  and file:line:col prefix.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

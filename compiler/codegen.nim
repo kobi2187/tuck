@@ -651,14 +651,14 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   else:
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
 
-proc emitNim*(m: Module): string =
+proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt"): string =
   var ctx = CodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m)
   var body = ""
   for d in m.decls:
     let code = ctx.genDecl(d)
     if code != "":
       body.add(code & "\n")
-  var res = "import ../compiler/tuck_rt\n\n"
+  var res = "import " & rtImport & "\n\n"
   for h in ctx.hoisted:
     res.add(h & "\n")
   if ctx.hoisted.len > 0:

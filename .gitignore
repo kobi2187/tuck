@@ -7,3 +7,4 @@ tests/compile_all_examples
 tests/typecheck_tests
 nimcache/
 .claude/
+tuck
