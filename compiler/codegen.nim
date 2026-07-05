@@ -7,6 +7,7 @@ type
     fieldVars: HashSet[string]
     indent: int
     module: Module
+    hoisted: seq[string]  # named decls hoisted out of field positions (inline enums)
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -81,6 +82,21 @@ proc genType*(t: Type): string =
   else:
     "pointer"
 
+# Field type emission. Nim forbids anonymous enums in field positions, so an
+# inline sum type is hoisted to a named enum `<Parent><Field>Kind`.
+proc fieldType(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
+  if f.typ != nil and f.typ.kind == tkSum:
+    var allNoFields = true
+    for v in f.typ.variants:
+      if v.fields.len > 0: allNoFields = false
+    if allNoFields and f.typ.variants.len > 0:
+      let enumName = parent & f.name.capitalize() & "Kind"
+      var tags: seq[string]
+      for v in f.typ.variants: tags.add(v.name)
+      ctx.hoisted.add("type " & enumName & "* = enum " & tags.join(", "))
+      return enumName
+  return genType(f.typ)
+
 proc lookupFnParams(m: Module, name: string): seq[string] =
   for d in m.decls:
     if d.kind == dkFn and d.name == name:
@@ -99,7 +115,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     of lkStr: "\"" & e.litValue & "\""
     else: e.litValue
   of exkVar:
-    if e.name in ctx.fieldVars: "self." & e.name
+    if e.name == "...": "discard"  # pending hole: compiles, does nothing
+    elif e.name in ctx.fieldVars: "self." & e.name
     else: e.name
   of exkField:
     # Unit sugar (5.ms) — emit the bare number; distinct unit types come later
@@ -237,7 +254,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     of lkStr: "\"" & e.litValue & "\""
     else: e.litValue
   of exkVar:
-    if e.name in ctx.fieldVars: "self." & e.name
+    if e.name == "...": "discard"
+    elif e.name in ctx.fieldVars: "self." & e.name
     else: e.name
   of exkField:
     if e.receiver != nil and e.receiver.kind == exkLit and e.receiver.litKind in {lkInt, lkFloat}:
@@ -424,7 +442,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       elif d.typeBody.kind == tkRecord:
         var fieldsStr: seq[string]
         for f in d.typeBody.fields:
-          fieldsStr.add("    " & f.name & "*: " & genType(f.typ))
+          fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
         let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
         var res = "type " & d.name & "* = ref object\n" & fieldsBody & "\n"
         var invariantChecks: seq[string]
@@ -445,7 +463,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   of dkObject:
     var fieldsStr: seq[string]
     for f in d.objFields:
-      fieldsStr.add("    " & f.name & "*: " & genType(f.typ))
+      fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
     let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
     var membersStr = ""
     for member in d.objMembers:
@@ -468,14 +486,32 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       if h.kind == dkFn:
         let variantName = "msg" & h.name.capitalize()
         enumVariants.add(variantName)
-      
+
+    if enumVariants.len == 0:
+      # No message handlers: an empty enum is invalid Nim. Emit just the state object.
+      var bareFields: seq[string]
+      for f in d.actorFields:
+        bareFields.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
+      let bareBody = if bareFields.len > 0: bareFields.join("\n") else: "    discard"
+      return "type " & d.name & "* = ref object\n" & bareBody & "\n"
+
+    # Handler params ride in the message envelope (deduped by name across handlers)
+    var seenMsgFields = initHashSet[string]()
+    for h in d.handlers:
+      if h.kind == dkFn:
+        for p in h.fnParams:
+          if p.name notin seenMsgFields:
+            seenMsgFields.incl(p.name)
+            msgFields.add("  " & p.name & "*: " & genType(p.typ))
+
     var msgEnumStr = "type " & msgEnumName & "* = enum " & enumVariants.join(", ") & "\n"
-    var msgEnvelopeStr = "type " & msgTypeName & "* = object\n  kind*: " & msgEnumName & "\n"
+    var msgEnvelopeStr = "type " & msgTypeName & "* = object\n  kind*: " & msgEnumName & "\n" &
+                         (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "")
     
     # 2. Generate Actor state object
     var fieldsStr: seq[string]
     for f in d.actorFields:
-      fieldsStr.add("    " & f.name & "*: " & genType(f.typ))
+      fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
     fieldsStr.add("    mailbox*: Mailbox[" & msgTypeName & ", " & queueSize & "]")
     let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
     var actorTypeStr = "type " & d.name & "* = ref object\n" & fieldsBody & "\n"
@@ -488,8 +524,11 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     for h in d.handlers:
       if h.kind == dkFn:
         let variantName = "msg" & h.name.capitalize()
+        var caseBody = ""
+        for p in h.fnParams:
+          caseBody.add("    let " & p.name & " = msg." & p.name & "\n")
         let bodyStr = ctx.genExpr(h.fnBody)
-        handlerCases.add("  of " & variantName & ":\n" & bodyStr)
+        handlerCases.add("  of " & variantName & ":\n" & caseBody & bodyStr)
       
     let dispatchStr = "proc handleMsg*(self: " & d.name & ", msg: " & msgTypeName & ") =\n  case msg.kind\n" & handlerCases.join("\n") & "\n"
     
@@ -499,7 +538,12 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       if h.kind == dkFn:
         let helperName = "send" & h.name.capitalize()
         let variantName = "msg" & h.name.capitalize()
-        helpersStr.add("proc " & helperName & "*(self: " & d.name & ") =\n  discard self.mailbox.enqueue(" & msgTypeName & "(kind: " & variantName & "))\n\n")
+        var helperParams = "self: " & d.name
+        var ctorArgs = "kind: " & variantName
+        for p in h.fnParams:
+          helperParams.add(", " & p.name & ": " & genType(p.typ))
+          ctorArgs.add(", " & p.name & ": " & p.name)
+        helpersStr.add("proc " & helperName & "*(" & helperParams & ") =\n  discard self.mailbox.enqueue(" & msgTypeName & "(" & ctorArgs & "))\n\n")
       
     return msgEnumStr & msgEnvelopeStr & "\n" & actorTypeStr & "\n" & dispatchStr & "\n" & helpersStr
 
@@ -586,9 +630,15 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
 
 proc emitNim*(m: Module): string =
   var ctx = CodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m)
-  var res = "import ../compiler/tuck_rt\n\n"
+  var body = ""
   for d in m.decls:
     let code = ctx.genDecl(d)
     if code != "":
-      res.add(code & "\n")
+      body.add(code & "\n")
+  var res = "import ../compiler/tuck_rt\n\n"
+  for h in ctx.hoisted:
+    res.add(h & "\n")
+  if ctx.hoisted.len > 0:
+    res.add("\n")
+  res.add(body)
   res

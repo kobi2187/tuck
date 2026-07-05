@@ -20,9 +20,12 @@ const
 # deliberately-undeclared sketch functions (fetch, merge, ...) and cannot.
 # When a new example goes green, add it here so regressions are caught.
 const nimCheckExpected = [
+  "05-actors-effects",
   "06-transitions-example",
+  "08-actors_isolated_state",
   "10-invariants",
   "13-arena-mem",
+  "15-type-attributes",
   "19-event-registry",
 ]
 

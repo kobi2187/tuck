@@ -231,7 +231,10 @@ proc parsePrimaryType(p: var Parser): Type =
     if p.current().kind == tkLBracket:
       # Check if it's attributes or generics
       let first = p.peek(1)
-      let isAttr = first.kind == tkIdent and (first.value in ["saturating", "sealed", "queue", "irq_safe", "no_alloc", "invariant", "packed", "align"])
+      let isAttr = first.kind == tkIdent and (first.value in [
+        "saturating", "sealed", "queue", "irq_safe", "no_alloc", "invariant",
+        "packed", "align", "wrapping", "trapping",
+        "big_endian", "little_endian", "volatile"])  # spec 4.6 type + field attrs
       discard p.advance() # eat "["
       if isAttr:
         var tAttrs: seq[TypeAttr]

@@ -25,7 +25,22 @@
   Feed, Action...) — need stubs/pending support to go green.
 - All suites green: typecheck 12/12, examples 20/20 + nim-check gate, end_to_end.
 
+## 2026-07-05 (later still) — emitter fixes round 2
+- `...` pending holes emit `discard` (was verbatim `...` — invalid Nim).
+- Inline sum-type fields hoisted to named enums (`<Parent><Field>Kind`) via
+  `CodegenCtx.hoisted` accumulator, prepended in emitNim (fixed m08).
+- Actor with zero handlers emits bare state object (empty enum invalid; m15).
+- Actor handler params now ride the message envelope: fields deduped by name,
+  `let p = msg.p` prelude per dispatch arm, typed send helpers (fixed m05).
+- Parser: attr allowlist extended with big_endian/little_endian/volatile/
+  wrapping/trapping — `u16 [big_endian]` no longer misparsed as generics (m15).
+- nim-check gate now 7/20: 05, 06, 08, 10, 13, 15, 19.
+
 Next candidates:
-1. Stub/pending support so more examples emit self-contained Nim → grow gate list.
-2. Extend checker: match exhaustiveness, distinct/unit types, generics.
-3. Actor/emitter indentation bugs (m05, m08, m15, m18 invalid Nim blocks).
+1. Type-directed lowering: expand record-typed vars at call sites + real alias
+   restructuring (blocks m18; needs typechecker info flowing into lowering).
+2. `pending:` blocks with typed signatures → stubs for sketch symbols (fetch,
+   Feed...) → most remaining examples could go green.
+3. `on select` lowering to task state machines (spec 9.2; blocks m14, m16).
+4. Top-level `or return` semantics — implicit main? (blocks m11).
+5. Extend checker: match exhaustiveness, distinct/unit types, generics.
