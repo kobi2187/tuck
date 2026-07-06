@@ -408,7 +408,11 @@ that relies on the global handler, so the shortcuts stay findable and can be
 retired one by one. Shipping firmware is expected to build with
 `[policy: strict]`.
 
-The same rules cover `?T` absence (error code `0` is reserved for absence).
+The same rules cover `?T` absence. `?T` is a true option type: absence is a
+first-class state (`ok | absent`), not a reserved error code. At runtime all
+three wrappers share one tri-state representation — `ok | err(code) | absent`
+— so `!?T` distinguishes failure from absence exactly, and error codes keep
+the full 16-bit space.
 
 ---
 

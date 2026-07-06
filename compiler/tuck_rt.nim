@@ -47,10 +47,14 @@ macro registerMMIO*(name: untyped, address: static[int], body: untyped): untyped
           result.add(setterNode)
 
 # --- Errors and absence: !T / ?T lower to one value type (no alloc, no nil) ---
+# ?T is an option: absence is a first-class state, not a reserved error code.
+# !T uses tsOk/tsErr, ?T uses tsOk/tsAbsent, !?T may be any of the three.
 type
+  TuckStatus* = enum
+    tsOk, tsErr, tsAbsent
   TuckResult*[T] = object
-    ok*: bool
-    err*: uint16   # app-wide error code; 0 = absence (?T)
+    status*: TuckStatus
+    err*: uint16   # app-wide error code; meaningful only when status == tsErr
     val*: T
 
 proc errCode*(name: static string): uint16 =
@@ -58,20 +62,21 @@ proc errCode*(name: static string): uint16 =
   var h = 2166136261'u32
   for c in name:
     h = (h xor uint32(c)) * 16777619'u32
-  result = uint16((h xor (h shr 16)) and 0xFFFF'u32)
-  if result == 0: result = 1  # 0 is reserved for absence
+  uint16((h xor (h shr 16)) and 0xFFFF'u32)
+
+proc ok*[T](r: TuckResult[T]): bool {.inline.} = r.status == tsOk
 
 proc tok*[T](v: T): TuckResult[T] {.inline.} =
-  TuckResult[T](ok: true, val: v)
+  TuckResult[T](status: tsOk, val: v)
 
 proc tokVoid*(): TuckResult[tuple[]] {.inline.} =
-  TuckResult[tuple[]](ok: true)
+  TuckResult[tuple[]](status: tsOk)
 
 proc terr*[T](code: uint16): TuckResult[T] {.inline.} =
-  TuckResult[T](ok: false, err: code)
+  TuckResult[T](status: tsErr, err: code)
 
 proc tnone*[T](): TuckResult[T] {.inline.} =
-  TuckResult[T](ok: false, err: 0)
+  TuckResult[T](status: tsAbsent)
 
 type
   BumpArena*[Size: static int] = object
