@@ -137,10 +137,22 @@
   also parse effect brackets now.
 - Examples 04/05/14/16 gained [io] on fallible sigs. 37 tests green, gate 10/10.
 
+## 2026-07-06 — spec 4.9: global error policy (spec only, via fork 3589c98)
+- User ruled: three modes strict/continue/exit in one `errors` declaration
+  (registry-style). continue = statement-position only, NO zero values ever;
+  exit = handler at first unhandled site then exit; strict = today's discard
+  ban + list-ALL-sites upgrade. SHORTCUTS (n) report every continue/exit build.
+- §4.8 rewritten to match implementation (boolean or, results flow whole,
+  [io] rule).
+- NOT implemented yet. Build items: `errors` decl parse, policy in checker
+  (strict list-all; continue/exit legalize statement-position discards),
+  SHORTCUTS report, handler injection in codegen.
+
 Next candidates:
-1. Type-directed lowering: expand record-typed vars at call sites + real alias
+1. Implement spec 4.9 error policy (see above).
+2. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).
-2. `on select` lowering to task state machines (spec 9.2; blocks 14, 16).
-3. Top-level `or return` semantics — implicit main? (blocks 11).
-4. Extend checker: match exhaustiveness, distinct/unit types, generics.
-5. Qualified pending names (http.get) so 14-task can stub module calls.
+3. `on select` lowering to task state machines (spec 9.2; blocks 14, 16).
+4. Top-level statement semantics — implicit main? (blocks 11; note: example 11 still uses removed `or return` style, needs rewrite to 4.9 policy).
+5. Extend checker: match exhaustiveness, distinct/unit types, generics.
+6. Qualified pending names (http.get) so 14-task can stub module calls.
