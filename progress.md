@@ -148,6 +148,14 @@
   (strict list-all; continue/exit legalize statement-position discards),
   SHORTCUTS report, handler injection in codegen.
 
+## 2026-07-06 — ?T is a true option (fork commit 1396823)
+- TuckResult now tri-state: status tsOk | tsErr | tsAbsent — absence is a
+  first-class state, not reserved err code 0. errCode gets full 16-bit space
+  back; !?T failure-vs-absence now exact. `ok()` proc keeps emitted `.ok`
+  syntax working, codegen unchanged. Suites green.
+- Known checker gap (fork-flagged, backlogged): use sites don't distinguish
+  ?T from !T — e.g. `?` on a ?T inside a !T fn passes.
+
 Next candidates:
 1. Implement spec 4.9 error policy (see above).
 2. Type-directed lowering: expand record-typed vars at call sites + real alias
@@ -156,3 +164,4 @@ Next candidates:
 4. Top-level statement semantics — implicit main? (blocks 11; note: example 11 still uses removed `or return` style, needs rewrite to 4.9 policy).
 5. Extend checker: match exhaustiveness, distinct/unit types, generics.
 6. Qualified pending names (http.get) so 14-task can stub module calls.
+7. Checker: distinguish ?T vs !T at use sites (propagation, policy handling).
