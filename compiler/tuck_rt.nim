@@ -73,12 +73,6 @@ proc terr*[T](code: uint16): TuckResult[T] {.inline.} =
 proc tnone*[T](): TuckResult[T] {.inline.} =
   TuckResult[T](ok: false, err: 0)
 
-template tuckOr*(a, b: bool): bool = a or b
-template tuckOr*[T](r: TuckResult[T], d: T): T =
-  block:
-    let tmp = r
-    if tmp.ok: tmp.val else: d
-
 type
   BumpArena*[Size: static int] = object
     buffer*: array[Size, byte]

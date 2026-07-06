@@ -12,7 +12,7 @@ actor UartDriver [queue: 8]:
 
 
 # Task — runs to completion, returns a value
-task fetchFeed({url: str}) -> !{feed: Feed}:
+task fetchFeed({url: str}) -> !{feed: Feed} [io]:
   let resp = http.get {url}     # [io] → implicit yield
 
   on select:                    # wait for any of these inside a task too

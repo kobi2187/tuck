@@ -6,10 +6,10 @@ type PodcastPlayerLifecycle:
   | Error({config: Config, reason: str})
 
 interface Storable:
-  fn save({item: Self}) -> !void
+  fn save({item: Self}) -> !void [io]
 
 mixin bulkOperations:
-  fn setMany(self, {pairs: Seq[Pair]}) -> !void:
+  fn setMany(self, {pairs: Seq[Pair]}) -> !void [io]:
     ...
 
 object PodcastApp:

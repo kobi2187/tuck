@@ -243,7 +243,7 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     let rawT = tc.synthesize(e.receiver)
     if isWrapper(rawT):
       fail("Type Error: unhandled " & typeName(rawT) &
-           " — handle with 'or' or propagate with '?' before accessing fields", e.span)
+           " — pass it to a handling function or propagate with '?' before accessing fields", e.span)
     let recvT = tc.resolve(rawT)
     let fields = tc.fieldsOf(recvT)
     if fields.len > 0:
@@ -283,28 +283,13 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     calleeT
   of exkBinary:
     let lt = tc.synthesize(e.left)
-    if e.binOp == boOr:
-      # `or` is Zig's catch/orelse: unwrap !T/?T with a fallback or early return
-      if isWrapper(lt):
-        let payload = unwrapEffect(lt)
-        if e.right != nil and e.right.kind == exkReturn:
-          discard tc.synthesize(e.right)
-          return payload
-        let rt = tc.synthesize(e.right)
-        if not tc.compatible(rt, payload):
-          fail("Type Error: 'or' fallback must be " & typeName(payload) &
-               " but got " & typeName(rt), e.right.span)
-        return payload
-      if e.right != nil and e.right.kind == exkReturn and not isUnknown(lt):
-        fail("Type Error: 'X or return' requires X to be !T or ?T, got " &
-             typeName(lt), e.span)
-      discard tc.synthesize(e.right)
-      return Type(span: e.span, kind: tkNamed, name: "bool")
+    # `or` is strictly boolean. Result structs flow whole; handling belongs to
+    # the next function in the chain (prelude, eventually) or `?` propagation.
     let rt = tc.synthesize(e.right)
     for (t, side) in [(lt, e.left), (rt, e.right)]:
       if isWrapper(t):
         fail("Type Error: unhandled " & typeName(t) &
-             " — handle with 'or' or propagate with '?'", side.span)
+             " — pass it to a handling function or propagate with '?'", side.span)
     case e.binOp
     of boAdd, boSub, boMul, boDiv, boMod:
       if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
@@ -335,13 +320,17 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     var last = unknownType(e.span)
     for s in e.stmts:
       last = tc.synthesize(s)
+      # Silently dropping a fallible result is the real error-hiding hole
+      if isWrapper(last):
+        fail("Type Error: " & typeName(last) & " result discarded — bind it, " &
+             "pass it on, or propagate with '?'", s.span)
     tc.popScope()
     last
   of exkIf:
     let condT = tc.synthesize(e.cond)
     if isWrapper(condT):
       fail("Type Error: unhandled " & typeName(condT) &
-           " in condition — handle with 'or' or propagate with '?'", e.cond.span)
+           " in condition — pass it to a handling function or propagate with '?'", e.cond.span)
     if not isUnknown(condT) and not tc.compatible(condT,
         Type(span: e.span, kind: tkNamed, name: "bool")):
       fail("Type Error: if condition must be bool, got " & typeName(condT), e.cond.span)
@@ -425,6 +414,14 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
     of dkMixin: tc.collectSigs(d.mixinMembers)
     of dkActor: tc.collectSigs(d.handlers)
     else: discard
+
+# Pure functions are total: only [io]-marked functions (I/O, unknown input)
+# may declare fallible !T returns. The pure core provably cannot fail.
+proc checkFallibleNeedsIo(name: string, ret: Type, effects: seq[EffectMarker], span: Span) =
+  if ret != nil and isWrapper(ret) and ret.base.name in ["!", "!?"] and
+     emIo notin effects:
+    fail("Effect Error: '" & name & "' returns " & typeName(ret) &
+         " — fallible functions must be marked [io]; pure functions are total", span)
 
 proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
                  ret: Type, body: Expr) =
@@ -581,8 +578,11 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     if d.isDecision:
       tc.checkDecisionTable(d)
       return
+    checkFallibleNeedsIo(d.name, d.fnReturnType, d.fnEffects, d.span)
     tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody)
-  of dkTask: tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)
+  of dkTask:
+    checkFallibleNeedsIo(d.name, d.taskReturnType, d.taskEffects, d.span)
+    tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)
   of dkExpr: discard tc.synthesize(d.expr)
   of dkObject:
     tc.pushScope()

@@ -123,6 +123,20 @@
 - Runtime-verified: propagation carries code (errCode("tooBig")), or-fallback
   recovers, ok-path unwraps. 36 checker tests green, gate 10/10.
 
+## 2026-07-05 — error design tightened per user rulings
+- `or` unwrapping REMOVED (user: too overloaded, ?? clashes with fluent style).
+  `or` is strictly boolean again. Results flow whole as structs; handling
+  functions will live in stdlib prelude later; errors may get short syntax
+  later. `?` propagation stays (visible at every hop, lowers to early return,
+  no unwinding — not exceptions).
+- New rule: fallible (!T-returning) fns MUST be [io] — pure core is total;
+  errors exist only at I/O / unknown-input boundaries (user's framing).
+- New rule: discarding a !T result as a bare statement = compile error.
+- Parser fix: `-> !void [io]` — markers attach as attrs on the PAYLOAD inside
+  the wrapper, not the wrapper; harvestEffects() now walks in. Pending sigs
+  also parse effect brackets now.
+- Examples 04/05/14/16 gained [io] on fallible sigs. 37 tests green, gate 10/10.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

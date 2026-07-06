@@ -267,6 +267,27 @@ proc parsePrimaryType(p: var Parser): Type =
   else:
     p.reportError("Unexpected token in type expression: " & $curr.kind)
 
+# Effect markers written after a return type (`-> T [io]`) parse as attrs on T —
+# or on the payload inside a !/? wrapper. Harvest them off wherever they landed.
+proc harvestEffects*(t: Type, effects: var seq[EffectMarker]) =
+  if t == nil: return
+  var kept: seq[TypeAttr]
+  for a in t.attrs:
+    case a.name
+    of "io": effects.add(emIo)
+    of "no_alloc": effects.add(emNoAlloc)
+    of "irq_safe": effects.add(emIrqSafe)
+    of "unsafe": effects.add(emUnsafe)
+    of "may_block": effects.add(emMayBlock)
+    of "stack": effects.add(emStack)
+    of "priority": effects.add(emPriority)
+    else: kept.add(a)
+  t.attrs = kept
+  if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+     t.base.name in ["!", "?", "!?"]:
+    for arg in t.args:
+      harvestEffects(arg, effects)
+
 proc parseType*(p: var Parser): Type =
   let sp = p.getSpan()
   var res = p.parsePrimaryType()
@@ -942,20 +963,7 @@ proc parseDecl*(p: var Parser): Decl =
       discard p.advance()
       retType = p.parseType()
     var effects: seq[EffectMarker]
-    # `-> T [io]` parses the markers as attrs on T; harvest them into effects
-    if retType != nil:
-      var kept: seq[TypeAttr]
-      for a in retType.attrs:
-        case a.name
-        of "io": effects.add(emIo)
-        of "no_alloc": effects.add(emNoAlloc)
-        of "irq_safe": effects.add(emIrqSafe)
-        of "unsafe": effects.add(emUnsafe)
-        of "may_block": effects.add(emMayBlock)
-        of "stack": effects.add(emStack)
-        of "priority": effects.add(emPriority)
-        else: kept.add(a)
-      retType.attrs = kept
+    harvestEffects(retType, effects)
     if p.current().kind == tkLBracket:
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
@@ -1030,7 +1038,24 @@ proc parseDecl*(p: var Parser): Decl =
       if p.current().kind == tkArrow:
         discard p.advance()
         retType = p.parseType()
-      decls.add(Decl(span: spDecl, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: @[], fnBody: nil, isPending: true))
+      var pendEffects: seq[EffectMarker]
+      if p.current().kind == tkLBracket:
+        discard p.advance()
+        while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+          let effName = p.expect(tkIdent, "Expected effect marker").value
+          case effName
+          of "io": pendEffects.add(emIo)
+          of "no_alloc": pendEffects.add(emNoAlloc)
+          of "irq_safe": pendEffects.add(emIrqSafe)
+          of "unsafe": pendEffects.add(emUnsafe)
+          of "may_block": pendEffects.add(emMayBlock)
+          of "stack": pendEffects.add(emStack)
+          of "priority": pendEffects.add(emPriority)
+          else: discard
+          if p.current().kind == tkComma:
+            discard p.advance()
+        discard p.expect(tkRBracket)
+      decls.add(Decl(span: spDecl, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: pendEffects, fnBody: nil, isPending: true))
       if p.current().kind == tkNewline:
         discard p.advance()
     discard p.expect(tkDedent)
@@ -1220,20 +1245,7 @@ proc parseDecl*(p: var Parser): Decl =
       discard p.advance()
       retType = p.parseType()
     var effects: seq[EffectMarker]
-    # `-> T [io]` parses the markers as attrs on T; harvest them into effects
-    if retType != nil:
-      var kept: seq[TypeAttr]
-      for a in retType.attrs:
-        case a.name
-        of "io": effects.add(emIo)
-        of "no_alloc": effects.add(emNoAlloc)
-        of "irq_safe": effects.add(emIrqSafe)
-        of "unsafe": effects.add(emUnsafe)
-        of "may_block": effects.add(emMayBlock)
-        of "stack": effects.add(emStack)
-        of "priority": effects.add(emPriority)
-        else: kept.add(a)
-      retType.attrs = kept
+    harvestEffects(retType, effects)
     if p.current().kind == tkLBracket:
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:

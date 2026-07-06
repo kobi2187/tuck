@@ -17,4 +17,4 @@ fn readSensor({port: u8}) -> !{value: u16} [io]:
 
 object PodcastApp:
   pending:
-    fn fetchFeed({url: str}) -> !{feed: Feed}
+    fn fetchFeed({url: str}) -> !{feed: Feed} [io]

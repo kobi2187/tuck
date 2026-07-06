@@ -186,57 +186,62 @@ decision route({priority: Priority, encrypted: bool}) -> int:
   | High  true  -> 3
 """, "unreachable"
 
-# ---------- errors as values: !T / ?T / or / ? ----------
+# ---------- errors as values: !T / ?T / ? ----------
 
-expectError "unhandled !T in arithmetic", """
+expectError "fallible fn must be [io]", """
 fn mightFail({n: int}) -> !{value: int}:
   return {value: n}
+""", "must be marked [io]"
 
-fn use({n: int}) -> int:
+expectError "unhandled !T in arithmetic", """
+fn mightFail({n: int}) -> !{value: int} [io]:
+  return {value: n}
+
+fn use({n: int}) -> int [io]:
   return {n} mightFail + 1
 """, "unhandled"
 
 expectError "unhandled !T field access", """
-fn mightFail({n: int}) -> !{value: int}:
+fn mightFail({n: int}) -> !{value: int} [io]:
   return {value: n}
 
-fn use({n: int}) -> int:
+fn use({n: int}) -> int [io]:
   let r = {n} mightFail
   return r.value
 """, "unhandled"
 
 expectError "propagation outside ! function", """
-fn mightFail({n: int}) -> !{value: int}:
+fn mightFail({n: int}) -> !{value: int} [io]:
   return {value: n}
 
-fn use({n: int}) -> int:
+fn use({n: int}) -> int [io]:
   let r = {n} mightFail?
   return r.value
 """, "must declare a !T return type"
 
-expectError "or fallback wrong type", """
-fn mightFail({n: int}) -> !{value: int}:
+expectError "'or' cannot unwrap results", """
+fn mightFail({n: int}) -> !{value: int} [io]:
   return {value: n}
 
-fn use({n: int}) -> int:
-  let r = {n} mightFail or "nope"
-  return r.value
-""", "fallback must be"
-
-expectOk "or with matching fallback", """
-fn mightFail({n: int}) -> !{value: int}:
-  return {value: n}
-
-fn use({n: int}) -> int:
+fn use({n: int}) -> int [io]:
   let r = {n} mightFail or {value: 0}
   return r.value
-"""
+""", "unhandled"
 
-expectOk "propagation inside ! function", """
-fn mightFail({n: int}) -> !{value: int}:
+expectError "discarded !T result", """
+fn mightFail({n: int}) -> !{value: int} [io]:
   return {value: n}
 
-fn use({n: int}) -> !{value: int}:
+fn use({n: int}) -> int [io]:
+  {n} mightFail
+  return 0
+""", "discarded"
+
+expectOk "propagation inside ! function", """
+fn mightFail({n: int}) -> !{value: int} [io]:
+  return {value: n}
+
+fn use({n: int}) -> !{value: int} [io]:
   let r = {n} mightFail?
   return {value: r.value}
 """

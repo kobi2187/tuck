@@ -307,15 +307,6 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
                 of boAnd: "and"
                 of boOr: "or"
                 of boXor: "xor"
-    if e.binOp == boOr:
-      # `or` = Zig catch/orelse: unwrap with fallback or early return.
-      # tuckOr's bool overload keeps plain boolean `or` working unchanged.
-      ctx.tmpCounter.inc
-      let tn = "tuckTmp" & $ctx.tmpCounter
-      if e.right.kind == exkReturn:
-        return "(let " & tn & " = " & ctx.genExpr(e.left) &
-               "; (if " & tn & ".ok: " & tn & ".val else: " & ctx.genExpr(e.right) & "))"
-      return "tuckOr(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
     return "(" & ctx.genExpr(e.left) & " " & opStr & " " & ctx.genExpr(e.right) & ")"
   of exkUnary:
     if e.unaryOp == uoPropagate:
