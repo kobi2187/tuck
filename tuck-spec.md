@@ -360,12 +360,55 @@ The invariant fires automatically everywhere. The developer writes it once.
 - `!?T` — both
 
 ```tuck
-let data = readFile {path}? or return Error.notFound  # propagate failure
-let user = findUser {id} or default User.empty        # handle absence
+fn loadFeed({path: str}) -> !{feed: Feed} [io]:
+  let data = readFile {path}?     # propagate failure upward
+  data parse
 ```
 
-`?` propagates the error upward (caller must handle `!T`). `or` provides a
-default or early return for absence.
+`?` propagates the error upward; it is only legal inside a function that
+itself returns `!T`. A `!T`/`?T` value otherwise flows **whole**, as a struct
+carrying `{ok, err, value}` — the next function in the chain decides what to
+do with it (handling functions live in the standard prelude). `or` is strictly
+boolean; it does not unwrap results.
+
+Fallible functions must be marked `[io]`: errors exist only at I/O and
+unknown-input boundaries. The pure core of a Tuck program is total — it
+cannot fail. Correctness there comes from decision tables, invariants, and
+exhaustive matching, not error returns.
+
+### 4.9 Global Error Policy
+
+Most codebases handle "an error I haven't dealt with yet" the same way: log
+it and move on. Tuck formalizes that shortcut in one visible place — like the
+event registry — so every site that relies on it is declared, reported, and
+findable.
+
+One `errors` declaration per application selects one of three modes:
+
+```tuck
+errors [policy: continue]:
+  on unhandled({code: u16, site: str}):
+    log.warn "unhandled error {code} at {site}"
+```
+
+- `strict` — every error is handled directly at its site (bound, propagated
+  with `?`, or passed to a handling function) or it is a **compile error**.
+  The compiler lists **all** unhandled sites, not just the first.
+- `continue` — an unhandled error is passed to the global `unhandled`
+  handler, then execution continues past that statement. Only legal where
+  the error was in statement position — no value is ever fabricated; a site
+  whose payload is actually needed is a compile error in every mode.
+- `exit` — the `unhandled` handler runs at the **first** unhandled site,
+  then the program exits. The handler is the hook for diagnostics machinery:
+  error stats, trace dumps, last-registry-events, and similar.
+
+In `continue` and `exit` modes the compiler prints a `SHORTCUTS (n)` report
+on every build — same format as the `pending` report — listing each site
+that relies on the global handler, so the shortcuts stay findable and can be
+retired one by one. Shipping firmware is expected to build with
+`[policy: strict]`.
+
+The same rules cover `?T` absence (error code `0` is reserved for absence).
 
 ---
 
