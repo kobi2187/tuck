@@ -237,6 +237,66 @@ fn use({n: int}) -> int [io]:
   return 0
 """, "discarded"
 
+expectError "strict lists ALL unhandled sites", """
+fn mightFail({n: int}) -> !{value: int} [io]:
+  return {value: n}
+
+fn use({n: int}) -> int [io]:
+  {n} mightFail
+  {n} mightFail
+  return 0
+""", "2 unhandled"
+
+expectOk "continue policy legalizes statement drops", """
+errors [policy: continue]:
+  on unhandled({code: u16, site: str}):
+    ...
+
+fn mightFail({n: int}) -> !{value: int} [io]:
+  return {value: n}
+
+fn use({n: int}) -> int [io]:
+  {n} mightFail
+  return 0
+"""
+
+expectError "continue policy needs a handler", """
+errors [policy: continue]
+
+fn f({n: int}) -> int:
+  return n
+""", "needs an 'on unhandled"
+
+expectError "continue does not legalize value positions", """
+errors [policy: continue]:
+  on unhandled({code: u16, site: str}):
+    ...
+
+fn mightFail({n: int}) -> !{value: int} [io]:
+  return {value: n}
+
+fn use({n: int}) -> int [io]:
+  return {n} mightFail + 1
+""", "unhandled"
+
+expectError "absence cannot propagate through !T fn", """
+fn mightBeAbsent({n: int}) -> ?{value: int}:
+  return {value: n}
+
+fn use({n: int}) -> !{value: int} [io]:
+  let r = {n} mightBeAbsent?
+  return {value: r.value}
+""", "cannot propagate"
+
+expectOk "absence propagates through ?T fn", """
+fn mightBeAbsent({n: int}) -> ?{value: int}:
+  return {value: n}
+
+fn use({n: int}) -> ?{value: int}:
+  let r = {n} mightBeAbsent?
+  return {value: r.value}
+"""
+
 expectOk "propagation inside ! function", """
 fn mightFail({n: int}) -> !{value: int} [io]:
   return {value: n}

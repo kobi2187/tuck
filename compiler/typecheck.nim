@@ -38,6 +38,8 @@ type
     currentFn: string
     pendingFns: Table[string, Span]
     implementedFns: HashSet[string]
+    errPolicy: string            # strict (default) | continue | exit
+    unhandledSites: seq[string]  # strict: error list; continue/exit: SHORTCUTS
 
 proc pushScope(tc: var TypeChecker) = tc.scopes.add(initTable[string, Binding]())
 proc popScope(tc: var TypeChecker) = discard tc.scopes.pop()
@@ -312,6 +314,19 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
       if tc.currentRet == nil or not isWrapper(tc.currentRet):
         fail("Type Error: '?' propagates the error upward, so '" & tc.currentFn &
              "' must declare a !T return type", e.span)
+      # Failure and absence propagate separately: the fn's wrapper must cover
+      # the operand's ("!?" covers both).
+      if isWrapper(t):
+        let ok = tc.currentRet.base.name
+        let opk = t.base.name
+        let covered = (opk == "!" and ok in ["!", "!?"]) or
+                      (opk == "?" and ok in ["?", "!?"]) or
+                      (opk == "!?" and ok == "!?")
+        if not covered:
+          fail("Type Error: '?' on a " & opk & "T value cannot propagate " &
+               "through '" & tc.currentFn & "' which returns " & ok &
+               "T — the return type must cover it (use " &
+               (if opk == "!?": "!?" else: opk) & "T or !?T)", e.span)
       return unwrapEffect(t)
     let t = tc.synthesize(e.operand)
     if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
@@ -320,10 +335,16 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     var last = unknownType(e.span)
     for s in e.stmts:
       last = tc.synthesize(s)
-      # Silently dropping a fallible result is the real error-hiding hole
+      # A dropped fallible result in statement position: the policy decides.
+      # strict collects it as an error (ALL sites reported at the end);
+      # continue/exit mark the site so codegen routes it to the handler.
       if isWrapper(last):
-        fail("Type Error: " & typeName(last) & " result discarded — bind it, " &
-             "pass it on, or propagate with '?'", s.span)
+        let site = tc.currentFn & " line " & $s.span.line
+        if tc.errPolicy in ["continue", "exit"]:
+          s.shortcutSite = site
+          tc.unhandledSites.add(typeName(last) & " at " & site)
+        else:
+          tc.unhandledSites.add(typeName(last) & " discarded at " & site)
     tc.popScope()
     last
   of exkIf:
@@ -413,6 +434,11 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
     of dkObject: tc.collectSigs(d.objMembers)
     of dkMixin: tc.collectSigs(d.mixinMembers)
     of dkActor: tc.collectSigs(d.handlers)
+    of dkErrors:
+      tc.errPolicy = d.policyName
+      if d.policyName in ["continue", "exit"] and d.errHandler == nil:
+        fail("Policy Error: errors [policy: " & d.policyName &
+             "] needs an 'on unhandled({code, site})' handler", d.span)
     else: discard
 
 # Pure functions are total: only [io]-marked functions (I/O, unknown input)
@@ -598,6 +624,8 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     tc.popScope()
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
   of dkType: tc.checkTransitions(d)
+  of dkErrors:
+    if d.errHandler != nil: tc.checkDecl(d.errHandler)
   else: discard
 
 proc sigStr(d: Decl): string =
@@ -624,11 +652,21 @@ proc collectPending(decls: seq[Decl], acc: var seq[string]) =
 proc pendingReport*(m: Module): seq[string] =
   collectPending(m.decls, result)
 
-proc typecheckModule*(m: Module) =
+# Returns the SHORTCUTS list (continue/exit policies): each statement-position
+# drop that will route to the global handler. Empty under strict — strict
+# raises instead, listing every unhandled site at once (spec 4.9).
+proc typecheckModule*(m: Module): seq[string] {.discardable.} =
   var tc = TypeChecker(module: m,
                        fnSigs: initTable[string, FnSig](),
-                       typeDecls: initTable[string, Type]())
+                       typeDecls: initTable[string, Type](),
+                       errPolicy: "strict")
   tc.pushScope()  # module-level scope: top-level let/var visible across decls
   tc.collectSigs(m.decls)
   for d in m.decls:
     tc.checkDecl(d)
+  if tc.errPolicy == "strict" and tc.unhandledSites.len > 0:
+    fail("Type Error: " & $tc.unhandledSites.len & " unhandled error result(s)" &
+         " — bind, pass on, or propagate with '?' (policy: strict):\n  " &
+         tc.unhandledSites.join("\n  "), m.span)
+  if tc.errPolicy in ["continue", "exit"]:
+    return tc.unhandledSites

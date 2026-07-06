@@ -54,15 +54,20 @@ proc parseSource(source: string): Module =
 # check stage; returns the module so compile can continue with it
 proc checkSource(source, path: string): Module =
   result = parseSource(source)
+  var shortcuts: seq[string]
   try:
     verifyModuleEffects(result)
-    typecheckModule(result)
+    shortcuts = typecheckModule(result)
   except SemanticError as err:
     die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
   let pend = pendingReport(result)
   if pend.len > 0:
     echo "PENDING (", pend.len, " unimplemented):"
     for entry in pend:
+      echo "  ", entry
+  if shortcuts.len > 0:
+    echo "SHORTCUTS (", shortcuts.len, " routed to the global error handler):"
+    for entry in shortcuts:
       echo "  ", entry
 
 when isMainModule:

@@ -1,0 +1,19 @@
+# Global error policy (spec 4.9). One declaration per application decides
+# what happens to a fallible result dropped in statement position:
+#   strict   — compile error, ALL unhandled sites listed
+#   continue — global handler runs, execution continues (no value fabricated)
+#   exit     — handler runs at the first unhandled site, then the program exits
+# continue/exit builds print a SHORTCUTS report so every site stays findable.
+
+errors [policy: continue]:
+  on unhandled({code: u16, site: str}):
+    ...
+
+fn readSensor({port: u8}) -> !{value: u16} [io]:
+  if port > 3:
+    return Error.badPort
+  return {value: 42}
+
+fn poll({port: u8}) -> int [io]:
+  {port} readSensor
+  return 0

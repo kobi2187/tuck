@@ -772,7 +772,38 @@ proc parseDecisionBody(p: var Parser): Expr =
 proc parseDecl*(p: var Parser): Decl =
   let sp = p.getSpan()
   let curr = p.current()
-  
+
+  # Global error policy (spec 4.9): errors [policy: strict|continue|exit]:
+  if curr.kind == tkIdent and curr.value == "errors" and p.peek().kind == tkLBracket:
+    discard p.advance() # errors
+    discard p.expect(tkLBracket)
+    let key = p.expect(tkIdent, "Expected 'policy' in errors declaration").value
+    if key != "policy":
+      p.reportError("errors declaration takes [policy: strict|continue|exit], got '" & key & "'")
+    discard p.expect(tkColon)
+    let policy = p.expect(tkIdent, "Expected policy name").value
+    if policy notin ["strict", "continue", "exit"]:
+      p.reportError("Unknown error policy '" & policy & "' — use strict, continue or exit")
+    discard p.expect(tkRBracket)
+    var handler: Decl = nil
+    if p.current().kind == tkColon:
+      discard p.advance()
+      discard p.expect(tkNewline)
+      while p.current().kind == tkNewline:
+        discard p.advance()
+      discard p.expect(tkIndent)
+      while p.current().kind != tkDedent and p.current().kind != tkEOF:
+        if p.current().kind == tkNewline:
+          discard p.advance()
+          continue
+        let member = p.parseDecl()
+        if member != nil and member.kind == dkFn and member.name == "unhandled":
+          handler = member
+        else:
+          p.reportError("errors block allows only 'on unhandled({code, site})'")
+      discard p.expect(tkDedent)
+    return Decl(span: sp, kind: dkErrors, name: "errors", policyName: policy, errHandler: handler)
+
   if curr.kind == tkIdent and curr.value == "register":
     discard p.advance() # eat "register"
     let name = p.expect(tkIdent, "Expected register name").value

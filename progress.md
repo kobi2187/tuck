@@ -156,12 +156,27 @@
 - Known checker gap (fork-flagged, backlogged): use sites don't distinguish
   ?T from !T — e.g. `?` on a ?T inside a !T fn passes.
 
+## 2026-07-06 — spec 4.9 IMPLEMENTED: global error policy
+- `errors [policy: strict|continue|exit]:` declaration parses (dkErrors);
+  continue/exit require `on unhandled({code, site})` handler (checked).
+- strict (default, no decl needed): unhandled sites now collected and ALL
+  listed in one error (was fail-at-first).
+- continue/exit: statement-position drops marked (shortcutSite on Expr),
+  reported as SHORTCUTS (n) by CLI + test drivers; codegen wraps each site:
+  `(let t = expr; if not t.ok: tuck_unhandled(t.err, "site"))` (+ quit(1)
+  in exit mode). Generated tuck_unhandled = rt logger + user handler body.
+- Item 7 done: `?` propagation now covers wrapper kinds — ?T can't propagate
+  through a !T fn (needs ?T or !?T); rt tfwd() preserves status (absence no
+  longer morphs into error 0 in transit).
+- Typed struct-literal returns: `return {value: 42}` in !{value: u16} fn
+  casts numeric fields to the declared payload type.
+- Example 22-error-policy; gate 11/22. Runtime-verified: continue keeps
+  running after handler, exit dies with code 1, stderr shows TUCK UNHANDLED.
+
 Next candidates:
-1. Implement spec 4.9 error policy (see above).
-2. Type-directed lowering: expand record-typed vars at call sites + real alias
+1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).
-3. `on select` lowering to task state machines (spec 9.2; blocks 14, 16).
-4. Top-level statement semantics — implicit main? (blocks 11; note: example 11 still uses removed `or return` style, needs rewrite to 4.9 policy).
-5. Extend checker: match exhaustiveness, distinct/unit types, generics.
-6. Qualified pending names (http.get) so 14-task can stub module calls.
-7. Checker: distinguish ?T vs !T at use sites (propagation, policy handling).
+2. `on select` lowering to task state machines (spec 9.2; blocks 14, 16).
+3. Top-level statement semantics — implicit main? (blocks 11; note: example 11 still uses removed `or return` style, needs rewrite to 4.9 policy).
+4. Extend checker: match exhaustiveness, distinct/unit types, generics.
+5. Qualified pending names (http.get) so 14-task can stub module calls.

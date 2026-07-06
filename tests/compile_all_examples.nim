@@ -30,6 +30,7 @@ const nimCheckExpected = [
   "15-type-attributes",
   "19-event-registry",
   "21-decision-bitmask",
+  "22-error-policy",
 ]
 
 proc nimCheckOutput(baseName: string): bool =
@@ -66,7 +67,11 @@ proc compileExample(path: string) =
   verifyModuleEffects(m)
 
   # Step 2.4: Type checking (before lowering — lowering rewrites call args)
-  typecheckModule(m)
+  let shortcuts = typecheckModule(m)
+  if shortcuts.len > 0:
+    echo "  SHORTCUTS (", shortcuts.len, " routed to the global error handler) in ", filename, ":"
+    for entry in shortcuts:
+      echo "    ", entry
 
   # Step 2.5: Compile-time TODO report
   let pend = pendingReport(m)

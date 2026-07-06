@@ -10,7 +10,9 @@ type
     hoisted: seq[string]  # named decls hoisted out of field positions (inline enums)
     retWrapped: bool      # current fn returns !T/?T → returns auto-wrap
     retInnerNim: string   # Nim type of the payload (for terr[T])
+    retInnerT: Type       # payload Tuck type (typed struct-literal emission)
     tmpCounter: int
+    errPolicy: string     # from the errors declaration; "" = strict
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -234,12 +236,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
   else:
     "discard"
 
-proc bangInfo(t: Type): tuple[wrapped: bool, inner: string] =
+proc bangInfo(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
   if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      t.base.name in ["!", "?", "!?"] and t.args.len == 1:
     let inner = genType(t.args[0])
-    return (true, if inner == "void": "tuple[]" else: inner)
-  return (false, "")
+    return (true, (if inner == "void": "tuple[]" else: inner), t.args[0])
+  return (false, "", nil)
 
 proc isDecisionTable(d: Decl): bool =
   if d.kind != dkFn or d.fnBody == nil or d.fnBody.kind != exkBlock: return false
@@ -313,8 +315,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       ctx.tmpCounter.inc
       let tn = "tuckTmp" & $ctx.tmpCounter
       return "(let " & tn & " = " & ctx.genExpr(e.operand) &
-             "; (if " & tn & ".ok: " & tn & ".val else: return terr[" &
-             ctx.retInnerNim & "](" & tn & ".err)))"
+             "; (if " & tn & ".ok: " & tn & ".val else: return tfwd[" &
+             ctx.retInnerNim & "](" & tn & ".status, " & tn & ".err)))"
     let opStr = case e.unaryOp
                 of uoNeg: "-"
                 of uoNot: "not "
@@ -325,7 +327,17 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     let oldIndent = ctx.indent
     ctx.indent += 1
     for s in e.stmts:
-      let stmtCode = ctx.genExpr(s)
+      var stmtCode = ctx.genExpr(s)
+      if stmtCode != "" and s.shortcutSite != "":
+        # continue/exit policy: dropped result routes to the global handler
+        ctx.tmpCounter.inc
+        let tn = "tuckDrop" & $ctx.tmpCounter
+        let onErr = if ctx.errPolicy == "exit":
+                      "(tuck_unhandled(" & tn & ".err, \"" & s.shortcutSite & "\"); quit(1))"
+                    else:
+                      "tuck_unhandled(" & tn & ".err, \"" & s.shortcutSite & "\")"
+        stmtCode = "(let " & tn & " = " & stmtCode & "; (if not " & tn &
+                   ".ok: " & onErr & "))"
       if stmtCode != "":
         if s.kind in {exkIf, exkBlock}:
           lines.add(stmtCode)  # these nodes carry their own indentation
@@ -376,6 +388,22 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
          v.receiver.name == "Error":
         # Error.name → app-wide 16-bit code, hashed at Nim compile time
         "return terr[" & ctx.retInnerNim & "](errCode(\"" & v.fieldName & "\"))"
+      elif v.kind == exkStruct and ctx.retInnerT != nil and ctx.retInnerT.kind == tkRecord:
+        # Typed literal: cast numeric fields to the declared payload field type
+        # so `return {value: 42}` matches tuple[value: uint16]
+        var parts: seq[string]
+        for f in v.fields:
+          var fieldNim = ""
+          for fd in ctx.retInnerT.fields:
+            if fd.name == f[0]: fieldNim = genType(fd.typ)
+          let ex = ctx.genExpr(f[1])
+          if fieldNim != "" and fieldNim notin ["int", "float", "string", "bool"] and
+             (fieldNim.startsWith("uint") or fieldNim.startsWith("int") or
+              fieldNim.startsWith("float")):
+            parts.add(f[0] & ": " & fieldNim & "(" & ex & ")")
+          else:
+            parts.add(f[0] & ": " & ex)
+        "return tok((" & parts.join(", ") & "))"
       else:
         "return tok(" & ctx.genExpr(v) & ")"
     else: "return " & ctx.genExpr(e.returnVal)
@@ -515,9 +543,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     for p in d.fnParams:
       ctx.definedVars.incl(p.name)
     let oldIndent = ctx.indent
-    let (bw, binner) = bangInfo(d.fnReturnType)
+    let (bw, binner, binnerT) = bangInfo(d.fnReturnType)
     ctx.retWrapped = bw
     ctx.retInnerNim = binner
+    ctx.retInnerT = binnerT
     ctx.indent += 1
     let bodyStr = ctx.genExpr(d.fnBody)
     ctx.indent = oldIndent
@@ -701,9 +730,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     for p in d.taskParams:
       ctx.definedVars.incl(p.name)
     let oldIndent = ctx.indent
-    let (bw, binner) = bangInfo(d.taskReturnType)
+    let (bw, binner, binnerT) = bangInfo(d.taskReturnType)
     ctx.retWrapped = bw
     ctx.retInnerNim = binner
+    ctx.retInnerT = binnerT
     ctx.indent += 1
     let bodyStr = ctx.genExpr(d.taskBody)
     ctx.indent = oldIndent
@@ -773,6 +803,23 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return enumStr & typeStr & "\n" & globalVarStr & fwdDeclsStr & raiseProcsStr
   of dkStaticAssert:
     return "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
+  of dkErrors:
+    # Global handler: rt logger first (errors are always visible), then the
+    # user's handler body.
+    var res = "proc tuck_unhandled*(code: uint16, site: string) =\n" &
+              "  tuckReportUnhandled(code, site)\n"
+    if d.errHandler != nil and d.errHandler.fnBody != nil:
+      let oldVars = ctx.definedVars
+      ctx.definedVars.incl("code")
+      ctx.definedVars.incl("site")
+      let oldIndent = ctx.indent
+      ctx.indent += 1
+      let bodyStr = ctx.genExpr(d.errHandler.fnBody)
+      ctx.indent = oldIndent
+      ctx.definedVars = oldVars
+      if bodyStr.strip() != "" and bodyStr.strip() != "discard":
+        res.add(bodyStr & "\n")
+    return res
   of dkMixin:
     # Pending blocks parse as a mixin named "pending"; emit stubs for its members.
     var res = ""
@@ -787,6 +834,9 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
 
 proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt"): string =
   var ctx = CodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m)
+  for d in m.decls:
+    if d != nil and d.kind == dkErrors:
+      ctx.errPolicy = d.policyName
   var body = ""
   for d in m.decls:
     let code = ctx.genDecl(d)

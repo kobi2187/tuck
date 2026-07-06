@@ -78,6 +78,13 @@ proc terr*[T](code: uint16): TuckResult[T] {.inline.} =
 proc tnone*[T](): TuckResult[T] {.inline.} =
   TuckResult[T](status: tsAbsent)
 
+proc tfwd*[T](status: TuckStatus, err: uint16): TuckResult[T] {.inline.} =
+  ## `?` propagation: forward failure OR absence unchanged (status-preserving)
+  TuckResult[T](status: status, err: err)
+
+proc tuckReportUnhandled*(code: uint16, site: string) =
+  stderr.writeLine("TUCK UNHANDLED: error " & $code & " at " & site)
+
 type
   BumpArena*[Size: static int] = object
     buffer*: array[Size, byte]

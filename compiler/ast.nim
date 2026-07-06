@@ -156,6 +156,8 @@ type
 
   Expr* = ref object
     span*: Span
+    shortcutSite*: string  # set by checker under continue/exit policy: this
+                           # statement drops a !T and routes to the handler
     case kind*: ExprKind
     of exkLit:
       litKind*: LitKind
@@ -220,6 +222,7 @@ type
     dkExpr
     dkRegister
     dkStaticAssert
+    dkErrors  # global error policy declaration (spec 4.9)
 
   Decl* = ref object
     span*: Span
@@ -260,6 +263,9 @@ type
       regFields*: seq[FieldDef]
     of dkStaticAssert:
       assertExpr*: Expr
+    of dkErrors:
+      policyName*: string  # strict | continue | exit
+      errHandler*: Decl    # the `on unhandled({code, site})` fn, nil if strict
 
   Module* = object
     path*: seq[string]
