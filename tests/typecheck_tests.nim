@@ -306,6 +306,44 @@ fn use({n: int}) -> !{value: int} [io]:
   return {value: r.value}
 """
 
+# ---------- distinct unit types (spec 4.2) ----------
+
+const unitPrelude = """
+distinct Milliseconds = u32
+distinct Microseconds = u32
+
+fn ms(value: u32) -> Milliseconds:
+  value Milliseconds
+
+fn us(value: u32) -> Microseconds:
+  value Microseconds
+
+fn delay({ms: Milliseconds}) -> {done: bool}:
+  {done: true}
+"""
+
+expectError "unit mismatch rejected", unitPrelude & """
+let r = {ms: 5.us} delay
+""", "field 'ms'"
+
+expectError "bare int where unit expected", unitPrelude & """
+let r = {ms: 5} delay
+""", "field 'ms'"
+
+expectOk "matching unit accepted", unitPrelude & """
+let r = {ms: 5.ms} delay
+"""
+
+expectError "arithmetic between different units", unitPrelude & """
+fn f({a: Milliseconds, b: Microseconds}) -> {v: Milliseconds}:
+  {v: a + b}
+""", "arithmetic"
+
+expectOk "same-unit arithmetic", unitPrelude & """
+fn f({a: Milliseconds, b: Milliseconds}) -> {v: Milliseconds}:
+  {v: a + b}
+"""
+
 # ---------- implicit return + branch agreement ----------
 
 expectOk "implicit tail return", """

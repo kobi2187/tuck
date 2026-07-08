@@ -1365,7 +1365,7 @@ proc parseDecl*(p: var Parser): Decl =
     let name = p.expect(tkIdent, "Expected distinct type name").value
     discard p.expect(tkAssign)
     let aliasType = p.parseType()
-    var attrs: seq[TypeAttr]
+    var attrs = aliasType.attrs  # parseType may have consumed [suffix: ms]
     attrs.add(TypeAttr(name: "distinct", value: "", span: sp))
     if p.current().kind == tkLBracket:
       discard p.advance()

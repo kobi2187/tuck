@@ -1,5 +1,5 @@
 # compiler/codegen.nim
-import ast, strutils, sets
+import ast, strutils, sets, tables
 
 type
   CodegenCtx = object
@@ -125,9 +125,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     elif e.name in ctx.fieldVars: "self." & e.name
     else: e.name
   of exkField:
-    # Unit sugar (5.ms) — emit the bare number; distinct unit types come later
+    # Unit sugar: 5.ms is a postfix call to the ordinary function ms
     if e.receiver != nil and e.receiver.kind == exkLit and e.receiver.litKind in {lkInt, lkFloat}:
-      ctx.genExpr(e.receiver, m)
+      if lookupFnParams(m, e.fieldName).len > 0:
+        e.fieldName & "(" & ctx.genExpr(e.receiver, m) & ")"
+      else:
+        ctx.genExpr(e.receiver, m)
     else:
       ctx.genExpr(e.receiver, m) & "." & e.fieldName
   of exkCall:
@@ -272,7 +275,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     else: e.name
   of exkField:
     if e.receiver != nil and e.receiver.kind == exkLit and e.receiver.litKind in {lkInt, lkFloat}:
-      ctx.genExpr(e.receiver)
+      if lookupFnParams(ctx.module, e.fieldName).len > 0:
+        e.fieldName & "(" & ctx.genExpr(e.receiver) & ")"
+      else:
+        ctx.genExpr(e.receiver)
     else:
       ctx.genExpr(e.receiver) & "." & e.fieldName
   of exkCall:
@@ -644,7 +650,19 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
           res.add("\nproc validate*(self: " & d.name & ") =\n" & invariantChecks.join("\n") & "\n")
         return res
       else:
+        var isDistinctT = false
+        for a in d.typeBody.attrs:
+          if a.name == "distinct": isDistinctT = true
         let typeBodyStr = genType(d.typeBody)
+        if isDistinctT:
+          # Nim distinct + borrowed ops: same bits, incompatible type
+          var res = "type " & d.name & "* = distinct " & typeBodyStr & "\n"
+          for op in ["+", "-", "*", "div", "mod"]:
+            res.add("proc `" & op & "`*(a, b: " & d.name & "): " & d.name & " {.borrow.}\n")
+          for op in ["==", "<", "<="]:
+            res.add("proc `" & op & "`*(a, b: " & d.name & "): bool {.borrow.}\n")
+          res.add("proc `$`*(a: " & d.name & "): string {.borrow.}\n")
+          return res
         return "type " & d.name & "* = " & typeBodyStr & "\n"
     return ""
   of dkObject:

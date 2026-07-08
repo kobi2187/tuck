@@ -44,6 +44,7 @@ type
                                  # is the implicit return, not a discard
     transitionCtx: bool          # constructing THROUGH transitionTo: sealed
                                  # non-initial variants are legal there
+    distinctNames: HashSet[string]   # distinct types: nominal, never widened
 
 proc pushScope(tc: var TypeChecker) = tc.scopes.add(initTable[string, Binding]())
 proc popScope(tc: var TypeChecker) = discard tc.scopes.pop()
@@ -119,7 +120,11 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
   # Nominal fast path
   if a.kind == tkNamed and e.kind == tkNamed:
     if a.name == e.name: return true
-    if isNumeric(a) and isNumeric(e): return true  # ponytail: loose numeric widening; tighten with distinct types later
+    # Distinct types are strictly nominal: no widening, no resolving through
+    # to the base type. Milliseconds is not Microseconds is not u32.
+    if a.name in tc.distinctNames or e.name in tc.distinctNames:
+      return false
+    if isNumeric(a) and isNumeric(e): return true  # loose numeric widening for primitives
     # One side may be an alias for a record — fall through to structural
     let ra = tc.resolve(a)
     let re = tc.resolve(e)
@@ -226,6 +231,16 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     let (found, b) = tc.lookup(e.name)
     if found: b.typ else: unknownType(e.span)
   of exkField:
+    # Unit sugar: 5.ms is postfix application — ms is an ordinary function
+    if e.receiver != nil and e.receiver.kind == exkLit and
+       e.receiver.litKind in {lkInt, lkFloat} and tc.fnSigs.hasKey(e.fieldName):
+      let sig = tc.fnSigs[e.fieldName]
+      if sig.params.len == 1:
+        let litT = tc.synthesize(e.receiver)
+        if not tc.compatible(litT, sig.params[0].typ):
+          fail("Type Error: argument to '" & e.fieldName & "' expects " &
+               typeName(sig.params[0].typ) & " but got " & typeName(litT), e.span)
+      return sig.ret
     # Variant construction: Type.Variant — sealed types only allow the
     # initial (first) variant directly; [unsafe] is the deserialization escape
     if e.receiver != nil and e.receiver.kind == exkVar and
@@ -279,6 +294,10 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     if calleeName in ["bake", "alias"]:
       for a in e.args: discard tc.synthesize(a)
       return unknownType(e.span)
+    if calleeName != "" and calleeName in tc.distinctNames:
+      # Calling a distinct type's name converts from its base (Nim-native)
+      for a in e.args: discard tc.synthesize(a)
+      return Type(span: e.span, kind: tkNamed, name: calleeName)
     if calleeName != "" and tc.fnSigs.hasKey(calleeName):
       let sig = tc.fnSigs[calleeName]
       tc.checkCallArgs(calleeName, sig, e)
@@ -459,7 +478,11 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
         tc.implementedFns.incl(d.name)
     of dkTask: tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType)
     of dkType:
-      if d.typeBody != nil: tc.typeDecls[d.name] = d.typeBody
+      if d.typeBody != nil:
+        tc.typeDecls[d.name] = d.typeBody
+        for a in d.typeBody.attrs:
+          if a.name == "distinct":
+            tc.distinctNames.incl(d.name)
     of dkObject: tc.collectSigs(d.objMembers)
     of dkMixin: tc.collectSigs(d.mixinMembers)
     of dkActor: tc.collectSigs(d.handlers)
@@ -702,6 +725,7 @@ proc typecheckModule*(m: Module): seq[string] {.discardable.} =
   var tc = TypeChecker(module: m,
                        fnSigs: initTable[string, FnSig](),
                        typeDecls: initTable[string, Type](),
+                       distinctNames: initHashSet[string](),
                        errPolicy: "strict")
   tc.pushScope()  # module-level scope: top-level let/var visible across decls
   tc.collectSigs(m.decls)

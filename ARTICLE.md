@@ -67,8 +67,8 @@ server ..port {8080} ..timeout {30.seconds} ..start
 
 `!T` means "may fail", `?T` means "may be absent" — one character each, no
 exceptions, no nil, no unwinding. Both lower to a single tri-state value type
-(`ok / err / absent`, error codes are 16-bit hashes computed at compile time —
-zero allocation, embedded-friendly).
+(`ok / err / absent`). Error names are ordinary enums declared in your domain
+modules; at runtime they are 16-bit codes — zero allocation, embedded-friendly.
 
 ```tuck
 fn readSensor({port: u8}) -> !{value: u16} [io]:
@@ -198,6 +198,22 @@ arena ScratchSpace [size: 2048]:
   ScratchSpace.reset          # entire arena freed in one assignment
 ```
 
+Unit types are distinct types plus ordinary functions — no compiler magic:
+
+```tuck
+distinct Milliseconds = u32
+
+fn ms(value: u32) -> Milliseconds:
+  value Milliseconds        # calling the type's name converts from its base
+
+delay {ms: 5.ms}            # fine — 5.ms is postfix application of fn ms
+delay {ms: 5}               # compile error — bare int is not Milliseconds
+delay {ms: 5.us}            # compile error — Microseconds is not Milliseconds
+```
+
+Same bits at runtime (Nim's native `distinct`), strictly incompatible at
+compile time — no widening, no resolving through to the base.
+
 Hardware access is typed MMIO — writing a read-only register field is a
 compile error:
 
@@ -227,16 +243,19 @@ OK (1.8 ms)
 
 `lex`, `parse`, `check`, `compile` (shorthands `l p ch c`). Fail fast: the
 first error prints as `file:line:col` with a caret into your source — always a
-**Tuck** error; you never read a Nim diagnostic. Sub-2ms per file today,
-against a 100ms budget. Tuck transpiles to readable Nim (Beef backend in
-progress), so the escape hatch is a language you can read, not a binary blob.
+**Tuck** error; you never read a Nim diagnostic. Today's (small) example files
+check in 1–2ms against a 100ms budget; real numbers wait for real programs.
+Tuck transpiles to readable Nim (Beef backend in progress), so the escape
+hatch is a language you can read, not a binary blob.
 
 ## Status
 
 Working today: the postfix core, bidirectional type checker (subset matching,
 branch agreement, implicit returns), errors-as-values with the three-mode
-policy, pending blocks, sealed transitions with tagged-union codegen, exact
-decision-table analysis with packed-key codegen, effect checking, the event
-registry, typed MMIO, pools/arenas, and the CLI. Designed but not yet built:
-actors-to-coroutine lowering, `bake` compile-time specialization, generics,
-the module system, and the incremental cache.
+policy, pending blocks, distinct unit types, sealed transitions with
+tagged-union codegen, exact decision-table analysis with packed-key codegen,
+effect checking, the event registry, typed MMIO, pools/arenas, and the CLI.
+Actors have their runtime library (typed mailboxes, message envelopes) and
+the syntax already transforms to Nim targeting it; the scheduler backing is
+the next layer. Designed but not yet built: `bake` compile-time
+specialization, generics, the module system, and the incremental cache.

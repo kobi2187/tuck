@@ -31,6 +31,7 @@ const nimCheckExpected = [
   "19-event-registry",
   "21-decision-bitmask",
   "22-error-policy",
+  "23-units",
 ]
 
 proc nimCheckOutput(baseName: string): bool =

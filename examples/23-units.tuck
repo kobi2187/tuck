@@ -1,0 +1,14 @@
+# Distinct unit types (spec 4.2): same bits at runtime, incompatible types at
+# compile time. There is no unit magic in the compiler — `ms` is an ordinary
+# function, and `5.ms` is postfix application of it. Calling the distinct
+# type's name converts from its base.
+
+distinct Milliseconds = u32
+
+fn ms(value: u32) -> Milliseconds:
+  value Milliseconds
+
+fn delay({ms: Milliseconds}) -> {done: bool}:
+  {done: true}
+
+let r = {ms: 5.ms} delay
