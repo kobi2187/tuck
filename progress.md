@@ -173,6 +173,27 @@
 - Example 22-error-policy; gate 11/22. Runtime-verified: continue keeps
   running after handler, exit dies with code 1, stderr shows TUCK UNHANDLED.
 
+## 2026-07-06 — postfix consolidation: three changes
+- Paren-calls REMOVED from expressions: `f(x)` is now a parse error ("calls
+  are postfix: {payload} fnName"). Parens survive only for grouping and the
+  spec 8.2 compile-time builtins sizeof/alignof/offsetof.
+- Variant construction is payload-first: `{config, feed} PlayerState.Ready`
+  (postfix-ident parse now builds dotted callees, incl `[unsafe]` marker).
+  Constructions fed by transitionTo chains exempt from the sealed rule
+  (transitions ARE the legal path; runtime matrix still checks).
+- Implicit last-expression return: tail value flows out as the result;
+  codegen rewrites tail stmt into the existing return emission (auto-wrap,
+  typed literals ride along). Control-flow tails (if/match) keep explicit
+  returns v1.
+- Typing teeth per user: if-branches and match-arms in value position must
+  agree on type; fn tail must match declared return ("'f' flows {v: str}
+  out of its body but declares {v: int}"). Fn-body tail exempt from the
+  discard rule (it's the result, not a drop).
+- Examples 04/12 + tests rewritten off paren-calls (postfix `n isOdd`,
+  `{} writeLog` for zero-param, `val2 echo`).
+- 52 checker tests green, gate 11/22, runtime-verified: implicit return in
+  plain + fallible fns, early exit intact.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

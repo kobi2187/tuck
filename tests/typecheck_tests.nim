@@ -306,6 +306,34 @@ fn use({n: int}) -> !{value: int} [io]:
   return {value: r.value}
 """
 
+# ---------- implicit return + branch agreement ----------
+
+expectOk "implicit tail return", """
+fn double({n: int}) -> {v: int}:
+  {v: n + n}
+"""
+
+expectError "implicit tail wrong type", """
+fn f({n: int}) -> {v: int}:
+  {v: "nope"}
+""", "flows"
+
+expectError "if branches disagree on type", """
+fn f({flag: bool}) -> {v: int}:
+  if flag:
+    {v: 1}
+  else:
+    {v: "s"}
+""", "different types"
+
+expectOk "if branches agree", """
+fn f({flag: bool}) -> {v: int}:
+  if flag:
+    return {v: 1}
+  else:
+    return {v: 2}
+"""
+
 # ---------- sealed construction (spec 4.4) ----------
 
 expectError "sealed non-initial construction rejected", """
@@ -412,10 +440,10 @@ cfg ..port {8080}
 
 expectOk "mutual recursion via pre-collected sigs", """
 fn isEven(n: int) -> bool:
-  return isOdd(n)
+  return n isOdd
 
 fn isOdd(n: int) -> bool:
-  return isEven(n)
+  return n isEven
 """
 
 expectOk "numeric widening int literal to u8", """

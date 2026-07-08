@@ -18,4 +18,4 @@ object PodcastApp:
   + bulkOperations
 
   fn play({episode: Episode}) -> void:
-    self ..loadEpisode(episode) ..startAudio
+    self ..loadEpisode {episode} ..startAudio

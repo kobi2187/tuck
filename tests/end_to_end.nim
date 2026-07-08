@@ -49,7 +49,7 @@ decision classifyPacket({priority: int, size: int, encrypted: bool}) -> int:
 let val1 = 9 addOne
 let val2 = {priority: 2, size: 64, encrypted: false} classifyPacket
 
-echo(val2)
+val2 echo
 """
 
 proc runEndToEnd() =
@@ -114,7 +114,7 @@ fn writeLog() [io]:
   discard
 
 fn doWork() -> void:
-  writeLog()
+  {} writeLog
 """
   var lexer = Lexer(source: invalidCode, position: 0, line: 1, column: 1, indentStack: @[0])
   var tokens: seq[Token]

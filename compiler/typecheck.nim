@@ -40,6 +40,10 @@ type
     implementedFns: HashSet[string]
     errPolicy: string            # strict (default) | continue | exit
     unhandledSites: seq[string]  # strict: error list; continue/exit: SHORTCUTS
+    bodyBlock: Expr              # current fn's outermost block: its last stmt
+                                 # is the implicit return, not a discard
+    transitionCtx: bool          # constructing THROUGH transitionTo: sealed
+                                 # non-initial variants are legal there
 
 proc pushScope(tc: var TypeChecker) = tc.scopes.add(initTable[string, Binding]())
 proc popScope(tc: var TypeChecker) = discard tc.scopes.pop()
@@ -236,7 +240,8 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
           for a in declared.attrs:
             if a.name == "sealed": isSealed = true
           if isSealed and declared.variants.len > 0 and
-             e.fieldName != declared.variants[0].name and not e.ctorUnsafe:
+             e.fieldName != declared.variants[0].name and not e.ctorUnsafe and
+             not tc.transitionCtx:
             fail("Sealed Error: " & e.receiver.name & "." & e.fieldName &
                  " cannot be constructed directly — sealed types start at '" &
                  declared.variants[0].name & "'; reach '" & e.fieldName &
@@ -280,7 +285,18 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
       return sig.ret
     var calleeT = unknownType(e.span)
     if e.callee != nil and e.callee.kind != exkVar:
+      # A construction fed by a transitionTo chain is a transition, not a
+      # direct construction — sealed rules allow it (runtime matrix checks it)
+      var viaTransition = false
+      for a in e.args:
+        if a != nil and a.kind == exkCall and a.callee != nil:
+          if (a.callee.kind == exkVar and a.callee.name == "transitionTo") or
+             (a.callee.kind == exkField and a.callee.fieldName == "transitionTo"):
+            viaTransition = true
+      let prevCtx = tc.transitionCtx
+      if viaTransition: tc.transitionCtx = true
       calleeT = tc.synthesize(e.callee)  # variant constructions carry their type
+      tc.transitionCtx = prevCtx
     for a in e.args: discard tc.synthesize(a)
     calleeT
   of exkBinary:
@@ -338,7 +354,9 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
       # A dropped fallible result in statement position: the policy decides.
       # strict collects it as an error (ALL sites reported at the end);
       # continue/exit mark the site so codegen routes it to the handler.
-      if isWrapper(last):
+      let isImplicitReturn = e == tc.bodyBlock and s == e.stmts[^1] and
+                             tc.currentRet != nil
+      if isWrapper(last) and not isImplicitReturn:
         let site = tc.currentFn & " line " & $s.span.line
         if tc.errPolicy in ["continue", "exit"]:
           s.shortcutSite = site
@@ -356,18 +374,29 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
         Type(span: e.span, kind: tkNamed, name: "bool")):
       fail("Type Error: if condition must be bool, got " & typeName(condT), e.cond.span)
     let thenT = tc.synthesize(e.thenBranch)
-    discard tc.synthesize(e.elseBranch)
-    thenT
+    let elseT = tc.synthesize(e.elseBranch)
+    # Branches that produce values must agree on the type
+    if e.elseBranch != nil and not isUnknown(thenT) and not isUnknown(elseT) and
+       not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
+      fail("Type Error: if branches produce different types: " &
+           typeName(thenT) & " vs " & typeName(elseT), e.span)
+    if isUnknown(thenT): elseT else: thenT
   of exkMatch:
     discard tc.synthesize(e.subject)
+    var armT = unknownType(e.span)
     for arm in e.arms:
       tc.pushScope()
       # v1: pattern-bound names enter scope as Unknown
       if arm.pattern != nil and arm.pattern.kind == pkVar:
         tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
-      discard tc.synthesize(arm.body)
+      let t = tc.synthesize(arm.body)
       tc.popScope()
-    unknownType(e.span)
+      if not isUnknown(t) and not isUnknown(armT) and
+         not tc.compatible(t, armT) and not tc.compatible(armT, t):
+        fail("Type Error: match arms produce different types: " &
+             typeName(armT) & " vs " & typeName(t), arm.span)
+      if isUnknown(armT): armT = t
+    armT
   of exkFor:
     discard tc.synthesize(e.iterable)
     tc.pushScope()
@@ -457,7 +486,21 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
     tc.bindName(p.name, p.typ, true)
   tc.currentRet = ret
   tc.currentFn = name
-  discard tc.synthesize(body)
+  let prevBody = tc.bodyBlock
+  tc.bodyBlock = body
+  let bodyT = tc.synthesize(body)
+  # Implicit return: the value flowing at the end of the body is the result.
+  # Branch agreement (if/match) already unified branch types into bodyT.
+  # unit/unknown tails mean explicit returns or sketch code — checked elsewhere.
+  if ret != nil and body != nil and body.kind == exkBlock and body.stmts.len > 0:
+    let lastKind = body.stmts[^1].kind
+    if lastKind notin {exkReturn, exkRaise} and
+       not isUnknown(bodyT) and
+       not (bodyT.kind == tkNamed and bodyT.name in ["unit", "void"]) and
+       not tc.compatible(bodyT, ret):
+      fail("Type Error: '" & name & "' flows " & typeName(bodyT) &
+           " out of its body but declares " & typeName(ret), body.stmts[^1].span)
+  tc.bodyBlock = prevBody
   tc.currentRet = nil
   tc.currentFn = ""
   tc.popScope()

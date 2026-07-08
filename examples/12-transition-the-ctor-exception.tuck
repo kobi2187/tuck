@@ -9,11 +9,11 @@ type PlayerState:
     Loading  -> Unloaded   # cancel
 
 # Constructing directly — always fine
-let p = PlayerState.Ready({config, feed})  # testing, deserialization, whatever
+let p = {config, feed} PlayerState.Ready  # testing, deserialization, whatever
 
 # Runtime transition — checked
-p.transition(Loading)   # ERROR: Ready -> Loading not in table
-p.transition(Unloaded)  # ERROR: Ready -> Unloaded not in table
+{p, target: Loading} transition   # ERROR: Ready -> Loading not in table
+{p, target: Unloaded} transition  # ERROR: Ready -> Unloaded not in table
 
 
 
@@ -35,4 +35,4 @@ type MqttSession [sealed]:
 
 
 # For deserialization, just add [unsafe] escape:
-let session = MqttSession.Connected [unsafe] ({socket, keepalive: 60})
+let session = {socket, keepalive: 60} MqttSession.Connected [unsafe]

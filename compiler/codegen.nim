@@ -434,6 +434,19 @@ proc genPendingStub(d: Decl): string =
   return "proc " & fnNameSanitized & "*" & paramStr & ": " & retTypeStr &
          " =\n  stderr.writeLine(\"TUCK PENDING: " & d.name & " invoked (not implemented)\")\n"
 
+# Implicit return: the value flowing at the end of a fn body is its result.
+# Rewrite the tail statement into an explicit return so the existing return
+# emission (auto-wrap, typed literals) handles it. Control-flow tails keep
+# explicit returns for now (checker enforces branch agreement).
+proc injectTailReturn(body: Expr, retTypeStr: string) =
+  if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
+     retTypeStr != "void":
+    let lastS = body.stmts[^1]
+    if lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
+                         exkAssign, exkBlock} and
+       not (lastS.kind == exkVar and lastS.name == "..."):
+      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
+
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   if d == nil: return ""
   case d.kind
@@ -547,6 +560,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.retWrapped = bw
     ctx.retInnerNim = binner
     ctx.retInnerT = binnerT
+    injectTailReturn(d.fnBody, retTypeStr)
     ctx.indent += 1
     let bodyStr = ctx.genExpr(d.fnBody)
     ctx.indent = oldIndent
@@ -734,6 +748,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.retWrapped = bw
     ctx.retInnerNim = binner
     ctx.retInnerT = binnerT
+    injectTailReturn(d.taskBody, retTypeStr)
     ctx.indent += 1
     let bodyStr = ctx.genExpr(d.taskBody)
     ctx.indent = oldIndent

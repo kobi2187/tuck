@@ -508,7 +508,9 @@ proc parseChainExpr(p: var Parser): Expr =
       let arg = p.parsePrimaryExpr()
       let calleeExpr = Expr(span: sp, kind: exkVar, name: "bake")
       expr = Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr, arg])
-    elif p.current().kind == tkLParen:
+    elif p.current().kind == tkLParen and expr.kind == exkVar and
+         expr.name in ["sizeof", "alignof", "offsetof"]:
+      # Compile-time builtins (spec 8.2) keep parens; everything else is postfix
       discard p.advance()
       var args: seq[Expr]
       while p.current().kind != tkRParen and p.current().kind != tkEOF:
@@ -517,6 +519,8 @@ proc parseChainExpr(p: var Parser): Expr =
           discard p.advance()
       discard p.expect(tkRParen)
       expr = Expr(span: sp, kind: exkCall, callee: expr, args: args)
+    elif p.current().kind == tkLParen:
+      p.reportError("Function calls are postfix in Tuck: write {payload} fnName, not fnName(args)")
     elif p.current().kind == tkLBrace:
       let arg = p.parsePrimaryExpr()
       expr = Expr(span: sp, kind: exkCall, callee: expr, args: @[arg])
@@ -545,7 +549,19 @@ proc parseChainExpr(p: var Parser): Expr =
         expr = Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
       else:
         let callee = p.advance().value
-        let calleeExpr = Expr(span: sp, kind: exkVar, name: callee)
+        var calleeExpr = Expr(span: sp, kind: exkVar, name: callee)
+        # Qualified postfix: {payload} Type.Variant [unsafe] — the callee may
+        # be a dotted path; construction flows payload-first like any call
+        while p.current().kind == tkDot:
+          discard p.advance()
+          let fname = p.expect(tkIdent, "Expected name after '.'").value
+          calleeExpr = Expr(span: sp, kind: exkField, receiver: calleeExpr, fieldName: fname)
+          if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+             p.peek(1).value == "unsafe" and p.peek(2).kind == tkRBracket:
+            discard p.advance()
+            discard p.advance()
+            discard p.advance()
+            calleeExpr.ctorUnsafe = true
         expr = Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
     else:
       break
