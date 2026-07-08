@@ -1,3 +1,10 @@
+import http
+
+type Feed = {episodes: int}
+
+pending:
+  fn parse({body: str}) -> {feed: Feed}
+
 task fetchFeed({url: str}) -> !{feed: Feed} [io]:
-  let resp = http.get {url}    # [io] → compiler inserts yield here automatically
-  resp.body parse              # pure → no yield, runs immediately
+  let resp = {url} http::get?   # [io] → compiler inserts yield here automatically
+  resp.body parse               # pure → no yield, runs immediately

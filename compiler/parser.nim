@@ -1037,6 +1037,11 @@ proc parseDecl*(p: var Parser): Decl =
       body = p.parseBlock()
     return Decl(span: sp, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: effects, fnBody: body)
 
+  of tkImport:
+    discard p.advance()
+    let modName = p.expect(tkIdent, "Expected module name after 'import'").value
+    return Decl(span: sp, kind: dkImport, name: modName)
+
   of tkPending:
     discard p.advance()
     discard p.expect(tkColon)
@@ -1051,7 +1056,11 @@ proc parseDecl*(p: var Parser): Decl =
         continue
       let spDecl = p.getSpan()
       discard p.expect(tkFn)
-      let name = p.expect(tkIdent, "Expected function name in pending declaration").value
+      var name = p.expect(tkIdent, "Expected function name in pending declaration").value
+      if p.current().kind == tkColonColon:
+        # module-qualified sketch stub: fn http::get(...)
+        discard p.advance()
+        name = name & "::" & p.expect(tkIdent, "Expected identifier after '::'").value
       discard p.expect(tkLParen)
       var params: seq[Param]
       if p.current().kind != tkRParen:

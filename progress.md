@@ -209,6 +209,29 @@
   micro-optimizations.
 - Example 23-units in gate (12 valid). 57 checker tests green.
 
+## 2026-07-08 — real imports: `import http` + `module::fn` + msgpack cache
+- `import http` loads http.tuck from the importer's dir (compiler/modules.nim:
+  loadProgram — import closure, diamond collapse, cycle = error). Access is
+  qualified-only: `{url} http::get`; no unqualified leakage. `::` also works
+  in pending blocks (`fn http::get(...)`) for module stubs without a module.
+- ORDER-INDEPENDENT (user ruling): typecheckProgram pass 1 collects EVERY
+  module's sigs, pass 2 checks bodies — call site may precede any decl.
+- Gradualness kept: unknown module prefix = Unknown (sketches compile, e.g.
+  17's audio::play); KNOWN module missing fn = error. Wrong/missing payload
+  fields checked across module boundary.
+- Incremental-compilation groundwork (user ruling): imported modules cache
+  their AST as msgpack (<dir>/.tuck-cache/<name>.bin, msgpack4nim) keyed by
+  compiler build stamp + source hash; best-effort, falls back to reparse.
+  Needs -d:nimOldCaseObjects (config.nims) — msgpack4nim unpacks case
+  objects by late discriminant assign; custom unpack procs if it ever bites.
+- Codegen: one Nim file per module, main `import http`, qualified call =
+  `http.get(...)` (Nim namespacing, no mangling); sketch-qualified pending
+  stubs mangle :: → _. Cross-module param order read from the target module.
+- 14-task rewritten (import http + `?` propagation + implicit return);
+  examples/http.tuck new. Gate 13 (added 14-task). 60 checker tests,
+  cli smoke, end_to_end all green. Runtime-verified: binary runs, TUCK
+  PENDING for get/parse, exit 0.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

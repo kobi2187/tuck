@@ -5,7 +5,7 @@
 #   tuck parse   file.tuck        (p)   syntax check; --ast dumps JSON
 #   tuck check   file.tuck        (ch)  effects + types + PENDING report
 #   tuck compile file.tuck        (c)   check + emit .nim (--beef for .bf too)
-import os, strutils, times, std/json
+import os, strutils, times, tables, std/json
 import lexer
 import compiler/ast
 import compiler/parser
@@ -15,6 +15,7 @@ import compiler/lowering
 import compiler/codegen
 import compiler/codegen_beef
 import compiler/ast_serializer
+import compiler/modules
 
 proc usage() =
   stderr.writeLine """tuck — the Tuck compiler
@@ -51,16 +52,30 @@ proc parseSource(source: string): Module =
   var p = Parser(source: source, tokens: lexTokens(source), cursor: 0)
   p.parseModule()
 
-# check stage; returns the module so compile can continue with it
-proc checkSource(source, path: string): Module =
-  result = parseSource(source)
+# check stage over the whole import closure; returns the loaded program
+# (dep-first, entry module last) so compile can continue with it
+proc checkProgram(path: string): seq[LoadedModule] =
+  try:
+    result = loadProgram(path)
+  except ModuleError as err:
+    die(path & ": " & err.msg)
+  var mods: seq[tuple[name, path: string, m: Module]]
+  for lm in result: mods.add((lm.name, lm.path, lm.m))
   var shortcuts: seq[string]
   try:
-    verifyModuleEffects(result)
-    shortcuts = typecheckModule(result)
+    for lm in result:
+      verifyModuleEffects(lm.m)
+    shortcuts = typecheckProgram(mods)
   except SemanticError as err:
-    die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
-  let pend = pendingReport(result)
+    # typecheckProgram errors already carry file:line:col; effects errors don't
+    if ".tuck:" in err.msg: die(err.msg)
+    else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
+  var pend: seq[string]
+  for lm in result:
+    for entry in pendingReport(lm.m):
+      # qualify pendings living in imported modules
+      if lm.path != result[^1].path: pend.add(lm.name & "::" & entry)
+      else: pend.add(entry)
   if pend.len > 0:
     echo "PENDING (", pend.len, " unimplemented):"
     for entry in pend:
@@ -91,11 +106,10 @@ when isMainModule:
       echo pretty(toJson(m))
     echo "OK — ", m.decls.len, " top-level declarations (", elapsedMs(t0), ")"
   of "check", "ch":
-    discard checkSource(source, path)
+    discard checkProgram(path)
     echo "OK (", elapsedMs(t0), ")"
   of "compile", "c":
-    let m = checkSource(source, path)
-    lowerModule(m)
+    let prog = checkProgram(path)
     var outDir = parentDir(path)
     for o in opts:
       if o.startsWith("-o:"): outDir = o[3 .. ^1]
@@ -105,9 +119,18 @@ when isMainModule:
     # import path from the output dir back to the runtime module
     let rtDir = getAppDir() / "compiler"
     let rtImport = relativePath(rtDir / "tuck_rt", outDir).replace('\\', '/')
-    let nimPath = outDir / (base & ".nim")
-    writeFile(nimPath, emitNim(m, rtImport))
-    echo "wrote ", nimPath
+    var realModules = initTable[string, Module]()
+    for lm in prog[0 ..< prog.high]:
+      realModules[lm.name] = lm.m
+    # imported modules first (each its own Nim file), entry module last
+    for lm in prog:
+      lowerModule(lm.m)
+      let isEntry = lm.path == prog[^1].path
+      let outName = if isEntry: base else: lm.name
+      let nimPath = outDir / (outName & ".nim")
+      writeFile(nimPath, emitNim(lm.m, rtImport, realModules))
+      echo "wrote ", nimPath
+    let m = prog[^1].m
     if "--beef" in opts:
       let bfPath = outDir / (base & ".bf")
       writeFile(bfPath, emitBeef(m))

@@ -13,6 +13,7 @@ type
     retInnerT: Type       # payload Tuck type (typed struct-literal emission)
     tmpCounter: int
     errPolicy: string     # from the errors declaration; "" = strict
+    realModules: Table[string, Module]  # imported modules emitted as own Nim files
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -112,6 +113,13 @@ proc lookupFnParams(m: Module, name: string): seq[string] =
       return res
   return @[]
 
+# module::fn — a real imported module rides Nim's own namespacing; a
+# sketch-pending qualified name maps to its mangled stub (genPendingStub).
+proc genQualified(ctx: CodegenCtx, e: Expr): string =
+  let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
+  if modName in ctx.realModules: modName & "." & e.qualName
+  else: modName & "_" & e.qualName
+
 proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
@@ -133,11 +141,19 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
         ctx.genExpr(e.receiver, m)
     else:
       ctx.genExpr(e.receiver, m) & "." & e.fieldName
+  of exkQualified:
+    genQualified(ctx, e)
   of exkCall:
     var args: seq[string]
     let calleeStr = ctx.genExpr(e.callee, m)
     if e.args.len == 1 and e.args[0].kind == exkStruct:
-      let expectedParams = lookupFnParams(m, calleeStr)
+      # qualified callee into a real module: param order lives in THAT module
+      let expectedParams =
+        if e.callee != nil and e.callee.kind == exkQualified and
+           e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
+          lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
+        else:
+          lookupFnParams(m, calleeStr)
       if expectedParams.len > 0:
         for paramName in expectedParams:
           var found = false
@@ -281,6 +297,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         ctx.genExpr(e.receiver)
     else:
       ctx.genExpr(e.receiver) & "." & e.fieldName
+  of exkQualified:
+    genQualified(ctx, e)
   of exkCall:
     var args: seq[string]
     if e.args.len == 1 and e.args[0].kind == exkStruct:
@@ -434,7 +452,7 @@ proc genPendingStub(d: Decl): string =
   # Tuck call sites pass one whole payload struct; the Tuck checker already
   # verified its shape against the pending signature. The Nim stub is generic
   # so any payload representation is absorbed.
-  let fnNameSanitized = d.name.replace(".", "_")
+  let fnNameSanitized = d.name.replace(".", "_").replace("::", "_")
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
   let paramStr = if d.fnParams.len > 0: "[T](payload: T)" else: "()"
   return "proc " & fnNameSanitized & "*" & paramStr & ": " & retTypeStr &
@@ -834,6 +852,8 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(kind: " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
       
     return enumStr & typeStr & "\n" & globalVarStr & fwdDeclsStr & raiseProcsStr
+  of dkImport:
+    return ""  # emitNim adds the Nim import line
   of dkStaticAssert:
     return "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
   of dkErrors:
@@ -865,8 +885,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   else:
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
 
-proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt"): string =
-  var ctx = CodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m)
+proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
+              realModules = initTable[string, Module]()): string =
+  var ctx = CodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
+                       realModules: realModules)
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       ctx.errPolicy = d.policyName
@@ -875,7 +897,11 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt"): string =
     let code = ctx.genDecl(d)
     if code != "":
       body.add(code & "\n")
-  var res = "import " & rtImport & "\n\n"
+  var res = "import " & rtImport & "\n"
+  for d in m.decls:
+    if d != nil and d.kind == dkImport and d.name in realModules:
+      res.add("import " & d.name & "\n")
+  res.add("\n")
   for h in ctx.hoisted:
     res.add(h & "\n")
   if ctx.hoisted.len > 0:

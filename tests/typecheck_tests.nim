@@ -491,6 +491,88 @@ fn setPort({port: u8}) -> int:
 let x = {port: 80} setPort
 """
 
+expectOk "qualified pending call, matching payload", """
+pending:
+  fn http::get({url: str}) -> !{body: str} [io]
+
+fn go({url: str}) -> !{body: str} [io]:
+  return {url} http::get
+"""
+
+expectOk "qualified call site before its pending decl (order-free)", """
+fn go({url: str}) -> !{body: str} [io]:
+  return {url} http::get
+
+pending:
+  fn http::get({url: str}) -> !{body: str} [io]
+"""
+
+expectError "qualified call: wrong field type", """
+pending:
+  fn http::get({url: str}) -> !{body: str} [io]
+
+fn go() -> !{body: str} [io]:
+  return {url: 42} http::get
+""", "expects"
+
+expectError "known module, missing function", """
+pending:
+  fn http::get({url: str}) -> !{body: str} [io]
+
+fn go() -> void:
+  let x = {url: "a"} http::post
+""", "has no function"
+
+expectOk "unknown module prefix stays gradual", """
+fn go() -> void:
+  {volume: 3} audio::play
+"""
+
+# ---------- real imports: whole-program, order-independent ----------
+import os
+import ../compiler/ast
+import ../compiler/modules
+
+block:
+  let dir = getTempDir() / "tuck_import_test"
+  createDir(dir)
+  writeFile(dir / "http.tuck", """
+pending:
+  fn get({url: str}) -> !{body: str} [io]
+""")
+  writeFile(dir / "main.tuck", """
+import http
+
+fn go({url: str}) -> !{body: str} [io]:
+  return {url} http::get
+""")
+  try:
+    let prog = loadProgram(dir / "main.tuck")
+    var mods: seq[tuple[name, path: string, m: Module]]
+    for lm in prog: mods.add((lm.name, lm.path, lm.m))
+    discard typecheckProgram(mods)
+    echo "PASS (ok)     real import: qualified call checks against module sig"
+  except CatchableError as err:
+    echo "FAIL          real import — ", err.msg
+    failures.inc
+  # wrong payload field across the module boundary must be caught
+  writeFile(dir / "main.tuck", """
+import http
+
+fn go() -> !{body: str} [io]:
+  return {target: 1} http::get
+""")
+  try:
+    let prog = loadProgram(dir / "main.tuck")
+    var mods: seq[tuple[name, path: string, m: Module]]
+    for lm in prog: mods.add((lm.name, lm.path, lm.m))
+    discard typecheckProgram(mods)
+    echo "FAIL          real import bad payload — expected error, got none"
+    failures.inc
+  except SemanticError as err:
+    echo "PASS (error)  real import bad payload — ", err.msg
+  removeDir(dir)
+
 if failures > 0:
   echo failures, " test(s) failed"
   quit(1)

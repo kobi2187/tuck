@@ -1,0 +1,4 @@
+# http — a library module: imported by 14-task.tuck, never compiled alone.
+# Its one fn is pending: the walking skeleton runs, the TODO report nags.
+pending:
+  fn get({url: str}) -> !{body: str} [io]

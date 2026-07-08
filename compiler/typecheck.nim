@@ -45,6 +45,7 @@ type
     transitionCtx: bool          # constructing THROUGH transitionTo: sealed
                                  # non-initial variants are legal there
     distinctNames: HashSet[string]   # distinct types: nominal, never widened
+    knownModules: HashSet[string]    # imported modules + qualified-pending prefixes
 
 proc pushScope(tc: var TypeChecker) = tc.scopes.add(initTable[string, Binding]())
 proc popScope(tc: var TypeChecker) = discard tc.scopes.pop()
@@ -290,7 +291,18 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     Type(span: e.span, kind: tkApp,
          base: Type(span: e.span, kind: tkNamed, name: "Seq"), args: @[elemT])
   of exkCall:
-    let calleeName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name else: ""
+    var calleeName = ""
+    if e.callee != nil and e.callee.kind == exkVar:
+      calleeName = e.callee.name
+    elif e.callee != nil and e.callee.kind == exkQualified:
+      # module::fn — a KNOWN module (imported / pending-stubbed) is strict:
+      # the fn must exist. An unknown prefix stays gradual, like any
+      # undeclared identifier, so sketch code keeps compiling.
+      let modName = if e.callee.modulePath.len > 0: e.callee.modulePath[0] else: ""
+      calleeName = modName & "::" & e.callee.qualName
+      if modName in tc.knownModules and not tc.fnSigs.hasKey(calleeName):
+        fail("Type Error: module '" & modName & "' has no function '" &
+             e.callee.qualName & "'", e.span)
     if calleeName in ["bake", "alias"]:
       for a in e.args: discard tc.synthesize(a)
       return unknownType(e.span)
@@ -465,8 +477,13 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
   for d in decls:
     if d == nil: continue
     case d.kind
+    of dkImport:
+      tc.knownModules.incl(d.name)
     of dkFn:
       tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType)
+      if "::" in d.name:
+        # qualified sketch stub legalizes its module prefix
+        tc.knownModules.incl(d.name.split("::")[0])
       # Stale-pending check, order-independent: implemented + still pending = error
       if d.isPending:
         if d.name in tc.implementedFns:
@@ -721,12 +738,18 @@ proc pendingReport*(m: Module): seq[string] =
 # Returns the SHORTCUTS list (continue/exit policies): each statement-position
 # drop that will route to the global handler. Empty under strict — strict
 # raises instead, listing every unhandled site at once (spec 4.9).
-proc typecheckModule*(m: Module): seq[string] {.discardable.} =
+proc typecheckModule*(m: Module,
+                      externSigs = initTable[string, FnSig](),
+                      externPending = initTable[string, Span]()): seq[string] {.discardable.} =
   var tc = TypeChecker(module: m,
-                       fnSigs: initTable[string, FnSig](),
+                       fnSigs: externSigs,
+                       pendingFns: externPending,
                        typeDecls: initTable[string, Type](),
                        distinctNames: initHashSet[string](),
                        errPolicy: "strict")
+  for qualName in externSigs.keys:
+    if "::" in qualName:
+      tc.knownModules.incl(qualName.split("::")[0])
   tc.pushScope()  # module-level scope: top-level let/var visible across decls
   tc.collectSigs(m.decls)
   for d in m.decls:
@@ -737,3 +760,45 @@ proc typecheckModule*(m: Module): seq[string] {.discardable.} =
          tc.unhandledSites.join("\n  "), m.span)
   if tc.errPolicy in ["continue", "exit"]:
     return tc.unhandledSites
+
+# Whole-program checking, order-independent: pass 1 collects EVERY module's
+# signatures; pass 2 checks bodies against the full picture. `mods` is
+# dep-first with the entry module last (compiler/modules.nim order); the
+# entry module's SHORTCUTS list is returned.
+proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]]): seq[string] {.discardable.} =
+  var sigsByMod = initTable[string, Table[string, FnSig]]()
+  var pendByMod = initTable[string, Table[string, Span]]()
+  var importsByMod = initTable[string, seq[string]]()
+  for (name, path, m) in mods:
+    var tc = TypeChecker(module: m,
+                         fnSigs: initTable[string, FnSig](),
+                         typeDecls: initTable[string, Type](),
+                         distinctNames: initHashSet[string](),
+                         errPolicy: "strict")
+    try:
+      tc.collectSigs(m.decls)
+    except SemanticError as err:
+      err.msg = path & ":" & $err.line & ":" & $err.col & ": " & err.msg
+      raise
+    sigsByMod[name] = tc.fnSigs
+    pendByMod[name] = tc.pendingFns
+    var imps: seq[string]
+    for d in m.decls:
+      if d != nil and d.kind == dkImport: imps.add(d.name)
+    importsByMod[name] = imps
+  for (name, path, m) in mods:
+    # importer sees imported fns under qualified keys only (no leakage)
+    var extern = initTable[string, FnSig]()
+    var externPend = initTable[string, Span]()
+    for imp in importsByMod[name]:
+      for fname, sig in sigsByMod.getOrDefault(imp):
+        if "::" notin fname:
+          extern[imp & "::" & fname] = sig
+      for fname, sp in pendByMod.getOrDefault(imp):
+        if "::" notin fname:
+          externPend[imp & "::" & fname] = sp
+    try:
+      result = typecheckModule(m, extern, externPend)
+    except SemanticError as err:
+      err.msg = path & ":" & $err.line & ":" & $err.col & ": " & err.msg
+      raise

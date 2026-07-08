@@ -8,3 +8,4 @@ tests/typecheck_tests
 nimcache/
 .claude/
 tuck
+.tuck-cache/

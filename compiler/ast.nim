@@ -223,6 +223,7 @@ type
     dkRegister
     dkStaticAssert
     dkErrors  # global error policy declaration (spec 4.9)
+    dkImport  # import <module> — loads <module>.tuck next to the importer
 
   Decl* = ref object
     span*: Span
@@ -266,6 +267,8 @@ type
     of dkErrors:
       policyName*: string  # strict | continue | exit
       errHandler*: Decl    # the `on unhandled({code, site})` fn, nil if strict
+    of dkImport:
+      discard  # module name lives in Decl.name
 
   Module* = object
     path*: seq[string]

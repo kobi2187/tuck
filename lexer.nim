@@ -40,7 +40,7 @@ type
     tkObject, tkMixin, tkInterface, tkActor, tkTask,
     tkPending, tkOn, tkSelect, tkRegistry,
     tkDecision, tkPool, tkArena, tkRegister,
-    tkWhen, tkDistinct, tkBake,
+    tkWhen, tkDistinct, tkBake, tkImport,
     tkAnd, tkOr, tkNot, tkTrue, tkFalse, tkNone,
     tkStaticAssert,
 
@@ -72,7 +72,7 @@ const keywords = {
   "on": tkOn, "select": tkSelect,
   "registry": tkRegistry, "decision": tkDecision,
   "pending": tkPending, "when": tkWhen,
-  "distinct": tkDistinct, "bake": tkBake,
+  "distinct": tkDistinct, "bake": tkBake, "import": tkImport,
   "and": tkAnd, "or": tkOr, "not": tkNot,
   "true": tkTrue, "false": tkFalse, "none": tkNone,
   "static_assert": tkStaticAssert

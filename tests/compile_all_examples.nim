@@ -1,5 +1,5 @@
 # tests/compile_all_examples.nim
-import os, strutils, std/json
+import os, strutils, tables, std/json
 import ../lexer
 import ../compiler/ast
 import ../compiler/parser
@@ -9,6 +9,7 @@ import ../compiler/codegen_beef
 import ../compiler/ast_serializer
 import ../compiler/semantics
 import ../compiler/typecheck
+import ../compiler/modules
 
 import osproc
 
@@ -32,6 +33,7 @@ const nimCheckExpected = [
   "21-decision-bitmask",
   "22-error-policy",
   "23-units",
+  "14-task",
 ]
 
 proc nimCheckOutput(baseName: string): bool =
@@ -41,6 +43,13 @@ proc nimCheckOutput(baseName: string): bool =
   let modName = "m_" & baseName.replace("-", "_")
   var src = readFile(outDir / (baseName & ".nim"))
   src = src.replace("import ../compiler/tuck_rt", "import ../../../compiler/tuck_rt")
+  # imported Tuck modules sit as sibling .nim files; carry them along
+  for line in src.splitLines:
+    if line.startsWith("import ") and "/" notin line:
+      let dep = line[7 .. ^1].strip()
+      var depSrc = readFile(outDir / (dep & ".nim"))
+      depSrc = depSrc.replace("import ../compiler/tuck_rt", "import ../../../compiler/tuck_rt")
+      writeFile(checkDir / (dep & ".nim"), depSrc)
   writeFile(checkDir / (modName & ".nim"), src)
   let (_, rc) = execCmdEx("nim check --hints:off --warnings:off " &
                           quoteShell(checkDir / (modName & ".nim")))
@@ -49,32 +58,25 @@ proc nimCheckOutput(baseName: string): bool =
 proc compileExample(path: string) =
   let filename = extractFilename(path)
   let baseName = filename.changeFileExt("")
-  let source = readFile(path)
-  
-  # Step 1: Lexing
-  var lexer = Lexer(source: source, position: 0, line: 1, column: 1, indentStack: @[0])
-  var tokens: seq[Token]
-  while true:
-    let token = lexer.nextToken()
-    tokens.add(token)
-    if token.kind == tkEOF:
-      break
-      
-  # Step 2: Parsing
-  var parser = Parser(source: source, tokens: tokens, cursor: 0)
-  let m = parser.parseModule()
-  
+
+  # Steps 1-2: whole import closure (lex + parse, msgpack-cached imports)
+  let prog = loadProgram(path)
+  var mods: seq[tuple[name, path: string, m: Module]]
+  for lm in prog: mods.add((lm.name, lm.path, lm.m))
+
   # Step 2.3: Semantic verification
-  verifyModuleEffects(m)
+  for lm in prog:
+    verifyModuleEffects(lm.m)
 
   # Step 2.4: Type checking (before lowering — lowering rewrites call args)
-  let shortcuts = typecheckModule(m)
+  let shortcuts = typecheckProgram(mods)
   if shortcuts.len > 0:
     echo "  SHORTCUTS (", shortcuts.len, " routed to the global error handler) in ", filename, ":"
     for entry in shortcuts:
       echo "    ", entry
 
   # Step 2.5: Compile-time TODO report
+  let m = prog[^1].m
   let pend = pendingReport(m)
   if pend.len > 0:
     echo "  PENDING (", pend.len, " unimplemented) in ", filename, ":"
@@ -82,16 +84,22 @@ proc compileExample(path: string) =
       echo "    ", entry
 
   # Step 3: Lowering
-  lowerModule(m)
-  
+  for lm in prog:
+    lowerModule(lm.m)
+
   # Step 4: Serialize AST
   let astJson = toJson(m)
   writeFile(outDir / (baseName & ".json"), pretty(astJson))
-  
-  # Step 5: Code Generation
-  let nimCode = emitNim(m)
+
+  # Step 5: Code Generation — imported modules become sibling Nim files
+  var realModules = initTable[string, Module]()
+  for lm in prog[0 ..< prog.high]:
+    realModules[lm.name] = lm.m
+  for lm in prog[0 ..< prog.high]:
+    writeFile(outDir / (lm.name & ".nim"), emitNim(lm.m, realModules = realModules))
+  let nimCode = emitNim(m, realModules = realModules)
   writeFile(outDir / (baseName & ".nim"), nimCode)
-  
+
   let beefCode = emitBeef(m)
   writeFile(outDir / (baseName & ".bf"), beefCode)
 
