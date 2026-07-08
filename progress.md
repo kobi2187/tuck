@@ -194,6 +194,21 @@
 - 52 checker tests green, gate 11/22, runtime-verified: implicit return in
   plain + fallible fns, early exit intact.
 
+## 2026-07-06 — distinct types (user-directed design corrections)
+- distinct Milliseconds = u32: strictly nominal in checker (no widening, no
+  resolve-through); codegen emits Nim distinct + borrowed ops.
+- NO unit magic in the compiler (user correction — first attempt used a
+  [suffix: ms] attr, reverted): `ms` is an ordinary function
+  `fn ms(value: u32) -> Milliseconds: value Milliseconds`; `5.ms` is postfix
+  application; calling a distinct type's name converts from its base
+  (lowers to Nim's native conversion).
+- ARTICLE.md corrected: error names = declared enums (checker validation of
+  Error.x against a declared enum = backlog); actors have runtime lib +
+  lower toward it; timing qualified as small-example numbers. User ruling
+  on perf: no seq-based AST for now — suitable data structures over
+  micro-optimizations.
+- Example 23-units in gate (12 valid). 57 checker tests green.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).
@@ -201,3 +216,4 @@ Next candidates:
 3. Top-level statement semantics — implicit main? (blocks 11; note: example 11 still uses removed `or return` style, needs rewrite to 4.9 policy).
 4. Extend checker: match exhaustiveness, distinct/unit types, generics.
 5. Qualified pending names (http.get) so 14-task can stub module calls.
+6. Validate Error.x names against a declared error enum (domain module).
