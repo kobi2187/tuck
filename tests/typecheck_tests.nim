@@ -529,7 +529,7 @@ fn go() -> void:
 """
 
 # ---------- real imports: whole-program, order-independent ----------
-import os
+import os, tables
 import ../compiler/ast
 import ../compiler/modules
 
@@ -571,6 +571,48 @@ fn go() -> !{body: str} [io]:
     failures.inc
   except SemanticError as err:
     echo "PASS (error)  real import bad payload — ", err.msg
+
+  # signature index: a fresh entry resolves imports without loading the AST,
+  # and the checker still enforces payload shapes through it
+  writeFile(dir / "main.tuck", """
+import http
+
+fn go({url: str}) -> !{body: str} [io]:
+  return {url} http::get
+""")
+  try:
+    let prog = loadProgram(dir / "main.tuck")
+    updateIndex(dir, prog, moduleSigs)
+    let (full, sigOnly) = loadProgramIndexed(dir / "main.tuck")
+    doAssert sigOnly.hasKey("http"), "http should resolve from the index"
+    doAssert full.len == 1, "only main should load in full"
+    var mods: seq[tuple[name, path: string, m: Module]]
+    for lm in full: mods.add((lm.name, lm.path, lm.m))
+    var preSigs = initTable[string, seq[SigInfo]]()
+    for name, e in sigOnly: preSigs[name] = e.sigs
+    discard typecheckProgram(mods, preSigs)
+    echo "PASS (ok)     sig index: import resolved without AST load"
+  except CatchableError as err:
+    echo "FAIL          sig index — ", err.msg
+    failures.inc
+  # ...and a bad payload is still caught against the indexed signatures
+  writeFile(dir / "main.tuck", """
+import http
+
+fn go() -> !{body: str} [io]:
+  return {target: 1} http::get
+""")
+  try:
+    let (full, sigOnly) = loadProgramIndexed(dir / "main.tuck")
+    var mods: seq[tuple[name, path: string, m: Module]]
+    for lm in full: mods.add((lm.name, lm.path, lm.m))
+    var preSigs = initTable[string, seq[SigInfo]]()
+    for name, e in sigOnly: preSigs[name] = e.sigs
+    discard typecheckProgram(mods, preSigs)
+    echo "FAIL          sig index bad payload — expected error, got none"
+    failures.inc
+  except SemanticError as err:
+    echo "PASS (error)  sig index bad payload — ", err.msg
   removeDir(dir)
 
 if failures > 0:

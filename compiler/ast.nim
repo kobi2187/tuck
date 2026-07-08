@@ -211,6 +211,15 @@ type
   LitKind* = enum
     lkInt, lkFloat, lkStr, lkBool, lkUnit
 
+  # A function signature as stored in the .tuck-cache signature index:
+  # enough to typecheck an importer without deserializing the module's AST.
+  SigInfo* = object
+    name*: string
+    params*: seq[Param]
+    ret*: Type
+    isPending*: bool
+    line*: int
+
   DeclKind* = enum
     dkType
     dkObject

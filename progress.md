@@ -232,6 +232,21 @@
   cli smoke, end_to_end all green. Runtime-verified: binary runs, TUCK
   PENDING for get/parse, exit 0.
 
+## 2026-07-08 — signature index: check without touching import ASTs
+- Per-dir .tuck-cache/index.bin (msgpack): module name → srcHash, cachedAt,
+  deps (+hashes at index time), sigs (SigInfo: params/ret/isPending/line).
+- `tuck check`: import with a FRESH entry resolves from the index — no
+  reparse, no AST deserialization, no body re-check. Entries written only
+  after a whole-program check passes, so trusting them is sound. Freshness =
+  build stamp + own source hash + recursive dep-hash chain (a changed dep
+  invalidates its importers).
+- `tuck compile` keeps full ASTs (must emit) but refreshes the index too.
+- PENDING report still lists pendings of sig-only modules (from SigInfo).
+- typecheckProgram gained preSigs param; moduleSigs()/sigLine() exported.
+- Verified: warm check leaves http.bin absent (module truly never loaded);
+  source edit → full reload; bad payload caught against index sigs alone.
+  64 checker tests, gate 13, cli smoke, end_to_end green.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

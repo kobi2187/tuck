@@ -735,6 +735,16 @@ proc collectPending(decls: seq[Decl], acc: var seq[string]) =
 proc pendingReport*(m: Module): seq[string] =
   collectPending(m.decls, result)
 
+# Same line format as pendingReport, from an index SigInfo (no AST needed).
+proc sigLine*(si: SigInfo): string =
+  var parts: seq[string]
+  for p in si.params:
+    parts.add(p.name & ": " & typeName(p.typ))
+  result = si.name & "({" & parts.join(", ") & "})"
+  if si.ret != nil:
+    result.add(" -> " & typeName(si.ret))
+  result.add("   line " & $si.line)
+
 # Returns the SHORTCUTS list (continue/exit policies): each statement-position
 # drop that will route to the global handler. Empty under strict — strict
 # raises instead, listing every unhandled site at once (spec 4.9).
@@ -761,11 +771,28 @@ proc typecheckModule*(m: Module,
   if tc.errPolicy in ["continue", "exit"]:
     return tc.unhandledSites
 
+# Signature export for the .tuck-cache index: same collection walk the
+# checker uses (nested fns in objects/mixins/actors included).
+proc moduleSigs*(m: Module): seq[SigInfo] =
+  var tc = TypeChecker(module: m,
+                       fnSigs: initTable[string, FnSig](),
+                       typeDecls: initTable[string, Type](),
+                       distinctNames: initHashSet[string](),
+                       errPolicy: "strict")
+  tc.collectSigs(m.decls)
+  for name, sig in tc.fnSigs:
+    result.add(SigInfo(name: name, params: sig.params, ret: sig.ret,
+                       isPending: tc.pendingFns.hasKey(name),
+                       line: tc.pendingFns.getOrDefault(name).line))
+
 # Whole-program checking, order-independent: pass 1 collects EVERY module's
 # signatures; pass 2 checks bodies against the full picture. `mods` is
 # dep-first with the entry module last (compiler/modules.nim order); the
 # entry module's SHORTCUTS list is returned.
-proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]]): seq[string] {.discardable.} =
+# `preSigs`: modules resolved from the signature index — typechecked in an
+# earlier run and unchanged since, so only their signatures participate.
+proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
+                       preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
   var sigsByMod = initTable[string, Table[string, FnSig]]()
   var pendByMod = initTable[string, Table[string, Span]]()
   var importsByMod = initTable[string, seq[string]]()
@@ -791,12 +818,19 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]]): seq[str
     var extern = initTable[string, FnSig]()
     var externPend = initTable[string, Span]()
     for imp in importsByMod[name]:
-      for fname, sig in sigsByMod.getOrDefault(imp):
-        if "::" notin fname:
-          extern[imp & "::" & fname] = sig
-      for fname, sp in pendByMod.getOrDefault(imp):
-        if "::" notin fname:
-          externPend[imp & "::" & fname] = sp
+      if sigsByMod.hasKey(imp):
+        for fname, sig in sigsByMod[imp]:
+          if "::" notin fname:
+            extern[imp & "::" & fname] = sig
+        for fname, sp in pendByMod.getOrDefault(imp):
+          if "::" notin fname:
+            externPend[imp & "::" & fname] = sp
+      else:
+        for si in preSigs.getOrDefault(imp):
+          if "::" notin si.name:
+            extern[imp & "::" & si.name] = (si.params, si.ret)
+            if si.isPending:
+              externPend[imp & "::" & si.name] = Span(line: si.line, col: 1)
     try:
       result = typecheckModule(m, extern, externPend)
     except SemanticError as err:

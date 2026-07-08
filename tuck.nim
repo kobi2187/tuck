@@ -53,29 +53,43 @@ proc parseSource(source: string): Module =
   p.parseModule()
 
 # check stage over the whole import closure; returns the loaded program
-# (dep-first, entry module last) so compile can continue with it
-proc checkProgram(path: string): seq[LoadedModule] =
+# (dep-first, entry module last) so compile can continue with it.
+# needBodies=false (check): unchanged imports resolve from the signature
+# index — no AST load at all. needBodies=true (compile): full ASTs.
+proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
+  var sigOnly = initTable[string, IndexEntry]()
   try:
-    result = loadProgram(path)
+    if needBodies:
+      result = loadProgram(path)
+    else:
+      (result, sigOnly) = loadProgramIndexed(path)
   except ModuleError as err:
     die(path & ": " & err.msg)
   var mods: seq[tuple[name, path: string, m: Module]]
   for lm in result: mods.add((lm.name, lm.path, lm.m))
+  var preSigs = initTable[string, seq[SigInfo]]()
+  for name, e in sigOnly: preSigs[name] = e.sigs
   var shortcuts: seq[string]
   try:
     for lm in result:
       verifyModuleEffects(lm.m)
-    shortcuts = typecheckProgram(mods)
+    shortcuts = typecheckProgram(mods, preSigs)
   except SemanticError as err:
     # typecheckProgram errors already carry file:line:col; effects errors don't
     if ".tuck:" in err.msg: die(err.msg)
     else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
+  # program checked clean: refresh the signature index for future checks
+  updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
   var pend: seq[string]
   for lm in result:
     for entry in pendingReport(lm.m):
       # qualify pendings living in imported modules
       if lm.path != result[^1].path: pend.add(lm.name & "::" & entry)
       else: pend.add(entry)
+  for name, e in sigOnly:
+    for si in e.sigs:
+      if si.isPending:
+        pend.add(name & "::" & sigLine(si))
   if pend.len > 0:
     echo "PENDING (", pend.len, " unimplemented):"
     for entry in pend:
@@ -109,7 +123,7 @@ when isMainModule:
     discard checkProgram(path)
     echo "OK (", elapsedMs(t0), ")"
   of "compile", "c":
-    let prog = checkProgram(path)
+    let prog = checkProgram(path, needBodies = true)
     var outDir = parentDir(path)
     for o in opts:
       if o.startsWith("-o:"): outDir = o[3 .. ^1]
