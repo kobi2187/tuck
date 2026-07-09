@@ -1,0 +1,61 @@
+# Tuck Roadmap (as of 2026-07-09)
+
+Status legend: DONE = parse+check+codegen+tested. Gate = generated Nim passes
+`nim check` (13/24 examples).
+
+## Done
+Postfix calls, subset matching, let/var + `..`, sum types, sealed transition
+tables (runtime matrix + reachability), decision tables (exact enum analysis,
+packed-key codegen), distinct types/units, `!T ?T !?T` + `?` + global error
+policy §4.9, effect enforcement, pending blocks + stubs + TODO report,
+imports + `::` + msgpack AST cache + signature index, registry §10, register
+decl §8.1, sizeof/alignof/offsetof §8.2, static_assert, invariant → validate()
+proc, tuck CLI (lex/parse/check/compile).
+
+## User rulings (2026-07-09)
+- §6.3 complexity limit: ENFORCE as hard compile error (cyclomatic ≤ 5,
+  ~10–15 executable lines/fn).
+- `Foo {}`: legal only when the type has no fields (empty state is a valid
+  type). Types with fields require every field at construction; absence must
+  be explicit `?T`. Add to spec §4.8.
+- Actors/tasks: API stays actors + tasks; runtime strategy OPEN — evaluate
+  nim-cps vs hand-rolled stackless state machines before building §9.2/9.4.
+- Effects §3.7: implicit upward propagation (caller of [io] is [io]
+  automatically); only boundaries need annotation. Change checker from
+  require-declared to infer-and-propagate.
+
+## Partial
+| Feature | Spec | Missing piece |
+|---|---|---|
+| Invariants | 4.7 | auto-insert validate() at construction/mutation/return/deserialization |
+| Actors | 9.1 | coroutine/state-machine runtime, static ring queues, scheduler (design open) |
+| Tasks | 9.2 | state-machine transform at [io] yield points |
+| bake | 3.5 | real specialization; ex 03 emits invalid Nim |
+| alias / type-directed lowering | 2.5 | record expansion at call sites; blocks ex 18, 04, 12 |
+| pool / arena | 7.2/7.3 | acquire/release bitmask, reset, scope analysis, size verification |
+| Interfaces | 5.2/5.3 | satisfies checking, fat-pointer dispatch |
+| Type composition `+` | 4.5 | conflict detection unverified |
+| match | — | exhaustiveness checking |
+| Effects | 3.7 | switch to implicit propagation (ruling above) |
+| Beef backend | — | emits, never validated |
+
+## Missing
+- `on select` §9.3 (blocks ex 16) + scheduler §9.4
+- `when TARGET` conditionals §8.3 (blocks ex 11, 20)
+- `pred` / `set` fn prefixes §3.6
+- Stack-depth budgets `[stack: N]` §6.2
+- Complexity limit §6.3 (ruling: hard error)
+- Generics substitution
+- Error.x validated against a declared error enum
+- Top-level statements / implicit main (ex 11)
+- Visibility (pub/private), imported types via `::`, nested module paths
+
+## Broken-example map
+03 → bake; 18 → alias lowering; 11 → when + implicit main; 16 → on select;
+20 → when + embedded attrs depth; 02/04/09/12/17 → only need sketch
+decls/pending blocks (example edits, no compiler work).
+
+## Spec debt
+§11 describes npeg parser + flat IR + Merkle cache; reality is recursive
+descent + ref-AST + hash-keyed msgpack cache + signature index. Rewrite §11
+to match implementation (as was done for §4.8).
