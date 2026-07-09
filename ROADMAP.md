@@ -24,6 +24,24 @@ proc, tuck CLI (lex/parse/check/compile).
   automatically); only boundaries need annotation. Change checker from
   require-declared to infer-and-propagate.
 
+## User rulings (2026-07-09, session 2) — error model + OS layer
+- `extern:` blocks (DONE): sigs implemented by tuck_rt; `extern [c, header:
+  "uart.h"]:` emits Nim importc — the C/bare-metal seam. Tuck→Nim→C→gcc
+  covers embedded; `tuck build` will forward nim flags (--os:standalone etc).
+- Stdlib v1 scope: fs, io, sys (os/env), time — extern sigs over Nim stdlib.
+- Errors are declared enums (fieldless sums), named in the signature via
+  `[error: FsError]` attr (effects bracket). Effects ≠ errors: [io] still
+  propagates upward independently.
+- The enum never flows bare — always inside the result struct
+  {ok, err, value}. Raise site: `return err FsError.NotFound`, shorthand
+  `err NotFound` resolved against the sig's declared error type.
+- `expr?` propagation operator DROPPED. Handling = local if/ifErr/.ok
+  access, or return the whole result up. Policy 4.9 unhandled list tracks
+  the rest. (Parked idea, not firm: call-site `get!` as io marker.)
+- Tri-state result STAYS: `int?!` = fallible + optional in one value.
+- Type wrapper position: both accepted — `int?` == `?int`, canonical
+  postfix; combos `T?!`/`T!?` equivalent.
+
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|

@@ -111,6 +111,15 @@ proc lookupFnParams(m: Module, name: string): seq[string] =
       for p in d.fnParams:
         res.add(p.name)
       return res
+    # extern fns live in a mixin block but have concrete exploded params.
+    # Pending fns stay excluded: their stub takes one generic payload.
+    if d.kind == dkMixin:
+      for mem in d.mixinMembers:
+        if mem.kind == dkFn and mem.isExtern and mem.name == name:
+          var res: seq[string]
+          for p in mem.fnParams:
+            res.add(p.name)
+          return res
   return @[]
 
 # module::fn — a real imported module rides Nim's own namespacing; a
@@ -875,12 +884,21 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return res
   of dkMixin:
     # Pending blocks parse as a mixin named "pending"; emit stubs for its members.
+    # Extern blocks: rt-implemented fns emit NOTHING (tuck_rt provides them);
+    # C-imported fns emit importc bindings with concrete param types.
     var res = ""
     for m in d.mixinMembers:
       if m.kind == dkFn and m.isPending:
         res.add(genPendingStub(m) & "\n")
+      elif m.kind == dkFn and m.isExtern and m.externHeader != "":
+        var params: seq[string]
+        for prm in m.fnParams:
+          params.add(prm.name & ": " & genType(prm.typ))
+        let retStr = if m.fnReturnType != nil: genType(m.fnReturnType) else: "void"
+        res.add("proc " & m.name & "*(" & params.join(", ") & "): " & retStr &
+                " {.importc: \"" & m.name & "\", header: \"" & m.externHeader & "\".}\n")
     if res == "":
-      return "# [codegen] ignored decl kind " & $d.kind & "\n"
+      return ""
     return res
   else:
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
@@ -898,6 +916,17 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
     if code != "":
       body.add(code & "\n")
   var res = "import " & rtImport & "\n"
+  # rt-implemented extern fns: importers reach them as <module>.<fn>, so the
+  # module re-exports the runtime that actually defines them
+  for d in m.decls:
+    if d != nil and d.kind == dkMixin and d.name == "extern":
+      var hasRtExtern = false
+      for mem in d.mixinMembers:
+        if mem.kind == dkFn and mem.isExtern and mem.externHeader == "":
+          hasRtExtern = true
+      if hasRtExtern:
+        res.add("export tuck_rt\n")
+        break
   for d in m.decls:
     if d != nil and d.kind == dkImport and d.name in realModules:
       res.add("import " & d.name & "\n")

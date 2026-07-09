@@ -785,9 +785,107 @@ proc parseDecisionBody(p: var Parser): Expr =
   discard p.expect(tkDedent)
   return Expr(span: sp, kind: exkBlock, stmts: stmts)
 
+# Body-less signature block: `: NEWLINE INDENT (fn name(params) -> ret [fx])* DEDENT`
+# Shared by pending: (typed holes) and extern: (runtime / C implemented).
+proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
+  discard p.expect(tkColon)
+  discard p.expect(tkNewline)
+  while p.current().kind == tkNewline:
+    discard p.advance()
+  discard p.expect(tkIndent)
+  while p.current().kind != tkDedent and p.current().kind != tkEOF:
+    if p.current().kind == tkNewline:
+      discard p.advance()
+      continue
+    let spDecl = p.getSpan()
+    discard p.expect(tkFn)
+    var name = p.expect(tkIdent, "Expected function name in " & what & " declaration").value
+    if p.current().kind == tkColonColon:
+      # module-qualified sketch stub: fn http::get(...)
+      discard p.advance()
+      name = name & "::" & p.expect(tkIdent, "Expected identifier after '::'").value
+    discard p.expect(tkLParen)
+    var params: seq[Param]
+    if p.current().kind != tkRParen:
+      while true:
+        let pSp = p.getSpan()
+        if p.current().kind == tkLBrace:
+          discard p.advance()
+          while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+            let paramName = p.expect(tkIdent, "Expected parameter name").value
+            discard p.expect(tkColon)
+            let paramType = p.parseType()
+            params.add(Param(name: paramName, typ: paramType, span: pSp))
+            if p.current().kind == tkComma:
+              discard p.advance()
+          discard p.expect(tkRBrace)
+        else:
+          let paramName = p.expect(tkIdent, "Expected parameter name").value
+          var paramType: Type = nil
+          if paramName == "self" and p.current().kind != tkColon:
+            paramType = Type(span: pSp, kind: tkNamed, name: "Self")
+          else:
+            discard p.expect(tkColon)
+            paramType = p.parseType()
+          params.add(Param(name: paramName, typ: paramType, span: pSp))
+        if p.current().kind == tkComma:
+          discard p.advance()
+        else:
+          break
+    discard p.expect(tkRParen)
+    var retType: Type
+    if p.current().kind == tkArrow:
+      discard p.advance()
+      retType = p.parseType()
+    var sigEffects: seq[EffectMarker]
+    if p.current().kind == tkLBracket:
+      discard p.advance()
+      while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+        let effName = p.expect(tkIdent, "Expected effect marker").value
+        case effName
+        of "io": sigEffects.add(emIo)
+        of "no_alloc": sigEffects.add(emNoAlloc)
+        of "irq_safe": sigEffects.add(emIrqSafe)
+        of "unsafe": sigEffects.add(emUnsafe)
+        of "may_block": sigEffects.add(emMayBlock)
+        of "stack": sigEffects.add(emStack)
+        of "priority": sigEffects.add(emPriority)
+        else: discard
+        if p.current().kind == tkComma:
+          discard p.advance()
+      discard p.expect(tkRBracket)
+    result.add(Decl(span: spDecl, kind: dkFn, name: name, fnParams: params,
+                    fnReturnType: retType, fnEffects: sigEffects, fnBody: nil))
+    if p.current().kind == tkNewline:
+      discard p.advance()
+  discard p.expect(tkDedent)
+
 proc parseDecl*(p: var Parser): Decl =
   let sp = p.getSpan()
   let curr = p.current()
+
+  # extern: / extern [c, header: "uart.h"]: — signatures implemented by the
+  # runtime (tuck_rt) or imported from C. No bodies, no stubs.
+  if curr.kind == tkIdent and curr.value == "extern" and
+     p.peek().kind in {tkColon, tkLBracket}:
+    discard p.advance() # extern
+    var header = ""
+    if p.current().kind == tkLBracket:
+      discard p.advance()
+      while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+        let key = p.expect(tkIdent, "Expected 'c' or 'header' in extern attributes").value
+        if key == "header":
+          discard p.expect(tkColon)
+          header = p.expect(tkStrLit, "Expected header path string").value
+        # "c" is the target marker; nothing to store
+        if p.current().kind == tkComma:
+          discard p.advance()
+      discard p.expect(tkRBracket)
+    let decls = p.parseSigBlock("extern")
+    for d in decls:
+      d.isExtern = true
+      d.externHeader = header
+    return Decl(span: sp, kind: dkMixin, name: "extern", mixinMembers: decls)
 
   # Global error policy (spec 4.9): errors [policy: strict|continue|exit]:
   if curr.kind == tkIdent and curr.value == "errors" and p.peek().kind == tkLBracket:
@@ -1044,77 +1142,8 @@ proc parseDecl*(p: var Parser): Decl =
 
   of tkPending:
     discard p.advance()
-    discard p.expect(tkColon)
-    discard p.expect(tkNewline)
-    while p.current().kind == tkNewline:
-      discard p.advance()
-    discard p.expect(tkIndent)
-    var decls: seq[Decl]
-    while p.current().kind != tkDedent and p.current().kind != tkEOF:
-      if p.current().kind == tkNewline:
-        discard p.advance()
-        continue
-      let spDecl = p.getSpan()
-      discard p.expect(tkFn)
-      var name = p.expect(tkIdent, "Expected function name in pending declaration").value
-      if p.current().kind == tkColonColon:
-        # module-qualified sketch stub: fn http::get(...)
-        discard p.advance()
-        name = name & "::" & p.expect(tkIdent, "Expected identifier after '::'").value
-      discard p.expect(tkLParen)
-      var params: seq[Param]
-      if p.current().kind != tkRParen:
-        while true:
-          let pSp = p.getSpan()
-          if p.current().kind == tkLBrace:
-            discard p.advance()
-            while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-              let paramName = p.expect(tkIdent, "Expected parameter name").value
-              discard p.expect(tkColon)
-              let paramType = p.parseType()
-              params.add(Param(name: paramName, typ: paramType, span: pSp))
-              if p.current().kind == tkComma:
-                discard p.advance()
-            discard p.expect(tkRBrace)
-          else:
-            let paramName = p.expect(tkIdent, "Expected parameter name").value
-            var paramType: Type = nil
-            if paramName == "self" and p.current().kind != tkColon:
-              paramType = Type(span: pSp, kind: tkNamed, name: "Self")
-            else:
-              discard p.expect(tkColon)
-              paramType = p.parseType()
-            params.add(Param(name: paramName, typ: paramType, span: pSp))
-          if p.current().kind == tkComma:
-            discard p.advance()
-          else:
-            break
-      discard p.expect(tkRParen)
-      var retType: Type
-      if p.current().kind == tkArrow:
-        discard p.advance()
-        retType = p.parseType()
-      var pendEffects: seq[EffectMarker]
-      if p.current().kind == tkLBracket:
-        discard p.advance()
-        while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-          let effName = p.expect(tkIdent, "Expected effect marker").value
-          case effName
-          of "io": pendEffects.add(emIo)
-          of "no_alloc": pendEffects.add(emNoAlloc)
-          of "irq_safe": pendEffects.add(emIrqSafe)
-          of "unsafe": pendEffects.add(emUnsafe)
-          of "may_block": pendEffects.add(emMayBlock)
-          of "stack": pendEffects.add(emStack)
-          of "priority": pendEffects.add(emPriority)
-          else: discard
-          if p.current().kind == tkComma:
-            discard p.advance()
-        discard p.expect(tkRBracket)
-      decls.add(Decl(span: spDecl, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: pendEffects, fnBody: nil, isPending: true))
-      if p.current().kind == tkNewline:
-        discard p.advance()
-    discard p.expect(tkDedent)
+    let decls = p.parseSigBlock("pending")
+    for d in decls: d.isPending = true
     return Decl(span: sp, kind: dkMixin, name: "pending", mixinMembers: decls)
 
   of tkType:

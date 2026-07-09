@@ -255,6 +255,9 @@ type
       fnBody*: Expr
       isPending*: bool  # declared in a `pending:` block; body is nil
       isDecision*: bool # parsed from a `decision` table; body is match rows
+      isExtern*: bool   # declared in an `extern:` block; implemented by the
+                        # runtime (tuck_rt) or, with a header, imported from C
+      externHeader*: string # extern [c, header: "uart.h"] — empty = rt-implemented
     of dkMixin:
       mixinMembers*: seq[Decl]
     of dkActor:
