@@ -30,8 +30,8 @@ any of these things:
 | Concern | Answer |
 |---|---|
 | State | Sum types with sealed transitions |
-| Errors | `!T` propagation with `or` |
-| Absence | `?T` with `or` |
+| Errors | `!T` results carrying declared error enums, unwrapped under `if r.ok` |
+| Absence | `?T` option values — no nil, ever |
 | Side effects | Effect markers `[io, no_alloc, ...]` |
 | Shared mutable state | Actors with typed message queues |
 | Short async operations | Tasks — `[io]` functions yield implicitly |
@@ -357,24 +357,59 @@ The invariant fires automatically everywhere. The developer writes it once.
 
 - `!T` — the operation might fail
 - `?T` — the value might be absent
-- `!?T` — both
+- `!?T` (or `?!T`) — both
+
+Wrappers may also be written postfix: `int?`, `{feed: Feed}!`, `u16?!` —
+identical meaning, canonical form is postfix.
+
+**Errors are declared enums.** An error definition is an ordinary fieldless
+sum type. A fallible signature names the enums it can raise in the effect
+bracket — a list, since one function can fail in several domains:
 
 ```tuck
-fn loadFeed({path: str}) -> !{feed: Feed} [io]:
-  let data = readFile {path}?     # propagate failure upward
-  data parse
+type FsError:
+  | NotFound
+  | AccessDenied
+
+fn loadFeed({path: str}) -> !{feed: Feed} [io, error: FsError | NetError]:
+  if {path} missing:
+    return err FsError.NotFound   # qualified
+  ...
+  err AccessDenied                # shorthand: resolved against the declared
+                                  # list; ambiguous across enums = error
 ```
 
-`?` propagates the error upward; it is only legal inside a function that
-itself returns `!T`. A `!T`/`?T` value otherwise flows **whole**, as a struct
-carrying `{ok, err, value}` — the next function in the chain decides what to
-do with it (handling functions live in the standard prelude). `or` is strictly
-boolean; it does not unwrap results.
+`err X` builds the error result and returns it — an early exit, like
+`return`. The enum value never flows bare: it rides inside the result struct
+`{ok, err, value}`. Re-raising an existing code is `err r.err`. The compiler
+validates every raise site against the declared `[error: ...]` list.
+
+**Handling is unwrapping, and it is scoped.** A result flows **whole** until
+it is inspected. `.ok` and `.err` are readable anywhere; `.value` is legal
+only inside that result's `if r.ok:` guard — the narrowing holds within the
+guarded block and nowhere else. Outside it the value is still the wrapped
+type, and returning it where a bare `T` is expected is a compile error:
+
+```tuck
+fn use({path: str}) -> int [io]:
+  let r = {path} loadFeed
+  if r.ok:
+    return r.value.feed.episodes   # legal: under the guard
+  0                                # error path: no fabricated values
+```
+
+There is no propagation operator. Passing the burden upward is simply
+returning the whole result — the caller's signature then carries `!T` too,
+and the caller unwraps or passes it on. `or` is strictly boolean; it does
+not unwrap results. Handling combinators (`ifErr`, defaults) live in the
+standard prelude, not in the language.
 
 Fallible functions must be marked `[io]`: errors exist only at I/O and
 unknown-input boundaries. The pure core of a Tuck program is total — it
 cannot fail. Correctness there comes from decision tables, invariants, and
-exhaustive matching, not error returns.
+exhaustive matching, not error returns. Effect markers and error lists are
+different systems: `[io]` propagates up the call chain; errors stop at the
+first handler.
 
 ### 4.9 Global Error Policy
 
@@ -391,9 +426,10 @@ errors [policy: continue]:
     log.warn "unhandled error {code} at {site}"
 ```
 
-- `strict` — every error is handled directly at its site (bound, propagated
-  with `?`, or passed to a handling function) or it is a **compile error**.
-  The compiler lists **all** unhandled sites, not just the first.
+- `strict` — every error is handled directly at its site (unwrapped under an
+  `if r.ok` guard, passed to a handling function, or returned whole to the
+  caller) or it is a **compile error**. The compiler lists **all** unhandled
+  sites, not just the first.
 - `continue` — an unhandled error is passed to the global `unhandled`
   handler, then execution continues past that statement. Only legal where
   the error was in statement position — no value is ever fabricated; a site
@@ -916,7 +952,7 @@ primary   <- literal | structLit | "(" * expr * ")" | loIdent | upIdent
 postfixOp <- (".." * loIdent * ?structLit)   # mutation
            | ("."  * loIdent)                    # field access
            | ("[" * expr * "]")              # index
-           | "?"                                # error propagate
+           | ("?" | "!" | "?!")                 # postfix type wrappers (type position)
            | ("::" * loIdent)                   # function ref
 postfix   <- primary * *postfixOp
 app       <- postfix +                        # implicit whitespace invocation
