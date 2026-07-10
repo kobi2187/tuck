@@ -55,7 +55,7 @@ type
   TuckResult*[T] = object
     status*: TuckStatus
     err*: uint16   # app-wide error code; meaningful only when status == tsErr
-    val*: T
+    value*: T
 
 proc errCode*(name: static string): uint16 =
   # compile-time FNV-1a, folded to 16 bits; stable across builds, no tables
@@ -67,7 +67,7 @@ proc errCode*(name: static string): uint16 =
 proc ok*[T](r: TuckResult[T]): bool {.inline.} = r.status == tsOk
 
 proc tok*[T](v: T): TuckResult[T] {.inline.} =
-  TuckResult[T](status: tsOk, val: v)
+  TuckResult[T](status: tsOk, value: v)
 
 proc tokVoid*(): TuckResult[tuple[]] {.inline.} =
   TuckResult[tuple[]](status: tsOk)

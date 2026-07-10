@@ -247,6 +247,30 @@
   source edit → full reload; bad payload caught against index sigs alone.
   64 checker tests, gate 13, cli smoke, end_to_end green.
 
+## 2026-07-10 — error model v2 (user rulings) + extern blocks
+- `extern:` blocks: sigs implemented by tuck_rt (no stub, module re-exports
+  rt); `extern [c, header: "uart.h"]:` emits Nim importc — C/bare-metal seam.
+- Declared error enums: `[error: FsError | NetError]` (LIST) in the effect
+  bracket; enums are ordinary fieldless sums. Codes = errCode("Enum.Variant")
+  FNV hash (ords would collide across enums). Effects ≠ errors — [io]
+  propagation untouched.
+- Raise: `return err FsError.NotFound` / bare `err AccessDenied` statement
+  (early error return); shorthand resolved+validated against the declared
+  list (ambiguity across enums = error, qualify). Dynamic re-raise
+  `err r.err`. Checker rewrites shorthand to qualified for codegen.
+- `expr?` propagation operator REMOVED (user ruling). Handling = result
+  introspection: `.ok`/`.err` anywhere; `.value` ONLY inside that result's
+  `if r.ok:` guard (scope-limited narrowing — outside the guard it's still
+  wrapped; returning it where bare T expected still fails).
+- Type wrappers now postfix too: `T?`, `T!`, `T?!` (== prefix ?/!/!?);
+  lexer lexes `?!` as the !? wrapper.
+- rt: TuckResult.val renamed .value (matches the language).
+- 14-task rewritten to if-guard + err re-raise. 69 checker tests, gate 13,
+  cli smoke, end_to_end green; runtime-verified both raise paths + ok path.
+- Known gaps (backlog): SigInfo doesn't carry error lists yet (cross-module
+  raise validation); `.err` typed Unknown (enum-typed comparisons later);
+  narrowing only via `if x.ok` then-branch (no `not x.ok` continuation).
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

@@ -104,6 +104,16 @@ proc fieldType(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
       return enumName
   return genType(f.typ)
 
+# err Enum.Variant — a reference to a declared error enum's variant?
+proc isErrEnumRef(m: Module, e: Expr): bool =
+  if e == nil or e.kind != exkField or e.receiver == nil or
+     e.receiver.kind != exkVar: return false
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.name == e.receiver.name and
+       d.typeBody != nil and d.typeBody.kind == tkSum:
+      return true
+  false
+
 proc lookupFnParams(m: Module, name: string): seq[string] =
   for d in m.decls:
     if d.kind == dkFn and d.name == name:
@@ -248,9 +258,16 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     return targetStr & " = " & valStr
   of exkReturn:
     if e.returnVal == nil: "return"
+    elif e.returnVal.kind == exkRaise: ctx.genExpr(e.returnVal, m)
     else: "return " & ctx.genExpr(e.returnVal, m)
   of exkRaise:
-    "raise " & ctx.genExpr(e.raiseVal, m)
+    # err X — early-return an error result
+    let rv = e.raiseVal
+    if isErrEnumRef(m, rv):
+      "return terr[" & ctx.retInnerNim & "](errCode(\"" &
+        rv.receiver.name & "." & rv.fieldName & "\"))"
+    else:
+      "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv, m) & "))"
   of exkChain:
     var res = ctx.genExpr(e.base, m)
     for step in e.steps:
@@ -344,12 +361,6 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
                 of boXor: "xor"
     return "(" & ctx.genExpr(e.left) & " " & opStr & " " & ctx.genExpr(e.right) & ")"
   of exkUnary:
-    if e.unaryOp == uoPropagate:
-      ctx.tmpCounter.inc
-      let tn = "tuckTmp" & $ctx.tmpCounter
-      return "(let " & tn & " = " & ctx.genExpr(e.operand) &
-             "; (if " & tn & ".ok: " & tn & ".val else: return tfwd[" &
-             ctx.retInnerNim & "](" & tn & ".status, " & tn & ".err)))"
     let opStr = case e.unaryOp
                 of uoNeg: "-"
                 of uoNot: "not "
@@ -417,7 +428,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       else: "return"
     elif ctx.retWrapped:
       let v = e.returnVal
-      if v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
+      if v.kind == exkRaise:
+        ctx.genExpr(v)  # err X already emits the full error return
+      elif v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
          v.receiver.name == "Error":
         # Error.name → app-wide 16-bit code, hashed at Nim compile time
         "return terr[" & ctx.retInnerNim & "](errCode(\"" & v.fieldName & "\"))"
@@ -441,7 +454,13 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         "return tok(" & ctx.genExpr(v) & ")"
     else: "return " & ctx.genExpr(e.returnVal)
   of exkRaise:
-    "raise " & ctx.genExpr(e.raiseVal)
+    # err X — early-return an error result
+    let rv = e.raiseVal
+    if isErrEnumRef(ctx.module, rv):
+      "return terr[" & ctx.retInnerNim & "](errCode(\"" &
+        rv.receiver.name & "." & rv.fieldName & "\"))"
+    else:
+      "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
   of exkChain:
     var res = ctx.genExpr(e.base)
     for step in e.steps:

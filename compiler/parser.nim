@@ -238,6 +238,7 @@ proc parsePrimaryType(p: var Parser): Type =
         "saturating", "sealed", "queue", "irq_safe", "no_alloc", "invariant",
         "packed", "align", "wrapping", "trapping",
         "big_endian", "little_endian", "volatile",       # spec 4.6 type + field attrs
+        "error",                                          # [error: FsError] on fallible returns
         "io", "unsafe", "may_block", "stack", "priority"])  # effect markers after a return type
       discard p.advance() # eat "["
       if isAttr:
@@ -245,6 +246,18 @@ proc parsePrimaryType(p: var Parser): Type =
         while p.current().kind != tkRBracket and p.current().kind != tkEOF:
           let attrSp = p.getSpan()
           let attrName = p.expect(tkIdent, "Expected attribute name").value
+          if attrName == "error":
+            # [error: FsError | NetError] — one attr per listed enum
+            discard p.expect(tkColon)
+            tAttrs.add(TypeAttr(name: "error",
+              value: p.expect(tkIdent, "Expected error enum name").value, span: attrSp))
+            while p.current().kind == tkPipe:
+              discard p.advance()
+              tAttrs.add(TypeAttr(name: "error",
+                value: p.expect(tkIdent, "Expected error enum name after '|'").value, span: attrSp))
+            if p.current().kind == tkComma:
+              discard p.advance()
+            continue
           var val = ""
           if p.current().kind == tkColon:
             discard p.advance()
@@ -269,7 +282,8 @@ proc parsePrimaryType(p: var Parser): Type =
 
 # Effect markers written after a return type (`-> T [io]`) parse as attrs on T —
 # or on the payload inside a !/? wrapper. Harvest them off wherever they landed.
-proc harvestEffects*(t: Type, effects: var seq[EffectMarker]) =
+proc harvestEffects*(t: Type, effects: var seq[EffectMarker],
+                     errorTypes: var seq[string]) =
   if t == nil: return
   var kept: seq[TypeAttr]
   for a in t.attrs:
@@ -281,12 +295,13 @@ proc harvestEffects*(t: Type, effects: var seq[EffectMarker]) =
     of "may_block": effects.add(emMayBlock)
     of "stack": effects.add(emStack)
     of "priority": effects.add(emPriority)
+    of "error": errorTypes.add(a.value)  # [error: FsError | NetError]
     else: kept.add(a)
   t.attrs = kept
   if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      t.base.name in ["!", "?", "!?"]:
     for arg in t.args:
-      harvestEffects(arg, effects)
+      harvestEffects(arg, effects, errorTypes)
 
 proc parseType*(p: var Parser): Type =
   let sp = p.getSpan()
@@ -319,6 +334,16 @@ proc parseType*(p: var Parser): Type =
         res.members.add(rightWithSuffix)
       else:
         res = Type(span: sp, kind: tkUnion, members: @[res, rightWithSuffix])
+    elif curr.kind in {tkQuestion, tkBang, tkBangQuestion}:
+      # postfix wrappers: int? (option), int! (fallible), int?! (both) —
+      # equivalent to the prefix forms ?T / !T / !?T
+      discard p.advance()
+      let wname = case curr.kind
+                  of tkQuestion: "?"
+                  of tkBang: "!"
+                  else: "!?"
+      res = Type(span: sp, kind: tkApp,
+                 base: Type(span: sp, kind: tkNamed, name: wname), args: @[res])
     else:
       break
   return res
@@ -389,6 +414,14 @@ proc isStructLiteral(p: Parser): bool =
 proc parsePrimaryExpr(p: var Parser): Expr =
   let sp = p.getSpan()
   let curr = p.current()
+  # `err X` — raise an error value into the fn's result: `return err
+  # FsError.NotFound`, shorthand `err NotFound` (resolved against the sig's
+  # [error: E]), or re-raise a code: `err resp.err`
+  if curr.kind == tkIdent and curr.value == "err" and
+     p.peek().kind in {tkIdent, tkIntLit}:
+    discard p.advance()
+    let val = p.parseExpr()
+    return Expr(span: sp, kind: exkRaise, raiseVal: val)
   if curr.kind == tkDotDot and p.peek().kind == tkDot:
     discard p.advance()
     discard p.advance()
@@ -495,9 +528,6 @@ proc parseChainExpr(p: var Parser): Expr =
       var steps: seq[ChainStep]
       steps.add(ChainStep(op: coDotDot, target: Expr(span: sp, kind: exkVar, name: fieldName), arg: arg, span: sp))
       expr = Expr(span: sp, kind: exkChain, base: expr, steps: steps)
-    elif p.current().kind == tkQuestion:
-      discard p.advance()
-      expr = Expr(span: sp, kind: exkUnary, unaryOp: uoPropagate, operand: expr)
     elif p.current().kind == tkColonColon:
       discard p.advance()
       let name = p.expect(tkIdent, "Expected identifier after '::'").value
@@ -838,10 +868,20 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
       discard p.advance()
       retType = p.parseType()
     var sigEffects: seq[EffectMarker]
+    var sigErrTypes: seq[string]
+    harvestEffects(retType, sigEffects, sigErrTypes)
     if p.current().kind == tkLBracket:
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
         let effName = p.expect(tkIdent, "Expected effect marker").value
+        if effName == "error":
+          discard p.expect(tkColon)
+          sigErrTypes.add(p.expect(tkIdent, "Expected error enum name after 'error:'").value)
+          while p.current().kind == tkPipe:
+            discard p.advance()
+            sigErrTypes.add(p.expect(tkIdent, "Expected error enum name after '|'").value)
+          if p.current().kind == tkComma: discard p.advance()
+          continue
         case effName
         of "io": sigEffects.add(emIo)
         of "no_alloc": sigEffects.add(emNoAlloc)
@@ -855,7 +895,8 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
           discard p.advance()
       discard p.expect(tkRBracket)
     result.add(Decl(span: spDecl, kind: dkFn, name: name, fnParams: params,
-                    fnReturnType: retType, fnEffects: sigEffects, fnBody: nil))
+                    fnReturnType: retType, fnEffects: sigEffects, fnBody: nil,
+                    fnErrorTypes: sigErrTypes))
     if p.current().kind == tkNewline:
       discard p.advance()
   discard p.expect(tkDedent)
@@ -1108,12 +1149,21 @@ proc parseDecl*(p: var Parser): Decl =
       discard p.advance()
       retType = p.parseType()
     var effects: seq[EffectMarker]
-    harvestEffects(retType, effects)
+    var errTypes: seq[string]
+    harvestEffects(retType, effects, errTypes)
     if p.current().kind == tkLBracket:
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
         let effSp = p.getSpan()
         let effName = p.expect(tkIdent, "Expected effect marker").value
+        if effName == "error":
+          discard p.expect(tkColon)
+          errTypes.add(p.expect(tkIdent, "Expected error enum name after 'error:'").value)
+          while p.current().kind == tkPipe:
+            discard p.advance()
+            errTypes.add(p.expect(tkIdent, "Expected error enum name after '|'").value)
+          if p.current().kind == tkComma: discard p.advance()
+          continue
         var eff: EffectMarker
         case effName
         of "io": eff = emIo
@@ -1133,7 +1183,7 @@ proc parseDecl*(p: var Parser): Decl =
     if p.current().kind == tkColon:
       discard p.advance()
       body = p.parseBlock()
-    return Decl(span: sp, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: effects, fnBody: body)
+    return Decl(span: sp, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: effects, fnBody: body, fnErrorTypes: errTypes)
 
   of tkImport:
     discard p.advance()
@@ -1330,7 +1380,8 @@ proc parseDecl*(p: var Parser): Decl =
       discard p.advance()
       retType = p.parseType()
     var effects: seq[EffectMarker]
-    harvestEffects(retType, effects)
+    var taskErrTypes: seq[string]
+    harvestEffects(retType, effects, taskErrTypes)
     if p.current().kind == tkLBracket:
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:

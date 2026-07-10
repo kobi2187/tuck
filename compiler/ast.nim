@@ -258,6 +258,7 @@ type
       isExtern*: bool   # declared in an `extern:` block; implemented by the
                         # runtime (tuck_rt) or, with a header, imported from C
       externHeader*: string # extern [c, header: "uart.h"] — empty = rt-implemented
+      fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin:
       mixinMembers*: seq[Decl]
     of dkActor:

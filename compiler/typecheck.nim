@@ -46,6 +46,9 @@ type
                                  # non-initial variants are legal there
     distinctNames: HashSet[string]   # distinct types: nominal, never widened
     knownModules: HashSet[string]    # imported modules + qualified-pending prefixes
+    currentErrTypes: seq[string]     # [error: A | B] of the fn being checked
+    okNarrowed: HashSet[string]      # results guarded by `if x.ok` in scope:
+                                     # .value is legal only under the guard
 
 proc pushScope(tc: var TypeChecker) = tc.scopes.add(initTable[string, Binding]())
 proc popScope(tc: var TypeChecker) = discard tc.scopes.pop()
@@ -232,6 +235,23 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     let (found, b) = tc.lookup(e.name)
     if found: b.typ else: unknownType(e.span)
   of exkField:
+    # Result introspection: .ok/.err/.value on a !T/?T value IS the handling —
+    # unwrapping is a plain if, no special syntax
+    if e.fieldName in ["ok", "err", "value"] and e.receiver != nil and
+       e.receiver.kind in {exkVar, exkField}:
+      let recvT = tc.synthesize(e.receiver)
+      if isWrapper(recvT):
+        case e.fieldName
+        of "ok": return Type(span: e.span, kind: tkNamed, name: "bool")
+        of "value":
+          # unwrap is legal only under this result's `if x.ok` guard
+          if e.receiver.kind != exkVar or e.receiver.name notin tc.okNarrowed:
+            fail("Type Error: unhandled " & typeName(recvT) & " — read .value" &
+                 " inside an `if " &
+                 (if e.receiver.kind == exkVar: e.receiver.name else: "<result>") &
+                 ".ok` guard", e.span)
+          return unwrapEffect(recvT)
+        else: return unknownType(e.span)  # .err — code; enum-typed later
     # Unit sugar: 5.ms is postfix application — ms is an ordinary function
     if e.receiver != nil and e.receiver.kind == exkLit and
        e.receiver.litKind in {lkInt, lkFloat} and tc.fnSigs.hasKey(e.fieldName):
@@ -353,28 +373,6 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     else:
       Type(span: e.span, kind: tkNamed, name: "bool")
   of exkUnary:
-    if e.unaryOp == uoPropagate:
-      let t = tc.synthesize(e.operand)
-      if not isWrapper(t) and not isUnknown(t):
-        fail("Type Error: '?' propagation needs a !T or ?T value, got " &
-             typeName(t), e.span)
-      if tc.currentRet == nil or not isWrapper(tc.currentRet):
-        fail("Type Error: '?' propagates the error upward, so '" & tc.currentFn &
-             "' must declare a !T return type", e.span)
-      # Failure and absence propagate separately: the fn's wrapper must cover
-      # the operand's ("!?" covers both).
-      if isWrapper(t):
-        let ok = tc.currentRet.base.name
-        let opk = t.base.name
-        let covered = (opk == "!" and ok in ["!", "!?"]) or
-                      (opk == "?" and ok in ["?", "!?"]) or
-                      (opk == "!?" and ok == "!?")
-        if not covered:
-          fail("Type Error: '?' on a " & opk & "T value cannot propagate " &
-               "through '" & tc.currentFn & "' which returns " & ok &
-               "T — the return type must cover it (use " &
-               (if opk == "!?": "!?" else: opk) & "T or !?T)", e.span)
-      return unwrapEffect(t)
     let t = tc.synthesize(e.operand)
     if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
   of exkBlock:
@@ -387,7 +385,8 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
       # continue/exit mark the site so codegen routes it to the handler.
       let isImplicitReturn = e == tc.bodyBlock and s == e.stmts[^1] and
                              tc.currentRet != nil
-      if isWrapper(last) and not isImplicitReturn:
+      # `err X` is a control-flow exit (early error return), never a drop
+      if isWrapper(last) and not isImplicitReturn and s.kind != exkRaise:
         let site = tc.currentFn & " line " & $s.span.line
         if tc.errPolicy in ["continue", "exit"]:
           s.shortcutSite = site
@@ -404,7 +403,16 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
     if not isUnknown(condT) and not tc.compatible(condT,
         Type(span: e.span, kind: tkNamed, name: "bool")):
       fail("Type Error: if condition must be bool, got " & typeName(condT), e.cond.span)
+    # `if r.ok:` narrows r inside the then-branch ONLY — outside the guard
+    # the value is still the wrapped type (strict, scope-limited)
+    var guard = ""
+    if e.cond != nil and e.cond.kind == exkField and e.cond.fieldName == "ok" and
+       e.cond.receiver != nil and e.cond.receiver.kind == exkVar and
+       e.cond.receiver.name notin tc.okNarrowed:
+      guard = e.cond.receiver.name
+    if guard != "": tc.okNarrowed.incl(guard)
     let thenT = tc.synthesize(e.thenBranch)
+    if guard != "": tc.okNarrowed.excl(guard)
     let elseT = tc.synthesize(e.elseBranch)
     # Branches that produce values must agree on the type
     if e.elseBranch != nil and not isUnknown(thenT) and not isUnknown(elseT) and
@@ -453,7 +461,48 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
       discard tc.synthesize(e.returnVal)
     Type(span: e.span, kind: tkNamed, name: "unit")
   of exkRaise:
-    discard tc.synthesize(e.raiseVal)
+    # `err X` — an error value of the current fn's fallible result type.
+    # X is a variant of a declared [error: E] enum (qualified E.V or bare V),
+    # or a dynamic re-raise of an existing code (err resp.err).
+    if tc.currentRet == nil or not isWrapper(tc.currentRet):
+      fail("Type Error: 'err' raises into a fallible result, so '" &
+           tc.currentFn & "' must declare a !T return type", e.span)
+    let rv = e.raiseVal
+    if rv != nil and rv.kind == exkVar:
+      if tc.currentErrTypes.len == 0:
+        fail("Type Error: 'err " & rv.name & "' needs a declared error type" &
+             " — add [error: <Enum>] to '" & tc.currentFn & "'", e.span)
+      var owners: seq[string]
+      for en in tc.currentErrTypes:
+        if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
+          for v in tc.typeDecls[en].variants:
+            if v.name == rv.name: owners.add(en)
+      if owners.len == 0:
+        fail("Type Error: '" & rv.name & "' is not a variant of " &
+             tc.currentErrTypes.join(" | "), e.span)
+      if owners.len > 1:
+        fail("Type Error: '" & rv.name & "' is ambiguous (" &
+             owners.join(", ") & ") — qualify it: " & owners[0] & "." & rv.name,
+             e.span)
+      # resolve the shorthand for codegen: err V → err Enum.V
+      e.raiseVal = Expr(span: rv.span, kind: exkField,
+                        receiver: Expr(span: rv.span, kind: exkVar, name: owners[0]),
+                        fieldName: rv.name)
+    elif rv != nil and rv.kind == exkField and rv.receiver != nil and
+         rv.receiver.kind == exkVar and tc.typeDecls.hasKey(rv.receiver.name) and
+         tc.typeDecls[rv.receiver.name].kind == tkSum:
+      let en = rv.receiver.name
+      if tc.currentErrTypes.len > 0 and en notin tc.currentErrTypes:
+        fail("Type Error: '" & tc.currentFn & "' raises " & en &
+             " but declares [error: " & tc.currentErrTypes.join(" | ") & "]", e.span)
+      var found = false
+      for v in tc.typeDecls[en].variants:
+        if v.name == rv.fieldName: found = true
+      if not found:
+        fail("Type Error: '" & rv.fieldName & "' is not a variant of " & en, e.span)
+    else:
+      discard tc.synthesize(rv)  # dynamic re-raise
+    # control-flow exit: neutral type so branches/blocks don't see a wrapper
     Type(span: e.span, kind: tkNamed, name: "unit")
   of exkChain:
     let baseT = tc.synthesize(e.base)
@@ -688,7 +737,9 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
       tc.checkDecisionTable(d)
       return
     checkFallibleNeedsIo(d.name, d.fnReturnType, d.fnEffects, d.span)
+    tc.currentErrTypes = d.fnErrorTypes
     tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody)
+    tc.currentErrTypes = @[]
   of dkTask:
     checkFallibleNeedsIo(d.name, d.taskReturnType, d.taskEffects, d.span)
     tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)

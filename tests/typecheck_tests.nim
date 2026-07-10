@@ -201,22 +201,40 @@ fn use({n: int}) -> int [io]:
   return {n} mightFail + 1
 """, "unhandled"
 
-expectError "unhandled !T field access", """
-fn mightFail({n: int}) -> !{value: int} [io]:
-  return {value: n}
+expectError "unhandled !T payload access", """
+fn mightFail({n: int}) -> !{amount: int} [io]:
+  return {amount: n}
 
 fn use({n: int}) -> int [io]:
   let r = {n} mightFail
-  return r.value
+  return r.amount
 """, "unhandled"
 
-expectError "propagation outside ! function", """
-fn mightFail({n: int}) -> !{value: int} [io]:
-  return {value: n}
+expectOk "result introspection (.ok/.value) is the handling", """
+fn mightFail({n: int}) -> !{amount: int} [io]:
+  return {amount: n}
 
 fn use({n: int}) -> int [io]:
-  let r = {n} mightFail?
-  return r.value
+  let r = {n} mightFail
+  if r.ok:
+    return r.value.amount
+  return 0
+"""
+
+expectError ".value outside the ok guard", """
+fn mightFail({n: int}) -> !{amount: int} [io]:
+  return {amount: n}
+
+fn use({n: int}) -> int [io]:
+  let r = {n} mightFail
+  if r.ok:
+    let x = 1
+  return r.value.amount
+""", "inside an `if"
+
+expectError "err outside a fallible fn", """
+fn use({n: int}) -> int:
+  err 5
 """, "must declare a !T return type"
 
 expectError "'or' cannot unwrap results", """
@@ -279,31 +297,92 @@ fn use({n: int}) -> int [io]:
   return {n} mightFail + 1
 """, "unhandled"
 
-expectError "absence cannot propagate through !T fn", """
-fn mightBeAbsent({n: int}) -> ?{value: int}:
-  return {value: n}
+expectOk "err raise: qualified and shorthand variants", """
+type FsError:
+  | NotFound
+  | AccessDenied
 
-fn use({n: int}) -> !{value: int} [io]:
-  let r = {n} mightBeAbsent?
-  return {value: r.value}
-""", "cannot propagate"
-
-expectOk "absence propagates through ?T fn", """
-fn mightBeAbsent({n: int}) -> ?{value: int}:
-  return {value: n}
-
-fn use({n: int}) -> ?{value: int}:
-  let r = {n} mightBeAbsent?
-  return {value: r.value}
+fn readIt({path: str}) -> !{content: str} [io, error: FsError]:
+  if {path} missing:
+    return err FsError.NotFound
+  err AccessDenied
 """
 
-expectOk "propagation inside ! function", """
-fn mightFail({n: int}) -> !{value: int} [io]:
-  return {value: n}
+expectError "err raise: unknown variant", """
+type FsError:
+  | NotFound
+  | AccessDenied
 
-fn use({n: int}) -> !{value: int} [io]:
-  let r = {n} mightFail?
-  return {value: r.value}
+fn readIt({path: str}) -> !{content: str} [io, error: FsError]:
+  err DiskFull
+""", "not a variant"
+
+expectError "err raise: enum not in the declared list", """
+type FsError:
+  | NotFound
+  | AccessDenied
+type NetError:
+  | Timeout
+  | Refused
+
+fn readIt({path: str}) -> !{content: str} [io, error: FsError]:
+  err NetError.Timeout
+""", "declares [error: FsError]"
+
+expectOk "err raise: multiple error enums", """
+type FsError:
+  | NotFound
+  | AccessDenied
+type NetError:
+  | Timeout
+  | Refused
+
+fn fetchIt({url: str}) -> !{content: str} [io, error: FsError | NetError]:
+  if {url} slow:
+    return err Timeout
+  err FsError.NotFound
+"""
+
+expectError "err raise: variant ambiguous across listed enums", """
+type FsError:
+  | NotFound
+  | Timeout
+type NetError:
+  | Timeout
+  | Refused
+
+fn fetchIt({url: str}) -> !{content: str} [io, error: FsError | NetError]:
+  err Timeout
+""", "ambiguous"
+
+expectOk "re-raise an existing code (err r.err)", """
+fn mightFail({n: int}) -> !{amount: int} [io]:
+  return {amount: n}
+
+fn use({n: int}) -> !{total: int} [io]:
+  let r = {n} mightFail
+  if r.ok:
+    return {total: r.value.amount}
+  err r.err
+"""
+
+expectOk "option introspection on ?T", """
+fn mightBeAbsent({n: int}) -> ?{amount: int}:
+  return {amount: n}
+
+fn use({n: int}) -> int:
+  let r = {n} mightBeAbsent
+  if r.ok:
+    return r.value.amount
+  return 0
+"""
+
+expectOk "postfix wrapper types: int? and combos", """
+fn mightBeAbsent({n: int}) -> {amount: int}?:
+  return {amount: n}
+
+fn both({n: int}) -> {amount: int}?! [io]:
+  return {amount: n}
 """
 
 # ---------- distinct unit types (spec 4.2) ----------

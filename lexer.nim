@@ -257,6 +257,7 @@ proc scanNext*(L: var Lexer) =
     if L.tryTwoChar("->", tkArrow): return
     if L.tryTwoChar("=>", tkFatArrow): return
     if L.tryTwoChar("::", tkColonColon): return
+    if L.tryTwoChar("?!", tkBangQuestion): return  # T?! == T!? — same wrapper
     if L.tryTwoChar("!?", tkBangQuestion): return
     if L.tryTwoChar("==", tkEq): return
     if L.tryTwoChar("!=", tkNeq): return
