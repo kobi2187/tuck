@@ -271,6 +271,22 @@
   raise validation); `.err` typed Unknown (enum-typed comparisons later);
   narrowing only via `if x.ok` then-branch (no `not x.ok` continuation).
 
+## 2026-07-10 — stdlib v1 + tuck build: real OS programs
+- std/{fs,io,sys,time}.tuck: extern sigs over tuck_rt (Nim stdlib = the
+  portable OS layer). Fallible fns declare [error: FsError]-style enums;
+  rt impls catch Nim exceptions → terr(errCode("FsError.IoFailed")) —
+  exceptions never escape. getEnv absent → tnone (tri-state).
+- Import search path: importer's dir, then TUCK_STDLIB env, then std/ next
+  to the compiler binary (and ../std for tests binaries).
+- `tuck build` (b): compile + nim c to a binary; declared `fn main` gets a
+  `when isMainModule: main()` runner; --nim:"..." forwards flags (the
+  bare-metal path: --os:standalone --cpu:arm ...); dashed/digit-leading
+  names sanitized (m_24_stdlib).
+- examples/24-stdlib.tuck: writes + reads /tmp file, prints content —
+  BUILT AND RAN as native binary. Gate 14/25. All suites green.
+- Backlog noted: sig index skips stdlib-dir entries (always full-loads,
+  msgpack module cache still applies); no int→str/interp for printing nums.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

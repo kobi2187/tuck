@@ -27,11 +27,13 @@ commands:
   parse, p      parse; prints OK or the first syntax error
   check, ch     parse + effect check + type check + pending report
   compile, c    check + transpile to Nim (and Beef with --beef)
+  build, b      compile + nim c to a binary (fn main runs at start)
 
 options:
   --ast         (parse) dump the AST as JSON to stdout
   --beef        (compile) also emit a .bf Beef file
-  -o:DIR        (compile) output directory (default: next to source)"""
+  -o:DIR        (compile/build) output directory (default: next to source)
+  --nim:FLAGS   (build) extra nim flags, e.g. --nim:"--os:standalone --cpu:arm""""
   quit(2)
 
 proc die(msg: string) =
@@ -122,7 +124,7 @@ when isMainModule:
   of "check", "ch":
     discard checkProgram(path)
     echo "OK (", elapsedMs(t0), ")"
-  of "compile", "c":
+  of "compile", "c", "build", "b":
     let prog = checkProgram(path, needBodies = true)
     var outDir = parentDir(path)
     for o in opts:
@@ -149,6 +151,29 @@ when isMainModule:
       let bfPath = outDir / (base & ".bf")
       writeFile(bfPath, emitBeef(m))
       echo "wrote ", bfPath
+    if cmd in ["build", "b"]:
+      # entry point: a declared `fn main` runs when the binary starts
+      var hasMain = false
+      for d in m.decls:
+        if d != nil and d.kind == dkFn and d.name == "main": hasMain = true
+      let mainNim = outDir / (base & ".nim")
+      if hasMain:
+        writeFile(mainNim, readFile(mainNim) & "\nwhen isMainModule:\n  main()\n")
+      # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
+      var nimFlags = ""
+      for o in opts:
+        if o.startsWith("--nim:"): nimFlags = o[6 .. ^1]
+      # Nim module names can't start with a digit or contain dashes
+      var binBase = base.replace("-", "_")
+      if binBase.len > 0 and binBase[0] in {'0' .. '9'}: binBase = "m_" & binBase
+      let binNim = outDir / (binBase & ".nim")
+      if binNim != mainNim: copyFile(mainNim, binNim)
+      let binPath = outDir / binBase
+      let nimCmd = "nim c --hints:off --warnings:off " & nimFlags &
+                   " -o:" & quoteShell(binPath) & " " & quoteShell(binNim)
+      let rc = execShellCmd(nimCmd)
+      if rc != 0: die("tuck: nim compilation failed")
+      echo "built ", binPath
     echo "OK (", elapsedMs(t0), ")"
   else:
     usage()

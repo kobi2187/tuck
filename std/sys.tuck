@@ -1,0 +1,6 @@
+# std/sys — process environment. Implemented by tuck_rt.
+extern:
+  fn argCount() -> {count: int} [io]
+  fn argAt({index: int}) -> {arg: str} [io]
+  fn getEnv({name: str}) -> {value: str}? [io]
+  fn exit({code: int}) -> void [io]

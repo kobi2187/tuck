@@ -1,0 +1,12 @@
+# std/fs — file system. Implemented by tuck_rt over Nim's portable stdlib.
+type FsError:
+  | NotFound
+  | AccessDenied
+  | IoFailed
+
+extern:
+  fn readFile({path: str}) -> !{content: str} [io, error: FsError]
+  fn writeFile({path: str, content: str}) -> !void [io, error: FsError]
+  fn appendFile({path: str, content: str}) -> !void [io, error: FsError]
+  fn fileExists({path: str}) -> bool [io]
+  fn removeFile({path: str}) -> !void [io, error: FsError]

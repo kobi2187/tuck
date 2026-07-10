@@ -1,0 +1,12 @@
+# Real OS work through the stdlib: fs + io extern modules over tuck_rt.
+import fs
+import io
+
+fn main() -> void [io]:
+  let w = {path: "/tmp/tuck-demo.txt", content: "hello from tuck"} fs::writeFile
+  if w.ok:
+    let r = {path: "/tmp/tuck-demo.txt"} fs::readFile
+    if r.ok:
+      {text: r.value.content} io::printLine
+      return
+  {text: "stdlib demo failed"} io::printLine

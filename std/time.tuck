@@ -1,0 +1,4 @@
+# std/time — clocks. Implemented by tuck_rt.
+extern:
+  fn nowMs() -> {ms: u64} [io]
+  fn sleepMs({ms: u32}) -> void [io, may_block]

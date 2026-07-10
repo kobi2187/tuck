@@ -138,3 +138,69 @@ proc dequeue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: var T): bool =
   msg = mb.data[mb.head]
   mb.head = (mb.head + 1) mod Cap
   return true
+
+# ---------- stdlib externs (std/*.tuck) ----------
+# Nim's portable stdlib IS Tuck's OS layer. Exceptions never escape: every
+# fallible fn catches and returns terr(errCode("Enum.Variant")) — matching
+# the error enums declared in the std/*.tuck signatures.
+import std/[os, times, syncio]
+
+proc readFile*(path: string): TuckResult[tuple[content: string]] =
+  try:
+    if not fileExists(path):
+      return terr[tuple[content: string]](errCode("FsError.NotFound"))
+    tok((content: syncio.readFile(path)))
+  except IOError, OSError:
+    terr[tuple[content: string]](errCode("FsError.IoFailed"))
+
+proc writeFile*(path: string, content: string): TuckResult[tuple[]] =
+  try:
+    syncio.writeFile(path, content)
+    tokVoid()
+  except IOError, OSError:
+    terr[tuple[]](errCode("FsError.AccessDenied"))
+
+proc appendFile*(path: string, content: string): TuckResult[tuple[]] =
+  try:
+    let f = open(path, fmAppend)
+    f.write(content)
+    f.close()
+    tokVoid()
+  except IOError, OSError:
+    terr[tuple[]](errCode("FsError.AccessDenied"))
+
+proc removeFile*(path: string): TuckResult[tuple[]] =
+  try:
+    if not fileExists(path):
+      return terr[tuple[]](errCode("FsError.NotFound"))
+    os.removeFile(path)
+    tokVoid()
+  except OSError:
+    terr[tuple[]](errCode("FsError.AccessDenied"))
+
+proc fileExists*(path: string): bool = os.fileExists(path)
+
+proc print*(text: string) = stdout.write(text)
+proc printLine*(text: string) = stdout.writeLine(text)
+
+proc readLine*(): TuckResult[tuple[line: string]] =
+  try:
+    tok((line: stdin.readLine()))
+  except EOFError:
+    terr[tuple[line: string]](errCode("IoError.EndOfInput"))
+  except IOError:
+    terr[tuple[line: string]](errCode("IoError.IoFailed"))
+
+proc argCount*(): tuple[count: int] = (count: paramCount())
+proc argAt*(index: int): tuple[arg: string] = (arg: paramStr(index))
+
+proc getEnv*(name: string): TuckResult[tuple[value: string]] =
+  if os.existsEnv(name):
+    tok((value: os.getEnv(name)))
+  else:
+    tnone[tuple[value: string]]()
+
+proc exit*(code: int) = quit(code)
+
+proc nowMs*(): tuple[ms: uint64] = (ms: uint64(epochTime() * 1000))
+proc sleepMs*(ms: uint32) = os.sleep(int(ms))

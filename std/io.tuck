@@ -1,0 +1,9 @@
+# std/io — console. Implemented by tuck_rt.
+type IoError:
+  | EndOfInput
+  | IoFailed
+
+extern:
+  fn print({text: str}) -> void [io]
+  fn printLine({text: str}) -> void [io]
+  fn readLine() -> !{line: str} [io, error: IoError]

@@ -145,6 +145,20 @@ proc updateIndex*(dir: string, mods: seq[LoadedModule],
   except CatchableError:
     discard  # index is an accelerator, never a blocker
 
+# Import resolution: the importer's directory first, then the stdlib
+# (TUCK_STDLIB env var, or std/ next to the compiler binary / repo root).
+proc resolveImport*(importerPath, module: string): string =
+  var candidates = @[importerPath.parentDir / (module & ".tuck")]
+  let envStd = getEnv("TUCK_STDLIB")
+  if envStd != "":
+    candidates.add(envStd / (module & ".tuck"))
+  candidates.add(getAppDir() / "std" / (module & ".tuck"))
+  candidates.add(getAppDir() / ".." / "std" / (module & ".tuck"))
+  for c in candidates:
+    if fileExists(c): return c
+  raise newException(ModuleError,
+    "imported module '" & module & "' not found: tried " & candidates.join(", "))
+
 proc loadProgram*(entryPath: string): seq[LoadedModule] =
   ## Parse the entry file and its whole import closure. Dep-first order,
   ## entry module last. Diamond imports collapse; cycles are errors.
@@ -160,11 +174,7 @@ proc loadProgram*(entryPath: string): seq[LoadedModule] =
     # the entry module is always parsed fresh (it's what's being worked on)
     let m = if isEntry: parseTuckFile(ap) else: loadModuleCached(ap)
     for imp in importsOf(m):
-      let ipath = ap.parentDir / (imp & ".tuck")
-      if not fileExists(ipath):
-        raise newException(ModuleError,
-          "imported module '" & imp & "' not found: expected " & ipath)
-      visit(ipath, false)
+      visit(resolveImport(ap, imp), false)
     visiting.excl(ap)
     done.incl(ap)
     order.add(LoadedModule(name: extractFilename(ap).changeFileExt(""), path: ap, m: m))
@@ -192,10 +202,7 @@ proc loadProgramIndexed*(entryPath: string):
     visiting.incl(ap)
     let m = if isEntry: parseTuckFile(ap) else: loadModuleCached(ap)
     for imp in importsOf(m):
-      let ipath = ap.parentDir / (imp & ".tuck")
-      if not fileExists(ipath):
-        raise newException(ModuleError,
-          "imported module '" & imp & "' not found: expected " & ipath)
+      let ipath = resolveImport(ap, imp)
       if absolutePath(ipath) notin done and entryValid(idx, dir, imp):
         sigOnly[imp] = idx[imp]
       else:

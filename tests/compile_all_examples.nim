@@ -34,6 +34,7 @@ const nimCheckExpected = [
   "22-error-policy",
   "23-units",
   "14-task",
+  "24-stdlib",
 ]
 
 proc nimCheckOutput(baseName: string): bool =
