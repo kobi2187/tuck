@@ -178,6 +178,153 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type
 
+proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
+  # Result introspection: .ok/.err/.value on a !T/?T value IS the handling —
+  # unwrapping is a plain if, no special syntax
+  if e.fieldName in ["ok", "err", "value"] and e.receiver != nil and
+     e.receiver.kind in {exkVar, exkField}:
+    let recvT = tc.synthesize(e.receiver)
+    if isWrapper(recvT):
+      case e.fieldName
+      of "ok": return Type(span: e.span, kind: tkNamed, name: "bool")
+      of "value":
+        # unwrap is legal only under this result's `if x.ok` guard
+        if e.receiver.kind != exkVar or e.receiver.name notin tc.okNarrowed:
+          fail("Type Error: unhandled " & typeName(recvT) & " — read .value" &
+               " inside an `if " &
+               (if e.receiver.kind == exkVar: e.receiver.name else: "<result>") &
+               ".ok` guard", e.span)
+        return unwrapEffect(recvT)
+      else: return unknownType(e.span)  # .err — code; enum-typed later
+  # Unit sugar: 5.ms is postfix application — ms is an ordinary function
+  if e.receiver != nil and e.receiver.kind == exkLit and
+     e.receiver.litKind in {lkInt, lkFloat} and tc.fnSigs.hasKey(e.fieldName):
+    let sig = tc.fnSigs[e.fieldName]
+    if sig.params.len == 1:
+      let litT = tc.synthesize(e.receiver)
+      if not tc.compatible(litT, sig.params[0].typ):
+        fail("Type Error: argument to '" & e.fieldName & "' expects " &
+             typeName(sig.params[0].typ) & " but got " & typeName(litT), e.span)
+    return sig.ret
+  # Variant construction: Type.Variant — sealed types only allow the
+  # initial (first) variant directly; [unsafe] is the deserialization escape
+  if e.receiver != nil and e.receiver.kind == exkVar and
+     tc.typeDecls.hasKey(e.receiver.name):
+    let declared = tc.typeDecls[e.receiver.name]
+    if declared.kind == tkSum:
+      var isVariant = false
+      for v in declared.variants:
+        if v.name == e.fieldName: isVariant = true
+      if isVariant:
+        var isSealed = false
+        for a in declared.attrs:
+          if a.name == "sealed": isSealed = true
+        if isSealed and declared.variants.len > 0 and
+           e.fieldName != declared.variants[0].name and not e.ctorUnsafe and
+           not tc.transitionCtx:
+          fail("Sealed Error: " & e.receiver.name & "." & e.fieldName &
+               " cannot be constructed directly — sealed types start at '" &
+               declared.variants[0].name & "'; reach '" & e.fieldName &
+               "' via transitions, or mark [unsafe] for deserialization", e.span)
+        return Type(span: e.span, kind: tkNamed, name: e.receiver.name)
+  let rawT = tc.synthesize(e.receiver)
+  if isWrapper(rawT):
+    fail("Type Error: unhandled " & typeName(rawT) &
+         " — pass it to a handling function or propagate with '?' before accessing fields", e.span)
+  let recvT = tc.resolve(rawT)
+  let fields = tc.fieldsOf(recvT)
+  if fields.len > 0:
+    for f in fields:
+      if f.name == e.fieldName: return f.typ
+    # Known record, missing field: the payoff error.
+    # Sum types carry variant fields we don't track per-variant in v1 — only
+    # flag when the receiver is a plain record.
+    if recvT.kind == tkRecord:
+      fail("Type Error: no field '" & e.fieldName & "' on type " & typeName(recvT), e.span)
+  unknownType(e.span)
+
+proc synthBinary(tc: var TypeChecker, e: Expr): Type =
+  let lt = tc.synthesize(e.left)
+  # `or` is strictly boolean. Result structs flow whole; handling belongs to
+  # the next function in the chain (prelude, eventually) or `?` propagation.
+  let rt = tc.synthesize(e.right)
+  for (t, side) in [(lt, e.left), (rt, e.right)]:
+    if isWrapper(t):
+      fail("Type Error: unhandled " & typeName(t) &
+           " — pass it to a handling function or propagate with '?'", side.span)
+  case e.binOp
+  of boAdd, boSub, boMul, boDiv, boMod:
+    if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
+      fail("Type Error: arithmetic between " & typeName(lt) & " and " &
+           typeName(rt), e.span)
+    if isUnknown(lt): rt else: lt
+  of boEq, boNeq, boLt, boGt, boLe, boGe:
+    if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
+      fail("Type Error: comparison between " & typeName(lt) & " and " &
+           typeName(rt), e.span)
+    Type(span: e.span, kind: tkNamed, name: "bool")
+  else:
+    Type(span: e.span, kind: tkNamed, name: "bool")
+
+proc synthIf(tc: var TypeChecker, e: Expr): Type =
+  let condT = tc.synthesize(e.cond)
+  if isWrapper(condT):
+    fail("Type Error: unhandled " & typeName(condT) &
+         " in condition — pass it to a handling function or propagate with '?'", e.cond.span)
+  if not isUnknown(condT) and not tc.compatible(condT,
+      Type(span: e.span, kind: tkNamed, name: "bool")):
+    fail("Type Error: if condition must be bool, got " & typeName(condT), e.cond.span)
+  # `if r.ok:` narrows r inside the then-branch ONLY — outside the guard
+  # the value is still the wrapped type (strict, scope-limited)
+  var guard = ""
+  if e.cond != nil and e.cond.kind == exkField and e.cond.fieldName == "ok" and
+     e.cond.receiver != nil and e.cond.receiver.kind == exkVar and
+     e.cond.receiver.name notin tc.okNarrowed:
+    guard = e.cond.receiver.name
+  if guard != "": tc.okNarrowed.incl(guard)
+  let thenT = tc.synthesize(e.thenBranch)
+  if guard != "": tc.okNarrowed.excl(guard)
+  let elseT = tc.synthesize(e.elseBranch)
+  # Branches that produce values must agree on the type
+  if e.elseBranch != nil and not isUnknown(thenT) and not isUnknown(elseT) and
+     not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
+    fail("Type Error: if branches produce different types: " &
+         typeName(thenT) & " vs " & typeName(elseT), e.span)
+  if isUnknown(thenT): elseT else: thenT
+
+proc synthMatch(tc: var TypeChecker, e: Expr): Type =
+  discard tc.synthesize(e.subject)
+  var armT = unknownType(e.span)
+  for arm in e.arms:
+    tc.pushScope()
+    # v1: pattern-bound names enter scope as Unknown
+    if arm.pattern != nil and arm.pattern.kind == pkVar:
+      tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
+    let t = tc.synthesize(arm.body)
+    tc.popScope()
+    if not isUnknown(t) and not isUnknown(armT) and
+       not tc.compatible(t, armT) and not tc.compatible(armT, t):
+      fail("Type Error: match arms produce different types: " &
+           typeName(armT) & " vs " & typeName(t), arm.span)
+    if isUnknown(armT): armT = t
+  armT
+
+proc synthChain(tc: var TypeChecker, e: Expr): Type =
+  let baseT = tc.synthesize(e.base)
+  # Spec 2.3: `..` mutation only on var bindings
+  if e.base != nil and e.base.kind == exkVar:
+    var hasMutation = false
+    for step in e.steps:
+      if step.op == coDotDot: hasMutation = true
+    if hasMutation:
+      let (found, b) = tc.lookup(e.base.name)
+      if found and not b.isVar:
+        fail("Type Error: cannot mutate '" & e.base.name &
+             "' with '..' — it was declared with 'let'; use 'var'", e.span)
+  for step in e.steps:
+    discard tc.synthesize(step.arg)
+  baseT
+
 proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
   if e == nil or expected == nil: return
   let actual = tc.synthesize(e)
@@ -305,6 +452,58 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
   else:
     for a in e.args: discard tc.synthesize(a)
 
+proc synthCall(tc: var TypeChecker, e: Expr): Type =
+  var calleeName = ""
+  if e.callee != nil and e.callee.kind == exkVar:
+    calleeName = e.callee.name
+  elif e.callee != nil and e.callee.kind == exkQualified:
+    # module::fn — a KNOWN module (imported / pending-stubbed) is strict:
+    # the fn must exist. An unknown prefix stays gradual, like any
+    # undeclared identifier, so sketch code keeps compiling.
+    let modName = if e.callee.modulePath.len > 0: e.callee.modulePath[0] else: ""
+    calleeName = modName & "::" & e.callee.qualName
+    if modName in tc.knownModules and not tc.fnSigs.hasKey(calleeName):
+      fail("Type Error: module '" & modName & "' has no function '" &
+           e.callee.qualName & "'", e.span)
+  if calleeName in ["bake", "alias"]:
+    for a in e.args: discard tc.synthesize(a)
+    return unknownType(e.span)
+  if calleeName != "" and calleeName in tc.distinctNames:
+    # Calling a distinct type's name converts from its base (Nim-native)
+    for a in e.args: discard tc.synthesize(a)
+    return Type(span: e.span, kind: tkNamed, name: calleeName)
+  if calleeName != "" and tc.typeGenerics.hasKey(calleeName):
+    # ponytail: v1 ceiling — Nim needs explicit Box[int](...) and codegen has
+    # no checker info; lift when type-directed lowering lands
+    fail("Type Error: '" & calleeName & "' is a generic type — direct " &
+         "construction is not supported yet; return it from a generic fn instead", e.span)
+  if calleeName != "" and tc.fnSigs.hasKey(calleeName):
+    let sig = tc.fnSigs[calleeName]
+    var bindings = initTable[string, Type]()
+    tc.checkCallArgs(calleeName, sig, e, bindings)
+    if sig.generics.len == 0: return sig.ret
+    # Unbound type params degrade to Unknown (gradual, like sketch code)
+    for g in sig.generics:
+      if not bindings.hasKey(g):
+        bindings[g] = unknownType(e.span)
+    return substituteType(sig.ret, bindings)
+  var calleeT = unknownType(e.span)
+  if e.callee != nil and e.callee.kind != exkVar:
+    # A construction fed by a transitionTo chain is a transition, not a
+    # direct construction — sealed rules allow it (runtime matrix checks it)
+    var viaTransition = false
+    for a in e.args:
+      if a != nil and a.kind == exkCall and a.callee != nil:
+        if (a.callee.kind == exkVar and a.callee.name == "transitionTo") or
+           (a.callee.kind == exkField and a.callee.fieldName == "transitionTo"):
+          viaTransition = true
+    let prevCtx = tc.transitionCtx
+    if viaTransition: tc.transitionCtx = true
+    calleeT = tc.synthesize(e.callee)  # variant constructions carry their type
+    tc.transitionCtx = prevCtx
+  for a in e.args: discard tc.synthesize(a)
+  calleeT
+
 proc synthesize(tc: var TypeChecker, e: Expr): Type =
   if e == nil: return unknownType(Span())
   case e.kind
@@ -319,70 +518,7 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
   of exkVar:
     let (found, b) = tc.lookup(e.name)
     if found: b.typ else: unknownType(e.span)
-  of exkField:
-    # Result introspection: .ok/.err/.value on a !T/?T value IS the handling —
-    # unwrapping is a plain if, no special syntax
-    if e.fieldName in ["ok", "err", "value"] and e.receiver != nil and
-       e.receiver.kind in {exkVar, exkField}:
-      let recvT = tc.synthesize(e.receiver)
-      if isWrapper(recvT):
-        case e.fieldName
-        of "ok": return Type(span: e.span, kind: tkNamed, name: "bool")
-        of "value":
-          # unwrap is legal only under this result's `if x.ok` guard
-          if e.receiver.kind != exkVar or e.receiver.name notin tc.okNarrowed:
-            fail("Type Error: unhandled " & typeName(recvT) & " — read .value" &
-                 " inside an `if " &
-                 (if e.receiver.kind == exkVar: e.receiver.name else: "<result>") &
-                 ".ok` guard", e.span)
-          return unwrapEffect(recvT)
-        else: return unknownType(e.span)  # .err — code; enum-typed later
-    # Unit sugar: 5.ms is postfix application — ms is an ordinary function
-    if e.receiver != nil and e.receiver.kind == exkLit and
-       e.receiver.litKind in {lkInt, lkFloat} and tc.fnSigs.hasKey(e.fieldName):
-      let sig = tc.fnSigs[e.fieldName]
-      if sig.params.len == 1:
-        let litT = tc.synthesize(e.receiver)
-        if not tc.compatible(litT, sig.params[0].typ):
-          fail("Type Error: argument to '" & e.fieldName & "' expects " &
-               typeName(sig.params[0].typ) & " but got " & typeName(litT), e.span)
-      return sig.ret
-    # Variant construction: Type.Variant — sealed types only allow the
-    # initial (first) variant directly; [unsafe] is the deserialization escape
-    if e.receiver != nil and e.receiver.kind == exkVar and
-       tc.typeDecls.hasKey(e.receiver.name):
-      let declared = tc.typeDecls[e.receiver.name]
-      if declared.kind == tkSum:
-        var isVariant = false
-        for v in declared.variants:
-          if v.name == e.fieldName: isVariant = true
-        if isVariant:
-          var isSealed = false
-          for a in declared.attrs:
-            if a.name == "sealed": isSealed = true
-          if isSealed and declared.variants.len > 0 and
-             e.fieldName != declared.variants[0].name and not e.ctorUnsafe and
-             not tc.transitionCtx:
-            fail("Sealed Error: " & e.receiver.name & "." & e.fieldName &
-                 " cannot be constructed directly — sealed types start at '" &
-                 declared.variants[0].name & "'; reach '" & e.fieldName &
-                 "' via transitions, or mark [unsafe] for deserialization", e.span)
-          return Type(span: e.span, kind: tkNamed, name: e.receiver.name)
-    let rawT = tc.synthesize(e.receiver)
-    if isWrapper(rawT):
-      fail("Type Error: unhandled " & typeName(rawT) &
-           " — pass it to a handling function or propagate with '?' before accessing fields", e.span)
-    let recvT = tc.resolve(rawT)
-    let fields = tc.fieldsOf(recvT)
-    if fields.len > 0:
-      for f in fields:
-        if f.name == e.fieldName: return f.typ
-      # Known record, missing field: the payoff error.
-      # Sum types carry variant fields we don't track per-variant in v1 — only
-      # flag when the receiver is a plain record.
-      if recvT.kind == tkRecord:
-        fail("Type Error: no field '" & e.fieldName & "' on type " & typeName(recvT), e.span)
-    unknownType(e.span)
+  of exkField: tc.synthFieldAccess(e)
   of exkStruct:
     var fs: seq[FieldDef]
     for f in e.fields:
@@ -395,79 +531,8 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
       if isUnknown(elemT): elemT = t
     Type(span: e.span, kind: tkApp,
          base: Type(span: e.span, kind: tkNamed, name: "Seq"), args: @[elemT])
-  of exkCall:
-    var calleeName = ""
-    if e.callee != nil and e.callee.kind == exkVar:
-      calleeName = e.callee.name
-    elif e.callee != nil and e.callee.kind == exkQualified:
-      # module::fn — a KNOWN module (imported / pending-stubbed) is strict:
-      # the fn must exist. An unknown prefix stays gradual, like any
-      # undeclared identifier, so sketch code keeps compiling.
-      let modName = if e.callee.modulePath.len > 0: e.callee.modulePath[0] else: ""
-      calleeName = modName & "::" & e.callee.qualName
-      if modName in tc.knownModules and not tc.fnSigs.hasKey(calleeName):
-        fail("Type Error: module '" & modName & "' has no function '" &
-             e.callee.qualName & "'", e.span)
-    if calleeName in ["bake", "alias"]:
-      for a in e.args: discard tc.synthesize(a)
-      return unknownType(e.span)
-    if calleeName != "" and calleeName in tc.distinctNames:
-      # Calling a distinct type's name converts from its base (Nim-native)
-      for a in e.args: discard tc.synthesize(a)
-      return Type(span: e.span, kind: tkNamed, name: calleeName)
-    if calleeName != "" and tc.typeGenerics.hasKey(calleeName):
-      # ponytail: v1 ceiling — Nim needs explicit Box[int](...) and codegen has
-      # no checker info; lift when type-directed lowering lands
-      fail("Type Error: '" & calleeName & "' is a generic type — direct " &
-           "construction is not supported yet; return it from a generic fn instead", e.span)
-    if calleeName != "" and tc.fnSigs.hasKey(calleeName):
-      let sig = tc.fnSigs[calleeName]
-      var bindings = initTable[string, Type]()
-      tc.checkCallArgs(calleeName, sig, e, bindings)
-      if sig.generics.len == 0: return sig.ret
-      # Unbound type params degrade to Unknown (gradual, like sketch code)
-      for g in sig.generics:
-        if not bindings.hasKey(g):
-          bindings[g] = unknownType(e.span)
-      return substituteType(sig.ret, bindings)
-    var calleeT = unknownType(e.span)
-    if e.callee != nil and e.callee.kind != exkVar:
-      # A construction fed by a transitionTo chain is a transition, not a
-      # direct construction — sealed rules allow it (runtime matrix checks it)
-      var viaTransition = false
-      for a in e.args:
-        if a != nil and a.kind == exkCall and a.callee != nil:
-          if (a.callee.kind == exkVar and a.callee.name == "transitionTo") or
-             (a.callee.kind == exkField and a.callee.fieldName == "transitionTo"):
-            viaTransition = true
-      let prevCtx = tc.transitionCtx
-      if viaTransition: tc.transitionCtx = true
-      calleeT = tc.synthesize(e.callee)  # variant constructions carry their type
-      tc.transitionCtx = prevCtx
-    for a in e.args: discard tc.synthesize(a)
-    calleeT
-  of exkBinary:
-    let lt = tc.synthesize(e.left)
-    # `or` is strictly boolean. Result structs flow whole; handling belongs to
-    # the next function in the chain (prelude, eventually) or `?` propagation.
-    let rt = tc.synthesize(e.right)
-    for (t, side) in [(lt, e.left), (rt, e.right)]:
-      if isWrapper(t):
-        fail("Type Error: unhandled " & typeName(t) &
-             " — pass it to a handling function or propagate with '?'", side.span)
-    case e.binOp
-    of boAdd, boSub, boMul, boDiv, boMod:
-      if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
-        fail("Type Error: arithmetic between " & typeName(lt) & " and " &
-             typeName(rt), e.span)
-      if isUnknown(lt): rt else: lt
-    of boEq, boNeq, boLt, boGt, boLe, boGe:
-      if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
-        fail("Type Error: comparison between " & typeName(lt) & " and " &
-             typeName(rt), e.span)
-      Type(span: e.span, kind: tkNamed, name: "bool")
-    else:
-      Type(span: e.span, kind: tkNamed, name: "bool")
+  of exkCall: tc.synthCall(e)
+  of exkBinary: tc.synthBinary(e)
   of exkUnary:
     let t = tc.synthesize(e.operand)
     if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
@@ -491,47 +556,8 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
           tc.unhandledSites.add(typeName(last) & " discarded at " & site)
     tc.popScope()
     last
-  of exkIf:
-    let condT = tc.synthesize(e.cond)
-    if isWrapper(condT):
-      fail("Type Error: unhandled " & typeName(condT) &
-           " in condition — pass it to a handling function or propagate with '?'", e.cond.span)
-    if not isUnknown(condT) and not tc.compatible(condT,
-        Type(span: e.span, kind: tkNamed, name: "bool")):
-      fail("Type Error: if condition must be bool, got " & typeName(condT), e.cond.span)
-    # `if r.ok:` narrows r inside the then-branch ONLY — outside the guard
-    # the value is still the wrapped type (strict, scope-limited)
-    var guard = ""
-    if e.cond != nil and e.cond.kind == exkField and e.cond.fieldName == "ok" and
-       e.cond.receiver != nil and e.cond.receiver.kind == exkVar and
-       e.cond.receiver.name notin tc.okNarrowed:
-      guard = e.cond.receiver.name
-    if guard != "": tc.okNarrowed.incl(guard)
-    let thenT = tc.synthesize(e.thenBranch)
-    if guard != "": tc.okNarrowed.excl(guard)
-    let elseT = tc.synthesize(e.elseBranch)
-    # Branches that produce values must agree on the type
-    if e.elseBranch != nil and not isUnknown(thenT) and not isUnknown(elseT) and
-       not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
-      fail("Type Error: if branches produce different types: " &
-           typeName(thenT) & " vs " & typeName(elseT), e.span)
-    if isUnknown(thenT): elseT else: thenT
-  of exkMatch:
-    discard tc.synthesize(e.subject)
-    var armT = unknownType(e.span)
-    for arm in e.arms:
-      tc.pushScope()
-      # v1: pattern-bound names enter scope as Unknown
-      if arm.pattern != nil and arm.pattern.kind == pkVar:
-        tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
-      let t = tc.synthesize(arm.body)
-      tc.popScope()
-      if not isUnknown(t) and not isUnknown(armT) and
-         not tc.compatible(t, armT) and not tc.compatible(armT, t):
-        fail("Type Error: match arms produce different types: " &
-             typeName(armT) & " vs " & typeName(t), arm.span)
-      if isUnknown(armT): armT = t
-    armT
+  of exkIf: tc.synthIf(e)
+  of exkMatch: tc.synthMatch(e)
   of exkFor:
     discard tc.synthesize(e.iterable)
     tc.pushScope()
@@ -600,21 +626,7 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
       discard tc.synthesize(rv)  # dynamic re-raise
     # control-flow exit: neutral type so branches/blocks don't see a wrapper
     Type(span: e.span, kind: tkNamed, name: "unit")
-  of exkChain:
-    let baseT = tc.synthesize(e.base)
-    # Spec 2.3: `..` mutation only on var bindings
-    if e.base != nil and e.base.kind == exkVar:
-      var hasMutation = false
-      for step in e.steps:
-        if step.op == coDotDot: hasMutation = true
-      if hasMutation:
-        let (found, b) = tc.lookup(e.base.name)
-        if found and not b.isVar:
-          fail("Type Error: cannot mutate '" & e.base.name &
-               "' with '..' — it was declared with 'let'; use 'var'", e.span)
-    for step in e.steps:
-      discard tc.synthesize(step.arg)
-    baseT
+  of exkChain: tc.synthChain(e)
   of exkQualified, exkImport:
     unknownType(e.span)
 
