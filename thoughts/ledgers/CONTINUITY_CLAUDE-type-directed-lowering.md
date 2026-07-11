@@ -20,13 +20,21 @@ remaining blockers are named).
 - Annotate in synthesize dispatcher (one place, post-forth-refactor).
 - Unknown type stays nil-equivalent for codegen (don't explode Unknowns).
 
-## State
-- Now: [→] Phase 1: ty field + stamping + pipeline verify
-- Remaining:
-  - [ ] Phase 2: record-var call explosion (genCall/genConstruction)
-  - [ ] Phase 3: generic record construction (drop v1 checker error)
-  - [ ] Phase 4: mutation-site validate; examples 18/04/12 → gate attempt
-  - [ ] Docs: ROADMAP (Partial rows: alias lowering, invariants), progress.md
+## State — COMPLETE for this pass (2026-07-11)
+- [x] Phase 1: Expr.ty stamped in synthesize wrapper; pipeline shares refs.
+- [x] Phase 2: explodeRecordArg in genCall + genConstruction; `p advance` →
+      advance(p.position, p.step), runtime-verified, cli_smoke regression.
+      Root-caused: constructions synthesized Unknown — now typed. Also fixed
+      latent written-order arg bug in genConstruction struct path. 096da30.
+- [x] Phase 3: generic construction — checker infers bindings from payload,
+      ty stamp carries tkApp; codegen emits Box[int](...). Uninferrable
+      param = clear error. Runtime-verified.
+- [~] Phase 4 findings: mutation validate blocked on `..` emission DESIGN
+      (setter-call convention `x.field(arg)` — needs user ruling on mutation
+      lowering), not on type info. Ex 04/12 = sketch decl edits only;
+      ex 18 = alias() restructuring (separate feature). Gate unchanged 14/25.
+- Ceilings: non-exkVar payload args not exploded (double-eval; bind-to-temp
+  when needed); cross-module explosion (qualified callee) not attempted.
 
 ## Open Questions
 - UNCONFIRMED: does `tuck check` (no codegen) path share TypeChecker AST with

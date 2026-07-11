@@ -473,10 +473,28 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     for a in e.args: discard tc.synthesize(a)
     return Type(span: e.span, kind: tkNamed, name: calleeName)
   if calleeName != "" and tc.typeGenerics.hasKey(calleeName):
-    # ponytail: v1 ceiling — Nim needs explicit Box[int](...) and codegen has
-    # no checker info; lift when type-directed lowering lands
-    fail("Type Error: '" & calleeName & "' is a generic type — direct " &
-         "construction is not supported yet; return it from a generic fn instead", e.span)
+    # {value: 5} Box — infer the type params from the payload fields; the ty
+    # stamp lets codegen emit the explicit Box[int](...) Nim needs
+    let gs = tc.typeGenerics[calleeName]
+    var bindings = initTable[string, Type]()
+    if e.args.len == 1 and e.args[0].kind == exkStruct:
+      let declFields = getFieldsForType(tc.module, tc.typeDecls[calleeName])
+      for f in e.args[0].fields:
+        let ft = tc.synthesize(f[1])
+        for df in declFields:
+          if df.name == f[0]:
+            tc.inferBindings(df.typ, ft, gs, bindings, calleeName, f[1].span)
+            break
+    else:
+      for a in e.args: discard tc.synthesize(a)
+    var gargs: seq[Type]
+    for g in gs:
+      if not bindings.hasKey(g):
+        fail("Type Error: cannot infer generic parameter '" & g & "' of '" &
+             calleeName & "' from the construction payload", e.span)
+      gargs.add(bindings[g])
+    return Type(span: e.span, kind: tkApp,
+                base: Type(span: e.span, kind: tkNamed, name: calleeName), args: gargs)
   if calleeName != "" and tc.typeDecls.hasKey(calleeName) and
      not tc.fnSigs.hasKey(calleeName):
     # {fields} TypeName — construction produces the declared type

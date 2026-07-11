@@ -743,13 +743,21 @@ fn get({b: Box[int]}) -> str:
   return b.value
 """, "str"
 
-expectError "generic record construction unsupported v1", """
+expectOk "generic record construction infers instantiation", """
 type Box[T] = {value: T}
 
 fn f() -> int:
   let b = {value: 5} Box
+  return b.value
+"""
+
+expectError "generic construction with uninferrable param", """
+type Box[T] = {value: T}
+
+fn f() -> int:
+  let b = {} Box
   return 1
-""", "generic"
+""", "cannot infer"
 
 if failures > 0:
   echo failures, " test(s) failed"

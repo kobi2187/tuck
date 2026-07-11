@@ -68,11 +68,11 @@ construction, generic bodies gradual, no constraints).
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
-| Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). Mutation + extern/deserialization sites wait on type-directed lowering (codegen has no var-type env; `..` emission itself needs it). Fallible `!T` returns not validated yet. Ruling: BLOCK syntax only |
+| Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). Mutation sites still deferred — NOT on lowering anymore but on the `..` emission design itself (emits `x.field(arg)` setter-call convention; needs a ruling on what mutation lowers to). Extern/deserialization + `!T`-wrapped returns pending. Ruling: BLOCK syntax only |
 | Actors | 9.1 | coroutine/state-machine runtime, static ring queues, scheduler (design open) |
 | Tasks | 9.2 | state-machine transform at [io] yield points |
 | bake | 3.5 | real specialization; ex 03 emits invalid Nim |
-| alias / type-directed lowering | 2.5 | record expansion at call sites; blocks ex 18, 04, 12 |
+| alias restructuring | 2.5 | alias() field-rename lowering (blocks ex 18). Type-directed lowering itself LANDED 2026-07-11: typed AST (Expr.ty), record-var payload explosion (`p advance` → advance(p.position, p.step)), generic record construction Box[int](...). Ex 04/12 need only sketch decl edits. Non-exkVar payload args not exploded (double-eval; bind-to-temp later) |
 | pool / arena | 7.2/7.3 | acquire/release bitmask, reset, scope analysis, size verification |
 | Interfaces | 5.2/5.3 | satisfies checking, fat-pointer dispatch |
 | Type composition `+` | 4.5 | conflict detection unverified |

@@ -369,6 +369,27 @@
   thoughts/ledgers/CONTINUITY_CLAUDE-forth-refactor.md (complete).
 - Commits: b7f8af0, efcfb3a, ff9dfd3, 5721e91.
 
+## 2026-07-11 — type-directed lowering: typed AST + the blockers it kills
+- Expr.ty: checker stamps every expression's type in ONE place (synthesize
+  wrapper — forth-refactor payoff). Codegen reads the stamp; ty==nil always
+  falls back to old emission. No side-table (TypeChecker is the transient
+  semantic object; side tables wait for stable node IDs / LSP).
+- Record-var payload explosion: `p advance` → `advance(p.position, p.step)`
+  (param order, field-name match — mirrors checker subset matching). exkVar
+  args only (double-eval guard). Root cause found on the way: constructions
+  `{...} TypeName` synthesized Unknown — now typed as their decl. Also fixed
+  latent bug: struct-literal args in fn bodies were emitted in WRITTEN order,
+  not param order.
+- Generic record construction UNBLOCKED: checker infers T from payload,
+  codegen emits `Box[int](value: 41)` from the ty stamp; uninferrable = error.
+  Old v1 checker error removed; tests flipped.
+- NOT done, with reasons named: mutation-site validate (blocked on `..`
+  emission design — `x ..field {v}` emits setter-call `x.field(v)`, needs a
+  ruling on mutation lowering); ex 18 (alias() restructuring, separate
+  feature); ex 04/12 (sketch decl edits only, no compiler work).
+- cli_smoke gained the explosion regression. All suites green. Commits
+  096da30 + follow-up. Ledger: CONTINUITY_CLAUDE-type-directed-lowering.md.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

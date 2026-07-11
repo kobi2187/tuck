@@ -376,7 +376,14 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     var parts: seq[string]
     for field in e.args[0].fields:
       parts.add(field[0] & ": " & ctx.genExpr(field[1]))
-    let ctor = e.callee.name & "(" & parts.join(", ") & ")"
+    # generic type: the checker's ty stamp carries the inferred instantiation
+    var ctorName = e.callee.name
+    if e.ty != nil and e.ty.kind == tkApp and e.ty.base != nil and
+       e.ty.base.kind == tkNamed and e.ty.base.name == e.callee.name:
+      var gparts: seq[string]
+      for a in e.ty.args: gparts.add(genType(a))
+      ctorName &= "[" & gparts.join(", ") & "]"
+    let ctor = ctorName & "(" & parts.join(", ") & ")"
     if hasInvariants(ctx.module, e.callee.name):
       # production site: construction — validate before the value flows on
       ctx.tmpCounter.inc
