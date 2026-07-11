@@ -159,6 +159,27 @@ proc resolveImport*(importerPath, module: string): string =
   raise newException(ModuleError,
     "imported module '" & module & "' not found: tried " & candidates.join(", "))
 
+# Imported TYPES are visible unqualified in the importer (user ruling —
+# composition must read clean: `type Player = Playback + Cache`). Inject
+# imported type decls into each importer, marked so codegen skips re-emitting
+# them (Nim's own import brings the real definitions in).
+proc injectImportedTypes*(prog: var seq[LoadedModule]) =
+  var typesByName = initTable[string, seq[Decl]]()
+  for lm in prog:
+    var own: seq[Decl]
+    for d in lm.m.decls:
+      if d != nil and d.kind == dkType and d.span.file != ImportedTypeMarker:
+        own.add(d)
+    typesByName[lm.name] = own
+  for i in 0 ..< prog.len:
+    for imp in importsOf(prog[i].m):
+      for td in typesByName.getOrDefault(imp):
+        let marked = Decl(kind: dkType, name: td.name, generics: td.generics,
+                          typeBody: td.typeBody, typeMembers: td.typeMembers,
+                          span: Span(line: td.span.line, col: td.span.col,
+                                     file: ImportedTypeMarker))
+        prog[i].m.decls.insert(marked, 0)
+
 proc loadProgram*(entryPath: string): seq[LoadedModule] =
   ## Parse the entry file and its whole import closure. Dep-first order,
   ## entry module last. Diamond imports collapse; cycles are errors.

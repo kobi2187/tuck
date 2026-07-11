@@ -549,6 +549,8 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
         for a in d.typeBody.attrs:
           if a.name == "distinct":
             tc.distinctNames.incl(d.name)
+      # manager types carry functionality: member fns join the catalog
+      tc.collectSigs(d.typeMembers)
     of dkObject: tc.collectSigs(d.objMembers)
     of dkMixin: tc.collectSigs(d.mixinMembers)
     of dkActor: tc.collectSigs(d.handlers)

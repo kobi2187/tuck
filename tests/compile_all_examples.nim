@@ -61,7 +61,8 @@ proc compileExample(path: string) =
   let baseName = filename.changeFileExt("")
 
   # Steps 1-2: whole import closure (lex + parse, msgpack-cached imports)
-  let prog = loadProgram(path)
+  var prog = loadProgram(path)
+  injectImportedTypes(prog)  # imported types are visible unqualified
   var mods: seq[tuple[name, path: string, m: Module]]
   for lm in prog: mods.add((lm.name, lm.path, lm.m))
 

@@ -211,6 +211,11 @@ type
   LitKind* = enum
     lkInt, lkFloat, lkStr, lkBool, lkUnit
 
+  # Imported type decls are injected into the importer for checking and
+  # lowering, marked with this span.file so codegen skips re-emitting them.
+const ImportedTypeMarker* = "<imported>"
+
+type
   # A function signature as stored in the .tuck-cache signature index:
   # enough to typecheck an importer without deserializing the module's AST.
   SigInfo* = object

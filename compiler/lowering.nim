@@ -148,6 +148,14 @@ proc lowerModule*(m: Module) =
       for member in d.objMembers:
         if member.kind == dkFn:
           lowerExpr(member.fnBody, m)
+    of dkType:
+      for member in d.typeMembers:
+        if member.kind == dkFn:
+          lowerExpr(member.fnBody, m)
+    of dkMixin:
+      for member in d.mixinMembers:
+        if member.kind == dkFn:
+          lowerExpr(member.fnBody, m)
     of dkExpr:
       lowerExpr(d.expr, m)
     else:

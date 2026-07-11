@@ -104,6 +104,14 @@ proc fieldType(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
       return enumName
   return genType(f.typ)
 
+# {fields} TypeName — construction of a declared record type
+proc isRecordType(m: Module, name: string): bool =
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.name == name and
+       d.typeBody != nil and d.typeBody.kind == tkRecord:
+      return true
+  false
+
 # err Enum.Variant — a reference to a declared error enum's variant?
 proc isErrEnumRef(m: Module, e: Expr): bool =
   if e == nil or e.kind != exkField or e.receiver == nil or
@@ -121,11 +129,13 @@ proc lookupFnParams(m: Module, name: string): seq[string] =
       for p in d.fnParams:
         res.add(p.name)
       return res
-    # extern fns live in a mixin block but have concrete exploded params.
-    # Pending fns stay excluded: their stub takes one generic payload.
-    if d.kind == dkMixin:
-      for mem in d.mixinMembers:
-        if mem.kind == dkFn and mem.isExtern and mem.name == name:
+    # member fns (mixin buckets, manager types, externs) have concrete
+    # exploded params. Pending fns stay excluded: their stub takes one
+    # generic payload.
+    if d.kind == dkMixin or d.kind == dkType:
+      let members = if d.kind == dkMixin: d.mixinMembers else: d.typeMembers
+      for mem in members:
+        if mem.kind == dkFn and not mem.isPending and mem.name == name:
           var res: seq[string]
           for p in mem.fnParams:
             res.add(p.name)
@@ -165,6 +175,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
   of exkCall:
     var args: seq[string]
     let calleeStr = ctx.genExpr(e.callee, m)
+    if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(m, calleeStr):
+      # record construction: named fields, not positional
+      var parts: seq[string]
+      for field in e.args[0].fields:
+        parts.add(field[0] & ": " & ctx.genExpr(field[1], m))
+      return calleeStr & "(" & parts.join(", ") & ")"
     if e.args.len == 1 and e.args[0].kind == exkStruct:
       # qualified callee into a real module: param order lives in THAT module
       let expectedParams =
@@ -327,6 +343,14 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     genQualified(ctx, e)
   of exkCall:
     var args: seq[string]
+    if e.args.len == 1 and e.args[0].kind == exkStruct and
+       e.callee != nil and e.callee.kind == exkVar and
+       isRecordType(ctx.module, e.callee.name):
+      # record construction: named fields, not positional
+      var parts: seq[string]
+      for field in e.args[0].fields:
+        parts.add(field[0] & ": " & ctx.genExpr(field[1]))
+      return e.callee.name & "(" & parts.join(", ") & ")"
     if e.args.len == 1 and e.args[0].kind == exkStruct:
       for field in e.args[0].fields:
         args.add(ctx.genExpr(field[1]))
@@ -501,6 +525,8 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
 
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   if d == nil: return ""
+  if d.kind == dkType and d.span.file == ImportedTypeMarker:
+    return ""  # defined in its own module; the Nim import brings it in
   case d.kind
   of dkFn:
     if d.isPending:
@@ -694,6 +720,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
             invariantChecks.add("  assert(" & condStr & ", \"Invariant violated: " & condStr & "\")")
         if invariantChecks.len > 0:
           res.add("\nproc validate*(self: " & d.name & ") =\n" & invariantChecks.join("\n") & "\n")
+        # manager types carry functionality: member fns join the catalog
+        for member in d.typeMembers:
+          if member.kind == dkFn:
+            res.add("\n" & ctx.genDecl(member) & "\n")
         return res
       else:
         var isDistinctT = false
@@ -909,6 +939,9 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     for m in d.mixinMembers:
       if m.kind == dkFn and m.isPending:
         res.add(genPendingStub(m) & "\n")
+      elif m.kind == dkFn and not m.isExtern:
+        # a mixin is a named bucket of functions (spec 5.1) — emit them
+        res.add(ctx.genDecl(m) & "\n")
       elif m.kind == dkFn and m.isExtern and m.externHeader != "":
         var params: seq[string]
         for prm in m.fnParams:

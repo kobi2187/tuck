@@ -775,8 +775,24 @@ proc parseObjectBody(p: var Parser, fields: var seq[FieldDef], members: var seq[
       let fSp = p.getSpan()
       discard p.advance()
       discard p.expect(tkColon)
-      let expr = p.parseExpr()
-      members.add(Decl(span: fSp, kind: dkExpr, expr: expr))
+      if p.current().kind == tkNewline:
+        # block form: each line is one invariant predicate
+        discard p.advance()
+        while p.current().kind == tkNewline:
+          discard p.advance()
+        discard p.expect(tkIndent)
+        while p.current().kind != tkDedent and p.current().kind != tkEOF:
+          if p.current().kind == tkNewline:
+            discard p.advance()
+            continue
+          let eSp = p.getSpan()
+          members.add(Decl(span: eSp, kind: dkExpr, expr: p.parseExpr()))
+          if p.current().kind == tkNewline:
+            discard p.advance()
+        discard p.expect(tkDedent)
+      else:
+        let expr = p.parseExpr()
+        members.add(Decl(span: fSp, kind: dkExpr, expr: expr))
       if p.current().kind == tkNewline:
         discard p.advance()
     else:
@@ -1284,11 +1300,27 @@ proc parseDecl*(p: var Parser): Decl =
         let fSp = p.getSpan()
         discard p.advance()
         discard p.expect(tkColon)
-        let expr = p.parseExpr()
-        members.add(Decl(span: fSp, kind: dkExpr, expr: expr))
+        if p.current().kind == tkNewline:
+          # block form: each line is one invariant predicate
+          discard p.advance()
+          while p.current().kind == tkNewline:
+            discard p.advance()
+          discard p.expect(tkIndent)
+          while p.current().kind != tkDedent and p.current().kind != tkEOF:
+            if p.current().kind == tkNewline:
+              discard p.advance()
+              continue
+            let eSp = p.getSpan()
+            members.add(Decl(span: eSp, kind: dkExpr, expr: p.parseExpr()))
+            if p.current().kind == tkNewline:
+              discard p.advance()
+          discard p.expect(tkDedent)
+        else:
+          let expr = p.parseExpr()
+          members.add(Decl(span: fSp, kind: dkExpr, expr: expr))
         if p.current().kind == tkNewline:
           discard p.advance()
-          
+
       else:
         let fSp = p.getSpan()
         let fName = p.expect(tkIdent, "Expected field or variant in type").value

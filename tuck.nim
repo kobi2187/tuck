@@ -67,6 +67,7 @@ proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
       (result, sigOnly) = loadProgramIndexed(path)
   except ModuleError as err:
     die(path & ": " & err.msg)
+  injectImportedTypes(result)  # imported types are visible unqualified
   var mods: seq[tuple[name, path: string, m: Module]]
   for lm in result: mods.add((lm.name, lm.path, lm.m))
   var preSigs = initTable[string, seq[SigInfo]]()
