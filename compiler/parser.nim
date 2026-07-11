@@ -202,68 +202,97 @@ proc parseInvariantBlock(p: var Parser, members: var seq[Decl]) =
   if p.current().kind == tkNewline:
     discard p.advance()
 
+# u16 [big_endian] / -> T [io] / !T [error: FsError] — attributes in TYPE-USE
+# position (already inside the bracket; caller ate "[")
+proc parseTypeUseAttrs(p: var Parser): seq[TypeAttr] =
+  while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+    let attrSp = p.getSpan()
+    let attrName = p.expect(tkIdent, "Expected attribute name").value
+    if attrName == "error":
+      # [error: FsError | NetError] — one attr per listed enum
+      discard p.expect(tkColon)
+      result.add(TypeAttr(name: "error",
+        value: p.expect(tkIdent, "Expected error enum name").value, span: attrSp))
+      while p.current().kind == tkPipe:
+        discard p.advance()
+        result.add(TypeAttr(name: "error",
+          value: p.expect(tkIdent, "Expected error enum name after '|'").value, span: attrSp))
+      if p.current().kind == tkComma:
+        discard p.advance()
+      continue
+    var val = ""
+    if p.current().kind == tkColon:
+      discard p.advance()
+      val = p.parseExpr().toString()
+    result.add(TypeAttr(name: attrName, value: val, span: attrSp))
+    if p.current().kind == tkComma:
+      discard p.advance()
+  discard p.expect(tkRBracket)
+
+# (T, U) -> R fn types, (T) grouping, (A, B) tuples
+proc parseParenType(p: var Parser, sp: Span): Type =
+  discard p.advance()
+  var types: seq[Type]
+  while p.current().kind != tkRParen and p.current().kind != tkEOF:
+    types.add(p.parseType())
+    if p.current().kind == tkComma:
+      discard p.advance()
+  discard p.expect(tkRParen)
+  if p.current().kind == tkArrow:
+    discard p.advance()
+    let retType = p.parseType()
+    return Type(span: sp, kind: tkFunc, params: types, result: retType)
+  elif types.len == 1:
+    return types[0]
+  else:
+    return Type(span: sp, kind: tkTuple, elems: types)
+
+# {A, B} inline enum or {a: T, b: U} inline record
+proc parseBraceType(p: var Parser, sp: Span): Type =
+  let isEnum = p.peek(2).kind in {tkComma, tkRBrace}
+  discard p.advance()
+  if isEnum:
+    var variants: seq[VariantDef]
+    while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+      let vSp = p.getSpan()
+      let name = p.expect(tkIdent, "Expected tag name in enum").value
+      variants.add(VariantDef(name: name, fields: @[], span: vSp))
+      if p.current().kind == tkComma:
+        discard p.advance()
+    discard p.expect(tkRBrace)
+    return Type(span: sp, kind: tkSum, variants: variants, transitions: @[], attrs: @[])
+  else:
+    var fields: seq[FieldDef]
+    while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+      let fSp = p.getSpan()
+      let name = p.expect(tkIdent, "Expected field name in record definition").value
+      discard p.expect(tkColon)
+      let typ = p.parseType()
+      fields.add(FieldDef(name: name, typ: typ, attrs: @[], span: fSp))
+      if p.current().kind == tkComma:
+        discard p.advance()
+    discard p.expect(tkRBrace)
+    return Type(span: sp, kind: tkRecord, fields: fields, attrs: @[])
+
 proc parsePrimaryType(p: var Parser): Type =
   let sp = p.getSpan()
   let curr = p.current()
-  if curr.kind == tkBang:
+  if curr.kind in {tkBang, tkQuestion, tkBangQuestion}:
+    # !T / ?T / !?T — result wrappers (spec 4.8), stored as tkApp on "!"/"?"/"!?"
+    let marker = case curr.kind
+      of tkBang: "!"
+      of tkQuestion: "?"
+      else: "!?"
     discard p.advance()
     let inner = p.parseType()
-    let bangBase = Type(span: sp, kind: tkNamed, name: "!")
-    return Type(span: sp, kind: tkApp, base: bangBase, args: @[inner])
-  elif curr.kind == tkQuestion:
-    discard p.advance()
-    let inner = p.parseType()
-    let questBase = Type(span: sp, kind: tkNamed, name: "?")
-    return Type(span: sp, kind: tkApp, base: questBase, args: @[inner])
-  elif curr.kind == tkBangQuestion:
-    discard p.advance()
-    let inner = p.parseType()
-    let bqBase = Type(span: sp, kind: tkNamed, name: "!?")
-    return Type(span: sp, kind: tkApp, base: bqBase, args: @[inner])
+    let wrapBase = Type(span: sp, kind: tkNamed, name: marker)
+    return Type(span: sp, kind: tkApp, base: wrapBase, args: @[inner])
 
   elif curr.kind == tkLParen:
-    discard p.advance()
-    var types: seq[Type]
-    while p.current().kind != tkRParen and p.current().kind != tkEOF:
-      types.add(p.parseType())
-      if p.current().kind == tkComma:
-        discard p.advance()
-    discard p.expect(tkRParen)
-    
-    if p.current().kind == tkArrow:
-      discard p.advance()
-      let retType = p.parseType()
-      return Type(span: sp, kind: tkFunc, params: types, result: retType)
-    elif types.len == 1:
-      return types[0]
-    else:
-      return Type(span: sp, kind: tkTuple, elems: types)
+    return p.parseParenType(sp)
 
   elif curr.kind == tkLBrace:
-    let isEnum = p.peek(2).kind in {tkComma, tkRBrace}
-    discard p.advance()
-    if isEnum:
-      var variants: seq[VariantDef]
-      while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-        let vSp = p.getSpan()
-        let name = p.expect(tkIdent, "Expected tag name in enum").value
-        variants.add(VariantDef(name: name, fields: @[], span: vSp))
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRBrace)
-      return Type(span: sp, kind: tkSum, variants: variants, transitions: @[], attrs: @[])
-    else:
-      var fields: seq[FieldDef]
-      while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-        let fSp = p.getSpan()
-        let name = p.expect(tkIdent, "Expected field name in record definition").value
-        discard p.expect(tkColon)
-        let typ = p.parseType()
-        fields.add(FieldDef(name: name, typ: typ, attrs: @[], span: fSp))
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRBrace)
-      return Type(span: sp, kind: tkRecord, fields: fields, attrs: @[])
+    return p.parseBraceType(sp)
 
   elif curr.kind == tkFn:
     discard p.advance()
@@ -287,31 +316,7 @@ proc parsePrimaryType(p: var Parser): Type =
         "io", "unsafe", "may_block", "stack", "priority"])  # effect markers after a return type
       discard p.advance() # eat "["
       if isAttr:
-        var tAttrs: seq[TypeAttr]
-        while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-          let attrSp = p.getSpan()
-          let attrName = p.expect(tkIdent, "Expected attribute name").value
-          if attrName == "error":
-            # [error: FsError | NetError] — one attr per listed enum
-            discard p.expect(tkColon)
-            tAttrs.add(TypeAttr(name: "error",
-              value: p.expect(tkIdent, "Expected error enum name").value, span: attrSp))
-            while p.current().kind == tkPipe:
-              discard p.advance()
-              tAttrs.add(TypeAttr(name: "error",
-                value: p.expect(tkIdent, "Expected error enum name after '|'").value, span: attrSp))
-            if p.current().kind == tkComma:
-              discard p.advance()
-            continue
-          var val = ""
-          if p.current().kind == tkColon:
-            discard p.advance()
-            val = p.parseExpr().toString()
-          tAttrs.add(TypeAttr(name: attrName, value: val, span: attrSp))
-          if p.current().kind == tkComma:
-            discard p.advance()
-        discard p.expect(tkRBracket)
-        base.attrs = tAttrs
+        base.attrs = p.parseTypeUseAttrs()
       else:
         var args: seq[Type]
         while p.current().kind != tkRBracket and p.current().kind != tkEOF:
@@ -456,6 +461,35 @@ proc isStructLiteral(p: Parser): bool =
       return true
   return false
 
+# {a: 1, b} — struct literal; a bare name is shorthand for name: name
+proc parseStructLiteral(p: var Parser, sp: Span): Expr =
+  discard p.advance()
+  var fields: seq[(string, Expr)]
+  while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+    let name = p.expect(tkIdent, "Expected field name in struct literal").value
+    var valExpr: Expr
+    if p.current().kind == tkColon:
+      discard p.advance()
+      valExpr = p.parseExpr()
+    else:
+      valExpr = Expr(span: sp, kind: exkVar, name: name)
+    fields.add((name, valExpr))
+    if p.current().kind == tkComma:
+      discard p.advance()
+  discard p.expect(tkRBrace)
+  return Expr(span: sp, kind: exkStruct, fields: fields)
+
+# { stmt; stmt } — inline block expression
+proc parseBraceBlock(p: var Parser, sp: Span): Expr =
+  discard p.advance()
+  var stmts: seq[Expr]
+  while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+    stmts.add(p.parseExpr())
+    if p.current().kind == tkNewline:
+      discard p.advance()
+  discard p.expect(tkRBrace)
+  return Expr(span: sp, kind: exkBlock, stmts: stmts)
+
 proc parsePrimaryExpr(p: var Parser): Expr =
   let sp = p.getSpan()
   let curr = p.current()
@@ -507,30 +541,9 @@ proc parsePrimaryExpr(p: var Parser): Expr =
     return Expr(span: sp, kind: exkVar, name: name)
   of tkLBrace:
     if p.isStructLiteral():
-      discard p.advance()
-      var fields: seq[(string, Expr)]
-      while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-        let name = p.expect(tkIdent, "Expected field name in struct literal").value
-        var valExpr: Expr
-        if p.current().kind == tkColon:
-          discard p.advance()
-          valExpr = p.parseExpr()
-        else:
-          valExpr = Expr(span: sp, kind: exkVar, name: name)
-        fields.add((name, valExpr))
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRBrace)
-      return Expr(span: sp, kind: exkStruct, fields: fields)
+      return p.parseStructLiteral(sp)
     else:
-      discard p.advance()
-      var stmts: seq[Expr]
-      while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-        stmts.add(p.parseExpr())
-        if p.current().kind == tkNewline:
-          discard p.advance()
-      discard p.expect(tkRBrace)
-      return Expr(span: sp, kind: exkBlock, stmts: stmts)
+      return p.parseBraceBlock(sp)
   of tkLBracket:
     discard p.advance()
     var items: seq[Expr]
@@ -548,6 +561,56 @@ proc parsePrimaryExpr(p: var Parser): Expr =
   else:
     p.reportError("Expected expression but got: " & $curr.kind)
 
+# Type.Variant [unsafe] — deserialization escape hatch for sealed construction
+# (spec 4.4). Consumes the marker and reports whether it was present.
+proc tryUnsafeMarker(p: var Parser): bool =
+  if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+     p.peek(1).value == "unsafe" and p.peek(2).kind == tkRBracket:
+    discard p.advance()  # [
+    discard p.advance()  # unsafe
+    discard p.advance()  # ]
+    return true
+  false
+
+# expr alias(field: expr, ...) — record restructuring step (spec 2.5)
+proc parseAliasStep(p: var Parser, expr: Expr): Expr =
+  let spAlias = p.getSpan()
+  discard p.advance()
+  discard p.expect(tkLParen)
+  var fields: seq[(string, Expr)]
+  while p.current().kind != tkRParen and p.current().kind != tkEOF:
+    let name = p.expect(tkIdent, "Expected field name in alias").value
+    discard p.expect(tkColon)
+    let valExpr = p.parseExpr()
+    fields.add((name, valExpr))
+    if p.current().kind == tkComma:
+      discard p.advance()
+  discard p.expect(tkRParen)
+  let structExpr = Expr(span: spAlias, kind: exkStruct, fields: fields)
+  let calleeExpr = Expr(span: spAlias, kind: exkVar, name: "alias")
+  return Expr(span: spAlias, kind: exkCall, callee: calleeExpr, args: @[expr, structExpr])
+
+# {payload} fnName / {payload} mod::fn / {payload} Type.Variant [unsafe] —
+# the postfix call, Tuck's one call shape
+proc parsePostfixCall(p: var Parser, expr: Expr, sp: Span): Expr =
+  if p.peek().kind == tkColonColon:
+    let moduleName = p.advance().value
+    discard p.expect(tkColonColon)
+    let name = p.expect(tkIdent, "Expected identifier after '::'").value
+    let calleeExpr = Expr(span: sp, kind: exkQualified, modulePath: @[moduleName], qualName: name)
+    return Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
+  let callee = p.advance().value
+  var calleeExpr = Expr(span: sp, kind: exkVar, name: callee)
+  # Qualified postfix: the callee may be a dotted path; construction flows
+  # payload-first like any call
+  while p.current().kind == tkDot:
+    discard p.advance()
+    let fname = p.expect(tkIdent, "Expected name after '.'").value
+    calleeExpr = Expr(span: sp, kind: exkField, receiver: calleeExpr, fieldName: fname)
+    if p.tryUnsafeMarker():
+      calleeExpr.ctorUnsafe = true
+  return Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
+
 proc parseChainExpr(p: var Parser): Expr =
   var expr = p.parsePrimaryExpr()
   
@@ -557,12 +620,7 @@ proc parseChainExpr(p: var Parser): Expr =
       discard p.advance()
       let fieldName = p.expect(tkIdent, "Expected field name after '.'").value
       expr = Expr(span: sp, kind: exkField, receiver: expr, fieldName: fieldName)
-      # Type.Variant [unsafe] — escape hatch for sealed construction (spec 4.4)
-      if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
-         p.peek(1).value == "unsafe" and p.peek(2).kind == tkRBracket:
-        discard p.advance()  # [
-        discard p.advance()  # unsafe
-        discard p.advance()  # ]
+      if p.tryUnsafeMarker():
         expr.ctorUnsafe = true
     elif p.current().kind == tkDotDot:
       discard p.advance()
@@ -600,44 +658,9 @@ proc parseChainExpr(p: var Parser): Expr =
       let arg = p.parsePrimaryExpr()
       expr = Expr(span: sp, kind: exkCall, callee: expr, args: @[arg])
     elif p.current().kind == tkIdent and p.current().value == "alias" and p.peek().kind == tkLParen:
-      let spAlias = p.getSpan()
-      discard p.advance()
-      discard p.expect(tkLParen)
-      var fields: seq[(string, Expr)]
-      while p.current().kind != tkRParen and p.current().kind != tkEOF:
-        let name = p.expect(tkIdent, "Expected field name in alias").value
-        discard p.expect(tkColon)
-        let valExpr = p.parseExpr()
-        fields.add((name, valExpr))
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRParen)
-      let structExpr = Expr(span: spAlias, kind: exkStruct, fields: fields)
-      let calleeExpr = Expr(span: spAlias, kind: exkVar, name: "alias")
-      expr = Expr(span: spAlias, kind: exkCall, callee: calleeExpr, args: @[expr, structExpr])
+      expr = p.parseAliasStep(expr)
     elif p.current().kind == tkIdent and not (p.current().value in ["or", "and", "in", "invariant", "transitions"]):
-      if p.peek().kind == tkColonColon:
-        let moduleName = p.advance().value
-        discard p.expect(tkColonColon)
-        let name = p.expect(tkIdent, "Expected identifier after '::'").value
-        let calleeExpr = Expr(span: sp, kind: exkQualified, modulePath: @[moduleName], qualName: name)
-        expr = Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
-      else:
-        let callee = p.advance().value
-        var calleeExpr = Expr(span: sp, kind: exkVar, name: callee)
-        # Qualified postfix: {payload} Type.Variant [unsafe] — the callee may
-        # be a dotted path; construction flows payload-first like any call
-        while p.current().kind == tkDot:
-          discard p.advance()
-          let fname = p.expect(tkIdent, "Expected name after '.'").value
-          calleeExpr = Expr(span: sp, kind: exkField, receiver: calleeExpr, fieldName: fname)
-          if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
-             p.peek(1).value == "unsafe" and p.peek(2).kind == tkRBracket:
-            discard p.advance()
-            discard p.advance()
-            discard p.advance()
-            calleeExpr.ctorUnsafe = true
-        expr = Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
+      expr = p.parsePostfixCall(expr, sp)
     else:
       break
   return expr
