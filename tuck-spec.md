@@ -645,6 +645,96 @@ Anything allocated from an arena cannot outlive the arena. The compiler enforces
 this via scope analysis. No per-object free, no fragmentation, worst-case
 allocation time is a pointer increment.
 
+### 7.4 The Resource Registry
+
+Scope-based RAII is the wrong model for OS resources. A hot loop that opens and
+closes a file or socket per iteration thrashes on syscalls; the true mental
+model is the one the OS itself uses — a global table of handles (the process fd
+table). Tuck makes that table explicit: every acquired OS resource lives in a
+global, per-kind registry inside the runtime. Nothing is ever lost, even under
+GC; cleanup is policy, not accident.
+
+**Declaration.** Resource *kinds* are user-declared, an open set — a UDP
+library declares its own kind the same way a module declares its error enums:
+
+```tuck
+resources:
+  net  [cap: 10_000, on_full: error, sweep_batch: 100]
+  file [cap: 8, on_finish: flush]
+  udp                     # no cap: unbounded, seq-backed
+```
+
+`cap` is optional. Without it the table grows (the OS ulimit is the real
+bound); with it the declared `on_full` policy applies and standalone targets
+back the table with a static array — the cap becomes a link-time memory
+budget, and on hosted servers the explicit shed-load point (the
+`worker_connections` knob, in the language). The cap is also the leak alarm:
+a table that fills is a bug surfacing early, not an OOM three days in.
+
+**Handles, not refs.** User code never holds the resource — it holds an opaque
+handle: a plain value (slot index + generation counter), copyable, comparable,
+Tier 1 safe (§7.1). The actual ref lives in the registry entry, in the runtime
+layer, alongside its generation and an `isFinished` flag. A stale handle
+(generation mismatch) is a caught runtime error,
+never a write to the wrong file — the fd-reuse bug class is closed by
+construction. Internally the registry is the pool machinery of §7.2: slot
+array, occupancy bitmask, O(1) acquire and release.
+
+**Acquire sites** are marked in the effects bracket, on extern signatures and
+plain functions alike, and propagate exactly like effects (§3.7 —
+infer-and-propagate; a fn returning a resource it did not finish carries the
+marker):
+
+```tuck
+fn open(port: u16) -> UdpSocket! [io, resource: udp]
+```
+
+An unknown kind in `[resource: k]` is a compile error, same as an undeclared
+error enum.
+
+**`defer` is release intent, not release.** At scope end the defer block marks
+the entry `isFinished: true`, runs the kind's `on_finish` action, and bumps the
+generation — the handle dies *at mark time*, so use-after-defer is a caught
+stale-handle error under every policy, and buggy code behaves identically in
+all modes. Whether the OS handle actually closes there is the declared policy
+(mirroring the `errors` declaration, §4.9):
+
+- **strict** — close at scope end. Deterministic; the embedded/debug default.
+- **lazy** — mark only. Finished entries are reclaimed by a sweep when the
+  table passes a watermark (~75% of cap), on memory pressure, or at cap.
+- **exit** — close-all only at program end.
+
+**finish vs reclaim.** Marking and closing are split so durability never
+depends on sweep timing: `on_finish` (per kind — `file: flush`, net:
+shutdown, default: none) runs at mark time, always; reclaiming the fd itself
+may be lazy. A write-heavy loop under lazy policy loses no data.
+
+**Sweeping is inline — no thread, no background actor.** The trigger lives in
+the defer-release code itself: setting `isFinished` also checks (in lazy mode)
+whether the table has reached the watermark, and if so evicts synchronously
+right there — all finished entries, or in user-specified batches
+(`sweep_batch: 100`). So eviction happens mid-loop, deterministically, inside
+the mark: a loop acquiring 10,000 times against a cap in the thousands never
+blocks — each iteration's defer marks, and the marks themselves reclaim once
+the threshold trips. Amortized, lock-free. An explicit `kind::sweep` call
+exists for scheduled cleanup, and a dedicated sweeper actor is a possible
+opt-in once actors land — never a requirement. Only finished entries are ever
+reclaimed; there is no time-based eviction of live resources. Close-all (exit
+or shutdown) runs in LIFO registration order:
+files flush before their directories close, TLS shuts down before its socket.
+
+**Static tracking.** The checker verifies scope-locally that every acquire
+ends in exactly one of: a defer mark, or an escape into the registry (storing
+or returning the handle). Escape is always sound — the registry guarantees
+close-at-exit — so no whole-program alias analysis is needed; the global table
+is the safety net that makes the local analysis sufficient. There is no
+refcount: resources are single-owner, one bool. Debug builds print an
+`OPEN RESOURCES (n)` report listing unfinished entries with their acquire
+sites, in the same spirit as the PENDING and SHORTCUTS reports.
+
+Both models coexist: `defer` for genuinely scoped lifetimes, the registry as
+the safety net underneath everything.
+
 ---
 
 ## Part 8: Hardware
@@ -1006,6 +1096,9 @@ Items deferred, not forgotten:
 5. **Protocol state machines on message sequences** — valid ordering of messages,
    not just valid message shapes. Post-v1.
 6. **LSP protocol** — error format, incremental re-check triggers.
+7. **Resource registry details (§7.4)** — handle sharing across actors
+   (likely ownership transfer, not refcount — deferred to actor design);
+   sweep scheduling beyond acquire-time watermark + explicit `kind::sweep`.
 
 ---
 

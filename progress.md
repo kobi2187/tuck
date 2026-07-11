@@ -287,6 +287,23 @@
 - Backlog noted: sig index skips stdlib-dir entries (always full-loads,
   msgpack module cache still applies); no int→str/interp for printing nums.
 
+## 2026-07-11 — resource registry designed (spec §7.4, docs only)
+- Design session: global per-kind resource registry replaces scope-RAII as the
+  primary model for OS resources (fd-table mental model; RAII thrash in hot
+  loops). Full design in spec §7.4; rulings condensed in ROADMAP.
+- Key points: user-declared kinds via `resources:` block; `[resource: kind]`
+  attr rides the effects bracket + propagation; u32 index+generation handles
+  (Tier-1 values, refs stay in rt); `defer` = mark isFinished + on_finish
+  (file: flush) + generation bump (handle dies at mark under every policy);
+  close policy strict/lazy/exit mirrors errors decl; sweep runs INLINE in the
+  defer-release code at watermark (~75%), all-finished or `sweep_batch: N` —
+  no thread/actor, no refcount, NO time-based eviction; cap optional
+  (seq-backed unbounded vs static array on standalone); scope-local static
+  check (defer-mark or registry escape, escape always sound); debug
+  OPEN RESOURCES report; LIFO close-all.
+- Implementation = new Missing entry in ROADMAP (parser/checker/rt/codegen/
+  report). Not started.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

@@ -42,6 +42,27 @@ proc, tuck CLI (lex/parse/check/compile).
 - Type wrapper position: both accepted — `int?` == `?int`, canonical
   postfix; combos `T?!`/`T!?` equivalent.
 
+## User rulings (2026-07-11) — resource registry (spec §7.4, design only)
+- Global per-kind registry in tuck_rt (slot table = pool §7.2 machinery);
+  user code holds u32 index+generation HANDLES (Tier-1 values), refs stay in
+  the runtime layer.
+- Kinds user-declared via `resources:` block (open set, like error enums);
+  acquire sites marked `[resource: kind]` in the effects bracket, propagated
+  by the effects machinery. Unknown kind = checker error.
+- `defer` block = release INTENT: marks isFinished, runs per-kind `on_finish`
+  (file: flush), bumps generation (handle dies at mark under every policy).
+  Actual close per policy strict/lazy/exit (errors-decl symmetry).
+- No refcount — single owner, one isFinished bool; eviction candidates =
+  finished entries only.
+- Cap optional: absent → seq-backed unbounded; present → on_full policy,
+  static array on standalone. Watermark sweep (~75%) runs INLINE in the
+  defer-release code (mark checks threshold, evicts all finished or in
+  user-specified batches, `sweep_batch: 100`) — no thread/actor; explicit
+  `kind::sweep` for scheduled cleanup. NO idle/time-based eviction. LIFO
+  close-all.
+- Static check: every acquire ends in defer-mark or registry escape (escape
+  always sound); scope-local analysis only. Debug `OPEN RESOURCES (n)` report.
+
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
@@ -58,6 +79,10 @@ proc, tuck CLI (lex/parse/check/compile).
 | Beef backend | — | emits, never validated |
 
 ## Missing
+- Resource registry §7.4 — parser (`resources` decl, `defer` block,
+  `[resource:]` attr), checker (kind validation, propagation,
+  acquire-must-finish tracking), rt slot table + inline sweep, codegen
+  (mark/close per policy), OPEN RESOURCES report
 - `on select` §9.3 (blocks ex 16) + scheduler §9.4
 - `when TARGET` conditionals §8.3 (blocks ex 11, 20)
 - `pred` / `set` fn prefixes §3.6
