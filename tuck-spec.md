@@ -1087,8 +1087,13 @@ topDecl <- fnDecl | typeDecl | objDecl | mixinDecl | ifaceDecl
 
 Items deferred, not forgotten:
 
-1. **Generics / parametric types** — `Seq[T]`, `Option[T]` used throughout but
-   not yet specified. Likely a simple substitution model, no HKTs.
+1. **Generics / parametric types** — v1 implemented (2026-07-11): simple
+   substitution, Nim/C# style — no variance, no HKTs, no constraints.
+   `fn identity[T]({x: T}) -> T`, `type Box[T] = {value: T}`; type params are
+   Uppercase idents, inferred at call sites from the payload (no explicit
+   call-site type args), lowered verbatim to Nim generics (Nim monomorphizes).
+   Remaining: direct construction of generic records (`{value: 5} Box` —
+   checker error v1), constraints, explicit instantiation syntax.
 2. **Module system** — how files import each other, visibility rules.
 3. **SVD importer** — tooling to generate register declarations from vendor XML.
 4. **Deferred logging** (`defmt`-style) — format-string-ID protocol. Specified as

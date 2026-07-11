@@ -629,7 +629,9 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     for p in d.fnParams:
       params.add(p.name & ": " & genType(p.typ))
     let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
-    let header = "proc " & fnNameSanitized & "*(" & params.join(", ") & "): " & retTypeStr & " ="
+    # Generic fns pass their type params straight through — Nim monomorphizes
+    let genericStr = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]" else: ""
+    let header = "proc " & fnNameSanitized & "*" & genericStr & "(" & params.join(", ") & "): " & retTypeStr & " ="
     let oldVars = ctx.definedVars
     for p in d.fnParams:
       ctx.definedVars.incl(p.name)
@@ -709,7 +711,8 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
         for f in d.typeBody.fields:
           fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
         let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
-        var res = "type " & d.name & "* = ref object\n" & fieldsBody & "\n"
+        let tGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
+        var res = "type " & d.name & "*" & tGen & " = ref object\n" & fieldsBody & "\n"
         var invariantChecks: seq[string]
         var checkCtx = CodegenCtx(definedVars: initHashSet[string](), fieldVars: initHashSet[string](), indent: 0)
         for f in d.typeBody.fields:
@@ -739,7 +742,8 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
             res.add("proc `" & op & "`*(a, b: " & d.name & "): bool {.borrow.}\n")
           res.add("proc `$`*(a: " & d.name & "): string {.borrow.}\n")
           return res
-        return "type " & d.name & "* = " & typeBodyStr & "\n"
+        let aGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
+        return "type " & d.name & "*" & aGen & " = " & typeBodyStr & "\n"
     return ""
   of dkObject:
     var fieldsStr: seq[string]

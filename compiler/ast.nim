@@ -222,6 +222,7 @@ type
     name*: string
     params*: seq[Param]
     ret*: Type
+    generics*: seq[string]
     isPending*: bool
     line*: int
 
@@ -254,6 +255,7 @@ type
     of dkRegistry:
       variants*: seq[VariantDef]
     of dkFn:
+      fnGenerics*: seq[string]
       fnParams*: seq[Param]
       fnReturnType*: Type
       fnEffects*: seq[EffectMarker]

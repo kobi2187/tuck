@@ -304,6 +304,29 @@
 - Implementation = new Missing entry in ROADMAP (parser/checker/rt/codegen/
   report). Not started.
 
+## 2026-07-11 — generics v1: simple substitution, lowered to Nim generics
+- User ruling: usual Nim/C# generics — no variance, no HKTs, no constraints.
+- Key design: Tuck does NOT monomorphize — codegen emits `proc f*[T]` /
+  `type Box*[T]` verbatim and Nim instantiates (same move as errors riding
+  effects machinery). Compiler work = parse + infer + substitute only.
+- parser: `fn identity[T](...)` bracket between name and paren (new fnGenerics
+  on dkFn); `type Box[T] = ...` — Uppercase-first ident disambiguates generics
+  from lowercase attrs in the same bracket position.
+- typecheck: FnSig/SigInfo carry generics (index path included); call sites
+  infer bindings by unifying declared param types against payload field types
+  (recursing tkApp/tkRecord), conflict = error naming both types; substituted
+  params run through the existing arg checks; return type substituted at the
+  call site (unbound params degrade to Unknown — gradual). Generic type
+  aliases resolve through fieldsOf with substitution (Box[int].value: int).
+  Generic fn BODIES are gradual: type params bind as Unknown (Nim rechecks at
+  instantiation). Direct construction of a generic record = friendly checker
+  error (needs type-directed lowering; Nim requires Box[int](...)).
+- Runtime-verified: tuck build of Box[T]+identity[T] program → binary ran
+  exit 0. 76 checker tests green (7 new), gate 14/25, cli smoke, end_to_end.
+- Ceilings: no constraints (arithmetic on T in a body errors at Nim level
+  only via instantiation), positional multi-arg path not generic, generic
+  record construction blocked.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

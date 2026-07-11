@@ -694,6 +694,63 @@ fn go() -> !{body: str} [io]:
     echo "PASS (error)  sig index bad payload — ", err.msg
   removeDir(dir)
 
+# ---------- generics (simple substitution, Nim/C# style — no variance) ----------
+
+expectOk "generic fn call infers and flows return type", """
+fn identity[T]({x: T}) -> T:
+  return x
+
+fn f() -> int:
+  let y = {x: 5} identity
+  return y + 1
+"""
+
+expectError "generic return type mismatch at call site", """
+fn identity[T]({x: T}) -> T:
+  return x
+
+fn g() -> int:
+  return {x: "s"} identity
+""", "int"
+
+expectError "generic binding conflict", """
+fn pair[T]({a: T, b: T}) -> T:
+  return a
+
+let x = {a: 1, b: "s"} pair
+""", "'T'"
+
+expectOk "generic param inside container type", """
+fn firstOf[T]({xs: Seq[T]}) -> T:
+  return {xs} head
+
+fn f({nums: Seq[int]}) -> int:
+  let n = {xs: nums} firstOf
+  return n + 1
+"""
+
+expectOk "generic type alias in signature", """
+type Box[T] = {value: T}
+
+fn get({b: Box[int]}) -> int:
+  return b.value
+"""
+
+expectError "generic type alias field mismatch", """
+type Box[T] = {value: T}
+
+fn get({b: Box[int]}) -> str:
+  return b.value
+""", "str"
+
+expectError "generic record construction unsupported v1", """
+type Box[T] = {value: T}
+
+fn f() -> int:
+  let b = {value: 5} Box
+  return 1
+""", "generic"
+
 if failures > 0:
   echo failures, " test(s) failed"
   quit(1)

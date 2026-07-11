@@ -10,7 +10,9 @@ packed-key codegen), distinct types/units, `!T ?T !?T` + `?` + global error
 policy §4.9, effect enforcement, pending blocks + stubs + TODO report,
 imports + `::` + msgpack AST cache + signature index, registry §10, register
 decl §8.1, sizeof/alignof/offsetof §8.2, static_assert, invariant → validate()
-proc, tuck CLI (lex/parse/check/compile).
+proc, tuck CLI (lex/parse/check/compile), generics v1 (simple substitution,
+call-site inference, lowered to Nim generics; ceilings: no generic-record
+construction, generic bodies gradual, no constraints).
 
 ## User rulings (2026-07-09)
 - §6.3 complexity limit: ENFORCE as hard compile error (cyclomatic ≤ 5,
@@ -88,7 +90,6 @@ proc, tuck CLI (lex/parse/check/compile).
 - `pred` / `set` fn prefixes §3.6
 - Stack-depth budgets `[stack: N]` §6.2
 - Complexity limit §6.3 (ruling: hard error)
-- Generics substitution
 - Error.x validated against a declared error enum
 - Top-level statements / implicit main (ex 11)
 - Visibility (pub/private), imported types via `::`, nested module paths

@@ -28,11 +28,13 @@ proc fail(msg: string, span: Span) =
 
 type
   Binding = tuple[typ: Type, isVar: bool]
-  FnSig = tuple[params: seq[Param], ret: Type]
+  FnSig = tuple[params: seq[Param], ret: Type, generics: seq[string]]
   TypeChecker = object
     module: Module
     fnSigs: Table[string, FnSig]
     typeDecls: Table[string, Type]
+    typeGenerics: Table[string, seq[string]]  # generic type decls: Box -> @["T"]
+    currentGenerics: HashSet[string]          # type params of the fn body being checked
     scopes: seq[Table[string, Binding]]
     currentRet: Type
     currentFn: string
@@ -79,9 +81,22 @@ proc unwrapEffect(t: Type): Type =
     return unwrapEffect(t.args[0])
   return t
 
+proc substituteTypeFwd(t: Type, b: Table[string, Type]): Type
+
 # Field list of a type, resolving named/union/rename via lowering's helper.
+# `Box[int]` resolves through the generic decl with T substituted.
 proc fieldsOf(tc: TypeChecker, t: Type): seq[FieldDef] =
   if t == nil: return @[]
+  if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+     tc.typeGenerics.hasKey(t.base.name) and
+     tc.typeGenerics[t.base.name].len == t.args.len:
+    var b = initTable[string, Type]()
+    let gs = tc.typeGenerics[t.base.name]
+    for i in 0 ..< gs.len: b[gs[i]] = t.args[i]
+    let body = tc.typeDecls[t.base.name]
+    for f in getFieldsForType(tc.module, body):
+      result.add(FieldDef(name: f.name, typ: substituteTypeFwd(f.typ, b), span: f.span))
+    return
   getFieldsForType(tc.module, t)
 
 proc typeName(t: Type): string =
@@ -170,10 +185,65 @@ proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
     fail("Type Error: " & what & " expects " & typeName(expected) &
          " but got " & typeName(actual), e.span)
 
+# --- Generics: simple substitution, Nim/C# style. No variance, no HKTs. ---
+# Type params are inferred at the call site by unifying declared param types
+# against the payload's field types, then substituted into params and return.
+
+proc substituteType(t: Type, b: Table[string, Type]): Type =
+  if t == nil or b.len == 0: return t
+  case t.kind
+  of tkNamed:
+    if b.hasKey(t.name): return b[t.name]
+    t
+  of tkApp:
+    var args: seq[Type]
+    for a in t.args: args.add(substituteType(a, b))
+    Type(span: t.span, kind: tkApp, attrs: t.attrs,
+         base: substituteType(t.base, b), args: args)
+  of tkRecord:
+    var fields: seq[FieldDef]
+    for f in t.fields:
+      fields.add(FieldDef(name: f.name, typ: substituteType(f.typ, b), span: f.span))
+    Type(span: t.span, kind: tkRecord, attrs: t.attrs, fields: fields)
+  else: t
+
+proc substituteTypeFwd(t: Type, b: Table[string, Type]): Type =
+  substituteType(t, b)
+
+proc inferBindings(tc: TypeChecker, declared, actual: Type,
+                   generics: seq[string], bindings: var Table[string, Type],
+                   fnName: string, sp: Span) =
+  if declared == nil or actual == nil or isUnknown(actual): return
+  case declared.kind
+  of tkNamed:
+    if declared.name in generics:
+      if bindings.hasKey(declared.name):
+        if not tc.compatible(actual, bindings[declared.name]) or
+           not tc.compatible(bindings[declared.name], actual):
+          fail("Type Error: generic parameter '" & declared.name & "' of '" &
+               fnName & "' bound to both " & typeName(bindings[declared.name]) &
+               " and " & typeName(actual), sp)
+      else:
+        bindings[declared.name] = actual
+  of tkApp:
+    if actual.kind == tkApp and declared.args.len == actual.args.len:
+      tc.inferBindings(declared.base, actual.base, generics, bindings, fnName, sp)
+      for i in 0 ..< declared.args.len:
+        tc.inferBindings(declared.args[i], actual.args[i], generics, bindings, fnName, sp)
+  of tkRecord:
+    let aFields = if actual.kind == tkRecord: actual.fields else: tc.fieldsOf(actual)
+    for df in declared.fields:
+      for af in aFields:
+        if af.name == df.name:
+          tc.inferBindings(df.typ, af.typ, generics, bindings, fnName, sp)
+          break
+  else: discard
+
 # Match a single call argument against declared params.
 # Tuck convention: one struct-shaped payload whose fields map to params by name.
-proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr) =
-  let params = sig.params
+proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
+                   bindings: var Table[string, Type]) =
+  var params = sig.params
   if e.args.len == 1 and params.len > 0:
     let arg = e.args[0]
     var argFields: seq[tuple[name: string, typ: Type, span: Span]] = @[]
@@ -191,11 +261,26 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr) =
           for f in fs: argFields.add((f.name, f.typ, arg.span))
         elif params.len == 1:
           # Single scalar param: direct positional pass (e.g. `9 addOne`)
-          if not tc.compatible(t, params[0].typ):
+          if sig.generics.len > 0:
+            tc.inferBindings(params[0].typ, t, sig.generics, bindings, fnName, arg.span)
+          let expected = substituteType(params[0].typ, bindings)
+          if not tc.compatible(t, expected):
             fail("Type Error: argument to '" & fnName & "' expects " &
-                 typeName(params[0].typ) & " but got " & typeName(t), arg.span)
+                 typeName(expected) & " but got " & typeName(t), arg.span)
           return
     if not shapeKnown: return  # Unknown payload — let it flow
+    if sig.generics.len > 0:
+      # Infer type-param bindings from the payload, then check against the
+      # substituted signature (conflicts reported inside inferBindings)
+      for p in params:
+        for af in argFields:
+          if af.name == p.name:
+            tc.inferBindings(p.typ, af.typ, sig.generics, bindings, fnName, af.span)
+            break
+      var subst: seq[Param]
+      for p in params:
+        subst.add(Param(name: p.name, typ: substituteType(p.typ, bindings), span: p.span))
+      params = subst
     for p in params:
       if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == "Self": continue
       var found = false
@@ -330,10 +415,21 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
       # Calling a distinct type's name converts from its base (Nim-native)
       for a in e.args: discard tc.synthesize(a)
       return Type(span: e.span, kind: tkNamed, name: calleeName)
+    if calleeName != "" and tc.typeGenerics.hasKey(calleeName):
+      # ponytail: v1 ceiling — Nim needs explicit Box[int](...) and codegen has
+      # no checker info; lift when type-directed lowering lands
+      fail("Type Error: '" & calleeName & "' is a generic type — direct " &
+           "construction is not supported yet; return it from a generic fn instead", e.span)
     if calleeName != "" and tc.fnSigs.hasKey(calleeName):
       let sig = tc.fnSigs[calleeName]
-      tc.checkCallArgs(calleeName, sig, e)
-      return sig.ret
+      var bindings = initTable[string, Type]()
+      tc.checkCallArgs(calleeName, sig, e, bindings)
+      if sig.generics.len == 0: return sig.ret
+      # Unbound type params degrade to Unknown (gradual, like sketch code)
+      for g in sig.generics:
+        if not bindings.hasKey(g):
+          bindings[g] = unknownType(e.span)
+      return substituteType(sig.ret, bindings)
     var calleeT = unknownType(e.span)
     if e.callee != nil and e.callee.kind != exkVar:
       # A construction fed by a transitionTo chain is a transition, not a
@@ -529,7 +625,7 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
     of dkImport:
       tc.knownModules.incl(d.name)
     of dkFn:
-      tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType)
+      tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType, d.fnGenerics)
       if "::" in d.name:
         # qualified sketch stub legalizes its module prefix
         tc.knownModules.incl(d.name.split("::")[0])
@@ -542,10 +638,12 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
         if tc.pendingFns.hasKey(d.name):
           fail("Pending Error: '" & d.name & "' is implemented — remove it from the pending block", d.span)
         tc.implementedFns.incl(d.name)
-    of dkTask: tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType)
+    of dkTask: tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType, @[])
     of dkType:
       if d.typeBody != nil:
         tc.typeDecls[d.name] = d.typeBody
+        if d.generics.len > 0:
+          tc.typeGenerics[d.name] = d.generics
         for a in d.typeBody.attrs:
           if a.name == "distinct":
             tc.distinctNames.incl(d.name)
@@ -570,11 +668,15 @@ proc checkFallibleNeedsIo(name: string, ret: Type, effects: seq[EffectMarker], s
          " — fallible functions must be marked [io]; pure functions are total", span)
 
 proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
-                 ret: Type, body: Expr) =
+                 ret: Type, body: Expr, generics: seq[string] = @[]) =
   tc.pushScope()
+  # Generic bodies are gradual: type params bind as Unknown (checked at the
+  # call site via inference; Nim rechecks per instantiation)
+  var gsub = initTable[string, Type]()
+  for g in generics: gsub[g] = unknownType(Span())
   for p in params:
     # Params bound mutable: `set` functions legitimately use `..` on them
-    tc.bindName(p.name, p.typ, true)
+    tc.bindName(p.name, substituteType(p.typ, gsub), true)
   tc.currentRet = ret
   tc.currentFn = name
   let prevBody = tc.bodyBlock
@@ -740,7 +842,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
       return
     checkFallibleNeedsIo(d.name, d.fnReturnType, d.fnEffects, d.span)
     tc.currentErrTypes = d.fnErrorTypes
-    tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody)
+    tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody, d.fnGenerics)
     tc.currentErrTypes = @[]
   of dkTask:
     checkFallibleNeedsIo(d.name, d.taskReturnType, d.taskEffects, d.span)
@@ -835,6 +937,7 @@ proc moduleSigs*(m: Module): seq[SigInfo] =
   tc.collectSigs(m.decls)
   for name, sig in tc.fnSigs:
     result.add(SigInfo(name: name, params: sig.params, ret: sig.ret,
+                       generics: sig.generics,
                        isPending: tc.pendingFns.hasKey(name),
                        line: tc.pendingFns.getOrDefault(name).line))
 
@@ -881,7 +984,7 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
       else:
         for si in preSigs.getOrDefault(imp):
           if "::" notin si.name:
-            extern[imp & "::" & si.name] = (si.params, si.ret)
+            extern[imp & "::" & si.name] = (si.params, si.ret, si.generics)
             if si.isPending:
               externPend[imp & "::" & si.name] = Span(line: si.line, col: 1)
     try:

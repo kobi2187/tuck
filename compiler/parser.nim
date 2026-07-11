@@ -1131,6 +1131,14 @@ proc parseDecl*(p: var Parser): Decl =
     while p.current().kind == tkDot:
       discard p.advance()
       name.add("." & p.expect(tkIdent, "Expected qualified name component").value)
+    var fnGenerics: seq[string]
+    if p.current().kind == tkLBracket:
+      discard p.advance()
+      while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+        fnGenerics.add(p.expect(tkIdent, "Expected generic parameter name").value)
+        if p.current().kind == tkComma:
+          discard p.advance()
+      discard p.expect(tkRBracket)
     discard p.expect(tkLParen)
     var params: seq[Param]
     if p.current().kind != tkRParen:
@@ -1199,7 +1207,7 @@ proc parseDecl*(p: var Parser): Decl =
     if p.current().kind == tkColon:
       discard p.advance()
       body = p.parseBlock()
-    return Decl(span: sp, kind: dkFn, name: name, fnParams: params, fnReturnType: retType, fnEffects: effects, fnBody: body, fnErrorTypes: errTypes)
+    return Decl(span: sp, kind: dkFn, name: name, fnGenerics: fnGenerics, fnParams: params, fnReturnType: retType, fnEffects: effects, fnBody: body, fnErrorTypes: errTypes)
 
   of tkImport:
     discard p.advance()
@@ -1215,6 +1223,16 @@ proc parseDecl*(p: var Parser): Decl =
   of tkType:
     discard p.advance()
     let name = p.expect(tkIdent, "Expected type name").value
+    # `type Box[T]` — generic params are Uppercase idents; attrs are lowercase
+    var typeGenerics: seq[string]
+    if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+       p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A'..'Z'}:
+      discard p.advance()
+      while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+        typeGenerics.add(p.expect(tkIdent, "Expected generic parameter name").value)
+        if p.current().kind == tkComma:
+          discard p.advance()
+      discard p.expect(tkRBracket)
     var attrs: seq[TypeAttr]
     if p.current().kind == tkLBracket:
       discard p.advance()
@@ -1235,7 +1253,7 @@ proc parseDecl*(p: var Parser): Decl =
       if p.current().kind == tkNewline:
         discard p.advance()
       aliasType.attrs = attrs
-      return Decl(span: sp, kind: dkType, name: name, generics: @[], typeBody: aliasType)
+      return Decl(span: sp, kind: dkType, name: name, generics: typeGenerics, typeBody: aliasType)
     discard p.expect(tkColon)
     discard p.expect(tkNewline)
     while p.current().kind == tkNewline:
@@ -1341,7 +1359,7 @@ proc parseDecl*(p: var Parser): Decl =
     else:
       bodyType = Type(span: sp, kind: tkRecord, fields: fields, attrs: attrs)
       
-    return Decl(span: sp, kind: dkType, name: name, generics: @[], typeBody: bodyType, typeMembers: members)
+    return Decl(span: sp, kind: dkType, name: name, generics: typeGenerics, typeBody: bodyType, typeMembers: members)
 
   of tkObject:
     discard p.advance()
