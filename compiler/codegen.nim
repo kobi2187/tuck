@@ -159,6 +159,48 @@ proc genQualified(ctx: CodegenCtx, e: Expr): string =
   if modName in ctx.realModules: modName & "." & e.qualName
   else: modName & "_" & e.qualName
 
+proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string
+
+# exkCall (module-aware overload): record construction, qualified-module
+# param reordering, or plain positional call.
+proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
+  var args: seq[string]
+  let calleeStr = ctx.genExpr(e.callee, m)
+  if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(m, calleeStr):
+    # record construction: named fields, not positional
+    var parts: seq[string]
+    for field in e.args[0].fields:
+      parts.add(field[0] & ": " & ctx.genExpr(field[1], m))
+    return calleeStr & "(" & parts.join(", ") & ")"
+  if e.args.len == 1 and e.args[0].kind == exkStruct:
+    # qualified callee into a real module: param order lives in THAT module
+    let expectedParams =
+      if e.callee != nil and e.callee.kind == exkQualified and
+         e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
+        lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
+      else:
+        lookupFnParams(m, calleeStr)
+    if expectedParams.len > 0:
+      for paramName in expectedParams:
+        var found = false
+        for field in e.args[0].fields:
+          if field[0] == paramName:
+            args.add(ctx.genExpr(field[1], m))
+            found = true
+            break
+        if not found:
+          args.add("nil")
+    else:
+      for field in e.args[0].fields:
+        args.add(ctx.genExpr(field[1], m))
+  else:
+    for a in e.args: args.add(ctx.genExpr(a, m))
+  if calleeStr == "bake":
+    return args[0] & "(" & args[1..^1].join(", ") & ")"
+  elif calleeStr == "alias":
+    return args[0]
+  return calleeStr & "(" & args.join(", ") & ")"
+
 proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
@@ -183,42 +225,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
   of exkQualified:
     genQualified(ctx, e)
   of exkCall:
-    var args: seq[string]
-    let calleeStr = ctx.genExpr(e.callee, m)
-    if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(m, calleeStr):
-      # record construction: named fields, not positional
-      var parts: seq[string]
-      for field in e.args[0].fields:
-        parts.add(field[0] & ": " & ctx.genExpr(field[1], m))
-      return calleeStr & "(" & parts.join(", ") & ")"
-    if e.args.len == 1 and e.args[0].kind == exkStruct:
-      # qualified callee into a real module: param order lives in THAT module
-      let expectedParams =
-        if e.callee != nil and e.callee.kind == exkQualified and
-           e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
-          lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
-        else:
-          lookupFnParams(m, calleeStr)
-      if expectedParams.len > 0:
-        for paramName in expectedParams:
-          var found = false
-          for field in e.args[0].fields:
-            if field[0] == paramName:
-              args.add(ctx.genExpr(field[1], m))
-              found = true
-              break
-          if not found:
-            args.add("nil")
-      else:
-        for field in e.args[0].fields:
-          args.add(ctx.genExpr(field[1], m))
-    else:
-      for a in e.args: args.add(ctx.genExpr(a, m))
-    if calleeStr == "bake":
-      return args[0] & "(" & args[1..^1].join(", ") & ")"
-    elif calleeStr == "alias":
-      return args[0]
-    return calleeStr & "(" & args.join(", ") & ")"
+    ctx.genCall(e, m)
   of exkStruct:
     var parts: seq[string]
     for f in e.fields:
@@ -329,6 +336,78 @@ proc genPatternStr(p: Pattern): string =
   of pkLit: p.litValue
   else: "_"
 
+proc genExpr*(ctx: var CodegenCtx, e: Expr): string
+
+# exkCall (module-less overload): record construction (with invariant
+# validate() insertion) or plain call.
+proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
+  var args: seq[string]
+  if e.args.len == 1 and e.args[0].kind == exkStruct and
+     e.callee != nil and e.callee.kind == exkVar and
+     isRecordType(ctx.module, e.callee.name):
+    # record construction: named fields, not positional
+    var parts: seq[string]
+    for field in e.args[0].fields:
+      parts.add(field[0] & ": " & ctx.genExpr(field[1]))
+    let ctor = e.callee.name & "(" & parts.join(", ") & ")"
+    if hasInvariants(ctx.module, e.callee.name):
+      # production site: construction — validate before the value flows on
+      ctx.tmpCounter.inc
+      let tmp = "tuckInv" & $ctx.tmpCounter
+      return "(let " & tmp & " = " & ctor & "; validate(" & tmp & "); " & tmp & ")"
+    return ctor
+  if e.args.len == 1 and e.args[0].kind == exkStruct:
+    for field in e.args[0].fields:
+      args.add(ctx.genExpr(field[1]))
+  else:
+    for a in e.args: args.add(ctx.genExpr(a))
+  let calleeStr = ctx.genExpr(e.callee)
+  if calleeStr == "bake":
+    return args[0] & "(" & args[1..^1].join(", ") & ")"
+  elif calleeStr == "alias":
+    return args[0]
+  return calleeStr & "(" & args.join(", ") & ")"
+
+# exkReturn emission: auto-wrapped tok()/terr() results, typed struct
+# literals, invariant-carrying returns, or a plain return.
+proc genReturn(ctx: var CodegenCtx, e: Expr): string =
+  if e.returnVal == nil:
+    if ctx.retWrapped and ctx.retInnerNim == "tuple[]": return "return tokVoid()"
+    else: return "return"
+  elif ctx.retWrapped:
+    let v = e.returnVal
+    if v.kind == exkRaise:
+      return ctx.genExpr(v)  # err X already emits the full error return
+    elif v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
+       v.receiver.name == "Error":
+      # Error.name → app-wide 16-bit code, hashed at Nim compile time
+      return "return terr[" & ctx.retInnerNim & "](errCode(\"" & v.fieldName & "\"))"
+    elif v.kind == exkStruct and ctx.retInnerT != nil and ctx.retInnerT.kind == tkRecord:
+      # Typed literal: cast numeric fields to the declared payload field type
+      # so `return {value: 42}` matches tuple[value: uint16]
+      var parts: seq[string]
+      for f in v.fields:
+        var fieldNim = ""
+        for fd in ctx.retInnerT.fields:
+          if fd.name == f[0]: fieldNim = genType(fd.typ)
+        let ex = ctx.genExpr(f[1])
+        if fieldNim != "" and fieldNim notin ["int", "float", "string", "bool"] and
+           (fieldNim.startsWith("uint") or fieldNim.startsWith("int") or
+            fieldNim.startsWith("float")):
+          parts.add(f[0] & ": " & fieldNim & "(" & ex & ")")
+        else:
+          parts.add(f[0] & ": " & ex)
+      return "return tok((" & parts.join(", ") & "))"
+    else:
+      return "return tok(" & ctx.genExpr(v) & ")"
+  elif ctx.retInvName != "":
+    # production site: return value of an invariant-carrying type
+    ctx.tmpCounter.inc
+    let tmp = "tuckInv" & $ctx.tmpCounter
+    return "return (let " & tmp & " = " & ctx.genExpr(e.returnVal) & "; validate(" &
+      tmp & "); " & tmp & ")"
+  else: return "return " & ctx.genExpr(e.returnVal)
+
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
@@ -352,32 +431,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkQualified:
     genQualified(ctx, e)
   of exkCall:
-    var args: seq[string]
-    if e.args.len == 1 and e.args[0].kind == exkStruct and
-       e.callee != nil and e.callee.kind == exkVar and
-       isRecordType(ctx.module, e.callee.name):
-      # record construction: named fields, not positional
-      var parts: seq[string]
-      for field in e.args[0].fields:
-        parts.add(field[0] & ": " & ctx.genExpr(field[1]))
-      let ctor = e.callee.name & "(" & parts.join(", ") & ")"
-      if hasInvariants(ctx.module, e.callee.name):
-        # production site: construction — validate before the value flows on
-        ctx.tmpCounter.inc
-        let tmp = "tuckInv" & $ctx.tmpCounter
-        return "(let " & tmp & " = " & ctor & "; validate(" & tmp & "); " & tmp & ")"
-      return ctor
-    if e.args.len == 1 and e.args[0].kind == exkStruct:
-      for field in e.args[0].fields:
-        args.add(ctx.genExpr(field[1]))
-    else:
-      for a in e.args: args.add(ctx.genExpr(a))
-    let calleeStr = ctx.genExpr(e.callee)
-    if calleeStr == "bake":
-      return args[0] & "(" & args[1..^1].join(", ") & ")"
-    elif calleeStr == "alias":
-      return args[0]
-    return calleeStr & "(" & args.join(", ") & ")"
+    ctx.genConstruction(e)
   of exkStruct:
     var parts: seq[string]
     for f in e.fields:
@@ -463,42 +517,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     else:
       return "discard"
   of exkReturn:
-    if e.returnVal == nil:
-      if ctx.retWrapped and ctx.retInnerNim == "tuple[]": "return tokVoid()"
-      else: "return"
-    elif ctx.retWrapped:
-      let v = e.returnVal
-      if v.kind == exkRaise:
-        ctx.genExpr(v)  # err X already emits the full error return
-      elif v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
-         v.receiver.name == "Error":
-        # Error.name → app-wide 16-bit code, hashed at Nim compile time
-        "return terr[" & ctx.retInnerNim & "](errCode(\"" & v.fieldName & "\"))"
-      elif v.kind == exkStruct and ctx.retInnerT != nil and ctx.retInnerT.kind == tkRecord:
-        # Typed literal: cast numeric fields to the declared payload field type
-        # so `return {value: 42}` matches tuple[value: uint16]
-        var parts: seq[string]
-        for f in v.fields:
-          var fieldNim = ""
-          for fd in ctx.retInnerT.fields:
-            if fd.name == f[0]: fieldNim = genType(fd.typ)
-          let ex = ctx.genExpr(f[1])
-          if fieldNim != "" and fieldNim notin ["int", "float", "string", "bool"] and
-             (fieldNim.startsWith("uint") or fieldNim.startsWith("int") or
-              fieldNim.startsWith("float")):
-            parts.add(f[0] & ": " & fieldNim & "(" & ex & ")")
-          else:
-            parts.add(f[0] & ": " & ex)
-        "return tok((" & parts.join(", ") & "))"
-      else:
-        "return tok(" & ctx.genExpr(v) & ")"
-    elif ctx.retInvName != "":
-      # production site: return value of an invariant-carrying type
-      ctx.tmpCounter.inc
-      let tmp = "tuckInv" & $ctx.tmpCounter
-      "return (let " & tmp & " = " & ctx.genExpr(e.returnVal) & "; validate(" &
-        tmp & "); " & tmp & ")"
-    else: "return " & ctx.genExpr(e.returnVal)
+    ctx.genReturn(e)
   of exkRaise:
     # err X — early-return an error result
     let rv = e.raiseVal
@@ -519,6 +538,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     return res
   else:
     "discard"
+
+proc genDecl*(ctx: var CodegenCtx, d: Decl): string
 
 # Pending stub: logs on invocation, returns the zero value (Nim zero-inits result).
 # The walking skeleton runs; the compile-time PENDING report nags until implemented.
@@ -545,12 +566,7 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
        not (lastS.kind == exkVar and lastS.name == "..."):
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
 
-proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
-  if d == nil: return ""
-  if d.kind == dkType and d.span.file == ImportedTypeMarker:
-    return ""  # defined in its own module; the Nim import brings it in
-  case d.kind
-  of dkFn:
+proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
     if d.isPending:
       return genPendingStub(d)
     let fnNameSanitized = d.name.replace(".", "_")
@@ -673,116 +689,114 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.retWrapped = false
     ctx.definedVars = oldVars
     return header & "\n" & bodyStr & "\n"
-  of dkType:
-    if d.typeBody != nil:
-      if d.typeBody.kind == tkSum:
-        var hasPayload = false
-        for v in d.typeBody.variants:
-          if v.fields.len > 0: hasPayload = true
-        let hasTransitions = d.typeBody.transitions.len > 0
-        if not hasPayload and not hasTransitions:
-          # plain enum (also what decision tables key over)
-          var tags: seq[string]
-          for v in d.typeBody.variants: tags.add(v.name)
-          return "type " & d.name & "* = enum " & tags.join(", ") & "\n"
 
-        var res = ""
-        var kindName = d.name
-        if hasPayload:
-          # tagged union: kind enum + object variant; each variant's payload is
-          # a tuple field named after the variant (no cross-branch name clashes)
-          kindName = d.name & "Kind"
-          var tags: seq[string]
-          for v in d.typeBody.variants: tags.add(v.name)
-          res.add("type " & kindName & "* = enum " & tags.join(", ") & "\n")
-          res.add("type " & d.name & "* = object\n  case kind*: " & kindName & "\n")
-          for v in d.typeBody.variants:
-            if v.fields.len == 0:
-              res.add("  of " & v.name & ": discard\n")
-            else:
-              var parts: seq[string]
-              for f in v.fields:
-                parts.add(f.name & ": " & genType(f.typ))
-              res.add("  of " & v.name & ": " & v.name.toLowerAscii() &
-                      "*: tuple[" & parts.join(", ") & "]\n")
+# --- dkType sum-type branch helpers ---
+
+proc genTransitionProcs(d: Decl, kindName: string, hasPayload: bool): string =
+      var canLines: seq[string]
+      canLines.add("proc canTransition*(frm, to: " & kindName & "): bool =")
+      canLines.add("  case frm")
+      for v in d.typeBody.variants:
+        var allowed: seq[string]
+        for tr in d.typeBody.transitions:
+          if tr.`from` == v.name: allowed.add(tr.to)
+        if allowed.len > 0:
+          canLines.add("  of " & v.name & ": to in {" & allowed.join(", ") & "}")
         else:
-          res.add("type " & d.name & "* = enum ")
-          var tags: seq[string]
-          for v in d.typeBody.variants: tags.add(v.name)
-          res.add(tags.join(", ") & "\n")
+          canLines.add("  of " & v.name & ": false")
+      var res = canLines.join("\n") & "\n"
+      let kindOf = if hasPayload: ".kind" else: ""
+      res.add("proc transitionTo*(self: var " & d.name & ", target: " & d.name & ") =\n" &
+              "  if not canTransition(self" & kindOf & ", target" & kindOf & "):\n" &
+              "    raise newException(ValueError, \"Invalid transition \" & $self" & kindOf &
+              " & \" -> \" & $target" & kindOf & ")\n" &
+              "  self = target\n")
+      return res
 
-        if hasTransitions:
-          # transition matrix: pure predicate + checked assignment
-          var canLines: seq[string]
-          canLines.add("proc canTransition*(frm, to: " & kindName & "): bool =")
-          canLines.add("  case frm")
-          for v in d.typeBody.variants:
-            var allowed: seq[string]
-            for tr in d.typeBody.transitions:
-              if tr.`from` == v.name: allowed.add(tr.to)
-            if allowed.len > 0:
-              canLines.add("  of " & v.name & ": to in {" & allowed.join(", ") & "}")
-            else:
-              canLines.add("  of " & v.name & ": false")
-          res.add(canLines.join("\n") & "\n")
-          let kindOf = if hasPayload: ".kind" else: ""
-          res.add("proc transitionTo*(self: var " & d.name & ", target: " & d.name & ") =\n" &
-                  "  if not canTransition(self" & kindOf & ", target" & kindOf & "):\n" &
-                  "    raise newException(ValueError, \"Invalid transition \" & $self" & kindOf &
-                  " & \" -> \" & $target" & kindOf & ")\n" &
-                  "  self = target\n")
-        return res
-      elif d.typeBody.kind == tkRecord:
-        var fieldsStr: seq[string]
-        for f in d.typeBody.fields:
-          fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
-        let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
-        let tGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
-        var res = "type " & d.name & "*" & tGen & " = ref object\n" & fieldsBody & "\n"
-        var invariantChecks: seq[string]
-        var checkCtx = CodegenCtx(definedVars: initHashSet[string](), fieldVars: initHashSet[string](), indent: 0)
-        for f in d.typeBody.fields:
-          checkCtx.fieldVars.incl(f.name)
-        for member in d.typeMembers:
-          if member.kind == dkExpr:
-            let condStr = checkCtx.genExpr(member.expr)
-            invariantChecks.add("  assert(" & condStr & ", \"Invariant violated: " & condStr & "\")")
-        if invariantChecks.len > 0:
-          # spec 4.7: stripped in release builds — the proc empties out and inlines away
-          res.add("\nproc validate*(self: " & d.name & ") =\n  when not defined(release):\n" &
-                  invariantChecks.join("\n").indent(2) & "\n")
-        # manager types carry functionality: member fns join the catalog
-        for member in d.typeMembers:
-          if member.kind == dkFn:
-            res.add("\n" & ctx.genDecl(member) & "\n")
-        return res
+proc genSumType(ctx: var CodegenCtx, d: Decl): string =
+      var hasPayload = false
+      for v in d.typeBody.variants:
+        if v.fields.len > 0: hasPayload = true
+      let hasTransitions = d.typeBody.transitions.len > 0
+      if not hasPayload and not hasTransitions:
+        # plain enum (also what decision tables key over)
+        var tags: seq[string]
+        for v in d.typeBody.variants: tags.add(v.name)
+        return "type " & d.name & "* = enum " & tags.join(", ") & "\n"
+
+      var res = ""
+      var kindName = d.name
+      if hasPayload:
+        # tagged union: kind enum + object variant; each variant's payload is
+        # a tuple field named after the variant (no cross-branch name clashes)
+        kindName = d.name & "Kind"
+        var tags: seq[string]
+        for v in d.typeBody.variants: tags.add(v.name)
+        res.add("type " & kindName & "* = enum " & tags.join(", ") & "\n")
+        res.add("type " & d.name & "* = object\n  case kind*: " & kindName & "\n")
+        for v in d.typeBody.variants:
+          if v.fields.len == 0:
+            res.add("  of " & v.name & ": discard\n")
+          else:
+            var parts: seq[string]
+            for f in v.fields:
+              parts.add(f.name & ": " & genType(f.typ))
+            res.add("  of " & v.name & ": " & v.name.toLowerAscii() &
+                    "*: tuple[" & parts.join(", ") & "]\n")
       else:
-        var isDistinctT = false
-        for a in d.typeBody.attrs:
-          if a.name == "distinct": isDistinctT = true
-        let typeBodyStr = genType(d.typeBody)
-        if isDistinctT:
-          # Nim distinct + borrowed ops: same bits, incompatible type
-          var res = "type " & d.name & "* = distinct " & typeBodyStr & "\n"
-          for op in ["+", "-", "*", "div", "mod"]:
-            res.add("proc `" & op & "`*(a, b: " & d.name & "): " & d.name & " {.borrow.}\n")
-          for op in ["==", "<", "<="]:
-            res.add("proc `" & op & "`*(a, b: " & d.name & "): bool {.borrow.}\n")
-          res.add("proc `$`*(a: " & d.name & "): string {.borrow.}\n")
-          return res
-        let aGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
-        return "type " & d.name & "*" & aGen & " = " & typeBodyStr & "\n"
-    return ""
-  of dkObject:
-    var fieldsStr: seq[string]
-    for f in d.objFields:
-      fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
-    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
-    var membersStr = ""
-    for member in d.objMembers:
-      membersStr.add(ctx.genDecl(member) & "\n")
-    return "type " & d.name & "* = ref object\n" & fieldsBody & "\n\n" & membersStr
-  of dkActor:
+        res.add("type " & d.name & "* = enum ")
+        var tags: seq[string]
+        for v in d.typeBody.variants: tags.add(v.name)
+        res.add(tags.join(", ") & "\n")
+
+      if hasTransitions:
+        # transition matrix: pure predicate + checked assignment
+        res.add(genTransitionProcs(d, kindName, hasPayload))
+      return res
+
+proc genRecordType(ctx: var CodegenCtx, d: Decl): string =
+      var fieldsStr: seq[string]
+      for f in d.typeBody.fields:
+        fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
+      let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
+      let tGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
+      var res = "type " & d.name & "*" & tGen & " = ref object\n" & fieldsBody & "\n"
+      var invariantChecks: seq[string]
+      var checkCtx = CodegenCtx(definedVars: initHashSet[string](), fieldVars: initHashSet[string](), indent: 0)
+      for f in d.typeBody.fields:
+        checkCtx.fieldVars.incl(f.name)
+      for member in d.typeMembers:
+        if member.kind == dkExpr:
+          let condStr = checkCtx.genExpr(member.expr)
+          invariantChecks.add("  assert(" & condStr & ", \"Invariant violated: " & condStr & "\")")
+      if invariantChecks.len > 0:
+        # spec 4.7: stripped in release builds — the proc empties out and inlines away
+        res.add("\nproc validate*(self: " & d.name & ") =\n  when not defined(release):\n" &
+                invariantChecks.join("\n").indent(2) & "\n")
+      # manager types carry functionality: member fns join the catalog
+      for member in d.typeMembers:
+        if member.kind == dkFn:
+          res.add("\n" & ctx.genDecl(member) & "\n")
+      return res
+
+proc genAliasType(d: Decl): string =
+      var isDistinctT = false
+      for a in d.typeBody.attrs:
+        if a.name == "distinct": isDistinctT = true
+      let typeBodyStr = genType(d.typeBody)
+      if isDistinctT:
+        # Nim distinct + borrowed ops: same bits, incompatible type
+        var res = "type " & d.name & "* = distinct " & typeBodyStr & "\n"
+        for op in ["+", "-", "*", "div", "mod"]:
+          res.add("proc `" & op & "`*(a, b: " & d.name & "): " & d.name & " {.borrow.}\n")
+        for op in ["==", "<", "<="]:
+          res.add("proc `" & op & "`*(a, b: " & d.name & "): bool {.borrow.}\n")
+        res.add("proc `$`*(a: " & d.name & "): string {.borrow.}\n")
+        return res
+      let aGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
+      return "type " & d.name & "*" & aGen & " = " & typeBodyStr & "\n"
+
+proc genActor(ctx: var CodegenCtx, d: Decl): string =
     var queueSize = "8"
     for attr in d.attrs:
       if attr.name == "queue":
@@ -860,6 +874,78 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       
     return msgEnumStr & msgEnvelopeStr & "\n" & actorTypeStr & "\n" & dispatchStr & "\n" & helpersStr
 
+proc genRegistry(ctx: var CodegenCtx, d: Decl): string =
+    let msgEnumName = d.name & "Kind"
+    var enumVariants: seq[string]
+    var fieldsStr: seq[string]
+    var seenFields = initHashSet[string]()
+    for v in d.variants:
+      enumVariants.add(v.name)
+      for f in v.fields:
+        if f.name notin seenFields:
+          seenFields.incl(f.name)
+          fieldsStr.add("    " & f.name & "*: " & genType(f.typ))
+
+    let enumStr = "type " & msgEnumName & "* = enum " & enumVariants.join(", ") & "\n"
+    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: ""
+    let typeStr = "type " & d.name & "* = ref object\n    kind*: " & msgEnumName & "\n" & fieldsBody & "\n"
+    let globalVarStr = "var latest" & d.name & "*: " & d.name & "\n\n"
+
+    # Forward-declare handler procs: raise procs call them before their definition
+    var fwdDeclsStr = ""
+    var raiseProcsStr = ""
+    for v in d.variants:
+      var params: seq[string]
+      var assignParts: seq[string]
+      for f in v.fields:
+        params.add(f.name & ": " & genType(f.typ))
+        assignParts.add(f.name & ": " & f.name)
+      let paramStr = params.join(", ")
+      let assignStr = if assignParts.len > 0: ", " & assignParts.join(", ") else: ""
+
+      let handlerName = d.name & "." & v.name
+      let handlerNameSanitized = d.name & "_" & v.name
+      var handlerCalls: seq[string]
+      for decl in ctx.module.decls:
+        if decl.kind == dkFn and decl.name == handlerName:
+          var argNames: seq[string]
+          for f in v.fields: argNames.add(f.name)
+          handlerCalls.add("  " & handlerNameSanitized & "(" & argNames.join(", ") & ")")
+          let retStr = if decl.fnReturnType != nil: genType(decl.fnReturnType) else: "void"
+          fwdDeclsStr.add("proc " & handlerNameSanitized & "*(" & paramStr & "): " & retStr & "\n")
+
+      let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
+      raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(kind: " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
+
+    return enumStr & typeStr & "\n" & globalVarStr & fwdDeclsStr & raiseProcsStr
+
+proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
+  if d == nil: return ""
+  if d.kind == dkType and d.span.file == ImportedTypeMarker:
+    return ""  # defined in its own module; the Nim import brings it in
+  case d.kind
+  of dkFn:
+    return ctx.genFnDecl(d)
+  of dkType:
+    if d.typeBody != nil:
+      if d.typeBody.kind == tkSum:
+        return ctx.genSumType(d)
+      elif d.typeBody.kind == tkRecord:
+        return ctx.genRecordType(d)
+      else:
+        return genAliasType(d)
+    return ""
+  of dkObject:
+    var fieldsStr: seq[string]
+    for f in d.objFields:
+      fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
+    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
+    var membersStr = ""
+    for member in d.objMembers:
+      membersStr.add(ctx.genDecl(member) & "\n")
+    return "type " & d.name & "* = ref object\n" & fieldsBody & "\n\n" & membersStr
+  of dkActor:
+    return ctx.genActor(d)
   of dkTask:
     var params: seq[string]
     for p in d.taskParams:
@@ -899,49 +985,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       fieldsStr.add("  " & f.name & ": bit(" & bitVal & ", " & accessMode & ")")
     return "registerMMIO(" & d.name & ", " & d.regAddress & "):\n" & fieldsStr.join("\n") & "\n"
   of dkRegistry:
-    let msgEnumName = d.name & "Kind"
-    var enumVariants: seq[string]
-    var fieldsStr: seq[string]
-    var seenFields = initHashSet[string]()
-    for v in d.variants:
-      enumVariants.add(v.name)
-      for f in v.fields:
-        if f.name notin seenFields:
-          seenFields.incl(f.name)
-          fieldsStr.add("    " & f.name & "*: " & genType(f.typ))
-          
-    let enumStr = "type " & msgEnumName & "* = enum " & enumVariants.join(", ") & "\n"
-    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: ""
-    let typeStr = "type " & d.name & "* = ref object\n    kind*: " & msgEnumName & "\n" & fieldsBody & "\n"
-    let globalVarStr = "var latest" & d.name & "*: " & d.name & "\n\n"
-
-    # Forward-declare handler procs: raise procs call them before their definition
-    var fwdDeclsStr = ""
-    var raiseProcsStr = ""
-    for v in d.variants:
-      var params: seq[string]
-      var assignParts: seq[string]
-      for f in v.fields:
-        params.add(f.name & ": " & genType(f.typ))
-        assignParts.add(f.name & ": " & f.name)
-      let paramStr = params.join(", ")
-      let assignStr = if assignParts.len > 0: ", " & assignParts.join(", ") else: ""
-      
-      let handlerName = d.name & "." & v.name
-      let handlerNameSanitized = d.name & "_" & v.name
-      var handlerCalls: seq[string]
-      for decl in ctx.module.decls:
-        if decl.kind == dkFn and decl.name == handlerName:
-          var argNames: seq[string]
-          for f in v.fields: argNames.add(f.name)
-          handlerCalls.add("  " & handlerNameSanitized & "(" & argNames.join(", ") & ")")
-          let retStr = if decl.fnReturnType != nil: genType(decl.fnReturnType) else: "void"
-          fwdDeclsStr.add("proc " & handlerNameSanitized & "*(" & paramStr & "): " & retStr & "\n")
-
-      let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
-      raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(kind: " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
-      
-    return enumStr & typeStr & "\n" & globalVarStr & fwdDeclsStr & raiseProcsStr
+    return ctx.genRegistry(d)
   of dkImport:
     return ""  # emitNim adds the Nim import line
   of dkStaticAssert:
