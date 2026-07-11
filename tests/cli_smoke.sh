@@ -56,4 +56,23 @@ EOF
 ./tuck build "$inv/ok.tuck" -o:"$inv/out2" > /dev/null
 "$inv/out2/ok" || { echo "FAIL: valid invariant program aborted"; exit 1; }
 rm -rf "$inv"
+
+# type-directed lowering: record var as whole payload explodes to params
+tdl="tests/.smoke_tdl"
+rm -rf "$tdl" && mkdir -p "$tdl"
+cat > "$tdl/p.tuck" <<'EOF'
+type Player = {position: int, step: int}
+
+fn advance({position: int, step: int}) -> int:
+  return position + step
+
+fn main() -> void:
+  let p = {position: 10, step: 5} Player
+  let n = p advance
+  return
+EOF
+./tuck build "$tdl/p.tuck" -o:"$tdl/out" > /dev/null
+grep -q "advance(p.position, p.step)" "$tdl/out/p.nim" || { echo "FAIL: record var not exploded"; exit 1; }
+"$tdl/out/p" || { echo "FAIL: exploded program did not run"; exit 1; }
+rm -rf "$tdl"
 echo "cli smoke OK"

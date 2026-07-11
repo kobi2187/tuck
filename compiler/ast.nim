@@ -158,6 +158,8 @@ type
     span*: Span
     shortcutSite*: string  # set by checker under continue/exit policy: this
                            # statement drops a !T and routes to the handler
+    ty*: Type              # stamped by the checker (typed AST): codegen reads
+                           # it for type-directed lowering; nil = not checked
     case kind*: ExprKind
     of exkLit:
       litKind*: LitKind
@@ -214,6 +216,10 @@ type
   # Imported type decls are injected into the importer for checking and
   # lowering, marked with this span.file so codegen skips re-emitting them.
 const ImportedTypeMarker* = "<imported>"
+
+# The checker's gradual-typing sentinel: undeclared symbols synthesize this
+# named type; codegen treats it as "no type information".
+const UnknownName* = "<unknown>"
 
 type
   # A function signature as stored in the .tuck-cache signature index:

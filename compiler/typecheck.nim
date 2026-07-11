@@ -5,7 +5,7 @@
 # so sketch code keeps compiling while declared code is checked strictly.
 import ast, semantics, lowering, tables, strutils, sets
 
-const UnknownName = "<unknown>"
+# UnknownName now lives in ast.nim (codegen needs it for typed-AST checks)
 
 proc unknownType(sp: Span): Type =
   Type(span: sp, kind: tkNamed, name: UnknownName)
@@ -477,6 +477,11 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     # no checker info; lift when type-directed lowering lands
     fail("Type Error: '" & calleeName & "' is a generic type — direct " &
          "construction is not supported yet; return it from a generic fn instead", e.span)
+  if calleeName != "" and tc.typeDecls.hasKey(calleeName) and
+     not tc.fnSigs.hasKey(calleeName):
+    # {fields} TypeName — construction produces the declared type
+    for a in e.args: discard tc.synthesize(a)
+    return Type(span: e.span, kind: tkNamed, name: calleeName)
   if calleeName != "" and tc.fnSigs.hasKey(calleeName):
     let sig = tc.fnSigs[calleeName]
     var bindings = initTable[string, Type]()
@@ -504,8 +509,9 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   for a in e.args: discard tc.synthesize(a)
   calleeT
 
-proc synthesize(tc: var TypeChecker, e: Expr): Type =
-  if e == nil: return unknownType(Span())
+# Kind dispatch lives in synthesizeKind; synthesize stamps the result onto the
+# node (typed AST — codegen reads e.ty for type-directed lowering)
+proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   case e.kind
   of exkLit:
     let name = case e.litKind
@@ -629,6 +635,11 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
   of exkChain: tc.synthChain(e)
   of exkQualified, exkImport:
     unknownType(e.span)
+
+proc synthesize(tc: var TypeChecker, e: Expr): Type =
+  if e == nil: return unknownType(Span())
+  result = tc.synthesizeKind(e)
+  e.ty = result
 
 proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
   for d in decls:

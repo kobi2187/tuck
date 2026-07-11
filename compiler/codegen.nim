@@ -1,5 +1,5 @@
 # compiler/codegen.nim
-import ast, strutils, sets, tables
+import ast, lowering, strutils, sets, tables
 
 type
   CodegenCtx = object
@@ -160,6 +160,32 @@ proc genQualified(ctx: CodegenCtx, e: Expr): string =
   else: modName & "_" & e.qualName
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string
+proc genExpr*(ctx: var CodegenCtx, e: Expr): string
+
+# Type-directed explosion: a record-typed VAR as the whole payload
+# (`p advance`) explodes to the fn's params by field name, in param order —
+# same subset matching the checker verified. Fields come from the checker's
+# ty stamp on the arg node.
+proc recordFieldNames(ctx: CodegenCtx, t: Type): seq[string] =
+  if t == nil: return @[]
+  if t.kind == tkNamed and t.name == UnknownName: return @[]
+  for f in getFieldsForType(ctx.module, t):
+    result.add(f.name)
+
+proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
+  # ponytail: exkVar args only — repeating any other expr risks double
+  # evaluation; bind-to-temp lowering when a real case shows up
+  if e.args.len != 1 or e.args[0].kind != exkVar: return ""
+  let params = lookupFnParams(ctx.module, calleeStr)
+  if params.len == 0: return ""
+  let fields = ctx.recordFieldNames(e.args[0].ty)
+  if fields.len == 0: return ""
+  var parts: seq[string]
+  for paramName in params:
+    if paramName notin fields: return ""  # not a payload match — leave as-is
+    parts.add(ctx.genExpr(e.args[0]) & "." & paramName)
+  return calleeStr & "(" & parts.join(", ") & ")"
+
 
 # exkCall (module-aware overload): record construction, qualified-module
 # param reordering, or plain positional call.
@@ -172,6 +198,9 @@ proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
     for field in e.args[0].fields:
       parts.add(field[0] & ": " & ctx.genExpr(field[1], m))
     return calleeStr & "(" & parts.join(", ") & ")"
+  if calleeStr notin ["bake", "alias"]:
+    let exploded = ctx.explodeRecordArg(e, calleeStr)
+    if exploded != "": return exploded
   if e.args.len == 1 and e.args[0].kind == exkStruct:
     # qualified callee into a real module: param order lives in THAT module
     let expectedParams =
@@ -336,8 +365,6 @@ proc genPatternStr(p: Pattern): string =
   of pkLit: p.litValue
   else: "_"
 
-proc genExpr*(ctx: var CodegenCtx, e: Expr): string
-
 # exkCall (module-less overload): record construction (with invariant
 # validate() insertion) or plain call.
 proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
@@ -356,12 +383,24 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
       let tmp = "tuckInv" & $ctx.tmpCounter
       return "(let " & tmp & " = " & ctor & "; validate(" & tmp & "); " & tmp & ")"
     return ctor
+  let calleeStr = ctx.genExpr(e.callee)
+  if calleeStr notin ["bake", "alias"]:
+    let exploded = ctx.explodeRecordArg(e, calleeStr)
+    if exploded != "": return exploded
   if e.args.len == 1 and e.args[0].kind == exkStruct:
-    for field in e.args[0].fields:
-      args.add(ctx.genExpr(field[1]))
+    # param order lives with the fn, not the literal — match by name
+    let expectedParams = lookupFnParams(ctx.module, calleeStr)
+    if expectedParams.len > 0:
+      for paramName in expectedParams:
+        for field in e.args[0].fields:
+          if field[0] == paramName:
+            args.add(ctx.genExpr(field[1]))
+            break
+    else:
+      for field in e.args[0].fields:
+        args.add(ctx.genExpr(field[1]))
   else:
     for a in e.args: args.add(ctx.genExpr(a))
-  let calleeStr = ctx.genExpr(e.callee)
   if calleeStr == "bake":
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
