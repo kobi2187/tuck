@@ -353,6 +353,22 @@
   env): mutation sites (`..` emission needs the rework anyway), extern/
   deserialization returns, !T-wrapped returns.
 
+## 2026-07-11 — forth-style refactor: dispatchers read as tables of contents
+- Nim skills loaded from ~/.agents/skills (code-organization/style/api-design).
+- parseDecl 644→~50-line dispatcher (9 per-decl parsers; parseDeclAttrs killed
+  a 4x duplicate, parseInvariantBlock a 2x); expression/type parsers split
+  (wrapper merge, parseParenType/BraceType/TypeUseAttrs/StructLiteral/
+  PostfixCall/AliasStep, tryUnsafeMarker 2x dedup).
+- codegen genDecl 442→~45 (genFnDecl/genSumType/genTransitionProcs/
+  genRecordType/genAliasType/genActor/genRegistry); genExpr arms →
+  genCall/genConstruction/genReturn. Done by sonnet subagent.
+- typecheck synthesize 313→126 (synthFieldAccess/Call/Binary/Chain/If/Match);
+  checkDecisionTable left whole (two self-contained algorithms). Sonnet
+  subagent.
+- Extraction-only, all suites green per phase. Ledger:
+  thoughts/ledgers/CONTINUITY_CLAUDE-forth-refactor.md (complete).
+- Commits: b7f8af0, efcfb3a, ff9dfd3, 5721e91.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).

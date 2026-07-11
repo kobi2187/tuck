@@ -22,14 +22,20 @@ suites green, no proc over ~80 lines in the refactored files.
 - Helpers private (no *) unless already exported.
 - Forward decls where extraction breaks def-before-use order.
 
-## State
-- Done: (none yet)
-- Now: [→] Phase 1: parser.nim parseDecl → per-decl-kind procs (644 lines)
-- Remaining:
-  - [ ] Phase 2: parser.nim parsePrimaryType/parseChainExpr/parsePrimaryExpr helpers
-  - [ ] Phase 3: codegen.nim genDecl → per-kind emitters (442 lines)
-  - [ ] Phase 4: codegen.nim genExpr overloads → site helpers
-  - [ ] Phase 5: typecheck.nim synthesize → per-expr-kind procs (313 lines)
+## State — COMPLETE (2026-07-11)
+- Done:
+  - [x] Phase 1: parseDecl → 9 named per-decl parsers + parseDeclAttrs (4x dup)
+        + parseInvariantBlock (2x dup). Commit b7f8af0.
+  - [x] Phase 2: wrapper-branch merge, parseParenType, parseBraceType,
+        parseTypeUseAttrs, parseStructLiteral, parseBraceBlock,
+        tryUnsafeMarker (2x dup), parseAliasStep, parsePostfixCall. efcfb3a.
+  - [x] Phase 3+4 (sonnet agent): genFnDecl, genSumType+genTransitionProcs,
+        genRecordType, genAliasType, genActor, genRegistry, genCall,
+        genConstruction, genReturn. ff9dfd3.
+  - [x] Phase 5 (sonnet agent): synthFieldAccess/Call/Binary/Chain/If/Match;
+        checkDecisionTable deliberately left whole. 5721e91.
+- Result: longest procs were 644/442/313 → now every dispatcher ≤135 lines and
+  reads as a table of contents. All suites green at every step.
 
 ## Open Questions
 - UNCONFIRMED: whether parser Parser object methods use `var Parser` uniformly
