@@ -28,7 +28,8 @@ register RCC_CR at 0x40021000:
 
 type Temperature:
   celsius: float
-  invariant: celsius >= -273.15
+  invariant:
+    celsius >= -273.15
 
 type TrafficLight:
   | Red

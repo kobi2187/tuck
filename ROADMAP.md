@@ -68,7 +68,7 @@ construction, generic bodies gradual, no constraints).
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
-| Invariants | 4.7 | auto-insert validate() at construction/mutation/return/deserialization |
+| Invariants | 4.7 | auto-insert validate() at construction/mutation/return/deserialization (2026-07-11 ruling: BLOCK syntax only — inline + attr forms removed, parse error) |
 | Actors | 9.1 | coroutine/state-machine runtime, static ring queues, scheduler (design open) |
 | Tasks | 9.2 | state-machine transform at [io] yield points |
 | bake | 3.5 | real specialization; ex 03 emits invalid Nim |

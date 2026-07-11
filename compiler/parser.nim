@@ -791,8 +791,7 @@ proc parseObjectBody(p: var Parser, fields: var seq[FieldDef], members: var seq[
             discard p.advance()
         discard p.expect(tkDedent)
       else:
-        let expr = p.parseExpr()
-        members.add(Decl(span: fSp, kind: dkExpr, expr: expr))
+        p.reportError("invariant is a block: `invariant:` then one indented predicate per line", fSp.line, fSp.col)
       if p.current().kind == tkNewline:
         discard p.advance()
     else:
@@ -1039,6 +1038,8 @@ proc parseDecl*(p: var Parser): Decl =
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
         let attrSp = p.getSpan()
         let attrName = p.expect(tkIdent, "Expected attribute name").value
+        if attrName == "invariant":
+          p.reportError("invariant is a block inside the type body, not an attribute: `invariant:` then one indented predicate per line", attrSp.line, attrSp.col)
         var val = ""
         if p.current().kind == tkColon:
           discard p.advance()
@@ -1239,6 +1240,8 @@ proc parseDecl*(p: var Parser): Decl =
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
         let attrSp = p.getSpan()
         let attrName = p.expect(tkIdent, "Expected attribute name").value
+        if attrName == "invariant":
+          p.reportError("invariant is a block inside the type body, not an attribute: `invariant:` then one indented predicate per line", attrSp.line, attrSp.col)
         var val = ""
         if p.current().kind == tkColon:
           discard p.advance()
@@ -1334,8 +1337,7 @@ proc parseDecl*(p: var Parser): Decl =
               discard p.advance()
           discard p.expect(tkDedent)
         else:
-          let expr = p.parseExpr()
-          members.add(Decl(span: fSp, kind: dkExpr, expr: expr))
+          p.reportError("invariant is a block: `invariant:` then one indented predicate per line", fSp.line, fSp.col)
         if p.current().kind == tkNewline:
           discard p.advance()
 
@@ -1379,6 +1381,8 @@ proc parseDecl*(p: var Parser): Decl =
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
         let attrSp = p.getSpan()
         let attrName = p.expect(tkIdent, "Expected attribute name").value
+        if attrName == "invariant":
+          p.reportError("invariant is a block inside the type body, not an attribute: `invariant:` then one indented predicate per line", attrSp.line, attrSp.col)
         var val = ""
         if p.current().kind == tkColon:
           discard p.advance()
@@ -1511,6 +1515,8 @@ proc parseDecl*(p: var Parser): Decl =
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
         let attrSp = p.getSpan()
         let attrName = p.expect(tkIdent, "Expected attribute name").value
+        if attrName == "invariant":
+          p.reportError("invariant is a block inside the type body, not an attribute: `invariant:` then one indented predicate per line", attrSp.line, attrSp.col)
         var val = ""
         if p.current().kind == tkColon:
           discard p.advance()

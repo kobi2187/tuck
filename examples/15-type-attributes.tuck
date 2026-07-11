@@ -3,8 +3,10 @@ type EthernetFrame [packed, align: 2]:
   src:       Array[6, u8]
   ethertype: u16 [big_endian]   # field-level annotation, same brackets
 
-type Temperature [invariant: celsius >= -273.15]:
+type Temperature:
   celsius: f32
+  invariant:
+    celsius >= -273.15
 
 actor UartDriver [queue: 8, priority: high]:
   ...

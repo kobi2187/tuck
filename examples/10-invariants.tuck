@@ -1,3 +1,4 @@
 type Temperature:
   celsius: f32
-  invariant: celsius >= -273.15  # just a predicate
+  invariant:
+    celsius >= -273.15

@@ -330,13 +330,11 @@ type EthernetFrame [packed, align: 2]:
   dst:       Array[6, u8]
   src:       Array[6, u8]
   ethertype: u16 [big_endian]    # field-level attribute
-
-type Temperature [invariant: celsius >= -273.15]:
-  celsius: f32
 ```
 
-**Available type attributes:** `packed`, `align: N`, `sealed`, `invariant: expr`,
-`saturating`, `wrapping`, `trapping`
+**Available type attributes:** `packed`, `align: N`, `sealed`,
+`saturating`, `wrapping`, `trapping` (invariants are a block inside the type
+body, not an attribute — §4.7)
 
 **Available field attributes:** `big_endian`, `little_endian`, `volatile`
 
@@ -344,14 +342,21 @@ type Temperature [invariant: celsius >= -273.15]:
 
 Invariants are runtime asserts — inserted by the compiler at every point where a
 value of that type is produced: construction, return value, after mutation, after
-deserialization. Stripped in release builds. Zero compiler complexity:
+deserialization. Stripped in release builds. Zero compiler complexity.
+
+Block form only — `invariant:` inside the type body, one predicate per line:
 
 ```tuck
-type Percentage [invariant: value >= 0 and value <= 100]:
+type Percentage:
   value: u8
+  invariant:
+    value >= 0
+    value <= 100
 ```
 
-The invariant fires automatically everywhere. The developer writes it once.
+The invariants fire automatically everywhere. The developer writes them once.
+(There is no inline or attribute form; predicates that belong together still
+read as separate declared facts.)
 
 ### 4.8 Error and Absence
 

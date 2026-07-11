@@ -35,8 +35,10 @@ type PlayerState [sealed]:
 pool BufferPool: Array[512, u8] * 4
 
 # 5. Type Invariant
-type Volume [invariant: level <= 100]:
+type Volume:
   level: u8
+  invariant:
+    level <= 100
 
 # 6. Cooperative StreamReader Task
 task streamReader({streamId: u8, chunks: Seq[u32]}) -> !void [io]:

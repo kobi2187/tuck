@@ -327,6 +327,17 @@
   only via instantiation), positional multi-arg path not generic, generic
   record construction blocked.
 
+## 2026-07-11 — invariants: block syntax only (user ruling)
+- `invariant:` block (one predicate per line) is THE form. Single-line
+  `invariant: pred` member and `[invariant: expr]` attribute are parse errors
+  with a pointer to the block form. The attr form was silently IGNORED by
+  codegen (only body members reached validate()) — now impossible to write.
+- Examples 10/15/20 + end_to_end embedded source rewritten to block form.
+  Spec §4.7 rewritten (block-only, multi-predicate example); attr list in §4.6
+  no longer mentions invariant. validate() emission verified on example 10.
+- Auto-insert of validate() at construction/mutation/return/deserialization
+  stays backlog (ROADMAP Partial).
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).
