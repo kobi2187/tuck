@@ -21,4 +21,39 @@ fi
 ./tuck ch "$bad" 2>&1 | grep -q "bad.tuck:2:" || { echo "FAIL: no file:line:col prefix"; exit 1; }
 
 rm -rf "$out"
+
+# invariants: validate() auto-inserted at construction and return sites
+inv="tests/.smoke_inv"
+rm -rf "$inv" && mkdir -p "$inv"
+cat > "$inv/viol.tuck" <<'EOF'
+type Temperature:
+  celsius: int
+  invariant:
+    celsius >= -273
+
+fn main() -> void:
+  let t = {celsius: -400} Temperature
+  return
+EOF
+./tuck build "$inv/viol.tuck" -o:"$inv/out" > /dev/null
+if "$inv/out/viol" 2>/dev/null; then
+  echo "FAIL: invariant violation at construction did not abort"; exit 1
+fi
+"$inv/out/viol" 2>&1 | grep -q "Invariant violated" || { echo "FAIL: no invariant message"; exit 1; }
+cat > "$inv/ok.tuck" <<'EOF'
+type Temperature:
+  celsius: int
+  invariant:
+    celsius >= -273
+
+fn freeze() -> Temperature:
+  return {celsius: 0} Temperature
+
+fn main() -> void:
+  let t = {} freeze
+  return
+EOF
+./tuck build "$inv/ok.tuck" -o:"$inv/out2" > /dev/null
+"$inv/out2/ok" || { echo "FAIL: valid invariant program aborted"; exit 1; }
+rm -rf "$inv"
 echo "cli smoke OK"

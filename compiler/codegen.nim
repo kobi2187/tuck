@@ -11,6 +11,7 @@ type
     retWrapped: bool      # current fn returns !T/?T → returns auto-wrap
     retInnerNim: string   # Nim type of the payload (for terr[T])
     retInnerT: Type       # payload Tuck type (typed struct-literal emission)
+    retInvName: string    # fn returns an invariant-carrying type: validate at return sites
     tmpCounter: int
     errPolicy: string     # from the errors declaration; "" = strict
     realModules: Table[string, Module]  # imported modules emitted as own Nim files
@@ -103,6 +104,15 @@ proc fieldType(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
       ctx.hoisted.add("type " & enumName & "* = enum " & tags.join(", "))
       return enumName
   return genType(f.typ)
+
+# Does this declared type carry invariant predicates? (block members are
+# dkExpr decls; production sites append a validate() call — spec 4.7)
+proc hasInvariants(m: Module, name: string): bool =
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.name == name:
+      for member in d.typeMembers:
+        if member.kind == dkExpr: return true
+  false
 
 # {fields} TypeName — construction of a declared record type
 proc isRecordType(m: Module, name: string): bool =
@@ -350,7 +360,13 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       var parts: seq[string]
       for field in e.args[0].fields:
         parts.add(field[0] & ": " & ctx.genExpr(field[1]))
-      return e.callee.name & "(" & parts.join(", ") & ")"
+      let ctor = e.callee.name & "(" & parts.join(", ") & ")"
+      if hasInvariants(ctx.module, e.callee.name):
+        # production site: construction — validate before the value flows on
+        ctx.tmpCounter.inc
+        let tmp = "tuckInv" & $ctx.tmpCounter
+        return "(let " & tmp & " = " & ctor & "; validate(" & tmp & "); " & tmp & ")"
+      return ctor
     if e.args.len == 1 and e.args[0].kind == exkStruct:
       for field in e.args[0].fields:
         args.add(ctx.genExpr(field[1]))
@@ -476,6 +492,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         "return tok((" & parts.join(", ") & "))"
       else:
         "return tok(" & ctx.genExpr(v) & ")"
+    elif ctx.retInvName != "":
+      # production site: return value of an invariant-carrying type
+      ctx.tmpCounter.inc
+      let tmp = "tuckInv" & $ctx.tmpCounter
+      "return (let " & tmp & " = " & ctx.genExpr(e.returnVal) & "; validate(" &
+        tmp & "); " & tmp & ")"
     else: "return " & ctx.genExpr(e.returnVal)
   of exkRaise:
     # err X — early-return an error result
@@ -640,6 +662,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.retWrapped = bw
     ctx.retInnerNim = binner
     ctx.retInnerT = binnerT
+    ctx.retInvName =
+      if not bw and d.fnReturnType != nil and d.fnReturnType.kind == tkNamed and
+         hasInvariants(ctx.module, d.fnReturnType.name): d.fnReturnType.name
+      else: ""
     injectTailReturn(d.fnBody, retTypeStr)
     ctx.indent += 1
     let bodyStr = ctx.genExpr(d.fnBody)
@@ -722,7 +748,9 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
             let condStr = checkCtx.genExpr(member.expr)
             invariantChecks.add("  assert(" & condStr & ", \"Invariant violated: " & condStr & "\")")
         if invariantChecks.len > 0:
-          res.add("\nproc validate*(self: " & d.name & ") =\n" & invariantChecks.join("\n") & "\n")
+          # spec 4.7: stripped in release builds — the proc empties out and inlines away
+          res.add("\nproc validate*(self: " & d.name & ") =\n  when not defined(release):\n" &
+                  invariantChecks.join("\n").indent(2) & "\n")
         # manager types carry functionality: member fns join the catalog
         for member in d.typeMembers:
           if member.kind == dkFn:

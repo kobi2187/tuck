@@ -338,6 +338,21 @@
 - Auto-insert of validate() at construction/mutation/return/deserialization
   stays backlog (ROADMAP Partial).
 
+## 2026-07-11 — invariants auto-inserted at production sites (spec 4.7, partial)
+- Technique: not a search — production is syntactically local. Codegen asks
+  "does this node's type carry invariants?" (hasInvariants set lookup) at the
+  two crisp sites it already emits: record CONSTRUCTION
+  (`(let t = T(...); validate(t); t)` paren stmt-list) and plain RETURN of an
+  invariant-carrying named type (ctx.retInvName, set per fn; tail returns ride
+  the existing rewrite-to-exkReturn path).
+- validate() body now wrapped `when not defined(release):` — spec's "stripped
+  in release" is real; verified: violating program aborts with "Invariant
+  violated" in debug, runs exit-0 under --nim:"-d:release".
+- cli_smoke gained both runtime cases (violation aborts / valid runs).
+- Deferred (same blocker = type-directed lowering, codegen has no var-type
+  env): mutation sites (`..` emission needs the rework anyway), extern/
+  deserialization returns, !T-wrapped returns.
+
 Next candidates:
 1. Type-directed lowering: expand record-typed vars at call sites + real alias
    restructuring (blocks 18, 04, 12; needs typechecker info in lowering).
