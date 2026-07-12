@@ -398,3 +398,40 @@ Next candidates:
 4. Extend checker: match exhaustiveness, distinct/unit types, generics.
 5. Qualified pending names (http.get) so 14-task can stub module calls.
 6. Validate Error.x names against a declared error enum (domain module).
+
+## 2026-07-12 — Beef backend parity: emitter rewritten, compiles and runs
+
+- `codegen_beef.nim` rewritten to mirror `codegen.nim` construct for
+  construct: !T/?T/!?T -> `TuckResult<T>` with tok/terr auto-wrap (error
+  codes FNV-hashed by the emitter, so Beef needs no comptime hashing),
+  error policy (`tuck_unhandled` + dropped-result routing via
+  shortcutSite), record ctors with named-field matching, param reordering,
+  record-var payload explosion, invariant `validate` + `__validated()` at
+  production sites, generic ctor instantiation from the ty stamp, pending
+  stubs, packed + chained decision tables, payload sum types (Kind enum +
+  carrier class), transitions (`canTransition`/`transitionTo`), actors
+  with real message envelopes (params ride in the Msg, send helpers take
+  them), registries, mixins/extern (`[CLink]` bindings; rt externs forward
+  to the runtime), distinct types (wrapper struct + operators incl. `<=>`),
+  unit sugar, alias/bake, qualified module refs via `emitBeefModule`
+  (static class per module), hoisted inline enums, implicit tail returns.
+  Record shapes hoist to `TRec_*` structs (Beef has no 1-element tuples).
+- New Beef runtime `compiler/tuck_rt.bf` (namespace TuckRt): TuckResult,
+  tok/terr/tnone/tfwd, Mailbox<T, const N>, BumpArena/ObjectPool,
+  RegisterMMIO/Bit attributes, stdlib layer (fs/io/sys/time) mirroring
+  tuck_rt.nim including its error codes.
+- New `tests/beef_backend.nim`: feature assertions over all 25 examples +
+  BeefBuild compile check for the same 14 examples nim check covers — all
+  green, and the built 24-stdlib binary runs (`hello from tuck`).
+  Requires BeefBuild (looks at $BEEFBUILD_BIN, /opt/beef/IDE/dist, PATH);
+  skips the compile layer when absent.
+- Emitter-only change: tuck.nim/parser/checker/lowering untouched;
+  `emitBeef` grew an optional realModules param (default keeps the old
+  call shape). All existing suites still green (compile_all_examples,
+  end_to_end, typecheck, cli_smoke).
+
+Next candidates (Beef):
+1. Wire per-module .bf emission + a `build --beef` step in tuck.nim (the
+   emitter and tests are ready; the CLI still emits entry module only).
+2. exkList/exkFor coverage (16/17/20) once the Nim backend gets them too.
+3. `or return` in expression position (statement position works).
