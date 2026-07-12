@@ -435,3 +435,20 @@ Next candidates (Beef):
    emitter and tests are ready; the CLI still emits entry module only).
 2. exkList/exkFor coverage (16/17/20) once the Nim backend gets them too.
 3. `or return` in expression position (statement position works).
+
+## 2026-07-12 — stdlib bottom-layer catalogue (planning report)
+
+- stdlib-blocks.md: ~95 building blocks across 17 domains (prelude/result,
+  strings, bytes, bit intrinsics, integer semantics, atomics/volatile,
+  interrupts/MMIO, fixed-capacity no_alloc structures, collections, math,
+  random, time, raw memory, os/fs/process, sockets, actor messaging,
+  diagnostics), surveyed from C/C++/Rust-core/Zig/Nim/Go/BEAM (no
+  reflection/macros — metal-capable set). Each block classified:
+  extern (direct) ~60%, extern (shim, exception→terr reshape) ~20%,
+  write (rt) ~15%, write (Tuck prelude) ~5%. Every cited Nim symbol
+  verified by nim-check probe (one fix: volatileLoad/Store live in
+  std/volatile, not system).
+- Open rulings named, not made: generic containers vs monomorphic extern
+  (blocks Map/Set/Deque), collection call style, compiler-lowered vs rt for
+  checked arithmetic, §7.4 resource kinds for fs/net sigs, bytes repr.
+- ROADMAP points at the report from the stdlib ruling.
