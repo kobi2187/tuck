@@ -1,0 +1,35 @@
+# Plan: Stdlib Layer Map (dependency graph, layer 0 → high-level API)
+
+## Context
+
+`stdlib-blocks.md` (committed f2ab61d) catalogues ~95 layer-0 building blocks. The user now wants the layers ABOVE: study how ambitious stdlibs (.NET BCL, Go, Rust core/alloc/std, plus Nim/Elixir where instructive) stack their modules — a dependency tree from layer 0 up to high-level APIs — and use that map to audit layer 0 for missed basics. Deliverable is a report; the audit feeds concrete amendments back into stdlib-blocks.md.
+
+## Deliverable
+
+1. **New file `stdlib-layers.md`** at repo root:
+
+   - **Method**: how the reference stdlibs actually layer. Go's import DAG (runtime → sync/atomic → sync → io → bytes/strings/strconv → bufio/fmt → os → net → crypto → net/http); .NET's (System.Private.CoreLib primitives/String/Span → Collections → IO.Stream → Text.Encoding → Net.Sockets → Net.Security/TLS → Net.Http); Rust's crate split (core → alloc → std, then blessed crates). One short paragraph each — these are the empirical ground truth for the layering.
+
+   - **The layer map** (the core): ASCII tree/diagram plus one table per layer with columns Module | Builds on (named lower modules) | Reference-lib counterpart (Go / .NET / Rust). Layers:
+     - **L0 — building blocks**: the 17 domains of stdlib-blocks.md (referenced, not repeated).
+     - **L1 — protocols & composition primitives** (the layer the reference libs all insert immediately above primitives): stream Reader/Writer/Seeker/Closer abstraction (Go `io`, .NET `Stream`, Rust `Read/Write`); hash/equality/ordering protocol for user types (prereq for Map/Set!); iteration protocol; growable text builder; buffered reader/writer (`bufio`); formatting (`fmt`/`strconv`-style value→text, minus reflection — Tuck constraint noted); error wrapping/context; cli args→flags parsing.
+     - **L2 — encodings & pure algorithms**: hex/base64, utf-16/latin-1 transcode, binary (de)serialization helpers, checksums (crc32/adler), crypto hashes (sha-2, blake), compression (deflate/gzip), big integers, regex, time zones & calendar arithmetic, sorting/searching beyond basics.
+     - **L3 — structured data & net infrastructure**: url, mime, dns high-level, textproto (line-based protocols), json/xml/csv (note: no reflection ⇒ Tuck needs derive-style codegen or manual mapping — flagged as a language-adjacent decision), crypto primitives (AEAD, key exchange on bigint+hashes+entropy), uuid.
+     - **L4 — secure transport & protocols**: TLS (crypto+net), http/1.1 client+server (url+textproto+compression+tls), websocket, smtp/ftp-class protocols, archive formats (tar/zip on compression).
+     - **L5 — application services**: high-level logging, testing harness, config, templating, rpc — the "stdlib or ecosystem?" boundary line, with a note on what Go/.NET chose to ship vs punt.
+     - Cross-cutting column/marks for what the actor runtime (supervision, timers) touches at each layer, BEAM-style.
+
+   - **Gap audit — the feedback the user asked for**: layer-0/1 basics the layer exercise exposes as missing from stdlib-blocks.md. Known candidates from drafting (verify while writing): **stream interface** (io.Reader/Writer — most load-bearing abstraction in all three reference libs), **hash protocol** (`std/hashes` in Nim — required before Map/Set of user types), **signal handling** (os/signal, Ctrl-C), **hex/binary integer parse+format** (strconv beyond base 10 — `strutils.toHex/fromHex/parseHexInt`), **string builder over growable buffer**, **path canonicalize/realpath**. Each gets the same Block/Precedent/Nim-mapping/Class row format.
+
+2. **Amend `stdlib-blocks.md`**: add the audited gap rows to their domains (strings, os, collections/protocols — a new short "protocols" section if needed), so the catalogue stays THE single source. Verify any new Nim symbols by extending the existing probe (`scratchpad/probe.nim`) and re-running `nim check`.
+
+3. **ROADMAP.md**: extend the existing stdlib pointer line to mention the layer map. **progress.md**: ledger entry.
+
+4. Commit on `claude/beef-backend-parity-er5zbp` (push still 403 — goes with the queued commits).
+
+## Verification
+
+- Extended probe passes `nim check` (covers every newly cited Nim symbol, e.g. `std/hashes.hash`, `strutils.toHex`, `posix`/`system` signal seam).
+- Every module row in every layer names its "builds on" modules, and those all exist in a LOWER layer (no forward references — that's the graph's invariant).
+- Gap-audit rows appear in BOTH files (layers report cites them; blocks catalogue contains them).
+- Doc-only change; existing suites untouched.
