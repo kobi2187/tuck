@@ -398,3 +398,76 @@ Next candidates:
 4. Extend checker: match exhaustiveness, distinct/unit types, generics.
 5. Qualified pending names (http.get) so 14-task can stub module calls.
 6. Validate Error.x names against a declared error enum (domain module).
+
+## 2026-07-12 — Beef backend parity: emitter rewritten, compiles and runs
+
+- `codegen_beef.nim` rewritten to mirror `codegen.nim` construct for
+  construct: !T/?T/!?T -> `TuckResult<T>` with tok/terr auto-wrap (error
+  codes FNV-hashed by the emitter, so Beef needs no comptime hashing),
+  error policy (`tuck_unhandled` + dropped-result routing via
+  shortcutSite), record ctors with named-field matching, param reordering,
+  record-var payload explosion, invariant `validate` + `__validated()` at
+  production sites, generic ctor instantiation from the ty stamp, pending
+  stubs, packed + chained decision tables, payload sum types (Kind enum +
+  carrier class), transitions (`canTransition`/`transitionTo`), actors
+  with real message envelopes (params ride in the Msg, send helpers take
+  them), registries, mixins/extern (`[CLink]` bindings; rt externs forward
+  to the runtime), distinct types (wrapper struct + operators incl. `<=>`),
+  unit sugar, alias/bake, qualified module refs via `emitBeefModule`
+  (static class per module), hoisted inline enums, implicit tail returns.
+  Record shapes hoist to `TRec_*` structs (Beef has no 1-element tuples).
+- New Beef runtime `compiler/tuck_rt.bf` (namespace TuckRt): TuckResult,
+  tok/terr/tnone/tfwd, Mailbox<T, const N>, BumpArena/ObjectPool,
+  RegisterMMIO/Bit attributes, stdlib layer (fs/io/sys/time) mirroring
+  tuck_rt.nim including its error codes.
+- New `tests/beef_backend.nim`: feature assertions over all 25 examples +
+  BeefBuild compile check for the same 14 examples nim check covers — all
+  green, and the built 24-stdlib binary runs (`hello from tuck`).
+  Requires BeefBuild (looks at $BEEFBUILD_BIN, /opt/beef/IDE/dist, PATH);
+  skips the compile layer when absent.
+- Emitter-only change: tuck.nim/parser/checker/lowering untouched;
+  `emitBeef` grew an optional realModules param (default keeps the old
+  call shape). All existing suites still green (compile_all_examples,
+  end_to_end, typecheck, cli_smoke).
+
+Next candidates (Beef):
+1. Wire per-module .bf emission + a `build --beef` step in tuck.nim (the
+   emitter and tests are ready; the CLI still emits entry module only).
+2. exkList/exkFor coverage (16/17/20) once the Nim backend gets them too.
+3. `or return` in expression position (statement position works).
+
+## 2026-07-12 — stdlib bottom-layer catalogue (planning report)
+
+- stdlib-blocks.md: ~95 building blocks across 17 domains (prelude/result,
+  strings, bytes, bit intrinsics, integer semantics, atomics/volatile,
+  interrupts/MMIO, fixed-capacity no_alloc structures, collections, math,
+  random, time, raw memory, os/fs/process, sockets, actor messaging,
+  diagnostics), surveyed from C/C++/Rust-core/Zig/Nim/Go/BEAM (no
+  reflection/macros — metal-capable set). Each block classified:
+  extern (direct) ~60%, extern (shim, exception→terr reshape) ~20%,
+  write (rt) ~15%, write (Tuck prelude) ~5%. Every cited Nim symbol
+  verified by nim-check probe (one fix: volatileLoad/Store live in
+  std/volatile, not system).
+- Open rulings named, not made: generic containers vs monomorphic extern
+  (blocks Map/Set/Deque), collection call style, compiler-lowered vs rt for
+  checked arithmetic, §7.4 resource kinds for fs/net sigs, bytes repr.
+- ROADMAP points at the report from the stdlib ruling.
+
+## 2026-07-12 — stdlib layer map (L0→L5) + layer-audit feedback into L0
+
+- stdlib-layers.md: dependency-layer map modeled on how Go (import DAG),
+  .NET (CoreLib→Stream→Sockets→Http), Rust (core→alloc→std) and BEAM
+  actually stack: L1 protocols/composition (stream iface, bufio, builder,
+  fmt-without-reflection, hash/eq/ord, errors-ctx, flags) → L2 pure
+  algorithms (encodings, digests, compress, bigint, regex, tz) → L3
+  structured data/net infra (url, textproto, json, crypto suite, dns) →
+  L4 transport (tls-via-OpenSSL-wrap flagged, http, websocket, archives)
+  → L5 app services (log, testing, supervision; config/template punted).
+  Includes suggested build order; shared lesson: every reference lib
+  inserts a thin protocol layer directly above the primitives.
+- Gap audit fed back into stdlib-blocks.md §18: stream interface, hash
+  protocol (hashes.hash), radix parse/format (toHex/parseHexInt et al),
+  text builder, ctrl-c/posix signals, realpath — all probe-verified
+  (fix found: posix.signal returns void; std/sha1 deprecated → digests
+  reclassified write-or-wrap). New open ruling recorded: derive-style
+  codegen for records (fmt/hash/json all block on it).

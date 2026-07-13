@@ -9,3 +9,5 @@ nimcache/
 .claude/
 tuck
 .tuck-cache/
+tests/beef_out/
+tests/beef_backend
