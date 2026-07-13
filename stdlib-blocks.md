@@ -266,6 +266,24 @@ primitive set. All write (rt).
 | unhandled-error report | Tuck-specific (policy §4.9) | `tuckReportUnhandled` | write (rt) | rt |
 | deferred logging (defmt-style format-string-ID) | Rust `defmt` | none | write (rt + Tuck mixin) — PRD ruling (tuck_prd_0.1.md:752) | new |
 
+## 18. Core protocols & late additions (from the layer audit)
+
+Added 2026-07-12 by the layer-map exercise (stdlib-layers.md): blocks that
+every reference stdlib inserts directly above the primitives and that L1+
+modules assume. Missing them was the audit's finding.
+
+| Block | Precedent | Nim mapping | Class | Status |
+|---|---|---|---|---|
+| stream reader/writer/seeker/closer interface (+ file/socket/membuf impls) | Go `io`, .NET `Stream`, Rust `Read/Write` | — (Tuck `interface`, spec §5) | write (prelude) | new |
+| hash protocol (primitives) | Go `hash`, .NET `GetHashCode`, Rust `Hash`, Nim `hashes` | `hashes.hash` | extern (direct) | new |
+| hash/eq/ord for user records | Rust `derive(Hash, Eq, Ord)` | — | blocked on derive ruling (see open questions) | new |
+| radix parse: hex/bin/oct ints | C `strtol`, Go `strconv`, Rust `from_str_radix` | `strutils.parseHexInt`, `strutils.parseBinInt`, `strutils.parseOctInt` | extern (shim) | new |
+| radix format: hex/bin/oct | same | `strutils.toHex`, `strutils.toBin`, `strutils.toOct` | extern (direct) | new |
+| text/byte builder (amortized append) | Go `strings.Builder`, C# `StringBuilder` | `system.add` on string (Nim strings are growable) | extern (direct) — surface it | new |
+| ctrl-c / termination hook | Go `os/signal`, C `signal` | `system.setControlCHook` | extern (shim) | new |
+| posix signals (full set) | C `sigaction`, BEAM traps | `posix.signal` / `posix.sigaction` | extern (shim, posix-only) | new |
+| path canonicalize (realpath) | all | `os.expandFilename` | extern (shim) | new |
+
 ---
 
 ## Already covered today (the delta baseline)
@@ -302,3 +320,7 @@ already exist (registerMMIO) or compiler lowering (checked-arith attrs).
    day one so the sigs don't churn.
 5. **Bytes representation**: `Seq[u8]` everywhere vs a distinct binary type
    (BEAM-style) — affects §3 slicing semantics and the string↔bytes seam.
+6. **Derive-style codegen for records** (from the layer audit): fmt, hash,
+   and json all block on the same ruling — Tuck has no reflection, so
+   per-record toStr/hash/encode must be compiler-derived or hand-written.
+   One decision, three payoffs (stdlib-layers.md L1/L3 notes).

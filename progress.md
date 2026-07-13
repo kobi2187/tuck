@@ -452,3 +452,22 @@ Next candidates (Beef):
   (blocks Map/Set/Deque), collection call style, compiler-lowered vs rt for
   checked arithmetic, §7.4 resource kinds for fs/net sigs, bytes repr.
 - ROADMAP points at the report from the stdlib ruling.
+
+## 2026-07-12 — stdlib layer map (L0→L5) + layer-audit feedback into L0
+
+- stdlib-layers.md: dependency-layer map modeled on how Go (import DAG),
+  .NET (CoreLib→Stream→Sockets→Http), Rust (core→alloc→std) and BEAM
+  actually stack: L1 protocols/composition (stream iface, bufio, builder,
+  fmt-without-reflection, hash/eq/ord, errors-ctx, flags) → L2 pure
+  algorithms (encodings, digests, compress, bigint, regex, tz) → L3
+  structured data/net infra (url, textproto, json, crypto suite, dns) →
+  L4 transport (tls-via-OpenSSL-wrap flagged, http, websocket, archives)
+  → L5 app services (log, testing, supervision; config/template punted).
+  Includes suggested build order; shared lesson: every reference lib
+  inserts a thin protocol layer directly above the primitives.
+- Gap audit fed back into stdlib-blocks.md §18: stream interface, hash
+  protocol (hashes.hash), radix parse/format (toHex/parseHexInt et al),
+  text builder, ctrl-c/posix signals, realpath — all probe-verified
+  (fix found: posix.signal returns void; std/sha1 deprecated → digests
+  reclassified write-or-wrap). New open ruling recorded: derive-style
+  codegen for records (fmt/hash/json all block on it).

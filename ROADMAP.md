@@ -32,7 +32,8 @@ construction, generic bodies gradual, no constraints).
   covers embedded; `tuck build` will forward nim flags (--os:standalone etc).
 - Stdlib v1 scope: fs, io, sys (os/env), time — extern sigs over Nim stdlib.
   Full bottom-layer catalogue (what to extern vs write, per domain, incl.
-  embedded/atomics/net/proc): stdlib-blocks.md.
+  embedded/atomics/net/proc): stdlib-blocks.md. Layer map above it
+  (L0→L5 dependency graph, build order, derive ruling): stdlib-layers.md.
 - Errors are declared enums (fieldless sums), named in the signature via
   `[error: FsError]` attr (effects bracket). Effects ≠ errors: [io] still
   propagates upward independently.
