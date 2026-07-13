@@ -471,3 +471,26 @@ Next candidates (Beef):
   (fix found: posix.signal returns void; std/sha1 deprecated → digests
   reclassified write-or-wrap). New open ruling recorded: derive-style
   codegen for records (fmt/hash/json all block on it).
+
+## 2026-07-13 — `tuck build --beef` wired into the CLI
+
+- `--beef` on `compile`/`build` now emits every imported module as its own
+  `mod_<name>.bf` (via `emitBeefModule`, was entry-module-only before) plus
+  the entry `.bf`. `build --beef` additionally scaffolds a throwaway Beef
+  project (BeefProj.toml/BeefSpace.toml, same shape as
+  tests/beef_backend.nim's compile check), shells out to BeefBuild, and
+  copies the resulting binary to `<binBase>_beef` next to the Nim binary —
+  both backends' binaries coexist under distinct names.
+- `findBeefBuild()`/project scaffold duplicated from tests/beef_backend.nim
+  (BEEFBUILD_BIN env, /opt/beef/IDE/dist, PATH). BeefBuild absent → warns
+  and skips the Beef step; Nim build still completes (never fail the whole
+  `build` over an optional backend).
+- Toolchain gap closed to test this for real: BeefBuild requires LLVM 22
+  (not in Ubuntu Noble's repos, max 20) — installed via apt.llvm.org, then
+  built BeefBuild from ~/apps/Beef (cmake+ninja, full Beef self-test suite
+  ran clean). Verified end-to-end: `tuck build examples/24-stdlib.tuck
+  --beef` compiles fs/io as separate .bf modules, links, runs, prints
+  "hello from tuck" — matches the Nim backend's own verified output.
+- cli_smoke.sh gained the coverage (skips the BeefBuild-required assertion
+  when no toolchain is found, matching beef_backend.nim's convention).
+  All suites green: typecheck, examples gate 14/25, end_to_end, cli smoke.

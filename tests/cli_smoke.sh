@@ -75,4 +75,25 @@ EOF
 grep -q "advance(p.position, p.step)" "$tdl/out/p.nim" || { echo "FAIL: record var not exploded"; exit 1; }
 "$tdl/out/p" || { echo "FAIL: exploded program did not run"; exit 1; }
 rm -rf "$tdl"
+
+# tuck build --beef: scaffolds a Beef project and builds it with BeefBuild
+# when a toolchain is present; always emits the .bf source either way.
+bf="tests/.smoke_beef"
+rm -rf "$bf" && mkdir -p "$bf"
+cat > "$bf/hi.tuck" <<'EOF'
+fn main() -> void:
+  return
+EOF
+./tuck build "$bf/hi.tuck" --beef -o:"$bf/out" > /dev/null
+test -f "$bf/out/hi.bf" || { echo "FAIL: no .bf source emitted"; exit 1; }
+BEEF_BUILD_BIN="${BEEFBUILD_BIN:-}"
+[ -z "$BEEF_BUILD_BIN" ] && command -v BeefBuild >/dev/null 2>&1 && BEEF_BUILD_BIN=$(command -v BeefBuild)
+[ -z "$BEEF_BUILD_BIN" ] && [ -f /opt/beef/IDE/dist/BeefBuild ] && BEEF_BUILD_BIN=/opt/beef/IDE/dist/BeefBuild
+if [ -n "$BEEF_BUILD_BIN" ]; then
+  test -x "$bf/out/hi_beef" || { echo "FAIL: no Beef binary built"; exit 1; }
+  "$bf/out/hi_beef" || { echo "FAIL: Beef binary did not run"; exit 1; }
+else
+  echo "SKIP Beef build check: BeefBuild not found (set BEEFBUILD_BIN)"
+fi
+rm -rf "$bf"
 echo "cli smoke OK"
