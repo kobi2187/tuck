@@ -178,6 +178,48 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type
 
+# Method form: `x .fn {args}` / `x ..fn {args}` — the receiver rides as the
+# fn's FIRST parameter (checked structurally when the receiver type has no
+# name), the braced struct fills the remaining parameters by name. Builds and
+# returns the positional exkCall node (receiver, then declared-order args),
+# ty-stamped with the fn's return type — codegen emits it as-is.
+proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
+                     recvT: Type, argStruct: Expr, sp: Span): Expr =
+  let sig = tc.fnSigs[fnName]
+  if sig.params.len == 0:
+    fail("Type Error: '" & fnName & "' takes no parameters — it cannot be " &
+         "called as a method on " & typeName(recvT), sp)
+  if not tc.compatible(recvT, sig.params[0].typ):
+    fail("Type Error: '" & fnName & "' first parameter expects " &
+         typeName(sig.params[0].typ) & " but the receiver is " &
+         typeName(recvT), sp)
+  var argFields: seq[(string, Expr)]
+  if argStruct != nil:
+    if argStruct.kind != exkStruct:
+      fail("Type Error: arguments to '" & fnName &
+           "' must be a struct literal: {name: value, ...}", argStruct.span)
+    argFields = argStruct.fields
+  var args: seq[Expr] = @[receiver]
+  for i in 1 ..< sig.params.len:
+    let p = sig.params[i]
+    var found = false
+    for f in argFields:
+      if f[0] == p.name:
+        let ft = tc.synthesize(f[1])
+        if not tc.compatible(ft, p.typ):
+          fail("Type Error: field '" & p.name & "' of call to '" & fnName &
+               "' expects " & typeName(p.typ) & " but got " & typeName(ft),
+               f[1].span)
+        args.add(f[1])
+        found = true
+        break
+    if not found:
+      fail("Type Error: call to '" & fnName & "' is missing required field '" &
+           p.name & ": " & typeName(p.typ) & "'", sp)
+  result = Expr(span: sp, kind: exkCall,
+                callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
+  result.ty = sig.ret
+
 proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   # Result introspection: .ok/.err/.value on a !T/?T value IS the handling —
   # unwrapping is a plain if, no special syntax
@@ -233,14 +275,30 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
          " — pass it to a handling function or propagate with '?' before accessing fields", e.span)
   let recvT = tc.resolve(rawT)
   let fields = tc.fieldsOf(recvT)
-  if fields.len > 0:
-    for f in fields:
-      if f.name == e.fieldName: return f.typ
-    # Known record, missing field: the payoff error.
-    # Sum types carry variant fields we don't track per-variant in v1 — only
-    # flag when the receiver is a plain record.
-    if recvT.kind == tkRecord:
-      fail("Type Error: no field '" & e.fieldName & "' on type " & typeName(recvT), e.span)
+  for f in fields:
+    if f.name == e.fieldName:
+      if e.dotArg != nil:
+        fail("Type Error: '" & e.fieldName & "' is a field of " &
+             typeName(recvT) & " — fields take no arguments; to set it, " &
+             "use '.." & e.fieldName & " {value}' on a var", e.span)
+      return f.typ
+  # Not a field — `x.name` resolves to a fn by lookup, not syntax.
+  if tc.fnSigs.hasKey(e.fieldName):
+    if e.dotArg != nil:
+      # `.fn {args}` method form: receiver = first param, args fill the rest
+      e.callNode = tc.synthMethodCall(e.fieldName, e.receiver, recvT,
+                                       e.dotArg, e.span)
+      return e.callNode.ty
+    # bare `.fn` — same as a whitespace call: the receiver is the payload
+    e.callNode = Expr(span: e.span, kind: exkCall,
+                       callee: Expr(span: e.span, kind: exkVar, name: e.fieldName),
+                       args: @[e.receiver])
+    return tc.synthesize(e.callNode)
+  # Known record, missing field, no matching fn: the payoff error.
+  # Sum types carry variant fields we don't track per-variant in v1 — only
+  # flag when the receiver is a plain record.
+  if fields.len > 0 and recvT.kind == tkRecord:
+    fail("Type Error: no field '" & e.fieldName & "' on type " & typeName(recvT), e.span)
   unknownType(e.span)
 
 proc synthBinary(tc: var TypeChecker, e: Expr): Type =
@@ -321,8 +379,53 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
       if found and not b.isVar:
         fail("Type Error: cannot mutate '" & e.base.name &
              "' with '..' — it was declared with 'let'; use 'var'", e.span)
-  for step in e.steps:
-    discard tc.synthesize(step.arg)
+  # Each `..name {args}` step either SETS a field (payload is the single
+  # {value: X} sugar) or calls a mutator fn — receiver rides as the first
+  # parameter, and the result is reassigned into the base var (an ordinary
+  # var-reassignment type check, so the fn must return the receiver's type).
+  # Either way the chain stays on the base var.
+  let recvT = tc.resolve(baseT)
+  let fields = tc.fieldsOf(recvT)
+  for step in e.steps.mitems:
+    var isField = false
+    for f in fields:
+      if f.name == step.target.name:
+        isField = true
+        if step.arg == nil or step.arg.kind != exkStruct or
+           step.arg.fields.len != 1:
+          fail("Type Error: setting field '" & f.name & "' with '..' takes " &
+               "exactly one value: ..." & f.name & " {" & typeName(f.typ) &
+               "}", step.span)
+        let valExpr = step.arg.fields[0][1]
+        let vt = tc.synthesize(valExpr)
+        if not tc.compatible(vt, f.typ):
+          fail("Type Error: field '" & f.name & "' of " & typeName(recvT) &
+               " is " & typeName(f.typ) & " but got " & typeName(vt),
+               valExpr.span)
+        break
+    if not isField:
+      if tc.fnSigs.hasKey(step.target.name):
+        var retT: Type
+        if step.arg != nil:
+          # braced args pin the method form: receiver = first param
+          step.callNode = tc.synthMethodCall(step.target.name, e.base, recvT,
+                                              step.arg, step.span)
+          retT = step.callNode.ty
+        else:
+          # bare `..fn`: same type-directed resolution as any other call
+          # (whole-bind the receiver, else its fields fill the params)
+          step.callNode = Expr(span: step.span, kind: exkCall,
+                                callee: Expr(span: step.span, kind: exkVar,
+                                             name: step.target.name),
+                                args: @[e.base])
+          retT = tc.synthesize(step.callNode)
+        if not tc.compatible(retT, baseT):
+          fail("Type Error: cannot assign " & typeName(retT) & " to " &
+               typeName(baseT) & " — a '..' mutator must return the " &
+               "receiver's type", step.span)
+      elif recvT.kind == tkRecord:
+        fail("Type Error: no field or fn '" & step.target.name & "' on type " &
+             typeName(recvT), step.span)
   baseT
 
 proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
@@ -402,19 +505,23 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
     else:
       let t = tc.synthesize(arg)
       if not isUnknown(t):
+        # Whole-bind first: a single-param fn whose param accepts the value
+        # whole takes it as-is (`9 addOne`, `server describe` where describe's
+        # param is the Server itself). Only otherwise does the value's SHAPE
+        # matter — its fields map onto the params by name (`p advance`).
+        if params.len == 1:
+          if sig.generics.len > 0:
+            tc.inferBindings(params[0].typ, t, sig.generics, bindings, fnName, arg.span)
+          let expected = substituteType(params[0].typ, bindings)
+          if tc.compatible(t, expected):
+            return
+          if tc.fieldsOf(t).len == 0:
+            fail("Type Error: argument to '" & fnName & "' expects " &
+                 typeName(expected) & " but got " & typeName(t), arg.span)
         let fs = tc.fieldsOf(t)
         if fs.len > 0:
           shapeKnown = true
           for f in fs: argFields.add((f.name, f.typ, arg.span))
-        elif params.len == 1:
-          # Single scalar param: direct positional pass (e.g. `9 addOne`)
-          if sig.generics.len > 0:
-            tc.inferBindings(params[0].typ, t, sig.generics, bindings, fnName, arg.span)
-          let expected = substituteType(params[0].typ, bindings)
-          if not tc.compatible(t, expected):
-            fail("Type Error: argument to '" & fnName & "' expects " &
-                 typeName(expected) & " but got " & typeName(t), arg.span)
-          return
     if not shapeKnown: return  # Unknown payload — let it flow
     if sig.generics.len > 0:
       # Infer type-param bindings from the payload, then check against the

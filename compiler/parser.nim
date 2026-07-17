@@ -542,8 +542,14 @@ proc parsePrimaryExpr(p: var Parser): Expr =
   of tkLBrace:
     if p.isStructLiteral():
       return p.parseStructLiteral(sp)
+    elif p.peek(1).kind == tkRBrace:
+      return p.parseBraceBlock(sp)  # {} — empty struct, handled above; unreachable here, kept for safety
     else:
-      return p.parseBraceBlock(sp)
+      # {expr} — a bare value is sugar for {value: expr}
+      discard p.advance()
+      let val = p.parseExpr()
+      discard p.expect(tkRBrace)
+      return Expr(span: sp, kind: exkStruct, fields: @[("value", val)])
   of tkLBracket:
     discard p.advance()
     var items: seq[Expr]
@@ -622,15 +628,23 @@ proc parseChainExpr(p: var Parser): Expr =
       expr = Expr(span: sp, kind: exkField, receiver: expr, fieldName: fieldName)
       if p.tryUnsafeMarker():
         expr.ctorUnsafe = true
+      # `.fn {args}` — method form: receiver is the fn's first parameter,
+      # the braced struct fills the remaining parameters
+      if p.current().kind == tkLBrace:
+        expr.dotArg = p.parsePrimaryExpr()
     elif p.current().kind == tkDotDot:
       discard p.advance()
       let fieldName = p.expect(tkIdent, "Expected builder field name after '..'").value
       var arg: Expr = nil
       if p.current().kind == tkLBrace:
         arg = p.parsePrimaryExpr()
-      var steps: seq[ChainStep]
-      steps.add(ChainStep(op: coDotDot, target: Expr(span: sp, kind: exkVar, name: fieldName), arg: arg, span: sp))
-      expr = Expr(span: sp, kind: exkChain, base: expr, steps: steps)
+      let step = ChainStep(op: coDotDot, target: Expr(span: sp, kind: exkVar, name: fieldName), arg: arg, span: sp)
+      # steps accumulate on ONE chain node — every `..` in the chain mutates
+      # the same base var
+      if expr.kind == exkChain:
+        expr.steps.add(step)
+      else:
+        expr = Expr(span: sp, kind: exkChain, base: expr, steps: @[step])
     elif p.current().kind == tkColonColon:
       discard p.advance()
       let name = p.expect(tkIdent, "Expected identifier after '::'").value

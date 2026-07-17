@@ -71,7 +71,7 @@ construction, generic bodies gradual, no constraints).
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
-| Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). Mutation sites still deferred — NOT on lowering anymore but on the `..` emission design itself (emits `x.field(arg)` setter-call convention; needs a ruling on what mutation lowers to). Extern/deserialization + `!T`-wrapped returns pending. Ruling: BLOCK syntax only |
+| Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). `..` emission RESOLVED 2026-07-13 (field assign / mutator reassign — spec §2.3): mutation-site validate() now unblocked, just needs the insert after chain steps. Extern/deserialization + `!T`-wrapped returns pending. Ruling: BLOCK syntax only |
 | Actors | 9.1 | coroutine/state-machine runtime, static ring queues, scheduler (design open) |
 | Tasks | 9.2 | state-machine transform at [io] yield points |
 | bake | 3.5 | real specialization; ex 03 emits invalid Nim |
@@ -99,8 +99,9 @@ construction, generic bodies gradual, no constraints).
 
 ## Broken-example map
 03 → bake; 18 → alias lowering; 11 → when + implicit main; 16 → on select;
-20 → when + embedded attrs depth; 02/04/09/12/17 → only need sketch
-decls/pending blocks (example edits, no compiler work).
+20 → when + embedded attrs depth; 04/09/12 → only need sketch decls/pending
+blocks (example edits, no compiler work). 02 GREEN 2026-07-13 (real decls,
+in both gates); 17 typechecks (sketch decls added).
 
 ## Spec debt
 §11 describes npeg parser + flat IR + Merkle cache; reality is recursive

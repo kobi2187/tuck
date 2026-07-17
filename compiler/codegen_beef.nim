@@ -531,6 +531,9 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
         return e.fieldName & "(" & ctx.genBeefExpr(e.receiver) & ")"
       else:
         return ctx.genBeefExpr(e.receiver)
+    if e.callNode != nil:
+      # fieldName resolved to a fn call, not a field (checker-stamped)
+      return ctx.genBeefCall(e.callNode)
     return ctx.genBeefExpr(e.receiver) & "." & e.fieldName
   of exkQualified:
     return genQualified(ctx, e)
@@ -606,7 +609,7 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
         ownsLayout = true
         stmtCode = ind & "  " & stmtCode
       if stmtCode != "":
-        if s.kind in {exkIf, exkFor, exkBlock} or ownsLayout:
+        if s.kind in {exkIf, exkFor, exkBlock, exkChain} or ownsLayout:
           lines.add(stmtCode)  # these carry their own indentation
         else:
           lines.add(ind & "  " & stmtCode & ";")
@@ -649,15 +652,20 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
   of exkRaise:
     return ctx.genRaise(e)
   of exkChain:
-    var res = ctx.genBeefExpr(e.base)
+    # `x ..field {v} ..mutate {a}` — one plain Beef statement per step:
+    # field set, or mutator call reassigned into the base var
+    let baseStr = ctx.genBeefExpr(e.base)
+    var lines: seq[string]
     for step in e.steps:
-      let targetStr = ctx.genBeefExpr(step.target)
-      let argStr = if step.arg != nil: ctx.genBeefExpr(step.arg) else: ""
-      if argStr != "":
-        res = res & "." & targetStr & "(" & argStr & ")"
+      if step.callNode != nil:
+        lines.add(ind & baseStr & " = " & ctx.genBeefCall(step.callNode) & ";")
       else:
-        res = res & "." & targetStr & "()"
-    return res
+        var valStr = ""
+        if step.arg != nil and step.arg.kind == exkStruct and
+           step.arg.fields.len == 1:
+          valStr = ctx.genBeefExpr(step.arg.fields[0][1])
+        lines.add(ind & baseStr & "." & step.target.name & " = " & valStr & ";")
+    return lines.join("\n")
   else:
     return ""
 

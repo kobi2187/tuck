@@ -133,6 +133,7 @@ type
     target*: Expr
     arg*: Expr
     span*: Span
+    callNode*: Expr  # stamped by the checker when target resolves to a fn call
 
   ExprKind* = enum
     exkLit
@@ -170,6 +171,11 @@ type
       receiver*: Expr
       fieldName*: string
       ctorUnsafe*: bool  # Type.Variant [unsafe] — sealed-construction escape hatch
+      dotArg*: Expr      # `.fn {args}` — extra args for the method form
+                         # (receiver rides as the fn's first parameter)
+      callNode*: Expr    # stamped by the checker when fieldName resolves to a
+                         # fn call (not a field): the synthesized exkCall node,
+                         # already typed — codegen emits this instead
     of exkQualified:
       modulePath*: seq[string]
       qualName*: string

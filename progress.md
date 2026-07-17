@@ -494,3 +494,44 @@ Next candidates (Beef):
 - cli_smoke.sh gained the coverage (skips the BeefBuild-required assertion
   when no toolchain is found, matching beef_backend.nim's convention).
   All suites green: typecheck, examples gate 14/25, end_to_end, cli smoke.
+
+## 2026-07-13 — `.`/`..` semantics settled (user rulings) + implemented
+
+- Design session produced THE call model (spec §2.3 rewritten):
+  - Whitespace, `.name`, `.name {args}` are ONE call form, resolved
+    semantically: fn's first param accepts the receiver whole (structural
+    when unnamed) → whole-bind, braced args fill remaining params by name;
+    otherwise the receiver's FIELDS fill the params (subset matching, the
+    old `p advance` explosion). Whole-bind lives in checkCallArgs, so every
+    call path shares it. Empty braces harmless.
+  - `.name` on a struct WITH field `name` = field read; field + braces =
+    error pointing at `..`. Ambiguity resolved by lookup, not syntax.
+  - `..name {arg}` (var only): field set (payload = exactly one field —
+    `{8080}` sugars to `{value: 8080}`, `{episode}` to `{episode: episode}`)
+    or MUTATOR call — braced args pin method form, result reassigned into
+    the var via the ordinary assignment check (must return receiver's
+    type). Chain always continues on the base var. `..start` in the old
+    spec example was a confirmed typo (start returns bool → `.start`).
+  - `{expr}` with a non-ident single value parses as `{value: expr}`
+    (parser sugar; parseBraceBlock now unreachable from that position).
+- Implementation: Expr.exkField gained dotArg (parser consumes `{...}`
+  after `.name`) + callNode; ChainStep gained callNode — checker stamps
+  the resolved exkCall, codegen (Nim × both genExpr overloads + Beef)
+  just emits it. synthMethodCall = the method-form checker (arg1
+  compat, named rest, positional call node in declared param order).
+- Parser bug found by runtime verify: multi-step chains nested one
+  exkChain per step (base = previous chain) — codegen emitted garbage.
+  Steps now accumulate on ONE node. Chains emit PRETTY multi-line Nim
+  (`server.port = 8080` / `server = withPort(server, 90)`), exkChain
+  added to the self-indenting node sets. Runtime-verified via exit code.
+- Errors all explain the fix: field-with-args, let-mutation, non-mutator
+  return type, arg1 mismatch, unknown name, wrong value type. 18-case
+  battery ran against the checker (scratchpad/speccases) — outcomes match
+  the model 18/18.
+- examples/02-builder-mutation.tuck now REAL (decls + mutator + field
+  sets), in BOTH gates: nim-check 15/25, Beef compile-check 15. Example 17
+  gained its missing sketch fields (currentEpisode, lastPlayed).
+- Suites green: typecheck (86), examples 25 + gate 15, end_to_end,
+  cli_smoke, beef_backend (25 assertions + 15 builds).
+- Backlog unblocked: mutation-site invariant validate() (ROADMAP row
+  updated); purity enforcement for mutators via effects = future ruling.

@@ -9,6 +9,8 @@ type Episode:
 object PodcastApp:
   host: str
   library: Seq[Episode]
+  currentEpisode: Episode
+  lastPlayed: str
 
 fn changePlaySpeed({app: PodcastApp, ratio: float}) -> PodcastApp:
   # `input` is the full incoming struct: {app, ratio}

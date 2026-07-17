@@ -72,25 +72,71 @@ as a whole.
 
 ### 2.3 Postfix Invocation vs. Mutation
 
-Two distinct surface forms, keeping pure calls and stateful mutation separate:
+The object is the struct — the object's state. A fn operates on it. Calls
+resolve **semantically, not by syntax**: whitespace, `.name`, and
+`.name {args}` are the same call form (empty braces are merely redundant).
 
-- **whitespace** — implicit function invocation. The previous struct is passed as
-  the single payload to the next function.
-- **`..` (DotDot) — Mutation/builder.** Modifies a bound `var` in place and
-  returns it for further chaining.
+**Call resolution** (one rule everywhere): the value on the left is offered
+to the fn's FIRST parameter whole; if the types are compatible, it binds
+whole (structurally when the receiver type has no name) and the braced
+struct fills the remaining parameters by name. Otherwise the value's
+**fields** fill the parameters by name (subset matching, §2.5).
 
 ```tuck
-# Functional pipeline — immutable, each step receives the previous struct
-let result = {config} connect query
+fn describe({self: Server}) -> str: ...
+fn scaled({self: Server, factor: int}) -> int: ...
+fn advance({position: int, step: int}) -> int: ...
 
-# Builder pattern — stateful assembly on a var
-var server = ServerConfig {}
-server ..port {8080} ..timeout {30.seconds} ..start
+s describe            # whole-bind: describe(s)
+s.describe            # identical
+s.describe {}         # identical (empty braces: harmless, unnecessary)
+s.scaled {factor: 2}  # whole-bind + braced args: scaled(s, 2)
+p advance             # Player has no param-1 match → fields fill params:
+                      # advance(p.position, p.step)
 ```
 
-Mutating a struct requires using `..` on a `var`. The compiler rejects `..` on
-`let` bindings. This friction is intentional — it encourages extraction and keeps
-functions tiny.
+`.name` on a struct that HAS a field `name` reads the field; otherwise it
+resolves to a fn by lookup. A field takes no arguments — `s.port {8080}`
+is a compile error pointing at `..`.
+
+**`..` (DotDot) — mutation/builder.** Only on a `var`; the compiler rejects
+`..` on `let` bindings (friction is intentional — it encourages extraction
+and keeps functions tiny). Each `..name {arg}` step either:
+
+- **sets a field** — `name` is a field of the var's type; the payload is
+  exactly one value (`{8080}` is sugar for `{value: 8080}`; `{episode}` is
+  shorthand for `{episode: episode}` — the single value is what's
+  assigned), or
+- **calls a mutator fn** — resolution as above, and the RESULT is
+  reassigned into the var. An ordinary reassignment type-check applies, so
+  the fn must return the receiver's type. Mutators should just update
+  state (enforcing purity via effect markers: future work).
+
+Either way the chain continues on the same var.
+
+```tuck
+type ServerConfig:
+  port: int
+  timeout: u32
+
+fn withDefaults({self: ServerConfig}) -> ServerConfig: ...
+fn start({self: ServerConfig}) -> bool: ...
+
+var server = {port: 0, timeout: 0} ServerConfig
+server ..withDefaults ..port {8080} ..timeout {60.seconds}
+let ok = server.start   # NOT ..start — start returns bool, not the receiver
+```
+
+**What errors, and why:**
+
+| Form | Error |
+|---|---|
+| `s.port {8080}` | `port` is a field — fields take no arguments; set with `..port {…}` on a var |
+| `let s = …; s ..port {1}` | `..` on a `let` — use `var` |
+| `s ..describe` | mutator must return the receiver's type (describe returns `str`) |
+| `n ..withPort {80}` (n: int) | fn's first parameter expects `ServerConfig`, receiver is `int` |
+| `s ..mystery {1}` | no field or fn `mystery` on the receiver's type |
+| `s ..port {"x"}` | field `port` is `int` but got `str` |
 
 ### 2.4 Field Access Auto-Wrap
 

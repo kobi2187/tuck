@@ -164,6 +164,7 @@ const beefCheckExpected = [
   "08-actors_isolated_state",
   "13-arena-mem",
   "15-type-attributes",
+  "02-builder-mutation",
 ]
 
 proc beefCompileCheck(beefBuild, baseName: string, deps: seq[string]): bool =

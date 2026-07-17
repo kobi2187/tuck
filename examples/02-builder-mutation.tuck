@@ -1,4 +1,24 @@
-# Builder pattern with mutation operator
-var server = ServerConfig {}
+# Builder pattern with the mutation operator `..` (spec 2.3).
+# `..name {arg}` on a var either SETS a field or calls a MUTATOR fn
+# (receiver rides as the fn's first parameter, result is reassigned into
+# the var). Either way the chain continues on the same var.
 
-server ..port {8080} ..timeout {30.seconds} ..start
+type ServerConfig:
+  port: int
+  timeout: u32
+  running: bool
+
+# a mutator: first param is the receiver's type, returns the receiver's type
+fn withDefaults({self: ServerConfig}) -> ServerConfig:
+  return {port: 80, timeout: 30, running: false} ServerConfig
+
+# an ordinary fn — callable as `server.start` / `server start`; NOT a
+# mutator (returns bool), so `..start` would be a compile error
+fn start({self: ServerConfig}) -> bool:
+  return true
+
+fn main() -> void:
+  var server = {port: 0, timeout: 0, running: false} ServerConfig
+  server ..withDefaults ..port {8080} ..timeout {60}
+  let ok = server.start
+  return

@@ -22,6 +22,7 @@ const
 # When a new example goes green, add it here so regressions are caught.
 const nimCheckExpected = [
   "01-data-flow",
+  "02-builder-mutation",
   "05-actors-effects",
   "07-comments",
   "06-transitions-example",

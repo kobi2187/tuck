@@ -249,6 +249,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
         e.fieldName & "(" & ctx.genExpr(e.receiver, m) & ")"
       else:
         ctx.genExpr(e.receiver, m)
+    elif e.callNode != nil:
+      # fieldName resolved to a fn call, not a field (checker-stamped)
+      ctx.genCall(e.callNode, m)
     else:
       ctx.genExpr(e.receiver, m) & "." & e.fieldName
   of exkQualified:
@@ -293,7 +296,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     for s in e.stmts:
       let stmtCode = ctx.genExpr(s, m)
       if stmtCode != "":
-        lines.add(ind & "  " & stmtCode)
+        if s.kind == exkChain:
+          lines.add(stmtCode)  # carries its own indentation (multi-line)
+        else:
+          lines.add(ind & "  " & stmtCode)
     ctx.indent = oldIndent
     if lines.len == 0:
       return ind & "discard"
@@ -331,15 +337,20 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     else:
       "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv, m) & "))"
   of exkChain:
-    var res = ctx.genExpr(e.base, m)
+    # `x ..field {v} ..mutate {a}` — one plain Nim statement per step:
+    # field set, or mutator call reassigned into the base var
+    let baseStr = ctx.genExpr(e.base, m)
+    var lines: seq[string]
     for step in e.steps:
-      let targetStr = ctx.genExpr(step.target, m)
-      let argStr = if step.arg != nil: ctx.genExpr(step.arg, m) else: ""
-      if argStr != "":
-        res = res & "." & targetStr & "(" & argStr & ")"
+      if step.callNode != nil:
+        lines.add(ind & baseStr & " = " & ctx.genCall(step.callNode, m))
       else:
-        res = res & "." & targetStr & "()"
-    return res
+        var valStr = ""
+        if step.arg != nil and step.arg.kind == exkStruct and
+           step.arg.fields.len == 1:
+          valStr = ctx.genExpr(step.arg.fields[0][1], m)
+        lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
+    return lines.join("\n")
   else:
     "discard"
 
@@ -472,6 +483,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         e.fieldName & "(" & ctx.genExpr(e.receiver) & ")"
       else:
         ctx.genExpr(e.receiver)
+    elif e.callNode != nil:
+      ctx.genCall(e.callNode, ctx.module)
     else:
       ctx.genExpr(e.receiver) & "." & e.fieldName
   of exkQualified:
@@ -523,7 +536,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         stmtCode = "(let " & tn & " = " & stmtCode & "; (if not " & tn &
                    ".ok: " & onErr & "))"
       if stmtCode != "":
-        if s.kind in {exkIf, exkBlock}:
+        if s.kind in {exkIf, exkBlock, exkChain}:
           lines.add(stmtCode)  # these nodes carry their own indentation
         else:
           lines.add(ind & "  " & stmtCode)
@@ -573,15 +586,20 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     else:
       "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
   of exkChain:
-    var res = ctx.genExpr(e.base)
+    # `x ..field {v} ..mutate {a}` — one plain Nim statement per step:
+    # field set, or mutator call reassigned into the base var
+    let baseStr = ctx.genExpr(e.base)
+    var lines: seq[string]
     for step in e.steps:
-      let targetStr = ctx.genExpr(step.target)
-      let argStr = if step.arg != nil: ctx.genExpr(step.arg) else: ""
-      if argStr != "":
-        res = res & "." & targetStr & "(" & argStr & ")"
+      if step.callNode != nil:
+        lines.add(ind & baseStr & " = " & ctx.genCall(step.callNode, ctx.module))
       else:
-        res = res & "." & targetStr & "()"
-    return res
+        var valStr = ""
+        if step.arg != nil and step.arg.kind == exkStruct and
+           step.arg.fields.len == 1:
+          valStr = ctx.genExpr(step.arg.fields[0][1])
+        lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
+    return lines.join("\n")
   else:
     "discard"
 

@@ -555,6 +555,113 @@ var cfg = {port: 80}
 cfg ..port {8080}
 """
 
+expectOk "'.' calls a fn when the name is not a field", """
+type Server:
+  port: int
+
+fn describe({port: int}) -> str:
+  return "server"
+
+fn main() -> void:
+  let server = {port: 80} Server
+  let d = server.describe
+  return
+"""
+
+expectOk "'..' reassigns from a mutator fn: arg1 is the receiver, returns its type", """
+type Server:
+  port: int
+
+fn withPort({self: Server, value: int}) -> Server:
+  return {port: value} Server
+
+fn main() -> void:
+  var server = {port: 0} Server
+  server ..withPort {80}
+  return
+"""
+
+expectError "'..' on a fn whose first param is not the receiver type", """
+type Server:
+  port: int
+
+fn withPort({count: int, value: int}) -> Server:
+  return {port: value} Server
+
+fn main() -> void:
+  var server = {port: 0} Server
+  server ..withPort {80}
+  return
+""", "first parameter"
+
+expectOk "'.fn {args}': receiver is the first param, braced args fill the rest", """
+type Server:
+  port: int
+
+fn scaled({self: Server, factor: int}) -> int:
+  return factor
+
+fn main() -> void:
+  let server = {port: 80} Server
+  let n = server.scaled {factor: 2}
+  return
+"""
+
+expectError "'.fn {args}': missing param not covered by the braced args", """
+type Server:
+  port: int
+
+fn scaled({self: Server, factor: int}) -> int:
+  return factor
+
+fn main() -> void:
+  let server = {port: 80} Server
+  let n = server.scaled {}
+  return
+""", "missing required field 'factor"
+
+expectError "'.field {args}': fields take no arguments", """
+type Server:
+  port: int
+
+fn main() -> void:
+  let server = {port: 80} Server
+  let n = server.port {8080}
+  return
+""", "'port' is a field"
+
+expectOk "bare value braces: {8080} is {value: 8080}", """
+fn double({value: int}) -> int:
+  return value * 2
+
+fn main() -> void:
+  let n = {8080} double
+  return
+"""
+
+expectError "'..' fn call whose return type does not match the var", """
+type Server:
+  port: int
+
+fn describe({self: Server}) -> str:
+  return "server"
+
+fn main() -> void:
+  var server = {port: 0} Server
+  server ..describe {}
+  return
+""", "cannot assign str to Server"
+
+expectError "'.' on a name that is neither a field nor a fn", """
+type Server:
+  port: int
+
+fn main() -> void:
+  let server = {port: 0} Server
+  let x = server.mystery
+  return
+""", "no field 'mystery'"
+
 expectOk "mutual recursion via pre-collected sigs", """
 fn isEven(n: int) -> bool:
   return n isOdd
