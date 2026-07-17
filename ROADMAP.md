@@ -74,14 +74,14 @@ construction, generic bodies gradual, no constraints).
 | Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). mutation sites DONE 2026-07-13 (validate() appended after `..` chains on invariant-carrying vars, both backends, runtime-verified). Extern/deserialization + `!T`-wrapped returns pending. Ruling: BLOCK syntax only |
 | Actors | 9.1 | coroutine/state-machine runtime, static ring queues, scheduler (design open) |
 | Tasks | 9.2 | state-machine transform at [io] yield points |
-| bake | 3.5 | real specialization; ex 03 emits invalid Nim |
-| alias restructuring | 2.5 | alias() field-rename lowering (blocks ex 18). Type-directed lowering itself LANDED 2026-07-11: typed AST (Expr.ty), record-var payload explosion (`p advance` → advance(p.position, p.step)), generic record construction Box[int](...). Ex 04/12 need only sketch decl edits. Non-exkVar payload args not exploded (double-eval; bind-to-temp later) |
+| bake | 3.5 | v1 DONE 2026-07-13 (Factor-fry: :name refs, fn→auto generic lowering, slot.invoke; ex 03 green+runtime-verified). Beef bake = delegate-type ceiling. True Tuck-IR inlining later if ever needed |
+| alias restructuring | 2.5 | DONE 2026-07-13 (typed renamed record, both backends; ex 18 green). Non-exkVar payload args still not exploded (double-eval; bind-to-temp later) |
 | pool / arena | 7.2/7.3 | acquire/release bitmask, reset, scope analysis, size verification |
 | Interfaces | 5.2/5.3 | satisfies checking, fat-pointer dispatch |
 | Type composition `+` | 4.5 | conflict detection unverified |
 | match | — | exhaustiveness checking |
 | Effects | 3.7 | switch to implicit propagation (ruling above) |
-| Beef backend | — | emits, never validated |
+| Beef backend | — | parity suite + BeefBuild compile-check 20/25 examples; `tuck build --beef` in CLI. Ceilings: bake (delegate types), member-fn call-site ref marker |
 
 ## Missing
 - Resource registry §7.4 — parser (`resources` decl, `defer` block,
@@ -97,11 +97,10 @@ construction, generic bodies gradual, no constraints).
 - Top-level statements / implicit main (ex 11)
 - Visibility (pub/private), imported types via `::`, nested module paths
 
-## Broken-example map
-03 → bake; 18 → alias lowering; 11 → when + implicit main; 16 → on select;
-20 → when + embedded attrs depth; 04/09/12 → only need sketch decls/pending
-blocks (example edits, no compiler work). 02 GREEN 2026-07-13 (real decls,
-in both gates); 17 typechecks (sketch decls added).
+## Broken-example map (2026-07-13: Nim gate 21/25, Beef 20/25)
+Remaining: 11 → when + implicit main; 16 → on select (actor-runtime
+ruling); 20 → when + actor-transition lowering; 03 → Beef-side only
+(delegate types). Everything else GREEN in both gates.
 
 ## Spec debt
 §11 describes npeg parser + flat IR + Merkle cache; reality is recursive
