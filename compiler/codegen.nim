@@ -187,10 +187,45 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   return calleeStr & "(" & parts.join(", ") & ")"
 
 
+# {payload} Type.Variant — construction of a payload-carrying sum type
+# (object variant: kind enum + per-variant payload tuple). Fieldless-only
+# sums are plain Nim enums, where Type.Variant is already valid — returns ""
+# and the caller falls through to plain emission.
+proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
+                    payload: Expr): string =
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkType and d.name == typeName and
+       d.typeBody != nil and d.typeBody.kind == tkSum:
+      var hasPayload = false
+      for v in d.typeBody.variants:
+        if v.fields.len > 0: hasPayload = true
+      if not hasPayload: return ""
+      for v in d.typeBody.variants:
+        if v.name == variantName:
+          if v.fields.len == 0 or payload == nil:
+            return typeName & "(kind: " & variantName & ")"
+          # payload tuple in DECLARED field order
+          var parts: seq[string]
+          for f in v.fields:
+            var valStr = ""
+            for pf in payload.fields:
+              if pf[0] == f.name: valStr = ctx.genExpr(pf[1])
+            parts.add(f.name & ": " & valStr)
+          return typeName & "(kind: " & variantName & ", " &
+                 variantName.toLowerAscii() & ": (" & parts.join(", ") & "))"
+  ""
+
 # exkCall (module-aware overload): record construction, qualified-module
 # param reordering, or plain positional call.
 proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
   var args: seq[string]
+  if e.callee != nil and e.callee.kind == exkField and
+     e.callee.receiver != nil and e.callee.receiver.kind == exkVar:
+    let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
+                  else: nil
+    let ctor = ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName,
+                                   payload)
+    if ctor != "": return ctor
   let calleeStr = ctx.genExpr(e.callee, m)
   if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(m, calleeStr):
     # record construction: named fields, not positional
@@ -252,6 +287,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     elif e.callNode != nil:
       # fieldName resolved to a fn call, not a field (checker-stamped)
       ctx.genCall(e.callNode, m)
+    elif e.receiver != nil and e.receiver.kind == exkVar and
+         ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
+      # bare Type.Variant of a payload sum: kind-tagged construction
+      ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
     else:
       ctx.genExpr(e.receiver, m) & "." & e.fieldName
   of exkQualified:
@@ -401,6 +440,13 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
       let tmp = "tuckInv" & $ctx.tmpCounter
       return "(let " & tmp & " = " & ctor & "; validate(" & tmp & "); " & tmp & ")"
     return ctor
+  if e.callee != nil and e.callee.kind == exkField and
+     e.callee.receiver != nil and e.callee.receiver.kind == exkVar:
+    let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
+                  else: nil
+    let ctor = ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName,
+                                   payload)
+    if ctor != "": return ctor
   let calleeStr = ctx.genExpr(e.callee)
   if calleeStr notin ["bake", "alias"]:
     let exploded = ctx.explodeRecordArg(e, calleeStr)
@@ -485,6 +531,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         ctx.genExpr(e.receiver)
     elif e.callNode != nil:
       ctx.genCall(e.callNode, ctx.module)
+    elif e.receiver != nil and e.receiver.kind == exkVar and
+         ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
+      # bare Type.Variant of a payload sum: kind-tagged construction
+      ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
     else:
       ctx.genExpr(e.receiver) & "." & e.fieldName
   of exkQualified:
@@ -625,8 +675,14 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
   if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
      retTypeStr != "void":
     let lastS = body.stmts[^1]
-    if lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
-                         exkAssign, exkBlock} and
+    if lastS.kind == exkChain:
+      # a chain's value is its base var: keep the mutation statements,
+      # return the base afterwards
+      if lastS.base != nil:
+        body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
+                            returnVal: lastS.base))
+    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
+                           exkAssign, exkBlock} and
        not (lastS.kind == exkVar and lastS.name == "..."):
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
 

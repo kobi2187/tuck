@@ -68,10 +68,11 @@ const expectSubstrings = {
     "packed decision key",
     "switch (",
   ],
-  # odd bit widths round up to real ints
+  # enumerable columns emit a packed single-switch decision
   "09-decision-table": @[
-    "uint8",                            # u2 rounds up
-    "uint16",                           # u12 rounds up
+    "enum Priority",
+    "enum Action",
+    "packed decision key",
   ],
   # invariants: validate emitted AND called at production sites
   "10-invariants": @[
@@ -165,6 +166,8 @@ const beefCheckExpected = [
   "13-arena-mem",
   "15-type-attributes",
   "02-builder-mutation",
+  "09-decision-table",
+  "12-transition-the-ctor-exception",
 ]
 
 proc beefCompileCheck(beefBuild, baseName: string, deps: seq[string]): bool =

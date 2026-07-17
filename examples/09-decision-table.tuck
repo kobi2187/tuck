@@ -1,6 +1,22 @@
-decision classifyPacket({priority: u2, size: u12, encrypted: bool}) -> Action:
+# Decision table over enumerable columns: the checker proves completeness
+# and reachability exactly, and emits a single case over a packed key.
+
+type Priority:
+  | high
+  | low
+
+type SizeClass:
+  | big
+  | small
+
+type Action:
+  | QueueSecure
+  | QueueFast
+  | QueueImmediate
+  | QueueDefer
+
+decision classifyPacket({priority: Priority, size: SizeClass, encrypted: bool}) -> Action:
   | high    big   true  -> QueueSecure
   | high    big   false -> QueueFast
   | high    small _     -> QueueImmediate
   | low     _     _     -> QueueDefer
-  | _       _     _     -> Drop

@@ -325,8 +325,44 @@ proc genStructLit(ctx: var BeefCodegenCtx, e: Expr): string =
 
 # exkCall: record construction (with invariant validation and generic
 # instantiation), payload explosion, named-param reordering, or a plain call.
+# {payload} Type.Variant — construction of a payload-carrying sum type
+# (kind + per-variant TRec struct field). Fieldless-only sums are plain Beef
+# enums, where Type.Variant is already valid — returns "" to fall through.
+proc sumVariantCtor(ctx: var BeefCodegenCtx, typeName, variantName: string,
+                    payload: Expr): string =
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkType and d.name == typeName and
+       d.typeBody != nil and d.typeBody.kind == tkSum:
+      var hasPayload = false
+      for v in d.typeBody.variants:
+        if v.fields.len > 0: hasPayload = true
+      if not hasPayload: return ""
+      for v in d.typeBody.variants:
+        if v.name == variantName:
+          if v.fields.len == 0 or payload == nil:
+            return "new " & typeName & "() { kind = ." & variantName & " }"
+          let recName = ctx.recStructName(v.fields)
+          # positional ctor in DECLARED field order
+          var vals: seq[string]
+          for f in v.fields:
+            var valStr = "default"
+            for pf in payload.fields:
+              if pf[0] == f.name: valStr = ctx.genBeefExpr(pf[1])
+            vals.add(valStr)
+          return "new " & typeName & "() { kind = ." & variantName & ", " &
+                 v.name.toLowerAscii() & " = " & recName & "(" &
+                 vals.join(", ") & ") }"
+  ""
+
 proc genBeefCall(ctx: var BeefCodegenCtx, e: Expr): string =
   var args: seq[string]
+  if e.callee != nil and e.callee.kind == exkField and
+     e.callee.receiver != nil and e.callee.receiver.kind == exkVar:
+    let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
+                  else: nil
+    let ctor = ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName,
+                                   payload)
+    if ctor != "": return ctor
   let calleeStr = ctx.genBeefExpr(e.callee)
   if e.args.len == 1 and e.args[0].kind == exkStruct and
      e.callee != nil and e.callee.kind == exkVar and
@@ -534,6 +570,10 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
     if e.callNode != nil:
       # fieldName resolved to a fn call, not a field (checker-stamped)
       return ctx.genBeefCall(e.callNode)
+    if e.receiver != nil and e.receiver.kind == exkVar:
+      # bare Type.Variant of a payload sum: kind-tagged construction
+      let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
+      if ctor != "": return ctor
     return ctx.genBeefExpr(e.receiver) & "." & e.fieldName
   of exkQualified:
     return genQualified(ctx, e)
@@ -705,8 +745,15 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
   if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
      retTypeStr != "void":
     let lastS = body.stmts[^1]
-    if lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
-                         exkAssign, exkBlock} and
+    if lastS.kind == exkChain:
+      # a chain's value is its base var: keep the mutation statements,
+      # return the base afterwards (idempotent across backends — the shared
+      # AST may already carry the appended return)
+      if lastS.base != nil:
+        body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
+                            returnVal: lastS.base))
+    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
+                           exkAssign, exkBlock} and
        not (lastS.kind == exkVar and lastS.name == "..."):
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
 

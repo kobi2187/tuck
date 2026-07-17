@@ -76,6 +76,28 @@ grep -q "advance(p.position, p.step)" "$tdl/out/p.nim" || { echo "FAIL: record v
 "$tdl/out/p" || { echo "FAIL: exploded program did not run"; exit 1; }
 rm -rf "$tdl"
 
+# `..` chain as the fn's tail: mutate, then return the base var
+cht="tests/.smoke_chaintail"
+rm -rf "$cht" && mkdir -p "$cht"
+cat > "$cht/t.tuck" <<'EOF'
+import sys
+
+type Counter:
+  n: int
+
+fn bump({self: Counter}) -> Counter:
+  self ..n {41}
+
+fn main() -> void [io]:
+  var c = {n: 0} Counter
+  c ..bump ..n {42}
+  c.n sys::exit
+EOF
+./tuck build "$cht/t.tuck" -o:"$cht/out" > /dev/null
+rc=0; "$cht/out/t" || rc=$?
+[ "$rc" -eq 42 ] || { echo "FAIL: chain-tail program exit $rc, want 42"; exit 1; }
+rm -rf "$cht"
+
 # tuck build --beef: scaffolds a Beef project and builds it with BeefBuild
 # when a toolchain is present; always emits the .bf source either way.
 bf="tests/.smoke_beef"
