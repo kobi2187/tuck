@@ -592,3 +592,13 @@ Next candidates (Beef):
   Order-free (bound before body checks); Nim emits `const` in the type
   pass; Beef: literal→const, structured→static field. Runtime-verified
   (const + struct-const arithmetic exits 42). Spec §2.3b extended.
+
+## 2026-07-13 — TOUR.md + TOUR-GAPS.md (probe-driven language tour)
+
+- TOUR.md: 15-section tour of the working language, every "runs" snippet
+  actually built/executed during writing. TOUR-GAPS.md: 10 gaps found by
+  writing code the natural way first (user bar: any hoop counts).
+  Top finds: no int→str/interp (can't print a number!), str + str emits
+  invalid Nim, list-literal-of-constructions emitter bug, transitionTo
+  ergonomics, .err never enum-typed at handling sites, const rejects
+  unit sugar, match `:` vs decision `->` inconsistency, actors don't run.
