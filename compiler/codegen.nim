@@ -117,6 +117,19 @@ proc hasInvariants(m: Module, name: string): bool =
         if member.kind == dkExpr: return true
   false
 
+# An extern fn returning an invariant-carrying named type: values entering
+# from outside the checked world validate at the CALL site (we don't emit
+# the body). Returns the type name, or "".
+proc externInvRet(m: Module, fnName: string): string =
+  for d in m.decls:
+    if d != nil and d.kind == dkMixin:
+      for mem in d.mixinMembers:
+        if mem.kind == dkFn and mem.isExtern and mem.name == fnName and
+           mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
+           hasInvariants(m, mem.fnReturnType.name):
+          return mem.fnReturnType.name
+  ""
+
 # {fields} TypeName — construction of a declared record type
 proc isRecordType(m: Module, name: string): bool =
   for d in m.decls:
@@ -334,7 +347,13 @@ proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
     return args[0]
-  return calleeStr & "(" & args.join(", ") & ")"
+  let call = calleeStr & "(" & args.join(", ") & ")"
+  if externInvRet(ctx.module, calleeStr) != "":
+    # extern boundary: the returned value validates on entry
+    ctx.tmpCounter.inc
+    let tmp = "tuckInv" & $ctx.tmpCounter
+    return "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
+  return call
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
   if e == nil: return ""
@@ -559,7 +578,13 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
     return args[0]
-  return calleeStr & "(" & args.join(", ") & ")"
+  let call = calleeStr & "(" & args.join(", ") & ")"
+  if externInvRet(ctx.module, calleeStr) != "":
+    # extern boundary: the returned value validates on entry
+    ctx.tmpCounter.inc
+    let tmp = "tuckInv" & $ctx.tmpCounter
+    return "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
+  return call
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
 # literals, invariant-carrying returns, or a plain return.

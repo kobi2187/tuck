@@ -72,6 +72,42 @@ if "$inv/out3/mut" 2>/dev/null; then
   echo "FAIL: invariant violation at mutation did not abort"; exit 1
 fi
 "$inv/out3/mut" 2>&1 | grep -q "Invariant violated" || { echo "FAIL: no invariant message at mutation"; exit 1; }
+# !T-wrapped return: the payload validates before tok() wraps it
+cat > "$inv/wrap.tuck" <<'EOF'
+type Temperature:
+  celsius: int
+  invariant:
+    celsius >= -273
+
+fn read() -> !Temperature [io]:
+  return {celsius: -400} Temperature
+
+fn main() -> void [io]:
+  let r = {} read
+  return
+EOF
+./tuck build "$inv/wrap.tuck" -o:"$inv/out4" > /dev/null
+if "$inv/out4/wrap" 2>/dev/null; then
+  echo "FAIL: invariant violation inside !T return did not abort"; exit 1
+fi
+"$inv/out4/wrap" 2>&1 | grep -q "Invariant violated" || { echo "FAIL: no invariant message in !T return"; exit 1; }
+# extern boundary: a call to an extern fn returning an invariant-carrying
+# type validates at the call site (emission check — no rt impl to run)
+cat > "$inv/ext.tuck" <<'EOF'
+type Temperature:
+  celsius: int
+  invariant:
+    celsius >= -273
+
+extern:
+  fn readSensor({pin: int}) -> Temperature
+
+fn main() -> void:
+  let t = {pin: 3} readSensor
+  return
+EOF
+./tuck compile "$inv/ext.tuck" -o:"$inv/out5" > /dev/null
+grep -q "validate(" "$inv/out5/ext.nim" || { echo "FAIL: extern call site not validated"; exit 1; }
 rm -rf "$inv"
 
 # type-directed lowering: record var as whole payload explodes to params

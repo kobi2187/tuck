@@ -185,6 +185,18 @@ proc hasInvariants(m: Module, name: string): bool =
         if member.kind == dkExpr: return true
   false
 
+# An extern fn returning an invariant-carrying named type validates at the
+# call site (mirrors codegen.nim externInvRet).
+proc externInvRet(m: Module, fnName: string): string =
+  for d in m.decls:
+    if d != nil and d.kind == dkMixin:
+      for mem in d.mixinMembers:
+        if mem.kind == dkFn and mem.isExtern and mem.name == fnName and
+           mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
+           hasInvariants(m, mem.fnReturnType.name):
+          return mem.fnReturnType.name
+  ""
+
 proc isRecordType(m: Module, name: string): bool =
   for d in m.decls:
     if d != nil and d.kind == dkType and d.name == name and
@@ -454,6 +466,9 @@ proc genBeefCall(ctx: var BeefCodegenCtx, e: Expr): string =
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
     return args[0]
+  elif externInvRet(ctx.module, calleeStr) != "":
+    # extern boundary: the returned value validates on entry
+    return "__validated(" & calleeStr & "(" & args.join(", ") & "))"
   elif calleeStr == "echo":
     return "Console.WriteLine(" & args.join(", ") & ")"
   return calleeStr & "(" & args.join(", ") & ")"

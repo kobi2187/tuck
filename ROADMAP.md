@@ -71,7 +71,7 @@ construction, generic bodies gradual, no constraints).
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
-| Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). mutation sites DONE 2026-07-13 (validate() appended after `..` chains on invariant-carrying vars, both backends, runtime-verified). Extern/deserialization + `!T`-wrapped returns pending. Ruling: BLOCK syntax only |
+| Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). mutation sites, extern boundaries and `!T`-wrapped returns ALL DONE 2026-07-13 — every production site now validates (constructions, returns, `..` chains, extern call sites; !T payloads validate transitively via construction). Both backends, runtime-verified. Ruling: BLOCK syntax only |
 | Actors | 9.1 | coroutine/state-machine runtime, static ring queues, scheduler (design open) |
 | Tasks | 9.2 | state-machine transform at [io] yield points |
 | bake | 3.5 | v1 DONE 2026-07-13 (Factor-fry: :name refs, fn→auto generic lowering, slot.invoke; ex 03 green+runtime-verified). Beef bake = delegate-type ceiling. True Tuck-IR inlining later if ever needed |
