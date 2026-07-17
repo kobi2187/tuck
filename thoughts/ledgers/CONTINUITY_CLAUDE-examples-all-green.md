@@ -44,7 +44,12 @@ when Beef also compiles it).
         now two-pass (types before procs — Nim decl-before-use vs Tuck
         order-independence; object type headers via ctx.typeSection).
         Gates 18/25 both.
-- Now: [→] Phase 4: alias() restructuring (fixes 18 + 01's silent no-op).
+  - [x] Phase 4: alias() REAL. Checker types the result (renamed record;
+        bad source field / non-ident target = errors). Nim emits the
+        renamed tuple (temp-bind for non-var receivers); Beef emits the
+        renamed TRec positional ctor (exkVar+ty only, else pass-through
+        ceiling). Fixes 18 AND 01's silent no-op. Gates 19/25 both.
+- Now: [→] Phase 5: 03 bake specialization.
 - Remaining:
   - [ ] Phase 3: 04 — `Self` mapping + interface/manager emission + empty
         setMany body indent (`proc setMany(self: Self,...)` invalid Nim).

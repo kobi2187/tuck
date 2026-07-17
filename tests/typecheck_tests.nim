@@ -705,6 +705,35 @@ fn main() -> void:
   return
 """, "rename"
 
+expectOk "alias restructures: renamed fields satisfy the consumer", """
+fn playTrack({id: int, name: str}) -> void:
+  return
+
+fn main() -> void:
+  let ext = {trackId: 42, title: "x"}
+  let normalized = ext alias(trackId: id, title: name)
+  normalized playTrack
+  return
+"""
+
+expectError "alias result is typed: consumer catches a missing field", """
+fn playTrack({id: int, name: str}) -> void:
+  return
+
+fn main() -> void:
+  let ext = {trackId: 42, title: "x"}
+  let normalized = ext alias(trackId: id)
+  normalized playTrack
+  return
+""", "missing required field 'name"
+
+expectError "alias source field must exist on the receiver", """
+fn main() -> void:
+  let ext = {trackId: 42}
+  let normalized = ext alias(wrong: id)
+  return
+""", "does not exist"
+
 expectOk "mutual recursion via pre-collected sigs", """
 fn isEven(n: int) -> bool:
   return n isOdd

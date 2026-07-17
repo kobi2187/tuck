@@ -354,6 +354,26 @@ proc sumVariantCtor(ctx: var BeefCodegenCtx, typeName, variantName: string,
                  vals.join(", ") & ") }"
   ""
 
+# expr alias(old: new, ...) — rebuild as the renamed TRec shape.
+# ponytail: exkVar receivers only (no expr-position temp in Beef);
+# falls back to pass-through otherwise.
+proc genBeefAlias(ctx: var BeefCodegenCtx, e: Expr): string =
+  if e.args[0].kind != exkVar or e.args[0].ty == nil: return ""
+  let recvFields = getFieldsForType(ctx.module, e.args[0].ty)
+  if recvFields.len == 0: return ""
+  var newFields: seq[FieldDef]
+  var vals: seq[string]
+  let recv = ctx.genBeefExpr(e.args[0])
+  for (oldName, newExpr) in e.args[1].fields.items:
+    var ft: Type = nil
+    for rf in recvFields:
+      if rf.name == oldName: ft = rf.typ
+    if ft == nil or newExpr == nil or newExpr.kind != exkVar: return ""
+    newFields.add(FieldDef(name: newExpr.name, typ: ft, span: e.span))
+    vals.add(recv & "." & oldName)
+  let recName = ctx.recStructName(newFields)
+  return recName & "(" & vals.join(", ") & ")"
+
 proc genBeefCall(ctx: var BeefCodegenCtx, e: Expr): string =
   var args: seq[string]
   if e.callee != nil and e.callee.kind == exkField and
@@ -383,6 +403,9 @@ proc genBeefCall(ctx: var BeefCodegenCtx, e: Expr): string =
       # production site: construction — validate before the value flows on
       return "__validated(" & ctor & ")"
     return ctor
+  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    let aliased = ctx.genBeefAlias(e)
+    if aliased != "": return aliased
   if calleeStr notin ["bake", "alias"]:
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded

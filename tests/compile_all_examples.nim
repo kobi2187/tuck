@@ -24,6 +24,7 @@ const nimCheckExpected = [
   "01-data-flow",
   "02-builder-mutation",
   "04-sum-types-interface",
+  "18-alias",
   "09-decision-table",
   "12-transition-the-ctor-exception",
   "05-actors-effects",

@@ -167,6 +167,7 @@ const beefCheckExpected = [
   "15-type-attributes",
   "02-builder-mutation",
   "04-sum-types-interface",
+  "18-alias",
   "09-decision-table",
   "12-transition-the-ctor-exception",
 ]

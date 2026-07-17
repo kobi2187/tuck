@@ -588,6 +588,26 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     if modName in tc.knownModules and not tc.fnSigs.hasKey(calleeName):
       fail("Type Error: module '" & modName & "' has no function '" &
            e.callee.qualName & "'", e.span)
+  if calleeName == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    # expr alias(old: new, ...) — restructure: same values, renamed fields.
+    # The result is a REAL record type; consumers check against it.
+    let recvT = tc.resolve(tc.synthesize(e.args[0]))
+    let recvFields = tc.fieldsOf(recvT)
+    var fields: seq[FieldDef]
+    for (oldName, newExpr) in e.args[1].fields.items:
+      var ft: Type = nil
+      for rf in recvFields:
+        if rf.name == oldName: ft = rf.typ
+      if ft == nil and recvFields.len > 0:
+        fail("Type Error: alias source field '" & oldName &
+             "' does not exist on " & typeName(recvT), e.span)
+      if newExpr == nil or newExpr.kind != exkVar:
+        fail("Type Error: alias target must be a plain field name: " &
+             oldName & ": newName", e.span)
+      fields.add(FieldDef(name: newExpr.name,
+                          typ: (if ft == nil: unknownType(e.span) else: ft),
+                          span: e.span))
+    return Type(span: e.span, kind: tkRecord, fields: fields)
   if calleeName in ["bake", "alias"]:
     for a in e.args: discard tc.synthesize(a)
     return unknownType(e.span)

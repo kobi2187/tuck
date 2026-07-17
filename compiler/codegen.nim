@@ -174,6 +174,23 @@ proc recordFieldNames(ctx: CodegenCtx, t: Type): seq[string] =
   for f in getFieldsForType(ctx.module, t):
     result.add(f.name)
 
+# expr alias(old: new, ...) — rebuild the record with renamed fields:
+# (new1: x.old1, new2: x.old2, ...). Non-var receivers bind to a temp first
+# (no double evaluation).
+proc genAlias(ctx: var CodegenCtx, e: Expr): string =
+  var recv = ctx.genExpr(e.args[0])
+  var prefix = ""
+  if e.args[0].kind != exkVar:
+    ctx.tmpCounter.inc
+    let tmp = "tuckAlias" & $ctx.tmpCounter
+    prefix = "let " & tmp & " = " & recv & "; "
+    recv = tmp
+  var parts: seq[string]
+  for (oldName, newExpr) in e.args[1].fields.items:
+    parts.add(newExpr.name & ": " & recv & "." & oldName)
+  if prefix == "": "(" & parts.join(", ") & ")"
+  else: "(" & prefix & "(" & parts.join(", ") & "))"
+
 proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   # ponytail: exkVar args only — repeating any other expr risks double
   # evaluation; bind-to-temp lowering when a real case shows up
@@ -229,6 +246,8 @@ proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
                                    payload)
     if ctor != "": return ctor
   let calleeStr = ctx.genExpr(e.callee, m)
+  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    return ctx.genAlias(e)
   if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(m, calleeStr):
     # record construction: named fields, not positional
     var parts: seq[string]
@@ -450,6 +469,8 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
                                    payload)
     if ctor != "": return ctor
   let calleeStr = ctx.genExpr(e.callee)
+  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    return ctx.genAlias(e)
   if calleeStr notin ["bake", "alias"]:
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded
