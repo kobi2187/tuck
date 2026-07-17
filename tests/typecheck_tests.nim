@@ -662,6 +662,49 @@ fn main() -> void:
   return
 """, "no field 'mystery'"
 
+expectError "field set rejects a named-field payload", """
+type Server:
+  port: int
+  host: str
+
+fn main() -> void:
+  var server = {port: 0, host: "a"} Server
+  server ..port {host: 80}
+  return
+""", "takes one bare value"
+
+expectOk "field set accepts a bare var payload (ident shorthand)", """
+type Server:
+  host: str
+
+fn main() -> void:
+  var server = {host: "a"} Server
+  let name = "b"
+  server ..host {name}
+  return
+"""
+
+expectError "fn name colliding with a declared field name must rename", """
+type Server:
+  port: int
+
+fn port({value: int}) -> int:
+  return value
+
+fn main() -> void:
+  return
+""", "rename"
+
+expectError "'.' ambiguous on an anonymous struct: field and fn share the name", """
+fn port({value: int}) -> int:
+  return value
+
+fn main() -> void:
+  let cfg = {port: 80}
+  let x = cfg.port
+  return
+""", "rename"
+
 expectOk "mutual recursion via pre-collected sigs", """
 fn isEven(n: int) -> bool:
   return n isOdd

@@ -99,14 +99,20 @@ p advance             # Player has no param-1 match → fields fill params:
 resolves to a fn by lookup. A field takes no arguments — `s.port {8080}`
 is a compile error pointing at `..`.
 
+**Either/or namespace**: a field name may never shadow a declared fn name.
+Declaring both (`fn port` + a type with field `port`) is a compile error —
+rename one. Resolution is by lookup, so a shadow would silently change
+what `.port` means; the compiler refuses the ambiguity instead.
+
 **`..` (DotDot) — mutation/builder.** Only on a `var`; the compiler rejects
 `..` on `let` bindings (friction is intentional — it encourages extraction
 and keeps functions tiny). Each `..name {arg}` step either:
 
 - **sets a field** — `name` is a field of the var's type; the payload is
-  exactly one value (`{8080}` is sugar for `{value: 8080}`; `{episode}` is
-  shorthand for `{episode: episode}` — the single value is what's
-  assigned), or
+  one BARE value: `{8080}` (sugar for `{value: 8080}`) or a bare var
+  `{episode}`. A named pair (`..port {host: 80}`) is rejected — setting
+  several fields is a mutator fn's job. The value must match the field's
+  type and nothing else, or
 - **calls a mutator fn** — resolution as above, and the RESULT is
   reassigned into the var. An ordinary reassignment type-check applies, so
   the fn must return the receiver's type. Mutators should just update
@@ -137,6 +143,8 @@ let ok = server.start   # NOT ..start — start returns bool, not the receiver
 | `n ..withPort {80}` (n: int) | fn's first parameter expects `ServerConfig`, receiver is `int` |
 | `s ..mystery {1}` | no field or fn `mystery` on the receiver's type |
 | `s ..port {"x"}` | field `port` is `int` but got `str` |
+| `s ..port {host: 80}` | setting a field takes one bare value — use a mutator fn for several |
+| `fn port` + field `port` | field shadows a declared fn — rename one |
 
 ### 2.4 Field Access Auto-Wrap
 

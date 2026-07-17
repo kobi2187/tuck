@@ -535,3 +535,21 @@ Next candidates (Beef):
   cli_smoke, beef_backend (25 assertions + 15 builds).
 - Backlog unblocked: mutation-site invariant validate() (ROADMAP row
   updated); purity enforcement for mutators via effects = future ruling.
+
+## 2026-07-13 (later) — strictness screws tightened (user rulings)
+
+- Field set takes ONE BARE value only: `..port {80}` or `..host {name}`
+  (bare var). Named pair `..port {host: 80}` = error pointing at mutator
+  fns. Shorthand detection: single payload field named "value" (brace
+  sugar) or ident-shorthand pair (value expr is the same-named var).
+- Either/or namespace: a declared field name may not shadow a declared fn.
+  Two enforcement points: decl-time walk (record/object/actor fields vs
+  fnSigs — error names both and says "rename one") + use-site guard in
+  synthFieldAccess/synthChain (covers anonymous struct receivers the decl
+  walk can't see). Caught a REAL clash: example 01's pending fn `episodes`
+  vs the fetch-payload field `episodes` — fn renamed selectEpisodes.
+- Spec §2.3: bare-value rule + either/or paragraph + 2 error-table rows.
+- 90 checker tests green; all suites green (gate 15, Beef 15, e2e, smoke).
+- Still open (user asked for plain-words explanation): whether the
+  whole-bind-vs-field-explosion resolution needs an ambiguity error when
+  a call could match BOTH ways (currently whole-bind silently wins).

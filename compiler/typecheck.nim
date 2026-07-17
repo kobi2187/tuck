@@ -277,6 +277,10 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   let fields = tc.fieldsOf(recvT)
   for f in fields:
     if f.name == e.fieldName:
+      if tc.fnSigs.hasKey(e.fieldName):
+        fail("Type Error: '" & e.fieldName & "' is both a field here and a " &
+             "declared fn — rename one; fields and fns share the call " &
+             "namespace", e.span)
       if e.dotArg != nil:
         fail("Type Error: '" & e.fieldName & "' is a field of " &
              typeName(recvT) & " — fields take no arguments; to set it, " &
@@ -391,11 +395,23 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
     for f in fields:
       if f.name == step.target.name:
         isField = true
-        if step.arg == nil or step.arg.kind != exkStruct or
-           step.arg.fields.len != 1:
+        if tc.fnSigs.hasKey(f.name):
+          fail("Type Error: '" & f.name & "' is both a field here and a " &
+               "declared fn — rename one; fields and fns share the call " &
+               "namespace", step.span)
+        # payload must be a bare value: {80} (sugar for {value: 80}) or a
+        # bare var {name}. A named pair like {host: 80} is rejected —
+        # setting several fields is a mutator fn's job.
+        let okShape = step.arg != nil and step.arg.kind == exkStruct and
+                      step.arg.fields.len == 1 and
+                      (step.arg.fields[0][0] == "value" or
+                       (step.arg.fields[0][1] != nil and
+                        step.arg.fields[0][1].kind == exkVar and
+                        step.arg.fields[0][1].name == step.arg.fields[0][0]))
+        if not okShape:
           fail("Type Error: setting field '" & f.name & "' with '..' takes " &
-               "exactly one value: ..." & f.name & " {" & typeName(f.typ) &
-               "}", step.span)
+               "one bare value: ..." & f.name & " {" & typeName(f.typ) &
+               "} — to set several fields, use a mutator fn", step.span)
         let valExpr = step.arg.fields[0][1]
         let vt = tc.synthesize(valExpr)
         if not tc.compatible(vt, f.typ):
@@ -1065,6 +1081,23 @@ proc typecheckModule*(m: Module,
       tc.knownModules.incl(qualName.split("::")[0])
   tc.pushScope()  # module-level scope: top-level let/var visible across decls
   tc.collectSigs(m.decls)
+  # Either/or namespace: a declared field name may not shadow a declared fn —
+  # `.name` resolves by lookup, so a clash would silently change meaning.
+  for d in m.decls:
+    if d == nil: continue
+    let declFields =
+      case d.kind
+      of dkType:
+        if d.typeBody != nil and d.typeBody.kind == tkRecord: d.typeBody.fields
+        else: @[]
+      of dkObject: d.objFields
+      of dkActor: d.actorFields
+      else: @[]
+    for f in declFields:
+      if tc.fnSigs.hasKey(f.name):
+        fail("Type Error: field '" & f.name & "' of '" & d.name & "' has " &
+             "the same name as a declared fn — rename one; fields and fns " &
+             "share the call namespace", d.span)
   for d in m.decls:
     tc.checkDecl(d)
   if tc.errPolicy == "strict" and tc.unhandledSites.len > 0:

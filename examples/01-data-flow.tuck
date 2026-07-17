@@ -6,12 +6,12 @@
 pending:
   fn fetch({url: str}) -> {hasNew: bool, episodes: int, metadata: str}
   fn parse({hasNew: bool, episodes: int, metadata: str}) -> {episodes: int}
-  fn episodes({episodes: int}) -> {episodes: int}
+  fn selectEpisodes({episodes: int}) -> {episodes: int}
   fn process({episodes: int}) -> void
   fn log({metadata: str}) -> void
   fn playTrack({id: int, name: str, length: int}) -> void
 let request = {url: "example.com", timeout: 5.ms}  # 5.ms produces {value: 5}, so the timeout is always a single struct value
-let response = request fetch parse episodes
+let response = request fetch parse selectEpisodes
 
 var feed = {url: "https://example.com/feed"} fetch
 if feed.hasNew:
