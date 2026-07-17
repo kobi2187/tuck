@@ -71,7 +71,7 @@ construction, generic bodies gradual, no constraints).
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
-| Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). `..` emission RESOLVED 2026-07-13 (field assign / mutator reassign — spec §2.3): mutation-site validate() now unblocked, just needs the insert after chain steps. Extern/deserialization + `!T`-wrapped returns pending. Ruling: BLOCK syntax only |
+| Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). mutation sites DONE 2026-07-13 (validate() appended after `..` chains on invariant-carrying vars, both backends, runtime-verified). Extern/deserialization + `!T`-wrapped returns pending. Ruling: BLOCK syntax only |
 | Actors | 9.1 | coroutine/state-machine runtime, static ring queues, scheduler (design open) |
 | Tasks | 9.2 | state-machine transform at [io] yield points |
 | bake | 3.5 | real specialization; ex 03 emits invalid Nim |

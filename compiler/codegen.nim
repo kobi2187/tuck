@@ -469,6 +469,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
            step.arg.fields.len == 1:
           valStr = ctx.genExpr(step.arg.fields[0][1], m)
         lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
+    # mutation site: an invariant-carrying var re-validates after the chain
+    if e.base != nil and e.base.ty != nil and e.base.ty.kind == tkNamed and
+       hasInvariants(ctx.module, e.base.ty.name):
+      lines.add(ind & "validate(" & baseStr & ")")
     return lines.join("\n")
   else:
     "discard"
@@ -742,6 +746,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
            step.arg.fields.len == 1:
           valStr = ctx.genExpr(step.arg.fields[0][1])
         lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
+    # mutation site: an invariant-carrying var re-validates after the chain
+    if e.base != nil and e.base.ty != nil and e.base.ty.kind == tkNamed and
+       hasInvariants(ctx.module, e.base.ty.name):
+      lines.add(ind & "validate(" & baseStr & ")")
     return lines.join("\n")
   else:
     "discard"

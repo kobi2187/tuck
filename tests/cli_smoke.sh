@@ -55,6 +55,23 @@ fn main() -> void:
 EOF
 ./tuck build "$inv/ok.tuck" -o:"$inv/out2" > /dev/null
 "$inv/out2/ok" || { echo "FAIL: valid invariant program aborted"; exit 1; }
+# mutation site: `..` on an invariant-carrying var validates after the chain
+cat > "$inv/mut.tuck" <<'EOF'
+type Temperature:
+  celsius: int
+  invariant:
+    celsius >= -273
+
+fn main() -> void:
+  var t = {celsius: 0} Temperature
+  t ..celsius {-400}
+  return
+EOF
+./tuck build "$inv/mut.tuck" -o:"$inv/out3" > /dev/null
+if "$inv/out3/mut" 2>/dev/null; then
+  echo "FAIL: invariant violation at mutation did not abort"; exit 1
+fi
+"$inv/out3/mut" 2>&1 | grep -q "Invariant violated" || { echo "FAIL: no invariant message at mutation"; exit 1; }
 rm -rf "$inv"
 
 # type-directed lowering: record var as whole payload explodes to params
