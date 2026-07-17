@@ -151,6 +151,20 @@ rc=0; "$cht/out/t" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: chain-tail program exit $rc, want 42"; exit 1; }
 rm -rf "$cht"
 
+# top-level statements are declarations-only violations; library builds
+lib="tests/.smoke_lib"
+rm -rf "$lib" && mkdir -p "$lib"
+printf 'fn f({a: int}) -> int:\n  return a\n\nlet x = {a: 1} f\n' > "$lib/bad.tuck"
+if ./tuck ch "$lib/bad.tuck" 2>/dev/null; then
+  echo "FAIL: top-level statement accepted"; exit 1
+fi
+./tuck ch "$lib/bad.tuck" 2>&1 | grep -q "top-level statements" || { echo "FAIL: wrong top-level error"; exit 1; }
+printf 'fn helper({a: int}) -> int:\n  return a\n' > "$lib/libmod.tuck"
+./tuck build "$lib/libmod.tuck" -o:"$lib/out" | grep -q "library (no fn main)" || { echo "FAIL: library build message missing"; exit 1; }
+test -f "$lib/out/libmod.nim" || { echo "FAIL: library did not emit Nim"; exit 1; }
+test ! -f "$lib/out/libmod" || { echo "FAIL: library build produced a binary"; exit 1; }
+rm -rf "$lib"
+
 # tuck build --beef: scaffolds a Beef project and builds it with BeefBuild
 # when a toolchain is present; always emits the .bf source either way.
 bf="tests/.smoke_beef"

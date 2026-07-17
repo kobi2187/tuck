@@ -17,6 +17,8 @@ fn processISR({event: SensorEvent}) -> void [irq_safe, stack: 128]:
 pool UartBuffer: Array[64, u8] * 8   # 8 buffers of 64 bytes, statically allocated
                                       # known at compile time: 512 bytes, period
 
-let buf = UartBuffer.acquire or return Error.NoBuffer
-# ... use buf ...
-buf.release  
+fn handleUart() -> void:
+  let buf = UartBuffer.acquire
+  # ... use buf ...
+  buf.release
+  return  

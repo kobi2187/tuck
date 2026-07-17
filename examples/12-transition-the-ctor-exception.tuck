@@ -19,14 +19,7 @@ type PlayerState:
     Loading  -> Ready
     Loading  -> Unloaded   # cancel
 
-let config = {url: "https://example.com"} Config
-let feed = {title: "Deep Dive"} Feed
 
-# Unsealed type: constructing ANY variant directly is always fine
-# (testing, deserialization, whatever). Runtime transitions stay checked:
-# transitionTo raises on a pair missing from the table, e.g.
-# Ready -> Loading.
-let p = {config, feed} PlayerState.Ready
 
 # The [sealed] sum type: only the initial variant can be constructed
 # directly; every other variant requires going through a transition.
@@ -44,8 +37,18 @@ type MqttSession [sealed]:
     Connected     -> Subscribing
     Subscribing   -> Connected
 
-let fresh = MqttSession.Disconnected  # initial variant: fine
+fn main() -> void:
+  let config = {url: "https://example.com"} Config
+  let feed = {title: "Deep Dive"} Feed
 
-# For deserialization, the [unsafe] escape constructs a non-initial variant:
-let socket = {fd: 3} Socket
-let session = {socket, keepalive: 60} MqttSession.Connected [unsafe]
+  # Unsealed type: constructing ANY variant directly is always fine
+  # (testing, deserialization, whatever). Runtime transitions stay checked:
+  # transitionTo raises on a pair missing from the table.
+  let p = {config, feed} PlayerState.Ready
+
+  let fresh = MqttSession.Disconnected  # initial variant: fine
+
+  # For deserialization, the [unsafe] escape constructs a non-initial variant:
+  let socket = {fd: 3} Socket
+  let session = {socket, keepalive: 60} MqttSession.Connected [unsafe]
+  return

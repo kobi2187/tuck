@@ -47,10 +47,11 @@ decision classifyPacket({priority: int, size: int, encrypted: bool}) -> int:
   | 1     _     _     -> 4
   | _       _     _     -> 5
 
-let val1 = 9 addOne
-let val2 = {priority: 2, size: 64, encrypted: false} classifyPacket
-
-val2 echo
+fn main() -> void:
+  let val1 = 9 addOne
+  let val2 = {priority: 2, size: 64, encrypted: false} classifyPacket
+  val2 echo
+  return
 """
 
 proc runEndToEnd() =

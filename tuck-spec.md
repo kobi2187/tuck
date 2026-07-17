@@ -157,6 +157,20 @@ player.volume normalize   # volume: int → {value: int} → passed to normalize
 
 This is a compile-time rewrite. Zero runtime cost.
 
+### 2.3b Program Structure: Declarations and `main`
+
+A module's top level is DECLARATIONS ONLY: imports, types, fns, objects,
+actors, mixins, interfaces, registries, registers, pools, errors,
+resources, pending/extern blocks. No top-level statements — not even pure
+`let`s; constants live inside the fns that use them. The runnable program
+is `fn main`, period (ruling 2026-07-13).
+
+- A top-level statement is a compile error pointing at `fn main`.
+- `tuck build` with `fn main` → executable; without → LIBRARY build (the
+  emitted code is the artifact, no binary).
+- Rationale: predictable startup (no hidden module-init order), effects
+  stay on fns only, and both backends share one entry mechanism.
+
 ### 2.4b `input` and `merge`
 
 **`input`** is a reserved name: the fn's whole incoming payload as one

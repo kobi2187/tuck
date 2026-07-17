@@ -203,13 +203,17 @@ when isMainModule:
       writeFile(bfPath, emitBeef(m, realModules))
       echo "wrote ", bfPath
     if cmd in ["build", "b"]:
-      # entry point: a declared `fn main` runs when the binary starts
+      # entry point: `fn main` runs when the binary starts. No main =
+      # library build: the emitted code IS the artifact, no binary.
       var hasMain = false
       for d in m.decls:
         if d != nil and d.kind == dkFn and d.name == "main": hasMain = true
+      if not hasMain:
+        echo "library (no fn main): emitted code only, no binary"
+        echo "OK (", elapsedMs(t0), ")"
+        quit(0)
       let mainNim = outDir / (base & ".nim")
-      if hasMain:
-        writeFile(mainNim, readFile(mainNim) & "\nwhen isMainModule:\n  main()\n")
+      writeFile(mainNim, readFile(mainNim) & "\nwhen isMainModule:\n  main()\n")
       # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
       var nimFlags = ""
       for o in opts:

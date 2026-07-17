@@ -94,11 +94,10 @@ construction, generic bodies gradual, no constraints).
 - Stack-depth budgets `[stack: N]` §6.2
 - Complexity limit §6.3 (ruling: hard error)
 - Error.x validated against a declared error enum
-- Top-level statements / implicit main (ex 11)
 - Visibility (pub/private), imported types via `::`, nested module paths
 
 ## Broken-example map (2026-07-13: Nim gate 21/25, Beef 20/25)
-Remaining: 11 → when + implicit main; 16 → on select (actor-runtime
+Remaining: 11 → when + pool + attr features (main-only ruling landed 2026-07-13); 16 → on select (actor-runtime
 ruling); 20 → when + actor-transition lowering; 03 → Beef-side only
 (delegate types). Everything else GREEN in both gates.
 

@@ -48,19 +48,25 @@ expectError "wrong field type in call", """
 fn f({a: int}) -> int:
   return a
 
-let x = {a: "oops"} f
+fn main() -> void:
+  let x = {a: "oops"} f
+  return
 """, "field 'a'"
 
 expectError "missing required field", """
 fn send({email: str, name: str}) -> int:
   return 1
 
-let x = {email: "a@b.c"} send
+fn main() -> void:
+  let x = {email: "a@b.c"} send
+  return
 """, "missing required field 'name"
 
 expectError "mutation of let binding", """
-let cfg = {port: 80}
-cfg ..port {8080}
+fn main() -> void:
+  let cfg = {port: 80}
+  cfg ..port {8080}
+  return
 """, "declared with 'let'"
 
 expectError "return type mismatch", """
@@ -80,7 +86,9 @@ expectError "scalar arg type mismatch", """
 fn addOne(x: int) -> int:
   return x + 1
 
-let y = "hello" addOne
+fn main() -> void:
+  let y = "hello" addOne
+  return
 """, "expects int"
 
 expectError "arithmetic type clash", """
@@ -402,15 +410,21 @@ fn delay({ms: Milliseconds}) -> {done: bool}:
 """
 
 expectError "unit mismatch rejected", unitPrelude & """
-let r = {ms: 5.us} delay
+fn main() -> void:
+  let r = {ms: 5.us} delay
+  return
 """, "field 'ms'"
 
 expectError "bare int where unit expected", unitPrelude & """
-let r = {ms: 5} delay
+fn main() -> void:
+  let r = {ms: 5} delay
+  return
 """, "field 'ms'"
 
 expectOk "matching unit accepted", unitPrelude & """
-let r = {ms: 5.ms} delay
+fn main() -> void:
+  let r = {ms: 5.ms} delay
+  return
 """
 
 expectError "arithmetic between different units", unitPrelude & """
@@ -461,7 +475,9 @@ type Session [sealed]:
     Disconnected -> Connected
     Connected -> Disconnected
 
-let s = Session.Connected {keepalive: 60}
+fn main() -> void:
+  let s = Session.Connected {keepalive: 60}
+  return
 """, "cannot be constructed directly"
 
 expectOk "sealed initial construction allowed", """
@@ -472,7 +488,9 @@ type Session [sealed]:
     Disconnected -> Connected
     Connected -> Disconnected
 
-let s = Session.Disconnected
+fn main() -> void:
+  let s = Session.Disconnected
+  return
 """
 
 expectOk "sealed non-initial with unsafe escape", """
@@ -483,7 +501,9 @@ type Session [sealed]:
     Disconnected -> Connected
     Connected -> Disconnected
 
-let s = Session.Connected [unsafe] {keepalive: 60}
+fn main() -> void:
+  let s = Session.Connected [unsafe] {keepalive: 60}
+  return
 """
 
 expectOk "unsealed type constructs any variant", """
@@ -491,7 +511,9 @@ type State:
   | Idle
   | Busy({job: int})
 
-let s = State.Busy {job: 1}
+fn main() -> void:
+  let s = State.Busy {job: 1}
+  return
 """
 
 # ---------- effect markers ----------
@@ -518,7 +540,9 @@ expectError "pending sig strictly checked at call site", """
 pending:
   fn fetchFeed({url: str}) -> {feed: int}
 
-let x = {url: 42} fetchFeed
+fn main() -> void:
+  let x = {url: 42} fetchFeed
+  return
 """, "field 'url'"
 
 expectError "implemented fn still in pending block", """
@@ -533,8 +557,10 @@ expectOk "correct call to pending fn", """
 pending:
   fn fetchFeed({url: str}) -> {feed: int}
 
-let x = {url: "https://x"} fetchFeed
-let y = x.feed
+fn main() -> void:
+  let x = {url: "https://x"} fetchFeed
+  let y = x.feed
+  return
 """
 
 # ---------- positive cases ----------
@@ -543,16 +569,22 @@ expectOk "subset matching: extra fields ignored", """
 fn send({email: str}) -> int:
   return 1
 
-let x = {id: 5, email: "a@b.c", name: "Bo"} send
+fn main() -> void:
+  let x = {id: 5, email: "a@b.c", name: "Bo"} send
+  return
 """
 
 expectOk "unknown callee flows through", """
-let feed = {url: "https://x"} fetch parse
+fn main() -> void:
+  let feed = {url: "https://x"} fetch parse
+  return
 """
 
 expectOk "var mutation allowed", """
-var cfg = {port: 80}
-cfg ..port {8080}
+fn main() -> void:
+  var cfg = {port: 80}
+  cfg ..port {8080}
+  return
 """
 
 expectOk "'.' calls a fn when the name is not a field", """
@@ -819,6 +851,26 @@ fn main() -> void:
   return
 """, "must be a struct"
 
+expectError "top-level statements are not allowed", """
+fn f({a: int}) -> int:
+  return a
+
+let x = {a: 1} f
+""", "top-level statements"
+
+expectError "top-level let is not allowed either", """
+let x = 5
+""", "top-level statements"
+
+expectOk "declarations-only module is fine", """
+type Server:
+  port: int
+
+fn main() -> void:
+  let s = {port: 80} Server
+  return
+"""
+
 expectOk "mutual recursion via pre-collected sigs", """
 fn isEven(n: int) -> bool:
   return n isOdd
@@ -831,7 +883,9 @@ expectOk "numeric widening int literal to u8", """
 fn setPort({port: u8}) -> int:
   return 1
 
-let x = {port: 80} setPort
+fn main() -> void:
+  let x = {port: 80} setPort
+  return
 """
 
 expectOk "qualified pending call, matching payload", """
@@ -981,7 +1035,9 @@ expectError "generic binding conflict", """
 fn pair[T]({a: T, b: T}) -> T:
   return a
 
-let x = {a: 1, b: "s"} pair
+fn main() -> void:
+  let x = {a: 1, b: "s"} pair
+  return
 """, "'T'"
 
 expectOk "generic param inside container type", """

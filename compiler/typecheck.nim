@@ -1186,6 +1186,13 @@ proc typecheckModule*(m: Module,
              "the same name as a declared fn — rename one; fields and fns " &
              "share the call namespace", d.span)
   for d in m.decls:
+    # Module top level is declarations only — the runnable program lives in
+    # `fn main`. (User ruling 2026-07-13: no top-level statements, not even
+    # pure lets; `tuck build` without main = library.)
+    if d != nil and d.kind == dkExpr:
+      fail("Structure Error: top-level statements are not allowed — move " &
+           "this into `fn main` (a module is declarations; main is the " &
+           "program)", d.span)
     tc.checkDecl(d)
   if tc.errPolicy == "strict" and tc.unhandledSites.len > 0:
     fail("Type Error: " & $tc.unhandledSites.len & " unhandled error result(s)" &

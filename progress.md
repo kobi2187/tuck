@@ -566,3 +566,19 @@ Next candidates (Beef):
 - Remaining 4: 11+20 (`when TARGET` + implicit main + actor-transition
   lowering), 16 (`on select`, behind actor-runtime ruling). Beef bake =
   delegate-type ceiling (03 Nim-only).
+
+## 2026-07-13 — entry model settled: declarations only, main is the program
+
+- User ruling (after discussion): NO top-level statements of any kind —
+  not even pure lets. Module top level = declarations (import/type/fn/
+  object/actor/mixin/registry/register/pool/errors/pending/extern).
+  `tuck build` without fn main = LIBRARY build (emits code, no binary,
+  clear message). Checker: dkExpr at module level = Structure Error
+  pointing at fn main.
+- Rationale: predictable startup (no Nim-module-init vs Beef-Main()
+  parity-by-luck), effects discipline stays on fns, embedded-friendly.
+- Migration: 6 examples (01, 07, 11, 12, 18, 23) + 18 checker-test
+  snippets + end_to_end's embedded source wrapped into fn main; example
+  11's dead `or return` line replaced with a sketch fn. cli_smoke gained
+  the top-level-rejection + library-build cases.
+- Spec §2.3b added. All suites green (gate 21/25, Beef 20, e2e, smoke).
