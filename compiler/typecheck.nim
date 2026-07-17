@@ -1015,6 +1015,8 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   of dkObject:
     tc.pushScope()
     for f in d.objFields: tc.bindName(f.name, f.typ, true)
+    # member fns see the object itself as a mutable `self`
+    tc.bindName("self", Type(span: d.span, kind: tkNamed, name: d.name), true)
     for m in d.objMembers: tc.checkDecl(m)
     tc.popScope()
   of dkMixin:

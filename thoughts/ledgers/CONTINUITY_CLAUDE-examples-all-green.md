@@ -35,7 +35,16 @@ when Beef also compiles it).
         sumVariantCtor (Nim: kind-tagged object ctor; Beef: kind +
         positional TRec) hooked into both call paths + bare exkField.
         Gates now 17/25 both backends.
-- Now: [→] Phase 3: 04 — Self mapping + interface emission.
+  - [x] Phase 3: 04 GREEN both backends. Interface contracts (dkMixin
+        member, nil body) emit nothing; mixin fns with `self` materialize
+        only at `+ mixin` composition (Self → object, self: var T / ref T);
+        `+ RecordType` embeds as a field; object member fns gain
+        self: var ObjName (Nim) / ref ObjName (Beef — call-site ref marker
+        is a named ceiling); checker binds `self` in object scope; emitNim
+        now two-pass (types before procs — Nim decl-before-use vs Tuck
+        order-independence; object type headers via ctx.typeSection).
+        Gates 18/25 both.
+- Now: [→] Phase 4: alias() restructuring (fixes 18 + 01's silent no-op).
 - Remaining:
   - [ ] Phase 3: 04 — `Self` mapping + interface/manager emission + empty
         setMany body indent (`proc setMany(self: Self,...)` invalid Nim).

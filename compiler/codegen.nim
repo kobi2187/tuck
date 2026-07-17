@@ -8,6 +8,8 @@ type
     indent: int
     module: Module
     hoisted: seq[string]  # named decls hoisted out of field positions (inline enums)
+    typeSection: seq[string]  # object type headers — emitted with the types,
+                              # ahead of every proc (Nim needs decl-before-use)
     retWrapped: bool      # current fn returns !T/?T → returns auto-wrap
     retInnerNim: string   # Nim type of the payload (for terr[T])
     retInnerT: Type       # payload Tuck type (typed struct-literal emission)
@@ -810,6 +812,32 @@ proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
     ctx.definedVars = oldVars
     return header & "\n" & bodyStr & "\n"
 
+# Object member fn (or a mixin fn materialized by `+ mixin`): the object
+# rides as a mutable `self` first parameter; the contract placeholder type
+# `Self` resolves to the object. Emits via a shallow copy — the shared AST
+# stays untouched for the other backend.
+proc genMemberFn(ctx: var CodegenCtx, m: Decl, objName: string): string =
+  let selfType = Type(span: m.span, kind: tkNamed, name: "var " & objName)
+  let plainSelf = Type(span: m.span, kind: tkNamed, name: objName)
+  var params: seq[Param]
+  var hasSelf = false
+  for p in m.fnParams:
+    var pt = p.typ
+    if pt != nil and pt.kind == tkNamed and pt.name == "Self": pt = plainSelf
+    if p.name == "self":
+      hasSelf = true
+      params.add(Param(name: "self", typ: selfType, span: p.span))
+    else:
+      params.add(Param(name: p.name, typ: pt, span: p.span))
+  if not hasSelf:
+    params = @[Param(name: "self", typ: selfType, span: m.span)] & params
+  var ret = m.fnReturnType
+  if ret != nil and ret.kind == tkNamed and ret.name == "Self": ret = plainSelf
+  let copy = Decl(span: m.span, kind: dkFn, name: m.name, fnParams: params,
+                  fnReturnType: ret, fnBody: m.fnBody, fnEffects: m.fnEffects,
+                  fnGenerics: m.fnGenerics)
+  ctx.genFnDecl(copy)
+
 # --- dkType sum-type branch helpers ---
 
 proc genTransitionProcs(d: Decl, kindName: string, hasPayload: bool): string =
@@ -1059,11 +1087,37 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     var fieldsStr: seq[string]
     for f in d.objFields:
       fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
-    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
     var membersStr = ""
     for member in d.objMembers:
-      membersStr.add(ctx.genDecl(member) & "\n")
-    return "type " & d.name & "* = ref object\n" & fieldsBody & "\n\n" & membersStr
+      if member.kind == dkExpr and member.expr != nil and
+         member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
+         member.expr.operand != nil and member.expr.operand.kind == exkVar:
+        # `+ Name` composition entry: a declared mixin materializes its fn
+        # members on this object (Self -> the object); a declared record
+        # type embeds as a field (the manager carries its data along).
+        let compName = member.expr.operand.name
+        var composed = false
+        for cd in ctx.module.decls:
+          if cd == nil or cd.name != compName: continue
+          if cd.kind == dkMixin:
+            for m in cd.mixinMembers:
+              if m.kind == dkFn and m.fnBody != nil:
+                membersStr.add(ctx.genMemberFn(m, d.name) & "\n")
+            composed = true
+          elif cd.kind == dkType and cd.typeBody != nil and
+               cd.typeBody.kind == tkRecord:
+            let fname = compName[0].toLowerAscii() & compName[1..^1]
+            fieldsStr.add("    " & fname & "*: " & compName)
+            composed = true
+        if not composed:
+          membersStr.add("# + " & compName & " (undeclared — sketch)\n")
+      elif member.kind == dkFn:
+        membersStr.add(ctx.genMemberFn(member, d.name) & "\n")
+      else:
+        membersStr.add(ctx.genDecl(member) & "\n")
+    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
+    ctx.typeSection.add("type " & d.name & "* = ref object\n" & fieldsBody)
+    return membersStr
   of dkActor:
     return ctx.genActor(d)
   of dkTask:
@@ -1136,6 +1190,14 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       if m.kind == dkFn and m.isPending:
         res.add(genPendingStub(m) & "\n")
       elif m.kind == dkFn and not m.isExtern:
+        # interface contract (sig only, no body): nothing to emit — the
+        # implementing types provide the code. A fn with a `self` param
+        # materializes at `+ mixin` composition sites, not standalone.
+        if m.fnBody == nil: continue
+        var hasSelf = false
+        for p in m.fnParams:
+          if p.name == "self": hasSelf = true
+        if hasSelf: continue
         # a mixin is a named bucket of functions (spec 5.1) — emit them
         res.add(ctx.genDecl(m) & "\n")
       elif m.kind == dkFn and m.isExtern and m.externHeader != "":
@@ -1158,11 +1220,23 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       ctx.errPolicy = d.policyName
+  # Two passes: type declarations first (Nim needs decl-before-use; Tuck is
+  # order-independent), then everything else in source order. Object type
+  # headers land in ctx.typeSection during pass 2 and join the type block.
+  var typePart = ""
+  for d in m.decls:
+    if d != nil and d.kind == dkType:
+      let code = ctx.genDecl(d)
+      if code != "": typePart.add(code & "\n")
   var body = ""
   for d in m.decls:
+    if d == nil or d.kind == dkType: continue
     let code = ctx.genDecl(d)
     if code != "":
       body.add(code & "\n")
+  for ts in ctx.typeSection:
+    typePart.add(ts & "\n\n")
+  body = typePart & body
   var res = "import " & rtImport & "\n"
   # rt-implemented extern fns: importers reach them as <module>.<fn>, so the
   # module re-exports the runtime that actually defines them

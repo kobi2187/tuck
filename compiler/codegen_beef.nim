@@ -711,6 +711,34 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
 
 proc genBeefDecl*(ctx: var BeefCodegenCtx, d: Decl): string
 
+# Object member fn (or a mixin fn materialized by `+ mixin`): the object
+# rides as a `ref self` first parameter (reassignment must reach the
+# caller); `Self` resolves to the object. Shallow copy — the shared AST
+# stays untouched for the other backend.
+# ponytail: call sites don't add the `ref` marker yet — nothing in the
+# examples calls a member fn; wire it when one does.
+proc genBeefMemberFn(ctx: var BeefCodegenCtx, m: Decl, objName: string): string =
+  let selfType = Type(span: m.span, kind: tkNamed, name: "ref " & objName)
+  let plainSelf = Type(span: m.span, kind: tkNamed, name: objName)
+  var params: seq[Param]
+  var hasSelf = false
+  for p in m.fnParams:
+    var pt = p.typ
+    if pt != nil and pt.kind == tkNamed and pt.name == "Self": pt = plainSelf
+    if p.name == "self":
+      hasSelf = true
+      params.add(Param(name: "self", typ: selfType, span: p.span))
+    else:
+      params.add(Param(name: p.name, typ: pt, span: p.span))
+  if not hasSelf:
+    params = @[Param(name: "self", typ: selfType, span: m.span)] & params
+  var ret = m.fnReturnType
+  if ret != nil and ret.kind == tkNamed and ret.name == "Self": ret = plainSelf
+  let copy = Decl(span: m.span, kind: dkFn, name: m.name, fnParams: params,
+                  fnReturnType: ret, fnBody: m.fnBody, fnEffects: m.fnEffects,
+                  fnGenerics: m.fnGenerics)
+  ctx.genBeefDecl(copy)
+
 # Pending stub: logs on invocation, returns the zero value.
 proc genPendingStub(ctx: var BeefCodegenCtx, d: Decl): string =
   let ind = "  ".repeat(ctx.indent)
@@ -1256,10 +1284,34 @@ proc genBeefDecl*(ctx: var BeefCodegenCtx, d: Decl): string =
     var fieldsStr: seq[string]
     for f in d.objFields:
       fieldsStr.add(ind & "    public " & ctx.fieldType(d.name, f) & " " & f.name & ";")
-    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: ind & "    // empty"
     var membersStr = ""
     for member in d.objMembers:
-      membersStr.add(ctx.genBeefDecl(member) & "\n")
+      if member.kind == dkExpr and member.expr != nil and
+         member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
+         member.expr.operand != nil and member.expr.operand.kind == exkVar:
+        # `+ Name`: declared mixin materializes its fns on this object;
+        # a declared record type embeds as a field (mirrors codegen.nim)
+        let compName = member.expr.operand.name
+        var composed = false
+        for cd in ctx.module.decls:
+          if cd == nil or cd.name != compName: continue
+          if cd.kind == dkMixin:
+            for mm in cd.mixinMembers:
+              if mm.kind == dkFn and mm.fnBody != nil:
+                membersStr.add(ctx.genBeefMemberFn(mm, d.name) & "\n")
+            composed = true
+          elif cd.kind == dkType and cd.typeBody != nil and
+               cd.typeBody.kind == tkRecord:
+            let fname = compName[0].toLowerAscii() & compName[1..^1]
+            fieldsStr.add(ind & "    public " & compName & " " & fname & ";")
+            composed = true
+        if not composed:
+          membersStr.add(ind & "// + " & compName & " (undeclared — sketch)\n")
+      elif member.kind == dkFn:
+        membersStr.add(ctx.genBeefMemberFn(member, d.name) & "\n")
+      else:
+        membersStr.add(ctx.genBeefDecl(member) & "\n")
+    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: ind & "    // empty"
     return ind & "public class " & d.name & "\n" & ind & "{\n" & fieldsBody &
            "\n" & ind & "}\n\n" & membersStr
   of dkActor:
@@ -1349,6 +1401,13 @@ proc genBeefDecl*(ctx: var BeefCodegenCtx, d: Decl): string =
       if m.kind == dkFn and m.isPending:
         res.add(ctx.genPendingStub(m) & "\n")
       elif m.kind == dkFn and not m.isExtern:
+        # interface contract (sig only): nothing to emit; a fn with a `self`
+        # param materializes at `+ mixin` composition, not standalone
+        if m.fnBody == nil: continue
+        var hasSelf = false
+        for p in m.fnParams:
+          if p.name == "self": hasSelf = true
+        if hasSelf: continue
         # a mixin is a named bucket of functions (spec 5.1) — emit them
         res.add(ctx.genBeefDecl(m) & "\n")
       elif m.kind == dkFn and m.isExtern and m.externHeader != "":

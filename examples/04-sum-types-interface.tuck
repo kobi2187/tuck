@@ -1,16 +1,45 @@
 # Sum types, interfaces, mixins, and object composition
+
+type Config:
+  url: str
+
+type Feed:
+  title: str
+
+type AudioPlayer:
+  volume: int
+
+type NetworkClient:
+  timeout: u32
+
+type Episode:
+  name: str
+
+type Pair:
+  key: str
+  val: str
+
 type PodcastPlayerLifecycle:
   | Unloaded({config: Config})
   | Loading({config: Config, progress: int})
   | Ready({config: Config, feed: Feed, audio: AudioPlayer})
   | Error({config: Config, reason: str})
 
+# An interface is a contract: implementing types provide the code.
 interface Storable:
   fn save({item: Self}) -> !void [io]
 
+# A mixin with a `self` param materializes on every composing object.
 mixin bulkOperations:
   fn setMany(self, {pairs: Seq[Pair]}) -> !void [io]:
     ...
+
+# Mutators: first param is the receiver, return the receiver's type.
+fn loadEpisode({self: PodcastApp, episode: Episode}) -> PodcastApp:
+  self
+
+fn startAudio({self: PodcastApp}) -> PodcastApp:
+  self
 
 object PodcastApp:
   + AudioPlayer
