@@ -167,6 +167,12 @@ resources, pending/extern blocks. No top-level statements — not even pure
 is `fn main`, period (ruling 2026-07-13).
 
 - A top-level statement is a compile error pointing at `fn main`.
+- `const name = <data>` IS a declaration: strictly compile-time data
+  (literals, structs and lists of them, arithmetic over them — no calls,
+  no constructions). Baked into the binary; nothing runs at startup.
+  Runtime-initialized state has three homes: pass it down from main, an
+  actor owns it (shared mutable state), or the resource registry §7.4
+  (OS handles).
 - `tuck build` with `fn main` → executable; without → LIBRARY build (the
   emitted code is the artifact, no binary).
 - Rationale: predictable startup (no hidden module-init order), effects

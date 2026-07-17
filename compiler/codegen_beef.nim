@@ -1418,6 +1418,20 @@ proc genBeefDecl*(ctx: var BeefCodegenCtx, d: Decl): string =
     ctx.retInnerT = nil
     ctx.definedVars = oldVars
     return header & "\n" & bodyStr & "\n"
+  of dkConst:
+    # literals become Beef consts; structured data a static field
+    # (initialized at static ctor — still one-time, still immutable intent)
+    if d.constVal != nil and d.constVal.kind == exkLit:
+      let ty = case d.constVal.litKind
+               of lkInt: "int"
+               of lkFloat: "float"
+               of lkStr: "String"
+               of lkBool: "bool"
+               else: "int"
+      return ind & "public const " & ty & " " & d.name & " = " &
+             ctx.genBeefExpr(d.constVal) & ";"
+    return ind & "public static var " & d.name & " = " &
+           ctx.genBeefExpr(d.constVal) & ";"
   of dkExpr:
     return ctx.genBeefExpr(d.expr)
   of dkRegister:

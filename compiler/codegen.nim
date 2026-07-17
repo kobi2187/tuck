@@ -1274,6 +1274,8 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
 
   of dkExpr:
     return ctx.genExpr(d.expr)
+  of dkConst:
+    return "const " & d.name & " = " & ctx.genExpr(d.constVal)
   of dkRegister:
     var fieldsStr: seq[string]
     for f in d.regFields:
@@ -1355,12 +1357,12 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
   # headers land in ctx.typeSection during pass 2 and join the type block.
   var typePart = ""
   for d in m.decls:
-    if d != nil and d.kind == dkType:
+    if d != nil and d.kind in {dkType, dkConst}:
       let code = ctx.genDecl(d)
       if code != "": typePart.add(code & "\n")
   var body = ""
   for d in m.decls:
-    if d == nil or d.kind == dkType: continue
+    if d == nil or d.kind in {dkType, dkConst}: continue
     let code = ctx.genDecl(d)
     if code != "":
       body.add(code & "\n")

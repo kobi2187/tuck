@@ -582,3 +582,13 @@ Next candidates (Beef):
   11's dead `or return` line replaced with a sketch fn. cli_smoke gained
   the top-level-rejection + library-build cases.
 - Spec §2.3b added. All suites green (gate 21/25, Beef 20, e2e, smoke).
+
+## 2026-07-13 — const declarations (the compile-time-data carve-out)
+
+- Ruling: after surveying Zig/Rust/BEAM precedent, `const name = <data>`
+  joins the declaration set — strictly compile-time evaluable (literals,
+  structs/lists of them, arith; no calls/constructions), validated by the
+  checker with a pointer at fns/actors/registry for runtime values.
+  Order-free (bound before body checks); Nim emits `const` in the type
+  pass; Beef: literal→const, structured→static field. Runtime-verified
+  (const + struct-const arithmetic exits 42). Spec §2.3b extended.

@@ -862,6 +862,25 @@ expectError "top-level let is not allowed either", """
 let x = 5
 """, "top-level statements"
 
+expectOk "const: compile-time data, usable from fns", """
+const maxRetries = 3
+const defaults = {port: 80, host: "local"}
+
+fn f({n: int}) -> int:
+  return n + maxRetries
+
+fn main() -> void:
+  let p = defaults.port + maxRetries
+  return
+"""
+
+expectError "const initializer must be compile-time data (no calls)", """
+fn now() -> int:
+  return 1
+
+const t = {} now
+""", "compile-time"
+
 expectOk "declarations-only module is fine", """
 type Server:
   port: int

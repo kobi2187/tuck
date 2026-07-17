@@ -35,7 +35,7 @@ type
     tkLBracket, tkRBracket,
 
     # Keywords
-    tkFn, tkLet, tkVar, tkIf, tkElif, tkElse,
+    tkFn, tkLet, tkVar, tkConst, tkIf, tkElif, tkElse,
     tkFor, tkIn, tkMatch, tkReturn, tkType,
     tkObject, tkMixin, tkInterface, tkActor, tkTask,
     tkPending, tkOn, tkSelect, tkRegistry,
@@ -63,7 +63,7 @@ type
     pendingTokens*: seq[Token]
 
 const keywords = {
-  "fn": tkFn, "let": tkLet, "var": tkVar,
+  "fn": tkFn, "let": tkLet, "var": tkVar, "const": tkConst,
   "if": tkIf, "elif": tkElif, "else": tkElse,
   "for": tkFor, "in": tkIn, "match": tkMatch,
   "return": tkReturn, "type": tkType,

@@ -1577,6 +1577,14 @@ proc parseDecl*(p: var Parser): Decl =
     let expr = p.parseExpr()
     return Decl(span: sp, kind: dkExpr, expr: expr)
 
+  of tkConst:
+    # const name = <compile-time data> — a declaration, not a statement
+    discard p.advance()
+    let name = p.expect(tkIdent, "Expected constant name after 'const'").value
+    discard p.expect(tkAssign)
+    let valExpr = p.parseExpr()
+    return Decl(span: sp, kind: dkConst, name: name, constVal: valExpr)
+
   else:
     let expr = p.parseExpr()
     return Decl(span: sp, kind: dkExpr, expr: expr)

@@ -247,6 +247,7 @@ type
     dkActor
     dkTask
     dkExpr
+    dkConst   # compile-time data declaration: const name = <literal data>
     dkRegister
     dkStaticAssert
     dkErrors  # global error policy declaration (spec 4.9)
@@ -291,6 +292,8 @@ type
       taskBody*: Expr
     of dkExpr:
       expr*: Expr
+    of dkConst:
+      constVal*: Expr
     of dkRegister:
       regAddress*: string
       regFields*: seq[FieldDef]

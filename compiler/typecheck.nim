@@ -1166,8 +1166,33 @@ proc typecheckModule*(m: Module,
   for qualName in externSigs.keys:
     if "::" in qualName:
       tc.knownModules.incl(qualName.split("::")[0])
-  tc.pushScope()  # module-level scope: top-level let/var visible across decls
+  tc.pushScope()  # module-level scope: consts visible across decls
   tc.collectSigs(m.decls)
+  # const declarations: compile-time DATA only (literals, structs, lists of
+  # them, arithmetic over them) — no calls, no constructions, nothing runs.
+  # Bound before body checks so any fn can reference them, order-free.
+  for d in m.decls:
+    if d != nil and d.kind == dkConst:
+      proc comptimeOk(e: Expr): bool =
+        if e == nil: return false
+        case e.kind
+        of exkLit: true
+        of exkStruct:
+          for f in e.fields:
+            if not comptimeOk(f[1]): return false
+          true
+        of exkList:
+          for it in e.items:
+            if not comptimeOk(it): return false
+          true
+        of exkUnary: e.unaryOp in {uoNeg, uoNot} and comptimeOk(e.operand)
+        of exkBinary: comptimeOk(e.left) and comptimeOk(e.right)
+        else: false
+      if not comptimeOk(d.constVal):
+        fail("Const Error: 'const " & d.name & "' must be compile-time data " &
+             "(literals, structs and lists of them) — runtime values belong " &
+             "in fns, actors, or the resource registry", d.span)
+      tc.bindName(d.name, tc.synthesize(d.constVal), false)
   # Either/or namespace: a declared field name may not shadow a declared fn —
   # `.name` resolves by lookup, so a clash would silently change meaning.
   for d in m.decls:
