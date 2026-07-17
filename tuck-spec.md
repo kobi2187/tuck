@@ -52,16 +52,17 @@ allows syntactic sugar (`5.ms`) but semantically it is always a struct. The
 backend optimizes the wrapping away completely.
 
 ```tuck
-# Data flows through postfix chains
-let request = {url: "example.com", timeout: 5.ms}
-let response = request fetch parse episodes
+fn main() -> void:
+  # Data flows through postfix chains
+  let request = {url: "example.com", timeout: 5.ms}
+  let response = request fetch parse selectEpisodes
 
-# Bind to a variable to branch
-var feed = {url: "..."} fetch
-if feed.hasNew:
-  feed.episodes process
-else:
-  feed.metadata log
+  # Bind to a variable to branch
+  var feed = {url: "..."} fetch
+  if feed.hasNew:
+    feed.episodes process
+  else:
+    feed.metadata log
 ```
 
 ### 2.2 No Destructuring
