@@ -23,6 +23,7 @@ const
 const nimCheckExpected = [
   "01-data-flow",
   "02-builder-mutation",
+  "03-functions-bake",
   "04-sum-types-interface",
   "18-alias",
   "09-decision-table",

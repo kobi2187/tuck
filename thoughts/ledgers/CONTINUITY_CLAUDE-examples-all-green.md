@@ -49,9 +49,14 @@ when Beef also compiles it).
         renamed tuple (temp-bind for non-var receivers); Beef emits the
         renamed TRec positional ctor (exkVar+ty only, else pass-through
         ceiling). Fixes 18 AND 01's silent no-op. Gates 19/25 both.
-- Now: [→] Phase 5: 03 bake — BLOCKED on design rulings (see Open
-  Questions). Remaining phases each need rulings or major features;
-  paused for user input 2026-07-13.
+  - [x] Phase 5: bake v1 LANDED (user ruling: Factor-fry model, Nim-generic
+        lowering). `:name` fn refs emit bare; `fn` type → `auto` (Nim
+        monomorphizes); bake = typed struct rebuild (override/add, value
+        overrides type-checked); `slot.invoke {args}` builtin calls
+        through the slot. Runtime-verified: partial application exits 7.
+        03 in Nim gate (20/25). CEILING: Beef bake pass-through — needs a
+        delegate-type story (03 not in Beef gate, still 19).
+- Now: [→] Phase 6: 11/20 — `when TARGET` + implicit main rulings.
 - Remaining:
   - [ ] Phase 3: 04 — `Self` mapping + interface/manager emission + empty
         setMany body indent (`proc setMany(self: Self,...)` invalid Nim).

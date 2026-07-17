@@ -1,6 +1,17 @@
-# Field update and higher-order function flow
-fn applyOperation({a: int, b: int, op: fn}) -> {result: int}:
-  result = op invoke {a b}
+# `bake` — compile-time partial application (Factor-style fry).
+# A struct is the fn's context. bake fills slots: a fn reference (:name)
+# or argument values. Slots emit as generic params, so calls through a
+# baked slot are direct — no boxing, no runtime dispatch.
 
-let x = {a: 5, b: 10, someFunc}
-let y = x bake {someFunc: :add}
+fn plus({a: int, b: int}) -> int:
+  return a + b
+
+fn applyOperation({a: int, b: int, op: fn}) -> int:
+  op.invoke {a, b}
+
+fn main() -> void:
+  let x = {a: 5, b: 10}
+  let withOp = x bake {op: :plus}   # fill the fn slot
+  let smaller = withOp bake {b: 2} # bake argument values too
+  let r = smaller applyOperation
+  return

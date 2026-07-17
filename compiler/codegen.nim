@@ -50,7 +50,7 @@ proc genType*(t: Type): string =
     of "usize": "uint"
     of "Seq": "seq"
     of "Array": "array"
-    of "fn": "pointer"  # ponytail: fn-ref fields become proc types once bake lands
+    of "fn": "auto"  # fn slot: generic param — Nim monomorphizes per bake
     else:
       # Odd bit widths from decision tables (u2, u12, ...) round up to a real int
       if t.name.len >= 2 and t.name[0] in {'u', 'i'} and t.name[1..^1].allCharsInSet({'0'..'9'}):
@@ -158,7 +158,8 @@ proc lookupFnParams(m: Module, name: string): seq[string] =
 # sketch-pending qualified name maps to its mangled stub (genPendingStub).
 proc genQualified(ctx: CodegenCtx, e: Expr): string =
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
-  if modName in ctx.realModules: modName & "." & e.qualName
+  if modName == "": e.qualName  # `:name` — a bare fn reference
+  elif modName in ctx.realModules: modName & "." & e.qualName
   else: modName & "_" & e.qualName
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string
@@ -173,6 +174,32 @@ proc recordFieldNames(ctx: CodegenCtx, t: Type): seq[string] =
   if t.kind == tkNamed and t.name == UnknownName: return @[]
   for f in getFieldsForType(ctx.module, t):
     result.add(f.name)
+
+# expr bake {slot: :fn, arg: v, ...} — rebuild the context struct with slots
+# filled / values overridden / new fields added. Nim monomorphizes fn-typed
+# params downstream, so calls through baked slots are direct.
+proc genBake(ctx: var CodegenCtx, e: Expr): string =
+  var recv = ctx.genExpr(e.args[0])
+  var prefix = ""
+  if e.args[0].kind != exkVar:
+    ctx.tmpCounter.inc
+    let tmp = "tuckBake" & $ctx.tmpCounter
+    prefix = "let " & tmp & " = " & recv & "; "
+    recv = tmp
+  let recvFields = ctx.recordFieldNames(e.args[0].ty)
+  var parts: seq[string]
+  for fname in recvFields:
+    var overridden = ""
+    for (name, valExpr) in e.args[1].fields.items:
+      if name == fname: overridden = ctx.genExpr(valExpr)
+    parts.add(fname & ": " & (if overridden != "": overridden
+                              else: recv & "." & fname))
+  for (name, valExpr) in e.args[1].fields.items:
+    if name notin recvFields:
+      parts.add(name & ": " & ctx.genExpr(valExpr))
+  if parts.len == 0: return recv  # unknown receiver shape — pass through
+  if prefix == "": "(" & parts.join(", ") & ")"
+  else: "(" & prefix & "(" & parts.join(", ") & "))"
 
 # expr alias(old: new, ...) — rebuild the record with renamed fields:
 # (new1: x.old1, new2: x.old2, ...). Non-var receivers bind to a temp first
@@ -248,6 +275,8 @@ proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
   let calleeStr = ctx.genExpr(e.callee, m)
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genAlias(e)
+  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    return ctx.genBake(e)
   if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(m, calleeStr):
     # record construction: named fields, not positional
     var parts: seq[string]
@@ -471,6 +500,8 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   let calleeStr = ctx.genExpr(e.callee)
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genAlias(e)
+  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    return ctx.genBake(e)
   if calleeStr notin ["bake", "alias"]:
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded

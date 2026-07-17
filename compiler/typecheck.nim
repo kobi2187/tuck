@@ -238,6 +238,20 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
                ".ok` guard", e.span)
         return unwrapEffect(recvT)
       else: return unknownType(e.span)  # .err — code; enum-typed later
+  # `slot.invoke {args}` — call through a baked fn slot (builtin; the slot's
+  # signature is checked by Nim at instantiation — gradual here)
+  if e.fieldName == "invoke":
+    discard tc.synthesize(e.receiver)
+    var callArgs: seq[Expr] = @[]
+    if e.dotArg != nil:
+      if e.dotArg.kind != exkStruct:
+        fail("Type Error: invoke arguments must be a struct literal: " &
+             "slot.invoke {a, b}", e.dotArg.span)
+      discard tc.synthesize(e.dotArg)
+      callArgs.add(e.dotArg)
+    e.callNode = Expr(span: e.span, kind: exkCall, callee: e.receiver,
+                       args: callArgs)
+    return unknownType(e.span)
   # Unit sugar: 5.ms is postfix application — ms is an ordinary function
   if e.receiver != nil and e.receiver.kind == exkLit and
      e.receiver.litKind in {lkInt, lkFloat} and tc.fnSigs.hasKey(e.fieldName):
@@ -607,6 +621,30 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
       fields.add(FieldDef(name: newExpr.name,
                           typ: (if ft == nil: unknownType(e.span) else: ft),
                           span: e.span))
+    return Type(span: e.span, kind: tkRecord, fields: fields)
+  if calleeName == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    # expr bake {slot: :fn, arg: value, ...} — compile-time partial
+    # application: rebuild the context struct with slots filled (fn refs)
+    # or argument values overridden; unknown names ADD a field.
+    let recvT = tc.resolve(tc.synthesize(e.args[0]))
+    var fields: seq[FieldDef]
+    for rf in tc.fieldsOf(recvT):
+      fields.add(rf)
+    for (name, valExpr) in e.args[1].fields.items:
+      let vt = tc.synthesize(valExpr)
+      var found = false
+      for f in fields.mitems:
+        if f.name == name:
+          found = true
+          # a value override keeps the field's declared type; fn refs
+          # (Unknown) pass gradually
+          if not isUnknown(vt) and not tc.compatible(vt, f.typ):
+            fail("Type Error: bake override '" & name & "' expects " &
+                 typeName(f.typ) & " but got " & typeName(vt), valExpr.span)
+          break
+      if not found:
+        fields.add(FieldDef(name: name, typ: vt, span: valExpr.span))
+    if fields.len == 0: return unknownType(e.span)
     return Type(span: e.span, kind: tkRecord, fields: fields)
   if calleeName in ["bake", "alias"]:
     for a in e.args: discard tc.synthesize(a)

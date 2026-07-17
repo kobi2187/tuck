@@ -734,6 +734,29 @@ fn main() -> void:
   return
 """, "does not exist"
 
+expectOk "bake fills a fn slot and overrides values; result is typed", """
+fn add({a: int, b: int}) -> int:
+  return a + b
+
+fn consume({a: int, b: int}) -> int:
+  return a + b
+
+fn main() -> void:
+  let x = {a: 5, b: 10}
+  let y = x bake {op: :add}
+  let z = y bake {b: 2}
+  let r = {a: z.a, b: z.b} consume
+  return
+"""
+
+expectError "bake value override must keep the field's type", """
+fn main() -> void:
+  let x = {a: 5, b: 10}
+  let y = x bake {a: "nope"}
+  let r = y.a + 1
+  return
+""", "bake override 'a' expects int but got str"
+
 expectOk "mutual recursion via pre-collected sigs", """
 fn isEven(n: int) -> bool:
   return n isOdd
