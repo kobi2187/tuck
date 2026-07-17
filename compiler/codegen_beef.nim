@@ -26,6 +26,7 @@ type
     errPolicy: string     # from the errors declaration; "" = strict
     realModules: Table[string, Module]  # imported modules emitted as own Beef files
     staticAsserts: seq[string]  # collected into one `static this()` block
+    currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -374,6 +375,19 @@ proc genBeefAlias(ctx: var BeefCodegenCtx, e: Expr): string =
   let recName = ctx.recStructName(newFields)
   return recName & "(" & vals.join(", ") & ")"
 
+# {a, b} merge — flatten into the union TRec shape (mirrors codegen.nim)
+proc genBeefMerge(ctx: var BeefCodegenCtx, e: Expr): string =
+  var newFields: seq[FieldDef]
+  var vals: seq[string]
+  for (mname, mexpr) in e.args[0].fields.items:
+    if mexpr.kind != exkVar or mexpr.ty == nil: return ""
+    let recv = ctx.genBeefExpr(mexpr)
+    for f in getFieldsForType(ctx.module, mexpr.ty):
+      newFields.add(f)
+      vals.add(recv & "." & f.name)
+  if newFields.len == 0: return ""
+  return ctx.recStructName(newFields) & "(" & vals.join(", ") & ")"
+
 proc genBeefCall(ctx: var BeefCodegenCtx, e: Expr): string =
   var args: seq[string]
   if e.callee != nil and e.callee.kind == exkField and
@@ -406,6 +420,9 @@ proc genBeefCall(ctx: var BeefCodegenCtx, e: Expr): string =
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     let aliased = ctx.genBeefAlias(e)
     if aliased != "": return aliased
+  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
+    let merged = ctx.genBeefMerge(e)
+    if merged != "": return merged
   if calleeStr notin ["bake", "alias"]:
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded
@@ -575,6 +592,11 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
            else: e.litValue
   of exkVar:
     if e.name == "...": return ""  # pending hole: compiles, does nothing
+    if e.name == "input" and ctx.currentParams.len > 0:
+      # the whole incoming payload, rebuilt as its TRec shape
+      var vals: seq[string]
+      for p in ctx.currentParams: vals.add(p.name)
+      return ctx.recStructName(ctx.currentParams) & "(" & vals.join(", ") & ")"
     if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
     if e.name notin ctx.definedVars:
       # bare enum tag: qualify with its declared owner (Beef has no
@@ -583,6 +605,10 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
       if owner != "": return owner & "." & e.name
     return e.name
   of exkField:
+    # `input.x` — the incoming payload's field is just the param
+    if e.receiver != nil and e.receiver.kind == exkVar and
+       e.receiver.name == "input" and ctx.currentParams.len > 0:
+      return e.fieldName
     # Unit sugar: 5.ms is a postfix call to the ordinary function ms
     if e.receiver != nil and e.receiver.kind == exkLit and
        e.receiver.litKind in {lkInt, lkFloat}:
@@ -924,6 +950,9 @@ proc genDecisionTable(ctx: var BeefCodegenCtx, d: Decl): string =
 proc genBeefFnDecl(ctx: var BeefCodegenCtx, d: Decl): string =
   if d.isPending:
     return ctx.genPendingStub(d)
+  ctx.currentParams = @[]
+  for p in d.fnParams:
+    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
   if d.isDecision or d.isDecisionTable():
     return ctx.genDecisionTable(d)
   let ind = "  ".repeat(ctx.indent)
@@ -1340,6 +1369,9 @@ proc genBeefDecl*(ctx: var BeefCodegenCtx, d: Decl): string =
   of dkActor:
     return ctx.genActor(d)
   of dkTask:
+    ctx.currentParams = @[]
+    for p in d.taskParams:
+      ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     var params: seq[string]
     for p in d.taskParams:
       params.add(ctx.beefType(p.typ) & " " & p.name)

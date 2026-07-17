@@ -622,6 +622,25 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
                           typ: (if ft == nil: unknownType(e.span) else: ft),
                           span: e.span))
     return Type(span: e.span, kind: tkRecord, fields: fields)
+  if calleeName == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
+    # {a, b} merge — flatten: the UNION of the member structs' fields
+    # becomes one flat struct. Name collision = error (no silent shadowing).
+    var fields: seq[FieldDef]
+    for (mname, mexpr) in e.args[0].fields.items:
+      let mt = tc.resolve(tc.synthesize(mexpr))
+      if isUnknown(mt): continue  # sketch member — stays gradual
+      let mfs = tc.fieldsOf(mt)
+      if mfs.len == 0:
+        fail("Type Error: merge member '" & mname & "' must be a struct, " &
+             "got " & typeName(mt), mexpr.span)
+      for f in mfs:
+        for existing in fields:
+          if existing.name == f.name:
+            fail("Type Error: merge field '" & f.name &
+                 "' collides between members", e.span)
+        fields.add(f)
+    if fields.len == 0: return unknownType(e.span)
+    return Type(span: e.span, kind: tkRecord, fields: fields)
   if calleeName == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     # expr bake {slot: :fn, arg: value, ...} — compile-time partial
     # application: rebuild the context struct with slots filled (fn refs)
@@ -899,6 +918,14 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   for p in params:
     # Params bound mutable: `set` functions legitimately use `..` on them
     tc.bindName(p.name, substituteType(p.typ, gsub), true)
+  # `input` — the whole incoming payload as one struct (reserved keyword)
+  if params.len > 0:
+    var inputFields: seq[FieldDef]
+    for p in params:
+      inputFields.add(FieldDef(name: p.name, typ: substituteType(p.typ, gsub),
+                               span: p.span))
+    tc.bindName("input", Type(span: params[0].span, kind: tkRecord,
+                              fields: inputFields), false)
   tc.currentRet = ret
   tc.currentFn = name
   let prevBody = tc.bodyBlock

@@ -17,6 +17,7 @@ type
     tmpCounter: int
     errPolicy: string     # from the errors declaration; "" = strict
     realModules: Table[string, Module]  # imported modules emitted as own Nim files
+    currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -201,6 +202,24 @@ proc genBake(ctx: var CodegenCtx, e: Expr): string =
   if prefix == "": "(" & parts.join(", ") & ")"
   else: "(" & prefix & "(" & parts.join(", ") & "))"
 
+# {a, b} merge — flatten: one struct carrying the union of the members'
+# fields (collisions rejected by the checker).
+proc genMerge(ctx: var CodegenCtx, e: Expr): string =
+  var parts: seq[string]
+  var prefix = ""
+  for (mname, mexpr) in e.args[0].fields.items:
+    var recv = ctx.genExpr(mexpr)
+    if mexpr.kind != exkVar:
+      ctx.tmpCounter.inc
+      let tmp = "tuckMerge" & $ctx.tmpCounter
+      prefix.add("let " & tmp & " = " & recv & "; ")
+      recv = tmp
+    for f in ctx.recordFieldNames(mexpr.ty):
+      parts.add(f & ": " & recv & "." & f)
+  if parts.len == 0: return ctx.genExpr(e.args[0])  # sketch members
+  if prefix == "": "(" & parts.join(", ") & ")"
+  else: "(" & prefix & "(" & parts.join(", ") & "))"
+
 # expr alias(old: new, ...) — rebuild the record with renamed fields:
 # (new1: x.old1, new2: x.old2, ...). Non-var receivers bind to a temp first
 # (no double evaluation).
@@ -277,6 +296,8 @@ proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
     return ctx.genAlias(e)
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genBake(e)
+  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
+    return ctx.genMerge(e)
   if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(m, calleeStr):
     # record construction: named fields, not positional
     var parts: seq[string]
@@ -325,9 +346,18 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     else: e.litValue
   of exkVar:
     if e.name == "...": "discard"  # pending hole: compiles, does nothing
+    elif e.name == "input" and ctx.currentParams.len > 0:
+      # the whole incoming payload, rebuilt from the fn's params
+      var parts: seq[string]
+      for p in ctx.currentParams: parts.add(p.name & ": " & p.name)
+      "(" & parts.join(", ") & ")"
     elif e.name in ctx.fieldVars: "self." & e.name
     else: e.name
   of exkField:
+    # `input.x` — the incoming payload's field is just the param
+    if e.receiver != nil and e.receiver.kind == exkVar and
+       e.receiver.name == "input" and ctx.currentParams.len > 0:
+      return e.fieldName
     # Unit sugar: 5.ms is a postfix call to the ordinary function ms
     if e.receiver != nil and e.receiver.kind == exkLit and e.receiver.litKind in {lkInt, lkFloat}:
       if lookupFnParams(m, e.fieldName).len > 0:
@@ -502,6 +532,8 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     return ctx.genAlias(e)
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genBake(e)
+  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
+    return ctx.genMerge(e)
   if calleeStr notin ["bake", "alias"]:
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded
@@ -575,9 +607,16 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     else: e.litValue
   of exkVar:
     if e.name == "...": "discard"
+    elif e.name == "input" and ctx.currentParams.len > 0:
+      var parts: seq[string]
+      for p in ctx.currentParams: parts.add(p.name & ": " & p.name)
+      "(" & parts.join(", ") & ")"
     elif e.name in ctx.fieldVars: "self." & e.name
     else: e.name
   of exkField:
+    if e.receiver != nil and e.receiver.kind == exkVar and
+       e.receiver.name == "input" and ctx.currentParams.len > 0:
+      return e.fieldName
     if e.receiver != nil and e.receiver.kind == exkLit and e.receiver.litKind in {lkInt, lkFloat}:
       if lookupFnParams(ctx.module, e.fieldName).len > 0:
         e.fieldName & "(" & ctx.genExpr(e.receiver) & ")"
@@ -743,6 +782,9 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
 proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
     if d.isPending:
       return genPendingStub(d)
+    ctx.currentParams = @[]
+    for p in d.fnParams:
+      ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     let fnNameSanitized = d.name.replace(".", "_")
     if d.isDecision or d.isDecisionTable():
       var params: seq[string]
@@ -1173,6 +1215,9 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   of dkActor:
     return ctx.genActor(d)
   of dkTask:
+    ctx.currentParams = @[]
+    for p in d.taskParams:
+      ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     var params: seq[string]
     for p in d.taskParams:
       params.add(p.name & ": " & genType(p.typ))

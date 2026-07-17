@@ -757,6 +757,68 @@ fn main() -> void:
   return
 """, "bake override 'a' expects int but got str"
 
+expectOk "input: the whole incoming payload, typed", """
+type Episode:
+  title: str
+
+fn header({episode: Episode, n: int}) -> str:
+  return input.episode.title
+
+fn main() -> void:
+  return
+"""
+
+expectError "input: unknown field is caught", """
+fn f({a: int}) -> int:
+  return input.missing
+
+fn main() -> void:
+  return
+""", "no field 'missing'"
+
+expectOk "merge flattens member structs; consumer sees the union", """
+type Episode:
+  title: str
+
+type Prefs:
+  volume: int
+
+fn describe({title: str, volume: int}) -> str:
+  return title
+
+fn play({episode: Episode, prefs: Prefs}) -> void:
+  let ctx = {episode, prefs} merge
+  let d = ctx describe
+  return
+
+fn main() -> void:
+  return
+"""
+
+expectError "merge: field name collision between members", """
+type A:
+  x: int
+
+type B:
+  x: str
+
+fn f({a: A, b: B}) -> void:
+  let ctx = {a, b} merge
+  return
+
+fn main() -> void:
+  return
+""", "collides"
+
+expectError "merge member must be a struct", """
+fn f({a: int}) -> void:
+  let ctx = {a} merge
+  return
+
+fn main() -> void:
+  return
+""", "must be a struct"
+
 expectOk "mutual recursion via pre-collected sigs", """
 fn isEven(n: int) -> bool:
   return n isOdd

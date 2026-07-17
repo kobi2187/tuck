@@ -26,6 +26,7 @@ const nimCheckExpected = [
   "03-functions-bake",
   "04-sum-types-interface",
   "18-alias",
+  "17-input-merge",
   "09-decision-table",
   "12-transition-the-ctor-exception",
   "05-actors-effects",

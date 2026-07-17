@@ -1,31 +1,24 @@
-# `input` is a reserved keyword that always points to the incoming arg tuple.
-# Use normal field names for payload data, and use `input` when you need the full struct.
+# `input` — the whole incoming arg tuple as one struct.
+# `merge` — flatten member structs into ONE struct carrying the union of
+# their fields (a name collision between members is a compile error).
 
 type Episode:
   title: str
   duration: u32
   playSpeed: float
 
-object PodcastApp:
-  host: str
-  library: Seq[Episode]
-  currentEpisode: Episode
-  lastPlayed: str
+type PlayerPrefs:
+  volume: int
+  speed: float
 
-fn changePlaySpeed({app: PodcastApp, ratio: float}) -> PodcastApp:
-  # `input` is the full incoming struct: {app, ratio}
-  for x in input.app.library:
-    x.playSpeed = ratio
-  return app
+fn describe({title: str, volume: int}) -> str:
+  return title
 
-fn play({app: PodcastApp, episode: Episode}) -> void:
-  var ctx = {app, episode} merge  # var: mutated below with `..`
-  ctx ..loadEpisode startAudio
+fn header({episode: Episode, n: int}) -> str:
+  # input.episode is the episode param; input is the whole payload
+  return input.episode.title
 
-fn loadEpisode({app: PodcastApp, episode: Episode}) -> PodcastApp:
-  # use app and episode directly without destructuring
-  app ..currentEpisode {episode} ..lastPlayed {episode.title}
-
-fn startAudio({app: PodcastApp, episode: Episode}) -> void:
-  # pure concatenative call: payload first, function reference second
-  {episode: episode, source: app} audio::play
+fn play({episode: Episode, prefs: PlayerPrefs}) -> str:
+  # flat: title, duration, playSpeed, volume, speed — one struct
+  let ctx = {episode, prefs} merge
+  ctx describe

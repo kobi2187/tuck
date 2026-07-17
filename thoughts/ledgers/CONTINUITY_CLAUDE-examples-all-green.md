@@ -56,6 +56,13 @@ when Beef also compiles it).
         through the slot. Runtime-verified: partial application exits 7.
         03 in Nim gate (20/25). CEILING: Beef bake pass-through — needs a
         delegate-type story (03 not in Beef gate, still 19).
+  - [x] Phase 6b: `input` + `merge` LANDED (user rulings). input = the fn's
+        whole payload struct, bound by the checker (params record),
+        codegen rewrites input.x → x and bare input → param-tuple/TRec
+        rebuild. merge = FLATTEN: union of member structs' fields, name
+        collision = error, non-struct member = error; Nim emits the flat
+        tuple, Beef the union TRec. Runtime-verified (merge probe exits
+        33). 17 rewritten and in BOTH gates: Nim 21/25, Beef 20.
 - Now: [→] Phase 6: 11/20 — `when TARGET` + implicit main rulings.
 - Remaining:
   - [ ] Phase 3: 04 — `Self` mapping + interface/manager emission + empty
