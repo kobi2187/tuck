@@ -553,3 +553,16 @@ Next candidates (Beef):
 - Still open (user asked for plain-words explanation): whether the
   whole-bind-vs-field-explosion resolution needs an ambiguity error when
   a call could match BOTH ways (currently whole-bind silently wins).
+
+## 2026-07-13 — examples campaign phases 1-6b (ledger: examples-all-green)
+
+- Gate 15/25 → Nim 21/25, Beef 20/25 over six phases, each committed:
+  chain-tail fix (8166bb7), variant construction + 09/12 (same), 04
+  composition emission (2f2da87), alias() real (357f780), bake v1
+  (56d66e1), input+merge (b3ac4a9). Details per commit / ledger.
+- New spec sections: §2.3 rewritten (call model + error table), §2.4b
+  (input + merge). bake follows the user's Factor-fry ruling with
+  Nim-generic lowering (fn type → auto, :name refs, slot.invoke).
+- Remaining 4: 11+20 (`when TARGET` + implicit main + actor-transition
+  lowering), 16 (`on select`, behind actor-runtime ruling). Beef bake =
+  delegate-type ceiling (03 Nim-only).

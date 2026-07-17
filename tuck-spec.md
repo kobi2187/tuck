@@ -157,6 +157,25 @@ player.volume normalize   # volume: int → {value: int} → passed to normalize
 
 This is a compile-time rewrite. Zero runtime cost.
 
+### 2.4b `input` and `merge`
+
+**`input`** is a reserved name: the fn's whole incoming payload as one
+struct. `input.x` reads the param `x`; bare `input` is the whole payload
+where a struct is expected. Fully typed (the checker binds it as the param
+record); codegen rewrites `input.x` to the param directly — zero cost.
+
+**`merge`** flattens: `{a, b} merge` produces ONE struct carrying the
+union of the member structs' fields. A field-name collision between
+members is a compile error (no silent shadowing); a non-struct member is
+an error. merge changes the structure — contrast with `bake` (fills
+values/slots) and `alias` (renames fields).
+
+```tuck
+fn play({episode: Episode, prefs: PlayerPrefs}) -> str:
+  let ctx = {episode, prefs} merge   # title, duration, ..., volume, speed
+  ctx describe                        # subset matching picks what it needs
+```
+
 ### 2.5 Subset Matching
 
 If a flowing struct contains more fields than a function requires, the extra fields
