@@ -49,7 +49,9 @@ when Beef also compiles it).
         renamed tuple (temp-bind for non-var receivers); Beef emits the
         renamed TRec positional ctor (exkVar+ty only, else pass-through
         ceiling). Fixes 18 AND 01's silent no-op. Gates 19/25 both.
-- Now: [→] Phase 5: 03 bake specialization.
+- Now: [→] Phase 5: 03 bake — BLOCKED on design rulings (see Open
+  Questions). Remaining phases each need rulings or major features;
+  paused for user input 2026-07-13.
 - Remaining:
   - [ ] Phase 3: 04 — `Self` mapping + interface/manager emission + empty
         setMany body indent (`proc setMany(self: Self,...)` invalid Nim).
@@ -72,6 +74,18 @@ when Beef also compiles it).
         with a main (extend gate to build+run+assert where feasible).
 
 ## Open Questions
+- bake (03): what is v1? (a) true inline rewrite per spec 3.5, or (b) bind
+  the fn-ref into the struct (proc-typed field, call through it) with
+  inlining later. Also needs rulings: `:name` fn-ref literal semantics,
+  `op invoke {args}` call-through syntax, and the `fn` field TYPE story
+  (currently maps to `pointer` — uncallable).
+- `when TARGET` §8.3 + top-level statements / implicit main (11, 20).
+- `input` keyword + `merge` (17) — structural-merge keyword design.
+- on select §9.3 (16) — still behind the actor-runtime strategy ruling.
+- 20: transitionTo-with-payload inside actor handlers emits garbage —
+  mechanical fix possible once the intended lowering is confirmed
+  (what does `{rate} PlayerState.Decoding transitionTo` mean in a
+  handler? construct-then-checked-assign to self.state?).
 - UNCONFIRMED: does 04 need interface satisfies-checking (spec 5.2/5.3) or
   just emission fixes to go green?
 - Phase 8 needs a user ruling on the task runtime before it can start.
