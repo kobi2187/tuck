@@ -1372,30 +1372,67 @@ proc typecheckModule*(m: Module,
       tc.knownModules.incl(qualName.split("::")[0])
   tc.pushScope()  # module-level scope: consts visible across decls
   tc.collectSigs(m.decls)
-  # const declarations: compile-time DATA only (literals, structs, lists of
-  # them, arithmetic over them) — no calls, no constructions, nothing runs.
-  # Bound before body checks so any fn can reference them, order-free.
+  # const declarations: Nim-static semantics — arbitrary PURE computation,
+  # evaluated at compile time by the backend's const evaluator. Tuck rejects
+  # only what would break there: [io] calls (pure only), record-type
+  # constructions (records are reference values — not const-able), and
+  # unknown callees. Bound before body checks so any fn can reference them.
   for d in m.decls:
     if d != nil and d.kind == dkConst:
-      proc comptimeOk(e: Expr): bool =
-        if e == nil: return false
+      proc isIoFn(m: Module, name: string): bool =
+        for fd in m.decls:
+          if fd != nil and fd.kind == dkFn and fd.name == name:
+            return emIo in fd.fnEffects
+        false
+      proc fnDeclared(m: Module, name: string): bool =
+        for fd in m.decls:
+          if fd != nil and fd.kind == dkFn and fd.name == name: return true
+        false
+      proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr,
+                      sp: Span) =
+        if e == nil: return
         case e.kind
-        of exkLit: true
+        of exkLit, exkQualified: discard  # literals; :fn refs
         of exkStruct:
-          for f in e.fields:
-            if not comptimeOk(f[1]): return false
-          true
+          for f in e.fields: constCheck(tc, m, cname, f[1], sp)
         of exkList:
-          for it in e.items:
-            if not comptimeOk(it): return false
-          true
-        of exkUnary: e.unaryOp in {uoNeg, uoNot} and comptimeOk(e.operand)
-        of exkBinary: comptimeOk(e.left) and comptimeOk(e.right)
-        else: false
-      if not comptimeOk(d.constVal):
-        fail("Const Error: 'const " & d.name & "' must be compile-time data " &
-             "(literals, structs and lists of them) — runtime values belong " &
-             "in fns, actors, or the resource registry", d.span)
+          for it in e.items: constCheck(tc, m, cname, it, sp)
+        of exkUnary: constCheck(tc, m, cname, e.operand, sp)
+        of exkBinary:
+          constCheck(tc, m, cname, e.left, sp)
+          constCheck(tc, m, cname, e.right, sp)
+        of exkField:
+          # unit sugar (5.ms) and field reads over const sub-expressions
+          if e.receiver != nil: constCheck(tc, m, cname, e.receiver, sp)
+          if e.receiver != nil and e.receiver.kind == exkLit and
+             isIoFn(m, e.fieldName):
+            fail("Const Error: 'const " & cname & "' must be pure — '" &
+                 e.fieldName & "' is [io]", sp)
+        of exkCall:
+          for a in e.args: constCheck(tc, m, cname, a, sp)
+          if e.callee != nil and e.callee.kind == exkVar:
+            let callee = e.callee.name
+            if callee in ["bake", "merge", "alias"]: discard
+            elif tc.typeDecls.hasKey(callee) and
+                 tc.typeDecls[callee].kind == tkRecord:
+              fail("Const Error: 'const " & cname & "' cannot hold a " &
+                   "record construction (records are reference values) — " &
+                   "use a plain struct literal", sp)
+            elif tc.distinctNames.contains(callee): discard  # base conversion
+            elif isIoFn(m, callee):
+              fail("Const Error: 'const " & cname & "' must be pure — '" &
+                   callee & "' is [io]", sp)
+            elif not fnDeclared(m, callee) and
+                 not tc.typeDecls.hasKey(callee):
+              fail("Const Error: 'const " & cname & "' needs declared pure " &
+                   "fns — '" & callee & "' is unknown", sp)
+          elif e.callee != nil and e.callee.kind == exkField:
+            # {payload} Type.Variant — sum variants are value objects: fine
+            discard
+        else:
+          fail("Const Error: 'const " & cname & "' must be a pure " &
+               "compile-time expression", sp)
+      constCheck(tc, m, d.name, d.constVal, d.span)
       tc.bindName(d.name, tc.synthesize(d.constVal), false)
   # Either/or namespace: a declared field name may not shadow a declared fn —
   # `.name` resolves by lookup, so a clash would silently change meaning.

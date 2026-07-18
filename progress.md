@@ -665,3 +665,19 @@ Next candidates (Beef):
   with block arms (side effects live inside the narrowed arm now — better
   style for the static-transition idiom). New checker test; all suites
   green.
+
+## 2026-07-13 — const v2: Nim-static semantics (pure computed constants)
+
+- User ruling: const copies Nim's static model — arbitrary pure
+  compile-time computation, not a literal whitelist. Checker now rejects
+  only what would break: [io] calls (pure only), record-type
+  constructions (ref values — not const-able until value semantics),
+  unknown callees. Pure fn calls, unit sugar (5.ms), computed tables all
+  pass through.
+- Codegen emits an explicit `static:` block (`const x = static: expr`) —
+  and consts moved OUT of the type pass into source-order body emission
+  (they may call fns; fns must precede them, Nim decl-before-use).
+- Runtime-verified: `const sum = {a: 40, b: 2} plus` exits 42 (VM
+  evaluated the call at compile time); `const timeout = 5.ms` builds and
+  runs. TOUR-GAPS gap 6 closed. Beef ceiling unchanged (literal→const,
+  else static field, static-ctor-time init).

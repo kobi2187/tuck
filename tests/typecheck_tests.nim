@@ -874,12 +874,32 @@ fn main() -> void:
   return
 """
 
-expectError "const initializer must be compile-time data (no calls)", """
-fn now() -> int:
-  return 1
+expectOk "const evaluates pure computation at compile time", """
+distinct Milliseconds = u32
 
-const t = {} now
-""", "compile-time"
+fn ms(value: u32) -> Milliseconds:
+  value Milliseconds
+
+fn plus({a: int, b: int}) -> int:
+  return a + b
+
+const timeout = 5.ms
+const sum = {a: 2, b: 3} plus
+"""
+
+expectError "const initializer must be pure (no io)", """
+fn readPort() -> int [io]:
+  return 80
+
+const p = {} readPort
+""", "pure"
+
+expectError "const cannot hold a record construction (ref semantics)", """
+type Server:
+  port: int
+
+const s = {port: 80} Server
+""", "record"
 
 # ---------- static transition checking (spec 4.4b) ----------
 

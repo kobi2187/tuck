@@ -69,15 +69,12 @@ never comes back out. The whole point of `[error: ParseError]` is lost at
 the handling site. Known backlog ("enum-typed comparisons later") — this
 tour hit it immediately in the most natural error-handling paragraph.
 
-## 6. `const` can't hold unit values
+## 6. ~~`const` can't hold unit values~~ FIXED 2026-07-13
 
-```tuck
-const timeout = 5.ms   # Const Error — unit sugar is a fn call
-```
-
-Correct per the comptime rule, but timeouts/sizes are exactly what
-constants are for. Wants comptime evaluation of *pure* unit fns (or
-distinct-literal syntax) so `const timeout = 5.ms` works.
+`const` now has Nim-static semantics: arbitrary pure computation
+evaluated at compile time (explicit `static:` block in the emitted
+code). `const timeout = 5.ms` and computed constants work; `[io]`
+calls and record constructions are rejected at the Tuck level.
 
 ## 7. Two arrow styles: match uses `:`, decision tables use `->`
 
