@@ -460,6 +460,17 @@ set precisely enough to prove a transition legal, it is a compile error —
 never a silent drop to a runtime check. (A future explicit escape hatch,
 symmetrical to `[unsafe]` on sealed construction, is not yet designed.)
 
+**Sealed interplay**: the RHS of a checked transition assignment may
+construct a non-initial variant of a `[sealed]` type — the proven
+transition IS the legal path (static analogue of the old
+transitionTo-chain exemption). Helper fns constructing sealed variants
+outside such an assignment still need `[unsafe]`.
+
+*Implemented 2026-07-13* (checker-only; the runtime `transitionTo`
+remains available for dynamic cases). Known ceilings: return-site tracing
+is module-local (cross-module calls yield the full set); match-arm bodies
+are single-line today, which constrains narrowing blocks.
+
 ### 4.5 Type Composition
 
 Types are composed via set union. There is no inheritance:

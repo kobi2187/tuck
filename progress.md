@@ -626,3 +626,32 @@ Next candidates (Beef):
 - Spec §4.4b written (tuck-spec.md). ROADMAP Missing item added — scoped
   as its own implementation pass (touches the checker's core binding/flow
   model), not folded into the smaller TOUR-GAPS fixes. Not implemented.
+
+## 2026-07-13 — static transition checking IMPLEMENTED (spec 4.4b)
+
+- Checker-only pass, ~150 lines: tc.varVariants tracks each var's
+  possible-variant set for transitions-declared sum types. Reassignment
+  (plain or `..` mutator) = transition, checked pairwise (every
+  from-member -> every to-member needs a declared edge; same-variant =
+  payload refresh, always legal). if/match fork the state and UNION at
+  the join; loops check the body once against the entry set (no
+  fixed-point, per ruling); match on a tracked var narrows the subject
+  to the arm's variant inside that arm (variant patterns no longer
+  shadow-bind). Params enter at the full set — transitions on them
+  require match narrowing (the ruling's escape valve). Fn returns trace
+  syntactically (constructions at return sites, module-local); anything
+  untraceable = full set. Sealed interplay: RHS of a checked transition
+  assignment may construct non-initial sealed variants (transitionCtx
+  reused — static analogue of the transitionTo-chain exemption).
+- FIRST RUN CAUGHT A REAL BUG: example 20's `on pause` attempted
+  Idle -> Paused (not in its table) — invisible under runtime-only
+  checking unless that message arrived in that state. Handlers rewritten
+  in the static style (match-narrow + plain reassignment, transitionTo
+  gone from the example).
+- 8 new checker tests (legal/illegal edges, same-variant, branch-merge
+  union both ways, param full set, match narrowing, return tracing).
+  All suites green: 100+ checker tests, gate 21/25, Beef 20, e2e, smoke.
+- Ceilings: cross-module fns yield the full set; helper fns constructing
+  sealed variants outside a transition assignment still need [unsafe];
+  match arms are single-line (parser limitation, hit twice today);
+  optional debug-assert emission not done (checker proof stands alone).

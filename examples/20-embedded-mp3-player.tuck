@@ -55,17 +55,27 @@ actor Decoder [queue: 8]:
   vol: Volume = Volume {level: 80}
 
   on play({rate: Hz}) -> void:
-    # State transitions must conform to the transition matrix
-    state = state transitionTo PlayerState.Decoding {sampleRate: rate}
+    # spec 4.4b: reassignment IS the transition — statically checked.
+    # A message can arrive in any state, so match narrows first; only
+    # states with a declared edge to Decoding may move there.
+    match state:
+      Idle: state = {sampleRate: rate} PlayerState.Decoding
+      Paused: state = {sampleRate: rate} PlayerState.Decoding
+      Decoding: ...
     SystemEvents.raise PlaybackStarted
     DAC_CR ..EN {true}
 
   on pause() -> void:
-    state = state transitionTo PlayerState.Paused
+    match state:
+      Decoding: state = PlayerState.Paused
+      Idle: ...
+      Paused: ...
     DAC_CR ..EN {false}
 
   on stop() -> void:
-    state = state transitionTo PlayerState.Idle
+    # every state has a declared (or same-variant) edge to Idle:
+    # no narrowing needed, the full set proves it
+    state = PlayerState.Idle
     SystemEvents.raise PlaybackStopped
     DAC_CR ..EN {false}
 

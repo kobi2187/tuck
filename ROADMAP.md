@@ -71,6 +71,7 @@ construction, generic bodies gradual, no constraints).
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
+| Static transition checking | 4.4b | CORE DONE 2026-07-13: per-var variant sets (Type@Variant), reassignment-as-transition vs the table, if/match/loop set merges, match narrowing, param full-set entry, module-local return tracing, sealed-RHS exemption. Caught a real bug in ex 20 on first run. Ceilings: cross-module fns → full set; helper fns building sealed variants need [unsafe]; match arms single-line; optional debug assertion emission not done |
 | Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). mutation sites, extern boundaries and `!T`-wrapped returns ALL DONE 2026-07-13 — every production site now validates (constructions, returns, `..` chains, extern call sites; !T payloads validate transitively via construction). Both backends, runtime-verified. Ruling: BLOCK syntax only |
 | Actors | 9.1 | coroutine/state-machine runtime, static ring queues, scheduler (design open) |
 | Tasks | 9.2 | state-machine transform at [io] yield points |
@@ -84,17 +85,6 @@ construction, generic bodies gradual, no constraints).
 | Beef backend | — | parity suite + BeefBuild compile-check 20/25 examples; `tuck build --beef` in CLI. Ceilings: bake (delegate types), member-fn call-site ref marker |
 
 ## Missing
-- Static transition checking §4.4b (design done 2026-07-13, spec written,
-  NOT implemented) — every var of a transitions-declared type tracks its
-  possible-variant SET (Type@Variant) through the checker's existing
-  binding model; a reassignment that changes variant is checked against
-  the table at compile time (no user-written transitionTo for the common
-  case); branch/loop merges union the sets; fn boundaries carry narrowing
-  by traceability, not by signature; unprovable = compile error, no
-  runtime fallback. Touches the checker's core flow-tracking — scope as
-  its own implementation pass, not folded into smaller fixes. Today's
-  runtime transitionTo(self, target) stays as the (only) mechanism until
-  this lands.
 - Resource registry §7.4 — parser (`resources` decl, `defer` block,
   `[resource:]` attr), checker (kind validation, propagation,
   acquire-must-finish tracking), rt slot table + inline sweep, codegen

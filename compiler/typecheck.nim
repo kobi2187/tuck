@@ -51,6 +51,11 @@ type
     currentErrTypes: seq[string]     # [error: A | B] of the fn being checked
     okNarrowed: HashSet[string]      # results guarded by `if x.ok` in scope:
                                      # .value is legal only under the guard
+    varVariants: Table[string, seq[string]]  # spec 4.4b: per-var possible-
+                                     # variant SET for transitions-declared
+                                     # types (Type@Variant). Forked/unioned
+                                     # at branches; reassignments checked
+                                     # against the transition table.
 
 proc pushScope(tc: var TypeChecker) = tc.scopes.add(initTable[string, Binding]())
 proc popScope(tc: var TypeChecker) = discard tc.scopes.pop()
@@ -98,6 +103,118 @@ proc fieldsOf(tc: TypeChecker, t: Type): seq[FieldDef] =
       result.add(FieldDef(name: f.name, typ: substituteTypeFwd(f.typ, b), span: f.span))
     return
   getFieldsForType(tc.module, t)
+
+# --- spec 4.4b: static transition checking --------------------------------
+# A sum type with a `transitions:` block is TRACKED: every var of it carries
+# the set of variants it could statically be in (Type@Variant in
+# diagnostics). A reassignment that changes variant is checked against the
+# table at compile time; branch/loop merges union the sets; anything
+# unprovable is an error — never a silent runtime fallback.
+
+proc transType(tc: TypeChecker, t: Type): string =
+  ## the declared name of a transitions-carrying sum type, or ""
+  if t == nil or t.kind != tkNamed or not tc.typeDecls.hasKey(t.name): return ""
+  let body = tc.typeDecls[t.name]
+  if body.kind == tkSum and body.transitions.len > 0: return t.name
+  ""
+
+proc allVariants(tc: TypeChecker, typeName: string): seq[string] =
+  for v in tc.typeDecls[typeName].variants: result.add(v.name)
+
+proc hasEdge(tc: TypeChecker, typeName, frm, to: string): bool =
+  for tr in tc.typeDecls[typeName].transitions:
+    if tr.`from` == frm and tr.to == to: return true
+  false
+
+proc checkTransSet(tc: var TypeChecker, typeName: string,
+                   cur, next: seq[string], sp: Span) =
+  # legal iff every target is reachable from EVERY member of the current set
+  for to in next:
+    for frm in cur:
+      if frm == to: continue  # same-variant reassignment: payload refresh
+      if not tc.hasEdge(typeName, frm, to):
+        fail("Transition Error: " & typeName & " cannot go " & frm & " -> " &
+             to & " (value is " & typeName & "@{" & cur.join("|") &
+             "}; that edge is not in the transitions table)", sp)
+
+# Which variant set an RHS provides. Traceability is syntactic:
+# constructions give a singleton, var copies give the var's set, a fn whose
+# every return is a traceable construction gives their union — anything
+# else is the full set (all variants possible).
+proc fnReturnVariants(tc: TypeChecker, fnName, typeName: string): seq[string]
+
+proc exprVariants(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
+  if e == nil: return tc.allVariants(typeName)
+  case e.kind
+  of exkField:
+    # bare Type.Variant (incl. [unsafe])
+    if e.receiver != nil and e.receiver.kind == exkVar and
+       e.receiver.name == typeName:
+      return @[e.fieldName]
+  of exkCall:
+    # {payload} Type.Variant
+    if e.callee != nil and e.callee.kind == exkField and
+       e.callee.receiver != nil and e.callee.receiver.kind == exkVar and
+       e.callee.receiver.name == typeName:
+      return @[e.callee.fieldName]
+    # {args} someFn — trace the callee's return sites
+    if e.callee != nil and e.callee.kind == exkVar:
+      return tc.fnReturnVariants(e.callee.name, typeName)
+  of exkVar:
+    if tc.varVariants.hasKey(e.name):
+      return tc.varVariants[e.name]
+  else: discard
+  tc.allVariants(typeName)
+
+proc scanReturns(tc: TypeChecker, typeName: string, e: Expr,
+                 acc: var seq[string], exact: var bool) =
+  if e == nil or not exact: return
+  case e.kind
+  of exkReturn:
+    if e.returnVal == nil:
+      exact = false
+      return
+    let vs = tc.exprVariants(typeName, e.returnVal)
+    # only constructions count as traceable inside a body scan (var sets
+    # are flow-dependent and this is a syntactic pre-pass)
+    if vs.len == 1:
+      for v in vs:
+        if v notin acc: acc.add(v)
+    else:
+      exact = false
+  of exkBlock:
+    for s in e.stmts: tc.scanReturns(typeName, s, acc, exact)
+  of exkIf:
+    tc.scanReturns(typeName, e.thenBranch, acc, exact)
+    tc.scanReturns(typeName, e.elseBranch, acc, exact)
+  of exkMatch:
+    for arm in e.arms: tc.scanReturns(typeName, arm.body, acc, exact)
+  of exkFor:
+    tc.scanReturns(typeName, e.body, acc, exact)
+  else: discard
+
+proc fnReturnVariants(tc: TypeChecker, fnName, typeName: string): seq[string] =
+  for d in tc.module.decls:
+    if d != nil and d.kind == dkFn and d.name == fnName and
+       d.fnReturnType != nil and d.fnReturnType.kind == tkNamed and
+       d.fnReturnType.name == typeName and d.fnBody != nil:
+      var acc: seq[string]
+      var exact = true
+      tc.scanReturns(typeName, d.fnBody, acc, exact)
+      # the implicit tail return is a plain trailing expression
+      if d.fnBody.kind == exkBlock and d.fnBody.stmts.len > 0:
+        let last = d.fnBody.stmts[^1]
+        if last.kind notin {exkReturn, exkIf, exkMatch, exkFor, exkBlock,
+                            exkAssign}:
+          let vs = tc.exprVariants(typeName, last)
+          if vs.len == 1:
+            for v in vs:
+              if v notin acc: acc.add(v)
+          else:
+            exact = false
+      if exact and acc.len > 0: return acc
+      return tc.allVariants(typeName)
+  tc.allVariants(typeName)
 
 proc typeName(t: Type): string =
   if t == nil: return "void"
@@ -342,6 +459,19 @@ proc synthBinary(tc: var TypeChecker, e: Expr): Type =
   else:
     Type(span: e.span, kind: tkNamed, name: "bool")
 
+# spec 4.4b: union two branch states — narrowing is never discarded,
+# only widened to the union of what the branches could produce
+proc mergeVariants(a, b: Table[string, seq[string]]): Table[string, seq[string]] =
+  result = a
+  for k, v in b:
+    if result.hasKey(k):
+      var merged = result[k]
+      for x in v:
+        if x notin merged: merged.add(x)
+      result[k] = merged
+    else:
+      result[k] = v
+
 proc synthIf(tc: var TypeChecker, e: Expr): Type =
   let condT = tc.synthesize(e.cond)
   if isWrapper(condT):
@@ -358,9 +488,13 @@ proc synthIf(tc: var TypeChecker, e: Expr): Type =
      e.cond.receiver.name notin tc.okNarrowed:
     guard = e.cond.receiver.name
   if guard != "": tc.okNarrowed.incl(guard)
+  let entryVariants = tc.varVariants
   let thenT = tc.synthesize(e.thenBranch)
+  let thenVariants = tc.varVariants
   if guard != "": tc.okNarrowed.excl(guard)
+  tc.varVariants = entryVariants
   let elseT = tc.synthesize(e.elseBranch)
+  tc.varVariants = mergeVariants(thenVariants, tc.varVariants)
   # Branches that produce values must agree on the type
   if e.elseBranch != nil and not isUnknown(thenT) and not isUnknown(elseT) and
      not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
@@ -369,20 +503,44 @@ proc synthIf(tc: var TypeChecker, e: Expr): Type =
   if isUnknown(thenT): elseT else: thenT
 
 proc synthMatch(tc: var TypeChecker, e: Expr): Type =
-  discard tc.synthesize(e.subject)
+  let subjT = tc.synthesize(e.subject)
+  # spec 4.4b: matching a tracked var narrows it to the arm's variant
+  # inside that arm; the after-match state is the union of the arm exits
+  var trackedVar = ""
+  var trackedType = ""
+  if e.subject != nil and e.subject.kind == exkVar:
+    trackedType = tc.transType(subjT)
+    if trackedType != "": trackedVar = e.subject.name
+  let entryVariants = tc.varVariants
+  var mergedExit: Table[string, seq[string]]
+  var firstArm = true
   var armT = unknownType(e.span)
   for arm in e.arms:
+    tc.varVariants = entryVariants
     tc.pushScope()
-    # v1: pattern-bound names enter scope as Unknown
+    var isVariantArm = false
     if arm.pattern != nil and arm.pattern.kind == pkVar:
-      tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
+      if trackedVar != "" and
+         arm.pattern.name in tc.allVariants(trackedType):
+        # variant pattern: narrow the subject, do NOT bind the name
+        isVariantArm = true
+        tc.varVariants[trackedVar] = @[arm.pattern.name]
+      else:
+        # v1: pattern-bound names enter scope as Unknown
+        tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
     let t = tc.synthesize(arm.body)
     tc.popScope()
+    if firstArm:
+      mergedExit = tc.varVariants
+      firstArm = false
+    else:
+      mergedExit = mergeVariants(mergedExit, tc.varVariants)
     if not isUnknown(t) and not isUnknown(armT) and
        not tc.compatible(t, armT) and not tc.compatible(armT, t):
       fail("Type Error: match arms produce different types: " &
            typeName(armT) & " vs " & typeName(t), arm.span)
     if isUnknown(armT): armT = t
+  if not firstArm: tc.varVariants = mergedExit
   armT
 
 proc synthChain(tc: var TypeChecker, e: Expr): Type =
@@ -453,6 +611,16 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
           fail("Type Error: cannot assign " & typeName(retT) & " to " &
                typeName(baseT) & " — a '..' mutator must return the " &
                "receiver's type", step.span)
+        # spec 4.4b: a mutator reassignment on a tracked var is a transition
+        if e.base != nil and e.base.kind == exkVar:
+          let tn = tc.transType(baseT)
+          if tn != "":
+            let cur = if tc.varVariants.hasKey(e.base.name):
+                        tc.varVariants[e.base.name]
+                      else: tc.allVariants(tn)
+            let next = tc.fnReturnVariants(step.target.name, tn)
+            tc.checkTransSet(tn, cur, next, step.span)
+            tc.varVariants[e.base.name] = next
       elif recvT.kind == tkRecord:
         fail("Type Error: no field or fn '" & step.target.name & "' on type " &
              typeName(recvT), step.span)
@@ -787,18 +955,46 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     tc.pushScope()
     if e.iter != nil and e.iter.kind == pkVar:
       tc.bindName(e.iter.name, unknownType(e.iter.span), false)
+    # spec 4.4b: the body is checked ONCE against the entry set (no
+    # fixed-point simulation); after the loop the state is entry ∪ body-exit
+    let entryVariants = tc.varVariants
     discard tc.synthesize(e.body)
+    tc.varVariants = mergeVariants(entryVariants, tc.varVariants)
     tc.popScope()
     Type(span: e.span, kind: tkNamed, name: "unit")
   of exkAssign:
-    let valT = tc.synthesize(e.assignVal)
     if e.isDecl and e.target != nil and e.target.kind == exkVar:
+      let valT = tc.synthesize(e.assignVal)
       tc.bindName(e.target.name, valT, e.isMutable)
+      # spec 4.4b: a fresh binding of a tracked type starts at the RHS's set
+      let tn = tc.transType(valT)
+      if tn != "":
+        tc.varVariants[e.target.name] = tc.exprVariants(tn, e.assignVal)
     else:
       let targetT = tc.synthesize(e.target)
+      # spec 4.4b: the RHS of a checked transition assignment may construct
+      # a non-initial sealed variant — the transition IS the legal path
+      # (static analogue of the old transitionTo-chain exemption)
+      let trackedAssign = e.target != nil and e.target.kind == exkVar and
+                          tc.transType(targetT) != ""
+      let prevCtx = tc.transitionCtx
+      if trackedAssign: tc.transitionCtx = true
+      let valT = tc.synthesize(e.assignVal)
+      tc.transitionCtx = prevCtx
       if not tc.compatible(valT, targetT):
         fail("Type Error: cannot assign " & typeName(valT) & " to " &
              typeName(targetT), e.span)
+      # spec 4.4b: a reassignment that changes variant IS a transition —
+      # checked against the table, no user-written transitionTo needed
+      if e.target != nil and e.target.kind == exkVar:
+        let tn = tc.transType(targetT)
+        if tn != "":
+          let cur = if tc.varVariants.hasKey(e.target.name):
+                      tc.varVariants[e.target.name]
+                    else: tc.allVariants(tn)
+          let next = tc.exprVariants(tn, e.assignVal)
+          tc.checkTransSet(tn, cur, next, e.span)
+          tc.varVariants[e.target.name] = next
     Type(span: e.span, kind: tkNamed, name: "unit")
   of exkReturn:
     if e.returnVal != nil and tc.currentRet != nil:
@@ -915,9 +1111,16 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   # call site via inference; Nim rechecks per instantiation)
   var gsub = initTable[string, Type]()
   for g in generics: gsub[g] = unknownType(Span())
+  let savedVariants = tc.varVariants
+  tc.varVariants = initTable[string, seq[string]]()
   for p in params:
     # Params bound mutable: `set` functions legitimately use `..` on them
     tc.bindName(p.name, substituteType(p.typ, gsub), true)
+    # spec 4.4b: a param of a tracked type enters at the FULL variant set —
+    # transitions on it need `match` narrowing first
+    let ptn = tc.transType(p.typ)
+    if ptn != "":
+      tc.varVariants[p.name] = tc.allVariants(ptn)
   # `input` — the whole incoming payload as one struct (reserved keyword)
   if params.len > 0:
     var inputFields: seq[FieldDef]
@@ -945,6 +1148,7 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   tc.bodyBlock = prevBody
   tc.currentRet = nil
   tc.currentFn = ""
+  tc.varVariants = savedVariants
   tc.popScope()
 
 # --- Decision tables (spec 6.1): row width, unreachable rows, completeness ---

@@ -881,6 +881,88 @@ fn now() -> int:
 const t = {} now
 """, "compile-time"
 
+# ---------- static transition checking (spec 4.4b) ----------
+
+const doorPrelude = """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+  transitions:
+    Closed -> Open
+    Open   -> Closed
+    Closed -> Locked
+    Locked -> Closed
+
+"""
+
+expectOk "transition: legal reassignment", doorPrelude & """
+fn main() -> void:
+  var d = Door.Closed
+  d = Door.Open
+  return
+"""
+
+expectError "transition: illegal edge on reassignment", doorPrelude & """
+fn main() -> void:
+  var d = Door.Open
+  d = Door.Locked
+  return
+""", "Open -> Locked"
+
+expectOk "transition: same-variant reassignment allowed", doorPrelude & """
+fn main() -> void:
+  var d = Door.Closed
+  d = Door.Closed
+  return
+"""
+
+expectOk "transition: branch merge, next hop legal from both", doorPrelude & """
+fn main() -> void:
+  var d = Door.Closed
+  if true:
+    d = Door.Open
+  d = Door.Closed
+  return
+"""
+
+expectError "transition: branch merge, edge missing from one member", doorPrelude & """
+fn main() -> void:
+  var d = Door.Closed
+  if true:
+    d = Door.Open
+  d = Door.Locked
+  return
+""", "Open -> Locked"
+
+expectError "transition: param starts at the full set", doorPrelude & """
+fn slam({d: Door}) -> void:
+  var x = d
+  x = Door.Locked
+  return
+""", "-> Locked"
+
+expectOk "transition: match narrowing unlocks the edge", doorPrelude & """
+fn slam({d: Door}) -> void:
+  var x = d
+  match x:
+    Closed: x = Door.Locked
+    Open: x = Door.Closed
+    Locked: x = Door.Closed
+  return
+"""
+
+expectOk "transition: fn returning a construction narrows the caller", doorPrelude & """
+fn fresh() -> Door:
+  return Door.Closed
+
+fn main() -> void:
+  var d = {} fresh
+  d = Door.Locked
+  return
+"""
+
 expectOk "declarations-only module is fine", """
 type Server:
   port: int
