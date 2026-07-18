@@ -84,6 +84,17 @@ construction, generic bodies gradual, no constraints).
 | Beef backend | — | parity suite + BeefBuild compile-check 20/25 examples; `tuck build --beef` in CLI. Ceilings: bake (delegate types), member-fn call-site ref marker |
 
 ## Missing
+- Static transition checking §4.4b (design done 2026-07-13, spec written,
+  NOT implemented) — every var of a transitions-declared type tracks its
+  possible-variant SET (Type@Variant) through the checker's existing
+  binding model; a reassignment that changes variant is checked against
+  the table at compile time (no user-written transitionTo for the common
+  case); branch/loop merges union the sets; fn boundaries carry narrowing
+  by traceability, not by signature; unprovable = compile error, no
+  runtime fallback. Touches the checker's core flow-tracking — scope as
+  its own implementation pass, not folded into smaller fixes. Today's
+  runtime transitionTo(self, target) stays as the (only) mechanism until
+  this lands.
 - Resource registry §7.4 — parser (`resources` decl, `defer` block,
   `[resource:]` attr), checker (kind validation, propagation,
   acquire-must-finish tracking), rt slot table + inline sweep, codegen

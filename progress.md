@@ -602,3 +602,27 @@ Next candidates (Beef):
   invalid Nim, list-literal-of-constructions emitter bug, transitionTo
   ergonomics, .err never enum-typed at handling sites, const rejects
   unit sugar, match `:` vs decision `->` inconsistency, actors don't run.
+
+## 2026-07-13 — static transition checking designed (spec 4.4b, not yet built)
+
+- Started from TOUR-GAPS.md #4 (transitionTo ergonomics); design
+  conversation surfaced a much bigger idea: the type system should track
+  a var's possible variant SET through the checker's flow, and check
+  reassignment-as-transition at compile time — the user never writes
+  transitionTo for the common case. `Type@Variant` notation (compiler
+  diagnostics only, never source syntax) names the narrowed type.
+- Full ruling (session, condensed): applies to every transitions-declared
+  type, independent of [sealed] (sealed only restricts direct-construct
+  syntax to the initial variant — a much narrower, already-built rule).
+  Merges (branch/loop) UNION the possible-variant set, never discard to
+  bare Type. A transition against a set is legal only if the edge exists
+  from every member. Fn boundaries: param/return types stay unnarrowed in
+  signatures; the checker still carries the caller's known set into the
+  callee body and traces constructible returns back out; untraceable
+  returns yield the full set. Loops get NO special handling — body
+  checked once against the entry set, no fixed-point/simulation; an
+  illegal edge in a loop body fails regardless of iteration count.
+  Unprovable = compile error, never a silent runtime fallback.
+- Spec §4.4b written (tuck-spec.md). ROADMAP Missing item added — scoped
+  as its own implementation pass (touches the checker's core binding/flow
+  model), not folded into the smaller TOUR-GAPS fixes. Not implemented.

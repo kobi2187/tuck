@@ -400,8 +400,65 @@ let s = MqttSession.Connected {..}      # compile error — sealed
 let s = MqttSession.Connected [unsafe] {..}  # allowed with explicit escape
 ```
 
-The compiler verifies that every function returning a sealed sum type only produces
-variants reachable from its input variant via the declared transition graph.
+`[sealed]` is narrow: it only restricts *direct construction* syntax to the
+initial variant. It is independent of — and much smaller than — static
+transition checking below, which applies to every type that declares
+`transitions:`, sealed or not.
+
+### 4.4b Static Transition Checking — `Type@Variant`
+
+A value of a type that declares `transitions:` is always typed not just as
+`Type`, but as `Type@Variant` — the SET of variants it could statically be
+in at that point. This is the real type; bare `Type` is shorthand for the
+full set of all declared variants (no narrowing information yet). A fresh
+construction (`{...} Type.Variant`) narrows to the single variant
+constructed. `@Variant` is compiler notation for diagnostics and this
+spec — it is never written in `.tuck` source.
+
+**A new variant is never assigned from scratch onto a tracked var** — a
+plain reassignment that changes the tracked variant is checked exactly
+like a transition, against the same table, at compile time. There is no
+separate `transitionTo` call for the user to write; the compiler proves
+the edge itself wherever the change happens:
+
+```tuck
+var d = Door.Closed              # d: Door@Closed
+d = {} Door.Open                 # checked: Closed -> Open must be in the
+                                  # table. Legal here -> d: Door@Open
+```
+
+**Merging** (branches, loop bodies) UNIONS the possible-variant sets —
+narrowing is never discarded to bare `Type`:
+
+```tuck
+var d = Door.Closed              # d: Door@Closed
+if cond:
+  d = {} Door.Open                # this arm: Door@Open
+# after the if (no else): Door@{Closed | Open}
+```
+
+A transition attempted against a set `@{A | B}` is legal only if the
+target is reachable from EVERY member of the set (the edge must exist
+from `A` and from `B`). Loops get no special treatment — the loop body is
+checked once against the entry set, same as any other block; there is no
+fixed-point iteration or loop simulation. A bogus edge inside a loop body
+fails at that transition site regardless of how many times the loop could
+run.
+
+**Function boundaries carry the narrowing, not the signature.** A fn's
+declared param/return type stays the general `Type` (no `@Variant` in
+signatures) — but the checker still knows, at each call site, which set
+the argument value carried, and checks any transition inside the callee's
+body against that set. A callee's return narrows the caller's result only
+when the checker can trace it to a construction site (a literal
+`{...} Type.Variant`, or a variable whose set is known); an opaque return
+(e.g. relayed straight through from an untraceable source) yields the
+unnarrowed full-variant set at the call site.
+
+**No implicit runtime fallback, ever.** If the checker cannot determine a
+set precisely enough to prove a transition legal, it is a compile error —
+never a silent drop to a runtime check. (A future explicit escape hatch,
+symmetrical to `[unsafe]` on sealed construction, is not yet designed.)
 
 ### 4.5 Type Composition
 
