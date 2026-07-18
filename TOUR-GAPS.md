@@ -57,17 +57,14 @@ first — duplicating payload knowledge at every call site. Wants a ruling:
 `transitionTo` keyed by kind + payload args, or a per-edge generated fn
 (`p toPlaying {position: 0}`).
 
-## 5. Can't react to WHICH error occurred
+## 5. ~~Can't react to WHICH error occurred~~ FIXED 2026-07-13
 
-```tuck
-match r.err:
-  Empty: …      # checker: OK; emitted: uint16 vs enum — invalid Nim
-```
-
-`.err` is an untyped 16-bit code at runtime; the declared error enum
-never comes back out. The whole point of `[error: ParseError]` is lost at
-the handling site. Known backlog ("enum-typed comparisons later") — this
-tour hit it immediately in the most natural error-handling paragraph.
+`match r.err` is now fully typed: arms validate against the producer's
+declared `[error: ...]` enums (typos and cross-enum ambiguity caught),
+and compile to hashed id constants. Error ids are namespaced —
+`"module/Enum.Variant"` is the hash input — with a program-wide
+compile-time collision check, and debug builds embed a reverse table so
+the unhandled report prints the NAME, not a hex code.
 
 ## 6. ~~`const` can't hold unit values~~ FIXED 2026-07-13
 

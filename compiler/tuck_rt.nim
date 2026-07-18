@@ -148,17 +148,17 @@ import std/[os, times, syncio]
 proc readFile*(path: string): TuckResult[tuple[content: string]] =
   try:
     if not fileExists(path):
-      return terr[tuple[content: string]](errCode("FsError.NotFound"))
+      return terr[tuple[content: string]](errCode("fs/FsError.NotFound"))
     tok((content: syncio.readFile(path)))
   except IOError, OSError:
-    terr[tuple[content: string]](errCode("FsError.IoFailed"))
+    terr[tuple[content: string]](errCode("fs/FsError.IoFailed"))
 
 proc writeFile*(path: string, content: string): TuckResult[tuple[]] =
   try:
     syncio.writeFile(path, content)
     tokVoid()
   except IOError, OSError:
-    terr[tuple[]](errCode("FsError.AccessDenied"))
+    terr[tuple[]](errCode("fs/FsError.AccessDenied"))
 
 proc appendFile*(path: string, content: string): TuckResult[tuple[]] =
   try:
@@ -167,16 +167,16 @@ proc appendFile*(path: string, content: string): TuckResult[tuple[]] =
     f.close()
     tokVoid()
   except IOError, OSError:
-    terr[tuple[]](errCode("FsError.AccessDenied"))
+    terr[tuple[]](errCode("fs/FsError.AccessDenied"))
 
 proc removeFile*(path: string): TuckResult[tuple[]] =
   try:
     if not fileExists(path):
-      return terr[tuple[]](errCode("FsError.NotFound"))
+      return terr[tuple[]](errCode("fs/FsError.NotFound"))
     os.removeFile(path)
     tokVoid()
   except OSError:
-    terr[tuple[]](errCode("FsError.AccessDenied"))
+    terr[tuple[]](errCode("fs/FsError.AccessDenied"))
 
 proc fileExists*(path: string): bool = os.fileExists(path)
 
@@ -187,9 +187,9 @@ proc readLine*(): TuckResult[tuple[line: string]] =
   try:
     tok((line: stdin.readLine()))
   except EOFError:
-    terr[tuple[line: string]](errCode("IoError.EndOfInput"))
+    terr[tuple[line: string]](errCode("io/IoError.EndOfInput"))
   except IOError:
-    terr[tuple[line: string]](errCode("IoError.IoFailed"))
+    terr[tuple[line: string]](errCode("io/IoError.IoFailed"))
 
 proc argCount*(): tuple[count: int] = (count: paramCount())
 proc argAt*(index: int): tuple[arg: string] = (arg: paramStr(index))

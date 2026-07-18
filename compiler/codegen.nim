@@ -18,6 +18,7 @@ type
     errPolicy: string     # from the errors declaration; "" = strict
     realModules: Table[string, Module]  # imported modules emitted as own Nim files
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
+    moduleName: string    # error codes hash over "module/Enum.Variant"
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -147,6 +148,17 @@ proc isErrEnumRef(m: Module, e: Expr): bool =
        d.typeBody != nil and d.typeBody.kind == tkSum:
       return true
   false
+
+# Error ids are namespaced: the hash input is "module/Enum.Variant", where
+# module is the enum's ORIGIN (imported enums carry it on the marker).
+proc errNameFor(ctx: CodegenCtx, enumName, variant: string): string =
+  var origin = ctx.moduleName
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkType and d.name == enumName:
+      if d.span.file.startsWith(ImportedTypeMarker & ":"):
+        origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
+      break
+  origin & "/" & enumName & "." & variant
 
 proc lookupFnParams(m: Module, name: string): seq[string] =
   for d in m.decls:
@@ -471,7 +483,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     let rv = e.raiseVal
     if isErrEnumRef(m, rv):
       "return terr[" & ctx.retInnerNim & "](errCode(\"" &
-        rv.receiver.name & "." & rv.fieldName & "\"))"
+        ctx.errNameFor(rv.receiver.name, rv.fieldName) & "\"))"
     else:
       "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv, m) & "))"
   of exkChain:
@@ -740,10 +752,26 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     if e.subject != nil:
       let subjectStr = ctx.genExpr(e.subject)
       var cases: seq[string]
+      var errMatch = false
+      var hasWild = false
       for arm in e.arms:
-        let patStr = genPatternStr(arm.pattern)
+        if arm.pattern != nil and arm.pattern.kind == pkWild: hasWild = true
+        if arm.pattern != nil and arm.pattern.kind == pkVar and
+           "." in arm.pattern.name:
+          errMatch = true
+      for arm in e.arms:
+        var patStr = genPatternStr(arm.pattern)
+        if arm.pattern != nil and arm.pattern.kind == pkVar and
+           "." in arm.pattern.name:
+          # checker-qualified error variant: compare against the hashed id
+          let dot = arm.pattern.name.find(".")
+          patStr = "errCode(\"" & ctx.errNameFor(
+            arm.pattern.name[0 ..< dot], arm.pattern.name[dot+1 .. ^1]) & "\")"
         let bodyStr = ctx.genExpr(arm.body)
         cases.add("  of " & patStr & ":\n    " & bodyStr)
+      if errMatch and not hasWild:
+        # the code space is uint16 — the declared variants never cover it
+        cases.add("  else: discard")
       return "(case " & subjectStr & "\n" & cases.join("\n") & ")"
     else:
       return "discard"
@@ -754,7 +782,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     let rv = e.raiseVal
     if isErrEnumRef(ctx.module, rv):
       "return terr[" & ctx.retInnerNim & "](errCode(\"" &
-        rv.receiver.name & "." & rv.fieldName & "\"))"
+        ctx.errNameFor(rv.receiver.name, rv.fieldName) & "\"))"
     else:
       "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
   of exkChain:
@@ -1196,7 +1224,7 @@ proc genRegistry(ctx: var CodegenCtx, d: Decl): string =
 
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   if d == nil: return ""
-  if d.kind == dkType and d.span.file == ImportedTypeMarker:
+  if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; the Nim import brings it in
   case d.kind
   of dkFn:
@@ -1300,9 +1328,28 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
   of dkErrors:
     # Global handler: rt logger first (errors are always visible), then the
-    # user's handler body.
-    var res = "proc tuck_unhandled*(code: uint16, site: string) =\n" &
-              "  tuckReportUnhandled(code, site)\n"
+    # user's handler body. When declared error enums exist, a reverse table
+    # (hash -> "module/Enum.Variant") makes the report name the error.
+    var errNames: seq[string]
+    for td in ctx.module.decls:
+      if td == nil or td.kind != dkType: continue
+      if td.typeBody == nil or td.typeBody.kind != tkSum: continue
+      var fieldless = true
+      for v in td.typeBody.variants:
+        if v.fields.len > 0: fieldless = false
+      if not fieldless: continue
+      for v in td.typeBody.variants:
+        errNames.add(ctx.errNameFor(td.name, v.name))
+    var res = ""
+    if errNames.len > 0:
+      res.add("proc tuckErrName*(code: uint16): string =\n  case code\n")
+      for n in errNames:
+        res.add("  of errCode(\"" & n & "\"): \"" & n & "\"\n")
+      res.add("  else: \"code \" & $code\n")
+    res.add("proc tuck_unhandled*(code: uint16, site: string) =\n" &
+            "  tuckReportUnhandled(code, site)\n")
+    if errNames.len > 0:
+      res.add("  stderr.writeLine(\"TUCK ERROR NAME: \" & tuckErrName(code))\n")
     if d.errHandler != nil and d.errHandler.fnBody != nil:
       let oldVars = ctx.definedVars
       ctx.definedVars.incl("code")
@@ -1348,9 +1395,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
 
 proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
-              realModules = initTable[string, Module]()): string =
+              realModules = initTable[string, Module](),
+              moduleName = "main"): string =
   var ctx = CodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
-                       realModules: realModules)
+                       realModules: realModules, moduleName: moduleName)
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       ctx.errPolicy = d.policyName

@@ -101,11 +101,11 @@ public static class Rt
 	// ---------- stdlib externs (std/*.tuck) ----------
 	// Error codes are FNV-1a hashes precomputed by the emitter; these values
 	// mirror errCode("...") in tuck_rt.nim.
-	const uint16 cFsNotFound = 0x45A7;     // FsError.NotFound
-	const uint16 cFsIoFailed = 0x9E2E;     // FsError.IoFailed
-	const uint16 cFsAccessDenied = 0x65BD; // FsError.AccessDenied
-	const uint16 cIoEndOfInput = 0x271D;   // IoError.EndOfInput
-	const uint16 cIoIoFailed = 0xC02F;     // IoError.IoFailed
+	const uint16 cFsNotFound = 0xA5C5;     // fs/FsError.NotFound
+	const uint16 cFsIoFailed = 0x4490;     // fs/FsError.IoFailed
+	const uint16 cFsAccessDenied = 0x8336; // fs/FsError.AccessDenied
+	const uint16 cIoEndOfInput = 0x3473;   // io/IoError.EndOfInput
+	const uint16 cIoIoFailed = 0x1AAD;     // io/IoError.IoFailed
 
 	public static TuckResult<FsContent> readFile(StringView path)
 	{

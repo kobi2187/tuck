@@ -168,7 +168,7 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
   for lm in prog:
     var own: seq[Decl]
     for d in lm.m.decls:
-      if d != nil and d.kind == dkType and d.span.file != ImportedTypeMarker:
+      if d != nil and d.kind == dkType and not d.span.file.startsWith(ImportedTypeMarker):
         own.add(d)
     typesByName[lm.name] = own
   for i in 0 ..< prog.len:
@@ -177,7 +177,7 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
         let marked = Decl(kind: dkType, name: td.name, generics: td.generics,
                           typeBody: td.typeBody, typeMembers: td.typeMembers,
                           span: Span(line: td.span.line, col: td.span.col,
-                                     file: ImportedTypeMarker))
+                                     file: ImportedTypeMarker & ":" & imp))
         prog[i].m.decls.insert(marked, 0)
 
 proc loadProgram*(entryPath: string): seq[LoadedModule] =

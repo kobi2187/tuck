@@ -998,6 +998,40 @@ fn main() -> void:
   return
 """
 
+# ---------- error handling: match over r.err (typed by the declared enums) ----------
+
+const errPrelude = """
+type ParseError:
+  | Empty
+  | TooLong
+
+fn parseTitle({raw: str}) -> !str [io, error: ParseError]:
+  if raw == "":
+    err Empty
+  return raw
+
+"""
+
+expectOk "match r.err validates arms against the declared enum", errPrelude & """
+fn use({raw: str}) -> int [io]:
+  let r = {raw} parseTitle
+  if r.ok:
+    return 0
+  match r.err:
+    Empty: return 1
+    TooLong: return 2
+"""
+
+expectError "match r.err catches a variant typo", errPrelude & """
+fn use({raw: str}) -> int [io]:
+  let r = {raw} parseTitle
+  if r.ok:
+    return 0
+  match r.err:
+    Emtpy: return 1
+    TooLong: return 2
+""", "not a variant of ParseError"
+
 expectOk "declarations-only module is fine", """
 type Server:
   port: int

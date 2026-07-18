@@ -26,6 +26,7 @@ type
     errPolicy: string     # from the errors declaration; "" = strict
     realModules: Table[string, Module]  # imported modules emitted as own Beef files
     staticAsserts: seq[string]  # collected into one `static this()` block
+    moduleName: string    # error codes hash over "module/Enum.Variant"
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
 
 proc repeat(s: string, n: int): string =
@@ -527,12 +528,22 @@ proc armValue(ctx: var BeefCodegenCtx, e: Expr): string =
   return ctx.genBeefExpr(e)
 
 # exkRaise: err X — early-return an error result
+# Error ids hash over "module/Enum.Variant" — module = the enum's origin
+proc errNameFor(ctx: BeefCodegenCtx, enumName, variant: string): string =
+  var origin = ctx.moduleName
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkType and d.name == enumName:
+      if d.span.file.startsWith(ImportedTypeMarker & ":"):
+        origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
+      break
+  origin & "/" & enumName & "." & variant
+
 proc genRaise(ctx: var BeefCodegenCtx, e: Expr): string =
   let rv = e.raiseVal
   let inner = if ctx.retInnerBeef != "": ctx.retInnerBeef else: "TuckUnit"
   if isErrEnumRef(ctx.module, rv):
     "return terr<" & inner & ">(" &
-      errCodeLit(rv.receiver.name & "." & rv.fieldName) & ")"
+      errCodeLit(ctx.errNameFor(rv.receiver.name, rv.fieldName)) & ")"
   else:
     "return terr<" & inner & ">((uint16)(" & ctx.genBeefExpr(rv) & "))"
 
@@ -567,15 +578,30 @@ proc genMatchStmt(ctx: var BeefCodegenCtx, e: Expr): string =
   var cases: seq[string]
   let oldIndent = ctx.indent
   ctx.indent += 1
+  var errMatch = false
+  var hasWild = false
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkWild: hasWild = true
+    if arm.pattern != nil and arm.pattern.kind == pkVar and
+       "." in arm.pattern.name: errMatch = true
   for arm in e.arms:
     let patStr = genPatternStr(arm.pattern)
     let bodyStr = ctx.genBeefExpr(arm.body)
+    var caseVal = ""
+    if arm.pattern != nil and arm.pattern.kind == pkVar and
+       "." in arm.pattern.name:
+      let dot = arm.pattern.name.find(".")
+      caseVal = errCodeLit(ctx.errNameFor(arm.pattern.name[0 ..< dot],
+                                          arm.pattern.name[dot+1 .. ^1]))
     let caseLabel = if patStr == "_": "default:"
+                    elif caseVal != "": "case " & caseVal & ":"
                     else: "case " & ctx.patternValue(patStr) & ":"
     if arm.body != nil and arm.body.kind == exkBlock:
       cases.add(ind & caseLabel & "\n" & bodyStr)
     else:
       cases.add(ind & caseLabel & " " & bodyStr & ";")
+  if errMatch and not hasWild:
+    cases.add(ind & "default: break;")
   ctx.indent = oldIndent
   return ind & "switch (" & subjectStr & ")\n" & ind & "{\n" &
          cases.join("\n") & "\n" & ind & "}"
@@ -591,7 +617,13 @@ proc genMatchExpr(ctx: var BeefCodegenCtx, e: Expr): string =
     if patStr == "_" or i == e.arms.len - 1:
       res.add(bodyStr)
       break
-    res.add("((" & subjectStr & " == " & ctx.patternValue(patStr) & ") ? " &
+    var cmpVal = ctx.patternValue(patStr)
+    if arm.pattern != nil and arm.pattern.kind == pkVar and
+       "." in arm.pattern.name:
+      let dot = arm.pattern.name.find(".")
+      cmpVal = errCodeLit(ctx.errNameFor(arm.pattern.name[0 ..< dot],
+                                         arm.pattern.name[dot+1 .. ^1]))
+    res.add("((" & subjectStr & " == " & cmpVal & ") ? " &
             bodyStr & " : ")
     closing.inc
   res.add(")".repeat(closing))
@@ -1336,7 +1368,7 @@ proc genRtForwarder(ctx: var BeefCodegenCtx, mem: Decl): string =
 
 proc genBeefDecl*(ctx: var BeefCodegenCtx, d: Decl): string =
   if d == nil: return ""
-  if d.kind == dkType and d.span.file == ImportedTypeMarker:
+  if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; that module's Beef file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind
@@ -1540,11 +1572,12 @@ using static TuckRt.Rt;
 """
 
 proc emitBeef*(m: Module,
-               realModules = initTable[string, Module]()): string =
+               realModules = initTable[string, Module](),
+               moduleName = "main"): string =
   var ctx = BeefCodegenCtx(definedVars: initHashSet[string](),
                            fieldVars: initHashSet[string](),
                            fieldPrefix: "this.", indent: 1, module: m,
-                           realModules: realModules)
+                           realModules: realModules, moduleName: moduleName)
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       ctx.errPolicy = d.policyName
@@ -1579,7 +1612,7 @@ proc emitBeefModule*(name: string, m: Module,
   var ctx = BeefCodegenCtx(definedVars: initHashSet[string](),
                            fieldVars: initHashSet[string](),
                            fieldPrefix: "this.", indent: 1, module: m,
-                           realModules: realModules,
+                           realModules: realModules, moduleName: name,
                            modPrefix: name.replace("-", "_") & "_")
   for d in m.decls:
     if d != nil and d.kind == dkErrors:

@@ -151,6 +151,58 @@ rc=0; "$cht/out/t" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: chain-tail program exit $rc, want 42"; exit 1; }
 rm -rf "$cht"
 
+# match over r.err: arms compile to hashed code constants, branch correctly
+em="tests/.smoke_errmatch"
+rm -rf "$em" && mkdir -p "$em"
+cat > "$em/t.tuck" <<'EOF'
+import sys
+
+type ParseError:
+  | Empty
+  | TooLong
+
+fn parseTitle({raw: str}) -> !str [io, error: ParseError]:
+  if raw == "":
+    err Empty
+  return raw
+
+fn main() -> void [io]:
+  let r = {raw: ""} parseTitle
+  if r.ok:
+    0 sys::exit
+  match r.err:
+    Empty: 42 sys::exit
+    TooLong: 7 sys::exit
+EOF
+./tuck build "$em/t.tuck" -o:"$em/out" > /dev/null
+rc=0; "$em/out/t" || rc=$?
+[ "$rc" -eq 42 ] || { echo "FAIL: err-match branch wrong exit $rc, want 42"; exit 1; }
+rm -rf "$em"
+
+# unhandled report names the error via the reverse table (debug builds)
+en="tests/.smoke_errname"
+rm -rf "$en" && mkdir -p "$en"
+cat > "$en/t.tuck" <<'TUCKEOF'
+errors [policy: continue]:
+  on unhandled({code: u16, site: str}):
+    ...
+
+type ParseError:
+  | Empty
+
+fn parseTitle({raw: str}) -> !str [io, error: ParseError]:
+  if raw == "":
+    err Empty
+  return raw
+
+fn main() -> void [io]:
+  {raw: ""} parseTitle
+  return
+TUCKEOF
+./tuck build "$en/t.tuck" -o:"$en/out" > /dev/null
+"$en/out/t" 2>&1 | grep -q "TUCK ERROR NAME: t/ParseError.Empty" || { echo "FAIL: unhandled report missing error name"; exit 1; }
+rm -rf "$en"
+
 # top-level statements are declarations-only violations; library builds
 lib="tests/.smoke_lib"
 rm -rf "$lib" && mkdir -p "$lib"

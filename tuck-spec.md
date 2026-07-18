@@ -554,6 +554,17 @@ fn loadFeed({path: str}) -> !{feed: Feed} [io, error: FsError | NetError]:
 `{ok, err, value}`. Re-raising an existing code is `err r.err`. The compiler
 validates every raise site against the declared `[error: ...]` list.
 
+**Error ids** are 16-bit FNV-1a hashes over `"module/Enum.Variant"` — the
+namespace rides inside the id, so the same enum name in two modules gets
+distinct codes, and codes are stable across builds (name-derived, no
+central table). The compiler checks the whole program for hash collisions
+(a collision is a compile error naming both ids). **Handling**:
+`match r.err` arms are variants of the producer's declared enums —
+validated (typo, cross-enum ambiguity) and compiled to id-constant
+comparisons; `_` is the catch-all. Debug builds embed a reverse table
+(id → name) so unhandled-error reports print `module/Enum.Variant`
+instead of a raw code.
+
 **Handling is unwrapping, and it is scoped.** A result flows **whole** until
 it is inspected. `.ok` and `.err` are readable anywhere; `.value` is legal
 only inside that result's `if r.ok:` guard — the narrowing holds within the

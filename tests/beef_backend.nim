@@ -133,7 +133,7 @@ proc compileToBeef(path: string): tuple[base, code: string] =
   for lm in prog[0 ..< prog.high]:
     writeFile(outDir / ("mod_" & lm.name & ".bf"),
               emitBeefModule(lm.name, lm.m, realModules))
-  let code = emitBeef(prog[^1].m, realModules)
+  let code = emitBeef(prog[^1].m, realModules, baseName)
   writeFile(outDir / (baseName & ".bf"), code)
   (baseName, code)
 

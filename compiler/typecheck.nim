@@ -51,6 +51,9 @@ type
     currentErrTypes: seq[string]     # [error: A | B] of the fn being checked
     okNarrowed: HashSet[string]      # results guarded by `if x.ok` in scope:
                                      # .value is legal only under the guard
+    varErrTypes: Table[string, seq[string]]  # result vars -> the declared
+                                     # [error: ...] enums of the fn that
+                                     # produced them (match r.err typing)
     varVariants: Table[string, seq[string]]  # spec 4.4b: per-var possible-
                                      # variant SET for transitions-declared
                                      # types (Type@Variant). Forked/unioned
@@ -511,6 +514,37 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   if e.subject != nil and e.subject.kind == exkVar:
     trackedType = tc.transType(subjT)
     if trackedType != "": trackedVar = e.subject.name
+  # `match r.err` — arms are variants of the producer's declared error
+  # enums: validated (typo/ambiguity) and rewritten to Enum.Variant so
+  # codegen emits the hashed code constants
+  var errEnums: seq[string]
+  if e.subject != nil and e.subject.kind == exkField and
+     e.subject.fieldName == "err" and e.subject.receiver != nil and
+     e.subject.receiver.kind == exkVar and
+     tc.varErrTypes.hasKey(e.subject.receiver.name):
+    errEnums = tc.varErrTypes[e.subject.receiver.name]
+  if errEnums.len > 0:
+    for arm in e.arms.mitems:
+      if arm.pattern == nil or arm.pattern.kind == pkWild: continue
+      if arm.pattern.kind != pkVar:
+        fail("Type Error: match over an error code takes variant names " &
+             "of " & errEnums.join(" | ") & " (or _)", arm.span)
+      let aname = arm.pattern.name
+      if "." in aname: continue  # already qualified
+      var owners: seq[string]
+      for en in errEnums:
+        if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
+          for v in tc.typeDecls[en].variants:
+            if v.name == aname: owners.add(en)
+      if owners.len == 0:
+        fail("Type Error: '" & aname & "' is not a variant of " &
+             errEnums.join(" | "), arm.span)
+      if owners.len > 1:
+        fail("Type Error: '" & aname & "' is ambiguous (" &
+             owners.join(", ") & ") — qualify it: " & owners[0] & "." &
+             aname, arm.span)
+      arm.pattern = Pattern(span: arm.pattern.span, kind: pkVar,
+                            name: owners[0] & "." & aname)
   let entryVariants = tc.varVariants
   var mergedExit: Table[string, seq[string]]
   var firstArm = true
@@ -970,6 +1004,16 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
       let tn = tc.transType(valT)
       if tn != "":
         tc.varVariants[e.target.name] = tc.exprVariants(tn, e.assignVal)
+      # a result binding remembers its producer's declared error enums,
+      # so `match r.err` can be typed
+      if isWrapper(valT) and e.assignVal != nil and
+         e.assignVal.kind == exkCall and e.assignVal.callee != nil and
+         e.assignVal.callee.kind == exkVar:
+        for fd in tc.module.decls:
+          if fd != nil and fd.kind == dkFn and
+             fd.name == e.assignVal.callee.name and
+             fd.fnErrorTypes.len > 0:
+            tc.varErrTypes[e.target.name] = fd.fnErrorTypes
     else:
       let targetT = tc.synthesize(e.target)
       # spec 4.4b: the RHS of a checked transition assignment may construct
@@ -1488,8 +1532,38 @@ proc moduleSigs*(m: Module): seq[SigInfo] =
 # entry module's SHORTCUTS list is returned.
 # `preSigs`: modules resolved from the signature index — typechecked in an
 # earlier run and unchanged since, so only their signatures participate.
+# Mirror of tuck_rt's errCode: FNV-1a over "module/Enum.Variant", folded to
+# 16 bits. Used only for the program-wide collision check — a hash collision
+# between two error names would silently alias two errors at runtime.
+proc fnv16(name: string): uint16 =
+  var h = 2166136261'u32
+  for c in name:
+    h = (h xor uint32(c)) * 16777619'u32
+  uint16((h xor (h shr 16)) and 0xFFFF'u32)
+
+proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## Every declared error id ("module/Enum.Variant") must hash uniquely
+  ## across the whole program. The forward table is built here; a collision
+  ## is a compile error with a rename pointer.
+  var seen = initTable[uint16, string]()
+  for (name, path, m) in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkType: continue
+      if d.span.file.startsWith(ImportedTypeMarker): continue  # origin owns it
+      if d.typeBody == nil or d.typeBody.kind != tkSum: continue
+      for v in d.typeBody.variants:
+        if v.fields.len > 0: continue  # error enums are fieldless
+        let full = name & "/" & d.name & "." & v.name
+        let code = fnv16(full)
+        if seen.hasKey(code) and seen[code] != full:
+          fail("Error Id Collision: '" & full & "' and '" & seen[code] &
+               "' hash to the same 16-bit code (0x" & $code &
+               ") — rename one variant", d.span)
+        seen[code] = full
+
 proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
                        preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
+  checkErrCodeCollisions(mods)
   var sigsByMod = initTable[string, Table[string, FnSig]]()
   var pendByMod = initTable[string, Table[string, Span]]()
   var importsByMod = initTable[string, seq[string]]()

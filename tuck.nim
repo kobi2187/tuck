@@ -189,7 +189,7 @@ when isMainModule:
       let isEntry = lm.path == prog[^1].path
       let outName = if isEntry: base else: lm.name
       let nimPath = outDir / (outName & ".nim")
-      writeFile(nimPath, emitNim(lm.m, rtImport, realModules))
+      writeFile(nimPath, emitNim(lm.m, rtImport, realModules, outName))
       echo "wrote ", nimPath
     let m = prog[^1].m
     var beefDeps: seq[string]
@@ -200,7 +200,7 @@ when isMainModule:
         echo "wrote ", modBfPath
         beefDeps.add(lm.name)
       let bfPath = outDir / (base & ".bf")
-      writeFile(bfPath, emitBeef(m, realModules))
+      writeFile(bfPath, emitBeef(m, realModules, base))
       echo "wrote ", bfPath
     if cmd in ["build", "b"]:
       # entry point: `fn main` runs when the binary starts. No main =

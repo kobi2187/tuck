@@ -681,3 +681,26 @@ Next candidates (Beef):
   evaluated the call at compile time); `const timeout = 5.ms` builds and
   runs. TOUR-GAPS gap 6 closed. Beef ceiling unchanged (literal→const,
   else static field, static-ctor-time init).
+
+## 2026-07-13 — typed error handling: match r.err + namespaced ids + tables
+
+- `match r.err` fully wired (TOUR-GAPS #5 closed): result bindings
+  remember their producer's declared [error:] enums (varErrTypes);
+  match arms validate against them (typo + cross-enum ambiguity, same
+  rules as raise sites) and are checker-rewritten to qualified names;
+  codegen emits hashed id constants (`of errCode("mod/Enum.V")`) with an
+  auto `else: discard` (uint16 space is never variant-covered). Runtime
+  smoke: err-match branches to exit 42 through the hash comparison.
+- Error ids namespaced per user ruling: hash input = "module/Enum.Variant"
+  (origin module; imported enums carry origin on the <imported:name>
+  marker). Both emitters + both runtimes updated (tuck_rt.nim strings,
+  tuck_rt.bf hex constants recomputed). emitNim/emitBeef gained a
+  moduleName param.
+- Tables: program-wide compile-time COLLISION check (fnv16 mirror in the
+  checker; a 16-bit collision between two error names = compile error
+  naming both). Reverse table (id → name) emitted into builds with an
+  errors decl — the generated tuck_unhandled prints
+  "TUCK ERROR NAME: module/Enum.Variant" (smoke-verified).
+- All suites green. Ceilings: `.err` equality comparisons (only match is
+  typed); Beef reverse-table diagnostics (Nim only); SigInfo still lacks
+  error lists (cross-module err-match falls back to untyped).

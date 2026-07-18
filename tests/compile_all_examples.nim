@@ -105,8 +105,8 @@ proc compileExample(path: string) =
   for lm in prog[0 ..< prog.high]:
     realModules[lm.name] = lm.m
   for lm in prog[0 ..< prog.high]:
-    writeFile(outDir / (lm.name & ".nim"), emitNim(lm.m, realModules = realModules))
-  let nimCode = emitNim(m, realModules = realModules)
+    writeFile(outDir / (lm.name & ".nim"), emitNim(lm.m, realModules = realModules, moduleName = lm.name))
+  let nimCode = emitNim(m, realModules = realModules, moduleName = baseName)
   writeFile(outDir / (baseName & ".nim"), nimCode)
 
   let beefCode = emitBeef(m)
