@@ -413,6 +413,17 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     for f in e.fields:
       parts.add(f[0] & ": " & ctx.genExpr(f[1], m))
     "(" & parts.join(", ") & ")"
+  of exkList:
+    var items: seq[string]
+    for it in e.items: items.add(ctx.genExpr(it, m))
+    "@[" & items.join(", ") & "]"
+  of exkFor:
+    let iterStr = if e.iter != nil and e.iter.kind == pkVar: e.iter.name else: "_"
+    let oldIndent = ctx.indent
+    ctx.indent += 1
+    let bodyStr = ctx.genExpr(e.body, m)
+    ctx.indent = oldIndent
+    ind & "for " & iterStr & " in " & ctx.genExpr(e.iterable, m) & ":\n" & bodyStr
   of exkBinary:
     let opStr = case e.binOp
                 of boAdd: "+"
@@ -432,6 +443,11 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     if e.binOp == boOr and e.right.kind == exkReturn:
       let tmpName = "or_tmp_" & $ctx.definedVars.len
       return "(block: let " & tmpName & " = " & ctx.genExpr(e.left, m) & "; if not " & tmpName & ": " & ctx.genExpr(e.right, m) & "; " & tmpName & ")"
+    if e.binOp == boAdd and e.left != nil and e.left.ty != nil and
+       e.left.ty.kind == tkNamed and e.left.ty.name in ["str", "string"]:
+      # `+` on strings is concatenation — through the rt layer, not a
+      # hardcoded backend operator
+      return "tuckConcat(" & ctx.genExpr(e.left, m) & ", " & ctx.genExpr(e.right, m) & ")"
     return "(" & ctx.genExpr(e.left, m) & " " & opStr & " " & ctx.genExpr(e.right, m) & ")"
   of exkUnary:
     let opStr = case e.unaryOp
@@ -446,7 +462,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     for s in e.stmts:
       let stmtCode = ctx.genExpr(s, m)
       if stmtCode != "":
-        if s.kind == exkChain:
+        if s.kind in {exkChain, exkFor}:
           lines.add(stmtCode)  # carries its own indentation (multi-line)
         else:
           lines.add(ind & "  " & stmtCode)
@@ -680,6 +696,17 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     for f in e.fields:
       parts.add(f[0] & ": " & ctx.genExpr(f[1]))
     "(" & parts.join(", ") & ")"
+  of exkList:
+    var items: seq[string]
+    for it in e.items: items.add(ctx.genExpr(it))
+    "@[" & items.join(", ") & "]"
+  of exkFor:
+    let iterStr = if e.iter != nil and e.iter.kind == pkVar: e.iter.name else: "_"
+    let oldIndent = ctx.indent
+    ctx.indent += 1
+    let bodyStr = ctx.genExpr(e.body)
+    ctx.indent = oldIndent
+    ind & "for " & iterStr & " in " & ctx.genExpr(e.iterable) & ":\n" & bodyStr
   of exkBinary:
     let opStr = case e.binOp
                 of boAdd: "+"
@@ -696,6 +723,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
                 of boAnd: "and"
                 of boOr: "or"
                 of boXor: "xor"
+    if e.binOp == boAdd and e.left != nil and e.left.ty != nil and
+       e.left.ty.kind == tkNamed and e.left.ty.name in ["str", "string"]:
+      return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
     return "(" & ctx.genExpr(e.left) & " " & opStr & " " & ctx.genExpr(e.right) & ")"
   of exkUnary:
     let opStr = case e.unaryOp
@@ -720,7 +750,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         stmtCode = "(let " & tn & " = " & stmtCode & "; (if not " & tn &
                    ".ok: " & onErr & "))"
       if stmtCode != "":
-        if s.kind in {exkIf, exkBlock, exkChain}:
+        if s.kind in {exkIf, exkBlock, exkChain, exkFor}:
           lines.add(stmtCode)  # these nodes carry their own indentation
         else:
           lines.add(ind & "  " & stmtCode)

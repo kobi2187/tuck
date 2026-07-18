@@ -912,6 +912,15 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
       # module-qualified sketch stub: fn http::get(...)
       discard p.advance()
       name = name & "::" & p.expect(tkIdent, "Expected identifier after '::'").value
+    # generic sig: fn toStr[T](...) — Uppercase-first idents, like fn decls
+    var sigGenerics: seq[string]
+    if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+       p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A' .. 'Z'}:
+      discard p.advance()
+      while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+        sigGenerics.add(p.expect(tkIdent, "Expected type parameter").value)
+        if p.current().kind == tkComma: discard p.advance()
+      discard p.expect(tkRBracket)
     discard p.expect(tkLParen)
     var params: seq[Param]
     if p.current().kind != tkRParen:
@@ -973,6 +982,7 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
           discard p.advance()
       discard p.expect(tkRBracket)
     result.add(Decl(span: spDecl, kind: dkFn, name: name, fnParams: params,
+                    fnGenerics: sigGenerics,
                     fnReturnType: retType, fnEffects: sigEffects, fnBody: nil,
                     fnErrorTypes: sigErrTypes))
     if p.current().kind == tkNewline:

@@ -1,0 +1,3 @@
+# std/str — text conversion. Implemented by tuck_rt.
+extern:
+  fn toStr[T]({value: T}) -> str

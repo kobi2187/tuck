@@ -179,6 +179,36 @@ rc=0; "$em/out/t" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: err-match branch wrong exit $rc, want 42"; exit 1; }
 rm -rf "$em"
 
+# toStr + string concat + list literals + for loops (tour gaps 1-3)
+tg="tests/.smoke_tour123"
+rm -rf "$tg" && mkdir -p "$tg"
+cat > "$tg/t.tuck" <<'TUCKEOF'
+import io
+import str
+import sys
+
+type Episode:
+  minutes: int
+
+fn main() -> void [io]:
+  let name = "tuck"
+  {text: "hello, " + name} io::printLine
+  let n = 42
+  {text: n.toStr} io::printLine
+  let eps = [{minutes: 10} Episode, {minutes: 32} Episode]
+  var total = 0
+  for e in eps:
+    total = total + e.minutes
+  total sys::exit
+TUCKEOF
+./tuck build "$tg/t.tuck" -o:"$tg/out" > /dev/null
+out=$("$tg/out/t"; true)
+rc=0; "$tg/out/t" > /dev/null || rc=$?
+echo "$out" | grep -q "hello, tuck" || { echo "FAIL: concat output"; exit 1; }
+echo "$out" | grep -q "^42$" || { echo "FAIL: toStr output"; exit 1; }
+[ "$rc" -eq 42 ] || { echo "FAIL: list/for sum exit $rc, want 42"; exit 1; }
+rm -rf "$tg"
+
 # unhandled report names the error via the reverse table (debug builds)
 en="tests/.smoke_errname"
 rm -rf "$en" && mkdir -p "$en"

@@ -146,6 +146,20 @@ public static class Rt
 		return File.Exists(path);
 	}
 
+	public static String toStr<T>(T value)
+	{
+		let s = new String();
+		value.ToString(s);
+		return s;
+	}
+
+	public static String concat(StringView a, StringView b)
+	{
+		let s = new String(a);
+		s.Append(b);
+		return s;
+	}
+
 	public static void print(StringView text)
 	{
 		Console.Write(text);

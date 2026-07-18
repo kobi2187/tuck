@@ -7,7 +7,13 @@ hoops even a tiny bit, it's an area for improvement."*
 
 Ordered by how hard they blocked natural expression.
 
-## 1. Cannot print a number — no int→str, no interpolation
+## 1. ~~Cannot print a number~~ FIXED 2026-07-13 — generic `toStr`
+
+`std/str` ships `fn toStr[T]({value: T}) -> str` (one generic extern over
+the runtime): `{text: n.toStr} io::printLine` prints 42. Interpolation
+remains future sugar.
+
+### (original finding)
 
 ```tuck
 let n = 42
@@ -20,7 +26,13 @@ already lists radix format as extern `strutils`), ideally interpolation.
 **This blocked the hello-world of arithmetic.** Runtime verification in
 this project uses *exit codes* because of this gap — that's telling.
 
-## 2. String concatenation emits invalid code
+## 2. ~~String concatenation emits invalid code~~ FIXED 2026-07-13 — `+` is concat
+
+`"hello, " + name` works: codegen routes str `+` through the rt layer
+(`tuckConcat` / Beef `concat`) — one abstraction over the backend, not a
+hardcoded operator.
+
+### (original finding)
 
 ```tuck
 let greeting = "hello, " + name   # checker: OK; emitted Nim: `+` on strings — invalid
@@ -31,7 +43,16 @@ Checker accepts `str + str` (same-type arithmetic), codegen emits Nim
 for concat (then codegen must map it), or is concat a fn? Either way,
 today it silently produces broken output — worse than an error.
 
-## 3. List literals of constructions emit garbage
+## 3. ~~List literals of constructions emit garbage~~ FIXED 2026-07-13
+
+Root cause: the Nim backend simply had NO `exkList` arm (and, found while
+fixing, NO `exkFor` arm either — for-loops had never been emitted). Both
+added; a list of constructions now sums through a for-loop,
+runtime-verified. The collection API (add/len/...) is deliberately still
+out — it will be designed as Rust-level traits/interfaces in the stdlib
+session.
+
+### (original finding)
 
 ```tuck
 var eps = [{title: "A"} Episode, {title: "B"} Episode]

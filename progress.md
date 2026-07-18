@@ -704,3 +704,19 @@ Next candidates (Beef):
 - All suites green. Ceilings: `.err` equality comparisons (only match is
   typed); Beef reverse-table diagnostics (Nim only); SigInfo still lacks
   error lists (cross-module err-match falls back to untyped).
+
+## 2026-07-13 — tour gaps 1-3: toStr, + as concat, list/for emission
+
+- std/str.tuck: generic extern `fn toStr[T]({value: T}) -> str` over rt
+  `$`/ToString — printing a number is one call now. Sig-block parser
+  (pending/extern) learned generics brackets on the way.
+- `+` on str = concatenation (ruling), routed through the rt layer
+  (tuckConcat / Beef concat) instead of a hardcoded backend operator.
+- TWO missing emitter arms found: exkList AND exkFor had no Nim-backend
+  emission at all (fell to discard; 17's rewrite had dropped the only
+  for-loop, so the gate never saw one). Both added (for = self-indenting
+  statement, both overloads + block sets).
+- cli_smoke: one combined program asserts concat stdout, toStr stdout,
+  and a list-of-constructions summed via for (exit 42). Full matrix
+  green. Seq API deferred to the stdlib traits session (user ruling:
+  Rust-level traits/interfaces).

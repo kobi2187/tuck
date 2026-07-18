@@ -57,6 +57,10 @@ type
     err*: uint16   # app-wide error code; meaningful only when status == tsErr
     value*: T
 
+proc toStr*[T](value: T): string = $value
+
+proc tuckConcat*(a, b: string): string {.inline.} = a & b
+
 proc errCode*(name: static string): uint16 =
   # compile-time FNV-1a, folded to 16 bits; stable across builds, no tables
   var h = 2166136261'u32

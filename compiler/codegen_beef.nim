@@ -705,6 +705,9 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
                 of boAnd: "&&"
                 of boOr: "||"
                 of boXor: "^"
+    if e.binOp == boAdd and e.left != nil and e.left.ty != nil and
+       e.left.ty.kind == tkNamed and e.left.ty.name in ["str", "string"]:
+      return "concat(" & ctx.genBeefExpr(e.left) & ", " & ctx.genBeefExpr(e.right) & ")"
     return "(" & ctx.genBeefExpr(e.left) & " " & opStr & " " & ctx.genBeefExpr(e.right) & ")"
   of exkUnary:
     let opStr = case e.unaryOp
