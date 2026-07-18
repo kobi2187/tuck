@@ -59,11 +59,15 @@ actor Decoder [queue: 8]:
     # A message can arrive in any state, so match narrows first; only
     # states with a declared edge to Decoding may move there.
     match state:
-      Idle: state = {sampleRate: rate} PlayerState.Decoding
-      Paused: state = {sampleRate: rate} PlayerState.Decoding
+      Idle:
+        state = {sampleRate: rate} PlayerState.Decoding
+        SystemEvents.raise PlaybackStarted
+        DAC_CR ..EN {true}
+      Paused:
+        state = {sampleRate: rate} PlayerState.Decoding
+        SystemEvents.raise PlaybackStarted
+        DAC_CR ..EN {true}
       Decoding: ...
-    SystemEvents.raise PlaybackStarted
-    DAC_CR ..EN {true}
 
   on pause() -> void:
     match state:

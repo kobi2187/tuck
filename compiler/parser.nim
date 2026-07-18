@@ -774,7 +774,9 @@ proc parseExpr*(p: var Parser): Expr =
         continue
       let pat = p.parsePattern()
       discard p.expect(tkColon)
-      let body = p.parseExpr()
+      # arm body: a single expression on the same line, or an indented block
+      let body = if p.current().kind == tkNewline: p.parseBlock()
+                 else: p.parseExpr()
       arms.add(MatchArm(pattern: pat, guard: nil, body: body, span: p.getSpan()))
       if p.current().kind == tkNewline:
         discard p.advance()

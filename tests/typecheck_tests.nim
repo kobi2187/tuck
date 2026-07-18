@@ -953,6 +953,21 @@ fn slam({d: Door}) -> void:
   return
 """
 
+expectOk "match arms take indented multi-statement blocks", doorPrelude & """
+fn cycle({d: Door}) -> int:
+  var x = d
+  var n = 0
+  match x:
+    Closed:
+      x = Door.Open
+      n = 1
+    Open:
+      x = Door.Closed
+      n = 2
+    Locked: n = 3
+  return n
+"""
+
 expectOk "transition: fn returning a construction narrows the caller", doorPrelude & """
 fn fresh() -> Door:
   return Door.Closed

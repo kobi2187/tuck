@@ -655,3 +655,13 @@ Next candidates (Beef):
   sealed variants outside a transition assignment still need [unsafe];
   match arms are single-line (parser limitation, hit twice today);
   optional debug-assert emission not done (checker proof stands alone).
+
+## 2026-07-13 — match arms take indented blocks (parser limitation lifted)
+
+- Match arm bodies were single-expression, same-line only (`pat: expr`) —
+  hit twice during the transition-checking work. Parser now mirrors
+  if/for: colon followed by newline → parseBlock (indented multi-statement
+  arm), else the one-line expression. Example 20's play handler rewritten
+  with block arms (side effects live inside the narrowed arm now — better
+  style for the static-transition idiom). New checker test; all suites
+  green.
