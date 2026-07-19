@@ -54,6 +54,7 @@ type
     varErrTypes: Table[string, seq[string]]  # result vars -> the declared
                                      # [error: ...] enums of the fn that
                                      # produced them (match r.err typing)
+    loopDepth: int               # break/continue legality (innermost loop only)
     varVariants: Table[string, seq[string]]  # spec 4.4b: per-var possible-
                                      # variant SET for transitions-declared
                                      # types (Type@Variant). Forked/unioned
@@ -194,6 +195,8 @@ proc scanReturns(tc: TypeChecker, typeName: string, e: Expr,
     for arm in e.arms: tc.scanReturns(typeName, arm.body, acc, exact)
   of exkFor:
     tc.scanReturns(typeName, e.body, acc, exact)
+  of exkWhile:
+    tc.scanReturns(typeName, e.whileBody, acc, exact)
   else: discard
 
 proc fnReturnVariants(tc: TypeChecker, fnName, typeName: string): seq[string] =
@@ -207,8 +210,8 @@ proc fnReturnVariants(tc: TypeChecker, fnName, typeName: string): seq[string] =
       # the implicit tail return is a plain trailing expression
       if d.fnBody.kind == exkBlock and d.fnBody.stmts.len > 0:
         let last = d.fnBody.stmts[^1]
-        if last.kind notin {exkReturn, exkIf, exkMatch, exkFor, exkBlock,
-                            exkAssign}:
+        if last.kind notin {exkReturn, exkIf, exkMatch, exkFor, exkWhile,
+                            exkBreak, exkContinue, exkBlock, exkAssign}:
           let vs = tc.exprVariants(typeName, last)
           if vs.len == 1:
             for v in vs:
@@ -459,6 +462,13 @@ proc synthBinary(tc: var TypeChecker, e: Expr): Type =
       fail("Type Error: comparison between " & typeName(lt) & " and " &
            typeName(rt), e.span)
     Type(span: e.span, kind: tkNamed, name: "bool")
+  of boRangeIncl, boRangeExcl:
+    for (t, side) in [(lt, e.left), (rt, e.right)]:
+      if not isUnknown(t) and typeName(t) notin
+         ["int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"]:
+        fail("Type Error: range bounds must be integers, got " & typeName(t),
+             side.span)
+    Type(span: e.span, kind: tkNamed, name: "range")
   else:
     Type(span: e.span, kind: tkNamed, name: "bool")
 
@@ -989,12 +999,41 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     tc.pushScope()
     if e.iter != nil and e.iter.kind == pkVar:
       tc.bindName(e.iter.name, unknownType(e.iter.span), false)
+    elif e.iter != nil and e.iter.kind == pkTuple:
+      # `for idx, item in xs:` — idx is int, item is the (unknown) elem type
+      if e.iter.elems.len >= 1 and e.iter.elems[0].kind == pkVar:
+        tc.bindName(e.iter.elems[0].name,
+                    Type(span: e.iter.span, kind: tkNamed, name: "int"), false)
+      if e.iter.elems.len >= 2 and e.iter.elems[1].kind == pkVar:
+        tc.bindName(e.iter.elems[1].name, unknownType(e.iter.span), false)
     # spec 4.4b: the body is checked ONCE against the entry set (no
     # fixed-point simulation); after the loop the state is entry ∪ body-exit
     let entryVariants = tc.varVariants
+    inc tc.loopDepth
     discard tc.synthesize(e.body)
+    dec tc.loopDepth
     tc.varVariants = mergeVariants(entryVariants, tc.varVariants)
     tc.popScope()
+    Type(span: e.span, kind: tkNamed, name: "unit")
+  of exkWhile:
+    if e.whileCond != nil:
+      let ct = tc.synthesize(e.whileCond)
+      if not isUnknown(ct) and typeName(ct) != "bool":
+        fail("Type Error: loop condition must be bool, got " & typeName(ct),
+             e.whileCond.span)
+    let entryVariants = tc.varVariants
+    inc tc.loopDepth
+    discard tc.synthesize(e.whileBody)
+    dec tc.loopDepth
+    tc.varVariants = mergeVariants(entryVariants, tc.varVariants)
+    Type(span: e.span, kind: tkNamed, name: "unit")
+  of exkBreak:
+    if tc.loopDepth == 0:
+      fail("Control Flow Error: break outside of a loop", e.span)
+    Type(span: e.span, kind: tkNamed, name: "unit")
+  of exkContinue:
+    if tc.loopDepth == 0:
+      fail("Control Flow Error: continue outside of a loop", e.span)
     Type(span: e.span, kind: tkNamed, name: "unit")
   of exkAssign:
     if e.isDecl and e.target != nil and e.target.kind == exkVar:

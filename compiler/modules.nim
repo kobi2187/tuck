@@ -51,7 +51,9 @@ proc loadModuleCached(path: string): Module =
       unpack(readFile(cp), entry)
       if entry.stamp == buildStamp and entry.srcHash == srcHash:
         return entry.m
-    except CatchableError:
+    except CatchableError, Defect:
+      # msgpack raises Defects (ObjectConversionDefect) on layout changes,
+      # which the stamp check never gets to see — treat both as stale
       discard  # stale or damaged cache: reparse below
   result = parseTuckFile(path)
   try:
@@ -94,8 +96,8 @@ proc loadIndex*(dir: string): Table[string, IndexEntry] =
       unpack(readFile(ip), idx)
       if idx.stamp == buildStamp:
         return idx.entries
-    except CatchableError:
-      discard  # damaged index: treat as empty
+    except CatchableError, Defect:
+      discard  # damaged index (incl. msgpack layout Defects): treat as empty
   initTable[string, IndexEntry]()
 
 proc srcHashOf(path: string): string =

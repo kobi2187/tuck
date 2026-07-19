@@ -418,12 +418,30 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     for it in e.items: items.add(ctx.genExpr(it, m))
     "@[" & items.join(", ") & "]"
   of exkFor:
-    let iterStr = if e.iter != nil and e.iter.kind == pkVar: e.iter.name else: "_"
+    let iterStr =
+      if e.iter != nil and e.iter.kind == pkVar: e.iter.name
+      elif e.iter != nil and e.iter.kind == pkTuple:
+        var names: seq[string]
+        for el in e.iter.elems:
+          names.add(if el.kind == pkVar: el.name else: "_")
+        names.join(", ")
+      else: "_"
     let oldIndent = ctx.indent
     ctx.indent += 1
     let bodyStr = ctx.genExpr(e.body, m)
     ctx.indent = oldIndent
     ind & "for " & iterStr & " in " & ctx.genExpr(e.iterable, m) & ":\n" & bodyStr
+  of exkWhile:
+    let condStr = if e.whileCond == nil: "true" else: ctx.genExpr(e.whileCond, m)
+    let oldIndent = ctx.indent
+    ctx.indent += 1
+    let bodyStr = ctx.genExpr(e.whileBody, m)
+    ctx.indent = oldIndent
+    ind & "while " & condStr & ":\n" & bodyStr
+  of exkBreak:
+    "break"
+  of exkContinue:
+    "continue"
   of exkBinary:
     let opStr = case e.binOp
                 of boAdd: "+"
@@ -440,6 +458,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
                 of boAnd: "and"
                 of boOr: "or"
                 of boXor: "xor"
+                of boRangeIncl: ".."
+                of boRangeExcl: "..<"
     if e.binOp == boOr and e.right.kind == exkReturn:
       let tmpName = "or_tmp_" & $ctx.definedVars.len
       return "(block: let " & tmpName & " = " & ctx.genExpr(e.left, m) & "; if not " & tmpName & ": " & ctx.genExpr(e.right, m) & "; " & tmpName & ")"
@@ -462,7 +482,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     for s in e.stmts:
       let stmtCode = ctx.genExpr(s, m)
       if stmtCode != "":
-        if s.kind in {exkChain, exkFor}:
+        if s.kind in {exkChain, exkFor, exkWhile}:
           lines.add(stmtCode)  # carries its own indentation (multi-line)
         else:
           lines.add(ind & "  " & stmtCode)
@@ -701,12 +721,30 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     for it in e.items: items.add(ctx.genExpr(it))
     "@[" & items.join(", ") & "]"
   of exkFor:
-    let iterStr = if e.iter != nil and e.iter.kind == pkVar: e.iter.name else: "_"
+    let iterStr =
+      if e.iter != nil and e.iter.kind == pkVar: e.iter.name
+      elif e.iter != nil and e.iter.kind == pkTuple:
+        var names: seq[string]
+        for el in e.iter.elems:
+          names.add(if el.kind == pkVar: el.name else: "_")
+        names.join(", ")
+      else: "_"
     let oldIndent = ctx.indent
     ctx.indent += 1
     let bodyStr = ctx.genExpr(e.body)
     ctx.indent = oldIndent
     ind & "for " & iterStr & " in " & ctx.genExpr(e.iterable) & ":\n" & bodyStr
+  of exkWhile:
+    let condStr = if e.whileCond == nil: "true" else: ctx.genExpr(e.whileCond)
+    let oldIndent = ctx.indent
+    ctx.indent += 1
+    let bodyStr = ctx.genExpr(e.whileBody)
+    ctx.indent = oldIndent
+    ind & "while " & condStr & ":\n" & bodyStr
+  of exkBreak:
+    "break"
+  of exkContinue:
+    "continue"
   of exkBinary:
     let opStr = case e.binOp
                 of boAdd: "+"
@@ -723,6 +761,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
                 of boAnd: "and"
                 of boOr: "or"
                 of boXor: "xor"
+                of boRangeIncl: ".."
+                of boRangeExcl: "..<"
     if e.binOp == boAdd and e.left != nil and e.left.ty != nil and
        e.left.ty.kind == tkNamed and e.left.ty.name in ["str", "string"]:
       return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
@@ -750,7 +790,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         stmtCode = "(let " & tn & " = " & stmtCode & "; (if not " & tn &
                    ".ok: " & onErr & "))"
       if stmtCode != "":
-        if s.kind in {exkIf, exkBlock, exkChain, exkFor}:
+        if s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile}:
           lines.add(stmtCode)  # these nodes carry their own indentation
         else:
           lines.add(ind & "  " & stmtCode)
@@ -866,6 +906,7 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
         body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
                             returnVal: lastS.base))
     elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
+                           exkWhile, exkBreak, exkContinue,
                            exkAssign, exkBlock} and
        not (lastS.kind == exkVar and lastS.name == "..."):
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
@@ -976,7 +1017,8 @@ proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
     let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
     # Generic fns pass their type params straight through — Nim monomorphizes
     let genericStr = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]" else: ""
-    let header = "proc " & fnNameSanitized & "*" & genericStr & "(" & params.join(", ") & "): " & retTypeStr & " ="
+    let inlineStr = if d.isInline: " {.inline.}" else: ""
+    let header = "proc " & fnNameSanitized & "*" & genericStr & "(" & params.join(", ") & "): " & retTypeStr & inlineStr & " ="
     let oldVars = ctx.definedVars
     for p in d.fnParams:
       ctx.definedVars.incl(p.name)

@@ -684,11 +684,45 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
     return ".(" & parts.join(", ") & ")"
   of exkFor:
     let iterStr = ctx.genBeefExpr(e.iterable)
+    if e.iter != nil and e.iter.kind == pkTuple and e.iter.elems.len == 2:
+      # `for idx, item in xs:` — Beef foreach has no index form; lower to a
+      # counter initialized to -1 and incremented FIRST in the body, so
+      # `continue` inside the body cannot skip the increment.
+      let idxN = genPatternStr(e.iter.elems[0])
+      let itemN = genPatternStr(e.iter.elems[1])
+      let oldIndent = ctx.indent
+      ctx.indent += 1
+      let bodyStr = ctx.genBeefExpr(e.body)
+      ctx.indent = oldIndent
+      var res = ind & "{\n"
+      res.add(ind & "\tint " & idxN & " = -1;\n")
+      res.add(ind & "\tfor (var " & itemN & " in " & iterStr & ")\n")
+      res.add(ind & "\t{\n")
+      res.add(ind & "\t\t" & idxN & "++;\n")
+      # inner body statements re-emitted one level deeper inside our braces
+      var innerLines: seq[string]
+      for line in bodyStr.splitLines():
+        if line.len > 0: innerLines.add("\t" & line)
+      res.add(innerLines.join("\n") & "\n")
+      res.add(ind & "\t}\n")
+      res.add(ind & "}")
+      return res
     let oldIndent = ctx.indent
     ctx.indent += 1
     let bodyStr = ctx.genBeefExpr(e.body)
     ctx.indent = oldIndent
     return ind & "for (var " & genPatternStr(e.iter) & " in " & iterStr & ")\n" & bodyStr
+  of exkWhile:
+    let condStr = if e.whileCond == nil: "true" else: ctx.genBeefExpr(e.whileCond)
+    let oldIndent = ctx.indent
+    ctx.indent += 1
+    let bodyStr = ctx.genBeefExpr(e.whileBody)
+    ctx.indent = oldIndent
+    return ind & "while (" & condStr & ")\n" & bodyStr
+  of exkBreak:
+    return "break"
+  of exkContinue:
+    return "continue"
   of exkBinary:
     let opStr = case e.binOp
                 of boAdd: "+"
@@ -705,6 +739,8 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
                 of boAnd: "&&"
                 of boOr: "||"
                 of boXor: "^"
+                of boRangeIncl: "..."
+                of boRangeExcl: "..<"
     if e.binOp == boAdd and e.left != nil and e.left.ty != nil and
        e.left.ty.kind == tkNamed and e.left.ty.name in ["str", "string"]:
       return "concat(" & ctx.genBeefExpr(e.left) & ", " & ctx.genBeefExpr(e.right) & ")"
@@ -748,7 +784,7 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
         ownsLayout = true
         stmtCode = ind & "  " & stmtCode
       if stmtCode != "":
-        if s.kind in {exkIf, exkFor, exkBlock, exkChain} or ownsLayout:
+        if s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain} or ownsLayout:
           lines.add(stmtCode)  # these carry their own indentation
         else:
           lines.add(ind & "  " & stmtCode & ";")
@@ -883,7 +919,7 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
       if lastS.base != nil:
         body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
                             returnVal: lastS.base))
-    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
+    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor, exkWhile, exkBreak, exkContinue,
                            exkAssign, exkBlock} and
        not (lastS.kind == exkVar and lastS.name == "..."):
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
@@ -1017,7 +1053,8 @@ proc genBeefFnDecl(ctx: var BeefCodegenCtx, d: Decl): string =
   let retTypeStr = if d.fnReturnType != nil: ctx.beefType(d.fnReturnType) else: "void"
   # Generic fns pass their type params straight through — Beef monomorphizes
   let genericStr = if d.fnGenerics.len > 0: "<" & d.fnGenerics.join(", ") & ">" else: ""
-  let header = ind & "public static " & retTypeStr & " " & fnNameSanitized &
+  let inlinePrefix = if d.isInline: ind & "[Inline]\n" else: ""
+  let header = inlinePrefix & ind & "public static " & retTypeStr & " " & fnNameSanitized &
                genericStr & "(" & params.join(", ") & ")"
   let oldVars = ctx.definedVars
   for p in d.fnParams:
@@ -1557,7 +1594,7 @@ proc emitBody(ctx: var BeefCodegenCtx, m: Module): tuple[types, mains: string] =
       var stmtCode = ctx.genBeefExpr(d.expr)
       ctx.indent = oldIndent
       if stmtCode != "":
-        if d.expr != nil and d.expr.kind in {exkIf, exkFor, exkBlock}:
+        if d.expr != nil and d.expr.kind in {exkIf, exkFor, exkWhile, exkBlock}:
           mainStmts.add(stmtCode)
         else:
           mainStmts.add("        " & stmtCode & ";")

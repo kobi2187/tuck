@@ -136,6 +136,11 @@ proc toJson*(e: Expr): JsonNode =
     res["iter"] = toJson(e.iter)
     res["iterable"] = toJson(e.iterable)
     res["body"] = toJson(e.body)
+  of exkWhile:
+    res["whileCond"] = toJson(e.whileCond)
+    res["whileBody"] = toJson(e.whileBody)
+  of exkBreak, exkContinue:
+    discard
   of exkAssign:
     res["target"] = toJson(e.target)
     res["val"] = toJson(e.assignVal)

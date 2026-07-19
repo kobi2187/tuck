@@ -69,6 +69,12 @@ proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
   of exkFor:
     res = unionEffects(res, c.synthesizeExpr(e.iterable))
     res = unionEffects(res, c.synthesizeExpr(e.body))
+  of exkWhile:
+    if e.whileCond != nil:
+      res = unionEffects(res, c.synthesizeExpr(e.whileCond))
+    res = unionEffects(res, c.synthesizeExpr(e.whileBody))
+  of exkBreak, exkContinue:
+    discard
   of exkAssign:
     res = unionEffects(res, c.synthesizeExpr(e.target))
     res = unionEffects(res, c.synthesizeExpr(e.assignVal))

@@ -117,6 +117,7 @@ type
     boAdd, boSub, boMul, boDiv, boMod
     boEq, boNeq, boLt, boGt, boLe, boGe
     boAnd, boOr, boXor
+    boRangeIncl, boRangeExcl
 
   UnaryOp* = enum
     uoNeg
@@ -150,6 +151,9 @@ type
     exkIf
     exkMatch
     exkFor
+    exkWhile
+    exkBreak
+    exkContinue
     exkAssign
     exkReturn
     exkRaise
@@ -205,6 +209,11 @@ type
     of exkFor:
       iter*: Pattern
       iterable*, body*: Expr
+    of exkWhile:
+      whileCond*: Expr        # nil = infinite loop (`loop:`)
+      whileBody*: Expr
+    of exkBreak, exkContinue:
+      discard
     of exkAssign:
       target*, assignVal*: Expr
       isDecl*: bool     # true for `let x = ...` / `var x = ...`
@@ -278,6 +287,7 @@ type
       isExtern*: bool   # declared in an `extern:` block; implemented by the
                         # runtime (tuck_rt) or, with a header, imported from C
       externHeader*: string # extern [c, header: "uart.h"] — empty = rt-implemented
+      isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin:
       mixinMembers*: seq[Decl]

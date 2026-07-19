@@ -117,6 +117,11 @@ proc lowerExpr(e: Expr, m: Module) =
   of exkFor:
     lowerExpr(e.iterable, m)
     lowerExpr(e.body, m)
+  of exkWhile:
+    if e.whileCond != nil: lowerExpr(e.whileCond, m)
+    lowerExpr(e.whileBody, m)
+  of exkBreak, exkContinue:
+    discard
   of exkAssign:
     lowerExpr(e.target, m)
     lowerExpr(e.assignVal, m)
