@@ -61,6 +61,8 @@ proc toString*(e: Expr): string =
                 of boAnd: "and"
                 of boOr: "or"
                 of boXor: "xor"
+                of boRangeIncl: ".."
+                of boRangeExcl: "..<"
     return e.left.toString() & " " & opStr & " " & e.right.toString()
   of exkUnary:
     let opStr = case e.unaryOp
@@ -79,6 +81,12 @@ proc toString*(e: Expr): string =
     return "match"
   of exkFor:
     return "for"
+  of exkWhile:
+    return if e.whileCond == nil: "loop" else: "for " & e.whileCond.toString()
+  of exkBreak:
+    return "break"
+  of exkContinue:
+    return "continue"
   of exkAssign:
     return e.target.toString() & " = " & e.assignVal.toString()
   of exkReturn:
@@ -688,6 +696,7 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
     tkEq: (0, boEq), tkNeq: (0, boNeq),
     tkLt: (0, boLt), tkGt: (0, boGt), tkLte: (0, boLe), tkGte: (0, boGe),
     tkAnd: (-1, boAnd), tkOr: (-1, boOr),
+    tkRange: (-2, boRangeIncl), tkRangeLt: (-2, boRangeExcl),
   }.toTable()
   
   while true:
@@ -785,12 +794,42 @@ proc parseExpr*(p: var Parser): Expr =
 
   elif curr.kind == tkFor:
     discard p.advance()
-    let iter = p.parsePattern()
-    discard p.expect(tkIn)
-    let iterable = p.parseExpr()
+    # iteration form iff lookahead is `ident in` or `ident , ident in`;
+    # anything else after `for` is a while-style condition expression
+    let isIter = p.current().kind == tkIdent and
+      (p.peek(1).kind == tkIn or
+       (p.peek(1).kind == tkComma and p.peek(2).kind == tkIdent and
+        p.peek(3).kind == tkIn))
+    if isIter:
+      var iter = p.parsePattern()
+      if p.current().kind == tkComma:
+        discard p.advance()
+        let second = p.parsePattern()
+        iter = Pattern(span: iter.span, kind: pkTuple, elems: @[iter, second])
+      discard p.expect(tkIn)
+      let iterable = p.parseExpr()
+      discard p.expect(tkColon)
+      let body = p.parseBlock()
+      return Expr(span: sp, kind: exkFor, iter: iter, iterable: iterable, body: body)
+    else:
+      let cond = p.parseExpr()
+      discard p.expect(tkColon)
+      let body = p.parseBlock()
+      return Expr(span: sp, kind: exkWhile, whileCond: cond, whileBody: body)
+
+  elif curr.kind == tkLoop:
+    discard p.advance()
     discard p.expect(tkColon)
     let body = p.parseBlock()
-    return Expr(span: sp, kind: exkFor, iter: iter, iterable: iterable, body: body)
+    return Expr(span: sp, kind: exkWhile, whileCond: nil, whileBody: body)
+
+  elif curr.kind == tkBreak:
+    discard p.advance()
+    return Expr(span: sp, kind: exkBreak)
+
+  elif curr.kind == tkContinue:
+    discard p.advance()
+    return Expr(span: sp, kind: exkContinue)
 
   let left = p.parseBinaryExpr(-2)
   if p.current().kind == tkAssign:
@@ -1228,6 +1267,12 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
     return Decl(span: sp, kind: dkExpr, expr: selectExpr)
 
   discard p.advance()
+  # `fn inline name(...)` — codegen-attribute keyword slot after fn
+  var isInline = false
+  if p.current().kind == tkIdent and p.current().value == "inline" and
+     p.peek(1).kind == tkIdent:
+    isInline = true
+    discard p.advance()
   var name = p.expect(tkIdent, "Expected function or event name").value
   while p.current().kind == tkDot:
     discard p.advance()
@@ -1308,7 +1353,7 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
   if p.current().kind == tkColon:
     discard p.advance()
     body = p.parseBlock()
-  return Decl(span: sp, kind: dkFn, name: name, fnGenerics: fnGenerics, fnParams: params, fnReturnType: retType, fnEffects: effects, fnBody: body, fnErrorTypes: errTypes)
+  return Decl(span: sp, kind: dkFn, name: name, fnGenerics: fnGenerics, fnParams: params, fnReturnType: retType, fnEffects: effects, fnBody: body, fnErrorTypes: errTypes, isInline: isInline)
 
 # decision name(inputs) -> ret: pattern-row table (spec 6.1)
 proc parseDecisionDecl(p: var Parser, sp: Span): Decl =

@@ -1249,6 +1249,62 @@ fn f() -> int:
   return 1
 """, "cannot infer"
 
+# --- control flow: loop / for-cond / ranges / indexed for / break / continue / fn inline ---
+
+expectOk "loop with break, for-cond with continue", """
+fn main() -> int:
+  var n = 0
+  loop:
+    n += 1
+    if n == 3:
+      break
+  for n > 0:
+    n -= 1
+    if n == 1:
+      continue
+  return n
+"""
+
+expectOk "ranges and indexed for", """
+fn main() -> int:
+  var acc = 0
+  for i in 0 .. 3:
+    acc += i
+  for i in 0 ..< 3:
+    acc += i
+  let xs = [10, 20, 30]
+  for idx, item in xs:
+    acc += idx
+  return acc
+"""
+
+expectOk "fn inline parses and typechecks", """
+fn inline bump({x: int}) -> int:
+  return x + 1
+
+fn main() -> int:
+  return bump {x: 41}
+"""
+
+expectError "break outside loop", """
+fn main() -> int:
+  break
+  return 0
+""", "break outside"
+
+expectError "continue outside loop", """
+fn main() -> int:
+  continue
+  return 0
+""", "continue outside"
+
+expectError "non-bool loop condition", """
+fn main() -> int:
+  for 5:
+    return 1
+  return 0
+""", "must be bool"
+
 if failures > 0:
   echo failures, " test(s) failed"
   quit(1)
