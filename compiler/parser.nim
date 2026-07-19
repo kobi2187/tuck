@@ -1427,7 +1427,9 @@ proc parseErrorsDecl(p: var Parser, sp: Span): Decl =
   if key != "policy":
     p.reportError("errors declaration takes [policy: strict|continue|exit], got '" & key & "'")
   discard p.expect(tkColon)
-  let policy = p.expect(tkIdent, "Expected policy name").value
+  # `continue` is a keyword since the loops ruling — accept it here as a policy name
+  let policy = if p.current().kind == tkContinue: p.advance().value
+               else: p.expect(tkIdent, "Expected policy name").value
   if policy notin ["strict", "continue", "exit"]:
     p.reportError("Unknown error policy '" & policy & "' — use strict, continue or exit")
   discard p.expect(tkRBracket)

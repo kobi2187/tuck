@@ -15,7 +15,9 @@ type
 
     # Operators and Punctuations
     tkDot,        # .
-    tkDotDot,     # ..
+    tkDotDot,     # ..  (tight — chain mutator)
+    tkRange,      # spaced ` .. ` — inclusive range
+    tkRangeLt,    # ..< — exclusive range
     tkColon,      # :
     tkColonColon, # ::
     tkComma,      # ,
@@ -37,6 +39,7 @@ type
     # Keywords
     tkFn, tkLet, tkVar, tkConst, tkIf, tkElif, tkElse,
     tkFor, tkIn, tkMatch, tkReturn, tkType,
+    tkLoop, tkBreak, tkContinue,
     tkObject, tkMixin, tkInterface, tkActor, tkTask,
     tkPending, tkOn, tkSelect, tkRegistry,
     tkDecision, tkPool, tkArena, tkRegister,
@@ -66,6 +69,7 @@ const keywords = {
   "fn": tkFn, "let": tkLet, "var": tkVar, "const": tkConst,
   "if": tkIf, "elif": tkElif, "else": tkElse,
   "for": tkFor, "in": tkIn, "match": tkMatch,
+  "loop": tkLoop, "break": tkBreak, "continue": tkContinue,
   "return": tkReturn, "type": tkType,
   "object": tkObject, "mixin": tkMixin, "interface": tkInterface,
   "actor": tkActor, "task": tkTask,
@@ -253,7 +257,20 @@ proc scanNext*(L: var Lexer) =
   of 'a'..'z', 'A'..'Z', '_':
     L.lexIdent()
   else:
-    if L.tryTwoChar("..", tkDotDot): return
+    if L.peek() == '.' and L.peek(1) == '.':
+      let sl = L.line
+      let sc = L.column
+      if L.peek(2) == '<':
+        L.advance(); L.advance(); L.advance()
+        L.pendingTokens.add(Token(kind: tkRangeLt, value: "..<", line: sl, column: sc))
+        return
+      # spaced ` .. ` = range; tight `..ident` = chain mutator
+      let spacedBefore = L.position > 0 and L.source[L.position - 1] == ' '
+      let spacedAfter = L.peek(2) == ' '
+      let kind = if spacedBefore and spacedAfter: tkRange else: tkDotDot
+      L.advance(); L.advance()
+      L.pendingTokens.add(Token(kind: kind, value: "..", line: sl, column: sc))
+      return
     if L.tryTwoChar("->", tkArrow): return
     if L.tryTwoChar("=>", tkFatArrow): return
     if L.tryTwoChar("::", tkColonColon): return
