@@ -206,14 +206,20 @@ when isMainModule:
       # entry point: `fn main` runs when the binary starts. No main =
       # library build: the emitted code IS the artifact, no binary.
       var hasMain = false
+      var mainReturns = false
       for d in m.decls:
-        if d != nil and d.kind == dkFn and d.name == "main": hasMain = true
+        if d != nil and d.kind == dkFn and d.name == "main":
+          hasMain = true
+          mainReturns = d.fnReturnType != nil and
+            not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name in ["void", "unit"])
       if not hasMain:
         echo "library (no fn main): emitted code only, no binary"
         echo "OK (", elapsedMs(t0), ")"
         quit(0)
       let mainNim = outDir / (base & ".nim")
-      writeFile(mainNim, readFile(mainNim) & "\nwhen isMainModule:\n  main()\n")
+      # a value-returning main IS the process exit code
+      let mainCall = if mainReturns: "quit(main())" else: "main()"
+      writeFile(mainNim, readFile(mainNim) & "\nwhen isMainModule:\n  " & mainCall & "\n")
       # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
       var nimFlags = ""
       for o in opts:

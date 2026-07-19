@@ -489,7 +489,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     ctx.indent = oldIndent
     if lines.len == 0:
       return ind & "discard"
-    ind & "block:\n" & lines.join("\n")
+    # `if true:` not `block:` — a Nim `block` captures unlabeled `break`,
+    # which must reach the enclosing loop instead. Scoping is identical.
+    ind & "if true:\n" & lines.join("\n")
   of exkIf:
     let condStr = ctx.genExpr(e.cond, m)
     let oldIndent = ctx.indent
@@ -797,7 +799,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     ctx.indent = oldIndent
     if lines.len == 0:
       return ind & "discard"
-    ind & "block:\n" & lines.join("\n")
+    # `if true:` not `block:` — a Nim `block` captures unlabeled `break`,
+    # which must reach the enclosing loop instead. Scoping is identical.
+    ind & "if true:\n" & lines.join("\n")
   of exkIf:
     let condStr = ctx.genExpr(e.cond)
     let oldIndent = ctx.indent
