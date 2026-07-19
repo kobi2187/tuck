@@ -267,4 +267,36 @@ else
   echo "SKIP Beef build check: BeefBuild not found (set BEEFBUILD_BIN)"
 fi
 rm -rf "$bf"
+# control flow: loop/break, for-cond, continue, ranges, indexed for, fn inline
+cf="tests/.smoke_ctrlflow"
+rm -rf "$cf" && mkdir -p "$cf"
+cat > "$cf/cf.tuck" <<'TUCKEOF'
+fn inline bump({x: int}) -> int:
+  return x + 1
+
+fn main() -> int:
+  var acc = 0
+  loop:
+    acc += 1
+    if acc == 5:
+      break
+  for acc > 3:
+    acc -= 1
+  for i in 0 ..< 4:
+    if i == 2:
+      continue
+    acc += i
+  for i in 1 .. 3:
+    acc += i
+  let xs = [10, 20, 30]
+  for idx, item in xs:
+    acc += idx
+  return bump {x: acc}
+TUCKEOF
+./tuck build "$cf/cf.tuck" -o:"$cf/out" > /dev/null
+rc=0; "$cf/out/cf" || rc=$?
+[ "$rc" -eq 17 ] || { echo "FAIL: control-flow exit code $rc != 17"; exit 1; }
+grep -q "{.inline.}" "$cf/out/cf.nim" || { echo "FAIL: fn inline lost {.inline.}"; exit 1; }
+rm -rf "$cf"
+
 echo "cli smoke OK"

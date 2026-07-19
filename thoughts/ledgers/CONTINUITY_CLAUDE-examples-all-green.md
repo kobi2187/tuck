@@ -63,6 +63,12 @@ when Beef also compiles it).
         collision = error, non-struct member = error; Nim emits the flat
         tuple, Beef the union TRec. Runtime-verified (merge probe exits
         33). 17 rewritten and in BOTH gates: Nim 21/25, Beef 20.
+  - [x] Control flow loops (2026-07-19, spec 2.6/3.6b): unified for
+        (cond/iter/indexed), loop:, break/continue (depth-checked), spaced-..
+        ranges (Nim convention), fn inline. Runtime exit-17 smoke both
+        backends. Bugs fixed on the way: block:-captured break (now
+        `if true:` wrapper), value-returning main → quit(main()), msgpack
+        cache Defect-vs-stamp, continue-keyword vs errors-policy.
 - Now: [→] Phase 6: 11/20 — `when TARGET` + implicit main rulings.
 - Remaining:
   - [ ] Phase 3: 04 — `Self` mapping + interface/manager emission + empty

@@ -1,5 +1,30 @@
 # Progress Log
 
+## 2026-07-19 — control flow loops (spec 2.6/3.6b)
+- Design session first (brainstorm + spec doc docs/superpowers/specs/2026-07-18-control-flow-loops-design.md):
+  Odin-inspired unified `for`; rulings: `loop:` for infinite, `for cond:` while-style,
+  ranges = spaced `..` (Nim convention: `0 .. 10` incl, `0 ..< 10` excl; tight `..field`
+  stays the chain mutator — lexer splits on spacing), `for idx, item in xs:` via pkTuple,
+  break/continue innermost-only, NO labels ever (fn extraction + `fn inline` instead),
+  no C-style 3-clause. `fn inline` = keyword slot after fn (not a prefix, not an effect
+  marker; category of [packed]) → {.inline.} / [Inline].
+- Implementation: lexer keywords + tkRange/tkRangeLt; exkWhile/exkBreak/exkContinue +
+  boRangeIncl/boRangeExcl + dkFn.isInline; parser lookahead (ident [, ident] in = iter,
+  else cond); typecheck loopDepth + bool cond + int range bounds + idx:int binding;
+  both codegens.
+- Two REAL bugs found by runtime probe (checker-green ≠ working, again):
+  1) Nim `block:` wrapper captured unlabeled `break` — loops never exited. Fix: emit
+     `if true:` as the scope wrapper (identical scoping, not a break target).
+  2) value-returning `fn main` was emitted as bare `main()` — invalid Nim (discarded
+     int). Fix: `quit(main())` when main returns non-void/unit → main IS the exit code.
+- Also: msgpack AST-cache ObjectConversionDefect (enum layout change) escaped the
+  CatchableError guard before the stamp check — now caught as stale (modules.nim).
+- `continue` keyword collided with `errors [policy: continue]` — policy parser accepts
+  the token explicitly.
+- cli_smoke: new exit-17 control-flow case (loop/break, for-cond, continue, both
+  ranges, indexed for, fn inline verified in emitted Nim). Full matrix green incl.
+  BeefBuild. Spec: new 2.6 + 3.6b sections; ROADMAP synced.
+
 ## 2026-07-05
 - Assessed project: lexer/parser solid, semantics = effects only, codegen unverified.
 - Implemented bidirectional type checker: compiler/typecheck.nim (~370 lines).

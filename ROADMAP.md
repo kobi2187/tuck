@@ -83,6 +83,7 @@ construction, generic bodies gradual, no constraints).
 | match | — | exhaustiveness checking |
 | Effects | 3.7 | switch to implicit propagation (ruling above) |
 | Beef backend | — | parity suite + BeefBuild compile-check 20/25 examples; `tuck build --beef` in CLI. Ceilings: bake (delegate types), member-fn call-site ref marker |
+| Control flow loops | 2.6/3.6b | DONE 2026-07-19: unified for (cond/iter/indexed), loop, break/continue (innermost, depth-checked), spaced-`..` ranges (Nim convention), fn inline ({.inline.}/[Inline]). Runtime-verified exit-17 smoke both backends. No labels ever (ruling); value-returning main = process exit code |
 
 ## Missing
 - Resource registry §7.4 — parser (`resources` decl, `defer` block,

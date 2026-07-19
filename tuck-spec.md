@@ -224,6 +224,49 @@ type C = A + B {state -> bState}   # rename B's 'state' field
 Renaming is validated left-to-right. Renaming to an already-present name is a
 compile error.
 
+### 2.6 Control Flow: Loops
+
+One iteration keyword (`for`, Odin-inspired unification) plus `loop` for the
+infinite form. No `while` keyword, no C-style 3-clause form (a post-step is
+just the last statement in the body), and no labels — ever.
+
+```tuck
+loop:                        # infinite (while-true)
+  poll()
+  if done(): break
+
+for ready():                 # while-style — condition directly after for
+  tick()
+
+for i in 0 .. 10:            # inclusive range (Nim convention), 0..10
+  ...
+
+for i in 0 ..< 10:           # exclusive range, 0..9
+  ...
+
+for item in items:           # iterate values
+  ...
+
+for idx, item in items:      # iterate with index (idx: int)
+  ...
+```
+
+`break` and `continue` affect the nearest enclosing loop, usable anywhere in
+its body including nested `if`/`match`. The loop condition must be `bool`.
+
+**Ranges are spaced `..`.** The chain mutator is always tight (`s ..port`),
+a range operator always has spaces around it (`0 .. n`); the lexer separates
+the two by spacing. `..<` needs no space rule (`<` can never start a field).
+Range bounds must be integers.
+
+**No labeled break/continue.** Multi-level early exit is a decomposition
+signal, not a control-flow feature: extract the inner loop into its own
+function and react to its return value. This is the same stance as the
+cyclomatic-complexity ceiling (§6.1) — nested-break-through-two-loops is
+exactly the code that should become a named function. To make that
+extraction free on embedded targets, `fn inline` (§3.6b) guarantees the
+helper compiles away.
+
 ---
 
 ## Part 3: Functions
@@ -304,6 +347,26 @@ pred isReady() -> bool                                   # must be pure, returns
 - `pred` functions must be pure — the compiler rejects any `..` or `[io]` inside them.
 - `set` functions must use `..` — the compiler rejects returning a new value.
 - `fn` functions are unconstrained.
+
+### 3.6b Codegen Attributes: `fn inline`
+
+An optional keyword slot right after `fn`, before the name:
+
+```tuck
+fn inline queuePush({msg: Msg}) -> !void [no_alloc, irq_safe]:
+  ...
+```
+
+`inline` is neither a purity prefix (§3.6 — those replace `fn`) nor an
+effect marker (§3.7 — those are checker-enforced propagating contracts).
+It is a codegen hint, the function-level sibling of a type's
+`[packed, align: N]` attributes: no propagation, no semantic effect.
+Lowers to Nim `{.inline.}` / Beef `[Inline]`.
+
+It exists so the no-labels ruling (§2.6) costs nothing: extracting a hot
+inner loop into a helper and marking it `inline` produces codegen
+indistinguishable from hand-inlined code. Future attributes in this slot
+(`cold`, `noinline`) are possible; none are specified today.
 
 ### 3.7 Effect Markers
 
