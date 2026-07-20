@@ -231,6 +231,15 @@ proc lookupFnParams(m: Module, name: string): seq[string] =
           return res
   return @[]
 
+# fn param TYPES by position, for call sites deciding whether an arg needs
+# the `ref` marker (mutable record param) — mirrors lookupFnParams but
+# keeps the type instead of just the name.
+proc lookupFnParamTypes(m: Module, name: string): seq[Type] =
+  for d in m.decls:
+    if d.kind == dkFn and d.name == name:
+      for p in d.fnParams: result.add(p.typ)
+      return result
+
 proc genQualified(ctx: BeefCodegenCtx, e: Expr): string =
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
   if modName in ctx.realModules: modName & "." & e.qualName
@@ -425,7 +434,9 @@ proc genBeefCall(ctx: var BeefCodegenCtx, e: Expr): string =
       var gparts: seq[string]
       for a in e.ty.args: gparts.add(ctx.beefType(a))
       ctorName &= "<" & gparts.join(", ") & ">"
-    let ctor = "new " & ctorName & "() { " & parts.join(", ") & " }"
+    # value-type struct: `new` would heap-allocate and yield a pointer
+    # (Type*), not the value — Beef's struct object-initializer is `.()`
+    let ctor = ctorName & "() { " & parts.join(", ") & " }"
     if hasInvariants(ctx.module, e.callee.name):
       # production site: construction — validate before the value flows on
       return "__validated(" & ctor & ")"
@@ -462,7 +473,16 @@ proc genBeefCall(ctx: var BeefCodegenCtx, e: Expr): string =
       for field in e.args[0].fields:
         args.add(ctx.genBeefExpr(field[1]))
   else:
-    for a in e.args: args.add(ctx.genBeefExpr(a))
+    # bare positional args (incl. the receiver a chain mutator call
+    # synthesizes, e.g. `c ..bump`) — a mutable-record param needs `ref`
+    # at the call site too; only a bare var can be passed by ref in Beef
+    let paramTypes = lookupFnParamTypes(ctx.module, calleeStr)
+    for i, a in e.args:
+      let argStr = ctx.genBeefExpr(a)
+      let needsRef = a.kind == exkVar and i < paramTypes.len and
+                     paramTypes[i] != nil and paramTypes[i].kind == tkNamed and
+                     isRecordType(ctx.module, paramTypes[i].name)
+      args.add((if needsRef: "ref " else: "") & argStr)
   if calleeStr == "bake":
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
@@ -1049,7 +1069,13 @@ proc genBeefFnDecl(ctx: var BeefCodegenCtx, d: Decl): string =
   let fnNameSanitized = d.name.replace(".", "_")
   var params: seq[string]
   for p in d.fnParams:
-    params.add(ctx.beefType(p.typ) & " " & p.name)
+    # the checker binds every param isVar:true (`self ..mutate` is fn-
+    # uniform) — value-type (struct) records need `ref` to allow that
+    # mutation in Beef, mirroring the self-param treatment below
+    let isMutParam = p.typ != nil and p.typ.kind == tkNamed and
+                      isRecordType(ctx.module, p.typ.name)
+    let typeStr = ctx.beefType(p.typ)
+    params.add((if isMutParam: "ref " & typeStr else: typeStr) & " " & p.name)
   let retTypeStr = if d.fnReturnType != nil: ctx.beefType(d.fnReturnType) else: "void"
   # Generic fns pass their type params straight through — Beef monomorphizes
   let genericStr = if d.fnGenerics.len > 0: "<" & d.fnGenerics.join(", ") & ">" else: ""
@@ -1174,7 +1200,8 @@ proc genRecordType(ctx: var BeefCodegenCtx, d: Decl): string =
     fieldsStr.add(ind & "    public " & ctx.fieldType(d.name, f) & " " & f.name & ";")
   let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: ind & "    // empty"
   let tGen = if d.generics.len > 0: "<" & d.generics.join(", ") & ">" else: ""
-  var res = ind & "public class " & d.name & tGen & "\n" & ind & "{\n" &
+  # Tier 1 records are value types (spec §7.1) — struct, not class
+  var res = ind & "public struct " & d.name & tGen & "\n" & ind & "{\n" &
             fieldsBody & "\n" & ind & "}\n"
   var invariantChecks: seq[string]
   var checkCtx = BeefCodegenCtx(definedVars: initHashSet[string](),
@@ -1455,7 +1482,8 @@ proc genBeefDecl*(ctx: var BeefCodegenCtx, d: Decl): string =
       else:
         membersStr.add(ctx.genBeefDecl(member) & "\n")
     let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: ind & "    // empty"
-    return ind & "public class " & d.name & "\n" & ind & "{\n" & fieldsBody &
+    # manager objects hold var state but are Tier 1 value types too
+    return ind & "public struct " & d.name & "\n" & ind & "{\n" & fieldsBody &
            "\n" & ind & "}\n\n" & membersStr
   of dkActor:
     return ctx.genActor(d)

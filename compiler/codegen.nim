@@ -1017,7 +1017,14 @@ proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
 
     var params: seq[string]
     for p in d.fnParams:
-      params.add(p.name & ": " & genType(p.typ))
+      # the checker binds every param isVar:true (`self ..mutate` is fn-
+      # uniform, not member-fn-special) — value-type records need `var` to
+      # actually allow that mutation in Nim (a plain object, unlike the old
+      # `ref object`, can't be field-mutated through an immutable param)
+      let isMutParam = p.typ != nil and p.typ.kind == tkNamed and
+                        isRecordType(ctx.module, p.typ.name)
+      let typeStr = genType(p.typ)
+      params.add(p.name & ": " & (if isMutParam: "var " & typeStr else: typeStr))
     let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
     # Generic fns pass their type params straight through — Nim monomorphizes
     let genericStr = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]" else: ""
@@ -1139,7 +1146,8 @@ proc genRecordType(ctx: var CodegenCtx, d: Decl): string =
         fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
       let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
       let tGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
-      var res = "type " & d.name & "*" & tGen & " = ref object\n" & fieldsBody & "\n"
+      # Tier 1 records are value types (spec §7.1) — plain object, not ref
+      var res = "type " & d.name & "*" & tGen & " = object\n" & fieldsBody & "\n"
       var invariantChecks: seq[string]
       var checkCtx = CodegenCtx(definedVars: initHashSet[string](), fieldVars: initHashSet[string](), indent: 0)
       for f in d.typeBody.fields:
@@ -1347,7 +1355,8 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       else:
         membersStr.add(ctx.genDecl(member) & "\n")
     let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
-    ctx.typeSection.add("type " & d.name & "* = ref object\n" & fieldsBody)
+    # manager objects (dkObject) hold var state but are Tier 1 value types too
+    ctx.typeSection.add("type " & d.name & "* = object\n" & fieldsBody)
     return membersStr
   of dkActor:
     return ctx.genActor(d)

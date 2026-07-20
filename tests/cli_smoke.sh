@@ -299,4 +299,33 @@ rc=0; "$cf/out/cf" || rc=$?
 grep -q "{.inline.}" "$cf/out/cf.nim" || { echo "FAIL: fn inline lost {.inline.}"; exit 1; }
 rm -rf "$cf"
 
+# records are VALUE types (spec §7.1): == compares fields, not identity,
+# and a copy is independent of its source
+vt="tests/.smoke_valuetype"
+rm -rf "$vt" && mkdir -p "$vt"
+cat > "$vt/t.tuck" <<'TUCKEOF'
+type Point = {x: int, y: int}
+
+fn shift({p: Point}) -> Point:
+  p ..x {99}
+
+fn main() -> int:
+  let a = {x: 1, y: 2} Point
+  let b = {x: 1, y: 2} Point
+  var acc = 0
+  if a == b:
+    acc += 10
+  var c = {x: 1, y: 2} Point
+  let d = c
+  c ..x {50}
+  if d.x == 1:
+    acc += 7
+  return acc
+TUCKEOF
+./tuck build "$vt/t.tuck" -o:"$vt/out" > /dev/null
+rc=0; "$vt/out/t" || rc=$?
+[ "$rc" -eq 17 ] || { echo "FAIL: value-type semantics exit $rc, want 17"; exit 1; }
+grep -q "= object" "$vt/out/t.nim" || { echo "FAIL: record emitted as ref object"; exit 1; }
+rm -rf "$vt"
+
 echo "cli smoke OK"
