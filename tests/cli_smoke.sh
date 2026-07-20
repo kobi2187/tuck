@@ -328,4 +328,25 @@ rc=0; "$vt/out/t" || rc=$?
 grep -q "= object" "$vt/out/t.nim" || { echo "FAIL: record emitted as ref object"; exit 1; }
 rm -rf "$vt"
 
+# spec 2.3: a bare name IS a call — a zero-arg fn referenced bare must be
+# invoked, not taken as a proc reference (`:name` is the fn-ref form)
+nl="tests/.smoke_nullary"
+rm -rf "$nl" && mkdir -p "$nl"
+cat > "$nl/t.tuck" <<'TUCKEOF'
+fn getFive() -> int:
+  return 5
+
+fn getSeven() -> int:
+  return 7
+
+fn main() -> int:
+  let a = getFive
+  let b = getSeven {}
+  return a + b
+TUCKEOF
+./tuck build "$nl/t.tuck" -o:"$nl/out" > /dev/null
+rc=0; "$nl/out/t" || rc=$?
+[ "$rc" -eq 12 ] || { echo "FAIL: nullary call exit $rc, want 12"; exit 1; }
+rm -rf "$nl"
+
 echo "cli smoke OK"

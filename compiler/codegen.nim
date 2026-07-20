@@ -376,7 +376,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     of lkStr: "\"" & e.litValue & "\""
     else: e.litValue
   of exkVar:
-    if e.name == "...": "discard"  # pending hole: compiles, does nothing
+    # nullary call stamped by the checker (spec 2.3: a bare name IS a call)
+    if e.varCallNode != nil: ctx.genExpr(e.varCallNode, m)
+    elif e.name == "...": "discard"  # pending hole: compiles, does nothing
     elif e.name == "input" and ctx.currentParams.len > 0:
       # the whole incoming payload, rebuilt from the fn's params
       var parts: seq[string]
@@ -685,7 +687,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     of lkStr: "\"" & e.litValue & "\""
     else: e.litValue
   of exkVar:
-    if e.name == "...": "discard"
+    if e.varCallNode != nil: ctx.genExpr(e.varCallNode)
+    elif e.name == "...": "discard"
     elif e.name == "input" and ctx.currentParams.len > 0:
       var parts: seq[string]
       for p in ctx.currentParams: parts.add(p.name & ": " & p.name)

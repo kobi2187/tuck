@@ -87,6 +87,7 @@ proc toJson*(e: Expr): JsonNode =
     res["value"] = %e.litValue
   of exkVar:
     res["name"] = %e.name
+    if e.varCallNode != nil: res["varCallNode"] = toJson(e.varCallNode)
   of exkField:
     res["receiver"] = toJson(e.receiver)
     res["fieldName"] = %e.fieldName

@@ -953,7 +953,15 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     Type(span: e.span, kind: tkNamed, name: name)
   of exkVar:
     let (found, b) = tc.lookup(e.name)
-    if found: b.typ else: unknownType(e.span)
+    if found: b.typ
+    elif tc.fnSigs.hasKey(e.name) and tc.fnSigs[e.name].params.len == 0:
+      # spec 2.3: a bare name IS a call — `f`, `.f` and `.f {}` are one form.
+      # Only nullary fns: a fn with params referenced bare is a fn-ref (bake).
+      e.varCallNode = Expr(span: e.span, kind: exkCall,
+                           callee: Expr(span: e.span, kind: exkVar, name: e.name),
+                           args: @[])
+      tc.synthesize(e.varCallNode)
+    else: unknownType(e.span)
   of exkField: tc.synthFieldAccess(e)
   of exkStruct:
     var fs: seq[FieldDef]

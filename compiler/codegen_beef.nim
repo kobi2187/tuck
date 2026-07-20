@@ -658,6 +658,8 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
            of lkStr: "\"" & e.litValue & "\""
            else: e.litValue
   of exkVar:
+    # nullary call stamped by the checker (spec 2.3: a bare name IS a call)
+    if e.varCallNode != nil: return ctx.genBeefExpr(e.varCallNode)
     if e.name == "...": return ""  # pending hole: compiles, does nothing
     if e.name == "input" and ctx.currentParams.len > 0:
       # the whole incoming payload, rebuilt as its TRec shape

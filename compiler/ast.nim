@@ -171,6 +171,9 @@ type
       litValue*: string
     of exkVar:
       name*: string
+      varCallNode*: Expr # stamped by the checker when a bare name resolves to
+                         # a ZERO-PARAM fn: spec 2.3 makes `f`, `.f` and
+                         # `.f {}` the same call form — codegen emits this
     of exkField:
       receiver*: Expr
       fieldName*: string
