@@ -349,4 +349,28 @@ rc=0; "$nl/out/t" || rc=$?
 [ "$rc" -eq 12 ] || { echo "FAIL: nullary call exit $rc, want 12"; exit 1; }
 rm -rf "$nl"
 
+# a trailing `match subject:` IS the fn's result — its value arms carry no
+# returns of their own, so the implicit-return rewrite must wrap the match
+mr="tests/.smoke_matchret"
+rm -rf "$mr" && mkdir -p "$mr"
+cat > "$mr/t.tuck" <<'TUCKEOF'
+type Light:
+  | Red
+  | Yellow
+  | Green
+
+fn code({t: Light}) -> int:
+  match t:
+    Red: 3
+    Yellow: 5
+    Green: 9
+
+fn main() -> int:
+  return {t: Light.Green} code
+TUCKEOF
+./tuck build "$mr/t.tuck" -o:"$mr/out" > /dev/null
+rc=0; "$mr/out/t" || rc=$?
+[ "$rc" -eq 9 ] || { echo "FAIL: match-as-return exit $rc, want 9"; exit 1; }
+rm -rf "$mr"
+
 echo "cli smoke OK"

@@ -941,6 +941,11 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
       if lastS.base != nil:
         body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
                             returnVal: lastS.base))
+    elif lastS.kind == exkMatch and lastS.subject != nil:
+      # `match subject:` with value arms is an EXPRESSION — the tail match is
+      # the fn's result (decision tables, subject == nil, keep row returns).
+      # Idempotent: the other backend may have wrapped it already.
+      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
     elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor, exkWhile, exkBreak, exkContinue,
                            exkAssign, exkBlock} and
        not (lastS.kind == exkVar and lastS.name == "..."):
