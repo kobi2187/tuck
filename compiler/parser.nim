@@ -22,6 +22,10 @@ proc toString*(e: Expr): string =
       res.add(f[0] & ": " & f[1].toString())
     res.add("}")
     return res
+  of exkIndex:
+    return e.idxReceiver.toString() & "[" & e.idxArg.toString() & "]"
+  of exkIndexAssign:
+    return e.idxTarget.toString() & " = " & e.idxValue.toString()
   of exkList:
     var res = "["
     for i, item in e.items:
@@ -150,7 +154,15 @@ proc reportError*(p: Parser, msg: string, line = -1, col = -1) =
   stderr.writeLine ""
   quit(1)
 
+# `[` comes in two flavours: tkIndexLBracket (tight, `xs[i]`) and tkLBracket
+# (spaced or leading). Only parseChainExpr distinguishes them — declaration
+# and type contexts (`fn at[T]`, `[io]`, attributes) accept either.
+proc isLBracket(t: Token): bool =
+  t.kind in {tkLBracket, tkIndexLBracket}
+
 proc expect*(p: var Parser, kind: TokenKind, msg = ""): Token =
+  if kind == tkLBracket and p.current().kind == tkIndexLBracket:
+    return p.advance()
   if p.current().kind != kind:
     let errMsg = if msg.len > 0: msg else: "Expected token '" & $kind & "' but got '" & $p.current().kind & "' with value '" & p.current().value & "'"
     p.reportError(errMsg)
@@ -313,7 +325,7 @@ proc parsePrimaryType(p: var Parser): Type =
   elif curr.kind == tkIdent:
     let name = p.advance().value
     var base = Type(span: sp, kind: tkNamed, name: name)
-    if p.current().kind == tkLBracket:
+    if isLBracket(p.current()):
       # Check if it's attributes or generics
       let first = p.peek(1)
       let isAttr = first.kind == tkIdent and (first.value in [
@@ -558,7 +570,10 @@ proc parsePrimaryExpr(p: var Parser): Expr =
       let val = p.parseExpr()
       discard p.expect(tkRBrace)
       return Expr(span: sp, kind: exkStruct, fields: @[("value", val)])
-  of tkLBracket:
+  of tkLBracket, tkIndexLBracket:
+    # A tight `[` reaches here only when parseChainExpr declined it as an
+    # index (multi-element, e.g. the `Array[128, u8]` type-app form) — it is
+    # a list literal like any other.
     discard p.advance()
     var items: seq[Expr]
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
@@ -578,7 +593,7 @@ proc parsePrimaryExpr(p: var Parser): Expr =
 # Type.Variant [unsafe] — deserialization escape hatch for sealed construction
 # (spec 4.4). Consumes the marker and reports whether it was present.
 proc tryUnsafeMarker(p: var Parser): bool =
-  if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+  if isLBracket(p.current()) and p.peek(1).kind == tkIdent and
      p.peek(1).value == "unsafe" and p.peek(2).kind == tkRBracket:
     discard p.advance()  # [
     discard p.advance()  # unsafe
@@ -625,6 +640,27 @@ proc parsePostfixCall(p: var Parser, expr: Expr, sp: Span): Expr =
       calleeExpr.ctorUnsafe = true
   return Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
 
+# A tight `[` after an expression is ambiguous: `xs[i]` indexes, but
+# `Array[128, u8]` is a type application in expression position. An index
+# holds exactly ONE expression, so a top-level comma before the matching
+# `]` means this bracket was never an index.
+proc bracketHoldsOneExpr(p: Parser): bool =
+  var depth = 0
+  var i = 0
+  while true:
+    let k = p.peek(i).kind
+    case k
+    of tkLBracket, tkIndexLBracket, tkLParen, tkLBrace: depth.inc
+    of tkRParen, tkRBrace: depth.dec
+    of tkRBracket:
+      depth.dec
+      if depth == 0: return true
+    of tkComma:
+      if depth == 1: return false
+    of tkEOF, tkNewline: return false
+    else: discard
+    i.inc
+
 proc parseChainExpr(p: var Parser): Expr =
   var expr = p.parsePrimaryExpr()
   
@@ -658,6 +694,13 @@ proc parseChainExpr(p: var Parser): Expr =
       let name = p.expect(tkIdent, "Expected identifier after '::'").value
       let moduleName = if expr.kind == exkVar: expr.name else: ""
       expr = Expr(span: sp, kind: exkQualified, modulePath: @[moduleName], qualName: name)
+    elif p.current().kind == tkIndexLBracket and p.bracketHoldsOneExpr():
+      # `xs[i]` — the argument sits after the callee, like every other postfix
+      # continuation here. Chaining (`grid[i][j]`) falls out of the loop.
+      discard p.advance()
+      let idx = p.parseExpr()
+      discard p.expect(tkRBracket)
+      expr = Expr(span: sp, kind: exkIndex, idxReceiver: expr, idxArg: idx)
     elif p.current().kind == tkBake:
       discard p.advance()
       let arg = p.parsePrimaryExpr()
@@ -832,26 +875,25 @@ proc parseExpr*(p: var Parser): Expr =
     return Expr(span: sp, kind: exkContinue)
 
   let left = p.parseBinaryExpr(-2)
-  if p.current().kind == tkAssign:
+  # `=` and the compound forms differ only in the operator folded into the
+  # value, so they share one path — that keeps the exkIndex rewrite (setAt,
+  # not assign-to-a-place) in a single spot instead of five.
+  const compoundOps = {tkPlusAssign: boAdd, tkMinusAssign: boSub,
+                       tkStarAssign: boMul, tkSlashAssign: boDiv}.toTable()
+  if p.current().kind == tkAssign or p.current().kind in compoundOps:
+    let opKind = p.current().kind
     discard p.advance()
     let right = p.parseExpr()
-    return Expr(span: sp, kind: exkAssign, target: left, assignVal: right)
-  elif p.current().kind == tkPlusAssign:
-    discard p.advance()
-    let right = p.parseExpr()
-    return Expr(span: sp, kind: exkAssign, target: left, assignVal: Expr(span: sp, kind: exkBinary, binOp: boAdd, left: left, right: right))
-  elif p.current().kind == tkMinusAssign:
-    discard p.advance()
-    let right = p.parseExpr()
-    return Expr(span: sp, kind: exkAssign, target: left, assignVal: Expr(span: sp, kind: exkBinary, binOp: boSub, left: left, right: right))
-  elif p.current().kind == tkStarAssign:
-    discard p.advance()
-    let right = p.parseExpr()
-    return Expr(span: sp, kind: exkAssign, target: left, assignVal: Expr(span: sp, kind: exkBinary, binOp: boMul, left: left, right: right))
-  elif p.current().kind == tkSlashAssign:
-    discard p.advance()
-    let right = p.parseExpr()
-    return Expr(span: sp, kind: exkAssign, target: left, assignVal: Expr(span: sp, kind: exkBinary, binOp: boDiv, left: left, right: right))
+    # ponytail: `xs[i] += v` expands to `xs[i] = xs[i] + v`, so the receiver
+    # and index are evaluated twice. Fine for vars; bind to a temp if a
+    # side-effecting receiver ever needs to work here.
+    let value = if opKind == tkAssign: right
+                else: Expr(span: sp, kind: exkBinary, binOp: compoundOps[opKind],
+                           left: left, right: right)
+    if left.kind == exkIndex:
+      return Expr(span: sp, kind: exkIndexAssign,
+                  idxTarget: left, idxValue: value)
+    return Expr(span: sp, kind: exkAssign, target: left, assignVal: value)
   return left
 
 proc parseBlock*(p: var Parser): Expr =
@@ -953,7 +995,7 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
       name = name & "::" & p.expect(tkIdent, "Expected identifier after '::'").value
     # generic sig: fn toStr[T](...) — Uppercase-first idents, like fn decls
     var sigGenerics: seq[string]
-    if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+    if isLBracket(p.current()) and p.peek(1).kind == tkIdent and
        p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A' .. 'Z'}:
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
@@ -996,7 +1038,7 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
     var sigEffects: seq[EffectMarker]
     var sigErrTypes: seq[string]
     harvestEffects(retType, sigEffects, sigErrTypes)
-    if p.current().kind == tkLBracket:
+    if isLBracket(p.current()):
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
         let effName = p.expect(tkIdent, "Expected effect marker").value
@@ -1107,7 +1149,7 @@ proc parseTaskDecl(p: var Parser, sp: Span): Decl =
   var effects: seq[EffectMarker]
   var taskErrTypes: seq[string]
   harvestEffects(retType, effects, taskErrTypes)
-  if p.current().kind == tkLBracket:
+  if isLBracket(p.current()):
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
       let effSp = p.getSpan()
@@ -1137,7 +1179,7 @@ proc parseTypeDecl(p: var Parser, sp: Span): Decl =
   let name = p.expect(tkIdent, "Expected type name").value
   # `type Box[T]` — generic params are Uppercase idents; attrs are lowercase
   var typeGenerics: seq[string]
-  if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+  if isLBracket(p.current()) and p.peek(1).kind == tkIdent and
      p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A'..'Z'}:
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
@@ -1278,7 +1320,7 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
     discard p.advance()
     name.add("." & p.expect(tkIdent, "Expected qualified name component").value)
   var fnGenerics: seq[string]
-  if p.current().kind == tkLBracket:
+  if isLBracket(p.current()):
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
       fnGenerics.add(p.expect(tkIdent, "Expected generic parameter name").value)
@@ -1321,7 +1363,7 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
   var effects: seq[EffectMarker]
   var errTypes: seq[string]
   harvestEffects(retType, effects, errTypes)
-  if p.current().kind == tkLBracket:
+  if isLBracket(p.current()):
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
       let effSp = p.getSpan()
@@ -1448,7 +1490,7 @@ proc parseRegisterDecl(p: var Parser, sp: Span): Decl =
           discard p.advance()
     # Parse optional attributes [read, write]
     var rAttrs: seq[TypeAttr]
-    if p.current().kind == tkLBracket:
+    if isLBracket(p.current()):
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
         let rAttrSp = p.getSpan()
@@ -1501,7 +1543,7 @@ proc parseErrorsDecl(p: var Parser, sp: Span): Decl =
 proc parseExternDecl(p: var Parser, sp: Span): Decl =
   discard p.advance() # extern
   var header = ""
-  if p.current().kind == tkLBracket:
+  if isLBracket(p.current()):
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
       let key = p.expect(tkIdent, "Expected 'c' or 'header' in extern attributes").value
@@ -1525,11 +1567,11 @@ proc parseDecl*(p: var Parser): Decl =
   # extern: / extern [c, header: "uart.h"]: — signatures implemented by the
   # runtime (tuck_rt) or imported from C. No bodies, no stubs.
   if curr.kind == tkIdent and curr.value == "extern" and
-     p.peek().kind in {tkColon, tkLBracket}:
+     p.peek().kind in {tkColon, tkLBracket, tkIndexLBracket}:
     return p.parseExternDecl(sp)
 
   # Global error policy (spec 4.9): errors [policy: strict|continue|exit]:
-  if curr.kind == tkIdent and curr.value == "errors" and p.peek().kind == tkLBracket:
+  if curr.kind == tkIdent and curr.value == "errors" and isLBracket(p.peek()):
     return p.parseErrorsDecl(sp)
 
   if curr.kind == tkIdent and curr.value == "register":

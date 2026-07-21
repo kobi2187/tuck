@@ -300,6 +300,8 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
   return a.kind == e.kind
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type
+proc synthIndex(tc: var TypeChecker, e: Expr): Type
+proc synthIndexAssign(tc: var TypeChecker, e: Expr): Type
 
 # Method form: `x .fn {args}` / `x ..fn {args}` — the receiver rides as the
 # fn's FIRST parameter (checked structurally when the receiver type has no
@@ -975,6 +977,8 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
       if isUnknown(elemT): elemT = t
     Type(span: e.span, kind: tkApp,
          base: Type(span: e.span, kind: tkNamed, name: "Seq"), args: @[elemT])
+  of exkIndex: tc.synthIndex(e)
+  of exkIndexAssign: tc.synthIndexAssign(e)
   of exkCall: tc.synthCall(e)
   of exkBinary: tc.synthBinary(e)
   of exkUnary:
@@ -1140,6 +1144,54 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkChain: tc.synthChain(e)
   of exkQualified, exkImport:
     unknownType(e.span)
+
+# `xs[i]` / `xs[i] = v` are sugar. Both rewrite IN PLACE into an ordinary
+# call to `at` / `setAt` and then defer to synthCall — so generic binding,
+# effects and error types all apply as usual, and neither codegen needs an
+# arm for the index nodes (they no longer exist by the time codegen runs).
+proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
+                 sp: Span): Expr =
+  # A Seq comes from std/seq; any other type supplies its own `at`/`setAt`.
+  # (fnSigs is keyed by name alone — no overloading — so Seq's must stay
+  # qualified to avoid colliding with a user type's.)
+  let isSeq = recvT != nil and recvT.kind == tkApp and recvT.base != nil and
+              recvT.base.kind == tkNamed and recvT.base.name == "Seq"
+  if isSeq:
+    return Expr(span: sp, kind: exkQualified, modulePath: @["seq"],
+                qualName: fnName)
+  if fnName notin tc.fnSigs:
+    let tn = if recvT == nil: "unknown" else: typeName(recvT)
+    fail("Type Error: type '" & tn & "' is not indexable — define '" &
+         fnName & "' for it", sp)
+  Expr(span: sp, kind: exkVar, name: fnName)
+
+proc synthIndex(tc: var TypeChecker, e: Expr): Type =
+  let recvT = tc.synthesize(e.idxReceiver)
+  let idxT = tc.synthesize(e.idxArg)
+  if not isUnknown(idxT) and not (idxT.kind == tkNamed and idxT.name == "int"):
+    fail("Type Error: index must be int, got " & typeName(idxT), e.idxArg.span)
+  let sp = e.span
+  let callee = tc.indexCallee(recvT, "at", sp)
+  let payload = Expr(span: sp, kind: exkStruct,
+                     fields: @[("items", e.idxReceiver), ("index", e.idxArg)])
+  e[] = Expr(span: sp, kind: exkCall, callee: callee, args: @[payload])[]
+  tc.synthCall(e)
+
+proc synthIndexAssign(tc: var TypeChecker, e: Expr): Type =
+  let target = e.idxTarget
+  let recvT = tc.synthesize(target.idxReceiver)
+  let idxT = tc.synthesize(target.idxArg)
+  if not isUnknown(idxT) and not (idxT.kind == tkNamed and idxT.name == "int"):
+    fail("Type Error: index must be int, got " & typeName(idxT),
+         target.idxArg.span)
+  let sp = e.span
+  let callee = tc.indexCallee(recvT, "setAt", sp)
+  let payload = Expr(span: sp, kind: exkStruct,
+                     fields: @[("items", target.idxReceiver),
+                               ("index", target.idxArg),
+                               ("value", e.idxValue)])
+  e[] = Expr(span: sp, kind: exkCall, callee: callee, args: @[payload])[]
+  tc.synthCall(e)
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type =
   if e == nil: return unknownType(Span())

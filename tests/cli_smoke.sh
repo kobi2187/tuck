@@ -405,4 +405,65 @@ fi
 grep -q "out of bounds for seq of length 3" "$sq/err.txt" || { echo "FAIL: bounds precondition message missing"; exit 1; }
 rm -rf "$sq"
 
+# bracket sugar: xs[i] reads, xs[i] = v writes, xs[i] += v compounds.
+# All desugar to the seq::at / seq::setAt calls above — same bounds
+# precondition, no new codegen path.
+ix="tests/.smoke_index"
+rm -rf "$ix" && mkdir -p "$ix"
+cat > "$ix/t.tuck" <<'TUCKEOF'
+import seq
+
+fn main() -> int:
+  var xs = [10, 20, 30]
+  xs[1] = 5
+  xs[0] += 5
+  return xs[0] + xs[1] + xs[2]
+TUCKEOF
+./tuck build "$ix/t.tuck" -o:"$ix/out" > /dev/null
+rc=0; "$ix/out/t" || rc=$?
+[ "$rc" -eq 50 ] || { echo "FAIL: bracket index exit $rc, want 50"; exit 1; }
+
+# the tight-`[` rule must not eat list literals or generic/type brackets
+cat > "$ix/amb.tuck" <<'TUCKEOF'
+import seq
+
+fn firstOf[T]({items: Seq[T]}) -> T:
+  return {items: items, index: 0} seq::at
+
+fn main() -> int:
+  let ys = [1, 2, 3]
+  var grid = [7, 8, 9]
+  let a = {items: ys} firstOf
+  return a + grid[2] + ys[1]
+TUCKEOF
+./tuck build "$ix/amb.tuck" -o:"$ix/aout" > /dev/null
+rc=0; "$ix/aout/amb" || rc=$?
+[ "$rc" -eq 12 ] || { echo "FAIL: bracket ambiguity exit $rc, want 12"; exit 1; }
+
+# bounds still fire through the sugar
+cat > "$ix/oob.tuck" <<'TUCKEOF'
+import seq
+
+fn main() -> int:
+  var xs = [10, 20, 30]
+  return xs[7]
+TUCKEOF
+./tuck build "$ix/oob.tuck" -o:"$ix/oout" > /dev/null
+if "$ix/oout/oob" 2>"$ix/err.txt"; then
+  echo "FAIL: out-of-bounds xs[7] did not abort"; exit 1
+fi
+grep -q "out of bounds for seq of length 3" "$ix/err.txt" || { echo "FAIL: sugar lost the bounds precondition"; exit 1; }
+
+# a non-indexable receiver names the type and the fn to define
+cat > "$ix/bad.tuck" <<'TUCKEOF'
+fn main() -> int:
+  let n = 5
+  return n[0]
+TUCKEOF
+if ./tuck ch "$ix/bad.tuck" 2>/dev/null; then
+  echo "FAIL: indexing an int was accepted"; exit 1
+fi
+./tuck ch "$ix/bad.tuck" 2>&1 | grep -q "not indexable" || { echo "FAIL: wrong non-indexable error"; exit 1; }
+rm -rf "$ix"
+
 echo "cli smoke OK"

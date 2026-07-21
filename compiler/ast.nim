@@ -143,6 +143,8 @@ type
     exkQualified
     exkStruct
     exkList
+    exkIndex
+    exkIndexAssign
     exkCall
     exkChain
     exkBinary
@@ -190,6 +192,15 @@ type
       fields*: seq[(string, Expr)]
     of exkList:
       items*: seq[Expr]
+    of exkIndex:
+      # `xs[i]` — sugar the checker rewrites into an `at`/`setAt` call once
+      # the receiver's type is known (Seq -> seq::at, user type -> its own at)
+      idxReceiver*: Expr
+      idxArg*: Expr
+    of exkIndexAssign:
+      # `xs[i] = v` — rewritten to a setAt call by the checker
+      idxTarget*: Expr   # the exkIndex being assigned into
+      idxValue*: Expr
     of exkCall:
       callee*: Expr
       args*: seq[Expr]
