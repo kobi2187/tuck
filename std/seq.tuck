@@ -1,0 +1,6 @@
+# std/seq — indexed access. Implemented by tuck_rt.
+# Bounds are a precondition: an out-of-range index is a program error
+# reported at the call site, not a result the caller matches on.
+extern:
+  fn at[T]({items: Seq[T], index: int}) -> T
+  fn setAt[T]({items: Seq[T], index: int, value: T}) -> void

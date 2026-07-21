@@ -59,6 +59,21 @@ type
 
 proc toStr*[T](value: T): string = $value
 
+# seq access. Bounds are a PRECONDITION: violating one is a program error,
+# reported with the caller's file/line, not an error value the caller matches.
+proc tuckSeqBounds(index, length: int, op: string) =
+  if index < 0 or index >= length:
+    raise newException(IndexDefect,
+      op & ": index " & $index & " out of bounds for seq of length " & $length)
+
+proc at*[T](items: seq[T], index: int): T =
+  tuckSeqBounds(index, items.len, "at")
+  items[index]
+
+proc setAt*[T](items: var seq[T], index: int, value: T) =
+  tuckSeqBounds(index, items.len, "setAt")
+  items[index] = value
+
 proc tuckConcat*(a, b: string): string {.inline.} = a & b
 
 proc errCode*(name: static string): uint16 =

@@ -373,4 +373,36 @@ rc=0; "$mr/out/t" || rc=$?
 [ "$rc" -eq 9 ] || { echo "FAIL: match-as-return exit $rc, want 9"; exit 1; }
 rm -rf "$mr"
 
+# std/seq: indexed read/write as named fns (`at`/`setAt`), not `[]` sugar.
+# Bounds are a precondition — out of range aborts at the call site.
+sq="tests/.smoke_seqat"
+rm -rf "$sq" && mkdir -p "$sq"
+cat > "$sq/t.tuck" <<'TUCKEOF'
+import seq
+
+fn main() -> int:
+  var xs = [10, 20, 30]
+  {items: xs, index: 1, value: 5} seq::setAt
+  let a = {items: xs, index: 0} seq::at
+  let b = {items: xs, index: 1} seq::at
+  let c = {items: xs, index: 2} seq::at
+  return a + b + c
+TUCKEOF
+./tuck build "$sq/t.tuck" -o:"$sq/out" > /dev/null
+rc=0; "$sq/out/t" || rc=$?
+[ "$rc" -eq 45 ] || { echo "FAIL: seq at/setAt exit $rc, want 45"; exit 1; }
+cat > "$sq/oob.tuck" <<'TUCKEOF'
+import seq
+
+fn main() -> int:
+  var xs = [10, 20, 30]
+  return {items: xs, index: 7} seq::at
+TUCKEOF
+./tuck build "$sq/oob.tuck" -o:"$sq/oout" > /dev/null
+if "$sq/oout/oob" 2>"$sq/err.txt"; then
+  echo "FAIL: out-of-bounds at() did not abort"; exit 1
+fi
+grep -q "out of bounds for seq of length 3" "$sq/err.txt" || { echo "FAIL: bounds precondition message missing"; exit 1; }
+rm -rf "$sq"
+
 echo "cli smoke OK"
