@@ -645,18 +645,32 @@ comparisons; `_` is the catch-all. Debug builds embed a reverse table
 instead of a raw code.
 
 **Handling is unwrapping, and it is scoped.** A result flows **whole** until
-it is inspected. `.ok` and `.err` are readable anywhere; `.value` is legal
-only inside that result's `if r.ok:` guard — the narrowing holds within the
-guarded block and nowhere else. Outside it the value is still the wrapped
-type, and returning it where a bare `T` is expected is a compile error:
+it is inspected. `.ok` and `.err` are readable anywhere; `.value` needs a
+guard. Two forms, and they narrow different regions:
 
 ```tuck
 fn use({path: str}) -> int [io]:
   let r = {path} loadFeed
   if r.ok:
-    return r.value.feed.episodes   # legal: under the guard
+    return r.value.feed.episodes   # legal: inside the guarded block
   0                                # error path: no fabricated values
+
+fn use2({path: str}) -> int [io]:
+  let r = {path} loadFeed
+  if not r.ok:
+    return 0                       # bail out first...
+  return r.value.feed.episodes     # ...and the rest of the fn is narrowed
 ```
+
+`if r.ok:` narrows its own block. `if not r.ok:` narrows **everything after
+it**, provided the branch always exits (returns, raises, breaks or
+continues) — otherwise control could reach the following code with the value
+still absent, and the narrowing would be unsound. The early-return form keeps
+the happy path unindented, which is why it is the one the pool and resource
+examples use.
+
+Outside a guard the value is still the wrapped type, and returning it where a
+bare `T` is expected is a compile error.
 
 There is no propagation operator. Passing the burden upward is simply
 returning the whole result — the caller's signature then carries `!T` too,

@@ -238,7 +238,7 @@ fn use({n: int}) -> int [io]:
   if r.ok:
     let x = 1
   return r.value.amount
-""", "inside an `if"
+""", "guard it first"
 
 expectError "err outside a fallible fn", """
 fn use({n: int}) -> int:
@@ -1333,6 +1333,60 @@ fn main() -> int:
   var xs = [10, 20, 30]
   return xs[1, 2]
 """, "index"
+
+# ---------- early-return guards narrow ----------
+
+expectOk "early-return guard narrows the rest of the fn", """
+fn readIt({n: int}) -> !{v: int} [io]:
+  return {v: n}
+
+fn main() -> int [io]:
+  let r = {n: 5} readIt
+  if not r.ok:
+    return 0
+  return r.value.v
+"""
+
+expectError "a guard that falls through does NOT narrow", """
+fn readIt({n: int}) -> !{v: int} [io]:
+  return {v: n}
+
+fn main() -> int [io]:
+  let r = {n: 5} readIt
+  if not r.ok:
+    let x = 1
+  return r.value.v
+""", "guard it first"
+
+expectError "no guard at all is still an error", """
+fn readIt({n: int}) -> !{v: int} [io]:
+  return {v: n}
+
+fn main() -> int [io]:
+  let r = {n: 5} readIt
+  return r.value.v
+""", "guard it first"
+
+expectOk "early-return guard works for ?T from a pool", """
+type Slot:
+  id: int
+
+pool Slots = Slot [count: 2]
+
+fn main() -> int:
+  let s = Slots.acquire
+  if not s.ok:
+    return 0
+  return s.value.id
+"""
+
+expectOk "unary `not` binds looser than field access", """
+fn main() -> int:
+  let p = {flag: true}
+  if not p.flag:
+    return 0
+  return 1
+"""
 
 # ---------- pools (spec 7.2) ----------
 

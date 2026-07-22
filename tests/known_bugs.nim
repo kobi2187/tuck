@@ -368,7 +368,7 @@ fn main() -> int:
     ok)
 
 # ---------------------------------------------------------------------------
-# 9. OPEN — an early-return guard does not narrow a result
+# 9. FIXED 2026-07-23 — an early-return guard narrows a result
 # ---------------------------------------------------------------------------
 # The checker recognises only `if r.ok:` as the guard. `if not r.ok: return`
 # proves presence for everything AFTER it just as well, and is the flat form
@@ -393,7 +393,7 @@ fn main() -> int [io]:
       "`if r.ok:` form is recognised today, which forces the happy path to " &
       "be indented — the opposite of what early-return is for.",
     "compiler/typecheck.nim — the .ok guard analysis",
-    fixed = false,
+    fixed = true,
     ok)
 
 echo ""

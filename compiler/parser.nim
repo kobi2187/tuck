@@ -168,6 +168,7 @@ proc getSpan(p: Parser): Span =
 # Forward declarations
 proc parseType*(p: var Parser): Type
 proc parseExpr*(p: var Parser): Expr
+proc parseChainExpr(p: var Parser): Expr
 proc parsePattern*(p: var Parser): Pattern
 proc parseDecl*(p: var Parser): Decl
 proc parseBlock*(p: var Parser): Expr
@@ -554,11 +555,11 @@ proc parsePrimaryExpr(p: var Parser): Expr =
     return Expr(span: sp, kind: exkQualified, modulePath: @[], qualName: name)
   if curr.kind == tkMinus:
     discard p.advance()
-    let operand = p.parsePrimaryExpr()
+    let operand = p.parseChainExpr()
     return Expr(span: sp, kind: exkUnary, unaryOp: uoNeg, operand: operand)
   if curr.kind == tkNot:
     discard p.advance()
-    let operand = p.parsePrimaryExpr()
+    let operand = p.parseChainExpr()
     return Expr(span: sp, kind: exkUnary, unaryOp: uoNot, operand: operand)
   case curr.kind
   of tkIntLit:

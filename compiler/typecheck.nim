@@ -358,10 +358,11 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
       of "value":
         # unwrap is legal only under this result's `if x.ok` guard
         if e.receiver.kind != exkVar or e.receiver.name notin tc.okNarrowed:
-          fail("Type Error: unhandled " & typeName(recvT) & " — read .value" &
-               " inside an `if " &
-               (if e.receiver.kind == exkVar: e.receiver.name else: "<result>") &
-               ".ok` guard", e.span)
+          let n = if e.receiver.kind == exkVar: e.receiver.name else: "<result>"
+          fail("Type Error: unhandled " & typeName(recvT) & " — guard it " &
+               "first: `if " & n & ".ok:` and read .value inside, or " &
+               "`if not " & n & ".ok:` with a return, which narrows " &
+               "everything after it", e.span)
         return unwrapEffect(recvT)
       else: return unknownType(e.span)  # .err — code; enum-typed later
   # `slot.invoke {args}` — call through a baked fn slot (builtin; the slot's
@@ -983,6 +984,38 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
 
 # Kind dispatch lives in synthesizeKind; synthesize stamps the result onto the
 # node (typed AST — codegen reads semLayer.typeFor(e) for type-directed lowering)
+proc alwaysExits(e: Expr): bool =
+  ## True when control cannot fall out the bottom of this branch — the
+  ## condition that lets an early-return guard narrow what follows it.
+  if e == nil: return false
+  case e.kind
+  of exkReturn, exkRaise, exkBreak, exkContinue: true
+  of exkBlock:
+    e.stmts.len > 0 and alwaysExits(e.stmts[^1])
+  of exkIf:
+    # only if BOTH sides exit; a missing else can fall through
+    e.elseBranch != nil and alwaysExits(e.thenBranch) and
+      alwaysExits(e.elseBranch)
+  of exkMatch:
+    if e.arms.len == 0: return false
+    for arm in e.arms:
+      if not alwaysExits(arm.body): return false
+    true
+  else: false
+
+proc earlyReturnGuard(s: Expr): string =
+  ## `if not r.ok: <exits>` — the name of the result it proves present for
+  ## everything after this statement, or "" when the shape does not match.
+  if s == nil or s.kind != exkIf or s.cond == nil: return ""
+  if not alwaysExits(s.thenBranch): return ""
+  if s.elseBranch != nil: return ""   # an else means the guard is not a bail
+  let c = s.cond
+  if c.kind != exkUnary or c.unaryOp != uoNot or c.operand == nil: return ""
+  let inner = c.operand
+  if inner.kind != exkField or inner.fieldName != "ok": return ""
+  if inner.receiver == nil or inner.receiver.kind != exkVar: return ""
+  inner.receiver.name
+
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   case e.kind
   of exkLit:
@@ -1028,8 +1061,17 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkBlock:
     tc.pushScope()
     var last = unknownType(e.span)
+    # `if not r.ok: return` proves r is present for the REST of this block.
+    # Unlike `if r.ok:`, which narrows its own then-branch, an early-return
+    # guard narrows everything after it — so the narrowing is applied here,
+    # where statements are sequenced, and undone when the block ends.
+    var earlyNarrowed: seq[string]
     for s in e.stmts:
       last = tc.synthesize(s)
+      let g = earlyReturnGuard(s)
+      if g != "" and g notin tc.okNarrowed:
+        tc.okNarrowed.incl(g)
+        earlyNarrowed.add(g)
       # A dropped fallible result in statement position: the policy decides.
       # strict collects it as an error (ALL sites reported at the end);
       # continue/exit mark the site so codegen routes it to the handler.
@@ -1043,6 +1085,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
           tc.unhandledSites.add(typeName(last) & " at " & site)
         else:
           tc.unhandledSites.add(typeName(last) & " discarded at " & site)
+    for g in earlyNarrowed: tc.okNarrowed.excl(g)
     tc.popScope()
     last
   of exkIf: tc.synthIf(e)
