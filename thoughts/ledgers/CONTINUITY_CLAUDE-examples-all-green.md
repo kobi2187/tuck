@@ -115,4 +115,9 @@ when Beef also compiles it).
 - Gate lists: tests/compile_all_examples.nim nimCheckExpected,
   tests/beef_backend.nim beefCheckExpected
 - Test: full matrix — typecheck_tests, compile_all_examples, end_to_end,
-  cli_smoke.sh (BEEFBUILD_BIN=~/apps/Beef/IDE/dist/BeefBuild), beef_backend
+  cli_smoke.sh (BEEFBUILD_BIN=~/apps/Beef/IDE/dist/BeefBuild), beef_backend,
+  known_bugs
+- known_bugs (2026-07-22): every confirmed bug, open or fixed, asserted as
+  CORRECT behaviour plus a `fixed` flag. Fix a bug -> flip its flag -> the
+  same assertion becomes a permanent regression guard. Suite fails both when
+  a fix lands unflagged and when a fixed bug returns. 5 open, 1 fixed.

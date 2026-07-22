@@ -1,0 +1,228 @@
+# tests/known_bugs.nim
+# Regression tests for known bugs — both the ones still open and the ones
+# already fixed.
+#
+# Each entry states the CORRECT behaviour as a real assertion, plus a `fixed`
+# flag saying whether the compiler does that yet.
+#
+#   fixed = false -> the bug is open. The suite reports it and expects the
+#                    assertion to fail. If it starts PASSING, the suite fails
+#                    and tells you to flip the flag: that is how a fix gets
+#                    locked in.
+#   fixed = true  -> the bug is fixed. The assertion is now a permanent
+#                    regression guard: if the bug ever comes back, the suite
+#                    fails like any normal test.
+#
+# So fixing a bug is a two-line change — fix it, flip the flag — and from then
+# on the same assertion protects it forever. Nothing gets deleted, so a bug
+# that returns is caught by the test written when it was first found.
+
+import os, osproc, strutils
+
+let repoRoot = currentSourcePath.parentDir.parentDir
+let tuckBin = repoRoot / "tuck"
+
+var failures = 0
+var stillBroken = 0
+
+proc build(src: string): tuple[ok: bool, output: string] =
+  ## Compile a snippet all the way to a binary. ok=false when any stage fails.
+  let dir = getTempDir() / "tuck_known_bugs"
+  removeDir(dir)
+  createDir(dir)
+  let f = dir / "t.tuck"
+  writeFile(f, src)
+  let (outp, code) = execCmdEx(tuckBin & " build " & f & " -o:" & dir / "out")
+  result = (code == 0, outp)
+
+proc run(src: string): tuple[built: bool, exitCode: int] =
+  ## Build and run; exitCode is the process result (Tuck main's return value).
+  let dir = getTempDir() / "tuck_known_bugs_run"
+  removeDir(dir)
+  createDir(dir)
+  let f = dir / "t.tuck"
+  writeFile(f, src)
+  let (_, code) = execCmdEx(tuckBin & " build " & f & " -o:" & dir / "out")
+  if code != 0: return (false, -1)
+  let (_, rc) = execCmdEx(dir / "out" / "t")
+  (true, rc)
+
+proc check(src: string): string =
+  let dir = getTempDir() / "tuck_known_bugs_check"
+  removeDir(dir)
+  createDir(dir)
+  let f = dir / "t.tuck"
+  writeFile(f, src)
+  let (outp, _) = execCmdEx(tuckBin & " ch " & f)
+  outp
+
+template bug(name, why, fixWhere: string, fixed: bool, correct: untyped) =
+  ## `correct` asserts the behaviour we WANT. `fixed` says whether we have it.
+  let ok = correct
+  if fixed and ok:
+    echo "PASS           ", name
+    echo "               (regression guard — this bug was fixed and stays fixed)"
+  elif fixed and not ok:
+    echo "REGRESSED!     ", name
+    echo "               ", why
+    echo "               This was FIXED and has come back. Look at: ", fixWhere
+    failures.inc
+  elif ok:
+    echo "NOW PASSING!   ", name
+    echo "               This bug appears to be fixed — that is GOOD."
+    echo "               Set fixed = true on this entry to lock the fix in,"
+    echo "               so the suite catches it if it ever returns."
+    failures.inc
+  else:
+    echo "OPEN (known)   ", name
+    echo "               ", why
+    echo "               fix: ", fixWhere
+    stillBroken.inc
+
+echo "=== known bugs: each line below is a bug that still reproduces ==="
+echo ""
+
+# ---------------------------------------------------------------------------
+# 1. `/=` on integers emits Nim's float-returning `/`
+# ---------------------------------------------------------------------------
+# Found 2026-07-22 while collapsing the five compound-assign branches.
+# Verified pre-existing at bd335c3, so it predates that refactor.
+block:
+  let (ok, outp) = build("""
+fn main() -> int:
+  var a = 10
+  a /= 4
+  return a
+""")
+  bug(
+    "`/=` on ints uses integer division",
+    "`a /= 4` on an int lowers to Nim's `/`, which returns float, so the " &
+      "generated code does not compile. Integer division should emit `div`.",
+    "compiler/codegen.nim binary emission — boDiv on integer operands",
+    fixed = false,
+    ok)   # correct = it compiles
+
+# ---------------------------------------------------------------------------
+# 2. `toStr` + string concatenation picks the numeric `+`
+# ---------------------------------------------------------------------------
+# From the 2026-07-20 expressibility audit; investigation was in flight when
+# that session ended. `n.toStr` alone works; it only breaks under `+`.
+block:
+  let (ok, outp) = build("""
+fn main() -> int:
+  let n = 3
+  let s = n.toStr + " bottles"
+  return 0
+""")
+  bug(
+    "`toStr` result stays a str under `+`",
+    "`n.toStr + \" bottles\"` picks the numeric `+` overload instead of " &
+      "tuckConcat. The concat branch tests e.left's type, which is not str " &
+      "here — either the type is unset or the expression parses as " &
+      "`n.(toStr + ...)`.",
+    "compiler/codegen.nim:469 / :772 concat condition — dump the AST first",
+    fixed = false,
+    ok)   # correct = it compiles
+
+# ---------------------------------------------------------------------------
+# 3. `if` has no expression form
+# ---------------------------------------------------------------------------
+block:
+  let outp = check("""
+fn main() -> int:
+  let a = 5
+  let x = if a > 0: 1 else: 2
+  return x
+""")
+  bug(
+    "`if` works as an expression",
+    "`let x = if c: a else: b` is a parse error. Nim (the target) supports " &
+      "if-expressions natively, so this is a parser gap, not a lowering one.",
+    "compiler/parser.nim — allow exkIf in expression position",
+    fixed = false,
+    "Parse Error" notin outp)   # correct = it parses
+
+# ---------------------------------------------------------------------------
+# 4. `[saturating]` does not clamp — it WRAPS, silently
+# ---------------------------------------------------------------------------
+# The worst of these: no error at compile time, no trap at runtime, just a
+# wrong value. Spec 7.1 promises saturating clamps at the maximum.
+block:
+  # 70000 into a u16 should clamp to 65535. If it wraps it becomes 4464.
+  let (built, rc) = run("""
+type SafeRPM = u16 [saturating]
+
+fn main() -> int:
+  let s = 70000 SafeRPM
+  if s == 65535 SafeRPM:
+    return 1
+  return 2
+""")
+  bug(
+    "`[saturating]` clamps at the maximum",
+    "70000 into a `u16 [saturating]` should clamp to 65535; it wraps to " &
+      "4464 instead. Codegen emits a bare `SafeRPM(70000)` with no clamp, " &
+      "and drops `distinct` as well. Silent wrong value — no error, no trap.",
+    "compiler/codegen.nim distinct-type emission — clamp on construction",
+    fixed = false,
+    built and rc == 1)   # correct = 70000 clamped to 65535
+
+# ---------------------------------------------------------------------------
+# 5. A type argument named like an attribute fails to parse
+# ---------------------------------------------------------------------------
+# The attribute-vs-generic decision is a hardcoded 19-name word list
+# (parser.nim:328). Any type argument sharing a name with an attribute —
+# error, stack, queue, align, priority, volatile … — is misread.
+block:
+  let outp = check("""
+type Box[T]:
+  v: T
+
+fn take({b: Box[error]}) -> int:
+  return 0
+
+fn main() -> int:
+  return 0
+""")
+  bug(
+    "type argument may be named like an attribute",
+    "`Box[error]` fails because `error` is in the attribute word list, so " &
+      "the parser reads the type argument as `[error: ...]`. Same for " &
+      "stack, queue, align, priority, volatile and 14 others.",
+    "compiler/parser.nim:328 — decide by declared set, not a literal list",
+    fixed = false,
+    "Parse Error" notin outp)   # correct = it parses
+
+# ---------------------------------------------------------------------------
+# 6. FIXED 2026-07-22 — the diagnostic for bug 5 named a token, not the problem
+# ---------------------------------------------------------------------------
+# `Box[error]` used to fail with "Expected token 'tkColon' but got
+# 'tkRBracket'", which tells the user nothing. The parse still fails (bug 5
+# above), but the message now explains why and what to do.
+block:
+  let outp = check("""
+type Box[T]:
+  v: T
+
+fn take({b: Box[error]}) -> int:
+  return 0
+
+fn main() -> int:
+  return 0
+""")
+  bug(
+    "attribute/type-argument clash explains itself",
+    "The parse error for `Box[error]` must say that `error` is an attribute " &
+      "name, not report a raw token mismatch.",
+    "compiler/parser.nim — the isAttr branch's guard",
+    fixed = true,
+    "is an attribute name" in outp and "tkColon" notin outp)
+
+echo ""
+echo "open bugs: ", stillBroken
+if failures > 0:
+  echo ""
+  echo failures, " entr(ies) need attention: either a fix landed and its flag"
+  echo "needs flipping to fixed = true, or a fixed bug has come back."
+  quit(1)
+echo "OK — open bugs still open, fixed bugs still fixed."

@@ -330,6 +330,22 @@ proc parsePrimaryType(p: var Parser): Type =
         "io", "unsafe", "may_block", "stack", "priority"])  # effect markers after a return type
       discard p.advance() # eat "["
       if isAttr:
+        # An attribute is `[name]` or `[name: value]`. If the name is followed
+        # by anything else, this was meant as a TYPE ARGUMENT that happens to
+        # share a name with an attribute — say so, rather than reporting a
+        # surprising token. (The word list itself is the real bug; see
+        # tests/known_bugs.nim.)
+        # `error` additionally REQUIRES a value (`[error: FsError]`), so a
+        # bare `[error]` is certainly a type argument, not an attribute.
+        let bareAttr = p.peek(1).kind in {tkRBracket, tkComma}
+        if p.peek(1).kind notin {tkColon, tkRBracket, tkComma} or
+           (first.value == "error" and bareAttr):
+          p.reportError("'" & first.value & "' is an attribute name, so " &
+            "`" & base.name & "[" & first.value & "]` is read as an " &
+            "attribute, not a type argument. Rename the type argument — " &
+            "attribute names (error, stack, queue, align, priority, " &
+            "volatile, io, sealed, packed, …) cannot currently be used as " &
+            "type arguments.")
         base.attrs = p.parseTypeUseAttrs()
       else:
         var args: seq[Type]
