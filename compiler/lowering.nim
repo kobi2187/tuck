@@ -1,5 +1,6 @@
 # compiler/lowering.nim
-import ast, strutils
+import ast
+import resolution, strutils
 
 proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
   if t == nil: return @[]
@@ -137,9 +138,11 @@ proc lowerExpr(e: Expr, m: Module) =
   of exkBracket:
     # the checker-stamped at() call is what codegen emits — lower it, not
     # the sugar node (a type application has no call and nothing to lower)
-    if e.brCallNode != nil: lowerExpr(e.brCallNode, m)
+    let c = current.call(e)
+    if c != nil: lowerExpr(c, m)
   of exkBracketAssign:
-    if e.brAssignNode != nil: lowerExpr(e.brAssignNode, m)
+    let c = current.call(e)
+    if c != nil: lowerExpr(c, m)
   of exkLit, exkVar, exkQualified, exkImport:
     # leaves: nothing beneath them to lower
     discard

@@ -7,6 +7,7 @@
 # against compiler/tuck_rt.bf (namespace TuckRt) the way Nim output
 # imports compiler/tuck_rt.nim.
 import ast, lowering, strutils, sets, tables
+import resolution
 
 type
   BeefCodegenCtx = object
@@ -659,7 +660,7 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
            else: e.litValue
   of exkVar:
     # nullary call stamped by the checker (spec 2.3: a bare name IS a call)
-    if e.varCallNode != nil: return ctx.genBeefExpr(e.varCallNode)
+    if current.hasCall(e): return ctx.genBeefExpr(current.call(e))
     if e.name == "...": return ""  # pending hole: compiles, does nothing
     if e.name == "input" and ctx.currentParams.len > 0:
       # the whole incoming payload, rebuilt as its TRec shape
@@ -685,9 +686,9 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
         return e.fieldName & "(" & ctx.genBeefExpr(e.receiver) & ")"
       else:
         return ctx.genBeefExpr(e.receiver)
-    if e.callNode != nil:
-      # fieldName resolved to a fn call, not a field (checker-stamped)
-      return ctx.genBeefCall(e.callNode)
+    if current.hasCall(e):
+      # fieldName resolved to a fn call, not a field (checker-resolved)
+      return ctx.genBeefCall(current.call(e))
     if e.receiver != nil and e.receiver.kind == exkVar:
       # bare Type.Variant of a payload sum: kind-tagged construction
       let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
@@ -706,10 +707,10 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
     return ".(" & parts.join(", ") & ")"
   of exkBracket:
     # indexing resolved to an at() call; a type application never reaches codegen
-    if e.brCallNode != nil: return ctx.genBeefExpr(e.brCallNode)
+    if current.hasCall(e): return ctx.genBeefExpr(current.call(e))
     return ""
   of exkBracketAssign:
-    if e.brAssignNode != nil: return ctx.genBeefExpr(e.brAssignNode)
+    if current.hasCall(e): return ctx.genBeefExpr(current.call(e))
     return ""
   of exkFor:
     let iterStr = ctx.genBeefExpr(e.iterable)
@@ -861,8 +862,8 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
     let baseStr = ctx.genBeefExpr(e.base)
     var lines: seq[string]
     for step in e.steps:
-      if step.callNode != nil:
-        lines.add(ind & baseStr & " = " & ctx.genBeefCall(step.callNode) & ";")
+      if current.stepCall(step) != nil:
+        lines.add(ind & baseStr & " = " & ctx.genBeefCall(current.stepCall(step)) & ";")
       else:
         var valStr = ""
         if step.arg != nil and step.arg.kind == exkStruct and

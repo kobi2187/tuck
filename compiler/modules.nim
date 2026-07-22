@@ -50,7 +50,13 @@ proc loadModuleCached(path: string): Module =
       var entry: CacheEntry
       unpack(readFile(cp), entry)
       if entry.stamp == buildStamp and entry.srcHash == srcHash:
-        return entry.m
+        # A cached module carries the ids it had when it was written, which
+        # would collide with the ids handed out this run. Renumber into the
+        # current program's space.
+        result = entry.m
+        clearIds(result)
+        assignIds(result)
+        return result
     except CatchableError, Defect:
       # msgpack raises Defects (ObjectConversionDefect) on layout changes,
       # which the stamp check never gets to see — treat both as stale

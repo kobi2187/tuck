@@ -1,5 +1,6 @@
 # compiler/codegen.nim
 import ast, lowering, strutils, sets, tables
+import resolution
 
 type
   CodegenCtx = object
@@ -506,7 +507,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     of lkStr: "\"" & e.litValue & "\""
     else: e.litValue
   of exkVar:
-    if e.varCallNode != nil: ctx.genExpr(e.varCallNode)
+    if current.hasCall(e): ctx.genExpr(current.call(e))
     elif e.name == "...": "discard"
     elif e.name == "input" and ctx.currentParams.len > 0:
       var parts: seq[string]
@@ -523,8 +524,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         e.fieldName & "(" & ctx.genExpr(e.receiver) & ")"
       else:
         ctx.genExpr(e.receiver)
-    elif e.callNode != nil:
-      ctx.genCall(e.callNode)
+    elif current.hasCall(e):
+      ctx.genCall(current.call(e))
     elif e.receiver != nil and e.receiver.kind == exkVar and
          ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
       # bare Type.Variant of a payload sum: kind-tagged construction
@@ -546,9 +547,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     "@[" & items.join(", ") & "]"
   of exkBracket:
     # indexing resolved to an at() call; a type application never reaches codegen
-    if e.brCallNode != nil: ctx.genExpr(e.brCallNode) else: ""
+    if current.hasCall(e): ctx.genExpr(current.call(e)) else: ""
   of exkBracketAssign:
-    if e.brAssignNode != nil: ctx.genExpr(e.brAssignNode) else: ""
+    if current.hasCall(e): ctx.genExpr(current.call(e)) else: ""
   of exkFor:
     let iterStr =
       if e.iter != nil and e.iter.kind == pkVar: e.iter.name
@@ -698,8 +699,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     let baseStr = ctx.genExpr(e.base)
     var lines: seq[string]
     for step in e.steps:
-      if step.callNode != nil:
-        lines.add(ind & baseStr & " = " & ctx.genCall(step.callNode))
+      if current.stepCall(step) != nil:
+        lines.add(ind & baseStr & " = " & ctx.genCall(current.stepCall(step)))
       else:
         var valStr = ""
         if step.arg != nil and step.arg.kind == exkStruct and

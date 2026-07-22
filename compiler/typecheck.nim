@@ -4,6 +4,7 @@
 # Undeclared symbols synthesize Unknown, which is compatible with everything,
 # so sketch code keeps compiling while declared code is checked strictly.
 import ast, semantics, lowering, tables, strutils, sets
+import resolution
 
 # UnknownName now lives in ast.nim (codegen needs it for typed-AST checks)
 
@@ -374,8 +375,8 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
              "slot.invoke {a, b}", e.dotArg.span)
       discard tc.synthesize(e.dotArg)
       callArgs.add(e.dotArg)
-    e.callNode = Expr(span: e.span, kind: exkCall, callee: e.receiver,
-                       args: callArgs)
+    setCall(current, e, Expr(span: e.span, kind: exkCall, callee: e.receiver,
+                             args: callArgs))
     return unknownType(e.span)
   # Unit sugar: 5.ms is postfix application — ms is an ordinary function
   if e.receiver != nil and e.receiver.kind == exkLit and
@@ -429,14 +430,16 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   if tc.fnSigs.hasKey(e.fieldName):
     if e.dotArg != nil:
       # `.fn {args}` method form: receiver = first param, args fill the rest
-      e.callNode = tc.synthMethodCall(e.fieldName, e.receiver, recvT,
-                                       e.dotArg, e.span)
-      return e.callNode.ty
+      let mc = tc.synthMethodCall(e.fieldName, e.receiver, recvT,
+                                  e.dotArg, e.span)
+      setCall(current, e, mc)
+      return mc.ty
     # bare `.fn` — same as a whitespace call: the receiver is the payload
-    e.callNode = Expr(span: e.span, kind: exkCall,
-                       callee: Expr(span: e.span, kind: exkVar, name: e.fieldName),
-                       args: @[e.receiver])
-    return tc.synthesize(e.callNode)
+    let bc = Expr(span: e.span, kind: exkCall,
+                  callee: Expr(span: e.span, kind: exkVar, name: e.fieldName),
+                  args: @[e.receiver])
+    setCall(current, e, bc)
+    return tc.synthesize(bc)
   # Known record, missing field, no matching fn: the payoff error.
   # Sum types carry variant fields we don't track per-variant in v1 — only
   # flag when the receiver is a plain record.
@@ -642,17 +645,19 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
         var retT: Type
         if step.arg != nil:
           # braced args pin the method form: receiver = first param
-          step.callNode = tc.synthMethodCall(step.target.name, e.base, recvT,
-                                              step.arg, step.span)
-          retT = step.callNode.ty
+          let sc = tc.synthMethodCall(step.target.name, e.base, recvT,
+                                      step.arg, step.span)
+          setStepCall(current, step, sc)
+          retT = sc.ty
         else:
           # bare `..fn`: same type-directed resolution as any other call
           # (whole-bind the receiver, else its fields fill the params)
-          step.callNode = Expr(span: step.span, kind: exkCall,
-                                callee: Expr(span: step.span, kind: exkVar,
-                                             name: step.target.name),
-                                args: @[e.base])
-          retT = tc.synthesize(step.callNode)
+          let sc = Expr(span: step.span, kind: exkCall,
+                        callee: Expr(span: step.span, kind: exkVar,
+                                     name: step.target.name),
+                        args: @[e.base])
+          setStepCall(current, step, sc)
+          retT = tc.synthesize(sc)
         if not tc.compatible(retT, baseT):
           fail("Type Error: cannot assign " & typeName(retT) & " to " &
                typeName(baseT) & " — a '..' mutator must return the " &
@@ -959,10 +964,11 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     elif tc.fnSigs.hasKey(e.name) and tc.fnSigs[e.name].params.len == 0:
       # spec 2.3: a bare name IS a call — `f`, `.f` and `.f {}` are one form.
       # Only nullary fns: a fn with params referenced bare is a fn-ref (bake).
-      e.varCallNode = Expr(span: e.span, kind: exkCall,
-                           callee: Expr(span: e.span, kind: exkVar, name: e.name),
-                           args: @[])
-      tc.synthesize(e.varCallNode)
+      let vc = Expr(span: e.span, kind: exkCall,
+                    callee: Expr(span: e.span, kind: exkVar, name: e.name),
+                    args: @[])
+      setCall(current, e, vc)
+      tc.synthesize(vc)
     else: unknownType(e.span)
   of exkField: tc.synthFieldAccess(e)
   of exkStruct:
@@ -1207,8 +1213,9 @@ proc synthBracket(tc: var TypeChecker, e: Expr): Type =
      tc.typeDecls.hasKey(e.brReceiver.name):
     return tc.typeAppFromBracket(e, e.brReceiver.name)
   let recvT = tc.synthesize(e.brReceiver)
-  e.brCallNode = tc.resolveIndex(e, nil, recvT, e.span)
-  tc.synthesize(e.brCallNode)
+  let ic = tc.resolveIndex(e, nil, recvT, e.span)
+  setCall(current, e, ic)
+  tc.synthesize(ic)
 
 proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
   let br = e.brTarget
@@ -1217,8 +1224,9 @@ proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
     fail("Type Error: cannot assign into the type application '" &
          br.brReceiver.name & "[...]'", e.span)
   let recvT = tc.synthesize(br.brReceiver)
-  e.brAssignNode = tc.resolveIndex(br, e.brValue, recvT, e.span)
-  tc.synthesize(e.brAssignNode)
+  let ac = tc.resolveIndex(br, e.brValue, recvT, e.span)
+  setCall(current, e, ac)
+  tc.synthesize(ac)
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type =
   if e == nil: return unknownType(Span())
@@ -1689,6 +1697,8 @@ proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
 
 proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
                        preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
+  # one semantic layer per program; clear any previous run's entries
+  resetResolution()
   checkErrCodeCollisions(mods)
   var sigsByMod = initTable[string, Table[string, FnSig]]()
   var pendByMod = initTable[string, Table[string, Span]]()

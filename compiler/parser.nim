@@ -1684,4 +1684,6 @@ proc parseModule*(p: var Parser): Module =
       discard p.advance()
     else:
       decls.add(p.parseDecl())
-  return Module(path: @[], decls: decls, span: sp)
+  result = Module(path: @[], decls: decls, span: sp)
+  # identity for the semantic layer, assigned once at the parse boundary
+  assignIds(result)

@@ -2,6 +2,8 @@
 # Tuck AST node definitions.
 # This file contains the core syntax tree shape for the lexer/parser/compiler.
 
+import hashes
+
 type
   Span* = object
     line*: int
@@ -129,12 +131,18 @@ type
     coDot
     coDotDot
 
+  # Identity for the semantic layer. Assigned once, right after parsing, and
+  # carried through every later pass — including a per-target clone — so the
+  # Resolution built during checking stays reachable from a rewritten tree.
+  # 0 means "not yet assigned" (a node built by a later pass).
+  NodeId* = distinct uint32
+
   ChainStep* = object
     op*: ChainOp
     target*: Expr
     arg*: Expr
     span*: Span
-    callNode*: Expr  # stamped by the checker when target resolves to a fn call
+    id*: NodeId      # identity for the Resolution (a step can resolve to a call)
 
   ExprKind* = enum
     exkLit
@@ -162,6 +170,7 @@ type
     exkImport
 
   Expr* = ref object
+    id*: NodeId
     span*: Span
     shortcutSite*: string  # set by checker under continue/exit policy: this
                            # statement drops a !T and routes to the handler
@@ -173,18 +182,12 @@ type
       litValue*: string
     of exkVar:
       name*: string
-      varCallNode*: Expr # stamped by the checker when a bare name resolves to
-                         # a ZERO-PARAM fn: spec 2.3 makes `f`, `.f` and
-                         # `.f {}` the same call form — codegen emits this
     of exkField:
       receiver*: Expr
       fieldName*: string
       ctorUnsafe*: bool  # Type.Variant [unsafe] — sealed-construction escape hatch
       dotArg*: Expr      # `.fn {args}` — extra args for the method form
                          # (receiver rides as the fn's first parameter)
-      callNode*: Expr    # stamped by the checker when fieldName resolves to a
-                         # fn call (not a field): the synthesized exkCall node,
-                         # already typed — codegen emits this instead
     of exkQualified:
       modulePath*: seq[string]
       qualName*: string
@@ -195,15 +198,13 @@ type
     of exkBracket:
       # `recv[a, b, ...]`. The receiver decides the meaning, not the argument
       # count: a declared type is a type application, a value is an index.
-      # The checker resolves it and stamps brCallNode for the index case.
+      # The checker resolves it; the call lands in the Resolution.
       brReceiver*: Expr
       brArgs*: seq[Expr]
-      brCallNode*: Expr
     of exkBracketAssign:
-      # `recv[i] = v` — the checker stamps brCallNode with the setAt call
+      # `recv[i] = v` — the checker resolves this to a setAt call
       brTarget*: Expr    # the exkBracket being assigned into
       brValue*: Expr
-      brAssignNode*: Expr
     of exkCall:
       callee*: Expr
       args*: seq[Expr]
@@ -352,3 +353,149 @@ proc enumDomain*(m: Module, t: Type): seq[string] =
           vals.add(v.name)
         return vals
   return @[]
+
+# --- NodeId: identity for the semantic layer -------------------------------
+
+proc `==`*(a, b: NodeId): bool {.borrow.}
+proc hash*(a: NodeId): Hash {.borrow.}
+proc `$`*(a: NodeId): string = "n" & $uint32(a)
+
+proc isSet*(a: NodeId): bool = uint32(a) != 0'u32
+
+proc assignIds*(e: Expr, next: var uint32) =
+  ## Give every node in this tree an id. Idempotent: a node that already has
+  ## one keeps it, so re-running over a partly-built tree is safe.
+  if e == nil: return
+  if not e.id.isSet:
+    next.inc
+    e.id = NodeId(next)
+  case e.kind
+  of exkLit, exkVar, exkQualified, exkImport: discard
+  of exkField:
+    assignIds(e.receiver, next); assignIds(e.dotArg, next)
+  of exkStruct:
+    for f in e.fields: assignIds(f[1], next)
+  of exkList:
+    for it in e.items: assignIds(it, next)
+  of exkBracket:
+    assignIds(e.brReceiver, next)
+    for a in e.brArgs: assignIds(a, next)
+  of exkBracketAssign:
+    assignIds(e.brTarget, next); assignIds(e.brValue, next)
+  of exkCall:
+    assignIds(e.callee, next)
+    for a in e.args: assignIds(a, next)
+  of exkChain:
+    assignIds(e.base, next)
+    for s in e.steps.mitems:
+      if not s.id.isSet:
+        next.inc
+        s.id = NodeId(next)
+      assignIds(s.target, next); assignIds(s.arg, next)
+  of exkBinary:
+    assignIds(e.left, next); assignIds(e.right, next)
+  of exkUnary:
+    assignIds(e.operand, next)
+  of exkBlock:
+    for s in e.stmts: assignIds(s, next)
+  of exkIf:
+    assignIds(e.cond, next); assignIds(e.thenBranch, next)
+    assignIds(e.elseBranch, next)
+  of exkMatch:
+    assignIds(e.subject, next)
+    for arm in e.arms:
+      assignIds(arm.guard, next); assignIds(arm.body, next)
+  of exkFor:
+    assignIds(e.iterable, next); assignIds(e.body, next)
+  of exkWhile:
+    assignIds(e.whileCond, next); assignIds(e.whileBody, next)
+  of exkBreak, exkContinue: discard
+  of exkAssign:
+    assignIds(e.target, next); assignIds(e.assignVal, next)
+  of exkReturn:
+    assignIds(e.returnVal, next)
+  of exkRaise:
+    assignIds(e.raiseVal, next)
+
+proc assignIds*(d: Decl, next: var uint32) =
+  ## Every Expr reachable from a declaration.
+  if d == nil: return
+  case d.kind
+  of dkFn: assignIds(d.fnBody, next)
+  of dkTask: assignIds(d.taskBody, next)
+  of dkConst: assignIds(d.constVal, next)
+  of dkExpr: assignIds(d.expr, next)
+  of dkStaticAssert: assignIds(d.assertExpr, next)
+  of dkType:
+    for m in d.typeMembers: assignIds(m, next)
+  of dkObject:
+    for m in d.objMembers: assignIds(m, next)
+  of dkMixin:
+    for m in d.mixinMembers: assignIds(m, next)
+  of dkActor:
+    for h in d.handlers: assignIds(h, next)
+  of dkRegistry, dkRegister, dkErrors, dkImport: discard
+
+var globalNodeCounter: uint32 = 0
+
+proc assignIds*(m: var Module) =
+  ## Give the whole module's expressions their ids. Runs once, right after
+  ## parsing, so the semantic layer has a stable key for every source node.
+  ##
+  ## The counter is PROGRAM-wide, not per-module: a build checks and emits
+  ## several modules, and the Resolution table spans all of them, so ids
+  ## must not collide across modules.
+  for d in m.decls: assignIds(d, globalNodeCounter)
+
+proc clearIds*(e: Expr) =
+  ## Drop ids so assignIds hands out fresh ones. Needed when a module comes
+  ## back from the AST cache carrying ids from the run that wrote it.
+  if e == nil: return
+  e.id = NodeId(0)
+  case e.kind
+  of exkLit, exkVar, exkQualified, exkImport: discard
+  of exkField: (clearIds(e.receiver); clearIds(e.dotArg))
+  of exkStruct: (for f in e.fields: clearIds(f[1]))
+  of exkList: (for it in e.items: clearIds(it))
+  of exkBracket:
+    clearIds(e.brReceiver)
+    for a in e.brArgs: clearIds(a)
+  of exkBracketAssign: (clearIds(e.brTarget); clearIds(e.brValue))
+  of exkCall:
+    clearIds(e.callee)
+    for a in e.args: clearIds(a)
+  of exkChain:
+    clearIds(e.base)
+    for s in e.steps.mitems:
+      s.id = NodeId(0)
+      clearIds(s.target); clearIds(s.arg)
+  of exkBinary: (clearIds(e.left); clearIds(e.right))
+  of exkUnary: clearIds(e.operand)
+  of exkBlock: (for s in e.stmts: clearIds(s))
+  of exkIf: (clearIds(e.cond); clearIds(e.thenBranch); clearIds(e.elseBranch))
+  of exkMatch:
+    clearIds(e.subject)
+    for arm in e.arms: (clearIds(arm.guard); clearIds(arm.body))
+  of exkFor: (clearIds(e.iterable); clearIds(e.body))
+  of exkWhile: (clearIds(e.whileCond); clearIds(e.whileBody))
+  of exkBreak, exkContinue: discard
+  of exkAssign: (clearIds(e.target); clearIds(e.assignVal))
+  of exkReturn: clearIds(e.returnVal)
+  of exkRaise: clearIds(e.raiseVal)
+
+proc clearIds*(d: Decl) =
+  if d == nil: return
+  case d.kind
+  of dkFn: clearIds(d.fnBody)
+  of dkTask: clearIds(d.taskBody)
+  of dkConst: clearIds(d.constVal)
+  of dkExpr: clearIds(d.expr)
+  of dkStaticAssert: clearIds(d.assertExpr)
+  of dkType: (for m in d.typeMembers: clearIds(m))
+  of dkObject: (for m in d.objMembers: clearIds(m))
+  of dkMixin: (for m in d.mixinMembers: clearIds(m))
+  of dkActor: (for h in d.handlers: clearIds(h))
+  of dkRegistry, dkRegister, dkErrors, dkImport: discard
+
+proc clearIds*(m: var Module) =
+  for d in m.decls: clearIds(d)
