@@ -466,4 +466,57 @@ fi
 ./tuck ch "$ix/bad.tuck" 2>&1 | grep -q "not indexable" || { echo "FAIL: wrong non-indexable error"; exit 1; }
 rm -rf "$ix"
 
+# spec 7.2 pools: declaration diagnostics, and a real acquire/release cycle.
+pl="tests/.smoke_pool"
+rm -rf "$pl" && mkdir -p "$pl"
+
+# a pool needs a count — without one it has no static footprint
+printf 'pool Bufs = Array[8, u8]\n\nfn main() -> int:\n  return 0\n' > "$pl/nocount.tuck"
+if ./tuck ch "$pl/nocount.tuck" 2>/dev/null; then
+  echo "FAIL: pool without a count was accepted"; exit 1
+fi
+./tuck ch "$pl/nocount.tuck" 2>&1 | grep -q "needs a slot count" || { echo "FAIL: wrong no-count error"; exit 1; }
+
+# ... and the count must be a number
+printf 'pool Bufs = Array[8, u8] [count: many]\n\nfn main() -> int:\n  return 0\n' > "$pl/badcount.tuck"
+if ./tuck ch "$pl/badcount.tuck" 2>/dev/null; then
+  echo "FAIL: non-numeric count accepted"; exit 1
+fi
+./tuck ch "$pl/badcount.tuck" 2>&1 | grep -q "whole number" || { echo "FAIL: wrong bad-count error"; exit 1; }
+
+# a pool declares an element type
+printf 'pool Bufs [count: 8]\n\nfn main() -> int:\n  return 0\n' > "$pl/noelem.tuck"
+if ./tuck ch "$pl/noelem.tuck" 2>/dev/null; then
+  echo "FAIL: pool without an element type accepted"; exit 1
+fi
+./tuck ch "$pl/noelem.tuck" 2>&1 | grep -q "declares its element type" || { echo "FAIL: wrong no-element error"; exit 1; }
+
+# runtime: acquire to exhaustion, release, acquire again
+cat > "$pl/t.tuck" <<'TUCKEOF'
+type Slot:
+  id: int
+
+pool Slots = Slot [count: 2]
+
+fn main() -> int:
+  let a = Slots.acquire
+  let b = Slots.acquire
+  if not a.ok:
+    return 91
+  if not b.ok:
+    return 92
+  let c = Slots.acquire        # pool of 2 is exhausted
+  if c.ok:
+    return 93
+  Slots.release {a.value}      # give one back
+  let d = Slots.acquire        # ... so this must succeed
+  if not d.ok:
+    return 94
+  return 42
+TUCKEOF
+./tuck build "$pl/t.tuck" -o:"$pl/out" > /dev/null
+rc=0; "$pl/out/t" || rc=$?
+[ "$rc" -eq 42 ] || { echo "FAIL: pool acquire/release cycle exit $rc, want 42"; exit 1; }
+rm -rf "$pl"
+
 echo "cli smoke OK"

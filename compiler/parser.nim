@@ -322,12 +322,18 @@ proc parsePrimaryType(p: var Parser): Type =
     if p.current().kind == tkLBracket:
       # Check if it's attributes or generics
       let first = p.peek(1)
-      let isAttr = first.kind == tkIdent and (first.value in [
+      # `[name: value]` is SHAPE-identifiable as an attribute — a type
+      # argument is never followed by a colon. That covers every attribute
+      # with a value (count, align, error, stack, …) without naming it.
+      # Bare markers still need the word list, since `[sealed]` and `[T]`
+      # look alike. (The list is the remaining half of known_bugs entry 5.)
+      let valued = first.kind == tkIdent and p.peek(2).kind == tkColon
+      let isAttr = valued or (first.kind == tkIdent and (first.value in [
         "saturating", "sealed", "queue", "irq_safe", "no_alloc", "invariant",
         "packed", "align", "wrapping", "trapping",
         "big_endian", "little_endian", "volatile",       # spec 4.6 type + field attrs
         "error",                                          # [error: FsError] on fallible returns
-        "io", "unsafe", "may_block", "stack", "priority"])  # effect markers after a return type
+        "io", "unsafe", "may_block", "stack", "priority"]))  # effect markers after a return type
       discard p.advance() # eat "["
       if isAttr:
         # An attribute is `[name]` or `[name: value]`. If the name is followed

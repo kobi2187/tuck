@@ -1334,6 +1334,44 @@ fn main() -> int:
   return xs[1, 2]
 """, "index"
 
+# ---------- pools (spec 7.2) ----------
+
+expectOk "pool declares an element type and a count", """
+type Conn:
+  id: int
+
+pool Conns = Conn [count: 16]
+
+fn main() -> int:
+  return 0
+"""
+
+expectOk "pool of a primitive array", """
+pool Bufs = Array[64, u8] [count: 8]
+
+fn main() -> int:
+  return 0
+"""
+
+expectOk "acquire yields an optional handled with .ok", """
+pool Bufs = Array[64, u8] [count: 4]
+
+fn main() -> int:
+  let b = Bufs.acquire
+  if not b.ok:
+    return 1
+  Bufs.release {b.value}
+  return 0
+"""
+
+expectError "acquire result is an unhandled optional", """
+pool Bufs = Array[64, u8] [count: 4]
+
+fn use({n: int}) -> int:
+  let b = Bufs.acquire
+  return b.n
+""", "unhandled"
+
 # ---------- and/or/xor are strictly boolean ----------
 
 expectError "'or' rejects non-bool operands", """
