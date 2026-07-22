@@ -1334,6 +1334,93 @@ fn main() -> int:
   return xs[1, 2]
 """, "index"
 
+# ---------- the AST is syntax; the semantic layer is separate ----------
+import sets
+import ../compiler/resolution
+
+proc parseOnly(src: string): Module =
+  var lex = Lexer(source: src, position: 0, line: 1, column: 1, indentStack: @[0])
+  var toks: seq[Token]
+  while true:
+    let t = lex.nextToken()
+    toks.add(t)
+    if t.kind == tkEOF: break
+  var p = Parser(source: src, tokens: toks, cursor: 0)
+  p.parseModule()
+
+const semSrc = """
+fn bump({n: int}) -> int:
+  return n + 1
+
+fn main() -> int:
+  var xs = [1, 2, 3]
+  let a = {n: xs[0]} bump
+  return a
+"""
+
+block:
+  # Parsing alone must produce NO semantic facts: a bracket is still just a
+  # bracket until the checker resolves it.
+  resetResolution()
+  discard parseOnly(semSrc)
+  if semLayer.calls.len == 0 and semLayer.types.len == 0:
+    echo "PASS (ok)     parsing alone records no semantics"
+  else:
+    echo "FAIL          parsing alone leaked ", semLayer.calls.len, " calls / ",
+         semLayer.types.len, " types into the semantic layer"
+    failures.inc
+
+block:
+  # Every parsed node gets a unique, non-zero id — the key the semantic
+  # layer depends on.
+  let m = parseOnly(semSrc)
+  var ids: seq[uint32]
+  var zero = 0
+  proc walk(e: Expr) =
+    if e == nil: return
+    if uint32(e.id) == 0: zero.inc
+    ids.add(uint32(e.id))
+    case e.kind
+    of exkBlock: (for s in e.stmts: walk(s))
+    of exkReturn: walk(e.returnVal)
+    of exkAssign: (walk(e.target); walk(e.assignVal))
+    of exkBinary: (walk(e.left); walk(e.right))
+    of exkCall: (walk(e.callee); (for a in e.args: walk(a)))
+    of exkStruct: (for f in e.fields: walk(f[1]))
+    of exkList: (for i in e.items: walk(i))
+    of exkBracket: (walk(e.brReceiver); (for a in e.brArgs: walk(a)))
+    else: discard
+  for d in m.decls:
+    if d.kind == dkFn: walk(d.fnBody)
+  var uniq: HashSet[uint32]
+  for i in ids: uniq.incl(i)
+  if zero == 0 and uniq.len == ids.len and ids.len > 0:
+    echo "PASS (ok)     every parsed node has a unique id (", ids.len, " nodes)"
+  else:
+    echo "FAIL          ids: ", ids.len, " nodes, ", zero, " unassigned, ",
+         ids.len - uniq.len, " duplicates"
+    failures.inc
+
+block:
+  # A per-target clone must keep the semantic layer reachable: ids are
+  # values, so they survive the copy.
+  resetResolution()
+  var m = parseOnly(semSrc)
+  typecheckModule(m)
+  let clone = deepCopy(m)
+  var origBody, cloneBody: Expr
+  for d in m.decls:
+    if d.kind == dkFn and d.name == "main": origBody = d.fnBody
+  for d in clone.decls:
+    if d.kind == dkFn and d.name == "main": cloneBody = d.fnBody
+  if origBody != nil and cloneBody != nil and
+     origBody.id == cloneBody.id and
+     semLayer.typeFor(cloneBody) == semLayer.typeFor(origBody):
+    echo "PASS (ok)     semantics stay reachable through a clone"
+  else:
+    echo "FAIL          clone lost its link to the semantic layer"
+    failures.inc
+
 if failures > 0:
   echo failures, " test(s) failed"
   quit(1)
