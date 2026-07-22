@@ -69,7 +69,48 @@ when Beef also compiles it).
         backends. Bugs fixed on the way: block:-captured break (now
         `if true:` wrapper), value-returning main → quit(main()), msgpack
         cache Defect-vs-stamp, continue-keyword vs errors-policy.
-- Now: [→] Phase 6: 11/20 — `when TARGET` + implicit main rulings.
+  - [x] AST architecture pass (2026-07-22): the tree is now pure SYNTAX and
+        the semantic layer lives beside it. Every Expr/ChainStep carries a
+        NodeId assigned at the parse boundary; the checker writes calls,
+        types and shortcut sites into a Resolution keyed by that id
+        (compiler/resolution.nim, global `semLayer`). ty, shortcutSite and
+        all five side-node fields (callNode x2, varCallNode, brCallNode,
+        brAssignNode) are GONE from ast.nim. Each backend deep-copies the
+        checked tree before lowering, so Nim's lowering no longer mutates
+        what Beef then reads — ids survive the copy, which is why the
+        id-keyed layer was worth having. Also: the two genExpr overloads
+        merged into one (they had diverged in BOTH directions, 196 lines
+        deleted), and every ExprKind dispatch lost its `else` so a missing
+        arm is now a compile error. Research basis: rustc TypeckResults /
+        Roslyn SemanticModel vs Nim semArrayAccess; rulings recorded in the
+        commits.
+  - [x] `[saturating]` REAL (2026-07-22, spec 4.1). Root cause was the
+        PARSER: `type X = u16 [attr]` had its trailing attrs clobbered by
+        the pre-`=` ones, so the attribute never reached any backend —
+        [wrapping] and [trapping] were dead too. Store-guard design (clamp
+        where a value is stored, on a wider intermediate) not per-operator:
+        `a + b - c` all 60000 is 60000, not 5535. ~3 branchless instructions
+        (cmov), measured. Ceiling: u64 has no wider intermediate.
+  - [x] `or return` DROPPED (2026-07-22). Never worked — codegen-only
+        pattern match, emitted invalid Nim. and/or/xor are strictly boolean
+        now, ENFORCED (there had been no operand rule at all: `5 or "x"`
+        typechecked). ?T in a boolean position reads as "is present".
+  - [x] Pool §7.2 LANDED (2026-07-23). `pool X = ElemType [count: N]` —
+        arbitrary element type (not always an array; 7.4 pools files and
+        connections). Own DeclKind like registry/arena. count REQUIRED (a
+        pool without one has no static footprint). No on_full: exhaustion
+        is ?T absence and the caller decides. release goes through the POOL
+        (the element may be a primitive with no methods). rt ObjectPool
+        rewritten from ptr/nil to TuckResult[T]. Example 11 GREEN + new
+        example 25-pools (runtime-verified, exit 4). Gate 23/25.
+  - [x] Early-return guards NARROW (2026-07-23). `if not r.ok: return` now
+        narrows the rest of the fn, for !T and ?T alike, provided the branch
+        always exits. Underneath was a parser bug: `not r.ok` parsed as
+        `(not r).ok` — unary took a primary, so the guard shape the checker
+        wanted never existed. Unary now binds looser than `.field`/`[i]`
+        (`-p.v` was equally wrong). Narrowing lives in exkBlock, since an
+        early-return guard narrows its SIBLINGS, not its subtree.
+- Now: [→] Phase 6: 16/20 — `.fn {args}` ruling + `when TARGET`.
 - Remaining:
   - [ ] Phase 3: 04 — `Self` mapping + interface/manager emission + empty
         setMany body indent (`proc setMany(self: Self,...)` invalid Nim).
@@ -78,8 +119,8 @@ when Beef also compiles it).
         emits tuple rebuild `(id: x.trackId, name: x.title, ...)`.
   - [ ] Phase 5: 03 — bake real specialization (spec 3.5; emits garbage
         `x((someFunc: _add))` today).
-  - [ ] Phase 6: 11 — rewrite off removed `or return` to 4.9 policy; needs
-        `when TARGET` §8.3 + top-level statements/implicit main.
+  - [x] Phase 6: 11 GREEN (2026-07-23) — pool landed and SensorEvent (a
+        defect in the EXAMPLE, undeclared) added.
   - [ ] Phase 6b: 17 — `input` keyword + `merge` (structural merge = future
         language keyword per user). Needs a design ruling first.
   - [ ] Phase 7: 20 — transitionTo-with-payload inside actor handler emits
@@ -91,13 +132,37 @@ when Beef also compiles it).
   - [ ] Phase 9: semantic-equivalence pass — runtime-verify every example
         with a main (extend gate to build+run+assert where feasible).
 
+## Gate: Nim 23/25, Beef 20/25 (2026-07-23)
+Remaining broken: **16** (`.fn {args}` on an undeclared fn emits a bare field
+access, argument dropped — needs a ruling: resolve as a call, or error as
+undeclared?), **20** (MMIO register fields — `DMA1_CH3 ..EN` — after its pool
+and match-indent blockers cleared), **03** Beef-side only (delegate types).
+
+## known_bugs suite (tests/known_bugs.nim)
+Every confirmed bug, open or fixed, written as an assertion of CORRECT
+behaviour plus a `fixed` flag. Fix a bug -> flip its flag -> the same
+assertion becomes a permanent regression guard. The suite fails BOTH when a
+fix lands unflagged and when a fixed bug returns. Currently 6 open, 6 fixed.
+Open: `/=` on ints emits float `/`; toStr loses str-ness under `+`; `if` has
+no expression form; Beef does not clamp [saturating]; a type ARGUMENT named
+like an attribute (`Box[error]`) still fails (the valued half `[name: value]`
+is fixed, bare markers still use the word list); `.fn {args}` on an
+undeclared fn.
+
 ## Open Questions
 - bake (03): what is v1? (a) true inline rewrite per spec 3.5, or (b) bind
   the fn-ref into the struct (proc-typed field, call through it) with
   inlining later. Also needs rulings: `:name` fn-ref literal semantics,
   `op invoke {args}` call-through syntax, and the `fn` field TYPE story
   (currently maps to `pointer` — uncallable).
-- `when TARGET` §8.3 + top-level statements / implicit main (11, 20).
+- `when TARGET` §8.3 + top-level statements / implicit main (20).
+- **16's `.fn {args}` on an undeclared fn** — `buf.copyFrom {data}` emits
+  `self.buf.copyFrom`, a field read with the argument silently dropped.
+  Ruling needed: resolve it as a call anyway (sketch-friendly), or report
+  copyFrom as undeclared? Silently emitting a field access is neither.
+- User asked for MORE TESTS AND EXAMPLES, a few per feature. Pool now has 8
+  tests + a usage example; most older features still rest on one example
+  each. That was the standing request when the session ended.
 - `input` keyword + `merge` (17) — structural-merge keyword design.
 - on select §9.3 (16) — still behind the actor-runtime strategy ruling.
 - 20: transitionTo-with-payload inside actor handlers emits garbage —
