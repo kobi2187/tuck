@@ -877,22 +877,46 @@ Tuck is one language everywhere, with strict boundaries:
 
 Fixed-size object pool. Known at compile time, zero fragmentation, O(1) acquire:
 
-```tuck
-pool UartBuffer [size: 64, count: 8]:   # 512 bytes total, statically allocated
+A pool is **N slots of an arbitrary type** — not necessarily an array. Byte
+buffers are the embedded case; records are the §7.4 case (files, connections).
 
-let buf = UartBuffer.acquire     # ?Buffer — the pool may be exhausted
+```tuck
+pool UartBuffer  = Array[64, u8] [count: 8]   # 512 bytes, statically allocated
+pool Connections = Connection    [count: 16]  # records pool the same way
+
+let buf = UartBuffer.acquire     # ?Array[64, u8] — the pool may be exhausted
 if not buf.ok:
   return
 # ... use buf.value ...
-buf.value.release
+UartBuffer.release {buf.value}
 ```
+
+The declaration reuses the `X = <type> [attrs]` shape: the element type is
+explicit, `count` fixes the number of slots. There is no `size` knob — the
+footprint follows from the element type, and restating it would only drift.
 
 `acquire` yields `?T`: exhaustion is absence, handled like any other optional.
 There is no `or return` unwrap — `and`/`or`/`xor` are strictly boolean (a `?T`
 in a boolean position reads as "is present", which is a test, not an unwrap).
 
-Internally: a bitmask + a static array. `acquire` is a bitmask scan. `release` is
-a bit clear. Declared size is verified against available memory at compile time.
+`release` goes through the **pool**, not the value: `Pool.release {v}`. The
+element may be a primitive (`Array[64, u8]` carries no methods), so a
+`v.release` method form cannot work in general.
+
+`count` is **required**. A pool without one has no static footprint, which is
+the entire point of §7.2 — unlike §7.4's registry, whose `cap` is optional
+because an uncapped table may legitimately grow. Exhaustion needs no
+`on_full` policy either: it surfaces as absence, and the caller decides what
+that means (retry, shed, log). That knowledge lives at the call site, not the
+declaration.
+
+`pool` is its own declaration form, like `registry` and `arena` — the name
+denotes the *container*, not a value of the element type, so it cannot be a
+type attribute (`Buf.acquire` yielding a `Buf` would be circular).
+
+Internally: a bitmask + a static array. `acquire` is a bitmask scan. `release`
+is a bit clear. Total footprint is verified against available memory at
+compile time.
 
 ### 7.3 Arena Allocator
 

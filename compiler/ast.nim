@@ -265,6 +265,7 @@ type
     dkType
     dkObject
     dkRegistry
+    dkPool
     dkFn
     dkMixin
     dkActor
@@ -290,6 +291,11 @@ type
       objMembers*: seq[Decl]
     of dkRegistry:
       variants*: seq[VariantDef]
+    of dkPool:
+      # spec 7.2: N slots of an arbitrary element type. `count` is required —
+      # a pool without one has no static footprint, which is the whole point.
+      poolElem*: Type
+      poolCount*: int
     of dkFn:
       fnGenerics*: seq[string]
       fnParams*: seq[Param]
@@ -430,7 +436,7 @@ proc assignIds*(d: Decl, next: var uint32) =
     for m in d.mixinMembers: assignIds(m, next)
   of dkActor:
     for h in d.handlers: assignIds(h, next)
-  of dkRegistry, dkRegister, dkErrors, dkImport: discard
+  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport: discard
 
 var globalNodeCounter: uint32 = 0
 
@@ -491,7 +497,7 @@ proc clearIds*(d: Decl) =
   of dkObject: (for m in d.objMembers: clearIds(m))
   of dkMixin: (for m in d.mixinMembers: clearIds(m))
   of dkActor: (for h in d.handlers: clearIds(h))
-  of dkRegistry, dkRegister, dkErrors, dkImport: discard
+  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport: discard
 
 proc clearIds*(m: var Module) =
   for d in m.decls: clearIds(d)

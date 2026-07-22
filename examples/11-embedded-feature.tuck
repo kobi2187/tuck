@@ -19,11 +19,13 @@ fn processISR({event: SensorEvent}) -> void [irq_safe, stack: 128]:
   # if you call something that blows the budget: compile error
 
 
-pool UartBuffer: Array[64, u8] * 8   # 8 buffers of 64 bytes, statically allocated
-                                      # known at compile time: 512 bytes, period
+pool UartBuffer = Array[64, u8] [count: 8]  # 8 buffers of 64 bytes, statically
+                                            # allocated: 512 bytes, period
 
 fn handleUart() -> void:
-  let buf = UartBuffer.acquire
-  # ... use buf ...
-  buf.release
-  return  
+  let buf = UartBuffer.acquire   # ?Array[64, u8] — the pool may be exhausted
+  if not buf.ok:
+    return
+  # ... use buf.value ...
+  UartBuffer.release {buf.value}
+  return

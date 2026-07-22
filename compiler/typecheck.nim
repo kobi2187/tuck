@@ -426,6 +426,24 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
              typeName(recvT) & " — fields take no arguments; to set it, " &
              "use '.." & e.fieldName & " {value}' on a var", e.span)
       return f.typ
+  # A pool exposes `Pool.acquire` / `Pool.release {v}` (spec 7.2). These are
+  # registered qualified, since the receiver is the POOL itself rather than a
+  # value whose type carries the fn.
+  if e.receiver != nil and e.receiver.kind == exkVar and
+     tc.fnSigs.hasKey(e.receiver.name & "." & e.fieldName):
+    let sig = tc.fnSigs[e.receiver.name & "." & e.fieldName]
+    # `Pool.release {v}` — a one-field payload to a one-param fn IS the
+    # value; passing the wrapper tuple would not match the rt signature.
+    var extra = e.dotArg
+    if extra != nil and extra.kind == exkStruct and extra.fields.len == 1:
+      extra = extra.fields[0][1]
+    let call = Expr(span: e.span, kind: exkCall,
+                    callee: Expr(span: e.span, kind: exkVar,
+                                 name: e.fieldName),
+                    args: if extra != nil: @[e.receiver, extra]
+                          else: @[e.receiver])
+    setCall(semLayer, e, call)
+    return sig.ret
   # Not a field — `x.name` resolves to a fn by lookup, not syntax.
   if tc.fnSigs.hasKey(e.fieldName):
     if e.dotArg != nil:
@@ -1271,6 +1289,18 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
           fail("Pending Error: '" & d.name & "' is implemented — remove it from the pending block", d.span)
         tc.implementedFns.incl(d.name)
     of dkTask: tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType, @[])
+    of dkPool:
+      # spec 7.2: a pool exposes two ordinary fns. Registering them as normal
+      # signatures means `Pool.acquire` resolves through the same path as any
+      # other call — no special-case lookup, and the ?T falls out of the
+      # declared return type.
+      let optElem = Type(span: d.span, kind: tkApp,
+                         base: Type(span: d.span, kind: tkNamed, name: "?"),
+                         args: @[d.poolElem])
+      tc.fnSigs[d.name & ".acquire"] = (@[], optElem, @[])
+      tc.fnSigs[d.name & ".release"] =
+        (@[Param(name: "slot", typ: d.poolElem, span: d.span)],
+         Type(span: d.span, kind: tkNamed, name: "void"), @[])
     of dkType:
       if d.typeBody != nil:
         tc.typeDecls[d.name] = d.typeBody

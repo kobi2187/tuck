@@ -354,7 +354,14 @@ proc parsePrimaryType(p: var Parser): Type =
           if p.current().kind == tkComma:
             discard p.advance()
         discard p.expect(tkRBracket)
-        return Type(span: sp, kind: tkApp, base: base, args: args)
+        let applied = Type(span: sp, kind: tkApp, base: base, args: args)
+        # A SECOND bracket after type arguments is an attribute bracket:
+        # `Array[64, u8] [count: 8]` — args say what the type is, attrs
+        # say how it behaves.
+        if p.current().kind == tkLBracket:
+          discard p.advance()
+          applied.attrs = p.parseTypeUseAttrs()
+        return applied
     return base
 
   else:
@@ -1585,11 +1592,35 @@ proc parseDecl*(p: var Parser): Decl =
     return p.parseRegisterDecl(sp)
 
   elif curr.kind == tkIdent and curr.value == "pool":
+    # spec 7.2: `pool Name = ElemType [count: N]` — N slots of an arbitrary
+    # element type. Reuses the `X = <type> [attrs]` shape; the name denotes
+    # the POOL, not a value of the element type.
     discard p.advance() # eat "pool"
     let name = p.expect(tkIdent, "Expected pool name").value
-    discard p.expect(tkColon)
-    let pType = p.parseType()
-    return Decl(span: sp, kind: dkType, name: name, generics: @[], typeBody: pType)
+    if p.current().kind != tkAssign:
+      p.reportError("A pool declares its element type: " &
+        "`pool " & name & " = <ElementType> [count: N]`")
+    discard p.advance() # eat "="
+    let elem = p.parseType()
+    var count = 0
+    for a in elem.attrs:
+      if a.name == "count":
+        try: count = parseInt(a.value)
+        except ValueError:
+          p.reportError("pool '" & name & "': count must be a whole number, " &
+                        "got '" & a.value & "'")
+    if count <= 0:
+      p.reportError("pool '" & name & "' needs a slot count: " &
+        "`pool " & name & " = <ElementType> [count: N]`. A pool without a " &
+        "count has no static footprint, which is the point of a pool.")
+    # the count is the POOL's knob, not part of the element type
+    var elemAttrs: seq[TypeAttr]
+    for a in elem.attrs:
+      if a.name != "count": elemAttrs.add(a)
+    elem.attrs = elemAttrs
+    if p.current().kind == tkNewline: discard p.advance()
+    return Decl(span: sp, kind: dkPool, name: name,
+                poolElem: elem, poolCount: count)
 
   elif curr.kind == tkIdent and curr.value == "arena":
     return p.parseArenaDecl()

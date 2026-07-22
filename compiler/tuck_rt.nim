@@ -137,24 +137,28 @@ proc alloc*[Size: static int](arena: var BumpArena[Size], bytes: int): pointer =
 proc reset*[Size: static int](arena: var BumpArena[Size]) =
   arena.cursor = 0
 
+# spec 7.2: N slots of an arbitrary T plus an occupancy bitmask. Fixed size,
+# no fragmentation, O(1) release. Exhaustion is ABSENCE (?T), not nil and not
+# an error — the caller decides what running out means for its situation.
 type
   ObjectPool*[T; Count: static int] = object
     storage*: array[Count, T]
-    occupied*: uint64
+    occupied*: uint64        # ponytail: 64 slots max; widen to an array if needed
 
-proc acquire*[T; Count: static int](pool: var ObjectPool[T, Count]): ptr T =
-  for i in 0..<Count:
+proc acquire*[T; Count: static int](pool: var ObjectPool[T, Count]): TuckResult[T] =
+  for i in 0 ..< Count:
     if (pool.occupied and (1'u64 shl i)) == 0:
       pool.occupied = pool.occupied or (1'u64 shl i)
-      return addr pool.storage[i]
-  return nil
+      return tok(pool.storage[i])
+  tnone[T]()
 
-proc release*[T; Count: static int](pool: var ObjectPool[T, Count], item: ptr T) =
-  let baseAddr = cast[int](addr pool.storage[0])
-  let itemAddr = cast[int](item)
-  let index = (itemAddr - baseAddr) div sizeof(T)
-  if index >= 0 and index < Count:
-    pool.occupied = pool.occupied and not(1'u64 shl index)
+proc release*[T; Count: static int](pool: var ObjectPool[T, Count], item: T) =
+  # Which slot did this come from? Compare by address within the storage
+  # array — the value was handed out from one of these cells.
+  for i in 0 ..< Count:
+    if pool.storage[i] == item:
+      pool.occupied = pool.occupied and not(1'u64 shl i)
+      return
 
 type
   Mailbox*[T; Cap: static int] = object

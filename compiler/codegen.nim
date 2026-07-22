@@ -1303,6 +1303,11 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return "registerMMIO(" & d.name & ", " & d.regAddress & "):\n" & fieldsStr.join("\n") & "\n"
   of dkRegistry:
     return ctx.genRegistry(d)
+  of dkPool:
+    # spec 7.2: one static instance; acquire/release are the rt's generic
+    # procs, reached as `Pool.acquire` -> `acquire(Pool)`.
+    return "var " & d.name & "* = ObjectPool[" & genType(d.poolElem) & ", " &
+           $d.poolCount & "]()"
   of dkImport:
     return ""  # emitNim adds the Nim import line
   of dkStaticAssert:
