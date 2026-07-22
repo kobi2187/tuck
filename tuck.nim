@@ -183,25 +183,40 @@ when isMainModule:
     var realModules = initTable[string, Module]()
     for lm in prog[0 ..< prog.high]:
       realModules[lm.name] = lm.m
+    # Each backend lowers its OWN copy: lowering and the emitters both mutate
+    # the tree (injectTailReturn), so a shared one would hand Beef whatever
+    # Nim's pass left behind. Node ids survive the copy, so the Resolution
+    # built during checking stays reachable from either clone.
+    var nimProg: seq[LoadedModule]
+    for lm in prog: nimProg.add(LoadedModule(name: lm.name, path: lm.path,
+                                             m: deepCopy(lm.m)))
+    var nimReal = initTable[string, Module]()
+    for lm in nimProg[0 ..< nimProg.high]: nimReal[lm.name] = lm.m
     # imported modules first (each its own Nim file), entry module last
-    for lm in prog:
+    for lm in nimProg:
       lowerModule(lm.m)
-      let isEntry = lm.path == prog[^1].path
+      let isEntry = lm.path == nimProg[^1].path
       let outName = if isEntry: base else: lm.name
       let nimPath = outDir / (outName & ".nim")
-      writeFile(nimPath, emitNim(lm.m, rtImport, realModules, outName))
+      writeFile(nimPath, emitNim(lm.m, rtImport, nimReal, outName))
       echo "wrote ", nimPath
-    let m = prog[^1].m
     var beefDeps: seq[string]
     if "--beef" in opts:
-      for lm in prog[0 ..< prog.high]:
+      var bfProg: seq[LoadedModule]
+      for lm in prog: bfProg.add(LoadedModule(name: lm.name, path: lm.path,
+                                              m: deepCopy(lm.m)))
+      var bfReal = initTable[string, Module]()
+      for lm in bfProg[0 ..< bfProg.high]: bfReal[lm.name] = lm.m
+      for lm in bfProg: lowerModule(lm.m)
+      for lm in bfProg[0 ..< bfProg.high]:
         let modBfPath = outDir / ("mod_" & lm.name & ".bf")
-        writeFile(modBfPath, emitBeefModule(lm.name, lm.m, realModules))
+        writeFile(modBfPath, emitBeefModule(lm.name, lm.m, bfReal))
         echo "wrote ", modBfPath
         beefDeps.add(lm.name)
       let bfPath = outDir / (base & ".bf")
-      writeFile(bfPath, emitBeef(m, realModules, base))
+      writeFile(bfPath, emitBeef(bfProg[^1].m, bfReal, base))
       echo "wrote ", bfPath
+    let m = prog[^1].m
     if cmd in ["build", "b"]:
       # entry point: `fn main` runs when the binary starts. No main =
       # library build: the emitted code IS the artifact, no binary.
