@@ -43,11 +43,13 @@ type Volume:
 # 6. Cooperative StreamReader Task
 task streamReader({streamId: u8, chunks: Seq[u32]}) -> !void [io]:
   for i in chunks:
-    let buf = BufferPool.acquire or return
+    let buf = BufferPool.acquire   # ?Buffer — exhaustion is absence
+    if not buf.ok:
+      return
     # Implicitly yields control back to scheduler while waiting on DMA read
-    # buf.data = dmaRead {streamId}
+    # buf.value.data = dmaRead {streamId}
     DMA1_CH3 ..EN {true}
-    buf.release
+    buf.value.release
 
 # 7. Isolated Decoder Actor
 actor Decoder [queue: 8]:

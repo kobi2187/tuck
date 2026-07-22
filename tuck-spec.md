@@ -864,10 +864,16 @@ Fixed-size object pool. Known at compile time, zero fragmentation, O(1) acquire:
 ```tuck
 pool UartBuffer [size: 64, count: 8]:   # 512 bytes total, statically allocated
 
-let buf = UartBuffer.acquire or return Error.noBuffer
-# ... use buf ...
-buf.release
+let buf = UartBuffer.acquire     # ?Buffer — the pool may be exhausted
+if not buf.ok:
+  return
+# ... use buf.value ...
+buf.value.release
 ```
+
+`acquire` yields `?T`: exhaustion is absence, handled like any other optional.
+There is no `or return` unwrap — `and`/`or`/`xor` are strictly boolean (a `?T`
+in a boolean position reads as "is present", which is a test, not an unwrap).
 
 Internally: a bitmask + a static array. `acquire` is a bitmask scan. `release` is
 a bit clear. Declared size is verified against available memory at compile time.

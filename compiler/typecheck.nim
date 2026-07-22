@@ -447,13 +447,19 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
     fail("Type Error: no field '" & e.fieldName & "' on type " & typeName(recvT), e.span)
   unknownType(e.span)
 
+proc isOptional(t: Type): bool =
+  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+    t.base.name == "?" and t.args.len == 1
+
 proc synthBinary(tc: var TypeChecker, e: Expr): Type =
   let lt = tc.synthesize(e.left)
-  # `or` is strictly boolean. Result structs flow whole; handling belongs to
-  # the next function in the chain (prelude, eventually) or `?` propagation.
   let rt = tc.synthesize(e.right)
+  # `and`/`or`/`xor` are strictly boolean — they never unwrap a result. A ?T
+  # operand is the one exception: in a boolean position it reads as "is
+  # present", which is a test, not an unwrap. A !T still has to be handled.
+  let boolCtx = e.binOp in {boAnd, boOr, boXor}
   for (t, side) in [(lt, e.left), (rt, e.right)]:
-    if isWrapper(t):
+    if isWrapper(t) and not (boolCtx and isOptional(t)):
       fail("Type Error: unhandled " & typeName(t) &
            " — pass it to a handling function or propagate with '?'", side.span)
   case e.binOp
@@ -474,7 +480,18 @@ proc synthBinary(tc: var TypeChecker, e: Expr): Type =
         fail("Type Error: range bounds must be integers, got " & typeName(t),
              side.span)
     Type(span: e.span, kind: tkNamed, name: "range")
-  else:
+  of boAnd, boOr, boXor:
+    # Strictly boolean. `or` is NOT an unwrap operator: a failed result is
+    # handled with .ok / match r.err, never by falling through to a default.
+    let opName = case e.binOp
+                 of boAnd: "and"
+                 of boOr: "or"
+                 else: "xor"
+    for (t, side) in [(lt, e.left), (rt, e.right)]:
+      if isUnknown(t) or isOptional(t): continue  # ?T = "is present"
+      if not (t != nil and t.kind == tkNamed and t.name == "bool"):
+        fail("Type Error: '" & opName & "' expects bool, got " & typeName(t),
+             side.span)
     Type(span: e.span, kind: tkNamed, name: "bool")
 
 # spec 4.4b: union two branch states — narrowing is never discarded,

@@ -1334,6 +1334,39 @@ fn main() -> int:
   return xs[1, 2]
 """, "index"
 
+# ---------- and/or/xor are strictly boolean ----------
+
+expectError "'or' rejects non-bool operands", """
+fn main() -> int:
+  let a = 5 or 3
+  return 0
+""", "expects bool"
+
+expectError "'and' rejects non-bool operands", """
+fn main() -> int:
+  let a = "x" and "y"
+  return 0
+""", "expects bool"
+
+expectOk "'or' on bools is fine", """
+fn main() -> int:
+  let x = 1
+  let a = x > 0 or x < 10
+  return 0
+"""
+
+expectOk "?T reads as presence in a boolean guard", """
+fn find({n: int}) -> ?{value: int} [io]:
+  return {value: n}
+
+fn main() -> int [io]:
+  let a = {n: 1} find
+  let b = {n: 2} find
+  if a and b:
+    return 1
+  return 0
+"""
+
 # ---------- the AST is syntax; the semantic layer is separate ----------
 import sets
 import ../compiler/resolution

@@ -43,6 +43,12 @@ construction, generic bodies gradual, no constraints).
 - `expr?` propagation operator DROPPED. Handling = local if/ifErr/.ok
   access, or return the whole result up. Policy 4.9 unhandled list tracks
   the rest. (Parked idea, not firm: call-site `get!` as io marker.)
+- `or return` DROPPED (2026-07-22), same reasoning as `expr?`: it was a
+  second, weaker unwrap that discarded WHICH error occurred. `and`/`or`/`xor`
+  are now strictly boolean, enforced by the checker (there had been no
+  operand rule at all — `5 or "x"` typechecked). A `?T` operand in a boolean
+  position reads as "is present": a test, not an unwrap. Pool `acquire`
+  (§7.2) returns `?T` and is handled with an ordinary `if`.
 - Tri-state result STAYS: `int?!` = fallible + optional in one value.
 - Type wrapper position: both accepted — `int?` == `?int`, canonical
   postfix; combos `T?!`/`T!?` equivalent.

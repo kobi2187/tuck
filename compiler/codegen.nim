@@ -593,12 +593,6 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
                 of boXor: "xor"
                 of boRangeIncl: ".."
                 of boRangeExcl: "..<"
-    if e.binOp == boOr and e.right != nil and e.right.kind == exkReturn:
-      # `x or return` — the RHS exits, so the OR becomes a guarded block
-      let tmpName = "or_tmp_" & $ctx.definedVars.len
-      return "(block: let " & tmpName & " = " & ctx.genExpr(e.left) &
-             "; if not " & tmpName & ": " & ctx.genExpr(e.right) & "; " &
-             tmpName & ")"
     if e.binOp == boAdd and e.left != nil and semLayer.typeFor(e.left) != nil and
        semLayer.typeFor(e.left).kind == tkNamed and semLayer.typeFor(e.left).name in ["str", "string"]:
       return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"

@@ -791,13 +791,6 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
       if s.kind == exkMatch and s.subject != nil:
         stmtCode = ctx.genMatchStmt(s)
         ownsLayout = true
-      elif s.kind == exkBinary and s.binOp == boOr and s.right != nil and
-           s.right.kind == exkReturn:
-        # x or return E — shortcut: bail out when the condition is false
-        stmtCode = "if (!(" & ctx.genBeefExpr(s.left) & ")) { " &
-                   ctx.genBeefReturn(s.right) & "; }"
-        ownsLayout = true
-        stmtCode = ind & "  " & stmtCode
       else:
         stmtCode = ctx.genBeefExpr(s)
       if stmtCode != "" and semLayer.shortcut(s) != "":
