@@ -143,10 +143,12 @@ fn main() -> int:
     "Parse Error" notin outp)   # correct = it parses
 
 # ---------------------------------------------------------------------------
-# 4. `[saturating]` does not clamp — it WRAPS, silently
+# 4. FIXED 2026-07-22 — `[saturating]` clamps instead of wrapping
 # ---------------------------------------------------------------------------
-# The worst of these: no error at compile time, no trap at runtime, just a
-# wrong value. Spec 7.1 promises saturating clamps at the maximum.
+# Was: no error at compile time, no trap at runtime, just a wrong value
+# (70000 into a u16 became 4464). Root cause was in the PARSER, not codegen:
+# `type X = u16 [saturating]` had its trailing attrs clobbered by the
+# pre-`=` ones, so the attribute never reached the backend at all.
 block:
   # 70000 into a u16 should clamp to 65535. If it wraps it becomes 4464.
   let (built, rc) = run("""
@@ -163,9 +165,61 @@ fn main() -> int:
     "70000 into a `u16 [saturating]` should clamp to 65535; it wraps to " &
       "4464 instead. Codegen emits a bare `SafeRPM(70000)` with no clamp, " &
       "and drops `distinct` as well. Silent wrong value — no error, no trap.",
-    "compiler/codegen.nim distinct-type emission — clamp on construction",
-    fixed = false,
+    "compiler/parser.nim type-alias attrs + codegen saturatingBase",
+    fixed = true,
     built and rc == 1)   # correct = 70000 clamped to 65535
+
+# ---------------------------------------------------------------------------
+# 4b. FIXED 2026-07-22 — a saturating chain clamps against the FINAL value
+# ---------------------------------------------------------------------------
+# `a + b - c` (all 60000) is 60000, which fits. Per-operator saturation would
+# clamp a+b to 65535 and yield 5535; the store-guard design clamps only where
+# a value is stored, so transient intermediates do not corrupt the result.
+block:
+  let (built, rc) = run("""
+type SafeRPM = u16 [saturating]
+
+fn main() -> int:
+  let a = 60000 SafeRPM
+  let b = 60000 SafeRPM
+  let c = 60000 SafeRPM
+  let r = a + b - c
+  if r == 60000 SafeRPM:
+    return 1
+  return 2
+""")
+  bug(
+    "saturating chain clamps on the result, not each operator",
+    "`a + b - c` with all 60000 must be 60000. Clamping at every operator " &
+      "would give 5535 — an intermediate that overshoots and comes back is " &
+      "not an overflow.",
+    "compiler/codegen.nim genConstruction — clamp at stores only",
+    fixed = true,
+    built and rc == 1)
+
+# ---------------------------------------------------------------------------
+# 4c. OPEN — the Beef backend does not clamp
+# ---------------------------------------------------------------------------
+block:
+  let dir = getTempDir() / "tuck_known_bugs_bf"
+  removeDir(dir); createDir(dir)
+  let f = dir / "t.tuck"
+  writeFile(f, """
+type SafeRPM = u16 [saturating]
+
+fn main() -> int:
+  let s = 70000 SafeRPM
+  return 0
+""")
+  discard execCmdEx(tuckBin & " build " & f & " --beef -o:" & dir / "out")
+  let bf = try: readFile(dir / "out" / "t.bf") except: ""
+  bug(
+    "Beef backend clamps [saturating] too",
+    "The Nim backend clamps; Beef still emits a bare SafeRPM(70000). " &
+      "Parity commitment: every codegen change mirrors to Beef.",
+    "compiler/codegen_beef.nim — mirror saturatingBase from codegen.nim",
+    fixed = false,
+    bf.len > 0 and "70000" notin bf)
 
 # ---------------------------------------------------------------------------
 # 5. A type argument named like an attribute fails to parse

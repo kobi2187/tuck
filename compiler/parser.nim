@@ -1196,7 +1196,12 @@ proc parseTypeDecl(p: var Parser, sp: Span): Decl =
     let aliasType = p.parseType()
     if p.current().kind == tkNewline:
       discard p.advance()
-    aliasType.attrs = attrs
+    # Attributes may sit on either side of the `=`:
+    #   type X [packed] = u16      (collected above, before the `=`)
+    #   type X = u16 [saturating]  (collected by parseType, after it)
+    # Keep both — assigning here used to CLOBBER the trailing ones, which is
+    # why `[saturating]` was silently dropped.
+    for a in attrs: aliasType.attrs.add(a)
     return Decl(span: sp, kind: dkType, name: name, generics: typeGenerics, typeBody: aliasType)
   discard p.expect(tkColon)
   discard p.expect(tkNewline)

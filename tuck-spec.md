@@ -399,12 +399,28 @@ calling an `[io]` function is a compile error.
 Integers carry an overflow mode declared on the type:
 
 ```tuck
-distinct SafeRPM   = u16 [saturating]   # clamps at max, never wraps
-distinct PacketSeq = u8  [wrapping]     # intentional wraparound
-distinct ErrorCount= u32 [trapping]     # debug: panic, release: defined behavior
+type SafeRPM    = u16 [saturating]   # clamps at max, never wraps
+type PacketSeq  = u8  [wrapping]     # intentional wraparound
+type ErrorCount = u32 [trapping]     # debug: panic, release: defined behavior
 ```
 
 Default for primitive integers: `trapping` in debug, `wrapping` in release.
+
+The **attribute** is what changes behaviour — an overflow mode implies
+`distinct`, since it is meaningless on a bare alias (an alias *is* the base
+type and cannot carry different semantics). `type X = u16 [saturating]` and
+`distinct X = u16 [saturating]` are the same declaration.
+
+`[saturating]` clamps where a value is **stored** — construction, `let`/`var`
+init, field mutation — against a wider intermediate. It is not clamped at
+every operator: in `a + b - c` an intermediate may overshoot and come back,
+and only the stored result is checked, so a chain whose true value fits is
+never corrupted by a transient overflow. Unlike `invariant` (spec 4.7), the
+clamp is **never stripped in release** — it is value semantics, not an
+assertion. Cost is ~3 branchless instructions (a `cmov`).
+
+Ceiling: `u64 [saturating]` has no wider intermediate, so a chain that
+overflows `u64` itself wraps before the guard sees it. Exact for u8/u16/u32.
 
 ### 4.2 Distinct Types / Units
 

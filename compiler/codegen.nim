@@ -119,6 +119,20 @@ proc hasInvariants(m: Module, name: string): bool =
         if member.kind == dkExpr: return true
   false
 
+# spec 4.1: `[saturating]` clamps instead of wrapping. The ATTRIBUTE decides,
+# not the `distinct` keyword — `type X = u16 [saturating]` and
+# `distinct X = u16 [saturating]` mean the same thing (user ruling).
+# Returns the underlying Nim integer type, or "" when not saturating.
+proc saturatingBase(m: Module, name: string): string =
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.name == name and d.typeBody != nil:
+      var isSat = false
+      for a in d.typeBody.attrs:
+        if a.name == "saturating": isSat = true
+      if isSat and d.typeBody.kind == tkNamed:
+        return genType(d.typeBody)
+  ""
+
 # An extern fn returning an invariant-carrying named type: values entering
 # from outside the checked world validate at the CALL site (we don't emit
 # the body). Returns the type name, or "".
@@ -359,6 +373,15 @@ proc genCall(ctx: var CodegenCtx, e: Expr): string =
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
     return args[0]
+  let satBase = saturatingBase(ctx.module, calleeStr)
+  if satBase != "" and args.len == 1:
+    # spec 4.1: constructing a [saturating] type clamps instead of wrapping.
+    # The guard runs on a WIDER intermediate, so the value is checked against
+    # the type's real bounds rather than after it has already wrapped.
+    let widen = if satBase.startsWith("uint"): "uint64" else: "int64"
+    let satFn = if satBase.startsWith("uint"): "tuckSat" else: "tuckSatI"
+    return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
+           args[0] & ")))"
   let call = calleeStr & "(" & args.join(", ") & ")"
   if externInvRet(ctx.module, calleeStr) != "":
     # extern boundary: the returned value validates on entry
@@ -450,6 +473,15 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
     return args[0]
+  let satBase = saturatingBase(ctx.module, calleeStr)
+  if satBase != "" and args.len == 1:
+    # spec 4.1: constructing a [saturating] type clamps instead of wrapping.
+    # The guard runs on a WIDER intermediate, so the value is checked against
+    # the type's real bounds rather than after it has already wrapped.
+    let widen = if satBase.startsWith("uint"): "uint64" else: "int64"
+    let satFn = if satBase.startsWith("uint"): "tuckSat" else: "tuckSatI"
+    return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
+           args[0] & ")))"
   let call = calleeStr & "(" & args.join(", ") & ")"
   if externInvRet(ctx.module, calleeStr) != "":
     # extern boundary: the returned value validates on entry
@@ -1003,7 +1035,11 @@ proc genRecordType(ctx: var CodegenCtx, d: Decl): string =
 proc genAliasType(d: Decl): string =
       var isDistinctT = false
       for a in d.typeBody.attrs:
-        if a.name == "distinct": isDistinctT = true
+        # An overflow mode implies distinct: the ATTRIBUTE is what changes
+        # behaviour (user ruling), and it is meaningless on a bare alias —
+        # an alias IS the base type and cannot carry different semantics.
+        if a.name in ["distinct", "saturating", "wrapping", "trapping"]:
+          isDistinctT = true
       let typeBodyStr = genType(d.typeBody)
       if isDistinctT:
         # Nim distinct + borrowed ops: same bits, incompatible type

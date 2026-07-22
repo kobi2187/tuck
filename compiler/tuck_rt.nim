@@ -76,6 +76,25 @@ proc setAt*[T](items: var seq[T], index: int, value: T) =
 
 proc tuckConcat*(a, b: string): string {.inline.} = a & b
 
+# `[saturating]` (spec 4.1): clamp at the type's bounds instead of wrapping.
+# This is VALUE SEMANTICS, not an assertion — unlike validate() it is never
+# stripped in release, because removing it would change results.
+#
+# The guard runs where a value is STORED, on a wider intermediate, so a
+# chain like `a + b - c` clamps once against the final value rather than at
+# every operator (an intermediate that overshoots and comes back is not an
+# overflow). Compiles to a branchless cmov: ~3 instructions.
+#
+# ponytail: u64 has no wider intermediate, so a chain that overflows u64
+# itself wraps before this sees it. Exact for u8/u16/u32. See known_bugs.
+proc tuckSat*[T: SomeUnsignedInt](v: uint64): T {.inline.} =
+  if v > uint64(T.high): T.high else: T(v)
+
+proc tuckSatI*[T: SomeSignedInt](v: int64): T {.inline.} =
+  if v > int64(T.high): T.high
+  elif v < int64(T.low): T.low
+  else: T(v)
+
 proc errCode*(name: static string): uint16 =
   # compile-time FNV-1a, folded to 16 bits; stable across builds, no tables
   var h = 2166136261'u32
