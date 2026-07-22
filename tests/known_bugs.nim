@@ -273,10 +273,11 @@ fn main() -> int:
     "is an attribute name" in outp and "tkColon" notin outp)
 
 # ---------------------------------------------------------------------------
-# 7. OPEN — block-bodied match arms emit broken indentation
+# 7. FIXED 2026-07-22 — block-bodied match arms indent correctly
 # ---------------------------------------------------------------------------
-# Blocks example 20. The source is clean; the emitter over-indents the
-# `if true:` wrapper and under-indents its body, so Nim rejects the arm.
+# Was blocking example 20. The arm emitter hardcoded `"  of "` and `"\n    "`
+# as if the case sat at column 0, while a block body self-indents from
+# ctx.indent — so the two disagreed whenever a match was nested in a fn.
 block:
   let (ok, outp) = build("""
 type Light:
@@ -301,7 +302,40 @@ fn main() -> int:
       "`if true:` wrapper followed by an under-indented body, which Nim " &
       "rejects with \"expression expected, but found 'keyword of'\".",
     "compiler/codegen.nim match-arm emission — indentation of block bodies",
-    fixed = false,
+    fixed = true,
+    ok)
+
+# ---------------------------------------------------------------------------
+# 7b. FIXED 2026-07-22 — a tail match whose arms RETURN is not re-wrapped
+# ---------------------------------------------------------------------------
+# injectTailReturn assumed a trailing `match subject:` always had value arms,
+# so it wrapped it as `return (case ...)`. Arms that return on their own
+# produce no value, and Nim rejected the case expression as untyped.
+block:
+  let (ok, outp) = build("""
+type Light:
+  | Red
+  | Green
+
+fn describe({l: Light}) -> int:
+  match l:
+    Red:
+      let a = 1
+      return a
+    Green:
+      let b = 2
+      return b
+
+fn main() -> int:
+  return {l: Light.Green} describe
+""")
+  bug(
+    "tail match with returning arms is not double-wrapped",
+    "A trailing match whose arms return must not be wrapped in another " &
+      "return — `return (case ...)` asks Nim to type a case expression " &
+      "whose branches never yield a value.",
+    "compiler/codegen.nim injectTailReturn / matchArmsReturn",
+    fixed = true,
     ok)
 
 # ---------------------------------------------------------------------------

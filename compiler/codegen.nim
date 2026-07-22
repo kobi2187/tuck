@@ -701,11 +701,22 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
           let dot = arm.pattern.name.find(".")
           patStr = "errCode(\"" & ctx.errNameFor(
             arm.pattern.name[0 ..< dot], arm.pattern.name[dot+1 .. ^1]) & "\")"
-        let bodyStr = ctx.genExpr(arm.body)
-        cases.add("  of " & patStr & ":\n    " & bodyStr)
+        # Arms sit one level in from the `case`, and a BLOCK body one level
+        # further. Both must be derived from ctx.indent — a match nested in a
+        # fn body is not at column 0, and a block body self-indents from the
+        # same counter, so hardcoding the widths mismatched the two.
+        if arm.body != nil and arm.body.kind == exkBlock:
+          let oldIndent = ctx.indent
+          ctx.indent += 1          # body lines land under the `of`
+          let bodyStr = ctx.genExpr(arm.body)
+          ctx.indent = oldIndent
+          cases.add(ind & "of " & patStr & ":\n" & bodyStr)
+        else:
+          let bodyStr = ctx.genExpr(arm.body)
+          cases.add(ind & "of " & patStr & ":\n" & ind & "  " & bodyStr)
       if errMatch and not hasWild:
         # the code space is uint16 — the declared variants never cover it
-        cases.add("  else: discard")
+        cases.add(ind & "else: discard")
       return "(case " & subjectStr & "\n" & cases.join("\n") & ")"
     else:
       return "discard"
@@ -760,6 +771,18 @@ proc genPendingStub(d: Decl): string =
 # Rewrite the tail statement into an explicit return so the existing return
 # emission (auto-wrap, typed literals) handles it. Control-flow tails keep
 # explicit returns for now (checker enforces branch agreement).
+proc matchArmsReturn(m: Expr): bool =
+  ## True when the arms produce control flow rather than values — a block arm
+  ## ending in `return`, or a bare `return`. Such a match is already the
+  ## function's result and must not be wrapped in another return.
+  for arm in m.arms:
+    if arm.body == nil: continue
+    if arm.body.kind == exkReturn: return true
+    if arm.body.kind == exkBlock and arm.body.stmts.len > 0 and
+       arm.body.stmts[^1] != nil and arm.body.stmts[^1].kind == exkReturn:
+      return true
+  false
+
 proc injectTailReturn(body: Expr, retTypeStr: string) =
   if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
      retTypeStr != "void":
@@ -770,10 +793,13 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
       if lastS.base != nil:
         body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
                             returnVal: lastS.base))
-    elif lastS.kind == exkMatch and lastS.subject != nil:
-      # `match subject:` with value arms is an EXPRESSION — its arms carry no
-      # returns of their own, so the tail match is the fn's result. (A
-      # decision table — subject == nil — keeps its per-row returns.)
+    elif lastS.kind == exkMatch and lastS.subject != nil and
+         not matchArmsReturn(lastS):
+      # `match subject:` whose arms are VALUES is an expression, so the tail
+      # match is the fn's result. Arms that return on their own already are
+      # the result — wrapping those in `return (case ...)` asks Nim to type a
+      # case expression whose branches never produce a value. (A decision
+      # table — subject == nil — keeps its per-row returns.)
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
     elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
                            exkWhile, exkBreak, exkContinue,
