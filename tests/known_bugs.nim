@@ -367,6 +367,35 @@ fn main() -> int:
     fixed = false,
     ok)
 
+# ---------------------------------------------------------------------------
+# 9. OPEN — an early-return guard does not narrow a result
+# ---------------------------------------------------------------------------
+# The checker recognises only `if r.ok:` as the guard. `if not r.ok: return`
+# proves presence for everything AFTER it just as well, and is the flat form
+# the spec itself uses (7.2's pool example) — but reading .value after it is
+# rejected. Affects !T and ?T alike, so this is general error handling, not
+# a pool issue. Found while writing pool usage examples.
+block:
+  let (ok, outp) = build("""
+fn readIt({n: int}) -> !{v: int} [io]:
+  return {v: n}
+
+fn main() -> int [io]:
+  let r = {n: 5} readIt
+  if not r.ok:
+    return 0
+  return r.value.v
+""")
+  bug(
+    "early-return guard narrows a result",
+    "`if not r.ok: return` proves the value is present for the rest of the " &
+      "function, so `.value` after it must be legal. Only the nested " &
+      "`if r.ok:` form is recognised today, which forces the happy path to " &
+      "be indented — the opposite of what early-return is for.",
+    "compiler/typecheck.nim — the .ok guard analysis",
+    fixed = false,
+    ok)
+
 echo ""
 echo "open bugs: ", stillBroken
 if failures > 0:

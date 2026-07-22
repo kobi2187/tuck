@@ -519,4 +519,11 @@ rc=0; "$pl/out/t" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: pool acquire/release cycle exit $rc, want 42"; exit 1; }
 rm -rf "$pl"
 
+# the pools example is the usage showcase — it must actually run
+rm -rf "tests/.smoke_e25" && mkdir -p "tests/.smoke_e25"
+./tuck build examples/25-pools.tuck -o:"tests/.smoke_e25/out" > /dev/null
+rc=0; "tests/.smoke_e25/out/m_25_pools" || rc=$?
+[ "$rc" -eq 4 ] || { echo "FAIL: pools example exit $rc, want 4 (3 sessions + 1 buffer)"; exit 1; }
+rm -rf "tests/.smoke_e25"
+
 echo "cli smoke OK"

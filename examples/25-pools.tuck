@@ -1,0 +1,72 @@
+# Static memory pools (spec 7.2) — what they are FOR.
+#
+# A pool moves an allocation decision from runtime to compile time. You are
+# not caching and you are not reusing for speed: you are declaring "at most
+# N of these can exist at once", so the memory is fixed at link time and
+# malloc never appears. No fragmentation, no 3am OOM, no allocation failure
+# path that only runs after six weeks of uptime.
+#
+# The count is always a REAL-WORLD FACT, never a guess. That is what makes
+# a pool a pool rather than a cache with extra steps.
+
+
+# 1. DMA / peripheral buffers.
+# The count is a HARDWARE fact: this controller has 4 channels, so at most
+# 4 transfers can be in flight. A 5th buffer could never be used.
+pool RxBuffers = Array[512, u8] [count: 4]        # 2 KB, statically allocated
+
+
+# 2. Connection slots — pools are not embedded-only.
+# `count` here is the shed-load point: a server's worker_connections knob,
+# expressed in the language. Exhaustion is BACKPRESSURE, not an error:
+# refusing the 65th client is correct behaviour, not a failure.
+type Session:
+  clientId: u32
+  bytesIn: u32
+
+pool Sessions = Session [count: 64]
+
+
+# 3. Event records handed from an ISR to the main loop.
+# An interrupt handler cannot allocate — it must complete in bounded time —
+# so it takes a preallocated slot instead.
+type SensorReading:
+  channel: u8
+  value: u16
+
+pool Readings = SensorReading [count: 16]
+
+
+# --- using them ---------------------------------------------------------
+
+# Exhaustion is absence, and the CALLER decides what that means. Here it
+# means "turn this client away", which is a normal outcome, not an error.
+fn admit({id: u32}) -> int:
+  let s = Sessions.acquire
+  if s.ok:
+    return 1                     # admitted
+  return 0                       # at capacity: shed load
+
+
+# A slot is borrowed, not owned. Release returns it to the pool; the pool
+# is the owner, so release goes through the pool rather than the value
+# (the element may be a primitive with no methods at all).
+fn drainOnce() -> int:
+  let b = RxBuffers.acquire
+  if b.ok:
+    # ... hand b.value to the DMA controller, wait for the transfer ...
+    RxBuffers.release {b.value}
+    return 1
+  return 0                       # all 4 channels busy: try again later
+
+
+# The count is a budget you can actually spend. Admitting more clients than
+# the pool holds is impossible by construction — not by a check someone
+# might forget to write.
+fn main() -> int:
+  var admitted = 0
+  admitted = admitted + {id: 1} admit
+  admitted = admitted + {id: 2} admit
+  admitted = admitted + {id: 3} admit
+  let drained = {} drainOnce
+  return admitted + drained      # 3 sessions + 1 buffer = 4
