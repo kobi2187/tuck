@@ -874,7 +874,8 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
        hasInvariants(ctx.module, e.base.ty.name):
       lines.add(ind & "validate(" & baseStr & ");")
     return lines.join("\n")
-  else:
+  of exkImport:
+    # imports are declarations; they never reach expression position
     return ""
 
 proc genBeefDecl*(ctx: var BeefCodegenCtx, d: Decl): string

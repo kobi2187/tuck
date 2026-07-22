@@ -140,7 +140,8 @@ proc lowerExpr(e: Expr, m: Module) =
     if e.brCallNode != nil: lowerExpr(e.brCallNode, m)
   of exkBracketAssign:
     if e.brAssignNode != nil: lowerExpr(e.brAssignNode, m)
-  else:
+  of exkLit, exkVar, exkQualified, exkImport:
+    # leaves: nothing beneath them to lower
     discard
 
 proc lowerModule*(m: Module) =

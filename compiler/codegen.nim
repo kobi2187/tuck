@@ -711,8 +711,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
        hasInvariants(ctx.module, e.base.ty.name):
       lines.add(ind & "validate(" & baseStr & ")")
     return lines.join("\n")
-  else:
-    "discard"
+  of exkImport:
+    # imports are declarations; they never reach expression position
+    ""
 
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string
 
