@@ -35,7 +35,6 @@ type
     tkLParen, tkRParen,
     tkLBrace, tkRBrace,
     tkLBracket, tkRBracket,
-    tkIndexLBracket,  # `[` hugging an expression: xs[i] indexes, xs [1,2] is a list
 
     # Keywords
     tkFn, tkLet, tkVar, tkConst, tkIf, tkElif, tkElse,
@@ -305,14 +304,7 @@ proc scanNext*(L: var Lexer) =
     of ')': L.emitOneChar(tkRParen, ")")
     of '{': L.emitOneChar(tkLBrace, "{")
     of '}': L.emitOneChar(tkRBrace, "}")
-    of '[':
-      # Tight `[` (no space before) MAY be an index — `xs[i]` vs `xs [1, 2]`.
-      # The lexer only records tightness; only parseChainExpr, where indexing
-      # is legal, acts on it. Every declaration/type context treats both
-      # kinds alike (see isLBracket in parser.nim).
-      let prev = if L.position > 0: L.source[L.position - 1] else: '\0'
-      let tight = prev in {'a'..'z', 'A'..'Z', '0'..'9', '_', ')', ']', '"'}
-      L.emitOneChar(if tight: tkIndexLBracket else: tkLBracket, "[")
+    of '[': L.emitOneChar(tkLBracket, "[")
     of ']': L.emitOneChar(tkRBracket, "]")
     else:
       L.reportError("Unexpected character: " & ch, L.line, L.column)

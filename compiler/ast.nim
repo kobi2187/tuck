@@ -143,8 +143,8 @@ type
     exkQualified
     exkStruct
     exkList
-    exkIndex
-    exkIndexAssign
+    exkBracket
+    exkBracketAssign
     exkCall
     exkChain
     exkBinary
@@ -192,15 +192,18 @@ type
       fields*: seq[(string, Expr)]
     of exkList:
       items*: seq[Expr]
-    of exkIndex:
-      # `xs[i]` — sugar the checker rewrites into an `at`/`setAt` call once
-      # the receiver's type is known (Seq -> seq::at, user type -> its own at)
-      idxReceiver*: Expr
-      idxArg*: Expr
-    of exkIndexAssign:
-      # `xs[i] = v` — rewritten to a setAt call by the checker
-      idxTarget*: Expr   # the exkIndex being assigned into
-      idxValue*: Expr
+    of exkBracket:
+      # `recv[a, b, ...]`. The receiver decides the meaning, not the argument
+      # count: a declared type is a type application, a value is an index.
+      # The checker resolves it and stamps brCallNode for the index case.
+      brReceiver*: Expr
+      brArgs*: seq[Expr]
+      brCallNode*: Expr
+    of exkBracketAssign:
+      # `recv[i] = v` — the checker stamps brCallNode with the setAt call
+      brTarget*: Expr    # the exkBracket being assigned into
+      brValue*: Expr
+      brAssignNode*: Expr
     of exkCall:
       callee*: Expr
       args*: seq[Expr]

@@ -419,6 +419,11 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
     var items: seq[string]
     for it in e.items: items.add(ctx.genExpr(it, m))
     "@[" & items.join(", ") & "]"
+  of exkBracket:
+    # indexing resolved to an at() call; a type application never reaches codegen
+    if e.brCallNode != nil: ctx.genExpr(e.brCallNode, m) else: ""
+  of exkBracketAssign:
+    if e.brAssignNode != nil: ctx.genExpr(e.brAssignNode, m) else: ""
   of exkFor:
     let iterStr =
       if e.iter != nil and e.iter.kind == pkVar: e.iter.name
@@ -725,6 +730,11 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     var items: seq[string]
     for it in e.items: items.add(ctx.genExpr(it))
     "@[" & items.join(", ") & "]"
+  of exkBracket:
+    # indexing resolved to an at() call; a type application never reaches codegen
+    if e.brCallNode != nil: ctx.genExpr(e.brCallNode) else: ""
+  of exkBracketAssign:
+    if e.brAssignNode != nil: ctx.genExpr(e.brAssignNode) else: ""
   of exkFor:
     let iterStr =
       if e.iter != nil and e.iter.kind == pkVar: e.iter.name

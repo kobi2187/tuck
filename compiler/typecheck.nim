@@ -300,8 +300,8 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
   return a.kind == e.kind
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type
-proc synthIndex(tc: var TypeChecker, e: Expr): Type
-proc synthIndexAssign(tc: var TypeChecker, e: Expr): Type
+proc synthBracket(tc: var TypeChecker, e: Expr): Type
+proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type
 
 # Method form: `x .fn {args}` / `x ..fn {args}` — the receiver rides as the
 # fn's FIRST parameter (checked structurally when the receiver type has no
@@ -977,8 +977,8 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
       if isUnknown(elemT): elemT = t
     Type(span: e.span, kind: tkApp,
          base: Type(span: e.span, kind: tkNamed, name: "Seq"), args: @[elemT])
-  of exkIndex: tc.synthIndex(e)
-  of exkIndexAssign: tc.synthIndexAssign(e)
+  of exkBracket: tc.synthBracket(e)
+  of exkBracketAssign: tc.synthBracketAssign(e)
   of exkCall: tc.synthCall(e)
   of exkBinary: tc.synthBinary(e)
   of exkUnary:
@@ -1145,10 +1145,28 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkQualified, exkImport:
     unknownType(e.span)
 
-# `xs[i]` / `xs[i] = v` are sugar. Both rewrite IN PLACE into an ordinary
-# call to `at` / `setAt` and then defer to synthCall — so generic binding,
-# effects and error types all apply as usual, and neither codegen needs an
-# arm for the index nodes (they no longer exist by the time codegen runs).
+# A bracket's meaning comes from its RECEIVER, which only the checker knows:
+# a declared type name is a type application (`Array[128, u8]`), anything
+# else is indexing (`xs[i]`). The parser deliberately does not guess.
+
+proc typeAppFromBracket(tc: var TypeChecker, e: Expr, name: string): Type =
+  # `Name[a, b]` where Name is declared — the type-application form. Argument
+  # arity is checked against the decl's generic params when it has any;
+  # value arguments (`Array[128, u8]`) carry sizes and are not resolved here.
+  # Arena/alloc semantics stay unimplemented (ROADMAP §7.3) — this only gives
+  # the expression a type instead of misreading it as indexing.
+  if tc.typeGenerics.hasKey(name):
+    let arity = tc.typeGenerics[name].len
+    if arity != e.brArgs.len:
+      fail("Type Error: '" & name & "' takes " & $arity &
+           " type argument(s), got " & $e.brArgs.len, e.span)
+  var args: seq[Type]
+  for a in e.brArgs:
+    args.add(if a.kind == exkVar: Type(span: a.span, kind: tkNamed, name: a.name)
+             else: tc.synthesize(a))
+  Type(span: e.span, kind: tkApp,
+       base: Type(span: e.span, kind: tkNamed, name: name), args: args)
+
 proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
                  sp: Span): Expr =
   # A Seq comes from std/seq; any other type supplies its own `at`/`setAt`.
@@ -1165,33 +1183,42 @@ proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
          fnName & "' for it", sp)
   Expr(span: sp, kind: exkVar, name: fnName)
 
-proc synthIndex(tc: var TypeChecker, e: Expr): Type =
-  let recvT = tc.synthesize(e.idxReceiver)
-  let idxT = tc.synthesize(e.idxArg)
+# Indexing a VALUE: `at` when value is nil, `setAt` when it is not. The
+# resolved call is stamped as a side node (the house idiom — see exkField's
+# callNode) so the source node survives; codegen emits the stamped call.
+proc resolveIndex(tc: var TypeChecker, br: Expr, value: Expr,
+                  recvT: Type, sp: Span): Expr =
+  if br.brArgs.len != 1:
+    fail("Type Error: indexing takes exactly one index, got " &
+         $br.brArgs.len, sp)
+  let idx = br.brArgs[0]
+  let idxT = tc.synthesize(idx)
   if not isUnknown(idxT) and not (idxT.kind == tkNamed and idxT.name == "int"):
-    fail("Type Error: index must be int, got " & typeName(idxT), e.idxArg.span)
-  let sp = e.span
-  let callee = tc.indexCallee(recvT, "at", sp)
-  let payload = Expr(span: sp, kind: exkStruct,
-                     fields: @[("items", e.idxReceiver), ("index", e.idxArg)])
-  e[] = Expr(span: sp, kind: exkCall, callee: callee, args: @[payload])[]
-  tc.synthCall(e)
+    fail("Type Error: index must be int, got " & typeName(idxT), idx.span)
+  var fields = @[("items", br.brReceiver), ("index", idx)]
+  if value != nil:
+    fields.add(("value", value))
+  let callee = tc.indexCallee(recvT, if value == nil: "at" else: "setAt", sp)
+  Expr(span: sp, kind: exkCall, callee: callee,
+       args: @[Expr(span: sp, kind: exkStruct, fields: fields)])
 
-proc synthIndexAssign(tc: var TypeChecker, e: Expr): Type =
-  let target = e.idxTarget
-  let recvT = tc.synthesize(target.idxReceiver)
-  let idxT = tc.synthesize(target.idxArg)
-  if not isUnknown(idxT) and not (idxT.kind == tkNamed and idxT.name == "int"):
-    fail("Type Error: index must be int, got " & typeName(idxT),
-         target.idxArg.span)
-  let sp = e.span
-  let callee = tc.indexCallee(recvT, "setAt", sp)
-  let payload = Expr(span: sp, kind: exkStruct,
-                     fields: @[("items", target.idxReceiver),
-                               ("index", target.idxArg),
-                               ("value", e.idxValue)])
-  e[] = Expr(span: sp, kind: exkCall, callee: callee, args: @[payload])[]
-  tc.synthCall(e)
+proc synthBracket(tc: var TypeChecker, e: Expr): Type =
+  if e.brReceiver != nil and e.brReceiver.kind == exkVar and
+     tc.typeDecls.hasKey(e.brReceiver.name):
+    return tc.typeAppFromBracket(e, e.brReceiver.name)
+  let recvT = tc.synthesize(e.brReceiver)
+  e.brCallNode = tc.resolveIndex(e, nil, recvT, e.span)
+  tc.synthesize(e.brCallNode)
+
+proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
+  let br = e.brTarget
+  if br.brReceiver != nil and br.brReceiver.kind == exkVar and
+     tc.typeDecls.hasKey(br.brReceiver.name):
+    fail("Type Error: cannot assign into the type application '" &
+         br.brReceiver.name & "[...]'", e.span)
+  let recvT = tc.synthesize(br.brReceiver)
+  e.brAssignNode = tc.resolveIndex(br, e.brValue, recvT, e.span)
+  tc.synthesize(e.brAssignNode)
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type =
   if e == nil: return unknownType(Span())

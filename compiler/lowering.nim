@@ -134,6 +134,12 @@ proc lowerExpr(e: Expr, m: Module) =
     for step in e.steps:
       lowerExpr(step.target, m)
       lowerExpr(step.arg, m)
+  of exkBracket:
+    # the checker-stamped at() call is what codegen emits — lower it, not
+    # the sugar node (a type application has no call and nothing to lower)
+    if e.brCallNode != nil: lowerExpr(e.brCallNode, m)
+  of exkBracketAssign:
+    if e.brAssignNode != nil: lowerExpr(e.brAssignNode, m)
   else:
     discard
 

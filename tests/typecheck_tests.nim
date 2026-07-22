@@ -1305,6 +1305,35 @@ fn main() -> int:
   return 0
 """, "must be bool"
 
+# A bracket's meaning comes from its RECEIVER, not its argument count:
+# a declared type is a type application, a value is an index. Single-arg
+# type applications used to be misparsed as indexing.
+expectOk "single-arg type application is not indexing", """
+type Box:
+  n: int
+
+fn main() -> int:
+  let b = Box[128]
+  return 0
+"""
+
+expectOk "multi-arg type application in expression position", """
+type Array:
+  n: int
+
+fn main() -> int:
+  let b = Array[128, 8]
+  return 0
+"""
+
+expectError "multi-arg bracket on a value is not an index", """
+import seq
+
+fn main() -> int:
+  var xs = [10, 20, 30]
+  return xs[1, 2]
+""", "index"
+
 if failures > 0:
   echo failures, " test(s) failed"
   quit(1)

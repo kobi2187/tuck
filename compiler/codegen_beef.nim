@@ -704,6 +704,13 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
     for item in e.items:
       parts.add(ctx.genBeefExpr(item))
     return ".(" & parts.join(", ") & ")"
+  of exkBracket:
+    # indexing resolved to an at() call; a type application never reaches codegen
+    if e.brCallNode != nil: return ctx.genBeefExpr(e.brCallNode)
+    return ""
+  of exkBracketAssign:
+    if e.brAssignNode != nil: return ctx.genBeefExpr(e.brAssignNode)
+    return ""
   of exkFor:
     let iterStr = ctx.genBeefExpr(e.iterable)
     if e.iter != nil and e.iter.kind == pkTuple and e.iter.elems.len == 2:
