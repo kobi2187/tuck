@@ -16,15 +16,24 @@ type
     ## `x.f`, a bare nullary `f`, `xs[i]` and `xs[i] = v` all resolve to an
     ## ordinary call once the checker knows the types.
     calls*: Table[NodeId, Expr]
+    types*: Table[NodeId, Type]        # what the checker inferred
+    shortcuts*: Table[NodeId, string]  # errors-policy drop sites
+
+proc ensureId*(e: Expr) =
+  ## Nodes minted after the parse boundary (checker-synthesized calls) have
+  ## no id yet. Give them one on first use so nothing silently drops out of
+  ## the semantic layer.
+  if e != nil and not e.id.isSet: e.id = newNodeId()
 
 proc setCall*(r: var Resolution, e: Expr, call: Expr) =
-  if e != nil and e.id.isSet:
-    r.calls[e.id] = call
+  if e == nil: return
+  ensureId(e)
+  r.calls[e.id] = call
 
 proc call*(r: Resolution, e: Expr): Expr =
   ## The resolved call for this node, or nil if it did not resolve to one.
   if e == nil or not e.id.isSet: return nil
-  r.calls.getOrDefault(e.id, nil)
+  if r.calls.hasKey(e.id): r.calls[e.id] else: nil
 
 proc hasCall*(r: Resolution, e: Expr): bool =
   e != nil and e.id.isSet and r.calls.hasKey(e.id)
@@ -34,14 +43,41 @@ proc hasCall*(r: Resolution, e: Expr): bool =
 # signature in checker, lowering and both backends would be pure ceremony.
 # Cleared at the start of each check so repeated in-process runs (the test
 # suites) never see a previous program's entries.
-var current* = Resolution(calls: initTable[NodeId, Expr]())
+var semLayer* = Resolution(calls: initTable[NodeId, Expr](),
+                            types: initTable[NodeId, Type](),
+                            shortcuts: initTable[NodeId, string]())
 
 proc resetResolution*() =
-  current = Resolution(calls: initTable[NodeId, Expr]())
+  semLayer = Resolution(calls: initTable[NodeId, Expr](),
+                            types: initTable[NodeId, Type](),
+                            shortcuts: initTable[NodeId, string]())
 
 proc setStepCall*(r: var Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call
 
 proc stepCall*(r: Resolution, s: ChainStep): Expr =
   if not s.id.isSet: return nil
-  r.calls.getOrDefault(s.id, nil)
+  if r.calls.hasKey(s.id): r.calls[s.id] else: nil
+
+# --- types and shortcut sites ----------------------------------------------
+
+proc setType*(r: var Resolution, e: Expr, t: Type) =
+  if e == nil: return
+  ensureId(e)
+  r.types[e.id] = t
+
+proc typeFor*(r: Resolution, e: Expr): Type =
+  ## The checker's type for this node, or nil if it was never typed.
+  if e == nil or not e.id.isSet: return nil
+  if r.types.hasKey(e.id): r.types[e.id] else: nil
+
+proc setShortcut*(r: var Resolution, e: Expr, site: string) =
+  if e == nil: return
+  ensureId(e)
+  r.shortcuts[e.id] = site
+
+proc shortcut*(r: Resolution, e: Expr): string =
+  ## Non-empty when the errors policy routes this statement's dropped !T
+  ## to the global handler.
+  if e == nil or not e.id.isSet: return ""
+  r.shortcuts.getOrDefault(e.id, "")

@@ -172,10 +172,6 @@ type
   Expr* = ref object
     id*: NodeId
     span*: Span
-    shortcutSite*: string  # set by checker under continue/exit policy: this
-                           # statement drops a !T and routes to the handler
-    ty*: Type              # stamped by the checker (typed AST): codegen reads
-                           # it for type-directed lowering; nil = not checked
     case kind*: ExprKind
     of exkLit:
       litKind*: LitKind
@@ -499,3 +495,9 @@ proc clearIds*(d: Decl) =
 
 proc clearIds*(m: var Module) =
   for d in m.decls: clearIds(d)
+
+proc newNodeId*(): NodeId =
+  ## For nodes minted AFTER parsing (the checker synthesizes calls). Keeps
+  ## the invariant that every node can key into the semantic layer.
+  globalNodeCounter.inc
+  NodeId(globalNodeCounter)

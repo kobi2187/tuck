@@ -212,7 +212,7 @@ proc genBake(ctx: var CodegenCtx, e: Expr): string =
     let tmp = "tuckBake" & $ctx.tmpCounter
     prefix = "let " & tmp & " = " & recv & "; "
     recv = tmp
-  let recvFields = ctx.recordFieldNames(e.args[0].ty)
+  let recvFields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
   var parts: seq[string]
   for fname in recvFields:
     var overridden = ""
@@ -239,7 +239,7 @@ proc genMerge(ctx: var CodegenCtx, e: Expr): string =
       let tmp = "tuckMerge" & $ctx.tmpCounter
       prefix.add("let " & tmp & " = " & recv & "; ")
       recv = tmp
-    for f in ctx.recordFieldNames(mexpr.ty):
+    for f in ctx.recordFieldNames(semLayer.typeFor(mexpr)):
       parts.add(f & ": " & recv & "." & f)
   if parts.len == 0: return ctx.genExpr(e.args[0])  # sketch members
   if prefix == "": "(" & parts.join(", ") & ")"
@@ -268,7 +268,7 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
   let params = lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
-  let fields = ctx.recordFieldNames(e.args[0].ty)
+  let fields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
   var parts: seq[string]
   for paramName in params:
@@ -403,10 +403,10 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
       parts.add(field[0] & ": " & ctx.genExpr(field[1]))
     # generic type: the checker's ty stamp carries the inferred instantiation
     var ctorName = e.callee.name
-    if e.ty != nil and e.ty.kind == tkApp and e.ty.base != nil and
-       e.ty.base.kind == tkNamed and e.ty.base.name == e.callee.name:
+    if semLayer.typeFor(e) != nil and semLayer.typeFor(e).kind == tkApp and semLayer.typeFor(e).base != nil and
+       semLayer.typeFor(e).base.kind == tkNamed and semLayer.typeFor(e).base.name == e.callee.name:
       var gparts: seq[string]
-      for a in e.ty.args: gparts.add(genType(a))
+      for a in semLayer.typeFor(e).args: gparts.add(genType(a))
       ctorName &= "[" & gparts.join(", ") & "]"
     let ctor = ctorName & "(" & parts.join(", ") & ")"
     if hasInvariants(ctx.module, e.callee.name):
@@ -507,7 +507,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     of lkStr: "\"" & e.litValue & "\""
     else: e.litValue
   of exkVar:
-    if current.hasCall(e): ctx.genExpr(current.call(e))
+    if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e))
     elif e.name == "...": "discard"
     elif e.name == "input" and ctx.currentParams.len > 0:
       var parts: seq[string]
@@ -524,8 +524,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
         e.fieldName & "(" & ctx.genExpr(e.receiver) & ")"
       else:
         ctx.genExpr(e.receiver)
-    elif current.hasCall(e):
-      ctx.genCall(current.call(e))
+    elif semLayer.hasCall(e):
+      ctx.genCall(semLayer.call(e))
     elif e.receiver != nil and e.receiver.kind == exkVar and
          ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
       # bare Type.Variant of a payload sum: kind-tagged construction
@@ -547,9 +547,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     "@[" & items.join(", ") & "]"
   of exkBracket:
     # indexing resolved to an at() call; a type application never reaches codegen
-    if current.hasCall(e): ctx.genExpr(current.call(e)) else: ""
+    if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e)) else: ""
   of exkBracketAssign:
-    if current.hasCall(e): ctx.genExpr(current.call(e)) else: ""
+    if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e)) else: ""
   of exkFor:
     let iterStr =
       if e.iter != nil and e.iter.kind == pkVar: e.iter.name
@@ -599,8 +599,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       return "(block: let " & tmpName & " = " & ctx.genExpr(e.left) &
              "; if not " & tmpName & ": " & ctx.genExpr(e.right) & "; " &
              tmpName & ")"
-    if e.binOp == boAdd and e.left != nil and e.left.ty != nil and
-       e.left.ty.kind == tkNamed and e.left.ty.name in ["str", "string"]:
+    if e.binOp == boAdd and e.left != nil and semLayer.typeFor(e.left) != nil and
+       semLayer.typeFor(e.left).kind == tkNamed and semLayer.typeFor(e.left).name in ["str", "string"]:
       return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
     return "(" & ctx.genExpr(e.left) & " " & opStr & " " & ctx.genExpr(e.right) & ")"
   of exkUnary:
@@ -615,14 +615,14 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     ctx.indent += 1
     for s in e.stmts:
       var stmtCode = ctx.genExpr(s)
-      if stmtCode != "" and s.shortcutSite != "":
+      if stmtCode != "" and semLayer.shortcut(s) != "":
         # continue/exit policy: dropped result routes to the global handler
         ctx.tmpCounter.inc
         let tn = "tuckDrop" & $ctx.tmpCounter
         let onErr = if ctx.errPolicy == "exit":
-                      "(tuck_unhandled(" & tn & ".err, \"" & s.shortcutSite & "\"); quit(1))"
+                      "(tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) & "\"); quit(1))"
                     else:
-                      "tuck_unhandled(" & tn & ".err, \"" & s.shortcutSite & "\")"
+                      "tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) & "\")"
         stmtCode = "(let " & tn & " = " & stmtCode & "; (if not " & tn &
                    ".ok: " & onErr & "))"
       if stmtCode != "":
@@ -699,8 +699,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     let baseStr = ctx.genExpr(e.base)
     var lines: seq[string]
     for step in e.steps:
-      if current.stepCall(step) != nil:
-        lines.add(ind & baseStr & " = " & ctx.genCall(current.stepCall(step)))
+      if semLayer.stepCall(step) != nil:
+        lines.add(ind & baseStr & " = " & ctx.genCall(semLayer.stepCall(step)))
       else:
         var valStr = ""
         if step.arg != nil and step.arg.kind == exkStruct and
@@ -708,8 +708,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
           valStr = ctx.genExpr(step.arg.fields[0][1])
         lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
     # mutation site: an invariant-carrying var re-validates after the chain
-    if e.base != nil and e.base.ty != nil and e.base.ty.kind == tkNamed and
-       hasInvariants(ctx.module, e.base.ty.name):
+    if e.base != nil and semLayer.typeFor(e.base) != nil and semLayer.typeFor(e.base).kind == tkNamed and
+       hasInvariants(ctx.module, semLayer.typeFor(e.base).name):
       lines.add(ind & "validate(" & baseStr & ")")
     return lines.join("\n")
   of exkImport:

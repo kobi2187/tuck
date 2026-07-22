@@ -138,10 +138,10 @@ proc lowerExpr(e: Expr, m: Module) =
   of exkBracket:
     # the checker-stamped at() call is what codegen emits — lower it, not
     # the sugar node (a type application has no call and nothing to lower)
-    let c = current.call(e)
+    let c = semLayer.call(e)
     if c != nil: lowerExpr(c, m)
   of exkBracketAssign:
-    let c = current.call(e)
+    let c = semLayer.call(e)
     if c != nil: lowerExpr(c, m)
   of exkLit, exkVar, exkQualified, exkImport:
     # leaves: nothing beneath them to lower

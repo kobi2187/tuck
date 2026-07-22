@@ -344,7 +344,7 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
            p.name & ": " & typeName(p.typ) & "'", sp)
   result = Expr(span: sp, kind: exkCall,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
-  result.ty = sig.ret
+  setType(semLayer, result, sig.ret)
 
 proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   # Result introspection: .ok/.err/.value on a !T/?T value IS the handling —
@@ -375,7 +375,7 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
              "slot.invoke {a, b}", e.dotArg.span)
       discard tc.synthesize(e.dotArg)
       callArgs.add(e.dotArg)
-    setCall(current, e, Expr(span: e.span, kind: exkCall, callee: e.receiver,
+    setCall(semLayer, e, Expr(span: e.span, kind: exkCall, callee: e.receiver,
                              args: callArgs))
     return unknownType(e.span)
   # Unit sugar: 5.ms is postfix application — ms is an ordinary function
@@ -432,13 +432,13 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
       # `.fn {args}` method form: receiver = first param, args fill the rest
       let mc = tc.synthMethodCall(e.fieldName, e.receiver, recvT,
                                   e.dotArg, e.span)
-      setCall(current, e, mc)
-      return mc.ty
+      setCall(semLayer, e, mc)
+      return semLayer.typeFor(mc)
     # bare `.fn` — same as a whitespace call: the receiver is the payload
     let bc = Expr(span: e.span, kind: exkCall,
                   callee: Expr(span: e.span, kind: exkVar, name: e.fieldName),
                   args: @[e.receiver])
-    setCall(current, e, bc)
+    setCall(semLayer, e, bc)
     return tc.synthesize(bc)
   # Known record, missing field, no matching fn: the payoff error.
   # Sum types carry variant fields we don't track per-variant in v1 — only
@@ -647,8 +647,8 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
           # braced args pin the method form: receiver = first param
           let sc = tc.synthMethodCall(step.target.name, e.base, recvT,
                                       step.arg, step.span)
-          setStepCall(current, step, sc)
-          retT = sc.ty
+          setStepCall(semLayer, step, sc)
+          retT = semLayer.typeFor(sc)
         else:
           # bare `..fn`: same type-directed resolution as any other call
           # (whole-bind the receiver, else its fields fill the params)
@@ -656,7 +656,7 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
                         callee: Expr(span: step.span, kind: exkVar,
                                      name: step.target.name),
                         args: @[e.base])
-          setStepCall(current, step, sc)
+          setStepCall(semLayer, step, sc)
           retT = tc.synthesize(sc)
         if not tc.compatible(retT, baseT):
           fail("Type Error: cannot assign " & typeName(retT) & " to " &
@@ -947,7 +947,7 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   calleeT
 
 # Kind dispatch lives in synthesizeKind; synthesize stamps the result onto the
-# node (typed AST — codegen reads e.ty for type-directed lowering)
+# node (typed AST — codegen reads semLayer.typeFor(e) for type-directed lowering)
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   case e.kind
   of exkLit:
@@ -967,7 +967,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
       let vc = Expr(span: e.span, kind: exkCall,
                     callee: Expr(span: e.span, kind: exkVar, name: e.name),
                     args: @[])
-      setCall(current, e, vc)
+      setCall(semLayer, e, vc)
       tc.synthesize(vc)
     else: unknownType(e.span)
   of exkField: tc.synthFieldAccess(e)
@@ -1004,7 +1004,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
       if isWrapper(last) and not isImplicitReturn and s.kind != exkRaise:
         let site = tc.currentFn & " line " & $s.span.line
         if tc.errPolicy in ["continue", "exit"]:
-          s.shortcutSite = site
+          setShortcut(semLayer, s, site)
           tc.unhandledSites.add(typeName(last) & " at " & site)
         else:
           tc.unhandledSites.add(typeName(last) & " discarded at " & site)
@@ -1214,7 +1214,7 @@ proc synthBracket(tc: var TypeChecker, e: Expr): Type =
     return tc.typeAppFromBracket(e, e.brReceiver.name)
   let recvT = tc.synthesize(e.brReceiver)
   let ic = tc.resolveIndex(e, nil, recvT, e.span)
-  setCall(current, e, ic)
+  setCall(semLayer, e, ic)
   tc.synthesize(ic)
 
 proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
@@ -1225,13 +1225,13 @@ proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
          br.brReceiver.name & "[...]'", e.span)
   let recvT = tc.synthesize(br.brReceiver)
   let ac = tc.resolveIndex(br, e.brValue, recvT, e.span)
-  setCall(current, e, ac)
+  setCall(semLayer, e, ac)
   tc.synthesize(ac)
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type =
   if e == nil: return unknownType(Span())
   result = tc.synthesizeKind(e)
-  e.ty = result
+  setType(semLayer, e, result)
 
 proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
   for d in decls:

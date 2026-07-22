@@ -260,7 +260,7 @@ proc explodeRecordArg(ctx: var BeefCodegenCtx, e: Expr, calleeStr: string): stri
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
   let params = lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
-  let fields = ctx.recordFieldNames(e.args[0].ty)
+  let fields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
   var parts: seq[string]
   for paramName in params:
@@ -313,7 +313,7 @@ proc hasUnknownType(t: Type): bool =
 
 proc inferLitType(e: Expr): Type =
   # best-effort inference for sketch-mode literals
-  if e != nil and e.ty != nil and not hasUnknownType(e.ty): return e.ty
+  if e != nil and semLayer.typeFor(e) != nil and not hasUnknownType(semLayer.typeFor(e)): return semLayer.typeFor(e)
   if e != nil and e.kind == exkLit:
     case e.litKind
     of lkStr: return Type(kind: tkNamed, name: "str")
@@ -327,8 +327,8 @@ proc inferLitType(e: Expr): Type =
 # when the shape can't be fully resolved.
 proc genStructLit(ctx: var BeefCodegenCtx, e: Expr): string =
   var declFields: seq[FieldDef]
-  if e.ty != nil:
-    declFields = getFieldsForType(ctx.module, e.ty)
+  if semLayer.typeFor(e) != nil:
+    declFields = getFieldsForType(ctx.module, semLayer.typeFor(e))
   var allKnown = declFields.len > 0
   for f in declFields:
     if hasUnknownType(f.typ): allKnown = false
@@ -382,8 +382,8 @@ proc sumVariantCtor(ctx: var BeefCodegenCtx, typeName, variantName: string,
 # ponytail: exkVar receivers only (no expr-position temp in Beef);
 # falls back to pass-through otherwise.
 proc genBeefAlias(ctx: var BeefCodegenCtx, e: Expr): string =
-  if e.args[0].kind != exkVar or e.args[0].ty == nil: return ""
-  let recvFields = getFieldsForType(ctx.module, e.args[0].ty)
+  if e.args[0].kind != exkVar or semLayer.typeFor(e.args[0]) == nil: return ""
+  let recvFields = getFieldsForType(ctx.module, semLayer.typeFor(e.args[0]))
   if recvFields.len == 0: return ""
   var newFields: seq[FieldDef]
   var vals: seq[string]
@@ -403,9 +403,9 @@ proc genBeefMerge(ctx: var BeefCodegenCtx, e: Expr): string =
   var newFields: seq[FieldDef]
   var vals: seq[string]
   for (mname, mexpr) in e.args[0].fields.items:
-    if mexpr.kind != exkVar or mexpr.ty == nil: return ""
+    if mexpr.kind != exkVar or semLayer.typeFor(mexpr) == nil: return ""
     let recv = ctx.genBeefExpr(mexpr)
-    for f in getFieldsForType(ctx.module, mexpr.ty):
+    for f in getFieldsForType(ctx.module, semLayer.typeFor(mexpr)):
       newFields.add(f)
       vals.add(recv & "." & f.name)
   if newFields.len == 0: return ""
@@ -430,10 +430,10 @@ proc genBeefCall(ctx: var BeefCodegenCtx, e: Expr): string =
       parts.add(field[0] & " = " & ctx.genBeefExpr(field[1]))
     # generic type: the checker's ty stamp carries the inferred instantiation
     var ctorName = e.callee.name
-    if e.ty != nil and e.ty.kind == tkApp and e.ty.base != nil and
-       e.ty.base.kind == tkNamed and e.ty.base.name == e.callee.name:
+    if semLayer.typeFor(e) != nil and semLayer.typeFor(e).kind == tkApp and semLayer.typeFor(e).base != nil and
+       semLayer.typeFor(e).base.kind == tkNamed and semLayer.typeFor(e).base.name == e.callee.name:
       var gparts: seq[string]
-      for a in e.ty.args: gparts.add(ctx.beefType(a))
+      for a in semLayer.typeFor(e).args: gparts.add(ctx.beefType(a))
       ctorName &= "<" & gparts.join(", ") & ">"
     # value-type struct: `new` would heap-allocate and yield a pointer
     # (Type*), not the value — Beef's struct object-initializer is `.()`
@@ -660,7 +660,7 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
            else: e.litValue
   of exkVar:
     # nullary call stamped by the checker (spec 2.3: a bare name IS a call)
-    if current.hasCall(e): return ctx.genBeefExpr(current.call(e))
+    if semLayer.hasCall(e): return ctx.genBeefExpr(semLayer.call(e))
     if e.name == "...": return ""  # pending hole: compiles, does nothing
     if e.name == "input" and ctx.currentParams.len > 0:
       # the whole incoming payload, rebuilt as its TRec shape
@@ -686,9 +686,9 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
         return e.fieldName & "(" & ctx.genBeefExpr(e.receiver) & ")"
       else:
         return ctx.genBeefExpr(e.receiver)
-    if current.hasCall(e):
+    if semLayer.hasCall(e):
       # fieldName resolved to a fn call, not a field (checker-resolved)
-      return ctx.genBeefCall(current.call(e))
+      return ctx.genBeefCall(semLayer.call(e))
     if e.receiver != nil and e.receiver.kind == exkVar:
       # bare Type.Variant of a payload sum: kind-tagged construction
       let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
@@ -707,10 +707,10 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
     return ".(" & parts.join(", ") & ")"
   of exkBracket:
     # indexing resolved to an at() call; a type application never reaches codegen
-    if current.hasCall(e): return ctx.genBeefExpr(current.call(e))
+    if semLayer.hasCall(e): return ctx.genBeefExpr(semLayer.call(e))
     return ""
   of exkBracketAssign:
-    if current.hasCall(e): return ctx.genBeefExpr(current.call(e))
+    if semLayer.hasCall(e): return ctx.genBeefExpr(semLayer.call(e))
     return ""
   of exkFor:
     let iterStr = ctx.genBeefExpr(e.iterable)
@@ -771,8 +771,8 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
                 of boXor: "^"
                 of boRangeIncl: "..."
                 of boRangeExcl: "..<"
-    if e.binOp == boAdd and e.left != nil and e.left.ty != nil and
-       e.left.ty.kind == tkNamed and e.left.ty.name in ["str", "string"]:
+    if e.binOp == boAdd and e.left != nil and semLayer.typeFor(e.left) != nil and
+       semLayer.typeFor(e.left).kind == tkNamed and semLayer.typeFor(e.left).name in ["str", "string"]:
       return "concat(" & ctx.genBeefExpr(e.left) & ", " & ctx.genBeefExpr(e.right) & ")"
     return "(" & ctx.genBeefExpr(e.left) & " " & opStr & " " & ctx.genBeefExpr(e.right) & ")"
   of exkUnary:
@@ -800,15 +800,15 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
         stmtCode = ind & "  " & stmtCode
       else:
         stmtCode = ctx.genBeefExpr(s)
-      if stmtCode != "" and s.shortcutSite != "":
+      if stmtCode != "" and semLayer.shortcut(s) != "":
         # continue/exit policy: dropped result routes to the global handler
         ctx.tmpCounter.inc
         let tn = "tuckDrop" & $ctx.tmpCounter
         let onErr = if ctx.errPolicy == "exit":
-                      "{ tuck_unhandled(" & tn & ".err, \"" & s.shortcutSite &
+                      "{ tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) &
                       "\"); Runtime.FatalError(\"unhandled error\"); }"
                     else:
-                      "tuck_unhandled(" & tn & ".err, \"" & s.shortcutSite & "\");"
+                      "tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) & "\");"
         stmtCode = "{ let " & tn & " = " & stmtCode & "; if (!" & tn &
                    ".ok) " & onErr & " }"
         ownsLayout = true
@@ -862,8 +862,8 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
     let baseStr = ctx.genBeefExpr(e.base)
     var lines: seq[string]
     for step in e.steps:
-      if current.stepCall(step) != nil:
-        lines.add(ind & baseStr & " = " & ctx.genBeefCall(current.stepCall(step)) & ";")
+      if semLayer.stepCall(step) != nil:
+        lines.add(ind & baseStr & " = " & ctx.genBeefCall(semLayer.stepCall(step)) & ";")
       else:
         var valStr = ""
         if step.arg != nil and step.arg.kind == exkStruct and
@@ -871,8 +871,8 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
           valStr = ctx.genBeefExpr(step.arg.fields[0][1])
         lines.add(ind & baseStr & "." & step.target.name & " = " & valStr & ";")
     # mutation site: an invariant-carrying var re-validates after the chain
-    if e.base != nil and e.base.ty != nil and e.base.ty.kind == tkNamed and
-       hasInvariants(ctx.module, e.base.ty.name):
+    if e.base != nil and semLayer.typeFor(e.base) != nil and semLayer.typeFor(e.base).kind == tkNamed and
+       hasInvariants(ctx.module, semLayer.typeFor(e.base).name):
       lines.add(ind & "validate(" & baseStr & ");")
     return lines.join("\n")
   of exkImport:
