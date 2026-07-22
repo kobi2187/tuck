@@ -272,6 +272,67 @@ fn main() -> int:
     fixed = true,
     "is an attribute name" in outp and "tkColon" notin outp)
 
+# ---------------------------------------------------------------------------
+# 7. OPEN — block-bodied match arms emit broken indentation
+# ---------------------------------------------------------------------------
+# Blocks example 20. The source is clean; the emitter over-indents the
+# `if true:` wrapper and under-indents its body, so Nim rejects the arm.
+block:
+  let (ok, outp) = build("""
+type Light:
+  | Red
+  | Green
+
+fn describe({l: Light}) -> int:
+  match l:
+    Red:
+      let a = 1
+      return a
+    Green:
+      let b = 2
+      return b
+
+fn main() -> int:
+  return {l: Light.Green} describe
+""")
+  bug(
+    "block-bodied match arms indent correctly",
+    "A match arm with an indented block body emits an over-indented " &
+      "`if true:` wrapper followed by an under-indented body, which Nim " &
+      "rejects with \"expression expected, but found 'keyword of'\".",
+    "compiler/codegen.nim match-arm emission — indentation of block bodies",
+    fixed = false,
+    ok)
+
+# ---------------------------------------------------------------------------
+# 8. OPEN — `.fn {args}` on an UNDECLARED fn emits a bare field access
+# ---------------------------------------------------------------------------
+# Blocks example 16: `txBuf.copyFrom {data}` emits `self.txBuf.copyFrom`
+# — no call, no argument. The checker types the receiver as Unknown (the
+# fn is not declared anywhere), so the method form never resolves and
+# codegen falls through to plain field access. A sketch-level call should
+# still emit a CALL, or the checker should say the fn is undeclared.
+block:
+  let (ok, outp) = build("""
+actor Driver [queue: 8]:
+  buf: Seq[u8]
+
+  on send({data: Seq[u8]}) -> void:
+    buf.copyFrom {data}
+
+fn main() -> int:
+  return 0
+""")
+  bug(
+    "`.fn {args}` on an undeclared fn is a call or an error",
+    "`buf.copyFrom {data}` emits `self.buf.copyFrom` — a field access with " &
+      "the argument dropped entirely. Either resolve it as a call or " &
+      "report copyFrom as undeclared; silently emitting a field read is " &
+      "neither.",
+    "compiler/typecheck.nim synthFieldAccess + codegen exkField",
+    fixed = false,
+    ok)
+
 echo ""
 echo "open bugs: ", stillBroken
 if failures > 0:

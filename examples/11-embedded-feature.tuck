@@ -3,6 +3,11 @@ type PacketSeq  = u8  [wrapping]     # intentional wraparound for seq numbers
 type ErrorCount = u32 [trapping]     # panic in debug, defined behavior in release
 
 
+type SensorEvent:
+  channel: u8
+  reading: u16
+
+
 register RCC_CR at 0x40021000:
   HSION:  bit 0  [read, write]
   HSIRDY: bit 1  [read]          # read-only, compiler enforces
