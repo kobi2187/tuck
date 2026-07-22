@@ -188,7 +188,6 @@ proc genQualified(ctx: CodegenCtx, e: Expr): string =
   elif modName in ctx.realModules: modName & "." & e.qualName
   else: modName & "_" & e.qualName
 
-proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string
 
 # Type-directed explosion: a record-typed VAR as the whole payload
@@ -307,7 +306,7 @@ proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
 
 # exkCall (module-aware overload): record construction, qualified-module
 # param reordering, or plain positional call.
-proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
+proc genCall(ctx: var CodegenCtx, e: Expr): string =
   var args: seq[string]
   if e.callee != nil and e.callee.kind == exkField and
      e.callee.receiver != nil and e.callee.receiver.kind == exkVar:
@@ -316,18 +315,18 @@ proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
     let ctor = ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName,
                                    payload)
     if ctor != "": return ctor
-  let calleeStr = ctx.genExpr(e.callee, m)
+  let calleeStr = ctx.genExpr(e.callee)
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genAlias(e)
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genBake(e)
   if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
     return ctx.genMerge(e)
-  if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(m, calleeStr):
+  if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(ctx.module, calleeStr):
     # record construction: named fields, not positional
     var parts: seq[string]
     for field in e.args[0].fields:
-      parts.add(field[0] & ": " & ctx.genExpr(field[1], m))
+      parts.add(field[0] & ": " & ctx.genExpr(field[1]))
     return calleeStr & "(" & parts.join(", ") & ")"
   if calleeStr notin ["bake", "alias"]:
     let exploded = ctx.explodeRecordArg(e, calleeStr)
@@ -339,22 +338,22 @@ proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
          e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
         lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
       else:
-        lookupFnParams(m, calleeStr)
+        lookupFnParams(ctx.module, calleeStr)
     if expectedParams.len > 0:
       for paramName in expectedParams:
         var found = false
         for field in e.args[0].fields:
           if field[0] == paramName:
-            args.add(ctx.genExpr(field[1], m))
+            args.add(ctx.genExpr(field[1]))
             found = true
             break
         if not found:
           args.add("nil")
     else:
       for field in e.args[0].fields:
-        args.add(ctx.genExpr(field[1], m))
+        args.add(ctx.genExpr(field[1]))
   else:
-    for a in e.args: args.add(ctx.genExpr(a, m))
+    for a in e.args: args.add(ctx.genExpr(a))
   if calleeStr == "bake":
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
@@ -367,191 +366,6 @@ proc genCall(ctx: var CodegenCtx, e: Expr, m: Module): string =
     return "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
   return call
 
-proc genExpr*(ctx: var CodegenCtx, e: Expr, m: Module): string =
-  if e == nil: return ""
-  let ind = "  ".repeat(ctx.indent)
-  case e.kind
-  of exkLit:
-    case e.litKind
-    of lkStr: "\"" & e.litValue & "\""
-    else: e.litValue
-  of exkVar:
-    # nullary call stamped by the checker (spec 2.3: a bare name IS a call)
-    if e.varCallNode != nil: ctx.genExpr(e.varCallNode, m)
-    elif e.name == "...": "discard"  # pending hole: compiles, does nothing
-    elif e.name == "input" and ctx.currentParams.len > 0:
-      # the whole incoming payload, rebuilt from the fn's params
-      var parts: seq[string]
-      for p in ctx.currentParams: parts.add(p.name & ": " & p.name)
-      "(" & parts.join(", ") & ")"
-    elif e.name in ctx.fieldVars: "self." & e.name
-    else: e.name
-  of exkField:
-    # `input.x` — the incoming payload's field is just the param
-    if e.receiver != nil and e.receiver.kind == exkVar and
-       e.receiver.name == "input" and ctx.currentParams.len > 0:
-      return e.fieldName
-    # Unit sugar: 5.ms is a postfix call to the ordinary function ms
-    if e.receiver != nil and e.receiver.kind == exkLit and e.receiver.litKind in {lkInt, lkFloat}:
-      if lookupFnParams(m, e.fieldName).len > 0:
-        e.fieldName & "(" & ctx.genExpr(e.receiver, m) & ")"
-      else:
-        ctx.genExpr(e.receiver, m)
-    elif e.callNode != nil:
-      # fieldName resolved to a fn call, not a field (checker-stamped)
-      ctx.genCall(e.callNode, m)
-    elif e.receiver != nil and e.receiver.kind == exkVar and
-         ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
-      # bare Type.Variant of a payload sum: kind-tagged construction
-      ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
-    else:
-      ctx.genExpr(e.receiver, m) & "." & e.fieldName
-  of exkQualified:
-    genQualified(ctx, e)
-  of exkCall:
-    ctx.genCall(e, m)
-  of exkStruct:
-    var parts: seq[string]
-    for f in e.fields:
-      parts.add(f[0] & ": " & ctx.genExpr(f[1], m))
-    "(" & parts.join(", ") & ")"
-  of exkList:
-    var items: seq[string]
-    for it in e.items: items.add(ctx.genExpr(it, m))
-    "@[" & items.join(", ") & "]"
-  of exkBracket:
-    # indexing resolved to an at() call; a type application never reaches codegen
-    if e.brCallNode != nil: ctx.genExpr(e.brCallNode, m) else: ""
-  of exkBracketAssign:
-    if e.brAssignNode != nil: ctx.genExpr(e.brAssignNode, m) else: ""
-  of exkFor:
-    let iterStr =
-      if e.iter != nil and e.iter.kind == pkVar: e.iter.name
-      elif e.iter != nil and e.iter.kind == pkTuple:
-        var names: seq[string]
-        for el in e.iter.elems:
-          names.add(if el.kind == pkVar: el.name else: "_")
-        names.join(", ")
-      else: "_"
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    let bodyStr = ctx.genExpr(e.body, m)
-    ctx.indent = oldIndent
-    ind & "for " & iterStr & " in " & ctx.genExpr(e.iterable, m) & ":\n" & bodyStr
-  of exkWhile:
-    let condStr = if e.whileCond == nil: "true" else: ctx.genExpr(e.whileCond, m)
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    let bodyStr = ctx.genExpr(e.whileBody, m)
-    ctx.indent = oldIndent
-    ind & "while " & condStr & ":\n" & bodyStr
-  of exkBreak:
-    "break"
-  of exkContinue:
-    "continue"
-  of exkBinary:
-    let opStr = case e.binOp
-                of boAdd: "+"
-                of boSub: "-"
-                of boMul: "*"
-                of boDiv: "/"
-                of boMod: "mod"
-                of boEq: "=="
-                of boNeq: "!="
-                of boLt: "<"
-                of boGt: ">"
-                of boLe: "<="
-                of boGe: ">="
-                of boAnd: "and"
-                of boOr: "or"
-                of boXor: "xor"
-                of boRangeIncl: ".."
-                of boRangeExcl: "..<"
-    if e.binOp == boOr and e.right.kind == exkReturn:
-      let tmpName = "or_tmp_" & $ctx.definedVars.len
-      return "(block: let " & tmpName & " = " & ctx.genExpr(e.left, m) & "; if not " & tmpName & ": " & ctx.genExpr(e.right, m) & "; " & tmpName & ")"
-    if e.binOp == boAdd and e.left != nil and e.left.ty != nil and
-       e.left.ty.kind == tkNamed and e.left.ty.name in ["str", "string"]:
-      # `+` on strings is concatenation — through the rt layer, not a
-      # hardcoded backend operator
-      return "tuckConcat(" & ctx.genExpr(e.left, m) & ", " & ctx.genExpr(e.right, m) & ")"
-    return "(" & ctx.genExpr(e.left, m) & " " & opStr & " " & ctx.genExpr(e.right, m) & ")"
-  of exkUnary:
-    let opStr = case e.unaryOp
-                of uoNeg: "-"
-                of uoNot: "not "
-                else: ""
-    opStr & ctx.genExpr(e.operand, m)
-  of exkBlock:
-    var lines: seq[string]
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    for s in e.stmts:
-      let stmtCode = ctx.genExpr(s, m)
-      if stmtCode != "":
-        if s.kind in {exkChain, exkFor, exkWhile}:
-          lines.add(stmtCode)  # carries its own indentation (multi-line)
-        else:
-          lines.add(ind & "  " & stmtCode)
-    ctx.indent = oldIndent
-    if lines.len == 0:
-      return ind & "discard"
-    # `if true:` not `block:` — a Nim `block` captures unlabeled `break`,
-    # which must reach the enclosing loop instead. Scoping is identical.
-    ind & "if true:\n" & lines.join("\n")
-  of exkIf:
-    let condStr = ctx.genExpr(e.cond, m)
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    let thenStr = ctx.genExpr(e.thenBranch, m)
-    let elseStr = if e.elseBranch != nil:
-                    let elseBodyStr = ctx.genExpr(e.elseBranch, m)
-                    "\n" & ind & "else:\n" & elseBodyStr
-                  else: ""
-    ctx.indent = oldIndent
-    ind & "if " & condStr & ":\n" & thenStr & elseStr
-  of exkAssign:
-    let targetStr = ctx.genExpr(e.target, m)
-    let valStr = ctx.genExpr(e.assignVal, m)
-    if e.target.kind == exkVar:
-      let name = e.target.name
-      if name notin ctx.definedVars:
-        ctx.definedVars.incl(name)
-        return "var " & name & " = " & valStr
-    return targetStr & " = " & valStr
-  of exkReturn:
-    if e.returnVal == nil: "return"
-    elif e.returnVal.kind == exkRaise: ctx.genExpr(e.returnVal, m)
-    else: "return " & ctx.genExpr(e.returnVal, m)
-  of exkRaise:
-    # err X — early-return an error result
-    let rv = e.raiseVal
-    if isErrEnumRef(m, rv):
-      "return terr[" & ctx.retInnerNim & "](errCode(\"" &
-        ctx.errNameFor(rv.receiver.name, rv.fieldName) & "\"))"
-    else:
-      "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv, m) & "))"
-  of exkChain:
-    # `x ..field {v} ..mutate {a}` — one plain Nim statement per step:
-    # field set, or mutator call reassigned into the base var
-    let baseStr = ctx.genExpr(e.base, m)
-    var lines: seq[string]
-    for step in e.steps:
-      if step.callNode != nil:
-        lines.add(ind & baseStr & " = " & ctx.genCall(step.callNode, m))
-      else:
-        var valStr = ""
-        if step.arg != nil and step.arg.kind == exkStruct and
-           step.arg.fields.len == 1:
-          valStr = ctx.genExpr(step.arg.fields[0][1], m)
-        lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
-    # mutation site: an invariant-carrying var re-validates after the chain
-    if e.base != nil and e.base.ty != nil and e.base.ty.kind == tkNamed and
-       hasInvariants(ctx.module, e.base.ty.name):
-      lines.add(ind & "validate(" & baseStr & ")")
-    return lines.join("\n")
-  else:
-    "discard"
 
 proc bangInfo(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
   if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
@@ -710,7 +524,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       else:
         ctx.genExpr(e.receiver)
     elif e.callNode != nil:
-      ctx.genCall(e.callNode, ctx.module)
+      ctx.genCall(e.callNode)
     elif e.receiver != nil and e.receiver.kind == exkVar and
          ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
       # bare Type.Variant of a payload sum: kind-tagged construction
@@ -778,6 +592,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
                 of boXor: "xor"
                 of boRangeIncl: ".."
                 of boRangeExcl: "..<"
+    if e.binOp == boOr and e.right != nil and e.right.kind == exkReturn:
+      # `x or return` — the RHS exits, so the OR becomes a guarded block
+      let tmpName = "or_tmp_" & $ctx.definedVars.len
+      return "(block: let " & tmpName & " = " & ctx.genExpr(e.left) &
+             "; if not " & tmpName & ": " & ctx.genExpr(e.right) & "; " &
+             tmpName & ")"
     if e.binOp == boAdd and e.left != nil and e.left.ty != nil and
        e.left.ty.kind == tkNamed and e.left.ty.name in ["str", "string"]:
       return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
@@ -879,7 +699,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     var lines: seq[string]
     for step in e.steps:
       if step.callNode != nil:
-        lines.add(ind & baseStr & " = " & ctx.genCall(step.callNode, ctx.module))
+        lines.add(ind & baseStr & " = " & ctx.genCall(step.callNode))
       else:
         var valStr = ""
         if step.arg != nil and step.arg.kind == exkStruct and
