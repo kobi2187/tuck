@@ -1,21 +1,21 @@
 # Actor that RUNS — spec §9. An actor is a global SINGLETON: no construction,
 # no reference. The scheduler auto-registers every declared actor and runs as
-# a daemon until the program exits. main just sends by the actor's type name;
-# the actor itself ends the program once it has done its work.
+# a daemon ALONGSIDE main. main owns the lifecycle: it sends work, waits on a
+# predicate over the actor's public state, then ends the program itself.
 
-import sys
+import scheduler
 
 actor Counter [queue: 128]:
-  total: int = 0
-  seen: int = 0
+  total: int = 0                 # public: main's predicate reads it
 
   on add({n: int}):
     total += n
-    seen += 1
-    if seen == 10:               # terminal: exit with the sum (1+..+10 = 55)
-      {code: total} sys::exit
+
+fn sumReady() -> bool:
+  return Counter.total == 55     # 1+..+10
 
 fn main() -> int:
   for i in 1 .. 10:
     Counter send add {n: i}
-  return 0                        # unreached: the actor's sys::exit ends us
+  scheduler::waitUntil {pred: :sumReady}   # block until the actor has summed
+  return Counter.total                  # 55 = exit code

@@ -161,7 +161,6 @@ proc release*[T; Count: static int](pool: var ObjectPool[T, Count], item: T) =
       return
 
 import std/locks
-import std/os as stdos   # sleep for the scheduler daemon park
 
 type
   Mailbox*[T; Cap: static int] = object
@@ -213,19 +212,21 @@ proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
 # cooperatively. minicoro joins in Phase C for [io] yield. See the plan at
 # ~/.claude/plans/jolly-toasting-elephant.md.
 #
-# Model: actors NEVER exit. The scheduler is a daemon that runs until the
-# PROGRAM exits (main returns, or any code calls sys::exit). A mailbox always
-# accepts sends whether drained or not. No join, no drain-to-quiescence: the
-# daemon thread dies with the process. A program that must see its messages
-# processed does so by having an actor call sys::exit once its work is done
-# (main then parks via tuckSchedulerJoin so the process stays alive for it).
+# Model (Erlang/Elixir-flavoured): actors NEVER exit — they are daemons that
+# run alongside main until the PROGRAM exits. MAIN owns the lifecycle: it runs
+# independently, and decides when to end. A CLI ends when main returns; a
+# program that must wait for actor work to finish calls Scheduler.waitUntil
+# with a predicate over public actor state (`Counter.total == 55`) — main
+# blocks there, cond-var-woken after each drain sweep, until the predicate
+# holds. A mailbox always accepts sends; a full ring drops silently.
 type
   DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I do work?
 
   Scheduler* = object
     thread: Thread[void]
     lock: Lock
-    wake: Cond
+    wake: Cond          # main → scheduler: work is waiting
+    progress: Cond      # scheduler → waiters: a drain sweep just completed
     actors: seq[DrainProc]
     started: bool
     hasWork: bool
@@ -246,6 +247,10 @@ proc schedulerLoop() {.thread.} = {.cast(gcsafe).}:
     release(s.lock)
     for d in drains:
       discard d()
+    # a sweep finished — wake any waitUntil predicate to re-check
+    acquire(s.lock)
+    broadcast(s.progress)
+    release(s.lock)
 
 proc tuckSchedulerStart*() =
   ## Emitted at the top of main() when the program declares any actor.
@@ -253,6 +258,7 @@ proc tuckSchedulerStart*() =
   tuckScheduler.started = true
   initLock(tuckScheduler.lock)
   initCond(tuckScheduler.wake)
+  initCond(tuckScheduler.progress)
   createThread(tuckScheduler.thread, schedulerLoop)
 
 proc tuckStartActor*(drain: DrainProc) =
@@ -270,12 +276,22 @@ proc tuckNotifySend*() =
   release(tuckScheduler.lock)
   signal(tuckScheduler.wake)
 
-proc tuckSchedulerJoin*() =
-  ## Park the main thread so the daemon keeps running. The program ends when
-  ## an actor (or anything) calls sys::exit. Emitted at the end of a main that
-  ## declares actors, so main doesn't fall off the end and kill the daemon.
-  while true:
-    stdos.sleep(1000)
+proc waitUntil*(pred: proc(): bool) =
+  ## `scheduler::waitUntil {pred: :done}` — main blocks until the predicate
+  ## holds, re-checking it each time the scheduler completes a drain sweep
+  ## (cond-var, no busy-poll). The predicate reads public actor fields; it runs
+  ## on the MAIN thread (not the scheduler), so no gcsafe requirement — a plain
+  ## field read racing the scheduler's write is benign (the loop re-checks).
+  ## The name matches std/scheduler.tuck's extern signature.
+  if not tuckScheduler.started:
+    # no scheduler running (no actors) — the predicate can only be decided by
+    # main itself; check once and return rather than block forever
+    discard pred()
+    return
+  acquire(tuckScheduler.lock)
+  while not pred():
+    wait(tuckScheduler.progress, tuckScheduler.lock)
+  release(tuckScheduler.lock)
 
 # ---------- stdlib externs (std/*.tuck) ----------
 # Nim's portable stdlib IS Tuck's OS layer. Exceptions never escape: every

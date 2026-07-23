@@ -36,6 +36,11 @@ proc actorSingletonName(actorType: string): string =
   if actorType.len == 0: return "actorSingleton"
   actorType[0].toLowerAscii() & actorType[1..^1] & "Singleton"
 
+proc isActorType(ctx: CodegenCtx, name: string): bool =
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkActor and d.name == name: return true
+  false
+
 proc genType*(t: Type): string =
   if t == nil: return "void"
   case t.kind
@@ -568,6 +573,11 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
          ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
       # bare Type.Variant of a payload sum: kind-tagged construction
       ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
+    elif e.receiver != nil and e.receiver.kind == exkVar and
+         ctx.isActorType(e.receiver.name):
+      # `ActorType.field` — an actor is a singleton; read its public field off
+      # the rt-owned instance (main's waitUntil predicates read state this way)
+      actorSingletonName(e.receiver.name) & "." & e.fieldName
     else:
       ctx.genExpr(e.receiver) & "." & e.fieldName
   of exkQualified:

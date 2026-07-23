@@ -1,0 +1,4 @@
+# std/scheduler — the actor scheduler's main-side API. Implemented by tuck_rt.
+# Actors run as daemons alongside main; main uses these to wait on app state.
+extern:
+  fn waitUntil({pred: fn}) -> void [io]
