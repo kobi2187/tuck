@@ -30,6 +30,12 @@ proc capitalize(s: string): string =
   if s.len == 0: return ""
   return s[0].toUpperAscii() & s[1..^1]
 
+proc actorSingletonName(actorType: string): string =
+  # An actor is a global singleton (spec §9): one instance per declared type,
+  # named <type>Singleton. genActor emits it; sends target it.
+  if actorType.len == 0: return "actorSingleton"
+  actorType[0].toLowerAscii() & actorType[1..^1] & "Singleton"
+
 proc genType*(t: Type): string =
   if t == nil: return "void"
   case t.kind
@@ -749,6 +755,21 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
        hasInvariants(ctx.module, semLayer.typeFor(e.base).name):
       lines.add(ind & "validate(" & baseStr & ")")
     return lines.join("\n")
+  of exkSend:
+    # `ActorType send handler {payload}` — enqueue a Msg to the actor's
+    # singleton mailbox, then wake the scheduler. The message envelope mirrors
+    # genActor: kind = msg<Handler>, fields from the payload struct.
+    let singleton = actorSingletonName(e.sendActor)
+    let msgType = e.sendActor & "Msg"
+    let variant = "msg" & capitalize(e.sendHandler)
+    var ctorArgs = "kind: " & variant
+    if e.sendPayload != nil and e.sendPayload.kind == exkStruct:
+      for f in e.sendPayload.fields:
+        ctorArgs.add(", " & f[0] & ": " & ctx.genExpr(f[1]))
+    let ind = repeat("  ", ctx.indent)
+    # statement form: enqueue + notify on two lines at the current indent
+    "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
+      "))\n" & ind & "tuckNotifySend()"
   of exkImport:
     # imports are declarations; they never reach expression position
     ""
@@ -1126,9 +1147,14 @@ proc genActor(ctx: var CodegenCtx, d: Decl): string =
     let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
     var actorTypeStr = "type " & d.name & "* = ref object\n" & fieldsBody & "\n"
     
-    # 3. Generate dispatch handler
+    # 3. Generate dispatch handler. Inherit realModules/module/moduleName from
+    # the outer ctx so qualified calls in handler bodies (e.g. sys::exit)
+    # resolve as `module.fn`, not the underscore fallback.
     var handlerCases: seq[string]
-    var ctx = CodegenCtx(definedVars: initHashSet[string](), fieldVars: initHashSet[string](), indent: 2)
+    var ctx = CodegenCtx(definedVars: initHashSet[string](),
+                         fieldVars: initHashSet[string](), indent: 2,
+                         realModules: ctx.realModules, module: ctx.module,
+                         moduleName: ctx.moduleName)
     for f in d.actorFields:
       ctx.fieldVars.incl(f.name)
     for h in d.handlers:
@@ -1142,20 +1168,30 @@ proc genActor(ctx: var CodegenCtx, d: Decl): string =
       
     let dispatchStr = "proc handleMsg*(self: " & d.name & ", msg: " & msgTypeName & ") =\n  case msg.kind\n" & handlerCases.join("\n") & "\n"
     
-    # 4. Generate send helpers
-    var helpersStr = ""
-    for h in d.handlers:
-      if h.kind == dkFn:
-        let helperName = "send" & h.name.capitalize()
-        let variantName = "msg" & h.name.capitalize()
-        var helperParams = "self: " & d.name
-        var ctorArgs = "kind: " & variantName
-        for p in h.fnParams:
-          helperParams.add(", " & p.name & ": " & genType(p.typ))
-          ctorArgs.add(", " & p.name & ": " & p.name)
-        helpersStr.add("proc " & helperName & "*(" & helperParams & ") =\n  discard self.mailbox.enqueue(" & msgTypeName & "(" & ctorArgs & "))\n\n")
-      
-    return msgEnumStr & msgEnvelopeStr & "\n" & actorTypeStr & "\n" & dispatchStr & "\n" & helpersStr
+    # 4. Singleton instance (spec §9: one global per declared actor).
+    let singleton = actorSingletonName(d.name)
+    let singletonStr = "let " & singleton & "* = " & d.name & "()\n"
+
+    # 5. Drain closure: dequeue every pending msg, dispatch, report progress.
+    #    The scheduler registers this; it never sees the concrete Msg type.
+    let drainName = "drain" & d.name
+    let drainStr =
+      "proc " & drainName & "(): bool {.gcsafe.} =\n" &
+      "  {.cast(gcsafe).}:\n" &
+      "    result = false\n" &
+      "    var m: " & msgTypeName & "\n" &
+      "    while dequeue(" & singleton & ".mailbox, m):\n" &
+      "      handleMsg(" & singleton & ", m)\n" &
+      "      result = true\n"
+
+    # 6. Auto-registration hook: main's prologue calls registerActors(), which
+    #    starts every declared actor. Collected via a module-global emitted here.
+    let registerStr =
+      "proc registerActor" & d.name & "*() =\n" &
+      "  tuckStartActor(" & drainName & ")\n"
+
+    return msgEnumStr & msgEnvelopeStr & "\n" & actorTypeStr & "\n" &
+           singletonStr & "\n" & dispatchStr & "\n" & drainStr & "\n" & registerStr
 
 proc genRegistry(ctx: var CodegenCtx, d: Decl): string =
     let msgEnumName = d.name & "Kind"

@@ -868,6 +868,11 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
        hasInvariants(ctx.module, semLayer.typeFor(e.base).name):
       lines.add(ind & "validate(" & baseStr & ");")
     return lines.join("\n")
+  of exkSend:
+    # Beef actor runtime is a declared ceiling (no minicoro/scheduler path);
+    # emit a comment so the shape is visible but Beef never runs actors.
+    return "/* actor send: " & e.sendActor & "." & e.sendHandler &
+           " (Beef actor runtime not implemented) */"
   of exkImport:
     # imports are declarations; they never reach expression position
     return ""

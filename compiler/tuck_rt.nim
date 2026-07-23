@@ -161,6 +161,7 @@ proc release*[T; Count: static int](pool: var ObjectPool[T, Count], item: T) =
       return
 
 import std/locks
+import std/os as stdos   # sleep for the scheduler daemon park
 
 type
   Mailbox*[T; Cap: static int] = object
@@ -211,6 +212,13 @@ proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
 # ONE background OS thread; actors are opaque drain closures polled
 # cooperatively. minicoro joins in Phase C for [io] yield. See the plan at
 # ~/.claude/plans/jolly-toasting-elephant.md.
+#
+# Model: actors NEVER exit. The scheduler is a daemon that runs until the
+# PROGRAM exits (main returns, or any code calls sys::exit). A mailbox always
+# accepts sends whether drained or not. No join, no drain-to-quiescence: the
+# daemon thread dies with the process. A program that must see its messages
+# processed does so by having an actor call sys::exit once its work is done
+# (main then parks via tuckSchedulerJoin so the process stays alive for it).
 type
   DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I do work?
 
@@ -219,48 +227,36 @@ type
     lock: Lock
     wake: Cond
     actors: seq[DrainProc]
-    running: bool
+    started: bool
     hasWork: bool
-    draining: bool
 
 var tuckScheduler*: Scheduler            # one per program (rt-owned global)
 
 proc schedulerLoop() {.thread.} = {.cast(gcsafe).}:
   # The seq[DrainProc] is GC'd; we serialize all access with s.lock, so the
-  # conservative gcsafe check is satisfied by construction.
+  # conservative gcsafe check is satisfied by construction. Runs forever —
+  # process exit tears it down.
   let s = addr tuckScheduler
   while true:
     acquire(s.lock)
-    while s.running and not s.hasWork and not s.draining:
+    while not s.hasWork:
       wait(s.wake, s.lock)
-    if not s.running:
-      release(s.lock)
-      break
     s.hasWork = false
     let drains = s.actors
-    let winding = s.draining
     release(s.lock)
-    var didWork = false
     for d in drains:
-      if d(): didWork = true
-    # shutdown sweeps to quiescence: stop only after a pass that did nothing,
-    # so no message enqueued before shutdown is lost
-    if winding and not didWork:
-      acquire(s.lock)
-      s.running = false
-      release(s.lock)
-      break
+      discard d()
 
 proc tuckSchedulerStart*() =
   ## Emitted at the top of main() when the program declares any actor.
-  tuckScheduler.running = true
-  tuckScheduler.hasWork = true
+  if tuckScheduler.started: return
+  tuckScheduler.started = true
   initLock(tuckScheduler.lock)
   initCond(tuckScheduler.wake)
   createThread(tuckScheduler.thread, schedulerLoop)
 
 proc tuckStartActor*(drain: DrainProc) =
-  ## Register + wake. Emitted for each actor instance the program starts.
+  ## Register + wake. Emitted once per declared actor (auto-registered).
   acquire(tuckScheduler.lock)
   tuckScheduler.actors.add(drain)
   tuckScheduler.hasWork = true
@@ -268,22 +264,18 @@ proc tuckStartActor*(drain: DrainProc) =
   signal(tuckScheduler.wake)
 
 proc tuckNotifySend*() =
-  ## Emitted by each sendX after enqueue: wake the scheduler to drain.
+  ## Emitted by each send after enqueue: wake the scheduler to drain.
   acquire(tuckScheduler.lock)
   tuckScheduler.hasWork = true
   release(tuckScheduler.lock)
   signal(tuckScheduler.wake)
 
-proc tuckSchedulerShutdown*() =
-  ## Emitted at the end of main(): drain to quiescence, then join.
-  acquire(tuckScheduler.lock)
-  tuckScheduler.draining = true
-  tuckScheduler.hasWork = true
-  release(tuckScheduler.lock)
-  signal(tuckScheduler.wake)
-  joinThread(tuckScheduler.thread)
-  deinitCond(tuckScheduler.wake)
-  deinitLock(tuckScheduler.lock)
+proc tuckSchedulerJoin*() =
+  ## Park the main thread so the daemon keeps running. The program ends when
+  ## an actor (or anything) calls sys::exit. Emitted at the end of a main that
+  ## declares actors, so main doesn't fall off the end and kill the daemon.
+  while true:
+    stdos.sleep(1000)
 
 # ---------- stdlib externs (std/*.tuck) ----------
 # Nim's portable stdlib IS Tuck's OS layer. Exceptions never escape: every

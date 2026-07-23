@@ -103,6 +103,9 @@ proc toString*(e: Expr): string =
     return "raise " & rVal
   of exkImport:
     return "import"
+  of exkSend:
+    let p = if e.sendPayload != nil: " " & e.sendPayload.toString() else: ""
+    return e.sendActor & " send " & e.sendHandler & p
 
 type
   Parser* = object
@@ -738,6 +741,17 @@ proc parseChainExpr(p: var Parser): Expr =
     elif p.current().kind == tkLBrace:
       let arg = p.parsePrimaryExpr()
       expr = Expr(span: sp, kind: exkCall, callee: expr, args: @[arg])
+    elif p.current().kind == tkIdent and p.current().value == "send" and
+         expr.kind == exkVar and p.peek().kind == tkIdent:
+      # `ActorType send handler {payload}` — direct send to an actor singleton.
+      # The brace is the handler's message payload (optional for a no-arg on).
+      discard p.advance()                    # eat `send`
+      let handler = p.expect(tkIdent, "Expected handler name after 'send'").value
+      var payload: Expr = nil
+      if p.current().kind == tkLBrace:
+        payload = p.parsePrimaryExpr()
+      expr = Expr(span: sp, kind: exkSend, sendActor: expr.name,
+                  sendHandler: handler, sendPayload: payload)
     elif p.current().kind == tkIdent and p.current().value == "alias" and p.peek().kind == tkLParen:
       expr = p.parseAliasStep(expr)
     elif p.current().kind == tkIdent and not (p.current().value in ["or", "and", "in", "invariant", "transitions"]):

@@ -168,6 +168,7 @@ type
     exkReturn
     exkRaise
     exkImport
+    exkSend      # `ActorType send handler {payload}` — enqueue to an actor
 
   Expr* = ref object
     id*: NodeId
@@ -238,6 +239,10 @@ type
       raiseVal*: Expr
     of exkImport:
       path*: seq[string]
+    of exkSend:
+      sendActor*: string   # the actor TYPE name (singleton target)
+      sendHandler*: string # the `on <handler>` name
+      sendPayload*: Expr    # the `{...}` struct literal, or nil
 
   LitKind* = enum
     lkInt, lkFloat, lkStr, lkBool, lkUnit
@@ -418,6 +423,8 @@ proc assignIds*(e: Expr, next: var uint32) =
     assignIds(e.returnVal, next)
   of exkRaise:
     assignIds(e.raiseVal, next)
+  of exkSend:
+    assignIds(e.sendPayload, next)
 
 proc assignIds*(d: Decl, next: var uint32) =
   ## Every Expr reachable from a declaration.
@@ -484,6 +491,7 @@ proc clearIds*(e: Expr) =
   of exkAssign: (clearIds(e.target); clearIds(e.assignVal))
   of exkReturn: clearIds(e.returnVal)
   of exkRaise: clearIds(e.raiseVal)
+  of exkSend: clearIds(e.sendPayload)
 
 proc clearIds*(d: Decl) =
   if d == nil: return

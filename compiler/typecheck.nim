@@ -1233,6 +1233,46 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # control-flow exit: neutral type so branches/blocks don't see a wrapper
     Type(span: e.span, kind: tkNamed, name: "unit")
   of exkChain: tc.synthChain(e)
+  of exkSend:
+    # `ActorType send handler {payload}` — the actor must be declared, the
+    # handler must be one of its `on` handlers, and the payload must match the
+    # handler's params. A send is a statement: it yields unit.
+    var actorDecl: Decl = nil
+    for d in tc.module.decls:
+      if d != nil and d.kind == dkActor and d.name == e.sendActor:
+        actorDecl = d; break
+    if actorDecl == nil:
+      fail("Type Error: 'send' target '" & e.sendActor &
+           "' is not a declared actor", e.span)
+    var handler: Decl = nil
+    for h in actorDecl.handlers:
+      if h != nil and h.kind == dkFn and h.name == e.sendHandler:
+        handler = h; break
+    if handler == nil:
+      fail("Type Error: actor '" & e.sendActor & "' has no handler '" &
+           e.sendHandler & "'", e.span)
+    # payload fields must match the handler's params by name+type
+    var given: seq[(string, Expr)]
+    if e.sendPayload != nil:
+      if e.sendPayload.kind != exkStruct:
+        fail("Type Error: send payload must be a struct literal {name: value}",
+             e.sendPayload.span)
+      given = e.sendPayload.fields
+      discard tc.synthesize(e.sendPayload)
+    for p in handler.fnParams:
+      var found = false
+      for f in given:
+        if f[0] == p.name:
+          let ft = tc.synthesize(f[1])
+          if not tc.compatible(ft, p.typ):
+            fail("Type Error: send field '" & p.name & "' expects " &
+                 typeName(p.typ) & " but got " & typeName(ft), f[1].span)
+          found = true; break
+      if not found:
+        fail("Type Error: send to '" & e.sendActor & "." & e.sendHandler &
+             "' is missing field '" & p.name & ": " & typeName(p.typ) & "'",
+             e.span)
+    Type(span: e.span, kind: tkNamed, name: "unit")
   of exkQualified, exkImport:
     unknownType(e.span)
 

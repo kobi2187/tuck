@@ -1,0 +1,21 @@
+# Actor that RUNS — spec §9. An actor is a global SINGLETON: no construction,
+# no reference. The scheduler auto-registers every declared actor and runs as
+# a daemon until the program exits. main just sends by the actor's type name;
+# the actor itself ends the program once it has done its work.
+
+import sys
+
+actor Counter [queue: 128]:
+  total: int = 0
+  seen: int = 0
+
+  on add({n: int}):
+    total += n
+    seen += 1
+    if seen == 10:               # terminal: exit with the sum (1+..+10 = 55)
+      {code: total} sys::exit
+
+fn main() -> int:
+  for i in 1 .. 10:
+    Counter send add {n: i}
+  return 0                        # unreached: the actor's sys::exit ends us

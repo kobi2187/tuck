@@ -146,6 +146,8 @@ proc lowerExpr(e: Expr, m: Module) =
   of exkLit, exkVar, exkQualified, exkImport:
     # leaves: nothing beneath them to lower
     discard
+  of exkSend:
+    lowerExpr(e.sendPayload, m)
 
 proc lowerModule*(m: Module) =
   # Phase 1: Lower Union / Rename Types to Records

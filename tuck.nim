@@ -228,19 +228,38 @@ when isMainModule:
       # library build: the emitted code IS the artifact, no binary.
       var hasMain = false
       var mainReturns = false
+      var actorNames: seq[string]
       for d in m.decls:
         if d != nil and d.kind == dkFn and d.name == "main":
           hasMain = true
           mainReturns = d.fnReturnType != nil and
             not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name in ["void", "unit"])
+        if d != nil and d.kind == dkActor:
+          actorNames.add(d.name)
       if not hasMain:
         echo "library (no fn main): emitted code only, no binary"
         echo "OK (", elapsedMs(t0), ")"
         quit(0)
       let mainNim = outDir / (base & ".nim")
-      # a value-returning main IS the process exit code
-      let mainCall = if mainReturns: "quit(main())" else: "main()"
-      writeFile(mainNim, readFile(mainNim) & "\nwhen isMainModule:\n  " & mainCall & "\n")
+      # Actor boot: start the scheduler and register every declared actor
+      # BEFORE main runs; park after so main doesn't fall off the end and kill
+      # the daemon (spec §9 — actors run until the program exits).
+      var boot = ""
+      var park = ""
+      if actorNames.len > 0:
+        boot = "  tuckSchedulerStart()\n"
+        for a in actorNames: boot.add("  registerActor" & a & "()\n")
+        park = "\n  tuckSchedulerJoin()"
+      # a value-returning main IS the process exit code — UNLESS the program
+      # has actors: then main hands off to the scheduler and the program ends
+      # when an actor calls sys::exit (main's return would race the daemon).
+      let mainCall =
+        if actorNames.len > 0 and mainReturns: "discard main()"
+        elif actorNames.len > 0: "main()"
+        elif mainReturns: "quit(main())"
+        else: "main()"
+      writeFile(mainNim, readFile(mainNim) &
+        "\nwhen isMainModule:\n" & boot & "  " & mainCall & park & "\n")
       # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
       var nimFlags = ""
       for o in opts:

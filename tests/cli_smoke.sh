@@ -526,4 +526,12 @@ rc=0; "tests/.smoke_e25/out/m_25_pools" || rc=$?
 [ "$rc" -eq 4 ] || { echo "FAIL: pools example exit $rc, want 4 (3 sessions + 1 buffer)"; exit 1; }
 rm -rf "tests/.smoke_e25"
 
+# actor runtime (spec §9, Phase A): the actor singleton drains its mailbox on
+# the scheduler thread and exits with the accumulated state (1+..+10 = 55)
+rm -rf "tests/.smoke_e26" && mkdir -p "tests/.smoke_e26"
+./tuck build examples/26-actor-run.tuck -o:"tests/.smoke_e26/out" > /dev/null
+rc=0; "tests/.smoke_e26/out/m_26_actor_run" || rc=$?
+[ "$rc" -eq 55 ] || { echo "FAIL: actor-run example exit $rc, want 55"; exit 1; }
+rm -rf "tests/.smoke_e26"
+
 echo "cli smoke OK"
