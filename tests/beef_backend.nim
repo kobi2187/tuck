@@ -219,8 +219,16 @@ when isMainModule:
     var deps: seq[string]
     for lm in prog[0 ..< prog.high]: deps.add(lm.name)
     depsOf[baseName] = deps
-    let (base, code) = compileToBeef(path.path)
-    emitted[base] = code
+    try:
+      let (base, code) = compileToBeef(path.path)
+      emitted[base] = code
+    except CatchableError as ex:
+      # Known-broken sketches (16/20) are allowed to fail the checker;
+      # a gated example failing is a real regression.
+      if baseName in beefCheckExpected:
+        echo "  FAIL compile (gated regression): ", baseName
+        raise
+      echo "  skip (known-broken, not gated): ", baseName, " — ", ex.msg
 
   for base, code in emitted:
     if base in expectSubstrings:

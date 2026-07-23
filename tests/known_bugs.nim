@@ -347,7 +347,10 @@ fn main() -> int:
 # codegen falls through to plain field access. A sketch-level call should
 # still emit a CALL, or the checker should say the fn is undeclared.
 block:
-  let (ok, outp) = build("""
+  # Ruling 2026-07-23: `.fn {args}` — a brace after `.name` — is ALWAYS a
+  # call, never a field read. An undeclared callee is therefore a clean
+  # checker error, not a silent field access with the argument dropped.
+  let diag = check("""
 actor Driver [queue: 8]:
   buf: Seq[u8]
 
@@ -358,14 +361,13 @@ fn main() -> int:
   return 0
 """)
   bug(
-    "`.fn {args}` on an undeclared fn is a call or an error",
-    "`buf.copyFrom {data}` emits `self.buf.copyFrom` — a field access with " &
-      "the argument dropped entirely. Either resolve it as a call or " &
-      "report copyFrom as undeclared; silently emitting a field read is " &
-      "neither.",
-    "compiler/typecheck.nim synthFieldAccess + codegen exkField",
-    fixed = false,
-    ok)
+    "`.fn {args}` on an undeclared fn is reported, not silently a field read",
+    "`buf.copyFrom {data}` used to emit `self.buf.copyFrom` — a field access " &
+      "with the argument dropped entirely. `{args}` proves call intent; an " &
+      "undeclared callee must be a checker error.",
+    "compiler/typecheck.nim synthFieldAccess",
+    fixed = true,
+    "copyFrom" in diag and "declared" in diag)
 
 # ---------------------------------------------------------------------------
 # 9. FIXED 2026-07-23 — an early-return guard narrows a result

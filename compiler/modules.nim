@@ -153,10 +153,18 @@ proc updateIndex*(dir: string, mods: seq[LoadedModule],
   except CatchableError:
     discard  # index is an accelerator, never a blocker
 
+# A project root passed explicitly on the CLI (`--root:DIR`). Set once at
+# startup; searched before the ambient getAppDir() locations so a moved
+# binary (test runner, installed tuck) still finds std/ and sibling modules.
+var projectRoot*: string = ""
+
 # Import resolution: the importer's directory first, then the stdlib
-# (TUCK_STDLIB env var, or std/ next to the compiler binary / repo root).
+# (--root flag, TUCK_STDLIB env var, or std/ next to the compiler binary).
 proc resolveImport*(importerPath, module: string): string =
   var candidates = @[importerPath.parentDir / (module & ".tuck")]
+  if projectRoot != "":
+    candidates.add(projectRoot / (module & ".tuck"))
+    candidates.add(projectRoot / "std" / (module & ".tuck"))
   let envStd = getEnv("TUCK_STDLIB")
   if envStd != "":
     candidates.add(envStd / (module & ".tuck"))

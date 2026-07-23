@@ -33,6 +33,8 @@ options:
   --ast         (parse) dump the AST as JSON to stdout
   --beef        (compile) also emit a .bf Beef file
   -o:DIR        (compile/build) output directory (default: next to source)
+  --root:DIR    import search base for std/ and sibling modules (any command);
+                lets imports resolve regardless of cwd or binary location
   --nim:FLAGS   (build) extra nim flags, e.g. --nim:"--os:standalone --cpu:arm""""
   quit(2)
 
@@ -154,6 +156,10 @@ when isMainModule:
   let source = readFile(path)
   var opts: seq[string]
   for i in 3 .. paramCount(): opts.add(paramStr(i))
+  # `--root:DIR` sets the import search base explicitly, so imports resolve
+  # regardless of cwd or where the binary sits (see modules.resolveImport).
+  for o in opts:
+    if o.startsWith("--root:"): projectRoot = o[7 .. ^1]
   let t0 = epochTime()
 
   case cmd

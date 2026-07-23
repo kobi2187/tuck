@@ -459,6 +459,13 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
                   args: @[e.receiver])
     setCall(semLayer, e, bc)
     return tc.synthesize(bc)
+  # `.fn {args}` — the brace proves call intent (ruling 2026-07-23). If we
+  # reach here the callee matched neither a field nor a declared fn, so it is
+  # an undeclared call, not a field read to fall through on.
+  if e.dotArg != nil:
+    fail("Type Error: '" & e.fieldName & "' is called with arguments here " &
+         "but is not declared — a `.fn {args}` call needs a declared fn " &
+         "(add one, or a `pending:` stub)", e.span)
   # Known record, missing field, no matching fn: the payoff error.
   # Sum types carry variant fields we don't track per-variant in v1 — only
   # flag when the receiver is a plain record.
