@@ -20,6 +20,28 @@ when Beef also compiles it).
 - Audit method: compile each example, nim check with sanitized module name
   (m_NN_name), read first error (scratchpad/exaudit script, rerunnable).
 - Order: bugs first, then sketch-decl edits, then features by size.
+- ACTOR RUNTIME RULINGS (2026-07-23) — full plan at
+  ~/.claude/plans/jolly-toasting-elephant.md:
+  - Borrow ONE primitive: minicoro (single-header stackful C, public-domain,
+    vendored). It gives ONLY the suspend/resume stack-switch.
+  - Everything else — Mailbox (exists), scheduler, ready-queue, on-select,
+    timer wheel, dispatch — is OUR Nim code in tuck_rt. Not nim-cps, not a
+    hand-rolled state machine.
+  - ONE OS thread; actors AND tasks are coroutines multiplexed on it
+    (cooperative, §9.4). Actor is NOT a thread. Multi-core out of scope.
+  - Shared mechanism, distinct roles: actor = long-lived coroutine owning a
+    mailbox queue; task = async run-to-completion coroutine, no mailbox,
+    yields at [io].
+  - Stackful minicoro = backend #1 (hosted). Stackless hand-rolled =
+    declared FUTURE backend #2 (bare-metal), reachable via the thin Coro
+    seam. Stackful means [io] needs NO body-splitting: `call; coroYield()`.
+  - AST is DIRECT: `on select` gets its OWN dkSelect + SelectArm nodes, NOT
+    the current exkMatch-fake-subject hack (parser.nim ~1305-1330 to be
+    replaced). Standing user pref: explicit nodes over clever reuse.
+  - Phases: A scheduler+minicoro (verify ex 08) → B dkSelect nodes+timers
+    (ex 16) → C [io] yield → D transitionTo-in-handler (ex 20) → E spec §9
+    rewrite. Beef actors = ceiling (no minicoro path). Each phase
+    runtime-verified by exit code.
 
 ## State
 - Done:
@@ -110,7 +132,17 @@ when Beef also compiles it).
         wanted never existed. Unary now binds looser than `.field`/`[i]`
         (`-p.v` was equally wrong). Narrowing lives in exkBlock, since an
         early-return guard narrows its SIBLINGS, not its subtree.
-- Now: [→] Phase 6: 16/20 — `.fn {args}` ruling + `when TARGET`.
+  - [x] `.fn {args}` RULED + fixed (2026-07-23, commit 4c85a84). A brace
+        after `.name` proves call intent; an undeclared callee is now a
+        clean checker error (synthFieldAccess), not a silent field read with
+        the arg dropped. Closed known_bug #8 (open bugs 6→5). Gate harnesses
+        walked ALL examples and crashed on the new error for non-gated 16 —
+        now a non-gated compile failure is caught+skipped, a gated one still
+        raises. Also added `--root:DIR` CLI flag (modules.resolveImport +
+        tuck.nim): import search base so std/ + siblings resolve regardless
+        of cwd or binary location (test runner, installed tuck). 16 still
+        broken — needs actor runtime (Phase 8), NOT closed by this.
+- Now: [→] Phase 8 ready: actor runtime, minicoro seam (rulings above).
 - Remaining:
   - [ ] Phase 3: 04 — `Self` mapping + interface/manager emission + empty
         setMany body indent (`proc setMany(self: Self,...)` invalid Nim).
@@ -126,9 +158,12 @@ when Beef also compiles it).
   - [ ] Phase 7: 20 — transitionTo-with-payload inside actor handler emits
         `PlayerState.Decoding(transitionTo(self.state))(rate)` garbage;
         register DSL depth (`DAC_CR.EN = true` — MMIO attrs).
-  - [ ] Phase 8: 16 — `on select` §9.3 + timeout sugar (`timeout.5s` emits
-        invalid case arm). BLOCKED on actor/task runtime strategy ruling
-        (nim-cps vs hand-rolled state machines, ROADMAP 2026-07-09).
+  - [ ] Phase 8: 16 — `on select` §9.3 + timeout sugar (`timeout.5s`).
+        UNBLOCKED 2026-07-23 — runtime strategy RULED, design plan written
+        (see below). Neither nim-cps nor hand-rolled: borrow ONE primitive
+        (minicoro, stackful C, vendored) for the stack-switch; the whole
+        actor system — Mailbox, scheduler, ready-queue, on-select, timers —
+        is OUR Nim rt. Ready to implement Phase A (scheduler seam).
   - [ ] Phase 9: semantic-equivalence pass — runtime-verify every example
         with a main (extend gate to build+run+assert where feasible).
 

@@ -160,26 +160,130 @@ proc release*[T; Count: static int](pool: var ObjectPool[T, Count], item: T) =
       pool.occupied = pool.occupied and not(1'u64 shl i)
       return
 
+import std/locks
+
 type
   Mailbox*[T; Cap: static int] = object
     data*: array[Cap, T]
     head*: int
     tail*: int
+    lock*: Lock          # sends come from other threads; drain from the
+                         # scheduler thread — enqueue/dequeue must be guarded
+    inited*: bool
+
+proc initMailbox*[T; Cap: static int](mb: var Mailbox[T, Cap]) =
+  if not mb.inited:
+    initLock(mb.lock)
+    mb.inited = true
 
 proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
+  initMailbox(mb)
+  acquire(mb.lock)
   let next = (mb.tail + 1) mod Cap
   if next == mb.head:
+    release(mb.lock)
     return false
   mb.data[mb.tail] = msg
   mb.tail = next
+  release(mb.lock)
   return true
 
 proc dequeue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: var T): bool =
+  initMailbox(mb)
+  acquire(mb.lock)
   if mb.head == mb.tail:
+    release(mb.lock)
     return false
   msg = mb.data[mb.head]
   mb.head = (mb.head + 1) mod Cap
+  release(mb.lock)
   return true
+
+proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
+  ## Sender's opt-in backpressure check. sendX drops silently on a full ring
+  ## (fast, non-blocking, spec §9.1) — the sender may check first if it cares.
+  initMailbox(mb)
+  acquire(mb.lock)
+  result = ((mb.tail + 1) mod Cap) != mb.head
+  release(mb.lock)
+
+# ---------- actor scheduler (spec §9, Phase A) ----------
+# ONE background OS thread; actors are opaque drain closures polled
+# cooperatively. minicoro joins in Phase C for [io] yield. See the plan at
+# ~/.claude/plans/jolly-toasting-elephant.md.
+type
+  DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I do work?
+
+  Scheduler* = object
+    thread: Thread[void]
+    lock: Lock
+    wake: Cond
+    actors: seq[DrainProc]
+    running: bool
+    hasWork: bool
+    draining: bool
+
+var tuckScheduler*: Scheduler            # one per program (rt-owned global)
+
+proc schedulerLoop() {.thread.} = {.cast(gcsafe).}:
+  # The seq[DrainProc] is GC'd; we serialize all access with s.lock, so the
+  # conservative gcsafe check is satisfied by construction.
+  let s = addr tuckScheduler
+  while true:
+    acquire(s.lock)
+    while s.running and not s.hasWork and not s.draining:
+      wait(s.wake, s.lock)
+    if not s.running:
+      release(s.lock)
+      break
+    s.hasWork = false
+    let drains = s.actors
+    let winding = s.draining
+    release(s.lock)
+    var didWork = false
+    for d in drains:
+      if d(): didWork = true
+    # shutdown sweeps to quiescence: stop only after a pass that did nothing,
+    # so no message enqueued before shutdown is lost
+    if winding and not didWork:
+      acquire(s.lock)
+      s.running = false
+      release(s.lock)
+      break
+
+proc tuckSchedulerStart*() =
+  ## Emitted at the top of main() when the program declares any actor.
+  tuckScheduler.running = true
+  tuckScheduler.hasWork = true
+  initLock(tuckScheduler.lock)
+  initCond(tuckScheduler.wake)
+  createThread(tuckScheduler.thread, schedulerLoop)
+
+proc tuckStartActor*(drain: DrainProc) =
+  ## Register + wake. Emitted for each actor instance the program starts.
+  acquire(tuckScheduler.lock)
+  tuckScheduler.actors.add(drain)
+  tuckScheduler.hasWork = true
+  release(tuckScheduler.lock)
+  signal(tuckScheduler.wake)
+
+proc tuckNotifySend*() =
+  ## Emitted by each sendX after enqueue: wake the scheduler to drain.
+  acquire(tuckScheduler.lock)
+  tuckScheduler.hasWork = true
+  release(tuckScheduler.lock)
+  signal(tuckScheduler.wake)
+
+proc tuckSchedulerShutdown*() =
+  ## Emitted at the end of main(): drain to quiescence, then join.
+  acquire(tuckScheduler.lock)
+  tuckScheduler.draining = true
+  tuckScheduler.hasWork = true
+  release(tuckScheduler.lock)
+  signal(tuckScheduler.wake)
+  joinThread(tuckScheduler.thread)
+  deinitCond(tuckScheduler.wake)
+  deinitLock(tuckScheduler.lock)
 
 # ---------- stdlib externs (std/*.tuck) ----------
 # Nim's portable stdlib IS Tuck's OS layer. Exceptions never escape: every
