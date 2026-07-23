@@ -534,4 +534,12 @@ rc=0; "tests/.smoke_e26/out/m_26_actor_run" || rc=$?
 [ "$rc" -eq 55 ] || { echo "FAIL: actor-run example exit $rc, want 55"; exit 1; }
 rm -rf "tests/.smoke_e26"
 
+# on select (spec §9.3, Phase B): message arms dispatch by kind + a shutdown
+# arm. Accumulate 1..10, finish, wait, exit 55
+rm -rf "tests/.smoke_e27" && mkdir -p "tests/.smoke_e27"
+./tuck build examples/27-actor-select.tuck -o:"tests/.smoke_e27/out" > /dev/null
+rc=0; "tests/.smoke_e27/out/m_27_actor_select" || rc=$?
+[ "$rc" -eq 55 ] || { echo "FAIL: actor-select example exit $rc, want 55"; exit 1; }
+rm -rf "tests/.smoke_e27"
+
 echo "cli smoke OK"

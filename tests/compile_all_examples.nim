@@ -45,6 +45,7 @@ const nimCheckExpected = [
   "11-embedded-feature",
   "25-pools",
   "26-actor-run",
+  "27-actor-select",
 ]
 
 proc nimCheckOutput(baseName: string): bool =

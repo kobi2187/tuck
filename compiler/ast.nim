@@ -115,6 +115,14 @@ type
     body*: Expr
     span*: Span
 
+  # `on select` arm (spec §9.3). Phase B: message sources only — `source` is a
+  # message handler name; timer/timeout/shutdown sources come later.
+  SelectArm* = object
+    source*: string      # message handler name to wait on
+    binding*: seq[Param] # `-> {x, y}` payload binding (may be empty)
+    body*: Expr
+    span*: Span
+
   BinOp* = enum
     boAdd, boSub, boMul, boDiv, boMod
     boEq, boNeq, boLt, boGt, boLe, boGe
@@ -281,6 +289,7 @@ type
     dkStaticAssert
     dkErrors  # global error policy declaration (spec 4.9)
     dkImport  # import <module> — loads <module>.tuck next to the importer
+    dkSelect  # `on select:` — wait on multiple event sources (spec §9.3)
 
   Decl* = ref object
     span*: Span
@@ -339,6 +348,8 @@ type
       errHandler*: Decl    # the `on unhandled({code, site})` fn, nil if strict
     of dkImport:
       discard  # module name lives in Decl.name
+    of dkSelect:
+      selectArms*: seq[SelectArm]
 
   Module* = object
     path*: seq[string]
@@ -443,6 +454,8 @@ proc assignIds*(d: Decl, next: var uint32) =
     for m in d.mixinMembers: assignIds(m, next)
   of dkActor:
     for h in d.handlers: assignIds(h, next)
+  of dkSelect:
+    for arm in d.selectArms: assignIds(arm.body, next)
   of dkRegistry, dkPool, dkRegister, dkErrors, dkImport: discard
 
 var globalNodeCounter: uint32 = 0
@@ -505,6 +518,7 @@ proc clearIds*(d: Decl) =
   of dkObject: (for m in d.objMembers: clearIds(m))
   of dkMixin: (for m in d.mixinMembers: clearIds(m))
   of dkActor: (for h in d.handlers: clearIds(h))
+  of dkSelect: (for arm in d.selectArms: clearIds(arm.body))
   of dkRegistry, dkPool, dkRegister, dkErrors, dkImport: discard
 
 proc clearIds*(m: var Module) =

@@ -1320,28 +1320,50 @@ proc parseTypeDecl(p: var Parser, sp: Span): Decl =
 proc parseFnDecl(p: var Parser, sp: Span): Decl =
   let curr = p.current()
   if curr.kind == tkOn and p.peek(1).kind == tkSelect:
+    # `on select:` — wait on multiple event sources (spec §9.3). Direct
+    # dkSelect node (no exkMatch reuse). Phase B: each arm's source is a
+    # message handler name; `-> {binding}` binds the payload; `: body` runs.
     discard p.advance() # eat "on"
     discard p.advance() # eat "select"
     discard p.expect(tkColon)
     discard p.expect(tkNewline)
     discard p.expect(tkIndent)
-    var arms: seq[MatchArm]
+    var arms: seq[SelectArm]
     while p.current().kind != tkDedent and p.current().kind != tkEOF:
       if p.current().kind == tkNewline:
         discard p.advance()
         continue
+      let armSp = p.getSpan()
       discard p.expect(tkPipe)
-      let pat = p.parsePattern()
+      # source is a bare message name, or a dotted event source like
+      # `timer.1s` / `timeout.5s` / `resp.ok` (timers/readiness — parsed now,
+      # given meaning in a later phase). Consume up to the arrow.
+      var source = p.expect(tkIdent, "Expected a select source").value
+      while p.current().kind in {tkDot, tkIdent, tkIntLit} and
+            p.current().kind != tkArrow:
+        source.add(p.advance().value)
       discard p.expect(tkArrow)
-      discard p.parsePattern()
+      # `-> {name: Type, ...}` typed binding — the arm IS the message decl.
+      # `shutdown` (reserved) and empty-payload arms use `-> {}`.
+      var binding: seq[Param]
+      if p.current().kind == tkLBrace:
+        discard p.advance()
+        while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+          let bn = p.expect(tkIdent, "Expected binding name").value
+          var bt: Type = nil
+          if p.current().kind == tkColon:
+            discard p.advance()
+            bt = p.parseType()
+          binding.add(Param(name: bn, typ: bt, span: armSp))
+          if p.current().kind == tkComma: discard p.advance()
+        discard p.expect(tkRBrace)
       discard p.expect(tkColon)
       let body = p.parseExpr()
-      arms.add(MatchArm(pattern: pat, guard: nil, body: body, span: p.getSpan()))
+      arms.add(SelectArm(source: source, binding: binding, body: body, span: armSp))
       if p.current().kind == tkNewline:
         discard p.advance()
     discard p.expect(tkDedent)
-    let selectExpr = Expr(span: sp, kind: exkMatch, subject: Expr(span: sp, kind: exkVar, name: "select"), arms: arms)
-    return Decl(span: sp, kind: dkExpr, expr: selectExpr)
+    return Decl(span: sp, kind: dkSelect, selectArms: arms)
 
   discard p.advance()
   # `fn inline name(...)` — codegen-attribute keyword slot after fn

@@ -1244,11 +1244,22 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     if actorDecl == nil:
       fail("Type Error: 'send' target '" & e.sendActor &
            "' is not a declared actor", e.span)
-    var handler: Decl = nil
+    # the handler is an `on <name>` block OR an `on select` message arm
+    # (spec §9.3). Its expected params come from either source; `shutdown` is
+    # the reserved control message and takes an empty payload.
+    var handlerParams: seq[Param]
+    var found = false
+    if e.sendHandler == "shutdown":
+      found = true   # reserved: no params
     for h in actorDecl.handlers:
+      if found: break
       if h != nil and h.kind == dkFn and h.name == e.sendHandler:
-        handler = h; break
-    if handler == nil:
+        handlerParams = h.fnParams; found = true
+      elif h != nil and h.kind == dkSelect:
+        for arm in h.selectArms:
+          if arm.source == e.sendHandler:
+            handlerParams = arm.binding; found = true; break
+    if not found:
       fail("Type Error: actor '" & e.sendActor & "' has no handler '" &
            e.sendHandler & "'", e.span)
     # payload fields must match the handler's params by name+type
@@ -1259,19 +1270,18 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
              e.sendPayload.span)
       given = e.sendPayload.fields
       discard tc.synthesize(e.sendPayload)
-    for p in handler.fnParams:
-      var found = false
+    for p in handlerParams:
+      var pfound = false
       for f in given:
         if f[0] == p.name:
           let ft = tc.synthesize(f[1])
-          if not tc.compatible(ft, p.typ):
+          if p.typ != nil and not tc.compatible(ft, p.typ):
             fail("Type Error: send field '" & p.name & "' expects " &
                  typeName(p.typ) & " but got " & typeName(ft), f[1].span)
-          found = true; break
-      if not found:
+          pfound = true; break
+      if not pfound:
         fail("Type Error: send to '" & e.sendActor & "." & e.sendHandler &
-             "' is missing field '" & p.name & ": " & typeName(p.typ) & "'",
-             e.span)
+             "' is missing field '" & p.name & "'", e.span)
     Type(span: e.span, kind: tkNamed, name: "unit")
   of exkQualified, exkImport:
     unknownType(e.span)
