@@ -21,27 +21,49 @@ when Beef also compiles it).
   (m_NN_name), read first error (scratchpad/exaudit script, rerunnable).
 - Order: bugs first, then sketch-decl edits, then features by size.
 - ACTOR RUNTIME RULINGS (2026-07-23) — full plan at
-  ~/.claude/plans/jolly-toasting-elephant.md:
-  - Borrow ONE primitive: minicoro (single-header stackful C, public-domain,
-    vendored). It gives ONLY the suspend/resume stack-switch.
-  - Everything else — Mailbox (exists), scheduler, ready-queue, on-select,
-    timer wheel, dispatch — is OUR Nim code in tuck_rt. Not nim-cps, not a
-    hand-rolled state machine.
-  - ONE OS thread; actors AND tasks are coroutines multiplexed on it
-    (cooperative, §9.4). Actor is NOT a thread. Multi-core out of scope.
-  - Shared mechanism, distinct roles: actor = long-lived coroutine owning a
-    mailbox queue; task = async run-to-completion coroutine, no mailbox,
-    yields at [io].
-  - Stackful minicoro = backend #1 (hosted). Stackless hand-rolled =
-    declared FUTURE backend #2 (bare-metal), reachable via the thin Coro
-    seam. Stackful means [io] needs NO body-splitting: `call; coroYield()`.
-  - AST is DIRECT: `on select` gets its OWN dkSelect + SelectArm nodes, NOT
-    the current exkMatch-fake-subject hack (parser.nim ~1305-1330 to be
-    replaced). Standing user pref: explicit nodes over clever reuse.
-  - Phases: A scheduler+minicoro (verify ex 08) → B dkSelect nodes+timers
-    (ex 16) → C [io] yield → D transitionTo-in-handler (ex 20) → E spec §9
-    rewrite. Beef actors = ceiling (no minicoro path). Each phase
-    runtime-verified by exit code.
+  ~/.claude/plans/jolly-toasting-elephant.md. Phase A IMPLEMENTED + shipped
+  (commits 59e256a, aaf706d, b567ecc); rulings below are the AS-BUILT truth,
+  refined during implementation from the original plan.
+  MECHANISM:
+  - Borrow ONE primitive: minicoro (single-header stackful C, public-domain).
+    arsenal2 (/home/kl/prog/arsenal2) already vendors it + a tested Nim
+    wrapper: import arsenal/concurrency/coroutines/minicoro via
+    --path:/home/kl/prog/arsenal2/src. minicoro is the proven part; its
+    libaco/libdill wrappers are broken/experimental — use minicoro ONLY.
+  - minicoro gives ONLY the suspend/resume stack-switch, and is NOT wired yet
+    — Phase A needs no coroutine (handlers run to completion). It joins in
+    Phase C for [io] yield. Everything else (Mailbox, scheduler, ready-queue,
+    on-select, timers, dispatch) is OUR Nim code in tuck_rt.
+  THREADING / LIFECYCLE (Erlang/Elixir-style):
+  - Scheduler = a DAEMON on its OWN background OS thread; actors are polled
+    cooperatively on it (one kernel thread total, not per-actor). Actors run
+    ALONGSIDE main, never exit.
+  - MAIN owns the lifecycle. CLI ends when main returns (value-returning main
+    = exit code). To wait for actor work: `scheduler::waitUntil {pred: :fn}`
+    — main blocks on a predicate over PUBLIC actor state, cond-var-woken
+    after each drain sweep (no busy-poll). NOT actor-triggered sys::exit.
+  - Actor = global SINGLETON by declaration (no construction, no ref; like
+    the §10 event registry). Auto-registered at startup. `ActorType.field`
+    reads the singleton; `ActorType send handler {payload}` enqueues.
+  - Full mailbox DROPS silently (fast, non-blocking; sender checks hasRoom).
+    Ruling: mechanism stays simple; backpressure is the sender's job.
+  AST / SURFACE (all DIRECT — no clever reuse, standing user pref):
+  - `send` = dedicated exkSend node (parser branch, checker, Nim codegen).
+  - `scheduler::waitUntil` = ordinary rt fn + existing `:name` fn-ref; needs
+    NO compiler support (laziness falls out of passing a fn not a value).
+    std/scheduler.tuck declares the extern.
+  - Result out of an actor = a PUBLIC actor field main reads (not sys::exit,
+    not a shared global). Registry-based event waits are a later option.
+  - `on select` (Phase B) will get its OWN dkSelect + SelectArm nodes, NOT
+    the current exkMatch-fake-subject hack (parser.nim ~1305-1330 to replace).
+  STACK MODEL:
+  - Stackful minicoro = backend #1 (hosted). Stackless hand-rolled = declared
+    FUTURE backend #2 (bare-metal), reachable via the thin Coro seam. Stackful
+    means [io] needs NO body-splitting: `call; coroYield()`.
+  PHASES: A scheduler + send + waitUntil (DONE, ex 26 exit 55) → B dkSelect
+  nodes + timers + `5s` lexing (ex 16) → C [io] yield (wire minicoro) → D
+  transitionTo-in-handler (ex 20) → E spec §9 rewrite. Beef actors = ceiling
+  (comment-only, no minicoro path). Nim backend only for now (user ruling).
 
 ## State
 - Done:
@@ -142,7 +164,22 @@ when Beef also compiles it).
         tuck.nim): import search base so std/ + siblings resolve regardless
         of cwd or binary location (test runner, installed tuck). 16 still
         broken — needs actor runtime (Phase 8), NOT closed by this.
-- Now: [→] Phase 8 ready: actor runtime, minicoro seam (rulings above).
+  - [x] ACTOR PHASE A (2026-07-23, commits 59e256a/aaf706d/b567ecc). Actors
+        RUN. rt: thread-safe Mailbox (+hasRoom, silent-drop on full) and a
+        cooperative Scheduler on its own background OS thread (drain closures;
+        tuckSchedulerStart/StartActor/NotifySend; waitUntil blocks on a
+        `progress` cond broadcast per drain sweep). lang: new exkSend AST node
+        (`ActorType send handler {payload}`), actor = singleton (genActor
+        emits <type>Singleton + drain + registerActor), `ActorType.field`
+        reads the singleton, tuck.nim injects scheduler boot before main.
+        std/scheduler.tuck extern `waitUntil`. Erlang-style: main owns
+        lifecycle, `scheduler::waitUntil {pred: :fn}` waits on public actor
+        state. Example 26-actor-run: send 1..10, wait sum==55, exit 55 —
+        runtime-verified (cli_smoke) + nim-check gated. Gate now 24/25 Nim.
+        Beef actor = ceiling. NEXT: Phase B (dkSelect + timers, ex 16).
+- Now: [→] Actor Phase B: `on select` §9.3 — dkSelect/SelectArm nodes
+  (replace exkMatch hack), timer wheel, `5s`/`1s` duration lexing. Then C
+  ([io] yield, wire minicoro from arsenal2).
 - Remaining:
   - [ ] Phase 3: 04 — `Self` mapping + interface/manager emission + empty
         setMany body indent (`proc setMany(self: Self,...)` invalid Nim).
@@ -158,20 +195,20 @@ when Beef also compiles it).
   - [ ] Phase 7: 20 — transitionTo-with-payload inside actor handler emits
         `PlayerState.Decoding(transitionTo(self.state))(rate)` garbage;
         register DSL depth (`DAC_CR.EN = true` — MMIO attrs).
-  - [ ] Phase 8: 16 — `on select` §9.3 + timeout sugar (`timeout.5s`).
-        UNBLOCKED 2026-07-23 — runtime strategy RULED, design plan written
-        (see below). Neither nim-cps nor hand-rolled: borrow ONE primitive
-        (minicoro, stackful C, vendored) for the stack-switch; the whole
-        actor system — Mailbox, scheduler, ready-queue, on-select, timers —
-        is OUR Nim rt. Ready to implement Phase A (scheduler seam).
+  - [→] Phase 8: 16 — actor Phase A DONE (see above). Remaining for 16:
+        `on select` §9.3 (Phase B — dkSelect nodes + timers + `5s` lexing)
+        then `.fn {args}` handler methods. Runtime strategy fully RULED (see
+        ACTOR RUNTIME RULINGS). 16 also needs its undeclared `copyFrom`
+        method resolved (currently the `.fn {args}` checker error).
   - [ ] Phase 9: semantic-equivalence pass — runtime-verify every example
         with a main (extend gate to build+run+assert where feasible).
 
-## Gate: Nim 23/25, Beef 20/25 (2026-07-23)
-Remaining broken: **16** (`.fn {args}` on an undeclared fn emits a bare field
-access, argument dropped — needs a ruling: resolve as a call, or error as
-undeclared?), **20** (MMIO register fields — `DMA1_CH3 ..EN` — after its pool
-and match-indent blockers cleared), **03** Beef-side only (delegate types).
+## Gate: Nim 24/26, Beef 20/26 (2026-07-23)
+`.fn {args}` RULED+fixed (undeclared = checker error) and actor Phase A shipped
+(26-actor-run GREEN + runtime-verified). Remaining broken: **16** (`on select`
+§9.3 = actor Phase B; plus its undeclared `copyFrom` handler method), **20**
+(MMIO register fields — `DMA1_CH3 ..EN` — + transitionTo-in-handler), **03**
+Beef-side only (delegate types). Example 26 is the new actor gate entry.
 
 ## known_bugs suite (tests/known_bugs.nim)
 Every confirmed bug, open or fixed, written as an assertion of CORRECT
