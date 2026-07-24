@@ -634,6 +634,41 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
            typeName(armT) & " vs " & typeName(t), arm.span)
     if isUnknown(armT): armT = t
   if not firstArm: tc.varVariants = mergedExit
+
+  # Exhaustiveness (spec #10b): a match over a closed domain (a sum type, bool,
+  # or an error-code enum) must cover every case OR end with a catch-all `_`.
+  # Open domains (int/str/unknown) can't be enumerated, so they're not checked
+  # — same as Nim. Covered names come from the arms' variant patterns; a pkWild
+  # arm is the catch-all.
+  var domain: seq[string]
+  if errEnums.len > 0:
+    for en in errEnums:
+      if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
+        for v in tc.typeDecls[en].variants: domain.add(en & "." & v.name)
+  else:
+    let sumName = if trackedType != "": trackedType
+                  elif subjT != nil and subjT.kind == tkNamed and
+                       tc.typeDecls.hasKey(subjT.name) and
+                       tc.typeDecls[subjT.name].kind == tkSum: subjT.name
+                  else: ""
+    if sumName != "":
+      domain = tc.allVariants(sumName)
+    elif subjT != nil and subjT.kind == tkNamed and subjT.name == "bool":
+      domain = @["true", "false"]
+  if domain.len > 0:
+    var hasWild = false
+    var covered: HashSet[string]
+    for arm in e.arms:
+      if arm.pattern == nil or arm.pattern.kind == pkWild: hasWild = true
+      elif arm.pattern.kind == pkVar: covered.incl(arm.pattern.name)
+    if not hasWild:
+      var missing: seq[string]
+      for v in domain:
+        if v notin covered: missing.add(v)
+      if missing.len > 0:
+        fail("Type Error: match is not exhaustive — missing " &
+             missing.join(", ") & " (cover all cases or add a catch-all `_`)",
+             e.span)
   armT
 
 proc synthChain(tc: var TypeChecker, e: Expr): Type =

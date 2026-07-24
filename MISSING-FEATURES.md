@@ -74,10 +74,10 @@ Fixed since the 2026-07-13 tour: #1 toStr, #2 str concat, #3 list literals,
 - **#10 minor frictions:**
   - postfix binds tighter than operators (`x + y sys::exit`) — STILL OPEN, no
     precedence hint in errors.
-  - `match r.err:` exhaustiveness unchecked — STILL OPEN, RULING MADE: do FULL
-    exhaustiveness checks, Nim-style — every match over an enum/sum must cover
-    all variants OR have a catch-all, else a compile error. General feature
-    (all matches, not just error enums).
+  - match exhaustiveness — **DONE.** synthMatch now checks every match over a
+    closed domain (sum type, bool, or error-code enum) covers all cases OR ends
+    with a catch-all `_`, else a compile error. Open domains (int/str/unknown)
+    unchecked, like Nim. General (all matches, not just error enums).
   - "numbers only in exit-code verification" — STALE now: toStr works (gap #1
     fixed), so runtime proofs need not funnel through sys::exit. Tests still
     do, but it's no longer forced.
@@ -102,11 +102,10 @@ Fixed since the 2026-07-13 tour: #1 toStr, #2 str concat, #3 list literals,
 
 - Resource registry §7.4 (parser/checker/rt/codegen) — not started.
 - `when TARGET` §8.3 conditionals — blocks 11/20's target-specific code.
-- match exhaustiveness checking (RULED: full Nim-style — cover all variants or
-  catch-all, else compile error) — general gap, feeds #10b.
-- named function signatures `fnsig NAME = {params} -> ret` (RULED + syntax,
-  feeds #10c) — a named delegate type (struct-syntax params, full fn-return
-  parity) for fn slots/callbacks; checker validates call shape.
+- match exhaustiveness checking — **DONE** (Nim-style; sum/bool/error domains).
+- named function signatures `fnsig NAME = {params} -> ret` — **DONE** (Nim
+  backend): named delegate type, checker validates call shape, subsumes the old
+  uncallable `fn` slot. Beef = ceiling.
 - Visibility (pub/private), nested module paths.
 - `pred`/`set` fn prefixes §3.6; stack-depth budgets `[stack: N]` §6.2;
   complexity limit §6.3 (ruling: hard error) — declared, unbuilt.

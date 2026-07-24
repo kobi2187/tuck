@@ -1459,6 +1459,35 @@ fn main() -> int [io]:
   return 0
 """
 
+# ---------- match exhaustiveness (spec #10b: cover all variants or _) ----------
+expectError "match missing a variant is rejected", doorPrelude & """
+fn label({d: Door}) -> int:
+  var n = 0
+  match d:
+    Closed: n = 1
+    Open: n = 2
+  return n
+""", "Locked"
+
+expectOk "match covering all variants is exhaustive", doorPrelude & """
+fn label({d: Door}) -> int:
+  var n = 0
+  match d:
+    Closed: n = 1
+    Open: n = 2
+    Locked: n = 3
+  return n
+"""
+
+expectOk "a catch-all _ makes a match exhaustive", doorPrelude & """
+fn label({d: Door}) -> int:
+  var n = 0
+  match d:
+    Closed: n = 1
+    _: n = 0
+  return n
+"""
+
 # ---------- fnsig: named function signatures (spec D#10c) ----------
 expectOk "fnsig declares a named signature usable as a field type", """
 fnsig Adder = {a: int, b: int} -> {sum: int}
