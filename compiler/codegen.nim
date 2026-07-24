@@ -170,6 +170,16 @@ proc externInvRet(m: Module, fnName: string): string =
           return mem.fnReturnType.name
   ""
 
+proc externEmitName(m: Module, fnName: string): string =
+  ## The Nim/C proc name to emit for an extern with `[emit: "..."]`, or "" if
+  ## it uses its Tuck name (the default).
+  for d in m.decls:
+    if d != nil and d.kind == dkMixin:
+      for mem in d.mixinMembers:
+        if mem.kind == dkFn and mem.isExtern and mem.name == fnName:
+          return mem.externEmit
+  ""
+
 # {fields} TypeName — construction of a declared record type
 proc isRecordType(m: Module, name: string): bool =
   for d in m.decls:
@@ -410,7 +420,10 @@ proc genCall(ctx: var CodegenCtx, e: Expr): string =
     let satFn = if satBase.startsWith("uint"): "tuckSat" else: "tuckSatI"
     return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
            args[0] & ")))"
-  let call = calleeStr & "(" & args.join(", ") & ")"
+  # extern [emit: "..."] renames the emitted call to the real runtime/C proc
+  let emitName = externEmitName(ctx.module, calleeStr)
+  let callName = if emitName != "": emitName else: calleeStr
+  let call = callName & "(" & args.join(", ") & ")"
   if ctx.isTaskName(calleeStr):
     # Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
     # drives it via tuckRun (spec §9.2). Fire-and-forget for now; result-
@@ -516,7 +529,10 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     let satFn = if satBase.startsWith("uint"): "tuckSat" else: "tuckSatI"
     return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
            args[0] & ")))"
-  let call = calleeStr & "(" & args.join(", ") & ")"
+  # extern [emit: "..."] renames the emitted call to the real runtime/C proc
+  let emitName = externEmitName(ctx.module, calleeStr)
+  let callName = if emitName != "": emitName else: calleeStr
+  let call = callName & "(" & args.join(", ") & ")"
   if ctx.isTaskName(calleeStr):
     # Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
     # drives it via tuckRun (spec §9.2). Fire-and-forget for now; result-
@@ -1547,8 +1563,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
         for prm in m.fnParams:
           params.add(prm.name & ": " & genType(prm.typ))
         let retStr = if m.fnReturnType != nil: genType(m.fnReturnType) else: "void"
+        # [emit: "c_fn"] sets the importc name; else the Tuck name
+        let cName = if m.externEmit != "": m.externEmit else: m.name
         res.add("proc " & m.name & "*(" & params.join(", ") & "): " & retStr &
-                " {.importc: \"" & m.name & "\", header: \"" & m.externHeader & "\".}\n")
+                " {.importc: \"" & cName & "\", header: \"" & m.externHeader & "\".}\n")
     if res == "":
       return ""
     return res
@@ -1586,21 +1604,14 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
   for d in m.decls:
     if d != nil and d.kind == dkMixin and d.name == "extern":
       var hasRtExtern = false
-      var hasAsyncExtern = false
       for mem in d.mixinMembers:
         if mem.kind == dkFn and mem.isExtern and mem.externHeader == "":
           hasRtExtern = true
-          # scheduler externs (waitUntil, ...) are implemented by the Tuck
-          # runtime (tuck_async), not tuck_rt — re-export it so importers reach
-          # <module>.<fn>.
-          if mem.name in ["waitUntil"]: hasAsyncExtern = true
-      if hasRtExtern and not hasAsyncExtern:
+      if hasRtExtern:
+        # tuck_rt is the single facade — it re-exports tuck_async, so async
+        # externs (waitUntil, openSource, ...) resolve through this one export.
         res.add("export tuck_rt\n")
-      if hasAsyncExtern:
-        # tuck_async sits beside tuck_rt; derive its import from rtImport.
-        let asyncImp = rtImport[0 ..< rtImport.len - "tuck_rt".len] & "tuck_async"
-        res.add("import " & asyncImp & "\nexport tuck_async\n")
-      if hasRtExtern or hasAsyncExtern: break
+        break
   for d in m.decls:
     if d != nil and d.kind == dkImport and d.name in realModules:
       res.add("import " & d.name & "\n")

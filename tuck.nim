@@ -284,10 +284,11 @@ when isMainModule:
       let binPath = outDir / binBase
       # Async programs need arsenal on the path and Nim's stack-walker OFF
       # (it corrupts the switched coroutine stack — mandatory, see tuck_async).
-      var asyncFlags = ""
-      if usesRuntime:
-        asyncFlags = " --stackTrace:off --lineTrace:off " &
-                     "--path:" & quoteShell("/home/kl/prog/arsenal2/src") & " "
+      # tuck_rt is now the single facade — it imports tuck_async (→ arsenal) —
+      # so EVERY build needs arsenal on the path and the coroutine-safe flags,
+      # even a pure program (the async paths are just linked, not used).
+      let asyncFlags = " --stackTrace:off --lineTrace:off " &
+                       "--path:" & quoteShell("/home/kl/prog/arsenal2/src") & " "
       let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
                    " -o:" & quoteShell(binPath) & " " & quoteShell(binNim)
       let rc = execShellCmd(nimCmd)

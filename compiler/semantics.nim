@@ -121,7 +121,15 @@ proc verifyDecl*(c: var Checker, d: Decl) =
   of dkFn:
     if d.name in c.visiting: return
     c.visiting.incl(d.name)
-    c.checkExpr(d.fnBody, d.fnEffects, d.name)
+    # main is ASSUMED to touch I/O — the [io] marker distinguishes pure fns
+    # from impure ones (and drives async); it is not a gate on main. So main
+    # may call [io] externs without declaring [io]. Every other effect too:
+    # main is the program's impure entry point.
+    let budget = if d.name == "main":
+                   @[emIo, emNoAlloc, emIrqSafe, emUnsafe, emMayBlock,
+                     emStack, emPriority]
+                 else: d.fnEffects
+    c.checkExpr(d.fnBody, budget, d.name)
     c.visiting.excl(d.name)
   of dkTask:
     if d.name in c.visiting: return

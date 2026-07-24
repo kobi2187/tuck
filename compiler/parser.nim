@@ -1092,6 +1092,7 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
       retType = p.parseType()
     var sigEffects: seq[EffectMarker]
     var sigErrTypes: seq[string]
+    var sigEmit = ""
     harvestEffects(retType, sigEffects, sigErrTypes)
     if p.current().kind == tkLBracket:
       discard p.advance()
@@ -1103,6 +1104,12 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
           while p.current().kind == tkPipe:
             discard p.advance()
             sigErrTypes.add(p.expect(tkIdent, "Expected error enum name after '|'").value)
+          if p.current().kind == tkComma: discard p.advance()
+          continue
+        if effName == "emit":
+          # [emit: "nimProc"] — the exact runtime/C proc name to emit
+          discard p.expect(tkColon)
+          sigEmit = p.expect(tkStrLit, "Expected proc name string after 'emit:'").value
           if p.current().kind == tkComma: discard p.advance()
           continue
         case effName
@@ -1120,7 +1127,7 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
     result.add(Decl(span: spDecl, kind: dkFn, name: name, fnParams: params,
                     fnGenerics: sigGenerics,
                     fnReturnType: retType, fnEffects: sigEffects, fnBody: nil,
-                    fnErrorTypes: sigErrTypes))
+                    fnErrorTypes: sigErrTypes, externEmit: sigEmit))
     if p.current().kind == tkNewline:
       discard p.advance()
   discard p.expect(tkDedent)

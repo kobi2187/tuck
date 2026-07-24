@@ -325,6 +325,8 @@ type
       isExtern*: bool   # declared in an `extern:` block; implemented by the
                         # runtime (tuck_rt) or, with a header, imported from C
       externHeader*: string # extern [c, header: "uart.h"] — empty = rt-implemented
+      externEmit*: string   # [emit: "nimProc"] — the exact runtime/C proc name
+                            # to emit; empty = use the Tuck name
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin:

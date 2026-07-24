@@ -273,3 +273,11 @@ proc exit*(code: int) = quit(code)
 
 proc nowMs*(): tuple[ms: uint64] = (ms: uint64(epochTime() * 1000))
 proc sleepMs*(ms: uint32) = os.sleep(int(ms))
+
+# The single runtime facade: tuck_rt re-exports the async runtime so every
+# emitted program imports ONLY tuck_rt and reaches rt AND async names
+# (readFile, waitUntil, openSource, ...) uniformly. arsenal is bundled as the
+# base runtime. A name defined in both modules is a Nim redefinition error at
+# stdlib-compile time — the intended hard error, the stdlib author's to fix.
+import ./tuck_async
+export tuck_async

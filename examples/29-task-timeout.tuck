@@ -4,7 +4,7 @@
 # outstanding, because the [io] op is non-blocking (reactor + coroutine).
 
 extern:
-  fn openSource({ms: int}) -> {fd: int}   # an async read source (stays idle here)
+  fn openSource({ms: int}) -> {fd: int} [io]   # an async read source
 
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
   on select:
