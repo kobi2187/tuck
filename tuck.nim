@@ -232,6 +232,7 @@ when isMainModule:
       var hasMain = false
       var mainReturns = false
       var actorNames: seq[string]
+      var hasTasks = false
       for d in m.decls:
         if d != nil and d.kind == dkFn and d.name == "main":
           hasMain = true
@@ -239,6 +240,8 @@ when isMainModule:
             not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name in ["void", "unit"])
         if d != nil and d.kind == dkActor:
           actorNames.add(d.name)
+        if d != nil and d.kind == dkTask:
+          hasTasks = true
       if not hasMain:
         echo "library (no fn main): emitted code only, no binary"
         echo "OK (", elapsedMs(t0), ")"
@@ -253,10 +256,27 @@ when isMainModule:
       if actorNames.len > 0:
         boot = "  tuckSchedulerStart()\n"
         for a in actorNames: boot.add("  registerActor" & a & "()\n")
-      # a value-returning main IS the process exit code
-      let mainCall = if mainReturns: "quit(main())" else: "main()"
+      # Async tasks: emitted code imports the tuck_async runtime shim, and main
+      # drives the event loop. tuckAsyncInit before any spawn; tuckRun after
+      # main's own work so spawned tasks finish (spec §9.2).
+      var asyncInit = ""
+      var asyncDrive = ""
+      if hasTasks:
+        let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
+        writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
+        asyncInit = "  tuckAsyncInit()\n"
+        asyncDrive = "\n  tuckRun()"
+      # a value-returning main IS the process exit code. With tasks, main runs,
+      # then tuckRun() drives spawned tasks to completion before exiting (so
+      # the return-as-exit-code path applies AFTER the drive).
+      let mainCall =
+        if hasTasks and mainReturns: "let mainRc = main()"
+        elif mainReturns: "quit(main())"
+        else: "main()"
+      let asyncExit = if hasTasks and mainReturns: "\n  quit(mainRc)" else: ""
       writeFile(mainNim, readFile(mainNim) &
-        "\nwhen isMainModule:\n" & boot & "  " & mainCall & "\n")
+        "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
+        asyncDrive & asyncExit & "\n")
       # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
       var nimFlags = ""
       for o in opts:
@@ -267,7 +287,13 @@ when isMainModule:
       let binNim = outDir / (binBase & ".nim")
       if binNim != mainNim: copyFile(mainNim, binNim)
       let binPath = outDir / binBase
-      let nimCmd = "nim c --hints:off --warnings:off " & nimFlags &
+      # Async programs need arsenal on the path and Nim's stack-walker OFF
+      # (it corrupts the switched coroutine stack — mandatory, see tuck_async).
+      var asyncFlags = ""
+      if hasTasks:
+        asyncFlags = " --stackTrace:off --lineTrace:off " &
+                     "--path:" & quoteShell("/home/kl/prog/arsenal2/src") & " "
+      let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
                    " -o:" & quoteShell(binPath) & " " & quoteShell(binNim)
       let rc = execShellCmd(nimCmd)
       if rc != 0: die("tuck: nim compilation failed")

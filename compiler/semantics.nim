@@ -44,12 +44,19 @@ proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
     
     let calleeName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name else: ""
     if calleeName != "":
-      let calleeEffects = c.getDeclaredEffects(calleeName)
-      res = unionEffects(res, calleeEffects)
-      # The [io] marker IS the async annotation: a call to an [io] fn is a
-      # suspend point. Flag the call site so codegen emits the async transform.
-      if emIo in calleeEffects:
-        semLayer.markAsync(e)
+      # Calling a TASK is a spawn — it decouples the [io] work onto the
+      # scheduler, so the task's effects do NOT propagate to the caller and
+      # the caller does not suspend here (the yields happen inside the task).
+      var isTask = false
+      for d in c.module.decls:
+        if d != nil and d.kind == dkTask and d.name == calleeName: isTask = true
+      if not isTask:
+        let calleeEffects = c.getDeclaredEffects(calleeName)
+        res = unionEffects(res, calleeEffects)
+        # The [io] marker IS the async annotation: a call to an [io] fn is a
+        # suspend point. Flag the call site so codegen emits the async transform.
+        if emIo in calleeEffects:
+          semLayer.markAsync(e)
   of exkStruct:
     for f in e.fields:
       res = unionEffects(res, c.synthesizeExpr(f[1]))

@@ -42,6 +42,11 @@ proc isActorType(ctx: CodegenCtx, name: string): bool =
     if d != nil and d.kind == dkActor and d.name == name: return true
   false
 
+proc isTaskName(ctx: CodegenCtx, name: string): bool =
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkTask and d.name == name: return true
+  false
+
 proc genType*(t: Type): string =
   if t == nil: return "void"
   case t.kind
@@ -395,6 +400,12 @@ proc genCall(ctx: var CodegenCtx, e: Expr): string =
     return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
            args[0] & ")))"
   let call = calleeStr & "(" & args.join(", ") & ")"
+  if ctx.isTaskName(calleeStr):
+    # Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
+    # drives it via tuckRun (spec §9.2). Fire-and-forget for now; result-
+    # returning task calls are a later pass.
+    return "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: discard " &
+           call & "))"
   if externInvRet(ctx.module, calleeStr) != "":
     # extern boundary: the returned value validates on entry
     ctx.tmpCounter.inc
@@ -495,6 +506,12 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
            args[0] & ")))"
   let call = calleeStr & "(" & args.join(", ") & ")"
+  if ctx.isTaskName(calleeStr):
+    # Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
+    # drives it via tuckRun (spec §9.2). Fire-and-forget for now; result-
+    # returning task calls are a later pass.
+    return "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: discard " &
+           call & "))"
   if externInvRet(ctx.module, calleeStr) != "":
     # extern boundary: the returned value validates on entry
     ctx.tmpCounter.inc
