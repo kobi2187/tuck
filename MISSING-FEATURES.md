@@ -81,14 +81,22 @@ Fixed since the 2026-07-13 tour: #1 toStr, #2 str concat, #3 list literals,
   - "numbers only in exit-code verification" — STALE now: toStr works (gap #1
     fixed), so runtime proofs need not funnel through sys::exit. Tests still
     do, but it's no longer forced.
-  - `fn` slots have no signature type — STILL OPEN, RULING MADE: add NAMED
-    function signatures (a named delegate), not inline `fn(...)` everywhere:
-      `fnsig intFn = fn({a: int}) -> int`
-    then use `intFn` as the type (bake slots, callbacks). The checker validates
-    call shape against the named sig → restores the no-Nim-diagnostic promise.
-    Design: new `fnsig NAME = fn(<params>) -> <ret>` decl (a type alias over a
-    function type); the type resolves like any named type; a `fn`-typed field
-    can name it. Inline `fn(...)` may also be allowed as the anonymous form.
+  - `fn` slots have no signature type — STILL OPEN, RULING + SYNTAX MADE.
+    Add NAMED function signatures (a named delegate) using Tuck's struct syntax:
+      `fnsig Adder = {a: int, b: int} -> {sum: int}`
+      `fnsig Predicate = {} -> bool`
+      `fnsig Reader = {path: str} -> !{content: str}`
+    Form: `fnsig NAME = {params} -> <ret>` — named-struct params (reads exactly
+    like a fn minus name/body); `fnsig` keyword is grep-able/self-documenting.
+    RETURN side accepts ANYTHING a fn returns: `{struct}`, a bare type
+    (int/bool), void, and !T/?T wrappers — full parity with fn return types.
+    Then use NAME as a type: bake slots, callback fields, `:name` fn-ref args.
+    The checker validates call shape (arity/param-types/ret) against the named
+    sig → restores the no-Nim-diagnostic promise; subsumes the current `fn`
+    slot (which maps to an uncallable pointer today).
+    Build pieces: parser `fnsig NAME = {params} -> ret` decl; AST a function-
+    type node (params + ret) + named binding; checker resolves NAME to that
+    type and checks calls; codegen emits Nim `proc(a: int, b: int): tuple[...]`.
 
 ## E. Standing ROADMAP items (not tour/example specific)
 
@@ -96,8 +104,9 @@ Fixed since the 2026-07-13 tour: #1 toStr, #2 str concat, #3 list literals,
 - `when TARGET` §8.3 conditionals — blocks 11/20's target-specific code.
 - match exhaustiveness checking (RULED: full Nim-style — cover all variants or
   catch-all, else compile error) — general gap, feeds #10b.
-- named function signatures `fnsig NAME = fn(...) -> T` (RULED, feeds #10c) —
-  a named delegate type for fn slots/callbacks; checker validates call shape.
+- named function signatures `fnsig NAME = {params} -> ret` (RULED + syntax,
+  feeds #10c) — a named delegate type (struct-syntax params, full fn-return
+  parity) for fn slots/callbacks; checker validates call shape.
 - Visibility (pub/private), nested module paths.
 - `pred`/`set` fn prefixes §3.6; stack-depth budgets `[stack: N]` §6.2;
   complexity limit §6.3 (ruling: hard error) — declared, unbuilt.
