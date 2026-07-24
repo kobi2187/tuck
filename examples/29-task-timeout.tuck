@@ -3,13 +3,15 @@
 # that is impossible on blocking I/O — the timeout fires WHILE the read is
 # outstanding, because the [io] op is non-blocking (reactor + coroutine).
 
+import time
+
 extern:
   fn openSource({ms: int}) -> {fd: int} [io]   # an async read source
 
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
   on select:
-    | read fd     -> {}:  return {code: 1}   # data arrived first
-    | timeout 30  -> {}:  return {code: 2}   # 30ms deadline fired first
+    | read fd          -> {}:  return {code: 1}   # data arrived first
+    | timeout {30.ms}  -> {}:  return {code: 2}   # 30ms deadline fired first
 
 fn main() -> int:
   let src = {ms: 500} openSource       # data really arrives after 500ms

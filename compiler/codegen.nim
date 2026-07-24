@@ -881,7 +881,15 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     let ind = repeat("  ", ctx.indent)
     if readArm != nil and timeoutArm != nil:
       let fd = ctx.genExpr(readArm.arg)
-      let ms = ctx.genExpr(timeoutArm.arg)
+      # `timeout {5.ms}` — the arg is a duration payload; the runtime wants a
+      # plain int of milliseconds. Unwrap a single-field `{dur}` struct to its
+      # duration and convert to int; a bare int arg (`timeout 30`) passes through.
+      var durExpr = timeoutArm.arg
+      if durExpr != nil and durExpr.kind == exkStruct and durExpr.fields.len == 1:
+        durExpr = durExpr.fields[0][1]
+      var ms = ctx.genExpr(durExpr)
+      if not (timeoutArm.arg != nil and timeoutArm.arg.kind == exkLit):
+        ms = "int(" & ms & ")"   # a typed duration → milliseconds int
       ctx.indent += 1
       let innerInd = repeat("  ", ctx.indent)
       # arm bodies (a return/expr) don't self-indent — prepend the branch indent

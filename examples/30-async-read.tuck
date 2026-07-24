@@ -3,13 +3,15 @@
 # arm fires. This proves genuine non-blocking I/O: the task suspends on the fd,
 # the reactor sees it become readable, and resumes the coroutine.
 
+import time
+
 extern:
   fn openSource({ms: int}) -> {fd: int} [io]   # an async read source
 
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
   on select:
-    | read fd     -> {}:  return {code: 1}   # data arrived first
-    | timeout 100 -> {}:  return {code: 2}   # 100ms deadline
+    | read fd           -> {}:  return {code: 1}   # data arrived first
+    | timeout {100.ms}  -> {}:  return {code: 2}   # 100ms deadline
 
 fn main() -> int:
   let src = {ms: 5} openSource         # data arrives after 5ms

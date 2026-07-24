@@ -37,10 +37,12 @@ phases below green (cli_smoke + matrix + Beef where applicable).
         32-duration-units (exit 42) + cli_smoke gate. Matrix green.
         NOTE found: distinct->base readback (`n u32`) emits `u32` not `uint32`
         — a separate codegen gap, sidestepped in ex32, worth a known-bug later.
-- Now: [→] Phase 2: `timeout {5.ms}` typed in a TASK select — the duration lowers
-        to the real `tuckAwaitReadOrTimeout(fd, ms)`. Retype examples 29/30 to
-        the typed form (drop bare `timeout 30`). cli_smoke gates.
-  - [ ] Phase 3: ACTOR `on select` with a periodic `timer {..}` arm + a
+  - [x] Phase 2: `timeout {5.ms}` typed in a TASK select. Codegen unwraps the
+        `{dur}` payload and emits `int(<dur>)` for tuckAwaitReadOrTimeout; a
+        bare `timeout 30` still passes through. Examples 29 (exit 2) + 30
+        (exit 1) retyped to `timeout {30.ms}` / `{100.ms}` with `import time`.
+        cli_smoke + matrix + Beef (32 examples) green.
+- Now: [→] Phase 3: ACTOR `on select` with a periodic `timer {..}` arm + a
         `shutdown` arm. Own example, runtime-verified.
   - [ ] Phase 4: `resp.ok`/`resp.err` future-readiness select arms. OPEN: the
         runtime model (is `resp` a pending future the select awaits vs timeout,
