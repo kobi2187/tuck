@@ -76,9 +76,12 @@ proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
   for name, e in sigOnly: preSigs[name] = e.sigs
   var shortcuts: seq[string]
   try:
+    # typecheck first — it resetResolution()s the semantic layer — THEN the
+    # effect pass, so its async call-site marks land in the live semLayer that
+    # codegen reads (not wiped by the reset).
+    shortcuts = typecheckProgram(mods, preSigs)
     for lm in result:
       verifyModuleEffects(lm.m)
-    shortcuts = typecheckProgram(mods, preSigs)
   except SemanticError as err:
     # typecheckProgram errors already carry file:line:col; effects errors don't
     if ".tuck:" in err.msg: die(err.msg)

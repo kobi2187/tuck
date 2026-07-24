@@ -16,6 +16,7 @@ type
     retInnerT: Type       # payload Tuck type (typed struct-literal emission)
     retInvName: string    # fn returns an invariant-carrying type: validate at return sites
     tmpCounter: int
+    inTask: bool          # emitting a task body — [io] calls become async yields
     errPolicy: string     # from the errors declaration; "" = strict
     realModules: Table[string, Module]  # imported modules emitted as own Nim files
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
@@ -583,7 +584,14 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkQualified:
     genQualified(ctx, e)
   of exkCall:
-    ctx.genConstruction(e)
+    let base = ctx.genConstruction(e)
+    # An [io] call is a suspend point (the effect marker IS the async
+    # annotation). Cooperative-yield first cut: yield so other tasks progress,
+    # then perform the call. (Real fd-await lands with the async externs.)
+    if semLayer.isAsync(e) and ctx.inTask:
+      "(tuckYield(); " & base & ")"
+    else:
+      base
   of exkStruct:
     var parts: seq[string]
     for f in e.fields:
@@ -1360,7 +1368,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.retInnerT = binnerT
     injectTailReturn(d.taskBody, retTypeStr)
     ctx.indent += 1
+    let oldInTask = ctx.inTask
+    ctx.inTask = true          # [io] calls in this body become async yields
     let bodyStr = ctx.genExpr(d.taskBody)
+    ctx.inTask = oldInTask
     ctx.indent = oldIndent
     ctx.retWrapped = false
     ctx.definedVars = oldVars
