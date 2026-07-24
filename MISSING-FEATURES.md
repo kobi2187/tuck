@@ -12,7 +12,7 @@ which bare `nim check` doesn't pass).
 | Example | State | Missing feature |
 |---|---|---|
 | **16-actor-tasks-unified-syntax** | BROKEN (skip) | `.fn {args}` on an undeclared method (`copyFrom`) → checker error; AND dotted select sources (`resp.ok`, `timeout.5s`) parse as opaque strings, not typed readiness/duration. Needs: method-on-undeclared ruling + typed select sources + `5s` duration lexing. |
-| **20-embedded-mp3-player** | BROKEN | MMIO register-field access `DAC_CR.EN` → "undeclared field: 'EN'". Register DSL depth (nested bitfield write) unimplemented. Also transitionTo-with-payload in an actor handler. |
+| **20-embedded-mp3-player** | BROKEN | (1) MMIO register-field access `DAC_CR.EN` → "undeclared field: 'EN'" — register DSL depth (nested bitfield write) unimplemented. (2) `transitionTo`-with-payload INSIDE AN ACTOR HANDLER emits garbage — a handler-context codegen bug (the transition DESIGN is resolved; see D#4). |
 | **08-actors_isolated_state** | OK (library) | Decl-only actor (no main) — builds, not runtime-testable. Could add a driver + gate, or leave as a pure-decl showcase. |
 | **28-async-task** | GREEN (cli_smoke, exit 42) | Not in nimCheck gate (needs arsenal path). Runtime-verified only. |
 | **29-task-timeout** | GREEN (cli_smoke, exit 2) | Same — runtime-verified; uses a placeholder idle source (see C below). |
@@ -55,10 +55,14 @@ which bare `nim check` doesn't pass).
 Fixed since the 2026-07-13 tour: #1 toStr, #2 str concat, #3 list literals,
 #5 error match, #6 const-units. Still open:
 
-- **#4 transitionTo is a hoop** — STILL OPEN. Emitted `transitionTo` wants the
-  full constructed target (payload included); the natural call names only the
-  variant. Wants a ruling: kind+payload keying vs per-edge generated fn. (Same
-  as example 20's actor-handler transitionTo.)
+- **#4 transitionTo** — **RESOLVED.** The design ruling: the caller constructs
+  the FULL target variant (payload and all); emitted `transitionTo(self,
+  target: <SumType>)` validates the kind-edge against the table and assigns
+  `self = target`. Example 12 is gated/green on this. NOT a hoop — it's the
+  chosen model. The only remaining piece is a NARROWER codegen bug: example
+  20's `transitionTo`-with-payload INSIDE AN ACTOR HANDLER emits garbage
+  (`PlayerState.Decoding(transitionTo(self.state))(rate)`) — a handler-context
+  emission defect, not the transition design.
 - **#7 two arrow styles** — STILL OPEN. `match p:` uses `:`, `decision` uses
   `->`. Cosmetic inconsistency vs the "one answer per concern" philosophy.
 - **#8 match parse error has no hint** — STILL OPEN. `Stopped -> 0` (wrong
