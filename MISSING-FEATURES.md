@@ -63,30 +63,41 @@ Fixed since the 2026-07-13 tour: #1 toStr, #2 str concat, #3 list literals,
   20's `transitionTo`-with-payload INSIDE AN ACTOR HANDLER emits garbage
   (`PlayerState.Decoding(transitionTo(self.state))(rate)`) — a handler-context
   emission defect, not the transition design.
-- **#7 two arrow styles** — STILL OPEN. `match p:` uses `:`, `decision` uses
-  `->`. Cosmetic inconsistency vs the "one answer per concern" philosophy.
+- **#7 two arrow styles** — **CLOSED (ruling: keep both).** `match p:` uses
+  `:`, `decision` uses `->` — intentional, both stay. Not a gap.
 - **#8 match parse error has no hint** — STILL OPEN. `Stopped -> 0` (wrong
   style) gives a bare `[Parse Error]` with no "match arms are `pattern: value`".
+  Small: a targeted parser diagnostic.
 - **#9 actors declare but don't run** — **FIXED this session.** Actors run on
   the unified arsenal runtime (examples 26/27, exit 55). The highest-value gap
   is closed.
 - **#10 minor frictions:**
   - postfix binds tighter than operators (`x + y sys::exit`) — STILL OPEN, no
     precedence hint in errors.
-  - `match r.err:` exhaustiveness unchecked — STILL OPEN (match exhaustiveness
-    is a standing ROADMAP gap).
+  - `match r.err:` exhaustiveness unchecked — STILL OPEN, RULING MADE: do FULL
+    exhaustiveness checks, Nim-style — every match over an enum/sum must cover
+    all variants OR have a catch-all, else a compile error. General feature
+    (all matches, not just error enums).
   - "numbers only in exit-code verification" — STALE now: toStr works (gap #1
     fixed), so runtime proofs need not funnel through sys::exit. Tests still
     do, but it's no longer forced.
-  - `fn` slots have no signature type — STILL OPEN. `op: fn` accepts any call
-    shape; a `fn({a:int}) -> int` type syntax would restore the no-Nim-
-    diagnostic promise for bake-heavy code.
+  - `fn` slots have no signature type — STILL OPEN, RULING MADE: add NAMED
+    function signatures (a named delegate), not inline `fn(...)` everywhere:
+      `fnsig intFn = fn({a: int}) -> int`
+    then use `intFn` as the type (bake slots, callbacks). The checker validates
+    call shape against the named sig → restores the no-Nim-diagnostic promise.
+    Design: new `fnsig NAME = fn(<params>) -> <ret>` decl (a type alias over a
+    function type); the type resolves like any named type; a `fn`-typed field
+    can name it. Inline `fn(...)` may also be allowed as the anonymous form.
 
 ## E. Standing ROADMAP items (not tour/example specific)
 
 - Resource registry §7.4 (parser/checker/rt/codegen) — not started.
 - `when TARGET` §8.3 conditionals — blocks 11/20's target-specific code.
-- match exhaustiveness checking — general gap (feeds #10).
+- match exhaustiveness checking (RULED: full Nim-style — cover all variants or
+  catch-all, else compile error) — general gap, feeds #10b.
+- named function signatures `fnsig NAME = fn(...) -> T` (RULED, feeds #10c) —
+  a named delegate type for fn slots/callbacks; checker validates call shape.
 - Visibility (pub/private), nested module paths.
 - `pred`/`set` fn prefixes §3.6; stack-depth budgets `[stack: N]` §6.2;
   complexity limit §6.3 (ruling: hard error) — declared, unbuilt.
