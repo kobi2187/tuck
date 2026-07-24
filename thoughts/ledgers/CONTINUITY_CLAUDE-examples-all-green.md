@@ -60,6 +60,44 @@ when Beef also compiles it).
   - Stackful minicoro = backend #1 (hosted). Stackless hand-rolled = declared
     FUTURE backend #2 (bare-metal), reachable via the thin Coro seam. Stackful
     means [io] needs NO body-splitting: `call; coroYield()`.
+  PHASE C ASYNC-I/O INVESTIGATION (2026-07-23, UNRESOLVED — no code landed,
+  Phase A/B untouched on main; snapshot branch `phase-a-hand-scheduler`):
+  - GOAL restated by user: TRUE async concurrency (I/O in parallel, calls
+    yield until they return), ZERO syntax markers (no async/await; the [io]
+    marker at the call site is what transforms — effect system IS the async
+    annotation), fire-and-continue, looks EXACTLY like a sync call. All
+    "threading" = coroutines/fibers, NOT OS threads. Must be CROSS-PLATFORM
+    (incl. Windows) AND serve the BEEF backend too, not just Nim.
+  - minicoro/libaco = Level-1 (raw stack switch only, same tier). libdill/
+    libmill = Level-2 (coroutines + epoll/kqueue REACTOR + channels + timers
+    + choose/select). True async I/O needs Level-2. minicoro can NOT be the
+    reactor — it only switches stacks; a separate readiness engine is
+    mandatory (this was a user misconception, corrected).
+  - PROVEN by PoC (scratchpad): libdill's go+suspend works PERFECTLY in pure
+    C (flag=7). The SAME thing hosting a Nim coroutine body CRASHES
+    (SIGABRT→SIGSEGV), even with ZERO GC work in the coroutine (only a cint
+    store, raises:[]/gcsafe/noinline forced). Root cause is NOT (only) GC —
+    it is Nim-compiled code running on libdill's foreign swapped stack /
+    setjmp. libdill.a is fine; libaco/minicoro/ucontext (nimcoro) ALL hit the
+    same foreign-stack↔Nim wall (nimcoro's own README: "confuses Nim's GC").
+    libdill's `go` is a C MACRO (#define go dill_go, setjmp+setsp) — bindable
+    only via {.emit: "go(fn());".}, never as a proc pointer (this was the old
+    "troublesome" memory, now understood).
+  - THE FORK (undecided): the runtime must serve BOTH Nim and Beef.
+    (a) One portable C runtime (libdill/libmill or our own), both backends
+        bind it. Beef may bind it CLEANLY (no tracing-GC-on-foreign-stack
+        problem like Nim has) — libdill could work for Beef where it crashes
+        for Nim. Nim side needs a workaround or a different suspension.
+    (b) Per-backend native runtimes: Nim uses std/selectors (stdlib reactor,
+        cross-platform incl Windows, no FFI) + CPS or std/asyncdispatch
+        (no foreign stack → no crash class); Beef uses its own. Same Tuck
+        surface, different codegen per backend. Clean but two impls.
+    (c) Write our own minimal C reactor+coroutine runtime with a C ABI both
+        backends bind (a mini-libdill). Most control, biggest build.
+  - Beef's async/coroutine/C-interop story is UNRESEARCHED — needed before
+    choosing. NEXT: research Beef concurrency; decide the fork. std/selectors
+    IS the reactor for the Nim side regardless (stdlib, not hard). The hard
+    part is portable suspension that both backends share.
   PHASES: A scheduler + send + waitUntil (DONE, ex 26 exit 55) → B dkSelect
   nodes + timers + `5s` lexing (ex 16) → C [io] yield (wire minicoro) → D
   transitionTo-in-handler (ex 20) → E spec §9 rewrite. Beef actors = ceiling
