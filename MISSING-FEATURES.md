@@ -1,0 +1,90 @@
+# Missing Features & Gaps — snapshot 2026-07-24
+
+A "for later" list, compiled after the async/actor/extern work. Three parts:
+broken/incomplete examples, open known-bugs, and the TOUR-GAPS re-audit.
+
+## A. Examples not fully green
+
+Gate = `nim check` on emitted Nim (tests/compile_all_examples nimCheckExpected).
+Async examples build+run via cli_smoke instead (they need arsenal on the path,
+which bare `nim check` doesn't pass).
+
+| Example | State | Missing feature |
+|---|---|---|
+| **16-actor-tasks-unified-syntax** | BROKEN (skip) | `.fn {args}` on an undeclared method (`copyFrom`) → checker error; AND dotted select sources (`resp.ok`, `timeout.5s`) parse as opaque strings, not typed readiness/duration. Needs: method-on-undeclared ruling + typed select sources + `5s` duration lexing. |
+| **20-embedded-mp3-player** | BROKEN | MMIO register-field access `DAC_CR.EN` → "undeclared field: 'EN'". Register DSL depth (nested bitfield write) unimplemented. Also transitionTo-with-payload in an actor handler. |
+| **08-actors_isolated_state** | OK (library) | Decl-only actor (no main) — builds, not runtime-testable. Could add a driver + gate, or leave as a pure-decl showcase. |
+| **28-async-task** | GREEN (cli_smoke, exit 42) | Not in nimCheck gate (needs arsenal path). Runtime-verified only. |
+| **29-task-timeout** | GREEN (cli_smoke, exit 2) | Same — runtime-verified; uses a placeholder idle source (see C below). |
+
+(`http` in the list is a std/-style module, not an example.)
+
+## B. Open known-bugs (tests/known_bugs.nim, 5 open)
+
+1. **`/=` on ints emits float `/`** — integer compound-divide picks Nim's
+   float-returning `/`.
+2. **`toStr` result loses str-ness under `+`** — `n.toStr + "x"` picks the
+   numeric `+`, not concat.
+3. **`if` has no expression form** — `let x = if c: a else: b` unsupported.
+4. **Beef backend doesn't clamp `[saturating]`** — Nim clamps; Beef emits a
+   bare ctor (parity gap).
+5. **type argument named like an attribute** — `Box[error]` fails: `error` is
+   in the attribute word list, so the parser reads `[error: ...]`. Same for
+   stack/queue/align/priority/volatile + ~14 others. (The valued half
+   `[name: value]` is fixed; bare markers still use the word list.)
+
+(`.fn {args}` undeclared, #8, was CLOSED this stretch — now a checker error.)
+
+## C. Async/actor layer — real gaps (from this session's work)
+
+- **No real async std I/O externs.** std fs/io/sys are BLOCKING externs over
+  Nim's sync stdlib. There is no socket recv / async readFile that yields
+  through the reactor. The operation-timeout MECHANISM is real+proven, but
+  example 29 races an idle placeholder pipe (`openSource`) because there's
+  nothing real to race yet. NEXT: a real async source (async TCP recv) so a
+  task does genuine non-blocking I/O with a real timeout.
+- **Typed select sources.** `on select` arms only lower `read <fd>` /
+  `timeout <ms>` (bare + int). `resp.ok` (future readiness) and `timeout.5s`
+  (duration) parse as opaque strings — need typed SelectSource variants + `5s`
+  duration lexing. Blocks example 16's task select.
+- **Beef async/actor runtime** = declared ceiling (comment-only emission).
+  minicoro-beef exists; the same reactor design would need porting.
+
+## D. TOUR-GAPS re-audit (which still hold)
+
+Fixed since the 2026-07-13 tour: #1 toStr, #2 str concat, #3 list literals,
+#5 error match, #6 const-units. Still open:
+
+- **#4 transitionTo is a hoop** — STILL OPEN. Emitted `transitionTo` wants the
+  full constructed target (payload included); the natural call names only the
+  variant. Wants a ruling: kind+payload keying vs per-edge generated fn. (Same
+  as example 20's actor-handler transitionTo.)
+- **#7 two arrow styles** — STILL OPEN. `match p:` uses `:`, `decision` uses
+  `->`. Cosmetic inconsistency vs the "one answer per concern" philosophy.
+- **#8 match parse error has no hint** — STILL OPEN. `Stopped -> 0` (wrong
+  style) gives a bare `[Parse Error]` with no "match arms are `pattern: value`".
+- **#9 actors declare but don't run** — **FIXED this session.** Actors run on
+  the unified arsenal runtime (examples 26/27, exit 55). The highest-value gap
+  is closed.
+- **#10 minor frictions:**
+  - postfix binds tighter than operators (`x + y sys::exit`) — STILL OPEN, no
+    precedence hint in errors.
+  - `match r.err:` exhaustiveness unchecked — STILL OPEN (match exhaustiveness
+    is a standing ROADMAP gap).
+  - "numbers only in exit-code verification" — STALE now: toStr works (gap #1
+    fixed), so runtime proofs need not funnel through sys::exit. Tests still
+    do, but it's no longer forced.
+  - `fn` slots have no signature type — STILL OPEN. `op: fn` accepts any call
+    shape; a `fn({a:int}) -> int` type syntax would restore the no-Nim-
+    diagnostic promise for bake-heavy code.
+
+## E. Standing ROADMAP items (not tour/example specific)
+
+- Resource registry §7.4 (parser/checker/rt/codegen) — not started.
+- `when TARGET` §8.3 conditionals — blocks 11/20's target-specific code.
+- match exhaustiveness checking — general gap (feeds #10).
+- Visibility (pub/private), nested module paths.
+- `pred`/`set` fn prefixes §3.6; stack-depth budgets `[stack: N]` §6.2;
+  complexity limit §6.3 (ruling: hard error) — declared, unbuilt.
+- Spec §11 debt: describes npeg+flat-IR; reality is recursive-descent+ref-AST
+  + id-keyed Resolution — rewrite §11 to match.
