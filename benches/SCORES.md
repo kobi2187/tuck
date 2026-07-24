@@ -14,6 +14,16 @@ the absolute figure. A >2x slowdown on any line is worth investigating.
 | actor throughput | messages drained | ~21 M msgs/sec |
 | compiler front-end | lex+parse+check | ~23k lines/sec |
 
+### 2026-07-24 — coroutine stack 256KB → 128KB
+
+Halved the per-coroutine stack (`TuckStackSize` in tuck_async). 128KB is
+malloc's mmap threshold: stacks ≥128KB are mmap'd + lazily faulted, so spawn
+stays at full speed (0.23M/sec) AND resident memory drops sharply (40k live
+coroutines: 1.9GB→**329MB** peak RSS, since shallow Tuck bodies touch only a
+page or two). Dropping to 64KB was a TRAP — arena malloc instead of mmap, 4x
+slower spawn (0.06M/sec) and *higher* committed RSS. 128KB is the sweet spot.
+Switch throughput unchanged (1.69M/sec).
+
 ## Notes on what each measures
 
 - **async scale** (`bench_async_scale.nim`): N live coroutines each yielding K

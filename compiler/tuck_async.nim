@@ -22,6 +22,16 @@ type
 
 var gLoop {.threadvar.}: EventLoop
 
+const TuckStackSize* = 128 * 1024
+  ## Per-coroutine stack for tasks and actors. arsenal's default is 256KB; this
+  ## halves it → 2x coroutine density. 128KB is the SWEET SPOT, not the floor:
+  ## it is malloc's mmap threshold, so stacks ≥128KB are mmap'd (fast, lazily
+  ## faulted — ~0.25M spawns/sec). Dropping to 64KB falls back to arena malloc
+  ## and measured 4x SLOWER spawn for only marginal extra density — a bad trade.
+  ## Tuck bodies are shallow (a handler / task fn + locals) so 128KB is ample;
+  ## deeply-recursive user code is the only case that could need more (bump here,
+  ## or a per-task `[stack: N]` later). minicoro stacks are fixed — a real cap.
+
 proc tuckAsyncInit*() =
   ## Called once at the top of an async main, before spawning tasks.
   if gLoop == nil:
@@ -29,7 +39,7 @@ proc tuckAsyncInit*() =
 
 proc tuckSpawn*(fn: proc() {.closure, gcsafe.}) =
   ## Launch a task as a coroutine on the scheduler.
-  discard spawn(fn)
+  schedule(newCoroutine(fn, TuckStackSize))
 
 proc tuckYield*() =
   ## Cooperative yield: reschedule this task and hand control back so other
@@ -133,7 +143,7 @@ proc tuckStartActor*(drain: DrainProc) =
     while true:
       let didWork = drain()
       if not didWork:
-        coroYield()))            # idle — hand control back; resumed on send
+        coroYield()), TuckStackSize)   # idle — hand control back; resumed on send
   gActors.add(co)
   schedule(co)
 
