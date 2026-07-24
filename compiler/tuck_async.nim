@@ -22,15 +22,14 @@ type
 
 var gLoop {.threadvar.}: EventLoop
 
-const TuckStackSize* = 128 * 1024
-  ## Per-coroutine stack for tasks and actors. arsenal's default is 256KB; this
-  ## halves it → 2x coroutine density. 128KB is the SWEET SPOT, not the floor:
-  ## it is malloc's mmap threshold, so stacks ≥128KB are mmap'd (fast, lazily
-  ## faulted — ~0.25M spawns/sec). Dropping to 64KB falls back to arena malloc
-  ## and measured 4x SLOWER spawn for only marginal extra density — a bad trade.
-  ## Tuck bodies are shallow (a handler / task fn + locals) so 128KB is ample;
-  ## deeply-recursive user code is the only case that could need more (bump here,
-  ## or a per-task `[stack: N]` later). minicoro stacks are fixed — a real cap.
+const TuckStackSize* = 1024 * 1024
+  ## Per-coroutine stack for tasks and actors. arsenal builds minicoro with
+  ## MCO_USE_VMEM_ALLOCATOR (raw mmap), so this is a VIRTUAL reservation: only
+  ## the pages a coroutine actually touches fault in (4KB at a time). A 1MB
+  ## nominal stack therefore costs the same physical RAM as 128KB for shallow
+  ## Tuck bodies — measured identical (40k coroutines: ~329MB RSS, 0.24M
+  ## spawns/sec) — while removing the fixed-depth cap. Deep user recursion just
+  ## faults more pages; it no longer overflows a small fixed stack.
 
 proc tuckAsyncInit*() =
   ## Called once at the top of an async main, before spawning tasks.
