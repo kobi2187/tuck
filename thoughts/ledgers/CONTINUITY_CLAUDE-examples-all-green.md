@@ -178,6 +178,38 @@ when Beef also compiles it).
     tuck build must emit --stackTrace:off --lineTrace:off + that --path for
     async programs. NEXT unchanged: [io] call-site marking → async externs →
     task codegen emitting tuckSpawn/tuckAwaitRead/tuckRun.
+  PHASE C — TASKS RUN (2026-07-24, DONE + runtime-verified). Committed:
+  - compiler/tuck_async.nim: the thin Tuck runtime shim over arsenal
+    (tuckAsyncInit/tuckSpawn/tuckYield/tuckAwaitRead/tuckAwaitWrite/tuckRun),
+    unifying arsenal's split scheduler/eventloop into one tuckRun().
+  - [io] call-site marking: resolution.nim (asyncCalls set + markAsync/isAsync)
+    set in semantics.nim when a call's callee carries emIo. CRITICAL ORDER:
+    typecheckProgram resetResolution()s, so verifyModuleEffects (which marks)
+    now runs AFTER it in tuck.nim, else marks were wiped.
+  - codegen: an [io] call inside a task body (ctx.inTask) emits
+    `(tuckYield(); <call>)`. A task CALL (`{args} worker`) emits
+    `tuckSpawn(proc() = discard worker(args))` — scheduled as a coroutine.
+    Calling a task is a SPAWN: its effects do NOT propagate to the caller
+    (main calling an [io] task needs no [io]) and the caller doesn't suspend.
+  - tuck build: when the program declares any dkTask, emits `import
+    tuck_async`, --stackTrace:off --lineTrace:off, --path:arsenal/src, and
+    wires main = tuckAsyncInit(); main(); tuckRun(); quit(mainRc).
+  - Example 28-async-task: task with two [io] yields computes base*2, sys::exit
+    42. Runtime-verified in cli_smoke (8/8). Full matrix green.
+  - CEILING/COSMETIC: arsenal's coroutine.nim pulls backend.nim→libaco, unused,
+    giving a benign "missing .note.GNU-stack / executable stack" linker
+    warning. Importing minicoro.nim directly (not coroutine.nim) would drop it.
+  REMAINING Phase C (todo #4, #5):
+  - #4 task RESULT model: tasks return !T; `let r = {args} fetch` must yield the
+    caller the result once the task completes (result slot / arsenal
+    FixedFuture; caller awaits). Today task calls are fire-and-forget (discard).
+  - #5 OPERATION TIMEOUT (headline): task-side `on select` with timeout.Nms →
+    scheduler deadline racing a REAL async I/O op (non-blocking read via
+    tuckAwaitRead on an fd). Also fixes: local `extern:` block fns don't
+    register [io] effects (semantics.nim only registers dkFn/dkTask/dkActor —
+    a local extern's fns aren't in `declared`, so async-marking misses them);
+    and replaces the leftover parseSelectExpr exkMatch hack (task-position
+    select) with a proper node.
   PHASES: A scheduler + send + waitUntil (DONE, ex 26 exit 55) → B dkSelect
   nodes + timers + `5s` lexing (ex 16) → C [io] yield (wire minicoro) → D
   transitionTo-in-handler (ex 20) → E spec §9 rewrite. Beef actors = ceiling
