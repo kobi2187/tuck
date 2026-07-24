@@ -159,6 +159,25 @@ when Beef also compiles it).
     then the [io]-call-site marking + async-extern story, then task codegen.
     caveat: arsenal is the user's own, "half experimental" — verify each
     slice as we wire it (as we've been doing).
+  RUNTIME SHIM DESIGNED + PROVEN (2026-07-23): arsenal's scheduler is NOT
+  elegant enough to expose directly (debug echo spam, split scheduler/
+  eventloop, round-robin only). Ruling: Tuck emits its OWN thin runtime API,
+  redirects to arsenal as the swappable engine. Beef mirrors the SAME API
+  over minicoro-beef.
+  - Tuck shim API (PoC scratchpad/tuck_async.nim, result=20, clean output):
+    tuckAsyncInit() / tuckSpawn(fn) / tuckAwaitRead(fd) / tuckAwaitWrite(fd)
+    / tuckRun() — the last UNIFIES arsenal's split scheduler+eventloop into
+    one drive-to-completion call. This is the seam codegen targets.
+  - arsenal PATCHED (its own repo, commit 514febd): debug echoes in
+    scheduler.nim + io/eventloop.nim gated behind `-d:arsenalDebug` (silent by
+    default via a `dbg` template). arsenal tests still pass; reactor PoC now
+    clean. NOTE arsenal repo has OTHER large uncommitted work in its tree
+    (28 files) — untouched by us; our commit is only the 2 echo-gated files.
+  - The tuck rt module for this will live in tuck (compiler/ or a new
+    async rt file), import arsenal via --path:/home/kl/prog/arsenal2/src, and
+    tuck build must emit --stackTrace:off --lineTrace:off + that --path for
+    async programs. NEXT unchanged: [io] call-site marking → async externs →
+    task codegen emitting tuckSpawn/tuckAwaitRead/tuckRun.
   PHASES: A scheduler + send + waitUntil (DONE, ex 26 exit 55) → B dkSelect
   nodes + timers + `5s` lexing (ex 16) → C [io] yield (wire minicoro) → D
   transitionTo-in-handler (ex 20) → E spec §9 rewrite. Beef actors = ceiling
