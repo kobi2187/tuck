@@ -42,8 +42,14 @@ phases below green (cli_smoke + matrix + Beef where applicable).
         bare `timeout 30` still passes through. Examples 29 (exit 2) + 30
         (exit 1) retyped to `timeout {30.ms}` / `{100.ms}` with `import time`.
         cli_smoke + matrix + Beef (32 examples) green.
-- Now: [→] Phase 3: ACTOR `on select` with a periodic `timer {..}` arm + a
-        `shutdown` arm. Own example, runtime-verified.
+- Now: [→] Phase 3: ACTOR `on select` periodic `timer {..}` arm — DEFERRED,
+        needs a design pass first (user ruling 2026-07-24). Actor select
+        already handles named message arms + reserved `shutdown` (codegen
+        ~1254); what's MISSING is a TIME-driven arm. Open design questions:
+        reactor-timer-that-re-arms (reuses waitTimer/registerTimer; actor coro
+        parks on the timer between fires) vs poll-deadline-in-drain-loop
+        (simpler, drift under load). Also: periodic vs one-shot, interaction
+        with sends + shutdown, drift. BRAINSTORM before building.
   - [ ] Phase 4: `resp.ok`/`resp.err` future-readiness select arms. OPEN: the
         runtime model (is `resp` a pending future the select awaits vs timeout,
         or already-resolved?) — decide before building. UNCONFIRMED.
