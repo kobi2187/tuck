@@ -125,6 +125,40 @@ when Beef also compiles it).
     ones need an async-extern story. These two are the first things to settle
     when building. Actor Phase A/B code is committed + green; nothing here
     touched it.
+  BREAKTHROUGH (2026-07-23) — the async FOUNDATION IS PROVEN, on minicoro,
+  and ARSENAL2 ALREADY BUILT IT. User instinct vindicated: everything led
+  back to minicoro; build/reuse a reactor ON minicoro (not libdill).
+  - The libdill crash was libdill-SPECIFIC (its go-macro/setjmp fighting
+    Nim), NOT a general "Nim can't do foreign-stack coroutines" wall.
+    minicoro + Nim WORKS: a Nim coroutine yields on a minicoro stack and the
+    GC seq survives across the yield (PoC mco_yield: @[0,1,2,3]).
+  - CRITICAL BUILD FLAG: `--stackTrace:off --lineTrace:off` is MANDATORY for
+    coroutine code — Nim's stack-walking corrupts on the switched coro stack
+    (that was the teardown SIGABRT). With it off: clean, 13M switches/sec.
+    arsenal's own tests/test_coroutines.nim.cfg carries exactly these flags.
+    Tuck MUST emit these flags when building an async/actor program.
+  - arsenal2 (/home/kl/prog/arsenal2, --path:.../src) is a COMPLETE
+    cross-platform async-I/O runtime on minicoro, already built + tested:
+    coroutines/coroutine.nim (newCoroutine/resume/coroYield/destroy),
+    scheduler.nim (ready queue), fixed_async.nim (zero-alloc futures + await
+    across yields — test_fixed_async PASSES), io/eventloop.nim (std/selectors
+    reactor: waitForRead/waitForWrite suspend a coro, run() polls+resumes),
+    io/backends/{epoll,kqueue,iocp}.nim (Linux/BSD-mac/Windows), io/
+    async_socket.nim, channels/, nursery.nim, workstealing.nim.
+  - KEYSTONE PROVEN (PoC reactor_poc.nim): a coroutine suspended on a pipe fd
+    via loop.waitForRead, the reactor (epoll via std/selectors) detected
+    readiness and RESUMED the coroutine → got="hello". Real non-blocking I/O
+    + coroutine suspend/resume, end to end, no crash. This is the whole
+    Phase-C third leg, working.
+  - REVISED PLAN: Nim task backend = arsenal2's runtime (import it via --path,
+    like we do for minicoro). Beef backend = minicoro-beef (jazzbre) + port
+    the same reactor design (arsenal's is the reference impl) — SAME minicoro
+    characteristics both sides, symmetric. Codegen maps task→coroutine,
+    [io] call→waitForRead/await-on-fixed-future, on-select timeout→scheduler
+    deadline. NEXT: decide how tuck imports/vendors arsenal (path vs vendor),
+    then the [io]-call-site marking + async-extern story, then task codegen.
+    caveat: arsenal is the user's own, "half experimental" — verify each
+    slice as we wire it (as we've been doing).
   PHASES: A scheduler + send + waitUntil (DONE, ex 26 exit 55) → B dkSelect
   nodes + timers + `5s` lexing (ex 16) → C [io] yield (wire minicoro) → D
   transitionTo-in-handler (ex 20) → E spec §9 rewrite. Beef actors = ceiling
