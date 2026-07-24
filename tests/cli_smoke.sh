@@ -570,4 +570,12 @@ rc=0; "tests/.smoke_e30/out/m_30_async_read" || rc=$?
 [ "$rc" -eq 1 ] || { echo "FAIL: async-read example exit $rc, want 1"; exit 1; }
 rm -rf "tests/.smoke_e30"
 
+# fnsig (spec D#10c): a `:name` fn-ref fills a fnsig-typed slot and calling
+# through the slot runs the referenced fn. plus(40,2) via c.add -> exit 42.
+rm -rf "tests/.smoke_e31" && mkdir -p "tests/.smoke_e31"
+./tuck build examples/31-fnsig-callback.tuck -o:"tests/.smoke_e31/out" --root:"$(pwd)" > /dev/null
+rc=0; "tests/.smoke_e31/out/m_31_fnsig_callback" || rc=$?
+[ "$rc" -eq 42 ] || { echo "FAIL: fnsig example exit $rc, want 42"; exit 1; }
+rm -rf "tests/.smoke_e31"
+
 echo "cli smoke OK"

@@ -1459,6 +1459,29 @@ fn main() -> int [io]:
   return 0
 """
 
+# ---------- fnsig: named function signatures (spec D#10c) ----------
+expectOk "fnsig declares a named signature usable as a field type", """
+fnsig Adder = {a: int, b: int} -> {sum: int}
+
+type Calc = {op: Adder}
+"""
+
+expectOk "fnsig with a bare return type", """
+fnsig Predicate = {x: int} -> bool
+
+type Filter = {test: Predicate}
+"""
+
+expectError "a call through a fnsig slot checks arity", """
+fnsig Adder = {a: int, b: int} -> {sum: int}
+
+type Calc = {op: Adder}
+
+fn use({c: Calc}) -> int:
+  let r = {a: 1} c.op
+  return r.sum
+""", "Adder"
+
 # ---------- the AST is syntax; the semantic layer is separate ----------
 import sets
 import ../compiler/resolution

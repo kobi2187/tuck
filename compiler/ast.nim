@@ -294,6 +294,7 @@ type
     dkErrors  # global error policy declaration (spec 4.9)
     dkImport  # import <module> — loads <module>.tuck next to the importer
     dkSelect  # `on select:` — wait on multiple event sources (spec §9.3)
+    dkFnSig   # `fnsig NAME = {params} -> ret` — named function-signature type
 
   Decl* = ref object
     span*: Span
@@ -340,6 +341,12 @@ type
       taskReturnType*: Type
       taskEffects*: seq[EffectMarker]
       taskBody*: Expr
+    of dkFnSig:
+      # `fnsig NAME = {params} -> ret` — a named function-signature type (a
+      # named delegate). NAME becomes usable as a type for slots/callbacks;
+      # the checker validates calls through it (arity/param-types/ret).
+      sigParams*: seq[Param]
+      sigReturn*: Type
     of dkExpr:
       expr*: Expr
     of dkConst:
@@ -465,7 +472,7 @@ proc assignIds*(d: Decl, next: var uint32) =
     for h in d.handlers: assignIds(h, next)
   of dkSelect:
     for arm in d.selectArms: assignIds(arm.body, next)
-  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport: discard
+  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig: discard
 
 var globalNodeCounter: uint32 = 0
 
@@ -530,7 +537,7 @@ proc clearIds*(d: Decl) =
   of dkMixin: (for m in d.mixinMembers: clearIds(m))
   of dkActor: (for h in d.handlers: clearIds(h))
   of dkSelect: (for arm in d.selectArms: clearIds(arm.body))
-  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport: discard
+  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig: discard
 
 proc clearIds*(m: var Module) =
   for d in m.decls: clearIds(d)

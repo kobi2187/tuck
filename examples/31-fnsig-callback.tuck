@@ -1,0 +1,17 @@
+# fnsig — named function signatures (spec D#10c). A fnsig names a function
+# shape; a struct field of that type is a callback slot. A `:name` fn-ref fills
+# the slot, and calling through the slot runs the referenced fn. The checker
+# validates the call against the named signature — no Nim-level diagnostic.
+import sys
+
+fnsig Adder = {a: int, b: int} -> int
+
+type Calc = {add: Adder}
+
+fn plus({a: int, b: int}) -> int:
+  return a + b
+
+fn main() -> void [io]:
+  let c = {add: :plus} Calc
+  let r = {a: 40, b: 2} c.add
+  r sys::exit

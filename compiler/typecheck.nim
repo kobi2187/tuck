@@ -48,6 +48,7 @@ type
     transitionCtx: bool          # constructing THROUGH transitionTo: sealed
                                  # non-initial variants are legal there
     distinctNames: HashSet[string]   # distinct types: nominal, never widened
+    fnSigNames: HashSet[string]      # `fnsig NAME` — named function-signature types
     knownModules: HashSet[string]    # imported modules + qualified-pending prefixes
     currentErrTypes: seq[string]     # [error: A | B] of the fn being checked
     okNarrowed: HashSet[string]      # results guarded by `if x.ok` in scope:
@@ -986,6 +987,14 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     if viaTransition: tc.transitionCtx = true
     calleeT = tc.synthesize(e.callee)  # variant constructions carry their type
     tc.transitionCtx = prevCtx
+    # Calling THROUGH a fnsig-typed slot (`{args} c.op` where op: Adder):
+    # validate the args against the named signature and yield its return type.
+    let ct = tc.resolve(calleeT)
+    if ct != nil and ct.kind == tkNamed and ct.name in tc.fnSigNames:
+      let sig = tc.fnSigs[ct.name]
+      var bindings = initTable[string, Type]()
+      tc.checkCallArgs(ct.name, sig, e, bindings)
+      return sig.ret
   for a in e.args: discard tc.synthesize(a)
   calleeT
 
@@ -1398,6 +1407,11 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
           fail("Pending Error: '" & d.name & "' is implemented — remove it from the pending block", d.span)
         tc.implementedFns.incl(d.name)
     of dkTask: tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType, @[])
+    of dkFnSig:
+      # a named function-signature type: register its call shape under NAME and
+      # mark NAME as a fnsig so a call through a NAME-typed slot is validated.
+      tc.fnSigs[d.name] = (d.sigParams, d.sigReturn, @[])
+      tc.fnSigNames.incl(d.name)
     of dkPool:
       # spec 7.2: a pool exposes two ordinary fns. Registering them as normal
       # signatures means `Pool.acquire` resolves through the same path as any

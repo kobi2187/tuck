@@ -1570,6 +1570,18 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     if res == "":
       return ""
     return res
+  of dkFnSig:
+    # `fnsig NAME = {params} -> ret` → a Nim closure proc type. Named delegate
+    # for slots/callbacks; call shape already checked by the type checker.
+    var params: seq[string]
+    for prm in d.sigParams:
+      params.add(prm.name & ": " & genType(prm.typ))
+    let retStr = if d.sigReturn != nil and not
+                    (d.sigReturn.kind == tkNamed and d.sigReturn.name == "void"):
+                   genType(d.sigReturn)
+                 else: "void"
+    return "type " & d.name & "* = proc(" & params.join(", ") & "): " &
+           retStr & " {.closure.}\n"
   else:
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
 
@@ -1586,12 +1598,12 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
   # headers land in ctx.typeSection during pass 2 and join the type block.
   var typePart = ""
   for d in m.decls:
-    if d != nil and d.kind == dkType:
+    if d != nil and d.kind in {dkType, dkFnSig}:
       let code = ctx.genDecl(d)
       if code != "": typePart.add(code & "\n")
   var body = ""
   for d in m.decls:
-    if d == nil or d.kind == dkType: continue
+    if d == nil or d.kind in {dkType, dkFnSig}: continue
     let code = ctx.genDecl(d)
     if code != "":
       body.add(code & "\n")

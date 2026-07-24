@@ -1236,6 +1236,28 @@ proc parseTaskDecl(p: var Parser, sp: Span): Decl =
   return Decl(span: sp, kind: dkTask, name: name, taskParams: params, taskReturnType: retType, taskEffects: effects, taskBody: body)
 
 # type Name[T] [attrs] = alias | : body (fields / | variants / transitions / invariant:)
+# fnsig NAME = {params} -> ret — a named function-signature type (spec D#10c).
+# params read exactly like a fn's ({a: int, b: int}); ret accepts anything a fn
+# returns (a {struct}, a bare type, void, or !T/?T). NAME then usable as a type.
+proc parseFnSigDecl(p: var Parser, sp: Span): Decl =
+  discard p.advance()  # eat `fnsig`
+  let name = p.expect(tkIdent, "Expected fnsig name").value
+  discard p.expect(tkAssign)
+  # params: a brace record `{a: T, b: U}` (or `{}` for none) — reuse parseType,
+  # which yields a tkRecord, then lift its fields to named Params.
+  let paramsType = p.parseType()
+  var params: seq[Param]
+  if paramsType.kind == tkRecord:
+    for f in paramsType.fields:
+      params.add(Param(name: f.name, typ: f.typ, span: f.span))
+  else:
+    p.reportError("fnsig params must be a `{name: type, ...}` record")
+  discard p.expect(tkArrow)
+  let ret = p.parseType()
+  if p.current().kind == tkNewline:
+    discard p.advance()
+  return Decl(span: sp, kind: dkFnSig, name: name, sigParams: params, sigReturn: ret)
+
 proc parseTypeDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()
   let name = p.expect(tkIdent, "Expected type name").value
@@ -1743,6 +1765,9 @@ proc parseDecl*(p: var Parser): Decl =
 
   of tkTask:
     return p.parseTaskDecl(sp)
+
+  of tkFnsig:
+    return p.parseFnSigDecl(sp)
 
   of tkRegistry:
     return p.parseRegistryDecl(sp)
