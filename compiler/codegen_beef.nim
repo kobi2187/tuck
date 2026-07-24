@@ -873,6 +873,8 @@ proc genBeefExpr*(ctx: var BeefCodegenCtx, e: Expr): string =
     # emit a comment so the shape is visible but Beef never runs actors.
     return "/* actor send: " & e.sendActor & "." & e.sendHandler &
            " (Beef actor runtime not implemented) */"
+  of exkSelect:
+    return "/* on select (Beef async runtime not implemented) */"
   of exkImport:
     # imports are declarations; they never reach expression position
     return ""

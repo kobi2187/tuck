@@ -1,0 +1,17 @@
+# Operation timeout — spec §9.3. A task races an async I/O read against a
+# deadline with `on select`: whichever is ready first wins. This is the thing
+# that is impossible on blocking I/O — the timeout fires WHILE the read is
+# outstanding, because the [io] op is non-blocking (reactor + coroutine).
+
+extern:
+  fn openSource({ms: int}) -> {fd: int}   # an async read source (stays idle here)
+
+task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd     -> {}:  return {code: 1}   # data arrived first
+    | timeout 30  -> {}:  return {code: 2}   # 30ms deadline fired first
+
+fn main() -> int:
+  let src = {ms: 500} openSource       # source would take 500ms (never, here)
+  let r = {fd: src.fd} readOrGiveUp    # 30ms timeout wins -> code 2
+  return r.code

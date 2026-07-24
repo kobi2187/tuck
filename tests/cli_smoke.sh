@@ -552,4 +552,13 @@ rc=0; "tests/.smoke_e28/out/m_28_async_task" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: async-task example exit $rc, want 42"; exit 1; }
 rm -rf "tests/.smoke_e28"
 
+# operation timeout (spec §9.3): a task races an async read against a 30ms
+# deadline via `on select`; the read source stays idle so the timeout wins,
+# exit 2. This is the impossible-on-blocking-I/O case working for real.
+rm -rf "tests/.smoke_e29" && mkdir -p "tests/.smoke_e29"
+./tuck build examples/29-task-timeout.tuck -o:"tests/.smoke_e29/out" > /dev/null
+rc=0; "tests/.smoke_e29/out/m_29_task_timeout" || rc=$?
+[ "$rc" -eq 2 ] || { echo "FAIL: task-timeout example exit $rc, want 2"; exit 1; }
+rm -rf "tests/.smoke_e29"
+
 echo "cli smoke OK"

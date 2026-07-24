@@ -845,6 +845,28 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     # statement form: enqueue + notify on two lines at the current indent
     "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
       "))\n" & ind & "tuckNotifySend()"
+  of exkSelect:
+    # task `on select` (spec §9.3), first cut: exactly a `read <fd>` arm and a
+    # `timeout <ms>` arm race via tuckAwaitReadOrTimeout — true = fd readable
+    # (run the read body), false = deadline (run the timeout body).
+    var readArm, timeoutArm: ptr SelectArm = nil
+    for arm in e.selArms.mitems:
+      if arm.source == "read": readArm = addr arm
+      elif arm.source == "timeout": timeoutArm = addr arm
+    let ind = repeat("  ", ctx.indent)
+    if readArm != nil and timeoutArm != nil:
+      let fd = ctx.genExpr(readArm.arg)
+      let ms = ctx.genExpr(timeoutArm.arg)
+      ctx.indent += 1
+      let innerInd = repeat("  ", ctx.indent)
+      # arm bodies (a return/expr) don't self-indent — prepend the branch indent
+      let readBody = innerInd & ctx.genExpr(readArm.body)
+      let toBody = innerInd & ctx.genExpr(timeoutArm.body)
+      ctx.indent -= 1
+      "if tuckAwaitReadOrTimeout(" & fd & ", " & ms & "):\n" & readBody &
+        "\n" & ind & "else:\n" & toBody
+    else:
+      ind & "discard  # select: only read+timeout arms supported (first cut)"
   of exkImport:
     # imports are declarations; they never reach expression position
     ""
@@ -899,7 +921,7 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
     elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
                            exkWhile, exkBreak, exkContinue,
-                           exkAssign, exkBlock} and
+                           exkAssign, exkBlock, exkSelect, exkSend} and
        not (lastS.kind == exkVar and lastS.name == "..."):
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
 

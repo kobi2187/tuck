@@ -118,7 +118,8 @@ type
   # `on select` arm (spec §9.3). Phase B: message sources only — `source` is a
   # message handler name; timer/timeout/shutdown sources come later.
   SelectArm* = object
-    source*: string      # message handler name to wait on
+    source*: string      # actor: message handler name. task: "read"/"timeout".
+    arg*: Expr           # task select: the fd (read) or ms (timeout); else nil
     binding*: seq[Param] # `-> {x, y}` payload binding (may be empty)
     body*: Expr
     span*: Span
@@ -177,6 +178,7 @@ type
     exkRaise
     exkImport
     exkSend      # `ActorType send handler {payload}` — enqueue to an actor
+    exkSelect    # task-body `on select:` — wait on read/timeout branches
 
   Expr* = ref object
     id*: NodeId
@@ -251,6 +253,8 @@ type
       sendActor*: string   # the actor TYPE name (singleton target)
       sendHandler*: string # the `on <handler>` name
       sendPayload*: Expr    # the `{...}` struct literal, or nil
+    of exkSelect:
+      selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
 
   LitKind* = enum
     lkInt, lkFloat, lkStr, lkBool, lkUnit
@@ -436,6 +440,9 @@ proc assignIds*(e: Expr, next: var uint32) =
     assignIds(e.raiseVal, next)
   of exkSend:
     assignIds(e.sendPayload, next)
+  of exkSelect:
+    for arm in e.selArms:
+      assignIds(arm.arg, next); assignIds(arm.body, next)
 
 proc assignIds*(d: Decl, next: var uint32) =
   ## Every Expr reachable from a declaration.
@@ -505,6 +512,8 @@ proc clearIds*(e: Expr) =
   of exkReturn: clearIds(e.returnVal)
   of exkRaise: clearIds(e.raiseVal)
   of exkSend: clearIds(e.sendPayload)
+  of exkSelect:
+    for arm in e.selArms: (clearIds(arm.arg); clearIds(arm.body))
 
 proc clearIds*(d: Decl) =
   if d == nil: return

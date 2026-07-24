@@ -1283,6 +1283,15 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
         fail("Type Error: send to '" & e.sendActor & "." & e.sendHandler &
              "' is missing field '" & p.name & "'", e.span)
     Type(span: e.span, kind: tkNamed, name: "unit")
+  of exkSelect:
+    # task `on select` (spec §9.3): each arm waits on a source (read fd /
+    # timeout ms) then runs its body. Type the args (fd/ms are ints) and the
+    # bodies; the select's value is a branch outcome — leave it unknown, the
+    # bodies carry the returns.
+    for arm in e.selArms:
+      if arm.arg != nil: discard tc.synthesize(arm.arg)
+      discard tc.synthesize(arm.body)
+    unknownType(e.span)
   of exkQualified, exkImport:
     unknownType(e.span)
 

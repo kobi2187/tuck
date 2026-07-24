@@ -106,6 +106,8 @@ proc toString*(e: Expr): string =
   of exkSend:
     let p = if e.sendPayload != nil: " " & e.sendPayload.toString() else: ""
     return e.sendActor & " send " & e.sendHandler & p
+  of exkSelect:
+    return "on select (" & $e.selArms.len & " arms)"
 
 type
   Parser* = object
@@ -787,28 +789,51 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
   return left
 
 proc parseSelectExpr(p: var Parser): Expr =
+  # task-body `on select:` (spec §9.3) — direct exkSelect node. Each arm is
+  # `| <source> <arg> -> {bind}: body`; source is `read <fd>` (wait readable)
+  # or `timeout <ms>` (deadline). Replaces the old exkMatch-fake-subject hack.
   let sp = p.getSpan()
   discard p.expect(tkOn)
   discard p.expect(tkSelect)
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
   discard p.expect(tkIndent)
-  var arms: seq[MatchArm]
+  var arms: seq[SelectArm]
   while p.current().kind != tkDedent and p.current().kind != tkEOF:
     if p.current().kind == tkNewline:
       discard p.advance()
       continue
+    let armSp = p.getSpan()
     discard p.expect(tkPipe)
-    let pat = p.parsePattern()
+    var source = p.expect(tkIdent, "Expected a select source").value
+    # dotted sources (`resp.ok`, `timeout.5s`) — consume `.<part>` runs into an
+    # opaque source string (given meaning later). `read`/`timeout` stay bare and
+    # carry an arg.
+    while p.current().kind == tkDot:
+      source.add(p.advance().value)                    # the dot
+      if p.current().kind in {tkIdent, tkIntLit}:
+        source.add(p.advance().value)
+    # the source's argument: fd for read, ms for timeout (a primary expr)
+    var arg: Expr = nil
+    if p.current().kind != tkArrow and p.current().kind != tkColon:
+      arg = p.parsePrimaryExpr()
     discard p.expect(tkArrow)
-    discard p.parsePattern()
+    var binding: seq[Param]
+    if p.current().kind == tkLBrace:
+      discard p.advance()
+      while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+        let bn = p.expect(tkIdent, "Expected binding name").value
+        binding.add(Param(name: bn, typ: nil, span: armSp))
+        if p.current().kind == tkComma: discard p.advance()
+      discard p.expect(tkRBrace)
     discard p.expect(tkColon)
     let body = p.parseExpr()
-    arms.add(MatchArm(pattern: pat, guard: nil, body: body, span: p.getSpan()))
+    arms.add(SelectArm(source: source, arg: arg, binding: binding,
+                       body: body, span: armSp))
     if p.current().kind == tkNewline:
       discard p.advance()
   discard p.expect(tkDedent)
-  return Expr(span: sp, kind: exkMatch, subject: Expr(span: sp, kind: exkVar, name: "select"), arms: arms)
+  return Expr(span: sp, kind: exkSelect, selArms: arms)
 
 proc parseExpr*(p: var Parser): Expr =
   let sp = p.getSpan()

@@ -47,6 +47,28 @@ proc tuckAwaitWrite*(fd: TuckFd) =
   ## Suspend the current task until `fd` is writable.
   gLoop.waitForWrite(fd)
 
+proc tuckAwaitReadOrTimeout*(fd: TuckFd, timeoutMs: int): bool =
+  ## Suspend until `fd` is readable OR timeoutMs elapses. true = readable,
+  ## false = timed out. The operation-timeout primitive (spec §9.3).
+  gLoop.waitForReadOrTimeout(fd, timeoutMs)
+
+# --- a demo async source ----------------------------------------------------
+# Stands in for a real async I/O source (socket recv, etc.) until the std net
+# externs are async. Lets an `on select { read fd | timeout n }` be exercised.
+# Single-threaded: NO OS thread (that would fight the coroutine GC). The read
+# end simply never becomes ready on its own — a shorter `timeout` arm wins,
+# which is exactly the operation-timeout scenario. `ms` records the intended
+# data-arrival for callers that want to compare, but is not fed here.
+import std/posix
+
+proc openSource*(ms: int): tuple[fd: int] =
+  ## Open a pipe and return its read fd. It stays unreadable, so a task racing
+  ## `read fd` against a `timeout` always sees the timeout fire. (`ms` is the
+  ## nominal data-arrival, not fed here — a placeholder async source.)
+  var fds: array[2, cint]
+  discard pipe(fds)
+  (fd: fds[0].int)
+
 proc tuckRun*() =
   ## Drive everything — scheduler + I/O reactor — until all tasks finish.
   ## Unifies arsenal's split scheduler/eventloop into one call.
