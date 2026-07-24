@@ -98,6 +98,33 @@ when Beef also compiles it).
     choosing. NEXT: research Beef concurrency; decide the fork. std/selectors
     IS the reactor for the Nim side regardless (stdlib, not hard). The hard
     part is portable suspension that both backends share.
+  RESOLUTION (2026-07-23, user ruling): STEP BACK from actors/schedulers/C
+  coroutines. Implement TASKS + async via EACH BACKEND'S NATIVE async — Nim
+  → std/asyncdispatch, Beef → its own. Fork option (b), per-backend native.
+  No FFI, no foreign stack, no crash class. Tuck surface identical; only
+  codegen differs per backend.
+  - PROVEN by PoC (scratchpad/async_poc.nim, async_timeout.nim): asyncdispatch
+    gives (1) real concurrency — two tasks with 200ms [io] each finish in
+    ~200ms not 400 — and (2) REAL operation-timeout via withTimeout — a
+    deadline fires on a RUNNING [io] op (the thing impossible on blocking
+    I/O). async/await/Future all codegen-emitted, INVISIBLE in Tuck source
+    ("looks like sync", user's requirement). Cross-platform (asyncdispatch =
+    IOCP on Windows).
+  - MAPPING codegen must emit (Nim): `task f({x}) -> !T [io]` →
+    `proc f(x): Future[T] {.async.}`; each [io] call → `await <call>`;
+    calling a task → `await`; main → `waitFor`; `!T` → Future[TuckResult[T]];
+    task `on select` timeout.Nms → withTimeout.
+  - SCOPE agreed: tasks via asyncdispatch + operation-timeout select FIRST;
+    actors (Phase A/B hand scheduler) LEFT ALONE for now, relationship
+    deferred. Beef async = later (parity ceiling meanwhile).
+  - OPEN prereq for the build: codegen must know a call is [io] to insert
+    `await`. Effect info lives in semantics.nim's checker (declared table) but
+    is NOT yet surfaced to codegen. Need: mark [io] call sites (callee's
+    declared effects) so codegen awaits them. Also: [io] externs (std/http
+    etc) must return Future[T] — today std/* externs are blocking; the async
+    ones need an async-extern story. These two are the first things to settle
+    when building. Actor Phase A/B code is committed + green; nothing here
+    touched it.
   PHASES: A scheduler + send + waitUntil (DONE, ex 26 exit 55) → B dkSelect
   nodes + timers + `5s` lexing (ex 16) → C [io] yield (wire minicoro) → D
   transitionTo-in-handler (ex 20) → E spec §9 rewrite. Beef actors = ceiling
