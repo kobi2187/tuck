@@ -112,6 +112,13 @@ proc genType*(t: Type): string =
   else:
     "pointer"
 
+proc taskRetType(ctx: CodegenCtx, name: string): string =
+  ## The Nim return type of a declared task, for its result slot.
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkTask and d.name == name:
+      return if d.taskReturnType != nil: genType(d.taskReturnType) else: "void"
+  "void"
+
 # Field type emission. Nim forbids anonymous enums in field positions, so an
 # inline sum type is hoisted to a named enum `<Parent><Field>Kind`.
 proc fieldType(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
@@ -198,6 +205,10 @@ proc lookupFnParams(m: Module, name: string): seq[string] =
       var res: seq[string]
       for p in d.fnParams:
         res.add(p.name)
+      return res
+    if d.kind == dkTask and d.name == name:
+      var res: seq[string]
+      for p in d.taskParams: res.add(p.name)
       return res
     # member fns (mixin buckets, manager types, externs) have concrete
     # exploded params. Pending fns stay excluded: their stub takes one
@@ -715,6 +726,35 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     ctx.indent = oldIndent
     ind & "if " & condStr & ":\n" & thenStr & elseStr
   of exkAssign:
+    # `let r = {args} task` — a RESULT-bound task call: schedule the task with
+    # a result slot and await it (the caller yields if it's a coroutine, or
+    # drives the runtime if it's main). Distinct from a statement-position task
+    # call, which is fire-and-forget (concurrent).
+    if e.assignVal != nil and e.assignVal.kind == exkCall and
+       e.assignVal.callee != nil and e.assignVal.callee.kind == exkVar and
+       ctx.isTaskName(e.assignVal.callee.name):
+      let tname = e.assignVal.callee.name
+      let ret = ctx.taskRetType(tname)
+      # emit the raw call expression (args) by temporarily disabling the
+      # fire-and-forget spawn wrap: build the call directly
+      var argParts: seq[string]
+      if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
+        let expected = lookupFnParams(ctx.module, tname)
+        for pn in expected:
+          for f in e.assignVal.args[0].fields:
+            if f[0] == pn: argParts.add(ctx.genExpr(f[1])); break
+      let rawCall = tname & "(" & argParts.join(", ") & ")"
+      let slot = "tuckSlot" & $ctx.tmpCounter
+      ctx.tmpCounter.inc
+      let spawn = "(let " & slot & " = newAsyncResult[" & ret & "](); " &
+                  "spawnResult(" & slot & ", proc(): " & ret &
+                  " {.closure, gcsafe.} = ({.cast(gcsafe).}: " & rawCall &
+                  ")); awaitResult(" & slot & "))"
+      if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
+         e.target.name notin ctx.fieldVars:
+        ctx.definedVars.incl(e.target.name)
+        return "var " & e.target.name & " = " & spawn
+      return ctx.genExpr(e.target) & " = " & spawn
     let targetStr = ctx.genExpr(e.target)
     let valStr = ctx.genExpr(e.assignVal)
     if e.target.kind == exkVar:
