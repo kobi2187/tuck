@@ -1,4 +1,22 @@
-# std/time — clocks. Implemented by tuck_rt.
+# std/time — clocks + duration units. Implemented by tuck_rt.
+#
+# Duration types are distinct over their bit width (spec 4.2): same bits at
+# runtime, incompatible at compile time. `ms`/`us`/`s` are ordinary helper
+# fns, and `5.ms` is postfix application — no unit magic in the compiler.
+# Used by `on select`'s `timeout {5.ms}` arm.
+distinct Milliseconds = u32
+distinct Microseconds = u32
+distinct Seconds = u32
+
+fn ms(value: u32) -> Milliseconds:
+  value Milliseconds
+
+fn us(value: u32) -> Microseconds:
+  value Microseconds
+
+fn s(value: u32) -> Seconds:
+  value Seconds
+
 extern:
   fn nowMs() -> {ms: u64} [io]
   fn sleepMs({ms: u32}) -> void [io, may_block]

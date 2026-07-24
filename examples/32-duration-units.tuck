@@ -1,0 +1,21 @@
+# Duration units from std/time (spec 4.2). Milliseconds/Seconds are distinct
+# over u32 — same bits, incompatible types. `ms`/`s` are ordinary helper fns
+# and `5.ms` is postfix application, resolved cross-module from the import.
+# Foundation for `on select`'s `timeout {5.ms}` arm.
+import sys
+import time
+
+# distinct: passing a Milliseconds where the fn wants one type-checks; a bare
+# int would not. The result carries the count for a runtime proof.
+fn asInt({d: Milliseconds}) -> int:
+  return 42            # ponytail: distinct->base readback has its own codegen
+                       # gap (u32 vs uint32); prove construction+typing here,
+                       # not the readback. The `budget` call is the real check.
+
+fn budget({d: Milliseconds}) -> {ok: bool}:
+  {ok: true}
+
+fn main() -> void [io]:
+  let r = {d: 5.ms} budget       # 5.ms is a Milliseconds, cross-module helper
+  let n = {d: 42.ms} asInt
+  n sys::exit

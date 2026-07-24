@@ -578,4 +578,12 @@ rc=0; "tests/.smoke_e31/out/m_31_fnsig_callback" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: fnsig example exit $rc, want 42"; exit 1; }
 rm -rf "tests/.smoke_e31"
 
+# duration units (spec 4.2): std/time Milliseconds distinct + `ms` helper,
+# `5.ms` resolved cross-module from the import. asInt(42.ms) -> exit 42.
+rm -rf "tests/.smoke_e32" && mkdir -p "tests/.smoke_e32"
+./tuck build examples/32-duration-units.tuck -o:"tests/.smoke_e32/out" --root:"$(pwd)" > /dev/null
+rc=0; "tests/.smoke_e32/out/m_32_duration_units" || rc=$?
+[ "$rc" -eq 42 ] || { echo "FAIL: duration-units example exit $rc, want 42"; exit 1; }
+rm -rf "tests/.smoke_e32"
+
 echo "cli smoke OK"

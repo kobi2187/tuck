@@ -233,6 +233,15 @@ proc lookupFnParams(m: Module, name: string): seq[string] =
           return res
   return @[]
 
+proc isKnownFn(ctx: CodegenCtx, name: string): bool =
+  ## A fn (or task) with this name in the current module OR any imported one —
+  ## imported helpers like time's `ms` ride Nim's namespacing, so `5.ms`
+  ## resolves to a real call cross-module, not a dropped field read.
+  if lookupFnParams(ctx.module, name).len > 0: return true
+  for _, im in ctx.realModules:
+    if lookupFnParams(im, name).len > 0: return true
+  false
+
 # module::fn — a real imported module rides Nim's own namespacing; a
 # sketch-pending qualified name maps to its mangled stub (genPendingStub).
 proc genQualified(ctx: CodegenCtx, e: Expr): string =
@@ -608,7 +617,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
        e.receiver.name == "input" and ctx.currentParams.len > 0:
       return e.fieldName
     if e.receiver != nil and e.receiver.kind == exkLit and e.receiver.litKind in {lkInt, lkFloat}:
-      if lookupFnParams(ctx.module, e.fieldName).len > 0:
+      if ctx.isKnownFn(e.fieldName):
         e.fieldName & "(" & ctx.genExpr(e.receiver) & ")"
       else:
         ctx.genExpr(e.receiver)
