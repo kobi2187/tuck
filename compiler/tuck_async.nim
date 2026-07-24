@@ -52,21 +52,30 @@ proc tuckAwaitReadOrTimeout*(fd: TuckFd, timeoutMs: int): bool =
   ## false = timed out. The operation-timeout primitive (spec §9.3).
   gLoop.waitForReadOrTimeout(fd, timeoutMs)
 
+proc tuckSleep*(ms: int) =
+  ## Cooperative sleep: suspend this coroutine for `ms`, driven by the reactor.
+  gLoop.waitTimer(ms)
+
 # --- a demo async source ----------------------------------------------------
-# Stands in for a real async I/O source (socket recv, etc.) until the std net
-# externs are async. Lets an `on select { read fd | timeout n }` be exercised.
-# Single-threaded: NO OS thread (that would fight the coroutine GC). The read
-# end simply never becomes ready on its own — a shorter `timeout` arm wins,
-# which is exactly the operation-timeout scenario. `ms` records the intended
-# data-arrival for callers that want to compare, but is not fed here.
+# A REAL non-blocking source: a pipe whose write end is fed by a writer
+# coroutine after `ms` (a reactor-driven sleep, no OS thread — that would fight
+# the coroutine GC). So the read fd genuinely becomes readable at `ms`, and a
+# task racing `read fd` against a `timeout N` sees the true winner: data if
+# ms < N (read arm), timeout if ms > N. This exercises real suspend/resume:
+# the coroutine parks on the fd, the reactor sees it ready, resumes it.
 import std/posix
 
 proc openSource*(ms: int): tuple[fd: int] =
-  ## Open a pipe and return its read fd. It stays unreadable, so a task racing
-  ## `read fd` against a `timeout` always sees the timeout fire. (`ms` is the
-  ## nominal data-arrival, not fed here — a placeholder async source.)
+  ## Open a pipe, arm a writer coroutine to feed one byte after `ms`, and
+  ## return the read fd. The fd becomes readable at `ms` — a real async source.
   var fds: array[2, cint]
   discard pipe(fds)
+  let wr = fds[1]
+  tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    tuckSleep(ms)
+    var b: byte = 1
+    discard write(wr, addr b, 1)
+    discard close(wr)))
   (fd: fds[0].int)
 
 proc tuckRun*() =

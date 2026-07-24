@@ -1,0 +1,17 @@
+# Real async read winning the race — spec §9.3. Same mechanism as 29, opposite
+# outcome: the async source delivers data BEFORE the timeout, so the `read fd`
+# arm fires. This proves genuine non-blocking I/O: the task suspends on the fd,
+# the reactor sees it become readable, and resumes the coroutine.
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]   # an async read source
+
+task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd     -> {}:  return {code: 1}   # data arrived first
+    | timeout 100 -> {}:  return {code: 2}   # 100ms deadline
+
+fn main() -> int:
+  let src = {ms: 5} openSource         # data arrives after 5ms
+  let r = {fd: src.fd} readOrGiveUp    # read wins the 100ms timeout -> code 1
+  return r.code

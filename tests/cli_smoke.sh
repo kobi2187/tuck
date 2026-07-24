@@ -552,13 +552,22 @@ rc=0; "tests/.smoke_e28/out/m_28_async_task" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: async-task example exit $rc, want 42"; exit 1; }
 rm -rf "tests/.smoke_e28"
 
-# operation timeout (spec §9.3): a task races an async read against a 30ms
-# deadline via `on select`; the read source stays idle so the timeout wins,
-# exit 2. This is the impossible-on-blocking-I/O case working for real.
+# operation timeout (spec §9.3): a task races a REAL async read (data at 500ms)
+# against a 30ms deadline via `on select`; the timeout wins, exit 2. This is the
+# impossible-on-blocking-I/O case working for real.
 rm -rf "tests/.smoke_e29" && mkdir -p "tests/.smoke_e29"
 ./tuck build examples/29-task-timeout.tuck -o:"tests/.smoke_e29/out" > /dev/null
 rc=0; "tests/.smoke_e29/out/m_29_task_timeout" || rc=$?
 [ "$rc" -eq 2 ] || { echo "FAIL: task-timeout example exit $rc, want 2"; exit 1; }
 rm -rf "tests/.smoke_e29"
+
+# async read WINS (spec §9.3): same mechanism, data arrives at 5ms and beats the
+# 100ms timeout, exit 1. Proves the read fd genuinely became ready and resumed
+# the suspended coroutine — real non-blocking I/O, not just the timeout arm.
+rm -rf "tests/.smoke_e30" && mkdir -p "tests/.smoke_e30"
+./tuck build examples/30-async-read.tuck -o:"tests/.smoke_e30/out" > /dev/null
+rc=0; "tests/.smoke_e30/out/m_30_async_read" || rc=$?
+[ "$rc" -eq 1 ] || { echo "FAIL: async-read example exit $rc, want 1"; exit 1; }
+rm -rf "tests/.smoke_e30"
 
 echo "cli smoke OK"

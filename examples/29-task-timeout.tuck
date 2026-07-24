@@ -12,6 +12,6 @@ task readOrGiveUp({fd: int}) -> {code: int} [io]:
     | timeout 30  -> {}:  return {code: 2}   # 30ms deadline fired first
 
 fn main() -> int:
-  let src = {ms: 500} openSource       # source would take 500ms (never, here)
-  let r = {fd: src.fd} readOrGiveUp    # 30ms timeout wins -> code 2
+  let src = {ms: 500} openSource       # data really arrives after 500ms
+  let r = {fd: src.fd} readOrGiveUp    # 30ms timeout wins first -> code 2
   return r.code
