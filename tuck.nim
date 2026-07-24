@@ -247,28 +247,23 @@ when isMainModule:
         echo "OK (", elapsedMs(t0), ")"
         quit(0)
       let mainNim = outDir / (base & ".nim")
-      # Actor boot: start the scheduler daemon and register every declared
-      # actor BEFORE main runs. main then owns the lifecycle — it runs
-      # alongside the scheduler and ends the program itself (a value-returning
-      # main IS the exit code). If main needs to wait for actor work, it calls
-      # Scheduler.waitUntil {pred: :done} in its own body (spec §9).
+      # ONE Tuck runtime (compiler/tuck_async, arsenal engine): actors AND tasks
+      # are cooperative coroutines. Any program with actors or tasks imports it,
+      # inits it, registers its actor singletons before main, and — for tasks —
+      # drives to completion after main. Actors are daemons; main owns the
+      # lifecycle and waits on public state via scheduler::waitUntil.
+      let usesRuntime = actorNames.len > 0 or hasTasks
       var boot = ""
-      if actorNames.len > 0:
-        boot = "  tuckSchedulerStart()\n"
-        for a in actorNames: boot.add("  registerActor" & a & "()\n")
-      # Async tasks: emitted code imports the tuck_async runtime shim, and main
-      # drives the event loop. tuckAsyncInit before any spawn; tuckRun after
-      # main's own work so spawned tasks finish (spec §9.2).
       var asyncInit = ""
       var asyncDrive = ""
-      if hasTasks:
+      if usesRuntime:
         let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
         writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
         asyncInit = "  tuckAsyncInit()\n"
-        asyncDrive = "\n  tuckRun()"
-      # a value-returning main IS the process exit code. With tasks, main runs,
-      # then tuckRun() drives spawned tasks to completion before exiting (so
-      # the return-as-exit-code path applies AFTER the drive).
+        for a in actorNames: boot.add("  registerActor" & a & "()\n")
+        if hasTasks: asyncDrive = "\n  tuckRun()"
+      # a value-returning main IS the process exit code. When the runtime drives
+      # tasks after main, keep main's return as the exit code via mainRc.
       let mainCall =
         if hasTasks and mainReturns: "let mainRc = main()"
         elif mainReturns: "quit(main())"
@@ -290,7 +285,7 @@ when isMainModule:
       # Async programs need arsenal on the path and Nim's stack-walker OFF
       # (it corrupts the switched coroutine stack — mandatory, see tuck_async).
       var asyncFlags = ""
-      if hasTasks:
+      if usesRuntime:
         asyncFlags = " --stackTrace:off --lineTrace:off " &
                      "--path:" & quoteShell("/home/kl/prog/arsenal2/src") & " "
       let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &

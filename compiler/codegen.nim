@@ -1524,12 +1524,21 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
   for d in m.decls:
     if d != nil and d.kind == dkMixin and d.name == "extern":
       var hasRtExtern = false
+      var hasAsyncExtern = false
       for mem in d.mixinMembers:
         if mem.kind == dkFn and mem.isExtern and mem.externHeader == "":
           hasRtExtern = true
-      if hasRtExtern:
+          # scheduler externs (waitUntil, ...) are implemented by the Tuck
+          # runtime (tuck_async), not tuck_rt — re-export it so importers reach
+          # <module>.<fn>.
+          if mem.name in ["waitUntil"]: hasAsyncExtern = true
+      if hasRtExtern and not hasAsyncExtern:
         res.add("export tuck_rt\n")
-        break
+      if hasAsyncExtern:
+        # tuck_async sits beside tuck_rt; derive its import from rtImport.
+        let asyncImp = rtImport[0 ..< rtImport.len - "tuck_rt".len] & "tuck_async"
+        res.add("import " & asyncImp & "\nexport tuck_async\n")
+      if hasRtExtern or hasAsyncExtern: break
   for d in m.decls:
     if d != nil and d.kind == dkImport and d.name in realModules:
       res.add("import " & d.name & "\n")
