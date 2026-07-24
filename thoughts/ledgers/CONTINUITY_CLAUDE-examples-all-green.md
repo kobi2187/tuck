@@ -199,17 +199,33 @@ when Beef also compiles it).
   - CEILING/COSMETIC: arsenal's coroutine.nim pulls backend.nim→libaco, unused,
     giving a benign "missing .note.GNU-stack / executable stack" linker
     warning. Importing minicoro.nim directly (not coroutine.nim) would drop it.
-  REMAINING Phase C (todo #4, #5):
-  - #4 task RESULT model: tasks return !T; `let r = {args} fetch` must yield the
-    caller the result once the task completes (result slot / arsenal
-    FixedFuture; caller awaits). Today task calls are fire-and-forget (discard).
-  - #5 OPERATION TIMEOUT (headline): task-side `on select` with timeout.Nms →
-    scheduler deadline racing a REAL async I/O op (non-blocking read via
-    tuckAwaitRead on an fd). Also fixes: local `extern:` block fns don't
-    register [io] effects (semantics.nim only registers dkFn/dkTask/dkActor —
-    a local extern's fns aren't in `declared`, so async-marking misses them);
-    and replaces the leftover parseSelectExpr exkMatch hack (task-position
-    select) with a proper node.
+  UNIFIED (2026-07-24, todo #6 DONE): actors + tasks now share ONE Tuck
+  runtime (compiler/tuck_async) over arsenal — actors are cooperative
+  COROUTINES (loop drain-then-yield), not an OS-thread scheduler. tuck_rt's
+  Scheduler/schedulerLoop/tuckSchedulerStart removed. Single-thread → no locks
+  needed. tuckStartActor/tuckNotifySend/waitUntil reshaped into tuck_async;
+  the std `scheduler` extern module re-exports tuck_async. tuck build: any
+  program with actors OR tasks imports tuck_async + arsenal --path +
+  --stackTrace:off/--lineTrace:off. Verified 26/27/28 exit 55/55/42.
+  TASK RESULTS (2026-07-24, todo #4 DONE): `let r = {args} task` → newAsyncResult
+  + spawnResult + awaitResult (caller yields if coroutine, else pumps runtime).
+  Statement-position task call stays fire-and-forget. lookupFnParams now covers
+  dkTask. Example 28 = idiomatic result form (base*2 → res.r=42, no sys::exit).
+  REMAINING Phase C (todo #5 — OPERATION TIMEOUT, the headline):
+  - KEYSTONE PROVEN (scratchpad/timeout_poc.nim): a coroutine waits on an fd
+    OR a deadline via std/selectors registerTimer (timerfd/EVFILT_TIMER);
+    timeout fires when no I/O (outcome=timeout). No blocking, no timer wheel —
+    the reactor's select() resolves both. So operation-timeout IS buildable.
+  - REMAINING to wire: (a) waitReadOrTimeout in tuck_async over registerTimer;
+    (b) a REAL async I/O extern (non-blocking read via tuckAwaitRead on an fd)
+    to race; (c) language: task-side `on select` with `timeout.Nms` → the
+    runtime call, replacing the leftover parseSelectExpr exkMatch hack
+    (parser.nim ~789) with a proper node + Nms duration handling; (d) FIX:
+    local `extern:` block fns don't register [io] effects — semantics.nim
+    verifyModuleEffects only registers dkFn/dkTask/dkActor, so a local
+    extern's inner fns aren't in `declared` and async-marking misses them
+    (a task calling a local [io] extern won't yield). Each is de-risked; this
+    is the last Phase-C feature.
   PHASES: A scheduler + send + waitUntil (DONE, ex 26 exit 55) → B dkSelect
   nodes + timers + `5s` lexing (ex 16) → C [io] yield (wire minicoro) → D
   transitionTo-in-handler (ex 20) → E spec §9 rewrite. Beef actors = ceiling
