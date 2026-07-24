@@ -6,7 +6,7 @@
 # tree for its target without carrying (or losing) semantic residue: ids
 # survive the copy, so these lookups still resolve.
 
-import tables
+import tables, sets
 import ast
 
 type
@@ -18,6 +18,8 @@ type
     calls*: Table[NodeId, Expr]
     types*: Table[NodeId, Type]        # what the checker inferred
     shortcuts*: Table[NodeId, string]  # errors-policy drop sites
+    asyncCalls*: HashSet[NodeId]       # call sites whose callee is [io] —
+                                       # codegen awaits/yields them (async)
 
 proc ensureId*(e: Expr) =
   ## Nodes minted after the parse boundary (checker-synthesized calls) have
@@ -38,6 +40,16 @@ proc call*(r: Resolution, e: Expr): Expr =
 proc hasCall*(r: Resolution, e: Expr): bool =
   e != nil and e.id.isSet and r.calls.hasKey(e.id)
 
+proc markAsync*(r: var Resolution, e: Expr) =
+  ## Flag a call site as async — its callee carries [io], so codegen emits the
+  ## suspend/await transform (the effect marker IS the async annotation).
+  if e == nil: return
+  ensureId(e)
+  r.asyncCalls.incl(e.id)
+
+proc isAsync*(r: Resolution, e: Expr): bool =
+  e != nil and e.id.isSet and e.id in r.asyncCalls
+
 # The program-wide semantic layer. The compiler processes one program per
 # run, so a single instance is the honest model; passing it through every
 # signature in checker, lowering and both backends would be pure ceremony.
@@ -45,12 +57,14 @@ proc hasCall*(r: Resolution, e: Expr): bool =
 # suites) never see a previous program's entries.
 var semLayer* = Resolution(calls: initTable[NodeId, Expr](),
                             types: initTable[NodeId, Type](),
-                            shortcuts: initTable[NodeId, string]())
+                            shortcuts: initTable[NodeId, string](),
+                            asyncCalls: initHashSet[NodeId]())
 
 proc resetResolution*() =
   semLayer = Resolution(calls: initTable[NodeId, Expr](),
                             types: initTable[NodeId, Type](),
-                            shortcuts: initTable[NodeId, string]())
+                            shortcuts: initTable[NodeId, string](),
+                            asyncCalls: initHashSet[NodeId]())
 
 proc setStepCall*(r: var Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call

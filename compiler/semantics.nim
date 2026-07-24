@@ -1,5 +1,6 @@
 # compiler/semantics.nim
 import ast, tables, sets, strutils
+import resolution
 
 type
   SemanticError* = object of ValueError
@@ -43,7 +44,12 @@ proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
     
     let calleeName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name else: ""
     if calleeName != "":
-      res = unionEffects(res, c.getDeclaredEffects(calleeName))
+      let calleeEffects = c.getDeclaredEffects(calleeName)
+      res = unionEffects(res, calleeEffects)
+      # The [io] marker IS the async annotation: a call to an [io] fn is a
+      # suspend point. Flag the call site so codegen emits the async transform.
+      if emIo in calleeEffects:
+        semLayer.markAsync(e)
   of exkStruct:
     for f in e.fields:
       res = unionEffects(res, c.synthesizeExpr(f[1]))
