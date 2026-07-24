@@ -542,4 +542,14 @@ rc=0; "tests/.smoke_e27/out/m_27_actor_select" || rc=$?
 [ "$rc" -eq 55 ] || { echo "FAIL: actor-select example exit $rc, want 55"; exit 1; }
 rm -rf "tests/.smoke_e27"
 
+# async task (spec §9.2, Phase C): a task is an async coroutine, [io] calls are
+# implicit yields, calling it schedules it, the runtime drives to completion.
+# compute base*2 across two [io] yields, exit 42. (Not in nimCheckExpected —
+# needs arsenal on the path + --stackTrace:off, which `tuck build` supplies.)
+rm -rf "tests/.smoke_e28" && mkdir -p "tests/.smoke_e28"
+./tuck build examples/28-async-task.tuck -o:"tests/.smoke_e28/out" > /dev/null
+rc=0; "tests/.smoke_e28/out/m_28_async_task" || rc=$?
+[ "$rc" -eq 42 ] || { echo "FAIL: async-task example exit $rc, want 42"; exit 1; }
+rm -rf "tests/.smoke_e28"
+
 echo "cli smoke OK"

@@ -1,0 +1,21 @@
+# Task that RUNS — spec §9.2. A task is an async coroutine: [io] calls are
+# implicit yield points (the effect marker IS the async annotation — no
+# async/await keyword). Calling a task schedules it; main drives the scheduler
+# to completion via the runtime. The task ends the program with its result.
+
+import scheduler
+import sys
+
+fn stepIo({n: int}) -> {v: int} [io]:
+  return {v: n}                 # stands in for a real async I/O op
+
+task compute({base: int}) -> {r: int} [io]:
+  let a = {n: base} stepIo      # [io] -> yield
+  let b = {n: base} stepIo      # [io] -> yield
+  let total = a.v + b.v         # base*2
+  {code: total} sys::exit       # end the program with the result
+  return {r: total}             # unreached: sys::exit never returns
+
+fn main() -> int:
+  {base: 21} compute            # schedule the task (1 [io] pair -> exit 42)
+  return 0                      # unreached: the task's sys::exit ends us
