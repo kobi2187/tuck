@@ -109,6 +109,17 @@ proc loadIndex*(dir: string): Table[string, IndexEntry] =
 proc srcHashOf(path: string): string =
   $hash(readFile(path))
 
+proc resolveImport*(importerPath, module: string): string  # defined below
+
+# The source path an import resolves to FROM `dir` — its own directory, the
+# --root project, or the stdlib (same search resolveImport uses at load time).
+# A module imported as `import sys` lives under std/, NOT dir/sys.tuck, so the
+# cache must hash it where it actually is or std imports never validate.
+# Returns "" when the module can't be found.
+proc resolvedImportPath(dir, name: string): string =
+  try: resolveImport(dir / "_.tuck", name)
+  except ModuleError: ""
+
 # Entry is trustworthy iff its module's source is unchanged AND every dep it
 # was checked against is itself still valid (a changed dep changes the sigs
 # this module was checked against).
@@ -117,8 +128,8 @@ proc entryValid(idx: Table[string, IndexEntry], dir, name: string,
   if name in seen: return true  # cycle guard; load path errors on real cycles
   seen.incl(name)
   if not idx.hasKey(name): return false
-  let path = dir / (name & ".tuck")
-  if not fileExists(path): return false
+  let path = resolvedImportPath(dir, name)
+  if path == "" or not fileExists(path): return false
   let e = idx[name]
   if e.srcHash != srcHashOf(path): return false
   for (dep, h) in e.deps:
@@ -139,8 +150,8 @@ proc updateIndex*(dir: string, mods: seq[LoadedModule],
   for lm in mods:
     var deps: seq[tuple[name, hash: string]]
     for imp in importsOf(lm.m):
-      let ipath = lm.path.parentDir / (imp & ".tuck")
-      if fileExists(ipath):
+      let ipath = resolvedImportPath(lm.path.parentDir, imp)
+      if ipath != "" and fileExists(ipath):
         deps.add((imp, srcHashOf(ipath)))
     idx.entries[lm.name] = IndexEntry(
       srcHash: srcHashOf(lm.path),

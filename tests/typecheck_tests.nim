@@ -1180,6 +1180,38 @@ fn go() -> !{body: str} [io]:
     failures.inc
   except SemanticError as err:
     echo "PASS (error)  sig index bad payload — ", err.msg
+
+  # sig index for a std-style import resolved via projectRoot (a DIFFERENT
+  # directory than the entry): it must still cache, not re-check every build.
+  block:
+    let stdDir = getTempDir() / "tuck_std_root"
+    createDir(stdDir)
+    writeFile(stdDir / "netx.tuck", """
+pending:
+  fn fetch({url: str}) -> !{body: str} [io]
+""")
+    writeFile(dir / "main.tuck", """
+import netx
+
+fn go({url: str}) -> !{body: str} [io]:
+  return {url} netx::fetch
+""")
+    let savedRoot = projectRoot
+    projectRoot = stdDir            # netx resolves via root, not dir/
+    try:
+      let prog = loadProgram(dir / "main.tuck")
+      updateIndex(dir, prog, moduleSigs)
+      let (full, sigOnly) = loadProgramIndexed(dir / "main.tuck")
+      doAssert sigOnly.hasKey("netx"),
+        "a projectRoot-resolved import must cache in the sig index"
+      doAssert full.len == 1, "only main should load in full"
+      echo "PASS (ok)     sig index: projectRoot import cached"
+    except CatchableError as err:
+      echo "FAIL          sig index projectRoot import — ", err.msg
+      failures.inc
+    finally:
+      projectRoot = savedRoot
+      removeDir(stdDir)
   removeDir(dir)
 
 # ---------- generics (simple substitution, Nim/C# style — no variance) ----------
