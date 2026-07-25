@@ -22,6 +22,32 @@ type
     realModules: Table[string, Module]  # imported modules emitted as own Nim files
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     moduleName: string    # error codes hash over "module/Enum.Variant"
+    recordNames: HashSet[string]     # names of record types in `module` (O(1) lookup)
+    invariantNames: HashSet[string]  # names of invariant-carrying types in `module`
+    indexBuilt: bool                 # recordNames/invariantNames populated?
+
+proc buildDeclIndex(ctx: var CodegenCtx) =
+  ## Populate the name sets for `module` once, so per-node type queries are O(1)
+  ## instead of a full decl scan each call (the emit hot path is O(n) fns each
+  ## checking their param/return type names — a linear scan there is O(n²)).
+  if ctx.indexBuilt: return
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkType and d.typeBody != nil:
+      if d.typeBody.kind == tkRecord:
+        ctx.recordNames.incl(d.name)
+      for member in d.typeMembers:
+        if member.kind == dkExpr:
+          ctx.invariantNames.incl(d.name)
+          break
+  ctx.indexBuilt = true
+
+proc isRecordTypeFast(ctx: var CodegenCtx, name: string): bool =
+  ctx.buildDeclIndex()
+  name in ctx.recordNames
+
+proc hasInvariantsFast(ctx: var CodegenCtx, name: string): bool =
+  ctx.buildDeclIndex()
+  name in ctx.invariantNames
 
 proc actorSingletonName(actorType: string): string =
   # An actor is a global singleton (spec §9): one instance per declared type,
@@ -346,7 +372,7 @@ proc genCall(ctx: var CodegenCtx, e: Expr): string =
     return ctx.genBake(e)
   if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
     return ctx.genMerge(e)
-  if e.args.len == 1 and e.args[0].kind == exkStruct and isRecordType(ctx.module, calleeStr):
+  if e.args.len == 1 and e.args[0].kind == exkStruct and ctx.isRecordTypeFast(calleeStr):
     # record construction: named fields, not positional
     var parts: seq[string]
     for field in e.args[0].fields:
@@ -422,7 +448,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   var args: seq[string]
   if e.args.len == 1 and e.args[0].kind == exkStruct and
      e.callee != nil and e.callee.kind == exkVar and
-     isRecordType(ctx.module, e.callee.name):
+     ctx.isRecordTypeFast(e.callee.name):
     # record construction: named fields, not positional
     var parts: seq[string]
     for field in e.args[0].fields:
@@ -435,7 +461,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
       for a in semLayer.typeFor(e).args: gparts.add(genType(a))
       ctorName &= "[" & gparts.join(", ") & "]"
     let ctor = ctorName & "(" & parts.join(", ") & ")"
-    if hasInvariants(ctx.module, e.callee.name):
+    if ctx.hasInvariantsFast(e.callee.name):
       # production site: construction — validate before the value flows on
       ctx.tmpCounter.inc
       let tmp = "tuckInv" & $ctx.tmpCounter
@@ -815,7 +841,7 @@ proc genExprChain(ctx: var CodegenCtx, e: Expr): string =
       lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
   # mutation site: an invariant-carrying var re-validates after the chain
   if e.base != nil and semLayer.typeFor(e.base) != nil and semLayer.typeFor(e.base).kind == tkNamed and
-     hasInvariants(ctx.module, semLayer.typeFor(e.base).name):
+     ctx.hasInvariantsFast(semLayer.typeFor(e.base).name):
     lines.add(ind & "validate(" & baseStr & ")")
   lines.join("\n")
 
@@ -991,7 +1017,7 @@ proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
       # actually allow that mutation in Nim (a plain object, unlike the old
       # `ref object`, can't be field-mutated through an immutable param)
       let isMutParam = p.typ != nil and p.typ.kind == tkNamed and
-                        isRecordType(ctx.module, p.typ.name)
+                        ctx.isRecordTypeFast(p.typ.name)
       let typeStr = genType(p.typ)
       params.add(p.name & ": " & (if isMutParam: "var " & typeStr else: typeStr))
     let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
@@ -1009,7 +1035,7 @@ proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
     ctx.retInnerT = binnerT
     ctx.retInvName =
       if not bw and d.fnReturnType != nil and d.fnReturnType.kind == tkNamed and
-         hasInvariants(ctx.module, d.fnReturnType.name): d.fnReturnType.name
+         ctx.hasInvariantsFast(d.fnReturnType.name): d.fnReturnType.name
       else: ""
     injectTailReturn(d.fnBody, retTypeStr)
     ctx.indent += 1
