@@ -1,6 +1,7 @@
 # compiler/codegen.nim
 import ast, lowering, strutils, sets, tables
 import resolution
+import codegen_shared
 
 type
   CodegenCtx = object
@@ -21,15 +22,6 @@ type
     realModules: Table[string, Module]  # imported modules emitted as own Nim files
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     moduleName: string    # error codes hash over "module/Enum.Variant"
-
-proc repeat(s: string, n: int): string =
-  var res = ""
-  for i in 0..<n: res.add(s)
-  res
-
-proc capitalize(s: string): string =
-  if s.len == 0: return ""
-  return s[0].toUpperAscii() & s[1..^1]
 
 proc actorSingletonName(actorType: string): string =
   # An actor is a global singleton (spec §9): one instance per declared type,
@@ -136,13 +128,6 @@ proc fieldType(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
 
 # Does this declared type carry invariant predicates? (block members are
 # dkExpr decls; production sites append a validate() call — spec 4.7)
-proc hasInvariants(m: Module, name: string): bool =
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == name:
-      for member in d.typeMembers:
-        if member.kind == dkExpr: return true
-  false
-
 # spec 4.1: `[saturating]` clamps instead of wrapping. The ATTRIBUTE decides,
 # not the `distinct` keyword — `type X = u16 [saturating]` and
 # `distinct X = u16 [saturating]` mean the same thing (user ruling).
@@ -157,19 +142,6 @@ proc saturatingBase(m: Module, name: string): string =
         return genType(d.typeBody)
   ""
 
-# An extern fn returning an invariant-carrying named type: values entering
-# from outside the checked world validate at the CALL site (we don't emit
-# the body). Returns the type name, or "".
-proc externInvRet(m: Module, fnName: string): string =
-  for d in m.decls:
-    if d != nil and d.kind == dkMixin:
-      for mem in d.mixinMembers:
-        if mem.kind == dkFn and mem.isExtern and mem.name == fnName and
-           mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
-           hasInvariants(m, mem.fnReturnType.name):
-          return mem.fnReturnType.name
-  ""
-
 proc externEmitName(m: Module, fnName: string): string =
   ## The Nim/C proc name to emit for an extern with `[emit: "..."]`, or "" if
   ## it uses its Tuck name (the default).
@@ -179,24 +151,6 @@ proc externEmitName(m: Module, fnName: string): string =
         if mem.kind == dkFn and mem.isExtern and mem.name == fnName:
           return mem.externEmit
   ""
-
-# {fields} TypeName — construction of a declared record type
-proc isRecordType(m: Module, name: string): bool =
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == name and
-       d.typeBody != nil and d.typeBody.kind == tkRecord:
-      return true
-  false
-
-# err Enum.Variant — a reference to a declared error enum's variant?
-proc isErrEnumRef(m: Module, e: Expr): bool =
-  if e == nil or e.kind != exkField or e.receiver == nil or
-     e.receiver.kind != exkVar: return false
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == e.receiver.name and
-       d.typeBody != nil and d.typeBody.kind == tkSum:
-      return true
-  false
 
 # Error ids are namespaced: the hash input is "module/Enum.Variant", where
 # module is the enum's ORIGIN (imported enums carry it on the marker).
@@ -251,6 +205,14 @@ proc genQualified(ctx: CodegenCtx, e: Expr): string =
   else: modName & "_" & e.qualName
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string
+
+# The bigger genExpr arms live as their own procs so the dispatch `case` reads
+# as a routing table; each takes the ctx + node and recomputes its own indent.
+proc genExprAssign(ctx: var CodegenCtx, e: Expr): string
+proc genExprMatch(ctx: var CodegenCtx, e: Expr): string
+proc genExprChain(ctx: var CodegenCtx, e: Expr): string
+proc genExprSend(ctx: var CodegenCtx, e: Expr): string
+proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
 
 # Type-directed explosion: a record-typed VAR as the whole payload
 # (`p advance`) explodes to the fn's params by field name, in param order —
@@ -453,21 +415,6 @@ proc bangInfo(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
     let inner = genType(t.args[0])
     return (true, (if inner == "void": "tuple[]" else: inner), t.args[0])
   return (false, "", nil)
-
-proc isDecisionTable(d: Decl): bool =
-  if d.kind != dkFn or d.fnBody == nil or d.fnBody.kind != exkBlock: return false
-  if d.fnBody.stmts.len == 0: return false
-  for s in d.fnBody.stmts:
-    if s.kind != exkMatch or s.subject != nil: return false
-  return true
-
-proc genPatternStr(p: Pattern): string =
-  if p == nil: return "_"
-  case p.kind
-  of pkWild: "_"
-  of pkVar: p.name
-  of pkLit: p.litValue
-  else: "_"
 
 # exkCall (module-less overload): record construction (with invariant
 # validate() insertion) or plain call.
@@ -751,81 +698,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     ctx.indent = oldIndent
     ind & "if " & condStr & ":\n" & thenStr & elseStr
   of exkAssign:
-    # `let r = {args} task` — a RESULT-bound task call: schedule the task with
-    # a result slot and await it (the caller yields if it's a coroutine, or
-    # drives the runtime if it's main). Distinct from a statement-position task
-    # call, which is fire-and-forget (concurrent).
-    if e.assignVal != nil and e.assignVal.kind == exkCall and
-       e.assignVal.callee != nil and e.assignVal.callee.kind == exkVar and
-       ctx.isTaskName(e.assignVal.callee.name):
-      let tname = e.assignVal.callee.name
-      let ret = ctx.taskRetType(tname)
-      # emit the raw call expression (args) by temporarily disabling the
-      # fire-and-forget spawn wrap: build the call directly
-      var argParts: seq[string]
-      if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
-        let expected = lookupFnParams(ctx.module, tname)
-        for pn in expected:
-          for f in e.assignVal.args[0].fields:
-            if f[0] == pn: argParts.add(ctx.genExpr(f[1])); break
-      let rawCall = tname & "(" & argParts.join(", ") & ")"
-      let slot = "tuckSlot" & $ctx.tmpCounter
-      ctx.tmpCounter.inc
-      let spawn = "(let " & slot & " = newAsyncResult[" & ret & "](); " &
-                  "spawnResult(" & slot & ", proc(): " & ret &
-                  " {.closure, gcsafe.} = ({.cast(gcsafe).}: " & rawCall &
-                  ")); awaitResult(" & slot & "))"
-      if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
-         e.target.name notin ctx.fieldVars:
-        ctx.definedVars.incl(e.target.name)
-        return "var " & e.target.name & " = " & spawn
-      return ctx.genExpr(e.target) & " = " & spawn
-    let targetStr = ctx.genExpr(e.target)
-    let valStr = ctx.genExpr(e.assignVal)
-    if e.target.kind == exkVar:
-      let name = e.target.name
-      if name notin ctx.definedVars and name notin ctx.fieldVars:
-        ctx.definedVars.incl(name)
-        return "var " & name & " = " & valStr
-    return targetStr & " = " & valStr
+    ctx.genExprAssign(e)
   of exkMatch:
-    if e.subject != nil:
-      let subjectStr = ctx.genExpr(e.subject)
-      var cases: seq[string]
-      var errMatch = false
-      var hasWild = false
-      for arm in e.arms:
-        if arm.pattern != nil and arm.pattern.kind == pkWild: hasWild = true
-        if arm.pattern != nil and arm.pattern.kind == pkVar and
-           "." in arm.pattern.name:
-          errMatch = true
-      for arm in e.arms:
-        var patStr = genPatternStr(arm.pattern)
-        if arm.pattern != nil and arm.pattern.kind == pkVar and
-           "." in arm.pattern.name:
-          # checker-qualified error variant: compare against the hashed id
-          let dot = arm.pattern.name.find(".")
-          patStr = "errCode(\"" & ctx.errNameFor(
-            arm.pattern.name[0 ..< dot], arm.pattern.name[dot+1 .. ^1]) & "\")"
-        # Arms sit one level in from the `case`, and a BLOCK body one level
-        # further. Both must be derived from ctx.indent — a match nested in a
-        # fn body is not at column 0, and a block body self-indents from the
-        # same counter, so hardcoding the widths mismatched the two.
-        if arm.body != nil and arm.body.kind == exkBlock:
-          let oldIndent = ctx.indent
-          ctx.indent += 1          # body lines land under the `of`
-          let bodyStr = ctx.genExpr(arm.body)
-          ctx.indent = oldIndent
-          cases.add(ind & "of " & patStr & ":\n" & bodyStr)
-        else:
-          let bodyStr = ctx.genExpr(arm.body)
-          cases.add(ind & "of " & patStr & ":\n" & ind & "  " & bodyStr)
-      if errMatch and not hasWild:
-        # the code space is uint16 — the declared variants never cover it
-        cases.add(ind & "else: discard")
-      return "(case " & subjectStr & "\n" & cases.join("\n") & ")"
-    else:
-      return "discard"
+    ctx.genExprMatch(e)
   of exkReturn:
     ctx.genReturn(e)
   of exkRaise:
@@ -837,72 +712,159 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     else:
       "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
   of exkChain:
-    # `x ..field {v} ..mutate {a}` — one plain Nim statement per step:
-    # field set, or mutator call reassigned into the base var
-    let baseStr = ctx.genExpr(e.base)
-    var lines: seq[string]
-    for step in e.steps:
-      if semLayer.stepCall(step) != nil:
-        lines.add(ind & baseStr & " = " & ctx.genCall(semLayer.stepCall(step)))
-      else:
-        var valStr = ""
-        if step.arg != nil and step.arg.kind == exkStruct and
-           step.arg.fields.len == 1:
-          valStr = ctx.genExpr(step.arg.fields[0][1])
-        lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
-    # mutation site: an invariant-carrying var re-validates after the chain
-    if e.base != nil and semLayer.typeFor(e.base) != nil and semLayer.typeFor(e.base).kind == tkNamed and
-       hasInvariants(ctx.module, semLayer.typeFor(e.base).name):
-      lines.add(ind & "validate(" & baseStr & ")")
-    return lines.join("\n")
+    ctx.genExprChain(e)
   of exkSend:
-    # `ActorType send handler {payload}` — enqueue a Msg to the actor's
-    # singleton mailbox, then wake the scheduler. The message envelope mirrors
-    # genActor: kind = msg<Handler>, fields from the payload struct.
-    let singleton = actorSingletonName(e.sendActor)
-    let msgType = e.sendActor & "Msg"
-    let variant = "msg" & capitalize(e.sendHandler)
-    var ctorArgs = "kind: " & variant
-    if e.sendPayload != nil and e.sendPayload.kind == exkStruct:
-      for f in e.sendPayload.fields:
-        ctorArgs.add(", " & f[0] & ": " & ctx.genExpr(f[1]))
-    let ind = repeat("  ", ctx.indent)
-    # statement form: enqueue + notify on two lines at the current indent
-    "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
-      "))\n" & ind & "tuckNotifySend()"
+    ctx.genExprSend(e)
   of exkSelect:
-    # task `on select` (spec §9.3), first cut: exactly a `read <fd>` arm and a
-    # `timeout <ms>` arm race via tuckAwaitReadOrTimeout — true = fd readable
-    # (run the read body), false = deadline (run the timeout body).
-    var readArm, timeoutArm: ptr SelectArm = nil
-    for arm in e.selArms.mitems:
-      if arm.source == "read": readArm = addr arm
-      elif arm.source == "timeout": timeoutArm = addr arm
-    let ind = repeat("  ", ctx.indent)
-    if readArm != nil and timeoutArm != nil:
-      let fd = ctx.genExpr(readArm.arg)
-      # `timeout {5.ms}` — the arg is a duration payload; the runtime wants a
-      # plain int of milliseconds. Unwrap a single-field `{dur}` struct to its
-      # duration and convert to int; a bare int arg (`timeout 30`) passes through.
-      var durExpr = timeoutArm.arg
-      if durExpr != nil and durExpr.kind == exkStruct and durExpr.fields.len == 1:
-        durExpr = durExpr.fields[0][1]
-      var ms = ctx.genExpr(durExpr)
-      if not (timeoutArm.arg != nil and timeoutArm.arg.kind == exkLit):
-        ms = "int(" & ms & ")"   # a typed duration → milliseconds int
-      ctx.indent += 1
-      let innerInd = repeat("  ", ctx.indent)
-      # arm bodies (a return/expr) don't self-indent — prepend the branch indent
-      let readBody = innerInd & ctx.genExpr(readArm.body)
-      let toBody = innerInd & ctx.genExpr(timeoutArm.body)
-      ctx.indent -= 1
-      "if tuckAwaitReadOrTimeout(" & fd & ", " & ms & "):\n" & readBody &
-        "\n" & ind & "else:\n" & toBody
-    else:
-      ind & "discard  # select: only read+timeout arms supported (first cut)"
+    ctx.genExprSelect(e)
   of exkImport:
     # imports are declarations; they never reach expression position
     ""
+
+proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
+  # `let r = {args} task` — a RESULT-bound task call: schedule the task with
+  # a result slot and await it (the caller yields if it's a coroutine, or
+  # drives the runtime if it's main). Distinct from a statement-position task
+  # call, which is fire-and-forget (concurrent).
+  if e.assignVal != nil and e.assignVal.kind == exkCall and
+     e.assignVal.callee != nil and e.assignVal.callee.kind == exkVar and
+     ctx.isTaskName(e.assignVal.callee.name):
+    let tname = e.assignVal.callee.name
+    let ret = ctx.taskRetType(tname)
+    # emit the raw call expression (args) by temporarily disabling the
+    # fire-and-forget spawn wrap: build the call directly
+    var argParts: seq[string]
+    if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
+      let expected = lookupFnParams(ctx.module, tname)
+      for pn in expected:
+        for f in e.assignVal.args[0].fields:
+          if f[0] == pn: argParts.add(ctx.genExpr(f[1])); break
+    let rawCall = tname & "(" & argParts.join(", ") & ")"
+    let slot = "tuckSlot" & $ctx.tmpCounter
+    ctx.tmpCounter.inc
+    let spawn = "(let " & slot & " = newAsyncResult[" & ret & "](); " &
+                "spawnResult(" & slot & ", proc(): " & ret &
+                " {.closure, gcsafe.} = ({.cast(gcsafe).}: " & rawCall &
+                ")); awaitResult(" & slot & "))"
+    if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
+       e.target.name notin ctx.fieldVars:
+      ctx.definedVars.incl(e.target.name)
+      return "var " & e.target.name & " = " & spawn
+    return ctx.genExpr(e.target) & " = " & spawn
+  let targetStr = ctx.genExpr(e.target)
+  let valStr = ctx.genExpr(e.assignVal)
+  if e.target.kind == exkVar:
+    let name = e.target.name
+    if name notin ctx.definedVars and name notin ctx.fieldVars:
+      ctx.definedVars.incl(name)
+      return "var " & name & " = " & valStr
+  targetStr & " = " & valStr
+
+proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
+  if e.subject == nil: return "discard"
+  let ind = "  ".repeat(ctx.indent)
+  let subjectStr = ctx.genExpr(e.subject)
+  var cases: seq[string]
+  var errMatch = false
+  var hasWild = false
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkWild: hasWild = true
+    if arm.pattern != nil and arm.pattern.kind == pkVar and
+       "." in arm.pattern.name:
+      errMatch = true
+  for arm in e.arms:
+    var patStr = genPatternStr(arm.pattern)
+    if arm.pattern != nil and arm.pattern.kind == pkVar and
+       "." in arm.pattern.name:
+      # checker-qualified error variant: compare against the hashed id
+      let dot = arm.pattern.name.find(".")
+      patStr = "errCode(\"" & ctx.errNameFor(
+        arm.pattern.name[0 ..< dot], arm.pattern.name[dot+1 .. ^1]) & "\")"
+    # Arms sit one level in from the `case`, and a BLOCK body one level
+    # further. Both must be derived from ctx.indent — a match nested in a
+    # fn body is not at column 0, and a block body self-indents from the
+    # same counter, so hardcoding the widths mismatched the two.
+    if arm.body != nil and arm.body.kind == exkBlock:
+      let oldIndent = ctx.indent
+      ctx.indent += 1          # body lines land under the `of`
+      let bodyStr = ctx.genExpr(arm.body)
+      ctx.indent = oldIndent
+      cases.add(ind & "of " & patStr & ":\n" & bodyStr)
+    else:
+      let bodyStr = ctx.genExpr(arm.body)
+      cases.add(ind & "of " & patStr & ":\n" & ind & "  " & bodyStr)
+  if errMatch and not hasWild:
+    # the code space is uint16 — the declared variants never cover it
+    cases.add(ind & "else: discard")
+  "(case " & subjectStr & "\n" & cases.join("\n") & ")"
+
+proc genExprChain(ctx: var CodegenCtx, e: Expr): string =
+  # `x ..field {v} ..mutate {a}` — one plain Nim statement per step:
+  # field set, or mutator call reassigned into the base var
+  let ind = "  ".repeat(ctx.indent)
+  let baseStr = ctx.genExpr(e.base)
+  var lines: seq[string]
+  for step in e.steps:
+    if semLayer.stepCall(step) != nil:
+      lines.add(ind & baseStr & " = " & ctx.genCall(semLayer.stepCall(step)))
+    else:
+      var valStr = ""
+      if step.arg != nil and step.arg.kind == exkStruct and
+         step.arg.fields.len == 1:
+        valStr = ctx.genExpr(step.arg.fields[0][1])
+      lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
+  # mutation site: an invariant-carrying var re-validates after the chain
+  if e.base != nil and semLayer.typeFor(e.base) != nil and semLayer.typeFor(e.base).kind == tkNamed and
+     hasInvariants(ctx.module, semLayer.typeFor(e.base).name):
+    lines.add(ind & "validate(" & baseStr & ")")
+  lines.join("\n")
+
+proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
+  # `ActorType send handler {payload}` — enqueue a Msg to the actor's
+  # singleton mailbox, then wake the scheduler. The message envelope mirrors
+  # genActor: kind = msg<Handler>, fields from the payload struct.
+  let singleton = actorSingletonName(e.sendActor)
+  let msgType = e.sendActor & "Msg"
+  let variant = "msg" & capitalize(e.sendHandler)
+  var ctorArgs = "kind: " & variant
+  if e.sendPayload != nil and e.sendPayload.kind == exkStruct:
+    for f in e.sendPayload.fields:
+      ctorArgs.add(", " & f[0] & ": " & ctx.genExpr(f[1]))
+  let ind = repeat("  ", ctx.indent)
+  # statement form: enqueue + notify on two lines at the current indent
+  "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
+    "))\n" & ind & "tuckNotifySend()"
+
+proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
+  # task `on select` (spec §9.3), first cut: exactly a `read <fd>` arm and a
+  # `timeout <ms>` arm race via tuckAwaitReadOrTimeout — true = fd readable
+  # (run the read body), false = deadline (run the timeout body).
+  var readArm, timeoutArm: ptr SelectArm = nil
+  for arm in e.selArms.mitems:
+    if arm.source == "read": readArm = addr arm
+    elif arm.source == "timeout": timeoutArm = addr arm
+  let ind = repeat("  ", ctx.indent)
+  if readArm != nil and timeoutArm != nil:
+    let fd = ctx.genExpr(readArm.arg)
+    # `timeout {5.ms}` — the arg is a duration payload; the runtime wants a
+    # plain int of milliseconds. Unwrap a single-field `{dur}` struct to its
+    # duration and convert to int; a bare int arg (`timeout 30`) passes through.
+    var durExpr = timeoutArm.arg
+    if durExpr != nil and durExpr.kind == exkStruct and durExpr.fields.len == 1:
+      durExpr = durExpr.fields[0][1]
+    var ms = ctx.genExpr(durExpr)
+    if not (timeoutArm.arg != nil and timeoutArm.arg.kind == exkLit):
+      ms = "int(" & ms & ")"   # a typed duration → milliseconds int
+    ctx.indent += 1
+    let innerInd = repeat("  ", ctx.indent)
+    # arm bodies (a return/expr) don't self-indent — prepend the branch indent
+    let readBody = innerInd & ctx.genExpr(readArm.body)
+    let toBody = innerInd & ctx.genExpr(timeoutArm.body)
+    ctx.indent -= 1
+    "if tuckAwaitReadOrTimeout(" & fd & ", " & ms & "):\n" & readBody &
+      "\n" & ind & "else:\n" & toBody
+  else:
+    ind & "discard  # select: only read+timeout arms supported (first cut)"
 
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string
 
@@ -922,42 +884,6 @@ proc genPendingStub(d: Decl): string =
 # Rewrite the tail statement into an explicit return so the existing return
 # emission (auto-wrap, typed literals) handles it. Control-flow tails keep
 # explicit returns for now (checker enforces branch agreement).
-proc matchArmsReturn(m: Expr): bool =
-  ## True when the arms produce control flow rather than values — a block arm
-  ## ending in `return`, or a bare `return`. Such a match is already the
-  ## function's result and must not be wrapped in another return.
-  for arm in m.arms:
-    if arm.body == nil: continue
-    if arm.body.kind == exkReturn: return true
-    if arm.body.kind == exkBlock and arm.body.stmts.len > 0 and
-       arm.body.stmts[^1] != nil and arm.body.stmts[^1].kind == exkReturn:
-      return true
-  false
-
-proc injectTailReturn(body: Expr, retTypeStr: string) =
-  if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
-     retTypeStr != "void":
-    let lastS = body.stmts[^1]
-    if lastS.kind == exkChain:
-      # a chain's value is its base var: keep the mutation statements,
-      # return the base afterwards
-      if lastS.base != nil:
-        body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
-                            returnVal: lastS.base))
-    elif lastS.kind == exkMatch and lastS.subject != nil and
-         not matchArmsReturn(lastS):
-      # `match subject:` whose arms are VALUES is an expression, so the tail
-      # match is the fn's result. Arms that return on their own already are
-      # the result — wrapping those in `return (case ...)` asks Nim to type a
-      # case expression whose branches never produce a value. (A decision
-      # table — subject == nil — keeps its per-row returns.)
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
-    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
-                           exkWhile, exkBreak, exkContinue,
-                           exkAssign, exkBlock, exkSelect, exkSend} and
-       not (lastS.kind == exkVar and lastS.name == "..."):
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
-
 proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
     if d.isPending:
       return genPendingStub(d)
