@@ -1230,137 +1230,138 @@ proc genAliasType(d: Decl): string =
       let aGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
       return "type " & d.name & "*" & aGen & " = " & typeBodyStr & "\n"
 
+# An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
+# select` message arms (spec §9.3): a message kind + typed binding + body.
+type ActorMsgHandler = object
+  name: string
+  params: seq[Param]
+  body: Expr
+
+proc collectHandlers(d: Decl):
+    tuple[handlers: seq[ActorMsgHandler], shutdownBody: Expr, hasShutdown: bool] =
+  ## Split an actor's declarations into message handlers plus the reserved
+  ## `shutdown` control arm (which stops the actor rather than adding a message).
+  for h in d.handlers:
+    if h.kind == dkFn:
+      result.handlers.add(ActorMsgHandler(name: h.name, params: h.fnParams, body: h.fnBody))
+    elif h.kind == dkSelect:
+      for arm in h.selectArms:
+        if arm.source == "shutdown":
+          result.shutdownBody = arm.body
+          result.hasShutdown = true
+        else:
+          result.handlers.add(ActorMsgHandler(name: arm.source, params: arm.binding, body: arm.body))
+
+proc actorQueueSize(d: Decl): string =
+  ## The `[queue: N]` attribute, or the default mailbox size.
+  result = "8"
+  for attr in d.attrs:
+    if attr.name == "queue": return attr.value
+
+proc genMsgTypes(handlers: seq[ActorMsgHandler], hasShutdown: bool,
+                 msgEnumName, msgTypeName: string): string =
+  ## The message-kind enum + the message envelope object. Handler params ride
+  ## in the envelope, deduped by name across handlers.
+  var enumVariants: seq[string]
+  for h in handlers:
+    enumVariants.add("msg" & h.name.capitalize())
+  if hasShutdown:
+    enumVariants.add("msgShutdown")   # sent as `Actor send shutdown {}`
+  var msgFields: seq[string]
+  var seen = initHashSet[string]()
+  for h in handlers:
+    for p in h.params:
+      if p.name notin seen:
+        seen.incl(p.name)
+        msgFields.add("  " & p.name & "*: " & genType(p.typ))
+  let enumStr = "type " & msgEnumName & "* = enum " & enumVariants.join(", ") & "\n"
+  let envelopeStr = "type " & msgTypeName & "* = object\n  kind*: " & msgEnumName & "\n" &
+                    (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "")
+  enumStr & envelopeStr
+
+proc genActorState(ctx: var CodegenCtx, d: Decl, msgTypeName, queueSize: string,
+                   hasShutdown: bool): string =
+  ## The actor's ref-object state: declared fields + mailbox (+ `finished` flag,
+  ## which the shutdown arm sets to make the drain go inert).
+  var fieldsStr: seq[string]
+  for f in d.actorFields:
+    fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
+  fieldsStr.add("    mailbox*: Mailbox[" & msgTypeName & ", " & queueSize & "]")
+  if hasShutdown:
+    fieldsStr.add("    finished*: bool")
+  "type " & d.name & "* = ref object\n" & fieldsStr.join("\n") & "\n"
+
+proc genActorDispatch(ctx: CodegenCtx, d: Decl, msgTypeName: string,
+                      handlers: seq[ActorMsgHandler], shutdownBody: Expr,
+                      hasShutdown: bool): string =
+  ## The `handleMsg` proc: a case over the message kind. Runs in its own ctx so
+  ## handler bodies see the actor's fields as field vars; realModules/module are
+  ## inherited so qualified calls (e.g. sys::exit) resolve as `module.fn`.
+  var hctx = CodegenCtx(definedVars: initHashSet[string](),
+                        fieldVars: initHashSet[string](), indent: 2,
+                        realModules: ctx.realModules, module: ctx.module,
+                        moduleName: ctx.moduleName)
+  for f in d.actorFields:
+    hctx.fieldVars.incl(f.name)
+  # a block body self-indents; a single-expression arm body needs the arm indent
+  proc armBody(e: Expr): string =
+    let raw = hctx.genExpr(e)
+    if e != nil and e.kind == exkBlock: raw else: "    " & raw
+  var handlerCases: seq[string]
+  for h in handlers:
+    var caseBody = ""
+    for p in h.params:
+      caseBody.add("    let " & p.name & " = msg." & p.name & "\n")
+    handlerCases.add("  of msg" & h.name.capitalize() & ":\n" & caseBody & armBody(h.body))
+  if hasShutdown:
+    # run the shutdown body, then mark finished so the drain goes inert; a
+    # `return` in the arm body is a no-op statement here.
+    handlerCases.add("  of msgShutdown:\n" & armBody(shutdownBody) & "\n    self.finished = true")
+  "proc handleMsg*(self: " & d.name & ", msg: " & msgTypeName & ") =\n  case msg.kind\n" &
+    handlerCases.join("\n") & "\n"
+
+proc genActorDrain(msgTypeName, drainName, singleton: string, hasShutdown: bool): string =
+  ## The drain closure: dequeue every pending msg, dispatch, report progress.
+  ## The scheduler registers this; it never sees the concrete Msg type.
+  result =
+    "proc " & drainName & "(): bool {.gcsafe.} =\n" &
+    "  {.cast(gcsafe).}:\n" &
+    "    result = false\n"
+  if hasShutdown:
+    result.add("    if " & singleton & ".finished: return\n")
+  result.add(
+    "    var m: " & msgTypeName & "\n" &
+    "    while dequeue(" & singleton & ".mailbox, m):\n" &
+    "      handleMsg(" & singleton & ", m)\n" &
+    "      result = true\n")
+
 proc genActor(ctx: var CodegenCtx, d: Decl): string =
-    var queueSize = "8"
-    for attr in d.attrs:
-      if attr.name == "queue":
-        queueSize = attr.value
-        break
+  let queueSize = actorQueueSize(d)
+  let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
+  let msgEnumName = d.name & "MsgKind"
+  let msgTypeName = d.name & "Msg"
 
-    # A message handler, gathered from BOTH `on <name>` blocks AND `on select`
-    # message arms (spec §9.3 — a select arm is a receive branch: a message
-    # kind + inline typed binding + body). `shutdown` is a reserved control
-    # source, kept aside — it stops the actor rather than adding a message.
-    type MsgHandler = object
-      name: string
-      params: seq[Param]
-      body: Expr
-    var handlers: seq[MsgHandler]
-    var shutdownBody: Expr = nil
-    var hasShutdown = false
-    for h in d.handlers:
-      if h.kind == dkFn:
-        handlers.add(MsgHandler(name: h.name, params: h.fnParams, body: h.fnBody))
-      elif h.kind == dkSelect:
-        for arm in h.selectArms:
-          if arm.source == "shutdown":
-            shutdownBody = arm.body
-            hasShutdown = true
-          else:
-            handlers.add(MsgHandler(name: arm.source, params: arm.binding, body: arm.body))
-
-    # 1. Generate Msg Kind enum and Msg envelope
-    let msgEnumName = d.name & "MsgKind"
-    let msgTypeName = d.name & "Msg"
-    var enumVariants: seq[string]
-    var msgFields: seq[string]
-
-    for h in handlers:
-      enumVariants.add("msg" & h.name.capitalize())
-    if hasShutdown:
-      enumVariants.add("msgShutdown")   # sent as `Actor send shutdown {}`
-
-    if enumVariants.len == 0:
-      # No message handlers: an empty enum is invalid Nim. Emit just the state object.
-      var bareFields: seq[string]
-      for f in d.actorFields:
-        bareFields.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
-      let bareBody = if bareFields.len > 0: bareFields.join("\n") else: "    discard"
-      return "type " & d.name & "* = ref object\n" & bareBody & "\n"
-
-    # Handler params ride in the message envelope (deduped by name across handlers)
-    var seenMsgFields = initHashSet[string]()
-    for h in handlers:
-      for p in h.params:
-        if p.name notin seenMsgFields:
-          seenMsgFields.incl(p.name)
-          msgFields.add("  " & p.name & "*: " & genType(p.typ))
-
-    var msgEnumStr = "type " & msgEnumName & "* = enum " & enumVariants.join(", ") & "\n"
-    var msgEnvelopeStr = "type " & msgTypeName & "* = object\n  kind*: " & msgEnumName & "\n" &
-                         (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "")
-    
-    # 2. Generate Actor state object. `finished` supports the select shutdown
-    #    arm: once set, the drain goes inert (the actor stops receiving).
-    var fieldsStr: seq[string]
+  if handlers.len == 0 and not hasShutdown:
+    # No handlers: an empty enum is invalid Nim. Emit just the state object.
+    var bareFields: seq[string]
     for f in d.actorFields:
-      fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
-    fieldsStr.add("    mailbox*: Mailbox[" & msgTypeName & ", " & queueSize & "]")
-    if hasShutdown:
-      fieldsStr.add("    finished*: bool")
-    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
-    var actorTypeStr = "type " & d.name & "* = ref object\n" & fieldsBody & "\n"
+      bareFields.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
+    let bareBody = if bareFields.len > 0: bareFields.join("\n") else: "    discard"
+    return "type " & d.name & "* = ref object\n" & bareBody & "\n"
 
-    # 3. Generate dispatch handler. Inherit realModules/module/moduleName from
-    # the outer ctx so qualified calls in handler bodies (e.g. sys::exit)
-    # resolve as `module.fn`, not the underscore fallback.
-    var handlerCases: seq[string]
-    var ctx = CodegenCtx(definedVars: initHashSet[string](),
-                         fieldVars: initHashSet[string](), indent: 2,
-                         realModules: ctx.realModules, module: ctx.module,
-                         moduleName: ctx.moduleName)
-    for f in d.actorFields:
-      ctx.fieldVars.incl(f.name)
-    for h in handlers:
-      let variantName = "msg" & h.name.capitalize()
-      var caseBody = ""
-      for p in h.params:
-        caseBody.add("    let " & p.name & " = msg." & p.name & "\n")
-      # a block body self-indents its statements; a single-expression arm body
-      # (from a select arm) needs the case-arm indent prepended
-      let raw = ctx.genExpr(h.body)
-      let bodyStr = if h.body != nil and h.body.kind == exkBlock: raw
-                    else: "    " & raw
-      handlerCases.add("  of " & variantName & ":\n" & caseBody & bodyStr)
-    if hasShutdown:
-      # `shutdown` arm: run its body, then mark the actor finished so the drain
-      # goes inert. `return` in the arm body is a no-op statement here.
-      let raw = ctx.genExpr(shutdownBody)
-      let sbody = if shutdownBody != nil and shutdownBody.kind == exkBlock: raw
-                  else: "    " & raw
-      handlerCases.add("  of msgShutdown:\n" & sbody & "\n    self.finished = true")
+  let singleton = actorSingletonName(d.name)   # spec §9: one global per actor
+  let drainName = "drain" & d.name
+  let msgTypes = genMsgTypes(handlers, hasShutdown, msgEnumName, msgTypeName)
+  let stateStr = genActorState(ctx, d, msgTypeName, queueSize, hasShutdown)
+  let dispatchStr = genActorDispatch(ctx, d, msgTypeName, handlers, shutdownBody, hasShutdown)
+  let singletonStr = "let " & singleton & "* = " & d.name & "()\n"
+  let drainStr = genActorDrain(msgTypeName, drainName, singleton, hasShutdown)
+  # auto-registration hook: main's prologue calls registerActors()
+  let registerStr = "proc registerActor" & d.name & "*() =\n" &
+                    "  tuckStartActor(" & drainName & ")\n"
 
-    let dispatchStr = "proc handleMsg*(self: " & d.name & ", msg: " & msgTypeName & ") =\n  case msg.kind\n" & handlerCases.join("\n") & "\n"
-
-    # 4. Singleton instance (spec §9: one global per declared actor).
-    let singleton = actorSingletonName(d.name)
-    let singletonStr = "let " & singleton & "* = " & d.name & "()\n"
-
-    # 5. Drain closure: dequeue every pending msg, dispatch, report progress.
-    #    The scheduler registers this; it never sees the concrete Msg type.
-    #    With a shutdown arm, the drain runs the shutdown body and goes inert
-    #    once `finished` is set (spec §9.3 — the actor stops receiving).
-    let drainName = "drain" & d.name
-    var drainStr =
-      "proc " & drainName & "(): bool {.gcsafe.} =\n" &
-      "  {.cast(gcsafe).}:\n" &
-      "    result = false\n"
-    if hasShutdown:
-      drainStr.add("    if " & singleton & ".finished: return\n")
-    drainStr.add(
-      "    var m: " & msgTypeName & "\n" &
-      "    while dequeue(" & singleton & ".mailbox, m):\n" &
-      "      handleMsg(" & singleton & ", m)\n" &
-      "      result = true\n")
-
-    # 6. Auto-registration hook: main's prologue calls registerActors(), which
-    #    starts every declared actor. Collected via a module-global emitted here.
-    let registerStr =
-      "proc registerActor" & d.name & "*() =\n" &
-      "  tuckStartActor(" & drainName & ")\n"
-
-    return msgEnumStr & msgEnvelopeStr & "\n" & actorTypeStr & "\n" &
-           singletonStr & "\n" & dispatchStr & "\n" & drainStr & "\n" & registerStr
+  msgTypes & "\n" & stateStr & "\n" & singletonStr & "\n" & dispatchStr & "\n" &
+    drainStr & "\n" & registerStr
 
 proc genRegistry(ctx: var CodegenCtx, d: Decl): string =
     let msgEnumName = d.name & "Kind"
