@@ -604,19 +604,53 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
       for p in params:
         subst.add(Param(name: p.name, typ: substituteType(p.typ, bindings), span: p.span))
       params = subst
-    for p in params:
+    # Params are satisfied in two passes: by NAME first, then — for whatever
+    # is left — by TYPE, when exactly one unclaimed field could fit. That lets
+    # a producer's output record feed a consumer whose param names differ,
+    # without an explicit alias() for every handoff.
+    var claimed = newSeq[bool](argFields.len)
+    var resolved = newSeq[string](params.len)  # param index -> field name
+    var pending: seq[int]                      # params unmatched after pass 1
+
+    for pi, p in params:
       if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == "Self": continue
       var found = false
-      for af in argFields:
-        if af.name == p.name:
+      for ai, af in argFields:
+        if not claimed[ai] and af.name == p.name:
           if not tc.compatible(af.typ, p.typ):
             fail("Type Error: field '" & p.name & "' of call to '" & fnName &
                  "' expects " & typeName(p.typ) & " but got " & typeName(af.typ), af.span)
+          claimed[ai] = true
+          resolved[pi] = af.name
           found = true
           break
       if not found:
+        pending.add(pi)
+
+    # Pass 2 infers, so it demands STRICT type equality rather than the looser
+    # `compatible` rule: widening int -> float is a coercion the user never
+    # wrote, and distinct types stay nominal (Milliseconds is not u32). An
+    # ambiguous or absent match is left for the error below to report.
+    for pi in pending:
+      let p = params[pi]
+      var candidate = -1
+      var ambiguous = false
+      for ai, af in argFields:
+        if not claimed[ai] and typeName(af.typ) == typeName(p.typ):
+          if candidate < 0: candidate = ai
+          else: ambiguous = true
+      if candidate >= 0 and not ambiguous:
+        claimed[candidate] = true
+        resolved[pi] = argFields[candidate].name
+      else:
         fail("Type Error: call to '" & fnName & "' is missing required field '" &
-             p.name & ": " & typeName(p.typ) & "'", e.span)
+             p.name & ": " & typeName(p.typ) &
+             "' (add it, or alias a field to that name)", e.span)
+
+    # Hand the decision to codegen, which would otherwise re-derive the
+    # mapping by name and miss anything matched by type.
+    if e.kind == exkCall:
+      e.resolvedArgFields = resolved
   elif e.args.len == params.len:
     for i in 0 ..< params.len:
       if params[i].typ != nil and params[i].typ.kind == tkNamed and

@@ -319,10 +319,15 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   if params.len == 0: return ""
   let fields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
+  # The checker already decided which field feeds each param (they may differ
+  # in name, having been matched by type); prefer its mapping over re-deriving.
+  let resolved = e.resolvedArgFields
   var parts: seq[string]
-  for paramName in params:
-    if paramName notin fields: return ""  # not a payload match — leave as-is
-    parts.add(ctx.genExpr(e.args[0]) & "." & paramName)
+  for i, paramName in params:
+    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                    else: paramName
+    if fieldName notin fields: return ""  # not a payload match — leave as-is
+    parts.add(ctx.genExpr(e.args[0]) & "." & fieldName)
   return calleeStr & "(" & parts.join(", ") & ")"
 
 
@@ -390,10 +395,15 @@ proc genCall(ctx: var CodegenCtx, e: Expr): string =
       else:
         lookupFnParams(ctx.module, calleeStr)
     if expectedParams.len > 0:
-      for paramName in expectedParams:
+      let resolved = e.resolvedArgFields
+      for i, paramName in expectedParams:
+        # The checker's mapping wins: a field matched by type carries its own
+        # name, not the param's.
+        let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                        else: paramName
         var found = false
         for field in e.args[0].fields:
-          if field[0] == paramName:
+          if field[0] == fieldName:
             args.add(ctx.genExpr(field[1]))
             found = true
             break

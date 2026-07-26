@@ -1630,6 +1630,134 @@ block:
     echo "FAIL          clone lost its link to the semantic layer"
     failures.inc
 
+# ---------- type-based field/param auto-matching ----------
+# When a record argument's field NAMES don't line up with the callee's param
+# names, a param may still be matched by TYPE — but only when exactly one
+# unmatched field could satisfy it. Ambiguity is never guessed at; it is an
+# error directing the user to alias() explicitly.
+
+expectOk "auto-match by type when names differ", """
+fn playTrack({id: int, name: str, ok: bool}) -> void:
+  ...
+
+fn main() -> void:
+  let ext = {trackId: 42, title: "Slow Jam", active: true}
+  ext playTrack
+  return
+"""
+
+expectError "ambiguous same-typed fields need an alias", """
+fn playTrack({id: int, length: int}) -> void:
+  ...
+
+fn main() -> void:
+  let ext = {trackId: 42, durationMs: 215000}
+  ext playTrack
+  return
+""", "missing required field"
+
+expectOk "name match wins over a same-typed rival field", """
+fn f({a: int, b: int}) -> void:
+  ...
+
+fn main() -> void:
+  let r = {b: 2, a: 1}
+  r f
+  return
+"""
+
+expectOk "name matches first, then type fills the rest", """
+fn f({count: int, label: str}) -> void:
+  ...
+
+fn main() -> void:
+  let r = {count: 7, title: "x"}
+  r f
+  return
+"""
+
+expectError "no candidate of the required type", """
+fn f({count: int, label: str}) -> void:
+  ...
+
+fn main() -> void:
+  let r = {count: 7, other: 9}
+  r f
+  return
+""", "missing required field 'label"
+
+expectOk "auto-match on a struct literal argument", """
+fn f({id: int, name: str}) -> void:
+  ...
+
+fn main() -> void:
+  {userId: 3, handle: "kobi"} f
+  return
+"""
+
+# Auto-matching uses STRICT type equality, not the looser `compatible` rule
+# used once a param is already matched. Inferring a match is a guess, so it
+# must never silently widen int -> float; the user writes alias() instead.
+expectOk "strict equality distinguishes int from float", """
+fn f({n: int, x: float}) -> void:
+  ...
+
+fn main() -> void:
+  let r = {alpha: 1, beta: 2.5}
+  r f
+  return
+"""
+
+expectError "same-typed numerics are still ambiguous", """
+fn f({n: int, m: int}) -> void:
+  ...
+
+fn main() -> void:
+  let r = {alpha: 1, beta: 2}
+  r f
+  return
+""", "missing required field"
+
+# Distinct types are strictly nominal (spec 4.2: "Milliseconds is not u32").
+# Auto-matching must not resolve through to the base type and defeat that.
+expectError "a distinct type does not auto-match its base", """
+distinct Milliseconds = u32
+
+fn delay({ms: Milliseconds}) -> void:
+  ...
+
+fn main() -> void:
+  let r = {timeout: 5}
+  r delay
+  return
+""", "missing required field 'ms"
+
+expectOk "a distinct type auto-matches its own type", """
+distinct Milliseconds = u32
+
+fn ms(value: u32) -> Milliseconds:
+  value Milliseconds
+
+fn delay({ms: Milliseconds, label: str}) -> void:
+  ...
+
+fn main() -> void:
+  let r = {timeout: 5.ms, name: "boot"}
+  r delay
+  return
+"""
+
+expectOk "explicit alias still works alongside auto-matching", """
+fn playTrack({id: int, name: str, length: int}) -> void:
+  ...
+
+fn main() -> void:
+  let ext = {trackId: 42, title: "Slow Jam", durationMs: 215000}
+  let norm = ext alias(trackId: id, title: name, durationMs: length)
+  norm playTrack
+  return
+"""
+
 if failures > 0:
   echo failures, " test(s) failed"
   quit(1)

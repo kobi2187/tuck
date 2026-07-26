@@ -11,3 +11,6 @@ tuck
 .tuck-cache/
 tests/beef_out/
 tests/beef_backend
+tests/known_bugs
+tests/auto_alias_e2e
+tests/auto_alias_out/
