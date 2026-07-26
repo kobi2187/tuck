@@ -9,13 +9,12 @@
 ## mailboxes (only one coroutine runs at a time; sends and drains never race).
 ##
 ## Build note: async Tuck programs MUST compile with
-##   --stackTrace:off --lineTrace:off  and  --path:<arsenal>/src
+##   --stackTrace:off --lineTrace:off
 ## (Nim's stack-walker corrupts the switched coroutine stack otherwise.)
+## No --path is needed anymore: the engine is vendored in ./tuck_coro.
 
 import std/nativesockets
-import arsenal/concurrency/coroutines/coroutine
-import arsenal/concurrency/scheduler
-import arsenal/io/eventloop
+import ./tuck_coro
 
 type
   TuckFd* = int | SocketHandle

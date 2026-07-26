@@ -5,8 +5,8 @@
 set -e
 cd "$(dirname "$0")/.."
 
-ARS=/home/kl/prog/arsenal2/src
-NIMFLAGS="-d:release --hints:off --warnings:off --stackTrace:off --lineTrace:off --path:$ARS"
+# No --path: the coroutine engine is vendored in compiler/tuck_coro.nim.
+NIMFLAGS="-d:release --hints:off --warnings:off --stackTrace:off --lineTrace:off"
 
 echo "=== building tuck ==="
 nim c --hints:off --warnings:off -o:tuck tuck.nim > /dev/null 2>&1
