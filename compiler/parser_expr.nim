@@ -420,13 +420,19 @@ proc parseExpr*(p: var Parser): Expr =
     return Expr(span: sp, kind: exkAssign, target: target, assignVal: valExpr,
                 isDecl: true, isMutable: mutable)
 
-  if curr.kind == tkIf:
+  if curr.kind == tkIf or curr.kind == tkElif:
+    # `elif C: B` is sugar for `else: (if C: B)` — the nested if lands in
+    # elseBranch, so nothing downstream (checker, codegen) needs to know it
+    # was written as an elif. Recursion handles chains of any length plus a
+    # trailing `else`.
     discard p.advance()
     let cond = p.parseExpr()
     discard p.expect(tkColon)
     let thenBranch = p.parseBlock()
     var elseBranch: Expr
-    if p.current().kind == tkElse:
+    if p.current().kind == tkElif:
+      elseBranch = p.parseExpr()      # re-enters here on the tkElif branch
+    elif p.current().kind == tkElse:
       discard p.advance()
       discard p.expect(tkColon)
       elseBranch = p.parseBlock()

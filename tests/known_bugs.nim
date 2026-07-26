@@ -398,6 +398,40 @@ fn main() -> int [io]:
     fixed = true,
     ok)
 
+# ---------------------------------------------------------------------------
+# 10. FIXED 2026-07-26 — `elif` was lexed but never parsed
+# ---------------------------------------------------------------------------
+# tkElif existed in the lexer's keyword table from the start, but parseExpr's
+# if-branch only ever looked for tkElse, so a natural `elif` chain died with
+# "Expected expression but got: tkElif". Every multi-branch condition had to
+# be hand-nested. Found by the rosetta example corpus (b10, b16), where two
+# independent authors reached for elif writing ordinary grading/guard code.
+# Fix: `elif C: B` parses as `else: (if C: B)` — pure sugar, nested into
+# elseBranch, so no AST/checker/codegen change was needed.
+block:
+  let (ok, outp) = build("""
+fn classify({n: int}) -> int:
+  if n < 0:
+    return 0
+  elif n == 0:
+    return 1
+  elif n < 10:
+    return 2
+  else:
+    return 3
+
+fn main() -> int:
+  return {n: 5} classify
+""")
+  bug(
+    "elif chains parse",
+    "`elif` is in the lexer keyword table but the parser never consumed it, " &
+      "so every multi-branch condition had to be written as hand-nested " &
+      "if/else. It desugars to `else: (if C: B)`.",
+    "compiler/parser_expr.nim — parseExpr's tkIf branch",
+    fixed = true,
+    ok)
+
 echo ""
 echo "open bugs: ", stillBroken
 if failures > 0:
