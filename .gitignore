@@ -21,3 +21,4 @@ examples/*.bf
 compiler/tuckrt/minicoro.a
 tests/odin_out/
 tests/odin_backend
+tests/mangle_tests

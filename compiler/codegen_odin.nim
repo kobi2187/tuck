@@ -13,6 +13,7 @@
 # usually a fix in the other.
 import ast, lowering, strutils, sets, tables
 import resolution
+from mangle import mangleName
 
 type
   OdinCodegenCtx = object
@@ -1212,11 +1213,10 @@ proc genOdinFnDecl(ctx: var OdinCodegenCtx, d: Decl): string =
   if d.isDecision or d.isDecisionTable():
     return ctx.genDecisionTable(d)
   let ind = "  ".repeat(ctx.indent)
-  # Odin reserves `main` for the program entry point, which emitOdin writes
-  # itself — Tuck's own `fn main` becomes tuck_main and is called from there.
-  let fnNameSanitized =
-    if d.name == "main": "tuck_main"
-    else: d.name.replace(".", "_")
+  # Names arrive already mangled by the lowering pass (compiler/mangle.nim),
+  # which is also what keeps Tuck's `fn main` from colliding with Odin's
+  # entry point — it is tuck_main by the time it gets here.
+  let fnNameSanitized = d.name.replace(".", "_")
   var params: seq[string]
   ctx.fnAsParam = true
   for p in d.fnParams:
@@ -1901,7 +1901,7 @@ proc emitOdin*(m: Module,
   for d in m.decls:
     if d == nil: continue
     if d.kind in {dkActor, dkTask}: bootUsesRt = true
-    elif d.kind == dkFn and d.name == "main" and not d.isPending:
+    elif d.kind == dkFn and d.name == mangleName("main") and not d.isPending:
       bootMainReturns = d.fnReturnType != nil and
                         not (d.fnReturnType.kind == tkNamed and
                              d.fnReturnType.name == "void")
@@ -1950,12 +1950,14 @@ proc emitOdin*(m: Module,
     res.add(mains & "\n")
   # A value-returning `fn main` IS the process exit code (mirrors tuck.nim).
   var mainReturns = false
+  let tuckMain = mangleName("main")
   for d in m.decls:
-    if d != nil and d.kind == dkFn and d.name == "main" and not d.isPending:
+    if d != nil and d.kind == dkFn and d.name == tuckMain and not d.isPending:
       mainReturns = d.fnReturnType != nil and
                     not (d.fnReturnType.kind == tkNamed and
                          d.fnReturnType.name == "void")
-      res.add(if mainReturns: "\tmainRc := tuck_main()\n" else: "\ttuck_main()\n")
+      res.add(if mainReturns: "\tmainRc := " & tuckMain & "()\n"
+              else: "\t" & tuckMain & "()\n")
       break
   # Drive the loop only when TASKS exist. Actors are daemons whose drain
   # loops never finish, so running the scheduler for them would spin

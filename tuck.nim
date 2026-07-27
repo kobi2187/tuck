@@ -12,6 +12,7 @@ import compiler/parser
 import compiler/semantics
 import compiler/typecheck
 import compiler/lowering
+import compiler/mangle
 import compiler/codegen
 import compiler/codegen_beef
 import compiler/codegen_odin
@@ -220,6 +221,16 @@ when isMainModule:
     var realModules = initTable[string, Module]()
     for lm in prog[0 ..< prog.high]:
       realModules[lm.name] = lm.m
+    # Mangling runs ONCE over the WHOLE IMPORT CLOSURE and the shared
+    # Resolution, BEFORE the per-backend copies. Whole-program because a
+    # qualified reference names a decl in another module — `http::get` is a
+    # user fn and gets the prefix, `fs::readFile` is an extern and does not —
+    # which one module alone cannot distinguish. Before the copies because
+    # the Resolution is global; renaming it per-copy would leave the other
+    # backends looking up names that no longer exist.
+    var progMods: seq[Module]
+    for lm in prog: progMods.add(lm.m)
+    mangleProgram(progMods)
     # Each backend lowers its OWN copy: lowering and the emitters both mutate
     # the tree (injectTailReturn), so a shared one would hand Beef whatever
     # Nim's pass left behind. Node ids survive the copy, so the Resolution
@@ -244,7 +255,8 @@ when isMainModule:
                                               m: deepCopy(lm.m)))
       var bfReal = initTable[string, Module]()
       for lm in bfProg[0 ..< bfProg.high]: bfReal[lm.name] = lm.m
-      for lm in bfProg: lowerModule(lm.m)
+      for lm in bfProg:
+        lowerModule(lm.m)
       for lm in bfProg[0 ..< bfProg.high]:
         let modBfPath = outDir / ("mod_" & lm.name & ".bf")
         writeFile(modBfPath, emitBeefModule(lm.name, lm.m, bfReal))
@@ -259,7 +271,8 @@ when isMainModule:
                                               m: deepCopy(lm.m)))
       var odReal = initTable[string, Module]()
       for lm in odProg[0 ..< odProg.high]: odReal[lm.name] = lm.m
-      for lm in odProg: lowerModule(lm.m)
+      for lm in odProg:
+        lowerModule(lm.m)
       for lm in odProg[0 ..< odProg.high]:
         # Odin packages are DIRECTORIES: an imported module becomes
         # mod_<name>/<name>.odin so `import fs "./mod_fs"` resolves.
@@ -291,7 +304,9 @@ when isMainModule:
           mainReturns = d.fnReturnType != nil and
             not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name in ["void", "unit"])
         if d != nil and d.kind == dkActor:
-          actorNames.add(d.name)
+          # `m` is the ORIGINAL tree; each backend mangled its own deepCopy,
+          # so the emitted symbol carries the prefix and this must match.
+          actorNames.add(mangleName(d.name))
         if d != nil and d.kind == dkTask:
           hasTasks = true
       if not hasMain:
@@ -316,10 +331,13 @@ when isMainModule:
         if hasTasks: asyncDrive = "\n  tuckRun()"
       # a value-returning main IS the process exit code. When the runtime drives
       # tasks after main, keep main's return as the exit code via mainRc.
+      # `fn main` is mangled like every other user fn, so the entry calls the
+      # prefixed symbol.
+      let tuckMain = mangleName("main") & "()"
       let mainCall =
-        if hasTasks and mainReturns: "let mainRc = main()"
-        elif mainReturns: "quit(main())"
-        else: "main()"
+        if hasTasks and mainReturns: "let mainRc = " & tuckMain
+        elif mainReturns: "quit(" & tuckMain & ")"
+        else: tuckMain
       let asyncExit = if hasTasks and mainReturns: "\n  quit(mainRc)" else: ""
       writeFile(mainNim, readFile(mainNim) &
         "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
