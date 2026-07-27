@@ -46,6 +46,33 @@ proc die(msg: string) =
 proc elapsedMs(t0: float): string =
   formatFloat((epochTime() - t0) * 1000, ffDecimal, 1) & " ms"
 
+# Pick the quickest C backend available. tcc compiles several times faster
+# than gcc and is what Nim's own fast path expects; clang links faster than
+# gcc when tcc is absent. Empty = leave Nim's default alone.
+proc pickFastCC(): string =
+  # Tuck is single-threaded and cooperative (actors and tasks are coroutines
+  # on one scheduler), so --threads:off is correct on the merits — and it
+  # also drops the atomic builtins tcc lacks, which is what lets tcc, the
+  # fastest C compiler here, build the runtime at all.
+  if findExe("tcc") != "":
+    " --cc:tcc --tlsEmulation:on --threads:off "
+  elif findExe("clang") != "": " --cc:clang --threads:off "
+  else: " --threads:off "
+
+# Every backend reports the same two numbers after a successful build, so
+# `--nim` vs `--odin` is a fair comparison rather than a vibe.
+proc reportBuild(binPath: string, buildMs: float): string =
+  var sizeStr = "?"
+  try:
+    let bytes = getFileSize(binPath)
+    sizeStr = if bytes >= 1024 * 1024:
+                formatFloat(bytes.float / (1024 * 1024), ffDecimal, 1) & " MB"
+              else:
+                formatFloat(bytes.float / 1024, ffDecimal, 1) & " KB"
+  except OSError, IOError:
+    discard
+  "(" & formatFloat(buildMs, ffDecimal, 0) & " ms, " & sizeStr & ")"
+
 proc lexTokens(source: string): seq[Token] =
   var lex = Lexer(source: source, position: 0, line: 1, column: 1, indentStack: @[0])
   while true:
@@ -244,6 +271,12 @@ when isMainModule:
       let odPath = outDir / (base & ".odin")
       writeFile(odPath, emitOdin(odProg[^1].m, odReal, base))
       echo "wrote ", odPath
+      # The emitted package imports `./tuckrt`, so the runtime rides along.
+      let rtSrc = getAppDir() / "compiler" / "tuckrt"
+      if dirExists(rtSrc):
+        let rtDst = outDir / "tuckrt"
+        createDir(rtDst)
+        copyFile(rtSrc / "tuck_rt.odin", rtDst / "tuck_rt.odin")
     let m = prog[^1].m
     if cmd in ["build", "b"]:
       # entry point: `fn main` runs when the binary starts. No main =
@@ -307,11 +340,22 @@ when isMainModule:
       # for a pure program (the async paths are linked, just not used).
       # No --path: the coroutine engine is vendored in compiler/tuck_coro.nim.
       let asyncFlags = " --stackTrace:off --lineTrace:off "
+      # Default to the FAST path, not the fast-binary path: -d:release and
+      # -d:danger cost seconds of optimisation the edit/run loop never wants.
+      # `--opt:none` plus a quick C compiler is the shortest route to a
+      # runnable binary; `--release` opts into the slow, fast-code build.
+      let wantRelease = "--release" in opts
+      let speedFlags =
+        if wantRelease: " -d:release "
+        else: " --opt:none -d:tuckFast " & pickFastCC()
       let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
-                   " -o:" & quoteShell(binPath) & " " & quoteShell(binNim)
+                   speedFlags & " -o:" & quoteShell(binPath) & " " &
+                   quoteShell(binNim)
+      let nimT0 = epochTime()
       let rc = execShellCmd(nimCmd)
+      let buildMs = (epochTime() - nimT0) * 1000
       if rc != 0: die("tuck: nim compilation failed")
-      echo "built ", binPath
+      echo "built ", binPath, "  ", reportBuild(binPath, buildMs)
       if "--beef" in opts:
         let beefBuild = findBeefBuild()
         if beefBuild == "":
@@ -326,6 +370,28 @@ when isMainModule:
           copyFile(beefBinPath, outDir / (binBase & "_beef"))
           inclFilePermissions(outDir / (binBase & "_beef"), {fpUserExec, fpGroupExec, fpOthersExec})
           echo "built ", outDir / (binBase & "_beef")
+      if "--odin" in opts:
+        let odinExe = if findExe("odin") != "": findExe("odin")
+                      elif fileExists("/home/kl/apps/Odin/odin"): "/home/kl/apps/Odin/odin"
+                      else: ""
+        if odinExe == "":
+          echo "tuck: odin not found on PATH — skipping Odin build"
+        else:
+          # Odin builds a DIRECTORY (the package), not a single file, and
+          # wants the entry file named after nothing in particular — the
+          # emitted <base>.odin plus tuckrt/ and mod_*/ are already there.
+          let odinBin = outDir / (binBase & "_odin")
+          # -o:none is Odin's fastest path; -o:speed is the release build.
+          let odinOpt = if wantRelease: "-o:speed" else: "-o:none"
+          let odinCmd = quoteShell(odinExe) & " build " & quoteShell(outDir) &
+                        " " & odinOpt & " -out:" & quoteShell(odinBin)
+          let odT0 = epochTime()
+          let odRc = execShellCmd(odinCmd)
+          let odMs = (epochTime() - odT0) * 1000
+          if odRc != 0:
+            echo "tuck: odin compilation failed"
+          else:
+            echo "built ", odinBin, "  ", reportBuild(odinBin, odMs)
     echo "OK (", elapsedMs(t0), ")"
   else:
     usage()
