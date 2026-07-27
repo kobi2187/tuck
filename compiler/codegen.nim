@@ -113,6 +113,18 @@ proc genType*(t: Type): string =
     var parts: seq[string]
     for a in t.args: parts.add(genType(a))
     genType(t.base) & "[" & parts.join(", ") & "]"
+  of tkFunc:
+    # A resolved function reference (`:plus`) carries its real signature.
+    # `auto` below is fine for a PARAM (Nim monomorphizes per bake) but is
+    # not a type a record field can hold, so a tracked signature emits the
+    # concrete proc type instead. Mirrors codegen_odin.nim.
+    var ps: seq[string]
+    for p in t.params: ps.add(genType(p))
+    let r = if t.result != nil and not (t.result.kind == tkNamed and
+                                        t.result.name == "void"):
+              ": " & genType(t.result)
+            else: ""
+    "proc(" & ps.join(", ") & ")" & r & " {.closure.}"
   of tkRecord:
     var parts: seq[string]
     for f in t.fields: parts.add(f.name & ": " & genType(f.typ))

@@ -176,6 +176,11 @@ initScheduler :: proc() {
 	}
 }
 
+// `ready` is PRIVATE: it is a plausible Tuck function name — 27-actor-select
+// declares `fn ready` — and nothing outside this package needs it. The
+// runtime lives in its own package so a clash is not an error either way,
+// but keeping the surface small stops emitted code binding the wrong one.
+@(private)
 ready :: proc(coro: ^Coroutine) {
 	if coro == nil || isFinished(coro) do return
 	initScheduler()
@@ -186,6 +191,7 @@ schedule :: proc(coro: ^Coroutine) {
 	ready(coro)
 }
 
+@(private)
 spawn :: proc(fn: proc()) -> ^Coroutine {
 	c := newCoroutine(fn)
 	ready(c)

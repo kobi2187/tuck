@@ -118,11 +118,11 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     # `$T` mirrors the Nim backend's `auto`. A NAMED fnsig lands in the
     # `else` branch below and keeps its own type name.
     #
-    # ponytail: as a struct FIELD this still emits `rawptr`, which is not
-    # callable — `bake` filling a slot then calling through it works in the
-    # Nim backend but not here. Needs the record shape to become parametric
-    # over the slot's proc type; deferred, 03-functions-bake is the case.
-    of "fn": (if ctx.fnAsParam: "$T" else: "rawptr")
+    # As a struct FIELD there is no polymorphism to lean on, so it needs a
+    # concrete callable. tkFunc above covers the case where the checker
+    # resolved a `:name` reference and kept its signature; this is the
+    # fallback for a slot that was never given one.
+    of "fn": (if ctx.fnAsParam: "$T" else: "proc()")
     else:
       # Odd bit widths from decision tables (u2, u12, ...) round up to a real int
       if t.name.len >= 2 and t.name[0] in {'u', 'i'} and t.name[1..^1].allCharsInSet({'0'..'9'}):
@@ -172,6 +172,16 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     var parts: seq[string]
     for a in t.args: parts.add(ctx.odinType(a))
     return ctx.odinType(t.base) & "(" & parts.join(", ") & ")"
+  of tkFunc:
+    # A resolved function reference (`:plus`) carries its real signature, so
+    # it emits a callable proc type rather than an opaque pointer.
+    var ps: seq[string]
+    for p in t.params: ps.add(ctx.odinType(p))
+    let r = if t.result != nil and not (t.result.kind == tkNamed and
+                                        t.result.name == "void"):
+              " -> " & ctx.odinType(t.result)
+            else: ""
+    "proc(" & ps.join(", ") & ")" & r
   of tkRecord:
     recStructName(ctx, t.fields)
   of tkSum:
@@ -1887,13 +1897,20 @@ proc emitOdin*(m: Module,
   # The runtime boot below emits rt.* calls of its own, so decide on the
   # import from the DECLARATIONS, not just the already-emitted body.
   var bootUsesRt = false
+  var bootMainReturns = false
   for d in m.decls:
-    if d != nil and d.kind in {dkActor, dkTask}:
-      bootUsesRt = true
-      break
+    if d == nil: continue
+    if d.kind in {dkActor, dkTask}: bootUsesRt = true
+    elif d.kind == dkFn and d.name == "main" and not d.isPending:
+      bootMainReturns = d.fnReturnType != nil and
+                        not (d.fnReturnType.kind == tkNamed and
+                             d.fnReturnType.name == "void")
   var imports: seq[string]
   if "fmt." in body or "fmt." in mains:
     imports.add("import \"core:fmt\"")
+  # a value-returning main exits through os.exit
+  if bootMainReturns or "os." in body:
+    imports.add("import \"core:os\"")
   if bootUsesRt or "rt." in body or "rt." in mains:
     imports.add("import rt \"./tuckrt\"")
   # Imported Tuck modules are sibling packages (mod_<name>/), referenced
@@ -1931,12 +1948,22 @@ proc emitOdin*(m: Module,
       res.add("\trt.tuckStartActor(drain_" & a & ")\n")
   if mains != "":
     res.add(mains & "\n")
+  # A value-returning `fn main` IS the process exit code (mirrors tuck.nim).
+  var mainReturns = false
   for d in m.decls:
     if d != nil and d.kind == dkFn and d.name == "main" and not d.isPending:
-      res.add("\ttuck_main()\n")
+      mainReturns = d.fnReturnType != nil and
+                    not (d.fnReturnType.kind == tkNamed and
+                         d.fnReturnType.name == "void")
+      res.add(if mainReturns: "\tmainRc := tuck_main()\n" else: "\ttuck_main()\n")
       break
-  if usesRuntime:
+  # Drive the loop only when TASKS exist. Actors are daemons whose drain
+  # loops never finish, so running the scheduler for them would spin
+  # forever — tuck.nim gates on hasTasks for exactly this reason.
+  if hasTasks:
     res.add("\trt.tuckRun()\n")
+  if mainReturns:
+    res.add("\tos.exit(mainRc)\n")
   res.add("}\n")
   res
 

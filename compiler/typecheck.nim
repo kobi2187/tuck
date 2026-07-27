@@ -1082,6 +1082,15 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
       discard tc.synthesize(arm.body)
     unknownType(e.span)
   of exkQualified, exkImport:
+    # `:name` with no module path is a FUNCTION REFERENCE (`{add: :plus}`,
+    # `waitUntil {pred: :ready}`). Resolving it to a real tkFunc keeps the
+    # signature — params and result — instead of erasing it to Unknown, so a
+    # backend can emit a typed callable rather than an opaque pointer.
+    if e.modulePath.len == 0 and tc.fnSigs.hasKey(e.qualName):
+      let sig = tc.fnSigs[e.qualName]
+      var ps: seq[Type]
+      for p in sig.params: ps.add(p.typ)
+      return Type(span: e.span, kind: tkFunc, params: ps, result: sig.ret)
     unknownType(e.span)
 
 # A bracket's meaning comes from its RECEIVER, which only the checker knows:
