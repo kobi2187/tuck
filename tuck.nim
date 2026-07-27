@@ -234,7 +234,11 @@ when isMainModule:
       for lm in odProg[0 ..< odProg.high]: odReal[lm.name] = lm.m
       for lm in odProg: lowerModule(lm.m)
       for lm in odProg[0 ..< odProg.high]:
-        let modOdPath = outDir / ("mod_" & lm.name & ".odin")
+        # Odin packages are DIRECTORIES: an imported module becomes
+        # mod_<name>/<name>.odin so `import fs "./mod_fs"` resolves.
+        let modDir = outDir / ("mod_" & lm.name.replace("-", "_"))
+        createDir(modDir)
+        let modOdPath = modDir / (lm.name.replace("-", "_") & ".odin")
         writeFile(modOdPath, emitOdinModule(lm.name, lm.m, odReal))
         echo "wrote ", modOdPath
       let odPath = outDir / (base & ".odin")

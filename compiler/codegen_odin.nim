@@ -34,6 +34,7 @@ type
     staticAsserts: seq[string]  # collected into one `static this()` block
     moduleName: string    # error codes hash over "module/Enum.Variant"
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
+    ptrSelf: bool         # inside a member fn: `self` is ^T and needs a deref
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -392,7 +393,7 @@ proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
   ""
 
 # expr alias(old: new, ...) — rebuild as the renamed TRec shape.
-# ponytail: exkVar receivers only (no expr-position temp in Beef);
+# ponytail: exkVar receivers only (no expr-position temp);
 # falls back to pass-through otherwise.
 proc genOdinAlias(ctx: var OdinCodegenCtx, e: Expr): string =
   if e.args[0].kind != exkVar or semLayer.typeFor(e.args[0]) == nil: return ""
@@ -407,9 +408,9 @@ proc genOdinAlias(ctx: var OdinCodegenCtx, e: Expr): string =
       if rf.name == oldName: ft = rf.typ
     if ft == nil or newExpr == nil or newExpr.kind != exkVar: return ""
     newFields.add(FieldDef(name: newExpr.name, typ: ft, span: e.span))
-    vals.add(recv & "." & oldName)
+    vals.add(newExpr.name & " = " & recv & "." & oldName)
   let recName = ctx.recStructName(newFields)
-  return recName & "(" & vals.join(", ") & ")"
+  return recName & "{" & vals.join(", ") & "}"
 
 # {a, b} merge — flatten into the union TRec shape (mirrors codegen.nim)
 proc genOdinMerge(ctx: var OdinCodegenCtx, e: Expr): string =
@@ -420,9 +421,9 @@ proc genOdinMerge(ctx: var OdinCodegenCtx, e: Expr): string =
     let recv = ctx.genOdinExpr(mexpr)
     for f in getFieldsForType(ctx.module, semLayer.typeFor(mexpr)):
       newFields.add(f)
-      vals.add(recv & "." & f.name)
+      vals.add(f.name & " = " & recv & "." & f.name)
   if newFields.len == 0: return ""
-  return ctx.recStructName(newFields) & "(" & vals.join(", ") & ")"
+  return ctx.recStructName(newFields) & "{" & vals.join(", ") & "}"
 
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   var args: seq[string]
@@ -489,13 +490,13 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     # bare positional args (incl. the receiver a chain mutator call
     # synthesizes, e.g. `c ..bump`) — a mutable-record param takes a pointer,
     # so the call site passes `&x`; only a bare var has an address to take
-    let paramTypes = lookupFnParamTypes(ctx.module, calleeStr)
-    for i, a in e.args:
-      let argStr = ctx.genOdinExpr(a)
-      let needsRef = a.kind == exkVar and i < paramTypes.len and
-                     paramTypes[i] != nil and paramTypes[i].kind == tkNamed and
-                     isRecordType(ctx.module, paramTypes[i].name)
-      args.add((if needsRef: "&" else: "") & argStr)
+    # ponytail: pass records BY VALUE. A mutating callee would need `^T` and
+    # `&x` here, but Odin proc params aren't addressable, so `&param` is a
+    # hard error — and Tuck's mutators already return the updated value,
+    # which the chain emitter assigns back. Revisit if a real in-place
+    # mutator shows up that the return-and-assign shape can't express.
+    for a in e.args:
+      args.add(ctx.genOdinExpr(a))
   if calleeStr == "bake":
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
@@ -681,8 +682,10 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     if e.name == "input" and ctx.currentParams.len > 0:
       # the whole incoming payload, rebuilt as its TRec shape
       var vals: seq[string]
-      for p in ctx.currentParams: vals.add(p.name)
-      return ctx.recStructName(ctx.currentParams) & "(" & vals.join(", ") & ")"
+      for p in ctx.currentParams: vals.add(p.name & " = " & p.name)
+      return ctx.recStructName(ctx.currentParams) & "{" & vals.join(", ") & "}"
+    # inside a member fn `self` is a pointer: read through it
+    if e.name == "self" and ctx.ptrSelf: return "self^"
     if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
     if e.name notin ctx.definedVars:
       # bare enum tag: qualify with its declared owner (Beef has no
@@ -691,6 +694,13 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       if owner != "": return owner & "." & e.name
     return e.name
   of exkField:
+    # `r.ok` on a !T/?T value is a STATUS TEST, not a field — the runtime
+    # models status as an enum, so emit the comparison the guard means.
+    if e.fieldName == "ok" and e.receiver != nil:
+      let rt = semLayer.typeFor(e.receiver)
+      if rt != nil and rt.kind == tkApp and rt.base != nil and
+         rt.base.kind == tkNamed and rt.base.name in ["!", "?", "!?"]:
+        return ctx.genOdinExpr(e.receiver) & ".status == .Ok"
     # `input.x` — the incoming payload's field is just the param
     if e.receiver != nil and e.receiver.kind == exkVar and
        e.receiver.name == "input" and ctx.currentParams.len > 0:
@@ -720,7 +730,8 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     var parts: seq[string]
     for item in e.items:
       parts.add(ctx.genOdinExpr(item))
-    return ".(" & parts.join(", ") & ")"
+    # Odin infers the element type from context: `{a, b}` as a compound literal
+    return "{" & parts.join(", ") & "}"
   of exkBracket:
     # indexing resolved to an at() call; a type application never reaches codegen
     if semLayer.hasCall(e): return ctx.genOdinExpr(semLayer.call(e))
@@ -869,13 +880,13 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkRaise:
     return ctx.genRaise(e)
   of exkChain:
-    # `x ..field {v} ..mutate {a}` — one plain Beef statement per step:
+    # `x ..field {v} ..mutate {a}` — one plain statement per step:
     # field set, or mutator call reassigned into the base var
     let baseStr = ctx.genOdinExpr(e.base)
     var lines: seq[string]
     for step in e.steps:
       if semLayer.stepCall(step) != nil:
-        lines.add(ind & baseStr & " = " & ctx.genOdinCall(semLayer.stepCall(step)) & ";")
+        lines.add(ind & baseStr & " = " & ctx.genOdinCall(semLayer.stepCall(step)))
       else:
         var valStr = ""
         if step.arg != nil and step.arg.kind == exkStruct and
@@ -927,7 +938,12 @@ proc genOdinMemberFn(ctx: var OdinCodegenCtx, m: Decl, objName: string): string 
   let copy = Decl(span: m.span, kind: dkFn, name: m.name, fnParams: params,
                   fnReturnType: ret, fnBody: m.fnBody, fnEffects: m.fnEffects,
                   fnGenerics: m.fnGenerics)
-  ctx.genOdinDecl(copy)
+  # `self` is a POINTER here, so every mention in the body needs a deref —
+  # `self^` reads the value and `self^ = x` writes through to the caller.
+  let oldPtrSelf = ctx.ptrSelf
+  ctx.ptrSelf = true
+  result = ctx.genOdinDecl(copy)
+  ctx.ptrSelf = oldPtrSelf
 
 # Pending stub: logs on invocation, returns the zero value.
 proc genPendingStub(ctx: var OdinCodegenCtx, d: Decl): string =
@@ -983,10 +999,11 @@ proc genDecisionTable(ctx: var OdinCodegenCtx, d: Decl): string =
   let fnNameSanitized = d.name.replace(".", "_")
   var params: seq[string]
   for p in d.fnParams:
-    params.add(ctx.odinType(p.typ) & " " & p.name)
+    params.add(p.name & ": " & ctx.odinType(p.typ))
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
-  let header = ind & "public static " & retTypeStr & " " & fnNameSanitized &
-               "(" & params.join(", ") & ")"
+  let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
+  let header = ind & fnNameSanitized & " :: proc(" & params.join(", ") & ")" &
+               retStr & " {"
 
   # Bitmask/packed path: when every column domain is enumerable the whole
   # table collapses to one switch over a packed integer key (spec 6.1).
@@ -1043,28 +1060,24 @@ proc genDecisionTable(ctx: var OdinCodegenCtx, d: Decl): string =
       let ordExpr = if domains[c] == @["false", "true"]:
                       "(" & d.fnParams[c].name & " ? 1 : 0)"
                     else:
-                      "(int)" & d.fnParams[c].name
+                      "int(" & d.fnParams[c].name & ")"
       if stride > 1:
         keyParts.add(ordExpr & " * " & $stride)
       else:
         keyParts.add(ordExpr)
     var caseLines: seq[string]
-    caseLines.add(ind & "{")
-    caseLines.add(ind & "    switch (" & keyParts.join(" + ") & ")   // packed decision key")
-    caseLines.add(ind & "    {")
+    caseLines.add(ind & "\tswitch " & keyParts.join(" + ") & " {   // packed decision key")
     for gi, g in groups:
       if gi == groups.len - 1:
-        caseLines.add(ind & "    default: return " & g.outcome & ";")
+        caseLines.add(ind & "\tcase: return " & g.outcome)
       else:
         var ks: seq[string]
         for k in g.keys: ks.add($k)
-        caseLines.add(ind & "    case " & ks.join(", ") & ": return " & g.outcome & ";")
-    caseLines.add(ind & "    }")
-    caseLines.add(ind & "}")
-    return header & "\n" & caseLines.join("\n") & "\n"
+        caseLines.add(ind & "\tcase " & ks.join(", ") & ": return " & g.outcome)
+    caseLines.add(ind & "\t}")
+    return header & "\n" & caseLines.join("\n") & "\n" & ind & "}\n"
 
   var bodyLines: seq[string]
-  bodyLines.add(ind & "{")
   var hasCatchAll = false
   for idx, s in d.fnBody.stmts:
     let arm = s.arms[0]
@@ -1077,17 +1090,16 @@ proc genDecisionTable(ctx: var OdinCodegenCtx, d: Decl): string =
       let patStr = genPatternStr(pat)
       if patStr != "_" and i < d.fnParams.len:
         conds.add(d.fnParams[i].name & " == " & ctx.patternValue(patStr))
-    let condStr = if conds.len > 0: conds.join(" && ") else: "true"
+    let condStr = if conds.len > 0: conds.join(" && ") else: ""
     let resultExprStr = ctx.armValue(arm.body)
-    if condStr == "true":
-      bodyLines.add(ind & "    return " & resultExprStr & ";")
+    if condStr == "":
+      bodyLines.add(ind & "\treturn " & resultExprStr)
       hasCatchAll = true
     else:
-      bodyLines.add(ind & "    if (" & condStr & ") return " & resultExprStr & ";")
+      bodyLines.add(ind & "\tif " & condStr & " do return " & resultExprStr)
   if not hasCatchAll and retTypeStr != "void":
-    bodyLines.add(ind & "    return default;")
-  bodyLines.add(ind & "}")
-  return header & "\n" & bodyLines.join("\n") & "\n"
+    bodyLines.add(ind & "\treturn {}")
+  return header & "\n" & bodyLines.join("\n") & "\n" & ind & "}\n"
 
 proc genOdinFnDecl(ctx: var OdinCodegenCtx, d: Decl): string =
   if d.isPending:
@@ -1105,13 +1117,11 @@ proc genOdinFnDecl(ctx: var OdinCodegenCtx, d: Decl): string =
     else: d.name.replace(".", "_")
   var params: seq[string]
   for p in d.fnParams:
-    # the checker binds every param isVar:true (`self ..mutate` is fn-
-    # uniform) — value-type (struct) records need `^` (pointer) to allow
-    # that mutation in Odin, mirroring the self-param treatment below
-    let isMutParam = p.typ != nil and p.typ.kind == tkNamed and
-                      isRecordType(ctx.module, p.typ.name)
-    let typeStr = ctx.odinType(p.typ)
-    params.add(p.name & ": " & (if isMutParam: "^" & typeStr else: typeStr))
+    # Records pass BY VALUE. The checker binds every param isVar:true, but a
+    # Tuck mutator returns the updated record and the caller assigns it back
+    # (`server = withDefaults(server)`), so no pointer is needed — and Odin
+    # proc params aren't addressable, so `&arg` at the call site is illegal.
+    params.add(p.name & ": " & ctx.odinType(p.typ))
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
   # Generic fns: Odin's parametric polymorphism marks type params with `$`
   var genericParams: seq[string]
@@ -1313,13 +1323,12 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
       enumVariants.add("msg" & h.name.capitalize())
 
   if enumVariants.len == 0:
-    # No message handlers: an empty enum is invalid Beef. Emit just the state.
+    # No message handlers: an empty enum is invalid. Emit just the state.
     var bareFields: seq[string]
     for f in d.actorFields:
-      bareFields.add(ind & "    public " & ctx.fieldType(d.name, f) & " " & f.name & ";")
-    let bareBody = if bareFields.len > 0: bareFields.join("\n") else: ind & "    // empty"
-    return ind & "public class " & d.name & "\n" & ind & "{\n" & bareBody &
-           "\n" & ind & "}\n"
+      bareFields.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
+    let bareBody = if bareFields.len > 0: bareFields.join("\n") & "\n" else: ""
+    return ind & d.name & " :: struct {\n" & bareBody & ind & "}\n"
 
   # Handler params ride in the message envelope (deduped by name)
   var msgFields: seq[string]
@@ -1329,26 +1338,27 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
       for p in h.fnParams:
         if p.name notin seenMsgFields:
           seenMsgFields.incl(p.name)
-          msgFields.add(ind & "    public " & ctx.odinType(p.typ) & " " & p.name & ";")
+          msgFields.add(ind & "\t" & p.name & ": " & ctx.odinType(p.typ) & ",")
 
-  var res = ind & "public enum " & msgEnumName & " { " & enumVariants.join(", ") & " }\n"
-  res.add(ind & "public class " & msgTypeName & "\n" & ind & "{\n" &
-          ind & "    public " & msgEnumName & " kind;\n" &
+  var res = ind & msgEnumName & " :: enum { " & enumVariants.join(", ") & " }\n"
+  res.add(ind & msgTypeName & " :: struct {\n" &
+          ind & "\tkind: " & msgEnumName & ",\n" &
           (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") &
           ind & "}\n")
 
-  # Actor state object
+  # Actor state struct
   var fieldsStr: seq[string]
   for f in d.actorFields:
-    fieldsStr.add(ind & "    public " & ctx.fieldType(d.name, f) & " " & f.name & ";")
-  fieldsStr.add(ind & "    public Mailbox<" & msgTypeName & ", const " &
-                queueSize & "> mailbox;")
+    fieldsStr.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
+  fieldsStr.add(ind & "\tmailbox: rt.Mailbox(" & msgTypeName & ", " &
+                queueSize & "),")
 
-  # Dispatch handler
+  # Dispatch. Odin has no methods, so the actor rides as a `self` pointer and
+  # field access inside a handler goes through it.
   var handlerCases: seq[string]
   var hctx = OdinCodegenCtx(definedVars: initHashSet[string](),
                             fieldVars: initHashSet[string](),
-                            fieldPrefix: "this.", indent: ctx.indent + 3,
+                            fieldPrefix: "self.", indent: ctx.indent + 1,
                             module: ctx.module, realModules: ctx.realModules,
                             errPolicy: ctx.errPolicy)
   for f in d.actorFields:
@@ -1359,36 +1369,36 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
       var caseBody = ""
       for p in h.fnParams:
         hctx.definedVars.incl(p.name)
-        caseBody.add(ind & "        let " & p.name & " = msg." & p.name & ";\n")
+        caseBody.add(ind & "\t\t" & p.name & " := msg." & p.name & "\n")
       let bodyStr = hctx.genOdinExpr(h.fnBody)
-      handlerCases.add(ind & "        case ." & variantName & ":\n" & caseBody & bodyStr)
+      handlerCases.add(ind & "\tcase ." & variantName & ":\n" & caseBody & bodyStr)
   for hstr in hctx.hoisted:
     if hstr notin ctx.hoisted: ctx.hoisted.add(hstr)
   for sig, name in hctx.recShapes:
     if sig notin ctx.recShapes: ctx.recShapes[sig] = name
 
-  res.add(ind & "public class " & d.name & "\n" & ind & "{\n" &
-          fieldsStr.join("\n") & "\n\n")
-  res.add(ind & "    public void handleMsg(" & msgTypeName & " msg)\n" &
-          ind & "    {\n" & ind & "        switch (msg.kind)\n" &
-          ind & "        {\n" & handlerCases.join("\n") & "\n" &
-          ind & "        }\n" & ind & "    }\n")
+  res.add(ind & d.name & " :: struct {\n" & fieldsStr.join("\n") & "\n" &
+          ind & "}\n\n")
+  res.add(ind & "handleMsg_" & d.name & " :: proc(self: ^" & d.name &
+          ", msg: " & msgTypeName & ") {\n" &
+          ind & "\tswitch msg.kind {\n" & handlerCases.join("\n") & "\n" &
+          ind & "\t}\n" & ind & "}\n")
 
-  # Send helpers
+  # Send helpers: enqueue an envelope; a full ring drops (spec §9.1)
   for h in d.handlers:
     if h.kind == dkFn:
-      let helperName = "send" & h.name.capitalize()
+      let helperName = "send" & h.name.capitalize() & "_" & d.name
       let variantName = "msg" & h.name.capitalize()
       var helperParams: seq[string]
       var ctorArgs = "kind = ." & variantName
       for p in h.fnParams:
-        helperParams.add(ctx.odinType(p.typ) & " " & p.name)
+        helperParams.add(p.name & ": " & ctx.odinType(p.typ))
         ctorArgs.add(", " & p.name & " = " & p.name)
-      res.add("\n" & ind & "    public void " & helperName & "(" &
-              helperParams.join(", ") & ")\n" & ind & "    {\n" &
-              ind & "        this.mailbox.enqueue(new " & msgTypeName &
-              "() { " & ctorArgs & " });\n" & ind & "    }\n")
-  res.add(ind & "}\n")
+      let sep = if helperParams.len > 0: ", " else: ""
+      res.add("\n" & ind & helperName & " :: proc(self: ^" & d.name & sep &
+              helperParams.join(", ") & ") {\n" &
+              ind & "\t_ = rt.enqueue(&self.mailbox, " & msgTypeName &
+              "{" & ctorArgs & "})\n" & ind & "}\n")
   return res
 
 proc genRegistry(ctx: var OdinCodegenCtx, d: Decl): string =
@@ -1402,21 +1412,21 @@ proc genRegistry(ctx: var OdinCodegenCtx, d: Decl): string =
     for f in v.fields:
       if f.name notin seenFields:
         seenFields.incl(f.name)
-        fieldsStr.add(ind & "    public " & ctx.odinType(f.typ) & " " & f.name & ";")
+        fieldsStr.add(ind & "\t" & f.name & ": " & ctx.odinType(f.typ) & ",")
 
-  let enumStr = ind & "public enum " & msgEnumName & " { " & enumVariants.join(", ") & " }\n"
+  let enumStr = ind & msgEnumName & " :: enum { " & enumVariants.join(", ") & " }\n"
   let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") & "\n" else: ""
-  let typeStr = ind & "public class " & d.name & "\n" & ind & "{\n" &
-                ind & "    public " & msgEnumName & " kind;\n" & fieldsBody & ind & "}\n"
-  let globalVarStr = ind & "public static " & d.name & " latest" & d.name & ";\n\n"
+  let typeStr = ind & d.name & " :: struct {\n" &
+                ind & "\tkind: " & msgEnumName & ",\n" & fieldsBody & ind & "}\n"
+  let globalVarStr = ind & "latest" & d.name & ": " & d.name & "\n\n"
 
-  # Beef resolves declaration order lazily: no forward decls needed
+  # Odin resolves package-level declaration order lazily: no forward decls
   var raiseProcsStr = ""
   for v in d.variants:
     var params: seq[string]
     var assignParts: seq[string]
     for f in v.fields:
-      params.add(ctx.odinType(f.typ) & " " & f.name)
+      params.add(f.name & ": " & ctx.odinType(f.typ))
       assignParts.add(f.name & " = " & f.name)
     let paramStr = params.join(", ")
     let assignStr = if assignParts.len > 0: ", " & assignParts.join(", ") else: ""
@@ -1428,53 +1438,61 @@ proc genRegistry(ctx: var OdinCodegenCtx, d: Decl): string =
       if decl.kind == dkFn and decl.name == handlerName:
         var argNames: seq[string]
         for f in v.fields: argNames.add(f.name)
-        handlerCalls.add(ind & "    " & handlerNameSanitized & "(" &
-                         argNames.join(", ") & ");")
+        handlerCalls.add(ind & "\t" & handlerNameSanitized & "(" &
+                         argNames.join(", ") & ")")
 
     let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") & "\n" else: ""
-    raiseProcsStr.add(ind & "public static void raise_" & d.name & "_" & v.name &
-                      "(" & paramStr & ")\n" & ind & "{\n" &
-                      ind & "    latest" & d.name & " = new " & d.name &
-                      "() { kind = ." & v.name & assignStr & " };\n" &
+    raiseProcsStr.add(ind & "raise_" & d.name & "_" & v.name &
+                      " :: proc(" & paramStr & ") {\n" &
+                      ind & "\tlatest" & d.name & " = " & d.name &
+                      "{kind = ." & v.name & assignStr & "}\n" &
                       handlerInvokes & ind & "}\n\n")
 
   return enumStr & typeStr & "\n" & globalVarStr & raiseProcsStr
 
-# rt-implemented extern of a library module: forward to the Beef runtime,
+# rt-implemented extern of a library module: forward to the Odin runtime,
 # converting the runtime's record shapes to this module's hoisted shapes.
 proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl): string =
   let ind = "  ".repeat(ctx.indent)
   var params: seq[string]
   var argNames: seq[string]
   for p in mem.fnParams:
-    params.add(ctx.odinType(p.typ) & " " & p.name)
+    params.add(p.name & ": " & ctx.odinType(p.typ))
     argNames.add(p.name)
-  let callStr = "Rt." & mem.name & "(" & argNames.join(", ") & ")"
+  let callStr = "rt." & mem.name & "(" & argNames.join(", ") & ")"
   let (bw, _, binnerT) = ctx.odinBangInfo(mem.fnReturnType)
   let retTypeStr = if mem.fnReturnType != nil: ctx.odinType(mem.fnReturnType) else: "void"
-  let header = ind & "public static " & retTypeStr & " " & mem.name & "(" &
-               params.join(", ") & ")\n" & ind & "{\n"
+  let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
+  let header = ind & mem.name & " :: proc(" & params.join(", ") & ")" &
+               retStr & " {\n"
   if bw and binnerT != nil and binnerT.kind == tkRecord:
-    # convert TuckResult<RuntimeShape> -> TuckResult<ModuleShape> field by field
+    # convert TuckResult(RuntimeShape) -> TuckResult(ModuleShape) field by field
     let recName = recStructName(ctx, binnerT.fields)
     var fieldArgs: seq[string]
-    for f in binnerT.fields: fieldArgs.add("r.value." & f.name)
+    for f in binnerT.fields: fieldArgs.add(f.name & " = r.value." & f.name)
     return header &
-      ind & "    let r = " & callStr & ";\n" &
-      ind & "    " & retTypeStr & " res = default;\n" &
-      ind & "    res.status = r.status;\n" &
-      ind & "    res.err = r.err;\n" &
-      ind & "    if (r.status == .tsOk)\n" &
-      ind & "        res.value = " & recName & "(" & fieldArgs.join(", ") & ");\n" &
-      ind & "    return res;\n" & ind & "}\n"
+      ind & "\tr := " & callStr & "\n" &
+      ind & "\tres: " & retTypeStr & "\n" &
+      ind & "\tres.status = r.status\n" &
+      ind & "\tres.err = r.err\n" &
+      ind & "\tif r.status == .Ok {\n" &
+      ind & "\t\tres.value = " & recName & "{" & fieldArgs.join(", ") & "}\n" &
+      ind & "\t}\n" &
+      ind & "\treturn res\n" & ind & "}\n"
   elif mem.fnReturnType != nil and mem.fnReturnType.kind == tkRecord:
-    # plain record return: the runtime returns the single raw value
+    # plain record return: the runtime returns the single raw value, whose
+    # fields carry the same names as this module's hoisted shape
     let recName = recStructName(ctx, mem.fnReturnType.fields)
-    return header & ind & "    return " & recName & "(" & callStr & ");\n" & ind & "}\n"
+    var fieldArgs: seq[string]
+    for f in mem.fnReturnType.fields:
+      fieldArgs.add(f.name & " = raw." & f.name)
+    return header & ind & "\traw := " & callStr & "\n" &
+           ind & "\treturn " & recName & "{" & fieldArgs.join(", ") & "}\n" &
+           ind & "}\n"
   elif retTypeStr == "void":
-    return header & ind & "    " & callStr & ";\n" & ind & "}\n"
+    return header & ind & "\t" & callStr & "\n" & ind & "}\n"
   else:
-    return header & ind & "    return " & callStr & ";\n" & ind & "}\n"
+    return header & ind & "\treturn " & callStr & "\n" & ind & "}\n"
 
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   if d == nil: return ""
@@ -1536,10 +1554,15 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
       ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     var params: seq[string]
     for p in d.taskParams:
-      params.add(ctx.odinType(p.typ) & " " & p.name)
+      params.add(p.name & ": " & ctx.odinType(p.typ))
     let retTypeStr = if d.taskReturnType != nil: ctx.odinType(d.taskReturnType) else: "void"
-    let header = ind & "public static " & retTypeStr & " " & d.name & "(" &
-                 params.join(", ") & ")"
+    let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
+    # ponytail: a task emits as a plain proc and runs INLINE — there is no
+    # Odin coroutine runtime yet, so suspension points don't suspend. Same
+    # ceiling the Beef backend has. Spawn it properly once tuck_coro.odin
+    # lands; until then anything relying on a yield behaves synchronously.
+    let header = ind & d.name & " :: proc(" & params.join(", ") & ")" &
+                 retStr & " {"
     let oldVars = ctx.definedVars
     for p in d.taskParams:
       ctx.definedVars.incl(p.name)
@@ -1552,7 +1575,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     var bodyStr = ctx.genOdinExpr(d.taskBody)
     if d.taskBody != nil and d.taskBody.kind != exkBlock:
       let kw = if retTypeStr != "void": "return " else: ""
-      bodyStr = ind & "{\n" & ind & "  " & kw & bodyStr & ";\n" & ind & "}"
+      bodyStr = ind & "\t" & kw & bodyStr
     elif retTypeStr != "void":
       bodyStr = ensureTrailingReturn(bodyStr, d.taskBody, oldIndent)
     ctx.indent = oldIndent
@@ -1560,21 +1583,13 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     ctx.retInnerOdin = ""
     ctx.retInnerT = nil
     ctx.definedVars = oldVars
-    return header & "\n" & bodyStr & "\n"
+    return header & "\n" & bodyStr & "\n" & ind & "}\n"
   of dkConst:
-    # literals become Beef consts; structured data a static field
-    # (initialized at static ctor — still one-time, still immutable intent)
+    # A literal is a true compile-time constant (`::`); structured data
+    # becomes a package-level var, still one-time and immutable in intent.
     if d.constVal != nil and d.constVal.kind == exkLit:
-      let ty = case d.constVal.litKind
-               of lkInt: "int"
-               of lkFloat: "float"
-               of lkStr: "String"
-               of lkBool: "bool"
-               else: "int"
-      return ind & "public const " & ty & " " & d.name & " = " &
-             ctx.genOdinExpr(d.constVal) & ";"
-    return ind & "public static var " & d.name & " = " &
-           ctx.genOdinExpr(d.constVal) & ";"
+      return ind & d.name & " :: " & ctx.genOdinExpr(d.constVal)
+    return ind & d.name & " := " & ctx.genOdinExpr(d.constVal)
   of dkExpr:
     return ctx.genOdinExpr(d.expr)
   of dkRegister:
@@ -1701,6 +1716,14 @@ proc emitOdin*(m: Module,
     imports.add("import \"core:fmt\"")
   if "rt." in body or "rt." in mains:
     imports.add("import rt \"./tuckrt\"")
+  # Imported Tuck modules are sibling packages (mod_<name>/), referenced
+  # qualified as `<name>.fn` — import each one the body actually calls.
+  # The alias keeps the Tuck name even when it shadows an Odin core package
+  # (a module called `io` is fine as long as core:io isn't also imported).
+  for modName in realModules.keys:
+    let pkg = modName.replace("-", "_")
+    if (pkg & ".") in body or (pkg & ".") in mains:
+      imports.add("import " & pkg & " \"./mod_" & pkg & "\"")
   if imports.len > 0:
     res.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:
@@ -1736,10 +1759,19 @@ proc emitOdinModule*(name: string, m: Module,
     if d != nil and d.kind == dkErrors:
       ctx.errPolicy = d.policyName
   let (body, _) = ctx.emitBody(m)
-  var res = "package " & pkg & "\n\n"
+  # Odin package names are GLOBAL, not scoped to their directory, so a Tuck
+  # module called `io` or `os` would collide with core:io / core:os. The
+  # emitted package carries a tuck_ prefix; the import alias at the use site
+  # keeps the Tuck name, so qualified calls still read as `io.printLine`.
+  var res = "package tuck_" & pkg & "\n\n"
+  # This file lives in mod_<pkg>/, so siblings are one level up.
   var imports: seq[string]
   if "fmt." in body: imports.add("import \"core:fmt\"")
-  if "rt." in body: imports.add("import rt \"./tuckrt\"")
+  if "rt." in body: imports.add("import rt \"../tuckrt\"")
+  for modName in realModules.keys:
+    let dep = modName.replace("-", "_")
+    if dep != pkg and (dep & ".") in body:
+      imports.add("import " & dep & " \"../mod_" & dep & "\"")
   if imports.len > 0:
     res.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:
