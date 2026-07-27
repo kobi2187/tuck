@@ -208,6 +208,18 @@ proc fieldType(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
 
 # --- Shared declaration lookups (mirror codegen.nim) -----------------------
 
+# An actor is a SINGLETON (spec §9.1): one instance per declared actor,
+# named <type>Singleton. genActor emits it; sends and field reads target it.
+# Mirrors codegen.nim's actorSingletonName.
+proc actorSingletonName(actorType: string): string =
+  if actorType.len == 0: return "actorSingleton"
+  actorType[0].toLowerAscii() & actorType[1..^1] & "Singleton"
+
+proc isActorType(m: Module, name: string): bool =
+  for d in m.decls:
+    if d != nil and d.kind == dkActor and d.name == name: return true
+  false
+
 proc hasInvariants(m: Module, name: string): bool =
   for d in m.decls:
     if d != nil and d.kind == dkType and d.name == name:
@@ -767,6 +779,10 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       if owner != "": return owner & "." & e.name
     return e.name
   of exkField:
+    # `Counter.total` reads the actor SINGLETON's field, not a type's.
+    if e.receiver != nil and e.receiver.kind == exkVar and
+       isActorType(ctx.module, e.receiver.name):
+      return actorSingletonName(e.receiver.name) & "." & e.fieldName
     # `r.ok` on a !T/?T value is a STATUS TEST, not a field — the runtime
     # models status as an enum, so emit the comparison the guard means.
     if e.fieldName == "ok" and e.receiver != nil:
@@ -826,24 +842,15 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       ctx.indent += 1
       let bodyStr = ctx.genOdinExpr(e.body)
       ctx.indent = oldIndent
-      var res = ind & "{\n"
-      res.add(ind & "\tint " & idxN & " = -1;\n")
-      res.add(ind & "\tfor (var " & itemN & " in " & iterStr & ")\n")
-      res.add(ind & "\t{\n")
-      res.add(ind & "\t\t" & idxN & "++;\n")
-      # inner body statements re-emitted one level deeper inside our braces
-      var innerLines: seq[string]
-      for line in bodyStr.splitLines():
-        if line.len > 0: innerLines.add("\t" & line)
-      res.add(innerLines.join("\n") & "\n")
-      res.add(ind & "\t}\n")
-      res.add(ind & "}")
-      return res
+      # Odin's range-for yields the index natively — no counter to maintain.
+      return ind & "for " & itemN & ", " & idxN & " in " & iterStr & " {\n" &
+             bodyStr & "\n" & ind & "}"
     let oldIndent = ctx.indent
     ctx.indent += 1
     let bodyStr = ctx.genOdinExpr(e.body)
     ctx.indent = oldIndent
-    return ind & "for (var " & genPatternStr(e.iter) & " in " & iterStr & ")\n" & bodyStr
+    return ind & "for " & genPatternStr(e.iter) & " in " & iterStr & " {\n" &
+           bodyStr & "\n" & ind & "}"
   of exkWhile:
     let condStr = if e.whileCond == nil: "true" else: ctx.genOdinExpr(e.whileCond)
     let oldIndent = ctx.indent
@@ -871,7 +878,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
                 of boAnd: "&&"
                 of boOr: "||"
                 of boXor: "^"
-                of boRangeIncl: "..."
+                of boRangeIncl: "..="   # Odin spells inclusive ranges ..=
                 of boRangeExcl: "..<"
     if e.binOp == boAdd and e.left != nil and semLayer.typeFor(e.left) != nil and
        semLayer.typeFor(e.left).kind == tkNamed and semLayer.typeFor(e.left).name in ["str", "string"]:
@@ -974,12 +981,23 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
                 baseStr & ")")
     return lines.join("\n")
   of exkSend:
-    # Beef actor runtime is a declared ceiling (no minicoro/scheduler path);
-    # emit a comment so the shape is visible but Beef never runs actors.
-    return "/* actor send: " & e.sendActor & "." & e.sendHandler &
-           " (Beef actor runtime not implemented) */"
+    # `Actor send handler {payload}` — enqueue an envelope on the singleton's
+    # mailbox, then wake the actor. A full ring drops (spec §9.1).
+    # The send helper genActor emitted takes the payload fields positionally
+    # after the actor pointer, in handler-param order.
+    var sendArgs: seq[string]
+    if e.sendPayload != nil and e.sendPayload.kind == exkStruct:
+      for (_, fexpr) in e.sendPayload.fields.items:
+        sendArgs.add(ctx.genOdinExpr(fexpr))
+    let sep = if sendArgs.len > 0: ", " else: ""
+    return "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(&" &
+           actorSingletonName(e.sendActor) & sep & sendArgs.join(", ") & ")"
   of exkSelect:
-    return "/* on select (Beef async runtime not implemented) */"
+    # ponytail: `on select` needs the reactor to race a read against a
+    # timeout per branch (rt.tuckAwaitReadOrTimeout is there for it). The
+    # branch lowering isn't wired yet; 27-actor-select / 29-task-timeout
+    # are the cases. Emits nothing rather than pretending to work.
+    return "/* on select: not yet lowered for Odin */"
   of exkImport:
     # imports are declarations; they never reach expression position
     return ""
@@ -1399,12 +1417,17 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
       enumVariants.add("msg" & h.name.capitalize())
 
   if enumVariants.len == 0:
-    # No message handlers: an empty enum is invalid. Emit just the state.
+    # No message handlers: an empty enum is invalid. Emit the state, its
+    # singleton, and a drain that just parks — the entry point starts every
+    # declared actor, so the drain has to exist even with nothing to receive.
     var bareFields: seq[string]
     for f in d.actorFields:
       bareFields.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
     let bareBody = if bareFields.len > 0: bareFields.join("\n") & "\n" else: ""
-    return ind & d.name & " :: struct {\n" & bareBody & ind & "}\n"
+    return ind & d.name & " :: struct {\n" & bareBody & ind & "}\n\n" &
+           ind & actorSingletonName(d.name) & ": " & d.name & "\n\n" &
+           ind & "drain_" & d.name & " :: proc() {\n" &
+           ind & "\tfor { rt.coroYield() }\n" & ind & "}\n"
 
   # Handler params ride in the message envelope (deduped by name)
   var msgFields: seq[string]
@@ -1455,9 +1478,24 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
 
   res.add(ind & d.name & " :: struct {\n" & fieldsStr.join("\n") & "\n" &
           ind & "}\n\n")
+  # One instance per declared actor (spec §9.1); sends and field reads
+  # target it, so `Counter.total` means `counterSingleton.total`.
+  res.add(ind & actorSingletonName(d.name) & ": " & d.name & "\n\n")
   res.add(ind & "handleMsg_" & d.name & " :: proc(self: ^" & d.name &
           ", msg: " & msgTypeName & ") {\n" &
           ind & "\tswitch msg.kind {\n" & handlerCases.join("\n") & "\n" &
+          ind & "\t}\n" & ind & "}\n")
+  # Drain loop: the actor's coroutine body. Parks when the mailbox empties;
+  # tuckNotifySend wakes it after a send.
+  res.add("\n" & ind & "drain_" & d.name & " :: proc() {\n" &
+          ind & "\tfor {\n" &
+          ind & "\t\tmsg: " & msgTypeName & "\n" &
+          ind & "\t\tfor rt.dequeue(&" & actorSingletonName(d.name) &
+          ".mailbox, &msg) {\n" &
+          ind & "\t\t\thandleMsg_" & d.name & "(&" &
+          actorSingletonName(d.name) & ", msg)\n" &
+          ind & "\t\t}\n" &
+          ind & "\t\trt.coroYield()\n" &
           ind & "\t}\n" & ind & "}\n")
 
   # Send helpers: enqueue an envelope; a full ring drops (spec §9.1)
@@ -1533,7 +1571,13 @@ proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl): string =
   var params: seq[string]
   var argNames: seq[string]
   for p in mem.fnParams:
-    params.add(p.name & ": " & ctx.odinType(p.typ))
+    # A bare `fn` param on an extern (std/scheduler's `waitUntil {pred: fn}`)
+    # is a PREDICATE the runtime calls, so it needs a callable proc type —
+    # `rawptr` would not convert at the rt boundary.
+    let pt = if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == "fn":
+               "proc() -> bool"
+             else: ctx.odinType(p.typ)
+    params.add(p.name & ": " & pt)
     argNames.add(p.name)
   let callStr = "rt." & mem.name & "(" & argNames.join(", ") & ")"
   let (bw, _, binnerT) = ctx.odinBangInfo(mem.fnReturnType)
@@ -1840,10 +1884,17 @@ proc emitOdin*(m: Module,
   # Only import what the emitted body actually uses — Odin rejects unused
   # imports, so an unconditional header would fail to compile on any program
   # that happens not to touch the runtime.
+  # The runtime boot below emits rt.* calls of its own, so decide on the
+  # import from the DECLARATIONS, not just the already-emitted body.
+  var bootUsesRt = false
+  for d in m.decls:
+    if d != nil and d.kind in {dkActor, dkTask}:
+      bootUsesRt = true
+      break
   var imports: seq[string]
   if "fmt." in body or "fmt." in mains:
     imports.add("import \"core:fmt\"")
-  if "rt." in body or "rt." in mains:
+  if bootUsesRt or "rt." in body or "rt." in mains:
     imports.add("import rt \"./tuckrt\"")
   # Imported Tuck modules are sibling packages (mod_<name>/), referenced
   # qualified as `<name>.fn` — import each one the body actually calls.
@@ -1864,12 +1915,28 @@ proc emitOdin*(m: Module,
   res.add("main :: proc() {\n")
   for a in ctx.staticAsserts:
     res.add("\tassert(" & a & ")\n")
+  # Runtime boot mirrors the Nim entry (tuck.nim): init the scheduler and
+  # reactor, start every actor's drain coroutine, run main, then drive the
+  # loop so spawned tasks and actors get to finish.
+  var actorNames: seq[string]
+  var hasTasks = false
+  for d in m.decls:
+    if d == nil: continue
+    if d.kind == dkActor: actorNames.add(d.name)
+    elif d.kind == dkTask: hasTasks = true
+  let usesRuntime = actorNames.len > 0 or hasTasks
+  if usesRuntime:
+    res.add("\trt.tuckAsyncInit()\n")
+    for a in actorNames:
+      res.add("\trt.tuckStartActor(drain_" & a & ")\n")
   if mains != "":
     res.add(mains & "\n")
   for d in m.decls:
     if d != nil and d.kind == dkFn and d.name == "main" and not d.isPending:
       res.add("\ttuck_main()\n")
       break
+  if usesRuntime:
+    res.add("\trt.tuckRun()\n")
   res.add("}\n")
   res
 

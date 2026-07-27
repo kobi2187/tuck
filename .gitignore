@@ -18,3 +18,4 @@ tests/auto_alias_out/
 examples/*.nim
 examples/*.odin
 examples/*.bf
+compiler/tuckrt/minicoro.a
