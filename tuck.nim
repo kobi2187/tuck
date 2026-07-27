@@ -14,6 +14,7 @@ import compiler/typecheck
 import compiler/lowering
 import compiler/codegen
 import compiler/codegen_beef
+import compiler/codegen_odin
 import compiler/ast_serializer
 import compiler/modules
 
@@ -225,6 +226,20 @@ when isMainModule:
       let bfPath = outDir / (base & ".bf")
       writeFile(bfPath, emitBeef(bfProg[^1].m, bfReal, base))
       echo "wrote ", bfPath
+    if "--odin" in opts:
+      var odProg: seq[LoadedModule]
+      for lm in prog: odProg.add(LoadedModule(name: lm.name, path: lm.path,
+                                              m: deepCopy(lm.m)))
+      var odReal = initTable[string, Module]()
+      for lm in odProg[0 ..< odProg.high]: odReal[lm.name] = lm.m
+      for lm in odProg: lowerModule(lm.m)
+      for lm in odProg[0 ..< odProg.high]:
+        let modOdPath = outDir / ("mod_" & lm.name & ".odin")
+        writeFile(modOdPath, emitOdinModule(lm.name, lm.m, odReal))
+        echo "wrote ", modOdPath
+      let odPath = outDir / (base & ".odin")
+      writeFile(odPath, emitOdin(odProg[^1].m, odReal, base))
+      echo "wrote ", odPath
     let m = prog[^1].m
     if cmd in ["build", "b"]:
       # entry point: `fn main` runs when the binary starts. No main =
