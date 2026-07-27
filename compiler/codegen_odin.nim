@@ -35,6 +35,7 @@ type
     moduleName: string    # error codes hash over "module/Enum.Variant"
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     ptrSelf: bool         # inside a member fn: `self` is ^T and needs a deref
+    fnAsParam: bool       # emitting a param list: a bare `fn` is `$T` there
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -112,7 +113,16 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     of "usize": "uint"
     of "Seq": "[dynamic]"
     of "Array": "[]"
-    of "fn": "rawptr"  # ponytail: fn-ref fields become proc types once bake lands
+    # A bare `fn` with no declared signature is a BAKE SLOT: the concrete
+    # proc is filled in at the call site, so the param is polymorphic —
+    # `$T` mirrors the Nim backend's `auto`. A NAMED fnsig lands in the
+    # `else` branch below and keeps its own type name.
+    #
+    # ponytail: as a struct FIELD this still emits `rawptr`, which is not
+    # callable — `bake` filling a slot then calling through it works in the
+    # Nim backend but not here. Needs the record shape to become parametric
+    # over the slot's proc type; deferred, 03-functions-bake is the case.
+    of "fn": (if ctx.fnAsParam: "$T" else: "rawptr")
     else:
       # Odd bit widths from decision tables (u2, u12, ...) round up to a real int
       if t.name.len >= 2 and t.name[0] in {'u', 'i'} and t.name[1..^1].allCharsInSet({'0'..'9'}):
@@ -123,7 +133,21 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
         elif bits <= 32: base & "32"
         else: base & "64"
       elif t.name == UnknownName: "any"  # sketch mode: no type information
-      else: t.name
+      else:
+        # A type declared in an IMPORTED module lives in that module's Odin
+        # package, so it must be referenced qualified (`time.Milliseconds`).
+        # Beef needs no such qualification — its modules are static classes
+        # in one namespace.
+        var qualified = t.name
+        for d in ctx.module.decls:
+          if d != nil and d.kind == dkType and d.name == t.name and
+             d.span.file.startsWith(ImportedTypeMarker & ":"):
+            let origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
+            let pkg = origin.replace("-", "_")
+            if pkg != ctx.moduleName.replace("-", "_"):
+              qualified = pkg & "." & t.name
+            break
+        qualified
   of tkTuple:
     if t.elems.len == 1: return ctx.odinType(t.elems[0])
     var parts: seq[string]
@@ -247,7 +271,10 @@ proc lookupFnParamTypes(m: Module, name: string): seq[Type] =
 
 proc genQualified(ctx: OdinCodegenCtx, e: Expr): string =
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
-  if modName in ctx.realModules: modName & "." & e.qualName
+  # No module path at all (`:plus` — a bare fn reference): the name stands
+  # alone. Prefixing an empty module produced `_plus`, an undeclared name.
+  if modName == "": e.qualName
+  elif modName in ctx.realModules: modName.replace("-", "_") & "." & e.qualName
   else: modName & "_" & e.qualName
 
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
@@ -266,10 +293,15 @@ proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): stri
   if params.len == 0: return ""
   let fields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
+  # The checker already decided which field feeds each param (they may differ
+  # in name, having been matched by type); prefer its mapping over the name.
+  let resolved = e.resolvedArgFields
   var parts: seq[string]
-  for paramName in params:
-    if paramName notin fields: return ""
-    parts.add(ctx.genOdinExpr(e.args[0]) & "." & paramName)
+  for i, paramName in params:
+    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                    else: paramName
+    if fieldName notin fields: return ""
+    parts.add(ctx.genOdinExpr(e.args[0]) & "." & fieldName)
   return calleeStr & "(" & parts.join(", ") & ")"
 
 # Positional construction of a hoisted record struct from a struct literal,
@@ -345,21 +377,16 @@ proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
     # no type information at all: sketch mode, emit the bare value
     return ctx.genOdinExpr(e.fields[0][1])
   # Multi-field sketch literal: infer each field's type and hoist a shape.
+  # Odin has no anonymous struct type, so a bare `{a = 1}` is a hard error
+  # ("missing type in compound literal") — every literal MUST land on a named
+  # shape. A field whose type can't be inferred falls back to the runtime's
+  # `any`, which keeps sketch code compiling the way the Nim backend does.
   var inferred: seq[FieldDef]
-  var everyFieldTyped = true
   for f in e.fields:
-    let ft = inferLitType(f[1])
-    if ft == nil:
-      everyFieldTyped = false
-      break
+    var ft = inferLitType(f[1])
+    if ft == nil: ft = Type(kind: tkNamed, name: UnknownName, span: e.span)
     inferred.add(FieldDef(name: f[0], typ: ft, span: e.span))
-  if everyFieldTyped:
-    return ctx.recCtorFromLiteral(inferred, e.fields)
-  # Truly untyped: emit a bare compound literal and let Odin infer from context
-  var parts: seq[string]
-  for f in e.fields:
-    parts.add(f[0] & " = " & ctx.genOdinExpr(f[1]))
-  return "{" & parts.join(", ") & "}"
+  return ctx.recCtorFromLiteral(inferred, e.fields)
 
 # exkCall: record construction (with invariant validation and generic
 # instantiation), payload explosion, named-param reordering, or a plain call.
@@ -377,20 +404,48 @@ proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
       if not hasPayload: return ""
       for v in d.typeBody.variants:
         if v.name == variantName:
+          # Odin union: constructing a variant IS constructing its struct;
+          # the union carries the tag itself, so there is no kind field to
+          # set and no per-variant payload slot to name.
+          let vName = typeName & "_" & v.name
           if v.fields.len == 0 or payload == nil:
-            return "new " & typeName & "() { kind = ." & variantName & " }"
-          let recName = ctx.recStructName(v.fields)
-          # positional ctor in DECLARED field order
+            return vName & "{}"
           var vals: seq[string]
           for f in v.fields:
-            var valStr = "default"
             for pf in payload.fields:
-              if pf[0] == f.name: valStr = ctx.genOdinExpr(pf[1])
-            vals.add(valStr)
-          return "new " & typeName & "() { kind = ." & variantName & ", " &
-                 v.name.toLowerAscii() & " = " & recName & "(" &
-                 vals.join(", ") & ") }"
+              if pf[0] == f.name:
+                vals.add(f.name & " = " & ctx.genOdinExpr(pf[1]))
+                break
+          return vName & "{" & vals.join(", ") & "}"
   ""
+
+# expr bake {slot: value, ...} — rebuild the record with slots overridden.
+# Ported from codegen.nim; neither Beef nor this backend had an arm for it,
+# so `bake` used to fall through to a plain call and emit nonsense.
+proc genOdinBake(ctx: var OdinCodegenCtx, e: Expr): string =
+  if e.args[0].kind != exkVar: return ""  # ponytail: no expr-position temp
+  let recv = ctx.genOdinExpr(e.args[0])
+  let recvFields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
+  if recvFields.len == 0: return ""
+  var declFields: seq[FieldDef]
+  for f in getFieldsForType(ctx.module, semLayer.typeFor(e.args[0])):
+    declFields.add(f)
+  var parts: seq[string]
+  for fname in recvFields:
+    var overridden = ""
+    for (name, valExpr) in e.args[1].fields.items:
+      if name == fname: overridden = ctx.genOdinExpr(valExpr)
+    parts.add(fname & " = " & (if overridden != "": overridden
+                               else: recv & "." & fname))
+  # a name the receiver doesn't have ADDS a field, so the shape grows
+  for (name, valExpr) in e.args[1].fields.items:
+    if name notin recvFields:
+      parts.add(name & " = " & ctx.genOdinExpr(valExpr))
+      var ft = inferLitType(valExpr)
+      if ft == nil: ft = Type(kind: tkNamed, name: UnknownName, span: e.span)
+      declFields.add(FieldDef(name: name, typ: ft, span: e.span))
+  if parts.len == 0: return recv
+  return ctx.recStructName(declFields) & "{" & parts.join(", ") & "}"
 
 # expr alias(old: new, ...) — rebuild as the renamed TRec shape.
 # ponytail: exkVar receivers only (no expr-position temp);
@@ -435,6 +490,9 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
                                    payload)
     if ctor != "": return ctor
   let calleeStr = ctx.genOdinExpr(e.callee)
+  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    let baked = ctx.genOdinBake(e)
+    if baked != "": return baked
   if e.args.len == 1 and e.args[0].kind == exkStruct and
      e.callee != nil and e.callee.kind == exkVar and
      isRecordType(ctx.module, e.callee.name):
@@ -474,15 +532,20 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
       else:
         lookupFnParams(ctx.module, calleeStr)
     if expectedParams.len > 0:
-      for paramName in expectedParams:
+      # The checker's mapping wins: a field matched by TYPE carries its own
+      # name, not the param's (see typecheck.nim resolvedArgFields).
+      let resolved = e.resolvedArgFields
+      for i, paramName in expectedParams:
+        let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                        else: paramName
         var found = false
         for field in e.args[0].fields:
-          if field[0] == paramName:
+          if field[0] == fieldName:
             args.add(ctx.genOdinExpr(field[1]))
             found = true
             break
         if not found:
-          args.add("default")
+          args.add("{}")
     else:
       for field in e.args[0].fields:
         args.add(ctx.genOdinExpr(field[1]))
@@ -507,6 +570,16 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
            calleeStr & "(" & args.join(", ") & "))"
   elif calleeStr == "echo":
     return "fmt.println(" & args.join(", ") & ")"
+  # Runtime intrinsics: Beef reaches these through `using static Rt`, but
+  # Odin has no such import, so they qualify explicitly. The container ones
+  # mutate their receiver, so it goes in by pointer.
+  elif calleeStr in ["acquire", "release", "alloc", "reset", "enqueue",
+                     "dequeue", "hasRoom", "initMailbox"] and args.len > 0:
+    return "rt." & calleeStr & "(&" & args[0] &
+           (if args.len > 1: ", " & args[1..^1].join(", ") else: "") & ")"
+  elif calleeStr in ["at", "setAt", "toStr", "tuckConcat", "errCode",
+                     "tuckSat", "tuckSatI", "tuckReportUnhandled"]:
+    return "rt." & calleeStr & "(" & args.join(", ") & ")"
   return calleeStr & "(" & args.join(", ") & ")"
 
 proc odinBangInfo(ctx: var OdinCodegenCtx, t: Type):
@@ -700,7 +773,9 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       let rt = semLayer.typeFor(e.receiver)
       if rt != nil and rt.kind == tkApp and rt.base != nil and
          rt.base.kind == tkNamed and rt.base.name in ["!", "?", "!?"]:
-        return ctx.genOdinExpr(e.receiver) & ".status == .Ok"
+        # parenthesised: a guard may negate it (`!r.ok`), and `!x == y`
+        # would otherwise bind the `!` to the receiver alone
+        return "(" & ctx.genOdinExpr(e.receiver) & ".status == .Ok)"
     # `input.x` — the incoming payload's field is just the param
     if e.receiver != nil and e.receiver.kind == exkVar and
        e.receiver.name == "input" and ctx.currentParams.len > 0:
@@ -825,14 +900,13 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
         ctx.tmpCounter.inc
         let tn = "tuckDrop" & $ctx.tmpCounter
         let onErr = if ctx.errPolicy == "exit":
-                      "{ tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) &
-                      "\"); Runtime.FatalError(\"unhandled error\"); }"
+                      "tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) &
+                      "\"); panic(\"unhandled error\")"
                     else:
-                      "tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) & "\");"
-        stmtCode = "{ let " & tn & " = " & stmtCode & "; if (!" & tn &
-                   ".ok) " & onErr & " }"
+                      "tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) & "\")"
+        stmtCode = ind & "\t" & tn & " := " & stmtCode & "\n" &
+                   ind & "\tif " & tn & ".status != .Ok { " & onErr & " }"
         ownsLayout = true
-        stmtCode = ind & "  " & stmtCode
       if stmtCode != "":
         if s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain} or ownsLayout:
           lines.add(stmtCode)  # these carry their own indentation
@@ -1116,12 +1190,14 @@ proc genOdinFnDecl(ctx: var OdinCodegenCtx, d: Decl): string =
     if d.name == "main": "tuck_main"
     else: d.name.replace(".", "_")
   var params: seq[string]
+  ctx.fnAsParam = true
   for p in d.fnParams:
     # Records pass BY VALUE. The checker binds every param isVar:true, but a
     # Tuck mutator returns the updated record and the caller assigns it back
     # (`server = withDefaults(server)`), so no pointer is needed — and Odin
     # proc params aren't addressable, so `&arg` at the call site is illegal.
     params.add(p.name & ": " & ctx.odinType(p.typ))
+  ctx.fnAsParam = false
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
   # Generic fns: Odin's parametric polymorphism marks type params with `$`
   var genericParams: seq[string]
@@ -1593,22 +1669,57 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   of dkExpr:
     return ctx.genOdinExpr(d.expr)
   of dkRegister:
-    var fieldsStr: seq[string]
+    # Memory-mapped register. Nim emits a `registerMMIO` macro call and Beef
+    # an attribute; Odin has neither, so the bits become named masks plus a
+    # typed pointer at the MMIO address — the accessors read/write through it.
+    var bitConsts: seq[string]
+    var accessors: seq[string]
     for f in d.regFields:
       let bitVal = f.typ.name.replace("bit ", "").replace("bits ", "")
-      var accessMode = "ReadWrite"
       var hasRead = false
       var hasWrite = false
       for a in f.attrs:
         if a.name == "read": hasRead = true
         elif a.name == "write": hasWrite = true
-      if hasRead and not hasWrite: accessMode = "ReadOnly"
-      elif hasWrite and not hasRead: accessMode = "WriteOnly"
-      fieldsStr.add(ind & "    [Bit(" & bitVal & ", AccessMode." & accessMode &
-                    ")] public bool " & f.name & ";")
-    return ind & "[RegisterMMIO(" & d.regAddress & ")]\n" & ind &
-           "public class " & d.name & "\n" & ind & "{\n" &
-           fieldsStr.join("\n") & "\n" & ind & "}\n"
+      let canRead = hasRead or not hasWrite
+      let canWrite = hasWrite or not hasRead
+      # `bits 3..7` is a multi-bit FIELD: shift by the low bit and mask the
+      # width. A single `bit N` is the one-bit case of the same shape.
+      let dotPos = bitVal.find("..")
+      let loBit = if dotPos >= 0: bitVal[0 ..< dotPos].strip() else: bitVal
+      let hiBit = if dotPos >= 0: bitVal[dotPos + 2 .. ^1].strip() else: bitVal
+      let isRange = dotPos >= 0 and loBit != hiBit
+      let pfx = d.name & "_" & f.name
+      bitConsts.add(ind & pfx & "_SHIFT :: " & loBit)
+      if isRange:
+        bitConsts.add(ind & pfx & "_WIDTH :: " & hiBit & " - " & loBit & " + 1")
+        bitConsts.add(ind & pfx & "_MASK :: u32(1 << u32(" & pfx &
+                      "_WIDTH)) - 1")
+      if canRead:
+        let body = if isRange:
+                     "return (" & d.name & "^ >> u32(" & pfx & "_SHIFT)) & " &
+                       pfx & "_MASK"
+                   else:
+                     "return (" & d.name & "^ & (u32(1) << u32(" & pfx &
+                       "_SHIFT))) != 0"
+        let retT = if isRange: "u32" else: "bool"
+        accessors.add(ind & pfx & "_get :: proc() -> " & retT & " {\n" &
+                      ind & "\t" & body & "\n" & ind & "}\n")
+      if canWrite:
+        if isRange:
+          accessors.add(ind & pfx & "_set :: proc(value: u32) {\n" &
+                        ind & "\tshifted := (value & " & pfx & "_MASK) << u32(" &
+                        pfx & "_SHIFT)\n" &
+                        ind & "\t" & d.name & "^ = (" & d.name & "^ &~ (" & pfx &
+                        "_MASK << u32(" & pfx & "_SHIFT))) | shifted\n" &
+                        ind & "}\n")
+        else:
+          accessors.add(ind & pfx & "_set :: proc(on: bool) {\n" &
+                        ind & "\tmask := u32(1) << u32(" & pfx & "_SHIFT)\n" &
+                        ind & "\tif on { " & d.name & "^ |= mask } else { " &
+                        d.name & "^ &~= mask }\n" & ind & "}\n")
+    return ind & d.name & " := cast(^u32)(uintptr(" & d.regAddress & "))\n" &
+           bitConsts.join("\n") & "\n" & accessors.join("")
   of dkRegistry:
     return ctx.genRegistry(d)
   of dkImport:
@@ -1619,8 +1730,8 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   of dkErrors:
     # Global handler: rt logger first (errors are always visible), then the
     # user's handler body.
-    var res = ind & "public static void tuck_unhandled(uint16 code, String site)\n" &
-              ind & "{\n" & ind & "    tuckReportUnhandled(code, site);\n"
+    var res = ind & "tuck_unhandled :: proc(code: u16, site: string) {\n" &
+              ind & "\trt.tuckReportUnhandled(code, site)\n"
     if d.errHandler != nil and d.errHandler.fnBody != nil:
       let oldVars = ctx.definedVars
       ctx.definedVars.incl("code")
@@ -1666,6 +1777,24 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
       elif m.kind == dkFn and m.isExtern and ctx.modPrefix != "":
         res.add(ctx.genRtForwarder(m) & "\n")
     return res
+  of dkPool:
+    # spec 7.2: one package-level instance; acquire/release are the runtime's
+    # generic procs, reached as `Pool.acquire` -> `rt.acquire(&Pool)`.
+    # The Beef backend has no arm for this — parity is with codegen.nim.
+    return ind & d.name & ": rt.ObjectPool(" & ctx.odinType(d.poolElem) &
+           ", " & $d.poolCount & ")\n"
+  of dkFnSig:
+    # `fnsig NAME = {params} -> ret` → a named Odin proc type, used for
+    # callback slots. The Beef backend has no arm for this at all.
+    var params: seq[string]
+    for prm in d.sigParams:
+      params.add(prm.name & ": " & ctx.odinType(prm.typ))
+    let retStr =
+      if d.sigReturn != nil and not (d.sigReturn.kind == tkNamed and
+                                     d.sigReturn.name == "void"):
+        " -> " & ctx.odinType(d.sigReturn)
+      else: ""
+    return ind & d.name & " :: proc(" & params.join(", ") & ")" & retStr & "\n"
   else:
     return ""
 
