@@ -245,7 +245,7 @@ OK (1.8 ms)
 first error prints as `file:line:col` with a caret into your source — always a
 **Tuck** error; you never read a Nim diagnostic. Today's (small) example files
 check in 1–2ms against a 100ms budget; real numbers wait for real programs.
-Tuck transpiles to readable Nim (Beef backend in progress), so the escape
+Tuck transpiles to readable Nim and Odin, so the escape
 hatch is a language you can read, not a binary blob.
 
 ## Status

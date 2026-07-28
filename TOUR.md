@@ -288,14 +288,23 @@ register RCC_CR at 0x40021000:
   HSION:  bit 0  [read, write]
   HSIRDY: bit 1  [read]
 
-extern [c, header: "uart.h"]:
-  fn uartSend({byte: u8}) -> void
+extern [c, header: "zlib.h", lib: "z"]:
+  fnsig BinOp = {a: i32, b: i32} -> i32    # a C function pointer
+  type Point = {x: i32, y: i32}            # a C struct, by value
+  type Handle = {}                         # opaque: pointer only
+  fn compressBound({sourceLen: u64}) -> u64
 ```
 
 *(checks)* — Registers declare MMIO layout with access enforcement;
-`extern [c]` is the C seam. `tuck build --nim:"--os:standalone
---cpu:arm"` forwards cross-compilation flags; `--beef` builds the same
-program through the Beef backend.
+`extern [c]` is the C seam. Declaring something *inside* the block is what
+makes it foreign: structs are passed and returned by value, a fieldless type
+is an opaque handle, `{A = 10}` pins an enum to the header's numbering, and a
+`fnsig` becomes a C function pointer. `lib:` names the library to link (a bare
+name, or a path to a vendored `.c`), so no build plumbing is needed at the
+call site. Everything works identically on both backends.
+
+`tuck build --nim:"--os:standalone --cpu:arm"` forwards cross-compilation
+flags; `--odin` builds the same program through the Odin backend.
 
 ## 15. Actors (API today, runtime tomorrow)
 

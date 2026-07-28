@@ -361,7 +361,7 @@ fn inline queuePush({msg: Msg}) -> !void [no_alloc, irq_safe]:
 effect marker (§3.7 — those are checker-enforced propagating contracts).
 It is a codegen hint, the function-level sibling of a type's
 `[packed, align: N]` attributes: no propagation, no semantic effect.
-Lowers to Nim `{.inline.}` / Beef `[Inline]`.
+Lowers to Nim `{.inline.}` / Odin `@(require_results=false)`.
 
 It exists so the no-labels ruling (§2.6) costs nothing: extracting a hot
 inner loop into a helper and marking it `inline` produces codegen

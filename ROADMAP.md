@@ -88,7 +88,9 @@ construction, generic bodies gradual, no constraints).
 | Type composition `+` | 4.5 | conflict detection unverified |
 | match | — | exhaustiveness checking |
 | Effects | 3.7 | switch to implicit propagation (ruling above) |
-| Beef backend | — | parity suite + BeefBuild compile-check 20/25 examples; `tuck build --beef` in CLI. Ceilings: bake (delegate types), member-fn call-site ref marker |
+| ~~Beef backend~~ | — | REMOVED 2026-07-28. Frozen since the Odin backend landed, never compile-verified here (no BeefBuild), and every new construct meant a third unchecked emitter arm. Odin is the second backend |
+| Odin backend | — | 30 examples compile, 7 run-gated on exit codes; coroutine runtime over minicoro; full C FFI parity with Nim |
+| C FFI | — | DONE 2026-07-28: functions, cstring, structs by value, enums with explicit values, callbacks, opaque handles — all run-verified against a real C library on BOTH backends. `lib:` links a system library or a vendored `.c` |
 | Control flow loops | 2.6/3.6b | DONE 2026-07-19: unified for (cond/iter/indexed), loop, break/continue (innermost, depth-checked), spaced-`..` ranges (Nim convention), fn inline ({.inline.}/[Inline]). Runtime-verified exit-17 smoke both backends. No labels ever (ruling); value-returning main = process exit code |
 
 ## Missing

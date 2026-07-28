@@ -26,9 +26,7 @@ which bare `nim check` doesn't pass).
 2. **`toStr` result loses str-ness under `+`** — `n.toStr + "x"` picks the
    numeric `+`, not concat.
 3. **`if` has no expression form** — `let x = if c: a else: b` unsupported.
-4. **Beef backend doesn't clamp `[saturating]`** — Nim clamps; Beef emits a
-   bare ctor (parity gap).
-5. **type argument named like an attribute** — `Box[error]` fails: `error` is
+4. **type argument named like an attribute** — `Box[error]` fails: `error` is
    in the attribute word list, so the parser reads `[error: ...]`. Same for
    stack/queue/align/priority/volatile + ~14 others. (The valued half
    `[name: value]` is fixed; bare markers still use the word list.)
@@ -47,8 +45,8 @@ which bare `nim check` doesn't pass).
   `timeout <ms>` (bare + int). `resp.ok` (future readiness) and `timeout.5s`
   (duration) parse as opaque strings — need typed SelectSource variants + `5s`
   duration lexing. Blocks example 16's task select.
-- **Beef async/actor runtime** = declared ceiling (comment-only emission).
-  minicoro-beef exists; the same reactor design would need porting.
+(The Beef backend was removed 2026-07-28; its parity gaps are no longer
+tracked here.)
 
 ## D. TOUR-GAPS re-audit (which still hold)
 
@@ -103,9 +101,10 @@ Fixed since the 2026-07-13 tour: #1 toStr, #2 str concat, #3 list literals,
 - Resource registry §7.4 (parser/checker/rt/codegen) — not started.
 - `when TARGET` §8.3 conditionals — blocks 11/20's target-specific code.
 - match exhaustiveness checking — **DONE** (Nim-style; sum/bool/error domains).
-- named function signatures `fnsig NAME = {params} -> ret` — **DONE** (Nim
-  backend): named delegate type, checker validates call shape, subsumes the old
-  uncallable `fn` slot. Beef = ceiling.
+- named function signatures `fnsig NAME = {params} -> ret` — **DONE** (both
+  backends): named delegate type, checker validates call shape, subsumes the old
+  uncallable `fn` slot. Declared inside an `extern [c]` block it is a C
+  function pointer.
 - Visibility (pub/private), nested module paths.
 - `pred`/`set` fn prefixes §3.6; stack-depth budgets `[stack: N]` §6.2;
   complexity limit §6.3 (ruling: hard error) — declared, unbuilt.
