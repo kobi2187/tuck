@@ -1,0 +1,28 @@
+# Opaque C handles — the shape every real C library uses for its context
+# objects (FILE*, sqlite3*, ImGuiContext*). The header says only
+# `typedef struct Counter Counter;` with no definition, so callers may hold the
+# pointer and nothing else.
+#
+# In Tuck that is a FIELDLESS extern type. Having no fields is the whole point:
+# there is nothing to read, and its size is unknown, so it can only ever be a
+# pointer. Nim emits {.incompleteStruct.} plus a `ptr` alias (a `bycopy` object
+# would ask C for a size it does not have — "unknown type size"); Odin emits
+# `rawptr`.
+#
+# Lifetime is manual and explicit: C allocated it, C frees it. Nothing in Tuck
+# tracks that yet, so counterFree is the caller's job.
+import sys
+
+extern [c, header: "point.h", lib: "cffi/point.c"]:
+  type Counter = {}
+  fn counterNew({start: i32}) -> Counter
+  fn counterBump({c: Counter, by: i32}) -> i32
+  fn counterFree({c: Counter}) -> void
+
+fn main() -> void [io]:
+  let h = {start: 100} counterNew   # C mallocs; Tuck holds only the pointer
+  let t = {c: h, by: 5} counterBump # C dereferences it: 100 + 5
+  {c: h} counterFree
+  if t == 105:
+    0 exit
+  1 exit

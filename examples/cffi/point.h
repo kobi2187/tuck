@@ -22,4 +22,12 @@ int applyOp(Op op, int a, int b);
 typedef int (*BinOp)(int a, int b);
 int callBack(BinOp cb, int a, int b);
 
+/* Opaque handle: the struct is INCOMPLETE here on purpose — callers may only
+   hold the pointer, never its contents. The shape every real C library uses
+   for its context/session objects (FILE*, sqlite3*, ImGuiContext*). */
+typedef struct Counter Counter;
+Counter *counterNew(int start);
+int counterBump(Counter *c, int by);
+void counterFree(Counter *c);
+
 #endif

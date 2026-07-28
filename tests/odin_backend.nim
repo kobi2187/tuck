@@ -27,7 +27,7 @@ const odinCheckExpected = [
   "19-event-registry", "21-decision-bitmask", "22-error-policy", "23-units",
   "24-stdlib", "25-pools", "26-actor-run", "31-fnsig-callback",
   "32-duration-units", "33-ffi-zlib", "34-ffi-cstring", "35-ffi-struct",
-  "36-ffi-enum-callback",
+  "36-ffi-enum-callback", "37-ffi-handle",
 ]
 
 # Examples with a known exit code: these must RUN, not merely compile.
@@ -46,6 +46,8 @@ const odinRunExpected = {
   # C enum with explicit values (a wrong one hits the C default: -999) and a
   # callback C invokes: applyOp(OP_MUL,6,7)==42 and callBack(:addTwo,40,2)==1042.
   "36-ffi-enum-callback": 0,
+  # opaque handle: C mallocs, dereferences and frees it. 100 + 5 == 105.
+  "37-ffi-handle": 0,
 }
 
 proc findOdin(): string =

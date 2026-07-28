@@ -1427,6 +1427,10 @@ proc genRecordType(ctx: var OdinCodegenCtx, d: Decl): string =
   var tGenParts: seq[string]
   for g in d.generics: tGenParts.add("$" & g & ": typeid")
   let tGen = if tGenParts.len > 0: "(" & tGenParts.join(", ") & ")" else: ""
+  # A fieldless extern type is an opaque C handle (`typedef struct Foo Foo;`
+  # with no definition): unknown size, only ever held as a pointer.
+  if d.typeExternHeader != "" and d.typeBody.fields.len == 0:
+    return ind & d.name & " :: rawptr\n"
   # Tier 1 records are value types (spec §7.1) — struct, not a pointer type
   var res = ind & d.name & " :: struct" & tGen & " {\n" &
             (if fieldsBody != "": fieldsBody & "\n" else: "") & ind & "}\n"

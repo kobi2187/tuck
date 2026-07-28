@@ -1191,6 +1191,14 @@ proc genRecordType(ctx: var CodegenCtx, d: Decl): string =
       # Mirrors how Nim's own posix module binds `struct timespec`. `bycopy`
       # keeps it passed by value, which is the C signature's contract.
       if d.typeExternHeader != "":
+        # A FIELDLESS extern type is an opaque handle: `typedef struct Foo Foo;`
+        # with no definition in the header. Its size is unknown, so it can only
+        # ever be held as a pointer — `bycopy` would ask C for a size it does
+        # not have ("unknown type size"). The alias is what callers name.
+        if d.typeBody.fields.len == 0:
+          return "type " & d.name & "Obj {.importc: \"" & d.name & "\", header: \"" &
+                 d.typeExternHeader & "\", incompleteStruct.} = object\n" &
+                 "type " & d.name & "* = ptr " & d.name & "Obj\n"
         return "type " & d.name & "* {.importc: \"" & d.name & "\", header: \"" &
                d.typeExternHeader & "\", bycopy.} = object\n" & fieldsBody & "\n"
       # Tier 1 records are value types (spec §7.1) — plain object, not ref
