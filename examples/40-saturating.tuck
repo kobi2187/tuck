@@ -1,0 +1,25 @@
+# `[saturating]` clamps at the type's bounds instead of wrapping (spec 4.1).
+# The attribute is what makes it saturating, not the `distinct` keyword.
+#
+# This has to RUN, not merely compile: a missing clamp produces a perfectly
+# valid program that returns the wrong number. 70000 into a u16 clamps to
+# 65535; wrapping would give 4464. Both are u16, both compile, only one is
+# right — and for a while only the Nim backend was.
+#
+# The clamp runs on a WIDER intermediate, so a value is checked against the
+# type's real bounds rather than after it has already wrapped.
+#
+# These attributes stop being decorative under ruling R5: they are what a
+# lossy `~T` conversion consults to decide clamp vs wrap vs trap.
+
+type SafeRPM = u16 [saturating]
+
+fn main() -> int:
+  let over = 70000 SafeRPM      # clamps to 65535 (wrapped would be 4464)
+  let ok   = 1200 SafeRPM       # in range, untouched
+
+  if over == 65535 SafeRPM:
+    if ok == 1200 SafeRPM:
+      return 0
+    return 2
+  return 1

@@ -220,12 +220,12 @@ fn main() -> int:
   let od = try: readFile(dir / "out" / "t.odin") except: ""
   bug(
     "Odin backend clamps [saturating] too",
-    "The Nim backend clamps (codegen.nim saturatingBase); Odin still emits a " &
-      "bare SafeRPM(70000), so the same program silently wraps on one backend " &
-      "and clamps on the other. Parity commitment: every codegen change " &
-      "mirrors to Odin.",
-    "compiler/codegen_odin.nim — mirror saturatingBase from codegen.nim",
-    fixed = false,
+    "Both backends must clamp: the same program wrapping on one and clamping " &
+      "on the other is the divergence the parity commitment exists to stop. " &
+      "The Odin RUNTIME had tuckSat all along — only the emitter never " &
+      "called it.",
+    "compiler/codegen_odin.nim — saturatingType arm in the construction path",
+    fixed = true,
     od.len > 0 and "70000" notin od)
 
 # ---------------------------------------------------------------------------

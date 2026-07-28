@@ -174,14 +174,8 @@ proc fieldType(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
 # `distinct X = u16 [saturating]` mean the same thing (user ruling).
 # Returns the underlying Nim integer type, or "" when not saturating.
 proc saturatingBase(m: Module, name: string): string =
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == name and d.typeBody != nil:
-      var isSat = false
-      for a in d.typeBody.attrs:
-        if a.name == "saturating": isSat = true
-      if isSat and d.typeBody.kind == tkNamed:
-        return genType(d.typeBody)
-  ""
+  let t = m.saturatingType(name)
+  if t == nil: "" else: genType(t)
 
 proc externEmitName(m: Module, fnName: string): string =
   ## The Nim/C proc name to emit for an extern with `[emit: "..."]`, or "" if

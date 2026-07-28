@@ -28,7 +28,7 @@ const odinCheckExpected = [
   "24-stdlib", "25-pools", "26-actor-run", "31-fnsig-callback",
   "32-duration-units", "33-ffi-zlib", "34-ffi-cstring", "35-ffi-struct",
   "36-ffi-enum-callback", "37-ffi-handle", "28-async-task", "38-division",
-  "39-if-match-expr",
+  "39-if-match-expr", "40-saturating",
 ]
 
 # Examples with a known exit code: these must RUN, not merely compile.
@@ -58,6 +58,9 @@ const odinRunExpected = {
   # R2/R3: value-position if and match. Nim has an if-expression, Odin needs
   # its ternary — this asserts both reach the same answers.
   "39-if-match-expr": 0,
+  # [saturating] must CLAMP on both backends. A missing clamp compiles fine
+  # and returns 4464 instead of 65535 — only running catches it.
+  "40-saturating": 0,
 }
 
 proc findOdin(): string =

@@ -177,6 +177,17 @@ proc isErrEnumRef*(m: Module, e: Expr): bool =
      e.receiver.kind != exkVar: return false
   m.typeBodyKind(e.receiver.name) == tkSum
 
+proc saturatingType*(m: Module, name: string): Type =
+  ## The underlying Type of a `[saturating]` declaration, or nil. What makes a
+  ## type saturating is the ATTRIBUTE, not the `distinct` keyword — so
+  ## `type X = u16 [saturating]` and `distinct X = u16 [saturating]` are the
+  ## same thing (user ruling). Each backend spells the base type itself.
+  let d = m.findDecl(dkType, name)
+  if d == nil or d.typeBody == nil or d.typeBody.kind != tkNamed: return nil
+  for a in d.typeBody.attrs:
+    if a.name == "saturating": return d.typeBody
+  nil
+
 proc isValueIf*(e: Expr): bool =
   ## An `if` used as a VALUE rather than a statement (ruling R2):
   ## `let x = if c: a else: b`. Both branches must be present and neither may

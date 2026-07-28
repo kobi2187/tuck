@@ -568,7 +568,18 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
     return args[0]
-  elif externInvRet(ctx.module, calleeStr) != "":
+  let satT = ctx.module.saturatingType(calleeStr)
+  if satT != nil and args.len == 1:
+    # spec 4.1: constructing a [saturating] type CLAMPS instead of wrapping.
+    # Mirrors codegen.nim — the guard runs on a wider intermediate so the
+    # value is checked against the real bounds, not after it has wrapped.
+    let satBase = ctx.odinType(satT)
+    let unsigned = satBase.startsWith("u")
+    let widen = if unsigned: "u64" else: "i64"
+    let satFn = if unsigned: "rt.tuckSat" else: "rt.tuckSatI"
+    return calleeStr & "(" & satFn & "(" & satBase & ", " & widen & "(" &
+           args[0] & ")))"
+  if externInvRet(ctx.module, calleeStr) != "":
     # extern boundary: the returned value validates on entry
     return "__validated_" & externInvRet(ctx.module, calleeStr) & "(" &
            calleeStr & "(" & args.join(", ") & "))"
