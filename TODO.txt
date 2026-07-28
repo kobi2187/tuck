@@ -1,0 +1,95 @@
+# Tuck — bugs, gaps, decisions. One line each. Newest at the bottom of a section.
+# Format:  <id>  <state>  <area>  <one line>
+#   state: OPEN | WIP | DONE | WONTFIX
+#   Mark DONE, don't delete — the line is the record of what was fixed.
+# Anything needing more than a line goes in a handoff and is linked by date.
+
+## WHERE THIS IS GOING
+
+Tuck: named-struct dataflow language for embedded and systems work.
+Transpiles to Nim and Odin — both real, both run-verified, no interpreter.
+The bet: postfix payload calls + effects + actors give rapid-dev ergonomics
+without giving up metal access or predictable codegen.
+
+Standing rule (stdlib-blocks.md line 9): allow ALL hardware and OS access.
+If users are not limited there, and have actors/concurrency/rapid-dev
+skeletons to build on, they fill in what is missing themselves.
+
+No surprises is the other standing rule, and it outranks brevity. On
+embedded, a silently-wrong numeric or an implicit conversion is worse than a
+character of typing (see R1).
+
+Where it stands 2026-07-28:
+  DONE   lexer, parser, effect checker, bidirectional typechecker, lowering
+  DONE   two backends at parity — Nim and Odin, 31 compile / 8 run-gated
+  DONE   actors + coroutine runtime (minicoro) on both
+  DONE   C FFI complete: fns, cstring, structs by value, enums with explicit
+         values, callbacks, opaque handles — run-verified against real C
+  NOW    the stdlib bottom layer (stdlib-blocks.md) — mostly extern-direct,
+         gated on two rulings (D1 generic containers, D2 bytes repr)
+  NEXT   async that actually suspends (G1/G2), then the embedded set
+
+Milestone shape, not a schedule:
+  M1 language core + one backend            DONE
+  M2 second backend at parity               DONE
+  M3 C FFI good enough for a real library   DONE (zlib; ImGui-class next)
+  M4 stdlib bottom layer usable             IN PROGRESS
+  M5 async/embedded story real              BLOCKED on G1, G2
+  M6 self-hosting or a shipped program      NOT STARTED — the actual proof
+
+## RULINGS (decided; implement when the line comes up)
+
+R1   2026-07-28   `/` is REMOVED. Integer divide is `/i`, float divide is `/f`.
+                  No inference, no promotion, no surprise on embedded — the
+                  operator names the arithmetic. Kills B3 at the root rather
+                  than patching which `/` codegen picks. Applies to `/=` too:
+                  `/i=` and `/f=`. Mixed operands are a type error, not a
+                  silent widen.
+R2   2026-07-28   `if` is an EXPRESSION. `let x = if c: a else: b` is legal.
+                  An if used as a value must have an else; one used as a
+                  statement still need not.
+R3   2026-07-28   `match` is an EXPRESSION too, same rule — arms yield values,
+                  exhaustiveness already checked, so a value-position match
+                  needs no fallback arm when the domain is covered.
+
+## BUGS
+
+B1   OPEN   odin      [saturating] does not clamp — Nim clamps, Odin emits bare ctor. Same program wraps on one backend, clamps on other. Fix: mirror saturatingBase into codegen_odin.nim
+B2   OPEN   odin      `on select` not lowered — 29-task-timeout / 30-async-read fail to build. rt.tuckAwaitReadOrTimeout exists, branch lowering unwired. codegen_odin.nim:995
+B3   OPEN   codegen   `/=` on ints emits float `/` — SUPERSEDED by R1: `/` goes away entirely, `/i` and `/f` replace it
+B4   OPEN   codegen   `toStr` result loses str-ness under `+` — n.toStr + "x" picks numeric +
+B5   OPEN   parser    type argument named like an attribute fails — Box[error] reads as [error: ...]. Fix: decide by declared set, not the 19-name word list (parser_type.nim:128)
+B6   OPEN   examples  16-actor-tasks-unified-syntax does not compile — .fn {args} on undeclared copyFrom. In no test suite
+B7   OPEN   examples  20-embedded-mp3-player does not compile — MMIO register-field access (DAC_CR.EN) unimplemented; transitionTo-with-payload in an actor handler emits garbage
+B8   OPEN   cli       emitted .odin files collide in a shared dir — Odin builds a directory as one package. Workaround: -o: per example
+B9   DONE   odin      2026-07-28 driver shipped only tuck_rt.odin, so async CLI builds failed on tuckAsyncInit. Harness copied the whole dir and hid it
+
+## GAPS (missing features, roughly in blocking order)
+
+G1   OPEN   odin      task bodies not spawned onto the coroutine runtime — suspension points run inline. Runtime itself works (28-async-task exits 42)
+G2   OPEN   stdlib    no real async I/O externs — std fs/io/sys are blocking. 29-task-timeout races a placeholder idle pipe
+G3   OPEN   parser    typed select sources — resp.ok / timeout.5s parse as opaque strings. Needs SelectSource variants + 5s duration lexing. Blocks B6
+G4   OPEN   spec      resource kinds §7.4 designed, unimplemented — file/socket sigs should declare kinds from day one or they churn
+G5   OPEN   spec      `when TARGET` §8.3 conditionals — blocks embedded examples
+G6   OPEN   codegen   MMIO register-field depth (nested bitfield writes) — part of B7
+G7   OPEN   stdlib    §2 strings + §18 radix/builder — no blocked decisions, best first move
+G8   OPEN   stdlib    §5 integer semantics — rt helpers + lowering; fixes B1 properly rather than patching one backend
+G9   OPEN   lexer     R1: `/i` `/f` `/i=` `/f=` tokens; remove `/` and `/=`. Mixed-operand divide becomes a type error
+G10  OPEN   parser    R2/R3: if and match in value position. exkIf/exkMatch are already Expr nodes, so this is the parser's primary-position rule plus a checker rule (value-if needs else) and the two backends' emission
+
+## DECISIONS NEEDED (prose lives in ROADMAP/stdlib-blocks; this is the checklist)
+
+D1   OPEN   stdlib    generic containers vs extern mechanism — blocks all of stdlib-blocks §9 below the Seq rows. Generic externs now demonstrably work
+D2   OPEN   stdlib    bytes representation: Seq[u8] vs distinct binary type — blocks §15 net; re-cutting byte sigs later is expensive
+D3   OPEN   stdlib    collection call style: {xs, x} push vs xs ..push {x} — interacts with the set-fn rule §3.6
+D4   OPEN   stdlib    derive-style codegen for records — fmt/hash/json all block on it. One ruling, three payoffs
+D5   OPEN   ffi       `emit:` is redundant when it matches the fn name — keep for the escape-hatch case, drop from examples
+D6   OPEN   ffi       cstring vs cstr — Tuck takes both string and str; cstring has no short form
+
+## NOTES
+
+- tests/known_bugs.nim is executable and self-verifying: open bugs assert the
+  CORRECT behaviour and are expected to fail, so a bug that gets fixed makes
+  the suite fail until the flag is flipped. Bugs with a cheap assertion belong
+  there as well as here; this file is the index, that file is the proof.
+- Gate counts as of 2026-07-28: 31 Odin compile / 8 run, 25 Nim nim-check.
