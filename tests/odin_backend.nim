@@ -27,7 +27,7 @@ const odinCheckExpected = [
   "19-event-registry", "21-decision-bitmask", "22-error-policy", "23-units",
   "24-stdlib", "25-pools", "26-actor-run", "31-fnsig-callback",
   "32-duration-units", "33-ffi-zlib", "34-ffi-cstring", "35-ffi-struct",
-  "36-ffi-enum-callback", "37-ffi-handle",
+  "36-ffi-enum-callback", "37-ffi-handle", "28-async-task",
 ]
 
 # Examples with a known exit code: these must RUN, not merely compile.
@@ -48,6 +48,9 @@ const odinRunExpected = {
   "36-ffi-enum-callback": 0,
   # opaque handle: C mallocs, dereferences and frees it. 100 + 5 == 105.
   "37-ffi-handle": 0,
+  # the Odin coroutine runtime really runs: a spawned task returns 42 through
+  # tuckAsyncInit/tuckRun over minicoro.
+  "28-async-task": 42,
 }
 
 proc findOdin(): string =

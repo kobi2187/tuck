@@ -211,15 +211,17 @@ fn main() -> int:
   let s = 70000 SafeRPM
   return 0
 """)
-  discard execCmdEx(tuckBin & " build " & f & " --beef -o:" & dir / "out")
-  let bf = try: readFile(dir / "out" / "t.bf") except: ""
+  discard execCmdEx(tuckBin & " compile " & f & " --odin -o:" & dir / "out")
+  let od = try: readFile(dir / "out" / "t.odin") except: ""
   bug(
-    "Beef backend clamps [saturating] too",
-    "The Nim backend clamps; Beef still emits a bare SafeRPM(70000). " &
-      "Parity commitment: every codegen change mirrors to Beef.",
-    "compiler/codegen_beef.nim — mirror saturatingBase from codegen.nim",
+    "Odin backend clamps [saturating] too",
+    "The Nim backend clamps (codegen.nim saturatingBase); Odin still emits a " &
+      "bare SafeRPM(70000), so the same program silently wraps on one backend " &
+      "and clamps on the other. Parity commitment: every codegen change " &
+      "mirrors to Odin.",
+    "compiler/codegen_odin.nim — mirror saturatingBase from codegen.nim",
     fixed = false,
-    bf.len > 0 and "70000" notin bf)
+    od.len > 0 and "70000" notin od)
 
 # ---------------------------------------------------------------------------
 # 5. A type argument named like an attribute fails to parse

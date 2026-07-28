@@ -227,7 +227,14 @@ when isMainModule:
       if dirExists(rtSrc):
         let rtDst = outDir / "tuckrt"
         createDir(rtDst)
-        copyFile(rtSrc / "tuck_rt.odin", rtDst / "tuck_rt.odin")
+        # the WHOLE runtime package, not just tuck_rt.odin: tuck_coro.odin
+        # defines tuckAsyncInit/tuckRun/tuckSpawn, which the emitted entry
+        # point calls for any program with tasks or actors, plus the minicoro
+        # archive it links against.
+        for f in walkFiles(rtSrc / "*.odin"):
+          copyFile(f, rtDst / extractFilename(f))
+        if fileExists(rtSrc / "minicoro.a"):
+          copyFile(rtSrc / "minicoro.a", rtDst / "minicoro.a")
       # C sources an extern block binds with `lib: "path/to.c"`. Nim takes the
       # .c directly via {.compile.}; Odin cannot compile C, so it links the
       # object — build it here, next to where the emitted `foreign import`

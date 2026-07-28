@@ -1698,10 +1698,11 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
       params.add(p.name & ": " & ctx.odinType(p.typ))
     let retTypeStr = if d.taskReturnType != nil: ctx.odinType(d.taskReturnType) else: "void"
     let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
-    # ponytail: a task emits as a plain proc and runs INLINE — there is no
-    # Odin coroutine runtime yet, so suspension points don't suspend. Same
-    # ceiling the Beef backend has. Spawn it properly once tuck_coro.odin
-    # lands; until then anything relying on a yield behaves synchronously.
+    # ponytail: a task emits as a plain proc and runs INLINE, so suspension
+    # points do not suspend. The coroutine runtime itself is real and wired
+    # (tuckrt/tuck_coro.odin over minicoro — 28-async-task exits 42 and
+    # 26-actor-run drains its mailbox to 55); what is missing is spawning the
+    # task body ONTO it. Anything relying on a yield behaves synchronously.
     let header = ind & d.name & " :: proc(" & params.join(", ") & ")" &
                  retStr & " {"
     let oldVars = ctx.definedVars
