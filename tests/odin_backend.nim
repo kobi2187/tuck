@@ -26,7 +26,7 @@ const odinCheckExpected = [
   "13-arena-mem", "15-type-attributes", "17-input-merge", "18-alias",
   "19-event-registry", "21-decision-bitmask", "22-error-policy", "23-units",
   "24-stdlib", "25-pools", "26-actor-run", "31-fnsig-callback",
-  "32-duration-units", "33-ffi-zlib",
+  "32-duration-units", "33-ffi-zlib", "34-ffi-cstring",
 ]
 
 # Examples with a known exit code: these must RUN, not merely compile.
@@ -36,6 +36,9 @@ const odinRunExpected = {
   # Direct C FFI: 0 only if the `foreign` binding really reached system libz
   # and compressBound(1000) returned 1013. A broken binding cannot fake it.
   "33-ffi-zlib": 0,
+  # cstring across the FFI boundary: prints libz's version from a real char*
+  # and still gets compressBound right.
+  "34-ffi-cstring": 0,
 }
 
 proc findOdin(): string =

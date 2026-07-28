@@ -1,0 +1,24 @@
+# cstring at the FFI boundary. Tuck `string` is a GC'd Nim string / an Odin
+# fat pointer (ptr+len); neither is a NUL-terminated C `char*`, so a C function
+# returning one needs its own type. `cstring` maps to Nim's `cstring` and
+# Odin's `cstring`, both of which ARE char* — no copy, no conversion.
+#
+# zlibVersion() returns a static string owned by libz, so there is nothing to
+# free and the pointer outlives the call.
+import sys
+import io
+import str
+
+extern [c, header: "zlib.h", lib: "z"]:
+  fn zlibVersion() -> cstring [emit: "zlibVersion"]
+  fn compressBound({sourceLen: u64}) -> u64 [emit: "compressBound"]
+
+fn main() -> void [io]:
+  # crossing the boundary is explicit: toStr copies the C buffer into a Tuck
+  # string. cstring stays usable only at the edge, which keeps the copy visible.
+  let v = {value: zlibVersion} toStr
+  {text: v} printLine
+  let b = {sourceLen: 1000} compressBound
+  if b == 1013:
+    0 exit
+  1 exit

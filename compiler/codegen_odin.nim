@@ -109,6 +109,9 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     of "i64": "i64"
     of "int": "int"
     of "string", "str": "string"
+    # C's char* — the FFI boundary type. Odin's `string` is a fat pointer
+    # (ptr + len), not a NUL-terminated C string, so the two are distinct.
+    of "cstring": "cstring"
     of "bool": "bool"
     of "float": "f64"
     of "f32": "f32"
@@ -1617,9 +1620,14 @@ proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl): string =
     # A bare `fn` param on an extern (std/scheduler's `waitUntil {pred: fn}`)
     # is a PREDICATE the runtime calls, so it needs a callable proc type —
     # `rawptr` would not convert at the rt boundary.
-    let pt = if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == "fn":
+    var pt = if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == "fn":
                "proc() -> bool"
              else: ctx.odinType(p.typ)
+    # Odin marks a polymorphic param at the DECLARATION site: `value: $T`, not
+    # `value: T`. Without the sigil T is an undeclared name, so any generic
+    # extern forwarder (std/str's toStr) failed to compile.
+    if p.typ != nil and p.typ.kind == tkNamed and p.typ.name in mem.fnGenerics:
+      pt = "$" & pt
     params.add(p.name & ": " & pt)
     argNames.add(p.name)
   let callStr = "rt." & mem.name & "(" & argNames.join(", ") & ")"

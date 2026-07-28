@@ -74,7 +74,14 @@ errCode :: proc(name: string) -> u16 {
 }
 
 toStr :: proc(value: $T) -> string {
-	return fmt.aprint(value)
+	// cstring is a bare char* from C: aprint would format the POINTER, not
+	// the text. Odin's string(cstr) walks to the NUL and copies, which is
+	// what crossing the FFI boundary into a Tuck string has to mean.
+	when T == cstring {
+		return strings.clone(string(value))
+	} else {
+		return fmt.aprint(value)
+	}
 }
 
 tuckConcat :: proc(a, b: string) -> string {

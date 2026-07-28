@@ -81,6 +81,9 @@ proc genType*(t: Type): string =
     of "i64": "int64"
     of "int": "int"
     of "string", "str": "string"
+    # C's char* — the FFI boundary type. Distinct from `string`, which is a
+    # GC'd length-prefixed object Nim will not hand to a C function.
+    of "cstring": "cstring"
     of "bool": "bool"
     of "float": "float"
     of "f32": "float32"
