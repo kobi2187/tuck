@@ -685,7 +685,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
                 of boAdd: "+"
                 of boSub: "-"
                 of boMul: "*"
-                of boDiv: "/"
+                # Nim's `/` is ALWAYS float, even for int operands — that was
+                # bug B3. Integer divide is the `div` keyword.
+                of boDivInt: "div"
+                of boDivFloat: "/"
                 of boMod: "mod"
                 of boEq: "=="
                 of boNeq: "!="

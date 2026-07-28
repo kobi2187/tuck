@@ -27,7 +27,7 @@ const odinCheckExpected = [
   "19-event-registry", "21-decision-bitmask", "22-error-policy", "23-units",
   "24-stdlib", "25-pools", "26-actor-run", "31-fnsig-callback",
   "32-duration-units", "33-ffi-zlib", "34-ffi-cstring", "35-ffi-struct",
-  "36-ffi-enum-callback", "37-ffi-handle", "28-async-task",
+  "36-ffi-enum-callback", "37-ffi-handle", "28-async-task", "38-division",
 ]
 
 # Examples with a known exit code: these must RUN, not merely compile.
@@ -51,6 +51,9 @@ const odinRunExpected = {
   # the Odin coroutine runtime really runs: a spawned task returns 42 through
   # tuckAsyncInit/tuckRun over minicoro.
   "28-async-task": 42,
+  # R1: /i truncates (7 /i 2 == 3) and /f does not. Nim spells integer divide
+  # `div`, Odin spells it `/` — this asserts both reach the same answer.
+  "38-division": 0,
 }
 
 proc findOdin(): string =

@@ -1,0 +1,27 @@
+# Division names its arithmetic (ruling R1). There is no bare `/`:
+#   /i   truncating integer divide
+#   /f   float divide
+#   /i=  /f=   the compound forms
+#
+# Why: the backends disagree about what `/` means. Nim's `/` ALWAYS returns
+# float, even for two ints (its integer divide is the `div` keyword); Odin's
+# `/` follows the operand type. Leaving it to inference meant the same Tuck
+# source could produce different arithmetic per backend — and on embedded a
+# silently-wrong quotient is worse than one character of typing.
+#
+# Mixed operands are a type error, not a silent widen: `7 /f 2` is rejected
+# and tells you to use `/i` or convert.
+import sys
+
+fn main() -> void [io]:
+  let q = 7 /i 2            # 3, truncating — NOT 3.5 rounded
+  let r = 7.0 /f 2.0        # 3.5
+
+  var budget = 100
+  budget /i= 8              # 12
+
+  if q == 3:
+    if budget == 12:
+      if r > 3.4:           # float compare, avoids an equality on f64
+        0 exit
+  1 exit

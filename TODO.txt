@@ -56,7 +56,7 @@ R3   2026-07-28   `match` is an EXPRESSION too, same rule — arms yield values,
 
 B1   OPEN   odin      [saturating] does not clamp — Nim clamps, Odin emits bare ctor. Same program wraps on one backend, clamps on other. Fix: mirror saturatingBase into codegen_odin.nim
 B2   OPEN   odin      `on select` not lowered — 29-task-timeout / 30-async-read fail to build. rt.tuckAwaitReadOrTimeout exists, branch lowering unwired. codegen_odin.nim:995
-B3   OPEN   codegen   `/=` on ints emits float `/` — SUPERSEDED by R1: `/` goes away entirely, `/i` and `/f` replace it
+B3   DONE   codegen   2026-07-28 `/=` on ints emitted float `/`. Fixed by R1, not by patching the emitter: `/` is gone, `/i` and `/f` name the arithmetic. known_bugs now guards it
 B4   OPEN   codegen   `toStr` result loses str-ness under `+` — n.toStr + "x" picks numeric +
 B5   OPEN   parser    type argument named like an attribute fails — Box[error] reads as [error: ...]. Fix: decide by declared set, not the 19-name word list (parser_type.nim:128)
 B6   OPEN   examples  16-actor-tasks-unified-syntax does not compile — .fn {args} on undeclared copyFrom. In no test suite
@@ -74,7 +74,7 @@ G5   OPEN   spec      `when TARGET` §8.3 conditionals — blocks embedded examp
 G6   OPEN   codegen   MMIO register-field depth (nested bitfield writes) — part of B7
 G7   OPEN   stdlib    §2 strings + §18 radix/builder — no blocked decisions, best first move
 G8   OPEN   stdlib    §5 integer semantics — rt helpers + lowering; fixes B1 properly rather than patching one backend
-G9   OPEN   lexer     R1: `/i` `/f` `/i=` `/f=` tokens; remove `/` and `/=`. Mixed-operand divide becomes a type error
+G9   DONE   lexer     2026-07-28 R1 implemented — `/i` `/f` `/i=` `/f=`; bare `/` is a parse error naming the fix; mixed operands are a type error. Example 38, gated on both backends
 G10  OPEN   parser    R2/R3: if and match in value position. exkIf/exkMatch are already Expr nodes, so this is the parser's primary-position rule plus a checker rule (value-if needs else) and the two backends' emission
 
 ## DECISIONS NEEDED (prose lives in ROADMAP/stdlib-blocks; this is the checklist)

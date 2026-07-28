@@ -274,9 +274,27 @@ proc synthBinary(tc: var TypeChecker, e: Expr): Type =
       fail("Type Error: unhandled " & typeName(t) &
            " — pass it to a handling function or propagate with '?'", side.span)
   case e.binOp
-  of boAdd, boSub, boMul, boDiv, boMod:
+  of boAdd, boSub, boMul, boMod:
     if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
       fail("Type Error: arithmetic between " & typeName(lt) & " and " &
+           typeName(rt), e.span)
+    if isUnknown(lt): rt else: lt
+  of boDivInt, boDivFloat:
+    # R1: the operator names the arithmetic, so the operands must actually BE
+    # that kind. `compatible` alone would let `2 /f 3` through on loose numeric
+    # widening — precisely the silent conversion this ruling removes.
+    let wantFloat = e.binOp == boDivFloat
+    let opName = if wantFloat: "/f" else: "/i"
+    for (t, side) in [(lt, e.left), (rt, e.right)]:
+      if isUnknown(t): continue
+      let isFloatT = typeName(t) in ["float", "f32", "f64"]
+      if wantFloat != isFloatT:
+        fail("Type Error: `" & opName & "` takes " &
+             (if wantFloat: "float" else: "integer") & " operands, got " &
+             typeName(t) & " — use `" & (if wantFloat: "/i" else: "/f") &
+             "`, or convert explicitly", side.span)
+    if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
+      fail("Type Error: division between " & typeName(lt) & " and " &
            typeName(rt), e.span)
     if isUnknown(lt): rt else: lt
   of boEq, boNeq, boLt, boGt, boLe, boGe:

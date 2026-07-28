@@ -336,7 +336,8 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
   
   let opPrecedences = {
     tkPlus: (1, boAdd), tkMinus: (1, boSub),
-    tkStar: (2, boMul), tkSlash: (2, boDiv), tkPercent: (2, boMod),
+    tkStar: (2, boMul), tkPercent: (2, boMod),
+    tkSlashInt: (2, boDivInt), tkSlashFloat: (2, boDivFloat),
     tkEq: (0, boEq), tkNeq: (0, boNeq),
     tkLt: (0, boLt), tkGt: (0, boGt), tkLte: (0, boLe), tkGte: (0, boGe),
     tkAnd: (-1, boAnd), tkOr: (-1, boOr),
@@ -345,6 +346,17 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
   
   while true:
     let currKind = p.current().kind
+    # A bare `/` is not an operator (R1). Caught here rather than left to
+    # "unexpected token", because the fix is a specific one the message can
+    # name — and silently treating it as a float divide is the exact failure
+    # the ruling exists to prevent.
+    if currKind in {tkSlash, tkSlashAssign}:
+      p.reportError("`/` is not an operator in Tuck — write `/i` for integer " &
+        "division (truncating) or `/f` for float division. The operator names " &
+        "the arithmetic so the result cannot depend on how the operands were " &
+        "inferred." &
+        (if currKind == tkSlashAssign: " Same for `/=`: use `/i=` or `/f=`."
+         else: ""))
     if currKind in opPrecedences:
       let (prec, op) = opPrecedences[currKind]
       if prec >= minPrecedence:
@@ -509,7 +521,9 @@ proc parseExpr*(p: var Parser): Expr =
   # value, so they share one path — that keeps the bracket rewrite (setAt,
   # not assign-to-a-place) in a single spot instead of five.
   const compoundOps = {tkPlusAssign: boAdd, tkMinusAssign: boSub,
-                       tkStarAssign: boMul, tkSlashAssign: boDiv}.toTable()
+                       tkStarAssign: boMul,
+                       tkSlashIntAssign: boDivInt,
+                       tkSlashFloatAssign: boDivFloat}.toTable()
   if p.current().kind == tkAssign or p.current().kind in compoundOps:
     let opKind = p.current().kind
     discard p.advance()

@@ -127,7 +127,11 @@ type
     span*: Span
 
   BinOp* = enum
-    boAdd, boSub, boMul, boDiv, boMod
+    boAdd, boSub, boMul, boMod
+    # Division names its arithmetic (R1): `/i` truncating integer divide,
+    # `/f` float divide. There is no operand-inferred `/` — the two lower to
+    # different instructions, so the source says which one runs.
+    boDivInt, boDivFloat
     boEq, boNeq, boLt, boGt, boLe, boGe
     boAnd, boOr, boXor
     boRangeIncl, boRangeExcl

@@ -83,24 +83,29 @@ echo "=== known bugs: each line below is a bug that still reproduces ==="
 echo ""
 
 # ---------------------------------------------------------------------------
-# 1. `/=` on integers emits Nim's float-returning `/`
+# 1. Integer division is `/i`, and it really is integer division
 # ---------------------------------------------------------------------------
-# Found 2026-07-22 while collapsing the five compound-assign branches.
-# Verified pre-existing at bd335c3, so it predates that refactor.
+# Found 2026-07-22: `a /= 4` on an int lowered to Nim's `/`, which returns
+# float, so the emitted code did not compile.
+# FIXED 2026-07-28 by ruling R1 rather than by patching the emitter: a bare
+# `/` no longer exists, `/i` is integer divide and `/f` is float divide. The
+# operator names the arithmetic, so no operand-inference can pick wrong.
+# Nim spells integer divide `div` and Odin spells it `/` — that divergence is
+# exactly why the source has to say which one it means.
 block:
-  let (ok, outp) = build("""
+  let (built, rc) = run("""
 fn main() -> int:
   var a = 10
-  a /= 4
+  a /i= 4
   return a
 """)
   bug(
-    "`/=` on ints uses integer division",
-    "`a /= 4` on an int lowers to Nim's `/`, which returns float, so the " &
-      "generated code does not compile. Integer division should emit `div`.",
-    "compiler/codegen.nim binary emission — boDiv on integer operands",
-    fixed = false,
-    ok)   # correct = it compiles
+    "`/i=` on ints uses integer division",
+    "`a /i= 4` must lower to Nim's `div` and yield 2, not the " &
+      "float-returning `/` (which did not even compile).",
+    "compiler/codegen.nim binary emission — boDivInt emits `div`",
+    fixed = true,
+    built and rc == 2)
 
 # ---------------------------------------------------------------------------
 # 2. `toStr` + string concatenation picks the numeric `+`

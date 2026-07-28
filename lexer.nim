@@ -28,7 +28,9 @@ type
     tkBang,       # !
     tkBangQuestion,# !?
     tkAssign,     # =
-    tkPlus, tkMinus, tkStar, tkSlash, tkPercent,
+    tkPlus, tkMinus, tkStar, tkPercent,
+    tkSlash,                      # bare `/` — rejected; see tkSlashInt
+    tkSlashInt, tkSlashFloat,     # /i /f — divide names its arithmetic (R1)
     tkEq, tkNeq, tkLt, tkGt, tkLte, tkGte,
 
     # Grouping
@@ -48,7 +50,8 @@ type
     tkStaticAssert,
 
     tkSymbol, # legacy fallback
-    tkPlusAssign, tkMinusAssign, tkStarAssign, tkSlashAssign
+    tkPlusAssign, tkMinusAssign, tkStarAssign, tkSlashAssign,
+    tkSlashIntAssign, tkSlashFloatAssign    # /i= /f=
 
   Token* = object
     kind*: TokenKind
@@ -209,14 +212,15 @@ proc lexIdent*(L: var Lexer) =
   L.pendingTokens.add(Token(kind: kind, value: val, line: startLine, column: startCol))
 
 proc tryTwoChar*(L: var Lexer, match: string, kind: TokenKind): bool =
-  if L.peek() == match[0] and L.peek(1) == match[1]:
-    let startLine = L.line
-    let startCol = L.column
-    L.advance()
-    L.advance()
-    L.pendingTokens.add(Token(kind: kind, value: match, line: startLine, column: startCol))
-    return true
-  return false
+  ## Any fixed-length operator, longest-match-first at the call site. (Named
+  ## for the two-char case it started with; `/i=` and `/f=` are three.)
+  for i, c in match:
+    if L.peek(i) != c: return false
+  let startLine = L.line
+  let startCol = L.column
+  for _ in match: L.advance()
+  L.pendingTokens.add(Token(kind: kind, value: match, line: startLine, column: startCol))
+  return true
 
 proc emitOneChar*(L: var Lexer, kind: TokenKind, val: string) =
   L.pendingTokens.add(Token(kind: kind, value: val, line: L.line, column: L.column))
@@ -283,7 +287,14 @@ proc scanNext*(L: var Lexer) =
     if L.tryTwoChar("+=", tkPlusAssign): return
     if L.tryTwoChar("-=", tkMinusAssign): return
     if L.tryTwoChar("*=", tkStarAssign): return
-    if L.tryTwoChar("/=", tkSlashAssign): return
+    # Division names its arithmetic (ruling R1, 2026-07-28): `/i` is integer
+    # divide, `/f` is float divide, and a bare `/` does not exist. On embedded
+    # a silently-wrong quotient is worse than a character of typing. Longest
+    # match first — `/i=` must be tried before `/i`.
+    if L.tryTwoChar("/i=", tkSlashIntAssign): return
+    if L.tryTwoChar("/f=", tkSlashFloatAssign): return
+    if L.tryTwoChar("/i", tkSlashInt): return
+    if L.tryTwoChar("/f", tkSlashFloat): return
 
     case ch
     of '.': L.emitOneChar(tkDot, ".")
@@ -296,6 +307,8 @@ proc scanNext*(L: var Lexer) =
     of '+': L.emitOneChar(tkPlus, "+")
     of '-': L.emitOneChar(tkMinus, "-")
     of '*': L.emitOneChar(tkStar, "*")
+    # bare `/` is deliberately not a token — see the R1 note above. It reaches
+    # the parser as tkSlash only to produce a message naming the replacement.
     of '/': L.emitOneChar(tkSlash, "/")
     of '%': L.emitOneChar(tkPercent, "%")
     of '<': L.emitOneChar(tkLt, "<")

@@ -866,7 +866,11 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
                 of boAdd: "+"
                 of boSub: "-"
                 of boMul: "*"
-                of boDiv: "/"
+                # Odin's `/` follows the operand type (integer operands give
+                # integer division), so both map to `/` here — the DIFFERENCE
+                # from Nim, which needs `div`, is exactly why the Tuck source
+                # has to say which one it means.
+                of boDivInt, boDivFloat: "/"
                 of boMod: "%"
                 of boEq: "=="
                 of boNeq: "!="
