@@ -14,6 +14,7 @@ export parser_type
 # Forward declaration (parseExpr/parsePattern/parseBlock from parser_expr,
 # parseType from parser_type)
 proc parseDecl*(p: var Parser): Decl
+proc parseTypeDecl(p: var Parser, sp: Span): Decl  # extern blocks take types
 
 # [packed, align: 2, ...] — attribute bracket on a declaration (appends,
 # since some callers pre-seed attrs)
@@ -133,6 +134,15 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
       discard p.advance()
       continue
     let spDecl = p.getSpan()
+    # `type Name = {...}` inside an extern block: the C struct this library's
+    # functions take. Declaring it HERE (rather than outside) is what marks it
+    # foreign — the backends must then declare the C type instead of defining
+    # a layout-compatible duplicate, which the C compiler rejects.
+    if p.current().kind == tkType:
+      result.add(p.parseTypeDecl(p.getSpan()))
+      if p.current().kind == tkNewline:
+        discard p.advance()
+      continue
     discard p.expect(tkFn)
     var name = p.expect(tkIdent, "Expected function name in " & what & " declaration").value
     if p.current().kind == tkColonColon:
@@ -764,6 +774,11 @@ proc parseExternDecl(p: var Parser, sp: Span): Decl =
     discard p.expect(tkRBracket)
   let decls = p.parseSigBlock("extern")
   for d in decls:
+    if d.kind == dkType:
+      # a C struct, not a C function: it carries the header so the backend
+      # declares the foreign type instead of defining its own copy
+      d.typeExternHeader = header
+      continue
     d.isExtern = true
     d.externHeader = header
     d.externLib = lib

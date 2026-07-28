@@ -1,0 +1,32 @@
+# C structs by value, both directions. The type is declared INSIDE the extern
+# block — that is what marks it foreign, and it mirrors how a C header groups a
+# struct with the functions taking it.
+#
+# The two backends need opposite things here, which is why this has to be
+# checked rather than assumed:
+#   Nim  #includes point.h, so its type must BECOME the C type —
+#        {.importc: "Point", header: "point.h", bycopy.}. A plain object would
+#        be a second C struct with identical layout and the C compiler rejects
+#        the call.
+#   Odin never sees the header; it links object code, so a plain struct whose
+#        fields match the C layout IS the ABI declaration. No pragma.
+#
+# Layout needs no `packed`: C, Nim and Odin all use natural alignment and agree
+# on size and field offsets for this shape.
+#
+# Build needs the fixture in examples/cffi (see its point.h).
+import sys
+
+extern [c, header: "point.h", lib: "cffi/point.c"]:
+  type Point = {x: i32, y: i32}
+  fn takesPoint({p: Point}) -> i32
+  fn makesPoint({x: i32, y: i32}) -> Point
+
+fn main() -> void [io]:
+  let p = {x: 3, y: 7} makesPoint   # struct RETURNED by value from C
+  let r = {p: p} takesPoint         # struct PASSED by value back to C
+  # 3*100 + 7, computed in C. Asserted in-program rather than returned as the
+  # exit code: an exit status is one byte, so 307 could not survive it.
+  if r == 307:
+    0 exit
+  1 exit

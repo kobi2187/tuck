@@ -311,6 +311,11 @@ type
       generics*: seq[string]
       typeBody*: Type
       typeMembers*: seq[Decl]
+      # declared INSIDE an `extern [c, header: ...]` block: the struct belongs
+      # to the C library, so the backends must DECLARE it (Nim's
+      # {.importc, header.}, Odin's #packed-free plain struct) rather than
+      # define a layout-compatible duplicate the C compiler will reject.
+      typeExternHeader*: string
     of dkObject:
       objFields*: seq[FieldDef]
       mixins*: seq[string]

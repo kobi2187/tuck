@@ -37,8 +37,18 @@ type
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     ptrSelf: bool         # inside a member fn: `self` is ^T and needs a deref
     fnAsParam: bool       # emitting a param list: a bare `fn` is `$T` there
-    foreignLibs: HashSet[string]  # C libs bound by extern blocks; each needs a
-                                  # `foreign import` line at package top level
+    foreignLibs: Table[string, string]  # C libs bound by extern blocks:
+                                        # alias -> import spec. Each needs a
+                                        # `foreign import` at package top level
+
+proc odinLibSpec*(lib: string): string =
+  ## `lib: "..."` -> Odin's `foreign import` spec. A bare name is a system
+  ## library; a path rides through as-is. `.c` names vendored SOURCE, which
+  ## Odin cannot compile — the Nim backend takes it via {.compile.}, so here it
+  ## becomes the object file the project's build is expected to have produced.
+  if lib.endsWith(".c"): lib[0 ..< lib.len - 2] & ".o"
+  elif '/' in lib or lib.endsWith(".a") or lib.endsWith(".so") or lib.endsWith(".o"): lib
+  else: "system:" & lib
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -1856,7 +1866,12 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     var cBindings: seq[string]
     var cLib = ""
     for m in d.mixinMembers:
-      if m.kind == dkFn and m.isPending:
+      if m.kind == dkType:
+        # a C struct declared in the extern block. Odin needs no pragma: it
+        # never sees the C header, it links object code, so a plain struct with
+        # matching field types IS the ABI declaration.
+        res.add(ctx.genOdinDecl(m) & "\n")
+      elif m.kind == dkFn and m.isPending:
         res.add(ctx.genPendingStub(m) & "\n")
       elif m.kind == dkFn and not m.isExtern:
         # interface contract (sig only): nothing to emit; a fn with a `self`
@@ -1885,8 +1900,17 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
       elif m.kind == dkFn and m.isExtern and ctx.modPrefix != "":
         res.add(ctx.genRtForwarder(m) & "\n")
     if cBindings.len > 0:
-      let libAlias = if cLib != "": cLib else: "c"
-      ctx.foreignLibs.incl(libAlias)
+      # A path (vendored `.a`) cannot double as the Odin alias, so the alias is
+      # derived from the file stem and the path rides along as the import spec.
+      # `foreign import <alias> "<spec>"` — mirrors tuck_coro.odin's minicoro.a.
+      let libAlias = if cLib == "": "c"
+                     elif '/' in cLib or '.' in cLib:
+                       # ".../libpoint.a" -> "point"
+                       var stem = cLib.rsplit('/', 1)[^1]
+                       if stem.startsWith("lib"): stem = stem[3 .. ^1]
+                       stem.rsplit('.', 1)[0]
+                     else: cLib
+      ctx.foreignLibs[libAlias] = cLib
       res.add("@(default_calling_convention=\"c\")\n")
       res.add("foreign " & libAlias & " {\n" & cBindings.join("\n") & "\n}\n")
     return res
@@ -1982,8 +2006,8 @@ proc emitOdin*(m: Module,
       imports.add("import " & pkg & " \"./mod_" & pkg & "\"")
   # C libraries bound by extern blocks — see emitOdinModule for why these are
   # hoisted here rather than emitted beside the `foreign` block.
-  for lib in ctx.foreignLibs:
-    imports.add("foreign import " & lib & " \"system:" & lib & "\"")
+  for alias, spec in ctx.foreignLibs:
+    imports.add("foreign import " & alias & " \"" & odinLibSpec(spec) & "\"")
   if imports.len > 0:
     res.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:
@@ -2063,8 +2087,8 @@ proc emitOdinModule*(name: string, m: Module,
   # C libraries bound by extern blocks. `foreign import` is only legal at
   # package top level, so the emitter collects the names during emitBody and
   # declares them here — this is what makes the binding link.
-  for lib in ctx.foreignLibs:
-    imports.add("foreign import " & lib & " \"system:" & lib & "\"")
+  for alias, spec in ctx.foreignLibs:
+    imports.add("foreign import " & alias & " \"" & odinLibSpec(spec) & "\"")
   if imports.len > 0:
     res.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:

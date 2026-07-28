@@ -1166,6 +1166,15 @@ proc genRecordType(ctx: var CodegenCtx, d: Decl): string =
         fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
       let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
       let tGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
+      # A C struct (declared inside `extern [c, header: ...]`) must DECLARE the
+      # foreign type, not define a second one: Nim #includes the header, so a
+      # plain object would be a distinct C type with identical layout and the
+      # C compiler rejects the call ("cannot convert struct <anonymous>").
+      # Mirrors how Nim's own posix module binds `struct timespec`. `bycopy`
+      # keeps it passed by value, which is the C signature's contract.
+      if d.typeExternHeader != "":
+        return "type " & d.name & "* {.importc: \"" & d.name & "\", header: \"" &
+               d.typeExternHeader & "\", bycopy.} = object\n" & fieldsBody & "\n"
       # Tier 1 records are value types (spec §7.1) — plain object, not ref
       var res = "type " & d.name & "*" & tGen & " = object\n" & fieldsBody & "\n"
       var invariantChecks: seq[string]
@@ -1540,7 +1549,11 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     # C-imported fns emit importc bindings with concrete param types.
     var res = ""
     for m in d.mixinMembers:
-      if m.kind == dkFn and m.isPending:
+      if m.kind == dkType:
+        # a C struct declared in the extern block — genDecl routes it to
+        # genRecordType, which emits the importc/header form
+        res.add(ctx.genDecl(m) & "\n")
+      elif m.kind == dkFn and m.isPending:
         res.add(genPendingStub(m) & "\n")
       elif m.kind == dkFn and not m.isExtern:
         # interface contract (sig only, no body): nothing to emit — the
@@ -1629,7 +1642,23 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
         if mem.kind == dkFn and mem.isExtern and mem.externLib != "" and
            mem.externLib notin linkedLibs:
           linkedLibs.add(mem.externLib)
-          res.add("{.passL: \"-l" & mem.externLib & "\".}\n")
+          # A path (contains a separator, or names an archive/shared object) is
+          # passed to the linker verbatim; a bare name gets `-l`. Without this
+          # a vendored `.a` is unreachable: the pragma's flags land BEFORE the
+          # driver's, so a `-L` on the command line comes too late to resolve
+          # an emitted `-l`.
+          let lib = mem.externLib
+          if lib.endsWith(".c"):
+            # vendored C source: {.compile.} puts the object WITH the rest, so
+            # it links regardless of order. A static .a through {.passL.} does
+            # not work — Nim emits passL flags ahead of the object files, and an
+            # archive only contributes members resolving already-pending
+            # symbols, so every symbol comes out undefined.
+            res.add("{.compile: \"" & lib & "\".}\n")
+          elif '/' in lib or lib.endsWith(".a") or lib.endsWith(".so"):
+            res.add("{.passL: \"" & lib & "\".}\n")
+          else:
+            res.add("{.passL: \"-l" & lib & "\".}\n")
   for d in m.decls:
     if d != nil and d.kind == dkImport and d.name in realModules:
       res.add("import " & d.name & "\n")

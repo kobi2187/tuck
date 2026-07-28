@@ -26,7 +26,7 @@ const odinCheckExpected = [
   "13-arena-mem", "15-type-attributes", "17-input-merge", "18-alias",
   "19-event-registry", "21-decision-bitmask", "22-error-policy", "23-units",
   "24-stdlib", "25-pools", "26-actor-run", "31-fnsig-callback",
-  "32-duration-units", "33-ffi-zlib", "34-ffi-cstring",
+  "32-duration-units", "33-ffi-zlib", "34-ffi-cstring", "35-ffi-struct",
 ]
 
 # Examples with a known exit code: these must RUN, not merely compile.
@@ -39,6 +39,9 @@ const odinRunExpected = {
   # cstring across the FFI boundary: prints libz's version from a real char*
   # and still gets compressBound right.
   "34-ffi-cstring": 0,
+  # C struct by value both directions: takesPoint(makesPoint(3,7)) == 307,
+  # computed in C. Asserted in-program (an exit status is one byte).
+  "35-ffi-struct": 0,
 }
 
 proc findOdin(): string =
@@ -60,6 +63,15 @@ proc buildOne(odinExe, baseName: string): tuple[ok: bool, output: string] =
     copyFile(f, projDir / "tuckrt" / extractFilename(f))
   if fileExists(rtDir / "minicoro.a"):
     copyFile(rtDir / "minicoro.a", projDir / "tuckrt" / "minicoro.a")
+  # C fixtures an FFI example binds against (examples/cffi). The emitted
+  # `foreign import` path is relative to the package, so the objects have to
+  # sit at the same relative spot inside the copied project. Built on demand:
+  # a .o is a build artifact, not something to commit.
+  if dirExists(exampleDir / "cffi"):
+    createDir(projDir / "cffi")
+    for f in walkFiles(exampleDir / "cffi" / "*.c"):
+      let obj = projDir / "cffi" / extractFilename(f).changeFileExt("o")
+      discard execCmdEx("cc -c -fPIC " & quoteShell(f) & " -o " & quoteShell(obj))
   for modDir in walkDirs(exampleDir / "mod_*"):
     let dst = projDir / extractFilename(modDir)
     createDir(dst)

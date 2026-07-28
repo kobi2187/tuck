@@ -290,6 +290,22 @@ when isMainModule:
         let rtDst = outDir / "tuckrt"
         createDir(rtDst)
         copyFile(rtSrc / "tuck_rt.odin", rtDst / "tuck_rt.odin")
+      # C sources an extern block binds with `lib: "path/to.c"`. Nim takes the
+      # .c directly via {.compile.}; Odin cannot compile C, so it links the
+      # object — build it here, next to where the emitted `foreign import`
+      # expects it.
+      for d in odProg[^1].m.decls:
+        if d == nil or d.kind != dkMixin or d.name != "extern": continue
+        for mem in d.mixinMembers:
+          if mem.kind != dkFn or not mem.isExtern: continue
+          if not mem.externLib.endsWith(".c"): continue
+          let cSrc = parentDir(path) / mem.externLib
+          if not fileExists(cSrc): continue
+          let obj = outDir / mem.externLib.changeFileExt("o")
+          createDir(obj.parentDir())
+          if execShellCmd("cc -c -fPIC " & quoteShell(cSrc) & " -o " &
+                          quoteShell(obj)) != 0:
+            die("tuck: failed to compile C source " & cSrc)
     let m = prog[^1].m
     if cmd in ["build", "b"]:
       # entry point: `fn main` runs when the binary starts. No main =

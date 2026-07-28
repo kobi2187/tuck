@@ -50,7 +50,11 @@ proc isManglable(d: Decl): bool =
   if d == nil or d.name.len == 0: return false
   case d.kind
   of dkFn: not d.isExtern
-  of dkType, dkObject, dkActor, dkTask, dkConst, dkPool, dkRegistry,
+  # a type declared inside an `extern [c, header: ...]` block IS the C struct,
+  # so it keeps its name for the same reason extern fns do — the Nim backend
+  # emits it as the importc name, which must match the header.
+  of dkType: d.typeExternHeader == ""
+  of dkObject, dkActor, dkTask, dkConst, dkPool, dkRegistry,
      dkRegister, dkFnSig: true
   else: false
 
