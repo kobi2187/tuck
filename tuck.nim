@@ -299,7 +299,8 @@ when isMainModule:
       var actorNames: seq[string]
       var hasTasks = false
       for d in m.decls:
-        if d != nil and d.kind == dkFn and d.name == "main":
+        # `m` was mangled above, so `fn main` is now tuck_main here.
+        if d != nil and d.kind == dkFn and d.name == mangleName("main"):
           hasMain = true
           mainReturns = d.fnReturnType != nil and
             not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name in ["void", "unit"])

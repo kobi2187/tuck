@@ -276,13 +276,16 @@ proc createBackend*(fn: pointer, stackSize: int, userData: pointer): UnifiedBack
     if res != MCO_SUCCESS:
       raise newException(ValueError, "Failed to create minicoro coroutine: " & $res)
 
-proc resume*(backend: UnifiedBackend) =
+proc resume*(backend: UnifiedBackend) {.raises: [].} =
   when SelectedBackend == cbLibaco:
     aco_resume(backend.handle)
   else:
     let res = mco_resume(backend.handle)
     if res != MCO_SUCCESS:
-      raise newException(ValueError, "Failed to resume minicoro coroutine: " & $res)
+      # A failed switch means the coroutine or its stack is corrupt; there is
+      # nothing to recover to. Trapping keeps this proc non-raising, which is
+      # what stops Nim threading an error flag through every switch.
+      quit("tuck: failed to resume coroutine (minicoro error " & $res & ")")
 
 proc yieldBackend*() =
   when SelectedBackend == cbLibaco:
@@ -402,15 +405,28 @@ proc raiseCoroutineError(msg: string) {.noinline, noreturn, stackTrace: off.} =
 # Current Coroutine (Thread Local)
 # =============================================================================
 
-var activeCoroutine {.threadvar.}: Coroutine
-  ## The currently running coroutine in this thread, or nil if in main context.
+var activeCoroutine {.threadvar.}: ptr CoroutineObj
+  ## The currently running coroutine in this thread, or nil in main context.
   ## Renamed from arsenal's `currentCoroutine`: flattening put it in the same
   ## scope as scheduler.nim's exported `currentCoroutine()` proc, a different
   ## thing (the scheduler's own view) that must keep its name.
+  ##
+  ## A RAW POINTER, not a ref, and that is a deliberate ARC decision. As a ref
+  ## every read compiled to an `eqcopy` CALL plus an error-flag branch in the
+  ## generated C — twice per context switch, on the hottest path there is.
+  ##
+  ## Safe because this is a VIEW, never an owner: a running coroutine is kept
+  ## alive by `resume`'s own `c` parameter (a ref held for the whole call,
+  ## including across the switch), and by the scheduler's readyQueue /
+  ## currentCoro. activeCoroutine is only ever set to a coroutine that one of
+  ## those already owns, and cleared before that owner releases it.
 
 proc running*(): Coroutine =
   ## Get the currently running coroutine, or nil if not in a coroutine.
-  activeCoroutine
+  ## Converts the view back to a ref for callers, which re-establishes
+  ## ownership for as long as they hold it.
+  if activeCoroutine == nil: nil
+  else: cast[Coroutine](activeCoroutine)
 
 proc inCoroutine*(): bool =
   ## Check if currently executing within a coroutine.
@@ -477,33 +493,35 @@ proc newCoroutine*(fn: proc() {.nimcall, gcsafe.}, stackSize: int = DefaultStack
 # Coroutine Operations
 # =============================================================================
 
-proc resume*(c: Coroutine) =
+proc resume*(c: Coroutine) {.raises: [].} =
   ## Resume execution of a suspended coroutine.
-  
+  ##
+  ## `{.raises: [].}` for the same reason as coroYield: the error-flag
+  ## machinery Nim emits around a possibly-raising proc costs more than the
+  ## switch itself. Resuming a finished or already-running coroutine is a
+  ## programmer error, so it traps.
   if c.state == csFinished:
-    raiseCoroutineError("Cannot resume finished coroutine")
+    quit("tuck: cannot resume a finished coroutine")
   if c.state == csRunning:
-    raiseCoroutineError("Coroutine is already running")
+    quit("tuck: coroutine is already running")
 
-  # Update state
   c.state = csRunning
-  
-  # Set current coroutine threadvar
-  let prevCoro = activeCoroutine
-  activeCoroutine = c
 
-  try:
-    # Resume backend
-    resume(c.backend)
-  finally:
-    # Restore previous coroutine
-    activeCoroutine = prevCoro
-    
-    # Update state after return
-    if isFinished(c.backend):
-      c.state = csFinished
-    else:
-      c.state = csSuspended
+  # The `c` parameter is itself a ref held for the duration of this call, so
+  # it keeps the coroutine alive across the switch — activeCoroutine is a
+  # convenience view, not an owner.
+  let prevCoro = activeCoroutine
+  activeCoroutine = cast[ptr CoroutineObj](c)
+
+  # No try/finally: with `raises: []` nothing here can unwind, so the
+  # restore below always runs and the guard only costs code size.
+  resume(c.backend)
+
+  activeCoroutine = prevCoro
+  if isFinished(c.backend):
+    c.state = csFinished
+  else:
+    c.state = csSuspended
 
 proc isFinished*(c: Coroutine): bool {.inline.} = c.state == csFinished
 proc isRunning*(c: Coroutine): bool {.inline.} = c.state == csRunning
@@ -513,13 +531,20 @@ proc isSuspended*(c: Coroutine): bool {.inline.} = c.state == csSuspended
 # Yield
 # =============================================================================
 
-proc coroYield*() {.stackTrace: off.} =
+proc coroYield*() {.stackTrace: off, raises: [].} =
   ## Yield execution back to the caller of `resume()`.
-  
+  ##
+  ## `{.raises: [].}` is load-bearing, not decoration: without it Nim threads
+  ## an error flag through this proc, so the generated C fetches
+  ## nimErrorFlag() and branches after every statement — twice per switch, on
+  ## the hottest path in the runtime. Yielding outside a coroutine is a
+  ## PROGRAMMER error, not a recoverable one, so it traps instead of raising.
   let c = activeCoroutine
   if c == nil:
-    raiseCoroutineError("Cannot yield outside a coroutine")
-  
+    # not raiseCoroutineError: raising here is what forces the error-flag
+    # machinery into the generated C
+    quit("tuck: cannot yield outside a coroutine")
+
   c.state = csSuspended
   yieldBackend()
   c.state = csRunning

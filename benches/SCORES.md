@@ -51,6 +51,38 @@ path while the Nim one reflects a hand-written stand-in.
 Odin benches live in `benches/odin_async_scale/` and
 `benches/odin_actor_throughput/`; build with `odin build <dir> -o:speed`.
 
+### 2026-07-28 — Nim coroutine wrapper: 13.1 → 23.5 M switches/sec
+
+Reading the GENERATED C found it, after six wrong guesses (ORC vs ARC,
+try/finally, exceptions, a 72-byte by-value copy, refcounted deques — each
+measured, each worth ~1%). `coroYield`'s five lines compiled to a call to
+`eqcopy` plus an `nimErrorFlag()` fetch and a branch after every statement,
+twice per switch:
+
+    eqcopy___...(&c_1, activeCoroutine, NIM_FALSE);
+    if (NIM_UNLIKELY((*nimErr_))) { goto LA1_; }
+
+Two fixes, isolated by measuring one at a time:
+
+| change | raw switch |
+|---|---|
+| baseline | 13.1 M/sec |
+| `{.raises: [].}` + trap instead of raise | 18.9 M/sec |
+| `activeCoroutine` as `ptr` instead of `ref` | **23.5 M/sec** |
+
+The second is what removed the `eqcopy` call — the C is now a plain load.
+It is safe because activeCoroutine is a VIEW, never an owner: a running
+coroutine is kept alive by `resume`'s own ref parameter and by the
+scheduler's readyQueue. Verified under ASan (`--mm:orc -d:useMalloc
+-fsanitize=address`): no use-after-free, no leaks.
+
+Full-path async scale moved only 1.32 → 1.49 M/sec, because the scheduler
+dominates there — `Deque[Coroutine]` refcounts on every push/pop, measured
+at 1.55x the cost of a pointer deque. Actor throughput was unchanged
+(~23 M msgs/sec), same reason. Odin still leads on the full path (2.10),
+which is consistent with it emitting LLVM IR directly rather than going
+through C.
+
 ### 2026-07-24 — coroutine stack 256KB → 128KB
 
 First cut: halved the per-coroutine stack 256KB→128KB. 128KB is malloc's mmap
