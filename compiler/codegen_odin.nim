@@ -1279,7 +1279,22 @@ proc genOdinFnDecl(ctx: var OdinCodegenCtx, d: Decl): string =
   let allParams = genericParams & params
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   let inlinePrefix = if d.isInline: ind & "@(require_results=false)\n" else: ""
-  let header = inlinePrefix & ind & fnNameSanitized & " :: proc(" &
+  # A fn handed to a C function pointer needs the C calling convention. Odin
+  # cannot cast between conventions the way Nim can, so it goes on the
+  # DEFINITION, matched by shape against the module's C-callback fnsig.
+  # ponytail: shape match, not reference tracking. A same-shape fn that never
+  # crosses the boundary gets "c" harmlessly; tighten if that ever matters.
+  var conv = ""
+  for cd in ctx.module.decls:
+    if cd == nil or cd.kind != dkMixin: continue
+    for mem in cd.mixinMembers:
+      if mem.kind == dkFnSig and mem.sigIsCCallback and
+         mem.sigParams.len == d.fnParams.len:
+        var same = true
+        for i, sp in mem.sigParams:
+          if ctx.odinType(sp.typ) != ctx.odinType(d.fnParams[i].typ): same = false
+        if same: conv = "\"c\" "
+  let header = inlinePrefix & ind & fnNameSanitized & " :: proc " & conv & "(" &
                allParams.join(", ") & ")" & retStr & " {"
   let oldVars = ctx.definedVars
   for p in d.fnParams:
@@ -1355,7 +1370,8 @@ proc genSumType(ctx: var OdinCodegenCtx, d: Decl): string =
   if not hasPayload and not hasTransitions:
     # plain enum (also what decision tables key over)
     var tags: seq[string]
-    for v in d.typeBody.variants: tags.add(v.name)
+    for v in d.typeBody.variants:
+      tags.add(if v.value != "": v.name & " = " & v.value else: v.name)
     return ind & d.name & " :: enum { " & tags.join(", ") & " }\n"
 
   var res = ""
@@ -1866,10 +1882,11 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     var cBindings: seq[string]
     var cLib = ""
     for m in d.mixinMembers:
-      if m.kind == dkType:
-        # a C struct declared in the extern block. Odin needs no pragma: it
-        # never sees the C header, it links object code, so a plain struct with
-        # matching field types IS the ABI declaration.
+      if m.kind in {dkType, dkFnSig}:
+        # a C struct or callback signature declared in the extern block. Odin
+        # needs no pragma for the struct: it never sees the C header, it links
+        # object code, so a plain struct with matching fields IS the ABI
+        # declaration. The callback does need `proc "c"` — see genOdinDecl.
         res.add(ctx.genOdinDecl(m) & "\n")
       elif m.kind == dkFn and m.isPending:
         res.add(ctx.genPendingStub(m) & "\n")
@@ -1931,7 +1948,12 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
                                      d.sigReturn.name == "void"):
         " -> " & ctx.odinType(d.sigReturn)
       else: ""
-    return ind & d.name & " :: proc(" & params.join(", ") & ")" & retStr & "\n"
+    # A C callback is a bare function pointer using the C calling convention:
+    # `proc "c" (...)`. Odin's default convention differs, so passing a plain
+    # proc to a C function pointer would be an ABI mismatch.
+    let conv = if d.sigIsCCallback: "\"c\" " else: ""
+    return ind & d.name & " :: proc " & conv & "(" & params.join(", ") & ")" &
+           retStr & "\n"
   else:
     return ""
 

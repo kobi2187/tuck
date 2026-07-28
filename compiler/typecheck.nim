@@ -47,6 +47,17 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
     if ra != a or re != e: return tc.compatible(ra, re)
     return false
 
+  # A `:name` fn-ref synthesizes a tkFunc; the parameter names a fnsig, which
+  # is a tkNamed. Match the reference against the named signature's shape —
+  # otherwise the pair falls through to the record check and every callback
+  # argument is rejected (`expects BinOp but got <type>`).
+  if a.kind == tkFunc and e.kind == tkNamed and tc.fnSigs.hasKey(e.name):
+    let sig = tc.fnSigs[e.name]
+    if a.params.len != sig.params.len: return false
+    for i, p in sig.params:
+      if not tc.compatible(a.params[i], p.typ): return false
+    return a.result == nil or sig.ret == nil or tc.compatible(a.result, sig.ret)
+
   # Structural: expected record => subset matching (spec 2.5)
   let eFields = if e.kind == tkRecord: e.fields else: tc.fieldsOf(e)
   if eFields.len > 0 or e.kind == tkRecord:

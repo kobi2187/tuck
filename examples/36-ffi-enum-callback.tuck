@@ -1,0 +1,30 @@
+# C enums and callbacks. Both are declared INSIDE the extern block, same as the
+# struct in 35 — that is what marks them foreign.
+#
+# `= 10` on an enum tag is not decoration: C enums are rarely 0,1,2, and a
+# mis-numbered tag is silently the WRONG constant at the ABI boundary. The C
+# side returns -999 for an unrecognised op, so a wrong value fails loudly here.
+#
+# The callback needs the C calling convention, and the backends get there
+# differently: Nim casts the fn-ref to a {.cdecl.} proc type, Odin marks the
+# definition `proc "c"` (it has no cast between conventions). Either way a
+# C callback is non-capturing — a captured environment has nowhere to live on
+# the C side.
+import sys
+
+extern [c, header: "point.h", lib: "cffi/point.c"]:
+  fnsig BinOp = {a: i32, b: i32} -> i32
+  type Op = {OP_ADD = 10, OP_MUL = 20, OP_NEG = 30}
+  fn applyOp({op: Op, a: i32, b: i32}) -> i32
+  fn callBack({cb: BinOp, a: i32, b: i32}) -> i32
+
+fn addTwo({a: i32, b: i32}) -> i32:
+  return a + b
+
+fn main() -> void [io]:
+  let m = {op: Op.OP_MUL, a: 6, b: 7} applyOp   # C switches on 20 -> 6*7
+  let c = {cb: :addTwo, a: 40, b: 2} callBack   # C calls back -> 42 + 1000
+  if m == 42:
+    if c == 1042:
+      0 exit
+  1 exit

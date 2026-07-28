@@ -14,7 +14,8 @@ export parser_type
 # Forward declaration (parseExpr/parsePattern/parseBlock from parser_expr,
 # parseType from parser_type)
 proc parseDecl*(p: var Parser): Decl
-proc parseTypeDecl(p: var Parser, sp: Span): Decl  # extern blocks take types
+proc parseTypeDecl(p: var Parser, sp: Span): Decl   # extern blocks take types
+proc parseFnSigDecl(p: var Parser, sp: Span): Decl  # ...and C callback sigs
 
 # [packed, align: 2, ...] — attribute bracket on a declaration (appends,
 # since some callers pre-seed attrs)
@@ -140,6 +141,13 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
     # a layout-compatible duplicate, which the C compiler rejects.
     if p.current().kind == tkType:
       result.add(p.parseTypeDecl(p.getSpan()))
+      if p.current().kind == tkNewline:
+        discard p.advance()
+      continue
+    # `fnsig Name = {...} -> T` inside an extern block: a C function pointer
+    # the library calls back through.
+    if p.current().kind == tkFnsig:
+      result.add(p.parseFnSigDecl(p.getSpan()))
       if p.current().kind == tkNewline:
         discard p.advance()
       continue
@@ -778,6 +786,11 @@ proc parseExternDecl(p: var Parser, sp: Span): Decl =
       # a C struct, not a C function: it carries the header so the backend
       # declares the foreign type instead of defining its own copy
       d.typeExternHeader = header
+      continue
+    if d.kind == dkFnSig:
+      # a C function pointer: needs the C calling convention, not Nim's
+      # default closure (a two-word proc+env pair C cannot receive)
+      d.sigIsCCallback = true
       continue
     d.isExtern = true
     d.externHeader = header

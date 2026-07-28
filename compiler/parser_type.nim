@@ -58,14 +58,25 @@ proc parseParenType(p: var Parser, sp: Span): Type =
 
 # {A, B} inline enum or {a: T, b: U} inline record
 proc parseBraceType(p: var Parser, sp: Span): Type =
-  let isEnum = p.peek(2).kind in {tkComma, tkRBrace}
+  # `{A, B}` or `{A = 10, B = 20}` (explicit values, for C enums) vs a record
+  let isEnum = p.peek(2).kind in {tkComma, tkRBrace, tkAssign}
   discard p.advance()
   if isEnum:
     var variants: seq[VariantDef]
     while p.current().kind != tkRBrace and p.current().kind != tkEOF:
       let vSp = p.getSpan()
       let name = p.expect(tkIdent, "Expected tag name in enum").value
-      variants.add(VariantDef(name: name, fields: @[], span: vSp))
+      # `= N` pins the tag's numeric value. Required for C enums, whose
+      # values are rarely 0,1,2 — a mis-numbered tag is silently the wrong
+      # constant at the ABI boundary.
+      var val = ""
+      if p.current().kind == tkAssign:
+        discard p.advance()
+        if p.current().kind == tkMinus:
+          discard p.advance()
+          val = "-"
+        val.add(p.expect(tkIntLit, "Expected integer after '=' in enum").value)
+      variants.add(VariantDef(name: name, fields: @[], value: val, span: vSp))
       if p.current().kind == tkComma:
         discard p.advance()
     discard p.expect(tkRBrace)

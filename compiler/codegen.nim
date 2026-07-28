@@ -239,9 +239,26 @@ proc isKnownFn(ctx: CodegenCtx, name: string): bool =
 
 # module::fn — a real imported module rides Nim's own namespacing; a
 # sketch-pending qualified name maps to its mangled stub (genPendingStub).
+proc cCallbackSig(m: Module): string =
+  ## The name of a C-callback fnsig declared in an extern block, or "".
+  ## ponytail: first one wins — one C callback type per module covers every
+  ## real header so far; key by param types when a second one shows up.
+  for d in m.decls:
+    if d != nil and d.kind == dkMixin:
+      for mem in d.mixinMembers:
+        if mem.kind == dkFnSig and mem.sigIsCCallback: return mem.name
+  ""
+
 proc genQualified(ctx: CodegenCtx, e: Expr): string =
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
-  if modName == "": e.qualName  # `:name` — a bare fn reference
+  if modName == "":
+    # `:name` — a bare fn reference. Feeding one to a C function pointer needs
+    # the C calling convention; a cast is enough, so ordinary Tuck fns stay
+    # ordinary Nim procs instead of every fn carrying a {.cdecl.} it rarely
+    # needs. Non-capturing is guaranteed: Tuck fns are top-level.
+    let cb = cCallbackSig(ctx.module)
+    if cb != "": return "cast[" & cb & "](" & e.qualName & ")"
+    return e.qualName
   elif modName in ctx.realModules: modName & "." & e.qualName
   else: modName & "_" & e.qualName
 
@@ -1127,7 +1144,8 @@ proc genSumType(ctx: var CodegenCtx, d: Decl): string =
       if not hasPayload and not hasTransitions:
         # plain enum (also what decision tables key over)
         var tags: seq[string]
-        for v in d.typeBody.variants: tags.add(v.name)
+        for v in d.typeBody.variants:
+          tags.add(if v.value != "": v.name & " = " & v.value else: v.name)
         return "type " & d.name & "* = enum " & tags.join(", ") & "\n"
 
       var res = ""
@@ -1549,9 +1567,9 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     # C-imported fns emit importc bindings with concrete param types.
     var res = ""
     for m in d.mixinMembers:
-      if m.kind == dkType:
-        # a C struct declared in the extern block — genDecl routes it to
-        # genRecordType, which emits the importc/header form
+      if m.kind in {dkType, dkFnSig}:
+        # a C struct or callback signature declared in the extern block —
+        # genDecl routes them to the importc/header and cdecl forms
         res.add(ctx.genDecl(m) & "\n")
       elif m.kind == dkFn and m.isPending:
         res.add(genPendingStub(m) & "\n")
@@ -1588,8 +1606,14 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
                     (d.sigReturn.kind == tkNamed and d.sigReturn.name == "void"):
                    genType(d.sigReturn)
                  else: "void"
+    # A C callback must be a BARE function pointer with the C calling
+    # convention. Nim's default {.closure.} is a (proc, env) pair — the C
+    # compiler rejects it outright ("cannot convert struct <anonymous> to
+    # int (*)(int, int)"), and a captured environment has nowhere to live on
+    # the C side anyway, so C callbacks are necessarily non-capturing.
+    let conv = if d.sigIsCCallback: "{.cdecl.}" else: "{.closure.}"
     return "type " & d.name & "* = proc(" & params.join(", ") & "): " &
-           retStr & " {.closure.}\n"
+           retStr & " " & conv & "\n"
   else:
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
 

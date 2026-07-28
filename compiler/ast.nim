@@ -33,6 +33,8 @@ type
   VariantDef* = object
     name*: string
     fields*: seq[FieldDef]
+    value*: string  # `A = 10` — explicit ordinal, needed to match a C enum;
+                    # empty = sequential from 0, Tuck's and C's default
     span*: Span
 
   Transition* = object
@@ -363,6 +365,10 @@ type
       # the checker validates calls through it (arity/param-types/ret).
       sigParams*: seq[Param]
       sigReturn*: Type
+      # declared INSIDE an `extern [c, ...]` block: a C function pointer, so it
+      # must use the C calling convention. Nim's default {.closure.} is a
+      # two-word (proc, env) pair that no C function pointer can receive.
+      sigIsCCallback*: bool
     of dkExpr:
       expr*: Expr
     of dkConst:
