@@ -294,13 +294,37 @@ proc lookupFnParamTypes(m: Module, name: string): seq[Type] =
       for p in d.fnParams: result.add(p.typ)
       return result
 
+proc declaresFn(m: Module, name: string): bool =
+  ## Does this module declare `name` as a callable? Mirrors lookupFnParams'
+  ## shapes (top-level fns plus mixin/type members), but a fn with no params
+  ## is indistinguishable from "not found" there, so this returns a bool.
+  for d in m.decls:
+    if d == nil: continue
+    if d.kind == dkFn and d.name == name: return true
+    if d.kind in {dkMixin, dkType}:
+      let members = if d.kind == dkMixin: d.mixinMembers else: d.typeMembers
+      for mem in members:
+        if mem.kind == dkFn and mem.name == name: return true
+  false
+
 proc genQualified(ctx: OdinCodegenCtx, e: Expr): string =
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
-  # No module path at all (`:plus` — a bare fn reference): the name stands
-  # alone. Prefixing an empty module produced `_plus`, an undeclared name.
-  if modName == "": e.qualName
-  elif modName in ctx.realModules: modName.replace("-", "_") & "." & e.qualName
-  else: modName & "_" & e.qualName
+  if modName == "":
+    # Unqualified name. Nim gets this free — the emitted file `import`s the
+    # module and Nim's own overload resolution finds it. Odin has no such
+    # scope merge: a package member is ALWAYS `pkg.name`, so the qualifier
+    # has to be resolved here. Local declarations win; only a name this
+    # module does not declare is searched for among the imports.
+    if not ctx.module.declaresFn(e.qualName):
+      for modName, im in ctx.realModules:
+        if im.declaresFn(e.qualName):
+          return modName.replace("-", "_") & "." & e.qualName
+    # Not found anywhere (a bare fn reference like `:plus`, a local, or a
+    # builtin): the name stands alone. Prefixing an empty module produced
+    # `_plus`, an undeclared name.
+    return e.qualName
+  elif modName in ctx.realModules: return modName.replace("-", "_") & "." & e.qualName
+  else: return modName & "_" & e.qualName
 
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 
@@ -790,6 +814,13 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       # module-global enum members the way Nim does)
       let owner = enumTagOwner(ctx.module, e.name)
       if owner != "": return owner & "." & e.name
+      # unqualified cross-module call (`0 exit` for `sys::exit`). Nim resolves
+      # this itself through the emitted `import`; Odin never merges package
+      # scopes, so the owning package has to be found and spelled out here.
+      if not ctx.module.declaresFn(e.name):
+        for modName, im in ctx.realModules:
+          if im.declaresFn(e.name):
+            return modName.replace("-", "_") & "." & e.name
     return e.name
   of exkField:
     # `Counter.total` reads the actor SINGLETON's field, not a type's.

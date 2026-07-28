@@ -20,5 +20,5 @@ fn main() -> void [io]:
   # wrong symbol, unlinked lib) cannot produce this number by accident.
   let b = {sourceLen: 1000} compressBound
   if b == 1013:
-    0 sys::exit    # qualified: the Odin backend does not resolve a bare
-  1 sys::exit      # cross-module `exit` yet (Nim does) — matches 31/32
+    0 exit
+  1 exit
