@@ -740,15 +740,26 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     ind & "if true:\n" & lines.join("\n")
   of exkIf:
     let condStr = ctx.genExpr(e.cond)
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    let thenStr = ctx.genExpr(e.thenBranch)
-    let elseStr = if e.elseBranch != nil:
-                    let elseBodyStr = ctx.genExpr(e.elseBranch)
-                    "\n" & ind & "else:\n" & elseBodyStr
-                  else: ""
-    ctx.indent = oldIndent
-    ind & "if " & condStr & ":\n" & thenStr & elseStr
+    # R2: an if whose branches are single expressions (not blocks) IS a value.
+    # Nim spells that `if c: a else: b` on one line; the indented statement
+    # form below would emit a nested block where an expression is expected.
+    if isValueIf(e):
+      let saved = ctx.indent
+      ctx.indent = 0
+      let t = ctx.genExpr(e.thenBranch)
+      let f = ctx.genExpr(e.elseBranch)
+      ctx.indent = saved
+      "(if " & condStr & ": " & t & " else: " & f & ")"
+    else:
+      let oldIndent = ctx.indent
+      ctx.indent += 1
+      let thenStr = ctx.genExpr(e.thenBranch)
+      let elseStr = if e.elseBranch != nil:
+                      let elseBodyStr = ctx.genExpr(e.elseBranch)
+                      "\n" & ind & "else:\n" & elseBodyStr
+                    else: ""
+      ctx.indent = oldIndent
+      ind & "if " & condStr & ":\n" & thenStr & elseStr
   of exkAssign:
     ctx.genExprAssign(e)
   of exkMatch:

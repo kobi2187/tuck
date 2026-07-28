@@ -51,6 +51,10 @@ R2   2026-07-28   `if` is an EXPRESSION. `let x = if c: a else: b` is legal.
 R3   2026-07-28   `match` is an EXPRESSION too, same rule — arms yield values,
                   exhaustiveness already checked, so a value-position match
                   needs no fallback arm when the domain is covered.
+R4   2026-07-28   match arms take EITHER `Pat: body` or `| Pat -> body`. The
+                  arrow form is what decision tables and select arms already
+                  use, so one shape reads across every pattern construct.
+R5   OPEN         numeric conversion: syntax and rules undecided — see D7.
 
 ## BUGS
 
@@ -75,7 +79,7 @@ G6   OPEN   codegen   MMIO register-field depth (nested bitfield writes) — par
 G7   OPEN   stdlib    §2 strings + §18 radix/builder — no blocked decisions, best first move
 G8   OPEN   stdlib    §5 integer semantics — rt helpers + lowering; fixes B1 properly rather than patching one backend
 G9   DONE   lexer     2026-07-28 R1 implemented — `/i` `/f` `/i=` `/f=`; bare `/` is a parse error naming the fix; mixed operands are a type error. Example 38, gated on both backends
-G10  OPEN   parser    R2/R3: if and match in value position. exkIf/exkMatch are already Expr nodes, so this is the parser's primary-position rule plus a checker rule (value-if needs else) and the two backends' emission
+G10  DONE   parser    2026-07-28 R2/R3 — value-position if (parseBlock takes an inline body; Nim if-expr, Odin ternary). match already worked as an expression. match arms now also take `| Pat -> body`. Example 39, gated both backends
 
 ## DECISIONS NEEDED (prose lives in ROADMAP/stdlib-blocks; this is the checklist)
 
@@ -85,6 +89,8 @@ D3   OPEN   stdlib    collection call style: {xs, x} push vs xs ..push {x} — i
 D4   OPEN   stdlib    derive-style codegen for records — fmt/hash/json all block on it. One ruling, three payoffs
 D5   OPEN   ffi       `emit:` is redundant when it matches the fn name — keep for the escape-hatch case, drop from examples
 D6   OPEN   ffi       cstring vs cstr — Tuck takes both string and str; cstring has no short form
+D7   OPEN   lang      numeric conversion — `cast` vs `as` vs a named fn; whether only widening is implicit; whether narrowing needs the [saturating]/[trapping] attrs to say what happens. Follows R1's principle: the source names what happens, no silent surprise
+D8   OPEN   lang      wide numerics — decimal (money) and bigint. Both need heap or multi-word repr, so they collide with no_alloc/embedded. Decide whether they are stdlib types or language types, and whether embedded profiles exclude them
 
 ## NOTES
 

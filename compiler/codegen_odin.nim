@@ -931,6 +931,16 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkIf:
     # Odin: no parens around the condition, braces mandatory.
     let condStr = ctx.genOdinExpr(e.cond)
+    # R2: a value-position if becomes Odin's ternary. Odin has no
+    # if-expression, so the statement form below cannot stand in — it is not
+    # legal where a value is expected.
+    if isValueIf(e):
+      let saved = ctx.indent
+      ctx.indent = 0
+      let t = ctx.genOdinExpr(e.thenBranch)
+      let f = ctx.genOdinExpr(e.elseBranch)
+      ctx.indent = saved
+      return "(" & condStr & " ? " & t & " : " & f & ")"
     let oldIndent = ctx.indent
     ctx.indent += 1
     var thenStr = ctx.genOdinExpr(e.thenBranch)

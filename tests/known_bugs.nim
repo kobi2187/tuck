@@ -141,10 +141,10 @@ fn main() -> int:
 """)
   bug(
     "`if` works as an expression",
-    "`let x = if c: a else: b` is a parse error. Nim (the target) supports " &
-      "if-expressions natively, so this is a parser gap, not a lowering one.",
-    "compiler/parser.nim — allow exkIf in expression position",
-    fixed = false,
+    "`let x = if c: a else: b` must parse and yield a value (ruling R2). " &
+      "Nim has a real if-expression; Odin has none and gets its ternary.",
+    "compiler/parser_expr.nim parseBlock (inline body) + isValueIf in both emitters",
+    fixed = true,
     "Parse Error" notin outp)   # correct = it parses
 
 # ---------------------------------------------------------------------------

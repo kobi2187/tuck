@@ -28,6 +28,7 @@ const odinCheckExpected = [
   "24-stdlib", "25-pools", "26-actor-run", "31-fnsig-callback",
   "32-duration-units", "33-ffi-zlib", "34-ffi-cstring", "35-ffi-struct",
   "36-ffi-enum-callback", "37-ffi-handle", "28-async-task", "38-division",
+  "39-if-match-expr",
 ]
 
 # Examples with a known exit code: these must RUN, not merely compile.
@@ -54,6 +55,9 @@ const odinRunExpected = {
   # R1: /i truncates (7 /i 2 == 3) and /f does not. Nim spells integer divide
   # `div`, Odin spells it `/` — this asserts both reach the same answer.
   "38-division": 0,
+  # R2/R3: value-position if and match. Nim has an if-expression, Odin needs
+  # its ternary — this asserts both reach the same answers.
+  "39-if-match-expr": 0,
 }
 
 proc findOdin(): string =

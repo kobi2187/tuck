@@ -177,6 +177,16 @@ proc isErrEnumRef*(m: Module, e: Expr): bool =
      e.receiver.kind != exkVar: return false
   m.typeBodyKind(e.receiver.name) == tkSum
 
+proc isValueIf*(e: Expr): bool =
+  ## An `if` used as a VALUE rather than a statement (ruling R2):
+  ## `let x = if c: a else: b`. Both branches must be present and neither may
+  ## be a block — a block body is the statement form, written across lines.
+  ## The distinction is syntactic on purpose: it is visible at the call site,
+  ## so no type inference decides how the same source emits.
+  e != nil and e.kind == exkIf and
+  e.thenBranch != nil and e.thenBranch.kind != exkBlock and
+  e.elseBranch != nil and e.elseBranch.kind != exkBlock
+
 proc isDecisionTable*(d: Decl): bool =
   ## A fn whose body is only subject-less `match` blocks — a decision table.
   if d.kind != dkFn or d.fnBody == nil or d.fnBody.kind != exkBlock: return false

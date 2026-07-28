@@ -1,0 +1,49 @@
+# `if` and `match` are EXPRESSIONS (rulings R2/R3), so a value can be chosen
+# without a mutable placeholder that gets assigned in two branches.
+#
+# A value-position `if` must have an `else` — there is no value otherwise. A
+# statement `if` still does not need one. The distinction is syntactic, not
+# inferred: branches written inline are a value, an indented block is a
+# statement, so the same source never emits two different ways.
+#
+# The backends differ underneath and that is the point of pinning it: Nim has
+# a real if-expression (`if c: a else: b`), Odin does not and needs its
+# ternary (`c ? a : b`). Tuck says what it means; each backend spells it.
+#
+# match arms take either shape — `Pat: body` or `| Pat -> body`. The arrow
+# form is the one decision tables and select arms already use.
+import sys
+
+type Color = {Red, Green, Blue}
+
+fn main() -> void [io]:
+  let hot = true
+
+  # if as a value — no `var` placeholder, no assignment in each branch
+  let limit = if hot: 90 else: 20
+
+  # match as a value, colon arms
+  let c = Color.Green
+  let code = match c:
+    Red:   1
+    Green: 2
+    Blue:  3
+
+  # match as a value, arrow arms — same thing
+  let name = match c:
+    | Red   -> 10
+    | Green -> 20
+    | Blue  -> 30
+
+  # nests: the arms of a value-match may themselves be value-ifs
+  let scaled = match c:
+    Red:   if hot: 100 else: 1
+    Green: if hot: 200 else: 2
+    Blue:  if hot: 300 else: 3
+
+  if limit == 90:
+    if code == 2:
+      if name == 20:
+        if scaled == 200:
+          0 exit
+  1 exit

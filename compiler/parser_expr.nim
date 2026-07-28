@@ -466,8 +466,14 @@ proc parseExpr*(p: var Parser): Expr =
       if p.current().kind == tkNewline:
         discard p.advance()
         continue
+      # `| Pat -> body` and `Pat: body` are the same arm. The arrow form
+      # matches decision tables and select arms, so one shape reads across
+      # every construct that dispatches on a pattern.
+      let arrowForm = p.current().kind == tkPipe
+      if arrowForm: discard p.advance()
       let pat = p.parsePattern()
-      discard p.expect(tkColon)
+      if arrowForm: discard p.expect(tkArrow)
+      else: discard p.expect(tkColon)
       # arm body: a single expression on the same line, or an indented block
       let body = if p.current().kind == tkNewline: p.parseBlock()
                  else: p.parseExpr()
@@ -541,7 +547,13 @@ proc parseExpr*(p: var Parser): Expr =
   return left
 
 proc parseBlock*(p: var Parser): Expr =
+  ## An indented block, OR — when the body continues on the same line — a
+  ## single expression (ruling R2/R3: `let x = if c: 1 else: 2`). Returning
+  ## the bare expression rather than wrapping it in a one-statement block
+  ## keeps the value obvious to the checker and both emitters.
   let sp = p.getSpan()
+  if p.current().kind notin {tkNewline, tkEOF}:
+    return p.parseExpr()
   discard p.expect(tkNewline)
   while p.current().kind == tkNewline:
     discard p.advance()
