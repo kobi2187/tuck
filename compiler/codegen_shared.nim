@@ -1,7 +1,7 @@
 # compiler/codegen_shared.nim
 #
 # Backend-neutral codegen helpers — pure functions over the AST that both the
-# Nim and Beef emitters need, factored out of the two backend modules so the
+# Nim and Odin emitters need, factored out of the two backend modules so the
 # logic lives once. Nothing here touches a codegen context or emits target
 # syntax; each helper answers a question about a Module/Decl/Expr/Pattern.
 import ast, strutils

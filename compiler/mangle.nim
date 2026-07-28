@@ -16,7 +16,7 @@
 # `tuck_` prefix that cannot clash in any backend, now or later.
 #
 # WHY A PASS, NOT PER-BACKEND EMISSION:
-#   - Written once; every backend (Nim, Beef, Odin, and any future one) gets
+#   - Written once; every backend (Nim, Odin, and any future one) gets
 #     it without re-deriving the rule.
 #   - Declarations and references are renamed by the SAME walk, so they
 #     cannot drift apart. Mangling a declaration but missing one of its

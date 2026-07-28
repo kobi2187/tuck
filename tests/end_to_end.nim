@@ -2,7 +2,7 @@
 import ../lexer
 import ../compiler/parser
 import ../compiler/codegen
-import ../compiler/codegen_beef
+import ../compiler/codegen_odin
 import ../compiler/lowering
 import ../compiler/ast_serializer
 import ../compiler/semantics
@@ -99,15 +99,15 @@ proc runEndToEnd() =
   writeFile(tempPath, nimCode)
   echo "Written Nim output to tests/temp_out.nim"
 
-  # Step 4: Codegen to Beef
-  let beefCode = emitBeef(m)
-  echo "=== Generated Beef Code ==="
-  echo beefCode
+  # Step 4: Codegen to Odin
+  let odinCode = emitOdin(m)
+  echo "=== Generated Odin Code ==="
+  echo odinCode
   echo "=========================="
 
-  let tempBeefPath = "tests/temp_out.bf"
-  writeFile(tempBeefPath, beefCode)
-  echo "Written Beef output to tests/temp_out.bf"
+  let tempOdinPath = "tests/temp_out.odin"
+  writeFile(tempOdinPath, odinCode)
+  echo "Written Odin output to tests/temp_out.odin"
 
 proc testSemanticError() =
   # A pure function calling a function marked with [io] effect

@@ -26,12 +26,12 @@ type
     recShapes: Table[string, string]  # record shape signature -> struct name
     modPrefix: string     # library modules prefix hoisted names (dedupe per project)
     retWrapped: bool      # current fn returns !T/?T -> returns auto-wrap
-    retInnerOdin: string  # Beef type of the payload (for terr<T>)
+    retInnerOdin: string  # Odin type of the payload (for terr<T>)
     retInnerT: Type       # payload Tuck type (typed struct-literal emission)
     retInvName: string    # fn returns an invariant-carrying type: validate at return
     tmpCounter: int
     errPolicy: string     # from the errors declaration; "" = strict
-    realModules: Table[string, Module]  # imported modules emitted as own Beef files
+    realModules: Table[string, Module]  # imported modules emitted as own Odin files
     staticAsserts: seq[string]  # collected into one `static this()` block
     moduleName: string    # error codes hash over "module/Enum.Variant"
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
@@ -60,7 +60,7 @@ proc capitalize(s: string): string =
   return s[0].toUpperAscii() & s[1..^1]
 
 # Same FNV-1a fold as tuck_rt.nim's errCode: the emitter precomputes error
-# codes so the Beef runtime needs no compile-time hashing.
+# codes so the runtime needs no compile-time hashing.
 proc odinErrCode*(name: string): uint16 =
   var h = 2166136261'u32
   for c in name:

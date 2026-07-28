@@ -5,7 +5,6 @@ import ../compiler/ast
 import ../compiler/parser
 import ../compiler/lowering
 import ../compiler/codegen
-import ../compiler/codegen_beef
 import ../compiler/ast_serializer
 import ../compiler/semantics
 import ../compiler/typecheck
@@ -113,8 +112,6 @@ proc compileExample(path: string) =
   let nimCode = emitNim(m, realModules = realModules, moduleName = baseName)
   writeFile(outDir / (baseName & ".nim"), nimCode)
 
-  let beefCode = emitBeef(m)
-  writeFile(outDir / (baseName & ".bf"), beefCode)
 
 when isMainModule:
   createDir(outDir)

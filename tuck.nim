@@ -4,7 +4,7 @@
 #   tuck lex     file.tuck        (l)   tokens to stdout
 #   tuck parse   file.tuck        (p)   syntax check; --ast dumps JSON
 #   tuck check   file.tuck        (ch)  effects + types + PENDING report
-#   tuck compile file.tuck        (c)   check + emit .nim (--beef for .bf too)
+#   tuck compile file.tuck        (c)   check + emit .nim (--odin for .odin too)
 import os, strutils, times, tables, std/json, osproc
 import lexer
 import compiler/ast
@@ -14,7 +14,6 @@ import compiler/typecheck
 import compiler/lowering
 import compiler/mangle
 import compiler/codegen
-import compiler/codegen_beef
 import compiler/codegen_odin
 import compiler/ast_serializer
 import compiler/modules
@@ -28,12 +27,12 @@ commands:
   lex, l        tokenize and print the token stream
   parse, p      parse; prints OK or the first syntax error
   check, ch     parse + effect check + type check + pending report
-  compile, c    check + transpile to Nim (and Beef with --beef)
+  compile, c    check + transpile to Nim (and Odin with --odin)
   build, b      compile + nim c to a binary (fn main runs at start)
 
 options:
   --ast         (parse) dump the AST as JSON to stdout
-  --beef        (compile) also emit a .bf Beef file
+  --odin        (compile) also emit .odin files
   -o:DIR        (compile/build) output directory (default: next to source)
   --root:DIR    import search base for std/ and sibling modules (any command);
                 lets imports resolve regardless of cwd or binary location
@@ -136,50 +135,6 @@ proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
     for entry in shortcuts:
       echo "  ", entry
 
-proc findBeefBuild(): string =
-  if existsEnv("BEEFBUILD_BIN") and fileExists(getEnv("BEEFBUILD_BIN")):
-    return getEnv("BEEFBUILD_BIN")
-  let candidates = ["/opt/beef/IDE/dist/BeefBuild", "/opt/beef/bin/BeefBuild"]
-  for c in candidates:
-    if fileExists(c): return c
-  let (output, rc) = execCmdEx("which BeefBuild")
-  if rc == 0: return output.strip()
-  return ""
-
-# BeefBuild's per-platform Debug output dir name (verified: Linux64 on this host).
-proc beefBuildTarget(): string =
-  case hostOS
-  of "linux": "Debug_Linux64"
-  of "windows": "Debug_Win64"
-  of "macosx": "Debug_macOS"
-  else: "Debug_" & hostOS
-
-proc buildBeefProject(beefBuild, projDir, entryBf: string, deps: seq[string],
-                       srcOutDir, rtBeef: string) =
-  removeDir(projDir)
-  createDir(projDir / "src")
-  copyFile(rtBeef, projDir / "src" / "TuckRt.bf")
-  copyFile(entryBf, projDir / "src" / "Program.bf")
-  for dep in deps:
-    copyFile(srcOutDir / ("mod_" & dep & ".bf"), projDir / "src" / ("mod_" & dep & ".bf"))
-  writeFile(projDir / "BeefProj.toml", """
-FileVersion = 1
-
-[Project]
-Name = "tuckcheck"
-TargetType = "BeefConsoleApplication"
-StartupObject = "TuckApp.Program"
-""")
-  writeFile(projDir / "BeefSpace.toml", """
-FileVersion = 1
-Projects = {tuckcheck = {Path = "."}}
-
-[Workspace]
-StartupProject = "tuckcheck"
-""")
-  let rc = execShellCmd(quoteShell(beefBuild) & " -workspace=" & quoteShell(projDir))
-  if rc != 0: die("tuck: BeefBuild failed")
-
 when isMainModule:
   if paramCount() < 2: usage()
   let cmd = paramStr(1)
@@ -248,23 +203,6 @@ when isMainModule:
       let nimPath = outDir / (outName & ".nim")
       writeFile(nimPath, emitNim(lm.m, rtImport, nimReal, outName))
       echo "wrote ", nimPath
-    var beefDeps: seq[string]
-    if "--beef" in opts:
-      var bfProg: seq[LoadedModule]
-      for lm in prog: bfProg.add(LoadedModule(name: lm.name, path: lm.path,
-                                              m: deepCopy(lm.m)))
-      var bfReal = initTable[string, Module]()
-      for lm in bfProg[0 ..< bfProg.high]: bfReal[lm.name] = lm.m
-      for lm in bfProg:
-        lowerModule(lm.m)
-      for lm in bfProg[0 ..< bfProg.high]:
-        let modBfPath = outDir / ("mod_" & lm.name & ".bf")
-        writeFile(modBfPath, emitBeefModule(lm.name, lm.m, bfReal))
-        echo "wrote ", modBfPath
-        beefDeps.add(lm.name)
-      let bfPath = outDir / (base & ".bf")
-      writeFile(bfPath, emitBeef(bfProg[^1].m, bfReal, base))
-      echo "wrote ", bfPath
     if "--odin" in opts:
       var odProg: seq[LoadedModule]
       for lm in prog: odProg.add(LoadedModule(name: lm.name, path: lm.path,
@@ -391,20 +329,6 @@ when isMainModule:
       let buildMs = (epochTime() - nimT0) * 1000
       if rc != 0: die("tuck: nim compilation failed")
       echo "built ", binPath, "  ", reportBuild(binPath, buildMs)
-      if "--beef" in opts:
-        let beefBuild = findBeefBuild()
-        if beefBuild == "":
-          echo "tuck: BeefBuild not found (set BEEFBUILD_BIN) — skipping Beef build"
-        else:
-          let projDir = outDir / (binBase & "_beefproj")
-          buildBeefProject(beefBuild, projDir, outDir / (base & ".bf"), beefDeps,
-                            outDir, getAppDir() / "compiler" / "tuck_rt.bf")
-          let beefBinPath = projDir / "build" / beefBuildTarget() / "tuckcheck" / "tuckcheck"
-          if not fileExists(beefBinPath):
-            die("tuck: Beef compilation failed")
-          copyFile(beefBinPath, outDir / (binBase & "_beef"))
-          inclFilePermissions(outDir / (binBase & "_beef"), {fpUserExec, fpGroupExec, fpOthersExec})
-          echo "built ", outDir / (binBase & "_beef")
       if "--odin" in opts:
         let odinExe = if findExe("odin") != "": findExe("odin")
                       elif fileExists("/home/kl/apps/Odin/odin"): "/home/kl/apps/Odin/odin"

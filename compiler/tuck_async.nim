@@ -1,8 +1,8 @@
 ## The Tuck runtime — ONE cooperative runtime expressing Tuck's OWN model
 ## (actor singletons, tasks, waitUntil, scheduler helpers) over arsenal as the
 ## engine. Codegen targets THESE names only; arsenal (coroutines + reactor) is
-## the swappable engine, never exposed. Beef mirrors this same API over
-## minicoro-beef.
+## the swappable engine, never exposed. The Odin runtime mirrors this same API
+## over its own minicoro binding (compiler/tuckrt/tuck_coro.odin).
 ##
 ## Single-threaded + cooperative: actors and tasks are all coroutines on
 ## arsenal's scheduler. No OS threads — so no locks are needed on actor
