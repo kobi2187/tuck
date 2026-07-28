@@ -745,13 +745,19 @@ proc parseErrorsDecl(p: var Parser, sp: Span): Decl =
 proc parseExternDecl(p: var Parser, sp: Span): Decl =
   discard p.advance() # extern
   var header = ""
+  var lib = ""
   if p.current().kind == tkLBracket:
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-      let key = p.expect(tkIdent, "Expected 'c' or 'header' in extern attributes").value
+      let key = p.expect(tkIdent, "Expected 'c', 'header' or 'lib' in extern attributes").value
       if key == "header":
         discard p.expect(tkColon)
         header = p.expect(tkStrLit, "Expected header path string").value
+      elif key == "lib":
+        # bare library name — each backend decorates it natively ("z" ->
+        # Nim `-lz`, Odin `system:z`). Not a linker flag, so it stays portable.
+        discard p.expect(tkColon)
+        lib = p.expect(tkStrLit, "Expected library name string after 'lib:'").value
       # "c" is the target marker; nothing to store
       if p.current().kind == tkComma:
         discard p.advance()
@@ -760,6 +766,7 @@ proc parseExternDecl(p: var Parser, sp: Span): Decl =
   for d in decls:
     d.isExtern = true
     d.externHeader = header
+    d.externLib = lib
   return Decl(span: sp, kind: dkMixin, name: "extern", mixinMembers: decls)
 
 proc parseDecl*(p: var Parser): Decl =

@@ -37,6 +37,8 @@ type
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     ptrSelf: bool         # inside a member fn: `self` is ^T and needs a deref
     fnAsParam: bool       # emitting a param list: a bare `fn` is `$T` there
+    foreignLibs: HashSet[string]  # C libs bound by extern blocks; each needs a
+                                  # `foreign import` line at package top level
 
 proc repeat(s: string, n: int): string =
   var res = ""
@@ -1804,10 +1806,16 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     return res
   of dkMixin:
     # Pending blocks parse as a mixin named "pending"; emit stubs for members.
-    # Extern blocks: rt-implemented fns forward to the Beef runtime (library
-    # modules) or emit nothing (entry module — `using static Rt` covers them);
-    # C-imported fns emit [CLink] extern bindings with concrete param types.
+    # Extern blocks: rt-implemented fns forward to the Odin runtime (library
+    # modules) or emit nothing (entry module); C-imported fns become an Odin
+    # `foreign` block with concrete param types.
     var res = ""
+    # C bindings group per library: Odin wants ONE `foreign <lib> { ... }`
+    # block, not a pragma per proc the way Nim's importc works. The matching
+    # `foreign import` line is hoisted to the file header by emitOdin, since
+    # it is only legal at package top level.
+    var cBindings: seq[string]
+    var cLib = ""
     for m in d.mixinMembers:
       if m.kind == dkFn and m.isPending:
         res.add(ctx.genPendingStub(m) & "\n")
@@ -1824,12 +1832,24 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
       elif m.kind == dkFn and m.isExtern and m.externHeader != "":
         var params: seq[string]
         for prm in m.fnParams:
-          params.add(ctx.odinType(prm.typ) & " " & prm.name)
-        let retStr = if m.fnReturnType != nil: ctx.odinType(m.fnReturnType) else: "void"
-        res.add(ind & "[CLink] public static extern " & retStr & " " & m.name &
-                "(" & params.join(", ") & ");\n")
+          params.add(prm.name & ": " & ctx.odinType(prm.typ))
+        # `-> ret` is omitted entirely for void; "void" is Tuck's internal
+        # sentinel, not an Odin type.
+        let retT = if m.fnReturnType != nil: ctx.odinType(m.fnReturnType) else: "void"
+        let retStr = if retT == "void": "" else: " -> " & retT
+        # [emit: "c_name"] names the real C symbol; else the Tuck name. Externs
+        # are not mangled (mangle.nim:48), so m.name IS the foreign symbol.
+        let cName = if m.externEmit != "": m.externEmit else: m.name
+        cBindings.add("\t" & cName & " :: proc(" & params.join(", ") &
+                      ")" & retStr & " ---")
+        if m.externLib != "": cLib = m.externLib
       elif m.kind == dkFn and m.isExtern and ctx.modPrefix != "":
         res.add(ctx.genRtForwarder(m) & "\n")
+    if cBindings.len > 0:
+      let libAlias = if cLib != "": cLib else: "c"
+      ctx.foreignLibs.incl(libAlias)
+      res.add("@(default_calling_convention=\"c\")\n")
+      res.add("foreign " & libAlias & " {\n" & cBindings.join("\n") & "\n}\n")
     return res
   of dkPool:
     # spec 7.2: one package-level instance; acquire/release are the runtime's
@@ -1921,6 +1941,10 @@ proc emitOdin*(m: Module,
     let pkg = modName.replace("-", "_")
     if (pkg & ".") in body or (pkg & ".") in mains:
       imports.add("import " & pkg & " \"./mod_" & pkg & "\"")
+  # C libraries bound by extern blocks — see emitOdinModule for why these are
+  # hoisted here rather than emitted beside the `foreign` block.
+  for lib in ctx.foreignLibs:
+    imports.add("foreign import " & lib & " \"system:" & lib & "\"")
   if imports.len > 0:
     res.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:
@@ -1997,6 +2021,11 @@ proc emitOdinModule*(name: string, m: Module,
     let dep = modName.replace("-", "_")
     if dep != pkg and (dep & ".") in body:
       imports.add("import " & dep & " \"../mod_" & dep & "\"")
+  # C libraries bound by extern blocks. `foreign import` is only legal at
+  # package top level, so the emitter collects the names during emitBody and
+  # declares them here — this is what makes the binding link.
+  for lib in ctx.foreignLibs:
+    imports.add("foreign import " & lib & " \"system:" & lib & "\"")
   if imports.len > 0:
     res.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:

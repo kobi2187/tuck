@@ -335,6 +335,10 @@ type
       externHeader*: string # extern [c, header: "uart.h"] — empty = rt-implemented
       externEmit*: string   # [emit: "nimProc"] — the exact runtime/C proc name
                             # to emit; empty = use the Tuck name
+      externLib*: string    # extern [c, header: "zlib.h", lib: "z"] — the C
+                            # library to link. Nim emits {.passL: "-lz".};
+                            # Odin emits `foreign import z "system:z"`.
+                            # Empty = header-only (or rt-implemented).
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin:

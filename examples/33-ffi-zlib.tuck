@@ -1,0 +1,24 @@
+# Direct C FFI (spec: extern [c]). This is NOT the runtime-extern path that
+# 24-stdlib/29/30 use — those bind a proc in tuck_rt. Here the extern block
+# names a real C header and library, and each backend emits its own native
+# binding: Nim `{.importc, header.}` + `{.passL: "-lz".}`, Odin a
+# `foreign import` plus a `foreign z { ... }` block. Same .tuck, two backends,
+# two binaries, both calling the system libz.
+#
+# Integer-only on purpose: Tuck `string` is a GC'd Nim string / an Odin fat
+# pointer, and neither is a C `char*`, so `zlibVersion() -> cstring` needs a
+# cstring type Tuck does not have yet. compressBound is pure, total and
+# deterministic, which makes it assertable as an exit code.
+import sys
+
+extern [c, header: "zlib.h", lib: "z"]:
+  fn compressBound({sourceLen: u64}) -> u64 [emit: "compressBound"]
+
+fn main() -> void [io]:
+  # zlib's compressBound is len + (len>>12) + (len>>14) + (len>>25) + 13.
+  # For 1000 bytes: 1000 + 0 + 0 + 0 + 13 = 1013. A wrong binding (bad ABI,
+  # wrong symbol, unlinked lib) cannot produce this number by accident.
+  let b = {sourceLen: 1000} compressBound
+  if b == 1013:
+    0 sys::exit    # qualified: the Odin backend does not resolve a bare
+  1 sys::exit      # cross-module `exit` yet (Nim does) — matches 31/32

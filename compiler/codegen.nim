@@ -1616,6 +1616,17 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
         # externs (waitUntil, openSource, ...) resolve through this one export.
         res.add("export tuck_rt\n")
         break
+  # C-extern link flags. `{.passL.}` is a module pragma, so linking is settled
+  # in the emitted source — the driver needs no per-library plumbing. Deduped:
+  # several extern blocks may name the same library.
+  var linkedLibs: seq[string]
+  for d in m.decls:
+    if d != nil and d.kind == dkMixin and d.name == "extern":
+      for mem in d.mixinMembers:
+        if mem.kind == dkFn and mem.isExtern and mem.externLib != "" and
+           mem.externLib notin linkedLibs:
+          linkedLibs.add(mem.externLib)
+          res.add("{.passL: \"-l" & mem.externLib & "\".}\n")
   for d in m.decls:
     if d != nil and d.kind == dkImport and d.name in realModules:
       res.add("import " & d.name & "\n")
