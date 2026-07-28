@@ -205,36 +205,19 @@ proc errNameFor(ctx: CodegenCtx, enumName, variant: string): string =
   origin & "/" & enumName & "." & variant
 
 proc lookupFnParams(m: Module, name: string): seq[string] =
-  for d in m.decls:
-    if d.kind == dkFn and d.name == name:
-      var res: seq[string]
-      for p in d.fnParams:
-        res.add(p.name)
-      return res
-    if d.kind == dkTask and d.name == name:
-      var res: seq[string]
-      for p in d.taskParams: res.add(p.name)
-      return res
-    # member fns (mixin buckets, manager types, externs) have concrete
-    # exploded params. Pending fns stay excluded: their stub takes one
-    # generic payload.
-    if d.kind == dkMixin or d.kind == dkType:
-      let members = if d.kind == dkMixin: d.mixinMembers else: d.typeMembers
-      for mem in members:
-        if mem.kind == dkFn and not mem.isPending and mem.name == name:
-          var res: seq[string]
-          for p in mem.fnParams:
-            res.add(p.name)
-          return res
-  return @[]
+  ## Member fns (mixin buckets, manager types, externs) have concrete exploded
+  ## params. Pending fns stay excluded: their stub takes one generic payload.
+  m.findFn(name).paramNames()
 
 proc isKnownFn(ctx: CodegenCtx, name: string): bool =
   ## A fn (or task) with this name in the current module OR any imported one —
   ## imported helpers like time's `ms` ride Nim's namespacing, so `5.ms`
   ## resolves to a real call cross-module, not a dropped field read.
-  if lookupFnParams(ctx.module, name).len > 0: return true
+  ## Asks for the DECLARATION, not its param count: a zero-param fn is a real
+  ## fn, and testing `params.len > 0` would call it unknown.
+  if ctx.module.findFn(name) != nil: return true
   for _, im in ctx.realModules:
-    if lookupFnParams(im, name).len > 0: return true
+    if im.findFn(name) != nil: return true
   false
 
 # module::fn — a real imported module rides Nim's own namespacing; a
@@ -243,10 +226,8 @@ proc cCallbackSig(m: Module): string =
   ## The name of a C-callback fnsig declared in an extern block, or "".
   ## ponytail: first one wins — one C callback type per module covers every
   ## real header so far; key by param types when a second one shows up.
-  for d in m.decls:
-    if d != nil and d.kind == dkMixin:
-      for mem in d.mixinMembers:
-        if mem.kind == dkFnSig and mem.sigIsCCallback: return mem.name
+  for mem in m.externMembers():
+    if mem.kind == dkFnSig and mem.sigIsCCallback: return mem.name
   ""
 
 proc genQualified(ctx: CodegenCtx, e: Expr): string =
@@ -1653,44 +1634,30 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
   var res = "import " & rtImport & "\n"
   # rt-implemented extern fns: importers reach them as <module>.<fn>, so the
   # module re-exports the runtime that actually defines them
-  for d in m.decls:
-    if d != nil and d.kind == dkMixin and d.name == "extern":
-      var hasRtExtern = false
-      for mem in d.mixinMembers:
-        if mem.kind == dkFn and mem.isExtern and mem.externHeader == "":
-          hasRtExtern = true
-      if hasRtExtern:
-        # tuck_rt is the single facade — it re-exports tuck_async, so async
-        # externs (waitUntil, openSource, ...) resolve through this one export.
-        res.add("export tuck_rt\n")
-        break
+  for mem in m.externFns():
+    if mem.externHeader == "":
+      # tuck_rt is the single facade — it re-exports tuck_async, so async
+      # externs (waitUntil, openSource, ...) resolve through this one export.
+      res.add("export tuck_rt\n")
+      break
   # C-extern link flags. `{.passL.}` is a module pragma, so linking is settled
   # in the emitted source — the driver needs no per-library plumbing. Deduped:
   # several extern blocks may name the same library.
   var linkedLibs: seq[string]
-  for d in m.decls:
-    if d != nil and d.kind == dkMixin and d.name == "extern":
-      for mem in d.mixinMembers:
-        if mem.kind == dkFn and mem.isExtern and mem.externLib != "" and
-           mem.externLib notin linkedLibs:
-          linkedLibs.add(mem.externLib)
-          # A path (contains a separator, or names an archive/shared object) is
-          # passed to the linker verbatim; a bare name gets `-l`. Without this
-          # a vendored `.a` is unreachable: the pragma's flags land BEFORE the
-          # driver's, so a `-L` on the command line comes too late to resolve
-          # an emitted `-l`.
-          let lib = mem.externLib
-          if lib.endsWith(".c"):
-            # vendored C source: {.compile.} puts the object WITH the rest, so
-            # it links regardless of order. A static .a through {.passL.} does
-            # not work — Nim emits passL flags ahead of the object files, and an
-            # archive only contributes members resolving already-pending
-            # symbols, so every symbol comes out undefined.
-            res.add("{.compile: \"" & lib & "\".}\n")
-          elif '/' in lib or lib.endsWith(".a") or lib.endsWith(".so"):
-            res.add("{.passL: \"" & lib & "\".}\n")
-          else:
-            res.add("{.passL: \"-l" & lib & "\".}\n")
+  for mem in m.externFns():
+    let lib = mem.externLib
+    if lib == "" or lib in linkedLibs: continue
+    linkedLibs.add(lib)
+    if lib.endsWith(".c"):
+      # Vendored C source. {.compile.} places the object WITH the rest, so it
+      # links regardless of order — a static .a through {.passL.} does NOT
+      # work, because Nim emits passL flags ahead of the object files and an
+      # archive only contributes members resolving already-pending symbols.
+      res.add("{.compile: \"" & lib & "\".}\n")
+    elif '/' in lib or lib.endsWith(".a") or lib.endsWith(".so"):
+      res.add("{.passL: \"" & lib & "\".}\n")   # a path links verbatim
+    else:
+      res.add("{.passL: \"-l" & lib & "\".}\n") # a bare name gets -l
   for d in m.decls:
     if d != nil and d.kind == dkImport and d.name in realModules:
       res.add("import " & d.name & "\n")

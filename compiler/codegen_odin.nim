@@ -13,6 +13,7 @@
 # usually a fix in the other.
 import ast, lowering, strutils, sets, tables
 import resolution
+import codegen_shared
 from mangle import mangleName
 
 type
@@ -242,83 +243,24 @@ proc actorSingletonName(actorType: string): string =
   actorType[0].toLowerAscii() & actorType[1..^1] & "Singleton"
 
 proc isActorType(m: Module, name: string): bool =
-  for d in m.decls:
-    if d != nil and d.kind == dkActor and d.name == name: return true
-  false
+  m.findDecl(dkActor, name) != nil
 
-proc hasInvariants(m: Module, name: string): bool =
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == name:
-      for member in d.typeMembers:
-        if member.kind == dkExpr: return true
-  false
-
-# An extern fn returning an invariant-carrying named type validates at the
-# call site (mirrors codegen.nim externInvRet).
-proc externInvRet(m: Module, fnName: string): string =
-  for d in m.decls:
-    if d != nil and d.kind == dkMixin:
-      for mem in d.mixinMembers:
-        if mem.kind == dkFn and mem.isExtern and mem.name == fnName and
-           mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
-           hasInvariants(m, mem.fnReturnType.name):
-          return mem.fnReturnType.name
-  ""
-
-proc isRecordType(m: Module, name: string): bool =
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == name and
-       d.typeBody != nil and d.typeBody.kind == tkRecord:
-      return true
-  false
-
-proc isErrEnumRef(m: Module, e: Expr): bool =
-  if e == nil or e.kind != exkField or e.receiver == nil or
-     e.receiver.kind != exkVar: return false
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == e.receiver.name and
-       d.typeBody != nil and d.typeBody.kind == tkSum:
-      return true
-  false
+# hasInvariants / externInvRet / isRecordType / isErrEnumRef used to be
+# copy-pasted here from codegen.nim (this backend began as a fork). They are
+# backend-neutral questions about the AST, so they live in codegen_shared.
 
 proc lookupFnParams(m: Module, name: string): seq[string] =
-  for d in m.decls:
-    if d.kind == dkFn and d.name == name:
-      var res: seq[string]
-      for p in d.fnParams:
-        res.add(p.name)
-      return res
-    if d.kind == dkMixin or d.kind == dkType:
-      let members = if d.kind == dkMixin: d.mixinMembers else: d.typeMembers
-      for mem in members:
-        if mem.kind == dkFn and not mem.isPending and mem.name == name:
-          var res: seq[string]
-          for p in mem.fnParams:
-            res.add(p.name)
-          return res
-  return @[]
+  m.findFn(name).paramNames()
 
 # fn param TYPES by position, for call sites deciding whether an arg needs
-# the `ref` marker (mutable record param) — mirrors lookupFnParams but
-# keeps the type instead of just the name.
+# the `ref` marker (mutable record param).
 proc lookupFnParamTypes(m: Module, name: string): seq[Type] =
-  for d in m.decls:
-    if d.kind == dkFn and d.name == name:
-      for p in d.fnParams: result.add(p.typ)
-      return result
+  m.findFn(name).paramTypes()
 
 proc declaresFn(m: Module, name: string): bool =
-  ## Does this module declare `name` as a callable? Mirrors lookupFnParams'
-  ## shapes (top-level fns plus mixin/type members), but a fn with no params
-  ## is indistinguishable from "not found" there, so this returns a bool.
-  for d in m.decls:
-    if d == nil: continue
-    if d.kind == dkFn and d.name == name: return true
-    if d.kind in {dkMixin, dkType}:
-      let members = if d.kind == dkMixin: d.mixinMembers else: d.typeMembers
-      for mem in members:
-        if mem.kind == dkFn and mem.name == name: return true
-  false
+  ## Does this module declare `name` as a callable? A bool, because a fn with
+  ## no params is indistinguishable from "not found" in a param list.
+  m.findFn(name) != nil
 
 proc genQualified(ctx: OdinCodegenCtx, e: Expr): string =
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
@@ -1285,15 +1227,13 @@ proc genOdinFnDecl(ctx: var OdinCodegenCtx, d: Decl): string =
   # ponytail: shape match, not reference tracking. A same-shape fn that never
   # crosses the boundary gets "c" harmlessly; tighten if that ever matters.
   var conv = ""
-  for cd in ctx.module.decls:
-    if cd == nil or cd.kind != dkMixin: continue
-    for mem in cd.mixinMembers:
-      if mem.kind == dkFnSig and mem.sigIsCCallback and
-         mem.sigParams.len == d.fnParams.len:
-        var same = true
-        for i, sp in mem.sigParams:
-          if ctx.odinType(sp.typ) != ctx.odinType(d.fnParams[i].typ): same = false
-        if same: conv = "\"c\" "
+  for mem in ctx.module.externMembers():
+    if mem.kind == dkFnSig and mem.sigIsCCallback and
+       mem.sigParams.len == d.fnParams.len:
+      var same = true
+      for i, sp in mem.sigParams:
+        if ctx.odinType(sp.typ) != ctx.odinType(d.fnParams[i].typ): same = false
+      if same: conv = "\"c\" "
   let header = inlinePrefix & ind & fnNameSanitized & " :: proc " & conv & "(" &
                allParams.join(", ") & ")" & retStr & " {"
   let oldVars = ctx.definedVars
