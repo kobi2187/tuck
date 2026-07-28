@@ -1,6 +1,7 @@
 # compiler/lowering.nim
 import ast
 import resolution, strutils
+import ast_query
 
 proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
   if t == nil: return @[]
@@ -8,9 +9,8 @@ proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
   of tkRecord:
     return t.fields
   of tkNamed:
-    for d in m.decls:
-      if d.kind == dkType and d.name == t.name:
-        return getFieldsForType(m, d.typeBody)
+    let d = m.findDecl(dkType, t.name)
+    if d != nil: return getFieldsForType(m, d.typeBody)
   of tkUnion:
     var res: seq[FieldDef]
     for mem in t.members:
@@ -28,25 +28,14 @@ proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
     discard
   return @[]
 
-proc lookupFnParams(m: Module, name: string): seq[string] =
-  for d in m.decls:
-    if d.kind == dkFn and d.name == name:
-      var res: seq[string]
-      for p in d.fnParams:
-        res.add(p.name)
-      return res
-  return @[]
-
-proc lookupRegistryVariantParams(m: Module, registryName: string, variantName: string): seq[string] =
-  for d in m.decls:
-    if d.kind == dkRegistry and d.name == registryName:
-      for v in d.variants:
-        if v.name == variantName:
-          var res: seq[string]
-          for f in v.fields:
-            res.add(f.name)
-          return res
-  return @[]
+proc lookupRegistryVariantParams(m: Module, registryName, variantName: string): seq[string] =
+  let d = m.findDecl(dkRegistry, registryName)
+  if d == nil: return @[]
+  for v in d.variants:
+    if v.name == variantName:
+      for f in v.fields: result.add(f.name)
+      return result
+  @[]
 
 proc lowerExpr(e: Expr, m: Module)
 
@@ -78,7 +67,10 @@ proc lowerExpr(e: Expr, m: Module) =
         if parts.len == 3:
           expectedParams = lookupRegistryVariantParams(m, parts[1], parts[2])
       else:
-        expectedParams = lookupFnParams(m, calleeName)
+        # TOP-LEVEL fns only, deliberately: a member fn's payload explosion is
+        # the backends' job (they see the receiver), and doing it here too
+        # would apply it twice.
+        expectedParams = m.findDecl(dkFn, calleeName).paramNames()
         
       if expectedParams.len > 0 and e.args.len == 1 and e.args[0].kind == exkStruct:
         var newArgs: seq[Expr]
@@ -153,30 +145,15 @@ proc lowerExpr(e: Expr, m: Module) =
       lowerExpr(arm.arg, m); lowerExpr(arm.body, m)
 
 proc lowerModule*(m: Module) =
-  # Phase 1: Lower Union / Rename Types to Records
-  for d in m.decls:
-    if d.kind == dkType and d.typeBody != nil and (d.typeBody.kind == tkUnion or d.typeBody.kind == tkRename):
-      let flattenedFields = getFieldsForType(m, d.typeBody)
-      d.typeBody = Type(span: d.typeBody.span, kind: tkRecord, fields: flattenedFields, attrs: d.typeBody.attrs)
-  
-  # Phase 2: Lower Expressions (Subset Matching Call argument rewrites)
-  for d in m.decls:
-    case d.kind
-    of dkFn:
-      lowerExpr(d.fnBody, m)
-    of dkObject:
-      for member in d.objMembers:
-        if member.kind == dkFn:
-          lowerExpr(member.fnBody, m)
-    of dkType:
-      for member in d.typeMembers:
-        if member.kind == dkFn:
-          lowerExpr(member.fnBody, m)
-    of dkMixin:
-      for member in d.mixinMembers:
-        if member.kind == dkFn:
-          lowerExpr(member.fnBody, m)
-    of dkExpr:
-      lowerExpr(d.expr, m)
-    else:
-      discard
+  # Phase 1: union / rename type bodies collapse to plain records
+  for d in m.decls(dkType):
+    if d.typeBody != nil and d.typeBody.kind in {tkUnion, tkRename}:
+      d.typeBody = Type(span: d.typeBody.span, kind: tkRecord,
+                        fields: getFieldsForType(m, d.typeBody),
+                        attrs: d.typeBody.attrs)
+
+  # Phase 2: rewrite call arguments (subset matching) in every fn body
+  for fn in m.allFns():
+    lowerExpr(fn.fnBody, m)
+  for d in m.decls(dkExpr):
+    lowerExpr(d.expr, m)

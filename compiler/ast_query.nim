@@ -1,9 +1,17 @@
-# compiler/codegen_shared.nim
+# compiler/ast_query.nim
 #
-# Backend-neutral codegen helpers — pure functions over the AST that both the
-# Nim and Odin emitters need, factored out of the two backend modules so the
-# logic lives once. Nothing here touches a codegen context or emits target
-# syntax; each helper answers a question about a Module/Decl/Expr/Pattern.
+# The vocabulary for asking questions about a parsed program. Pure functions
+# over the AST — nothing here holds state, touches a codegen context, or emits
+# target syntax. Every helper answers one question about a Module/Decl/Expr.
+#
+# It exists because the same questions ("which decl is named X", "walk every
+# extern member", "what are this fn's params") were open-coded as nested loops
+# at ~60 sites across the two backends, lowering and the type checker. Written
+# out by hand they bury the intent in traversal, and copies drift: two
+# `lookupFnParams` disagreed about tasks for months because nothing put them
+# side by side.
+#
+# Add a helper here rather than open-coding the loop again.
 import ast, strutils
 
 proc repeat*(s: string, n: int): string =
@@ -60,6 +68,46 @@ proc cExternFn*(m: Module, name: string): Decl =
     if mem.name == name and mem.externHeader != "": return mem
   nil
 
+iterator members*(d: Decl): Decl =
+  ## The declarations nested inside another, whichever field holds them.
+  ## Callers that just want "everything inside this decl" should not have to
+  ## know that a mixin uses mixinMembers and an object uses objMembers.
+  if d != nil:
+    case d.kind
+    of dkMixin:
+      for mem in d.mixinMembers: (if mem != nil: yield mem)
+    of dkType:
+      for mem in d.typeMembers: (if mem != nil: yield mem)
+    of dkObject:
+      for mem in d.objMembers: (if mem != nil: yield mem)
+    of dkActor:
+      for mem in d.handlers: (if mem != nil: yield mem)
+    else: discard
+
+proc declaredFields*(d: Decl): seq[FieldDef] =
+  ## The fields a declaration introduces, whichever field holds them. A record
+  ## type keeps them in its body; objects and actors have their own seq.
+  if d == nil: return @[]
+  case d.kind
+  of dkType:
+    if d.typeBody != nil and d.typeBody.kind == tkRecord: d.typeBody.fields
+    else: @[]
+  of dkObject: d.objFields
+  of dkActor: d.actorFields
+  else: @[]
+
+iterator allFns*(m: Module): Decl =
+  ## Every fn in the module with a body to walk: top-level, plus the members
+  ## of objects, manager types, mixins and actors. Passes that rewrite bodies
+  ## (lowering) want exactly this set, and expressing it as a case statement
+  ## per site is how dkActor came to be silently skipped.
+  for d in m.decls:
+    if d == nil: continue
+    if d.kind == dkFn: yield d
+    else:
+      for mem in d.members():
+        if mem.kind == dkFn: yield mem
+
 proc findFn*(m: Module, name: string): Decl =
   ## The fn declaration named `name`, wherever it sits: top level, or a member
   ## of a mixin/extern block or a manager type. Pending stubs do not count as
@@ -70,10 +118,9 @@ proc findFn*(m: Module, name: string): Decl =
     if d == nil: continue
     if d.kind in {dkFn, dkTask} and d.name == name: return d
     if d.kind in {dkMixin, dkType}:
-      let members = if d.kind == dkMixin: d.mixinMembers else: d.typeMembers
-      for mem in members:
-        if mem != nil and mem.kind == dkFn and not mem.isPending and
-           mem.name == name: return mem
+      for mem in d.members():
+        if mem.kind == dkFn and not mem.isPending and mem.name == name:
+          return mem
   nil
 
 proc params*(d: Decl): seq[Param] =
@@ -114,6 +161,11 @@ proc typeBodyKind*(m: Module, name: string): TypeKind =
   let d = m.findDecl(dkType, name)
   if d == nil or d.typeBody == nil: return tkNamed
   d.typeBody.kind
+
+iterator sumTypes*(m: Module): Decl =
+  ## Declared sum types (`type X = {A, B}` and payload-carrying variants).
+  for d in m.decls(dkType):
+    if d.typeBody != nil and d.typeBody.kind == tkSum: yield d
 
 proc isRecordType*(m: Module, name: string): bool =
   ## `{fields} TypeName` — construction of a declared record type.

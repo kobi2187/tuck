@@ -5,6 +5,7 @@
 # so sketch code keeps compiling while declared code is checked strictly.
 import ast, semantics, lowering, tables, strutils, sets
 import resolution
+import ast_query
 import typecheck_util
 export typecheck_util
 import typecheck_state
@@ -1037,10 +1038,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # `ActorType send handler {payload}` — the actor must be declared, the
     # handler must be one of its `on` handlers, and the payload must match the
     # handler's params. A send is a statement: it yields unit.
-    var actorDecl: Decl = nil
-    for d in tc.module.decls:
-      if d != nil and d.kind == dkActor and d.name == e.sendActor:
-        actorDecl = d; break
+    let actorDecl = tc.module.findDecl(dkActor, e.sendActor)
     if actorDecl == nil:
       fail("Type Error: 'send' target '" & e.sendActor &
            "' is not a declared actor", e.span)
@@ -1528,14 +1526,10 @@ proc typecheckModule*(m: Module,
   for d in m.decls:
     if d != nil and d.kind == dkConst:
       proc isIoFn(m: Module, name: string): bool =
-        for fd in m.decls:
-          if fd != nil and fd.kind == dkFn and fd.name == name:
-            return emIo in fd.fnEffects
-        false
+        let fd = m.findDecl(dkFn, name)
+        fd != nil and emIo in fd.fnEffects
       proc fnDeclared(m: Module, name: string): bool =
-        for fd in m.decls:
-          if fd != nil and fd.kind == dkFn and fd.name == name: return true
-        false
+        m.findDecl(dkFn, name) != nil
       proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr,
                       sp: Span) =
         if e == nil: return
@@ -1586,15 +1580,7 @@ proc typecheckModule*(m: Module,
   # `.name` resolves by lookup, so a clash would silently change meaning.
   for d in m.decls:
     if d == nil: continue
-    let declFields =
-      case d.kind
-      of dkType:
-        if d.typeBody != nil and d.typeBody.kind == tkRecord: d.typeBody.fields
-        else: @[]
-      of dkObject: d.objFields
-      of dkActor: d.actorFields
-      else: @[]
-    for f in declFields:
+    for f in d.declaredFields():
       if tc.fnSigs.hasKey(f.name):
         fail("Type Error: field '" & f.name & "' of '" & d.name & "' has " &
              "the same name as a declared fn — rename one; fields and fns " &
@@ -1651,10 +1637,8 @@ proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
   ## is a compile error with a rename pointer.
   var seen = initTable[uint16, string]()
   for (name, path, m) in mods:
-    for d in m.decls:
-      if d == nil or d.kind != dkType: continue
+    for d in m.sumTypes():
       if d.span.file.startsWith(ImportedTypeMarker): continue  # origin owns it
-      if d.typeBody == nil or d.typeBody.kind != tkSum: continue
       for v in d.typeBody.variants:
         if v.fields.len > 0: continue  # error enums are fieldless
         let full = name & "/" & d.name & "." & v.name

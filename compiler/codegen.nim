@@ -1,7 +1,7 @@
 # compiler/codegen.nim
 import ast, lowering, strutils, sets, tables
 import resolution
-import codegen_shared
+import ast_query
 
 type
   CodegenCtx = object

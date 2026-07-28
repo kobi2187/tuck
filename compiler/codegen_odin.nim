@@ -13,7 +13,7 @@
 # usually a fix in the other.
 import ast, lowering, strutils, sets, tables
 import resolution
-import codegen_shared
+import ast_query
 from mangle import mangleName
 
 type
@@ -247,7 +247,7 @@ proc isActorType(m: Module, name: string): bool =
 
 # hasInvariants / externInvRet / isRecordType / isErrEnumRef used to be
 # copy-pasted here from codegen.nim (this backend began as a fork). They are
-# backend-neutral questions about the AST, so they live in codegen_shared.
+# backend-neutral questions about the AST, so they live in ast_query.
 
 proc lookupFnParams(m: Module, name: string): seq[string] =
   m.findFn(name).paramNames()
