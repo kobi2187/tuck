@@ -781,13 +781,6 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     if e.receiver != nil and e.receiver.kind == exkVar and
        e.receiver.name == "input" and ctx.currentParams.len > 0:
       return e.fieldName
-    # Unit sugar: 5.ms is a postfix call to the ordinary function ms
-    if e.receiver != nil and e.receiver.kind == exkLit and
-       e.receiver.litKind in {lkInt, lkFloat}:
-      if lookupFnParams(ctx.module, e.fieldName).len > 0:
-        return e.fieldName & "(" & ctx.genOdinExpr(e.receiver) & ")"
-      else:
-        return ctx.genOdinExpr(e.receiver)
     if semLayer.hasCall(e):
       # fieldName resolved to a fn call, not a field (checker-resolved)
       return ctx.genOdinCall(semLayer.call(e))
@@ -795,6 +788,12 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       # bare Type.Variant of a payload sum: kind-tagged construction
       let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
       if ctor != "": return ctor
+    if e.receiver != nil and e.receiver.kind == exkLit and
+       e.receiver.litKind in {lkInt, lkFloat}:
+      # `5.ms` the checker could not resolve — see the Nim backend's twin of
+      # this branch. A declared helper never reaches here; `hasCall` above
+      # catches it.
+      return ctx.genOdinExpr(e.receiver)
     return ctx.genOdinExpr(e.receiver) & "." & e.fieldName
   of exkQualified:
     return genQualified(ctx, e)

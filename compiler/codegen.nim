@@ -182,17 +182,6 @@ proc externEmitName(m: Module, fnName: string): string =
           return mem.externEmit
   ""
 
-proc isKnownFn(ctx: CodegenCtx, name: string): bool =
-  ## A fn (or task) with this name in the current module OR any imported one —
-  ## imported helpers like time's `ms` ride Nim's namespacing, so `5.ms`
-  ## resolves to a real call cross-module, not a dropped field read.
-  ## Asks for the DECLARATION, not its param count: a zero-param fn is a real
-  ## fn, and testing `params.len > 0` would call it unknown.
-  if ctx.module.findFn(name) != nil: return true
-  for _, im in ctx.realModules:
-    if im.findFn(name) != nil: return true
-  false
-
 # module::fn — a real imported module rides Nim's own namespacing; a
 # sketch-pending qualified name maps to its mangled stub (genPendingStub).
 proc cCallbackSig(m: Module): string =
@@ -579,12 +568,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     if e.receiver != nil and e.receiver.kind == exkVar and
        e.receiver.name == "input" and ctx.currentParams.len > 0:
       return e.fieldName
-    if e.receiver != nil and e.receiver.kind == exkLit and e.receiver.litKind in {lkInt, lkFloat}:
-      if ctx.isKnownFn(e.fieldName):
-        e.fieldName & "(" & ctx.genExpr(e.receiver) & ")"
-      else:
-        ctx.genExpr(e.receiver)
-    elif semLayer.hasCall(e):
+    if semLayer.hasCall(e):
       ctx.genCall(semLayer.call(e))
     elif e.receiver != nil and e.receiver.kind == exkVar and
          ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
@@ -595,6 +579,15 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       # `ActorType.field` — an actor is a singleton; read its public field off
       # the rt-owned instance (main's waitUntil predicates read state this way)
       actorSingletonName(e.receiver.name) & "." & e.fieldName
+    elif e.receiver != nil and e.receiver.kind == exkLit and
+         e.receiver.litKind in {lkInt, lkFloat}:
+      # `5.ms` the checker could not resolve — a sketch example applying a
+      # helper it never declared or imported (01-data-flow's `timeout: 5.ms`
+      # with no `import time`). A number has no fields, so emitting `5.ms`
+      # would be invalid in the target; degrade to the bare literal and let
+      # the walking skeleton still compile. A DECLARED helper never lands
+      # here: the checker stamps a call and `hasCall` above catches it.
+      ctx.genExpr(e.receiver)
     else:
       ctx.genExpr(e.receiver) & "." & e.fieldName
   of exkQualified:
