@@ -1,8 +1,6 @@
 == prep: emit examples/*.odin ==
   (no odin for examples/16-actor-tasks-unified-syntax.tuck)
   (no odin for examples/20-embedded-mp3-player.tuck)
-  (no odin for examples/23-units.tuck)
-  (no odin for examples/32-duration-units.tuck)
   (no odin for examples/35-ffi-struct.tuck)
   (no odin for examples/36-ffi-enum-callback.tuck)
   (no odin for examples/37-ffi-handle.tuck)
@@ -61,7 +59,6 @@ PASS (ok)     a distinct type auto-matches its own type
 PASS (ok)     explicit alias still works alongside auto-matching
 All typecheck tests passed
 == tests/cli_smoke.sh ==
-FAIL: err-match branch wrong exit 0, want 42
-FAIL: cli_smoke.sh
+cli smoke OK
 
-1 failure(s).
+All tests passed.

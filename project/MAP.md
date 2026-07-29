@@ -3,6 +3,28 @@
 Readability > simplicity > educational value > raw complexity metrics.
 Behavior-preserving throughout: no test expectation moves.
 
+## THE SIZE RULE (governs every task)
+Cyclomatic complexity minimal. Many tiny functions. **No proc body over 5-8
+lines.** Forth-like: small named words, each answering one question, composed
+together. A proc that needs a loop AND a branch is usually two procs.
+
+Naming carries the weight at this granularity — a tiny proc with a vague name
+is worse than the inline code it replaced. Name each after the QUESTION it
+answers (`originModuleOf`, `formatErrId`, `parseBraceParams`), house style per
+compiler/ast_query.nim.
+
+Still forbidden, at any size: flags-as-modes, interfaces-for-one-impl,
+factories, new runtime dispatch. Decompose with plain procs only.
+
+## AGENT RULES (orchestration, learned the hard way)
+- Agents NEVER run git. No commit, no revert, no `git show >`, no checkout.
+  They edit files and run ./run-all-tests.sh. Version control is the
+  orchestrator's alone. (A T2 agent reverted a deliberate fix via `git show`
+  because it could not tell an intentional concurrent edit from stray drift.)
+- The orchestrator NEVER edits a file an agent currently owns. Wait for the
+  agent to finish, or hand it the change as an instruction.
+- One owner per file at a time. Parallel tasks must have disjoint file sets.
+
 ## Component tree
 
 - [x] Verification harness            (status: done — T1)
