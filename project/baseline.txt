@@ -1,0 +1,67 @@
+== prep: emit examples/*.odin ==
+  (no odin for examples/16-actor-tasks-unified-syntax.tuck)
+  (no odin for examples/20-embedded-mp3-player.tuck)
+  (no odin for examples/23-units.tuck)
+  (no odin for examples/32-duration-units.tuck)
+  (no odin for examples/35-ffi-struct.tuck)
+  (no odin for examples/36-ffi-enum-callback.tuck)
+  (no odin for examples/37-ffi-handle.tuck)
+== tests/auto_alias_e2e.nim ==
+PASS (run)    source-field-order-is-irrelevant
+PASS (run)    name-match-and-type-match-together
+PASS (run)    name-match-claims-its-field-before-type-pass
+PASS (run)    explicit-alias-still-correct
+All auto-alias e2e tests passed
+== tests/compile_all_examples.nim ==
+  PASS nim check: 11-embedded-feature
+  PASS nim check: 25-pools
+  PASS nim check: 26-actor-run
+  PASS nim check: 27-actor-select
+All 25 expected outputs are valid Nim.
+== tests/end_to_end.nim ==
+}
+
+==========================
+Written Odin output to tests/temp_out.odin
+SUCCESS: Caught expected semantic error: Semantic Error: Expression requires effect [io], which is not allowed in context of 'doWork' at line 4:21
+== tests/known_bugs.nim ==
+PASS           elif chains parse
+               (regression guard — this bug was fixed and stays fixed)
+
+open bugs: 1
+OK — open bugs still open, fixed bugs still fixed.
+== tests/lexer_examples.nim ==
+(kind: tkIdent, value: "Red", line: 8, column: 15)
+(kind: tkDedent, value: "", line: 8, column: 18)
+(kind: tkDedent, value: "", line: 8, column: 18)
+(kind: tkDedent, value: "", line: 8, column: 18)
+(kind: tkEOF, value: "", line: 8, column: 18)
+== tests/mangle_tests.nim ==
+PASS  fields are NOT mangled
+PASS  params and locals stay bare
+PASS  externs are NOT mangled
+PASS  no double prefix
+All mangle tests passed
+== tests/odin_backend.nim ==
+  PASS run: 38-division -> 0
+  PASS run: 39-if-match-expr -> 0
+  PASS run: 40-saturating -> 0
+  PASS run: 41-tostr-concat -> 0
+All Odin backend checks passed (35 compile, 12 run)
+== tests/parser_examples.nim ==
+    name=main
+
+=== Parsing: examples/08-actors_isolated_state.tuck
+Successfully parsed module with 1 declarations.
+  Decl 1: kind=dkActor
+== tests/typecheck_tests.nim ==
+PASS (error)  same-typed numerics are still ambiguous — Type Error: call to 'f' is missing required field 'n: int' (add it, or alias a field to that name) at line 6:5
+PASS (error)  a distinct type does not auto-match its base — Type Error: call to 'delay' is missing required field 'ms: Milliseconds' (add it, or alias a field to that name) at line 8:5
+PASS (ok)     a distinct type auto-matches its own type
+PASS (ok)     explicit alias still works alongside auto-matching
+All typecheck tests passed
+== tests/cli_smoke.sh ==
+FAIL: err-match branch wrong exit 0, want 42
+FAIL: cli_smoke.sh
+
+1 failure(s).

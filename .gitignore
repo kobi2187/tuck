@@ -22,3 +22,10 @@ compiler/tuckrt/minicoro.a
 tests/odin_out/
 tests/odin_backend
 tests/mangle_tests
+# `tuck build` drops binaries and copied deps beside the examples;
+# run-all-tests.sh regenerates all of it on every run
+examples/m_*
+examples/cffi/*.o
+examples/tuckrt/
+examples/mod_*/
+tests/.smoke_*
