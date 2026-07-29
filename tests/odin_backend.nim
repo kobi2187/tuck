@@ -28,7 +28,7 @@ const odinCheckExpected = [
   "24-stdlib", "25-pools", "26-actor-run", "31-fnsig-callback",
   "32-duration-units", "33-ffi-zlib", "34-ffi-cstring", "35-ffi-struct",
   "36-ffi-enum-callback", "37-ffi-handle", "28-async-task", "38-division",
-  "39-if-match-expr", "40-saturating",
+  "39-if-match-expr", "40-saturating", "41-tostr-concat",
 ]
 
 # Examples with a known exit code: these must RUN, not merely compile.
@@ -61,6 +61,10 @@ const odinRunExpected = {
   # [saturating] must CLAMP on both backends. A missing clamp compiles fine
   # and returns 4464 instead of 65535 — only running catches it.
   "40-saturating": 0,
+  # postfix application on a variable + unqualified imported-fn call +
+  # string concat, all through the rt. Prints identical lines on both
+  # backends; 0 only if they match.
+  "41-tostr-concat": 0,
 }
 
 proc findOdin(): string =

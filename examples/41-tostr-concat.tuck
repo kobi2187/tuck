@@ -1,0 +1,47 @@
+# Postfix application and string concatenation, on an IMPORTED fn.
+#
+# `n.toStr` is a CALL, not a field read: the receiver becomes the argument.
+# Same rule as `5.ms` — it applies just as well when the receiver is a
+# variable, and when the fn lives in an imported module and is called
+# UNQUALIFIED (`toStr`, not `str::toStr` — the idiomatic form).
+#
+# `x doSth`, `x.doSth` and `{value: x} doSth` are the same call: a bare
+# receiver wraps into the one-field payload the signature declares, and
+# auto-renaming means the field name need not match.
+#
+# Two things had to be true for `n.toStr + " bottles"` to concat, and neither
+# was, for two independent reasons:
+#   1. `import str` brings `toStr` into scope UNQUALIFIED. The checker used to
+#      key imported signatures only as `str::toStr`, so the bare call typed
+#      as Unknown — it still emitted, but `+` could not see the result was a
+#      str and picked the numeric overload.
+#   2. postfix application only recognized a LITERAL receiver (`5.ms`), never
+#      a variable, so `n.toStr` was never treated as a call at all.
+import str
+import io
+import sys
+
+type Jar = {count: int, label: str}
+
+fn main() -> void [io]:
+  let n = 99
+
+  # postfix application on a variable, then concat
+  let s = n.toStr + " bottles"
+  {text: s} printLine
+
+  # `n toStr` (no dot) is the identical call
+  let t = n toStr + " more"
+  {text: t} printLine
+
+  # a declared field still wins over any same-named fn — checked at
+  # declaration time, so `Jar.count` reads the field, not a call to `count`
+  let j = {count: 7, label: "jam"} Jar
+  let c = j.count
+  let u = j.label + ": " + c.toStr
+  {text: u} printLine
+
+  if s == "99 bottles":
+    if u == "jam: 7":
+      0 exit
+  1 exit

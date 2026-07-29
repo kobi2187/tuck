@@ -896,7 +896,11 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
                 of boRangeExcl: "..<"
     if e.binOp == boAdd and e.left != nil and semLayer.typeFor(e.left) != nil and
        semLayer.typeFor(e.left).kind == tkNamed and semLayer.typeFor(e.left).name in ["str", "string"]:
-      return "concat(" & ctx.genOdinExpr(e.left) & ", " & ctx.genOdinExpr(e.right) & ")"
+      # rt.tuckConcat — `concat` was the Beef runtime's name and never
+      # existed in the Odin one (tuckrt/tuck_rt.odin:87), so any string `+`
+      # emitted an undeclared call.
+      return "rt.tuckConcat(" & ctx.genOdinExpr(e.left) & ", " &
+             ctx.genOdinExpr(e.right) & ")"
     return "(" & ctx.genOdinExpr(e.left) & " " & opStr & " " & ctx.genOdinExpr(e.right) & ")"
   of exkUnary:
     let opStr = case e.unaryOp

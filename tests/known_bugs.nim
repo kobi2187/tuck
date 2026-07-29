@@ -110,10 +110,22 @@ fn main() -> int:
 # ---------------------------------------------------------------------------
 # 2. `toStr` + string concatenation picks the numeric `+`
 # ---------------------------------------------------------------------------
-# From the 2026-07-20 expressibility audit; investigation was in flight when
-# that session ended. `n.toStr` alone works; it only breaks under `+`.
+# From the 2026-07-20 expressibility audit. Two real causes, found
+# 2026-07-28: an UNQUALIFIED call to an imported fn (`toStr`, not
+# `str::toStr` — the idiomatic form) never resolved a return type, because
+# only the qualified key existed in fnSigs; and postfix application
+# (`n.toStr`) only recognized a LITERAL receiver, never a variable, so
+# `n.toStr` was not even treated as a call. Fixed by seeding both the
+# qualified AND bare key at import-merge time (typecheckProgram), and by
+# extending postfix application to any variable/literal receiver, gated to
+# function bodies (tc.currentFn) so the identical spelling in a signature
+# still means a type/field path. Also fixed a Beef fossil this surfaced: the
+# Odin backend emitted a bare `concat(...)` for string `+`, which never
+# existed in the Odin runtime (only `rt.tuckConcat` does).
 block:
   let (ok, outp) = build("""
+import str
+
 fn main() -> int:
   let n = 3
   let s = n.toStr + " bottles"
@@ -121,12 +133,11 @@ fn main() -> int:
 """)
   bug(
     "`toStr` result stays a str under `+`",
-    "`n.toStr + \" bottles\"` picks the numeric `+` overload instead of " &
-      "tuckConcat. The concat branch tests e.left's type, which is not str " &
-      "here — either the type is unset or the expression parses as " &
-      "`n.(toStr + ...)`.",
-    "compiler/codegen.nim:469 / :772 concat condition — dump the AST first",
-    fixed = false,
+    "`n.toStr + \" bottles\"` must concat, not pick the numeric `+`.",
+    "compiler/typecheck.nim typecheckProgram (bare import key) + postfix " &
+      "application on a variable receiver; compiler/codegen_odin.nim " &
+      "rt.tuckConcat",
+    fixed = true,
     ok)   # correct = it compiles
 
 # ---------------------------------------------------------------------------
@@ -226,7 +237,9 @@ fn main() -> int:
       "called it.",
     "compiler/codegen_odin.nim — saturatingType arm in the construction path",
     fixed = true,
-    od.len > 0 and "70000" notin od)
+    # Assert the clamp is CALLED. "70000 is absent" would be wrong: it
+    # legitimately appears as the clamp's ARGUMENT, `rt.tuckSat(u16, u64(70000))`.
+    od.len > 0 and "tuckSat(u16" in od)
 
 # ---------------------------------------------------------------------------
 # 5. A type argument named like an attribute fails to parse

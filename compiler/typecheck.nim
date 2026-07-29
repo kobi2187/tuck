@@ -164,16 +164,57 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
     setCall(semLayer, e, Expr(span: e.span, kind: exkCall, callee: e.receiver,
                              args: callArgs))
     return unknownType(e.span)
-  # Unit sugar: 5.ms is postfix application — ms is an ordinary function
-  if e.receiver != nil and e.receiver.kind == exkLit and
-     e.receiver.litKind in {lkInt, lkFloat} and tc.fnSigs.hasKey(e.fieldName):
+  # Postfix application INSIDE A FUNCTION BODY: `5.ms`, `n.toStr`,
+  # `server.describe`. `x doSth` and `{value: x} doSth` are the same call —
+  # a bare receiver wraps into the one-field payload the signature declares
+  # (auto-renaming means the field name need not match). tc.currentFn gates
+  # this to bodies: the identical `a.b` spelling in a SIGNATURE is a type or
+  # field path, not a call.
+  #
+  # Two legal shapes reach here:
+  #   wrap    — `n.toStr`: the receiver IS the single argument
+  #   explode — `server.describe`: the receiver's fields feed the params by
+  #             name (payload-explode, handled by synthCall's caller further
+  #             down) — this branch must fall through rather than claim it.
+  # No field-vs-fn ambiguity to resolve: a DECLARED type's field sharing a
+  # name with a fn is already a compile error at declaration ("fields and
+  # fns share the call namespace", checked in typecheckProgram). An ANONYMOUS
+  # struct has no declaration for that check to see, so `{port: 80}.port` is
+  # still genuinely ambiguous and is caught separately, at use, below.
+  if tc.currentFn != "" and e.receiver != nil and
+     e.receiver.kind in {exkLit, exkVar} and tc.fnSigs.hasKey(e.fieldName):
     let sig = tc.fnSigs[e.fieldName]
-    if sig.params.len == 1:
-      let litT = tc.synthesize(e.receiver)
-      if not tc.compatible(litT, sig.params[0].typ):
+    let recvT = tc.synthesize(e.receiver)
+    let recvFields = tc.fieldsOf(tc.resolve(recvT))
+    # Ambiguous only for an ANONYMOUS record (no name to have been checked at
+    # declaration) whose fields literally include this name.
+    if recvT.kind == tkRecord:
+      for f in recvFields:
+        if f.name == e.fieldName:
+          fail("Type Error: '" & e.fieldName & "' is both a field here and " &
+               "a declared fn — rename one; fields and fns share the call " &
+               "namespace", e.span)
+    # Explode: the receiver's fields satisfy the signature's params by name.
+    var explodes = recvFields.len > 0 and sig.params.len > 0
+    for p in sig.params:
+      var found = false
+      for f in recvFields:
+        if f.name == p.name: found = true
+      if not found: explodes = false
+    if not explodes and sig.params.len == 1:
+      # A generic param (`toStr[T]({value: T})`) accepts anything — checking
+      # against the unbound type VARIABLE would reject every receiver.
+      let pt = sig.params[0].typ
+      let isTypeVar = pt != nil and pt.kind == tkNamed and pt.name in sig.generics
+      if not isTypeVar and not tc.compatible(recvT, pt):
         fail("Type Error: argument to '" & e.fieldName & "' expects " &
-             typeName(sig.params[0].typ) & " but got " & typeName(litT), e.span)
-    return sig.ret
+             typeName(pt) & " but got " & typeName(recvT), e.span)
+      # Stamp a real call node so codegen emits `toStr(n)`, not `n.toStr`.
+      setCall(semLayer, e, Expr(span: e.span, kind: exkCall,
+                               callee: Expr(span: e.span, kind: exkVar,
+                                            name: e.fieldName),
+                               args: @[e.receiver]))
+      return sig.ret
   # Variant construction: Type.Variant — sealed types only allow the
   # initial (first) variant directly; [unsafe] is the deserialization escape
   if e.receiver != nil and e.receiver.kind == exkVar and
@@ -1693,21 +1734,39 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
       if d != nil and d.kind == dkImport: imps.add(d.name)
     importsByMod[name] = imps
   for (name, path, m) in mods:
-    # importer sees imported fns under qualified keys only (no leakage)
+    # `import fs` brings fs's public fns into scope UNQUALIFIED — the
+    # idiomatic form (`readFile`, not `fs::readFile`) — same as most
+    # languages. The qualified key is always added too, since `::` is still
+    # how a caller disambiguates a genuine collision between two imports.
+    # A LOCAL declaration of the same name wins: collectSigs runs after this
+    # table seeds tc.fnSigs, so a same-named local overwrites the bare key.
     var extern = initTable[string, FnSig]()
     var externPend = initTable[string, Span]()
+    var bareOwner = initTable[string, string]()  # bare name -> which import
     for imp in importsByMod[name]:
+      template addBare(fname: string, sig: FnSig) =
+        if bareOwner.hasKey(fname) and bareOwner[fname] != imp:
+          fail("Type Error: '" & fname & "' is exported by both '" &
+               bareOwner[fname] & "' and '" & imp & "' — call it as '" &
+               bareOwner[fname] & "::" & fname & "' or '" & imp & "::" &
+               fname & "' to disambiguate", Span())
+        elif not bareOwner.hasKey(fname):
+          bareOwner[fname] = imp
+          extern[fname] = sig
       if sigsByMod.hasKey(imp):
         for fname, sig in sigsByMod[imp]:
           if "::" notin fname:
             extern[imp & "::" & fname] = sig
+            addBare(fname, sig)
         for fname, sp in pendByMod.getOrDefault(imp):
           if "::" notin fname:
             externPend[imp & "::" & fname] = sp
       else:
         for si in preSigs.getOrDefault(imp):
           if "::" notin si.name:
-            extern[imp & "::" & si.name] = (si.params, si.ret, si.generics)
+            let sig: FnSig = (si.params, si.ret, si.generics)
+            extern[imp & "::" & si.name] = sig
+            addBare(si.name, sig)
             if si.isPending:
               externPend[imp & "::" & si.name] = Span(line: si.line, col: 1)
     try:
