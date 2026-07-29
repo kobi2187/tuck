@@ -1,7 +1,8 @@
 # compiler/codegen.nim
-import ast, lowering, strutils, sets, tables
+import ast, strutils, sets, tables
 import resolution
 import ast_query
+import codegen_common
 
 type
   CodegenCtx = object
@@ -48,12 +49,6 @@ proc isRecordTypeFast(ctx: var CodegenCtx, name: string): bool =
 proc hasInvariantsFast(ctx: var CodegenCtx, name: string): bool =
   ctx.buildDeclIndex()
   name in ctx.invariantNames
-
-proc actorSingletonName(actorType: string): string =
-  # An actor is a global singleton (spec §9): one instance per declared type,
-  # named <type>Singleton. genActor emits it; sends target it.
-  if actorType.len == 0: return "actorSingleton"
-  actorType[0].toLowerAscii() & actorType[1..^1] & "Singleton"
 
 proc isActorType(ctx: CodegenCtx, name: string): bool =
   for d in ctx.module.decls:
@@ -187,22 +182,6 @@ proc externEmitName(m: Module, fnName: string): string =
           return mem.externEmit
   ""
 
-# Error ids are namespaced: the hash input is "module/Enum.Variant", where
-# module is the enum's ORIGIN (imported enums carry it on the marker).
-proc errNameFor(ctx: CodegenCtx, enumName, variant: string): string =
-  var origin = ctx.moduleName
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkType and d.name == enumName:
-      if d.span.file.startsWith(ImportedTypeMarker & ":"):
-        origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-      break
-  origin & "/" & enumName & "." & variant
-
-proc lookupFnParams(m: Module, name: string): seq[string] =
-  ## Member fns (mixin buckets, manager types, externs) have concrete exploded
-  ## params. Pending fns stay excluded: their stub takes one generic payload.
-  m.findFn(name).paramNames()
-
 proc isKnownFn(ctx: CodegenCtx, name: string): bool =
   ## A fn (or task) with this name in the current module OR any imported one —
   ## imported helpers like time's `ms` ride Nim's namespacing, so `5.ms`
@@ -251,12 +230,6 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
 # (`p advance`) explodes to the fn's params by field name, in param order —
 # same subset matching the checker verified. Fields come from the checker's
 # ty stamp on the arg node.
-proc recordFieldNames(ctx: CodegenCtx, t: Type): seq[string] =
-  if t == nil: return @[]
-  if t.kind == tkNamed and t.name == UnknownName: return @[]
-  for f in getFieldsForType(ctx.module, t):
-    result.add(f.name)
-
 # expr bake {slot: :fn, arg: v, ...} — rebuild the context struct with slots
 # filled / values overridden / new fields added. Nim monomorphizes fn-typed
 # params downstream, so calls through baked slots are direct.
@@ -268,7 +241,7 @@ proc genBake(ctx: var CodegenCtx, e: Expr): string =
     let tmp = "tuckBake" & $ctx.tmpCounter
     prefix = "let " & tmp & " = " & recv & "; "
     recv = tmp
-  let recvFields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
+  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
   var parts: seq[string]
   for fname in recvFields:
     var overridden = ""
@@ -295,7 +268,7 @@ proc genMerge(ctx: var CodegenCtx, e: Expr): string =
       let tmp = "tuckMerge" & $ctx.tmpCounter
       prefix.add("let " & tmp & " = " & recv & "; ")
       recv = tmp
-    for f in ctx.recordFieldNames(semLayer.typeFor(mexpr)):
+    for f in recordFieldNames(ctx.module, semLayer.typeFor(mexpr)):
       parts.add(f & ": " & recv & "." & f)
   if parts.len == 0: return ctx.genExpr(e.args[0])  # sketch members
   if prefix == "": "(" & parts.join(", ") & ")"
@@ -324,7 +297,7 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
   let params = lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
-  let fields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
+  let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
   # The checker already decided which field feeds each param (they may differ
   # in name, having been matched by type); prefer its mapping over re-deriving.
@@ -765,7 +738,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     let rv = e.raiseVal
     if isErrEnumRef(ctx.module, rv):
       "return terr[" & ctx.retInnerNim & "](errCode(\"" &
-        ctx.errNameFor(rv.receiver.name, rv.fieldName) & "\"))"
+        errNameFor(ctx.module, ctx.moduleName, rv.receiver.name, rv.fieldName) & "\"))"
     else:
       "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
   of exkChain:
@@ -835,7 +808,7 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
        "." in arm.pattern.name:
       # checker-qualified error variant: compare against the hashed id
       let dot = arm.pattern.name.find(".")
-      patStr = "errCode(\"" & ctx.errNameFor(
+      patStr = "errCode(\"" & errNameFor(ctx.module, ctx.moduleName,
         arm.pattern.name[0 ..< dot], arm.pattern.name[dot+1 .. ^1]) & "\")"
     # Arms sit one level in from the `case`, and a BLOCK body one level
     # further. Both must be derived from ctx.indent — a match nested in a
@@ -1535,7 +1508,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
         if v.fields.len > 0: fieldless = false
       if not fieldless: continue
       for v in td.typeBody.variants:
-        errNames.add(ctx.errNameFor(td.name, v.name))
+        errNames.add(errNameFor(ctx.module, ctx.moduleName, td.name, v.name))
     var res = ""
     if errNames.len > 0:
       res.add("proc tuckErrName*(code: uint16): string =\n  case code\n")

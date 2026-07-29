@@ -14,6 +14,7 @@
 import ast, lowering, strutils, sets, tables
 import resolution
 import ast_query
+import codegen_common
 from mangle import mangleName
 
 type
@@ -235,22 +236,12 @@ proc fieldType(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
 
 # --- Shared declaration lookups (mirror codegen.nim) -----------------------
 
-# An actor is a SINGLETON (spec §9.1): one instance per declared actor,
-# named <type>Singleton. genActor emits it; sends and field reads target it.
-# Mirrors codegen.nim's actorSingletonName.
-proc actorSingletonName(actorType: string): string =
-  if actorType.len == 0: return "actorSingleton"
-  actorType[0].toLowerAscii() & actorType[1..^1] & "Singleton"
-
 proc isActorType(m: Module, name: string): bool =
   m.findDecl(dkActor, name) != nil
 
 # hasInvariants / externInvRet / isRecordType / isErrEnumRef used to be
 # copy-pasted here from codegen.nim (this backend began as a fork). They are
 # backend-neutral questions about the AST, so they live in ast_query.
-
-proc lookupFnParams(m: Module, name: string): seq[string] =
-  m.findFn(name).paramNames()
 
 # fn param TYPES by position, for call sites deciding whether an arg needs
 # the `ref` marker (mutable record param).
@@ -283,19 +274,13 @@ proc genQualified(ctx: OdinCodegenCtx, e: Expr): string =
 
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 
-proc recordFieldNames(ctx: var OdinCodegenCtx, t: Type): seq[string] =
-  if t == nil: return @[]
-  if t.kind == tkNamed and t.name == UnknownName: return @[]
-  for f in getFieldsForType(ctx.module, t):
-    result.add(f.name)
-
 # Type-directed explosion: a record-typed VAR as the whole payload
 # (`p advance`) explodes to the fn's params by field name, in param order.
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
   let params = lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
-  let fields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
+  let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
   # The checker already decided which field feeds each param (they may differ
   # in name, having been matched by type); prefer its mapping over the name.
@@ -429,7 +414,7 @@ proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
 proc genOdinBake(ctx: var OdinCodegenCtx, e: Expr): string =
   if e.args[0].kind != exkVar: return ""  # ponytail: no expr-position temp
   let recv = ctx.genOdinExpr(e.args[0])
-  let recvFields = ctx.recordFieldNames(semLayer.typeFor(e.args[0]))
+  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
   if recvFields.len == 0: return ""
   var declFields: seq[FieldDef]
   for f in getFieldsForType(ctx.module, semLayer.typeFor(e.args[0])):
@@ -651,22 +636,12 @@ proc armValue(ctx: var OdinCodegenCtx, e: Expr): string =
   return ctx.genOdinExpr(e)
 
 # exkRaise: err X — early-return an error result
-# Error ids hash over "module/Enum.Variant" — module = the enum's origin
-proc errNameFor(ctx: OdinCodegenCtx, enumName, variant: string): string =
-  var origin = ctx.moduleName
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkType and d.name == enumName:
-      if d.span.file.startsWith(ImportedTypeMarker & ":"):
-        origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-      break
-  origin & "/" & enumName & "." & variant
-
 proc genRaise(ctx: var OdinCodegenCtx, e: Expr): string =
   let rv = e.raiseVal
   let inner = if ctx.retInnerOdin != "": ctx.retInnerOdin else: "rt.TuckUnit"
   if isErrEnumRef(ctx.module, rv):
     "return rt.terr(" & inner & ", " &
-      errCodeLit(ctx.errNameFor(rv.receiver.name, rv.fieldName)) & ")"
+      errCodeLit(errNameFor(ctx.module, ctx.moduleName, rv.receiver.name, rv.fieldName)) & ")"
   else:
     "return rt.terr(" & inner & ", u16(" & ctx.genOdinExpr(rv) & "))"
 
@@ -717,7 +692,7 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
     if arm.pattern != nil and arm.pattern.kind == pkVar and
        "." in arm.pattern.name:
       let dot = arm.pattern.name.find(".")
-      caseVal = errCodeLit(ctx.errNameFor(arm.pattern.name[0 ..< dot],
+      caseVal = errCodeLit(errNameFor(ctx.module, ctx.moduleName, arm.pattern.name[0 ..< dot],
                                           arm.pattern.name[dot+1 .. ^1]))
     let caseLabel = if patStr == "_": "default:"
                     elif caseVal != "": "case " & caseVal & ":"
@@ -747,7 +722,7 @@ proc genMatchExpr(ctx: var OdinCodegenCtx, e: Expr): string =
     if arm.pattern != nil and arm.pattern.kind == pkVar and
        "." in arm.pattern.name:
       let dot = arm.pattern.name.find(".")
-      cmpVal = errCodeLit(ctx.errNameFor(arm.pattern.name[0 ..< dot],
+      cmpVal = errCodeLit(errNameFor(ctx.module, ctx.moduleName, arm.pattern.name[0 ..< dot],
                                          arm.pattern.name[dot+1 .. ^1]))
     res.add("((" & subjectStr & " == " & cmpVal & ") ? " &
             bodyStr & " : ")
