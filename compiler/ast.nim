@@ -1,8 +1,28 @@
 # compiler/ast.nim
 # Tuck AST node definitions.
 # This file contains the core syntax tree shape for the lexer/parser/compiler.
+#
+# SourceName
+# ----------
+# Three node types (Type, Expr, Decl) carry `sourceName: Option[string]`.
+# The mangle pass renames top-level declarations and the references to them
+# (`Feed` -> `tuck_Feed`) so no emitted name can clash in any backend. It used
+# to do that destructively: the name the user wrote was gone, and anything
+# needing it back guessed by stripping the prefix off the mangled one.
+#
+# Guessing was wrong twice. Error ids hash over the name, and so does the
+# report that prints it to the user, so a mangled id both broke `match r.err`
+# and leaked `tuck_` into output. `sourceName` records the original AT the
+# rename, so the user-facing name is stored data rather than a convention:
+#
+#   none    -> never renamed; `name` IS the source name (the common case —
+#              locals, params and externs are never mangled)
+#   some(s) -> renamed; `s` is what the user wrote, `name` is what we emit
+#
+# It is common to all nodes but only meaningful on named ones, which is why
+# it sits beside `id`/`span` rather than inside a `case` branch.
 
-import hashes
+import hashes, std/options
 
 type
   Span* = object
@@ -56,6 +76,7 @@ type
   Type* = ref object
     span*: Span
     attrs*: seq[TypeAttr]
+    sourceName*: Option[string]  ## see SourceName note below
     case kind*: TypeKind
     of tkNamed:
       name*: string
@@ -189,6 +210,7 @@ type
   Expr* = ref object
     id*: NodeId
     span*: Span
+    sourceName*: Option[string]  ## see SourceName note below
     case kind*: ExprKind
     of exkLit:
       litKind*: LitKind
@@ -312,6 +334,7 @@ type
   Decl* = ref object
     span*: Span
     name*: string
+    sourceName*: Option[string]  ## see SourceName note below
     case kind*: DeclKind
     of dkType:
       generics*: seq[string]
@@ -410,6 +433,20 @@ proc enumDomain*(m: Module, t: Type): seq[string] =
           vals.add(v.name)
         return vals
   return @[]
+
+# --- SourceName: the name the user wrote -----------------------------------
+
+proc writtenName*(e: Expr): string =
+  ## What the user wrote for this expression's name. Use it for anything the
+  ## user sees or that must be stable across backends — never for an emitted
+  ## identifier, which has to stay mangled. Only exkVar carries a name.
+  if e == nil or e.kind != exkVar: return ""
+  if e.sourceName.isSome: e.sourceName.get else: e.name
+
+proc writtenName*(d: Decl): string =
+  ## What the user wrote for this declaration's name. See the Expr overload.
+  if d == nil: return ""
+  if d.sourceName.isSome: d.sourceName.get else: d.name
 
 # --- NodeId: identity for the semantic layer -------------------------------
 

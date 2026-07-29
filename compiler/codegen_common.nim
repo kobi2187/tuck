@@ -18,10 +18,17 @@ proc actorSingletonName*(actorType: string): string =
   if actorType.len == 0: return "actorSingleton"
   actorType[0].toLowerAscii() & actorType[1..^1] & "Singleton"
 
+proc namesType(d: Decl, typeName: string): bool =
+  ## Does this decl name that type? Matches either spelling: callers may hold
+  ## the emitted name or the one the user wrote, and after mangling those
+  ## differ.
+  d != nil and d.kind == dkType and
+    (d.name == typeName or d.writtenName == typeName)
+
 proc declOf(module: Module, typeName: string): Decl =
   ## The type decl named `typeName` in this module, or nil if there isn't one.
   for d in module.decls:
-    if d != nil and d.kind == dkType and d.name == typeName: return d
+    if namesType(d, typeName): return d
   nil
 
 proc importOrigin(d: Decl): string =

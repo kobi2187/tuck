@@ -641,7 +641,7 @@ proc genRaise(ctx: var OdinCodegenCtx, e: Expr): string =
   let inner = if ctx.retInnerOdin != "": ctx.retInnerOdin else: "rt.TuckUnit"
   if isErrEnumRef(ctx.module, rv):
     "return rt.terr(" & inner & ", " &
-      errCodeLit(errNameFor(ctx.module, ctx.moduleName, rv.receiver.name, rv.fieldName)) & ")"
+      errCodeLit(errNameFor(ctx.module, ctx.moduleName, rv.receiver.writtenName, rv.fieldName)) & ")"
   else:
     "return rt.terr(" & inner & ", u16(" & ctx.genOdinExpr(rv) & "))"
 

@@ -738,7 +738,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     let rv = e.raiseVal
     if isErrEnumRef(ctx.module, rv):
       "return terr[" & ctx.retInnerNim & "](errCode(\"" &
-        errNameFor(ctx.module, ctx.moduleName, rv.receiver.name, rv.fieldName) & "\"))"
+        errNameFor(ctx.module, ctx.moduleName, rv.receiver.writtenName, rv.fieldName) & "\"))"
     else:
       "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
   of exkChain:
@@ -1508,7 +1508,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
         if v.fields.len > 0: fieldless = false
       if not fieldless: continue
       for v in td.typeBody.variants:
-        errNames.add(errNameFor(ctx.module, ctx.moduleName, td.name, v.name))
+        errNames.add(errNameFor(ctx.module, ctx.moduleName, td.writtenName, v.name))
     var res = ""
     if errNames.len > 0:
       res.add("proc tuckErrName*(code: uint16): string =\n  case code\n")

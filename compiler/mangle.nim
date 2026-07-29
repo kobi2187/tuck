@@ -34,7 +34,7 @@
 #     would extend the same predicate here rather than in three backends.
 #   - LOCALS AND PARAMS. Not global, cannot collide.
 #   - ENUM VARIANTS / MATCH PATTERNS. Reached through their owning type.
-import ast, strutils, sets, tables
+import ast, strutils, sets, tables, std/options
 import resolution
 
 const TuckNamePrefix* = "tuck_"
@@ -44,6 +44,28 @@ proc mangleName*(name: string): string =
   ## which matters because each backend lowers its own deepCopy.
   if name.len == 0 or name.startsWith(TuckNamePrefix): return name
   TuckNamePrefix & name
+
+proc rememberSource(slot: var Option[string], name: string) =
+  ## Records the pre-mangle name, once. Guarded because each backend lowers
+  ## its own deepCopy and re-runs this pass — a second run must not overwrite
+  ## the original with the already-mangled name.
+  if slot.isNone: slot = some(name)
+
+proc renameDecl(d: Decl) =
+  ## Renames a decl to its mangled form, keeping what the user wrote.
+  rememberSource(d.sourceName, d.name)
+  d.name = mangleName(d.name)
+
+proc renameType(t: Type) =
+  ## Renames a named type reference, keeping what the user wrote.
+  rememberSource(t.sourceName, t.name)
+  t.name = mangleName(t.name)
+
+proc renameVar(e: Expr) =
+  ## Renames a variable reference that resolves to a top-level decl,
+  ## keeping what the user wrote.
+  rememberSource(e.sourceName, e.name)
+  e.name = mangleName(e.name)
 
 proc isManglable(d: Decl): bool =
   ## Externs bind a foreign symbol by name, so they keep theirs.
@@ -84,7 +106,7 @@ proc mangleType(t: Type, names: HashSet[string]) =
   if t == nil: return
   case t.kind
   of tkNamed:
-    if t.name in names: t.name = mangleName(t.name)
+    if t.name in names: renameType(t)
   of tkApp:
     mangleType(t.base, names)
     for a in t.args: mangleType(a, names)
@@ -119,7 +141,7 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string]) =
   case e.kind
   of exkVar:
     if e.name in names and e.name notin locals:
-      e.name = mangleName(e.name)
+      renameVar(e)
   of exkQualified:
     # `:fnref` (no module path) and `http::get` (qualified) both resolve
     # against the program-wide set, so a cross-module reference lands on the
@@ -301,7 +323,7 @@ proc mangleModuleWith(m: Module, names: HashSet[string]) =
 
   # now the declarations themselves
   for d in m.decls:
-    if isManglable(d): d.name = mangleName(d.name)
+    if isManglable(d): renameDecl(d)
     elif d != nil and d.kind == dkMixin:
       for mem in d.mixinMembers:
-        if isManglable(mem): mem.name = mangleName(mem.name)
+        if isManglable(mem): renameDecl(mem)
