@@ -17,6 +17,76 @@ proc parseDecl*(p: var Parser): Decl
 proc parseTypeDecl(p: var Parser, sp: Span): Decl   # extern blocks take types
 proc parseFnSigDecl(p: var Parser, sp: Span): Decl  # ...and C callback sigs
 
+# `(params)` — a fn/task/decision/sig parameter list. Each param is either
+# brace-destructured (`{a: T, b: U}`, one entry per field) or bare
+# (`name: Type`), with a bare `self` (no `: Type`) special-cased to `Self`.
+# The same list shape was open-coded at four call sites (parseSigBlock,
+# parseTaskDecl, parseFnDecl, parseDecisionDecl); this is that shape, once.
+proc parseBraceParams(p: var Parser, pSp: Span, params: var seq[Param]) =
+  ## Parses one `{a: T, b: U}` destructured group, appending each field as
+  ## its own Param sharing the group's span. Assumes the opening `{`.
+  discard p.advance()
+  while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+    let paramName = p.expect(tkIdent, "Expected parameter name").value
+    discard p.expect(tkColon)
+    let paramType = p.parseType()
+    params.add(Param(name: paramName, typ: paramType, span: pSp))
+    if p.current().kind == tkComma:
+      discard p.advance()
+  discard p.expect(tkRBrace)
+
+proc parseBareParam(p: var Parser, pSp: Span): Param =
+  ## Parses one `name: Type` param. A bare `self` (no `: Type` follows) is
+  ## the implicit-Self special case: it types itself as `Self`.
+  let paramName = p.expect(tkIdent, "Expected parameter name").value
+  if paramName == "self" and p.current().kind != tkColon:
+    return Param(name: paramName, typ: Type(span: pSp, kind: tkNamed, name: "Self"), span: pSp)
+  discard p.expect(tkColon)
+  Param(name: paramName, typ: p.parseType(), span: pSp)
+
+proc parseOneParam(p: var Parser, params: var seq[Param]) =
+  ## Parses one param, brace-destructured or bare, appending to `params`.
+  let pSp = p.getSpan()
+  if p.current().kind == tkLBrace:
+    parseBraceParams(p, pSp, params)
+  else:
+    params.add(parseBareParam(p, pSp))
+
+proc parseParamListBody(p: var Parser): seq[Param] =
+  ## Parses the comma-separated params between `(` and `)`, not including
+  ## the parens themselves.
+  if p.current().kind == tkRParen: return
+  while true:
+    parseOneParam(p, result)
+    if p.current().kind != tkComma: break
+    discard p.advance()
+
+proc parseParamList(p: var Parser): seq[Param] =
+  ## Parses a full `(params)` list, as used by fn/task/decision/sig decls.
+  discard p.expect(tkLParen)
+  result = parseParamListBody(p)
+  discard p.expect(tkRParen)
+
+# Maps an effect-marker identifier (`io`, `no_alloc`, ...) to its
+# EffectMarker, or returns false for anything else. The `[...]` effect
+# bracket has three callers (parseSigBlock, parseTaskDecl, parseFnDecl) and
+# each wraps this same name->marker mapping in its own handling of
+# `error:`/`emit:` sub-clauses and its own reaction to an unrecognized name
+# (silently ignore vs. report an error) — those reactions differ enough
+# between callers that forcing them into one loop would need a mode flag,
+# so only the mapping itself is shared.
+proc effectMarkerFromName(name: string, marker: var EffectMarker): bool =
+  case name
+  of "io": marker = emIo
+  of "no_alloc": marker = emNoAlloc
+  of "irq_safe": marker = emIrqSafe
+  of "unsafe": marker = emUnsafe
+  of "may_block": marker = emMayBlock
+  of "stack": marker = emStack
+  of "priority": marker = emPriority
+  else: return false
+  return true
+
 # [packed, align: 2, ...] — attribute bracket on a declaration (appends,
 # since some callers pre-seed attrs)
 proc parseDeclAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
@@ -166,35 +236,7 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
         sigGenerics.add(p.expect(tkIdent, "Expected type parameter").value)
         if p.current().kind == tkComma: discard p.advance()
       discard p.expect(tkRBracket)
-    discard p.expect(tkLParen)
-    var params: seq[Param]
-    if p.current().kind != tkRParen:
-      while true:
-        let pSp = p.getSpan()
-        if p.current().kind == tkLBrace:
-          discard p.advance()
-          while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-            let paramName = p.expect(tkIdent, "Expected parameter name").value
-            discard p.expect(tkColon)
-            let paramType = p.parseType()
-            params.add(Param(name: paramName, typ: paramType, span: pSp))
-            if p.current().kind == tkComma:
-              discard p.advance()
-          discard p.expect(tkRBrace)
-        else:
-          let paramName = p.expect(tkIdent, "Expected parameter name").value
-          var paramType: Type = nil
-          if paramName == "self" and p.current().kind != tkColon:
-            paramType = Type(span: pSp, kind: tkNamed, name: "Self")
-          else:
-            discard p.expect(tkColon)
-            paramType = p.parseType()
-          params.add(Param(name: paramName, typ: paramType, span: pSp))
-        if p.current().kind == tkComma:
-          discard p.advance()
-        else:
-          break
-    discard p.expect(tkRParen)
+    let params = parseParamList(p)
     var retType: Type
     if p.current().kind == tkArrow:
       discard p.advance()
@@ -221,15 +263,9 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
           sigEmit = p.expect(tkStrLit, "Expected proc name string after 'emit:'").value
           if p.current().kind == tkComma: discard p.advance()
           continue
-        case effName
-        of "io": sigEffects.add(emIo)
-        of "no_alloc": sigEffects.add(emNoAlloc)
-        of "irq_safe": sigEffects.add(emIrqSafe)
-        of "unsafe": sigEffects.add(emUnsafe)
-        of "may_block": sigEffects.add(emMayBlock)
-        of "stack": sigEffects.add(emStack)
-        of "priority": sigEffects.add(emPriority)
-        else: discard
+        var marker: EffectMarker
+        if effectMarkerFromName(effName, marker):
+          sigEffects.add(marker)
         if p.current().kind == tkComma:
           discard p.advance()
       discard p.expect(tkRBracket)
@@ -284,35 +320,7 @@ proc parseRegistryDecl(p: var Parser, sp: Span): Decl =
 proc parseTaskDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()
   let name = p.expect(tkIdent, "Expected task name").value
-  discard p.expect(tkLParen)
-  var params: seq[Param]
-  if p.current().kind != tkRParen:
-    while true:
-      let pSp = p.getSpan()
-      if p.current().kind == tkLBrace:
-        discard p.advance()
-        while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-          let paramName = p.expect(tkIdent, "Expected parameter name").value
-          discard p.expect(tkColon)
-          let paramType = p.parseType()
-          params.add(Param(name: paramName, typ: paramType, span: pSp))
-          if p.current().kind == tkComma:
-            discard p.advance()
-        discard p.expect(tkRBrace)
-      else:
-        let paramName = p.expect(tkIdent, "Expected parameter name").value
-        var paramType: Type = nil
-        if paramName == "self" and p.current().kind != tkColon:
-          paramType = Type(span: pSp, kind: tkNamed, name: "Self")
-        else:
-          discard p.expect(tkColon)
-          paramType = p.parseType()
-        params.add(Param(name: paramName, typ: paramType, span: pSp))
-      if p.current().kind == tkComma:
-        discard p.advance()
-      else:
-        break
-  discard p.expect(tkRParen)
+  let params = parseParamList(p)
   var retType: Type
   if p.current().kind == tkArrow:
     discard p.advance()
@@ -326,15 +334,7 @@ proc parseTaskDecl(p: var Parser, sp: Span): Decl =
       let effSp = p.getSpan()
       let effName = p.expect(tkIdent, "Expected effect marker").value
       var eff: EffectMarker
-      case effName
-      of "io": eff = emIo
-      of "no_alloc": eff = emNoAlloc
-      of "irq_safe": eff = emIrqSafe
-      of "unsafe": eff = emUnsafe
-      of "may_block": eff = emMayBlock
-      of "stack": eff = emStack
-      of "priority": eff = emPriority
-      else:
+      if not effectMarkerFromName(effName, eff):
         p.reportError("Unknown effect marker: " & effName, effSp.line, effSp.col)
       effects.add(eff)
       if p.current().kind == tkComma:
@@ -547,35 +547,7 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
       if p.current().kind == tkComma:
         discard p.advance()
     discard p.expect(tkRBracket)
-  discard p.expect(tkLParen)
-  var params: seq[Param]
-  if p.current().kind != tkRParen:
-    while true:
-      let pSp = p.getSpan()
-      if p.current().kind == tkLBrace:
-        discard p.advance()
-        while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-          let paramName = p.expect(tkIdent, "Expected parameter name").value
-          discard p.expect(tkColon)
-          let paramType = p.parseType()
-          params.add(Param(name: paramName, typ: paramType, span: pSp))
-          if p.current().kind == tkComma:
-            discard p.advance()
-        discard p.expect(tkRBrace)
-      else:
-        let paramName = p.expect(tkIdent, "Expected parameter name").value
-        var paramType: Type = nil
-        if paramName == "self" and p.current().kind != tkColon:
-          paramType = Type(span: pSp, kind: tkNamed, name: "Self")
-        else:
-          discard p.expect(tkColon)
-          paramType = p.parseType()
-        params.add(Param(name: paramName, typ: paramType, span: pSp))
-      if p.current().kind == tkComma:
-        discard p.advance()
-      else:
-        break
-  discard p.expect(tkRParen)
+  let params = parseParamList(p)
   var retType: Type
   if p.current().kind == tkArrow:
     discard p.advance()
@@ -597,15 +569,7 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
         if p.current().kind == tkComma: discard p.advance()
         continue
       var eff: EffectMarker
-      case effName
-      of "io": eff = emIo
-      of "no_alloc": eff = emNoAlloc
-      of "irq_safe": eff = emIrqSafe
-      of "unsafe": eff = emUnsafe
-      of "may_block": eff = emMayBlock
-      of "stack": eff = emStack
-      of "priority": eff = emPriority
-      else:
+      if not effectMarkerFromName(effName, eff):
         p.reportError("Unknown effect marker: " & effName, effSp.line, effSp.col)
       effects.add(eff)
       if p.current().kind == tkComma:
@@ -621,35 +585,7 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
 proc parseDecisionDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()
   let name = p.expect(tkIdent, "Expected decision name").value
-  discard p.expect(tkLParen)
-  var params: seq[Param]
-  if p.current().kind != tkRParen:
-    while true:
-      let pSp = p.getSpan()
-      if p.current().kind == tkLBrace:
-        discard p.advance()
-        while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-          let paramName = p.expect(tkIdent, "Expected parameter name").value
-          discard p.expect(tkColon)
-          let paramType = p.parseType()
-          params.add(Param(name: paramName, typ: paramType, span: pSp))
-          if p.current().kind == tkComma:
-            discard p.advance()
-        discard p.expect(tkRBrace)
-      else:
-        let paramName = p.expect(tkIdent, "Expected parameter name").value
-        var paramType: Type = nil
-        if paramName == "self" and p.current().kind != tkColon:
-          paramType = Type(span: pSp, kind: tkNamed, name: "Self")
-        else:
-          discard p.expect(tkColon)
-          paramType = p.parseType()
-        params.add(Param(name: paramName, typ: paramType, span: pSp))
-      if p.current().kind == tkComma:
-        discard p.advance()
-      else:
-        break
-  discard p.expect(tkRParen)
+  let params = parseParamList(p)
   discard p.expect(tkArrow)
   let retType = p.parseType()
   discard p.expect(tkColon)
