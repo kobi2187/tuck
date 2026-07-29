@@ -247,26 +247,10 @@ test -f "$lib/out/libmod.nim" || { echo "FAIL: library did not emit Nim"; exit 1
 test ! -f "$lib/out/libmod" || { echo "FAIL: library build produced a binary"; exit 1; }
 rm -rf "$lib"
 
-# tuck build --beef: scaffolds a Beef project and builds it with BeefBuild
-# when a toolchain is present; always emits the .bf source either way.
-bf="tests/.smoke_beef"
-rm -rf "$bf" && mkdir -p "$bf"
-cat > "$bf/hi.tuck" <<'EOF'
-fn main() -> void:
-  return
-EOF
-./tuck build "$bf/hi.tuck" --beef -o:"$bf/out" > /dev/null
-test -f "$bf/out/hi.bf" || { echo "FAIL: no .bf source emitted"; exit 1; }
-BEEF_BUILD_BIN="${BEEFBUILD_BIN:-}"
-[ -z "$BEEF_BUILD_BIN" ] && command -v BeefBuild >/dev/null 2>&1 && BEEF_BUILD_BIN=$(command -v BeefBuild)
-[ -z "$BEEF_BUILD_BIN" ] && [ -f /opt/beef/IDE/dist/BeefBuild ] && BEEF_BUILD_BIN=/opt/beef/IDE/dist/BeefBuild
-if [ -n "$BEEF_BUILD_BIN" ]; then
-  test -x "$bf/out/hi_beef" || { echo "FAIL: no Beef binary built"; exit 1; }
-  "$bf/out/hi_beef" || { echo "FAIL: Beef binary did not run"; exit 1; }
-else
-  echo "SKIP Beef build check: BeefBuild not found (set BEEFBUILD_BIN)"
-fi
-rm -rf "$bf"
+# (the Beef backend was removed in 7c84d1f; its --beef check lived here and
+# went with it. It had been unreachable anyway — the err-match check above
+# aborted this script long before reaching it.)
+
 # control flow: loop/break, for-cond, continue, ranges, indexed for, fn inline
 cf="tests/.smoke_ctrlflow"
 rm -rf "$cf" && mkdir -p "$cf"
