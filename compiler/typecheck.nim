@@ -883,6 +883,41 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
 # node (typed AST — codegen reads semLayer.typeFor(e) for type-directed lowering)
 
 
+# A record field holds a VALUE, so a call that builds one has to produce one
+# and nothing else. Without these two checks a void call reaches Nim as
+# `(a: tuck_shout(5))` and fails there — a message about generated code the
+# user never wrote — and an effectful call is smuggled into what reads as
+# plain data construction, silently.
+
+proc returnsNothing(sig: FnSig): bool =
+  ## Does this signature return no usable value?
+  sig.ret == nil or
+    (sig.ret.kind == tkNamed and sig.ret.name in ["void", "unit"])
+
+proc declaredEffects(m: Module, fnName: string): seq[EffectMarker] =
+  ## The effects declared on `fnName`, empty if it has none or is unknown.
+  let fd = m.findDecl(dkFn, fnName)
+  if fd == nil: @[] else: fd.fnEffects
+
+proc appliedFnName(e: Expr): string =
+  ## For `5.ms` in a field value, the name being applied — "" if this value
+  ## is not a postfix application.
+  if e != nil and e.kind == exkField: e.fieldName else: ""
+
+proc checkFieldValue(tc: var TypeChecker, fieldName: string, val: Expr) =
+  ## A record field's value must be a value: reject applying a fn that
+  ## returns nothing or declares effects.
+  let fn = appliedFnName(val)
+  if fn == "" or not tc.fnSigs.hasKey(fn): return
+  if returnsNothing(tc.fnSigs[fn]):
+    fail("Type Error: '" & fn & "' returns nothing, so it cannot fill field '" &
+         fieldName & "' — a record field needs a value", val.span)
+  let effects = declaredEffects(tc.module, fn)
+  if effects.len > 0:
+    fail("Type Error: '" & fn & "' declares effects, so it cannot fill field '" &
+         fieldName & "' — build the record from pure values and do the " &
+         "effectful call on its own line", val.span)
+
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   case e.kind
   of exkLit:
@@ -909,6 +944,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkStruct:
     var fs: seq[FieldDef]
     for f in e.fields:
+      tc.checkFieldValue(f[0], f[1])
       fs.add(FieldDef(name: f[0], typ: tc.synthesize(f[1]), span: f[1].span))
     Type(span: e.span, kind: tkRecord, fields: fs)
   of exkList:
