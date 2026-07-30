@@ -88,52 +88,61 @@ proc parseSource(source: string): Module =
 # (dep-first, entry module last) so compile can continue with it.
 # needBodies=false (check): unchanged imports resolve from the signature
 # index — no AST load at all. needBodies=true (compile): full ASTs.
-proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
+proc loadOrDie(path: string, needBodies: bool):
+    (seq[LoadedModule], Table[string, IndexEntry]) =
+  ## Load the program and its import closure. Without bodies the signature
+  ## index answers for the imports, which is what makes `check` cheap.
   var sigOnly = initTable[string, IndexEntry]()
   try:
-    if needBodies:
-      result = loadProgram(path)
-    else:
-      (result, sigOnly) = loadProgramIndexed(path)
+    if needBodies: return (loadProgram(path), sigOnly)
+    return loadProgramIndexed(path)
   except ModuleError as err:
     die(path & ": " & err.msg)
-  injectImportedTypes(result)  # imported types are visible unqualified
+
+proc checkOrDie(path: string, loaded: seq[LoadedModule],
+                sigOnly: Table[string, IndexEntry]): seq[string] =
+  ## Typecheck, then verify effects. Order matters: typecheckProgram resets
+  ## the semantic layer, so the effect pass must run AFTER it or its async
+  ## call-site marks are wiped before codegen reads them.
   var mods: seq[tuple[name, path: string, m: Module]]
-  for lm in result: mods.add((lm.name, lm.path, lm.m))
+  for lm in loaded: mods.add((lm.name, lm.path, lm.m))
   var preSigs = initTable[string, seq[SigInfo]]()
   for name, e in sigOnly: preSigs[name] = e.sigs
-  var shortcuts: seq[string]
   try:
-    # typecheck first — it resetResolution()s the semantic layer — THEN the
-    # effect pass, so its async call-site marks land in the live semLayer that
-    # codegen reads (not wiped by the reset).
-    shortcuts = typecheckProgram(mods, preSigs)
-    for lm in result:
-      verifyModuleEffects(lm.m)
+    result = typecheckProgram(mods, preSigs)
+    for lm in loaded: verifyModuleEffects(lm.m)
   except SemanticError as err:
     # typecheckProgram errors already carry file:line:col; effects errors don't
     if ".tuck:" in err.msg: die(err.msg)
     else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
-  # program checked clean: refresh the signature index for future checks
-  updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
-  var pend: seq[string]
-  for lm in result:
+
+proc pendingEntries(loaded: seq[LoadedModule],
+                    sigOnly: Table[string, IndexEntry]): seq[string] =
+  ## Every unimplemented fn across the program, qualified when it lives in an
+  ## imported module rather than the one being checked.
+  for lm in loaded:
     for entry in pendingReport(lm.m):
-      # qualify pendings living in imported modules
-      if lm.path != result[^1].path: pend.add(lm.name & "::" & entry)
-      else: pend.add(entry)
+      if lm.path != loaded[^1].path: result.add(lm.name & "::" & entry)
+      else: result.add(entry)
   for name, e in sigOnly:
     for si in e.sigs:
-      if si.isPending:
-        pend.add(name & "::" & sigLine(si))
-  if pend.len > 0:
-    echo "PENDING (", pend.len, " unimplemented):"
-    for entry in pend:
-      echo "  ", entry
-  if shortcuts.len > 0:
-    echo "SHORTCUTS (", shortcuts.len, " routed to the global error handler):"
-    for entry in shortcuts:
-      echo "  ", entry
+      if si.isPending: result.add(name & "::" & sigLine(si))
+
+proc report(title, noun: string, entries: seq[string]) =
+  ## One `TITLE (n noun):` block with its indented entries, or nothing at all.
+  if entries.len == 0: return
+  echo title, " (", entries.len, " ", noun, "):"
+  for entry in entries: echo "  ", entry
+
+proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
+  var sigOnly: Table[string, IndexEntry]
+  (result, sigOnly) = loadOrDie(path, needBodies)
+  injectImportedTypes(result)  # imported types are visible unqualified
+  let shortcuts = checkOrDie(path, result, sigOnly)
+  # program checked clean: refresh the signature index for future checks
+  updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
+  report("PENDING", "unimplemented", pendingEntries(result, sigOnly))
+  report("SHORTCUTS", "routed to the global error handler", shortcuts)
 
 when isMainModule:
   if paramCount() < 2: usage()
