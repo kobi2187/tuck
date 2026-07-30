@@ -907,6 +907,132 @@ proc genPendingStub(d: Decl): string =
 # Rewrite the tail statement into an explicit return so the existing return
 # emission (auto-wrap, typed literals) handles it. Control-flow tails keep
 # explicit returns for now (checker enforces branch agreement).
+proc columnDomains(ctx: CodegenCtx, d: Decl): (seq[seq[string]], bool, int) =
+  ## Each param's enumerable value set, whether ALL of them are enumerable,
+  ## and how many combinations that makes. Only an all-enumerable table can
+  ## collapse to a packed key.
+  var domains: seq[seq[string]]
+  var allEnum = true
+  var comboCount = 1
+  for p in d.fnParams:
+    let dom = enumDomain(ctx.module, p.typ)
+    if dom.len == 0: allEnum = false
+    domains.add(dom)
+    comboCount *= max(dom.len, 1)
+  (domains, allEnum, comboCount)
+
+proc decisionRows(ctx: var CodegenCtx, d: Decl): (seq[seq[string]], seq[string]) =
+  ## The table's rows as (pattern strings per column, emitted body).
+  var pats: seq[seq[string]]
+  var bodies: seq[string]
+  for s in d.fnBody.stmts:
+    if s.kind != exkMatch or s.arms.len == 0: continue
+    let pat = s.arms[0].pattern
+    var row: seq[string]
+    for el in (if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]):
+      row.add(genPatternStr(el))
+    pats.add(row)
+    bodies.add(ctx.genExpr(s.arms[0].body))
+  (pats, bodies)
+
+proc comboValues(domains: seq[seq[string]], combo: int): seq[string] =
+  ## The column values this combination index stands for, decoded mixed-radix.
+  result = newSeq[string](domains.len)
+  var rem = combo
+  for c in countdown(domains.high, 0):
+    result[c] = domains[c][rem mod domains[c].len]
+    rem = rem div domains[c].len
+
+proc rowMatches(row, vals: seq[string]): bool =
+  ## Does this row's pattern accept these column values? `_` matches anything.
+  for c in 0 ..< row.len:
+    if row[c] != "_" and row[c] != vals[c]: return false
+  true
+
+proc firstOutcome(rowPats: seq[seq[string]], bodies: seq[string],
+                  vals: seq[string]): string =
+  ## The body of the first row matching these values — the table's own
+  ## first-match-wins rule, applied ahead of time.
+  for i in 0 ..< rowPats.len:
+    if rowMatches(rowPats[i], vals): return bodies[i]
+  ""
+
+proc groupByOutcome(domains: seq[seq[string]], comboCount: int,
+                    rowPats: seq[seq[string]],
+                    bodies: seq[string]): seq[tuple[outcome: string, keys: seq[int]]] =
+  ## Every combination resolved to its outcome, then grouped so identical
+  ## outcomes share one `of` arm.
+  for combo in 0 ..< comboCount:
+    let outcome = firstOutcome(rowPats, bodies, comboValues(domains, combo))
+    var found = false
+    for g in result.mitems:
+      if g.outcome == outcome:
+        g.keys.add(combo)
+        found = true
+        break
+    if not found: result.add((outcome, @[combo]))
+
+proc packedKeyExpr(d: Decl, domains: seq[seq[string]], comboCount: int): string =
+  ## The mixed-radix key: each column's ord() scaled by the stride of the
+  ## columns to its right, summed.
+  var parts: seq[string]
+  var stride = comboCount
+  for c in 0 ..< domains.len:
+    stride = stride div domains[c].len
+    if stride > 1: parts.add("ord(" & d.fnParams[c].name & ") * " & $stride)
+    else: parts.add("ord(" & d.fnParams[c].name & ")")
+  parts.join(" + ")
+
+proc genPackedTable(ctx: var CodegenCtx, d: Decl, header: string,
+                    domains: seq[seq[string]], comboCount: int): string =
+  ## Bitmask/packed path (spec 6.1): when every column is enumerable the whole
+  ## table becomes one `case` over an integer key — no comparison chains at
+  ## runtime. The last group is the `else`, so the case is total.
+  let (rowPats, bodies) = ctx.decisionRows(d)
+  let groups = groupByOutcome(domains, comboCount, rowPats, bodies)
+  var lines = @["  case " & packedKeyExpr(d, domains, comboCount) &
+                "   # packed decision key"]
+  for gi, g in groups:
+    if gi == groups.len - 1:
+      lines.add("  else: return " & g.outcome)
+    else:
+      var ks: seq[string]
+      for k in g.keys: ks.add($k)
+      lines.add("  of " & ks.join(", ") & ": return " & g.outcome)
+  header & "\n" & lines.join("\n") & "\n"
+
+proc genConditionChain(ctx: var CodegenCtx, d: Decl, header: string): string =
+  ## Fallback when some column is not enumerable: an if/elif chain comparing
+  ## each param against its pattern. A row of all-`_` becomes the `else`.
+  var lines: seq[string]
+  for idx, s in d.fnBody.stmts:
+    let arm = s.arms[0]
+    var conds: seq[string]
+    for i, pat in arm.pattern.elems:
+      let patStr = genPatternStr(pat)
+      if patStr != "_": conds.add(d.fnParams[i].name & " == " & patStr)
+    let body = ctx.genExpr(arm.body)
+    if conds.len == 0:
+      lines.add("  else:\n    return " & body)
+    else:
+      let prefix = if idx == 0: "if " else: "elif "
+      lines.add("  " & prefix & conds.join(" and ") & ":\n    return " & body)
+  header & "\n" & lines.join("\n") & "\n"
+
+proc genDecisionFn(ctx: var CodegenCtx, d: Decl, fnNameSanitized: string): string =
+  ## A decision table compiles to one of two shapes: a packed `case` when
+  ## every column is enumerable, an if/elif chain otherwise.
+  var params: seq[string]
+  for p in d.fnParams:
+    params.add(p.name & ": " & genType(p.typ))
+  let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
+  let header = "proc " & fnNameSanitized & "*(" & params.join(", ") & "): " &
+               retTypeStr & " ="
+  let (domains, allEnum, comboCount) = ctx.columnDomains(d)
+  if allEnum and comboCount > 0 and comboCount <= 4096:
+    return ctx.genPackedTable(d, header, domains, comboCount)
+  ctx.genConditionChain(d, header)
+
 proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
     if d.isPending:
       return genPendingStub(d)
@@ -915,97 +1041,7 @@ proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
       ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     let fnNameSanitized = d.name.replace(".", "_")
     if d.isDecision or d.isDecisionTable():
-      var params: seq[string]
-      for p in d.fnParams:
-        params.add(p.name & ": " & genType(p.typ))
-      let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
-      let header = "proc " & fnNameSanitized & "*(" & params.join(", ") & "): " & retTypeStr & " ="
-
-      # Bitmask/packed path: when every column domain is enumerable the whole
-      # table collapses to one `case` over a packed integer key — zero
-      # comparison chains at runtime (spec 6.1).
-      var domains: seq[seq[string]]
-      var allEnum = true
-      var comboCount = 1
-      for p in d.fnParams:
-        let dom = enumDomain(ctx.module, p.typ)
-        if dom.len == 0: allEnum = false
-        domains.add(dom)
-        comboCount *= max(dom.len, 1)
-      if allEnum and comboCount > 0 and comboCount <= 4096:
-        var rowPats: seq[seq[string]]
-        var rowBodies: seq[string]
-        for s in d.fnBody.stmts:
-          if s.kind != exkMatch or s.arms.len == 0: continue
-          let pat = s.arms[0].pattern
-          var pats: seq[string]
-          for el in (if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]):
-            pats.add(genPatternStr(el))
-          rowPats.add(pats)
-          rowBodies.add(ctx.genExpr(s.arms[0].body))
-        # first-match outcome for every combination, grouped by outcome
-        var groups: seq[tuple[outcome: string, keys: seq[int]]]
-        for combo in 0 ..< comboCount:
-          var rem = combo
-          var vals = newSeq[string](domains.len)
-          for c in countdown(domains.high, 0):
-            vals[c] = domains[c][rem mod domains[c].len]
-            rem = rem div domains[c].len
-          var outcome = ""
-          for i in 0 ..< rowPats.len:
-            var matches = true
-            for c in 0 ..< rowPats[i].len:
-              if rowPats[i][c] != "_" and rowPats[i][c] != vals[c]:
-                matches = false
-                break
-            if matches:
-              outcome = rowBodies[i]
-              break
-          var found = false
-          for g in groups.mitems:
-            if g.outcome == outcome:
-              g.keys.add(combo)
-              found = true
-              break
-          if not found:
-            groups.add((outcome, @[combo]))
-        # packed key: mixed radix over ord() of each column
-        var keyParts: seq[string]
-        var stride = comboCount
-        for c in 0 ..< domains.len:
-          stride = stride div domains[c].len
-          if stride > 1:
-            keyParts.add("ord(" & d.fnParams[c].name & ") * " & $stride)
-          else:
-            keyParts.add("ord(" & d.fnParams[c].name & ")")
-        var caseLines: seq[string]
-        caseLines.add("  case " & keyParts.join(" + ") & "   # packed decision key")
-        for gi, g in groups:
-          if gi == groups.len - 1:
-            caseLines.add("  else: return " & g.outcome)
-          else:
-            var ks: seq[string]
-            for k in g.keys: ks.add($k)
-            caseLines.add("  of " & ks.join(", ") & ": return " & g.outcome)
-        return header & "\n" & caseLines.join("\n") & "\n"
-      var bodyLines: seq[string]
-      for idx, s in d.fnBody.stmts:
-        let arm = s.arms[0]
-        let pats = arm.pattern.elems
-        var conds: seq[string]
-        for i, pat in pats:
-          let patStr = genPatternStr(pat)
-          if patStr != "_":
-            let paramName = d.fnParams[i].name
-            conds.add(paramName & " == " & patStr)
-        let condStr = if conds.len > 0: conds.join(" and ") else: "true"
-        let resultExprStr = ctx.genExpr(arm.body)
-        let prefix = if idx == 0: "if " else: "elif "
-        if condStr == "true":
-          bodyLines.add("  else:\n    return " & resultExprStr)
-        else:
-          bodyLines.add("  " & prefix & condStr & ":\n    return " & resultExprStr)
-      return header & "\n" & bodyLines.join("\n") & "\n"
+      return ctx.genDecisionFn(d, fnNameSanitized)
 
     var params: seq[string]
     for p in d.fnParams:
