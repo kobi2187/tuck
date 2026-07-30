@@ -131,160 +131,209 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
   setType(semLayer, result, sig.ret)
 
-proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
-  # Result introspection: .ok/.err/.value on a !T/?T value IS the handling —
-  # unwrapping is a plain if, no special syntax
-  if e.fieldName in ["ok", "err", "value"] and e.receiver != nil and
-     e.receiver.kind in {exkVar, exkField}:
-    let recvT = tc.synthesize(e.receiver)
-    if isWrapper(recvT):
-      case e.fieldName
-      of "ok": return Type(span: e.span, kind: tkNamed, name: "bool")
-      of "value":
-        # unwrap is legal only under this result's `if x.ok` guard
-        if e.receiver.kind != exkVar or e.receiver.name notin tc.okNarrowed:
-          let n = if e.receiver.kind == exkVar: e.receiver.name else: "<result>"
-          fail("Type Error: unhandled " & typeName(recvT) & " — guard it " &
-               "first: `if " & n & ".ok:` and read .value inside, or " &
-               "`if not " & n & ".ok:` with a return, which narrows " &
-               "everything after it", e.span)
-        return unwrapEffect(recvT)
-      else: return unknownType(e.span)  # .err — code; enum-typed later
-  # `slot.invoke {args}` — call through a baked fn slot (builtin; the slot's
-  # signature is checked by Nim at instantiation — gradual here)
-  if e.fieldName == "invoke":
-    discard tc.synthesize(e.receiver)
-    var callArgs: seq[Expr] = @[]
+# `a.b` is one spelling for seven different things. Each of the procs below
+# recognises exactly one of them and returns nil for "not mine", so
+# synthFieldAccess reads as the ordered list of what `a.b` can mean — the
+# order matters and is the real content of this part of the checker.
+
+proc unwrapGuarded(tc: var TypeChecker, e: Expr, recvT: Type): Type =
+  ## `.value` is legal only under this result's own `if x.ok` guard.
+  if e.receiver.kind != exkVar or e.receiver.name notin tc.okNarrowed:
+    let n = if e.receiver.kind == exkVar: e.receiver.name else: "<result>"
+    fail("Type Error: unhandled " & typeName(recvT) & " — guard it " &
+         "first: `if " & n & ".ok:` and read .value inside, or " &
+         "`if not " & n & ".ok:` with a return, which narrows " &
+         "everything after it", e.span)
+  unwrapEffect(recvT)
+
+proc asResultIntrospection(tc: var TypeChecker, e: Expr): Type =
+  ## `.ok` / `.err` / `.value` on a !T/?T — introspection IS the handling,
+  ## unwrapping is a plain if rather than special syntax.
+  if e.fieldName notin ["ok", "err", "value"] or e.receiver == nil or
+     e.receiver.kind notin {exkVar, exkField}: return nil
+  let recvT = tc.synthesize(e.receiver)
+  if not isWrapper(recvT): return nil
+  case e.fieldName
+  of "ok": Type(span: e.span, kind: tkNamed, name: "bool")
+  of "value": tc.unwrapGuarded(e, recvT)
+  else: unknownType(e.span)  # .err — code; enum-typed later
+
+proc hasVariant(t: Type, name: string): bool =
+  ## Does this sum type declare a variant by this name?
+  for v in t.variants:
+    if v.name == name: return true
+  false
+
+proc isSealed(t: Type): bool =
+  ## Sealed types are entered only at their first variant; the rest are
+  ## reached through transitions.
+  for a in t.attrs:
+    if a.name == "sealed": return true
+  false
+
+proc sealedEntryOnly(tc: TypeChecker, t: Type, e: Expr): bool =
+  ## Is this a sealed type being constructed at a variant that is not its
+  ## entry point, outside a transition and without the [unsafe] escape?
+  isSealed(t) and t.variants.len > 0 and e.fieldName != t.variants[0].name and
+    not e.ctorUnsafe and not tc.transitionCtx
+
+proc asVariantConstruction(tc: var TypeChecker, e: Expr): Type =
+  ## `Type.Variant` — constructing a sum type's variant by name.
+  if e.receiver == nil or e.receiver.kind != exkVar or
+     not tc.typeDecls.hasKey(e.receiver.name): return nil
+  let declared = tc.typeDecls[e.receiver.name]
+  if declared.kind != tkSum or not declared.hasVariant(e.fieldName): return nil
+  if tc.sealedEntryOnly(declared, e):
+    fail("Sealed Error: " & e.receiver.name & "." & e.fieldName &
+         " cannot be constructed directly — sealed types start at '" &
+         declared.variants[0].name & "'; reach '" & e.fieldName &
+         "' via transitions, or mark [unsafe] for deserialization", e.span)
+  Type(span: e.span, kind: tkNamed, name: e.receiver.name)
+
+proc unwrapSingleField(arg: Expr): Expr =
+  ## `Pool.release {v}` hands a one-field payload to a one-param fn, where the
+  ## VALUE is the argument — passing the wrapper tuple would not match the rt
+  ## signature. Anything else passes through untouched.
+  if arg != nil and arg.kind == exkStruct and arg.fields.len == 1:
+    arg.fields[0][1]
+  else: arg
+
+proc fieldsCover(fields: seq[FieldDef], params: seq[Param]): bool =
+  ## Do these fields supply every param by name? That is the "explode" shape —
+  ## `server.describe` feeding a payload's fields to the params it declares.
+  if fields.len == 0 or params.len == 0: return false
+  for p in params:
+    var found = false
+    for f in fields:
+      if f.name == p.name: found = true
+    if not found: return false
+  true
+
+proc failIfFieldShadowsFn(fields: seq[FieldDef], recvT: Type, e: Expr) =
+  ## A DECLARED type's field clashing with a fn name is already caught at
+  ## declaration. An ANONYMOUS record has no declaration for that check to
+  ## see, so `{port: 80}.port` stays genuinely ambiguous until used.
+  if recvT.kind != tkRecord: return
+  for f in fields:
+    if f.name == e.fieldName:
+      fail("Type Error: '" & e.fieldName & "' is both a field here and " &
+           "a declared fn — rename one; fields and fns share the call " &
+           "namespace", e.span)
+
+proc failIfArgMismatched(tc: var TypeChecker, sig: FnSig, recvT: Type, e: Expr) =
+  ## The receiver must fit the single param it is about to fill. A generic
+  ## param accepts anything — checking against an unbound type VARIABLE would
+  ## reject every receiver.
+  let pt = sig.params[0].typ
+  let isTypeVar = pt != nil and pt.kind == tkNamed and pt.name in sig.generics
+  if not isTypeVar and not tc.compatible(recvT, pt):
+    fail("Type Error: argument to '" & e.fieldName & "' expects " &
+         typeName(pt) & " but got " & typeName(recvT), e.span)
+
+proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
+  ## Postfix application in a fn BODY: `5.ms`, `n.toStr`. `x doSth` and
+  ## `{value: x} doSth` are the same call — a bare receiver wraps into the
+  ## one-field payload the signature declares. tc.currentFn gates this to
+  ## bodies: the same `a.b` spelling in a SIGNATURE is a type or field path.
+  ## Returns nil for the explode shape (`server.describe`), which synthCall
+  ## handles further down — this must fall through rather than claim it.
+  if tc.currentFn == "" or e.receiver == nil or
+     e.receiver.kind notin {exkLit, exkVar} or
+     not tc.fnSigs.hasKey(e.fieldName): return nil
+  let sig = tc.fnSigs[e.fieldName]
+  let recvT = tc.synthesize(e.receiver)
+  let recvFields = tc.fieldsOf(tc.resolve(recvT))
+  failIfFieldShadowsFn(recvFields, recvT, e)
+  if fieldsCover(recvFields, sig.params) or sig.params.len != 1: return nil
+  tc.failIfArgMismatched(sig, recvT, e)
+  # Stamp a real call node so codegen emits `toStr(n)`, not `n.toStr`.
+  setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: @[e.receiver],
+                            callee: Expr(span: e.span, kind: exkVar,
+                                         name: e.fieldName)))
+  sig.ret
+
+proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
+                  recvT: Type): Type =
+  ## `x.field` — an ordinary field read off the receiver's type.
+  for f in fields:
+    if f.name != e.fieldName: continue
+    if tc.fnSigs.hasKey(e.fieldName):
+      fail("Type Error: '" & e.fieldName & "' is both a field here and a " &
+           "declared fn — rename one; fields and fns share the call " &
+           "namespace", e.span)
     if e.dotArg != nil:
-      if e.dotArg.kind != exkStruct:
-        fail("Type Error: invoke arguments must be a struct literal: " &
-             "slot.invoke {a, b}", e.dotArg.span)
-      discard tc.synthesize(e.dotArg)
-      callArgs.add(e.dotArg)
-    setCall(semLayer, e, Expr(span: e.span, kind: exkCall, callee: e.receiver,
-                             args: callArgs))
-    return unknownType(e.span)
-  # Postfix application INSIDE A FUNCTION BODY: `5.ms`, `n.toStr`,
-  # `server.describe`. `x doSth` and `{value: x} doSth` are the same call —
-  # a bare receiver wraps into the one-field payload the signature declares
-  # (auto-renaming means the field name need not match). tc.currentFn gates
-  # this to bodies: the identical `a.b` spelling in a SIGNATURE is a type or
-  # field path, not a call.
-  #
-  # Two legal shapes reach here:
-  #   wrap    — `n.toStr`: the receiver IS the single argument
-  #   explode — `server.describe`: the receiver's fields feed the params by
-  #             name (payload-explode, handled by synthCall's caller further
-  #             down) — this branch must fall through rather than claim it.
-  # No field-vs-fn ambiguity to resolve: a DECLARED type's field sharing a
-  # name with a fn is already a compile error at declaration ("fields and
-  # fns share the call namespace", checked in typecheckProgram). An ANONYMOUS
-  # struct has no declaration for that check to see, so `{port: 80}.port` is
-  # still genuinely ambiguous and is caught separately, at use, below.
-  if tc.currentFn != "" and e.receiver != nil and
-     e.receiver.kind in {exkLit, exkVar} and tc.fnSigs.hasKey(e.fieldName):
-    let sig = tc.fnSigs[e.fieldName]
-    let recvT = tc.synthesize(e.receiver)
-    let recvFields = tc.fieldsOf(tc.resolve(recvT))
-    # Ambiguous only for an ANONYMOUS record (no name to have been checked at
-    # declaration) whose fields literally include this name.
-    if recvT.kind == tkRecord:
-      for f in recvFields:
-        if f.name == e.fieldName:
-          fail("Type Error: '" & e.fieldName & "' is both a field here and " &
-               "a declared fn — rename one; fields and fns share the call " &
-               "namespace", e.span)
-    # Explode: the receiver's fields satisfy the signature's params by name.
-    var explodes = recvFields.len > 0 and sig.params.len > 0
-    for p in sig.params:
-      var found = false
-      for f in recvFields:
-        if f.name == p.name: found = true
-      if not found: explodes = false
-    if not explodes and sig.params.len == 1:
-      # A generic param (`toStr[T]({value: T})`) accepts anything — checking
-      # against the unbound type VARIABLE would reject every receiver.
-      let pt = sig.params[0].typ
-      let isTypeVar = pt != nil and pt.kind == tkNamed and pt.name in sig.generics
-      if not isTypeVar and not tc.compatible(recvT, pt):
-        fail("Type Error: argument to '" & e.fieldName & "' expects " &
-             typeName(pt) & " but got " & typeName(recvT), e.span)
-      # Stamp a real call node so codegen emits `toStr(n)`, not `n.toStr`.
-      setCall(semLayer, e, Expr(span: e.span, kind: exkCall,
-                               callee: Expr(span: e.span, kind: exkVar,
-                                            name: e.fieldName),
-                               args: @[e.receiver]))
-      return sig.ret
-  # Variant construction: Type.Variant — sealed types only allow the
-  # initial (first) variant directly; [unsafe] is the deserialization escape
-  if e.receiver != nil and e.receiver.kind == exkVar and
-     tc.typeDecls.hasKey(e.receiver.name):
-    let declared = tc.typeDecls[e.receiver.name]
-    if declared.kind == tkSum:
-      var isVariant = false
-      for v in declared.variants:
-        if v.name == e.fieldName: isVariant = true
-      if isVariant:
-        var isSealed = false
-        for a in declared.attrs:
-          if a.name == "sealed": isSealed = true
-        if isSealed and declared.variants.len > 0 and
-           e.fieldName != declared.variants[0].name and not e.ctorUnsafe and
-           not tc.transitionCtx:
-          fail("Sealed Error: " & e.receiver.name & "." & e.fieldName &
-               " cannot be constructed directly — sealed types start at '" &
-               declared.variants[0].name & "'; reach '" & e.fieldName &
-               "' via transitions, or mark [unsafe] for deserialization", e.span)
-        return Type(span: e.span, kind: tkNamed, name: e.receiver.name)
+      fail("Type Error: '" & e.fieldName & "' is a field of " &
+           typeName(recvT) & " — fields take no arguments; to set it, " &
+           "use '.." & e.fieldName & " {value}' on a var", e.span)
+    return f.typ
+  nil
+
+proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
+  ## Not a field: `x.name` resolves to a fn by LOOKUP rather than syntax.
+  ## `.fn {args}` is the method form (receiver first, args fill the rest);
+  ## bare `.fn` is a whitespace call with the receiver as the payload.
+  if not tc.fnSigs.hasKey(e.fieldName): return nil
+  if e.dotArg != nil:
+    let mc = tc.synthMethodCall(e.fieldName, e.receiver, recvT,
+                                e.dotArg, e.span)
+    setCall(semLayer, e, mc)
+    return semLayer.typeFor(mc)
+  let bc = Expr(span: e.span, kind: exkCall, args: @[e.receiver],
+                callee: Expr(span: e.span, kind: exkVar, name: e.fieldName))
+  setCall(semLayer, e, bc)
+  tc.synthesize(bc)
+
+proc asQualifiedMemberCall(tc: var TypeChecker, e: Expr): Type =
+  ## `Pool.acquire` / `Pool.release {v}` (spec 7.2) — registered under the
+  ## qualified name because the receiver is the POOL itself, not a value whose
+  ## type carries the fn.
+  if e.receiver == nil or e.receiver.kind != exkVar: return nil
+  let qualified = e.receiver.name & "." & e.fieldName
+  if not tc.fnSigs.hasKey(qualified): return nil
+  let extra = unwrapSingleField(e.dotArg)
+  let args = if extra != nil: @[e.receiver, extra] else: @[e.receiver]
+  setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
+                            callee: Expr(span: e.span, kind: exkVar,
+                                         name: e.fieldName)))
+  tc.fnSigs[qualified].ret
+
+proc asSlotInvoke(tc: var TypeChecker, e: Expr): Type =
+  ## `slot.invoke {args}` — a call through a baked fn slot. Builtin; the
+  ## slot's signature is checked by Nim at instantiation, gradual here.
+  if e.fieldName != "invoke": return nil
+  discard tc.synthesize(e.receiver)
+  var callArgs: seq[Expr] = @[]
+  if e.dotArg != nil:
+    if e.dotArg.kind != exkStruct:
+      fail("Type Error: invoke arguments must be a struct literal: " &
+           "slot.invoke {a, b}", e.dotArg.span)
+    discard tc.synthesize(e.dotArg)
+    callArgs.add(e.dotArg)
+  setCall(semLayer, e, Expr(span: e.span, kind: exkCall, callee: e.receiver,
+                           args: callArgs))
+  unknownType(e.span)
+
+proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
+  result = tc.asResultIntrospection(e)
+  if result != nil: return
+  result = tc.asSlotInvoke(e)
+  if result != nil: return
+  result = tc.asPostfixApplication(e)
+  if result != nil: return
+  result = tc.asVariantConstruction(e)
+  if result != nil: return
   let rawT = tc.synthesize(e.receiver)
   if isWrapper(rawT):
     fail("Type Error: unhandled " & typeName(rawT) &
          " — pass it to a handling function or propagate with '?' before accessing fields", e.span)
   let recvT = tc.resolve(rawT)
   let fields = tc.fieldsOf(recvT)
-  for f in fields:
-    if f.name == e.fieldName:
-      if tc.fnSigs.hasKey(e.fieldName):
-        fail("Type Error: '" & e.fieldName & "' is both a field here and a " &
-             "declared fn — rename one; fields and fns share the call " &
-             "namespace", e.span)
-      if e.dotArg != nil:
-        fail("Type Error: '" & e.fieldName & "' is a field of " &
-             typeName(recvT) & " — fields take no arguments; to set it, " &
-             "use '.." & e.fieldName & " {value}' on a var", e.span)
-      return f.typ
-  # A pool exposes `Pool.acquire` / `Pool.release {v}` (spec 7.2). These are
-  # registered qualified, since the receiver is the POOL itself rather than a
-  # value whose type carries the fn.
-  if e.receiver != nil and e.receiver.kind == exkVar and
-     tc.fnSigs.hasKey(e.receiver.name & "." & e.fieldName):
-    let sig = tc.fnSigs[e.receiver.name & "." & e.fieldName]
-    # `Pool.release {v}` — a one-field payload to a one-param fn IS the
-    # value; passing the wrapper tuple would not match the rt signature.
-    var extra = e.dotArg
-    if extra != nil and extra.kind == exkStruct and extra.fields.len == 1:
-      extra = extra.fields[0][1]
-    let call = Expr(span: e.span, kind: exkCall,
-                    callee: Expr(span: e.span, kind: exkVar,
-                                 name: e.fieldName),
-                    args: if extra != nil: @[e.receiver, extra]
-                          else: @[e.receiver])
-    setCall(semLayer, e, call)
-    return sig.ret
-  # Not a field — `x.name` resolves to a fn by lookup, not syntax.
-  if tc.fnSigs.hasKey(e.fieldName):
-    if e.dotArg != nil:
-      # `.fn {args}` method form: receiver = first param, args fill the rest
-      let mc = tc.synthMethodCall(e.fieldName, e.receiver, recvT,
-                                  e.dotArg, e.span)
-      setCall(semLayer, e, mc)
-      return semLayer.typeFor(mc)
-    # bare `.fn` — same as a whitespace call: the receiver is the payload
-    let bc = Expr(span: e.span, kind: exkCall,
-                  callee: Expr(span: e.span, kind: exkVar, name: e.fieldName),
-                  args: @[e.receiver])
-    setCall(semLayer, e, bc)
-    return tc.synthesize(bc)
+  result = tc.asPlainField(e, fields, recvT)
+  if result != nil: return
+  result = tc.asQualifiedMemberCall(e)
+  if result != nil: return
+  result = tc.asFnByName(e, recvT)
+  if result != nil: return
   # `.fn {args}` — the brace proves call intent (ruling 2026-07-23). If we
   # reach here the callee matched neither a field nor a declared fn, so it is
   # an undeclared call, not a field read to fall through on.
@@ -297,7 +346,7 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   # flag when the receiver is a plain record.
   if fields.len > 0 and recvT.kind == tkRecord:
     fail("Type Error: no field '" & e.fieldName & "' on type " & typeName(recvT), e.span)
-  unknownType(e.span)
+  return unknownType(e.span)
 
 proc isOptional(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
@@ -733,82 +782,101 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
   else:
     for a in e.args: discard tc.synthesize(a)
 
+proc calleeNameOf(tc: var TypeChecker, e: Expr): string =
+  ## The name being called. `module::fn` against a KNOWN module (imported or
+  ## pending-stubbed) is strict — the fn must exist; an unknown prefix stays
+  ## gradual like any undeclared identifier, so sketch code keeps compiling.
+  if e.callee == nil: return ""
+  if e.callee.kind == exkVar: return e.callee.name
+  if e.callee.kind != exkQualified: return ""
+  let modName = if e.callee.modulePath.len > 0: e.callee.modulePath[0] else: ""
+  result = modName & "::" & e.callee.qualName
+  if modName in tc.knownModules and not tc.fnSigs.hasKey(result):
+    fail("Type Error: module '" & modName & "' has no function '" &
+         e.callee.qualName & "'", e.span)
+
+proc aliasedFieldType(fields: seq[FieldDef], name: string): Type =
+  ## The type of the field an alias renames, nil if there is no such field.
+  for f in fields:
+    if f.name == name: return f.typ
+  nil
+
+proc asAliasCall(tc: var TypeChecker, e: Expr): Type =
+  ## `expr alias(old: new, ...)` — restructure: the same values under renamed
+  ## fields. The result is a REAL record type; consumers check against it.
+  let recvT = tc.resolve(tc.synthesize(e.args[0]))
+  let recvFields = tc.fieldsOf(recvT)
+  var fields: seq[FieldDef]
+  for (oldName, newExpr) in e.args[1].fields.items:
+    let ft = aliasedFieldType(recvFields, oldName)
+    if ft == nil and recvFields.len > 0:
+      fail("Type Error: alias source field '" & oldName &
+           "' does not exist on " & typeName(recvT), e.span)
+    if newExpr == nil or newExpr.kind != exkVar:
+      fail("Type Error: alias target must be a plain field name: " &
+           oldName & ": newName", e.span)
+    fields.add(FieldDef(name: newExpr.name, span: e.span,
+                        typ: (if ft == nil: unknownType(e.span) else: ft)))
+  Type(span: e.span, kind: tkRecord, fields: fields)
+
+proc failIfDuplicateField(fields: seq[FieldDef], f: FieldDef, sp: Span) =
+  ## Merge unions field sets, so a name in two members is an error rather
+  ## than a silent shadowing.
+  for existing in fields:
+    if existing.name == f.name:
+      fail("Type Error: merge field '" & f.name &
+           "' collides between members", sp)
+
+proc asMergeCall(tc: var TypeChecker, e: Expr): Type =
+  ## `{a, b} merge` — flatten the UNION of the member structs' fields into
+  ## one flat struct.
+  var fields: seq[FieldDef]
+  for (mname, mexpr) in e.args[0].fields.items:
+    let mt = tc.resolve(tc.synthesize(mexpr))
+    if isUnknown(mt): continue  # sketch member — stays gradual
+    let mfs = tc.fieldsOf(mt)
+    if mfs.len == 0:
+      fail("Type Error: merge member '" & mname & "' must be a struct, " &
+           "got " & typeName(mt), mexpr.span)
+    for f in mfs:
+      failIfDuplicateField(fields, f, e.span)
+      fields.add(f)
+  if fields.len == 0: return unknownType(e.span)
+  Type(span: e.span, kind: tkRecord, fields: fields)
+
+proc applyBakeOverride(tc: var TypeChecker, fields: var seq[FieldDef],
+                       name: string, valExpr: Expr) =
+  ## One `slot: value` from a bake payload: override the field if it exists,
+  ## otherwise ADD it. A value override keeps the field's declared type; fn
+  ## refs come through as Unknown and pass gradually.
+  let vt = tc.synthesize(valExpr)
+  for f in fields.mitems:
+    if f.name != name: continue
+    if not isUnknown(vt) and not tc.compatible(vt, f.typ):
+      fail("Type Error: bake override '" & name & "' expects " &
+           typeName(f.typ) & " but got " & typeName(vt), valExpr.span)
+    return
+  fields.add(FieldDef(name: name, typ: vt, span: valExpr.span))
+
+proc asBakeCall(tc: var TypeChecker, e: Expr): Type =
+  ## `expr bake {slot: :fn, arg: value, ...}` — compile-time partial
+  ## application: rebuild the context struct with slots filled or argument
+  ## values overridden.
+  let recvT = tc.resolve(tc.synthesize(e.args[0]))
+  var fields = tc.fieldsOf(recvT)
+  for (name, valExpr) in e.args[1].fields.items:
+    tc.applyBakeOverride(fields, name, valExpr)
+  if fields.len == 0: return unknownType(e.span)
+  Type(span: e.span, kind: tkRecord, fields: fields)
+
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
-  var calleeName = ""
-  if e.callee != nil and e.callee.kind == exkVar:
-    calleeName = e.callee.name
-  elif e.callee != nil and e.callee.kind == exkQualified:
-    # module::fn — a KNOWN module (imported / pending-stubbed) is strict:
-    # the fn must exist. An unknown prefix stays gradual, like any
-    # undeclared identifier, so sketch code keeps compiling.
-    let modName = if e.callee.modulePath.len > 0: e.callee.modulePath[0] else: ""
-    calleeName = modName & "::" & e.callee.qualName
-    if modName in tc.knownModules and not tc.fnSigs.hasKey(calleeName):
-      fail("Type Error: module '" & modName & "' has no function '" &
-           e.callee.qualName & "'", e.span)
+  let calleeName = tc.calleeNameOf(e)
   if calleeName == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    # expr alias(old: new, ...) — restructure: same values, renamed fields.
-    # The result is a REAL record type; consumers check against it.
-    let recvT = tc.resolve(tc.synthesize(e.args[0]))
-    let recvFields = tc.fieldsOf(recvT)
-    var fields: seq[FieldDef]
-    for (oldName, newExpr) in e.args[1].fields.items:
-      var ft: Type = nil
-      for rf in recvFields:
-        if rf.name == oldName: ft = rf.typ
-      if ft == nil and recvFields.len > 0:
-        fail("Type Error: alias source field '" & oldName &
-             "' does not exist on " & typeName(recvT), e.span)
-      if newExpr == nil or newExpr.kind != exkVar:
-        fail("Type Error: alias target must be a plain field name: " &
-             oldName & ": newName", e.span)
-      fields.add(FieldDef(name: newExpr.name,
-                          typ: (if ft == nil: unknownType(e.span) else: ft),
-                          span: e.span))
-    return Type(span: e.span, kind: tkRecord, fields: fields)
+    return tc.asAliasCall(e)
   if calleeName == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
-    # {a, b} merge — flatten: the UNION of the member structs' fields
-    # becomes one flat struct. Name collision = error (no silent shadowing).
-    var fields: seq[FieldDef]
-    for (mname, mexpr) in e.args[0].fields.items:
-      let mt = tc.resolve(tc.synthesize(mexpr))
-      if isUnknown(mt): continue  # sketch member — stays gradual
-      let mfs = tc.fieldsOf(mt)
-      if mfs.len == 0:
-        fail("Type Error: merge member '" & mname & "' must be a struct, " &
-             "got " & typeName(mt), mexpr.span)
-      for f in mfs:
-        for existing in fields:
-          if existing.name == f.name:
-            fail("Type Error: merge field '" & f.name &
-                 "' collides between members", e.span)
-        fields.add(f)
-    if fields.len == 0: return unknownType(e.span)
-    return Type(span: e.span, kind: tkRecord, fields: fields)
+    return tc.asMergeCall(e)
   if calleeName == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    # expr bake {slot: :fn, arg: value, ...} — compile-time partial
-    # application: rebuild the context struct with slots filled (fn refs)
-    # or argument values overridden; unknown names ADD a field.
-    let recvT = tc.resolve(tc.synthesize(e.args[0]))
-    var fields: seq[FieldDef]
-    for rf in tc.fieldsOf(recvT):
-      fields.add(rf)
-    for (name, valExpr) in e.args[1].fields.items:
-      let vt = tc.synthesize(valExpr)
-      var found = false
-      for f in fields.mitems:
-        if f.name == name:
-          found = true
-          # a value override keeps the field's declared type; fn refs
-          # (Unknown) pass gradually
-          if not isUnknown(vt) and not tc.compatible(vt, f.typ):
-            fail("Type Error: bake override '" & name & "' expects " &
-                 typeName(f.typ) & " but got " & typeName(vt), valExpr.span)
-          break
-      if not found:
-        fields.add(FieldDef(name: name, typ: vt, span: valExpr.span))
-    if fields.len == 0: return unknownType(e.span)
-    return Type(span: e.span, kind: tkRecord, fields: fields)
+    return tc.asBakeCall(e)
   if calleeName in ["bake", "alias"]:
     for a in e.args: discard tc.synthesize(a)
     return unknownType(e.span)
