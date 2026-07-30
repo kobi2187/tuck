@@ -1411,6 +1411,79 @@ proc genRegistry(ctx: var CodegenCtx, d: Decl): string =
 
     return enumStr & typeStr & "\n" & globalVarStr & fwdDeclsStr & raiseProcsStr
 
+proc isCompositionEntry(member: Decl): bool =
+  ## `+ Name` inside an object body — the entry that pulls another
+  ## declaration's members or data into this one.
+  member.kind == dkExpr and member.expr != nil and
+    member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
+    member.expr.operand != nil and member.expr.operand.kind == exkVar
+
+proc composeInto(ctx: var CodegenCtx, compName, objName: string,
+                 fields: var seq[string], members: var string): bool =
+  ## Materialise `+ compName` onto this object: a mixin's fns become member
+  ## fns (Self -> the object), a record type embeds as a field so the manager
+  ## carries its data along. False if nothing by that name is declared.
+  for cd in ctx.module.decls:
+    if cd == nil or cd.name != compName: continue
+    if cd.kind == dkMixin:
+      for m in cd.mixinMembers:
+        if m.kind == dkFn and m.fnBody != nil:
+          members.add(ctx.genMemberFn(m, objName) & "\n")
+      return true
+    if cd.kind == dkType and cd.typeBody != nil and cd.typeBody.kind == tkRecord:
+      let fname = compName[0].toLowerAscii() & compName[1..^1]
+      fields.add("    " & fname & "*: " & compName)
+      return true
+  false
+
+proc genObjectDecl(ctx: var CodegenCtx, d: Decl): string =
+  ## A manager object: its fields land in the type section, its members and
+  ## anything composed into it come back as top-level procs.
+  var fields: seq[string]
+  for f in d.objFields:
+    fields.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
+  var members = ""
+  for member in d.objMembers:
+    if isCompositionEntry(member):
+      let compName = member.expr.operand.name
+      if not ctx.composeInto(compName, d.name, fields, members):
+        members.add("# + " & compName & " (undeclared — sketch)\n")
+    elif member.kind == dkFn:
+      members.add(ctx.genMemberFn(member, d.name) & "\n")
+    else:
+      members.add(ctx.genDecl(member) & "\n")
+  let body = if fields.len > 0: fields.join("\n") else: "    discard"
+  # manager objects hold var state but are Tier 1 value types too
+  ctx.typeSection.add("type " & d.name & "* = object\n" & body)
+  members
+
+proc genTaskDecl(ctx: var CodegenCtx, d: Decl): string =
+  ## A task is a fn whose body runs on the scheduler: inside it, [io] calls
+  ## become async yields (ctx.inTask), which is the only reason it is not
+  ## just genFnDecl.
+  ctx.currentParams = @[]
+  var params: seq[string]
+  for p in d.taskParams:
+    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
+    params.add(p.name & ": " & genType(p.typ))
+  let retTypeStr = if d.taskReturnType != nil: genType(d.taskReturnType) else: "void"
+  let header = "proc " & d.name & "*(" & params.join(", ") & "): " &
+               retTypeStr & " ="
+  let oldVars = ctx.definedVars
+  for p in d.taskParams: ctx.definedVars.incl(p.name)
+  let oldIndent = ctx.indent
+  let oldInTask = ctx.inTask
+  (ctx.retWrapped, ctx.retInnerNim, ctx.retInnerT) = bangInfo(d.taskReturnType)
+  injectTailReturn(d.taskBody, retTypeStr)
+  ctx.indent += 1
+  ctx.inTask = true
+  let bodyStr = ctx.genExpr(d.taskBody)
+  ctx.inTask = oldInTask
+  ctx.indent = oldIndent
+  ctx.retWrapped = false
+  ctx.definedVars = oldVars
+  header & "\n" & bodyStr & "\n"
+
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   if d == nil: return ""
   if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
@@ -1428,70 +1501,11 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
         return genAliasType(d)
     return ""
   of dkObject:
-    var fieldsStr: seq[string]
-    for f in d.objFields:
-      fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
-    var membersStr = ""
-    for member in d.objMembers:
-      if member.kind == dkExpr and member.expr != nil and
-         member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
-         member.expr.operand != nil and member.expr.operand.kind == exkVar:
-        # `+ Name` composition entry: a declared mixin materializes its fn
-        # members on this object (Self -> the object); a declared record
-        # type embeds as a field (the manager carries its data along).
-        let compName = member.expr.operand.name
-        var composed = false
-        for cd in ctx.module.decls:
-          if cd == nil or cd.name != compName: continue
-          if cd.kind == dkMixin:
-            for m in cd.mixinMembers:
-              if m.kind == dkFn and m.fnBody != nil:
-                membersStr.add(ctx.genMemberFn(m, d.name) & "\n")
-            composed = true
-          elif cd.kind == dkType and cd.typeBody != nil and
-               cd.typeBody.kind == tkRecord:
-            let fname = compName[0].toLowerAscii() & compName[1..^1]
-            fieldsStr.add("    " & fname & "*: " & compName)
-            composed = true
-        if not composed:
-          membersStr.add("# + " & compName & " (undeclared — sketch)\n")
-      elif member.kind == dkFn:
-        membersStr.add(ctx.genMemberFn(member, d.name) & "\n")
-      else:
-        membersStr.add(ctx.genDecl(member) & "\n")
-    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
-    # manager objects (dkObject) hold var state but are Tier 1 value types too
-    ctx.typeSection.add("type " & d.name & "* = object\n" & fieldsBody)
-    return membersStr
+    return ctx.genObjectDecl(d)
   of dkActor:
     return ctx.genActor(d)
   of dkTask:
-    ctx.currentParams = @[]
-    for p in d.taskParams:
-      ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
-    var params: seq[string]
-    for p in d.taskParams:
-      params.add(p.name & ": " & genType(p.typ))
-    let retTypeStr = if d.taskReturnType != nil: genType(d.taskReturnType) else: "void"
-    let header = "proc " & d.name & "*(" & params.join(", ") & "): " & retTypeStr & " ="
-    let oldVars = ctx.definedVars
-    for p in d.taskParams:
-      ctx.definedVars.incl(p.name)
-    let oldIndent = ctx.indent
-    let (bw, binner, binnerT) = bangInfo(d.taskReturnType)
-    ctx.retWrapped = bw
-    ctx.retInnerNim = binner
-    ctx.retInnerT = binnerT
-    injectTailReturn(d.taskBody, retTypeStr)
-    ctx.indent += 1
-    let oldInTask = ctx.inTask
-    ctx.inTask = true          # [io] calls in this body become async yields
-    let bodyStr = ctx.genExpr(d.taskBody)
-    ctx.inTask = oldInTask
-    ctx.indent = oldIndent
-    ctx.retWrapped = false
-    ctx.definedVars = oldVars
-    return header & "\n" & bodyStr & "\n"
+    return ctx.genTaskDecl(d)
 
   of dkExpr:
     return ctx.genExpr(d.expr)
