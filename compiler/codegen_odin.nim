@@ -1638,6 +1638,86 @@ proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl): string =
   else:
     return header & ind & "\treturn " & callStr & "\n" & ind & "}\n"
 
+proc isCompositionEntry(member: Decl): bool =
+  ## `+ Name` inside an object body — the entry that pulls another
+  ## declaration's members or data into this one.
+  member.kind == dkExpr and member.expr != nil and
+    member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
+    member.expr.operand != nil and member.expr.operand.kind == exkVar
+
+proc composeInto(ctx: var OdinCodegenCtx, compName, objName, ind: string,
+                 fields: var seq[string], members: var string): bool =
+  ## Materialise `+ compName` onto this object: a mixin's fns become member
+  ## fns, a record type embeds as a field. Mirrors the Nim backend; only the
+  ## emitted syntax differs. False if nothing by that name is declared.
+  for cd in ctx.module.decls:
+    if cd == nil or cd.name != compName: continue
+    if cd.kind == dkMixin:
+      for mm in cd.mixinMembers:
+        if mm.kind == dkFn and mm.fnBody != nil:
+          members.add(ctx.genOdinMemberFn(mm, objName) & "\n")
+      return true
+    if cd.kind == dkType and cd.typeBody != nil and cd.typeBody.kind == tkRecord:
+      let fname = compName[0].toLowerAscii() & compName[1..^1]
+      fields.add(ind & "\t" & fname & ": " & compName & ",")
+      return true
+  false
+
+proc genObjectDecl(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## A manager object: fields become an Odin struct, members and anything
+  ## composed into it come back as package-level procs.
+  var fields: seq[string]
+  for f in d.objFields:
+    fields.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
+  var members = ""
+  for member in d.objMembers:
+    if isCompositionEntry(member):
+      let compName = member.expr.operand.name
+      if not ctx.composeInto(compName, d.name, ind, fields, members):
+        members.add(ind & "// + " & compName & " (undeclared — sketch)\n")
+    elif member.kind == dkFn:
+      members.add(ctx.genOdinMemberFn(member, d.name) & "\n")
+    else:
+      members.add(ctx.genOdinDecl(member) & "\n")
+  let body = if fields.len > 0: fields.join("\n") & "\n" else: ""
+  # manager objects hold var state but are Tier 1 value types too
+  ind & d.name & " :: struct {\n" & body & ind & "}\n\n" & members
+
+proc genTaskDecl(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## ponytail: a task emits as a plain proc and runs INLINE, so suspension
+  ## points do not suspend. The coroutine runtime itself is real and wired
+  ## (tuckrt/tuck_coro.odin over minicoro — 28-async-task exits 42 and
+  ## 26-actor-run drains its mailbox to 55); what is missing is spawning the
+  ## task body ONTO it. Anything relying on a yield behaves synchronously.
+  ctx.currentParams = @[]
+  var params: seq[string]
+  for p in d.taskParams:
+    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
+    params.add(p.name & ": " & ctx.odinType(p.typ))
+  let retTypeStr =
+    if d.taskReturnType != nil: ctx.odinType(d.taskReturnType) else: "void"
+  let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
+  let header = ind & d.name & " :: proc(" & params.join(", ") & ")" &
+               retStr & " {"
+  let oldVars = ctx.definedVars
+  for p in d.taskParams: ctx.definedVars.incl(p.name)
+  let oldIndent = ctx.indent
+  (ctx.retWrapped, ctx.retInnerOdin, ctx.retInnerT) =
+    ctx.odinBangInfo(d.taskReturnType)
+  injectTailReturn(d.taskBody, retTypeStr)
+  var bodyStr = ctx.genOdinExpr(d.taskBody)
+  if d.taskBody != nil and d.taskBody.kind != exkBlock:
+    let kw = if retTypeStr != "void": "return " else: ""
+    bodyStr = ind & "\t" & kw & bodyStr
+  elif retTypeStr != "void":
+    bodyStr = ensureTrailingReturn(bodyStr, d.taskBody, oldIndent)
+  ctx.indent = oldIndent
+  ctx.retWrapped = false
+  ctx.retInnerOdin = ""
+  ctx.retInnerT = nil
+  ctx.definedVars = oldVars
+  header & "\n" & bodyStr & "\n" & ind & "}\n"
+
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   if d == nil: return ""
   if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
@@ -1656,79 +1736,11 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
         return ctx.genAliasType(d)
     return ""
   of dkObject:
-    var fieldsStr: seq[string]
-    for f in d.objFields:
-      fieldsStr.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
-    var membersStr = ""
-    for member in d.objMembers:
-      if member.kind == dkExpr and member.expr != nil and
-         member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
-         member.expr.operand != nil and member.expr.operand.kind == exkVar:
-        # `+ Name`: declared mixin materializes its fns on this object;
-        # a declared record type embeds as a field (mirrors codegen.nim)
-        let compName = member.expr.operand.name
-        var composed = false
-        for cd in ctx.module.decls:
-          if cd == nil or cd.name != compName: continue
-          if cd.kind == dkMixin:
-            for mm in cd.mixinMembers:
-              if mm.kind == dkFn and mm.fnBody != nil:
-                membersStr.add(ctx.genOdinMemberFn(mm, d.name) & "\n")
-            composed = true
-          elif cd.kind == dkType and cd.typeBody != nil and
-               cd.typeBody.kind == tkRecord:
-            let fname = compName[0].toLowerAscii() & compName[1..^1]
-            fieldsStr.add(ind & "\t" & fname & ": " & compName & ",")
-            composed = true
-        if not composed:
-          membersStr.add(ind & "// + " & compName & " (undeclared — sketch)\n")
-      elif member.kind == dkFn:
-        membersStr.add(ctx.genOdinMemberFn(member, d.name) & "\n")
-      else:
-        membersStr.add(ctx.genOdinDecl(member) & "\n")
-    let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") & "\n" else: ""
-    # manager objects hold var state but are Tier 1 value types too
-    return ind & d.name & " :: struct {\n" & fieldsBody & ind & "}\n\n" &
-           membersStr
+    return ctx.genObjectDecl(d, ind)
   of dkActor:
     return ctx.genActor(d)
   of dkTask:
-    ctx.currentParams = @[]
-    for p in d.taskParams:
-      ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
-    var params: seq[string]
-    for p in d.taskParams:
-      params.add(p.name & ": " & ctx.odinType(p.typ))
-    let retTypeStr = if d.taskReturnType != nil: ctx.odinType(d.taskReturnType) else: "void"
-    let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
-    # ponytail: a task emits as a plain proc and runs INLINE, so suspension
-    # points do not suspend. The coroutine runtime itself is real and wired
-    # (tuckrt/tuck_coro.odin over minicoro — 28-async-task exits 42 and
-    # 26-actor-run drains its mailbox to 55); what is missing is spawning the
-    # task body ONTO it. Anything relying on a yield behaves synchronously.
-    let header = ind & d.name & " :: proc(" & params.join(", ") & ")" &
-                 retStr & " {"
-    let oldVars = ctx.definedVars
-    for p in d.taskParams:
-      ctx.definedVars.incl(p.name)
-    let oldIndent = ctx.indent
-    let (bw, binner, binnerT) = ctx.odinBangInfo(d.taskReturnType)
-    ctx.retWrapped = bw
-    ctx.retInnerOdin = binner
-    ctx.retInnerT = binnerT
-    injectTailReturn(d.taskBody, retTypeStr)
-    var bodyStr = ctx.genOdinExpr(d.taskBody)
-    if d.taskBody != nil and d.taskBody.kind != exkBlock:
-      let kw = if retTypeStr != "void": "return " else: ""
-      bodyStr = ind & "\t" & kw & bodyStr
-    elif retTypeStr != "void":
-      bodyStr = ensureTrailingReturn(bodyStr, d.taskBody, oldIndent)
-    ctx.indent = oldIndent
-    ctx.retWrapped = false
-    ctx.retInnerOdin = ""
-    ctx.retInnerT = nil
-    ctx.definedVars = oldVars
-    return header & "\n" & bodyStr & "\n" & ind & "}\n"
+    return ctx.genTaskDecl(d, ind)
   of dkConst:
     # A literal is a true compile-time constant (`::`); structured data
     # becomes a package-level var, still one-time and immutable in intent.
