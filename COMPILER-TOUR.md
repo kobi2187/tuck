@@ -151,22 +151,40 @@ convenience for much less machinery.
 ### The interesting part: what does `a.b` mean?
 
 `synthFieldAccess` is the best thing in this compiler to read if you want to
-feel how a language actually gets defined. The syntax `a.b` is used for
-**seven different things** in Tuck, and the checker resolves it by trying each
-in a fixed order:
+feel how a language actually gets defined. The syntax `a.b` means several
+different things in Tuck, and the checker decides which by trying them in a
+fixed order:
 
 1. `.ok` / `.err` / `.value` on a fallible value — result introspection
 2. `slot.invoke {args}` — calling through a baked function slot
-3. `5.ms`, `n.toStr` — postfix application (`x f` and `x.f` are the same call)
+3. `5.ms`, `n.toStr` — postfix application, early path: a literal or plain
+   variable receiver inside a function body
 4. `Color.Red` — constructing a variant of a sum type
 5. `point.x` — an ordinary field read
-6. `Pool.acquire` — a qualified member call
-7. `x.describe` — resolving to a function by name
+6. `Pool.acquire`, `Pool.release {v}` — a pool member call
+7. `x.describe` — postfix application again, as the fallthrough; plus
+   `.fn {args}`, the method form where the receiver is the first parameter and
+   the braces fill the rest
 
 **That order is the language rule.** It isn't an implementation detail; it's the
 spec. Change the order and you change what programs mean. In the code, each case
 is a small proc returning `nil` for "not mine," so the parent function reads as
 exactly the list above.
+
+Steps 3 and 7 are worth dwelling on, because they are the *same* operation
+reached from two places. Both build the identical node — a call with the
+receiver as its argument. They are split only because the ordering forces it:
+#3 has to run **before** variant construction and field reads, so `5.ms` is not
+mistaken for a field; #7 has to run **after** them, so a genuine field beats a
+same-named function. `asPlainField` sits between the two and raises an error if
+a field and a function share a name, which is what makes splitting them safe.
+
+Note also that #6 is *not* `module::function` — that is `::`, a different node
+kind (`exkQualified`) handled over in `synthCall`, and it never reaches this
+proc. What lands here is the dot form for pool members, registered internally
+under a dot-joined key (`"Pool.acquire"`). The two namespaces coexist inside
+`fnSigs`, so keep the spellings straight: `.` for pool members, `::` for module
+calls.
 
 That's a general lesson about compilers: a surprising amount of "language
 design" turns out to be *the order in which you try interpretations*.
@@ -368,85 +386,6 @@ built.
 The general move: **when a `case` covers an enum, prefer no `else`.** You trade
 a one-minute chore whenever the enum grows for a compile error instead of a
 silent gap. Codegen does the same thing for the same reason.
-
-## How fast is it, and where does the time go?
-
-Measured with `benches/bench_phases.nim`, which generates N independent
-type+fn pairs and times each phase in isolation. Phases that mutate the tree
-(typecheck, lower) get a fresh parse each iteration so the work is real.
-
-At 16,000 lines:
-
-| phase           |    time | share |
-|-----------------|--------:|------:|
-| lex             |   25 ms |   17% |
-| parse           |   38 ms |   26% |
-| verifyEffects   |    5 ms |    3% |
-| typecheck       |   42 ms |   28% |
-| lower           |   11 ms |    7% |
-| emitNim         |   28 ms |   19% |
-| **total**       | **148 ms** | **~108K lines/sec** |
-
-Two things worth reading off that table.
-
-**Checking is the most expensive phase, and effects are nearly free.** Type
-checking is 28% of the time; the effect pass is 3%. That asymmetry is
-structural — effects are a small fixed set of markers unioned up the tree,
-while typechecking resolves names, instantiates generics, and matches record
-fields.
-
-**Nothing dominates.** No single phase is over 30%, which means there's no
-easy win — you'd have to speed up several to move the total much.
-
-### Scaling: not quite linear
-
-Run the same benchmark at different sizes and throughput *drops*:
-
-| lines  | total  | lines/sec |
-|-------:|-------:|----------:|
-|  4,000 |  29 ms |   140,000 |
-|  8,000 |  70 ms |   114,000 |
-| 16,000 | 154 ms |   104,000 |
-| 32,000 | 320 ms |   100,000 |
-
-Per phase, going from 4K to 32K lines (an 8× increase):
-
-- lex **8.9×** and parse **8.9×** — linear, as they should be. Each token and
-  each node is visited a constant number of times.
-- emitNim **13.3×** — mildly superlinear.
-- typecheck **14.4×** and lower **18.3×** — clearly superlinear.
-
-**Why:** `findDecl` and `findFn` in `ast_query.nim` are linear scans over a
-module's declaration list. Call them once per declaration and you get O(N²).
-Lowering leans on them hardest, which is why it degrades most.
-
-**What already mitigates it:** the typechecker builds hash tables up front —
-`fnSigs` and `typeDecls` in `typecheck_state.nim` — so its hottest lookups are
-O(1) rather than scans. That's why typecheck degrades less than lowering
-despite doing far more work. The remaining scans are in the paths that haven't
-been given the same treatment.
-
-**Is it a problem?** Not yet, and that's a real engineering judgment rather
-than a shrug. 32,000 lines still checks in a third of a second, and the
-signature index (below) means you rarely re-check imports at all. The fix — an
-up-front name→decl table shared by every pass — is well understood and can wait
-until a real program feels slow. Worth knowing it's there, though: if compile
-times ever go bad on a big module, this is the reason, and this is the fix.
-
-### The efficiency trick that matters most
-
-The signature index in `modules.nim` beats all of the above, because the
-fastest pass is the one you skip.
-
-Checking a module needs its imports' **signatures**, not their bodies. So
-signatures are cached on disk (msgpack, keyed by compiler build stamp + source
-hash), and `tuck check` loads those instead of parsing and checking imported
-files at all. `tuck build` asks for real bodies, because it has to emit code
-for them.
-
-The asymmetry is the point: the command you run on every save does the least
-work. Per-phase micro-optimization is worth a few percent; not doing the work
-is worth the whole import closure.
 
 ## Running it
 
