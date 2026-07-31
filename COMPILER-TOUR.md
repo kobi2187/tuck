@@ -357,6 +357,23 @@ Depending on what you're curious about:
   especially the decision-table part.
 - **"What does the whole thing do?"** — `checkProgram` in `tuck.nim`.
 
+### A trick worth knowing: exhaustive dispatch as a free check
+
+`compiler/ast_serializer.nim` has no `else` branch anywhere — every `case` over
+a node kind handles every kind. That isn't tidiness; it's a cheap correctness
+check. Add a node kind to `ast.nim` and the serializer stops compiling until
+someone handles it.
+
+It used to have `else: discard`, and the result was a debugging tool that lied:
+dumping an actor showed no `on select` arms, no sends, no registries, no
+consts, no effects. The parser had built all of it; the dump just didn't say
+so — and a dump is most misleading exactly when you reach for it, which is when
+you're already confused.
+
+The general move: **when a `case` covers an enum, prefer no `else`.** You trade
+a one-minute chore whenever the enum grows for a compile error instead of a
+silent gap. Codegen does the same thing for the same reason.
+
 ## Running it
 
 ```bash

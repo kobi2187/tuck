@@ -11,16 +11,49 @@
 # early. Seeing text become tokens become a tree makes the first three stages
 # concrete in a way that reading about them does not.
 #
-# NOTE: this covers the node kinds worth inspecting rather than all of them,
-# and unknown kinds fall through quietly. It is a debugging aid, so a missing
-# arm costs you a blank spot in the dump — unlike codegen, where the same gap
-# would produce broken output and therefore has to be exhaustive.
+# EXHAUSTIVE ON PURPOSE — there is no `else: discard` anywhere in this file.
+#
+# It used to skip the kinds nobody had gotten around to, which quietly made it
+# a liar: dumping an actor showed no `on select` arms, no sends, no registries,
+# no consts, no error policies, no effects. The tree looked like the parser had
+# not built things it had in fact built — which is worst precisely when you
+# reach for a dump, i.e. when something is already confusing.
+#
+# With every `else` gone, Nim's exhaustiveness check does the work: add a node
+# kind to ast.nim and this file stops compiling until it is handled. That makes
+# the serializer a second check on the AST rather than a lagging copy of it,
+# and it is the cheapest such check in the codebase — a dump is not correctness
+# critical, so being forced to update it costs a minute and catches the
+# omission before codegen does.
 import std/json, ast
 
 proc toJson*(t: Type): JsonNode
 proc toJson*(e: Expr): JsonNode
 proc toJson*(p: Pattern): JsonNode
 proc toJson*(d: Decl): JsonNode
+
+proc paramsJson(params: seq[Param]): JsonNode =
+  ## `[{name, typ}, ...]` — the shape used wherever a node carries params.
+  result = newJArray()
+  for p in params:
+    var pj = newJObject()
+    pj["name"] = %p.name
+    pj["typ"] = toJson(p.typ)
+    result.add(pj)
+
+proc fieldsJson(fields: seq[FieldDef]): JsonNode =
+  ## `[{name, typ}, ...]` — same, for declared fields.
+  result = newJArray()
+  for f in fields:
+    var fj = newJObject()
+    fj["name"] = %f.name
+    fj["typ"] = toJson(f.typ)
+    result.add(fj)
+
+proc declsJson(decls: seq[Decl]): JsonNode =
+  ## A list of member declarations.
+  result = newJArray()
+  for d in decls: result.add(toJson(d))
 
 proc toJson*(t: Type): JsonNode =
   if t == nil: return newJNull()
@@ -173,8 +206,33 @@ proc toJson*(e: Expr): JsonNode =
       if s.arg != nil: sj["arg"] = toJson(s.arg)
       steps.add(sj)
     res["steps"] = steps
-  else:
-    discard
+  of exkBracket:
+    res["receiver"] = toJson(e.brReceiver)
+    var brArgs = newJArray()
+    for a in e.brArgs: brArgs.add(toJson(a))
+    res["args"] = brArgs
+  of exkBracketAssign:
+    res["target"] = toJson(e.brTarget)
+    res["val"] = toJson(e.brValue)
+  of exkQualified:
+    res["modulePath"] = %e.modulePath
+    res["qualName"] = %e.qualName
+  of exkImport:
+    res["path"] = %e.path
+  of exkSend:
+    res["actor"] = %e.sendActor
+    res["handler"] = %e.sendHandler
+    if e.sendPayload != nil: res["payload"] = toJson(e.sendPayload)
+  of exkSelect:
+    var arms = newJArray()
+    for arm in e.selArms:
+      var aj = newJObject()
+      aj["source"] = %arm.source
+      if arm.arg != nil: aj["arg"] = toJson(arm.arg)
+      if arm.binding.len > 0: aj["binding"] = paramsJson(arm.binding)
+      aj["body"] = toJson(arm.body)
+      arms.add(aj)
+    res["arms"] = arms
   return res
 
 proc toJson*(p: Pattern): JsonNode =
@@ -227,38 +285,73 @@ proc toJson*(d: Decl): JsonNode =
     for m in d.objMembers: members.add(toJson(m))
     res["members"] = members
   of dkFn:
-    var params = newJArray()
-    for p in d.fnParams:
-      var pj = newJObject()
-      pj["name"] = %p.name
-      pj["typ"] = toJson(p.typ)
-      params.add(pj)
-    res["params"] = params
+    res["generics"] = %d.fnGenerics
+    res["params"] = paramsJson(d.fnParams)
+    res["returnType"] = toJson(d.fnReturnType)
+    var effects = newJArray()
+    for eff in d.fnEffects: effects.add(% $eff)
+    res["effects"] = effects
     res["body"] = toJson(d.fnBody)
+    res["isPending"] = %d.isPending
+    res["isDecision"] = %d.isDecision
+    res["isExtern"] = %d.isExtern
+    res["isInline"] = %d.isInline
+    if d.externHeader != "": res["externHeader"] = %d.externHeader
+    if d.externEmit != "": res["externEmit"] = %d.externEmit
+    if d.externLib != "": res["externLib"] = %d.externLib
+    if d.fnErrorTypes.len > 0: res["errorTypes"] = %d.fnErrorTypes
   of dkRegister:
     res["address"] = %d.regAddress
-    var fields = newJArray()
-    for f in d.regFields:
-      var fj = newJObject()
-      fj["name"] = %f.name
-      fj["typ"] = toJson(f.typ)
-      fields.add(fj)
-    res["fields"] = fields
+    res["fields"] = fieldsJson(d.regFields)
   of dkActor:
-    var fields = newJArray()
-    for f in d.actorFields:
-      var fj = newJObject()
-      fj["name"] = %f.name
-      fj["typ"] = toJson(f.typ)
-      fields.add(fj)
-    res["fields"] = fields
-    var handlers = newJArray()
-    for h in d.handlers: handlers.add(toJson(h))
-    res["handlers"] = handlers
+    res["fields"] = fieldsJson(d.actorFields)
+    res["handlers"] = declsJson(d.handlers)
   of dkExpr:
     res["expr"] = toJson(d.expr)
-  else:
-    discard
+  of dkTask:
+    res["params"] = paramsJson(d.taskParams)
+    res["returnType"] = toJson(d.taskReturnType)
+    var effects = newJArray()
+    for eff in d.taskEffects: effects.add(% $eff)
+    res["effects"] = effects
+    res["body"] = toJson(d.taskBody)
+  of dkMixin:
+    res["members"] = declsJson(d.mixinMembers)
+  of dkRegistry:
+    var variants = newJArray()
+    for v in d.variants:
+      var vj = newJObject()
+      vj["name"] = %v.name
+      vj["fields"] = fieldsJson(v.fields)
+      if v.value != "": vj["value"] = %v.value
+      variants.add(vj)
+    res["variants"] = variants
+  of dkPool:
+    res["elem"] = toJson(d.poolElem)
+    res["count"] = %d.poolCount
+  of dkFnSig:
+    res["params"] = paramsJson(d.sigParams)
+    res["returnType"] = toJson(d.sigReturn)
+    res["isCCallback"] = %d.sigIsCCallback
+  of dkConst:
+    res["val"] = toJson(d.constVal)
+  of dkStaticAssert:
+    res["assert"] = toJson(d.assertExpr)
+  of dkErrors:
+    res["policy"] = %d.policyName
+    if d.errHandler != nil: res["handler"] = toJson(d.errHandler)
+  of dkImport:
+    discard  # the module name is already in `name`
+  of dkSelect:
+    var arms = newJArray()
+    for arm in d.selectArms:
+      var aj = newJObject()
+      aj["source"] = %arm.source
+      if arm.arg != nil: aj["arg"] = toJson(arm.arg)
+      if arm.binding.len > 0: aj["binding"] = paramsJson(arm.binding)
+      aj["body"] = toJson(arm.body)
+      arms.add(aj)
+    res["arms"] = arms
   return res
 
 proc toJson*(m: Module): JsonNode =
