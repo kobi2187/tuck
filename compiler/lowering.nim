@@ -66,15 +66,6 @@ proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
     discard
   return @[]
 
-proc lookupRegistryVariantParams(m: Module, registryName, variantName: string): seq[string] =
-  let d = m.findDecl(dkRegistry, registryName)
-  if d == nil: return @[]
-  for v in d.variants:
-    if v.name == variantName:
-      for f in v.fields: result.add(f.name)
-      return result
-  @[]
-
 proc lowerExpr(e: Expr, m: Module)
 
 proc lowerExpr(e: Expr, m: Module) =
@@ -87,37 +78,23 @@ proc lowerExpr(e: Expr, m: Module) =
     for a in e.args:
       lowerExpr(a, m)
     
-    # Check if this is an Event Registry raise call:
-    # e.callee: exkCall(callee: exkVar(name: variantName), args: [exkField(receiver: exkVar(name: registryName), fieldName: "raise")])
+    # `Registry.raise SomeEvent` — a call whose callee is a call whose argument
+    # is a field access. Flatten it to a plain call to `raise_Registry_Event`,
+    # which codegen emits like any other and never learns registries exist.
     if e.callee != nil and e.callee.kind == exkCall and e.callee.callee != nil and e.callee.callee.kind == exkVar:
       if e.callee.args.len == 1 and e.callee.args[0].kind == exkField:
         let fieldNode = e.callee.args[0]
         if fieldNode.receiver != nil and fieldNode.receiver.kind == exkVar and fieldNode.fieldName == "raise":
-          let registryName = fieldNode.receiver.name
-          let variantName = e.callee.callee.name
-          e.callee = Expr(span: e.span, kind: exkVar, name: "raise_" & registryName & "_" & variantName)
-    
-    let calleeName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name else: ""
-    if calleeName != "":
-      var expectedParams: seq[string]
-      if calleeName.startsWith("raise_"):
-        let parts = calleeName.split("_")
-        if parts.len == 3:
-          expectedParams = lookupRegistryVariantParams(m, parts[1], parts[2])
-      elif semLayer.callParamsFor(e).len > 0:
-        # TOP-LEVEL dkFn ONLY, deliberately. A member fn's payload explosion is
-        # the backends' job (they see the receiver) and doing it here too would
-        # apply it twice; a TASK is likewise left alone, since scheduling it is
-        # the backends' concern.
-        #
-        # The checker recorded these when it resolved the call, and only for
-        # top-level fns — so a non-empty value already means "safe to explode"
-        # and no lookup is needed to find that out. Asking the decl list here
-        # instead costs a scan per call expression, which is quadratic over a
-        # module (lowering grew 18.3x across an 8x input increase while lexing
-        # and parsing grew 8.9x; benches/bench_phases.nim).
-        expectedParams = semLayer.callParamsFor(e)
-        
+          e.callee = Expr(span: e.span, kind: exkVar,
+                          name: "raise_" & fieldNode.receiver.name & "_" &
+                                e.callee.callee.name)
+
+    if e.callee != nil and e.callee.kind == exkVar:
+      # The checker recorded the callee's params when it resolved the call, and
+      # only for top-level fns — so a non-empty value already means "safe to
+      # explode". A member fn's payload explosion belongs to the backends,
+      # which see the receiver, and a task is theirs to schedule.
+      let expectedParams = semLayer.callParamsFor(e)
       if expectedParams.len > 0 and e.args.len == 1 and e.args[0].kind == exkStruct:
         var newArgs: seq[Expr]
         let originalStruct = e.args[0]
