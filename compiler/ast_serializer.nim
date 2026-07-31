@@ -1,4 +1,20 @@
 # compiler/ast_serializer.nim
+#
+# The AST as JSON — a debugging window, not part of the pipeline.
+#
+# `tuck p file.tuck --ast` prints the tree this produces. That is the fastest
+# way to answer "what did the parser actually build?", and the fastest way to
+# see what mangling renamed, since you can diff the tree before and after a
+# pass.
+#
+# If you are learning how this compiler works, run it on a three-line file
+# early. Seeing text become tokens become a tree makes the first three stages
+# concrete in a way that reading about them does not.
+#
+# NOTE: this covers the node kinds worth inspecting rather than all of them,
+# and unknown kinds fall through quietly. It is a debugging aid, so a missing
+# arm costs you a blank spot in the dump — unlike codegen, where the same gap
+# would produce broken output and therefore has to be exhaustive.
 import std/json, ast
 
 proc toJson*(t: Type): JsonNode

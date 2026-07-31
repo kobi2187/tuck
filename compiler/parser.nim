@@ -1,4 +1,43 @@
 # compiler/parser.nim
+#
+# STAGE 2 OF THE PIPELINE — tokens become a tree. This file handles
+# DECLARATIONS: the top level of a program (fn, type, actor, task, mixin,
+# pending blocks, extern blocks, decision tables).
+#
+# Tokens are a flat list, but programs nest: a fn holds statements, a statement
+# holds expressions, expressions hold more expressions. The parser builds the
+# tree that mirrors that nesting — the AST (Abstract Syntax Tree, defined in
+# ast.nim).
+#
+# "Abstract" means it drops whatever does not change meaning: the parentheses
+# you added for readability, the whitespace, the comments. `2 + 3 * 4` becomes
+# a tree that already KNOWS the multiply binds tighter, without needing
+# parentheses to say so. Precedence stops being a question once it is shape.
+#
+# WHERE THIS FILE SITS. The grammar splits into layers, each using only the
+# ones below it:
+#
+#   parser_base      peek / advance / expect / error reporting
+#      ^
+#   parser_expr      expressions and patterns — the recursive core
+#      ^
+#   parser_type      type expressions: int, {a: int}, !str, Seq[int]
+#      ^
+#   parser (here)    declarations, and the module as a whole
+#
+# The one-way dependency is what stops mutual recursion from becoming a knot,
+# and it tells you where new syntax belongs: a new type form goes in
+# parser_type, a new operator in parser_expr, a new top-level keyword here.
+#
+# A RULE THIS CODEBASE HOLDS TO: every language construct gets its OWN node
+# kind. When `on select` was added it got real exkSelect / dkSelect nodes,
+# rather than being encoded as a `match` with a fake subject. Reusing an
+# existing node shape is always tempting and always costs more later, because
+# every downstream stage then has to know the trick and special-case it.
+#
+# What this stage does NOT do: it does not care whether anything is CORRECT.
+# `"hello" + 5` parses fine — it is well-formed syntax. Rejecting it is the
+# typechecker's job. A parser only decides whether the shape is legal.
 import strutils, tables
 import ast
 import ../lexer

@@ -1,4 +1,32 @@
 # compiler/semantics.nim
+#
+# STAGE 5 OF THE PIPELINE — the effect audit.
+#
+# An EFFECT is a marker on a function saying what it does besides compute:
+# [io] touches the outside world, [may_block] can wait, [no_alloc] promises not
+# to allocate. Think of it as a type system for side effects — you can read a
+# signature and know whether calling it can print, block, or allocate, without
+# opening the body.
+#
+# The rule this file enforces: a function may only perform effects it declares.
+# Call an [io] function from one that never declared [io], and that is an
+# error — the caller would be doing IO while its signature promised it did not.
+# Effects propagate up the call graph, so the declaration has to as well.
+#
+# Why it matters for Tuck specifically: the target is embedded work, where
+# "does this allocate?" and "can this block?" are the questions that decide
+# whether code is usable in an interrupt handler. Better to answer them at
+# compile time than to discover it on the device.
+#
+# ORDERING — THIS IS A REAL CONSTRAINT, NOT A PREFERENCE. This pass must run
+# AFTER typecheck.nim, never before. Typechecking resets the shared semantic
+# side-table (resolution.nim), so an effect pass that ran first would have all
+# of its async call-site marks wiped before codegen ever read them. The
+# sequencing lives in `checkOrDie` in tuck.nim, where it is commented.
+#
+# This kind of hidden inter-pass dependency is common in compilers and almost
+# never obvious from the code. When you find one, write it down where the
+# ordering is decided.
 import ast, tables, sets, strutils
 import resolution
 

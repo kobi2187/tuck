@@ -5,6 +5,38 @@
 #   tuck parse   file.tuck        (p)   syntax check; --ast dumps JSON
 #   tuck check   file.tuck        (ch)  effects + types + PENDING report
 #   tuck compile file.tuck        (c)   check + emit .nim (--odin for .odin too)
+#
+# THE DRIVER — this is where the pipeline is actually sequenced. If you want to
+# see the whole compiler in one screen, read `checkProgram` below:
+#
+#   load          modules.nim      pull in the import closure
+#   inject types  modules.nim      imported types become visible unqualified
+#   typecheck     typecheck.nim    do the types work out?
+#   verify        semantics.nim    do the effects add up?
+#   index         modules.nim      cache signatures for next time
+#   report                         list what is still `pending:`
+#
+# and then, for `compile`/`build` only:
+#
+#   mangle        mangle.nim       tuck_ prefix so emitted names cannot collide
+#   lower         lowering.nim     rewrite fancy constructs into dull ones
+#   emit          codegen*.nim     print Nim source, and Odin if asked
+#
+# TWO ORDERING FACTS THAT ARE EASY TO GET WRONG:
+#
+#   Typecheck BEFORE effects. Typechecking resets the shared semantic layer, so
+#   running the effect pass first would wipe its async call-site marks before
+#   codegen could read them. Commented on `checkOrDie`.
+#
+#   Each backend lowers its OWN deepCopy. Lowering and mangling mutate the tree
+#   in place, so two backends sharing one tree means the second lowers
+#   already-lowered code.
+#
+# WHY THE `pending:` REPORT EXISTS. Tuck lets you declare a function's
+# signature with no body. The compiler emits a stub and lists it as
+# unimplemented, so the program still compiles AND runs. You can sketch an
+# entire design in types, run it end to end, then fill in bodies one at a time.
+# The PENDING block printed after a check is that list.
 import os, strutils, times, tables, std/json, osproc
 import lexer
 import compiler/ast

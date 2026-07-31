@@ -1,8 +1,59 @@
 # compiler/typecheck.nim
-# Bidirectional type checker: synthesize (pull types up) + check (push types down).
-# Fail-fast: raises SemanticError on the first type error.
-# Undeclared symbols synthesize Unknown, which is compatible with everything,
-# so sketch code keeps compiling while declared code is checked strictly.
+#
+# STAGE 4 OF THE PIPELINE — does this program actually make sense?
+#
+# The parser will happily build a tree for `"hello" + 5`. That is perfectly
+# good SYNTAX. It is nonsense SEMANTICS, and this file is what says so — before
+# the program runs, rather than after it crashes. This is where a compiler
+# earns its keep.
+#
+# BIDIRECTIONAL CHECKING. Two cooperating questions, used in alternation:
+#
+#   synthesize  "I have no expectations. What type IS this?"   (`5` -> int)
+#   check       "I expect a str here. Does this fit?"
+#
+# Most real typecheckers work this way. Pure inference gets expensive and
+# fragile; pure annotation gets tedious to write. Alternating between pulling
+# types up and pushing them down gets most of the convenience for far less
+# machinery.
+#
+# FAIL-FAST. The first type error raises SemanticError and stops. No error
+# recovery, no cascade of confused follow-up messages caused by the first
+# mistake. One real error at a time, with a source position.
+#
+# GRADUAL BY DESIGN. An undeclared symbol synthesizes Unknown, and Unknown is
+# compatible with everything. So half-written sketch code still compiles while
+# the parts you HAVE declared are checked strictly. This is what makes Tuck's
+# `pending:` blocks work — declare the signature, leave the body for later, and
+# keep running the program in the meantime.
+#
+# ---------------------------------------------------------------------------
+# THE PART WORTH READING: synthFieldAccess, further down.
+#
+# `a.b` means SEVEN different things in Tuck, and the checker decides which by
+# trying them in a fixed order:
+#
+#   1. .ok / .err / .value on a fallible value   result introspection
+#   2. slot.invoke {args}                        call through a baked slot
+#   3. 5.ms, n.toStr                             postfix application
+#   4. Color.Red                                 sum-type variant construction
+#   5. point.x                                   an ordinary field read
+#   6. Pool.acquire                              qualified member call
+#   7. x.describe                                resolve to a fn by name
+#
+# THAT ORDER IS THE LANGUAGE RULE. It is not an implementation detail — change
+# the order and you change what programs mean. Each case is a small proc
+# returning nil for "not mine", so the parent reads as exactly the list above.
+#
+# There is a general lesson in that: a surprising amount of what feels like
+# "language design" turns out to be the order in which you try interpretations.
+# ---------------------------------------------------------------------------
+#
+# Split across four files so this one stays about RULES rather than plumbing:
+#   typecheck_state.nim   the TypeChecker object and its lookups
+#   typecheck_util.nim    small shared predicates (isNumeric, isWrapper, fail)
+#   typecheck_flow.nim    control-flow questions (does this branch always exit?)
+#   typecheck.nim         the rules themselves
 import ast, semantics, lowering, tables, strutils, sets
 import resolution
 import ast_query

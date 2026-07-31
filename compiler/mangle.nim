@@ -34,6 +34,30 @@
 #     would extend the same predicate here rather than in three backends.
 #   - LOCALS AND PARAMS. Not global, cannot collide.
 #   - ENUM VARIANTS / MATCH PATTERNS. Reached through their owning type.
+#
+# THE BOUNDARY THAT MATTERS — learned from two real bugs.
+#
+# Mangling exists for ONE purpose: keeping EMITTED IDENTIFIERS from colliding
+# with target-language symbols. That is the whole scope. Anything that is not
+# an emitted identifier must not be mangled, and getting this wrong is subtle
+# because the mangled name looks plausible everywhere.
+#
+# Error ids were the counter-example. An id like `t/ParseError.Empty` is hashed
+# to a uint16 at compile time and printed back to the user in crash reports. It
+# never becomes an identifier in the output, so it never had a collision
+# problem to solve. When a mangled name leaked into it, two things broke at
+# once: `match r.err` silently stopped matching (the construction site had the
+# prefix, the match arm did not, so every arm fell through and the program
+# exited 0), and error reports started showing users `tuck_ParseError`.
+#
+# The fix is the `sourceName` field on Type / Expr / Decl in ast.nim: this pass
+# RECORDS the original name at the moment it renames, via rememberSource below.
+# Anything wanting the user-facing name reads it back with `writtenName`.
+#
+# The principle worth carrying to other compilers: KEEP THE FACTS YOU KNOW.
+# This pass knows the original name at the instant it overwrites it. Storing it
+# costs one field. Reconstructing it later by stripping a prefix is a guess
+# dressed up as a rule, and it breaks the moment something else adds a prefix.
 import ast, strutils, sets, tables, std/options
 import resolution
 

@@ -1,4 +1,47 @@
 # compiler/codegen.nim
+#
+# STAGE 8 OF THE PIPELINE — the tree becomes Nim source text.
+# (codegen_odin.nim is this file's twin, emitting Odin instead.)
+#
+# This is the least mysterious stage: walk the tree, print strings. By the time
+# code reaches here every hard question has been answered — types check,
+# effects add up, names cannot collide, the fancy constructs are lowered away.
+# What is left is transcription.
+#
+# THE SHAPE OF A CODE GENERATOR, and why the long `case` statements stay long.
+#
+# genExpr and genDecl are each one big `case` over node kinds, one arm per
+# kind. They are long, and they are deliberately NOT split up. The reason is
+# that Nim errors on a `case` that misses an enum value — so the day someone
+# adds a node kind to ast.nim, the compiler immediately names every backend
+# that has not handled it yet. Break the dispatch into smaller procs and that
+# error becomes a silent gap that ships.
+#
+# The rule this codebase follows: LENGTH IS NOT THE PROBLEM, NESTING IS. A flat
+# 200-line dispatch where every arm is one line is easy to read. A 40-line proc
+# nested four deep is not. So the dispatch stays whole and the arms delegate to
+# small named procs — genFnDecl, genObjectDecl, genTaskDecl, and so on.
+#
+# WHAT IS SHARED WITH THE ODIN BACKEND, AND WHAT IS NOT.
+#
+# Shared, in codegen_common.nim: logic that has nothing to do with which
+# language is being emitted — errNameFor, actorSingletonName, lookupFnParams.
+# These were byte-identical copies in both backends and had no business being
+# duplicated.
+#
+# NOT shared, on purpose: anything whose difference IS the target syntax.
+# genObjectDecl exists in both files because Nim spells it `type X = object`
+# and Odin spells it `X :: struct {}`. A shared abstraction over that would
+# need a mini templating layer, which is harder to read than two honest copies.
+# Share the logic; never share the syntax.
+#
+# WORTH READING: genFnDecl's decision-table path. When every input column has a
+# small enumerable set of values, an entire table of rules collapses into ONE
+# `case` over a packed integer key — every combination resolved at compile time
+# and grouped by outcome, so the running program does zero comparisons. When a
+# column is not enumerable it falls back to a plain if/elif chain. That is a
+# real optimization at a size you can actually read: do the work now so the
+# program does not do it later.
 import ast, strutils, sets, tables
 import resolution
 import ast_query

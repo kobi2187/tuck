@@ -1,5 +1,19 @@
 # compiler/modules.nim — import-closure loading with a msgpack AST cache.
 #
+# STAGE 3 OF THE PIPELINE — find the rest of the program.
+#
+# `import time` means the compiler now needs std/time.tuck too, and whatever
+# THAT imports, and so on. This file walks the import graph and loads the whole
+# closure before any checking starts, because you cannot typecheck a call to
+# something you have not read yet.
+#
+# THE IDEA WORTH STEALING: checking a program does not need the full BODIES of
+# its imports — only their SIGNATURES, the names and types of what they export.
+# So a signature index is kept on disk, and `tuck check` loads signatures
+# instead of re-parsing entire files. `tuck build` asks for real bodies,
+# because now it genuinely has to emit code for them. Same walk, two depths,
+# and the cheap one is what you run on every keystroke.
+#
 # `import http` in foo.tuck loads http.tuck from foo's directory. Imported
 # modules are cached as serialized msgpack next to their source
 # (<dir>/.tuck-cache/<name>.bin) keyed by compiler build stamp + source hash,

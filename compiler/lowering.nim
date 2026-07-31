@@ -1,4 +1,34 @@
 # compiler/lowering.nim
+#
+# STAGE 7 OF THE PIPELINE — make the tree boring before emitting it.
+#
+# Lowering rewrites constructs that are pleasant to WRITE into constructs that
+# are easy to EMIT. Every shape eliminated here is one that neither backend
+# has to learn — and with two backends, that saving doubles.
+#
+# Two jobs in this compiler, both worth understanding as examples of the idea:
+#
+# 1. REGISTRY RAISES BECOME ORDINARY CALLS. `Registry.raise SomeEvent` reads
+#    nicely and parses into an awkward tree: a call whose callee is a call
+#    whose argument is a field access. Lowering flattens it into a plain call
+#    to `raise_Registry_SomeEvent`. Codegen then emits it like any other call
+#    and never learns that registries exist at all.
+#
+# 2. PAYLOAD EXPLOSION. Tuck lets you hand a struct to a function that declares
+#    separate parameters, matched up BY NAME rather than by position. That
+#    matching happens here, and the call is rewritten into positional
+#    arguments, so codegen just emits arguments in order.
+#
+# Both have the same shape: something friendly at the source level becomes
+# something dull before the emitter sees it. That is the entire purpose of a
+# lowering pass, in any compiler.
+#
+# WHY EACH BACKEND LOWERS ITS OWN COPY. lowerModule mutates the tree in place.
+# tuck.nim gives each backend a deepCopy to lower, because otherwise the second
+# backend would be lowering already-lowered code — mangling names twice,
+# exploding payloads that were already exploded. The passes here are written to
+# be idempotent where practical, but the deep copy is what actually guarantees
+# it.
 import ast
 import resolution, strutils
 import ast_query

@@ -1,4 +1,34 @@
 # lexer.nim
+#
+# STAGE 1 OF THE PIPELINE — text becomes tokens.
+#
+# Source code arrives as one long string. `fn main() -> void:` is 19
+# characters; nothing in it says "this part is a keyword" or "this part is a
+# name". The lexer chops the string into TOKENS, the words of the language, so
+# that every later stage can stop worrying about characters:
+#
+#   fn main() -> void:
+#     -> tkFn, tkIdent("main"), tkLParen, tkRParen, tkArrow,
+#        tkIdent("void"), tkColon
+#
+# Why this is its own stage: without it, the parser would re-answer the same
+# boring questions everywhere — is this whitespace, is this a comment, does
+# this number have a decimal point, is `!=` one token or two. Answer them once
+# here, and everything downstream deals in tokens.
+#
+# INDENTATION. Tuck uses indentation for blocks, like Python. The lexer tracks
+# the indent level and emits tkIndent / tkDedent tokens when it changes. That
+# turns "block structure" into ordinary tokens, so the parser can treat an
+# indented block exactly like anything else with an opener and a closer. It is
+# the standard trick for offside-rule languages, and it is why the parser never
+# has to count spaces.
+#
+# What this stage does NOT do: it has no idea whether a program makes sense.
+# `fn fn fn` lexes perfectly happily into three tkFn tokens. Deciding that this
+# is nonsense is the parser's job (bad structure) and the typechecker's job
+# (bad meaning). A lexer only knows how to spell, never what things mean.
+#
+# Depends on nothing in compiler/ — it sits at the very bottom of the DAG.
 import os, strutils, tables
 
 type
