@@ -1057,10 +1057,11 @@ proc returnsNothing(sig: FnSig): bool =
   sig.ret == nil or
     (sig.ret.kind == tkNamed and sig.ret.name in ["void", "unit"])
 
-proc declaredEffects(m: Module, fnName: string): seq[EffectMarker] =
+proc declaredEffects(tc: TypeChecker, fnName: string): seq[EffectMarker] =
   ## The effects declared on `fnName`, empty if it has none or is unknown.
-  let fd = m.findDecl(dkFn, fnName)
-  if fd == nil: @[] else: fd.fnEffects
+  ## Reads the signature table rather than scanning declarations, so this
+  ## answers for imported fns too — their effects ride in through the index.
+  if tc.fnSigs.hasKey(fnName): tc.fnSigs[fnName].effects else: @[]
 
 proc appliedFnName(e: Expr): string =
   ## For `5.ms` in a field value, the name being applied — "" if this value
@@ -1075,7 +1076,7 @@ proc checkFieldValue(tc: var TypeChecker, fieldName: string, val: Expr) =
   if returnsNothing(tc.fnSigs[fn]):
     fail("Type Error: '" & fn & "' returns nothing, so it cannot fill field '" &
          fieldName & "' — a record field needs a value", val.span)
-  let effects = declaredEffects(tc.module, fn)
+  let effects = tc.declaredEffects(fn)
   if effects.len > 0:
     fail("Type Error: '" & fn & "' declares effects, so it cannot fill field '" &
          fieldName & "' — build the record from pure values and do the " &
@@ -1449,7 +1450,7 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
     of dkImport:
       tc.knownModules.incl(d.name)
     of dkFn:
-      tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType, d.fnGenerics)
+      tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects)
       if "::" in d.name:
         # qualified sketch stub legalizes its module prefix
         tc.knownModules.incl(d.name.split("::")[0])
@@ -1462,11 +1463,14 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
         if tc.pendingFns.hasKey(d.name):
           fail("Pending Error: '" & d.name & "' is implemented — remove it from the pending block", d.span)
         tc.implementedFns.incl(d.name)
-    of dkTask: tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType, @[])
+    of dkTask:
+      tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType, @[], d.taskEffects)
     of dkFnSig:
       # a named function-signature type: register its call shape under NAME and
       # mark NAME as a fnsig so a call through a NAME-typed slot is validated.
-      tc.fnSigs[d.name] = (d.sigParams, d.sigReturn, @[])
+      # A signature TYPE declares no effects of its own — what gets baked into
+      # the slot carries them.
+      tc.fnSigs[d.name] = (d.sigParams, d.sigReturn, @[], @[])
       tc.fnSigNames.incl(d.name)
     of dkPool:
       # spec 7.2: a pool exposes two ordinary fns. Registering them as normal
@@ -1476,10 +1480,10 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
       let optElem = Type(span: d.span, kind: tkApp,
                          base: Type(span: d.span, kind: tkNamed, name: "?"),
                          args: @[d.poolElem])
-      tc.fnSigs[d.name & ".acquire"] = (@[], optElem, @[])
+      tc.fnSigs[d.name & ".acquire"] = (@[], optElem, @[], @[])
       tc.fnSigs[d.name & ".release"] =
         (@[Param(name: "slot", typ: d.poolElem, span: d.span)],
-         Type(span: d.span, kind: tkNamed, name: "void"), @[])
+         Type(span: d.span, kind: tkNamed, name: "void"), @[], @[])
     of dkType:
       if d.typeBody != nil:
         tc.typeDecls[d.name] = d.typeBody
@@ -1784,8 +1788,8 @@ proc typecheckModule*(m: Module,
   for d in m.decls:
     if d != nil and d.kind == dkConst:
       proc isIoFn(m: Module, name: string): bool =
-        let fd = m.findDecl(dkFn, name)
-        fd != nil and emIo in fd.fnEffects
+        # Reads the signature table, so an imported [io] fn counts too.
+        emIo in tc.declaredEffects(name)
       proc fnDeclared(m: Module, name: string): bool =
         m.findDecl(dkFn, name) != nil
       proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr,
@@ -1870,7 +1874,7 @@ proc moduleSigs*(m: Module): seq[SigInfo] =
   tc.collectSigs(m.decls)
   for name, sig in tc.fnSigs:
     result.add(SigInfo(name: name, params: sig.params, ret: sig.ret,
-                       generics: sig.generics,
+                       generics: sig.generics, effects: sig.effects,
                        isPending: tc.pendingFns.hasKey(name),
                        line: tc.pendingFns.getOrDefault(name).line))
 
@@ -1963,7 +1967,7 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
       else:
         for si in preSigs.getOrDefault(imp):
           if "::" notin si.name:
-            let sig: FnSig = (si.params, si.ret, si.generics)
+            let sig: FnSig = (si.params, si.ret, si.generics, si.effects)
             extern[imp & "::" & si.name] = sig
             addBare(si.name, sig)
             if si.isPending:

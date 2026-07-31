@@ -570,4 +570,46 @@ rc=0; "tests/.smoke_e32/out/m_32_duration_units" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: duration-units example exit $rc, want 42"; exit 1; }
 rm -rf "tests/.smoke_e32"
 
+# Effects cross the module boundary, from source AND from the cached index.
+# Both paths must reject identically: a pure fn calling an imported [io] fn is
+# an error whether the callee was just parsed or restored from .tuck-cache.
+# Run twice on purpose — the second run is the one that reads the index.
+eff="tests/.smoke_effects"
+rm -rf "$eff" && mkdir -p "$eff"
+cat > "$eff/lib.tuck" <<'EOF'
+fn noisy(value: int) -> int [io]:
+  return value + 1
+EOF
+cat > "$eff/bad.tuck" <<'EOF'
+import lib
+
+fn pure(value: int) -> int:
+  return value noisy
+
+fn main() -> void:
+  return
+EOF
+cat > "$eff/good.tuck" <<'EOF'
+import lib
+
+fn wrapper(value: int) -> int [io]:
+  return value noisy
+
+fn main() -> void [io]:
+  return
+EOF
+# warms the index for lib
+./tuck ch "$eff/good.tuck" --root:"$eff" > /dev/null || {
+  echo "FAIL: correctly-declared [io] propagation rejected"; exit 1; }
+for pass in cold warm; do
+  if ./tuck ch "$eff/bad.tuck" --root:"$eff" > /dev/null 2>&1; then
+    echo "FAIL: imported [io] not enforced on $pass cache"; exit 1
+  fi
+  ./tuck ch "$eff/bad.tuck" --root:"$eff" 2>&1 | grep -q "requires effect \[io\]" || {
+    echo "FAIL: wrong error for imported [io] on $pass cache"; exit 1; }
+done
+./tuck ch "$eff/good.tuck" --root:"$eff" > /dev/null || {
+  echo "FAIL: good case broke after index warm"; exit 1; }
+rm -rf "$eff"
+
 echo "cli smoke OK"

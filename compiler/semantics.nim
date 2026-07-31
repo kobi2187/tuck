@@ -182,9 +182,22 @@ proc verifyDecl*(c: var Checker, d: Decl) =
   else:
     discard
 
-proc verifyModuleEffects*(m: Module) =
+proc verifyModuleEffects*(m: Module,
+                          imported: Table[string, seq[EffectMarker]] =
+                            initTable[string, seq[EffectMarker]]()) =
+  ## Check every declaration in `m` performs only the effects it declares.
+  ##
+  ## `imported` carries the effects of fns this module IMPORTS, keyed the same
+  ## way calls name them. Without it an imported [io] fn looks pure to its
+  ## callers and the effect discipline stops at the file boundary; the driver
+  ## fills it from the signature index (see checkOrDie in tuck.nim), so it
+  ## works the same whether the callee came from source or from cache.
   var c = Checker(module: m, declared: initTable[string, seq[EffectMarker]](), visiting: initHashSet[string]())
-  
+
+  # Imported first, so a local declaration of the same name wins.
+  for name, effects in imported:
+    c.declared[name] = effects
+
   # Cache declared effect signatures in a symbol table lookup
   for d in m.decls:
     if d.kind == dkFn:

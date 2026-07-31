@@ -305,11 +305,21 @@ const UnknownName* = "<unknown>"
 type
   # A function signature as stored in the .tuck-cache signature index:
   # enough to typecheck an importer without deserializing the module's AST.
+  # What a module EXPORTS, in the form that survives to disk. This is the
+  # cross-module contract: msgpack'd into .tuck-cache so a later run can check
+  # against an import without re-reading its source, which is what keeps the
+  # stdlib out of every compile.
+  #
+  # Anything a caller must know to check a call correctly belongs here. If a
+  # field is missing, the check silently weakens the moment the callee comes
+  # from cache instead of source — effects were exactly that: without them an
+  # imported [io] fn looked pure to its callers.
   SigInfo* = object
     name*: string
     params*: seq[Param]
     ret*: Type
     generics*: seq[string]
+    effects*: seq[EffectMarker]  # [io], [may_block], ... — propagates to callers
     isPending*: bool
     line*: int
 

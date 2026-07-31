@@ -131,6 +131,24 @@ proc loadOrDie(path: string, needBodies: bool):
   except ModuleError as err:
     die(path & ": " & err.msg)
 
+proc importedEffects(loaded: seq[LoadedModule],
+                     sigOnly: Table[string, IndexEntry]):
+                       Table[string, seq[EffectMarker]] =
+  ## Effects of everything visible from OUTSIDE the module being checked, from
+  ## both places an import can come from: modules loaded with bodies, and
+  ## modules resolved to signatures only from the cached index. Keyed bare and
+  ## qualified, because a call may name either (`readFile` or `fs::readFile`).
+  for lm in loaded:
+    for d in lm.m.decls:
+      if d == nil or d.kind != dkFn: continue
+      result[d.name] = d.fnEffects
+      result[lm.name & "::" & d.name] = d.fnEffects
+  for modName, entry in sigOnly:
+    for si in entry.sigs:
+      if "::" in si.name: continue
+      result[si.name] = si.effects
+      result[modName & "::" & si.name] = si.effects
+
 proc checkOrDie(path: string, loaded: seq[LoadedModule],
                 sigOnly: Table[string, IndexEntry]): seq[string] =
   ## Typecheck, then verify effects. Order matters: typecheckProgram resets
@@ -140,9 +158,10 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   for lm in loaded: mods.add((lm.name, lm.path, lm.m))
   var preSigs = initTable[string, seq[SigInfo]]()
   for name, e in sigOnly: preSigs[name] = e.sigs
+  let imported = importedEffects(loaded, sigOnly)
   try:
     result = typecheckProgram(mods, preSigs)
-    for lm in loaded: verifyModuleEffects(lm.m)
+    for lm in loaded: verifyModuleEffects(lm.m, imported)
   except SemanticError as err:
     # typecheckProgram errors already carry file:line:col; effects errors don't
     if ".tuck:" in err.msg: die(err.msg)

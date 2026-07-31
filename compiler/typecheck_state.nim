@@ -10,7 +10,12 @@ import typecheck_util
 
 type
   Binding* = tuple[typ: Type, isVar: bool]
-  FnSig* = tuple[params: seq[Param], ret: Type, generics: seq[string]]
+  # The in-memory twin of ast.nim's SigInfo: what the checker needs to know
+  # about a fn it is calling, whether that fn was read from source or restored
+  # from the cached index. Keep the two in step — a field here that SigInfo
+  # lacks cannot survive to disk, and the check quietly weakens for imports.
+  FnSig* = tuple[params: seq[Param], ret: Type, generics: seq[string],
+                 effects: seq[EffectMarker]]
   TypeChecker* = object
     module*: Module
     fnSigs*: Table[string, FnSig]
