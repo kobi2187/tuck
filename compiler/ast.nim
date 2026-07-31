@@ -30,6 +30,18 @@ type
     col*: int
     file*: string
 
+  # What every AST node has: where it came from, and who it is.
+  #
+  # `id` is the handle the semantic layer uses. Before this existed only Expr
+  # carried one, so a Decl or a Type could be a lookup KEY but never a lookup
+  # TARGET — which is why passes ask "which declaration is named X" and scan
+  # the decl list to answer. Giving Decl and Type identity is what lets those
+  # scans become table reads, and what lets a reference point AT a declaration
+  # instead of describing it by name.
+  Node* = ref object of RootObj
+    id*: NodeId
+    span*: Span
+
   EffectMarker* = enum
     emIo
     emNoAlloc
@@ -73,8 +85,7 @@ type
     tkEffect
     tkRename
 
-  Type* = ref object
-    span*: Span
+  Type* = ref object of Node
     attrs*: seq[TypeAttr]
     sourceName*: Option[string]  ## see SourceName note below
     case kind*: TypeKind
@@ -207,9 +218,7 @@ type
     exkSend      # `ActorType send handler {payload}` — enqueue to an actor
     exkSelect    # task-body `on select:` — wait on read/timeout branches
 
-  Expr* = ref object
-    id*: NodeId
-    span*: Span
+  Expr* = ref object of Node
     sourceName*: Option[string]  ## see SourceName note below
     case kind*: ExprKind
     of exkLit:
@@ -356,8 +365,7 @@ type
     dkSelect  # `on select:` — wait on multiple event sources (spec §9.3)
     dkFnSig   # `fnsig NAME = {params} -> ret` — named function-signature type
 
-  Decl* = ref object
-    span*: Span
+  Decl* = ref object of Node
     name*: string
     sourceName*: Option[string]  ## see SourceName note below
     case kind*: DeclKind

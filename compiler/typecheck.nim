@@ -1499,13 +1499,15 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
           fail("Pending Error: '" & d.name & "' is implemented — remove it from the pending block", d.span)
         tc.implementedFns.incl(d.name)
     of dkTask:
-      tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType, @[], d.taskEffects)
+      tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType,
+                           newSeq[string](), d.taskEffects)
     of dkFnSig:
       # a named function-signature type: register its call shape under NAME and
       # mark NAME as a fnsig so a call through a NAME-typed slot is validated.
       # A signature TYPE declares no effects of its own — what gets baked into
       # the slot carries them.
-      tc.fnSigs[d.name] = (d.sigParams, d.sigReturn, @[], @[])
+      tc.fnSigs[d.name] = (d.sigParams, d.sigReturn,
+                           newSeq[string](), newSeq[EffectMarker]())
       tc.fnSigNames.incl(d.name)
     of dkPool:
       # spec 7.2: a pool exposes two ordinary fns. Registering them as normal
@@ -1515,10 +1517,12 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
       let optElem = Type(span: d.span, kind: tkApp,
                          base: Type(span: d.span, kind: tkNamed, name: "?"),
                          args: @[d.poolElem])
-      tc.fnSigs[d.name & ".acquire"] = (@[], optElem, @[], @[])
+      tc.fnSigs[d.name & ".acquire"] = (newSeq[Param](), optElem,
+                                        newSeq[string](), newSeq[EffectMarker]())
       tc.fnSigs[d.name & ".release"] =
         (@[Param(name: "slot", typ: d.poolElem, span: d.span)],
-         Type(span: d.span, kind: tkNamed, name: "void"), @[], @[])
+         Type(span: d.span, kind: tkNamed, name: "void"),
+         newSeq[string](), newSeq[EffectMarker]())
     of dkType:
       if d.typeBody != nil:
         tc.typeDecls[d.name] = d.typeBody
