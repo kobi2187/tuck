@@ -42,6 +42,19 @@ type
     foreignLibs: Table[string, string]  # C libs bound by extern blocks:
                                         # alias -> import spec. Each needs a
                                         # `foreign import` at package top level
+    actorNames: HashSet[string]  # dkActor decl names in `module`, built once
+    actorNamesBuilt: bool
+
+proc isActorType(ctx: var OdinCodegenCtx, name: string): bool =
+  ## O(1) after the first call. genOdinExpr's exkField arm asks this once per
+  ## FIELD ACCESS in the whole program; a decl-list scan there is the same
+  ## O(fns x accesses) mistake fixed for lowering, the effect checker's
+  ## task-spawn check, and the Nim backend's isActorType/isTaskName.
+  if not ctx.actorNamesBuilt:
+    for d in ctx.module.decls:
+      if d != nil and d.kind == dkActor: ctx.actorNames.incl(d.name)
+    ctx.actorNamesBuilt = true
+  name in ctx.actorNames
 
 proc odinLibSpec*(lib: string): string =
   ## `lib: "..."` -> Odin's `foreign import` spec. A bare name is a system
@@ -236,9 +249,6 @@ proc fieldType(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
 
 # --- Shared declaration lookups (mirror codegen.nim) -----------------------
 
-proc isActorType(m: Module, name: string): bool =
-  m.findDecl(dkActor, name) != nil
-
 # hasInvariants / externInvRet / isRecordType / isErrEnumRef used to be
 # copy-pasted here from codegen.nim (this backend began as a fork). They are
 # backend-neutral questions about the AST, so they live in ast_query.
@@ -278,7 +288,10 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 # (`p advance`) explodes to the fn's params by field name, in param order.
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  let params = lookupFnParams(ctx.module, calleeStr)
+  # Prefers the checker's own resolution (e.resolvedParams, set in
+  # checkCallArgs) over a decl-list scan — mirrors the Nim backend's fix.
+  let params = if e.resolvedParams.len > 0: e.resolvedParams
+               else: lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
   let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
@@ -518,6 +531,8 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
       if e.callee != nil and e.callee.kind == exkQualified and
          e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
         lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
+      elif e.resolvedParams.len > 0:
+        e.resolvedParams
       else:
         lookupFnParams(ctx.module, calleeStr)
     if expectedParams.len > 0:
@@ -766,7 +781,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkField:
     # `Counter.total` reads the actor SINGLETON's field, not a type's.
     if e.receiver != nil and e.receiver.kind == exkVar and
-       isActorType(ctx.module, e.receiver.name):
+       ctx.isActorType(e.receiver.name):
       return actorSingletonName(e.receiver.name) & "." & e.fieldName
     # `r.ok` on a !T/?T value is a STATUS TEST, not a field — the runtime
     # models status as an enum, so emit the comparison the guard means.

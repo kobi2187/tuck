@@ -44,6 +44,7 @@ type
   Checker = object
     module: Module
     declared: Table[string, seq[EffectMarker]]
+    taskNames: HashSet[string]  # dkTask decl names, built once — see isTask
     visiting: HashSet[string]
 
 proc getDeclaredEffects(c: Checker, name: string): seq[EffectMarker] =
@@ -81,10 +82,11 @@ proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
       # Calling a TASK is a spawn — it decouples the [io] work onto the
       # scheduler, so the task's effects do NOT propagate to the caller and
       # the caller does not suspend here (the yields happen inside the task).
-      var isTask = false
-      for d in c.module.decls:
-        if d != nil and d.kind == dkTask and d.name == calleeName: isTask = true
-      if not isTask:
+      # taskNames is built once in verifyModuleEffects; scanning c.module.decls
+      # here instead would cost one pass per call expression, quadratic over a
+      # module (the same mistake lowering's payload explosion made, fixed the
+      # same way: record it once where it is already known).
+      if calleeName notin c.taskNames:
         let calleeEffects = c.getDeclaredEffects(calleeName)
         res = unionEffects(res, calleeEffects)
         # The [io] marker IS the async annotation: a call to an [io] fn is a
@@ -204,6 +206,7 @@ proc verifyModuleEffects*(m: Module,
       c.declared[d.name] = d.fnEffects
     elif d.kind == dkTask:
       c.declared[d.name] = d.taskEffects
+      c.taskNames.incl(d.name)
     elif d.kind == dkActor:
       for h in d.handlers:
         if h.kind == dkFn:

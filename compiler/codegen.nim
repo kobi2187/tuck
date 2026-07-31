@@ -68,7 +68,16 @@ type
     moduleName: string    # error codes hash over "module/Enum.Variant"
     recordNames: HashSet[string]     # names of record types in `module` (O(1) lookup)
     invariantNames: HashSet[string]  # names of invariant-carrying types in `module`
-    indexBuilt: bool                 # recordNames/invariantNames populated?
+    actorNames: HashSet[string]      # names of dkActor decls in `module`
+    taskNames: HashSet[string]       # names of dkTask decls in `module`
+    # Answers for the three questions genConstruction asks about EVERY call:
+    # is the callee a [saturating] type, an extern with an invariant-carrying
+    # return, an extern with an [emit: "..."] name. Each used to be a full
+    # decl scan per call expression — together 16% of a whole compile.
+    saturatingTypes: Table[string, Type]  # name -> underlying type
+    externInvRets: Table[string, string]  # extern fn -> invariant ret type
+    externEmits: Table[string, string]    # extern fn -> [emit: "..."] name
+    indexBuilt: bool                 # the sets above are populated?
 
 proc buildDeclIndex(ctx: var CodegenCtx) =
   ## Populate the name sets for `module` once, so per-node type queries are O(1)
@@ -76,13 +85,37 @@ proc buildDeclIndex(ctx: var CodegenCtx) =
   ## checking their param/return type names — a linear scan there is O(n²)).
   if ctx.indexBuilt: return
   for d in ctx.module.decls:
-    if d != nil and d.kind == dkType and d.typeBody != nil:
+    if d == nil: continue
+    if d.kind == dkType and d.typeBody != nil:
       if d.typeBody.kind == tkRecord:
         ctx.recordNames.incl(d.name)
       for member in d.typeMembers:
         if member.kind == dkExpr:
           ctx.invariantNames.incl(d.name)
           break
+      # `[saturating]` is the ATTRIBUTE, not the `distinct` keyword — see
+      # ast_query.saturatingType, whose answer this caches.
+      if d.typeBody.kind == tkNamed:
+        for a in d.typeBody.attrs:
+          if a.name == "saturating":
+            ctx.saturatingTypes[d.name] = d.typeBody
+            break
+    elif d.kind == dkActor:
+      ctx.actorNames.incl(d.name)
+    elif d.kind == dkTask:
+      ctx.taskNames.incl(d.name)
+  # Externs are a SECOND pass: an extern's invariant-carrying return type is
+  # looked up in invariantNames, which the loop above has to finish filling
+  # first (a type may be declared after the extern that returns it).
+  for d in ctx.module.decls:
+    if d == nil or d.kind != dkMixin: continue
+    for mem in d.mixinMembers:
+      if mem.kind != dkFn or not mem.isExtern: continue
+      if mem.externEmit != "":
+        ctx.externEmits[mem.name] = mem.externEmit
+      if mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
+         mem.fnReturnType.name in ctx.invariantNames:
+        ctx.externInvRets[mem.name] = mem.fnReturnType.name
   ctx.indexBuilt = true
 
 proc isRecordTypeFast(ctx: var CodegenCtx, name: string): bool =
@@ -93,15 +126,33 @@ proc hasInvariantsFast(ctx: var CodegenCtx, name: string): bool =
   ctx.buildDeclIndex()
   name in ctx.invariantNames
 
-proc isActorType(ctx: CodegenCtx, name: string): bool =
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkActor and d.name == name: return true
-  false
+proc saturatingTypeFast(ctx: var CodegenCtx, name: string): Type =
+  ## ast_query.saturatingType's answer, from the index. genConstruction asks
+  ## this for EVERY call; the scanning version was 10% of a whole compile.
+  ctx.buildDeclIndex()
+  ctx.saturatingTypes.getOrDefault(name, nil)
 
-proc isTaskName(ctx: CodegenCtx, name: string): bool =
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkTask and d.name == name: return true
-  false
+proc externInvRetFast(ctx: var CodegenCtx, fnName: string): string =
+  ## ast_query.externInvRet's answer, from the index.
+  ctx.buildDeclIndex()
+  ctx.externInvRets.getOrDefault(fnName, "")
+
+proc externEmitNameFast(ctx: var CodegenCtx, fnName: string): string =
+  ## externEmitName's answer, from the index.
+  ctx.buildDeclIndex()
+  ctx.externEmits.getOrDefault(fnName, "")
+
+proc isActorType(ctx: var CodegenCtx, name: string): bool =
+  ctx.buildDeclIndex()
+  name in ctx.actorNames
+
+proc isTaskName(ctx: var CodegenCtx, name: string): bool =
+  ## Reads the index built once in buildDeclIndex, not a per-call scan of
+  ## ctx.module.decls — this is called from genCall, once per call expression,
+  ## and a scan there is the same O(fns x calls) mistake fixed for lowering and
+  ## the effect checker's task-spawn check.
+  ctx.buildDeclIndex()
+  name in ctx.taskNames
 
 proc genType*(t: Type): string =
   if t == nil: return "void"
@@ -211,19 +262,14 @@ proc fieldType(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
 # not the `distinct` keyword — `type X = u16 [saturating]` and
 # `distinct X = u16 [saturating]` mean the same thing (user ruling).
 # Returns the underlying Nim integer type, or "" when not saturating.
-proc saturatingBase(m: Module, name: string): string =
-  let t = m.saturatingType(name)
+proc saturatingBase(ctx: var CodegenCtx, name: string): string =
+  let t = ctx.saturatingTypeFast(name)
   if t == nil: "" else: genType(t)
 
-proc externEmitName(m: Module, fnName: string): string =
+proc externEmitName(ctx: var CodegenCtx, fnName: string): string =
   ## The Nim/C proc name to emit for an extern with `[emit: "..."]`, or "" if
   ## it uses its Tuck name (the default).
-  for d in m.decls:
-    if d != nil and d.kind == dkMixin:
-      for mem in d.mixinMembers:
-        if mem.kind == dkFn and mem.isExtern and mem.name == fnName:
-          return mem.externEmit
-  ""
+  ctx.externEmitNameFast(fnName)
 
 # module::fn — a real imported module rides Nim's own namespacing; a
 # sketch-pending qualified name maps to its mangled stub (genPendingStub).
@@ -327,7 +373,10 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   # ponytail: exkVar args only — repeating any other expr risks double
   # evaluation; bind-to-temp lowering when a real case shows up
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  let params = lookupFnParams(ctx.module, calleeStr)
+  # Same O(1)-vs-scan tradeoff as genCall's struct-literal branch: prefer the
+  # checker's own resolution when it recorded one.
+  let params = if e.resolvedParams.len > 0: e.resolvedParams
+               else: lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
   let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
@@ -399,11 +448,19 @@ proc genCall(ctx: var CodegenCtx, e: Expr): string =
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded
   if e.args.len == 1 and e.args[0].kind == exkStruct:
-    # qualified callee into a real module: param order lives in THAT module
+    # qualified callee into a real module: param order lives in THAT module,
+    # so this one genuinely needs the lookup (no index into another module's
+    # decls here). The local case reads the checker's own resolution instead
+    # of re-deriving it: e.resolvedParams is set in checkCallArgs for exactly
+    # this kind of call, and lookupFnParams here was a decl-list scan hit once
+    # per call expression — the same O(fns x calls) mistake fixed elsewhere in
+    # this pass.
     let expectedParams =
       if e.callee != nil and e.callee.kind == exkQualified and
          e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
         lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
+      elif e.resolvedParams.len > 0:
+        e.resolvedParams
       else:
         lookupFnParams(ctx.module, calleeStr)
     if expectedParams.len > 0:
@@ -430,7 +487,7 @@ proc genCall(ctx: var CodegenCtx, e: Expr): string =
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
     return args[0]
-  let satBase = saturatingBase(ctx.module, calleeStr)
+  let satBase = ctx.saturatingBase(calleeStr)
   if satBase != "" and args.len == 1:
     # spec 4.1: constructing a [saturating] type clamps instead of wrapping.
     # The guard runs on a WIDER intermediate, so the value is checked against
@@ -440,7 +497,7 @@ proc genCall(ctx: var CodegenCtx, e: Expr): string =
     return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
            args[0] & ")))"
   # extern [emit: "..."] renames the emitted call to the real runtime/C proc
-  let emitName = externEmitName(ctx.module, calleeStr)
+  let emitName = ctx.externEmitName(calleeStr)
   let callName = if emitName != "": emitName else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
   if ctx.isTaskName(calleeStr):
@@ -449,7 +506,7 @@ proc genCall(ctx: var CodegenCtx, e: Expr): string =
     # returning task calls are a later pass.
     return "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: discard " &
            call & "))"
-  if externInvRet(ctx.module, calleeStr) != "":
+  if ctx.externInvRetFast(calleeStr) != "":
     # extern boundary: the returned value validates on entry
     ctx.tmpCounter.inc
     let tmp = "tuckInv" & $ctx.tmpCounter
@@ -507,8 +564,16 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded
   if e.args.len == 1 and e.args[0].kind == exkStruct:
-    # param order lives with the fn, not the literal — match by name
-    let expectedParams = lookupFnParams(ctx.module, calleeStr)
+    # param order lives with the fn, not the literal — match by name.
+    # e.resolvedParams (set in checkCallArgs) covers the common top-level-fn
+    # case in O(1); lookupFnParams is a decl-list scan, kept only as the
+    # fallback for member/qualified calls the checker did not resolve this way
+    # — the same tradeoff already made in genCall/explodeRecordArg above. This
+    # was the ACTUAL hot path for `{a, b} fn` calls (genExpr's exkCall arm
+    # calls genConstruction, not genCall — a distinction easy to miss since
+    # the two procs mirror each other almost line for line).
+    let expectedParams = if e.resolvedParams.len > 0: e.resolvedParams
+                         else: lookupFnParams(ctx.module, calleeStr)
     if expectedParams.len > 0:
       for paramName in expectedParams:
         for field in e.args[0].fields:
@@ -524,7 +589,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
     return args[0]
-  let satBase = saturatingBase(ctx.module, calleeStr)
+  let satBase = ctx.saturatingBase(calleeStr)
   if satBase != "" and args.len == 1:
     # spec 4.1: constructing a [saturating] type clamps instead of wrapping.
     # The guard runs on a WIDER intermediate, so the value is checked against
@@ -534,7 +599,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
            args[0] & ")))"
   # extern [emit: "..."] renames the emitted call to the real runtime/C proc
-  let emitName = externEmitName(ctx.module, calleeStr)
+  let emitName = ctx.externEmitName(calleeStr)
   let callName = if emitName != "": emitName else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
   if ctx.isTaskName(calleeStr):
@@ -543,7 +608,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     # returning task calls are a later pass.
     return "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: discard " &
            call & "))"
-  if externInvRet(ctx.module, calleeStr) != "":
+  if ctx.externInvRetFast(calleeStr) != "":
     # extern boundary: the returned value validates on entry
     ctx.tmpCounter.inc
     let tmp = "tuckInv" & $ctx.tmpCounter

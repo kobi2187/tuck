@@ -1481,7 +1481,11 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.knownModules.incl(d.name)
     of dkFn:
       tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects)
-      if top: tc.topLevelFns.incl(d.name)
+      # NOT pending: a pending fn emits a generic one-payload stub
+      # (genPendingStub), so its real params are ({payload: T},) — nothing
+      # like its DECLARED params, which is what topLevelFns's consumers
+      # (lowering, codegen's explodeRecordArg/genCall) would explode against.
+      if top and not d.isPending: tc.topLevelFns.incl(d.name)
       if "::" in d.name:
         # qualified sketch stub legalizes its module prefix
         tc.knownModules.incl(d.name.split("::")[0])
