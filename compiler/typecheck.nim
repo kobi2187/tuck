@@ -1034,6 +1034,10 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     return Type(span: e.span, kind: tkNamed, name: calleeName)
   if calleeName != "" and tc.fnSigs.hasKey(calleeName):
     let sig = tc.fnSigs[calleeName]
+    # The name resolved here; record the edge so later passes read the answer
+    # instead of scanning the decl list to re-derive it.
+    if tc.fnDecls.hasKey(calleeName):
+      resolveTo(semLayer, e, tc.fnDecls[calleeName])
     var bindings = initTable[string, Type]()
     tc.checkCallArgs(calleeName, sig, e, bindings)
     if sig.generics.len == 0: return sig.ret
@@ -1481,6 +1485,10 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.knownModules.incl(d.name)
     of dkFn:
       tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects)
+      # Index it so a resolved call can point at this declaration rather than
+      # describe it by name.
+      indexDecl(semLayer, d)
+      tc.fnDecls[d.name] = d
       # NOT pending: a pending fn emits a generic one-payload stub
       # (genPendingStub), so its real params are ({payload: T},) — nothing
       # like its DECLARED params, which is what topLevelFns's consumers

@@ -35,6 +35,9 @@ type
                                   # non-initial variants are legal there
     distinctNames*: HashSet[string]   # distinct types: nominal, never widened
     fnSigNames*: HashSet[string]      # `fnsig NAME` — named function-signature types
+    fnDecls*: Table[string, Decl]     # the DECLARATION behind each fnSigs entry,
+                                      # so a resolved call can be recorded as an
+                                      # edge to it (resolution.resolveTo)
     topLevelFns*: HashSet[string]     # plain top-level `fn` decls: the only
                                       # callees lowering explodes payloads for
                                       # (tasks and member fns are the backends')
