@@ -20,6 +20,13 @@ type
     shortcuts*: Table[NodeId, string]  # errors-policy drop sites
     asyncCalls*: HashSet[NodeId]       # call sites whose callee is [io] —
                                        # codegen awaits/yields them (async)
+    # Name resolution, recorded once by the checker and read by every later
+    # pass. `decls` is the index — "give me that declaration" — and `declOf`
+    # is the edge a reference has to its target: "what does this name mean".
+    # Together they replace asking the module "which decl is named X", which
+    # is a scan of the declaration list per question.
+    decls*: Table[NodeId, Decl]        # id -> the declaration itself
+    declOf*: Table[NodeId, NodeId]     # referring node -> declaration id
 
 proc ensureId*(e: Expr) =
   ## Nodes minted after the parse boundary (checker-synthesized calls) have
@@ -58,13 +65,17 @@ proc isAsync*(r: Resolution, e: Expr): bool =
 var semLayer* = Resolution(calls: initTable[NodeId, Expr](),
                             types: initTable[NodeId, Type](),
                             shortcuts: initTable[NodeId, string](),
-                            asyncCalls: initHashSet[NodeId]())
+                            asyncCalls: initHashSet[NodeId](),
+                            decls: initTable[NodeId, Decl](),
+                            declOf: initTable[NodeId, NodeId]())
 
 proc resetResolution*() =
   semLayer = Resolution(calls: initTable[NodeId, Expr](),
                             types: initTable[NodeId, Type](),
                             shortcuts: initTable[NodeId, string](),
-                            asyncCalls: initHashSet[NodeId]())
+                            asyncCalls: initHashSet[NodeId](),
+                            decls: initTable[NodeId, Decl](),
+                            declOf: initTable[NodeId, NodeId]())
 
 proc setStepCall*(r: var Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call
@@ -84,6 +95,27 @@ proc typeFor*(r: Resolution, e: Expr): Type =
   ## The checker's type for this node, or nil if it was never typed.
   if e == nil or not e.id.isSet: return nil
   if r.types.hasKey(e.id): r.types[e.id] else: nil
+
+# --- name resolution ---------------------------------------------------------
+
+proc indexDecl*(r: var Resolution, d: Decl) =
+  ## Register a declaration so references can point at it.
+  if d != nil and d.id.isSet: r.decls[d.id] = d
+
+proc resolveTo*(r: var Resolution, e: Expr, d: Decl) =
+  ## Record that this expression refers to that declaration. Called where the
+  ## checker already resolved the name, so the answer costs nothing to keep.
+  if e == nil or d == nil or not d.id.isSet: return
+  ensureId(e)
+  r.decls[d.id] = d
+  r.declOf[e.id] = d.id
+
+proc declFor*(r: Resolution, e: Expr): Decl =
+  ## The declaration this expression refers to, or nil if the checker never
+  ## resolved it (sketch code, a local, a builtin).
+  if e == nil or not e.id.isSet: return nil
+  if not r.declOf.hasKey(e.id): return nil
+  r.decls.getOrDefault(r.declOf[e.id], nil)
 
 proc setShortcut*(r: var Resolution, e: Expr, site: string) =
   if e == nil: return

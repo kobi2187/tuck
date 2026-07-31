@@ -550,8 +550,14 @@ proc assignIds*(e: Expr, next: var uint32) =
       assignIds(arm.arg, next); assignIds(arm.body, next)
 
 proc assignIds*(d: Decl, next: var uint32) =
-  ## Every Expr reachable from a declaration.
+  ## The declaration itself, then every Expr reachable from it.
+  ##
+  ## The declaration needs its own id so a reference can point AT it: that is
+  ## what turns "which decl is named X" from a scan of the decl list into a
+  ## table read.
   if d == nil: return
+  inc next
+  d.id = NodeId(next)
   case d.kind
   of dkFn: assignIds(d.fnBody, next)
   of dkTask: assignIds(d.taskBody, next)
