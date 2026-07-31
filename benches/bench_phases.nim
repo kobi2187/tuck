@@ -16,7 +16,8 @@
 ##    building inside the timed body would measure the front end again.
 ##
 ## Timing itself is benchy's: warmup, many runs, min/avg/stddev. The min is the
-## number to read — it is the run least disturbed by the OS.
+## number to read — it is the run least disturbed by the OS, and it settles
+## within a handful of runs, so every phase is capped at POOL of them.
 ##
 ## Run: nim c -d:release --hints:off -o:benches/.bph benches/bench_phases.nim
 ##      benches/.bph [N]          (N = generated fn count, default 4000)
@@ -58,9 +59,14 @@ proc parseFresh(src: string, toks: seq[Token]): Module =
   var p = Parser(source: src, tokens: toks, cursor: 0)
   p.parseModule()
 
-# How many pre-built trees each mutating phase gets. benchy runs until it has
-# enough samples, so a pool this size caps those phases at POOL runs.
-const POOL = 40
+# How many pre-built trees each mutating phase gets — and therefore how many
+# times it runs, since benchy stops when the pool does.
+#
+# Building the pool is the whole cost of this benchmark: each entry is a full
+# front-end run that gets thrown away. 40 entries x 4 mutating phases took 23s
+# at N=2000. The number to read is the MIN, which stabilises long before then;
+# 12 keeps that and returns in a third of the time.
+const POOL = 12
 
 proc main() =
   let n = if paramCount() >= 1: parseInt(paramStr(1)) else: 4000
@@ -76,10 +82,10 @@ proc main() =
   # results were accumulated into something the program actually reads.
   var sink = 0
 
-  timeIt "lex":
+  timeIt "lex", POOL:
     sink += lexAll(src).len
 
-  timeIt "parse":
+  timeIt "parse", POOL:
     sink += parseFresh(src, toks).decls.len
 
   # verifyEffects mutates the resolution layer, so each run needs its own tree.
