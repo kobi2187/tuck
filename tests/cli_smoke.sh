@@ -612,4 +612,34 @@ done
   echo "FAIL: good case broke after index warm"; exit 1; }
 rm -rf "$eff"
 
+# Payload fields matched to params BY TYPE, with a struct LITERAL receiver.
+# The checker matches by name first, then by type for whatever is left
+# (typecheck.nim checkCallArgs pass 2), so `alpha` legitimately feeds `first`.
+# Lowering has to use that mapping rather than re-deriving it by name — when it
+# re-derived, nothing matched and every argument became the literal `none`,
+# which the type checker had already waved through. A variable receiver took a
+# different path and was always correct, which is why this went unnoticed:
+# the exit code below is 42 only if all three arguments arrive in order.
+bt="tests/.smoke_bytype"
+rm -rf "$bt" && mkdir -p "$bt"
+cat > "$bt/t.tuck" <<'EOF'
+import sys
+
+fn pick({first: int, second: str, third: bool}) -> int:
+  if third:
+    return first
+  return 0
+
+fn main() -> void [io]:
+  let r = {alpha: 42, beta: "x", gamma: true} pick
+  r sys::exit
+EOF
+./tuck build "$bt/t.tuck" -o:"$bt/out" --root:"$(pwd)" > /dev/null
+grep -q 'tuck_pick(42, "x", true)' "$bt/out/t.nim" || {
+  echo "FAIL: by-type literal payload emitted wrong args:"
+  grep 'tuck_pick(' "$bt/out/t.nim"; exit 1; }
+rc=0; "$bt/out/t" || rc=$?
+[ "$rc" -eq 42 ] || { echo "FAIL: by-type literal payload exit $rc, want 42"; exit 1; }
+rm -rf "$bt"
+
 echo "cli smoke OK"

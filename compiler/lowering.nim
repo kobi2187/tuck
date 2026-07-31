@@ -117,10 +117,19 @@ proc lowerExpr(e: Expr, m: Module) =
       if expectedParams.len > 0 and e.args.len == 1 and e.args[0].kind == exkStruct:
         var newArgs: seq[Expr]
         let originalStruct = e.args[0]
-        for paramName in expectedParams:
+        # The checker's mapping wins. It matches a payload field to a param by
+        # NAME first and then, for whatever is left, by TYPE when the match is
+        # unambiguous (typecheck.nim, checkCallArgs pass 2) — so a field may
+        # legitimately feed a param it shares no name with. Re-deriving the
+        # mapping by name here would miss exactly those, and the unmatched-param
+        # fallback below would then emit `none` in their place.
+        let resolved = e.resolvedArgFields
+        for i, paramName in expectedParams:
+          let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                          else: paramName
           var found = false
           for field in originalStruct.fields:
-            if field[0] == paramName:
+            if field[0] == fieldName:
               newArgs.add(field[1])
               found = true
               break
