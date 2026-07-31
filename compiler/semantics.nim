@@ -61,7 +61,13 @@ proc unionEffects(a, b: seq[EffectMarker]): seq[EffectMarker] =
     if x notin res: res.add(x)
   return res
 
+# The effect checker is the same synthesize/check pair as the TYPE checker,
+# one level over: synthesizeExpr asks "what effects does this expression
+# perform?" and checkExpr asks "are those allowed here?". Reading them side by
+# side is the quickest way to see that effects really are a type system, just
+# for side effects rather than values.
 proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
+  ## Every effect this expression performs, gathered from the whole subtree.
   if e == nil: return @[]
   var res: seq[EffectMarker] = @[]
   case e.kind
@@ -133,6 +139,10 @@ proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
   return res
 
 proc checkExpr(c: var Checker, e: Expr, expected: seq[EffectMarker], currentFn: string) =
+  ## Reject any effect this expression performs that `currentFn` did not
+  ## declare. `expected` is that declaration — an [io] fn may do IO, a fn with
+  ## no markers may do none, so an undeclared effect anywhere in the body is an
+  ## error naming the function that failed to declare it.
   if e == nil: return
   
   # 1. Synthesize the actual effects bottom-up

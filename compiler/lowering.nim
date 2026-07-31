@@ -34,6 +34,10 @@ import resolution, strutils
 import ast_query
 
 proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
+  ## The fields of a type, whichever way it was written: an inline record has
+  ## them directly, a named type needs its declaration looked up, a union or
+  ## rename needs its members flattened first. Callers asking "what fields does
+  ## this have?" should not have to care which case they are in.
   if t == nil: return @[]
   case t.kind
   of tkRecord:
@@ -174,7 +178,11 @@ proc lowerExpr(e: Expr, m: Module) =
     for arm in e.selArms:
       lowerExpr(arm.arg, m); lowerExpr(arm.body, m)
 
+# Entry point for the pass. Two phases, in this order: type bodies are
+# flattened first so the call-rewriting phase can look up a type's fields and
+# get a plain record back, whatever the source declared.
 proc lowerModule*(m: Module) =
+  ## Rewrite a module in place into the simpler form the backends expect.
   # Phase 1: union / rename type bodies collapse to plain records
   for d in m.decls(dkType):
     if d.typeBody != nil and d.typeBody.kind in {tkUnion, tkRename}:

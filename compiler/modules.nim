@@ -204,7 +204,14 @@ proc resolveImport*(importerPath, module: string): string =
 # composition must read clean: `type Player = Playback + Cache`). Inject
 # imported type decls into each importer, marked so codegen skips re-emitting
 # them (Nim's own import brings the real definitions in).
+# `import time` makes time's TYPES usable unqualified — you write `Milliseconds`,
+# not `time::Milliseconds`. Rather than teach every lookup in the checker to
+# search imported modules, the imported type declarations are copied into the
+# importer's own decl list, tagged with ImportedTypeMarker so later stages can
+# still tell them apart (codegen skips them: the target's own import already
+# brings them in).
 proc injectImportedTypes*(prog: var seq[LoadedModule]) =
+  ## Make each module's imported types visible unqualified in the importer.
   var typesByName = initTable[string, seq[Decl]]()
   for lm in prog:
     var own: seq[Decl]

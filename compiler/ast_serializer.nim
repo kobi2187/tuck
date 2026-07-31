@@ -11,20 +11,15 @@
 # early. Seeing text become tokens become a tree makes the first three stages
 # concrete in a way that reading about them does not.
 #
-# EXHAUSTIVE ON PURPOSE — there is no `else: discard` anywhere in this file.
+# EXHAUSTIVE ON PURPOSE — no `else: discard` anywhere in this file.
 #
-# It used to skip the kinds nobody had gotten around to, which quietly made it
-# a liar: dumping an actor showed no `on select` arms, no sends, no registries,
-# no consts, no error policies, no effects. The tree looked like the parser had
-# not built things it had in fact built — which is worst precisely when you
-# reach for a dump, i.e. when something is already confusing.
-#
-# With every `else` gone, Nim's exhaustiveness check does the work: add a node
-# kind to ast.nim and this file stops compiling until it is handled. That makes
-# the serializer a second check on the AST rather than a lagging copy of it,
-# and it is the cheapest such check in the codebase — a dump is not correctness
-# critical, so being forced to update it costs a minute and catches the
-# omission before codegen does.
+# Every `case` here covers every node kind, so Nim's exhaustiveness check
+# applies: add a kind to ast.nim and this file stops compiling until it is
+# handled. That keeps the dump honest — whatever the parser built, the dump
+# shows — and makes this the cheapest place in the codebase to catch a node
+# kind nobody has wired up yet. A dump is not correctness critical, so the
+# forced update costs a minute and surfaces the omission before codegen hits
+# it.
 import std/json, ast
 
 proc toJson*(t: Type): JsonNode
