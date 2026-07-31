@@ -100,11 +100,19 @@ proc lowerExpr(e: Expr, m: Module) =
         let parts = calleeName.split("_")
         if parts.len == 3:
           expectedParams = lookupRegistryVariantParams(m, parts[1], parts[2])
-      else:
-        # TOP-LEVEL fns only, deliberately: a member fn's payload explosion is
-        # the backends' job (they see the receiver), and doing it here too
-        # would apply it twice.
-        expectedParams = m.findDecl(dkFn, calleeName).paramNames()
+      elif e.resolvedParams.len > 0:
+        # TOP-LEVEL dkFn ONLY, deliberately. A member fn's payload explosion is
+        # the backends' job (they see the receiver) and doing it here too would
+        # apply it twice; a TASK is likewise left alone, since scheduling it is
+        # the backends' concern.
+        #
+        # The checker recorded these when it resolved the call, and only for
+        # top-level fns — so a non-empty value already means "safe to explode"
+        # and no lookup is needed to find that out. Asking the decl list here
+        # instead costs a scan per call expression, which is quadratic over a
+        # module (lowering grew 18.3x across an 8x input increase while lexing
+        # and parsing grew 8.9x; benches/bench_phases.nim).
+        expectedParams = e.resolvedParams
         
       if expectedParams.len > 0 and e.args.len == 1 and e.args[0].kind == exkStruct:
         var newArgs: seq[Expr]

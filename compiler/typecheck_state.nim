@@ -35,6 +35,9 @@ type
                                   # non-initial variants are legal there
     distinctNames*: HashSet[string]   # distinct types: nominal, never widened
     fnSigNames*: HashSet[string]      # `fnsig NAME` — named function-signature types
+    topLevelFns*: HashSet[string]     # plain top-level `fn` decls: the only
+                                      # callees lowering explodes payloads for
+                                      # (tasks and member fns are the backends')
     knownModules*: HashSet[string]    # imported modules + qualified-pending prefixes
     currentErrTypes*: seq[string]     # [error: A | B] of the fn being checked
     okNarrowed*: HashSet[string]      # results guarded by `if x.ok` in scope:

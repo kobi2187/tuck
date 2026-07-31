@@ -250,6 +250,13 @@ type
       # re-deriving the mapping by name. Empty = not applicable (multi-arg
       # positional calls, non-record args), and codegen keeps its old path.
       resolvedArgFields*: seq[string]
+      # The callee's PARAM names, in declaration order, recorded by the checker
+      # when it resolved this call. Lowering explodes a struct payload into
+      # positional args and needs exactly this; without it the pass searches
+      # the declaration list by name once per call expression, which is
+      # quadratic in a big module. Empty = callee not resolved (a sketch call,
+      # or one the checker left gradual), and lowering leaves the call alone.
+      resolvedParams*: seq[string]
     of exkChain:
       base*: Expr
       steps*: seq[ChainStep]

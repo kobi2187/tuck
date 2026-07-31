@@ -30,20 +30,36 @@
 # ---------------------------------------------------------------------------
 # THE PART WORTH READING: synthFieldAccess, further down.
 #
-# `a.b` means SEVEN different things in Tuck, and the checker decides which by
-# trying them in a fixed order:
+# `a.b` means several different things in Tuck, and the checker decides which
+# by trying them in a fixed order:
 #
 #   1. .ok / .err / .value on a fallible value   result introspection
 #   2. slot.invoke {args}                        call through a baked slot
-#   3. 5.ms, n.toStr                             postfix application
+#   3. 5.ms, n.toStr                             postfix application, EARLY
+#                                                (literal/var receiver, in a body)
 #   4. Color.Red                                 sum-type variant construction
 #   5. point.x                                   an ordinary field read
-#   6. Pool.acquire                              qualified member call
-#   7. x.describe                                resolve to a fn by name
+#   6. Pool.acquire, Pool.release {v}            pool member call
+#   7. x.describe                                postfix application, FALLTHROUGH
+#                                                plus `.fn {args}`, the method form
 #
 # THAT ORDER IS THE LANGUAGE RULE. It is not an implementation detail — change
 # the order and you change what programs mean. Each case is a small proc
 # returning nil for "not mine", so the parent reads as exactly the list above.
+#
+# 3 AND 7 ARE THE SAME OPERATION, reached from two points. Both stamp a call
+# with the receiver as its argument. They are separate only because the
+# ordering demands it: 3 must precede variant construction and field reads so
+# `5.ms` is not read as a field, and 7 must follow them so a real field wins
+# over a same-named fn. asPlainField sits between and fails on a field/fn name
+# clash, which is what makes the split safe. Only 7's `.fn {args}` branch is a
+# distinct meaning — that one routes to synthMethodCall.
+#
+# 6 IS NOT `module::function`. That is exkQualified, resolved in synthCall via
+# calleeNameOf, and it never reaches this proc. What arrives here is the dot
+# form for pool members, registered in fnSigs under a dot-joined key
+# ("Pool.acquire", built by the dkPool arm of collectSigs). Both namespaces
+# live in fnSigs: `.` for pool members, `::` for module calls.
 #
 # There is a general lesson in that: a surprising amount of what feels like
 # "language design" turns out to be the order in which you try interpretations.
@@ -778,6 +794,15 @@ proc inferBindings(tc: TypeChecker, declared, actual: Type,
 proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                    bindings: var Table[string, Type]) =
   var params = sig.params
+  # Record the callee's params for lowering, which explodes a struct payload
+  # into positional args. Set before any early return, since lowering needs it
+  # whenever the callee resolved rather than only when the payload shape was
+  # known — and ONLY for top-level fns, which are the only callees lowering
+  # touches. A non-empty value therefore already means "safe to explode", so
+  # lowering needs no second lookup to find that out.
+  if e.kind == exkCall and fnName in tc.topLevelFns:
+    e.resolvedParams = @[]
+    for p in params: e.resolvedParams.add(p.name)
   if e.args.len == 1 and params.len > 0:
     let arg = e.args[0]
     var argFields: seq[tuple[name: string, typ: Type, span: Span]] = @[]
@@ -1443,7 +1468,12 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
   result = tc.synthesizeKind(e)
   setType(semLayer, e, result)
 
-proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
+proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
+  ## `top` distinguishes a module's own declarations from the members nested
+  ## inside a type, object, mixin or actor. Only top-level fns get recorded in
+  ## topLevelFns, because they are the only callees lowering explodes payloads
+  ## for — a member fn's explosion belongs to the backends, which see the
+  ## receiver.
   for d in decls:
     if d == nil: continue
     case d.kind
@@ -1451,6 +1481,7 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl]) =
       tc.knownModules.incl(d.name)
     of dkFn:
       tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects)
+      if top: tc.topLevelFns.incl(d.name)
       if "::" in d.name:
         # qualified sketch stub legalizes its module prefix
         tc.knownModules.incl(d.name.split("::")[0])
