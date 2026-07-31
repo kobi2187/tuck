@@ -148,7 +148,7 @@ proc isActorType(ctx: var CodegenCtx, name: string): bool =
 
 proc isTaskName(ctx: var CodegenCtx, name: string): bool =
   ## Reads the index built once in buildDeclIndex, not a per-call scan of
-  ## ctx.module.decls — this is called from genCall, once per call expression,
+  ## ctx.module.decls — this is called from genConstruction, once per call
   ## and a scan there is the same O(fns x calls) mistake fixed for lowering and
   ## the effect checker's task-spawn check.
   ctx.buildDeclIndex()
@@ -373,7 +373,7 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   # ponytail: exkVar args only — repeating any other expr risks double
   # evaluation; bind-to-temp lowering when a real case shows up
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  # Same O(1)-vs-scan tradeoff as genCall's struct-literal branch: prefer the
+  # Same O(1)-vs-scan tradeoff as genConstruction's struct-literal branch: prefer
   # checker's own resolution when it recorded one.
   let params = if e.resolvedParams.len > 0: e.resolvedParams
                else: lookupFnParams(ctx.module, calleeStr)
@@ -420,100 +420,6 @@ proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
                  variantName.toLowerAscii() & ": (" & parts.join(", ") & "))"
   ""
 
-# exkCall (module-aware overload): record construction, qualified-module
-# param reordering, or plain positional call.
-proc genCall(ctx: var CodegenCtx, e: Expr): string =
-  var args: seq[string]
-  if e.callee != nil and e.callee.kind == exkField and
-     e.callee.receiver != nil and e.callee.receiver.kind == exkVar:
-    let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
-                  else: nil
-    let ctor = ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName,
-                                   payload)
-    if ctor != "": return ctor
-  let calleeStr = ctx.genExpr(e.callee)
-  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return ctx.genAlias(e)
-  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return ctx.genBake(e)
-  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genMerge(e)
-  if e.args.len == 1 and e.args[0].kind == exkStruct and ctx.isRecordTypeFast(calleeStr):
-    # record construction: named fields, not positional
-    var parts: seq[string]
-    for field in e.args[0].fields:
-      parts.add(field[0] & ": " & ctx.genExpr(field[1]))
-    return calleeStr & "(" & parts.join(", ") & ")"
-  if calleeStr notin ["bake", "alias"]:
-    let exploded = ctx.explodeRecordArg(e, calleeStr)
-    if exploded != "": return exploded
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    # qualified callee into a real module: param order lives in THAT module,
-    # so this one genuinely needs the lookup (no index into another module's
-    # decls here). The local case reads the checker's own resolution instead
-    # of re-deriving it: e.resolvedParams is set in checkCallArgs for exactly
-    # this kind of call, and lookupFnParams here was a decl-list scan hit once
-    # per call expression — the same O(fns x calls) mistake fixed elsewhere in
-    # this pass.
-    let expectedParams =
-      if e.callee != nil and e.callee.kind == exkQualified and
-         e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
-        lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
-      elif e.resolvedParams.len > 0:
-        e.resolvedParams
-      else:
-        lookupFnParams(ctx.module, calleeStr)
-    if expectedParams.len > 0:
-      let resolved = e.resolvedArgFields
-      for i, paramName in expectedParams:
-        # The checker's mapping wins: a field matched by type carries its own
-        # name, not the param's.
-        let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                        else: paramName
-        var found = false
-        for field in e.args[0].fields:
-          if field[0] == fieldName:
-            args.add(ctx.genExpr(field[1]))
-            found = true
-            break
-        if not found:
-          args.add("nil")
-    else:
-      for field in e.args[0].fields:
-        args.add(ctx.genExpr(field[1]))
-  else:
-    for a in e.args: args.add(ctx.genExpr(a))
-  if calleeStr == "bake":
-    return args[0] & "(" & args[1..^1].join(", ") & ")"
-  elif calleeStr == "alias":
-    return args[0]
-  let satBase = ctx.saturatingBase(calleeStr)
-  if satBase != "" and args.len == 1:
-    # spec 4.1: constructing a [saturating] type clamps instead of wrapping.
-    # The guard runs on a WIDER intermediate, so the value is checked against
-    # the type's real bounds rather than after it has already wrapped.
-    let widen = if satBase.startsWith("uint"): "uint64" else: "int64"
-    let satFn = if satBase.startsWith("uint"): "tuckSat" else: "tuckSatI"
-    return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
-           args[0] & ")))"
-  # extern [emit: "..."] renames the emitted call to the real runtime/C proc
-  let emitName = ctx.externEmitName(calleeStr)
-  let callName = if emitName != "": emitName else: calleeStr
-  let call = callName & "(" & args.join(", ") & ")"
-  if ctx.isTaskName(calleeStr):
-    # Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
-    # drives it via tuckRun (spec §9.2). Fire-and-forget for now; result-
-    # returning task calls are a later pass.
-    return "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: discard " &
-           call & "))"
-  if ctx.externInvRetFast(calleeStr) != "":
-    # extern boundary: the returned value validates on entry
-    ctx.tmpCounter.inc
-    let tmp = "tuckInv" & $ctx.tmpCounter
-    return "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
-  return call
-
-
 proc bangInfo(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
   if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      t.base.name in ["!", "?", "!?"] and t.args.len == 1:
@@ -523,6 +429,15 @@ proc bangInfo(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
 
 # exkCall (module-less overload): record construction (with invariant
 # validate() insertion) or plain call.
+# Every exkCall, whatever produced it: record and sum-variant construction, the
+# alias/bake/merge builtins, payload explosion, and the plain call.
+#
+# This was two procs — genConstruction for calls straight out of genExpr, genCall
+# for ones the checker synthesised (postfix `.fn`, chain steps). They mirrored
+# each other closely enough to read as copies, and had drifted: one knew about
+# generic instantiation and invariant validation, the other about qualified
+# callees and the by-type argument mapping. Fixing "the" bug in the wrong twin
+# was easy and silent, so they are one proc now.
 proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   var args: seq[string]
   if e.args.len == 1 and e.args[0].kind == exkStruct and
@@ -564,22 +479,37 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded
   if e.args.len == 1 and e.args[0].kind == exkStruct:
-    # param order lives with the fn, not the literal — match by name.
-    # e.resolvedParams (set in checkCallArgs) covers the common top-level-fn
-    # case in O(1); lookupFnParams is a decl-list scan, kept only as the
-    # fallback for member/qualified calls the checker did not resolve this way
-    # — the same tradeoff already made in genCall/explodeRecordArg above. This
-    # was the ACTUAL hot path for `{a, b} fn` calls (genExpr's exkCall arm
-    # calls genConstruction, not genCall — a distinction easy to miss since
-    # the two procs mirror each other almost line for line).
-    let expectedParams = if e.resolvedParams.len > 0: e.resolvedParams
-                         else: lookupFnParams(ctx.module, calleeStr)
+    # Param order lives with the fn, not with the literal, so the payload's
+    # fields are matched to params rather than taken positionally.
+    #
+    # Three sources, in order: a QUALIFIED callee's params live in the other
+    # module and must be looked up there; otherwise the checker's own
+    # resolution (resolvedParams, set in checkCallArgs) answers in O(1); the
+    # decl-list scan is the last resort for calls the checker left unresolved,
+    # and is a scan per call expression, so it must stay last.
+    let expectedParams =
+      if e.callee != nil and e.callee.kind == exkQualified and
+         e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
+        lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
+      elif e.resolvedParams.len > 0:
+        e.resolvedParams
+      else:
+        lookupFnParams(ctx.module, calleeStr)
     if expectedParams.len > 0:
-      for paramName in expectedParams:
+      let resolved = e.resolvedArgFields
+      for i, paramName in expectedParams:
+        # The checker's mapping wins: it matches by name first and then by
+        # type, so a field may feed a param it shares no name with.
+        let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                        else: paramName
+        var found = false
         for field in e.args[0].fields:
-          if field[0] == paramName:
+          if field[0] == fieldName:
             args.add(ctx.genExpr(field[1]))
+            found = true
             break
+        if not found:
+          args.add("nil")
     else:
       for field in e.args[0].fields:
         args.add(ctx.genExpr(field[1]))
@@ -677,7 +607,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
        e.receiver.name == "input" and ctx.currentParams.len > 0:
       return e.fieldName
     if semLayer.hasCall(e):
-      ctx.genCall(semLayer.call(e))
+      ctx.genConstruction(semLayer.call(e))
     elif e.receiver != nil and e.receiver.kind == exkVar and
          ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
       # bare Type.Variant of a payload sum: kind-tagged construction
@@ -937,7 +867,7 @@ proc genExprChain(ctx: var CodegenCtx, e: Expr): string =
   var lines: seq[string]
   for step in e.steps:
     if semLayer.stepCall(step) != nil:
-      lines.add(ind & baseStr & " = " & ctx.genCall(semLayer.stepCall(step)))
+      lines.add(ind & baseStr & " = " & ctx.genConstruction(semLayer.stepCall(step)))
     else:
       var valStr = ""
       if step.arg != nil and step.arg.kind == exkStruct and
