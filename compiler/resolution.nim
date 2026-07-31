@@ -27,6 +27,13 @@ type
     # is a scan of the declaration list per question.
     decls*: Table[NodeId, Decl]        # id -> the declaration itself
     declOf*: Table[NodeId, NodeId]     # referring node -> declaration id
+    # How a call's payload maps onto its callee's parameters, decided once by
+    # checkCallArgs. `argFields[i]` names the payload FIELD that satisfies
+    # param i — matched by name, or by type when the names differ — and
+    # `callParams[i]` is that param's own name. Codegen and lowering read
+    # these instead of re-deriving the mapping, which misses by-type matches.
+    argFields*: Table[NodeId, seq[string]]
+    callParams*: Table[NodeId, seq[string]]
 
 proc ensureId*(e: Expr) =
   ## Nodes minted after the parse boundary (checker-synthesized calls) have
@@ -67,7 +74,9 @@ var semLayer* = Resolution(calls: initTable[NodeId, Expr](),
                             shortcuts: initTable[NodeId, string](),
                             asyncCalls: initHashSet[NodeId](),
                             decls: initTable[NodeId, Decl](),
-                            declOf: initTable[NodeId, NodeId]())
+                            declOf: initTable[NodeId, NodeId](),
+                            argFields: initTable[NodeId, seq[string]](),
+                            callParams: initTable[NodeId, seq[string]]())
 
 proc resetResolution*() =
   semLayer = Resolution(calls: initTable[NodeId, Expr](),
@@ -75,7 +84,9 @@ proc resetResolution*() =
                             shortcuts: initTable[NodeId, string](),
                             asyncCalls: initHashSet[NodeId](),
                             decls: initTable[NodeId, Decl](),
-                            declOf: initTable[NodeId, NodeId]())
+                            declOf: initTable[NodeId, NodeId](),
+                            argFields: initTable[NodeId, seq[string]](),
+                            callParams: initTable[NodeId, seq[string]]())
 
 proc setStepCall*(r: var Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call
@@ -116,6 +127,30 @@ proc declFor*(r: Resolution, e: Expr): Decl =
   if e == nil or not e.id.isSet: return nil
   if not r.declOf.hasKey(e.id): return nil
   r.decls.getOrDefault(r.declOf[e.id], nil)
+
+proc setArgFields*(r: var Resolution, e: Expr, fields: seq[string]) =
+  ## Which payload field feeds each param, in param order.
+  if e == nil: return
+  ensureId(e)
+  r.argFields[e.id] = fields
+
+proc argFieldsFor*(r: Resolution, e: Expr): seq[string] =
+  ## Empty when the checker recorded no mapping — callers fall back to
+  ## matching by param name.
+  if e == nil or not e.id.isSet: return @[]
+  r.argFields.getOrDefault(e.id, @[])
+
+proc setCallParams*(r: var Resolution, e: Expr, params: seq[string]) =
+  ## The callee's parameter names, in declaration order.
+  if e == nil: return
+  ensureId(e)
+  r.callParams[e.id] = params
+
+proc callParamsFor*(r: Resolution, e: Expr): seq[string] =
+  ## Empty when the callee was never resolved, or is not one whose payload
+  ## may be exploded (a member fn, a task) — callers leave the call alone.
+  if e == nil or not e.id.isSet: return @[]
+  r.callParams.getOrDefault(e.id, @[])
 
 proc setShortcut*(r: var Resolution, e: Expr, site: string) =
   if e == nil: return

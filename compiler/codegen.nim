@@ -375,14 +375,14 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
   # Same O(1)-vs-scan tradeoff as genConstruction's struct-literal branch: prefer
   # checker's own resolution when it recorded one.
-  let params = if e.resolvedParams.len > 0: e.resolvedParams
+  let params = if semLayer.callParamsFor(e).len > 0: semLayer.callParamsFor(e)
                else: lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
   let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
   # The checker already decided which field feeds each param (they may differ
   # in name, having been matched by type); prefer its mapping over re-deriving.
-  let resolved = e.resolvedArgFields
+  let resolved = semLayer.argFieldsFor(e)
   var parts: seq[string]
   for i, paramName in params:
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
@@ -484,19 +484,19 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     #
     # Three sources, in order: a QUALIFIED callee's params live in the other
     # module and must be looked up there; otherwise the checker's own
-    # resolution (resolvedParams, set in checkCallArgs) answers in O(1); the
+    # resolution (semLayer.callParamsFor, set in checkCallArgs) answers in O(1); the
     # decl-list scan is the last resort for calls the checker left unresolved,
     # and is a scan per call expression, so it must stay last.
     let expectedParams =
       if e.callee != nil and e.callee.kind == exkQualified and
          e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
         lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
-      elif e.resolvedParams.len > 0:
-        e.resolvedParams
+      elif semLayer.callParamsFor(e).len > 0:
+        semLayer.callParamsFor(e)
       else:
         lookupFnParams(ctx.module, calleeStr)
     if expectedParams.len > 0:
-      let resolved = e.resolvedArgFields
+      let resolved = semLayer.argFieldsFor(e)
       for i, paramName in expectedParams:
         # The checker's mapping wins: it matches by name first and then by
         # type, so a field may feed a param it shares no name with.

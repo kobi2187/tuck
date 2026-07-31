@@ -288,16 +288,16 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 # (`p advance`) explodes to the fn's params by field name, in param order.
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  # Prefers the checker's own resolution (e.resolvedParams, set in
+  # Prefers the checker's own resolution (semLayer.callParamsFor, set in
   # checkCallArgs) over a decl-list scan — mirrors the Nim backend's fix.
-  let params = if e.resolvedParams.len > 0: e.resolvedParams
+  let params = if semLayer.callParamsFor(e).len > 0: semLayer.callParamsFor(e)
                else: lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
   let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
   if fields.len == 0: return ""
   # The checker already decided which field feeds each param (they may differ
   # in name, having been matched by type); prefer its mapping over the name.
-  let resolved = e.resolvedArgFields
+  let resolved = semLayer.argFieldsFor(e)
   var parts: seq[string]
   for i, paramName in params:
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
@@ -531,14 +531,14 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
       if e.callee != nil and e.callee.kind == exkQualified and
          e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
         lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
-      elif e.resolvedParams.len > 0:
-        e.resolvedParams
+      elif semLayer.callParamsFor(e).len > 0:
+        semLayer.callParamsFor(e)
       else:
         lookupFnParams(ctx.module, calleeStr)
     if expectedParams.len > 0:
       # The checker's mapping wins: a field matched by TYPE carries its own
-      # name, not the param's (see typecheck.nim resolvedArgFields).
-      let resolved = e.resolvedArgFields
+      # name, not the param's (see checkCallArgs / semLayer.argFieldsFor).
+      let resolved = semLayer.argFieldsFor(e)
       for i, paramName in expectedParams:
         let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
                         else: paramName

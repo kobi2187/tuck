@@ -100,7 +100,7 @@ proc lowerExpr(e: Expr, m: Module) =
         let parts = calleeName.split("_")
         if parts.len == 3:
           expectedParams = lookupRegistryVariantParams(m, parts[1], parts[2])
-      elif e.resolvedParams.len > 0:
+      elif semLayer.callParamsFor(e).len > 0:
         # TOP-LEVEL dkFn ONLY, deliberately. A member fn's payload explosion is
         # the backends' job (they see the receiver) and doing it here too would
         # apply it twice; a TASK is likewise left alone, since scheduling it is
@@ -112,7 +112,7 @@ proc lowerExpr(e: Expr, m: Module) =
         # instead costs a scan per call expression, which is quadratic over a
         # module (lowering grew 18.3x across an 8x input increase while lexing
         # and parsing grew 8.9x; benches/bench_phases.nim).
-        expectedParams = e.resolvedParams
+        expectedParams = semLayer.callParamsFor(e)
         
       if expectedParams.len > 0 and e.args.len == 1 and e.args[0].kind == exkStruct:
         var newArgs: seq[Expr]
@@ -123,7 +123,7 @@ proc lowerExpr(e: Expr, m: Module) =
         # legitimately feed a param it shares no name with. Re-deriving the
         # mapping by name here would miss exactly those, and the unmatched-param
         # fallback below would then emit `none` in their place.
-        let resolved = e.resolvedArgFields
+        let resolved = semLayer.argFieldsFor(e)
         for i, paramName in expectedParams:
           let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
                           else: paramName

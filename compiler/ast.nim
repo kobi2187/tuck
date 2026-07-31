@@ -252,20 +252,9 @@ type
     of exkCall:
       callee*: Expr
       args*: seq[Expr]
-      # Param-order mapping decided by the type checker: entry i names the
-      # argument record's FIELD that satisfies the callee's param i. Fields
-      # may be matched by name or, when unambiguous, by type — so a field's
-      # name need not equal the param's. Codegen reads this instead of
-      # re-deriving the mapping by name. Empty = not applicable (multi-arg
-      # positional calls, non-record args), and codegen keeps its old path.
-      resolvedArgFields*: seq[string]
-      # The callee's PARAM names, in declaration order, recorded by the checker
-      # when it resolved this call. Lowering explodes a struct payload into
-      # positional args and needs exactly this; without it the pass searches
-      # the declaration list by name once per call expression, which is
-      # quadratic in a big module. Empty = callee not resolved (a sketch call,
-      # or one the checker left gradual), and lowering leaves the call alone.
-      resolvedParams*: seq[string]
+      # The payload-to-param mapping the checker decides for this call lives
+      # in the semantic layer (resolution.argFieldsFor / callParamsFor), not
+      # here — it is derived, not syntax.
     of exkChain:
       base*: Expr
       steps*: seq[ChainStep]

@@ -801,8 +801,9 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
   # touches. A non-empty value therefore already means "safe to explode", so
   # lowering needs no second lookup to find that out.
   if e.kind == exkCall and fnName in tc.topLevelFns:
-    e.resolvedParams = @[]
-    for p in params: e.resolvedParams.add(p.name)
+    var names: seq[string]
+    for p in params: names.add(p.name)
+    setCallParams(semLayer, e, names)
   if e.args.len == 1 and params.len > 0:
     let arg = e.args[0]
     var argFields: seq[tuple[name: string, typ: Type, span: Span]] = @[]
@@ -890,7 +891,7 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
     # Hand the decision to codegen, which would otherwise re-derive the
     # mapping by name and miss anything matched by type.
     if e.kind == exkCall:
-      e.resolvedArgFields = resolved
+      setArgFields(semLayer, e, resolved)
   elif e.args.len == params.len:
     for i in 0 ..< params.len:
       if params[i].typ != nil and params[i].typ.kind == tkNamed and
