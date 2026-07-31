@@ -2,12 +2,27 @@
 ## times each compile phase in isolation — lex, parse, verifyEffects,
 ## typecheck, lower, emitNim — to find where the time goes before optimizing.
 ##
-## Phases that MUTATE the AST (typecheck, lower) are measured on a fresh parse
-## each iteration so the work is real every time. Reports ms and % of total.
+## TWO RULES THIS FILE EXISTS TO FOLLOW, both learned by getting them wrong:
 ##
-## Run via benches/run_phases.sh (builds with the right flags/paths).
+## 1. TIME EACH PHASE DIRECTLY, never by subtraction. Timing A+B+C and
+##    subtracting separately-measured A and B puts all of their drift on C, the
+##    smallest term. That reported lowering at up to 18x its real cost and
+##    sometimes as a NEGATIVE number — and an 18x figure is exactly the kind of
+##    thing someone optimizes against for a day before noticing.
+##
+## 2. SETUP OUTSIDE THE TIMER. The mutating phases (typecheck, lower, emitNim)
+##    consume the tree they run on, so each iteration needs a fresh one. Trees
+##    are pre-built into a pool below and one is taken per iteration, because
+##    building inside the timed body would measure the front end again.
+##
+## Timing itself is benchy's: warmup, many runs, min/avg/stddev. The min is the
+## number to read — it is the run least disturbed by the OS.
+##
+## Run: nim c -d:release --hints:off -o:benches/.bph benches/bench_phases.nim
+##      benches/.bph [N]          (N = generated fn count, default 4000)
 
-import std/[times, os, strutils, tables]
+import std/[os, strutils, tables]
+import benchy
 import ../lexer
 import ../compiler/parser
 import ../compiler/semantics
@@ -17,13 +32,19 @@ import ../compiler/codegen
 import ../compiler/ast
 
 proc gen(n: int): string =
-  ## N independent type+fn pairs — real checker work N times, no shared shortcut.
+  ## N independent type+fn pairs, then a body calling every one of them.
+  ## The calls matter: payload explosion in lowering is per CALL EXPRESSION,
+  ## so a file of declarations alone would not exercise it.
   var s = ""
   for i in 0 ..< n:
     s.add("type T" & $i & " = {a: int, b: int}\n")
     s.add("fn f" & $i & "({a: int, b: int}) -> int:\n")
     s.add("  let s = a + b\n")
     s.add("  return s * " & $i & "\n")
+  s.add("fn main() -> int:\n")
+  for i in 0 ..< n:
+    s.add("  let v" & $i & " = {a: 1, b: 2} f" & $i & "\n")
+  s.add("  return 0\n")
   s
 
 proc lexAll(src: string): seq[Token] =
@@ -37,80 +58,75 @@ proc parseFresh(src: string, toks: seq[Token]): Module =
   var p = Parser(source: src, tokens: toks, cursor: 0)
   p.parseModule()
 
-proc ms(t0: float): float = (epochTime() - t0) * 1000.0
+# How many pre-built trees each mutating phase gets. benchy runs until it has
+# enough samples, so a pool this size caps those phases at POOL runs.
+const POOL = 40
 
 proc main() =
   let n = if paramCount() >= 1: parseInt(paramStr(1)) else: 4000
   let src = gen(n)
   let lines = src.count('\n')
   echo "phase profile: N=", n, " fns, ", lines, " lines"
+  echo "(read the MIN column; setup is outside every timer)"
 
-  # --- lex (pure, repeatable) ---
-  var toks: seq[Token]
-  var t0 = epochTime()
-  const lexReps = 5
-  for _ in 0 ..< lexReps: toks = lexAll(src)
-  let tLex = ms(t0) / lexReps
+  let toks = lexAll(src)
 
-  # --- parse (pure: fresh tokens, builds a new tree) ---
-  t0 = epochTime()
-  const parseReps = 5
-  var m: Module
-  for _ in 0 ..< parseReps: m = parseFresh(src, toks)
-  let tParse = ms(t0) / parseReps
+  # benchy's `keep` is a no-op, so a result only handed to it is dead code and
+  # -d:release deletes the call — these phases reported 0.001 ms until the
+  # results were accumulated into something the program actually reads.
+  var sink = 0
 
-  # --- verifyEffects (mutates resolution; parse fresh each rep) ---
-  t0 = epochTime()
-  const semReps = 5
-  for _ in 0 ..< semReps:
+  timeIt "lex":
+    sink += lexAll(src).len
+
+  timeIt "parse":
+    sink += parseFresh(src, toks).decls.len
+
+  # verifyEffects mutates the resolution layer, so each run needs its own tree.
+  var semPool: seq[Module]
+  for _ in 0 ..< POOL: semPool.add(parseFresh(src, toks))
+  var semIdx = 0
+  timeIt "verifyEffects", POOL:
+    verifyModuleEffects(semPool[semIdx])
+    inc semIdx
+
+  var tcPool: seq[Module]
+  for _ in 0 ..< POOL:
     var mm = parseFresh(src, toks)
     verifyModuleEffects(mm)
-  let tSem = ms(t0) / semReps - tParse   # subtract the parse we paid inside
+    tcPool.add(mm)
+  var tcIdx = 0
+  timeIt "typecheck", POOL:
+    var mods = @[("m", "m.tuck", tcPool[tcIdx])]
+    discard typecheckProgram(mods)
+    inc tcIdx
 
-  # --- typecheck (mutates; fresh parse+verify each rep) ---
-  t0 = epochTime()
-  const tcReps = 5
-  for _ in 0 ..< tcReps:
+  var loPool: seq[Module]
+  for _ in 0 ..< POOL:
     var mm = parseFresh(src, toks)
     verifyModuleEffects(mm)
     var mods = @[("m", "m.tuck", mm)]
     discard typecheckProgram(mods)
-  let tTc = ms(t0) / tcReps - tParse - tSem
+    loPool.add(mm)
+  var loIdx = 0
+  timeIt "lower", POOL:
+    lowerModule(loPool[loIdx])
+    inc loIdx
 
-  # --- lower (mutates; fresh full front-end each rep) ---
-  t0 = epochTime()
-  const loReps = 5
-  for _ in 0 ..< loReps:
+  var emPool: seq[Module]
+  for _ in 0 ..< POOL:
     var mm = parseFresh(src, toks)
     verifyModuleEffects(mm)
     var mods = @[("m", "m.tuck", mm)]
     discard typecheckProgram(mods)
     lowerModule(mm)
-  let tLo = ms(t0) / loReps - tParse - tSem - tTc
+    emPool.add(mm)
+  var emIdx = 0
+  timeIt "emitNim", POOL:
+    sink += emitNim(emPool[emIdx], realModules = initTable[string, Module]()).len
+    inc emIdx
 
-  # --- emitNim (needs a lowered tree; fresh each rep) ---
-  t0 = epochTime()
-  const emReps = 5
-  for _ in 0 ..< emReps:
-    var mm = parseFresh(src, toks)
-    verifyModuleEffects(mm)
-    var mods = @[("m", "m.tuck", mm)]
-    discard typecheckProgram(mods)
-    lowerModule(mm)
-    discard emitNim(mm, realModules = initTable[string, Module]())
-  let tEm = ms(t0) / emReps - tParse - tSem - tTc - tLo
-
-  let total = tLex + tParse + tSem + tTc + tLo + tEm
-  proc row(name: string, t: float) =
-    echo "  ", name.alignLeft(16), (t).formatFloat(ffDecimal, 2).align(8), " ms  ",
-         (100.0 * t / total).formatFloat(ffDecimal, 1).align(5), " %"
-  row("lex", tLex)
-  row("parse", tParse)
-  row("verifyEffects", tSem)
-  row("typecheck", tTc)
-  row("lower", tLo)
-  row("emitNim", tEm)
-  echo "  ", "TOTAL".alignLeft(16), total.formatFloat(ffDecimal, 2).align(8), " ms  ",
-       (lines.float / (total/1000.0)).formatFloat(ffDecimal, 0), " lines/sec"
+  # Make `sink` observable so none of the above can be optimized away.
+  if sink == -1: echo "unreachable"
 
 main()
