@@ -54,6 +54,50 @@
 #   typecheck_util.nim    small shared predicates (isNumeric, isWrapper, fail)
 #   typecheck_flow.nim    control-flow questions (does this branch always exit?)
 #   typecheck.nim         the rules themselves
+#
+# ---------------------------------------------------------------------------
+# HOW IT RUNS, AND WHAT IT COSTS
+#
+# The shape is a single recursive walk. synthesize() descends an expression,
+# each node combining its children's types into its own, so one pass over the
+# tree types the whole tree — no fixpoint iteration, no constraint solver, no
+# unification queue. Errors raise immediately (fail-fast), so there is no error
+# recovery machinery either. That is the main reason a checker doing this much
+# work still lands at roughly a quarter of total compile time.
+#
+# THE INDEXES THAT MAKE IT FAST. Before walking anything, typecheck_state.nim
+# fills two tables:
+#
+#   fnSigs      name -> (params, return type, generics)
+#   typeDecls   name -> declared type body
+#
+# Both are hash tables built once per module, so name resolution during the
+# walk is O(1). The alternative — asking ast_query's findDecl/findFn each
+# time — is a linear scan of the declaration list, and doing that per node
+# turns the pass O(N²). The tables are the single most important performance
+# decision in this file.
+#
+# It is not fully O(1) yet: some paths still reach for the linear helpers, and
+# it shows. Between a 4,000- and a 32,000-line module (8x input) this pass
+# grows 14.4x while lexing and parsing grow 8.9x. Lowering, which leans on the
+# scans harder, grows 18.3x. Not urgent — 32,000 lines still checks in about a
+# third of a second — but that is where the time goes if it ever matters.
+#
+# TWO MORE THINGS THAT KEEP THE COST DOWN:
+#
+#   Unknown short-circuits. An undeclared symbol synthesizes Unknown, which is
+#   compatible with everything, so sketch code stops the checker early instead
+#   of dragging it through cascading failures.
+#
+#   Signature-only imports. modules.nim hands the checker its imports'
+#   SIGNATURES rather than their bodies, so `tuck check` never walks the
+#   interior of an imported module at all. The cheapest pass is the one that
+#   does not run.
+#
+# MEASURE, DO NOT GUESS: benches/bench_phases.nim times each phase in
+# isolation against a generated program, re-parsing between mutating phases so
+# the work is real.
+# ---------------------------------------------------------------------------
 import ast, semantics, lowering, tables, strutils, sets
 import resolution
 import ast_query

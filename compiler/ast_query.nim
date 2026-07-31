@@ -12,6 +12,28 @@
 # side by side.
 #
 # Add a helper here rather than open-coding the loop again.
+#
+# PERFORMANCE — READ THIS BEFORE ADDING A CALL IN A HOT LOOP.
+#
+# The lookups here (findDecl, findFn, allFns) are LINEAR SCANS over a module's
+# declaration list. One call is O(N) in the number of declarations; calling one
+# per declaration is O(N²).
+#
+# That is measurable today. Between a 4,000-line and a 32,000-line module (8x
+# the input), lex and parse both grow 8.9x — linear, as expected — while
+# lowering grows 18.3x and typechecking 14.4x. The gap is these scans. Overall
+# throughput falls from ~140K to ~100K lines/sec across that range
+# (benches/bench_phases.nim reproduces it).
+#
+# Callers that need many lookups should build a table ONCE instead. The type
+# checker already does: typecheck_state.nim fills `fnSigs` and `typeDecls`
+# up front, so its hottest lookups are O(1) hash hits rather than scans, which
+# is why it degrades noticeably less than lowering despite doing far more work.
+#
+# These scans are fine for a handful of lookups and fine at current program
+# sizes — 32,000 lines still checks in about a third of a second. The fix, when
+# a real program makes it hurt, is a name -> decl table built once per module
+# and shared by every pass, not micro-optimizing the scan.
 import ast, strutils
 
 proc repeat*(s: string, n: int): string =

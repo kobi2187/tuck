@@ -20,6 +20,39 @@
 # so unchanged modules skip lex+parse on later compiles (incremental
 # compilation groundwork). The cache is best-effort: any mismatch or damage
 # falls back to a fresh parse.
+#
+# ---------------------------------------------------------------------------
+# TWO CACHES, DOING DIFFERENT JOBS
+#
+# 1. THE AST CACHE (.tuck-cache/<name>.bin) — skips lex+parse.
+#    A whole parsed Module, msgpack-serialized, keyed on compiler build stamp
+#    + source hash. Deserializing beats re-parsing, and the key means a
+#    recompiled compiler or an edited source invalidates it automatically.
+#    Saves the ~43% of compile time that lexing and parsing cost.
+#
+# 2. THE SIGNATURE INDEX (.tuck-cache/index.bin) — skips the imports entirely.
+#    This is the bigger win by far. Checking a module needs its imports'
+#    SIGNATURES — exported names, their params and return types — not their
+#    bodies. The index stores just that, so `tuck check` never walks the
+#    interior of an imported module at all: no typechecking it, no effect
+#    verification, no lowering.
+#
+# The asymmetry is deliberate. `tuck check` runs on every save and asks for
+# signatures. `tuck build` runs when you actually want a binary and asks for
+# bodies, because now it has to emit code for them. Same loader, two depths.
+#
+# WHY THIS BEATS OPTIMIZING THE PASSES. Per-phase tuning is worth a few percent
+# (see benches/bench_phases.nim: no single phase exceeds ~30% of the total).
+# Not loading the import closure at all is worth however large that closure
+# is — unbounded, and it grows with the project rather than the file. The
+# fastest pass is the one that does not run.
+#
+# CORRECTNESS OVER SPEED, ALWAYS. Every cache here is best-effort: a stamp
+# mismatch, a hash mismatch, a truncated or unreadable file all fall back to a
+# fresh parse rather than trusting stale data. A cache that can serve a wrong
+# answer is worse than no cache, because the failure surfaces later as a
+# baffling type error in code the user did not touch.
+# ---------------------------------------------------------------------------
 import os, strutils, hashes, sets, tables, times
 import msgpack4nim
 import ast, parser
