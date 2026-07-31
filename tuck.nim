@@ -300,7 +300,7 @@ when isMainModule:
       # object — build it here, next to where the emitted `foreign import`
       # expects it.
       for d in odProg[^1].m.decls:
-        if d == nil or d.kind != dkMixin or d.name != "extern": continue
+        if d == nil or d.kind != dkExtern: continue
         for mem in d.mixinMembers:
           if mem.kind != dkFn or not mem.isExtern: continue
           if not mem.externLib.endsWith(".c"): continue

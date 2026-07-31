@@ -336,7 +336,15 @@ type
     dkRegistry
     dkPool
     dkFn
-    dkMixin
+    dkMixin   # `mixin Name:` — fns materialised onto a composing object
+    # `extern:` and `pending:` blocks parse into their own kinds rather than
+    # a dkMixin distinguished by `name == "extern"` / `== "pending"`. They are
+    # not mixins: nothing composes them, and consumers ask entirely different
+    # questions of them (what C symbol does this bind, is this fn still
+    # unimplemented). They keep `mixinMembers` because the payload — a list of
+    # member decls — is genuinely the same shape.
+    dkExtern  # `extern:` / `extern [c, header: "x.h"]:` — externally provided
+    dkPending # `pending:` — declared, not yet implemented; stubs are emitted
     dkActor
     dkTask
     dkExpr
@@ -392,7 +400,7 @@ type
                             # Empty = header-only (or rt-implemented).
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
-    of dkMixin:
+    of dkMixin, dkExtern, dkPending:
       mixinMembers*: seq[Decl]
     of dkActor:
       attrs*: seq[TypeAttr]
@@ -546,7 +554,7 @@ proc assignIds*(d: Decl, next: var uint32) =
     for m in d.typeMembers: assignIds(m, next)
   of dkObject:
     for m in d.objMembers: assignIds(m, next)
-  of dkMixin:
+  of dkMixin, dkExtern, dkPending:
     for m in d.mixinMembers: assignIds(m, next)
   of dkActor:
     for h in d.handlers: assignIds(h, next)
@@ -614,7 +622,7 @@ proc clearIds*(d: Decl) =
   of dkStaticAssert: clearIds(d.assertExpr)
   of dkType: (for m in d.typeMembers: clearIds(m))
   of dkObject: (for m in d.objMembers: clearIds(m))
-  of dkMixin: (for m in d.mixinMembers: clearIds(m))
+  of dkMixin, dkExtern, dkPending: (for m in d.mixinMembers: clearIds(m))
   of dkActor: (for h in d.handlers: clearIds(h))
   of dkSelect: (for arm in d.selectArms: clearIds(arm.body))
   of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig: discard

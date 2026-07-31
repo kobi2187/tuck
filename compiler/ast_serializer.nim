@@ -310,7 +310,7 @@ proc toJson*(d: Decl): JsonNode =
     for eff in d.taskEffects: effects.add(% $eff)
     res["effects"] = effects
     res["body"] = toJson(d.taskBody)
-  of dkMixin:
+  of dkMixin, dkExtern, dkPending:
     res["members"] = declsJson(d.mixinMembers)
   of dkRegistry:
     var variants = newJArray()

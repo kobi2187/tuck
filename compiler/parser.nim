@@ -770,7 +770,7 @@ proc parseExternDecl(p: var Parser, sp: Span): Decl =
     d.isExtern = true
     d.externHeader = header
     d.externLib = lib
-  return Decl(span: sp, kind: dkMixin, name: "extern", mixinMembers: decls)
+  return Decl(span: sp, kind: dkExtern, name: "extern", mixinMembers: decls)
 
 proc parseDecl*(p: var Parser): Decl =
   let sp = p.getSpan()
@@ -839,7 +839,7 @@ proc parseDecl*(p: var Parser): Decl =
     discard p.advance()
     let decls = p.parseSigBlock("pending")
     for d in decls: d.isPending = true
-    return Decl(span: sp, kind: dkMixin, name: "pending", mixinMembers: decls)
+    return Decl(span: sp, kind: dkPending, name: "pending", mixinMembers: decls)
 
   of tkType:
     return p.parseTypeDecl(sp)

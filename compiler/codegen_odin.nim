@@ -1667,7 +1667,8 @@ proc composeInto(ctx: var OdinCodegenCtx, compName, objName, ind: string,
   ## emitted syntax differs. False if nothing by that name is declared.
   for cd in ctx.module.decls:
     if cd == nil or cd.name != compName: continue
-    if cd.kind == dkMixin:
+    if cd.kind == dkMixin:   # composition names a real mixin, never a
+                             # pending/extern block
       for mm in cd.mixinMembers:
         if mm.kind == dkFn and mm.fnBody != nil:
           members.add(ctx.genOdinMemberFn(mm, objName) & "\n")
@@ -1844,7 +1845,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
         res.add(bodyStr & "\n")
     res.add(ind & "}\n")
     return res
-  of dkMixin:
+  of dkMixin, dkExtern, dkPending:
     # Pending blocks parse as a mixin named "pending"; emit stubs for members.
     # Extern blocks: rt-implemented fns forward to the Odin runtime (library
     # modules) or emit nothing (entry module); C-imported fns become an Odin

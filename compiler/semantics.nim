@@ -211,7 +211,7 @@ proc verifyModuleEffects*(m: Module,
       for h in d.handlers:
         if h.kind == dkFn:
           c.declared[h.name] = h.fnEffects
-    elif d.kind == dkMixin and d.name == "extern":
+    elif d.kind == dkExtern:
       # local `extern:` block — register each declared fn's effects so an [io]
       # extern marks its call sites async (else a task calling it never yields)
       for mem in d.mixinMembers:

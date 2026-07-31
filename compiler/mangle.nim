@@ -103,8 +103,9 @@ proc manglableNames*(m: Module): HashSet[string] =
   result = initHashSet[string]()
   for d in m.decls:
     if isManglable(d): result.incl(d.name)
-    # a mixin's members become top-level fns in every backend
-    if d != nil and d.kind == dkMixin:
+    # members of a mixin / extern / pending block become top-level fns in
+    # every backend, so their names are manglable too
+    if d != nil and d.kind in {dkMixin, dkExtern, dkPending}:
       for mem in d.mixinMembers:
         if isManglable(mem): result.incl(mem.name)
 
@@ -252,7 +253,7 @@ proc mangleMember(mem: Decl, names: HashSet[string]) =
   of dkExpr:
     var l = initHashSet[string]()
     mangleExpr(mem.expr, names, l)
-  of dkMixin:
+  of dkMixin, dkExtern, dkPending:
     for inner in mem.mixinMembers: mangleMember(inner, names)
   of dkType:
     mangleType(mem.typeBody, names)
@@ -323,7 +324,7 @@ proc mangleModuleWith(m: Module, names: HashSet[string]) =
     of dkActor:
       for f in d.actorFields: mangleType(f.typ, names)
       for h in d.handlers: mangleMember(h, names)
-    of dkMixin:
+    of dkMixin, dkExtern, dkPending:
       for mem in d.mixinMembers: mangleMember(mem, names)
     of dkExpr:
       var l = initHashSet[string]()
@@ -341,6 +342,6 @@ proc mangleModuleWith(m: Module, names: HashSet[string]) =
   # now the declarations themselves
   for d in m.decls:
     if isManglable(d): renameDecl(d)
-    elif d != nil and d.kind == dkMixin:
+    elif d != nil and d.kind in {dkMixin, dkExtern, dkPending}:
       for mem in d.mixinMembers:
         if isManglable(mem): renameDecl(mem)

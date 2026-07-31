@@ -108,7 +108,7 @@ proc buildDeclIndex(ctx: var CodegenCtx) =
   # looked up in invariantNames, which the loop above has to finish filling
   # first (a type may be declared after the extern that returns it).
   for d in ctx.module.decls:
-    if d == nil or d.kind != dkMixin: continue
+    if d == nil or d.kind != dkExtern: continue
     for mem in d.mixinMembers:
       if mem.kind != dkFn or not mem.isExtern: continue
       if mem.externEmit != "":
@@ -1463,7 +1463,8 @@ proc composeInto(ctx: var CodegenCtx, compName, objName: string,
   ## carries its data along. False if nothing by that name is declared.
   for cd in ctx.module.decls:
     if cd == nil or cd.name != compName: continue
-    if cd.kind == dkMixin:
+    if cd.kind == dkMixin:   # composition names a real mixin, never a
+                             # pending/extern block
       for m in cd.mixinMembers:
         if m.kind == dkFn and m.fnBody != nil:
           members.add(ctx.genMemberFn(m, objName) & "\n")
@@ -1612,10 +1613,11 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       if bodyStr.strip() != "" and bodyStr.strip() != "discard":
         res.add(bodyStr & "\n")
     return res
-  of dkMixin:
-    # Pending blocks parse as a mixin named "pending"; emit stubs for its members.
-    # Extern blocks: rt-implemented fns emit NOTHING (tuck_rt provides them);
-    # C-imported fns emit importc bindings with concrete param types.
+  of dkMixin, dkExtern, dkPending:
+    # All three carry members and emit per-member. dkPending emits stubs;
+    # dkExtern emits nothing for rt-implemented fns (tuck_rt provides them)
+    # and importc bindings for C-imported ones; a real mixin's fns are
+    # materialised onto the objects that compose it.
     var res = ""
     for m in d.mixinMembers:
       if m.kind in {dkType, dkFnSig}:

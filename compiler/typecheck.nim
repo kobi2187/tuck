@@ -1530,7 +1530,7 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
       # manager types carry functionality: member fns join the catalog
       tc.collectSigs(d.typeMembers)
     of dkObject: tc.collectSigs(d.objMembers)
-    of dkMixin: tc.collectSigs(d.mixinMembers)
+    of dkMixin, dkExtern, dkPending: tc.collectSigs(d.mixinMembers, top = false)
     of dkActor: tc.collectSigs(d.handlers)
     of dkErrors:
       tc.errPolicy = d.policyName
@@ -1751,7 +1751,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     tc.bindName("self", Type(span: d.span, kind: tkNamed, name: d.name), true)
     for m in d.objMembers: tc.checkDecl(m)
     tc.popScope()
-  of dkMixin:
+  of dkMixin, dkExtern, dkPending:
     for m in d.mixinMembers: tc.checkDecl(m)
   of dkActor:
     tc.pushScope()
@@ -1780,7 +1780,7 @@ proc collectPending(decls: seq[Decl], acc: var seq[string]) =
       if d.isPending:
         acc.add(sigStr(d) & "   line " & $d.span.line)
     of dkObject: collectPending(d.objMembers, acc)
-    of dkMixin: collectPending(d.mixinMembers, acc)
+    of dkMixin, dkExtern, dkPending: collectPending(d.mixinMembers, acc)
     of dkActor: collectPending(d.handlers, acc)
     else: discard
 

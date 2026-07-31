@@ -65,10 +65,8 @@ proc findDecl*(m: Module, kind: DeclKind, name: string): Decl =
   nil
 
 iterator externBlocks*(m: Module): Decl =
-  ## `extern:` / `extern [c, ...]:` blocks — each parses as a mixin named
-  ## "extern" whose members are the signatures.
-  for d in m.decls(dkMixin):
-    if d.name == "extern": yield d
+  ## `extern:` / `extern [c, ...]:` blocks, whose members are the signatures.
+  for d in m.decls(dkExtern): yield d
 
 iterator externMembers*(m: Module): Decl =
   ## Every member of every extern block, flattened. The common case: callers
@@ -96,7 +94,7 @@ iterator members*(d: Decl): Decl =
   ## know that a mixin uses mixinMembers and an object uses objMembers.
   if d != nil:
     case d.kind
-    of dkMixin:
+    of dkMixin, dkExtern, dkPending:
       for mem in d.mixinMembers: (if mem != nil: yield mem)
     of dkType:
       for mem in d.typeMembers: (if mem != nil: yield mem)
@@ -139,7 +137,7 @@ proc findFn*(m: Module, name: string): Decl =
   for d in m.decls:
     if d == nil: continue
     if d.kind in {dkFn, dkTask} and d.name == name: return d
-    if d.kind in {dkMixin, dkType}:
+    if d.kind in {dkMixin, dkExtern, dkPending, dkType}:
       for mem in d.members():
         if mem.kind == dkFn and not mem.isPending and mem.name == name:
           return mem
