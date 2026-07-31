@@ -305,26 +305,42 @@ proc scanNext*(L: var Lexer) =
       L.advance(); L.advance()
       L.pendingTokens.add(Token(kind: kind, value: "..", line: sl, column: sc))
       return
-    if L.tryTwoChar("->", tkArrow): return
-    if L.tryTwoChar("=>", tkFatArrow): return
-    if L.tryTwoChar("::", tkColonColon): return
-    if L.tryTwoChar("?!", tkBangQuestion): return  # T?! == T!? — same wrapper
-    if L.tryTwoChar("!?", tkBangQuestion): return
-    if L.tryTwoChar("==", tkEq): return
-    if L.tryTwoChar("!=", tkNeq): return
-    if L.tryTwoChar("<=", tkLte): return
-    if L.tryTwoChar(">=", tkGte): return
-    if L.tryTwoChar("+=", tkPlusAssign): return
-    if L.tryTwoChar("-=", tkMinusAssign): return
-    if L.tryTwoChar("*=", tkStarAssign): return
-    # Division names its arithmetic (ruling R1, 2026-07-28): `/i` is integer
-    # divide, `/f` is float divide, and a bare `/` does not exist. On embedded
-    # a silently-wrong quotient is worse than a character of typing. Longest
-    # match first — `/i=` must be tried before `/i`.
-    if L.tryTwoChar("/i=", tkSlashIntAssign): return
-    if L.tryTwoChar("/f=", tkSlashFloatAssign): return
-    if L.tryTwoChar("/i", tkSlashInt): return
-    if L.tryTwoChar("/f", tkSlashFloat): return
+    # Switch on the first character before trying anything: every multi-char
+    # operator is uniquely determined by it, so a `/` never has to be tested
+    # against "->", "==" and ten others first. Longest match still wins WITHIN
+    # a branch, which is the only place it matters (`/i=` before `/i`).
+    case ch
+    of '-':
+      if L.tryTwoChar("->", tkArrow): return
+      if L.tryTwoChar("-=", tkMinusAssign): return
+    of '=':
+      if L.tryTwoChar("=>", tkFatArrow): return
+      if L.tryTwoChar("==", tkEq): return
+    of ':':
+      if L.tryTwoChar("::", tkColonColon): return
+    of '?':
+      if L.tryTwoChar("?!", tkBangQuestion): return  # T?! == T!? — same wrapper
+    of '!':
+      if L.tryTwoChar("!?", tkBangQuestion): return
+      if L.tryTwoChar("!=", tkNeq): return
+    of '<':
+      if L.tryTwoChar("<=", tkLte): return
+    of '>':
+      if L.tryTwoChar(">=", tkGte): return
+    of '+':
+      if L.tryTwoChar("+=", tkPlusAssign): return
+    of '*':
+      if L.tryTwoChar("*=", tkStarAssign): return
+    of '/':
+      # Division names its arithmetic (ruling R1, 2026-07-28): `/i` is integer
+      # divide, `/f` is float divide, and a bare `/` does not exist. On embedded
+      # a silently-wrong quotient is worse than a character of typing. Longest
+      # match first — `/i=` must be tried before `/i`.
+      if L.tryTwoChar("/i=", tkSlashIntAssign): return
+      if L.tryTwoChar("/f=", tkSlashFloatAssign): return
+      if L.tryTwoChar("/i", tkSlashInt): return
+      if L.tryTwoChar("/f", tkSlashFloat): return
+    else: discard
 
     case ch
     of '.': L.emitOneChar(tkDot, ".")
