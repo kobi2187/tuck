@@ -128,6 +128,20 @@ proc declFor*(r: Resolution, e: Expr): Decl =
   if not r.declOf.hasKey(e.id): return nil
   r.decls.getOrDefault(r.declOf[e.id], nil)
 
+proc resolveTypeTo*(r: var Resolution, t: Type, d: Decl) =
+  ## Record that this type reference names that declaration. A tkNamed carries
+  ## a name because that is what the user wrote; this is what it MEANS.
+  if t == nil or d == nil or not d.id.isSet: return
+  if not t.id.isSet: t.id = newNodeId()
+  r.decls[d.id] = d
+  r.declOf[t.id] = d.id
+
+proc declForType*(r: Resolution, t: Type): Decl =
+  ## The declaration a named type refers to, or nil if never resolved.
+  if t == nil or not t.id.isSet: return nil
+  if not r.declOf.hasKey(t.id): return nil
+  r.decls.getOrDefault(r.declOf[t.id], nil)
+
 proc setArgFields*(r: var Resolution, e: Expr, fields: seq[string]) =
   ## Which payload field feeds each param, in param order.
   if e == nil: return

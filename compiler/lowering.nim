@@ -43,7 +43,11 @@ proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
   of tkRecord:
     return t.fields
   of tkNamed:
-    let d = m.findDecl(dkType, t.name)
+    # Follow the edge the checker recorded (resolveTypeNames) rather than
+    # matching t.name against the decl list — the name is what the user wrote,
+    # the edge is what it means, and after mangling the two differ.
+    var d = semLayer.declForType(t)
+    if d == nil: d = m.findDecl(dkType, t.name)
     if d != nil: return getFieldsForType(m, d.typeBody)
   of tkUnion:
     var res: seq[FieldDef]

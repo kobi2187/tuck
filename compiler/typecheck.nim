@@ -1533,6 +1533,8 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
          Type(span: d.span, kind: tkNamed, name: "void"),
          newSeq[string](), newSeq[EffectMarker]())
     of dkType:
+      indexDecl(semLayer, d)
+      tc.typeDeclsByName[d.name] = d
       if d.typeBody != nil:
         tc.typeDecls[d.name] = d.typeBody
         if d.generics.len > 0:
@@ -1551,6 +1553,67 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
         fail("Policy Error: errors [policy: " & d.policyName &
              "] needs an 'on unhandled({code, site})' handler", d.span)
     else: discard
+
+proc resolveTypeRefs(tc: TypeChecker, t: Type) =
+  ## Point every named type reference at the declaration it names, so later
+  ## passes follow an edge instead of matching a string. Recursive, because a
+  ## reference can be buried in a generic argument or a record field.
+  if t == nil: return
+  case t.kind
+  of tkNamed:
+    if tc.typeDeclsByName.hasKey(t.name):
+      resolveTypeTo(semLayer, t, tc.typeDeclsByName[t.name])
+  of tkApp:
+    resolveTypeRefs(tc, t.base)
+    for a in t.args: resolveTypeRefs(tc, a)
+  of tkTuple:
+    for e in t.elems: resolveTypeRefs(tc, e)
+  of tkFunc:
+    for p in t.params: resolveTypeRefs(tc, p)
+    resolveTypeRefs(tc, t.result)
+  of tkRecord:
+    for f in t.fields: resolveTypeRefs(tc, f.typ)
+  of tkUnion:
+    for mem in t.members: resolveTypeRefs(tc, mem)
+  of tkEffect: resolveTypeRefs(tc, t.inner)
+  of tkRename: resolveTypeRefs(tc, t.underlying)
+  of tkSum:
+    for v in t.variants:
+      for f in v.fields: resolveTypeRefs(tc, f.typ)
+
+proc resolveDeclTypeRefs(tc: TypeChecker, d: Decl) =
+  ## Every type a declaration mentions.
+  if d == nil: return
+  case d.kind
+  of dkType:
+    resolveTypeRefs(tc, d.typeBody)
+    for m in d.typeMembers: resolveDeclTypeRefs(tc, m)
+  of dkFn:
+    for p in d.fnParams: resolveTypeRefs(tc, p.typ)
+    resolveTypeRefs(tc, d.fnReturnType)
+  of dkTask:
+    for p in d.taskParams: resolveTypeRefs(tc, p.typ)
+    resolveTypeRefs(tc, d.taskReturnType)
+  of dkObject:
+    for f in d.objFields: resolveTypeRefs(tc, f.typ)
+    for m in d.objMembers: resolveDeclTypeRefs(tc, m)
+  of dkMixin, dkExtern, dkPending:
+    for m in d.mixinMembers: resolveDeclTypeRefs(tc, m)
+  of dkActor:
+    for f in d.actorFields: resolveTypeRefs(tc, f.typ)
+    for h in d.handlers: resolveDeclTypeRefs(tc, h)
+  of dkPool: resolveTypeRefs(tc, d.poolElem)
+  of dkFnSig:
+    for p in d.sigParams: resolveTypeRefs(tc, p.typ)
+    resolveTypeRefs(tc, d.sigReturn)
+  of dkRegistry:
+    for v in d.variants:
+      for f in v.fields: resolveTypeRefs(tc, f.typ)
+  else: discard
+
+proc resolveTypeNames*(tc: TypeChecker, m: Module) =
+  ## Run after collectSigs, when every declaration is known.
+  for d in m.decls: resolveDeclTypeRefs(tc, d)
 
 # Pure functions are total: only [io]-marked functions (I/O, unknown input)
 # may declare fallible !T returns. The pure core provably cannot fail.
@@ -1828,6 +1891,7 @@ proc typecheckModule*(m: Module,
       tc.knownModules.incl(qualName.split("::")[0])
   tc.pushScope()  # module-level scope: consts visible across decls
   tc.collectSigs(m.decls)
+  tc.resolveTypeNames(m)
   # const declarations: Nim-static semantics — arbitrary PURE computation,
   # evaluated at compile time by the backend's const evaluator. Tuck rejects
   # only what would break there: [io] calls (pure only), record-type
@@ -1920,6 +1984,7 @@ proc moduleSigs*(m: Module): seq[SigInfo] =
                        distinctNames: initHashSet[string](),
                        errPolicy: "strict")
   tc.collectSigs(m.decls)
+  tc.resolveTypeNames(m)
   for name, sig in tc.fnSigs:
     result.add(SigInfo(name: name, params: sig.params, ret: sig.ret,
                        generics: sig.generics, effects: sig.effects,
@@ -1975,6 +2040,7 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
                          errPolicy: "strict")
     try:
       tc.collectSigs(m.decls)
+      tc.resolveTypeNames(m)
     except SemanticError as err:
       err.msg = path & ":" & $err.line & ":" & $err.col & ": " & err.msg
       raise

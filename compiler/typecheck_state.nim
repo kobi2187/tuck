@@ -38,6 +38,10 @@ type
     fnDecls*: Table[string, Decl]     # the DECLARATION behind each fnSigs entry,
                                       # so a resolved call can be recorded as an
                                       # edge to it (resolution.resolveTo)
+    typeDeclsByName*: Table[string, Decl]  # same, for type declarations: lets a
+                                      # tkNamed reference be resolved to the
+                                      # decl it names instead of carrying only
+                                      # the name into later passes
     topLevelFns*: HashSet[string]     # plain top-level `fn` decls: the only
                                       # callees lowering explodes payloads for
                                       # (tasks and member fns are the backends')
