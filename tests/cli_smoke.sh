@@ -3,7 +3,9 @@
 set -e
 cd "$(dirname "$0")/.."
 
-nim c --hints:off --warnings:off -o:tuck tuck.nim
+# run-all-tests.sh builds tuck in stage 1; build it here only when this script
+# is run on its own, so the suite does not pay for a second compiler build.
+[ -x ./tuck ] || nim c --hints:off --warnings:off -o:tuck tuck.nim
 
 ./tuck l  examples/07-comments.tuck  > /dev/null
 ./tuck p  examples/07-comments.tuck  > /dev/null
@@ -22,6 +24,19 @@ fi
 
 rm -rf "$out"
 
+# --- independent cases, run concurrently -------------------------------
+#
+# Each case below builds and runs its own programs in its own
+# tests/.smoke_* directory and shares nothing writable with the others,
+# so they overlap. Serially this script was 33s — 30 `tuck build` calls
+# at ~0.8s each, and that 0.8s is Nim re-analysing tuck_rt and its async
+# chain per invocation, which no amount of test-side work removes.
+#
+# Each case keeps `exit 1` on failure: inside a function run as a
+# background job that exits the SUBSHELL, which `wait` reports as a
+# nonzero status, so the failure still propagates.
+
+case_inv() {
 # invariants: validate() auto-inserted at construction and return sites
 inv="tests/.smoke_inv"
 rm -rf "$inv" && mkdir -p "$inv"
@@ -109,7 +124,9 @@ EOF
 ./tuck compile "$inv/ext.tuck" -o:"$inv/out5" > /dev/null
 grep -q "validate(" "$inv/out5/ext.nim" || { echo "FAIL: extern call site not validated"; exit 1; }
 rm -rf "$inv"
+}
 
+case_tdl() {
 # type-directed lowering: record var as whole payload explodes to params
 tdl="tests/.smoke_tdl"
 rm -rf "$tdl" && mkdir -p "$tdl"
@@ -128,7 +145,9 @@ EOF
 grep -q "advance(p.position, p.step)" "$tdl/out/p.nim" || { echo "FAIL: record var not exploded"; exit 1; }
 "$tdl/out/p" || { echo "FAIL: exploded program did not run"; exit 1; }
 rm -rf "$tdl"
+}
 
+case_chaintail() {
 # `..` chain as the fn's tail: mutate, then return the base var
 cht="tests/.smoke_chaintail"
 rm -rf "$cht" && mkdir -p "$cht"
@@ -150,7 +169,9 @@ EOF
 rc=0; "$cht/out/t" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: chain-tail program exit $rc, want 42"; exit 1; }
 rm -rf "$cht"
+}
 
+case_errmatch() {
 # match over r.err: arms compile to hashed code constants, branch correctly
 em="tests/.smoke_errmatch"
 rm -rf "$em" && mkdir -p "$em"
@@ -178,7 +199,9 @@ EOF
 rc=0; "$em/out/t" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: err-match branch wrong exit $rc, want 42"; exit 1; }
 rm -rf "$em"
+}
 
+case_tour123() {
 # toStr + string concat + list literals + for loops (tour gaps 1-3)
 tg="tests/.smoke_tour123"
 rm -rf "$tg" && mkdir -p "$tg"
@@ -208,7 +231,9 @@ echo "$out" | grep -q "hello, tuck" || { echo "FAIL: concat output"; exit 1; }
 echo "$out" | grep -q "^42$" || { echo "FAIL: toStr output"; exit 1; }
 [ "$rc" -eq 42 ] || { echo "FAIL: list/for sum exit $rc, want 42"; exit 1; }
 rm -rf "$tg"
+}
 
+case_errname() {
 # unhandled report names the error via the reverse table (debug builds)
 en="tests/.smoke_errname"
 rm -rf "$en" && mkdir -p "$en"
@@ -232,7 +257,9 @@ TUCKEOF
 ./tuck build "$en/t.tuck" -o:"$en/out" > /dev/null
 "$en/out/t" 2>&1 | grep -q "TUCK ERROR NAME: t/ParseError.Empty" || { echo "FAIL: unhandled report missing error name"; exit 1; }
 rm -rf "$en"
+}
 
+case_lib() {
 # top-level statements are declarations-only violations; library builds
 lib="tests/.smoke_lib"
 rm -rf "$lib" && mkdir -p "$lib"
@@ -250,7 +277,9 @@ rm -rf "$lib"
 # (the Beef backend was removed in 7c84d1f; its --beef check lived here and
 # went with it. It had been unreachable anyway — the err-match check above
 # aborted this script long before reaching it.)
+}
 
+case_ctrlflow() {
 # control flow: loop/break, for-cond, continue, ranges, indexed for, fn inline
 cf="tests/.smoke_ctrlflow"
 rm -rf "$cf" && mkdir -p "$cf"
@@ -282,7 +311,9 @@ rc=0; "$cf/out/cf" || rc=$?
 [ "$rc" -eq 17 ] || { echo "FAIL: control-flow exit code $rc != 17"; exit 1; }
 grep -q "{.inline.}" "$cf/out/cf.nim" || { echo "FAIL: fn inline lost {.inline.}"; exit 1; }
 rm -rf "$cf"
+}
 
+case_valuetype() {
 # records are VALUE types (spec §7.1): == compares fields, not identity,
 # and a copy is independent of its source
 vt="tests/.smoke_valuetype"
@@ -311,7 +342,9 @@ rc=0; "$vt/out/t" || rc=$?
 [ "$rc" -eq 17 ] || { echo "FAIL: value-type semantics exit $rc, want 17"; exit 1; }
 grep -q "= object" "$vt/out/t.nim" || { echo "FAIL: record emitted as ref object"; exit 1; }
 rm -rf "$vt"
+}
 
+case_nullary() {
 # spec 2.3: a bare name IS a call — a zero-arg fn referenced bare must be
 # invoked, not taken as a proc reference (`:name` is the fn-ref form)
 nl="tests/.smoke_nullary"
@@ -332,7 +365,9 @@ TUCKEOF
 rc=0; "$nl/out/t" || rc=$?
 [ "$rc" -eq 12 ] || { echo "FAIL: nullary call exit $rc, want 12"; exit 1; }
 rm -rf "$nl"
+}
 
+case_matchret() {
 # a trailing `match subject:` IS the fn's result — its value arms carry no
 # returns of their own, so the implicit-return rewrite must wrap the match
 mr="tests/.smoke_matchret"
@@ -356,7 +391,9 @@ TUCKEOF
 rc=0; "$mr/out/t" || rc=$?
 [ "$rc" -eq 9 ] || { echo "FAIL: match-as-return exit $rc, want 9"; exit 1; }
 rm -rf "$mr"
+}
 
+case_seqat() {
 # std/seq: indexed read/write as named fns (`at`/`setAt`), not `[]` sugar.
 # Bounds are a precondition — out of range aborts at the call site.
 sq="tests/.smoke_seqat"
@@ -388,7 +425,9 @@ if "$sq/oout/oob" 2>"$sq/err.txt"; then
 fi
 grep -q "out of bounds for seq of length 3" "$sq/err.txt" || { echo "FAIL: bounds precondition message missing"; exit 1; }
 rm -rf "$sq"
+}
 
+case_index() {
 # bracket sugar: xs[i] reads, xs[i] = v writes, xs[i] += v compounds.
 # All desugar to the seq::at / seq::setAt calls above — same bounds
 # precondition, no new codegen path.
@@ -449,7 +488,9 @@ if ./tuck ch "$ix/bad.tuck" 2>/dev/null; then
 fi
 ./tuck ch "$ix/bad.tuck" 2>&1 | grep -q "not indexable" || { echo "FAIL: wrong non-indexable error"; exit 1; }
 rm -rf "$ix"
+}
 
+case_pool() {
 # spec 7.2 pools: declaration diagnostics, and a real acquire/release cycle.
 pl="tests/.smoke_pool"
 rm -rf "$pl" && mkdir -p "$pl"
@@ -502,14 +543,18 @@ TUCKEOF
 rc=0; "$pl/out/t" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: pool acquire/release cycle exit $rc, want 42"; exit 1; }
 rm -rf "$pl"
+}
 
+case_e25() {
 # the pools example is the usage showcase — it must actually run
 rm -rf "tests/.smoke_e25" && mkdir -p "tests/.smoke_e25"
 ./tuck build examples/25-pools.tuck -o:"tests/.smoke_e25/out" > /dev/null
 rc=0; "tests/.smoke_e25/out/m_25_pools" || rc=$?
 [ "$rc" -eq 4 ] || { echo "FAIL: pools example exit $rc, want 4 (3 sessions + 1 buffer)"; exit 1; }
 rm -rf "tests/.smoke_e25"
+}
 
+case_e26() {
 # actor runtime (spec §9, Phase A): the actor singleton drains its mailbox on
 # the scheduler thread and exits with the accumulated state (1+..+10 = 55)
 rm -rf "tests/.smoke_e26" && mkdir -p "tests/.smoke_e26"
@@ -517,7 +562,9 @@ rm -rf "tests/.smoke_e26" && mkdir -p "tests/.smoke_e26"
 rc=0; "tests/.smoke_e26/out/m_26_actor_run" || rc=$?
 [ "$rc" -eq 55 ] || { echo "FAIL: actor-run example exit $rc, want 55"; exit 1; }
 rm -rf "tests/.smoke_e26"
+}
 
+case_e27() {
 # on select (spec §9.3, Phase B): message arms dispatch by kind + a shutdown
 # arm. Accumulate 1..10, finish, wait, exit 55
 rm -rf "tests/.smoke_e27" && mkdir -p "tests/.smoke_e27"
@@ -525,7 +572,9 @@ rm -rf "tests/.smoke_e27" && mkdir -p "tests/.smoke_e27"
 rc=0; "tests/.smoke_e27/out/m_27_actor_select" || rc=$?
 [ "$rc" -eq 55 ] || { echo "FAIL: actor-select example exit $rc, want 55"; exit 1; }
 rm -rf "tests/.smoke_e27"
+}
 
+case_e28() {
 # async task (spec §9.2, Phase C): a task is an async coroutine, [io] calls are
 # implicit yields, calling it schedules it, the runtime drives to completion.
 # compute base*2 across two [io] yields, exit 42. (Not in nimCheckExpected —
@@ -535,7 +584,9 @@ rm -rf "tests/.smoke_e28" && mkdir -p "tests/.smoke_e28"
 rc=0; "tests/.smoke_e28/out/m_28_async_task" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: async-task example exit $rc, want 42"; exit 1; }
 rm -rf "tests/.smoke_e28"
+}
 
+case_e29() {
 # operation timeout (spec §9.3): a task races a REAL async read (data at 500ms)
 # against a 30ms deadline via `on select`; the timeout wins, exit 2. This is the
 # impossible-on-blocking-I/O case working for real.
@@ -544,7 +595,9 @@ rm -rf "tests/.smoke_e29" && mkdir -p "tests/.smoke_e29"
 rc=0; "tests/.smoke_e29/out/m_29_task_timeout" || rc=$?
 [ "$rc" -eq 2 ] || { echo "FAIL: task-timeout example exit $rc, want 2"; exit 1; }
 rm -rf "tests/.smoke_e29"
+}
 
+case_e30() {
 # async read WINS (spec §9.3): same mechanism, data arrives at 5ms and beats the
 # 100ms timeout, exit 1. Proves the read fd genuinely became ready and resumed
 # the suspended coroutine — real non-blocking I/O, not just the timeout arm.
@@ -553,7 +606,9 @@ rm -rf "tests/.smoke_e30" && mkdir -p "tests/.smoke_e30"
 rc=0; "tests/.smoke_e30/out/m_30_async_read" || rc=$?
 [ "$rc" -eq 1 ] || { echo "FAIL: async-read example exit $rc, want 1"; exit 1; }
 rm -rf "tests/.smoke_e30"
+}
 
+case_e31() {
 # fnsig (spec D#10c): a `:name` fn-ref fills a fnsig-typed slot and calling
 # through the slot runs the referenced fn. plus(40,2) via c.add -> exit 42.
 rm -rf "tests/.smoke_e31" && mkdir -p "tests/.smoke_e31"
@@ -561,7 +616,9 @@ rm -rf "tests/.smoke_e31" && mkdir -p "tests/.smoke_e31"
 rc=0; "tests/.smoke_e31/out/m_31_fnsig_callback" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: fnsig example exit $rc, want 42"; exit 1; }
 rm -rf "tests/.smoke_e31"
+}
 
+case_e32() {
 # duration units (spec 4.2): std/time Milliseconds distinct + `ms` helper,
 # `5.ms` resolved cross-module from the import. asInt(42.ms) -> exit 42.
 rm -rf "tests/.smoke_e32" && mkdir -p "tests/.smoke_e32"
@@ -569,7 +626,9 @@ rm -rf "tests/.smoke_e32" && mkdir -p "tests/.smoke_e32"
 rc=0; "tests/.smoke_e32/out/m_32_duration_units" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: duration-units example exit $rc, want 42"; exit 1; }
 rm -rf "tests/.smoke_e32"
+}
 
+case_effects() {
 # Effects cross the module boundary, from source AND from the cached index.
 # Both paths must reject identically: a pure fn calling an imported [io] fn is
 # an error whether the callee was just parsed or restored from .tuck-cache.
@@ -611,7 +670,9 @@ done
 ./tuck ch "$eff/good.tuck" --root:"$eff" > /dev/null || {
   echo "FAIL: good case broke after index warm"; exit 1; }
 rm -rf "$eff"
+}
 
+case_bytype() {
 # Payload fields matched to params BY TYPE, with a struct LITERAL receiver.
 # The checker matches by name first, then by type for whatever is left
 # (typecheck.nim checkCallArgs pass 2), so `alpha` legitimately feeds `first`.
@@ -641,5 +702,20 @@ grep -q 'tuck_pick(42, "x", true)' "$bt/out/t.nim" || {
 rc=0; "$bt/out/t" || rc=$?
 [ "$rc" -eq 42 ] || { echo "FAIL: by-type literal payload exit $rc, want 42"; exit 1; }
 rm -rf "$bt"
+}
 
-echo "cli smoke OK"
+# Launch every case, then collect. `wait <pid>` yields that job's status.
+pids=""
+for c in case_inv case_tdl case_chaintail case_errmatch case_tour123 case_errname case_lib case_ctrlflow case_valuetype case_nullary case_matchret case_seqat case_index case_pool case_e25 case_e26 case_e27 case_e28 case_e29 case_e30 case_e31 case_e32 case_effects case_bytype; do
+  $c & pids="$pids $!:$c"
+done
+rc=0
+for entry in $pids; do
+  wait "${entry%%:*}" || { echo "FAIL: ${entry#*:}"; rc=1; }
+done
+[ $rc -eq 0 ] || exit 1
+
+# Reported in the same shape as the tests/lib.sh scripts so the runner's
+# summary line matches uniformly. This script asserts with `set -e` +
+# explicit exits rather than lib.sh, so the count is its own.
+echo "cli_smoke.sh: all passed, 0 failed"

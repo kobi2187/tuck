@@ -1,18 +1,14 @@
 tests/examples_out/
 tests/temp_*
-tests/end_to_end
-tests/lexer_examples
-tests/parser_examples
-tests/compile_all_examples
-tests/typecheck_tests
 nimcache/
+# `tuck build` pins Nim's cache next to its output so concurrent builds of
+# same-named modules cannot collide in the shared ~/.cache/nim
+.nimcache/
 .claude/
 tuck
 .tuck-cache/
 tests/beef_out/
 tests/beef_backend
-tests/known_bugs
-tests/auto_alias_e2e
 tests/auto_alias_out/
 # emitted backend output lands next to the .tuck source
 examples/*.nim
@@ -20,8 +16,6 @@ examples/*.odin
 examples/*.bf
 compiler/tuckrt/minicoro.a
 tests/odin_out/
-tests/odin_backend
-tests/mangle_tests
 # `tuck build` drops binaries and copied deps beside the examples;
 # run-all-tests.sh regenerates all of it on every run
 examples/m_*
