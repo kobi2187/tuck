@@ -46,6 +46,9 @@ import ast, strutils, sets, tables
 import resolution
 import ast_query
 import codegen_common
+import codegen_type   # genType: Tuck type -> Nim type text
+import codegen_table  # decision-table combinatorics (spec 6.1)
+export genType        # re-exported: this file's public face is the backend
 
 type
   CodegenCtx = object
@@ -153,86 +156,6 @@ proc isTaskName(ctx: var CodegenCtx, name: string): bool =
   ## the effect checker's task-spawn check.
   ctx.buildDeclIndex()
   name in ctx.taskNames
-
-proc genType*(t: Type): string =
-  if t == nil: return "void"
-  case t.kind
-  of tkNamed:
-    case t.name
-    of "void": "void"
-    of "u8": "uint8"
-    of "u16": "uint16"
-    of "u32": "uint32"
-    of "u64": "uint64"
-    of "i8": "int8"
-    of "i16": "int16"
-    of "i32": "int32"
-    of "i64": "int64"
-    of "int": "int"
-    of "string", "str": "string"
-    # C's char* — the FFI boundary type. Distinct from `string`, which is a
-    # GC'd length-prefixed object Nim will not hand to a C function.
-    of "cstring": "cstring"
-    of "bool": "bool"
-    of "float": "float"
-    of "f32": "float32"
-    of "f64": "float64"
-    of "usize": "uint"
-    of "Seq": "seq"
-    of "Array": "array"
-    of "fn": "auto"  # fn slot: generic param — Nim monomorphizes per bake
-    else:
-      # Odd bit widths from decision tables (u2, u12, ...) round up to a real int
-      if t.name.len >= 2 and t.name[0] in {'u', 'i'} and t.name[1..^1].allCharsInSet({'0'..'9'}):
-        let bits = parseInt(t.name[1..^1])
-        let base = if t.name[0] == 'u': "uint" else: "int"
-        if bits <= 8: base & "8"
-        elif bits <= 16: base & "16"
-        elif bits <= 32: base & "32"
-        else: base & "64"
-      else: t.name
-  of tkTuple:
-    var parts: seq[string]
-    for e in t.elems: parts.add(genType(e))
-    "(" & parts.join(", ") & ")"
-  of tkApp:
-    if t.base.kind == tkNamed and t.base.name == "*":
-      return "array[" & genType(t.args[1]) & ", " & genType(t.args[0]) & "]"
-    # !T / ?T / !?T lower to TuckResult[T] — errors are first-class values
-    if t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"] and t.args.len == 1:
-      let inner = genType(t.args[0])
-      return "TuckResult[" & (if inner == "void": "tuple[]" else: inner) & "]"
-    var parts: seq[string]
-    for a in t.args: parts.add(genType(a))
-    genType(t.base) & "[" & parts.join(", ") & "]"
-  of tkFunc:
-    # A resolved function reference (`:plus`) carries its real signature.
-    # `auto` below is fine for a PARAM (Nim monomorphizes per bake) but is
-    # not a type a record field can hold, so a tracked signature emits the
-    # concrete proc type instead. Mirrors codegen_odin.nim.
-    var ps: seq[string]
-    for p in t.params: ps.add(genType(p))
-    let r = if t.result != nil and not (t.result.kind == tkNamed and
-                                        t.result.name == "void"):
-              ": " & genType(t.result)
-            else: ""
-    "proc(" & ps.join(", ") & ")" & r & " {.closure.}"
-  of tkRecord:
-    var parts: seq[string]
-    for f in t.fields: parts.add(f.name & ": " & genType(f.typ))
-    "tuple[" & parts.join(", ") & "]"
-  of tkSum:
-    var allNoFields = true
-    for v in t.variants:
-      if v.fields.len > 0: allNoFields = false
-    if allNoFields:
-      var tags: seq[string]
-      for v in t.variants: tags.add(v.name)
-      "enum " & tags.join(", ")
-    else:
-      "ref object"
-  else:
-    "pointer"
 
 proc taskRetType(ctx: CodegenCtx, name: string): string =
   ## The Nim return type of a declared task, for its result slot.
@@ -972,54 +895,6 @@ proc decisionRows(ctx: var CodegenCtx, d: Decl): (seq[seq[string]], seq[string])
     pats.add(row)
     bodies.add(ctx.genExpr(s.arms[0].body))
   (pats, bodies)
-
-proc comboValues(domains: seq[seq[string]], combo: int): seq[string] =
-  ## The column values this combination index stands for, decoded mixed-radix.
-  result = newSeq[string](domains.len)
-  var rem = combo
-  for c in countdown(domains.high, 0):
-    result[c] = domains[c][rem mod domains[c].len]
-    rem = rem div domains[c].len
-
-proc rowMatches(row, vals: seq[string]): bool =
-  ## Does this row's pattern accept these column values? `_` matches anything.
-  for c in 0 ..< row.len:
-    if row[c] != "_" and row[c] != vals[c]: return false
-  true
-
-proc firstOutcome(rowPats: seq[seq[string]], bodies: seq[string],
-                  vals: seq[string]): string =
-  ## The body of the first row matching these values — the table's own
-  ## first-match-wins rule, applied ahead of time.
-  for i in 0 ..< rowPats.len:
-    if rowMatches(rowPats[i], vals): return bodies[i]
-  ""
-
-proc groupByOutcome(domains: seq[seq[string]], comboCount: int,
-                    rowPats: seq[seq[string]],
-                    bodies: seq[string]): seq[tuple[outcome: string, keys: seq[int]]] =
-  ## Every combination resolved to its outcome, then grouped so identical
-  ## outcomes share one `of` arm.
-  for combo in 0 ..< comboCount:
-    let outcome = firstOutcome(rowPats, bodies, comboValues(domains, combo))
-    var found = false
-    for g in result.mitems:
-      if g.outcome == outcome:
-        g.keys.add(combo)
-        found = true
-        break
-    if not found: result.add((outcome, @[combo]))
-
-proc packedKeyExpr(d: Decl, domains: seq[seq[string]], comboCount: int): string =
-  ## The mixed-radix key: each column's ord() scaled by the stride of the
-  ## columns to its right, summed.
-  var parts: seq[string]
-  var stride = comboCount
-  for c in 0 ..< domains.len:
-    stride = stride div domains[c].len
-    if stride > 1: parts.add("ord(" & d.fnParams[c].name & ") * " & $stride)
-    else: parts.add("ord(" & d.fnParams[c].name & ")")
-  parts.join(" + ")
 
 proc genPackedTable(ctx: var CodegenCtx, d: Decl, header: string,
                     domains: seq[seq[string]], comboCount: int): string =

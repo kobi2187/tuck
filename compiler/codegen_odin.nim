@@ -15,6 +15,8 @@ import ast, lowering, strutils, sets, tables
 import resolution
 import ast_query
 import codegen_common
+import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
+export odinLibSpec, odinErrCode
 from mangle import mangleName
 
 type
@@ -55,35 +57,6 @@ proc isActorType(ctx: var OdinCodegenCtx, name: string): bool =
       if d != nil and d.kind == dkActor: ctx.actorNames.incl(d.name)
     ctx.actorNamesBuilt = true
   name in ctx.actorNames
-
-proc odinLibSpec*(lib: string): string =
-  ## `lib: "..."` -> Odin's `foreign import` spec. A bare name is a system
-  ## library; a path rides through as-is. `.c` names vendored SOURCE, which
-  ## Odin cannot compile — the Nim backend takes it via {.compile.}, so here it
-  ## becomes the object file the project's build is expected to have produced.
-  if lib.endsWith(".c"): lib[0 ..< lib.len - 2] & ".o"
-  elif '/' in lib or lib.endsWith(".a") or lib.endsWith(".so") or lib.endsWith(".o"): lib
-  else: "system:" & lib
-
-proc repeat(s: string, n: int): string =
-  var res = ""
-  for i in 0..<n: res.add(s)
-  res
-
-proc capitalize(s: string): string =
-  if s.len == 0: return ""
-  return s[0].toUpperAscii() & s[1..^1]
-
-# Same FNV-1a fold as tuck_rt.nim's errCode: the emitter precomputes error
-# codes so the runtime needs no compile-time hashing.
-proc odinErrCode*(name: string): uint16 =
-  var h = 2166136261'u32
-  for c in name:
-    h = (h xor uint32(c)) * 16777619'u32
-  uint16((h xor (h shr 16)) and 0xFFFF'u32)
-
-proc errCodeLit(name: string): string =
-  "0x" & toHex(odinErrCode(name)) & " /* " & name & " */"
 
 # --- Type emission --------------------------------------------------------
 
@@ -604,34 +577,6 @@ proc odinBangInfo(ctx: var OdinCodegenCtx, t: Type):
     let inner = ctx.odinType(t.args[0])
     return (true, (if inner == "void": "rt.TuckUnit" else: inner), t.args[0])
   return (false, "", nil)
-
-proc isDecisionTable(d: Decl): bool =
-  if d.kind != dkFn or d.fnBody == nil or d.fnBody.kind != exkBlock: return false
-  if d.fnBody.stmts.len == 0: return false
-  for s in d.fnBody.stmts:
-    if s.kind != exkMatch or s.subject != nil: return false
-  return true
-
-proc genPatternStr(p: Pattern): string =
-  if p == nil: return "_"
-  case p.kind
-  of pkWild: "_"
-  of pkVar: p.name
-  of pkLit: p.litValue
-  else: "_"
-
-# The declared enum (or its Kind enum) that owns a variant tag, if any.
-proc enumTagOwner(m: Module, tag: string): string =
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.typeBody != nil and
-       d.typeBody.kind == tkSum:
-      for v in d.typeBody.variants:
-        if v.name == tag:
-          var hasPayload = false
-          for vv in d.typeBody.variants:
-            if vv.fields.len > 0: hasPayload = true
-          return (if hasPayload: d.name & "Kind" else: d.name)
-  return ""
 
 # Comparison operand for a pattern value: enum tags need qualification (or
 # Beef's `.Tag` inference prefix for hoisted inline enums); literals pass.

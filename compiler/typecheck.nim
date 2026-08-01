@@ -123,6 +123,8 @@ import typecheck_state
 export typecheck_state
 import typecheck_flow
 export typecheck_flow
+import typecheck_transitions  # spec 4.4 sum-type transition graph
+export typecheck_transitions
 
 # UnknownName now lives in ast.nim (codegen needs it for typed-AST checks)
 # Stateless helpers now live in typecheck_util; the TypeChecker state object +
@@ -1775,36 +1777,6 @@ proc checkDecisionTable(tc: var TypeChecker, d: Decl) =
       fail("Decision Error: '" & d.name & "' cannot be proven complete — " &
            "end the table with a catch-all row (all _)", d.span)
 
-# --- Transition tables (spec 4.4): endpoints exist; sealed graph reachable ---
-
-proc checkTransitions(tc: var TypeChecker, d: Decl) =
-  let t = d.typeBody
-  if t == nil or t.kind != tkSum or t.transitions.len == 0: return
-  var variantNames = initHashSet[string]()
-  for v in t.variants: variantNames.incl(v.name)
-  for tr in t.transitions:
-    if tr.`from` notin variantNames:
-      fail("Transition Error: '" & tr.`from` & "' is not a variant of " & d.name, tr.span)
-    if tr.to notin variantNames:
-      fail("Transition Error: '" & tr.to & "' is not a variant of " & d.name, tr.span)
-  var isSealed = false
-  for a in t.attrs:
-    if a.name == "sealed": isSealed = true
-  if isSealed and t.variants.len > 0:
-    # Every variant must be reachable from the initial (first) variant
-    var reachable = [t.variants[0].name].toHashSet
-    var grew = true
-    while grew:
-      grew = false
-      for tr in t.transitions:
-        if tr.`from` in reachable and tr.to notin reachable:
-          reachable.incl(tr.to)
-          grew = true
-    for v in t.variants:
-      if v.name notin reachable:
-        fail("Transition Error: sealed type " & d.name & " variant '" & v.name &
-             "' is unreachable from initial variant '" & t.variants[0].name & "'", v.span)
-
 proc checkDecl(tc: var TypeChecker, d: Decl) =
   if d == nil: return
   case d.kind
@@ -1835,7 +1807,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     for h in d.handlers: tc.checkDecl(h)
     tc.popScope()
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
-  of dkType: tc.checkTransitions(d)
+  of dkType: checkTransitions(d)
   of dkErrors:
     if d.errHandler != nil: tc.checkDecl(d.errHandler)
   else: discard
