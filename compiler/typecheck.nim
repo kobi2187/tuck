@@ -1617,6 +1617,105 @@ proc resolveTypeNames*(tc: TypeChecker, m: Module) =
   ## Run after collectSigs, when every declaration is known.
   for d in m.decls: resolveDeclTypeRefs(tc, d)
 
+# --- Pointers are legal only at the extern boundary -------------------------
+#
+# Tuck is a safe language; unsafe types exist to talk to C and nowhere else. A
+# pointer may be produced by an extern and consumed by another extern or a
+# converter (`toStr`), but it may never be STORED — so no pointer outlives the
+# expression that obtained it and a dangling reference is unreachable from safe
+# code. examples/34-ffi-cstring.tuck already stated this as a comment; this is
+# the rule behind it.
+#
+# Pointer-kind is `cstring` plus any FIELDLESS extern type — an opaque C handle
+# (`typedef struct Foo Foo;`) whose size is unknown, so it can only ever be held
+# as a pointer (codegen emits `ptr FooObj` / `rawptr`).
+
+proc isPointerKind(tc: TypeChecker, t: Type): bool =
+  if t == nil or t.kind != tkNamed: return false
+  if t.name == "cstring": return true
+  if tc.typeDeclsByName.hasKey(t.name):
+    let d = tc.typeDeclsByName[t.name]
+    # `fields` only exists on a tkRecord body — a sum/named/alias extern type is
+    # not an opaque handle, and reading .fields on those is a FieldDefect.
+    return d.kind == dkType and d.typeExternHeader != "" and
+           d.typeBody != nil and d.typeBody.kind == tkRecord and
+           d.typeBody.fields.len == 0
+  false
+
+proc failIfPointer(tc: TypeChecker, t: Type, where: string, sp: Span) =
+  ## Reject a pointer-kind type anywhere it would escape the extern boundary.
+  ## Recurses so a pointer buried in `Seq[Buf]` or a record field is caught too.
+  if t == nil: return
+  if tc.isPointerKind(t):
+    fail("Type Error: " & typeName(t) & " is a pointer — it may only appear in " &
+         "an extern signature, not " & where & " (cross into safe Tuck with a " &
+         "converter such as toStr)", sp)
+  case t.kind
+  of tkApp:
+    failIfPointer(tc, t.base, where, sp)
+    for a in t.args: failIfPointer(tc, a, where, sp)
+  of tkTuple:
+    for e in t.elems: failIfPointer(tc, e, where, sp)
+  of tkFunc:
+    for p in t.params: failIfPointer(tc, p, where, sp)
+    failIfPointer(tc, t.result, where, sp)
+  of tkRecord:
+    for f in t.fields: failIfPointer(tc, f.typ, where, sp)
+  of tkEffect: failIfPointer(tc, t.inner, where, sp)
+  of tkRename: failIfPointer(tc, t.underlying, where, sp)
+  else: discard
+
+proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
+  ## Mirrors resolveDeclTypeRefs' walk. `inExtern` is threaded from the PARENT
+  ## decl rather than inferred here: dkMixin, dkExtern and dkPending share an
+  ## arm and both recurse through mixinMembers, so keying on the arm would let a
+  ## plain `mixin` hold a cstring — a real leak path, not a hypothetical one.
+  if d == nil: return
+  case d.kind
+  of dkFn:
+    if inExtern: return   # the boundary itself: pointers are the point
+    for p in d.fnParams:
+      failIfPointer(tc, p.typ, "a fn parameter", p.span)
+    failIfPointer(tc, d.fnReturnType, "a fn return type", d.span)
+  of dkTask:
+    for p in d.taskParams:
+      failIfPointer(tc, p.typ, "a task parameter", p.span)
+    failIfPointer(tc, d.taskReturnType, "a task return type", d.span)
+  of dkType:
+    # An extern type declaring an opaque handle is the declaration itself, not
+    # a use of one — only its MEMBERS are ordinary code.
+    if not inExtern and d.typeBody != nil and d.typeBody.kind == tkRecord:
+      for f in d.typeBody.fields:
+        failIfPointer(tc, f.typ, "a type field", f.span)
+    for m in d.typeMembers: checkPointerContainment(tc, m, inExtern)
+  of dkObject:
+    for f in d.objFields:
+      failIfPointer(tc, f.typ, "an object field", f.span)
+    for m in d.objMembers: checkPointerContainment(tc, m, inExtern)
+  of dkActor:
+    for f in d.actorFields:
+      failIfPointer(tc, f.typ, "an actor field", f.span)
+    for h in d.handlers: checkPointerContainment(tc, h, inExtern)
+  of dkExtern:
+    for m in d.mixinMembers: checkPointerContainment(tc, m, true)
+  of dkMixin, dkPending:
+    for m in d.mixinMembers: checkPointerContainment(tc, m, inExtern)
+  of dkPool: failIfPointer(tc, d.poolElem, "a pool element type", d.span)
+  of dkFnSig:
+    if inExtern: return   # a C callback signature is part of the boundary
+    for p in d.sigParams:
+      failIfPointer(tc, p.typ, "a fnsig parameter", p.span)
+    failIfPointer(tc, d.sigReturn, "a fnsig return type", d.span)
+  of dkRegistry:
+    for v in d.variants:
+      for f in v.fields:
+        failIfPointer(tc, f.typ, "a registry field", f.span)
+  else: discard
+
+proc checkPointers*(tc: TypeChecker, m: Module) =
+  ## Run after resolveTypeNames, when typeDeclsByName knows every extern type.
+  for d in m.decls: checkPointerContainment(tc, d)
+
 # Pure functions are total: only [io]-marked functions (I/O, unknown input)
 # may declare fallible !T returns. The pure core provably cannot fail.
 proc checkFallibleNeedsIo(name: string, ret: Type, effects: seq[EffectMarker], span: Span) =
@@ -1864,6 +1963,7 @@ proc typecheckModule*(m: Module,
   tc.pushScope()  # module-level scope: consts visible across decls
   tc.collectSigs(m.decls)
   tc.resolveTypeNames(m)
+  tc.checkPointers(m)   # pointers may not escape the extern boundary
   # const declarations: Nim-static semantics — arbitrary PURE computation,
   # evaluated at compile time by the backend's const evaluator. Tuck rejects
   # only what would break there: [io] calls (pure only), record-type

@@ -1,0 +1,150 @@
+#!/bin/bash
+# Pointer-kind types are legal ONLY at the extern boundary.
+#
+# Tuck is a safe language: unsafe types exist to talk to C and nowhere else. A
+# pointer may be produced by an extern and consumed by another extern or a
+# converter, but it may never be STORED — so no pointer outlives the expression
+# that obtained it, and a dangling reference is unreachable from safe Tuck.
+#
+# `examples/34-ffi-cstring.tuck:17` already stated this as a comment ("cstring
+# stays usable only at the edge, which keeps the copy visible") and reasoned
+# about the lifetime by hand. These tests make the comment a rule.
+#
+# Pointer-kind = `cstring`, plus any FIELDLESS extern type (an opaque C handle:
+# `typedef struct Foo Foo;` — unknown size, only ever held as a pointer; Nim
+# emits `ptr FooObj`, Odin `rawptr`).
+cd "$(dirname "$0")/.."
+. tests/lib.sh
+
+# --- legal: the extern boundary itself -----------------------------------
+
+src <<'EOF'
+extern [c, header: "string.h"]:
+  type Buf = {}
+  fn memcmp({a: Buf, b: Buf, n: usize}) -> i32 [emit: "memcmp"]
+
+fn main() -> int:
+  return 0
+EOF
+ok_check "opaque handle in an extern signature"
+
+src <<'EOF'
+extern [c, header: "zlib.h", lib: "z"]:
+  fn zlibVersion() -> cstring [emit: "zlibVersion"]
+
+fn main() -> int:
+  return 0
+EOF
+ok_check "cstring in an extern signature"
+
+# A `let` bound from an extern call is the transient result — legal, because it
+# is consumed in the same body and never escapes it.
+src <<'EOF'
+import str
+import io
+
+extern [c, header: "zlib.h", lib: "z"]:
+  fn zlibVersion() -> cstring [emit: "zlibVersion"]
+
+fn main() -> void [io]:
+  let v = {value: zlibVersion} toStr
+  {text: v} printLine
+EOF
+ok_check "cstring bound from an extern call, crossed via toStr"
+
+# --- illegal: every way a pointer could be stored or escape ---------------
+
+src <<'EOF'
+extern [c, header: "string.h"]:
+  type Buf = {}
+
+type Holder:
+  saved: Buf
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "handle in a record field" "only.*extern|pointer"
+
+src <<'EOF'
+extern [c, header: "string.h"]:
+  type Buf = {}
+
+fn leak({b: Buf}) -> Buf:
+  return b
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "handle in a plain fn signature" "only.*extern|pointer"
+
+src <<'EOF'
+type Holder:
+  raw: cstring
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "cstring in a record field" "only.*extern|pointer"
+
+src <<'EOF'
+fn sneaky({p: cstring}) -> cstring:
+  return p
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "cstring in a plain fn signature" "only.*extern|pointer"
+
+# A mixin is NOT an extern. It shares an AST arm with dkExtern
+# (typecheck.nim checkDecl / resolveDeclTypeRefs recurse via mixinMembers), so a
+# check keyed on "am I in that arm" instead of on the parent's isExtern would
+# miss this. Second leak path, tested on purpose.
+src <<'EOF'
+mixin Sneaky:
+  fn grab({p: cstring}) -> cstring:
+    return p
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "cstring in a mixin member" "only.*extern|pointer"
+
+src <<'EOF'
+actor Driver [queue: 8]:
+  held: cstring
+
+  on ping({n: int}) -> void:
+    return
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "cstring in an actor field" "only.*extern|pointer"
+
+src <<'EOF'
+extern [c, header: "string.h"]:
+  type Buf = {}
+
+fn collect() -> Seq[Buf]:
+  return []
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "handle as a Seq element" "only.*extern|pointer"
+
+# --- the sanctioned crossing still works end to end ----------------------
+
+# examples/34-ffi-cstring binds a real libz, takes a cstring back, and copies it
+# into a Tuck string with toStr. The rule must not break it.
+if ./tuck build examples/34-ffi-cstring.tuck -o:"$_dir/ffi" --root:"$(pwd)" \
+     > "$_dir/ffi.log" 2>&1; then
+  rc=0; "$_dir/ffi/m_34_ffi_cstring" > /dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then _ok "34-ffi-cstring still builds and runs"
+  else _no "34-ffi-cstring still builds and runs" "exit $rc, want 0"; fi
+else
+  _no "34-ffi-cstring still builds and runs" "$(tail -2 "$_dir/ffi.log")"
+fi
+
+finish
