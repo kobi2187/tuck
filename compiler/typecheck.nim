@@ -1190,17 +1190,35 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkIf: tc.synthIf(e)
   of exkMatch: tc.synthMatch(e)
   of exkFor:
-    discard tc.synthesize(e.iterable)
+    # The loop variable carries the ELEMENT type. Binding it Unknown (as this
+    # did) silently disabled checking inside every loop body, because Unknown is
+    # compatible with everything — `for p in people: p.nosuchfield` typechecked
+    # clean and reached codegen.
+    let iterT = tc.resolve(tc.synthesize(e.iterable))
+    let iterSpan = if e.iter != nil: e.iter.span else: e.span
+    let elemT =
+      if iterT != nil and iterT.kind == tkApp and iterT.base != nil and
+         iterT.base.kind == tkNamed and iterT.base.name in ["Seq", "Array"] and
+         iterT.args.len >= 1:
+        # Array[N, T] carries its length first; the element is the last arg.
+        iterT.args[^1]
+      elif iterT != nil and iterT.kind == tkNamed and iterT.name == "range":
+        Type(span: iterSpan, kind: tkNamed, name: "int")
+      else:
+        # An unrecognised iterable keeps the old behaviour rather than failing:
+        # a stdlib container or a sketch-mode value should not become an error
+        # here, it just goes unchecked as it did before.
+        unknownType(iterSpan)
     tc.pushScope()
     if e.iter != nil and e.iter.kind == pkVar:
-      tc.bindName(e.iter.name, unknownType(e.iter.span), false)
+      tc.bindName(e.iter.name, elemT, false)
     elif e.iter != nil and e.iter.kind == pkTuple:
-      # `for idx, item in xs:` — idx is int, item is the (unknown) elem type
+      # `for idx, item in xs:` — idx is int, item is the element
       if e.iter.elems.len >= 1 and e.iter.elems[0].kind == pkVar:
         tc.bindName(e.iter.elems[0].name,
                     Type(span: e.iter.span, kind: tkNamed, name: "int"), false)
       if e.iter.elems.len >= 2 and e.iter.elems[1].kind == pkVar:
-        tc.bindName(e.iter.elems[1].name, unknownType(e.iter.span), false)
+        tc.bindName(e.iter.elems[1].name, elemT, false)
     # spec 4.4b: the body is checked ONCE against the entry set (no
     # fixed-point simulation); after the loop the state is entry ∪ body-exit
     let entryVariants = tc.varVariants

@@ -772,28 +772,102 @@ object PodcastPlayer:
 
 ### 5.2 Interfaces
 
-Define strict contracts. Objects explicitly declare `satisfies InterfaceName`.
-Static checking, no hidden dispatch overhead:
+A contract: the set of functions a type promises to provide. The body is the
+requirement list — an interface holds nothing else, so there is no `require:`
+nesting.
 
 ```tuck
 interface Storable:
-  require:
-    fn save({dest: Path}) -> !void
-    fn load({src: Path}) -> !Self
+  fn save({dest: Path}) -> !void [io]
+  fn load({src: Path}) -> !Self [io]
 ```
+
+An object declares conformance with a `satisfies` line in its body, alongside
+the `+` composition lines it already carries. One object may satisfy several
+interfaces:
+
+```tuck
+object Document:
+  path: Path
+  + Timestamped
+  satisfies Storable
+
+  fn save({dest: Path}) -> !void [io]:
+    ...
+  fn load({src: Path}) -> !Self [io]:
+    ...
+```
+
+Conformance is checked at compile time. The rules:
+
+- **Parameters and return type match exactly** — same names, same types, same
+  order. Payload fields bind by name (Part 2), so a parameter's name is part of
+  the contract, not decoration.
+- **Effects may be a subset.** An implementation may do *less* than the contract
+  permits — a pure `save` satisfies an `[io] save` — never more. This is the
+  same direction as the caller/callee effect budget (Part 4).
+- **`Self` means the implementing type.** In a required signature `-> !Self`
+  reads as `-> !Document` for `Document`.
+
+A missing or mismatched member is a compile error naming both signatures.
 
 ### 5.3 Interface Dispatch
 
-`ref InterfaceName` is a fat pointer: data pointer + a small function table
-containing only the required function fields. At runtime, `item.save` is a struct
-field read followed by a call. The function table is minimal — only the fields the
-interface declares. The `.field` auto-wrap (Part 2.4) is a compile-time rewrite,
-zero runtime cost:
+An interface has no size, so an interface-typed value is never the object
+itself. It is a **two-word pair: a reference to the data, and a reference to the
+function table for that concrete type.** Both are filled in where the concrete
+type is known, which is always a place the compiler can see.
 
 ```tuck
-var items: Seq[ref Storable] = [doc, user, config]
-items.each {item}: item.save {dest: backupPath}
+var animals = [dog, cat]      # Dog and Cat both satisfy Animal
+for a in animals:
+  a.makeNoise
 ```
+
+At `[dog, cat]` the compiler knows each element's concrete type, so it links
+each one: element 0 carries the table for `Dog`, element 1 the table for `Cat`.
+At `a.makeNoise` it knows `a` is an `Animal`, so it knows `makeNoise` is a
+particular slot in that table. Both ends are resolved at compile time; the only
+thing not known until run time is which element the loop is on, which is a
+counter, not a type question.
+
+**There is no runtime type.** No header on the object, no hierarchy to walk, no
+name lookup, no type comparison — and therefore no type assertions, no type
+switches, and no inheritance. The table pointer is not "find out what this is";
+it is the answer, computed earlier and carried along. This is the whole of
+Tuck's dynamic behaviour, and it is dynamic only in the sense that a function
+pointer is.
+
+The table for a given (type, interface) pair is one static constant shared by
+every value of that type, so wrapping costs two stores and no allocation.
+
+**The data reference borrows.** It points at the object, not a copy — so
+mutation through an interface value is visible to the original, and no
+allocation or copy happens at the boundary. Borrowing is sound here because an
+interface-typed value cannot escape the scope holding the object:
+
+- legal as a function parameter, a local, and an element of a local collection
+- **not** legal as a record, object or actor field, nor as a return type, nor
+  inside a returned collection
+
+Those restrictions are what make the borrow safe without lifetime annotations:
+the object is always in an enclosing scope. (Compare Go, whose interface values
+*are* storable and which therefore copies to the heap on every conversion.)
+
+A collection of an interface type is a collection of these pairs. Every element
+is the same two words regardless of which concrete type it holds, which is what
+makes the collection uniform:
+
+```tuck
+var items = [doc, user, config]     # each satisfies Storable
+for item in items:
+  item.save {dest: backupPath}
+```
+
+No `ref` keyword appears. An interface name in type position can only mean this
+pair — there is nothing else it could denote — so spelling it out would add no
+information. (§7.1's Tier 1 rule "no `ref`" stands unqualified: interfaces do
+not introduce a user-visible reference type.)
 
 ### 5.4 The `pending` Block — Walking Skeleton
 
@@ -1379,6 +1453,11 @@ selectArm <- "|" * expr * "->" * structLit * ":" * stmt * nl
 # Event registry
 registry <- "registry" * >upIdent * ":" * nl * +sumVariant
 
+# Interfaces (§5.2) — the body IS the requirement list; sigs carry no body.
+# `satisfies` is an object-body line, like the `+` composition lines.
+ifaceDecl <- "interface" * >upIdent * ":" * nl * indent * +fnSig * dedent
+satisfies <- "satisfies" * >upIdent * nl
+
 # Top level
 topDecl <- fnDecl | typeDecl | objDecl | mixinDecl | ifaceDecl
          | actorDecl | taskDecl | registryDecl | decisionDecl
@@ -1419,6 +1498,10 @@ These are deliberate omissions, not oversights:
 - Exceptions
 - Inheritance
 - Vtables (dispatch is fat pointer field reads)
+- Runtime type information — an interface value carries a function table, not a
+  type; nothing can ask "what is this really?"
+- Type assertions / type switches (they would need the above)
+- Interface default methods (an interface is requirements only)
 - `self` keyword
 - Forward declarations
 - Preprocessor / macros
