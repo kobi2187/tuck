@@ -44,6 +44,12 @@ type
     foreignLibs: Table[string, string]  # C libs bound by extern blocks:
                                         # alias -> import spec. Each needs a
                                         # `foreign import` at package top level
+    implMods: Table[string, string]     # `impl: odin "..."` modules: alias ->
+                                        # import spec. Odin has no unqualified
+                                        # re-export, so each extern fn also gets
+                                        # a local forwarder calling <alias>.<fn>
+                                        # — call sites stay unqualified, as on
+                                        # the Nim side
     actorNames: HashSet[string]  # dkActor decl names in `module`, built once
     actorNamesBuilt: bool
 
@@ -110,6 +116,11 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     # C's char* — the FFI boundary type. Odin's `string` is a fat pointer
     # (ptr + len), not a NUL-terminated C string, so the two are distinct.
     of "cstring": "cstring"
+    # C's uint8_t* — see codegen_type.nim for why this is builtin rather than a
+    # user-declared extern type. `[^]u8` is Odin's multi-pointer: a pointer to
+    # an unknown number of u8, indexable, no length carried. `[dynamic]u8`
+    # (what Seq[u8] maps to) is a 40-byte struct, not a pointer.
+    of "Buf": "[^]u8"
     of "bool": "bool"
     of "float": "f64"
     of "f32": "f32"
@@ -1545,7 +1556,19 @@ proc genRegistry(ctx: var OdinCodegenCtx, d: Decl): string =
 
 # rt-implemented extern of a library module: forward to the Odin runtime,
 # converting the runtime's record shapes to this module's hoisted shapes.
-proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl): string =
+proc implAlias(module: string): string =
+  ## Package alias for an `impl: odin "..."` spec. Odin import paths use both
+  ## ':' (collection separator, "core:strings") and '/' (subdirectories), and
+  ## the last segment is the package name: "core:strings" -> strings,
+  ## "./tuckrt/zlib_shim" -> zlib_shim.
+  result = module
+  if ':' in result: result = result.rsplit(':', 1)[^1]
+  if '/' in result: result = result.rsplit('/', 1)[^1]
+
+proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl, alias = "rt"): string =
+  ## `alias` is the package the bodies live in: the runtime (`rt`) by default,
+  ## or an `impl: odin "..."` package. Only the call prefix differs — the shape
+  ## conversions below are the same either way, so they are not duplicated.
   let ind = "  ".repeat(ctx.indent)
   var params: seq[string]
   var argNames: seq[string]
@@ -1563,7 +1586,7 @@ proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl): string =
       pt = "$" & pt
     params.add(p.name & ": " & pt)
     argNames.add(p.name)
-  let callStr = "rt." & mem.name & "(" & argNames.join(", ") & ")"
+  let callStr = alias & "." & mem.name & "(" & argNames.join(", ") & ")"
   let (bw, _, binnerT) = ctx.odinBangInfo(mem.fnReturnType)
   let retTypeStr = if mem.fnReturnType != nil: ctx.odinType(mem.fnReturnType) else: "void"
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
@@ -1835,6 +1858,19 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
         cBindings.add("\t" & cName & " :: proc(" & params.join(", ") &
                       ")" & retStr & " ---")
         if m.externLib != "": cLib = m.externLib
+      elif m.kind == dkFn and m.isExtern and m.externImpl.len > 0:
+        # `impl: odin "..."` — the bodies live in a named Odin package rather
+        # than the runtime. Odin has no unqualified import, so a bare call to
+        # the extern's name can never resolve; emit a local forwarder into the
+        # aliased package instead, which keeps call sites identical to Nim's.
+        # An `impl:` naming only `nim` leaves nothing to emit here: that block
+        # is Nim-backend-only and Odin fails at the undeclared call, which is
+        # the honest outcome.
+        for (backend, module) in m.externImpl:
+          if backend != "odin": continue
+          let alias = implAlias(module)
+          ctx.implMods[alias] = module
+          res.add(ctx.genRtForwarder(m, alias) & "\n")
       elif m.kind == dkFn and m.isExtern and ctx.modPrefix != "":
         res.add(ctx.genRtForwarder(m) & "\n")
     if cBindings.len > 0:
@@ -1951,6 +1987,9 @@ proc emitOdin*(m: Module,
   # hoisted here rather than emitted beside the `foreign` block.
   for alias, spec in ctx.foreignLibs:
     imports.add("foreign import " & alias & " \"" & odinLibSpec(spec) & "\"")
+  # `impl: odin "..."` packages — the forwarders emitted above call <alias>.<fn>
+  for alias, spec in ctx.implMods:
+    imports.add("import " & alias & " \"" & spec & "\"")
   if imports.len > 0:
     res.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:
@@ -2032,6 +2071,9 @@ proc emitOdinModule*(name: string, m: Module,
   # declares them here — this is what makes the binding link.
   for alias, spec in ctx.foreignLibs:
     imports.add("foreign import " & alias & " \"" & odinLibSpec(spec) & "\"")
+  # `impl: odin "..."` packages — the forwarders emitted above call <alias>.<fn>
+  for alias, spec in ctx.implMods:
+    imports.add("import " & alias & " \"" & spec & "\"")
   if imports.len > 0:
     res.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:

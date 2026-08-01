@@ -395,6 +395,14 @@ type
                             # library to link. Nim emits {.passL: "-lz".};
                             # Odin emits `foreign import z "system:z"`.
                             # Empty = header-only (or rt-implemented).
+      externImpl*: seq[tuple[backend, module: string]]
+                            # extern [impl: nim "std/strutils", odin "core:strings"]
+                            # — the BACKEND-LANGUAGE module implementing these
+                            # sigs, so a header-less extern can name a body
+                            # module other than tuck_rt. The path is foreign
+                            # (Nim's or Odin's own spelling), which is why it
+                            # stays a string. A seq, not a Table: it holds one
+                            # or two entries and rides the msgpack AST cache.
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin, dkExtern, dkPending:

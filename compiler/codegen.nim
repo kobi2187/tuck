@@ -1579,6 +1579,21 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
       # externs (waitUntil, openSource, ...) resolve through this one export.
       res.add("export tuck_rt\n")
       break
+  # `impl: nim "..."` — a header-less extern whose bodies live somewhere other
+  # than tuck_rt. Imported AND re-exported for the same reason tuck_rt is:
+  # importers reach these fns as <module>.<fn>. Deduped; several blocks may
+  # name one module. This is what lets the stdlib grow without editing the
+  # compiler's own runtime.
+  var implMods: seq[string]
+  for mem in m.externFns():
+    if mem.externHeader != "": continue
+    for (backend, module) in mem.externImpl:
+      if backend != "nim" or module in implMods: continue
+      implMods.add(module)
+      # Nim exports by MODULE NAME, not by path: `export std/strutils` is a
+      # syntax error, `export strutils` is what re-exports it.
+      let exportName = module.rsplit('/', 1)[^1]
+      res.add("import " & module & "\nexport " & exportName & "\n")
   # C-extern link flags. `{.passL.}` is a module pragma, so linking is settled
   # in the emitted source — the driver needs no per-library plumbing. Deduped:
   # several extern blocks may name the same library.

@@ -739,10 +739,11 @@ proc parseExternDecl(p: var Parser, sp: Span): Decl =
   discard p.advance() # extern
   var header = ""
   var lib = ""
+  var impls: seq[tuple[backend, module: string]]
   if p.current().kind == tkLBracket:
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-      let key = p.expect(tkIdent, "Expected 'c', 'header' or 'lib' in extern attributes").value
+      let key = p.expect(tkIdent, "Expected 'c', 'header', 'lib' or 'impl' in extern attributes").value
       if key == "header":
         discard p.expect(tkColon)
         header = p.expect(tkStrLit, "Expected header path string").value
@@ -751,6 +752,21 @@ proc parseExternDecl(p: var Parser, sp: Span): Decl =
         # Nim `-lz`, Odin `system:z`). Not a linker flag, so it stays portable.
         discard p.expect(tkColon)
         lib = p.expect(tkStrLit, "Expected library name string after 'lib:'").value
+      elif key == "impl":
+        # `impl: nim "std/strutils", odin "core:strings"` — which module in the
+        # BACKEND's own language implements these sigs. Backend tag is a bare
+        # ident; the path stays a string because it is foreign (Nim and Odin
+        # spell module paths differently, and Odin's use ':' internally).
+        discard p.expect(tkColon)
+        while p.current().kind == tkIdent:
+          let backend = p.advance().value
+          let module = p.expect(tkStrLit,
+            "Expected a module path string after '" & backend & "' in impl:").value
+          impls.add((backend: backend, module: module))
+          if p.current().kind == tkComma and p.peek(1).kind == tkIdent and
+             p.peek(2).kind == tkStrLit:
+            discard p.advance()   # another backend pair follows
+          else: break
       # "c" is the target marker; nothing to store
       if p.current().kind == tkComma:
         discard p.advance()
@@ -770,6 +786,7 @@ proc parseExternDecl(p: var Parser, sp: Span): Decl =
     d.isExtern = true
     d.externHeader = header
     d.externLib = lib
+    d.externImpl = impls
   return Decl(span: sp, kind: dkExtern, name: "extern", mixinMembers: decls)
 
 proc parseDecl*(p: var Parser): Decl =

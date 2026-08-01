@@ -28,6 +28,37 @@ fn main() -> int:
 EOF
 ok_check "opaque handle in an extern signature"
 
+# Buf is the builtin uint8_t* — cstring's byte-array sibling. Builtin rather
+# than a user-declared `type Buf = {}`, which would emit {.importc: "Buf",
+# header: ...} and claim a C typedef named Buf exists in that header.
+src <<'EOF'
+extern [c, header: "string.h"]:
+  fn memcmp({a: Buf, b: Buf, n: usize}) -> i32 [emit: "memcmp"]
+
+fn main() -> int:
+  return 0
+EOF
+ok_check "Buf as an extern parameter"
+emits      "Buf is a real pointer in Nim"  'ptr UncheckedArray\[uint8\]'
+emits_odin "Buf is a real pointer in Odin" '\[\^\]u8'
+
+# A pointer may be passed INTO C: Tuck is handing over something C already
+# holds, and nothing raw ends up in a Tuck variable.
+src <<'EOF'
+extern [c, header: "string.h"]:
+  fn puts({s: cstring}) -> i32 [emit: "puts"]
+
+fn main() -> int:
+  return 0
+EOF
+ok_check "cstring as an extern parameter"
+
+# --- illegal: a pointer coming back OUT of C ------------------------------
+#
+# A returned pointer lands in a Tuck variable, and from there its lifetime is
+# C's business and unknowable here. The binding must return a safe type and
+# copy in its implementation, so forgetting the conversion is impossible
+# rather than merely discouraged.
 src <<'EOF'
 extern [c, header: "zlib.h", lib: "z"]:
   fn zlibVersion() -> cstring [emit: "zlibVersion"]
@@ -35,22 +66,26 @@ extern [c, header: "zlib.h", lib: "z"]:
 fn main() -> int:
   return 0
 EOF
-ok_check "cstring in an extern signature"
+bad_check "cstring as an extern return" "never returned out of it"
 
-# A `let` bound from an extern call is the transient result — legal, because it
-# is consumed in the same body and never escapes it.
 src <<'EOF'
-import str
-import io
+extern [c, header: "string.h"]:
+  fn grab() -> Buf [emit: "grab"]
 
-extern [c, header: "zlib.h", lib: "z"]:
-  fn zlibVersion() -> cstring [emit: "zlibVersion"]
-
-fn main() -> void [io]:
-  let v = {value: zlibVersion} toStr
-  {text: v} printLine
+fn main() -> int:
+  return 0
 EOF
-ok_check "cstring bound from an extern call, crossed via toStr"
+bad_check "Buf as an extern return" "never returned out of it"
+
+# ...including buried in a wrapper or a record
+src <<'EOF'
+extern [c, header: "zlib.h", lib: "z"]:
+  fn tryVersion() -> !cstring [io, emit: "tryVersion"]
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "cstring buried in a fallible return" "never returned out of it"
 
 # --- illegal: every way a pointer could be stored or escape ---------------
 
@@ -134,10 +169,21 @@ fn main() -> int:
 EOF
 bad_check "handle as a Seq element" "only.*extern|pointer"
 
+src <<'EOF'
+type Holder:
+  bytes: Buf
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "Buf in a record field" "only.*extern|pointer"
+
 # --- the sanctioned crossing still works end to end ----------------------
 
-# examples/34-ffi-cstring binds a real libz, takes a cstring back, and copies it
-# into a Tuck string with toStr. The rule must not break it.
+# examples/34-ffi-cstring reads libz's version string — a real C `char*` — and
+# must still reach Tuck as a `str`. Under the params-only rule the pointer no
+# longer crosses: the binding returns str and the copy happens in the impl
+# module, so this asserts the WRAPPING works, not just that the rule fires.
 if ./tuck build examples/34-ffi-cstring.tuck -o:"$_dir/ffi" --root:"$(pwd)" \
      > "$_dir/ffi.log" 2>&1; then
   rc=0; "$_dir/ffi/m_34_ffi_cstring" > /dev/null 2>&1 || rc=$?

@@ -36,6 +36,18 @@ proc genType*(t: Type): string =
     # C's char* — the FFI boundary type. Distinct from `string`, which is a
     # GC'd length-prefixed object Nim will not hand to a C function.
     of "cstring": "cstring"
+    # C's uint8_t* — cstring's byte-array sibling, for the pointer+length shape
+    # every buffer syscall wants (memcpy, read, send). Seq[u8] cannot play this
+    # role: it is a GC'd object with a length header, and passing one to C hands
+    # over the header, not the bytes.
+    #
+    # Builtin rather than a user-declared `type Buf = {}` inside an extern
+    # block: that route emits {.importc: "Buf", header: "...".}, claiming a C
+    # typedef named Buf exists in that header. For a real opaque handle
+    # (`typedef struct Counter Counter;`) that claim is true; for an anonymous
+    # byte pointer there is no such name, and it only survives because
+    # incompleteStruct means Nim never asks C to resolve it.
+    of "Buf": "ptr UncheckedArray[uint8]"
     of "bool": "bool"
     of "float": "float"
     of "f32": "float32"

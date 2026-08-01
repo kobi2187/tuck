@@ -89,6 +89,13 @@ build_one() {
     mkdir -p "$proj/$(basename "$modDir")"
     cp "$modDir"/*.odin "$proj/$(basename "$modDir")/" 2>/dev/null
   done
+  # Hand-written Odin packages named by `extern [impl: odin "./shim"]`. The
+  # emitted import is relative to where the .odin sits, and this harness copies
+  # it into an isolated package dir, so the package has to ride along too.
+  if [ -d "$exampleDir/shim" ]; then
+    mkdir -p "$proj/shim"
+    cp "$exampleDir"/shim/*.odin "$proj/shim/" 2>/dev/null
+  fi
   "$odin_exe" build "$proj" -o:none -out:"$proj/prog" > "$proj/build.log" 2>&1
 }
 

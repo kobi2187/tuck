@@ -105,6 +105,33 @@ proc reportBuild(binPath: string, buildMs: float): string =
     discard
   "(" & formatFloat(buildMs, ffDecimal, 0) & " ms, " & sizeStr & ")"
 
+proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
+  ## Rewrite `impl: <backend> "..."` module paths from source-relative (what the
+  ## author wrote, and the only frame of reference they have) to output-relative
+  ## (what the emitted import needs). `-o:` moves the output around, so this is
+  ## the compiler's job rather than something the author tracks.
+  ##
+  ## Only ./ and ../ forms are paths. "std/strutils" and "core:strings" are
+  ## module names in the backend's own namespace and pass through untouched —
+  ## the same distinction Nim and Odin themselves draw.
+  let srcDir = parentDir(absolutePath(lm.path))
+  for d in lm.m.decls:
+    if d == nil or d.kind != dkExtern: continue
+    for mem in d.mixinMembers:
+      if mem.kind != dkFn or not mem.isExtern: continue
+      for i in 0 ..< mem.externImpl.len:
+        if mem.externImpl[i].backend != backend: continue
+        let module = mem.externImpl[i].module
+        if not (module.startsWith("./") or module.startsWith("../")): continue
+        let abs = normalizedPath(srcDir / module)
+        var rel = relativePath(abs, outDir).replace('\\', '/')
+        # Keep an explicit relative marker. relativePath returns a BARE name
+        # for a sibling ("shim"), and Odin reads a bare import path as a
+        # COLLECTION name (like "core:"), not a directory — it fails with
+        # "Path does not exist". Nim accepts either, so ./ is right for both.
+        if not (rel.startsWith("./") or rel.startsWith("../")): rel = "./" & rel
+        mem.externImpl[i].module = rel
+
 proc lexTokens(source: string): seq[Token] =
   var lex = Lexer(source: source, position: 0, line: 1, column: 1, indentStack: @[0])
   while true:
@@ -255,6 +282,13 @@ when isMainModule:
                                              m: deepCopy(lm.m)))
     var nimReal = initTable[string, Module]()
     for lm in nimProg[0 ..< nimProg.high]: nimReal[lm.name] = lm.m
+    # `impl: nim "./shim/x"` — the author writes the path relative to their OWN
+    # .tuck file, which is the only place they can see it from. The emitted
+    # import has to be relative to the OUTPUT dir instead, and -o: moves that
+    # around, so rebase here rather than making the author think about it.
+    # A leading ./ or ../ marks a path; anything else ("std/strutils",
+    # "core:strings") is a target-language module name and rides through.
+    for lm in nimProg: rebaseImplPaths(lm, "nim", outDir)
     # imported modules first (each its own Nim file), entry module last
     for lm in nimProg:
       lowerModule(lm.m)
@@ -269,6 +303,7 @@ when isMainModule:
                                               m: deepCopy(lm.m)))
       var odReal = initTable[string, Module]()
       for lm in odProg[0 ..< odProg.high]: odReal[lm.name] = lm.m
+      for lm in odProg: rebaseImplPaths(lm, "odin", outDir)
       for lm in odProg:
         lowerModule(lm.m)
       for lm in odProg[0 ..< odProg.high]:

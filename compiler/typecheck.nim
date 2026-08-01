@@ -1632,7 +1632,8 @@ proc resolveTypeNames*(tc: TypeChecker, m: Module) =
 
 proc isPointerKind(tc: TypeChecker, t: Type): bool =
   if t == nil or t.kind != tkNamed: return false
-  if t.name == "cstring": return true
+  # Builtin FFI pointers: cstring (char*) and Buf (uint8_t*).
+  if t.name in ["cstring", "Buf"]: return true
   if tc.typeDeclsByName.hasKey(t.name):
     let d = tc.typeDeclsByName[t.name]
     # `fields` only exists on a tkRecord body — a sum/named/alias extern type is
@@ -1665,6 +1666,27 @@ proc failIfPointer(tc: TypeChecker, t: Type, where: string, sp: Span) =
   of tkRename: failIfPointer(tc, t.underlying, where, sp)
   else: discard
 
+proc failIfPointerReturn(tc: TypeChecker, t: Type, fnName: string, sp: Span) =
+  ## An extern may TAKE a pointer; it may not hand one back. Recurses, so
+  ## `!cstring` and `{p: Buf}` are caught as well as a bare return.
+  if t == nil: return
+  if tc.isPointerKind(t):
+    fail("Type Error: extern '" & fnName & "' returns " & typeName(t) &
+         " — a pointer may be passed INTO C but never returned out of it " &
+         "(wrap it: have the binding return str or Seq[u8], and copy in the " &
+         "implementation)", sp)
+  case t.kind
+  of tkApp:
+    failIfPointerReturn(tc, t.base, fnName, sp)
+    for a in t.args: failIfPointerReturn(tc, a, fnName, sp)
+  of tkTuple:
+    for e in t.elems: failIfPointerReturn(tc, e, fnName, sp)
+  of tkRecord:
+    for f in t.fields: failIfPointerReturn(tc, f.typ, fnName, sp)
+  of tkEffect: failIfPointerReturn(tc, t.inner, fnName, sp)
+  of tkRename: failIfPointerReturn(tc, t.underlying, fnName, sp)
+  else: discard
+
 proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
   ## Mirrors resolveDeclTypeRefs' walk. `inExtern` is threaded from the PARENT
   ## decl rather than inferred here: dkMixin, dkExtern and dkPending share an
@@ -1673,7 +1695,16 @@ proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
   if d == nil: return
   case d.kind
   of dkFn:
-    if inExtern: return   # the boundary itself: pointers are the point
+    if inExtern:
+      # Pointers cross INTO C, never back out. A param is Tuck handing C
+      # something it already holds; a RETURN would put a raw pointer in a Tuck
+      # variable, and from there its lifetime is C's business and unknowable
+      # here. A C fn returning char*/uint8_t* gets a shim in the Nim layer that
+      # copies into str/Seq[u8], so the Tuck-visible signature is a safe type
+      # and forgetting the conversion is impossible rather than merely
+      # discouraged.
+      failIfPointerReturn(tc, d.fnReturnType, d.name, d.span)
+      return
     for p in d.fnParams:
       failIfPointer(tc, p.typ, "a fn parameter", p.span)
     failIfPointer(tc, d.fnReturnType, "a fn return type", d.span)

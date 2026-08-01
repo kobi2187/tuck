@@ -1,23 +1,34 @@
-# cstring at the FFI boundary. Tuck `string` is a GC'd Nim string / an Odin
-# fat pointer (ptr+len); neither is a NUL-terminated C `char*`, so a C function
-# returning one needs its own type. `cstring` maps to Nim's `cstring` and
-# Odin's `cstring`, both of which ARE char* — no copy, no conversion.
+# A C `char*` reaching Tuck as a `str` — without the pointer ever crossing.
 #
-# zlibVersion() returns a static string owned by libz, so there is nothing to
-# free and the pointer outlives the call.
+# Tuck's rule: a raw pointer may be passed INTO C but never returned out of it.
+# A returned `char*` would land in a Tuck variable whose lifetime is C's
+# business and unknowable to the checker, so `fn zlibVersion() -> cstring` is a
+# compile error.
+#
+# Instead the binding declares `-> str` and names the module that implements it
+# per backend. Those shims (examples/shim/zlib_shim.nim and .odin) bind libz's
+# real `char*` in a language where pointers are ordinary, copy it, and hand back
+# an owned string. The unsafe reasoning — "zlibVersion returns a static string
+# owned by libz, so there is nothing to free" — lives next to the binding in one
+# small file, instead of being a convention every call site must remember.
+#
+# compressBound stays a direct C binding: it takes and returns integers, so
+# nothing needs wrapping. Both routes in one file, on purpose.
 import sys
 import io
-import str
+
+extern [impl: nim "./shim/zlib_shim", odin "./shim"]:
+  fn zlibVersion() -> str
 
 extern [c, header: "zlib.h", lib: "z"]:
-  fn zlibVersion() -> cstring [emit: "zlibVersion"]
   fn compressBound({sourceLen: u64}) -> u64 [emit: "compressBound"]
 
 fn main() -> void [io]:
-  # crossing the boundary is explicit: toStr copies the C buffer into a Tuck
-  # string. cstring stays usable only at the edge, which keeps the copy visible.
-  let v = {value: zlibVersion} toStr
+  let v = zlibVersion
   {text: v} printLine
+  # zlib's compressBound is len + (len>>12) + (len>>14) + (len>>25) + 13.
+  # For 1000 bytes: 1000 + 0 + 0 + 0 + 13 = 1013. A wrong binding (bad ABI,
+  # wrong symbol, unlinked lib) cannot produce this number by accident.
   let b = {sourceLen: 1000} compressBound
   if b == 1013:
     0 exit
