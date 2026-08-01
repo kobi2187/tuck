@@ -388,8 +388,16 @@ when isMainModule:
       let speedFlags =
         if wantRelease: " -d:release "
         else: " --opt:none -d:tuckFast " & pickFastCC()
+      # Nim derives its cache dir from the MODULE NAME, so two tuck builds of
+      # different programs that happen to share a basename (every `t.tuck` in
+      # a test suite) collide in ~/.cache/nim/t_d — one build's C output
+      # answering the other's link, nondeterministically, only under
+      # concurrency. Pin the cache next to the output instead: unique per
+      # build by construction, and it makes `tuck build` self-contained.
+      let nimCache = outDir / ".nimcache" / binBase
       let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
-                   speedFlags & " -o:" & quoteShell(binPath) & " " &
+                   speedFlags & " --nimcache:" & quoteShell(nimCache) &
+                   " -o:" & quoteShell(binPath) & " " &
                    quoteShell(binNim)
       let nimT0 = epochTime()
       let rc = execShellCmd(nimCmd)
