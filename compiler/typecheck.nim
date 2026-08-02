@@ -1749,6 +1749,8 @@ proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
     for m in d.mixinMembers: checkPointerContainment(tc, m, true)
   of dkMixin, dkPending:
     for m in d.mixinMembers: checkPointerContainment(tc, m, inExtern)
+  of dkInterface:
+    for m in d.ifaceMembers: checkPointerContainment(tc, m, inExtern)
   of dkPool: failIfPointer(tc, d.poolElem, "a pool element type", d.span)
   of dkFnSig:
     if inExtern: return   # a C callback signature is part of the boundary
@@ -1764,6 +1766,128 @@ proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
 proc checkPointers*(tc: TypeChecker, m: Module) =
   ## Run after resolveTypeNames, when typeDeclsByName knows every extern type.
   for d in m.decls: checkPointerContainment(tc, d)
+
+# --- Interface conformance (spec §5.2) --------------------------------------
+#
+# `satisfies I` is a promise; this is where it is kept. An object must
+# implement every fn the interface requires, with matching parameters and
+# return type, and may declare FEWER effects but never more.
+
+proc sameType(a, b: Type): bool =
+  ## Structural equality — deliberately NOT `compatible`, which is lenient by
+  ## design (Unknown, void, unit and Self match everything, so a conformance
+  ## check built on it would accept an impl returning void where the contract
+  ## says !str).
+  if a == nil or b == nil: return a == nil and b == nil
+  if a.kind != b.kind: return false
+  case a.kind
+  of tkNamed: a.name == b.name
+  of tkApp:
+    if not sameType(a.base, b.base) or a.args.len != b.args.len: return false
+    for i in 0 ..< a.args.len:
+      if not sameType(a.args[i], b.args[i]): return false
+    true
+  of tkTuple:
+    if a.elems.len != b.elems.len: return false
+    for i in 0 ..< a.elems.len:
+      if not sameType(a.elems[i], b.elems[i]): return false
+    true
+  of tkRecord:
+    if a.fields.len != b.fields.len: return false
+    for i in 0 ..< a.fields.len:
+      if a.fields[i].name != b.fields[i].name or
+         not sameType(a.fields[i].typ, b.fields[i].typ): return false
+    true
+  of tkFunc:
+    if a.params.len != b.params.len: return false
+    for i in 0 ..< a.params.len:
+      if not sameType(a.params[i], b.params[i]): return false
+    sameType(a.result, b.result)
+  else: typeName(a) == typeName(b)
+
+proc substSelf(t: Type, objName: string): Type =
+  ## `Self` in a required signature means the implementing type.
+  if t == nil: return nil
+  if t.kind == tkNamed and t.name == "Self":
+    return Type(span: t.span, kind: tkNamed, name: objName)
+  if t.kind == tkApp:
+    var args: seq[Type]
+    for a in t.args: args.add(substSelf(a, objName))
+    return Type(span: t.span, kind: tkApp, base: substSelf(t.base, objName),
+                args: args)
+  t
+
+proc sigText(d: Decl): string =
+  ## One line naming a signature, for both halves of a mismatch report.
+  var ps: seq[string]
+  for p in d.fnParams: ps.add(p.name & ": " & typeName(p.typ))
+  var effs: seq[string]
+  for e in d.fnEffects: effs.add(($e)[2 .. ^1].toLowerAscii)
+  result = "fn " & d.name & "({" & ps.join(", ") & "})"
+  if d.fnReturnType != nil: result.add(" -> " & typeName(d.fnReturnType))
+  if effs.len > 0: result.add(" [" & effs.join(", ") & "]")
+
+proc failConformance(objName, iname: string, want, got: Decl, why: string) =
+  fail("Conformance Error: object '" & objName & "' does not satisfy '" &
+       iname & "'\n  contract   " & sigText(want) &
+       "\n  implements " & sigText(got) & "\n  " & why, got.span)
+
+proc checkSigMatch(want, got: Decl, objName, iname: string) =
+  if want.fnParams.len != got.fnParams.len:
+    failConformance(objName, iname, want, got,
+      "takes " & $got.fnParams.len & " parameter(s), the contract declares " &
+      $want.fnParams.len)
+  for i in 0 ..< want.fnParams.len:
+    let w = want.fnParams[i]
+    let g = got.fnParams[i]
+    if w.name != g.name:
+      failConformance(objName, iname, want, got,
+        "parameter " & $(i + 1) & " is named '" & g.name &
+        "', the contract calls it '" & w.name &
+        "' (payload fields bind by name, so the name is part of the contract)")
+    if not sameType(substSelf(w.typ, objName), g.typ):
+      failConformance(objName, iname, want, got,
+        "parameter '" & w.name & "' is " & typeName(g.typ) &
+        ", the contract declares " & typeName(substSelf(w.typ, objName)))
+  if not sameType(substSelf(want.fnReturnType, objName), got.fnReturnType):
+    failConformance(objName, iname, want, got,
+      "returns " & typeName(got.fnReturnType) & ", the contract declares " &
+      typeName(substSelf(want.fnReturnType, objName)))
+  # Effects may be a SUBSET: an implementation may do less than the contract
+  # permits, never more. Same direction as the caller/callee effect budget.
+  for e in got.fnEffects:
+    if e notin want.fnEffects:
+      failConformance(objName, iname, want, got,
+        "declares effect [" & ($e)[2 .. ^1].toLowerAscii &
+        "], which the contract does not permit (an implementation may do " &
+        "LESS than the contract allows, never more)")
+
+proc checkConformance*(tc: TypeChecker, m: Module) =
+  ## Every `satisfies I` on an object is verified against interface I.
+  var ifaces = initTable[string, Decl]()
+  for d in m.decls:
+    if d != nil and d.kind == dkInterface: ifaces[d.name] = d
+  for d in m.decls:
+    if d == nil or d.kind != dkObject or d.satisfies.len == 0: continue
+    for iname in d.satisfies:
+      if iname notin ifaces:
+        fail("Conformance Error: object '" & d.name & "' satisfies '" & iname &
+             "' but no interface by that name is declared", d.span)
+      for want in ifaces[iname].ifaceMembers:
+        if want == nil or want.kind != dkFn: continue
+        var got: Decl = nil
+        for have in d.members():
+          # A body-less member is a signature, not an implementation — there
+          # would be no code to run.
+          if have.kind == dkFn and have.name == want.name and have.fnBody != nil:
+            got = have
+            break
+        if got == nil:
+          fail("Conformance Error: object '" & d.name & "' satisfies '" &
+               iname & "' but does not implement\n    " & sigText(want) &
+               "\n  (add it as a member fn, or drop the `satisfies " & iname &
+               "` line)", d.span)
+        checkSigMatch(want, got, d.name, iname)
 
 # Pure functions are total: only [io]-marked functions (I/O, unknown input)
 # may declare fallible !T returns. The pure core provably cannot fail.
@@ -2012,7 +2136,8 @@ proc typecheckModule*(m: Module,
   tc.pushScope()  # module-level scope: consts visible across decls
   tc.collectSigs(m.decls)
   tc.resolveTypeNames(m)
-  tc.checkPointers(m)   # pointers may not escape the extern boundary
+  tc.checkPointers(m)      # pointers may not escape the extern boundary
+  tc.checkConformance(m)   # `satisfies I` means every I member is implemented
   # const declarations: Nim-static semantics — arbitrary PURE computation,
   # evaluated at compile time by the backend's const evaluator. Tuck rejects
   # only what would break there: [io] calls (pure only), record-type

@@ -102,6 +102,8 @@ iterator members*(d: Decl): Decl =
       for mem in d.objMembers: (if mem != nil: yield mem)
     of dkActor:
       for mem in d.handlers: (if mem != nil: yield mem)
+    of dkInterface:
+      for mem in d.ifaceMembers: (if mem != nil: yield mem)
     else: discard
 
 proc declaredFields*(d: Decl): seq[FieldDef] =

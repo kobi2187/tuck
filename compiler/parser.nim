@@ -195,6 +195,21 @@ proc parseObjectBody(p: var Parser, fields: var seq[FieldDef], members: var seq[
       members.add(p.parseDecl())
     elif p.current().kind == tkIdent and p.current().value == "invariant":
       p.parseInvariantBlock(members)
+    elif p.current().kind == tkIdent and p.current().value == "satisfies" and
+         p.peek(1).kind == tkIdent:
+      # `satisfies I` (spec §5.2) — a body line beside the `+` composition
+      # lines. Contextual like `invariant` above, and gated on an Ident
+      # following, so a FIELD named `satisfies: bool` still parses as a field.
+      # Collected as a dkExpr member because parseObjectBody is shared with
+      # dkActor and has no out-param; the dkObject arm sifts it into the
+      # `satisfies` field, exactly as `+ X` is sifted by isCompositionEntry.
+      let sSp = p.getSpan()
+      discard p.advance()
+      let iname = p.expect(tkIdent, "Expected interface name after 'satisfies'").value
+      members.add(Decl(span: sSp, kind: dkExpr, name: iname,
+                       expr: Expr(span: sSp, kind: exkVar, name: satisfiesMark)))
+      if p.current().kind == tkNewline:
+        discard p.advance()
     else:
       let fSp = p.getSpan()
       let fName = p.expect(tkIdent, "Expected field or member name in object").value
@@ -868,7 +883,18 @@ proc parseDecl*(p: var Parser): Decl =
     var fields: seq[FieldDef]
     var members: seq[Decl]
     p.parseObjectBody(fields, members)
-    return Decl(span: sp, kind: dkObject, name: name, objFields: fields, mixins: @[], objMembers: members)
+    # Sift the `satisfies I` lines out of the member list into their own field,
+    # so no later pass has to know they were ever members.
+    var sats: seq[string]
+    var realMembers: seq[Decl]
+    for m in members:
+      if m != nil and m.kind == dkExpr and m.expr != nil and
+         m.expr.kind == exkVar and m.expr.name == satisfiesMark:
+        sats.add(m.name)
+      else:
+        realMembers.add(m)
+    return Decl(span: sp, kind: dkObject, name: name, objFields: fields,
+                satisfies: sats, objMembers: realMembers)
 
   of tkActor:
     discard p.advance()
@@ -908,7 +934,18 @@ proc parseDecl*(p: var Parser): Decl =
       discard p.advance()
     return Decl(span: sp, kind: dkType, name: name, generics: @[], typeBody: aliasType)
 
-  of tkMixin, tkInterface:
+  of tkInterface:
+    # A contract (spec §5.2): the body IS the requirement list, so it is exactly
+    # the body-less sig block `extern` and `pending` already use. Kept apart
+    # from tkMixin below because the two mean opposite things — a mixin's
+    # members are code to compose INTO an object, an interface's are
+    # requirements to check AGAINST one.
+    discard p.advance()
+    let name = p.expect(tkIdent, "Expected interface name").value
+    return Decl(span: sp, kind: dkInterface, name: name,
+                ifaceMembers: p.parseSigBlock("interface"))
+
+  of tkMixin:
     discard p.advance()
     let name = p.expect(tkIdent, "Expected mixin name").value
     discard p.expect(tkColon)

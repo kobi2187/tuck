@@ -307,6 +307,13 @@ const ImportedTypeMarker* = "<imported>"
 # named type; codegen treats it as "no type information".
 const UnknownName* = "<unknown>"
 
+# A `satisfies I` line inside an object body (spec §5.2). parseObjectBody is
+# shared with dkActor and has no out-param, so the line is collected as a dkExpr
+# member carrying this sentinel, with the interface name in `Decl.name`; the
+# dkObject arm sifts those into the object's `satisfies` field. Same shape as
+# the `+ X` composition members, which are sifted by isCompositionEntry.
+const satisfiesMark* = "<satisfies>"
+
 type
   # A function signature as stored in the .tuck-cache signature index:
   # enough to typecheck an importer without deserializing the module's AST.
@@ -353,6 +360,13 @@ type
     dkImport  # import <module> — loads <module>.tuck next to the importer
     dkSelect  # `on select:` — wait on multiple event sources (spec §9.3)
     dkFnSig   # `fnsig NAME = {params} -> ret` — named function-signature type
+    dkInterface # `interface NAME:` — a contract (spec §5.2). Its own kind, NOT
+                # a share of dkMixin's arm: a mixin's members are CODE that gets
+                # composed into an object, an interface's are REQUIREMENTS that
+                # get checked against one. Sharing an arm is what let a plain
+                # mixin hold a cstring past the pointer rule (see
+                # checkPointerContainment) — the same mistake twice would be
+                # careless.
 
   Decl* = ref object of Node
     name*: string
@@ -369,7 +383,12 @@ type
       typeExternHeader*: string
     of dkObject:
       objFields*: seq[FieldDef]
-      mixins*: seq[string]
+      satisfies*: seq[string]  # `satisfies I` lines — the interfaces this object
+                               # promises to implement (spec §5.2). Checked by
+                               # checkConformance; a seq because an object may
+                               # satisfy several. (Was `mixins`, which was
+                               # written once as @[] and never read —
+                               # composition arrives as uoComposition members.)
       objMembers*: seq[Decl]
     of dkRegistry:
       variants*: seq[VariantDef]
@@ -407,6 +426,8 @@ type
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin, dkExtern, dkPending:
       mixinMembers*: seq[Decl]
+    of dkInterface:
+      ifaceMembers*: seq[Decl]  # body-less dkFn sigs — the requirements
     of dkActor:
       attrs*: seq[TypeAttr]
       actorFields*: seq[FieldDef]
@@ -567,6 +588,8 @@ proc assignIds*(d: Decl, next: var uint32) =
     for m in d.objMembers: assignIds(m, next)
   of dkMixin, dkExtern, dkPending:
     for m in d.mixinMembers: assignIds(m, next)
+  of dkInterface:
+    for m in d.ifaceMembers: assignIds(m, next)
   of dkActor:
     for h in d.handlers: assignIds(h, next)
   of dkSelect:
@@ -634,6 +657,7 @@ proc clearIds*(d: Decl) =
   of dkType: (for m in d.typeMembers: clearIds(m))
   of dkObject: (for m in d.objMembers: clearIds(m))
   of dkMixin, dkExtern, dkPending: (for m in d.mixinMembers: clearIds(m))
+  of dkInterface: (for m in d.ifaceMembers: clearIds(m))
   of dkActor: (for h in d.handlers: clearIds(h))
   of dkSelect: (for arm in d.selectArms: clearIds(arm.body))
   of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig: discard
