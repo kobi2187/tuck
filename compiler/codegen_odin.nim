@@ -11,7 +11,7 @@
 # languages, so ~1150 of its lines are AST logic that ports unchanged and
 # only the emitted syntax differs. Keep the two diffable — a fix in one is
 # usually a fix in the other.
-import ast, lowering, strutils, sets, tables
+import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
@@ -735,6 +735,20 @@ proc genMatchExpr(ctx: var OdinCodegenCtx, e: Expr): string =
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
+  # A concrete object entering an interface slot becomes the two-word pair.
+  # Mirrors the Nim backend; the table is a package-scope value, so this costs
+  # two stores and no allocation, and the data half borrows.
+  let w = semLayer.wrapOf(e)
+  if w.objName != "" and e.kind == exkVar:
+    var ifaceName = w.iface
+    var objName = w.objName
+    for d in ctx.module.decls:
+      if d == nil: continue
+      let src = if d.sourceName.isSome: d.sourceName.get else: d.name
+      if d.kind == dkInterface and src == w.iface: ifaceName = d.name
+      if d.kind == dkObject and src == w.objName: objName = d.name
+    return ifaceName & "{data = &" & e.name & ", vt = &" &
+           ifaceName & "_for_" & objName & "}"
   case e.kind
   of exkLit:
     return case e.litKind
@@ -766,6 +780,13 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
             return modName.replace("-", "_") & "." & e.name
     return e.name
   of exkField:
+    # A call through an interface value: read the table the value carries.
+    let ic = semLayer.ifaceCallOf(e)
+    if ic.member != "":
+      let recv = ctx.genOdinExpr(e.receiver)
+      var iargs = @[recv & ".data"]
+      if e.dotArg != nil: iargs.add(ctx.genOdinExpr(e.dotArg))
+      return recv & ".vt." & ic.member & "(" & iargs.join(", ") & ")"
     # `Counter.total` reads the actor SINGLETON's field, not a type's.
     if e.receiver != nil and e.receiver.kind == exkVar and
        ctx.isActorType(e.receiver.name):
@@ -1944,6 +1965,35 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     let conv = if d.sigIsCCallback: "\"c\" " else: ""
     return ind & d.name & " :: proc " & conv & "(" & params.join(", ") & ")" &
            retStr & "\n"
+  of dkInterface:
+    # Two words: a reference to the data and a reference to that concrete
+    # type's function table (spec §5.3). Mirrors the Nim backend; only the
+    # spelling differs. Odin needs no calling-convention marker here — a plain
+    # proc value is already a bare function pointer.
+    var entries: seq[string]
+    for mem in d.ifaceMembers:
+      if mem == nil or mem.kind != dkFn: continue
+      var params = @["data: rawptr"]
+      for prm in mem.fnParams:
+        if prm.name == "self": continue
+        # `Self` is the INTERFACE here — see the Nim backend for why.
+        var pt = prm.typ
+        if pt != nil and pt.kind == tkNamed and pt.name == "Self":
+          pt = Type(span: prm.span, kind: tkNamed, name: d.name)
+        params.add(prm.name & ": " & ctx.odinType(pt))
+      let mret =
+        if mem.fnReturnType != nil and not (mem.fnReturnType.kind == tkNamed and
+                                            mem.fnReturnType.name == "void"):
+          " -> " & ctx.odinType(mem.fnReturnType)
+        else: ""
+      entries.add(ind & "\t" & mem.name & ": proc(" & params.join(", ") & ")" &
+                  mret & ",")
+    result = ind & d.name & "VT :: struct {\n" & entries.join("\n") &
+             (if entries.len > 0: "\n" else: "") & ind & "}\n\n"
+    result.add(ind & d.name & " :: struct {\n" &
+               ind & "\tdata: rawptr,\n" &
+               ind & "\tvt: ^" & d.name & "VT,\n" & ind & "}\n")
+    return result
   else:
     return ""
 
@@ -1966,6 +2016,47 @@ proc emitBody(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] =
       let code = ctx.genOdinDecl(d)
       if code != "":
         body.add(code & "\n")
+  # Interface tables, on demand: only the (object, interface) pairs a wrap site
+  # asked for (semLayer.ifacePairs). Mirrors the Nim backend — but Odin needs
+  # no forward declarations, since `::` definitions are order-independent at
+  # package scope.
+  for pair in semLayer.ifacePairs:
+    # The checker recorded SOURCE names (it runs before mangleProgram), so
+    # decls are found by sourceName and emitted under their current name.
+    var iface: Decl = nil
+    var objDecl: Decl = nil
+    for d in m.decls:
+      if d == nil: continue
+      let src = if d.sourceName.isSome: d.sourceName.get else: d.name
+      if d.kind == dkInterface and src == pair.iface: iface = d
+      if d.kind == dkObject and src == pair.objName: objDecl = d
+    if iface == nil or objDecl == nil: continue
+    var fields: seq[string]
+    for mem in iface.ifaceMembers:
+      if mem == nil or mem.kind != dkFn: continue
+      let thunk = iface.name & "_" & objDecl.name & "_" & mem.name
+      var params = @["data: rawptr"]
+      # The member fn already takes a pointer receiver, so the cast IS the
+      # argument — no deref, unlike the Nim side's `cast[ptr T](data)[]`.
+      var args = @["cast(^" & objDecl.name & ")data"]
+      for prm in mem.fnParams:
+        if prm.name == "self": continue
+        var pt = prm.typ
+        if pt != nil and pt.kind == tkNamed and pt.name == "Self":
+          pt = Type(span: prm.span, kind: tkNamed, name: iface.name)
+        params.add(prm.name & ": " & ctx.odinType(pt))
+        args.add(prm.name)
+      let mret =
+        if mem.fnReturnType != nil and not (mem.fnReturnType.kind == tkNamed and
+                                            mem.fnReturnType.name == "void"):
+          " -> " & ctx.odinType(mem.fnReturnType)
+        else: ""
+      body.add(thunk & " :: proc(" & params.join(", ") & ")" & mret & " {\n" &
+               "\treturn " & memberProcName(objDecl.name, mem.name) &
+               "(" & args.join(", ") & ")\n}\n\n")
+      fields.add(mem.name & " = " & thunk)
+    body.add(iface.name & "_for_" & objDecl.name & " := " & iface.name &
+             "VT{" & fields.join(", ") & "}\n\n")
   (body, mainStmts.join("\n"))
 
 # Odin errors on unused imports, so the header is assembled from what the

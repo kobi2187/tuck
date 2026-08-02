@@ -210,8 +210,14 @@ iterator sumTypes*(m: Module): Decl =
     if d.typeBody != nil and d.typeBody.kind == tkSum: yield d
 
 proc isRecordType*(m: Module, name: string): bool =
-  ## `{fields} TypeName` — construction of a declared record type.
-  m.typeBodyKind(name) == tkRecord
+  ## `{fields} TypeName` — construction of a declared record type. An OBJECT
+  ## constructs the same way (named fields, not positional), so it answers true
+  ## here too; without it a backend emitted `tuck_Dog("rex")`, which neither
+  ## Nim nor Odin accepts.
+  if m.typeBodyKind(name) == tkRecord: return true
+  for d in m.decls:
+    if d != nil and d.kind == dkObject and d.name == name: return true
+  false
 
 proc isErrEnumRef*(m: Module, e: Expr): bool =
   ## `err Enum.Variant` — a reference to a declared error enum's variant?

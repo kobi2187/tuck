@@ -40,6 +40,13 @@ emits "one static table per pair"          'Animal_for_tuck_Dog'
 emits "the call reads the table"           'vt\.noise|\.vt\['
 runs  "and the program runs"               1
 
+# Both backends, or it is not a feature. The parity commitment is explicit in
+# codegen.nim's header: share the logic, never share the syntax.
+emits_odin "Odin: a table type"        'AnimalVT'
+emits_odin "Odin: a thunk"             'Animal_tuck_Dog_noise'
+emits_odin "Odin: a static table"      'Animal_for_tuck_Dog'
+emits_odin "Odin: the call reads it"   'vt\.noise|vt\^\.noise' 
+
 # --- dispatch actually selects per object ---------------------------------
 
 # 1 + 41 = 42, reachable only if each element carried its own table. Either

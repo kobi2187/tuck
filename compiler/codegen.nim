@@ -1602,7 +1602,13 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
       for prm in mem.fnParams:
         # `self` is the data half; the rest ride as ordinary parameters.
         if prm.name == "self": continue
-        params.add(prm.name & ": " & genType(prm.typ))
+        # `Self` in a contract means the INTERFACE at this point: a table entry
+        # is shared by every implementing type, so the concrete one is not
+        # knowable here — the value carries its own.
+        var pt = prm.typ
+        if pt != nil and pt.kind == tkNamed and pt.name == "Self":
+          pt = Type(span: prm.span, kind: tkNamed, name: d.name)
+        params.add(prm.name & ": " & genType(pt))
       let retStr = if mem.fnReturnType != nil and not
                       (mem.fnReturnType.kind == tkNamed and
                        mem.fnReturnType.name == "void"):
@@ -1673,7 +1679,12 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
       var args = @["cast[ptr " & objName & "](data)[]"]
       for prm in mem.fnParams:
         if prm.name == "self": continue
-        params.add(prm.name & ": " & genType(prm.typ))
+        # `Self` is the interface here too — the thunk's signature must match
+        # the table entry's exactly.
+        var pt = prm.typ
+        if pt != nil and pt.kind == tkNamed and pt.name == "Self":
+          pt = Type(span: prm.span, kind: tkNamed, name: ifaceName)
+        params.add(prm.name & ": " & genType(pt))
         args.add(prm.name)
       let retStr = if mem.fnReturnType != nil and not
                       (mem.fnReturnType.kind == tkNamed and
