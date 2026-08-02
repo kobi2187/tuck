@@ -878,6 +878,11 @@ proc checkIfaceArg(tc: var TypeChecker, iname: string, argT: Type,
   ## emission demand-driven rather than one-per-`satisfies`.
   if argT == nil or isUnknown(argT): return   # gradual: let it flow
   let objName = if argT.kind == tkNamed: argT.name else: ""
+  # Already an interface value of the SAME interface — passing one onward is
+  # just handing over the pair, so there is nothing to wrap. Without this,
+  # `fn outer({a: Animal}) = {a: a} inner` was rejected with "Animal is not an
+  # object, so it cannot satisfy Animal", which is both wrong and confusing.
+  if objName == iname: return
   if objName != "" and tc.objDecls.hasKey(objName) and
      iname in tc.objDecls[objName].satisfies:
     semLayer.markWrap(argExpr, objName, iname)
