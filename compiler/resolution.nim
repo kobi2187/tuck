@@ -48,6 +48,7 @@ type
     # set is closed by the time anything reads it.
     wraps*: Table[NodeId, tuple[objName, iface: string]]
     ifacePairs*: HashSet[tuple[objName, iface: string]]
+    ifaceCalls*: Table[NodeId, tuple[iface, member: string]]
 
 proc ensureId*(e: Expr) =
   ## Nodes minted after the parse boundary (checker-synthesized calls) have
@@ -92,6 +93,18 @@ proc wrapOf*(r: Resolution, e: Expr): tuple[objName, iface: string] =
   if e == nil or not e.id.isSet: return (objName: "", iface: "")
   r.wraps.getOrDefault(e.id, (objName: "", iface: ""))
 
+proc markIfaceCall*(r: var Resolution, e: Expr, iface, member: string) =
+  ## Flag `a.noise` as a call THROUGH an interface value: codegen reads the
+  ## function table rather than emitting a direct call, because which
+  ## implementation runs is carried by the value, not known here.
+  if e == nil: return
+  ensureId(e)
+  r.ifaceCalls[e.id] = (iface: iface, member: member)
+
+proc ifaceCallOf*(r: Resolution, e: Expr): tuple[iface, member: string] =
+  if e == nil or not e.id.isSet: return (iface: "", member: "")
+  r.ifaceCalls.getOrDefault(e.id, (iface: "", member: ""))
+
 # The program-wide semantic layer. The compiler processes one program per
 # run, so a single instance is the honest model; passing it through every
 # signature in checker, lowering and both backends would be pure ceremony.
@@ -106,7 +119,8 @@ var semLayer* = Resolution(calls: initTable[NodeId, Expr](),
                             argFields: initTable[NodeId, seq[string]](),
                             callParams: initTable[NodeId, seq[string]](),
                             wraps: initTable[NodeId, tuple[objName, iface: string]](),
-                            ifacePairs: initHashSet[tuple[objName, iface: string]]())
+                            ifacePairs: initHashSet[tuple[objName, iface: string]](),
+                            ifaceCalls: initTable[NodeId, tuple[iface, member: string]]())
 
 proc resetResolution*() =
   semLayer = Resolution(calls: initTable[NodeId, Expr](),
@@ -118,7 +132,8 @@ proc resetResolution*() =
                             argFields: initTable[NodeId, seq[string]](),
                             callParams: initTable[NodeId, seq[string]](),
                             wraps: initTable[NodeId, tuple[objName, iface: string]](),
-                            ifacePairs: initHashSet[tuple[objName, iface: string]]())
+                            ifacePairs: initHashSet[tuple[objName, iface: string]](),
+                            ifaceCalls: initTable[NodeId, tuple[iface, member: string]]())
 
 proc setStepCall*(r: var Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call

@@ -427,6 +427,7 @@ proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
     setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
                               callee: Expr(span: e.span, kind: exkVar,
                                            name: e.fieldName)))
+    semLayer.markIfaceCall(e, recvT.name, mem.name)
     return ret
   # The receiver IS an interface, so a name the contract lacks is an error
   # here rather than something for a later arm to try.
