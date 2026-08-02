@@ -29,6 +29,8 @@ EOF
 ok_check "a composed field is reachable by its own name"
 emits    "and the object carries it directly"  'x\*: int'
 omits    "not as a nested record"              'tuck_A\*: tuck_A'
+emits_odin "Odin: merged too"                  'x: int'
+omits_odin "Odin: not nested either"           'tuck_A: tuck_A'
 runs     "so the emitted code compiles"        0
 
 # Two records merge, and both their fields land.

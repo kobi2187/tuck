@@ -160,6 +160,18 @@ emits_odin() {
     _no "$1" "emitted Odin lacks /$2/"; fi
 }
 
+omits_odin() {
+  # Same as `omits`, against the Odin backend's output. A failed emit counts as
+  # a failure rather than a vacuous pass — "the pattern is absent" must not be
+  # satisfied by there being no output at all.
+  if ! "$TUCK" c "$_cur/t.tuck" --odin -o:"$_cur/odin" --root:"$(pwd)" \
+       > "$_cur/odin.log" 2>&1; then
+    _no "$1" "Odin emission failed: $(tail -1 "$_cur/odin.log")"
+  elif grep -qE "$2" "$_cur/odin/t.odin" 2>/dev/null; then
+    _no "$1" "emitted Odin contains /$2/ but should not"
+  else _ok "$1"; fi
+}
+
 finish() {
   [ "$_open" -eq 0 ] || printf 'open bugs: %d\n' "$_open"
   printf '%s: %d passed, %d failed\n' "${0##*/}" "$_pass" "$_fail"

@@ -26,6 +26,12 @@ omits "no bare fn decl"        'proc helper'
 # Idempotence: each backend lowers its own deepCopy, and a pass that
 # double-prefixed would produce tuck_tuck_helper on the second run.
 omits "no double prefix"       'tuck_tuck_'
+# Mangling is a whole-program pass that runs BEFORE either backend, so the two
+# cannot diverge by construction — but nothing said so, and the interface work
+# showed how quietly a backend can fall behind when only one is asserted.
+emits_odin "Odin: fn decl mangled"      'tuck_helper :: proc'
+emits_odin "Odin: fn call site mangled" 'tuck_helper\('
+omits_odin "Odin: no double prefix"     'tuck_tuck_'
 
 # The whole point: a user fn named like a runtime proc must not collide.
 src <<'EOF'
@@ -94,5 +100,6 @@ fn main() -> void:
 EOF
 emits "extern call verbatim"    'readFile\('
 omits "externs are NOT mangled" 'tuck_readFile'
+omits_odin "Odin: externs NOT mangled"  'tuck_readFile'
 
 finish
