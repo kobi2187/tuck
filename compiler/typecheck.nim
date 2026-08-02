@@ -1088,9 +1088,13 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
       gargs.add(bindings[g])
     return Type(span: e.span, kind: tkApp,
                 base: Type(span: e.span, kind: tkNamed, name: calleeName), args: gargs)
-  if calleeName != "" and tc.typeDecls.hasKey(calleeName) and
-     not tc.fnSigs.hasKey(calleeName):
-    # {fields} TypeName — construction produces the declared type
+  if calleeName != "" and not tc.fnSigs.hasKey(calleeName) and
+     (tc.typeDecls.hasKey(calleeName) or tc.objDecls.hasKey(calleeName)):
+    # {fields} TypeName — construction produces the declared type. Objects are
+    # constructible by name like records, but are deliberately absent from
+    # typeDecls: `resolve` unwraps anything found there to its body, and an
+    # object is NOMINAL. So the gate asks both tables while the result stays
+    # the name either way.
     for a in e.args: discard tc.synthesize(a)
     return Type(span: e.span, kind: tkNamed, name: calleeName)
   if calleeName != "" and tc.fnSigs.hasKey(calleeName):
@@ -2159,7 +2163,16 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   of dkActor:
     tc.pushScope()
     for f in d.actorFields: tc.bindName(f.name, f.typ, true)
-    for h in d.handlers: tc.checkDecl(h)
+    for h in d.handlers:
+      # `result` inside a handler IS its declared return type. Nothing bound it,
+      # so it synthesized as Unknown and every assignment to it was accepted.
+      # A handler with no return type gets no binding at all, which makes
+      # `result = ...` the undeclared-name error it should be.
+      tc.pushScope()
+      if h != nil and h.kind == dkFn and h.fnReturnType != nil:
+        tc.bindName("result", h.fnReturnType, true)
+      tc.checkDecl(h)
+      tc.popScope()
     tc.popScope()
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
   of dkType: checkTransitions(d)

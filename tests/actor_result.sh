@@ -3,8 +3,12 @@
 #
 # It was bound to nothing at all, so it synthesized as Unknown — and Unknown is
 # compatible with everything, so `result = <anything>` was accepted and every
-# later use went unchecked. One of the five gaps that a strict-typing
-# experiment surfaced; the sentinel had been hiding it.
+# later use went unchecked. One of the gaps a strict-typing experiment
+# surfaced; the sentinel had been hiding it.
+#
+# A handler with NO return type gets no binding, which is why `result = ...`
+# there should be an undeclared-name error — still open below, because
+# undeclared names are unchecked generally (not an actor problem).
 cd "$(dirname "$0")/.."
 . tests/lib.sh
 
@@ -30,8 +34,7 @@ actor Counter:
 fn main() -> int:
   return 0
 EOF
-try bad_check "assigning the wrong type to result is caught" "result|count|str"
-bug_open "result is not typed (nothing binds it, so it synthesizes as Unknown)"
+bad_check "assigning the wrong type to result is caught" "result|count|str"
 
 # A handler with no return type has no result to assign.
 src <<'EOF'
