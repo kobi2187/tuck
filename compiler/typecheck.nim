@@ -277,6 +277,19 @@ proc hasVariant(t: Type, name: string): bool =
     if v.name == name: return true
   false
 
+proc sumTypeOwning(tc: TypeChecker, variant: string): string =
+  ## The declared sum type that owns this variant name, or "".
+  ##
+  ## A bare `Red` is a value of its sum type — it used to synthesize as Unknown
+  ## (exkVar knows only locals and fnSigs), so `return Red` was accepted
+  ## wherever any type was expected. Ambiguity is not resolved here: if two sum
+  ## types declare the same variant the first wins, exactly as the qualified
+  ## form `Light.Red` exists to disambiguate.
+  for name, body in tc.typeDecls:
+    if body != nil and body.kind == tkSum and body.hasVariant(variant):
+      return name
+  ""
+
 proc isSealed(t: Type): bool =
   ## Sealed types are entered only at their first variant; the rest are
   ## reached through transitions.
@@ -1197,7 +1210,12 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
                     args: @[])
       setCall(semLayer, e, vc)
       tc.synthesize(vc)
-    else: unknownType(e.span)
+    else:
+      # A bare sum-type variant is a value of its sum type. `Light.Red` is the
+      # qualified form of the same thing, handled by the field-access path.
+      let owner = tc.sumTypeOwning(e.name)
+      if owner != "": Type(span: e.span, kind: tkNamed, name: owner)
+      else: unknownType(e.span)
   of exkField: tc.synthFieldAccess(e)
   of exkStruct:
     var fs: seq[FieldDef]
