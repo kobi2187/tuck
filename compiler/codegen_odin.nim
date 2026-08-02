@@ -268,6 +268,26 @@ proc genQualified(ctx: OdinCodegenCtx, e: Expr): string =
 
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 
+proc memberProcName*(objName, memberName: string): string =
+  ## Object member fns emit qualified: `Dog.noise` -> `tuck_Dog_noise`.
+  ##
+  ## Nim tolerated a bare `noise` because it overloads on the `self` parameter's
+  ## type, so two objects' members were two overloads. Odin does not overload —
+  ## two `noise :: proc` at package level is "Redeclaration of 'noise' in this
+  ## scope", so `object Dog` and `object Cat` both having a `noise` emitted a
+  ## package that could not compile. Qualifying is also what interfaces need:
+  ## several types answering the same call is the whole point of a contract.
+  objName & "_" & memberName
+
+proc memberOwner(ctx: OdinCodegenCtx, recvT: Type): string =
+  ## The object type a member call dispatches on, or "" when the receiver is
+  ## not an object (a record's `.fn` is a free fn and keeps its bare name).
+  if recvT == nil or recvT.kind != tkNamed: return ""
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkObject and d.name == recvT.name: return d.name
+  ""
+
+
 # Type-directed explosion: a record-typed VAR as the whole payload
 # (`p advance`) explodes to the fn's params by field name, in param order.
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
@@ -475,7 +495,18 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     let ctor = ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName,
                                    payload)
     if ctor != "": return ctor
-  let calleeStr = ctx.genOdinExpr(e.callee)
+  var calleeStr = ctx.genOdinExpr(e.callee)
+  # A member call arrives as a bare-name callee with the receiver as args[0]
+  # (the checker's asFnByName rewrite). The DECLARATION emitted qualified, so
+  # the call has to match — derive the same name from the receiver's type.
+  if e.callee != nil and e.callee.kind == exkVar and e.args.len >= 1:
+    let owner = ctx.memberOwner(semLayer.typeFor(e.args[0]))
+    if owner != "":
+      for d in ctx.module.decls:
+        if d == nil or d.kind != dkObject or d.name != owner: continue
+        for mem in d.objMembers:
+          if mem != nil and mem.kind == dkFn and mem.name == e.callee.name:
+            calleeStr = memberProcName(owner, e.callee.name)
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     let baked = ctx.genOdinBake(e)
     if baked != "": return baked
@@ -1000,7 +1031,8 @@ proc genOdinMemberFn(ctx: var OdinCodegenCtx, m: Decl, objName: string): string 
     params = @[Param(name: "self", typ: selfType, span: m.span)] & params
   var ret = m.fnReturnType
   if ret != nil and ret.kind == tkNamed and ret.name == "Self": ret = plainSelf
-  let copy = Decl(span: m.span, kind: dkFn, name: m.name, fnParams: params,
+  let copy = Decl(span: m.span, kind: dkFn, name: memberProcName(objName, m.name),
+                  fnParams: params,
                   fnReturnType: ret, fnBody: m.fnBody, fnEffects: m.fnEffects,
                   fnGenerics: m.fnGenerics)
   # `self` is a POINTER here, so every mention in the body needs a deref —
