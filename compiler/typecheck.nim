@@ -1814,6 +1814,36 @@ proc isPointerKind(tc: TypeChecker, t: Type): bool =
            d.typeBody.fields.len == 0
   false
 
+proc failIfIfaceField(tc: TypeChecker, t: Type, where: string, sp: Span) =
+  ## An interface value may not be STORED in a field.
+  ##
+  ## Its data half points AT the object rather than a copy — that is what makes
+  ## a wrap two stores and no allocation, and what makes mutation visible to the
+  ## original. A record, object or actor outlives any scope, so a field holding
+  ## one always outlives the object it borrows.
+  ##
+  ## Only fields, deliberately. Returning an interface value is unsafe only when
+  ## the data came from a LOCAL — returning a borrow of a parameter is fine, and
+  ## banning returns outright would rule out mixed collections. That needs a
+  ## look at whether the value escapes, which is a separate question.
+  if t == nil: return
+  if t.kind == tkNamed and tc.ifaceDecls.hasKey(t.name):
+    fail("Type Error: " & t.name & " is an interface — it may not be stored " &
+         "in " & where & ", because the value borrows the object it was made " &
+         "from and a field outlives every scope (pass it as a parameter " &
+         "instead, or store the concrete object)", sp)
+  case t.kind
+  of tkApp:
+    failIfIfaceField(tc, t.base, where, sp)
+    for a in t.args: failIfIfaceField(tc, a, where, sp)
+  of tkTuple:
+    for e in t.elems: failIfIfaceField(tc, e, where, sp)
+  of tkRecord:
+    for f in t.fields: failIfIfaceField(tc, f.typ, where, sp)
+  of tkEffect: failIfIfaceField(tc, t.inner, where, sp)
+  of tkRename: failIfIfaceField(tc, t.underlying, where, sp)
+  else: discard
+
 proc failIfPointer(tc: TypeChecker, t: Type, where: string, sp: Span) =
   ## Reject a pointer-kind type anywhere it would escape the extern boundary.
   ## Recurses so a pointer buried in `Seq[Buf]` or a record field is caught too.
@@ -1889,14 +1919,17 @@ proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
     if not inExtern and d.typeBody != nil and d.typeBody.kind == tkRecord:
       for f in d.typeBody.fields:
         failIfPointer(tc, f.typ, "a type field", f.span)
+        failIfIfaceField(tc, f.typ, "a type field", f.span)
     for m in d.typeMembers: checkPointerContainment(tc, m, inExtern)
   of dkObject:
     for f in d.objFields:
       failIfPointer(tc, f.typ, "an object field", f.span)
+      failIfIfaceField(tc, f.typ, "an object field", f.span)
     for m in d.objMembers: checkPointerContainment(tc, m, inExtern)
   of dkActor:
     for f in d.actorFields:
       failIfPointer(tc, f.typ, "an actor field", f.span)
+      failIfIfaceField(tc, f.typ, "an actor field", f.span)
     for h in d.handlers: checkPointerContainment(tc, h, inExtern)
   of dkExtern:
     for m in d.mixinMembers: checkPointerContainment(tc, m, true)
@@ -1914,6 +1947,7 @@ proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
     for v in d.variants:
       for f in v.fields:
         failIfPointer(tc, f.typ, "a registry field", f.span)
+        failIfIfaceField(tc, f.typ, "a registry field", f.span)
   else: discard
 
 proc checkPointers*(tc: TypeChecker, m: Module) =

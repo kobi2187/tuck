@@ -144,8 +144,18 @@ at the boundary.
 (Compare Go, whose interface values *are* freely storable and which therefore
 copies to the heap on every conversion.)
 
-Borrowing is only sound while the object outlives the interface value, and
-**that is not yet enforced** — see Current limits.
+Borrowing is only sound while the object outlives the interface value. An
+interface value therefore **may not be stored in a field** — of a record, an
+object or an actor — because a struct outlives every scope, so a field holding
+one is always wrong:
+
+```
+Type Error: Animal is an interface — it may not be stored in an object field,
+because the value borrows the object it was made from and a field outlives
+every scope (pass it as a parameter instead, or store the concrete object)
+```
+
+Passing one as a parameter is the intended use and stays legal.
 
 ### Emission is demand-driven
 
@@ -171,13 +181,19 @@ Both produce 42 for the example above.
 
 ## Current limits
 
-**The borrow is not contained yet.** The design is that an interface value may
-appear as a function parameter and a local, but not as a record/object/actor
-field nor as a return type — so the object it points at is always in an
-enclosing scope. Today none of that is checked: returning an interface value or
-storing one in a field both compile, and either can dangle. The pointer
-containment rule already implemented for `cstring`/`Buf`
-(`tests/pointer_containment.sh`) is the shape this needs.
+**Returning an interface value is unchecked.** Fields are rejected (above), but
+a returned interface value can still dangle:
+
+```tuck
+fn bad() -> Animal:
+  var d = {name: "rex"} Dog
+  return {a: d} pick        # d dies here; the returned pair points at it
+```
+
+Returning a borrow of a *parameter* is perfectly safe, and forbidding returns
+outright would rule out mixed collections — so the rule has to distinguish
+where the data came from, which is a real escape analysis rather than a
+syntactic check. Not attempted yet.
 
 **A list literal does not wrap its elements.** `[d, c]` synthesizes as
 `Seq[Dog]` from its first element, so a `Seq[Animal]` parameter rejects it. The
