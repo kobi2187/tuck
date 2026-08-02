@@ -42,6 +42,13 @@ type
                                       # tkNamed reference be resolved to the
                                       # decl it names instead of carrying only
                                       # the name into later passes
+    ifaceDecls*: Table[string, Decl]  # `interface NAME` (spec §5.2). Kept apart
+                                      # from typeDeclsByName because an
+                                      # interface is NOT a type: it has no size
+                                      # and nothing is ever an instance of one.
+    objDecls*: Table[string, Decl]    # `object NAME` — to answer "does this
+                                      # object declare `satisfies I`" at a call
+                                      # site without rescanning the decl list
     topLevelFns*: HashSet[string]     # plain top-level `fn` decls: the only
                                       # callees lowering explodes payloads for
                                       # (tasks and member fns are the backends')

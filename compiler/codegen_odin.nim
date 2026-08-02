@@ -1663,8 +1663,9 @@ proc isCompositionEntry(member: Decl): bool =
 proc composeInto(ctx: var OdinCodegenCtx, compName, objName, ind: string,
                  fields: var seq[string], members: var string): bool =
   ## Materialise `+ compName` onto this object: a mixin's fns become member
-  ## fns, a record type embeds as a field. Mirrors the Nim backend; only the
-  ## emitted syntax differs. False if nothing by that name is declared.
+  ## fns, a record type's FIELDS MERGE IN (set union, spec §4.5). Mirrors the
+  ## Nim backend; only the emitted syntax differs. False if nothing by that
+  ## name is declared.
   for cd in ctx.module.decls:
     if cd == nil or cd.name != compName: continue
     if cd.kind == dkMixin:   # composition names a real mixin, never a
@@ -1674,8 +1675,8 @@ proc composeInto(ctx: var OdinCodegenCtx, compName, objName, ind: string,
           members.add(ctx.genOdinMemberFn(mm, objName) & "\n")
       return true
     if cd.kind == dkType and cd.typeBody != nil and cd.typeBody.kind == tkRecord:
-      let fname = compName[0].toLowerAscii() & compName[1..^1]
-      fields.add(ind & "\t" & fname & ": " & compName & ",")
+      for f in cd.typeBody.fields:
+        fields.add(ind & "\t" & f.name & ": " & ctx.fieldType(objName, f) & ",")
       return true
   false
 

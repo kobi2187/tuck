@@ -305,7 +305,28 @@ const ImportedTypeMarker* = "<imported>"
 
 # The checker's gradual-typing sentinel: undeclared symbols synthesize this
 # named type; codegen treats it as "no type information".
-const UnknownName* = "<unknown>"
+#
+# BEING SPLIT UP. One sentinel was doing several unrelated jobs, and because
+# `compatible` treats it as matching everything, every one of those jobs
+# silently disabled type checking wherever its value flowed. Measured: making
+# it incompatible breaks 15 checks, of which only the generic ones are a real
+# need — the rest were bugs it was hiding (a loop variable's element type, an
+# object's fields, an interface argument, actor `result`, `Error.X`).
+#
+# Each distinct meaning gets its own name so the checker can be strict about
+# the one that means "I could not work it out":
+const
+  UnknownName* = "<unknown>"      # the checker could not tell — a GAP, and the
+                                  # long-term goal is for this to be an error
+  TypeParamName* = "<typeparam>"  # a generic's T inside its own body: not
+                                  # unknown, but ANY type, fixed per call site
+  PendingName* = "<pending>"      # declared, not implemented (spec §5.4). The
+                                  # walking skeleton must still run, so this
+                                  # one is deliberately permissive
+  EmptyRecName* = "<emptyrec>"    # `{}` — a real type (the empty record), not
+                                  # an absence of one
+  AfterErrorName* = "<afterror>"  # a dummy returned after fail() has already
+                                  # reported; nothing should ever check it
 
 # A `satisfies I` line inside an object body (spec §5.2). parseObjectBody is
 # shared with dkActor and has no out-param, so the line is collected as a dkExpr

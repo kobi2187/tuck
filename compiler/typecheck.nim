@@ -793,6 +793,42 @@ proc inferBindings(tc: TypeChecker, declared, actual: Type,
 
 # Match a single call argument against declared params.
 # Tuck convention: one struct-shaped payload whose fields map to params by name.
+proc ifaceSlot(tc: TypeChecker, t: Type): string =
+  ## The interface an argument position demands, or "" when it demands an
+  ## ordinary type. An interface name in type position is the two-word pair,
+  ## never a value — nothing is ever an instance of one.
+  if t == nil or t.kind != tkNamed: return ""
+  if tc.ifaceDecls.hasKey(t.name): return t.name
+  ""
+
+proc checkIfaceArg(tc: var TypeChecker, iname: string, argT: Type,
+                   argExpr: Expr, what: string) =
+  ## An object reaches an interface slot only by DECLARING `satisfies I`.
+  ## Having the right members by coincidence is not enough: conformance is
+  ## explicit (spec §5.2), so that adding a member can never silently enrol a
+  ## type in a contract its author never agreed to.
+  ##
+  ## The wrap is recorded here because this is the last point where the
+  ## concrete type is known — the callee sees only the interface. Recording it
+  ## also demands the (object, interface) pair, which is what makes table
+  ## emission demand-driven rather than one-per-`satisfies`.
+  if argT == nil or isUnknown(argT): return   # gradual: let it flow
+  let objName = if argT.kind == tkNamed: argT.name else: ""
+  if objName != "" and tc.objDecls.hasKey(objName) and
+     iname in tc.objDecls[objName].satisfies:
+    semLayer.markWrap(argExpr, objName, iname)
+    return
+  let why =
+    if objName != "" and tc.objDecls.hasKey(objName):
+      "object '" & objName & "' does not declare `satisfies " & iname & "`"
+    elif objName != "" and tc.typeDeclsByName.hasKey(objName):
+      "'" & objName & "' is a type, not an object — only objects may satisfy " &
+        "an interface"
+    else:
+      typeName(argT) & " is not an object, so it cannot satisfy " & iname
+  fail("Type Error: " & what & " expects " & iname & ", but " & why,
+       argExpr.span)
+
 proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                    bindings: var Table[string, Type]) =
   var params = sig.params
@@ -822,6 +858,15 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
         # param is the Server itself). Only otherwise does the value's SHAPE
         # matter — its fields map onto the params by name (`p advance`).
         if params.len == 1:
+          # An interface slot is checked BEFORE `compatible`: an interface name
+          # has no type declaration, so it resolves to Unknown, and Unknown is
+          # compatible with everything — the early return below would accept
+          # any argument at all.
+          let iname0 = tc.ifaceSlot(params[0].typ)
+          if iname0 != "":
+            tc.checkIfaceArg(iname0, t, arg,
+                             "argument to '" & fnName & "'")
+            return
           if sig.generics.len > 0:
             tc.inferBindings(params[0].typ, t, sig.generics, bindings, fnName, arg.span)
           let expected = substituteType(params[0].typ, bindings)
@@ -860,7 +905,20 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
       var found = false
       for ai, af in argFields:
         if not claimed[ai] and af.name == p.name:
-          if not tc.compatible(af.typ, p.typ):
+          let iname = tc.ifaceSlot(p.typ)
+          if iname != "":
+            # An interface slot: `compatible` would reject Dog-vs-Animal (they
+            # are unrelated names) and has no way to know about `satisfies`.
+            # The wrap is marked on the payload FIELD's expression, which is
+            # the value that becomes the pair — argFields carries only types,
+            # so the expression is fetched from the struct literal by name.
+            var argE = e
+            if e.args.len == 1 and e.args[0].kind == exkStruct:
+              for f in e.args[0].fields:
+                if f[0] == af.name: argE = f[1]
+            tc.checkIfaceArg(iname, af.typ, argE, "field '" & p.name &
+                             "' of call to '" & fnName & "'")
+          elif not tc.compatible(af.typ, p.typ):
             fail("Type Error: field '" & p.name & "' of call to '" & fnName &
                  "' expects " & typeName(p.typ) & " but got " & typeName(af.typ), af.span)
           claimed[ai] = true
@@ -1564,7 +1622,25 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
             tc.distinctNames.incl(d.name)
       # manager types carry functionality: member fns join the catalog
       tc.collectSigs(d.typeMembers)
-    of dkObject: tc.collectSigs(d.objMembers)
+    of dkObject:
+      tc.objDecls[d.name] = d
+      tc.typeDeclsByName[d.name] = d
+      # `{fields} Obj` constructs an object, exactly as `{fields} Rec`
+      # constructs a record. Objects were absent from typeDecls, so the
+      # construction path in synthCall fell through and produced Unknown —
+      # which then made every field access on the result unchecked
+      # (`r.nosuchfield` passed) and let any value into an interface slot.
+      # NOT registered in typeDecls: `resolve` unwraps any name found there to
+      # its body, and an object is NOMINAL — `loadEpisode({self: PodcastApp})`
+      # must keep seeing PodcastApp, not the record shape behind it. Records
+      # are structural and belong there; objects do not. Field lookup reaches
+      # an object through typeDeclsByName + composedFields instead.
+      tc.collectSigs(d.objMembers)
+    of dkInterface:
+      # Indexed, NOT collected into fnSigs: an interface's members are
+      # requirements, not callable functions. Registering them would put
+      # `noise` in the flat table with no body behind it.
+      tc.ifaceDecls[d.name] = d
     of dkMixin, dkExtern, dkPending: tc.collectSigs(d.mixinMembers, top = false)
     of dkActor: tc.collectSigs(d.handlers)
     of dkErrors:
@@ -1654,9 +1730,13 @@ proc isPointerKind(tc: TypeChecker, t: Type): bool =
   if t.name in ["cstring", "Buf"]: return true
   if tc.typeDeclsByName.hasKey(t.name):
     let d = tc.typeDeclsByName[t.name]
+    # typeExternHeader/typeBody exist only on dkType — the table also holds
+    # dkObject (objects are constructible by name too), and touching a
+    # dkType-only field on one is a FieldDefect, not a false.
+    if d.kind != dkType: return false
     # `fields` only exists on a tkRecord body — a sum/named/alias extern type is
     # not an opaque handle, and reading .fields on those is a FieldDefect.
-    return d.kind == dkType and d.typeExternHeader != "" and
+    return d.typeExternHeader != "" and
            d.typeBody != nil and d.typeBody.kind == tkRecord and
            d.typeBody.fields.len == 0
   false
@@ -1903,7 +1983,10 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   # Generic bodies are gradual: type params bind as Unknown (checked at the
   # call site via inference; Nim rechecks per instantiation)
   var gsub = initTable[string, Type]()
-  for g in generics: gsub[g] = unknownType(Span())
+  # `T` inside a generic body is not unknown — it is ANY type, fixed per call
+  # site. The body is checked once against that abstraction; each instantiation
+  # is rechecked by the backend.
+  for g in generics: gsub[g] = typeParamType(Span())
   let savedVariants = tc.varVariants
   tc.varVariants = initTable[string, seq[string]]()
   for p in params:

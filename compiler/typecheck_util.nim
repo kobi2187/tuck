@@ -6,10 +6,43 @@
 import ast, semantics, tables, strutils, sets
 
 proc unknownType*(sp: Span): Type =
+  ## The checker could not work this type out. A GAP — every one found so far
+  ## turned out to be a bug it was hiding, so prefer one of the named sentinels
+  ## below whenever the situation actually has a name.
   Type(span: sp, kind: tkNamed, name: UnknownName)
 
+proc typeParamType*(sp: Span): Type =
+  ## A generic's `T` inside its own body: not unknown, ANY type, fixed per call
+  ## site. `fn identity[T]({x: T}) -> T` checks its body once with T abstract.
+  Type(span: sp, kind: tkNamed, name: TypeParamName)
+
+proc pendingType*(sp: Span): Type =
+  ## Declared, not implemented (spec §5.4). Deliberately permissive: the whole
+  ## point of the walking skeleton is that the program compiles and runs.
+  Type(span: sp, kind: tkNamed, name: PendingName)
+
+proc emptyRecType*(sp: Span): Type =
+  ## `{}` — the empty record. A real type, not an absence of one.
+  Type(span: sp, kind: tkNamed, name: EmptyRecName)
+
+proc afterErrorType*(sp: Span): Type =
+  ## Returned after fail() has already reported. Nothing should check it; it
+  ## exists only because the code path needs a Type to return.
+  Type(span: sp, kind: tkNamed, name: AfterErrorName)
+
+proc isTypeParam*(t: Type): bool =
+  t != nil and t.kind == tkNamed and t.name == TypeParamName
+
+proc isPending*(t: Type): bool =
+  t != nil and t.kind == tkNamed and t.name == PendingName
+
 proc isUnknown*(t: Type): bool =
-  t == nil or (t.kind == tkNamed and t.name == UnknownName)
+  ## True for every sentinel, so existing call sites keep their present
+  ## behaviour while the meanings are separated one at a time. Narrowing this
+  ## to UnknownName alone is what finally makes a checker gap an error.
+  t == nil or (t.kind == tkNamed and
+               t.name in [UnknownName, TypeParamName, PendingName,
+                          EmptyRecName, AfterErrorName])
 
 const NumericNames* = ["int", "i8", "i16", "i32", "i64",
                        "u8", "u16", "u32", "u64", "usize",

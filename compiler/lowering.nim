@@ -48,7 +48,12 @@ proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
     # the edge is what it means, and after mangling the two differ.
     var d = semLayer.declForType(t)
     if d == nil: d = m.findDecl(dkType, t.name)
-    if d != nil: return getFieldsForType(m, d.typeBody)
+    if d != nil:
+      # An object keeps its fields in objFields, not typeBody, and `+ Record`
+      # merges more in — composedFields answers both. Records fall through to
+      # their body as before.
+      if d.kind != dkType: return composedFields(m, d)
+      return getFieldsForType(m, d.typeBody)
   of tkUnion:
     var res: seq[FieldDef]
     for mem in t.members:

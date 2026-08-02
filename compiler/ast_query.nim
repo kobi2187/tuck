@@ -118,6 +118,26 @@ proc declaredFields*(d: Decl): seq[FieldDef] =
   of dkActor: d.actorFields
   else: @[]
 
+proc composedFields*(m: Module, d: Decl): seq[FieldDef] =
+  ## An object's fields INCLUDING everything `+ Record` merges in — composition
+  ## is set union (spec §4.5), so a composed field is the object's own as far
+  ## as every later pass is concerned. Needs the module, which is why this is
+  ## separate from declaredFields above.
+  ##
+  ## A composed MIXIN contributes member fns, not fields, and adds nothing here.
+  if d == nil: return @[]
+  result = declaredFields(d)
+  if d.kind != dkObject: return
+  for mem in d.objMembers:
+    if mem == nil or mem.kind != dkExpr or mem.expr == nil: continue
+    if mem.expr.kind != exkUnary or mem.expr.unaryOp != uoComposition: continue
+    let comp = mem.expr.operand
+    if comp == nil or comp.kind != exkVar: continue
+    for cd in m.decls:
+      if cd == nil or cd.kind != dkType or cd.name != comp.name: continue
+      if cd.typeBody == nil or cd.typeBody.kind != tkRecord: continue
+      for f in cd.typeBody.fields: result.add(f)
+
 iterator allFns*(m: Module): Decl =
   ## Every fn in the module with a body to walk: top-level, plus the members
   ## of objects, manager types, mixins and actors. Passes that rewrite bodies

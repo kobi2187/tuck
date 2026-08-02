@@ -1334,8 +1334,15 @@ proc isCompositionEntry(member: Decl): bool =
 proc composeInto(ctx: var CodegenCtx, compName, objName: string,
                  fields: var seq[string], members: var string): bool =
   ## Materialise `+ compName` onto this object: a mixin's fns become member
-  ## fns (Self -> the object), a record type embeds as a field so the manager
-  ## carries its data along. False if nothing by that name is declared.
+  ## fns (Self -> the object), a record type's FIELDS MERGE IN. False if
+  ## nothing by that name is declared.
+  ##
+  ## Merge, not embed: composition is set union (spec §4.5), the same as
+  ## `type M = A + B`. Embedding it as a nested `a: A` field made the two forms
+  ## of `+` mean different things, and the checker was already treating a
+  ## composed field as the object's own — so `self.x` typechecked and emitted
+  ## `self.x` against an object whose only field was `a`, which Nim rejected
+  ## with "undeclared field: 'x'".
   for cd in ctx.module.decls:
     if cd == nil or cd.name != compName: continue
     if cd.kind == dkMixin:   # composition names a real mixin, never a
@@ -1345,8 +1352,8 @@ proc composeInto(ctx: var CodegenCtx, compName, objName: string,
           members.add(ctx.genMemberFn(m, objName) & "\n")
       return true
     if cd.kind == dkType and cd.typeBody != nil and cd.typeBody.kind == tkRecord:
-      let fname = compName[0].toLowerAscii() & compName[1..^1]
-      fields.add("    " & fname & "*: " & compName)
+      for f in cd.typeBody.fields:
+        fields.add("    " & f.name & "*: " & ctx.fieldType(objName, f))
       return true
   false
 

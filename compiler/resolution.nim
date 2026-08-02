@@ -34,6 +34,20 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    # Interface wraps (spec §5.3). `wraps` marks the expression where a concrete
+    # object enters an interface slot, so codegen emits the two-word pair there
+    # instead of the bare value. `ifacePairs` is the DEMAND SET: exactly the
+    # (object, interface) combinations some wrap actually asked for.
+    #
+    # Demand-driven on purpose. Emitting a table and a thunk-per-method for
+    # every declared `satisfies` would generate code for pairs no program uses
+    # — an object may satisfy an interface it is never passed as. Collecting
+    # from call sites instead means an unused `satisfies` costs the conformance
+    # check and nothing else. Safe because the checker completes before codegen
+    # begins (tuck.nim: checkOrDie, then mangleProgram, then emitNim), so the
+    # set is closed by the time anything reads it.
+    wraps*: Table[NodeId, tuple[objName, iface: string]]
+    ifacePairs*: HashSet[tuple[objName, iface: string]]
 
 proc ensureId*(e: Expr) =
   ## Nodes minted after the parse boundary (checker-synthesized calls) have
@@ -64,6 +78,20 @@ proc markAsync*(r: var Resolution, e: Expr) =
 proc isAsync*(r: Resolution, e: Expr): bool =
   e != nil and e.id.isSet and e.id in r.asyncCalls
 
+proc markWrap*(r: var Resolution, e: Expr, objName, iface: string) =
+  ## Flag an expression as an interface wrap: a concrete object entering an
+  ## interface slot. Codegen emits the {data, table} pair here rather than the
+  ## bare value, and records the pair as demanded so the table and its thunks
+  ## get generated.
+  if e == nil: return
+  ensureId(e)
+  r.wraps[e.id] = (objName: objName, iface: iface)
+  r.ifacePairs.incl((objName: objName, iface: iface))
+
+proc wrapOf*(r: Resolution, e: Expr): tuple[objName, iface: string] =
+  if e == nil or not e.id.isSet: return (objName: "", iface: "")
+  r.wraps.getOrDefault(e.id, (objName: "", iface: ""))
+
 # The program-wide semantic layer. The compiler processes one program per
 # run, so a single instance is the honest model; passing it through every
 # signature in checker, lowering and both backends would be pure ceremony.
@@ -76,7 +104,9 @@ var semLayer* = Resolution(calls: initTable[NodeId, Expr](),
                             decls: initTable[NodeId, Decl](),
                             declOf: initTable[NodeId, NodeId](),
                             argFields: initTable[NodeId, seq[string]](),
-                            callParams: initTable[NodeId, seq[string]]())
+                            callParams: initTable[NodeId, seq[string]](),
+                            wraps: initTable[NodeId, tuple[objName, iface: string]](),
+                            ifacePairs: initHashSet[tuple[objName, iface: string]]())
 
 proc resetResolution*() =
   semLayer = Resolution(calls: initTable[NodeId, Expr](),
@@ -86,7 +116,9 @@ proc resetResolution*() =
                             decls: initTable[NodeId, Decl](),
                             declOf: initTable[NodeId, NodeId](),
                             argFields: initTable[NodeId, seq[string]](),
-                            callParams: initTable[NodeId, seq[string]]())
+                            callParams: initTable[NodeId, seq[string]](),
+                            wraps: initTable[NodeId, tuple[objName, iface: string]](),
+                            ifacePairs: initHashSet[tuple[objName, iface: string]]())
 
 proc setStepCall*(r: var Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call
