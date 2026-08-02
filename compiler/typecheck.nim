@@ -368,6 +368,12 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
      not tc.fnSigs.hasKey(e.fieldName): return nil
   let sig = tc.fnSigs[e.fieldName]
   let recvT = tc.synthesize(e.receiver)
+  # An interface receiver belongs to asInterfaceCall: `noise` is in fnSigs
+  # because some OBJECT declares a member by that name, and matching against
+  # that object's signature here would reject the interface ("expects Dog but
+  # got Animal") before the contract is ever consulted.
+  if recvT != nil and recvT.kind == tkNamed and tc.ifaceDecls.hasKey(recvT.name):
+    return nil
   let recvFields = tc.fieldsOf(tc.resolve(recvT))
   failIfFieldShadowsFn(recvFields, recvT, e)
   if fieldsCover(recvFields, sig.params) or sig.params.len != 1: return nil
@@ -393,6 +399,44 @@ proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
            "use '.." & e.fieldName & " {value}' on a var", e.span)
     return f.typ
   nil
+
+proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
+  ## `a.noise` where `a` is an interface value — resolved against the CONTRACT,
+  ## which is all the callee knows about its argument.
+  ##
+  ## The contract is also the whole of what is reachable: a member the concrete
+  ## object happens to have but the interface does not declare is not callable
+  ## here, because nothing at this site knows which object it was handed.
+  if recvT == nil or recvT.kind != tkNamed: return nil
+  if not tc.ifaceDecls.hasKey(recvT.name): return nil
+  let iface = tc.ifaceDecls[recvT.name]
+  for mem in iface.ifaceMembers:
+    if mem == nil or mem.kind != dkFn or mem.name != e.fieldName: continue
+    # `Self` in the contract is the interface here: the callee holds an
+    # interface value, not the concrete type behind it.
+    let selfT = Type(span: e.span, kind: tkNamed, name: recvT.name)
+    var params: seq[Param]
+    for p in mem.fnParams:
+      var pt = p.typ
+      if pt != nil and pt.kind == tkNamed and pt.name == "Self": pt = selfT
+      params.add(Param(name: p.name, typ: pt, span: p.span))
+    var ret = mem.fnReturnType
+    if ret != nil and ret.kind == tkNamed and ret.name == "Self": ret = selfT
+    let extra = unwrapSingleField(e.dotArg)
+    let args = if extra != nil: @[e.receiver, extra] else: @[e.receiver]
+    setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
+                              callee: Expr(span: e.span, kind: exkVar,
+                                           name: e.fieldName)))
+    return ret
+  # The receiver IS an interface, so a name the contract lacks is an error
+  # here rather than something for a later arm to try.
+  var names: seq[string]
+  for mem in iface.ifaceMembers:
+    if mem != nil and mem.kind == dkFn: names.add(mem.name)
+  fail("Type Error: interface " & recvT.name & " declares no '" & e.fieldName &
+       "' — it requires: " & names.join(", ") &
+       " (a member the concrete object has but the contract does not is not " &
+       "reachable through the interface)", e.span)
 
 proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## Not a field: `x.name` resolves to a fn by LOOKUP rather than syntax.
@@ -457,6 +501,12 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   result = tc.asPlainField(e, fields, recvT)
   if result != nil: return
   result = tc.asQualifiedMemberCall(e)
+  if result != nil: return
+  # Before asFnByName: an interface receiver must resolve against its CONTRACT.
+  # asFnByName looks the bare name up in the flat signature table and would
+  # find whichever object declared one, then reject the receiver ("expects Dog
+  # but got Animal") — or worse, silently pick the wrong object's member.
+  result = tc.asInterfaceCall(e, recvT)
   if result != nil: return
   result = tc.asFnByName(e, recvT)
   if result != nil: return
