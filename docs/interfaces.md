@@ -192,8 +192,7 @@ fn bad() -> Animal:
 
 Returning a borrow of a *parameter* is perfectly safe, and forbidding returns
 outright would rule out mixed collections — so the rule has to distinguish
-where the data came from, which is a real escape analysis rather than a
-syntactic check. Not attempted yet.
+where the data came from. See "Intended direction" below.
 
 **A list literal does not wrap its elements.** `[d, c]` synthesizes as
 `Seq[Dog]` from its first element, so a `Seq[Animal]` parameter rejects it. The
@@ -211,6 +210,66 @@ fns are registered under their bare name in a flat table, so `Dog.noise` and
 `Cat.noise` collide there. Emission qualifies them (`tuck_Dog_noise`), and
 dispatch resolves through the contract, so this does not affect interfaces — but
 a member fn still shadows a top-level fn of the same name.
+
+---
+
+## Intended direction: escape analysis with promotion
+
+The limits above — no fields, no safe returns, no collections — all come from
+one fact: the interface value borrows, and a borrow is only valid while its
+object lives. Every way of removing that restriction was considered, and only
+one keeps what makes the current design good.
+
+### Why not copy
+
+Making the interface value own its data removes dangling entirely — it can then
+be stored, returned, collected, sent to an actor. But every copying scheme pays
+the same two prices, and one of them is the point of the feature:
+
+| | Dangles? | Allocator | Cap | Mutation visible |
+|---|---|---|---|---|
+| borrow (today) | yes, on return | none | none | **yes** |
+| inline buffer in the pair | no | none | object size | no |
+| slot table per type | no | none | live count, and slots never free | no |
+| heap box per wrap | no | yes | none | no |
+
+Every safe option loses mutation-visibility, because a value that owns its data
+cannot also alias the original. `x.feed {n: 1}` would mutate the copy, and the
+idiom becomes write-back (`xs[i] = x.feed {n: 1}`). That is a coherent language
+— it is roughly Go's `[]T` of values — but it is a different one, and it gives
+up something the borrow gets for free.
+
+### The direction
+
+Decide at the DECLARATION whether a local escapes, and place it accordingly.
+
+```tuck
+fn bad() -> Animal:
+  var d = {name: "rex"} Dog     # the compiler sees d's address escape via the
+  return {a: d} pick            # return, so d is placed in stable storage
+```
+
+The pointer never has to be updated, because `d` was never in the frame to
+begin with. (Moving an object after the fact would mean finding every pointer
+to it, which is why no compiler does it that way.) This is what Go does, and
+what Nim's own escape analysis does for closures.
+
+What it buys: fields, returns and collections all become legal, mutation stays
+visible, there is no size cap, nothing is copied, and **no annotation appears
+in the source**. The restrictions simply lift.
+
+What it costs:
+
+- **A dataflow pass per function** — does this local's address reach a return, a
+  field, or a longer-lived value? Shallow versions are a few hundred lines. The
+  correctness stakes are real: a wrong "does not escape" is a dangling pointer,
+  so it must be conservative — when unsure, promote.
+- **Stable storage for the escaping ones.** Escaping locals are rare, and the
+  runtime already has `BumpArena` and `ObjectPool` to place them in, so this
+  need not mean a general allocator.
+
+Until then, interfaces are safe in the parameter case — which is the common one
+— and the field rule blocks the case that is always wrong.
 
 ## Tests
 
