@@ -46,9 +46,9 @@ fn main() -> int:
 EOF
 ok_check "a mixed list reaches a Seq[Animal] parameter"
 runs     "each element dispatches to its own implementation"  42
-emits      "a table for Dog"   'Animal_for_tuck_Dog'
-emits      "a table for Cat"   'Animal_for_tuck_Cat'
-emits_odin "Odin: both tables" 'Animal_for_tuck_(Dog|Cat)'
+emits      "a branch for Dog"  'tuck_DogVal'
+emits      "a branch for Cat"  'tuck_CatVal'
+emits_odin "Odin: both branches" 'tuck_(Dog|Cat)Val'
 # OPEN, and PRE-EXISTING: Odin rejects a list literal passed to a Seq
 # parameter — "Compound literals of dynamic types are disabled by default" —
 # because [dynamic]T has no literal form, only `append`. A plain Seq[Record]
@@ -126,5 +126,59 @@ fn main() -> int:
 EOF
 ok_check "a Seq of a concrete type is untouched"
 runs     "and still runs"  2
+
+# --- what copy semantics unlocked ---------------------------------------
+#
+# All three were compile errors under the borrowing representation: the value
+# pointed AT the object, so it could not outlive it. Copying removes the
+# question entirely.
+
+src <<EOF
+$IFACE
+fn pick({a: Animal}) -> Animal:
+  return a
+
+fn makeOne() -> Animal:
+  var d = {name: "rex"} Dog
+  return {a: d} pick
+
+fn hear({a: Animal}) -> int:
+  return a.noise
+
+fn main() -> int:
+  var a = {} makeOne
+  return {a: a} hear
+EOF
+ok_check "returning an interface value made from a local"
+runs     "and the copy outlives the local"  1
+
+src <<EOF
+$IFACE
+object Keeper:
+  pet: Animal
+
+fn main() -> int:
+  return 0
+EOF
+ok_check "an interface value in a field"
+
+src <<EOF
+$IFACE
+fn makeMany() -> Seq[Animal]:
+  var d = {name: "rex"} Dog
+  var c = {lives: 9} Cat
+  return [d, c]
+
+fn total({xs: Seq[Animal]}) -> int:
+  var s = 0
+  for a in xs:
+    s = s + a.noise
+  return s
+
+fn main() -> int:
+  return {xs: {} makeMany} total
+EOF
+ok_check "returning a Seq of interface values built from locals"
+runs     "and every element survives"  42
 
 finish

@@ -42,7 +42,7 @@
 # column is not enumerable it falls back to a plain if/elif chain. That is a
 # real optimization at a size you can actually read: do the work now so the
 # program does not do it later.
-import ast, strutils, sets, tables, options
+import ast, strutils, sets, tables, options, algorithm
 import resolution
 import ast_query
 import codegen_common
@@ -125,6 +125,27 @@ proc buildDeclIndex(ctx: var CodegenCtx) =
          mem.fnReturnType.name in ctx.invariantNames:
         ctx.externInvRets[mem.name] = mem.fnReturnType.name
   ctx.indexBuilt = true
+
+proc satisfiersOf*(ctx: CodegenCtx, iface: string): seq[Decl] =
+  ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.
+  ##
+  ## An interface value is a variant over its satisfying types, so the set has
+  ## to be complete before the type can be emitted — an object in another
+  ## module adds a branch. Ordered by name so the emitted tag enum is stable
+  ## between runs rather than depending on table iteration order.
+  var seen = initHashSet[string]()
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkObject and iface in d.satisfies and
+       d.name notin seen:
+      seen.incl(d.name)
+      result.add(d)
+  for _, m in ctx.realModules:
+    for d in m.decls:
+      if d != nil and d.kind == dkObject and iface in d.satisfies and
+         d.name notin seen:
+        seen.incl(d.name)
+        result.add(d)
+  result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
 
 proc isRecordTypeFast(ctx: var CodegenCtx, name: string): bool =
   ctx.buildDeclIndex()
@@ -516,12 +537,12 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
-  # A concrete object entering an interface slot becomes the two-word pair:
-  # a reference to the object and a reference to that type's function table
-  # (spec §5.3). The table is a static global, so this costs two stores and no
-  # allocation, and the data half BORROWS — mutation through the interface is
-  # visible to the original, which is sound because an interface value cannot
-  # outlive the scope holding the object.
+  # A concrete object entering an interface slot is COPIED into the variant
+  # (spec §5.3): `Animal(tag: Animal_is_Dog, DogVal: d)`. The backend generates
+  # the right copy for managed fields, and the value owns its data — so it can
+  # be returned, stored in a field, or collected with no lifetime question.
+  # Mutation through it hits the copy, which is the same rule records and actor
+  # messages already follow.
   let w = semLayer.wrapOf(e)
   if w.objName != "":
     var ifaceName = w.iface
@@ -535,8 +556,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     # marks), so its name is emitted directly rather than re-entering genExpr,
     # which would see the same mark and recurse forever.
     if e.kind == exkVar:
-      return ifaceName & "(data: addr " & e.name &
-             ", vt: addr " & ifaceName & "_for_" & objName & ")"
+      return ifaceName & "(tag: " & ifaceName & "_is_" & objName & ", " &
+             objName & "Val: " & e.name & ")"
   case e.kind
   of exkLit:
     case e.litKind
@@ -560,10 +581,25 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     # site, where the concrete type was known — nothing is resolved here.
     let ic = semLayer.ifaceCallOf(e)
     if ic.member != "":
+      # Dispatch is a `case` on the tag calling the concrete member fn
+      # directly — no function table, no thunk, and the optimizer can see
+      # through it. Emitted as a Nim case EXPRESSION so it composes anywhere a
+      # value is expected.
       let recv = ctx.genExpr(e.receiver)
-      var args = @[recv & ".data"]
-      if e.dotArg != nil: args.add(ctx.genExpr(e.dotArg))
-      return recv & ".vt." & ic.member & "(" & args.join(", ") & ")"
+      var extra = ""
+      if e.dotArg != nil: extra = ", " & ctx.genExpr(e.dotArg)
+      var arms: seq[string]
+      for s in ctx.satisfiersOf(ic.iface):
+        # A member fn takes `self: var T`, so the branch binds a mutable copy
+        # of the payload rather than passing the field of an immutable value.
+        # Mutation hits that copy, which is the semantics: an interface value
+        # OWNS its data.
+        arms.add(ind & "  of " & ic.iface & "_is_" & s.name & ":\n" &
+                 ind & "    var tmp = " & recv & "." & s.name & "Val\n" &
+                 ind & "    " & ic.member & "(tmp" & extra & ")")
+      if arms.len == 0: return ""
+      return "(block:\n" & ind & "  case " & recv & ".tag\n" &
+             arms.join("\n") & ")"
     if semLayer.hasCall(e):
       ctx.genConstruction(semLayer.call(e))
     elif e.receiver != nil and e.receiver.kind == exkVar and
@@ -1585,43 +1621,36 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return "type " & d.name & "* = proc(" & params.join(", ") & "): " &
            retStr & " " & conv & "\n"
   of dkInterface:
-    # An interface value is two words: a reference to the DATA and a reference
-    # to that concrete type's FUNCTION TABLE (spec §5.3). Both are filled at
-    # the wrap site, where the compiler still knows the concrete type — so
-    # there is no runtime type, no header on the object, and no lookup. The
-    # table pointer is not "find out what this is", it is the answer, computed
-    # earlier and carried along.
+    # An interface value is a VARIANT over the types that satisfy it: a tag
+    # plus the object itself, copied in (spec §5.3). Copy, not a pointer to
+    # the original — that is the same rule as every other value in Tuck, and
+    # it is what makes returning one, storing one in a field, and collecting
+    # them all just work with no lifetime questions.
     #
-    # {.nimcall.}, not {.closure.}: a thunk captures nothing, so a closure's
-    # environment word would be dead weight. (dkFnSig above defaults to closure
-    # because a fn slot may be baked; a table entry never is.)
-    var entries: seq[string]
-    for mem in d.ifaceMembers:
-      if mem == nil or mem.kind != dkFn: continue
-      var params = @["data: pointer"]
-      for prm in mem.fnParams:
-        # `self` is the data half; the rest ride as ordinary parameters.
-        if prm.name == "self": continue
-        # `Self` in a contract means the INTERFACE at this point: a table entry
-        # is shared by every implementing type, so the concrete one is not
-        # knowable here — the value carries its own.
-        var pt = prm.typ
-        if pt != nil and pt.kind == tkNamed and pt.name == "Self":
-          pt = Type(span: prm.span, kind: tkNamed, name: d.name)
-        params.add(prm.name & ": " & genType(pt))
-      let retStr = if mem.fnReturnType != nil and not
-                      (mem.fnReturnType.kind == tkNamed and
-                       mem.fnReturnType.name == "void"):
-                     ": " & genType(mem.fnReturnType)
-                   else: ""
-      entries.add("  " & mem.name & "*: proc(" & params.join(", ") & ")" &
-                  retStr & " {.nimcall.}")
-    let vtName = d.name & "VT"
-    result = "type " & vtName & "* = object\n" &
-             (if entries.len > 0: entries.join("\n") else: "  discard") & "\n\n"
+    # A variant rather than `array[max(sizeof), byte]` + copyMem: Tuck objects
+    # hold `str` and `Seq`, which the backend manages, and a byte blit never
+    # adjusts the refcount — the source's destructor would free the payload out
+    # from under the copy. The variant lets Nim generate the right copy and
+    # destroy per branch.
+    #
+    # The tag replaces the function table entirely: dispatch is a `case`
+    # calling the concrete member fn directly, so there are no thunks and the
+    # optimizer can see through it.
+    let sats = ctx.satisfiersOf(d.name)
+    if sats.len == 0:
+      # Declared but nothing satisfies it — still a legal declaration, and
+      # there is no value to represent.
+      return "# interface " & d.name & ": no satisfying types\n"
+    var tags: seq[string]
+    var branches: seq[string]
+    for s in sats:
+      let tag = d.name & "_is_" & s.name
+      tags.add(tag)
+      branches.add("  of " & tag & ": " & s.name & "Val*: " & s.name)
+    result = "type " & d.name & "Tag* = enum " & tags.join(", ") & "\n\n"
     result.add("type " & d.name & "* = object\n" &
-               "  data*: pointer\n" &
-               "  vt*: ptr " & vtName & "\n")
+               "  case tag*: " & d.name & "Tag\n" &
+               branches.join("\n") & "\n")
     return result
   else:
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
@@ -1639,7 +1668,7 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
   # headers land in ctx.typeSection during pass 2 and join the type block.
   var typePart = ""
   for d in m.decls:
-    if d != nil and d.kind in {dkType, dkFnSig, dkInterface}:
+    if d != nil and d.kind in {dkType, dkFnSig}:
       let code = ctx.genDecl(d)
       if code != "": typePart.add(code & "\n")
   var body = ""
@@ -1648,74 +1677,16 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
     let code = ctx.genDecl(d)
     if code != "":
       body.add(code & "\n")
-  # Interface tables, emitted ON DEMAND: exactly the (object, interface) pairs
-  # some wrap site asked for (semLayer.ifacePairs, recorded by the checker).
-  # Emitting one per declared `satisfies` would generate code for pairs no
-  # program uses — an object may satisfy an interface it is never passed as.
-  #
-  # After the body, because a thunk forwards to the object's member fn and
-  # those are emitted above; `let` tables are initialised at module scope in
-  # order, so they must follow the procs they name.
-  var thunkPart = ""
-  for pair in semLayer.ifacePairs:
-    # The checker recorded SOURCE names (it runs before mangleProgram), so the
-    # decls are found by their remembered source name and their CURRENT names
-    # are what the emitted code must use.
-    var iface: Decl = nil
-    var objDecl: Decl = nil
-    for d in m.decls:
-      if d == nil: continue
-      let src = if d.sourceName.isSome: d.sourceName.get else: d.name
-      if d.kind == dkInterface and src == pair.iface: iface = d
-      if d.kind == dkObject and src == pair.objName: objDecl = d
-    if iface == nil or objDecl == nil: continue
-    let ifaceName = iface.name
-    let objName = objDecl.name
-    var fields: seq[string]
-    for mem in iface.ifaceMembers:
-      if mem == nil or mem.kind != dkFn: continue
-      let thunk = ifaceName & "_" & objName & "_" & mem.name
-      var params = @["data: pointer"]
-      var args = @["cast[ptr " & objName & "](data)[]"]
-      for prm in mem.fnParams:
-        if prm.name == "self": continue
-        # `Self` is the interface here too — the thunk's signature must match
-        # the table entry's exactly.
-        var pt = prm.typ
-        if pt != nil and pt.kind == tkNamed and pt.name == "Self":
-          pt = Type(span: prm.span, kind: tkNamed, name: ifaceName)
-        params.add(prm.name & ": " & genType(pt))
-        args.add(prm.name)
-      let retStr = if mem.fnReturnType != nil and not
-                      (mem.fnReturnType.kind == tkNamed and
-                       mem.fnReturnType.name == "void"):
-                     ": " & genType(mem.fnReturnType)
-                   else: ""
-      # The member fn is emitted with the body, below these thunks — so it gets
-      # a forward declaration here. The thunks have to precede the body because
-      # the `let` table below names them and `main` names the table.
-      var fwdParams = @["self: var " & objName]
-      for prm in mem.fnParams:
-        if prm.name == "self": continue
-        fwdParams.add(prm.name & ": " & genType(prm.typ))
-      thunkPart.add("proc " & mem.name & "*(" & fwdParams.join(", ") & ")" &
-                    retStr & "\n")
-      # `cast[ptr T](data)[]` is a valid `var T` argument, which is what the
-      # member fn's receiver is.
-      thunkPart.add("proc " & thunk & "(" & params.join(", ") & ")" & retStr &
-               " {.nimcall.} =\n  " & mem.name & "(" & args.join(", ") & ")\n\n")
-      fields.add(mem.name & ": " & thunk)
-    # One static table per pair, shared by every value of that type — so a
-    # wrap costs two stores and no allocation.
-    thunkPart.add("let " & ifaceName & "_for_" & objName & " = " &
-             ifaceName & "VT(" & fields.join(", ") & ")\n\n")
   for ts in ctx.typeSection:
     typePart.add(ts & "\n\n")
-  # Thunks and their tables sit between the types and the body: a thunk
-  # forwards to a member fn, and Nim needs the proc DECLARED before the `let`
-  # that names it — but `main` needs the table. A forward declaration per thunk
-  # settles both without depending on where main lands.
-  body = typePart & thunkPart & body
+  # Interfaces LAST in the type block: an interface variant names the object
+  # types it wraps, and those headers only reach typeSection during the body
+  # pass above. Nim needs decl-before-use.
+  for d in m.decls:
+    if d != nil and d.kind == dkInterface:
+      let code = ctx.genDecl(d)
+      if code != "": typePart.add(code & "\n")
+  body = typePart & body
   var res = "import " & rtImport & "\n"
   # rt-implemented extern fns: importers reach them as <module>.<fn>, so the
   # module re-exports the runtime that actually defines them

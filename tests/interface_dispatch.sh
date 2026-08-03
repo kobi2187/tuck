@@ -33,19 +33,20 @@ fn main() -> int:
   return {a: d} hear
 EOF
 ok_check "the program checks"
-emits "a table type for the interface"     'AnimalVT'
-emits "a two-word pair for the value"      'data.*vt|vt.*data'
-emits "a thunk for the pair in use"        'Animal_tuck_Dog_noise'
-emits "one static table per pair"          'Animal_for_tuck_Dog'
-emits "the call reads the table"           'vt\.noise|\.vt\['
+emits "a tag enum for the interface"       'AnimalTag'
+emits "the value is a variant over its types" 'case tag'
+emits "the payload is the object itself"   'tuck_DogVal'
+emits "dispatch is a case on the tag"      'case .*\.tag'
+omits "no function table"                  'AnimalVT'
+omits "no thunks"                          'Animal_tuck_Dog_noise'
 runs  "and the program runs"               1
 
 # Both backends, or it is not a feature. The parity commitment is explicit in
 # codegen.nim's header: share the logic, never share the syntax.
-emits_odin "Odin: a table type"        'AnimalVT'
-emits_odin "Odin: a thunk"             'Animal_tuck_Dog_noise'
-emits_odin "Odin: a static table"      'Animal_for_tuck_Dog'
-emits_odin "Odin: the call reads it"   'vt\.noise|vt\^\.noise' 
+emits_odin "Odin: a tag enum"          'AnimalTag'
+emits_odin "Odin: a variant struct"    'tag: AnimalTag'
+emits_odin "Odin: dispatch switches"   'switch v\.tag'
+omits_odin "Odin: no function table"   'AnimalVT' 
 
 # --- dispatch actually selects per object ---------------------------------
 
@@ -77,13 +78,13 @@ fn main() -> int:
 EOF
 ok_check "two objects, one interface parameter"
 runs     "each dispatches to its own implementation"  42
-emits    "a thunk for Dog"  'Animal_tuck_Dog_noise'
-emits    "a thunk for Cat"  'Animal_tuck_Cat_noise'
+emits    "a branch for Dog"  'Animal_is_tuck_Dog'
+emits    "a branch for Cat"  'Animal_is_tuck_Cat'
 
-# --- emission is demand-driven --------------------------------------------
-
-# Ghost satisfies Animal but is never passed as one, so no table and no thunk
-# should be emitted for it.
+# Every satisfying type is a branch of the variant, whether or not a program
+# wraps one — the type has to hold any of them. That replaces the old
+# demand-driven table emission, which existed because a table per (object,
+# interface) pair was only needed where a wrap actually happened.
 src <<'EOF'
 interface Animal:
   fn noise({self: Self}) -> int
@@ -107,8 +108,8 @@ fn main() -> int:
   var d = {name: "rex"} Dog
   return {a: d} hear
 EOF
-ok_check "an object may satisfy without ever being passed as one"
-emits    "the used pair is emitted"      'Animal_for_tuck_Dog'
-omits    "the unused pair is not"        'Animal_for_tuck_Ghost'
+ok_check "an object may satisfy without ever being wrapped"
+emits    "it is still a branch of the variant"  'tuck_GhostVal'
+runs     "and the program runs"                 1
 
 finish

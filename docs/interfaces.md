@@ -86,82 +86,68 @@ what the contract does require.
 
 ## How it works
 
-An interface has no size, so an interface-typed value is never the object
-itself. It is **two words: a reference to the data, and a reference to that
-concrete type's function table.**
+An interface value is a **variant over the types that satisfy it**: a tag, plus
+the object itself, copied in.
 
 ```nim
-type AnimalVT* = object
-  noise*: proc(data: pointer): int {.nimcall.}
+type AnimalTag* = enum Animal_is_tuck_Cat, Animal_is_tuck_Dog
 
 type Animal* = object
-  data*: pointer
-  vt*: ptr AnimalVT
+  case tag*: AnimalTag
+  of Animal_is_tuck_Cat: tuck_CatVal*: tuck_Cat
+  of Animal_is_tuck_Dog: tuck_DogVal*: tuck_Dog
 ```
 
-Both halves are filled where a concrete object enters an interface slot — the
-last point at which the compiler knows the type:
+Wrapping copies:
 
 ```nim
-tuck_hear(Animal(data: addr d, vt: addr Animal_for_tuck_Dog))
+tuck_hear(Animal(tag: Animal_is_tuck_Dog, tuck_DogVal: d))
 ```
 
-and the call simply reads what the value carries:
+and dispatch is a `case` on the tag calling the concrete member fn directly:
 
 ```nim
 proc tuck_hear*(a: Animal): int =
-  return a.vt.noise(a.data)
+  case a.tag
+  of Animal_is_tuck_Dog:
+    var tmp = a.tuck_DogVal
+    noise(tmp)
+  ...
 ```
 
-The table is a static global, one per (object, interface) pair, shared by every
-value of that type. A thunk adapts the object's member fn to the table's
-signature:
+No function table, no thunks, no pointers — and the optimizer can see through
+the whole thing.
 
-```nim
-proc Animal_tuck_Dog_noise(data: pointer): int {.nimcall.} =
-  noise(cast[ptr tuck_Dog](data)[])
+### It copies, like everything else
 
-let Animal_for_tuck_Dog = AnimalVT(noise: Animal_tuck_Dog_noise)
-```
+The value **owns** its data. That is the same rule records and actor messages
+already follow, so there is one thing to learn about values in Tuck: they copy.
 
-So a wrap costs two stores and no allocation.
+Consequences, all of them good:
 
-### What this is not
+- an interface value can be **returned**, stored in a **field**, and held in a
+  **collection**, with no lifetime question to reason about
+- mutation through an interface hits the copy, not the original — write it back
+  if you want it kept, exactly as with any other value
+- no escape analysis, no borrow rules, no annotations
 
-**There is no runtime type.** No header on the object, no hierarchy to walk, no
-name lookup, no type comparison. The table pointer is not "find out what this
-is" — it is the answer, computed at compile time and carried along. Dispatch is
-dynamic only in the sense that a function pointer is.
+### Why a variant and not a byte buffer
 
-That forecloses, deliberately: type assertions, type switches, reflection,
-inheritance, and interface default methods. All are listed in the spec's
-Appendix B as omissions.
+`array[max(sizeof), byte]` plus a memcpy is the obvious cheap version, and it is
+**wrong**: Tuck objects hold `str` and `Seq`, which the backend manages, and a
+byte blit never adjusts the refcount — the source's destructor frees the payload
+out from under the copy.
 
-**The data half borrows.** It points at the object, not a copy — so mutation
-through an interface value is visible to the original, and nothing is allocated
-at the boundary.
+That version passed three hand probes before AddressSanitizer and a look at the
+mechanism showed it had survived only because ARC happened to *move* rather than
+copy in those particular shapes. A variant lets each backend generate the
+correct copy and destroy per branch.
 
-(Compare Go, whose interface values *are* freely storable and which therefore
-copies to the heap on every conversion.)
+### Every satisfier is a branch
 
-Borrowing is only sound while the object outlives the interface value. An
-interface value therefore **may not be stored in a field** — of a record, an
-object or an actor — because a struct outlives every scope, so a field holding
-one is always wrong:
-
-```
-Type Error: Animal is an interface — it may not be stored in an object field,
-because the value borrows the object it was made from and a field outlives
-every scope (pass it as a parameter instead, or store the concrete object)
-```
-
-Passing one as a parameter is the intended use and stays legal.
-
-### Emission is demand-driven
-
-Tables and thunks are generated only for the (object, interface) pairs some call
-site actually asked for. An object that satisfies an interface it is never
-passed as costs the conformance check and nothing else.
+The variant must be able to hold any satisfying type, so each one is a branch
+whether or not a given program ever wraps it. That needs the whole-program set,
+which `satisfies` declares and codegen collects across the module closure.
 
 ### Both backends
 
@@ -169,38 +155,15 @@ Nim and Odin emit the same structure from one source; only the spelling differs:
 
 | | Nim | Odin |
 |---|---|---|
-| table | `AnimalVT = object` | `AnimalVT :: struct` |
-| pointer | `data*: pointer` | `data: rawptr` |
-| cast | `cast[ptr T](data)[]` | `cast(^T)data` (no deref — the receiver is already a pointer) |
-| address-of | `addr d` | `&d` |
-| construction | `Animal(data: …, vt: …)` | `Animal{data = …, vt = …}` |
+| variant | `case tag*: AnimalTag` | `tag: AnimalTag` + payload fields |
+| construction | `Animal(tag: …, tuck_DogVal: d)` | `Animal{tag = …, tuck_DogVal = d}` |
+| dispatch | `case a.tag` (an expression) | `switch v.tag` inside a closure, since Odin has no switch expression |
 
 Both produce 42 for the example above.
 
 ---
 
 ## Current limits
-
-**Returning a borrow of a local is rejected, not promoted.** The analysis
-(`compiler/escape.nim`, driven by `checkEscapesIn`) finds it and reports:
-
-```tuck
-fn bad() -> Animal:
-  var d = {name: "rex"} Dog
-  return {a: d} pick
-```
-```
-Type Error: 'd' is a local, and an interface value made from it is returned —
-the value borrows d, which dies when 'bad' returns (return the concrete
-object, or take it as a parameter so the caller owns it)
-```
-
-That closes the hole — a compile error instead of a dangling pointer — but it
-is a restriction, not the end state. Returning a borrow of a *parameter* is
-already allowed, since the caller owns that object. What is missing is
-promotion: placing an escaping local in stable storage so the return becomes
-legal rather than rejected. See "Intended direction" below; when it lands,
-these errors simply stop firing.
 
 **Odin cannot take a list literal for a `Seq` parameter.** Pre-existing and not
 about interfaces — a plain `Seq[Record]` fails the same way, because
@@ -210,84 +173,18 @@ statement hoisting in the Odin backend. Mixed collections therefore work on the
 Nim backend today and not yet on Odin.
 
 **Only objects may satisfy an interface.** Actors are plausible later — their
-handlers dispatch through a mailbox, so the thunk shape genuinely differs — and
-nothing in the design precludes it.
+handlers dispatch through a mailbox, so the dispatch shape genuinely differs —
+and nothing in the design precludes it.
+
+**Every satisfying type is a branch, so the value is as large as the largest.**
+A `Seq[Animal]` element is `max(sizeof)` over the satisfying types, plus the
+tag. Predictable and known at compile time, which suits the embedded story, but
+it wastes space when the types differ wildly. A borrow-when-provably-safe
+optimization could avoid the copy where nothing observes the difference; it is
+not worth building until a profiler asks for it.
 
 **Two objects satisfying one interface share a member-name namespace.** Member
 fns are registered under their bare name in a flat table, so `Dog.noise` and
 `Cat.noise` collide there. Emission qualifies them (`tuck_Dog_noise`), and
 dispatch resolves through the contract, so this does not affect interfaces — but
 a member fn still shadows a top-level fn of the same name.
-
----
-
-## Intended direction: escape analysis with promotion
-
-The limits above — no fields, no safe returns, no collections — all come from
-one fact: the interface value borrows, and a borrow is only valid while its
-object lives. Every way of removing that restriction was considered, and only
-one keeps what makes the current design good.
-
-### Why not copy
-
-Making the interface value own its data removes dangling entirely — it can then
-be stored, returned, collected, sent to an actor. But every copying scheme pays
-the same two prices, and one of them is the point of the feature:
-
-| | Dangles? | Allocator | Cap | Mutation visible |
-|---|---|---|---|---|
-| borrow (today) | yes, on return | none | none | **yes** |
-| inline buffer in the pair | no | none | object size | no |
-| slot table per type | no | none | live count, and slots never free | no |
-| heap box per wrap | no | yes | none | no |
-
-Every safe option loses mutation-visibility, because a value that owns its data
-cannot also alias the original. `x.feed {n: 1}` would mutate the copy, and the
-idiom becomes write-back (`xs[i] = x.feed {n: 1}`). That is a coherent language
-— it is roughly Go's `[]T` of values — but it is a different one, and it gives
-up something the borrow gets for free.
-
-### The direction
-
-Decide at the DECLARATION whether a local escapes, and place it accordingly.
-
-```tuck
-fn bad() -> Animal:
-  var d = {name: "rex"} Dog     # the compiler sees d's address escape via the
-  return {a: d} pick            # return, so d is placed in stable storage
-```
-
-The pointer never has to be updated, because `d` was never in the frame to
-begin with. (Moving an object after the fact would mean finding every pointer
-to it, which is why no compiler does it that way.) This is what Go does, and
-what Nim's own escape analysis does for closures.
-
-What it buys: fields, returns and collections all become legal, mutation stays
-visible, there is no size cap, nothing is copied, and **no annotation appears
-in the source**. The restrictions simply lift.
-
-What it costs:
-
-- **A dataflow pass per function** — does this local's address reach a return, a
-  field, or a longer-lived value? Shallow versions are a few hundred lines. The
-  correctness stakes are real: a wrong "does not escape" is a dangling pointer,
-  so it must be conservative — when unsure, promote.
-- **Stable storage for the escaping ones.** Escaping locals are rare, so this
-  need not mean a general allocator. It must NOT be a user-visible `BumpArena`
-  or `ObjectPool`, though: those are the embedded programmer's to reset, and
-  resetting one would silently invalidate live interface values that the
-  compiler put there without being asked. Promotion storage has to be
-  compiler-owned and unreachable from user code.
-
-Until then, interfaces are safe in the parameter case — which is the common one
-— and the field rule blocks the case that is always wrong.
-
-## Tests
-
-- `tests/interfaces.sh` — declaration and conformance, including every failure
-  mode with its message
-- `tests/interface_wrap.sh` — which objects may enter an interface slot
-- `tests/interface_call.sh` — resolving a call against the contract
-- `tests/interface_dispatch.sh` — emitted shape on both backends, demand-driven
-  generation, and an exit code (42) reachable only if each object dispatched to
-  its own implementation

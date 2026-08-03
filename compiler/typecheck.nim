@@ -117,7 +117,6 @@
 import ast, semantics, lowering, tables, strutils, sets
 import resolution
 import ast_query
-import escape
 import typecheck_util
 export typecheck_util
 import typecheck_state
@@ -1473,7 +1472,22 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     Type(span: e.span, kind: tkNamed, name: "unit")
   of exkReturn:
     if e.returnVal != nil and tc.currentRet != nil:
-      tc.check(e.returnVal, tc.currentRet, "return value of '" & tc.currentFn & "'")
+      # `return [d, c]` where the fn returns Seq[Animal]: the list literal takes
+      # its element type from the first item, so it must be wrapped element by
+      # element against the RETURN type — the same treatment a call argument
+      # gets, at the other position where an expected type is known.
+      let retIface = tc.ifaceElemSlot(tc.currentRet)
+      if retIface != "" and e.returnVal.kind == exkList:
+        tc.checkIfaceElems(retIface, e.returnVal,
+                           "return value of '" & tc.currentFn & "'")
+      else:
+        let retScalar = tc.ifaceSlot(tc.currentRet)
+        if retScalar != "":
+          tc.checkIfaceArg(retScalar, tc.synthesize(e.returnVal), e.returnVal,
+                           "return value of '" & tc.currentFn & "'")
+        else:
+          tc.check(e.returnVal, tc.currentRet,
+                   "return value of '" & tc.currentFn & "'")
     elif e.returnVal != nil:
       discard tc.synthesize(e.returnVal)
     Type(span: e.span, kind: tkNamed, name: "unit")
@@ -1862,36 +1876,6 @@ proc isPointerKind(tc: TypeChecker, t: Type): bool =
            d.typeBody.fields.len == 0
   false
 
-proc failIfIfaceField(tc: TypeChecker, t: Type, where: string, sp: Span) =
-  ## An interface value may not be STORED in a field.
-  ##
-  ## Its data half points AT the object rather than a copy — that is what makes
-  ## a wrap two stores and no allocation, and what makes mutation visible to the
-  ## original. A record, object or actor outlives any scope, so a field holding
-  ## one always outlives the object it borrows.
-  ##
-  ## Only fields, deliberately. Returning an interface value is unsafe only when
-  ## the data came from a LOCAL — returning a borrow of a parameter is fine, and
-  ## banning returns outright would rule out mixed collections. That needs a
-  ## look at whether the value escapes, which is a separate question.
-  if t == nil: return
-  if t.kind == tkNamed and tc.ifaceDecls.hasKey(t.name):
-    fail("Type Error: " & t.name & " is an interface — it may not be stored " &
-         "in " & where & ", because the value borrows the object it was made " &
-         "from and a field outlives every scope (pass it as a parameter " &
-         "instead, or store the concrete object)", sp)
-  case t.kind
-  of tkApp:
-    failIfIfaceField(tc, t.base, where, sp)
-    for a in t.args: failIfIfaceField(tc, a, where, sp)
-  of tkTuple:
-    for e in t.elems: failIfIfaceField(tc, e, where, sp)
-  of tkRecord:
-    for f in t.fields: failIfIfaceField(tc, f.typ, where, sp)
-  of tkEffect: failIfIfaceField(tc, t.inner, where, sp)
-  of tkRename: failIfIfaceField(tc, t.underlying, where, sp)
-  else: discard
-
 proc failIfPointer(tc: TypeChecker, t: Type, where: string, sp: Span) =
   ## Reject a pointer-kind type anywhere it would escape the extern boundary.
   ## Recurses so a pointer buried in `Seq[Buf]` or a record field is caught too.
@@ -1967,17 +1951,14 @@ proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
     if not inExtern and d.typeBody != nil and d.typeBody.kind == tkRecord:
       for f in d.typeBody.fields:
         failIfPointer(tc, f.typ, "a type field", f.span)
-        failIfIfaceField(tc, f.typ, "a type field", f.span)
     for m in d.typeMembers: checkPointerContainment(tc, m, inExtern)
   of dkObject:
     for f in d.objFields:
       failIfPointer(tc, f.typ, "an object field", f.span)
-      failIfIfaceField(tc, f.typ, "an object field", f.span)
     for m in d.objMembers: checkPointerContainment(tc, m, inExtern)
   of dkActor:
     for f in d.actorFields:
       failIfPointer(tc, f.typ, "an actor field", f.span)
-      failIfIfaceField(tc, f.typ, "an actor field", f.span)
     for h in d.handlers: checkPointerContainment(tc, h, inExtern)
   of dkExtern:
     for m in d.mixinMembers: checkPointerContainment(tc, m, true)
@@ -1995,7 +1976,6 @@ proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
     for v in d.variants:
       for f in v.fields:
         failIfPointer(tc, f.typ, "a registry field", f.span)
-        failIfIfaceField(tc, f.typ, "a registry field", f.span)
   else: discard
 
 proc checkPointers*(tc: TypeChecker, m: Module) =
@@ -2096,146 +2076,6 @@ proc checkSigMatch(want, got: Decl, objName, iname: string) =
         "declares effect [" & ($e)[2 .. ^1].toLowerAscii &
         "], which the contract does not permit (an implementation may do " &
         "LESS than the contract allows, never more)")
-
-# --- Escape: an interface value may not outlive the object it borrows -------
-#
-# The data half points AT the object rather than a copy. Storing one in a field
-# is always wrong and is rejected elsewhere; RETURNING one is wrong only when
-# the object was a local, because returning a borrow of a PARAMETER is safe —
-# the caller owns that object across the call.
-#
-# So the question is per-function: does a returned interface value trace back
-# to a local? That is answered with the escape solver (compiler/escape.nim),
-# which is fed two kinds of fact and run to a fixed point.
-#
-# Detection only, for now: an escaping local is an ERROR rather than a promotion
-# to stable storage. That closes the hole (a compile error instead of a dangling
-# pointer) and leaves promotion as a later relaxation, at which point these
-# errors simply stop firing.
-
-proc mentionsInterface(tc: TypeChecker, t: Type): bool =
-  ## Does this type contain an interface anywhere? `Animal` and `Seq[Animal]`
-  ## both do; only such a return can carry a borrow out of the frame.
-  if t == nil: return false
-  if t.kind == tkNamed and tc.ifaceDecls.hasKey(t.name): return true
-  case t.kind
-  of tkApp:
-    if mentionsInterface(tc, t.base): return true
-    for a in t.args:
-      if mentionsInterface(tc, a): return true
-    false
-  of tkTuple:
-    for e in t.elems:
-      if mentionsInterface(tc, e): return true
-    false
-  of tkRecord:
-    for f in t.fields:
-      if mentionsInterface(tc, f.typ): return true
-    false
-  of tkEffect: mentionsInterface(tc, t.inner)
-  of tkRename: mentionsInterface(tc, t.underlying)
-  else: false
-
-proc wrappedOperands(e: Expr): seq[string] =
-  ## The variable names that got wrapped into an interface value inside this
-  ## expression. `{a: d} pick` yields `d` — the object whose lifetime the
-  ## resulting value depends on.
-  if e == nil: return @[]
-  let w = semLayer.wrapOf(e)
-  if w.objName != "" and e.kind == exkVar: return @[e.name]
-  case e.kind
-  of exkCall:
-    for a in e.args: result.add(wrappedOperands(a))
-  of exkStruct:
-    for f in e.fields: result.add(wrappedOperands(f[1]))
-  of exkField:
-    result.add(wrappedOperands(e.receiver))
-    result.add(wrappedOperands(e.dotArg))
-  of exkList:
-    for it in e.items: result.add(wrappedOperands(it))
-  else: discard
-
-proc idFor(localIds: var Table[string, int], nextId: var int,
-           name: string): int =
-  ## One id per NAME: the question is about a variable's storage, so `d` in two
-  ## statements is one object.
-  if not localIds.hasKey(name):
-    nextId.inc
-    localIds[name] = nextId
-  localIds[name]
-
-proc collectEscapeFacts(tc: TypeChecker, e: Expr, g: var EscapeGraph,
-                        localIds: var Table[string, int], nextId: var int,
-                        params: HashSet[string]) =
-  ## Walk a fn body recording where wrapped values flow.
-  ##
-  ## Ids are minted per NAME rather than per node: the question is about a
-  ## variable's storage, and `d` in two statements is one object.
-  if e == nil: return
-  case e.kind
-  of exkReturn:
-    if e.returnVal != nil:
-      # Whatever a return carries escapes. A wrap directly in the return
-      # position names its object; a variable names itself.
-      let w = semLayer.wrapOf(e.returnVal)
-      if w.objName != "":
-        # `return {a: d} pick` — the wrapped operand is what must outlive.
-        if e.returnVal.kind == exkVar:
-          g.note(idFor(localIds, nextId, e.returnVal.name), esGlobal)
-      elif e.returnVal.kind == exkVar:
-        g.note(idFor(localIds, nextId, e.returnVal.name), esGlobal)
-      collectEscapeFacts(tc, e.returnVal, g, localIds, nextId, params)
-  of exkAssign:
-    # `var wrapped = {a: d} pick` — wrapped inherits d's fate, so an edge from
-    # the source name to the target lets a later `return wrapped` reach d.
-    if e.target != nil and e.target.kind == exkVar and e.assignVal != nil:
-      let dst = idFor(localIds, nextId, e.target.name)
-      for src in wrappedOperands(e.assignVal):
-        g.flow(idFor(localIds, nextId, src), dst)
-    collectEscapeFacts(tc, e.assignVal, g, localIds, nextId, params)
-  of exkBlock:
-    for s in e.stmts: collectEscapeFacts(tc, s, g, localIds, nextId, params)
-  of exkIf:
-    collectEscapeFacts(tc, e.cond, g, localIds, nextId, params)
-    collectEscapeFacts(tc, e.thenBranch, g, localIds, nextId, params)
-    collectEscapeFacts(tc, e.elseBranch, g, localIds, nextId, params)
-  of exkFor:
-    collectEscapeFacts(tc, e.body, g, localIds, nextId, params)
-  of exkWhile:
-    collectEscapeFacts(tc, e.body, g, localIds, nextId, params)
-  of exkCall:
-    for a in e.args: collectEscapeFacts(tc, a, g, localIds, nextId, params)
-  else: discard
-
-proc checkEscapes(tc: TypeChecker, d: Decl) =
-  ## Reject a fn that returns an interface value borrowed from one of its own
-  ## locals.
-  if d == nil or d.kind != dkFn or d.fnBody == nil: return
-  # Only fns whose RETURN type mentions an interface can leak this way.
-  if not mentionsInterface(tc, d.fnReturnType): return
-  var params = initHashSet[string]()
-  for p in d.fnParams: params.incl(p.name)
-  var g = initEscapeGraph()
-  var localIds = initTable[string, int]()
-  var nextId = 0
-  collectEscapeFacts(tc, d.fnBody, g, localIds, nextId, params)
-  g.solve()
-  for name, id in localIds:
-    # A PARAMETER escaping is fine: the caller owns the object across the call.
-    if name in params: continue
-    if g.escapes(id):
-      fail("Type Error: '" & name & "' is a local, and an interface value " &
-           "made from it is returned — the value borrows " & name &
-           ", which dies when '" & d.name & "' returns (return the concrete " &
-           "object, or take it as a parameter so the caller owns it)", d.span)
-
-proc checkEscapesIn*(tc: TypeChecker, m: Module) =
-  for d in m.decls:
-    if d == nil: continue
-    if d.kind == dkFn: checkEscapes(tc, d)
-    else:
-      for mem in d.members():
-        if mem != nil and mem.kind == dkFn: checkEscapes(tc, mem)
 
 proc checkConformance*(tc: TypeChecker, m: Module) =
   ## Every `satisfies I` on an object is verified against interface I.
@@ -2525,7 +2365,6 @@ proc typecheckModule*(m: Module,
   tc.resolveTypeNames(m)
   tc.checkPointers(m)      # pointers may not escape the extern boundary
   tc.checkConformance(m)   # `satisfies I` means every I member is implemented
-  tc.checkEscapesIn(m)     # an interface value may not outlive its object
   # const declarations: Nim-static semantics — arbitrary PURE computation,
   # evaluated at compile time by the backend's const evaluator. Tuck rejects
   # only what would break there: [io] calls (pure only), record-type
