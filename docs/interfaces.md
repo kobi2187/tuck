@@ -202,12 +202,12 @@ promotion: placing an escaping local in stable storage so the return becomes
 legal rather than rejected. See "Intended direction" below; when it lands,
 these errors simply stop firing.
 
-**A list literal does not wrap its elements.** `[d, c]` synthesizes as
-`Seq[Dog]` from its first element, so a `Seq[Animal]` parameter rejects it. The
-wrap fires at a call argument today; a collection element needs the expected
-element type pushed into the literal, which is a change to how list literals are
-checked. Until then, heterogeneous *collections* are not available — passing
-different objects to the same interface *parameter* is.
+**Odin cannot take a list literal for a `Seq` parameter.** Pre-existing and not
+about interfaces — a plain `Seq[Record]` fails the same way, because
+`[dynamic]T` has no literal form in Odin ("Compound literals of dynamic types
+are disabled by default"); it is built with `append`. Emitting that needs
+statement hoisting in the Odin backend. Mixed collections therefore work on the
+Nim backend today and not yet on Odin.
 
 **Only objects may satisfy an interface.** Actors are plausible later — their
 handlers dispatch through a mailbox, so the thunk shape genuinely differs — and

@@ -866,6 +866,19 @@ proc ifaceSlot(tc: TypeChecker, t: Type): string =
   if tc.ifaceDecls.hasKey(t.name): return t.name
   ""
 
+proc ifaceElemSlot(tc: TypeChecker, t: Type): string =
+  ## The interface a COLLECTION position demands: `Seq[Animal]` -> "Animal".
+  ## A list literal takes its element type from the first item, so `[d, c]`
+  ## synthesizes as Seq[Dog] and would be rejected — the expected type has to
+  ## come from the parameter instead, and each element wrapped in its own pair.
+  if t == nil or t.kind != tkApp or t.base == nil: return ""
+  if t.base.kind != tkNamed or t.base.name notin ["Seq", "Array"]: return ""
+  if t.args.len == 0: return ""
+  let elem = t.args[^1]
+  if elem != nil and elem.kind == tkNamed and tc.ifaceDecls.hasKey(elem.name):
+    return elem.name
+  ""
+
 proc checkIfaceArg(tc: var TypeChecker, iname: string, argT: Type,
                    argExpr: Expr, what: string) =
   ## An object reaches an interface slot only by DECLARING `satisfies I`.
@@ -898,6 +911,20 @@ proc checkIfaceArg(tc: var TypeChecker, iname: string, argT: Type,
       typeName(argT) & " is not an object, so it cannot satisfy " & iname
   fail("Type Error: " & what & " expects " & iname & ", but " & why,
        argExpr.span)
+
+proc checkIfaceElems(tc: var TypeChecker, iname: string, argExpr: Expr,
+                     what: string) =
+  ## Every element of a list literal reaching a `Seq[Interface]` slot gets its
+  ## own wrap — the two-word pair is per element, and each carries the table
+  ## for ITS concrete type. That is what makes the elements uniform in size
+  ## while dispatching differently.
+  ##
+  ## A non-literal argument (a variable already holding a Seq) is left alone:
+  ## its elements were wrapped wherever the list was built.
+  if argExpr == nil or argExpr.kind != exkList: return
+  for item in argExpr.items:
+    let t = tc.synthesize(item)
+    tc.checkIfaceArg(iname, t, item, what)
 
 proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                    bindings: var Table[string, Type]) =
@@ -932,6 +959,11 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
           # has no type declaration, so it resolves to Unknown, and Unknown is
           # compatible with everything — the early return below would accept
           # any argument at all.
+          let elemIface0 = tc.ifaceElemSlot(params[0].typ)
+          if elemIface0 != "":
+            tc.checkIfaceElems(elemIface0, arg,
+                               "argument to '" & fnName & "'")
+            return
           let iname0 = tc.ifaceSlot(params[0].typ)
           if iname0 != "":
             tc.checkIfaceArg(iname0, t, arg,
@@ -975,8 +1007,18 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
       var found = false
       for ai, af in argFields:
         if not claimed[ai] and af.name == p.name:
+          let elemIface = tc.ifaceElemSlot(p.typ)
           let iname = tc.ifaceSlot(p.typ)
-          if iname != "":
+          if elemIface != "":
+            # `Seq[Animal]` — wrap each element, and skip `compatible`, which
+            # would compare Seq[Dog] against Seq[Animal] and reject it.
+            var argE2 = e
+            if e.args.len == 1 and e.args[0].kind == exkStruct:
+              for f in e.args[0].fields:
+                if f[0] == af.name: argE2 = f[1]
+            tc.checkIfaceElems(elemIface, argE2, "field '" & p.name &
+                               "' of call to '" & fnName & "'")
+          elif iname != "":
             # An interface slot: `compatible` would reject Dog-vs-Animal (they
             # are unrelated names) and has no way to know about `satisfies`.
             # The wrap is marked on the payload FIELD's expression, which is
