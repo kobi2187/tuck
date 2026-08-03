@@ -16,11 +16,9 @@
 # conservative in what the LANGUAGE permits is not, because every false
 # rejection is a program someone has to rewrite for no reason.
 #
-# Status: the ALLOWED cases all pass and are locked in — they are the guard
-# against an over-eager analysis rejecting ordinary code when it lands. Three
-# FORBIDDEN cases are still `bug_open`, all of them the same shape: a local
-# wrapped and then outlived by the wrap. Those need the analysis; the fourth
-# (reaching a record field) is already caught by the field rule.
+# Status: all of it passes. The analysis (compiler/escape.nim, fed by
+# checkEscapesIn) rejects the three dangling shapes and lets every ordinary
+# pattern through — which is the point of having both lists.
 #
 # Writing the ALLOW list first paid for itself immediately: it found that
 # `{a: a} inner` — passing an interface value onward — was rejected with
@@ -63,8 +61,7 @@ fn bad() -> Animal:
 fn main() -> int:
   return 0
 EOF
-try bad_check "returning a wrap of a LOCAL" "escape|outlive|local"
-bug_open "FORBID: returning an interface value made from a local"
+bad_check "returning a wrap of a LOCAL" "escape|outlive|local"
 
 # Same, without the helper — the wrap happens in the return expression.
 src <<EOF
@@ -83,8 +80,7 @@ fn pick({a: Animal}) -> Animal:
 fn main() -> int:
   return 0
 EOF
-try bad_check "returning a local that was wrapped earlier" "escape|outlive|local"
-bug_open "FORBID: returning a local interface binding"
+bad_check "returning a local that was wrapped earlier" "escape|outlive|local"
 
 # Through a collection: the Seq outlives the objects its elements point at.
 src <<EOF
@@ -97,8 +93,7 @@ fn bad() -> Seq[Animal]:
 fn main() -> int:
   return 0
 EOF
-try bad_check "returning a Seq of wraps of LOCALS" "escape|outlive|local"
-bug_open "FORBID: returning a collection of interface values over locals"
+bad_check "returning a Seq of wraps of LOCALS" "escape|outlive|local"
 
 # Buried one level: the local escapes inside a record.
 src <<EOF

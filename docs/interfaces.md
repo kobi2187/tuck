@@ -181,18 +181,26 @@ Both produce 42 for the example above.
 
 ## Current limits
 
-**Returning an interface value is unchecked.** Fields are rejected (above), but
-a returned interface value can still dangle:
+**Returning a borrow of a local is rejected, not promoted.** The analysis
+(`compiler/escape.nim`, driven by `checkEscapesIn`) finds it and reports:
 
 ```tuck
 fn bad() -> Animal:
   var d = {name: "rex"} Dog
-  return {a: d} pick        # d dies here; the returned pair points at it
+  return {a: d} pick
+```
+```
+Type Error: 'd' is a local, and an interface value made from it is returned —
+the value borrows d, which dies when 'bad' returns (return the concrete
+object, or take it as a parameter so the caller owns it)
 ```
 
-Returning a borrow of a *parameter* is perfectly safe, and forbidding returns
-outright would rule out mixed collections — so the rule has to distinguish
-where the data came from. See "Intended direction" below.
+That closes the hole — a compile error instead of a dangling pointer — but it
+is a restriction, not the end state. Returning a borrow of a *parameter* is
+already allowed, since the caller owns that object. What is missing is
+promotion: placing an escaping local in stable storage so the return becomes
+legal rather than rejected. See "Intended direction" below; when it lands,
+these errors simply stop firing.
 
 **A list literal does not wrap its elements.** `[d, c]` synthesizes as
 `Seq[Dog]` from its first element, so a `Seq[Animal]` parameter rejects it. The
@@ -264,9 +272,12 @@ What it costs:
   field, or a longer-lived value? Shallow versions are a few hundred lines. The
   correctness stakes are real: a wrong "does not escape" is a dangling pointer,
   so it must be conservative — when unsure, promote.
-- **Stable storage for the escaping ones.** Escaping locals are rare, and the
-  runtime already has `BumpArena` and `ObjectPool` to place them in, so this
-  need not mean a general allocator.
+- **Stable storage for the escaping ones.** Escaping locals are rare, so this
+  need not mean a general allocator. It must NOT be a user-visible `BumpArena`
+  or `ObjectPool`, though: those are the embedded programmer's to reset, and
+  resetting one would silently invalidate live interface values that the
+  compiler put there without being asked. Promotion storage has to be
+  compiler-owned and unreachable from user code.
 
 Until then, interfaces are safe in the parameter case — which is the common one
 — and the field rule blocks the case that is always wrong.
