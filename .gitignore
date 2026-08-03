@@ -17,6 +17,7 @@ examples/*.bf
 compiler/tuckrt/minicoro.a
 tests/odin_out/
 tests/escape_solver
+tests/interface_repr_slice
 compiler/escape
 # `tuck build` drops binaries and copied deps beside the examples;
 # run-all-tests.sh regenerates all of it on every run
