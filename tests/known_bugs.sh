@@ -233,4 +233,47 @@ TUCKEOF
 try runs "" 2
 bug_fixed "elif chains parse"
 
+# 11. An overflow attribute implies `distinct` on the Nim backend but not on
+# Odin. codegen.nim's genAliasType treats distinct/saturating/wrapping/trapping
+# alike — the ATTRIBUTE is what changes behaviour, and it is meaningless on a
+# bare alias. codegen_odin.nim's genAliasType matches only "distinct", so
+# `u16 [saturating]` emits `SafeRPM :: u16`: a plain alias, freely mixable with
+# any other u16, where Nim gives a type the compiler keeps separate.
+# The clamping itself is right on both (tuckSat is emitted either way); what
+# Odin loses is the type distinction.
+src <<'TUCKEOF'
+type SafeRPM = u16 [saturating]
+
+fn main() -> int:
+  var r = SafeRPM(70000)
+  return 0
+TUCKEOF
+try emits_odin "" 'SafeRPM :: distinct u16'
+bug_open "an overflow attribute implies distinct on the Odin backend too"
+
+# 12. `on select` actors emit Odin that does not compile. genActor collects
+# message variants from `h.kind == dkFn` only, but an `on select` arm is not a
+# dkFn, so enumVariants comes back EMPTY and the no-handler fallback fires:
+# no message enum, no mailbox, no handleMsg, and a drain that is a bare
+# `for { coroYield() }` spin. Meanwhile the send sites still emit calls to
+# sendAdd_<Actor>, which nothing defines — `odin build` fails with
+# "Undeclared name: sendAdd_tuck_Accumulator".
+#
+# The Nim backend handles this: collectHandlers walks BOTH `on <name>` blocks
+# and `on select` arms. 27-actor-select is absent from odin_backend.sh's
+# odin_compile list, which is why this never surfaced there.
+src <<'TUCKEOF'
+actor Accumulator [queue: 64]:
+  total: int = 0
+
+  on select:
+    | add -> {n: int}:  total += n
+
+fn main() -> int:
+  Accumulator send add {n: 1}
+  return 0
+TUCKEOF
+try emits_odin "" 'sendAdd_tuck_Accumulator :: proc'
+bug_open "an 'on select' actor emits its send procs on the Odin backend"
+
 finish
