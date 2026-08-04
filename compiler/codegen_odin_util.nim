@@ -25,7 +25,7 @@ proc odinLibSpec*(lib: string): string =
   elif '/' in lib or lib.endsWith(".a") or lib.endsWith(".so") or lib.endsWith(".o"): lib
   else: "system:" & lib
 
-# repeat/capitalize are NOT here: identical copies already live in ast_query,
+# repeat/capitalize are NOT here: they are strutils', re-exported by ast_query,
 # which this backend already imports. They were private duplicates in
 # codegen_odin.nim that local shadowing kept invisible until the split
 # widened their scope and Nim reported the ambiguity.

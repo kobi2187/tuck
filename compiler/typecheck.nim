@@ -2348,6 +2348,58 @@ proc sigLine*(si: SigInfo): string =
 # Returns the SHORTCUTS list (continue/exit policies): each statement-position
 # drop that will route to the global handler. Empty under strict — strict
 # raises instead, listing every unhandled site at once (spec 4.9).
+proc isIoFn(tc: TypeChecker, name: string): bool =
+  ## Reads the signature table, so an imported [io] fn counts too.
+  emIo in tc.declaredEffects(name)
+
+proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
+  ## Reject what a const cannot be. Nim-static semantics: arbitrary PURE
+  ## computation, evaluated at compile time by the backend's const evaluator,
+  ## so this forbids only what would break there — [io] calls, record-type
+  ## constructions (records are reference values), and unknown callees.
+  if e == nil: return
+  case e.kind
+  of exkLit, exkQualified: discard  # literals; :fn refs
+  of exkStruct:
+    for f in e.fields: constCheck(tc, m, cname, f[1], sp)
+  of exkList:
+    for it in e.items: constCheck(tc, m, cname, it, sp)
+  of exkUnary: constCheck(tc, m, cname, e.operand, sp)
+  of exkBinary:
+    constCheck(tc, m, cname, e.left, sp)
+    constCheck(tc, m, cname, e.right, sp)
+  of exkField:
+    # unit sugar (5.ms) and field reads over const sub-expressions
+    if e.receiver != nil: constCheck(tc, m, cname, e.receiver, sp)
+    if e.receiver != nil and e.receiver.kind == exkLit and
+       tc.isIoFn(e.fieldName):
+      fail("Const Error: 'const " & cname & "' must be pure — '" &
+           e.fieldName & "' is [io]", sp)
+  of exkCall:
+    for a in e.args: constCheck(tc, m, cname, a, sp)
+    if e.callee != nil and e.callee.kind == exkVar:
+      let callee = e.callee.name
+      if callee in ["bake", "merge", "alias"]: discard
+      elif tc.typeDecls.hasKey(callee) and
+           tc.typeDecls[callee].kind == tkRecord:
+        fail("Const Error: 'const " & cname & "' cannot hold a " &
+             "record construction (records are reference values) — " &
+             "use a plain struct literal", sp)
+      elif tc.distinctNames.contains(callee): discard  # base conversion
+      elif tc.isIoFn(callee):
+        fail("Const Error: 'const " & cname & "' must be pure — '" &
+             callee & "' is [io]", sp)
+      elif m.findDecl(dkFn, callee) == nil and
+           not tc.typeDecls.hasKey(callee):
+        fail("Const Error: 'const " & cname & "' needs declared pure " &
+             "fns — '" & callee & "' is unknown", sp)
+    elif e.callee != nil and e.callee.kind == exkField:
+      # {payload} Type.Variant — sum variants are value objects: fine
+      discard
+  else:
+    fail("Const Error: 'const " & cname & "' must be a pure " &
+         "compile-time expression", sp)
+
 proc typecheckModule*(m: Module,
                       externSigs = initTable[string, FnSig](),
                       externPending = initTable[string, Span]()): seq[string] {.discardable.} =
@@ -2365,62 +2417,10 @@ proc typecheckModule*(m: Module,
   tc.resolveTypeNames(m)
   tc.checkPointers(m)      # pointers may not escape the extern boundary
   tc.checkConformance(m)   # `satisfies I` means every I member is implemented
-  # const declarations: Nim-static semantics — arbitrary PURE computation,
-  # evaluated at compile time by the backend's const evaluator. Tuck rejects
-  # only what would break there: [io] calls (pure only), record-type
-  # constructions (records are reference values — not const-able), and
-  # unknown callees. Bound before body checks so any fn can reference them.
+  # const declarations are bound BEFORE body checks so any fn can reference
+  # them; constCheck says what a const is allowed to be.
   for d in m.decls:
     if d != nil and d.kind == dkConst:
-      proc isIoFn(m: Module, name: string): bool =
-        # Reads the signature table, so an imported [io] fn counts too.
-        emIo in tc.declaredEffects(name)
-      proc fnDeclared(m: Module, name: string): bool =
-        m.findDecl(dkFn, name) != nil
-      proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr,
-                      sp: Span) =
-        if e == nil: return
-        case e.kind
-        of exkLit, exkQualified: discard  # literals; :fn refs
-        of exkStruct:
-          for f in e.fields: constCheck(tc, m, cname, f[1], sp)
-        of exkList:
-          for it in e.items: constCheck(tc, m, cname, it, sp)
-        of exkUnary: constCheck(tc, m, cname, e.operand, sp)
-        of exkBinary:
-          constCheck(tc, m, cname, e.left, sp)
-          constCheck(tc, m, cname, e.right, sp)
-        of exkField:
-          # unit sugar (5.ms) and field reads over const sub-expressions
-          if e.receiver != nil: constCheck(tc, m, cname, e.receiver, sp)
-          if e.receiver != nil and e.receiver.kind == exkLit and
-             isIoFn(m, e.fieldName):
-            fail("Const Error: 'const " & cname & "' must be pure — '" &
-                 e.fieldName & "' is [io]", sp)
-        of exkCall:
-          for a in e.args: constCheck(tc, m, cname, a, sp)
-          if e.callee != nil and e.callee.kind == exkVar:
-            let callee = e.callee.name
-            if callee in ["bake", "merge", "alias"]: discard
-            elif tc.typeDecls.hasKey(callee) and
-                 tc.typeDecls[callee].kind == tkRecord:
-              fail("Const Error: 'const " & cname & "' cannot hold a " &
-                   "record construction (records are reference values) — " &
-                   "use a plain struct literal", sp)
-            elif tc.distinctNames.contains(callee): discard  # base conversion
-            elif isIoFn(m, callee):
-              fail("Const Error: 'const " & cname & "' must be pure — '" &
-                   callee & "' is [io]", sp)
-            elif not fnDeclared(m, callee) and
-                 not tc.typeDecls.hasKey(callee):
-              fail("Const Error: 'const " & cname & "' needs declared pure " &
-                   "fns — '" & callee & "' is unknown", sp)
-          elif e.callee != nil and e.callee.kind == exkField:
-            # {payload} Type.Variant — sum variants are value objects: fine
-            discard
-        else:
-          fail("Const Error: 'const " & cname & "' must be a pure " &
-               "compile-time expression", sp)
       constCheck(tc, m, d.name, d.constVal, d.span)
       tc.bindName(d.name, tc.synthesize(d.constVal), false)
   # Either/or namespace: a declared field name may not shadow a declared fn —

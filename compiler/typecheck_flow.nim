@@ -25,6 +25,18 @@ proc transType*(tc: TypeChecker, t: Type): string =
   if body.kind == tkSum and body.transitions.len > 0: return t.name
   ""
 
+## PRECONDITION for allVariants and hasEdge: `typeName` names a declared type.
+## Both index tc.typeDecls directly and raise KeyError if it does not.
+##
+## Every caller establishes this first, in one of two ways. Most pass a
+## transType result, which returns "" for anything undeclared and is checked
+## against "" before use. The exception is checkDecisionTable
+## (typecheck.nim:708), which computes a match's coverage domain over ANY sum
+## type, not just a transitions-carrying one — so it does its own hasKey ahead
+## of the call. Guarding in here instead would be dead code today; keep the
+## precondition, and if a third kind of caller appears, give it a total
+## variant rather than making these two lie about their domain.
+
 proc allVariants*(tc: TypeChecker, typeName: string): seq[string] =
   for v in tc.typeDecls[typeName].variants: result.add(v.name)
 

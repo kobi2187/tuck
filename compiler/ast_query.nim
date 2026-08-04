@@ -35,15 +35,13 @@
 # a real program makes it hurt, is a name -> decl table built once per module
 # and shared by every pass, not micro-optimizing the scan.
 import ast, strutils
+export strutils.repeat, strutils.capitalizeAscii
 
-proc repeat*(s: string, n: int): string =
-  var res = ""
-  for i in 0 ..< n: res.add(s)
-  res
-
-proc capitalize*(s: string): string =
-  if s.len == 0: return ""
-  s[0].toUpperAscii() & s[1 .. ^1]
+# `repeat` and `capitalize` used to be hand-written here and were byte-for-byte
+# strutils. Re-exported instead so the backends that relied on getting them
+# from this module still do, and so the codebase has one implementation rather
+# than a stdlib one nobody reached for.
+template capitalize*(s: string): string = capitalizeAscii(s)
 
 # --- Declaration lookup ----------------------------------------------------
 #

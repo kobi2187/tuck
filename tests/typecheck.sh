@@ -982,6 +982,19 @@ TUCKEOF
 bad_check 'const cannot hold a record construction (ref semantics)' 'record'
 
 src <<'TUCKEOF'
+const K = {1} mystery
+TUCKEOF
+bad_check 'const rejects an unknown callee' 'unknown'
+
+src <<'TUCKEOF'
+fn double({n: int}) -> int:
+  return n * 2
+
+const K = {2} double
+TUCKEOF
+ok_check 'const accepts a declared pure fn'
+
+src <<'TUCKEOF'
 type Door:
   | Closed
   | Open
