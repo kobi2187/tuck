@@ -28,13 +28,17 @@ odin_compile="
 09-decision-table 10-invariants 11-embedded-feature
 12-transition-the-ctor-exception 13-arena-mem 15-type-attributes 17-input-merge
 18-alias 19-event-registry 21-decision-bitmask 22-error-policy 23-units
-24-stdlib 25-pools 26-actor-run 31-fnsig-callback 32-duration-units
+24-stdlib 25-pools 26-actor-run 27-actor-select 31-fnsig-callback
+32-duration-units
 33-ffi-zlib 34-ffi-cstring 35-ffi-struct 36-ffi-enum-callback 37-ffi-handle
 28-async-task 38-division 39-if-match-expr 40-saturating 41-tostr-concat
 "
 
 # Examples with a known exit code: these must RUN, not merely compile.
 #   26-actor-run     55  1+..+10 drained through the actor mailbox
+#   27-actor-select  55  same sum, but the handlers are `on select` arms —
+#                        which used to emit an actor with no mailbox and no
+#                        send procs, so the package did not compile
 #   31-fnsig-callback 42 40 + 2 through a baked callback slot
 #   33-ffi-zlib       0  real libz reached: compressBound(1000) == 1013
 #   34-ffi-cstring    0  libz's version via a real char*, compressBound right
@@ -46,7 +50,7 @@ odin_compile="
 #   39-if-match-expr  0  R2/R3: value-position if and match agree
 #   40-saturating     0  [saturating] must CLAMP (a miss returns 4464)
 #   41-tostr-concat   0  postfix application + unqualified call + concat
-odin_run="26-actor-run:55 31-fnsig-callback:42 33-ffi-zlib:0 34-ffi-cstring:0
+odin_run="26-actor-run:55 27-actor-select:55 31-fnsig-callback:42 33-ffi-zlib:0 34-ffi-cstring:0
 35-ffi-struct:0 36-ffi-enum-callback:0 37-ffi-handle:0 28-async-task:42
 38-division:0 39-if-match-expr:0 40-saturating:0 41-tostr-concat:0"
 

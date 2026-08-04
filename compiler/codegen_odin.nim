@@ -1425,10 +1425,16 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
 
   let msgEnumName = d.name & "MsgKind"
   let msgTypeName = d.name & "Msg"
+  # BOTH forms declare a message: `on add({n: int})` and an `| add -> {n: int}`
+  # select arm. Walking only dkFn made every `on select` actor take the
+  # no-handler path below, which emits no enum, no mailbox and no send procs —
+  # while the send SITES still called them, so the package did not compile.
+  let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
   var enumVariants: seq[string]
-  for h in d.handlers:
-    if h.kind == dkFn:
-      enumVariants.add("msg" & h.name.capitalize())
+  for h in handlers:
+    enumVariants.add("msg" & h.name.capitalize())
+  if hasShutdown:
+    enumVariants.add("msgShutdown")   # sent as `Actor send shutdown {}`
 
   if enumVariants.len == 0:
     # No message handlers: an empty enum is invalid. Emit the state, its
@@ -1446,12 +1452,11 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
   # Handler params ride in the message envelope (deduped by name)
   var msgFields: seq[string]
   var seenMsgFields = initHashSet[string]()
-  for h in d.handlers:
-    if h.kind == dkFn:
-      for p in h.fnParams:
-        if p.name notin seenMsgFields:
-          seenMsgFields.incl(p.name)
-          msgFields.add(ind & "\t" & p.name & ": " & ctx.odinType(p.typ) & ",")
+  for h in handlers:
+    for p in h.params:
+      if p.name notin seenMsgFields:
+        seenMsgFields.incl(p.name)
+        msgFields.add(ind & "\t" & p.name & ": " & ctx.odinType(p.typ) & ",")
 
   var res = ind & msgEnumName & " :: enum { " & enumVariants.join(", ") & " }\n"
   res.add(ind & msgTypeName & " :: struct {\n" &
@@ -1465,6 +1470,9 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
     fieldsStr.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
   fieldsStr.add(ind & "\tmailbox: rt.Mailbox(" & msgTypeName & ", " &
                 queueSize & "),")
+  if hasShutdown:
+    # the shutdown arm sets this, which makes the drain go inert
+    fieldsStr.add(ind & "\tfinished: bool,")
 
   # Dispatch. Odin has no methods, so the actor rides as a `self` pointer and
   # field access inside a handler goes through it.
@@ -1476,15 +1484,20 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
                             errPolicy: ctx.errPolicy)
   for f in d.actorFields:
     hctx.fieldVars.incl(f.name)
-  for h in d.handlers:
-    if h.kind == dkFn:
-      let variantName = "msg" & h.name.capitalize()
-      var caseBody = ""
-      for p in h.fnParams:
-        hctx.definedVars.incl(p.name)
-        caseBody.add(ind & "\t\t" & p.name & " := msg." & p.name & "\n")
-      let bodyStr = hctx.genOdinExpr(h.fnBody)
-      handlerCases.add(ind & "\tcase ." & variantName & ":\n" & caseBody & bodyStr)
+  for h in handlers:
+    let variantName = "msg" & h.name.capitalize()
+    var caseBody = ""
+    for p in h.params:
+      hctx.definedVars.incl(p.name)
+      caseBody.add(ind & "\t\t" & p.name & " := msg." & p.name & "\n")
+    let bodyStr = hctx.genOdinExpr(h.body)
+    handlerCases.add(ind & "\tcase ." & variantName & ":\n" & caseBody & bodyStr)
+  if hasShutdown:
+    # Stops the actor rather than adding a message: run the arm's body, then
+    # set the flag the drain checks.
+    let sdBody = if shutdownBody != nil: hctx.genOdinExpr(shutdownBody) & "\n" else: ""
+    handlerCases.add(ind & "\tcase .msgShutdown:\n" & sdBody &
+                     ind & "\t\tself.finished = true")
   for hstr in hctx.hoisted:
     if hstr notin ctx.hoisted: ctx.hoisted.add(hstr)
   for sig, name in hctx.recShapes:
@@ -1501,8 +1514,12 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
           ind & "\t}\n" & ind & "}\n")
   # Drain loop: the actor's coroutine body. Parks when the mailbox empties;
   # tuckNotifySend wakes it after a send.
+  let finishedGuard =
+    if hasShutdown:
+      ind & "\t\tif " & actorSingletonName(d.name) & ".finished { return }\n"
+    else: ""
   res.add("\n" & ind & "drain_" & d.name & " :: proc() {\n" &
-          ind & "\tfor {\n" &
+          ind & "\tfor {\n" & finishedGuard &
           ind & "\t\tmsg: " & msgTypeName & "\n" &
           ind & "\t\tfor rt.dequeue(&" & actorSingletonName(d.name) &
           ".mailbox, &msg) {\n" &
@@ -1513,20 +1530,24 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
           ind & "\t}\n" & ind & "}\n")
 
   # Send helpers: enqueue an envelope; a full ring drops (spec §9.1)
-  for h in d.handlers:
-    if h.kind == dkFn:
-      let helperName = "send" & h.name.capitalize() & "_" & d.name
-      let variantName = "msg" & h.name.capitalize()
-      var helperParams: seq[string]
-      var ctorArgs = "kind = ." & variantName
-      for p in h.fnParams:
-        helperParams.add(p.name & ": " & ctx.odinType(p.typ))
-        ctorArgs.add(", " & p.name & " = " & p.name)
-      let sep = if helperParams.len > 0: ", " else: ""
-      res.add("\n" & ind & helperName & " :: proc(self: ^" & d.name & sep &
-              helperParams.join(", ") & ") {\n" &
-              ind & "\t_ = rt.enqueue(&self.mailbox, " & msgTypeName &
-              "{" & ctorArgs & "})\n" & ind & "}\n")
+  for h in handlers:
+    let helperName = "send" & h.name.capitalize() & "_" & d.name
+    let variantName = "msg" & h.name.capitalize()
+    var helperParams: seq[string]
+    var ctorArgs = "kind = ." & variantName
+    for p in h.params:
+      helperParams.add(p.name & ": " & ctx.odinType(p.typ))
+      ctorArgs.add(", " & p.name & " = " & p.name)
+    let sep = if helperParams.len > 0: ", " else: ""
+    res.add("\n" & ind & helperName & " :: proc(self: ^" & d.name & sep &
+            helperParams.join(", ") & ") {\n" &
+            ind & "\t_ = rt.enqueue(&self.mailbox, " & msgTypeName &
+            "{" & ctorArgs & "})\n" & ind & "}\n")
+  if hasShutdown:
+    res.add("\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" &
+            d.name & ") {\n" &
+            ind & "\t_ = rt.enqueue(&self.mailbox, " & msgTypeName &
+            "{kind = .msgShutdown})\n" & ind & "}\n")
   return res
 
 proc genRegistry(ctx: var OdinCodegenCtx, d: Decl): string =

@@ -274,6 +274,6 @@ fn main() -> int:
   return 0
 TUCKEOF
 try emits_odin "" 'sendAdd_tuck_Accumulator :: proc'
-bug_open "an 'on select' actor emits its send procs on the Odin backend"
+bug_fixed "an 'on select' actor emits its send procs on the Odin backend"
 
 finish

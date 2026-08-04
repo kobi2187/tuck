@@ -48,6 +48,41 @@ proc satisfiersOf*(module: Module, realModules: Table[string, Module],
         result.add(d)
   result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
 
+# An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
+# select` message arms (spec §9.3): a message kind + typed binding + body.
+type ActorMsgHandler* = object
+  name*: string
+  params*: seq[Param]
+  body*: Expr
+
+proc collectHandlers*(d: Decl):
+    tuple[handlers: seq[ActorMsgHandler], shutdownBody: Expr, hasShutdown: bool] =
+  ## Split an actor's declarations into message handlers plus the reserved
+  ## `shutdown` control arm (which stops the actor rather than adding a message).
+  ##
+  ## The two forms are the same thing to a backend: `on add({n: int}): ...` and
+  ## an `| add -> {n: int}: ...` arm both declare a message named add with that
+  ## binding. Walking only dkFn — which the Odin backend did at five separate
+  ## sites — made every `on select` actor look like an actor with NO handlers.
+  for h in d.handlers:
+    if h.kind == dkFn:
+      result.handlers.add(ActorMsgHandler(name: h.name, params: h.fnParams,
+                                          body: h.fnBody))
+    elif h.kind == dkSelect:
+      for arm in h.selectArms:
+        if arm.source == "shutdown":
+          result.shutdownBody = arm.body
+          result.hasShutdown = true
+        else:
+          result.handlers.add(ActorMsgHandler(name: arm.source,
+                                              params: arm.binding, body: arm.body))
+
+proc actorQueueSize*(d: Decl): string =
+  ## The `[queue: N]` attribute, or the default mailbox size.
+  result = "8"
+  for attr in d.attrs:
+    if attr.name == "queue": return attr.value
+
 proc sumHasPayload*(body: Type): bool =
   ## Does any variant of this sum carry fields? The branch key for four
   ## emitters: a fieldless sum is a plain enum in both targets, a
