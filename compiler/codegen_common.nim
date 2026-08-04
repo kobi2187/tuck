@@ -8,9 +8,52 @@
 # object, so the two backends can't drift apart on questions that have
 # nothing to do with which language is being emitted.
 #
+# THE TEST FOR BELONGING HERE: is it a QUERY or an EMITTER? A query asks the
+# tree a question and returns data — satisfiersOf ("which objects satisfy this
+# contract"), recordFieldNames, isCompositionEntry. The answer is the same
+# whichever language is being printed, so it belongs here.
+#
+# An emitter interleaves that traversal with syntax — composeInto and
+# genObjectDecl walk the same decls in the same order in both backends, but
+# each line they build is target-specific and each calls back into its own
+# backend's emitters. Those stay duplicated on purpose; see codegen.nim's
+# header: share the logic, never share the syntax.
+#
 # Sits below both backends in the dependency DAG, alongside ast_query and
 # lowering — it imports those and nothing that imports either codegen module.
-import ast, lowering, ast_query, strutils
+import ast, lowering, ast_query, strutils, sets, tables, algorithm
+
+proc satisfiersOf*(module: Module, realModules: Table[string, Module],
+                   iface: string): seq[Decl] =
+  ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.
+  ##
+  ## An interface value is a variant over its satisfying types, so the set has
+  ## to be complete before the type can be emitted — an object in another
+  ## module adds a branch. Ordered by name so the emitted tag enum is stable
+  ## between runs rather than depending on table iteration order.
+  ##
+  ## Takes the two fields directly rather than a ctx: the question is "which
+  ## objects satisfy this contract", which has no target syntax in it.
+  var seen = initHashSet[string]()
+  for d in module.decls:
+    if d != nil and d.kind == dkObject and iface in d.satisfies and
+       d.name notin seen:
+      seen.incl(d.name)
+      result.add(d)
+  for _, m in realModules:
+    for d in m.decls:
+      if d != nil and d.kind == dkObject and iface in d.satisfies and
+         d.name notin seen:
+        seen.incl(d.name)
+        result.add(d)
+  result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
+
+proc isCompositionEntry*(member: Decl): bool =
+  ## `+ Name` inside an object body — the entry that pulls another
+  ## declaration's members or data into this one.
+  member.kind == dkExpr and member.expr != nil and
+    member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
+    member.expr.operand != nil and member.expr.operand.kind == exkVar
 
 proc actorSingletonName*(actorType: string): string =
   ## An actor is a global singleton (spec §9): one instance per declared

@@ -11,7 +11,7 @@
 # languages, so ~1150 of its lines are AST logic that ports unchanged and
 # only the emitted syntax differs. Keep the two diffable — a fix in one is
 # usually a fix in the other.
-import ast, lowering, strutils, sets, tables, options, algorithm
+import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
@@ -269,22 +269,8 @@ proc genQualified(ctx: OdinCodegenCtx, e: Expr): string =
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 
 proc satisfiersOf*(ctx: OdinCodegenCtx, iface: string): seq[Decl] =
-  ## Every object declaring `satisfies iface`, whole-program. Mirrors the Nim
-  ## backend: the variant needs the complete set before the type can be
-  ## emitted, and the order is by name so the tag enum is stable.
-  var seen = initHashSet[string]()
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkObject and iface in d.satisfies and
-       d.name notin seen:
-      seen.incl(d.name)
-      result.add(d)
-  for _, m in ctx.realModules:
-    for d in m.decls:
-      if d != nil and d.kind == dkObject and iface in d.satisfies and
-         d.name notin seen:
-        seen.incl(d.name)
-        result.add(d)
-  result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
+  ## Whole-program satisfier set — see codegen_common.satisfiersOf.
+  satisfiersOf(ctx.module, ctx.realModules, iface)
 
 proc memberProcName*(objName, memberName: string): string =
   ## Object member fns emit qualified: `Dog.noise` -> `tuck_Dog_noise`.
@@ -1702,13 +1688,6 @@ proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl, alias = "rt"): string =
     return header & ind & "\t" & callStr & "\n" & ind & "}\n"
   else:
     return header & ind & "\treturn " & callStr & "\n" & ind & "}\n"
-
-proc isCompositionEntry(member: Decl): bool =
-  ## `+ Name` inside an object body — the entry that pulls another
-  ## declaration's members or data into this one.
-  member.kind == dkExpr and member.expr != nil and
-    member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
-    member.expr.operand != nil and member.expr.operand.kind == exkVar
 
 proc composeInto(ctx: var OdinCodegenCtx, compName, objName, ind: string,
                  fields: var seq[string], members: var string): bool =

@@ -42,7 +42,7 @@
 # column is not enumerable it falls back to a plain if/elif chain. That is a
 # real optimization at a size you can actually read: do the work now so the
 # program does not do it later.
-import ast, strutils, sets, tables, options, algorithm
+import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
@@ -127,25 +127,8 @@ proc buildDeclIndex(ctx: var CodegenCtx) =
   ctx.indexBuilt = true
 
 proc satisfiersOf*(ctx: CodegenCtx, iface: string): seq[Decl] =
-  ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.
-  ##
-  ## An interface value is a variant over its satisfying types, so the set has
-  ## to be complete before the type can be emitted — an object in another
-  ## module adds a branch. Ordered by name so the emitted tag enum is stable
-  ## between runs rather than depending on table iteration order.
-  var seen = initHashSet[string]()
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkObject and iface in d.satisfies and
-       d.name notin seen:
-      seen.incl(d.name)
-      result.add(d)
-  for _, m in ctx.realModules:
-    for d in m.decls:
-      if d != nil and d.kind == dkObject and iface in d.satisfies and
-         d.name notin seen:
-        seen.incl(d.name)
-        result.add(d)
-  result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
+  ## Whole-program satisfier set — see codegen_common.satisfiersOf.
+  satisfiersOf(ctx.module, ctx.realModules, iface)
 
 proc isRecordTypeFast(ctx: var CodegenCtx, name: string): bool =
   ctx.buildDeclIndex()
@@ -1394,13 +1377,6 @@ proc genRegistry(ctx: var CodegenCtx, d: Decl): string =
       raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(kind: " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
 
     return enumStr & typeStr & "\n" & globalVarStr & fwdDeclsStr & raiseProcsStr
-
-proc isCompositionEntry(member: Decl): bool =
-  ## `+ Name` inside an object body — the entry that pulls another
-  ## declaration's members or data into this one.
-  member.kind == dkExpr and member.expr != nil and
-    member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
-    member.expr.operand != nil and member.expr.operand.kind == exkVar
 
 proc composeInto(ctx: var CodegenCtx, compName, objName: string,
                  fields: var seq[string], members: var string): bool =
