@@ -617,6 +617,22 @@ proc assignIds*(d: Decl, next: var uint32) =
     for arm in d.selectArms: assignIds(arm.body, next)
   of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig: discard
 
+# The id supply. SINGLE-WRITER: one thread mints ids, which holds today because
+# tuck is built --threads:off (tuck.nim pickFastCC — that flag is also what lets
+# tcc, the fastest C backend here, build the runtime at all).
+#
+# If modules are ever parsed/checked in PARALLEL, this is the first thing that
+# breaks, and it breaks SILENTLY: two threads racing `inc` hand out the same
+# NodeId, and a duplicate id does not crash — it cross-wires the semantic layer,
+# so one node reads another's type or resolved call. Two ways out, both cheap:
+#
+#   - RANGE-PARTITION: give thread N the id space N shl 24. Collision becomes
+#     impossible by construction, NodeId stays 4 bytes.
+#   - ATOMIC: fetchAdd on the counter. Simplest, but needs --threads:on.
+#
+# NOT a UUID. NodeId is a Table key on the compiler's hottest path (codegen
+# alone does ~68 semLayer lookups), so 16-byte keys would cost 4x the key width
+# and slower hashing to solve a problem partitioning solves for free.
 var globalNodeCounter: uint32 = 0
 
 proc assignIds*(m: var Module) =

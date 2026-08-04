@@ -330,27 +330,20 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
 # and the caller falls through to plain emission.
 proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
                     payload: Expr): string =
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkType and d.name == typeName and
-       d.typeBody != nil and d.typeBody.kind == tkSum:
-      var hasPayload = false
-      for v in d.typeBody.variants:
-        if v.fields.len > 0: hasPayload = true
-      if not hasPayload: return ""
-      for v in d.typeBody.variants:
-        if v.name == variantName:
-          if v.fields.len == 0 or payload == nil:
-            return typeName & "(kind: " & variantName & ")"
-          # payload tuple in DECLARED field order
-          var parts: seq[string]
-          for f in v.fields:
-            var valStr = ""
-            for pf in payload.fields:
-              if pf[0] == f.name: valStr = ctx.genExpr(pf[1])
-            parts.add(f.name & ": " & valStr)
-          return typeName & "(kind: " & variantName & ", " &
-                 variantName.toLowerAscii() & ": (" & parts.join(", ") & "))"
-  ""
+  let found = payloadSumVariant(ctx.module, typeName, variantName)
+  if found.isNone: return ""
+  let v = found.get
+  if v.fields.len == 0 or payload == nil:
+    return typeName & "(kind: " & variantName & ")"
+  # payload tuple in DECLARED field order
+  var parts: seq[string]
+  for f in v.fields:
+    var valStr = ""
+    for pf in payload.fields:
+      if pf[0] == f.name: valStr = ctx.genExpr(pf[1])
+    parts.add(f.name & ": " & valStr)
+  typeName & "(kind: " & variantName & ", " &
+    variantName.toLowerAscii() & ": (" & parts.join(", ") & "))"
 
 proc bangInfo(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
   if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
@@ -528,13 +521,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   # messages already follow.
   let w = semLayer.wrapOf(e)
   if w.objName != "":
-    var ifaceName = w.iface
-    var objName = w.objName
-    for d in ctx.module.decls:
-      if d == nil: continue
-      let src = if d.sourceName.isSome: d.sourceName.get else: d.name
-      if d.kind == dkInterface and src == w.iface: ifaceName = d.name
-      if d.kind == dkObject and src == w.objName: objName = d.name
+    let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
     # The wrapped expression is a variable (that is the only form the checker
     # marks), so its name is emitted directly rather than re-entering genExpr,
     # which would see the same mark and recurse forever.
@@ -923,20 +910,6 @@ proc genPendingStub(d: Decl): string =
 # Rewrite the tail statement into an explicit return so the existing return
 # emission (auto-wrap, typed literals) handles it. Control-flow tails keep
 # explicit returns for now (checker enforces branch agreement).
-proc columnDomains(ctx: CodegenCtx, d: Decl): (seq[seq[string]], bool, int) =
-  ## Each param's enumerable value set, whether ALL of them are enumerable,
-  ## and how many combinations that makes. Only an all-enumerable table can
-  ## collapse to a packed key.
-  var domains: seq[seq[string]]
-  var allEnum = true
-  var comboCount = 1
-  for p in d.fnParams:
-    let dom = enumDomain(ctx.module, p.typ)
-    if dom.len == 0: allEnum = false
-    domains.add(dom)
-    comboCount *= max(dom.len, 1)
-  (domains, allEnum, comboCount)
-
 proc decisionRows(ctx: var CodegenCtx, d: Decl): (seq[seq[string]], seq[string]) =
   ## The table's rows as (pattern strings per column, emitted body).
   var pats: seq[seq[string]]
@@ -996,8 +969,8 @@ proc genDecisionFn(ctx: var CodegenCtx, d: Decl, fnNameSanitized: string): strin
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
   let header = "proc " & fnNameSanitized & "*(" & params.join(", ") & "): " &
                retTypeStr & " ="
-  let (domains, allEnum, comboCount) = ctx.columnDomains(d)
-  if allEnum and comboCount > 0 and comboCount <= 4096:
+  let (domains, allEnum, comboCount) = columnDomains(ctx.module, d)
+  if allEnum and comboCount > 0 and comboCount <= MaxPackedCombos:
     return ctx.genPackedTable(d, header, domains, comboCount)
   ctx.genConditionChain(d, header)
 
@@ -1079,9 +1052,7 @@ proc genTransitionProcs(d: Decl, kindName: string, hasPayload: bool): string =
       canLines.add("proc canTransition*(frm, to: " & kindName & "): bool =")
       canLines.add("  case frm")
       for v in d.typeBody.variants:
-        var allowed: seq[string]
-        for tr in d.typeBody.transitions:
-          if tr.`from` == v.name: allowed.add(tr.to)
+        let allowed = allowedTransitions(d.typeBody, v.name)
         if allowed.len > 0:
           canLines.add("  of " & v.name & ": to in {" & allowed.join(", ") & "}")
         else:
@@ -1096,9 +1067,7 @@ proc genTransitionProcs(d: Decl, kindName: string, hasPayload: bool): string =
       return res
 
 proc genSumType(ctx: var CodegenCtx, d: Decl): string =
-      var hasPayload = false
-      for v in d.typeBody.variants:
-        if v.fields.len > 0: hasPayload = true
+      let hasPayload = sumHasPayload(d.typeBody)
       let hasTransitions = d.typeBody.transitions.len > 0
       if not hasPayload and not hasTransitions:
         # plain enum (also what decision tables key over)

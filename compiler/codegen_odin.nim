@@ -15,6 +15,7 @@ import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+import codegen_table  # decision-table combinatorics, shared with the Nim backend
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
 export odinLibSpec, odinErrCode
 from mangle import mangleName
@@ -405,29 +406,22 @@ proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
 # enums, where Type.Variant is already valid — returns "" to fall through.
 proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
                     payload: Expr): string =
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkType and d.name == typeName and
-       d.typeBody != nil and d.typeBody.kind == tkSum:
-      var hasPayload = false
-      for v in d.typeBody.variants:
-        if v.fields.len > 0: hasPayload = true
-      if not hasPayload: return ""
-      for v in d.typeBody.variants:
-        if v.name == variantName:
-          # Odin union: constructing a variant IS constructing its struct;
-          # the union carries the tag itself, so there is no kind field to
-          # set and no per-variant payload slot to name.
-          let vName = typeName & "_" & v.name
-          if v.fields.len == 0 or payload == nil:
-            return vName & "{}"
-          var vals: seq[string]
-          for f in v.fields:
-            for pf in payload.fields:
-              if pf[0] == f.name:
-                vals.add(f.name & " = " & ctx.genOdinExpr(pf[1]))
-                break
-          return vName & "{" & vals.join(", ") & "}"
-  ""
+  let found = payloadSumVariant(ctx.module, typeName, variantName)
+  if found.isNone: return ""
+  let v = found.get
+  # Odin union: constructing a variant IS constructing its struct; the union
+  # carries the tag itself, so there is no kind field to set and no
+  # per-variant payload slot to name.
+  let vName = typeName & "_" & v.name
+  if v.fields.len == 0 or payload == nil:
+    return vName & "{}"
+  var vals: seq[string]
+  for f in v.fields:
+    for pf in payload.fields:
+      if pf[0] == f.name:
+        vals.add(f.name & " = " & ctx.genOdinExpr(pf[1]))
+        break
+  vName & "{" & vals.join(", ") & "}"
 
 # expr bake {slot: value, ...} — rebuild the record with slots overridden.
 # Ported from codegen.nim; neither Beef nor this backend had an arm for it,
@@ -744,13 +738,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   # returned or stored with no lifetime question — nothing borrows.
   let w = semLayer.wrapOf(e)
   if w.objName != "" and e.kind == exkVar:
-    var ifaceName = w.iface
-    var objName = w.objName
-    for d in ctx.module.decls:
-      if d == nil: continue
-      let src = if d.sourceName.isSome: d.sourceName.get else: d.name
-      if d.kind == dkInterface and src == w.iface: ifaceName = d.name
-      if d.kind == dkObject and src == w.objName: objName = d.name
+    let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
     return ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
            objName & "Val = " & e.name & "}"
   case e.kind
@@ -1141,15 +1129,8 @@ proc genDecisionTable(ctx: var OdinCodegenCtx, d: Decl): string =
 
   # Bitmask/packed path: when every column domain is enumerable the whole
   # table collapses to one switch over a packed integer key (spec 6.1).
-  var domains: seq[seq[string]]
-  var allEnum = true
-  var comboCount = 1
-  for p in d.fnParams:
-    let dom = enumDomain(ctx.module, p.typ)
-    if dom.len == 0: allEnum = false
-    domains.add(dom)
-    comboCount *= max(dom.len, 1)
-  if allEnum and comboCount > 0 and comboCount <= 4096:
+  let (domains, allEnum, comboCount) = columnDomains(ctx.module, d)
+  if allEnum and comboCount > 0 and comboCount <= MaxPackedCombos:
     var rowPats: seq[seq[string]]
     var rowBodies: seq[string]
     for s in d.fnBody.stmts:
@@ -1161,32 +1142,10 @@ proc genDecisionTable(ctx: var OdinCodegenCtx, d: Decl): string =
       rowPats.add(pats)
       rowBodies.add(ctx.armValue(s.arms[0].body))
     # first-match outcome for every combination, grouped by outcome
-    var groups: seq[tuple[outcome: string, keys: seq[int]]]
-    for combo in 0 ..< comboCount:
-      var rem = combo
-      var vals = newSeq[string](domains.len)
-      for c in countdown(domains.high, 0):
-        vals[c] = domains[c][rem mod domains[c].len]
-        rem = rem div domains[c].len
-      var outcome = ""
-      for i in 0 ..< rowPats.len:
-        var matches = true
-        for c in 0 ..< rowPats[i].len:
-          if rowPats[i][c] != "_" and rowPats[i][c] != vals[c]:
-            matches = false
-            break
-        if matches:
-          outcome = rowBodies[i]
-          break
-      var found = false
-      for g in groups.mitems:
-        if g.outcome == outcome:
-          g.keys.add(combo)
-          found = true
-          break
-      if not found:
-        groups.add((outcome, @[combo]))
-    # packed key: mixed radix over the ordinal of each column
+    let groups = groupByOutcome(domains, comboCount, rowPats, rowBodies)
+    # packed key: mixed radix over the ordinal of each column. NOT
+    # packedKeyExpr — that emits Nim's `ord()`; Odin needs int() and a bool
+    # ternary, which is the one part of this that is genuinely syntax.
     var keyParts: seq[string]
     var stride = comboCount
     for c in 0 ..< domains.len:
@@ -1320,9 +1279,7 @@ proc genTransitionProcs(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
                kindName & ") -> bool {")
   canLines.add(ind & "\tswitch frm {")
   for v in d.typeBody.variants:
-    var allowed: seq[string]
-    for tr in d.typeBody.transitions:
-      if tr.`from` == v.name: allowed.add(tr.to)
+    let allowed = allowedTransitions(d.typeBody, v.name)
     if allowed.len > 0:
       var conds: seq[string]
       for a in allowed: conds.add("to == ." & a)
@@ -1346,9 +1303,7 @@ proc genTransitionProcs(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
 
 proc genSumType(ctx: var OdinCodegenCtx, d: Decl): string =
   let ind = "  ".repeat(ctx.indent)
-  var hasPayload = false
-  for v in d.typeBody.variants:
-    if v.fields.len > 0: hasPayload = true
+  let hasPayload = sumHasPayload(d.typeBody)
   let hasTransitions = d.typeBody.transitions.len > 0
   if not hasPayload and not hasTransitions:
     # plain enum (also what decision tables key over)

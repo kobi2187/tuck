@@ -107,33 +107,50 @@ proc ifaceCallOf*(r: Resolution, e: Expr): tuple[iface, member: string] =
 
 # The program-wide semantic layer. The compiler processes one program per
 # run, so a single instance is the honest model; passing it through every
-# signature in checker, lowering and both backends would be pure ceremony.
+# signature in checker, lowering and both backends would be pure ceremony
+# (~105 call sites across 6 files).
+#
+# OWNERSHIP. typecheckProgram owns the lifecycle: it calls resetResolution()
+# first thing, so every entry here belongs to the program currently being
+# checked. Nothing else may reset it — tuck.nim's checkOrDie carries a comment
+# about this because the effect pass must run AFTER typecheckProgram or its
+# async call-site marks are wiped before codegen reads them.
+#
+# SINGLE-WRITER, in two senses:
+#
+#   1. In PHASE. The checker writes; lowering and both backends only read.
+#      mangleProgram is the one exception, and it runs whole-program BEFORE the
+#      per-backend deepCopies precisely because this is shared — renaming per
+#      copy would leave the other backend looking up names that no longer
+#      exist (tuck.nim).
+#   2. In THREAD. One thread, which holds because tuck is built --threads:off
+#      (tuck.nim pickFastCC). Parallel module checking would need this sharded
+#      per module and merged at the join, or guarded. The tables are keyed by
+#      NodeId, which is minted from another single-writer global — see
+#      ast.globalNodeCounter, which breaks first and breaks silently.
+#
 # Cleared at the start of each check so repeated in-process runs (the test
 # suites) never see a previous program's entries.
-var semLayer* = Resolution(calls: initTable[NodeId, Expr](),
-                            types: initTable[NodeId, Type](),
-                            shortcuts: initTable[NodeId, string](),
-                            asyncCalls: initHashSet[NodeId](),
-                            decls: initTable[NodeId, Decl](),
-                            declOf: initTable[NodeId, NodeId](),
-                            argFields: initTable[NodeId, seq[string]](),
-                            callParams: initTable[NodeId, seq[string]](),
-                            wraps: initTable[NodeId, tuple[objName, iface: string]](),
-                            ifacePairs: initHashSet[tuple[objName, iface: string]](),
-                            ifaceCalls: initTable[NodeId, tuple[iface, member: string]]())
+proc newResolution(): Resolution =
+  Resolution(calls: initTable[NodeId, Expr](),
+             types: initTable[NodeId, Type](),
+             shortcuts: initTable[NodeId, string](),
+             asyncCalls: initHashSet[NodeId](),
+             decls: initTable[NodeId, Decl](),
+             declOf: initTable[NodeId, NodeId](),
+             argFields: initTable[NodeId, seq[string]](),
+             callParams: initTable[NodeId, seq[string]](),
+             wraps: initTable[NodeId, tuple[objName, iface: string]](),
+             ifacePairs: initHashSet[tuple[objName, iface: string]](),
+             ifaceCalls: initTable[NodeId, tuple[iface, member: string]]())
+
+var semLayer* = newResolution()
 
 proc resetResolution*() =
-  semLayer = Resolution(calls: initTable[NodeId, Expr](),
-                            types: initTable[NodeId, Type](),
-                            shortcuts: initTable[NodeId, string](),
-                            asyncCalls: initHashSet[NodeId](),
-                            decls: initTable[NodeId, Decl](),
-                            declOf: initTable[NodeId, NodeId](),
-                            argFields: initTable[NodeId, seq[string]](),
-                            callParams: initTable[NodeId, seq[string]](),
-                            wraps: initTable[NodeId, tuple[objName, iface: string]](),
-                            ifacePairs: initHashSet[tuple[objName, iface: string]](),
-                            ifaceCalls: initTable[NodeId, tuple[iface, member: string]]())
+  ## Called by typecheckProgram, which owns this layer's lifecycle. A field
+  ## added to Resolution is initialised in ONE place now — the two copies of
+  ## this literal had to be kept in step by hand.
+  semLayer = newResolution()
 
 proc setStepCall*(r: var Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call

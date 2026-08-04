@@ -14,14 +14,39 @@
 # outcomes, and build the mixed-radix key expression. None of it touches
 # CodegenCtx, so none of it can reach back into expression emission.
 #
-# What stayed in codegen.nim: decisionRows and genPackedTable/genConditionChain,
+# What stayed in the backends: decisionRows and genPackedTable/genConditionChain,
 # because they call ctx.genExpr to emit the row bodies. That call is exactly
 # the seam — above it lives the recursive backend, below it lives this.
 #
-# packedKeyExpr emits `ord(param) * stride` in Nim spelling. That is the one
-# target-language detail here; the Odin backend builds its own tables rather
-# than sharing it (share the logic, never share the syntax).
-import ast, strutils
+# BOTH backends use this. The Odin one used to hand-roll columnDomains and a
+# fused copy of comboValues/rowMatches/firstOutcome/groupByOutcome inline; it
+# now calls these. The combinatorics are a fact about the TABLE, not about the
+# language it prints into.
+#
+# packedKeyExpr is the exception and stays Nim-only: it emits `ord(param)`,
+# where Odin needs `int(param)` and a bool ternary. That one IS syntax, so the
+# Odin backend still builds its own key (share the logic, never share the
+# syntax).
+import ast, ast_query, strutils
+
+const MaxPackedCombos* = 4096
+  ## Above this many combinations the packed table stops being worth it and
+  ## both backends fall back to a comparison chain. Shared so the two cannot
+  ## disagree about where that line is.
+
+proc columnDomains*(m: Module, d: Decl): (seq[seq[string]], bool, int) =
+  ## Each param's enumerable value set, whether ALL of them are enumerable,
+  ## and how many combinations that makes. Only an all-enumerable table can
+  ## collapse to a packed key.
+  var domains: seq[seq[string]]
+  var allEnum = true
+  var comboCount = 1
+  for p in d.fnParams:
+    let dom = enumDomain(m, p.typ)
+    if dom.len == 0: allEnum = false
+    domains.add(dom)
+    comboCount *= max(dom.len, 1)
+  (domains, allEnum, comboCount)
 
 proc comboValues*(domains: seq[seq[string]], combo: int): seq[string] =
   ## The column values this combination index stands for, decoded mixed-radix.

@@ -21,7 +21,7 @@
 #
 # Sits below both backends in the dependency DAG, alongside ast_query and
 # lowering — it imports those and nothing that imports either codegen module.
-import ast, lowering, ast_query, strutils, sets, tables, algorithm
+import ast, lowering, ast_query, strutils, sets, tables, algorithm, options
 
 proc satisfiersOf*(module: Module, realModules: Table[string, Module],
                    iface: string): seq[Decl] =
@@ -47,6 +47,53 @@ proc satisfiersOf*(module: Module, realModules: Table[string, Module],
         seen.incl(d.name)
         result.add(d)
   result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
+
+proc sumHasPayload*(body: Type): bool =
+  ## Does any variant of this sum carry fields? The branch key for four
+  ## emitters: a fieldless sum is a plain enum in both targets, a
+  ## payload-carrying one needs a tagged representation.
+  if body == nil: return false
+  for v in body.variants:
+    if v.fields.len > 0: return true
+  false
+
+proc payloadSumVariant*(m: Module, typeName, variantName: string): Option[VariantDef] =
+  ## The named variant of a PAYLOAD-carrying sum type. None when there is no
+  ## such type, it carries no payload anywhere, or it has no such variant —
+  ## all three mean "not a variant construction", and the caller falls through
+  ## to plain emission.
+  ##
+  ## Both backends' sumVariantCtor opened with this same scan-and-precondition
+  ## before diverging on how a variant is spelled. VariantDef is a value
+  ## object, so this is an Option rather than a nillable ref.
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.name == typeName and
+       d.typeBody != nil and d.typeBody.kind == tkSum:
+      if not sumHasPayload(d.typeBody): return none(VariantDef)
+      for v in d.typeBody.variants:
+        if v.name == variantName: return some(v)
+  none(VariantDef)
+
+proc allowedTransitions*(body: Type, fromVariant: string): seq[string] =
+  ## Which variants `fromVariant` may transition to, per the declared table.
+  ## Data only — Nim spells the result `to in {a, b}` and Odin
+  ## `to == .a || to == .b`.
+  if body == nil: return @[]
+  for tr in body.transitions:
+    if tr.`from` == fromVariant: result.add(tr.to)
+
+proc resolveWrapNames*(m: Module, iface, objName: string): tuple[iface, obj: string] =
+  ## Map an (interface, object) pair from the names the CHECKER recorded to the
+  ## names being EMITTED. Mangling renames decls but the wrap was recorded
+  ## before that, so both backends re-resolved through sourceName here — the
+  ## only two places either backend reads sourceName, which is exactly how they
+  ## would drift apart if mangling changed.
+  result = (iface: iface, obj: objName)
+  for d in m.decls:
+    if d == nil: continue
+    let src = if d.sourceName.isSome: d.sourceName.get else: d.name
+    if d.kind == dkInterface and src == iface: result.iface = d.name
+    if d.kind == dkObject and src == objName: result.obj = d.name
 
 proc isCompositionEntry*(member: Decl): bool =
   ## `+ Name` inside an object body — the entry that pulls another
