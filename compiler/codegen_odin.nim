@@ -739,9 +739,9 @@ proc genMatchExpr(ctx: var OdinCodegenCtx, e: Expr): string =
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
-  # A concrete object entering an interface slot becomes the two-word pair.
-  # Mirrors the Nim backend; the table is a package-scope value, so this costs
-  # two stores and no allocation, and the data half borrows.
+  # A concrete object entering an interface slot is COPIED into the variant
+  # (spec §5.3). Mirrors the Nim backend: the value owns its data, so it can be
+  # returned or stored with no lifetime question — nothing borrows.
   let w = semLayer.wrapOf(e)
   if w.objName != "" and e.kind == exkVar:
     var ifaceName = w.iface
@@ -784,7 +784,8 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
             return modName.replace("-", "_") & "." & e.name
     return e.name
   of exkField:
-    # A call through an interface value: read the table the value carries.
+    # A call through an interface value: switch on the tag the value carries
+    # and call the concrete member fn. Mirrors the Nim backend.
     let ic = semLayer.ifaceCallOf(e)
     if ic.member != "":
       # Dispatch is a switch on the tag calling the concrete member fn — no

@@ -35,17 +35,17 @@ type
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
     # Interface wraps (spec §5.3). `wraps` marks the expression where a concrete
-    # object enters an interface slot, so codegen emits the two-word pair there
+    # object enters an interface slot, so codegen emits the tagged variant there
     # instead of the bare value. `ifacePairs` is the DEMAND SET: exactly the
     # (object, interface) combinations some wrap actually asked for.
     #
-    # Demand-driven on purpose. Emitting a table and a thunk-per-method for
-    # every declared `satisfies` would generate code for pairs no program uses
-    # — an object may satisfy an interface it is never passed as. Collecting
-    # from call sites instead means an unused `satisfies` costs the conformance
-    # check and nothing else. Safe because the checker completes before codegen
-    # begins (tuck.nim: checkOrDie, then mangleProgram, then emitNim), so the
-    # set is closed by the time anything reads it.
+    # Demand-driven on purpose. Emitting a variant branch for every declared
+    # `satisfies` would generate code for pairs no program uses — an object may
+    # satisfy an interface it is never passed as. Collecting from call sites
+    # instead means an unused `satisfies` costs the conformance check and
+    # nothing else. Safe because the checker completes before codegen begins
+    # (tuck.nim: checkOrDie, then mangleProgram, then emitNim), so the set is
+    # closed by the time anything reads it.
     wraps*: Table[NodeId, tuple[objName, iface: string]]
     ifacePairs*: HashSet[tuple[objName, iface: string]]
     ifaceCalls*: Table[NodeId, tuple[iface, member: string]]
@@ -81,9 +81,9 @@ proc isAsync*(r: Resolution, e: Expr): bool =
 
 proc markWrap*(r: var Resolution, e: Expr, objName, iface: string) =
   ## Flag an expression as an interface wrap: a concrete object entering an
-  ## interface slot. Codegen emits the {data, table} pair here rather than the
-  ## bare value, and records the pair as demanded so the table and its thunks
-  ## get generated.
+  ## interface slot. Codegen emits the tagged variant here rather than the bare
+  ## value, copying the object in, and records the pair as demanded so the
+  ## variant gets a branch for it.
   if e == nil: return
   ensureId(e)
   r.wraps[e.id] = (objName: objName, iface: iface)
@@ -94,8 +94,8 @@ proc wrapOf*(r: Resolution, e: Expr): tuple[objName, iface: string] =
   r.wraps.getOrDefault(e.id, (objName: "", iface: ""))
 
 proc markIfaceCall*(r: var Resolution, e: Expr, iface, member: string) =
-  ## Flag `a.noise` as a call THROUGH an interface value: codegen reads the
-  ## function table rather than emitting a direct call, because which
+  ## Flag `a.noise` as a call THROUGH an interface value: codegen switches on
+  ## the value's tag rather than emitting a direct call, because which
   ## implementation runs is carried by the value, not known here.
   if e == nil: return
   ensureId(e)

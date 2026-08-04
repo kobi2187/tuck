@@ -559,9 +559,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     if e.receiver != nil and e.receiver.kind == exkVar and
        e.receiver.name == "input" and ctx.currentParams.len > 0:
       return e.fieldName
-    # A call through an interface value: read the function table the value
-    # carries and call it. Which implementation runs was decided at the wrap
-    # site, where the concrete type was known — nothing is resolved here.
+    # A call through an interface value: switch on the tag the value carries
+    # and call the concrete member fn. Which implementations are POSSIBLE was
+    # fixed at the wrap sites (the demand set); which one runs is the tag,
+    # read here at the call.
     let ic = semLayer.ifaceCallOf(e)
     if ic.member != "":
       # Dispatch is a `case` on the tag calling the concrete member fn

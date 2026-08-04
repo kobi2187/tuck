@@ -859,8 +859,8 @@ proc inferBindings(tc: TypeChecker, declared, actual: Type,
 # Tuck convention: one struct-shaped payload whose fields map to params by name.
 proc ifaceSlot(tc: TypeChecker, t: Type): string =
   ## The interface an argument position demands, or "" when it demands an
-  ## ordinary type. An interface name in type position is the two-word pair,
-  ## never a value — nothing is ever an instance of one.
+  ## ordinary type. An interface name in type position is the variant over its
+  ## satisfying types, never a value — nothing is ever an instance of one.
   if t == nil or t.kind != tkNamed: return ""
   if tc.ifaceDecls.hasKey(t.name): return t.name
   ""
@@ -887,7 +887,7 @@ proc checkIfaceArg(tc: var TypeChecker, iname: string, argT: Type,
   ##
   ## The wrap is recorded here because this is the last point where the
   ## concrete type is known — the callee sees only the interface. Recording it
-  ## also demands the (object, interface) pair, which is what makes table
+  ## also demands the (object, interface) pair, which is what makes variant
   ## emission demand-driven rather than one-per-`satisfies`.
   if argT == nil or isUnknown(argT): return   # gradual: let it flow
   let objName = if argT.kind == tkNamed: argT.name else: ""
@@ -914,9 +914,9 @@ proc checkIfaceArg(tc: var TypeChecker, iname: string, argT: Type,
 proc checkIfaceElems(tc: var TypeChecker, iname: string, argExpr: Expr,
                      what: string) =
   ## Every element of a list literal reaching a `Seq[Interface]` slot gets its
-  ## own wrap — the two-word pair is per element, and each carries the table
-  ## for ITS concrete type. That is what makes the elements uniform in size
-  ## while dispatching differently.
+  ## own wrap — the variant is per element, each tagged with ITS concrete type.
+  ## That is what makes the elements uniform in size while dispatching
+  ## differently.
   ##
   ## A non-literal argument (a variable already holding a Seq) is left alone:
   ## its elements were wrapped wherever the list was built.
