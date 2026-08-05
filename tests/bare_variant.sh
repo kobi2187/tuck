@@ -39,11 +39,12 @@ fn main() -> int:
   return 0
 EOF
 try bad_check "a variant of another sum type is rejected" "Red|Colour|Light"
-# OPEN, and NOT caused by bare variants: two different sum types are compatible
-# with each other generally. `fn pick({l: Light}) -> Colour: return l` passes
-# too, with no bare variant involved. The fix belongs in `compatible`, which
-# does not compare sum types nominally.
-bug_open "two different sum types are mutually compatible"
+# NOT caused by bare variants: two different sum types were compatible with
+# each other generally — `fn pick({l: Light}) -> Colour: return l` passed too,
+# with no bare variant involved. Fixed in `compatible`, which now rejects two
+# differently-named sums BEFORE resolving them (resolving destroyed the names,
+# and the fallthrough `a.kind == e.kind` then saw tkSum == tkSum).
+bug_fixed "two different sum types are not compatible"
 
 src <<'EOF'
 type Light:

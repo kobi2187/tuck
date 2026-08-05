@@ -155,9 +155,20 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
     if a.name in tc.distinctNames or e.name in tc.distinctNames:
       return false
     if isNumeric(a) and isNumeric(e): return true  # loose numeric widening for primitives
-    # One side may be an alias for a record — fall through to structural
+    # SUM TYPES ARE NOMINAL. Two differently-named sums are never compatible,
+    # even though both resolve to a tkSum body. Resolving first destroyed the
+    # only thing that distinguishes them: the fallthrough at the bottom is
+    # `a.kind == e.kind`, and tkSum == tkSum, so `fn pick() -> Colour: return
+    # Red` and `fn pick({l: Light}) -> Colour: return l` both passed.
+    #
+    # Checked here rather than at the bottom because by then the names are
+    # gone. Records still fall through to structural matching below — subset
+    # matching (spec 2.5) is the whole point for them.
     let ra = tc.resolve(a)
     let re = tc.resolve(e)
+    if ra != nil and re != nil and
+       (ra.kind == tkSum or re.kind == tkSum): return false
+    # One side may be an alias for a record — fall through to structural
     if ra != a or re != e: return tc.compatible(ra, re)
     return false
 
