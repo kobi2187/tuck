@@ -894,8 +894,10 @@ proc run*(loop: EventLoop) =
       discard runNext()
 
     # Exit before parking if nothing can wake us — otherwise a finished
-    # program sits in epoll for the timeout on its way out.
-    if loop.waiters.len == 0 and not hasPending():
+    # program sits in epoll for the timeout on its way out. Checked AFTER the
+    # drain, so a coroutine that called stop() in this pass is honoured
+    # immediately rather than after another 100ms in epoll_wait.
+    if loop.stopped or (loop.waiters.len == 0 and not hasPending()):
       break
 
     # Now park for I/O, which is the only thing that can produce more work.

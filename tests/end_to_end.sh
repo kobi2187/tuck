@@ -82,4 +82,29 @@ fn doWork() -> void:
 TUCKEOF
 bad_check "a pure fn cannot call an [io] fn" 'requires effect \[io\]'
 
+# scheduler::stop ends the loop even with a coroutine still parked. The
+# scheduler otherwise returns only when NOTHING is waiting, so a program that
+# parks on an fd nobody will feed — a server's accept loop — runs forever.
+# `runs` would HANG rather than fail without it, which is why this is here
+# rather than only in a bench.
+src <<'TUCKEOF'
+import scheduler
+
+actor Worker [queue: 8]:
+  done: bool = false
+
+  on go({n: int}):
+    done = true
+
+fn ready() -> bool:
+  return Worker.done
+
+fn main() -> int:
+  Worker send go {n: 1}
+  scheduler::waitUntil {pred: :ready}
+  {} scheduler::stop
+  return 7
+TUCKEOF
+runs "scheduler::stop ends the loop" 7
+
 finish

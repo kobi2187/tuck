@@ -416,6 +416,10 @@ tuckRun :: proc() {
 		for hasPending() {
 			if !runNext() do break
 		}
+		// Checked AFTER the drain so a coroutine that called stop() in this
+		// pass is honoured immediately, rather than after another 100ms parked
+		// in epoll_wait. Mirrors the Nim run().
+		if gLoop.stopped do break
 		if len(gLoop.waiters) == 0 && !hasPending() do break
 		runOnce(100)
 	}
@@ -565,4 +569,12 @@ waitUntil :: proc(pred: proc() -> bool) {
 			if !runNext() do runOnce(10)
 		}
 	}
+}
+
+// std/scheduler.tuck's `stop` extern. Ends the loop even while coroutines are
+// still parked on fds — tuckRun otherwise returns only when NOTHING is
+// waiting, so one coroutine parked on an fd that never becomes readable (a
+// server's accept loop) would keep the program alive forever.
+stop :: proc() {
+	tuckStop()
 }

@@ -185,6 +185,19 @@ proc tuckRun*() =
   ## Unifies arsenal's split scheduler/eventloop into one call.
   gLoop.run()
 
+proc tuckStop*() =
+  ## Ask the loop to return after the current pass, even if coroutines are
+  ## still parked on fds.
+  ##
+  ## run() otherwise exits only when `waiters.len == 0`, so ONE coroutine
+  ## parked on an fd that will never become readable keeps the process alive
+  ## forever, spinning epoll_wait on an empty set. A server's accept loop is
+  ## exactly that shape: it parks on the listening fd waiting for a client
+  ## that may never arrive, and nothing else can end the program.
+  ##
+  ## Mirrors the Odin backend's tuckStop, which has always had this.
+  if gLoop != nil: gLoop.stop()
+
 # --- task results ---------------------------------------------------------
 # A task returns a value. `let r = {args} fetch` schedules fetch with a result
 # slot; reading r awaits that slot. A TuckResult holds the eventual value and
@@ -260,3 +273,7 @@ proc waitUntil*(pred: proc(): bool) =
   ## runtime cooperatively meanwhile. (Same drive as awaitResult from main.)
   while not pred():
     discard pumpOnce()
+
+proc stop*() =
+  ## `scheduler::stop` — the std name for tuckStop.
+  tuckStop()

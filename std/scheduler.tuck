@@ -2,3 +2,8 @@
 # Actors run as daemons alongside main; main uses these to wait on app state.
 extern:
   fn waitUntil({pred: fn}) -> void [io]
+  # Ask the scheduler to return after the current pass. Needed by anything
+  # that parks on an fd which may never become readable — a server's accept
+  # loop is the standard case: without this the program runs forever, because
+  # the loop only ends when NOTHING is waiting.
+  fn stop() -> void [io]
