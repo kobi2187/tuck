@@ -39,6 +39,13 @@ proc tuckSpawn*(fn: proc() {.closure, gcsafe.}) =
   ## Launch a task as a coroutine on the scheduler.
   schedule(newCoroutine(fn, TuckStackSize))
 
+proc inCoroutine*(): bool =
+  ## Are we on a coroutine, or in the main context? Spelled as a predicate
+  ## because --threads:on brings system.running(Thread) into scope, and a bare
+  ## `running()` in a module that also sees `Thread` loses overload resolution
+  ## to it — a confusing error far from the cause.
+  running() != nil
+
 proc tuckYield*() =
   ## Cooperative yield: reschedule this task and hand control back so other
   ## tasks make progress. The [io] yield point when there is no real fd yet.
@@ -139,7 +146,7 @@ proc tuckSubmitBlocking*(fn: BlockingFn, arg: pointer) =
   ##
   ## Called from the main context (no coroutine), this runs the work inline:
   ## there is nothing to yield to, and parking would deadlock.
-  if running() == nil:
+  if not inCoroutine():
     fn(arg)
     return
   ensureBlockingThread()

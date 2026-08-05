@@ -223,40 +223,143 @@ template posixRead(fd: cint, buf: pointer, n: int): int =
   ## syncio's buffered readLine (which must never run on the worker).
   posix.read(fd, buf, n)
 
+# C's allocator, not Nim's. The worker may not allocate through the collector
+# (see the cross-thread contract in tuck_async), so a result buffer it fills
+# has to come from here and be freed by the scheduler thread after the copy.
+proc cMalloc(size: csize_t): pointer {.importc: "malloc", header: "<stdlib.h>".}
+proc cRealloc(p: pointer, size: csize_t): pointer
+  {.importc: "realloc", header: "<stdlib.h>".}
+proc cFree(p: pointer) {.importc: "free", header: "<stdlib.h>".}
+
+# --- file externs, offloaded ------------------------------------------------
+#
+# All of these block: a regular file is always "ready" to epoll, so the reactor
+# cannot await one. They run on the worker via tuckSubmitBlocking, under the
+# contract in tuck_async — no GC memory crosses the boundary.
+#
+# That is why these use raw open/read/write rather than syncio: the argument
+# is a caller-owned C buffer, the result is a malloc'd buffer the worker fills
+# and the SCHEDULER thread copies into a Nim string and frees. Nothing on the
+# worker allocates through Nim, and nothing the worker wrote outlives the copy.
+
+type
+  FileOp = enum
+    fopRead, fopWrite, fopAppend, fopRemove
+
+  IoStatus = enum
+    ## What the worker concluded. An enum rather than a coded int so a `case`
+    ## over it is exhaustive-checked and a new outcome cannot be silently
+    ## unhandled at a call site.
+    iosOk
+    iosNotFound
+    iosIoFailed
+    iosAccessDenied
+    iosEndOfInput
+
+  FileReq = object
+    op: FileOp
+    path: cstring          ## caller-owned, alive for the whole call
+    data: cstring          ## write/append payload; caller-owned
+    dataLen: int
+    outBuf: pointer        ## fopRead: malloc'd by the worker, freed by caller
+    outLen: int
+    status: IoStatus
+
+proc fileWorker(arg: pointer) {.nimcall, gcsafe.} =
+  ## Runs on the blocking thread. Raw syscalls only.
+  let r = cast[ptr FileReq](arg)
+  case r.op
+  of fopRemove:
+    if posix.unlink(r.path) != 0:
+      r.status = if posix.errno == posix.ENOENT: iosNotFound
+                 else: iosAccessDenied
+  of fopWrite, fopAppend:
+    let flags = posix.O_WRONLY or posix.O_CREAT or
+                (if r.op == fopAppend: posix.O_APPEND else: posix.O_TRUNC)
+    let fd = posix.open(r.path, flags, posix.Mode(0o644))
+    if fd < 0:
+      r.status = iosAccessDenied
+      return
+    var off = 0
+    while off < r.dataLen:
+      let n = posix.write(fd, cast[pointer](cast[uint](r.data) + uint(off)),
+                          r.dataLen - off)
+      if n <= 0:
+        r.status = iosAccessDenied
+        break
+      off += n
+    discard posix.close(fd)
+  of fopRead:
+    let fd = posix.open(r.path, posix.O_RDONLY)
+    if fd < 0:
+      r.status = if posix.errno == posix.ENOENT: iosNotFound
+                 else: iosIoFailed
+      return
+    # Grow-on-demand with malloc, not seq: the worker may not allocate through
+    # Nim. Starts at 64K and doubles, so an ordinary file is one allocation.
+    var cap = 65536
+    var buf = cMalloc(cap.csize_t)
+    var len = 0
+    while true:
+      if len == cap:
+        cap *= 2
+        let bigger = cRealloc(buf, cap.csize_t)
+        if bigger == nil:
+          cFree(buf); r.status = iosIoFailed; return
+        buf = bigger
+      let n = posix.read(fd, cast[pointer](cast[uint](buf) + uint(len)),
+                         cap - len)
+      if n < 0:
+        cFree(buf); discard posix.close(fd)
+        r.status = iosIoFailed; return
+      if n == 0: break
+      len += n
+    discard posix.close(fd)
+    r.outBuf = buf
+    r.outLen = len
+
+proc runFileOp(op: FileOp, path: string, data: string = ""): FileReq =
+  ## Set up the request on the SCHEDULER thread, hand it to the worker, park.
+  ## `path`/`data` stay alive here for the whole call — the coroutine cannot
+  ## proceed until the worker signals, so the worker's view is always valid.
+  result = FileReq(op: op, path: path.cstring, data: data.cstring,
+                   dataLen: data.len, outBuf: nil, outLen: 0, status: iosOk)
+  tuckSubmitBlocking(fileWorker, addr result)
+
+proc fsErr[T](s: IoStatus): TuckResult[T] =
+  ## One place mapping a worker outcome onto the FsError variants declared in
+  ## std/fs.tuck. Exhaustive, so a new IoStatus is a compile error here rather
+  ## than a silently-wrong error code at four call sites.
+  case s
+  of iosNotFound: terr[T](errCode("fs/FsError.NotFound"))
+  of iosAccessDenied: terr[T](errCode("fs/FsError.AccessDenied"))
+  of iosOk, iosIoFailed, iosEndOfInput: terr[T](errCode("fs/FsError.IoFailed"))
+
 proc readFile*(path: string): TuckResult[tuple[content: string]] =
-  try:
-    if not fileExists(path):
-      return terr[tuple[content: string]](errCode("fs/FsError.NotFound"))
-    tok((content: syncio.readFile(path)))
-  except IOError, OSError:
-    terr[tuple[content: string]](errCode("fs/FsError.IoFailed"))
+  var r = runFileOp(fopRead, path)
+  if r.status != iosOk: return fsErr[tuple[content: string]](r.status)
+  var content = newString(r.outLen)
+  if r.outLen > 0:
+    copyMem(addr content[0], r.outBuf, r.outLen)
+  if r.outBuf != nil: cFree(r.outBuf)
+  tok((content: content))
 
 proc writeFile*(path: string, content: string): TuckResult[tuple[]] =
-  try:
-    syncio.writeFile(path, content)
-    tokVoid()
-  except IOError, OSError:
-    terr[tuple[]](errCode("fs/FsError.AccessDenied"))
+  let r = runFileOp(fopWrite, path, content)
+  if r.status == iosOk: tokVoid() else: fsErr[tuple[]](r.status)
 
 proc appendFile*(path: string, content: string): TuckResult[tuple[]] =
-  try:
-    let f = open(path, fmAppend)
-    f.write(content)
-    f.close()
-    tokVoid()
-  except IOError, OSError:
-    terr[tuple[]](errCode("fs/FsError.AccessDenied"))
+  let r = runFileOp(fopAppend, path, content)
+  if r.status == iosOk: tokVoid() else: fsErr[tuple[]](r.status)
 
 proc removeFile*(path: string): TuckResult[tuple[]] =
-  try:
-    if not fileExists(path):
-      return terr[tuple[]](errCode("fs/FsError.NotFound"))
-    os.removeFile(path)
-    tokVoid()
-  except OSError:
-    terr[tuple[]](errCode("fs/FsError.AccessDenied"))
+  let r = runFileOp(fopRemove, path)
+  if r.status == iosOk: tokVoid() else: fsErr[tuple[]](r.status)
 
 proc fileExists*(path: string): bool = os.fileExists(path)
+  ## NOT offloaded: a stat is a metadata lookup, microseconds on any live
+  ## filesystem. Paying a thread handoff and a pipe round-trip for it would
+  ## cost more than the call.
 
 proc print*(text: string) = stdout.write(text)
 proc printLine*(text: string) = stdout.writeLine(text)
@@ -269,7 +372,7 @@ type
     ## worker may not touch GC memory.
     buf: array[4096, char]
     len: int
-    status: int   ## 0 ok, 1 end of input, 2 io failure
+    status: IoStatus
 
 proc readLineWorker(arg: pointer) {.nimcall, gcsafe.} =
   ## Runs on the blocking thread. Raw read(2) on stdin — no Nim I/O, no
@@ -280,10 +383,10 @@ proc readLineWorker(arg: pointer) {.nimcall, gcsafe.} =
     var c: char
     let n = posixRead(cint(0), addr c, 1)
     if n < 0:
-      r.status = 2
+      r.status = iosIoFailed
       return
     if n == 0:                      # EOF
-      if i == 0: r.status = 1
+      if i == 0: r.status = iosEndOfInput
       break
     if c == '\n': break
     r.buf[i] = c
@@ -294,15 +397,17 @@ proc readLine*(): TuckResult[tuple[line: string]] =
   ## Blocks on user input, so it runs on the blocking thread: stdin has no
   ## readiness the reactor could await, and waiting for it inline would stop
   ## every timer and actor in the process until someone hits enter.
-  var req = ReadLineReq(len: 0, status: 0)
+  var req = ReadLineReq(len: 0, status: iosOk)
   tuckSubmitBlocking(readLineWorker, addr req)
   case req.status
-  of 1: terr[tuple[line: string]](errCode("io/IoError.EndOfInput"))
-  of 2: terr[tuple[line: string]](errCode("io/IoError.IoFailed"))
-  else:
+  of iosEndOfInput:
+    terr[tuple[line: string]](errCode("io/IoError.EndOfInput"))
+  of iosOk:
     var line = newString(req.len)
     for i in 0 ..< req.len: line[i] = req.buf[i]
     tok((line: line))
+  of iosIoFailed, iosNotFound, iosAccessDenied:
+    terr[tuple[line: string]](errCode("io/IoError.IoFailed"))
 
 proc argCount*(): tuple[count: int] = (count: paramCount())
 proc argAt*(index: int): tuple[arg: string] = (arg: paramStr(index))
@@ -316,7 +421,19 @@ proc getEnv*(name: string): TuckResult[tuple[value: string]] =
 proc exit*(code: int) = quit(code)
 
 proc nowMs*(): tuple[ms: uint64] = (ms: uint64(epochTime() * 1000))
-proc sleepMs*(ms: uint32) = os.sleep(int(ms))
+proc sleepMs*(ms: uint32) =
+  ## The reactor's timer, NOT the worker and NOT os.sleep. A sleep is the one
+  ## "blocking" op that was never blocking-by-nature: waiting for a deadline is
+  ## exactly what a timerfd does, so tuckSleep suspends only this coroutine
+  ## while everything else keeps running. Offloading it would burn a thread to
+  ## reproduce what the reactor already does for free.
+  ##
+  ## os.sleep here used to halt the process: the scheduler, the reactor, every
+  ## actor and every timer, for the full duration.
+  ## inCoroutine rather than a bare `running()`: --threads:on puts
+  ## system.running(Thread) in scope, which otherwise wins overload resolution.
+  if inCoroutine(): tuckSleep(int(ms))
+  else: os.sleep(int(ms))   # no scheduler to yield to
 
 # The single runtime facade: tuck_rt re-exports the async runtime so every
 # emitted program imports ONLY tuck_rt and reaches rt AND async names

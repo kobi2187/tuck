@@ -18,8 +18,8 @@
 ##   nim c --opt:none --stackTrace:off --lineTrace:off --cc:clang --threads:on \
 ##     -o:bench_offload benches/bench_offload.nim && ./bench_offload
 
-import std/[posix, times, strformat]
-import ../compiler/tuck_async
+import std/[posix, times, strformat, os, strutils]
+import ../compiler/tuck_rt
 
 const
   BlockMs = 300
@@ -93,3 +93,40 @@ when isMainModule:
     let ms = measureConcurrent(n)
     let overhead = ms - float(n * BlockMs)
     echo &"    n={n}  wall={ms:.0f}ms  serial={n*BlockMs}ms  overhead={overhead:.0f}ms"
+
+  # --- the fs externs actually work through the seam -----------------------
+  # Round-trips real content through the worker: the payload crosses as a C
+  # buffer, the result comes back malloc'd and is copied on this thread. A
+  # size well past the worker's initial 64K capacity exercises the realloc
+  # growth path, which is where a lifetime bug would show up.
+  echo "\n  fs round-trip through the worker:"
+  let path = getTempDir() / "tuck-bench-offload.txt"
+  let payload = repeat("tuck", 40_000)        # 160KB: forces two grows
+  var fsOk = true
+  tuckAsyncInit()
+  tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    let w = tuck_rt.writeFile(path, payload)
+    if not w.ok: echo "    writeFile FAILED"; fsOk = false
+    let r = tuck_rt.readFile(path)
+    if not r.ok:
+      echo "    readFile FAILED"; fsOk = false
+    elif r.value.content != payload:
+      echo &"    CONTENT MISMATCH: got {r.value.content.len}B want {payload.len}B"
+      fsOk = false
+    else:
+      echo &"    wrote+read {payload.len}B, content matches"
+    let a = tuck_rt.appendFile(path, "tail")
+    if not a.ok: echo "    appendFile FAILED"; fsOk = false
+    let r2 = tuck_rt.readFile(path)
+    if r2.ok and r2.value.content.len != payload.len + 4:
+      echo "    APPEND LENGTH WRONG"; fsOk = false
+    let d = tuck_rt.removeFile(path)
+    if not d.ok: echo "    removeFile FAILED"; fsOk = false
+    if tuck_rt.fileExists(path): echo "    FILE STILL EXISTS"; fsOk = false
+    let missing = tuck_rt.readFile(path)        # now gone: must be NotFound
+    if missing.ok: echo "    reading a deleted file SUCCEEDED"; fsOk = false))
+  tuckRun()
+  if not fsOk:
+    echo "  FAIL  fs externs are broken through the seam"
+    quit(1)
+  echo "  PASS  write/read/append/remove and the not-found path all correct"
