@@ -1445,6 +1445,24 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
              fd.fnErrorTypes.len > 0:
             tc.varErrTypes[e.target.name] = fd.fnErrorTypes
     else:
+      # An assignment TARGET must name something. A bare name that resolves to
+      # nothing is a typo, and letting it through was silent: the target
+      # synthesized as Unknown, and Unknown is compatible with everything, so
+      # `nosuchfield += n` typechecked in a fn and in an actor handler alike.
+      #
+      # Only the target position, and only a BARE name. Unknown stays load-
+      # bearing everywhere else — it is what keeps sketch code compiling
+      # (an unknown module prefix, a pending fn's callers), so making exkVar
+      # synthesis itself strict would break gradual typing. Everything legally
+      # assignable is bound by this point: locals and params by bindName,
+      # actor fields and a handler's `result` when the handler's scope opens.
+      if e.target != nil and e.target.kind == exkVar:
+        let (found, _) = tc.lookup(e.target.name)
+        if not found and not tc.fnSigs.hasKey(e.target.name) and
+           tc.sumTypeOwning(e.target.name) == "":
+          fail("Type Error: cannot assign to '" & e.target.name &
+               "' — no variable, parameter or field by that name is in scope",
+               e.span)
       let targetT = tc.synthesize(e.target)
       # spec 4.4b: the RHS of a checked transition assignment may construct
       # a non-initial sealed variant — the transition IS the legal path

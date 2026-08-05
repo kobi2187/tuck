@@ -48,7 +48,7 @@ fn main() -> int:
   return 0
 EOF
 try bad_check "a void handler has no result" "result"
-bug_open "a void handler's result is not rejected (same cause)"
+bug_fixed "a void handler's result is rejected (same cause)"
 
 # The actor's own fields still resolve inside a handler — a regression guard,
 # since binding result must not disturb the field scope.
@@ -78,7 +78,7 @@ fn main() -> int:
   return 0
 EOF
 try bad_check "an unknown actor field is caught" "nosuchfield"
-bug_open "an undeclared name is not caught (exkVar resolves to Unknown)"
+bug_fixed "an undeclared assignment target is caught in a handler"
 
 src <<'EOF'
 fn f({n: int}) -> void:
@@ -88,6 +88,6 @@ fn main() -> int:
   return 0
 EOF
 try bad_check "an undeclared assignment target is caught in a plain fn too" "nosuchvar"
-bug_open "...and the same in a plain fn, which is where the real fix belongs"
+bug_fixed "...and the same in a plain fn, which is where the fix landed"
 
 finish
