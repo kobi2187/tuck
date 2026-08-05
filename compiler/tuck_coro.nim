@@ -884,16 +884,22 @@ proc run*(loop: EventLoop) =
 
   loop.stopped = false
   while not loop.stopped:
-    # Process I/O events
-    discard loop.runOnce(timeoutMs = 100)
-
-    # Run ready coroutines
+    # Drain the ready queue FIRST. Blocking in epoll before running work that
+    # is already runnable costs the whole timeout on every pass: a spawned
+    # coroutine with no pending I/O waited up to 100ms to start, and a program
+    # doing N sequential offloads paid it N times (measured: a constant ~100ms
+    # on top of every blocking call, independent of how many were queued).
+    # The Odin tuckRun always had this order.
     while hasPending():
       discard runNext()
 
-    # Exit if no more work
+    # Exit before parking if nothing can wake us — otherwise a finished
+    # program sits in epoll for the timeout on its way out.
     if loop.waiters.len == 0 and not hasPending():
       break
+
+    # Now park for I/O, which is the only thing that can produce more work.
+    discard loop.runOnce(timeoutMs = 100)
 
 proc stop*(loop: EventLoop) =
   ## Stop the event loop. Causes run() to return.

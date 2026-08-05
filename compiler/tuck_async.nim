@@ -64,6 +64,94 @@ proc tuckSleep*(ms: int) =
   ## Cooperative sleep: suspend this coroutine for `ms`, driven by the reactor.
   gLoop.waitTimer(ms)
 
+import std/posix
+
+# --- the offload seam -------------------------------------------------------
+#
+# ONE interface, three possible backings. A blocking operation cannot be made
+# to yield: a regular file is always "ready" to epoll, so the reactor is
+# structurally incapable of awaiting it. libuv answers this with a thread pool;
+# this is the same answer at the smallest size that removes the hang.
+#
+#   inline      call straight through — freestanding/embedded, where there is
+#               one bare-metal loop and no scheduler to starve
+#   one thread  what this file implements — serialized, an honest ceiling
+#   pool        later, when a benchmark shows serialization is the bottleneck
+#
+# The seam is deliberately expressible in C: a function pointer, an opaque
+# argument, and a completion fd. Nothing in it is Nim-shaped. The long-run plan
+# is one C implementation bound from both backends over the existing FFI, so
+# the two backends share semantics by construction rather than by mirroring.
+#
+# THE CROSS-THREAD CONTRACT. Every runtime global here is a {.threadvar.}
+# (gLoop, globalScheduler, gActors) and tuck_coro's activeCoroutine is a raw
+# ptr whose safety argument is single-threaded ownership. So the worker touches
+# NONE of it:
+#
+#   The worker may touch only the request's own pointers, one libc/syscall,
+#   and write() of one byte to the completion fd. It never calls running(),
+#   schedule() or ready(), never allocates, and never dereferences a GC'd
+#   string or seq.
+#
+# Everything crossing the boundary is caller-allocated and caller-freed. The
+# parked coroutine's own stack keeps the request alive — it cannot proceed
+# until the byte arrives, so there is no ownership question to resolve.
+
+type
+  BlockingFn* = proc(arg: pointer) {.nimcall, gcsafe.}
+    ## The work itself. Runs on the blocking thread under the contract above.
+
+  BlockingReq = object
+    fn: BlockingFn
+    arg: pointer
+    doneFd: cint      ## write end of the caller's completion pipe
+
+var
+  gBlockingThread: Thread[void]
+  gBlockingStarted = false
+  gReqPipe: array[2, cint]   ## scheduler -> worker: one request at a time
+
+proc blockingWorker() {.thread.} =
+  ## Serve one request at a time, forever. Reads a whole BlockingReq off the
+  ## request pipe (a pipe write of <= PIPE_BUF is atomic, so requests never
+  ## interleave), runs it, then signals the caller's completion fd.
+  while true:
+    var req: BlockingReq
+    let n = read(gReqPipe[0], addr req, sizeof(BlockingReq))
+    if n != sizeof(BlockingReq): break   # pipe closed: the process is going down
+    req.fn(req.arg)
+    var b: byte = 1
+    discard write(req.doneFd, addr b, 1)
+    discard close(req.doneFd)
+
+proc ensureBlockingThread() =
+  ## Start the worker on first use. A program that never blocks never pays for
+  ## a thread.
+  if gBlockingStarted: return
+  discard pipe(gReqPipe)
+  createThread(gBlockingThread, blockingWorker)
+  gBlockingStarted = true
+
+proc tuckSubmitBlocking*(fn: BlockingFn, arg: pointer) =
+  ## Run `fn(arg)` off the scheduler thread and SUSPEND this coroutine until it
+  ## finishes. The scheduler, the reactor, every other actor and every timer
+  ## keep running meanwhile — which is the whole point.
+  ##
+  ## Called from the main context (no coroutine), this runs the work inline:
+  ## there is nothing to yield to, and parking would deadlock.
+  if running() == nil:
+    fn(arg)
+    return
+  ensureBlockingThread()
+  var done: array[2, cint]
+  discard pipe(done)
+  var req = BlockingReq(fn: fn, arg: arg, doneFd: done[1])
+  discard write(gReqPipe[1], addr req, sizeof(BlockingReq))
+  tuckAwaitRead(done[0].int)   # the reactor resumes us when the byte lands
+  var b: byte = 0
+  discard read(done[0], addr b, 1)
+  discard close(done[0])
+
 # --- a demo async source ----------------------------------------------------
 # A REAL non-blocking source: a pipe whose write end is fed by a writer
 # coroutine after `ms` (a reactor-driven sleep, no OS thread — that would fight
@@ -71,7 +159,6 @@ proc tuckSleep*(ms: int) =
 # task racing `read fd` against a `timeout N` sees the true winner: data if
 # ms < N (read arm), timeout if ms > N. This exercises real suspend/resume:
 # the coroutine parks on the fd, the reactor sees it ready, resumes it.
-import std/posix
 
 proc openSource*(ms: int): tuple[fd: int] =
   ## Open a pipe, arm a writer coroutine to feed one byte after `ms`, and

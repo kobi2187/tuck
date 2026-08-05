@@ -78,18 +78,22 @@ proc die(msg: string) =
 proc elapsedMs(t0: float): string =
   formatFloat((epochTime() - t0) * 1000, ffDecimal, 1) & " ms"
 
-# Pick the quickest C backend available. tcc compiles several times faster
-# than gcc and is what Nim's own fast path expects; clang links faster than
-# gcc when tcc is absent. Empty = leave Nim's default alone.
+# Pick the quickest C backend available that can build the runtime.
 proc pickFastCC(): string =
-  # Tuck is single-threaded and cooperative (actors and tasks are coroutines
-  # on one scheduler), so --threads:off is correct on the merits — and it
-  # also drops the atomic builtins tcc lacks, which is what lets tcc, the
-  # fastest C compiler here, build the runtime at all.
-  if findExe("tcc") != "":
-    " --cc:tcc --tlsEmulation:on --threads:off "
-  elif findExe("clang") != "": " --cc:clang --threads:off "
-  else: " --threads:off "
+  # THE SCHEDULER is single-threaded and cooperative, and stays that way: tasks
+  # and actors are coroutines, one resume per tick, no preemption (spec §9.4).
+  # But a BLOCKING extern (readLine, readFile) cannot be made to yield — a
+  # regular file is always "ready" to epoll, so the reactor structurally cannot
+  # await it. Those run on the runtime's blocking thread and signal completion
+  # through a pipe the reactor already watches (tuck_async.tuckSubmitBlocking),
+  # which needs --threads:on.
+  #
+  # That rules tcc out: it lacks the atomic builtins Nim's threaded runtime
+  # needs, and fails with "undeclared identifier: 'atomicStoreN'". tcc built
+  # this ~0.2s faster per program; a `readLine` that stops every timer and
+  # actor in the process until the user hits enter is the thing being bought.
+  if findExe("clang") != "": " --cc:clang --threads:on "
+  else: " --threads:on "
 
 # Every backend reports the same two numbers after a successful build, so
 # `--nim` vs `--odin` is a fair comparison rather than a vibe.

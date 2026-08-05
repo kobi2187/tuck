@@ -212,7 +212,16 @@ proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
 # Nim's portable stdlib IS Tuck's OS layer. Exceptions never escape: every
 # fallible fn catches and returns terr(errCode("Enum.Variant")) — matching
 # the error enums declared in the std/*.tuck signatures.
+#
+# Imported HERE rather than at the facade below because the blocking externs
+# route through tuck_async.tuckSubmitBlocking — see readLine.
 import std/[os, times, syncio]
+import ./tuck_async
+from std/posix import nil
+template posixRead(fd: cint, buf: pointer, n: int): int =
+  ## stdin's raw read, spelled explicitly so it cannot be confused with
+  ## syncio's buffered readLine (which must never run on the worker).
+  posix.read(fd, buf, n)
 
 proc readFile*(path: string): TuckResult[tuple[content: string]] =
   try:
@@ -252,13 +261,48 @@ proc fileExists*(path: string): bool = os.fileExists(path)
 proc print*(text: string) = stdout.write(text)
 proc printLine*(text: string) = stdout.writeLine(text)
 
+type
+  ReadLineReq = object
+    ## Caller-allocated, caller-freed, and reachable only from the parked
+    ## coroutine's stack — see the cross-thread contract in tuck_async. The
+    ## buffer is a fixed array rather than a string precisely because the
+    ## worker may not touch GC memory.
+    buf: array[4096, char]
+    len: int
+    status: int   ## 0 ok, 1 end of input, 2 io failure
+
+proc readLineWorker(arg: pointer) {.nimcall, gcsafe.} =
+  ## Runs on the blocking thread. Raw read(2) on stdin — no Nim I/O, no
+  ## allocation, nothing that could reach the collector.
+  let r = cast[ptr ReadLineReq](arg)
+  var i = 0
+  while i < r.buf.len:
+    var c: char
+    let n = posixRead(cint(0), addr c, 1)
+    if n < 0:
+      r.status = 2
+      return
+    if n == 0:                      # EOF
+      if i == 0: r.status = 1
+      break
+    if c == '\n': break
+    r.buf[i] = c
+    i.inc
+  r.len = i
+
 proc readLine*(): TuckResult[tuple[line: string]] =
-  try:
-    tok((line: stdin.readLine()))
-  except EOFError:
-    terr[tuple[line: string]](errCode("io/IoError.EndOfInput"))
-  except IOError:
-    terr[tuple[line: string]](errCode("io/IoError.IoFailed"))
+  ## Blocks on user input, so it runs on the blocking thread: stdin has no
+  ## readiness the reactor could await, and waiting for it inline would stop
+  ## every timer and actor in the process until someone hits enter.
+  var req = ReadLineReq(len: 0, status: 0)
+  tuckSubmitBlocking(readLineWorker, addr req)
+  case req.status
+  of 1: terr[tuple[line: string]](errCode("io/IoError.EndOfInput"))
+  of 2: terr[tuple[line: string]](errCode("io/IoError.IoFailed"))
+  else:
+    var line = newString(req.len)
+    for i in 0 ..< req.len: line[i] = req.buf[i]
+    tok((line: line))
 
 proc argCount*(): tuple[count: int] = (count: paramCount())
 proc argAt*(index: int): tuple[arg: string] = (arg: paramStr(index))
@@ -279,5 +323,5 @@ proc sleepMs*(ms: uint32) = os.sleep(int(ms))
 # (readFile, waitUntil, openSource, ...) uniformly. arsenal is bundled as the
 # base runtime. A name defined in both modules is a Nim redefinition error at
 # stdlib-compile time — the intended hard error, the stdlib author's to fix.
-import ./tuck_async
+# (The import itself is up with the externs, which call into it.)
 export tuck_async
