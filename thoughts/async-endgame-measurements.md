@@ -86,6 +86,49 @@ fixture. The mechanism is real and proven; there is nothing real to point it
 at. That is the actual blocker for the async story, and it is a std-library
 gap, not a runtime gap.
 
+## 5. Verified against real TCP
+
+The socket spike (throwaway, `scratchpad/spike/sock.nim`) built
+listen/accept/connect/recv/send on raw non-blocking posix sockets, awaited
+purely through the EXISTING `tuckAwaitRead`/`tuckAwaitWrite`. No runtime
+changes were needed at all.
+
+Echo server, 100ms of simulated work per request, one thread:
+
+| clients | wall | serial would be | replies |
+|---|---|---|---|
+| 1 | 101ms | 100ms | 1/1 correct |
+| 2 | 101ms | 200ms | 2/2 correct |
+| 4 | 102ms | 400ms | 4/4 correct |
+| 8 | 103ms | 800ms | 8/8 correct |
+| 16 | 105ms | 1600ms | 16/16 correct |
+| 32 | 108ms | 3200ms | 32/32 correct |
+
+Flat to 32 connections. This is the prediction in §1 confirmed on real sockets
+rather than on `openSource`: the reactor path is asymptotically better, and a
+socket module needs no new machinery — only externs.
+
+### Two things the spike exposed
+
+**A leaked waiter hangs the program, silently.** `run()` exits on
+`waiters.len == 0`. One coroutine parked on an fd that will never become
+readable keeps the process alive forever, spinning `epoll_wait` on an empty
+set. A server's accept loop is exactly this shape, so a real server needs a
+shutdown path.
+
+`EventLoop.stop()` exists (`tuck_coro.nim:904`) but is NOT re-exported by
+`tuck_async`, so nothing in Tuck can reach it. The Odin side already has
+`tuckStop` (`tuck_coro.odin`). Closing that asymmetry is a prerequisite for a
+socket module, not an optional extra.
+
+**Debugging note.** The hang was diagnosed by `strace -e epoll_ctl,epoll_wait`
+plus a temporary trace in `runOnce`, after three wrong hypotheses from reading
+code (double registration, accept-loop overrun, coroutine-id reuse via a
+recycled heap address). The trace showed `sendto(8, ...) = -1 EBADF` and a
+`waiters=@[5]` that never cleared, which named the real cause — a closure
+capturing the loop's `let` by reference, so every handler saw the last accepted
+fd. Instrument before theorising.
+
 ## Recommended order (revised by these numbers)
 
 1. **A socket extern in std** — `listen`/`accept`/`recv`/`send` returning fds,
