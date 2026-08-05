@@ -1,0 +1,37 @@
+# std/net — TCP over the reactor. Implemented by tuck_rt.
+#
+# Every call here SUSPENDS the calling task rather than blocking the process:
+# sockets have real readiness, so they reach the reactor (epoll/kqueue) and do
+# not touch the blocking worker that files need. Measured flat to 32 concurrent
+# connections on one thread — see thoughts/async-endgame-measurements.md.
+#
+# A socket is a plain fd, so `on select | read fd | timeout {N.ms}` works on
+# one directly: that is the operation-timeout primitive (spec §9.3) applied to
+# real network I/O rather than to a fixture.
+type NetError:
+  | Refused        # nothing listening, or the peer rejected the connection
+  | AddressInUse   # another process holds that port
+  | Unreachable    # no route, or the address does not resolve
+  | Closed         # the peer hung up mid-operation
+  | IoFailed       # anything else the OS reported
+
+extern:
+  # Bind a port and start listening. The returned fd is what accept takes.
+  fn listen({port: int}) -> !{fd: int} [io, error: NetError]
+
+  # Suspend until a client arrives, then take it. One accepted fd per call.
+  fn accept({fd: int}) -> !{fd: int} [io, error: NetError]
+
+  # Connect to host:port. Suspends until the handshake completes.
+  fn connect({host: str, port: int}) -> !{fd: int} [io, error: NetError]
+
+  # Suspend until data arrives, then take up to `max` bytes. An EMPTY string
+  # means the peer closed cleanly — that is not an error, so callers check
+  # `.len == 0` rather than matching a variant.
+  fn recv({fd: int, max: int}) -> !{data: str} [io, error: NetError]
+
+  # Send all of it, suspending as needed when the socket's buffer fills.
+  fn send({fd: int, data: str}) -> !{sent: int} [io, error: NetError]
+
+  # Release the fd. Safe to call on an already-failed socket.
+  fn close({fd: int}) -> void [io]

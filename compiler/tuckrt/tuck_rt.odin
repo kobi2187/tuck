@@ -15,6 +15,7 @@ package tuckrt
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sys/linux"
 import "core:time"
 
 // !T is a result, ?T is an option: absence is a first-class state, not a
@@ -208,6 +209,19 @@ FsContent :: struct {
 
 IoLine :: struct {
 	line: string,
+}
+
+// std/net payloads
+NetFd :: struct {
+	fd: int,
+}
+
+NetData :: struct {
+	data: string,
+}
+
+NetSent :: struct {
+	sent: int,
 }
 
 EnvValue :: struct {
@@ -407,6 +421,179 @@ readLine :: proc() -> TuckResult(IoLine) {
 		return terr(IoLine, errCode("io/IoError.IoFailed"))
 	}
 	return terr(IoLine, errCode("io/IoError.IoFailed"))
+}
+
+// --- std/net: TCP over the reactor ------------------------------------------
+//
+// Sockets have real readiness, so every one of these SUSPENDS the calling task
+// through the reactor rather than blocking the process. None touch the
+// blocking worker — that is only for files, path metadata and DNS, which have
+// no readiness to await. Mirrors tuck_rt.nim.
+
+NetErrKind :: enum {
+	Refused,
+	AddressInUse,
+	Unreachable,
+	Closed,
+	IoFailed,
+}
+
+@(private)
+netErrCode :: proc(e: NetErrKind) -> u16 {
+	switch e {
+	case .Refused:      return errCode("net/NetError.Refused")
+	case .AddressInUse: return errCode("net/NetError.AddressInUse")
+	case .Unreachable:  return errCode("net/NetError.Unreachable")
+	case .Closed:       return errCode("net/NetError.Closed")
+	case .IoFailed:     return errCode("net/NetError.IoFailed")
+	}
+	return errCode("net/NetError.IoFailed")
+}
+
+@(private)
+classifyErrno :: proc(e: linux.Errno) -> NetErrKind {
+	#partial switch e {
+	case .ECONNREFUSED: return .Refused
+	case .EADDRINUSE:   return .AddressInUse
+	case .ENETUNREACH, .EHOSTUNREACH: return .Unreachable
+	case .EPIPE, .ECONNRESET: return .Closed
+	}
+	return .IoFailed
+}
+
+@(private)
+parseIPv4 :: proc(host: string) -> (addr: [4]u8, ok: bool) {
+	// Dotted quad only. A hostname needs DNS, which blocks and therefore
+	// belongs on the worker — not wired yet, so say so rather than connecting
+	// somewhere unintended.
+	parts := strings.split(host, ".", context.temp_allocator)
+	if len(parts) != 4 do return {}, false
+	for p, i in parts {
+		v := 0
+		if len(p) == 0 do return {}, false
+		for ch in p {
+			if ch < '0' || ch > '9' do return {}, false
+			v = v * 10 + int(ch - '0')
+		}
+		if v > 255 do return {}, false
+		addr[i] = u8(v)
+	}
+	return addr, true
+}
+
+listen :: proc(port: int) -> TuckResult(NetFd) {
+	fd, err := linux.socket(.INET, .STREAM, {.NONBLOCK}, .TCP)
+	if err != .NONE do return terr(NetFd, netErrCode(classifyErrno(err)))
+	// SO_REUSEADDR so a restarted server does not trip over its own TIME_WAIT
+	// sockets — without it, rebinding within ~60s of a shutdown fails.
+	yes: b32 = true
+	_ = linux.setsockopt(fd, linux.SOL_SOCKET, linux.Socket_Option.REUSEADDR, &yes)
+	sa := linux.Sock_Addr_In{
+		sin_family = .INET,
+		sin_port   = u16be(u16(port)),
+		sin_addr   = {0, 0, 0, 0},
+	}
+	if berr := linux.bind(fd, &sa); berr != .NONE {
+		k := classifyErrno(berr)
+		linux.close(fd)
+		return terr(NetFd, netErrCode(k))
+	}
+	if lerr := linux.listen(fd, 64); lerr != .NONE {
+		k := classifyErrno(lerr)
+		linux.close(fd)
+		return terr(NetFd, netErrCode(k))
+	}
+	return tok(NetFd{fd = int(fd)})
+}
+
+accept :: proc(fd: int) -> TuckResult(NetFd) {
+	// Suspends on the listening fd until a client arrives. Re-parks on a
+	// spurious wake (another coroutine took the connection first).
+	for {
+		tuckAwaitRead(fd)
+		sa: linux.Sock_Addr_In
+		c, err := linux.accept(linux.Fd(fd), &sa, {.NONBLOCK})
+		if err == .NONE do return tok(NetFd{fd = int(c)})
+		if err != .EAGAIN do return terr(NetFd, netErrCode(classifyErrno(err)))
+	}
+}
+
+connect :: proc(host: string, port: int) -> TuckResult(NetFd) {
+	// Non-blocking connect: the syscall returns EINPROGRESS immediately and
+	// the fd becomes WRITABLE when the handshake finishes, so the task
+	// suspends on write-readiness rather than blocking.
+	ip, okIp := parseIPv4(host)
+	if !okIp do return terr(NetFd, netErrCode(.Unreachable))
+	fd, err := linux.socket(.INET, .STREAM, {.NONBLOCK}, .TCP)
+	if err != .NONE do return terr(NetFd, netErrCode(classifyErrno(err)))
+	sa := linux.Sock_Addr_In{
+		sin_family = .INET,
+		sin_port   = u16be(u16(port)),
+		sin_addr   = ip,
+	}
+	cerr := linux.connect(fd, &sa)
+	if cerr != .NONE && cerr != .EINPROGRESS {
+		k := classifyErrno(cerr)
+		linux.close(fd)
+		return terr(NetFd, netErrCode(k))
+	}
+	if cerr == .EINPROGRESS {
+		tuckAwaitWrite(int(fd))
+		// The handshake's real outcome lands in SO_ERROR, not in connect's
+		// return value.
+		soErr: i32 = 0
+		// getsockopt_base, not the getsockopt group: in Odin dev-2026-07 the
+		// getsockopt_sock wrapper passes `cast(int) opt` into a parameter
+		// declared `opt: Socket_Option` (core/sys/linux/sys.odin:751), so the
+		// group fails to instantiate. Upstream bug, not ours.
+		_, gerr := linux.getsockopt_base(fd, int(linux.SOL_SOCKET),
+			linux.Socket_Option.ERROR, &soErr)
+		if gerr == .NONE && soErr != 0 {
+			linux.close(fd)
+			return terr(NetFd, netErrCode(classifyErrno(linux.Errno(soErr))))
+		}
+	}
+	return tok(NetFd{fd = int(fd)})
+}
+
+recv :: proc(fd: int, max: int) -> TuckResult(NetData) {
+	// An EMPTY result means the peer closed cleanly — not an error, so callers
+	// test `.data` for emptiness rather than matching a variant.
+	if max <= 0 do return tok(NetData{data = ""})
+	buf := make([]u8, max, context.allocator)
+	for {
+		tuckAwaitRead(fd)
+		n, err := linux.recv(linux.Fd(fd), buf[:], {})
+		if err == .NONE {
+			if n == 0 do return tok(NetData{data = ""})
+			return tok(NetData{data = strings.clone(string(buf[:n]))})
+		}
+		if err != .EAGAIN do return terr(NetData, netErrCode(classifyErrno(err)))
+	}
+}
+
+send :: proc(fd: int, data: string) -> TuckResult(NetSent) {
+	// Sends ALL of it, suspending on write-readiness whenever the kernel
+	// buffer fills. A partial write is not surfaced: the caller asked to send
+	// a value.
+	if len(data) == 0 do return tok(NetSent{sent = 0})
+	bytes := transmute([]u8)data
+	sent := 0
+	for sent < len(bytes) {
+		n, err := linux.send(linux.Fd(fd), bytes[sent:], {})
+		if err == .NONE {
+			sent += n
+		} else if err == .EAGAIN {
+			tuckAwaitWrite(fd)
+		} else {
+			return terr(NetSent, netErrCode(classifyErrno(err)))
+		}
+	}
+	return tok(NetSent{sent = sent})
+}
+
+close :: proc(fd: int) {
+	linux.close(linux.Fd(fd))
 }
 
 // --- std/sys ---

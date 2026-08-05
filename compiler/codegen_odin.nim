@@ -53,6 +53,8 @@ type
                                         # the Nim side
     actorNames: HashSet[string]  # dkActor decl names in `module`, built once
     actorNamesBuilt: bool
+    taskNames: HashSet[string]   # dkTask decl names, same one-shot index
+    taskNamesBuilt: bool
 
 proc isActorType(ctx: var OdinCodegenCtx, name: string): bool =
   ## O(1) after the first call. genOdinExpr's exkField arm asks this once per
@@ -64,6 +66,17 @@ proc isActorType(ctx: var OdinCodegenCtx, name: string): bool =
       if d != nil and d.kind == dkActor: ctx.actorNames.incl(d.name)
     ctx.actorNamesBuilt = true
   name in ctx.actorNames
+
+proc isTaskName(ctx: var OdinCodegenCtx, name: string): bool =
+  ## Mirrors the Nim backend. Calling a task SCHEDULES it as a coroutine
+  ## (spec §9.2); emitting a direct call instead runs its body on the main
+  ## context, where the first tuckAwaitRead hits parkCurrent's
+  ## "cannot await outside a coroutine" panic.
+  if not ctx.taskNamesBuilt:
+    for d in ctx.module.decls:
+      if d != nil and d.kind == dkTask: ctx.taskNames.incl(d.name)
+    ctx.taskNamesBuilt = true
+  name in ctx.taskNames
 
 # --- Type emission --------------------------------------------------------
 
@@ -608,6 +621,24 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   elif calleeStr in ["at", "setAt", "toStr", "tuckConcat", "errCode",
                      "tuckSat", "tuckSatI", "tuckReportUnhandled"]:
     return "rt." & calleeStr & "(" & args.join(", ") & ")"
+  if ctx.isTaskName(calleeStr) and args.len == 0:
+    # Calling a task SCHEDULES it as a coroutine — it runs concurrently and
+    # tuckRun drives it (spec §9.2). Mirrors the Nim backend, which has always
+    # emitted tuckSpawn here.
+    #
+    # Without this the task body runs on the MAIN context, so the first
+    # tuckAwaitRead inside it hits parkCurrent's "cannot await outside a
+    # coroutine" panic. It went unnoticed because 28-async-task, the only Odin
+    # task example, never awaits an fd — only tuckYield, which is legal
+    # anywhere.
+    #
+    # NULLARY ONLY. Odin proc literals cannot capture (verified: "Undeclared
+    # name: x" for a literal referencing an outer local), so a task WITH
+    # arguments needs them marshalled through a heap context the thunk owns —
+    # designed, not guessed. Until then a task with arguments still emits a
+    # direct call, which is wrong the moment it awaits; see
+    # thoughts/bugs-found-while-building-net.md.
+    return "rt.tuckSpawn(proc() { " & calleeStr & "() })"
   return calleeStr & "(" & args.join(", ") & ")"
 
 proc odinBangInfo(ctx: var OdinCodegenCtx, t: Type):

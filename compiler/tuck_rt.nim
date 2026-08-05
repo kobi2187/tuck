@@ -256,6 +256,15 @@ type
     iosAccessDenied
     iosEndOfInput
 
+  NetErrKind = enum
+    ## The errno classes a Tuck program can act on differently, mirroring the
+    ## NetError variants in std/net.tuck.
+    nekRefused
+    nekAddressInUse
+    nekUnreachable
+    nekClosed
+    nekIoFailed
+
   FileReq = object
     op: FileOp
     path: cstring          ## caller-owned, alive for the whole call
@@ -408,6 +417,159 @@ proc readLine*(): TuckResult[tuple[line: string]] =
     tok((line: line))
   of iosIoFailed, iosNotFound, iosAccessDenied:
     terr[tuple[line: string]](errCode("io/IoError.IoFailed"))
+
+# --- std/net: TCP over the reactor ------------------------------------------
+#
+# Sockets have real readiness, so every one of these SUSPENDS the calling task
+# through the reactor rather than blocking the process. None of them touch the
+# blocking worker — that is only for files, path metadata and DNS, which have
+# no readiness to await (thoughts/async-endgame-measurements.md).
+#
+# Raw posix rather than std/net: Nim's Socket is a blocking abstraction over
+# the same fds, and the whole point is to hand codegen a plain int fd that
+# `on select | read fd` can await directly.
+
+proc netErr[T](e: NetErrKind): TuckResult[T] =
+  ## One place mapping an errno class onto the NetError variants declared in
+  ## std/net.tuck. Exhaustive, so a new kind is a compile error here.
+  case e
+  of nekRefused: terr[T](errCode("net/NetError.Refused"))
+  of nekAddressInUse: terr[T](errCode("net/NetError.AddressInUse"))
+  of nekUnreachable: terr[T](errCode("net/NetError.Unreachable"))
+  of nekClosed: terr[T](errCode("net/NetError.Closed"))
+  of nekIoFailed: terr[T](errCode("net/NetError.IoFailed"))
+
+proc classifyErrno(): NetErrKind =
+  ## errno at the moment of failure, bucketed into what a Tuck program can act
+  ## on. Anything unrecognised is IoFailed rather than a guess.
+  let e = osLastError().int32
+  if e == posix.ECONNREFUSED: nekRefused
+  elif e == posix.EADDRINUSE: nekAddressInUse
+  elif e == posix.ENETUNREACH or e == posix.EHOSTUNREACH: nekUnreachable
+  elif e == posix.EPIPE or e == posix.ECONNRESET: nekClosed
+  else: nekIoFailed
+
+proc setNonBlocking(fd: cint) =
+  let fl = posix.fcntl(fd, posix.F_GETFL, 0)
+  discard posix.fcntl(fd, posix.F_SETFL, fl or posix.O_NONBLOCK)
+
+proc listen*(port: int): TuckResult[tuple[fd: int]] =
+  let sh = posix.socket(posix.AF_INET, posix.SOCK_STREAM, 0)
+  if cint(sh) < 0: return netErr[tuple[fd: int]](classifyErrno())
+  let fd = cint(sh)
+  # SO_REUSEADDR so a restarted server does not trip over its own TIME_WAIT
+  # sockets — without it, rebinding within ~60s of a shutdown fails.
+  var yes: cint = 1
+  discard posix.setsockopt(posix.SocketHandle(fd), posix.SOL_SOCKET,
+                           posix.SO_REUSEADDR, addr yes,
+                           posix.SockLen(sizeof(yes)))
+  var sa: posix.Sockaddr_in
+  sa.sin_family = posix.TSa_Family(posix.AF_INET)
+  sa.sin_port = posix.htons(uint16(port))
+  sa.sin_addr.s_addr = posix.INADDR_ANY
+  if posix.bindSocket(posix.SocketHandle(fd), cast[ptr posix.SockAddr](addr sa),
+                      posix.SockLen(sizeof(sa))) < 0:
+    let k = classifyErrno()
+    discard posix.close(fd)
+    return netErr[tuple[fd: int]](k)
+  if posix.listen(posix.SocketHandle(fd), 64) < 0:
+    let k = classifyErrno()
+    discard posix.close(fd)
+    return netErr[tuple[fd: int]](k)
+  setNonBlocking(fd)
+  tok((fd: fd.int))
+
+proc accept*(fd: int): TuckResult[tuple[fd: int]] =
+  ## Suspends on the listening fd until a client arrives. The loop re-parks on
+  ## a spurious wake (another coroutine took the connection first).
+  while true:
+    tuckAwaitRead(fd)
+    let c = cint(posix.accept(posix.SocketHandle(fd), nil, nil))
+    if c >= 0:
+      setNonBlocking(c)
+      return tok((fd: c.int))
+    let e = osLastError().int32
+    if e != posix.EAGAIN and e != posix.EWOULDBLOCK:
+      return netErr[tuple[fd: int]](classifyErrno())
+
+proc connect*(host: string, port: int): TuckResult[tuple[fd: int]] =
+  ## Non-blocking connect: the syscall returns posix.EINPROGRESS immediately and the
+  ## fd becomes WRITABLE when the handshake finishes, so the task suspends on
+  ## write-readiness rather than blocking.
+  let sh = posix.socket(posix.AF_INET, posix.SOCK_STREAM, 0)
+  if cint(sh) < 0: return netErr[tuple[fd: int]](classifyErrno())
+  let fd = cint(sh)
+  setNonBlocking(fd)
+  var sa: posix.Sockaddr_in
+  sa.sin_family = posix.TSa_Family(posix.AF_INET)
+  sa.sin_port = posix.htons(uint16(port))
+  sa.sin_addr.s_addr = posix.inet_addr(host)
+  if sa.sin_addr.s_addr == posix.InAddrScalar(0xFFFFFFFF'u32) and
+     host != "255.255.255.255":
+    # inet_addr only parses dotted quads; a hostname needs DNS, which blocks
+    # and therefore belongs on the worker. Not wired yet — say so rather than
+    # connecting somewhere unintended.
+    discard posix.close(fd)
+    return netErr[tuple[fd: int]](nekUnreachable)
+  let rc = posix.connect(posix.SocketHandle(fd),
+                         cast[ptr posix.SockAddr](addr sa),
+                         posix.SockLen(sizeof(sa)))
+  if rc < 0:
+    let e = osLastError().int32
+    if e != posix.EINPROGRESS:
+      let k = classifyErrno()
+      discard posix.close(fd)
+      return netErr[tuple[fd: int]](k)
+    tuckAwaitWrite(fd.int)
+    # The handshake's real outcome lands in SO_ERROR, not in connect's return.
+    var soErr: cint = 0
+    var sl = posix.SockLen(sizeof(soErr))
+    discard posix.getsockopt(posix.SocketHandle(fd), posix.SOL_SOCKET,
+                             posix.SO_ERROR, addr soErr, addr sl)
+    if soErr != 0:
+      discard posix.close(fd)
+      return netErr[tuple[fd: int]](
+        if soErr == posix.ECONNREFUSED: nekRefused
+        elif soErr == posix.ENETUNREACH or soErr == posix.EHOSTUNREACH: nekUnreachable
+        else: nekIoFailed)
+  tok((fd: fd.int))
+
+proc recv*(fd: int, max: int): TuckResult[tuple[data: string]] =
+  ## An EMPTY result means the peer closed cleanly — not an error, so callers
+  ## test `.data.len == 0` rather than matching a variant.
+  if max <= 0: return tok((data: ""))
+  var buf = newString(max)
+  while true:
+    tuckAwaitRead(fd)
+    let n = posix.recv(posix.SocketHandle(fd), addr buf[0], max, 0)
+    if n > 0:
+      buf.setLen(n)
+      return tok((data: buf))
+    if n == 0: return tok((data: ""))
+    let e = osLastError().int32
+    if e != posix.EAGAIN and e != posix.EWOULDBLOCK:
+      return netErr[tuple[data: string]](classifyErrno())
+
+proc send*(fd: int, data: string): TuckResult[tuple[sent: int]] =
+  ## Sends ALL of it, suspending on write-readiness whenever the kernel buffer
+  ## fills. A partial write is not surfaced: the caller asked to send a value.
+  if data.len == 0: return tok((sent: 0))
+  var sent = 0
+  while sent < data.len:
+    let n = posix.send(posix.SocketHandle(fd), unsafeAddr data[sent],
+                       data.len - sent, 0)
+    if n > 0:
+      sent += n
+    else:
+      let e = osLastError().int32
+      if e == posix.EAGAIN or e == posix.EWOULDBLOCK:
+        tuckAwaitWrite(fd)
+      else:
+        return netErr[tuple[sent: int]](classifyErrno())
+  tok((sent: sent))
+
+proc close*(fd: int) =
+  discard posix.close(cint(fd))
 
 proc argCount*(): tuple[count: int] = (count: paramCount())
 proc argAt*(index: int): tuple[arg: string] = (arg: paramStr(index))

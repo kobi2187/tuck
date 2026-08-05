@@ -1,0 +1,50 @@
+import net
+import scheduler
+
+# Server and client in ONE program over real TCP on loopback. Binding a task's
+# result AWAITS it (spec §9.2), so the server must not be bound before the
+# client runs — an actor holds the result instead, and main waits on its state.
+actor Result [queue: 8]:
+  code: int = 0
+  ready: bool = false
+
+  on put({c: int}):
+    code = c
+    ready = true
+
+task serve({lfd: int}) -> {n: int} [io]:
+  let c = {fd: lfd} net::accept
+  if c.ok:
+    let req = {fd: c.value.fd, max: 256} net::recv
+    let s = {fd: c.value.fd, data: "pong"} net::send
+    {fd: c.value.fd} net::close
+  return {n: 0}
+
+task client({port: int}) -> {n: int} [io]:
+  let c = {host: "127.0.0.1", port: port} net::connect
+  if c.ok:
+    let s = {fd: c.value.fd, data: "ping"} net::send
+    let r = {fd: c.value.fd, max: 256} net::recv
+    {fd: c.value.fd} net::close
+    if r.ok:
+      if r.value.data == "pong":
+        Result send put {c: 42}
+        return {n: 0}
+    Result send put {c: 3}
+    return {n: 0}
+  Result send put {c: 4}
+  return {n: 0}
+
+fn done() -> bool:
+  return Result.ready
+
+fn main() -> int [io]:
+  let l = {port: 34593} net::listen
+  if l.ok:
+    {lfd: l.value.fd} serve      # fire-and-forget: not bound, so not awaited
+    {port: 34593} client
+    scheduler::waitUntil {pred: :done}
+    {fd: l.value.fd} net::close
+    {} scheduler::stop
+    return Result.code
+  return 1

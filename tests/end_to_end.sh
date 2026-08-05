@@ -107,4 +107,59 @@ fn main() -> int:
 TUCKEOF
 runs "scheduler::stop ends the loop" 7
 
+# std/net over the reactor: a server task and a client task in ONE program,
+# real TCP on loopback. Proves listen/accept/connect/send/recv/close all
+# suspend through the reactor rather than blocking — a regression here HANGS
+# rather than failing, which is why it is a `runs` and not an `emits`.
+src <<'TUCKEOF'
+import net
+import scheduler
+
+actor Result [queue: 8]:
+  code: int = 0
+  ready: bool = false
+
+  on put({c: int}):
+    code = c
+    ready = true
+
+task serve({lfd: int}) -> {n: int} [io]:
+  let c = {fd: lfd} net::accept
+  if c.ok:
+    let req = {fd: c.value.fd, max: 256} net::recv
+    let s = {fd: c.value.fd, data: "pong"} net::send
+    {fd: c.value.fd} net::close
+  return {n: 0}
+
+task client({port: int}) -> {n: int} [io]:
+  let c = {host: "127.0.0.1", port: port} net::connect
+  if c.ok:
+    let s = {fd: c.value.fd, data: "ping"} net::send
+    let r = {fd: c.value.fd, max: 256} net::recv
+    {fd: c.value.fd} net::close
+    if r.ok:
+      if r.value.data == "pong":
+        Result send put {c: 9}
+        return {n: 0}
+    Result send put {c: 3}
+    return {n: 0}
+  Result send put {c: 4}
+  return {n: 0}
+
+fn done() -> bool:
+  return Result.ready
+
+fn main() -> int [io]:
+  let l = {port: 34599} net::listen
+  if l.ok:
+    {lfd: l.value.fd} serve
+    {port: 34599} client
+    scheduler::waitUntil {pred: :done}
+    {fd: l.value.fd} net::close
+    {} scheduler::stop
+    return Result.code
+  return 1
+TUCKEOF
+runs "std/net does a real TCP round trip" 9
+
 finish

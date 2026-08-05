@@ -20,7 +20,7 @@ gated="
 09-decision-table 10-invariants 11-embedded-feature
 12-transition-the-ctor-exception 13-arena-mem 14-task 15-type-attributes
 17-input-merge 18-alias 19-event-registry 21-decision-bitmask 22-error-policy
-23-units 24-stdlib 25-pools 26-actor-run 27-actor-select
+23-units 24-stdlib 25-pools 26-actor-run 27-actor-select 42-net-echo
 "
 
 out=$(mktemp -d)
