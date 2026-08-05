@@ -228,36 +228,129 @@ NowMs :: struct {
 
 // --- std/fs ---
 
+// These all block: a regular file is always "ready" to epoll, so the reactor
+// cannot await one. They run on the worker via tuckSubmitBlocking (see
+// tuck_coro.odin), which parks the calling coroutine on a completion pipe.
+//
+// Mirrors tuck_rt.nim, but simpler: Odin has no GC, so the worker may use the
+// ordinary allocator and the request can hold Odin strings and slices directly
+// — the Nim side has to marshal through C buffers to keep the collector out of
+// the worker's reach.
+
+IoStatus :: enum {
+	Ok,
+	NotFound,
+	IoFailed,
+	AccessDenied,
+	EndOfInput,
+}
+
+@(private)
+FileOp :: enum {
+	Read,
+	Write,
+	Append,
+	Remove,
+}
+
+@(private)
+FileReq :: struct {
+	op:      FileOp,
+	path:    string,
+	data:    string,
+	outData: []u8,
+	status:  IoStatus,
+}
+
+@(private)
+fileWorker :: proc(arg: rawptr) {
+	r := (^FileReq)(arg)
+	switch r.op {
+	case .Read:
+		if !os.exists(r.path) {
+			r.status = .NotFound
+			return
+		}
+		data, err := os.read_entire_file_from_path(r.path, context.allocator)
+		if err != nil {
+			r.status = .IoFailed
+			return
+		}
+		r.outData = data
+	case .Write:
+		if os.write_entire_file(r.path, transmute([]u8)r.data) != nil {
+			r.status = .AccessDenied
+		}
+	case .Append:
+		f, err := os.open(r.path, os.O_WRONLY | os.O_APPEND | os.O_CREATE,
+			os.Permissions{.Read_User, .Write_User, .Read_Group, .Read_Other})
+		if err != nil {
+			r.status = .AccessDenied
+			return
+		}
+		defer os.close(f)
+		if _, werr := os.write(f, transmute([]u8)r.data); werr != nil {
+			r.status = .AccessDenied
+		}
+	case .Remove:
+		if !os.exists(r.path) {
+			r.status = .NotFound
+			return
+		}
+		if os.remove(r.path) != nil do r.status = .AccessDenied
+	}
+}
+
+@(private)
+runFileOp :: proc(op: FileOp, path: string, data: string = "") -> FileReq {
+	// The request lives on THIS coroutine's stack for the whole call: it cannot
+	// proceed until the worker signals, so the worker's view is always valid.
+	req := FileReq{op = op, path = path, data = data, status = .Ok}
+	tuckSubmitBlocking(fileWorker, &req)
+	return req
+}
+
+// One place mapping a worker outcome onto the FsError variants declared in
+// std/fs.tuck. Exhaustive, so a new IoStatus is a compile error here rather
+// than a silently wrong error code at four call sites.
+@(private)
+fsErrCode :: proc(s: IoStatus) -> u16 {
+	switch s {
+	case .NotFound:     return errCode("fs/FsError.NotFound")
+	case .AccessDenied: return errCode("fs/FsError.AccessDenied")
+	case .Ok, .IoFailed, .EndOfInput:
+		return errCode("fs/FsError.IoFailed")
+	}
+	return errCode("fs/FsError.IoFailed")
+}
+
 readFile :: proc(path: string) -> TuckResult(FsContent) {
-	if !os.exists(path) do return terr(FsContent, errCode("fs/FsError.NotFound"))
-	data, err := os.read_entire_file_from_path(path, context.allocator)
-	if err != nil do return terr(FsContent, errCode("fs/FsError.IoFailed"))
-	return tok(FsContent{content = string(data)})
+	r := runFileOp(.Read, path)
+	if r.status != .Ok do return terr(FsContent, fsErrCode(r.status))
+	return tok(FsContent{content = string(r.outData)})
 }
 
 writeFile :: proc(path: string, content: string) -> TuckResult(TuckUnit) {
-	err := os.write_entire_file(path, transmute([]u8)content)
-	if err != nil do return terr(TuckUnit, errCode("fs/FsError.AccessDenied"))
+	r := runFileOp(.Write, path, content)
+	if r.status != .Ok do return terr(TuckUnit, fsErrCode(r.status))
 	return tokVoid()
 }
 
 appendFile :: proc(path: string, content: string) -> TuckResult(TuckUnit) {
-	f, err := os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREATE, os.Permissions{.Read_User, .Write_User, .Read_Group, .Read_Other})
-	if err != nil do return terr(TuckUnit, errCode("fs/FsError.AccessDenied"))
-	defer os.close(f)
-	_, werr := os.write(f, transmute([]u8)content)
-	if werr != nil do return terr(TuckUnit, errCode("fs/FsError.AccessDenied"))
+	r := runFileOp(.Append, path, content)
+	if r.status != .Ok do return terr(TuckUnit, fsErrCode(r.status))
 	return tokVoid()
 }
 
 removeFile :: proc(path: string) -> TuckResult(TuckUnit) {
-	if !os.exists(path) do return terr(TuckUnit, errCode("fs/FsError.NotFound"))
-	if os.remove(path) != nil {
-		return terr(TuckUnit, errCode("fs/FsError.AccessDenied"))
-	}
+	r := runFileOp(.Remove, path)
+	if r.status != .Ok do return terr(TuckUnit, fsErrCode(r.status))
 	return tokVoid()
 }
 
+// NOT offloaded: a stat is a metadata lookup, microseconds on any live
+// filesystem. Paying a thread handoff and a pipe round-trip would cost more
+// than the call. Mirrors the Nim side.
 fileExists :: proc(path: string) -> bool {
 	return os.exists(path)
 }
@@ -272,13 +365,48 @@ printLine :: proc(text: string) {
 	fmt.println(text)
 }
 
+@(private)
+ReadLineReq :: struct {
+	buf:    [4096]u8,
+	len:    int,
+	status: IoStatus,
+}
+
+@(private)
+readLineWorker :: proc(arg: rawptr) {
+	r := (^ReadLineReq)(arg)
+	n, err := os.read(os.stdin, r.buf[:])
+	if err != nil {
+		r.status = .IoFailed
+		return
+	}
+	if n <= 0 {
+		r.status = .EndOfInput
+		return
+	}
+	r.len = n
+}
+
+// Blocks on user input, so it runs on the worker: waiting for it inline would
+// stop every timer and actor in the process until someone hits enter.
+//
+// stdin DOES have real readiness, so this could reach the reactor instead —
+// see thoughts/async-endgame-measurements.md. The worker was the fix that
+// removed the hang; the reactor is the better implementation of the same
+// extern, and applies to both backends equally.
 readLine :: proc() -> TuckResult(IoLine) {
-	buf: [4096]u8
-	n, err := os.read(os.stdin, buf[:])
-	if err != nil do return terr(IoLine, errCode("io/IoError.IoFailed"))
-	if n <= 0 do return terr(IoLine, errCode("io/IoError.EndOfInput"))
-	line := strings.trim_right(string(buf[:n]), "\r\n")
-	return tok(IoLine{line = strings.clone(line)})
+	req := ReadLineReq{status = .Ok}
+	tuckSubmitBlocking(readLineWorker, &req)
+	switch req.status {
+	case .EndOfInput:
+		return terr(IoLine, errCode("io/IoError.EndOfInput"))
+	case .Ok:
+		line := strings.trim_right(string(req.buf[:req.len]), "\r\n")
+		return tok(IoLine{line = strings.clone(line)})
+	case .IoFailed, .NotFound, .AccessDenied:
+		return terr(IoLine, errCode("io/IoError.IoFailed"))
+	}
+	return terr(IoLine, errCode("io/IoError.IoFailed"))
 }
 
 // --- std/sys ---
@@ -310,6 +438,18 @@ nowMs :: proc() -> NowMs {
 	return NowMs{ms = u64(time.to_unix_nanoseconds(time.now()) / 1_000_000)}
 }
 
+// The reactor's timer, NOT the worker and NOT time.sleep. A sleep is the one
+// "blocking" op that was never blocking-by-nature: waiting for a deadline is
+// exactly what a timerfd does, so tuckSleep suspends only this coroutine while
+// everything else keeps running. Offloading it would burn a thread to
+// reproduce what the reactor already does for free.
+//
+// time.sleep here used to halt the process: the scheduler, the reactor, every
+// actor and every timer, for the full duration.
 sleepMs :: proc(ms: u32) {
-	time.sleep(time.Duration(ms) * time.Millisecond)
+	if activeCoroutine != nil {
+		tuckSleep(int(ms))
+	} else {
+		time.sleep(time.Duration(ms) * time.Millisecond)   // no scheduler to yield to
+	}
 }

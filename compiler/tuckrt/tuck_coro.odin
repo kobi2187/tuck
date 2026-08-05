@@ -20,6 +20,7 @@ package tuckrt
 import "core:c"
 import "core:container/queue"
 import "core:sys/linux"
+import "core:thread"
 import "base:runtime"
 
 // ===========================================================================
@@ -431,6 +432,99 @@ tuckStop :: proc() {
 tuckAsyncInit :: proc() {
 	initScheduler()
 	initLoop()
+}
+
+// ---------------------------------------------------------------------------
+// The offload seam — mirrors tuck_async.nim's tuckSubmitBlocking.
+//
+// A blocking operation cannot be made to yield: a regular file is always
+// "ready" to epoll, so the reactor is structurally incapable of awaiting one.
+// The work runs on a worker thread and signals completion by writing one byte
+// to a pipe the reactor already watches, which resumes the parked coroutine.
+//
+// MEASURED (thoughts/async-endgame-measurements.md): one worker serializes, so
+// N concurrent blocking calls cost N*work. A pool of K caps at exactly K and
+// then goes linear again — it buys a constant, not asynchrony. Anything with
+// real fd readiness (sockets, pipes, tty, timers) belongs on the reactor
+// instead and should never reach this. Files, path metadata and DNS are the
+// worker's permanent job.
+//
+// The contract is the same as the Nim side, and simpler to honour here because
+// Odin has no GC: the worker touches only the request's own pointers, one
+// syscall, and the completion write. It never schedules and never allocates.
+
+BlockingFn :: proc(arg: rawptr)
+
+@(private)
+BlockingReq :: struct {
+	fn:     BlockingFn,
+	arg:    rawptr,
+	doneFd: linux.Fd,
+}
+
+@(private)
+gBlockingStarted: bool
+
+@(private)
+gReqPipe: [2]linux.Fd
+
+@(private)
+blockingWorker :: proc(t: ^thread.Thread) {
+	for {
+		req: BlockingReq
+		n, rerr := linux.read(gReqPipe[0], ([^]u8)(&req)[:size_of(BlockingReq)])
+		if rerr != nil || n != size_of(BlockingReq) do break
+		req.fn(req.arg)
+		b: [1]u8 = {1}
+		_, _ = linux.write(req.doneFd, b[:])
+		linux.close(req.doneFd)
+	}
+}
+
+@(private)
+ensureBlockingThread :: proc() {
+	// Started on first use: a program that never blocks never pays for a
+	// thread. One worker, process lifetime, never joined — it parks in read()
+	// on the request pipe when idle.
+	if gBlockingStarted do return
+	fds: [2]linux.Fd
+	if linux.pipe2(&fds, {}) != nil do return
+	gReqPipe = fds
+	t := thread.create(blockingWorker)
+	if t == nil do return
+	thread.start(t)
+	gBlockingStarted = true
+}
+
+// Run `fn(arg)` off the scheduler thread and SUSPEND this coroutine until it
+// finishes. The scheduler, the reactor, every actor and every timer keep
+// running meanwhile.
+//
+// Called outside a coroutine this runs inline: there is nothing to yield to,
+// and parking would deadlock.
+tuckSubmitBlocking :: proc(fn: BlockingFn, arg: rawptr) {
+	if activeCoroutine == nil {
+		fn(arg)
+		return
+	}
+	initLoop()
+	ensureBlockingThread()
+	if !gBlockingStarted {
+		fn(arg)   // no worker: better inline than not at all
+		return
+	}
+	done: [2]linux.Fd
+	if linux.pipe2(&done, {}) != nil {
+		fn(arg)
+		return
+	}
+	req := BlockingReq{fn = fn, arg = arg, doneFd = done[1]}
+	buf := ([^]u8)(&req)[:size_of(BlockingReq)]
+	_, _ = linux.write(gReqPipe[1], buf)
+	tuckAwaitRead(int(done[0]))   // the reactor resumes us when the byte lands
+	b: [1]u8
+	_, _ = linux.read(done[0], b[:])
+	linux.close(done[0])
 }
 
 tuckSpawn :: proc(fn: proc()) {

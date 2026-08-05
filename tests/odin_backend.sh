@@ -50,9 +50,11 @@ odin_compile="
 #   39-if-match-expr  0  R2/R3: value-position if and match agree
 #   40-saturating     0  [saturating] must CLAMP (a miss returns 4464)
 #   41-tostr-concat   0  postfix application + unqualified call + concat
+#   24-stdlib         0  writeFile then readFile THROUGH THE OFFLOAD WORKER —
+#                        compile-only could not see that the round trip works
 odin_run="26-actor-run:55 27-actor-select:55 31-fnsig-callback:42 33-ffi-zlib:0 34-ffi-cstring:0
 35-ffi-struct:0 36-ffi-enum-callback:0 37-ffi-handle:0 28-async-task:42
-38-division:0 39-if-match-expr:0 40-saturating:0 41-tostr-concat:0"
+38-division:0 39-if-match-expr:0 40-saturating:0 41-tostr-concat:0 24-stdlib:0"
 
 odin_exe=$(command -v odin || true)
 for c in /home/kl/apps/Odin/odin /opt/odin/odin; do
