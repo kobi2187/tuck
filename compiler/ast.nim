@@ -381,6 +381,14 @@ type
     dkImport  # import <module> — loads <module>.tuck next to the importer
     dkSelect  # `on select:` — wait on multiple event sources (spec §9.3)
     dkFnSig   # `fnsig NAME = {params} -> ret` — named function-signature type
+    dkSatisfies # `Obj satisfies Iface` at TOP LEVEL — a calling module attaching
+                # an object it did not declare to a contract it did not declare
+                # (spec §5.2). Its own kind rather than a dkExpr carrying a
+                # marker: the object-body form is sifted into dkObject.satisfies
+                # at parse time and disappears, whereas this one has to SURVIVE
+                # as a declaration so a later module in the closure can see it.
+                # Conformance is checked identically either way — attaching does
+                # not weaken the contract, it only widens where it may be stated.
     dkInterface # `interface NAME:` — a contract (spec §5.2). Its own kind, NOT
                 # a share of dkMixin's arm: a mixin's members are CODE that gets
                 # composed into an object, an interface's are REQUIREMENTS that
@@ -458,6 +466,12 @@ type
       taskReturnType*: Type
       taskEffects*: seq[EffectMarker]
       taskBody*: Expr
+    of dkSatisfies:
+      # `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL.
+      # `name` is the OBJECT; these are the interfaces being attached to it.
+      # A seq because the list form attaches several at once, and because a
+      # module may state several separate lines for the same object.
+      satisfyTargets*: seq[string]
     of dkFnSig:
       # `fnsig NAME = {params} -> ret` — a named function-signature type (a
       # named delegate). NAME becomes usable as a type for slots/callbacks;
@@ -615,7 +629,9 @@ proc assignIds*(d: Decl, next: var uint32) =
     for h in d.handlers: assignIds(h, next)
   of dkSelect:
     for arm in d.selectArms: assignIds(arm.body, next)
-  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig: discard
+  # dkSatisfies carries only names, no sub-expressions to identify.
+  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig,
+     dkSatisfies: discard
 
 # The id supply. SINGLE-WRITER: one thread mints ids, which holds today because
 # tuck is built --threads:off (tuck.nim pickFastCC — that flag is also what lets
@@ -697,7 +713,8 @@ proc clearIds*(d: Decl) =
   of dkInterface: (for m in d.ifaceMembers: clearIds(m))
   of dkActor: (for h in d.handlers: clearIds(h))
   of dkSelect: (for arm in d.selectArms: clearIds(arm.body))
-  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig: discard
+  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig,
+     dkSatisfies: discard
 
 proc clearIds*(m: var Module) =
   for d in m.decls: clearIds(d)

@@ -23,8 +23,8 @@ interface Speaker:
   fn speak({volume: int}) -> str
 
 object Dog:
-  name: str
   satisfies Speaker
+  name: str
 
   fn speak({volume: int}) -> str:
     return self.name
@@ -43,9 +43,9 @@ interface Named:
   fn label() -> str
 
 object Dog:
-  name: str
   satisfies Speaker
   satisfies Named
+  name: str
 
   fn speak({volume: int}) -> str:
     return self.name
@@ -64,8 +64,8 @@ interface Loader:
   fn load({path: str}) -> str [io]
 
 object Cache:
-  data: str
   satisfies Loader
+  data: str
 
   fn load({path: str}) -> str:
     return self.data
@@ -81,8 +81,8 @@ interface Cloneable:
   fn copyOf() -> Self
 
 object Doc:
-  n: int
   satisfies Cloneable
+  n: int
 
   fn copyOf() -> Doc:
     return self
@@ -109,8 +109,8 @@ interface Speaker:
   fn speak({volume: int}) -> str
 
 object Mime:
-  name: str
   satisfies Speaker
+  name: str
 
 fn main() -> int:
   return 0
@@ -124,8 +124,8 @@ interface Speaker:
   fn speak({volume: int}) -> str
 
 object Dog:
-  name: str
   satisfies Speaker
+  name: str
 
   fn speak({loudness: int}) -> str:
     return self.name
@@ -140,8 +140,8 @@ interface Speaker:
   fn speak({volume: int}) -> str
 
 object Dog:
-  name: str
   satisfies Speaker
+  name: str
 
   fn speak({volume: str}) -> str:
     return self.name
@@ -156,8 +156,8 @@ interface Speaker:
   fn speak({volume: int}) -> str
 
 object Dog:
-  name: str
   satisfies Speaker
+  name: str
 
   fn speak({volume: int}) -> int:
     return 1
@@ -186,8 +186,8 @@ bad_check "an impl may not declare effects the contract lacks" "io|effect"
 
 src <<'EOF'
 object Dog:
-  name: str
   satisfies NoSuchInterface
+  name: str
 
   fn speak({volume: int}) -> str:
     return self.name
@@ -204,8 +204,8 @@ interface Speaker:
   fn speak({volume: int}) -> str
 
 object Dog:
-  name: str
   satisfies Speaker
+  name: str
 
   fn speak({volume: int}) -> str
 
@@ -213,6 +213,100 @@ fn main() -> int:
   return 0
 EOF
 bad_check "a body-less member does not implement the contract" "speak"
+
+# --- top-level `Obj satisfies Iface` --------------------------------------
+#
+# A CALLING module attaches an object it did not declare to a contract it did
+# not declare, so a library type can be used through your interface without
+# editing the library.
+
+src <<'TUCKEOF'
+import sys
+
+interface Speaker:
+  fn noise({self: Self}) -> int
+
+interface Mover:
+  fn steps({self: Self}) -> int
+
+object Dog:
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 1
+  fn steps({self: Dog}) -> int:
+    return 4
+
+object Cat:
+  satisfies Speaker
+  name: str
+  fn noise({self: Cat}) -> int:
+    return 41
+  fn steps({self: Cat}) -> int:
+    return 0
+
+Dog satisfies [Speaker, Mover]
+Cat satisfies [Speaker, Mover]
+
+fn hear({a: Speaker}) -> int:
+  return a.noise
+
+fn main() -> void [io]:
+  let d = {name: "rex"} Dog
+  let c = {name: "tom"} Cat
+  let total = {a: d} hear + {a: c} hear
+  total sys::exit
+TUCKEOF
+runs "a top-level satisfies attaches an object to a contract" 42
+
+# Re-stating a contract the object already declares is a NO-OP, not an error:
+# a calling module cannot know what the library already promised. (Cat above
+# declares `satisfies Speaker` in its body AND is listed again at top level.)
+
+src <<'TUCKEOF'
+interface Speaker:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  name: str
+
+Dog satisfies Speaker
+
+fn main() -> int:
+  return 0
+TUCKEOF
+bad_check "an attached contract is still enforced" "does not implement"
+
+src <<'TUCKEOF'
+interface Speaker:
+  fn noise({self: Self}) -> int
+
+Ghost satisfies Speaker
+
+fn main() -> int:
+  return 0
+TUCKEOF
+bad_check "attaching to an undeclared object is reported" "not a declared object"
+
+# --- contracts come before fields -----------------------------------------
+#
+# What an object PROMISES should be visible before its data, so a body reads
+# "what is this for" before "what does it hold" and the promise cannot hide
+# below a long field list.
+
+src <<'TUCKEOF'
+interface Speaker:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  name: str
+  satisfies Speaker
+  fn noise({self: Dog}) -> int:
+    return 1
+
+fn main() -> int:
+  return 0
+TUCKEOF
+bad_check "a satisfies line after a field is rejected" "before the object's fields"
 
 # --- the existing example must stay honest --------------------------------
 

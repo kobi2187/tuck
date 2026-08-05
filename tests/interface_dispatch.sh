@@ -19,8 +19,8 @@ interface Animal:
   fn noise({self: Self}) -> int
 
 object Dog:
-  name: str
   satisfies Animal
+  name: str
 
   fn noise({self: Dog}) -> int:
     return 1
@@ -57,14 +57,14 @@ interface Animal:
   fn noise({self: Self}) -> int
 
 object Dog:
-  name: str
   satisfies Animal
+  name: str
   fn noise({self: Dog}) -> int:
     return 1
 
 object Cat:
-  lives: int
   satisfies Animal
+  lives: int
   fn noise({self: Cat}) -> int:
     return 41
 
@@ -90,14 +90,14 @@ interface Animal:
   fn noise({self: Self}) -> int
 
 object Dog:
-  name: str
   satisfies Animal
+  name: str
   fn noise({self: Dog}) -> int:
     return 1
 
 object Ghost:
-  n: int
   satisfies Animal
+  n: int
   fn noise({self: Ghost}) -> int:
     return 99
 

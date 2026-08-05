@@ -13,15 +13,15 @@ IFACE='interface Animal:
   fn noise({self: Self}) -> int
 
 object Dog:
-  name: str
   satisfies Animal
+  name: str
 
   fn noise({self: Dog}) -> int:
     return 1
 
 object Cat:
-  lives: int
   satisfies Animal
+  lives: int
 
   fn noise({self: Cat}) -> int:
     return 41
@@ -49,14 +49,38 @@ runs     "each element dispatches to its own implementation"  42
 emits      "a branch for Dog"  'tuck_DogVal'
 emits      "a branch for Cat"  'tuck_CatVal'
 emits_odin "Odin: both branches" 'tuck_(Dog|Cat)Val'
-# OPEN, and PRE-EXISTING: Odin rejects a list literal passed to a Seq
-# parameter — "Compound literals of dynamic types are disabled by default" —
-# because [dynamic]T has no literal form, only `append`. A plain Seq[Record]
-# fails identically, so this is not about interfaces; no example passes a list
+# PRE-EXISTING: Odin rejects a list literal passed to a Seq parameter —
+# "Compound literals of dynamic types are disabled by default" — because
+# [dynamic]T has no literal form, only `append`. A plain Seq[Record] fails
+# identically, so this is not about interfaces; no example passes a list
 # literal to a Seq parameter, which is why it had never surfaced. The fix is
 # statement hoisting in the Odin emitter (declare, append, then use), which is
 # the piece the interface design flagged as the largest Odin-specific item.
-printf '  OPEN  Odin: a list literal cannot reach a Seq parameter (pre-existing)\n' 
+#
+# Was a bare `printf '  OPEN  ...'`, which can never fail — it would have gone
+# on announcing the bug forever after a fix. Stated as the CORRECT behaviour
+# with a bug_open marker instead, so fixing it makes the suite demand the flip.
+src <<EOF
+$IFACE
+fn total({xs: Seq[Animal]}) -> int:
+  var s = 0
+  for a in xs:
+    s = s + a.noise
+  return s
+
+fn main() -> int:
+  var d = {name: "rex"} Dog
+  var c = {name: "tom"} Cat
+  return {xs: [d, c]} total
+EOF
+# Asserted at the EMISSION level, because lib.sh cannot run `odin build` (only
+# odin_backend.sh can). The observable is the inline BRACED COMPOUND LITERAL at
+# the call site — `tuck_total({Animal{...}})` — which is precisely what Odin
+# rejects with "Compound literals of dynamic types are disabled by default".
+# The fix is statement hoisting: declare a temp, append to it, pass the temp.
+# When that lands this literal disappears and the assertion flips.
+try omits_odin "" 'tuck_total\(\{'
+bug_open "Odin: a list literal can reach a Seq parameter"
 
 # A single-element list still works — the common degenerate case.
 src <<EOF

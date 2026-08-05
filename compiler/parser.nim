@@ -203,7 +203,16 @@ proc parseObjectBody(p: var Parser, fields: var seq[FieldDef], members: var seq[
       # Collected as a dkExpr member because parseObjectBody is shared with
       # dkActor and has no out-param; the dkObject arm sifts it into the
       # `satisfies` field, exactly as `+ X` is sifted by isCompositionEntry.
+      #
+      # CONTRACTS COME FIRST: a `satisfies` line must precede the object's
+      # fields, so what the object PROMISES is visible before its data. Reading
+      # a body top-down then answers "what is this for" before "what does it
+      # hold", and the promise cannot hide below a long field list.
       let sSp = p.getSpan()
+      if fields.len > 0:
+        p.reportError("`satisfies` must come before the object's fields — " &
+                      "state the contract first, then the data",
+                      sSp.line, sSp.col)
       discard p.advance()
       let iname = p.expect(tkIdent, "Expected interface name after 'satisfies'").value
       members.add(Decl(span: sSp, kind: dkExpr, name: iname,
@@ -978,6 +987,35 @@ proc parseDecl*(p: var Parser): Decl =
     discard p.expect(tkAssign)
     let valExpr = p.parseExpr()
     return Decl(span: sp, kind: dkConst, name: name, constVal: valExpr)
+
+  of tkIdent:
+    # `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL (spec §5.2).
+    #
+    # A CALLING module attaches an object it did not declare to a contract it
+    # did not declare — so a library's type can be used through your interface
+    # without editing the library. Contextual, exactly like the object-body
+    # form above: `satisfies` is not a token, so this is gated on the next
+    # ident being it, and any other top-level ident still falls through to the
+    # expression arm below.
+    if p.peek(1).kind == tkIdent and p.peek(1).value == "satisfies":
+      let objName = p.advance().value
+      discard p.advance()                  # `satisfies`
+      var targets: seq[string]
+      if p.current().kind == tkLBracket:
+        # list form: attach several contracts at once
+        discard p.advance()
+        while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+          targets.add(p.expect(tkIdent, "Expected interface name in satisfies list").value)
+          if p.current().kind == tkComma: discard p.advance()
+        discard p.expect(tkRBracket, "Expected ']' closing a satisfies list")
+      else:
+        targets.add(p.expect(tkIdent, "Expected interface name after 'satisfies'").value)
+      if p.current().kind == tkNewline:
+        discard p.advance()
+      return Decl(span: sp, kind: dkSatisfies, name: objName,
+                  satisfyTargets: targets)
+    let expr = p.parseExpr()
+    return Decl(span: sp, kind: dkExpr, expr: expr)
 
   else:
     let expr = p.parseExpr()

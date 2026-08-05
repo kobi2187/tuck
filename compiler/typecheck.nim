@@ -2077,8 +2077,37 @@ proc checkSigMatch(want, got: Decl, objName, iname: string) =
         "], which the contract does not permit (an implementation may do " &
         "LESS than the contract allows, never more)")
 
+proc applySatisfiesDecls*(m: Module) =
+  ## Fold every top-level `Obj satisfies Iface` into that object's own
+  ## `satisfies` list, BEFORE conformance runs.
+  ##
+  ## Doing it here rather than teaching each later pass about dkSatisfies is
+  ## the whole point: conformance checking, interface wrapping and both
+  ## backends' satisfiersOf all read `dkObject.satisfies`, so after this merge
+  ## an attached contract is indistinguishable from a declared one — which is
+  ## exactly the intent. Attaching widens WHERE a promise may be stated, never
+  ## what the promise means.
+  ##
+  ## Re-stating a contract the object already declares is a NO-OP, not an
+  ## error: a calling module cannot be expected to know what the library
+  ## already promised, and demanding it check would defeat the feature.
+  var objs = initTable[string, Decl]()
+  for d in m.decls:
+    if d != nil and d.kind == dkObject: objs[d.name] = d
+  for d in m.decls:
+    if d == nil or d.kind != dkSatisfies: continue
+    if d.name notin objs:
+      fail("Conformance Error: `" & d.name & " satisfies ...` names '" &
+           d.name & "', which is not a declared object in scope", d.span)
+    let obj = objs[d.name]
+    for iname in d.satisfyTargets:
+      if iname notin obj.satisfies:
+        obj.satisfies.add(iname)
+
 proc checkConformance*(tc: TypeChecker, m: Module) =
-  ## Every `satisfies I` on an object is verified against interface I.
+  ## Every `satisfies I` on an object is verified against interface I —
+  ## whether the object declared it or a later module attached it.
+  applySatisfiesDecls(m)
   var ifaces = initTable[string, Decl]()
   for d in m.decls:
     if d != nil and d.kind == dkInterface: ifaces[d.name] = d
