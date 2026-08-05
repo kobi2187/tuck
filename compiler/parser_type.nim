@@ -134,7 +134,16 @@ proc parsePrimaryType(p: var Parser): Type =
       # Bare markers still need the word list, since `[sealed]` and `[T]`
       # look alike. (The list is the remaining half of known_bugs entry 5.)
       let valued = first.kind == tkIdent and p.peek(2).kind == tkColon
-      let isAttr = valued or (first.kind == tkIdent and (first.value in [
+      # These attributes ALWAYS carry a value — `[error: FsError]`,
+      # `[queue: 8]`, `[stack: 128]`, `[align: 2]`, `[priority: high]`. There
+      # is no bare form of any of them in the language, so `Box[error]` with no
+      # colon cannot be an attribute and is certainly a type argument. Naming
+      # them lets those five out of the word list entirely.
+      const valuedOnlyAttrs = ["error", "stack", "align", "queue", "priority"]
+      let bareValuedOnly = first.kind == tkIdent and
+                           first.value in valuedOnlyAttrs and not valued
+      let isAttr = valued or (first.kind == tkIdent and not bareValuedOnly and
+                              (first.value in [
         "saturating", "sealed", "queue", "irq_safe", "no_alloc", "invariant",
         "packed", "align", "wrapping", "trapping",
         "big_endian", "little_endian", "volatile",       # spec 4.6 type + field attrs
@@ -145,19 +154,17 @@ proc parsePrimaryType(p: var Parser): Type =
         # An attribute is `[name]` or `[name: value]`. If the name is followed
         # by anything else, this was meant as a TYPE ARGUMENT that happens to
         # share a name with an attribute — say so, rather than reporting a
-        # surprising token. (The word list itself is the real bug; see
-        # tests/known_bugs.nim.)
-        # `error` additionally REQUIRES a value (`[error: FsError]`), so a
-        # bare `[error]` is certainly a type argument, not an attribute.
-        let bareAttr = p.peek(1).kind in {tkRBracket, tkComma}
-        if p.peek(1).kind notin {tkColon, tkRBracket, tkComma} or
-           (first.value == "error" and bareAttr):
+        # surprising token.
+        #
+        # The remaining ambiguity is only the BARE markers (sealed, packed,
+        # io, …), where `[sealed]` and `[T]` really do look alike. The
+        # valued-only names are resolved above and never reach here bare.
+        if p.peek(1).kind notin {tkColon, tkRBracket, tkComma}:
           p.reportError("'" & first.value & "' is an attribute name, so " &
             "`" & base.name & "[" & first.value & "]` is read as an " &
             "attribute, not a type argument. Rename the type argument — " &
-            "attribute names (error, stack, queue, align, priority, " &
-            "volatile, io, sealed, packed, …) cannot currently be used as " &
-            "type arguments.")
+            "bare attribute markers (sealed, packed, volatile, io, unsafe, " &
+            "saturating, …) cannot currently be used as type arguments.")
         base.attrs = p.parseTypeUseAttrs()
       else:
         var args: seq[Type]

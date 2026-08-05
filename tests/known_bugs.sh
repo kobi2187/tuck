@@ -114,11 +114,11 @@ TUCKEOF
 try emits_odin "" 'tuckSat\(u16'
 bug_fixed "Odin backend clamps [saturating] too"
 
-# 5. OPEN — a type argument named like an attribute fails to parse. The
-# attribute-vs-generic decision is a hardcoded 19-name word list, so any type
-# argument sharing a name with an attribute — error, stack, queue, align,
-# priority, volatile … — is misread.
-# Fix: decide by declared set, not a literal list (compiler/parser.nim).
+# 5. A type argument named like a VALUED-ONLY attribute now parses. error,
+# stack, align, queue and priority always carry a value (`[error: FsError]`,
+# `[queue: 8]`) — there is no bare form of any of them — so `Box[error]` with
+# no colon cannot be an attribute and is certainly a type argument. Those five
+# left the word list entirely.
 src <<'TUCKEOF'
 type Box[T]:
   v: T
@@ -130,23 +130,25 @@ fn main() -> int:
   return 0
 TUCKEOF
 try ok_check ""
-bug_open "type argument may be named like an attribute"
+bug_fixed "a type argument may be named like a valued-only attribute"
 
-# 6. The diagnostic for bug 5 named a token, not the problem. `Box[error]`
-# used to fail with "Expected token 'tkColon' but got 'tkRBracket'". The parse
-# still fails (bug 5 above), but the message now explains why and what to do.
+# 6. The BARE markers stay ambiguous — `[sealed]` and `[T]` genuinely look
+# alike, and unlike the valued-only names a bare `sealed` is a real attribute.
+# So this case still cannot parse as a type argument; what is asserted is that
+# the message explains why rather than naming a surprised token (it used to be
+# "Expected token 'tkColon' but got 'tkRBracket'").
 src <<'TUCKEOF'
 type Box[T]:
   v: T
 
-fn take({b: Box[error]}) -> int:
+fn take({b: Box[sealed]}) -> int:
   return 0
 
 fn main() -> int:
   return 0
 TUCKEOF
 try bad_check "" 'is an attribute name'
-bug_fixed "attribute/type-argument clash explains itself"
+bug_open "a bare attribute marker cannot be used as a type argument"
 
 # 7. Block-bodied match arms indent correctly. Was blocking example 20: the
 # arm emitter hardcoded `"  of "` and `"\n    "` as if the case sat at column
