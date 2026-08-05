@@ -245,11 +245,11 @@ src <<'TUCKEOF'
 type SafeRPM = u16 [saturating]
 
 fn main() -> int:
-  var r = SafeRPM(70000)
+  let s = 70000 SafeRPM
   return 0
 TUCKEOF
 try emits_odin "" 'SafeRPM :: distinct u16'
-bug_open "an overflow attribute implies distinct on the Odin backend too"
+bug_fixed "an overflow attribute implies distinct on the Odin backend too"
 
 # 12. `on select` actors emit Odin that does not compile. genActor collects
 # message variants from `h.kind == dkFn` only, but an `on select` arm is not a
@@ -275,5 +275,35 @@ fn main() -> int:
 TUCKEOF
 try emits_odin "" 'sendAdd_tuck_Accumulator :: proc'
 bug_fixed "an 'on select' actor emits its send procs on the Odin backend"
+
+# 13. A `-> void` task could not be fire-and-forget. The spawn wrapper always
+# emitted `discard <call>`, so a task returning nothing produced
+# `discard tuck_fire()` over a void proc — "expression has no type (or is
+# ambiguous)". The most natural fire-and-forget task was the one shape that
+# did not compile; found while writing the std/net example, which had to give
+# its tasks a `{n: int}` return they did not want.
+src <<'TUCKEOF'
+import scheduler
+
+actor Sink [queue: 8]:
+  hits: int = 0
+  on ping({n: int}):
+    hits += n
+
+task fire() -> void [io]:
+  Sink send ping {n: 5}
+  return
+
+fn done() -> bool:
+  return Sink.hits == 5
+
+fn main() -> int [io]:
+  {} fire
+  scheduler::waitUntil {pred: :done}
+  {} scheduler::stop
+  return Sink.hits
+TUCKEOF
+try runs "" 5
+bug_fixed "a -> void task can be fire-and-forget"
 
 finish

@@ -1431,11 +1431,8 @@ proc genRecordType(ctx: var OdinCodegenCtx, d: Decl): string =
 
 proc genAliasType(ctx: var OdinCodegenCtx, d: Decl): string =
   let ind = "  ".repeat(ctx.indent)
-  var isDistinctT = false
-  for a in d.typeBody.attrs:
-    if a.name == "distinct": isDistinctT = true
   let typeBodyStr = ctx.odinType(d.typeBody)
-  if isDistinctT:
+  if isDistinctAlias(d.typeBody):
     # Odin has `distinct` natively: same bits, incompatible type, and
     # arithmetic/comparison already work on the distinct type. No wrapper
     # struct or operator overloads needed (the Beef backend hand-rolls both).

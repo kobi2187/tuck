@@ -83,6 +83,23 @@ proc actorQueueSize*(d: Decl): string =
   for attr in d.attrs:
     if attr.name == "queue": return attr.value
 
+proc isDistinctAlias*(body: Type): bool =
+  ## Does this alias declare a type the compiler must keep SEPARATE from its
+  ## base? `distinct` says so outright; an overflow mode implies it, because
+  ## the ATTRIBUTE is what changes behaviour (user ruling) and it is
+  ## meaningless on a bare alias — an alias IS its base type and cannot carry
+  ## different arithmetic.
+  ##
+  ## Shared because the two backends had already drifted: codegen.nim matched
+  ## all four names, codegen_odin.nim only "distinct", so `u16 [saturating]`
+  ## emitted `distinct uint16` on Nim and a plain `:: u16` alias on Odin —
+  ## freely mixable with any other u16. Same question, one answer.
+  if body == nil: return false
+  for a in body.attrs:
+    if a.name in ["distinct", "saturating", "wrapping", "trapping"]:
+      return true
+  false
+
 proc sumHasPayload*(body: Type): bool =
   ## Does any variant of this sum carry fields? The branch key for four
   ## emitters: a fieldless sum is a plain enum in both targets, a

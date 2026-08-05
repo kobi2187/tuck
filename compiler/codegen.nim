@@ -461,8 +461,16 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
     # Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
     # drives it via tuckRun (spec §9.2). Fire-and-forget for now; result-
     # returning task calls are a later pass.
-    return "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: discard " &
-           call & "))"
+    #
+    # `discard` only when there is something to discard: a `-> void` task
+    # emitted `discard tuck_serve(...)` over a void proc, which Nim rejects
+    # with "expression has no type (or is ambiguous)". So the most natural
+    # fire-and-forget task — one that returns nothing — was the one shape that
+    # did not compile.
+    let body = if ctx.taskRetType(calleeStr) == "void": call
+               else: "discard " & call
+    return "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: " &
+           body & "))"
   if ctx.externInvRetFast(calleeStr) != "":
     # extern boundary: the returned value validates on entry
     ctx.tmpCounter.inc
@@ -1150,15 +1158,8 @@ proc genRecordType(ctx: var CodegenCtx, d: Decl): string =
       return res
 
 proc genAliasType(d: Decl): string =
-      var isDistinctT = false
-      for a in d.typeBody.attrs:
-        # An overflow mode implies distinct: the ATTRIBUTE is what changes
-        # behaviour (user ruling), and it is meaningless on a bare alias —
-        # an alias IS the base type and cannot carry different semantics.
-        if a.name in ["distinct", "saturating", "wrapping", "trapping"]:
-          isDistinctT = true
       let typeBodyStr = genType(d.typeBody)
-      if isDistinctT:
+      if isDistinctAlias(d.typeBody):
         # Nim distinct + borrowed ops: same bits, incompatible type
         var res = "type " & d.name & "* = distinct " & typeBodyStr & "\n"
         for op in ["+", "-", "*", "div", "mod"]:

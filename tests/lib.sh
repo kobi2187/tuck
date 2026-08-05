@@ -111,13 +111,23 @@ _emitted() {
 }
 
 emits() {
-  if _emitted | grep -qE "$2"; then _ok "$1"; else
-    _no "$1" "emitted Nim lacks /$2/"
-  fi
+  # A failed emit is reported AS a failed emit, not as a missing pattern —
+  # otherwise a test whose .tuck source stops compiling silently reads as
+  # "feature absent" forever.
+  if ! "$TUCK" c "$_cur/t.tuck" -o:"$_cur/out" --root:"$(pwd)" \
+       > "$_cur/emit.log" 2>&1; then
+    _no "$1" "emission failed: $(tail -1 "$_cur/emit.log")"
+  elif grep -qE "$2" "$_cur/out/t.nim" 2>/dev/null; then _ok "$1"
+  else _no "$1" "emitted Nim lacks /$2/"; fi
 }
 
 omits() {
-  if _emitted | grep -qE "$2"; then
+  # A failed emit must NOT satisfy "the pattern is absent" — with no output at
+  # all the assertion is vacuous, which is the worse direction of the same bug.
+  if ! "$TUCK" c "$_cur/t.tuck" -o:"$_cur/out" --root:"$(pwd)" \
+       > "$_cur/emit.log" 2>&1; then
+    _no "$1" "emission failed: $(tail -1 "$_cur/emit.log")"
+  elif grep -qE "$2" "$_cur/out/t.nim" 2>/dev/null; then
     _no "$1" "emitted Nim contains /$2/ but should not"
   else _ok "$1"; fi
 }
@@ -154,10 +164,15 @@ bug_open() {
 }
 
 emits_odin() {
-  # Same as `emits`, against the Odin backend's output.
-  if "$TUCK" c "$_cur/t.tuck" --odin -o:"$_cur/odin" --root:"$(pwd)" > "$_cur/odin.log" 2>&1 \
-     && grep -qE "$2" "$_cur/odin/t.odin" 2>/dev/null; then _ok "$1"; else
-    _no "$1" "emitted Odin lacks /$2/"; fi
+  # Same as `emits`, against the Odin backend's output. A failed emit is
+  # reported AS a failed emit: reporting it as "lacks pattern" hid a bug entry
+  # whose own .tuck source did not compile, so it read as open long after the
+  # compiler was fixed. omits_odin already separated these two cases.
+  if ! "$TUCK" c "$_cur/t.tuck" --odin -o:"$_cur/odin" --root:"$(pwd)" \
+       > "$_cur/odin.log" 2>&1; then
+    _no "$1" "Odin emission failed: $(tail -1 "$_cur/odin.log")"
+  elif grep -qE "$2" "$_cur/odin/t.odin" 2>/dev/null; then _ok "$1"
+  else _no "$1" "emitted Odin lacks /$2/"; fi
 }
 
 omits_odin() {

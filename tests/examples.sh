@@ -19,9 +19,26 @@ gated="
 05-actors-effects 06-transitions-example 07-comments 08-actors_isolated_state
 09-decision-table 10-invariants 11-embedded-feature
 12-transition-the-ctor-exception 13-arena-mem 14-task 15-type-attributes
-17-input-merge 18-alias 19-event-registry 21-decision-bitmask 22-error-policy
-23-units 24-stdlib 25-pools 26-actor-run 27-actor-select 42-net-echo
+17-input-merge 18-alias 19-event-registry 20-embedded-mp3-player
+21-decision-bitmask 22-error-policy
+23-units 24-stdlib 25-pools 26-actor-run 27-actor-select 28-async-task
+29-task-timeout 30-async-read 31-fnsig-callback 32-duration-units
+33-ffi-zlib 34-ffi-cstring 35-ffi-struct 36-ffi-enum-callback
+38-division 39-if-match-expr 40-saturating 41-tostr-concat 42-net-echo
+http
 "
+
+# NOT gated, and why:
+#   16-actor-tasks-unified-syntax — genuinely broken: dotted select sources
+#     (`resp.ok`, `timeout.5s`) parse as opaque strings. See MISSING-FEATURES.
+#   37-ffi-handle — compiles only with the examples dir as --root, because its
+#     `lib: "cffi/point.c"` is relative to that. It IS compile- and run-gated
+#     in odin_backend.sh, which sets that up.
+#
+# Everything else above was ungated purely by drift: 15 examples compiled fine
+# and nothing here would have noticed them breaking. Several were run-gated in
+# odin_backend.sh while invisible to this file, so a Nim-side regression was
+# silent. Add a name here the moment it goes green.
 
 out=$(mktemp -d)
 trap 'rm -rf "$out" "$_dir"' EXIT

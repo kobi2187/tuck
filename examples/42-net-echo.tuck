@@ -12,15 +12,15 @@ actor Result [queue: 8]:
     code = c
     ready = true
 
-task serve({lfd: int}) -> {n: int} [io]:
+task serve({lfd: int}) -> void [io]:
   let c = {fd: lfd} net::accept
   if c.ok:
     let req = {fd: c.value.fd, max: 256} net::recv
     let s = {fd: c.value.fd, data: "pong"} net::send
     {fd: c.value.fd} net::close
-  return {n: 0}
+  return
 
-task client({port: int}) -> {n: int} [io]:
+task client({port: int}) -> void [io]:
   let c = {host: "127.0.0.1", port: port} net::connect
   if c.ok:
     let s = {fd: c.value.fd, data: "ping"} net::send
@@ -29,11 +29,11 @@ task client({port: int}) -> {n: int} [io]:
     if r.ok:
       if r.value.data == "pong":
         Result send put {c: 42}
-        return {n: 0}
+        return
     Result send put {c: 3}
-    return {n: 0}
+    return
   Result send put {c: 4}
-  return {n: 0}
+  return
 
 fn done() -> bool:
   return Result.ready
