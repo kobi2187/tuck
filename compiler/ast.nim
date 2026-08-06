@@ -62,6 +62,13 @@ type
     attrs*: seq[TypeAttr]
     span*: Span
 
+  FieldInit* = tuple[name: string, value: Expr]
+    ## One `name: value` pair of a record literal `{a: 1, b: 2}`.
+    ## A NAMED tuple, so a reader sees `f.name` / `f.value` instead of
+    ## having to know that index 0 is the name and index 1 the value.
+    ## Structurally identical to the anonymous pair it replaced, so
+    ## positional construction and `f[0]`/`f[1]` still compile.
+
   VariantDef* = object
     name*: string
     fields*: seq[FieldDef]
@@ -236,7 +243,7 @@ type
       modulePath*: seq[string]
       qualName*: string
     of exkStruct:
-      fields*: seq[(string, Expr)]
+      fields*: seq[FieldInit]
     of exkList:
       items*: seq[Expr]
     of exkBracket:

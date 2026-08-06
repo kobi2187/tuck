@@ -1298,340 +1298,428 @@ proc checkFieldValue(tc: var TypeChecker, fieldName: string, val: Expr) =
          fieldName & "' — build the record from pure values and do the " &
          "effectful call on its own line", val.span)
 
+proc litTypeName(k: LitKind): string =
+  ## The primitive type a literal denotes.
+  case k
+  of lkInt: "int"
+  of lkFloat: "float"
+  of lkStr: "str"
+  of lkBool: "bool"
+  of lkUnit: "unit"
+
+proc synthNullaryCall(tc: var TypeChecker, e: Expr): Type =
+  ## spec 2.3: a bare name IS a call — `f`, `.f` and `.f {}` are one form.
+  ## Only nullary fns: a fn with params referenced bare is a fn-ref (bake).
+  let vc = Expr(span: e.span, kind: exkCall,
+                callee: Expr(span: e.span, kind: exkVar, name: e.name),
+                args: @[])
+  setCall(semLayer, e, vc)
+  tc.synthesize(vc)
+
+proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
+  ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
+  ## qualified form of the same thing, handled by the field-access path.
+  let owner = tc.sumTypeOwning(e.name)
+  if owner != "": Type(span: e.span, kind: tkNamed, name: owner)
+  else: unknownType(e.span)
+
+proc synthVar(tc: var TypeChecker, e: Expr): Type =
+  ## A bare name: a binding in scope, else a nullary call, else a variant.
+  let (found, b) = tc.lookup(e.name)
+  if found: b.typ
+  elif tc.fnSigs.hasKey(e.name) and tc.fnSigs[e.name].params.len == 0:
+    tc.synthNullaryCall(e)
+  else:
+    tc.synthBareVariant(e)
+
+proc synthStruct(tc: var TypeChecker, e: Expr): Type =
+  ## A record literal types field by field.
+  var fs: seq[FieldDef]
+  for f in e.fields:
+    tc.checkFieldValue(f[0], f[1])
+    fs.add(FieldDef(name: f[0], typ: tc.synthesize(f[1]), span: f[1].span))
+  Type(span: e.span, kind: tkRecord, fields: fs)
+
+proc synthList(tc: var TypeChecker, e: Expr): Type =
+  ## A list literal takes its element type from the first item.
+  var elemT = unknownType(e.span)
+  for item in e.items:
+    let t = tc.synthesize(item)
+    if isUnknown(elemT): elemT = t
+  Type(span: e.span, kind: tkApp,
+       base: Type(span: e.span, kind: tkNamed, name: "Seq"), args: @[elemT])
+
+proc synthUnary(tc: var TypeChecker, e: Expr): Type =
+  ## `not` yields bool; every other unary keeps its operand's type.
+  let t = tc.synthesize(e.operand)
+  if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
+
+proc isImplicitReturn(tc: TypeChecker, blk, s: Expr): bool =
+  ## The last statement of a fn's body block stands in for its return.
+  blk == tc.bodyBlock and s == blk.stmts[^1] and tc.currentRet != nil
+
+proc noteDroppedResult(tc: var TypeChecker, s: Expr, last: Type) =
+  ## A dropped fallible result in statement position: the policy decides.
+  ## strict collects it as an error (ALL sites reported at the end);
+  ## continue/exit mark the site so codegen routes it to the handler.
+  let site = tc.currentFn & " line " & $s.span.line
+  if tc.errPolicy in ["continue", "exit"]:
+    setShortcut(semLayer, s, site)
+    tc.unhandledSites.add(typeName(last) & " at " & site)
+  else:
+    tc.unhandledSites.add(typeName(last) & " discarded at " & site)
+
+proc synthStmt(tc: var TypeChecker, blk, s: Expr, narrowed: var seq[string]): Type =
+  ## One statement of a block: type it, apply any early-return narrowing,
+  ## and report it if it drops a fallible result.
+  result = tc.synthesize(s)
+  let g = earlyReturnGuard(s)
+  if g != "" and g notin tc.okNarrowed:
+    tc.okNarrowed.incl(g)
+    narrowed.add(g)
+  # `err X` is a control-flow exit (early error return), never a drop
+  if isWrapper(result) and not tc.isImplicitReturn(blk, s) and s.kind != exkRaise:
+    tc.noteDroppedResult(s, result)
+
+proc synthBlock(tc: var TypeChecker, e: Expr): Type =
+  ## A block's type is its last statement's.
+  ##
+  ## `if not r.ok: return` proves r is present for the REST of this block.
+  ## Unlike `if r.ok:`, which narrows its own then-branch, an early-return
+  ## guard narrows everything after it — so the narrowing is applied here,
+  ## where statements are sequenced, and undone when the block ends.
+  tc.pushScope()
+  var narrowed: seq[string]
+  result = unknownType(e.span)
+  for s in e.stmts:
+    result = tc.synthStmt(e, s, narrowed)
+  for g in narrowed: tc.okNarrowed.excl(g)
+  tc.popScope()
+
+proc unitType(sp: Span): Type =
+  ## The type of a statement.
+  Type(span: sp, kind: tkNamed, name: "unit")
+
+proc elementType(tc: var TypeChecker, iterT: Type, sp: Span): Type =
+  ## The element type an iterable yields.
+  ##
+  ## An unrecognised iterable stays Unknown rather than failing: a stdlib
+  ## container or a sketch-mode value should not become an error here.
+  if iterT != nil and iterT.kind == tkApp and iterT.base != nil and
+     iterT.base.kind == tkNamed and iterT.base.name in ["Seq", "Array"] and
+     iterT.args.len >= 1:
+    iterT.args[^1]   # Array[N, T] carries its length first
+  elif iterT != nil and iterT.kind == tkNamed and iterT.name == "range":
+    Type(span: sp, kind: tkNamed, name: "int")
+  else:
+    unknownType(sp)
+
+proc bindLoopVars(tc: var TypeChecker, iter: Pattern, elemT: Type) =
+  ## Bind the loop variable(s). `for idx, item in xs:` binds idx as int.
+  if iter == nil: return
+  if iter.kind == pkVar:
+    tc.bindName(iter.name, elemT, false)
+  elif iter.kind == pkTuple:
+    if iter.elems.len >= 1 and iter.elems[0].kind == pkVar:
+      tc.bindName(iter.elems[0].name,
+                  Type(span: iter.span, kind: tkNamed, name: "int"), false)
+    if iter.elems.len >= 2 and iter.elems[1].kind == pkVar:
+      tc.bindName(iter.elems[1].name, elemT, false)
+
+proc synthLoopBody(tc: var TypeChecker, body: Expr) =
+  ## spec 4.4b: the body is checked ONCE against the entry set (no
+  ## fixed-point simulation); after the loop the state is entry ∪ body-exit.
+  let entryVariants = tc.varVariants
+  inc tc.loopDepth
+  discard tc.synthesize(body)
+  dec tc.loopDepth
+  tc.varVariants = mergeVariants(entryVariants, tc.varVariants)
+
+proc synthFor(tc: var TypeChecker, e: Expr): Type =
+  ## The loop variable carries the ELEMENT type. Binding it Unknown silently
+  ## disabled checking inside every loop body, because Unknown is compatible
+  ## with everything — `for p in people: p.nosuchfield` typechecked clean.
+  let iterT = tc.resolve(tc.synthesize(e.iterable))
+  let iterSpan = if e.iter != nil: e.iter.span else: e.span
+  tc.pushScope()
+  tc.bindLoopVars(e.iter, tc.elementType(iterT, iterSpan))
+  tc.synthLoopBody(e.body)
+  tc.popScope()
+  unitType(e.span)
+
+proc synthWhile(tc: var TypeChecker, e: Expr): Type =
+  ## A while condition must be bool.
+  if e.whileCond != nil:
+    let ct = tc.synthesize(e.whileCond)
+    if not isUnknown(ct) and typeName(ct) != "bool":
+      fail("Type Error: loop condition must be bool, got " & typeName(ct),
+           e.whileCond.span)
+  tc.synthLoopBody(e.whileBody)
+  unitType(e.span)
+
+proc synthLoopExit(tc: var TypeChecker, e: Expr, what: string): Type =
+  ## `break` / `continue` are legal only inside a loop.
+  if tc.loopDepth == 0:
+    fail("Control Flow Error: " & what & " outside of a loop", e.span)
+  unitType(e.span)
+
+proc rememberErrTypes(tc: var TypeChecker, name: string, val: Expr) =
+  ## A result binding remembers its producer's declared error enums, so
+  ## `match r.err` can be typed.
+  if val == nil or val.kind != exkCall or val.callee == nil or
+     val.callee.kind != exkVar: return
+  for fd in tc.module.decls:
+    if fd != nil and fd.kind == dkFn and fd.name == val.callee.name and
+       fd.fnErrorTypes.len > 0:
+      tc.varErrTypes[name] = fd.fnErrorTypes
+
+proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
+  ## A fresh binding. spec 4.4b: a tracked type starts at the RHS's set.
+  let valT = tc.synthesize(e.assignVal)
+  tc.bindName(e.target.name, valT, e.isMutable)
+  let tn = tc.transType(valT)
+  if tn != "":
+    tc.varVariants[e.target.name] = tc.exprVariants(tn, e.assignVal)
+  if isWrapper(valT):
+    tc.rememberErrTypes(e.target.name, e.assignVal)
+
+proc failIfTargetUnbound(tc: var TypeChecker, e: Expr) =
+  ## An assignment TARGET must name something. A bare name resolving to
+  ## nothing is a typo, and letting it through was silent: the target
+  ## synthesized as Unknown, and Unknown is compatible with everything, so
+  ## `nosuchfield += n` typechecked in a fn and in an actor handler alike.
+  ##
+  ## Only the target position, and only a BARE name. Unknown stays load-
+  ## bearing everywhere else — it is what keeps sketch code compiling (an
+  ## unknown module prefix, a pending fn's callers), so making exkVar
+  ## synthesis itself strict would break gradual typing.
+  if e.target == nil or e.target.kind != exkVar: return
+  let (found, _) = tc.lookup(e.target.name)
+  if not found and not tc.fnSigs.hasKey(e.target.name) and
+     tc.sumTypeOwning(e.target.name) == "":
+    fail("Type Error: cannot assign to '" & e.target.name &
+         "' — no variable, parameter or field by that name is in scope", e.span)
+
+proc synthAssignVal(tc: var TypeChecker, e: Expr, targetT: Type): Type =
+  ## spec 4.4b: the RHS of a checked transition assignment may construct a
+  ## non-initial sealed variant — the transition IS the legal path (static
+  ## analogue of the old transitionTo-chain exemption).
+  let tracked = e.target != nil and e.target.kind == exkVar and
+                tc.transType(targetT) != ""
+  let prevCtx = tc.transitionCtx
+  if tracked: tc.transitionCtx = true
+  result = tc.synthesize(e.assignVal)
+  tc.transitionCtx = prevCtx
+
+proc checkTransition(tc: var TypeChecker, e: Expr, targetT: Type) =
+  ## spec 4.4b: a reassignment that changes variant IS a transition —
+  ## checked against the table, no user-written transitionTo needed.
+  if e.target == nil or e.target.kind != exkVar: return
+  let tn = tc.transType(targetT)
+  if tn == "": return
+  let cur = if tc.varVariants.hasKey(e.target.name): tc.varVariants[e.target.name]
+            else: tc.allVariants(tn)
+  let next = tc.exprVariants(tn, e.assignVal)
+  tc.checkTransSet(tn, cur, next, e.span)
+  tc.varVariants[e.target.name] = next
+
+proc synthReassign(tc: var TypeChecker, e: Expr) =
+  ## Assignment to an existing binding.
+  tc.failIfTargetUnbound(e)
+  let targetT = tc.synthesize(e.target)
+  let valT = tc.synthAssignVal(e, targetT)
+  if not tc.compatible(valT, targetT):
+    fail("Type Error: cannot assign " & typeName(valT) & " to " &
+         typeName(targetT), e.span)
+  tc.checkTransition(e, targetT)
+
+proc synthAssign(tc: var TypeChecker, e: Expr): Type =
+  ## An assignment is a statement: it yields unit.
+  if e.isDecl and e.target != nil and e.target.kind == exkVar:
+    tc.synthDeclAssign(e)
+  else:
+    tc.synthReassign(e)
+  unitType(e.span)
+
+proc checkReturnValue(tc: var TypeChecker, e: Expr) =
+  ## `return [d, c]` where the fn returns Seq[Animal]: the list literal takes
+  ## its element type from the first item, so it must be wrapped element by
+  ## element against the RETURN type — the same treatment a call argument
+  ## gets, at the other position where an expected type is known.
+  let what = "return value of '" & tc.currentFn & "'"
+  let retIface = tc.ifaceElemSlot(tc.currentRet)
+  if retIface != "" and e.returnVal.kind == exkList:
+    tc.checkIfaceElems(retIface, e.returnVal, what)
+    return
+  let retScalar = tc.ifaceSlot(tc.currentRet)
+  if retScalar != "":
+    tc.checkIfaceArg(retScalar, tc.synthesize(e.returnVal), e.returnVal, what)
+  else:
+    tc.check(e.returnVal, tc.currentRet, what)
+
+proc synthReturn(tc: var TypeChecker, e: Expr): Type =
+  ## A return checks its value against the fn's declared return type.
+  if e.returnVal != nil and tc.currentRet != nil:
+    tc.checkReturnValue(e)
+  elif e.returnVal != nil:
+    discard tc.synthesize(e.returnVal)
+  unitType(e.span)
+
+proc errEnumsOwning(tc: TypeChecker, variant: string): seq[string] =
+  ## Which of the current fn's declared error enums have this variant.
+  for en in tc.currentErrTypes:
+    if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
+      for v in tc.typeDecls[en].variants:
+        if v.name == variant: result.add(en)
+
+proc resolveBareErr(tc: var TypeChecker, e, rv: Expr) =
+  ## `err V` — resolve the shorthand for codegen: err V → err Enum.V.
+  if tc.currentErrTypes.len == 0:
+    fail("Type Error: 'err " & rv.name & "' needs a declared error type" &
+         " — add [error: <Enum>] to '" & tc.currentFn & "'", e.span)
+  let owners = tc.errEnumsOwning(rv.name)
+  if owners.len == 0:
+    fail("Type Error: '" & rv.name & "' is not a variant of " &
+         tc.currentErrTypes.join(" | "), e.span)
+  if owners.len > 1:
+    fail("Type Error: '" & rv.name & "' is ambiguous (" & owners.join(", ") &
+         ") — qualify it: " & owners[0] & "." & rv.name, e.span)
+  e.raiseVal = Expr(span: rv.span, kind: exkField,
+                    receiver: Expr(span: rv.span, kind: exkVar, name: owners[0]),
+                    fieldName: rv.name)
+
+proc isQualifiedErr(tc: TypeChecker, rv: Expr): bool =
+  ## Is this `err Enum.Variant`?
+  rv != nil and rv.kind == exkField and rv.receiver != nil and
+    rv.receiver.kind == exkVar and tc.typeDecls.hasKey(rv.receiver.name) and
+    tc.typeDecls[rv.receiver.name].kind == tkSum
+
+proc checkQualifiedErr(tc: var TypeChecker, e, rv: Expr) =
+  ## `err Enum.V` — the enum must be declared and V must be one of its variants.
+  let en = rv.receiver.name
+  if tc.currentErrTypes.len > 0 and en notin tc.currentErrTypes:
+    fail("Type Error: '" & tc.currentFn & "' raises " & en &
+         " but declares [error: " & tc.currentErrTypes.join(" | ") & "]", e.span)
+  for v in tc.typeDecls[en].variants:
+    if v.name == rv.fieldName: return
+  fail("Type Error: '" & rv.fieldName & "' is not a variant of " & en, e.span)
+
+proc synthRaise(tc: var TypeChecker, e: Expr): Type =
+  ## `err X` — an error value of the current fn's fallible result type.
+  ## X is a variant of a declared [error: E] enum (qualified E.V or bare V),
+  ## or a dynamic re-raise of an existing code (err resp.err).
+  if tc.currentRet == nil or not isWrapper(tc.currentRet):
+    fail("Type Error: 'err' raises into a fallible result, so '" &
+         tc.currentFn & "' must declare a !T return type", e.span)
+  let rv = e.raiseVal
+  if rv != nil and rv.kind == exkVar: tc.resolveBareErr(e, rv)
+  elif tc.isQualifiedErr(rv): tc.checkQualifiedErr(e, rv)
+  else: discard tc.synthesize(rv)  # dynamic re-raise
+  # control-flow exit: neutral type so branches/blocks don't see a wrapper
+  unitType(e.span)
+
+proc sendHandlerParams(tc: TypeChecker, actorDecl: Decl, handler: string,
+                       found: var bool): seq[Param] =
+  ## The params a handler expects. It is an `on <name>` block OR an `on select`
+  ## message arm (spec §9.3); `shutdown` is the reserved control message and
+  ## takes an empty payload.
+  if handler == "shutdown": found = true
+  for h in actorDecl.handlers:
+    if found: break
+    if h != nil and h.kind == dkFn and h.name == handler:
+      found = true; return h.fnParams
+    elif h != nil and h.kind == dkSelect:
+      for arm in h.selectArms:
+        if arm.source == handler:
+          found = true; return arm.binding
+
+proc sendPayloadFields(tc: var TypeChecker, e: Expr): seq[FieldInit] =
+  ## The payload's fields, typed. A send payload must be a struct literal.
+  if e.sendPayload == nil: return
+  if e.sendPayload.kind != exkStruct:
+    fail("Type Error: send payload must be a struct literal {name: value}",
+         e.sendPayload.span)
+  discard tc.synthesize(e.sendPayload)
+  e.sendPayload.fields
+
+proc checkSendField(tc: var TypeChecker, e: Expr, p: Param,
+                    given: seq[FieldInit]) =
+  ## One handler param must be supplied by the payload, at a matching type.
+  for f in given:
+    if f.name != p.name: continue
+    let ft = tc.synthesize(f.value)
+    if p.typ != nil and not tc.compatible(ft, p.typ):
+      fail("Type Error: send field '" & p.name & "' expects " &
+           typeName(p.typ) & " but got " & typeName(ft), f.value.span)
+    return
+  fail("Type Error: send to '" & e.sendActor & "." & e.sendHandler &
+       "' is missing field '" & p.name & "'", e.span)
+
+proc synthSend(tc: var TypeChecker, e: Expr): Type =
+  ## `ActorType send handler {payload}` — the actor must be declared, the
+  ## handler must be one of its `on` handlers, and the payload must match the
+  ## handler's params. A send is a statement: it yields unit.
+  let actorDecl = tc.module.findDecl(dkActor, e.sendActor)
+  if actorDecl == nil:
+    fail("Type Error: 'send' target '" & e.sendActor &
+         "' is not a declared actor", e.span)
+  var found = false
+  let handlerParams = tc.sendHandlerParams(actorDecl, e.sendHandler, found)
+  if not found:
+    fail("Type Error: actor '" & e.sendActor & "' has no handler '" &
+         e.sendHandler & "'", e.span)
+  let given = tc.sendPayloadFields(e)
+  for p in handlerParams: tc.checkSendField(e, p, given)
+  unitType(e.span)
+
+proc synthSelect(tc: var TypeChecker, e: Expr): Type =
+  ## task `on select` (spec §9.3): each arm waits on a source (read fd /
+  ## timeout ms) then runs its body. Type the args (fd/ms are ints) and the
+  ## bodies; the select's value is a branch outcome — leave it unknown, the
+  ## bodies carry the returns.
+  for arm in e.selArms:
+    if arm.arg != nil: discard tc.synthesize(arm.arg)
+    discard tc.synthesize(arm.body)
+  unknownType(e.span)
+
+proc synthQualified(tc: var TypeChecker, e: Expr): Type =
+  ## `:name` with no module path is a FUNCTION REFERENCE (`{add: :plus}`,
+  ## `waitUntil {pred: :ready}`). Resolving it to a real tkFunc keeps the
+  ## signature — params and result — instead of erasing it to Unknown, so a
+  ## backend can emit a typed callable rather than an opaque pointer.
+  if e.modulePath.len != 0 or not tc.fnSigs.hasKey(e.qualName):
+    return unknownType(e.span)
+  let sig = tc.fnSigs[e.qualName]
+  var ps: seq[Type]
+  for p in sig.params: ps.add(p.typ)
+  Type(span: e.span, kind: tkFunc, params: ps, result: sig.ret)
+
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   case e.kind
-  of exkLit:
-    let name = case e.litKind
-      of lkInt: "int"
-      of lkFloat: "float"
-      of lkStr: "str"
-      of lkBool: "bool"
-      of lkUnit: "unit"
-    Type(span: e.span, kind: tkNamed, name: name)
-  of exkVar:
-    let (found, b) = tc.lookup(e.name)
-    if found: b.typ
-    elif tc.fnSigs.hasKey(e.name) and tc.fnSigs[e.name].params.len == 0:
-      # spec 2.3: a bare name IS a call — `f`, `.f` and `.f {}` are one form.
-      # Only nullary fns: a fn with params referenced bare is a fn-ref (bake).
-      let vc = Expr(span: e.span, kind: exkCall,
-                    callee: Expr(span: e.span, kind: exkVar, name: e.name),
-                    args: @[])
-      setCall(semLayer, e, vc)
-      tc.synthesize(vc)
-    else:
-      # A bare sum-type variant is a value of its sum type. `Light.Red` is the
-      # qualified form of the same thing, handled by the field-access path.
-      let owner = tc.sumTypeOwning(e.name)
-      if owner != "": Type(span: e.span, kind: tkNamed, name: owner)
-      else: unknownType(e.span)
+  of exkLit: Type(span: e.span, kind: tkNamed, name: litTypeName(e.litKind))
+  of exkVar: tc.synthVar(e)
   of exkField: tc.synthFieldAccess(e)
-  of exkStruct:
-    var fs: seq[FieldDef]
-    for f in e.fields:
-      tc.checkFieldValue(f[0], f[1])
-      fs.add(FieldDef(name: f[0], typ: tc.synthesize(f[1]), span: f[1].span))
-    Type(span: e.span, kind: tkRecord, fields: fs)
-  of exkList:
-    var elemT = unknownType(e.span)
-    for item in e.items:
-      let t = tc.synthesize(item)
-      if isUnknown(elemT): elemT = t
-    Type(span: e.span, kind: tkApp,
-         base: Type(span: e.span, kind: tkNamed, name: "Seq"), args: @[elemT])
+  of exkStruct: tc.synthStruct(e)
+  of exkList: tc.synthList(e)
   of exkBracket: tc.synthBracket(e)
   of exkBracketAssign: tc.synthBracketAssign(e)
   of exkCall: tc.synthCall(e)
   of exkBinary: tc.synthBinary(e)
-  of exkUnary:
-    let t = tc.synthesize(e.operand)
-    if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
-  of exkBlock:
-    tc.pushScope()
-    var last = unknownType(e.span)
-    # `if not r.ok: return` proves r is present for the REST of this block.
-    # Unlike `if r.ok:`, which narrows its own then-branch, an early-return
-    # guard narrows everything after it — so the narrowing is applied here,
-    # where statements are sequenced, and undone when the block ends.
-    var earlyNarrowed: seq[string]
-    for s in e.stmts:
-      last = tc.synthesize(s)
-      let g = earlyReturnGuard(s)
-      if g != "" and g notin tc.okNarrowed:
-        tc.okNarrowed.incl(g)
-        earlyNarrowed.add(g)
-      # A dropped fallible result in statement position: the policy decides.
-      # strict collects it as an error (ALL sites reported at the end);
-      # continue/exit mark the site so codegen routes it to the handler.
-      let isImplicitReturn = e == tc.bodyBlock and s == e.stmts[^1] and
-                             tc.currentRet != nil
-      # `err X` is a control-flow exit (early error return), never a drop
-      if isWrapper(last) and not isImplicitReturn and s.kind != exkRaise:
-        let site = tc.currentFn & " line " & $s.span.line
-        if tc.errPolicy in ["continue", "exit"]:
-          setShortcut(semLayer, s, site)
-          tc.unhandledSites.add(typeName(last) & " at " & site)
-        else:
-          tc.unhandledSites.add(typeName(last) & " discarded at " & site)
-    for g in earlyNarrowed: tc.okNarrowed.excl(g)
-    tc.popScope()
-    last
+  of exkUnary: tc.synthUnary(e)
+  of exkBlock: tc.synthBlock(e)
   of exkIf: tc.synthIf(e)
   of exkMatch: tc.synthMatch(e)
-  of exkFor:
-    # The loop variable carries the ELEMENT type. Binding it Unknown (as this
-    # did) silently disabled checking inside every loop body, because Unknown is
-    # compatible with everything — `for p in people: p.nosuchfield` typechecked
-    # clean and reached codegen.
-    let iterT = tc.resolve(tc.synthesize(e.iterable))
-    let iterSpan = if e.iter != nil: e.iter.span else: e.span
-    let elemT =
-      if iterT != nil and iterT.kind == tkApp and iterT.base != nil and
-         iterT.base.kind == tkNamed and iterT.base.name in ["Seq", "Array"] and
-         iterT.args.len >= 1:
-        # Array[N, T] carries its length first; the element is the last arg.
-        iterT.args[^1]
-      elif iterT != nil and iterT.kind == tkNamed and iterT.name == "range":
-        Type(span: iterSpan, kind: tkNamed, name: "int")
-      else:
-        # An unrecognised iterable keeps the old behaviour rather than failing:
-        # a stdlib container or a sketch-mode value should not become an error
-        # here, it just goes unchecked as it did before.
-        unknownType(iterSpan)
-    tc.pushScope()
-    if e.iter != nil and e.iter.kind == pkVar:
-      tc.bindName(e.iter.name, elemT, false)
-    elif e.iter != nil and e.iter.kind == pkTuple:
-      # `for idx, item in xs:` — idx is int, item is the element
-      if e.iter.elems.len >= 1 and e.iter.elems[0].kind == pkVar:
-        tc.bindName(e.iter.elems[0].name,
-                    Type(span: e.iter.span, kind: tkNamed, name: "int"), false)
-      if e.iter.elems.len >= 2 and e.iter.elems[1].kind == pkVar:
-        tc.bindName(e.iter.elems[1].name, elemT, false)
-    # spec 4.4b: the body is checked ONCE against the entry set (no
-    # fixed-point simulation); after the loop the state is entry ∪ body-exit
-    let entryVariants = tc.varVariants
-    inc tc.loopDepth
-    discard tc.synthesize(e.body)
-    dec tc.loopDepth
-    tc.varVariants = mergeVariants(entryVariants, tc.varVariants)
-    tc.popScope()
-    Type(span: e.span, kind: tkNamed, name: "unit")
-  of exkWhile:
-    if e.whileCond != nil:
-      let ct = tc.synthesize(e.whileCond)
-      if not isUnknown(ct) and typeName(ct) != "bool":
-        fail("Type Error: loop condition must be bool, got " & typeName(ct),
-             e.whileCond.span)
-    let entryVariants = tc.varVariants
-    inc tc.loopDepth
-    discard tc.synthesize(e.whileBody)
-    dec tc.loopDepth
-    tc.varVariants = mergeVariants(entryVariants, tc.varVariants)
-    Type(span: e.span, kind: tkNamed, name: "unit")
-  of exkBreak:
-    if tc.loopDepth == 0:
-      fail("Control Flow Error: break outside of a loop", e.span)
-    Type(span: e.span, kind: tkNamed, name: "unit")
-  of exkContinue:
-    if tc.loopDepth == 0:
-      fail("Control Flow Error: continue outside of a loop", e.span)
-    Type(span: e.span, kind: tkNamed, name: "unit")
-  of exkAssign:
-    if e.isDecl and e.target != nil and e.target.kind == exkVar:
-      let valT = tc.synthesize(e.assignVal)
-      tc.bindName(e.target.name, valT, e.isMutable)
-      # spec 4.4b: a fresh binding of a tracked type starts at the RHS's set
-      let tn = tc.transType(valT)
-      if tn != "":
-        tc.varVariants[e.target.name] = tc.exprVariants(tn, e.assignVal)
-      # a result binding remembers its producer's declared error enums,
-      # so `match r.err` can be typed
-      if isWrapper(valT) and e.assignVal != nil and
-         e.assignVal.kind == exkCall and e.assignVal.callee != nil and
-         e.assignVal.callee.kind == exkVar:
-        for fd in tc.module.decls:
-          if fd != nil and fd.kind == dkFn and
-             fd.name == e.assignVal.callee.name and
-             fd.fnErrorTypes.len > 0:
-            tc.varErrTypes[e.target.name] = fd.fnErrorTypes
-    else:
-      # An assignment TARGET must name something. A bare name that resolves to
-      # nothing is a typo, and letting it through was silent: the target
-      # synthesized as Unknown, and Unknown is compatible with everything, so
-      # `nosuchfield += n` typechecked in a fn and in an actor handler alike.
-      #
-      # Only the target position, and only a BARE name. Unknown stays load-
-      # bearing everywhere else — it is what keeps sketch code compiling
-      # (an unknown module prefix, a pending fn's callers), so making exkVar
-      # synthesis itself strict would break gradual typing. Everything legally
-      # assignable is bound by this point: locals and params by bindName,
-      # actor fields and a handler's `result` when the handler's scope opens.
-      if e.target != nil and e.target.kind == exkVar:
-        let (found, _) = tc.lookup(e.target.name)
-        if not found and not tc.fnSigs.hasKey(e.target.name) and
-           tc.sumTypeOwning(e.target.name) == "":
-          fail("Type Error: cannot assign to '" & e.target.name &
-               "' — no variable, parameter or field by that name is in scope",
-               e.span)
-      let targetT = tc.synthesize(e.target)
-      # spec 4.4b: the RHS of a checked transition assignment may construct
-      # a non-initial sealed variant — the transition IS the legal path
-      # (static analogue of the old transitionTo-chain exemption)
-      let trackedAssign = e.target != nil and e.target.kind == exkVar and
-                          tc.transType(targetT) != ""
-      let prevCtx = tc.transitionCtx
-      if trackedAssign: tc.transitionCtx = true
-      let valT = tc.synthesize(e.assignVal)
-      tc.transitionCtx = prevCtx
-      if not tc.compatible(valT, targetT):
-        fail("Type Error: cannot assign " & typeName(valT) & " to " &
-             typeName(targetT), e.span)
-      # spec 4.4b: a reassignment that changes variant IS a transition —
-      # checked against the table, no user-written transitionTo needed
-      if e.target != nil and e.target.kind == exkVar:
-        let tn = tc.transType(targetT)
-        if tn != "":
-          let cur = if tc.varVariants.hasKey(e.target.name):
-                      tc.varVariants[e.target.name]
-                    else: tc.allVariants(tn)
-          let next = tc.exprVariants(tn, e.assignVal)
-          tc.checkTransSet(tn, cur, next, e.span)
-          tc.varVariants[e.target.name] = next
-    Type(span: e.span, kind: tkNamed, name: "unit")
-  of exkReturn:
-    if e.returnVal != nil and tc.currentRet != nil:
-      # `return [d, c]` where the fn returns Seq[Animal]: the list literal takes
-      # its element type from the first item, so it must be wrapped element by
-      # element against the RETURN type — the same treatment a call argument
-      # gets, at the other position where an expected type is known.
-      let retIface = tc.ifaceElemSlot(tc.currentRet)
-      if retIface != "" and e.returnVal.kind == exkList:
-        tc.checkIfaceElems(retIface, e.returnVal,
-                           "return value of '" & tc.currentFn & "'")
-      else:
-        let retScalar = tc.ifaceSlot(tc.currentRet)
-        if retScalar != "":
-          tc.checkIfaceArg(retScalar, tc.synthesize(e.returnVal), e.returnVal,
-                           "return value of '" & tc.currentFn & "'")
-        else:
-          tc.check(e.returnVal, tc.currentRet,
-                   "return value of '" & tc.currentFn & "'")
-    elif e.returnVal != nil:
-      discard tc.synthesize(e.returnVal)
-    Type(span: e.span, kind: tkNamed, name: "unit")
-  of exkRaise:
-    # `err X` — an error value of the current fn's fallible result type.
-    # X is a variant of a declared [error: E] enum (qualified E.V or bare V),
-    # or a dynamic re-raise of an existing code (err resp.err).
-    if tc.currentRet == nil or not isWrapper(tc.currentRet):
-      fail("Type Error: 'err' raises into a fallible result, so '" &
-           tc.currentFn & "' must declare a !T return type", e.span)
-    let rv = e.raiseVal
-    if rv != nil and rv.kind == exkVar:
-      if tc.currentErrTypes.len == 0:
-        fail("Type Error: 'err " & rv.name & "' needs a declared error type" &
-             " — add [error: <Enum>] to '" & tc.currentFn & "'", e.span)
-      var owners: seq[string]
-      for en in tc.currentErrTypes:
-        if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
-          for v in tc.typeDecls[en].variants:
-            if v.name == rv.name: owners.add(en)
-      if owners.len == 0:
-        fail("Type Error: '" & rv.name & "' is not a variant of " &
-             tc.currentErrTypes.join(" | "), e.span)
-      if owners.len > 1:
-        fail("Type Error: '" & rv.name & "' is ambiguous (" &
-             owners.join(", ") & ") — qualify it: " & owners[0] & "." & rv.name,
-             e.span)
-      # resolve the shorthand for codegen: err V → err Enum.V
-      e.raiseVal = Expr(span: rv.span, kind: exkField,
-                        receiver: Expr(span: rv.span, kind: exkVar, name: owners[0]),
-                        fieldName: rv.name)
-    elif rv != nil and rv.kind == exkField and rv.receiver != nil and
-         rv.receiver.kind == exkVar and tc.typeDecls.hasKey(rv.receiver.name) and
-         tc.typeDecls[rv.receiver.name].kind == tkSum:
-      let en = rv.receiver.name
-      if tc.currentErrTypes.len > 0 and en notin tc.currentErrTypes:
-        fail("Type Error: '" & tc.currentFn & "' raises " & en &
-             " but declares [error: " & tc.currentErrTypes.join(" | ") & "]", e.span)
-      var found = false
-      for v in tc.typeDecls[en].variants:
-        if v.name == rv.fieldName: found = true
-      if not found:
-        fail("Type Error: '" & rv.fieldName & "' is not a variant of " & en, e.span)
-    else:
-      discard tc.synthesize(rv)  # dynamic re-raise
-    # control-flow exit: neutral type so branches/blocks don't see a wrapper
-    Type(span: e.span, kind: tkNamed, name: "unit")
+  of exkFor: tc.synthFor(e)
+  of exkWhile: tc.synthWhile(e)
+  of exkBreak: tc.synthLoopExit(e, "break")
+  of exkContinue: tc.synthLoopExit(e, "continue")
+  of exkAssign: tc.synthAssign(e)
+  of exkReturn: tc.synthReturn(e)
+  of exkRaise: tc.synthRaise(e)
   of exkChain: tc.synthChain(e)
-  of exkSend:
-    # `ActorType send handler {payload}` — the actor must be declared, the
-    # handler must be one of its `on` handlers, and the payload must match the
-    # handler's params. A send is a statement: it yields unit.
-    let actorDecl = tc.module.findDecl(dkActor, e.sendActor)
-    if actorDecl == nil:
-      fail("Type Error: 'send' target '" & e.sendActor &
-           "' is not a declared actor", e.span)
-    # the handler is an `on <name>` block OR an `on select` message arm
-    # (spec §9.3). Its expected params come from either source; `shutdown` is
-    # the reserved control message and takes an empty payload.
-    var handlerParams: seq[Param]
-    var found = false
-    if e.sendHandler == "shutdown":
-      found = true   # reserved: no params
-    for h in actorDecl.handlers:
-      if found: break
-      if h != nil and h.kind == dkFn and h.name == e.sendHandler:
-        handlerParams = h.fnParams; found = true
-      elif h != nil and h.kind == dkSelect:
-        for arm in h.selectArms:
-          if arm.source == e.sendHandler:
-            handlerParams = arm.binding; found = true; break
-    if not found:
-      fail("Type Error: actor '" & e.sendActor & "' has no handler '" &
-           e.sendHandler & "'", e.span)
-    # payload fields must match the handler's params by name+type
-    var given: seq[(string, Expr)]
-    if e.sendPayload != nil:
-      if e.sendPayload.kind != exkStruct:
-        fail("Type Error: send payload must be a struct literal {name: value}",
-             e.sendPayload.span)
-      given = e.sendPayload.fields
-      discard tc.synthesize(e.sendPayload)
-    for p in handlerParams:
-      var pfound = false
-      for f in given:
-        if f[0] == p.name:
-          let ft = tc.synthesize(f[1])
-          if p.typ != nil and not tc.compatible(ft, p.typ):
-            fail("Type Error: send field '" & p.name & "' expects " &
-                 typeName(p.typ) & " but got " & typeName(ft), f[1].span)
-          pfound = true; break
-      if not pfound:
-        fail("Type Error: send to '" & e.sendActor & "." & e.sendHandler &
-             "' is missing field '" & p.name & "'", e.span)
-    Type(span: e.span, kind: tkNamed, name: "unit")
-  of exkSelect:
-    # task `on select` (spec §9.3): each arm waits on a source (read fd /
-    # timeout ms) then runs its body. Type the args (fd/ms are ints) and the
-    # bodies; the select's value is a branch outcome — leave it unknown, the
-    # bodies carry the returns.
-    for arm in e.selArms:
-      if arm.arg != nil: discard tc.synthesize(arm.arg)
-      discard tc.synthesize(arm.body)
-    unknownType(e.span)
-  of exkQualified, exkImport:
-    # `:name` with no module path is a FUNCTION REFERENCE (`{add: :plus}`,
-    # `waitUntil {pred: :ready}`). Resolving it to a real tkFunc keeps the
-    # signature — params and result — instead of erasing it to Unknown, so a
-    # backend can emit a typed callable rather than an opaque pointer.
-    if e.modulePath.len == 0 and tc.fnSigs.hasKey(e.qualName):
-      let sig = tc.fnSigs[e.qualName]
-      var ps: seq[Type]
-      for p in sig.params: ps.add(p.typ)
-      return Type(span: e.span, kind: tkFunc, params: ps, result: sig.ret)
-    unknownType(e.span)
+  of exkSend: tc.synthSend(e)
+  of exkSelect: tc.synthSelect(e)
+  of exkQualified, exkImport: tc.synthQualified(e)
 
 # A bracket's meaning comes from its RECEIVER, which only the checker knows:
 # a declared type name is a type application (`Array[128, u8]`), anything
