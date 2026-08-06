@@ -67,10 +67,25 @@ proc expect*(p: var Parser, kind: TokenKind, msg = ""): Token =
   result = p.advance()
 
 proc expectAttrName*(p: var Parser, msg: string): Token =
-  ## An attribute name. Either a reserved BARE marker (tkAttr — `sealed`,
-  ## `io`) or an ordinary identifier used as a valued attribute's parameter
-  ## name (`count` in `[count: 4]`). Only the bare markers are reserved,
-  ## because only they collide with a type argument's shape.
+  ## An attribute name — a reserved marker (tkAttr) or an ordinary identifier
+  ## used as a valued attribute's parameter name (`count` in `[count: 4]`).
+  if p.current().kind in {tkIdent, tkAttr}:
+    return p.advance()
+  p.reportError(msg)
+
+proc expectMemberName*(p: var Parser, msg: string): Token =
+  ## A name in a position where ONLY a name can appear — a parameter, field,
+  ## variant, module or member. Accepts tkAttr as well as tkIdent.
+  ##
+  ## Attribute names are reserved so `Box[error]` cannot be a type argument.
+  ## But `{priority: Priority}` is a FIELD, and `import console` a MODULE —
+  ## positions where no attribute could ever appear, so the reserved word is
+  ## just a name and the parser says so. The lexer cannot make that call; the
+  ## parser knows what it is looking for.
+  ##
+  ## This is what lets reservation be total without stealing ordinary words
+  ## from the user. Type names are Capitalized, so a lowercase field named
+  ## `priority` never collides with the type `Priority` either.
   if p.current().kind in {tkIdent, tkAttr}:
     return p.advance()
   p.reportError(msg)

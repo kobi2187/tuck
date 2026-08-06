@@ -127,16 +127,40 @@ type Box[T]:
 fn take({b: Box[error]}) -> int:
   return 0
 
-fn takeSealed({b: Box[sealed]}) -> int:
+fn main() -> int:
   return 0
+TUCKEOF
+bad_check "a reserved attribute name is not a type argument" 'reserved attribute name'
+bad_check "...and the message says how to fix it" 'Capitalized and unreserved'
 
-fn takeStack({b: Box[stack]}) -> int:
+# The rename the message asks for.
+src <<'TUCKEOF'
+type Box[T]:
+  v: T
+
+fn take({b: Box[Err]}) -> int:
   return 0
 
 fn main() -> int:
   return 0
 TUCKEOF
-ok_check "an attribute name may be a type argument"
+ok_check "a Capitalized, unreserved type argument is accepted"
+
+# A reserved word is still a legal FIELD name — a field position can never
+# hold an attribute, so the parser accepts it there and reads its value.
+src <<'TUCKEOF'
+type Priority:
+  | high
+  | low
+
+decision route({priority: Priority, encrypted: bool}) -> int:
+  | high  true  -> 1
+  | _     _     -> 2
+
+fn main() -> int:
+  return {priority: Priority.low, encrypted: false} route
+TUCKEOF
+runs "a reserved word is still a legal field name" 2
 
 # And the attribute reading still wins where it must, in the same file shape
 # the corpus uses everywhere.

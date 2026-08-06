@@ -54,7 +54,7 @@ proc parsePattern*(p: var Parser): Pattern =
     discard p.advance()
     var fields: seq[(string, Pattern)]
     while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-      let name = p.expect(tkIdent, "Expected field name in pattern").value
+      let name = p.expectMemberName("Expected field name in pattern").value
       var pat: Pattern
       if p.current().kind == tkColon:
         discard p.advance()
@@ -74,7 +74,10 @@ proc isStructLiteral(p: Parser): bool =
   let second = p.peek(2)
   if first.kind == tkRBrace:
     return true
-  if first.kind == tkIdent:
+  # tkAttr as well as tkIdent: a reserved attribute name is still a legal
+  # FIELD name — `{priority: Priority}` — because a field position can never
+  # hold an attribute. Reserved-ness is decided by position, not by the word.
+  if first.kind in {tkIdent, tkAttr}:
     if second.kind in {tkColon, tkComma, tkRBrace}:
       return true
   return false
@@ -84,7 +87,7 @@ proc parseStructLiteral(p: var Parser, sp: Span): Expr =
   discard p.advance()
   var fields: seq[(string, Expr)]
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-    let name = p.expect(tkIdent, "Expected field name in struct literal").value
+    let name = p.expectMemberName("Expected field name in struct literal").value
     var valExpr: Expr
     if p.current().kind == tkColon:
       discard p.advance()
@@ -205,7 +208,7 @@ proc parseAliasStep(p: var Parser, expr: Expr): Expr =
   discard p.expect(tkLParen)
   var fields: seq[(string, Expr)]
   while p.current().kind != tkRParen and p.current().kind != tkEOF:
-    let name = p.expect(tkIdent, "Expected field name in alias").value
+    let name = p.expectMemberName("Expected field name in alias").value
     discard p.expect(tkColon)
     let valExpr = p.parseExpr()
     fields.add((name, valExpr))
@@ -231,7 +234,7 @@ proc parsePostfixCall(p: var Parser, expr: Expr, sp: Span): Expr =
   # payload-first like any call
   while p.current().kind == tkDot:
     discard p.advance()
-    let fname = p.expect(tkIdent, "Expected name after '.'").value
+    let fname = p.expectMemberName("Expected name after '.'").value
     calleeExpr = Expr(span: sp, kind: exkField, receiver: calleeExpr, fieldName: fname)
     if p.tryUnsafeMarker():
       calleeExpr.ctorUnsafe = true
@@ -254,7 +257,7 @@ proc parseChainExpr(p: var Parser): Expr =
     let sp = p.getSpan()
     if p.current().kind == tkDot:
       discard p.advance()
-      let fieldName = p.expect(tkIdent, "Expected field name after '.'").value
+      let fieldName = p.expectMemberName("Expected field name after '.'").value
       expr = Expr(span: sp, kind: exkField, receiver: expr, fieldName: fieldName)
       if p.tryUnsafeMarker():
         expr.ctorUnsafe = true
@@ -329,7 +332,7 @@ proc parseChainExpr(p: var Parser): Expr =
       # `ActorType send handler {payload}` — direct send to an actor singleton.
       # The brace is the handler's message payload (optional for a no-arg on).
       discard p.advance()                    # eat `send`
-      let handler = p.expect(tkIdent, "Expected handler name after 'send'").value
+      let handler = p.expectMemberName("Expected handler name after 'send'").value
       var payload: Expr = nil
       if p.current().kind == tkLBrace:
         payload = p.parsePrimaryExpr()

@@ -66,7 +66,7 @@ proc parseBraceParams(p: var Parser, pSp: Span, params: var seq[Param]) =
   ## its own Param sharing the group's span. Assumes the opening `{`.
   discard p.advance()
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-    let paramName = p.expect(tkIdent, "Expected parameter name").value
+    let paramName = p.expectMemberName("Expected parameter name").value
     discard p.expect(tkColon)
     let paramType = p.parseType()
     params.add(Param(name: paramName, typ: paramType, span: pSp))
@@ -77,7 +77,7 @@ proc parseBraceParams(p: var Parser, pSp: Span, params: var seq[Param]) =
 proc parseBareParam(p: var Parser, pSp: Span): Param =
   ## Parses one `name: Type` param. A bare `self` (no `: Type` follows) is
   ## the implicit-Self special case: it types itself as `Self`.
-  let paramName = p.expect(tkIdent, "Expected parameter name").value
+  let paramName = p.expectMemberName("Expected parameter name").value
   if paramName == "self" and p.current().kind != tkColon:
     return Param(name: paramName, typ: Type(span: pSp, kind: tkNamed, name: "Self"), span: pSp)
   discard p.expect(tkColon)
@@ -193,7 +193,7 @@ proc parseObjectBody(p: var Parser, fields: var seq[FieldDef], members: var seq[
     let isMember = p.current().kind in {tkFn, tkLet, tkVar, tkPending, tkOn, tkPlus}
     if isMember:
       members.add(p.parseDecl())
-    elif p.current().kind == tkIdent and p.current().value == "invariant":
+    elif p.current().kind == tkAttr and p.current().value == "invariant":
       p.parseInvariantBlock(members)
     elif p.current().kind == tkIdent and p.current().value == "satisfies" and
          p.peek(1).kind == tkIdent:
@@ -221,7 +221,7 @@ proc parseObjectBody(p: var Parser, fields: var seq[FieldDef], members: var seq[
         discard p.advance()
     else:
       let fSp = p.getSpan()
-      let fName = p.expect(tkIdent, "Expected field or member name in object").value
+      let fName = p.expectMemberName("Expected field or member name in object").value
       discard p.expect(tkColon)
       let fType = p.parseType()
       if p.current().kind == tkAssign:
@@ -314,10 +314,10 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
         let effName = p.expectAttrName("Expected effect marker").value
         if effName == "error":
           discard p.expect(tkColon)
-          sigErrTypes.add(p.expect(tkIdent, "Expected error enum name after 'error:'").value)
+          sigErrTypes.add(p.expectMemberName("Expected error enum name after 'error:'").value)
           while p.current().kind == tkPipe:
             discard p.advance()
-            sigErrTypes.add(p.expect(tkIdent, "Expected error enum name after '|'").value)
+            sigErrTypes.add(p.expectMemberName("Expected error enum name after '|'").value)
           if p.current().kind == tkComma: discard p.advance()
           continue
         if effName == "emit":
@@ -354,7 +354,7 @@ proc parseRegistryDecl(p: var Parser, sp: Span): Decl =
       continue
     discard p.expect(tkPipe)
     let vSp = p.getSpan()
-    let vName = p.expect(tkIdent, "Expected variant name in registry").value
+    let vName = p.expectMemberName("Expected variant name in registry").value
     var vFields: seq[FieldDef]
     var hasParens = false
     if p.current().kind == tkLParen:
@@ -364,7 +364,7 @@ proc parseRegistryDecl(p: var Parser, sp: Span): Decl =
       discard p.advance()
       while p.current().kind != tkRBrace and p.current().kind != tkEOF:
         let fSp = p.getSpan()
-        let fName = p.expect(tkIdent, "Expected variant field name").value
+        let fName = p.expectMemberName("Expected variant field name").value
         discard p.expect(tkColon)
         let fType = p.parseType()
         vFields.add(FieldDef(name: fName, typ: fType, attrs: @[], span: fSp))
@@ -476,7 +476,7 @@ proc parseTypeDecl(p: var Parser, sp: Span): Decl =
     if p.current().kind == tkPipe:
       discard p.advance()
       let vSp = p.getSpan()
-      let vName = p.expect(tkIdent, "Expected variant name").value
+      let vName = p.expectMemberName("Expected variant name").value
       var vFields: seq[FieldDef]
       var hasParens = false
       if p.current().kind == tkLParen:
@@ -486,7 +486,7 @@ proc parseTypeDecl(p: var Parser, sp: Span): Decl =
         discard p.advance()
         while p.current().kind != tkRBrace and p.current().kind != tkEOF:
           let fSp = p.getSpan()
-          let fName = p.expect(tkIdent, "Expected variant field name").value
+          let fName = p.expectMemberName("Expected variant field name").value
           discard p.expect(tkColon)
           let fType = p.parseType()
           vFields.add(FieldDef(name: fName, typ: fType, attrs: @[], span: fSp))
@@ -517,12 +517,12 @@ proc parseTypeDecl(p: var Parser, sp: Span): Decl =
           discard p.advance()
       discard p.expect(tkDedent)
       
-    elif p.current().kind == tkIdent and p.current().value == "invariant":
+    elif p.current().kind == tkAttr and p.current().value == "invariant":
       p.parseInvariantBlock(members)
 
     else:
       let fSp = p.getSpan()
-      let fName = p.expect(tkIdent, "Expected field or variant in type").value
+      let fName = p.expectMemberName("Expected field or variant in type").value
       discard p.expect(tkColon)
       let fType = p.parseType()
       if p.current().kind == tkAssign:
@@ -625,10 +625,10 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
       let effName = p.expectAttrName("Expected effect marker").value
       if effName == "error":
         discard p.expect(tkColon)
-        errTypes.add(p.expect(tkIdent, "Expected error enum name after 'error:'").value)
+        errTypes.add(p.expectMemberName("Expected error enum name after 'error:'").value)
         while p.current().kind == tkPipe:
           discard p.advance()
-          errTypes.add(p.expect(tkIdent, "Expected error enum name after '|'").value)
+          errTypes.add(p.expectMemberName("Expected error enum name after '|'").value)
         if p.current().kind == tkComma: discard p.advance()
         continue
       var eff: EffectMarker
@@ -873,7 +873,7 @@ proc parseDecl*(p: var Parser): Decl =
 
   of tkImport:
     discard p.advance()
-    let modName = p.expect(tkIdent, "Expected module name after 'import'").value
+    let modName = p.expectMemberName("Expected module name after 'import'").value
     return Decl(span: sp, kind: dkImport, name: modName)
 
   of tkPending:

@@ -116,30 +116,30 @@ const keywords = {
   "static_assert": tkStaticAssert,
 
   # ATTRIBUTE NAMES — reserved globally, exactly like the keywords above.
-  # They all share one token kind because the parser never needs to tell them
-  # apart lexically; parseTypeUseAttrs reads the name off the token's value.
+  # They share one token kind because the parser never needs to tell them
+  # apart lexically; it reads the name off the token's value.
   #
-  # Reserved rather than context-sensitive so `Box[error]` is decidable
-  # without a word list in the parser: a reserved word is never a user
-  # identifier, so a bracket entry that lexes as tkAttr IS an attribute and
-  # one that lexes as tkIdent IS a type argument. The old parser-side list
-  # could not do this, because `error` lexed as an ordinary identifier and
-  # `Box[error]` and `u16 [error: E]` were the same shape.
-  # BARE MARKERS ONLY. These stand alone in a bracket — `[sealed]`, `[io]` —
-  # which is precisely the shape that collides with a type argument `[T]`.
+  # RESERVED MEANS RESERVED. Every attribute name is here, whether it stands
+  # alone (`[sealed]`) or takes a value (`[error: E]`, `[align: 2]`), and
+  # whether it heads a block (`invariant:`) or sits in a bracket. The word
+  # belongs to the language, so it is never a user identifier — which is what
+  # makes `Box[error]` an error rather than a guess.
+  #
+  # The parser then decides by POSITION: where only a NAME can appear — a
+  # field, parameter, variant, module — it accepts tkAttr and reads its value
+  # (expectMemberName), so `{priority: Priority}` is still an ordinary field.
+  # Type names are Capitalized, so a lowercase field never collides with a
+  # type either.
   #
   # NOT here: attribute PARAMETER names (count, size, queue, policy, read,
-  # write, emit, impl, header, lib, c, nim, odin, at, bit, bits). Those always
-  # appear as `name: value`, so `[count: 4]` is identifiable by shape and
-  # needs no reservation — and they are ordinary field names besides
-  # (`{c: Counter}`, `count: int`).
-  # NOT `invariant` either — that is a BLOCK keyword in a type body
-  # (`invariant:` then indented predicates), never a bracket marker.
+  # write, emit, impl, header, lib, c, nim, odin, at, bit, bits). Those are
+  # the user's words in `[count: 4]`, not the language's.
   "saturating": tkAttr, "wrapping": tkAttr, "trapping": tkAttr,
   "sealed": tkAttr, "packed": tkAttr, "volatile": tkAttr,
-  "big_endian": tkAttr, "little_endian": tkAttr,
+  "big_endian": tkAttr, "little_endian": tkAttr, "invariant": tkAttr,
   "io": tkAttr, "unsafe": tkAttr, "may_block": tkAttr, "no_alloc": tkAttr,
-  "irq_safe": tkAttr
+  "irq_safe": tkAttr,
+  "error": tkAttr, "stack": tkAttr, "align": tkAttr, "priority": tkAttr
 }.toTable()
 
 proc getLineContext(source: string, targetLine: int): string =

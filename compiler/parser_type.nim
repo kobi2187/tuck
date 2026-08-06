@@ -21,11 +21,11 @@ proc parseTypeUseAttrs(p: var Parser): seq[TypeAttr] =
       # [error: FsError | NetError] — one attr per listed enum
       discard p.expect(tkColon)
       result.add(TypeAttr(name: "error",
-        value: p.expect(tkIdent, "Expected error enum name").value, span: attrSp))
+        value: p.expectMemberName("Expected error enum name").value, span: attrSp))
       while p.current().kind == tkPipe:
         discard p.advance()
         result.add(TypeAttr(name: "error",
-          value: p.expect(tkIdent, "Expected error enum name after '|'").value, span: attrSp))
+          value: p.expectMemberName("Expected error enum name after '|'").value, span: attrSp))
       if p.current().kind == tkComma:
         discard p.advance()
       continue
@@ -85,7 +85,7 @@ proc parseBraceType(p: var Parser, sp: Span): Type =
     var fields: seq[FieldDef]
     while p.current().kind != tkRBrace and p.current().kind != tkEOF:
       let fSp = p.getSpan()
-      let name = p.expect(tkIdent, "Expected field name in record definition").value
+      let name = p.expectMemberName("Expected field name in record definition").value
       discard p.expect(tkColon)
       let typ = p.parseType()
       fields.add(FieldDef(name: name, typ: typ, attrs: @[], span: fSp))
@@ -123,29 +123,45 @@ proc parsePrimaryType(p: var Parser): Type =
     return Type(span: sp, kind: tkNamed, name: val)
 
   elif curr.kind == tkIdent:
-    let name = p.advance().value
+    let nameTok = p.advance()
+    let name = nameTok.value
     var base = Type(span: sp, kind: tkNamed, name: name)
     if p.current().kind == tkLBracket:
       # Check if it's attributes or generics
       let first = p.peek(1)
       # Two shapes, no word list:
       #   `[name: value]`  — a type argument is never followed by a colon, so
-      #                      every VALUED attribute is identifiable by shape
-      #                      (`[count: 4]`, `[error: FsError]`, `[stack: 128]`)
-      #   bare tkAttr      — a reserved BARE marker (`[sealed]`, `[io]`), the
-      #                      one shape that genuinely collides with `[T]`
+      #                      a valued attribute is identifiable by shape
+      #   tkAttr           — a RESERVED attribute name; the word belongs to
+      #                      the language, so this bracket is an attribute
       # Anything else is a type argument.
       #
-      # Only the bare markers are reserved words. That is the whole gap this
-      # closes: `sealed` used to lex as an ordinary identifier, so `Box[sealed]`
-      # and `u16 [sealed]` were the same shape and the parser needed a 19-name
-      # list to guess. Reserving exactly those words removes the ambiguity at
-      # the source. Attribute PARAMETER names stay ordinary identifiers —
-      # `count`, `size`, `c` are good field names and always appear valued.
+      # `Box[error]` therefore lands in the attribute branch and is REJECTED,
+      # which is correct: `error` is an attribute name, not the user's to take.
+      # The old 19-name list in this file tried to guess the same thing after
+      # the fact and could not, because `error` lexed as an ordinary
+      # identifier. Reserving the word settles it at the source.
       let valued = p.peek(2).kind == tkColon
       let isAttr = first.kind == tkAttr or (first.kind == tkIdent and valued)
       discard p.advance() # eat "["
       if isAttr:
+        # A reserved name where a TYPE ARGUMENT was clearly meant —
+        # `Box[error]`. Only when the bracket is TIGHT: a spaced one is the
+        # ordinary attribute position (`-> !Temperature [io]`,
+        # `u16 [saturating]`), which is correct code and must not be flagged.
+        # Tightness is not what decides attribute-vs-argument — the reserved
+        # word already did that — it only decides whether the user plainly
+        # meant an argument and deserves the rename hint.
+        let brkTok = p.tokens[p.cursor - 1]
+        let tight = brkTok.line == nameTok.line and
+                    brkTok.column == nameTok.column + nameTok.value.len
+        if tight and first.kind == tkAttr and not valued and
+           p.peek(1).kind == tkRBracket and base.name.len > 0 and
+           base.name[0] in {'A'..'Z'}:
+          p.reportError("`" & base.name & "[" & first.value & "]` — '" &
+            first.value & "' is a reserved attribute name and cannot be a " &
+            "type argument. Rename it to something Capitalized and " &
+            "unreserved, e.g. `" & base.name & "[Err]`.")
         base.attrs = p.parseTypeUseAttrs()
       else:
         var args: seq[Type]
