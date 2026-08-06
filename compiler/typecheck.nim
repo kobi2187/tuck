@@ -634,112 +634,134 @@ proc synthIf(tc: var TypeChecker, e: Expr): Type =
          typeName(thenT) & " vs " & typeName(elseT), e.span)
   if isUnknown(thenT): elseT else: thenT
 
-proc synthMatch(tc: var TypeChecker, e: Expr): Type =
-  let subjT = tc.synthesize(e.subject)
-  # spec 4.4b: matching a tracked var narrows it to the arm's variant
-  # inside that arm; the after-match state is the union of the arm exits
-  var trackedVar = ""
-  var trackedType = ""
-  if e.subject != nil and e.subject.kind == exkVar:
-    trackedType = tc.transType(subjT)
-    if trackedType != "": trackedVar = e.subject.name
-  # `match r.err` — arms are variants of the producer's declared error
-  # enums: validated (typo/ambiguity) and rewritten to Enum.Variant so
-  # codegen emits the hashed code constants
-  var errEnums: seq[string]
-  if e.subject != nil and e.subject.kind == exkField and
-     e.subject.fieldName == "err" and e.subject.receiver != nil and
-     e.subject.receiver.kind == exkVar and
-     tc.varErrTypes.hasKey(e.subject.receiver.name):
-    errEnums = tc.varErrTypes[e.subject.receiver.name]
-  if errEnums.len > 0:
-    for arm in e.arms.mitems:
-      if arm.pattern == nil or arm.pattern.kind == pkWild: continue
-      if arm.pattern.kind != pkVar:
-        fail("Type Error: match over an error code takes variant names " &
-             "of " & errEnums.join(" | ") & " (or _)", arm.span)
-      let aname = arm.pattern.name
-      if "." in aname: continue  # already qualified
-      var owners: seq[string]
-      for en in errEnums:
-        if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
-          for v in tc.typeDecls[en].variants:
-            if v.name == aname: owners.add(en)
-      if owners.len == 0:
-        fail("Type Error: '" & aname & "' is not a variant of " &
-             errEnums.join(" | "), arm.span)
-      if owners.len > 1:
-        fail("Type Error: '" & aname & "' is ambiguous (" &
-             owners.join(", ") & ") — qualify it: " & owners[0] & "." &
-             aname, arm.span)
-      arm.pattern = Pattern(span: arm.pattern.span, kind: pkVar,
-                            name: owners[0] & "." & aname)
+proc matchErrEnums(tc: TypeChecker, subject: Expr): seq[string] =
+  ## `match r.err` — the producer's declared error enums, if the subject is
+  ## the `err` field of a binding that remembered them.
+  if subject == nil or subject.kind != exkField or subject.fieldName != "err" or
+     subject.receiver == nil or subject.receiver.kind != exkVar or
+     not tc.varErrTypes.hasKey(subject.receiver.name): return
+  tc.varErrTypes[subject.receiver.name]
+
+proc enumsOwningVariant(tc: TypeChecker, enums: seq[string],
+                        variant: string): seq[string] =
+  ## Which of these sum types declare a variant by this name.
+  for en in enums:
+    if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
+      for v in tc.typeDecls[en].variants:
+        if v.name == variant: result.add(en)
+
+proc qualifyErrArm(tc: TypeChecker, arm: var MatchArm, errEnums: seq[string]) =
+  ## Rewrite a bare error arm to Enum.Variant so codegen emits the hashed
+  ## code constants, failing on a typo or an ambiguous name.
+  if arm.pattern == nil or arm.pattern.kind == pkWild: return
+  if arm.pattern.kind != pkVar:
+    fail("Type Error: match over an error code takes variant names of " &
+         errEnums.join(" | ") & " (or _)", arm.span)
+  let aname = arm.pattern.name
+  if "." in aname: return  # already qualified
+  let owners = tc.enumsOwningVariant(errEnums, aname)
+  if owners.len == 0:
+    fail("Type Error: '" & aname & "' is not a variant of " &
+         errEnums.join(" | "), arm.span)
+  if owners.len > 1:
+    fail("Type Error: '" & aname & "' is ambiguous (" & owners.join(", ") &
+         ") — qualify it: " & owners[0] & "." & aname, arm.span)
+  arm.pattern = Pattern(span: arm.pattern.span, kind: pkVar,
+                        name: owners[0] & "." & aname)
+
+proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, trackedVar,
+                    trackedType: string) =
+  ## A variant pattern narrows the subject and does NOT bind the name;
+  ## v1: any other pattern-bound name enters scope as Unknown.
+  if arm.pattern == nil or arm.pattern.kind != pkVar: return
+  if trackedVar != "" and arm.pattern.name in tc.allVariants(trackedType):
+    tc.varVariants[trackedVar] = @[arm.pattern.name]
+  else:
+    tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
+
+proc synthArm(tc: var TypeChecker, arm: MatchArm, trackedVar,
+              trackedType: string): Type =
+  ## One arm, typed in its own scope with the subject narrowed.
+  tc.pushScope()
+  tc.bindArmPattern(arm, trackedVar, trackedType)
+  result = tc.synthesize(arm.body)
+  tc.popScope()
+
+proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
+  ## Every arm must produce the same type.
+  if not isUnknown(t) and not isUnknown(armT) and
+     not tc.compatible(t, armT) and not tc.compatible(armT, t):
+    fail("Type Error: match arms produce different types: " &
+         typeName(armT) & " vs " & typeName(t), sp)
+  if isUnknown(armT): armT = t
+
+proc synthArms(tc: var TypeChecker, e: Expr, trackedVar,
+               trackedType: string): Type =
+  ## Type every arm from the same entry state; the after-match state is the
+  ## union of the arm exits (spec 4.4b).
   let entryVariants = tc.varVariants
   var mergedExit: Table[string, seq[string]]
   var firstArm = true
-  var armT = unknownType(e.span)
+  result = unknownType(e.span)
   for arm in e.arms:
     tc.varVariants = entryVariants
-    tc.pushScope()
-    var isVariantArm = false
-    if arm.pattern != nil and arm.pattern.kind == pkVar:
-      if trackedVar != "" and
-         arm.pattern.name in tc.allVariants(trackedType):
-        # variant pattern: narrow the subject, do NOT bind the name
-        isVariantArm = true
-        tc.varVariants[trackedVar] = @[arm.pattern.name]
-      else:
-        # v1: pattern-bound names enter scope as Unknown
-        tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
-    let t = tc.synthesize(arm.body)
-    tc.popScope()
-    if firstArm:
-      mergedExit = tc.varVariants
-      firstArm = false
-    else:
-      mergedExit = mergeVariants(mergedExit, tc.varVariants)
-    if not isUnknown(t) and not isUnknown(armT) and
-       not tc.compatible(t, armT) and not tc.compatible(armT, t):
-      fail("Type Error: match arms produce different types: " &
-           typeName(armT) & " vs " & typeName(t), arm.span)
-    if isUnknown(armT): armT = t
+    let t = tc.synthArm(arm, trackedVar, trackedType)
+    mergedExit = if firstArm: tc.varVariants
+                 else: mergeVariants(mergedExit, tc.varVariants)
+    firstArm = false
+    tc.unifyArmType(result, t, arm.span)
   if not firstArm: tc.varVariants = mergedExit
 
-  # Exhaustiveness (spec #10b): a match over a closed domain (a sum type, bool,
-  # or an error-code enum) must cover every case OR end with a catch-all `_`.
-  # Open domains (int/str/unknown) can't be enumerated, so they're not checked
-  # — same as Nim. Covered names come from the arms' variant patterns; a pkWild
-  # arm is the catch-all.
-  var domain: seq[string]
+proc matchDomain(tc: TypeChecker, subjT: Type, trackedType: string,
+                 errEnums: seq[string]): seq[string] =
+  ## Every case a closed subject can take. Open domains (int/str/unknown)
+  ## cannot be enumerated, so they return empty and go unchecked — same as Nim.
   if errEnums.len > 0:
     for en in errEnums:
       if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
-        for v in tc.typeDecls[en].variants: domain.add(en & "." & v.name)
-  else:
-    let sumName = if trackedType != "": trackedType
-                  elif subjT != nil and subjT.kind == tkNamed and
-                       tc.typeDecls.hasKey(subjT.name) and
-                       tc.typeDecls[subjT.name].kind == tkSum: subjT.name
-                  else: ""
-    if sumName != "":
-      domain = tc.allVariants(sumName)
-    elif subjT != nil and subjT.kind == tkNamed and subjT.name == "bool":
-      domain = @["true", "false"]
-  if domain.len > 0:
-    var hasWild = false
-    var covered: HashSet[string]
-    for arm in e.arms:
-      if arm.pattern == nil or arm.pattern.kind == pkWild: hasWild = true
-      elif arm.pattern.kind == pkVar: covered.incl(arm.pattern.name)
-    if not hasWild:
-      var missing: seq[string]
-      for v in domain:
-        if v notin covered: missing.add(v)
-      if missing.len > 0:
-        fail("Type Error: match is not exhaustive — missing " &
-             missing.join(", ") & " (cover all cases or add a catch-all `_`)",
-             e.span)
-  armT
+        for v in tc.typeDecls[en].variants: result.add(en & "." & v.name)
+    return
+  let sumName = if trackedType != "": trackedType
+                elif subjT != nil and subjT.kind == tkNamed and
+                     tc.typeDecls.hasKey(subjT.name) and
+                     tc.typeDecls[subjT.name].kind == tkSum: subjT.name
+                else: ""
+  if sumName != "": tc.allVariants(sumName)
+  elif subjT != nil and subjT.kind == tkNamed and subjT.name == "bool":
+    @["true", "false"]
+  else: @[]
+
+proc checkExhaustive(tc: TypeChecker, e: Expr, domain: seq[string]) =
+  ## spec #10b: a match over a closed domain must cover every case OR end
+  ## with a catch-all `_`.
+  if domain.len == 0: return
+  var hasWild = false
+  var covered: HashSet[string]
+  for arm in e.arms:
+    if arm.pattern == nil or arm.pattern.kind == pkWild: hasWild = true
+    elif arm.pattern.kind == pkVar: covered.incl(arm.pattern.name)
+  if hasWild: return
+  var missing: seq[string]
+  for v in domain:
+    if v notin covered: missing.add(v)
+  if missing.len > 0:
+    fail("Type Error: match is not exhaustive — missing " & missing.join(", ") &
+         " (cover all cases or add a catch-all `_`)", e.span)
+
+proc synthMatch(tc: var TypeChecker, e: Expr): Type =
+  ## A match types every arm to one type, then checks it covers its subject.
+  let subjT = tc.synthesize(e.subject)
+  # spec 4.4b: matching a tracked var narrows it to the arm's variant
+  var trackedType = ""
+  var trackedVar = ""
+  if e.subject != nil and e.subject.kind == exkVar:
+    trackedType = tc.transType(subjT)
+    if trackedType != "": trackedVar = e.subject.name
+  let errEnums = tc.matchErrEnums(e.subject)
+  if errEnums.len > 0:
+    for arm in e.arms.mitems: tc.qualifyErrArm(arm, errEnums)
+  result = tc.synthArms(e, trackedVar, trackedType)
+  tc.checkExhaustive(e, tc.matchDomain(subjT, trackedType, errEnums))
 
 proc synthChain(tc: var TypeChecker, e: Expr): Type =
   let baseT = tc.synthesize(e.base)
