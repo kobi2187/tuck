@@ -1232,6 +1232,86 @@ proc asBakeCall(tc: var TypeChecker, e: Expr): Type =
   if fields.len == 0: return unknownType(e.span)
   Type(span: e.span, kind: tkRecord, fields: fields)
 
+proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
+                           gs: seq[string],
+                           bindings: var Table[string, Type]) =
+  ## Bind a generic type's params from the payload's field types.
+  if e.args.len != 1 or e.args[0].kind != exkStruct:
+    for a in e.args: discard tc.synthesize(a)
+    return
+  let declFields = getFieldsForType(tc.module, tc.typeDecls[calleeName])
+  for f in e.args[0].fields:
+    let ft = tc.synthesize(f.value)
+    for df in declFields:
+      if df.name == f.name:
+        tc.inferBindings(df.typ, ft, gs, bindings, calleeName, f.value.span)
+        break
+
+proc asGenericConstruction(tc: var TypeChecker, e: Expr,
+                           calleeName: string): Type =
+  ## `{value: 5} Box` — infer the type params from the payload fields; the ty
+  ## stamp lets codegen emit the explicit Box[int](...) Nim needs.
+  let gs = tc.typeGenerics[calleeName]
+  var bindings = initTable[string, Type]()
+  tc.inferConstructionArgs(e, calleeName, gs, bindings)
+  var gargs: seq[Type]
+  for g in gs:
+    if not bindings.hasKey(g):
+      fail("Type Error: cannot infer generic parameter '" & g & "' of '" &
+           calleeName & "' from the construction payload", e.span)
+    gargs.add(bindings[g])
+  Type(span: e.span, kind: tkApp, args: gargs,
+       base: Type(span: e.span, kind: tkNamed, name: calleeName))
+
+proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
+  ## A call to a fn with a known signature.
+  let sig = tc.fnSigs[calleeName]
+  # The name resolved here; record the edge so later passes read the answer
+  # instead of scanning the decl list to re-derive it.
+  if tc.fnDecls.hasKey(calleeName):
+    resolveTo(semLayer, e, tc.fnDecls[calleeName])
+  var bindings = initTable[string, Type]()
+  tc.checkCallArgs(calleeName, sig, e, bindings)
+  if sig.generics.len == 0: return sig.ret
+  # Unbound type params degrade to Unknown (gradual, like sketch code)
+  for g in sig.generics:
+    if not bindings.hasKey(g):
+      bindings[g] = unknownType(e.span)
+  substituteType(sig.ret, bindings)
+
+proc viaTransitionChain(e: Expr): bool =
+  ## Is this construction fed by a transitionTo chain? That is a transition,
+  ## not a direct construction — sealed rules allow it (the runtime matrix
+  ## checks it).
+  for a in e.args:
+    if a == nil or a.kind != exkCall or a.callee == nil: continue
+    if (a.callee.kind == exkVar and a.callee.name == "transitionTo") or
+       (a.callee.kind == exkField and a.callee.fieldName == "transitionTo"):
+      return true
+  false
+
+proc synthCalleeType(tc: var TypeChecker, e: Expr): Type =
+  ## The callee's own type, synthesized in a transition context when the
+  ## construction is fed by a transitionTo chain.
+  let prevCtx = tc.transitionCtx
+  if viaTransitionChain(e): tc.transitionCtx = true
+  result = tc.synthesize(e.callee)  # variant constructions carry their type
+  tc.transitionCtx = prevCtx
+
+proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
+  ## A callee that is not a bare name. Calling THROUGH a fnsig-typed slot
+  ## (`{args} c.op` where op: Adder) validates the args against the named
+  ## signature and yields its return type; anything else keeps the callee's
+  ## own type.
+  result = tc.synthCalleeType(e)
+  let ct = tc.resolve(result)
+  if ct != nil and ct.kind == tkNamed and ct.name in tc.fnSigNames:
+    let sig = tc.fnSigs[ct.name]
+    var bindings = initTable[string, Type]()
+    tc.checkCallArgs(ct.name, sig, e, bindings)
+    return sig.ret
+  for a in e.args: discard tc.synthesize(a)
+
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
   let calleeName = tc.calleeNameOf(e)
   if calleeName == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
@@ -1248,28 +1328,7 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     for a in e.args: discard tc.synthesize(a)
     return Type(span: e.span, kind: tkNamed, name: calleeName)
   if calleeName != "" and tc.typeGenerics.hasKey(calleeName):
-    # {value: 5} Box — infer the type params from the payload fields; the ty
-    # stamp lets codegen emit the explicit Box[int](...) Nim needs
-    let gs = tc.typeGenerics[calleeName]
-    var bindings = initTable[string, Type]()
-    if e.args.len == 1 and e.args[0].kind == exkStruct:
-      let declFields = getFieldsForType(tc.module, tc.typeDecls[calleeName])
-      for f in e.args[0].fields:
-        let ft = tc.synthesize(f.value)
-        for df in declFields:
-          if df.name == f.name:
-            tc.inferBindings(df.typ, ft, gs, bindings, calleeName, f.value.span)
-            break
-    else:
-      for a in e.args: discard tc.synthesize(a)
-    var gargs: seq[Type]
-    for g in gs:
-      if not bindings.hasKey(g):
-        fail("Type Error: cannot infer generic parameter '" & g & "' of '" &
-             calleeName & "' from the construction payload", e.span)
-      gargs.add(bindings[g])
-    return Type(span: e.span, kind: tkApp,
-                base: Type(span: e.span, kind: tkNamed, name: calleeName), args: gargs)
+    return tc.asGenericConstruction(e, calleeName)
   if calleeName != "" and not tc.fnSigs.hasKey(calleeName) and
      (tc.typeDecls.hasKey(calleeName) or tc.objDecls.hasKey(calleeName)):
     # {fields} TypeName — construction produces the declared type. Objects are
@@ -1280,43 +1339,11 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     for a in e.args: discard tc.synthesize(a)
     return Type(span: e.span, kind: tkNamed, name: calleeName)
   if calleeName != "" and tc.fnSigs.hasKey(calleeName):
-    let sig = tc.fnSigs[calleeName]
-    # The name resolved here; record the edge so later passes read the answer
-    # instead of scanning the decl list to re-derive it.
-    if tc.fnDecls.hasKey(calleeName):
-      resolveTo(semLayer, e, tc.fnDecls[calleeName])
-    var bindings = initTable[string, Type]()
-    tc.checkCallArgs(calleeName, sig, e, bindings)
-    if sig.generics.len == 0: return sig.ret
-    # Unbound type params degrade to Unknown (gradual, like sketch code)
-    for g in sig.generics:
-      if not bindings.hasKey(g):
-        bindings[g] = unknownType(e.span)
-    return substituteType(sig.ret, bindings)
-  var calleeT = unknownType(e.span)
+    return tc.asDeclaredCall(e, calleeName)
   if e.callee != nil and e.callee.kind != exkVar:
-    # A construction fed by a transitionTo chain is a transition, not a
-    # direct construction — sealed rules allow it (runtime matrix checks it)
-    var viaTransition = false
-    for a in e.args:
-      if a != nil and a.kind == exkCall and a.callee != nil:
-        if (a.callee.kind == exkVar and a.callee.name == "transitionTo") or
-           (a.callee.kind == exkField and a.callee.fieldName == "transitionTo"):
-          viaTransition = true
-    let prevCtx = tc.transitionCtx
-    if viaTransition: tc.transitionCtx = true
-    calleeT = tc.synthesize(e.callee)  # variant constructions carry their type
-    tc.transitionCtx = prevCtx
-    # Calling THROUGH a fnsig-typed slot (`{args} c.op` where op: Adder):
-    # validate the args against the named signature and yield its return type.
-    let ct = tc.resolve(calleeT)
-    if ct != nil and ct.kind == tkNamed and ct.name in tc.fnSigNames:
-      let sig = tc.fnSigs[ct.name]
-      var bindings = initTable[string, Type]()
-      tc.checkCallArgs(ct.name, sig, e, bindings)
-      return sig.ret
+    return tc.asIndirectCall(e)
   for a in e.args: discard tc.synthesize(a)
-  calleeT
+  unknownType(e.span)
 
 # Kind dispatch lives in synthesizeKind; synthesize stamps the result onto the
 # node (typed AST — codegen reads semLayer.typeFor(e) for type-directed lowering)
