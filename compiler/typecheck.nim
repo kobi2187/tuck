@@ -2227,6 +2227,52 @@ proc failIfPointerReturn(tc: TypeChecker, t: Type, fnName: string, sp: Span) =
   of tkRename: failIfPointerReturn(tc, t.underlying, fnName, sp)
   else: discard
 
+proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false)
+
+proc checkParamPointers(tc: TypeChecker, params: seq[Param], ret: Type,
+                        what: string, sp: Span) =
+  ## No pointer may appear in an ordinary signature, either side.
+  for p in params:
+    failIfPointer(tc, p.typ, "a " & what & " parameter", p.span)
+  failIfPointer(tc, ret, "a " & what & " return type", sp)
+
+proc checkFnPointers(tc: TypeChecker, d: Decl, inExtern: bool) =
+  ## Pointers cross INTO C, never back out. A param is Tuck handing C something
+  ## it already holds; a RETURN would put a raw pointer in a Tuck variable, and
+  ## from there its lifetime is C's business and unknowable here. A C fn
+  ## returning char*/uint8_t* gets a shim in the Nim layer that copies into
+  ## str/Seq[u8], so the Tuck-visible signature is a safe type and forgetting
+  ## the conversion is impossible rather than merely discouraged.
+  if inExtern:
+    failIfPointerReturn(tc, d.fnReturnType, d.name, d.span)
+  else:
+    checkParamPointers(tc, d.fnParams, d.fnReturnType, "fn", d.span)
+
+proc checkTypePointers(tc: TypeChecker, d: Decl, inExtern: bool) =
+  ## An extern type declaring an opaque handle is the declaration itself, not
+  ## a use of one — only its MEMBERS are ordinary code.
+  if not inExtern and d.typeBody != nil and d.typeBody.kind == tkRecord:
+    for f in d.typeBody.fields:
+      failIfPointer(tc, f.typ, "a type field", f.span)
+  for m in d.typeMembers: checkPointerContainment(tc, m, inExtern)
+
+proc checkMemberPointers(tc: TypeChecker, fields: seq[FieldDef],
+                         members: seq[Decl], what: string, inExtern: bool) =
+  ## A declaration that owns both fields and members: neither may hold a pointer.
+  for f in fields:
+    failIfPointer(tc, f.typ, what, f.span)
+  for m in members: checkPointerContainment(tc, m, inExtern)
+
+proc checkFnSigPointers(tc: TypeChecker, d: Decl, inExtern: bool) =
+  ## A C callback signature is part of the boundary and may hold pointers.
+  if inExtern: return
+  checkParamPointers(tc, d.sigParams, d.sigReturn, "fnsig", d.span)
+
+proc checkRegistryPointers(tc: TypeChecker, d: Decl) =
+  for v in d.variants:
+    for f in v.fields:
+      failIfPointer(tc, f.typ, "a registry field", f.span)
+
 proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
   ## Mirrors resolveDeclTypeRefs' walk. `inExtern` is threaded from the PARENT
   ## decl rather than inferred here: dkMixin, dkExtern and dkPending share an
@@ -2234,39 +2280,13 @@ proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
   ## plain `mixin` hold a cstring — a real leak path, not a hypothetical one.
   if d == nil: return
   case d.kind
-  of dkFn:
-    if inExtern:
-      # Pointers cross INTO C, never back out. A param is Tuck handing C
-      # something it already holds; a RETURN would put a raw pointer in a Tuck
-      # variable, and from there its lifetime is C's business and unknowable
-      # here. A C fn returning char*/uint8_t* gets a shim in the Nim layer that
-      # copies into str/Seq[u8], so the Tuck-visible signature is a safe type
-      # and forgetting the conversion is impossible rather than merely
-      # discouraged.
-      failIfPointerReturn(tc, d.fnReturnType, d.name, d.span)
-      return
-    for p in d.fnParams:
-      failIfPointer(tc, p.typ, "a fn parameter", p.span)
-    failIfPointer(tc, d.fnReturnType, "a fn return type", d.span)
-  of dkTask:
-    for p in d.taskParams:
-      failIfPointer(tc, p.typ, "a task parameter", p.span)
-    failIfPointer(tc, d.taskReturnType, "a task return type", d.span)
-  of dkType:
-    # An extern type declaring an opaque handle is the declaration itself, not
-    # a use of one — only its MEMBERS are ordinary code.
-    if not inExtern and d.typeBody != nil and d.typeBody.kind == tkRecord:
-      for f in d.typeBody.fields:
-        failIfPointer(tc, f.typ, "a type field", f.span)
-    for m in d.typeMembers: checkPointerContainment(tc, m, inExtern)
-  of dkObject:
-    for f in d.objFields:
-      failIfPointer(tc, f.typ, "an object field", f.span)
-    for m in d.objMembers: checkPointerContainment(tc, m, inExtern)
-  of dkActor:
-    for f in d.actorFields:
-      failIfPointer(tc, f.typ, "an actor field", f.span)
-    for h in d.handlers: checkPointerContainment(tc, h, inExtern)
+  of dkFn: checkFnPointers(tc, d, inExtern)
+  of dkTask: checkParamPointers(tc, d.taskParams, d.taskReturnType, "task", d.span)
+  of dkType: checkTypePointers(tc, d, inExtern)
+  of dkObject: checkMemberPointers(tc, d.objFields, d.objMembers,
+                                   "an object field", inExtern)
+  of dkActor: checkMemberPointers(tc, d.actorFields, d.handlers,
+                                  "an actor field", inExtern)
   of dkExtern:
     for m in d.mixinMembers: checkPointerContainment(tc, m, true)
   of dkMixin, dkPending:
@@ -2274,15 +2294,8 @@ proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
   of dkInterface:
     for m in d.ifaceMembers: checkPointerContainment(tc, m, inExtern)
   of dkPool: failIfPointer(tc, d.poolElem, "a pool element type", d.span)
-  of dkFnSig:
-    if inExtern: return   # a C callback signature is part of the boundary
-    for p in d.sigParams:
-      failIfPointer(tc, p.typ, "a fnsig parameter", p.span)
-    failIfPointer(tc, d.sigReturn, "a fnsig return type", d.span)
-  of dkRegistry:
-    for v in d.variants:
-      for f in v.fields:
-        failIfPointer(tc, f.typ, "a registry field", f.span)
+  of dkFnSig: checkFnSigPointers(tc, d, inExtern)
+  of dkRegistry: checkRegistryPointers(tc, d)
   else: discard
 
 proc checkPointers*(tc: TypeChecker, m: Module) =
@@ -2643,44 +2656,57 @@ proc checkDecisionTable(tc: var TypeChecker, d: Decl) =
   else:
     checkPairwise(d, rows)
 
+proc checkDecl(tc: var TypeChecker, d: Decl)
+
+proc checkFnDecl(tc: var TypeChecker, d: Decl) =
+  ## A decision table is checked as a table; anything else as a fn body.
+  if d.isDecision:
+    tc.checkDecisionTable(d)
+    return
+  checkFallibleNeedsIo(d.name, d.fnReturnType, d.fnEffects, d.span)
+  tc.currentErrTypes = d.fnErrorTypes
+  tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody, d.fnGenerics)
+  tc.currentErrTypes = @[]
+
+proc checkObjectDecl(tc: var TypeChecker, d: Decl) =
+  ## Member fns see the object's fields, and the object itself as a mutable
+  ## `self`.
+  tc.pushScope()
+  for f in d.objFields: tc.bindName(f.name, f.typ, true)
+  tc.bindName("self", Type(span: d.span, kind: tkNamed, name: d.name), true)
+  for m in d.objMembers: tc.checkDecl(m)
+  tc.popScope()
+
+proc checkHandler(tc: var TypeChecker, h: Decl) =
+  ## `result` inside a handler IS its declared return type. Nothing bound it,
+  ## so it synthesized as Unknown and every assignment to it was accepted. A
+  ## handler with no return type gets no binding at all, which makes
+  ## `result = ...` the undeclared-name error it should be.
+  tc.pushScope()
+  if h != nil and h.kind == dkFn and h.fnReturnType != nil:
+    tc.bindName("result", h.fnReturnType, true)
+  tc.checkDecl(h)
+  tc.popScope()
+
+proc checkActorDecl(tc: var TypeChecker, d: Decl) =
+  ## Handlers see the actor's fields.
+  tc.pushScope()
+  for f in d.actorFields: tc.bindName(f.name, f.typ, true)
+  for h in d.handlers: tc.checkHandler(h)
+  tc.popScope()
+
 proc checkDecl(tc: var TypeChecker, d: Decl) =
   if d == nil: return
   case d.kind
-  of dkFn:
-    if d.isDecision:
-      tc.checkDecisionTable(d)
-      return
-    checkFallibleNeedsIo(d.name, d.fnReturnType, d.fnEffects, d.span)
-    tc.currentErrTypes = d.fnErrorTypes
-    tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody, d.fnGenerics)
-    tc.currentErrTypes = @[]
+  of dkFn: tc.checkFnDecl(d)
   of dkTask:
     checkFallibleNeedsIo(d.name, d.taskReturnType, d.taskEffects, d.span)
     tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)
   of dkExpr: discard tc.synthesize(d.expr)
-  of dkObject:
-    tc.pushScope()
-    for f in d.objFields: tc.bindName(f.name, f.typ, true)
-    # member fns see the object itself as a mutable `self`
-    tc.bindName("self", Type(span: d.span, kind: tkNamed, name: d.name), true)
-    for m in d.objMembers: tc.checkDecl(m)
-    tc.popScope()
+  of dkObject: tc.checkObjectDecl(d)
   of dkMixin, dkExtern, dkPending:
     for m in d.mixinMembers: tc.checkDecl(m)
-  of dkActor:
-    tc.pushScope()
-    for f in d.actorFields: tc.bindName(f.name, f.typ, true)
-    for h in d.handlers:
-      # `result` inside a handler IS its declared return type. Nothing bound it,
-      # so it synthesized as Unknown and every assignment to it was accepted.
-      # A handler with no return type gets no binding at all, which makes
-      # `result = ...` the undeclared-name error it should be.
-      tc.pushScope()
-      if h != nil and h.kind == dkFn and h.fnReturnType != nil:
-        tc.bindName("result", h.fnReturnType, true)
-      tc.checkDecl(h)
-      tc.popScope()
-    tc.popScope()
+  of dkActor: tc.checkActorDecl(d)
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
   of dkType: checkTransitions(d)
   of dkErrors:
@@ -2728,6 +2754,43 @@ proc isIoFn(tc: TypeChecker, name: string): bool =
   ## Reads the signature table, so an imported [io] fn counts too.
   emIo in tc.declaredEffects(name)
 
+proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span)
+
+proc constCheckField(tc: TypeChecker, m: Module, cname: string, e: Expr,
+                     sp: Span) =
+  ## Unit sugar (5.ms) and field reads over const sub-expressions.
+  if e.receiver == nil: return
+  constCheck(tc, m, cname, e.receiver, sp)
+  if e.receiver.kind == exkLit and tc.isIoFn(e.fieldName):
+    fail("Const Error: 'const " & cname & "' must be pure — '" &
+         e.fieldName & "' is [io]", sp)
+
+proc constCheckCallee(tc: TypeChecker, m: Module, cname, callee: string,
+                      sp: Span) =
+  ## What a const's call may name: a compile-time combinator, a distinct base
+  ## conversion, or a declared pure fn.
+  if callee in ["bake", "merge", "alias"]: return
+  if tc.distinctNames.contains(callee): return  # base conversion
+  if tc.typeDecls.hasKey(callee) and tc.typeDecls[callee].kind == tkRecord:
+    fail("Const Error: 'const " & cname & "' cannot hold a record " &
+         "construction (records are reference values) — use a plain struct " &
+         "literal", sp)
+  if tc.isIoFn(callee):
+    fail("Const Error: 'const " & cname & "' must be pure — '" & callee &
+         "' is [io]", sp)
+  if m.findDecl(dkFn, callee) == nil and not tc.typeDecls.hasKey(callee):
+    fail("Const Error: 'const " & cname & "' needs declared pure fns — '" &
+         callee & "' is unknown", sp)
+
+proc constCheckCall(tc: TypeChecker, m: Module, cname: string, e: Expr,
+                    sp: Span) =
+  ## A call in a const: its arguments and, for a named callee, the callee
+  ## itself. `{payload} Type.Variant` names a field — sum variants are value
+  ## objects, which are fine.
+  for a in e.args: constCheck(tc, m, cname, a, sp)
+  if e.callee != nil and e.callee.kind == exkVar:
+    constCheckCallee(tc, m, cname, e.callee.name, sp)
+
 proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
   ## Reject what a const cannot be. Nim-static semantics: arbitrary PURE
   ## computation, evaluated at compile time by the backend's const evaluator,
@@ -2744,42 +2807,16 @@ proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
   of exkBinary:
     constCheck(tc, m, cname, e.left, sp)
     constCheck(tc, m, cname, e.right, sp)
-  of exkField:
-    # unit sugar (5.ms) and field reads over const sub-expressions
-    if e.receiver != nil: constCheck(tc, m, cname, e.receiver, sp)
-    if e.receiver != nil and e.receiver.kind == exkLit and
-       tc.isIoFn(e.fieldName):
-      fail("Const Error: 'const " & cname & "' must be pure — '" &
-           e.fieldName & "' is [io]", sp)
-  of exkCall:
-    for a in e.args: constCheck(tc, m, cname, a, sp)
-    if e.callee != nil and e.callee.kind == exkVar:
-      let callee = e.callee.name
-      if callee in ["bake", "merge", "alias"]: discard
-      elif tc.typeDecls.hasKey(callee) and
-           tc.typeDecls[callee].kind == tkRecord:
-        fail("Const Error: 'const " & cname & "' cannot hold a " &
-             "record construction (records are reference values) — " &
-             "use a plain struct literal", sp)
-      elif tc.distinctNames.contains(callee): discard  # base conversion
-      elif tc.isIoFn(callee):
-        fail("Const Error: 'const " & cname & "' must be pure — '" &
-             callee & "' is [io]", sp)
-      elif m.findDecl(dkFn, callee) == nil and
-           not tc.typeDecls.hasKey(callee):
-        fail("Const Error: 'const " & cname & "' needs declared pure " &
-             "fns — '" & callee & "' is unknown", sp)
-    elif e.callee != nil and e.callee.kind == exkField:
-      # {payload} Type.Variant — sum variants are value objects: fine
-      discard
+  of exkField: constCheckField(tc, m, cname, e, sp)
+  of exkCall: constCheckCall(tc, m, cname, e, sp)
   else:
     fail("Const Error: 'const " & cname & "' must be a pure " &
          "compile-time expression", sp)
 
-proc typecheckModule*(m: Module,
-                      externSigs = initTable[string, FnSig](),
-                      externPending = initTable[string, Span]()): seq[string] {.discardable.} =
-  var tc = TypeChecker(module: m,
+proc newModuleChecker(m: Module, externSigs: Table[string, FnSig],
+                      externPending: Table[string, Span]): TypeChecker =
+  ## A checker seeded with what this module's imports export.
+  result = TypeChecker(module: m,
                        fnSigs: externSigs,
                        pendingFns: externPending,
                        typeDecls: initTable[string, Type](),
@@ -2787,42 +2824,60 @@ proc typecheckModule*(m: Module,
                        errPolicy: "strict")
   for qualName in externSigs.keys:
     if "::" in qualName:
-      tc.knownModules.incl(qualName.split("::")[0])
+      result.knownModules.incl(qualName.split("::")[0])
+
+proc bindConsts(tc: var TypeChecker, m: Module) =
+  ## const declarations are bound BEFORE body checks so any fn can reference
+  ## them; constCheck says what a const is allowed to be.
+  for d in m.decls:
+    if d != nil and d.kind == dkConst:
+      constCheck(tc, m, d.name, d.constVal, d.span)
+      tc.bindName(d.name, tc.synthesize(d.constVal), false)
+
+proc failIfFieldShadowsDeclaredFn(tc: TypeChecker, m: Module) =
+  ## Either/or namespace: a declared field name may not shadow a declared fn —
+  ## `.name` resolves by lookup, so a clash would silently change meaning.
+  for d in m.decls:
+    if d == nil: continue
+    for f in d.declaredFields():
+      if tc.fnSigs.hasKey(f.name):
+        fail("Type Error: field '" & f.name & "' of '" & d.name & "' has the " &
+             "same name as a declared fn — rename one; fields and fns share " &
+             "the call namespace", d.span)
+
+proc failIfTopLevelStatement(d: Decl) =
+  ## Module top level is declarations only — the runnable program lives in
+  ## `fn main`. (User ruling 2026-07-13: no top-level statements, not even
+  ## pure lets; `tuck build` without main = library.)
+  if d != nil and d.kind == dkExpr:
+    fail("Structure Error: top-level statements are not allowed — move this " &
+         "into `fn main` (a module is declarations; main is the program)",
+         d.span)
+
+proc reportUnhandled(tc: TypeChecker, m: Module): seq[string] =
+  ## Under `strict` a dropped fallible result is an error; the other policies
+  ## hand the sites to codegen, which routes them to the handler.
+  if tc.errPolicy == "strict" and tc.unhandledSites.len > 0:
+    fail("Type Error: " & $tc.unhandledSites.len & " unhandled error result(s)" &
+         " — bind, pass on, or propagate with '?' (policy: strict):\n  " &
+         tc.unhandledSites.join("\n  "), m.span)
+  if tc.errPolicy in ["continue", "exit"]: tc.unhandledSites else: @[]
+
+proc typecheckModule*(m: Module,
+                      externSigs = initTable[string, FnSig](),
+                      externPending = initTable[string, Span]()): seq[string] {.discardable.} =
+  var tc = newModuleChecker(m, externSigs, externPending)
   tc.pushScope()  # module-level scope: consts visible across decls
   tc.collectSigs(m.decls)
   tc.resolveTypeNames(m)
   tc.checkPointers(m)      # pointers may not escape the extern boundary
   tc.checkConformance(m)   # `satisfies I` means every I member is implemented
-  # const declarations are bound BEFORE body checks so any fn can reference
-  # them; constCheck says what a const is allowed to be.
+  tc.bindConsts(m)
+  tc.failIfFieldShadowsDeclaredFn(m)
   for d in m.decls:
-    if d != nil and d.kind == dkConst:
-      constCheck(tc, m, d.name, d.constVal, d.span)
-      tc.bindName(d.name, tc.synthesize(d.constVal), false)
-  # Either/or namespace: a declared field name may not shadow a declared fn —
-  # `.name` resolves by lookup, so a clash would silently change meaning.
-  for d in m.decls:
-    if d == nil: continue
-    for f in d.declaredFields():
-      if tc.fnSigs.hasKey(f.name):
-        fail("Type Error: field '" & f.name & "' of '" & d.name & "' has " &
-             "the same name as a declared fn — rename one; fields and fns " &
-             "share the call namespace", d.span)
-  for d in m.decls:
-    # Module top level is declarations only — the runnable program lives in
-    # `fn main`. (User ruling 2026-07-13: no top-level statements, not even
-    # pure lets; `tuck build` without main = library.)
-    if d != nil and d.kind == dkExpr:
-      fail("Structure Error: top-level statements are not allowed — move " &
-           "this into `fn main` (a module is declarations; main is the " &
-           "program)", d.span)
+    failIfTopLevelStatement(d)
     tc.checkDecl(d)
-  if tc.errPolicy == "strict" and tc.unhandledSites.len > 0:
-    fail("Type Error: " & $tc.unhandledSites.len & " unhandled error result(s)" &
-         " — bind, pass on, or propagate with '?' (policy: strict):\n  " &
-         tc.unhandledSites.join("\n  "), m.span)
-  if tc.errPolicy in ["continue", "exit"]:
-    return tc.unhandledSites
+  tc.reportUnhandled(m)
 
 # Signature export for the .tuck-cache index: same collection walk the
 # checker uses (nested fns in objects/mixins/actors included).
