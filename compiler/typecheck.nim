@@ -124,6 +124,9 @@ export typecheck_state
 import typecheck_flow
 export typecheck_flow
 import typecheck_transitions  # spec 4.4 sum-type transition graph
+import typecheck_decisions    # spec 6.1 decision-table analysis
+import typecheck_pointers     # pointers stay at the extern boundary
+import typecheck_conformance  # spec 5.2 `satisfies` verification
 export typecheck_transitions
 
 # UnknownName now lives in ast.nim (codegen needs it for typed-AST checks)
@@ -2153,306 +2156,6 @@ proc resolveTypeNames*(tc: TypeChecker, m: Module) =
   ## Run after collectSigs, when every declaration is known.
   for d in m.decls: resolveDeclTypeRefs(tc, d)
 
-# --- Pointers are legal only at the extern boundary -------------------------
-#
-# Tuck is a safe language; unsafe types exist to talk to C and nowhere else. A
-# pointer may be produced by an extern and consumed by another extern or a
-# converter (`toStr`), but it may never be STORED — so no pointer outlives the
-# expression that obtained it and a dangling reference is unreachable from safe
-# code. examples/34-ffi-cstring.tuck already stated this as a comment; this is
-# the rule behind it.
-#
-# Pointer-kind is `cstring` plus any FIELDLESS extern type — an opaque C handle
-# (`typedef struct Foo Foo;`) whose size is unknown, so it can only ever be held
-# as a pointer (codegen emits `ptr FooObj` / `rawptr`).
-
-proc isPointerKind(tc: TypeChecker, t: Type): bool =
-  if t == nil or t.kind != tkNamed: return false
-  # Builtin FFI pointers: cstring (char*) and Buf (uint8_t*).
-  if t.name in ["cstring", "Buf"]: return true
-  if tc.typeDeclsByName.hasKey(t.name):
-    let d = tc.typeDeclsByName[t.name]
-    # typeExternHeader/typeBody exist only on dkType — the table also holds
-    # dkObject (objects are constructible by name too), and touching a
-    # dkType-only field on one is a FieldDefect, not a false.
-    if d.kind != dkType: return false
-    # `fields` only exists on a tkRecord body — a sum/named/alias extern type is
-    # not an opaque handle, and reading .fields on those is a FieldDefect.
-    return d.typeExternHeader != "" and
-           d.typeBody != nil and d.typeBody.kind == tkRecord and
-           d.typeBody.fields.len == 0
-  false
-
-proc failIfPointer(tc: TypeChecker, t: Type, where: string, sp: Span) =
-  ## Reject a pointer-kind type anywhere it would escape the extern boundary.
-  ## Recurses so a pointer buried in `Seq[Buf]` or a record field is caught too.
-  if t == nil: return
-  if tc.isPointerKind(t):
-    fail("Type Error: " & typeName(t) & " is a pointer — it may only appear in " &
-         "an extern signature, not " & where & " (cross into safe Tuck with a " &
-         "converter such as toStr)", sp)
-  case t.kind
-  of tkApp:
-    failIfPointer(tc, t.base, where, sp)
-    for a in t.args: failIfPointer(tc, a, where, sp)
-  of tkTuple:
-    for e in t.elems: failIfPointer(tc, e, where, sp)
-  of tkFunc:
-    for p in t.params: failIfPointer(tc, p, where, sp)
-    failIfPointer(tc, t.result, where, sp)
-  of tkRecord:
-    for f in t.fields: failIfPointer(tc, f.typ, where, sp)
-  of tkEffect: failIfPointer(tc, t.inner, where, sp)
-  of tkRename: failIfPointer(tc, t.underlying, where, sp)
-  else: discard
-
-proc failIfPointerReturn(tc: TypeChecker, t: Type, fnName: string, sp: Span) =
-  ## An extern may TAKE a pointer; it may not hand one back. Recurses, so
-  ## `!cstring` and `{p: Buf}` are caught as well as a bare return.
-  if t == nil: return
-  if tc.isPointerKind(t):
-    fail("Type Error: extern '" & fnName & "' returns " & typeName(t) &
-         " — a pointer may be passed INTO C but never returned out of it " &
-         "(wrap it: have the binding return str or Seq[u8], and copy in the " &
-         "implementation)", sp)
-  case t.kind
-  of tkApp:
-    failIfPointerReturn(tc, t.base, fnName, sp)
-    for a in t.args: failIfPointerReturn(tc, a, fnName, sp)
-  of tkTuple:
-    for e in t.elems: failIfPointerReturn(tc, e, fnName, sp)
-  of tkRecord:
-    for f in t.fields: failIfPointerReturn(tc, f.typ, fnName, sp)
-  of tkEffect: failIfPointerReturn(tc, t.inner, fnName, sp)
-  of tkRename: failIfPointerReturn(tc, t.underlying, fnName, sp)
-  else: discard
-
-proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false)
-
-proc checkParamPointers(tc: TypeChecker, params: seq[Param], ret: Type,
-                        what: string, sp: Span) =
-  ## No pointer may appear in an ordinary signature, either side.
-  for p in params:
-    failIfPointer(tc, p.typ, "a " & what & " parameter", p.span)
-  failIfPointer(tc, ret, "a " & what & " return type", sp)
-
-proc checkFnPointers(tc: TypeChecker, d: Decl, inExtern: bool) =
-  ## Pointers cross INTO C, never back out. A param is Tuck handing C something
-  ## it already holds; a RETURN would put a raw pointer in a Tuck variable, and
-  ## from there its lifetime is C's business and unknowable here. A C fn
-  ## returning char*/uint8_t* gets a shim in the Nim layer that copies into
-  ## str/Seq[u8], so the Tuck-visible signature is a safe type and forgetting
-  ## the conversion is impossible rather than merely discouraged.
-  if inExtern:
-    failIfPointerReturn(tc, d.fnReturnType, d.name, d.span)
-  else:
-    checkParamPointers(tc, d.fnParams, d.fnReturnType, "fn", d.span)
-
-proc checkTypePointers(tc: TypeChecker, d: Decl, inExtern: bool) =
-  ## An extern type declaring an opaque handle is the declaration itself, not
-  ## a use of one — only its MEMBERS are ordinary code.
-  if not inExtern and d.typeBody != nil and d.typeBody.kind == tkRecord:
-    for f in d.typeBody.fields:
-      failIfPointer(tc, f.typ, "a type field", f.span)
-  for m in d.typeMembers: checkPointerContainment(tc, m, inExtern)
-
-proc checkMemberPointers(tc: TypeChecker, fields: seq[FieldDef],
-                         members: seq[Decl], what: string, inExtern: bool) =
-  ## A declaration that owns both fields and members: neither may hold a pointer.
-  for f in fields:
-    failIfPointer(tc, f.typ, what, f.span)
-  for m in members: checkPointerContainment(tc, m, inExtern)
-
-proc checkFnSigPointers(tc: TypeChecker, d: Decl, inExtern: bool) =
-  ## A C callback signature is part of the boundary and may hold pointers.
-  if inExtern: return
-  checkParamPointers(tc, d.sigParams, d.sigReturn, "fnsig", d.span)
-
-proc checkRegistryPointers(tc: TypeChecker, d: Decl) =
-  for v in d.variants:
-    for f in v.fields:
-      failIfPointer(tc, f.typ, "a registry field", f.span)
-
-proc checkPointerContainment(tc: TypeChecker, d: Decl, inExtern = false) =
-  ## Mirrors resolveDeclTypeRefs' walk. `inExtern` is threaded from the PARENT
-  ## decl rather than inferred here: dkMixin, dkExtern and dkPending share an
-  ## arm and both recurse through mixinMembers, so keying on the arm would let a
-  ## plain `mixin` hold a cstring — a real leak path, not a hypothetical one.
-  if d == nil: return
-  case d.kind
-  of dkFn: checkFnPointers(tc, d, inExtern)
-  of dkTask: checkParamPointers(tc, d.taskParams, d.taskReturnType, "task", d.span)
-  of dkType: checkTypePointers(tc, d, inExtern)
-  of dkObject: checkMemberPointers(tc, d.objFields, d.objMembers,
-                                   "an object field", inExtern)
-  of dkActor: checkMemberPointers(tc, d.actorFields, d.handlers,
-                                  "an actor field", inExtern)
-  of dkExtern:
-    for m in d.mixinMembers: checkPointerContainment(tc, m, true)
-  of dkMixin, dkPending:
-    for m in d.mixinMembers: checkPointerContainment(tc, m, inExtern)
-  of dkInterface:
-    for m in d.ifaceMembers: checkPointerContainment(tc, m, inExtern)
-  of dkPool: failIfPointer(tc, d.poolElem, "a pool element type", d.span)
-  of dkFnSig: checkFnSigPointers(tc, d, inExtern)
-  of dkRegistry: checkRegistryPointers(tc, d)
-  else: discard
-
-proc checkPointers*(tc: TypeChecker, m: Module) =
-  ## Run after resolveTypeNames, when typeDeclsByName knows every extern type.
-  for d in m.decls: checkPointerContainment(tc, d)
-
-# --- Interface conformance (spec §5.2) --------------------------------------
-#
-# `satisfies I` is a promise; this is where it is kept. An object must
-# implement every fn the interface requires, with matching parameters and
-# return type, and may declare FEWER effects but never more.
-
-proc sameType(a, b: Type): bool =
-  ## Structural equality — deliberately NOT `compatible`, which is lenient by
-  ## design (Unknown, void, unit and Self match everything, so a conformance
-  ## check built on it would accept an impl returning void where the contract
-  ## says !str).
-  if a == nil or b == nil: return a == nil and b == nil
-  if a.kind != b.kind: return false
-  case a.kind
-  of tkNamed: a.name == b.name
-  of tkApp:
-    if not sameType(a.base, b.base) or a.args.len != b.args.len: return false
-    for i in 0 ..< a.args.len:
-      if not sameType(a.args[i], b.args[i]): return false
-    true
-  of tkTuple:
-    if a.elems.len != b.elems.len: return false
-    for i in 0 ..< a.elems.len:
-      if not sameType(a.elems[i], b.elems[i]): return false
-    true
-  of tkRecord:
-    if a.fields.len != b.fields.len: return false
-    for i in 0 ..< a.fields.len:
-      if a.fields[i].name != b.fields[i].name or
-         not sameType(a.fields[i].typ, b.fields[i].typ): return false
-    true
-  of tkFunc:
-    if a.params.len != b.params.len: return false
-    for i in 0 ..< a.params.len:
-      if not sameType(a.params[i], b.params[i]): return false
-    sameType(a.result, b.result)
-  else: typeName(a) == typeName(b)
-
-proc substSelf(t: Type, objName: string): Type =
-  ## `Self` in a required signature means the implementing type.
-  if t == nil: return nil
-  if t.kind == tkNamed and t.name == "Self":
-    return Type(span: t.span, kind: tkNamed, name: objName)
-  if t.kind == tkApp:
-    var args: seq[Type]
-    for a in t.args: args.add(substSelf(a, objName))
-    return Type(span: t.span, kind: tkApp, base: substSelf(t.base, objName),
-                args: args)
-  t
-
-proc sigText(d: Decl): string =
-  ## One line naming a signature, for both halves of a mismatch report.
-  var ps: seq[string]
-  for p in d.fnParams: ps.add(p.name & ": " & typeName(p.typ))
-  var effs: seq[string]
-  for e in d.fnEffects: effs.add(($e)[2 .. ^1].toLowerAscii)
-  result = "fn " & d.name & "({" & ps.join(", ") & "})"
-  if d.fnReturnType != nil: result.add(" -> " & typeName(d.fnReturnType))
-  if effs.len > 0: result.add(" [" & effs.join(", ") & "]")
-
-proc failConformance(objName, iname: string, want, got: Decl, why: string) =
-  fail("Conformance Error: object '" & objName & "' does not satisfy '" &
-       iname & "'\n  contract   " & sigText(want) &
-       "\n  implements " & sigText(got) & "\n  " & why, got.span)
-
-proc checkSigMatch(want, got: Decl, objName, iname: string) =
-  if want.fnParams.len != got.fnParams.len:
-    failConformance(objName, iname, want, got,
-      "takes " & $got.fnParams.len & " parameter(s), the contract declares " &
-      $want.fnParams.len)
-  for i in 0 ..< want.fnParams.len:
-    let w = want.fnParams[i]
-    let g = got.fnParams[i]
-    if w.name != g.name:
-      failConformance(objName, iname, want, got,
-        "parameter " & $(i + 1) & " is named '" & g.name &
-        "', the contract calls it '" & w.name &
-        "' (payload fields bind by name, so the name is part of the contract)")
-    if not sameType(substSelf(w.typ, objName), g.typ):
-      failConformance(objName, iname, want, got,
-        "parameter '" & w.name & "' is " & typeName(g.typ) &
-        ", the contract declares " & typeName(substSelf(w.typ, objName)))
-  if not sameType(substSelf(want.fnReturnType, objName), got.fnReturnType):
-    failConformance(objName, iname, want, got,
-      "returns " & typeName(got.fnReturnType) & ", the contract declares " &
-      typeName(substSelf(want.fnReturnType, objName)))
-  # Effects may be a SUBSET: an implementation may do less than the contract
-  # permits, never more. Same direction as the caller/callee effect budget.
-  for e in got.fnEffects:
-    if e notin want.fnEffects:
-      failConformance(objName, iname, want, got,
-        "declares effect [" & ($e)[2 .. ^1].toLowerAscii &
-        "], which the contract does not permit (an implementation may do " &
-        "LESS than the contract allows, never more)")
-
-proc applySatisfiesDecls*(m: Module) =
-  ## Fold every top-level `Obj satisfies Iface` into that object's own
-  ## `satisfies` list, BEFORE conformance runs.
-  ##
-  ## Doing it here rather than teaching each later pass about dkSatisfies is
-  ## the whole point: conformance checking, interface wrapping and both
-  ## backends' satisfiersOf all read `dkObject.satisfies`, so after this merge
-  ## an attached contract is indistinguishable from a declared one — which is
-  ## exactly the intent. Attaching widens WHERE a promise may be stated, never
-  ## what the promise means.
-  ##
-  ## Re-stating a contract the object already declares is a NO-OP, not an
-  ## error: a calling module cannot be expected to know what the library
-  ## already promised, and demanding it check would defeat the feature.
-  var objs = initTable[string, Decl]()
-  for d in m.decls:
-    if d != nil and d.kind == dkObject: objs[d.name] = d
-  for d in m.decls:
-    if d == nil or d.kind != dkSatisfies: continue
-    if d.name notin objs:
-      fail("Conformance Error: `" & d.name & " satisfies ...` names '" &
-           d.name & "', which is not a declared object in scope", d.span)
-    let obj = objs[d.name]
-    for iname in d.satisfyTargets:
-      if iname notin obj.satisfies:
-        obj.satisfies.add(iname)
-
-proc checkConformance*(tc: TypeChecker, m: Module) =
-  ## Every `satisfies I` on an object is verified against interface I —
-  ## whether the object declared it or a later module attached it.
-  applySatisfiesDecls(m)
-  var ifaces = initTable[string, Decl]()
-  for d in m.decls:
-    if d != nil and d.kind == dkInterface: ifaces[d.name] = d
-  for d in m.decls:
-    if d == nil or d.kind != dkObject or d.satisfies.len == 0: continue
-    for iname in d.satisfies:
-      if iname notin ifaces:
-        fail("Conformance Error: object '" & d.name & "' satisfies '" & iname &
-             "' but no interface by that name is declared", d.span)
-      for want in ifaces[iname].ifaceMembers:
-        if want == nil or want.kind != dkFn: continue
-        var got: Decl = nil
-        for have in d.members():
-          # A body-less member is a signature, not an implementation — there
-          # would be no code to run.
-          if have.kind == dkFn and have.name == want.name and have.fnBody != nil:
-            got = have
-            break
-        if got == nil:
-          fail("Conformance Error: object '" & d.name & "' satisfies '" &
-               iname & "' but does not implement\n    " & sigText(want) &
-               "\n  (add it as a member fn, or drop the `satisfies " & iname &
-               "` line)", d.span)
-        checkSigMatch(want, got, d.name, iname)
-
 # Pure functions are total: only [io]-marked functions (I/O, unknown input)
 # may declare fallible !T returns. The pure core provably cannot fail.
 proc checkFallibleNeedsIo(name: string, ret: Type, effects: seq[EffectMarker], span: Span) =
@@ -2511,150 +2214,24 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   tc.varVariants = savedVariants
   tc.popScope()
 
-# --- Decision tables (spec 6.1): row width, unreachable rows, completeness ---
-
-proc patCovers(a, b: Pattern): bool =
-  # Does pattern a match everything pattern b matches? (per column)
-  if a == nil or a.kind == pkWild: return true
-  if b == nil or b.kind == pkWild: return false
-  if a.kind != b.kind: return false
-  case a.kind
-  of pkVar: a.name == b.name
-  of pkLit: a.litKind == b.litKind and a.litValue == b.litValue
-  else: false
-
-type
-  DecisionRow = tuple[pats: seq[Pattern], span: Span]
-    ## One row of a decision table: a pattern per input column.
-
-const MaxEnumeratedCombos = 4096
-  ## Above this, exact enumeration costs more than it is worth and the
-  ## pairwise fallback takes over.
-
-proc patValue(p: Pattern): string =
-  ## The value a pattern names, or "_" for a wildcard.
-  if p == nil: return "_"
-  case p.kind
-  of pkWild: "_"
-  of pkVar: p.name
-  of pkLit: p.litValue
-  else: "_"
-
-proc rowPatterns(pat: Pattern): seq[Pattern] =
-  ## A row's columns. A tuple pattern is already one per column; anything
-  ## else is a single-column row.
-  if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]
+# --- Decision tables (spec 6.1) ---------------------------------------------
+# The analysis lives in typecheck_decisions; only collecting the rows needs
+# the checker, because each row's body has to be typed.
 
 proc collectRows(tc: var TypeChecker, d: Decl): seq[DecisionRow] =
   ## Every row of the table, checked for width and typed.
   for s in d.fnBody.stmts:
     if s.kind != exkMatch or s.arms.len == 0: continue
     let pats = rowPatterns(s.arms[0].pattern)
-    if pats.len != d.fnParams.len:
-      fail("Decision Error: row in '" & d.name & "' has " & $pats.len &
-           " columns but the table declares " & $d.fnParams.len & " inputs",
-           s.span)
+    checkRowWidth(d, pats, s.span)
     result.add((pats, s.span))
     discard tc.synthesize(s.arms[0].body)
-
-proc columnDomains(tc: TypeChecker, d: Decl, allEnum: var bool,
-                   comboCount: var int): seq[seq[string]] =
-  ## The values each input column can take. allEnum stays true only when
-  ## every column is enumerable (bool / fieldless sum types).
-  allEnum = true
-  comboCount = 1
-  for p in d.fnParams:
-    let dom = enumDomain(tc.module, p.typ)
-    if dom.len == 0: allEnum = false
-    result.add(dom)
-    comboCount *= max(dom.len, 1)
-
-proc comboValues(domains: seq[seq[string]], combo: int): seq[string] =
-  ## Decode a mixed-radix combination index into one value per column.
-  var rem = combo
-  for c in countdown(domains.high, 0):
-    result.insert(domains[c][rem mod domains[c].len], 0)
-    rem = rem div domains[c].len
-
-proc rowMatches(r: DecisionRow, vals: seq[string]): bool =
-  ## Does this row fire for this input combination?
-  for c in 0 ..< r.pats.len:
-    let v = patValue(r.pats[c])
-    if v != "_" and v != vals[c]: return false
-  true
-
-proc checkRowSymbols(d: Decl, rows: seq[DecisionRow],
-                     domains: seq[seq[string]]) =
-  ## Symbols in rows must be actual values of the column type.
-  for r in rows:
-    for c in 0 ..< r.pats.len:
-      let v = patValue(r.pats[c])
-      if v != "_" and v notin domains[c]:
-        fail("Decision Error: '" & v & "' is not a value of " &
-             typeName(d.fnParams[c].typ) & " in table '" & d.name & "'", r.span)
-
-proc failGap(d: Decl, vals: seq[string]) =
-  ## No row fires for this input combination.
-  var desc: seq[string]
-  for c in 0 ..< vals.len:
-    desc.add(d.fnParams[c].name & ": " & vals[c])
-  fail("Decision Error: '" & d.name & "' has a gap — no row matches (" &
-       desc.join(", ") & ")", d.span)
-
-proc firstMatchingRow(rows: seq[DecisionRow], vals: seq[string]): int =
-  ## The row that fires for this combination, -1 if there is none.
-  for i, r in rows:
-    if rowMatches(r, vals): return i
-  -1
-
-proc checkExactly(d: Decl, rows: seq[DecisionRow], domains: seq[seq[string]],
-                  comboCount: int) =
-  ## EXACT analysis: every input combination is enumerated, so gaps and
-  ## unreachable rows are proven, not approximated.
-  checkRowSymbols(d, rows, domains)
-  var rowUsed = newSeq[bool](rows.len)
-  for combo in 0 ..< comboCount:
-    let vals = comboValues(domains, combo)
-    let hit = firstMatchingRow(rows, vals)
-    if hit < 0: failGap(d, vals)
-    rowUsed[hit] = true
-  for i, used in rowUsed:
-    if not used:
-      fail("Decision Error: row " & $(i+1) & " of '" & d.name &
-           "' is unreachable — earlier rows cover all its inputs", rows[i].span)
-
-proc coversRow(earlier, later: DecisionRow): bool =
-  ## Does an earlier row match everything a later one matches?
-  for c in 0 ..< later.pats.len:
-    if not patCovers(earlier.pats[c], later.pats[c]): return false
-  true
-
-proc checkPairwise(d: Decl, rows: seq[DecisionRow]) =
-  ## Open domains: completeness cannot be proven, so check rows against each
-  ## other and require a catch-all row.
-  for j in 1 ..< rows.len:
-    for i in 0 ..< j:
-      if coversRow(rows[i], rows[j]):
-        fail("Decision Error: row " & $(j+1) & " of '" & d.name &
-             "' is unreachable — row " & $(i+1) & " already covers it",
-             rows[j].span)
-  for p in rows[^1].pats:
-    if p != nil and p.kind != pkWild:
-      fail("Decision Error: '" & d.name & "' cannot be proven complete — " &
-           "end the table with a catch-all row (all _)", d.span)
 
 proc checkDecisionTable(tc: var TypeChecker, d: Decl) =
   ## spec 6.1: row width, unreachable rows, completeness.
   if d.fnBody == nil or d.fnBody.kind != exkBlock or d.fnBody.stmts.len == 0:
     fail("Decision Error: decision table '" & d.name & "' has no rows", d.span)
-  let rows = tc.collectRows(d)
-  var allEnum = true
-  var comboCount = 1
-  let domains = tc.columnDomains(d, allEnum, comboCount)
-  if allEnum and comboCount <= MaxEnumeratedCombos:
-    checkExactly(d, rows, domains, comboCount)
-  else:
-    checkPairwise(d, rows)
+  checkDecisionRows(tc.module, d, tc.collectRows(d))
 
 proc checkDecl(tc: var TypeChecker, d: Decl)
 
@@ -2870,8 +2447,8 @@ proc typecheckModule*(m: Module,
   tc.pushScope()  # module-level scope: consts visible across decls
   tc.collectSigs(m.decls)
   tc.resolveTypeNames(m)
-  tc.checkPointers(m)      # pointers may not escape the extern boundary
-  tc.checkConformance(m)   # `satisfies I` means every I member is implemented
+  checkPointers(tc.typeDeclsByName, m)  # pointers stay at the extern boundary
+  checkConformance(m)      # `satisfies I` means every I member is implemented
   tc.bindConsts(m)
   tc.failIfFieldShadowsDeclaredFn(m)
   for d in m.decls:
