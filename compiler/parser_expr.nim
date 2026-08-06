@@ -188,7 +188,9 @@ proc parsePrimaryExpr(p: var Parser): Expr =
 # Type.Variant [unsafe] — deserialization escape hatch for sealed construction
 # (spec 4.4). Consumes the marker and reports whether it was present.
 proc tryUnsafeMarker(p: var Parser): bool =
-  if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+  # `unsafe` is a reserved bare marker (tkAttr), so the kind check is the
+  # value check — no identifier could reach here spelled `unsafe`.
+  if p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
      p.peek(1).value == "unsafe" and p.peek(2).kind == tkRBracket:
     discard p.advance()  # [
     discard p.advance()  # unsafe
@@ -278,6 +280,16 @@ proc parseChainExpr(p: var Parser): Expr =
       let name = p.expect(tkIdent, "Expected identifier after '::'").value
       let moduleName = if expr.kind == exkVar: expr.name else: ""
       expr = Expr(span: sp, kind: exkQualified, modulePath: @[moduleName], qualName: name)
+    elif p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
+         p.peek(2).kind == tkRBracket:
+      # A trailing bare-marker bracket on a call — `uart.flush {buf} [io]`.
+      # An effect ANNOTATION on the statement, not part of the expression, so
+      # it is consumed and dropped here rather than ending the chain. Only a
+      # reserved marker qualifies; `xs [1, 2]` is still a separate list
+      # literal, and `xs[i]` is still indexing (handled tight, below).
+      discard p.advance()  # [
+      discard p.advance()  # marker
+      discard p.advance()  # ]
     elif p.current().kind == tkLBracket and p.bracketIsTight():
       # `recv[a, b, ...]` — the argument sits after the callee, like every
       # other postfix continuation here. One arg on a value is an index; a

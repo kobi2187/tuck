@@ -78,6 +78,7 @@ type
     tkWhen, tkDistinct, tkBake, tkImport,
     tkAnd, tkOr, tkNot, tkTrue, tkFalse, tkNone,
     tkStaticAssert,
+    tkAttr,   # an ATTRIBUTE name — sealed, io, error, stack, … (see keywords)
 
     tkSymbol, # legacy fallback
     tkPlusAssign, tkMinusAssign, tkStarAssign, tkSlashAssign,
@@ -112,7 +113,33 @@ const keywords = {
   "distinct": tkDistinct, "bake": tkBake, "import": tkImport,
   "and": tkAnd, "or": tkOr, "not": tkNot,
   "true": tkTrue, "false": tkFalse, "none": tkNone,
-  "static_assert": tkStaticAssert
+  "static_assert": tkStaticAssert,
+
+  # ATTRIBUTE NAMES — reserved globally, exactly like the keywords above.
+  # They all share one token kind because the parser never needs to tell them
+  # apart lexically; parseTypeUseAttrs reads the name off the token's value.
+  #
+  # Reserved rather than context-sensitive so `Box[error]` is decidable
+  # without a word list in the parser: a reserved word is never a user
+  # identifier, so a bracket entry that lexes as tkAttr IS an attribute and
+  # one that lexes as tkIdent IS a type argument. The old parser-side list
+  # could not do this, because `error` lexed as an ordinary identifier and
+  # `Box[error]` and `u16 [error: E]` were the same shape.
+  # BARE MARKERS ONLY. These stand alone in a bracket — `[sealed]`, `[io]` —
+  # which is precisely the shape that collides with a type argument `[T]`.
+  #
+  # NOT here: attribute PARAMETER names (count, size, queue, policy, read,
+  # write, emit, impl, header, lib, c, nim, odin, at, bit, bits). Those always
+  # appear as `name: value`, so `[count: 4]` is identifiable by shape and
+  # needs no reservation — and they are ordinary field names besides
+  # (`{c: Counter}`, `count: int`).
+  # NOT `invariant` either — that is a BLOCK keyword in a type body
+  # (`invariant:` then indented predicates), never a bracket marker.
+  "saturating": tkAttr, "wrapping": tkAttr, "trapping": tkAttr,
+  "sealed": tkAttr, "packed": tkAttr, "volatile": tkAttr,
+  "big_endian": tkAttr, "little_endian": tkAttr,
+  "io": tkAttr, "unsafe": tkAttr, "may_block": tkAttr, "no_alloc": tkAttr,
+  "irq_safe": tkAttr
 }.toTable()
 
 proc getLineContext(source: string, targetLine: int): string =

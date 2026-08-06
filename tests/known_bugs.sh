@@ -114,11 +114,12 @@ TUCKEOF
 try emits_odin "" 'tuckSat\(u16'
 bug_fixed "Odin backend clamps [saturating] too"
 
-# 5. A type argument named like a VALUED-ONLY attribute now parses. error,
-# stack, align, queue and priority always carry a value (`[error: FsError]`,
-# `[queue: 8]`) — there is no bare form of any of them — so `Box[error]` with
-# no colon cannot be an attribute and is certainly a type argument. Those five
-# left the word list entirely.
+# 5. RULING 2026-08-06, not a bug: attribute names are RESERVED in bracket
+# position, and user type names must be Capitalized. `Box[T]` and
+# `u16 [saturating]` are the same shape, so the parser needs a rule. The
+# attribute set is CLOSED, so a word list was never incomplete — it was
+# AMBIGUOUS, since `error`/`sealed`/`stack` are all good type-parameter names.
+# Case resolves what no list can; the reserved list is the backstop.
 src <<'TUCKEOF'
 type Box[T]:
   v: T
@@ -126,29 +127,81 @@ type Box[T]:
 fn take({b: Box[error]}) -> int:
   return 0
 
+fn takeSealed({b: Box[sealed]}) -> int:
+  return 0
+
+fn takeStack({b: Box[stack]}) -> int:
+  return 0
+
 fn main() -> int:
   return 0
 TUCKEOF
-try ok_check ""
-bug_fixed "a type argument may be named like a valued-only attribute"
+ok_check "an attribute name may be a type argument"
 
-# 6. The BARE markers stay ambiguous — `[sealed]` and `[T]` genuinely look
-# alike, and unlike the valued-only names a bare `sealed` is a real attribute.
-# So this case still cannot parse as a type argument; what is asserted is that
-# the message explains why rather than naming a surprised token (it used to be
-# "Expected token 'tkColon' but got 'tkRBracket'").
+# And the attribute reading still wins where it must, in the same file shape
+# the corpus uses everywhere.
+src <<'TUCKEOF'
+type SafeRPM = u16 [saturating]
+
+fn main() -> int:
+  let s = 70000 SafeRPM
+  if s == 65535 SafeRPM:
+    return 1
+  return 2
+TUCKEOF
+runs "an attribute bracket is still an attribute" 1
+
+# A bare marker is a RESERVED WORD now, so it cannot be an ordinary name.
+src <<'TUCKEOF'
+fn main() -> int:
+  let sealed = 1
+  return sealed
+TUCKEOF
+bad_check "a reserved marker cannot be a variable name" '.'
+
+# 5b. The capitalization half of the same ruling. Enforced at DECLARATION, so
+# the error lands where the name is chosen. The corpus already followed this
+# everywhere — one mixin in example 04 was the only violation.
+src <<'TUCKEOF'
+type box[T]:
+  v: T
+
+fn main() -> int:
+  return 0
+TUCKEOF
+bad_check "a lowercase type name is rejected" 'must be Capitalized'
+
+src <<'TUCKEOF'
+object dog:
+  name: str
+
+fn main() -> int:
+  return 0
+TUCKEOF
+bad_check "a lowercase object name is rejected" 'must be Capitalized'
+
+src <<'TUCKEOF'
+mixin helpers:
+  fn double({self: Self}) -> int:
+    return 1
+
+fn main() -> int:
+  return 0
+TUCKEOF
+bad_check "a lowercase mixin name is rejected" 'must be Capitalized'
+
+# Primitives stay lowercase — they are a closed set, not user declarations.
 src <<'TUCKEOF'
 type Box[T]:
   v: T
 
-fn take({b: Box[sealed]}) -> int:
+fn take({b: Box[u8]}) -> int:
   return 0
 
 fn main() -> int:
   return 0
 TUCKEOF
-try bad_check "" 'is an attribute name'
-bug_open "a bare attribute marker cannot be used as a type argument"
+ok_check "a primitive is still a legal type argument"
 
 # 7. Block-bodied match arms indent correctly. Was blocking example 20: the
 # arm emitter hardcoded `"  of "` and `"\n    "` as if the case sat at column

@@ -15,7 +15,7 @@
 # compressBound stays a direct C binding: it takes and returns integers, so
 # nothing needs wrapping. Both routes in one file, on purpose.
 import sys
-import io
+import console
 
 extern [impl: nim "./shim/zlib_shim", odin "./shim"]:
   fn zlibVersion() -> str

@@ -413,14 +413,14 @@ readLine :: proc() -> TuckResult(IoLine) {
 	tuckSubmitBlocking(readLineWorker, &req)
 	switch req.status {
 	case .EndOfInput:
-		return terr(IoLine, errCode("io/IoError.EndOfInput"))
+		return terr(IoLine, errCode("console/IoError.EndOfInput"))
 	case .Ok:
 		line := strings.trim_right(string(req.buf[:req.len]), "\r\n")
 		return tok(IoLine{line = strings.clone(line)})
 	case .IoFailed, .NotFound, .AccessDenied:
-		return terr(IoLine, errCode("io/IoError.IoFailed"))
+		return terr(IoLine, errCode("console/IoError.IoFailed"))
 	}
-	return terr(IoLine, errCode("io/IoError.IoFailed"))
+	return terr(IoLine, errCode("console/IoError.IoFailed"))
 }
 
 // --- std/net: TCP over the reactor ------------------------------------------

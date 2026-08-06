@@ -66,5 +66,39 @@ proc expect*(p: var Parser, kind: TokenKind, msg = ""): Token =
     p.reportError(errMsg)
   result = p.advance()
 
+proc expectAttrName*(p: var Parser, msg: string): Token =
+  ## An attribute name. Either a reserved BARE marker (tkAttr — `sealed`,
+  ## `io`) or an ordinary identifier used as a valued attribute's parameter
+  ## name (`count` in `[count: 4]`). Only the bare markers are reserved,
+  ## because only they collide with a type argument's shape.
+  if p.current().kind in {tkIdent, tkAttr}:
+    return p.advance()
+  p.reportError(msg)
+
+proc expectTypeName*(p: var Parser, what: string): Token =
+  ## A user-declared type name — type, object, interface, actor, distinct,
+  ## fnsig, registry, pool, arena — must be Capitalized.
+  ##
+  ## This is what makes `Box[error]` decidable. `Box[T]` and `u16 [saturating]`
+  ## are the same shape, a bracket after a type name, so the parser needed a
+  ## word list to tell an attribute from a type argument. The attribute set is
+  ## CLOSED, so that list was never incomplete — it was AMBIGUOUS, because
+  ## `error`, `sealed` and `stack` are all good type-parameter names too. Case
+  ## resolves what no list can. Primitives (u8, int, str, …) stay lowercase and
+  ## are a closed set of their own.
+  ##
+  ## Enforced at declaration rather than at use, so the error lands where the
+  ## name is chosen. The corpus already followed this everywhere — zero
+  ## lowercase user type names across examples and std — so this codifies
+  ## existing practice rather than changing it.
+  let tok = p.expect(tkIdent, "Expected " & what & " name")
+  if tok.value.len > 0 and tok.value[0] notin {'A'..'Z'}:
+    p.reportError("a " & what & " name must be Capitalized — `" & tok.value &
+                  "` starts lowercase. Lowercase names are reserved for " &
+                  "primitives (u8, int, str, …) and attributes ([sealed], " &
+                  "[io], …), which is what lets `Box[T]` be told apart from " &
+                  "`u16 [saturating]`.", tok.line, tok.column)
+  tok
+
 proc getSpan*(p: Parser): Span =
   Span(line: p.current().line, col: p.current().column, file: "")

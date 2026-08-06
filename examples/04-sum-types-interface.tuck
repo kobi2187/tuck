@@ -30,7 +30,7 @@ interface Storable:
   fn save({item: Self}) -> !void [io]
 
 # A mixin with a `self` param materializes on every composing object.
-mixin bulkOperations:
+mixin BulkOperations:
   fn setMany(self, {pairs: Seq[Pair]}) -> !void [io]:
     ...
 
@@ -44,7 +44,7 @@ fn startAudio({self: PodcastApp}) -> PodcastApp:
 object PodcastApp:
   + AudioPlayer
   + NetworkClient
-  + bulkOperations
+  + BulkOperations
 
   fn play({episode: Episode}) -> void:
     self ..loadEpisode {episode} ..startAudio

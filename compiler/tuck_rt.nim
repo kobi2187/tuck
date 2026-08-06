@@ -410,13 +410,13 @@ proc readLine*(): TuckResult[tuple[line: string]] =
   tuckSubmitBlocking(readLineWorker, addr req)
   case req.status
   of iosEndOfInput:
-    terr[tuple[line: string]](errCode("io/IoError.EndOfInput"))
+    terr[tuple[line: string]](errCode("console/IoError.EndOfInput"))
   of iosOk:
     var line = newString(req.len)
     for i in 0 ..< req.len: line[i] = req.buf[i]
     tok((line: line))
   of iosIoFailed, iosNotFound, iosAccessDenied:
-    terr[tuple[line: string]](errCode("io/IoError.IoFailed"))
+    terr[tuple[line: string]](errCode("console/IoError.IoFailed"))
 
 # --- std/net: TCP over the reactor ------------------------------------------
 #

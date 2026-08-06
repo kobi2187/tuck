@@ -206,7 +206,7 @@ case_tour123() {
 tg="tests/.smoke_tour123"
 rm -rf "$tg" && mkdir -p "$tg"
 cat > "$tg/t.tuck" <<'TUCKEOF'
-import io
+import console
 import str
 import sys
 
@@ -215,9 +215,9 @@ type Episode:
 
 fn main() -> void [io]:
   let name = "tuck"
-  {text: "hello, " + name} io::printLine
+  {text: "hello, " + name} console::printLine
   let n = 42
-  {text: n.toStr} io::printLine
+  {text: n.toStr} console::printLine
   let eps = [{minutes: 10} Episode, {minutes: 32} Episode]
   var total = 0
   for e in eps:

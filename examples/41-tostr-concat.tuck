@@ -18,7 +18,7 @@
 #   2. postfix application only recognized a LITERAL receiver (`5.ms`), never
 #      a variable, so `n.toStr` was never treated as a call at all.
 import str
-import io
+import console
 import sys
 
 type Jar = {count: int, label: str}

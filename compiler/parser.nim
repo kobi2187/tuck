@@ -133,7 +133,7 @@ proc parseDeclAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
   discard p.advance()
   while p.current().kind != tkRBracket and p.current().kind != tkEOF:
     let attrSp = p.getSpan()
-    let attrName = p.expect(tkIdent, "Expected attribute name").value
+    let attrName = p.expectAttrName("Expected attribute name").value
     if attrName == "invariant":
       p.reportError("invariant is a block inside the type body, not an attribute: `invariant:` then one indented predicate per line", attrSp.line, attrSp.col)
     var val = ""
@@ -311,7 +311,7 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
     if p.current().kind == tkLBracket:
       discard p.advance()
       while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-        let effName = p.expect(tkIdent, "Expected effect marker").value
+        let effName = p.expectAttrName("Expected effect marker").value
         if effName == "error":
           discard p.expect(tkColon)
           sigErrTypes.add(p.expect(tkIdent, "Expected error enum name after 'error:'").value)
@@ -343,7 +343,7 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
 # registry Name: | Variant {fields} — global event registry (spec 10)
 proc parseRegistryDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()
-  let name = p.expect(tkIdent, "Expected registry name").value
+  let name = p.expectTypeName("registry").value
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
   discard p.expect(tkIndent)
@@ -395,7 +395,7 @@ proc parseTaskDecl(p: var Parser, sp: Span): Decl =
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
       let effSp = p.getSpan()
-      let effName = p.expect(tkIdent, "Expected effect marker").value
+      let effName = p.expectAttrName("Expected effect marker").value
       var eff: EffectMarker
       if not effectMarkerFromName(effName, eff):
         p.reportError("Unknown effect marker: " & effName, effSp.line, effSp.col)
@@ -413,7 +413,7 @@ proc parseTaskDecl(p: var Parser, sp: Span): Decl =
 # returns (a {struct}, a bare type, void, or !T/?T). NAME then usable as a type.
 proc parseFnSigDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()  # eat `fnsig`
-  let name = p.expect(tkIdent, "Expected fnsig name").value
+  let name = p.expectTypeName("fnsig").value
   discard p.expect(tkAssign)
   # params: a brace record `{a: T, b: U}` (or `{}` for none) — reuse parseType,
   # which yields a tkRecord, then lift its fields to named Params.
@@ -432,7 +432,7 @@ proc parseFnSigDecl(p: var Parser, sp: Span): Decl =
 
 proc parseTypeDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()
-  let name = p.expect(tkIdent, "Expected type name").value
+  let name = p.expectTypeName("type").value
   # `type Box[T]` — generic params are Uppercase idents; attrs are lowercase
   var typeGenerics: seq[string]
   if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
@@ -622,7 +622,7 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:
       let effSp = p.getSpan()
-      let effName = p.expect(tkIdent, "Expected effect marker").value
+      let effName = p.expectAttrName("Expected effect marker").value
       if effName == "error":
         discard p.expect(tkColon)
         errTypes.add(p.expect(tkIdent, "Expected error enum name after 'error:'").value)
@@ -659,7 +659,7 @@ proc parseDecisionDecl(p: var Parser, sp: Span): Decl =
 proc parseArenaDecl(p: var Parser): Decl =
   let spArena = p.getSpan()
   discard p.advance() # eat "arena"
-  let name = p.expect(tkIdent, "Expected arena name").value
+  let name = p.expectTypeName("arena").value
   var attrs: seq[TypeAttr]
   p.parseDeclAttrs(attrs)
   discard p.expect(tkColon)
@@ -835,7 +835,7 @@ proc parseDecl*(p: var Parser): Decl =
     # element type. Reuses the `X = <type> [attrs]` shape; the name denotes
     # the POOL, not a value of the element type.
     discard p.advance() # eat "pool"
-    let name = p.expect(tkIdent, "Expected pool name").value
+    let name = p.expectTypeName("pool").value
     if p.current().kind != tkAssign:
       p.reportError("A pool declares its element type: " &
         "`pool " & name & " = <ElementType> [count: N]`")
@@ -887,7 +887,7 @@ proc parseDecl*(p: var Parser): Decl =
 
   of tkObject:
     discard p.advance()
-    let name = p.expect(tkIdent, "Expected object name").value
+    let name = p.expectTypeName("object").value
     discard p.expect(tkColon)
     var fields: seq[FieldDef]
     var members: seq[Decl]
@@ -907,7 +907,7 @@ proc parseDecl*(p: var Parser): Decl =
 
   of tkActor:
     discard p.advance()
-    let name = p.expect(tkIdent, "Expected actor name").value
+    let name = p.expectTypeName("actor").value
     var attrs: seq[TypeAttr]
     p.parseDeclAttrs(attrs)
     discard p.expect(tkColon)
@@ -932,7 +932,7 @@ proc parseDecl*(p: var Parser): Decl =
 
   of tkDistinct:
     discard p.advance()
-    let name = p.expect(tkIdent, "Expected distinct type name").value
+    let name = p.expectTypeName("distinct type").value
     discard p.expect(tkAssign)
     let aliasType = p.parseType()
     var attrs = aliasType.attrs  # parseType may have consumed [suffix: ms]
@@ -950,13 +950,13 @@ proc parseDecl*(p: var Parser): Decl =
     # members are code to compose INTO an object, an interface's are
     # requirements to check AGAINST one.
     discard p.advance()
-    let name = p.expect(tkIdent, "Expected interface name").value
+    let name = p.expectTypeName("interface").value
     return Decl(span: sp, kind: dkInterface, name: name,
                 ifaceMembers: p.parseSigBlock("interface"))
 
   of tkMixin:
     discard p.advance()
-    let name = p.expect(tkIdent, "Expected mixin name").value
+    let name = p.expectTypeName("mixin").value
     discard p.expect(tkColon)
     discard p.expect(tkNewline)
     discard p.expect(tkIndent)

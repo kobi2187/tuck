@@ -1,0 +1,13 @@
+# std/console — terminal I/O. Implemented by tuck_rt.
+#
+# Named `console`, not `io`: `io` is the effect attribute `[io]`, a reserved
+# word, so it cannot also be a module name. Reserving it is what makes
+# `Box[error]` decidable — an attribute name is never an identifier.
+type IoError:
+  | EndOfInput
+  | IoFailed
+
+extern:
+  fn print({text: str}) -> void [io]
+  fn printLine({text: str}) -> void [io]
+  fn readLine() -> !{line: str} [io, error: IoError]

@@ -12,16 +12,15 @@ That is authoritative; this file explains them.
 
 ---
 
-## A. Open bugs (3, all with a failing test that pins them)
+## A. Open bugs (2, all with a failing test that pins them)
 
 Each has a regression test written as the CORRECT behaviour, marked `bug_open`.
 Fixing one means flipping the marker to `bug_fixed`, which locks it in.
 
 | # | Bug | Test | Where the fix belongs |
 |---|---|---|---|
-| 1 | A BARE attribute marker cannot be a type argument: `Box[sealed]`. Genuinely ambiguous — `[sealed]` and `[T]` look alike, and a bare `sealed` IS a real attribute. (The valued-only names — error, stack, align, queue, priority — were fixed: they always carry a value, so a bare one is certainly a type argument.) | known_bugs | `parser_type.nim` — decide by declared set, not a word list |
-| 2 | A member fn shadows a top-level fn of the same name. `collectSigs` registers object members under their bare name into the same flat `fnSigs` as top-level fns, so `Dog.noise` overwrites the free `noise`. Pools show the fix — they key qualified (`Pool.acquire`) — but applying it to members means changing CALL RESOLUTION, not just emission. | member_names | `typecheck.nim` `collectSigs` + call resolution |
-| 3 | Odin: a list literal cannot reach a `Seq` parameter. `[dynamic]T` has no literal form, only `append`, and Odin rejects the inline braced compound literal at the call site. A plain `Seq[Record]` fails identically, so it is not interface-specific. Needs statement hoisting in the Odin emitter (declare, append, then pass). | interface_seq | `codegen_odin.nim` |
+| 1 | A member fn shadows a top-level fn of the same name. `collectSigs` registers object members under their bare name into the same flat `fnSigs` as top-level fns, so `Dog.noise` overwrites the free `noise`. Attempted and reverted: a member must STAY in that table, because `d.noise` resolves through `asFnByName`, which looks the bare name up there — so letting the free fn win simply breaks the member call instead. Needs call resolution to distinguish them. | member_names | `typecheck.nim` `collectSigs` + call resolution |
+| 2 | Odin: a list literal cannot reach a `Seq` parameter. `[dynamic]T` has no literal form, only `append`, and Odin rejects the inline braced compound literal at the call site. A plain `Seq[Record]` fails identically, so it is not interface-specific. Needs statement hoisting in the Odin emitter (declare, append, then pass). | interface_seq | `codegen_odin.nim` |
 
 **Tracked but without a test yet:** on Odin a task WITH ARGUMENTS still emits a
 direct call, so its body runs on the main context and the first
@@ -90,9 +89,19 @@ Fixed 2026-08-05, later in the same day (7 open bugs -> 3):
   `compatible` resolved a name mismatch through to the body, which destroyed
   the names, and the fallthrough `a.kind == e.kind` then saw tkSum == tkSum.
   Now rejected before resolving.
-- **A valued-only attribute name may be a type argument.** `Box[error]` parses.
-  error/stack/align/queue/priority always carry a value, so a bare one cannot
-  be an attribute.
+- **An attribute name may be a type argument.** `Box[error]`, `Box[sealed]`,
+  `Box[stack]` all parse. Fixed at the SOURCE rather than in the parser: bare
+  markers (sealed, io, unsafe, packed, saturating, …) are now reserved words
+  with their own token kind, so they can never be an ordinary identifier, and
+  the 19-name list in `parser_type.nim` is gone. Attribute PARAMETER names
+  (count, size, queue, header, lib, c, …) stay ordinary identifiers — they
+  always appear as `name: value`, which is identifiable by shape, and they are
+  good field names (`{c: Counter}`, `count: int`).
+- **User-declared type names must be Capitalized** — type, object, interface,
+  actor, distinct, fnsig, registry, pool, arena. The corpus already followed
+  this everywhere; one mixin in example 04 was the sole violation.
+- **`std/io` is now `std/console`**, because `io` is the `[io]` effect marker
+  and a reserved word cannot also be a module name.
 
 Verified fixed earlier on 2026-08-05:
 

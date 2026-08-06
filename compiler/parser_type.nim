@@ -16,7 +16,7 @@ proc parseType*(p: var Parser): Type   # internal recursion (paren/primary/self)
 proc parseTypeUseAttrs(p: var Parser): seq[TypeAttr] =
   while p.current().kind != tkRBracket and p.current().kind != tkEOF:
     let attrSp = p.getSpan()
-    let attrName = p.expect(tkIdent, "Expected attribute name").value
+    let attrName = p.expectAttrName("Expected attribute name").value
     if attrName == "error":
       # [error: FsError | NetError] — one attr per listed enum
       discard p.expect(tkColon)
@@ -128,43 +128,24 @@ proc parsePrimaryType(p: var Parser): Type =
     if p.current().kind == tkLBracket:
       # Check if it's attributes or generics
       let first = p.peek(1)
-      # `[name: value]` is SHAPE-identifiable as an attribute — a type
-      # argument is never followed by a colon. That covers every attribute
-      # with a value (count, align, error, stack, …) without naming it.
-      # Bare markers still need the word list, since `[sealed]` and `[T]`
-      # look alike. (The list is the remaining half of known_bugs entry 5.)
-      let valued = first.kind == tkIdent and p.peek(2).kind == tkColon
-      # These attributes ALWAYS carry a value — `[error: FsError]`,
-      # `[queue: 8]`, `[stack: 128]`, `[align: 2]`, `[priority: high]`. There
-      # is no bare form of any of them in the language, so `Box[error]` with no
-      # colon cannot be an attribute and is certainly a type argument. Naming
-      # them lets those five out of the word list entirely.
-      const valuedOnlyAttrs = ["error", "stack", "align", "queue", "priority"]
-      let bareValuedOnly = first.kind == tkIdent and
-                           first.value in valuedOnlyAttrs and not valued
-      let isAttr = valued or (first.kind == tkIdent and not bareValuedOnly and
-                              (first.value in [
-        "saturating", "sealed", "queue", "irq_safe", "no_alloc", "invariant",
-        "packed", "align", "wrapping", "trapping",
-        "big_endian", "little_endian", "volatile",       # spec 4.6 type + field attrs
-        "error",                                          # [error: FsError] on fallible returns
-        "io", "unsafe", "may_block", "stack", "priority"]))  # effect markers after a return type
+      # Two shapes, no word list:
+      #   `[name: value]`  — a type argument is never followed by a colon, so
+      #                      every VALUED attribute is identifiable by shape
+      #                      (`[count: 4]`, `[error: FsError]`, `[stack: 128]`)
+      #   bare tkAttr      — a reserved BARE marker (`[sealed]`, `[io]`), the
+      #                      one shape that genuinely collides with `[T]`
+      # Anything else is a type argument.
+      #
+      # Only the bare markers are reserved words. That is the whole gap this
+      # closes: `sealed` used to lex as an ordinary identifier, so `Box[sealed]`
+      # and `u16 [sealed]` were the same shape and the parser needed a 19-name
+      # list to guess. Reserving exactly those words removes the ambiguity at
+      # the source. Attribute PARAMETER names stay ordinary identifiers —
+      # `count`, `size`, `c` are good field names and always appear valued.
+      let valued = p.peek(2).kind == tkColon
+      let isAttr = first.kind == tkAttr or (first.kind == tkIdent and valued)
       discard p.advance() # eat "["
       if isAttr:
-        # An attribute is `[name]` or `[name: value]`. If the name is followed
-        # by anything else, this was meant as a TYPE ARGUMENT that happens to
-        # share a name with an attribute — say so, rather than reporting a
-        # surprising token.
-        #
-        # The remaining ambiguity is only the BARE markers (sealed, packed,
-        # io, …), where `[sealed]` and `[T]` really do look alike. The
-        # valued-only names are resolved above and never reach here bare.
-        if p.peek(1).kind notin {tkColon, tkRBracket, tkComma}:
-          p.reportError("'" & first.value & "' is an attribute name, so " &
-            "`" & base.name & "[" & first.value & "]` is read as an " &
-            "attribute, not a type argument. Rename the type argument — " &
-            "bare attribute markers (sealed, packed, volatile, io, unsafe, " &
-            "saturating, …) cannot currently be used as type arguments.")
         base.attrs = p.parseTypeUseAttrs()
       else:
         var args: seq[Type]
