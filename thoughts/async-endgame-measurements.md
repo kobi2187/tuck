@@ -131,9 +131,12 @@ fd. Instrument before theorising.
 
 ## Recommended order (revised by these numbers)
 
-1. **A socket extern in std** — `listen`/`accept`/`recv`/`send` returning fds,
-   awaited through the existing `tuckAwaitRead`. This is where the flat line in
-   the table above comes from, and it needs no new runtime machinery.
+1. ~~**A socket extern in std**~~ — **DONE 2026-08-05.** `std/net.tuck`:
+   listen/accept/connect/recv/send/close over plain int fds, awaited through
+   the existing `tuckAwaitRead`/`tuckAwaitWrite`, on both backends. Needed no
+   new runtime machinery, exactly as predicted. Run-gated in `end_to_end.sh`
+   (real TCP round trip) and `examples.sh` (42-net-echo). Remaining gap: DNS,
+   so `connect` takes dotted quads only.
 2. **Move `readLine` to the reactor** — stdin has readiness; the worker was the
    expedient fix, not the right one.
 3. **Keep the single worker** for files/metadata/DNS. At n=4 concurrent file

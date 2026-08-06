@@ -34,7 +34,7 @@ that was already runnable waited out the epoll timeout. Measured as a constant
 The Odin `tuckRun` always had the correct order — another silent asymmetry
 where one backend was right and the other was not.
 
-## 3. OPEN — a `void` task cannot be fire-and-forget
+## 3. FIXED (2026-08-05) — a `void` task cannot be fire-and-forget
 
 ```tuck
 task serve({lfd: int}) -> void [io]:
@@ -49,9 +49,9 @@ emits `discard tuck_serve(...)` for a proc returning `void`:
 Error: expression 'tuck_serve(l.value.fd)' has no type (or is ambiguous)
 ```
 
-Worked around in the net example by giving the task a `{n: int}` return it does
-not need. The fire-and-forget path in `codegen.nim` (the `tuckSpawn(... discard
-call)` form) needs to not emit `discard` when the callee returns void.
+Fixed: the spawn wrapper emits `discard` only when there is something to
+discard (`ctx.taskRetType(callee) != "void"`). 42-net-echo dropped the
+`{n: int}` return it never wanted. Regression test in known_bugs.
 
 ## 4. OPEN (design, worth documenting) — binding a task result awaits it
 

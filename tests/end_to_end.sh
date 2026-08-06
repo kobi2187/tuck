@@ -162,4 +162,22 @@ fn main() -> int [io]:
 TUCKEOF
 runs "std/net does a real TCP round trip" 9
 
+# MISSING-FEATURES.md claims a specific number of open bugs. It had drifted
+# badly once — listing four fixed bugs as open, two working examples as broken,
+# and a shipped feature as an unbuilt proposal — because nothing checked it.
+# The count is objective, so pin it: fixing a bug now forces the doc to be
+# updated in the same change, which is when the context is still in hand.
+_declared=$(grep -oE '^## A\. Open bugs \(([0-9]+)' MISSING-FEATURES.md \
+            | grep -oE '[0-9]+')
+_actual=$(grep -cE '^bug_open ' tests/known_bugs.sh)
+# known_bugs.sh is the pinned subset; other suites carry their own bug_open
+# lines, so the doc counts those too. Compare against the whole suite instead.
+_suite=$(grep -hcE '^bug_open ' tests/*.sh | paste -sd+ | bc)
+if [ "$_declared" = "$_suite" ]; then
+  _ok "MISSING-FEATURES open-bug count matches the suite ($_suite)"
+else
+  _no "MISSING-FEATURES open-bug count matches the suite" \
+      "doc says $_declared, suite has $_suite bug_open assertions"
+fi
+
 finish

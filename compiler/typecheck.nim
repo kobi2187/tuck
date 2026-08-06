@@ -1785,7 +1785,7 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
           if a.name == "distinct":
             tc.distinctNames.incl(d.name)
       # manager types carry functionality: member fns join the catalog
-      tc.collectSigs(d.typeMembers)
+      tc.collectSigs(d.typeMembers, top = false)
     of dkObject:
       tc.objDecls[d.name] = d
       tc.typeDeclsByName[d.name] = d
@@ -1799,7 +1799,7 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
       # must keep seeing PodcastApp, not the record shape behind it. Records
       # are structural and belong there; objects do not. Field lookup reaches
       # an object through typeDeclsByName + composedFields instead.
-      tc.collectSigs(d.objMembers)
+      tc.collectSigs(d.objMembers, top = false)
     of dkInterface:
       # Indexed, NOT collected into fnSigs: an interface's members are
       # requirements, not callable functions. Registering them would put

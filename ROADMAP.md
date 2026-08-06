@@ -20,8 +20,12 @@ construction, generic bodies gradual, no constraints).
 - `Foo {}`: legal only when the type has no fields (empty state is a valid
   type). Types with fields require every field at construction; absence must
   be explicit `?T`. Add to spec §4.8.
-- Actors/tasks: API stays actors + tasks; runtime strategy OPEN — evaluate
-  nim-cps vs hand-rolled stackless state machines before building §9.2/9.4.
+- Actors/tasks: API stays actors + tasks. Runtime strategy SETTLED (2026-08-05):
+  stackful coroutines over vendored minicoro with mmap'd virtual stacks, one
+  cooperative scheduler, and an epoll/kqueue reactor. Neither nim-cps nor
+  hand-rolled stackless state machines — both backends drive the same C
+  library, so they cannot diverge on switch semantics. §9.2/9.4 are built and
+  run-gated (examples 26/27/28/42).
 - Effects §3.7: implicit upward propagation (caller of [io] is [io]
   automatically); only boundaries need annotation. Change checker from
   require-declared to infer-and-propagate.
@@ -79,17 +83,17 @@ construction, generic bodies gradual, no constraints).
 |---|---|---|
 | Static transition checking | 4.4b | CORE DONE 2026-07-13: per-var variant sets (Type@Variant), reassignment-as-transition vs the table, if/match/loop set merges, match narrowing, param full-set entry, module-local return tracing, sealed-RHS exemption. Caught a real bug in ex 20 on first run. Ceilings: cross-module fns → full set; helper fns building sealed variants need [unsafe]; match arms single-line; optional debug assertion emission not done |
 | Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). mutation sites, extern boundaries and `!T`-wrapped returns ALL DONE 2026-07-13 — every production site now validates (constructions, returns, `..` chains, extern call sites; !T payloads validate transitively via construction). Both backends, runtime-verified. Ruling: BLOCK syntax only |
-| Actors | 9.1 | coroutine/state-machine runtime, static ring queues, scheduler (design open) |
-| Tasks | 9.2 | state-machine transform at [io] yield points |
+| Actors | 9.1 | DONE 2026-08-05. Stackful minicoro coroutines, static ring mailboxes, cooperative scheduler + epoll reactor. `on <name>` and `on select` handlers both work on both backends (26/27 run-gated at 55). Ceiling: tuckNotifySend broadcast-wakes every actor per send, not the addressee |
+| Tasks | 9.2 | DONE 2026-08-05 — but STACKFUL coroutines, not the state-machine transform this row assumed. `[io]` calls are yield points; binding a task's result awaits it. Ceiling: on Odin a task WITH ARGUMENTS still emits a direct call (proc literals cannot capture), so its body runs off-coroutine |
 | bake | 3.5 | v1 DONE 2026-07-13 (Factor-fry: :name refs, fn→auto generic lowering, slot.invoke; ex 03 green+runtime-verified). Beef bake = delegate-type ceiling. True Tuck-IR inlining later if ever needed |
 | alias restructuring | 2.5 | DONE 2026-07-13 (typed renamed record, both backends; ex 18 green). Non-exkVar payload args still not exploded (double-eval; bind-to-temp later) |
 | pool / arena | 7.2/7.3 | acquire/release bitmask, reset, scope analysis, size verification |
-| Interfaces | 5.2/5.3 | satisfies checking, fat-pointer dispatch |
+| Interfaces | 5.2/5.3 | DONE. `satisfies` is checked at compile time; an interface value is a TAGGED VARIANT THAT COPIES, not a fat pointer — dispatch is a switch on the tag calling the concrete member fn, so there is no table, no thunk, and no lifetime question (escape analysis was deleted with the pointer design). Both backends |
 | Type composition `+` | 4.5 | conflict detection unverified |
-| match | — | exhaustiveness checking |
+| match | — | exhaustiveness DONE: every match over a closed domain (sum type, bool, error enum) must cover all cases or end in `_`. Open domains (int/str) unchecked, as in Nim |
 | Effects | 3.7 | switch to implicit propagation (ruling above) |
 | ~~Beef backend~~ | — | REMOVED 2026-07-28. Frozen since the Odin backend landed, never compile-verified here (no BeefBuild), and every new construct meant a third unchecked emitter arm. Odin is the second backend |
-| Odin backend | — | 30 examples compile, 7 run-gated on exit codes; coroutine runtime over minicoro; full C FFI parity with Nim |
+| Odin backend | — | 2026-08-05: 41 examples compile-gated, 15 run-gated on exit codes; coroutine runtime over minicoro; full C FFI parity; offload worker + std/net mirrored. Known gap: a task WITH ARGUMENTS is not spawned as a coroutine |
 | C FFI | — | DONE 2026-07-28: functions, cstring, structs by value, enums with explicit values, callbacks, opaque handles — all run-verified against a real C library on BOTH backends. `lib:` links a system library or a vendored `.c` |
 | Control flow loops | 2.6/3.6b | DONE 2026-07-19: unified for (cond/iter/indexed), loop, break/continue (innermost, depth-checked), spaced-`..` ranges (Nim convention), fn inline ({.inline.}/[Inline]). Runtime-verified exit-17 smoke both backends. No labels ever (ruling); value-returning main = process exit code |
 
@@ -98,7 +102,10 @@ construction, generic bodies gradual, no constraints).
   `[resource:]` attr), checker (kind validation, propagation,
   acquire-must-finish tracking), rt slot table + inline sweep, codegen
   (mark/close per policy), OPEN RESOURCES report
-- `on select` §9.3 (blocks ex 16) + scheduler §9.4
+- `on select` §9.3: the ACTOR form is done (ex 27, both backends). The TASK
+  form lowers `read <fd>` / `timeout <ms>` only — dotted sources (`resp.ok`,
+  `timeout.5s`) still parse as opaque strings, which is what blocks ex 16.
+  Scheduler §9.4 is done (see Partial above).
 - `when TARGET` conditionals §8.3 (blocks ex 11, 20)
 - `pred` / `set` fn prefixes §3.6
 - Stack-depth budgets `[stack: N]` §6.2
