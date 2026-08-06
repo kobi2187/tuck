@@ -129,85 +129,107 @@ export typecheck_transitions
 # UnknownName now lives in ast.nim (codegen needs it for typed-AST checks)
 # Stateless helpers now live in typecheck_util; the TypeChecker state object +
 # scope/resolve/fieldsOf now live in typecheck_state (both imported above).
-proc compatible(tc: TypeChecker, actual, expected: Type): bool =
-  # Wrapper discipline: a bare T may flow where !T is expected (auto-wrap on
-  # return), and !T matches !T — but a !T/?T value where bare T is expected is
-  # an UNHANDLED error and never compatible. `or` / `?` unwrap explicitly.
-  var a = actual
-  var e = expected
-  if isWrapper(a):
-    if isWrapper(e):
-      a = unwrapEffect(a)
-      e = unwrapEffect(e)
-    elif not isUnknown(e):
-      return false
-  else:
+proc compatible(tc: TypeChecker, actual, expected: Type): bool
+
+const AnyMatchingNames = ["void", "unit", "Self", "fn"]
+  ## Names that match anything: the absence of a type, the receiver
+  ## placeholder, and the untyped callable.
+
+proc matchesAnything(t: Type): bool =
+  ## Does this type accept any counterpart?
+  t.kind == tkNamed and t.name in AnyMatchingNames
+
+proc unwrapForCompare(actual, expected: Type, a, e: var Type): bool =
+  ## Wrapper discipline: a bare T may flow where !T is expected (auto-wrap on
+  ## return), and !T matches !T — but a !T/?T value where bare T is expected is
+  ## an UNHANDLED error and never compatible. `or` / `?` unwrap explicitly.
+  ## Returns false when the pair is already known incompatible.
+  a = actual
+  e = expected
+  if not isWrapper(a):
     e = unwrapEffect(e)
-  if isUnknown(a) or isUnknown(e): return true
-  if e.kind == tkNamed and e.name in ["void", "unit", "Self", "fn"]: return true
-  if a.kind == tkNamed and a.name in ["void", "unit", "Self", "fn"]: return true
-
-  # Nominal fast path
-  if a.kind == tkNamed and e.kind == tkNamed:
-    if a.name == e.name: return true
-    # Distinct types are strictly nominal: no widening, no resolving through
-    # to the base type. Milliseconds is not Microseconds is not u32.
-    if a.name in tc.distinctNames or e.name in tc.distinctNames:
-      return false
-    if isNumeric(a) and isNumeric(e): return true  # loose numeric widening for primitives
-    # SUM TYPES ARE NOMINAL. Two differently-named sums are never compatible,
-    # even though both resolve to a tkSum body. Resolving first destroyed the
-    # only thing that distinguishes them: the fallthrough at the bottom is
-    # `a.kind == e.kind`, and tkSum == tkSum, so `fn pick() -> Colour: return
-    # Red` and `fn pick({l: Light}) -> Colour: return l` both passed.
-    #
-    # Checked here rather than at the bottom because by then the names are
-    # gone. Records still fall through to structural matching below — subset
-    # matching (spec 2.5) is the whole point for them.
-    let ra = tc.resolve(a)
-    let re = tc.resolve(e)
-    if ra != nil and re != nil and
-       (ra.kind == tkSum or re.kind == tkSum): return false
-    # One side may be an alias for a record — fall through to structural
-    if ra != a or re != e: return tc.compatible(ra, re)
+  elif isWrapper(e):
+    a = unwrapEffect(a)
+    e = unwrapEffect(e)
+  elif not isUnknown(e):
     return false
+  true
 
-  # A `:name` fn-ref synthesizes a tkFunc; the parameter names a fnsig, which
-  # is a tkNamed. Match the reference against the named signature's shape —
-  # otherwise the pair falls through to the record check and every callback
-  # argument is rejected (`expects BinOp but got <type>`).
+proc nominalCompatible(tc: TypeChecker, a, e: Type): bool =
+  ## Two named types. Distinct types are strictly nominal: no widening, no
+  ## resolving through to the base type — Milliseconds is not Microseconds is
+  ## not u32.
+  ##
+  ## SUM TYPES ARE NOMINAL too. Two differently-named sums are never
+  ## compatible, even though both resolve to a tkSum body. Resolving first
+  ## destroyed the only thing that distinguishes them: the fallthrough is
+  ## `a.kind == e.kind`, and tkSum == tkSum, so `fn pick() -> Colour: return
+  ## Red` and `fn pick({l: Light}) -> Colour: return l` both passed. It is
+  ## checked here rather than at the bottom because by then the names are gone.
+  ## Records still fall through to structural matching — subset matching
+  ## (spec 2.5) is the whole point for them.
+  if a.name == e.name: return true
+  if a.name in tc.distinctNames or e.name in tc.distinctNames: return false
+  if isNumeric(a) and isNumeric(e): return true  # loose widening for primitives
+  let ra = tc.resolve(a)
+  let re = tc.resolve(e)
+  if ra != nil and re != nil and (ra.kind == tkSum or re.kind == tkSum):
+    return false
+  # One side may be an alias for a record — fall through to structural
+  if ra != a or re != e: tc.compatible(ra, re) else: false
+
+proc fnRefCompatible(tc: TypeChecker, a, e: Type): bool =
+  ## A `:name` fn-ref synthesizes a tkFunc while the parameter names a fnsig,
+  ## which is a tkNamed. Match the reference against the named signature's
+  ## shape — otherwise the pair falls through to the record check and every
+  ## callback argument is rejected (`expects BinOp but got <type>`).
+  let sig = tc.fnSigs[e.name]
+  if a.params.len != sig.params.len: return false
+  for i, p in sig.params:
+    if not tc.compatible(a.params[i], p.typ): return false
+  a.result == nil or sig.ret == nil or tc.compatible(a.result, sig.ret)
+
+proc recordCompatible(tc: TypeChecker, a: Type, eFields: seq[FieldDef]): bool =
+  ## Expected record => subset matching (spec 2.5): every expected field must
+  ## be present and compatible, extras are fine.
+  let aFields = if a.kind == tkRecord: a.fields else: tc.fieldsOf(a)
+  if aFields.len == 0 and a.kind != tkRecord:
+    return false  # known non-record vs record
+  for ef in eFields:
+    var found = false
+    for af in aFields:
+      if af.name != ef.name: continue
+      if not tc.compatible(af.typ, ef.typ): return false
+      found = true
+      break
+    if not found: return false
+  true
+
+proc appCompatible(tc: TypeChecker, a, e: Type): bool =
+  ## Two type applications: same base, and pairwise-compatible arguments.
+  if not tc.compatible(a.base, e.base): return false
+  if a.args.len != e.args.len: return true
+  for i in 0 ..< a.args.len:
+    if not tc.compatible(a.args[i], e.args[i]): return false
+  true
+
+proc compatible(tc: TypeChecker, actual, expected: Type): bool =
+  ## May a value of `actual` flow where `expected` is wanted?
+  var a, e: Type
+  if not unwrapForCompare(actual, expected, a, e): return false
+  if isUnknown(a) or isUnknown(e): return true
+  if matchesAnything(e) or matchesAnything(a): return true
+  if a.kind == tkNamed and e.kind == tkNamed:
+    return tc.nominalCompatible(a, e)
   if a.kind == tkFunc and e.kind == tkNamed and tc.fnSigs.hasKey(e.name):
-    let sig = tc.fnSigs[e.name]
-    if a.params.len != sig.params.len: return false
-    for i, p in sig.params:
-      if not tc.compatible(a.params[i], p.typ): return false
-    return a.result == nil or sig.ret == nil or tc.compatible(a.result, sig.ret)
-
-  # Structural: expected record => subset matching (spec 2.5)
+    return tc.fnRefCompatible(a, e)
   let eFields = if e.kind == tkRecord: e.fields else: tc.fieldsOf(e)
   if eFields.len > 0 or e.kind == tkRecord:
-    let aFields = if a.kind == tkRecord: a.fields else: tc.fieldsOf(a)
-    if aFields.len == 0 and a.kind != tkRecord:
-      return false  # known non-record vs record
-    for ef in eFields:
-      var found = false
-      for af in aFields:
-        if af.name == ef.name:
-          if not tc.compatible(af.typ, ef.typ): return false
-          found = true
-          break
-      if not found: return false
-    return true
-
+    return tc.recordCompatible(a, eFields)
   if a.kind == tkApp and e.kind == tkApp:
-    if not tc.compatible(a.base, e.base): return false
-    if a.args.len == e.args.len:
-      for i in 0 ..< a.args.len:
-        if not tc.compatible(a.args[i], e.args[i]): return false
-    return true
-
+    return tc.appCompatible(a, e)
   # Sum types and the rest: nominal only, handled above; unknown shapes pass
-  return a.kind == e.kind
+  a.kind == e.kind
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type
 proc synthBracket(tc: var TypeChecker, e: Expr): Type
@@ -538,85 +560,128 @@ proc isOptional(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name == "?" and t.args.len == 1
 
-proc synthBinary(tc: var TypeChecker, e: Expr): Type =
-  let lt = tc.synthesize(e.left)
-  let rt = tc.synthesize(e.right)
-  # `and`/`or`/`xor` are strictly boolean — they never unwrap a result. A ?T
-  # operand is the one exception: in a boolean position it reads as "is
-  # present", which is a test, not an unwrap. A !T still has to be handled.
+const IntegerTypeNames = ["int", "i8", "i16", "i32", "i64",
+                          "u8", "u16", "u32", "u64"]
+const FloatTypeNames = ["float", "f32", "f64"]
+
+type
+  Operand = tuple[typ: Type, expr: Expr]
+    ## One side of a binary operator, with the expression it came from so a
+    ## diagnostic can point at the offending side rather than the whole
+    ## expression.
+
+proc operands(lt, rt: Type, e: Expr): array[2, Operand] =
+  [(lt, e.left), (rt, e.right)]
+
+proc failIfUnhandled(lt, rt: Type, e: Expr) =
+  ## `and`/`or`/`xor` are strictly boolean — they never unwrap a result. A ?T
+  ## operand is the one exception: in a boolean position it reads as "is
+  ## present", which is a test, not an unwrap. A !T still has to be handled.
   let boolCtx = e.binOp in {boAnd, boOr, boXor}
-  for (t, side) in [(lt, e.left), (rt, e.right)]:
+  for (t, side) in operands(lt, rt, e):
     if isWrapper(t) and not (boolCtx and isOptional(t)):
       fail("Type Error: unhandled " & typeName(t) &
            " — pass it to a handling function or propagate with '?'", side.span)
+
+proc failIfMismatched(tc: TypeChecker, lt, rt: Type, what: string, sp: Span) =
+  ## Both sides of an arithmetic or comparison operator must agree.
+  if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
+    fail("Type Error: " & what & " between " & typeName(lt) & " and " &
+         typeName(rt), sp)
+
+proc widerOperand(lt, rt: Type): Type =
+  ## The type an arithmetic result carries.
+  if isUnknown(lt): rt else: lt
+
+proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
+  tc.failIfMismatched(lt, rt, "arithmetic", e.span)
+  widerOperand(lt, rt)
+
+proc failIfWrongDivKind(lt, rt: Type, e: Expr) =
+  ## R1: the operator names the arithmetic, so the operands must actually BE
+  ## that kind. `compatible` alone would let `2 /f 3` through on loose numeric
+  ## widening — precisely the silent conversion this ruling removes.
+  let wantFloat = e.binOp == boDivFloat
+  let opName = if wantFloat: "/f" else: "/i"
+  let alternative = if wantFloat: "/i" else: "/f"
+  for (t, side) in operands(lt, rt, e):
+    if isUnknown(t): continue
+    if wantFloat != (typeName(t) in FloatTypeNames):
+      fail("Type Error: `" & opName & "` takes " &
+           (if wantFloat: "float" else: "integer") & " operands, got " &
+           typeName(t) & " — use `" & alternative & "`, or convert explicitly",
+           side.span)
+
+proc synthDivision(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
+  failIfWrongDivKind(lt, rt, e)
+  tc.failIfMismatched(lt, rt, "division", e.span)
+  widerOperand(lt, rt)
+
+proc synthComparison(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
+  tc.failIfMismatched(lt, rt, "comparison", e.span)
+  Type(span: e.span, kind: tkNamed, name: "bool")
+
+proc synthRange(lt, rt: Type, e: Expr): Type =
+  ## Range bounds must be integers.
+  for (t, side) in operands(lt, rt, e):
+    if not isUnknown(t) and typeName(t) notin IntegerTypeNames:
+      fail("Type Error: range bounds must be integers, got " & typeName(t),
+           side.span)
+  Type(span: e.span, kind: tkNamed, name: "range")
+
+proc boolOpName(op: BinOp): string =
+  case op
+  of boAnd: "and"
+  of boOr: "or"
+  else: "xor"
+
+proc synthBoolOp(lt, rt: Type, e: Expr): Type =
+  ## Strictly boolean. `or` is NOT an unwrap operator: a failed result is
+  ## handled with .ok / match r.err, never by falling through to a default.
+  for (t, side) in operands(lt, rt, e):
+    if isUnknown(t) or isOptional(t): continue  # ?T = "is present"
+    if not (t != nil and t.kind == tkNamed and t.name == "bool"):
+      fail("Type Error: '" & boolOpName(e.binOp) & "' expects bool, got " &
+           typeName(t), side.span)
+  Type(span: e.span, kind: tkNamed, name: "bool")
+
+proc synthBinary(tc: var TypeChecker, e: Expr): Type =
+  let lt = tc.synthesize(e.left)
+  let rt = tc.synthesize(e.right)
+  failIfUnhandled(lt, rt, e)
   case e.binOp
-  of boAdd, boSub, boMul, boMod:
-    if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
-      fail("Type Error: arithmetic between " & typeName(lt) & " and " &
-           typeName(rt), e.span)
-    if isUnknown(lt): rt else: lt
-  of boDivInt, boDivFloat:
-    # R1: the operator names the arithmetic, so the operands must actually BE
-    # that kind. `compatible` alone would let `2 /f 3` through on loose numeric
-    # widening — precisely the silent conversion this ruling removes.
-    let wantFloat = e.binOp == boDivFloat
-    let opName = if wantFloat: "/f" else: "/i"
-    for (t, side) in [(lt, e.left), (rt, e.right)]:
-      if isUnknown(t): continue
-      let isFloatT = typeName(t) in ["float", "f32", "f64"]
-      if wantFloat != isFloatT:
-        fail("Type Error: `" & opName & "` takes " &
-             (if wantFloat: "float" else: "integer") & " operands, got " &
-             typeName(t) & " — use `" & (if wantFloat: "/i" else: "/f") &
-             "`, or convert explicitly", side.span)
-    if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
-      fail("Type Error: division between " & typeName(lt) & " and " &
-           typeName(rt), e.span)
-    if isUnknown(lt): rt else: lt
-  of boEq, boNeq, boLt, boGt, boLe, boGe:
-    if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
-      fail("Type Error: comparison between " & typeName(lt) & " and " &
-           typeName(rt), e.span)
-    Type(span: e.span, kind: tkNamed, name: "bool")
-  of boRangeIncl, boRangeExcl:
-    for (t, side) in [(lt, e.left), (rt, e.right)]:
-      if not isUnknown(t) and typeName(t) notin
-         ["int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"]:
-        fail("Type Error: range bounds must be integers, got " & typeName(t),
-             side.span)
-    Type(span: e.span, kind: tkNamed, name: "range")
-  of boAnd, boOr, boXor:
-    # Strictly boolean. `or` is NOT an unwrap operator: a failed result is
-    # handled with .ok / match r.err, never by falling through to a default.
-    let opName = case e.binOp
-                 of boAnd: "and"
-                 of boOr: "or"
-                 else: "xor"
-    for (t, side) in [(lt, e.left), (rt, e.right)]:
-      if isUnknown(t) or isOptional(t): continue  # ?T = "is present"
-      if not (t != nil and t.kind == tkNamed and t.name == "bool"):
-        fail("Type Error: '" & opName & "' expects bool, got " & typeName(t),
-             side.span)
-    Type(span: e.span, kind: tkNamed, name: "bool")
+  of boAdd, boSub, boMul, boMod: tc.synthArithmetic(lt, rt, e)
+  of boDivInt, boDivFloat: tc.synthDivision(lt, rt, e)
+  of boEq, boNeq, boLt, boGt, boLe, boGe: tc.synthComparison(lt, rt, e)
+  of boRangeIncl, boRangeExcl: synthRange(lt, rt, e)
+  of boAnd, boOr, boXor: synthBoolOp(lt, rt, e)
 
 # spec 4.4b: union two branch states — narrowing is never discarded,
 # only widened to the union of what the branches could produce
 
-proc synthIf(tc: var TypeChecker, e: Expr): Type =
-  let condT = tc.synthesize(e.cond)
+proc checkCondition(tc: var TypeChecker, cond: Expr, sp: Span) =
+  ## A condition must be a plain bool — an unhandled fallible result is the
+  ## common mistake and gets its own message.
+  let condT = tc.synthesize(cond)
   if isWrapper(condT):
-    fail("Type Error: unhandled " & typeName(condT) &
-         " in condition — pass it to a handling function or propagate with '?'", e.cond.span)
-  if not isUnknown(condT) and not tc.compatible(condT,
-      Type(span: e.span, kind: tkNamed, name: "bool")):
-    fail("Type Error: if condition must be bool, got " & typeName(condT), e.cond.span)
-  # `if r.ok:` narrows r inside the then-branch ONLY — outside the guard
-  # the value is still the wrapped type (strict, scope-limited)
-  var guard = ""
-  if e.cond != nil and e.cond.kind == exkField and e.cond.fieldName == "ok" and
-     e.cond.receiver != nil and e.cond.receiver.kind == exkVar and
-     e.cond.receiver.name notin tc.okNarrowed:
-    guard = e.cond.receiver.name
+    fail("Type Error: unhandled " & typeName(condT) & " in condition — pass " &
+         "it to a handling function or propagate with '?'", cond.span)
+  if not isUnknown(condT) and
+     not tc.compatible(condT, Type(span: sp, kind: tkNamed, name: "bool")):
+    fail("Type Error: if condition must be bool, got " & typeName(condT),
+         cond.span)
+
+proc okGuardName(tc: TypeChecker, cond: Expr): string =
+  ## `if r.ok:` narrows r inside the then-branch ONLY — outside the guard the
+  ## value is still the wrapped type (strict, scope-limited).
+  if cond != nil and cond.kind == exkField and cond.fieldName == "ok" and
+     cond.receiver != nil and cond.receiver.kind == exkVar and
+     cond.receiver.name notin tc.okNarrowed:
+    cond.receiver.name
+  else: ""
+
+proc synthBranches(tc: var TypeChecker, e: Expr, guard: string): (Type, Type) =
+  ## Both branches from the same entry state; the after-if state is their union.
   if guard != "": tc.okNarrowed.incl(guard)
   let entryVariants = tc.varVariants
   let thenT = tc.synthesize(e.thenBranch)
@@ -625,7 +690,12 @@ proc synthIf(tc: var TypeChecker, e: Expr): Type =
   tc.varVariants = entryVariants
   let elseT = tc.synthesize(e.elseBranch)
   tc.varVariants = mergeVariants(thenVariants, tc.varVariants)
-  # Branches that produce values must agree on the type
+  (thenT, elseT)
+
+proc synthIf(tc: var TypeChecker, e: Expr): Type =
+  ## Branches that produce values must agree on the type.
+  tc.checkCondition(e.cond, e.span)
+  let (thenT, elseT) = tc.synthBranches(e, tc.okGuardName(e.cond))
   if e.elseBranch != nil and not isUnknown(thenT) and not isUnknown(elseT) and
      not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
     fail("Type Error: if branches produce different types: " &
