@@ -1822,10 +1822,206 @@ proc genTaskDecl(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ctx.definedVars = oldVars
   header & "\n" & bodyStr & "\n" & ind & "}\n"
 
+proc isBlank(code: string): bool =
+  ## Does this emitted body amount to nothing? A handler whose body generated
+  ## only whitespace or an empty block adds no statements.
+  for c in code:
+    if c notin {' ', '\n', '\t', '{', '}'}: return false
+  true
+
+proc genErrHandlerBody(ctx: var OdinCodegenCtx, handler: Decl): string =
+  ## The user's handler body, with `code` and `site` in scope as its params.
+  let savedVars = ctx.definedVars
+  ctx.definedVars.incl("code")
+  ctx.definedVars.incl("site")
+  result = ctx.genIndented(handler.fnBody)
+  ctx.definedVars = savedVars
+  if isBlank(result): result = ""
+
+proc genErrHandler(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## Global handler: rt logger first (errors are always visible), then the
+  ## user's handler body.
+  result = ind & "tuck_unhandled :: proc(code: u16, site: string) {\n" &
+           ind & "\trt.tuckReportUnhandled(code, site)\n"
+  if d.errHandler != nil and d.errHandler.fnBody != nil:
+    let body = ctx.genErrHandlerBody(d.errHandler)
+    if body != "": result.add(body & "\n")
+  result.add(ind & "}\n")
+
+proc takesSelf(m: Decl): bool =
+  ## A fn with a `self` param materializes at `+ mixin` composition, not
+  ## standalone.
+  for p in m.fnParams:
+    if p.name == "self": return true
+  false
+
+proc genCBinding(ctx: var OdinCodegenCtx, m: Decl): string =
+  ## One `foreign` entry. `-> ret` is omitted entirely for void; "void" is
+  ## Tuck's internal sentinel, not an Odin type. [emit: "c_name"] names the
+  ## real C symbol; else the Tuck name — externs are not mangled
+  ## (mangle.nim:48), so m.name IS the foreign symbol.
+  var params: seq[string]
+  for prm in m.fnParams:
+    params.add(prm.name & ": " & ctx.odinType(prm.typ))
+  let retT = if m.fnReturnType != nil: ctx.odinType(m.fnReturnType) else: "void"
+  let retStr = if retT == "void": "" else: " -> " & retT
+  let cName = if m.externEmit != "": m.externEmit else: m.name
+  "\t" & cName & " :: proc(" & params.join(", ") & ")" & retStr & " ---"
+
+proc genImplForwarders(ctx: var OdinCodegenCtx, m: Decl): string =
+  ## `impl: odin "..."` — the bodies live in a named Odin package rather than
+  ## the runtime. Odin has no unqualified import, so a bare call to the
+  ## extern's name can never resolve; emit a local forwarder into the aliased
+  ## package instead, which keeps call sites identical to Nim's.
+  ##
+  ## An `impl:` naming only `nim` leaves nothing to emit here: that block is
+  ## Nim-backend-only and Odin fails at the undeclared call, which is the
+  ## honest outcome.
+  for (backend, module) in m.externImpl:
+    if backend != "odin": continue
+    let alias = implAlias(module)
+    ctx.implMods[alias] = module
+    result.add(ctx.genRtForwarder(m, alias) & "\n")
+
+proc foreignLibAlias(cLib: string): string =
+  ## A path (vendored `.a`) cannot double as the Odin alias, so the alias is
+  ## derived from the file stem and the path rides along as the import spec.
+  ## ".../libpoint.a" -> "point".
+  if cLib == "": return "c"
+  if '/' notin cLib and '.' notin cLib: return cLib
+  var stem = cLib.rsplit('/', 1)[^1]
+  if stem.startsWith("lib"): stem = stem[3 .. ^1]
+  stem.rsplit('.', 1)[0]
+
+proc genForeignBlock(ctx: var OdinCodegenCtx, bindings: seq[string],
+                     cLib: string): string =
+  ## `foreign import <alias> "<spec>"` — mirrors tuck_coro.odin's minicoro.a.
+  ## The import line itself is hoisted to the file header by emitOdin, since
+  ## it is only legal at package top level.
+  let libAlias = foreignLibAlias(cLib)
+  ctx.foreignLibs[libAlias] = cLib
+  "@(default_calling_convention=\"c\")\n" &
+    "foreign " & libAlias & " {\n" & bindings.join("\n") & "\n}\n"
+
+proc genMixinMember(ctx: var OdinCodegenCtx, m: Decl, cBindings: var seq[string],
+                    cLib: var string): string =
+  ## One member of a mixin/extern/pending block. A C binding is collected
+  ## rather than emitted, because Odin wants ONE `foreign <lib> { ... }` block
+  ## rather than a pragma per proc the way Nim's importc works.
+  if m.kind in {dkType, dkFnSig}:
+    # a C struct or callback signature declared in the extern block. Odin needs
+    # no pragma for the struct: it never sees the C header, it links object
+    # code, so a plain struct with matching fields IS the ABI declaration. The
+    # callback does need `proc "c"` — see genOdinDecl.
+    return ctx.genOdinDecl(m) & "\n"
+  if m.kind != dkFn: return ""
+  if m.isPending: return ctx.genPendingStub(m) & "\n"
+  if not m.isExtern:
+    # interface contract (sig only): nothing to emit
+    if m.fnBody == nil or takesSelf(m): return ""
+    # a mixin is a named bucket of functions (spec 5.1) — emit them
+    return ctx.genOdinDecl(m) & "\n"
+  if m.externHeader != "":
+    cBindings.add(ctx.genCBinding(m))
+    if m.externLib != "": cLib = m.externLib
+    return ""
+  if m.externImpl.len > 0: return ctx.genImplForwarders(m)
+  if ctx.modPrefix != "": return ctx.genRtForwarder(m) & "\n"
+  ""
+
+proc genMixinBlock(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## Pending blocks parse as a mixin named "pending"; emit stubs for members.
+  ## Extern blocks: rt-implemented fns forward to the Odin runtime (library
+  ## modules) or emit nothing (entry module); C-imported fns become an Odin
+  ## `foreign` block with concrete param types.
+  var cBindings: seq[string]
+  var cLib = ""
+  for m in d.mixinMembers:
+    result.add(ctx.genMixinMember(m, cBindings, cLib))
+  if cBindings.len > 0:
+    result.add(ctx.genForeignBlock(cBindings, cLib))
+
+type
+  BitField = object
+    ## One `bit N` / `bits LO..HI` field of a memory-mapped register, decoded
+    ## from its declared type and attributes.
+    prefix: string    # <register>_<field>, the name every emitted symbol shares
+    loBit, hiBit: string
+    isRange: bool     # a multi-bit field, not a single flag
+    canRead, canWrite: bool
+
+proc decodeBitField(regName: string, f: FieldDef): BitField =
+  ## `bits 3..7` is a multi-bit FIELD: shift by the low bit and mask the width.
+  ## A single `bit N` is the one-bit case of the same shape.
+  let bitVal = f.typ.name.replace("bit ", "").replace("bits ", "")
+  let dotPos = bitVal.find("..")
+  result.loBit = if dotPos >= 0: bitVal[0 ..< dotPos].strip() else: bitVal
+  result.hiBit = if dotPos >= 0: bitVal[dotPos + 2 .. ^1].strip() else: bitVal
+  result.isRange = dotPos >= 0 and result.loBit != result.hiBit
+  result.prefix = regName & "_" & f.name
+  var hasRead, hasWrite = false
+  for a in f.attrs:
+    if a.name == "read": hasRead = true
+    elif a.name == "write": hasWrite = true
+  # An unmarked field is readable AND writable; marking one direction opts out
+  # of the other.
+  result.canRead = hasRead or not hasWrite
+  result.canWrite = hasWrite or not hasRead
+
+proc bitConsts(bf: BitField, ind: string): seq[string] =
+  ## The shift, and for a range the width and mask.
+  result.add(ind & bf.prefix & "_SHIFT :: " & bf.loBit)
+  if bf.isRange:
+    result.add(ind & bf.prefix & "_WIDTH :: " & bf.hiBit & " - " & bf.loBit &
+               " + 1")
+    result.add(ind & bf.prefix & "_MASK :: u32(1 << u32(" & bf.prefix &
+               "_WIDTH)) - 1")
+
+proc bitGetter(bf: BitField, regName, ind: string): string =
+  ## A range reads as a masked u32; a single bit reads as a bool.
+  let body = if bf.isRange:
+               "return (" & regName & "^ >> u32(" & bf.prefix & "_SHIFT)) & " &
+                 bf.prefix & "_MASK"
+             else:
+               "return (" & regName & "^ & (u32(1) << u32(" & bf.prefix &
+                 "_SHIFT))) != 0"
+  let retT = if bf.isRange: "u32" else: "bool"
+  ind & bf.prefix & "_get :: proc() -> " & retT & " {\n" &
+    ind & "\t" & body & "\n" & ind & "}\n"
+
+proc bitSetter(bf: BitField, regName, ind: string): string =
+  ## A range clears its mask before OR-ing the shifted value in; a single bit
+  ## sets or clears one mask.
+  if bf.isRange:
+    return ind & bf.prefix & "_set :: proc(value: u32) {\n" &
+           ind & "\tshifted := (value & " & bf.prefix & "_MASK) << u32(" &
+             bf.prefix & "_SHIFT)\n" &
+           ind & "\t" & regName & "^ = (" & regName & "^ &~ (" & bf.prefix &
+             "_MASK << u32(" & bf.prefix & "_SHIFT))) | shifted\n" &
+           ind & "}\n"
+  ind & bf.prefix & "_set :: proc(on: bool) {\n" &
+    ind & "\tmask := u32(1) << u32(" & bf.prefix & "_SHIFT)\n" &
+    ind & "\tif on { " & regName & "^ |= mask } else { " & regName &
+      "^ &~= mask }\n" & ind & "}\n"
+
+proc genRegister(ctx: OdinCodegenCtx, d: Decl, ind: string): string =
+  ## Memory-mapped register. Nim emits a `registerMMIO` macro call and Beef an
+  ## attribute; Odin has neither, so the bits become named masks plus a typed
+  ## pointer at the MMIO address — the accessors read/write through it.
+  var consts: seq[string]
+  var accessors: seq[string]
+  for f in d.regFields:
+    let bf = decodeBitField(d.name, f)
+    consts.add(bitConsts(bf, ind))
+    if bf.canRead: accessors.add(bitGetter(bf, d.name, ind))
+    if bf.canWrite: accessors.add(bitSetter(bf, d.name, ind))
+  ind & d.name & " := cast(^u32)(uintptr(" & d.regAddress & "))\n" &
+    consts.join("\n") & "\n" & accessors.join("")
+
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   if d == nil: return ""
   if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
-    return ""  # defined in its own module; that module's Beef file has it
+    return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind
   of dkFn:
@@ -1853,58 +2049,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     return ind & d.name & " := " & ctx.genOdinExpr(d.constVal)
   of dkExpr:
     return ctx.genOdinExpr(d.expr)
-  of dkRegister:
-    # Memory-mapped register. Nim emits a `registerMMIO` macro call and Beef
-    # an attribute; Odin has neither, so the bits become named masks plus a
-    # typed pointer at the MMIO address — the accessors read/write through it.
-    var bitConsts: seq[string]
-    var accessors: seq[string]
-    for f in d.regFields:
-      let bitVal = f.typ.name.replace("bit ", "").replace("bits ", "")
-      var hasRead = false
-      var hasWrite = false
-      for a in f.attrs:
-        if a.name == "read": hasRead = true
-        elif a.name == "write": hasWrite = true
-      let canRead = hasRead or not hasWrite
-      let canWrite = hasWrite or not hasRead
-      # `bits 3..7` is a multi-bit FIELD: shift by the low bit and mask the
-      # width. A single `bit N` is the one-bit case of the same shape.
-      let dotPos = bitVal.find("..")
-      let loBit = if dotPos >= 0: bitVal[0 ..< dotPos].strip() else: bitVal
-      let hiBit = if dotPos >= 0: bitVal[dotPos + 2 .. ^1].strip() else: bitVal
-      let isRange = dotPos >= 0 and loBit != hiBit
-      let pfx = d.name & "_" & f.name
-      bitConsts.add(ind & pfx & "_SHIFT :: " & loBit)
-      if isRange:
-        bitConsts.add(ind & pfx & "_WIDTH :: " & hiBit & " - " & loBit & " + 1")
-        bitConsts.add(ind & pfx & "_MASK :: u32(1 << u32(" & pfx &
-                      "_WIDTH)) - 1")
-      if canRead:
-        let body = if isRange:
-                     "return (" & d.name & "^ >> u32(" & pfx & "_SHIFT)) & " &
-                       pfx & "_MASK"
-                   else:
-                     "return (" & d.name & "^ & (u32(1) << u32(" & pfx &
-                       "_SHIFT))) != 0"
-        let retT = if isRange: "u32" else: "bool"
-        accessors.add(ind & pfx & "_get :: proc() -> " & retT & " {\n" &
-                      ind & "\t" & body & "\n" & ind & "}\n")
-      if canWrite:
-        if isRange:
-          accessors.add(ind & pfx & "_set :: proc(value: u32) {\n" &
-                        ind & "\tshifted := (value & " & pfx & "_MASK) << u32(" &
-                        pfx & "_SHIFT)\n" &
-                        ind & "\t" & d.name & "^ = (" & d.name & "^ &~ (" & pfx &
-                        "_MASK << u32(" & pfx & "_SHIFT))) | shifted\n" &
-                        ind & "}\n")
-        else:
-          accessors.add(ind & pfx & "_set :: proc(on: bool) {\n" &
-                        ind & "\tmask := u32(1) << u32(" & pfx & "_SHIFT)\n" &
-                        ind & "\tif on { " & d.name & "^ |= mask } else { " &
-                        d.name & "^ &~= mask }\n" & ind & "}\n")
-    return ind & d.name & " := cast(^u32)(uintptr(" & d.regAddress & "))\n" &
-           bitConsts.join("\n") & "\n" & accessors.join("")
+  of dkRegister: ctx.genRegister(d, ind)
   of dkRegistry:
     return ctx.genRegistry(d)
   of dkImport:
@@ -1912,102 +2057,8 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   of dkStaticAssert:
     ctx.staticAsserts.add(ctx.genOdinExpr(d.assertExpr))
     return ""
-  of dkErrors:
-    # Global handler: rt logger first (errors are always visible), then the
-    # user's handler body.
-    var res = ind & "tuck_unhandled :: proc(code: u16, site: string) {\n" &
-              ind & "\trt.tuckReportUnhandled(code, site)\n"
-    if d.errHandler != nil and d.errHandler.fnBody != nil:
-      let oldVars = ctx.definedVars
-      ctx.definedVars.incl("code")
-      ctx.definedVars.incl("site")
-      let oldIndent = ctx.indent
-      ctx.indent += 1
-      let bodyStr = ctx.genOdinExpr(d.errHandler.fnBody)
-      ctx.indent = oldIndent
-      ctx.definedVars = oldVars
-      var squeezed = ""
-      for c in bodyStr:
-        if c notin {' ', '\n', '\t'}: squeezed.add(c)
-      if squeezed != "" and squeezed != "{}":
-        res.add(bodyStr & "\n")
-    res.add(ind & "}\n")
-    return res
-  of dkMixin, dkExtern, dkPending:
-    # Pending blocks parse as a mixin named "pending"; emit stubs for members.
-    # Extern blocks: rt-implemented fns forward to the Odin runtime (library
-    # modules) or emit nothing (entry module); C-imported fns become an Odin
-    # `foreign` block with concrete param types.
-    var res = ""
-    # C bindings group per library: Odin wants ONE `foreign <lib> { ... }`
-    # block, not a pragma per proc the way Nim's importc works. The matching
-    # `foreign import` line is hoisted to the file header by emitOdin, since
-    # it is only legal at package top level.
-    var cBindings: seq[string]
-    var cLib = ""
-    for m in d.mixinMembers:
-      if m.kind in {dkType, dkFnSig}:
-        # a C struct or callback signature declared in the extern block. Odin
-        # needs no pragma for the struct: it never sees the C header, it links
-        # object code, so a plain struct with matching fields IS the ABI
-        # declaration. The callback does need `proc "c"` — see genOdinDecl.
-        res.add(ctx.genOdinDecl(m) & "\n")
-      elif m.kind == dkFn and m.isPending:
-        res.add(ctx.genPendingStub(m) & "\n")
-      elif m.kind == dkFn and not m.isExtern:
-        # interface contract (sig only): nothing to emit; a fn with a `self`
-        # param materializes at `+ mixin` composition, not standalone
-        if m.fnBody == nil: continue
-        var hasSelf = false
-        for p in m.fnParams:
-          if p.name == "self": hasSelf = true
-        if hasSelf: continue
-        # a mixin is a named bucket of functions (spec 5.1) — emit them
-        res.add(ctx.genOdinDecl(m) & "\n")
-      elif m.kind == dkFn and m.isExtern and m.externHeader != "":
-        var params: seq[string]
-        for prm in m.fnParams:
-          params.add(prm.name & ": " & ctx.odinType(prm.typ))
-        # `-> ret` is omitted entirely for void; "void" is Tuck's internal
-        # sentinel, not an Odin type.
-        let retT = if m.fnReturnType != nil: ctx.odinType(m.fnReturnType) else: "void"
-        let retStr = if retT == "void": "" else: " -> " & retT
-        # [emit: "c_name"] names the real C symbol; else the Tuck name. Externs
-        # are not mangled (mangle.nim:48), so m.name IS the foreign symbol.
-        let cName = if m.externEmit != "": m.externEmit else: m.name
-        cBindings.add("\t" & cName & " :: proc(" & params.join(", ") &
-                      ")" & retStr & " ---")
-        if m.externLib != "": cLib = m.externLib
-      elif m.kind == dkFn and m.isExtern and m.externImpl.len > 0:
-        # `impl: odin "..."` — the bodies live in a named Odin package rather
-        # than the runtime. Odin has no unqualified import, so a bare call to
-        # the extern's name can never resolve; emit a local forwarder into the
-        # aliased package instead, which keeps call sites identical to Nim's.
-        # An `impl:` naming only `nim` leaves nothing to emit here: that block
-        # is Nim-backend-only and Odin fails at the undeclared call, which is
-        # the honest outcome.
-        for (backend, module) in m.externImpl:
-          if backend != "odin": continue
-          let alias = implAlias(module)
-          ctx.implMods[alias] = module
-          res.add(ctx.genRtForwarder(m, alias) & "\n")
-      elif m.kind == dkFn and m.isExtern and ctx.modPrefix != "":
-        res.add(ctx.genRtForwarder(m) & "\n")
-    if cBindings.len > 0:
-      # A path (vendored `.a`) cannot double as the Odin alias, so the alias is
-      # derived from the file stem and the path rides along as the import spec.
-      # `foreign import <alias> "<spec>"` — mirrors tuck_coro.odin's minicoro.a.
-      let libAlias = if cLib == "": "c"
-                     elif '/' in cLib or '.' in cLib:
-                       # ".../libpoint.a" -> "point"
-                       var stem = cLib.rsplit('/', 1)[^1]
-                       if stem.startsWith("lib"): stem = stem[3 .. ^1]
-                       stem.rsplit('.', 1)[0]
-                     else: cLib
-      ctx.foreignLibs[libAlias] = cLib
-      res.add("@(default_calling_convention=\"c\")\n")
-      res.add("foreign " & libAlias & " {\n" & cBindings.join("\n") & "\n}\n")
-    return res
+  of dkErrors: ctx.genErrHandler(d, ind)
+  of dkMixin, dkExtern, dkPending: ctx.genMixinBlock(d)
   of dkPool:
     # spec 7.2: one package-level instance; acquire/release are the runtime's
     # generic procs, reached as `Pool.acquire` -> `rt.acquire(&Pool)`.
