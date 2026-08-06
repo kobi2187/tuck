@@ -761,81 +761,94 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   result = tc.synthArms(e, trackedVar, trackedType)
   tc.checkExhaustive(e, tc.matchDomain(subjT, trackedType, errEnums))
 
+proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
+  ## Spec 2.3: `..` mutation only on var bindings.
+  if e.base == nil or e.base.kind != exkVar: return
+  var hasMutation = false
+  for step in e.steps:
+    if step.op == coDotDot: hasMutation = true
+  if not hasMutation: return
+  let (found, b) = tc.lookup(e.base.name)
+  if found and not b.isVar:
+    fail("Type Error: cannot mutate '" & e.base.name &
+         "' with '..' — it was declared with 'let'; use 'var'", e.span)
+
+proc checkFieldSet(tc: var TypeChecker, step: ChainStep, f: FieldDef,
+                   recvT: Type) =
+  ## `..name {value}` — set a field to one bare value.
+  if tc.fnSigs.hasKey(f.name):
+    fail("Type Error: '" & f.name & "' is both a field here and a declared " &
+         "fn — rename one; fields and fns share the call namespace", step.span)
+  if not isBareValuePayload(step.arg):
+    fail("Type Error: setting field '" & f.name & "' with '..' takes one " &
+         "bare value: ..." & f.name & " {" & typeName(f.typ) &
+         "} — to set several fields, use a mutator fn", step.span)
+  let valExpr = soleFieldValue(step.arg)
+  let vt = tc.synthesize(valExpr)
+  if not tc.compatible(vt, f.typ):
+    fail("Type Error: field '" & f.name & "' of " & typeName(recvT) & " is " &
+         typeName(f.typ) & " but got " & typeName(vt), valExpr.span)
+
+proc mutatorReturnType(tc: var TypeChecker, step: var ChainStep, base: Expr,
+                       recvT: Type): Type =
+  ## Call the mutator, recording the call for codegen. Braced args pin the
+  ## method form (receiver = first param); a bare `..fn` gets the same
+  ## type-directed resolution as any other call.
+  let sc = if step.arg != nil:
+             tc.synthMethodCall(step.target.name, base, recvT, step.arg,
+                                step.span)
+           else:
+             Expr(span: step.span, kind: exkCall, args: @[base],
+                  callee: Expr(span: step.span, kind: exkVar,
+                               name: step.target.name))
+  setStepCall(semLayer, step, sc)
+  if step.arg != nil: semLayer.typeFor(sc) else: tc.synthesize(sc)
+
+proc checkMutatorTransition(tc: var TypeChecker, step: ChainStep, base: Expr,
+                            baseT: Type) =
+  ## spec 4.4b: a mutator reassignment on a tracked var is a transition.
+  if base == nil or base.kind != exkVar: return
+  let tn = tc.transType(baseT)
+  if tn == "": return
+  let cur = if tc.varVariants.hasKey(base.name): tc.varVariants[base.name]
+            else: tc.allVariants(tn)
+  let next = tc.fnReturnVariants(step.target.name, tn)
+  tc.checkTransSet(tn, cur, next, step.span)
+  tc.varVariants[base.name] = next
+
+proc checkMutatorCall(tc: var TypeChecker, step: var ChainStep, e: Expr,
+                      baseT, recvT: Type) =
+  ## `..fn {args}` — the receiver rides as the first parameter and the result
+  ## is reassigned into the base var, so the fn must return the receiver's type.
+  let retT = tc.mutatorReturnType(step, e.base, recvT)
+  if not tc.compatible(retT, baseT):
+    fail("Type Error: cannot assign " & typeName(retT) & " to " &
+         typeName(baseT) & " — a '..' mutator must return the receiver's type",
+         step.span)
+  tc.checkMutatorTransition(step, e.base, baseT)
+
+proc checkChainStep(tc: var TypeChecker, step: var ChainStep, e: Expr,
+                    baseT, recvT: Type, fields: seq[FieldDef]) =
+  ## One `..name {args}` step: either it SETS a field or it calls a mutator.
+  for f in fields:
+    if f.name == step.target.name:
+      tc.checkFieldSet(step, f, recvT)
+      return
+  if tc.fnSigs.hasKey(step.target.name):
+    tc.checkMutatorCall(step, e, baseT, recvT)
+  elif recvT.kind == tkRecord:
+    fail("Type Error: no field or fn '" & step.target.name & "' on type " &
+         typeName(recvT), step.span)
+
 proc synthChain(tc: var TypeChecker, e: Expr): Type =
-  let baseT = tc.synthesize(e.base)
-  # Spec 2.3: `..` mutation only on var bindings
-  if e.base != nil and e.base.kind == exkVar:
-    var hasMutation = false
-    for step in e.steps:
-      if step.op == coDotDot: hasMutation = true
-    if hasMutation:
-      let (found, b) = tc.lookup(e.base.name)
-      if found and not b.isVar:
-        fail("Type Error: cannot mutate '" & e.base.name &
-             "' with '..' — it was declared with 'let'; use 'var'", e.span)
-  # Each `..name {args}` step either SETS a field (payload is the single
-  # {value: X} sugar) or calls a mutator fn — receiver rides as the first
-  # parameter, and the result is reassigned into the base var (an ordinary
-  # var-reassignment type check, so the fn must return the receiver's type).
-  # Either way the chain stays on the base var.
-  let recvT = tc.resolve(baseT)
+  ## A `..` chain stays on its base var: every step either sets a field or
+  ## calls a mutator that returns the receiver's type.
+  result = tc.synthesize(e.base)
+  tc.failIfMutatingLet(e)
+  let recvT = tc.resolve(result)
   let fields = tc.fieldsOf(recvT)
   for step in e.steps.mitems:
-    var isField = false
-    for f in fields:
-      if f.name == step.target.name:
-        isField = true
-        if tc.fnSigs.hasKey(f.name):
-          fail("Type Error: '" & f.name & "' is both a field here and a " &
-               "declared fn — rename one; fields and fns share the call " &
-               "namespace", step.span)
-        if not isBareValuePayload(step.arg):
-          fail("Type Error: setting field '" & f.name & "' with '..' takes " &
-               "one bare value: ..." & f.name & " {" & typeName(f.typ) &
-               "} — to set several fields, use a mutator fn", step.span)
-        let valExpr = soleFieldValue(step.arg)
-        let vt = tc.synthesize(valExpr)
-        if not tc.compatible(vt, f.typ):
-          fail("Type Error: field '" & f.name & "' of " & typeName(recvT) &
-               " is " & typeName(f.typ) & " but got " & typeName(vt),
-               valExpr.span)
-        break
-    if not isField:
-      if tc.fnSigs.hasKey(step.target.name):
-        var retT: Type
-        if step.arg != nil:
-          # braced args pin the method form: receiver = first param
-          let sc = tc.synthMethodCall(step.target.name, e.base, recvT,
-                                      step.arg, step.span)
-          setStepCall(semLayer, step, sc)
-          retT = semLayer.typeFor(sc)
-        else:
-          # bare `..fn`: same type-directed resolution as any other call
-          # (whole-bind the receiver, else its fields fill the params)
-          let sc = Expr(span: step.span, kind: exkCall,
-                        callee: Expr(span: step.span, kind: exkVar,
-                                     name: step.target.name),
-                        args: @[e.base])
-          setStepCall(semLayer, step, sc)
-          retT = tc.synthesize(sc)
-        if not tc.compatible(retT, baseT):
-          fail("Type Error: cannot assign " & typeName(retT) & " to " &
-               typeName(baseT) & " — a '..' mutator must return the " &
-               "receiver's type", step.span)
-        # spec 4.4b: a mutator reassignment on a tracked var is a transition
-        if e.base != nil and e.base.kind == exkVar:
-          let tn = tc.transType(baseT)
-          if tn != "":
-            let cur = if tc.varVariants.hasKey(e.base.name):
-                        tc.varVariants[e.base.name]
-                      else: tc.allVariants(tn)
-            let next = tc.fnReturnVariants(step.target.name, tn)
-            tc.checkTransSet(tn, cur, next, step.span)
-            tc.varVariants[e.base.name] = next
-      elif recvT.kind == tkRecord:
-        fail("Type Error: no field or fn '" & step.target.name & "' on type " &
-             typeName(recvT), step.span)
-  baseT
+    tc.checkChainStep(step, e, result, recvT, fields)
 
 proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
   if e == nil or expected == nil: return
@@ -1890,6 +1903,96 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
   result = tc.synthesizeKind(e)
   setType(semLayer, e, result)
 
+proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true)
+
+proc failIfPendingClash(tc: TypeChecker, d: Decl) =
+  ## Stale-pending check, order-independent: implemented + still pending is an
+  ## error whichever declaration the checker reaches first.
+  fail("Pending Error: '" & d.name &
+       "' is implemented — remove it from the pending block", d.span)
+
+proc collectFnSig(tc: var TypeChecker, d: Decl, top: bool) =
+  ## A fn joins the signature catalog, and is indexed so a resolved call can
+  ## point at this declaration rather than describe it by name.
+  tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects)
+  indexDecl(semLayer, d)
+  tc.fnDecls[d.name] = d
+  # NOT pending: a pending fn emits a generic one-payload stub
+  # (genPendingStub), so its real params are ({payload: T},) — nothing like its
+  # DECLARED params, which is what topLevelFns's consumers (lowering,
+  # codegen's explodeRecordArg/genCall) would explode against.
+  if top and not d.isPending: tc.topLevelFns.incl(d.name)
+  if "::" in d.name:
+    # qualified sketch stub legalizes its module prefix
+    tc.knownModules.incl(d.name.split("::")[0])
+  if d.isPending:
+    if d.name in tc.implementedFns: tc.failIfPendingClash(d)
+    tc.pendingFns[d.name] = d.span
+  elif d.fnBody != nil:
+    if tc.pendingFns.hasKey(d.name): tc.failIfPendingClash(d)
+    tc.implementedFns.incl(d.name)
+
+proc collectFnSigType(tc: var TypeChecker, d: Decl) =
+  ## A named function-signature type: register its call shape under NAME and
+  ## mark NAME as a fnsig so a call through a NAME-typed slot is validated.
+  ## A signature TYPE declares no effects of its own — what gets baked into
+  ## the slot carries them.
+  tc.fnSigs[d.name] = (d.sigParams, d.sigReturn,
+                       newSeq[string](), newSeq[EffectMarker]())
+  tc.fnSigNames.incl(d.name)
+
+proc collectPoolSigs(tc: var TypeChecker, d: Decl) =
+  ## spec 7.2: a pool exposes two ordinary fns. Registering them as normal
+  ## signatures means `Pool.acquire` resolves through the same path as any
+  ## other call — no special-case lookup, and the ?T falls out of the declared
+  ## return type.
+  let optElem = Type(span: d.span, kind: tkApp, args: @[d.poolElem],
+                     base: Type(span: d.span, kind: tkNamed, name: "?"))
+  tc.fnSigs[d.name & ".acquire"] = (newSeq[Param](), optElem,
+                                    newSeq[string](), newSeq[EffectMarker]())
+  tc.fnSigs[d.name & ".release"] =
+    (@[Param(name: "slot", typ: d.poolElem, span: d.span)],
+     Type(span: d.span, kind: tkNamed, name: "void"),
+     newSeq[string](), newSeq[EffectMarker]())
+
+proc collectTypeDecl(tc: var TypeChecker, d: Decl) =
+  ## A type's body joins the type table; manager types carry functionality, so
+  ## their member fns join the catalog too.
+  indexDecl(semLayer, d)
+  tc.typeDeclsByName[d.name] = d
+  if d.typeBody != nil:
+    tc.typeDecls[d.name] = d.typeBody
+    if d.generics.len > 0:
+      tc.typeGenerics[d.name] = d.generics
+    for a in d.typeBody.attrs:
+      if a.name == "distinct":
+        tc.distinctNames.incl(d.name)
+  tc.collectSigs(d.typeMembers, top = false)
+
+proc collectObjectDecl(tc: var TypeChecker, d: Decl) =
+  ## `{fields} Obj` constructs an object, exactly as `{fields} Rec` constructs
+  ## a record. Objects were absent from typeDecls, so the construction path in
+  ## synthCall fell through and produced Unknown — which made every field
+  ## access on the result unchecked (`r.nosuchfield` passed) and let any value
+  ## into an interface slot.
+  ##
+  ## Still NOT registered in typeDecls: `resolve` unwraps any name found there
+  ## to its body, and an object is NOMINAL — `loadEpisode({self: PodcastApp})`
+  ## must keep seeing PodcastApp, not the record shape behind it. Records are
+  ## structural and belong there; objects do not. Field lookup reaches an
+  ## object through typeDeclsByName + composedFields instead.
+  tc.objDecls[d.name] = d
+  tc.typeDeclsByName[d.name] = d
+  tc.collectSigs(d.objMembers, top = false)
+
+proc collectErrPolicy(tc: var TypeChecker, d: Decl) =
+  ## The module's error policy, which decides what a dropped fallible result
+  ## does.
+  tc.errPolicy = d.policyName
+  if d.policyName in ["continue", "exit"] and d.errHandler == nil:
+    fail("Policy Error: errors [policy: " & d.policyName &
+         "] needs an 'on unhandled({code, site})' handler", d.span)
+
 proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
   ## `top` distinguishes a module's own declarations from the members nested
   ## inside a type, object, mixin or actor. Only top-level fns get recorded in
@@ -1901,80 +2004,14 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
     case d.kind
     of dkImport:
       tc.knownModules.incl(d.name)
-    of dkFn:
-      tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects)
-      # Index it so a resolved call can point at this declaration rather than
-      # describe it by name.
-      indexDecl(semLayer, d)
-      tc.fnDecls[d.name] = d
-      # NOT pending: a pending fn emits a generic one-payload stub
-      # (genPendingStub), so its real params are ({payload: T},) — nothing
-      # like its DECLARED params, which is what topLevelFns's consumers
-      # (lowering, codegen's explodeRecordArg/genCall) would explode against.
-      if top and not d.isPending: tc.topLevelFns.incl(d.name)
-      if "::" in d.name:
-        # qualified sketch stub legalizes its module prefix
-        tc.knownModules.incl(d.name.split("::")[0])
-      # Stale-pending check, order-independent: implemented + still pending = error
-      if d.isPending:
-        if d.name in tc.implementedFns:
-          fail("Pending Error: '" & d.name & "' is implemented — remove it from the pending block", d.span)
-        tc.pendingFns[d.name] = d.span
-      elif d.fnBody != nil:
-        if tc.pendingFns.hasKey(d.name):
-          fail("Pending Error: '" & d.name & "' is implemented — remove it from the pending block", d.span)
-        tc.implementedFns.incl(d.name)
+    of dkFn: tc.collectFnSig(d, top)
     of dkTask:
       tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType,
                            newSeq[string](), d.taskEffects)
-    of dkFnSig:
-      # a named function-signature type: register its call shape under NAME and
-      # mark NAME as a fnsig so a call through a NAME-typed slot is validated.
-      # A signature TYPE declares no effects of its own — what gets baked into
-      # the slot carries them.
-      tc.fnSigs[d.name] = (d.sigParams, d.sigReturn,
-                           newSeq[string](), newSeq[EffectMarker]())
-      tc.fnSigNames.incl(d.name)
-    of dkPool:
-      # spec 7.2: a pool exposes two ordinary fns. Registering them as normal
-      # signatures means `Pool.acquire` resolves through the same path as any
-      # other call — no special-case lookup, and the ?T falls out of the
-      # declared return type.
-      let optElem = Type(span: d.span, kind: tkApp,
-                         base: Type(span: d.span, kind: tkNamed, name: "?"),
-                         args: @[d.poolElem])
-      tc.fnSigs[d.name & ".acquire"] = (newSeq[Param](), optElem,
-                                        newSeq[string](), newSeq[EffectMarker]())
-      tc.fnSigs[d.name & ".release"] =
-        (@[Param(name: "slot", typ: d.poolElem, span: d.span)],
-         Type(span: d.span, kind: tkNamed, name: "void"),
-         newSeq[string](), newSeq[EffectMarker]())
-    of dkType:
-      indexDecl(semLayer, d)
-      tc.typeDeclsByName[d.name] = d
-      if d.typeBody != nil:
-        tc.typeDecls[d.name] = d.typeBody
-        if d.generics.len > 0:
-          tc.typeGenerics[d.name] = d.generics
-        for a in d.typeBody.attrs:
-          if a.name == "distinct":
-            tc.distinctNames.incl(d.name)
-      # manager types carry functionality: member fns join the catalog
-      tc.collectSigs(d.typeMembers, top = false)
-    of dkObject:
-      tc.objDecls[d.name] = d
-      tc.typeDeclsByName[d.name] = d
-      # `{fields} Obj` constructs an object, exactly as `{fields} Rec`
-      # constructs a record. Objects were absent from typeDecls, so the
-      # construction path in synthCall fell through and produced Unknown —
-      # which then made every field access on the result unchecked
-      # (`r.nosuchfield` passed) and let any value into an interface slot.
-      # NOT registered in typeDecls: `resolve` unwraps any name found there to
-      # its body, and an object is NOMINAL — `loadEpisode({self: PodcastApp})`
-      # must keep seeing PodcastApp, not the record shape behind it. Records
-      # are structural and belong there; objects do not. Field lookup reaches
-      # an object through typeDeclsByName + composedFields instead.
-      tc.collectSigs(d.objMembers, top = false)
+    of dkFnSig: tc.collectFnSigType(d)
+    of dkPool: tc.collectPoolSigs(d)
+    of dkType: tc.collectTypeDecl(d)
+    of dkObject: tc.collectObjectDecl(d)
     of dkInterface:
       # Indexed, NOT collected into fnSigs: an interface's members are
       # requirements, not callable functions. Registering them would put
@@ -1982,11 +2019,7 @@ proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.ifaceDecls[d.name] = d
     of dkMixin, dkExtern, dkPending: tc.collectSigs(d.mixinMembers, top = false)
     of dkActor: tc.collectSigs(d.handlers)
-    of dkErrors:
-      tc.errPolicy = d.policyName
-      if d.policyName in ["continue", "exit"] and d.errHandler == nil:
-        fail("Policy Error: errors [policy: " & d.policyName &
-             "] needs an 'on unhandled({code, site})' handler", d.span)
+    of dkErrors: tc.collectErrPolicy(d)
     else: discard
 
 proc resolveTypeRefs(tc: TypeChecker, t: Type) =
@@ -2770,14 +2803,35 @@ proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
                ") — rename one variant", d.span)
         seen[code] = full
 
-proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
-                       preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
-  # one semantic layer per program; clear any previous run's entries
-  resetResolution()
-  checkErrCodeCollisions(mods)
-  var sigsByMod = initTable[string, Table[string, FnSig]]()
-  var pendByMod = initTable[string, Table[string, Span]]()
-  var importsByMod = initTable[string, seq[string]]()
+type
+  ProgramSigs = object
+    ## What every module exports, gathered before any module is checked, so an
+    ## import can be resolved regardless of declaration order.
+    byMod: Table[string, Table[string, FnSig]]
+    pendByMod: Table[string, Table[string, Span]]
+    importsByMod: Table[string, seq[string]]
+
+  ImportScope = object
+    ## The names an importing module can see. `extern` holds both spellings;
+    ## `bareOwner` remembers which import claimed each unqualified name, so a
+    ## genuine collision between two imports is reported rather than silently
+    ## resolved.
+    extern: Table[string, FnSig]
+    pending: Table[string, Span]
+    bareOwner: Table[string, string]
+
+proc withModulePrefix(err: ref SemanticError, path: string): ref SemanticError =
+  ## Prefix a module-local error with the file it came from.
+  err.msg = path & ":" & $err.line & ":" & $err.col & ": " & err.msg
+  err
+
+proc moduleImports(m: Module): seq[string] =
+  ## The modules this one imports, in declaration order.
+  for d in m.decls:
+    if d != nil and d.kind == dkImport: result.add(d.name)
+
+proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): ProgramSigs =
+  ## Every module's signatures and pending fns, before any body is checked.
   for (name, path, m) in mods:
     var tc = TypeChecker(module: m,
                          fnSigs: initTable[string, FnSig](),
@@ -2788,52 +2842,66 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
       tc.collectSigs(m.decls)
       tc.resolveTypeNames(m)
     except SemanticError as err:
-      err.msg = path & ":" & $err.line & ":" & $err.col & ": " & err.msg
-      raise
-    sigsByMod[name] = tc.fnSigs
-    pendByMod[name] = tc.pendingFns
-    var imps: seq[string]
-    for d in m.decls:
-      if d != nil and d.kind == dkImport: imps.add(d.name)
-    importsByMod[name] = imps
+      raise withModulePrefix(err, path)
+    result.byMod[name] = tc.fnSigs
+    result.pendByMod[name] = tc.pendingFns
+    result.importsByMod[name] = moduleImports(m)
+
+proc addBare(scope: var ImportScope, fname, imp: string, sig: FnSig) =
+  ## Claim an unqualified name for an import, or report the collision.
+  if scope.bareOwner.hasKey(fname) and scope.bareOwner[fname] != imp:
+    fail("Type Error: '" & fname & "' is exported by both '" &
+         scope.bareOwner[fname] & "' and '" & imp & "' — call it as '" &
+         scope.bareOwner[fname] & "::" & fname & "' or '" & imp & "::" &
+         fname & "' to disambiguate", Span())
+  elif not scope.bareOwner.hasKey(fname):
+    scope.bareOwner[fname] = imp
+    scope.extern[fname] = sig
+
+proc importChecked(scope: var ImportScope, sigs: ProgramSigs, imp: string) =
+  ## Bring in a module that is part of this program.
+  for fname, sig in sigs.byMod[imp]:
+    if "::" notin fname:
+      scope.extern[imp & "::" & fname] = sig
+      scope.addBare(fname, imp, sig)
+  for fname, sp in sigs.pendByMod.getOrDefault(imp):
+    if "::" notin fname:
+      scope.pending[imp & "::" & fname] = sp
+
+proc importPrebuilt(scope: var ImportScope, preSigs: Table[string, seq[SigInfo]],
+                    imp: string) =
+  ## Bring in a module whose signatures came from an index rather than source.
+  for si in preSigs.getOrDefault(imp):
+    if "::" in si.name: continue
+    let sig: FnSig = (si.params, si.ret, si.generics, si.effects)
+    scope.extern[imp & "::" & si.name] = sig
+    scope.addBare(si.name, imp, sig)
+    if si.isPending:
+      scope.pending[imp & "::" & si.name] = Span(line: si.line, col: 1)
+
+proc importScopeFor(sigs: ProgramSigs, preSigs: Table[string, seq[SigInfo]],
+                    name: string): ImportScope =
+  ## `import fs` brings fs's public fns into scope UNQUALIFIED — the idiomatic
+  ## form (`readFile`, not `fs::readFile`), same as most languages. The
+  ## qualified key is always added too, since `::` is still how a caller
+  ## disambiguates a genuine collision between two imports.
+  ##
+  ## A LOCAL declaration of the same name wins: collectSigs runs after this
+  ## table seeds tc.fnSigs, so a same-named local overwrites the bare key.
+  for imp in sigs.importsByMod[name]:
+    if sigs.byMod.hasKey(imp): result.importChecked(sigs, imp)
+    else: result.importPrebuilt(preSigs, imp)
+
+proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
+                       preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
+  ## Signatures are gathered across the whole program first, then each module
+  ## is checked against what its imports export.
+  resetResolution()  # one semantic layer per program
+  checkErrCodeCollisions(mods)
+  let sigs = collectProgramSigs(mods)
   for (name, path, m) in mods:
-    # `import fs` brings fs's public fns into scope UNQUALIFIED — the
-    # idiomatic form (`readFile`, not `fs::readFile`) — same as most
-    # languages. The qualified key is always added too, since `::` is still
-    # how a caller disambiguates a genuine collision between two imports.
-    # A LOCAL declaration of the same name wins: collectSigs runs after this
-    # table seeds tc.fnSigs, so a same-named local overwrites the bare key.
-    var extern = initTable[string, FnSig]()
-    var externPend = initTable[string, Span]()
-    var bareOwner = initTable[string, string]()  # bare name -> which import
-    for imp in importsByMod[name]:
-      template addBare(fname: string, sig: FnSig) =
-        if bareOwner.hasKey(fname) and bareOwner[fname] != imp:
-          fail("Type Error: '" & fname & "' is exported by both '" &
-               bareOwner[fname] & "' and '" & imp & "' — call it as '" &
-               bareOwner[fname] & "::" & fname & "' or '" & imp & "::" &
-               fname & "' to disambiguate", Span())
-        elif not bareOwner.hasKey(fname):
-          bareOwner[fname] = imp
-          extern[fname] = sig
-      if sigsByMod.hasKey(imp):
-        for fname, sig in sigsByMod[imp]:
-          if "::" notin fname:
-            extern[imp & "::" & fname] = sig
-            addBare(fname, sig)
-        for fname, sp in pendByMod.getOrDefault(imp):
-          if "::" notin fname:
-            externPend[imp & "::" & fname] = sp
-      else:
-        for si in preSigs.getOrDefault(imp):
-          if "::" notin si.name:
-            let sig: FnSig = (si.params, si.ret, si.generics, si.effects)
-            extern[imp & "::" & si.name] = sig
-            addBare(si.name, sig)
-            if si.isPending:
-              externPend[imp & "::" & si.name] = Span(line: si.line, col: 1)
+    let scope = importScopeFor(sigs, preSigs, name)
     try:
-      result = typecheckModule(m, extern, externPend)
+      result = typecheckModule(m, scope.extern, scope.pending)
     except SemanticError as err:
-      err.msg = path & ":" & $err.line & ":" & $err.col & ": " & err.msg
-      raise
+      raise withModulePrefix(err, path)
