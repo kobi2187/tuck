@@ -936,152 +936,201 @@ proc checkIfaceElems(tc: var TypeChecker, iname: string, argExpr: Expr,
     let t = tc.synthesize(item)
     tc.checkIfaceArg(iname, t, item, what)
 
+type
+  ArgField = tuple[name: string, typ: Type, span: Span]
+    ## One field of a call's payload, once its type is known.
+
+proc isSelfParam(p: Param): bool =
+  ## A `Self` param is the receiver, supplied by the call site, not the payload.
+  p.typ != nil and p.typ.kind == tkNamed and p.typ.name == "Self"
+
+proc recordCallParams(tc: var TypeChecker, fnName: string, params: seq[Param],
+                      e: Expr) =
+  ## Record the callee's params for lowering, which explodes a struct payload
+  ## into positional args. Set before any early return, since lowering needs it
+  ## whenever the callee resolved rather than only when the payload shape was
+  ## known — and ONLY for top-level fns, which are the only callees lowering
+  ## touches. A non-empty value therefore already means "safe to explode", so
+  ## lowering needs no second lookup to find that out.
+  if e.kind != exkCall or fnName notin tc.topLevelFns: return
+  var names: seq[string]
+  for p in params: names.add(p.name)
+  setCallParams(semLayer, e, names)
+
+proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
+                    t: Type, bindings: var Table[string, Type]): bool =
+  ## A single-param fn whose param accepts the value WHOLE takes it as-is
+  ## (`9 addOne`, `server describe` where describe's param is the Server
+  ## itself). Returns true when the value bound whole; only otherwise does
+  ## the value's SHAPE matter — its fields map onto the params by name.
+  ##
+  ## An interface slot is checked BEFORE `compatible`: an interface name has
+  ## no type declaration, so it resolves to Unknown, and Unknown is compatible
+  ## with everything — the early return would otherwise accept any argument.
+  let param = sig.params[0]
+  let what = "argument to '" & fnName & "'"
+  let elemIface = tc.ifaceElemSlot(param.typ)
+  if elemIface != "":
+    tc.checkIfaceElems(elemIface, arg, what)
+    return true
+  let iname = tc.ifaceSlot(param.typ)
+  if iname != "":
+    tc.checkIfaceArg(iname, t, arg, what)
+    return true
+  if sig.generics.len > 0:
+    tc.inferBindings(param.typ, t, sig.generics, bindings, fnName, arg.span)
+  let expected = substituteType(param.typ, bindings)
+  if tc.compatible(t, expected): return true
+  if tc.fieldsOf(t).len == 0:
+    fail("Type Error: argument to '" & fnName & "' expects " &
+         typeName(expected) & " but got " & typeName(t), arg.span)
+
+proc payloadFields(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
+                   bindings: var Table[string, Type],
+                   shapeKnown: var bool): seq[ArgField] =
+  ## The payload's fields with their types, from a struct literal directly or
+  ## from the shape of any other value. shapeKnown stays false for an Unknown
+  ## payload, which is let through unchecked.
+  if arg.kind == exkStruct:
+    shapeKnown = true
+    for f in arg.fields:
+      result.add((f.name, tc.synthesize(f.value), f.value.span))
+    return
+  let t = tc.synthesize(arg)
+  if isUnknown(t): return
+  if sig.params.len == 1 and tc.checkWholeBind(fnName, sig, arg, t, bindings):
+    return
+  let fs = tc.fieldsOf(t)
+  if fs.len > 0:
+    shapeKnown = true
+    for f in fs: result.add((f.name, f.typ, arg.span))
+
+proc substituteParams(tc: var TypeChecker, fnName: string, sig: FnSig,
+                      argFields: seq[ArgField],
+                      bindings: var Table[string, Type]): seq[Param] =
+  ## Infer type-param bindings from the payload, then check against the
+  ## substituted signature (conflicts reported inside inferBindings).
+  for p in sig.params:
+    for af in argFields:
+      if af.name == p.name:
+        tc.inferBindings(p.typ, af.typ, sig.generics, bindings, fnName, af.span)
+        break
+  for p in sig.params:
+    result.add(Param(name: p.name, typ: substituteType(p.typ, bindings),
+                     span: p.span))
+
+proc payloadFieldExpr(e: Expr, name: string): Expr =
+  ## The expression that supplied a payload field. The interface wrap is marked
+  ## on the FIELD's expression, which is the value that becomes the pair —
+  ## argFields carries only types, so the expression is fetched by name.
+  result = e
+  if e.args.len == 1 and e.args[0].kind == exkStruct:
+    for f in e.args[0].fields:
+      if f.name == name: result = f.value
+
+proc checkNamedField(tc: var TypeChecker, fnName: string, p: Param,
+                     af: ArgField, e: Expr) =
+  ## One payload field against the param that claimed it.
+  let what = "field '" & p.name & "' of call to '" & fnName & "'"
+  let elemIface = tc.ifaceElemSlot(p.typ)
+  if elemIface != "":
+    # `Seq[Animal]` — wrap each element, and skip `compatible`, which would
+    # compare Seq[Dog] against Seq[Animal] and reject it.
+    tc.checkIfaceElems(elemIface, payloadFieldExpr(e, af.name), what)
+    return
+  let iname = tc.ifaceSlot(p.typ)
+  if iname != "":
+    # An interface slot: `compatible` would reject Dog-vs-Animal (they are
+    # unrelated names) and has no way to know about `satisfies`.
+    tc.checkIfaceArg(iname, af.typ, payloadFieldExpr(e, af.name), what)
+    return
+  if not tc.compatible(af.typ, p.typ):
+    fail("Type Error: field '" & p.name & "' of call to '" & fnName &
+         "' expects " & typeName(p.typ) & " but got " & typeName(af.typ), af.span)
+
+proc claimByName(tc: var TypeChecker, fnName: string, params: seq[Param],
+                 argFields: seq[ArgField], e: Expr, claimed: var seq[bool],
+                 resolved: var seq[string]): seq[int] =
+  ## Pass 1: every param takes the field of its own name. Returns the params
+  ## left unmatched.
+  for pi, p in params:
+    if isSelfParam(p): continue
+    var found = false
+    for ai, af in argFields:
+      if claimed[ai] or af.name != p.name: continue
+      tc.checkNamedField(fnName, p, af, e)
+      claimed[ai] = true
+      resolved[pi] = af.name
+      found = true
+      break
+    if not found: result.add(pi)
+
+proc soleFieldOfType(params: seq[Param], argFields: seq[ArgField],
+                     claimed: seq[bool], pi: int): int =
+  ## The one unclaimed field whose type matches this param exactly, or -1 when
+  ## there is no such field or more than one.
+  ##
+  ## STRICT type equality rather than the looser `compatible` rule: widening
+  ## int -> float is a coercion the user never wrote, and distinct types stay
+  ## nominal (Milliseconds is not u32).
+  result = -1
+  for ai, af in argFields:
+    if claimed[ai] or typeName(af.typ) != typeName(params[pi].typ): continue
+    if result >= 0: return -1   # ambiguous
+    result = ai
+
+proc claimByType(tc: var TypeChecker, fnName: string, params: seq[Param],
+                 argFields: seq[ArgField], e: Expr, pending: seq[int],
+                 claimed: var seq[bool], resolved: var seq[string]) =
+  ## Pass 2: a param still unmatched takes the sole unclaimed field of its
+  ## type. That lets a producer's output record feed a consumer whose param
+  ## names differ, without an explicit alias() for every handoff.
+  for pi in pending:
+    let candidate = soleFieldOfType(params, argFields, claimed, pi)
+    if candidate < 0:
+      fail("Type Error: call to '" & fnName & "' is missing required field '" &
+           params[pi].name & ": " & typeName(params[pi].typ) &
+           "' (add it, or alias a field to that name)", e.span)
+    claimed[candidate] = true
+    resolved[pi] = argFields[candidate].name
+
+proc checkPayloadCall(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
+                      bindings: var Table[string, Type]) =
+  ## A call whose single argument is a payload: its fields satisfy the params.
+  var shapeKnown = false
+  let argFields = tc.payloadFields(fnName, sig, e.args[0], bindings, shapeKnown)
+  if not shapeKnown: return  # Unknown payload — let it flow
+  let params = if sig.generics.len > 0:
+                 tc.substituteParams(fnName, sig, argFields, bindings)
+               else: sig.params
+  var claimed = newSeq[bool](argFields.len)
+  var resolved = newSeq[string](params.len)  # param index -> field name
+  let pending = tc.claimByName(fnName, params, argFields, e, claimed, resolved)
+  tc.claimByType(fnName, params, argFields, e, pending, claimed, resolved)
+  # Hand the decision to codegen, which would otherwise re-derive the mapping
+  # by name and miss anything matched by type.
+  if e.kind == exkCall:
+    setArgFields(semLayer, e, resolved)
+
+proc checkPositionalArgs(tc: var TypeChecker, fnName: string,
+                         params: seq[Param], e: Expr) =
+  ## One argument per param, checked in order.
+  for i in 0 ..< params.len:
+    if isSelfParam(params[i]): continue
+    let t = tc.synthesize(e.args[i])
+    if not tc.compatible(t, params[i].typ):
+      fail("Type Error: argument " & $(i+1) & " to '" & fnName & "' expects " &
+           typeName(params[i].typ) & " but got " & typeName(t), e.args[i].span)
+
 proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                    bindings: var Table[string, Type]) =
-  var params = sig.params
-  # Record the callee's params for lowering, which explodes a struct payload
-  # into positional args. Set before any early return, since lowering needs it
-  # whenever the callee resolved rather than only when the payload shape was
-  # known — and ONLY for top-level fns, which are the only callees lowering
-  # touches. A non-empty value therefore already means "safe to explode", so
-  # lowering needs no second lookup to find that out.
-  if e.kind == exkCall and fnName in tc.topLevelFns:
-    var names: seq[string]
-    for p in params: names.add(p.name)
-    setCallParams(semLayer, e, names)
-  if e.args.len == 1 and params.len > 0:
-    let arg = e.args[0]
-    var argFields: seq[tuple[name: string, typ: Type, span: Span]] = @[]
-    var shapeKnown = false
-    if arg.kind == exkStruct:
-      shapeKnown = true
-      for f in arg.fields:
-        argFields.add((f[0], tc.synthesize(f[1]), f[1].span))
-    else:
-      let t = tc.synthesize(arg)
-      if not isUnknown(t):
-        # Whole-bind first: a single-param fn whose param accepts the value
-        # whole takes it as-is (`9 addOne`, `server describe` where describe's
-        # param is the Server itself). Only otherwise does the value's SHAPE
-        # matter — its fields map onto the params by name (`p advance`).
-        if params.len == 1:
-          # An interface slot is checked BEFORE `compatible`: an interface name
-          # has no type declaration, so it resolves to Unknown, and Unknown is
-          # compatible with everything — the early return below would accept
-          # any argument at all.
-          let elemIface0 = tc.ifaceElemSlot(params[0].typ)
-          if elemIface0 != "":
-            tc.checkIfaceElems(elemIface0, arg,
-                               "argument to '" & fnName & "'")
-            return
-          let iname0 = tc.ifaceSlot(params[0].typ)
-          if iname0 != "":
-            tc.checkIfaceArg(iname0, t, arg,
-                             "argument to '" & fnName & "'")
-            return
-          if sig.generics.len > 0:
-            tc.inferBindings(params[0].typ, t, sig.generics, bindings, fnName, arg.span)
-          let expected = substituteType(params[0].typ, bindings)
-          if tc.compatible(t, expected):
-            return
-          if tc.fieldsOf(t).len == 0:
-            fail("Type Error: argument to '" & fnName & "' expects " &
-                 typeName(expected) & " but got " & typeName(t), arg.span)
-        let fs = tc.fieldsOf(t)
-        if fs.len > 0:
-          shapeKnown = true
-          for f in fs: argFields.add((f.name, f.typ, arg.span))
-    if not shapeKnown: return  # Unknown payload — let it flow
-    if sig.generics.len > 0:
-      # Infer type-param bindings from the payload, then check against the
-      # substituted signature (conflicts reported inside inferBindings)
-      for p in params:
-        for af in argFields:
-          if af.name == p.name:
-            tc.inferBindings(p.typ, af.typ, sig.generics, bindings, fnName, af.span)
-            break
-      var subst: seq[Param]
-      for p in params:
-        subst.add(Param(name: p.name, typ: substituteType(p.typ, bindings), span: p.span))
-      params = subst
-    # Params are satisfied in two passes: by NAME first, then — for whatever
-    # is left — by TYPE, when exactly one unclaimed field could fit. That lets
-    # a producer's output record feed a consumer whose param names differ,
-    # without an explicit alias() for every handoff.
-    var claimed = newSeq[bool](argFields.len)
-    var resolved = newSeq[string](params.len)  # param index -> field name
-    var pending: seq[int]                      # params unmatched after pass 1
-
-    for pi, p in params:
-      if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == "Self": continue
-      var found = false
-      for ai, af in argFields:
-        if not claimed[ai] and af.name == p.name:
-          let elemIface = tc.ifaceElemSlot(p.typ)
-          let iname = tc.ifaceSlot(p.typ)
-          if elemIface != "":
-            # `Seq[Animal]` — wrap each element, and skip `compatible`, which
-            # would compare Seq[Dog] against Seq[Animal] and reject it.
-            var argE2 = e
-            if e.args.len == 1 and e.args[0].kind == exkStruct:
-              for f in e.args[0].fields:
-                if f[0] == af.name: argE2 = f[1]
-            tc.checkIfaceElems(elemIface, argE2, "field '" & p.name &
-                               "' of call to '" & fnName & "'")
-          elif iname != "":
-            # An interface slot: `compatible` would reject Dog-vs-Animal (they
-            # are unrelated names) and has no way to know about `satisfies`.
-            # The wrap is marked on the payload FIELD's expression, which is
-            # the value that becomes the pair — argFields carries only types,
-            # so the expression is fetched from the struct literal by name.
-            var argE = e
-            if e.args.len == 1 and e.args[0].kind == exkStruct:
-              for f in e.args[0].fields:
-                if f[0] == af.name: argE = f[1]
-            tc.checkIfaceArg(iname, af.typ, argE, "field '" & p.name &
-                             "' of call to '" & fnName & "'")
-          elif not tc.compatible(af.typ, p.typ):
-            fail("Type Error: field '" & p.name & "' of call to '" & fnName &
-                 "' expects " & typeName(p.typ) & " but got " & typeName(af.typ), af.span)
-          claimed[ai] = true
-          resolved[pi] = af.name
-          found = true
-          break
-      if not found:
-        pending.add(pi)
-
-    # Pass 2 infers, so it demands STRICT type equality rather than the looser
-    # `compatible` rule: widening int -> float is a coercion the user never
-    # wrote, and distinct types stay nominal (Milliseconds is not u32). An
-    # ambiguous or absent match is left for the error below to report.
-    for pi in pending:
-      let p = params[pi]
-      var candidate = -1
-      var ambiguous = false
-      for ai, af in argFields:
-        if not claimed[ai] and typeName(af.typ) == typeName(p.typ):
-          if candidate < 0: candidate = ai
-          else: ambiguous = true
-      if candidate >= 0 and not ambiguous:
-        claimed[candidate] = true
-        resolved[pi] = argFields[candidate].name
-      else:
-        fail("Type Error: call to '" & fnName & "' is missing required field '" &
-             p.name & ": " & typeName(p.typ) &
-             "' (add it, or alias a field to that name)", e.span)
-
-    # Hand the decision to codegen, which would otherwise re-derive the
-    # mapping by name and miss anything matched by type.
-    if e.kind == exkCall:
-      setArgFields(semLayer, e, resolved)
-  elif e.args.len == params.len:
-    for i in 0 ..< params.len:
-      if params[i].typ != nil and params[i].typ.kind == tkNamed and
-         params[i].typ.name == "Self": continue
-      let t = tc.synthesize(e.args[i])
-      if not tc.compatible(t, params[i].typ):
-        fail("Type Error: argument " & $(i+1) & " to '" & fnName & "' expects " &
-             typeName(params[i].typ) & " but got " & typeName(t), e.args[i].span)
+  ## Arguments reach a fn in one of two shapes: a single payload whose fields
+  ## map onto the params, or one argument per param.
+  tc.recordCallParams(fnName, sig.params, e)
+  if e.args.len == 1 and sig.params.len > 0:
+    tc.checkPayloadCall(fnName, sig, e, bindings)
+  elif e.args.len == sig.params.len:
+    tc.checkPositionalArgs(fnName, sig.params, e)
   else:
     for a in e.args: discard tc.synthesize(a)
 
