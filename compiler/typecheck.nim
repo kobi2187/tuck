@@ -228,7 +228,7 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
     fail("Type Error: '" & fnName & "' first parameter expects " &
          typeName(sig.params[0].typ) & " but the receiver is " &
          typeName(recvT), sp)
-  var argFields: seq[(string, Expr)]
+  var argFields: seq[FieldInit]
   if argStruct != nil:
     if argStruct.kind != exkStruct:
       fail("Type Error: arguments to '" & fnName &
@@ -239,13 +239,13 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
     let p = sig.params[i]
     var found = false
     for f in argFields:
-      if f[0] == p.name:
-        let ft = tc.synthesize(f[1])
+      if f.name == p.name:
+        let ft = tc.synthesize(f.value)
         if not tc.compatible(ft, p.typ):
           fail("Type Error: field '" & p.name & "' of call to '" & fnName &
                "' expects " & typeName(p.typ) & " but got " & typeName(ft),
-               f[1].span)
-        args.add(f[1])
+               f.value.span)
+        args.add(f.value)
         found = true
         break
     if not found:
@@ -331,9 +331,7 @@ proc unwrapSingleField(arg: Expr): Expr =
   ## `Pool.release {v}` hands a one-field payload to a one-param fn, where the
   ## VALUE is the argument — passing the wrapper tuple would not match the rt
   ## signature. Anything else passes through untouched.
-  if arg != nil and arg.kind == exkStruct and arg.fields.len == 1:
-    arg.fields[0][1]
-  else: arg
+  soleFieldValue(arg)
 
 proc fieldsCover(fields: seq[FieldDef], params: seq[Param]): bool =
   ## Do these fields supply every param by name? That is the "explode" shape —
@@ -791,20 +789,11 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
           fail("Type Error: '" & f.name & "' is both a field here and a " &
                "declared fn — rename one; fields and fns share the call " &
                "namespace", step.span)
-        # payload must be a bare value: {80} (sugar for {value: 80}) or a
-        # bare var {name}. A named pair like {host: 80} is rejected —
-        # setting several fields is a mutator fn's job.
-        let okShape = step.arg != nil and step.arg.kind == exkStruct and
-                      step.arg.fields.len == 1 and
-                      (step.arg.fields[0][0] == "value" or
-                       (step.arg.fields[0][1] != nil and
-                        step.arg.fields[0][1].kind == exkVar and
-                        step.arg.fields[0][1].name == step.arg.fields[0][0]))
-        if not okShape:
+        if not isBareValuePayload(step.arg):
           fail("Type Error: setting field '" & f.name & "' with '..' takes " &
                "one bare value: ..." & f.name & " {" & typeName(f.typ) &
                "} — to set several fields, use a mutator fn", step.span)
-        let valExpr = step.arg.fields[0][1]
+        let valExpr = soleFieldValue(step.arg)
         let vt = tc.synthesize(valExpr)
         if not tc.compatible(vt, f.typ):
           fail("Type Error: field '" & f.name & "' of " & typeName(recvT) &
@@ -1266,10 +1255,10 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     if e.args.len == 1 and e.args[0].kind == exkStruct:
       let declFields = getFieldsForType(tc.module, tc.typeDecls[calleeName])
       for f in e.args[0].fields:
-        let ft = tc.synthesize(f[1])
+        let ft = tc.synthesize(f.value)
         for df in declFields:
-          if df.name == f[0]:
-            tc.inferBindings(df.typ, ft, gs, bindings, calleeName, f[1].span)
+          if df.name == f.name:
+            tc.inferBindings(df.typ, ft, gs, bindings, calleeName, f.value.span)
             break
     else:
       for a in e.args: discard tc.synthesize(a)
@@ -1407,8 +1396,8 @@ proc synthStruct(tc: var TypeChecker, e: Expr): Type =
   ## A record literal types field by field.
   var fs: seq[FieldDef]
   for f in e.fields:
-    tc.checkFieldValue(f[0], f[1])
-    fs.add(FieldDef(name: f[0], typ: tc.synthesize(f[1]), span: f[1].span))
+    tc.checkFieldValue(f.name, f.value)
+    fs.add(FieldDef(name: f.name, typ: tc.synthesize(f.value), span: f.value.span))
   Type(span: e.span, kind: tkRecord, fields: fs)
 
 proc synthList(tc: var TypeChecker, e: Expr): Type =
@@ -2578,7 +2567,7 @@ proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
   case e.kind
   of exkLit, exkQualified: discard  # literals; :fn refs
   of exkStruct:
-    for f in e.fields: constCheck(tc, m, cname, f[1], sp)
+    for f in e.fields: constCheck(tc, m, cname, f.value, sp)
   of exkList:
     for it in e.items: constCheck(tc, m, cname, it, sp)
   of exkUnary: constCheck(tc, m, cname, e.operand, sp)

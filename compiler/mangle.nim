@@ -172,7 +172,7 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string]) =
     mangleExpr(e.dotArg, names, locals)
   of exkStruct:
     # field names bare; values walked
-    for f in e.fields: mangleExpr(f[1], names, locals)
+    for f in e.fields: mangleExpr(f.value, names, locals)
   of exkList:
     for it in e.items: mangleExpr(it, names, locals)
   of exkBracket:

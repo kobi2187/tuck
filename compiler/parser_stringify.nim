@@ -21,7 +21,7 @@ proc toString*(e: Expr): string =
     var res = "{"
     for i, f in e.fields:
       if i > 0: res.add(", ")
-      res.add(f[0] & ": " & f[1].toString())
+      res.add(f.name & ": " & f.value.toString())
     res.add("}")
     return res
   of exkBracket:

@@ -499,14 +499,14 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
       for f in v.fields:
         var fieldNim = ""
         for fd in ctx.retInnerT.fields:
-          if fd.name == f[0]: fieldNim = genType(fd.typ)
-        let ex = ctx.genExpr(f[1])
+          if fd.name == f.name: fieldNim = genType(fd.typ)
+        let ex = ctx.genExpr(f.value)
         if fieldNim != "" and fieldNim notin ["int", "float", "string", "bool"] and
            (fieldNim.startsWith("uint") or fieldNim.startsWith("int") or
             fieldNim.startsWith("float")):
-          parts.add(f[0] & ": " & fieldNim & "(" & ex & ")")
+          parts.add(f.name & ": " & fieldNim & "(" & ex & ")")
         else:
-          parts.add(f[0] & ": " & ex)
+          parts.add(f.name & ": " & ex)
       return "return tok((" & parts.join(", ") & "))"
     else:
       return "return tok(" & ctx.genExpr(v) & ")"
@@ -615,7 +615,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkStruct:
     var parts: seq[string]
     for f in e.fields:
-      parts.add(f[0] & ": " & ctx.genExpr(f[1]))
+      parts.add(f.name & ": " & ctx.genExpr(f.value))
     "(" & parts.join(", ") & ")"
   of exkList:
     var items: seq[string]
@@ -772,7 +772,7 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
       let expected = lookupFnParams(ctx.module, tname)
       for pn in expected:
         for f in e.assignVal.args[0].fields:
-          if f[0] == pn: argParts.add(ctx.genExpr(f[1])); break
+          if f.name == pn: argParts.add(ctx.genExpr(f.value)); break
     let rawCall = tname & "(" & argParts.join(", ") & ")"
     let slot = "tuckSlot" & $ctx.tmpCounter
     ctx.tmpCounter.inc
@@ -843,9 +843,8 @@ proc genExprChain(ctx: var CodegenCtx, e: Expr): string =
       lines.add(ind & baseStr & " = " & ctx.genConstruction(semLayer.stepCall(step)))
     else:
       var valStr = ""
-      if step.arg != nil and step.arg.kind == exkStruct and
-         step.arg.fields.len == 1:
-        valStr = ctx.genExpr(step.arg.fields[0][1])
+      if isSingleFieldPayload(step.arg):
+        valStr = ctx.genExpr(soleFieldValue(step.arg))
       lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
   # mutation site: an invariant-carrying var re-validates after the chain
   if e.base != nil and semLayer.typeFor(e.base) != nil and semLayer.typeFor(e.base).kind == tkNamed and
@@ -863,7 +862,7 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   var ctorArgs = "kind: " & variant
   if e.sendPayload != nil and e.sendPayload.kind == exkStruct:
     for f in e.sendPayload.fields:
-      ctorArgs.add(", " & f[0] & ": " & ctx.genExpr(f[1]))
+      ctorArgs.add(", " & f.name & ": " & ctx.genExpr(f.value))
   let ind = repeat("  ", ctx.indent)
   # statement form: enqueue + notify on two lines at the current indent
   "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
@@ -883,9 +882,7 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
     # `timeout {5.ms}` — the arg is a duration payload; the runtime wants a
     # plain int of milliseconds. Unwrap a single-field `{dur}` struct to its
     # duration and convert to int; a bare int arg (`timeout 30`) passes through.
-    var durExpr = timeoutArm.arg
-    if durExpr != nil and durExpr.kind == exkStruct and durExpr.fields.len == 1:
-      durExpr = durExpr.fields[0][1]
+    let durExpr = soleFieldValue(timeoutArm.arg)
     var ms = ctx.genExpr(durExpr)
     if not (timeoutArm.arg != nil and timeoutArm.arg.kind == exkLit):
       ms = "int(" & ms & ")"   # a typed duration → milliseconds int

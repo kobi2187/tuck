@@ -67,7 +67,7 @@ type
     ## A NAMED tuple, so a reader sees `f.name` / `f.value` instead of
     ## having to know that index 0 is the name and index 1 the value.
     ## Structurally identical to the anonymous pair it replaced, so
-    ## positional construction and `f[0]`/`f[1]` still compile.
+    ## positional construction `(name, expr)` still compiles.
 
   VariantDef* = object
     name*: string
@@ -561,7 +561,7 @@ proc assignIds*(e: Expr, next: var uint32) =
   of exkField:
     assignIds(e.receiver, next); assignIds(e.dotArg, next)
   of exkStruct:
-    for f in e.fields: assignIds(f[1], next)
+    for f in e.fields: assignIds(f.value, next)
   of exkList:
     for it in e.items: assignIds(it, next)
   of exkBracket:
@@ -675,7 +675,7 @@ proc clearIds*(e: Expr) =
   case e.kind
   of exkLit, exkVar, exkQualified, exkImport: discard
   of exkField: (clearIds(e.receiver); clearIds(e.dotArg))
-  of exkStruct: (for f in e.fields: clearIds(f[1]))
+  of exkStruct: (for f in e.fields: clearIds(f.value))
   of exkList: (for it in e.items: clearIds(it))
   of exkBracket:
     clearIds(e.brReceiver)

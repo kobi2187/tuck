@@ -95,7 +95,7 @@ proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
           semLayer.markAsync(e)
   of exkStruct:
     for f in e.fields:
-      res = unionEffects(res, c.synthesizeExpr(f[1]))
+      res = unionEffects(res, c.synthesizeExpr(f.value))
   of exkList:
     for item in e.items:
       res = unionEffects(res, c.synthesizeExpr(item))

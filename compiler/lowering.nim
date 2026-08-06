@@ -124,7 +124,7 @@ proc lowerExpr(e: Expr, m: Module) =
         e.args = newArgs
   of exkStruct:
     for f in e.fields:
-      lowerExpr(f[1], m)
+      lowerExpr(f.value, m)
   of exkList:
     for item in e.items:
       lowerExpr(item, m)

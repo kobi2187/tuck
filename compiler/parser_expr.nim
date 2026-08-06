@@ -85,7 +85,7 @@ proc isStructLiteral(p: Parser): bool =
 # {a: 1, b} — struct literal; a bare name is shorthand for name: name
 proc parseStructLiteral(p: var Parser, sp: Span): Expr =
   discard p.advance()
-  var fields: seq[(string, Expr)]
+  var fields: seq[FieldInit]
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
     let name = p.expectMemberName("Expected field name in struct literal").value
     var valExpr: Expr
@@ -206,7 +206,7 @@ proc parseAliasStep(p: var Parser, expr: Expr): Expr =
   let spAlias = p.getSpan()
   discard p.advance()
   discard p.expect(tkLParen)
-  var fields: seq[(string, Expr)]
+  var fields: seq[FieldInit]
   while p.current().kind != tkRParen and p.current().kind != tkEOF:
     let name = p.expectMemberName("Expected field name in alias").value
     discard p.expect(tkColon)

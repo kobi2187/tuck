@@ -244,6 +244,27 @@ proc isValueIf*(e: Expr): bool =
   e.thenBranch != nil and e.thenBranch.kind != exkBlock and
   e.elseBranch != nil and e.elseBranch.kind != exkBlock
 
+proc isSingleFieldPayload*(e: Expr): bool =
+  ## A payload carrying exactly one field: `{n}`, `{value: 5}`, `{host: h}`.
+  e != nil and e.kind == exkStruct and e.fields.len == 1
+
+proc soleFieldValue*(e: Expr): Expr =
+  ## The value inside a single-field payload, else the expression itself.
+  ## `{value: 5}` unwraps to `5`; anything else passes through untouched.
+  if isSingleFieldPayload(e): e.fields[0].value else: e
+
+proc isBareValuePayload*(e: Expr): bool =
+  ## A payload holding one BARE value rather than a named pair: `{n}` or the
+  ## `{value: x}` spelling of the same thing. `{host: 80}` is NOT bare — it
+  ## names a specific field, which is a mutator fn's job, not a `..` set.
+  ##
+  ## The parser spells a bare `{n}` as the pair `(n, <var n>)`, so a field
+  ## whose name equals its own variable's name is the bare form.
+  if not isSingleFieldPayload(e): return false
+  let f = e.fields[0]
+  f.name == "value" or
+    (f.value != nil and f.value.kind == exkVar and f.value.name == f.name)
+
 proc isDecisionTable*(d: Decl): bool =
   ## A fn whose body is only subject-less `match` blocks — a decision table.
   if d.kind != dkFn or d.fnBody == nil or d.fnBody.kind != exkBlock: return false

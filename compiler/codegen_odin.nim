@@ -331,16 +331,16 @@ proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): stri
 # Positional construction of a hoisted record struct from a struct literal,
 # in declared-field order, casting numeric fields to the declared type.
 proc recCtorFromLiteral(ctx: var OdinCodegenCtx, declFields: seq[FieldDef],
-                        litFields: seq[(string, Expr)]): string =
+                        litFields: seq[FieldInit]): string =
   let structName = recStructName(ctx, declFields)
   # Odin struct literals are named — `T{a = 1, b = 2}` — so a field the
   # literal omits simply stays zero-valued and needs no placeholder.
   var parts: seq[string]
   for fd in declFields:
     for f in litFields:
-      if f[0] == fd.name:
+      if f.name == fd.name:
         let fieldOdin = ctx.odinType(fd.typ)
-        let ex = ctx.genOdinExpr(f[1])
+        let ex = ctx.genOdinExpr(f.value)
         # narrow numeric literals to the declared field width
         if fieldOdin notin ["int", "f64", "f32", "string", "bool"] and
            (fieldOdin.startsWith("u") or fieldOdin.startsWith("i") or
@@ -394,12 +394,12 @@ proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
   if allKnown:
     return ctx.recCtorFromLiteral(declFields, e.fields)
   if e.fields.len == 1:
-    let ft = inferLitType(e.fields[0][1])
+    let ft = inferLitType(e.fields[0].value)
     if ft != nil:
-      return ctx.recCtorFromLiteral(@[FieldDef(name: e.fields[0][0], typ: ft)],
+      return ctx.recCtorFromLiteral(@[FieldDef(name: e.fields[0].name, typ: ft)],
                                     e.fields)
     # no type information at all: sketch mode, emit the bare value
-    return ctx.genOdinExpr(e.fields[0][1])
+    return ctx.genOdinExpr(e.fields[0].value)
   # Multi-field sketch literal: infer each field's type and hoist a shape.
   # Odin has no anonymous struct type, so a bare `{a = 1}` is a hard error
   # ("missing type in compound literal") — every literal MUST land on a named
@@ -407,9 +407,9 @@ proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
   # `any`, which keeps sketch code compiling the way the Nim backend does.
   var inferred: seq[FieldDef]
   for f in e.fields:
-    var ft = inferLitType(f[1])
+    var ft = inferLitType(f.value)
     if ft == nil: ft = Type(kind: tkNamed, name: UnknownName, span: e.span)
-    inferred.add(FieldDef(name: f[0], typ: ft, span: e.span))
+    inferred.add(FieldDef(name: f.name, typ: ft, span: e.span))
   return ctx.recCtorFromLiteral(inferred, e.fields)
 
 # exkCall: record construction (with invariant validation and generic
@@ -1030,9 +1030,8 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
         lines.add(ind & baseStr & " = " & ctx.genOdinCall(semLayer.stepCall(step)))
       else:
         var valStr = ""
-        if step.arg != nil and step.arg.kind == exkStruct and
-           step.arg.fields.len == 1:
-          valStr = ctx.genOdinExpr(step.arg.fields[0][1])
+        if isSingleFieldPayload(step.arg):
+          valStr = ctx.genOdinExpr(soleFieldValue(step.arg))
         lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
     # mutation site: an invariant-carrying var re-validates after the chain
     if e.base != nil and semLayer.typeFor(e.base) != nil and semLayer.typeFor(e.base).kind == tkNamed and
