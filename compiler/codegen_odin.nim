@@ -497,50 +497,109 @@ proc genOdinMerge(ctx: var OdinCodegenCtx, e: Expr): string =
   if newFields.len == 0: return ""
   return ctx.recStructName(newFields) & "{" & vals.join(", ") & "}"
 
+proc asSumVariantCall(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `Type.Variant {payload}` — a kind-tagged construction, not a call.
+  if e.callee == nil or e.callee.kind != exkField or
+     e.callee.receiver == nil or e.callee.receiver.kind != exkVar: return ""
+  let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
+                else: nil
+  ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
+
+proc memberCalleeName(ctx: OdinCodegenCtx, e: Expr): string =
+  ## A member call arrives as a bare-name callee with the receiver as args[0]
+  ## (the checker's asFnByName rewrite). The DECLARATION emitted qualified, so
+  ## the call has to match — derive the same name from the receiver's type.
+  if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
+  let owner = ctx.memberOwner(semLayer.typeFor(e.args[0]))
+  if owner == "": return ""
+  for d in ctx.module.decls:
+    if d == nil or d.kind != dkObject or d.name != owner: continue
+    for mem in d.objMembers:
+      if mem != nil and mem.kind == dkFn and mem.name == e.callee.name:
+        return memberProcName(owner, e.callee.name)
+  ""
+
+proc genericCtorName(ctx: var OdinCodegenCtx, e: Expr, base: string): string =
+  ## A generic type: the checker's ty stamp carries the inferred instantiation.
+  let t = semLayer.typeFor(e)
+  if t == nil or t.kind != tkApp or t.base == nil or
+     t.base.kind != tkNamed or t.base.name != base: return base
+  var gparts: seq[string]
+  for a in t.args: gparts.add(ctx.odinType(a))
+  base & "(" & gparts.join(", ") & ")"
+
+proc isRecordConstruction(ctx: OdinCodegenCtx, e: Expr): bool =
+  e.args.len == 1 and e.args[0].kind == exkStruct and
+    e.callee != nil and e.callee.kind == exkVar and
+    isRecordType(ctx.module, e.callee.name)
+
+proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Odin struct literal: `Type{field = value, ...}`, a value not a pointer.
+  ## Record construction takes NAMED fields, not positional.
+  var parts: seq[string]
+  for f in e.args[0].fields:
+    parts.add(f.name & " = " & ctx.genOdinExpr(f.value))
+  let ctor = ctx.genericCtorName(e, e.callee.name) & "{" & parts.join(", ") & "}"
+  if hasInvariants(ctx.module, e.callee.name):
+    # production site: construction — validate before the value flows on
+    return "__validated_" & e.callee.name & "(" & ctor & ")"
+  ctor
+
+proc expectedParamNames(ctx: var OdinCodegenCtx, e: Expr,
+                        calleeStr: string): seq[string] =
+  ## Param order lives with the fn, not the literal — match by name. A
+  ## qualified callee into a real module resolves in THAT module.
+  if e.callee != nil and e.callee.kind == exkQualified and
+     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
+    return lookupFnParams(ctx.realModules[e.callee.modulePath[0]],
+                          e.callee.qualName)
+  if semLayer.callParamsFor(e).len > 0: return semLayer.callParamsFor(e)
+  lookupFnParams(ctx.module, calleeStr)
+
+proc payloadFieldArg(ctx: var OdinCodegenCtx, payload: Expr,
+                     fieldName: string): string =
+  ## The value supplied for one param, or an empty literal when the payload
+  ## does not carry it.
+  for f in payload.fields:
+    if f.name == fieldName: return ctx.genOdinExpr(f.value)
+  "{}"
+
+proc genPayloadArgs(ctx: var OdinCodegenCtx, e: Expr,
+                    calleeStr: string): seq[string] =
+  ## A payload's fields, ordered to match the callee's params.
+  let expected = ctx.expectedParamNames(e, calleeStr)
+  if expected.len == 0:
+    for f in e.args[0].fields: result.add(ctx.genOdinExpr(f.value))
+    return
+  # The checker's mapping wins: a field matched by TYPE carries its own name,
+  # not the param's (see checkCallArgs / semLayer.argFieldsFor).
+  let resolved = semLayer.argFieldsFor(e)
+  for i, paramName in expected:
+    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                    else: paramName
+    result.add(ctx.payloadFieldArg(e.args[0], fieldName))
+
+proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr,
+                 calleeStr: string): seq[string] =
+  ## ponytail: pass records BY VALUE. A mutating callee would need `^T` and
+  ## `&x` at the call site, but Odin proc params aren't addressable, so
+  ## `&param` is a hard error — and Tuck's mutators already return the updated
+  ## value, which the chain emitter assigns back. Revisit if a real in-place
+  ## mutator shows up that the return-and-assign shape can't express.
+  if e.args.len == 1 and e.args[0].kind == exkStruct:
+    return ctx.genPayloadArgs(e, calleeStr)
+  for a in e.args: result.add(ctx.genOdinExpr(a))
+
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
-  var args: seq[string]
-  if e.callee != nil and e.callee.kind == exkField and
-     e.callee.receiver != nil and e.callee.receiver.kind == exkVar:
-    let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
-                  else: nil
-    let ctor = ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName,
-                                   payload)
-    if ctor != "": return ctor
+  let variant = ctx.asSumVariantCall(e)
+  if variant != "": return variant
   var calleeStr = ctx.genOdinExpr(e.callee)
-  # A member call arrives as a bare-name callee with the receiver as args[0]
-  # (the checker's asFnByName rewrite). The DECLARATION emitted qualified, so
-  # the call has to match — derive the same name from the receiver's type.
-  if e.callee != nil and e.callee.kind == exkVar and e.args.len >= 1:
-    let owner = ctx.memberOwner(semLayer.typeFor(e.args[0]))
-    if owner != "":
-      for d in ctx.module.decls:
-        if d == nil or d.kind != dkObject or d.name != owner: continue
-        for mem in d.objMembers:
-          if mem != nil and mem.kind == dkFn and mem.name == e.callee.name:
-            calleeStr = memberProcName(owner, e.callee.name)
+  let member = ctx.memberCalleeName(e)
+  if member != "": calleeStr = member
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     let baked = ctx.genOdinBake(e)
     if baked != "": return baked
-  if e.args.len == 1 and e.args[0].kind == exkStruct and
-     e.callee != nil and e.callee.kind == exkVar and
-     isRecordType(ctx.module, e.callee.name):
-    # record construction: named fields, not positional
-    var parts: seq[string]
-    for field in e.args[0].fields:
-      parts.add(field[0] & " = " & ctx.genOdinExpr(field[1]))
-    # generic type: the checker's ty stamp carries the inferred instantiation
-    var ctorName = e.callee.name
-    if semLayer.typeFor(e) != nil and semLayer.typeFor(e).kind == tkApp and semLayer.typeFor(e).base != nil and
-       semLayer.typeFor(e).base.kind == tkNamed and semLayer.typeFor(e).base.name == e.callee.name:
-      var gparts: seq[string]
-      for a in semLayer.typeFor(e).args: gparts.add(ctx.odinType(a))
-      ctorName &= "(" & gparts.join(", ") & ")"
-    # Odin struct literal: `Type{field = value, ...}`, a value not a pointer
-    let ctor = ctorName & "{" & parts.join(", ") & "}"
-    if hasInvariants(ctx.module, e.callee.name):
-      # production site: construction — validate before the value flows on
-      return "__validated_" & e.callee.name & "(" & ctor & ")"
-    return ctor
+  if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     let aliased = ctx.genOdinAlias(e)
     if aliased != "": return aliased
@@ -550,46 +609,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if calleeStr notin ["bake", "alias"]:
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    # param order lives with the fn, not the literal — match by name.
-    # A qualified callee into a real module resolves in THAT module.
-    let expectedParams =
-      if e.callee != nil and e.callee.kind == exkQualified and
-         e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
-        lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
-      elif semLayer.callParamsFor(e).len > 0:
-        semLayer.callParamsFor(e)
-      else:
-        lookupFnParams(ctx.module, calleeStr)
-    if expectedParams.len > 0:
-      # The checker's mapping wins: a field matched by TYPE carries its own
-      # name, not the param's (see checkCallArgs / semLayer.argFieldsFor).
-      let resolved = semLayer.argFieldsFor(e)
-      for i, paramName in expectedParams:
-        let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                        else: paramName
-        var found = false
-        for field in e.args[0].fields:
-          if field[0] == fieldName:
-            args.add(ctx.genOdinExpr(field[1]))
-            found = true
-            break
-        if not found:
-          args.add("{}")
-    else:
-      for field in e.args[0].fields:
-        args.add(ctx.genOdinExpr(field[1]))
-  else:
-    # bare positional args (incl. the receiver a chain mutator call
-    # synthesizes, e.g. `c ..bump`) — a mutable-record param takes a pointer,
-    # so the call site passes `&x`; only a bare var has an address to take
-    # ponytail: pass records BY VALUE. A mutating callee would need `^T` and
-    # `&x` here, but Odin proc params aren't addressable, so `&param` is a
-    # hard error — and Tuck's mutators already return the updated value,
-    # which the chain emitter assigns back. Revisit if a real in-place
-    # mutator shows up that the return-and-assign shape can't express.
-    for a in e.args:
-      args.add(ctx.genOdinExpr(a))
+  let args = ctx.genCallArgs(e, calleeStr)
   if calleeStr == "bake":
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
@@ -1496,140 +1516,170 @@ proc genAliasType(ctx: var OdinCodegenCtx, d: Decl): string =
   return ind & d.name & " :: " & (if aGen != "": "struct" & aGen & " { " &
          "using _: " & typeBodyStr & " }" else: typeBodyStr) & "\n"
 
-proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
-  let ind = "  ".repeat(ctx.indent)
-  var queueSize = "8"
+const DefaultMailboxSize = "8"
+  ## Messages an actor's ring holds unless `[queue: N]` says otherwise.
+
+proc msgVariantName(handlerName: string): string =
+  ## The message-enum tag a handler receives on.
+  "msg" & handlerName.capitalize()
+
+proc mailboxSize(d: Decl): string =
   for attr in d.attrs:
-    if attr.name == "queue":
-      queueSize = attr.value
-      break
+    if attr.name == "queue": return attr.value
+  DefaultMailboxSize
 
-  let msgEnumName = d.name & "MsgKind"
-  let msgTypeName = d.name & "Msg"
-  # BOTH forms declare a message: `on add({n: int})` and an `| add -> {n: int}`
-  # select arm. Walking only dkFn made every `on select` actor take the
-  # no-handler path below, which emits no enum, no mailbox and no send procs —
-  # while the send SITES still called them, so the package did not compile.
-  let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
-  var enumVariants: seq[string]
-  for h in handlers:
-    enumVariants.add("msg" & h.name.capitalize())
-  if hasShutdown:
-    enumVariants.add("msgShutdown")   # sent as `Actor send shutdown {}`
+proc actorFieldLines(ctx: var OdinCodegenCtx, d: Decl): seq[string] =
+  let ind = "  ".repeat(ctx.indent)
+  for f in d.actorFields:
+    result.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
 
-  if enumVariants.len == 0:
-    # No message handlers: an empty enum is invalid. Emit the state, its
-    # singleton, and a drain that just parks — the entry point starts every
-    # declared actor, so the drain has to exist even with nothing to receive.
-    var bareFields: seq[string]
-    for f in d.actorFields:
-      bareFields.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
-    let bareBody = if bareFields.len > 0: bareFields.join("\n") & "\n" else: ""
-    return ind & d.name & " :: struct {\n" & bareBody & ind & "}\n\n" &
-           ind & actorSingletonName(d.name) & ": " & d.name & "\n\n" &
-           ind & "drain_" & d.name & " :: proc() {\n" &
-           ind & "\tfor { rt.coroYield() }\n" & ind & "}\n"
+proc genInertActor(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## No message handlers: an empty enum is invalid. Emit the state, its
+  ## singleton, and a drain that just parks — the entry point starts every
+  ## declared actor, so the drain has to exist even with nothing to receive.
+  let fields = ctx.actorFieldLines(d)
+  let body = if fields.len > 0: fields.join("\n") & "\n" else: ""
+  ind & d.name & " :: struct {\n" & body & ind & "}\n\n" &
+    ind & actorSingletonName(d.name) & ": " & d.name & "\n\n" &
+    ind & "drain_" & d.name & " :: proc() {\n" &
+    ind & "\tfor { rt.coroYield() }\n" & ind & "}\n"
 
-  # Handler params ride in the message envelope (deduped by name)
+proc genMsgEnvelope(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandler],
+                    variants: seq[string], ind: string): string =
+  ## The message enum and the envelope struct. Handler params ride in the
+  ## envelope, deduped by name.
   var msgFields: seq[string]
-  var seenMsgFields = initHashSet[string]()
+  var seen = initHashSet[string]()
   for h in handlers:
     for p in h.params:
-      if p.name notin seenMsgFields:
-        seenMsgFields.incl(p.name)
-        msgFields.add(ind & "\t" & p.name & ": " & ctx.odinType(p.typ) & ",")
+      if p.name in seen: continue
+      seen.incl(p.name)
+      msgFields.add(ind & "\t" & p.name & ": " & ctx.odinType(p.typ) & ",")
+  ind & d.name & "MsgKind :: enum { " & variants.join(", ") & " }\n" &
+    ind & d.name & "Msg :: struct {\n" &
+    ind & "\tkind: " & d.name & "MsgKind,\n" &
+    (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") &
+    ind & "}\n"
 
-  var res = ind & msgEnumName & " :: enum { " & enumVariants.join(", ") & " }\n"
-  res.add(ind & msgTypeName & " :: struct {\n" &
-          ind & "\tkind: " & msgEnumName & ",\n" &
-          (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") &
-          ind & "}\n")
-
-  # Actor state struct
-  var fieldsStr: seq[string]
-  for f in d.actorFields:
-    fieldsStr.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
-  fieldsStr.add(ind & "\tmailbox: rt.Mailbox(" & msgTypeName & ", " &
-                queueSize & "),")
+proc genActorState(ctx: var OdinCodegenCtx, d: Decl, hasShutdown: bool,
+                   ind: string): string =
+  ## The actor's state struct: its own fields, its mailbox, and — when it can
+  ## be shut down — the flag the drain checks.
+  var fields = ctx.actorFieldLines(d)
+  fields.add(ind & "\tmailbox: rt.Mailbox(" & d.name & "Msg, " &
+             mailboxSize(d) & "),")
   if hasShutdown:
-    # the shutdown arm sets this, which makes the drain go inert
-    fieldsStr.add(ind & "\tfinished: bool,")
+    fields.add(ind & "\tfinished: bool,")
+  ind & d.name & " :: struct {\n" & fields.join("\n") & "\n" & ind & "}\n\n"
 
-  # Dispatch. Odin has no methods, so the actor rides as a `self` pointer and
-  # field access inside a handler goes through it.
-  var handlerCases: seq[string]
-  var hctx = OdinCodegenCtx(definedVars: initHashSet[string](),
-                            fieldVars: initHashSet[string](),
-                            fieldPrefix: "self.", indent: ctx.indent + 1,
-                            module: ctx.module, realModules: ctx.realModules,
-                            errPolicy: ctx.errPolicy)
+proc newHandlerCtx(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
+  ## Odin has no methods, so the actor rides as a `self` pointer and field
+  ## access inside a handler goes through it.
+  result = OdinCodegenCtx(definedVars: initHashSet[string](),
+                          fieldVars: initHashSet[string](),
+                          fieldPrefix: "self.", indent: ctx.indent + 1,
+                          module: ctx.module, realModules: ctx.realModules,
+                          errPolicy: ctx.errPolicy)
   for f in d.actorFields:
-    hctx.fieldVars.incl(f.name)
-  for h in handlers:
-    let variantName = "msg" & h.name.capitalize()
-    var caseBody = ""
-    for p in h.params:
-      hctx.definedVars.incl(p.name)
-      caseBody.add(ind & "\t\t" & p.name & " := msg." & p.name & "\n")
-    let bodyStr = hctx.genOdinExpr(h.body)
-    handlerCases.add(ind & "\tcase ." & variantName & ":\n" & caseBody & bodyStr)
-  if hasShutdown:
-    # Stops the actor rather than adding a message: run the arm's body, then
-    # set the flag the drain checks.
-    let sdBody = if shutdownBody != nil: hctx.genOdinExpr(shutdownBody) & "\n" else: ""
-    handlerCases.add(ind & "\tcase .msgShutdown:\n" & sdBody &
-                     ind & "\t\tself.finished = true")
-  for hstr in hctx.hoisted:
-    if hstr notin ctx.hoisted: ctx.hoisted.add(hstr)
+    result.fieldVars.incl(f.name)
+
+proc adoptHandlerCtx(ctx: var OdinCodegenCtx, hctx: OdinCodegenCtx) =
+  ## Anything the handler bodies hoisted belongs to the enclosing file.
+  for h in hctx.hoisted:
+    if h notin ctx.hoisted: ctx.hoisted.add(h)
   for sig, name in hctx.recShapes:
     if sig notin ctx.recShapes: ctx.recShapes[sig] = name
 
-  res.add(ind & d.name & " :: struct {\n" & fieldsStr.join("\n") & "\n" &
-          ind & "}\n\n")
-  # One instance per declared actor (spec §9.1); sends and field reads
-  # target it, so `Counter.total` means `counterSingleton.total`.
-  res.add(ind & actorSingletonName(d.name) & ": " & d.name & "\n\n")
-  res.add(ind & "handleMsg_" & d.name & " :: proc(self: ^" & d.name &
-          ", msg: " & msgTypeName & ") {\n" &
-          ind & "\tswitch msg.kind {\n" & handlerCases.join("\n") & "\n" &
-          ind & "\t}\n" & ind & "}\n")
-  # Drain loop: the actor's coroutine body. Parks when the mailbox empties;
-  # tuckNotifySend wakes it after a send.
-  let finishedGuard =
-    if hasShutdown:
-      ind & "\t\tif " & actorSingletonName(d.name) & ".finished { return }\n"
-    else: ""
-  res.add("\n" & ind & "drain_" & d.name & " :: proc() {\n" &
-          ind & "\tfor {\n" & finishedGuard &
-          ind & "\t\tmsg: " & msgTypeName & "\n" &
-          ind & "\t\tfor rt.dequeue(&" & actorSingletonName(d.name) &
-          ".mailbox, &msg) {\n" &
-          ind & "\t\t\thandleMsg_" & d.name & "(&" &
-          actorSingletonName(d.name) & ", msg)\n" &
-          ind & "\t\t}\n" &
-          ind & "\t\trt.coroYield()\n" &
-          ind & "\t}\n" & ind & "}\n")
+proc genHandlerCase(hctx: var OdinCodegenCtx, h: ActorMsgHandler, ind: string): string =
+  ## One dispatch arm: unpack the envelope's fields, then run the body.
+  var unpack = ""
+  for p in h.params:
+    hctx.definedVars.incl(p.name)
+    unpack.add(ind & "\t\t" & p.name & " := msg." & p.name & "\n")
+  ind & "\tcase ." & msgVariantName(h.name) & ":\n" & unpack &
+    hctx.genOdinExpr(h.body)
 
-  # Send helpers: enqueue an envelope; a full ring drops (spec §9.1)
+proc genDispatch(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandler],
+                 shutdownBody: Expr, hasShutdown: bool, ind: string): string =
+  ## The switch that routes an envelope to its handler.
+  var hctx = ctx.newHandlerCtx(d)
+  var cases: seq[string]
   for h in handlers:
-    let helperName = "send" & h.name.capitalize() & "_" & d.name
-    let variantName = "msg" & h.name.capitalize()
-    var helperParams: seq[string]
-    var ctorArgs = "kind = ." & variantName
-    for p in h.params:
-      helperParams.add(p.name & ": " & ctx.odinType(p.typ))
-      ctorArgs.add(", " & p.name & " = " & p.name)
-    let sep = if helperParams.len > 0: ", " else: ""
-    res.add("\n" & ind & helperName & " :: proc(self: ^" & d.name & sep &
-            helperParams.join(", ") & ") {\n" &
-            ind & "\t_ = rt.enqueue(&self.mailbox, " & msgTypeName &
-            "{" & ctorArgs & "})\n" & ind & "}\n")
+    cases.add(hctx.genHandlerCase(h, ind))
   if hasShutdown:
-    res.add("\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" &
-            d.name & ") {\n" &
-            ind & "\t_ = rt.enqueue(&self.mailbox, " & msgTypeName &
-            "{kind = .msgShutdown})\n" & ind & "}\n")
-  return res
+    # Stops the actor rather than adding a message: run the arm's body, then
+    # set the flag the drain checks.
+    let sdBody = if shutdownBody != nil: hctx.genOdinExpr(shutdownBody) & "\n"
+                 else: ""
+    cases.add(ind & "\tcase .msgShutdown:\n" & sdBody &
+              ind & "\t\tself.finished = true")
+  ctx.adoptHandlerCtx(hctx)
+  ind & "handleMsg_" & d.name & " :: proc(self: ^" & d.name & ", msg: " &
+    d.name & "Msg) {\n" & ind & "\tswitch msg.kind {\n" & cases.join("\n") &
+    "\n" & ind & "\t}\n" & ind & "}\n"
+
+proc genDrain(d: Decl, hasShutdown: bool, ind: string): string =
+  ## The actor's coroutine body. Parks when the mailbox empties;
+  ## tuckNotifySend wakes it after a send.
+  let singleton = actorSingletonName(d.name)
+  let finishedGuard = if hasShutdown:
+                        ind & "\t\tif " & singleton & ".finished { return }\n"
+                      else: ""
+  "\n" & ind & "drain_" & d.name & " :: proc() {\n" &
+    ind & "\tfor {\n" & finishedGuard &
+    ind & "\t\tmsg: " & d.name & "Msg\n" &
+    ind & "\t\tfor rt.dequeue(&" & singleton & ".mailbox, &msg) {\n" &
+    ind & "\t\t\thandleMsg_" & d.name & "(&" & singleton & ", msg)\n" &
+    ind & "\t\t}\n" & ind & "\t\trt.coroYield()\n" &
+    ind & "\t}\n" & ind & "}\n"
+
+proc genSendHelper(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
+                   ind: string): string =
+  ## Enqueue an envelope; a full ring drops (spec §9.1).
+  var params: seq[string]
+  var ctorArgs = "kind = ." & msgVariantName(h.name)
+  for p in h.params:
+    params.add(p.name & ": " & ctx.odinType(p.typ))
+    ctorArgs.add(", " & p.name & " = " & p.name)
+  let sep = if params.len > 0: ", " else: ""
+  "\n" & ind & "send" & h.name.capitalize() & "_" & d.name & " :: proc(self: ^" &
+    d.name & sep & params.join(", ") & ") {\n" &
+    ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name & "Msg{" & ctorArgs &
+    "})\n" & ind & "}\n"
+
+proc genShutdownSender(d: Decl, ind: string): string =
+  "\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" & d.name &
+    ") {\n" & ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name &
+    "Msg{kind = .msgShutdown})\n" & ind & "}\n"
+
+proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## An actor emits its message envelope, state struct, singleton, dispatch,
+  ## drain loop and one send helper per handler.
+  ##
+  ## BOTH forms declare a message: `on add({n: int})` and an
+  ## `| add -> {n: int}` select arm. Walking only dkFn made every `on select`
+  ## actor take the no-handler path, which emits no enum, no mailbox and no
+  ## send procs — while the send SITES still called them, so the package did
+  ## not compile.
+  let ind = "  ".repeat(ctx.indent)
+  let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
+  var variants: seq[string]
+  for h in handlers: variants.add(msgVariantName(h.name))
+  if hasShutdown:
+    variants.add("msgShutdown")   # sent as `Actor send shutdown {}`
+  if variants.len == 0:
+    return ctx.genInertActor(d, ind)
+  result = ctx.genMsgEnvelope(d, handlers, variants, ind)
+  result.add(ctx.genActorState(d, hasShutdown, ind))
+  # One instance per declared actor (spec §9.1); sends and field reads target
+  # it, so `Counter.total` means `counterSingleton.total`.
+  result.add(ind & actorSingletonName(d.name) & ": " & d.name & "\n\n")
+  result.add(ctx.genDispatch(d, handlers, shutdownBody, hasShutdown, ind))
+  result.add(genDrain(d, hasShutdown, ind))
+  for h in handlers:
+    result.add(ctx.genSendHelper(d, h, ind))
+  if hasShutdown:
+    result.add(genShutdownSender(d, ind))
 
 proc genRegistry(ctx: var OdinCodegenCtx, d: Decl): string =
   let ind = "  ".repeat(ctx.indent)
