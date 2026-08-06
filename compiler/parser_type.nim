@@ -94,6 +94,62 @@ proc parseBraceType(p: var Parser, sp: Span): Type =
     discard p.expect(tkRBrace)
     return Type(span: sp, kind: tkRecord, fields: fields, attrs: @[])
 
+# --- `Name`, `Name[args]`, `Name [attrs]` ----------------------------------
+#
+# One bracket after a type name is either ATTRIBUTES or TYPE ARGUMENTS, and
+# the reserved words settle it: an attribute name belongs to the language, so
+# it can never be a user's type parameter. `Box[error]` is therefore an
+# attribute bracket — and rejected, which is correct.
+
+proc bracketHoldsAttrs(p: Parser): bool =
+  ## `[sealed]` — a reserved name. `[count: 4]` — valued, and a type argument
+  ## is never followed by a colon. Anything else is a type argument.
+  let first = p.peek(1)
+  first.kind == tkAttr or (first.kind == tkIdent and p.peek(2).kind == tkColon)
+
+proc meantAsTypeArg(p: Parser, nameTok: Token): bool =
+  ## Did the user plainly mean `Box[error]` as a type argument? Only when the
+  ## bracket is TIGHT against a Capitalized name: a spaced bracket is the
+  ## ordinary attribute position (`-> !Temperature [io]`, `u16 [saturating]`).
+  let brk = p.tokens[p.cursor - 1]
+  brk.line == nameTok.line and
+    brk.column == nameTok.column + nameTok.value.len and
+    p.peek(1).kind == tkRBracket and
+    nameTok.value.len > 0 and nameTok.value[0] in {'A'..'Z'}
+
+proc rejectReservedTypeArg(p: var Parser, nameTok: Token, attr: string) =
+  p.reportError("`" & nameTok.value & "[" & attr & "]` — '" & attr &
+    "' is a reserved attribute name and cannot be a type argument. Rename " &
+    "it to something Capitalized and unreserved, e.g. `" & nameTok.value &
+    "[Err]`.")
+
+proc parseTypeArgs(p: var Parser, sp: Span, base: Type): Type =
+  ## `Name[A, B]`. A SECOND bracket after the arguments is attributes —
+  ## `Array[64, u8] [count: 8]`: args say what the type IS, attrs how it behaves.
+  var args: seq[Type]
+  while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+    args.add(p.parseType())
+    if p.current().kind == tkComma:
+      discard p.advance()
+  discard p.expect(tkRBracket)
+  result = Type(span: sp, kind: tkApp, base: base, args: args)
+  if p.current().kind == tkLBracket:
+    discard p.advance()
+    result.attrs = p.parseTypeUseAttrs()
+
+proc parseNamedType(p: var Parser, sp: Span): Type =
+  let nameTok = p.advance()
+  var base = Type(span: sp, kind: tkNamed, name: nameTok.value)
+  if p.current().kind != tkLBracket: return base
+  let attrs = p.bracketHoldsAttrs()
+  let first = p.peek(1)
+  discard p.advance()  # eat "["
+  if not attrs: return p.parseTypeArgs(sp, base)
+  if first.kind == tkAttr and p.meantAsTypeArg(nameTok):
+    p.rejectReservedTypeArg(nameTok, first.value)
+  base.attrs = p.parseTypeUseAttrs()
+  base
+
 proc parsePrimaryType(p: var Parser): Type =
   let sp = p.getSpan()
   let curr = p.current()
@@ -123,62 +179,7 @@ proc parsePrimaryType(p: var Parser): Type =
     return Type(span: sp, kind: tkNamed, name: val)
 
   elif curr.kind == tkIdent:
-    let nameTok = p.advance()
-    let name = nameTok.value
-    var base = Type(span: sp, kind: tkNamed, name: name)
-    if p.current().kind == tkLBracket:
-      # Check if it's attributes or generics
-      let first = p.peek(1)
-      # Two shapes, no word list:
-      #   `[name: value]`  — a type argument is never followed by a colon, so
-      #                      a valued attribute is identifiable by shape
-      #   tkAttr           — a RESERVED attribute name; the word belongs to
-      #                      the language, so this bracket is an attribute
-      # Anything else is a type argument.
-      #
-      # `Box[error]` therefore lands in the attribute branch and is REJECTED,
-      # which is correct: `error` is an attribute name, not the user's to take.
-      # The old 19-name list in this file tried to guess the same thing after
-      # the fact and could not, because `error` lexed as an ordinary
-      # identifier. Reserving the word settles it at the source.
-      let valued = p.peek(2).kind == tkColon
-      let isAttr = first.kind == tkAttr or (first.kind == tkIdent and valued)
-      discard p.advance() # eat "["
-      if isAttr:
-        # A reserved name where a TYPE ARGUMENT was clearly meant —
-        # `Box[error]`. Only when the bracket is TIGHT: a spaced one is the
-        # ordinary attribute position (`-> !Temperature [io]`,
-        # `u16 [saturating]`), which is correct code and must not be flagged.
-        # Tightness is not what decides attribute-vs-argument — the reserved
-        # word already did that — it only decides whether the user plainly
-        # meant an argument and deserves the rename hint.
-        let brkTok = p.tokens[p.cursor - 1]
-        let tight = brkTok.line == nameTok.line and
-                    brkTok.column == nameTok.column + nameTok.value.len
-        if tight and first.kind == tkAttr and not valued and
-           p.peek(1).kind == tkRBracket and base.name.len > 0 and
-           base.name[0] in {'A'..'Z'}:
-          p.reportError("`" & base.name & "[" & first.value & "]` — '" &
-            first.value & "' is a reserved attribute name and cannot be a " &
-            "type argument. Rename it to something Capitalized and " &
-            "unreserved, e.g. `" & base.name & "[Err]`.")
-        base.attrs = p.parseTypeUseAttrs()
-      else:
-        var args: seq[Type]
-        while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-          args.add(p.parseType())
-          if p.current().kind == tkComma:
-            discard p.advance()
-        discard p.expect(tkRBracket)
-        let applied = Type(span: sp, kind: tkApp, base: base, args: args)
-        # A SECOND bracket after type arguments is an attribute bracket:
-        # `Array[64, u8] [count: 8]` — args say what the type is, attrs
-        # say how it behaves.
-        if p.current().kind == tkLBracket:
-          discard p.advance()
-          applied.attrs = p.parseTypeUseAttrs()
-        return applied
-    return base
+    return p.parseNamedType(sp)
 
   else:
     p.reportError("Unexpected token in type expression: " & $curr.kind)
