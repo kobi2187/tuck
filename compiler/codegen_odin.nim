@@ -761,305 +761,359 @@ proc genMatchExpr(ctx: var OdinCodegenCtx, e: Expr): string =
   res.add(")".repeat(closing))
   return res
 
+proc genIndented(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Emit a nested body one level deeper, restoring the indent afterwards.
+  ## Every block-owning construct needs this, and each used to spell out the
+  ## save/increment/restore by hand.
+  let saved = ctx.indent
+  ctx.indent += 1
+  result = ctx.genOdinExpr(e)
+  ctx.indent = saved
+
+proc genUnindented(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Emit an expression with no indentation — for a value position, where a
+  ## leading run of spaces would land in the middle of an expression.
+  let saved = ctx.indent
+  ctx.indent = 0
+  result = ctx.genOdinExpr(e)
+  ctx.indent = saved
+
+proc genInterfaceWrap(ctx: var OdinCodegenCtx, e: Expr,
+                      w: tuple[objName, iface: string]): string =
+  ## A concrete object entering an interface slot is COPIED into the variant
+  ## (spec §5.3). Mirrors the Nim backend: the value owns its data, so it can
+  ## be returned or stored with no lifetime question — nothing borrows.
+  let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
+  ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
+    objName & "Val = " & e.name & "}"
+
+proc genLit(e: Expr): string =
+  case e.litKind
+  of lkStr: "\"" & e.litValue & "\""
+  else: e.litValue
+
+proc genInputPayload(ctx: var OdinCodegenCtx): string =
+  ## `input` — the whole incoming payload, rebuilt as its TRec shape.
+  var vals: seq[string]
+  for p in ctx.currentParams: vals.add(p.name & " = " & p.name)
+  ctx.recStructName(ctx.currentParams) & "{" & vals.join(", ") & "}"
+
+proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string =
+  ## An unqualified cross-module call (`0 exit` for `sys::exit`). Nim resolves
+  ## this itself through the emitted `import`; Odin never merges package
+  ## scopes, so the owning package has to be found and spelled out here.
+  if ctx.module.declaresFn(name): return ""
+  for modName, im in ctx.realModules:
+    if im.declaresFn(name):
+      return modName.replace("-", "_") & "." & name
+  ""
+
+proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A bare name: a checker-stamped call, a payload, a field, an enum tag, or
+  ## a plain variable.
+  if semLayer.hasCall(e): return ctx.genOdinExpr(semLayer.call(e))
+  if e.name == "...": return ""  # pending hole: compiles, does nothing
+  if e.name == "input" and ctx.currentParams.len > 0: return ctx.genInputPayload()
+  if e.name == "self" and ctx.ptrSelf: return "self^"  # member fn: deref
+  if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
+  if e.name in ctx.definedVars: return e.name
+  # bare enum tag: qualify with its declared owner (Odin has no module-global
+  # enum members the way Nim does)
+  let owner = enumTagOwner(ctx.module, e.name)
+  if owner != "": return owner & "." & e.name
+  let foreign = ctx.qualifiedForeignFn(e.name)
+  if foreign != "": return foreign
+  e.name
+
+proc genIfaceDispatch(ctx: var OdinCodegenCtx, e: Expr,
+                      ic: tuple[iface, member: string]): string =
+  ## A call through an interface value: switch on the tag the value carries and
+  ## call the concrete member fn — no table, no thunk. Emitted as an
+  ## immediately-called closure because Odin has no switch EXPRESSION, and a
+  ## call site needs a value.
+  let recv = ctx.genOdinExpr(e.receiver)
+  var extra = ""
+  if e.dotArg != nil: extra = ", " & ctx.genOdinExpr(e.dotArg)
+  var arms: seq[string]
+  for st in ctx.satisfiersOf(ic.iface):
+    arms.add("\t\tcase ." & ic.iface & "_is_" & st.name & ":\n" &
+             "\t\t\ttmp := v." & st.name & "Val\n" &
+             "\t\t\treturn " & memberProcName(st.name, ic.member) &
+             "(&tmp" & extra & ")")
+  if arms.len == 0: return ""
+  "(proc(v: " & ic.iface & ") -> int {\n\tswitch v.tag {\n" &
+    arms.join("\n") & "\n\t}\n\treturn 0\n})(" & recv & ")"
+
+proc isResultStatusTest(e: Expr): bool =
+  ## `r.ok` on a !T/?T value is a STATUS TEST, not a field.
+  if e.fieldName != "ok" or e.receiver == nil: return false
+  let rt = semLayer.typeFor(e.receiver)
+  rt != nil and rt.kind == tkApp and rt.base != nil and
+    rt.base.kind == tkNamed and rt.base.name in ["!", "?", "!?"]
+
+proc isInputField(ctx: OdinCodegenCtx, e: Expr): bool =
+  ## `input.x` — the incoming payload's field is just the param.
+  e.receiver != nil and e.receiver.kind == exkVar and
+    e.receiver.name == "input" and ctx.currentParams.len > 0
+
+proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A `.name` access: interface dispatch, an actor singleton's field, a
+  ## status test, a resolved call, a sum-variant construction, or a plain read.
+  let ic = semLayer.ifaceCallOf(e)
+  if ic.member != "": return ctx.genIfaceDispatch(e, ic)
+  # `Counter.total` reads the actor SINGLETON's field, not a type's.
+  if e.receiver != nil and e.receiver.kind == exkVar and
+     ctx.isActorType(e.receiver.name):
+    return actorSingletonName(e.receiver.name) & "." & e.fieldName
+  if isResultStatusTest(e):
+    # parenthesised: a guard may negate it (`!r.ok`), and `!x == y` would
+    # otherwise bind the `!` to the receiver alone
+    return "(" & ctx.genOdinExpr(e.receiver) & ".status == .Ok)"
+  if ctx.isInputField(e): return e.fieldName
+  # fieldName resolved to a fn call, not a field (checker-resolved)
+  if semLayer.hasCall(e): return ctx.genOdinCall(semLayer.call(e))
+  if e.receiver != nil and e.receiver.kind == exkVar:
+    # bare Type.Variant of a payload sum: kind-tagged construction
+    let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
+    if ctor != "": return ctor
+  if e.receiver != nil and e.receiver.kind == exkLit and
+     e.receiver.litKind in {lkInt, lkFloat}:
+    # `5.ms` the checker could not resolve — see the Nim backend's twin of
+    # this branch. A declared helper never reaches here; `hasCall` catches it.
+    return ctx.genOdinExpr(e.receiver)
+  ctx.genOdinExpr(e.receiver) & "." & e.fieldName
+
+proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Indexing resolved to an at() call; a type application never reaches
+  ## codegen, so an unresolved bracket emits nothing.
+  if semLayer.hasCall(e): ctx.genOdinExpr(semLayer.call(e)) else: ""
+
+proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Odin infers the element type from context: `{a, b}` as a compound literal.
+  var parts: seq[string]
+  for item in e.items: parts.add(ctx.genOdinExpr(item))
+  "{" & parts.join(", ") & "}"
+
+proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## Odin's range-for yields the index natively, so `for idx, item in xs:`
+  ## needs no counter to maintain.
+  let iterStr = ctx.genOdinExpr(e.iterable)
+  let vars = if e.iter != nil and e.iter.kind == pkTuple and e.iter.elems.len == 2:
+               genPatternStr(e.iter.elems[1]) & ", " &
+                 genPatternStr(e.iter.elems[0])
+             else: genPatternStr(e.iter)
+  let bodyStr = ctx.genIndented(e.body)
+  ind & "for " & vars & " in " & iterStr & " {\n" & bodyStr & "\n" & ind & "}"
+
+proc genWhile(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  let condStr = if e.whileCond == nil: "true" else: ctx.genOdinExpr(e.whileCond)
+  ind & "while (" & condStr & ")\n" & ctx.genIndented(e.whileBody)
+
+proc odinBinOp(op: BinOp): string =
+  ## Odin's `/` follows the operand type (integer operands give integer
+  ## division), so both divisions map to `/` here — the DIFFERENCE from Nim,
+  ## which needs `div`, is exactly why the Tuck source has to say which one it
+  ## means.
+  case op
+  of boAdd: "+"
+  of boSub: "-"
+  of boMul: "*"
+  of boDivInt, boDivFloat: "/"
+  of boMod: "%"
+  of boEq: "=="
+  of boNeq: "!="
+  of boLt: "<"
+  of boGt: ">"
+  of boLe: "<="
+  of boGe: ">="
+  of boAnd: "&&"
+  of boOr: "||"
+  of boXor: "^"
+  of boRangeIncl: "..="   # Odin spells inclusive ranges ..=
+  of boRangeExcl: "..<"
+
+proc isStringConcat(e: Expr): bool =
+  ## `+` over strings is a runtime call, not an operator.
+  if e.binOp != boAdd or e.left == nil: return false
+  let lt = semLayer.typeFor(e.left)
+  lt != nil and lt.kind == tkNamed and lt.name in ["str", "string"]
+
+proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## rt.tuckConcat — `concat` was the Beef runtime's name and never existed in
+  ## the Odin one (tuckrt/tuck_rt.odin:87), so any string `+` emitted an
+  ## undeclared call.
+  if isStringConcat(e):
+    return "rt.tuckConcat(" & ctx.genOdinExpr(e.left) & ", " &
+           ctx.genOdinExpr(e.right) & ")"
+  "(" & ctx.genOdinExpr(e.left) & " " & odinBinOp(e.binOp) & " " &
+    ctx.genOdinExpr(e.right) & ")"
+
+proc genUnary(ctx: var OdinCodegenCtx, e: Expr): string =
+  let opStr = case e.unaryOp
+              of uoNeg: "-"
+              of uoNot: "!"
+              else: ""
+  opStr & ctx.genOdinExpr(e.operand)
+
+proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): string =
+  ## continue/exit policy: a dropped result routes to the global handler.
+  ctx.tmpCounter.inc
+  let tn = "tuckDrop" & $ctx.tmpCounter
+  let site = semLayer.shortcut(s)
+  let onErr = if ctx.errPolicy == "exit":
+                "tuck_unhandled(" & tn & ".err, \"" & site &
+                  "\"); panic(\"unhandled error\")"
+              else:
+                "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
+  ind & "\t" & tn & " := " & stmtCode & "\n" &
+    ind & "\tif " & tn & ".status != .Ok { " & onErr & " }"
+
+proc ownsItsLayout(s: Expr): bool =
+  ## Constructs that emit their own indentation and terminator.
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain}
+
+proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
+  ## One statement of a block, indented unless it lays itself out.
+  var ownsLayout = s.kind == exkMatch and s.subject != nil
+  var code = if ownsLayout: ctx.genMatchStmt(s) else: ctx.genOdinExpr(s)
+  if code != "" and semLayer.shortcut(s) != "":
+    code = ctx.genDroppedResult(s, code, ind)
+    ownsLayout = true
+  if code == "": return ""
+  # Odin has no statement terminator
+  if ownsItsLayout(s) or ownsLayout: code else: ind & "  " & code
+
+proc genBlock(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## No braces here: Odin's block-owning constructs (proc, if, for) emit their
+  ## own `{`, and a bare nested block is rare enough not to need one.
+  let saved = ctx.indent
+  ctx.indent += 1
+  var lines: seq[string]
+  for s in e.stmts:
+    let code = ctx.genStmt(s, ind)
+    if code != "": lines.add(code)
+  ctx.indent = saved
+  lines.join("\n")
+
+proc genTernary(ctx: var OdinCodegenCtx, e: Expr, condStr: string): string =
+  ## R2: a value-position if becomes Odin's ternary. Odin has no
+  ## if-expression, so the statement form cannot stand in — it is not legal
+  ## where a value is expected.
+  "(" & condStr & " ? " & ctx.genUnindented(e.thenBranch) & " : " &
+    ctx.genUnindented(e.elseBranch) & ")"
+
+proc genBranch(ctx: var OdinCodegenCtx, branch: Expr, ind: string): string =
+  ## A branch body, indented by hand when it is a single statement rather than
+  ## a block that indents itself.
+  result = ctx.genIndented(branch)
+  if branch != nil and branch.kind != exkBlock:
+    result = ind & "  " & result
+
+proc genIf(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## Odin: no parens around the condition, braces mandatory.
+  let condStr = ctx.genOdinExpr(e.cond)
+  if isValueIf(e): return ctx.genTernary(e, condStr)
+  let thenStr = ctx.genBranch(e.thenBranch, ind)
+  var elseStr = ""
+  if e.elseBranch != nil:
+    elseStr = "\n" & ind & "} else {\n" & ctx.genBranch(e.elseBranch, ind)
+  ind & "if " & condStr & " {\n" & thenStr & elseStr & "\n" & ind & "}"
+
+proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
+  let targetStr = ctx.genOdinExpr(e.target)
+  let valStr = ctx.genOdinExpr(e.assignVal)
+  if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
+     e.target.name notin ctx.fieldVars:
+    ctx.definedVars.incl(e.target.name)
+    return e.target.name & " := " & valStr
+  targetStr & " = " & valStr
+
+proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `return err X` is the raise, not a wrapped return value.
+  if e.returnVal != nil and e.returnVal.kind == exkRaise:
+    ctx.genOdinExpr(e.returnVal)
+  else:
+    ctx.genOdinReturn(e)
+
+proc genChainStep(ctx: var OdinCodegenCtx, step: ChainStep, baseStr,
+                  ind: string): string =
+  ## One step: a mutator call reassigned into the base var, or a field set.
+  if semLayer.stepCall(step) != nil:
+    return ind & baseStr & " = " & ctx.genOdinCall(semLayer.stepCall(step))
+  let valStr = if isSingleFieldPayload(step.arg):
+                 ctx.genOdinExpr(soleFieldValue(step.arg))
+               else: ""
+  ind & baseStr & "." & step.target.name & " = " & valStr
+
+proc genChainRevalidate(ctx: OdinCodegenCtx, e: Expr, baseStr,
+                        ind: string): string =
+  ## A mutation site: an invariant-carrying var re-validates after the chain.
+  if e.base == nil: return ""
+  let bt = semLayer.typeFor(e.base)
+  if bt == nil or bt.kind != tkNamed or not hasInvariants(ctx.module, bt.name):
+    return ""
+  ind & "validate_" & bt.name & "(" & baseStr & ")"
+
+proc genChain(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## `x ..field {v} ..mutate {a}` — one plain statement per step.
+  let baseStr = ctx.genOdinExpr(e.base)
+  var lines: seq[string]
+  for step in e.steps:
+    lines.add(ctx.genChainStep(step, baseStr, ind))
+  let revalidate = ctx.genChainRevalidate(e, baseStr, ind)
+  if revalidate != "": lines.add(revalidate)
+  lines.join("\n")
+
+proc genSend(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `Actor send handler {payload}` — enqueue an envelope on the singleton's
+  ## mailbox, then wake the actor. A full ring drops (spec §9.1). The send
+  ## helper genActor emitted takes the payload fields positionally after the
+  ## actor pointer, in handler-param order.
+  var sendArgs: seq[string]
+  if e.sendPayload != nil and e.sendPayload.kind == exkStruct:
+    for f in e.sendPayload.fields:
+      sendArgs.add(ctx.genOdinExpr(f.value))
+  let sep = if sendArgs.len > 0: ", " else: ""
+  "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(&" &
+    actorSingletonName(e.sendActor) & sep & sendArgs.join(", ") & ")"
+
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
-  # A concrete object entering an interface slot is COPIED into the variant
-  # (spec §5.3). Mirrors the Nim backend: the value owns its data, so it can be
-  # returned or stored with no lifetime question — nothing borrows.
   let w = semLayer.wrapOf(e)
   if w.objName != "" and e.kind == exkVar:
-    let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
-    return ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
-           objName & "Val = " & e.name & "}"
+    return ctx.genInterfaceWrap(e, w)
   case e.kind
-  of exkLit:
-    return case e.litKind
-           of lkStr: "\"" & e.litValue & "\""
-           else: e.litValue
-  of exkVar:
-    # nullary call stamped by the checker (spec 2.3: a bare name IS a call)
-    if semLayer.hasCall(e): return ctx.genOdinExpr(semLayer.call(e))
-    if e.name == "...": return ""  # pending hole: compiles, does nothing
-    if e.name == "input" and ctx.currentParams.len > 0:
-      # the whole incoming payload, rebuilt as its TRec shape
-      var vals: seq[string]
-      for p in ctx.currentParams: vals.add(p.name & " = " & p.name)
-      return ctx.recStructName(ctx.currentParams) & "{" & vals.join(", ") & "}"
-    # inside a member fn `self` is a pointer: read through it
-    if e.name == "self" and ctx.ptrSelf: return "self^"
-    if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
-    if e.name notin ctx.definedVars:
-      # bare enum tag: qualify with its declared owner (Beef has no
-      # module-global enum members the way Nim does)
-      let owner = enumTagOwner(ctx.module, e.name)
-      if owner != "": return owner & "." & e.name
-      # unqualified cross-module call (`0 exit` for `sys::exit`). Nim resolves
-      # this itself through the emitted `import`; Odin never merges package
-      # scopes, so the owning package has to be found and spelled out here.
-      if not ctx.module.declaresFn(e.name):
-        for modName, im in ctx.realModules:
-          if im.declaresFn(e.name):
-            return modName.replace("-", "_") & "." & e.name
-    return e.name
-  of exkField:
-    # A call through an interface value: switch on the tag the value carries
-    # and call the concrete member fn. Mirrors the Nim backend.
-    let ic = semLayer.ifaceCallOf(e)
-    if ic.member != "":
-      # Dispatch is a switch on the tag calling the concrete member fn — no
-      # table, no thunk. Emitted as an immediately-called closure because Odin
-      # has no switch EXPRESSION, and a call site needs a value.
-      let recv = ctx.genOdinExpr(e.receiver)
-      var extra = ""
-      if e.dotArg != nil: extra = ", " & ctx.genOdinExpr(e.dotArg)
-      var arms: seq[string]
-      for st in ctx.satisfiersOf(ic.iface):
-        arms.add("\t\tcase ." & ic.iface & "_is_" & st.name & ":\n" &
-                 "\t\t\ttmp := v." & st.name & "Val\n" &
-                 "\t\t\treturn " & memberProcName(st.name, ic.member) &
-                 "(&tmp" & extra & ")")
-      if arms.len == 0: return ""
-      return "(proc(v: " & ic.iface & ") -> int {\n\tswitch v.tag {\n" &
-             arms.join("\n") & "\n\t}\n\treturn 0\n})(" & recv & ")"
-    # `Counter.total` reads the actor SINGLETON's field, not a type's.
-    if e.receiver != nil and e.receiver.kind == exkVar and
-       ctx.isActorType(e.receiver.name):
-      return actorSingletonName(e.receiver.name) & "." & e.fieldName
-    # `r.ok` on a !T/?T value is a STATUS TEST, not a field — the runtime
-    # models status as an enum, so emit the comparison the guard means.
-    if e.fieldName == "ok" and e.receiver != nil:
-      let rt = semLayer.typeFor(e.receiver)
-      if rt != nil and rt.kind == tkApp and rt.base != nil and
-         rt.base.kind == tkNamed and rt.base.name in ["!", "?", "!?"]:
-        # parenthesised: a guard may negate it (`!r.ok`), and `!x == y`
-        # would otherwise bind the `!` to the receiver alone
-        return "(" & ctx.genOdinExpr(e.receiver) & ".status == .Ok)"
-    # `input.x` — the incoming payload's field is just the param
-    if e.receiver != nil and e.receiver.kind == exkVar and
-       e.receiver.name == "input" and ctx.currentParams.len > 0:
-      return e.fieldName
-    if semLayer.hasCall(e):
-      # fieldName resolved to a fn call, not a field (checker-resolved)
-      return ctx.genOdinCall(semLayer.call(e))
-    if e.receiver != nil and e.receiver.kind == exkVar:
-      # bare Type.Variant of a payload sum: kind-tagged construction
-      let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
-      if ctor != "": return ctor
-    if e.receiver != nil and e.receiver.kind == exkLit and
-       e.receiver.litKind in {lkInt, lkFloat}:
-      # `5.ms` the checker could not resolve — see the Nim backend's twin of
-      # this branch. A declared helper never reaches here; `hasCall` above
-      # catches it.
-      return ctx.genOdinExpr(e.receiver)
-    return ctx.genOdinExpr(e.receiver) & "." & e.fieldName
-  of exkQualified:
-    return genQualified(ctx, e)
-  of exkCall:
-    return ctx.genOdinCall(e)
-  of exkStruct:
-    return ctx.genStructLit(e)
-  of exkList:
-    var parts: seq[string]
-    for item in e.items:
-      parts.add(ctx.genOdinExpr(item))
-    # Odin infers the element type from context: `{a, b}` as a compound literal
-    return "{" & parts.join(", ") & "}"
-  of exkBracket:
-    # indexing resolved to an at() call; a type application never reaches codegen
-    if semLayer.hasCall(e): return ctx.genOdinExpr(semLayer.call(e))
-    return ""
-  of exkBracketAssign:
-    if semLayer.hasCall(e): return ctx.genOdinExpr(semLayer.call(e))
-    return ""
-  of exkFor:
-    let iterStr = ctx.genOdinExpr(e.iterable)
-    if e.iter != nil and e.iter.kind == pkTuple and e.iter.elems.len == 2:
-      # `for idx, item in xs:` — Beef foreach has no index form; lower to a
-      # counter initialized to -1 and incremented FIRST in the body, so
-      # `continue` inside the body cannot skip the increment.
-      let idxN = genPatternStr(e.iter.elems[0])
-      let itemN = genPatternStr(e.iter.elems[1])
-      let oldIndent = ctx.indent
-      ctx.indent += 1
-      let bodyStr = ctx.genOdinExpr(e.body)
-      ctx.indent = oldIndent
-      # Odin's range-for yields the index natively — no counter to maintain.
-      return ind & "for " & itemN & ", " & idxN & " in " & iterStr & " {\n" &
-             bodyStr & "\n" & ind & "}"
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    let bodyStr = ctx.genOdinExpr(e.body)
-    ctx.indent = oldIndent
-    return ind & "for " & genPatternStr(e.iter) & " in " & iterStr & " {\n" &
-           bodyStr & "\n" & ind & "}"
-  of exkWhile:
-    let condStr = if e.whileCond == nil: "true" else: ctx.genOdinExpr(e.whileCond)
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    let bodyStr = ctx.genOdinExpr(e.whileBody)
-    ctx.indent = oldIndent
-    return ind & "while (" & condStr & ")\n" & bodyStr
-  of exkBreak:
-    return "break"
-  of exkContinue:
-    return "continue"
-  of exkBinary:
-    let opStr = case e.binOp
-                of boAdd: "+"
-                of boSub: "-"
-                of boMul: "*"
-                # Odin's `/` follows the operand type (integer operands give
-                # integer division), so both map to `/` here — the DIFFERENCE
-                # from Nim, which needs `div`, is exactly why the Tuck source
-                # has to say which one it means.
-                of boDivInt, boDivFloat: "/"
-                of boMod: "%"
-                of boEq: "=="
-                of boNeq: "!="
-                of boLt: "<"
-                of boGt: ">"
-                of boLe: "<="
-                of boGe: ">="
-                of boAnd: "&&"
-                of boOr: "||"
-                of boXor: "^"
-                of boRangeIncl: "..="   # Odin spells inclusive ranges ..=
-                of boRangeExcl: "..<"
-    if e.binOp == boAdd and e.left != nil and semLayer.typeFor(e.left) != nil and
-       semLayer.typeFor(e.left).kind == tkNamed and semLayer.typeFor(e.left).name in ["str", "string"]:
-      # rt.tuckConcat — `concat` was the Beef runtime's name and never
-      # existed in the Odin one (tuckrt/tuck_rt.odin:87), so any string `+`
-      # emitted an undeclared call.
-      return "rt.tuckConcat(" & ctx.genOdinExpr(e.left) & ", " &
-             ctx.genOdinExpr(e.right) & ")"
-    return "(" & ctx.genOdinExpr(e.left) & " " & opStr & " " & ctx.genOdinExpr(e.right) & ")"
-  of exkUnary:
-    let opStr = case e.unaryOp
-                of uoNeg: "-"
-                of uoNot: "!"
-                else: ""
-    return opStr & ctx.genOdinExpr(e.operand)
-  of exkBlock:
-    var lines: seq[string]
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    for s in e.stmts:
-      var stmtCode: string
-      var ownsLayout = false  # statement carries its own indentation/terminator
-      if s.kind == exkMatch and s.subject != nil:
-        stmtCode = ctx.genMatchStmt(s)
-        ownsLayout = true
-      else:
-        stmtCode = ctx.genOdinExpr(s)
-      if stmtCode != "" and semLayer.shortcut(s) != "":
-        # continue/exit policy: dropped result routes to the global handler
-        ctx.tmpCounter.inc
-        let tn = "tuckDrop" & $ctx.tmpCounter
-        let onErr = if ctx.errPolicy == "exit":
-                      "tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) &
-                      "\"); panic(\"unhandled error\")"
-                    else:
-                      "tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) & "\")"
-        stmtCode = ind & "\t" & tn & " := " & stmtCode & "\n" &
-                   ind & "\tif " & tn & ".status != .Ok { " & onErr & " }"
-        ownsLayout = true
-      if stmtCode != "":
-        if s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain} or ownsLayout:
-          lines.add(stmtCode)  # these carry their own indentation
-        else:
-          lines.add(ind & "  " & stmtCode)  # Odin has no statement terminator
-    ctx.indent = oldIndent
-    # No braces here: Odin's block-owning constructs (proc, if, for) emit
-    # their own `{`, and a bare nested block is rare enough not to need one.
-    if lines.len == 0:
-      return ""
-    return lines.join("\n")
-  of exkIf:
-    # Odin: no parens around the condition, braces mandatory.
-    let condStr = ctx.genOdinExpr(e.cond)
-    # R2: a value-position if becomes Odin's ternary. Odin has no
-    # if-expression, so the statement form below cannot stand in — it is not
-    # legal where a value is expected.
-    if isValueIf(e):
-      let saved = ctx.indent
-      ctx.indent = 0
-      let t = ctx.genOdinExpr(e.thenBranch)
-      let f = ctx.genOdinExpr(e.elseBranch)
-      ctx.indent = saved
-      return "(" & condStr & " ? " & t & " : " & f & ")"
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    var thenStr = ctx.genOdinExpr(e.thenBranch)
-    if e.thenBranch != nil and e.thenBranch.kind != exkBlock:
-      thenStr = ind & "  " & thenStr
-    var elseStr = ""
-    if e.elseBranch != nil:
-      var elseBodyStr = ctx.genOdinExpr(e.elseBranch)
-      if e.elseBranch.kind != exkBlock:
-        elseBodyStr = ind & "  " & elseBodyStr
-      elseStr = "\n" & ind & "} else {\n" & elseBodyStr
-    ctx.indent = oldIndent
-    return ind & "if " & condStr & " {\n" & thenStr & elseStr & "\n" & ind & "}"
-  of exkAssign:
-    let targetStr = ctx.genOdinExpr(e.target)
-    let valStr = ctx.genOdinExpr(e.assignVal)
-    if e.target.kind == exkVar:
-      let name = e.target.name
-      if name notin ctx.definedVars and name notin ctx.fieldVars:
-        ctx.definedVars.incl(name)
-        return name & " := " & valStr
-    return targetStr & " = " & valStr
-  of exkMatch:
-    if e.subject != nil:
-      return ctx.genMatchExpr(e)
-    return ""
-  of exkReturn:
-    if e.returnVal != nil and e.returnVal.kind == exkRaise:
-      return ctx.genOdinExpr(e.returnVal)
-    return ctx.genOdinReturn(e)
-  of exkRaise:
-    return ctx.genRaise(e)
-  of exkChain:
-    # `x ..field {v} ..mutate {a}` — one plain statement per step:
-    # field set, or mutator call reassigned into the base var
-    let baseStr = ctx.genOdinExpr(e.base)
-    var lines: seq[string]
-    for step in e.steps:
-      if semLayer.stepCall(step) != nil:
-        lines.add(ind & baseStr & " = " & ctx.genOdinCall(semLayer.stepCall(step)))
-      else:
-        var valStr = ""
-        if isSingleFieldPayload(step.arg):
-          valStr = ctx.genOdinExpr(soleFieldValue(step.arg))
-        lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
-    # mutation site: an invariant-carrying var re-validates after the chain
-    if e.base != nil and semLayer.typeFor(e.base) != nil and semLayer.typeFor(e.base).kind == tkNamed and
-       hasInvariants(ctx.module, semLayer.typeFor(e.base).name):
-      lines.add(ind & "validate_" & semLayer.typeFor(e.base).name & "(" &
-                baseStr & ")")
-    return lines.join("\n")
-  of exkSend:
-    # `Actor send handler {payload}` — enqueue an envelope on the singleton's
-    # mailbox, then wake the actor. A full ring drops (spec §9.1).
-    # The send helper genActor emitted takes the payload fields positionally
-    # after the actor pointer, in handler-param order.
-    var sendArgs: seq[string]
-    if e.sendPayload != nil and e.sendPayload.kind == exkStruct:
-      for (_, fexpr) in e.sendPayload.fields.items:
-        sendArgs.add(ctx.genOdinExpr(fexpr))
-    let sep = if sendArgs.len > 0: ", " else: ""
-    return "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(&" &
-           actorSingletonName(e.sendActor) & sep & sendArgs.join(", ") & ")"
+  of exkLit: genLit(e)
+  of exkVar: ctx.genVar(e)
+  of exkField: ctx.genFieldAccess(e)
+  of exkQualified: genQualified(ctx, e)
+  of exkCall: ctx.genOdinCall(e)
+  of exkStruct: ctx.genStructLit(e)
+  of exkList: ctx.genList(e)
+  of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
+  of exkFor: ctx.genFor(e, ind)
+  of exkWhile: ctx.genWhile(e, ind)
+  of exkBreak: "break"
+  of exkContinue: "continue"
+  of exkBinary: ctx.genBinary(e)
+  of exkUnary: ctx.genUnary(e)
+  of exkBlock: ctx.genBlock(e, ind)
+  of exkIf: ctx.genIf(e, ind)
+  of exkAssign: ctx.genAssign(e)
+  of exkMatch: (if e.subject != nil: ctx.genMatchExpr(e) else: "")
+  of exkReturn: ctx.genReturnStmt(e)
+  of exkRaise: ctx.genRaise(e)
+  of exkChain: ctx.genChain(e, ind)
+  of exkSend: ctx.genSend(e)
   of exkSelect:
     # ponytail: `on select` needs the reactor to race a read against a
     # timeout per branch (rt.tuckAwaitReadOrTimeout is there for it). The
     # branch lowering isn't wired yet; 27-actor-select / 29-task-timeout
     # are the cases. Emits nothing rather than pretending to work.
-    return "/* on select: not yet lowered for Odin */"
-  of exkImport:
-    # imports are declarations; they never reach expression position
-    return ""
+    "/* on select: not yet lowered for Odin */"
+  of exkImport: ""  # imports are declarations, never expression position
 
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string
 
