@@ -433,7 +433,17 @@ when isMainModule:
       # answering the other's link, nondeterministically, only under
       # concurrency. Pin the cache next to the output instead: unique per
       # build by construction, and it makes `tuck build` self-contained.
-      let nimCache = outDir / ".nimcache" / binBase
+      #
+      # TUCK_NIMCACHE overrides that for callers who can guarantee no
+      # concurrent build shares it. The runtime (tuck_rt, tuck_async,
+      # tuck_coro, vendored minicoro) is identical for every program, so
+      # compiling it once instead of per build takes a hello-world from 0.85s
+      # to 0.27s. The test suite sets this PER SCRIPT: builds within one
+      # script are sequential, so they share safely, while concurrent scripts
+      # keep separate caches and the collision above stays impossible.
+      let sharedCache = getEnv("TUCK_NIMCACHE")
+      let nimCache = if sharedCache != "": sharedCache
+                     else: outDir / ".nimcache" / binBase
       let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
                    speedFlags & " --nimcache:" & quoteShell(nimCache) &
                    " -o:" & quoteShell(binPath) & " " &

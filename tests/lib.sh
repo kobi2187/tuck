@@ -64,7 +64,18 @@ src() {
 _build() {
   # Compile to Nim AND link, since `runs` needs a binary. Output and exit
   # status are captured for the caller to inspect.
-  "$TUCK" build "$_cur/t.tuck" -o:"$_cur/out" --root:"$(pwd)" > "$_cur/build.log" 2>&1
+  #
+  # ONCE PER SNIPPET. `src` gives every case its own directory, so a second
+  # assertion against the same source cannot need a different binary — and a
+  # `tuck build` is ~0.85s of Nim compile-and-link, by far the most expensive
+  # thing a test does. Several cases assert two things about one program
+  # (known_bugs' block-bodied match arms, checked for both indentation and
+  # double-wrapping), which paid that twice for one binary.
+  if [ -f "$_cur/.built" ]; then return $(cat "$_cur/.built"); fi
+  local rc=0
+  "$TUCK" build "$_cur/t.tuck" -o:"$_cur/out" --root:"$(pwd)" > "$_cur/build.log" 2>&1 || rc=$?
+  echo "$rc" > "$_cur/.built"
+  return $rc
 }
 
 ok_check() {
@@ -103,19 +114,25 @@ outputs() {
   fi
 }
 
-_emitted() {
+_emit() {
   # `tuck c` stops at Nim source — no linking, so this is the cheap path for
-  # tests that only care about what was emitted.
-  "$TUCK" c "$_cur/t.tuck" -o:"$_cur/out" --root:"$(pwd)" > "$_cur/emit.log" 2>&1 \
-    && cat "$_cur/out/t.nim"
+  # tests that only care about what was emitted. Cached per snippet like
+  # _build: mangle.sh greps ONE emitted program 19 times, interface_dispatch
+  # 13, and re-emitting for each grep answers a question already answered.
+  if [ -f "$_cur/.emitted" ]; then return $(cat "$_cur/.emitted"); fi
+  local rc=0
+  "$TUCK" c "$_cur/t.tuck" -o:"$_cur/out" --root:"$(pwd)" > "$_cur/emit.log" 2>&1 || rc=$?
+  echo "$rc" > "$_cur/.emitted"
+  return $rc
 }
+
+_emitted() { _emit && cat "$_cur/out/t.nim"; }
 
 emits() {
   # A failed emit is reported AS a failed emit, not as a missing pattern —
   # otherwise a test whose .tuck source stops compiling silently reads as
   # "feature absent" forever.
-  if ! "$TUCK" c "$_cur/t.tuck" -o:"$_cur/out" --root:"$(pwd)" \
-       > "$_cur/emit.log" 2>&1; then
+  if ! _emit; then
     _no "$1" "emission failed: $(tail -1 "$_cur/emit.log")"
   elif grep -qE "$2" "$_cur/out/t.nim" 2>/dev/null; then _ok "$1"
   else _no "$1" "emitted Nim lacks /$2/"; fi
@@ -124,8 +141,7 @@ emits() {
 omits() {
   # A failed emit must NOT satisfy "the pattern is absent" — with no output at
   # all the assertion is vacuous, which is the worse direction of the same bug.
-  if ! "$TUCK" c "$_cur/t.tuck" -o:"$_cur/out" --root:"$(pwd)" \
-       > "$_cur/emit.log" 2>&1; then
+  if ! _emit; then
     _no "$1" "emission failed: $(tail -1 "$_cur/emit.log")"
   elif grep -qE "$2" "$_cur/out/t.nim" 2>/dev/null; then
     _no "$1" "emitted Nim contains /$2/ but should not"
@@ -163,13 +179,22 @@ bug_open() {
   fi
 }
 
+_emit_odin() {
+  # Cached per snippet, like _emit.
+  if [ -f "$_cur/.emitted_odin" ]; then return $(cat "$_cur/.emitted_odin"); fi
+  local rc=0
+  "$TUCK" c "$_cur/t.tuck" --odin -o:"$_cur/odin" --root:"$(pwd)" \
+    > "$_cur/odin.log" 2>&1 || rc=$?
+  echo "$rc" > "$_cur/.emitted_odin"
+  return $rc
+}
+
 emits_odin() {
   # Same as `emits`, against the Odin backend's output. A failed emit is
   # reported AS a failed emit: reporting it as "lacks pattern" hid a bug entry
   # whose own .tuck source did not compile, so it read as open long after the
   # compiler was fixed. omits_odin already separated these two cases.
-  if ! "$TUCK" c "$_cur/t.tuck" --odin -o:"$_cur/odin" --root:"$(pwd)" \
-       > "$_cur/odin.log" 2>&1; then
+  if ! _emit_odin; then
     _no "$1" "Odin emission failed: $(tail -1 "$_cur/odin.log")"
   elif grep -qE "$2" "$_cur/odin/t.odin" 2>/dev/null; then _ok "$1"
   else _no "$1" "emitted Odin lacks /$2/"; fi
@@ -179,8 +204,7 @@ omits_odin() {
   # Same as `omits`, against the Odin backend's output. A failed emit counts as
   # a failure rather than a vacuous pass — "the pattern is absent" must not be
   # satisfied by there being no output at all.
-  if ! "$TUCK" c "$_cur/t.tuck" --odin -o:"$_cur/odin" --root:"$(pwd)" \
-       > "$_cur/odin.log" 2>&1; then
+  if ! _emit_odin; then
     _no "$1" "Odin emission failed: $(tail -1 "$_cur/odin.log")"
   elif grep -qE "$2" "$_cur/odin/t.odin" 2>/dev/null; then
     _no "$1" "emitted Odin contains /$2/ but should not"

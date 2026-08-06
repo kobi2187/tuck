@@ -85,15 +85,43 @@ trap 'rm -rf "$logdir"' EXIT
 # lever left is overlapping them.
 #
 # Output is captured per test and printed after, since interleaved live output
-# from 9 concurrent scripts is unreadable.
-export TEST_JOBS=2   # inner parallelism per script; the stage itself is the outer
-for f in $test_files; do
-  ( start=$(date +%s.%N)
-    bash "$f" > "$logdir/$(basename "$f").out" 2>&1
-    echo $? > "$logdir/$(basename "$f").rc"
-    stage_secs $start > "$logdir/$(basename "$f").t" ) &
+# from 21 concurrent scripts is unreadable.
+#
+# BOUNDED to core count. Launching all 21 at once with TEST_JOBS=2 each put up
+# to 42 Nim compiles on $(nproc) cores; every one of them is a full
+# compile-and-link, so they thrash rather than overlap. Measured:
+# known_bugs.sh takes 11.7s alone and 37.6s in that pile-up — a 3.2x
+# contention tax, and since the stage cannot finish before its slowest script,
+# that tax WAS the stage.
+#
+# Longest-first, so the critical-path scripts start immediately rather than
+# landing last behind a queue of short ones.
+# Inner parallelism stays: odin_backend fans 36 `odin build` calls out over
+# TEST_JOBS, and serializing those cost more than the contention it saved
+# (37.4s vs 33.2s). What changed is the OUTER bound — 21 scripts at once on
+# $(nproc) cores was the pile-up.
+export TEST_JOBS=3
+_slowest="known_bugs.sh interface_seq.sh odin_backend.sh cli_smoke.sh auto_alias.sh object_composition.sh loop_var_type.sh interface_dispatch.sh"
+_ordered=""
+for b in $_slowest; do
+  [ -f "tests/$b" ] && _ordered="$_ordered tests/$b"
 done
-wait
+for f in $test_files; do
+  case " $_ordered " in *" $f "*) ;; *) _ordered="$_ordered $f";; esac
+done
+
+# NOT a shared TUCK_NIMCACHE. Sharing one cache per script looked like a 3x
+# win in isolation (0.85s -> 0.27s per build, since the runtime compiles once)
+# and made the suite 7x SLOWER — 43s to 301s, with a failure. Builds inside a
+# script are not sequential: TEST_JOBS fans them out, and concurrent nim
+# invocations against one cache serialize on it and corrupt each other.
+# Measure the suite, not the microbenchmark.
+printf '%s\n' $_ordered | xargs -P "$(nproc)" -I{} sh -c '
+  f="$1"; b=$(basename "$f")
+  start=$(date +%s.%N)
+  bash "$f" > "'"$logdir"'/$b.out" 2>&1
+  echo $? > "'"$logdir"'/$b.rc"
+  echo "scale=1; ($(date +%s.%N) - $start)/1" | bc > "'"$logdir"'/$b.t"' _ {}
 
 for f in $test_files; do
   b=$(basename "$f")
