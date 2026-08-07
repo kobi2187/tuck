@@ -2422,6 +2422,72 @@ proc failIfFieldShadowsDeclaredFn(tc: TypeChecker, m: Module) =
              "same name as a declared fn — rename one; fields and fns share " &
              "the call namespace", d.span)
 
+proc declaredName(d: Decl): string =
+  ## The name a declaration introduces into the module's namespace, or "" for
+  ## one that introduces none (an expression, an import, the errors block).
+  case d.kind
+  of dkFn, dkType, dkObject, dkActor, dkTask, dkConst, dkRegistry, dkPool,
+     dkFnSig, dkInterface, dkRegister: d.name
+  else: ""
+
+proc failIfDuplicateDecl(m: Module) =
+  ## A name may be declared once per module.
+  ##
+  ## Without this a duplicate reached CODEGEN and emitted invalid target code
+  ## — two `proc tuck_f*(): int` in one Nim module — so the user got an error
+  ## about generated code they never wrote. Fns and types share one namespace
+  ## because they share the call syntax: `{x: 1} F` cannot mean both
+  ## "construct F" and "call F".
+  var seen = initTable[string, Span]()
+  for d in m.decls:
+    if d == nil: continue
+    let name = declaredName(d)
+    if name == "": continue
+    if seen.hasKey(name):
+      fail("Structure Error: '" & name & "' is declared twice in this module" &
+           " (first at line " & $seen[name].line & ") — every top-level name " &
+           "is declared once; fns and types share one namespace because they " &
+           "share the call syntax", d.span)
+    seen[name] = d.span
+
+proc failIfDuplicateMember(what, owner: string, names: seq[(string, Span)]) =
+  ## A field, variant or parameter name may appear once per declaration.
+  var seen = initTable[string, Span]()
+  for (name, span) in names:
+    if seen.hasKey(name):
+      fail("Structure Error: " & what & " '" & name & "' appears twice in '" &
+           owner & "' (first at line " & $seen[name].line & ")", span)
+    seen[name] = span
+
+proc fieldNames(fields: seq[FieldDef]): seq[(string, Span)] =
+  for f in fields: result.add((f.name, f.span))
+
+proc paramNames(params: seq[Param]): seq[(string, Span)] =
+  for p in params: result.add((p.name, p.span))
+
+proc failIfDuplicateMembers(m: Module) =
+  ## The same rule one level down: inside a type, object, actor or fn.
+  for d in m.decls:
+    if d == nil: continue
+    case d.kind
+    of dkFn:
+      failIfDuplicateMember("parameter", d.name, paramNames(d.fnParams))
+    of dkTask:
+      failIfDuplicateMember("parameter", d.name, paramNames(d.taskParams))
+    of dkObject:
+      failIfDuplicateMember("field", d.name, fieldNames(d.objFields))
+    of dkActor:
+      failIfDuplicateMember("field", d.name, fieldNames(d.actorFields))
+    of dkType:
+      if d.typeBody == nil: continue
+      if d.typeBody.kind == tkRecord:
+        failIfDuplicateMember("field", d.name, fieldNames(d.typeBody.fields))
+      elif d.typeBody.kind == tkSum:
+        var vs: seq[(string, Span)]
+        for v in d.typeBody.variants: vs.add((v.name, v.span))
+        failIfDuplicateMember("variant", d.name, vs)
+    else: discard
+
 proc failIfTopLevelStatement(d: Decl) =
   ## Module top level is declarations only — the runnable program lives in
   ## `fn main`. (User ruling 2026-07-13: no top-level statements, not even
@@ -2450,6 +2516,8 @@ proc typecheckModule*(m: Module,
   checkPointers(tc.typeDeclsByName, m)  # pointers stay at the extern boundary
   checkConformance(m)      # `satisfies I` means every I member is implemented
   tc.bindConsts(m)
+  failIfDuplicateDecl(m)
+  failIfDuplicateMembers(m)
   tc.failIfFieldShadowsDeclaredFn(m)
   for d in m.decls:
     failIfTopLevelStatement(d)
