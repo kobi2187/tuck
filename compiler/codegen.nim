@@ -233,6 +233,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string
 proc genExprChain(ctx: var CodegenCtx, e: Expr): string
+proc genChainIntoTemp(ctx: var CodegenCtx, e: Expr): (string, string)
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
 
@@ -635,20 +636,24 @@ proc indentPrefix(code: string): string =
 
 proc genCallOnReceiver(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A resolved `.fn` call. When its RECEIVER is a `..` chain, the chain emits
-  ## as statements, not as an expression — so it is hoisted above the call and
-  ## the call takes the chain's base var.
+  ## as statements, not as an expression — so it is hoisted above the call,
+  ## run into a temp, and the call takes that temp.
   ##
-  ## Splicing it inline instead produced
+  ##   self ..loadEp {n} .startAudio
+  ##     ->  var tuckChain1 = self
+  ##         tuckChain1 = tuck_loadEp(tuckChain1, n)
+  ##         tuck_startAudio(tuckChain1)
+  ##
+  ## `self` is left alone: a chain only writes back when it stands alone on a
+  ## line. Splicing the chain inline instead produced
   ##   tuck_startAudio(self = tuck_loadEpisode(self, episode))
   ## — an assignment in an argument slot, which Nim rejects with "expression
   ## is immutable, not 'var'". Statements sequence; they do not nest.
   if e.receiver == nil or e.receiver.kind != exkChain:
     return ctx.genConstruction(semLayer.call(e))
-  let chainStmts = ctx.genExpr(e.receiver)
-  # The chain leaves its result in its BASE var, so the call reads that rather
-  # than the chain expression — which is the same node, and would otherwise be
-  # emitted a second time inside the argument list.
-  #
+  # The chain runs into a TEMP — the base is not touched — and the call takes
+  # that temp as its receiver.
+  let (chainStmts, tmp) = ctx.genChainIntoTemp(e.receiver)
   # Matched by NodeId, NOT by reference: tuck.nim hands each backend a
   # deepCopy of the checked tree, so the argument the CHECKER stored in the
   # resolved call and the receiver codegen is walking are different objects.
@@ -656,9 +661,10 @@ proc genCallOnReceiver(ctx: var CodegenCtx, e: Expr, ind: string): string =
   let call = semLayer.call(e)
   var direct = Expr(span: call.span, kind: exkCall, callee: call.callee,
                     args: call.args)
+  let tmpExpr = Expr(span: e.span, kind: exkVar, name: tmp)
   for i in 0 ..< direct.args.len:
     if direct.args[i] != nil and direct.args[i].id == e.receiver.id:
-      direct.args[i] = e.receiver.base
+      direct.args[i] = tmpExpr
   # genExprChain indents every line it emits, so the call is placed at that
   # same indent rather than at `ind`, which would be one level shallower.
   chainStmts & "\n" & chainStmts.indentPrefix & ctx.genConstruction(direct)
@@ -786,6 +792,16 @@ proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
                 "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
   "(let " & tn & " = " & stmtCode & "; (if not " & tn & ".ok: " & onErr & "))"
 
+proc isCallOnChain(s: Expr): bool =
+  ## `self ..loadEp {n} .startAudio` — a resolved call whose receiver is a
+  ## chain. The chain lowers to statements, so the whole thing is multi-line.
+  s.kind == exkField and s.receiver != nil and
+    s.receiver.kind == exkChain and semLayer.hasCall(s)
+
+proc isChainBinding(s: Expr): bool =
+  ## `var b = a ..setN {5}` — the chain runs into a temp above the binding.
+  s.kind == exkAssign and s.assignVal != nil and s.assignVal.kind == exkChain
+
 proc ownsItsLayout(s: Expr): bool =
   ## Nodes that carry their own indentation.
   ##
@@ -794,10 +810,8 @@ proc ownsItsLayout(s: Expr): bool =
   ## multi-line and indents itself. Left out, genStmt added its own prefix on
   ## top of the chain's and produced 8 spaces against the block's 4 — which
   ## Nim rejects as invalid indentation.
-  if s.kind == exkField and s.receiver != nil and
-     s.receiver.kind == exkChain and semLayer.hasCall(s):
-    return true
-  s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile}
+  s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile} or
+    isCallOnChain(s) or isChainBinding(s)
 
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
@@ -916,14 +930,23 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
       ctx.definedVars.incl(e.target.name)
       return "var " & e.target.name & " = " & spawn
     return ctx.genExpr(e.target) & " = " & spawn
+  # A chain being BOUND is consumed, so it runs into a temp and leaves its
+  # base alone — `var b = a ..setN {n: 5}` must not touch `a`. The statements
+  # are hoisted above the binding, which then reads the temp.
+  var prelude = ""
+  var valSrc = e.assignVal
+  if valSrc != nil and valSrc.kind == exkChain:
+    let (stmts, tmp) = ctx.genChainIntoTemp(valSrc)
+    prelude = stmts & "\n" & stmts.indentPrefix
+    valSrc = Expr(span: valSrc.span, kind: exkVar, name: tmp)
   let targetStr = ctx.genExpr(e.target)
-  let valStr = ctx.genExpr(e.assignVal)
+  let valStr = ctx.genExpr(valSrc)
   if e.target.kind == exkVar:
     let name = e.target.name
     if name notin ctx.definedVars and name notin ctx.fieldVars:
       ctx.definedVars.incl(name)
-      return "var " & name & " = " & valStr
-  targetStr & " = " & valStr
+      return prelude & "var " & name & " = " & valStr
+  prelude & targetStr & " = " & valStr
 
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
   if e.subject == nil: return "discard"
@@ -963,25 +986,76 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
     cases.add(ind & "else: discard")
   "(case " & subjectStr & "\n" & cases.join("\n") & ")"
 
-proc genExprChain(ctx: var CodegenCtx, e: Expr): string =
-  # `x ..field {v} ..mutate {a}` — one plain Nim statement per step:
-  # field set, or mutator call reassigned into the base var
+proc threadReceiver(call, base: Expr, into, baseStr: string): Expr =
+  ## Each step's resolved call names the chain's BASE as its receiver. When
+  ## the chain runs into a temp, every step must read the PREVIOUS step's
+  ## result instead — otherwise `a ..setN {5} ..setN {7}` emits two calls both
+  ## reading `a`, and the first result is silently discarded.
+  ##
+  ## Matched by NodeId: each backend walks a deepCopy of the checked tree, so
+  ## the node the checker stored is not the node being walked here.
+  if into == baseStr or base == nil: return call
+  result = Expr(span: call.span, kind: exkCall, callee: call.callee,
+                args: call.args)
+  let intoExpr = Expr(span: call.span, kind: exkVar, name: into)
+  for i in 0 ..< result.args.len:
+    if result.args[i] != nil and result.args[i].id == base.id:
+      result.args[i] = intoExpr
+
+proc chainSteps(ctx: var CodegenCtx, e: Expr, into: string): string =
+  ## The chain's steps, each assigning through `into`.
+  ##
+  ## `into` is the base var when NOTHING CONSUMES the chain's result (the
+  ## builder form, which updates the base), or a fresh temp when something
+  ## does and the base must be left alone.
   let ind = "  ".repeat(ctx.indent)
   let baseStr = ctx.genExpr(e.base)
   var lines: seq[string]
   for step in e.steps:
     if semLayer.stepCall(step) != nil:
-      lines.add(ind & baseStr & " = " & ctx.genConstruction(semLayer.stepCall(step)))
+      let call = threadReceiver(semLayer.stepCall(step), e.base, into, baseStr)
+      lines.add(ind & into & " = " & ctx.genConstruction(call))
     else:
       var valStr = ""
       if isSingleFieldPayload(step.arg):
         valStr = ctx.genExpr(soleFieldValue(step.arg))
-      lines.add(ind & baseStr & "." & step.target.name & " = " & valStr)
+      lines.add(ind & into & "." & step.target.name & " = " & valStr)
   # mutation site: an invariant-carrying var re-validates after the chain
-  if e.base != nil and semLayer.typeFor(e.base) != nil and semLayer.typeFor(e.base).kind == tkNamed and
+  if e.base != nil and semLayer.typeFor(e.base) != nil and
+     semLayer.typeFor(e.base).kind == tkNamed and
      ctx.hasInvariantsFast(semLayer.typeFor(e.base).name):
-    lines.add(ind & "validate(" & baseStr & ")")
+    lines.add(ind & "validate(" & into & ")")
   lines.join("\n")
+
+proc genChainIntoTemp(ctx: var CodegenCtx, e: Expr): (string, string) =
+  ## A chain in VALUE position: copy the base into a temp, run the steps on
+  ## the temp, and hand back (statements, tempName) so the caller can use the
+  ## result without the base being touched.
+  ##
+  ## A caller that wants the pre-chain value simply keeps its own var — the
+  ## base is never written here.
+  let ind = "  ".repeat(ctx.indent)
+  ctx.tmpCounter.inc
+  let tmp = "tuckChain" & $ctx.tmpCounter
+  let seed = ind & "var " & tmp & " = " & ctx.genExpr(e.base)
+  (seed & "\n" & ctx.chainSteps(e, tmp), tmp)
+
+proc genExprChain(ctx: var CodegenCtx, e: Expr): string =
+  ## A chain whose result NOTHING CONSUMES: the steps assign through the base
+  ## var, so the builder updates it.
+  ##
+  ##   server ..withDefaults ..port {8080}   ->  server = withDefaults(server)
+  ##                                             server.port = 8080
+  ##
+  ## What decides this is whether the chain feeds something — a `.call`, a
+  ## binding, an argument — not how the source is laid out. A chain split over
+  ## several lines but ending in a `.call` still feeds that call, and goes
+  ## through genChainIntoTemp instead.
+  ##
+  ## Emitting this form in value position produced
+  ## `var b =     a = tuck_setN(a, 5)` — an assignment inside an assignment,
+  ## which Nim rejects, and which clobbered the base as well.
+  ctx.chainSteps(e, ctx.genExpr(e.base))
 
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   # `ActorType send handler {payload}` — enqueue a Msg to the actor's

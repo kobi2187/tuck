@@ -125,5 +125,26 @@ fn main() -> int:
 EOF
 ok_check "a builder chain followed by a terminal call"
 runs     "and lowers to sequenced statements, not a nested call"  0
+omits    "the terminal call does not write back to the base"  'self = tuck_loadEp'
+
+# A chain BOUND to a variable. `a` must be left alone — the chain threads a
+# temp and the binding reads it. This emitted `var b =     a = tuck_setN(a, 5)`
+# (an assignment inside an assignment, rejected by Nim) AND clobbered `a`.
+src <<'EOF'
+fn setN({self: App, n: int}) -> App:
+  self
+
+object App:
+  n: int
+
+fn main() -> int:
+  var a = {n: 0} App
+  var b = a ..setN {n: 5} ..setN {n: 7}
+  return b.n
+EOF
+ok_check "a chain bound to a variable"
+runs     "and compiles"  0
+omits    "the bound chain leaves its base alone"  'a = tuck_setN'
+emits    "each step reads the previous step's result"  'tuckChain1 = tuck_setN\(tuckChain1'
 
 finish
