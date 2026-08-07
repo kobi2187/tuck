@@ -74,16 +74,35 @@ type
 # New compiler build invalidates every cache (AST layout may have changed).
 const buildStamp = CompileDate & " " & CompileTime
 
-proc parseTuckFile*(path: string): Module =
-  let source = readFile(path)
-  var lex = Lexer(source: source, position: 0, line: 1, column: 1, indentStack: @[0])
-  var tokens: seq[Token]
+proc lexSource*(source: string): seq[Token] =
+  ## Text to tokens. Raises SyntaxError on a malformed source.
+  var lex = Lexer(source: source, position: 0, line: 1, column: 1,
+                  indentStack: @[0])
   while true:
     let t = lex.nextToken()
-    tokens.add(t)
+    result.add(t)
     if t.kind == tkEOF: break
-  var p = Parser(source: source, tokens: tokens, cursor: 0)
+
+proc parseSource*(source: string): Module =
+  ## Text to AST — the whole front end. Raises SyntaxError on a malformed
+  ## source, from either stage.
+  ##
+  ## THE single front-end entry point. It used to be three: this file's
+  ## parseTuckFile plus a lexTokens/parseSource pair in tuck.nim, each with
+  ## its own copy of the lex-then-parse loop. Only one of them was wrapped
+  ## when the front end started raising, so `tuck ch` on a bad character
+  ## printed an unhandled-exception traceback instead of a diagnostic.
+  var p = Parser(source: source, tokens: lexSource(source), cursor: 0)
   p.parseModule()
+
+proc parseTuckFile*(path: string): Module =
+  ## Parse one file, naming it in any rejection. The lexer and parser see only
+  ## a string, so the path is added here — the layer that opened the file.
+  try:
+    parseSource(readFile(path))
+  except SyntaxError as err:
+    err.msg = path & ": " & err.msg
+    raise
 
 proc cachePathFor(path: string): string =
   path.parentDir / ".tuck-cache" / extractFilename(path).changeFileExt("bin")

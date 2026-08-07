@@ -99,6 +99,20 @@ type
     indentStack*: seq[int]
     pendingTokens*: seq[Token]
 
+  SyntaxError* = object of ValueError
+    ## A malformed source file, from the lexer or the parser.
+    ##
+    ## RAISED, not printed-and-quit. The two front-end stages used to write
+    ## the diagnostic to stderr and call `quit(1)` themselves, which made a
+    ## rejection indistinguishable from a crash to anything calling them
+    ## in-process — a test, a fuzz harness, an editor. The typechecker
+    ## already raised (SemanticError), so this makes the whole front end
+    ## agree: the stage says what is wrong, the DRIVER decides what to do
+    ## about it.
+    line*, col*: int
+    context*: string   # the offending source line, for the caret display
+    stage*: string     # "Lexical Error" / "Parse Error" — which stage rejected
+
 const keywords = {
   "fn": tkFn, "let": tkLet, "var": tkVar, "const": tkConst,
   "if": tkIf, "elif": tkElif, "else": tkElse,
@@ -158,15 +172,14 @@ proc getLineContext(source: string, targetLine: int): string =
   return ""
 
 proc reportError*(L: Lexer, message: string, line: int, col: int) =
-  let ctxLine = getLineContext(L.source, line)
-  stderr.writeLine "\n[Lexical Error] at line " & $line & ", column " & $col & ":"
-  stderr.writeLine "  " & message
-  if ctxLine.len > 0:
-    stderr.writeLine ""
-    stderr.writeLine "    " & ctxLine
-    stderr.writeLine "    " & repeat(' ', col - 1) & "^"
-  stderr.writeLine ""
-  quit(1)
+  ## Reject the source. Raises rather than printing and quitting, so a caller
+  ## can tell a rejection from a crash; `tuck.nim` catches this and prints.
+  var err = newException(SyntaxError, message)
+  err.line = line
+  err.col = col
+  err.context = getLineContext(L.source, line)
+  err.stage = "Lexical Error"
+  raise err
 
 proc peek*(L: Lexer, offset = 0): char =
   if L.position + offset < L.source.len:

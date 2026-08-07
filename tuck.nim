@@ -75,6 +75,22 @@ proc die(msg: string) =
   stderr.writeLine msg
   quit(1)
 
+proc dieSyntax(err: ref SyntaxError) {.noreturn.} =
+  ## Print a front-end rejection the way the lexer and parser used to print it
+  ## themselves, before they were changed to raise. The FORMAT is unchanged —
+  ## what moved is who decides to exit. The error names its own stage, so a
+  ## lexical error stays labelled one even when `tuck parse` is what surfaced
+  ## it.
+  stderr.writeLine "\n[" & err.stage & "] at line " & $err.line & ", column " &
+                   $err.col & ":"
+  stderr.writeLine "  " & err.msg
+  if err.context.len > 0:
+    stderr.writeLine ""
+    stderr.writeLine "    " & err.context
+    stderr.writeLine "    " & repeat(' ', max(err.col - 1, 0)) & "^"
+  stderr.writeLine ""
+  quit(1)
+
 proc elapsedMs(t0: float): string =
   formatFloat((epochTime() - t0) * 1000, ffDecimal, 1) & " ms"
 
@@ -136,16 +152,15 @@ proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
         if not (rel.startsWith("./") or rel.startsWith("../")): rel = "./" & rel
         mem.externImpl[i].module = rel
 
-proc lexTokens(source: string): seq[Token] =
-  var lex = Lexer(source: source, position: 0, line: 1, column: 1, indentStack: @[0])
-  while true:
-    let t = lex.nextToken()
-    result.add(t)
-    if t.kind == tkEOF: break
+proc lexOrDie(source: string): seq[Token] =
+  ## `tuck lex` — the tokens, or the diagnostic and exit.
+  try: lexSource(source)
+  except SyntaxError as err: dieSyntax(err)
 
-proc parseSource(source: string): Module =
-  var p = Parser(source: source, tokens: lexTokens(source), cursor: 0)
-  p.parseModule()
+proc parseOrDie(source: string): Module =
+  ## `tuck parse` — the AST, or the diagnostic and exit.
+  try: parseSource(source)
+  except SyntaxError as err: dieSyntax(err)
 
 # check stage over the whole import closure; returns the loaded program
 # (dep-first, entry module last) so compile can continue with it.
@@ -161,6 +176,11 @@ proc loadOrDie(path: string, needBodies: bool):
     return loadProgramIndexed(path)
   except ModuleError as err:
     die(path & ": " & err.msg)
+  except SyntaxError as err:
+    # A malformed source anywhere in the import closure. The stage that found
+    # it does not know which FILE it was reading; modules.nim does, and says so
+    # by prefixing the path onto the message before re-raising.
+    dieSyntax(err)
 
 proc importedEffects(loaded: seq[LoadedModule],
                      sigOnly: Table[string, IndexEntry]):
@@ -242,11 +262,11 @@ when isMainModule:
 
   case cmd
   of "lex", "l":
-    for t in lexTokens(source):
+    for t in lexOrDie(source):
       echo t.line, ":", t.column, "\t", t.kind, "\t", t.value
     echo "OK (", elapsedMs(t0), ")"
   of "parse", "p":
-    let m = parseSource(source)
+    let m = parseOrDie(source)
     if "--ast" in opts:
       echo pretty(toJson(m))
     echo "OK — ", m.decls.len, " top-level declarations (", elapsedMs(t0), ")"

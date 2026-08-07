@@ -48,17 +48,15 @@ proc getLineContext(source: string, targetLine: int): string =
   return ""
 
 proc reportError*(p: Parser, msg: string, line = -1, col = -1) =
-  let targetLine = if line == -1: p.current().line else: line
-  let targetCol = if col == -1: p.current().column else: col
-  let ctxLine = getLineContext(p.source, targetLine)
-  stderr.writeLine "\n[Parse Error] at line " & $targetLine & ", column " & $targetCol & ":"
-  stderr.writeLine "  " & msg
-  if ctxLine.len > 0:
-    stderr.writeLine ""
-    stderr.writeLine "    " & ctxLine
-    stderr.writeLine "    " & repeat(' ', targetCol - 1) & "^"
-  stderr.writeLine ""
-  quit(1)
+  ## Reject the source. Raises rather than printing and quitting, so a caller
+  ## can tell a rejection from a crash; `tuck.nim` catches this and prints.
+  ## Defaults to the current token's position when none is given.
+  var err = newException(SyntaxError, msg)
+  err.line = if line == -1: p.current().line else: line
+  err.col = if col == -1: p.current().column else: col
+  err.context = getLineContext(p.source, err.line)
+  err.stage = "Parse Error"
+  raise err
 
 proc expect*(p: var Parser, kind: TokenKind, msg = ""): Token =
   if p.current().kind != kind:
