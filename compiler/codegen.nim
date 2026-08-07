@@ -518,242 +518,286 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
       tmp & "); " & tmp & ")"
   else: return "return " & ctx.genExpr(e.returnVal)
 
+proc genIndented(ctx: var CodegenCtx, e: Expr): string =
+  ## Emit a nested body one level deeper, restoring the indent afterwards.
+  ## Twin of codegen_odin's genIndented.
+  let saved = ctx.indent
+  ctx.indent += 1
+  result = ctx.genExpr(e)
+  ctx.indent = saved
+
+proc genInterfaceWrap(e: Expr, ifaceName, objName: string): string =
+  ## A concrete object entering an interface slot is COPIED into the variant
+  ## (spec §5.3): `Animal(tag: Animal_is_Dog, DogVal: d)`. The backend
+  ## generates the right copy for managed fields, and the value owns its data
+  ## — so it can be returned, stored in a field, or collected with no lifetime
+  ## question. Mutation through it hits the copy, which is the same rule
+  ## records and actor messages already follow.
+  ##
+  ## The wrapped expression is a variable (the only form the checker marks),
+  ## so its name is emitted directly rather than re-entering genExpr, which
+  ## would see the same mark and recurse forever.
+  ifaceName & "(tag: " & ifaceName & "_is_" & objName & ", " &
+    objName & "Val: " & e.name & ")"
+
+proc genLit(e: Expr): string =
+  case e.litKind
+  of lkStr: "\"" & e.litValue & "\""
+  else: e.litValue
+
+proc genInputPayload(ctx: CodegenCtx): string =
+  ## `input` — the whole incoming payload, rebuilt as a tuple.
+  var parts: seq[string]
+  for p in ctx.currentParams: parts.add(p.name & ": " & p.name)
+  "(" & parts.join(", ") & ")"
+
+proc genVar(ctx: var CodegenCtx, e: Expr): string =
+  ## A bare name: a checker-stamped call, a payload, a field, or a plain
+  ## variable.
+  if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e))
+  elif e.name == "...": "discard"   # pending hole
+  elif e.name == "input" and ctx.currentParams.len > 0: ctx.genInputPayload()
+  elif e.name in ctx.fieldVars: "self." & e.name
+  else: e.name
+
+proc genIfaceDispatch(ctx: var CodegenCtx, e: Expr,
+                      ic: tuple[iface, member: string], ind: string): string =
+  ## Dispatch is a `case` on the tag calling the concrete member fn directly —
+  ## no function table, no thunk, and the optimizer can see through it.
+  ## Emitted as a Nim case EXPRESSION so it composes anywhere a value is
+  ## expected.
+  ##
+  ## A member fn takes `self: var T`, so each branch binds a mutable copy of
+  ## the payload rather than passing the field of an immutable value. Mutation
+  ## hits that copy, which is the semantics: an interface value OWNS its data.
+  let recv = ctx.genExpr(e.receiver)
+  var extra = ""
+  if e.dotArg != nil: extra = ", " & ctx.genExpr(e.dotArg)
+  var arms: seq[string]
+  for s in ctx.satisfiersOf(ic.iface):
+    arms.add(ind & "  of " & ic.iface & "_is_" & s.name & ":\n" &
+             ind & "    var tmp = " & recv & "." & s.name & "Val\n" &
+             ind & "    " & ic.member & "(tmp" & extra & ")")
+  if arms.len == 0: return ""
+  "(block:\n" & ind & "  case " & recv & ".tag\n" & arms.join("\n") & ")"
+
+proc isInputField(ctx: CodegenCtx, e: Expr): bool =
+  ## `input.x` — the incoming payload's field is just the param.
+  e.receiver != nil and e.receiver.kind == exkVar and
+    e.receiver.name == "input" and ctx.currentParams.len > 0
+
+proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## A `.name` access: a payload field, interface dispatch, a resolved call, a
+  ## sum-variant construction, an actor singleton's field, or a plain read.
+  if ctx.isInputField(e): return e.fieldName
+  # Which implementations are POSSIBLE was fixed at the wrap sites (the demand
+  # set); which one runs is the tag, read here at the call.
+  let ic = semLayer.ifaceCallOf(e)
+  if ic.member != "": return ctx.genIfaceDispatch(e, ic, ind)
+  if semLayer.hasCall(e): return ctx.genConstruction(semLayer.call(e))
+  if e.receiver != nil and e.receiver.kind == exkVar:
+    # bare Type.Variant of a payload sum: kind-tagged construction
+    let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
+    if ctor != "": return ctor
+    # `ActorType.field` — an actor is a singleton; read its public field off
+    # the rt-owned instance (main's waitUntil predicates read state this way)
+    if ctx.isActorType(e.receiver.name):
+      return actorSingletonName(e.receiver.name) & "." & e.fieldName
+  if e.receiver != nil and e.receiver.kind == exkLit and
+     e.receiver.litKind in {lkInt, lkFloat}:
+    # `5.ms` the checker could not resolve — a sketch example applying a
+    # helper it never declared or imported (01-data-flow's `timeout: 5.ms`
+    # with no `import time`). A number has no fields, so emitting `5.ms` would
+    # be invalid in the target; degrade to the bare literal and let the walking
+    # skeleton still compile. A DECLARED helper never lands here: the checker
+    # stamps a call and `hasCall` above catches it.
+    return ctx.genExpr(e.receiver)
+  ctx.genExpr(e.receiver) & "." & e.fieldName
+
+proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =
+  ## An [io] call is a suspend point (the effect marker IS the async
+  ## annotation). Cooperative-yield first cut: yield so other tasks progress,
+  ## then perform the call. (Real fd-await lands with the async externs.)
+  let base = ctx.genConstruction(e)
+  if semLayer.isAsync(e) and ctx.inTask: "(tuckYield(); " & base & ")"
+  else: base
+
+proc genStruct(ctx: var CodegenCtx, e: Expr): string =
+  var parts: seq[string]
+  for f in e.fields: parts.add(f.name & ": " & ctx.genExpr(f.value))
+  "(" & parts.join(", ") & ")"
+
+proc genList(ctx: var CodegenCtx, e: Expr): string =
+  var items: seq[string]
+  for it in e.items: items.add(ctx.genExpr(it))
+  "@[" & items.join(", ") & "]"
+
+proc genCallResolved(ctx: var CodegenCtx, e: Expr): string =
+  ## Indexing resolved to an at() call; a type application never reaches
+  ## codegen, so an unresolved bracket emits nothing.
+  if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e)) else: ""
+
+proc loopVarNames(iter: Pattern): string =
+  ## The name(s) a `for` binds. Nim's `for a, b in xs` needs both spelled out.
+  if iter == nil: return "_"
+  if iter.kind == pkVar: return iter.name
+  if iter.kind != pkTuple: return "_"
+  var names: seq[string]
+  for el in iter.elems:
+    names.add(if el.kind == pkVar: el.name else: "_")
+  names.join(", ")
+
+proc genFor(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  let iterStr = loopVarNames(e.iter)
+  let iterable = ctx.genExpr(e.iterable)
+  ind & "for " & iterStr & " in " & iterable & ":\n" & ctx.genIndented(e.body)
+
+proc genWhile(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  let condStr = if e.whileCond == nil: "true" else: ctx.genExpr(e.whileCond)
+  ind & "while " & condStr & ":\n" & ctx.genIndented(e.whileBody)
+
+proc nimBinOp(op: BinOp): string =
+  ## Nim's `/` is ALWAYS float, even for int operands — that was bug B3.
+  ## Integer divide is the `div` keyword.
+  case op
+  of boAdd: "+"
+  of boSub: "-"
+  of boMul: "*"
+  of boDivInt: "div"
+  of boDivFloat: "/"
+  of boMod: "mod"
+  of boEq: "=="
+  of boNeq: "!="
+  of boLt: "<"
+  of boGt: ">"
+  of boLe: "<="
+  of boGe: ">="
+  of boAnd: "and"
+  of boOr: "or"
+  of boXor: "xor"
+  of boRangeIncl: ".."
+  of boRangeExcl: "..<"
+
+proc isStringConcat(e: Expr): bool =
+  ## `+` over strings is a runtime call, not an operator.
+  if e.binOp != boAdd or e.left == nil: return false
+  let lt = semLayer.typeFor(e.left)
+  lt != nil and lt.kind == tkNamed and lt.name in ["str", "string"]
+
+proc genBinary(ctx: var CodegenCtx, e: Expr): string =
+  if isStringConcat(e):
+    return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
+  "(" & ctx.genExpr(e.left) & " " & nimBinOp(e.binOp) & " " &
+    ctx.genExpr(e.right) & ")"
+
+proc genUnary(ctx: var CodegenCtx, e: Expr): string =
+  let opStr = case e.unaryOp
+              of uoNeg: "-"
+              of uoNot: "not "
+              else: ""
+  opStr & ctx.genExpr(e.operand)
+
+proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
+  ## continue/exit policy: a dropped result routes to the global handler.
+  ctx.tmpCounter.inc
+  let tn = "tuckDrop" & $ctx.tmpCounter
+  let site = semLayer.shortcut(s)
+  let onErr = if ctx.errPolicy == "exit":
+                "(tuck_unhandled(" & tn & ".err, \"" & site & "\"); quit(1))"
+              else:
+                "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
+  "(let " & tn & " = " & stmtCode & "; (if not " & tn & ".ok: " & onErr & "))"
+
+proc ownsItsLayout(s: Expr): bool =
+  ## Nodes that carry their own indentation.
+  s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile}
+
+proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
+  ## One statement of a block, indented unless it lays itself out.
+  var code = ctx.genExpr(s)
+  if code != "" and semLayer.shortcut(s) != "":
+    code = ctx.genDroppedResult(s, code)
+  if code == "": return ""
+  if ownsItsLayout(s): code else: ind & "  " & code
+
+proc genBlock(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## `if true:` not `block:` — a Nim `block` captures unlabeled `break`, which
+  ## must reach the enclosing loop instead. Scoping is identical.
+  let saved = ctx.indent
+  ctx.indent += 1
+  var lines: seq[string]
+  for s in e.stmts:
+    let code = ctx.genStmt(s, ind)
+    if code != "": lines.add(code)
+  ctx.indent = saved
+  if lines.len == 0: return ind & "discard"
+  ind & "if true:\n" & lines.join("\n")
+
+proc genUnindented(ctx: var CodegenCtx, e: Expr): string =
+  ## Emit an expression with no indentation — for a value position, where a
+  ## leading run of spaces would land in the middle of an expression.
+  let saved = ctx.indent
+  ctx.indent = 0
+  result = ctx.genExpr(e)
+  ctx.indent = saved
+
+proc genValueIf(ctx: var CodegenCtx, e: Expr, condStr: string): string =
+  ## R2: an if whose branches are single expressions (not blocks) IS a value.
+  ## Nim spells that `if c: a else: b` on one line; the indented statement form
+  ## would emit a nested block where an expression is expected.
+  "(if " & condStr & ": " & ctx.genUnindented(e.thenBranch) & " else: " &
+    ctx.genUnindented(e.elseBranch) & ")"
+
+proc genIf(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  let condStr = ctx.genExpr(e.cond)
+  if isValueIf(e): return ctx.genValueIf(e, condStr)
+  let thenStr = ctx.genIndented(e.thenBranch)
+  let elseStr = if e.elseBranch != nil:
+                  "\n" & ind & "else:\n" & ctx.genIndented(e.elseBranch)
+                else: ""
+  ind & "if " & condStr & ":\n" & thenStr & elseStr
+
+proc genRaise(ctx: var CodegenCtx, e: Expr): string =
+  ## `err X` — early-return an error result.
+  let rv = e.raiseVal
+  if isErrEnumRef(ctx.module, rv):
+    let name = errNameFor(ctx.module, ctx.moduleName, rv.receiver.writtenName,
+                          rv.fieldName)
+    return "return terr[" & ctx.retInnerNim & "](errCode(\"" & name & "\"))"
+  "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
+
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
-  # A concrete object entering an interface slot is COPIED into the variant
-  # (spec §5.3): `Animal(tag: Animal_is_Dog, DogVal: d)`. The backend generates
-  # the right copy for managed fields, and the value owns its data — so it can
-  # be returned, stored in a field, or collected with no lifetime question.
-  # Mutation through it hits the copy, which is the same rule records and actor
-  # messages already follow.
   let w = semLayer.wrapOf(e)
-  if w.objName != "":
+  if w.objName != "" and e.kind == exkVar:
     let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
-    # The wrapped expression is a variable (that is the only form the checker
-    # marks), so its name is emitted directly rather than re-entering genExpr,
-    # which would see the same mark and recurse forever.
-    if e.kind == exkVar:
-      return ifaceName & "(tag: " & ifaceName & "_is_" & objName & ", " &
-             objName & "Val: " & e.name & ")"
+    return genInterfaceWrap(e, ifaceName, objName)
   case e.kind
-  of exkLit:
-    case e.litKind
-    of lkStr: "\"" & e.litValue & "\""
-    else: e.litValue
-  of exkVar:
-    if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e))
-    elif e.name == "...": "discard"
-    elif e.name == "input" and ctx.currentParams.len > 0:
-      var parts: seq[string]
-      for p in ctx.currentParams: parts.add(p.name & ": " & p.name)
-      "(" & parts.join(", ") & ")"
-    elif e.name in ctx.fieldVars: "self." & e.name
-    else: e.name
-  of exkField:
-    if e.receiver != nil and e.receiver.kind == exkVar and
-       e.receiver.name == "input" and ctx.currentParams.len > 0:
-      return e.fieldName
-    # A call through an interface value: switch on the tag the value carries
-    # and call the concrete member fn. Which implementations are POSSIBLE was
-    # fixed at the wrap sites (the demand set); which one runs is the tag,
-    # read here at the call.
-    let ic = semLayer.ifaceCallOf(e)
-    if ic.member != "":
-      # Dispatch is a `case` on the tag calling the concrete member fn
-      # directly — no function table, no thunk, and the optimizer can see
-      # through it. Emitted as a Nim case EXPRESSION so it composes anywhere a
-      # value is expected.
-      let recv = ctx.genExpr(e.receiver)
-      var extra = ""
-      if e.dotArg != nil: extra = ", " & ctx.genExpr(e.dotArg)
-      var arms: seq[string]
-      for s in ctx.satisfiersOf(ic.iface):
-        # A member fn takes `self: var T`, so the branch binds a mutable copy
-        # of the payload rather than passing the field of an immutable value.
-        # Mutation hits that copy, which is the semantics: an interface value
-        # OWNS its data.
-        arms.add(ind & "  of " & ic.iface & "_is_" & s.name & ":\n" &
-                 ind & "    var tmp = " & recv & "." & s.name & "Val\n" &
-                 ind & "    " & ic.member & "(tmp" & extra & ")")
-      if arms.len == 0: return ""
-      return "(block:\n" & ind & "  case " & recv & ".tag\n" &
-             arms.join("\n") & ")"
-    if semLayer.hasCall(e):
-      ctx.genConstruction(semLayer.call(e))
-    elif e.receiver != nil and e.receiver.kind == exkVar and
-         ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil) != "":
-      # bare Type.Variant of a payload sum: kind-tagged construction
-      ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
-    elif e.receiver != nil and e.receiver.kind == exkVar and
-         ctx.isActorType(e.receiver.name):
-      # `ActorType.field` — an actor is a singleton; read its public field off
-      # the rt-owned instance (main's waitUntil predicates read state this way)
-      actorSingletonName(e.receiver.name) & "." & e.fieldName
-    elif e.receiver != nil and e.receiver.kind == exkLit and
-         e.receiver.litKind in {lkInt, lkFloat}:
-      # `5.ms` the checker could not resolve — a sketch example applying a
-      # helper it never declared or imported (01-data-flow's `timeout: 5.ms`
-      # with no `import time`). A number has no fields, so emitting `5.ms`
-      # would be invalid in the target; degrade to the bare literal and let
-      # the walking skeleton still compile. A DECLARED helper never lands
-      # here: the checker stamps a call and `hasCall` above catches it.
-      ctx.genExpr(e.receiver)
-    else:
-      ctx.genExpr(e.receiver) & "." & e.fieldName
-  of exkQualified:
-    genQualified(ctx, e)
-  of exkCall:
-    let base = ctx.genConstruction(e)
-    # An [io] call is a suspend point (the effect marker IS the async
-    # annotation). Cooperative-yield first cut: yield so other tasks progress,
-    # then perform the call. (Real fd-await lands with the async externs.)
-    if semLayer.isAsync(e) and ctx.inTask:
-      "(tuckYield(); " & base & ")"
-    else:
-      base
-  of exkStruct:
-    var parts: seq[string]
-    for f in e.fields:
-      parts.add(f.name & ": " & ctx.genExpr(f.value))
-    "(" & parts.join(", ") & ")"
-  of exkList:
-    var items: seq[string]
-    for it in e.items: items.add(ctx.genExpr(it))
-    "@[" & items.join(", ") & "]"
-  of exkBracket:
-    # indexing resolved to an at() call; a type application never reaches codegen
-    if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e)) else: ""
-  of exkBracketAssign:
-    if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e)) else: ""
-  of exkFor:
-    let iterStr =
-      if e.iter != nil and e.iter.kind == pkVar: e.iter.name
-      elif e.iter != nil and e.iter.kind == pkTuple:
-        var names: seq[string]
-        for el in e.iter.elems:
-          names.add(if el.kind == pkVar: el.name else: "_")
-        names.join(", ")
-      else: "_"
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    let bodyStr = ctx.genExpr(e.body)
-    ctx.indent = oldIndent
-    ind & "for " & iterStr & " in " & ctx.genExpr(e.iterable) & ":\n" & bodyStr
-  of exkWhile:
-    let condStr = if e.whileCond == nil: "true" else: ctx.genExpr(e.whileCond)
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    let bodyStr = ctx.genExpr(e.whileBody)
-    ctx.indent = oldIndent
-    ind & "while " & condStr & ":\n" & bodyStr
-  of exkBreak:
-    "break"
-  of exkContinue:
-    "continue"
-  of exkBinary:
-    let opStr = case e.binOp
-                of boAdd: "+"
-                of boSub: "-"
-                of boMul: "*"
-                # Nim's `/` is ALWAYS float, even for int operands — that was
-                # bug B3. Integer divide is the `div` keyword.
-                of boDivInt: "div"
-                of boDivFloat: "/"
-                of boMod: "mod"
-                of boEq: "=="
-                of boNeq: "!="
-                of boLt: "<"
-                of boGt: ">"
-                of boLe: "<="
-                of boGe: ">="
-                of boAnd: "and"
-                of boOr: "or"
-                of boXor: "xor"
-                of boRangeIncl: ".."
-                of boRangeExcl: "..<"
-    if e.binOp == boAdd and e.left != nil and semLayer.typeFor(e.left) != nil and
-       semLayer.typeFor(e.left).kind == tkNamed and semLayer.typeFor(e.left).name in ["str", "string"]:
-      return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
-    return "(" & ctx.genExpr(e.left) & " " & opStr & " " & ctx.genExpr(e.right) & ")"
-  of exkUnary:
-    let opStr = case e.unaryOp
-                of uoNeg: "-"
-                of uoNot: "not "
-                else: ""
-    opStr & ctx.genExpr(e.operand)
-  of exkBlock:
-    var lines: seq[string]
-    let oldIndent = ctx.indent
-    ctx.indent += 1
-    for s in e.stmts:
-      var stmtCode = ctx.genExpr(s)
-      if stmtCode != "" and semLayer.shortcut(s) != "":
-        # continue/exit policy: dropped result routes to the global handler
-        ctx.tmpCounter.inc
-        let tn = "tuckDrop" & $ctx.tmpCounter
-        let onErr = if ctx.errPolicy == "exit":
-                      "(tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) & "\"); quit(1))"
-                    else:
-                      "tuck_unhandled(" & tn & ".err, \"" & semLayer.shortcut(s) & "\")"
-        stmtCode = "(let " & tn & " = " & stmtCode & "; (if not " & tn &
-                   ".ok: " & onErr & "))"
-      if stmtCode != "":
-        if s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile}:
-          lines.add(stmtCode)  # these nodes carry their own indentation
-        else:
-          lines.add(ind & "  " & stmtCode)
-    ctx.indent = oldIndent
-    if lines.len == 0:
-      return ind & "discard"
-    # `if true:` not `block:` — a Nim `block` captures unlabeled `break`,
-    # which must reach the enclosing loop instead. Scoping is identical.
-    ind & "if true:\n" & lines.join("\n")
-  of exkIf:
-    let condStr = ctx.genExpr(e.cond)
-    # R2: an if whose branches are single expressions (not blocks) IS a value.
-    # Nim spells that `if c: a else: b` on one line; the indented statement
-    # form below would emit a nested block where an expression is expected.
-    if isValueIf(e):
-      let saved = ctx.indent
-      ctx.indent = 0
-      let t = ctx.genExpr(e.thenBranch)
-      let f = ctx.genExpr(e.elseBranch)
-      ctx.indent = saved
-      "(if " & condStr & ": " & t & " else: " & f & ")"
-    else:
-      let oldIndent = ctx.indent
-      ctx.indent += 1
-      let thenStr = ctx.genExpr(e.thenBranch)
-      let elseStr = if e.elseBranch != nil:
-                      let elseBodyStr = ctx.genExpr(e.elseBranch)
-                      "\n" & ind & "else:\n" & elseBodyStr
-                    else: ""
-      ctx.indent = oldIndent
-      ind & "if " & condStr & ":\n" & thenStr & elseStr
-  of exkAssign:
-    ctx.genExprAssign(e)
-  of exkMatch:
-    ctx.genExprMatch(e)
-  of exkReturn:
-    ctx.genReturn(e)
-  of exkRaise:
-    # err X — early-return an error result
-    let rv = e.raiseVal
-    if isErrEnumRef(ctx.module, rv):
-      "return terr[" & ctx.retInnerNim & "](errCode(\"" &
-        errNameFor(ctx.module, ctx.moduleName, rv.receiver.writtenName, rv.fieldName) & "\"))"
-    else:
-      "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
-  of exkChain:
-    ctx.genExprChain(e)
-  of exkSend:
-    ctx.genExprSend(e)
-  of exkSelect:
-    ctx.genExprSelect(e)
-  of exkImport:
-    # imports are declarations; they never reach expression position
-    ""
+  of exkLit: genLit(e)
+  of exkVar: ctx.genVar(e)
+  of exkField: ctx.genFieldAccess(e, ind)
+  of exkQualified: genQualified(ctx, e)
+  of exkCall: ctx.genCallExpr(e)
+  of exkStruct: ctx.genStruct(e)
+  of exkList: ctx.genList(e)
+  of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
+  of exkFor: ctx.genFor(e, ind)
+  of exkWhile: ctx.genWhile(e, ind)
+  of exkBreak: "break"
+  of exkContinue: "continue"
+  of exkBinary: ctx.genBinary(e)
+  of exkUnary: ctx.genUnary(e)
+  of exkBlock: ctx.genBlock(e, ind)
+  of exkIf: ctx.genIf(e, ind)
+  of exkAssign: ctx.genExprAssign(e)
+  of exkMatch: ctx.genExprMatch(e)
+  of exkReturn: ctx.genReturn(e)
+  of exkRaise: ctx.genRaise(e)
+  of exkChain: ctx.genExprChain(e)
+  of exkSend: ctx.genExprSend(e)
+  of exkSelect: ctx.genExprSelect(e)
+  of exkImport: ""  # imports are declarations, never expression position
 
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
   # `let r = {args} task` — a RESULT-bound task call: schedule the task with
