@@ -134,9 +134,17 @@ export typecheck_transitions
 # scope/resolve/fieldsOf now live in typecheck_state (both imported above).
 proc compatible(tc: TypeChecker, actual, expected: Type): bool
 
-const AnyMatchingNames = ["void", "unit", "Self", "fn"]
-  ## Names that match anything: the absence of a type, the receiver
-  ## placeholder, and the untyped callable.
+const AnyMatchingNames = ["void", "unit", "fn"]
+  ## Names that match anything: the absence of a type, and the untyped
+  ## callable.
+  ##
+  ## `Self` USED to be here and is not, because two real mechanisms already
+  ## handle it and this entry could only fire where they had missed — which
+  ## is precisely where a diagnostic is due. asInterfaceCall substitutes the
+  ## concrete receiver type for Self before checking (search `pt = selfT`),
+  ## and isSelfParam skips Self params in checkCallArgs, since the receiver
+  ## comes from the call site rather than the payload. Removing it cost
+  ## nothing: the full gate stayed green.
 
 proc matchesAnything(t: Type): bool =
   ## Does this type accept any counterpart?
@@ -173,7 +181,9 @@ proc nominalCompatible(tc: TypeChecker, a, e: Type): bool =
   ## (spec 2.5) is the whole point for them.
   if a.name == e.name: return true
   if a.name in tc.distinctNames or e.name in tc.distinctNames: return false
-  if isNumeric(a) and isNumeric(e): return true  # loose widening for primitives
+  if isNumeric(a) and isNumeric(e):
+    when defined(strictNumeric): return false     # measure the widening
+    else: return true                             # loose widening for primitives
   let ra = tc.resolve(a)
   let re = tc.resolve(e)
   if ra != nil and re != nil and (ra.kind == tkSum or re.kind == tkSum):
@@ -220,8 +230,18 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
   ## May a value of `actual` flow where `expected` is wanted?
   var a, e: Type
   if not unwrapForCompare(actual, expected, a, e): return false
-  if isUnknown(a) or isUnknown(e): return true
-  if matchesAnything(e) or matchesAnything(a): return true
+  # Unknown is compatible with everything, which makes every Unknown a check
+  # that silently passes. MEASURED (2026-08-07): building with this returning
+  # `false` instead turns 7 of the 43 examples red — an untyped value reaching
+  # a sum type, and three fns whose body the checker cannot type at all
+  # satisfying a declared `-> bool` or `-> !{value: u16}`. Each is a real gap
+  # this line is hiding, not a false positive. See fuzz/README.md.
+  if isUnknown(a) or isUnknown(e):
+    when defined(strictUnknown): return false
+    else: return true
+  if matchesAnything(e) or matchesAnything(a):
+    when defined(strictAny): return false
+    else: return true
   if a.kind == tkNamed and e.kind == tkNamed:
     return tc.nominalCompatible(a, e)
   if a.kind == tkFunc and e.kind == tkNamed and tc.fnSigs.hasKey(e.name):
@@ -232,7 +252,8 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
   if a.kind == tkApp and e.kind == tkApp:
     return tc.appCompatible(a, e)
   # Sum types and the rest: nominal only, handled above; unknown shapes pass
-  a.kind == e.kind
+  when defined(strictKind): false   # measure the same-kind fallthrough
+  else: a.kind == e.kind
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type
 proc synthBracket(tc: var TypeChecker, e: Expr): Type
