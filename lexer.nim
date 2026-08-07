@@ -181,6 +181,33 @@ proc reportError*(L: Lexer, message: string, line: int, col: int) =
   err.stage = "Lexical Error"
   raise err
 
+proc describe*(kind: TokenKind, value = ""): string =
+  ## How a token reads in a DIAGNOSTIC — the way the user wrote it, not the
+  ## enum the compiler calls it.
+  ##
+  ## "Expected expression but got: tkPipe" tells a user nothing: `tkPipe` is
+  ## not in the language, `|` is. Layout tokens have no spelling at all, so
+  ## they are described by what they MEAN — an indent is "the start of an
+  ## indented block", which is what the user has to change.
+  case kind
+  of tkIndent: "the start of an indented block"
+  of tkDedent: "the end of an indented block"
+  of tkNewline: "the end of the line"
+  of tkEOF: "the end of the file"
+  of tkIdent: (if value.len > 0: "`" & value & "`" else: "a name")
+  of tkIntLit, tkFloatLit: (if value.len > 0: "`" & value & "`"
+                            else: "a number")
+  of tkStrLit: "a string"
+  of tkAttr: (if value.len > 0: "the attribute `" & value & "`"
+              else: "an attribute")
+  else:
+    # Everything else is punctuation or a keyword, and the lexer kept the
+    # exact source text on the token.
+    if value.len > 0: "`" & value & "`" else: "`" & ($kind)[2 .. ^1] & "`"
+
+proc describe*(t: Token): string =
+  describe(t.kind, t.value)
+
 proc peek*(L: Lexer, offset = 0): char =
   if L.position + offset < L.source.len:
     L.source[L.position + offset]

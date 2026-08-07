@@ -186,7 +186,7 @@ proc parsePrimaryExpr(p: var Parser): Expr =
     discard p.expect(tkRParen)
     return inner
   else:
-    p.reportError("Expected expression but got: " & $curr.kind)
+    p.reportError("Expected an expression here, found " & describe(curr))
 
 # Type.Variant [unsafe] — deserialization escape hatch for sealed construction
 # (spec 4.4). Consumes the marker and reports whether it was present.

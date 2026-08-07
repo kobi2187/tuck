@@ -60,7 +60,9 @@ proc reportError*(p: Parser, msg: string, line = -1, col = -1) =
 
 proc expect*(p: var Parser, kind: TokenKind, msg = ""): Token =
   if p.current().kind != kind:
-    let errMsg = if msg.len > 0: msg else: "Expected token '" & $kind & "' but got '" & $p.current().kind & "' with value '" & p.current().value & "'"
+    let errMsg = if msg.len > 0: msg
+                 else: "Expected " & describe(kind) & " here, found " &
+                       describe(p.current())
     p.reportError(errMsg)
   result = p.advance()
 
