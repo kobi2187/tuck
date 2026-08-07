@@ -250,101 +250,144 @@ proc bracketIsTight(p: Parser): bool =
   let br = p.current()
   br.line == prev.line and br.column == prev.column + prev.value.len
 
+const NonCallIdents = ["or", "and", "in", "invariant", "transitions"]
+  ## Idents that continue an ENCLOSING construct rather than calling the
+  ## expression to their left, so a chain must stop before them.
+
+const ParenBuiltins = ["sizeof", "alignof", "offsetof"]
+  ## Compile-time builtins (spec 8.2) keep parens; everything else is postfix.
+
+proc chainField(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## `.name`, and `.fn {args}` — the method form, where the receiver is the
+  ## fn's first parameter and the braced struct fills the rest.
+  discard p.advance()
+  let fieldName = p.expectMemberName("Expected field name after '.'").value
+  result = Expr(span: sp, kind: exkField, receiver: expr, fieldName: fieldName)
+  if p.tryUnsafeMarker(): result.ctorUnsafe = true
+  if p.current().kind == tkLBrace: result.dotArg = p.parsePrimaryExpr()
+
+proc chainMutation(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## `..name {value}` — a builder step. Steps accumulate on ONE chain node,
+  ## because every `..` in the chain mutates the same base var.
+  discard p.advance()
+  let fieldName = p.expect(tkIdent,
+                           "Expected builder field name after '..'").value
+  var arg: Expr = nil
+  if p.current().kind == tkLBrace: arg = p.parsePrimaryExpr()
+  let step = ChainStep(op: coDotDot, arg: arg, span: sp,
+                       target: Expr(span: sp, kind: exkVar, name: fieldName))
+  if expr.kind == exkChain:
+    expr.steps.add(step)
+    return expr
+  Expr(span: sp, kind: exkChain, base: expr, steps: @[step])
+
+proc chainQualified(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## `module::name`.
+  discard p.advance()
+  let name = p.expect(tkIdent, "Expected identifier after '::'").value
+  let moduleName = if expr.kind == exkVar: expr.name else: ""
+  Expr(span: sp, kind: exkQualified, modulePath: @[moduleName], qualName: name)
+
+proc skipEffectAnnotation(p: var Parser) =
+  ## A trailing bare-marker bracket on a call — `uart.flush {buf} [io]`. An
+  ## effect ANNOTATION on the statement, not part of the expression, so it is
+  ## consumed and dropped rather than ending the chain. Only a reserved marker
+  ## qualifies; `xs [1, 2]` is still a separate list literal, and `xs[i]` is
+  ## still indexing.
+  discard p.advance()  # [
+  discard p.advance()  # marker
+  discard p.advance()  # ]
+
+proc parseCommaList(p: var Parser, closer: TokenKind): seq[Expr] =
+  ## Comma-separated expressions up to `closer`, which is consumed.
+  while p.current().kind != closer and p.current().kind != tkEOF:
+    result.add(p.parseExpr())
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(closer)
+
+proc chainBracket(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## `recv[a, b, ...]` — the argument sits after the callee, like every other
+  ## postfix continuation. One arg on a value is an index; a declared type
+  ## receiver is a type application. The checker decides; chaining
+  ## (`grid[i][j]`) falls out of the loop.
+  discard p.advance()
+  Expr(span: sp, kind: exkBracket, brReceiver: expr,
+       brArgs: p.parseCommaList(tkRBracket))
+
+proc chainBake(p: var Parser, expr: Expr, sp: Span): Expr =
+  discard p.advance()
+  let arg = p.parsePrimaryExpr()
+  Expr(span: sp, kind: exkCall, args: @[expr, arg],
+       callee: Expr(span: sp, kind: exkVar, name: "bake"))
+
+proc chainBuiltinCall(p: var Parser, expr: Expr, sp: Span): Expr =
+  discard p.advance()
+  Expr(span: sp, kind: exkCall, callee: expr,
+       args: p.parseCommaList(tkRParen))
+
+proc chainSend(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## `ActorType send handler {payload}` — a direct send to an actor
+  ## singleton. The brace is the handler's message payload, optional for a
+  ## no-arg `on`.
+  discard p.advance()                    # eat `send`
+  let handler = p.expectMemberName("Expected handler name after 'send'").value
+  var payload: Expr = nil
+  if p.current().kind == tkLBrace: payload = p.parsePrimaryExpr()
+  Expr(span: sp, kind: exkSend, sendActor: expr.name, sendHandler: handler,
+       sendPayload: payload)
+
+proc isSendStep(p: Parser, expr: Expr): bool =
+  p.current().kind == tkIdent and p.current().value == "send" and
+    expr.kind == exkVar and p.peek().kind == tkIdent
+
+proc isAliasStep(p: Parser): bool =
+  p.current().kind == tkIdent and p.current().value == "alias" and
+    p.peek().kind == tkLParen
+
+proc isBuiltinCall(p: Parser, expr: Expr): bool =
+  p.current().kind == tkLParen and expr.kind == exkVar and
+    expr.name in ParenBuiltins
+
+proc isEffectAnnotation(p: Parser): bool =
+  p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
+    p.peek(2).kind == tkRBracket
+
+proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
+  ## One postfix continuation. `done` is set when nothing continues the chain,
+  ## which is what ends the loop.
+  done = false
+  case p.current().kind
+  of tkDot: return p.chainField(expr, sp)
+  of tkDotDot: return p.chainMutation(expr, sp)
+  of tkColonColon: return p.chainQualified(expr, sp)
+  of tkBake: return p.chainBake(expr, sp)
+  of tkLBrace: return Expr(span: sp, kind: exkCall, callee: expr,
+                           args: @[p.parsePrimaryExpr()])
+  of tkLBracket:
+    if p.isEffectAnnotation():
+      p.skipEffectAnnotation()
+      return expr
+    if p.bracketIsTight(): return p.chainBracket(expr, sp)
+  of tkLParen:
+    if p.isBuiltinCall(expr): return p.chainBuiltinCall(expr, sp)
+    p.reportError("Function calls are postfix in Tuck: write {payload} " &
+                  "fnName, not fnName(args)")
+  of tkIdent:
+    if p.isSendStep(expr): return p.chainSend(expr, sp)
+    if p.isAliasStep(): return p.parseAliasStep(expr)
+    if p.current().value notin NonCallIdents:
+      return p.parsePostfixCall(expr, sp)
+  else: discard
+  done = true
+  expr
+
 proc parseChainExpr(p: var Parser): Expr =
-  var expr = p.parsePrimaryExpr()
-  
-  while true:
-    let sp = p.getSpan()
-    if p.current().kind == tkDot:
-      discard p.advance()
-      let fieldName = p.expectMemberName("Expected field name after '.'").value
-      expr = Expr(span: sp, kind: exkField, receiver: expr, fieldName: fieldName)
-      if p.tryUnsafeMarker():
-        expr.ctorUnsafe = true
-      # `.fn {args}` — method form: receiver is the fn's first parameter,
-      # the braced struct fills the remaining parameters
-      if p.current().kind == tkLBrace:
-        expr.dotArg = p.parsePrimaryExpr()
-    elif p.current().kind == tkDotDot:
-      discard p.advance()
-      let fieldName = p.expect(tkIdent, "Expected builder field name after '..'").value
-      var arg: Expr = nil
-      if p.current().kind == tkLBrace:
-        arg = p.parsePrimaryExpr()
-      let step = ChainStep(op: coDotDot, target: Expr(span: sp, kind: exkVar, name: fieldName), arg: arg, span: sp)
-      # steps accumulate on ONE chain node — every `..` in the chain mutates
-      # the same base var
-      if expr.kind == exkChain:
-        expr.steps.add(step)
-      else:
-        expr = Expr(span: sp, kind: exkChain, base: expr, steps: @[step])
-    elif p.current().kind == tkColonColon:
-      discard p.advance()
-      let name = p.expect(tkIdent, "Expected identifier after '::'").value
-      let moduleName = if expr.kind == exkVar: expr.name else: ""
-      expr = Expr(span: sp, kind: exkQualified, modulePath: @[moduleName], qualName: name)
-    elif p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
-         p.peek(2).kind == tkRBracket:
-      # A trailing bare-marker bracket on a call — `uart.flush {buf} [io]`.
-      # An effect ANNOTATION on the statement, not part of the expression, so
-      # it is consumed and dropped here rather than ending the chain. Only a
-      # reserved marker qualifies; `xs [1, 2]` is still a separate list
-      # literal, and `xs[i]` is still indexing (handled tight, below).
-      discard p.advance()  # [
-      discard p.advance()  # marker
-      discard p.advance()  # ]
-    elif p.current().kind == tkLBracket and p.bracketIsTight():
-      # `recv[a, b, ...]` — the argument sits after the callee, like every
-      # other postfix continuation here. One arg on a value is an index; a
-      # declared type receiver is a type application. The checker decides;
-      # chaining (`grid[i][j]`) falls out of this loop.
-      discard p.advance()
-      var brArgs: seq[Expr]
-      while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-        brArgs.add(p.parseExpr())
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRBracket)
-      expr = Expr(span: sp, kind: exkBracket, brReceiver: expr, brArgs: brArgs)
-    elif p.current().kind == tkBake:
-      discard p.advance()
-      let arg = p.parsePrimaryExpr()
-      let calleeExpr = Expr(span: sp, kind: exkVar, name: "bake")
-      expr = Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr, arg])
-    elif p.current().kind == tkLParen and expr.kind == exkVar and
-         expr.name in ["sizeof", "alignof", "offsetof"]:
-      # Compile-time builtins (spec 8.2) keep parens; everything else is postfix
-      discard p.advance()
-      var args: seq[Expr]
-      while p.current().kind != tkRParen and p.current().kind != tkEOF:
-        args.add(p.parseExpr())
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRParen)
-      expr = Expr(span: sp, kind: exkCall, callee: expr, args: args)
-    elif p.current().kind == tkLParen:
-      p.reportError("Function calls are postfix in Tuck: write {payload} fnName, not fnName(args)")
-    elif p.current().kind == tkLBrace:
-      let arg = p.parsePrimaryExpr()
-      expr = Expr(span: sp, kind: exkCall, callee: expr, args: @[arg])
-    elif p.current().kind == tkIdent and p.current().value == "send" and
-         expr.kind == exkVar and p.peek().kind == tkIdent:
-      # `ActorType send handler {payload}` — direct send to an actor singleton.
-      # The brace is the handler's message payload (optional for a no-arg on).
-      discard p.advance()                    # eat `send`
-      let handler = p.expectMemberName("Expected handler name after 'send'").value
-      var payload: Expr = nil
-      if p.current().kind == tkLBrace:
-        payload = p.parsePrimaryExpr()
-      expr = Expr(span: sp, kind: exkSend, sendActor: expr.name,
-                  sendHandler: handler, sendPayload: payload)
-    elif p.current().kind == tkIdent and p.current().value == "alias" and p.peek().kind == tkLParen:
-      expr = p.parseAliasStep(expr)
-    elif p.current().kind == tkIdent and not (p.current().value in ["or", "and", "in", "invariant", "transitions"]):
-      expr = p.parsePostfixCall(expr, sp)
-    else:
-      break
-  return expr
+  ## A primary expression followed by any number of postfix continuations —
+  ## field access, builder mutation, indexing, a call, a send.
+  result = p.parsePrimaryExpr()
+  var done = false
+  while not done:
+    result = p.chainStep(result, p.getSpan(), done)
 
 proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
   var left = p.parseChainExpr()
@@ -431,111 +474,120 @@ proc parseSelectExpr(p: var Parser): Expr =
   discard p.expect(tkDedent)
   return Expr(span: sp, kind: exkSelect, selArms: arms)
 
+proc parseBinding(p: var Parser, sp: Span, mutable: bool): Expr =
+  ## `let name = value` / `var name = value`.
+  discard p.advance()
+  let name = p.expect(tkIdent, "Expected variable name").value
+  discard p.expect(tkAssign)
+  Expr(span: sp, kind: exkAssign, assignVal: p.parseExpr(), isDecl: true,
+       isMutable: mutable, target: Expr(span: sp, kind: exkVar, name: name))
+
+proc parseElseBranch(p: var Parser): Expr =
+  ## `elif C: B` is sugar for `else: (if C: B)` — the nested if lands in
+  ## elseBranch, so nothing downstream (checker, codegen) needs to know it was
+  ## written as an elif. Recursion handles chains of any length plus a
+  ## trailing `else`.
+  if p.current().kind == tkElif: return p.parseExpr()
+  if p.current().kind != tkElse: return nil
+  discard p.advance()
+  discard p.expect(tkColon)
+  p.parseBlock()
+
+proc parseIfExpr(p: var Parser, sp: Span): Expr =
+  discard p.advance()
+  let cond = p.parseExpr()
+  discard p.expect(tkColon)
+  let thenBranch = p.parseBlock()
+  Expr(span: sp, kind: exkIf, cond: cond, thenBranch: thenBranch,
+       elseBranch: p.parseElseBranch())
+
+proc parseReturnExpr(p: var Parser, sp: Span): Expr =
+  ## A bare `return` ends the line; anything else is the returned value.
+  discard p.advance()
+  let val = if p.current().kind in {tkNewline, tkDedent}: nil
+            else: p.parseExpr()
+  Expr(span: sp, kind: exkReturn, returnVal: val)
+
+proc parseMatchArm(p: var Parser): MatchArm =
+  ## `| Pat -> body` and `Pat: body` are the same arm. The arrow form matches
+  ## decision tables and select arms, so one shape reads across every
+  ## construct that dispatches on a pattern.
+  let arrowForm = p.current().kind == tkPipe
+  if arrowForm: discard p.advance()
+  let pat = p.parsePattern()
+  if arrowForm: discard p.expect(tkArrow) else: discard p.expect(tkColon)
+  # arm body: a single expression on the same line, or an indented block
+  let body = if p.current().kind == tkNewline: p.parseBlock()
+             else: p.parseExpr()
+  result = MatchArm(pattern: pat, guard: nil, body: body, span: p.getSpan())
+  if p.current().kind == tkNewline: discard p.advance()
+
+proc parseMatchExpr(p: var Parser, sp: Span): Expr =
+  discard p.advance()
+  let subject = p.parseExpr()
+  discard p.expect(tkColon)
+  discard p.expect(tkNewline)
+  var arms: seq[MatchArm]
+  p.indentedBlock:
+    arms.add(p.parseMatchArm())
+  Expr(span: sp, kind: exkMatch, subject: subject, arms: arms)
+
+proc isIterationForm(p: Parser): bool =
+  ## `for` iterates iff the lookahead is `ident in` or `ident, ident in`;
+  ## anything else after `for` is a while-style condition expression.
+  p.current().kind == tkIdent and
+    (p.peek(1).kind == tkIn or
+     (p.peek(1).kind == tkComma and p.peek(2).kind == tkIdent and
+      p.peek(3).kind == tkIn))
+
+proc parseLoopVars(p: var Parser): Pattern =
+  ## One binding, or `idx, item` as a tuple pattern.
+  let first = p.parsePattern()
+  if p.current().kind != tkComma: return first
+  discard p.advance()
+  let second = p.parsePattern()
+  Pattern(span: first.span, kind: pkTuple, elems: @[first, second])
+
+proc parseForExpr(p: var Parser, sp: Span): Expr =
+  discard p.advance()
+  if not p.isIterationForm():
+    let cond = p.parseExpr()
+    discard p.expect(tkColon)
+    return Expr(span: sp, kind: exkWhile, whileCond: cond,
+                whileBody: p.parseBlock())
+  let iter = p.parseLoopVars()
+  discard p.expect(tkIn)
+  let iterable = p.parseExpr()
+  discard p.expect(tkColon)
+  Expr(span: sp, kind: exkFor, iter: iter, iterable: iterable,
+       body: p.parseBlock())
+
+proc parseLoopExpr(p: var Parser, sp: Span): Expr =
+  ## `loop:` — a while with no condition.
+  discard p.advance()
+  discard p.expect(tkColon)
+  Expr(span: sp, kind: exkWhile, whileCond: nil, whileBody: p.parseBlock())
+
 proc parseExpr*(p: var Parser): Expr =
   let sp = p.getSpan()
   let curr = p.current()
   if curr.kind == tkOn and p.peek().kind == tkSelect:
     return p.parseSelectExpr()
 
-  if curr.kind == tkLet or curr.kind == tkVar:
-    let mutable = curr.kind == tkVar
-    discard p.advance()
-    let name = p.expect(tkIdent, "Expected variable name").value
-    discard p.expect(tkAssign)
-    let valExpr = p.parseExpr()
-    let target = Expr(span: sp, kind: exkVar, name: name)
-    return Expr(span: sp, kind: exkAssign, target: target, assignVal: valExpr,
-                isDecl: true, isMutable: mutable)
-
-  if curr.kind == tkIf or curr.kind == tkElif:
-    # `elif C: B` is sugar for `else: (if C: B)` — the nested if lands in
-    # elseBranch, so nothing downstream (checker, codegen) needs to know it
-    # was written as an elif. Recursion handles chains of any length plus a
-    # trailing `else`.
-    discard p.advance()
-    let cond = p.parseExpr()
-    discard p.expect(tkColon)
-    let thenBranch = p.parseBlock()
-    var elseBranch: Expr
-    if p.current().kind == tkElif:
-      elseBranch = p.parseExpr()      # re-enters here on the tkElif branch
-    elif p.current().kind == tkElse:
-      discard p.advance()
-      discard p.expect(tkColon)
-      elseBranch = p.parseBlock()
-    return Expr(span: sp, kind: exkIf, cond: cond, thenBranch: thenBranch, elseBranch: elseBranch)
-    
-  elif curr.kind == tkReturn:
-    discard p.advance()
-    let val = if p.current().kind == tkNewline or p.current().kind == tkDedent: nil else: p.parseExpr()
-    return Expr(span: sp, kind: exkReturn, returnVal: val)
-
-  elif curr.kind == tkMatch:
-    discard p.advance()
-    let subject = p.parseExpr()
-    discard p.expect(tkColon)
-    discard p.expect(tkNewline)
-    discard p.expect(tkIndent)
-    var arms: seq[MatchArm]
-    while p.current().kind != tkDedent and p.current().kind != tkEOF:
-      if p.current().kind == tkNewline:
-        discard p.advance()
-        continue
-      # `| Pat -> body` and `Pat: body` are the same arm. The arrow form
-      # matches decision tables and select arms, so one shape reads across
-      # every construct that dispatches on a pattern.
-      let arrowForm = p.current().kind == tkPipe
-      if arrowForm: discard p.advance()
-      let pat = p.parsePattern()
-      if arrowForm: discard p.expect(tkArrow)
-      else: discard p.expect(tkColon)
-      # arm body: a single expression on the same line, or an indented block
-      let body = if p.current().kind == tkNewline: p.parseBlock()
-                 else: p.parseExpr()
-      arms.add(MatchArm(pattern: pat, guard: nil, body: body, span: p.getSpan()))
-      if p.current().kind == tkNewline:
-        discard p.advance()
-    discard p.expect(tkDedent)
-    return Expr(span: sp, kind: exkMatch, subject: subject, arms: arms)
-
-  elif curr.kind == tkFor:
-    discard p.advance()
-    # iteration form iff lookahead is `ident in` or `ident , ident in`;
-    # anything else after `for` is a while-style condition expression
-    let isIter = p.current().kind == tkIdent and
-      (p.peek(1).kind == tkIn or
-       (p.peek(1).kind == tkComma and p.peek(2).kind == tkIdent and
-        p.peek(3).kind == tkIn))
-    if isIter:
-      var iter = p.parsePattern()
-      if p.current().kind == tkComma:
-        discard p.advance()
-        let second = p.parsePattern()
-        iter = Pattern(span: iter.span, kind: pkTuple, elems: @[iter, second])
-      discard p.expect(tkIn)
-      let iterable = p.parseExpr()
-      discard p.expect(tkColon)
-      let body = p.parseBlock()
-      return Expr(span: sp, kind: exkFor, iter: iter, iterable: iterable, body: body)
-    else:
-      let cond = p.parseExpr()
-      discard p.expect(tkColon)
-      let body = p.parseBlock()
-      return Expr(span: sp, kind: exkWhile, whileCond: cond, whileBody: body)
-
-  elif curr.kind == tkLoop:
-    discard p.advance()
-    discard p.expect(tkColon)
-    let body = p.parseBlock()
-    return Expr(span: sp, kind: exkWhile, whileCond: nil, whileBody: body)
-
-  elif curr.kind == tkBreak:
+  case curr.kind
+  of tkLet, tkVar: return p.parseBinding(sp, mutable = curr.kind == tkVar)
+  of tkIf, tkElif: return p.parseIfExpr(sp)
+  of tkReturn: return p.parseReturnExpr(sp)
+  of tkMatch: return p.parseMatchExpr(sp)
+  of tkFor: return p.parseForExpr(sp)
+  of tkLoop: return p.parseLoopExpr(sp)
+  of tkBreak:
     discard p.advance()
     return Expr(span: sp, kind: exkBreak)
-
-  elif curr.kind == tkContinue:
+  of tkContinue:
     discard p.advance()
     return Expr(span: sp, kind: exkContinue)
+  else: discard
 
   let left = p.parseBinaryExpr(-2)
   # `=` and the compound forms differ only in the operator folded into the
