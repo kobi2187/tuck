@@ -22,14 +22,20 @@ cd "$(dirname "$0")/.."
 
 run_hatch() {
   printf '=== %s ===\n' "$1"
-  if ! nim c --hints:off --warnings:off -d:"$1" -o:/tmp/tuck_$1 tuck.nim 2>/dev/null
+  # The binary MUST live in the project directory. Built to /tmp it cannot
+  # resolve `import io` — modules.nim looks for std/ relative to the binary —
+  # so every example importing the stdlib fails for a reason that has nothing
+  # to do with the hatch under test. That mistake inflated the first run of
+  # this script from 3 failures to 18.
+  if ! nim c --hints:off --warnings:off -d:"$1" -o:"./tuck_$1" tuck.nim 2>/dev/null
   then
     printf '  BUILD FAILED\n\n'
     return
   fi
   for f in examples/*.tuck; do
-    /tmp/tuck_$1 ch "$f" >/dev/null 2>&1 || printf '  %s\n' "$(basename "$f")"
+    "./tuck_$1" ch "$f" >/dev/null 2>&1 || printf '  %s\n' "$(basename "$f")"
   done
+  rm -f "./tuck_$1"
   printf '\n'
 }
 
