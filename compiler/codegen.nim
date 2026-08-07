@@ -363,36 +363,88 @@ proc bangInfo(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
 # generic instantiation and invariant validation, the other about qualified
 # callees and the by-type argument mapping. Fixing "the" bug in the wrong twin
 # was easy and silent, so they are one proc now.
+proc genericCtorName(ctx: var CodegenCtx, e: Expr, base: string): string =
+  ## A generic type: the checker's ty stamp carries the inferred instantiation.
+  let t = semLayer.typeFor(e)
+  if t == nil or t.kind != tkApp or t.base == nil or
+     t.base.kind != tkNamed or t.base.name != base: return base
+  var gparts: seq[string]
+  for a in t.args: gparts.add(genType(a))
+  base & "[" & gparts.join(", ") & "]"
+
+proc isRecordConstruction(ctx: var CodegenCtx, e: Expr): bool =
+  e.args.len == 1 and e.args[0].kind == exkStruct and
+    e.callee != nil and e.callee.kind == exkVar and
+    ctx.isRecordTypeFast(e.callee.name)
+
+proc genRecordCtor(ctx: var CodegenCtx, e: Expr): string =
+  ## Record construction takes NAMED fields, not positional.
+  var parts: seq[string]
+  for f in e.args[0].fields:
+    parts.add(f.name & ": " & ctx.genExpr(f.value))
+  let ctor = ctx.genericCtorName(e, e.callee.name) & "(" & parts.join(", ") & ")"
+  if not ctx.hasInvariantsFast(e.callee.name): return ctor
+  # production site: construction — validate before the value flows on
+  ctx.tmpCounter.inc
+  let tmp = "tuckInv" & $ctx.tmpCounter
+  "(let " & tmp & " = " & ctor & "; validate(" & tmp & "); " & tmp & ")"
+
+proc asSumVariantCall(ctx: var CodegenCtx, e: Expr): string =
+  ## `Type.Variant {payload}` — a kind-tagged construction, not a call.
+  if e.callee == nil or e.callee.kind != exkField or
+     e.callee.receiver == nil or e.callee.receiver.kind != exkVar: return ""
+  let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
+                else: nil
+  ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
+
+proc expectedParamNames(ctx: var CodegenCtx, e: Expr,
+                        calleeStr: string): seq[string] =
+  ## Param order lives with the fn, not with the literal, so the payload's
+  ## fields are matched to params rather than taken positionally.
+  ##
+  ## Three sources, in order: a QUALIFIED callee's params live in the other
+  ## module and must be looked up there; otherwise the checker's own
+  ## resolution (semLayer.callParamsFor, set in checkCallArgs) answers in
+  ## O(1); the decl-list scan is the last resort for calls the checker left
+  ## unresolved, and is a scan per call expression, so it must stay last.
+  if e.callee != nil and e.callee.kind == exkQualified and
+     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
+    return lookupFnParams(ctx.realModules[e.callee.modulePath[0]],
+                          e.callee.qualName)
+  if semLayer.callParamsFor(e).len > 0: return semLayer.callParamsFor(e)
+  lookupFnParams(ctx.module, calleeStr)
+
+proc payloadFieldArg(ctx: var CodegenCtx, payload: Expr,
+                     fieldName: string): string =
+  ## The value supplied for one param, or nil when the payload lacks it.
+  for f in payload.fields:
+    if f.name == fieldName: return ctx.genExpr(f.value)
+  "nil"
+
+proc genPayloadArgs(ctx: var CodegenCtx, e: Expr,
+                    calleeStr: string): seq[string] =
+  ## A payload's fields, ordered to match the callee's params.
+  let expected = ctx.expectedParamNames(e, calleeStr)
+  if expected.len == 0:
+    for f in e.args[0].fields: result.add(ctx.genExpr(f.value))
+    return
+  # The checker's mapping wins: it matches by name first and then by type, so
+  # a field may feed a param it shares no name with.
+  let resolved = semLayer.argFieldsFor(e)
+  for i, paramName in expected:
+    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                    else: paramName
+    result.add(ctx.payloadFieldArg(e.args[0], fieldName))
+
+proc genCallArgs(ctx: var CodegenCtx, e: Expr, calleeStr: string): seq[string] =
+  if e.args.len == 1 and e.args[0].kind == exkStruct:
+    return ctx.genPayloadArgs(e, calleeStr)
+  for a in e.args: result.add(ctx.genExpr(a))
+
 proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
-  var args: seq[string]
-  if e.args.len == 1 and e.args[0].kind == exkStruct and
-     e.callee != nil and e.callee.kind == exkVar and
-     ctx.isRecordTypeFast(e.callee.name):
-    # record construction: named fields, not positional
-    var parts: seq[string]
-    for field in e.args[0].fields:
-      parts.add(field[0] & ": " & ctx.genExpr(field[1]))
-    # generic type: the checker's ty stamp carries the inferred instantiation
-    var ctorName = e.callee.name
-    if semLayer.typeFor(e) != nil and semLayer.typeFor(e).kind == tkApp and semLayer.typeFor(e).base != nil and
-       semLayer.typeFor(e).base.kind == tkNamed and semLayer.typeFor(e).base.name == e.callee.name:
-      var gparts: seq[string]
-      for a in semLayer.typeFor(e).args: gparts.add(genType(a))
-      ctorName &= "[" & gparts.join(", ") & "]"
-    let ctor = ctorName & "(" & parts.join(", ") & ")"
-    if ctx.hasInvariantsFast(e.callee.name):
-      # production site: construction — validate before the value flows on
-      ctx.tmpCounter.inc
-      let tmp = "tuckInv" & $ctx.tmpCounter
-      return "(let " & tmp & " = " & ctor & "; validate(" & tmp & "); " & tmp & ")"
-    return ctor
-  if e.callee != nil and e.callee.kind == exkField and
-     e.callee.receiver != nil and e.callee.receiver.kind == exkVar:
-    let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
-                  else: nil
-    let ctor = ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName,
-                                   payload)
-    if ctor != "": return ctor
+  if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
+  let variant = ctx.asSumVariantCall(e)
+  if variant != "": return variant
   let calleeStr = ctx.genExpr(e.callee)
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genAlias(e)
@@ -403,43 +455,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if calleeStr notin ["bake", "alias"]:
     let exploded = ctx.explodeRecordArg(e, calleeStr)
     if exploded != "": return exploded
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    # Param order lives with the fn, not with the literal, so the payload's
-    # fields are matched to params rather than taken positionally.
-    #
-    # Three sources, in order: a QUALIFIED callee's params live in the other
-    # module and must be looked up there; otherwise the checker's own
-    # resolution (semLayer.callParamsFor, set in checkCallArgs) answers in O(1); the
-    # decl-list scan is the last resort for calls the checker left unresolved,
-    # and is a scan per call expression, so it must stay last.
-    let expectedParams =
-      if e.callee != nil and e.callee.kind == exkQualified and
-         e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
-        lookupFnParams(ctx.realModules[e.callee.modulePath[0]], e.callee.qualName)
-      elif semLayer.callParamsFor(e).len > 0:
-        semLayer.callParamsFor(e)
-      else:
-        lookupFnParams(ctx.module, calleeStr)
-    if expectedParams.len > 0:
-      let resolved = semLayer.argFieldsFor(e)
-      for i, paramName in expectedParams:
-        # The checker's mapping wins: it matches by name first and then by
-        # type, so a field may feed a param it shares no name with.
-        let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                        else: paramName
-        var found = false
-        for field in e.args[0].fields:
-          if field[0] == fieldName:
-            args.add(ctx.genExpr(field[1]))
-            found = true
-            break
-        if not found:
-          args.add("nil")
-    else:
-      for field in e.args[0].fields:
-        args.add(ctx.genExpr(field[1]))
-  else:
-    for a in e.args: args.add(ctx.genExpr(a))
+  let args = ctx.genCallArgs(e, calleeStr)
   if calleeStr == "bake":
     return args[0] & "(" & args[1..^1].join(", ") & ")"
   elif calleeStr == "alias":
@@ -1436,6 +1452,114 @@ proc genTaskDecl(ctx: var CodegenCtx, d: Decl): string =
   ctx.definedVars = oldVars
   header & "\n" & bodyStr & "\n"
 
+proc bitAccessMode(f: FieldDef): string =
+  ## An unmarked field is readable AND writable; marking one direction opts
+  ## out of the other.
+  var hasRead, hasWrite = false
+  for a in f.attrs:
+    if a.name == "read": hasRead = true
+    elif a.name == "write": hasWrite = true
+  if hasRead and not hasWrite: "ReadOnly"
+  elif hasWrite and not hasRead: "WriteOnly"
+  else: "ReadWrite"
+
+proc genRegister(d: Decl): string =
+  ## Memory-mapped register. Nim has a `registerMMIO` macro that takes the
+  ## bit layout directly, so this backend hands it the fields — the Odin
+  ## backend, which has no such macro, lowers the same declaration to named
+  ## masks plus accessor procs.
+  var fields: seq[string]
+  for f in d.regFields:
+    let bitVal = f.typ.name.replace("bit ", "").replace("bits ", "")
+    fields.add("  " & f.name & ": bit(" & bitVal & ", " & bitAccessMode(f) & ")")
+  "registerMMIO(" & d.name & ", " & d.regAddress & "):\n" &
+    fields.join("\n") & "\n"
+
+proc declaredErrNames(ctx: CodegenCtx): seq[string] =
+  ## Every "module/Enum.Variant" this module declares. Error enums are
+  ## FIELDLESS sums; one with payload fields is an ordinary sum type.
+  for td in ctx.module.decls:
+    if td == nil or td.kind != dkType: continue
+    if td.typeBody == nil or td.typeBody.kind != tkSum: continue
+    var fieldless = true
+    for v in td.typeBody.variants:
+      if v.fields.len > 0: fieldless = false
+    if not fieldless: continue
+    for v in td.typeBody.variants:
+      result.add(errNameFor(ctx.module, ctx.moduleName, td.writtenName, v.name))
+
+proc genErrNameTable(errNames: seq[string]): string =
+  ## A reverse table (hash -> "module/Enum.Variant") so a report can name the
+  ## error rather than print its code.
+  result = "proc tuckErrName*(code: uint16): string =\n  case code\n"
+  for n in errNames:
+    result.add("  of errCode(\"" & n & "\"): \"" & n & "\"\n")
+  result.add("  else: \"code \" & $code\n")
+
+proc genErrHandlerBody(ctx: var CodegenCtx, handler: Decl): string =
+  ## The user's handler body, with `code` and `site` in scope as its params.
+  let savedVars = ctx.definedVars
+  ctx.definedVars.incl("code")
+  ctx.definedVars.incl("site")
+  result = ctx.genIndented(handler.fnBody)
+  ctx.definedVars = savedVars
+  if result.strip() == "" or result.strip() == "discard": result = ""
+
+proc genErrHandler(ctx: var CodegenCtx, d: Decl): string =
+  ## Global handler: rt logger first (errors are always visible), then the
+  ## user's handler body.
+  let errNames = ctx.declaredErrNames()
+  if errNames.len > 0: result.add(genErrNameTable(errNames))
+  result.add("proc tuck_unhandled*(code: uint16, site: string) =\n" &
+             "  tuckReportUnhandled(code, site)\n")
+  if errNames.len > 0:
+    result.add("  stderr.writeLine(\"TUCK ERROR NAME: \" & tuckErrName(code))\n")
+  if d.errHandler != nil and d.errHandler.fnBody != nil:
+    let body = ctx.genErrHandlerBody(d.errHandler)
+    if body != "": result.add(body & "\n")
+
+proc takesSelf(m: Decl): bool =
+  ## A fn with a `self` param materializes at `+ mixin` composition sites,
+  ## not standalone.
+  for p in m.fnParams:
+    if p.name == "self": return true
+  false
+
+proc genImportcBinding(m: Decl): string =
+  ## A C-imported fn. [emit: "c_fn"] sets the importc name; else the Tuck name.
+  var params: seq[string]
+  for prm in m.fnParams:
+    params.add(prm.name & ": " & genType(prm.typ))
+  let retStr = if m.fnReturnType != nil: genType(m.fnReturnType) else: "void"
+  let cName = if m.externEmit != "": m.externEmit else: m.name
+  "proc " & m.name & "*(" & params.join(", ") & "): " & retStr &
+    " {.importc: \"" & cName & "\", header: \"" & m.externHeader & "\".}\n"
+
+proc genMixinMember(ctx: var CodegenCtx, m: Decl): string =
+  ## One member of a mixin/extern/pending block.
+  if m.kind in {dkType, dkFnSig}:
+    # a C struct or callback signature declared in the extern block — genDecl
+    # routes them to the importc/header and cdecl forms
+    return ctx.genDecl(m) & "\n"
+  if m.kind != dkFn: return ""
+  if m.isPending: return genPendingStub(m) & "\n"
+  if not m.isExtern:
+    # interface contract (sig only, no body): nothing to emit — the
+    # implementing types provide the code
+    if m.fnBody == nil or takesSelf(m): return ""
+    # a mixin is a named bucket of functions (spec 5.1) — emit them
+    return ctx.genDecl(m) & "\n"
+  if m.externHeader != "": return genImportcBinding(m)
+  ""   # rt-implemented: tuck_rt provides it, nothing to emit here
+
+proc genMixinBlock(ctx: var CodegenCtx, d: Decl): string =
+  ## All three kinds carry members and emit per-member. dkPending emits stubs;
+  ## dkExtern emits nothing for rt-implemented fns (tuck_rt provides them) and
+  ## importc bindings for C-imported ones; a real mixin's fns are materialised
+  ## onto the objects that compose it.
+  for m in d.mixinMembers:
+    result.add(ctx.genMixinMember(m))
+
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   if d == nil: return ""
   if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
@@ -1465,20 +1589,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     # explicit static block: the backend evaluates the initializer at
     # compile time (pure computation — the checker already enforced purity)
     return "const " & d.name & " = static:\n  " & ctx.genExpr(d.constVal)
-  of dkRegister:
-    var fieldsStr: seq[string]
-    for f in d.regFields:
-      let bitVal = f.typ.name.replace("bit ", "").replace("bits ", "")
-      var accessMode = "ReadWrite"
-      var hasRead = false
-      var hasWrite = false
-      for a in f.attrs:
-        if a.name == "read": hasRead = true
-        elif a.name == "write": hasWrite = true
-      if hasRead and not hasWrite: accessMode = "ReadOnly"
-      elif hasWrite and not hasRead: accessMode = "WriteOnly"
-      fieldsStr.add("  " & f.name & ": bit(" & bitVal & ", " & accessMode & ")")
-    return "registerMMIO(" & d.name & ", " & d.regAddress & "):\n" & fieldsStr.join("\n") & "\n"
+  of dkRegister: return genRegister(d)
   of dkRegistry:
     return ctx.genRegistry(d)
   of dkPool:
@@ -1490,78 +1601,8 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return ""  # emitNim adds the Nim import line
   of dkStaticAssert:
     return "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
-  of dkErrors:
-    # Global handler: rt logger first (errors are always visible), then the
-    # user's handler body. When declared error enums exist, a reverse table
-    # (hash -> "module/Enum.Variant") makes the report name the error.
-    var errNames: seq[string]
-    for td in ctx.module.decls:
-      if td == nil or td.kind != dkType: continue
-      if td.typeBody == nil or td.typeBody.kind != tkSum: continue
-      var fieldless = true
-      for v in td.typeBody.variants:
-        if v.fields.len > 0: fieldless = false
-      if not fieldless: continue
-      for v in td.typeBody.variants:
-        errNames.add(errNameFor(ctx.module, ctx.moduleName, td.writtenName, v.name))
-    var res = ""
-    if errNames.len > 0:
-      res.add("proc tuckErrName*(code: uint16): string =\n  case code\n")
-      for n in errNames:
-        res.add("  of errCode(\"" & n & "\"): \"" & n & "\"\n")
-      res.add("  else: \"code \" & $code\n")
-    res.add("proc tuck_unhandled*(code: uint16, site: string) =\n" &
-            "  tuckReportUnhandled(code, site)\n")
-    if errNames.len > 0:
-      res.add("  stderr.writeLine(\"TUCK ERROR NAME: \" & tuckErrName(code))\n")
-    if d.errHandler != nil and d.errHandler.fnBody != nil:
-      let oldVars = ctx.definedVars
-      ctx.definedVars.incl("code")
-      ctx.definedVars.incl("site")
-      let oldIndent = ctx.indent
-      ctx.indent += 1
-      let bodyStr = ctx.genExpr(d.errHandler.fnBody)
-      ctx.indent = oldIndent
-      ctx.definedVars = oldVars
-      if bodyStr.strip() != "" and bodyStr.strip() != "discard":
-        res.add(bodyStr & "\n")
-    return res
-  of dkMixin, dkExtern, dkPending:
-    # All three carry members and emit per-member. dkPending emits stubs;
-    # dkExtern emits nothing for rt-implemented fns (tuck_rt provides them)
-    # and importc bindings for C-imported ones; a real mixin's fns are
-    # materialised onto the objects that compose it.
-    var res = ""
-    for m in d.mixinMembers:
-      if m.kind in {dkType, dkFnSig}:
-        # a C struct or callback signature declared in the extern block —
-        # genDecl routes them to the importc/header and cdecl forms
-        res.add(ctx.genDecl(m) & "\n")
-      elif m.kind == dkFn and m.isPending:
-        res.add(genPendingStub(m) & "\n")
-      elif m.kind == dkFn and not m.isExtern:
-        # interface contract (sig only, no body): nothing to emit — the
-        # implementing types provide the code. A fn with a `self` param
-        # materializes at `+ mixin` composition sites, not standalone.
-        if m.fnBody == nil: continue
-        var hasSelf = false
-        for p in m.fnParams:
-          if p.name == "self": hasSelf = true
-        if hasSelf: continue
-        # a mixin is a named bucket of functions (spec 5.1) — emit them
-        res.add(ctx.genDecl(m) & "\n")
-      elif m.kind == dkFn and m.isExtern and m.externHeader != "":
-        var params: seq[string]
-        for prm in m.fnParams:
-          params.add(prm.name & ": " & genType(prm.typ))
-        let retStr = if m.fnReturnType != nil: genType(m.fnReturnType) else: "void"
-        # [emit: "c_fn"] sets the importc name; else the Tuck name
-        let cName = if m.externEmit != "": m.externEmit else: m.name
-        res.add("proc " & m.name & "*(" & params.join(", ") & "): " & retStr &
-                " {.importc: \"" & cName & "\", header: \"" & m.externHeader & "\".}\n")
-    if res == "":
-      return ""
-    return res
+  of dkErrors: return ctx.genErrHandler(d)
+  of dkMixin, dkExtern, dkPending: return ctx.genMixinBlock(d)
   of dkFnSig:
     # `fnsig NAME = {params} -> ret` → a Nim closure proc type. Named delegate
     # for slots/callbacks; call shape already checked by the type checker.
