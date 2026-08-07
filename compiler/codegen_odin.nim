@@ -609,57 +609,80 @@ proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr,
     return ctx.genPayloadArgs(e, calleeStr)
   for a in e.args: result.add(ctx.genOdinExpr(a))
 
+const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
+                     "dequeue", "hasRoom", "initMailbox"]
+  ## Runtime intrinsics whose receiver they MUTATE, so it goes in by pointer.
+
+const RtByValue = ["at", "setAt", "toStr", "tuckConcat", "errCode",
+                   "tuckSat", "tuckSatI", "tuckReportUnhandled"]
+  ## Runtime intrinsics taking their arguments as-is. Beef reached these
+  ## through `using static Rt`; Odin has no such import, so both lists
+  ## qualify explicitly.
+
+proc asCombinatorCall(ctx: var OdinCodegenCtx, e: Expr,
+                      calleeStr: string): string =
+  ## The compile-time combinators, each of which rewrites the call rather than
+  ## emitting one. Any that declines returns "" and the call proceeds.
+  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    return ctx.genOdinBake(e)
+  if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
+  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    return ctx.genOdinAlias(e)
+  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
+    return ctx.genOdinMerge(e)
+  if calleeStr notin ["bake", "alias"]:
+    return ctx.explodeRecordArg(e, calleeStr)
+  ""
+
+proc genSaturatingCtor(ctx: var OdinCodegenCtx, satT: Type,
+                       calleeStr, arg: string): string =
+  ## spec 4.1: constructing a [saturating] type CLAMPS instead of wrapping.
+  ## Mirrors codegen.nim — the guard runs on a wider intermediate so the value
+  ## is checked against the real bounds, not after it has wrapped.
+  let satBase = ctx.odinType(satT)
+  let unsigned = satBase.startsWith("u")
+  let widen = if unsigned: "u64" else: "i64"
+  let satFn = if unsigned: "rt.tuckSat" else: "rt.tuckSatI"
+  calleeStr & "(" & satFn & "(" & satBase & ", " & widen & "(" & arg & ")))"
+
+proc genRtCall(calleeStr: string, args: seq[string]): string =
+  ## A runtime intrinsic, by pointer or by value.
+  if calleeStr in RtByPointer and args.len > 0:
+    let rest = if args.len > 1: ", " & args[1..^1].join(", ") else: ""
+    return "rt." & calleeStr & "(&" & args[0] & rest & ")"
+  if calleeStr in RtByValue:
+    return "rt." & calleeStr & "(" & args.join(", ") & ")"
+  ""
+
+proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
+                     args: seq[string]): string =
+  ## The emission forms, once the arguments are built.
+  if calleeStr == "bake": return args[0] & "(" & args[1..^1].join(", ") & ")"
+  if calleeStr == "alias": return args[0]
+  let satT = ctx.module.saturatingType(calleeStr)
+  if satT != nil and args.len == 1:
+    return ctx.genSaturatingCtor(satT, calleeStr, args[0])
+  let invRet = externInvRet(ctx.module, calleeStr)
+  if invRet != "":
+    # extern boundary: the returned value validates on entry
+    return "__validated_" & invRet & "(" & calleeStr & "(" &
+           args.join(", ") & "))"
+  if calleeStr == "echo": return "fmt.println(" & args.join(", ") & ")"
+  let rt = genRtCall(calleeStr, args)
+  if rt != "": return rt
+  ""
+
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.genOdinExpr(e.callee)
   let member = ctx.memberCalleeName(e)
   if member != "": calleeStr = member
-  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    let baked = ctx.genOdinBake(e)
-    if baked != "": return baked
-  if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
-  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    let aliased = ctx.genOdinAlias(e)
-    if aliased != "": return aliased
-  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
-    let merged = ctx.genOdinMerge(e)
-    if merged != "": return merged
-  if calleeStr notin ["bake", "alias"]:
-    let exploded = ctx.explodeRecordArg(e, calleeStr)
-    if exploded != "": return exploded
+  let combinator = ctx.asCombinatorCall(e, calleeStr)
+  if combinator != "": return combinator
   let args = ctx.genCallArgs(e, calleeStr)
-  if calleeStr == "bake":
-    return args[0] & "(" & args[1..^1].join(", ") & ")"
-  elif calleeStr == "alias":
-    return args[0]
-  let satT = ctx.module.saturatingType(calleeStr)
-  if satT != nil and args.len == 1:
-    # spec 4.1: constructing a [saturating] type CLAMPS instead of wrapping.
-    # Mirrors codegen.nim — the guard runs on a wider intermediate so the
-    # value is checked against the real bounds, not after it has wrapped.
-    let satBase = ctx.odinType(satT)
-    let unsigned = satBase.startsWith("u")
-    let widen = if unsigned: "u64" else: "i64"
-    let satFn = if unsigned: "rt.tuckSat" else: "rt.tuckSatI"
-    return calleeStr & "(" & satFn & "(" & satBase & ", " & widen & "(" &
-           args[0] & ")))"
-  if externInvRet(ctx.module, calleeStr) != "":
-    # extern boundary: the returned value validates on entry
-    return "__validated_" & externInvRet(ctx.module, calleeStr) & "(" &
-           calleeStr & "(" & args.join(", ") & "))"
-  elif calleeStr == "echo":
-    return "fmt.println(" & args.join(", ") & ")"
-  # Runtime intrinsics: Beef reaches these through `using static Rt`, but
-  # Odin has no such import, so they qualify explicitly. The container ones
-  # mutate their receiver, so it goes in by pointer.
-  elif calleeStr in ["acquire", "release", "alloc", "reset", "enqueue",
-                     "dequeue", "hasRoom", "initMailbox"] and args.len > 0:
-    return "rt." & calleeStr & "(&" & args[0] &
-           (if args.len > 1: ", " & args[1..^1].join(", ") else: "") & ")"
-  elif calleeStr in ["at", "setAt", "toStr", "tuckConcat", "errCode",
-                     "tuckSat", "tuckSatI", "tuckReportUnhandled"]:
-    return "rt." & calleeStr & "(" & args.join(", ") & ")"
+  let emitted = ctx.genCallWithArgs(e, calleeStr, args)
+  if emitted != "": return emitted
   if ctx.isTaskName(calleeStr) and args.len == 0:
     # Calling a task SCHEDULES it as a coroutine — it runs concurrently and
     # tuckRun drives it (spec §9.2). Mirrors the Nim backend, which has always

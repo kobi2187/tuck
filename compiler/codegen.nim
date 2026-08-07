@@ -441,11 +441,10 @@ proc genCallArgs(ctx: var CodegenCtx, e: Expr, calleeStr: string): seq[string] =
     return ctx.genPayloadArgs(e, calleeStr)
   for a in e.args: result.add(ctx.genExpr(a))
 
-proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
-  if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
-  let variant = ctx.asSumVariantCall(e)
-  if variant != "": return variant
-  let calleeStr = ctx.genExpr(e.callee)
+proc asCombinatorCall(ctx: var CodegenCtx, e: Expr,
+                      calleeStr: string): string =
+  ## The compile-time combinators, each of which rewrites the call rather than
+  ## emitting one. Any that declines returns "" and the call proceeds.
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genAlias(e)
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
@@ -453,46 +452,70 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
     return ctx.genMerge(e)
   if calleeStr notin ["bake", "alias"]:
-    let exploded = ctx.explodeRecordArg(e, calleeStr)
-    if exploded != "": return exploded
-  let args = ctx.genCallArgs(e, calleeStr)
-  if calleeStr == "bake":
-    return args[0] & "(" & args[1..^1].join(", ") & ")"
-  elif calleeStr == "alias":
-    return args[0]
-  let satBase = ctx.saturatingBase(calleeStr)
-  if satBase != "" and args.len == 1:
-    # spec 4.1: constructing a [saturating] type clamps instead of wrapping.
-    # The guard runs on a WIDER intermediate, so the value is checked against
-    # the type's real bounds rather than after it has already wrapped.
-    let widen = if satBase.startsWith("uint"): "uint64" else: "int64"
-    let satFn = if satBase.startsWith("uint"): "tuckSat" else: "tuckSatI"
-    return calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" &
-           args[0] & ")))"
-  # extern [emit: "..."] renames the emitted call to the real runtime/C proc
+    return ctx.explodeRecordArg(e, calleeStr)
+  ""
+
+proc genSaturatingCtor(satBase, calleeStr, arg: string): string =
+  ## spec 4.1: constructing a [saturating] type clamps instead of wrapping.
+  ## The guard runs on a WIDER intermediate, so the value is checked against
+  ## the type's real bounds rather than after it has already wrapped.
+  let unsigned = satBase.startsWith("uint")
+  let widen = if unsigned: "uint64" else: "int64"
+  let satFn = if unsigned: "tuckSat" else: "tuckSatI"
+  calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" & arg & ")))"
+
+proc genSpawnCall(ctx: var CodegenCtx, calleeStr, call: string): string =
+  ## Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
+  ## drives it via tuckRun (spec §9.2). Fire-and-forget for now;
+  ## result-returning task calls are a later pass.
+  ##
+  ## `discard` only when there is something to discard: a `-> void` task
+  ## emitted `discard tuck_serve(...)` over a void proc, which Nim rejects with
+  ## "expression has no type (or is ambiguous)". So the most natural
+  ## fire-and-forget task — one that returns nothing — was the one shape that
+  ## did not compile.
+  let body = if ctx.taskRetType(calleeStr) == "void": call
+             else: "discard " & call
+  "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: " & body & "))"
+
+proc genValidatedCall(ctx: var CodegenCtx, call: string): string =
+  ## Extern boundary: the returned value validates on entry.
+  ctx.tmpCounter.inc
+  let tmp = "tuckInv" & $ctx.tmpCounter
+  "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
+
+proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
+                  args: seq[string]): string =
+  ## An ordinary call, wrapped by whatever the callee is: a spawned task, an
+  ## invariant-validating extern, or neither.
+  ##
+  ## extern [emit: "..."] renames the emitted call to the real runtime/C proc.
   let emitName = ctx.externEmitName(calleeStr)
   let callName = if emitName != "": emitName else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
-  if ctx.isTaskName(calleeStr):
-    # Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
-    # drives it via tuckRun (spec §9.2). Fire-and-forget for now; result-
-    # returning task calls are a later pass.
-    #
-    # `discard` only when there is something to discard: a `-> void` task
-    # emitted `discard tuck_serve(...)` over a void proc, which Nim rejects
-    # with "expression has no type (or is ambiguous)". So the most natural
-    # fire-and-forget task — one that returns nothing — was the one shape that
-    # did not compile.
-    let body = if ctx.taskRetType(calleeStr) == "void": call
-               else: "discard " & call
-    return "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: " &
-           body & "))"
-  if ctx.externInvRetFast(calleeStr) != "":
-    # extern boundary: the returned value validates on entry
-    ctx.tmpCounter.inc
-    let tmp = "tuckInv" & $ctx.tmpCounter
-    return "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
-  return call
+  if ctx.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, call)
+  if ctx.externInvRetFast(calleeStr) != "": return ctx.genValidatedCall(call)
+  call
+
+proc genCallWithArgs(ctx: var CodegenCtx, calleeStr: string,
+                     args: seq[string]): string =
+  ## The emission forms, once the arguments are built.
+  if calleeStr == "bake": return args[0] & "(" & args[1..^1].join(", ") & ")"
+  if calleeStr == "alias": return args[0]
+  let satBase = ctx.saturatingBase(calleeStr)
+  if satBase != "" and args.len == 1:
+    return genSaturatingCtor(satBase, calleeStr, args[0])
+  ctx.genPlainCall(calleeStr, args)
+
+proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
+  if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
+  let variant = ctx.asSumVariantCall(e)
+  if variant != "": return variant
+  let calleeStr = ctx.genExpr(e.callee)
+  let combinator = ctx.asCombinatorCall(e, calleeStr)
+  if combinator != "": return combinator
+  let args = ctx.genCallArgs(e, calleeStr)
+  ctx.genCallWithArgs(calleeStr, args)
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
 # literals, invariant-carrying returns, or a plain return.
