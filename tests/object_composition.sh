@@ -101,4 +101,29 @@ EOF
 ok_check "type composition still flattens"
 runs     "and still compiles"  0
 
+# A `..` chain followed by a `.` call. The chain lowers to STATEMENTS, so the
+# call must be sequenced after them — not spliced into its argument list,
+# which emitted `startAudio(self = loadEp(self, n))`: an assignment inside a
+# call, rejected by Nim as "expression is immutable, not 'var'" and by Odin
+# equally. `runs` is the real assertion here; `ok_check` alone passed
+# throughout, because the defect was in emission rather than in typing.
+src <<'EOF'
+fn loadEp({self: App, n: int}) -> App:
+  self
+
+fn startAudio({self: App}) -> void:
+  return
+
+object App:
+  n: int
+  fn play({n: int}) -> void:
+    self ..loadEp {n} .startAudio
+
+fn main() -> int:
+  var a = {n: 1} App
+  return 0
+EOF
+ok_check "a builder chain followed by a terminal call"
+runs     "and lowers to sequenced statements, not a nested call"  0
+
 finish

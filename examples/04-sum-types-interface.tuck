@@ -34,12 +34,14 @@ mixin BulkOperations:
   fn setMany(self, {pairs: Seq[Pair]}) -> !void [io]:
     ...
 
-# Mutators: first param is the receiver, return the receiver's type.
+# Mutators take the receiver as their first param. A BUILDER step returns the
+# receiver's type so `..` can chain onto it; a terminal ACTION returns void and
+# is invoked with a single `.`.
 fn loadEpisode({self: PodcastApp, episode: Episode}) -> PodcastApp:
   self
 
-fn startAudio({self: PodcastApp}) -> PodcastApp:
-  self
+fn startAudio({self: PodcastApp}) -> void:
+  return
 
 object PodcastApp:
   + AudioPlayer
@@ -47,4 +49,4 @@ object PodcastApp:
   + BulkOperations
 
   fn play({episode: Episode}) -> void:
-    self ..loadEpisode {episode} ..startAudio
+    self ..loadEpisode {episode} .startAudio

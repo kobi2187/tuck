@@ -918,7 +918,35 @@ proc isInputField(ctx: OdinCodegenCtx, e: Expr): bool =
   e.receiver != nil and e.receiver.kind == exkVar and
     e.receiver.name == "input" and ctx.currentParams.len > 0
 
-proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr): string =
+proc indentPrefix(code: string): string =
+  ## The leading whitespace of the LAST line of an emitted block, so a
+  ## statement appended after it lands at the same indent.
+  let lastLine = code.rsplit('\n', 1)[^1]
+  for ch in lastLine:
+    if ch notin {' ', '\t'}: break
+    result.add(ch)
+
+proc genCallOnReceiver(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## A resolved `.fn` call whose RECEIVER is a `..` chain. Twin of the Nim
+  ## backend's proc of the same name — the chain lowers to STATEMENTS, so it
+  ## is hoisted above the call rather than spliced into an argument slot,
+  ## where it would emit an assignment inside a call's parentheses.
+  ##
+  ## The argument is matched by NodeId, not by reference: tuck.nim gives each
+  ## backend a deepCopy of the checked tree, so the node the checker stored
+  ## and the node walked here are different objects.
+  if e.receiver == nil or e.receiver.kind != exkChain:
+    return ctx.genOdinCall(semLayer.call(e))
+  let chainStmts = ctx.genOdinExpr(e.receiver)
+  let call = semLayer.call(e)
+  var direct = Expr(span: call.span, kind: exkCall, callee: call.callee,
+                    args: call.args)
+  for i in 0 ..< direct.args.len:
+    if direct.args[i] != nil and direct.args[i].id == e.receiver.id:
+      direct.args[i] = e.receiver.base
+  chainStmts & "\n" & chainStmts.indentPrefix & ctx.genOdinCall(direct)
+
+proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: interface dispatch, an actor singleton's field, a
   ## status test, a resolved call, a sum-variant construction, or a plain read.
   let ic = semLayer.ifaceCallOf(e)
@@ -933,7 +961,7 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr): string =
     return "(" & ctx.genOdinExpr(e.receiver) & ".status == .Ok)"
   if ctx.isInputField(e): return e.fieldName
   # fieldName resolved to a fn call, not a field (checker-resolved)
-  if semLayer.hasCall(e): return ctx.genOdinCall(semLayer.call(e))
+  if semLayer.hasCall(e): return ctx.genCallOnReceiver(e, ind)
   if e.receiver != nil and e.receiver.kind == exkVar:
     # bare Type.Variant of a payload sum: kind-tagged construction
     let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
@@ -1032,6 +1060,13 @@ proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): 
 
 proc ownsItsLayout(s: Expr): bool =
   ## Constructs that emit their own indentation and terminator.
+  ##
+  ## A `.fn` call over a chain receiver belongs here too — the chain lowers to
+  ## statements, so the whole thing is multi-line and indents itself. Mirrors
+  ## the Nim backend.
+  if s.kind == exkField and s.receiver != nil and
+     s.receiver.kind == exkChain and semLayer.hasCall(s):
+    return true
   s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain}
 
 proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
@@ -1149,7 +1184,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: genLit(e)
   of exkVar: ctx.genVar(e)
-  of exkField: ctx.genFieldAccess(e)
+  of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
   of exkCall: ctx.genOdinCall(e)
   of exkStruct: ctx.genStructLit(e)
