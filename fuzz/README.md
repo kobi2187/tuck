@@ -61,6 +61,38 @@ examples.
 | missing error | Duplicate fn / type / object / const / field / variant / parameter, all accepted, all reaching codegen. |
 | unfriendly | `Expected expression but got: tkPipe` — nine findings, all leaking the token enum. |
 
+## The largest missing-error source: `unknownType`
+
+`compatible` returns true whenever either side is Unknown
+(`typecheck.nim`), so **every Unknown is a check that silently passes**.
+`unknownType`'s own doc says "every one found so far turned out to be a bug
+it was hiding". That is now measured rather than asserted.
+
+Building with that line returning `false` instead:
+
+```bash
+# the experiment, not a supported build
+nim c -d:strictUnknown -o:tuck_strict tuck.nim
+```
+
+turns **7 of the 43 examples red**, each a real gap:
+
+| example | hidden by Unknown |
+|---|---|
+| `08-actors_isolated_state` | an untyped value assigned to a sum type |
+| `22-error-policy` | a fn returning `<unknown>` against a declared `!{value: u16}` |
+| `27-actor-select`, `42-net-echo` | a fn whose body the checker cannot type satisfying `-> bool` |
+
+The `-> bool` cases are the sharpest: a predicate the checker gave up on
+still passes a bool return, and codegen then emits what the backend rejects.
+
+This is not a one-line fix — Unknown is load-bearing for gradual typing
+(sketch code, an unknown module prefix, a pending fn's callers), which is
+why the line is still there. Narrowing it means giving each of those cases
+its own named sentinel, which `typecheck_util.nim` already began
+(`pendingType`, `typeParamType`, `afterErrorType`). The 7 failures are the
+work list.
+
 ## Not yet covered
 
 - The TYPECHECKER and both backends. This target stops at the parser; a
