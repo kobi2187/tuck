@@ -13,8 +13,14 @@ a one-line `of` arm is not counted as a branch. A multi-line arm is, because at
 that point the arm carries logic rather than delegating.
 
 Usage:
-    tools/complexity.py compiler/*.nim          # ranked table
-    tools/complexity.py --gate 5 compiler/*.nim # exit 1 if any proc exceeds
+    tools/complexity.py compiler/*.nim              # ranked table
+    tools/complexity.py --gate 27 compiler/*.nim    # ceiling only
+    tools/complexity.py --gate 27 --budget 196 ...  # ceiling + count
+
+The gate is a RATCHET. It is set to whatever the tree currently is, so it
+cannot get worse, and the numbers come DOWN as procs are split — never up to
+accommodate new code. `--budget` is the number of procs allowed over the
+threshold of 5; both numbers are lowered by hand as work lands.
 """
 import re
 import sys
@@ -83,8 +89,15 @@ def measure(path):
 
 def main(argv):
     gate = None
-    if argv and argv[0] == '--gate':
-        gate = int(argv[1])
+    budget = None
+    while argv and argv[0].startswith('--'):
+        if argv[0] == '--gate':
+            gate = int(argv[1])
+        elif argv[0] == '--budget':
+            budget = int(argv[1])
+        else:
+            print(f'unknown option {argv[0]}')
+            return 2
         argv = argv[2:]
     if not argv:
         print(__doc__)
@@ -107,13 +120,32 @@ def main(argv):
         for n, cc, f, lineno, name in sorted(over_cc, key=lambda r: -r[1]):
             print(f'  cc={cc:<3} {n:>3}ln  {f}:{lineno:<5} {name}')
 
+    if gate is None and budget is None:
+        return 0
+
+    failed = False
     if gate is not None:
         worst = [r for r in rows if r[1] > gate]
         if worst:
-            print(f'\nFAIL: {len(worst)} proc(s) over complexity {gate}')
-            return 1
-        print(f'\nOK: no proc over complexity {gate}')
-    return 0
+            print(f'\nFAIL: {len(worst)} proc(s) over the ceiling of {gate}:')
+            for n, cc, f, lineno, name in sorted(worst, key=lambda r: -r[1]):
+                print(f'  cc={cc:<3} {f}:{lineno} {name}')
+            failed = True
+        else:
+            print(f'\nceiling {gate}: ok (worst is {max(r[1] for r in rows)})')
+
+    if budget is not None:
+        if len(over_cc) > budget:
+            print(f'FAIL: {len(over_cc)} procs over complexity '
+                  f'{MAX_COMPLEXITY}, budget is {budget}')
+            failed = True
+        else:
+            print(f'budget {budget}: ok ({len(over_cc)} over '
+                  f'complexity {MAX_COMPLEXITY})')
+            if len(over_cc) < budget:
+                print(f'  -> tighten --budget to {len(over_cc)} in '
+                      f'tests/complexity.sh')
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':
