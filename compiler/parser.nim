@@ -1012,19 +1012,27 @@ const TopLevelKeywords = "fn, type, object, actor, task, interface, mixin, " &
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in contextualDecl.
 
-proc failIfMisspelledDeclKeyword(p: var Parser) =
-  ## `typ Light:` / `ty=e Light:` — a misspelled top-level keyword.
+const ContextualOpeners = ["extern", "errors", "register", "pool", "arena",
+                           "satisfies"]
+  ## Declaration openers the lexer does not tokenize — recognised by NAME in
+  ## contextualDecl. Kept beside it: a new one added there must be added here,
+  ## or the top-level check rejects it before contextualDecl ever runs.
+
+proc opensDeclaration(p: Parser): bool =
+  ## Does this word open a declaration? Only the contextual openers can, since
+  ## every other declaration starts with a real token.
+  p.current().value in ContextualOpeners
+
+proc failNotADeclaration(p: var Parser) =
+  ## A word that opens no declaration. THE FIRST WORD DECIDES — a module's top
+  ## level is declarations only, so there is nothing else this could become and
+  ## no reason to read ahead to find out.
   ##
-  ## An unrecognised opening word is tkIdent, so it used to fall through to an
-  ## EXPRESSION statement and die further along at whatever punctuation came
-  ## next: `typ Light:` reported "Expected an expression here, found `:`" at the
-  ## colon, blaming column 10 for a typo in column 1. Found by the fuzzer twice
-  ## (`ty=e Light:`, `typfn ight:`).
-  ##
-  ## `<ident> <ident> :` cannot be a top-level expression under any spelling, so
-  ## reaching here with that shape means the first word was meant to be a
-  ## keyword. Name the valid ones rather than guessing which was intended.
-  if p.peek(1).kind != tkIdent or p.peek(2).kind != tkColon: return
+  ## The parser used to fall through to an EXPRESSION statement here and die
+  ## further along at whatever punctuation came next: `typ Light:` reported
+  ## "Expected an expression here, found `:`", blaming column 10 for a typo in
+  ## column 1. Three fuzz findings were that one mistake (`ty=e Light:`,
+  ## `typfn ight:`, `ac:`), each pointing at the wrong place.
   p.reportError("'" & p.current().value & "' does not start a declaration. " &
                 "A module's top level holds declarations only, opened by one " &
                 "of: " & TopLevelKeywords & ".")
@@ -1105,21 +1113,26 @@ proc parseDecl*(p: var Parser): Decl =
   of tkMixin: return p.parseMixinDecl(sp)
   of tkPlus: return p.parseCompositionDecl(sp)
   of tkConst: return p.parseConstDecl(sp)
-  of tkIdent:
-    # Not a declaration opener (contextualDecl already had first refusal), so
-    # this is a statement — rejected as a top-level one, unless it is a typo'd
-    # keyword, which failIfMisspelledDeclKeyword names first.
-    p.failIfMisspelledDeclKeyword()
-    return p.parseExprDecl(sp)
+  of tkIdent: return p.parseExprDecl(sp)
   else: return p.parseExprDecl(sp)
 
 proc parseModule*(p: var Parser): Module =
+  ## THE FIRST WORD DECIDES. A module's top level is declarations only, so an
+  ## opening word that names no declaration is rejected right here — no
+  ## lookahead, no shape-matching, no parsing ahead to find out what it might
+  ## have been.
+  ##
+  ## The check belongs to parseModule rather than parseDecl because parseDecl
+  ## is shared: an arena body (parseArenaDecl) calls it for ordinary statements
+  ## like `ScratchSpace.reset`, which are legal THERE and only illegal here.
   let sp = p.getSpan()
   var decls: seq[Decl]
   while p.current().kind != tkEOF:
     if p.current().kind == tkNewline:
       discard p.advance()
     else:
+      if p.current().kind == tkIdent and not p.opensDeclaration():
+        p.failNotADeclaration()
       decls.add(p.parseDecl())
   result = Module(path: @[], decls: decls, span: sp)
   # identity for the semantic layer, assigned once at the parse boundary

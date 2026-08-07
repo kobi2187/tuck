@@ -964,6 +964,25 @@ typ Light:
 TUCKEOF
 bad_check 'a misspelled top-level keyword names the valid ones' 'does\ not\ start\ a\ declaration'
 
+# The first word alone decides — no second word needed to reach the same error.
+src <<'TUCKEOF'
+ac:
+  t: int
+TUCKEOF
+bad_check 'a bare misspelled keyword is rejected on the first word' 'does\ not\ start\ a\ declaration'
+
+# ...but an arena body holds ordinary STATEMENTS, parsed through the same
+# parseDecl. `ScratchSpace.reset` is a bare ident there and must stay legal —
+# which is why the check lives in parseModule, not parseDecl.
+src <<'TUCKEOF'
+arena ScratchSpace [size: 2048]:
+  ScratchSpace.reset
+
+fn main() -> void:
+  return
+TUCKEOF
+ok_check 'an arena body still holds bare statements'
+
 # `satisfies` is a top-level declaration opener like any other, so it must not
 # be caught by the misspelled-keyword check above. (It used to be spelled
 # `Obj satisfies Iface`, deciding on the SECOND word — the one construct that

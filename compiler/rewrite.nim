@@ -36,7 +36,7 @@
 #
 # WHAT LANDS HERE NEXT. Other implicit decisions still living in the checker,
 # each a candidate when next touched: a bare name is a call (spec 2.3,
-# synthNullaryCall), `Pool.acquire` (asQualifiedMemberCall), `x.f` -> `f(x)`
+# synthNullaryCall), `Pool.acquire` (asStaticMemberCall), `x.f` -> `f(x)`
 # (asFnByName's bare arm). Subset matching and the auto-wrap into !T are
 # type-DEPENDENT and stay in the checker — they are the boundary, not tenants.
 #

@@ -511,10 +511,17 @@ proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   setCall(semLayer, e, bc)
   tc.synthesize(bc)
 
-proc asQualifiedMemberCall(tc: var TypeChecker, e: Expr): Type =
-  ## `Pool.acquire` / `Pool.release {v}` (spec 7.2) — registered under the
-  ## qualified name because the receiver is the POOL itself, not a value whose
-  ## type carries the fn.
+proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
+  ## `Pool.acquire` / `Pool.release {v}` (spec 7.2) — a STATIC member call on a
+  ## singleton type, the way `StaticClass.method` reads elsewhere. The receiver
+  ## is the pool ITSELF, not a value whose type carries the fn, so the signature
+  ## is registered under `Owner.member` (collectPoolSigs).
+  ##
+  ## NOT qualification. Module qualification is `::` — a separate token
+  ## (tkColonColon) producing exkQualified with a modulePath. This `.` is
+  ## ordinary field-access syntax whose receiver happens to name a type. The
+  ## proc was called asQualifiedMemberCall, which read as though the two were
+  ## the same mechanism; they are not, and never were.
   if e.receiver == nil or e.receiver.kind != exkVar: return nil
   let qualified = e.receiver.name & "." & e.fieldName
   if not tc.fnSigs.hasKey(qualified): return nil
@@ -617,7 +624,7 @@ proc typedFieldForm(tc: var TypeChecker, e: Expr, recvT: Type,
   ## object declared one — rejecting the receiver ("expects Dog but got
   ## Animal"), or worse, silently picking the wrong object's member.
   result = tc.asPlainField(e, fields, recvT)
-  if result == nil: result = tc.asQualifiedMemberCall(e)
+  if result == nil: result = tc.asStaticMemberCall(e)
   if result == nil: result = tc.asInterfaceCall(e, recvT)
   if result == nil: result = tc.asFnByName(e, recvT)
 
