@@ -6,6 +6,8 @@ scope") and spec §4.8/§7. This is the lowest layer — the set later layers
 no Tuck signatures are proposed here (those come per-module, following the
 std/fs.tuck pattern).
 
+Decision: most importantly: allow all hardware access and OS access. for example, decrease volume via the lib. if tuck users aren't limited in this sense, and also have mechanisms (such as actors, concurrency, rapid dev skeleton etc) to easily build more complex software, they will fill all that's needed later on.
+
 ## Method
 
 Union of the bottom layers of metal-capable and systems languages — C
