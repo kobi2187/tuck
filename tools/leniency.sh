@@ -1,22 +1,26 @@
 #!/bin/bash
 # What does each of `compatible`'s escape hatches actually cost?
 #
-# The checker is lenient in four separate places, and "too lenient" is not
+# The checker is lenient in three separate places, and "too lenient" is not
 # actionable until each one has a number. This builds a compiler per hatch,
 # with that hatch closed and the others left open, and counts how many of the
 # examples stop checking.
 #
 #   strictUnknown — an Unknown on either side matches anything
-#   strictAny     — void / unit / Self / fn match anything
 #   strictNumeric — any numeric widens to any other numeric
 #   strictKind    — two types of the same KIND match, whatever they are
+#
+# A fourth, `strictAny` (void / unit / Self / fn match anything), is GONE: the
+# hatch it measured was closed rather than flagged. Each name was removed once
+# its cost had been measured at zero — see the note above `compatible` in
+# compiler/typecheck.nim. No type matches anything now.
 #
 # A high count is not automatically bad: some leniency is deliberate (a
 # pending fn's callers must keep compiling). The point is to know which
 # examples each one is holding up, so they can be fixed one hatch at a time
 # rather than all at once.
 #
-# Usage: tools/leniency.sh [hatch ...]      (default: all four)
+# Usage: tools/leniency.sh [hatch ...]      (default: all three)
 set -u
 cd "$(dirname "$0")/.."
 
@@ -39,6 +43,6 @@ run_hatch() {
   printf '\n'
 }
 
-for hatch in "${@:-strictUnknown strictAny strictNumeric strictKind}"; do
+for hatch in "${@:-strictUnknown strictNumeric strictKind}"; do
   run_hatch "$hatch"
 done

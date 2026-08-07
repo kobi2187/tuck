@@ -1,7 +1,12 @@
 # std/scheduler — the actor scheduler's main-side API. Implemented by tuck_rt.
 # Actors run as daemons alongside main; main uses these to wait on app state.
+# The predicate the scheduler polls. Spelling it out is what lets the checker
+# reject a mis-shaped callback and the backends emit a typed callable — a bare
+# `fn` matches anything and lowers to a GUESSED `proc() -> bool`.
+fnsig Predicate = {} -> bool
+
 extern:
-  fn waitUntil({pred: fn}) -> void [io]
+  fn waitUntil({pred: Predicate}) -> void [io]
   # Ask the scheduler to return after the current pass. Needed by anything
   # that parks on an fd which may never become readable — a server's accept
   # loop is the standard case: without this the program runs forever, because

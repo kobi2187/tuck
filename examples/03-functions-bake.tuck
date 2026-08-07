@@ -3,10 +3,12 @@
 # or argument values. Slots emit as generic params, so calls through a
 # baked slot are direct — no boxing, no runtime dispatch.
 
+fnsig BinOp = {a: int, b: int} -> int
+
 fn plus({a: int, b: int}) -> int:
   return a + b
 
-fn applyOperation({a: int, b: int, op: fn}) -> int:
+fn applyOperation({a: int, b: int, op: BinOp}) -> int:
   op.invoke {a, b}
 
 fn main() -> void:

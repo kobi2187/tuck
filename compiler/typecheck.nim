@@ -134,21 +134,23 @@ export typecheck_transitions
 # scope/resolve/fieldsOf now live in typecheck_state (both imported above).
 proc compatible(tc: TypeChecker, actual, expected: Type): bool
 
-const AnyMatchingNames = ["void", "unit", "fn"]
-  ## Names that match anything: the absence of a type, and the untyped
-  ## callable.
-  ##
-  ## `Self` USED to be here and is not, because two real mechanisms already
-  ## handle it and this entry could only fire where they had missed — which
-  ## is precisely where a diagnostic is due. asInterfaceCall substitutes the
-  ## concrete receiver type for Self before checking (search `pt = selfT`),
-  ## and isSelfParam skips Self params in checkCallArgs, since the receiver
-  ## comes from the call site rather than the payload. Removing it cost
-  ## nothing: the full gate stayed green.
-
-proc matchesAnything(t: Type): bool =
-  ## Does this type accept any counterpart?
-  t.kind == tkNamed and t.name in AnyMatchingNames
+# NO TYPE MATCHES ANYTHING. There was a list of names that did — `void`,
+# `unit`, `Self`, `fn` — and it is gone. Each was measured before removal:
+#
+# `Self`    asInterfaceCall substitutes the concrete receiver type before
+#           checking, and isSelfParam skips Self params in checkCallArgs, so
+#           the entry could only fire where BOTH had missed. Cost: nothing.
+#
+# `void`/   Making the absence of a type match ANY type meant a void-returning
+# `unit`    fn satisfied `-> int`. returnsNothing answers the real question
+#           where it matters. Cost: nothing, once examples/04 stopped declaring
+#           `-> void` for a body yielding a PodcastApp — the bug it was hiding.
+#
+# `fn`      A bare `fn` param had no signature to check against, so every
+#           callback argument passed. `fnsig NAME = {params} -> ret` (spec
+#           D#10c) states the shape instead, and fnRefCompatible checks a
+#           `:name` reference against it. The two sites that used bare `fn`
+#           are std/scheduler's `Predicate` and examples/03's `BinOp`.
 
 proc unwrapForCompare(actual, expected: Type, a, e: var Type): bool =
   ## Wrapper discipline: a bare T may flow where !T is expected (auto-wrap on
@@ -239,9 +241,6 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
   if isUnknown(a) or isUnknown(e):
     when defined(strictUnknown): return false
     else: return true
-  if matchesAnything(e) or matchesAnything(a):
-    when defined(strictAny): return false
-    else: return true
   if a.kind == tkNamed and e.kind == tkNamed:
     return tc.nominalCompatible(a, e)
   if a.kind == tkFunc and e.kind == tkNamed and tc.fnSigs.hasKey(e.name):
@@ -258,6 +257,8 @@ proc compatible(tc: TypeChecker, actual, expected: Type): bool =
 proc synthesize(tc: var TypeChecker, e: Expr): Type
 proc synthBracket(tc: var TypeChecker, e: Expr): Type
 proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type
+proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
+                   bindings: var Table[string, Type])  # asSlotInvoke calls it
 
 # Method form: `x .fn {args}` / `x ..fn {args}` — the receiver rides as the
 # fn's FIRST parameter (checked structurally when the receiver type has no
@@ -523,21 +524,40 @@ proc asQualifiedMemberCall(tc: var TypeChecker, e: Expr): Type =
                                          name: e.fieldName)))
   tc.fnSigs[qualified].ret
 
+proc checkThroughFnSig(tc: var TypeChecker, slotT: Type, call: Expr): Type =
+  ## A call THROUGH a slot whose type is a `fnsig` NAME: validate the arguments
+  ## against the named signature and yield its return type. nil when the slot
+  ## names no signature, so the caller can decide what an untyped slot means.
+  ## Shared by both spellings of the same operation — `{args} c.op`
+  ## (asIndirectCall) and `c.op.invoke {args}` (asSlotInvoke).
+  if slotT == nil or slotT.kind != tkNamed or slotT.name notin tc.fnSigNames:
+    return nil
+  let sig = tc.fnSigs[slotT.name]
+  var bindings = initTable[string, Type]()
+  tc.checkCallArgs(slotT.name, sig, call, bindings)
+  sig.ret
+
+proc invokeArgs(tc: var TypeChecker, e: Expr): seq[Expr] =
+  ## The braced payload of `slot.invoke {a, b}`, synthesized. Empty for a
+  ## nullary invoke.
+  if e.dotArg == nil: return @[]
+  if e.dotArg.kind != exkStruct:
+    fail("Type Error: invoke arguments must be a struct literal: " &
+         "slot.invoke {a, b}", e.dotArg.span)
+  discard tc.synthesize(e.dotArg)
+  @[e.dotArg]
+
 proc asSlotInvoke(tc: var TypeChecker, e: Expr): Type =
-  ## `slot.invoke {args}` — a call through a baked fn slot. Builtin; the
-  ## slot's signature is checked by Nim at instantiation, gradual here.
+  ## `slot.invoke {args}` — a call through a baked fn slot. A slot typed by a
+  ## `fnsig` is checked against that signature; an untyped one has nothing to
+  ## check against and stays gradual.
   if e.fieldName != "invoke": return nil
-  discard tc.synthesize(e.receiver)
-  var callArgs: seq[Expr] = @[]
-  if e.dotArg != nil:
-    if e.dotArg.kind != exkStruct:
-      fail("Type Error: invoke arguments must be a struct literal: " &
-           "slot.invoke {a, b}", e.dotArg.span)
-    discard tc.synthesize(e.dotArg)
-    callArgs.add(e.dotArg)
-  setCall(semLayer, e, Expr(span: e.span, kind: exkCall, callee: e.receiver,
-                           args: callArgs))
-  unknownType(e.span)
+  let slotT = tc.resolve(tc.synthesize(e.receiver))
+  let call = Expr(span: e.span, kind: exkCall, callee: e.receiver,
+                  args: tc.invokeArgs(e))
+  setCall(semLayer, e, call)
+  result = tc.checkThroughFnSig(slotT, call)
+  if result == nil: result = unknownType(e.span)
 
 proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   result = tc.asResultIntrospection(e)
@@ -1411,12 +1431,8 @@ proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
   ## signature and yields its return type; anything else keeps the callee's
   ## own type.
   result = tc.synthCalleeType(e)
-  let ct = tc.resolve(result)
-  if ct != nil and ct.kind == tkNamed and ct.name in tc.fnSigNames:
-    let sig = tc.fnSigs[ct.name]
-    var bindings = initTable[string, Type]()
-    tc.checkCallArgs(ct.name, sig, e, bindings)
-    return sig.ret
+  let viaSig = tc.checkThroughFnSig(tc.resolve(result), e)
+  if viaSig != nil: return viaSig
   for a in e.args: discard tc.synthesize(a)
 
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
@@ -1552,6 +1568,28 @@ proc isImplicitReturn(tc: TypeChecker, blk, s: Expr): bool =
   ## The last statement of a fn's body block stands in for its return.
   blk == tc.bodyBlock and s == blk.stmts[^1] and tc.currentRet != nil
 
+proc isControlFlowExit(s: Expr): bool =
+  ## Does this statement LEAVE the fn rather than produce a value to drop?
+  ##
+  ## `err X` is the base case. It also rides inside a branch — `if raw == "":
+  ## err Empty` — and there the enclosing `if` carries the raise's type (the
+  ## fn's !T) without being a value anyone dropped. Missing that read the
+  ## guard clause as an unhandled result and, under a continue/exit policy,
+  ## wrapped a branch that only ever `return`s in `(let tmp = ...)`, which is
+  ## not an expression: `Error: invalid indentation`.
+  if s == nil: return false
+  case s.kind
+  of exkRaise, exkReturn: true
+  of exkIf:
+    # A guard clause — `if cond: err X` with no else — exits on the taken
+    # path and falls through on the other, so nothing is dropped either way.
+    # With an else, both paths have to exit for the same to hold.
+    if s.elseBranch == nil: isControlFlowExit(s.thenBranch)
+    else: isControlFlowExit(s.thenBranch) and isControlFlowExit(s.elseBranch)
+  of exkBlock:
+    s.stmts.len > 0 and isControlFlowExit(s.stmts[^1])
+  else: false
+
 proc noteDroppedResult(tc: var TypeChecker, s: Expr, last: Type) =
   ## A dropped fallible result in statement position: the policy decides.
   ## strict collects it as an error (ALL sites reported at the end);
@@ -1571,8 +1609,9 @@ proc synthStmt(tc: var TypeChecker, blk, s: Expr, narrowed: var seq[string]): Ty
   if g != "" and g notin tc.okNarrowed:
     tc.okNarrowed.incl(g)
     narrowed.add(g)
-  # `err X` is a control-flow exit (early error return), never a drop
-  if isWrapper(result) and not tc.isImplicitReturn(blk, s) and s.kind != exkRaise:
+  # a control-flow exit (`err X`, or a branch that only exits) is never a drop
+  if isWrapper(result) and not tc.isImplicitReturn(blk, s) and
+     not isControlFlowExit(s):
     tc.noteDroppedResult(s, result)
 
 proc synthBlock(tc: var TypeChecker, e: Expr): Type =
@@ -1809,8 +1848,12 @@ proc synthRaise(tc: var TypeChecker, e: Expr): Type =
   if rv != nil and rv.kind == exkVar: tc.resolveBareErr(e, rv)
   elif tc.isQualifiedErr(rv): tc.checkQualifiedErr(e, rv)
   else: discard tc.synthesize(rv)  # dynamic re-raise
-  # control-flow exit: neutral type so branches/blocks don't see a wrapper
-  unitType(e.span)
+  # `err X` BUILDS the error case of the fn's !T — errors are values in Tuck,
+  # not exceptions, so this yields that result type and `return err X` is an
+  # ordinary checked return. It used to yield unit, which type-checked only
+  # because `unit` matched everything; with that hatch gone, a raise in tail
+  # position has to carry the fn's real return type or it cannot satisfy it.
+  tc.currentRet
 
 proc sendHandlerParams(tc: TypeChecker, actorDecl: Decl, handler: string,
                        found: var bool): seq[Param] =

@@ -294,6 +294,27 @@ TUCKEOF
 bad_check 'continue does not legalize value positions' 'unhandled'
 
 src <<'TUCKEOF'
+errors [policy: continue]:
+  on unhandled({code: u16, site: str}):
+    ...
+
+type ParseError:
+  | Empty
+
+fn parseTitle({raw: str}) -> !str [io, error: ParseError]:
+  if raw == "":
+    err Empty
+  return raw
+TUCKEOF
+ok_check 'a guard clause raising err is not a dropped result'
+# The guard exits on one path and falls through on the other, so nothing is
+# dropped. Reported as a drop under a continue policy, codegen wrapped a
+# branch that only returns in `(let tuckDrop1 = ...)` — not an expression,
+# so the emitted Nim died on `invalid indentation`. ok_check alone would not
+# catch a return of that bug: the spurious shortcut still CHECKS clean.
+omits 'a guard clause emits no drop-site wrapper' 'tuckDrop'
+
+src <<'TUCKEOF'
 type FsError:
   | NotFound
   | AccessDenied
