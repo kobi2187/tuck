@@ -164,4 +164,70 @@ fn main() -> int:
 TUCKEOF
 ok_check 'the same parameter name in two different fns'
 
+# Composition is set union (spec 4.5), and a union with a name in both members
+# is a compile error — resolved by RENAMING at the composition site (spec 2.5),
+# never by the compiler picking a winner. Accepted silently, both fields reached
+# the same Nim object and the user got `Error: attempt to redefine: 'x'` naming
+# generated code they never wrote.
+src <<'TUCKEOF'
+type A:
+  x: int
+
+type B:
+  x: str
+
+object C:
+  + A
+  + B
+
+fn main() -> int:
+  return 0
+TUCKEOF
+bad_check 'composed field collision' 'x'
+
+src <<'TUCKEOF'
+type A:
+  x: int
+
+type B:
+  x: str
+
+type C = A + B
+
+fn main() -> int:
+  return 0
+TUCKEOF
+bad_check 'union field collision' 'x'
+
+# The remedy the error names must actually work.
+src <<'TUCKEOF'
+type A:
+  x: int
+
+type B:
+  x: str
+
+type C = A + B {x -> bx}
+
+fn main() -> int:
+  return 0
+TUCKEOF
+ok_check 'a rename resolves the collision'
+
+src <<'TUCKEOF'
+type A:
+  a: int
+
+type B:
+  b: str
+
+object C:
+  + A
+  + B
+
+fn main() -> int:
+  return 0
+TUCKEOF
+ok_check 'composition without a collision'
+
 finish

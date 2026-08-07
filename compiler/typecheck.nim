@@ -2564,8 +2564,41 @@ proc failIfDuplicateMember(what, owner: string, names: seq[(string, Span)]) =
 proc fieldNames(fields: seq[FieldDef]): seq[(string, Span)] =
   for f in fields: result.add((f.name, f.span))
 
+proc failIfComposedCollision(owner: string, fields: seq[FieldDef], sp: Span) =
+  ## Composition is SET UNION (spec 4.5), and a name contributed by two members
+  ## is a compile error. No automatic resolution: the compiler does not pick a
+  ## winner, shadow one, or invent a name. The user renames, or it does not
+  ## compile.
+  ##
+  ## Accepted silently, both fields reached the same target object and the user
+  ## got `Error: attempt to redefine: 'x'` naming generated code they never
+  ## wrote — the failure class tests/duplicates.sh exists to prevent.
+  var seen = initTable[string, Span]()
+  for f in fields:
+    if seen.hasKey(f.name):
+      fail("Type Error: composed field '" & f.name & "' is contributed twice " &
+           "to '" & owner & "' (first at line " & $seen[f.name].line &
+           "). Rename one at the composition site: " &
+           "`type C = A + B {oldName -> newName}` (spec 2.5)", sp)
+    seen[f.name] = f.span
+
 proc paramNames(params: seq[Param]): seq[(string, Span)] =
   for p in params: result.add((p.name, p.span))
+
+proc failIfDuplicateTypeMembers(m: Module, d: Decl) =
+  ## A type's own members, by the shape of its body: a union flattens to a field
+  ## set, a record has one directly, a sum has variants.
+  if d.typeBody == nil: return
+  if d.typeBody.kind in {tkUnion, tkRename}:
+    # `type C = A + B`, and the rename form that resolves a collision —
+    # getFieldsForType flattens both, applying renames on the way
+    failIfComposedCollision(d.name, getFieldsForType(m, d.typeBody), d.span)
+  elif d.typeBody.kind == tkRecord:
+    failIfDuplicateMember("field", d.name, fieldNames(d.typeBody.fields))
+  elif d.typeBody.kind == tkSum:
+    var vs: seq[(string, Span)]
+    for v in d.typeBody.variants: vs.add((v.name, v.span))
+    failIfDuplicateMember("variant", d.name, vs)
 
 proc failIfDuplicateMembers(m: Module) =
   ## The same rule one level down: inside a type, object, actor or fn.
@@ -2578,16 +2611,12 @@ proc failIfDuplicateMembers(m: Module) =
       failIfDuplicateMember("parameter", d.name, paramNames(d.taskParams))
     of dkObject:
       failIfDuplicateMember("field", d.name, fieldNames(d.objFields))
+      # `+ Record` members merge fields in, so the union is what must be unique
+      failIfComposedCollision(d.name, composedFields(m, d), d.span)
     of dkActor:
       failIfDuplicateMember("field", d.name, fieldNames(d.actorFields))
     of dkType:
-      if d.typeBody == nil: continue
-      if d.typeBody.kind == tkRecord:
-        failIfDuplicateMember("field", d.name, fieldNames(d.typeBody.fields))
-      elif d.typeBody.kind == tkSum:
-        var vs: seq[(string, Span)]
-        for v in d.typeBody.variants: vs.add((v.name, v.span))
-        failIfDuplicateMember("variant", d.name, vs)
+      failIfDuplicateTypeMembers(m, d)
     else: discard
 
 proc failIfTopLevelStatement(d: Decl) =
