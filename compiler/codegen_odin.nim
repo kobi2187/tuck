@@ -1479,59 +1479,67 @@ proc genTransitionProcs(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
           ind & "\tself^ = target\n" & ind & "}\n")
   return res
 
+proc variantTagList(d: Decl, withValues = false): string =
+  ## The variant names, optionally with the explicit ordinals a C enum needs.
+  var tags: seq[string]
+  for v in d.typeBody.variants:
+    tags.add(if withValues and v.value != "": v.name & " = " & v.value
+             else: v.name)
+  tags.join(", ")
+
+proc genVariantStruct(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,
+                      ind: string): string =
+  ## One variant of a payload union, as its own struct.
+  let vName = d.name & "_" & v.name
+  if v.fields.len == 0: return ind & vName & " :: struct {}\n"
+  var fieldLines: seq[string]
+  for f in v.fields:
+    fieldLines.add(ind & "\t" & f.name & ": " & ctx.odinType(f.typ) & ",")
+  ind & vName & " :: struct {\n" & fieldLines.join("\n") & "\n" & ind & "}\n"
+
+proc genTagProjection(d: Decl, kindName, ind: string): string =
+  ## Transitions compare states, so a payload union also needs a tag enum and
+  ## a projection from value to tag.
+  result = ind & kindName & " :: enum { " & variantTagList(d) & " }\n"
+  result.add(ind & "tag_" & d.name & " :: proc(v: " & d.name & ") -> " &
+             kindName & " {\n" & ind & "\tswitch _ in v {\n")
+  for v in d.typeBody.variants:
+    result.add(ind & "\tcase " & d.name & "_" & v.name & ": return ." &
+               v.name & "\n")
+  result.add(ind & "\t}\n" & ind & "\treturn ." &
+             d.typeBody.variants[0].name & "\n" & ind & "}\n")
+
+proc genPayloadUnion(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
+                     hasTransitions: bool, ind: string): string =
+  ## Odin has a real tagged union: each variant becomes its own struct and the
+  ## union carries them directly — no hand-rolled kind enum, and
+  ## `switch v in value` gets exhaustiveness from the compiler.
+  var members: seq[string]
+  for v in d.typeBody.variants:
+    result.add(ctx.genVariantStruct(d, v, ind))
+    members.add(d.name & "_" & v.name)
+  result.add(ind & d.name & " :: union {" & members.join(", ") & "}\n")
+  if hasTransitions:
+    result.add(genTagProjection(d, kindName, ind))
+
 proc genSumType(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## A sum type is a plain enum unless it carries payloads or declares
+  ## transitions.
   let ind = "  ".repeat(ctx.indent)
   let hasPayload = sumHasPayload(d.typeBody)
   let hasTransitions = d.typeBody.transitions.len > 0
   if not hasPayload and not hasTransitions:
     # plain enum (also what decision tables key over)
-    var tags: seq[string]
-    for v in d.typeBody.variants:
-      tags.add(if v.value != "": v.name & " = " & v.value else: v.name)
-    return ind & d.name & " :: enum { " & tags.join(", ") & " }\n"
-
-  var res = ""
-  var kindName = d.name
-  if hasPayload:
-    # Odin has a real tagged union: each variant becomes its own struct and
-    # the union carries them directly — no hand-rolled kind enum, and
-    # `switch v in value` gets exhaustiveness from the compiler.
-    kindName = d.name & "Kind"
-    var members: seq[string]
-    for v in d.typeBody.variants:
-      let vName = d.name & "_" & v.name
-      if v.fields.len > 0:
-        var fieldLines: seq[string]
-        for f in v.fields:
-          fieldLines.add(ind & "\t" & f.name & ": " & ctx.odinType(f.typ) & ",")
-        res.add(ind & vName & " :: struct {\n" & fieldLines.join("\n") &
-                "\n" & ind & "}\n")
-      else:
-        res.add(ind & vName & " :: struct {}\n")
-      members.add(vName)
-    res.add(ind & d.name & " :: union {" & members.join(", ") & "}\n")
-    if hasTransitions:
-      # Transitions compare states, so a payload union also needs a tag enum
-      # and a projection from value to tag.
-      var tags: seq[string]
-      for v in d.typeBody.variants: tags.add(v.name)
-      res.add(ind & kindName & " :: enum { " & tags.join(", ") & " }\n")
-      res.add(ind & "tag_" & d.name & " :: proc(v: " & d.name & ") -> " &
-              kindName & " {\n" & ind & "\tswitch _ in v {\n")
-      for v in d.typeBody.variants:
-        res.add(ind & "\tcase " & d.name & "_" & v.name & ": return ." &
-                v.name & "\n")
-      res.add(ind & "\t}\n" & ind & "\treturn ." & d.typeBody.variants[0].name &
-              "\n" & ind & "}\n")
-  else:
-    var tags: seq[string]
-    for v in d.typeBody.variants: tags.add(v.name)
-    res.add(ind & d.name & " :: enum { " & tags.join(", ") & " }\n")
-
+    return ind & d.name & " :: enum { " & variantTagList(d, withValues = true) &
+           " }\n"
+  let kindName = if hasPayload: d.name & "Kind" else: d.name
+  result = if hasPayload:
+             ctx.genPayloadUnion(d, kindName, hasTransitions, ind)
+           else:
+             ind & d.name & " :: enum { " & variantTagList(d) & " }\n"
   if hasTransitions:
     # transition matrix: pure predicate + checked assignment
-    res.add(ctx.genTransitionProcs(d, kindName, hasPayload))
-  return res
+    result.add(ctx.genTransitionProcs(d, kindName, hasPayload))
 
 proc genRecordType(ctx: var OdinCodegenCtx, d: Decl): string =
   let ind = "  ".repeat(ctx.indent)
@@ -1755,57 +1763,103 @@ proc genActor(ctx: var OdinCodegenCtx, d: Decl): string =
   if hasShutdown:
     result.add(genShutdownSender(d, ind))
 
+proc registryEventStruct(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## The event enum and the flat struct carrying every variant's fields,
+  ## deduped by name.
+  var variants: seq[string]
+  var fields: seq[string]
+  var seen = initHashSet[string]()
+  for v in d.variants:
+    variants.add(v.name)
+    for f in v.fields:
+      if f.name in seen: continue
+      seen.incl(f.name)
+      fields.add(ind & "\t" & f.name & ": " & ctx.odinType(f.typ) & ",")
+  let fieldsBody = if fields.len > 0: fields.join("\n") & "\n" else: ""
+  ind & d.name & "Kind :: enum { " & variants.join(", ") & " }\n" &
+    ind & d.name & " :: struct {\n" &
+    ind & "\tkind: " & d.name & "Kind,\n" & fieldsBody & ind & "}\n"
+
+proc registryHandlerCalls(ctx: OdinCodegenCtx, d: Decl, v: VariantDef,
+                          ind: string): string =
+  ## Every declared handler for this event, called with the event's fields.
+  let handlerName = d.name & "." & v.name
+  var calls: seq[string]
+  for decl in ctx.module.decls:
+    if decl.kind != dkFn or decl.name != handlerName: continue
+    var argNames: seq[string]
+    for f in v.fields: argNames.add(f.name)
+    calls.add(ind & "\t" & d.name & "_" & v.name & "(" & argNames.join(", ") & ")")
+  if calls.len > 0: calls.join("\n") & "\n" else: ""
+
+proc registryRaiseProc(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,
+                       ind: string): string =
+  ## `raise_<Registry>_<Event>` — record the event as latest, then run its
+  ## handlers.
+  var params: seq[string]
+  var assigns: seq[string]
+  for f in v.fields:
+    params.add(f.name & ": " & ctx.odinType(f.typ))
+    assigns.add(f.name & " = " & f.name)
+  let assignStr = if assigns.len > 0: ", " & assigns.join(", ") else: ""
+  ind & "raise_" & d.name & "_" & v.name & " :: proc(" & params.join(", ") &
+    ") {\n" & ind & "\tlatest" & d.name & " = " & d.name & "{kind = ." &
+    v.name & assignStr & "}\n" & ctx.registryHandlerCalls(d, v, ind) &
+    ind & "}\n\n"
+
 proc genRegistry(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## An event registry: the event type, the latest-event global, and one
+  ## raise proc per event.
+  ##
+  ## Odin resolves package-level declaration order lazily, so the raise procs
+  ## may call handlers declared after them — no forward decls needed.
   let ind = "  ".repeat(ctx.indent)
-  let msgEnumName = d.name & "Kind"
-  var enumVariants: seq[string]
-  var fieldsStr: seq[string]
-  var seenFields = initHashSet[string]()
+  result = ctx.registryEventStruct(d, ind) & "\n"
+  result.add(ind & "latest" & d.name & ": " & d.name & "\n\n")
   for v in d.variants:
-    enumVariants.add(v.name)
-    for f in v.fields:
-      if f.name notin seenFields:
-        seenFields.incl(f.name)
-        fieldsStr.add(ind & "\t" & f.name & ": " & ctx.odinType(f.typ) & ",")
-
-  let enumStr = ind & msgEnumName & " :: enum { " & enumVariants.join(", ") & " }\n"
-  let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") & "\n" else: ""
-  let typeStr = ind & d.name & " :: struct {\n" &
-                ind & "\tkind: " & msgEnumName & ",\n" & fieldsBody & ind & "}\n"
-  let globalVarStr = ind & "latest" & d.name & ": " & d.name & "\n\n"
-
-  # Odin resolves package-level declaration order lazily: no forward decls
-  var raiseProcsStr = ""
-  for v in d.variants:
-    var params: seq[string]
-    var assignParts: seq[string]
-    for f in v.fields:
-      params.add(f.name & ": " & ctx.odinType(f.typ))
-      assignParts.add(f.name & " = " & f.name)
-    let paramStr = params.join(", ")
-    let assignStr = if assignParts.len > 0: ", " & assignParts.join(", ") else: ""
-
-    let handlerName = d.name & "." & v.name
-    let handlerNameSanitized = d.name & "_" & v.name
-    var handlerCalls: seq[string]
-    for decl in ctx.module.decls:
-      if decl.kind == dkFn and decl.name == handlerName:
-        var argNames: seq[string]
-        for f in v.fields: argNames.add(f.name)
-        handlerCalls.add(ind & "\t" & handlerNameSanitized & "(" &
-                         argNames.join(", ") & ")")
-
-    let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") & "\n" else: ""
-    raiseProcsStr.add(ind & "raise_" & d.name & "_" & v.name &
-                      " :: proc(" & paramStr & ") {\n" &
-                      ind & "\tlatest" & d.name & " = " & d.name &
-                      "{kind = ." & v.name & assignStr & "}\n" &
-                      handlerInvokes & ind & "}\n\n")
-
-  return enumStr & typeStr & "\n" & globalVarStr & raiseProcsStr
+    result.add(ctx.registryRaiseProc(d, v, ind))
 
 # rt-implemented extern of a library module: forward to the Odin runtime,
 # converting the runtime's record shapes to this module's hoisted shapes.
+proc forwarderParamType(ctx: var OdinCodegenCtx, p: Param, mem: Decl): string =
+  ## A bare `fn` param on an extern (std/scheduler's `waitUntil {pred: fn}`)
+  ## is a PREDICATE the runtime calls, so it needs a callable proc type —
+  ## `rawptr` would not convert at the rt boundary.
+  ##
+  ## Odin marks a polymorphic param at the DECLARATION site: `value: $T`, not
+  ## `value: T`. Without the sigil T is an undeclared name, so any generic
+  ## extern forwarder (std/str's toStr) failed to compile.
+  let named = p.typ != nil and p.typ.kind == tkNamed
+  if named and p.typ.name == "fn": return "proc() -> bool"
+  result = ctx.odinType(p.typ)
+  if named and p.typ.name in mem.fnGenerics: result = "$" & result
+
+proc recordFromFields(ctx: var OdinCodegenCtx, fields: seq[FieldDef],
+                      source: string): string =
+  ## Rebuild a record from `source`'s same-named fields — the runtime's shape
+  ## and this module's hoisted shape agree on names, not on identity.
+  var args: seq[string]
+  for f in fields: args.add(f.name & " = " & source & "." & f.name)
+  recStructName(ctx, fields) & "{" & args.join(", ") & "}"
+
+proc forwardWrappedRecord(ctx: var OdinCodegenCtx, innerT: Type,
+                          callStr, retTypeStr, ind: string): string =
+  ## Convert TuckResult(RuntimeShape) -> TuckResult(ModuleShape) field by field.
+  ind & "\tr := " & callStr & "\n" &
+    ind & "\tres: " & retTypeStr & "\n" &
+    ind & "\tres.status = r.status\n" &
+    ind & "\tres.err = r.err\n" &
+    ind & "\tif r.status == .Ok {\n" &
+    ind & "\t\tres.value = " & ctx.recordFromFields(innerT.fields, "r.value") &
+    "\n" & ind & "\t}\n" & ind & "\treturn res\n"
+
+proc forwardRecord(ctx: var OdinCodegenCtx, retT: Type,
+                   callStr, ind: string): string =
+  ## Plain record return: the runtime returns the single raw value, whose
+  ## fields carry the same names as this module's hoisted shape.
+  ind & "\traw := " & callStr & "\n" &
+    ind & "\treturn " & ctx.recordFromFields(retT.fields, "raw") & "\n"
+
 proc implAlias(module: string): string =
   ## Package alias for an `impl: odin "..."` spec. Odin import paths use both
   ## ':' (collection separator, "core:strings") and '/' (subdirectories), and
@@ -1823,53 +1877,25 @@ proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl, alias = "rt"): string =
   var params: seq[string]
   var argNames: seq[string]
   for p in mem.fnParams:
-    # A bare `fn` param on an extern (std/scheduler's `waitUntil {pred: fn}`)
-    # is a PREDICATE the runtime calls, so it needs a callable proc type —
-    # `rawptr` would not convert at the rt boundary.
-    var pt = if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == "fn":
-               "proc() -> bool"
-             else: ctx.odinType(p.typ)
-    # Odin marks a polymorphic param at the DECLARATION site: `value: $T`, not
-    # `value: T`. Without the sigil T is an undeclared name, so any generic
-    # extern forwarder (std/str's toStr) failed to compile.
-    if p.typ != nil and p.typ.kind == tkNamed and p.typ.name in mem.fnGenerics:
-      pt = "$" & pt
-    params.add(p.name & ": " & pt)
+    params.add(p.name & ": " & ctx.forwarderParamType(p, mem))
     argNames.add(p.name)
   let callStr = alias & "." & mem.name & "(" & argNames.join(", ") & ")"
   let (bw, _, binnerT) = ctx.odinBangInfo(mem.fnReturnType)
-  let retTypeStr = if mem.fnReturnType != nil: ctx.odinType(mem.fnReturnType) else: "void"
+  let retTypeStr = if mem.fnReturnType != nil: ctx.odinType(mem.fnReturnType)
+                   else: "void"
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   let header = ind & mem.name & " :: proc(" & params.join(", ") & ")" &
                retStr & " {\n"
-  if bw and binnerT != nil and binnerT.kind == tkRecord:
-    # convert TuckResult(RuntimeShape) -> TuckResult(ModuleShape) field by field
-    let recName = recStructName(ctx, binnerT.fields)
-    var fieldArgs: seq[string]
-    for f in binnerT.fields: fieldArgs.add(f.name & " = r.value." & f.name)
-    return header &
-      ind & "\tr := " & callStr & "\n" &
-      ind & "\tres: " & retTypeStr & "\n" &
-      ind & "\tres.status = r.status\n" &
-      ind & "\tres.err = r.err\n" &
-      ind & "\tif r.status == .Ok {\n" &
-      ind & "\t\tres.value = " & recName & "{" & fieldArgs.join(", ") & "}\n" &
-      ind & "\t}\n" &
-      ind & "\treturn res\n" & ind & "}\n"
-  elif mem.fnReturnType != nil and mem.fnReturnType.kind == tkRecord:
-    # plain record return: the runtime returns the single raw value, whose
-    # fields carry the same names as this module's hoisted shape
-    let recName = recStructName(ctx, mem.fnReturnType.fields)
-    var fieldArgs: seq[string]
-    for f in mem.fnReturnType.fields:
-      fieldArgs.add(f.name & " = raw." & f.name)
-    return header & ind & "\traw := " & callStr & "\n" &
-           ind & "\treturn " & recName & "{" & fieldArgs.join(", ") & "}\n" &
-           ind & "}\n"
-  elif retTypeStr == "void":
-    return header & ind & "\t" & callStr & "\n" & ind & "}\n"
-  else:
-    return header & ind & "\treturn " & callStr & "\n" & ind & "}\n"
+  let body =
+    if bw and binnerT != nil and binnerT.kind == tkRecord:
+      ctx.forwardWrappedRecord(binnerT, callStr, retTypeStr, ind)
+    elif mem.fnReturnType != nil and mem.fnReturnType.kind == tkRecord:
+      ctx.forwardRecord(mem.fnReturnType, callStr, ind)
+    elif retTypeStr == "void":
+      ind & "\t" & callStr & "\n"
+    else:
+      ind & "\treturn " & callStr & "\n"
+  header & body & ind & "}\n"
 
 proc composeInto(ctx: var OdinCodegenCtx, compName, objName, ind: string,
                  fields: var seq[string], members: var string): bool =
