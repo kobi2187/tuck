@@ -352,12 +352,13 @@ proc parseBraceFields(p: var Parser): seq[FieldDef] =
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBrace)
 
-proc parseRegistryVariant(p: var Parser): VariantDef =
-  ## `| Name {field: Type}` — one event of a registry. The parens around the
-  ## payload are optional.
+proc parseVariant(p: var Parser, what: string): VariantDef =
+  ## `| Name {field: Type}` — one variant of a sum type, or one event of a
+  ## registry. Identical grammar either way; `what` only names the context in
+  ## the diagnostic. The parens around the payload are optional.
   discard p.expect(tkPipe)
   let vSp = p.getSpan()
-  let vName = p.expectMemberName("Expected variant name in registry").value
+  let vName = p.expectMemberName("Expected variant name" & what).value
   let hasParens = p.current().kind == tkLParen
   if hasParens: discard p.advance()
   var vFields: seq[FieldDef]
@@ -373,7 +374,7 @@ proc parseRegistryDecl(p: var Parser, sp: Span): Decl =
   discard p.expect(tkNewline)
   var variants: seq[VariantDef]
   p.indentedBlock:
-    variants.add(p.parseRegistryVariant())
+    variants.add(p.parseVariant(" in registry"))
   Decl(span: sp, kind: dkRegistry, name: name, variants: variants)
 
 # task name({params}) -> ret [effects]: body (spec 9.2)
@@ -427,167 +428,199 @@ proc parseFnSigDecl(p: var Parser, sp: Span): Decl =
     discard p.advance()
   return Decl(span: sp, kind: dkFnSig, name: name, sigParams: params, sigReturn: ret)
 
+proc parseGenericParams(p: var Parser): seq[string] =
+  ## `type Box[T]` — generic params are Uppercase idents; attrs are lowercase,
+  ## which is what tells `Box[T]` apart from `u16 [saturating]`.
+  if not (p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+          p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A'..'Z'}): return
+  discard p.advance()
+  while p.current().kind notin {tkRBracket, tkEOF}:
+    result.add(p.expect(tkIdent, "Expected generic parameter name").value)
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBracket)
+
+proc parseAliasBody(p: var Parser, sp: Span, name: string,
+                    generics: seq[string], attrs: seq[TypeAttr]): Decl =
+  ## `type X = <type>`. Attributes may sit on EITHER side of the `=`:
+  ##   type X [packed] = u16      (collected before the `=`)
+  ##   type X = u16 [saturating]  (collected by parseType, after it)
+  ## Keep both — assigning here used to CLOBBER the trailing ones, which is
+  ## why `[saturating]` was silently dropped.
+  discard p.advance()
+  let aliasType = p.parseType()
+  if p.current().kind == tkNewline: discard p.advance()
+  for a in attrs: aliasType.attrs.add(a)
+  Decl(span: sp, kind: dkType, name: name, generics: generics,
+       typeBody: aliasType)
+
+proc parseTransition(p: var Parser): Transition =
+  ## `From -> To` — one edge of a sum type's transition table.
+  let tSp = p.getSpan()
+  let fromState = p.expect(tkIdent, "Expected transition source state").value
+  discard p.expect(tkArrow)
+  let toState = p.expect(tkIdent, "Expected transition target state").value
+  if p.current().kind == tkNewline: discard p.advance()
+  Transition(`from`: fromState, to: toState, span: tSp)
+
+proc parseTransitionsBlock(p: var Parser, transitions: var seq[Transition]) =
+  discard p.advance()          # `transitions`
+  discard p.expect(tkColon)
+  discard p.expect(tkNewline)
+  p.indentedBlock:
+    transitions.add(p.parseTransition())
+
+proc parseTypeField(p: var Parser): FieldDef =
+  ## `name: Type` — one field of a record body. A `= default` is parsed and
+  ## dropped: defaults are not carried on the type today.
+  let fSp = p.getSpan()
+  let fName = p.expectMemberName("Expected field or variant in type").value
+  discard p.expect(tkColon)
+  let fType = p.parseType()
+  if p.current().kind == tkAssign:
+    discard p.advance()
+    discard p.parseExpr()
+  if p.current().kind == tkNewline: discard p.advance()
+  FieldDef(name: fName, typ: fType, attrs: @[], span: fSp)
+
+proc parseTypeBodyLine(p: var Parser, variants: var seq[VariantDef],
+                       transitions: var seq[Transition],
+                       fields: var seq[FieldDef], members: var seq[Decl]) =
+  ## One line of a type body: a variant, the transitions block, an invariant,
+  ## or a field.
+  if p.current().kind == tkPipe:
+    variants.add(p.parseVariant(""))
+  elif p.current().kind == tkIdent and p.current().value == "transitions":
+    p.parseTransitionsBlock(transitions)
+  elif p.current().kind == tkAttr and p.current().value == "invariant":
+    p.parseInvariantBlock(members)
+  else:
+    fields.add(p.parseTypeField())
+
 proc parseTypeDecl(p: var Parser, sp: Span): Decl =
+  ## `type Name[T] [attrs]` — either an alias after `=`, or an indented body
+  ## whose lines decide whether it is a SUM (any `| variant`) or a RECORD.
   discard p.advance()
   let name = p.expectTypeName("type").value
-  # `type Box[T]` — generic params are Uppercase idents; attrs are lowercase
-  var typeGenerics: seq[string]
-  if p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
-     p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A'..'Z'}:
-    discard p.advance()
-    while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-      typeGenerics.add(p.expect(tkIdent, "Expected generic parameter name").value)
-      if p.current().kind == tkComma:
-        discard p.advance()
-    discard p.expect(tkRBracket)
+  let generics = p.parseGenericParams()
   var attrs: seq[TypeAttr]
   p.parseDeclAttrs(attrs)
   if p.current().kind == tkAssign:
-    discard p.advance()
-    let aliasType = p.parseType()
-    if p.current().kind == tkNewline:
-      discard p.advance()
-    # Attributes may sit on either side of the `=`:
-    #   type X [packed] = u16      (collected above, before the `=`)
-    #   type X = u16 [saturating]  (collected by parseType, after it)
-    # Keep both — assigning here used to CLOBBER the trailing ones, which is
-    # why `[saturating]` was silently dropped.
-    for a in attrs: aliasType.attrs.add(a)
-    return Decl(span: sp, kind: dkType, name: name, generics: typeGenerics, typeBody: aliasType)
+    return p.parseAliasBody(sp, name, generics, attrs)
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
-  while p.current().kind == tkNewline:
-    discard p.advance()
-  discard p.expect(tkIndent)
-  
+  while p.current().kind == tkNewline: discard p.advance()
   var variants: seq[VariantDef]
   var transitions: seq[Transition]
   var fields: seq[FieldDef]
   var members: seq[Decl]
-  
-  while p.current().kind != tkDedent and p.current().kind != tkEOF:
-    if p.current().kind == tkNewline:
-      discard p.advance()
-      continue
-      
-    if p.current().kind == tkPipe:
-      discard p.advance()
-      let vSp = p.getSpan()
-      let vName = p.expectMemberName("Expected variant name").value
-      var vFields: seq[FieldDef]
-      var hasParens = false
-      if p.current().kind == tkLParen:
-        hasParens = true
-        discard p.advance()
-      if p.current().kind == tkLBrace:
-        discard p.advance()
-        while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-          let fSp = p.getSpan()
-          let fName = p.expectMemberName("Expected variant field name").value
-          discard p.expect(tkColon)
-          let fType = p.parseType()
-          vFields.add(FieldDef(name: fName, typ: fType, attrs: @[], span: fSp))
-          if p.current().kind == tkComma:
-            discard p.advance()
-        discard p.expect(tkRBrace)
-      if hasParens:
-        discard p.expect(tkRParen)
-      variants.add(VariantDef(name: vName, fields: vFields, span: vSp))
-      if p.current().kind == tkNewline:
-        discard p.advance()
-        
-    elif p.current().kind == tkIdent and p.current().value == "transitions":
-      discard p.advance()
-      discard p.expect(tkColon)
-      discard p.expect(tkNewline)
-      discard p.expect(tkIndent)
-      while p.current().kind != tkDedent and p.current().kind != tkEOF:
-        if p.current().kind == tkNewline:
-          discard p.advance()
-          continue
-        let tSp = p.getSpan()
-        let fromState = p.expect(tkIdent, "Expected transition source state").value
-        discard p.expect(tkArrow)
-        let toState = p.expect(tkIdent, "Expected transition target state").value
-        transitions.add(Transition(`from`: fromState, to: toState, span: tSp))
-        if p.current().kind == tkNewline:
-          discard p.advance()
-      discard p.expect(tkDedent)
-      
-    elif p.current().kind == tkAttr and p.current().value == "invariant":
-      p.parseInvariantBlock(members)
-
+  p.indentedBlock:
+    p.parseTypeBodyLine(variants, transitions, fields, members)
+  let bodyType =
+    if variants.len > 0:
+      Type(span: sp, kind: tkSum, variants: variants,
+           transitions: transitions, attrs: attrs)
     else:
-      let fSp = p.getSpan()
-      let fName = p.expectMemberName("Expected field or variant in type").value
-      discard p.expect(tkColon)
-      let fType = p.parseType()
-      if p.current().kind == tkAssign:
-        discard p.advance()
-        discard p.parseExpr()
-      fields.add(FieldDef(name: fName, typ: fType, attrs: @[], span: fSp))
-      if p.current().kind == tkNewline:
-        discard p.advance()
-        
-  discard p.expect(tkDedent)
-  
-  var bodyType: Type
-  if variants.len > 0:
-    bodyType = Type(span: sp, kind: tkSum, variants: variants, transitions: transitions, attrs: attrs)
-  else:
-    bodyType = Type(span: sp, kind: tkRecord, fields: fields, attrs: attrs)
-    
-  return Decl(span: sp, kind: dkType, name: name, generics: typeGenerics, typeBody: bodyType, typeMembers: members)
+      Type(span: sp, kind: tkRecord, fields: fields, attrs: attrs)
+  Decl(span: sp, kind: dkType, name: name, generics: generics,
+       typeBody: bodyType, typeMembers: members)
+
+proc parseSelectSource(p: var Parser): string =
+  ## A bare message name, or a dotted event source like `timer.1s` /
+  ## `timeout.5s` / `resp.ok` (timers and readiness — parsed now, given
+  ## meaning in a later phase). Consumed up to the arrow.
+  result = p.expect(tkIdent, "Expected a select source").value
+  while p.current().kind in {tkDot, tkIdent, tkIntLit} and
+        p.current().kind != tkArrow:
+    result.add(p.advance().value)
+
+proc parseSelectBinding(p: var Parser, armSp: Span): seq[Param] =
+  ## `-> {name: Type, ...}` typed binding — the arm IS the message decl.
+  ## `shutdown` (reserved) and empty-payload arms use `-> {}`.
+  if p.current().kind != tkLBrace: return
+  discard p.advance()
+  while p.current().kind notin {tkRBrace, tkEOF}:
+    let bn = p.expect(tkIdent, "Expected binding name").value
+    var bt: Type = nil
+    if p.current().kind == tkColon:
+      discard p.advance()
+      bt = p.parseType()
+    result.add(Param(name: bn, typ: bt, span: armSp))
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBrace)
+
+proc parseSelectArm(p: var Parser): SelectArm =
+  ## `| source -> {binding}: body` — one arm of an `on select`.
+  let armSp = p.getSpan()
+  discard p.expect(tkPipe)
+  let source = p.parseSelectSource()
+  discard p.expect(tkArrow)
+  let binding = p.parseSelectBinding(armSp)
+  discard p.expect(tkColon)
+  let body = p.parseExpr()
+  if p.current().kind == tkNewline: discard p.advance()
+  SelectArm(source: source, binding: binding, body: body, span: armSp)
+
+proc parseSelectDecl(p: var Parser, sp: Span): Decl =
+  ## `on select:` — wait on multiple event sources (spec §9.3). A direct
+  ## dkSelect node, NOT an exkMatch reuse: each arm's source is a message
+  ## handler name, `-> {binding}` binds the payload, `: body` runs.
+  discard p.advance() # eat "on"
+  discard p.advance() # eat "select"
+  discard p.expect(tkColon)
+  discard p.expect(tkNewline)
+  var arms: seq[SelectArm]
+  p.indentedBlock:
+    arms.add(p.parseSelectArm())
+  Decl(span: sp, kind: dkSelect, selectArms: arms)
+
+proc parseQualifiedName(p: var Parser): string =
+  ## `name` or `Type.member` — a fn may be declared as a member.
+  result = p.expect(tkIdent, "Expected function or event name").value
+  while p.current().kind == tkDot:
+    discard p.advance()
+    result.add("." & p.expect(tkIdent,
+                              "Expected qualified name component").value)
+
+proc parseBracketedNames(p: var Parser, what: string): seq[string] =
+  ## `[A, B, C]` — a comma-separated name list in brackets.
+  if p.current().kind != tkLBracket: return
+  discard p.advance()
+  while p.current().kind notin {tkRBracket, tkEOF}:
+    result.add(p.expect(tkIdent, "Expected " & what).value)
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBracket)
+
+proc parseErrorTypes(p: var Parser, errTypes: var seq[string]) =
+  ## `[error: E]` or `[error: E | F]` — the enums this fn may raise.
+  discard p.expect(tkColon)
+  errTypes.add(p.expectMemberName("Expected error enum name after 'error:'").value)
+  while p.current().kind == tkPipe:
+    discard p.advance()
+    errTypes.add(p.expectMemberName("Expected error enum name after '|'").value)
+
+proc parseEffectList(p: var Parser, effects: var seq[EffectMarker],
+                     errTypes: var seq[string]) =
+  ## `[io, may_block]` — the effect markers, with `error:` folded in since it
+  ## shares the bracket.
+  if p.current().kind != tkLBracket: return
+  discard p.advance()
+  while p.current().kind notin {tkRBracket, tkEOF}:
+    let effSp = p.getSpan()
+    let effName = p.expectAttrName("Expected effect marker").value
+    if effName == "error":
+      p.parseErrorTypes(errTypes)
+    else:
+      var eff: EffectMarker
+      if not effectMarkerFromName(effName, eff):
+        p.reportError("Unknown effect marker: " & effName, effSp.line, effSp.col)
+      effects.add(eff)
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBracket)
 
 # fn name[T]({params}) -> ret [effects]: body — also `on select` arms and event handlers
 proc parseFnDecl(p: var Parser, sp: Span): Decl =
-  let curr = p.current()
-  if curr.kind == tkOn and p.peek(1).kind == tkSelect:
-    # `on select:` — wait on multiple event sources (spec §9.3). Direct
-    # dkSelect node (no exkMatch reuse). Phase B: each arm's source is a
-    # message handler name; `-> {binding}` binds the payload; `: body` runs.
-    discard p.advance() # eat "on"
-    discard p.advance() # eat "select"
-    discard p.expect(tkColon)
-    discard p.expect(tkNewline)
-    discard p.expect(tkIndent)
-    var arms: seq[SelectArm]
-    while p.current().kind != tkDedent and p.current().kind != tkEOF:
-      if p.current().kind == tkNewline:
-        discard p.advance()
-        continue
-      let armSp = p.getSpan()
-      discard p.expect(tkPipe)
-      # source is a bare message name, or a dotted event source like
-      # `timer.1s` / `timeout.5s` / `resp.ok` (timers/readiness — parsed now,
-      # given meaning in a later phase). Consume up to the arrow.
-      var source = p.expect(tkIdent, "Expected a select source").value
-      while p.current().kind in {tkDot, tkIdent, tkIntLit} and
-            p.current().kind != tkArrow:
-        source.add(p.advance().value)
-      discard p.expect(tkArrow)
-      # `-> {name: Type, ...}` typed binding — the arm IS the message decl.
-      # `shutdown` (reserved) and empty-payload arms use `-> {}`.
-      var binding: seq[Param]
-      if p.current().kind == tkLBrace:
-        discard p.advance()
-        while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-          let bn = p.expect(tkIdent, "Expected binding name").value
-          var bt: Type = nil
-          if p.current().kind == tkColon:
-            discard p.advance()
-            bt = p.parseType()
-          binding.add(Param(name: bn, typ: bt, span: armSp))
-          if p.current().kind == tkComma: discard p.advance()
-        discard p.expect(tkRBrace)
-      discard p.expect(tkColon)
-      let body = p.parseExpr()
-      arms.add(SelectArm(source: source, binding: binding, body: body, span: armSp))
-      if p.current().kind == tkNewline:
-        discard p.advance()
-    discard p.expect(tkDedent)
-    return Decl(span: sp, kind: dkSelect, selectArms: arms)
-
+  if p.current().kind == tkOn and p.peek(1).kind == tkSelect:
+    return p.parseSelectDecl(sp)
   discard p.advance()
   # `fn inline name(...)` — codegen-attribute keyword slot after fn
   var isInline = false
@@ -595,18 +628,8 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
      p.peek(1).kind == tkIdent:
     isInline = true
     discard p.advance()
-  var name = p.expect(tkIdent, "Expected function or event name").value
-  while p.current().kind == tkDot:
-    discard p.advance()
-    name.add("." & p.expect(tkIdent, "Expected qualified name component").value)
-  var fnGenerics: seq[string]
-  if p.current().kind == tkLBracket:
-    discard p.advance()
-    while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-      fnGenerics.add(p.expect(tkIdent, "Expected generic parameter name").value)
-      if p.current().kind == tkComma:
-        discard p.advance()
-    discard p.expect(tkRBracket)
+  let name = p.parseQualifiedName()
+  let fnGenerics = p.parseBracketedNames("generic parameter name")
   let params = parseParamList(p)
   var retType: Type
   if p.current().kind == tkArrow:
@@ -615,31 +638,14 @@ proc parseFnDecl(p: var Parser, sp: Span): Decl =
   var effects: seq[EffectMarker]
   var errTypes: seq[string]
   harvestEffects(retType, effects, errTypes)
-  if p.current().kind == tkLBracket:
-    discard p.advance()
-    while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-      let effSp = p.getSpan()
-      let effName = p.expectAttrName("Expected effect marker").value
-      if effName == "error":
-        discard p.expect(tkColon)
-        errTypes.add(p.expectMemberName("Expected error enum name after 'error:'").value)
-        while p.current().kind == tkPipe:
-          discard p.advance()
-          errTypes.add(p.expectMemberName("Expected error enum name after '|'").value)
-        if p.current().kind == tkComma: discard p.advance()
-        continue
-      var eff: EffectMarker
-      if not effectMarkerFromName(effName, eff):
-        p.reportError("Unknown effect marker: " & effName, effSp.line, effSp.col)
-      effects.add(eff)
-      if p.current().kind == tkComma:
-        discard p.advance()
-    discard p.expect(tkRBracket)
+  p.parseEffectList(effects, errTypes)
   var body: Expr = nil
   if p.current().kind == tkColon:
     discard p.advance()
     body = p.parseBlock()
-  return Decl(span: sp, kind: dkFn, name: name, fnGenerics: fnGenerics, fnParams: params, fnReturnType: retType, fnEffects: effects, fnBody: body, fnErrorTypes: errTypes, isInline: isInline)
+  Decl(span: sp, kind: dkFn, name: name, fnGenerics: fnGenerics,
+       fnParams: params, fnReturnType: retType, fnEffects: effects,
+       fnBody: body, fnErrorTypes: errTypes, isInline: isInline)
 
 # decision name(inputs) -> ret: pattern-row table (spec 6.1)
 proc parseDecisionDecl(p: var Parser, sp: Span): Decl =
