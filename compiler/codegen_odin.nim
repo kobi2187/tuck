@@ -1239,155 +1239,210 @@ proc injectTailReturn(body: Expr, retTypeStr: string) =
 
 # Decision tables: packed single-switch when every column is enumerable,
 # otherwise a first-match if/else chain (mirrors codegen.nim).
-proc genDecisionTable(ctx: var OdinCodegenCtx, d: Decl): string =
-  let ind = "  ".repeat(ctx.indent)
-  let fnNameSanitized = d.name.replace(".", "_")
+proc decisionHeader(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## The proc signature a decision table compiles to.
   var params: seq[string]
   for p in d.fnParams:
     params.add(p.name & ": " & ctx.odinType(p.typ))
-  let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
-  let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
-  let header = ind & fnNameSanitized & " :: proc(" & params.join(", ") & ")" &
-               retStr & " {"
+  let retT = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
+  let retStr = if retT != "void": " -> " & retT else: ""
+  ind & d.name.replace(".", "_") & " :: proc(" & params.join(", ") & ")" &
+    retStr & " {"
 
-  # Bitmask/packed path: when every column domain is enumerable the whole
-  # table collapses to one switch over a packed integer key (spec 6.1).
-  let (domains, allEnum, comboCount) = columnDomains(ctx.module, d)
-  if allEnum and comboCount > 0 and comboCount <= MaxPackedCombos:
-    var rowPats: seq[seq[string]]
-    var rowBodies: seq[string]
-    for s in d.fnBody.stmts:
-      if s.kind != exkMatch or s.arms.len == 0: continue
-      let pat = s.arms[0].pattern
-      var pats: seq[string]
-      for el in (if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]):
-        pats.add(genPatternStr(el))
-      rowPats.add(pats)
-      rowBodies.add(ctx.armValue(s.arms[0].body))
-    # first-match outcome for every combination, grouped by outcome
-    let groups = groupByOutcome(domains, comboCount, rowPats, rowBodies)
-    # packed key: mixed radix over the ordinal of each column. NOT
-    # packedKeyExpr — that emits Nim's `ord()`; Odin needs int() and a bool
-    # ternary, which is the one part of this that is genuinely syntax.
-    var keyParts: seq[string]
-    var stride = comboCount
-    for c in 0 ..< domains.len:
-      stride = stride div domains[c].len
-      let ordExpr = if domains[c] == @["false", "true"]:
-                      "(" & d.fnParams[c].name & " ? 1 : 0)"
-                    else:
-                      "int(" & d.fnParams[c].name & ")"
-      if stride > 1:
-        keyParts.add(ordExpr & " * " & $stride)
-      else:
-        keyParts.add(ordExpr)
-    var caseLines: seq[string]
-    caseLines.add(ind & "\tswitch " & keyParts.join(" + ") & " {   // packed decision key")
-    for gi, g in groups:
-      if gi == groups.len - 1:
-        caseLines.add(ind & "\tcase: return " & g.outcome)
-      else:
-        var ks: seq[string]
-        for k in g.keys: ks.add($k)
-        caseLines.add(ind & "\tcase " & ks.join(", ") & ": return " & g.outcome)
-    caseLines.add(ind & "\t}")
-    return header & "\n" & caseLines.join("\n") & "\n" & ind & "}\n"
+proc columnOrdinal(domain: seq[string], paramName: string): string =
+  ## A column's ordinal. NOT packedKeyExpr — that emits Nim's `ord()`; Odin
+  ## needs int() and a bool ternary, which is the one part of this that is
+  ## genuinely syntax.
+  if domain == @["false", "true"]: "(" & paramName & " ? 1 : 0)"
+  else: "int(" & paramName & ")"
 
-  var bodyLines: seq[string]
+proc packedKey(d: Decl, domains: seq[seq[string]], comboCount: int): string =
+  ## Mixed radix over the ordinal of each column.
+  var parts: seq[string]
+  var stride = comboCount
+  for c in 0 ..< domains.len:
+    stride = stride div domains[c].len
+    let ordExpr = columnOrdinal(domains[c], d.fnParams[c].name)
+    parts.add(if stride > 1: ordExpr & " * " & $stride else: ordExpr)
+  parts.join(" + ")
+
+proc decisionRowPatterns(s: Expr): seq[string] =
+  ## One row's column patterns, as their surface spelling.
+  let pat = s.arms[0].pattern
+  for el in (if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]):
+    result.add(genPatternStr(el))
+
+proc collectDecisionRows(ctx: var OdinCodegenCtx, d: Decl,
+                         rowPats: var seq[seq[string]],
+                         rowBodies: var seq[string]) =
+  for s in d.fnBody.stmts:
+    if s.kind != exkMatch or s.arms.len == 0: continue
+    rowPats.add(decisionRowPatterns(s))
+    rowBodies.add(ctx.armValue(s.arms[0].body))
+
+proc genPackedDecision(ctx: var OdinCodegenCtx, d: Decl,
+                       domains: seq[seq[string]], comboCount: int,
+                       ind: string): string =
+  ## Every column domain is enumerable, so the whole table collapses to one
+  ## switch over a packed integer key (spec 6.1).
+  var rowPats: seq[seq[string]]
+  var rowBodies: seq[string]
+  ctx.collectDecisionRows(d, rowPats, rowBodies)
+  # first-match outcome for every combination, grouped by outcome
+  let groups = groupByOutcome(domains, comboCount, rowPats, rowBodies)
+  var lines: seq[string]
+  lines.add(ind & "\tswitch " & packedKey(d, domains, comboCount) &
+            " {   // packed decision key")
+  for gi, g in groups:
+    if gi == groups.len - 1:
+      lines.add(ind & "\tcase: return " & g.outcome)
+    else:
+      var ks: seq[string]
+      for k in g.keys: ks.add($k)
+      lines.add(ind & "\tcase " & ks.join(", ") & ": return " & g.outcome)
+  lines.add(ind & "\t}")
+  lines.join("\n")
+
+proc decisionRowCondition(ctx: var OdinCodegenCtx, d: Decl, arm: MatchArm): string =
+  ## The guard a row fires under — empty when every column is a wildcard,
+  ## which makes it the catch-all.
+  let pats = if arm.pattern != nil and arm.pattern.kind == pkTuple:
+               arm.pattern.elems
+             else: @[arm.pattern]
+  var conds: seq[string]
+  for i, pat in pats:
+    let patStr = genPatternStr(pat)
+    if patStr != "_" and i < d.fnParams.len:
+      conds.add(d.fnParams[i].name & " == " & ctx.patternValue(patStr))
+  conds.join(" && ")
+
+proc genChainedDecision(ctx: var OdinCodegenCtx, d: Decl, retTypeStr,
+                        ind: string): string =
+  ## An open column domain cannot be packed, so the rows become guards in
+  ## order, and a table with no catch-all needs a zero value to fall out on.
+  var lines: seq[string]
   var hasCatchAll = false
-  for idx, s in d.fnBody.stmts:
+  for s in d.fnBody.stmts:
     let arm = s.arms[0]
-    let pats = if arm.pattern != nil and arm.pattern.kind == pkTuple:
-                 arm.pattern.elems
-               else:
-                 @[arm.pattern]
-    var conds: seq[string]
-    for i, pat in pats:
-      let patStr = genPatternStr(pat)
-      if patStr != "_" and i < d.fnParams.len:
-        conds.add(d.fnParams[i].name & " == " & ctx.patternValue(patStr))
-    let condStr = if conds.len > 0: conds.join(" && ") else: ""
-    let resultExprStr = ctx.armValue(arm.body)
-    if condStr == "":
-      bodyLines.add(ind & "\treturn " & resultExprStr)
+    let cond = ctx.decisionRowCondition(d, arm)
+    let value = ctx.armValue(arm.body)
+    if cond == "":
+      lines.add(ind & "\treturn " & value)
       hasCatchAll = true
     else:
-      bodyLines.add(ind & "\tif " & condStr & " do return " & resultExprStr)
+      lines.add(ind & "\tif " & cond & " do return " & value)
   if not hasCatchAll and retTypeStr != "void":
-    bodyLines.add(ind & "\treturn {}")
-  return header & "\n" & bodyLines.join("\n") & "\n" & ind & "}\n"
+    lines.add(ind & "\treturn {}")
+  lines.join("\n")
 
-proc genOdinFnDecl(ctx: var OdinCodegenCtx, d: Decl): string =
-  if d.isPending:
-    return ctx.genPendingStub(d)
-  ctx.currentParams = @[]
-  for p in d.fnParams:
-    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
-  if d.isDecision or d.isDecisionTable():
-    return ctx.genDecisionTable(d)
+proc genDecisionTable(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## Packed when every column is enumerable, chained guards otherwise.
   let ind = "  ".repeat(ctx.indent)
-  # Names arrive already mangled by the lowering pass (compiler/mangle.nim),
-  # which is also what keeps Tuck's `fn main` from colliding with Odin's
-  # entry point — it is tuck_main by the time it gets here.
-  let fnNameSanitized = d.name.replace(".", "_")
+  let header = ctx.decisionHeader(d, ind)
+  let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
+                   else: "void"
+  let (domains, allEnum, comboCount) = columnDomains(ctx.module, d)
+  let body = if allEnum and comboCount > 0 and comboCount <= MaxPackedCombos:
+               ctx.genPackedDecision(d, domains, comboCount, ind)
+             else:
+               ctx.genChainedDecision(d, retTypeStr, ind)
+  header & "\n" & body & "\n" & ind & "}\n"
+
+proc cCallbackConvention(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## A fn handed to a C function pointer needs the C calling convention. Odin
+  ## cannot cast between conventions the way Nim can, so it goes on the
+  ## DEFINITION, matched by shape against the module's C-callback fnsig.
+  ##
+  ## ponytail: shape match, not reference tracking. A same-shape fn that never
+  ## crosses the boundary gets "c" harmlessly; tighten if that ever matters.
+  for mem in ctx.module.externMembers():
+    if mem.kind != dkFnSig or not mem.sigIsCCallback or
+       mem.sigParams.len != d.fnParams.len: continue
+    var same = true
+    for i, sp in mem.sigParams:
+      if ctx.odinType(sp.typ) != ctx.odinType(d.fnParams[i].typ): same = false
+    if same: return "\"c\" "
+  ""
+
+proc fnParamList(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## Records pass BY VALUE. The checker binds every param isVar:true, but a
+  ## Tuck mutator returns the updated record and the caller assigns it back
+  ## (`server = withDefaults(server)`), so no pointer is needed — and Odin
+  ## proc params aren't addressable, so `&arg` at the call site is illegal.
+  ##
+  ## Generic fns come first: Odin's parametric polymorphism marks type params
+  ## with `$`.
   var params: seq[string]
+  for g in d.fnGenerics: params.add("$" & g & ": typeid")
   ctx.fnAsParam = true
   for p in d.fnParams:
-    # Records pass BY VALUE. The checker binds every param isVar:true, but a
-    # Tuck mutator returns the updated record and the caller assigns it back
-    # (`server = withDefaults(server)`), so no pointer is needed — and Odin
-    # proc params aren't addressable, so `&arg` at the call site is illegal.
     params.add(p.name & ": " & ctx.odinType(p.typ))
   ctx.fnAsParam = false
-  let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
-  # Generic fns: Odin's parametric polymorphism marks type params with `$`
-  var genericParams: seq[string]
-  for g in d.fnGenerics: genericParams.add("$" & g & ": typeid")
-  let allParams = genericParams & params
+  params.join(", ")
+
+proc fnHeader(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): string =
+  ## Names arrive already mangled by the lowering pass (compiler/mangle.nim),
+  ## which is also what keeps Tuck's `fn main` from colliding with Odin's entry
+  ## point — it is tuck_main by the time it gets here.
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   let inlinePrefix = if d.isInline: ind & "@(require_results=false)\n" else: ""
-  # A fn handed to a C function pointer needs the C calling convention. Odin
-  # cannot cast between conventions the way Nim can, so it goes on the
-  # DEFINITION, matched by shape against the module's C-callback fnsig.
-  # ponytail: shape match, not reference tracking. A same-shape fn that never
-  # crosses the boundary gets "c" harmlessly; tighten if that ever matters.
-  var conv = ""
-  for mem in ctx.module.externMembers():
-    if mem.kind == dkFnSig and mem.sigIsCCallback and
-       mem.sigParams.len == d.fnParams.len:
-      var same = true
-      for i, sp in mem.sigParams:
-        if ctx.odinType(sp.typ) != ctx.odinType(d.fnParams[i].typ): same = false
-      if same: conv = "\"c\" "
-  let header = inlinePrefix & ind & fnNameSanitized & " :: proc " & conv & "(" &
-               allParams.join(", ") & ")" & retStr & " {"
-  let oldVars = ctx.definedVars
-  for p in d.fnParams:
-    ctx.definedVars.incl(p.name)
-  let oldIndent = ctx.indent
-  let (bw, binner, binnerT) = ctx.odinBangInfo(d.fnReturnType)
-  ctx.retWrapped = bw
-  ctx.retInnerOdin = binner
-  ctx.retInnerT = binnerT
+  inlinePrefix & ind & d.name.replace(".", "_") & " :: proc " &
+    ctx.cCallbackConvention(d) & "(" & ctx.fnParamList(d) & ")" & retStr & " {"
+
+proc enterReturnContext(ctx: var OdinCodegenCtx, d: Decl) =
+  ## What the body needs to know about the return: whether it auto-wraps into
+  ## a !T/?T result, and whether the returned value carries invariants to
+  ## validate on the way out.
+  let (wrapped, innerOdin, innerT) = ctx.odinBangInfo(d.fnReturnType)
+  ctx.retWrapped = wrapped
+  ctx.retInnerOdin = innerOdin
+  ctx.retInnerT = innerT
   ctx.retInvName =
-    if not bw and d.fnReturnType != nil and d.fnReturnType.kind == tkNamed and
+    if not wrapped and d.fnReturnType != nil and
+       d.fnReturnType.kind == tkNamed and
        hasInvariants(ctx.module, d.fnReturnType.name): d.fnReturnType.name
     else: ""
-  injectTailReturn(d.fnBody, retTypeStr)
-  var bodyStr = ctx.genOdinExpr(d.fnBody)
-  if d.fnBody != nil and d.fnBody.kind != exkBlock:
-    # single-expression body: `header {` is already open, so just the line
-    let kw = if retTypeStr != "void": "return " else: ""
-    bodyStr = ind & "\t" & kw & bodyStr
-  elif retTypeStr != "void":
-    bodyStr = ensureTrailingReturn(bodyStr, d.fnBody, oldIndent)
-  ctx.indent = oldIndent
+
+proc leaveReturnContext(ctx: var OdinCodegenCtx) =
   ctx.retWrapped = false
   ctx.retInnerOdin = ""
   ctx.retInnerT = nil
   ctx.retInvName = ""
-  ctx.definedVars = oldVars
-  return header & "\n" & bodyStr & "\n" & ind & "}\n"
+
+proc genFnBody(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): string =
+  ## The body, with every return path accounted for: a single-expression body
+  ## becomes one `return` line, and a block body gets a trailing return when
+  ## the fn owes a value.
+  let savedIndent = ctx.indent
+  injectTailReturn(d.fnBody, retTypeStr)
+  result = ctx.genOdinExpr(d.fnBody)
+  if d.fnBody != nil and d.fnBody.kind != exkBlock:
+    # single-expression body: `header {` is already open, so just the line
+    let kw = if retTypeStr != "void": "return " else: ""
+    result = ind & "\t" & kw & result
+  elif retTypeStr != "void":
+    result = ensureTrailingReturn(result, d.fnBody, savedIndent)
+  ctx.indent = savedIndent
+
+proc genOdinFnDecl(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## An ordinary fn. A pending fn is a stub and a decision table has its own
+  ## lowering; both leave before any of this runs.
+  if d.isPending: return ctx.genPendingStub(d)
+  ctx.currentParams = @[]
+  for p in d.fnParams:
+    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
+  if d.isDecision or d.isDecisionTable(): return ctx.genDecisionTable(d)
+  let ind = "  ".repeat(ctx.indent)
+  let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
+                   else: "void"
+  let header = ctx.fnHeader(d, retTypeStr, ind)
+  let savedVars = ctx.definedVars
+  for p in d.fnParams: ctx.definedVars.incl(p.name)
+  ctx.enterReturnContext(d)
+  let bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  ctx.leaveReturnContext()
+  ctx.definedVars = savedVars
+  header & "\n" & bodyStr & "\n" & ind & "}\n"
 
 # --- dkType sum-type branch helpers ---
 
