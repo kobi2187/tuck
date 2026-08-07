@@ -244,8 +244,8 @@ object Cat:
   fn steps({self: Cat}) -> int:
     return 0
 
-Dog satisfies [Speaker, Mover]
-Cat satisfies [Speaker, Mover]
+satisfies Dog: Speaker, Mover
+satisfies Cat: Speaker, Mover
 
 fn hear({a: Speaker}) -> int:
   return a.noise
@@ -269,7 +269,7 @@ interface Speaker:
 object Dog:
   name: str
 
-Dog satisfies Speaker
+satisfies Dog: Speaker
 
 fn main() -> int:
   return 0
@@ -280,7 +280,7 @@ src <<'TUCKEOF'
 interface Speaker:
   fn noise({self: Self}) -> int
 
-Ghost satisfies Speaker
+satisfies Ghost: Speaker
 
 fn main() -> int:
   return 0

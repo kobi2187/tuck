@@ -964,8 +964,10 @@ typ Light:
 TUCKEOF
 bad_check 'a misspelled top-level keyword names the valid ones' 'does\ not\ start\ a\ declaration'
 
-# ...and the shape it guards must not swallow `Obj satisfies Iface`, which is
-# also `<ident> <ident>` at top level.
+# `satisfies` is a top-level declaration opener like any other, so it must not
+# be caught by the misspelled-keyword check above. (It used to be spelled
+# `Obj satisfies Iface`, deciding on the SECOND word — the one construct that
+# needed a two-token lookahead, and the reason that check has to be careful.)
 src <<'TUCKEOF'
 object Dog:
   n: int
@@ -975,7 +977,7 @@ object Dog:
 interface Animal:
   fn noise({self: Self}) -> int
 
-Dog satisfies Animal
+satisfies Dog: Animal
 
 fn main() -> void:
   return

@@ -811,6 +811,20 @@ Conformance is checked at compile time. The rules:
 
 A missing or mismatched member is a compile error naming both signatures.
 
+**Attaching a contract from outside.** A conformance may also be declared at
+top level, by a module that owns neither the object nor the interface:
+
+```tuck
+satisfies Document: Storable
+satisfies Image: Storable, Cacheable      # several at once
+```
+
+This is what lets a library's type be used through *your* interface without
+editing the library. The rules above are unchanged — the object must still
+implement every member, or it is a compile error. Re-stating a contract the
+object already declares in its body is a no-op, not an error: a calling module
+cannot know what the library already promised.
+
 ### 5.3 Interface Dispatch
 
 An interface has no size, so an interface-typed value is never the object
@@ -1458,10 +1472,14 @@ registry <- "registry" * >upIdent * ":" * nl * +sumVariant
 ifaceDecl <- "interface" * >upIdent * ":" * nl * indent * +fnSig * dedent
 satisfies <- "satisfies" * >upIdent * nl
 
+# ...and a top-level form, for attaching an object you did not declare to a
+# contract you did not declare. Keyword first, like every other declaration.
+satisfiesDecl <- "satisfies" * >upIdent * ":" * >upIdent * *("," * >upIdent) * nl
+
 # Top level
 topDecl <- fnDecl | typeDecl | objDecl | mixinDecl | ifaceDecl
          | actorDecl | taskDecl | registryDecl | decisionDecl
-         | letStmt | varStmt
+         | satisfiesDecl | letStmt | varStmt
 ```
 
 ---

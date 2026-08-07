@@ -994,19 +994,21 @@ proc parseConstDecl(p: var Parser, sp: Span): Decl =
   Decl(span: sp, kind: dkConst, name: name, constVal: p.parseExpr())
 
 proc parseSatisfyTargets(p: var Parser): seq[string] =
-  ## One interface name, or a bracketed list attaching several at once.
-  if p.current().kind != tkLBracket:
-    return @[p.expect(tkIdent, "Expected interface name after 'satisfies'").value]
-  discard p.advance()
-  while p.current().kind notin {tkRBracket, tkEOF}:
+  ## The contracts after the `:` — one name, or several separated by commas.
+  ##
+  ## No brackets: `satisfies Dog: Speaker, Mover`. The `:` already separates
+  ## subject from contracts, so a bracket would only add noise — and `[...]`
+  ## after a type name means ATTRIBUTES everywhere else in the grammar
+  ## (parser_type's bracketHoldsAttrs), which this is not.
+  result.add(p.expect(tkIdent, "Expected an interface name").value)
+  while p.current().kind == tkComma:
+    discard p.advance()
     result.add(p.expect(tkIdent,
-                        "Expected interface name in satisfies list").value)
-    if p.current().kind == tkComma: discard p.advance()
-  discard p.expect(tkRBracket, "Expected ']' closing a satisfies list")
+                        "Expected an interface name after ','").value)
 
 const TopLevelKeywords = "fn, type, object, actor, task, interface, mixin, " &
   "fnsig, registry, decision, pending, distinct, const, import, extern, " &
-  "errors, register, pool, arena, static_assert"
+  "errors, register, pool, arena, satisfies, static_assert"
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in contextualDecl.
 
@@ -1027,19 +1029,24 @@ proc failIfMisspelledDeclKeyword(p: var Parser) =
                 "A module's top level holds declarations only, opened by one " &
                 "of: " & TopLevelKeywords & ".")
 
-proc parseIdentDecl(p: var Parser, sp: Span): Decl =
-  ## `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL (spec §5.2).
+proc parseSatisfiesDecl(p: var Parser, sp: Span): Decl =
+  ## `satisfies Obj: Iface` / `satisfies Obj: A, B, C` at TOP LEVEL (spec §5.2).
   ##
   ## A CALLING module attaches an object it did not declare to a contract it
   ## did not declare — so a library's type can be used through your interface
-  ## without editing the library. Contextual, exactly like the object-body
-  ## form: `satisfies` is not a token, so this is gated on the next ident
-  ## being it, and any other top-level ident falls through to an expression.
-  if not (p.peek(1).kind == tkIdent and p.peek(1).value == "satisfies"):
-    p.failIfMisspelledDeclKeyword()
-    return p.parseExprDecl(sp)
-  let objName = p.advance().value
+  ## without editing the library.
+  ##
+  ## KEYWORD FIRST, like every other declaration. The form used to be
+  ## `Obj satisfies Iface`, which put the deciding word SECOND and made this
+  ## the one top-level construct needing a two-token lookahead — parseDecl had
+  ## to send every stray ident through parseIdentDecl to find out. The `:`
+  ## separates subject from contract, so the list form needs no brackets.
   discard p.advance()                  # `satisfies`
+  let objName = p.expect(tkIdent,
+                         "Expected an object name after 'satisfies'").value
+  discard p.expect(tkColon,
+                   "Expected ':' after the object name — write " &
+                   "`satisfies " & objName & ": Iface`")
   let targets = p.parseSatisfyTargets()
   if p.current().kind == tkNewline: discard p.advance()
   Decl(span: sp, kind: dkSatisfies, name: objName, satisfyTargets: targets)
@@ -1064,6 +1071,10 @@ proc contextualDecl(p: var Parser, sp: Span, handled: var bool): Decl =
   of "register": return p.parseRegisterDecl(sp)
   of "pool": return p.parsePoolDecl(sp)
   of "arena": return p.parseArenaDecl()
+  # `satisfies Obj: Iface` (spec 5.2) — gated on the object name following, so
+  # a variable or field named `satisfies` still parses as an expression.
+  of "satisfies":
+    if p.peek().kind == tkIdent: return p.parseSatisfiesDecl(sp)
   else: discard
   handled = false
 
@@ -1094,7 +1105,12 @@ proc parseDecl*(p: var Parser): Decl =
   of tkMixin: return p.parseMixinDecl(sp)
   of tkPlus: return p.parseCompositionDecl(sp)
   of tkConst: return p.parseConstDecl(sp)
-  of tkIdent: return p.parseIdentDecl(sp)
+  of tkIdent:
+    # Not a declaration opener (contextualDecl already had first refusal), so
+    # this is a statement — rejected as a top-level one, unless it is a typo'd
+    # keyword, which failIfMisspelledDeclKeyword names first.
+    p.failIfMisspelledDeclKeyword()
+    return p.parseExprDecl(sp)
   else: return p.parseExprDecl(sp)
 
 proc parseModule*(p: var Parser): Module =
