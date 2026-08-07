@@ -628,6 +628,18 @@ rc=0; "tests/.smoke_e32/out/m_32_duration_units" || rc=$?
 rm -rf "tests/.smoke_e32"
 }
 
+case_e43() {
+# The literal-value payload: `5.double` is `{value: 5} double`. The wrap is made
+# in compiler/rewrite.nim BEFORE type checking, so it does not depend on the
+# applied name resolving — while it lived inside a type rule, an unknown fn
+# skipped the wrap and `5.ms` silently emitted a bare `5`. 10 + 30 -> exit 40.
+rm -rf "tests/.smoke_e43" && mkdir -p "tests/.smoke_e43"
+./tuck build examples/43-literal-payload.tuck -o:"tests/.smoke_e43/out" --root:"$(pwd)" > /dev/null
+rc=0; "tests/.smoke_e43/out/m_43_literal_payload" || rc=$?
+[ "$rc" -eq 40 ] || { echo "FAIL: literal-payload example exit $rc, want 40"; exit 1; }
+rm -rf "tests/.smoke_e43"
+}
+
 case_effects() {
 # Effects cross the module boundary, from source AND from the cached index.
 # Both paths must reject identically: a pure fn calling an imported [io] fn is
@@ -706,7 +718,7 @@ rm -rf "$bt"
 
 # Launch every case, then collect. `wait <pid>` yields that job's status.
 pids=""
-for c in case_inv case_tdl case_chaintail case_errmatch case_tour123 case_errname case_lib case_ctrlflow case_valuetype case_nullary case_matchret case_seqat case_index case_pool case_e25 case_e26 case_e27 case_e28 case_e29 case_e30 case_e31 case_e32 case_effects case_bytype; do
+for c in case_inv case_tdl case_chaintail case_errmatch case_tour123 case_errname case_lib case_ctrlflow case_valuetype case_nullary case_matchret case_seqat case_index case_pool case_e25 case_e26 case_e27 case_e28 case_e29 case_e30 case_e31 case_e32 case_e43 case_effects case_bytype; do
   $c & pids="$pids $!:$c"
 done
 rc=0

@@ -687,15 +687,6 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
     # the rt-owned instance (main's waitUntil predicates read state this way)
     if ctx.isActorType(e.receiver.name):
       return actorSingletonName(e.receiver.name) & "." & e.fieldName
-  if e.receiver != nil and e.receiver.kind == exkLit and
-     e.receiver.litKind in {lkInt, lkFloat}:
-    # `5.ms` the checker could not resolve — a sketch example applying a
-    # helper it never declared or imported (01-data-flow's `timeout: 5.ms`
-    # with no `import time`). A number has no fields, so emitting `5.ms` would
-    # be invalid in the target; degrade to the bare literal and let the walking
-    # skeleton still compile. A DECLARED helper never lands here: the checker
-    # stamps a call and `hasCall` above catches it.
-    return ctx.genExpr(e.receiver)
   ctx.genExpr(e.receiver) & "." & e.fieldName
 
 proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =

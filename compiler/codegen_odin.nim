@@ -966,11 +966,6 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     # bare Type.Variant of a payload sum: kind-tagged construction
     let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
     if ctor != "": return ctor
-  if e.receiver != nil and e.receiver.kind == exkLit and
-     e.receiver.litKind in {lkInt, lkFloat}:
-    # `5.ms` the checker could not resolve — see the Nim backend's twin of
-    # this branch. A declared helper never reaches here; `hasCall` catches it.
-    return ctx.genOdinExpr(e.receiver)
   ctx.genOdinExpr(e.receiver) & "." & e.fieldName
 
 proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =

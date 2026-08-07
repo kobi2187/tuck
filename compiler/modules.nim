@@ -55,7 +55,7 @@
 # ---------------------------------------------------------------------------
 import os, strutils, hashes, sets, tables, times
 import msgpack4nim
-import ast, parser
+import ast, parser, rewrite
 import ../lexer
 
 type
@@ -92,8 +92,14 @@ proc parseSource*(source: string): Module =
   ## its own copy of the lex-then-parse loop. Only one of them was wrapped
   ## when the front end started raising, so `tuck ch` on a bad character
   ## printed an unhandled-exception traceback instead of a diagnostic.
+  ##
+  ## Being the single entry point is also why the rewrite pass hooks here:
+  ## every module reaches the checker normalized, however it was loaded. The
+  ## msgpack cache therefore stores already-rewritten trees, which is safe
+  ## because buildStamp keys on the compiler's own build time — see rewrite.nim.
   var p = Parser(source: source, tokens: lexSource(source), cursor: 0)
-  p.parseModule()
+  result = p.parseModule()
+  rewriteModule(result)
 
 proc parseTuckFile*(path: string): Module =
   ## Parse one file, naming it in any rejection. The lexer and parser see only

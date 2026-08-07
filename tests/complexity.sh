@@ -43,5 +43,15 @@ if [ "$rc" -eq 0 ]; then
 fi
 echo "complexity.sh: 1 failed"
 echo "  A proc got more complex, or a new one landed over the ceiling."
-echo "  Split it — do not raise CEILING/BUDGET in this file."
+echo
+echo "  BUDGET is a COUNT, not a per-proc verdict: any proc over cc 5 that"
+echo "  gets split pays it back. Splitting the newcomer is rarely the best"
+echo "  trade — a small proc at cc=6 is far more readable than the cc=20+"
+echo "  procs already in the tree. Run"
+echo
+echo "    python3 tools/complexity.py compiler/*.nim lexer.nim tuck.nim \\"
+echo "      | grep cc= | sort -t= -k2 -rn | head"
+echo
+echo "  and split the worst offender you can do WELL instead. Never raise"
+echo "  CEILING/BUDGET in this file."
 exit 1

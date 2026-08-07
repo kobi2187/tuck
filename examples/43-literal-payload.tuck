@@ -1,0 +1,29 @@
+# The literal-value payload (spec: a bare literal IS a one-field struct).
+#
+# `5.double` means `{value: 5} double` — the literal wraps into the payload the
+# signature declares, and the fn reads `value` in its body. Nothing here is
+# special-cased for numbers: it rides the ordinary payload convention, which is
+# also what makes `timeout {5.ms}` work.
+#
+# The wrap happens in compiler/rewrite.nim, BEFORE type checking, so it does not
+# depend on the applied name resolving. That ordering is the point: while the
+# wrap lived inside a type rule it was skipped whenever the fn was unknown, and
+# `5.ms` with no `import time` silently emitted a bare `5` — the unit dropped,
+# with the check still reporting OK.
+#
+# Exit code IS the assertion: 10 + 30 = 40.
+import sys
+
+fn double({value: int}) -> int:
+  return value * 2
+
+fn addTen({value: int}) -> int:
+  return value + 10
+
+fn main() -> void:
+  # 5.double == {value: 5} double == 10
+  let a = 5.double
+  # chained, left to right: 10 -> 20 -> 30
+  let b = 10.double.addTen
+  let total = a + b     # 10 + 30
+  total sys::exit

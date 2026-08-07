@@ -117,6 +117,7 @@
 import ast, semantics, lowering, tables, strutils, sets
 import resolution
 import ast_query
+import rewrite   # isLiteralPayload — recognize the wrap the pass introduced
 import typecheck_util
 export typecheck_util
 import typecheck_state
@@ -559,14 +560,72 @@ proc asSlotInvoke(tc: var TypeChecker, e: Expr): Type =
   result = tc.checkThroughFnSig(slotT, call)
   if result == nil: result = unknownType(e.span)
 
-proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
+proc missingFieldMessage(e: Expr, recvT: Type, fields: seq[FieldDef]): string =
+  ## Known record, missing field, no matching fn: the payoff error. Sum types
+  ## carry variant fields we don't track per-variant in v1, so only a plain
+  ## record is flagged; anything else falls through to gradual typing.
+  if fields.len == 0: return ""
+  if recvT.kind != tkRecord: return ""
+  "no field '" & e.fieldName & "' on type " & typeName(recvT)
+
+proc unresolvedFieldMessage(e: Expr, recvT: Type,
+                            fields: seq[FieldDef]): string =
+  ## Why `x.name` resolved to nothing, most specific reason first. Empty means
+  ## nothing definite enough to report.
+  if e.dotArg != nil:
+    # `.fn {args}` — the brace proves call intent (ruling 2026-07-23), so this
+    # is an undeclared CALL, not a field read to fall through on.
+    return "'" & e.fieldName & "' is called with arguments here but is not " &
+           "declared — a `.fn {args}` call needs a declared fn (add one, or " &
+           "a `pending:` stub)"
+  if isLiteralPayload(e.receiver):
+    # The rewrite pass turned a bare literal receiver into the payload
+    # `{value: n}` (`5.ms` is `{value: 5} .ms`), so by here BOTH lookups have
+    # failed: no field of that record, and no fn in scope. Say both, and name
+    # the likeliest cause — an unimported helper is how this reads in
+    # practice. missingFieldMessage would instead describe a wrap the user
+    # never wrote.
+    return "'" & e.fieldName & "' is neither a field of " & typeName(recvT) &
+           " nor a fn in scope — a literal applied to a name wraps as that " &
+           "payload, so `" & e.fieldName & "` must be a declared fn. Is an " &
+           "`import` missing?"
+  missingFieldMessage(e, recvT, fields)
+
+proc failUnresolvedFieldAccess(tc: TypeChecker, e: Expr, recvT: Type,
+                               fields: seq[FieldDef]) =
+  ## `x.name` matched no field and no fn. Report the most specific reason —
+  ## every arm of synthFieldAccess has already declined, so this is the end of
+  ## the line and a vague message here is what the user is left with.
+  ##
+  ## Pick the message, then fail once.
+  let msg = unresolvedFieldMessage(e, recvT, fields)
+  if msg.len > 0: fail("Type Error: " & msg, e.span)
+
+proc syntacticFieldForm(tc: var TypeChecker, e: Expr): Type =
+  ## The arms that read `x.name` from its SHAPE alone, before the receiver's
+  ## type is known. First non-nil wins; nil means none of them claimed it.
   result = tc.asResultIntrospection(e)
-  if result != nil: return
-  result = tc.asSlotInvoke(e)
-  if result != nil: return
-  result = tc.asPostfixApplication(e)
-  if result != nil: return
-  result = tc.asVariantConstruction(e)
+  if result == nil: result = tc.asSlotInvoke(e)
+  if result == nil: result = tc.asPostfixApplication(e)
+  if result == nil: result = tc.asVariantConstruction(e)
+
+proc typedFieldForm(tc: var TypeChecker, e: Expr, recvT: Type,
+                    fields: seq[FieldDef]): Type =
+  ## The arms that need the receiver's TYPE. Order matters once: an interface
+  ## receiver must resolve against its CONTRACT before asFnByName, which looks
+  ## the bare name up in the flat signature table and would find whichever
+  ## object declared one — rejecting the receiver ("expects Dog but got
+  ## Animal"), or worse, silently picking the wrong object's member.
+  result = tc.asPlainField(e, fields, recvT)
+  if result == nil: result = tc.asQualifiedMemberCall(e)
+  if result == nil: result = tc.asInterfaceCall(e, recvT)
+  if result == nil: result = tc.asFnByName(e, recvT)
+
+proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
+  ## `x.name` is many things — a field read, a call, a variant construction, an
+  ## interface dispatch. Try them in two groups: what the syntax alone can
+  ## settle, then what needs the receiver's type.
+  result = tc.syntacticFieldForm(e)
   if result != nil: return
   let rawT = tc.synthesize(e.receiver)
   if isWrapper(rawT):
@@ -574,30 +633,9 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
          " — pass it to a handling function or propagate with '?' before accessing fields", e.span)
   let recvT = tc.resolve(rawT)
   let fields = tc.fieldsOf(recvT)
-  result = tc.asPlainField(e, fields, recvT)
+  result = tc.typedFieldForm(e, recvT, fields)
   if result != nil: return
-  result = tc.asQualifiedMemberCall(e)
-  if result != nil: return
-  # Before asFnByName: an interface receiver must resolve against its CONTRACT.
-  # asFnByName looks the bare name up in the flat signature table and would
-  # find whichever object declared one, then reject the receiver ("expects Dog
-  # but got Animal") — or worse, silently pick the wrong object's member.
-  result = tc.asInterfaceCall(e, recvT)
-  if result != nil: return
-  result = tc.asFnByName(e, recvT)
-  if result != nil: return
-  # `.fn {args}` — the brace proves call intent (ruling 2026-07-23). If we
-  # reach here the callee matched neither a field nor a declared fn, so it is
-  # an undeclared call, not a field read to fall through on.
-  if e.dotArg != nil:
-    fail("Type Error: '" & e.fieldName & "' is called with arguments here " &
-         "but is not declared — a `.fn {args}` call needs a declared fn " &
-         "(add one, or a `pending:` stub)", e.span)
-  # Known record, missing field, no matching fn: the payoff error.
-  # Sum types carry variant fields we don't track per-variant in v1 — only
-  # flag when the receiver is a plain record.
-  if fields.len > 0 and recvT.kind == tkRecord:
-    fail("Type Error: no field '" & e.fieldName & "' on type " & typeName(recvT), e.span)
+  tc.failUnresolvedFieldAccess(e, recvT, fields)
   return unknownType(e.span)
 
 proc isOptional(t: Type): bool =

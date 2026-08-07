@@ -1,5 +1,7 @@
 # Named structs and postfix data flow
 
+import time   # `5.ms` is a call into std/time, not a field read
+
 # Walking skeleton: these are declared but not yet implemented.
 # The compiler prints them as a TODO list on every debug build and
 # generates runnable stubs (log + zero value) so the program still runs.
