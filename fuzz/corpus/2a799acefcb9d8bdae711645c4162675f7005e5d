@@ -1,0 +1,4 @@
+actor Count(rÄ
+  total: int
+  on bump({n: int}):
+    total = total + n

@@ -19,7 +19,8 @@ nim c --hints:off --warnings:off -o:tuck tuck.nim || { echo "FAIL: cannot build 
 # critical path starts immediately.
 quick="typecheck.sh frontend.sh examples.sh pointer_containment.sh
 interfaces.sh interface_wrap.sh interface_call.sh actor_result.sh
-bare_variant.sh member_names.sh mangle.sh complexity.sh"
+bare_variant.sh member_names.sh mangle.sh complexity.sh duplicates.sh
+fuzz_corpus.sh"
 
 logdir=$(mktemp -d)
 trap 'rm -rf "$logdir"' EXIT

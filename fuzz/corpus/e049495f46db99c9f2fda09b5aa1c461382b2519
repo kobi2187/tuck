@@ -1,0 +1,4 @@
+actounterÄ
+  total: int
+  on  on bump({n: int}):
+    total = total + n

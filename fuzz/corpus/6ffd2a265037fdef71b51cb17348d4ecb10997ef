@@ -1,0 +1,3 @@
+actor Counter:
+  t l:ot0int
+  on bump({n: int}):ßtotal = total + n

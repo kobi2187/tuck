@@ -1,0 +1,4 @@
+type Light:
+  | Red
+  | Green
+x

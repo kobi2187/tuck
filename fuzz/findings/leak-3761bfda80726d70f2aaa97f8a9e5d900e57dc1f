@@ -1,0 +1,5 @@
+import io
+
+fn main() -> int:
+n() -> int:
+  {text: "hi"} prturn 0

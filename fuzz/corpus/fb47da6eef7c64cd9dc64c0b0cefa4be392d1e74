@@ -1,0 +1,4 @@
+actor Counter:
+  total: int
+  on bump({n: int}):
+×ßßßtotal = total + n

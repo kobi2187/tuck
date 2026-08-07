@@ -1,0 +1,4 @@
+actor Counter:
+  totam: int
+  on bump*{n: {n: int}):
+  oat   total + n

@@ -1,0 +1,4 @@
+object Server:
+  port: int
+  fn start({self: Server}) -> int:
+    return port

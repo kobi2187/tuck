@@ -1,0 +1,3 @@
+³type Light:
+  | Red
+  | ;Green

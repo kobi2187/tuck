@@ -1,0 +1,3 @@
+actor Counteror BounterÄ
+  total bump({n: int}):
+    total = total + n
