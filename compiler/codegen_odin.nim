@@ -107,6 +107,80 @@ proc recStructName(ctx: var OdinCodegenCtx, fields: seq[FieldDef]): string =
   ctx.hoisted.add(res)
   return name
 
+proc isOddBitWidth(name: string): bool =
+  ## `u2`, `u12` — a width a decision table produced that no machine type has.
+  name.len >= 2 and name[0] in {'u', 'i'} and
+    name[1..^1].allCharsInSet({'0'..'9'})
+
+proc roundedIntType(name: string): string =
+  ## Odd bit widths round UP to the next real machine int.
+  let bits = parseInt(name[1..^1])
+  let base = if name[0] == 'u': "u" else: "i"
+  if bits <= 8: base & "8"
+  elif bits <= 16: base & "16"
+  elif bits <= 32: base & "32"
+  else: base & "64"
+
+proc importedTypeQualifier(ctx: OdinCodegenCtx, name: string): string =
+  ## A type declared in an IMPORTED module lives in that module's Odin
+  ## package, so it must be referenced qualified (`time.Milliseconds`). Beef
+  ## needed no such qualification — its modules were static classes in one
+  ## namespace.
+  for d in ctx.module.decls:
+    if d == nil or d.kind != dkType or d.name != name: continue
+    if not d.span.file.startsWith(ImportedTypeMarker & ":"): break
+    let origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
+    let pkg = origin.replace("-", "_")
+    if pkg != ctx.moduleName.replace("-", "_"): return pkg & "." & name
+    break
+  name
+
+proc odinNamedFallback(ctx: OdinCodegenCtx, t: Type): string =
+  ## A name the primitive table did not cover.
+  if isOddBitWidth(t.name): roundedIntType(t.name)
+  elif t.name == UnknownName: "any"  # sketch mode: no type information
+  else: ctx.importedTypeQualifier(t.name)
+
+proc odinTupleType(ctx: var OdinCodegenCtx, t: Type): string =
+  if t.elems.len == 1: return ctx.odinType(t.elems[0])
+  var parts: seq[string]
+  for e in t.elems: parts.add(ctx.odinType(e))
+  "(" & parts.join(", ") & ")"
+
+proc odinAppType(ctx: var OdinCodegenCtx, t: Type): string =
+  ## Odin puts the size BEFORE the element type: [N]T, not T[N].
+  if t.base.kind == tkNamed:
+    case t.base.name
+    of "*":       # elem * count — sized array
+      return "[" & ctx.odinType(t.args[1]) & "]" & ctx.odinType(t.args[0])
+    of "Array":   # Array[count, elem]
+      return "[" & ctx.odinType(t.args[0]) & "]" & ctx.odinType(t.args[1])
+    of "!", "?", "!?":
+      # errors are first-class values: !T / ?T / !?T lower to rt.TuckResult(T)
+      if t.args.len == 1:
+        let inner = ctx.odinType(t.args[0])
+        return "rt.TuckResult(" &
+               (if inner == "void": "rt.TuckUnit" else: inner) & ")"
+    of "Seq":
+      var parts: seq[string]
+      for a in t.args: parts.add(ctx.odinType(a))
+      return "[dynamic]" & parts.join(", ")
+    else: discard
+  var parts: seq[string]
+  for a in t.args: parts.add(ctx.odinType(a))
+  ctx.odinType(t.base) & "(" & parts.join(", ") & ")"
+
+proc odinFuncType(ctx: var OdinCodegenCtx, t: Type): string =
+  ## A resolved function reference (`:plus`) carries its real signature, so it
+  ## emits a callable proc type rather than an opaque pointer.
+  var ps: seq[string]
+  for p in t.params: ps.add(ctx.odinType(p))
+  let r = if t.result != nil and
+             not (t.result.kind == tkNamed and t.result.name == "void"):
+            " -> " & ctx.odinType(t.result)
+          else: ""
+  "proc(" & ps.join(", ") & ")" & r
+
 proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
   if t == nil: return "void"
   case t.kind
@@ -152,65 +226,10 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     # resolved a `:name` reference and kept its signature; this is the
     # fallback for a slot that was never given one.
     of "fn": (if ctx.fnAsParam: "$T" else: "proc()")
-    else:
-      # Odd bit widths from decision tables (u2, u12, ...) round up to a real int
-      if t.name.len >= 2 and t.name[0] in {'u', 'i'} and t.name[1..^1].allCharsInSet({'0'..'9'}):
-        let bits = parseInt(t.name[1..^1])
-        let base = if t.name[0] == 'u': "u" else: "i"
-        if bits <= 8: base & "8"
-        elif bits <= 16: base & "16"
-        elif bits <= 32: base & "32"
-        else: base & "64"
-      elif t.name == UnknownName: "any"  # sketch mode: no type information
-      else:
-        # A type declared in an IMPORTED module lives in that module's Odin
-        # package, so it must be referenced qualified (`time.Milliseconds`).
-        # Beef needs no such qualification — its modules are static classes
-        # in one namespace.
-        var qualified = t.name
-        for d in ctx.module.decls:
-          if d != nil and d.kind == dkType and d.name == t.name and
-             d.span.file.startsWith(ImportedTypeMarker & ":"):
-            let origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-            let pkg = origin.replace("-", "_")
-            if pkg != ctx.moduleName.replace("-", "_"):
-              qualified = pkg & "." & t.name
-            break
-        qualified
-  of tkTuple:
-    if t.elems.len == 1: return ctx.odinType(t.elems[0])
-    var parts: seq[string]
-    for e in t.elems: parts.add(ctx.odinType(e))
-    "(" & parts.join(", ") & ")"
-  of tkApp:
-    # Odin puts the size BEFORE the element type: [N]T, not T[N].
-    if t.base.kind == tkNamed and t.base.name == "*":
-      # elem * count — sized array
-      return "[" & ctx.odinType(t.args[1]) & "]" & ctx.odinType(t.args[0])
-    if t.base.kind == tkNamed and t.base.name == "Array":
-      # Array[count, elem]
-      return "[" & ctx.odinType(t.args[0]) & "]" & ctx.odinType(t.args[1])
-    # !T / ?T / !?T lower to rt.TuckResult(T) — errors are first-class values
-    if t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"] and t.args.len == 1:
-      let inner = ctx.odinType(t.args[0])
-      return "rt.TuckResult(" & (if inner == "void": "rt.TuckUnit" else: inner) & ")"
-    if t.base.kind == tkNamed and t.base.name == "Seq":
-      var parts: seq[string]
-      for a in t.args: parts.add(ctx.odinType(a))
-      return "[dynamic]" & parts.join(", ")
-    var parts: seq[string]
-    for a in t.args: parts.add(ctx.odinType(a))
-    return ctx.odinType(t.base) & "(" & parts.join(", ") & ")"
-  of tkFunc:
-    # A resolved function reference (`:plus`) carries its real signature, so
-    # it emits a callable proc type rather than an opaque pointer.
-    var ps: seq[string]
-    for p in t.params: ps.add(ctx.odinType(p))
-    let r = if t.result != nil and not (t.result.kind == tkNamed and
-                                        t.result.name == "void"):
-              " -> " & ctx.odinType(t.result)
-            else: ""
-    "proc(" & ps.join(", ") & ")" & r
+    else: ctx.odinNamedFallback(t)
+  of tkTuple: ctx.odinTupleType(t)
+  of tkApp: ctx.odinAppType(t)
+  of tkFunc: ctx.odinFuncType(t)
   of tkRecord:
     recStructName(ctx, t.fields)
   of tkSum:
@@ -2178,104 +2197,121 @@ proc emitBody(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] =
 # body actually referenced rather than emitted wholesale.
 const odinPackage = "package main\n\n"
 
-proc emitOdin*(m: Module,
-               realModules = initTable[string, Module](),
-               moduleName = "main"): string =
-  # indent 0: Odin declarations are top-level in a package, with no
-  # enclosing class the way Beef/C# needs one.
-  var ctx = OdinCodegenCtx(definedVars: initHashSet[string](),
-                           fieldVars: initHashSet[string](),
-                           fieldPrefix: "self.", indent: 0, module: m,
-                           realModules: realModules, moduleName: moduleName)
+proc newOdinCtx(m: Module, realModules: Table[string, Module],
+                moduleName: string, modPrefix = ""): OdinCodegenCtx =
+  ## indent 0: Odin declarations are top-level in a package, with no enclosing
+  ## class the way Beef/C# needed one.
+  result = OdinCodegenCtx(definedVars: initHashSet[string](),
+                          fieldVars: initHashSet[string](),
+                          fieldPrefix: "self.", indent: 0, module: m,
+                          realModules: realModules, moduleName: moduleName,
+                          modPrefix: modPrefix)
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
-      ctx.errPolicy = d.policyName
-  let (body, mains) = ctx.emitBody(m)
-  var res = odinPackage
-  # Only import what the emitted body actually uses — Odin rejects unused
-  # imports, so an unconditional header would fail to compile on any program
-  # that happens not to touch the runtime.
-  # The runtime boot below emits rt.* calls of its own, so decide on the
-  # import from the DECLARATIONS, not just the already-emitted body.
-  var bootUsesRt = false
-  var bootMainReturns = false
+      result.errPolicy = d.policyName
+
+proc returnsValue(d: Decl): bool =
+  ## Does this fn hand back something a caller can use?
+  d.fnReturnType != nil and
+    not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name == "void")
+
+proc mainDecl(m: Module): Decl =
+  ## The program's entry fn, if it has one.
+  let tuckMain = mangleName("main")
   for d in m.decls:
-    if d == nil: continue
-    if d.kind in {dkActor, dkTask}: bootUsesRt = true
-    elif d.kind == dkFn and d.name == mangleName("main") and not d.isPending:
-      bootMainReturns = d.fnReturnType != nil and
-                        not (d.fnReturnType.kind == tkNamed and
-                             d.fnReturnType.name == "void")
-  var imports: seq[string]
-  if "fmt." in body or "fmt." in mains:
-    imports.add("import \"core:fmt\"")
-  # a value-returning main exits through os.exit
-  if bootMainReturns or "os." in body:
-    imports.add("import \"core:os\"")
-  if bootUsesRt or "rt." in body or "rt." in mains:
-    imports.add("import rt \"./tuckrt\"")
-  # Imported Tuck modules are sibling packages (mod_<name>/), referenced
-  # qualified as `<name>.fn` — import each one the body actually calls.
-  # The alias keeps the Tuck name even when it shadows an Odin core package
-  # (a module called `io` is fine as long as core:io isn't also imported).
-  for modName in realModules.keys:
-    let pkg = modName.replace("-", "_")
-    if (pkg & ".") in body or (pkg & ".") in mains:
-      imports.add("import " & pkg & " \"./mod_" & pkg & "\"")
-  # C libraries bound by extern blocks — see emitOdinModule for why these are
-  # hoisted here rather than emitted beside the `foreign` block.
-  for alias, spec in ctx.foreignLibs:
-    imports.add("foreign import " & alias & " \"" & odinLibSpec(spec) & "\"")
-  # `impl: odin "..."` packages — the forwarders emitted above call <alias>.<fn>
-  for alias, spec in ctx.implMods:
-    imports.add("import " & alias & " \"" & spec & "\"")
-  if imports.len > 0:
-    res.add(imports.join("\n") & "\n\n")
-  for h in ctx.hoisted:
-    res.add(h & "\n\n")
-  res.add(body)
-  # Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
-  # asserts fold into the same entry (Odin has #assert for compile-time,
-  # but these are runtime-checked in the Beef path too).
-  res.add("main :: proc() {\n")
-  for a in ctx.staticAsserts:
-    res.add("\tassert(" & a & ")\n")
-  # Runtime boot mirrors the Nim entry (tuck.nim): init the scheduler and
-  # reactor, start every actor's drain coroutine, run main, then drive the
-  # loop so spawned tasks and actors get to finish.
-  var actorNames: seq[string]
-  var hasTasks = false
+    if d != nil and d.kind == dkFn and d.name == tuckMain and not d.isPending:
+      return d
+  nil
+
+proc runtimeUsers(m: Module, actorNames: var seq[string],
+                  hasTasks: var bool) =
+  ## Which declarations make the program need the scheduler.
   for d in m.decls:
     if d == nil: continue
     if d.kind == dkActor: actorNames.add(d.name)
     elif d.kind == dkTask: hasTasks = true
-  let usesRuntime = actorNames.len > 0 or hasTasks
-  if usesRuntime:
-    res.add("\trt.tuckAsyncInit()\n")
+
+proc odinImports(ctx: OdinCodegenCtx, m: Module, body, mains: string,
+                 realModules: Table[string, Module]): seq[string] =
+  ## Only import what the emitted body actually uses — Odin rejects unused
+  ## imports, so an unconditional header would fail to compile on any program
+  ## that happens not to touch the runtime.
+  ##
+  ## The runtime boot emits rt.* calls of its own, so the decision reads the
+  ## DECLARATIONS too, not just the already-emitted body.
+  var actorNames: seq[string]
+  var hasTasks = false
+  runtimeUsers(m, actorNames, hasTasks)
+  let mainFn = mainDecl(m)
+  if "fmt." in body or "fmt." in mains:
+    result.add("import \"core:fmt\"")
+  # a value-returning main exits through os.exit
+  if (mainFn != nil and mainFn.returnsValue) or "os." in body:
+    result.add("import \"core:os\"")
+  if actorNames.len > 0 or hasTasks or "rt." in body or "rt." in mains:
+    result.add("import rt \"./tuckrt\"")
+  # Imported Tuck modules are sibling packages (mod_<name>/), referenced
+  # qualified as `<name>.fn` — import each one the body actually calls. The
+  # alias keeps the Tuck name even when it shadows an Odin core package (a
+  # module called `io` is fine as long as core:io isn't also imported).
+  for modName in realModules.keys:
+    let pkg = modName.replace("-", "_")
+    if (pkg & ".") in body or (pkg & ".") in mains:
+      result.add("import " & pkg & " \"./mod_" & pkg & "\"")
+  # C libraries bound by extern blocks — see emitOdinModule for why these are
+  # hoisted here rather than emitted beside the `foreign` block.
+  for alias, spec in ctx.foreignLibs:
+    result.add("foreign import " & alias & " \"" & odinLibSpec(spec) & "\"")
+  # `impl: odin "..."` packages — the forwarders emitted call <alias>.<fn>
+  for alias, spec in ctx.implMods:
+    result.add("import " & alias & " \"" & spec & "\"")
+
+proc genEntryPoint(ctx: OdinCodegenCtx, m: Module, mains: string): string =
+  ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
+  ## asserts fold into the same entry (Odin has #assert for compile-time, but
+  ## these are runtime-checked in the Beef path too).
+  ##
+  ## Runtime boot mirrors the Nim entry (tuck.nim): init the scheduler and
+  ## reactor, start every actor's drain coroutine, run main, then drive the
+  ## loop so spawned tasks and actors get to finish.
+  result = "main :: proc() {\n"
+  for a in ctx.staticAsserts:
+    result.add("\tassert(" & a & ")\n")
+  var actorNames: seq[string]
+  var hasTasks = false
+  runtimeUsers(m, actorNames, hasTasks)
+  if actorNames.len > 0 or hasTasks:
+    result.add("\trt.tuckAsyncInit()\n")
     for a in actorNames:
-      res.add("\trt.tuckStartActor(drain_" & a & ")\n")
-  if mains != "":
-    res.add(mains & "\n")
+      result.add("\trt.tuckStartActor(drain_" & a & ")\n")
+  if mains != "": result.add(mains & "\n")
   # A value-returning `fn main` IS the process exit code (mirrors tuck.nim).
-  var mainReturns = false
-  let tuckMain = mangleName("main")
-  for d in m.decls:
-    if d != nil and d.kind == dkFn and d.name == tuckMain and not d.isPending:
-      mainReturns = d.fnReturnType != nil and
-                    not (d.fnReturnType.kind == tkNamed and
-                         d.fnReturnType.name == "void")
-      res.add(if mainReturns: "\tmainRc := " & tuckMain & "()\n"
-              else: "\t" & tuckMain & "()\n")
-      break
-  # Drive the loop only when TASKS exist. Actors are daemons whose drain
-  # loops never finish, so running the scheduler for them would spin
-  # forever — tuck.nim gates on hasTasks for exactly this reason.
-  if hasTasks:
-    res.add("\trt.tuckRun()\n")
-  if mainReturns:
-    res.add("\tos.exit(mainRc)\n")
-  res.add("}\n")
-  res
+  let mainFn = mainDecl(m)
+  let mainReturns = mainFn != nil and mainFn.returnsValue
+  if mainFn != nil:
+    let tuckMain = mangleName("main")
+    result.add(if mainReturns: "\tmainRc := " & tuckMain & "()\n"
+               else: "\t" & tuckMain & "()\n")
+  # Drive the loop only when TASKS exist. Actors are daemons whose drain loops
+  # never finish, so running the scheduler for them would spin forever —
+  # tuck.nim gates on hasTasks for exactly this reason.
+  if hasTasks: result.add("\trt.tuckRun()\n")
+  if mainReturns: result.add("\tos.exit(mainRc)\n")
+  result.add("}\n")
+
+proc emitOdin*(m: Module,
+               realModules = initTable[string, Module](),
+               moduleName = "main"): string =
+  var ctx = newOdinCtx(m, realModules, moduleName)
+  let (body, mains) = ctx.emitBody(m)
+  result = odinPackage
+  let imports = ctx.odinImports(m, body, mains, realModules)
+  if imports.len > 0:
+    result.add(imports.join("\n") & "\n\n")
+  for h in ctx.hoisted:
+    result.add(h & "\n\n")
+  result.add(body)
+  result.add(ctx.genEntryPoint(m, mains))
 
 # A library module (import target). Odin has no static classes: a module is
 # a package, and a qualified ref (`fs::readFile`) becomes `fs.readFile` via
@@ -2283,14 +2319,7 @@ proc emitOdin*(m: Module,
 proc emitOdinModule*(name: string, m: Module,
                      realModules = initTable[string, Module]()): string =
   let pkg = name.replace("-", "_")
-  var ctx = OdinCodegenCtx(definedVars: initHashSet[string](),
-                           fieldVars: initHashSet[string](),
-                           fieldPrefix: "self.", indent: 0, module: m,
-                           realModules: realModules, moduleName: name,
-                           modPrefix: pkg & "_")
-  for d in m.decls:
-    if d != nil and d.kind == dkErrors:
-      ctx.errPolicy = d.policyName
+  var ctx = newOdinCtx(m, realModules, name, modPrefix = pkg & "_")
   let (body, _) = ctx.emitBody(m)
   # Odin package names are GLOBAL, not scoped to their directory, so a Tuck
   # module called `io` or `os` would collide with core:io / core:os. The
