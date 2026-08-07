@@ -341,43 +341,40 @@ proc parseSigBlock(p: var Parser, what: string): seq[Decl] =
   discard p.expect(tkDedent)
 
 # registry Name: | Variant {fields} — global event registry (spec 10)
+proc parseBraceFields(p: var Parser): seq[FieldDef] =
+  ## `{name: Type, ...}` — a variant's payload fields.
+  discard p.expect(tkLBrace)
+  while p.current().kind notin {tkRBrace, tkEOF}:
+    let fSp = p.getSpan()
+    let fName = p.expectMemberName("Expected variant field name").value
+    discard p.expect(tkColon)
+    result.add(FieldDef(name: fName, typ: p.parseType(), attrs: @[], span: fSp))
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBrace)
+
+proc parseRegistryVariant(p: var Parser): VariantDef =
+  ## `| Name {field: Type}` — one event of a registry. The parens around the
+  ## payload are optional.
+  discard p.expect(tkPipe)
+  let vSp = p.getSpan()
+  let vName = p.expectMemberName("Expected variant name in registry").value
+  let hasParens = p.current().kind == tkLParen
+  if hasParens: discard p.advance()
+  var vFields: seq[FieldDef]
+  if p.current().kind == tkLBrace: vFields = p.parseBraceFields()
+  if hasParens: discard p.expect(tkRParen)
+  if p.current().kind == tkNewline: discard p.advance()
+  VariantDef(name: vName, fields: vFields, span: vSp)
+
 proc parseRegistryDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()
   let name = p.expectTypeName("registry").value
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
-  discard p.expect(tkIndent)
   var variants: seq[VariantDef]
-  while p.current().kind != tkDedent and p.current().kind != tkEOF:
-    if p.current().kind == tkNewline:
-      discard p.advance()
-      continue
-    discard p.expect(tkPipe)
-    let vSp = p.getSpan()
-    let vName = p.expectMemberName("Expected variant name in registry").value
-    var vFields: seq[FieldDef]
-    var hasParens = false
-    if p.current().kind == tkLParen:
-      hasParens = true
-      discard p.advance()
-    if p.current().kind == tkLBrace:
-      discard p.advance()
-      while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-        let fSp = p.getSpan()
-        let fName = p.expectMemberName("Expected variant field name").value
-        discard p.expect(tkColon)
-        let fType = p.parseType()
-        vFields.add(FieldDef(name: fName, typ: fType, attrs: @[], span: fSp))
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRBrace)
-    if hasParens:
-      discard p.expect(tkRParen)
-    variants.add(VariantDef(name: vName, fields: vFields, span: vSp))
-    if p.current().kind == tkNewline:
-      discard p.advance()
-  discard p.expect(tkDedent)
-  return Decl(span: sp, kind: dkRegistry, name: name, variants: variants)
+  p.indentedBlock:
+    variants.add(p.parseRegistryVariant())
+  Decl(span: sp, kind: dkRegistry, name: name, variants: variants)
 
 # task name({params}) -> ret [effects]: body (spec 9.2)
 proc parseTaskDecl(p: var Parser, sp: Span): Decl =
@@ -667,17 +664,49 @@ proc parseArenaDecl(p: var Parser): Decl =
   discard p.expect(tkNewline)
   while p.current().kind == tkNewline:
     discard p.advance()
-  discard p.expect(tkIndent)
-  while p.current().kind != tkDedent and p.current().kind != tkEOF:
-    if p.current().kind == tkNewline:
-      discard p.advance()
-      continue
+  p.indentedBlock:
     members.add(p.parseDecl())
-  discard p.expect(tkDedent)
   let arenaType = Type(span: spArena, kind: tkRecord, fields: @[], attrs: attrs)
   return Decl(span: spArena, kind: dkType, name: name, generics: @[], typeBody: arenaType)
 
 # register Name at 0xADDR: bit fields — type-safe MMIO (spec 8.1)
+proc parseBitSpec(p: var Parser): string =
+  ## `bit 0` or `bits 3..7` — the layout a register field occupies, kept as
+  ## the field's type NAME so codegen can lower it per backend.
+  var bitType = ""
+  if p.current().kind == tkIdent: bitType = p.advance().value
+  var bitVal = ""
+  if p.current().kind == tkIntLit:
+    bitVal = p.advance().value
+    if p.current().kind == tkDotDot:
+      bitVal.add("..")
+      discard p.advance()
+      if p.current().kind == tkIntLit:
+        bitVal.add(p.advance().value)
+  bitType & " " & bitVal
+
+proc parseAccessAttrs(p: var Parser): seq[TypeAttr] =
+  ## Optional `[read, write]` on a register field.
+  if p.current().kind != tkLBracket: return
+  discard p.advance()
+  while p.current().kind notin {tkRBracket, tkEOF}:
+    let sp = p.getSpan()
+    let name = p.expect(tkIdent, "Expected access attribute").value
+    result.add(TypeAttr(name: name, value: "", span: sp))
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBracket)
+
+proc parseRegisterField(p: var Parser): FieldDef =
+  ## `name: bits 3..7 [read]` — one field of a memory-mapped register.
+  let fSp = p.getSpan()
+  let fName = p.expect(tkIdent, "Expected register field name").value
+  discard p.expect(tkColon)
+  let bitSpec = p.parseBitSpec()
+  let attrs = p.parseAccessAttrs()
+  if p.current().kind == tkNewline: discard p.advance()
+  FieldDef(name: fName, typ: Type(span: fSp, kind: tkNamed, name: bitSpec),
+           attrs: attrs, span: fSp)
+
 proc parseRegisterDecl(p: var Parser, sp: Span): Decl =
   discard p.advance() # eat "register"
   let name = p.expect(tkIdent, "Expected register name").value
@@ -685,45 +714,11 @@ proc parseRegisterDecl(p: var Parser, sp: Span): Decl =
   let address = p.expect(tkIntLit, "Expected address literal").value
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
-  discard p.expect(tkIndent)
   var fields: seq[FieldDef]
-  while p.current().kind != tkDedent and p.current().kind != tkEOF:
-    if p.current().kind == tkNewline:
-      discard p.advance()
-      continue
-    let fSp = p.getSpan()
-    let fName = p.expect(tkIdent, "Expected register field name").value
-    discard p.expect(tkColon)
-    # Parse "bit 0" or "bits 3..7"
-    var bitType = ""
-    if p.current().kind == tkIdent:
-      bitType = p.advance().value
-    var bitVal = ""
-    if p.current().kind == tkIntLit:
-      bitVal = p.advance().value
-      if p.current().kind == tkDotDot:
-        bitVal.add("..")
-        discard p.advance()
-        if p.current().kind == tkIntLit:
-          bitVal.add(p.current().value)
-          discard p.advance()
-    # Parse optional attributes [read, write]
-    var rAttrs: seq[TypeAttr]
-    if p.current().kind == tkLBracket:
-      discard p.advance()
-      while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-        let rAttrSp = p.getSpan()
-        let rAttrName = p.expect(tkIdent, "Expected access attribute").value
-        rAttrs.add(TypeAttr(name: rAttrName, value: "", span: rAttrSp))
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRBracket)
-    let typeName = bitType & " " & bitVal
-    fields.add(FieldDef(name: fName, typ: Type(span: fSp, kind: tkNamed, name: typeName), attrs: rAttrs, span: fSp))
-    if p.current().kind == tkNewline:
-      discard p.advance()
-  discard p.expect(tkDedent)
-  return Decl(span: sp, kind: dkRegister, name: name, regAddress: address, regFields: fields)
+  p.indentedBlock:
+    fields.add(p.parseRegisterField())
+  Decl(span: sp, kind: dkRegister, name: name, regAddress: address,
+       regFields: fields)
 
 # errors [policy: strict|continue|exit]: on unhandled(...) (spec 4.9)
 proc parseErrorsDecl(p: var Parser, sp: Span): Decl =
@@ -813,6 +808,173 @@ proc parseExternDecl(p: var Parser, sp: Span): Decl =
     d.externImpl = impls
   return Decl(span: sp, kind: dkExtern, name: "extern", mixinMembers: decls)
 
+proc parseExprDecl(p: var Parser, sp: Span): Decl =
+  ## A top-level statement: `let`, `var`, or a bare expression.
+  Decl(span: sp, kind: dkExpr, expr: p.parseExpr())
+
+proc parsePoolCount(p: var Parser, name: string, elem: Type): int =
+  ## The `[count: N]` attribute a pool needs. It is the POOL's knob, not part
+  ## of the element type, so it is read here and stripped below.
+  for a in elem.attrs:
+    if a.name != "count": continue
+    try: result = parseInt(a.value)
+    except ValueError:
+      p.reportError("pool '" & name & "': count must be a whole number, " &
+                    "got '" & a.value & "'")
+  if result <= 0:
+    p.reportError("pool '" & name & "' needs a slot count: `pool " & name &
+      " = <ElementType> [count: N]`. A pool without a count has no static " &
+      "footprint, which is the point of a pool.")
+
+proc withoutAttr(t: Type, name: string): Type =
+  ## The same type with one attribute removed.
+  result = t
+  var kept: seq[TypeAttr]
+  for a in t.attrs:
+    if a.name != name: kept.add(a)
+  result.attrs = kept
+
+proc parsePoolDecl(p: var Parser, sp: Span): Decl =
+  ## spec 7.2: `pool Name = ElemType [count: N]` — N slots of an arbitrary
+  ## element type. Reuses the `X = <type> [attrs]` shape; the name denotes the
+  ## POOL, not a value of the element type.
+  discard p.advance() # eat "pool"
+  let name = p.expectTypeName("pool").value
+  if p.current().kind != tkAssign:
+    p.reportError("A pool declares its element type: " &
+      "`pool " & name & " = <ElementType> [count: N]`")
+  discard p.advance() # eat "="
+  let elem = p.parseType()
+  let count = p.parsePoolCount(name, elem)
+  if p.current().kind == tkNewline: discard p.advance()
+  Decl(span: sp, kind: dkPool, name: name,
+       poolElem: elem.withoutAttr("count"), poolCount: count)
+
+proc parseImportDecl(p: var Parser, sp: Span): Decl =
+  discard p.advance()
+  let modName = p.expectMemberName("Expected module name after 'import'").value
+  Decl(span: sp, kind: dkImport, name: modName)
+
+proc parsePendingDecl(p: var Parser, sp: Span): Decl =
+  discard p.advance()
+  let decls = p.parseSigBlock("pending")
+  for d in decls: d.isPending = true
+  Decl(span: sp, kind: dkPending, name: "pending", mixinMembers: decls)
+
+proc siftSatisfies(members: seq[Decl], sats: var seq[string]): seq[Decl] =
+  ## Sift the `satisfies I` lines out of the member list into their own field,
+  ## so no later pass has to know they were ever members.
+  for m in members:
+    if m != nil and m.kind == dkExpr and m.expr != nil and
+       m.expr.kind == exkVar and m.expr.name == satisfiesMark:
+      sats.add(m.name)
+    else:
+      result.add(m)
+
+proc parseObjectDecl(p: var Parser, sp: Span): Decl =
+  discard p.advance()
+  let name = p.expectTypeName("object").value
+  discard p.expect(tkColon)
+  var fields: seq[FieldDef]
+  var members: seq[Decl]
+  p.parseObjectBody(fields, members)
+  var sats: seq[string]
+  let realMembers = siftSatisfies(members, sats)
+  Decl(span: sp, kind: dkObject, name: name, objFields: fields,
+       satisfies: sats, objMembers: realMembers)
+
+proc parseActorDecl(p: var Parser, sp: Span): Decl =
+  discard p.advance()
+  let name = p.expectTypeName("actor").value
+  var attrs: seq[TypeAttr]
+  p.parseDeclAttrs(attrs)
+  discard p.expect(tkColon)
+  var fields: seq[FieldDef]
+  var members: seq[Decl]
+  p.parseObjectBody(fields, members)
+  Decl(span: sp, kind: dkActor, name: name, attrs: attrs,
+       actorFields: fields, handlers: members)
+
+proc parseStaticAssertDecl(p: var Parser, sp: Span): Decl =
+  discard p.advance()
+  Decl(span: sp, kind: dkStaticAssert, assertExpr: p.parseExpr())
+
+proc parseDistinctDecl(p: var Parser, sp: Span): Decl =
+  discard p.advance()
+  let name = p.expectTypeName("distinct type").value
+  discard p.expect(tkAssign)
+  let aliasType = p.parseType()
+  var attrs = aliasType.attrs  # parseType may have consumed [suffix: ms]
+  attrs.add(TypeAttr(name: "distinct", value: "", span: sp))
+  p.parseDeclAttrs(attrs)
+  aliasType.attrs = attrs
+  if p.current().kind == tkNewline: discard p.advance()
+  Decl(span: sp, kind: dkType, name: name, generics: @[], typeBody: aliasType)
+
+proc parseInterfaceDecl(p: var Parser, sp: Span): Decl =
+  ## A contract (spec §5.2): the body IS the requirement list, so it is exactly
+  ## the body-less sig block `extern` and `pending` already use. Kept apart
+  ## from a mixin because the two mean opposite things — a mixin's members are
+  ## code to compose INTO an object, an interface's are requirements to check
+  ## AGAINST one.
+  discard p.advance()
+  let name = p.expectTypeName("interface").value
+  Decl(span: sp, kind: dkInterface, name: name,
+       ifaceMembers: p.parseSigBlock("interface"))
+
+proc parseMixinDecl(p: var Parser, sp: Span): Decl =
+  discard p.advance()
+  let name = p.expectTypeName("mixin").value
+  discard p.expect(tkColon)
+  discard p.expect(tkNewline)
+  var members: seq[Decl]
+  p.indentedBlock:
+    members.add(p.parseDecl())
+  Decl(span: sp, kind: dkMixin, name: name, mixinMembers: members)
+
+proc parseCompositionDecl(p: var Parser, sp: Span): Decl =
+  ## `+ Name` — compose a mixin or record into the enclosing declaration.
+  discard p.advance()
+  let name = p.expect(tkIdent, "Expected composition name after '+'").value
+  let target = Expr(span: sp, kind: exkVar, name: name)
+  Decl(span: sp, kind: dkExpr,
+       expr: Expr(span: sp, kind: exkUnary, unaryOp: uoComposition,
+                  operand: target))
+
+proc parseConstDecl(p: var Parser, sp: Span): Decl =
+  ## `const name = <compile-time data>` — a declaration, not a statement.
+  discard p.advance()
+  let name = p.expect(tkIdent, "Expected constant name after 'const'").value
+  discard p.expect(tkAssign)
+  Decl(span: sp, kind: dkConst, name: name, constVal: p.parseExpr())
+
+proc parseSatisfyTargets(p: var Parser): seq[string] =
+  ## One interface name, or a bracketed list attaching several at once.
+  if p.current().kind != tkLBracket:
+    return @[p.expect(tkIdent, "Expected interface name after 'satisfies'").value]
+  discard p.advance()
+  while p.current().kind notin {tkRBracket, tkEOF}:
+    result.add(p.expect(tkIdent,
+                        "Expected interface name in satisfies list").value)
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBracket, "Expected ']' closing a satisfies list")
+
+proc parseIdentDecl(p: var Parser, sp: Span): Decl =
+  ## `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL (spec §5.2).
+  ##
+  ## A CALLING module attaches an object it did not declare to a contract it
+  ## did not declare — so a library's type can be used through your interface
+  ## without editing the library. Contextual, exactly like the object-body
+  ## form: `satisfies` is not a token, so this is gated on the next ident
+  ## being it, and any other top-level ident falls through to an expression.
+  if not (p.peek(1).kind == tkIdent and p.peek(1).value == "satisfies"):
+    return p.parseExprDecl(sp)
+  let objName = p.advance().value
+  discard p.advance()                  # `satisfies`
+  let targets = p.parseSatisfyTargets()
+  if p.current().kind == tkNewline: discard p.advance()
+  Decl(span: sp, kind: dkSatisfies, name: objName, satisfyTargets: targets)
+
 proc parseDecl*(p: var Parser): Decl =
   let sp = p.getSpan()
   let curr = p.current()
@@ -831,35 +993,7 @@ proc parseDecl*(p: var Parser): Decl =
     return p.parseRegisterDecl(sp)
 
   elif curr.kind == tkIdent and curr.value == "pool":
-    # spec 7.2: `pool Name = ElemType [count: N]` — N slots of an arbitrary
-    # element type. Reuses the `X = <type> [attrs]` shape; the name denotes
-    # the POOL, not a value of the element type.
-    discard p.advance() # eat "pool"
-    let name = p.expectTypeName("pool").value
-    if p.current().kind != tkAssign:
-      p.reportError("A pool declares its element type: " &
-        "`pool " & name & " = <ElementType> [count: N]`")
-    discard p.advance() # eat "="
-    let elem = p.parseType()
-    var count = 0
-    for a in elem.attrs:
-      if a.name == "count":
-        try: count = parseInt(a.value)
-        except ValueError:
-          p.reportError("pool '" & name & "': count must be a whole number, " &
-                        "got '" & a.value & "'")
-    if count <= 0:
-      p.reportError("pool '" & name & "' needs a slot count: " &
-        "`pool " & name & " = <ElementType> [count: N]`. A pool without a " &
-        "count has no static footprint, which is the point of a pool.")
-    # the count is the POOL's knob, not part of the element type
-    var elemAttrs: seq[TypeAttr]
-    for a in elem.attrs:
-      if a.name != "count": elemAttrs.add(a)
-    elem.attrs = elemAttrs
-    if p.current().kind == tkNewline: discard p.advance()
-    return Decl(span: sp, kind: dkPool, name: name,
-                poolElem: elem, poolCount: count)
+    return p.parsePoolDecl(sp)
 
   elif curr.kind == tkIdent and curr.value == "arena":
     return p.parseArenaDecl()
@@ -871,155 +1005,22 @@ proc parseDecl*(p: var Parser): Decl =
   of tkFn, tkOn:
     return p.parseFnDecl(sp)
 
-  of tkImport:
-    discard p.advance()
-    let modName = p.expectMemberName("Expected module name after 'import'").value
-    return Decl(span: sp, kind: dkImport, name: modName)
-
-  of tkPending:
-    discard p.advance()
-    let decls = p.parseSigBlock("pending")
-    for d in decls: d.isPending = true
-    return Decl(span: sp, kind: dkPending, name: "pending", mixinMembers: decls)
-
-  of tkType:
-    return p.parseTypeDecl(sp)
-
-  of tkObject:
-    discard p.advance()
-    let name = p.expectTypeName("object").value
-    discard p.expect(tkColon)
-    var fields: seq[FieldDef]
-    var members: seq[Decl]
-    p.parseObjectBody(fields, members)
-    # Sift the `satisfies I` lines out of the member list into their own field,
-    # so no later pass has to know they were ever members.
-    var sats: seq[string]
-    var realMembers: seq[Decl]
-    for m in members:
-      if m != nil and m.kind == dkExpr and m.expr != nil and
-         m.expr.kind == exkVar and m.expr.name == satisfiesMark:
-        sats.add(m.name)
-      else:
-        realMembers.add(m)
-    return Decl(span: sp, kind: dkObject, name: name, objFields: fields,
-                satisfies: sats, objMembers: realMembers)
-
-  of tkActor:
-    discard p.advance()
-    let name = p.expectTypeName("actor").value
-    var attrs: seq[TypeAttr]
-    p.parseDeclAttrs(attrs)
-    discard p.expect(tkColon)
-    var fields: seq[FieldDef]
-    var members: seq[Decl]
-    p.parseObjectBody(fields, members)
-    return Decl(span: sp, kind: dkActor, name: name, attrs: attrs, actorFields: fields, handlers: members)
-
-  of tkTask:
-    return p.parseTaskDecl(sp)
-
-  of tkFnsig:
-    return p.parseFnSigDecl(sp)
-
-  of tkRegistry:
-    return p.parseRegistryDecl(sp)
-
-  of tkStaticAssert:
-    discard p.advance()
-    let expr = p.parseExpr()
-    return Decl(span: sp, kind: dkStaticAssert, assertExpr: expr)
-
-  of tkDistinct:
-    discard p.advance()
-    let name = p.expectTypeName("distinct type").value
-    discard p.expect(tkAssign)
-    let aliasType = p.parseType()
-    var attrs = aliasType.attrs  # parseType may have consumed [suffix: ms]
-    attrs.add(TypeAttr(name: "distinct", value: "", span: sp))
-    p.parseDeclAttrs(attrs)
-    aliasType.attrs = attrs
-    if p.current().kind == tkNewline:
-      discard p.advance()
-    return Decl(span: sp, kind: dkType, name: name, generics: @[], typeBody: aliasType)
-
-  of tkInterface:
-    # A contract (spec §5.2): the body IS the requirement list, so it is exactly
-    # the body-less sig block `extern` and `pending` already use. Kept apart
-    # from tkMixin below because the two mean opposite things — a mixin's
-    # members are code to compose INTO an object, an interface's are
-    # requirements to check AGAINST one.
-    discard p.advance()
-    let name = p.expectTypeName("interface").value
-    return Decl(span: sp, kind: dkInterface, name: name,
-                ifaceMembers: p.parseSigBlock("interface"))
-
-  of tkMixin:
-    discard p.advance()
-    let name = p.expectTypeName("mixin").value
-    discard p.expect(tkColon)
-    discard p.expect(tkNewline)
-    discard p.expect(tkIndent)
-    var members: seq[Decl]
-    while p.current().kind != tkDedent and p.current().kind != tkEOF:
-      if p.current().kind == tkNewline:
-        discard p.advance()
-      else:
-        members.add(p.parseDecl())
-    discard p.expect(tkDedent)
-    return Decl(span: sp, kind: dkMixin, name: name, mixinMembers: members)
-
-  of tkPlus:
-    discard p.advance()
-    let name = p.expect(tkIdent, "Expected composition name after '+'").value
-    let target = Expr(span: sp, kind: exkVar, name: name)
-    let unaryExpr = Expr(span: sp, kind: exkUnary, unaryOp: uoComposition, operand: target)
-    return Decl(span: sp, kind: dkExpr, expr: unaryExpr)
-
-  of tkLet, tkVar:
-    let expr = p.parseExpr()
-    return Decl(span: sp, kind: dkExpr, expr: expr)
-
-  of tkConst:
-    # const name = <compile-time data> — a declaration, not a statement
-    discard p.advance()
-    let name = p.expect(tkIdent, "Expected constant name after 'const'").value
-    discard p.expect(tkAssign)
-    let valExpr = p.parseExpr()
-    return Decl(span: sp, kind: dkConst, name: name, constVal: valExpr)
-
-  of tkIdent:
-    # `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL (spec §5.2).
-    #
-    # A CALLING module attaches an object it did not declare to a contract it
-    # did not declare — so a library's type can be used through your interface
-    # without editing the library. Contextual, exactly like the object-body
-    # form above: `satisfies` is not a token, so this is gated on the next
-    # ident being it, and any other top-level ident still falls through to the
-    # expression arm below.
-    if p.peek(1).kind == tkIdent and p.peek(1).value == "satisfies":
-      let objName = p.advance().value
-      discard p.advance()                  # `satisfies`
-      var targets: seq[string]
-      if p.current().kind == tkLBracket:
-        # list form: attach several contracts at once
-        discard p.advance()
-        while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-          targets.add(p.expect(tkIdent, "Expected interface name in satisfies list").value)
-          if p.current().kind == tkComma: discard p.advance()
-        discard p.expect(tkRBracket, "Expected ']' closing a satisfies list")
-      else:
-        targets.add(p.expect(tkIdent, "Expected interface name after 'satisfies'").value)
-      if p.current().kind == tkNewline:
-        discard p.advance()
-      return Decl(span: sp, kind: dkSatisfies, name: objName,
-                  satisfyTargets: targets)
-    let expr = p.parseExpr()
-    return Decl(span: sp, kind: dkExpr, expr: expr)
-
-  else:
-    let expr = p.parseExpr()
-    return Decl(span: sp, kind: dkExpr, expr: expr)
+  of tkImport: return p.parseImportDecl(sp)
+  of tkPending: return p.parsePendingDecl(sp)
+  of tkType: return p.parseTypeDecl(sp)
+  of tkObject: return p.parseObjectDecl(sp)
+  of tkActor: return p.parseActorDecl(sp)
+  of tkTask: return p.parseTaskDecl(sp)
+  of tkFnsig: return p.parseFnSigDecl(sp)
+  of tkRegistry: return p.parseRegistryDecl(sp)
+  of tkStaticAssert: return p.parseStaticAssertDecl(sp)
+  of tkDistinct: return p.parseDistinctDecl(sp)
+  of tkInterface: return p.parseInterfaceDecl(sp)
+  of tkMixin: return p.parseMixinDecl(sp)
+  of tkPlus: return p.parseCompositionDecl(sp)
+  of tkConst: return p.parseConstDecl(sp)
+  of tkIdent: return p.parseIdentDecl(sp)
+  else: return p.parseExprDecl(sp)
 
 proc parseModule*(p: var Parser): Module =
   let sp = p.getSpan()

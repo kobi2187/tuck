@@ -117,3 +117,22 @@ proc expectTypeName*(p: var Parser, what: string): Token =
 
 proc getSpan*(p: Parser): Span =
   Span(line: p.current().line, col: p.current().column, file: "")
+
+template indentedBlock*(p: var Parser, body: untyped) =
+  ## Walk an indented block: enter it, run `body` once per non-blank line,
+  ## and leave it. Blank lines inside a block are skipped here so no caller
+  ## repeats the check.
+  ##
+  ## A TEMPLATE rather than a proc because `body` is arbitrary parsing code
+  ## that reads and writes the caller's own locals — passing it as a closure
+  ## would buy nothing and cost the capture. Every indented construct in the
+  ## grammar (object bodies, sig blocks, decision tables, registry variants,
+  ## register fields, mixins, arenas) opens with exactly this scaffolding, and
+  ## each used to spell it out.
+  discard p.expect(tkIndent)
+  while p.current().kind notin {tkDedent, tkEOF}:
+    if p.current().kind == tkNewline:
+      discard p.advance()
+    else:
+      body
+  discard p.expect(tkDedent)
