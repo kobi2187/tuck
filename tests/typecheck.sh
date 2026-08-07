@@ -954,6 +954,34 @@ let x = {a: 1} f
 TUCKEOF
 bad_check 'top-level statements are not allowed' 'top\-level\ statements'
 
+# A misspelled opening keyword used to fall through to an EXPRESSION statement
+# and die at the colon — `typ Light:` blamed column 10 for a typo in column 1.
+# Found by the fuzzer twice. The message names the valid openers rather than
+# guessing which was meant.
+src <<'TUCKEOF'
+typ Light:
+  a: int
+TUCKEOF
+bad_check 'a misspelled top-level keyword names the valid ones' 'does\ not\ start\ a\ declaration'
+
+# ...and the shape it guards must not swallow `Obj satisfies Iface`, which is
+# also `<ident> <ident>` at top level.
+src <<'TUCKEOF'
+object Dog:
+  n: int
+  fn noise({self: Dog}) -> int:
+    return n
+
+interface Animal:
+  fn noise({self: Self}) -> int
+
+Dog satisfies Animal
+
+fn main() -> void:
+  return
+TUCKEOF
+ok_check 'satisfies still parses at top level'
+
 src <<'TUCKEOF'
 let x = 5
 TUCKEOF

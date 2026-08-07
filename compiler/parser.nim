@@ -1004,6 +1004,29 @@ proc parseSatisfyTargets(p: var Parser): seq[string] =
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBracket, "Expected ']' closing a satisfies list")
 
+const TopLevelKeywords = "fn, type, object, actor, task, interface, mixin, " &
+  "fnsig, registry, decision, pending, distinct, const, import, extern, " &
+  "errors, register, pool, arena, static_assert"
+  ## Everything parseDecl accepts to OPEN a declaration — the tokenized
+  ## keywords plus the contextual ones recognised in contextualDecl.
+
+proc failIfMisspelledDeclKeyword(p: var Parser) =
+  ## `typ Light:` / `ty=e Light:` — a misspelled top-level keyword.
+  ##
+  ## An unrecognised opening word is tkIdent, so it used to fall through to an
+  ## EXPRESSION statement and die further along at whatever punctuation came
+  ## next: `typ Light:` reported "Expected an expression here, found `:`" at the
+  ## colon, blaming column 10 for a typo in column 1. Found by the fuzzer twice
+  ## (`ty=e Light:`, `typfn ight:`).
+  ##
+  ## `<ident> <ident> :` cannot be a top-level expression under any spelling, so
+  ## reaching here with that shape means the first word was meant to be a
+  ## keyword. Name the valid ones rather than guessing which was intended.
+  if p.peek(1).kind != tkIdent or p.peek(2).kind != tkColon: return
+  p.reportError("'" & p.current().value & "' does not start a declaration. " &
+                "A module's top level holds declarations only, opened by one " &
+                "of: " & TopLevelKeywords & ".")
+
 proc parseIdentDecl(p: var Parser, sp: Span): Decl =
   ## `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL (spec §5.2).
   ##
@@ -1013,6 +1036,7 @@ proc parseIdentDecl(p: var Parser, sp: Span): Decl =
   ## form: `satisfies` is not a token, so this is gated on the next ident
   ## being it, and any other top-level ident falls through to an expression.
   if not (p.peek(1).kind == tkIdent and p.peek(1).value == "satisfies"):
+    p.failIfMisspelledDeclKeyword()
     return p.parseExprDecl(sp)
   let objName = p.advance().value
   discard p.advance()                  # `satisfies`
