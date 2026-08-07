@@ -2617,7 +2617,11 @@ proc failIfDuplicateMembers(m: Module) =
       failIfDuplicateMember("field", d.name, fieldNames(d.actorFields))
     of dkType:
       failIfDuplicateTypeMembers(m, d)
-    else: discard
+    of dkRegistry, dkPool, dkMixin, dkExtern, dkPending, dkExpr, dkConst,
+       dkRegister, dkStaticAssert, dkErrors, dkImport, dkInterface,
+       dkSelect, dkFnSig, dkSatisfies:
+      discard  # no field/param set of their own to check
+
 
 proc failIfTopLevelStatement(d: Decl) =
   ## Module top level is declarations only — the runnable program lives in
