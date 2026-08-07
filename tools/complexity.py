@@ -25,24 +25,56 @@ PROC_NAME = re.compile(r'^\w+ ([\w`*]+)')
 ONE_LINE_ARM = re.compile(r'^of .*:\s*\S')
 BRANCH = re.compile(r'(?<![\w.])(if|elif|while|and|or|except)(?![\w])')
 
+# A proc's body ends at the next proc OR at any other top-level construct.
+# Without this, a trailing `when isMainModule:` block was charged to whatever
+# proc happened to precede it — which reported tuck.nim's 9-line checkProgram
+# as 184 lines at complexity 50, by far the worst in the codebase and entirely
+# an artifact.
+TOP_LEVEL = re.compile(r'^(when|if|type|const|let|var|import|from|export|'
+                       r'include|macro|using|block|for|while|echo|discard)\b')
+
 MAX_LINES = 8
 MAX_COMPLEXITY = 5
+
+
+def body_end(lines, start):
+    """Where the proc beginning at `start` ends.
+
+    A proc's body is its indented lines. It ends at the first later line that
+    is in column 0 and is not a continuation of the signature — the next proc,
+    a `when` block, a type section, anything at top level.
+    """
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if not line.strip() or line[0] in ' \t':
+            continue
+        if PROC_START.match(line) or TOP_LEVEL.match(line):
+            return i
+        # a bare top-level identifier line (rare) also closes the body
+        if not line.startswith(')') and not line.startswith('#'):
+            return i
+    return len(lines)
 
 
 def measure(path):
     """Yield (lines, complexity, lineno, name) for every proc in a file."""
     lines = open(path, encoding='utf-8').read().split('\n')
-    starts = [i for i, l in enumerate(lines) if PROC_START.match(l)]
-    for idx, start in enumerate(starts):
-        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
-        name = PROC_NAME.match(lines[start])
+    for start, line in enumerate(lines):
+        if not PROC_START.match(line):
+            continue
+        name = PROC_NAME.match(line)
         if not name:
             continue
+        end = body_end(lines, start)
         body = [l for l in lines[start:end]
                 if l.strip() and not l.strip().startswith('#')]
+        # A forward declaration has a signature and no body. It is not a proc
+        # to measure — the definition further down is.
+        if len(body) <= 1 and not lines[start].rstrip().endswith('='):
+            continue
         complexity = 1
-        for line in lines[start:end]:
-            stripped = line.strip()
+        for l in lines[start:end]:
+            stripped = l.strip()
             if stripped.startswith('#') or ONE_LINE_ARM.match(stripped):
                 continue
             complexity += len(BRANCH.findall(stripped))
