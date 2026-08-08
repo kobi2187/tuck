@@ -20,26 +20,34 @@
 # dropped below the budget, so the ratchet reports its own slack instead of
 # quietly drifting.
 #
-# There is no Nim tool for this. nimpretty only formats, nimfmt lints style,
-# `nim check` has no complexity warning, and lizard/scc cannot parse Nim.
+# MEASURED ON THE REAL AST. tools/cc.nim parses each file with the Nim
+# compiler's own parser and walks the tree. The previous tool matched
+# `if|elif|while|and|or|except` as TEXT, which was wrong twice over: it counted
+# those words inside string literals (a three-arm case whose arms are English
+# sentences scored 8), and it never counted `case` arms at all — so a 20-arm
+# case over an enum scored 1, and the metric was blind to how Nim actually
+# branches. Swapping to the AST moved the honest numbers to 280/64 from the
+# regex's 188/27; nothing in the tree changed.
 set -u
 cd "$(dirname "$0")/.."
 
-CEILING=27
-BUDGET=188
-# 196 -> 188 without any refactoring: tools/complexity.py stopped counting
-# `and`/`or`/`if` inside STRING LITERALS. Eight procs were never complex, only
-# wordy — a diagnostic's explanation text is full of those words, and a
-# three-arm case in diagnostics.nim scored 8 with all seven matches inside
-# quotes. The ratchet was asking for a refactor that did not exist.
+CEILING=64
+BUDGET=280
+
+CC=tools/cc
+[ -x "$CC" ] || {
+  echo "complexity.sh: tools/cc not built. Once:"
+  echo "  nim c --path:\$(dirname \$(dirname \$(readlink -f \$(command -v nim)))) \\"
+  echo "      -o:tools/cc tools/cc.nim"
+  exit 1
+}
 
 echo "== cyclomatic complexity ratchet (ceiling $CEILING, budget $BUDGET) =="
 
-# The verdict is python's exit status, not tail's — hence PIPESTATUS. Only the
-# summary lines are shown; the full ranked table is `tools/complexity.py` on
-# its own.
-python3 tools/complexity.py --gate "$CEILING" --budget "$BUDGET" \
-  compiler/*.nim lexer.nim tuck.nim | grep -vE '^  cc=' | tail -20
+# Only the summary lines are shown; the full ranked table is `tools/cc` on its
+# own.
+"$CC" --gate "$CEILING" --budget "$BUDGET" compiler/*.nim lexer.nim tuck.nim \
+  | grep -vE '^  cc='
 rc=${PIPESTATUS[0]}
 
 if [ "$rc" -eq 0 ]; then
@@ -51,11 +59,10 @@ echo "  A proc got more complex, or a new one landed over the ceiling."
 echo
 echo "  BUDGET is a COUNT, not a per-proc verdict: any proc over cc 5 that"
 echo "  gets split pays it back. Splitting the newcomer is rarely the best"
-echo "  trade — a small proc at cc=6 is far more readable than the cc=20+"
+echo "  trade — a small proc at cc=6 is far more readable than the cc=40+"
 echo "  procs already in the tree. Run"
 echo
-echo "    python3 tools/complexity.py compiler/*.nim lexer.nim tuck.nim \\"
-echo "      | grep cc= | sort -t= -k2 -rn | head"
+echo "    tools/cc compiler/*.nim lexer.nim tuck.nim | head -20"
 echo
 echo "  and split the worst offender you can do WELL instead. Never raise"
 echo "  CEILING/BUDGET in this file."
