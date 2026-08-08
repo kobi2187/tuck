@@ -148,6 +148,57 @@ omits() {
   else _ok "$1"; fi
 }
 
+# --- golden emission -----------------------------------------------------
+#
+# `frozen NAME` asserts the emitted Nim is byte-for-byte what it was when the
+# behaviour was last verified BY HAND. No compiling, no running: the same
+# source through the same compiler produces the same text, so unchanged text
+# is unchanged behaviour.
+#
+# This replaces `runs NAME CODE` for cases whose point is a runtime fact —
+# `/i=` really doing integer division shows up as `a = (a div 4)`, which the
+# golden pins exactly. Running proved it once; the text carries it from then on.
+# A `tuck build` is ~1.03s against ~0.00s for an emit, and 40 of them were 41s
+# of a 69s suite.
+#
+# WHEN THE DIFF APPEARS, READ IT. It means codegen changed. If the new text is
+# better — a real improvement or a new feature — verify the runtime behaviour
+# by hand ONCE, then update the golden with `TUCK_BLESS=1`. A diff nobody can
+# justify is the regression this exists to catch.
+# Named for the test file that sourced this, resolved ONCE here rather than at
+# each call: `try frozen ...` adds a stack frame, so walking BASH_SOURCE from
+# inside the assertion put goldens under tests/golden/lib/.
+_goldenDir="tests/golden/$(basename "${BASH_SOURCE[1]%.sh}")"
+
+frozen() {
+  local name="$1"
+  local slug; slug=$(echo "$name" | tr -cs 'A-Za-z0-9' '-' | sed 's/^-//;s/-$//')
+  local dir="$_goldenDir"
+  local want="$dir/$slug.nim"
+  if ! _emit; then
+    _no "$name" "emission failed: $(tail -1 "$_cur/emit.log")"
+    return
+  fi
+  # The runtime import is a path relative to the OUTPUT directory, which is a
+  # mktemp dir — machine-specific, and no part of what is being asserted.
+  local got="$_cur/got.nim"
+  grep -v '^import .*compiler/tuck_rt$' "$_cur/out/t.nim" > "$got"
+  if [ "${TUCK_BLESS:-}" = "1" ]; then
+    mkdir -p "$dir" && cp "$got" "$want"
+    _ok "$name (blessed)"
+    return
+  fi
+  if [ ! -f "$want" ]; then
+    _no "$name" "no golden yet — verify the behaviour, then TUCK_BLESS=1"
+    return
+  fi
+  if diff -q "$want" "$got" > /dev/null 2>&1; then _ok "$name"
+  else
+    _no "$name" "emission changed:
+$(diff -u "$want" "$got" | sed -n '4,12p')"
+  fi
+}
+
 # --- known-bug tri-state -----------------------------------------------
 #
 # A bug entry states the CORRECT behaviour as a real assertion, plus whether

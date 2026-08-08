@@ -35,7 +35,7 @@ fn main() -> int:
   a /i= 4
   return a
 TUCKEOF
-try runs "" 2
+try frozen "'/i=' on ints uses integer division"
 bug_fixed "'/i=' on ints uses integer division"
 
 # 2. `toStr` + string concatenation picked the numeric `+`. Two causes: an
@@ -50,7 +50,7 @@ fn main() -> int:
   let s = n.toStr + " bottles"
   return 0
 TUCKEOF
-try runs "" 0
+try frozen "'toStr' result stays a str under '+'"
 bug_fixed "'toStr' result stays a str under '+'"
 
 # 3. `if` has no expression form (ruling R2). Nim has a real if-expression;
@@ -77,7 +77,7 @@ fn main() -> int:
     return 1
   return 2
 TUCKEOF
-try runs "" 1
+try frozen "'[saturating]' clamps at the maximum"
 bug_fixed "'[saturating]' clamps at the maximum"
 
 # 4b. A saturating chain clamps against the FINAL value. `a + b - c` (all
@@ -96,7 +96,7 @@ fn main() -> int:
     return 1
   return 2
 TUCKEOF
-try runs "" 1
+try frozen "saturating chain clamps on the result, not each operator"
 bug_fixed "saturating chain clamps on the result, not each operator"
 
 # 4c. The Odin backend must clamp too: the same program wrapping on one
@@ -160,7 +160,7 @@ decision route({priority: Priority, encrypted: bool}) -> int:
 fn main() -> int:
   return {priority: Priority.low, encrypted: false} route
 TUCKEOF
-runs "a reserved word is still a legal field name" 2
+frozen "a reserved word is still a legal field name"
 
 # And the attribute reading still wins where it must, in the same file shape
 # the corpus uses everywhere.
@@ -173,7 +173,7 @@ fn main() -> int:
     return 1
   return 2
 TUCKEOF
-runs "an attribute bracket is still an attribute" 1
+frozen "an attribute bracket is still an attribute"
 
 # A bare marker is a RESERVED WORD now, so it cannot be an ordinary name.
 src <<'TUCKEOF'
@@ -250,9 +250,9 @@ fn describe({l: Light}) -> int:
 fn main() -> int:
   return {l: Light.Green} describe
 TUCKEOF
-try runs "" 2
+try frozen "block-bodied match arms indent correctly"
 bug_fixed "block-bodied match arms indent correctly"
-try runs "" 2
+try frozen "tail match with returning arms is not double-wrapped"
 bug_fixed "tail match with returning arms is not double-wrapped"
 
 # 8. `.fn {args}` on an UNDECLARED fn emitted a bare field access —
@@ -286,7 +286,7 @@ fn main() -> int [io]:
     return 0
   return r.value.v
 TUCKEOF
-try runs "" 5
+try frozen "early-return guard narrows a result"
 bug_fixed "early-return guard narrows a result"
 
 # 10. `elif` was lexed but never parsed. tkElif was in the lexer's keyword
@@ -309,7 +309,7 @@ fn classify({n: int}) -> int:
 fn main() -> int:
   return {n: 5} classify
 TUCKEOF
-try runs "" 2
+try frozen "elif chains parse"
 bug_fixed "elif chains parse"
 
 # 11. An overflow attribute implies `distinct` on the Nim backend but not on
@@ -382,7 +382,7 @@ fn main() -> int [io]:
   {} scheduler::stop
   return Sink.hits
 TUCKEOF
-try runs "" 5
+try frozen "a -> void task can be fire-and-forget"
 bug_fixed "a -> void task can be fire-and-forget"
 
 finish
