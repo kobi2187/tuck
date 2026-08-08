@@ -10,9 +10,16 @@ tuck
 tests/beef_out/
 tests/beef_backend
 tests/auto_alias_out/
-# emitted backend output lands next to the .tuck source
-examples/*.nim
-examples/*.odin
+# Emitted backend output lands next to the .tuck source, and is TRACKED on
+# purpose: the generated Nim and Odin is the compiler's real product, and
+# keeping it in the tree is the only way a change to codegen is visible as a
+# diff rather than something you have to run the compiler to notice.
+#
+# Regenerate with tools/emit_examples.sh. A commit touching codegen is expected
+# to carry the re-emitted output with it — an unexpected diff there is the
+# review signal.
+#
+# .bf (Beef) stays ignored: that backend is a ceiling experiment, not a product.
 examples/*.bf
 compiler/tuckrt/minicoro.a
 tests/odin_out/
