@@ -1,0 +1,3 @@
+actor Counter:
+  total: int
+t->al + n

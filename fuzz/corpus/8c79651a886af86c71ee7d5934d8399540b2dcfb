@@ -1,0 +1,2 @@
+actor Counter:
+  total: = total + n

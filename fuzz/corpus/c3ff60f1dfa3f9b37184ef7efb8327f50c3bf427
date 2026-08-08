@@ -1,0 +1,3 @@
+actor Counter:J  total:!int
+  on bump({n: int}):
+×ßÍßtotal = -otal k n

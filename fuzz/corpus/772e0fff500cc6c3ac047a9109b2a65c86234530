@@ -1,0 +1,3 @@
+actor Coter:
+  total:actor Counter:
+  total: = total  int+

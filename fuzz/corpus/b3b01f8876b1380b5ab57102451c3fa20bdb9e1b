@@ -1,0 +1,4 @@
+object Seif r:
+  port: int
+  fn start({self: Server}) -> int:
+    return port

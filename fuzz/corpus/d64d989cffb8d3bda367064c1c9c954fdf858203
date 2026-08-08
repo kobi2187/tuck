@@ -1,0 +1,4 @@
+type d
+  | Greenelset:
+  | Red
+  | Green
