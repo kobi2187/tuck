@@ -27,7 +27,7 @@
 ## registered item from every suite in one pool bounded by the core count.
 ## The assertions look identical at the call site; `phase` is what differs.
 
-import std/[os, osproc, strutils, strformat, tables, re]
+import std/[os, osproc, strutils, strformat, tables, re, streams]
 
 type
   Verb* = enum
@@ -435,6 +435,20 @@ proc resultOf*(t: T, idx: int): (int, string) =
   (t.work[idx].rc, t.work[idx].output)
 
 # --- suite lifecycle -----------------------------------------------------
+
+proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
+  ## Run a command NOW and wait. The pool is for work that is independent;
+  ## this is for the sequences — build, run what was built, grep what it
+  ## printed — where each step needs the one before. cli_smoke is all of that
+  ## shape, and expressing ~100 sequential dependencies as pool edges would
+  ## obscure rather than parallelize it.
+  assert argv.len > 0
+  let child = startProcess(argv[0], args = argv[1 .. ^1],
+                           options = {poUsePath, poStdErrToStdOut})
+  let output = child.outputStream.readAll()
+  let rc = child.waitForExit()
+  child.close()
+  (rc, output)
 
 proc findOdin*(): string =
   ## The Odin compiler, or "" if it is not installed. Two suites need it —

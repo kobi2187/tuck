@@ -9,10 +9,15 @@ import ../harness
 import actor_result
 import auto_alias
 import bare_variant
+import cli_smoke
+import complexity
+import diagnostics
 import duplicates
+import end_to_end
 import examples
 import extern_impl
 import frontend
+import fuzz_corpus
 import interface_call
 import interface_dispatch
 import interface_seq
@@ -35,10 +40,15 @@ let registry: seq[Entry] = @[
   ("actor_result",        SuiteProc(actor_result.run),        true),
   ("auto_alias",          SuiteProc(auto_alias.run),          false),
   ("bare_variant",        SuiteProc(bare_variant.run),        true),
+  ("cli_smoke",           SuiteProc(cli_smoke.run),           false),
+  ("complexity",          SuiteProc(complexity.run),          true),
+  ("diagnostics",         SuiteProc(diagnostics.run),         false),
   ("duplicates",          SuiteProc(duplicates.run),          true),
+  ("end_to_end",          SuiteProc(end_to_end.run),          false),
   ("examples",            SuiteProc(examples.run),            true),
   ("extern_impl",         SuiteProc(extern_impl.run),         false),
   ("frontend",            SuiteProc(frontend.run),            true),
+  ("fuzz_corpus",         SuiteProc(fuzz_corpus.run),         true),
   ("interface_call",      SuiteProc(interface_call.run),      true),
   ("interface_dispatch",  SuiteProc(interface_dispatch.run),  false),
   ("interface_seq",       SuiteProc(interface_seq.run),       false),

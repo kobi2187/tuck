@@ -18,9 +18,12 @@ QUICK = {
     "member_names", "mangle", "complexity", "duplicates", "fuzz_corpus",
 }
 
+# Not suites: the registry itself, and helper modules that export no `run`.
+NOT_SUITES = {"all", "smokelib"}
+
 names = sorted(
     f[:-4] for f in os.listdir(HERE)
-    if f.endswith(".nim") and f != "all.nim"
+    if f.endswith(".nim") and f[:-4] not in NOT_SUITES
 )
 
 w = max(len(n) for n in names) + 2
