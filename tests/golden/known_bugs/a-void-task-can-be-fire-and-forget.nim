@@ -6,8 +6,8 @@ type tuck_SinkMsg* = object
   n*: int
 
 type tuck_Sink* = ref object
-    hits*: int
-    mailbox*: Mailbox[tuck_SinkMsg, 8]
+  hits*: int
+  mailbox*: Mailbox[tuck_SinkMsg, 8]
 
 let tuck_SinkSingleton* = tuck_Sink()
 

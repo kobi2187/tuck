@@ -1,6 +1,6 @@
 
 type tuck_App* = object
-    n*: int
+  n*: int
 
 proc tuck_loadEp*(self: var tuck_App, n: int): tuck_App =
   return self

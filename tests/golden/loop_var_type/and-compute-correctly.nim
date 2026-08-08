@@ -1,9 +1,9 @@
 
 type tuck_P* = object
-    n*: int
+  n*: int
 
 type tuck_Q* = object
-    m*: int
+  m*: int
 
 proc tuck_both*(ps: seq[tuck_P], qs: seq[tuck_Q]): int =
   var s = 0

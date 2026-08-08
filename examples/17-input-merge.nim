@@ -1,13 +1,13 @@
 import ../compiler/tuck_rt
 
 type tuck_Episode* = object
-    title*: string
-    duration*: uint32
-    playSpeed*: float
+  title*: string
+  duration*: uint32
+  playSpeed*: float
 
 type tuck_PlayerPrefs* = object
-    volume*: int
-    speed*: float
+  volume*: int
+  speed*: float
 
 proc tuck_describe*(title: string, volume: int): string =
   return title

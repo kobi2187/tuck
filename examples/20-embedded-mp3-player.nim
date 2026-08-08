@@ -39,7 +39,7 @@ proc transitionTo*(self: var tuck_PlayerState, target: tuck_PlayerState) =
   self = target
 
 type tuck_Volume* = object
-    level*: uint8
+  level*: uint8
 
 proc validate*(self: tuck_Volume) =
   when not defined(release):
@@ -48,7 +48,7 @@ proc validate*(self: tuck_Volume) =
 type tuck_SystemEventsKind* = enum PlaybackStarted, PlaybackStopped, HardwareError
 type tuck_SystemEvents* = ref object
     kind*: tuck_SystemEventsKind
-    code*: uint8
+  code*: uint8
 
 var latesttuck_SystemEvents*: tuck_SystemEvents
 
@@ -90,9 +90,9 @@ type tuck_DecoderMsg* = object
   rate*: tuck_Hz
 
 type tuck_Decoder* = ref object
-    state*: tuck_PlayerState
-    vol*: tuck_Volume
-    mailbox*: Mailbox[tuck_DecoderMsg, 8]
+  state*: tuck_PlayerState
+  vol*: tuck_Volume
+  mailbox*: Mailbox[tuck_DecoderMsg, 8]
 
 let tuck_DecoderSingleton* = tuck_Decoder()
 

@@ -7,8 +7,8 @@ type tuck_CounterMsg* = object
   n*: int
 
 type tuck_Counter* = ref object
-    total*: int
-    mailbox*: Mailbox[tuck_CounterMsg, 128]
+  total*: int
+  mailbox*: Mailbox[tuck_CounterMsg, 128]
 
 let tuck_CounterSingleton* = tuck_Counter()
 

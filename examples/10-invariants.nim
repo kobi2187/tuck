@@ -1,7 +1,7 @@
 import ../compiler/tuck_rt
 
 type tuck_Temperature* = object
-    celsius*: float32
+  celsius*: float32
 
 proc validate*(self: tuck_Temperature) =
   when not defined(release):

@@ -8,9 +8,9 @@ type tuck_ResultMsg* = object
   c*: int
 
 type tuck_Result* = ref object
-    code*: int
-    ready*: bool
-    mailbox*: Mailbox[tuck_ResultMsg, 8]
+  code*: int
+  ready*: bool
+  mailbox*: Mailbox[tuck_ResultMsg, 8]
 
 let tuck_ResultSingleton* = tuck_Result()
 

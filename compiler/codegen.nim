@@ -1327,8 +1327,8 @@ proc genSumType(ctx: var CodegenCtx, d: Decl): string =
 proc genRecordType(ctx: var CodegenCtx, d: Decl): string =
       var fieldsStr: seq[string]
       for f in d.typeBody.fields:
-        fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
-      let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "    discard"
+        fieldsStr.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
+      let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: "  discard"
       let tGen = if d.generics.len > 0: "[" & d.generics.join(", ") & "]" else: ""
       # A C struct (declared inside `extern [c, header: ...]`) must DECLARE the
       # foreign type, not define a second one: Nim #includes the header, so a
@@ -1408,10 +1408,10 @@ proc genActorState(ctx: var CodegenCtx, d: Decl, msgTypeName, queueSize: string,
   ## which the shutdown arm sets to make the drain go inert).
   var fieldsStr: seq[string]
   for f in d.actorFields:
-    fieldsStr.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
-  fieldsStr.add("    mailbox*: Mailbox[" & msgTypeName & ", " & queueSize & "]")
+    fieldsStr.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
+  fieldsStr.add("  mailbox*: Mailbox[" & msgTypeName & ", " & queueSize & "]")
   if hasShutdown:
-    fieldsStr.add("    finished*: bool")
+    fieldsStr.add("  finished*: bool")
   "type " & d.name & "* = ref object\n" & fieldsStr.join("\n") & "\n"
 
 proc genActorDispatch(ctx: CodegenCtx, d: Decl, msgTypeName: string,
@@ -1468,8 +1468,8 @@ proc genActor(ctx: var CodegenCtx, d: Decl): string =
     # No handlers: an empty enum is invalid Nim. Emit just the state object.
     var bareFields: seq[string]
     for f in d.actorFields:
-      bareFields.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
-    let bareBody = if bareFields.len > 0: bareFields.join("\n") else: "    discard"
+      bareFields.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
+    let bareBody = if bareFields.len > 0: bareFields.join("\n") else: "  discard"
     return "type " & d.name & "* = ref object\n" & bareBody & "\n"
 
   let singleton = actorSingletonName(d.name)   # spec §9: one global per actor
@@ -1496,7 +1496,7 @@ proc genRegistry(ctx: var CodegenCtx, d: Decl): string =
       for f in v.fields:
         if f.name notin seenFields:
           seenFields.incl(f.name)
-          fieldsStr.add("    " & f.name & "*: " & genType(f.typ))
+          fieldsStr.add("  " & f.name & "*: " & genType(f.typ))
 
     let enumStr = "type " & msgEnumName & "* = enum " & enumVariants.join(", ") & "\n"
     let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: ""
@@ -1553,7 +1553,7 @@ proc composeInto(ctx: var CodegenCtx, compName, objName: string,
       return true
     if cd.kind == dkType and cd.typeBody != nil and cd.typeBody.kind == tkRecord:
       for f in cd.typeBody.fields:
-        fields.add("    " & f.name & "*: " & ctx.fieldType(objName, f))
+        fields.add("  " & f.name & "*: " & ctx.fieldType(objName, f))
       return true
   false
 
@@ -1562,7 +1562,7 @@ proc genObjectDecl(ctx: var CodegenCtx, d: Decl): string =
   ## anything composed into it come back as top-level procs.
   var fields: seq[string]
   for f in d.objFields:
-    fields.add("    " & f.name & "*: " & ctx.fieldType(d.name, f))
+    fields.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
   var members = ""
   for member in d.objMembers:
     if isCompositionEntry(member):
@@ -1573,7 +1573,7 @@ proc genObjectDecl(ctx: var CodegenCtx, d: Decl): string =
       members.add(ctx.genMemberFn(member, d.name) & "\n")
     else:
       members.add(ctx.genDecl(member) & "\n")
-  let body = if fields.len > 0: fields.join("\n") else: "    discard"
+  let body = if fields.len > 0: fields.join("\n") else: "  discard"
   # manager objects hold var state but are Tier 1 value types too
   ctx.typeSection.add("type " & d.name & "* = object\n" & body)
   members

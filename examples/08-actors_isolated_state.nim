@@ -7,8 +7,8 @@ type tuck_TrafficLightMsg* = object
   kind*: tuck_TrafficLightMsgKind
 
 type tuck_TrafficLight* = ref object
-    state*: tuck_TrafficLightStateKind
-    mailbox*: Mailbox[tuck_TrafficLightMsg, 4]
+  state*: tuck_TrafficLightStateKind
+  mailbox*: Mailbox[tuck_TrafficLightMsg, 4]
 
 let tuck_TrafficLightSingleton* = tuck_TrafficLight()
 

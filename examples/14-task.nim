@@ -2,7 +2,7 @@ import ../compiler/tuck_rt
 import http
 
 type tuck_Feed* = object
-    episodes*: int
+  episodes*: int
 
 proc tuck_parse*[T](payload: T): tuple[feed: tuck_Feed] =
   stderr.writeLine("TUCK PENDING: tuck_parse invoked (not implemented)")

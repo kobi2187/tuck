@@ -3,8 +3,8 @@ import ../compiler/tuck_rt
 import sys
 
 type Point* {.importc: "Point", header: "point.h", bycopy.} = object
-    x*: int32
-    y*: int32
+  x*: int32
+  y*: int32
 
 proc takesPoint*(p: Point): int32 {.importc: "takesPoint", header: "point.h".}
 proc makesPoint*(x: int32, y: int32): Point {.importc: "makesPoint", header: "point.h".}

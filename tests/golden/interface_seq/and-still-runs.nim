@@ -1,9 +1,9 @@
 
 type tuck_Dog* = object
-    name*: string
+  name*: string
 
 type tuck_Cat* = object
-    lives*: int
+  lives*: int
 
 type AnimalTag* = enum Animal_is_tuck_Cat, Animal_is_tuck_Dog
 

@@ -1,11 +1,11 @@
 import ../compiler/tuck_rt
 
 type tuck_Feed* = object
-    title*: string
-    episodeCount*: int
+  title*: string
+  episodeCount*: int
 
 type tuck_PodcastApp* = object
-    discard
+  discard
 
 type tuck_CounterMsgKind* = enum msgIncrement, msgGet
 type tuck_CounterMsg* = object
@@ -13,8 +13,8 @@ type tuck_CounterMsg* = object
   n*: int
 
 type tuck_Counter* = ref object
-    count*: int
-    mailbox*: Mailbox[tuck_CounterMsg, 8]
+  count*: int
+  mailbox*: Mailbox[tuck_CounterMsg, 8]
 
 let tuck_CounterSingleton* = tuck_Counter()
 

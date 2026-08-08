@@ -1,6 +1,6 @@
 
 type tuck_P* = object
-    n*: int
+  n*: int
 
 proc tuck_total*(xs: seq[tuck_P]): int =
   var s = 0

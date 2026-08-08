@@ -34,8 +34,8 @@ proc `<=`*(a, b: tuck_ErrorCount): bool {.borrow.}
 proc `$`*(a: tuck_ErrorCount): string {.borrow.}
 
 type tuck_SensorEvent* = object
-    channel*: uint8
-    reading*: uint16
+  channel*: uint8
+  reading*: uint16
 
 registerMMIO(tuck_RCC_CR, 0x40021000):
   HSION: bit(0, ReadWrite)

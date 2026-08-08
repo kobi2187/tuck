@@ -4,7 +4,7 @@ import sys
 type tuck_Adder* = proc(a: int, b: int): int {.closure.}
 
 type tuck_Calc* = object
-    add*: tuck_Adder
+  add*: tuck_Adder
 
 proc tuck_plus*(a: int, b: int): int =
   return (a + b)

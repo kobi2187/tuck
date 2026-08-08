@@ -3,9 +3,9 @@ import ../compiler/tuck_rt
 type tuck_AppEventsKind* = enum SensorFailure, LowMemory
 type tuck_AppEvents* = ref object
     kind*: tuck_AppEventsKind
-    port*: uint8
-    reason*: string
-    remaining*: uint32
+  port*: uint8
+  reason*: string
+  remaining*: uint32
 
 var latesttuck_AppEvents*: tuck_AppEvents
 

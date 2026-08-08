@@ -1,12 +1,12 @@
 import ../compiler/tuck_rt
 
 type tuck_Session* = object
-    clientId*: uint32
-    bytesIn*: uint32
+  clientId*: uint32
+  bytesIn*: uint32
 
 type tuck_SensorReading* = object
-    channel*: uint8
-    value*: uint16
+  channel*: uint8
+  value*: uint16
 
 var tuck_RxBuffers* = ObjectPool[array[512, uint8], 4]()
 var tuck_Sessions* = ObjectPool[tuck_Session, 64]()

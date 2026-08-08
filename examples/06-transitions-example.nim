@@ -1,10 +1,10 @@
 import ../compiler/tuck_rt
 
 type tuck_Config* = object
-    url*: string
+  url*: string
 
 type tuck_Feed* = object
-    title*: string
+  title*: string
 
 type tuck_PodcastPlayerLifecycleKind* = enum Unloaded, Loading, Ready
 type tuck_PodcastPlayerLifecycle* = object

@@ -1,13 +1,13 @@
 
 type tuck_A* = object
-    x*: int
+  x*: int
 
 type tuck_B* = object
-    y*: int
+  y*: int
 
 type tuck_M* = object
-    x*: int
-    y*: int
+  x*: int
+  y*: int
 
 proc tuck_use*(m: var tuck_M): int =
   return (m.x + m.y)

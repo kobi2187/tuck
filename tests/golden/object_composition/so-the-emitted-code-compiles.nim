@@ -1,9 +1,9 @@
 
 type tuck_A* = object
-    x*: int
+  x*: int
 
 type tuck_Obj* = object
-    x*: int
+  x*: int
 
 proc get*(self: var tuck_Obj): int =
   return self.x

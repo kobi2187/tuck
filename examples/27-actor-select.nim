@@ -7,10 +7,10 @@ type tuck_AccumulatorMsg* = object
   n*: int
 
 type tuck_Accumulator* = ref object
-    total*: int
-    done*: bool
-    mailbox*: Mailbox[tuck_AccumulatorMsg, 64]
-    finished*: bool
+  total*: int
+  done*: bool
+  mailbox*: Mailbox[tuck_AccumulatorMsg, 64]
+  finished*: bool
 
 let tuck_AccumulatorSingleton* = tuck_Accumulator()
 

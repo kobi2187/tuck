@@ -1,13 +1,13 @@
 import ../compiler/tuck_rt
 
 type tuck_Config* = object
-    url*: string
+  url*: string
 
 type tuck_Feed* = object
-    title*: string
+  title*: string
 
 type tuck_Socket* = object
-    fd*: int
+  fd*: int
 
 type tuck_PlayerStateKind* = enum Unloaded, Loading, Ready
 type tuck_PlayerState* = object

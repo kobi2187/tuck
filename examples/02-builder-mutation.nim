@@ -1,9 +1,9 @@
 import ../compiler/tuck_rt
 
 type tuck_ServerConfig* = object
-    port*: int
-    timeout*: uint32
-    running*: bool
+  port*: int
+  timeout*: uint32
+  running*: bool
 
 proc tuck_withDefaults*(self: var tuck_ServerConfig): tuck_ServerConfig =
   return tuck_ServerConfig(port: 80, timeout: 30, running: false)

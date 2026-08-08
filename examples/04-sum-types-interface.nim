@@ -1,23 +1,23 @@
 import ../compiler/tuck_rt
 
 type tuck_Config* = object
-    url*: string
+  url*: string
 
 type tuck_Feed* = object
-    title*: string
+  title*: string
 
 type tuck_AudioPlayer* = object
-    volume*: int
+  volume*: int
 
 type tuck_NetworkClient* = object
-    timeout*: uint32
+  timeout*: uint32
 
 type tuck_Episode* = object
-    name*: string
+  name*: string
 
 type tuck_Pair* = object
-    key*: string
-    val*: string
+  key*: string
+  val*: string
 
 type tuck_PodcastPlayerLifecycleKind* = enum Unloaded, Loading, Ready, Error
 type tuck_PodcastPlayerLifecycle* = object
@@ -28,8 +28,8 @@ type tuck_PodcastPlayerLifecycle* = object
   of Error: error*: tuple[config: tuck_Config, reason: string]
 
 type tuck_PodcastApp* = object
-    volume*: int
-    timeout*: uint32
+  volume*: int
+  timeout*: uint32
 
 # interface Storable: no satisfying types
 

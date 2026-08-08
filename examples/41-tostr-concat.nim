@@ -4,8 +4,8 @@ import console
 import sys
 
 type tuck_Jar* = object
-    count*: int
-    label*: string
+  count*: int
+  label*: string
 
 proc tuck_main*(): void =
   var n = 99
