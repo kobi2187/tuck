@@ -112,6 +112,7 @@ type
     line*, col*: int
     context*: string   # the offending source line, for the caret display
     stage*: string     # "Lexical Error" / "Parse Error" — which stage rejected
+    code*: string      # "TK-PA03" — the lookup code, empty when unassigned
 
 const keywords = {
   "fn": tkFn, "let": tkLet, "var": tkVar, "const": tkConst,

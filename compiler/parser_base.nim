@@ -7,6 +7,8 @@
 import strutils
 import ../lexer
 import ast
+import diagnostics
+export diagnostics   # every reportError caller needs the codes
 
 type
   Parser* = object
@@ -47,15 +49,20 @@ proc getLineContext(source: string, targetLine: int): string =
     return currentLine
   return ""
 
-proc reportError*(p: Parser, msg: string, line = -1, col = -1) =
+proc reportError*(p: Parser, msg: string, line = -1, col = -1,
+                  dc = dcNone) =
   ## Reject the source. Raises rather than printing and quitting, so a caller
   ## can tell a rejection from a crash; `tuck.nim` catches this and prints.
   ## Defaults to the current token's position when none is given.
+  ##
+  ## `dc` is the lookup code (diagnostics.nim). It rides in `err.code` rather
+  ## than being pasted into the message, so the driver decides how to show it.
   var err = newException(SyntaxError, msg)
   err.line = if line == -1: p.current().line else: line
   err.col = if col == -1: p.current().column else: col
   err.context = getLineContext(p.source, err.line)
   err.stage = "Parse Error"
+  err.code = code(dc)
   raise err
 
 proc expect*(p: var Parser, kind: TokenKind, msg = ""): Token =

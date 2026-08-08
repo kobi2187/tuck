@@ -4,6 +4,8 @@
 # TypeChecker context. Factored out so the checker's synthesis, flow, and
 # validation modules can all share them without threading state.
 import ast, semantics, tables, strutils, sets
+import diagnostics
+export diagnostics   # every fail() caller needs the codes
 
 proc unknownType*(sp: Span): Type =
   ## The checker could not work this type out. A GAP — every one found so far
@@ -56,6 +58,12 @@ proc fail*(msg: string, span: Span) =
   err.line = span.line
   err.col = span.col
   raise err
+
+proc fail*(dc: DiagCode, msg: string, span: Span) =
+  ## The same rejection, carrying a lookup code (`TK-TY01: expects int but got
+  ## str`). The uncoded overload above still works, so codes are adopted site
+  ## by site rather than in one sweep — see diagnostics.nim.
+  fail(withCode(dc, msg), span)
 
 # `!T` / `?T` / `!?T` parse as tkApp with a tkNamed base of "!", "?" or "!?".
 proc isWrapper*(t: Type): bool =

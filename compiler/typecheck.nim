@@ -567,24 +567,27 @@ proc asSlotInvoke(tc: var TypeChecker, e: Expr): Type =
   result = tc.checkThroughFnSig(slotT, call)
   if result == nil: result = unknownType(e.span)
 
-proc missingFieldMessage(e: Expr, recvT: Type, fields: seq[FieldDef]): string =
+type Diag = tuple[code: DiagCode, msg: string]
+  ## A diagnostic under construction: the code to look up, and what to say.
+  ## An empty msg means "nothing definite enough to report".
+
+proc missingFieldMessage(e: Expr, recvT: Type, fields: seq[FieldDef]): Diag =
   ## Known record, missing field, no matching fn: the payoff error. Sum types
   ## carry variant fields we don't track per-variant in v1, so only a plain
   ## record is flagged; anything else falls through to gradual typing.
-  if fields.len == 0: return ""
-  if recvT.kind != tkRecord: return ""
-  "no field '" & e.fieldName & "' on type " & typeName(recvT)
+  if fields.len == 0: return (dcNone, "")
+  if recvT.kind != tkRecord: return (dcNone, "")
+  (dcTyNoField, "no field '" & e.fieldName & "' on type " & typeName(recvT))
 
-proc unresolvedFieldMessage(e: Expr, recvT: Type,
-                            fields: seq[FieldDef]): string =
-  ## Why `x.name` resolved to nothing, most specific reason first. Empty means
-  ## nothing definite enough to report.
+proc unresolvedFieldMessage(e: Expr, recvT: Type, fields: seq[FieldDef]): Diag =
+  ## Why `x.name` resolved to nothing, most specific reason first.
   if e.dotArg != nil:
     # `.fn {args}` — the brace proves call intent (ruling 2026-07-23), so this
     # is an undeclared CALL, not a field read to fall through on.
-    return "'" & e.fieldName & "' is called with arguments here but is not " &
-           "declared — a `.fn {args}` call needs a declared fn (add one, or " &
-           "a `pending:` stub)"
+    return (dcTyUndeclared,
+            "'" & e.fieldName & "' is called with arguments here but is not " &
+            "declared — a `.fn {args}` call needs a declared fn (add one, or " &
+            "a `pending:` stub)")
   if isLiteralPayload(e.receiver):
     # The rewrite pass turned a bare literal receiver into the payload
     # `{value: n}` (`5.ms` is `{value: 5} .ms`), so by here BOTH lookups have
@@ -592,10 +595,11 @@ proc unresolvedFieldMessage(e: Expr, recvT: Type,
     # the likeliest cause — an unimported helper is how this reads in
     # practice. missingFieldMessage would instead describe a wrap the user
     # never wrote.
-    return "'" & e.fieldName & "' is neither a field of " & typeName(recvT) &
-           " nor a fn in scope — a literal applied to a name wraps as that " &
-           "payload, so `" & e.fieldName & "` must be a declared fn. Is an " &
-           "`import` missing?"
+    return (dcTyUndeclared,
+            "'" & e.fieldName & "' is neither a field of " & typeName(recvT) &
+            " nor a fn in scope — a literal applied to a name wraps as that " &
+            "payload, so `" & e.fieldName & "` must be a declared fn. Is an " &
+            "`import` missing?")
   missingFieldMessage(e, recvT, fields)
 
 proc failUnresolvedFieldAccess(tc: TypeChecker, e: Expr, recvT: Type,
@@ -604,9 +608,9 @@ proc failUnresolvedFieldAccess(tc: TypeChecker, e: Expr, recvT: Type,
   ## every arm of synthFieldAccess has already declined, so this is the end of
   ## the line and a vague message here is what the user is left with.
   ##
-  ## Pick the message, then fail once.
-  let msg = unresolvedFieldMessage(e, recvT, fields)
-  if msg.len > 0: fail("Type Error: " & msg, e.span)
+  ## Pick the diagnostic, then fail once.
+  let d = unresolvedFieldMessage(e, recvT, fields)
+  if d.msg.len > 0: fail(d.code, d.msg, e.span)
 
 proc syntacticFieldForm(tc: var TypeChecker, e: Expr): Type =
   ## The arms that read `x.name` from its SHAPE alone, before the receiver's
@@ -2583,7 +2587,8 @@ proc failIfComposedCollision(owner: string, fields: seq[FieldDef], sp: Span) =
   var seen = initTable[string, Span]()
   for f in fields:
     if seen.hasKey(f.name):
-      fail("Type Error: composed field '" & f.name & "' is contributed twice " &
+      fail(dcTyComposedCollision,
+           "composed field '" & f.name & "' is contributed twice " &
            "to '" & owner & "' (first at line " & $seen[f.name].line &
            "). Rename one at the composition site: " &
            "`type C = A + B {oldName -> newName}` (spec 2.5)", sp)

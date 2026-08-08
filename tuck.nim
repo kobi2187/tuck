@@ -61,6 +61,7 @@ commands:
   check, ch     parse + effect check + type check + pending report
   compile, c    check + transpile to Nim (and Odin with --odin)
   build, b      compile + nim c to a binary (fn main runs at start)
+  explain CODE  what a diagnostic code means, e.g. `tuck explain TK-TY05`
 
 options:
   --ast         (parse) dump the AST as JSON to stdout
@@ -81,7 +82,8 @@ proc dieSyntax(err: ref SyntaxError) {.noreturn.} =
   ## what moved is who decides to exit. The error names its own stage, so a
   ## lexical error stays labelled one even when `tuck parse` is what surfaced
   ## it.
-  stderr.writeLine "\n[" & err.stage & "] at line " & $err.line & ", column " &
+  let tag = if err.code.len > 0: err.stage & " " & err.code else: err.stage
+  stderr.writeLine "\n[" & tag & "] at line " & $err.line & ", column " &
                    $err.col & ":"
   stderr.writeLine "  " & err.msg
   if err.context.len > 0:
@@ -249,6 +251,15 @@ proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
 when isMainModule:
   if paramCount() < 2: usage()
   let cmd = paramStr(1)
+  # `explain` takes a CODE, not a file — answered before the file check below.
+  if cmd == "explain":
+    let dc = parseCode(paramStr(2))
+    if dc == dcNone:
+      die("tuck: no such diagnostic code: " & paramStr(2) &
+          " (codes look like TK-TY05)")
+    echo $dc, "  ", categoryName(dc), " Error"
+    echo "  ", explanationOf(dc)
+    quit(0)
   let path = paramStr(2)
   if not fileExists(path): die("tuck: no such file: " & path)
   let source = readFile(path)

@@ -1035,7 +1035,7 @@ proc failNotADeclaration(p: var Parser) =
   ## `typfn ight:`, `ac:`), each pointing at the wrong place.
   p.reportError("'" & p.current().value & "' does not start a declaration. " &
                 "A module's top level holds declarations only, opened by one " &
-                "of: " & TopLevelKeywords & ".")
+                "of: " & TopLevelKeywords & ".", dc = dcPaNotADeclaration)
 
 proc parseSatisfiesDecl(p: var Parser, sp: Span): Decl =
   ## `satisfies Obj: Iface` / `satisfies Obj: A, B, C` at TOP LEVEL (spec §5.2).
