@@ -812,9 +812,8 @@ proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   if code == "": return ""
   if ownsItsLayout(s): code else: ind & "  " & code
 
-proc genBlock(ctx: var CodegenCtx, e: Expr, ind: string): string =
-  ## `if true:` not `block:` — a Nim `block` captures unlabeled `break`, which
-  ## must reach the enclosing loop instead. Scoping is identical.
+proc genStmts(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## The statements of a block, indented one level, with no scope around them.
   let saved = ctx.indent
   ctx.indent += 1
   var lines: seq[string]
@@ -822,8 +821,27 @@ proc genBlock(ctx: var CodegenCtx, e: Expr, ind: string): string =
     let code = ctx.genStmt(s, ind)
     if code != "": lines.add(code)
   ctx.indent = saved
-  if lines.len == 0: return ind & "discard"
-  ind & "if true:\n" & lines.join("\n")
+  lines.join("\n")
+
+proc genFnBody(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## A fn's body needs NO scope of its own — the proc already is one. Emitting
+  ## the `if true:` that genBlock uses for nested blocks wrapped 79 of the 124
+  ## blocks across the examples in a construct that did nothing.
+  if e == nil or e.kind != exkBlock: return ctx.genExpr(e)
+  result = ctx.genStmts(e, ind)
+  if result.len == 0: result = ind & "  discard"
+
+proc genBlock(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## A NESTED block — one that introduces a scope inside a fn.
+  ##
+  ## `if true:` not `block:` — a Nim `block` captures unlabeled `break`, which
+  ## must reach the enclosing loop instead. Scoping is identical.
+  ##
+  ## A fn body is not this: it goes through genFnBody, which skips the wrapper
+  ## because the proc supplies the scope.
+  let body = ctx.genStmts(e, ind)
+  if body.len == 0: return ind & "discard"
+  ind & "if true:\n" & body
 
 proc genUnindented(ctx: var CodegenCtx, e: Expr): string =
   ## Emit an expression with no indentation — for a value position, where a
@@ -1213,8 +1231,7 @@ proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
          ctx.hasInvariantsFast(d.fnReturnType.name): d.fnReturnType.name
       else: ""
     injectTailReturn(d.fnBody, retTypeStr)
-    ctx.indent += 1
-    let bodyStr = ctx.genExpr(d.fnBody)
+    let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
     ctx.indent = oldIndent
     ctx.retWrapped = false
     ctx.definedVars = oldVars
@@ -1579,9 +1596,9 @@ proc genTaskDecl(ctx: var CodegenCtx, d: Decl): string =
   let oldInTask = ctx.inTask
   (ctx.retWrapped, ctx.retInnerNim, ctx.retInnerT) = bangInfo(d.taskReturnType)
   injectTailReturn(d.taskBody, retTypeStr)
-  ctx.indent += 1
   ctx.inTask = true
-  let bodyStr = ctx.genExpr(d.taskBody)
+  # A task lowers to a proc, so its body needs no scope of its own either.
+  let bodyStr = ctx.genFnBody(d.taskBody, "  ".repeat(ctx.indent))
   ctx.inTask = oldInTask
   ctx.indent = oldIndent
   ctx.retWrapped = false
@@ -1637,7 +1654,9 @@ proc genErrHandlerBody(ctx: var CodegenCtx, handler: Decl): string =
   let savedVars = ctx.definedVars
   ctx.definedVars.incl("code")
   ctx.definedVars.incl("site")
-  result = ctx.genIndented(handler.fnBody)
+  # A handler body is a PROC body — genFnBody, not genIndented, so it does not
+  # get the `if true:` scope that a nested block needs.
+  result = ctx.genFnBody(handler.fnBody, "  ".repeat(ctx.indent))
   ctx.definedVars = savedVars
   if result.strip() == "" or result.strip() == "discard": result = ""
 
