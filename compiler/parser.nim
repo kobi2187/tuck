@@ -1116,6 +1116,18 @@ proc parseDecl*(p: var Parser): Decl =
   of tkIdent: return p.parseExprDecl(sp)
   else: return p.parseExprDecl(sp)
 
+proc failIfNotTopLevelStart(p: var Parser) =
+  ## Can this token open a top-level declaration at all? Two ways it cannot,
+  ## both reported HERE rather than deeper, where the parser would only be able
+  ## to describe the symptom it tripped over.
+  if p.current().kind == tkIndent:
+    # Nothing above to nest inside — the declaration this line belongs to is
+    # missing, or misspelled so no block was ever opened.
+    p.reportError("This line is indented, but nothing is open above it.",
+                  dc = dcPaStrayIndent)
+  if p.current().kind == tkIdent and not p.opensDeclaration():
+    p.failNotADeclaration()
+
 proc parseModule*(p: var Parser): Module =
   ## THE FIRST WORD DECIDES. A module's top level is declarations only, so an
   ## opening word that names no declaration is rejected right here — no
@@ -1131,8 +1143,7 @@ proc parseModule*(p: var Parser): Module =
     if p.current().kind == tkNewline:
       discard p.advance()
     else:
-      if p.current().kind == tkIdent and not p.opensDeclaration():
-        p.failNotADeclaration()
+      p.failIfNotTopLevelStart()
       decls.add(p.parseDecl())
   result = Module(path: @[], decls: decls, span: sp)
   # identity for the semantic layer, assigned once at the parse boundary

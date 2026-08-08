@@ -172,14 +172,20 @@ proc getLineContext(source: string, targetLine: int): string =
     return currentLine
   return ""
 
-proc reportError*(L: Lexer, message: string, line: int, col: int) =
+proc reportError*(L: Lexer, message: string, line: int, col: int,
+                  code = "") =
   ## Reject the source. Raises rather than printing and quitting, so a caller
   ## can tell a rejection from a crash; `tuck.nim` catches this and prints.
+  ##
+  ## `code` is the lookup code as a STRING rather than a DiagCode: the lexer
+  ## sits below compiler/, so it cannot import the registry without inverting
+  ## the dependency. tests/diagnostics.sh checks the two agree.
   var err = newException(SyntaxError, message)
   err.line = line
   err.col = col
   err.context = getLineContext(L.source, line)
   err.stage = "Lexical Error"
+  err.code = code
   raise err
 
 proc describe*(kind: TokenKind, value = ""): string =
@@ -224,32 +230,63 @@ proc advance*(L: var Lexer) =
       L.column += 1
     L.position += 1
 
+const IndentWidth* = 2
+  ## One level of nesting, in spaces. Fixed rather than inferred: indentation
+  ## IS structure here, so a single width means the same nesting always looks
+  ## the same, and any other amount is a mistake the lexer can name.
+
+proc measureIndent(L: var Lexer): int =
+  ## Consume the leading spaces and report how many. A tab is rejected here
+  ## rather than given a width: any width would be a guess that differs
+  ## between editors.
+  while L.peek() == ' ':
+    result += 1
+    L.advance()
+  if L.peek() == '\t':
+    L.reportError("Tabs are not allowed. Use spaces.", L.line, L.column,
+                  "TK-LX01")
+
+proc stepIn(L: var Lexer, spaces, currentIndent: int) =
+  ## One level deeper. ONE STEP IN IS EXACTLY TWO SPACES: any width would
+  ## nest, so accepting a mix means two files that look different are the same
+  ## program, and a misaligned continuation reads as a block. Fixing the step
+  ## also makes a stray indent diagnosable — at top level it can only be a
+  ## mistake.
+  if spaces - currentIndent != IndentWidth:
+    L.reportError("Indent one level with exactly " & $IndentWidth &
+                  " spaces — this line goes in by " & $(spaces - currentIndent) &
+                  ". (Indentation is structure in Tuck, so one width keeps " &
+                  "the same nesting looking the same.)", L.line, L.column,
+                  "TK-LX06")
+  L.indentStack.add(spaces)
+  L.pendingTokens.add(Token(kind: tkIndent, value: "", line: L.line, column: L.column))
+
+proc stepOut(L: var Lexer, spaces: int) =
+  ## Back out to a shallower level, closing one block per level left. Landing
+  ## between two levels closes nothing cleanly, which is the error.
+  while L.indentStack.len > 0 and L.indentStack[^1] > spaces:
+    discard L.indentStack.pop()
+    L.pendingTokens.add(Token(kind: tkDedent, value: "", line: L.line, column: L.column))
+  let activeIndent = if L.indentStack.len > 0: L.indentStack[^1] else: 0
+  if activeIndent != spaces:
+    L.reportError("This line lines up with no block above it — it is out by " &
+                  $(spaces - activeIndent) & " space(s) from the nearest one.",
+                  L.line, L.column, "TK-LX04")
+
 proc handleIndent*(L: var Lexer) =
   if L.indentStack.len == 0:
     L.indentStack.add(0)
 
-  var spaces = 0
-  while L.peek() == ' ':
-    spaces += 1
-    L.advance()
-
-  if L.peek() == '\t':
-    L.reportError("Tabs are not allowed. Use spaces.", L.line, L.column)
+  let spaces = L.measureIndent()
 
   if L.peek() == '\n' or L.peek() == '#' or L.peek() == '\0':
     return
 
   let currentIndent = L.indentStack[^1]
   if spaces > currentIndent:
-    L.indentStack.add(spaces)
-    L.pendingTokens.add(Token(kind: tkIndent, value: "", line: L.line, column: L.column))
+    L.stepIn(spaces, currentIndent)
   elif spaces < currentIndent:
-    while L.indentStack.len > 0 and L.indentStack[^1] > spaces:
-      discard L.indentStack.pop()
-      L.pendingTokens.add(Token(kind: tkDedent, value: "", line: L.line, column: L.column))
-    let activeIndent = if L.indentStack.len > 0: L.indentStack[^1] else: 0
-    if activeIndent != spaces:
-      L.reportError("Inconsistent indentation level. Expected matching indentation.", L.line, L.column)
+    L.stepOut(spaces)
 
 proc handleEOF*(L: var Lexer) =
   while L.indentStack.len > 1:
@@ -334,7 +371,8 @@ proc skipComment*(L: var Lexer) =
 proc skipSpaces*(L: var Lexer) =
   while L.peek() == ' ' or L.peek() == '\t':
     if L.peek() == '\t':
-      L.reportError("Tabs are not allowed. Use spaces.", L.line, L.column)
+      L.reportError("Tabs are not allowed. Use spaces.", L.line, L.column,
+                  "TK-LX01")
     L.advance()
 
 proc scanNext*(L: var Lexer) =

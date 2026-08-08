@@ -33,3 +33,4 @@ examples/cffi/*.o
 examples/tuckrt/
 examples/mod_*/
 tests/.smoke_*
+tools/__pycache__/

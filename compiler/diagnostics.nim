@@ -43,6 +43,7 @@ type
     dcLxUnterminatedStr = "TK-LX02"     ## string literal with no closing quote
     dcLxBadChar = "TK-LX03"             ## a byte that begins no token
     dcLxIndent = "TK-LX04"              ## indentation does not match any level
+    dcLxIndentWidth = "TK-LX06"         ## a step in that is not exactly 2 spaces
     dcLxNumber = "TK-LX05"              ## malformed numeric literal
 
     # --- PA: parse --------------------------------------------------------
@@ -52,6 +53,7 @@ type
     dcPaCallSyntax = "TK-PA04"          ## `f(args)` — calls are postfix
     dcPaDivision = "TK-PA05"            ## bare `/` — write `/i` or `/f`
     dcPaSatisfiesOrder = "TK-PA06"      ## `satisfies` after the object's fields
+    dcPaStrayIndent = "TK-PA07"         ## indented line with nothing open above
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -63,6 +65,11 @@ type
     dcTyPointerReturn = "TK-TY07"       ## extern returns a memory pointer
     dcTyPointerStored = "TK-TY08"       ## a pointer stored outside the boundary
     dcTyArgMismatch = "TK-TY09"         ## an argument does not fit its param
+    dcTyCondNotBool = "TK-TY10"         ## an if/loop condition is not bool
+    dcTyBranchDisagree = "TK-TY11"      ## if/match branches yield different types
+    dcTyNotExhaustive = "TK-TY12"       ## a match leaves a variant unhandled
+    dcTyImmutable = "TK-TY13"           ## assigning to something declared `let`
+    dcTyBadIndex = "TK-TY14"            ## an index is not an int, or not one index
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -120,8 +127,8 @@ proc withCode*(d: DiagCode, msg: string): string =
   if d == dcNone: msg
   else: categoryName(d) & " Error [" & $d & "]: " & msg
 
-proc frontEndExplanation(d: DiagCode): string =
-  ## LX and PA — the bytes, and the grammar.
+proc lexExplanation(d: DiagCode): string =
+  ## LX — the bytes do not form tokens.
   case d
   of dcLxTab:
     "Indentation is spaces only. A tab is rejected rather than assigned a " &
@@ -129,8 +136,21 @@ proc frontEndExplanation(d: DiagCode): string =
   of dcLxUnterminatedStr:
     "A string literal reached the end of the line with no closing quote."
   of dcLxBadChar: "A byte that begins no token in Tuck."
-  of dcLxIndent: "The indentation matches no enclosing level."
+  of dcLxIndent:
+    "This line's indentation does not line up with any block it could be in. " &
+    "Fix: match it to the block you meant — either the one above, or a level " &
+    "you have already closed."
+  of dcLxIndentWidth:
+    "Going one level in is exactly two spaces. This line went in by a " &
+    "different amount. Fix: use two spaces per level. Tuck fixes the width " &
+    "because indentation is structure here — if any amount nested, two files " &
+    "that look different could be the same program."
   of dcLxNumber: "A numeric literal the lexer cannot read."
+  else: ""
+
+proc parseExplanation(d: DiagCode): string =
+  ## PA — the tokens do not form the grammar.
+  case d
   of dcPaExpectedExpr:
     "An expression was required at this position and something else was found."
   of dcPaExpectedToken: "A specific token was required at this position."
@@ -146,35 +166,98 @@ proc frontEndExplanation(d: DiagCode): string =
     "result cannot depend on how the operands were inferred."
   of dcPaSatisfiesOrder:
     "A `satisfies` line comes before the object's fields, so what the object " &
-    "PROMISES is visible before its data."
+    "PROMISES is visible before its data. Fix: move the `satisfies` line above " &
+    "the first field."
+  of dcPaStrayIndent:
+    "This line is indented, but there is nothing above it to be inside of. " &
+    "Usually the declaration it belongs to is missing, or its name is " &
+    "misspelled so the compiler never opened a block. Fix: check the line " &
+    "above — it should be a declaration ending in `:`."
   else: ""
 
-proc typeExplanation(d: DiagCode): string =
-  ## TY — a value does not fit where it flows.
+proc nameExplanation(d: DiagCode): string =
+  ## TY — the name does not resolve, or the shape does not carry it.
   case d
-  of dcTyMismatch: "A value does not fit where it flows."
-  of dcTyNoField: "The receiver's type has no field by that name."
+  of dcTyNoField:
+    "That type has no field by this name. Fix: check the spelling, and check " &
+    "you are reading the value you think you are — the type is named in the " &
+    "message."
   of dcTyUndeclared:
-    "The name resolved to neither a field of the receiver nor a fn in scope. " &
-    "A missing `import` is the usual cause."
-  of dcTyUnhandledResult:
-    "A fallible result (`!T`) was dropped. Bind it, pass it on, or propagate " &
-    "it with `?`."
+    "The name is neither a field of the value on the left nor a function in " &
+    "scope. Fix: check the spelling first, then whether the module declaring " &
+    "it is imported — a helper like `ms` lives in std/time and needs " &
+    "`import time`."
   of dcTyComposedCollision:
     "Composition is set union (spec 4.5), so a field name contributed by two " &
     "members is a conflict. The compiler does not pick a winner: rename one " &
     "at the composition site, `type C = A + B {oldName -> newName}` (2.5)."
   of dcTyDuplicateMember:
-    "A field, parameter or variant name appears twice in one declaration."
+    "A field, parameter or variant name appears twice in one declaration. " &
+    "Fix: rename one of them."
+  else: ""
+
+proc pointerExplanation(d: DiagCode): string =
+  ## TY — the extern boundary, where unsafe types are allowed and nowhere else.
+  case d
   of dcTyPointerReturn:
     "An extern may take a pointer INTO memory but never return one, because " &
-    "the lifetime of what it addresses is C's and unknowable here. An opaque " &
-    "handle — a fieldless extern type — is exempt: nothing to dereference."
+    "the lifetime of what it addresses is C's and unknowable here. Fix: have " &
+    "the binding return `str` or `Seq[u8]` and copy in the implementation. An " &
+    "opaque handle — a fieldless extern type — is exempt: nothing to " &
+    "dereference, so nothing to outlive."
   of dcTyPointerStored:
     "A pointer is legal only at the extern boundary, never stored, so none " &
-    "outlives the expression that obtained it."
-  of dcTyArgMismatch: "An argument does not fit the parameter it fills."
+    "outlives the expression that obtained it. Fix: copy what you need out of " &
+    "it — into a `str` or a `Seq[u8]` — and keep that instead."
   else: ""
+
+proc controlFlowExplanation(d: DiagCode): string =
+  ## TY — the types a control-flow construct requires of its parts.
+  case d
+  of dcTyCondNotBool:
+    "A condition must be a `bool`. Fix: compare something — `if n > 0:` " &
+    "rather than `if n:`. Tuck has no truthiness, so a number or a string is " &
+    "never a yes/no on its own."
+  of dcTyBranchDisagree:
+    "Every branch of an `if` or `match` used as a VALUE has to produce the " &
+    "same type, because the whole expression has one type. Fix: make the " &
+    "branches agree, or use it as a statement and return from each branch."
+  of dcTyNotExhaustive:
+    "A `match` has to cover every variant. Fix: add the missing arms — they " &
+    "are named in the message. Tuck has no catch-all `else` here on purpose: " &
+    "when a new variant is added later, this error is what finds every place " &
+    "that has to handle it."
+  else: ""
+
+proc valueFitExplanation(d: DiagCode): string =
+  ## TY — a value does not fit the position it reached.
+  case d
+  of dcTyMismatch:
+    "A value's type is not the one this position needs. Fix: convert it, or " &
+    "change the declaration to the type you actually meant. Tuck does not " &
+    "convert silently — a widening you did not ask for is a bug you cannot see."
+  of dcTyImmutable:
+    "This name was declared with `let`, so it cannot be reassigned. Fix: use " &
+    "`var` if it really does change, or bind a new name for the new value."
+  of dcTyBadIndex:
+    "An index must be a single `int`. Fix: check the value's type, and pass " &
+    "exactly one index — `xs[i]`, not `xs[i, j]`."
+  of dcTyUnhandledResult:
+    "A function that can fail returned `!T`, and the result was thrown away " &
+    "— so a failure would pass unnoticed. Fix: bind it with `let` and check " &
+    "`.ok`, hand it to something that handles it, or add `?` to pass the " &
+    "failure up to your own caller."
+  of dcTyArgMismatch:
+    "An argument does not fit the parameter it fills. Fix: the message names " &
+    "both types — convert the value, or change the parameter."
+  else: ""
+
+proc typeExplanation(d: DiagCode): string =
+  ## TY — grouped by what the reader was doing when it fired.
+  result = nameExplanation(d)
+  if result.len == 0: result = pointerExplanation(d)
+  if result.len == 0: result = controlFlowExplanation(d)
+  if result.len == 0: result = valueFitExplanation(d)
 
 proc ruleExplanation(d: DiagCode): string =
   ## The remaining categories — one declared rule each.
@@ -206,9 +289,11 @@ proc explanationOf*(d: DiagCode): string =
   ## reads this. A message is written for the site that raised it; this is
   ## written for the reader looking the rule up afterwards.
   if d == dcNone: return "No code assigned to this diagnostic yet."
-  result = frontEndExplanation(d)
+  result = lexExplanation(d)
+  if result.len == 0: result = parseExplanation(d)
   if result.len == 0: result = typeExplanation(d)
   if result.len == 0: result = ruleExplanation(d)
+
 
 proc parseCode*(s: string): DiagCode =
   ## Look up a code the user typed — `tuck explain TK-TY01`. Case-insensitive,
@@ -217,3 +302,9 @@ proc parseCode*(s: string): DiagCode =
   for d in DiagCode:
     if $d == want: return d
   dcNone
+
+proc explainCode*(code: string): string =
+  ## Explain a code given as a STRING — what an error carries, and what a user
+  ## pastes back. The lexer reports codes as strings (it sits below this module
+  ## and cannot import the enum), so this is the lookup both sides share.
+  explanationOf(parseCode(code))

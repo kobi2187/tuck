@@ -26,7 +26,12 @@ set -u
 cd "$(dirname "$0")/.."
 
 CEILING=27
-BUDGET=196
+BUDGET=188
+# 196 -> 188 without any refactoring: tools/complexity.py stopped counting
+# `and`/`or`/`if` inside STRING LITERALS. Eight procs were never complex, only
+# wordy — a diagnostic's explanation text is full of those words, and a
+# three-arm case in diagnostics.nim scored 8 with all seven matches inside
+# quotes. The ratchet was asking for a refactor that did not exist.
 
 echo "== cyclomatic complexity ratchet (ceiling $CEILING, budget $BUDGET) =="
 

@@ -43,6 +43,22 @@ MAX_LINES = 8
 MAX_COMPLEXITY = 5
 
 
+STRING_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def strip_strings(line):
+    """Blank out string literals before counting branches.
+
+    A diagnostic's explanation text is full of the words this counts —
+    "and", "or", and an example like `if n > 0:` — none of which branch.
+    Measured: a three-arm case in compiler/diagnostics.nim scored 8, and all
+    seven matches were inside string literals. Splitting such a proc cannot
+    lower its score, so the ratchet was asking for a refactor that does not
+    exist; it now measures code.
+    """
+    return STRING_LITERAL.sub('""', line)
+
+
 def body_end(lines, start):
     """Where the proc beginning at `start` ends.
 
@@ -83,7 +99,7 @@ def measure(path):
             stripped = l.strip()
             if stripped.startswith('#') or ONE_LINE_ARM.match(stripped):
                 continue
-            complexity += len(BRANCH.findall(stripped))
+            complexity += len(BRANCH.findall(strip_strings(stripped)))
         yield len(body), complexity, start + 1, name.group(1)
 
 

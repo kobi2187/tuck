@@ -90,6 +90,10 @@ proc dieSyntax(err: ref SyntaxError) {.noreturn.} =
     stderr.writeLine ""
     stderr.writeLine "    " & err.context
     stderr.writeLine "    " & repeat(' ', max(err.col - 1, 0)) & "^"
+  # The code's own explanation, looked up by the string the error carries.
+  if err.code.len > 0:
+    stderr.writeLine ""
+    stderr.writeLine "  " & explainCode(err.code)
   stderr.writeLine ""
   quit(1)
 
