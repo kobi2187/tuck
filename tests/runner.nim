@@ -27,12 +27,13 @@
 ##   tests/run --bless          rewrite goldens (was TUCK_BLESS=1)
 ##   tests/run --jobs:N         override the pool bound
 
-import std/[os, osproc, strutils, strformat, times, monotimes, streams, sequtils]
+import std/[os, osproc, strutils, strformat, times, monotimes, streams, sequtils,
+            tables]
 import harness
 import suites/all
 
 proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
-             jobs: int) =
+             jobs: int, prepOf: proc (i: int) = nil) =
   ## Execute every work item, at most `jobs` at a time, respecting `dep`.
   ##
   ## Dependencies only ever go build -> run (nothing nests deeper), so a
@@ -70,8 +71,10 @@ proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
         if not ready(i): continue
         if running.anyIt(it.idx == i): continue
         let argv = argvOf(i)
-        if argv.len == 0 or not (fileExists(argv[0]) or argv[0].len > 0):
-          continue
+        if argv.len == 0: continue
+        # Staging, for the items that need files put in place between their
+        # dependency finishing and this command starting.
+        if prepOf != nil: prepOf(i)
         try:
           let p = startProcess(argv[0], args = argv[1 .. ^1],
                                options = {poUsePath, poStdErrToStdOut})
@@ -141,7 +144,10 @@ proc runSuites(names: seq[string], jobs: int, bless: bool, root: string): int =
   let argvOf = proc (i: int): seq[string] =
     let (si, ii) = owner[i]
     ts[si].cmdFor(ii)
-  runPool(flat, argvOf, jobs)
+  let prepOf = proc (i: int) =
+    let (si, ii) = owner[i]
+    if ii in ts[si].preps: ts[si].preps[ii](ts[si].work[ii].dir)
+  runPool(flat, argvOf, jobs, prepOf)
 
   # Hand results back to their suites, then report.
   for i in 0 ..< flat.len:

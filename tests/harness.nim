@@ -55,6 +55,7 @@ type
     work*: seq[WorkItem]
     byKey: Table[string, int]   ## (dir, verb) -> index; the dedup table
     rawCmds*: Table[int, seq[string]]  ## work index -> argv, for needCmd
+    preps*: Table[int, proc (dir: string) {.closure.}]  ## staging, run before the cmd
     dir*: string                ## the suite's scratch root
     cur: string                 ## current snippet dir
     n: int
@@ -385,6 +386,32 @@ proc bugOpen*(t: var T, name: string) =
 # own source for declared diagnostic codes, counting bug_open lines in the
 # suite. They register a raw command and read its result.
 
+proc needOdin*(t: var T): int =
+  ## The Odin-emission item for the current snippet, registering it if the
+  ## suite has not already asked for one. Lets a suite depend on the emitted
+  ## .odin without going through emitsOdin.
+  t.need(vEmitOdin)
+
+proc needCmdAfter*(t: var T, argv: seq[string], dep: int,
+                   prep: proc (dir: string) {.closure.}, dir: string): int =
+  ## A command that depends on an earlier item AND needs files staged between
+  ## the two. `prep` runs after `dep` succeeds and before this command starts.
+  ##
+  ## This exists for exactly one shape: `odin build` over a package assembled
+  ## from a .odin the pool itself produced. Without the hook the staging would
+  ## have to happen in the report pass, which is after every command has
+  ## already run.
+  let key = "cmd\0" & argv.join("\0")
+  if t.phase == pCollect:
+    if key in t.byKey: return t.byKey[key]
+    t.work.add WorkItem(dir: dir, verb: vCheck, dep: dep, rc: 0)
+    result = t.work.high
+    t.byKey[key] = result
+    t.rawCmds[result] = argv
+    t.preps[result] = prep
+  else:
+    result = t.byKey[key]
+
 proc needCmd*(t: var T, argv: seq[string]): int =
   ## Register an arbitrary command. Keyed by the command itself, since these
   ## are not tied to a snippet dir.
@@ -402,6 +429,29 @@ proc resultOf*(t: T, idx: int): (int, string) =
   (t.work[idx].rc, t.work[idx].output)
 
 # --- suite lifecycle -----------------------------------------------------
+
+proc findOdin*(): string =
+  ## The Odin compiler, or "" if it is not installed. Two suites need it —
+  ## member_names for one package, odin_backend for thirty-odd — and both
+  ## looked in the same places, so the search lives here.
+  result = findExe("odin")
+  if result.len > 0: return
+  for c in ["/home/kl/apps/Odin/odin", "/opt/odin/odin"]:
+    if fileExists(c): return c
+  return ""
+
+proc stageOdinPkg*(dir, odinSrc: string) =
+  ## Assemble a self-contained Odin package: the emitted .odin as main, plus
+  ## the Tuck runtime beside it. `odin build` takes a DIRECTORY, and the
+  ## emitted `import "tuckrt"` is relative to it, so the runtime has to sit at
+  ## the same relative spot inside the copy.
+  removeDir(dir)
+  createDir(dir / "tuckrt")
+  copyFile(odinSrc, dir / "main.odin")
+  for f in walkFiles("compiler/tuckrt/*.odin"):
+    copyFile(f, dir / "tuckrt" / f.lastPathPart)
+  if fileExists("compiler/tuckrt/minicoro.a"):
+    copyFile("compiler/tuckrt/minicoro.a", dir / "tuckrt" / "minicoro.a")
 
 proc rewind*(t: var T) =
   ## Reset the per-body cursors between the collect and report passes. The
