@@ -35,3 +35,6 @@ examples/mod_*/
 tests/.smoke_*
 tools/__pycache__/
 tools/cc
+
+# The test runner binary (tests/runner.nim). Built by run-all-tests.sh.
+tests/run
