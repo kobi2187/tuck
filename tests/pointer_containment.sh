@@ -178,6 +178,58 @@ fn main() -> int:
 EOF
 bad_check "Buf in a record field" "only.*extern|pointer"
 
+# --- returning: memory pointers no, opaque handles yes -------------------
+
+# The rule is about MEMORY, not about pointers. A returned cstring/Buf points
+# at bytes whose lifetime is C's and unknowable here — that is the hazard.
+src <<'EOF'
+extern [c, header: "zlib.h"]:
+  fn zlibVersion() -> cstring
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "an extern may not return cstring" "never returned out of it"
+
+src <<'EOF'
+extern [c, header: "x.h"]:
+  fn getBuf() -> Buf
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "an extern may not return Buf" "never returned out of it"
+
+# An OPAQUE HANDLE is exempt: `typedef struct Counter Counter;` has no
+# definition, so there is nothing to dereference and no memory Tuck can read.
+# It is a token the library hands out and takes back — every real C API works
+# this way (FILE*, sqlite3*). Barring it left counterNew unwritable in ANY
+# form, since a handle has no by-value equivalent to copy out.
+src <<'EOF'
+extern [c, header: "point.h"]:
+  type Counter = {}
+  fn counterNew({start: i32}) -> Counter
+  fn counterFree({c: Counter}) -> void
+
+fn main() -> int:
+  return 0
+EOF
+ok_check "an extern MAY return an opaque handle"
+
+# ...but the containment rule is unchanged: a handle still cannot be STORED.
+src <<'EOF'
+extern [c, header: "point.h"]:
+  type Counter = {}
+  fn counterNew({start: i32}) -> Counter
+
+type Holder:
+  c: Counter
+
+fn main() -> int:
+  return 0
+EOF
+bad_check "an opaque handle still may not be stored" "only.*extern|pointer"
+
 # --- the sanctioned crossing still works end to end ----------------------
 
 # examples/34-ffi-cstring reads libz's version string — a real C `char*` — and

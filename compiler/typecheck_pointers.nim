@@ -66,15 +66,37 @@ proc failIfPointer*(decls: TypeDecls, t: Type, where: string, sp: Span) =
   of tkRename: failIfPointer(decls, t.underlying, where, sp)
   else: discard
 
+proc isMemoryPointer(t: Type): bool =
+  ## A pointer INTO MEMORY — `cstring` or `Buf`. Distinct from an opaque
+  ## handle, which is also held as a pointer but addresses nothing readable.
+  t.kind == tkNamed and t.name in BuiltinPointerNames
+
+proc memoryPointerReturnMsg(fnName, tName: string): string =
+  "Type Error: extern '" & fnName & "' returns " & tName &
+  " — a pointer INTO MEMORY may be passed into C but never returned out of " &
+  "it, because its lifetime is C's and unknowable here (wrap it: have the " &
+  "binding return str or Seq[u8], and copy in the implementation). An opaque " &
+  "handle — a fieldless extern type — is exempt: there is nothing to " &
+  "dereference."
+
 proc failIfPointerReturn*(decls: TypeDecls, t: Type, fnName: string, sp: Span) =
-  ## An extern may TAKE a pointer; it may not hand one back. Recurses, so
-  ## `!cstring` and `{p: Buf}` are caught as well as a bare return.
+  ## An extern may TAKE a pointer into memory; it may not hand one back.
+  ## Recurses, so `!cstring` and `{p: Buf}` are caught as well as a bare return.
+  ##
+  ## THE RULE IS ABOUT MEMORY, NOT ABOUT POINTERS. A returned `cstring`/`Buf`
+  ## lands in a Tuck variable pointing at bytes whose lifetime is C's business
+  ## and unknowable to the checker — that is the hazard.
+  ##
+  ## An OPAQUE HANDLE is not that. `typedef struct Counter Counter;` declares a
+  ## type with no definition, so there is nothing to dereference and no memory
+  ## Tuck can read: it is a token the library hands out and takes back, and
+  ## every real C API works this way (FILE*, sqlite3*, ImGuiContext*). Barring
+  ## it left `counterNew` unwritable in any form, since a handle has no
+  ## by-value equivalent to copy out — the wrap this message suggests does not
+  ## exist for one. See examples/37-ffi-handle.
   if t == nil: return
-  if decls.isPointerKind(t):
-    fail("Type Error: extern '" & fnName & "' returns " & typeName(t) &
-         " — a pointer may be passed INTO C but never returned out of it " &
-         "(wrap it: have the binding return str or Seq[u8], and copy in the " &
-         "implementation)", sp)
+  if isMemoryPointer(t):
+    fail(memoryPointerReturnMsg(fnName, typeName(t)), sp)
   case t.kind
   of tkApp:
     failIfPointerReturn(decls, t.base, fnName, sp)
