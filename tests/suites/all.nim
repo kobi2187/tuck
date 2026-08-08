@@ -9,27 +9,49 @@ import ../harness
 import actor_result
 import auto_alias
 import bare_variant
+import duplicates
+import examples
+import extern_impl
+import frontend
 import interface_call
+import interface_dispatch
+import interface_seq
 import interface_wrap
 import interfaces
+import known_bugs
 import loop_var_type
 import mangle
 import member_names
+import object_composition
+import odin_backend
+import pointer_containment
+import typecheck
 
 type Entry = tuple[name: string, body: SuiteProc, quick: bool]
 
 # `quick` marks the check-only suites — no `tuck build`, no `odin build`. Those
 # are what tests/run --quick runs, the inner-loop gate that quick-test.sh was.
 let registry: seq[Entry] = @[
-  ("actor_result",   SuiteProc(actor_result.run),   true),
-  ("auto_alias",     SuiteProc(auto_alias.run),     false),
-  ("bare_variant",   SuiteProc(bare_variant.run),   true),
-  ("interface_call", SuiteProc(interface_call.run), true),
-  ("interface_wrap", SuiteProc(interface_wrap.run), true),
-  ("interfaces",     SuiteProc(interfaces.run),     true),
-  ("loop_var_type",  SuiteProc(loop_var_type.run),  false),
-  ("mangle",         SuiteProc(mangle.run),         true),
-  ("member_names",   SuiteProc(member_names.run),   true),
+  ("actor_result",        SuiteProc(actor_result.run),        true),
+  ("auto_alias",          SuiteProc(auto_alias.run),          false),
+  ("bare_variant",        SuiteProc(bare_variant.run),        true),
+  ("duplicates",          SuiteProc(duplicates.run),          true),
+  ("examples",            SuiteProc(examples.run),            true),
+  ("extern_impl",         SuiteProc(extern_impl.run),         false),
+  ("frontend",            SuiteProc(frontend.run),            true),
+  ("interface_call",      SuiteProc(interface_call.run),      true),
+  ("interface_dispatch",  SuiteProc(interface_dispatch.run),  false),
+  ("interface_seq",       SuiteProc(interface_seq.run),       false),
+  ("interface_wrap",      SuiteProc(interface_wrap.run),      true),
+  ("interfaces",          SuiteProc(interfaces.run),          true),
+  ("known_bugs",          SuiteProc(known_bugs.run),          false),
+  ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
+  ("mangle",              SuiteProc(mangle.run),              true),
+  ("member_names",        SuiteProc(member_names.run),        true),
+  ("object_composition",  SuiteProc(object_composition.run),  false),
+  ("odin_backend",        SuiteProc(odin_backend.run),        false),
+  ("pointer_containment", SuiteProc(pointer_containment.run), true),
+  ("typecheck",           SuiteProc(typecheck.run),           true),
 ]
 
 proc suiteBody*(name: string): SuiteProc =

@@ -141,7 +141,13 @@ proc cmdFor*(t: T, idx: int): seq[string] =
   let it = t.work[idx]
   case it.verb
   of vCheck:    @[tuckExe, "ch", it.dir / "t.tuck", "--root:" & t.root]
-  of vEmit:     @[tuckExe, "c", it.dir / "t.tuck", "-o:" & it.dir / "out",
+  # SEPARATE OUTPUT DIRS per verb. lib.sh pointed `tuck c` and `tuck build` at
+  # the same -o: directory, which was safe because a shell script ran them one
+  # after another. Here they are independent pool items and CAN run at once —
+  # and `tuck c` rewriting t.nim under a `tuck build` that has already linked
+  # it left the binary in place but the run reporting exit 0 with no output.
+  # A snippet asserted with both `emits` and `runs` hit it every time.
+  of vEmit:     @[tuckExe, "c", it.dir / "t.tuck", "-o:" & it.dir / "emit",
                   "--root:" & t.root]
   of vEmitOdin: @[tuckExe, "c", it.dir / "t.tuck", "--odin",
                   "-o:" & it.dir / "odin", "--root:" & t.root]
@@ -220,7 +226,7 @@ proc outputs*(t: var T, name, pattern: string) =
     t.no name, &"output did not match /{pattern}/: " & lastLine(t.item(r).output)
 
 proc emittedNim(t: T, i: int): string =
-  let p = t.item(i).dir / "out" / "t.nim"
+  let p = t.item(i).dir / "emit" / "t.nim"
   if fileExists(p): readFile(p) else: ""
 
 proc emits*(t: var T, name, pattern: string) =
