@@ -59,8 +59,7 @@ fn main() -> int:
   return {xs: [{n: 3} P, {n: 39} P]} total
 EOF
 ok_check "a real field on a loop variable still checks"
-runs     "and the loop still computes"  42
-
+frozen     "and the loop still computes"
 # The index of `for idx, item in xs:` is an int, and the element keeps its type
 src <<'EOF'
 type P = {n: int}
@@ -75,8 +74,7 @@ fn main() -> int:
   return {xs: [{n: 3} P, {n: 38} P]} total
 EOF
 ok_check "indexed form binds both"
-runs     "index is an int, element keeps its type"  42
-
+frozen     "index is an int, element keeps its type"
 # Ranges bind an int, not an element type — must not regress
 src <<'EOF'
 fn main() -> int:
@@ -85,8 +83,7 @@ fn main() -> int:
     s = s + i
   return s
 EOF
-runs "a range loop still binds an int" 6
-
+frozen "a range loop still binds an int"
 # Nested loops over different element types keep their own bindings
 src <<'EOF'
 type P = {n: int}
@@ -103,6 +100,5 @@ fn main() -> int:
   return {ps: [{n: 1} P], qs: [{m: 41} Q]} both
 EOF
 ok_check "nested loops keep separate element types"
-runs     "and compute correctly"  42
-
+frozen     "and compute correctly"
 finish

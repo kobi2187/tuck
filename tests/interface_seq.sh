@@ -45,7 +45,7 @@ fn main() -> int:
   return {xs: [d, c]} total
 EOF
 ok_check "a mixed list reaches a Seq[Animal] parameter"
-runs     "each element dispatches to its own implementation"  42
+frozen     "each element dispatches to its own implementation"
 emits      "a branch for Dog"  'tuck_DogVal'
 emits      "a branch for Cat"  'tuck_CatVal'
 emits_odin "Odin: both branches" 'tuck_(Dog|Cat)Val'
@@ -96,8 +96,7 @@ fn main() -> int:
   return {xs: [d]} total
 EOF
 ok_check "a one-element list of one concrete type"
-runs     "and it runs"  1
-
+frozen     "and it runs"
 # Order does not matter: the element type comes from the PARAMETER, not from
 # whichever item happens to be first.
 src <<EOF
@@ -114,8 +113,7 @@ fn main() -> int:
   return {xs: [c, d]} total
 EOF
 ok_check "the first element does not fix the list's type"
-runs     "and the sum is the same either way"  42
-
+frozen     "and the sum is the same either way"
 # --- still rejected -------------------------------------------------------
 
 # An object that does not satisfy cannot ride in the list.
@@ -149,8 +147,7 @@ fn main() -> int:
   return {xs: [a, b]} count
 EOF
 ok_check "a Seq of a concrete type is untouched"
-runs     "and still runs"  2
-
+frozen     "and still runs"
 # --- what copy semantics unlocked ---------------------------------------
 #
 # All three were compile errors under the borrowing representation: the value
@@ -174,8 +171,7 @@ fn main() -> int:
   return {a: a} hear
 EOF
 ok_check "returning an interface value made from a local"
-runs     "and the copy outlives the local"  1
-
+frozen     "and the copy outlives the local"
 src <<EOF
 $IFACE
 object Keeper:
@@ -203,6 +199,5 @@ fn main() -> int:
   return {xs: {} makeMany} total
 EOF
 ok_check "returning a Seq of interface values built from locals"
-runs     "and every element survives"  42
-
+frozen     "and every element survives"
 finish

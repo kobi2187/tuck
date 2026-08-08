@@ -31,8 +31,7 @@ emits    "and the object carries it directly"  'x\*: int'
 omits    "not as a nested record"              'tuck_A\*: tuck_A'
 emits_odin "Odin: merged too"                  'x: int'
 omits_odin "Odin: not nested either"           'tuck_A: tuck_A'
-runs     "so the emitted code compiles"        0
-
+frozen     "so the emitted code compiles"
 # Two records merge, and both their fields land.
 src <<'EOF'
 type A = {x: int}
@@ -49,8 +48,7 @@ fn main() -> int:
   return 0
 EOF
 ok_check "two composed records both contribute"
-runs     "and the result compiles"  0
-
+frozen     "and the result compiles"
 # The object's own fields and composed fields coexist.
 src <<'EOF'
 type A = {x: int}
@@ -66,8 +64,7 @@ fn main() -> int:
   return 0
 EOF
 ok_check "own fields and composed fields coexist"
-runs     "and compile together"  0
-
+frozen     "and compile together"
 # A composed MIXIN contributes fns, not fields — it must not become a field.
 src <<'EOF'
 type A = {x: int}
@@ -99,8 +96,7 @@ fn main() -> int:
   return 0
 EOF
 ok_check "type composition still flattens"
-runs     "and still compiles"  0
-
+frozen     "and still compiles"
 # A `..` chain followed by a `.` call. The chain lowers to STATEMENTS, so the
 # call must be sequenced after them — not spliced into its argument list,
 # which emitted `startAudio(self = loadEp(self, n))`: an assignment inside a
@@ -124,7 +120,7 @@ fn main() -> int:
   return 0
 EOF
 ok_check "a builder chain followed by a terminal call"
-runs     "and lowers to sequenced statements, not a nested call"  0
+frozen     "and lowers to sequenced statements, not a nested call"
 omits    "the terminal call does not write back to the base"  'self = tuck_loadEp'
 
 # A chain BOUND to a variable. `a` must be left alone — the chain threads a
@@ -143,7 +139,7 @@ fn main() -> int:
   return b.n
 EOF
 ok_check "a chain bound to a variable"
-runs     "and compiles"  0
+frozen     "and compiles"
 omits    "the bound chain leaves its base alone"  'a = tuck_setN'
 emits    "each step reads the previous step's result"  'tuckChain1 = tuck_setN\(tuckChain1'
 
