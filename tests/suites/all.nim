@@ -6,14 +6,19 @@
 ## below, and add one row to `registry`.
 
 import ../harness
-import loop_var_type
+import loop_var_type, interface_call, interface_wrap, mangle
+import interfaces
 
 type Entry = tuple[name: string, body: SuiteProc, quick: bool]
 
 # `quick` marks the check-only suites — no `tuck build`, no `odin build`. Those
 # are what tests/run --quick runs, the inner-loop gate that quick-test.sh was.
 let registry: seq[Entry] = @[
-  ("loop_var_type", SuiteProc(loop_var_type.run), false),
+  ("loop_var_type",  SuiteProc(loop_var_type.run),  false),
+  ("interface_call", SuiteProc(interface_call.run), true),
+  ("interface_wrap", SuiteProc(interface_wrap.run), true),
+  ("mangle",         SuiteProc(mangle.run),         true),
+  ("interfaces",     SuiteProc(interfaces.run),     true),
 ]
 
 proc suiteBody*(name: string): SuiteProc =

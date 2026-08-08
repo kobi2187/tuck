@@ -87,11 +87,15 @@ proc no*(t: var T, name, why: string) =
   t.failed.inc
   echo &"  FAIL  {name}\n        {why}"
 
-proc tryq*(t: var T, body: proc (t: var T)) =
-  ## Run an assertion for its OUTCOME only: `t.tryq(...)` then bugFixed/bugOpen.
-  ## Named `tryq` because `try` is a Nim keyword.
+template quietly*(t: var T, body: untyped) =
+  ## Run an assertion for its OUTCOME only, then read it with bugFixed/bugOpen:
+  ##
+  ##   t.quietly: t.runs("x", 2)
+  ##   t.bugFixed "x"
+  ##
+  ## This is lib.sh's `try`, which is a Nim keyword — hence the name.
   t.quiet = true
-  body(t)
+  body
   t.quiet = false
 
 # --- snippets ------------------------------------------------------------
