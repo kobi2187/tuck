@@ -87,7 +87,7 @@
   compiler/tuck_rt so emitted Nim compiles from anywhere.
 - Gotcha logged: strutils.tokenize iterator shadowed local proc in for-loop —
   renamed to lexTokens.
-- tests/cli_smoke.sh builds CLI, runs all commands, asserts fail-fast exit code
+- tests/suites/cli_smoke.nim builds CLI, runs all commands, asserts fail-fast exit code
   and file:line:col prefix.
 
 ## 2026-07-05 — correctness checks round: transitions, decisions, effects

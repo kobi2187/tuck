@@ -39,7 +39,7 @@ context the thunk owns and frees.
 
 Everything else in `examples/` compiles. `37-ffi-handle` compiles only with the
 examples dir as `--root` (its `lib: "cffi/point.c"` is relative to that), which
-is why it is gated in `odin_backend.sh` rather than `examples.sh`.
+is why it is gated in `tests/suites/odin_backend.nim` rather than `tests/suites/examples.nim`.
 
 ## C. Async / concurrency gaps
 
@@ -127,7 +127,7 @@ Verified fixed earlier on 2026-08-05:
 - **`--threads:on` widens `system`'s namespace.** `system.running(Thread)` beat
   `tuck_coro.running()` in overload resolution once already. `inCoroutine()`
   exists so callers avoid the ambiguous form.
-- **Gate lists are the real coverage.** `examples.sh` gates 41 examples and
-  `odin_backend.sh` gates compile+run separately. Anything off a list is
+- **Gate lists are the real coverage.** `tests/suites/examples.nim` gates 41 examples and
+  `tests/suites/odin_backend.nim` gates compile+run separately. Anything off a list is
   unchecked — that is how an Odin actor emitting undefined send procs, and a
   `24-stdlib` whose fs round-trip never ran, both survived.

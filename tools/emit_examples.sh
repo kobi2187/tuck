@@ -7,7 +7,7 @@
 # one you did.
 #
 # It deliberately does NOT check exit status per example: some examples are
-# known not to compile (tests/examples.sh holds the gated list, and the
+# known not to compile (tests/suites/examples.nim holds the gated list, and the
 # ungated ones are tracked in MISSING-FEATURES). Their output simply does not
 # refresh, which is the honest result rather than a failure.
 set -u

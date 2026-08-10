@@ -39,7 +39,7 @@ is how the `tkPipe` diagnostics were found.
 ## 2. Rejection corpus — finds MISSING errors
 
 libFuzzer structurally cannot find "invalid input was accepted", because
-accepting garbage is not a crash. That half is `tests/duplicates.sh`: inputs
+accepting garbage is not a crash. That half is `tests/suites/duplicates.nim`: inputs
 that MUST be rejected, asserted to be.
 
 This is where the more serious defects were. Twelve shapes of duplicate

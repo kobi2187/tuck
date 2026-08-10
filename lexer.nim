@@ -179,7 +179,7 @@ proc reportError*(L: Lexer, message: string, line: int, col: int,
   ##
   ## `code` is the lookup code as a STRING rather than a DiagCode: the lexer
   ## sits below compiler/, so it cannot import the registry without inverting
-  ## the dependency. tests/diagnostics.sh checks the two agree.
+  ## the dependency. tests/suites/diagnostics.nim checks the two agree.
   var err = newException(SyntaxError, message)
   err.line = line
   err.col = col

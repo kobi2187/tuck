@@ -2583,7 +2583,7 @@ proc failIfComposedCollision(owner: string, fields: seq[FieldDef], sp: Span) =
   ##
   ## Accepted silently, both fields reached the same target object and the user
   ## got `Error: attempt to redefine: 'x'` naming generated code they never
-  ## wrote — the failure class tests/duplicates.sh exists to prevent.
+  ## wrote — the failure class tests/suites/duplicates.nim exists to prevent.
   var seen = initTable[string, Span]()
   for f in fields:
     if seen.hasKey(f.name):

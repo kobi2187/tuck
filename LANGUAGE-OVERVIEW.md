@@ -8,23 +8,25 @@ feature does not exist, it says that too — this document is written against a
 work-in-progress compiler, and the most useful thing it can do is be honest
 about the edges.
 
-**How to check any claim:** `./run-all-tests.sh`. The suite is the source of
-truth; this file explains it. Assertion vocabulary (`tests/lib.sh`):
+**How to check any claim:** `./run-all-tests.sh`, or `tests/run <suite>` for
+one of them. The suite is the source of truth; this file explains it.
+Assertion vocabulary (`tests/harness.nim`):
 
 | Assertion | Means |
 |---|---|
-| `ok_check` / `bad_check` | `tuck ch` must pass / must fail with a matching message |
-| `runs NAME CODE` | build and execute; **exit code must equal CODE** — the real gate |
-| `emits` / `emits_odin` | grep the emitted Nim / Odin |
-| `bug_open` | the assertion is *expected to fail*; if it starts passing the suite FAILS and demands you flip it |
+| `okCheck` / `badCheck` | `tuck ch` must pass / must fail with a matching message |
+| `runs NAME, CODE` | build and execute; **exit code must equal CODE** — the real gate |
+| `emits` / `emitsOdin` | grep the emitted Nim / Odin |
+| `frozen NAME` | the emitted Nim must match `tests/golden/<suite>/` byte for byte |
+| `bugOpen` | the assertion is *expected to fail*; if it starts passing the suite FAILS and demands you flip it |
 
 ---
 
 ## 1. The shape of a program
 
 A module is **declarations only**. Top-level statements are rejected —
-`top-level statements` (`typecheck.sh:928`). A file with no `fn main` builds as
-a library and produces no binary (`cli_smoke.sh:271`).
+`top-level statements` (`tests/suites/typecheck.nim`). A file with no `fn main` builds as
+a library and produces no binary (`tests/suites/cli_smoke.nim`).
 
 `const` is the exception, and it evaluates at compile time:
 
@@ -36,7 +38,7 @@ const sum = {a: 2, b: 3} plus        # pure computation, folded
 ```
 
 A `const` initializer must be pure — an `[io]` call is rejected with `pure`
-(`typecheck.sh:968`), and a record construction with `record` (`:976`).
+(`tests/suites/typecheck.nim`), and a record construction with `record` (`:976`).
 
 ---
 
@@ -58,8 +60,8 @@ getFive                     # a bare name IS a call, for a nullary fn
 9 addOne                    # bare scalar receiver
 ```
 
-All verified (`cli_smoke.sh:348` exits 12 through two nullary call forms;
-`typecheck.sh:722`; `end_to_end.sh:56`).
+All verified (`tests/suites/cli_smoke.nim` exits 12 through two nullary call forms;
+`tests/suites/typecheck.nim`; `tests/suites/end_to_end.nim`).
 
 Chaining is the idiom for data flow:
 
@@ -69,21 +71,21 @@ let response = request fetch parse selectEpisodes   # examples/01:15
 
 ### How arguments actually bind
 
-Three passes, in order (`typecheck.sh:1694-1820`, run-verified in
-`tests/auto_alias.sh`):
+Three passes, in order (`tests/suites/typecheck.nim`, run-verified in
+`tests/suites/auto_alias.nim`):
 
 1. **Subset** — extra payload fields are ignored.
 2. **By name** — `{id: 1, byteCount: 999}` into `{id: int, size: int}` binds
-   `id` by name, giving `n1/999` not `n999/1` (`auto_alias.sh:64`).
+   `id` by name, giving `n1/999` not `n999/1` (`tests/suites/auto_alias.nim`).
 3. **By type**, for whatever is left — `{trackId: 42, title: "Slow Jam",
    active: true}` binds cleanly into `{id: int, name: str, ok: bool}`.
 
-Position is irrelevant; scrambled field order still binds (`auto_alias.sh:32`).
+Position is irrelevant; scrambled field order still binds (`tests/suites/auto_alias.nim`).
 Ambiguity is an error, not a guess: two unmatched fields of the same type →
-`missing required field` (`typecheck.sh:1705`).
+`missing required field` (`tests/suites/typecheck.nim`).
 
 **Implementation note.** The checker records the mapping it decided, and
-lowering *uses that record* rather than re-deriving it. `cli_smoke.sh:675`
+lowering *uses that record* rather than re-deriving it. `tests/suites/cli_smoke.nim`
 asserts the emitted Nim is literally `tuck_pick(42, "x", true)` — proof the
 by-type mapping survives to codegen.
 
@@ -97,19 +99,19 @@ fn header({episode: Episode, n: int}) -> str:
 ### Returns
 
 Explicit `return`, or an **implicit tail return** — the last expression is the
-result (`typecheck.sh:485`). A trailing `match` is the result and gets wrapped
-(`cli_smoke.sh:370`, exit 9).
+result (`tests/suites/typecheck.nim`). A trailing `match` is the result and gets wrapped
+(`tests/suites/cli_smoke.nim`, exit 9).
 
 ### `.name` resolution
 
 - A declared **field wins over a same-named fn** — and the clash is caught at
   *declaration* time: declaring `fn port()` beside `type Server: port: int` is
-  an error, `rename` (`typecheck.sh:781`).
+  an error, `rename` (`tests/suites/typecheck.nim`).
 - `.name` with no such field becomes a **call** with the receiver as first
-  param (`typecheck.sh:641`).
+  param (`tests/suites/typecheck.nim`).
 - `.fn {args}` — receiver first, braces fill the rest.
 - A brace after `.name` is **always** a call; an undeclared callee is a clean
-  error, not a silent field read (`known_bugs.sh:179`).
+  error, not a silent field read (`tests/suites/known_bugs.nim`).
 
 ### `..` — the mutation operator
 
@@ -118,7 +120,7 @@ server ..withDefaults ..port {8080} ..timeout {60}     # examples/02:22
 ```
 
 Either sets a field or calls a mutator whose first param is the receiver; the
-result is reassigned. On a `let` → `declared with 'let'` (`typecheck.sh:34`).
+result is reassigned. On a `let` → `declared with 'let'` (`tests/suites/typecheck.nim`).
 
 ---
 
@@ -137,12 +139,12 @@ type Box[T] = {value: T}          # generic
 
 Construction is postfix: `{port: 80} Server`.
 
-**Records are values.** `cli_smoke.sh:316` (exit 17) verifies `==` compares
+**Records are values.** `tests/suites/cli_smoke.nim` (exit 17) verifies `==` compares
 fields, a copy is independent of its source, and the emitted Nim says
 `= object`, not `ref object`.
 
 A record var passed as a whole payload **explodes into params** — emitted Nim
-is `advance(p.position, p.step)` (`cli_smoke.sh:129`).
+is `advance(p.position, p.step)` (`tests/suites/cli_smoke.nim`).
 
 ### Objects — `object`, with members and contracts
 
@@ -156,7 +158,7 @@ object Dog:
 
 Objects carry fields, `+ Composed` entries, `satisfies` lines, member fns, and
 `self`. Two objects may share a member fn name — Nim overloads on `self`, Odin
-cannot, so the emitter mangles to `tuck_Dog_noise` (`member_names.sh:14`,
+cannot, so the emitter mangles to `tuck_Dog_noise` (`tests/suites/member_names.nim`,
 gated by a real `odin build`).
 
 ### Mixins — `mixin`, fns only, never fields
@@ -168,12 +170,12 @@ mixin Helpers:
 ```
 
 Asserted to contribute **no field named after the mixin**
-(`object_composition.sh:88`).
+(`tests/suites/object_composition.nim`).
 
 ### Composition `+` is set union
 
 For both records and objects: `object O: + A` emits `x*: int` directly, and
-*omits* any nested `tuck_A*: tuck_A` field (`object_composition.sh:30`). Same
+*omits* any nested `tuck_A*: tuck_A` field (`tests/suites/object_composition.nim`). Same
 for `type M = A + B`.
 
 ### Sum types
@@ -198,7 +200,7 @@ return Red                                 # bare, unqualified — carries its s
 
 > ⚠️ **OPEN BUG — cross-sum-type assignment is unchecked.** Returning a `Light`
 > variant where `Colour` is declared is currently *accepted*
-> (`bare_variant.sh:27`). The fix belongs in `compatible`, which does not
+> (`tests/suites/bare_variant.nim`). The fix belongs in `compatible`, which does not
 > compare sum types nominally.
 
 ### match
@@ -216,7 +218,7 @@ let name = match c:
 ```
 
 **Exhaustiveness is enforced** over any closed domain: a missing variant errors
-naming it (`typecheck.sh:1602`); `_` satisfies it. `match` is an expression and
+naming it (`tests/suites/typecheck.nim`); `_` satisfies it. `match` is an expression and
 nests.
 
 ### Generics
@@ -228,7 +230,7 @@ type Box[T] = {value: T}
 ```
 
 Inference flows through calls and construction: `{value: 5} Box` infers the
-instantiation (`typecheck.sh:1363`); `{} Box` → `cannot infer` (`:1372`). A
+instantiation (`tests/suites/typecheck.nim`); `{} Box` → `cannot infer` (`:1372`). A
 binding conflict — `{a: 1, b: "s"} pair` — errors naming `'T'` (`:1327`).
 
 > ⚠️ **OPEN BUG — a type argument named like an attribute fails to parse.**
@@ -236,7 +238,7 @@ binding conflict — `{a: 1, b: "s"} pair` — errors naming `'T'` (`:1327`).
 > attribute-vs-generic decision is a hardcoded 19-name word list. Reserved in
 > brackets: `error`, `stack`, `queue`, `align`, `priority`, `volatile`, and ~13
 > more. The *diagnostic* is good (`is an attribute name`), but the fix is to
-> decide by declared set, not a literal list (`known_bugs.sh:117`).
+> decide by declared set, not a literal list (`tests/suites/known_bugs.nim`).
 
 ---
 
@@ -245,10 +247,10 @@ binding conflict — `{a: 1, b: "s"} pair` — errors naming `'T'` (`:1327`).
 ### Constructors
 
 `!T` fallible, `?T` optional, `!?T` both. Postfix forms also parse:
-`{amount: int}?` and `{amount: int}?!` (`typecheck.sh:383`).
+`{amount: int}?` and `{amount: int}?!` (`tests/suites/typecheck.nim`).
 
 **A fallible fn must be `[io]`** — otherwise `must be marked [io]`
-(`typecheck.sh:175`). `?T` carries no such requirement.
+(`tests/suites/typecheck.nim`). `?T` carries no such requirement.
 
 ### Handling
 
@@ -259,12 +261,12 @@ if r.ok:
 ```
 
 Accessing `.value` without a guard → `guard it first`. A guard that *falls
-through* does not narrow (`typecheck.sh:1482`). An **early-return guard does**
-narrow — `if not r.ok: return 0` then `r.value.v` (`known_bugs.sh:199`, exit 5).
+through* does not narrow (`tests/suites/typecheck.nim`). An **early-return guard does**
+narrow — `if not r.ok: return 0` then `r.value.v` (`tests/suites/known_bugs.nim`, exit 5).
 
 Every unhandled shape is rejected with `unhandled`: arithmetic on `!T`, payload
 access, `or`-defaulting, a bare statement drop, an unhandled pool `acquire`.
-Multiple sites are all listed at once: `2 unhandled` (`typecheck.sh:250`).
+Multiple sites are all listed at once: `2 unhandled` (`tests/suites/typecheck.nim`).
 
 ### Raising
 
@@ -285,8 +287,8 @@ fn fetchIt({url: str}) -> !{content: str} [io, error: FsError | NetError]:
 ```
 
 `match r.err:` validates arms against the declared enums; a typo errors with
-`not a variant of ParseError` (`typecheck.sh:1216`). Run-verified through the
-`Empty` arm, exit 42 (`cli_smoke.sh:174`).
+`not a variant of ParseError` (`tests/suites/typecheck.nim`). Run-verified through the
+`Empty` arm, exit 42 (`tests/suites/cli_smoke.nim`).
 
 ### errors policy
 
@@ -301,7 +303,7 @@ sites), `continue` (handler runs, execution continues, no value fabricated),
 `exit` (handler runs at the first site, program exits).
 
 `continue` legalizes **statement drops only** — not value positions
-(`typecheck.sh:283`). Declaring a policy with no handler → `needs an 'on
+(`tests/suites/typecheck.nim`). Declaring a policy with no handler → `needs an 'on
 unhandled'`.
 
 > **Test coverage caveat:** only `continue` is tested. `strict` is exercised
@@ -325,7 +327,7 @@ fn hear({a: Animal}) -> int:
   return a.noise
 ```
 
-### Conformance rules (`tests/interfaces.sh`)
+### Conformance rules (`tests/suites/interfaces.nim`)
 
 - Params and return match **exactly, names included** — payload fields bind by
   name, so a renamed param is an error (`:122`).
@@ -337,12 +339,12 @@ fn hear({a: Animal}) -> int:
   implement (`:202`).
 
 **Conformance is explicit, never structural.** An object with all the right
-members but no `satisfies` line is *rejected* (`interface_wrap.sh:86`).
+members but no `satisfies` line is *rejected* (`tests/suites/interface_wrap.nim`).
 
 ### How dispatch actually works
 
 **A tagged variant that copies — not a vtable, not a fat pointer.**
-`interface_dispatch.sh:36` asserts the emission shape directly:
+`tests/suites/interface_dispatch.nim` asserts the emission shape directly:
 
 ```
 emits  'AnimalTag'                    # a tag enum
@@ -356,15 +358,15 @@ Every satisfying type is a branch, whether or not anything wraps it (`:88`).
 Because the value **copies**, an interface value may be returned from a local,
 stored in a field (`object Keeper: pet: Animal`), and collected into a
 `Seq[Animal]` — all three were illegal under the old pointer design
-(`interface_seq.sh:130`).
+(`tests/suites/interface_seq.nim`).
 
 Run-verified: two objects through one param → 1 + 41 = **42**, a number neither
-implementation reaches alone (`interface_dispatch.sh:80`).
+implementation reaches alone (`tests/suites/interface_dispatch.nim`).
 
 > ⚠️ **OPEN (Odin)** — a list literal cannot reach a `Seq` parameter:
 > "Compound literals of dynamic types are disabled by default". Affects
 > `Seq[Record]` identically; needs statement hoisting in the Odin emitter
-> (`interface_seq.sh:59`).
+> (`tests/suites/interface_seq.nim`).
 
 ---
 
@@ -383,7 +385,7 @@ type PlayerState:
 ```
 
 **Reassignment IS the transition, and it is checked statically.** This is real
-flow analysis (`typecheck.sh:997-1193`):
+flow analysis (`tests/suites/typecheck.nim`):
 
 | Situation | Result |
 |---|---|
@@ -438,10 +440,10 @@ type ErrorCount = u32 [trapping]
 `[saturating]` is fully run-gated on both backends: `70000 SafeRPM` → 65535
 (wrapping would give 4464). **The clamp is a store-guard, not per-operator** —
 `a + b - c` with all 60000 yields 60000, not 5535, because clamping runs on a
-wider intermediate (`known_bugs.sh:83`).
+wider intermediate (`tests/suites/known_bugs.nim`).
 
 An overflow attribute **implies `distinct`** on both backends
-(`known_bugs.sh:244`).
+(`tests/suites/known_bugs.nim`).
 
 > **`[wrapping]` and `[trapping]` have no behavioural test** — declaration-only.
 
@@ -475,7 +477,7 @@ type Temperature:
     celsius >= -273.15
 ```
 
-**Run-verified aborting in four positions** (`cli_smoke.sh:39`), each with
+**Run-verified aborting in four positions** (`tests/suites/cli_smoke.nim`), each with
 `Invariant violated`:
 
 1. at construction
@@ -510,10 +512,10 @@ packed integer key, so the running program does zero comparisons.
 | enum symbol typo | error `not a value of` |
 
 First-match-wins, run-verified: row `| 2 64 _ -> 3` is the first match for
-`(2, 64, false)`, exit 3 (`end_to_end.sh:48`).
+`(2, 64, false)`, exit 3 (`tests/suites/end_to_end.nim`).
 
 **Implementation:** a decision table is a `dkFn` carrying `isDecision`, not its
-own AST node kind (`end_to_end.sh:67`). The combinatorics live in
+own AST node kind (`tests/suites/end_to_end.nim`). The combinatorics live in
 `compiler/codegen_table.nim`, shared by both backends.
 
 ---
@@ -564,7 +566,7 @@ Run-verified 55 on both backends.
 > ⚠️ **OPEN ×2** — `result` in a *void* handler is not rejected, and an
 > **undeclared assignment target is not caught anywhere**: `nosuchfield += n`
 > typechecks, in actors *and in plain fns*, where the real fix belongs
-> (`actor_result.sh:51,81,91`).
+> (`tests/suites/actor_result.nim`).
 
 ### Tasks — async that looks synchronous
 
@@ -609,7 +611,7 @@ task readOrGiveUp({fd: int}) -> {code: int} [io]:
 
 **Both race outcomes are run-verified**, which is the real evidence of genuine
 non-blocking I/O: source at 500ms vs a 30ms deadline → exit 2; source at 5ms vs
-100ms → exit 1 (`cli_smoke.sh:589,600`).
+100ms → exit 1 (`tests/suites/cli_smoke.nim`).
 
 Working arm sources are `read <fd>` and `timeout {N.ms}`.
 
@@ -644,8 +646,8 @@ Markers that appear in working code: `[io]`, `[irq_safe]`, `[stack: N]`,
 `[unsafe]`, `[priority]`, `[error: E]`, `[emit: "..."]`.
 
 **`[io]` is the only enforced effect.** A pure fn calling an `[io]` fn →
-`requires effect [io]` (`typecheck.sh:568`). Effects cross module boundaries
-from source *and from the cache* — `cli_smoke.sh:631` runs the check twice,
+`requires effect [io]` (`tests/suites/typecheck.nim`). Effects cross module boundaries
+from source *and from the cache* — `tests/suites/cli_smoke.nim` runs the check twice,
 cold and warm, and both must reject identically.
 
 > **`[no_alloc]` and `[may_block]` appear in NO example and NO test.** They
@@ -669,13 +671,13 @@ let w = {path: "/tmp/x", content: "hi"} fs::writeFile   # qualified
 
 Both forms work. Unqualified is idiomatic (`examples/41:5`). An unknown module
 prefix stays **gradual** — `{volume: 3} audio::play` typechecks
-(`typecheck.sh:1284`), so a sketch compiles before its modules exist.
+(`tests/suites/typecheck.nim`), so a sketch compiles before its modules exist.
 
 Module resolution needs `--root:`.
 
 ### Name mangling
 
-A whole-program pass before either backend (`tests/mangle.sh`): fns and types
+A whole-program pass before either backend (`tests/suites/mangle.nim`): fns and types
 get a `tuck_` prefix; **fields, params and locals stay bare** (namespaced by
 their record); **externs are never mangled** — they bind foreign symbols by
 name. Idempotent, since each backend lowers its own deep copy.
@@ -730,7 +732,7 @@ manual — C allocated it, C frees it, and nothing in Tuck tracks that yet.**
 > A pointer may be produced by an extern and consumed by another extern, but it
 > **may never be stored.**
 
-`tests/pointer_containment.sh` is the most systematic negative test in the
+`tests/suites/pointer_containment.nim` is the most systematic negative test in the
 suite (196 lines). Pointer-kinds are `cstring`, `Buf`, and any fieldless extern
 type. Legal as an extern *parameter*; illegal as an extern *return* — even
 buried in a wrapper (`-> !cstring`) — and illegal in a record field, a plain fn
@@ -786,7 +788,7 @@ From `examples/25:3`, worth quoting:
 
 **Exhaustion is absence (`?T`), not an error** — the caller decides what running
 out means. Run-verified exhaustion cycle: acquire 2 of 2, third fails, release
-one, fourth succeeds, exit 42 (`cli_smoke.sh:519`).
+one, fourth succeeds, exit 42 (`tests/suites/cli_smoke.nim`).
 
 > **`arena` (`.alloc`, `.reset`) is compile-gated only — zero behavioural
 > assertions.** Same for `registry` (`.raise`, `on Reg.Variant`) and MMIO
@@ -805,11 +807,11 @@ for idx, item in xs: # indexed
 ```
 
 `break` / `continue` target the innermost loop; there are **no labels, ever**
-(a ruling). Run-verified exit 17 through every form (`cli_smoke.sh:282`).
+(a ruling). Run-verified exit 17 through every form (`tests/suites/cli_smoke.nim`).
 
 Loop variables carry real types — a field typo on a loop var is caught, in both
 the plain and indexed forms, and nested loops keep separate element types
-(`loop_var_type.sh`).
+(`tests/suites/loop_var_type.nim`).
 
 List literals and indexing:
 
@@ -848,9 +850,9 @@ flipping `bug_open` → `bug_fixed`, which locks it in permanently.
 
 | # | Bug | Test |
 |---|---|---|
-| 1 | A **bare** attribute marker cannot be a type argument (`Box[sealed]`) — genuinely ambiguous, since a bare `sealed` is a real attribute | `known_bugs.sh` |
-| 2 | A member fn shadows a top-level fn of the same name — needs a change to call resolution, not just emission | `member_names.sh` |
-| 3 | Odin: a list literal cannot reach a `Seq` parameter — needs statement hoisting in the emitter | `interface_seq.sh` |
+| 1 | A **bare** attribute marker cannot be a type argument (`Box[sealed]`) — genuinely ambiguous, since a bare `sealed` is a real attribute | `tests/suites/known_bugs.nim` |
+| 2 | A member fn shadows a top-level fn of the same name — needs a change to call resolution, not just emission | `tests/suites/member_names.nim` |
+| 3 | Odin: a list literal cannot reach a `Seq` parameter — needs statement hoisting in the emitter | `tests/suites/interface_seq.nim` |
 
 Plus, tracked without a test yet: on Odin a **task with arguments** is not
 spawned as a coroutine (proc literals cannot capture).

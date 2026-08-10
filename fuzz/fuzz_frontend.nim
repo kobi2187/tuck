@@ -8,7 +8,7 @@
 #
 # WHAT THIS DOES NOT CATCH: a MISSING error — invalid source the parser
 # happily accepts. Accepting garbage is not a crash, so the fuzzer cannot see
-# it. That half is tests/reject.sh, which asserts that specific inputs ARE
+# it. That half is tests/suites/duplicates.nim, which asserts specific inputs ARE
 # rejected. Both halves are needed; this one finds the inputs that break the
 # machinery, that one finds the inputs the machinery should have refused.
 #
