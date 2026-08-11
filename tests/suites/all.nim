@@ -31,6 +31,7 @@ import object_composition
 import odin_backend
 import pointer_containment
 import typecheck
+import when_target
 
 type Entry = tuple[name: string, body: SuiteProc, quick: bool]
 
@@ -62,6 +63,7 @@ let registry: seq[Entry] = @[
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
   ("typecheck",           SuiteProc(typecheck.run),           true),
+  ("when_target",         SuiteProc(when_target.run),         false),
 ]
 
 proc suiteBody*(name: string): SuiteProc =

@@ -200,6 +200,40 @@ fn play({episode: Episode, prefs: PlayerPrefs}) -> str:
   ctx describe                        # subset matching picks what it needs
 ```
 
+### 2.4c `alias`
+
+Renames fields on a flowing struct, without touching its values — the
+explicit tool for the "the field names don't match, but the data is right"
+handoff between two parts of a program that were not written expecting each
+other (an external API's payload feeding a function that expects its own
+naming convention, say). Contrast with `merge` (changes the field SET) and
+`bake` (fills fn-reference/value slots, §3.5): `alias` only ever renames.
+
+```tuck
+let ext = {trackId: 42, title: "SlowJam", durationMs: 215000}
+let norm = ext alias(trackId: id, title: name, durationMs: length)
+# norm: {id: 42, name: "SlowJam", length: 215000}
+norm describe   # subset/name matching now applies against the RENAMED fields
+```
+
+The call takes **parentheses**, not the `{}` struct-literal braces every
+other postfix call in this spec uses — a deliberate, sole exception, so a
+rename step is visually distinct from an ordinary call at a glance. Each
+`oldName: newName` pair says which of the receiver's fields to rename and
+what to call it in the result; fields not mentioned pass through unchanged.
+Renaming a field that does not exist on the receiver is a compile error. The
+result is a fresh, fully-typed struct (not a view over the original) — the
+usual subset-matching and missing-field checks (§2.5, §4.8) apply to it
+exactly as they would to any other struct.
+
+Two fields ending up with the same name in the RESULT — whether one rename
+target collides with an untouched field, or two renames target the same new
+name — is intended to be a compile error, the same "no silent shadowing"
+rule `merge` enforces above. That check is not implemented yet: today
+`alias` does not validate the result for collisions, which can silently drop
+a field or (worse) produce emitted code that fails to compile downstream.
+Treat multi-field `alias` calls carefully until this is closed.
+
 ### 2.5 Subset Matching
 
 If a flowing struct contains more fields than a function requires, the extra fields
@@ -333,20 +367,23 @@ let y = x.bake {someFunc: :add}
 `bake` unifies partial application, dependency injection, and the strategy pattern
 into one compile-time operation.
 
-### 3.6 Function Prefix Modifiers
+### 3.6 Function Prefix Modifiers — proposed, then dropped
 
-Functions can be qualified with a prefix that declares intent and allows the
-compiler to enforce constraints:
+`pred`/`set` keyword prefixes (purity declared by which keyword opens the
+signature, mirroring `fn`) were proposed in an earlier draft of this spec and
+never implemented — no lexer keyword, no parser rule, no checker constraint
+ever existed for either. Formally dropped rather than left as a stale
+proposal: everything they would have enforced is already enforced by
+mechanisms this spec specifies elsewhere, so a second, keyword-level purity
+system would have duplicated a rule rather than added one.
 
-```tuck
-fn   query({filter: Filter}) -> {results: Seq[Episode]}  # reads, no side effects
-set  volume({level: int}) -> void                        # uses .., modifies state
-pred isReady() -> bool                                   # must be pure, returns bool
-```
+- "Does this function have side effects" is answered by effect markers
+  (§3.7) — a fn with no `[io]` (etc.) in its budget cannot perform one, and
+  the checker verifies every call transitively, not just the fn's own body.
+- "Does this function mutate its receiver" is answered by `..`-on-`var`-only
+  (§2.3) — a `let`-bound receiver already cannot be mutated through a chain.
 
-- `pred` functions must be pure — the compiler rejects any `..` or `[io]` inside them.
-- `set` functions must use `..` — the compiler rejects returning a new value.
-- `fn` functions are unconstrained.
+Every function is declared `fn`; there is no other opening keyword.
 
 ### 3.6b Codegen Attributes: `fn inline`
 
@@ -357,10 +394,9 @@ fn inline queuePush({msg: Msg}) -> !void [no_alloc, irq_safe]:
   ...
 ```
 
-`inline` is neither a purity prefix (§3.6 — those replace `fn`) nor an
-effect marker (§3.7 — those are checker-enforced propagating contracts).
-It is a codegen hint, the function-level sibling of a type's
-`[packed, align: N]` attributes: no propagation, no semantic effect.
+`inline` is not an effect marker (§3.7 — those are checker-enforced
+propagating contracts). It is a codegen hint, the function-level sibling of a
+type's `[packed, align: N]` attributes: no propagation, no semantic effect.
 Lowers to Nim `{.inline.}` / Odin `@(require_results=false)`.
 
 It exists so the no-labels ruling (§2.6) costs nothing: extracting a hot
@@ -383,9 +419,36 @@ fn queuePush({msg: Msg}) -> !void [no_alloc, irq_safe]:
 
 **Initial marker set:** `io`, `alloc`, `no_alloc`, `may_block`, `irq_safe`, `unsafe`
 
-Effect markers propagate upward — a function that calls an `[io]` function is
-itself implicitly `[io]`. The checker verifies this. An `[irq_safe]` function
-calling an `[io]` function is a compile error.
+**Declaration is explicit, not inferred.** A function's effect budget is
+exactly the markers written on its own signature — nothing more. Calling a
+function that performs an effect your own signature did not declare is a
+compile error naming the missing marker, even if the call is one level deep:
+
+```tuck
+fn readSensor({port: u8}) -> !{value: u16} [io]: ...
+
+fn poll({port: u8}) -> !{value: u16}:        # no [io] declared
+  return {port} readSensor                    # Error: requires effect [io],
+                                                # which is not allowed here
+```
+
+This is a deliberate ruling, not an inference gap the checker will one day
+close: requiring every effectful function to say so, at every level, is the
+same "everything explicit, locatable, auditable" stance the rest of this
+spec takes (Part 1) — a reader on the fence about whether some deeply-nested
+helper touches I/O should never need to trace the call graph to find out; the
+signature already says so. What *does* propagate is the obligation: a
+function cannot perform an effect it did not declare, so declaring `[io]`
+anywhere in a call chain forces every caller up that chain to declare it too,
+transitively — the checker enforces the whole chain, not just the immediate
+call.
+
+`main` is exempt: it is assumed impure (the program's entry point always
+does something), so it may call anything without declaring effects itself.
+
+An `[irq_safe]` function calling an `[io]` function is a compile error — one
+instance of the general rule above (`io` is simply not in an `[irq_safe]`
+fn's declared budget), not a special case.
 
 ---
 
@@ -827,10 +890,13 @@ cannot know what the library already promised.
 
 ### 5.3 Interface Dispatch
 
-An interface has no size, so an interface-typed value is never the object
-itself. It is a **two-word pair: a reference to the data, and a reference to the
-function table for that concrete type.** Both are filled in where the concrete
-type is known, which is always a place the compiler can see.
+An interface-typed value is a **copying tagged variant** over every type that
+satisfies it, not a pointer to one — the same shape a sealed sum type (§4.4)
+takes, generated instead of hand-written. A concrete object entering an
+interface slot is *copied* into the variant, tag and all; the variant then
+owns its data outright, the same as any other Tuck value (§7.1's Tier 1 rule
+"no `ref`" stands unqualified — an interface value introduces no reference or
+pointer, user-visible or otherwise).
 
 ```tuck
 var animals = [dog, cat]      # Dog and Cat both satisfy Animal
@@ -838,39 +904,31 @@ for a in animals:
   a.makeNoise
 ```
 
-At `[dog, cat]` the compiler knows each element's concrete type, so it links
-each one: element 0 carries the table for `Dog`, element 1 the table for `Cat`.
-At `a.makeNoise` it knows `a` is an `Animal`, so it knows `makeNoise` is a
-particular slot in that table. Both ends are resolved at compile time; the only
-thing not known until run time is which element the loop is on, which is a
-counter, not a type question.
+At `[dog, cat]` the compiler knows each element's concrete type, so it copies
+each one into an `Animal` variant carrying that type's tag. At `a.makeNoise`
+it knows `a` is an `Animal`, so the call compiles to a `switch` on the tag,
+one arm per satisfying type, each arm a direct (non-virtual) call to that
+type's own `makeNoise`. There is no dispatch table, no thunk, and — because
+every satisfying type is known at compile time, the set is closed, and a
+`match`-style switch over it is exhaustive by construction — no lifetime
+question: the copy is why. (An earlier design used a borrowing two-word
+`{data, function-table}` pair instead, with escape-scope restrictions to keep
+the borrow sound; that representation was dropped in favor of the copying
+variant, and the restrictions along with it — see below.)
 
-**There is no runtime type.** No header on the object, no hierarchy to walk, no
-name lookup, no type comparison — and therefore no type assertions, no type
-switches, and no inheritance. The table pointer is not "find out what this is";
-it is the answer, computed earlier and carried along. This is the whole of
-Tuck's dynamic behaviour, and it is dynamic only in the sense that a function
-pointer is.
+The variant does carry a tag, so dispatch is not literally "no runtime
+information" the way a plain struct's is. What Tuck does not have is *open*
+runtime type information: the tag distinguishes only the CLOSED set of types
+declared to satisfy this one interface, resolved and validated entirely at
+compile time. There is still no general type assertion, no type switch over
+an arbitrary type, and no inheritance — those would need a type identity that
+means something outside one interface's own closed variant, which nothing in
+Tuck produces.
 
-The table for a given (type, interface) pair is one static constant shared by
-every value of that type, so wrapping costs two stores and no allocation.
-
-**The data reference borrows.** It points at the object, not a copy — so
-mutation through an interface value is visible to the original, and no
-allocation or copy happens at the boundary. Borrowing is sound here because an
-interface-typed value cannot escape the scope holding the object:
-
-- legal as a function parameter, a local, and an element of a local collection
-- **not** legal as a record, object or actor field, nor as a return type, nor
-  inside a returned collection
-
-Those restrictions are what make the borrow safe without lifetime annotations:
-the object is always in an enclosing scope. (Compare Go, whose interface values
-*are* storable and which therefore copies to the heap on every conversion.)
-
-A collection of an interface type is a collection of these pairs. Every element
-is the same two words regardless of which concrete type it holds, which is what
-makes the collection uniform:
+Because the value is copied, not borrowed, there is no escape-scope
+restriction left to state: an interface-typed value may be a function
+parameter, a local, an element of a collection, an object/actor field, or a
+return type — anywhere an ordinary Tuck value may appear.
 
 ```tuck
 var items = [doc, user, config]     # each satisfies Storable
@@ -878,10 +936,12 @@ for item in items:
   item.save {dest: backupPath}
 ```
 
-No `ref` keyword appears. An interface name in type position can only mean this
-pair — there is nothing else it could denote — so spelling it out would add no
-information. (§7.1's Tier 1 rule "no `ref`" stands unqualified: interfaces do
-not introduce a user-visible reference type.)
+Every element of a collection of an interface type is the same shape
+regardless of which concrete type it holds (the tagged variant), which is
+what makes the collection uniform. Mutating a satisfying type's own field
+through a stored `+`-composed member still works exactly as it does anywhere
+else in Tuck — it mutates the copy the interface value holds, same as passing
+any other Tuck value ever does; there is no separate rule for interfaces.
 
 ### 5.4 The `pending` Block — Walking Skeleton
 
@@ -1073,9 +1133,9 @@ construction. Internally the registry is the pool machinery of §7.2: slot
 array, occupancy bitmask, O(1) acquire and release.
 
 **Acquire sites** are marked in the effects bracket, on extern signatures and
-plain functions alike, and propagate exactly like effects (§3.7 —
-infer-and-propagate; a fn returning a resource it did not finish carries the
-marker):
+plain functions alike, and are declared exactly like effects (§3.7 —
+explicit, not inferred; a fn returning a resource it did not finish must
+declare the marker itself, same as any other effect):
 
 ```tuck
 fn open(port: u16) -> UdpSocket! [io, resource: udp]
@@ -1162,7 +1222,10 @@ common and invisible without it.
 
 ### 8.3 `when` Conditionals
 
-Compile-time platform selection. No preprocessor, no `#ifdef` soup:
+Compile-time platform selection. No preprocessor, no `#ifdef` soup: a
+non-matching block's declarations do not merely fail to run, they are
+dropped from the module before typecheck ever sees them — never checked,
+never emitted, as if that block had not been written.
 
 ```tuck
 when TARGET == "stm32f4":
@@ -1171,14 +1234,51 @@ when TARGET == "rp2040":
   fn initClock() -> void: ...
 ```
 
+`TARGET` is set by `--target:NAME` on the `tuck` CLI (any command); resolved
+at module load, before any other pass runs, so it applies uniformly whether
+the module came from a fresh parse or the AST cache — the cache itself
+stores `when` blocks unresolved, precisely so it stays correct across runs
+that pass different `--target:` values rather than serving one run's
+resolved tree to a differently-targeted one. With no `--target:` given, every
+`when` block is dropped (fails closed, rather than guessing a default
+platform). v1 supports exactly the shape shown — `TARGET` compared against
+one string literal — not a general compile-time boolean expression; there is
+no `elif`/`else` form.
+
 ---
 
 ## Part 9: Concurrency
 
+**Runtime note, read before either subsection below.** An earlier draft of
+this spec targeted *stackless* coroutines — a compiler transform turning each
+`[io]` yield point into a state-machine variant, with no per-task stack at
+all. That approach was deliberately abandoned: hand-rolled stackless state
+machines (and the nim-cps alternative) were tried and dropped in favor of
+**stackful coroutines over a single, vendored C library (minicoro)**, shared
+identically by both backends, so the two cannot diverge on switch semantics
+the way two independent hand-written transforms eventually would. Each task
+or actor gets a real coroutine with its own stack; `[io]` calls yield by an
+actual stack switch (`mco_yield`/`mco_resume`), not a compiler-synthesized
+state enum. Stacks are `mmap`-reserved virtual memory (a large nominal size,
+e.g. 1MB) rather than `calloc`'d — physical RAM is only committed for the
+pages a coroutine actually touches, so many idle coroutines are cheap even
+though each nominally "has" a big stack.
+
+**This makes the concurrency runtime a Tier 3 (§7.1) capability today, not a
+Tier 1 one**: `mmap` and the epoll/kqueue-based reactor that drives I/O
+readiness both assume a hosted OS. A bare-metal Cortex-M0 target has neither.
+Actors and tasks as specified below are real, both-backends-verified, and
+run-gated by the test suite — but they currently target Linux/macOS/Windows,
+not the bare-metal case Part 1 frames as a primary use case. A stackless,
+truly Tier-1-safe concurrency path is not designed; if the embedded story
+needs one, it is separate future work, not a mode of what is built today.
+
 ### 9.1 Actors
 
-Long-lived isolated state machines. Compile to stackless coroutines — explicit
-state machines with static ring buffers. Suitable for 32KB Cortex-M0 environments:
+Long-lived isolated state machines, one instance per declared type (a
+singleton — there is no separate construction step, no reference to hold).
+Each runs on its own coroutine (see the runtime note above) with a static
+ring-buffer mailbox:
 
 ```tuck
 actor UartDriver [queue: 8]:
@@ -1194,7 +1294,9 @@ actor UartDriver [queue: 8]:
 ```
 
 Only value types (copied) cross actor boundaries. No reference sharing across
-boundaries. Queue size is declared and statically verified against available memory.
+boundaries. Queue (mailbox) size is a compile-time constant — the ring buffer
+is sized to it exactly, so a full mailbox is a fixed, known capacity, not an
+unbounded allocation.
 
 ### 9.2 Tasks
 
@@ -1208,8 +1310,13 @@ task fetchFeed({url: str}) -> !{feed: Feed}:
   resp.body parse              # pure → runs immediately, no yield
 ```
 
-The compiler transforms the task body into a state machine — one variant per `[io]`
-call site, locals that survive across yields become fields of the state enum.
+Calling a task **spawns** it onto its own coroutine (runtime note above) — the
+call returns immediately, and the caller does not suspend at the call site
+itself; binding the task's result (`let r = {...} fetchFeed`) is what awaits
+completion, and only there does the caller yield if the task has not finished.
+A task's effects do not propagate to its caller (contrast §3.7's ordinary
+call rule) — spawning decouples them, exactly because they now run on a
+different coroutine on the caller's behalf rather than inline in its own body.
 
 ### 9.3 `on select` — Waiting on Multiple Events
 
@@ -1227,9 +1334,13 @@ task handleConn({conn: Connection}) -> !void:
 ### 9.4 The Scheduler
 
 The entire Tuck scheduler is cooperative. Tasks and actors are items in a ready
-queue. Each gets one `resume` call per tick, runs until its next `[io]` yield
-point, then re-enqueues or parks waiting for a waker. No preemption, no kernel
-context switches, no per-task stack allocation.
+queue. Each gets one `resume` call per tick — a coroutine switch onto that
+task's or actor's own stack (see the runtime note opening this Part) — runs
+until its next `[io]` yield point, then re-enqueues or parks waiting for a
+waker. An epoll/kqueue-based reactor drives readiness for parked I/O waits.
+No preemption, no kernel context switches. Each task and actor does have its
+own coroutine stack (the runtime note above covers why that is cheap in
+practice, not absent).
 
 ---
 
@@ -1505,6 +1616,14 @@ Items deferred, not forgotten:
 7. **Resource registry details (§7.4)** — handle sharing across actors
    (likely ownership transfer, not refcount — deferred to actor design);
    sweep scheduling beyond acquire-time watermark + explicit `kind::sweep`.
+8. **Explicit numeric-conversion sigils** — ruled (not yet implemented):
+   `~T` marks a conversion that may lose precision, range, or meaning
+   (narrowing, signed↔unsigned at any width, float↔int); `^T` marks one that
+   provably cannot. A lossy conversion without `~` would be a compile error,
+   not a warning — today `compatible()` still lets any numeric type match any
+   other, which is the gap this closes. Declared types never auto-widen
+   either way (`u8 + u8` stays `u8`); this is additive to, not a
+   replacement for, the overflow-mode attributes in §4.1.
 
 ---
 
@@ -1515,10 +1634,12 @@ These are deliberate omissions, not oversights:
 - Null / nil
 - Exceptions
 - Inheritance
-- Vtables (dispatch is fat pointer field reads)
-- Runtime type information — an interface value carries a function table, not a
-  type; nothing can ask "what is this really?"
-- Type assertions / type switches (they would need the above)
+- Vtables (dispatch is a compile-time switch over a closed tagged variant —
+  §5.3 — not an indirect call through a table)
+- *Open* runtime type information — an interface value's tag distinguishes
+  only the closed set of types satisfying that one interface, resolved at
+  compile time; nothing can ask an arbitrary "what is this really?"
+- Type assertions / general type switches (they would need the above)
 - Interface default methods (an interface is requirements only)
 - `self` keyword
 - Forward declarations

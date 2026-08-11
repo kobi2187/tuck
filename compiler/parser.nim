@@ -977,6 +977,31 @@ proc parseMixinDecl(p: var Parser, sp: Span): Decl =
     members.add(p.parseDecl())
   Decl(span: sp, kind: dkMixin, name: name, mixinMembers: members)
 
+proc parseWhenDecl(p: var Parser, sp: Span): Decl =
+  ## spec §8.3: `when TARGET == "value":` — compile-time platform selection.
+  ## v1 supports exactly this one shape (TARGET compared against a single
+  ## string literal); it is not a general compile-time boolean expression.
+  ## Resolution (which block's decls actually reach the module) happens
+  ## later, in modules.resolveWhenBlocks — see the dkWhen comment in ast.nim
+  ## for why that has to be a separate, uncached pass.
+  discard p.advance()  # eat 'when'
+  let targetWord = p.expect(tkIdent, "Expected 'TARGET' after 'when' — " &
+    "'when' only supports 'when TARGET == \"...\":'").value
+  if targetWord != "TARGET":
+    p.reportError("'when' only supports 'when TARGET == \"...\":' — got " &
+                  "'when " & targetWord & "'")
+  discard p.expect(tkEq, "Expected '==' after 'when TARGET'")
+  let valTok = p.expect(tkStrLit,
+    "Expected a string literal naming the target, e.g. " &
+    "when TARGET == \"stm32f4\":")
+  discard p.expect(tkColon)
+  discard p.expect(tkNewline)
+  var members: seq[Decl]
+  p.indentedBlock:
+    members.add(p.parseDecl())
+  Decl(span: sp, kind: dkWhen, name: "when", whenTargetValue: valTok.value,
+       whenDecls: members)
+
 proc parseCompositionDecl(p: var Parser, sp: Span): Decl =
   ## `+ Name` — compose a mixin or record into the enclosing declaration.
   discard p.advance()
@@ -1008,7 +1033,7 @@ proc parseSatisfyTargets(p: var Parser): seq[string] =
 
 const TopLevelKeywords = "fn, type, object, actor, task, interface, mixin, " &
   "fnsig, registry, decision, pending, distinct, const, import, extern, " &
-  "errors, register, pool, arena, satisfies, static_assert"
+  "errors, register, pool, arena, satisfies, static_assert, when"
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in contextualDecl.
 
@@ -1113,6 +1138,7 @@ proc parseDecl*(p: var Parser): Decl =
   of tkMixin: return p.parseMixinDecl(sp)
   of tkPlus: return p.parseCompositionDecl(sp)
   of tkConst: return p.parseConstDecl(sp)
+  of tkWhen: return p.parseWhenDecl(sp)
   of tkIdent: return p.parseExprDecl(sp)
   else: return p.parseExprDecl(sp)
 

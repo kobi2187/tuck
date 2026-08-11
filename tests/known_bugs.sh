@@ -385,4 +385,66 @@ TUCKEOF
 try frozen "a -> void task can be fire-and-forget"
 bug_fixed "a -> void task can be fire-and-forget"
 
+# 14. Constructing a type with MISSING required fields is silently accepted.
+# `{fields} TypeName` construction (typecheck.nim, the branch that returns
+# early once the callee resolves to a known type/object name) never checks
+# the supplied field set against the type's DECLARED fields — only the
+# function-CALL path does that ("missing required field '...'"). Found while
+# auditing spec §4.8 against a 2026-07-09 ruling ("types with fields require
+# every field at construction; absence must be explicit ?T") that was never
+# wired into the checker, or regressed since. `{}` with zero fields supplied
+# against a two-required-int-field type passes `tuck ch` with no diagnostic
+# at all — the missing fields are whatever the backend zero-inits them to.
+src <<'TUCKEOF'
+type Config:
+  port: int
+  timeout: int
+
+fn main() -> int:
+  let c = {} Config
+  return 0
+TUCKEOF
+try bad_check "constructing a type with missing required fields is rejected" "missing\ required\ field"
+bug_open "constructing a type with missing required fields is rejected"
+
+# 15. An `on select` arm shape the emitter does not recognise silently
+# compiles to a no-op `discard` — the entire handler body is dropped, with NO
+# compile error, NO warning, not even a PENDING report entry. Root cause:
+# codegen.nim's select lowering only handles a plain `read <fd>` / `timeout
+# <ms>` pair; anything else (including this program, which is close to spec
+# §9.3's OWN worked example) falls through to a bare `discard` with a code
+# comment as the only trace. Typed select sources (`timeout.5s`) are tracked
+# as missing (G3) but the SILENCE is the worse half of the gap: a program that
+# looks correct and compiles clean does nothing at the deadline.
+src <<'TUCKEOF'
+task handleConn({conn: int}) -> void:
+  on select:
+    | timeout.5s -> {}: return
+
+fn main() -> int:
+  return 0
+TUCKEOF
+try omits "an unrecognised 'on select' arm does not silently discard its body" "only read.timeout arms supported"
+bug_open "an unrecognised 'on select' arm does not silently discard its body"
+
+# 16. `alias(...)` never checks the RESULT for field-name collisions — neither
+# against the receiver's own untouched fields, nor between two renamed-to
+# targets. `ext alias(trackId: title, category: title)` (two sources renamed
+# to the SAME target) type-checks clean today AND emits a Nim tuple literal
+# with the field 'title' written twice, which `nim check` rejects outright
+# ("field initialized twice: 'title'") — exactly the class of bug
+# tests/duplicates.sh's failIfComposedCollision exists to catch for `+`
+# composition (spec §2.5), just not reached here because alias() is a
+# different code path. `tuck ch` gives no hint that anything is wrong; the
+# correct behaviour is a checker error naming the collision, same spirit as
+# failIfComposedCollision's "contributed twice" message.
+src <<'TUCKEOF'
+fn main() -> int:
+  let ext = {trackId: 42, category: 7}
+  let normalized = ext alias(trackId: title, category: title)
+  return 0
+TUCKEOF
+try bad_check "alias() rejects two renamed fields colliding on the same target name" "twice|collis|already|duplicate"
+bug_open "alias() rejects two renamed fields colliding on the same target name"
+
 finish
