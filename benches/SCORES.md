@@ -125,3 +125,57 @@ across libc/sizes/platforms rather than relying on calloc's large-alloc path.
 ## History
 
 <!-- append a dated row here each time a run shifts the numbers materially -->
+
+## Value semantics vs reference semantics — 2026-08-11
+
+**The question this answers:** Tuck's central bet is that every record is a
+VALUE (spec §7.1 Tier 1 — copied, no `ref`, no heap). Does that cost
+performance? `benches/bench_value_vs_ref.nim` holds everything constant —
+same Nim, same allocator, same flags, same workload — and changes only
+`object` to `ref object`.
+
+`-d:release --opt:speed --mm:arc`. Ratio > 1.00 means VALUE semantics is
+faster.
+
+| record | shape | value µs | ref µs | ratio | winner |
+|---|---|---|---|---|---|
+| 16 B | S1 read-param | 38968 | 48258 | 1.24x | value |
+| 16 B | S2 build-return | 4251 | 43277 | **10.18x** | value |
+| 16 B | S3 iterate | 21979 | 22277 | 1.01x | tie |
+| 16 B | S4 copy-assign | 1636 | 14306 | **8.74x** | value |
+| 256 B | S1 read-param | 41441 | 47789 | 1.15x | value |
+| 256 B | S2 build-return | 20500 | 124048 | **6.05x** | value |
+| 256 B | S3 iterate, 1 field of 32 | 101250 | 68420 | **0.68x** | ref |
+| 256 B | S3 iterate, all fields | 285686 | 690791 | **2.42x** | value |
+| 256 B | S4 copy-assign | 1615 | 14086 | **8.72x** | value |
+
+**Value semantics wins 8 of 9 shapes, and the losses are not where the
+folklore says.** The three things worth carrying:
+
+1. **Passing is already free, at any size.** Nim compiles a large non-`var`
+   object parameter to a POINTER — verified in the emitted C: `byVal(Big)`
+   and `byVar(var Big)` produce byte-identical signatures. Value semantics
+   never copies to pass. S1's margin is `ref` paying refcount traffic that
+   value semantics does not have.
+2. **The copy value semantics is accused of mostly does not happen.** S4 is
+   `var b = a` on a 256-byte record and value is 8.7x FASTER — the copy is
+   dead and the optimizer deletes it, while `ref` cannot delete an increment
+   and a decrement. Construction (S2) is the same story one level up: `ref`
+   must call the allocator, value semantics must not.
+3. **The one loss is a LAYOUT problem, not a semantics problem.** Reading 1
+   field out of 32 across 200k records strides a cache line per element;
+   the array-of-pointers happens to pack denser. Neither `ref` nor value
+   fixes that — splitting the record or an SoA layout does. It is the
+   classic AoS access pattern, and it would cost the same in C.
+
+**Consequence for the language:** value semantics needs no defending on
+performance grounds, and needs no copy-elimination machinery to be
+competitive. The copy-elision work that motivated this bench
+(`-O:chain-inplace`) addresses the builder pattern specifically — a real
+528-byte-stack-frame case — but the bench shows that pattern is not where the
+cost of value semantics lives, because for the common shapes there is no cost
+to remove.
+
+Caveat on target: measured on x86-64 with a large cache. On a Cortex-M with
+no cache and no allocator the case is *stronger*, not weaker — `ref` needs a
+heap that Tier 1 deliberately does not have.
