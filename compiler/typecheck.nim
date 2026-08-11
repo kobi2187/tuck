@@ -2633,6 +2633,8 @@ proc failIfDuplicateMembers(m: Module) =
        dkRegister, dkStaticAssert, dkErrors, dkImport, dkInterface,
        dkSelect, dkFnSig, dkSatisfies:
       discard  # no field/param set of their own to check
+    of dkWhen:
+      discard  # never reaches here — resolveWhenBlocks runs before typecheck
 
 
 proc failIfTopLevelStatement(d: Decl) =
