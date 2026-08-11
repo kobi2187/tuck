@@ -241,6 +241,39 @@ proc updateIndex*(dir: string, mods: seq[LoadedModule],
 # binary (test runner, installed tuck) still finds std/ and sibling modules.
 var projectRoot*: string = ""
 
+# The build's TARGET, passed on the CLI (`--target:NAME`). Set once at
+# startup, read by resolveWhenBlocks below. Empty by default — with no
+# --target given, every `when TARGET == "...":` block is dropped (fails
+# closed: nothing platform-specific compiles in unless a target is named).
+var buildTarget*: string = ""
+
+proc whenDeclsFor(d: Decl, target: string): seq[Decl] =
+  ## What `d` contributes to the module once `when` is resolved: an ordinary
+  ## decl contributes itself; a MATCHING `when` block contributes its inner
+  ## decls; a non-matching one contributes nothing — dropped entirely, never
+  ## typechecked, never emitted, exactly as if it had not been written (spec:
+  ## "no preprocessor, no #ifdef soup" — the other target's code simply does
+  ## not exist here).
+  if d == nil: return @[]
+  if d.kind != dkWhen: return @[d]
+  if d.whenTargetValue == target: d.whenDecls else: @[]
+
+proc resolveWhenBlocks*(m: var Module, target: string) =
+  ## spec §8.3: gate `when TARGET == "value":` blocks against the build's
+  ## target. Must run AFTER load (fresh parse or cache) and BEFORE anything
+  ## else reads `m.decls` — typecheck, effect verification, injecting
+  ## imported types, lowering, codegen all assume `dkWhen` is already gone.
+  ##
+  ## Deliberately NOT done inside parseSource/rewriteModule: those results are
+  ## exactly what the AST cache persists, keyed on (build stamp, source
+  ## hash) — NOT on target. Resolving here instead means the cache stays
+  ## target-agnostic and correct no matter which --target a given run used;
+  ## this pass is cheap enough (a linear scan) to redo unconditionally on
+  ## every run, cached or not.
+  var resolved: seq[Decl]
+  for d in m.decls: resolved.add(whenDeclsFor(d, target))
+  m.decls = resolved
+
 # Import resolution: the importer's directory first, then the stdlib
 # (--root flag, TUCK_STDLIB env var, or std/ next to the compiler binary).
 proc resolveImport*(importerPath, module: string): string =

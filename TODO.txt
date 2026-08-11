@@ -110,7 +110,7 @@ G1   OPEN   odin      task bodies not spawned onto the coroutine runtime — sus
 G2   OPEN   stdlib    no real async I/O externs — std fs/io/sys are blocking. 29-task-timeout races a placeholder idle pipe
 G3   OPEN   parser    typed select sources — resp.ok / timeout.5s parse as opaque strings. Needs SelectSource variants + 5s duration lexing. Blocks B6
 G4   OPEN   spec      resource kinds §7.4 designed, unimplemented — file/socket sigs should declare kinds from day one or they churn
-G5   OPEN   spec      `when TARGET` §8.3 conditionals — blocks embedded examples
+G5   DONE   lang      2026-08-11 `when TARGET` §8.3 implemented — resolved at module load (uncached, so --target: survives the AST cache correctly), --target:NAME CLI flag, both backends unchanged since codegen never sees a dropped block
 G6   OPEN   codegen   MMIO register-field depth (nested bitfield writes) — part of B7
 G7   OPEN   stdlib    §2 strings + §18 radix/builder — no blocked decisions, best first move
 G8   OPEN   stdlib    §5 integer semantics — rt helpers + lowering; fixes B1 properly rather than patching one backend

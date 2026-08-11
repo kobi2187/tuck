@@ -12,7 +12,16 @@ imports + `::` + msgpack AST cache + signature index, registry §10, register
 decl §8.1, sizeof/alignof/offsetof §8.2, static_assert, invariant → validate()
 proc, tuck CLI (lex/parse/check/compile), generics v1 (simple substitution,
 call-site inference, lowered to Nim generics; ceilings: no generic-record
-construction, generic bodies gradual, no constraints).
+construction, generic bodies gradual, no constraints). `when TARGET == "...":`
+conditionals §8.3, 2026-08-11: resolved at module load (uncached — see
+modules.resolveWhenBlocks), `--target:NAME` CLI flag, both backends need no
+codegen changes since the AST is already filtered before codegen runs.
+
+`pred`/`set` fn prefixes §3.6 — DROPPED 2026-08-11 (never implemented, and
+formally will not be: effect markers already gate side effects, `..`-on-var
+already gates mutation, so a third purity mechanism at the keyword level
+would duplicate a rule rather than add one). Spec §3.6 rewritten to record
+this instead of describing unbuilt syntax.
 
 ## User rulings (2026-07-09)
 - §6.3 complexity limit: ENFORCE as hard compile error (cyclomatic ≤ 5,
@@ -26,9 +35,12 @@ construction, generic bodies gradual, no constraints).
   hand-rolled stackless state machines — both backends drive the same C
   library, so they cannot diverge on switch semantics. §9.2/9.4 are built and
   run-gated (examples 26/27/28/42).
-- Effects §3.7: implicit upward propagation (caller of [io] is [io]
-  automatically); only boundaries need annotation. Change checker from
-  require-declared to infer-and-propagate.
+- Effects §3.7: RE-RULED 2026-08-11 — require-declared stays. The
+  infer-and-propagate ruling above was never implemented; re-examined and
+  reversed instead of implemented, since explicit declaration at every level
+  fits Tuck's "everything explicit" stance (spec Part 1) better than silent
+  upward inference would. Spec §3.7 rewritten to describe require-declared as
+  the real (and now permanent) design.
 
 ## User rulings (2026-07-09, session 2) — error model + OS layer
 - `extern:` blocks (DONE): sigs implemented by tuck_rt; `extern [c, header:
@@ -106,8 +118,6 @@ construction, generic bodies gradual, no constraints).
   form lowers `read <fd>` / `timeout <ms>` only — dotted sources (`resp.ok`,
   `timeout.5s`) still parse as opaque strings, which is what blocks ex 16.
   Scheduler §9.4 is done (see Partial above).
-- `when TARGET` conditionals §8.3 (blocks ex 11, 20)
-- `pred` / `set` fn prefixes §3.6
 - Stack-depth budgets `[stack: N]` §6.2
 - Complexity limit §6.3 (ruling: hard error)
 - Error.x validated against a declared error enum
@@ -119,6 +129,8 @@ ruling); 20 → when + actor-transition lowering; 03 → Beef-side only
 (delegate types). Everything else GREEN in both gates.
 
 ## Spec debt
-§11 describes npeg parser + flat IR + Merkle cache; reality is recursive
-descent + ref-AST + hash-keyed msgpack cache + signature index. Rewrite §11
-to match implementation (as was done for §4.8).
+None outstanding. §11/§12 (previously: describing npeg parser + flat IR +
+Merkle cache while reality is recursive descent + ref-AST + hash-keyed
+msgpack cache + signature index) rewritten 2026-08-11 to match the real
+compiler — confirmed, per user ruling, that the built architecture is
+preferred over the original design, not a gap to close.

@@ -403,6 +403,15 @@ type
                 # mixin hold a cstring past the pointer rule (see
                 # checkPointerContainment) — the same mistake twice would be
                 # careless.
+    dkWhen      # `when TARGET == "value":` — compile-time platform selection
+                # (spec §8.3). Resolved by modules.resolveWhenBlocks right after
+                # load, BEFORE typecheck ever runs: a non-matching block's decls
+                # are dropped from the module entirely (never checked, never
+                # emitted), a matching block's decls splice in as if declared
+                # directly. Never resolved inside parseSource/rewriteModule,
+                # because those results are what the AST cache stores — caching
+                # a resolved tree would key it to whichever --target happened to
+                # be active on the run that wrote the cache.
 
   Decl* = ref object of Node
     name*: string
@@ -462,6 +471,9 @@ type
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin, dkExtern, dkPending:
       mixinMembers*: seq[Decl]
+    of dkWhen:
+      whenTargetValue*: string  # the string literal on the RHS of `TARGET ==`
+      whenDecls*: seq[Decl]     # top-level declarations gated by this block
     of dkInterface:
       ifaceMembers*: seq[Decl]  # body-less dkFn sigs — the requirements
     of dkActor:
@@ -630,6 +642,8 @@ proc assignIds*(d: Decl, next: var uint32) =
     for m in d.objMembers: assignIds(m, next)
   of dkMixin, dkExtern, dkPending:
     for m in d.mixinMembers: assignIds(m, next)
+  of dkWhen:
+    for m in d.whenDecls: assignIds(m, next)
   of dkInterface:
     for m in d.ifaceMembers: assignIds(m, next)
   of dkActor:
@@ -717,6 +731,7 @@ proc clearIds*(d: Decl) =
   of dkType: (for m in d.typeMembers: clearIds(m))
   of dkObject: (for m in d.objMembers: clearIds(m))
   of dkMixin, dkExtern, dkPending: (for m in d.mixinMembers: clearIds(m))
+  of dkWhen: (for m in d.whenDecls: clearIds(m))
   of dkInterface: (for m in d.ifaceMembers: clearIds(m))
   of dkActor: (for h in d.handlers: clearIds(h))
   of dkSelect: (for arm in d.selectArms: clearIds(arm.body))

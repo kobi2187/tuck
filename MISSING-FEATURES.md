@@ -1,18 +1,23 @@
-# Missing Features & Gaps — snapshot 2026-08-05
+# Missing Features & Gaps — snapshot 2026-08-11
 
 Every claim below was re-verified against the compiler on the date in the
-heading. The previous snapshot (2026-07-24) had drifted badly: it listed four
-bugs as open that were fixed, called two examples broken that compile, and
-described `fnsig` as an unbuilt proposal when it ships in example 31. If you
-are reading this more than a few weeks out, re-run the checks rather than
-trusting the text — the suite is the source of truth, this file is a summary.
+heading. The previous snapshot (2026-08-05) had drifted less than most: its
+"2 open bugs" claim was still accurate on this pass. What changed this time is
+coverage, not correctness — the Odin backend was actually built and
+`odin build`/`odin run`-verified for the first time in a while (a nightly
+binary, since GitHub access in that audit's sandbox was scoped away from
+odin-lang/Odin), which is how the C1 "task with arguments" ceiling below
+moved from "measured" to "attempted to reproduce, blocked by a separate
+issue." If you are reading this more than a few weeks out, re-run the checks
+rather than trusting the text — the suite is the source of truth, this file
+is a summary.
 
 **How to get the real list:** `./run-all-tests.sh` prints every `OPEN` line.
 That is authoritative; this file explains them.
 
 ---
 
-## A. Open bugs (2, all with a failing test that pins them)
+## A. Open bugs (5, all with a failing test that pins them)
 
 Each has a regression test written as the CORRECT behaviour, marked `bug_open`.
 Fixing one means flipping the marker to `bug_fixed`, which locks it in.
@@ -21,12 +26,22 @@ Fixing one means flipping the marker to `bug_fixed`, which locks it in.
 |---|---|---|---|
 | 1 | A member fn shadows a top-level fn of the same name. `collectSigs` registers object members under their bare name into the same flat `fnSigs` as top-level fns, so `Dog.noise` overwrites the free `noise`. Attempted and reverted: a member must STAY in that table, because `d.noise` resolves through `asFnByName`, which looks the bare name up there — so letting the free fn win simply breaks the member call instead. Needs call resolution to distinguish them. | member_names | `typecheck.nim` `collectSigs` + call resolution |
 | 2 | Odin: a list literal cannot reach a `Seq` parameter. `[dynamic]T` has no literal form, only `append`, and Odin rejects the inline braced compound literal at the call site. A plain `Seq[Record]` fails identically, so it is not interface-specific. Needs statement hoisting in the Odin emitter (declare, append, then pass). | interface_seq | `codegen_odin.nim` |
+| 3 | Constructing a type with MISSING required fields is silently accepted — `{} Config` against a two-required-field `Config` passes `tuck ch` with no diagnostic. The `{fields} TypeName` construction path in the checker never validates the supplied field set against the type's declared fields; only the function-CALL path does. Contradicts a 2026-07-09 ruling (ROADMAP.md: "types with fields require every field at construction") that was apparently never wired in, or regressed since. | known_bugs | `typecheck.nim`, the construction-callee branch |
+| 4 | An `on select` arm shape the emitter does not recognise silently compiles to a bare `discard` — the whole handler body is dropped with no error, no warning, not even a PENDING entry. Reproduces on the spec's own §9.3 example shape. Not the same gap as the dotted-source parsing limitation below (B, and the "tracked but without a test yet" note) — that one is a known unfinished feature; this one is the same code path failing *silently* instead of refusing to compile. | known_bugs | `codegen.nim`, the select-arm lowering fallback |
+| 5 | `alias(...)` never checks its result for field-name collisions. Two sources renamed to the same target (`ext alias(trackId: title, category: title)`) type-checks clean and emits a Nim tuple with `title` written twice, which `nim check` rejects outright. `duplicates.sh`'s `failIfComposedCollision` catches the equivalent case for `+` composition; `alias()` is a different code path and isn't covered by it. | known_bugs | `typecheck.nim`, the alias-call branch |
 
-**Tracked but without a test yet:** on Odin a task WITH ARGUMENTS still emits a
-direct call, so its body runs on the main context and the first
-`tuckAwaitRead` panics. Nullary tasks are fixed. Odin proc literals cannot
-capture (verified with a two-line program), so the arguments need a heap
-context the thunk owns and frees.
+**Tracked but without a test yet — attempted to reproduce this session,
+blocked by a separate issue:** on Odin a task WITH ARGUMENTS is claimed to
+still emit a direct call, so its body would run on the main context and the
+first `tuckAwaitRead` would panic. Compiling `examples/29-task-timeout.tuck`
+(a task with a `{fd: int}` param, real `on select` read+timeout) against Odin
+to isolate this hits a DIFFERENT, earlier compile error first — `on select`
+with a real (non-synthetic) yield point is not lowered for Odin at all
+("Expected 1 return values, got 0" / `Undeclared name: openSource`) — so the
+narrower "args + real yield" claim above stays unverified in isolation; a
+task with args but only SYNTHETIC `[io]` calls (`examples/28-async-task.tuck`,
+which never truly parks) compiles and runs correctly and does not exercise
+the claim either way.
 
 ## B. Broken examples (1)
 

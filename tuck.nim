@@ -69,6 +69,8 @@ options:
   -o:DIR        (compile/build) output directory (default: next to source)
   --root:DIR    import search base for std/ and sibling modules (any command);
                 lets imports resolve regardless of cwd or binary location
+  --target:NAME selects which `when TARGET == "NAME":` blocks compile in
+                (spec §8.3; any command). Unset = every such block is dropped.
   --nim:FLAGS   (build) extra nim flags, e.g. --nim:"--os:standalone --cpu:arm""""
   quit(2)
 
@@ -245,6 +247,7 @@ proc report(title, noun: string, entries: seq[string]) =
 proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
   var sigOnly: Table[string, IndexEntry]
   (result, sigOnly) = loadOrDie(path, needBodies)
+  for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
   injectImportedTypes(result)  # imported types are visible unqualified
   let shortcuts = checkOrDie(path, result, sigOnly)
   # program checked clean: refresh the signature index for future checks
@@ -273,6 +276,11 @@ when isMainModule:
   # regardless of cwd or where the binary sits (see modules.resolveImport).
   for o in opts:
     if o.startsWith("--root:"): projectRoot = o[7 .. ^1]
+  # `--target:NAME` selects which `when TARGET == "...":` blocks (spec §8.3)
+  # compile in; see modules.resolveWhenBlocks. Unset = "" = every such block
+  # is dropped (fails closed, not toward guessing a platform).
+  for o in opts:
+    if o.startsWith("--target:"): buildTarget = o[9 .. ^1]
   let t0 = epochTime()
 
   case cmd
