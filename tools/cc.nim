@@ -27,6 +27,31 @@
 # NOT counted: `else` (the edge already exists), `try`/`finally` (no branch of
 # their own), and anything inside a nested routine — that gets its own score.
 #
+# THE TABULAR EXEMPTION. A `case` whose arms are all FLAT — every arm's body
+# contributing no branches of its own — is a DISPATCH TABLE, and scores +1 for
+# the whole construct rather than +1 per arm.
+#
+# The distinction is branching logic versus a table. Nested ifs COMPOSE: each
+# one multiplies the states a reader has to hold. Table rows do not — they are
+# mutually exclusive, read one at a time, and a twenty-fifth row does not make
+# the first twenty-four harder to follow. Charging per arm says a 24-way
+# dispatch over an enum is four times hairier than a 6-deep nest of
+# conditionals, which is backwards.
+#
+# It also worked against a rule this project actually wants. Nim's exhaustive
+# `case` (no `else`) is how you get the compiler to tell you about the enum
+# value you forgot to handle; charging per arm made the safe, exhaustive form
+# the expensive one. A metric that pushes authors toward `else: discard` is
+# measuring the wrong thing.
+#
+# THE EXEMPTION IS EARNED, NOT ASSUMED. One arm with an `if` in it and the
+# whole case reverts to per-arm charging — because at that point it is not a
+# table, it is a nest with a `case` at the top. So it cannot be gamed by adding
+# arms, and it cannot be used to hide logic inside them.
+#
+# compiler/complexity.nim applies the same rule to Tuck's `match`, for the same
+# reasons. The two tools now agree on what complexity means, one level apart.
+#
 # BUILD ONCE (the binary is gitignored; this imports Nim's compiler sources,
 # so it needs the install root on the path):
 #
@@ -55,10 +80,33 @@ proc isShortCircuit(n: PNode): bool =
   if n.len == 0 or n[0].kind != nkIdent: return false
   n[0].ident.s in ShortCircuit
 
+proc countBranches(n: PNode): int
+
+proc isDispatchTable(n: PNode): bool =
+  ## A `case` whose every arm body is FLAT — no branches of its own. See the
+  ## TABULAR EXEMPTION note at the top.
+  ##
+  ## Deliberately strict: one arm with an `if` in it and this is false, so the
+  ## case goes back to being charged per arm. An arm that merely CALLS a proc
+  ## stays flat, which is the point — dispatching to named handlers is the
+  ## shape being rewarded.
+  if n.kind != nkCaseStmt: return false
+  for arm in n:
+    if arm.kind notin {nkOfBranch, nkElifBranch, nkElse}: continue
+    # An `elif` inside a case is a guard, not a row — real branching logic.
+    if arm.kind == nkElifBranch: return false
+    if arm.len == 0: continue
+    if countBranches(arm[^1]) > 0: return false
+  true
+
 proc countBranches(n: PNode): int =
   ## Decision points beneath `n`, NOT descending into a nested routine — that
   ## has its own complexity and is reported separately.
   if n == nil: return 0
+  if isDispatchTable(n):
+    # +1 for the whole construct. Arm bodies are flat by definition here, so
+    # there is nothing further to count beneath them.
+    return 1
   if n.kind in BranchKinds: result += 1
   if isShortCircuit(n): result += 1
   for c in n:
