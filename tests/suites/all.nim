@@ -29,6 +29,7 @@ import mangle
 import member_names
 import object_composition
 import odin_backend
+import optimize
 import pointer_containment
 import typecheck
 import when_target
@@ -61,6 +62,7 @@ let registry: seq[Entry] = @[
   ("member_names",        SuiteProc(member_names.run),        true),
   ("object_composition",  SuiteProc(object_composition.run),  false),
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
+  ("optimize",            SuiteProc(optimize.run),            false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
   ("typecheck",           SuiteProc(typecheck.run),           true),
   ("when_target",         SuiteProc(when_target.run),         false),

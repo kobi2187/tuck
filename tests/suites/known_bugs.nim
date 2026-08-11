@@ -431,7 +431,7 @@ fn main() -> int:
   # to the SAME target) type-checks clean today AND emits a Nim tuple literal
   # with the field 'title' written twice, which `nim check` rejects outright
   # ("field initialized twice: 'title'") — exactly the class of bug
-  # tests/duplicates.sh's failIfComposedCollision exists to catch for `+`
+  # tests/suites/duplicates.nim's failIfComposedCollision exists to catch for `+`
   # composition (spec §2.5), just not reached here because alias() is a
   # different code path. `tuck ch` gives no hint that anything is wrong; the
   # correct behaviour is a checker error naming the collision, same spirit as
@@ -444,5 +444,66 @@ fn main() -> int:
 """
   t.quietly: t.badCheck "alias() rejects two renamed fields colliding on the same target name", "twice|collis|already|duplicate"
   t.bugOpen "alias() rejects two renamed fields colliding on the same target name"
+
+  # 17. A QUALIFIED mutator in a `..` chain emits garbage. `cfg ..mod::fn`
+  # drops the call entirely and applies the NEXT chain step to the function
+  # instead of the receiver:
+  #
+  #     cfg ..bigmod::withDefaults ..f1 {60}   ->   tuck_withDefaults.f1 = 60
+  #
+  # The unqualified form (`cfg ..withDefaults`, which works because imported
+  # fns are visible unqualified) lowers correctly to
+  # `cfg = tuck_withDefaults(cfg)`, so this is specific to the `mod::fn`
+  # spelling in chain-step position. It fails loudly one stage later — Nim
+  # rejects a field assignment on a proc — but `tuck ch` reports nothing, so
+  # the diagnostic the user sees is about emitted code they never wrote,
+  # which is exactly what the checker exists to prevent.
+  #
+  # Either fix is acceptable: lower it like the unqualified form, or reject a
+  # qualified name in chain-step position at check time. Whichever lands,
+  # flip this marker and point the assertion at the behaviour chosen.
+  t.src """
+import bigmod
+
+fn main() -> int:
+  var cfg = {f0: 1, f1: 2} Big
+  cfg ..bigmod::withDefaults ..f1 {60}
+  return cfg.f0
+"""
+  t.addFile("bigmod.tuck", """type Big:
+  f0: int
+  f1: int
+
+fn withDefaults({self: Big}) -> Big:
+  var s = self
+  s ..f0 {80}
+  return s
+""")
+  t.quietly: t.omits "a qualified mutator in a chain does not emit a field-set on the function", "tuck_withDefaults\\.f"
+  t.bugOpen "a qualified mutator in a chain does not emit a field-set on the function"
+
+  # 18. Odin: an imported TYPE is emitted unqualified, so it does not resolve.
+  # The emitter qualifies an imported FN correctly
+  # (`bigmod.tuck_withDefaults(cfg)`) but writes the type from the same module
+  # bare — `cfg := tuck_Big{...}` — and Odin answers `Undeclared name:
+  # tuck_Big`, so any program whose type comes from another module fails to
+  # build on that backend.
+  #
+  # Nim is unaffected: its own `import` brings the name into scope
+  # unqualified, which is exactly the assumption baked into the shared
+  # emitter path. Odin's `import bigmod "./mod_bigmod"` does not, so the
+  # package name has to be written.
+  t.src """
+import bigmod
+
+fn main() -> int:
+  var cfg = {f0: 1} Big
+  return cfg.f0
+"""
+  t.addFile("bigmod.tuck", """type Big:
+  f0: int
+""")
+  t.quietly: t.emitsOdin "an imported type is qualified with its package on Odin", "bigmod\\.tuck_Big"
+  t.bugOpen "an imported type is qualified with its package on Odin"
 
   t.finish()

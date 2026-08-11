@@ -1009,15 +1009,24 @@ Algorithm: DFS over the call graph in the IR, summing frame sizes. Recursive cal
 are flagged — they are banned in Tier 1 anyway (unbounded stack). The result is a
 certification-grade guarantee with zero runtime cost.
 
-### 6.3 Complexity Limit
+### 6.3 Complexity Limit — ruled, not yet enforced
 
-The compiler enforces a cyclomatic complexity limit of ≤ 5 and approximately
-10-15 executable lines per function. This is not a linting suggestion — it is a
-compile error. Functions that exceed the limit must be decomposed.
+The intent: a cyclomatic complexity limit of ≤ 5 and approximately 10–15
+executable lines per `fn`, as a compile error rather than a linting
+suggestion, so every function reads like pseudocode, fits in your head, and
+is auditable for certification. It forces high-level architecture to remain
+pure wiring diagrams.
 
-This ensures every function reads like pseudocode, fits in your head, and is
-auditable for certification. It forces high-level architecture to remain pure
-wiring diagrams.
+**Status: not implemented.** `tuck check` measures nothing today and rejects
+no program for being too complex, at any size. The ceiling is real only for
+the *compiler's own Nim source*, where `tools/cc` measures it against a
+budget in the test suite — that tool parses Nim, not Tuck, so it cannot be
+pointed at user code as-is.
+
+Until it lands, treat the limit as a convention the corpus follows rather
+than a guarantee the compiler provides. When it does land it applies to
+`fn` declarations; the ceiling for a `decision` table is its row count, which
+the table's own exhaustiveness/overlap checking (§6.1) already bounds.
 
 ---
 

@@ -49,6 +49,7 @@ import compiler/codegen
 import compiler/codegen_odin
 import compiler/ast_serializer
 import compiler/modules
+import compiler/optimize
 
 proc usage() =
   stderr.writeLine """tuck — the Tuck compiler
@@ -71,6 +72,10 @@ options:
                 lets imports resolve regardless of cwd or binary location
   --target:NAME selects which `when TARGET == "NAME":` blocks compile in
                 (spec §8.3; any command). Unset = every such block is dropped.
+  -O:PASS[,...] (compile/build) optional optimization passes, OFF by default.
+                `-O:all` enables every pass; `-O:report` lists what was
+                rewritten. See compiler/optimize.nim for what each one does
+                and what it refuses to touch.
   --nim:FLAGS   (build) extra nim flags, e.g. --nim:"--os:standalone --cpu:arm""""
   quit(2)
 
@@ -281,6 +286,28 @@ when isMainModule:
   # is dropped (fails closed, not toward guessing a platform).
   for o in opts:
     if o.startsWith("--target:"): buildTarget = o[9 .. ^1]
+  # `-O:name[,name]` turns on OPTIONAL passes (compiler/optimize.nim), off by
+  # default. `-O:report` additionally lists every site a pass rewrote. An
+  # unknown pass name is fatal rather than ignored: a typo in a build script
+  # must not quietly mean "no optimization".
+  var optPasses: set[OptPass]
+  var optReport = false
+  for o in opts:
+    if not o.startsWith("-O:"): continue
+    var spec = o[3 .. ^1]
+    if spec == "report" or spec.startsWith("report,"):
+      optReport = true
+      spec = (if spec == "report": "" else: spec["report,".len .. ^1])
+    elif spec.endsWith(",report"):
+      optReport = true
+      spec = spec[0 ..< spec.len - ",report".len]
+    let (ps, bad) = parseOptPasses(spec)
+    if bad != "":
+      var known: seq[string]
+      for p in OptPass: known.add($p)
+      die("tuck: no such optimization pass: '" & bad & "'\n" &
+          "  available: " & known.join(", ") & ", all")
+    optPasses = optPasses + ps
   let t0 = epochTime()
 
   case cmd
@@ -319,6 +346,14 @@ when isMainModule:
     # backends looking up names that no longer exist.
     var progMods: seq[Module]
     for lm in prog: progMods.add(lm.m)
+    # OPTIONAL passes (compiler/optimize.nim), before mangling so they work on
+    # the user's own names, and before the per-backend copies so one rewrite
+    # serves both. With no `-O` this is a no-op returning an empty seq — the
+    # emitted code is then byte-identical to a build of a tree without that
+    # file at all, which is what makes each pass independently testable.
+    let optHits = optimizeProgram(progMods, optPasses)
+    if optReport:
+      report("OPTIMIZED", "site(s) rewritten", optHits)
     mangleProgram(progMods)
     # Each backend lowers its OWN copy: lowering and the emitters both mutate
     # the tree (injectTailReturn), so a shared one would hand Beef whatever
