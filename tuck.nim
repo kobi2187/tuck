@@ -42,6 +42,7 @@ import lexer
 import compiler/ast
 import compiler/parser
 import compiler/semantics
+import compiler/complexity
 import compiler/typecheck
 import compiler/lowering
 import compiler/mangle
@@ -71,7 +72,16 @@ options:
                 lets imports resolve regardless of cwd or binary location
   --target:NAME selects which `when TARGET == "NAME":` blocks compile in
                 (spec §8.3; any command). Unset = every such block is dropped.
-  --nim:FLAGS   (build) extra nim flags, e.g. --nim:"--os:standalone --cpu:arm""""
+  --nim:FLAGS   (build) extra nim flags, e.g. --nim:"--os:standalone --cpu:arm"
+  --max-complexity:N  size budget: max independent paths through a fn
+                (any command; default 6, `:0` disables). A match/select costs
+                nothing for the construct — only what its arms do is counted.
+  --max-fn-lines:N    size budget: max source lines a fn may span
+                (any command; default 8, `:0` disables). Match/select arm
+                bodies and `decision` tables do not count.
+
+  Functions over either budget are REPORTED worst-first, and only fail the
+  build under --release."""
   quit(2)
 
 proc die(msg: string) =
@@ -226,6 +236,32 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
     if ".tuck:" in err.msg: die(err.msg)
     else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
 
+proc sizeReport(path: string, loaded: seq[LoadedModule]) =
+  ## Print every function over the size budget, worst first — and on a release
+  ## build, stop.
+  ##
+  ## Runs AFTER typecheck and effects: size is a style limit, not a correctness
+  ## one, so a file that does not compile reports the real error rather than a
+  ## size list for code that was never going to build.
+  ##
+  ## Only the module being checked, never its imports. A dependency's oversized
+  ## fn is its author's build to fix — listing fns you cannot edit is not a
+  ## work plan, it is noise you learn to scroll past.
+  let offenders = measureModule(loaded[^1].m, sizeBudget)
+  if offenders.len == 0: return
+  let verb = if sizeIsError: "OVER BUDGET" else: "SIZE"
+  echo verb, " (", offenders.len, " ",
+       (if offenders.len == 1: "function" else: "functions"), "):"
+  for o in offenders:
+    echo "  ", path, ":", o.span.line, ":", o.span.col, ": ",
+         describe(o, sizeBudget)
+  # A normal build has now SAID it; a release build stops. Same measurement,
+  # different moment — see complexity.sizeIsError.
+  if sizeIsError:
+    die("tuck: " & $offenders.len & " function(s) over the size budget " &
+        "(--release requires them under it; raise with --max-complexity:N / " &
+        "--max-fn-lines:N, or :0 to disable)")
+
 proc pendingEntries(loaded: seq[LoadedModule],
                     sigOnly: Table[string, IndexEntry]): seq[string] =
   ## Every unimplemented fn across the program, qualified when it lives in an
@@ -254,6 +290,7 @@ proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
   updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
   report("PENDING", "unimplemented", pendingEntries(result, sigOnly))
   report("SHORTCUTS", "routed to the global error handler", shortcuts)
+  sizeReport(path, result)
 
 when isMainModule:
   if paramCount() < 2: usage()
@@ -281,6 +318,24 @@ when isMainModule:
   # is dropped (fails closed, not toward guessing a platform).
   for o in opts:
     if o.startsWith("--target:"): buildTarget = o[9 .. ^1]
+  # `--max-complexity:N` / `--max-fn-lines:N` — the per-fn size budget
+  # (compiler/complexity.nim). `:0` disables that half of the check. A
+  # non-number is rejected rather than silently read as 0, which would turn a
+  # typo into a disabled check.
+  for o in opts:
+    for (flag, field) in [("--max-complexity:", 0), ("--max-fn-lines:", 1)]:
+      if o.startsWith(flag):
+        let raw = o[flag.len .. ^1]
+        var n: int
+        try: n = parseInt(raw)
+        except ValueError:
+          die("tuck: " & flag & " needs a number, got: " & raw)
+        if n < 0: die("tuck: " & flag & " cannot be negative: " & raw)
+        if field == 0: sizeBudget.maxComplexity = n
+        else: sizeBudget.maxLines = n
+  # `--release` promotes the size report from a list to a failure. Read here
+  # rather than in the build arm because the check runs before it.
+  sizeIsError = "--release" in opts
   let t0 = epochTime()
 
   case cmd

@@ -57,7 +57,12 @@ type
     rawCmds*: Table[int, seq[string]]  ## work index -> argv, for needCmd
     preps*: Table[int, proc (dir: string) {.closure.}]  ## staging, run before the cmd
     dir*: string                ## the suite's scratch root
-    cur: string                 ## current snippet dir
+    cur*: string                ## current snippet dir — the .tuck written by
+                                ## `src` lives at `cur / "t.tuck"`. Exported so
+                                ## a suite can re-run the SAME snippet under
+                                ## different flags via needCmd, which is how
+                                ## fn_size checks that --release promotes its
+                                ## report to a failure.
     n: int
     cursor: int                 ## report pass: which registration we are on
     passed*, failed*, open*: int
@@ -204,6 +209,36 @@ proc badCheck*(t: var T, name, pattern: string) =
     t.ok name
   else:
     t.no name, &"wrong error; wanted /{pattern}/, got: " & lastLine(it.output)
+
+proc checkSays*(t: var T, name, pattern: string) =
+  ## The check PASSES and its output matches — for diagnostics that report
+  ## without failing. `okCheck` cannot see the text and `badCheck` demands a
+  ## non-zero exit; a warning-shaped diagnostic is neither.
+  let i = t.need(vCheck)
+  if t.phase == pCollect: return
+  let it = t.item(i)
+  if t.failedTo(i):
+    t.no name, "expected a clean check, got: " & lastLine(it.output)
+  elif find(it.output, re(pattern)) >= 0:
+    t.ok name
+  else:
+    t.no name, &"check passed but said nothing matching /{pattern}/: " &
+               lastLine(it.output)
+
+proc checkSilent*(t: var T, name, pattern: string) =
+  ## The check passes and says NOTHING matching `pattern` — the other half of
+  ## checkSays, for asserting an exemption really is one. Without this, a rule
+  ## that stopped firing entirely would look identical to a rule correctly not
+  ## firing on the exempt case.
+  let i = t.need(vCheck)
+  if t.phase == pCollect: return
+  let it = t.item(i)
+  if t.failedTo(i):
+    t.no name, "expected a clean check, got: " & lastLine(it.output)
+  elif find(it.output, re(pattern)) >= 0:
+    t.no name, &"expected no /{pattern}/, got: " & lastLine(it.output)
+  else:
+    t.ok name
 
 proc runs*(t: var T, name: string, code: int) =
   let b = t.need(vBuild)
