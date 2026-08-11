@@ -129,6 +129,8 @@ ruling); 20 → when + actor-transition lowering; 03 → Beef-side only
 (delegate types). Everything else GREEN in both gates.
 
 ## Spec debt
-§11 describes npeg parser + flat IR + Merkle cache; reality is recursive
-descent + ref-AST + hash-keyed msgpack cache + signature index. Rewrite §11
-to match implementation (as was done for §4.8).
+None outstanding. §11/§12 (previously: describing npeg parser + flat IR +
+Merkle cache while reality is recursive descent + ref-AST + hash-keyed
+msgpack cache + signature index) rewritten 2026-08-11 to match the real
+compiler — confirmed, per user ruling, that the built architecture is
+preferred over the original design, not a gap to close.

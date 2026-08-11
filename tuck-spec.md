@@ -1393,105 +1393,145 @@ to other event types. Each handler returns, the raiser continues.
 
 ## Part 11: Compiler Architecture
 
+*This Part describes the compiler that was actually built, not the one an
+earlier draft of this spec planned. The two differ on purpose, not by
+drift: npeg, a flat index-based IR, and a Merkle-hashed cache were the
+original design; a hand-rolled recursive-descent parser, a tree-shaped AST,
+and a simpler build-stamp-and-source-hash cache are what was built instead,
+and that outcome is preferred, not a compromise to fix later. This Part was
+rewritten 2026-08 to match reality; treat anything below as a description of
+the real compiler.*
+
 ### 11.1 Pipeline
 
 ```
 Source File
-  → Tokenizer (hand-rolled, ~300 lines)
-  → Parser (npeg — grammar compiles to zero-overhead Nim procedures)
-  → Flat IR (seq[IRNode], index-based, no pointers)
-  → Pass 1: Signature Collection (linear scan, builds Tables)
-  → Pass 2: Body Checking (bidirectional typing, shape resolution)
-  → Cache Write (Merkle hash → msgpack AnalysisEnvelope → .tuck-cache)
-  → Emitter (dumb case statement, concatenates Nim source strings)
-  → Nim Compiler → Binary
+  → Lexer (hand-rolled) — text to tokens
+  → Parser (hand-rolled, recursive descent) — tokens to a tree-shaped AST
+  → Rewrite — unconditional, type-free tree normalization (what a
+    construct MEANS: e.g. `5.ms` sugar, `elif` as sugar for nested `else`/`if`)
+  → Module loading — import closure, msgpack AST cache + signature index,
+    `when TARGET` resolution (§8.3)
+  → Typecheck — bidirectional (synthesize/check), two passes per module:
+    signature collection, then per-declaration body checking; fails fast
+  → Semantics — the effect audit (§3.7): every performed effect must be
+    declared, checked bottom-up per declaration
+  → Mangling — whole-program, once: user names get a backend-collision-proof
+    prefix, before any backend-specific work begins
+  → Lowering — per backend (each gets its own copy of the checked tree):
+    rewrites constructs that are pleasant to WRITE into ones that are easy
+    to EMIT (e.g. a registry raise becomes an ordinary call)
+  → Emitter — codegen.nim (Nim) / codegen_odin.nim (Odin): walks the tree,
+    concatenates target-language source text directly, no separate IR
+  → Nim or Odin compiler → Binary
 ```
 
-### 11.2 The IR
+### 11.2 The AST
 
-Flat `seq[IRNode]` with index-based references. No pointer chasing, cache-friendly,
-trivially serializable with msgpack. Nim's tagged unions (`object of enum`) enforce
-exhaustive handling — adding a new IR node kind forces every unhandled `case`
-statement to become a compile error:
+A tree of `ref object` nodes (`compiler/ast.nim`'s `Decl` and `Expr`), not a
+flat, index-based structure — pointer-linked, the ordinary shape a
+recursive-descent parser naturally builds. Both are Nim `case object`
+variants keyed by a kind enum (`DeclKind`, `ExprKind`), so the same
+exhaustiveness guarantee an index-based IR would have given still holds:
+adding a new kind forces every unhandled `case` in the compiler to become a
+compile error, at every later stage — typecheck, semantics, lowering, both
+emitters.
 
 ```nim
-type IRKind = enum
-  irConst, irName, irFnRef, irStruct, irField,
-  irFnDef, irCall, irBake,
-  irLet, irVar, irAssign, irBlock, irReturn,
-  irIf, irMatch, irFor, irMutate,
-  irTypeDecl, irVariant, irTransition,
-  irDecision, irDecisionRow,
-  irActor, irOnHandler, irTask, irSelect,
-  irEventRegistry, irRaise, irOnEvent,
-  irPool, irArena, irRegister, irPending
+type DeclKind* = enum
+  dkType, dkObject, dkRegistry, dkPool, dkFn, dkMixin, dkExtern, dkPending,
+  dkActor, dkTask, dkExpr, dkConst, dkRegister, dkStaticAssert, dkErrors,
+  dkImport, dkSelect, dkFnSig, dkSatisfies, dkInterface, dkWhen
+  # (representative, not exhaustive — the real enum grows as the language does)
 
-type NodeIdx  = distinct int32
-type OptNode  = Option[NodeIdx]
-type FieldDef = tuple[name, typ: string]
-type IfBranch = tuple[cond: OptNode, body: NodeIdx]
-type MatchArm = tuple[variant: string, body: NodeIdx]
+type ExprKind* = enum
+  exkVar, exkLit, exkStruct, exkCall, exkField, exkChain, exkAssign,
+  exkIf, exkMatch, exkFor, exkBinary, exkUnary, exkReturn, exkRaise,
+  exkSend, exkSelect
+  # (representative, not exhaustive)
 ```
 
-### 11.3 Pass 1 — Signature Collection
+### 11.3 Signature Collection
 
-One linear scan of the IR. Only examines top-level declarations. Builds:
+One linear scan over each module's top-level declarations (`collectSigs`),
+before any function body is checked. Builds the tables later checking reads:
 
-- `sigs:   Table[string, FnSig]` — all function names → signatures
-- `shapes: Table[string, FieldSet]` — all type names → field sets
-- `graphs: Table[string, TransGraph]` — all sealed types → transition adjacency lists
+- function/task signatures, keyed by name (and by `module::name` for
+  qualified calls)
+- type field sets, for subset matching (§2.5)
+- sealed-type transition adjacency, for static transition checking (§4.4b)
 
-Return types are explicit on all signatures. This seeds pass 1 with enough
-information to resolve mutual recursion without forward declarations. Two mutually
-recursive functions are both in the signature table before either body is checked.
+Return types are explicit on all signatures. This is what seeds the scan
+with enough information to resolve mutual recursion without forward
+declarations — two mutually recursive functions are both in the signature
+table before either body is checked.
 
-Each top-level declaration is Merkle-hashed. Cache hits skip pass 2 entirely.
+### 11.4 Body Checking
 
-### 11.4 Pass 2 — Body Checking
+For each declaration, in source order:
 
-Works only on cache-miss declarations. For each function body:
+- Resolve every call: subset/whole-bind matching (§2.5) against the
+  signature table built above
+- Check `match` exhaustiveness over closed domains (sum types, `bool`,
+  error enums)
+- Check `..` only on `var` bindings (§2.3)
+- Check effect markers: every performed effect must be in the declaring
+  function's own declared budget (§3.7 — explicit, not inferred)
 
-- Resolve every call: `synthesize(arg shape) ⊆ required(fn param shape)`
-- Check `match` exhaustiveness
-- Check `..` only on `var` bindings
-- Check effect marker propagation
-- Verify complexity ≤ 5
-- Verify stack budget if declared
+For each sealed type: verify every match arm and every tracked reassignment
+only produces transition-graph-reachable variants (§4.4b).
 
-For each sealed type: verify all match arms in all functions only produce
-transition-graph-reachable variants.
+For each decision table: build the packed-key table, check coverage and
+overlaps (§6.1).
 
-For each decision table: build bitmask, check coverage and overlaps.
-
-For each actor/task: verify queue sizes fit in declared memory tier.
-
-**Error handling:** collect all errors in the current declaration, continue to the
-next. One bad function does not prevent checking the rest of the file.
+**Error handling: fails fast.** The first error in a declaration stops the
+check and is reported with its file:line:col; the compiler does not attempt
+to collect every error across the whole file in one run.
 
 ### 11.5 The Cache
 
-Content-addressable, append-only binary file (`.tuck-cache`), loaded entirely into
-RAM as `Table[Hash, seq[byte]]`.
+Two caches, doing different jobs, both under `<dir>/.tuck-cache/`:
 
-- **Key:** Merkle hash = `Hash(AST bytes + hashes of all dependencies)`. Changing
-  a dependency mathematically invalidates the parent.
-- **Value:** msgpack `AnalysisEnvelope` with three slots:
-  1. `Summary` — input shape, output shape, effect markers, complexity score
-  2. `BaseIR` — flattened, desugared IR nodes
-  3. `Specialized` — bitmask tables (decisions), transition graphs (actors/sealed
-     types), stack depth results
+1. **The AST cache** (`<name>.bin`) — an entire parsed-and-rewritten `Module`,
+   msgpack-serialized. Keyed on (compiler build stamp, source hash): a
+   recompiled compiler or an edited source invalidates the entry, which then
+   falls back to a fresh parse. Skips lexing and parsing for an unchanged
+   import.
+2. **The signature index** (`index.bin`) — just the exported signatures a
+   module needed the LAST time the whole program checked clean, plus the
+   source hash of each dependency at that time. An import is trusted from
+   here — no AST load, no re-typechecking its body — only if its own source
+   is unchanged AND every dependency it names is *itself* still valid,
+   checked recursively; a changed dependency anywhere in the chain falls
+   back to loading that import in full. `tuck check` reads this and, when it
+   hits, never walks the interior of an imported module at all; `tuck
+   build`/`compile` always need real bodies (to emit code for them), so this
+   index is `check`'s accelerator specifically, not a build cache.
+
+Both caches are best-effort: a stamp mismatch, a hash mismatch, or a
+truncated/unreadable file all fall back to a fresh parse or a full reload
+rather than trusting stale data.
 
 ### 11.6 The Emitter
 
-A dumb `case` statement over `IRKind` that concatenates Nim source strings. Never
-builds a Nim AST. This is intentional — the emitter is not where bugs live. All
-correctness work happens in pass 2.
+Two emitters — `codegen.nim` (Nim) and `codegen_odin.nim` (Odin), sharing
+helpers via `codegen_common.nim` — each a `case` statement over the real AST's
+kind enums (§11.2) that concatenates target-language source strings directly.
+Neither builds a Nim or Odin AST of its own; by the time a tree reaches here,
+every hard question (types, effects, names, sealed transitions, decision
+coverage) has already been answered by earlier stages, so what is left is
+transcription.
 
-Special cases:
-- `irDecision` → Nim `case` over a packed `uint64`
-- `irActor` → Nim closure with `while true` + case over message types
-- `irTask` → Nim state machine proc with one variant per `[io]` yield point
-- `irRegister` → `volatile` field access with inline endian swap if `[big_endian]`
+A few constructs worth naming because they lower to more than a literal
+transcription:
+- a decision table → a target-language `case`/`switch` over a packed integer
+- an actor → a mailbox struct (a static ring buffer) plus handler procs
+  dispatched by message tag; both backends run actors and tasks on their own
+  coroutine, over the same vendored C library (minicoro) — see Part 9's
+  runtime note for why, and why that currently makes concurrency a Tier 3
+  (§7.1) capability rather than a Tier 1 one
+- a register declaration → `volatile` field access with inline endian swap
+  where `[big_endian]` is declared
 
 ### 11.7 Bidirectional Typing
 
@@ -1515,11 +1555,14 @@ signature style means the annotation is almost always already there.
 
 ---
 
-## Part 12: Grammar Sketch (npeg)
+## Part 12: Grammar Sketch
 
-The parser uses npeg, which compiles the grammar to Nim procedures at compile time.
-Action blocks fire during parsing and write directly into the flat IR — no
-intermediate CST is materialized.
+A descriptive sketch of the syntax the parser accepts, in PEG-like notation
+(`<-`, `*`, `?`, `+`, alternation) for readability — it does not name or
+imply a particular parsing technology. The real parser (Part 11) is a
+hand-rolled recursive descent, not a grammar compiled by a parser-generator
+library; this section describes the LANGUAGE it accepts, not how that parser
+is implemented.
 
 Key rules:
 
@@ -1587,10 +1630,16 @@ satisfies <- "satisfies" * >upIdent * nl
 # contract you did not declare. Keyword first, like every other declaration.
 satisfiesDecl <- "satisfies" * >upIdent * ":" * >upIdent * *("," * >upIdent) * nl
 
-# Top level
+# Compile-time platform selection (§8.3) — v1 supports exactly this one
+# condition shape, not a general compile-time boolean expression.
+whenDecl <- "when" * "TARGET" * "==" * stringLit * ":" * nl * indent
+          * +topDecl * dedent
+
+# Top level — DECLARATIONS ONLY (§2.3b). No let/var/bare-expression
+# statement ever appears here; the runnable program is `fn main`.
 topDecl <- fnDecl | typeDecl | objDecl | mixinDecl | ifaceDecl
          | actorDecl | taskDecl | registryDecl | decisionDecl
-         | satisfiesDecl | letStmt | varStmt
+         | satisfiesDecl | whenDecl
 ```
 
 ---
