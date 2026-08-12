@@ -2,7 +2,7 @@
 type tuck_App* = object
   n*: int
 
-proc tuck_setN*(self: var tuck_App, n: int): tuck_App =
+proc tuck_setN*(self: tuck_App, n: int): tuck_App =
   return self
 
 proc tuck_main*(): int =

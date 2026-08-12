@@ -925,15 +925,31 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   tc.checkExhaustive(e, tc.matchDomain(subjT, trackedType, errEnums))
 
 proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
-  ## Spec 2.3: `..` mutation only on var bindings.
+  ## Spec 2.3: `..` mutation only on var bindings — and NEVER on a parameter,
+  ## which is a value the caller owns (spec §7.1).
+  ##
+  ## The two rejections are separate because their fixes are: a `let` becomes
+  ## a `var`, whereas a parameter can never become one — you copy it. Telling
+  ## a user to "use 'var'" on a parameter sends them somewhere that does not
+  ## exist.
   if e.base == nil or e.base.kind != exkVar: return
   var hasMutation = false
   for step in e.steps:
     if step.op == coDotDot: hasMutation = true
   if not hasMutation: return
   let (found, b) = tc.lookup(e.base.name)
-  if found and not b.isVar:
-    fail("Type Error: cannot mutate '" & e.base.name &
+  if not found: return
+  if b.isParam:
+    # One line: `fail` appends "at line L:C", so a multi-line fix sketch would
+    # read with the location dangling off the end of it.
+    fail(dcTyParamMutation,
+         "cannot mutate parameter '" & e.base.name & "' with '..' — a " &
+         "parameter is a value the caller owns, not a var. Fix: copy it " &
+         "first (`var s = " & e.base.name & "`), chain on the copy, and " &
+         "return it", e.span)
+  if not b.isVar:
+    fail(dcTyImmutable,
+         "cannot mutate '" & e.base.name &
          "' with '..' — it was declared with 'let'; use 'var'", e.span)
 
 proc checkFieldSet(tc: var TypeChecker, step: ChainStep, f: FieldDef,
@@ -2290,8 +2306,38 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   let savedVariants = tc.varVariants
   tc.varVariants = initTable[string, seq[string]]()
   for p in params:
-    # Params bound mutable: `set` functions legitimately use `..` on them
-    tc.bindName(p.name, substituteType(p.typ, gsub), true)
+    # THE `self` EXCEPTION (spec §5.1). An object member declares its receiver
+    # explicitly (`fn louder({self: Self})`), so by the time we get here it
+    # looks like any other parameter — but checkObjectDecl has already bound a
+    # mutable `self` in the enclosing scope, and re-binding it immutable here
+    # would shadow that and break `self ..volume {11}`, which the spec shows
+    # as valid.
+    #
+    # So: a param that shadows an already-mutable binding of the same name
+    # inherits its mutability. Outside an object member nothing has bound
+    # `self`, so the lookup misses and the ordinary rule applies — a plain fn
+    # whose first param merely happens to be NAMED `self` gets no exemption,
+    # which is right, because it is still someone else's value.
+    let (shadowsMutable, outer) = tc.lookup(p.name)
+    if shadowsMutable and outer.isVar and not outer.isParam:
+      tc.bindName(p.name, substituteType(p.typ, gsub), true)
+      let stn = tc.transType(p.typ)
+      if stn != "": tc.varVariants[p.name] = tc.allVariants(stn)
+      continue
+    # A parameter is an IMMUTABLE binding of a value (spec §7.1). Bound
+    # `isVar: false, isParam: true` — the second flag is what lets
+    # failIfMutatingLet reject `..` here with the right message instead of
+    # the one about `let`.
+    #
+    # This used to bind them mutable, justified by "`set` functions
+    # legitimately use `..` on them". That justification outlived the feature:
+    # `set`/`pred` prefixes were dropped (spec §3.6, never implemented), while
+    # the mutable binding stayed and made codegen emit `var T` for every
+    # record param — which in Nim is a BY-REFERENCE pass, so a callee could
+    # silently write through to the caller's record. The Odin backend
+    # (codegen_odin.nim's fnParamList) never did this and rejected the same
+    # program outright, which is how the divergence surfaced.
+    tc.bindName(p.name, substituteType(p.typ, gsub), false, isParam = true)
     # spec 4.4b: a param of a tracked type enters at the FULL variant set —
     # transitions on it need `match` narrowing first
     let ptn = tc.transType(p.typ)

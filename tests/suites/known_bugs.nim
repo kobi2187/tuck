@@ -506,4 +506,41 @@ fn main() -> int:
   t.quietly: t.emitsOdin "an imported type is qualified with its package on Odin", "bigmod\\.tuck_Big"
   t.bugOpen "an imported type is qualified with its package on Odin"
 
+  # 19. A fn could write through its own parameter to the CALLER's record.
+  # The checker bound every param mutable ("`set` functions legitimately use
+  # `..` on them" — for a `set` prefix that was never implemented and has
+  # since been dropped), so codegen emitted `var T` for record params. In Nim
+  # `var` on a PARAMETER is not write permission, it is a by-reference pass,
+  # so this returned 70 instead of 100:
+  #
+  #   fn afterFee({acct: Account, fee: int}) -> int:
+  #     acct ..balance {acct.balance - fee}   # spends the caller's money
+  #
+  # It was also a backend divergence: codegen_odin.nim always passed records
+  # by value, so Odin rejected the same program outright ("Cannot assign to
+  # 'acct.balance' which is a procedure parameter") while Nim silently
+  # miscomputed. Ruling 2026-08-12: a parameter is an immutable binding of a
+  # value (spec §7.1); `self` in an object member and an actor's own fields
+  # stay mutable, because those are state the callee owns.
+  #
+  # Fixed by giving Binding an `isParam` flag, rejecting `..` on it with
+  # TK-TY15, and dropping `var` from emitted record params. Free at the
+  # machine level: the emitted C signature is byte-identical either way
+  # (both `Big*`). tests/suites/value_semantics.nim holds the full guarantee.
+  t.src """
+type Account:
+  balance: int
+
+fn afterFee({acct: Account, fee: int}) -> int:
+  acct ..balance {acct.balance - fee}
+  return acct.balance
+
+fn main() -> int:
+  var savings = {balance: 100} Account
+  let preview = {acct: savings, fee: 30} afterFee
+  return savings.balance
+"""
+  t.quietly: t.badCheck "a fn cannot mutate its caller's record through a parameter", "TK-TY15"
+  t.bugFixed "a fn cannot mutate its caller's record through a parameter"
+
   t.finish()

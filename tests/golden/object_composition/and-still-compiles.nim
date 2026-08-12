@@ -9,7 +9,7 @@ type tuck_M* = object
   x*: int
   y*: int
 
-proc tuck_use*(m: var tuck_M): int =
+proc tuck_use*(m: tuck_M): int =
   return (m.x + m.y)
 
 proc tuck_main*(): int =

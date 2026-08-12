@@ -9,7 +9,19 @@ import ast, lowering, tables, sets
 import typecheck_util
 
 type
-  Binding* = tuple[typ: Type, isVar: bool]
+  Binding* = tuple[typ: Type, isVar: bool, isParam: bool]
+    ## `isVar` is write permission; `isParam` says the name is a FUNCTION
+    ## PARAMETER, which is a third thing rather than a flavour of the first.
+    ##
+    ## A parameter is an immutable binding of a VALUE (spec §7.1): the callee
+    ## may read it and may copy it, but may never write through it to the
+    ## caller's record. That is not the same rejection as `..` on a `let`, and
+    ## it does not have the same fix, so failIfMutatingLet needs to tell them
+    ## apart to say anything useful.
+    ##
+    ## `self` in an object member and an actor's own fields stay `isVar: true`
+    ## and `isParam: false` — they mutate state the callee OWNS, which is the
+    ## stated exception (§5.1), not a caller's value.
   # The in-memory twin of ast.nim's SigInfo: what the checker needs to know
   # about a fn it is calling, whether that fn was read from source or restored
   # from the cached index. Keep the two in step — a field here that SigInfo
@@ -69,14 +81,15 @@ type
 proc pushScope*(tc: var TypeChecker) = tc.scopes.add(initTable[string, Binding]())
 proc popScope*(tc: var TypeChecker) = discard tc.scopes.pop()
 
-proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool) =
-  tc.scopes[^1][name] = (typ, isVar)
+proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
+               isParam = false) =
+  tc.scopes[^1][name] = (typ, isVar, isParam)
 
 proc lookup*(tc: TypeChecker, name: string): tuple[found: bool, b: Binding] =
   for i in countdown(tc.scopes.high, 0):
     if tc.scopes[i].hasKey(name):
       return (true, tc.scopes[i][name])
-  return (false, (Type(nil), false))
+  return (false, (Type(nil), false, false))
 
 # Resolve a named type to its declared body (aliases, one level at a time).
 proc resolve*(tc: TypeChecker, t: Type, depth = 0): Type =

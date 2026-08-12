@@ -5,10 +5,10 @@ type tuck_ServerConfig* = object
   timeout*: uint32
   running*: bool
 
-proc tuck_withDefaults*(self: var tuck_ServerConfig): tuck_ServerConfig =
+proc tuck_withDefaults*(self: tuck_ServerConfig): tuck_ServerConfig =
   return tuck_ServerConfig(port: 80, timeout: 30, running: false)
 
-proc tuck_start*(self: var tuck_ServerConfig): bool =
+proc tuck_start*(self: tuck_ServerConfig): bool =
   return true
 
 proc tuck_main*(): void =

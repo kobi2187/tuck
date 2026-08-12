@@ -102,7 +102,14 @@ fn main() -> void:
   removeDir(d)
 
 proc caseChaintail(w: Work) =
-  # `..` chain as the fn's tail: mutate, then return the base var
+  # `..` chain as the fn's tail: mutate a local copy, which is the chain's
+  # implicit result.
+  #
+  # Was `self ..n {41}` straight on the parameter. That stopped compiling when
+  # parameters became immutable values (spec §7.1) — a mutator copies first
+  # and returns the copy, so the caller's record is never written through.
+  # What this case is actually for (a chain in tail position IS the return
+  # value) is unchanged.
   let d = caseDir("chaintail")
   buildOk(d.write("t.tuck", """
 import sys
@@ -111,7 +118,8 @@ type Counter:
   n: int
 
 fn bump({self: Counter}) -> Counter:
-  self ..n {41}
+  var s = self
+  s ..n {41}
 
 fn main() -> void [io]:
   var c = {n: 0} Counter
@@ -253,14 +261,21 @@ fn main() -> int:
   removeDir(d)
 
 proc caseValuetype(w: Work) =
-  # records are VALUE types (spec §7.1): == compares fields, not identity,
-  # and a copy is independent of its source
+  # records are VALUE types (spec §7.1): == compares fields, not identity, a
+  # copy is independent of its source, and PASSING one to a fn does not let
+  # that fn write back through it.
+  #
+  # `shift` used to be `p ..x {99}` — mutating the parameter directly, which
+  # the emitter turned into a `var` (by-reference) param, so the caller's
+  # record changed. The case asserting value semantics was itself violating
+  # them. It now copies, and the caller checks its own value survived.
   let d = caseDir("valuetype")
   buildOk(d.write("t.tuck", """
 type Point = {x: int, y: int}
 
 fn shift({p: Point}) -> Point:
-  p ..x {99}
+  var s = p
+  s ..x {99}
 
 fn main() -> int:
   let a = {x: 1, y: 2} Point
@@ -273,9 +288,13 @@ fn main() -> int:
   c ..x {50}
   if d.x == 1:
     acc += 7
+  var e = {x: 1, y: 2} Point
+  let moved = {p: e} shift
+  if e.x == 1 and moved.x == 99:
+    acc += 5
   return acc
 """), d / "out")
-  mustExit(d / "out" / "t", 17)
+  mustExit(d / "out" / "t", 22)
   mustContain(d / "out" / "t.nim", "= object")
   removeDir(d)
 

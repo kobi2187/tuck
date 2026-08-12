@@ -40,6 +40,42 @@ any of these things:
 | Correctness | Decision tables, transition graphs, invariant asserts |
 | Composition | Domain files, mixins, manager objects |
 
+### Prefer Removing the Vocabulary Over Checking the Usage
+
+The rule behind most of the table above, stated once so the rest of this spec
+does not have to re-derive it:
+
+> Every construct that can express a dangerous thing costs a permanent
+> checker in the compiler and a permanent rule in the reader's head. Tuck
+> spends its simplicity budget by **not being able to say the dangerous
+> thing** — so there is nothing left to check.
+
+Worked through:
+
+- **No `ref` in Tier 1**, so no two names ever denote one record. A data race
+  needs two references to one mutable location; the sentence cannot be
+  formed. That is why Tuck has no `Send`/`Sync`, no borrow checker, no
+  lifetimes — not because those problems were solved, but because they were
+  never expressible.
+- **Messages are copied** into a fixed-size mailbox (§9.1), so nothing
+  crosses an actor boundary by reference and "two actors sharing state" is
+  likewise unsayable.
+- **No heap in Tier 1**, so use-after-free has no vocabulary either, and
+  neither does the machinery that would otherwise be needed to prevent it.
+- **Parameters are values** (§7.1), so a callee cannot write through to its
+  caller — the last way a name could reach memory it does not own.
+
+The trade is deliberate and it is not free: things this vocabulary cannot say
+must be said another way, which is what actors (§9.1) and the one `registry`
+(Part 10) are for. Shared mutable state is not forbidden, it is *named* — it
+lives in constructs that own it, rather than being available implicitly on
+every type.
+
+The corollary for anyone extending this language: when a proposal needs a new
+static analysis to be safe, that is the signal to ask what would have to be
+*removed* instead. A checker that can be deleted along with the construct it
+guards is a better outcome than a checker that must be maintained forever.
+
 ---
 
 ## Part 2: The Universal Shape
@@ -833,6 +869,17 @@ object PodcastPlayer:
     self ..loadEpisode ..startAudio
 ```
 
+**`self` is the exception to the parameter rule.** An ordinary parameter is
+an immutable binding of a value and cannot be mutated with `..` (§7.1) —
+because it belongs to the caller. A member fn's `self` is different in kind:
+it is the object's **own** state, which is the entire job of a manager
+object, so `self ..loadEpisode` is legal and stays legal.
+
+The distinction is ownership, not syntax. A plain `fn` whose first parameter
+merely happens to be *named* `self` gets no exemption — it is still someone
+else's value, and mutating it is still an error. The same reasoning makes an
+actor handler's fields mutable (§9.1).
+
 ### 5.2 Interfaces
 
 A contract: the set of functions a type promises to provide. The body is the
@@ -1043,6 +1090,47 @@ Tuck is one language everywhere, with strict boundaries:
   SIMD, `when` conditionals, bump and arena allocators.
 - **Tier 3 (Systems):** Explicitly Nim. C FFI, MMIO, raw pointers, atomics. A
   concrete substrate, not a vague escape hatch.
+
+**A parameter is an immutable binding of a value.** A function may read its
+parameter and may copy it; it can never write through one to the caller's
+record. `..` on a parameter is a compile error (`TK-TY15`) naming the fix:
+
+```tuck
+fn afterFee({acct: Account, fee: int}) -> Account:
+  var s = acct              # copy first...
+  s ..balance {acct.balance - fee}
+  return s                  # ...and hand the copy back
+```
+
+Without this rule a function that reads like a question ("what *would* the
+balance be after a fee?") could answer it by changing the caller's account —
+and since the caller has no syntax marking the call as mutating, nothing at
+the call site would hint that it happened. That is the bug class Tier 1
+exists to remove, and it is the last way a name could reach memory it does
+not own (see "Prefer Removing the Vocabulary", Part 1).
+
+Two exceptions, both mutating state the callee **owns** rather than a
+caller's value: an object member mutating its own `self` (§5.1), and an actor
+handler mutating its own fields (§9.1).
+
+**Passing is free.** Value semantics costs nothing to pass at any size: both
+backends hand a record over without copying it — Nim passes a large object by
+hidden reference, Odin by value — and the guarantee above is what makes that
+safe. The copy in `var s = acct` is usually deleted too, since the optimizer
+can see the original is dead. Measured on this tree, value semantics beats
+reference semantics on construction (6–10x, no allocator), assignment (~8x,
+no refcount), and dense iteration (~2.4x, contiguous rather than
+pointer-chasing); the one case it loses is reading a single field from each
+of many large records, which is an array-of-structs *layout* problem that
+would cost the same in C. See `benches/bench_value_vs_ref.nim` and
+`benches/SCORES.md`.
+
+**Pointers cross into Tier 3 and never come back.** A pointer-kind value
+(`cstring`, an opaque C handle, `Buf`) may be produced and consumed at an
+extern boundary, but never stored in a record, returned into Tier 1, or held
+past the expression that obtained it (`TK-TY07`, `TK-TY08`). This is not
+merely an FFI convention: it is what keeps the no-aliasing guarantee true at
+the one place the language cannot see the other side of.
 
 ### 7.2 Static Memory Pool
 

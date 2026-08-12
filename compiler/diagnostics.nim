@@ -70,6 +70,7 @@ type
     dcTyNotExhaustive = "TK-TY12"       ## a match leaves a variant unhandled
     dcTyImmutable = "TK-TY13"           ## assigning to something declared `let`
     dcTyBadIndex = "TK-TY14"            ## an index is not an int, or not one index
+    dcTyParamMutation = "TK-TY15"       ## `..` on a parameter (a value, not a var)
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -239,6 +240,15 @@ proc valueFitExplanation(d: DiagCode): string =
   of dcTyImmutable:
     "This name was declared with `let`, so it cannot be reassigned. Fix: use " &
     "`var` if it really does change, or bind a new name for the new value."
+  of dcTyParamMutation:
+    "A parameter is a VALUE the caller handed you, not a variable you own, " &
+    "so `..` cannot mutate it — otherwise a function that looks like it only " &
+    "reads (`{acct, fee} afterFee`) could quietly change the caller's record. " &
+    "Fix: copy it first and return the copy — `var s = <param>`, chain on " &
+    "`s`, `return s` — which is what every mutator in the corpus already " &
+    "does. An object member mutating its own `self`, or an actor mutating " &
+    "its own fields, is a different thing and stays legal: that is state the " &
+    "callee owns."
   of dcTyBadIndex:
     "An index must be a single `int`. Fix: check the value's type, and pass " &
     "exactly one index — `xs[i]`, not `xs[i, j]`."

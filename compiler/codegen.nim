@@ -1205,14 +1205,26 @@ proc genFnDecl(ctx: var CodegenCtx, d: Decl): string =
 
     var params: seq[string]
     for p in d.fnParams:
-      # the checker binds every param isVar:true (`self ..mutate` is fn-
-      # uniform, not member-fn-special) — value-type records need `var` to
-      # actually allow that mutation in Nim (a plain object, unlike the old
-      # `ref object`, can't be field-mutated through an immutable param)
-      let isMutParam = p.typ != nil and p.typ.kind == tkNamed and
-                        ctx.isRecordTypeFast(p.typ.name)
-      let typeStr = genType(p.typ)
-      params.add(p.name & ": " & (if isMutParam: "var " & typeStr else: typeStr))
+      # PARAMS ARE NEVER `var`. In Nim, `var` on a parameter is not write
+      # permission — it is a by-reference pass — so emitting it for every
+      # record param meant a callee could write through to the CALLER's
+      # record, which spec §7.1 says is impossible. A fn that read like a
+      # preview (`{acct, fee} afterFee`) silently withdrew the money.
+      #
+      # Dropping it is free: verified in the emitted C, a `var Big` param and
+      # a plain `Big` param have byte-identical signatures (both `Big*`) —
+      # Nim already passes a large object by hidden reference. Only the write
+      # permission goes away, which is the whole point.
+      #
+      # A mutator does not need it either: it returns the updated record and
+      # the caller assigns it back (`server = withDefaults(server)`), which is
+      # what codegen_odin.nim's fnParamList has always relied on — that
+      # backend never emitted a pointer here, and rejected the same programs
+      # Nim silently accepted.
+      #
+      # The exception is `self` in an object member, emitted by genMemberFn
+      # below: that mutates state the object OWNS (spec §5.1).
+      params.add(p.name & ": " & genType(p.typ))
     let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
     # Generic fns pass their type params straight through — Nim monomorphizes
     let genericStr = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]" else: ""

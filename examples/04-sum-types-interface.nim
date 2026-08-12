@@ -33,16 +33,16 @@ type tuck_PodcastApp* = object
 
 # interface Storable: no satisfying types
 
-proc tuck_loadEpisode*(self: var tuck_PodcastApp, episode: var tuck_Episode): tuck_PodcastApp =
+proc tuck_loadEpisode*(self: tuck_PodcastApp, episode: tuck_Episode): tuck_PodcastApp =
   return self
 
-proc tuck_startAudio*(self: var tuck_PodcastApp): void =
+proc tuck_startAudio*(self: tuck_PodcastApp): void =
   return
 
 proc tuck_setMany*(self: var tuck_PodcastApp, pairs: seq[tuck_Pair]): TuckResult[tuple[]] =
   discard
 
-proc play*(self: var tuck_PodcastApp, episode: var tuck_Episode): void =
+proc play*(self: var tuck_PodcastApp, episode: tuck_Episode): void =
   var tuckChain1 = self
   tuckChain1 = tuck_loadEpisode(tuckChain1, episode)
   tuck_startAudio(tuckChain1)

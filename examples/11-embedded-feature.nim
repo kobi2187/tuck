@@ -42,7 +42,7 @@ registerMMIO(tuck_RCC_CR, 0x40021000):
   HSIRDY: bit(1, ReadOnly)
   HSITRIM: bit(3..7, ReadWrite)
 
-proc tuck_processISR*(event: var tuck_SensorEvent): void =
+proc tuck_processISR*(event: tuck_SensorEvent): void =
   discard
 
 var tuck_UartBuffer* = ObjectPool[array[64, uint8], 8]()

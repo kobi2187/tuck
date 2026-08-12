@@ -12,10 +12,10 @@ type tuck_PlayerPrefs* = object
 proc tuck_describe*(title: string, volume: int): string =
   return title
 
-proc tuck_header*(episode: var tuck_Episode, n: int): string =
+proc tuck_header*(episode: tuck_Episode, n: int): string =
   return episode.title
 
-proc tuck_play*(episode: var tuck_Episode, prefs: var tuck_PlayerPrefs): string =
+proc tuck_play*(episode: tuck_Episode, prefs: tuck_PlayerPrefs): string =
   var ctx = (title: episode.title, duration: episode.duration, playSpeed: episode.playSpeed, volume: prefs.volume, speed: prefs.speed)
   return tuck_describe(ctx.title, ctx.volume)
 

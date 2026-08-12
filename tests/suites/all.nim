@@ -32,6 +32,7 @@ import odin_backend
 import optimize
 import pointer_containment
 import typecheck
+import value_semantics
 import when_target
 
 type Entry = tuple[name: string, body: SuiteProc, quick: bool]
@@ -65,6 +66,7 @@ let registry: seq[Entry] = @[
   ("optimize",            SuiteProc(optimize.run),            false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
   ("typecheck",           SuiteProc(typecheck.run),           true),
+  ("value_semantics",     SuiteProc(value_semantics.run),     false),
   ("when_target",         SuiteProc(when_target.run),         false),
 ]
 
