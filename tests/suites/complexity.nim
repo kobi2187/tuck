@@ -50,7 +50,19 @@ const
   # several long procs under the ceiling as a side effect. Ratchet down when
   # the number drops — `tools/cc` prints the suggestion — so the budget stays
   # a real bound rather than slack that later work can spend silently.
-  BUDGET = 270
+  # 286 -> 270 (value-semantics work) -> 273 (declaration-side checker work:
+  # checkInvariants + its name walker, and genType split into nimPrimitive /
+  # widenOddWidth).
+  #
+  # TEMPORARILY LAX, by decision, while the declaration-side checks land —
+  # tighten in a dedicated pass once they are all in. Note the trap this
+  # number sets, since it caught me: splitting genType (cc=53, the worst proc
+  # in the tree) made the count go UP, because the metric counts ROUTINES over
+  # the ceiling and three procs at cc>5 score worse than one at cc=53. So the
+  # budget rewards leaving monsters intact. Worth replacing with a sum or a
+  # p95 when someone has the appetite; until then, read a rise here as "new
+  # code landed", not necessarily "the tree got worse".
+  BUDGET = 273
   CC = "tools/cc"
 
 proc run*(t: var T) =

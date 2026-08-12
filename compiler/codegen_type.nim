@@ -17,55 +17,65 @@
 # language, not incidental duplication.
 import ast, strutils
 
+proc widenOddWidth(name: string): string =
+  ## Odd bit widths from decision tables (u2, u12, ...) round up to a real
+  ## int. Anything that is not `u<digits>` / `i<digits>` is a user type name
+  ## and rides through untouched.
+  if name.len >= 2 and name[0] in {'u', 'i'} and
+     name[1..^1].allCharsInSet({'0'..'9'}):
+    let bits = parseInt(name[1..^1])
+    let base = if name[0] == 'u': "uint" else: "int"
+    if bits <= 8: base & "8"
+    elif bits <= 16: base & "16"
+    elif bits <= 32: base & "32"
+    else: base & "64"
+  else: name
+
+proc nimPrimitive(name: string): string =
+  ## Tuck's primitive names to Nim's. A pure lookup, split out of genType so
+  ## the dispatch there is about type SHAPES (named, tuple, app, record...)
+  ## rather than being dominated by one long table of scalar names.
+  case name
+  of "void": "void"
+  of "u8": "uint8"
+  of "u16": "uint16"
+  of "u32": "uint32"
+  of "u64": "uint64"
+  of "i8": "int8"
+  of "i16": "int16"
+  of "i32": "int32"
+  of "i64": "int64"
+  of "int": "int"
+  of "string", "str": "string"
+  # C's char* — the FFI boundary type. Distinct from `string`, which is a
+  # GC'd length-prefixed object Nim will not hand to a C function.
+  of "cstring": "cstring"
+  # C's uint8_t* — cstring's byte-array sibling, for the pointer+length shape
+  # every buffer syscall wants (memcpy, read, send). Seq[u8] cannot play this
+  # role: it is a GC'd object with a length header, and passing one to C hands
+  # over the header, not the bytes.
+  #
+  # Builtin rather than a user-declared `type Buf = {}` inside an extern
+  # block: that route emits {.importc: "Buf", header: "...".}, claiming a C
+  # typedef named Buf exists in that header. For a real opaque handle
+  # (`typedef struct Counter Counter;`) that claim is true; for an anonymous
+  # byte pointer there is no such name, and it only survives because
+  # incompleteStruct means Nim never asks C to resolve it.
+  of "Buf": "ptr UncheckedArray[uint8]"
+  of "bool": "bool"
+  of "float": "float"
+  of "f32": "float32"
+  of "f64": "float64"
+  of "usize": "uint"
+  of "Seq": "seq"
+  of "Array": "array"
+  of "fn": "auto"  # fn slot: generic param — Nim monomorphizes per bake
+  else: widenOddWidth(name)
+
 proc genType*(t: Type): string =
   if t == nil: return "void"
   case t.kind
-  of tkNamed:
-    case t.name
-    of "void": "void"
-    of "u8": "uint8"
-    of "u16": "uint16"
-    of "u32": "uint32"
-    of "u64": "uint64"
-    of "i8": "int8"
-    of "i16": "int16"
-    of "i32": "int32"
-    of "i64": "int64"
-    of "int": "int"
-    of "string", "str": "string"
-    # C's char* — the FFI boundary type. Distinct from `string`, which is a
-    # GC'd length-prefixed object Nim will not hand to a C function.
-    of "cstring": "cstring"
-    # C's uint8_t* — cstring's byte-array sibling, for the pointer+length shape
-    # every buffer syscall wants (memcpy, read, send). Seq[u8] cannot play this
-    # role: it is a GC'd object with a length header, and passing one to C hands
-    # over the header, not the bytes.
-    #
-    # Builtin rather than a user-declared `type Buf = {}` inside an extern
-    # block: that route emits {.importc: "Buf", header: "...".}, claiming a C
-    # typedef named Buf exists in that header. For a real opaque handle
-    # (`typedef struct Counter Counter;`) that claim is true; for an anonymous
-    # byte pointer there is no such name, and it only survives because
-    # incompleteStruct means Nim never asks C to resolve it.
-    of "Buf": "ptr UncheckedArray[uint8]"
-    of "bool": "bool"
-    of "float": "float"
-    of "f32": "float32"
-    of "f64": "float64"
-    of "usize": "uint"
-    of "Seq": "seq"
-    of "Array": "array"
-    of "fn": "auto"  # fn slot: generic param — Nim monomorphizes per bake
-    else:
-      # Odd bit widths from decision tables (u2, u12, ...) round up to a real int
-      if t.name.len >= 2 and t.name[0] in {'u', 'i'} and t.name[1..^1].allCharsInSet({'0'..'9'}):
-        let bits = parseInt(t.name[1..^1])
-        let base = if t.name[0] == 'u': "uint" else: "int"
-        if bits <= 8: base & "8"
-        elif bits <= 16: base & "16"
-        elif bits <= 32: base & "32"
-        else: base & "64"
-      else: t.name
+  of tkNamed: nimPrimitive(t.name)
   of tkTuple:
     var parts: seq[string]
     for e in t.elems: parts.add(genType(e))

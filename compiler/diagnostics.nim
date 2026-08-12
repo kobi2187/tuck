@@ -88,6 +88,26 @@ type
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
     dcSmOther = "TK-SM01"               ## a semantic rule with no code of its own
 
+    # --- AC / IV / RG / RE: the DECLARATION side ---------------------------
+    # Call sites were well checked long before declarations were: `send`,
+    # task results, decision rows and transitions all validate, while the
+    # things they refer TO — an actor's queue, an invariant's predicate, the
+    # registry, a register's bit layout — were walked by nobody. Everything
+    # here is a rule the spec already states; the codes are what makes the
+    # rejection Tuck's rather than the backend's.
+    dcAcQueueSize = "TK-AC01"           ## an actor's [queue: N] is not a positive count
+    dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
+    dcIvNotBool = "TK-IV02"             ## an invariant predicate is not a bool
+    dcRgUnknownEvent = "TK-RG01"        ## raise/handle names no declared event
+    dcRgPayload = "TK-RG02"             ## an event payload does not match its variant
+    dcRgNoHandler = "TK-RG03"           ## a declared event nothing handles
+    dcRgSelfRaise = "TK-RG04"           ## a handler raises the event it handles
+    dcRgDuplicate = "TK-RG05"           ## more than one registry in a program
+    dcReReadOnly = "TK-RE01"            ## writing a field declared [read]
+    dcReWriteOnly = "TK-RE02"           ## reading a field declared [write]
+    dcReBitRange = "TK-RE03"            ## a bit index outside the register's width
+    dcReOverlap = "TK-RE04"             ## two fields claim the same bit
+
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
 site rather than in one sweep — a diagnostic that has not been assigned one
@@ -292,6 +312,59 @@ proc ruleExplanation(d: DiagCode): string =
   of dcSeConstruction:
     "A sealed type is constructed only through its declared transitions."
   of dcSmOther: "A semantic rule with no code of its own yet."
+  of dcAcQueueSize:
+    "An actor's `[queue: N]` is the exact capacity of its mailbox ring, so N " &
+    "must be a positive whole number. Zero or negative is not a smaller " &
+    "mailbox, it is a broken one — the emitted ring divides by its capacity, " &
+    "so the program builds and then dies on the first send. Fix: give a real " &
+    "count, or drop the attribute to take the default."
+  of dcIvUnknownField:
+    "An `invariant:` predicate may only name fields of the type it is " &
+    "declared in — it runs wherever a value of that type is produced, where " &
+    "nothing else is in scope. Fix: check the spelling, or add the field."
+  of dcIvNotBool:
+    "An `invariant:` predicate has to be a yes/no about the value, so it " &
+    "must be a `bool`. Fix: compare something — `value <= 100` rather than " &
+    "`value + 1`. Tuck has no truthiness, so a number is never a condition."
+  of dcRgUnknownEvent:
+    "`raise` and `on` may only name variants the `registry` declares, so the " &
+    "whole event surface stays readable from the declaration plus its " &
+    "handlers. Fix: check the spelling, or add the variant to the registry."
+  of dcRgPayload:
+    "An event's payload has to match the fields its registry variant " &
+    "declares. Fix: pass exactly those fields — the variant's declaration is " &
+    "the contract every raise site is checked against."
+  of dcRgNoHandler:
+    "Every declared event needs at least one handler: an event nothing " &
+    "listens to is a signal that silently goes nowhere, which is the failure " &
+    "the one-registry design exists to prevent. Fix: add an `on " &
+    "<Registry>.<Event>` handler, or remove the variant."
+  of dcRgSelfRaise:
+    "A handler may not raise the event it handles — that is an infinite " &
+    "loop, and raising is synchronous, so it is an immediate one. Fix: raise " &
+    "a different event, or do the work directly."
+  of dcRgDuplicate:
+    "One `registry` per program (spec Part 10). The point is that the entire " &
+    "event surface is readable in one place; two registries means two places " &
+    "and no guarantee they agree. Fix: merge them into one."
+  of dcReReadOnly:
+    "This register field is declared `[read]`, so writing it is a compile " &
+    "error — on real hardware the write is either ignored or has a side " &
+    "effect nobody wrote down. Fix: check the datasheet; if it really is " &
+    "writable, declare it `[read, write]`."
+  of dcReWriteOnly:
+    "This register field is declared `[write]`, so reading it is a compile " &
+    "error — a write-only field reads back as something undefined. Fix: keep " &
+    "the value you wrote in a variable, or declare the field `[read, write]` " &
+    "if the hardware supports it."
+  of dcReBitRange:
+    "A register field's bits must fit inside the register's width. Fix: " &
+    "check the bit numbers against the datasheet — an index past the end " &
+    "silently reads or writes nothing on hardware."
+  of dcReOverlap:
+    "Two fields of one register claim the same bit, so writing one would " &
+    "corrupt the other. Fix: check the bit ranges — this is almost always a " &
+    "transcription slip from the datasheet."
   else: ""
 
 proc explanationOf*(d: DiagCode): string =

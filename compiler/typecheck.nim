@@ -2478,8 +2478,93 @@ proc checkHandler(tc: var TypeChecker, h: Decl) =
   tc.checkDecl(h)
   tc.popScope()
 
+proc checkInvariants(tc: var TypeChecker, d: Decl) =
+  ## spec 4.7: an `invariant:` predicate is a yes/no about a value of this
+  ## type, checked wherever one is produced. So it may name the type's OWN
+  ## fields and nothing else, and it must be a bool.
+  ##
+  ## Nothing checked either. codegen emits the predicate into a `validate`
+  ## proc with only the fields in scope, so a typo became a Nim error about
+  ## generated code ("candidates (edit distance...): 'tuckYield'"), and a
+  ## non-boolean predicate became `assert(value + 1, ...)` — a type error in
+  ## the emitted file, naming a line the user never wrote.
+  if d.typeBody == nil or d.typeBody.kind != tkRecord: return
+  var hasInvariant = false
+  for member in d.typeMembers:
+    if member != nil and member.kind == dkExpr: hasInvariant = true
+  if not hasInvariant: return
+
+  var known: HashSet[string]
+  for f in d.typeBody.fields: known.incl(f.name)
+
+  proc failIfUnknownName(tc: var TypeChecker, e: Expr, owner: string) =
+    ## Every bare name in the predicate must be one of this type's fields.
+    ##
+    ## Checked on the NAMES rather than on the predicate's synthesized type,
+    ## because `nosuchfield <= 100` still synthesizes `bool` — a comparison
+    ## with an unknown operand is not itself unknown, so looking only at the
+    ## result would let exactly the typo case through.
+    if e == nil: return
+    case e.kind
+    of exkVar:
+      if e.name notin known and not tc.fnSigs.hasKey(e.name):
+        fail(dcIvUnknownField,
+             "invariant on '" & owner & "' names '" & e.name & "', which is " &
+             "not a field of it — an invariant may only mention this type's " &
+             "own fields, since that is all that is in scope where it runs",
+             e.span)
+    of exkBinary:
+      tc.failIfUnknownName(e.left, owner); tc.failIfUnknownName(e.right, owner)
+    of exkUnary: tc.failIfUnknownName(e.operand, owner)
+    of exkField: tc.failIfUnknownName(e.receiver, owner)
+    of exkCall:
+      for a in e.args: tc.failIfUnknownName(a, owner)
+    else: discard
+
+  tc.pushScope()
+  for f in d.typeBody.fields: tc.bindName(f.name, f.typ, false)
+  for member in d.typeMembers:
+    if member == nil or member.kind != dkExpr or member.expr == nil: continue
+    tc.failIfUnknownName(member.expr, d.name)
+    let t = tc.synthesize(member.expr)
+    if not (t.kind == tkNamed and t.name == "bool"):
+      fail(dcIvNotBool,
+           "invariant on '" & d.name & "' must be a bool, got " &
+           typeName(t) & " — an invariant is a yes/no about the value " &
+           "(`value <= 100`), not a computation", member.expr.span)
+  tc.popScope()
+
+proc checkActorQueue(d: Decl) =
+  ## `[queue: N]` is the mailbox ring's exact capacity, so N must be a
+  ## positive whole number.
+  ##
+  ## Nothing validated it, and the value rides to codegen as a STRING, so
+  ## `queue: 0` emitted `Mailbox[Msg, 0]` and the program built cleanly and
+  ## then died on the first send with a division by zero (the ring wraps with
+  ## `mod Cap`). `queue: -5` built too, and died with an index-out-of-bounds.
+  ## A declaration that cannot work should not reach a backend.
+  ##
+  ## An ABSENT attribute is fine — codegen_common.actorQueueSize defaults to
+  ## 8. This checks the value only when one was written.
+  for attr in d.attrs:
+    if attr.name != "queue": continue
+    var n = 0
+    try:
+      n = parseInt(attr.value.strip())
+    except ValueError:
+      fail(dcAcQueueSize,
+           "actor '" & d.name & "': queue size must be a whole number, got '" &
+           attr.value & "'", attr.span)
+    if n <= 0:
+      fail(dcAcQueueSize,
+           "actor '" & d.name & "': queue size must be at least 1, got " &
+           $n & " — the mailbox is a ring of exactly this many slots, so a " &
+           "zero or negative one cannot hold a message (it builds, then " &
+           "fails on the first send)", attr.span)
+
 proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   ## Handlers see the actor's fields.
+  checkActorQueue(d)
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
   for h in d.handlers: tc.checkHandler(h)
@@ -2498,7 +2583,9 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     for m in d.mixinMembers: tc.checkDecl(m)
   of dkActor: tc.checkActorDecl(d)
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
-  of dkType: checkTransitions(d)
+  of dkType:
+    checkTransitions(d)
+    tc.checkInvariants(d)
   of dkErrors:
     if d.errHandler != nil: tc.checkDecl(d.errHandler)
   else: discard
