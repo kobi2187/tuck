@@ -318,4 +318,57 @@ fn main() -> int:
 """
   t.okCheck "a well-formed register reads and writes normally"
 
+  # --- pools and arenas, §7.2 / §7.3 (TK-TY03, TK-ME01) --------------------
+  #
+  # Both exist so the footprint is STATIC, which makes the numbers part of the
+  # declaration's meaning rather than decoration. A pool over an undeclared
+  # type used to reach Nim as a spell suggestion about generated code.
+
+  t.src """
+pool P = NoSuchType [count: 4]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a pool over an undeclared element type is rejected", "TK-TY03"
+
+  t.src """
+arena A [size: 0]:
+  discard
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an arena of size 0 is rejected", "TK-ME01"
+
+  t.src """
+type Conn:
+  fd: int
+
+pool P = Conn [count: 4]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a pool over a declared record is accepted"
+
+  # A primitive element type is not in typeDecls (primitives are a closed set
+  # the backends know), so the rule keys on Capitalization — this case is why.
+  t.src """
+pool P = Array[64, u8] [count: 8]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a pool over a primitive array is accepted"
+
+  t.src """
+arena A [size: 2048]:
+  discard
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "an arena with a real size is accepted"
+
   t.finish()

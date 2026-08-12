@@ -21,6 +21,11 @@
 #   PO  policy       the `errors [policy: ...]` block is malformed
 #   SE  sealed       a sealed type constructed outside its transitions
 #   SM  semantic     everything else the checker rejects
+#   AC  actor        an actor declaration the runtime could not honour (9.1)
+#   ME  memory       a pool or arena whose size/count is not a real footprint
+#   IV  invariant    an `invariant:` predicate that cannot mean anything (4.7)
+#   RG  registry     the event registry's rules (Part 10)
+#   RE  register     a memory-mapped register's layout or access mode (8.1)
 #
 # NUMBERS ARE PERMANENT. Once a code appears in a release it names that
 # diagnostic forever. A diagnostic that is deleted RETIRES its number — the
@@ -96,6 +101,7 @@ type
     # here is a rule the spec already states; the codes are what makes the
     # rejection Tuck's rather than the backend's.
     dcAcQueueSize = "TK-AC01"           ## an actor's [queue: N] is not a positive count
+    dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
     dcIvNotBool = "TK-IV02"             ## an invariant predicate is not a bool
     dcRgUnknownEvent = "TK-RG01"        ## raise/handle names no declared event
@@ -312,6 +318,12 @@ proc ruleExplanation(d: DiagCode): string =
   of dcSeConstruction:
     "A sealed type is constructed only through its declared transitions."
   of dcSmOther: "A semantic rule with no code of its own yet."
+  of dcMeSizeCount:
+    "A `pool`'s `count` and an `arena`'s `size` ARE the allocation — the " &
+    "footprint is fixed at compile time, which is the entire point of both " &
+    "(spec 7.2, 7.3). So the number must be positive: zero or negative is " &
+    "not a smaller reservation, it is one that cannot hold anything. Fix: " &
+    "give a real count or size."
   of dcAcQueueSize:
     "An actor's `[queue: N]` is the exact capacity of its mailbox ring, so N " &
     "must be a positive whole number. Zero or negative is not a smaller " &

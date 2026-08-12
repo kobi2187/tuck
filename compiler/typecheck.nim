@@ -2628,6 +2628,49 @@ proc checkInvariants(tc: var TypeChecker, d: Decl) =
            "(`value <= 100`), not a computation", member.expr.span)
   tc.popScope()
 
+proc checkPoolDecl(tc: TypeChecker, d: Decl) =
+  ## spec 7.2: a pool is N slots of a real type, and `count` is required
+  ## precisely so the footprint is static. The parser already rejects a
+  ## missing or non-numeric count; what nothing checked was whether the
+  ## ELEMENT TYPE exists, so `pool P = NoSuchType [count: 4]` emitted an
+  ## ObjectPool over an undeclared name and failed in Nim with a spell
+  ## suggestion about generated code.
+  ##
+  ## Primitives and the builtin containers are not in typeDecls (they are a
+  ## closed set the backends know), so only a Capitalized name that resolves
+  ## nowhere is an error — the same rule declarations use everywhere else.
+  if d.poolElem == nil or d.poolElem.kind != tkNamed: return
+  let n = d.poolElem.name
+  if n.len == 0 or not n[0].isUpperAscii: return    # primitive: u8, int, ...
+  if tc.typeDecls.hasKey(n) or tc.objDecls.hasKey(n): return
+  if n in ["Seq", "Array", "Buf"]: return           # builtin containers
+  fail(dcTyUndeclared,
+       "pool '" & d.name & "': no type named '" & n &
+       "' — a pool holds slots of a declared type", d.span)
+
+proc checkArenaAttrs(d: Decl) =
+  ## spec 7.3: `arena A [size: N]` reserves N bytes up front, so N has to be
+  ## a positive count for the same reason an actor's queue does — the number
+  ## IS the allocation.
+  ##
+  ## An arena parses into a dkType carrying its attrs, which is why this runs
+  ## from the dkType arm rather than an arm of its own.
+  if d.typeBody == nil: return
+  for attr in d.typeBody.attrs:
+    if attr.name != "size": continue
+    var n = 0
+    try:
+      n = parseInt(attr.value.strip())
+    except ValueError:
+      fail(dcMeSizeCount,
+           "arena '" & d.name & "': size must be a whole number of bytes, " &
+           "got '" & attr.value & "'", attr.span)
+    if n <= 0:
+      fail(dcMeSizeCount,
+           "arena '" & d.name & "': size must be at least 1 byte, got " & $n &
+           " — the size IS the reservation, so a zero or negative one " &
+           "cannot hold anything", attr.span)
+
 proc checkActorQueue(d: Decl) =
   ## `[queue: N]` is the mailbox ring's exact capacity, so N must be a
   ## positive whole number.
@@ -2680,7 +2723,9 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   of dkType:
     checkTransitions(d)
     tc.checkInvariants(d)
+    checkArenaAttrs(d)          # an arena parses into a dkType (spec 7.3)
   of dkRegister: checkRegisterDecl(d)
+  of dkPool: tc.checkPoolDecl(d)
   of dkErrors:
     if d.errHandler != nil: tc.checkDecl(d.errHandler)
   else: discard

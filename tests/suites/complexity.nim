@@ -35,10 +35,10 @@ const
   CEILING = 64
   # History: 280 -> 286 (compiler/optimize.nim) -> 270 (value-semantics work
   # split the write checks out, which took several long procs under the
-  # ceiling) -> 279 (declaration-side checks: invariants, actor queues, the
-  # registry's five rules, registers' four).
+  # ceiling) -> 281 (declaration-side checks: invariants, actor queues, the
+  # registry's five rules, registers' four, pool/arena footprints).
   #
-  # TEMPORARILY LAX AT 279, by decision, while the declaration-side checker
+  # TEMPORARILY LAX AT 281, by decision, while the declaration-side checker
   # work lands; tighten in a dedicated pass once it is all in. `tools/cc`
   # prints "tighten --budget to N" whenever the real count is below this, so
   # the slack reports itself rather than drifting.
@@ -51,7 +51,7 @@ const
   # the opposite of what it is for. Splitting a hot proc is still the right
   # call — take the +N and say so here. Worth replacing the metric with a sum
   # or a p95 when someone has the appetite.
-  BUDGET = 279
+  BUDGET = 281
   CC = "tools/cc"
 
 proc run*(t: var T) =
