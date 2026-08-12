@@ -924,6 +924,14 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   result = tc.synthArms(e, trackedVar, trackedType)
   tc.checkExhaustive(e, tc.matchDomain(subjT, trackedType, errEnums))
 
+proc assignRoot*(e: Expr): Expr =
+  ## The variable a write ultimately lands on: `c` for `c`, `c.n`, or
+  ## `c.inner.n`. Indexing is deliberately NOT followed — `xs[i]` writes
+  ## through a collection, which is its own question.
+  result = e
+  while result != nil and result.kind == exkField and result.receiver != nil:
+    result = result.receiver
+
 proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
   ## Spec 2.3: `..` mutation only on var bindings — and NEVER on a parameter,
   ## which is a value the caller owns (spec §7.1).
@@ -932,25 +940,37 @@ proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
   ## a `var`, whereas a parameter can never become one — you copy it. Telling
   ## a user to "use 'var'" on a parameter sends them somewhere that does not
   ## exist.
-  if e.base == nil or e.base.kind != exkVar: return
+  ##
+  ## The base may be a FIELD PATH, not just a name: `o.i ..n {9}` mutates
+  ## through `o` just as surely as `o ..n {9}` does, so this follows the chain
+  ## to its root binding rather than bailing on anything that is not a bare
+  ## name.
+  if e.base == nil: return
+  let base = assignRoot(e.base)
+  if base == nil or base.kind != exkVar: return
   var hasMutation = false
   for step in e.steps:
     if step.op == coDotDot: hasMutation = true
   if not hasMutation: return
-  let (found, b) = tc.lookup(e.base.name)
+  let (found, b) = tc.lookup(base.name)
   if not found: return
+  let whole = base.id == e.base.id     # `c ..n` vs `c.inner ..n`
   if b.isParam:
     # One line: `fail` appends "at line L:C", so a multi-line fix sketch would
     # read with the location dangling off the end of it.
     fail(dcTyParamMutation,
-         "cannot mutate parameter '" & e.base.name & "' with '..' — a " &
-         "parameter is a value the caller owns, not a var. Fix: copy it " &
-         "first (`var s = " & e.base.name & "`), chain on the copy, and " &
-         "return it", e.span)
+         "cannot mutate " &
+         (if whole: "parameter '" & base.name & "'"
+          else: "a field of parameter '" & base.name & "'") &
+         " with '..' — a parameter is a value the caller owns, not a var. " &
+         "Fix: copy it first (`var s = " & base.name & "`), chain on the " &
+         "copy, and return it", e.span)
   if not b.isVar:
     fail(dcTyImmutable,
-         "cannot mutate '" & e.base.name &
-         "' with '..' — it was declared with 'let'; use 'var'", e.span)
+         "cannot mutate " &
+         (if whole: "'" & base.name & "'"
+          else: "a field of '" & base.name & "'") &
+         " with '..' — it was declared with 'let'; use 'var'", e.span)
 
 proc checkFieldSet(tc: var TypeChecker, step: ChainStep, f: FieldDef,
                    recvT: Type) =
@@ -1798,6 +1818,39 @@ proc failIfTargetUnbound(tc: var TypeChecker, e: Expr) =
     fail("Type Error: cannot assign to '" & e.target.name &
          "' — no variable, parameter or field by that name is in scope", e.span)
 
+proc failIfTargetImmutable(tc: var TypeChecker, e: Expr) =
+  ## An assignment may not write through a parameter or a `let`, whether it
+  ## names the binding itself (`c = ...`), one of its fields (`c.n = ...`), or
+  ## a nested field (`c.inner.n = ...`). `+=` and friends desugar to `x = x +
+  ## v` in the parser, so they arrive here too.
+  ##
+  ## WHY THIS IS SEPARATE FROM failIfMutatingLet: that one guards `..`, which
+  ## is only one of the doors. This is the other, and it was unguarded — both
+  ## `c.n = 9` on a parameter and `c = ...` on a `let` reached the backend,
+  ## where NIM rejected them with a message naming generated code the user
+  ## never wrote ("'c.n' cannot be assigned to"). A rejection Nim makes is a
+  ## rejection Tuck should make first, with a code the user can look up.
+  if e.target == nil: return
+  let root = assignRoot(e.target)
+  if root == nil or root.kind != exkVar: return
+  let (found, b) = tc.lookup(root.name)
+  if not found: return
+  let whole = root.id == e.target.id   # `c = v` vs `c.n = v`
+  if b.isParam:
+    fail(dcTyParamMutation,
+         "cannot assign to " &
+         (if whole: "parameter '" & root.name & "'"
+          else: "a field of parameter '" & root.name & "'") &
+         " — a parameter is a value the caller owns, not a var. Fix: copy " &
+         "it first (`var s = " & root.name & "`), change the copy, and " &
+         "return it", e.span)
+  if not b.isVar:
+    fail(dcTyImmutable,
+         "cannot assign to " &
+         (if whole: "'" & root.name & "'"
+          else: "a field of '" & root.name & "'") &
+         " — it was declared with 'let'; use 'var'", e.span)
+
 proc synthAssignVal(tc: var TypeChecker, e: Expr, targetT: Type): Type =
   ## spec 4.4b: the RHS of a checked transition assignment may construct a
   ## non-initial sealed variant — the transition IS the legal path (static
@@ -1824,6 +1877,7 @@ proc checkTransition(tc: var TypeChecker, e: Expr, targetT: Type) =
 proc synthReassign(tc: var TypeChecker, e: Expr) =
   ## Assignment to an existing binding.
   tc.failIfTargetUnbound(e)
+  tc.failIfTargetImmutable(e)
   let targetT = tc.synthesize(e.target)
   let valT = tc.synthAssignVal(e, targetT)
   if not tc.compatible(valT, targetT):

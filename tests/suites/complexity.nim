@@ -45,7 +45,12 @@ const
   # WORSE, not better. Raise it deliberately with a reason, or reduce the
   # routine count (deduplicating optimize.nim's two identical AST walks took
   # it from 7 to 6) — do not split a proc just to move the number.
-  BUDGET = 286
+  # TIGHTENED 286 -> 270 by the value-semantics work: splitting the write
+  # checks out of the assignment path (failIfTargetImmutable, assignRoot) took
+  # several long procs under the ceiling as a side effect. Ratchet down when
+  # the number drops — `tools/cc` prints the suggestion — so the budget stays
+  # a real bound rather than slack that later work can spend silently.
+  BUDGET = 270
   CC = "tools/cc"
 
 proc run*(t: var T) =
