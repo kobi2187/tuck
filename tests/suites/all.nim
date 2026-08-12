@@ -11,6 +11,7 @@ import auto_alias
 import bare_variant
 import cli_smoke
 import complexity
+import declarations
 import diagnostics
 import duplicates
 import end_to_end
@@ -45,6 +46,7 @@ let registry: seq[Entry] = @[
   ("bare_variant",        SuiteProc(bare_variant.run),        true),
   ("cli_smoke",           SuiteProc(cli_smoke.run),           false),
   ("complexity",          SuiteProc(complexity.run),          true),
+  ("declarations",        SuiteProc(declarations.run),        false),
   ("diagnostics",         SuiteProc(diagnostics.run),         false),
   ("duplicates",          SuiteProc(duplicates.run),          true),
   ("end_to_end",          SuiteProc(end_to_end.run),          false),

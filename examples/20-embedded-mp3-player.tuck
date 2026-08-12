@@ -87,6 +87,21 @@ actor Decoder [queue: 8]:
 
 static_assert sizeof(Volume) == 1
 
-# 8. Main Application Controller
+# 8. Event handlers. EVERY declared event needs one (spec Part 10): an event
+# nothing listens to is a signal that silently goes nowhere, and the single
+# registry exists so the whole event surface reads from the declaration plus
+# these handlers. This example raised three events and handled none until the
+# checker started enforcing it.
+on SystemEvents.PlaybackStarted():
+  DAC_CR ..EN {true}
+
+on SystemEvents.PlaybackStopped():
+  DAC_CR ..EN {false}
+
+on SystemEvents.HardwareError({code: u8}):
+  let failed = code
+  DAC_CR ..EN {false}
+
+# 9. Main Application Controller
 fn main() -> void:
   discard

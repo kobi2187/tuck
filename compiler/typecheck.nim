@@ -114,7 +114,7 @@
 # isolation against a generated program, re-parsing between mutating phases so
 # the work is real.
 # ---------------------------------------------------------------------------
-import ast, semantics, lowering, tables, strutils, sets
+import ast, semantics, lowering, tables, strutils, sets, sequtils
 import resolution
 import ast_query
 import rewrite   # isLiteralPayload — recognize the wrap the pass introduced
@@ -632,10 +632,103 @@ proc typedFieldForm(tc: var TypeChecker, e: Expr, recvT: Type,
   if result == nil: result = tc.asInterfaceCall(e, recvT)
   if result == nil: result = tc.asFnByName(e, recvT)
 
+const RegisterWidth = 32
+  ## Bits in a memory-mapped register. Not declared per register today — the
+  ## targets §8.1 names (STM32, RP2040, Cortex-M generally) are 32-bit MMIO,
+  ## and the Nim backend's registerMMIO macro assumes it. If a register ever
+  ## needs another width, this becomes an attribute rather than a constant.
+
+proc regBits(f: FieldDef): tuple[lo, hi: int, ok: bool] =
+  ## The bit range a register field occupies. The parser keeps it in the
+  ## field's type NAME — "bit 0" or "bits 3..7" — so this is where that
+  ## spelling gets turned back into numbers.
+  if f.typ == nil or f.typ.kind != tkNamed: return (0, 0, false)
+  let spec = f.typ.name.replace("bits ", "").replace("bit ", "").strip()
+  try:
+    if ".." in spec:
+      let parts = spec.split("..")
+      if parts.len != 2: return (0, 0, false)
+      return (parseInt(parts[0].strip()), parseInt(parts[1].strip()), true)
+    let one = parseInt(spec)
+    return (one, one, true)
+  except ValueError:
+    return (0, 0, false)
+
+proc checkRegisterDecl(d: Decl) =
+  ## spec 8.1: a register's fields describe real hardware, so the layout has
+  ## to be one the hardware could have — bits inside the register, and no two
+  ## fields claiming the same bit.
+  ##
+  ## Neither was checked. `bit 99` emitted a mask no hardware has, and two
+  ## fields overlapping meant writing one silently corrupted the other, which
+  ## is exactly the datasheet-transcription slip a compiler should catch.
+  var owner: array[RegisterWidth, string]
+  for f in d.regFields:
+    let (lo, hi, ok) = regBits(f)
+    if not ok: continue        # malformed spec — the parser reports its own
+    if lo < 0 or hi >= RegisterWidth or lo > hi:
+      fail(dcReBitRange,
+           "register '" & d.name & "', field '" & f.name & "': bits " &
+           $lo & ".." & $hi & " do not fit a " & $RegisterWidth &
+           "-bit register (valid bits are 0.." & $(RegisterWidth - 1) & ")",
+           f.span)
+    for b in lo .. hi:
+      if owner[b] != "":
+        fail(dcReOverlap,
+             "register '" & d.name & "': fields '" & owner[b] & "' and '" &
+             f.name & "' both claim bit " & $b & " — writing one would " &
+             "corrupt the other", f.span)
+      owner[b] = f.name
+
+proc registerFieldAccess(m: Module, regName, fieldName: string):
+    tuple[found, canRead, canWrite: bool] =
+  ## What a register field permits. No `[read]`/`[write]` attribute at all
+  ## means both, which is how the corpus writes a plain field.
+  for d in m.decls:
+    if d == nil or d.kind != dkRegister or d.name != regName: continue
+    for f in d.regFields:
+      if f.name != fieldName: continue
+      var sawRead, sawWrite = false
+      for a in f.attrs:
+        if a.name == "read": sawRead = true
+        elif a.name == "write": sawWrite = true
+      if not sawRead and not sawWrite: return (true, true, true)
+      return (true, sawRead, sawWrite)
+  (false, false, false)
+
+proc failIfRegisterAccess(tc: var TypeChecker, e: Expr) =
+  ## spec 8.1: "Writing to a read-only field is a compile error. Reading a
+  ## write-only field is a compile error." Neither was one — a `[read]` field
+  ## took a write and emitted it, so the promise in the spec was prose.
+  ##
+  ## A register write is a chain step (`DAC_CR ..EN {false}`); a read is an
+  ## ordinary field access (`DAC_CR.EN`). Both are recognised by the RECEIVER
+  ## naming a `register` declaration, which is unambiguous: a register is a
+  ## declaration, not a value, so nothing else can be named there.
+  if e == nil: return
+  if e.kind == exkChain and e.base != nil and e.base.kind == exkVar:
+    for step in e.steps:
+      if step.op != coDotDot or step.target == nil: continue
+      let acc = registerFieldAccess(tc.module, e.base.name, step.target.name)
+      if acc.found and not acc.canWrite:
+        fail(dcReReadOnly,
+             "register field '" & e.base.name & "." & step.target.name &
+             "' is declared [read] — writing it is a compile error (spec " &
+             "§8.1). On hardware the write is ignored or has an undocumented " &
+             "side effect", step.span)
+  if e.kind == exkField and e.receiver != nil and e.receiver.kind == exkVar:
+    let acc = registerFieldAccess(tc.module, e.receiver.name, e.fieldName)
+    if acc.found and not acc.canRead:
+      fail(dcReWriteOnly,
+           "register field '" & e.receiver.name & "." & e.fieldName &
+           "' is declared [write] — reading it is a compile error (spec " &
+           "§8.1); a write-only field reads back undefined", e.span)
+
 proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   ## `x.name` is many things — a field read, a call, a variant construction, an
   ## interface dispatch. Try them in two groups: what the syntax alone can
   ## settle, then what needs the receiver's type.
+  tc.failIfRegisterAccess(e)   # spec 8.1: no reading a [write] field
   result = tc.syntacticFieldForm(e)
   if result != nil: return
   let rawT = tc.synthesize(e.receiver)
@@ -1044,6 +1137,7 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
   ## calls a mutator that returns the receiver's type.
   result = tc.synthesize(e.base)
   tc.failIfMutatingLet(e)
+  tc.failIfRegisterAccess(e)   # spec 8.1: no writing a [read] field
   let recvT = tc.resolve(result)
   let fields = tc.fieldsOf(recvT)
   for step in e.steps.mitems:
@@ -2586,6 +2680,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   of dkType:
     checkTransitions(d)
     tc.checkInvariants(d)
+  of dkRegister: checkRegisterDecl(d)
   of dkErrors:
     if d.errHandler != nil: tc.checkDecl(d.errHandler)
   else: discard
@@ -2891,6 +2986,139 @@ proc fnv16(name: string): uint16 =
     h = (h xor uint32(c)) * 16777619'u32
   uint16((h xor (h shr 16)) and 0xFFFF'u32)
 
+proc raisedEventsIn(e: Expr, into: var seq[tuple[reg, ev: string, sp: Span,
+                                                  payload: Expr]]) =
+  ## Every `Registry.raise Event {payload}` reachable from `e`.
+  ##
+  ## Matched on the PRE-LOWERING shape — a call whose callee is a call whose
+  ## single argument is a `.raise` field access — because lowering.nim
+  ## flattens exactly this into `raise_Registry_Event` and the checker runs
+  ## first. Keeping the two in step matters: if the parse shape changes, this
+  ## silently stops finding raises, so the suite asserts a bad raise is
+  ## rejected rather than asserting this walker's internals.
+  if e == nil: return
+  if e.kind == exkCall and e.callee != nil and e.callee.kind == exkCall and
+     e.callee.callee != nil and e.callee.callee.kind == exkVar and
+     e.callee.args.len == 1 and e.callee.args[0].kind == exkField:
+    let f = e.callee.args[0]
+    if f.fieldName == "raise" and f.receiver != nil and
+       f.receiver.kind == exkVar:
+      into.add((f.receiver.name, e.callee.callee.name, e.span,
+                if e.args.len == 1: e.args[0] else: nil))
+  case e.kind
+  of exkCall:
+    raisedEventsIn(e.callee, into)
+    for a in e.args: raisedEventsIn(a, into)
+  of exkBlock: (for s in e.stmts: raisedEventsIn(s, into))
+  of exkIf:
+    raisedEventsIn(e.cond, into); raisedEventsIn(e.thenBranch, into)
+    raisedEventsIn(e.elseBranch, into)
+  of exkMatch:
+    raisedEventsIn(e.subject, into)
+    for arm in e.arms: raisedEventsIn(arm.body, into)
+  of exkFor: (raisedEventsIn(e.iterable, into); raisedEventsIn(e.body, into))
+  of exkWhile: (raisedEventsIn(e.whileCond, into); raisedEventsIn(e.whileBody, into))
+  of exkAssign: (raisedEventsIn(e.target, into); raisedEventsIn(e.assignVal, into))
+  of exkReturn: raisedEventsIn(e.returnVal, into)
+  of exkStruct: (for f in e.fields: raisedEventsIn(f.value, into))
+  of exkChain:
+    raisedEventsIn(e.base, into)
+    for s in e.steps: raisedEventsIn(s.arg, into)
+  else: discard
+
+proc checkRegistry*(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## spec Part 10: the whole event surface is readable from the `registry`
+  ## declaration plus its `on Registry.Event` handlers. That promise needs
+  ## four rules, none of which were enforced — a raise naming a typo'd event
+  ## reached the backend and became a Nim "invalid indentation" error, and an
+  ## event nobody handled compiled to a signal that silently went nowhere.
+  var regs: Table[string, Decl]              # registry name -> decl
+  var variants: Table[string, VariantDef]    # "Reg.Event" -> variant
+  var firstReg = ""
+
+  for (_, _, m) in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkRegistry: continue
+      if firstReg != "" and d.name != firstReg:
+        fail(dcRgDuplicate,
+             "registry '" & d.name & "': a program declares ONE registry " &
+             "(spec Part 10) and '" & firstReg & "' is already declared — " &
+             "the point is that the whole event surface reads in one place",
+             d.span)
+      firstReg = d.name
+      regs[d.name] = d
+      for v in d.variants: variants[d.name & "." & v.name] = v
+  if regs.len == 0: return
+
+  # Handlers are parsed as fns named `Registry.Event`.
+  var handled: HashSet[string]
+  var handlerOf = initTable[string, Decl]()
+  for (_, _, m) in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkFn or "." notin d.name: continue
+      let parts = d.name.split('.')
+      if parts.len != 2 or parts[0] notin regs: continue
+      if d.name notin variants:
+        fail(dcRgUnknownEvent,
+             "no event '" & parts[1] & "' in registry '" & parts[0] &
+             "' — `on` may only handle variants the registry declares",
+             d.span)
+      handled.incl(d.name)
+      handlerOf[d.name] = d
+
+  # Every declared event needs a handler, or it is a signal going nowhere.
+  for key, v in variants:
+    if key notin handled:
+      fail(dcRgNoHandler,
+           "event '" & key & "' has no handler — every declared event needs " &
+           "at least one `on " & key & "(...)`, or remove the variant",
+           v.span)
+
+  # Raise sites: the event must exist, its payload must match, and a handler
+  # may not raise the event it handles (an immediate infinite loop, since
+  # raising is synchronous).
+  for (_, _, m) in mods:
+    for d in m.allFns():
+      var raises: seq[tuple[reg, ev: string, sp: Span, payload: Expr]]
+      raisedEventsIn(d.fnBody, raises)
+      for r in raises:
+        if r.reg notin regs: continue          # not a registry raise at all
+        let key = r.reg & "." & r.ev
+        if key notin variants:
+          fail(dcRgUnknownEvent,
+               "registry '" & r.reg & "' declares no event '" & r.ev &
+               "' — `raise` may only name variants the registry declares",
+               r.sp)
+        if d.name == key:
+          fail(dcRgSelfRaise,
+               "handler for '" & key & "' raises the event it handles — " &
+               "raising is synchronous, so this is an immediate infinite " &
+               "loop", r.sp)
+        # Payload fields must be exactly the variant's.
+        let want = variants[key].fields
+        if r.payload == nil or r.payload.kind != exkStruct:
+          if want.len > 0:
+            fail(dcRgPayload,
+                 "event '" & key & "' carries a payload (" &
+                 want.mapIt(it.name).join(", ") & "), but none was given",
+                 r.sp)
+          continue
+        var given: HashSet[string]
+        for f in r.payload.fields: given.incl(f.name)
+        for w in want:
+          if w.name notin given:
+            fail(dcRgPayload,
+                 "event '" & key & "' is missing payload field '" & w.name &
+                 "' — the registry variant's declaration is the contract",
+                 r.sp)
+        for f in r.payload.fields:
+          if not want.anyIt(it.name == f.name):
+            fail(dcRgPayload,
+                 "event '" & key & "' has no payload field '" & f.name &
+                 "' — the registry declares " &
+                 (if want.len == 0: "no payload"
+                  else: want.mapIt(it.name).join(", ")), r.sp)
+
 proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
   ## Every declared error id ("module/Enum.Variant") must hash uniquely
   ## across the whole program. The forward table is built here; a collision
@@ -3004,6 +3232,7 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
   ## is checked against what its imports export.
   resetResolution()  # one semantic layer per program
   checkErrCodeCollisions(mods)
+  checkRegistry(mods)
   let sigs = collectProgramSigs(mods)
   for (name, path, m) in mods:
     let scope = importScopeFor(sigs, preSigs, name)

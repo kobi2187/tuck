@@ -10,13 +10,14 @@ type tuck_AppEvents* = ref object
 var latesttuck_AppEvents*: tuck_AppEvents
 
 proc tuck_AppEvents_SensorFailure*(port: uint8, reason: string): void
+proc tuck_AppEvents_LowMemory*(remaining: uint32): void
 proc raise_tuck_AppEvents_SensorFailure*(port: uint8, reason: string) =
   latesttuck_AppEvents = tuck_AppEvents(kind: SensorFailure, port: port, reason: reason)
   tuck_AppEvents_SensorFailure(port, reason)
 
 proc raise_tuck_AppEvents_LowMemory*(remaining: uint32) =
   latesttuck_AppEvents = tuck_AppEvents(kind: LowMemory, remaining: remaining)
-  discard
+  tuck_AppEvents_LowMemory(remaining)
 
 
 proc tuck_triggerEvent*(): void =
@@ -25,5 +26,8 @@ proc tuck_triggerEvent*(): void =
 proc tuck_AppEvents_SensorFailure*(port: uint8, reason: string): void =
   var x = port
   var y = reason
+
+proc tuck_AppEvents_LowMemory*(remaining: uint32): void =
+  var left = remaining
 
 static: assert((1 == 1))

@@ -33,36 +33,25 @@ import ../harness
 
 const
   CEILING = 64
-  # RAISED 280 -> 286 when compiler/optimize.nim landed: six routines, all of
-  # them either a kind-dispatch `case` (mentionsName, rewriteChains) or a flat
-  # run of guard clauses (builderSteps, which is a refusal list — every `if
-  # ... return @[]` is one shape the pass declines to touch). Both are the
-  # shape this codebase deliberately keeps whole rather than splitting; see
-  # codegen.nim's "LENGTH IS NOT THE PROBLEM, NESTING IS".
+  # History: 280 -> 286 (compiler/optimize.nim) -> 270 (value-semantics work
+  # split the write checks out, which took several long procs under the
+  # ceiling) -> 279 (declaration-side checks: invariants, actor queues, the
+  # registry's five rules, registers' four).
   #
-  # Note the metric counts ROUTINES OVER THE CEILING, not total complexity, so
-  # splitting a cc=39 guard run into three cc=13 helpers makes this number
-  # WORSE, not better. Raise it deliberately with a reason, or reduce the
-  # routine count (deduplicating optimize.nim's two identical AST walks took
-  # it from 7 to 6) — do not split a proc just to move the number.
-  # TIGHTENED 286 -> 270 by the value-semantics work: splitting the write
-  # checks out of the assignment path (failIfTargetImmutable, assignRoot) took
-  # several long procs under the ceiling as a side effect. Ratchet down when
-  # the number drops — `tools/cc` prints the suggestion — so the budget stays
-  # a real bound rather than slack that later work can spend silently.
-  # 286 -> 270 (value-semantics work) -> 273 (declaration-side checker work:
-  # checkInvariants + its name walker, and genType split into nimPrimitive /
-  # widenOddWidth).
+  # TEMPORARILY LAX AT 279, by decision, while the declaration-side checker
+  # work lands; tighten in a dedicated pass once it is all in. `tools/cc`
+  # prints "tighten --budget to N" whenever the real count is below this, so
+  # the slack reports itself rather than drifting.
   #
-  # TEMPORARILY LAX, by decision, while the declaration-side checks land —
-  # tighten in a dedicated pass once they are all in. Note the trap this
-  # number sets, since it caught me: splitting genType (cc=53, the worst proc
-  # in the tree) made the count go UP, because the metric counts ROUTINES over
-  # the ceiling and three procs at cc>5 score worse than one at cc=53. So the
-  # budget rewards leaving monsters intact. Worth replacing with a sum or a
-  # p95 when someone has the appetite; until then, read a rise here as "new
-  # code landed", not necessarily "the tree got worse".
-  BUDGET = 273
+  # THE TRAP THIS NUMBER SETS, written down because it caught me: the metric
+  # counts ROUTINES OVER THE CEILING, not total complexity. Splitting genType
+  # (cc=53, the worst proc in the tree) into three readable procs made the
+  # count go UP by two, because three procs at cc>5 score worse than one at
+  # cc=53. So the budget actively rewards leaving monsters intact, which is
+  # the opposite of what it is for. Splitting a hot proc is still the right
+  # call — take the +N and say so here. Worth replacing the metric with a sum
+  # or a p95 when someone has the appetite.
+  BUDGET = 279
   CC = "tools/cc"
 
 proc run*(t: var T) =

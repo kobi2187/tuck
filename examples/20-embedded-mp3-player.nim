@@ -52,17 +52,20 @@ type tuck_SystemEvents* = ref object
 
 var latesttuck_SystemEvents*: tuck_SystemEvents
 
+proc tuck_SystemEvents_PlaybackStarted*(): void
+proc tuck_SystemEvents_PlaybackStopped*(): void
+proc tuck_SystemEvents_HardwareError*(code: uint8): void
 proc raise_tuck_SystemEvents_PlaybackStarted*() =
   latesttuck_SystemEvents = tuck_SystemEvents(kind: PlaybackStarted)
-  discard
+  tuck_SystemEvents_PlaybackStarted()
 
 proc raise_tuck_SystemEvents_PlaybackStopped*() =
   latesttuck_SystemEvents = tuck_SystemEvents(kind: PlaybackStopped)
-  discard
+  tuck_SystemEvents_PlaybackStopped()
 
 proc raise_tuck_SystemEvents_HardwareError*(code: uint8) =
   latesttuck_SystemEvents = tuck_SystemEvents(kind: HardwareError, code: code)
-  discard
+  tuck_SystemEvents_HardwareError(code)
 
 
 registerMMIO(tuck_DAC_CR, 0x40007400):
@@ -142,6 +145,16 @@ proc registerActortuck_Decoder*() =
   tuckStartActor(draintuck_Decoder)
 
 static: assert((sizeof(tuck_Volume) == 1))
+proc tuck_SystemEvents_PlaybackStarted*(): void =
+  tuck_DAC_CR.EN = true
+
+proc tuck_SystemEvents_PlaybackStopped*(): void =
+  tuck_DAC_CR.EN = false
+
+proc tuck_SystemEvents_HardwareError*(code: uint8): void =
+  var failed = code
+  tuck_DAC_CR.EN = false
+
 proc tuck_main*(): void =
   discard
 

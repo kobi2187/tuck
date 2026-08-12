@@ -16,14 +16,17 @@ latesttuck_SystemEvents: tuck_SystemEvents
 
 raise_tuck_SystemEvents_PlaybackStarted :: proc() {
 	latesttuck_SystemEvents = tuck_SystemEvents{kind = .PlaybackStarted}
+	tuck_SystemEvents_PlaybackStarted()
 }
 
 raise_tuck_SystemEvents_PlaybackStopped :: proc() {
 	latesttuck_SystemEvents = tuck_SystemEvents{kind = .PlaybackStopped}
+	tuck_SystemEvents_PlaybackStopped()
 }
 
 raise_tuck_SystemEvents_HardwareError :: proc(code: u8) {
 	latesttuck_SystemEvents = tuck_SystemEvents{kind = .HardwareError, code = code}
+	tuck_SystemEvents_HardwareError(code)
 }
 
 
@@ -180,6 +183,19 @@ sendPause_tuck_Decoder :: proc(self: ^tuck_Decoder) {
 
 sendStop_tuck_Decoder :: proc(self: ^tuck_Decoder) {
 	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{kind = .msgStop})
+}
+
+tuck_SystemEvents_PlaybackStarted :: proc () {
+  tuck_DAC_CR.EN = true
+}
+
+tuck_SystemEvents_PlaybackStopped :: proc () {
+  tuck_DAC_CR.EN = false
+}
+
+tuck_SystemEvents_HardwareError :: proc (code: u8) {
+  failed := code
+  tuck_DAC_CR.EN = false
 }
 
 tuck_main :: proc () {

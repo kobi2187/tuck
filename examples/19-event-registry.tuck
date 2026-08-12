@@ -14,4 +14,11 @@ on AppEvents.SensorFailure({port: u8, reason: str}):
   let x = port
   let y = reason
 
+# EVERY declared event needs a handler (spec Part 10) — an event nothing
+# listens to is a signal that silently goes nowhere, which is the failure the
+# one-registry design exists to prevent. This example declared LowMemory and
+# handled only SensorFailure until the checker started enforcing the rule.
+on AppEvents.LowMemory({remaining: u32}):
+  let left = remaining
+
 static_assert 1 == 1
