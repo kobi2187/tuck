@@ -1485,7 +1485,7 @@ proc failIfDuplicateField(fields: seq[FieldDef], f: FieldDef, sp: Span,
   ## code the user never wrote. A fourth combiner must call this too.
   for existing in fields:
     if existing.name == f.name:
-      fail("Type Error: " & op & " field '" & f.name & "' collides " &
+      fail("Type Error: duplicate " & op & " field '" & f.name & "' — " &
            source, sp)
 
 proc asAliasCall(tc: var TypeChecker, e: Expr): Type =
@@ -1505,7 +1505,7 @@ proc asAliasCall(tc: var TypeChecker, e: Expr): Type =
     let renamed = FieldDef(name: newExpr.name, span: e.span,
                            typ: (if ft == nil: unknownType(e.span) else: ft))
     failIfDuplicateField(fields, renamed, e.span, "alias",
-                         "— two sources renamed onto the same target")
+                         "two sources renamed onto the same target")
     fields.add(renamed)
   Type(span: e.span, kind: tkRecord, fields: fields)
 
@@ -1521,7 +1521,8 @@ proc asMergeCall(tc: var TypeChecker, e: Expr): Type =
       fail("Type Error: merge member '" & mname & "' must be a struct, " &
            "got " & typeName(mt), mexpr.span)
     for f in mfs:
-      failIfDuplicateField(fields, f, e.span, "merge", "between members")
+      failIfDuplicateField(fields, f, e.span, "merge",
+                           "the same name is contributed by two members")
       fields.add(f)
   if fields.len == 0: return unknownType(e.span)
   Type(span: e.span, kind: tkRecord, fields: fields)

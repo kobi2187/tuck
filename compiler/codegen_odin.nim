@@ -540,12 +540,20 @@ proc memberCalleeName(ctx: OdinCodegenCtx, e: Expr): string =
 
 proc genericCtorName(ctx: var OdinCodegenCtx, e: Expr, base: string): string =
   ## A generic type: the checker's ty stamp carries the inferred instantiation.
+  ##
+  ## The base name is QUALIFIED first. A construction reaches text through
+  ## `e.callee.name`, which never passes through odinType — so a type declared
+  ## in an imported module was written bare (`tuck_Big{...}`) and Odin
+  ## answered `Undeclared name`, while a fn from the same module qualified
+  ## correctly. Odin never merges package scopes: a package member is ALWAYS
+  ## `pkg.name`.
+  let qbase = ctx.importedTypeQualifier(base)
   let t = semLayer.typeFor(e)
   if t == nil or t.kind != tkApp or t.base == nil or
-     t.base.kind != tkNamed or t.base.name != base: return base
+     t.base.kind != tkNamed or t.base.name != base: return qbase
   var gparts: seq[string]
   for a in t.args: gparts.add(ctx.odinType(a))
-  base & "(" & gparts.join(", ") & ")"
+  qbase & "(" & gparts.join(", ") & ")"
 
 proc isRecordConstruction(ctx: OdinCodegenCtx, e: Expr): bool =
   e.args.len == 1 and e.args[0].kind == exkStruct and

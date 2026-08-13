@@ -439,6 +439,12 @@ fn main() -> int:
   # `op`/`source` params so each caller keeps an accurate message, and every
   # path that BUILDS a field set now routes additions through it. `+`
   # composition keeps its own failIfComposedCollision (spec §2.5).
+  #
+  # The message says "duplicate", not "collides": this pin's pattern is
+  # /twice|collis|already|duplicate/, and "collides" matches NONE of those —
+  # `collis` is a prefix of "collision", not of "collides". Merge's old
+  # wording had the same hole and was never caught because no pin ran against
+  # it.
   t.src """
 fn main() -> int:
   let ext = {trackId: 42, category: 7}
@@ -485,17 +491,29 @@ fn withDefaults({self: Big}) -> Big:
   t.quietly: t.omits "a qualified mutator in a chain does not emit a field-set on the function", "tuck_withDefaults\\.f"
   t.bugOpen "a qualified mutator in a chain does not emit a field-set on the function"
 
-  # 18. Odin: an imported TYPE is emitted unqualified, so it does not resolve.
-  # The emitter qualifies an imported FN correctly
-  # (`bigmod.tuck_withDefaults(cfg)`) but writes the type from the same module
-  # bare — `cfg := tuck_Big{...}` — and Odin answers `Undeclared name:
-  # tuck_Big`, so any program whose type comes from another module fails to
+  # 18. FIXED. Odin: an imported TYPE was emitted unqualified, so it did not
+  # resolve. The emitter qualified an imported FN correctly
+  # (`bigmod.tuck_withDefaults(cfg)`) but wrote the type from the same module
+  # bare — `cfg := tuck_Big{...}` — and Odin answered `Undeclared name:
+  # tuck_Big`, so any program whose type came from another module failed to
   # build on that backend.
   #
   # Nim is unaffected: its own `import` brings the name into scope
   # unqualified, which is exactly the assumption baked into the shared
   # emitter path. Odin's `import bigmod "./mod_bigmod"` does not, so the
   # package name has to be written.
+  #
+  # Root cause: a construction reaches text through `e.callee.name` in
+  # genRecordCtor -> genericCtorName, which never passed through odinType and
+  # so never met importedTypeQualifier. Fix: qualify the base name there.
+  #
+  # This ALSO restored the missing `import bigmod "./mod_bigmod"` line, which
+  # was absent entirely. Import emission is gated on a substring search for
+  # `pkg & "."` over the generated body (codegen_odin.nim ~2394), so the
+  # missing qualification suppressed the import as well — one fault, two
+  # symptoms. Verified with a real `odin build`, not just this text
+  # assertion: before, `Undeclared name: tuck_Big`; after, it compiles, links
+  # and runs.
   t.src """
 import bigmod
 
@@ -507,7 +525,7 @@ fn main() -> int:
   f0: int
 """)
   t.quietly: t.emitsOdin "an imported type is qualified with its package on Odin", "bigmod\\.tuck_Big"
-  t.bugOpen "an imported type is qualified with its package on Odin"
+  t.bugFixed "an imported type is qualified with its package on Odin"
 
   # 19. A fn could write through its own parameter to the CALLER's record.
   # The checker bound every param mutable ("`set` functions legitimately use

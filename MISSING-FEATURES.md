@@ -17,7 +17,7 @@ That is authoritative; this file explains them.
 
 ---
 
-## A. Open bugs (6, all with a failing test that pins them)
+## A. Open bugs (5, all with a failing test that pins them)
 
 Each has a regression test written as the CORRECT behaviour, marked `bug_open`.
 Fixing one means flipping the marker to `bug_fixed`, which locks it in.
@@ -29,7 +29,6 @@ Fixing one means flipping the marker to `bug_fixed`, which locks it in.
 | 3 | Constructing a type with MISSING required fields is silently accepted — `{} Config` against a two-required-field `Config` passes `tuck ch` with no diagnostic. The `{fields} TypeName` construction path in the checker never validates the supplied field set against the type's declared fields; only the function-CALL path does. Contradicts a 2026-07-09 ruling (ROADMAP.md: "types with fields require every field at construction") that was apparently never wired in, or regressed since. | known_bugs | `typecheck.nim`, the construction-callee branch |
 | 4 | An `on select` arm shape the emitter does not recognise silently compiles to a bare `discard` — the whole handler body is dropped with no error, no warning, not even a PENDING entry. Reproduces on the spec's own §9.3 example shape. Not the same gap as the dotted-source parsing limitation below (B, and the "tracked but without a test yet" note) — that one is a known unfinished feature; this one is the same code path failing *silently* instead of refusing to compile. | known_bugs | `codegen.nim`, the select-arm lowering fallback |
 | 5 | A QUALIFIED mutator in a `..` chain destroys the receiver: `cfg ..mod::fn ..f1 {60}` emits `tuck_withDefaults.f1 = 60`. **This is a PARSER bug, not codegen** (verified 2026-08-13 by dumping both trees with `tuck p --ast`): the qualified form parses to a chain whose base is `exkQualified{modulePath: [""], qualName: "withDefaults"}` with ONE step — `cfg` is gone — while the unqualified form parses to two steps with base `cfg`. `chainQualified` (parser_expr.nim:284) receives the chain node, fails its `expr.kind == exkVar` test so the module name becomes `""`, and returns a fresh node, discarding its input. The checker then cannot save it: `checkChainStep` falls off the end without an error when the receiver is `tkNamed` rather than `tkRecord`. | known_bugs | `parser_expr.nim` `chainQualified`; plus the `checkChainStep` fall-through |
-| 6 | Odin: an imported TYPE is emitted unqualified and does not resolve. The emitter qualifies an imported FN correctly (`bigmod.tuck_withDefaults`) but writes the type bare — `cfg := tuck_Big{...}` — so Odin answers `Undeclared name: tuck_Big` and any program whose type comes from another module fails to build. Nim is unaffected: its `import` brings the name in unqualified, which is the assumption the shared emitter path bakes in. Also (verified 2026-08-13) the emitted file carries **no `import` for the module at all**: import emission is gated on a substring search for `pkg & "."` over the generated text, so missing qualification suppresses the import too. | known_bugs | `codegen_odin.nim`, type-name emission |
 
 **Tracked but without a test yet — attempted to reproduce this session,
 blocked by a separate issue:** on Odin a task WITH ARGUMENTS is claimed to

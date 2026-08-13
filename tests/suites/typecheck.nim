@@ -935,7 +935,7 @@ fn f({a: A, b: B}) -> void:
 fn main() -> void:
   return
 """
-  t.badCheck "merge: field name collision between members", "collides"
+  t.badCheck "merge: field name collision between members", "duplicate merge field"
 
   t.src """
 fn f({a: int}) -> void:
