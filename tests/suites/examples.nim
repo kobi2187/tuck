@@ -1,5 +1,34 @@
 ## Every gated example must compile through tuck; the rest may fail.
 ##
+## WHAT AN EXAMPLE CLAIMS, AND WHY COMPILE-ONLY IS OFTEN THE RIGHT GATE.
+## `examples/` holds two kinds of file doing two different jobs, and the
+## difference is visible in the source rather than in a list here:
+##
+##   NO `fn main`   — a SYNTAX SPECIMEN. It claims only "this is how the
+##                    construct is written". There is nothing to run, and
+##                    compiling IS the whole assertion. 15 files today
+##                    (10-invariants, 19-event-registry, ...). Many describe
+##                    features whose MEANING the compiler cannot execute yet;
+##                    the specimen pins the surface while the semantics grow.
+##
+##   `fn main`      — a PROGRAM. It claims "this runs", and a `-> int` main
+##                    additionally claims "and computes THIS". Those claims
+##                    need a run, which is why 14 of them carry an expected
+##                    exit code in tests/suites/odin_backend.nim's `odinRun`
+##                    and more run through cli_smoke.
+##
+## So a compile-only gate is not weak gating of a program, it is correct
+## gating of a specimen. What it CANNOT catch is a specimen whose meaning
+## quietly went wrong: 19-event-registry declared an event it never handled,
+## and 20 raised three and handled none, both compiling happily for months.
+## That is not a missing run — a run would not have caught it either. It is a
+## missing RULE, and the fix was to write one (spec Part 10, TK-RG03), after
+## which both files failed to compile and were corrected.
+##
+## The lesson worth keeping: for a specimen, the checker is the only reader.
+## When a specimen goes stale it is because a rule is unenforced, so the fix
+## belongs in the checker, not in this suite's gating.
+##
 ## Replaces tests/compile_all_examples.nim. That one ran the pipeline in-process
 ## (linking parser + typecheck + codegen into a Nim program), then re-verified
 ## the emitted Nim with ~25 serial `nim check` calls. Both are gone: `tuck c`

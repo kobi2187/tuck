@@ -83,7 +83,25 @@ compiler/          parser -> rewrite -> typecheck -> semantics -> lowering -> co
   optimize.nim     OPTIONAL passes, off unless -O names them
   tuckrt/          the Odin runtime (the Nim one is compiler/tuck_*.nim)
 std/               the standard library, in Tuck
-examples/          44 programs, gated by the suite — the real corpus
+examples/          the corpus — see below
 tests/suites/      one .nim per suite; harness.nim holds the assertions
 benches/           measurements, with SCORES.md as the ledger
 ```
+
+### Two kinds of example
+
+`examples/` holds two artifacts with different claims, told apart by whether
+the file has a `fn main`:
+
+- **No `fn main` — a syntax specimen.** Claims only "this is how the construct
+  is written". Compiling is the whole assertion, and many describe features
+  whose *meaning* the compiler cannot execute yet — the specimen pins the
+  surface while the semantics are still being built.
+- **`fn main` — a program.** Claims "this runs"; with `-> int`, "and computes
+  this". Those are run-gated with an expected exit code
+  (`tests/suites/odin_backend.nim`, `cli_smoke`).
+
+The distinction matters when reading a green suite: a compile-only example is
+not weakly-tested, it is a specimen correctly tested. What that cannot catch
+is a specimen whose meaning drifts — for those the checker is the only reader,
+so the fix is a new rule in the compiler, not a stronger gate here.
