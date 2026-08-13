@@ -20,10 +20,27 @@
 ## Here every subprocess in the whole suite goes into one pool bounded by the
 ## core count, so the bound is actually the bound.
 ##
+## MODES. The clock is decided by one question: does an assertion invoke a
+## BACKEND compiler? `tuck` is milliseconds; `nim c` / `odin build` on the
+## emitted code is ~1s, three orders of magnitude more. So the modes filter by
+## VERB — how far down the pipeline each assertion goes — and every suite runs
+## in every mode. Assertions above the cap report SKIP and are counted.
+##
+##   --check   tuck ch only ......... types, effects, diagnostics    ~2s
+##   --quick   + tuck c ............. adds emits/omits/frozen        ~5s
+##   (default) + nim build & run .... adds exit codes and output     ~30s
+##
+## `--full` is the default spelled out. The Odin layer additionally needs
+## TUCK_REQUIRE_ODIN=1, or it skips when the toolchain is absent.
+##
+## This replaced a SUITE-level `--quick`, which excluded whole files and so
+## classified `declarations` — 27 badChecks, zero runs, ~2ms each — as slow.
+##
 ## Usage:
-##   tests/run                  every suite
+##   tests/run                  every suite, every assertion
 ##   tests/run loop_var_type    one suite (repeatable)
-##   tests/run --quick          the check-only suites, no build/run/odin
+##   tests/run --check          the edit-loop gate
+##   tests/run --quick          + codegen text and goldens
 ##   tests/run --bless          rewrite goldens (was TUCK_BLESS=1)
 ##   tests/run --jobs:N         override the pool bound
 
@@ -43,6 +60,16 @@ proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
   ## what lib.sh did by checking _build's status before running.
   var running: seq[tuple[p: Process, idx: int]]
   var pending = items.len
+
+  # Items the MODE excluded (harness.maxVerb) never run. Retire them before
+  # the loop so nothing waits on them and nothing marks them failed: their
+  # assertions read `skipped` and report SKIP. rc stays 0 — a skipped item is
+  # not a failed one, and a dependent build/run is skipped in its own right.
+  for i in 0 ..< items.len:
+    if items[i].skipped:
+      items[i].done = true
+      items[i].output = "skipped: mode excludes this verb"
+      pending.dec
 
   template ready(i: int): bool =
     (not items[i].done) and
@@ -115,6 +142,10 @@ proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
     running.delete(reaped)
     pending.dec
 
+var totalSkipped* = 0
+  ## Assertions the mode excluded, summed across suites — reported at the end
+  ## so a `--check` green is never mistaken for a full green.
+
 proc runSuites(names: seq[string], jobs: int, bless: bool, root: string): int =
   ## Collect pass over every suite, one pool, then the report pass.
   var ts: seq[T]
@@ -142,6 +173,10 @@ proc runSuites(names: seq[string], jobs: int, bless: bool, root: string): int =
       owner.add (si, ii)
 
   let argvOf = proc (i: int): seq[string] =
+    # An empty argv tells runPool there is nothing to launch. A skipped item
+    # stays in the array so every index and `dep` edge keeps its meaning
+    # across the two passes — only its execution is dropped.
+    if flat[i].skipped: return @[]
     let (si, ii) = owner[i]
     ts[si].cmdFor(ii)
   let prepOf = proc (i: int) =
@@ -164,6 +199,7 @@ proc runSuites(names: seq[string], jobs: int, bless: bool, root: string): int =
     echo &"-- {ts[si].name}"
     suiteBody(ts[si].name)(ts[si])
     if ts[si].failed > 0: failures.inc
+    totalSkipped += ts[si].skipped
   failures
 
 proc secs(t0: MonoTime): string =
@@ -174,13 +210,27 @@ when isMainModule:
     want: seq[string]
     jobs = countProcessors()
     bless = false
-    quick = false
+    modeName = "full"
   for a in commandLineParams():
-    if a == "--quick": quick = true
+    # MODES filter the work pool by VERB, not by suite. Every suite runs in
+    # every mode; assertions needing a backend compile report SKIP when the
+    # mode excludes them. See harness.maxVerb for why the verb is the right
+    # axis: `tuck` is milliseconds, `nim c`/`odin build` is ~1s, so the only
+    # question that moves the clock is whether a backend gets invoked.
+    if a == "--check":
+      maxVerb = vCheck        # types + effects only. The edit-loop gate.
+      modeName = "check"
+    elif a == "--quick":
+      maxVerb = vEmitOdin     # + codegen text: emits/omits/frozen goldens.
+      modeName = "quick"
+    elif a == "--full":
+      maxVerb = vRun          # + nim build/run. Odin builds are gated by
+      modeName = "full"       # TUCK_REQUIRE_ODIN in the suite that owns them.
     elif a == "--bless": bless = true
     elif a.startsWith("--jobs:"): jobs = parseInt(a[7 .. ^1])
     elif a.startsWith("--"): quit "unknown flag: " & a
     else: want.add a
+  let quick = maxVerb < vBuild   # stage 2 emits .odin only when something reads it
 
   let root = getCurrentDir()
   let t0 = getMonoTime()
@@ -217,11 +267,13 @@ when isMainModule:
     emitSecs = secs(ts1)
     echo &"  -> {emitSecs}s, {nOdin}/{nTuck} emitted"
 
-  # Stage 3 — the suites.
-  let names = if want.len > 0: want
-              elif quick: quickSuites()
-              else: allSuites()
-  echo &"== stage 3: tests ({names.len} suites, pool of {jobs}) =="
+  # Stage 3 — the suites. EVERY suite, in every mode: the mode decides which
+  # ASSERTIONS run, not which files. quickSuites() is kept for callers that
+  # still want the old file-level split, but is no longer how --quick works —
+  # it classified `declarations` (27 badChecks, zero runs, ~2ms each) as slow
+  # and skipped it entirely from the inner loop.
+  let names = if want.len > 0: want else: allSuites()
+  echo &"== stage 3: tests ({names.len} suites, mode {modeName}, pool of {jobs}) =="
   ts1 = getMonoTime()
   let failures = runSuites(names, jobs, bless, root)
   let testSecs = secs(ts1)
@@ -236,4 +288,11 @@ when isMainModule:
   if failures > 0:
     echo &"{failures} failure(s)."
     quit 1
-  echo "All tests passed."
+  # A partial mode must never print the same words as a full run. "All tests
+  # passed" after --check would claim the backends were exercised when no
+  # backend ran at all.
+  if totalSkipped > 0:
+    echo &"Passed in mode {modeName}: {totalSkipped} assertion(s) skipped " &
+         "(need a backend build). Run tests/run for those."
+  else:
+    echo "All tests passed."

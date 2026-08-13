@@ -47,6 +47,11 @@ type
     rc*: int
     output*: string
     done*: bool
+    skipped*: bool     ## filtered out by --check/--quick, never attempted
+      ## Distinct from `done == false`, which means "its dependency failed".
+      ## Assertions must report a skipped item as SKIP, not as a failure —
+      ## otherwise a mode that runs fewer items reports a wall of red instead
+      ## of a smaller, honest green.
 
   T* = object
     ## One suite's state. `work` is handed to the runner between passes.
@@ -60,15 +65,32 @@ type
     cur: string                 ## current snippet dir
     n: int
     cursor: int                 ## report pass: which registration we are on
-    passed*, failed*, open*: int
+    passed*, failed*, open*, skipped*: int
     quiet: bool
     lastOk: bool
+    lastSkipped: bool
     bless*: bool
     root*: string               ## project root, for --root:
 
   SuiteProc* = proc (t: var T) {.nimcall.}
 
 var tuckExe* = "./tuck"
+
+# --- how far down the pipeline this run goes -------------------------------
+#
+# The cost of a test is decided almost entirely by ONE question: does it invoke
+# a BACKEND compiler? `tuck` itself is milliseconds — a full check of a snippet
+# is ~2ms — while `nim c` or `odin build` on the emitted code is ~0.5-1s, two
+# to three orders of magnitude more. So the useful axis is not "which suites"
+# but "how far down the pipeline each assertion goes", which is exactly what
+# Verb already records.
+#
+# maxVerb filters the work pool on that. Every suite still RUNS in every mode;
+# the assertions whose verb exceeds the cap report SKIP instead of executing.
+# That beats the older suite-level `--quick`, which excluded whole files: the
+# `declarations` suite is 27 `badCheck`s and zero runs, all of them ~2ms, yet
+# it was classified slow and skipped entirely in the inner loop.
+var maxVerb* = vRun   ## default: everything except what needs the Odin toolchain
 
 # --- reporting -----------------------------------------------------------
 #
@@ -78,15 +100,29 @@ var tuckExe* = "./tuck"
 
 proc ok*(t: var T, name: string) =
   t.lastOk = true
+  t.lastSkipped = false
   if t.quiet: return
   t.passed.inc
   echo &"  PASS  {name}"
 
 proc no*(t: var T, name, why: string) =
   t.lastOk = false
+  t.lastSkipped = false
   if t.quiet: return
   t.failed.inc
   echo &"  FAIL  {name}\n        {why}"
+
+proc skip*(t: var T, name: string) =
+  ## This assertion needed a backend compile the current mode excludes.
+  ##
+  ## `lastOk = true` so a skipped assertion under `quietly` reads as "nothing
+  ## to report" rather than as a reproducing bug — otherwise `--check` would
+  ## turn every bugOpen whose assertion needs a run into a phantom OPEN line.
+  t.lastOk = true
+  t.lastSkipped = true
+  if t.quiet: return
+  t.skipped.inc
+  echo &"  SKIP  {name} (needs a backend build; run without --check/--quick)"
 
 template quietly*(t: var T, body: untyped) =
   ## Run an assertion for its OUTCOME only, then read it with bugFixed/bugOpen:
@@ -166,13 +202,19 @@ proc need(t: var T, verb: Verb, dep = -1): int =
   let key = t.cur & "\0" & $verb
   if t.phase == pCollect:
     if key in t.byKey: return t.byKey[key]
-    t.work.add WorkItem(dir: t.cur, verb: verb, dep: dep, rc: 0)
+    # Over the mode's cap: registered so indices stay stable across the two
+    # passes, but marked skipped so the pool never launches it and the
+    # assertion reports SKIP rather than a failure.
+    t.work.add WorkItem(dir: t.cur, verb: verb, dep: dep, rc: 0,
+                        skipped: verb > maxVerb)
     result = t.work.high
     t.byKey[key] = result
   else:
     result = t.byKey[key]
 
 proc item(t: T, idx: int): WorkItem = t.work[idx]
+
+proc wasSkipped(t: T, idx: int): bool = t.work[idx].skipped
 
 proc failedTo(t: T, idx: int): bool =
   ## An item that never ran (because its dependency failed) counts as failed.
@@ -209,6 +251,7 @@ proc runs*(t: var T, name: string, code: int) =
   let b = t.need(vBuild)
   let r = t.need(vRun, dep = b)
   if t.phase == pCollect: return
+  if t.wasSkipped(r): t.skip name; return
   if t.failedTo(b):
     t.no name, "build failed: " & tailLines(t.item(b).output, 2)
     return
@@ -221,6 +264,7 @@ proc outputs*(t: var T, name, pattern: string) =
   ## too would be wrong — `outputs` never builds on its own in lib.sh either.
   let r = t.need(vRun, dep = t.need(vBuild))
   if t.phase == pCollect: return
+  if t.wasSkipped(r): t.skip name; return
   if find(t.item(r).output, re(pattern)) >= 0: t.ok name
   else:
     t.no name, &"output did not match /{pattern}/: " & lastLine(t.item(r).output)
@@ -235,6 +279,7 @@ proc emits*(t: var T, name, pattern: string) =
   ## "feature absent" forever.
   let i = t.need(vEmit)
   if t.phase == pCollect: return
+  if t.wasSkipped(i): t.skip name; return
   if t.failedTo(i):
     t.no name, "emission failed: " & lastLine(t.item(i).output)
   elif find(t.emittedNim(i), re(pattern)) >= 0:
@@ -247,6 +292,7 @@ proc omits*(t: var T, name, pattern: string) =
   ## all the assertion is vacuous, which is the worse direction of the same bug.
   let i = t.need(vEmit)
   if t.phase == pCollect: return
+  if t.wasSkipped(i): t.skip name; return
   if t.failedTo(i):
     t.no name, "emission failed: " & lastLine(t.item(i).output)
   elif find(t.emittedNim(i), re(pattern)) >= 0:
@@ -265,6 +311,7 @@ proc emitsOdin*(t: var T, name, pattern: string) =
   ## compiler was fixed.
   let i = t.need(vEmitOdin)
   if t.phase == pCollect: return
+  if t.wasSkipped(i): t.skip name; return
   if t.failedTo(i):
     t.no name, "Odin emission failed: " & lastLine(t.item(i).output)
   elif find(t.emittedOdin(i), re(pattern)) >= 0:
@@ -277,6 +324,7 @@ proc omitsOdin*(t: var T, name, pattern: string) =
   ## a failure rather than a vacuous pass.
   let i = t.need(vEmitOdin)
   if t.phase == pCollect: return
+  if t.wasSkipped(i): t.skip name; return
   if t.failedTo(i):
     t.no name, "Odin emission failed: " & lastLine(t.item(i).output)
   elif find(t.emittedOdin(i), re(pattern)) >= 0:
@@ -328,6 +376,7 @@ proc unifiedDiff(want, got: string, ctx: int): string =
 proc frozen*(t: var T, name: string) =
   let i = t.need(vEmit)
   if t.phase == pCollect: return
+  if t.wasSkipped(i): t.skip name; return
   if t.failedTo(i):
     t.no name, "emission failed: " & lastLine(t.item(i).output)
     return
@@ -375,11 +424,14 @@ proc frozen*(t: var T, name: string) =
 
 proc bugFixed*(t: var T, name: string) =
   if t.phase == pCollect: return
+  # A skipped assertion is not evidence in either direction.
+  if t.lastSkipped: t.skip name & " (regression guard)"; return
   if t.lastOk: t.ok name & " (regression guard)"
   else: t.no name, "REGRESSED — this was fixed and has come back"
 
 proc bugOpen*(t: var T, name: string) =
   if t.phase == pCollect: return
+  if t.lastSkipped: t.skip name & " (known bug)"; return
   if t.lastOk:
     t.no name, "NOW PASSING — that is GOOD. Change bugOpen to bugFixed to lock it in."
   else:
@@ -399,7 +451,8 @@ proc needOdin*(t: var T): int =
   t.need(vEmitOdin)
 
 proc needCmdAfter*(t: var T, argv: seq[string], dep: int,
-                   prep: proc (dir: string) {.closure.}, dir: string): int =
+                   prep: proc (dir: string) {.closure.}, dir: string,
+                   verb = vBuild): int =
   ## A command that depends on an earlier item AND needs files staged between
   ## the two. `prep` runs after `dep` succeeds and before this command starts.
   ##
@@ -407,10 +460,16 @@ proc needCmdAfter*(t: var T, argv: seq[string], dep: int,
   ## from a .odin the pool itself produced. Without the hook the staging would
   ## have to happen in the report pass, which is after every command has
   ## already run.
+  ##
+  ## Defaults to vBuild BECAUSE of that shape: every caller here is an actual
+  ## backend compile or the binary it produced, which is exactly what the
+  ## cheap modes exist to skip. Registered as vCheck it would run in `--check`
+  ## and cost a second apiece.
   let key = "cmd\0" & argv.join("\0")
   if t.phase == pCollect:
     if key in t.byKey: return t.byKey[key]
-    t.work.add WorkItem(dir: dir, verb: vCheck, dep: dep, rc: 0)
+    t.work.add WorkItem(dir: dir, verb: verb, dep: dep, rc: 0,
+                        skipped: verb > maxVerb)
     result = t.work.high
     t.byKey[key] = result
     t.rawCmds[result] = argv
@@ -418,23 +477,42 @@ proc needCmdAfter*(t: var T, argv: seq[string], dep: int,
   else:
     result = t.byKey[key]
 
-proc needCmd*(t: var T, argv: seq[string]): int =
+proc needCmd*(t: var T, argv: seq[string], verb = vCheck): int =
   ## Register an arbitrary command. Keyed by the command itself, since these
   ## are not tied to a snippet dir.
+  ##
+  ## `verb` declares how expensive it is, so the mode filter can drop it: an
+  ## `odin build` registered as vCheck would run in `--check` and cost a
+  ## second, defeating the point of the mode. Default vCheck because most raw
+  ## commands here are `./tuck` invocations, which are milliseconds.
   let key = "cmd\0" & argv.join("\0")
   if t.phase == pCollect:
     if key in t.byKey: return t.byKey[key]
-    t.work.add WorkItem(dir: "", verb: vCheck, dep: -1, rc: 0)
+    t.work.add WorkItem(dir: "", verb: verb, dep: -1, rc: 0,
+                        skipped: verb > maxVerb)
     result = t.work.high
     t.byKey[key] = result
     t.rawCmds[result] = argv
   else:
     result = t.byKey[key]
 
+proc skippedCmd*(t: T, idx: int): bool = t.work[idx].skipped
+  ## For suites driving raw commands: report SKIP rather than reading a result
+  ## that was never produced.
+
 proc resultOf*(t: T, idx: int): (int, string) =
   (t.work[idx].rc, t.work[idx].output)
 
 # --- suite lifecycle -----------------------------------------------------
+
+proc buildsAllowed*(): bool = maxVerb >= vBuild
+  ## Whether the current mode runs backend compiles at all.
+  ##
+  ## For suites that drive commands through `sh` instead of the pool: `sh`
+  ## executes immediately, so no filter can reach it: the suite must ask
+  ## before it starts. cli_smoke is the whole reason — it is ~100 sequential
+  ## `tuck build` + run steps and dominates a full run, so `--check` and
+  ## `--quick` skip it wholesale rather than pretending to filter it.
 
 proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
   ## Run a command NOW and wait. The pool is for work that is independent;
@@ -487,4 +565,5 @@ proc finish*(t: var T) =
   # The `.sh` suffix is kept deliberately: run-all-tests.sh grepped for this
   # exact shape, and so does tests/end_to_end.sh's MISSING-FEATURES count.
   # Renaming it would be a second migration for no gain.
-  echo &"{t.name}.sh: {t.passed} passed, {t.failed} failed"
+  let skipNote = if t.skipped > 0: &", {t.skipped} skipped" else: ""
+  echo &"{t.name}.sh: {t.passed} passed, {t.failed} failed{skipNote}"

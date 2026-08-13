@@ -545,6 +545,15 @@ fn main() -> void [io]:
 proc run*(t: var T) =
   if t.phase != pReport: return
 
+  # This suite is ~100 SEQUENTIAL `tuck build` + run steps driven through `sh`,
+  # which executes immediately and so cannot be filtered by the work pool. It
+  # dominates a full run, and every case here is a backend compile by nature,
+  # so the cheap modes skip it wholesale rather than pretending to filter it.
+  if not buildsAllowed():
+    t.skip "cli_smoke (every case builds and runs a binary)"
+    t.finish()
+    return
+
   # The CLI's own surface, before the cases: every verb runs, and a type error
   # exits nonzero with a file:line:col prefix.
   block:

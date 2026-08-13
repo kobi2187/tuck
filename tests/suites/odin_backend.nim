@@ -148,7 +148,10 @@ proc run*(t: var T) =
   if t.phase != pReport: return
 
   for (base, i) in buildIdx:
-    if not fileExists(exampleDir / base & ".odin"):
+    # Mode excluded the odin build; a `prog` left by an earlier full run must
+    # not be read as this run's result.
+    if t.skippedCmd(i): t.skip "compile " & base
+    elif not fileExists(exampleDir / base & ".odin"):
       t.no "compile " & base,
         "missing emitted Odin (run `tuck c examples/" & base & ".tuck --odin` first)"
     elif fileExists(projFor(base) / "prog"):
@@ -162,6 +165,7 @@ proc run*(t: var T) =
       t.no "compile " & base, errs.join("\n")
 
   for (base, want, i) in runIdx:
+    if t.skippedCmd(i): t.skip "run " & base; continue
     if not fileExists(projFor(base) / "prog"):
       t.no "run " & base, "no binary to run"
       continue

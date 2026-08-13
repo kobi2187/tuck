@@ -71,11 +71,13 @@ fn main() -> int:
   # (examples/shim/zlib_shim.nim / .odin) copies it. Asserted on the Nim side by
   # running it; the Odin side is gated by tests/odin_backend.sh.
   let zdir = t.dir / "z"
-  let zb = t.needCmd @["./tuck", "build", "examples/34-ffi-cstring.tuck",
-                       "-o:" & zdir, "--root:" & t.root]
+  let zb = t.needCmd(@["./tuck", "build", "examples/34-ffi-cstring.tuck",
+                       "-o:" & zdir, "--root:" & t.root], vBuild)
   let zr = t.needCmdAfter(@[zdir / "m_34_ffi_cstring"], zb,
                           proc (dir: string) = discard, zdir)
-  if t.phase == pReport:
+  if t.phase == pReport and t.skippedCmd(zb):
+    t.skip "34-ffi-cstring builds and prints libz's version"
+  elif t.phase == pReport:
     let (brc, blog) = t.resultOf(zb)
     if brc != 0:
       t.no "34-ffi-cstring builds", blog.strip(leading = false).splitLines()[^2 .. ^1].join("\n")
