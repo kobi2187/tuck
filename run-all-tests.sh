@@ -11,5 +11,6 @@
 set -eu
 cd "$(dirname "$0")"
 
-nim c --hints:off --warnings:off -o:tests/run tests/runner.nim
+# tests/run is a script that rebuilds the runner before exec'ing it, so the
+# build line lives in exactly one place.
 exec ./tests/run "$@"

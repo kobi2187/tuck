@@ -205,6 +205,20 @@ proc runSuites(names: seq[string], jobs: int, bless: bool, root: string): int =
 proc secs(t0: MonoTime): string =
   &"{(getMonoTime() - t0).inMilliseconds.float / 1000.0:.1f}"
 
+proc tuckIsStale(): bool =
+  ## Is ./tuck older than any source it is built from?
+  ##
+  ## Exact rather than approximate: the binary comes from tuck.nim, lexer.nim
+  ## and compiler/*.nim, and nothing else reaches it. A missing binary is
+  ## stale by definition.
+  if not fileExists("tuck"): return true
+  let built = getLastModificationTime("tuck")
+  for f in ["tuck.nim", "lexer.nim"]:
+    if fileExists(f) and getLastModificationTime(f) > built: return true
+  for f in walkFiles("compiler/*.nim"):
+    if getLastModificationTime(f) > built: return true
+  false
+
 when isMainModule:
   var
     want: seq[string]
@@ -235,11 +249,24 @@ when isMainModule:
   let root = getCurrentDir()
   let t0 = getMonoTime()
 
-  # Stage 1 — nim builds tuck. Once.
-  echo "== stage 1: nim builds tuck =="
+  # Stage 1 — nim builds tuck. Once, and only when a source is newer than the
+  # binary.
+  #
+  # Nim's own incremental check is not free: deciding "nothing changed" across
+  # the 33 compiler modules costs ~2.95s, every run. That is most of a
+  # `--check` pass (~4.5s) spent proving the compiler is already built. An
+  # mtime test answers the same question in microseconds.
+  #
+  # The dependency set is exact — tuck.nim, lexer.nim and compiler/*.nim are
+  # what the binary is built from — so a skip is a fact, not an optimism. Any
+  # doubt, delete ./tuck and it rebuilds.
+  let mustBuild = tuckIsStale()
+  echo(if mustBuild: "== stage 1: nim builds tuck =="
+       else: "== stage 1: tuck is current, not rebuilt ==")
   var ts1 = getMonoTime()
-  if execCmd("nim c --hints:off --warnings:off -o:tuck tuck.nim") != 0:
-    quit "FAIL: cannot build tuck", 1
+  if mustBuild:
+    if execCmd("nim c --hints:off --warnings:off -o:tuck tuck.nim") != 0:
+      quit "FAIL: cannot build tuck", 1
   let nimSecs = secs(ts1)
   echo &"  {nimSecs}s, tuck binary {getFileSize(\"tuck\") div 1024}K"
 

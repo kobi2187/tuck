@@ -11,5 +11,5 @@
 set -eu
 cd "$(dirname "$0")"
 
-nim c --hints:off --warnings:off -o:tests/run tests/runner.nim
+# tests/run rebuilds the runner before exec'ing it — see that script.
 exec ./tests/run --quick "$@"

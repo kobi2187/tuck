@@ -1,0 +1,45 @@
+#!/bin/bash
+# The suite entry point. Rebuilds the runner ONLY when a test source changed,
+# then execs it.
+#
+# This is a SCRIPT, not the compiled runner. It used to be the binary itself,
+# which made a stale build indistinguishable from a fresh one: editing a suite
+# and running `tests/run` re-ran the PREVIOUS version of that suite and
+# reported it as green. That cost a wrong commit on 2026-08-13 — a flipped
+# bugOpen marker never executed, so the fix looked verified when it was not.
+#
+# The rebuild is CONDITIONAL because it is not free: ~1.2s, which against a
+# ~4.5s `--check` run is a 27% tax to pay on every inner-loop iteration. The
+# staleness test is an exact one — the runner is built from tests/runner.nim,
+# tests/harness.nim and tests/suites/*.nim, and nothing else — so "no source
+# is newer than the binary" means the binary is current, and skipping is safe
+# rather than optimistic.
+#
+# (`tuck` itself is NOT rebuilt here. The runner does that at stage 1 of every
+# run, so the compiler under test is always current.)
+#
+# Usage is unchanged:
+#   tests/run                     every suite
+#   tests/run loop_var_type       one suite
+#   tests/run --quick             check-only, no `tuck build`
+#   tests/run --check             `tuck ch` only
+#   tests/run --bless             re-bless goldens
+set -eu
+cd "$(dirname "$0")/.."
+
+BIN=tests/.runner-bin
+
+stale() {
+  [ ! -x "$BIN" ] && return 0
+  # -newer is a true mtime comparison, so an edit that does not change a file's
+  # size or content still triggers — which is what you want from a safety net.
+  for src in tests/runner.nim tests/harness.nim tests/suites/*.nim; do
+    [ "$src" -nt "$BIN" ] && return 0
+  done
+  return 1
+}
+
+if stale; then
+  nim c --hints:off --warnings:off -o:"$BIN" tests/runner.nim
+fi
+exec "./$BIN" "$@"

@@ -36,5 +36,9 @@ tests/.smoke_*
 tools/__pycache__/
 tools/cc
 
-# The test runner binary (tests/runner.nim). Built by run-all-tests.sh.
-tests/run
+# The compiled test runner (from tests/runner.nim). Dot-prefixed so it cannot
+# be mistaken for the entry point: `tests/run` is a tracked SCRIPT that builds
+# this and execs it. It used to BE this binary, which meant a stale build was
+# indistinguishable from a fresh one — you could edit a suite, run it, and be
+# shown the previous version's result as green.
+tests/.runner-bin
