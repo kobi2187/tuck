@@ -405,15 +405,35 @@ fn main() -> int:
   t.quietly: t.badCheck "constructing a type with missing required fields is rejected", "missing\\ required\\ field"
   t.bugOpen "constructing a type with missing required fields is rejected"
 
-  # 15. An `on select` arm shape the emitter does not recognise silently
-  # compiles to a no-op `discard` — the entire handler body is dropped, with NO
-  # compile error, NO warning, not even a PENDING report entry. Root cause:
-  # codegen.nim's select lowering only handles a plain `read <fd>` / `timeout
-  # <ms>` pair; anything else (including this program, which is close to spec
-  # §9.3's OWN worked example) falls through to a bare `discard` with a code
-  # comment as the only trace. Typed select sources (`timeout.5s`) are tracked
-  # as missing (G3) but the SILENCE is the worse half of the gap: a program that
-  # looks correct and compiles clean does nothing at the deadline.
+  # 15. FIXED. An `on select` arm shape the emitter did not recognise silently
+  # compiled to a no-op `discard` — the entire handler body dropped, with NO
+  # compile error, NO warning, not even a PENDING report entry. codegen's
+  # select lowering handled only a plain `read <fd>` / `timeout <ms>` pair;
+  # anything else (including this program, close to spec §9.3's OWN worked
+  # example) fell through to a bare `discard` with a code comment as the only
+  # trace. A program that looks correct, compiles clean and does nothing at
+  # the deadline is the worst outcome available.
+  #
+  # Two defects sat here and only ONE is fixed. Typed select sources
+  # (`timeout.5s`) remain unlowered — that is G3, an unbuilt feature, and
+  # being unbuilt is acceptable. The SILENCE was the bug, and it is gone: the
+  # CHECKER now refuses any arm the backends cannot lower
+  # (typecheck.nim failIfUnlowerableArm), so `tuck ch` reports it rather than
+  # the user discovering it at runtime.
+  #
+  # Rejection lives in the checker, not codegen, for two reasons: codegen has
+  # no failure path at all (by the time you reach it the program is supposed
+  # to be valid), and an error raised there would never surface from `tuck ch`
+  # — the user would still see OK, then get a surprise one stage later.
+  #
+  # The string compares that caused it are gone too. The parser concatenates a
+  # dotted source into one opaque string, so `arm.source == "timeout"` never
+  # matched `timeout.5s`. Arms are now classified once into SelectSourceKind
+  # (ast_query.sourceKind) and matched EXHAUSTIVELY, so a new source kind
+  # cannot be added without deciding whether it can be lowered.
+  #
+  # The assertion is badCheck, not omits: the program no longer reaches
+  # emission at all, which is the point.
   t.src """
 task handleConn({conn: int}) -> void:
   on select:
@@ -422,8 +442,8 @@ task handleConn({conn: int}) -> void:
 fn main() -> int:
   return 0
 """
-  t.quietly: t.omits "an unrecognised 'on select' arm does not silently discard its body", "only read.timeout arms supported"
-  t.bugOpen "an unrecognised 'on select' arm does not silently discard its body"
+  t.quietly: t.badCheck "an unrecognised 'on select' arm does not silently discard its body", "not yet lowered|unsupported .on select"
+  t.bugFixed "an unrecognised 'on select' arm does not silently discard its body"
 
   # 16. FIXED. `alias(...)` never checked its RESULT for field-name
   # collisions: `ext alias(trackId: title, category: title)` (two sources

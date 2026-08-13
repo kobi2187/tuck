@@ -1082,24 +1082,35 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
     "))\n" & ind & "tuckNotifySend()"
 
+proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
+  ## The `timeout` arm's deadline as a plain int of milliseconds.
+  ##
+  ## `timeout {5.ms}` passes a duration payload; the runtime wants an int, so
+  ## a single-field `{dur}` struct unwraps to its duration and converts. A
+  ## bare `timeout 30` is already an int literal and passes through.
+  let ms = ctx.genExpr(soleFieldValue(arm.arg))
+  if arm.arg != nil and arm.arg.kind == exkLit: ms
+  else: "int(" & ms & ")"
+
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
   # task `on select` (spec §9.3), first cut: exactly a `read <fd>` arm and a
   # `timeout <ms>` arm race via tuckAwaitReadOrTimeout — true = fd readable
   # (run the read body), false = deadline (run the timeout body).
+  # Classified, not string-compared: `timeout.5s` is not `timeout`, and the
+  # bare compare that missed it is what dropped whole handler bodies into a
+  # `discard`. The checker now REFUSES any arm this cannot lower
+  # (failIfUnlowerableArm), so the fallback below is unreachable for a
+  # checked program and stays only as a belt for direct codegen callers.
   var readArm, timeoutArm: ptr SelectArm = nil
   for arm in e.selArms.mitems:
-    if arm.source == "read": readArm = addr arm
-    elif arm.source == "timeout": timeoutArm = addr arm
+    case arm.sourceKind
+    of sskRead: readArm = addr arm
+    of sskTimeout: timeoutArm = addr arm
+    of sskTimeoutTyped, sskOther: discard   # refused by the checker
   let ind = repeat("  ", ctx.indent)
   if readArm != nil and timeoutArm != nil:
     let fd = ctx.genExpr(readArm.arg)
-    # `timeout {5.ms}` — the arg is a duration payload; the runtime wants a
-    # plain int of milliseconds. Unwrap a single-field `{dur}` struct to its
-    # duration and convert to int; a bare int arg (`timeout 30`) passes through.
-    let durExpr = soleFieldValue(timeoutArm.arg)
-    var ms = ctx.genExpr(durExpr)
-    if not (timeoutArm.arg != nil and timeoutArm.arg.kind == exkLit):
-      ms = "int(" & ms & ")"   # a typed duration → milliseconds int
+    let ms = ctx.selectTimeoutMs(timeoutArm[])
     ctx.indent += 1
     let innerInd = repeat("  ", ctx.indent)
     # arm bodies (a return/expr) don't self-indent — prepend the branch indent
@@ -1109,6 +1120,8 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
     "if tuckAwaitReadOrTimeout(" & fd & ", " & ms & "):\n" & readBody &
       "\n" & ind & "else:\n" & toBody
   else:
+    # Unreachable for a checked program — failIfUnlowerableArm rejects these
+    # before emission. Kept as a visible marker rather than silence.
     ind & "discard  # select: only read+timeout arms supported (first cut)"
 
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string

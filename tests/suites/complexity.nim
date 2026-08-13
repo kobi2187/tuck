@@ -64,7 +64,7 @@ const
   # Both are still RATCHETS. tools/cc prints "tighten --debt/--heavy to N"
   # whenever the real figure is below the gate, so slack reports itself.
   # Raising either needs a reason in this comment.
-  DEBT = 1954
+  DEBT = 1953
   HEAVY = 60
   CC = "tools/cc"
 

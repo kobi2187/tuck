@@ -165,6 +165,23 @@ type
     body*: Expr
     span*: Span
 
+  # What a task select arm's `source` string MEANS. The parser stores the
+  # source verbatim — including dotted forms like `timeout.5s`, which it
+  # concatenates into one opaque string — so the raw field cannot be compared
+  # against "read"/"timeout" safely: `timeout.5s` is not `timeout`.
+  #
+  # An enum rather than those bare string compares, because the compare is
+  # what made a whole handler body vanish: an arm the emitter did not
+  # recognise fell through to `discard` and dropped its body with no
+  # diagnostic. Classifying once and matching exhaustively means a shape the
+  # backend cannot lower is a branch someone must WRITE, not a string that
+  # quietly matches nothing.
+  SelectSourceKind* = enum
+    sskRead              ## `read <fd>` — wait for the fd to become readable
+    sskTimeout           ## `timeout <ms>` — plain deadline, arg carries the ms
+    sskTimeoutTyped      ## `timeout.5s` — dotted duration; parsed, NOT lowered
+    sskOther             ## anything else: an actor handler name, or unbuilt
+
   BinOp* = enum
     boAdd, boSub, boMul, boMod
     # Division names its arithmetic (R1): `/i` truncating integer divide,

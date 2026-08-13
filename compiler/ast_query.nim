@@ -51,6 +51,19 @@ template capitalize*(s: string): string = capitalizeAscii(s)
 # bury the intent; named here, the call site reads as the question it asks.
 # Add a helper rather than open-coding the loop again.
 
+proc sourceKind*(arm: SelectArm): SelectSourceKind =
+  ## What a task select arm's source string means.
+  ##
+  ## The parser concatenates a dotted source into one opaque string
+  ## (`timeout.5s`), so a bare `arm.source == "timeout"` compare misses it —
+  ## which is precisely how an arm the emitter could not lower reached a
+  ## `discard` and had its body dropped in silence. Classify once, here, and
+  ## let every backend match on the result exhaustively.
+  if arm.source == "read": sskRead
+  elif arm.source == "timeout": sskTimeout
+  elif arm.source.startsWith("timeout."): sskTimeoutTyped
+  else: sskOther
+
 iterator decls*(m: Module, kind: DeclKind): Decl =
   ## Every non-nil top-level declaration of one kind.
   for d in m.decls:

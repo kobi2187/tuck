@@ -2136,12 +2136,37 @@ proc synthSend(tc: var TypeChecker, e: Expr): Type =
   for p in handlerParams: tc.checkSendField(e, p, given)
   unitType(e.span)
 
+proc failIfUnlowerableArm(arm: SelectArm) =
+  ## A task select arm the backends cannot lower must be REFUSED here, not
+  ## discovered at emission time.
+  ##
+  ## codegen lowered exactly one shape — a `read` arm raced against a
+  ## `timeout` arm — and sent everything else to a bare `discard`, dropping
+  ## the whole handler body with no error, no warning, and no PENDING entry.
+  ## A program that looks correct, compiles clean and does nothing at the
+  ## deadline is the worst outcome available; refusing to compile it is
+  ## strictly better than silently emitting a no-op.
+  ##
+  ## The case is exhaustive on purpose: a new source kind cannot be added
+  ## without deciding, right here, whether it can be lowered yet.
+  case arm.sourceKind
+  of sskRead, sskTimeout: discard        # the lowered shape
+  of sskTimeoutTyped:
+    fail("Type Error: a typed timeout source (`" & arm.source & "`) is " &
+         "parsed but not yet lowered — use `timeout <ms>` for now. Its body " &
+         "would otherwise be silently dropped", arm.span)
+  of sskOther:
+    fail("Type Error: unsupported `on select` source '" & arm.source &
+         "' — a task select takes `read <fd>` and `timeout <ms>` arms. Its " &
+         "body would otherwise be silently dropped", arm.span)
+
 proc synthSelect(tc: var TypeChecker, e: Expr): Type =
   ## task `on select` (spec §9.3): each arm waits on a source (read fd /
   ## timeout ms) then runs its body. Type the args (fd/ms are ints) and the
   ## bodies; the select's value is a branch outcome — leave it unknown, the
   ## bodies carry the returns.
   for arm in e.selArms:
+    failIfUnlowerableArm(arm)
     if arm.arg != nil: discard tc.synthesize(arm.arg)
     discard tc.synthesize(arm.body)
   unknownType(e.span)
