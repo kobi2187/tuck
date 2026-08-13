@@ -22,6 +22,35 @@ Assertion vocabulary (`tests/harness.nim`):
 
 ---
 
+## 0. Read this first: what will surprise you
+
+Tuck features that behave differently from what a reader of C, Go, Rust, Nim
+or Python would assume. Each one has bitten someone — including an AI agent
+auditing this compiler, who read a payload binding as a checker bug and nearly
+"fixed" a working feature. Skim this table before deciding anything is broken.
+
+| # | It looks like… | It actually is | Where |
+|---|---|---|---|
+| 1 | `{wrong: 1} f` should fail — the name is wrong | **Legal.** A payload field claims a parameter BY TYPE when unambiguous, so a producer's output feeds a consumer with different names, no `alias()` needed. Wrong *types* still fail. | §2 |
+| 2 | Extra payload fields are an error | **Ignored.** Subset matching: pass a big struct to a small signature. | §2 |
+| 3 | `getFive` is a function reference | **A call.** A bare name invokes. `:getFive` is the reference. | §2 |
+| 4 | Records are copied when passed | **Passed without copying** — but with value semantics enforced: a callee cannot write through a parameter (`TK-TY15`). Both backends emit a pointer; the guarantee is in the checker, not a copy. | §3, §7.1 |
+| 5 | `..` is a range | **`..name` mutates** a `var`; a range is spaced (`0 .. n`). Whitespace distinguishes them. | §16 |
+| 6 | `/` divides | **Not an operator.** `/i` is integer divide, `/f` float. Bare `/` is a parse error. | §7 |
+| 7 | Interfaces are pointers/vtables | **A copying tagged variant.** An interface value OWNS its data; dispatch is a switch on a tag. | §5 |
+| 8 | Actors are objects you construct | **Singletons.** One instance per declared type, no construction, no reference. | §10 |
+| 9 | `[io]` propagates automatically | **You declare it at every level.** An undeclared effect is an error, not an inference. | §11 |
+| 10 | An unhandled event is fine | **Compile error.** Every registry event needs a handler (`TK-RG03`), and one registry per program. | §10, Part 10 |
+| 11 | `self ..field` is banned like any parameter | **Legal for object members and actor fields** — state the callee OWNS. A plain fn whose param is merely NAMED `self` gets no exemption. | §5.1, §7.1 |
+| 12 | Concurrency targets microcontrollers | **Hosted OS today** — stackful minicoro coroutines over `mmap`, epoll/kqueue reactor. Tier 3, not Tier 1. | §10 |
+
+**If something here looks like a bug:** read the cited section first, then
+`grep` for a suite named after it (`tests/suites/auto_alias.nim` exists
+entirely for #1). A dedicated suite is strong evidence the behaviour is
+intended.
+
+---
+
 ## 1. The shape of a program
 
 A module is **declarations only**. Top-level statements are rejected —

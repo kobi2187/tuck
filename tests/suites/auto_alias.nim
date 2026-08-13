@@ -1,5 +1,23 @@
 ## End-to-end guard for type-based field/param auto-matching.
 ##
+## THE FEATURE, since it surprises people (spec §2.5, LANGUAGE-OVERVIEW §2):
+## a payload field may claim a parameter BY TYPE, not only by name. So
+##
+##     fn work({n: int}) -> int: ...
+##     {wrong: 1} work            # LEGAL. `wrong` is an int, `n` wants an int.
+##
+## is deliberate, not a checker gap. It exists so a producer's output record
+## feeds a consumer whose field names differ, without an explicit alias() at
+## every handoff. Binding runs in three passes: subset (extra fields ignored),
+## then by NAME, then by TYPE for whatever is left. Ambiguity is an error
+## rather than a guess — two unmatched fields of one type give "missing
+## required field". Wrong TYPES are always rejected.
+##
+## Read that before "fixing" a permissive-looking call site: an AI agent
+## auditing the checker in 2026-08 flagged exactly the case above as a hole
+## and came close to deleting the feature. This suite existing IS the evidence
+## the behaviour is intended.
+##
 ## A typecheck-only test cannot catch a MISALIGNED mapping: if two fields have
 ## compatible types, binding the wrong one to the wrong param still typechecks
 ## cleanly and still emits well-formed Nim. Only running the code and checking

@@ -13,10 +13,18 @@
 ## the failure this catches.
 ##
 ##   CEILING — no proc may exceed this complexity.
-##   BUDGET  — how many procs may sit above the threshold of 5.
+##   DEBT    — sum of (cc - 5) over every proc above 5. Total, not headcount.
+##   HEAVY   — how many procs may sit at cc>=15, where reading really suffers.
 ##
-## The script prints "tighten --budget to N" whenever the real count has
-## dropped below the budget, so the ratchet reports its own slack instead of
+## DEBT and HEAVY replaced a plain COUNT of procs over 5. The count treated a
+## cc=6 helper and a cc=53 monster as equal debt, so it fired on the 64 procs
+## sitting one over the line while staying silent about the tail — and it
+## PUNISHED splitting a monster, since three procs over 5 score worse than one
+## at 53. The goal was always "small readable procs"; these two measure that,
+## the count measured headcount.
+##
+## The script prints "tighten --debt/--heavy to N" whenever the real figure has
+## dropped below the gate, so the ratchet reports its own slack instead of
 ## quietly drifting.
 ##
 ## MEASURED ON THE REAL AST. tools/cc.nim parses each file with the Nim
@@ -33,25 +41,31 @@ import ../harness
 
 const
   CEILING = 64
-  # History: 280 -> 286 (compiler/optimize.nim) -> 270 (value-semantics work
-  # split the write checks out, which took several long procs under the
-  # ceiling) -> 281 (declaration-side checks: invariants, actor queues, the
-  # registry's five rules, registers' four, pool/arena footprints).
+  # DEBT and HEAVY replaced a plain COUNT of routines over 5, which was the
+  # wrong gate and had been quietly punishing good code.
   #
-  # TEMPORARILY LAX AT 281, by decision, while the declaration-side checker
-  # work lands; tighten in a dedicated pass once it is all in. `tools/cc`
-  # prints "tighten --budget to N" whenever the real count is below this, so
-  # the slack reports itself rather than drifting.
+  # The count weighted every routine the same, so a cc=6 helper — one guard
+  # plus a short case — was the same unit of debt as a cc=53 monster. Two
+  # consequences, both real in this tree:
   #
-  # THE TRAP THIS NUMBER SETS, written down because it caught me: the metric
-  # counts ROUTINES OVER THE CEILING, not total complexity. Splitting genType
-  # (cc=53, the worst proc in the tree) into three readable procs made the
-  # count go UP by two, because three procs at cc>5 score worse than one at
-  # cc=53. So the budget actively rewards leaving monsters intact, which is
-  # the opposite of what it is for. Splitting a hot proc is still the right
-  # call — take the +N and say so here. Worth replacing the metric with a sum
-  # or a p95 when someone has the appetite.
-  BUDGET = 281
+  #   * it fired on good code: 64 routines sit at exactly cc=6, one over the
+  #     line, and nearly all of them are fine as they are;
+  #   * it PUNISHED the fix. Splitting genType (cc=53, then the worst proc
+  #     here) into three readable procs RAISED the count by two, because three
+  #     routines over 5 score worse than one at 53. The gate was rewarding
+  #     leaving monsters intact — the opposite of its purpose.
+  #
+  # DEBT sums how far each routine exceeds 5, so the arithmetic finally
+  # matches the intent: splitting 53 into 8+7+6 moves debt 48 -> 6, and a new
+  # small helper costs 1. HEAVY counts only routines at cc>=15 (this tree's
+  # p90) — the ones where complexity actually costs a reader. Together: "the
+  # tail is shrinking", without taxing every small helper.
+  #
+  # Both are still RATCHETS. tools/cc prints "tighten --debt/--heavy to N"
+  # whenever the real figure is below the gate, so slack reports itself.
+  # Raising either needs a reason in this comment.
+  DEBT = 1954
+  HEAVY = 60
   CC = "tools/cc"
 
 proc run*(t: var T) =
@@ -63,7 +77,7 @@ proc run*(t: var T) =
     t.failed.inc
     return
 
-  var argv = @[CC, "--gate", $CEILING, "--budget", $BUDGET]
+  var argv = @[CC, "--gate", $CEILING, "--debt", $DEBT, "--heavy", $HEAVY]
   for f in walkFiles("compiler/*.nim"): argv.add f
   argv.add "lexer.nim"
   argv.add "tuck.nim"
@@ -72,7 +86,7 @@ proc run*(t: var T) =
   if t.phase != pReport: return
 
   echo "== cyclomatic complexity ratchet (ceiling " & $CEILING &
-       ", budget " & $BUDGET & ") =="
+       ", debt " & $DEBT & ", heavy " & $HEAVY & ") =="
   let (rc, outp) = t.resultOf(i)
   # Only the summary lines are shown; the full ranked table is `tools/cc` on its
   # own.
@@ -84,14 +98,17 @@ proc run*(t: var T) =
     return
   t.failed.inc
   echo "complexity.sh: 1 failed"
-  echo "  A proc got more complex, or a new one landed over the ceiling."
+  echo "  A proc got more complex, or a heavy new one landed."
   echo ""
-  echo "  BUDGET is a COUNT, not a per-proc verdict: any proc over cc 5 that"
-  echo "  gets split pays it back. Splitting the newcomer is rarely the best"
-  echo "  trade — a small proc at cc=6 is far more readable than the cc=40+"
-  echo "  procs already in the tree. Run"
+  echo "  DEBT is the sum of (cc - 5) over every proc above 5, so it rewards"
+  echo "  what you actually want: splitting a cc=53 proc into 8+7+6 moves debt"
+  echo "  48 -> 6. A genuinely-needed small helper at cc=6 costs 1, which is"
+  echo "  the right price. HEAVY counts procs at cc>=15 — the ones that hurt"
+  echo "  to read. Neither punishes a good split. Run"
   echo ""
   echo "    tools/cc compiler/*.nim lexer.nim tuck.nim | head -20"
   echo ""
-  echo "  and split the worst offender you can do WELL instead. Never raise"
-  echo "  CEILING/BUDGET in this file."
+  echo "  and split the worst offender you can do WELL. If a new proc really"
+  echo "  needs its complexity (a dispatch `case` over an enum is dispatch,"
+  echo "  not complexity), raise the number here WITH the reason — but check"
+  echo "  first whether paying it down elsewhere is the better trade."

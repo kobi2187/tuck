@@ -112,17 +112,19 @@ proc measure(path: string, acc: var seq[Measured]) =
     stderr.writeLine "cc: could not parse ", path, ": ", e.msg
 
 proc main() =
-  var gate, budget = -1
+  var gate, budget, debt, heavy = -1
   var files: seq[string]
   var i = 1
   while i <= paramCount():
     case paramStr(i)
     of "--gate": inc i; gate = parseInt(paramStr(i))
     of "--budget": inc i; budget = parseInt(paramStr(i))
+    of "--debt": inc i; debt = parseInt(paramStr(i))
+    of "--heavy": inc i; heavy = parseInt(paramStr(i))
     else: files.add(paramStr(i))
     inc i
   if files.len == 0:
-    echo "usage: cc [--gate N] [--budget N] FILE..."
+    echo "usage: cc [--gate N] [--budget N] [--debt N] [--heavy N] FILE..."
     quit(1)
 
   var all: seq[Measured]
@@ -153,6 +155,44 @@ proc main() =
       echo "budget ", budget, ": ok (", over.len, " over complexity 5)"
       if over.len < budget:
         echo "  -> tighten --budget to ", over.len
+
+  # --debt / --heavy: the metrics that actually track "small, readable procs".
+  #
+  # WHY THE COUNT ALONE IS THE WRONG GATE. `--budget` counts ROUTINES over 5
+  # and weights them all the same, so a cc=6 helper (one guard plus a short
+  # case) is the same unit of debt as a cc=53 monster. Two consequences, both
+  # observed in this tree:
+  #
+  #   * it fires on good code. 64 procs sit at exactly cc=6, one over the
+  #     line, and almost all are fine.
+  #   * it PUNISHES the fix. Splitting genType (cc=53, worst in the tree) into
+  #     three readable procs raised the count by two, because three procs over
+  #     5 score worse than one at 53. The gate rewarded leaving it alone.
+  #
+  # DEBT sums how far each routine is over 5, so splitting a monster always
+  # helps (53 becomes 8+7+6: debt 48 -> 6) and a new cc=6 helper costs 1.
+  # HEAVY counts only routines at or over its threshold — the ones where
+  # complexity genuinely hurts reading. Together they say "the tail is
+  # shrinking" without taxing every small helper.
+  let totalDebt = over.foldl(a + b.cc - 5, 0)
+  if debt >= 0:
+    if totalDebt > debt:
+      echo "FAIL: complexity debt ", totalDebt, " (sum over 5), limit is ", debt
+      failed = true
+    else:
+      echo "debt ", debt, ": ok (", totalDebt, ")"
+      if totalDebt < debt: echo "  -> tighten --debt to ", totalDebt
+  if heavy >= 0:
+    # The threshold is where a `case` stops being dispatch and starts being a
+    # proc doing several jobs. 15 is this tree's p90.
+    const HeavyAt = 15
+    let heavies = all.filterIt(it.cc >= HeavyAt)
+    if heavies.len > heavy:
+      echo "FAIL: ", heavies.len, " routines at cc>=", HeavyAt, ", limit is ", heavy
+      failed = true
+    else:
+      echo "heavy ", heavy, ": ok (", heavies.len, " at cc>=", HeavyAt, ")"
+      if heavies.len < heavy: echo "  -> tighten --heavy to ", heavies.len
   quit(if failed: 1 else: 0)
 
 main()
