@@ -1470,6 +1470,24 @@ proc aliasedFieldType(fields: seq[FieldDef], name: string): Type =
     if f.name == name: return f.typ
   nil
 
+proc failIfDuplicateField(fields: seq[FieldDef], f: FieldDef, sp: Span,
+                          op, source: string) =
+  ## Every path that BUILDS a field set routes its additions through here, so
+  ## a name landing twice is an error rather than a silent shadowing. `op` and
+  ## `source` name the operation and where the collision came from, because
+  ## the same collision means something different per caller — merge unions
+  ## two members, alias renames two sources onto one target.
+  ##
+  ## Tuck has three field-combining paths: `+` composition (guarded
+  ## separately by duplicates.nim's failIfComposedCollision), `merge`, and
+  ## `alias`. alias went unguarded and emitted a Nim tuple with the same field
+  ## written twice, which `nim check` rejects — a diagnostic about generated
+  ## code the user never wrote. A fourth combiner must call this too.
+  for existing in fields:
+    if existing.name == f.name:
+      fail("Type Error: " & op & " field '" & f.name & "' collides " &
+           source, sp)
+
 proc asAliasCall(tc: var TypeChecker, e: Expr): Type =
   ## `expr alias(old: new, ...)` — restructure: the same values under renamed
   ## fields. The result is a REAL record type; consumers check against it.
@@ -1484,17 +1502,12 @@ proc asAliasCall(tc: var TypeChecker, e: Expr): Type =
     if newExpr == nil or newExpr.kind != exkVar:
       fail("Type Error: alias target must be a plain field name: " &
            oldName & ": newName", e.span)
-    fields.add(FieldDef(name: newExpr.name, span: e.span,
-                        typ: (if ft == nil: unknownType(e.span) else: ft)))
+    let renamed = FieldDef(name: newExpr.name, span: e.span,
+                           typ: (if ft == nil: unknownType(e.span) else: ft))
+    failIfDuplicateField(fields, renamed, e.span, "alias",
+                         "— two sources renamed onto the same target")
+    fields.add(renamed)
   Type(span: e.span, kind: tkRecord, fields: fields)
-
-proc failIfDuplicateField(fields: seq[FieldDef], f: FieldDef, sp: Span) =
-  ## Merge unions field sets, so a name in two members is an error rather
-  ## than a silent shadowing.
-  for existing in fields:
-    if existing.name == f.name:
-      fail("Type Error: merge field '" & f.name &
-           "' collides between members", sp)
 
 proc asMergeCall(tc: var TypeChecker, e: Expr): Type =
   ## `{a, b} merge` — flatten the UNION of the member structs' fields into
@@ -1508,7 +1521,7 @@ proc asMergeCall(tc: var TypeChecker, e: Expr): Type =
       fail("Type Error: merge member '" & mname & "' must be a struct, " &
            "got " & typeName(mt), mexpr.span)
     for f in mfs:
-      failIfDuplicateField(fields, f, e.span)
+      failIfDuplicateField(fields, f, e.span, "merge", "between members")
       fields.add(f)
   if fields.len == 0: return unknownType(e.span)
   Type(span: e.span, kind: tkRecord, fields: fields)

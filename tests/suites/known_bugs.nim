@@ -425,17 +425,20 @@ fn main() -> int:
   t.quietly: t.omits "an unrecognised 'on select' arm does not silently discard its body", "only read.timeout arms supported"
   t.bugOpen "an unrecognised 'on select' arm does not silently discard its body"
 
-  # 16. `alias(...)` never checks the RESULT for field-name collisions — neither
-  # against the receiver's own untouched fields, nor between two renamed-to
-  # targets. `ext alias(trackId: title, category: title)` (two sources renamed
-  # to the SAME target) type-checks clean today AND emits a Nim tuple literal
-  # with the field 'title' written twice, which `nim check` rejects outright
-  # ("field initialized twice: 'title'") — exactly the class of bug
-  # tests/suites/duplicates.nim's failIfComposedCollision exists to catch for `+`
-  # composition (spec §2.5), just not reached here because alias() is a
-  # different code path. `tuck ch` gives no hint that anything is wrong; the
-  # correct behaviour is a checker error naming the collision, same spirit as
-  # failIfComposedCollision's "contributed twice" message.
+  # 16. FIXED. `alias(...)` never checked its RESULT for field-name
+  # collisions: `ext alias(trackId: title, category: title)` (two sources
+  # renamed to the SAME target) type-checked clean AND emitted a Nim tuple
+  # with 'title' written twice, which `nim check` rejects outright ("field
+  # initialized twice") — a diagnostic about generated code the user never
+  # wrote.
+  #
+  # The guard already existed: failIfDuplicateField, used by asMergeCall
+  # twenty lines below asAliasCall — and defined AFTER it, so alias could not
+  # see it without a forward declaration. That ordering accident is the most
+  # likely reason it was never applied. Fix: the guard moved above both, took
+  # `op`/`source` params so each caller keeps an accurate message, and every
+  # path that BUILDS a field set now routes additions through it. `+`
+  # composition keeps its own failIfComposedCollision (spec §2.5).
   t.src """
 fn main() -> int:
   let ext = {trackId: 42, category: 7}
@@ -443,7 +446,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.badCheck "alias() rejects two renamed fields colliding on the same target name", "twice|collis|already|duplicate"
-  t.bugOpen "alias() rejects two renamed fields colliding on the same target name"
+  t.bugFixed "alias() rejects two renamed fields colliding on the same target name"
 
   # 17. A QUALIFIED mutator in a `..` chain emits garbage. `cfg ..mod::fn`
   # drops the call entirely and applies the NEXT chain step to the function
