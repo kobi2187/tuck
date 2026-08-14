@@ -104,8 +104,13 @@ const
   # pairwise" arms collapsed onto two helpers (23 -> 9).
   # 1397 -> 1388, HEAVY 40 -> 39: raisedEventsIn walks ast.children instead of
   # ten hand-listed kinds plus `else: discard`.
-  DEBT = 1388
-  HEAVY = 39
+  # 1388 -> 1308, HEAVY 39 -> 33: the ast.children sweep. Every hand-rolled
+  # Expr walk in the tree now uses the iterator — rewriteExpr, synthesizeExpr,
+  # mentionsName, rewriteChains, raisedEventsIn, scanReturns — plus splits of
+  # buildDeclIndex and genType. Four of those walks had a silent gap; two were
+  # real bugs (EV-4, and the pointer-return tkFunc case).
+  DEBT = 1308
+  HEAVY = 33
   CC = "tools/cc"
 
 proc run*(t: var T) =
