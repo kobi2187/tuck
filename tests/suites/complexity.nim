@@ -76,8 +76,17 @@ const
   # 1963 -> 1964 (same day): TK-TY16's arm in the `explain` table. A registry
   # dispatch, so +1 for the whole table rather than per code — every new
   # diagnostic costs this, and diagnostics.nim's suite requires the arm.
-  DEBT = 1964
-  HEAVY = 60
+  #
+  # 1964 -> 1476, HEAVY 60 -> 45 (2026-08-14): NOT a code change — tools/cc
+  # stopped charging for PURE DISPATCH ARMS. An `of` arm with no decision of
+  # its own is a lookup-table entry written in control-flow syntax, and
+  # counting one apiece made a 21-kind AST dispatch outscore genuinely knotty
+  # code. Nearly 500 of the tree's measured debt was tables. The exemption is
+  # measured, not assumed: an arm that loops, tests or short-circuits still
+  # counts in full (tools/cc.nim isDispatchArm). What now tops the ranking —
+  # lowerExpr at 42, scanNext at 38 — is real work, which is the point.
+  DEBT = 1476
+  HEAVY = 45
   CC = "tools/cc"
 
 proc run*(t: var T) =

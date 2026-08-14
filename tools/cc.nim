@@ -19,13 +19,25 @@
 # anything that adds an edge to the control-flow graph:
 #
 #   if / elif        each condition
-#   case             each `of` arm, and each `elif` inside one
+#   case             each `of` arm that CONTAINS A DECISION (see below)
 #   while / for      the loop test
 #   and / or         short-circuit — a second path around the right operand
 #   except           each handler
 #
 # NOT counted: `else` (the edge already exists), `try`/`finally` (no branch of
-# their own), and anything inside a nested routine — that gets its own score.
+# their own), anything inside a nested routine — that gets its own score — and
+# PURE DISPATCH ARMS.
+#
+# DISPATCH ARMS. An `of` arm whose body has no branch of its own is a lookup
+# table entry written in control-flow syntax: `of exkUnary: yield e.operand`.
+# The arms are data, and a reader scans them instead of tracing them. Charging
+# one apiece made a 21-kind AST dispatch outscore genuinely knotty code, which
+# taxed the exact shape this tree wants — see ast.children and clearIds, where
+# the alternative is the same 21 arms copy-pasted per traversal.
+#
+# The exemption is EARNED, not assumed: it is measured by recursing into the
+# arm, so anything that loops, tests, or short-circuits still counts. A `case`
+# doing real work per arm scores exactly as before.
 #
 # BUILD ONCE (the binary is gitignored; this imports Nim's compiler sources,
 # so it needs the install root on the path):
@@ -55,11 +67,28 @@ proc isShortCircuit(n: PNode): bool =
   if n.len == 0 or n[0].kind != nkIdent: return false
   n[0].ident.s in ShortCircuit
 
+proc countBranches(n: PNode): int
+
+proc isDispatchArm(n: PNode): bool =
+  ## An `of` arm that only DELIVERS a value — no decision of its own.
+  ##
+  ## A `case` mapping each kind to a straight action is a lookup table written
+  ## in control-flow syntax; the arms are data, not decisions, and a reader
+  ## scans them rather than tracing them. Charging one per arm made a 21-kind
+  ## AST dispatch score higher than genuinely knotty code, which taxed exactly
+  ## the shape this tree wants (see ast.children, clearIds).
+  ##
+  ## "No decision of its own" is measured, not guessed: the arm's body must
+  ## contain zero branch points. An arm that loops, tests, or short-circuits
+  ## is doing work and is still counted.
+  if n.kind != nkOfBranch or n.len == 0: return false
+  countBranches(n[^1]) == 0
+
 proc countBranches(n: PNode): int =
   ## Decision points beneath `n`, NOT descending into a nested routine — that
   ## has its own complexity and is reported separately.
   if n == nil: return 0
-  if n.kind in BranchKinds: result += 1
+  if n.kind in BranchKinds and not isDispatchArm(n): result += 1
   if isShortCircuit(n): result += 1
   for c in n:
     if c.kind in RoutineKinds: continue

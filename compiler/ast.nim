@@ -704,44 +704,81 @@ proc assignIds*(m: var Module) =
   ## must not collide across modules.
   for d in m.decls: assignIds(d, globalNodeCounter)
 
+iterator children*(e: Expr): Expr =
+  ## Every sub-expression, one level down. For the walks that only need to
+  ## VISIT nodes rather than rewrite them — the traversal is the boilerplate,
+  ## and assignIds/clearIds already hand-roll it twice because they mutate.
+  ##
+  ## The case is exhaustive on purpose: a new ExprKind must be listed here or
+  ## the compiler refuses, which is what stops a walk from silently missing a
+  ## node and reporting a clean result over a subtree it never looked at.
+  if e != nil:
+    case e.kind
+    of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue: discard
+    of exkField:
+      yield e.receiver
+      yield e.dotArg
+    of exkStruct:
+      for f in e.fields: yield f.value
+    of exkList:
+      for it in e.items: yield it
+    of exkBracket:
+      yield e.brReceiver
+      for a in e.brArgs: yield a
+    of exkBracketAssign:
+      yield e.brTarget
+      yield e.brValue
+    of exkCall:
+      yield e.callee
+      for a in e.args: yield a
+    of exkChain:
+      yield e.base
+      for s in e.steps:
+        yield s.target
+        yield s.arg
+    of exkBinary:
+      yield e.left
+      yield e.right
+    of exkUnary: yield e.operand
+    of exkBlock:
+      for s in e.stmts: yield s
+    of exkIf:
+      yield e.cond
+      yield e.thenBranch
+      yield e.elseBranch
+    of exkMatch:
+      yield e.subject
+      for arm in e.arms:
+        yield arm.guard
+        yield arm.body
+    of exkFor:
+      yield e.iterable
+      yield e.body
+    of exkWhile:
+      yield e.whileCond
+      yield e.whileBody
+    of exkAssign:
+      yield e.target
+      yield e.assignVal
+    of exkReturn: yield e.returnVal
+    of exkRaise: yield e.raiseVal
+    of exkSend: yield e.sendPayload
+    of exkSelect:
+      for arm in e.selArms:
+        yield arm.arg
+        yield arm.body
+
 proc clearIds*(e: Expr) =
   ## Drop ids so assignIds hands out fresh ones. Needed when a module comes
   ## back from the AST cache carrying ids from the run that wrote it.
+  ## The traversal is `children` — this used to repeat all 21 arms of it.
   if e == nil: return
   e.id = NodeId(0)
-  case e.kind
-  of exkLit, exkVar, exkQualified, exkImport: discard
-  of exkField: (clearIds(e.receiver); clearIds(e.dotArg))
-  of exkStruct: (for f in e.fields: clearIds(f.value))
-  of exkList: (for it in e.items: clearIds(it))
-  of exkBracket:
-    clearIds(e.brReceiver)
-    for a in e.brArgs: clearIds(a)
-  of exkBracketAssign: (clearIds(e.brTarget); clearIds(e.brValue))
-  of exkCall:
-    clearIds(e.callee)
-    for a in e.args: clearIds(a)
-  of exkChain:
-    clearIds(e.base)
-    for s in e.steps.mitems:
-      s.id = NodeId(0)
-      clearIds(s.target); clearIds(s.arg)
-  of exkBinary: (clearIds(e.left); clearIds(e.right))
-  of exkUnary: clearIds(e.operand)
-  of exkBlock: (for s in e.stmts: clearIds(s))
-  of exkIf: (clearIds(e.cond); clearIds(e.thenBranch); clearIds(e.elseBranch))
-  of exkMatch:
-    clearIds(e.subject)
-    for arm in e.arms: (clearIds(arm.guard); clearIds(arm.body))
-  of exkFor: (clearIds(e.iterable); clearIds(e.body))
-  of exkWhile: (clearIds(e.whileCond); clearIds(e.whileBody))
-  of exkBreak, exkContinue: discard
-  of exkAssign: (clearIds(e.target); clearIds(e.assignVal))
-  of exkReturn: clearIds(e.returnVal)
-  of exkRaise: clearIds(e.raiseVal)
-  of exkSend: clearIds(e.sendPayload)
-  of exkSelect:
-    for arm in e.selArms: (clearIds(arm.arg); clearIds(arm.body))
+  # A chain STEP carries its own id, which is not an Expr and so is not a
+  # child. Everything else is reached by the iterator.
+  if e.kind == exkChain:
+    for s in e.steps.mitems: s.id = NodeId(0)
+  for c in e.children: clearIds(c)
 
 proc clearIds*(d: Decl) =
   if d == nil: return
