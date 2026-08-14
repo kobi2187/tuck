@@ -91,8 +91,16 @@ const
   # and its three shape helpers). The alternative was the previous behaviour —
   # any `..fn` clears every hole — which is unsound in the direction that
   # matters: it hands back a "filled" field the mutator never touched.
-  DEBT = 1487
-  HEAVY = 45
+  #
+  # 1487 -> 1424, HEAVY 45 -> 42 (2026-08-14): a complexity pass. Four procs
+  # split along boundaries their own comments already described —
+  # builderSteps 39 -> 14/11/10, checkRegistry 34 -> four rules, lowerExpr
+  # 42 -> 12/10/6 (its ~20 recursion arms became ast.children), mangleExpr
+  # 32 -> 22 (the same, minus the three arms that carry a scoping rule).
+  # Behaviour-preserving: emitted output for examples/ is byte-identical
+  # throughout, which is the real check for the lowering and mangling ones.
+  DEBT = 1424
+  HEAVY = 42
   CC = "tools/cc"
 
 proc run*(t: var T) =

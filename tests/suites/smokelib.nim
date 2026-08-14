@@ -69,6 +69,13 @@ proc mustExit*(binary: string, want: int) =
 proc mustAbort*(binary, needle: string) =
   ## The binary must FAIL, and say why. Two halves of one assertion: an abort
   ## with the wrong message is as much a regression as no abort at all.
+  ##
+  ## KNOWN FLAKE (seen 2026-08-14): this can fail with rc != 0 and outp EMPTY —
+  ## "aborted without /X/: " with nothing after the colon. The binary did abort
+  ## correctly; the output capture came back blank under parallel load. Same
+  ## family as the `Bad file descriptor` IOError this harness occasionally
+  ## raises. An empty `outp` on a non-zero rc means "rerun before believing
+  ## it", not "the compiler regressed" — verify by running the binary by hand.
   let (rc, outp) = exec(binary)
   if rc == 0: fail binary.lastPathPart & " did not abort"
   if needle.len > 0 and not outp.contains(needle):
