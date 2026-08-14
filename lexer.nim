@@ -375,7 +375,98 @@ proc skipSpaces*(L: var Lexer) =
                   "TK-LX01")
     L.advance()
 
+proc scanDotDot(L: var Lexer): bool =
+  ## `..<` / `..` / `..name`. Returns whether it consumed anything.
+  ##
+  ## Spacing decides the meaning: a spaced ` .. ` is a RANGE, a tight `..name`
+  ## is a chain mutator. That is the whole disambiguation, and it is why this
+  ## has to be tried before the operator tables below.
+  if not (L.peek() == '.' and L.peek(1) == '.'): return false
+  let sl = L.line
+  let sc = L.column
+  if L.peek(2) == '<':
+    L.advance(); L.advance(); L.advance()
+    L.pendingTokens.add(Token(kind: tkRangeLt, value: "..<", line: sl,
+                              column: sc))
+    return true
+  let spacedBefore = L.position > 0 and L.source[L.position - 1] == ' '
+  let spacedAfter = L.peek(2) == ' '
+  let kind = if spacedBefore and spacedAfter: tkRange else: tkDotDot
+  L.advance(); L.advance()
+  L.pendingTokens.add(Token(kind: kind, value: "..", line: sl, column: sc))
+  true
+
+const MultiCharOps: seq[tuple[spelling: string, kind: TokenKind]] = @[
+  ## Every operator longer than one character, as DATA rather than a nest of
+  ## guards. Two rules are baked into the order and must survive edits:
+  ##
+  ##   1. LONGEST MATCH FIRST within a first character — `/i=` before `/i`,
+  ##      or `x /i= 2` lexes as `/i` then a stray `=`.
+  ##   2. Division names its arithmetic (ruling R1, 2026-07-28): `/i` is
+  ##      integer divide, `/f` is float, and a bare `/` does not exist. On
+  ##      embedded a silently-wrong quotient is worse than a character of
+  ##      typing.
+  ("->", tkArrow), ("-=", tkMinusAssign),
+  ("=>", tkFatArrow), ("==", tkEq),
+  ("::", tkColonColon),
+  ("?!", tkBangQuestion),          # T?! == T!? — same wrapper
+  ("!?", tkBangQuestion), ("!=", tkNeq),
+  ("<=", tkLte),
+  (">=", tkGte),
+  ("+=", tkPlusAssign),
+  ("*=", tkStarAssign),
+  ("/i=", tkSlashIntAssign), ("/f=", tkSlashFloatAssign),
+  ("/i", tkSlashInt), ("/f", tkSlashFloat),
+]
+
+proc scanMultiChar(L: var Lexer, ch: char): bool =
+  ## The two- and three-character operators. Returns whether one matched.
+  ##
+  ## Only the entries starting with `ch` are tried, so a `/` is never tested
+  ## against "->", "==" and ten others — the same short-circuit the previous
+  ## hand-written `case` gave, without one branch per operator.
+  for op in MultiCharOps:
+    if op.spelling[0] == ch and L.tryTwoChar(op.spelling, op.kind):
+      return true
+  false
+
+proc scanOneChar(L: var Lexer, ch: char) =
+  ## The single-character tokens — a lookup table written as a case, and the
+  ## last word: anything reaching here that is not listed is a lex error.
+  case ch
+  of '.': L.emitOneChar(tkDot, ".")
+  of ':': L.emitOneChar(tkColon, ":")
+  of ',': L.emitOneChar(tkComma, ",")
+  of '|': L.emitOneChar(tkPipe, "|")
+  of '?': L.emitOneChar(tkQuestion, "?")
+  of '!': L.emitOneChar(tkBang, "!")
+  of '=': L.emitOneChar(tkAssign, "=")
+  of '+': L.emitOneChar(tkPlus, "+")
+  of '-': L.emitOneChar(tkMinus, "-")
+  of '*': L.emitOneChar(tkStar, "*")
+  # bare `/` is deliberately not a token — see the R1 note above. It reaches
+  # the parser as tkSlash only to produce a message naming the replacement.
+  of '/': L.emitOneChar(tkSlash, "/")
+  of '%': L.emitOneChar(tkPercent, "%")
+  of '<': L.emitOneChar(tkLt, "<")
+  of '>': L.emitOneChar(tkGt, ">")
+  of '(': L.emitOneChar(tkLParen, "(")
+  of ')': L.emitOneChar(tkRParen, ")")
+  of '{': L.emitOneChar(tkLBrace, "{")
+  of '}': L.emitOneChar(tkRBrace, "}")
+  of '[': L.emitOneChar(tkLBracket, "[")
+  of ']': L.emitOneChar(tkRBracket, "]")
+  else:
+    L.reportError("Unexpected character: " & ch, L.line, L.column)
+
 proc scanNext*(L: var Lexer) =
+  ## One step of the lexer: emit whatever the next character starts.
+  ##
+  ## Four stages, in this order and for this reason:
+  ##   indentation   only at column 1, and it can emit on its own
+  ##   the openers   EOF, space, comment, newline, string, number, identifier
+  ##   `..`          spacing-sensitive, so it must precede the operator tables
+  ##   operators     multi-char first (longest match), then single-char
   if L.column == 1:
     L.handleIndent()
     if L.pendingTokens.len > 0:
@@ -383,99 +474,21 @@ proc scanNext*(L: var Lexer) =
 
   let ch = L.peek()
   case ch
-  of '\0':
-    L.handleEOF()
-  of ' ':
-    L.skipSpaces()
-  of '#':
-    L.skipComment()
+  of '\0': L.handleEOF()
+  of ' ': L.skipSpaces()
+  of '#': L.skipComment()
   of '\n':
     if L.pendingTokens.len > 0 or L.position > 0:
-      L.pendingTokens.add(Token(kind: tkNewline, value: "\n", line: L.line, column: L.column))
+      L.pendingTokens.add(Token(kind: tkNewline, value: "\n", line: L.line,
+                                column: L.column))
     L.advance()
-  of '"':
-    L.lexString()
-  of '0'..'9':
-    L.lexNumber()
-  of 'a'..'z', 'A'..'Z', '_':
-    L.lexIdent()
+  of '"': L.lexString()
+  of '0'..'9': L.lexNumber()
+  of 'a'..'z', 'A'..'Z', '_': L.lexIdent()
   else:
-    if L.peek() == '.' and L.peek(1) == '.':
-      let sl = L.line
-      let sc = L.column
-      if L.peek(2) == '<':
-        L.advance(); L.advance(); L.advance()
-        L.pendingTokens.add(Token(kind: tkRangeLt, value: "..<", line: sl, column: sc))
-        return
-      # spaced ` .. ` = range; tight `..ident` = chain mutator
-      let spacedBefore = L.position > 0 and L.source[L.position - 1] == ' '
-      let spacedAfter = L.peek(2) == ' '
-      let kind = if spacedBefore and spacedAfter: tkRange else: tkDotDot
-      L.advance(); L.advance()
-      L.pendingTokens.add(Token(kind: kind, value: "..", line: sl, column: sc))
-      return
-    # Switch on the first character before trying anything: every multi-char
-    # operator is uniquely determined by it, so a `/` never has to be tested
-    # against "->", "==" and ten others first. Longest match still wins WITHIN
-    # a branch, which is the only place it matters (`/i=` before `/i`).
-    case ch
-    of '-':
-      if L.tryTwoChar("->", tkArrow): return
-      if L.tryTwoChar("-=", tkMinusAssign): return
-    of '=':
-      if L.tryTwoChar("=>", tkFatArrow): return
-      if L.tryTwoChar("==", tkEq): return
-    of ':':
-      if L.tryTwoChar("::", tkColonColon): return
-    of '?':
-      if L.tryTwoChar("?!", tkBangQuestion): return  # T?! == T!? — same wrapper
-    of '!':
-      if L.tryTwoChar("!?", tkBangQuestion): return
-      if L.tryTwoChar("!=", tkNeq): return
-    of '<':
-      if L.tryTwoChar("<=", tkLte): return
-    of '>':
-      if L.tryTwoChar(">=", tkGte): return
-    of '+':
-      if L.tryTwoChar("+=", tkPlusAssign): return
-    of '*':
-      if L.tryTwoChar("*=", tkStarAssign): return
-    of '/':
-      # Division names its arithmetic (ruling R1, 2026-07-28): `/i` is integer
-      # divide, `/f` is float divide, and a bare `/` does not exist. On embedded
-      # a silently-wrong quotient is worse than a character of typing. Longest
-      # match first — `/i=` must be tried before `/i`.
-      if L.tryTwoChar("/i=", tkSlashIntAssign): return
-      if L.tryTwoChar("/f=", tkSlashFloatAssign): return
-      if L.tryTwoChar("/i", tkSlashInt): return
-      if L.tryTwoChar("/f", tkSlashFloat): return
-    else: discard
-
-    case ch
-    of '.': L.emitOneChar(tkDot, ".")
-    of ':': L.emitOneChar(tkColon, ":")
-    of ',': L.emitOneChar(tkComma, ",")
-    of '|': L.emitOneChar(tkPipe, "|")
-    of '?': L.emitOneChar(tkQuestion, "?")
-    of '!': L.emitOneChar(tkBang, "!")
-    of '=': L.emitOneChar(tkAssign, "=")
-    of '+': L.emitOneChar(tkPlus, "+")
-    of '-': L.emitOneChar(tkMinus, "-")
-    of '*': L.emitOneChar(tkStar, "*")
-    # bare `/` is deliberately not a token — see the R1 note above. It reaches
-    # the parser as tkSlash only to produce a message naming the replacement.
-    of '/': L.emitOneChar(tkSlash, "/")
-    of '%': L.emitOneChar(tkPercent, "%")
-    of '<': L.emitOneChar(tkLt, "<")
-    of '>': L.emitOneChar(tkGt, ">")
-    of '(': L.emitOneChar(tkLParen, "(")
-    of ')': L.emitOneChar(tkRParen, ")")
-    of '{': L.emitOneChar(tkLBrace, "{")
-    of '}': L.emitOneChar(tkRBrace, "}")
-    of '[': L.emitOneChar(tkLBracket, "[")
-    of ']': L.emitOneChar(tkRBracket, "]")
-    else:
-      L.reportError("Unexpected character: " & ch, L.line, L.column)
+    if L.scanDotDot(): return
+    if L.scanMultiChar(ch): return
+    L.scanOneChar(ch)
 
 proc nextToken*(L: var Lexer): Token =
   while L.pendingTokens.len == 0:

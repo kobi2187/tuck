@@ -109,8 +109,11 @@ const
   # mentionsName, rewriteChains, raisedEventsIn, scanReturns — plus splits of
   # buildDeclIndex and genType. Four of those walks had a silent gap; two were
   # real bugs (EV-4, and the pointer-return tkFunc case).
-  DEBT = 1308
-  HEAVY = 33
+  # 1308 -> 1280, HEAVY 33 -> 32: scanNext, the tree's worst proc at cc=38,
+  # split into its four stages and the multi-char operator nest turned into a
+  # table. 38 -> 8/7, with the two operator procs under the threshold.
+  DEBT = 1280
+  HEAVY = 32
   CC = "tools/cc"
 
 proc run*(t: var T) =
