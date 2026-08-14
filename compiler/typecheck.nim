@@ -65,11 +65,31 @@
 # "language design" turns out to be the order in which you try interpretations.
 # ---------------------------------------------------------------------------
 #
-# Split across four files so this one stays about RULES rather than plumbing:
-#   typecheck_state.nim   the TypeChecker object and its lookups
-#   typecheck_util.nim    small shared predicates (isNumeric, isWrapper, fail)
-#   typecheck_flow.nim    control-flow questions (does this branch always exit?)
-#   typecheck.nim         the rules themselves
+# Split so this one stays about RULES rather than plumbing:
+#   typecheck_state.nim        the TypeChecker object, scopes, lookups
+#   typecheck_util.nim         small shared predicates (isWrapper, isUninit, fail)
+#   typecheck_flow.nim         pure pre-passes: transitions, callee scans, exits
+#   typecheck_conformance.nim  `satisfies` — does this object meet the contract
+#   typecheck_pointers.nim     where a raw pointer may and may not appear
+#   typecheck_decisions.nim    decision-table coverage and overlap
+#   typecheck_transitions.nim  validating a `transitions:` block's own shape
+#   typecheck.nim              the rules themselves
+#
+# ---------------------------------------------------------------------------
+# THE MAP. This file is long; these are its parts, in order. Grep `# === ` to
+# move between them.
+#
+#   THE COMPATIBILITY RELATION   may this type flow where that one is wanted
+#   FIELD ACCESS                 the seven meanings of `a.b`, in priority order
+#   REGISTERS / MMIO             bit ranges and [read]/[write] permissions
+#   OPERATORS                    arithmetic, division, comparison, boolean
+#   BRANCHES, MATCH, THE MERGE   where per-variable knowledge forks and rejoins
+#   CHAINS AND MUTATION          `..field {v}` / `..fn`, and what a write means
+#   CALL SYNTHESIS               construction vs builtin vs plain call
+#   THE SPINE                    one synth* per ExprKind — the walk itself
+#   SIGNATURE COLLECTION         the pre-pass, and per-declaration validators
+#   CONST PURITY                 a const may not call into the world
+#   PROGRAM DRIVER               run the passes over every module, in order
 #
 # ---------------------------------------------------------------------------
 # HOW IT RUNS, AND WHAT IT COSTS
@@ -133,6 +153,13 @@ export typecheck_transitions
 # UnknownName now lives in ast.nim (codegen needs it for typed-AST checks)
 # Stateless helpers now live in typecheck_util; the TypeChecker state object +
 # scope/resolve/fieldsOf now live in typecheck_state (both imported above).
+
+# === THE COMPATIBILITY RELATION ============================================
+# "May a value of THIS type flow where THAT one is wanted?" One predicate over
+# wrapper discipline, nominal-vs-structural rules, numeric widening and fnsig
+# matching. Every call site, assignment and return routes through `compatible`,
+# so a change here changes what the whole language accepts.
+
 proc compatible(tc: TypeChecker, actual, expected: Type): bool
 
 # NO TYPE MATCHES ANYTHING. There was a list of names that did — `void`,
@@ -264,6 +291,11 @@ proc synthBracket(tc: var TypeChecker, e: Expr): Type
 proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type
 proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                    bindings: var Table[string, Type])  # asSlotInvoke calls it
+
+# === FIELD ACCESS: WHAT `a.b` MEANS ========================================
+# The ordered dispatch documented at the top of this file — seven different
+# things share one spelling, and the ORDER is the language rule. Each `as*`
+# arm returns nil for "not mine"; the first non-nil wins.
 
 # Method form: `x .fn {args}` / `x ..fn {args}` — the receiver rides as the
 # fn's FIRST parameter (checked structurally when the receiver type has no
@@ -656,6 +688,12 @@ const RegisterWidth = 32
   ## and the Nim backend's registerMMIO macro assumes it. If a register ever
   ## needs another width, this becomes an attribute rather than a constant.
 
+# === REGISTERS / MMIO (spec 8.1) ===========================================
+# A `register` type maps named bit ranges onto a hardware word. Self-contained
+# bit arithmetic plus the [read]/[write] permission check — the only
+# per-field permission rule in the checker that comes from a DECLARATION
+# rather than from flow.
+
 proc regBits(f: FieldDef): tuple[lo, hi: int, ok: bool] =
   ## The bit range a register field occupies. The parser keeps it in the
   ## field's type NAME — "bit 0" or "bits 3..7" — so this is where that
@@ -759,6 +797,11 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   if result != nil: return
   tc.failUnresolvedFieldAccess(e, recvT, fields)
   return unknownType(e.span)
+
+# === OPERATORS =============================================================
+# Arithmetic, division (`/i` vs `/f` — Tuck has no bare `/`), comparison,
+# ranges, boolean ops. Mostly small: both operands must agree, and an
+# unhandled !T/?T may not reach an operator at all.
 
 proc isOptional(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
@@ -883,6 +926,12 @@ proc okGuardName(tc: TypeChecker, cond: Expr): string =
      not tc.isNarrowed(cond.receiver.name):
     cond.receiver.name
   else: ""
+
+# === BRANCHES, MATCH, AND THE MERGE ========================================
+# Where the checker's per-variable knowledge FORKS and rejoins. Each branch
+# runs from the same entry state and the exits are merged; getting the merge
+# wrong is how narrowing or variant state leaks across a branch it should not.
+# The three join sites (if/else, match arms, loop body) are all here.
 
 proc synthBranches(tc: var TypeChecker, e: Expr, guard: string): (Type, Type) =
   ## Both branches from the same entry state; the after-if state is their union.
@@ -1034,6 +1083,11 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
     for arm in e.arms.mitems: tc.qualifyErrArm(arm, errEnums)
   result = tc.synthArms(e, trackedVar, trackedType)
   tc.checkExhaustive(e, tc.matchDomain(subjT, trackedType, errEnums))
+
+# === CHAINS AND MUTATION ===================================================
+# `x ..field {v}` / `x ..fn`. Who may be written (mutability), what a step
+# means (field set vs mutator call), and what a write does to the checker's
+# knowledge — transitions taken, <uninit> holes filled.
 
 proc assignRoot*(e: Expr): Expr =
   ## The variable a write ultimately lands on: `c` for `c`, `c.n`, or
@@ -1511,6 +1565,12 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
   else:
     for a in e.args: discard tc.synthesize(a)
 
+# === CALL SYNTHESIS ========================================================
+# What `{payload} name` MEANS: a construction, a restructuring builtin
+# (alias/merge/bake), a distinct conversion, or a plain call. synthCall is the
+# ordered chain that decides which — the same "first arm that claims it wins"
+# shape as the field-access dispatch above.
+
 proc calleeNameOf(tc: var TypeChecker, e: Expr): string =
   ## The name being called. `module::fn` against a KNOWN module (imported or
   ## pending-stubbed) is strict — the fn must exist; an unknown prefix stays
@@ -1782,6 +1842,11 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     return tc.asIndirectCall(e)
   for a in e.args: discard tc.synthesize(a)
   unknownType(e.span)
+
+# === THE SPINE: ONE synth* PER EXPRESSION KIND =============================
+# Everything above is reached FROM here. synthesizeKind is the case over
+# ExprKind; each arm is a synthX that returns the expression's type. This is
+# the walk — the rest of the file is what the individual kinds need.
 
 # Kind dispatch lives in synthesizeKind; synthesize stamps the result onto the
 # node (typed AST — codegen reads semLayer.typeFor(e) for type-directed lowering)
@@ -2433,6 +2498,11 @@ proc synthesize(tc: var TypeChecker, e: Expr): Type =
   # unchanged by this feature.
   setType(semLayer, e, unwrapUninit(result))
 
+# === SIGNATURE COLLECTION AND DECLARATION VALIDATION =======================
+# The pre-pass that fills fnSigs / typeDecls / objDecls before any body is
+# checked, so a call can resolve a fn declared later in the file — plus the
+# per-declaration validators (pool, arena, actor queue, invariants, registry).
+
 proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true)
 
 proc failIfPendingClash(tc: TypeChecker, d: Decl) =
@@ -2947,6 +3017,10 @@ proc sigLine*(si: SigInfo): string =
 # Returns the SHORTCUTS list (continue/exit policies): each statement-position
 # drop that will route to the global handler. Empty under strict — strict
 # raises instead, listing every unhandled site at once (spec 4.9).
+# === CONST PURITY ==========================================================
+# A `const` initialiser must be computable without running the program: no io,
+# no calls that could. Small recursive walk, no coupling to synthesis.
+
 proc isIoFn(tc: TypeChecker, name: string): bool =
   ## Reads the signature table, so an imported [io] fn counts too.
   emIo in tc.declaredEffects(name)
@@ -3009,6 +3083,11 @@ proc constCheck(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
   else:
     fail("Const Error: 'const " & cname & "' must be a pure " &
          "compile-time expression", sp)
+
+# === PROGRAM DRIVER ========================================================
+# Whole-program orchestration: build a checker per module, run the passes in
+# order, collect diagnostics. `typecheckProgram` at the bottom is the only
+# entry the pipeline calls.
 
 proc newModuleChecker(m: Module, externSigs: Table[string, FnSig],
                       externPending: Table[string, Span]): TypeChecker =
