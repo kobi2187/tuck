@@ -64,7 +64,12 @@ proc failIfPointer(decls: TypeDecls, t: Type, where: string, sp: Span) =
     for f in t.fields: failIfPointer(decls, f.typ, where, sp)
   of tkEffect: failIfPointer(decls, t.inner, where, sp)
   of tkRename: failIfPointer(decls, t.underlying, where, sp)
-  else: discard
+  # Listed rather than left to `else`, because this is a SAFETY check and a
+  # kind it forgets to descend into is a pointer it lets through. tkNamed is
+  # the base case (isPointerKind above already answered for it); tkSum's
+  # variant payloads are field lists checked where the variant is declared;
+  # tkUnion is flattened to a record before any backend sees it.
+  of tkNamed, tkSum, tkUnion: discard
 
 proc isMemoryPointer(t: Type): bool =
   ## A pointer INTO MEMORY — `cstring` or `Buf`. Distinct from an opaque
@@ -107,7 +112,14 @@ proc failIfPointerReturn(decls: TypeDecls, t: Type, fnName: string, sp: Span) =
     for f in t.fields: failIfPointerReturn(decls, f.typ, fnName, sp)
   of tkEffect: failIfPointerReturn(decls, t.inner, fnName, sp)
   of tkRename: failIfPointerReturn(decls, t.underlying, fnName, sp)
-  else: discard
+  of tkFunc:
+    # Was missing while failIfPointer above descended into it — a returned
+    # callback whose own signature passes memory would have gone unchecked.
+    for p in t.params: failIfPointerReturn(decls, p, fnName, sp)
+    failIfPointerReturn(decls, t.result, fnName, sp)
+  # Listed, not `else`: a kind this forgets is a pointer it returns. See the
+  # note on failIfPointer for why each of these has nothing to descend into.
+  of tkNamed, tkSum, tkUnion: discard
 
 proc checkPointerContainment(decls: TypeDecls, d: Decl, inExtern = false)
 
