@@ -100,13 +100,27 @@ proc exprVariants*(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
     if tc.varVariants.hasKey(e.name):
       return tc.varVariants[e.name]
   else: discard
+  # NOT a gap: this is a classifier, not a walk. Every kind it does not name —
+  # and every shape within the three it does — falls here to "could be any
+  # variant", which is the conservative answer. Narrowing it would need
+  # evidence; widening the case would not change what this returns.
   tc.allVariants(typeName)
 
 proc scanReturns(tc: TypeChecker, typeName: string, e: Expr,
                  acc: var seq[string], exact: var bool) =
+  ## Every `return` reachable from `e`, and which variant it yields.
+  ##
+  ## Walks EVERY child via ast.children. It used to list six kinds and
+  ## `else: discard`, so a return nested anywhere else went uncounted — and an
+  ## uncounted return makes the variant set look narrower than it is, which is
+  ## the unsafe direction for a transition check.
+  ##
+  ## Recursing into more places than the old list only ever finds MORE
+  ## returns; a `return` is a statement and cannot appear where the old walk
+  ## deliberately did not look (an `if` condition, say), so the extra reach
+  ## costs nothing and closes the gap.
   if e == nil or not exact: return
-  case e.kind
-  of exkReturn:
+  if e.kind == exkReturn:
     if e.returnVal == nil:
       exact = false
       return
@@ -118,18 +132,8 @@ proc scanReturns(tc: TypeChecker, typeName: string, e: Expr,
         if v notin acc: acc.add(v)
     else:
       exact = false
-  of exkBlock:
-    for s in e.stmts: tc.scanReturns(typeName, s, acc, exact)
-  of exkIf:
-    tc.scanReturns(typeName, e.thenBranch, acc, exact)
-    tc.scanReturns(typeName, e.elseBranch, acc, exact)
-  of exkMatch:
-    for arm in e.arms: tc.scanReturns(typeName, arm.body, acc, exact)
-  of exkFor:
-    tc.scanReturns(typeName, e.body, acc, exact)
-  of exkWhile:
-    tc.scanReturns(typeName, e.whileBody, acc, exact)
-  else: discard
+    return
+  for c in e.children: tc.scanReturns(typeName, c, acc, exact)
 
 
 # --- GROUP 2: callee scanning, for the <uninit> rule -----------------------
