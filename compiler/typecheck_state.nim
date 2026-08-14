@@ -85,15 +85,47 @@ type
                                       # types (Type@Variant). Forked/unioned
                                       # at branches; reassignments checked
                                       # against the transition table.
+    shadowedVariants*: seq[seq[tuple[name: string, prev: seq[string],
+                                     had: bool]]]
+      ## Undo log for varVariants, one frame per open scope. Because
+      ## varVariants is name-keyed, an inner binding overwrites an outer one's
+      ## entry; this remembers what was there so popScope can put it back.
+      ## `had` distinguishes "the outer had no entry" from "the outer had an
+      ## empty one" — deleting and restoring-empty are different states.
 
-proc pushScope*(tc: var TypeChecker) = tc.scopes.add(initTable[string, Binding]())
-proc popScope*(tc: var TypeChecker) = discard tc.scopes.pop()
+proc pushScope*(tc: var TypeChecker) =
+  tc.scopes.add(initTable[string, Binding]())
+  tc.shadowedVariants.add(@[])
+
+proc popScope*(tc: var TypeChecker) =
+  ## Dropping a scope undoes the variant state of everything it BOUND.
+  ##
+  ## varVariants is keyed by bare NAME, so an inner `var s` overwrites the
+  ## outer `s`'s entry. Without this, the inner one's state outlived its scope
+  ## and merged into the outer at the enclosing branch join — widening
+  ## `{Running}` to `{Idle|Running}` and REJECTING a declared, legal edge.
+  ##
+  ## Only names this scope actually REBOUND are touched (bindName records
+  ## them), so a scope that merely reads or reassigns an outer var leaves its
+  ## state alone — which is what keeps branch merging working.
+  if tc.scopes.len == 0: return
+  discard tc.scopes.pop()
+  if tc.shadowedVariants.len > 0:
+    for (name, prev, had) in tc.shadowedVariants.pop():
+      if had: tc.varVariants[name] = prev
+      else: tc.varVariants.del(name)
 
 proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
                isParam = false) =
   ## A fresh binding is never narrowed: guarding is something that happens to
   ## a result AFTER it is bound, and a new binding of the same name is a
   ## different result.
+  # Record what this name's variant state was before the binding shadowed it,
+  # once per scope — the FIRST bind is the one that shadowed an outer entry.
+  if tc.shadowedVariants.len > 0 and not tc.scopes[^1].hasKey(name):
+    let had = tc.varVariants.hasKey(name)
+    tc.shadowedVariants[^1].add((name,
+                                 (if had: tc.varVariants[name] else: @[]), had))
   tc.scopes[^1][name] = (typ, isVar, isParam, false)
 
 proc setNarrowed*(tc: var TypeChecker, name: string, on: bool) =

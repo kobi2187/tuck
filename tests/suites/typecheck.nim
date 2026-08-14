@@ -1212,6 +1212,29 @@ fn slam({d: Door}) -> void:
 """
   t.okCheck "transition: match narrowing unlocks the edge"
 
+  # Variant state is per BINDING. An inner `var s` is a different variable
+  # whose state must not merge into the outer one when its scope ends —
+  # keyed by name alone it did, widening the outer to {Idle|Running} and
+  # rejecting a Running -> Done edge that is declared and legal.
+  t.src """
+type Phase [sealed]:
+  | Idle
+  | Running
+  | Done
+  transitions:
+    Idle -> Running
+    Running -> Done
+
+fn main({b: bool}) -> int:
+  var s = Phase.Idle
+  s = Phase.Running
+  if b:
+    var s = Phase.Idle
+  s = Phase.Done
+  return 0
+"""
+  t.okCheck "an inner binding's variant state does not leak to the outer one"
+
   t.src """
 type Door:
   | Closed
