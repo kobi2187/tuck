@@ -33,6 +33,7 @@ import odin_backend
 import optimize
 import pointer_containment
 import typecheck
+import uninit
 import value_semantics
 import when_target
 
@@ -68,6 +69,7 @@ let registry: seq[Entry] = @[
   ("optimize",            SuiteProc(optimize.run),            false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
   ("typecheck",           SuiteProc(typecheck.run),           true),
+  ("uninit",              SuiteProc(uninit.run),              false),
   ("value_semantics",     SuiteProc(value_semantics.run),     false),
   ("when_target",         SuiteProc(when_target.run),         false),
 ]

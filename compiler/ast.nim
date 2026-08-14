@@ -351,6 +351,12 @@ const
                                   # an absence of one
   AfterErrorName* = "<afterror>"  # a dummy returned after fail() has already
                                   # reported; nothing should ever check it
+  UninitName* = "<uninit>"        # a declared field the construction did not
+                                  # supply. Wraps the field's own type
+                                  # (`<uninit>[int]`), rides with the value so
+                                  # nesting cannot launder it, and is erased
+                                  # before codegen — the emitted record keeps
+                                  # its declared field types exactly.
 
 # A `satisfies I` line inside an object body (spec §5.2). parseObjectBody is
 # shared with dkActor and has no out-param, so the line is collected as a dkExpr

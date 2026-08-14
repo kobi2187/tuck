@@ -75,6 +75,37 @@ proc unwrapEffect*(t: Type): Type =
     return unwrapEffect(t.args[0])
   t
 
+# `<uninit>[T]` — a declared field the construction did not supply. Shares
+# tkApp's shape with the wrappers above but is deliberately NOT one of them:
+# `!`/`?` are written by the author in a signature, this is inferred by the
+# checker and never spelled in source. Adding it to isWrapper would make every
+# wrapper site tell the user to guard something they never declared.
+proc isUninit*(t: Type): bool =
+  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+    t.base.name == UninitName and t.args.len == 1
+
+proc unwrapUninit*(t: Type): Type =
+  ## The field's real type, marker removed. Used wherever the QUESTION is
+  ## "what shape is this?" rather than "may I read it?" — record compatibility,
+  ## and the boundary where a type is stamped for codegen.
+  if isUninit(t): t.args[0] else: t
+
+proc anyUninit*(t: Type): bool =
+  ## Does this record carry a hole, at any depth? Recursive, so an Outer whose
+  ## Inner has one still answers yes and keeps its structural type instead of
+  ## collapsing back to the nominal declaration.
+  if t == nil or t.kind != tkRecord: return false
+  for f in t.fields:
+    if isUninit(f.typ) or anyUninit(f.typ): return true
+  false
+
+proc markUninit*(t: Type, sp: Span): Type =
+  ## Wrap a field's type as unsupplied. Idempotent: marking twice is the same
+  ## as marking once, which keeps re-entrant construction paths honest.
+  if isUninit(t): t
+  else: Type(span: sp, kind: tkApp, args: @[t],
+             base: Type(span: sp, kind: tkNamed, name: UninitName))
+
 proc typeName*(t: Type): string =
   if t == nil: return "void"
   case t.kind
@@ -86,6 +117,9 @@ proc typeName*(t: Type): string =
   of tkApp:
     if t.base != nil and t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"]:
       t.base.name & typeName(t.args[0])
+    elif isUninit(t):
+      # reads as a state of the field, not a container of it
+      typeName(t.args[0]) & " " & UninitName
     else:
       var parts: seq[string]
       for a in t.args: parts.add(typeName(a))

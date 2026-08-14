@@ -144,6 +144,43 @@ proc isNarrowed*(tc: TypeChecker, name: string): bool =
       return tc.scopes[i][name].narrowed
   false
 
+proc retype*(tc: var TypeChecker, name: string, typ: Type) =
+  ## Replace the innermost binding's TYPE, keeping its permissions.
+  ##
+  ## This is how an unsupplied field stops being one: assignment rebuilds the
+  ## record type with that field's `<uninit>` marker removed. Storing the
+  ## state in the binding rather than a name-keyed table beside it means
+  ## shadowing and scope exit are already handled — an inner `let c` has its
+  ## own binding with its own type, and it dies with its scope.
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      tc.scopes[i][name].typ = typ
+      return
+
+proc filled(t: Type, field: string): Type =
+  ## `t` with the marker off `field`, or off every field when `field` is "".
+  if t == nil or t.kind != tkRecord: return t
+  var fs: seq[FieldDef]
+  for f in t.fields:
+    if field == "" or f.name == field:
+      fs.add(FieldDef(name: f.name, typ: unwrapUninit(f.typ), span: f.span))
+    else: fs.add(f)
+  Type(span: t.span, kind: tkRecord, fields: fs)
+
+proc clearUninit*(tc: var TypeChecker, name: string, field = "") =
+  ## A write filled one of `name`'s holes — rebuild its type without the
+  ## marker. An empty `field` clears them ALL, which is what a `..fn` mutator
+  ## does: it may write anything and the checker only sees its return type, so
+  ## the permissive answer is the useful one (a missed hole beats refusing a
+  ## working builder).
+  ##
+  ## No-op unless the binding's type is a record, so every write path can call
+  ## this without first asking whether the feature applies.
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      tc.scopes[i][name].typ = filled(tc.scopes[i][name].typ, field)
+      return
+
 proc lookup*(tc: TypeChecker, name: string): tuple[found: bool, b: Binding] =
   for i in countdown(tc.scopes.high, 0):
     if tc.scopes[i].hasKey(name):

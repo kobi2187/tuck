@@ -215,7 +215,11 @@ proc recordCompatible(tc: TypeChecker, a: Type, eFields: seq[FieldDef]): bool =
     var found = false
     for af in aFields:
       if af.name != ef.name: continue
-      if not tc.compatible(af.typ, ef.typ): return false
+      # A hole does not change the record's SHAPE, so a partly-built Config is
+      # still a Config and may be passed whole. Whether the hole's value may
+      # be USED is a different question, answered at the read site — keeping
+      # them apart is what lets `f {c}` pass while `5 + c.hole` fails.
+      if not tc.compatible(unwrapUninit(af.typ), ef.typ): return false
       found = true
       break
     if not found: return false
@@ -441,6 +445,18 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
                                          name: e.fieldName)))
   sig.ret
 
+proc failUninitRead(name: string, t: Type, sp: Span) =
+  ## Reading a field the construction never supplied.
+  ##
+  ## The READ is the error, not the omission: an untouched hole is legal, so
+  ## the message names what to do about it rather than scolding the
+  ## construction.
+  fail("Type Error: '" & name & "' is " & UninitName & " here — it was not " &
+       "supplied at construction and nothing has assigned it since. Set it " &
+       "first (`" & name & " = ...` or `.." & name & " {...}`), or declare " &
+       "it '" & typeName(unwrapUninit(t)) & "?' if it is genuinely optional",
+       sp)
+
 proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
                   recvT: Type): Type =
   ## `x.field` — an ordinary field read off the receiver's type.
@@ -454,6 +470,7 @@ proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
       fail("Type Error: '" & e.fieldName & "' is a field of " &
            typeName(recvT) & " — fields take no arguments; to set it, " &
            "use '.." & e.fieldName & " {value}' on a var", e.span)
+    if isUninit(f.typ): failUninitRead(e.fieldName, f.typ, e.span)
     return f.typ
   nil
 
@@ -1077,9 +1094,13 @@ proc checkFieldSet(tc: var TypeChecker, step: ChainStep, f: FieldDef,
          "} — to set several fields, use a mutator fn", step.span)
   let valExpr = soleFieldValue(step.arg)
   let vt = tc.synthesize(valExpr)
-  if not tc.compatible(vt, f.typ):
+  # Against the field's DECLARED type: setting an unsupplied field is how the
+  # hole gets filled, so the value is matched against what the field will
+  # hold, not against the marker saying it holds nothing yet.
+  let want = unwrapUninit(f.typ)
+  if not tc.compatible(vt, want):
     fail("Type Error: field '" & f.name & "' of " & typeName(recvT) & " is " &
-         typeName(f.typ) & " but got " & typeName(vt), valExpr.span)
+         typeName(want) & " but got " & typeName(vt), valExpr.span)
 
 proc mutatorReturnType(tc: var TypeChecker, step: var ChainStep, base: Expr,
                        recvT: Type): Type =
@@ -1122,12 +1143,17 @@ proc checkMutatorCall(tc: var TypeChecker, step: var ChainStep, e: Expr,
 proc checkChainStep(tc: var TypeChecker, step: var ChainStep, e: Expr,
                     baseT, recvT: Type, fields: seq[FieldDef]) =
   ## One `..name {args}` step: either it SETS a field or it calls a mutator.
+  ## Both fill holes — a field set fills its own, a mutator may write anything
+  ## and the checker only sees its return type, so it clears them all.
+  let base = if e.base != nil and e.base.kind == exkVar: e.base.name else: ""
   for f in fields:
     if f.name == step.target.name:
       tc.checkFieldSet(step, f, recvT)
+      if base != "": tc.clearUninit(base, step.target.name)
       return
   if tc.fnSigs.hasKey(step.target.name):
     tc.checkMutatorCall(step, e, baseT, recvT)
+    if base != "": tc.clearUninit(base)
   elif recvT.kind == tkRecord:
     fail("Type Error: no field or fn '" & step.target.name & "' on type " &
          typeName(recvT), step.span)
@@ -1628,6 +1654,68 @@ proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
   if viaSig != nil: return viaSig
   for a in e.args: discard tc.synthesize(a)
 
+proc declaredFieldsOf(tc: TypeChecker, e: Expr, calleeName: string): seq[FieldDef] =
+  ## The fields a construction is measured against.
+  ##
+  ## Objects keep theirs in objFields, not typeBody, and getFieldsForType only
+  ## reaches those through a recorded decl edge — which a bare construction has
+  ## not got. objDecls is the checker's own table and answers directly.
+  if tc.objDecls.hasKey(calleeName):
+    composedFields(tc.module, tc.objDecls[calleeName])
+  else:
+    getFieldsForType(tc.module, Type(span: e.span, kind: tkNamed,
+                                     name: calleeName))
+
+proc suppliedFieldTypes(tc: var TypeChecker, e: Expr): Table[string, Type] =
+  ## The payload's fields by name, typed.
+  ##
+  ## Synthesized here rather than read back from semLayer: the stamp is
+  ## deliberately stripped of `<uninit>` markers (codegen must never see one),
+  ## and the marker is exactly what this needs.
+  if e.args.len == 1 and e.args[0] != nil and e.args[0].kind == exkStruct:
+    for f in e.args[0].fields:
+      result[f.name] = tc.synthesize(f.value)
+
+proc constructedField(d: FieldDef, supplied: Table[string, Type],
+                      sp: Span, holes: var bool): FieldDef =
+  ## One field of a construction: supplied, supplied-but-itself-holed, or
+  ## missing.
+  ##
+  ## A supplied field keeps the type of the VALUE given for it whenever that
+  ## value carries holes of its own — that is what stops nesting from
+  ## laundering. Storing a partly-built Inner into an Outer makes the Outer
+  ## carry Inner's hole, so `o.inner.b` is refused just as `i.b` would be.
+  ## Everywhere else the DECLARED type is kept, so nothing else shifts.
+  if not supplied.hasKey(d.name):
+    holes = true
+    return FieldDef(name: d.name, typ: markUninit(d.typ, sp), span: d.span)
+  let vt = supplied[d.name]
+  if vt != nil and vt.kind == tkRecord and anyUninit(vt):
+    holes = true
+    return FieldDef(name: d.name, typ: vt, span: d.span)
+  d
+
+proc constructedType(tc: var TypeChecker, e: Expr, calleeName: string): Type =
+  ## `{fields} TypeName` — the declared type, EXCEPT that any declared field
+  ## the payload did not supply comes back marked `<uninit>`.
+  ##
+  ## No holes ⇒ the plain nominal type, byte-identical to before this feature,
+  ## so the common path is untouched. Only a partial construction yields a
+  ## structural record — normal here: asAliasCall and asMergeCall already
+  ## return synthesized tkRecords that match no declaration.
+  ##
+  ## The marker rides on the FIELD's type, never on the record's: a marked
+  ## record would hit synthFieldAccess's isWrapper gate and make even reading
+  ## a SUPPLIED field an error.
+  let declared = tc.declaredFieldsOf(e, calleeName)
+  let nominal = Type(span: e.span, kind: tkNamed, name: calleeName)
+  if declared.len == 0: return nominal
+  let supplied = tc.suppliedFieldTypes(e)
+  var holes = false
+  var fs: seq[FieldDef]
+  for d in declared: fs.add(constructedField(d, supplied, e.span, holes))
+  if holes: Type(span: e.span, kind: tkRecord, fields: fs) else: nominal
+
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
   let calleeName = tc.calleeNameOf(e)
   if calleeName == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
@@ -1653,7 +1741,7 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     # object is NOMINAL. So the gate asks both tables while the result stays
     # the name either way.
     for a in e.args: discard tc.synthesize(a)
-    return Type(span: e.span, kind: tkNamed, name: calleeName)
+    return tc.constructedType(e, calleeName)
   if calleeName != "" and tc.fnSigs.hasKey(calleeName):
     return tc.asDeclaredCall(e, calleeName)
   if e.callee != nil and e.callee.kind != exkVar:
@@ -1990,6 +2078,14 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
   ## Assignment to an existing binding.
   tc.failIfTargetUnbound(e)
   tc.failIfTargetImmutable(e)
+  # `c.f = v` fills the hole. Clear it BEFORE synthesizing the target: the
+  # target is synthesized for its TYPE, which routes through asPlainField, so
+  # clearing afterwards would make the statement that fixes the hole the one
+  # that reports it. (The RHS is synthesized separately below, so reading the
+  # hole on the right of its own assignment is still caught.)
+  if e.target != nil and e.target.kind == exkField and
+     e.target.receiver != nil and e.target.receiver.kind == exkVar:
+    tc.clearUninit(e.target.receiver.name, e.target.fieldName)
   let targetT = tc.synthesize(e.target)
   let valT = tc.synthAssignVal(e, targetT)
   if not tc.compatible(valT, targetT):
@@ -2294,7 +2390,14 @@ proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
 proc synthesize(tc: var TypeChecker, e: Expr): Type =
   if e == nil: return unknownType(Span())
   result = tc.synthesizeKind(e)
-  setType(semLayer, e, result)
+  # Two different consumers, two different answers. The RETURNED type keeps
+  # the `<uninit>` marker, because that is how it rides with the value —
+  # synthStruct types a literal from its fields' synthesized types, so a
+  # partial record stored inside another carries its holes along and cannot
+  # be laundered. What is STORED for codegen has the marker stripped: the
+  # backends must see the field's real type, and the emitted record is
+  # unchanged by this feature.
+  setType(semLayer, e, unwrapUninit(result))
 
 proc collectSigs(tc: var TypeChecker, decls: seq[Decl], top = true)
 

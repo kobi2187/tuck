@@ -64,7 +64,15 @@ const
   # Both are still RATCHETS. tools/cc prints "tighten --debt/--heavy to N"
   # whenever the real figure is below the gate, so slack reports itself.
   # Raising either needs a reason in this comment.
-  DEBT = 1953
+  #
+  # 1953 -> 1963 (2026-08-14): the `<uninit>` field analysis. A new rule that
+  # every write path and the single field-read site must honour cannot be free
+  # in branch count. What was extractable WAS extracted first — the diagnostic
+  # out of asPlainField, the record rebuild out of clearUninit, and
+  # constructedType split three ways (13 -> 6) — taking the cost from 22 to
+  # 10. The remainder is the rule itself: two more arms in checkChainStep,
+  # one guard each in synthReassign, anyUninit and clearUninit.
+  DEBT = 1963
   HEAVY = 60
   CC = "tools/cc"
 
