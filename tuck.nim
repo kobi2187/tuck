@@ -72,9 +72,11 @@ options:
                 lets imports resolve regardless of cwd or binary location
   --target:NAME selects which `when TARGET == "NAME":` blocks compile in
                 (spec §8.3; any command). Unset = every such block is dropped.
-  -O:PASS[,...] (compile/build) optional optimization passes, OFF by default.
-                `-O:all` enables every pass; `-O:report` lists what was
-                rewritten. See compiler/optimize.nim for what each one does
+  -O:PASS[,...] (compile/build) optimization passes. ON by default — every
+                pass is semantics-preserving. `-O:none` turns them all off,
+                which is the first thing to try if emitted code looks wrong.
+                Naming passes replaces the default set; `-O:report` lists what
+                was rewritten. See compiler/optimize.nim for what each does
                 and what it refuses to touch.
   --nim:FLAGS   (build) extra nim flags, e.g. --nim:"--os:standalone --cpu:arm""""
   quit(2)
@@ -286,12 +288,19 @@ when isMainModule:
   # is dropped (fails closed, not toward guessing a platform).
   for o in opts:
     if o.startsWith("--target:"): buildTarget = o[9 .. ^1]
-  # `-O:name[,name]` turns on OPTIONAL passes (compiler/optimize.nim), off by
-  # default. `-O:report` additionally lists every site a pass rewrote. An
-  # unknown pass name is fatal rather than ignored: a typo in a build script
-  # must not quietly mean "no optimization".
+  # Optimization passes (compiler/optimize.nim) are ON by default — a pass
+  # that only runs when asked for is a pass nothing exercises, and every one
+  # here is required to be semantics-preserving.
+  #
+  # `-O:none` turns them all off, which is the first step when emitted code
+  # looks wrong: if `-O:none` changes the answer, the bug is in a pass.
+  # `-O:name[,name]` selects an explicit subset. `-O:report` lists every site
+  # a pass rewrote. An unknown pass name is fatal rather than ignored: a typo
+  # in a build script must not quietly mean something other than it says.
   var optPasses: set[OptPass]
+  for p in OptPass: optPasses.incl(p)
   var optReport = false
+  var optExplicit = false      # a -O: naming passes REPLACES the default set
   for o in opts:
     if not o.startsWith("-O:"): continue
     var spec = o[3 .. ^1]
@@ -301,12 +310,20 @@ when isMainModule:
     elif spec.endsWith(",report"):
       optReport = true
       spec = spec[0 ..< spec.len - ",report".len]
+    if spec == "none":
+      optPasses = {}
+      optExplicit = true
+      continue
+    if spec == "": continue                      # bare `-O:report`
     let (ps, bad) = parseOptPasses(spec)
     if bad != "":
       var known: seq[string]
       for p in OptPass: known.add($p)
       die("tuck: no such optimization pass: '" & bad & "'\n" &
-          "  available: " & known.join(", ") & ", all")
+          "  available: " & known.join(", ") & ", all, none")
+    if not optExplicit:
+      optPasses = {}                             # drop the defaults first
+      optExplicit = true
     optPasses = optPasses + ps
   let t0 = epochTime()
 

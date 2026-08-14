@@ -69,26 +69,31 @@ proc emittedWith(t: var T, tag: string, flags: seq[string]): string =
   if fileExists(p): readFile(p) else: ""
 
 proc run*(t: var T) =
-  # --- 1. off by default is inert -----------------------------------------
+  # --- 1. ON by default, and -O:none is the escape hatch -------------------
+  #
+  # Passes run unless told otherwise (2026-08-14). `-O:none` must still turn
+  # them all off: when emitted code looks wrong, "does -O:none change the
+  # answer" is the first question, and it needs to be askable without
+  # rebuilding the compiler.
 
   t.src wholeValueSrc
-  let plainOff = t.emittedWith("off", @[])
-  let plainOn = t.emittedWith("on", @["-O:chain-inplace"])
+  let plainOff = t.emittedWith("off", @["-O:none"])
+  let plainOn = t.emittedWith("on", @[])
   if t.phase != pCollect:
     if plainOff.startsWith("EMIT FAILED") or plainOn.startsWith("EMIT FAILED"):
       t.no "a pass changes the emitted code when asked for", plainOff & plainOn
     elif plainOff == plainOn:
       t.no "a pass changes the emitted code when asked for",
-           "-O:chain-inplace emitted the same text as no -O at all"
+           "-O:none emitted the same text as the default"
     else:
       t.ok "a pass changes the emitted code when asked for"
 
-    # The inert property: no -O means the call survives untouched.
+    # -O:none is genuinely inert: the call survives untouched.
     if "tuck_withDefaults(" in plainOff:
-      t.ok "without -O the mutator call is emitted unchanged"
+      t.ok "-O:none leaves the mutator call unchanged"
     else:
-      t.no "without -O the mutator call is emitted unchanged",
-           "the call is already gone with no -O given: " & plainOff
+      t.no "-O:none leaves the mutator call unchanged",
+           "the call is gone even with -O:none: " & plainOff
 
   # --- 2. the whole-value builder loses its call ---------------------------
 
@@ -108,8 +113,8 @@ proc run*(t: var T) =
   # --- 3. the temp-and-mutate builder loses its copies ---------------------
 
   t.src tempAndMutateSrc
-  let tmOff = t.emittedWith("off", @[])
-  let tmOn = t.emittedWith("on", @["-O:chain-inplace"])
+  let tmOff = t.emittedWith("off", @["-O:none"])
+  let tmOn = t.emittedWith("on", @[])
   if t.phase != pCollect:
     if "tuck_withDefaults(" in tmOff and "tuck_withDefaults(" notin tmOn and
        "cfg.timeout = 30" in tmOn:

@@ -13,7 +13,7 @@ proc tuck_start*(self: tuck_ServerConfig): bool =
 
 proc tuck_main*(): void =
   var server = tuck_ServerConfig(port: 0, timeout: 0, running: false)
-  server = tuck_withDefaults(server)
+  server = tuck_ServerConfig(port: 80, timeout: 30, running: false)
   server.port = 8080
   server.timeout = 60
   var ok = tuck_start(server)
