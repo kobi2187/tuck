@@ -383,16 +383,24 @@ fn main() -> int [io]:
   t.quietly: t.frozen "a -> void task can be fire-and-forget"
   t.bugFixed "a -> void task can be fire-and-forget"
 
-  # 14. Constructing a type with MISSING required fields is silently accepted.
-  # `{fields} TypeName` construction (typecheck.nim, the branch that returns
-  # early once the callee resolves to a known type/object name) never checks
-  # the supplied field set against the type's DECLARED fields — only the
-  # function-CALL path does that ("missing required field '...'"). Found while
-  # auditing spec §4.8 against a 2026-07-09 ruling ("types with fields require
-  # every field at construction; absence must be explicit ?T") that was never
-  # wired into the checker, or regressed since. `{}` with zero fields supplied
-  # against a two-required-int-field type passes `tuck ch` with no diagnostic
-  # at all — the missing fields are whatever the backend zero-inits them to.
+  # 14. FIXED 2026-08-14, but NOT as this entry originally demanded — the
+  # ruling it was pinned against was re-ruled instead.
+  #
+  # The bug: `{fields} TypeName` construction never checked the supplied field
+  # set against the DECLARED fields, so a missing field became whatever the
+  # backend zero-inits. Pinned against the 2026-07-09 ruling "types with
+  # fields require every field at construction".
+  #
+  # Enforcing that literally would have rejected the builder pattern —
+  # construct partial, fill by chain, then read — which works and is worth
+  # keeping. So construction stays legal and the UNSUPPLIED FIELD carries a
+  # compile-time `<uninit>` marker instead: reading it is the error, assigning
+  # it clears it, never reading it is fine. See ROADMAP.md (RE-RULED) and
+  # tests/suites/uninit.nim for the full rule set.
+  #
+  # The original snippet — `{} Config` with the field never read — is now
+  # CORRECT and compiles. The assertion moved to the read, which is where the
+  # defect always actually bit.
   t.src """
 type Config:
   port: int
@@ -400,10 +408,10 @@ type Config:
 
 fn main() -> int:
   let c = {} Config
-  return 0
+  return c.timeout
 """
-  t.quietly: t.badCheck "constructing a type with missing required fields is rejected", "missing\\ required\\ field"
-  t.bugOpen "constructing a type with missing required fields is rejected"
+  t.quietly: t.badCheck "reading a field the construction skipped is rejected", "uninit"
+  t.bugFixed "reading a field the construction skipped is rejected"
 
   # 15. FIXED. An `on select` arm shape the emitter did not recognise silently
   # compiled to a no-op `discard` — the entire handler body dropped, with NO

@@ -29,6 +29,17 @@ this instead of describing unbuilt syntax.
 - `Foo {}`: legal only when the type has no fields (empty state is a valid
   type). Types with fields require every field at construction; absence must
   be explicit `?T`. Add to spec §4.8.
+  RE-RULED 2026-08-14 — partial construction is LEGAL; the unsupplied fields
+  are `<uninit>`, a compile-time-only state with no runtime representation.
+  Three rules: never read it and the program compiles, read it unset and that
+  is the error (TK-TY16), assign it and the marker is gone. Rejecting at the
+  construction site would have refused the builder pattern (construct partial,
+  fill by chain, then read), which works and is worth keeping — this is the
+  data analogue of `pending:` (§5.4), so a walking skeleton can carry holes in
+  its DATA as well as its functions. The marker rides in the field's type, so
+  storing a partial record inside another cannot launder it. `{}` on a
+  zero-field type is unchanged. Function CALLS still require every field —
+  only type/object construction changed.
 - Actors/tasks: API stays actors + tasks. Runtime strategy SETTLED (2026-08-05):
   stackful coroutines over vendored minicoro with mmap'd virtual stacks, one
   cooperative scheduler, and an epoll/kqueue reactor. Neither nim-cps nor

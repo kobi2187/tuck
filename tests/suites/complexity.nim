@@ -72,7 +72,11 @@ const
   # constructedType split three ways (13 -> 6) — taking the cost from 22 to
   # 10. The remainder is the rule itself: two more arms in checkChainStep,
   # one guard each in synthReassign, anyUninit and clearUninit.
-  DEBT = 1963
+  #
+  # 1963 -> 1964 (same day): TK-TY16's arm in the `explain` table. A registry
+  # dispatch, so +1 for the whole table rather than per code — every new
+  # diagnostic costs this, and diagnostics.nim's suite requires the arm.
+  DEBT = 1964
   HEAVY = 60
   CC = "tools/cc"
 

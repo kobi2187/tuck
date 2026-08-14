@@ -76,6 +76,7 @@ type
     dcTyImmutable = "TK-TY13"           ## assigning to something declared `let`
     dcTyBadIndex = "TK-TY14"            ## an index is not an int, or not one index
     dcTyParamMutation = "TK-TY15"       ## `..` on a parameter (a value, not a var)
+    dcTyUninitRead = "TK-TY16"          ## reading a field the construction skipped
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -275,6 +276,15 @@ proc valueFitExplanation(d: DiagCode): string =
     "does. An object member mutating its own `self`, or an actor mutating " &
     "its own fields, is a different thing and stays legal: that is state the " &
     "callee owns."
+  of dcTyUninitRead:
+    "The construction did not supply this field and nothing has assigned it " &
+    "since, so there is no value to read — only whatever the backend would " &
+    "zero-init. Partial construction is deliberately legal (it is how the " &
+    "builder pattern works: construct, fill by chain, then read), so the " &
+    "error is the READ, not the omission — a field you never read is fine. " &
+    "Fix: set it first (`c.field = ...` or `c ..field {...}`), or declare it " &
+    "`T?` if absence is a real state the type should carry. The marker is " &
+    "compile-time only; nothing about it reaches the emitted code."
   of dcTyBadIndex:
     "An index must be a single `int`. Fix: check the value's type, and pass " &
     "exactly one index — `xs[i]`, not `xs[i, j]`."

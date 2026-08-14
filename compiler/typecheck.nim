@@ -451,7 +451,8 @@ proc failUninitRead(name: string, t: Type, sp: Span) =
   ## The READ is the error, not the omission: an untouched hole is legal, so
   ## the message names what to do about it rather than scolding the
   ## construction.
-  fail("Type Error: '" & name & "' is " & UninitName & " here — it was not " &
+  fail(dcTyUninitRead,
+       "Type Error: '" & name & "' is " & UninitName & " here — it was not " &
        "supplied at construction and nothing has assigned it since. Set it " &
        "first (`" & name & " = ...` or `.." & name & " {...}`), or declare " &
        "it '" & typeName(unwrapUninit(t)) & "?' if it is genuinely optional",
