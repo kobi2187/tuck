@@ -85,7 +85,13 @@ const
   # measured, not assumed: an arm that loops, tests or short-circuits still
   # counts in full (tools/cc.nim isDispatchArm). What now tops the ranking —
   # lowerExpr at 42, scanNext at 38 — is real work, which is the point.
-  DEBT = 1476
+  #
+  # 1476 -> 1487 (2026-08-14): mutators fill only the fields they PROVABLY
+  # assign, which needs a write-side scan of the callee (collectFieldWrites
+  # and its three shape helpers). The alternative was the previous behaviour —
+  # any `..fn` clears every hole — which is unsound in the direction that
+  # matters: it hands back a "filled" field the mutator never touched.
+  DEBT = 1487
   HEAVY = 45
   CC = "tools/cc"
 

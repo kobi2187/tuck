@@ -132,6 +132,74 @@ proc collectFieldReads*(param: string, e: Expr, acc: var HashSet[string]) =
     acc.incl(e.fieldName)
   for c in e.children: collectFieldReads(param, c, acc)
 
+proc namesVar(e: Expr, name: string): bool =
+  e != nil and e.kind == exkVar and e.name == name
+
+proc assignedField(target: Expr, name: string, acc: var HashSet[string]) =
+  ## `name.f = v` — f is given a value.
+  if target != nil and target.kind == exkField and
+     namesVar(target.receiver, name):
+    acc.incl(target.fieldName)
+
+proc constructedFields(e: Expr, name: string, acc: var HashSet[string]) =
+  ## `var name = {a: 1, b: 2} T` — a construction supplies exactly what it
+  ## lists, so binding one to the returned local fills those fields.
+  if not (e.isDecl and namesVar(e.target, name)): return
+  let v = e.assignVal
+  if v == nil or v.kind != exkCall or v.args.len != 1: return
+  if v.args[0] == nil or v.args[0].kind != exkStruct: return
+  for f in v.args[0].fields: acc.incl(f.name)
+
+proc chainSetFields(e: Expr, name: string, acc: var HashSet[string]) =
+  ## `name ..f {v}` — every step that names a field sets it. A step naming a
+  ## FN is a nested mutator; not followed, so it credits nothing (the safe
+  ## direction, see collectFieldWrites).
+  if not namesVar(e.base, name): return
+  for s in e.steps:
+    if s.target != nil and s.target.kind == exkVar: acc.incl(s.target.name)
+
+proc collectFieldWrites*(target: string, e: Expr, acc: var HashSet[string]) =
+  ## Every field `target` is given a value in this subtree — `t.f = v`,
+  ## `t ..f {v}`, and the fields of a construction bound to it.
+  ##
+  ## The mirror of collectFieldReads, and its soundness runs the OTHER WAY.
+  ## A missed read fails open (a bad call slips through); a missed write fails
+  ## CLOSED — a hole the mutator did fill is still reported, which is a false
+  ## error on working code. So this only ever credits what it can prove, and
+  ## anything it cannot see leaves the hole marked. Visible and fixable
+  ## (set the field at the call site) rather than silently wrong.
+  if e == nil: return
+  case e.kind
+  of exkAssign:
+    assignedField(e.target, target, acc)       # t.f = v
+    constructedFields(e, target, acc)          # var t = {a: 1} T
+  of exkChain:
+    chainSetFields(e, target, acc)             # t ..f {v}
+  else: discard
+  for c in e.children: collectFieldWrites(target, c, acc)
+
+proc mutatorFillsFields*(tc: TypeChecker, fnName: string): HashSet[string] =
+  ## The fields a `..fn` mutator provably gives a value to.
+  ##
+  ## A mutator is `fn f({self: T}) -> T`: it copies self, sets fields, returns
+  ## the copy. Scanning what it writes to the RETURNED name is what lets
+  ## `c ..configure` fill holes without clearing ones it never touched.
+  ##
+  ## Empty for anything unscannable — an imported or pending fn, or a body
+  ## whose returned value is not a plain local. See collectFieldWrites for why
+  ## erring empty is the safe direction here.
+  if not tc.fnDecls.hasKey(fnName): return
+  let d = tc.fnDecls[fnName]
+  if d == nil or d.kind != dkFn or d.fnBody == nil: return
+  # Which local is returned? Only a bare `return name` is traceable.
+  var returned = ""
+  for s in d.fnBody.children:
+    if s != nil and s.kind == exkReturn and s.returnVal != nil and
+       s.returnVal.kind == exkVar:
+      returned = s.returnVal.name
+  if returned == "": return
+  collectFieldWrites(returned, d.fnBody, result)
+
 proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
                        holes: HashSet[string]): seq[string] =
   ## Which of `holes` the named fn actually reads off `param`.

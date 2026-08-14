@@ -90,6 +90,16 @@ proc unwrapUninit*(t: Type): Type =
   ## and the boundary where a type is stamped for codegen.
   if isUninit(t): t.args[0] else: t
 
+proc stripUninit*(t: Type): Type =
+  ## A record with every field's marker removed — the shape it will have once
+  ## the holes are filled. For comparisons that ask "is this the right TYPE?"
+  ## rather than "may I read this?".
+  if t == nil or t.kind != tkRecord: return unwrapUninit(t)
+  var fs: seq[FieldDef]
+  for f in t.fields:
+    fs.add(FieldDef(name: f.name, typ: stripUninit(f.typ), span: f.span))
+  Type(span: t.span, kind: tkRecord, fields: fs)
+
 proc anyUninit*(t: Type): bool =
   ## Does this record carry a hole, at any depth? Recursive, so an Outer whose
   ## Inner has one still answers yes and keeps its structural type instead of

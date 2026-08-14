@@ -1135,7 +1135,10 @@ proc checkMutatorCall(tc: var TypeChecker, step: var ChainStep, e: Expr,
   ## `..fn {args}` — the receiver rides as the first parameter and the result
   ## is reassigned into the base var, so the fn must return the receiver's type.
   let retT = tc.mutatorReturnType(step, e.base, recvT)
-  if not tc.compatible(retT, baseT):
+  # Compare shapes, not hole state: the receiver may be partly built, and a
+  # mutator returning a complete value is exactly what fills it. Marking the
+  # target would make `c ..fn` unusable on the records that most need it.
+  if not tc.compatible(retT, stripUninit(baseT)):
     fail("Type Error: cannot assign " & typeName(retT) & " to " &
          typeName(baseT) & " — a '..' mutator must return the receiver's type",
          step.span)
@@ -1144,8 +1147,9 @@ proc checkMutatorCall(tc: var TypeChecker, step: var ChainStep, e: Expr,
 proc checkChainStep(tc: var TypeChecker, step: var ChainStep, e: Expr,
                     baseT, recvT: Type, fields: seq[FieldDef]) =
   ## One `..name {args}` step: either it SETS a field or it calls a mutator.
-  ## Both fill holes — a field set fills its own, a mutator may write anything
-  ## and the checker only sees its return type, so it clears them all.
+  ## Both fill holes — a field set fills its own, and a mutator fills the ones
+  ## its body provably assigns, which is why `c ..configure` works without
+  ## pretending a mutator touched fields it never mentions.
   let base = if e.base != nil and e.base.kind == exkVar: e.base.name else: ""
   for f in fields:
     if f.name == step.target.name:
@@ -1154,7 +1158,9 @@ proc checkChainStep(tc: var TypeChecker, step: var ChainStep, e: Expr,
       return
   if tc.fnSigs.hasKey(step.target.name):
     tc.checkMutatorCall(step, e, baseT, recvT)
-    if base != "": tc.clearUninit(base)
+    if base != "":
+      for f in tc.mutatorFillsFields(step.target.name):
+        tc.clearUninit(base, f)
   elif recvT.kind == tkRecord:
     fail("Type Error: no field or fn '" & step.target.name & "' on type " &
          typeName(recvT), step.span)

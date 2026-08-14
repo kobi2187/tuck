@@ -178,10 +178,9 @@ proc filled(t: Type, field: string): Type =
 
 proc clearUninit*(tc: var TypeChecker, name: string, field = "") =
   ## A write filled one of `name`'s holes — rebuild its type without the
-  ## marker. An empty `field` clears them ALL, which is what a `..fn` mutator
-  ## does: it may write anything and the checker only sees its return type, so
-  ## the permissive answer is the useful one (a missed hole beats refusing a
-  ## working builder).
+  ## marker. An empty `field` clears every one, which no caller does today:
+  ## a mutator clears the fields its body provably assigns, one call per
+  ## field (see mutatorFillsFields).
   ##
   ## No-op unless the binding's type is a record, so every write path can call
   ## this without first asking whether the feature applies.

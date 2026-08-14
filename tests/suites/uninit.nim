@@ -64,6 +64,48 @@ fn main() -> int:
 """
   t.okCheck "a chain step fills an unsupplied field"
 
+  # A mutator fills the fields its body provably assigns — not all of them.
+  # Scanning what it writes is what makes `c ..configure` usable on a partly
+  # built record without pretending it touched fields it never mentions.
+  t.src Cfg & """
+fn configure({self: Config}) -> Config:
+  var s = self
+  s ..timeout {30}
+  return s
+
+fn main() -> int:
+  var c = {port: 80} Config
+  c ..configure
+  return c.timeout
+"""
+  t.okCheck "a mutator that sets the field fills its hole"
+
+  t.src Cfg & """
+fn touch({self: Config}) -> Config:
+  var s = self
+  s ..port {1}
+  return s
+
+fn main() -> int:
+  var c = {port: 80} Config
+  c ..touch
+  return c.timeout
+"""
+  t.badCheck "a mutator that does NOT set the field leaves its hole", "uninit"
+
+  # The other mutator shape: build a fresh complete record and return it.
+  t.src Cfg & """
+fn reset({self: Config}) -> Config:
+  var s = {port: 1, timeout: 2} Config
+  return s
+
+fn main() -> int:
+  var c = {port: 80} Config
+  c ..reset
+  return c.timeout
+"""
+  t.okCheck "a mutator that rebuilds the whole record fills every hole"
+
   # --- the record moves freely -------------------------------------------
   # Across a call boundary the question is sharper than compatibility can
   # answer: passing a partly-built record is fine unless the callee READS one
