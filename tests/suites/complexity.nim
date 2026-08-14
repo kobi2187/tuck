@@ -99,8 +99,11 @@ const
   # 32 -> 22 (the same, minus the three arms that carry a scoping rule).
   # Behaviour-preserving: emitted output for examples/ is byte-identical
   # throughout, which is the real check for the lowering and mangling ones.
-  DEBT = 1424
-  HEAVY = 42
+  # 1424 -> 1397, HEAVY 42 -> 40: synthCall split into asRestructuringBuiltin
+  # + asNamedCallee (27 -> 10/9), and sameType's four "same length, then
+  # pairwise" arms collapsed onto two helpers (23 -> 9).
+  DEBT = 1397
+  HEAVY = 40
   CC = "tools/cc"
 
 proc run*(t: var T) =

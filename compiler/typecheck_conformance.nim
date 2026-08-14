@@ -15,6 +15,24 @@
 import ast, ast_query, tables, strutils
 import typecheck_util
 
+proc sameType(a, b: Type): bool
+
+proc sameTypes(a, b: seq[Type]): bool =
+  ## Pairwise, same length — the shape four of sameType's arms share.
+  if a.len != b.len: return false
+  for i in 0 ..< a.len:
+    if not sameType(a[i], b[i]): return false
+  true
+
+proc sameFields(a, b: seq[FieldDef]): bool =
+  ## Pairwise by name AND type, in order. A record's field ORDER is part of
+  ## its identity here: two records with the same fields in a different order
+  ## are not the same type.
+  if a.len != b.len: return false
+  for i in 0 ..< a.len:
+    if a[i].name != b[i].name or not sameType(a[i].typ, b[i].typ): return false
+  true
+
 proc sameType(a, b: Type): bool =
   ## Structural equality — deliberately NOT `compatible`, which is lenient by
   ## design (Unknown, void, unit and Self match everything, so a conformance
@@ -24,27 +42,10 @@ proc sameType(a, b: Type): bool =
   if a.kind != b.kind: return false
   case a.kind
   of tkNamed: a.name == b.name
-  of tkApp:
-    if not sameType(a.base, b.base) or a.args.len != b.args.len: return false
-    for i in 0 ..< a.args.len:
-      if not sameType(a.args[i], b.args[i]): return false
-    true
-  of tkTuple:
-    if a.elems.len != b.elems.len: return false
-    for i in 0 ..< a.elems.len:
-      if not sameType(a.elems[i], b.elems[i]): return false
-    true
-  of tkRecord:
-    if a.fields.len != b.fields.len: return false
-    for i in 0 ..< a.fields.len:
-      if a.fields[i].name != b.fields[i].name or
-         not sameType(a.fields[i].typ, b.fields[i].typ): return false
-    true
-  of tkFunc:
-    if a.params.len != b.params.len: return false
-    for i in 0 ..< a.params.len:
-      if not sameType(a.params[i], b.params[i]): return false
-    sameType(a.result, b.result)
+  of tkApp:  sameType(a.base, b.base) and sameTypes(a.args, b.args)
+  of tkTuple: sameTypes(a.elems, b.elems)
+  of tkRecord: sameFields(a.fields, b.fields)
+  of tkFunc: sameTypes(a.params, b.params) and sameType(a.result, b.result)
   else: typeName(a) == typeName(b)
 
 proc substSelf(t: Type, objName: string): Type =
