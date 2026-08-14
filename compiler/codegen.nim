@@ -82,39 +82,27 @@ type
     externEmits: Table[string, string]    # extern fn -> [emit: "..."] name
     indexBuilt: bool                 # the sets above are populated?
 
-proc buildDeclIndex(ctx: var CodegenCtx) =
-  ## Populate the name sets for `module` once, so per-node type queries are O(1)
-  ## instead of a full decl scan each call (the emit hot path is O(n) fns each
-  ## checking their param/return type names — a linear scan there is O(n²)).
-  if ctx.indexBuilt: return
-  for d in ctx.module.decls:
-    if d == nil: continue
-    # An object constructs exactly like a record — `{name: "rex"} Dog` is named
-    # fields, not positional — so it belongs in the same set. Without this,
-    # construction emitted `tuck_Dog("rex")` and Nim rejected it.
-    if d.kind == dkObject:
-      ctx.recordNames.incl(d.name)
-    if d.kind == dkType and d.typeBody != nil:
-      if d.typeBody.kind == tkRecord:
-        ctx.recordNames.incl(d.name)
-      for member in d.typeMembers:
-        if member.kind == dkExpr:
-          ctx.invariantNames.incl(d.name)
-          break
-      # `[saturating]` is the ATTRIBUTE, not the `distinct` keyword — see
-      # ast_query.saturatingType, whose answer this caches.
-      if d.typeBody.kind == tkNamed:
-        for a in d.typeBody.attrs:
-          if a.name == "saturating":
-            ctx.saturatingTypes[d.name] = d.typeBody
-            break
-    elif d.kind == dkActor:
-      ctx.actorNames.incl(d.name)
-    elif d.kind == dkTask:
-      ctx.taskNames.incl(d.name)
-  # Externs are a SECOND pass: an extern's invariant-carrying return type is
-  # looked up in invariantNames, which the loop above has to finish filling
-  # first (a type may be declared after the extern that returns it).
+proc indexTypeDecl(ctx: var CodegenCtx, d: Decl) =
+  ## The three things a `type` contributes to the index.
+  if d.typeBody == nil: return
+  if d.typeBody.kind == tkRecord:
+    ctx.recordNames.incl(d.name)
+  for member in d.typeMembers:
+    if member.kind == dkExpr:
+      ctx.invariantNames.incl(d.name)
+      break
+  # `[saturating]` is the ATTRIBUTE, not the `distinct` keyword — see
+  # ast_query.saturatingType, whose answer this caches.
+  if d.typeBody.kind == tkNamed:
+    for a in d.typeBody.attrs:
+      if a.name == "saturating":
+        ctx.saturatingTypes[d.name] = d.typeBody
+        break
+
+proc indexExterns(ctx: var CodegenCtx) =
+  ## Externs are a SECOND pass: an extern's invariant-carrying return type is
+  ## looked up in invariantNames, which the first pass has to finish filling
+  ## (a type may be declared after the extern that returns it).
   for d in ctx.module.decls:
     if d == nil or d.kind != dkExtern: continue
     for mem in d.mixinMembers:
@@ -124,6 +112,29 @@ proc buildDeclIndex(ctx: var CodegenCtx) =
       if mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
          mem.fnReturnType.name in ctx.invariantNames:
         ctx.externInvRets[mem.name] = mem.fnReturnType.name
+
+proc buildDeclIndex(ctx: var CodegenCtx) =
+  ## Populate the name sets for `module` once, so per-node type queries are O(1)
+  ## instead of a full decl scan each call (the emit hot path is O(n) fns each
+  ## checking their param/return type names — a linear scan there is O(n²)).
+  if ctx.indexBuilt: return
+  for d in ctx.module.decls:
+    if d == nil: continue
+    case d.kind
+    # An object constructs exactly like a record — `{name: "rex"} Dog` is named
+    # fields, not positional — so it belongs in the same set. Without this,
+    # construction emitted `tuck_Dog("rex")` and Nim rejected it.
+    of dkObject: ctx.recordNames.incl(d.name)
+    of dkType: ctx.indexTypeDecl(d)
+    of dkActor: ctx.actorNames.incl(d.name)
+    of dkTask: ctx.taskNames.incl(d.name)
+    # Everything else contributes no NAME to this index. Listed rather than
+    # left to `else`, so a new DeclKind that should be indexed is a compile
+    # error here instead of a lookup that quietly returns false.
+    of dkFn, dkMixin, dkExtern, dkPending, dkPool, dkFnSig, dkRegistry,
+       dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
+       dkSelect, dkSatisfies, dkInterface, dkWhen: discard
+  ctx.indexExterns()
   ctx.indexBuilt = true
 
 proc satisfiersOf*(ctx: CodegenCtx, iface: string): seq[Decl] =

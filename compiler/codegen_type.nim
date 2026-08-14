@@ -72,6 +72,43 @@ proc nimPrimitive(name: string): string =
   of "fn": "auto"  # fn slot: generic param — Nim monomorphizes per bake
   else: widenOddWidth(name)
 
+proc genType*(t: Type): string
+
+proc genAppType(t: Type): string =
+  ## `T[args]` — a sized array, a result wrapper, or a plain application.
+  if t.base.kind == tkNamed and t.base.name == "*":
+    return "array[" & genType(t.args[1]) & ", " & genType(t.args[0]) & "]"
+  # !T / ?T / !?T lower to TuckResult[T] — errors are first-class values
+  if t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"] and
+     t.args.len == 1:
+    let inner = genType(t.args[0])
+    return "TuckResult[" & (if inner == "void": "tuple[]" else: inner) & "]"
+  var parts: seq[string]
+  for a in t.args: parts.add(genType(a))
+  genType(t.base) & "[" & parts.join(", ") & "]"
+
+proc genFuncType(t: Type): string =
+  ## A resolved function reference (`:plus`) carries its real signature.
+  ## `auto` is fine for a PARAM (Nim monomorphizes per bake) but is not a type
+  ## a record field can hold, so a tracked signature emits the concrete proc
+  ## type instead. Mirrors codegen_odin.nim.
+  var ps: seq[string]
+  for p in t.params: ps.add(genType(p))
+  let r = if t.result != nil and not (t.result.kind == tkNamed and
+                                      t.result.name == "void"):
+            ": " & genType(t.result)
+          else: ""
+  "proc(" & ps.join(", ") & ")" & r & " {.closure.}"
+
+proc genSumType(t: Type): string =
+  ## Fieldless variants are a plain Nim enum; anything carrying a payload
+  ## needs the tagged `ref object` the declaration emitter builds.
+  for v in t.variants:
+    if v.fields.len > 0: return "ref object"
+  var tags: seq[string]
+  for v in t.variants: tags.add(v.name)
+  "enum " & tags.join(", ")
+
 proc genType*(t: Type): string =
   if t == nil: return "void"
   case t.kind
@@ -80,41 +117,15 @@ proc genType*(t: Type): string =
     var parts: seq[string]
     for e in t.elems: parts.add(genType(e))
     "(" & parts.join(", ") & ")"
-  of tkApp:
-    if t.base.kind == tkNamed and t.base.name == "*":
-      return "array[" & genType(t.args[1]) & ", " & genType(t.args[0]) & "]"
-    # !T / ?T / !?T lower to TuckResult[T] — errors are first-class values
-    if t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"] and t.args.len == 1:
-      let inner = genType(t.args[0])
-      return "TuckResult[" & (if inner == "void": "tuple[]" else: inner) & "]"
-    var parts: seq[string]
-    for a in t.args: parts.add(genType(a))
-    genType(t.base) & "[" & parts.join(", ") & "]"
-  of tkFunc:
-    # A resolved function reference (`:plus`) carries its real signature.
-    # `auto` below is fine for a PARAM (Nim monomorphizes per bake) but is
-    # not a type a record field can hold, so a tracked signature emits the
-    # concrete proc type instead. Mirrors codegen_odin.nim.
-    var ps: seq[string]
-    for p in t.params: ps.add(genType(p))
-    let r = if t.result != nil and not (t.result.kind == tkNamed and
-                                        t.result.name == "void"):
-              ": " & genType(t.result)
-            else: ""
-    "proc(" & ps.join(", ") & ")" & r & " {.closure.}"
+  of tkApp: genAppType(t)
+  of tkFunc: genFuncType(t)
   of tkRecord:
     var parts: seq[string]
     for f in t.fields: parts.add(f.name & ": " & genType(f.typ))
     "tuple[" & parts.join(", ") & "]"
-  of tkSum:
-    var allNoFields = true
-    for v in t.variants:
-      if v.fields.len > 0: allNoFields = false
-    if allNoFields:
-      var tags: seq[string]
-      for v in t.variants: tags.add(v.name)
-      "enum " & tags.join(", ")
-    else:
-      "ref object"
-  else:
-    "pointer"
+  of tkSum: genSumType(t)
+  # A union or rename should have been flattened by lowering before reaching a
+  # backend, and tkEffect is a checker-side annotation with no runtime shape;
+  # `pointer` is the it-got-here-anyway answer for all three. Listed rather
+  # than left to `else` so a new TypeKind must decide explicitly.
+  of tkUnion, tkRename, tkEffect: "pointer"
