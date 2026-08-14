@@ -214,56 +214,54 @@ proc builderSteps(callee: Decl, m: Module): seq[ChainStep] =
   if not allPlainFieldSets(mid, tmpName, paramName): return @[]
   mid.steps
 
+proc isSpliceableStep(s: ChainStep): bool =
+  ## A step that could carry a builder call: `..fn` with a resolved call and
+  ## no braced payload. A payload means the call takes more than the receiver,
+  ## which is not the shape a builder splice can replace.
+  s.op == coDotDot and semLayer.stepCall(s) != nil and
+    s.target != nil and s.target.kind == exkVar and
+    (s.arg == nil or (s.arg.kind == exkStruct and s.arg.fields.len == 0))
+
+proc spliceStep(s: ChainStep, fns: Table[string, Decl], m: Module,
+                kept: var seq[ChainStep], hits: var seq[string]): bool =
+  ## Try to replace one step with the builder it calls. Returns whether it
+  ## did; the caller keeps the step untouched when it did not.
+  let callee = fns.getOrDefault(s.target.name, nil)
+  let steps = builderSteps(callee, m)
+  if steps.len > 0:
+    for bs in steps: kept.add(deepCopy(bs))
+    hits.add(s.target.name & " (" & $steps.len & " field-set" &
+             (if steps.len == 1: "" else: "s") & ") at line " & $s.span.line)
+    return true
+  # ...or the receiver-independent builder: keep the step, but point its
+  # resolved call at the value itself, so the emitter writes `cfg = {…} Cfg`
+  # where it used to write `cfg = withDefaults(cfg)`. The step stays a step;
+  # only what it resolves to changes, which is why no emitter has to learn
+  # anything.
+  let whole = builderWholeValue(callee)
+  if whole == nil: return false
+  semLayer.setStepCall(s, deepCopy(whole))
+  hits.add(s.target.name & " (whole value) at line " & $s.span.line)
+  kept.add(s)
+  true
+
 proc rewriteChains(e: Expr, fns: Table[string, Decl], m: Module,
                    hits: var seq[string]) =
   ## Walk `e`, splicing builder bodies into every chain step that qualifies.
+  ##
+  ## The chain arm stays explicit because it REPLACES e.steps; everything else
+  ## is a plain walk, so it goes through ast.children — which also reaches the
+  ## kinds the old hand-written list did not name.
   if e == nil: return
-  case e.kind
-  of exkChain:
+  if e.kind == exkChain:
     rewriteChains(e.base, fns, m, hits)
     var kept: seq[ChainStep]
     for s in e.steps:
-      var spliced = false
-      if s.op == coDotDot and semLayer.stepCall(s) != nil and
-         s.target != nil and s.target.kind == exkVar and
-         # a braced payload means the call takes more than the receiver
-         (s.arg == nil or (s.arg.kind == exkStruct and s.arg.fields.len == 0)):
-        let callee = fns.getOrDefault(s.target.name, nil)
-        let steps = builderSteps(callee, m)
-        if steps.len > 0:
-          for bs in steps: kept.add(deepCopy(bs))
-          hits.add(s.target.name & " (" & $steps.len & " field-set" &
-                   (if steps.len == 1: "" else: "s") & ") at line " & $s.span.line)
-          spliced = true
-        else:
-          # ...or the receiver-independent builder: keep the step, but point
-          # its resolved call at the value itself, so the emitter writes
-          # `cfg = {…} Cfg` where it used to write `cfg = withDefaults(cfg)`.
-          # The step stays a step; only what it resolves to changes, which is
-          # why no emitter has to learn anything.
-          let whole = builderWholeValue(callee)
-          if whole != nil:
-            semLayer.setStepCall(s, deepCopy(whole))
-            hits.add(s.target.name & " (whole value) at line " & $s.span.line)
-            kept.add(s)
-            spliced = true
-      if not spliced: kept.add(s)
+      if not (isSpliceableStep(s) and spliceStep(s, fns, m, kept, hits)):
+        kept.add(s)
     e.steps = kept
-  of exkBlock: (for s in e.stmts: rewriteChains(s, fns, m, hits))
-  of exkIf:
-    rewriteChains(e.cond, fns, m, hits)
-    rewriteChains(e.thenBranch, fns, m, hits)
-    rewriteChains(e.elseBranch, fns, m, hits)
-  of exkMatch:
-    rewriteChains(e.subject, fns, m, hits)
-    for arm in e.arms: rewriteChains(arm.body, fns, m, hits)
-  of exkFor: (rewriteChains(e.iterable, fns, m, hits); rewriteChains(e.body, fns, m, hits))
-  of exkWhile: (rewriteChains(e.whileCond, fns, m, hits); rewriteChains(e.whileBody, fns, m, hits))
-  of exkAssign: (rewriteChains(e.target, fns, m, hits); rewriteChains(e.assignVal, fns, m, hits))
-  of exkReturn: rewriteChains(e.returnVal, fns, m, hits)
-  of exkCall: (for a in e.args: rewriteChains(a, fns, m, hits))
-  of exkStruct: (for f in e.fields: rewriteChains(f.value, fns, m, hits))
-  else: discard
+    return
+  for c in e.children: rewriteChains(c, fns, m, hits)
 
 # ---------------------------------------------------------------------------
 
