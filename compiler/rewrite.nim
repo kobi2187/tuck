@@ -78,72 +78,14 @@ proc rewriteFieldReceiver(e: Expr) =
     e.receiver = payloadOfLiteral(e.receiver)
 
 proc rewriteExpr(e: Expr) =
-  ## Walk every expression, applying the rules on the way down. Mirrors
-  ## lowerExpr's exhaustive case: a new Expr kind should fail to compile here
-  ## rather than be silently skipped.
+  ## Walk every expression, applying the rules on the way down.
+  ##
+  ## The traversal is ast.children — exhaustive by construction, so a new Expr
+  ## kind cannot be silently skipped here. Only exkField does any work; the
+  ## rest of the walk exists to reach it.
   if e == nil: return
-  case e.kind
-  of exkField:
-    rewriteFieldReceiver(e)
-    rewriteExpr(e.receiver)
-    rewriteExpr(e.dotArg)
-  of exkCall:
-    rewriteExpr(e.callee)
-    for a in e.args: rewriteExpr(a)
-  of exkStruct:
-    for f in e.fields: rewriteExpr(f.value)
-  of exkList:
-    for item in e.items: rewriteExpr(item)
-  of exkBinary:
-    rewriteExpr(e.left)
-    rewriteExpr(e.right)
-  of exkUnary:
-    rewriteExpr(e.operand)
-  of exkBlock:
-    for s in e.stmts: rewriteExpr(s)
-  of exkIf:
-    rewriteExpr(e.cond)
-    rewriteExpr(e.thenBranch)
-    rewriteExpr(e.elseBranch)
-  of exkMatch:
-    rewriteExpr(e.subject)
-    for arm in e.arms:
-      rewriteExpr(arm.guard)   # `Some(x) if x > 5:` — the guard is an expression
-      rewriteExpr(arm.body)
-  of exkFor:
-    rewriteExpr(e.iterable)
-    rewriteExpr(e.body)
-  of exkWhile:
-    rewriteExpr(e.whileCond)
-    rewriteExpr(e.whileBody)
-  of exkAssign:
-    rewriteExpr(e.target)
-    rewriteExpr(e.assignVal)
-  of exkReturn:
-    rewriteExpr(e.returnVal)
-  of exkRaise:
-    rewriteExpr(e.raiseVal)
-  of exkChain:
-    rewriteExpr(e.base)
-    for step in e.steps:
-      rewriteExpr(step.target)
-      rewriteExpr(step.arg)
-  of exkBracket:
-    # the sugar node itself: the checker has not stamped a call yet, so walk
-    # the parts the user wrote
-    rewriteExpr(e.brReceiver)
-    for a in e.brArgs: rewriteExpr(a)
-  of exkBracketAssign:
-    rewriteExpr(e.brTarget)
-    rewriteExpr(e.brValue)
-  of exkSend:
-    rewriteExpr(e.sendPayload)
-  of exkSelect:
-    for arm in e.selArms:
-      rewriteExpr(arm.arg)
-      rewriteExpr(arm.body)
-  of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue:
-    discard  # leaves: nothing beneath them
+  if e.kind == exkField: rewriteFieldReceiver(e)
+  for c in e.children: rewriteExpr(c)
 
 proc rewriteModule*(m: Module) =
   ## Normalize a module in place. Walks fn bodies via allFns rather than a

@@ -79,6 +79,27 @@ fn doWork() -> void:
 """
   t.badCheck "a pure fn cannot call an [io] fn", "requires effect \\[io\\]"
 
+  # ...and the effect must be seen wherever the call HIDES. The audit's walker
+  # used to list fourteen Expr kinds and `else: discard`, so a call inside a
+  # send payload, a select arm or a field access was never reached: this
+  # program passed clean until 2026-08-14. An unseen [io] is also an unmarked
+  # suspend point, so codegen would skip the async transform for it.
+  t.src """
+actor Sink:
+  hits: int
+  on ping({n: int}):
+    self.hits = n
+
+fn noisy() -> int [io]:
+  return 5
+
+fn quiet() -> void:
+  Sink send ping {n: {} noisy}
+  return
+"""
+  t.badCheck "an [io] call inside a send payload is still an effect",
+             "requires effect \\[io\\]"
+
   # scheduler::stop ends the loop even with a coroutine still parked. The
   # scheduler otherwise returns only when NOTHING is waiting, so a program that
   # parks on an fd nobody will feed — a server's accept loop — runs forever.

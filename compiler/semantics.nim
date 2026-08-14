@@ -67,18 +67,12 @@ proc unionEffects(a, b: seq[EffectMarker]): seq[EffectMarker] =
 # perform?" and checkExpr asks "are those allowed here?". Reading them side by
 # side is the quickest way to see that effects really are a type system, just
 # for side effects rather than values.
-proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
-  ## Every effect this expression performs, gathered from the whole subtree.
-  if e == nil: return @[]
-  var res: seq[EffectMarker] = @[]
-  case e.kind
-  of exkCall:
-    res = unionEffects(res, c.synthesizeExpr(e.callee))
-    for a in e.args:
-      res = unionEffects(res, c.synthesizeExpr(a))
-    
-    let calleeName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name else: ""
-    if calleeName != "":
+proc callEffects(c: var Checker, e: Expr, res: var seq[EffectMarker]) =
+  ## The effects a CALL adds beyond its subexpressions: the callee's own
+  ## declared set, and the async mark that goes with [io].
+  let calleeName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name
+                   else: ""
+  if calleeName != "":
       # Calling a TASK is a spawn — it decouples the [io] work onto the
       # scheduler, so the task's effects do NOT propagate to the caller and
       # the caller does not suspend here (the yields happen inside the task).
@@ -93,52 +87,22 @@ proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
         # suspend point. Flag the call site so codegen emits the async transform.
         if emIo in calleeEffects:
           semLayer.markAsync(e)
-  of exkStruct:
-    for f in e.fields:
-      res = unionEffects(res, c.synthesizeExpr(f.value))
-  of exkList:
-    for item in e.items:
-      res = unionEffects(res, c.synthesizeExpr(item))
-  of exkBinary:
-    res = unionEffects(res, c.synthesizeExpr(e.left))
-    res = unionEffects(res, c.synthesizeExpr(e.right))
-  of exkUnary:
-    res = unionEffects(res, c.synthesizeExpr(e.operand))
-  of exkBlock:
-    for s in e.stmts:
-      res = unionEffects(res, c.synthesizeExpr(s))
-  of exkIf:
-    res = unionEffects(res, c.synthesizeExpr(e.cond))
-    res = unionEffects(res, c.synthesizeExpr(e.thenBranch))
-    res = unionEffects(res, c.synthesizeExpr(e.elseBranch))
-  of exkMatch:
-    res = unionEffects(res, c.synthesizeExpr(e.subject))
-    for arm in e.arms:
-      res = unionEffects(res, c.synthesizeExpr(arm.body))
-  of exkFor:
-    res = unionEffects(res, c.synthesizeExpr(e.iterable))
-    res = unionEffects(res, c.synthesizeExpr(e.body))
-  of exkWhile:
-    if e.whileCond != nil:
-      res = unionEffects(res, c.synthesizeExpr(e.whileCond))
-    res = unionEffects(res, c.synthesizeExpr(e.whileBody))
-  of exkBreak, exkContinue:
-    discard
-  of exkAssign:
-    res = unionEffects(res, c.synthesizeExpr(e.target))
-    res = unionEffects(res, c.synthesizeExpr(e.assignVal))
-  of exkReturn:
-    res = unionEffects(res, c.synthesizeExpr(e.returnVal))
-  of exkRaise:
-    res = unionEffects(res, c.synthesizeExpr(e.raiseVal))
-  of exkChain:
-    res = unionEffects(res, c.synthesizeExpr(e.base))
-    for step in e.steps:
-      res = unionEffects(res, c.synthesizeExpr(step.target))
-      res = unionEffects(res, c.synthesizeExpr(step.arg))
-  else:
-    discard
-  return res
+
+proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
+  ## Every effect this expression performs, gathered from the whole subtree.
+  ##
+  ## Walks EVERY child via ast.children. It used to list fourteen kinds and
+  ## `else: discard`, which skipped exkSend, exkSelect, exkField, exkBracket
+  ## and exkBracketAssign — so an [io] call inside a send payload or a select
+  ## arm was neither counted against the enclosing fn's declared effects nor
+  ## marked async, and an unmarked suspend point is a codegen bug, not just a
+  ## missing diagnostic.
+  if e == nil: return @[]
+  var res: seq[EffectMarker] = @[]
+  for child in e.children:
+    res = unionEffects(res, c.synthesizeExpr(child))
+  if e.kind == exkCall: c.callEffects(e, res)
+  res
 
 proc checkExpr(c: var Checker, e: Expr, expected: seq[EffectMarker], currentFn: string) =
   ## Reject any effect this expression performs that `currentFn` did not

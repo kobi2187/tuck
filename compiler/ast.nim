@@ -712,6 +712,18 @@ iterator children*(e: Expr): Expr =
   ## The case is exhaustive on purpose: a new ExprKind must be listed here or
   ## the compiler refuses, which is what stops a walk from silently missing a
   ## node and reporting a clean result over a subtree it never looked at.
+  ##
+  ## No `skip: set[ExprKind]` parameter, deliberately. It would be two lines,
+  ## but every caller today wants the whole tree, and every bug this iterator
+  ## replaced came from a walk that CHOSE which kinds to visit
+  ## (raisedEventsIn, scanReturns, mentionsName, synthesizeExpr — four silent
+  ## gaps, all the same shape). A skip set hands that choice back.
+  ##
+  ## The two callers that really do treat a kind differently — mangleExpr's
+  ## scoping arms, lowerExpr's bracket nodes — do not merely skip it, they do
+  ## something ELSE with it, which is an explicit `case` arm before the walk
+  ## and not something a skip set could express. Add the parameter when a
+  ## caller wants plain omission and can be named in this comment.
   if e != nil:
     case e.kind
     of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue: discard

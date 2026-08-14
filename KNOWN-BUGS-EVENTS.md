@@ -172,6 +172,62 @@ probably covered, but it was not tested.
 
 ---
 
+## EV-4 — an `[io]` call inside a `send` payload escaped the effect audit
+
+**FIXED 2026-08-14.** Recorded because it is the same shape as EV-1/EV-2 and
+because it reached codegen, not just diagnostics.
+
+### Reproduce (against a compiler older than this commit)
+
+```tuck
+actor Sink:
+  hits: int
+  on ping({n: int}):
+    self.hits = n
+
+fn noisy() -> int [io]:
+  return 5
+
+fn quiet() -> void:            # declares NO effects
+  Sink send ping {n: {} noisy}
+  return
+```
+
+Old compiler: `OK (2.5 ms)`. Correct answer, and what it now says:
+
+```
+Semantic Error: Expression requires effect [io], which is not allowed in
+context of 'quiet'
+```
+
+### Why
+
+`synthesizeExpr` (compiler/semantics.nim) gathered effects with a case over
+fourteen Expr kinds and `else: discard`. `exkSend`, `exkSelect`, `exkField`,
+`exkBracket` and `exkBracketAssign` were not among them, so nothing inside a
+send payload or a select arm contributed its effects.
+
+Two consequences, and the second is worse than a missed diagnostic:
+
+1. the enclosing fn's declared effects were not checked against the call;
+2. `semLayer.markAsync(e)` never fired for it — and that mark is what tells
+   codegen to emit the async transform. An unseen `[io]` is an unmarked
+   suspend point.
+
+`exkSend` and `exkSelect` are precisely the actor and task constructs, which
+is where effects concentrate.
+
+### Fix
+
+The walk is `ast.children`, exhaustive by construction. Regression test in
+tests/suites/end_to_end.nim beside the existing "a pure fn cannot call an
+[io] fn" case.
+
+Verified by running the pre-refactor binary against the same program: `OK`
+before, rejected after.
+
+---
+
 ## EV-3 — the duplicate-mechanism pattern behind EV-1
 
 Not a separate bug; the shape that produced one. Recorded because it recurs.
