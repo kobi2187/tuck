@@ -9,9 +9,15 @@ import ast, lowering, tables, sets
 import typecheck_util
 
 type
-  Binding* = tuple[typ: Type, isVar: bool, isParam: bool]
+  Binding* = tuple[typ: Type, isVar: bool, isParam: bool, narrowed: bool]
     ## `isVar` is write permission; `isParam` says the name is a FUNCTION
     ## PARAMETER, which is a third thing rather than a flavour of the first.
+    ##
+    ## `narrowed` is "this result has been guarded, so `.value` is readable"
+    ## (spec §4.8). It lives on the BINDING, not in a name-keyed set beside
+    ## the scope stack, because an inner `let r` is a different result that
+    ## nothing has guarded — keyed by name alone it inherited the outer `r`'s
+    ## narrowing and read `.value` off an unhandled wrapper.
     ##
     ## A parameter is an immutable binding of a VALUE (spec §7.1): the callee
     ## may read it and may copy it, but may never write through it to the
@@ -66,8 +72,10 @@ type
                                       # (tasks and member fns are the backends')
     knownModules*: HashSet[string]    # imported modules + qualified-pending prefixes
     currentErrTypes*: seq[string]     # [error: A | B] of the fn being checked
-    okNarrowed*: HashSet[string]      # results guarded by `if x.ok` in scope:
-                                      # .value is legal only under the guard
+    # Narrowing (`if r.ok:`) used to live here as a HashSet[string] keyed by
+    # bare name. It moved ONTO Binding, because two bindings can share a name:
+    # an inner `let r` inherited the outer's narrowing and read `.value` off an
+    # unhandled wrapper. See Binding.narrowed and setNarrowed/isNarrowed.
     varErrTypes*: Table[string, seq[string]]  # result vars -> the declared
                                       # [error: ...] enums of the fn that
                                       # produced them (match r.err typing)
@@ -83,13 +91,32 @@ proc popScope*(tc: var TypeChecker) = discard tc.scopes.pop()
 
 proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
                isParam = false) =
-  tc.scopes[^1][name] = (typ, isVar, isParam)
+  ## A fresh binding is never narrowed: guarding is something that happens to
+  ## a result AFTER it is bound, and a new binding of the same name is a
+  ## different result.
+  tc.scopes[^1][name] = (typ, isVar, isParam, false)
+
+proc setNarrowed*(tc: var TypeChecker, name: string, on: bool) =
+  ## Mark the INNERMOST binding of `name` as guarded, or unmark it. Walks the
+  ## same way `lookup` does, so the binding that gets marked is the one a read
+  ## would resolve to.
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      tc.scopes[i][name].narrowed = on
+      return
+
+proc isNarrowed*(tc: TypeChecker, name: string): bool =
+  ## Has the innermost binding of `name` been guarded?
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      return tc.scopes[i][name].narrowed
+  false
 
 proc lookup*(tc: TypeChecker, name: string): tuple[found: bool, b: Binding] =
   for i in countdown(tc.scopes.high, 0):
     if tc.scopes[i].hasKey(name):
       return (true, tc.scopes[i][name])
-  return (false, (Type(nil), false, false))
+  return (false, (Type(nil), false, false, false))
 
 # Resolve a named type to its declared body (aliases, one level at a time).
 proc resolve*(tc: TypeChecker, t: Type, depth = 0): Type =

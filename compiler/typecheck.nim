@@ -310,7 +310,7 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
 
 proc unwrapGuarded(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `.value` is legal only under this result's own `if x.ok` guard.
-  if e.receiver.kind != exkVar or e.receiver.name notin tc.okNarrowed:
+  if e.receiver.kind != exkVar or not tc.isNarrowed(e.receiver.name):
     let n = if e.receiver.kind == exkVar: e.receiver.name else: "<result>"
     fail("Type Error: unhandled " & typeName(recvT) & " — guard it " &
          "first: `if " & n & ".ok:` and read .value inside, or " &
@@ -862,17 +862,17 @@ proc okGuardName(tc: TypeChecker, cond: Expr): string =
   ## value is still the wrapped type (strict, scope-limited).
   if cond != nil and cond.kind == exkField and cond.fieldName == "ok" and
      cond.receiver != nil and cond.receiver.kind == exkVar and
-     cond.receiver.name notin tc.okNarrowed:
+     not tc.isNarrowed(cond.receiver.name):
     cond.receiver.name
   else: ""
 
 proc synthBranches(tc: var TypeChecker, e: Expr, guard: string): (Type, Type) =
   ## Both branches from the same entry state; the after-if state is their union.
-  if guard != "": tc.okNarrowed.incl(guard)
+  if guard != "": tc.setNarrowed(guard, true)
   let entryVariants = tc.varVariants
   let thenT = tc.synthesize(e.thenBranch)
   let thenVariants = tc.varVariants
-  if guard != "": tc.okNarrowed.excl(guard)
+  if guard != "": tc.setNarrowed(guard, false)
   tc.varVariants = entryVariants
   let elseT = tc.synthesize(e.elseBranch)
   tc.varVariants = mergeVariants(thenVariants, tc.varVariants)
@@ -1799,8 +1799,8 @@ proc synthStmt(tc: var TypeChecker, blk, s: Expr, narrowed: var seq[string]): Ty
   ## and report it if it drops a fallible result.
   result = tc.synthesize(s)
   let g = earlyReturnGuard(s)
-  if g != "" and g notin tc.okNarrowed:
-    tc.okNarrowed.incl(g)
+  if g != "" and not tc.isNarrowed(g):
+    tc.setNarrowed(g, true)
     narrowed.add(g)
   # a control-flow exit (`err X`, or a branch that only exits) is never a drop
   if isWrapper(result) and not tc.isImplicitReturn(blk, s) and
@@ -1819,7 +1819,11 @@ proc synthBlock(tc: var TypeChecker, e: Expr): Type =
   result = unknownType(e.span)
   for s in e.stmts:
     result = tc.synthStmt(e, s, narrowed)
-  for g in narrowed: tc.okNarrowed.excl(g)
+  # Unwind BEFORE popScope: the narrowing lives on the binding, and a guard
+  # set here may have marked a binding from an ENCLOSING scope (the block
+  # pushes its own scope, but `let r` sits outside it). Popping first would
+  # leave that outer binding narrowed for the rest of the fn.
+  for g in narrowed: tc.setNarrowed(g, false)
   tc.popScope()
 
 proc unitType(sp: Span): Type =

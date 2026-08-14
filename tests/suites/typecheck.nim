@@ -1572,6 +1572,25 @@ fn main() -> int [io]:
 """
   t.badCheck "no guard at all is still an error", "guard\\ it\\ first"
 
+  # Narrowing is keyed by BINDING, not by name. An inner `r` is a different
+  # result that nothing has guarded, so it must not inherit the outer's
+  # narrowing just for sharing a spelling.
+  t.src """
+fn readIt({n: int}) -> !{v: int} [io]:
+  return {v: n}
+
+fn main({b: bool}) -> int [io]:
+  let r = {n: 5} readIt
+  if not r.ok:
+    return 0
+  if b:
+    let r = {n: 9} readIt
+    return r.value.v
+  return r.value.v
+"""
+  t.badCheck "an inner binding does not inherit the outer's narrowing",
+             "guard\\ it\\ first"
+
   t.src """
 type Slot:
   id: int
