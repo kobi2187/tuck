@@ -3334,6 +3334,17 @@ proc raisedEventsIn(e: Expr, into: var seq[tuple[reg, ev: string, sp: Span,
   ## first. Keeping the two in step matters: if the parse shape changes, this
   ## silently stops finding raises, so the suite asserts a bad raise is
   ## rejected rather than asserting this walker's internals.
+  ## Walks EVERY child via ast.children. It used to list ten kinds and
+  ## `else: discard`, which silently skipped the rest — a raise inside a
+  ## `send` payload, a select arm or either side of a binary was not found,
+  ## and an unfound raise is an UNCHECKED one.
+  ##
+  ## KNOWN GAP, not this proc's: checkRaiseSites feeds it from `allFns`, which
+  ## yields dkFn only — so a raise in a TASK body is never scanned no matter
+  ## how thorough the walk is. Verified 2026-08-14: a typo'd event inside an
+  ## `on select` arm of a task passes `tuck ch` clean. Fixing it means
+  ## widening allFns (ast_query.nim:152), whose own comment already warns that
+  ## per-site kind lists are how dkActor came to be silently skipped.
   if e == nil: return
   if e.kind == exkCall and e.callee != nil and e.callee.kind == exkCall and
      e.callee.callee != nil and e.callee.callee.kind == exkVar and
@@ -3343,26 +3354,7 @@ proc raisedEventsIn(e: Expr, into: var seq[tuple[reg, ev: string, sp: Span,
        f.receiver.kind == exkVar:
       into.add((f.receiver.name, e.callee.callee.name, e.span,
                 if e.args.len == 1: e.args[0] else: nil))
-  case e.kind
-  of exkCall:
-    raisedEventsIn(e.callee, into)
-    for a in e.args: raisedEventsIn(a, into)
-  of exkBlock: (for s in e.stmts: raisedEventsIn(s, into))
-  of exkIf:
-    raisedEventsIn(e.cond, into); raisedEventsIn(e.thenBranch, into)
-    raisedEventsIn(e.elseBranch, into)
-  of exkMatch:
-    raisedEventsIn(e.subject, into)
-    for arm in e.arms: raisedEventsIn(arm.body, into)
-  of exkFor: (raisedEventsIn(e.iterable, into); raisedEventsIn(e.body, into))
-  of exkWhile: (raisedEventsIn(e.whileCond, into); raisedEventsIn(e.whileBody, into))
-  of exkAssign: (raisedEventsIn(e.target, into); raisedEventsIn(e.assignVal, into))
-  of exkReturn: raisedEventsIn(e.returnVal, into)
-  of exkStruct: (for f in e.fields: raisedEventsIn(f.value, into))
-  of exkChain:
-    raisedEventsIn(e.base, into)
-    for s in e.steps: raisedEventsIn(s.arg, into)
-  else: discard
+  for c in e.children: raisedEventsIn(c, into)
 
 # The registry rules (spec Part 10) are four independent passes over the same
 # program. One proc each, in the order checkRegistry runs them.

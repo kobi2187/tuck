@@ -102,8 +102,10 @@ const
   # 1424 -> 1397, HEAVY 42 -> 40: synthCall split into asRestructuringBuiltin
   # + asNamedCallee (27 -> 10/9), and sameType's four "same length, then
   # pairwise" arms collapsed onto two helpers (23 -> 9).
-  DEBT = 1397
-  HEAVY = 40
+  # 1397 -> 1388, HEAVY 40 -> 39: raisedEventsIn walks ast.children instead of
+  # ten hand-listed kinds plus `else: discard`.
+  DEBT = 1388
+  HEAVY = 39
   CC = "tools/cc"
 
 proc run*(t: var T) =
