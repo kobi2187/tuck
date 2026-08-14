@@ -92,6 +92,15 @@ type
       ## entry; this remembers what was there so popScope can put it back.
       ## `had` distinguishes "the outer had no entry" from "the outer had an
       ## empty one" — deleting and restoring-empty are different states.
+      ##
+      ## WHY NOT ON `Binding`, where narrowing lives. Considered and rejected
+      ## 2026-08-14. Narrowing is a bool with no join, so it moved cleanly.
+      ## Variant state has a real one: the three join sites snapshot and
+      ## restore the WHOLE table (`tc.varVariants = entryVariants`) and merge
+      ## with mergeVariants, which is three readable lines. Per-binding state
+      ## would turn each of those into a scope-stack walk — a bigger, subtler
+      ## diff at exactly the places merge bugs live, to delete this log. The
+      ## log is the cheaper correct answer; leave it.
 
 proc pushScope*(tc: var TypeChecker) =
   tc.scopes.add(initTable[string, Binding]())

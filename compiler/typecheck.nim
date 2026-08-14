@@ -216,9 +216,9 @@ proc recordCompatible(tc: TypeChecker, a: Type, eFields: seq[FieldDef]): bool =
     for af in aFields:
       if af.name != ef.name: continue
       # A hole does not change the record's SHAPE, so a partly-built Config is
-      # still a Config and may be passed whole. Whether the hole's value may
-      # be USED is a different question, answered at the read site — keeping
-      # them apart is what lets `f {c}` pass while `5 + c.hole` fails.
+      # structurally still a Config. Whether THIS callee may receive one is a
+      # sharper question than compatibility can answer — it depends on which
+      # fields the callee reads — so checkNamedField asks it separately.
       if not tc.compatible(unwrapUninit(af.typ), ef.typ): return false
       found = true
       break
@@ -452,7 +452,7 @@ proc failUninitRead(name: string, t: Type, sp: Span) =
   ## the message names what to do about it rather than scolding the
   ## construction.
   fail(dcTyUninitRead,
-       "Type Error: '" & name & "' is " & UninitName & " here — it was not " &
+       "'" & name & "' is " & UninitName & " here — it was not " &
        "supplied at construction and nothing has assigned it since. Set it " &
        "first (`" & name & " = ...` or `.." & name & " {...}`), or declare " &
        "it '" & typeName(unwrapUninit(t)) & "?' if it is genuinely optional",
@@ -1372,6 +1372,32 @@ proc payloadFieldExpr(e: Expr, name: string): Expr =
     for f in e.args[0].fields:
       if f.name == name: result = f.value
 
+proc holesOf(t: Type): HashSet[string] =
+  ## The unsupplied fields of a record, empty for anything else.
+  if t != nil and t.kind == tkRecord:
+    for f in t.fields:
+      if isUninit(f.typ): result.incl(f.name)
+
+proc failIfCalleeReadsHole(tc: var TypeChecker, fnName, paramName: string,
+                           af: ArgField) =
+  ## Passing a partly-built record is fine unless the callee READS one of the
+  ## holes.
+  ##
+  ## Checked here rather than in `compatible`, which sees only the declared
+  ## types and would have to refuse every partial record — including the many
+  ## a callee never looks at. Reported at the CALL site, because that is where
+  ## the missing field can actually be supplied.
+  let holes = holesOf(af.typ)
+  if holes.len == 0: return
+  let hit = tc.uninitFieldsRead(fnName, paramName, holes)
+  if hit.len == 0: return
+  fail(dcTyUninitRead,
+       "'" & fnName & "' reads " &
+       (if hit.len == 1: "field '" & hit[0] & "'" else: "fields " & $hit) &
+       " of '" & paramName & "', which this call leaves " & UninitName &
+       " — set " & (if hit.len == 1: "it" else: "them") & " before the call",
+       af.span)
+
 proc checkNamedField(tc: var TypeChecker, fnName: string, p: Param,
                      af: ArgField, e: Expr) =
   ## One payload field against the param that claimed it.
@@ -1391,6 +1417,7 @@ proc checkNamedField(tc: var TypeChecker, fnName: string, p: Param,
   if not tc.compatible(af.typ, p.typ):
     fail("Type Error: field '" & p.name & "' of call to '" & fnName &
          "' expects " & typeName(p.typ) & " but got " & typeName(af.typ), af.span)
+  tc.failIfCalleeReadsHole(fnName, p.name, af)
 
 proc claimByName(tc: var TypeChecker, fnName: string, params: seq[Param],
                  argFields: seq[ArgField], e: Expr, claimed: var seq[bool],

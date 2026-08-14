@@ -65,6 +65,10 @@ fn main() -> int:
   t.okCheck "a chain step fills an unsupplied field"
 
   # --- the record moves freely -------------------------------------------
+  # Across a call boundary the question is sharper than compatibility can
+  # answer: passing a partly-built record is fine unless the callee READS one
+  # of the holes. Checked by scanning the callee's body at the call site, so
+  # the error lands where the field can actually be supplied.
   t.src Cfg & """
 fn show({c: Config}) -> int:
   return c.port
@@ -73,7 +77,29 @@ fn main() -> int:
   let c = {port: 80} Config
   return {c: c} show
 """
-  t.okCheck "a partly-built record passes whole"
+  t.okCheck "a partly-built record passes to a callee that reads only supplied fields"
+
+  t.src Cfg & """
+fn show({c: Config}) -> int:
+  return c.timeout
+
+fn main() -> int:
+  let c = {port: 80} Config
+  return {c: c} show
+"""
+  t.badCheck "passing a hole to a callee that reads it is rejected", "reads field"
+
+  # Filling it first makes the same call legal.
+  t.src Cfg & """
+fn show({c: Config}) -> int:
+  return c.timeout
+
+fn main() -> int:
+  var c = {port: 80} Config
+  c.timeout = 30
+  return {c: c} show
+"""
+  t.okCheck "filling the hole before the call makes it legal"
 
   t.src Cfg & """
 fn main() -> int:

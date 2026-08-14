@@ -5,7 +5,7 @@
 # merge of variant sets, and the early-return-guard narrowing. Pure with respect
 # to synthesis — nothing here calls back into the synth core, so it sits below
 # it in the checker DAG. Operates on a TypeChecker from typecheck_state.
-import ast, tables, strutils
+import ast, tables, sets, strutils
 import typecheck_util
 import typecheck_state
 
@@ -113,6 +113,40 @@ proc scanReturns*(tc: TypeChecker, typeName: string, e: Expr,
   of exkWhile:
     tc.scanReturns(typeName, e.whileBody, acc, exact)
   else: discard
+
+
+proc collectFieldReads*(param: string, e: Expr, acc: var HashSet[string]) =
+  ## Every `param.field` read in this subtree.
+  ##
+  ## A syntactic pre-pass over a callee's body, same shape as fnReturnVariants
+  ## below. Writes are not distinguished because a parameter cannot be written
+  ## through at all (TK-TY15), so every occurrence is a read.
+  ##
+  ## Walks EVERY child via ast.children rather than the handful of kinds
+  ## scanReturns visits: a read can appear anywhere an expression can, and a
+  ## missed one fails OPEN — the caller would be told its hole is unused when
+  ## the callee does read it.
+  if e == nil: return
+  if e.kind == exkField and e.receiver != nil and
+     e.receiver.kind == exkVar and e.receiver.name == param:
+    acc.incl(e.fieldName)
+  for c in e.children: collectFieldReads(param, c, acc)
+
+proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
+                       holes: HashSet[string]): seq[string] =
+  ## Which of `holes` the named fn actually reads off `param`.
+  ##
+  ## Empty means the callee never touches them, so passing a partly-built
+  ## record is fine. An unknown callee (imported, pending, a fn slot) has no
+  ## body to scan and answers empty too — permissive, matching how the rest of
+  ## the checker degrades when it cannot see something.
+  if not tc.fnDecls.hasKey(fnName): return @[]
+  let d = tc.fnDecls[fnName]
+  if d == nil or d.kind != dkFn or d.fnBody == nil: return @[]
+  var reads: HashSet[string]
+  collectFieldReads(param, d.fnBody, reads)
+  for h in holes:
+    if h in reads: result.add(h)
 
 proc fnReturnVariants*(tc: TypeChecker, fnName, typeName: string): seq[string] =
   for d in tc.module.decls:
