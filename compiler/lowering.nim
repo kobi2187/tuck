@@ -73,113 +73,76 @@ proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
 
 proc lowerExpr(e: Expr, m: Module)
 
+proc flattenRegistryRaise(e: Expr) =
+  ## `Registry.raise SomeEvent` — a call whose callee is a call whose argument
+  ## is a field access. Flatten it to a plain call to `raise_Registry_Event`,
+  ## which codegen emits like any other and never learns registries exist.
+  if e.callee == nil or e.callee.kind != exkCall: return
+  if e.callee.callee == nil or e.callee.callee.kind != exkVar: return
+  if e.callee.args.len != 1 or e.callee.args[0].kind != exkField: return
+  let fieldNode = e.callee.args[0]
+  if fieldNode.receiver == nil or fieldNode.receiver.kind != exkVar: return
+  if fieldNode.fieldName != "raise": return
+  e.callee = Expr(span: e.span, kind: exkVar,
+                  name: "raise_" & fieldNode.receiver.name & "_" &
+                        e.callee.callee.name)
+
+proc explodePayload(e: Expr) =
+  ## `{a: 1, b: 2} f` -> `f(1, 2)`. One arg per declared param, in order.
+  ##
+  ## The checker recorded the callee's params when it resolved the call, and
+  ## only for top-level fns — so a non-empty value already means "safe to
+  ## explode". A member fn's payload explosion belongs to the backends, which
+  ## see the receiver, and a task is theirs to schedule.
+  if e.callee == nil or e.callee.kind != exkVar: return
+  let expectedParams = semLayer.callParamsFor(e)
+  if expectedParams.len == 0: return
+  if e.args.len != 1 or e.args[0].kind != exkStruct: return
+
+  # The checker's mapping wins. It matches a payload field to a param by NAME
+  # first and then, for whatever is left, by TYPE when the match is
+  # unambiguous (typecheck.nim, checkCallArgs pass 2) — so a field may
+  # legitimately feed a param it shares no name with. Re-deriving the mapping
+  # by name here would miss exactly those, and the unmatched-param fallback
+  # below would then emit `none` in their place.
+  let originalStruct = e.args[0]
+  let resolved = semLayer.argFieldsFor(e)
+  var newArgs: seq[Expr]
+  for i, paramName in expectedParams:
+    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                    else: paramName
+    var found = false
+    for field in originalStruct.fields:
+      if field[0] == fieldName:
+        newArgs.add(field[1])
+        found = true
+        break
+    if not found:
+      newArgs.add(Expr(span: e.span, kind: exkLit, litKind: lkUnit,
+                       litValue: "none"))
+  e.args = newArgs
+
 proc lowerExpr(e: Expr, m: Module) =
+  ## Rewrite one expression and everything under it.
+  ##
+  ## The traversal is `ast.children`; only two node kinds do anything beyond
+  ## recursing, and both are calls. The bracket kinds are the one exception to
+  ## the generic walk — they lower the checker-stamped `at()` call instead of
+  ## their own children, because that call is what codegen emits and it is not
+  ## a child of the sugar node.
   if e == nil: return
   case e.kind
-  of exkField:
-    lowerExpr(e.receiver, m)
-  of exkCall:
-    lowerExpr(e.callee, m)
-    for a in e.args:
-      lowerExpr(a, m)
-    
-    # `Registry.raise SomeEvent` — a call whose callee is a call whose argument
-    # is a field access. Flatten it to a plain call to `raise_Registry_Event`,
-    # which codegen emits like any other and never learns registries exist.
-    if e.callee != nil and e.callee.kind == exkCall and e.callee.callee != nil and e.callee.callee.kind == exkVar:
-      if e.callee.args.len == 1 and e.callee.args[0].kind == exkField:
-        let fieldNode = e.callee.args[0]
-        if fieldNode.receiver != nil and fieldNode.receiver.kind == exkVar and fieldNode.fieldName == "raise":
-          e.callee = Expr(span: e.span, kind: exkVar,
-                          name: "raise_" & fieldNode.receiver.name & "_" &
-                                e.callee.callee.name)
+  of exkBracket, exkBracketAssign:
+    let c = semLayer.call(e)
+    if c != nil: lowerExpr(c, m)
+    return
+  else: discard
 
-    if e.callee != nil and e.callee.kind == exkVar:
-      # The checker recorded the callee's params when it resolved the call, and
-      # only for top-level fns — so a non-empty value already means "safe to
-      # explode". A member fn's payload explosion belongs to the backends,
-      # which see the receiver, and a task is theirs to schedule.
-      let expectedParams = semLayer.callParamsFor(e)
-      if expectedParams.len > 0 and e.args.len == 1 and e.args[0].kind == exkStruct:
-        var newArgs: seq[Expr]
-        let originalStruct = e.args[0]
-        # The checker's mapping wins. It matches a payload field to a param by
-        # NAME first and then, for whatever is left, by TYPE when the match is
-        # unambiguous (typecheck.nim, checkCallArgs pass 2) — so a field may
-        # legitimately feed a param it shares no name with. Re-deriving the
-        # mapping by name here would miss exactly those, and the unmatched-param
-        # fallback below would then emit `none` in their place.
-        let resolved = semLayer.argFieldsFor(e)
-        for i, paramName in expectedParams:
-          let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                          else: paramName
-          var found = false
-          for field in originalStruct.fields:
-            if field[0] == fieldName:
-              newArgs.add(field[1])
-              found = true
-              break
-          if not found:
-            newArgs.add(Expr(span: e.span, kind: exkLit, litKind: lkUnit, litValue: "none"))
-        e.args = newArgs
-  of exkStruct:
-    for f in e.fields:
-      lowerExpr(f.value, m)
-  of exkList:
-    for item in e.items:
-      lowerExpr(item, m)
-  of exkBinary:
-    lowerExpr(e.left, m)
-    lowerExpr(e.right, m)
-  of exkUnary:
-    lowerExpr(e.operand, m)
-  of exkBlock:
-    for s in e.stmts:
-      lowerExpr(s, m)
-  of exkIf:
-    lowerExpr(e.cond, m)
-    lowerExpr(e.thenBranch, m)
-    lowerExpr(e.elseBranch, m)
-  of exkMatch:
-    lowerExpr(e.subject, m)
-    for arm in e.arms:
-      lowerExpr(arm.body, m)
-  of exkFor:
-    lowerExpr(e.iterable, m)
-    lowerExpr(e.body, m)
-  of exkWhile:
-    if e.whileCond != nil: lowerExpr(e.whileCond, m)
-    lowerExpr(e.whileBody, m)
-  of exkBreak, exkContinue:
-    discard
-  of exkAssign:
-    lowerExpr(e.target, m)
-    lowerExpr(e.assignVal, m)
-  of exkReturn:
-    lowerExpr(e.returnVal, m)
-  of exkRaise:
-    lowerExpr(e.raiseVal, m)
-  of exkChain:
-    lowerExpr(e.base, m)
-    for step in e.steps:
-      lowerExpr(step.target, m)
-      lowerExpr(step.arg, m)
-  of exkBracket:
-    # the checker-stamped at() call is what codegen emits — lower it, not
-    # the sugar node (a type application has no call and nothing to lower)
-    let c = semLayer.call(e)
-    if c != nil: lowerExpr(c, m)
-  of exkBracketAssign:
-    let c = semLayer.call(e)
-    if c != nil: lowerExpr(c, m)
-  of exkLit, exkVar, exkQualified, exkImport:
-    # leaves: nothing beneath them to lower
-    discard
-  of exkSend:
-    lowerExpr(e.sendPayload, m)
-  of exkSelect:
-    for arm in e.selArms:
-      lowerExpr(arm.arg, m); lowerExpr(arm.body, m)
+  for c in e.children: lowerExpr(c, m)
+
+  if e.kind == exkCall:
+    flattenRegistryRaise(e)
+    explodePayload(e)
 
 # Entry point for the pass. Two phases, in this order: type bodies are
 # flattened first so the call-rewriting phase can look up a type's fields and
