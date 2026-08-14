@@ -117,7 +117,7 @@ proc checkSigMatch(want, got: Decl, objName, iname: string) =
       typeName(substSelf(want.fnReturnType, objName)))
   checkEffectSubset(want, got, objName, iname)
 
-proc applySatisfiesDecls*(m: Module) =
+proc applySatisfiesDecls(m: Module) =
   ## Fold every top-level `Obj satisfies Iface` into that object's own
   ## `satisfies` list, BEFORE conformance runs.
   ##

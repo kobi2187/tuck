@@ -26,9 +26,17 @@ type
   DecisionRow* = tuple[pats: seq[Pattern], span: Span]
     ## One row of a decision table: a pattern per input column.
 
-const MaxEnumeratedCombos* = 4096
+const MaxEnumeratedCombos = 4096
   ## Above this, exact enumeration costs more than it is worth and the
   ## pairwise fallback takes over.
+  ##
+  ## KNOWINGLY DUPLICATED: codegen_table.nim has MaxPackedCombos = 4096 and its
+  ## own columnDomains/comboValues with the same mixed-radix logic. Its comment
+  ## says the constant is "shared so the two cannot disagree" — it is not, and
+  ## they can. Left alone on purpose: the shared home would be ast_query (both
+  ## import it), but moving it makes a CHECKER file depend on a BACKEND one or
+  ## churns both backends to relocate ~15 lines that have never drifted. Fix it
+  ## the day either copy changes.
 
 proc patCovers(a, b: Pattern): bool =
   ## Does pattern a match everything pattern b matches? (per column)

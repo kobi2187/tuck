@@ -28,7 +28,7 @@ type
 const BuiltinPointerNames = ["cstring", "Buf"]
   ## The builtin FFI pointers: cstring (char*) and Buf (uint8_t*).
 
-proc isPointerKind*(decls: TypeDecls, t: Type): bool =
+proc isPointerKind(decls: TypeDecls, t: Type): bool =
   ## Is this type held as a raw pointer?
   if t == nil or t.kind != tkNamed: return false
   if t.name in BuiltinPointerNames: return true
@@ -43,7 +43,7 @@ proc isPointerKind*(decls: TypeDecls, t: Type): bool =
   d.typeExternHeader != "" and d.typeBody != nil and
     d.typeBody.kind == tkRecord and d.typeBody.fields.len == 0
 
-proc failIfPointer*(decls: TypeDecls, t: Type, where: string, sp: Span) =
+proc failIfPointer(decls: TypeDecls, t: Type, where: string, sp: Span) =
   ## Reject a pointer-kind type anywhere it would escape the extern boundary.
   ## Recurses so a pointer buried in `Seq[Buf]` or a record field is caught too.
   if t == nil: return
@@ -79,7 +79,7 @@ proc memoryPointerReturnMsg(fnName, tName: string): string =
   "handle — a fieldless extern type — is exempt: there is nothing to " &
   "dereference."
 
-proc failIfPointerReturn*(decls: TypeDecls, t: Type, fnName: string, sp: Span) =
+proc failIfPointerReturn(decls: TypeDecls, t: Type, fnName: string, sp: Span) =
   ## An extern may TAKE a pointer into memory; it may not hand one back.
   ## Recurses, so `!cstring` and `{p: Buf}` are caught as well as a bare return.
   ##

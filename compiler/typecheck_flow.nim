@@ -40,7 +40,7 @@ proc transType*(tc: TypeChecker, t: Type): string =
 proc allVariants*(tc: TypeChecker, typeName: string): seq[string] =
   for v in tc.typeDecls[typeName].variants: result.add(v.name)
 
-proc hasEdge*(tc: TypeChecker, typeName, frm, to: string): bool =
+proc hasEdge(tc: TypeChecker, typeName, frm, to: string): bool =
   for tr in tc.typeDecls[typeName].transitions:
     if tr.`from` == frm and tr.to == to: return true
   false
@@ -85,7 +85,7 @@ proc exprVariants*(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
   else: discard
   tc.allVariants(typeName)
 
-proc scanReturns*(tc: TypeChecker, typeName: string, e: Expr,
+proc scanReturns(tc: TypeChecker, typeName: string, e: Expr,
                  acc: var seq[string], exact: var bool) =
   if e == nil or not exact: return
   case e.kind
@@ -115,7 +115,7 @@ proc scanReturns*(tc: TypeChecker, typeName: string, e: Expr,
   else: discard
 
 
-proc collectFieldReads*(param: string, e: Expr, acc: var HashSet[string]) =
+proc collectFieldReads(param: string, e: Expr, acc: var HashSet[string]) =
   ## Every `param.field` read in this subtree.
   ##
   ## A syntactic pre-pass over a callee's body, same shape as fnReturnVariants
@@ -158,7 +158,7 @@ proc chainSetFields(e: Expr, name: string, acc: var HashSet[string]) =
   for s in e.steps:
     if s.target != nil and s.target.kind == exkVar: acc.incl(s.target.name)
 
-proc collectFieldWrites*(target: string, e: Expr, acc: var HashSet[string]) =
+proc collectFieldWrites(target: string, e: Expr, acc: var HashSet[string]) =
   ## Every field `target` is given a value in this subtree — `t.f = v`,
   ## `t ..f {v}`, and the fields of a construction bound to it.
   ##
@@ -251,7 +251,7 @@ proc mergeVariants*(a, b: Table[string, seq[string]]): Table[string, seq[string]
     else:
       result[k] = v
 
-proc alwaysExits*(e: Expr): bool =
+proc alwaysExits(e: Expr): bool =
   ## True when control cannot fall out the bottom of this branch — the
   ## condition that lets an early-return guard narrow what follows it.
   if e == nil: return false
