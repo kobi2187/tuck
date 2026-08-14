@@ -1810,24 +1810,48 @@ proc constructedType(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   for d in declared: fs.add(constructedField(d, supplied, e.span, holes))
   if holes: Type(span: e.span, kind: tkRecord, fields: fs) else: nominal
 
-proc synthCall(tc: var TypeChecker, e: Expr): Type =
-  let calleeName = tc.calleeNameOf(e)
-  if calleeName == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return tc.asAliasCall(e)
-  if calleeName == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
-    return tc.asMergeCall(e)
-  if calleeName == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return tc.asBakeCall(e)
-  if calleeName in ["bake", "alias"]:
-    for a in e.args: discard tc.synthesize(a)
-    return unknownType(e.span)
-  if calleeName != "" and calleeName in tc.distinctNames:
+proc synthArgsUnknown(tc: var TypeChecker, e: Expr): Type =
+  ## Type the arguments for their side effects and give up on the result. The
+  ## gradual escape hatch: the call itself is not understood, but its
+  ## arguments still have to check out.
+  for a in e.args: discard tc.synthesize(a)
+  unknownType(e.span)
+
+proc synthArgsAs(tc: var TypeChecker, e: Expr, name: string): Type =
+  ## Type the arguments, then answer with a named type regardless — a
+  ## conversion, where the args are checked but the result is the target type.
+  for a in e.args: discard tc.synthesize(a)
+  Type(span: e.span, kind: tkNamed, name: name)
+
+proc asRestructuringBuiltin(tc: var TypeChecker, e: Expr,
+                            calleeName: string): Type =
+  ## `alias` / `merge` / `bake` — the three builtins that rearrange a record's
+  ## fields rather than calling anything. Each wants a specific argument
+  ## shape; a wrong shape is not an error, it degrades to Unknown so sketch
+  ## code keeps compiling.
+  case calleeName
+  of "alias":
+    if e.args.len == 2 and e.args[1].kind == exkStruct: tc.asAliasCall(e)
+    else: tc.synthArgsUnknown(e)
+  of "merge":
+    if e.args.len == 1 and e.args[0].kind == exkStruct: tc.asMergeCall(e)
+    else: nil                      # `merge` is also an ordinary name
+  of "bake":
+    if e.args.len == 2 and e.args[1].kind == exkStruct: tc.asBakeCall(e)
+    else: tc.synthArgsUnknown(e)
+  else: nil
+
+proc asNamedCallee(tc: var TypeChecker, e: Expr, calleeName: string): Type =
+  ## A callee that resolved to a NAME: a distinct conversion, a generic or
+  ## plain construction, or a declared fn. Ordered — the first that claims the
+  ## name wins, and nil means none did.
+  if calleeName == "": return nil
+  if calleeName in tc.distinctNames:
     # Calling a distinct type's name converts from its base (Nim-native)
-    for a in e.args: discard tc.synthesize(a)
-    return Type(span: e.span, kind: tkNamed, name: calleeName)
-  if calleeName != "" and tc.typeGenerics.hasKey(calleeName):
+    return tc.synthArgsAs(e, calleeName)
+  if tc.typeGenerics.hasKey(calleeName):
     return tc.asGenericConstruction(e, calleeName)
-  if calleeName != "" and not tc.fnSigs.hasKey(calleeName) and
+  if not tc.fnSigs.hasKey(calleeName) and
      (tc.typeDecls.hasKey(calleeName) or tc.objDecls.hasKey(calleeName)):
     # {fields} TypeName — construction produces the declared type. Objects are
     # constructible by name like records, but are deliberately absent from
@@ -1836,12 +1860,22 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     # the name either way.
     for a in e.args: discard tc.synthesize(a)
     return tc.constructedType(e, calleeName)
-  if calleeName != "" and tc.fnSigs.hasKey(calleeName):
+  if tc.fnSigs.hasKey(calleeName):
     return tc.asDeclaredCall(e, calleeName)
+  nil
+
+proc synthCall(tc: var TypeChecker, e: Expr): Type =
+  ## What `{payload} name` means, in priority order: a restructuring builtin,
+  ## then a name (distinct / construction / declared fn), then a callee that
+  ## is not a bare name at all. Nothing claims it -> Unknown, gradually.
+  let calleeName = tc.calleeNameOf(e)
+  result = tc.asRestructuringBuiltin(e, calleeName)
+  if result != nil: return
+  result = tc.asNamedCallee(e, calleeName)
+  if result != nil: return
   if e.callee != nil and e.callee.kind != exkVar:
     return tc.asIndirectCall(e)
-  for a in e.args: discard tc.synthesize(a)
-  unknownType(e.span)
+  return tc.synthArgsUnknown(e)
 
 # === THE SPINE: ONE synth* PER EXPRESSION KIND =============================
 # Everything above is reached FROM here. synthesizeKind is the case over
