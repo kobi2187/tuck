@@ -1,17 +1,34 @@
 # compiler/typecheck_flow.nim
 #
-# Control-flow and variant-narrowing analysis for the type checker: the spec
-# 4.4b transition tracking (which variants a tracked var can hold), branch/loop
-# merge of variant sets, and the early-return-guard narrowing. Pure with respect
-# to synthesis — nothing here calls back into the synth core, so it sits below
-# it in the checker DAG. Operates on a TypeChecker from typecheck_state.
+# Analyses that answer a question ABOUT a program without synthesizing types.
+# Pure with respect to synthesis — nothing here calls back into the synth core,
+# so it sits below it in the checker DAG. Operates on a TypeChecker from
+# typecheck_state.
+#
+# THREE UNRELATED GROUPS live here, and the file name only names the third.
+# They share a home because they share the "pure pre-pass" property, not a
+# subject:
+#
+#   1. TRANSITIONS (spec 4.4b) — which variants a tracked var can hold, and
+#      the merge that unions those sets at a branch.
+#   2. CALLEE SCANNING — which fields a fn reads off a param, and which a
+#      mutator provably assigns. Feeds the <uninit> rule.
+#   3. CONTROL FLOW — does this statement always exit, and does it narrow the
+#      rest of its block.
+#
+# Grep `GROUP` to jump between them.
+#
+# Splitting them into three files was considered and rejected: two of the
+# three would be under 40 lines, and the cluster's own history shows that
+# extracting by helper-kind rather than by feature is what produced its
+# shallowest modules. Marked instead.
 import ast, tables, sets, strutils
 import typecheck_util
 import typecheck_state
 
 
 
-# --- spec 4.4b: static transition checking --------------------------------
+# --- GROUP 1: spec 4.4b static transition checking -------------------------
 # A sum type with a `transitions:` block is TRACKED: every var of it carries
 # the set of variants it could statically be in (Type@Variant in
 # diagnostics). A reassignment that changes variant is checked against the
@@ -114,6 +131,16 @@ proc scanReturns(tc: TypeChecker, typeName: string, e: Expr,
     tc.scanReturns(typeName, e.whileBody, acc, exact)
   else: discard
 
+
+# --- GROUP 2: callee scanning, for the <uninit> rule -----------------------
+# A partly-built record may cross a call boundary, but only if the callee does
+# not READ one of its holes — and a `..fn` mutator fills exactly the fields it
+# provably assigns. Both questions are answered by a syntactic pre-pass over
+# the callee's body, so both live here.
+#
+# The two scans have OPPOSITE soundness directions. Missing a read fails open
+# (a bad call slips through); missing a write fails closed (a filled hole is
+# still reported). Each proc says which way it errs.
 
 proc collectFieldReads(param: string, e: Expr, acc: var HashSet[string]) =
   ## Every `param.field` read in this subtree.
@@ -250,6 +277,8 @@ proc mergeVariants*(a, b: Table[string, seq[string]]): Table[string, seq[string]
       result[k] = merged
     else:
       result[k] = v
+
+# --- GROUP 3: control flow -------------------------------------------------
 
 proc alwaysExits(e: Expr): bool =
   ## True when control cannot fall out the bottom of this branch — the
