@@ -167,39 +167,14 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string]) =
     # `fs::readFile`, which is never manglable, stays verbatim.
     if e.qualName in names:
       e.qualName = mangleName(e.qualName)
-  of exkField:
-    mangleExpr(e.receiver, names, locals)
-    mangleExpr(e.dotArg, names, locals)
-  of exkStruct:
-    # field names bare; values walked
-    for f in e.fields: mangleExpr(f.value, names, locals)
-  of exkList:
-    for it in e.items: mangleExpr(it, names, locals)
-  of exkBracket:
-    mangleExpr(e.brReceiver, names, locals)
-    for a in e.brArgs: mangleExpr(a, names, locals)
-  of exkBracketAssign:
-    mangleExpr(e.brTarget, names, locals)
-    mangleExpr(e.brValue, names, locals)
-  of exkCall:
-    mangleExpr(e.callee, names, locals)
-    for a in e.args: mangleExpr(a, names, locals)
-  of exkChain:
-    mangleExpr(e.base, names, locals)
-    for s in e.steps:
-      mangleExpr(s.target, names, locals)
-      mangleExpr(s.arg, names, locals)
-  of exkBinary:
-    mangleExpr(e.left, names, locals)
-    mangleExpr(e.right, names, locals)
-  of exkUnary:
-    mangleExpr(e.operand, names, locals)
-  of exkBlock:
-    for s in e.stmts: mangleExpr(s, names, locals)
-  of exkIf:
-    mangleExpr(e.cond, names, locals)
-    mangleExpr(e.thenBranch, names, locals)
-    mangleExpr(e.elseBranch, names, locals)
+  # The uniform middle: kinds whose children are all walked with the SAME
+  # locals set, in no particular order. Everything with a scoping rule of its
+  # own — exkFor, exkAssign, exkMatch — is spelled out below instead, because
+  # for those it matters WHICH children are visited and in what order.
+  of exkField, exkStruct, exkList, exkBracket, exkBracketAssign, exkCall,
+     exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile, exkReturn,
+     exkRaise:
+    for c in e.children: mangleExpr(c, names, locals)
   of exkMatch:
     mangleExpr(e.subject, names, locals)
     for arm in e.arms: mangleExpr(arm.body, names, locals)
@@ -209,20 +184,15 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string]) =
     var inner = locals
     if e.iter != nil and e.iter.kind == pkVar: inner.incl(e.iter.name)
     mangleExpr(e.body, names, inner)
-  of exkWhile:
-    mangleExpr(e.whileCond, names, locals)
-    mangleExpr(e.whileBody, names, locals)
   of exkAssign:
-    # `let x = ...` introduces a local that shadows from here on
+    # `let x = ...` introduces a local that shadows from here on. Value FIRST,
+    # then the name becomes local — so `let x = x` reads the outer one. A bare
+    # target is the declaration itself and must not be renamed.
     mangleExpr(e.assignVal, names, locals)
     if e.target != nil and e.target.kind == exkVar:
       locals.incl(e.target.name)
     else:
       mangleExpr(e.target, names, locals)
-  of exkReturn:
-    mangleExpr(e.returnVal, names, locals)
-  of exkRaise:
-    mangleExpr(e.raiseVal, names, locals)
   of exkSend:
     if e.sendActor in names: e.sendActor = mangleName(e.sendActor)
     mangleExpr(e.sendPayload, names, locals)
