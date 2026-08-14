@@ -3330,16 +3330,18 @@ proc raisedEventsIn(e: Expr, into: var seq[tuple[reg, ev: string, sp: Span,
     for s in e.steps: raisedEventsIn(s.arg, into)
   else: discard
 
-proc checkRegistry*(mods: seq[tuple[name, path: string, m: Module]]) =
-  ## spec Part 10: the whole event surface is readable from the `registry`
-  ## declaration plus its `on Registry.Event` handlers. That promise needs
-  ## four rules, none of which were enforced — a raise naming a typo'd event
-  ## reached the backend and became a Nim "invalid indentation" error, and an
-  ## event nobody handled compiled to a signal that silently went nowhere.
-  var regs: Table[string, Decl]              # registry name -> decl
-  var variants: Table[string, VariantDef]    # "Reg.Event" -> variant
-  var firstReg = ""
+# The registry rules (spec Part 10) are four independent passes over the same
+# program. One proc each, in the order checkRegistry runs them.
 
+type RegistryEvents = tuple[regs: Table[string, Decl],
+                            variants: Table[string, VariantDef]]
+  ## The declared surface: registries by name, and every "Reg.Event" variant.
+
+proc collectRegistries(mods: seq[tuple[name, path: string, m: Module]]):
+                       RegistryEvents =
+  ## RULE 1 — a program declares ONE registry, so the whole event surface
+  ## reads in one place.
+  var firstReg = ""
   for (_, _, m) in mods:
     for d in m.decls:
       if d == nil or d.kind != dkRegistry: continue
@@ -3350,45 +3352,72 @@ proc checkRegistry*(mods: seq[tuple[name, path: string, m: Module]]) =
              "the point is that the whole event surface reads in one place",
              d.span)
       firstReg = d.name
-      regs[d.name] = d
-      for v in d.variants: variants[d.name & "." & v.name] = v
-  if regs.len == 0: return
+      result.regs[d.name] = d
+      for v in d.variants: result.variants[d.name & "." & v.name] = v
 
-  # Handlers are parsed as fns named `Registry.Event`.
-  var handled: HashSet[string]
-  var handlerOf = initTable[string, Decl]()
+proc collectHandlers(mods: seq[tuple[name, path: string, m: Module]],
+                     ev: RegistryEvents): HashSet[string] =
+  ## RULE 2 — an `on Registry.Event` handler may only name a declared event.
+  ## Handlers are parsed as fns named `Registry.Event`.
   for (_, _, m) in mods:
     for d in m.decls:
       if d == nil or d.kind != dkFn or "." notin d.name: continue
       let parts = d.name.split('.')
-      if parts.len != 2 or parts[0] notin regs: continue
-      if d.name notin variants:
+      if parts.len != 2 or parts[0] notin ev.regs: continue
+      if d.name notin ev.variants:
         fail(dcRgUnknownEvent,
              "no event '" & parts[1] & "' in registry '" & parts[0] &
              "' — `on` may only handle variants the registry declares",
              d.span)
-      handled.incl(d.name)
-      handlerOf[d.name] = d
+      result.incl(d.name)
 
-  # Every declared event needs a handler, or it is a signal going nowhere.
-  for key, v in variants:
+proc failIfUnhandledEvent(ev: RegistryEvents, handled: HashSet[string]) =
+  ## RULE 3 — an event nobody handles is a signal that goes nowhere.
+  for key, v in ev.variants:
     if key notin handled:
       fail(dcRgNoHandler,
            "event '" & key & "' has no handler — every declared event needs " &
            "at least one `on " & key & "(...)`, or remove the variant",
            v.span)
 
-  # Raise sites: the event must exist, its payload must match, and a handler
-  # may not raise the event it handles (an immediate infinite loop, since
-  # raising is synchronous).
+proc checkRaisePayload(key: string, want: seq[FieldDef], payload: Expr,
+                       sp: Span) =
+  ## The payload a raise supplies must be exactly the variant's fields — the
+  ## declaration is the contract, both ways.
+  if payload == nil or payload.kind != exkStruct:
+    if want.len > 0:
+      fail(dcRgPayload,
+           "event '" & key & "' carries a payload (" &
+           want.mapIt(it.name).join(", ") & "), but none was given", sp)
+    return
+  var given: HashSet[string]
+  for f in payload.fields: given.incl(f.name)
+  for w in want:
+    if w.name notin given:
+      fail(dcRgPayload,
+           "event '" & key & "' is missing payload field '" & w.name &
+           "' — the registry variant's declaration is the contract", sp)
+  for f in payload.fields:
+    if not want.anyIt(it.name == f.name):
+      fail(dcRgPayload,
+           "event '" & key & "' has no payload field '" & f.name &
+           "' — the registry declares " &
+           (if want.len == 0: "no payload"
+            else: want.mapIt(it.name).join(", ")), sp)
+
+proc checkRaiseSites(mods: seq[tuple[name, path: string, m: Module]],
+                     ev: RegistryEvents) =
+  ## RULE 4 — a raise must name a declared event, carry the right payload, and
+  ## not come from the handler of that same event (raising is synchronous, so
+  ## that is an immediate infinite loop).
   for (_, _, m) in mods:
     for d in m.allFns():
       var raises: seq[tuple[reg, ev: string, sp: Span, payload: Expr]]
       raisedEventsIn(d.fnBody, raises)
       for r in raises:
-        if r.reg notin regs: continue          # not a registry raise at all
+        if r.reg notin ev.regs: continue        # not a registry raise at all
         let key = r.reg & "." & r.ev
-        if key notin variants:
+        if key notin ev.variants:
           fail(dcRgUnknownEvent,
                "registry '" & r.reg & "' declares no event '" & r.ev &
                "' — `raise` may only name variants the registry declares",
@@ -3398,30 +3427,19 @@ proc checkRegistry*(mods: seq[tuple[name, path: string, m: Module]]) =
                "handler for '" & key & "' raises the event it handles — " &
                "raising is synchronous, so this is an immediate infinite " &
                "loop", r.sp)
-        # Payload fields must be exactly the variant's.
-        let want = variants[key].fields
-        if r.payload == nil or r.payload.kind != exkStruct:
-          if want.len > 0:
-            fail(dcRgPayload,
-                 "event '" & key & "' carries a payload (" &
-                 want.mapIt(it.name).join(", ") & "), but none was given",
-                 r.sp)
-          continue
-        var given: HashSet[string]
-        for f in r.payload.fields: given.incl(f.name)
-        for w in want:
-          if w.name notin given:
-            fail(dcRgPayload,
-                 "event '" & key & "' is missing payload field '" & w.name &
-                 "' — the registry variant's declaration is the contract",
-                 r.sp)
-        for f in r.payload.fields:
-          if not want.anyIt(it.name == f.name):
-            fail(dcRgPayload,
-                 "event '" & key & "' has no payload field '" & f.name &
-                 "' — the registry declares " &
-                 (if want.len == 0: "no payload"
-                  else: want.mapIt(it.name).join(", ")), r.sp)
+        checkRaisePayload(key, ev.variants[key].fields, r.payload, r.sp)
+
+proc checkRegistry*(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## spec Part 10: the whole event surface is readable from the `registry`
+  ## declaration plus its `on Registry.Event` handlers. That promise needs
+  ## four rules, none of which were enforced — a raise naming a typo'd event
+  ## reached the backend and became a Nim "invalid indentation" error, and an
+  ## event nobody handled compiled to a signal that silently went nowhere.
+  let ev = collectRegistries(mods)
+  if ev.regs.len == 0: return
+  let handled = collectHandlers(mods, ev)
+  failIfUnhandledEvent(ev, handled)
+  checkRaiseSites(mods, ev)
 
 proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
   ## Every declared error id ("module/Enum.Variant") must hash uniquely

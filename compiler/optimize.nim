@@ -158,44 +158,65 @@ proc builderWholeValue(callee: Decl): Expr =
   if mentionsName(ret.returnVal, callee.fnParams[0].name): return nil
   ret.returnVal
 
+# Recognising a builder is four independent questions about the same three
+# statements. Each is its own proc so the SHAPE reads as a list of conditions
+# rather than one 39-branch bail-out chain.
+
+proc isSplicableFn(callee: Decl, m: Module): bool =
+  ## A fn whose body could be spliced at all: real, one param, three
+  ## statements. Invariants on the return type disqualify it — splicing would
+  ## lose their return-site validation.
+  if callee == nil or callee.kind != dkFn: return false
+  if callee.isPending or callee.isExtern or callee.fnBody == nil: return false
+  if callee.fnParams.len != 1: return false
+  let body = callee.fnBody
+  if body.kind != exkBlock or body.stmts.len != 3: return false
+  let rt = callee.fnReturnType
+  not (rt != nil and rt.kind == tkNamed and hasInvariants(m, rt.name))
+
+proc copiesParam(decl: Expr, paramName: string): string =
+  ## `var t = p` — returns `t`, or "" if the first statement is not that.
+  if decl == nil or decl.kind != exkAssign or not decl.isDecl or
+     not decl.isMutable: return ""
+  if decl.target == nil or decl.target.kind != exkVar: return ""
+  if decl.assignVal == nil or decl.assignVal.kind != exkVar: return ""
+  if decl.assignVal.name != paramName: return ""
+  decl.target.name
+
+proc returnsName(ret: Expr, name: string): bool =
+  ## `return t`, and nothing else.
+  ret != nil and ret.kind == exkReturn and ret.returnVal != nil and
+    ret.returnVal.kind == exkVar and ret.returnVal.name == name
+
+proc allPlainFieldSets(mid: Expr, tmpName, paramName: string): bool =
+  ## A chain on `t` whose every step SETS a field — no nested calls, and no
+  ## arg reading the temp or the parameter. Such an arg is why this refuses:
+  ## splicing would move the read past writes the caller's chain does first.
+  if mid == nil or mid.kind != exkChain: return false
+  if mid.base == nil or mid.base.kind != exkVar or mid.base.name != tmpName:
+    return false
+  if mid.steps.len == 0: return false
+  for s in mid.steps:
+    if s.op != coDotDot: return false
+    if semLayer.stepCall(s) != nil: return false   # nested call, not a set
+    if s.target == nil or s.target.kind != exkVar: return false
+    if mentionsName(s.arg, tmpName) or mentionsName(s.arg, paramName):
+      return false
+  true
+
 proc builderSteps(callee: Decl, m: Module): seq[ChainStep] =
   ## The field-set steps of `callee` if it is a plain builder, else @[].
-  if callee == nil or callee.kind != dkFn: return @[]
-  if callee.isPending or callee.isExtern or callee.fnBody == nil: return @[]
-  if callee.fnParams.len != 1: return @[]
-  let body = callee.fnBody
-  if body.kind != exkBlock or body.stmts.len != 3: return @[]
-
-  let (decl, mid, ret) = (body.stmts[0], body.stmts[1], body.stmts[2])
-  # var t = p
-  if decl == nil or decl.kind != exkAssign or not decl.isDecl or
-     not decl.isMutable: return @[]
-  if decl.target == nil or decl.target.kind != exkVar: return @[]
-  if decl.assignVal == nil or decl.assignVal.kind != exkVar: return @[]
-  let tmpName = decl.target.name
-  let paramName = decl.assignVal.name
-  if paramName != callee.fnParams[0].name: return @[]
-  # return t
-  if ret == nil or ret.kind != exkReturn or ret.returnVal == nil or
-     ret.returnVal.kind != exkVar or ret.returnVal.name != tmpName: return @[]
-  # a chain on t, every step a field-set
-  if mid == nil or mid.kind != exkChain: return @[]
-  if mid.base == nil or mid.base.kind != exkVar or mid.base.name != tmpName:
-    return @[]
-  if mid.steps.len == 0: return @[]
-
-  # The receiver type's invariants would lose their return-site validation.
-  let rt = callee.fnReturnType
-  if rt != nil and rt.kind == tkNamed and hasInvariants(m, rt.name): return @[]
-
-  for s in mid.steps:
-    if s.op != coDotDot: return @[]
-    if semLayer.stepCall(s) != nil: return @[]   # nested call: not a field-set
-    if s.target == nil or s.target.kind != exkVar: return @[]
-    # An arg reading the temp or the parameter is the refusal above: splicing
-    # it would move the read past writes the caller's chain performs first.
-    if mentionsName(s.arg, tmpName) or mentionsName(s.arg, paramName):
-      return @[]
+  ##
+  ## A builder is exactly: `var t = p` / a chain of field-sets on `t` /
+  ## `return t`. Anything else is left alone.
+  if not isSplicableFn(callee, m): return @[]
+  let (decl, mid, ret) = (callee.fnBody.stmts[0], callee.fnBody.stmts[1],
+                          callee.fnBody.stmts[2])
+  let paramName = callee.fnParams[0].name
+  let tmpName = copiesParam(decl, paramName)
+  if tmpName == "": return @[]
+  if not returnsName(ret, tmpName): return @[]
+  if not allPlainFieldSets(mid, tmpName, paramName): return @[]
   mid.steps
 
 proc rewriteChains(e: Expr, fns: Table[string, Decl], m: Module,
