@@ -170,6 +170,36 @@ probably covered, but it was not tested.
 
 ---
 
+---
+
+## EV-3 — the duplicate-mechanism pattern behind EV-1
+
+Not a separate bug; the shape that produced one. Recorded because it recurs.
+
+Three roles in this compiler have TWO implementations, one feature-full and
+one simplistic. In each case the simplistic copy is the one with the hole, and
+the feature-full one hides it:
+
+| Role | Feature-full | Simplistic |
+|---|---|---|
+| payload explosion | `codegen.nim:311-318`, from the checker's recorded mapping | `lowerExpr`'s `explodePayload` |
+| decision-table combinatorics | `codegen_table.nim:37` `columnDomains` | `typecheck_decisions.nim:57`, same loop, var out-params |
+| AST traversal | `ast.children`, exhaustive and compiler-checked | ~8 hand-rolled walks with `else: discard` |
+
+EV-1 is what this costs. Payload explosion inside a task body works — because
+codegen does it independently — so `lowerModule` never walking `taskBody`
+looked harmless for years. The moment a transform with no second
+implementation (registry-raise flattening) took that path, it emitted garbage.
+
+The decision-table pair carries its own irony: `codegen_table.nim:21` says the
+constant is "shared so the two cannot disagree", and there are two constants.
+
+The traversal pair is being closed as encountered — `clearIds`, `lowerExpr`,
+`raisedEventsIn`, `scanReturns` and `mentionsName` now use `ast.children`.
+Each had a different silent gap before.
+
+---
+
 ## Not bugs, checked and cleared
 
 - **`raisedEventsIn` missing node kinds.** Was real; fixed 2026-08-14 in

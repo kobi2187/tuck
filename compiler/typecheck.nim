@@ -2711,7 +2711,28 @@ proc resolveDeclTypeRefs(tc: TypeChecker, d: Decl) =
   of dkRegistry:
     for v in d.variants:
       for f in v.fields: resolveTypeRefs(tc, f.typ)
-  else: discard
+  of dkInterface:
+    # body-less fn sigs — their params and returns are type references like
+    # any other. Removing `else: discard` is what surfaced this: the compiler
+    # named dkInterface as uncovered.
+    for m in d.ifaceMembers: resolveDeclTypeRefs(tc, m)
+  of dkWhen:
+    # `when TARGET == "x":` gates ordinary declarations; those still mention
+    # types whether or not the block is selected for this target.
+    for m in d.whenDecls: resolveDeclTypeRefs(tc, m)
+  # Listed rather than left to `else`, so adding a DeclKind that DOES carry a
+  # type reference is a compile error here instead of a silently unresolved
+  # name. Each of these has nothing to resolve:
+  #   dkRegister      fields are `bit N` ranges, never a user-named type
+  #   dkExpr          an expression; its types are resolved by the walk
+  #   dkConst         ditto — the value is an expression
+  #   dkStaticAssert  ditto
+  #   dkErrors        a policy name (strict | continue | exit)
+  #   dkImport        a module path
+  #   dkSelect        arms hold expressions, walked elsewhere
+  #   dkSatisfies     a list of interface NAMES, resolved by conformance
+  of dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
+     dkSelect, dkSatisfies: discard
 
 proc resolveTypeNames*(tc: TypeChecker, m: Module) =
   ## Run after collectSigs, when every declaration is known.

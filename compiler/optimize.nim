@@ -117,21 +117,16 @@ proc parseOptPasses*(spec: string): tuple[passes: set[OptPass], bad: string] =
 proc mentionsName(e: Expr, name: string): bool =
   ## Does `e` read `name` anywhere? Used to refuse any builder whose body
   ## depends on its own parameter — see the refusal list above.
+  ##
+  ## Walks EVERY child via ast.children. It used to name seven kinds and
+  ## `else: discard`, which is the unsafe direction for a guard: a mention it
+  ## failed to see let a splice through that reads a value the caller's chain
+  ## has not written yet. Looking in more places can only make the optimizer
+  ## refuse more, never splice something it should not.
   if e == nil: return false
   if e.kind == exkVar and e.name == name: return true
-  case e.kind
-  of exkStruct: (for f in e.fields: (if mentionsName(f.value, name): return true))
-  of exkField: return mentionsName(e.receiver, name)
-  of exkBinary: return mentionsName(e.left, name) or mentionsName(e.right, name)
-  of exkUnary: return mentionsName(e.operand, name)
-  of exkCall:
-    if mentionsName(e.callee, name): return true
-    for a in e.args: (if mentionsName(a, name): return true)
-  of exkList: (for i in e.items: (if mentionsName(i, name): return true))
-  of exkChain:
-    if mentionsName(e.base, name): return true
-    for s in e.steps: (if mentionsName(s.arg, name): return true)
-  else: discard
+  for c in e.children:
+    if mentionsName(c, name): return true
   false
 
 proc builderWholeValue(callee: Decl): Expr =
