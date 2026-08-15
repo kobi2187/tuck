@@ -2661,78 +2661,21 @@ proc resolveTypeRefs(tc: TypeChecker, t: Type) =
   ## passes follow an edge instead of matching a string. Recursive, because a
   ## reference can be buried in a generic argument or a record field.
   if t == nil: return
-  case t.kind
-  of tkNamed:
-    if tc.typeDeclsByName.hasKey(t.name):
-      resolveTypeTo(semLayer, t, tc.typeDeclsByName[t.name])
-  of tkApp:
-    resolveTypeRefs(tc, t.base)
-    for a in t.args: resolveTypeRefs(tc, a)
-  of tkTuple:
-    for e in t.elems: resolveTypeRefs(tc, e)
-  of tkFunc:
-    for p in t.params: resolveTypeRefs(tc, p)
-    resolveTypeRefs(tc, t.result)
-  of tkRecord:
-    for f in t.fields: resolveTypeRefs(tc, f.typ)
-  of tkUnion:
-    for mem in t.members: resolveTypeRefs(tc, mem)
-  of tkEffect: resolveTypeRefs(tc, t.inner)
-  of tkRename: resolveTypeRefs(tc, t.underlying)
-  of tkSum:
-    for v in t.variants:
-      for f in v.fields: resolveTypeRefs(tc, f.typ)
+  if t.kind == tkNamed and tc.typeDeclsByName.hasKey(t.name):
+    resolveTypeTo(semLayer, t, tc.typeDeclsByName[t.name])
+  for c in t.children: resolveTypeRefs(tc, c)
 
 proc resolveDeclTypeRefs(tc: TypeChecker, d: Decl) =
-  ## Every type a declaration mentions.
+  ## Every type a declaration mentions, including its members'.
+  ##
+  ## `ownTypes` says which types a decl names directly and `childDecls` which
+  ## declarations nest inside it — so this is the same two lines as every other
+  ## whole-tree pass. It used to spell out all 21 kinds, which is where
+  ## dkInterface and dkWhen had gone missing until an `else: discard` removal
+  ## surfaced them.
   if d == nil: return
-  case d.kind
-  of dkType:
-    resolveTypeRefs(tc, d.typeBody)
-    for m in d.typeMembers: resolveDeclTypeRefs(tc, m)
-  of dkFn:
-    for p in d.fnParams: resolveTypeRefs(tc, p.typ)
-    resolveTypeRefs(tc, d.fnReturnType)
-  of dkTask:
-    for p in d.taskParams: resolveTypeRefs(tc, p.typ)
-    resolveTypeRefs(tc, d.taskReturnType)
-  of dkObject:
-    for f in d.objFields: resolveTypeRefs(tc, f.typ)
-    for m in d.objMembers: resolveDeclTypeRefs(tc, m)
-  of dkMixin, dkExtern, dkPending:
-    for m in d.mixinMembers: resolveDeclTypeRefs(tc, m)
-  of dkActor:
-    for f in d.actorFields: resolveTypeRefs(tc, f.typ)
-    for h in d.handlers: resolveDeclTypeRefs(tc, h)
-  of dkPool: resolveTypeRefs(tc, d.poolElem)
-  of dkFnSig:
-    for p in d.sigParams: resolveTypeRefs(tc, p.typ)
-    resolveTypeRefs(tc, d.sigReturn)
-  of dkRegistry:
-    for v in d.variants:
-      for f in v.fields: resolveTypeRefs(tc, f.typ)
-  of dkInterface:
-    # body-less fn sigs — their params and returns are type references like
-    # any other. Removing `else: discard` is what surfaced this: the compiler
-    # named dkInterface as uncovered.
-    for m in d.ifaceMembers: resolveDeclTypeRefs(tc, m)
-  of dkWhen:
-    # `when TARGET == "x":` gates ordinary declarations; those still mention
-    # types whether or not the block is selected for this target.
-    for m in d.whenDecls: resolveDeclTypeRefs(tc, m)
-  # Listed rather than left to `else`, so adding a DeclKind that DOES carry a
-  # type reference is a compile error here instead of a silently unresolved
-  # name. Each of these has nothing to resolve:
-  #   dkRegister      fields are `bit N` ranges, never a user-named type
-  #   dkExpr          an expression; its types are resolved by the walk
-  #   dkConst         ditto — the value is an expression
-  #   dkStaticAssert  ditto
-  #   dkErrors        a policy name (strict | continue | exit)
-  #   dkImport        a module path
-  #   dkSelect        arms hold expressions, walked elsewhere
-  #   dkSatisfies     a list of interface NAMES, resolved by conformance
-  of dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
-     dkSelect, dkSatisfies: discard
+  for t in d.ownTypes: resolveTypeRefs(tc, t)
+  for m in d.childDecls: resolveDeclTypeRefs(tc, m)
 
 proc resolveTypeNames*(tc: TypeChecker, m: Module) =
   ## Run after collectSigs, when every declaration is known.

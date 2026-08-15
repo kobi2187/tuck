@@ -584,161 +584,40 @@ proc `$`*(a: NodeId): string = "n" & $uint32(a)
 
 proc isSet*(a: NodeId): bool = uint32(a) != 0'u32
 
-iterator childDecls*(d: Decl): Decl =
-  ## Every declaration nested one level inside `d`, whichever field holds it.
+iterator children*(t: Type): Type =
+  ## Every type one level down. The Type half of `children(Expr)`, and it
+  ## exists for the same reason: this walk was hand-rolled in eight files, and
+  ## the copies had already diverged — mangleType ended in `else: discard`
+  ## while resolveTypeRefs listed tkEffect explicitly. Latent rather than live,
+  ## since nothing constructs a tkEffect today, but that is exactly the kind of
+  ## drift a shared iterator makes impossible.
   ##
-  ## The Decl half of `children(Expr)`, and it exists for the same reason: the
-  ## traversal is boilerplate, and assignIds/clearIds hand-rolled it twice —
-  ## identical arms differing only in the action. A walk that lists kinds by
-  ## hand is a walk that can silently miss one.
+  ## Exhaustive on purpose: a new TypeKind must be listed here or this stops
+  ## compiling.
   ##
-  ## Exhaustive on purpose. A new DeclKind must be listed here or this stops
-  ## compiling, which is the whole guarantee.
-  ##
-  ## NOT the same as ast_query.members: that one is the API for "what is
-  ## declared inside this thing" and deliberately excludes a `when` block's
-  ## body (resolved away before checking) and a select arm's. This one is the
-  ## TRAVERSAL — everything an id-assigning or id-clearing walk must reach.
-  if d != nil:
-    case d.kind
-    of dkType:
-      for m in d.typeMembers: yield m
-    of dkObject:
-      for m in d.objMembers: yield m
-    of dkMixin, dkExtern, dkPending:
-      for m in d.mixinMembers: yield m
-    of dkWhen:
-      for m in d.whenDecls: yield m
-    of dkInterface:
-      for m in d.ifaceMembers: yield m
-    of dkActor:
-      for h in d.handlers: yield h
-    of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
-       dkPool, dkRegister, dkErrors, dkImport, dkFnSig, dkSatisfies:
-      discard
-
-iterator ownExprs*(d: Decl): Expr =
-  ## Every expression this declaration owns directly — its body, initializer or
-  ## arm bodies. Paired with `childDecls`, these two reach everything under a
-  ## Decl, which is what an id walk needs.
-  ##
-  ## dkSelect is here rather than in childDecls because a select arm holds an
-  ## Expr body, not a nested declaration.
-  if d != nil:
-    case d.kind
-    of dkFn: yield d.fnBody
-    of dkTask: yield d.taskBody
-    of dkConst: yield d.constVal
-    of dkExpr: yield d.expr
-    of dkStaticAssert: yield d.assertExpr
-    of dkSelect:
-      for arm in d.selectArms: yield arm.body
-    of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
-       dkActor, dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig,
-       dkSatisfies:
-      discard
-
-proc assignIds*(e: Expr, next: var uint32) =
-  ## Give every node in this tree an id. Idempotent: a node that already has
-  ## one keeps it, so re-running over a partly-built tree is safe.
-  if e == nil: return
-  if not e.id.isSet:
-    next.inc
-    e.id = NodeId(next)
-  case e.kind
-  of exkLit, exkVar, exkQualified, exkImport: discard
-  of exkField:
-    assignIds(e.receiver, next); assignIds(e.dotArg, next)
-  of exkStruct:
-    for f in e.fields: assignIds(f.value, next)
-  of exkList:
-    for it in e.items: assignIds(it, next)
-  of exkBracket:
-    assignIds(e.brReceiver, next)
-    for a in e.brArgs: assignIds(a, next)
-  of exkBracketAssign:
-    assignIds(e.brTarget, next); assignIds(e.brValue, next)
-  of exkCall:
-    assignIds(e.callee, next)
-    for a in e.args: assignIds(a, next)
-  of exkChain:
-    assignIds(e.base, next)
-    for s in e.steps.mitems:
-      if not s.id.isSet:
-        next.inc
-        s.id = NodeId(next)
-      assignIds(s.target, next); assignIds(s.arg, next)
-  of exkBinary:
-    assignIds(e.left, next); assignIds(e.right, next)
-  of exkUnary:
-    assignIds(e.operand, next)
-  of exkBlock:
-    for s in e.stmts: assignIds(s, next)
-  of exkIf:
-    assignIds(e.cond, next); assignIds(e.thenBranch, next)
-    assignIds(e.elseBranch, next)
-  of exkMatch:
-    assignIds(e.subject, next)
-    for arm in e.arms:
-      assignIds(arm.guard, next); assignIds(arm.body, next)
-  of exkFor:
-    assignIds(e.iterable, next); assignIds(e.body, next)
-  of exkWhile:
-    assignIds(e.whileCond, next); assignIds(e.whileBody, next)
-  of exkBreak, exkContinue: discard
-  of exkAssign:
-    assignIds(e.target, next); assignIds(e.assignVal, next)
-  of exkReturn:
-    assignIds(e.returnVal, next)
-  of exkRaise:
-    assignIds(e.raiseVal, next)
-  of exkSend:
-    assignIds(e.sendPayload, next)
-  of exkSelect:
-    for arm in e.selArms:
-      assignIds(arm.arg, next); assignIds(arm.body, next)
-
-proc assignIds*(d: Decl, next: var uint32) =
-  ## The declaration itself, then every Expr reachable from it.
-  ##
-  ## The declaration needs its own id so a reference can point AT it: that is
-  ## what turns "which decl is named X" from a scan of the decl list into a
-  ## table read.
-  if d == nil: return
-  inc next
-  d.id = NodeId(next)
-  # The traversal is childDecls + ownExprs. Kinds with neither — dkSatisfies
-  # carries only names, dkRegistry only event shapes — fall out of both
-  # iterators and need no arm here.
-  for e in d.ownExprs: assignIds(e, next)
-  for m in d.childDecls: assignIds(m, next)
-
-# The id supply. SINGLE-WRITER: one thread mints ids, which holds today because
-# tuck is built --threads:off (tuck.nim pickFastCC — that flag is also what lets
-# tcc, the fastest C backend here, build the runtime at all).
-#
-# If modules are ever parsed/checked in PARALLEL, this is the first thing that
-# breaks, and it breaks SILENTLY: two threads racing `inc` hand out the same
-# NodeId, and a duplicate id does not crash — it cross-wires the semantic layer,
-# so one node reads another's type or resolved call. Two ways out, both cheap:
-#
-#   - RANGE-PARTITION: give thread N the id space N shl 24. Collision becomes
-#     impossible by construction, NodeId stays 4 bytes.
-#   - ATOMIC: fetchAdd on the counter. Simplest, but needs --threads:on.
-#
-# NOT a UUID. NodeId is a Table key on the compiler's hottest path (codegen
-# alone does ~68 semLayer lookups), so 16-byte keys would cost 4x the key width
-# and slower hashing to solve a problem partitioning solves for free.
-var globalNodeCounter: uint32 = 0
-
-proc assignIds*(m: var Module) =
-  ## Give the whole module's expressions their ids. Runs once, right after
-  ## parsing, so the semantic layer has a stable key for every source node.
-  ##
-  ## The counter is PROGRAM-wide, not per-module: a build checks and emits
-  ## several modules, and the Resolution table spans all of them, so ids
-  ## must not collide across modules.
-  for d in m.decls: assignIds(d, globalNodeCounter)
+  ## Field and variant NAMES are not yielded — they are not types. A caller
+  ## that needs them (codegen emitting a record) walks `fields` itself; this
+  ## iterator answers "what types does this type refer to".
+  if t != nil:
+    case t.kind
+    of tkNamed: discard
+    of tkApp:
+      yield t.base
+      for a in t.args: yield a
+    of tkTuple:
+      for e in t.elems: yield e
+    of tkFunc:
+      for p in t.params: yield p
+      yield t.result
+    of tkRecord:
+      for f in t.fields: yield f.typ
+    of tkSum:
+      for v in t.variants:
+        for f in v.fields: yield f.typ
+    of tkUnion:
+      for mem in t.members: yield mem
+    of tkEffect: yield t.inner
+    of tkRename: yield t.underlying
 
 iterator children*(e: Expr): Expr =
   ## Every sub-expression, one level down. For the walks that only need to
@@ -815,6 +694,162 @@ iterator children*(e: Expr): Expr =
       for arm in e.selArms:
         yield arm.arg
         yield arm.body
+
+iterator childDecls*(d: Decl): Decl =
+  ## Every declaration nested one level inside `d`, whichever field holds it.
+  ##
+  ## The Decl half of `children(Expr)`, and it exists for the same reason: the
+  ## traversal is boilerplate, and assignIds/clearIds hand-rolled it twice —
+  ## identical arms differing only in the action. A walk that lists kinds by
+  ## hand is a walk that can silently miss one.
+  ##
+  ## Exhaustive on purpose. A new DeclKind must be listed here or this stops
+  ## compiling, which is the whole guarantee.
+  ##
+  ## NOT the same as ast_query.members: that one is the API for "what is
+  ## declared inside this thing" and deliberately excludes a `when` block's
+  ## body (resolved away before checking) and a select arm's. This one is the
+  ## TRAVERSAL — everything an id-assigning or id-clearing walk must reach.
+  if d != nil:
+    case d.kind
+    of dkType:
+      for m in d.typeMembers: yield m
+    of dkObject:
+      for m in d.objMembers: yield m
+    of dkMixin, dkExtern, dkPending:
+      for m in d.mixinMembers: yield m
+    of dkWhen:
+      for m in d.whenDecls: yield m
+    of dkInterface:
+      for m in d.ifaceMembers: yield m
+    of dkActor:
+      for h in d.handlers: yield h
+    of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
+       dkPool, dkRegister, dkErrors, dkImport, dkFnSig, dkSatisfies:
+      discard
+
+iterator ownTypes*(d: Decl): Type =
+  ## Every type this declaration mentions DIRECTLY — its fields' types, its
+  ## params and return, a pool's element type. Not its members' (walk
+  ## childDecls for those) and not the types nested inside these (walk
+  ## children(Type)).
+  ##
+  ## The third of the four iterators that together cover a Decl:
+  ## childDecls / ownExprs / ownTypes, plus children(Type) beneath. Written
+  ## once because resolveDeclTypeRefs and mangleDeclTypes were the same list
+  ## of field accesses with a different action.
+  if d != nil:
+    case d.kind
+    of dkFn:
+      for p in d.fnParams: yield p.typ
+      yield d.fnReturnType
+    of dkTask:
+      for p in d.taskParams: yield p.typ
+      yield d.taskReturnType
+    of dkFnSig:
+      for p in d.sigParams: yield p.typ
+      yield d.sigReturn
+    of dkType: yield d.typeBody
+    of dkObject:
+      for f in d.objFields: yield f.typ
+    of dkActor:
+      for f in d.actorFields: yield f.typ
+    of dkPool: yield d.poolElem
+    of dkRegistry:
+      for v in d.variants:
+        for f in v.fields: yield f.typ
+    # Nothing to yield. dkRegister's fields are `bit N` ranges, never a
+    # user-named type; dkExpr/dkConst/dkStaticAssert carry expressions whose
+    # types the expression walk reaches; dkErrors a policy name; dkImport a
+    # module path; dkSelect arm bodies; dkSatisfies interface NAMES, resolved
+    # by conformance. dkMixin/dkExtern/dkPending/dkInterface/dkWhen hold only
+    # members — childDecls reaches those.
+    of dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
+       dkSelect, dkSatisfies, dkMixin, dkExtern, dkPending, dkInterface,
+       dkWhen:
+      discard
+
+iterator ownExprs*(d: Decl): Expr =
+  ## Every expression this declaration owns directly — its body, initializer or
+  ## arm bodies. Paired with `childDecls`, these two reach everything under a
+  ## Decl, which is what an id walk needs.
+  ##
+  ## dkSelect is here rather than in childDecls because a select arm holds an
+  ## Expr body, not a nested declaration.
+  if d != nil:
+    case d.kind
+    of dkFn: yield d.fnBody
+    of dkTask: yield d.taskBody
+    of dkConst: yield d.constVal
+    of dkExpr: yield d.expr
+    of dkStaticAssert: yield d.assertExpr
+    of dkSelect:
+      for arm in d.selectArms: yield arm.body
+    of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
+       dkActor, dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig,
+       dkSatisfies:
+      discard
+
+proc assignIds*(e: Expr, next: var uint32) =
+  ## Give every node in this tree an id. Idempotent: a node that already has
+  ## one keeps it, so re-running over a partly-built tree is safe.
+  ##
+  ## The traversal is `children`; only exkChain needs an arm of its own,
+  ## because a ChainStep carries its OWN id and is not an Expr, so the
+  ## iterator cannot yield it. This used to list all 21 kinds, which is the
+  ## same walk `children` exists to stop people writing.
+  if e == nil: return
+  if not e.id.isSet:
+    next.inc
+    e.id = NodeId(next)
+  if e.kind == exkChain:
+    for s in e.steps.mitems:
+      if not s.id.isSet:
+        next.inc
+        s.id = NodeId(next)
+  for c in e.children: assignIds(c, next)
+
+proc assignIds*(d: Decl, next: var uint32) =
+  ## The declaration itself, then every Expr reachable from it.
+  ##
+  ## The declaration needs its own id so a reference can point AT it: that is
+  ## what turns "which decl is named X" from a scan of the decl list into a
+  ## table read.
+  if d == nil: return
+  inc next
+  d.id = NodeId(next)
+  # The traversal is childDecls + ownExprs. Kinds with neither — dkSatisfies
+  # carries only names, dkRegistry only event shapes — fall out of both
+  # iterators and need no arm here.
+  for e in d.ownExprs: assignIds(e, next)
+  for m in d.childDecls: assignIds(m, next)
+
+# The id supply. SINGLE-WRITER: one thread mints ids, which holds today because
+# tuck is built --threads:off (tuck.nim pickFastCC — that flag is also what lets
+# tcc, the fastest C backend here, build the runtime at all).
+#
+# If modules are ever parsed/checked in PARALLEL, this is the first thing that
+# breaks, and it breaks SILENTLY: two threads racing `inc` hand out the same
+# NodeId, and a duplicate id does not crash — it cross-wires the semantic layer,
+# so one node reads another's type or resolved call. Two ways out, both cheap:
+#
+#   - RANGE-PARTITION: give thread N the id space N shl 24. Collision becomes
+#     impossible by construction, NodeId stays 4 bytes.
+#   - ATOMIC: fetchAdd on the counter. Simplest, but needs --threads:on.
+#
+# NOT a UUID. NodeId is a Table key on the compiler's hottest path (codegen
+# alone does ~68 semLayer lookups), so 16-byte keys would cost 4x the key width
+# and slower hashing to solve a problem partitioning solves for free.
+var globalNodeCounter: uint32 = 0
+
+proc assignIds*(m: var Module) =
+  ## Give the whole module's expressions their ids. Runs once, right after
+  ## parsing, so the semantic layer has a stable key for every source node.
+  ##
+  ## The counter is PROGRAM-wide, not per-module: a build checks and emits
+  ## several modules, and the Resolution table spans all of them, so ids
+  ## must not collide across modules.
+  for d in m.decls: assignIds(d, globalNodeCounter)
 
 proc clearIds*(e: Expr) =
   ## Drop ids so assignIds hands out fresh ones. Needed when a module comes

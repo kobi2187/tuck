@@ -121,29 +121,18 @@ proc programNames*(mods: seq[Module]): HashSet[string] =
     for n in ns: result.incl(n)
 
 proc mangleType(t: Type, names: HashSet[string]) =
+  ## Rename every type NAME reachable from `t`. Field and variant names stay
+  ## bare — only the types they hold resolve to declarations, and ast.children
+  ## yields exactly those.
+  ##
+  ## The walk used to be spelled out here, ending in `else: discard` — which
+  ## covered tkEffect, the one kind resolveTypeRefs listed and this did not.
+  ## Harmless today only because nothing constructs a tkEffect (effects ride on
+  ## fnEffects, and `!T` is its own wrapper), so the divergence was latent
+  ## rather than live. Sharing the iterator means the two cannot drift again.
   if t == nil: return
-  case t.kind
-  of tkNamed:
-    if t.name in names: renameType(t)
-  of tkApp:
-    mangleType(t.base, names)
-    for a in t.args: mangleType(a, names)
-  of tkTuple:
-    for e in t.elems: mangleType(e, names)
-  of tkFunc:
-    for p in t.params: mangleType(p, names)
-    mangleType(t.result, names)
-  of tkRecord:
-    # field NAMES stay bare; their types still resolve to declarations
-    for f in t.fields: mangleType(f.typ, names)
-  of tkSum:
-    for v in t.variants:
-      for f in v.fields: mangleType(f.typ, names)
-  of tkUnion:
-    for mem in t.members: mangleType(mem, names)
-  of tkRename:
-    mangleType(t.underlying, names)
-  else: discard
+  if t.kind == tkNamed and t.name in names: renameType(t)
+  for c in t.children: mangleType(c, names)
 
 proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string]) =
   ## `locals` shadows: a param or `let` named the same as a global refers to
@@ -235,40 +224,20 @@ proc mangleMember(mem: Decl, names: HashSet[string]) =
 
 proc mangleModuleWith(m: Module, names: HashSet[string])
 
-proc mangleDeclTypes(d: Decl, names: HashSet[string]) =
-  ## Every TYPE a declaration mentions: field types, params, return type,
-  ## pool element. Split from the expression walk below because they are two
-  ## independent jobs that happened to share one dispatch — a kind may need
-  ## either, both, or neither.
-  case d.kind
-  of dkTask:
-    for p in d.taskParams: mangleType(p.typ, names)
-    mangleType(d.taskReturnType, names)
-  of dkObject:
-    for f in d.objFields: mangleType(f.typ, names)
-  of dkType:
-    mangleType(d.typeBody, names)
-  of dkActor:
-    for f in d.actorFields: mangleType(f.typ, names)
-  of dkPool:
-    mangleType(d.poolElem, names)
-  of dkFn, dkMixin, dkExtern, dkPending, dkExpr, dkConst, dkStaticAssert,
-     dkRegistry, dkRegister, dkErrors, dkImport, dkSelect, dkFnSig,
-     dkSatisfies, dkInterface, dkWhen:
-    discard
-
 proc mangleDeclRefs(d: Decl, names: HashSet[string]) =
   ## Rename every reference INSIDE a declaration, before the declaration
   ## itself is renamed.
   ##
   ## Three jobs, each expressed once: the types it mentions, the bodies it
-  ## owns, and its nested members. `ownExprs` and `childDecls` supply the last
-  ## two, so a new DeclKind is reached here automatically once it is listed in
-  ## those iterators — which is the point of having them.
-  mangleDeclTypes(d, names)
+  ## owns, and its nested members. ownTypes / ownExprs / childDecls supply all
+  ## three, so a new DeclKind is reached here automatically once it is listed
+  ## in those iterators — which is the point of having them.
+  for t in d.ownTypes: mangleType(t, names)
 
   # A fn's body needs its params in scope as locals; mangleFnBody knows that.
-  # A task's is the same shape, spelled with taskParams.
+  # A task's is the same shape, spelled with taskParams. Both also re-mangle
+  # their param/return types, which ownTypes above already covered —
+  # harmless, since mangleName skips an already-prefixed name.
   if d.kind == dkFn:
     mangleFnBody(d, names)
   elif d.kind == dkTask:

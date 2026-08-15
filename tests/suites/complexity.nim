@@ -52,7 +52,10 @@ import std/[os, strutils]
 import ../harness
 
 const
-  CEILING = 64
+  # CEILING: no routine may exceed this. 64 -> 22 (2026-08-15) — it had been
+  # set when scanNext sat at 38 and nothing has approached it since, so it was
+  # gating nothing. Now one over the current worst.
+  CEILING = 22
 
   # HEAVY: how many routines may sit at cc>=15 — this tree's p90, and the point
   # where a `case` stops being dispatch and starts being a thing you trace.
@@ -95,7 +98,20 @@ const
   #     split into mangleDeclTypes + mangleDeclRefs, the latter reaching bodies
   #     and members through ownExprs/childDecls. Emitted output for examples/
   #     is byte-identical, which is the real check for a mangling change.
-  HEAVY = 28
+  #
+  # 28 -> 26 (2026-08-15), the duplication pass. ast.children gains a Type
+  # overload and ast.ownTypes joins childDecls/ownExprs, so the four walks a
+  # Decl needs are written once each:
+  #   * resolveTypeRefs 17 -> 3 and mangleType 17 -> 3 were the SAME structural
+  #     walk over Type, differing only in the action at tkNamed. They had
+  #     already drifted — mangleType ended in `else: discard` where the other
+  #     listed tkEffect.
+  #   * resolveDeclTypeRefs 25 -> 3, which was ownTypes + childDecls recursion
+  #     spelled out over 21 kinds; dkInterface and dkWhen had gone missing from
+  #     it until an earlier `else: discard` removal surfaced them.
+  #   * assignIds(Expr) 20 -> 6, the last hand-rolled Expr walk. Now matches
+  #     clearIds exactly: one exkChain arm for the step ids, then children.
+  HEAVY = 26
   CC = "tools/cyc"
 
 proc run*(t: var T) =
