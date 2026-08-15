@@ -112,7 +112,14 @@ const
   # 1308 -> 1280, HEAVY 33 -> 32: scanNext, the tree's worst proc at cc=38,
   # split into its four stages and the multi-char operator nest turned into a
   # table. 38 -> 8/7, with the two operator procs under the threshold.
-  DEBT = 1280
+  # 1280 -> 1274 (2026-08-15): the `else: discard` sweep. Removing the blanket
+  # arms is debt-NEUTRAL by itself (a pure dispatch arm is exempt), but the
+  # sweep found a real bug — lowerModule never walked taskBody, so a registry
+  # raise inside a task reached codegen unlowered and emitted invalid Nim. The
+  # fix is a third loop in lowerModule, +1 honest branch, paid for by splitting
+  # getFieldsForType (12 -> 5) into namedTypeFields / renamedFields /
+  # unionFields, each of which its own comment already described.
+  DEBT = 1274
   HEAVY = 32
   CC = "tools/cyc"
 

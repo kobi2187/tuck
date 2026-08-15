@@ -94,8 +94,8 @@ proc rewriteModule*(m: Module) =
   ##
   ## Tasks are walked SEPARATELY: allFns yields dkFn only, and a task keeps its
   ## body in taskBody. Seven examples declare tasks, so a rule that skipped them
-  ## would be silently half-applied. (lowerModule has this same gap — it walks
-  ## allFns and never reaches taskBody.)
+  ## would be silently half-applied. (lowerModule had this same gap and emitted
+  ## an unlowered registry raise from a task body; it now walks dkTask too.)
   for fn in m.allFns(): rewriteExpr(fn.fnBody)
   for d in m.decls(dkTask): rewriteExpr(d.taskBody)
   for d in m.decls(dkExpr): rewriteExpr(d.expr)

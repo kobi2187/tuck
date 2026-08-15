@@ -33,6 +33,36 @@ import ast
 import resolution, strutils
 import ast_query
 
+proc getFieldsForType*(m: Module, t: Type): seq[FieldDef]
+
+proc namedTypeFields(m: Module, t: Type): seq[FieldDef] =
+  ## The fields behind a NAME. Follows the edge the checker recorded
+  ## (resolveTypeNames) rather than matching t.name against the decl list — the
+  ## name is what the user wrote, the edge is what it means, and after mangling
+  ## the two differ.
+  var d = semLayer.declForType(t)
+  if d == nil: d = m.findDecl(dkType, t.name)
+  if d == nil: return @[]
+  # An object keeps its fields in objFields, not typeBody, and `+ Record`
+  # merges more in — composedFields answers both. Records fall through to
+  # their body as before.
+  if d.kind != dkType: return composedFields(m, d)
+  getFieldsForType(m, d.typeBody)
+
+proc renamedFields(m: Module, t: Type): seq[FieldDef] =
+  ## The underlying type's fields, with `renames` applied to their names.
+  result = getFieldsForType(m, t.underlying)
+  for f in result.mitems:
+    for r in t.renames:
+      if f.name == r[0]:
+        f.name = r[1]
+        break
+
+proc unionFields(m: Module, t: Type): seq[FieldDef] =
+  ## Every member's fields, concatenated — a union is flattened, not tagged.
+  for mem in t.members:
+    result.add(getFieldsForType(m, mem))
+
 proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
   ## The fields of a type, whichever way it was written: an inline record has
   ## them directly, a named type needs its declaration looked up, a union or
@@ -40,36 +70,14 @@ proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
   ## this have?" should not have to care which case they are in.
   if t == nil: return @[]
   case t.kind
-  of tkRecord:
-    return t.fields
-  of tkNamed:
-    # Follow the edge the checker recorded (resolveTypeNames) rather than
-    # matching t.name against the decl list — the name is what the user wrote,
-    # the edge is what it means, and after mangling the two differ.
-    var d = semLayer.declForType(t)
-    if d == nil: d = m.findDecl(dkType, t.name)
-    if d != nil:
-      # An object keeps its fields in objFields, not typeBody, and `+ Record`
-      # merges more in — composedFields answers both. Records fall through to
-      # their body as before.
-      if d.kind != dkType: return composedFields(m, d)
-      return getFieldsForType(m, d.typeBody)
-  of tkUnion:
-    var res: seq[FieldDef]
-    for mem in t.members:
-      res.add(getFieldsForType(m, mem))
-    return res
-  of tkRename:
-    var fields = getFieldsForType(m, t.underlying)
-    for f in fields.mitems:
-      for r in t.renames:
-        if f.name == r[0]:
-          f.name = r[1]
-          break
-    return fields
-  else:
-    discard
-  return @[]
+  of tkRecord: t.fields
+  of tkNamed: namedTypeFields(m, t)
+  of tkUnion: unionFields(m, t)
+  of tkRename: renamedFields(m, t)
+  # Named rather than `else: discard`: these kinds genuinely have no fields to
+  # flatten, and saying so per kind means a new TypeKind stops compiling here
+  # rather than silently answering "no fields".
+  of tkTuple, tkApp, tkFunc, tkSum, tkEffect: @[]
 
 proc lowerExpr(e: Expr, m: Module)
 
@@ -136,7 +144,13 @@ proc lowerExpr(e: Expr, m: Module) =
     let c = semLayer.call(e)
     if c != nil: lowerExpr(c, m)
     return
-  else: discard
+  # Every other kind walks its children generically. Listed rather than
+  # `else: discard` so adding an ExprKind forces a decision here.
+  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkCall,
+     exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkMatch, exkFor,
+     exkWhile, exkBreak, exkContinue, exkAssign, exkReturn, exkRaise,
+     exkImport, exkSend, exkSelect:
+    discard
 
   for c in e.children: lowerExpr(c, m)
 
@@ -157,7 +171,17 @@ proc lowerModule*(m: Module) =
                         attrs: d.typeBody.attrs)
 
   # Phase 2: rewrite call arguments (subset matching) in every fn body
+  #
+  # Tasks are walked SEPARATELY, for the same reason rewriteModule does it:
+  # allFns yields dkFn (plus nested fn members), and a task keeps its body in
+  # taskBody, which is an Expr rather than a member Decl. Omitting this line
+  # meant a task body reached codegen UNLOWERED — a registry raise inside a
+  # task emitted `LowMemory(tuck_AppEvents.raise)(42)`, the awkward pre-lowering
+  # tree, which is not valid Nim. rewrite.nim's own comment recorded this gap
+  # before it was fixed here.
   for fn in m.allFns():
     lowerExpr(fn.fnBody, m)
+  for d in m.decls(dkTask):
+    lowerExpr(d.taskBody, m)
   for d in m.decls(dkExpr):
     lowerExpr(d.expr, m)

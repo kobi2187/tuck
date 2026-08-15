@@ -592,4 +592,33 @@ fn main() -> int:
   t.quietly: t.badCheck "a fn cannot mutate its caller's record through a parameter", "TK-TY15"
   t.bugFixed "a fn cannot mutate its caller's record through a parameter"
 
+  # A task body is LOWERED like any other body.
+  # Found 2026-08-15 while removing `else: discard`. lowerModule walked
+  # `allFns()` and top-level `dkExpr` and nothing else — but a task keeps its
+  # body in `taskBody`, an Expr rather than a member Decl, so `allFns` (which
+  # reaches nested fns via `members()`) never sees it. Every lowering therefore
+  # skipped task bodies: a registry raise inside a task kept its pre-lowering
+  # shape and emitted `LowMemory(tuck_AppEvents.raise)(42)`, which is not valid
+  # Nim. In a plain fn the same line lowered to `raise_tuck_AppEvents_LowMemory`.
+  #
+  # rewriteModule had already hit this and walks dkTask separately; its comment
+  # named lowerModule as having the same gap, and it stayed open. Fixed by
+  # giving lowerModule the same third loop.
+  t.src """
+registry AppEvents:
+  | LowMemory({remaining: u32})
+
+task monitor():
+  AppEvents.raise LowMemory {remaining: 42}
+
+on AppEvents.LowMemory({remaining: u32}):
+  let left = remaining
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.emits("a registry raise in a task body is lowered",
+                     r"raise_tuck_AppEvents_LowMemory\(42\)")
+  t.bugFixed "a registry raise in a task body is lowered"
+
   t.finish()

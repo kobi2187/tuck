@@ -115,7 +115,18 @@ iterator members*(d: Decl): Decl =
       for mem in d.handlers: (if mem != nil: yield mem)
     of dkInterface:
       for mem in d.ifaceMembers: (if mem != nil: yield mem)
-    else: discard
+    # Every remaining kind, named rather than caught by `else: discard`, so a
+    # new DeclKind fails to compile here and gets decided instead of skipped.
+    #
+    # dkTask is the one worth pausing on: a task is NOT memberless, but what it
+    # holds is an Expr (taskBody), not a nested Decl, and this iterator yields
+    # declarations. Callers that want bodies to walk must reach taskBody
+    # themselves — rewriteModule and lowerModule both do. lowerModule did not
+    # until 2026-08-15, and emitted an unlowered registry raise from every task
+    # body as a result.
+    of dkTask, dkFn, dkRegistry, dkPool, dkExpr, dkConst, dkRegister,
+       dkStaticAssert, dkErrors, dkImport, dkSelect, dkFnSig, dkSatisfies,
+       dkWhen: discard
 
 proc declaredFields*(d: Decl): seq[FieldDef] =
   ## The fields a declaration introduces, whichever field holds them. A record
