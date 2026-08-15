@@ -34,7 +34,7 @@ examples/tuckrt/
 examples/mod_*/
 tests/.smoke_*
 tools/__pycache__/
-tools/cc
+tools/cyc
 
 # The compiled test runner (from tests/runner.nim). Dot-prefixed so it cannot
 # be mistaken for the entry point: `tests/run` is a tracked SCRIPT that builds

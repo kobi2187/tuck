@@ -27,7 +27,7 @@
 ## dropped below the gate, so the ratchet reports its own slack instead of
 ## quietly drifting.
 ##
-## MEASURED ON THE REAL AST. tools/cc.nim parses each file with the Nim
+## MEASURED ON THE REAL AST. tools/cyc.nim parses each file with the Nim
 ## compiler's own parser and walks the tree. The previous tool matched
 ## `if|elif|while|and|or|except` as TEXT, which was wrong twice over: it counted
 ## those words inside string literals (a three-arm case whose arms are English
@@ -61,7 +61,7 @@ const
   # p90) — the ones where complexity actually costs a reader. Together: "the
   # tail is shrinking", without taxing every small helper.
   #
-  # Both are still RATCHETS. tools/cc prints "tighten --debt/--heavy to N"
+  # Both are still RATCHETS. tools/cyc prints "tighten --debt/--heavy to N"
   # whenever the real figure is below the gate, so slack reports itself.
   # Raising either needs a reason in this comment.
   #
@@ -77,13 +77,13 @@ const
   # dispatch, so +1 for the whole table rather than per code — every new
   # diagnostic costs this, and diagnostics.nim's suite requires the arm.
   #
-  # 1964 -> 1476, HEAVY 60 -> 45 (2026-08-14): NOT a code change — tools/cc
+  # 1964 -> 1476, HEAVY 60 -> 45 (2026-08-14): NOT a code change — tools/cyc
   # stopped charging for PURE DISPATCH ARMS. An `of` arm with no decision of
   # its own is a lookup-table entry written in control-flow syntax, and
   # counting one apiece made a 21-kind AST dispatch outscore genuinely knotty
   # code. Nearly 500 of the tree's measured debt was tables. The exemption is
   # measured, not assumed: an arm that loops, tests or short-circuits still
-  # counts in full (tools/cc.nim isDispatchArm). What now tops the ranking —
+  # counts in full (tools/cyc.nim isDispatchArm). What now tops the ranking —
   # lowerExpr at 42, scanNext at 38 — is real work, which is the point.
   #
   # 1476 -> 1487 (2026-08-14): mutators fill only the fields they PROVABLY
@@ -114,14 +114,14 @@ const
   # table. 38 -> 8/7, with the two operator procs under the threshold.
   DEBT = 1280
   HEAVY = 32
-  CC = "tools/cc"
+  CC = "tools/cyc"
 
 proc run*(t: var T) =
   if not fileExists(CC):
     if t.phase != pReport: return
-    echo "complexity.sh: tools/cc not built. Once:"
+    echo "complexity.sh: tools/cyc not built. Once:"
     echo "  nim c --path:$(dirname $(dirname $(readlink -f $(command -v nim)))) \\"
-    echo "      -o:tools/cc tools/cc.nim"
+    echo "      -o:tools/cyc tools/cyc.nim"
     t.failed.inc
     return
 
@@ -136,7 +136,7 @@ proc run*(t: var T) =
   echo "== cyclomatic complexity ratchet (ceiling " & $CEILING &
        ", debt " & $DEBT & ", heavy " & $HEAVY & ") =="
   let (rc, outp) = t.resultOf(i)
-  # Only the summary lines are shown; the full ranked table is `tools/cc` on its
+  # Only the summary lines are shown; the full ranked table is `tools/cyc` on its
   # own.
   for l in outp.splitLines():
     if not l.startsWith("  cc="): echo l
@@ -154,7 +154,7 @@ proc run*(t: var T) =
   echo "  the right price. HEAVY counts procs at cc>=15 — the ones that hurt"
   echo "  to read. Neither punishes a good split. Run"
   echo ""
-  echo "    tools/cc compiler/*.nim lexer.nim tuck.nim | head -20"
+  echo "    tools/cyc compiler/*.nim lexer.nim tuck.nim | head -20"
   echo ""
   echo "  and split the worst offender you can do WELL. If a new proc really"
   echo "  needs its complexity (a dispatch `case` over an enum is dispatch,"
