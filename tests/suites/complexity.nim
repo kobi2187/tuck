@@ -13,17 +13,29 @@
 ## the failure this catches.
 ##
 ##   CEILING — no proc may exceed this complexity.
-##   DEBT    — sum of (cc - 5) over every proc above 5. Total, not headcount.
 ##   HEAVY   — how many procs may sit at cc>=15, where reading really suffers.
 ##
-## DEBT and HEAVY replaced a plain COUNT of procs over 5. The count treated a
-## cc=6 helper and a cc=53 monster as equal debt, so it fired on the 64 procs
-## sitting one over the line while staying silent about the tail — and it
-## PUNISHED splitting a monster, since three procs over 5 score worse than one
-## at 53. The goal was always "small readable procs"; these two measure that,
-## the count measured headcount.
+## ONLY THE TOP OFFENDERS ARE GATED. Both numbers are ORDER STATISTICS — the
+## max, and the count above roughly p90 — which is what makes them honest about
+## a growing codebase: adding 300 small helpers moves neither, and one new
+## monster moves both.
 ##
-## The script prints "tighten --debt/--heavy to N" whenever the real figure has
+## A third gate, DEBT (the sum of cc-5 over every proc above 5), was dropped on
+## 2026-08-15. A sum grows with SIZE, not with quality — a 2x bigger compiler
+## of identical quality doubles it, so it cannot tell "worse" from "more". It
+## also moved 1964 -> 1476 on a change to the measuring tool's own counting
+## rule, a third of the total, with the tree untouched. And it taxed
+## correctness: a bug fix needing one honest extra branch failed the gate until
+## something unrelated was refactored to pay for it, which is the same perverse
+## incentive the plain COUNT gate had before it. tools/cyc still PRINTS debt, so
+## the trend stays visible; nothing fails on it.
+##
+## (The COUNT gate that preceded both treated a cc=6 helper and a cc=53 monster
+## as equal, so it fired on the 64 procs one over the line while staying silent
+## about the tail — and it PUNISHED splitting a monster, since three procs over
+## 5 score worse than one at 53.)
+##
+## The script prints "tighten --heavy to N" whenever the real figure has
 ## dropped below the gate, so the ratchet reports its own slack instead of
 ## quietly drifting.
 ##
@@ -41,86 +53,49 @@ import ../harness
 
 const
   CEILING = 64
-  # DEBT and HEAVY replaced a plain COUNT of routines over 5, which was the
-  # wrong gate and had been quietly punishing good code.
+
+  # HEAVY: how many routines may sit at cc>=15 — this tree's p90, and the point
+  # where a `case` stops being dispatch and starts being a thing you trace.
+  # A RATCHET: set to whatever the tree currently is, lowered by hand as procs
+  # are split, never raised to accommodate new code. tools/cyc prints
+  # "tighten --heavy to N" whenever the real figure is below the gate, so slack
+  # reports itself. Raising it needs a reason written here.
   #
-  # The count weighted every routine the same, so a cc=6 helper — one guard
-  # plus a short case — was the same unit of debt as a cc=53 monster. Two
-  # consequences, both real in this tree:
+  # 60 -> 45 (2026-08-14): NOT a code change — tools/cyc stopped charging for
+  # PURE DISPATCH ARMS. An `of` arm with no decision of its own is a
+  # lookup-table entry written in control-flow syntax, and counting one apiece
+  # made a 21-kind AST dispatch outscore genuinely knotty code. The exemption
+  # is measured, not assumed: an arm that loops, tests or short-circuits still
+  # counts in full (tools/cyc.nim isDispatchArm).
   #
-  #   * it fired on good code: 64 routines sit at exactly cc=6, one over the
-  #     line, and nearly all of them are fine as they are;
-  #   * it PUNISHED the fix. Splitting genType (cc=53, then the worst proc
-  #     here) into three readable procs RAISED the count by two, because three
-  #     routines over 5 score worse than one at 53. The gate was rewarding
-  #     leaving monsters intact — the opposite of its purpose.
+  # 45 -> 42 (2026-08-14): four procs split along boundaries their own comments
+  # already described — builderSteps 39 -> 14/11/10, checkRegistry 34 -> four
+  # rules, lowerExpr 42 -> 12/10/6 (its ~20 recursion arms became
+  # ast.children), mangleExpr 32 -> 22.
+  # 42 -> 40: synthCall split into asRestructuringBuiltin + asNamedCallee
+  # (27 -> 10/9), and sameType's four "same length, then pairwise" arms
+  # collapsed onto two helpers (23 -> 9).
+  # 40 -> 39: raisedEventsIn walks ast.children instead of ten hand-listed
+  # kinds plus `else: discard`.
+  # 39 -> 33: the ast.children sweep. Every hand-rolled Expr walk in the tree
+  # now uses the iterator. Four of those walks had a silent gap; two were real
+  # bugs (EV-4, and the pointer-return tkFunc case).
+  # 33 -> 32: scanNext, then the tree's worst proc at cc=38, split into its
+  # four stages and the multi-char operator nest turned into a table.
   #
-  # DEBT sums how far each routine exceeds 5, so the arithmetic finally
-  # matches the intent: splitting 53 into 8+7+6 moves debt 48 -> 6, and a new
-  # small helper costs 1. HEAVY counts only routines at cc>=15 (this tree's
-  # p90) — the ones where complexity actually costs a reader. Together: "the
-  # tail is shrinking", without taxing every small helper.
-  #
-  # Both are still RATCHETS. tools/cyc prints "tighten --debt/--heavy to N"
-  # whenever the real figure is below the gate, so slack reports itself.
-  # Raising either needs a reason in this comment.
-  #
-  # 1953 -> 1963 (2026-08-14): the `<uninit>` field analysis. A new rule that
-  # every write path and the single field-read site must honour cannot be free
-  # in branch count. What was extractable WAS extracted first — the diagnostic
-  # out of asPlainField, the record rebuild out of clearUninit, and
-  # constructedType split three ways (13 -> 6) — taking the cost from 22 to
-  # 10. The remainder is the rule itself: two more arms in checkChainStep,
-  # one guard each in synthReassign, anyUninit and clearUninit.
-  #
-  # 1963 -> 1964 (same day): TK-TY16's arm in the `explain` table. A registry
-  # dispatch, so +1 for the whole table rather than per code — every new
-  # diagnostic costs this, and diagnostics.nim's suite requires the arm.
-  #
-  # 1964 -> 1476, HEAVY 60 -> 45 (2026-08-14): NOT a code change — tools/cyc
-  # stopped charging for PURE DISPATCH ARMS. An `of` arm with no decision of
-  # its own is a lookup-table entry written in control-flow syntax, and
-  # counting one apiece made a 21-kind AST dispatch outscore genuinely knotty
-  # code. Nearly 500 of the tree's measured debt was tables. The exemption is
-  # measured, not assumed: an arm that loops, tests or short-circuits still
-  # counts in full (tools/cyc.nim isDispatchArm). What now tops the ranking —
-  # lowerExpr at 42, scanNext at 38 — is real work, which is the point.
-  #
-  # 1476 -> 1487 (2026-08-14): mutators fill only the fields they PROVABLY
-  # assign, which needs a write-side scan of the callee (collectFieldWrites
-  # and its three shape helpers). The alternative was the previous behaviour —
-  # any `..fn` clears every hole — which is unsound in the direction that
-  # matters: it hands back a "filled" field the mutator never touched.
-  #
-  # 1487 -> 1424, HEAVY 45 -> 42 (2026-08-14): a complexity pass. Four procs
-  # split along boundaries their own comments already described —
-  # builderSteps 39 -> 14/11/10, checkRegistry 34 -> four rules, lowerExpr
-  # 42 -> 12/10/6 (its ~20 recursion arms became ast.children), mangleExpr
-  # 32 -> 22 (the same, minus the three arms that carry a scoping rule).
-  # Behaviour-preserving: emitted output for examples/ is byte-identical
-  # throughout, which is the real check for the lowering and mangling ones.
-  # 1424 -> 1397, HEAVY 42 -> 40: synthCall split into asRestructuringBuiltin
-  # + asNamedCallee (27 -> 10/9), and sameType's four "same length, then
-  # pairwise" arms collapsed onto two helpers (23 -> 9).
-  # 1397 -> 1388, HEAVY 40 -> 39: raisedEventsIn walks ast.children instead of
-  # ten hand-listed kinds plus `else: discard`.
-  # 1388 -> 1308, HEAVY 39 -> 33: the ast.children sweep. Every hand-rolled
-  # Expr walk in the tree now uses the iterator — rewriteExpr, synthesizeExpr,
-  # mentionsName, rewriteChains, raisedEventsIn, scanReturns — plus splits of
-  # buildDeclIndex and genType. Four of those walks had a silent gap; two were
-  # real bugs (EV-4, and the pointer-return tkFunc case).
-  # 1308 -> 1280, HEAVY 33 -> 32: scanNext, the tree's worst proc at cc=38,
-  # split into its four stages and the multi-char operator nest turned into a
-  # table. 38 -> 8/7, with the two operator procs under the threshold.
-  # 1280 -> 1274 (2026-08-15): the `else: discard` sweep. Removing the blanket
-  # arms is debt-NEUTRAL by itself (a pure dispatch arm is exempt), but the
-  # sweep found a real bug — lowerModule never walked taskBody, so a registry
-  # raise inside a task reached codegen unlowered and emitted invalid Nim. The
-  # fix is a third loop in lowerModule, +1 honest branch, paid for by splitting
-  # getFieldsForType (12 -> 5) into namedTypeFields / renamedFields /
-  # unionFields, each of which its own comment already described.
-  DEBT = 1274
-  HEAVY = 32
+  # 32 -> 28 (2026-08-15), the pass that also dropped the DEBT gate:
+  #   * ast.childDecls / ast.ownExprs — the Decl half of ast.children. clearIds
+  #     and assignIds(Decl) were the SAME traversal written twice, identical
+  #     arms differing only in the action; both are now two lines. 16/16 -> 0.
+  #   * toString 29 -> 8: two operator spelling tables lifted out as opStr(),
+  #     the three hand-rolled comma-joins replaced by listToString, and the
+  #     four optional-payload `if`s by optToString.
+  #   * mangleModuleWith 22 -> 9: one dispatch doing two independent jobs
+  #     (mangle the types a decl mentions, mangle the expressions it owns)
+  #     split into mangleDeclTypes + mangleDeclRefs, the latter reaching bodies
+  #     and members through ownExprs/childDecls. Emitted output for examples/
+  #     is byte-identical, which is the real check for a mangling change.
+  HEAVY = 28
   CC = "tools/cyc"
 
 proc run*(t: var T) =
@@ -132,7 +107,7 @@ proc run*(t: var T) =
     t.failed.inc
     return
 
-  var argv = @[CC, "--gate", $CEILING, "--debt", $DEBT, "--heavy", $HEAVY]
+  var argv = @[CC, "--gate", $CEILING, "--heavy", $HEAVY]
   for f in walkFiles("compiler/*.nim"): argv.add f
   argv.add "lexer.nim"
   argv.add "tuck.nim"
@@ -141,7 +116,7 @@ proc run*(t: var T) =
   if t.phase != pReport: return
 
   echo "== cyclomatic complexity ratchet (ceiling " & $CEILING &
-       ", debt " & $DEBT & ", heavy " & $HEAVY & ") =="
+       ", heavy " & $HEAVY & ") =="
   let (rc, outp) = t.resultOf(i)
   # Only the summary lines are shown; the full ranked table is `tools/cyc` on its
   # own.
@@ -155,11 +130,10 @@ proc run*(t: var T) =
   echo "complexity.sh: 1 failed"
   echo "  A proc got more complex, or a heavy new one landed."
   echo ""
-  echo "  DEBT is the sum of (cc - 5) over every proc above 5, so it rewards"
-  echo "  what you actually want: splitting a cc=53 proc into 8+7+6 moves debt"
-  echo "  48 -> 6. A genuinely-needed small helper at cc=6 costs 1, which is"
-  echo "  the right price. HEAVY counts procs at cc>=15 — the ones that hurt"
-  echo "  to read. Neither punishes a good split. Run"
+  echo "  CEILING is the worst proc in the tree; HEAVY counts the procs at"
+  echo "  cc>=15 — the ones that actually hurt to read. Both are order"
+  echo "  statistics, so a pile of small helpers costs nothing and one new"
+  echo "  monster costs immediately. Neither punishes a good split. Run"
   echo ""
   echo "    tools/cyc compiler/*.nim lexer.nim tuck.nim | head -20"
   echo ""

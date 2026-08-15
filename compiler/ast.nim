@@ -584,6 +584,60 @@ proc `$`*(a: NodeId): string = "n" & $uint32(a)
 
 proc isSet*(a: NodeId): bool = uint32(a) != 0'u32
 
+iterator childDecls*(d: Decl): Decl =
+  ## Every declaration nested one level inside `d`, whichever field holds it.
+  ##
+  ## The Decl half of `children(Expr)`, and it exists for the same reason: the
+  ## traversal is boilerplate, and assignIds/clearIds hand-rolled it twice —
+  ## identical arms differing only in the action. A walk that lists kinds by
+  ## hand is a walk that can silently miss one.
+  ##
+  ## Exhaustive on purpose. A new DeclKind must be listed here or this stops
+  ## compiling, which is the whole guarantee.
+  ##
+  ## NOT the same as ast_query.members: that one is the API for "what is
+  ## declared inside this thing" and deliberately excludes a `when` block's
+  ## body (resolved away before checking) and a select arm's. This one is the
+  ## TRAVERSAL — everything an id-assigning or id-clearing walk must reach.
+  if d != nil:
+    case d.kind
+    of dkType:
+      for m in d.typeMembers: yield m
+    of dkObject:
+      for m in d.objMembers: yield m
+    of dkMixin, dkExtern, dkPending:
+      for m in d.mixinMembers: yield m
+    of dkWhen:
+      for m in d.whenDecls: yield m
+    of dkInterface:
+      for m in d.ifaceMembers: yield m
+    of dkActor:
+      for h in d.handlers: yield h
+    of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
+       dkPool, dkRegister, dkErrors, dkImport, dkFnSig, dkSatisfies:
+      discard
+
+iterator ownExprs*(d: Decl): Expr =
+  ## Every expression this declaration owns directly — its body, initializer or
+  ## arm bodies. Paired with `childDecls`, these two reach everything under a
+  ## Decl, which is what an id walk needs.
+  ##
+  ## dkSelect is here rather than in childDecls because a select arm holds an
+  ## Expr body, not a nested declaration.
+  if d != nil:
+    case d.kind
+    of dkFn: yield d.fnBody
+    of dkTask: yield d.taskBody
+    of dkConst: yield d.constVal
+    of dkExpr: yield d.expr
+    of dkStaticAssert: yield d.assertExpr
+    of dkSelect:
+      for arm in d.selectArms: yield arm.body
+    of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
+       dkActor, dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig,
+       dkSatisfies:
+      discard
+
 proc assignIds*(e: Expr, next: var uint32) =
   ## Give every node in this tree an id. Idempotent: a node that already has
   ## one keeps it, so re-running over a partly-built tree is safe.
@@ -653,29 +707,11 @@ proc assignIds*(d: Decl, next: var uint32) =
   if d == nil: return
   inc next
   d.id = NodeId(next)
-  case d.kind
-  of dkFn: assignIds(d.fnBody, next)
-  of dkTask: assignIds(d.taskBody, next)
-  of dkConst: assignIds(d.constVal, next)
-  of dkExpr: assignIds(d.expr, next)
-  of dkStaticAssert: assignIds(d.assertExpr, next)
-  of dkType:
-    for m in d.typeMembers: assignIds(m, next)
-  of dkObject:
-    for m in d.objMembers: assignIds(m, next)
-  of dkMixin, dkExtern, dkPending:
-    for m in d.mixinMembers: assignIds(m, next)
-  of dkWhen:
-    for m in d.whenDecls: assignIds(m, next)
-  of dkInterface:
-    for m in d.ifaceMembers: assignIds(m, next)
-  of dkActor:
-    for h in d.handlers: assignIds(h, next)
-  of dkSelect:
-    for arm in d.selectArms: assignIds(arm.body, next)
-  # dkSatisfies carries only names, no sub-expressions to identify.
-  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig,
-     dkSatisfies: discard
+  # The traversal is childDecls + ownExprs. Kinds with neither — dkSatisfies
+  # carries only names, dkRegistry only event shapes — fall out of both
+  # iterators and need no arm here.
+  for e in d.ownExprs: assignIds(e, next)
+  for m in d.childDecls: assignIds(m, next)
 
 # The id supply. SINGLE-WRITER: one thread mints ids, which holds today because
 # tuck is built --threads:off (tuck.nim pickFastCC — that flag is also what lets
@@ -794,21 +830,8 @@ proc clearIds*(e: Expr) =
 
 proc clearIds*(d: Decl) =
   if d == nil: return
-  case d.kind
-  of dkFn: clearIds(d.fnBody)
-  of dkTask: clearIds(d.taskBody)
-  of dkConst: clearIds(d.constVal)
-  of dkExpr: clearIds(d.expr)
-  of dkStaticAssert: clearIds(d.assertExpr)
-  of dkType: (for m in d.typeMembers: clearIds(m))
-  of dkObject: (for m in d.objMembers: clearIds(m))
-  of dkMixin, dkExtern, dkPending: (for m in d.mixinMembers: clearIds(m))
-  of dkWhen: (for m in d.whenDecls: clearIds(m))
-  of dkInterface: (for m in d.ifaceMembers: clearIds(m))
-  of dkActor: (for h in d.handlers: clearIds(h))
-  of dkSelect: (for arm in d.selectArms: clearIds(arm.body))
-  of dkRegistry, dkPool, dkRegister, dkErrors, dkImport, dkFnSig,
-     dkSatisfies: discard
+  for e in d.ownExprs: clearIds(e)
+  for m in d.childDecls: clearIds(m)
 
 proc clearIds*(m: var Module) =
   for d in m.decls: clearIds(d)

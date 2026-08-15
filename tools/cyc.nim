@@ -1,4 +1,4 @@
-# tools/cc.nim — cyclomatic complexity, measured on the real AST.
+# tools/cyc.nim — cyclomatic complexity, measured on the real AST.
 #
 # WHY NOT A REGEX. tools/complexity.py counts `if|elif|while|and|or|except` as
 # text. That is wrong in both directions, and both were observed here:
@@ -43,9 +43,9 @@
 # so it needs the install root on the path):
 #
 #   nim c --path:$(dirname $(dirname $(readlink -f $(command -v nim)))) \
-#       -o:tools/cc tools/cc.nim
+#       -o:tools/cyc tools/cyc.nim
 #
-# Usage: cc [--gate N] [--budget N] FILE...
+# Usage: cyc [--gate N] [--budget N] [--debt N] [--heavy N] FILE...
 import compiler/[ast, idents, options, parser, lineinfos, llstream]
 import std/[os, strutils, algorithm, sequtils]
 
@@ -138,7 +138,7 @@ proc measure(path: string, acc: var seq[Measured]) =
   try:
     collect(parseString(readFile(path), cache, conf, path), path, acc)
   except CatchableError as e:
-    stderr.writeLine "cc: could not parse ", path, ": ", e.msg
+    stderr.writeLine "cyc: could not parse ", path, ": ", e.msg
 
 proc main() =
   var gate, budget, debt, heavy = -1
@@ -153,7 +153,7 @@ proc main() =
     else: files.add(paramStr(i))
     inc i
   if files.len == 0:
-    echo "usage: cc [--gate N] [--budget N] [--debt N] [--heavy N] FILE..."
+    echo "usage: cyc [--gate N] [--budget N] [--debt N] [--heavy N] FILE..."
     quit(1)
 
   var all: seq[Measured]
@@ -204,6 +204,14 @@ proc main() =
   # complexity genuinely hurts reading. Together they say "the tail is
   # shrinking" without taxing every small helper.
   let totalDebt = over.foldl(a + b.cc - 5, 0)
+  # Reported always, gated only when asked. The suite no longer passes --debt:
+  # it is a SUM, so it grows with the codebase regardless of quality — a 2x
+  # bigger compiler of identical quality doubles it, and it cannot tell "worse"
+  # from "more". It also moved 1964 -> 1476 on a change to this tool's own
+  # counting rule, a third of the total, with the tree untouched. CEILING and
+  # HEAVY are order statistics (max, and count above p90) and do not have
+  # either problem. Kept visible because the trend is still worth a glance.
+  echo "debt: ", totalDebt, " (sum over 5, not gated)"
   if debt >= 0:
     if totalDebt > debt:
       echo "FAIL: complexity debt ", totalDebt, " (sum over 5), limit is ", debt

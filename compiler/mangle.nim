@@ -235,6 +235,55 @@ proc mangleMember(mem: Decl, names: HashSet[string]) =
 
 proc mangleModuleWith(m: Module, names: HashSet[string])
 
+proc mangleDeclTypes(d: Decl, names: HashSet[string]) =
+  ## Every TYPE a declaration mentions: field types, params, return type,
+  ## pool element. Split from the expression walk below because they are two
+  ## independent jobs that happened to share one dispatch — a kind may need
+  ## either, both, or neither.
+  case d.kind
+  of dkTask:
+    for p in d.taskParams: mangleType(p.typ, names)
+    mangleType(d.taskReturnType, names)
+  of dkObject:
+    for f in d.objFields: mangleType(f.typ, names)
+  of dkType:
+    mangleType(d.typeBody, names)
+  of dkActor:
+    for f in d.actorFields: mangleType(f.typ, names)
+  of dkPool:
+    mangleType(d.poolElem, names)
+  of dkFn, dkMixin, dkExtern, dkPending, dkExpr, dkConst, dkStaticAssert,
+     dkRegistry, dkRegister, dkErrors, dkImport, dkSelect, dkFnSig,
+     dkSatisfies, dkInterface, dkWhen:
+    discard
+
+proc mangleDeclRefs(d: Decl, names: HashSet[string]) =
+  ## Rename every reference INSIDE a declaration, before the declaration
+  ## itself is renamed.
+  ##
+  ## Three jobs, each expressed once: the types it mentions, the bodies it
+  ## owns, and its nested members. `ownExprs` and `childDecls` supply the last
+  ## two, so a new DeclKind is reached here automatically once it is listed in
+  ## those iterators — which is the point of having them.
+  mangleDeclTypes(d, names)
+
+  # A fn's body needs its params in scope as locals; mangleFnBody knows that.
+  # A task's is the same shape, spelled with taskParams.
+  if d.kind == dkFn:
+    mangleFnBody(d, names)
+  elif d.kind == dkTask:
+    var locals = initHashSet[string]()
+    for p in d.taskParams: locals.incl(p.name)
+    mangleExpr(d.taskBody, names, locals)
+  else:
+    # Everything else owning an expression — dkExpr, dkConst, dkStaticAssert,
+    # a select arm — has no parameters, so each gets a fresh empty scope.
+    for e in d.ownExprs:
+      var l = initHashSet[string]()
+      mangleExpr(e, names, l)
+
+  for mem in d.childDecls: mangleMember(mem, names)
+
 proc mangleProgram*(mods: seq[Module]) =
   ## Mangle a whole import closure — the entry module plus every module it
   ## imports — in ONE pass, then the shared Resolution.
@@ -276,38 +325,7 @@ proc mangleModuleWith(m: Module, names: HashSet[string]) =
   for d in m.decls:
     if d == nil: continue
     # references inside bodies, before the declaration itself is renamed
-    case d.kind
-    of dkFn:
-      mangleFnBody(d, names)
-    of dkTask:
-      var locals = initHashSet[string]()
-      for p in d.taskParams: locals.incl(p.name)
-      mangleExpr(d.taskBody, names, locals)
-      for p in d.taskParams: mangleType(p.typ, names)
-      mangleType(d.taskReturnType, names)
-    of dkObject:
-      for f in d.objFields: mangleType(f.typ, names)
-      for mem in d.objMembers: mangleMember(mem, names)
-    of dkType:
-      mangleType(d.typeBody, names)
-      for mem in d.typeMembers: mangleMember(mem, names)
-    of dkActor:
-      for f in d.actorFields: mangleType(f.typ, names)
-      for h in d.handlers: mangleMember(h, names)
-    of dkMixin, dkExtern, dkPending:
-      for mem in d.mixinMembers: mangleMember(mem, names)
-    of dkExpr:
-      var l = initHashSet[string]()
-      mangleExpr(d.expr, names, l)
-    of dkConst:
-      var l = initHashSet[string]()
-      mangleExpr(d.constVal, names, l)
-    of dkPool:
-      mangleType(d.poolElem, names)
-    of dkStaticAssert:
-      var l = initHashSet[string]()
-      mangleExpr(d.assertExpr, names, l)
-    else: discard
+    mangleDeclRefs(d, names)
 
   # now the declarations themselves
   for d in m.decls:
