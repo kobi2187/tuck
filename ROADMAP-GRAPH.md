@@ -1037,7 +1037,7 @@ the one worth being blunt about.
 | Q6 | `F1` — generic params on `fnsig`; constraints or not? | **needs info** | params are small, constraints are large. Decide the two separately; D-06 raised the cost estimate |
 | Q7 | `F2` — derive, or hand-written per record? | **unexamined, but now leaning** | two independent arguments converge on *don't*: the inventory says hand-write and measure, and the reject-don't-transform rule (§0) makes derive the single heaviest thing on the foundation list |
 | Q8 | `F4` — interface dispatch: fix the copy, or handle-based sum type? | **unexamined** | a design fork, not a fix. Nothing has been drawn |
-| Q9 | T-11 — the three parser papercuts: fix, or declare the ceiling? | **needs a ruling** | a "that's the ceiling, document it" is a valid, free answer |
+| Q9 | T-11 — the three parser papercuts: fix, or declare the ceiling? | **DECIDED 2026-08-19** | **the ceiling, documented.** `LANGUAGE-OVERVIEW.md` §0 rows 13–14, pinned by `tests/suites/syntax_ceilings.nim`. The third was withdrawn — it was a misdiagnosis, not a ceiling (D-13) |
 | Q10 | `F26` — how does the checker say *"that function does not exist"* without becoming a nominal type system? | **unexamined** | discovered yesterday (D-08). The lightweight version is: know the exported names, report a call that resolves to nothing |
 
 ### Embedded, where the user has said the knowledge is thin

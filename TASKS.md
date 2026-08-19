@@ -122,16 +122,17 @@ Acceptance criteria:
 - [ ] no changes outside `tuck.nim`, `compiler/semantics.nim`, `compiler/typecheck_util.nim`, `tests/suites/diagnostics.nim`
 
 ## T-11: the jam papercuts — decide, then fix or document
-Status: pending
-Maps to: **C11** — DISCOVERIES D-01, D-02, D-03
+Status: **done** (2026-08-19) — **RULED: these are the ceiling, documented**
+Maps to: **C11** — DISCOVERIES D-01, D-02, D-03/D-13
 Depends on: —
-Interfaces: parser only
+Interfaces: parser only — and no parser change was made, which was the point
 Acceptance criteria:
-- [ ] multi-line list literals parse (D-01), or the ceiling is stated in `LANGUAGE-OVERVIEW.md` §0
-- [ ] value-`if` composes as a binary operand (D-02), or same
-- [ ] bare-receiver postfix inside a struct literal (D-03), or same
-- [ ] **each of the three gets a decision recorded, not silence** — a ruling is an acceptable outcome
-- [ ] no changes outside `compiler/parser*.nim`, `LANGUAGE-OVERVIEW.md`, `tests/suites/parser.nim`
+- [x] D-01 multi-line list literals — **ceiling**, `LANGUAGE-OVERVIEW.md` §0 row 13
+- [x] D-02 value-`if` as an operand — **ceiling**, §0 row 14, workaround is one `let`
+- [x] D-03 — **withdrawn, not a ceiling**: `{a: n twice} P` checks clean. The spike's failure was `f at 0`, a postfix call with an extra argument. See D-13
+- [x] each decision recorded, not silence
+- [x] pinned by `tests/suites/syntax_ceilings.nim` so the ceiling cannot move silently in either direction — including one `okCheck` proving the workaround compiles, because a ceiling with no way around it would be a gap
+- [x] no changes outside `LANGUAGE-OVERVIEW.md`, `tests/suites/syntax_ceilings.nim`, `tests/suites/all.nim`, `tests/suites/regen.py`, `DISCOVERIES.md`
 
 ## T-12: examples must compile their emitted Nim
 Status: pending

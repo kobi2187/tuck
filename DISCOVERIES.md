@@ -30,12 +30,25 @@ is accepted at the top of an assignment RHS (`let limit = if hot: 90 else: 20`,
 `let` per branch-value.
 **Node:** C11. Worth a decision: is this the intended ceiling or a gap?
 
-### D-03 · Bare-receiver postfix breaks inside a struct literal
+### D-03 · Bare-receiver postfix breaks inside a struct literal — **WRONG, see D-13**
 **Assumed:** `{who: f at 0}` works — postfix application is the house style.
-**Found:** `Expected field name in struct literal`. The *payload* form nests
-fine (`{score: {bag: bag} scoreBag}` parses), the *bare receiver* form does
-not. So Tuck's two signature features do not compose in one direction.
+**Found:** `Expected field name in struct literal`.
 **Node:** C11.
+**Retracted 2026-08-19** — the diagnosis was wrong; see D-13. The entry stays
+because this log is append-only and a wrong reading is worth keeping visible.
+
+### D-13 · D-03 was misdiagnosed: bare-receiver postfix in a field is fine
+**Assumed (from D-03):** a bare receiver cannot be postfix-applied in a
+struct-literal field position, so two signature features do not compose.
+**Found:** they compose. `{a: n twice} P` checks clean — reproduced while
+writing the ceiling suite for the T-11 ruling. What actually failed in the
+spike was `f at 0`: a postfix call carrying an **extra argument**, which is not
+syntax in any position, field or otherwise. `at` takes `{items, index}`, so the
+payload form is required — `{items: f, index: 0} at`.
+**Node:** none. No ceiling to document, no gap to fix.
+**Lesson:** the spike reported the symptom's location, not its cause. Writing
+the assertion is what caught it — which is the argument for pinning a ruling
+with a test rather than only with prose.
 
 ### D-04 · Parse errors are genuinely good; type errors are not
 **Assumed (from the toolchain report):** the Elm-grade registry prose is

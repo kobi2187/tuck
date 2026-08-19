@@ -32,6 +32,7 @@ import object_composition
 import odin_backend
 import optimize
 import pointer_containment
+import syntax_ceilings
 import typecheck
 import uninit
 import value_semantics
@@ -68,6 +69,7 @@ let registry: seq[Entry] = @[
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
+  ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     false),
   ("typecheck",           SuiteProc(typecheck.run),           true),
   ("uninit",              SuiteProc(uninit.run),              false),
   ("value_semantics",     SuiteProc(value_semantics.run),     false),
