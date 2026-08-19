@@ -72,21 +72,32 @@ The consequence for the graph is concrete and appears in §4, §6 and §10:
 gate**, because it is the only thing standing between a jam dev and a hash map.
 See §10 for the lens in full.
 
-**The second rule, applied to every borrow in §5: parity, not bulk.**
+**The second rule, applied to every borrow in §5: value, not architecture.**
 
-> Tuck evades complexity. A module earns its place by reaching **functional
-> parity** with the established library it is modelled on — while staying
-> lightweight and elegant. The reference implementation is the *behaviour* to
-> match, never the size to match.
+> Tuck evades complexity. For each capability, ask **what final value the module
+> actually gives the user**, then take the most pragmatic and simple path to
+> that value — which is often a *different architecture*, not a smaller copy of
+> the reference one.
 
-This is what stops "learn from Go's `io`" from becoming "port Go's `io`". Each
-row in §5 names a source for its **shape and semantics**; none of them licenses
-the source's surface area. Three consequences that bind the later sections:
+The canonical illustration, and the one to reason by:
 
-- **Match the capability, cut the ceremony.** Erlang teaches supervision, not
-  `gen_server` boilerplate. Rust teaches `heapless`'s capacity-in-the-type, not
-  its trait tower. Cargo teaches project shape, not its feature resolver.
-- **A smaller mechanism that covers the same ground wins.** Zig's
+> **A SQL server can be a behemoth, so take the SQLite path** — local,
+> lightweight, fast enough, file-based, and inspectable, which is to say
+> *transparent*. A web server can be huge; find the lightest thing that works
+> well and build that.
+
+This is the difference between "port Go's `io`" and "get what Go's `io` gives
+you". SQLite is not a small SQL Server — it is a different shape that delivers
+the value most programs actually wanted, at a fraction of the cost, and it wins
+on a property the big one doesn't even offer: you can open the file and look.
+Four consequences that bind the later sections:
+
+- **Name the value, then choose the shape.** Not *"how does .NET implement
+  this"* but *"what does a person get from this module, and what is the
+  simplest thing that gets them there"*. Worked through in §5.1.
+- **Transparency counts as value.** File-based and inspectable beats opaque and
+  clever. It is also what makes a two-day user trust the thing.
+- **A smaller mechanism covering the same ground wins.** Zig's
   `packed struct(u32)` is *"genuinely better than svd2rust's closure API and
   about a tenth the machinery"* — that ratio is the standard, not an anecdote.
 - **When Tuck's own machinery already covers a borrowed idea, use it.**
@@ -94,8 +105,18 @@ the source's surface area. Three consequences that bind the later sections:
   would cost every backend a dispatch arm for zero gain. `interface`+`satisfies`
   is already the shape of `embedded-hal`.
 
+**Actors are the load-bearing instance of this rule, not merely a feature.** The
+reason a lot of complex software becomes tractable in Tuck is that the actor
+model replaces a pile of mechanisms — threads, locks, condition variables,
+futures, callback graphs — with **one mental model** the user already holds
+after five minutes. That is exactly "the most pragmatic path to the value":
+concurrency's value is *do many things at once without corrupting state*, and
+one model that delivers it beats four that compose badly. See §8 for what that
+costs today and what it needs.
+
 Where the two rules disagree, they usually don't: the jam test says *what must
-be in the box*, this one says *how big the box is allowed to get*.
+be in the box*, this one says *how big the box is allowed to get, and in what
+shape*.
 
 **Evidence.** Every claim below carries a `file:line`. Where an assertion could
 not be reproduced against the current tree, it says so. The compiler beats every
@@ -211,7 +232,7 @@ This table is the spine of the document; §3 and §4 hang off it.
 | **F2** | derive-style codegen for records (hash / eq / ord / toStr) | ✗ | no reflection, no macros; `stdlib-layers.md` L1 note | `fmt`, `json`, `Map` keyed by a record — *one decision, three payoffs* |
 | **F3** | `[error: E]` permitted without `[io]` | ⛔ | `typecheck.nim:2686` `checkFallibleNeedsIo` | every pure parser: `parse`, `json`, `num`. Today a JSON decoder poisons its whole call graph with `[io]` |
 | **F4** | interface dispatch without copying the receiver | ⛔ | interfaces are copying tagged variants (spec §5.3) | `stream` reader/writer — *the* keystone in Go, .NET and Rust alike; therefore `bufio`, `http`, handle-based `fs` |
-| **F5** | a value with a stable, takeable address (region / DMA buffer) | ⛔ | `typecheck_pointers.nim` forbids storing or returning any pointer-kind value | binding a vendor HAL, DMA, hosted drivers, pooled buffers with identity. **See §7.3** |
+| **F5** | a value with a stable, takeable address (region / DMA buffer) | ⛔ | `typecheck_pointers.nim` forbids storing or returning any pointer-kind value. **Scope check (2026-08-19):** an *opaque* C handle already works — `examples/37-ffi-handle.tuck` holds a fieldless extern type and names `sqlite3*` as the case it serves. What is blocked is taking the address of a **Tuck** value and handing out a mutable buffer | DMA, vendor HALs of the `HAL_UART_Transmit(&huart2, buf, len, tmo)` shape, pooled buffers with identity — **not** ordinary C library bindings. **See §7.3** |
 | **F6** | `volatile` load/store and memory barriers in codegen | ✗ | Nim emits `cast[ptr T](a)[]`; Odin emits `p^` — both plain, both eliminable | any MMIO poll loop surviving `-O2`; therefore every driver |
 | **F7** | per-declaration error collection | ✗ | `typecheck.nim:3277-3279` is the seam; `typecheck.nim:20-22` states the fail-fast rationale | `--all-errors`, and the LSP. Retrofitting later means touching 134 `fail()` sites twice |
 | **F8** | comments become tokens; `##` attaches to a `Decl` | ✗ | `lexer.nim:479` → `skipComment` at `lexer.nim:367`; nothing comment-shaped in `ast.nim` | `tuck fmt` (an AST printer would **delete every comment** — data loss), `tuck doc`, LSP hover |
@@ -338,10 +359,9 @@ The compression the brief asked for — *this from that language, that from
 another*, with the reason each source is the right one for a language with no
 reflection, no macros, no closures and two backends.
 
-**Read every row under the parity rule (§0):** the source names the behaviour to
-match, never the size. Each borrow is an obligation to reach the same
-functionality *more lightly* — if a row ends up as heavy as its source, the row
-was copied rather than designed.
+**Read every row under the value rule (§0):** the source names the value to
+deliver, never the architecture to reproduce. If a row ends up as heavy as its
+source, the row was copied rather than designed.
 
 | Area | Borrowed from | Why that one |
 |---|---|---|
@@ -366,6 +386,38 @@ was copied rather than designed.
 | project shape | **Cargo's manifest**, **Zig's** deferral of the registry | Zig went 7 years without a package manager, Go 9, both growing hard. Ship `tuck.toml`; ship no registry |
 | canonical printer | **gofmt / `zig fmt`** as a *migration lever* | not cosmetics — the substrate for `tuck fix -r`. A pre-1.0 language that can rewrite its own corpus stops stranding its own tutorial |
 | positioning | **MISRA C:2012**, inverted | no dynamic memory, no recursion, restricted pointers, no implicit conversions. *"The MISRA subset, but as a language instead of a checklist"* is sharper than "systems language that transpiles" |
+
+---
+
+### 5.1 Value, not architecture — worked against .NET
+
+.NET is the right foil because it is the most *complete* of the reference
+stdlibs, so every row shows the gap between the value and the machinery built to
+deliver it. Column 2 is the question that decides the design; column 3 is the
+answer under §0.
+
+| .NET gives you | The value a person is actually after | Tuck's lightest path to that value |
+|---|---|---|
+| EF Core + SQL Server / LocalDB | durable, queryable, transactional local state | **SQLite via `extern`** — one file, no server, no daemon, no migration tooling to install. Inspectable with any tool. Ships as the answer to "where do I put my data". **Unblocked today:** `sqlite3*` is an opaque handle, which `examples/37-ffi-handle.tuck` already binds — this row needs no foundation node, only the work |
+| Kestrel + the ASP.NET middleware pipeline | *"handle HTTP requests, route them, write responses"* | a small HTTP/1.1 server over TCP, **one actor per connection**. No middleware abstraction, no host builder, no DI-wired pipeline |
+| `IServiceCollection` + DI container + lifetimes | wire components together without hand-threading | **nothing** — construct records and pass them. A container solves a problem created by the framework that needs it. Explicit non-goal |
+| `IConfiguration` + layered providers + options binding | read settings, override per environment | one file plus env-var override. Two sources, no provider abstraction |
+| `ILogger` + providers + scopes + filters | see what happened, filter by severity | leveled log writing to a stream; defmt-style format-ID logging when the target is a microcontroller |
+| `Task` / `async` / TPL / `lock` / `Channel<T>` | do many things at once without corrupting state | **actors + tasks — one model.** The whole point (§0, §8) |
+| `System.Text.Json` + reflection + source generators | records ↔ text, both directions | derive-generated per-record encode/decode (`F2`). No reflection to build, none to pay for |
+| xunit + a runner + an assertion library + mocks | check behaviour, know precisely what broke | `[test]` attribute, test fns return `!{}`, failure *is* an error value. Reuses the error model and `report()` — zero new runtime |
+| `Stream` + `TextReader`/`TextWriter` + adapters | move bytes to and from anything | one `stream` reader/writer interface with file, socket and memory impls (`F4`) |
+| `System.Net.Sockets` + `SslStream` + `HttpClient` | talk to a service over the network | sockets now; TLS by wrapping OpenSSL through `extern [c]`, never by writing one |
+| NuGet + the registry + version resolution | use someone else's code | `tuck.toml` with exact-rev deps + `vendor/`. The manifest *is* the lockfile. No registry until there is something to put in it |
+
+**The test each row passes:** could a person do the thing they came to do, on
+day one, without learning an architecture first? Where the answer is yes with
+less, the row takes the less.
+
+**Where this rule does not apply:** input validation at trust boundaries, error
+handling that prevents data loss, and the guarantees the language sells
+(`[no_alloc]`, register permissions, decision-table completeness). Simplifying
+those is not lightness, it is removing the product.
 
 ---
 
