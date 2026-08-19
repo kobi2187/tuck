@@ -1,0 +1,83 @@
+# SPIKE (throwaway) — the weekend program, C11 / ROADMAP-GRAPH.md §10.4.
+#
+# Written the way a jam dev WOULD write it after two days, not the way Tuck
+# compiles today. Every failure the checker reports is a discovery.
+# No tests, no polish, no error handling. Disposable.
+
+import console
+import str
+import sys
+import time
+import fs
+import seq
+
+type Item = {name: str, value: int, rare: bool}
+type Run  = {who: str, score: int, seconds: int}
+
+# --- the loot table ------------------------------------------------------
+
+fn lootTable() -> Seq[Item]:
+  [{name: "rusty key", value: 3, rare: false} Item, {name: "gold idol", value: 50, rare: true} Item, {name: "bread", value: 1, rare: false} Item, {name: "moon shard", value: 25, rare: true} Item]
+
+# --- scoring -------------------------------------------------------------
+
+fn scoreBag({bag: Seq[Item]}) -> int:
+  var total = 0
+  for it in bag:
+    let add = if it.rare: it.value * 2 else: it.value
+    total = total + add
+  total
+
+# --- the leaderboard: a hash map keyed by player name --------------------
+
+fn leaderboard({runs: Seq[Run]}) -> Seq[Run]:
+  runs sortBy {by: :byScore}
+
+fn byScore({a: Run, b: Run}) -> bool:
+  a.score > b.score
+
+# --- the save file -------------------------------------------------------
+
+fn saveRun({r: Run, path: str}) -> !void [io, error: FsError]:
+  let line = r.who + "," + r.score.toStr + "," + r.seconds.toStr + "\n"
+  {path: path, content: line} fs::appendFile
+
+fn loadRuns({path: str}) -> Seq[Run] [io]:
+  var out = Seq[Run] new
+  let raw = {path: path} fs::readFile
+  if raw.ok:
+    for line in {s: raw.value.content, sep: "\n"} split:
+      let f = {s: line, sep: ","} split
+      if f.len == 3:
+        let who = {items: f, index: 0} at
+        let sc = {s: {items: f, index: 1} at} parseInt
+        let se = {s: {items: f, index: 2} at} parseInt
+        out ..push {who: who, score: sc, seconds: se} Run
+  out
+
+# --- the turn loop -------------------------------------------------------
+
+fn playOneRun({who: str}) -> Run [io]:
+  let start = nowMs
+  var bag = Seq[Item] new
+  let table = lootTable
+  for turn in 1 .. 8:
+    let pick = {max: table.len} randBelow
+    bag ..push table at pick
+    {text: "turn " + turn.toStr + ": found " + (bag at bag.len - 1).name} printLine
+  let elapsed = nowMs
+  {who: who, score: {bag: bag} scoreBag, seconds: 0} Run
+
+fn main() -> int [io]:
+  let name = if {index: 1} argAt.arg == "": "player" else: {index: 1} argAt.arg
+  let r = {who: name} playOneRun
+  {text: name + " scored " + r.score.toStr} printLine
+
+  let saved = {r: r, path: "/tmp/tuck-jam-scores.csv"} saveRun
+  let all = {path: "/tmp/tuck-jam-scores.csv"} loadRuns
+  let board = {runs: all} leaderboard
+
+  {text: "--- leaderboard ---"} printLine
+  for row in board:
+    {text: row.who + "  " + row.score.toStr} printLine
+  0
