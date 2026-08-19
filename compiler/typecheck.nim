@@ -2689,80 +2689,102 @@ proc checkFallibleNeedsIo(name: string, ret: Type, effects: seq[EffectMarker], s
     fail("Effect Error: '" & name & "' returns " & typeName(ret) &
          " — fallible functions must be marked [io]; pure functions are total", span)
 
+proc bindParam(tc: var TypeChecker, p: Param, gsub: Table[string, Type]) =
+  ## Bind one parameter, and note its variant set if its type is tracked.
+  ##
+  ## THE `self` EXCEPTION (spec §5.1). An object member declares its receiver
+  ## explicitly (`fn louder({self: Self})`), so by the time we get here it
+  ## looks like any other parameter — but checkObjectDecl has already bound a
+  ## mutable `self` in the enclosing scope, and re-binding it immutable here
+  ## would shadow that and break `self ..volume {11}`, which the spec shows
+  ## as valid.
+  ##
+  ## So: a param that shadows an already-mutable binding of the same name
+  ## inherits its mutability. Outside an object member nothing has bound
+  ## `self`, so the lookup misses and the ordinary rule applies — a plain fn
+  ## whose first param merely happens to be NAMED `self` gets no exemption,
+  ## which is right, because it is still someone else's value.
+  ##
+  ## Otherwise a parameter is an IMMUTABLE binding of a value (spec §7.1).
+  ## Bound `isVar: false, isParam: true` — the second flag is what lets
+  ## failIfMutatingLet reject `..` here with the right message instead of the
+  ## one about `let`.
+  ##
+  ## This used to bind them mutable, justified by "`set` functions
+  ## legitimately use `..` on them". That justification outlived the feature:
+  ## `set`/`pred` prefixes were dropped (spec §3.6, never implemented), while
+  ## the mutable binding stayed and made codegen emit `var T` for every record
+  ## param — which in Nim is a BY-REFERENCE pass, so a callee could silently
+  ## write through to the caller's record. The Odin backend never did this and
+  ## rejected the same program outright, which is how the divergence surfaced.
+  let (shadowsMutable, outer) = tc.lookup(p.name)
+  let inheritsMutable = shadowsMutable and outer.isVar and not outer.isParam
+  if inheritsMutable:
+    tc.bindName(p.name, substituteType(p.typ, gsub), true)
+  else:
+    tc.bindName(p.name, substituteType(p.typ, gsub), false, isParam = true)
+  # spec 4.4b: a param of a tracked type enters at the FULL variant set —
+  # transitions on it need `match` narrowing first.
+  let tn = tc.transType(p.typ)
+  if tn != "": tc.varVariants[p.name] = tc.allVariants(tn)
+
+proc bindInput(tc: var TypeChecker, params: seq[Param],
+               gsub: Table[string, Type]) =
+  ## `input` — the whole incoming payload as one struct (reserved keyword).
+  if params.len == 0: return
+  var inputFields: seq[FieldDef]
+  for p in params:
+    inputFields.add(FieldDef(name: p.name, typ: substituteType(p.typ, gsub),
+                             span: p.span))
+  tc.bindName("input", Type(span: params[0].span, kind: tkRecord,
+                            fields: inputFields), false)
+
+proc tailIsImplicitReturn(tc: TypeChecker, body: Expr, bodyT, ret: Type): bool =
+  ## Does the value flowing off the end of `body` have to match `ret`?
+  ##
+  ## Only for a block whose last statement is an expression: an explicit
+  ## return or raise has already been checked, a unit/void tail means the
+  ## fn ends without producing anything, and an Unknown tail is sketch code
+  ## the checker cannot judge. Branch agreement (if/match) has already
+  ## unified branch types into bodyT by this point.
+  if ret == nil or body == nil: return false
+  if body.kind != exkBlock or body.stmts.len == 0: return false
+  if body.stmts[^1].kind in {exkReturn, exkRaise}: return false
+  if isUnknown(bodyT): return false
+  bodyT.kind != tkNamed or bodyT.name notin ["unit", "void"]
+
 proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
                  ret: Type, body: Expr, generics: seq[string] = @[]) =
+  ## Check one callable body: bind its params, bind `input`, synthesize, and
+  ## verify the value that flows off the end against the declared return.
+  ##
+  ## Everything mutated here is saved and restored around the body, so a
+  ## nested check (an object member, an actor handler) cannot leak state into
+  ## its enclosing one.
   tc.pushScope()
-  # Generic bodies are gradual: type params bind as Unknown (checked at the
-  # call site via inference; Nim rechecks per instantiation)
-  var gsub = initTable[string, Type]()
   # `T` inside a generic body is not unknown — it is ANY type, fixed per call
   # site. The body is checked once against that abstraction; each instantiation
   # is rechecked by the backend.
+  var gsub = initTable[string, Type]()
   for g in generics: gsub[g] = typeParamType(Span())
+
   let savedVariants = tc.varVariants
+  let prevBody = tc.bodyBlock
   tc.varVariants = initTable[string, seq[string]]()
-  for p in params:
-    # THE `self` EXCEPTION (spec §5.1). An object member declares its receiver
-    # explicitly (`fn louder({self: Self})`), so by the time we get here it
-    # looks like any other parameter — but checkObjectDecl has already bound a
-    # mutable `self` in the enclosing scope, and re-binding it immutable here
-    # would shadow that and break `self ..volume {11}`, which the spec shows
-    # as valid.
-    #
-    # So: a param that shadows an already-mutable binding of the same name
-    # inherits its mutability. Outside an object member nothing has bound
-    # `self`, so the lookup misses and the ordinary rule applies — a plain fn
-    # whose first param merely happens to be NAMED `self` gets no exemption,
-    # which is right, because it is still someone else's value.
-    let (shadowsMutable, outer) = tc.lookup(p.name)
-    if shadowsMutable and outer.isVar and not outer.isParam:
-      tc.bindName(p.name, substituteType(p.typ, gsub), true)
-      let stn = tc.transType(p.typ)
-      if stn != "": tc.varVariants[p.name] = tc.allVariants(stn)
-      continue
-    # A parameter is an IMMUTABLE binding of a value (spec §7.1). Bound
-    # `isVar: false, isParam: true` — the second flag is what lets
-    # failIfMutatingLet reject `..` here with the right message instead of
-    # the one about `let`.
-    #
-    # This used to bind them mutable, justified by "`set` functions
-    # legitimately use `..` on them". That justification outlived the feature:
-    # `set`/`pred` prefixes were dropped (spec §3.6, never implemented), while
-    # the mutable binding stayed and made codegen emit `var T` for every
-    # record param — which in Nim is a BY-REFERENCE pass, so a callee could
-    # silently write through to the caller's record. The Odin backend
-    # (codegen_odin.nim's fnParamList) never did this and rejected the same
-    # program outright, which is how the divergence surfaced.
-    tc.bindName(p.name, substituteType(p.typ, gsub), false, isParam = true)
-    # spec 4.4b: a param of a tracked type enters at the FULL variant set —
-    # transitions on it need `match` narrowing first
-    let ptn = tc.transType(p.typ)
-    if ptn != "":
-      tc.varVariants[p.name] = tc.allVariants(ptn)
-  # `input` — the whole incoming payload as one struct (reserved keyword)
-  if params.len > 0:
-    var inputFields: seq[FieldDef]
-    for p in params:
-      inputFields.add(FieldDef(name: p.name, typ: substituteType(p.typ, gsub),
-                               span: p.span))
-    tc.bindName("input", Type(span: params[0].span, kind: tkRecord,
-                              fields: inputFields), false)
+
+  for p in params: tc.bindParam(p, gsub)
+  tc.bindInput(params, gsub)
+
   tc.currentRet = ret
   tc.currentFn = name
-  let prevBody = tc.bodyBlock
   tc.bodyBlock = body
   let bodyT = tc.synthesize(body)
-  # Implicit return: the value flowing at the end of the body is the result.
-  # Branch agreement (if/match) already unified branch types into bodyT.
-  # unit/unknown tails mean explicit returns or sketch code — checked elsewhere.
-  if ret != nil and body != nil and body.kind == exkBlock and body.stmts.len > 0:
-    let lastKind = body.stmts[^1].kind
-    if lastKind notin {exkReturn, exkRaise} and
-       not isUnknown(bodyT) and
-       not (bodyT.kind == tkNamed and bodyT.name in ["unit", "void"]) and
-       not tc.compatible(bodyT, ret):
-      fail("Type Error: '" & name & "' flows " & typeName(bodyT) &
-           " out of its body but declares " & typeName(ret), body.stmts[^1].span)
+
+  if tc.tailIsImplicitReturn(body, bodyT, ret) and
+     not tc.compatible(bodyT, ret):
+    fail("Type Error: '" & name & "' flows " & typeName(bodyT) &
+         " out of its body but declares " & typeName(ret), body.stmts[^1].span)
+
   tc.bodyBlock = prevBody
   tc.currentRet = nil
   tc.currentFn = ""
