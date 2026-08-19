@@ -118,6 +118,36 @@ Where the two rules disagree, they usually don't: the jam test says *what must
 be in the box*, this one says *how big the box is allowed to get, and in what
 shape*.
 
+**The third rule, and it governs the compiler rather than the library: reject,
+don't transform.**
+
+> Most of the compiler **rejects faults and lets good code proceed**. A few real
+> transformations exist — `[saturating]`, `[wrapping]`, the effect lowerings —
+> and they are deliberately local. This is how Tuck avoids writing complicated
+> compiler passes.
+
+Visible in the tree, not just stated: `[saturating]` is resolved by a
+name→type lookup consulted *during emission* (`codegen.nim:94-99`), not by an
+AST-rewriting pass; `optimize.nim` holds the only rewriting passes and they are
+**off unless `-O` names them**. The checker's own taxonomy says the same thing —
+`check*` asserts, `fail*` raises, `synth*` returns a type — with `as*` returning
+nil for "not mine".
+
+This is a scoping rule for the foundation tier, and it sorts the nodes cleanly:
+
+| Node | Under this rule |
+|---|---|
+| `F10` `[no_alloc]`, `F11` `[irq_safe]`, `F26` unknown-name reporting, `F7` multi-error | **rejectors.** Walk, compare, say no. All cheap, all in the grain |
+| `F12` `[stack: N]` | already the rule applied — the compiler *emits a manifest* and a post-link tool does the analysis. Any frame size the front end computed would be fiction anyway |
+| `F6` volatile, `F19` vector table | **emission**, mechanical: choose `volatileLoad` over a deref, print a table from a declaration set |
+| `F2` **derive** | **the one true transformation on the list**, and therefore the one to be most suspicious of. The stdlib inventory already recommends *don't derive — hand-write, measure, revisit*. This rule says the same thing for an independent reason, which is the strongest argument available for Q7 |
+| `F1` `fnsig` generics | substitution the compiler already does for generics (Appendix A.1). Extending it is not a new pass |
+
+**The payoff to state out loud:** a compiler that mostly rejects is a compiler a
+small team can keep correct — and it is why the diagnostic registry, the
+decision-table completeness proof and the register bit-overlap check exist at
+all. They are rejections, which is what this compiler is good at.
+
 **Evidence.** Every claim below carries a `file:line`. Where an assertion could
 not be reproduced against the current tree, it says so. The compiler beats every
 document, this one included.
@@ -374,7 +404,7 @@ source, the row was copied rather than designed.
 | error *presentation* | **Go's first line, Rust's structure, Elm's voice** | greppable `error[TK-TY15]:`, labeled spans on the source, second-person prose. The registry text is already Elm-grade and unreachable |
 | error *codes* | **Rust `--explain`** | Elm deliberately has none; for a systems language whose users grep and file bugs, codes are right. `tuck explain` already exists |
 | restrictions | **Ada `pragma Restrictions`** | `No_Implicit_Heap_Allocations`, `No_Recursion`, unit-scoped and composable into named profiles. One flag instead of a thousand annotations |
-| bare-metal concurrency | **Ada Ravenscar** (subset the model) + **RTIC** (ceiling analysis) | the "no-OS concurrency subset" problem was solved and standardized decades ago. RTIC's compile-time ceiling analysis is data-race freedom with *zero* runtime |
+| bare-metal concurrency | **Embassy / RTIC software tasks** for the shape (stackless), **RTIC** for ceiling analysis, **Ada Ravenscar** for what to subset | see §7.6 — automatic async means the task *model* ports to metal unchanged and only the lowering changes. Ceiling analysis remains the answer at the ISR↔task boundary: data-race freedom with *zero* runtime |
 | MMIO | **Zig** — `volatile` in the pointer type, `packed struct(u32)` | a type qualifier the compiler cannot forget, at a tenth the machinery of accessor generation |
 | register maps | **Rust `svd2rust`** | generated from the vendor's own SVD; the map is never hand-transcribed. Tuck's checker already beats it on bit-overlap |
 | driver portability | **Rust `embedded-hal`** | the thing that actually built the ecosystem. Tuck's `interface`+`satisfies` is the same shape and is used for nothing like it |
@@ -602,6 +632,55 @@ Not everything here is a gap, and the wins are unusual ones:
 - **Register declarations with bit-overlap and range checking** — better than C,
   better than most HALs, less syntax than svd2rust's closure API.
 - **No alloca, no VLA.** Free win for stack analysis; say so loudly.
+
+---
+
+### 7.6 Automatic async makes the coroutine representation a lowering choice
+
+The property that changes this whole branch, and which the sections above were
+written without connecting:
+
+> **`[io]` IS the async annotation.** There is no `async`, no `await`. Calling a
+> task schedules it; *binding its result* awaits it. `[io]` calls are implicit
+> yield points. (`LANGUAGE-OVERVIEW.md:615`, `examples/28`.)
+
+The developer never writes a suspension point, so **the developer's source does
+not encode one**. The compiler knows exactly where every yield is, because it is
+exactly the set of `[io]` calls it already tracks for the effect system. That
+has a consequence the embedded discussion needs:
+
+**Stackful vs stackless is a backend decision, and switching it breaks no user
+code.**
+
+| | Hosted (today) | Bare metal (open) |
+|---|---|---|
+| representation | stackful coroutines over vendored minicoro, mmap'd stacks | **stackless** — lower each task to a state machine over its `[io]` points |
+| cost | 1MB virtual reserve per task, MMU guard pages catch overflow | one struct per task, sized by the compiler. No per-task stack, nothing to overflow |
+| user code | identical | identical |
+
+This retires the strongest objection in §7.4. The argument against porting
+minicoro to metal was TinyGo's failure mode — *fixed-size task stacks that
+overflow silently, because there is no MMU to catch them*. A stackless lowering
+does not have stacks to overflow. It is also what C# `async`, Rust `async fn`
+and every embedded async framework (Embassy, RTIC's software tasks) actually do,
+and the reason they can run in kilobytes.
+
+**What it costs:** recursion inside a task becomes impossible (a state machine
+has no stack to recurse on) — which is *already* on the bare-metal restriction
+list under `F11`. And the lowering is real compiler work, on the backend that
+does not have it yet.
+
+**What it means for the roadmap:** the bare profile does **not** need a second
+concurrency model. Ravenscar-style subsetting and RTIC ceiling analysis stay
+valuable for the *ISR↔task* boundary (`F24`, `F11`), but the task model itself
+survives the trip to metal intact. That is a materially cheaper 0.7 than §7.4
+assumed, and it is a direct payoff of the automatic-async design — the burden it
+removed from the developer is the same burden it removed from the port.
+
+**Open, and genuinely not yet decided:** which backend gets the stackless
+lowering first, whether the hosted path eventually shares it, and whether an
+existing C library does the job better than writing it (see §12 — C libraries
+are fair game, and minicoro is already precedent).
 
 ---
 
@@ -901,18 +980,84 @@ only three:
 
 ---
 
-## 13. Open questions for the user
+## 12b. Standing constraint: C libraries are fair game
 
-1. **`F5`** — region type / `[dma]` buffer, or a narrower stated positioning?
-   (§7.3)
-2. **§7.4** — is *"Odin is the embedded backend, Nim is the hosted one"* the
-   official call, with parity claimed only above the OS line?
-3. **§8.2** — do addressable actor instances land in the hosted profile while
-   the bare profile keeps singletons?
-4. **`F3`** — amend the spec so `[error: E]` is legal without `[io]`? The spec's
-   own justification already names *unknown input*, and a string handed to a
-   parser is unknown input.
-5. **§10.4** — what is the weekend program? A roguelike turn loop, a text
-   adventure, an asset packer and a small tool all exercise the same kit
-   (`Map`, `sort`, `str`, `json`, `rand`, file I/O). Naming it fixes the 0.6
-   exit criterion as a diff instead of a checklist.
+Recorded 2026-08-19, because it changes the build-vs-bind calculus in every
+section above.
+
+> **Depending on a C library is not a defeat.** minicoro is already vendored and
+> load-bearing. Others are welcome on the same terms.
+
+This is the value rule (§0) applied to implementation: if a mature C library
+delivers the value, binding it *is* the lightest path, and `extern [c, header:]`
+is the seam that already works (`examples/33`–`37`). It settles several rows
+that otherwise look like multi-month projects:
+
+| Capability | Position under this constraint |
+|---|---|
+| TLS | wrap OpenSSL/BoringSSL. Nobody except Go and .NET wrote their own, and neither should Tuck |
+| SQLite | bind it — `sqlite3*` is an opaque handle, already expressible (§5.1) |
+| compression, regex, digests, bigint | bind zlib, PCRE, a digest library. Writing them in Tuck is a *choice* for dogfooding, never a requirement |
+| stackless coroutines on metal (§7.6) | an existing C implementation is a legitimate answer, exactly as minicoro was for the hosted path |
+| an RTOS | *"Tuck compiles to C-callable code you run under FreeRTOS/Zephyr"* is a better position than reimplementing one |
+
+**The limits that stay.** A binding must still fit the value model — `F5` means
+a C API that wants the address of a Tuck value is a problem regardless of how
+good the library is (§7.3) — and every vendored dependency is a freestanding
+question later: it must build for the target, or the bare profile loses it.
+
+---
+
+## 13. Decisions not yet made
+
+Honest register. The map above says what is missing; this section says **which
+of it is undecided, and what would settle it.** Three states, and the third is
+the one worth being blunt about.
+
+| State | Meaning |
+|---|---|
+| **deferred** | decided *not to decide yet*, with a trigger that forces it |
+| **needs info** | the decision is blocked on a measurement or a spike, not on an opinion |
+| **unexamined** | not yet thought about properly. No shame in the label; the risk is pretending otherwise |
+
+### Positioning and architecture
+
+| # | Decision | State | What would settle it |
+|---|---|---|---|
+| Q1 | `F5` — region/`[dma]` type, or a narrower stated positioning? | **needs info** | a spike: bind one real vendor HAL call and see exactly which rule bites (§7.3) |
+| Q2 | *Odin is the embedded backend, Nim is the hosted one* — official? | **deferred** | trigger: the first freestanding build attempt. Do not decide on paper first |
+| Q3 | addressable actor instances in the hosted profile, singletons on bare? | **unexamined** | six of thirteen actor use-cases need *N of a thing* (§8.2) — that table is the input, the ruling is not made |
+| Q4 | stackless lowering — which backend first, does hosted share it, write or bind? | **unexamined** | §7.6 is one day old. Needs a spike sized like S-01 |
+
+### Language rulings
+
+| # | Decision | State | What would settle it |
+|---|---|---|---|
+| Q5 | `F3` — permit `[error: E]` without `[io]`? | **deferred** | leaning yes: the spec's own justification already names *unknown input*. Needs a spec amendment, not research |
+| Q6 | `F1` — generic params on `fnsig`; constraints or not? | **needs info** | params are small, constraints are large. Decide the two separately; D-06 raised the cost estimate |
+| Q7 | `F2` — derive, or hand-written per record? | **unexamined, but now leaning** | two independent arguments converge on *don't*: the inventory says hand-write and measure, and the reject-don't-transform rule (§0) makes derive the single heaviest thing on the foundation list |
+| Q8 | `F4` — interface dispatch: fix the copy, or handle-based sum type? | **unexamined** | a design fork, not a fix. Nothing has been drawn |
+| Q9 | T-11 — the three parser papercuts: fix, or declare the ceiling? | **needs a ruling** | a "that's the ceiling, document it" is a valid, free answer |
+| Q10 | `F26` — how does the checker say *"that function does not exist"* without becoming a nominal type system? | **unexamined** | discovered yesterday (D-08). The lightweight version is: know the exported names, report a call that resolves to nothing |
+
+### Embedded, where the user has said the knowledge is thin
+
+| # | Decision | State | Note |
+|---|---|---|---|
+| Q11 | per-task memory model on metal | **superseded** by §7.6 — stackless removes the question rather than answering it |
+| Q12 | which board, which target triple, which linker script | **unexamined** | §7's MUST #1 says pick *one*. Nobody has picked |
+| Q13 | `[stack: N]` — post-link tool over `-fstack-usage`, or drop the feature? | **deferred** | T-09 keeps the number in the AST; that is reversible and cheap either way |
+| Q14 | does the bare profile keep `str`/`Seq` at all, or only bounded forms? | **unexamined** | this is the TinyGo question, and it is the one that decides whether "suitable for embedded" is true |
+
+**The honest summary:** seven of fourteen are `unexamined`. That is not a
+failure of the roadmap — the graph exists precisely to make *which* things are
+undecided visible, instead of letting them hide inside a milestone list. The
+cheapest of them (Q9, Q5) are rulings you can make in a sitting; the expensive
+ones (Q3, Q8, Q14) each deserve a spike the size of S-01, and S-01 cost ~95
+lines and six checker runs.
+
+### One more, and it is the cheapest on the page
+
+| # | Decision | State | Note |
+|---|---|---|---|
+| Q15 | what *is* the weekend program (§10.4)? | **needs a ruling** | a roguelike turn loop, a text adventure, an asset packer and a small CLI all exercise the same kit — `Map`, `sort`, `str`, `json`, `rand`, file I/O. Naming one turns the 0.6 exit criterion from a checklist into a diff |
