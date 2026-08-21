@@ -80,7 +80,12 @@ fn main() -> int:
   elif t.phase == pReport:
     let (brc, blog) = t.resultOf(zb)
     if brc != 0:
-      t.no "34-ffi-cstring builds", blog.strip(leading = false).splitLines()[^2 .. ^1].join("\n")
+      # The LAST TWO lines, or fewer if that is all there is. A one-line
+      # failure used to crash the whole suite here (`[^2 .. ^1]` indexing -1),
+      # which killed every test after it and hid the failure it was reporting.
+      # Front-end rejections are one line; only Nim's own errors carry a hint.
+      let blines = blog.strip(leading = false).splitLines()
+      t.no "34-ffi-cstring builds", blines[max(blines.len - 2, 0) .. ^1].join("\n")
     else:
       let (rc, outp) = t.resultOf(zr)
       if rc != 0:

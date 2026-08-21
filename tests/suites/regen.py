@@ -16,7 +16,7 @@ QUICK = {
     "typecheck", "frontend", "examples", "pointer_containment", "interfaces",
     "interface_wrap", "interface_call", "actor_result", "bare_variant",
     "member_names", "mangle", "complexity", "duplicates", "fuzz_corpus",
-    "syntax_ceilings",
+    "syntax_ceilings", "fn_size",
 }
 
 # Not suites: the registry itself, and helper modules that export no `run`.

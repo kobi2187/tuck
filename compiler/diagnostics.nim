@@ -92,6 +92,8 @@ type
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
+    dcCxComplexity = "TK-CX01"          ## a fn has too many independent paths
+    dcCxLines = "TK-CX02"               ## a fn spans too many source lines
     dcSmOther = "TK-SM01"               ## a semantic rule with no code of its own
 
     # --- AC / IV / RG / RE: the DECLARATION side ---------------------------
@@ -144,6 +146,7 @@ proc categoryName*(d: DiagCode): string =
   of "PE": "Pending"
   of "PO": "Policy"
   of "SE": "Sealed"
+  of "CX": "Complexity"
   else: "Semantic"
 
 proc withCode*(d: DiagCode, msg: string): string =
@@ -327,6 +330,19 @@ proc ruleExplanation(d: DiagCode): string =
   of dcPoMalformed: "The `errors [policy: ...]` block is malformed."
   of dcSeConstruction:
     "A sealed type is constructed only through its declared transitions."
+  of dcCxComplexity:
+    "A fn has more independent paths through it than the size budget allows " &
+    "(one per if, loop, `and`/`or`, match guard and `?`, plus one). Reported " &
+    "worst-first on a normal build; fails a `--release` build. Split it, or " &
+    "raise the limit with `--max-complexity:N` (`:0` disables). A `match` or " &
+    "`on select` costs nothing for the construct itself — dispatching over " &
+    "many variants is free; only what the arms DO is counted."
+  of dcCxLines:
+    "A fn spans more source lines than the size budget allows, counted from " &
+    "its first line to its last. Reported worst-first on a normal build; " &
+    "fails a `--release` build. Split it, or raise the limit with " &
+    "`--max-fn-lines:N` (`:0` disables). Match and select arm bodies, and " &
+    "`decision` tables, do not count toward the total."
   of dcSmOther: "A semantic rule with no code of its own yet."
   of dcMeSizeCount:
     "A `pool`'s `count` and an `arena`'s `size` ARE the allocation — the " &
