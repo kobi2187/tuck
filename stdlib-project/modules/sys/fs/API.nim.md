@@ -65,6 +65,18 @@ proc receive*(w: var Watcher; timeout = Forever): Option[Change]
 type Change* = object
   kind*: ChangeKind                         ## Created, Modified, Removed, Renamed
   path*, wasPath*: Path
+
+type Lock* = object                         ## Resource. Advisory, whole-file — `flock`/`LockFileEx`
+proc lock*(path: Path): Lock
+  ## Blocks until acquired. The common single-instance-app case: one call,
+  ## held for the process's whole lifetime, released by `close` or process
+  ## exit — whichever comes first, which is the entire point of an advisory
+  ## lock over a plain "does this file exist" check racing at startup.
+proc tryLock*(path: Path): Option[Lock]
+  ## Absent immediately if another process already holds it — the shape a
+  ## "second copy is already running" check actually wants; `lock` would
+  ## make that check block on itself.
+proc close*(l: var Lock)                    ## idempotent, releases early if held past its need
 ```
 
 ## Friendly-naming notes
@@ -81,6 +93,7 @@ type Change* = object
 | `remove_file` / `remove_dir_all` | `remove(path, recursive =)` | one verb, one option |
 | `create_dir_all` | `makeFolder(path, parents = true)` | the common case is the default |
 | `Watcher::poll -> Vec<FsEvent>` | `receive(w, timeout)` | the vocabulary's await-a-message verb; `sys.signal` reads identically |
+| `flock(fd, LOCK_EX \| LOCK_NB)` | `tryLock(path)` | one call instead of a raw syscall plus flag arithmetic; `Option` where the OS returns `EWOULDBLOCK` |
 
 ## In use
 
@@ -98,9 +111,17 @@ var wal = open("data/wal.log", Appending)
 wal.writeAll(frame(cmd))
 wal.persist(metadata = false)               # fdatasync — the whole reason the split exists
 client.writeAll(OkReply)
+
+# a desktop app (per DOMAINS.md): refuse to start a second copy of itself
+tryLock(appDataDir() / "app.lock").ifSome(guard):
+  runApp()
+  close(guard)
+do:
+  echo "already running"; quit(1)
 ```
 
 ## Vocabulary exceptions
 - **`remove(path)` returns nothing**, unlike the table's `remove(target, key) -> Option[V]`. The OS does not hand back what it deleted, and inventing a value to return would be a lie.
 - **`persist`, `rename`, `walk` and `watch` are domain verbs.** Durability, atomic relinking and tree traversal have no structural analogue; each takes its subject first and its options last.
 - **`Watcher` uses `receive` without being a `Messenger`.** Nothing ever sends to it. Borrowing the one right verb beats inventing `nextEvent`.
+- **`Lock` is advisory, not mandatory.** It only stops another process that also calls `lock`/`tryLock` on the same path — it does not prevent an unrelated program from reading or writing the file underneath it. That's the real semantics of `flock`/`LockFileEx` on every OS this wraps, and pretending otherwise would be the "hidden control flow" mistake `REPORT.md`'s Zig citation already warns against. *(Specified in `DOMAINS.md`'s Extension round 4 — the single-instance-lock gap, desktop domain.)*

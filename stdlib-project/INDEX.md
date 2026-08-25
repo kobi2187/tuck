@@ -2,7 +2,7 @@
 
 This directory is the follow-up to `REPORT.md`'s comparative stdlib study and unified proposal. Per the proposal's five tiers, every module named in Part IV now has its own folder under `modules/<tier>/<module>/API.md` containing a concrete API sketch (types and signatures, not just prose), the real-world API(s) it's modeled on, and a "validated by applications" section that traces specific design decisions back to a specific application's concrete requirement. Eleven medium-complexity application ideas live under `apps/<name>/APP.md` and were used as the validation harness — analysis only, nothing here was implemented or run.
 
-65 modules (including two submodules — `std.crypto::x509`, `std.encoding::ics` — and one new top-level module, `sys.ble`, added across three extension rounds), 26 applications, ~100,000 words of design analysis. See "Extension round 1/2/3" below the coverage matrix for what was added after the initial pass and why.
+72 modules (including three submodules — `std.crypto::x509`, `std.encoding::ics`, `std.db::sqlite` — and eight new top-level modules — `sys.ble` (round 2) and `sys.window`, `sys.audio`, `std.db`, `core.geom`, `platform.watchdog`, `std.perf`, `std.queue` (round 4) — added across four extension rounds), 26 applications, ~100,000 words of design analysis. See "Extension round 1/2/3/4" below the coverage matrix for what was added after the initial pass and why.
 
 ## The applications
 
@@ -37,15 +37,15 @@ This directory is the follow-up to `REPORT.md`'s comparative stdlib study and un
 
 ## Full module list by tier
 
-**core** (freestanding — no allocator, no OS): `types`, `slice`, `array`, `str`, `iter`, `cmp`, `convert`, `fmt`, `mem`, `ptr`, `atomic`, `sync-cell`, `error`, `simd`, `hash`, `num`
+**core** (freestanding — no allocator, no OS): `types`, `slice`, `array`, `str`, `iter`, `cmp`, `convert`, `fmt`, `mem`, `ptr`, `atomic`, `sync-cell`, `error`, `simd`, `hash`, `num`, `geom` *(added in Extension round 4 — vectors/matrix/AABB, no allocator needed)*
 
 **alloc** (heap, no OS): `allocator`, `vec`, `string`, `map`, `set`, `deque`, `list`, `box`, `rc`, `fmt`
 
-**sys** (hosted OS, thin wrapping): `io`, `fs`, `env`, `process`, `thread`, `sync`, `time`, `net`, `mmap`, `dynload`, `ffi`, `signal`, `ble` *(added in Extension round 2 — hosted-OS BLE central, sibling to `platform.net-lowpower`'s embedded BLE peripheral)*
+**sys** (hosted OS, thin wrapping): `io`, `fs`, `env`, `process`, `thread`, `sync`, `time`, `net`, `mmap`, `dynload`, `ffi`, `signal`, `ble` *(round 2 — hosted-OS BLE central, sibling to `platform.net-lowpower`'s embedded BLE peripheral)*, `window` *(round 4 — window/surface/input primitive, shared consumer across desktop/game/mobile)*, `audio` *(round 4 — thin PCM device I/O, bundled rung B1)*
 
-**std** (hosted OS, batteries included): `async`, `testing`, `log`, `regex`, `encoding`, `crypto`, `compress`, `archive`, `net-http`, `net-tls`, `chrono`, `math`, `random`, `cli`, `reflect`, `serde-derive`, `i18n`
+**std** (hosted OS, batteries included): `async`, `testing`, `log`, `regex`, `encoding`, `crypto`, `compress`, `archive`, `net-http`, `net-tls`, `chrono`, `math`, `random`, `cli`, `reflect`, `serde-derive`, `i18n`, `db` *(round 4 — query/row-mapping interface, `database/sql`-shaped, with the bundled `sqlite` submodule as rung B1's reference driver)*, `perf` *(round 4 — Stopwatch/Counter/Histogram, measurement only; heavier profiling stays external per `GOVERNANCE.md`)*, `queue` *(round 4 — `DurableQueue[T]`, crash-safe push/pending/ack, generalizing the mobile-sync write-queue finding)*
 
-**platform** (embedded/systems toolkit, sibling of std): `hal`, `rtos`, `interrupt`, `devicetree`, `boot`, `power`, `dsp`, `net-lowpower`, `libc-shim`
+**platform** (embedded/systems toolkit, sibling of std): `hal`, `rtos`, `interrupt`, `devicetree`, `boot`, `power`, `dsp`, `net-lowpower`, `libc-shim`, `watchdog` *(round 4 — arm/feed/timeout, vendor-boundary-friendly)*
 
 ## Coverage matrix — which apps drove which modules' design decisions
 
@@ -205,6 +205,33 @@ Since Extension round 1, `std.async` carried an unresolved, load-bearing open qu
 
 `sys.time::Instant::now()`'s actual cost on the hot path `load-tester` needs (thousands of calls per second) is flagged, not resolved — the API shape is judged right (opaque, allocation-free) but its performance characteristics depend on the underlying OS mechanism (vDSO on Linux/macOS, `QueryPerformanceCounter` on Windows) in a way this project's analysis-only scope can name but not verify.
 
+## Extension round 4 — the domain-persona pass, seven new modules plus two glue additions
+
+Where rounds 1–3 validated by *application*, this round (`DOMAINS.md`) validated by *developer domain* — web backend, game, desktop, CLI, mobile, embedded — asking what a specific kind of developer needs every day, not what one app happens to exercise. It also corrected its own working definition of "offline" mid-pass: not the shipped app's runtime network reachability, but the *developer's* package-registry access — which changed which gaps counted as blocking (see `GOVERNANCE.md`'s rung B1/B2 split, added the same round). Module count: **72** (7 new top-level modules; the one submodule is `std.db::sqlite`, itself new this round). App count unchanged at 26 — this round validated by persona, not by adding apps.
+
+Seven real gaps, each confirmed absent by grep across the existing 65 before being written up, per this project's standing discipline:
+
+- **`sys.window`** — window/surface creation, input-event polling, framebuffer/GPU-handle access. The highest-leverage single finding: desktop, game, and mobile all independently hit this same absence. Deliberately one altitude below a GUI toolkit (`std.gui` stays excluded, unchanged) — the SDL2/GLFW/raylib shape, not Qt's.
+- **`std.db`** — a query/row-mapping interface, Go `database/sql`-shaped, plus a bundled `sqlite` submodule as the reference driver. Resolves the ORM question raised mid-project: not an ORM (an anticipated heavy abstraction this project's own taste rejects), not silence either (Rust's async-runtime fragmentation is the named cautionary case) — an interface at rung A, with the one driver both web-backend and mobile's most common app shape depends on promoted to rung **B1** (bundled in the offline installer, not fetched from a registry).
+- **`sys.audio`** — thin PCM device I/O for the game domain, also rung B1 for the same offline-blocking reason as sqlite. Explicitly not a mixer or effects chain; those stay external, built on this baseline.
+- **`core.geom`** — `Vec2`/`Vec3`/`Mat3`/`Aabb2` and the intersection tests a real-time loop needs every frame. Small, decades-settled, `core`-tier because none of it needs a heap — same character as `COMPARISON.md`'s priority-queue finding.
+- **`platform.watchdog`** — arm/feed/timeout, the most universal fault-recovery primitive in firmware engineering, oddly absent from the original `platform.*` survey despite being more vendor-boundary-friendly than several already-covered concerns.
+- **`std.perf`** — `Stopwatch`/`Counter`/`Histogram`, resolving `COMPARISON.md`'s profiling gap on the measurement half only; sampling profilers and flamegraphs stay external per `GOVERNANCE.md`'s split, the same "measurement in std, presentation not" line Go draws between `runtime/pprof` and `go tool pprof`.
+- **`std.queue`** — `DurableQueue[T]`: crash-safe `push`/`pending`/`ack`, resolving `DOMAINS.md`'s Finding C. Started as "just compose `alloc.deque` and `sys.fs`," per that finding's own original text — writing the actual composition surfaced real design questions (crash-safe framing, replay ordering, at-least-once accounting) a one-line recommendation hadn't answered, which is why it became a module rather than only an "In use" example.
+
+Two smaller items resolved as glue additions to *existing* modules, per `DOMAINS.md`'s own characterization of them as one-proc-or-one-type gaps rather than new subsystems:
+
+- **`sys.fs` gained `Lock`/`tryLock`/`close`** — an advisory whole-file lock (`flock`/`LockFileEx`-shaped), closing the desktop single-instance-enforcement gap.
+- **`std.net-http` gained a `Cookie` type** (`cookies(req)`/`setCookie(reply, c)`) — the type itself was a genuine gap; session state stays a documented composition against `std.crypto`'s existing `hmacSha256`/`sameSecret`, not a new `Session` type, per `DOMAINS.md`'s original "primitives exist, needs an example" call.
+
+**A documentation gap this round leaves open, on purpose.** The Nim-pilot convention below states `core`/`alloc`-tier modules get both an `API.md` (Rust-flavored design reasoning) and an `API.nim.md` (the intended Nim shape). `core.geom` was written `API.nim.md`-only, matching every other module from this round — design-only signatures, no implementation, and (per the request that produced it) no separate Rust-flavored write-up. It's the one module in `core`/`alloc` without that pair; noted here rather than silently inconsistent with the rest of the pilot's own stated rule.
+
+**A translation gap this round leaves open, deliberately, and larger than the one above.** Every `API.nim.md` in this project — including all seven new modules and both glue additions — is written as freeform static functions (`proc`/`func` taking their subject as the first argument), because it was brainstormed by someone who hadn't seen Tuck yet and was scoped to *functionality*, not to Tuck's own idioms. Per direct guidance: most real Tuck code is expected to be built from manager objects and interfaces, with mixins doing the composition work these `API.nim.md` files currently do by convention (the closed verb vocabulary, the `Resource`/`Lifecycle`/`Messenger` protocol assignments) rather than by a language mechanism. That translation — freeform procs into Tuck's actual object/interface/mixin shape — is a distinct future pass, the same way the Nim pilot below was itself a distinct pass after the original Rust-flavored `API.md` reasoning. Nothing in this round attempts it, and nothing here should be read as a claim about what the Tuck-native surface will actually look like.
+
+### Honest gaps this round did not resolve, named rather than guessed at
+
+Per `DOMAINS.md`'s own ranked table: schema migrations (a natural extension of `std.db`'s interface, not written yet), a TTY/piping predicate on `std.cli` (internal logic already exists, needs a public accessor), connection pooling for `std.db` (deliberately deferred the same way `std.async`'s executor model was, until a concrete high-concurrency app forces the real answer rather than a guess), and OTA/DFU firmware updates (rung B2 — vendor-varies, and an offline-safe fallback via physical debugger flashing already exists, unlike the cases that forced `std.db`/`sys.audio` to rung B1).
+
 ## The Nim pilot — protocol vocabulary, and a friendlier surface
 
 The Rust-flavored pseudocode in every `API.md` was a lingua franca for *design reasoning*, not a target language. This pass begins expressing the library in **idiomatic, approachable Nim** — the actual intended shape — governed by a new spec, `PROTOCOLS.md`, which supersedes the report's Design Principle 3 and deepens Principle 4.
@@ -252,6 +279,10 @@ The pilot was extended to the full library. Every module now has an `API.nim.md`
 **Prediction 1 — `Messenger` may not cover broadcast: right about the protocol, wrong about the examples, and therefore nothing was added.** `Messenger` genuinely cannot express one-to-many delivery. But neither motivating case needed it: a scope's cancellation reaching every task at once turned out to be `Waitable` (many tasks `wait`, one `stop` releases them all), and `load-tester`'s connection pool is `open`/`close` on a `Resource`. No module in the library demanded `publish`/`subscribe`, so per the contract's rule 6, no `Broadcaster` protocol exists. Identifying a real limit whose examples then dissolve is the best available outcome — the gap is documented, and speculative surface was still avoided.
 
 **Prediction 2 — `std.crypto` strains hardest: confirmed, worse than predicted, and the guessed remedy was wrong.** The module introduced **fifteen domain verbs**, which is exactly the count the maintainability contract names as evidence a module belongs in the extended ecosystem. It stays in `std` on the stated escape clause (each is one universally understood word obeying the argument-order rule, so shape stays guessable even when meaning needs docs). But the predicted "thin `Resource` shell" never materialized — nothing in crypto opens or closes. What appeared instead was `Streamable` on `Digest` and `Collection` on `CertStore`, both incidental, neither on the key types. **`Key` is the deliberate hole**: no `get`, no `show`, no `$`, so `echo key` does not compile. The vocabulary being refused where obeying it would be dangerous is the system working, not failing.
+
+**Post-completion note (Extension round 4).** The five modules added after this "all 65 translated" milestone (`sys.window`, `sys.audio`, `std.db`, `core.geom`, `platform.watchdog`) are `API.nim.md`-only, no `API.md` — matching how every `sys`/`std`/`platform` module here already works, but a first for `core`/`alloc`, where `core.geom` is the one module without the Rust-flavored design-reasoning half its tier-mates all have. Named in the round-4 section above rather than left as a silent inconsistency.
+
+**A third translation, `API.tuck.md` — real, compiler-verified Tuck.** Seven modules (`core.geom`, `std.perf`, `sys.window`, `sys.audio`, `platform.watchdog`, `std.db`, `std.queue`) now have a third sibling file, each with real Tuck code checked against `./tuck ch` in the scratchpad before being written down — see `TUCK-TRANSLATION.md` for the shared findings (the `pending` mechanism, no operator overloading, value semantics forcing return-not-mutate) and each module's own file for what's specific to it. Two shapes were used, per direct guidance: freeform `pending:` functions for stateless modules (`core.geom`, `std.perf`), and `actor` singletons for genuinely stateful, OS-resource-owning services (the other five) — with the actor reply-synchronicity question left explicitly open rather than resolved unilaterally, since it needs its own design session. `std.db` and `std.queue` surfaced the sharpest structural tension: an actor is one instance per declared *type*, which doesn't fit either module's real need for multiple independent instances (several connections, several queues) — flagged prominently in both files rather than folded into the general open-questions list.
 
 ### What the full translation found
 

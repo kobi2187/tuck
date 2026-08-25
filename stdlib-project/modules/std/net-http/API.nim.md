@@ -45,6 +45,24 @@ proc set*(h: var Headers; name, value: TextView)            ## Settable
 func has*(h: Headers; name: TextView): bool
 iterator list*(h: Headers): (TextView, TextView)
 
+type
+  SameSite* = enum ssStrict, ssLax, ssNone
+  Cookie* = object
+    name*, value*: Text
+    path*: Option[Text]
+    domain*: Option[Text]
+    maxAge*: Option[Duration]
+    httpOnly*, secure*: bool
+    sameSite*: SameSite
+
+func cookies*(r: Request): seq[Cookie]
+  ## Parses every `Cookie:` header sent by the client. Options
+  ## (`path`/`domain`/`maxAge`/flags) are absent on the request side — the
+  ## browser never sends them back, only `name`/`value`.
+proc setCookie*(r: var Reply; c: Cookie)
+  ## Appends one `Set-Cookie:` header; call it once per cookie, the same
+  ## way `Headers.set` is one call per header rather than a batch API.
+
 # Connection pool — checkout and return are the Resource verbs, nothing new.
 proc open*(p: var Pool; host: TextView; s: Scope): Connection
   ## Hands back an idle keep-alive when there is one, opens a new one up to
@@ -87,6 +105,7 @@ proc wait*(s: Server; timeout = foreverDuration): bool      ## Waitable
 | `PoolConfig { .. }` | named args on `newClient` | Three fields become three trailing arguments; there is no config object to discover. |
 | `ResponseWriter` | `Reply` | Short, and it takes `set`/`write` from the protocols rather than `set_status`/`set_header`/`writer()`. |
 | `Router` / `use_middleware` | `Routes` / `wrap` | `add(routes, Get, "/x", h)` is the Collection verb; `wrap` says what middleware does. |
+| `cookie::Cookie` builder (separate crate in most stacks) | `Cookie` object literal | one plain type, not a builder — every field is a named option at construction |
 | `Server::serve(ctx)` | `start` / `stop` / `wait` | Three protocol verbs replace one blocking call, and graceful shutdown stops being a special argument. |
 
 ## In use
@@ -106,9 +125,28 @@ withScope(deadline = some(runFor)):
         discard client.fetch(target, s).readAll()
         latency.add((now() - t0).millis)         # task-local std.math Quantiles
 echo client.poolStats()                          # idle ~0, inUse ~200 means real reuse
+
+# web backend (per DOMAINS.md): a signed session cookie, no new module —
+# std.crypto's hmacSha256 plus this file's Cookie type is the whole thing
+proc issueSession(userId: string; secret: array[32, byte]): Cookie =
+  let mac = hmacSha256(secret, userId.toBytes())            # std.crypto
+  let token = userId & "." & mac.toBytes().toBase64()        # std.encoding
+  Cookie(name: "session", value: token, httpOnly: true,
+         secure: true, sameSite: ssLax, maxAge: some(7.days))
+
+proc verifySession(req: Request; secret: array[32, byte]): Option[string] =
+  for c in req.cookies():
+    if c.name != "session": continue
+    let parts = c.value.split(".", maxSplit = 1)             # core.str
+    if parts.len != 2: return none(string)
+    let expect = hmacSha256(secret, parts[0].toBytes())
+    if sameSecret(expect, parts[1].fromBase64()): return some(parts[0])
+  none(string)
 ```
 
 ## Vocabulary exceptions
 `fetch` is a domain verb introduced specifically so `get` can keep its promise. This is the clearest case in the whole `std` tier where the vocabulary's rule ("absence returns `Option`, failure raises") outranked the temptation to reuse a structural verb because it read nicely.
 
 `wrap` and `handle` are domain verbs: middleware composition and request dispatch have no structural analogue. `Handler` is a `concept`, so any object with a `handle` proc qualifies — including `Routes` itself, which is how a router nests inside a router with no special case.
+
+**`Cookie` and the session example are `DOMAINS.md`'s Extension round 4** — the type was a genuine gap (grep found none), but session state itself deliberately stays an "In use" composition rather than a `Session` type: `sameSecret` is `std.crypto`'s existing constant-time comparison, and inventing a second signing helper here would duplicate a primitive that already exists one module over.
