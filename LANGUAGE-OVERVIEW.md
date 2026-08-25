@@ -599,6 +599,32 @@ Run-verified 55 on both backends.
 > typechecks, in actors *and in plain fns*, where the real fix belongs
 > (`tests/suites/actor_result.nim`).
 
+> ⚠️ **OPEN — a generic `fnsig` does not parse.** `fnsig Mapper[T, U] = {x: T} -> U`
+> fails with `Expected 'Assign' here, found '['` — `fnsig` has no
+> type-parameter slot, though `fn`/`type` both do. Writing the params bare
+> (`fnsig Mapper = {x: T} -> U`) *appears* to typecheck, but only because
+> gradual typing reads the unbound `T`/`U` as `Unknown` — it is not real
+> generic binding, and is the trap §0 warns about (sketch code and a broken
+> tree both read `Unknown`). Blocks every higher-order generic API
+> (`map`/`fold`/`keep` over `Seq[T]`), since `bake` needs a `fnsig`-typed
+> field to fill. Same family as the generic-actor gap below.
+
+> ⚠️ **OPEN — a generic actor declaration does not parse.**
+> `actor Box[T] [queue: 4]:` fails with `Expected 'Colon' here, found '['` —
+> the actor grammar has no type-parameter slot the way `type`/`fn` do
+> (`fn identity[T]`, `type Box[T] = {value: T}` both parse fine; `actor` does
+> not). Found while designing a stdlib service actor generic over its
+> payload type. Unclear which side of the line this falls on: it could be a
+> straightforward grammar gap (the `actor` rule simply never grew the `[T]`
+> slot), or it could be pointing at something semantically unresolved —
+> an actor is a compile-time singleton with no construction step (§10
+> above), so it isn't obvious what "one instance, but generic over `T`"
+> would even mean, since nothing ever supplies `T` at a call site the way
+> an ordinary generic fn does. Flagged rather than triaged; the closest
+> precedent (`Box[error]` as a parameter, §3) turned out to be a *ruling*
+> ("attribute names are reserved in brackets") rather than a bug, so this
+> one shouldn't be assumed to be a bug either without someone deciding.
+
 ### Tasks — async that looks synchronous
 
 ```tuck
@@ -763,6 +789,24 @@ manual — C allocated it, C frees it, and nothing in Tuck tracks that yet.**
 > A pointer may be produced by an extern and consumed by another extern, but it
 > **may never be stored.**
 
+Three rules, not one — the distinction is about **memory**, not pointers
+(`tests/suites/pointer_containment.nim` is the authority):
+
+| | `cstring` / `Buf` | opaque handle (`type C = {}`) |
+|---|---|---|
+| extern **parameter** | legal | legal |
+| extern **return** | **illegal** — *"never returned out of it"* | **legal** (exempt) |
+| **stored** anywhere | illegal | illegal |
+
+The exemption exists because a fieldless extern type has no definition:
+"there is nothing to dereference and no memory Tuck can read. It is a token
+the library hands out and takes back — every real C API works this way
+(`FILE*`, `sqlite3*`). Barring it left `counterNew` unwritable in ANY form,
+since a handle has no by-value equivalent to copy out." A returned
+`cstring`, by contrast, points at bytes whose lifetime is C's and
+unknowable here — so that binding must return a safe type and copy in the
+impl module (`examples/34-ffi-cstring.tuck`, build-and-run gated).
+
 `tests/suites/pointer_containment.nim` is the most systematic negative test in the
 suite (196 lines). Pointer-kinds are `cstring`, `Buf`, and any fieldless extern
 type. Legal as an extern *parameter*; illegal as an extern *return* — even
@@ -780,6 +824,18 @@ let r = {a: 40, b: 2} c.add
 ```
 
 Run-gated 42 on both backends.
+
+> ⚠️ **OPEN — storing into a `fnsig` slot is not signature-checked.** A
+> plainly mismatched fn reference is accepted: with
+> `fnsig Predicate = {x: int} -> bool`,
+> `type Query = {items: Seq[int], test: Predicate}` and
+> `fn wrongShape({a: str}) -> str`, both `{items: [1,2,3], test: :wrongShape} Query`
+> and `{items: [1,2,3]} bake {test: :wrongShape}` typecheck clean.
+> `tests/suites/typecheck.nim:1805` covers the other direction — a *call
+> through* a fnsig slot checks arity — so the gap is specifically on the
+> store, not on use. `bake`'s intended semantics is that it matches the
+> signature declared on the record's slot, which makes this the check that
+> makes the feature safe.
 
 ---
 
