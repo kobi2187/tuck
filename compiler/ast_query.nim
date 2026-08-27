@@ -35,6 +35,7 @@
 # a real program makes it hurt, is a name -> decl table built once per module
 # and shared by every pass, not micro-optimizing the scan.
 import ast, strutils
+import resolution
 export strutils.repeat, strutils.capitalizeAscii
 
 # `repeat` and `capitalize` used to be hand-written here and were byte-for-byte
@@ -343,3 +344,45 @@ proc injectTailReturn*(body: Expr, retTypeStr: string) =
                            exkAssign, exkBlock, exkSelect, exkSend} and
        not (lastS.kind == exkVar and lastS.name == "..."):
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
+
+# --- sketch-mode type queries --------------------------------------------
+#
+# Both backends that must NAME a type (Odin and D — Nim infers) need these,
+# and both had grown a private byte-identical copy. Shared here rather than
+# in one backend's util module, since neither owns the question.
+
+proc hasUnknownType*(t: Type): bool =
+  ## Does this type contain the checker's "I could not work it out" marker
+  ## anywhere inside it? A backend that must spell a type needs to know
+  ## before it tries.
+  if t == nil: return true
+  case t.kind
+  of tkNamed: t.name == UnknownName
+  of tkApp:
+    if hasUnknownType(t.base): return true
+    for a in t.args:
+      if hasUnknownType(a): return true
+    false
+  of tkRecord:
+    for f in t.fields:
+      if hasUnknownType(f.typ): return true
+    false
+  of tkTuple:
+    for el in t.elems:
+      if hasUnknownType(el): return true
+    false
+  else: false
+
+proc inferLitType*(e: Expr): Type =
+  ## Best-effort type for a literal the checker could not type — sketch mode,
+  ## where a shape still has to be emitted. The checker's own stamp wins when
+  ## it says anything useful.
+  if e != nil and semLayer.typeFor(e) != nil and
+     not hasUnknownType(semLayer.typeFor(e)): return semLayer.typeFor(e)
+  if e != nil and e.kind == exkLit:
+    case e.litKind
+    of lkStr: return Type(kind: tkNamed, name: "str")
+    of lkBool: return Type(kind: tkNamed, name: "bool")
+    of lkFloat: return Type(kind: tkNamed, name: "float")
+    else: return Type(kind: tkNamed, name: "int")
+  nil

@@ -370,36 +370,6 @@ proc recCtorFromLiteral(ctx: var OdinCodegenCtx, declFields: seq[FieldDef],
         break
   return structName & "{" & parts.join(", ") & "}"
 
-proc hasUnknownType(t: Type): bool =
-  if t == nil: return true
-  case t.kind
-  of tkNamed: t.name == UnknownName
-  of tkApp:
-    if hasUnknownType(t.base): return true
-    for a in t.args:
-      if hasUnknownType(a): return true
-    false
-  of tkRecord:
-    for f in t.fields:
-      if hasUnknownType(f.typ): return true
-    false
-  of tkTuple:
-    for el in t.elems:
-      if hasUnknownType(el): return true
-    false
-  else: false
-
-proc inferLitType(e: Expr): Type =
-  # best-effort inference for sketch-mode literals
-  if e != nil and semLayer.typeFor(e) != nil and not hasUnknownType(semLayer.typeFor(e)): return semLayer.typeFor(e)
-  if e != nil and e.kind == exkLit:
-    case e.litKind
-    of lkStr: return Type(kind: tkNamed, name: "str")
-    of lkBool: return Type(kind: tkNamed, name: "bool")
-    of lkFloat: return Type(kind: tkNamed, name: "float")
-    else: return Type(kind: tkNamed, name: "int")
-  return nil
-
 # Struct literal outside call/return contexts: use the checker's ty stamp to
 # pick the record shape. Odin has no anonymous record type, so an unresolved
 # shape hoists a named struct from the literal's own inferred field types.

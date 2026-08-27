@@ -21,23 +21,6 @@ void printLine(string s) { stdout.writeln(s); }
 // std.conv.text is the same "any value to its display form" operation.
 string toStr(T)(T value) { return text(value); }
 
-/// One line of stdin, without its newline. End of input is an ERROR
-/// (IoError.EndOfInput), not absence — std/console declares it that way, so
-/// a caller tells "nothing left" from "a blank line" by the status.
-/// (Module-scope declarations are order-free in D, so this sits with the
-/// other console I/O even though it returns a carrier defined below.)
-R readLine(R)()
-{
-    import std.stdio : stdin;
-    alias P = typeof(R.value);
-    auto line = stdin.readln();
-    if (line.length == 0)
-        return terr!P(errCode("console/IoError.EndOfInput"));
-    while (line.length > 0 && (line[$ - 1] == '\n' || line[$ - 1] == '\r'))
-        line = line[0 .. $ - 1];
-    return tok(tuckRec!(P, "line")(line.idup));
-}
-
 // !T is a result, ?T is an option: absence is a first-class state, not a
 // reserved error code. !T uses Ok/Err, ?T uses Ok/Absent, !?T may be any.
 //
@@ -158,6 +141,21 @@ R tuckRec(R, names...)(typeof(mixin("R." ~ names[0])) value)
     R r;
     mixin("r." ~ names[0] ~ " = value;");
     return r;
+}
+
+/// std/console — one line of stdin, without its newline. End of input is an
+/// ERROR (IoError.EndOfInput), not absence: std/console declares it that
+/// way, so a caller tells "nothing left" from "a blank line" by the status.
+R readLine(R)()
+{
+    import std.stdio : stdin;
+    alias P = typeof(R.value);
+    auto line = stdin.readln();
+    if (line.length == 0)
+        return terr!P(errCode("console/IoError.EndOfInput"));
+    while (line.length > 0 && (line[$ - 1] == '\n' || line[$ - 1] == '\r'))
+        line = line[0 .. $ - 1];
+    return tok(tuckRec!(P, "line")(line.idup));
 }
 
 // std/fs — the filesystem. The error codes are the FsError variants the

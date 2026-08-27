@@ -64,6 +64,13 @@ const dPrims = {
 proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef],
                     owner = ""): string
 
+proc dAlias*(moduleName: string): string =
+  ## A Tuck module's name as a D identifier — the import alias at a use site
+  ## and the `mod_<alias>` file it comes from. One spelling rule in one
+  ## place: it was written out at nine call sites, which is how a module
+  ## named `net-http` ends up half-translated.
+  moduleName.replace("-", "_")
+
 proc seqElem*(t: Type): Type =
   ## The element type of a `Seq[T]`, or nil for anything else. One predicate
   ## for the four places that used to re-test `tkApp and base.name == "Seq"`
@@ -91,8 +98,8 @@ proc importedTypeQualifierD(ctx: DCodegenCtx, name: string): string =
     if d == nil or d.kind != dkType or d.name != name: continue
     if not d.span.file.startsWith(ImportedTypeMarker & ":"): break
     let origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-    let pkg = origin.replace("-", "_")
-    if pkg != ctx.moduleName.replace("-", "_"): return pkg & "." & name
+    let pkg = dAlias(origin)
+    if pkg != dAlias(ctx.moduleName): return pkg & "." & name
     break
   name
 
@@ -184,7 +191,7 @@ proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef],
   if owner != "" and owner != ctx.moduleName:
     var nameParts: seq[string]
     for f in fields: nameParts.add(f.name)
-    let alias = owner.replace("-", "_")
+    let alias = dAlias(owner)
     return alias & ".TRec_" & alias & "_" & nameParts.join("_") & "_" &
            toHex(odinErrCode(sig))
   if sig in ctx.recShapes:
@@ -209,59 +216,34 @@ proc declaresFnD(m: Module, name: string): bool =
   ## Same predicate as the Odin backend's declaresFn (private there).
   m.findFn(name) != nil
 
+proc importDeclaring(ctx: DCodegenCtx, name: string): string =
+  ## The imported module that declares `name` as a callable, or "" when this
+  ## module declares it (local wins) or nobody does. D has no cross-module
+  ## scope merge, so every foreign call has to be qualified — three separate
+  ## copies of this search had grown before it was named once.
+  if name == "" or ctx.module.declaresFnD(name): return ""
+  for modName, im in ctx.realModules:
+    if im.declaresFnD(name): return modName
+  ""
+
 proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
-  ## D, like Odin, has no cross-module scope merge: an imported module's fn
-  ## is always `alias.name`. Local declarations win; only a name this module
-  ## does not declare is searched for among the imports.
+  ## An imported module's fn is always `alias.name`. Local declarations win;
+  ## only a name this module does not declare is searched for.
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
   if modName == "":
-    if not ctx.module.declaresFnD(e.qualName):
-      for name, im in ctx.realModules:
-        if im.declaresFnD(e.qualName):
-          return name.replace("-", "_") & "." & e.qualName
-    return e.qualName
-  elif modName in ctx.realModules:
-    return modName.replace("-", "_") & "." & e.qualName
-  else:
-    return modName & "_" & e.qualName
+    let owner = ctx.importDeclaring(e.qualName)
+    return if owner == "": e.qualName else: dAlias(owner) & "." & e.qualName
+  if modName in ctx.realModules:
+    return dAlias(modName) & "." & e.qualName
+  # not an imported Tuck module: a foreign namespace, flattened by the
+  # mangler into one name
+  modName & "_" & e.qualName
 
 proc genDLit(e: Expr): string =
   case e.litKind
   of lkStr: "\"" & e.litValue & "\""
   of lkInt, lkFloat, lkBool: e.litValue
   of lkUnit: ""
-
-proc hasUnknownTypeD(t: Type): bool =
-  if t == nil: return true
-  case t.kind
-  of tkNamed: t.name == UnknownName
-  of tkApp:
-    if hasUnknownTypeD(t.base): return true
-    for a in t.args:
-      if hasUnknownTypeD(a): return true
-    false
-  of tkRecord:
-    for f in t.fields:
-      if hasUnknownTypeD(f.typ): return true
-    false
-  of tkTuple:
-    for el in t.elems:
-      if hasUnknownTypeD(el): return true
-    false
-  else: false
-
-proc inferLitTypeD(e: Expr): Type =
-  ## Best-effort inference for sketch-mode literals — mirror of the Odin
-  ## backend's inferLitType.
-  if e != nil and semLayer.typeFor(e) != nil and
-     not hasUnknownTypeD(semLayer.typeFor(e)): return semLayer.typeFor(e)
-  if e != nil and e.kind == exkLit:
-    case e.litKind
-    of lkStr: return Type(kind: tkNamed, name: "str")
-    of lkBool: return Type(kind: tkNamed, name: "bool")
-    of lkFloat: return Type(kind: tkNamed, name: "float")
-    else: return Type(kind: tkNamed, name: "int")
-  return nil
 
 const dWideTypes = ["long", "double", "string", "bool", "void", "auto"]
 
@@ -295,12 +277,12 @@ proc genDStructLit(ctx: var DCodegenCtx, e: Expr): string =
     declFields = getFieldsForType(ctx.module, semLayer.typeFor(e))
   var allKnown = declFields.len > 0
   for f in declFields:
-    if hasUnknownTypeD(f.typ): allKnown = false
+    if hasUnknownType(f.typ): allKnown = false
   if allKnown:
     return ctx.recCtorFromLiteralD(declFields, e.fields)
   var inferred: seq[FieldDef]
   for f in e.fields:
-    var ft = inferLitTypeD(f.value)
+    var ft = inferLitType(f.value)
     if ft == nil:
       return dUnsupported("struct literal with an uninferable field '" &
                           f.name & "'")
@@ -404,7 +386,7 @@ proc genDBake(ctx: var DCodegenCtx, e: Expr): string =
   for (name, valExpr) in e.args[1].fields.items:
     if name notin recvFields:
       parts.add(name & ": " & ctx.genDExpr(valExpr))
-      var ft = inferLitTypeD(valExpr)
+      var ft = inferLitType(valExpr)
       if ft == nil: ft = Type(kind: tkNamed, name: UnknownName, span: e.span)
       declFields.add(FieldDef(name: name, typ: ft, span: e.span))
   if parts.len == 0: return recv
@@ -457,13 +439,11 @@ proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
 
 proc resolveDCallee(ctx: var DCodegenCtx, e: Expr): string =
   ## A bare-name callee (exkVar) resolves like an unqualified exkQualified:
-  ## local declarations win, then the imports — D has no scope merge to do
-  ## it for us (Nim's backend leans on Nim's own resolution here).
-  if e.callee != nil and e.callee.kind == exkVar and
-     not ctx.module.declaresFnD(e.callee.name):
-    for name, im in ctx.realModules:
-      if im.declaresFnD(e.callee.name):
-        return name.replace("-", "_") & "." & e.callee.name
+  ## local declarations win, then the imports. (The Nim backend leans on
+  ## Nim's own resolution here and needs no such step.)
+  if e.callee != nil and e.callee.kind == exkVar:
+    let owner = ctx.importDeclaring(e.callee.name)
+    if owner != "": return dAlias(owner) & "." & e.callee.name
   ctx.genDExpr(e.callee)
 
 proc memberProcNameD(objName, memberName: string): string =
@@ -686,13 +666,11 @@ proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
   if e.callee.kind == exkQualified and e.callee.modulePath.len > 0 and
      e.callee.modulePath[0] in ctx.realModules:
     return e.callee.modulePath[0]
-  let bare = if e.callee.kind == exkVar: e.callee.name
-             elif e.callee.kind == exkQualified: e.callee.qualName
+  let bare = case e.callee.kind
+             of exkVar: e.callee.name
+             of exkQualified: e.callee.qualName
              else: ""
-  if bare == "" or ctx.module.declaresFnD(bare): return ""
-  for name, im in ctx.realModules:
-    if im.declaresFnD(bare): return name
-  ""
+  ctx.importDeclaring(bare)
 
 proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   ## The declared D type for `let x = <val>`, naming a foreign record shape
@@ -1022,38 +1000,39 @@ proc dExternTodo(mem: Decl): string =
            " (C-header/lib/impl externs arrive in M5)\n"
   ""
 
+proc externShapeArg(ctx: var DCodegenCtx, ret: Type, retStr: string): string =
+  ## A record-returning extern hands the runtime the shape to FILL, as a
+  ## template argument: the struct was hoisted by this module, so the
+  ## runtime cannot name it (see tuck_rt.d's tuckRec). "" when the return
+  ## carries no record and the runtime's own type suffices.
+  if ret != nil and ret.kind == tkRecord:
+    return "!(" & retStr & ")"
+  let payload = bangInner(ret)
+  if payload != nil and payload.kind == tkRecord:
+    return "!(rt.TuckResult!(" & ctx.dType(payload) & "))"
+  ""
+
 proc genDExternFwd(ctx: var DCodegenCtx, mem: Decl): string =
-  ## An rt-implemented extern emits a forwarder calling `rt.<name>` — the
-  ## Odin backend's shape (D likewise has no cross-module scope merge that
-  ## would make the bare name resolve).
+  ## An rt-implemented extern emits a forwarder calling `rt.<name>` — D has
+  ## no cross-module scope merge that would make the bare name resolve.
   if mem.kind != dkFn: return ""
   let todo = dExternTodo(mem)
   if todo != "": return todo
   let ret = mem.fnReturnType
+  let retStr = ctx.dType(ret)
   let emitName = if mem.externEmit != "": mem.externEmit else: mem.name
   # A generic extern (`fn toStr[T]`) forwards as a D function template —
   # the same construct the runtime's own toStr(T)(T) already is.
   let tmplParams = if mem.fnGenerics.len > 0:
                      "(" & mem.fnGenerics.join(", ") & ")"
                    else: ""
-  let retStr = ctx.dType(ret)
-  result = retStr & " " & mem.name & tmplParams & "(" &
-           ctx.genDParams(mem.fnParams) & ") {\n"
   var args: seq[string]
   for p in mem.fnParams: args.add(p.name)
-  # A record-returning extern hands the runtime the shape to fill: the
-  # struct is named by THIS module (the emitter hoisted it), so the runtime
-  # takes it as a template argument rather than declaring a parallel copy.
-  let payload = bangInner(ret)
-  let shape = if ret != nil and ret.kind == tkRecord: retStr
-              elif payload != nil and payload.kind == tkRecord:
-                "rt.TuckResult!(" & ctx.dType(payload) & ")"
-              else: ""
-  let shapeArg = if shape != "": "!(" & shape & ")" else: ""
-  let call = "rt." & emitName & shapeArg & "(" & args.join(", ") & ")"
-  let isVoid = ret == nil or ctx.dType(ret) == "void"
-  result.add("    " & (if isVoid: call else: "return " & call) & ";\n")
-  result.add("}\n")
+  let call = "rt." & emitName & ctx.externShapeArg(ret, retStr) &
+             "(" & args.join(", ") & ")"
+  let body = if retStr == "void": call else: "return " & call
+  retStr & " " & mem.name & tmplParams & "(" &
+    ctx.genDParams(mem.fnParams) & ") {\n" & "    " & body & ";\n" & "}\n"
 
 proc genDExternBlock(ctx: var DCodegenCtx, d: Decl): string =
   for mem in d.mixinMembers:
@@ -1158,27 +1137,31 @@ proc dModuleName*(base: string): string =
   ## like `01-data-flow`. Hyphens become underscores and a leading digit
   ## gets a prefix — the FILE keeps its own name (only imported modules
   ## need name==file, and those are mod_<name> which never start digital).
-  result = base.replace("-", "_")
+  result = dAlias(base)
   if result.len > 0 and result[0] in {'0' .. '9'}: result = "_" & result
+
+proc usesSymbol(code, sym: string): bool =
+  ## Does the emitted text call or qualify `sym`? Both spellings, because a
+  ## symbol may be invoked (`writeln(x)`) or reached through (`stderr.x`).
+  (sym & "(") in code or (sym & ".") in code
 
 proc dImports(ctx: DCodegenCtx, body, mains: string,
               inModuleDir = false): seq[string] =
   ## Only import what the emitted code references — same policy as the Odin
   ## backend (and D warns on unused imports under -w).
+  let code = body & mains
   # The entry point always calls rt.tuckSetArgs, so an entry module always
   # needs the runtime; a library module only if its own body reached for it.
-  if "rt." in body or "rt." in mains or not inModuleDir:
+  if usesSymbol(code, "rt") or not inModuleDir:
     result.add("import rt = tuck_rt;")
   var stdioSyms: seq[string]
   for sym in ["writeln", "stderr"]:
-    if (sym & "(" in body) or (sym & "(" in mains) or
-       (sym & "." in body) or (sym & "." in mains):
-      stdioSyms.add(sym)
+    if usesSymbol(code, sym): stdioSyms.add(sym)
   if stdioSyms.len > 0:
     result.add("import std.stdio : " & stdioSyms.join(", ") & ";")
   for modName in ctx.realModules.keys:
-    let alias = modName.replace("-", "_")
-    if (alias & ".") in body or (alias & ".") in mains:
+    let alias = dAlias(modName)
+    if usesSymbol(code, alias):
       result.add("import " & alias & " = mod_" & alias & ";")
 
 proc mainDeclD(m: Module): Decl =
@@ -1246,7 +1229,7 @@ proc emitDModule*(name: string, m: Module,
   ## The import alias at the use site keeps the Tuck name, so calls read
   ## `console.printLine` — and the mod_ prefix keeps a Tuck module called
   ## `std` or `core` from colliding with D's own top-level packages.
-  let alias = name.replace("-", "_")
+  let alias = dAlias(name)
   var ctx = newDCtx(m, realModules, name, modPrefix = alias & "_")
   let (body, _) = ctx.emitDBody(m)
   result = "module mod_" & alias & ";\n\n"
