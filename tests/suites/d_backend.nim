@@ -32,6 +32,28 @@ proc runsD(t: var T, name: string, want: int, dmdExe: string) =
   if rc == want: t.ok name
   else: t.no name, "exit " & $rc & ", want " & $want & ": " & output.strip()
 
+proc runsDWith(t: var T, name: string, want: int, dmdExe: string,
+               flags: seq[string], tag: string) =
+  ## Like runsD, but with extra dmd flags — so a build MODE can be asserted,
+  ## not just the source. The binary is named per tag so two modes of one
+  ## snippet do not overwrite each other.
+  let e = t.needD()
+  let dir = t.curDir / "dlang"
+  let bin = dir / ("prog_" & tag)
+  let b = t.needCmdAfter(@[dmdExe, "-i", "-I" & dir] & flags &
+                         @[dir / "t.d", "-of=" & bin],
+                         e, proc (dir: string) = discard, dir)
+  let r = t.needCmdAfter(@[bin], b, proc (dir: string) = discard, dir)
+  if t.phase == pCollect: return
+  if t.skippedCmd(r): t.skip name; return
+  let (brc, bout) = t.resultOf(b)
+  if brc != 0:
+    t.no name, "dmd build failed: " & bout.strip().splitLines()[^1]
+    return
+  let (rc, _) = t.resultOf(r)
+  if rc == want: t.ok name
+  else: t.no name, "exit " & $rc & ", want " & $want
+
 proc run*(t: var T) =
   let dmdExe = findDmd()
   if dmdExe.len == 0:
@@ -309,5 +331,48 @@ fn main() -> int [io]:
   t.emitsD "T20: a bare return in a fallible fn still wraps",
            r"return rt\.tokVoid\(\);"
   t.runsD "T20: err results never take the ok branch (42+3)", 45, dmdExe
+
+  # --- T22: invariants, on by default and opt-out only -------------------
+  # ROADMAP 2026-08-25 ruling 5: invariants stay in a RELEASE build unless
+  # the user asks to strip them. The Nim backend hardcodes
+  # `when not defined(release)` and cannot honour that; this backend is
+  # written to the ruling, and these assertions are what keep it honest.
+  t.src """
+type Temperature:
+  celsius: f32
+  invariant:
+    celsius >= -273.15
+
+fn main() -> int:
+  let ok = {celsius: 20.0} Temperature
+  return 0
+"""
+  t.emitsD "T22: the guard is opt-OUT, not release-stripped",
+           r"version \(tuckNoInvariants\) \{\} else"
+  t.emitsD "T22: a field in an invariant is reached through self",
+           r"self\.celsius >= -273\.15"
+  t.emitsD "T22: construction validates before the value flows on",
+           r"__validated_tuck_Temperature\(tuck_Temperature\(celsius: 20\.0\)\)"
+  t.omitsD "T22: not assert — dmd's -release strips those, undoing the ruling",
+           r"assert\("
+  t.runsD "T22: a satisfied invariant costs nothing observable", 0, dmdExe
+
+  t.src """
+type Temperature:
+  celsius: f32
+  invariant:
+    celsius >= -273.15
+
+fn main() -> int:
+  let bad = {celsius: -300.0} Temperature
+  return 0
+"""
+  # 134 = SIGABRT. The point is not the number but that it is NOT 0 in
+  # either build: a violated invariant stops at the site.
+  t.runsD "T22: a violated invariant aborts in a normal build", 134, dmdExe
+  t.runsDWith "T22: and STILL aborts under -O -release (the ruling's teeth)",
+              134, dmdExe, @["-O", "-release"], "rel"
+  t.runsDWith "T22: stripped only when the user explicitly opts out",
+              0, dmdExe, @["-version=tuckNoInvariants"], "off"
 
   t.finish()

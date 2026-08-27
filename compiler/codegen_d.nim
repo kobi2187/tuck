@@ -42,6 +42,8 @@ type
     retWrapped: bool       # current fn returns !T/?T — returns auto-wrap
     retInnerD: string      # D type of the payload (for terr!T)
     retInnerT: Type        # payload Tuck type (typed struct-literal returns)
+    fieldVars: HashSet[string]  # inside an invariant: names that are fields
+    fieldPrefix: string         # what those names are reached through
 
 proc dUnsupported(construct: string): string =
   ## The D backend refuses what it cannot yet emit — loudly, at emission
@@ -356,15 +358,15 @@ proc isRecordConstructionD(ctx: DCodegenCtx, e: Expr): bool =
 
 proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
   ## `{fields} TypeName` — a named-argument struct literal of the DECLARED
-  ## type. Invariant-carrying types wait for M4's validate machinery: refuse
-  ## rather than construct without the check the Nim backend inserts.
-  if hasInvariants(ctx.module, e.callee.name):
-    return dUnsupported("constructing invariant-carrying type " &
-                        e.callee.name & " (M4)")
+  ## type. A production site: an invariant-carrying value validates before
+  ## it flows on (spec 4.7).
   var parts: seq[string]
   for f in e.args[0].fields:
     parts.add(f.name & ": " & ctx.genDExpr(f.value))
-  e.callee.name & "(" & parts.join(", ") & ")"
+  let ctor = e.callee.name & "(" & parts.join(", ") & ")"
+  if hasInvariants(ctx.module, e.callee.name):
+    return "__validated_" & e.callee.name & "(" & ctor & ")"
+  ctor
 
 proc genDBake(ctx: var DCodegenCtx, e: Expr): string =
   ## expr bake {slot: value, ...} — rebuild the record with slots overridden
@@ -535,7 +537,12 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
       return "return rt.tokVoid()"
     return "return"
   if ctx.retWrapped: return ctx.genDWrappedReturn(e.returnVal)
-  "return " & ctx.genDExpr(e.returnVal)
+  let v = ctx.genDExpr(e.returnVal)
+  # production site: handing back a value of an invariant-carrying type
+  let rt = semLayer.typeFor(e.returnVal)
+  if rt != nil and rt.kind == tkNamed and hasInvariants(ctx.module, rt.name):
+    return "return __validated_" & rt.name & "(" & v & ")"
+  "return " & v
 
 proc indD(ctx: DCodegenCtx): string = repeat(' ', ctx.indent * 4)
 
@@ -641,6 +648,7 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   if e.name == "...": return ""   # pending hole: compiles, does nothing
   if e.name == "input" and ctx.currentParams.len > 0:
     return ctx.genDInputPayload()
+  if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
   if e.name notin ctx.definedVars:
     let tag = ctx.qualifyEnumTag(e.name)
     if tag != "": return tag
@@ -870,15 +878,16 @@ proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep,
   ctx.indD & baseStr & "." & step.target.name & " = " & valStr & ";\n"
 
 proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
-  ## `x ..field {v} ..mutate {a}` — one plain statement per step.
-  ## (Invariant re-validation after the chain arrives with M4.)
+  ## `x ..field {v} ..mutate {a}` — one plain statement per step, then a
+  ## re-validation: a MUTATION site is a production site too, since the
+  ## value that flows on afterwards is a different one.
   let baseStr = ctx.genDExpr(e.base)
+  for step in e.steps:
+    result.add(ctx.genDChainStep(step, baseStr))
   if e.base != nil:
     let bt = semLayer.typeFor(e.base)
     if bt != nil and bt.kind == tkNamed and hasInvariants(ctx.module, bt.name):
-      return dUnsupported("chain over invariant-carrying " & bt.name & " (M4)")
-  for step in e.steps:
-    result.add(ctx.genDChainStep(step, baseStr))
+      result.add(ctx.indD & "validate_" & bt.name & "(" & baseStr & ");\n")
 
 proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   if e == nil: return ""
@@ -973,10 +982,8 @@ proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
 
 proc genDObjectDecl(ctx: var DCodegenCtx, d: Decl): string =
   ## `object` — a plain D struct plus its member fns as qualified free
-  ## procs. Composition (+Mixin) and satisfies arrive with M4's interface
-  ## work; invariants with M4's validate machinery.
-  if hasInvariants(ctx.module, d.name):
-    return dUnsupported("object " & d.name & " with invariants (M4)")
+  ## procs. Composition (+Mixin) and satisfies arrive with the interface
+  ## work.
   result = "struct " & d.name & " {\n"
   for f in d.objFields:
     result.add("    " & ctx.dType(f.typ) & " " & f.name & ";\n")
@@ -1039,6 +1046,39 @@ proc genDExternBlock(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDExternFwd(mem)
     if code != "": result.add(code & "\n")
 
+proc genDValidate(ctx: var DCodegenCtx, d: Decl): string =
+  ## spec 4.7: an invariant-carrying type validates at every PRODUCTION
+  ## site. Emitted behind `version(tuckNoInvariants)` — opt-OUT, so the
+  ## checks stay on in a release build by default.
+  ##
+  ## The Nim backend hardcodes `when not defined(release)`, which makes the
+  ## checks impossible to keep in the build where a violated invariant means
+  ## corrupt data. ROADMAP's 2026-08-25 ruling 5 reverses that; this backend
+  ## is written to the ruling rather than inheriting the bug.
+  var checks: seq[string]
+  let savedFields = ctx.fieldVars
+  let savedPrefix = ctx.fieldPrefix
+  ctx.fieldVars.clear()
+  for f in d.typeBody.fields: ctx.fieldVars.incl(f.name)
+  ctx.fieldPrefix = "self."
+  for member in d.typeMembers:
+    if member != nil and member.kind == dkExpr:
+      let cond = ctx.genDExpr(member.expr)
+      # An explicit test + abort, NOT `assert`: dmd's -release strips
+      # asserts, which would silently undo the ruling this guard exists to
+      # implement (verified — an assert-based version passed in release).
+      checks.add("        if (!(" & cond & "))\n" &
+                 "            rt.tuckInvariantFailed(\"" &
+                 cond.replace("\"", "'") & "\", \"" & d.name & "\");")
+  ctx.fieldVars = savedFields
+  ctx.fieldPrefix = savedPrefix
+  if checks.len == 0: return ""
+  "\nvoid validate_" & d.name & "(" & d.name & " self)\n{\n" &
+    "    version (tuckNoInvariants) {} else\n    {\n" &
+    checks.join("\n") & "\n    }\n}\n\n" &
+    d.name & " __validated_" & d.name & "(" & d.name & " v)\n{\n" &
+    "    validate_" & d.name & "(v);\n    return v;\n}\n"
+
 proc genDTypeDecl(ctx: var DCodegenCtx, d: Decl): string =
   if d.generics.len > 0: return dUnsupported("generic type " & d.name)
   let body = d.typeBody
@@ -1054,6 +1094,10 @@ proc genDTypeDecl(ctx: var DCodegenCtx, d: Decl): string =
     for f in body.fields:
       res.add("    " & ctx.dType(f.typ) & " " & f.name & ";\n")
     res.add("}\n")
+    res.add(ctx.genDValidate(d))
+    for member in d.typeMembers:
+      if member != nil and member.kind == dkFn:
+        res.add("\n" & ctx.genDFnDecl(member) & "\n")
     return res
   if body.kind in {tkNamed, tkApp, tkRename, tkEffect}:
     # `type Ms = int` and friends. The DISTINCTNESS was enforced by the

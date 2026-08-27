@@ -82,6 +82,22 @@ TuckResult!T tfwd(T)(TuckStatus status, ushort err)
     return r;
 }
 
+/// An invariant violation (spec 4.7) — abort naming the condition.
+///
+/// NOT `assert`: dmd's `-release` strips asserts outright, so a guard built
+/// on one silently evaporates in exactly the build where a violated
+/// invariant means corrupt data. ROADMAP's 2026-08-25 ruling 5 says
+/// invariants stay on in release by default, opt-out only, so the check has
+/// to be real code the optimiser keeps. (The Nim backend has the same bug
+/// from the other direction: it hardcodes `when not defined(release)`.)
+void tuckInvariantFailed(string cond, string typeName)
+{
+    import std.stdio : stderr;
+    import core.stdc.stdlib : abort;
+    stderr.writeln("Invariant violated on ", typeName, ": ", cond);
+    abort();
+}
+
 void tuckReportUnhandled(ushort code, string site)
 {
     import std.stdio : stderr;

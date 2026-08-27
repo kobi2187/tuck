@@ -113,8 +113,16 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
         byte-identical. New helper `tuckRec!(R, "field")` lets the runtime
         fill the CALLER's hoisted record shape — Odin declares a parallel
         struct per extern instead.
-  - [ ] M4 rest: T21 error policy,
-        T22 invariants (version(tuckNoInvariants)), T23 interfaces,
+  - [x] T22 invariants, written to ROADMAP ruling 5 rather than inheriting
+        the Nim backend's bug: guarded by `version (tuckNoInvariants)`, so
+        checks stay ON in a release build and strip only when asked. All
+        four production sites validate (construction, chain mutation,
+        return, extern boundary). NOT `assert` — dmd's -release strips
+        those, which silently undid the ruling (verified: an assert-based
+        version passed in release). Emits an explicit test calling
+        rt.tuckInvariantFailed, which aborts naming the condition.
+        Example 10 compiles. Suite asserts all three build modes.
+  - [ ] M4 rest: T21 error policy, T23 interfaces,
         T24 decision tables+saturating+const+static assert
   - [ ] Sweep status (44 examples): 15 compile clean, 21 die naming their
         own task, 8 dmd-fail = 5 FFI (T26) + 2 tasks (M7) + saturating
