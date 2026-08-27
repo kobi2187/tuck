@@ -48,6 +48,7 @@ import compiler/lowering
 import compiler/mangle
 import compiler/codegen
 import compiler/codegen_odin
+import compiler/codegen_d
 import compiler/ast_serializer
 import compiler/modules
 import compiler/optimize
@@ -68,6 +69,7 @@ commands:
 options:
   --ast         (parse) dump the AST as JSON to stdout
   --odin        (compile) also emit .odin files
+  --dlang       (compile) also emit .d files
   -o:DIR        (compile/build) output directory (default: next to source)
   --root:DIR    import search base for std/ and sibling modules (any command);
                 lets imports resolve regardless of cwd or binary location
@@ -500,6 +502,29 @@ when isMainModule:
           if execShellCmd("cc -c -fPIC " & quoteShell(cSrc) & " -o " &
                           quoteShell(obj)) != 0:
             die("tuck: failed to compile C source " & cSrc)
+    if "--dlang" in opts:
+      # Third backend, same discipline: its own deepCopy (lowering mutates),
+      # one .d file per module (D modules are files, unlike Odin's package
+      # directories), runtime rides along as a sibling tuck_rt.d.
+      var dProg: seq[LoadedModule]
+      for lm in prog: dProg.add(LoadedModule(name: lm.name, path: lm.path,
+                                             m: deepCopy(lm.m)))
+      var dReal = initTable[string, Module]()
+      for lm in dProg[0 ..< dProg.high]: dReal[lm.name] = lm.m
+      for lm in dProg: rebaseImplPaths(lm, "d", outDir)
+      for lm in dProg:
+        lowerModule(lm.m)
+      for lm in dProg[0 ..< dProg.high]:
+        let modDPath = outDir / ("mod_" & lm.name.replace("-", "_") & ".d")
+        writeFile(modDPath, emitDModule(lm.name, lm.m, dReal))
+        echo "wrote ", modDPath
+      let dPath = outDir / (base & ".d")
+      writeFile(dPath, emitD(dProg[^1].m, dReal, base))
+      echo "wrote ", dPath
+      let rtSrcD = getAppDir() / "compiler" / "tuckrt_d"
+      if dirExists(rtSrcD):
+        for f in walkFiles(rtSrcD / "*.d"):
+          copyFile(f, outDir / extractFilename(f))
     let m = prog[^1].m
     if cmd in ["build", "b"]:
       # entry point: `fn main` runs when the binary starts. No main =
@@ -625,6 +650,26 @@ when isMainModule:
             echo "tuck: odin compilation failed"
           else:
             echo "built ", odinBin, "  ", reportBuild(odinBin, odMs)
+      if "--dlang" in opts:
+        let dmdExe = findExe("dmd")
+        if dmdExe == "":
+          echo "tuck: dmd not found on PATH — skipping D build"
+        else:
+          let dBin = outDir / (binBase & "_d")
+          # -i compiles imported modules (mod_*.d, tuck_rt.d) automatically;
+          # -O -release is the fast-code build, default is the fast build.
+          let dOpt = if wantRelease: " -O -release" else: ""
+          let dCmd = quoteShell(dmdExe) & " -i" & dOpt &
+                     " -I" & quoteShell(outDir) &
+                     " -of=" & quoteShell(dBin) & " " &
+                     quoteShell(outDir / (base & ".d"))
+          let dT0 = epochTime()
+          let dRc = execShellCmd(dCmd)
+          let dMs = (epochTime() - dT0) * 1000
+          if dRc != 0:
+            echo "tuck: dmd compilation failed"
+          else:
+            echo "built ", dBin, "  ", reportBuild(dBin, dMs)
     echo "OK (", elapsedMs(t0), ")"
   else:
     usage()
