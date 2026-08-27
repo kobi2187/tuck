@@ -50,8 +50,9 @@ complexity gate complains.
 - Build: `dmd -i -I<outDir>` so imports resolve without listing files.
 - Type map: Tuck `int` → D `long` (D int is 32-bit!), `str` → `string`,
   `Seq[T]` → `T[]`, f32/f64 → float/double, iN/uN → byte/short/int/long +u.
-- Actors/tasks: NOT phase 1. Emit a loud "D backend: not yet supported" die,
-  not silent wrong code. Phase 4 uses core.thread.Fiber (druntime, no minicoro).
+- Actors/tasks: NOT early. Emit a loud "D backend: not yet supported" die,
+  not silent wrong code. M7 uses MINICORO (see the portable-runtime constraint
+  above — this supersedes the original core.thread.Fiber note).
 
 ## State
 Approved plan: ~/.claude/plans/fancy-yawning-karp.md (T1-T29, 7 milestones).
@@ -61,7 +62,6 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
 - Done:
   - [x] Orientation: driver flow (tuck.nim:400-530), Odin emitter skeleton +
         call machinery read, AST kinds enumerated (24 exk, 21 dk, 9 tk)
-- Done:
   - [x] Milestone 1 — plumbing (hello world end to end, exit 7, stdout ≡ Nim
         backend; dmd build 213ms). Also fixed pre-existing red complexity
         gate: complexity.nim walk cc=23>22, split walkMatch/walkSelect out.
@@ -91,10 +91,6 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
         Seq .dup on assignment (aliasing probe: 64 both). Examples 01, 02,
         07, 18, 41 run-identical to Nim backend; 17 compiles (specimen).
         Suite now 28 assertions. Invariant-carrying paths die loudly (M4).
-- Remaining:
-  - [ ] M3 records & calls: T11 TRec hoisting, T12 payload explosion+qualified,
-        T13 chains, T14 alias/merge, T15 pending stubs, T16 objects/self,
-        T17 slice-aliasing audit
   - [x] T18/T19 sum types + match: payload-free sums are plain D enums,
         match is `final switch` (D re-checks exhaustiveness — the guarantee
         Tuck makes), value-position match is an immediately-called lambda
@@ -122,11 +118,20 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
         version passed in release). Emits an explicit test calling
         rt.tuckInvariantFailed, which aborts naming the condition.
         Example 10 compiles. Suite asserts all three build modes.
-  - [ ] M4 rest: T21 error policy, T23 interfaces,
-        T24 decision tables+saturating+const+static assert
-  - [ ] Sweep status (44 examples): 15 compile clean, 21 die naming their
-        own task, 8 dmd-fail = 5 FFI (T26) + 2 tasks (M7) + saturating
-        (T24). Re-run after each task.
+  - [x] T24 (part) + fnsig: [saturating] ctors clamp via rt.tuckSat/tuckSatI
+        (example 40 identical — a miss returns 4464); const emits a D `enum`
+        (compile-time) or `immutable`; static_assert is D's own native
+        `static assert`, no workaround (Odin has to defer its to a runtime
+        check in the entry point). fnsig is a D `function` pointer, NOT a
+        delegate — Tuck has no captured environment, so the bare pointer
+        loses nothing. A fn used as a VALUE takes `&`: a bare name in D
+        value position is a nullary CALL. Decided by the checker's type
+        (tkFunc), not the node kind — a `:ref` arrives as exkVar or
+        exkQualified depending on spelling (verified by instrumenting).
+        Example 31 runs 42 on both.
+  - [ ] M4 rest: T21 error policy, T23 interfaces, T24 decision tables
+  - [ ] Sweep status (44 examples): 17 compile clean, 20 die naming their
+        own task, 7 dmd-fail = 5 FFI (T26) + 2 tasks (M7).
   - [ ] M5 modules & extern: T25 mod_*.d, T26 extern flavours, T27 emit_examples
   - [ ] M6 tests: T28 harness+d_backend suite, T29 example sweep
   - [ ] M7 concurrency (Fiber) — own plan when reached

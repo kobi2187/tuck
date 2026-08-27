@@ -424,6 +424,19 @@ proc genDMerge(ctx: var DCodegenCtx, e: Expr): string =
   if newFields.len == 0: return ""
   ctx.recStructNameD(newFields) & "(" & vals.join(", ") & ")"
 
+proc genDSaturatingCtor(ctx: var DCodegenCtx, satT: Type,
+                        calleeStr, arg: string): string =
+  ## spec 4.1: constructing a `[saturating]` type CLAMPS instead of
+  ## wrapping. The guard runs on a wider intermediate, so the value is
+  ## tested against the type's real bounds rather than after it has already
+  ## wrapped — mirrors both other backends.
+  let satBase = ctx.dType(satT)
+  let unsigned = satBase.startsWith("u")
+  let widen = if unsigned: "ulong" else: "long"
+  let satFn = if unsigned: "rt.tuckSat" else: "rt.tuckSatI"
+  calleeStr & "(" & satFn & "!(" & satBase & ")(cast(" & widen & ")(" &
+    arg & ")))"
+
 proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
   ## The compile-time combinators; any that declines returns "" and the call
@@ -494,6 +507,9 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   if calleeStr == "echo":
     # `echo` is the builtin debug print; writeln is D's identical construct.
     return "writeln(" & args.join(", ") & ")"
+  let satT = ctx.module.saturatingType(calleeStr)
+  if satT != nil and args.len == 1:
+    return ctx.genDSaturatingCtor(satT, calleeStr, args[0])
   calleeStr & "(" & args.join(", ") & ")"
 
 proc errCodeArg(ctx: DCodegenCtx, name: string): string =
@@ -641,9 +657,23 @@ proc qualifyEnumTag(ctx: DCodegenCtx, name: string): string =
   let owner = enumTagOwner(ctx.module, name)
   if owner == "": "" else: owner & "." & name
 
+proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool =
+  ## A `:fnRef` filling a callback slot — a declared fn named as a VALUE
+  ## rather than called. In D a bare function name in value position is a
+  ## call with no arguments, so the reference needs `&`; Nim and Odin both
+  ## take the bare name.
+  ##
+  ## Decided by the checker's TYPE, not the node kind: a ref arrives as
+  ## exkVar or exkQualified depending on how it was written, but its type is
+  ## a function type either way (verified — `{add: :plus}` reaches codegen
+  ## as exkQualified).
+  if e == nil or semLayer.hasCall(e): return false
+  let t = semLayer.typeFor(e)
+  t != nil and t.kind == tkFunc
+
 proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a pending hole, the whole incoming
-  ## payload, an enum tag, or a variable. (self arrives with its milestone.)
+  ## payload, an enum tag, or a variable.
   if semLayer.hasCall(e): return ctx.genDExpr(semLayer.call(e))
   if e.name == "...": return ""   # pending hole: compiles, does nothing
   if e.name == "input" and ctx.currentParams.len > 0:
@@ -891,6 +921,11 @@ proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
 
 proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   if e == nil: return ""
+  # A fn used as a VALUE needs `&` in D, whichever way it was written —
+  # checked here, where exkVar and exkQualified both pass through.
+  if e.kind in {exkVar, exkQualified} and ctx.isFnRefD(e):
+    let name = if e.kind == exkVar: ctx.genDVarName(e) else: ctx.genDQualified(e)
+    return "&" & name
   case e.kind
   of exkLit: genDLit(e)
   of exkVar: ctx.genDVarName(e)
@@ -1128,6 +1163,27 @@ proc genDPendingBlock(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDPendingStub(mem)
     if code != "": result.add(code & "\n")
 
+proc genDFnSig(ctx: var DCodegenCtx, d: Decl): string =
+  ## `fnsig NAME = {params} -> ret` — a named callback shape, filled by a
+  ## `:fnRef` and called through.
+  ##
+  ## D's `function` pointer is the identical construct, and it is the RIGHT
+  ## one rather than `delegate`: Tuck has no captured environment (a "closure"
+  ## is a baked record whose body reads the record's own fields), so a bare
+  ## pointer loses nothing and is what a C callback needs anyway. Nim has to
+  ## reach for {.cdecl.} on the C path for exactly this reason.
+  var params: seq[string]
+  for prm in d.sigParams:
+    params.add(ctx.dType(prm.typ) & " " & prm.name)
+  let retStr =
+    if d.sigReturn != nil and not (d.sigReturn.kind == tkNamed and
+                                   d.sigReturn.name == "void"):
+      ctx.dType(d.sigReturn)
+    else: "void"
+  let conv = if d.sigIsCCallback: "extern (C) " else: ""
+  "alias " & d.name & " = " & conv & retStr & " function(" &
+    params.join(", ") & ");\n"
+
 proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
@@ -1148,13 +1204,24 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
   of dkActor: dUnsupported("actor " & d.name & " (arrives with the Fiber runtime)")
   of dkTask: dUnsupported("task " & d.name & " (arrives with the Fiber runtime)")
   of dkExpr: ""   # top-level statements are collected by emitBody
-  of dkConst: dUnsupported("const " & d.name)
+  of dkConst:
+    # A literal is a true compile-time constant (`enum` is D's word for
+    # one); structured data becomes an immutable module-level value.
+    if d.constVal != nil and d.constVal.kind == exkLit:
+      "enum " & d.name & " = " & ctx.genDExpr(d.constVal) & ";\n"
+    else:
+      "immutable " & d.name & " = " & ctx.genDExpr(d.constVal) & ";\n"
   of dkRegister: dUnsupported("register " & d.name)
-  of dkStaticAssert: dUnsupported("static assert (M4)")
+  of dkStaticAssert:
+    # D checks this at COMPILE time, natively — the identical construct.
+    # (The Odin backend collects these into a runtime `assert` in its entry
+    # point, because Odin's #assert does not reach here; Nim has
+    # `static: assert`. D needs no such workaround.)
+    "static assert(" & ctx.genDExpr(d.assertExpr) & ");\n"
   of dkErrors: dUnsupported("errors policy (M4)")
   of dkImport: ""
   of dkSelect: dUnsupported("top-level on select (arrives with the Fiber runtime)")
-  of dkFnSig: dUnsupported("fnsig " & d.name)
+  of dkFnSig: ctx.genDFnSig(d)
   of dkSatisfies: dUnsupported("top-level satisfies (M4)")
   of dkInterface: dUnsupported("interface " & d.name & " (M4)")
   of dkWhen: ""   # resolved away by modules.resolveWhenBlocks before codegen

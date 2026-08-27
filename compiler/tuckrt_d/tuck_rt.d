@@ -82,6 +82,21 @@ TuckResult!T tfwd(T)(TuckStatus status, ushort err)
     return r;
 }
 
+/// `[saturating]` (spec 4.1): clamp at the type's bounds instead of
+/// wrapping. The caller widens first, so the guard tests the real value
+/// rather than one that has already wrapped.
+T tuckSat(T)(ulong v) if (__traits(isUnsigned, T))
+{
+    return v > cast(ulong) T.max ? T.max : cast(T) v;
+}
+
+T tuckSatI(T)(long v) if (!__traits(isUnsigned, T))
+{
+    if (v > cast(long) T.max) return T.max;
+    if (v < cast(long) T.min) return T.min;
+    return cast(T) v;
+}
+
 /// An invariant violation (spec 4.7) — abort naming the condition.
 ///
 /// NOT `assert`: dmd's `-release` strips asserts outright, so a guard built

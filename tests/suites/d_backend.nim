@@ -375,4 +375,53 @@ fn main() -> int:
   t.runsDWith "T22: stripped only when the user explicitly opts out",
               0, dmdExe, @["-version=tuckNoInvariants"], "off"
 
+  # --- T24 (part): saturating, const, static assert ----------------------
+  t.src """
+type SafeRPM = u16 [saturating]
+
+fn main() -> int:
+  let over = 70000 SafeRPM
+  let ok = 1200 SafeRPM
+  if over == 65535 SafeRPM:
+    return ok /i 100
+  return 1
+"""
+  t.emitsD "T24: a saturating ctor clamps through the runtime, widened first",
+           r"rt\.tuckSat!\(ushort\)\(cast\(ulong\)\(70000\)\)"
+  t.runsD "T24: 70000 CLAMPS to 65535 rather than wrapping to 4464",
+          12, dmdExe
+
+  t.src """
+const LIMIT = 8
+
+static_assert LIMIT == 8
+
+fn main() -> int:
+  return LIMIT
+"""
+  t.emitsD "T24: a literal const is a D compile-time enum",
+           r"enum tuck_LIMIT = 8;"
+  t.emitsD "T24: static assert is checked by D at compile time, natively",
+           r"static assert\("
+  t.runsD "T24: the const reads back as its value", 8, dmdExe
+
+  # --- fnsig: a callback slot is a bare function pointer -----------------
+  t.src """
+fnsig Adder = {a: int, b: int} -> int
+
+type Calc = {add: Adder}
+
+fn plus({a: int, b: int}) -> int:
+  return a + b
+
+fn main() -> int:
+  let c = {add: :plus} Calc
+  return {a: 40, b: 2} c.add
+"""
+  t.emitsD "fnsig: a named signature is a D function pointer, not a delegate",
+           r"alias tuck_Adder = long function\(long a, long b\);"
+  t.emitsD "fnsig: a fn used as a VALUE takes & — a bare name would call it",
+           r"add: &tuck_plus"
+  t.runsD "fnsig: calling through the slot runs the referenced fn", 42, dmdExe
+
   t.finish()
