@@ -20,7 +20,11 @@ import resolution
 import ast_query
 import codegen_common
 import lowering                # getFieldsForType
-from codegen_odin_util import odinErrCode  # shared record-shape hash
+# Shared, ctx-free helpers that happen to live in the Odin backend's util
+# module: the record-shape hash (so both backends name a shape alike) and the
+# enum a bare tag belongs to. Neither is Odin-specific; if a third consumer
+# appears they should move to a backend-neutral module.
+from codegen_odin_util import odinErrCode, enumTagOwner
 from mangle import mangleName
 
 type
@@ -547,13 +551,24 @@ proc genDInputPayload(ctx: var DCodegenCtx): string =
   for p in ctx.currentParams: vals.add(p.name & ": " & p.name)
   ctx.recStructNameD(ctx.currentParams) & "(" & vals.join(", ") & ")"
 
+proc qualifyEnumTag(ctx: DCodegenCtx, name: string): string =
+  ## A bare enum tag is written `Owner.Tag` in D — enum members do not leak
+  ## into module scope (same as Odin, unlike Nim). "" when `name` is not a
+  ## declared tag.
+  if name.len == 0 or name[0] notin {'A' .. 'Z'}: return ""
+  let owner = enumTagOwner(ctx.module, name)
+  if owner == "": "" else: owner & "." & name
+
 proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a pending hole, the whole incoming
-  ## payload, or a variable. (self / enum tags arrive with their milestones.)
+  ## payload, an enum tag, or a variable. (self arrives with its milestone.)
   if semLayer.hasCall(e): return ctx.genDExpr(semLayer.call(e))
   if e.name == "...": return ""   # pending hole: compiles, does nothing
   if e.name == "input" and ctx.currentParams.len > 0:
     return ctx.genDInputPayload()
+  if e.name notin ctx.definedVars:
+    let tag = ctx.qualifyEnumTag(e.name)
+    if tag != "": return tag
   e.name
 
 proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
@@ -667,6 +682,74 @@ proc genDList(ctx: var DCodegenCtx, e: Expr): string =
   for item in e.items: parts.add(ctx.genDExpr(item))
   "[" & parts.join(", ") & "]"
 
+proc dPatternStr(ctx: var DCodegenCtx, pat: Pattern): string =
+  ## One arm's pattern as a D case label. A bare tag qualifies to its enum;
+  ## a literal stands as written.
+  let raw = genPatternStr(pat)
+  let tag = ctx.qualifyEnumTag(raw)
+  if tag != "": tag else: raw
+
+proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm): string =
+  ## `case LABEL:` plus its body, indented one level in. Every arm breaks:
+  ## D switch cases fall through by default where Tuck's arms never do, so
+  ## the break is the semantics, not decoration. (A body ending in `return`
+  ## makes it unreachable, so it is omitted there.)
+  if arm.guard != nil:
+    return dUnsupported("a guarded match arm (M4b)")
+  let label = ctx.dPatternStr(arm.pattern)
+  let head = if arm.pattern != nil and arm.pattern.kind == pkWild:
+               ctx.indD & "default:\n"
+             else: ctx.indD & "case " & label & ":\n"
+  let body = ctx.genDNested(arm.body)
+  let ends = body.strip()
+  let needsBreak = not (ends.endsWith("return;") or
+                        ends.contains("return ") and ends.endsWith(";") and
+                        ends.splitLines()[^1].strip().startsWith("return"))
+  ctx.indent += 1
+  let brk = if needsBreak: ctx.indD & "break;\n" else: ""
+  ctx.indent -= 1
+  head & body & brk
+
+proc hasWildArm(e: Expr): bool =
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkWild: return true
+  false
+
+proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string =
+  ## `final switch` — D's own exhaustiveness check, which is exactly the
+  ## guarantee Tuck's match makes, so the compiler re-verifies the arm set
+  ## rather than the emitter trusting it. An arm set WITH a wildcard cannot
+  ## be `final` (D rejects a default there), so those emit a plain switch.
+  if e.subject == nil: return dUnsupported("decision table (T24)")
+  let kw = if hasWildArm(e): "switch" else: "final switch"
+  result = ctx.indD & kw & " (" & ctx.genDExpr(e.subject) & ") {\n"
+  for arm in e.arms:
+    result.add(ctx.genDMatchArm(arm))
+  result.add(ctx.indD & "}")
+
+proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
+  ## A match in VALUE position. D has no switch-expression, so the arms go
+  ## into an immediately-called lambda — which, unlike Odin's chained
+  ## ternary, keeps the exhaustiveness check and reads as the same table the
+  ## statement form does.
+  if e.subject == nil: return dUnsupported("decision table in value position")
+  let kw = if hasWildArm(e): "switch" else: "final switch"
+  let saved = ctx.indent
+  ctx.indent = 1
+  var arms = ""
+  for arm in e.arms:
+    if arm.guard != nil:
+      ctx.indent = saved
+      return dUnsupported("a guarded match arm (M4b)")
+    let label = ctx.dPatternStr(arm.pattern)
+    let head = if arm.pattern != nil and arm.pattern.kind == pkWild:
+                 ctx.indD & "default: "
+               else: ctx.indD & "case " & label & ": "
+    arms.add(head & "return " & ctx.genDExpr(arm.body) & ";\n")
+  ctx.indent = saved
+  "(() { " & kw & " (" & ctx.genDExpr(e.subject) & ") {\n" & arms &
+    ctx.indD & "} })()"
+
 proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep,
                    baseStr: string): string =
   ## One `..` step: a mutator call reassigned into the base var, or a plain
@@ -709,7 +792,8 @@ proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   of exkUnary: ctx.genDUnary(e)
   of exkBlock: ctx.genDBlock(e)
   of exkIf: ctx.genDIf(e)
-  of exkMatch: dUnsupported("match")
+  of exkMatch:
+    if matchArmsReturn(e): ctx.genDMatchStmt(e) else: ctx.genDMatchExpr(e)
   of exkFor: ctx.genDFor(e)
   of exkWhile: ctx.genDWhile(e)
   of exkBreak: "break"

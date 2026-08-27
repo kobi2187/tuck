@@ -195,4 +195,55 @@ fn main() -> int:
            r"long\[\] b = \(a\)\.dup;"
   t.runsD "M3: writing b never writes a (7+7+50)", 64, dmdExe
 
+  # --- Milestone 4: sum types and match ----------------------------------
+  # T18/T19, scoped to PAYLOAD-FREE sums: payload-carrying ones do not work
+  # end to end in the Nim or Odin backends either (ledger DISCOVERIES), so
+  # the authority has to be fixed before a third backend can follow it.
+  t.src """
+type Color:
+  | Red
+  | Green
+  | Blue
+
+fn rank({c: Color}) -> int:
+  match c:
+    Red: return 1
+    Green: return 2
+    Blue: return 3
+
+fn main() -> int:
+  let x = Color.Green
+  let y = Color.Blue
+  return ({c: x} rank) * 10 + ({c: y} rank)
+"""
+  t.emitsD "M4: a payload-free sum is a plain D enum",
+           r"enum tuck_Color \{ Red, Green, Blue \}"
+  t.emitsD "M4: match is a final switch — D re-checks the arms are exhaustive",
+           r"final switch \(c\) \{"
+  t.emitsD "M4: a bare tag qualifies to its enum, which D requires",
+           r"case tuck_Color\.Red:"
+  t.runsD "M4: match dispatches to the right arm (2*10+3)", 23, dmdExe
+
+  # A match in VALUE position: D has no switch-expression, so the arms go
+  # into an immediately-called lambda — which keeps the exhaustiveness check
+  # that Odin's chained-ternary lowering loses.
+  t.src """
+type Color:
+  | Red
+  | Green
+  | Blue
+
+fn main() -> int:
+  let c = Color.Green
+  let code = match c:
+    Red: 1
+    Green: 2
+    Blue: 3
+  return code
+"""
+  t.emitsD "M4: value-position match keeps the exhaustive switch in a lambda",
+           r"\(\(\) \{ final switch \(c\) \{"
+  t.omitsD "M4: no chained ternary for a value match", r"\? 1 :"
+  t.runsD "M4: value-position match yields the arm's value", 2, dmdExe
+
   t.finish()

@@ -95,9 +95,18 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
   - [ ] M3 records & calls: T11 TRec hoisting, T12 payload explosion+qualified,
         T13 chains, T14 alias/merge, T15 pending stubs, T16 objects/self,
         T17 slice-aliasing audit
-  - [ ] M4 sums & errors: T18 sum types, T19 match/final switch, T20 TuckResult,
-        T21 error policy, T22 invariants (version(tuckNoInvariants)),
-        T23 interfaces, T24 decision tables+saturating+const+static assert
+  - [x] T18/T19 sum types + match: payload-free sums are plain D enums,
+        match is `final switch` (D re-checks exhaustiveness — the guarantee
+        Tuck makes), value-position match is an immediately-called lambda
+        keeping that check. Bare tags qualify to their enum. Example 39
+        run-identical. PAYLOAD sums deferred: broken in Nim AND Odin too
+        (see DISCOVERIES) — fix the authority first, in one pass for all
+        three backends.
+  - [ ] M4 rest: T20 TuckResult, T21 error policy,
+        T22 invariants (version(tuckNoInvariants)), T23 interfaces,
+        T24 decision tables+saturating+const+static assert
+  - [ ] Sweep status (44 examples): 13 compile clean, 22 die naming their
+        own task, 9 dmd-fail (5 are FFI = T26). Re-run after each task.
   - [ ] M5 modules & extern: T25 mod_*.d, T26 extern flavours, T27 emit_examples
   - [ ] M6 tests: T28 harness+d_backend suite, T29 example sweep
   - [ ] M7 concurrency (Fiber) — own plan when reached
@@ -162,3 +171,16 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
   `return ((s == Kind.Dot) ? return 0 : ...)`, which is not valid Odin.
   Found probing sum types for M4. The Nim backend emits a proper `case`
   for the same source. D follows Nim's shape (final switch), not this.
+- BUG (both existing backends, pre-existing): **payload-carrying sum types
+  do not work end to end.** `type Shape: | Dot | Line({length: int})` with
+  `match s: Line: return s.length` typechecks, then:
+  * Nim backend emits `case s` (not `case s.kind`) → "selector must be of
+    an ordinal type"; payload reads emit `s.length`, but the declared
+    layout is `s.line.length`; and construction drops the payload
+    entirely (`tuck_Shape(kind: Line)` for `Shape.Line {length: 5}`).
+  * Odin backend emits the invalid ternary-with-return above.
+  Payload-FREE sums are fine in both (probe: exit 23). So M4's T18/T19
+  scope to payload-free sums + match; payload sums need the AUTHORITY
+  fixed first — a language-level gap, not a D one. Worth its own task
+  after the backend, since fixing it in three backends at once is the
+  cheapest moment.
