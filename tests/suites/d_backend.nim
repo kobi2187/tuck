@@ -130,4 +130,69 @@ fn main() -> int:
   t.omitsD "M2: nothing reaches for a runtime concat helper", "tuckConcat"
   t.runsD "M2: strings, loop and lists compute 38", 38, dmdExe
 
+  # --- Milestone 3: records, calls, objects, aliasing --------------------
+  # T11/T15: record shapes hoist as named TRec structs; pending stubs are
+  # function templates returning the zero value.
+  t.src """
+pending:
+  fn fetch({url: str}) -> {hits: int, title: str}
+
+fn main() -> int:
+  let page = {url: "x"} fetch
+  return page.hits
+"""
+  t.emitsD "M3: record shape hoists as a named TRec struct",
+           r"struct TRec_hits_title_[0-9A-F]{4} \{"
+  t.emitsD "M3: pending stub is a function template",
+           r"tuck_fetch\(T\)\(T payload\) \{"
+  t.emitsD "M3: pending stub logs to stderr like the Nim backend",
+           r"stderr\.writeln\(""TUCK PENDING: tuck_fetch invoked"
+  t.emitsD "M3: pending stub returns the zero value",
+           r"return typeof\(return\)\.init;"
+  t.runsD "M3: pending walking skeleton runs and returns the stub zero",
+          0, dmdExe
+
+  # T16: object member fns are qualified free procs; `self` is a D ref —
+  # the mutation must reach the caller's var (1 then 2, not 1 then 1).
+  t.src """
+object Counter:
+  total: int
+  step: int
+
+  fn bump({self: Counter}) -> int:
+    self ..total {self.total + self.step}
+    return self.total
+
+fn main() -> int:
+  var c = {total: 0, step: 3} Counter
+  let r1 = {self: c} bump
+  let r2 = {self: c} bump
+  return c.total + r2 - r1
+"""
+  t.emitsD "M3: object emits a plain struct",
+           r"struct tuck_Counter \{"
+  t.emitsD "M3: member fn is a qualified free proc with ref self",
+           r"long tuck_Counter_bump\(ref tuck_Counter self\)"
+  t.emitsD "M3: record construction is a named-argument struct literal",
+           r"tuck_Counter\(total: 0, step: 3\)"
+  t.runsD "M3: self mutation persists across calls (6+6-3)", 9, dmdExe
+
+  # T17: Tuck Seq assignment copies; a bare D slice assignment would alias.
+  t.src """
+import seq
+
+fn firstOf({items: Seq[int]}) -> int:
+  return items[0]
+
+fn main() -> int:
+  var a = [7, 8, 9]
+  var b = a
+  b[0] = 50
+  let x = a firstOf
+  return x + a[0] + b[0]
+"""
+  t.emitsD "M3: Seq assignment restores value semantics with .dup",
+           r"long\[\] b = \(a\)\.dup;"
+  t.runsD "M3: writing b never writes a (7+7+50)", 64, dmdExe
+
   t.finish()

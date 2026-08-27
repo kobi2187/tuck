@@ -60,9 +60,16 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
         vEmitD verb + emitsD/omitsD/needD/findDmd, --quick includes D
         emission, tests/suites/d_backend.nim (17 assertions incl. dmd
         build+run via needCmdAfter chain). Grow it per milestone.
-- Now: [→] M3 records & calls: T11 TRec hoisting, T12 payload explosion+
-        qualified, T13 chains, T14 alias/merge, T15 pending stubs,
-        T16 objects/self, T17 slice-aliasing audit
+  - [x] M3 records & calls (T11-T17): TRec hoisting (same FNV hash naming
+        as Odin), named-arg struct literals, payload/record-var explosion,
+        combinators (bake/alias/merge ports), chains (.. steps as
+        statements), pending stubs (fn templates, stderr like Nim), objects
+        (struct + Obj_member free procs, ref self — probe: 9), imported
+        type qualification, input payload rebuild, generic extern
+        forwarders (templates), bracket at/setAt via resolved calls,
+        Seq .dup on assignment (aliasing probe: 64 both). Examples 01, 02,
+        07, 18, 41 run-identical to Nim backend; 17 compiles (specimen).
+        Suite now 28 assertions. Invariant-carrying paths die loudly (M4).
 - Remaining:
   - [ ] M3 records & calls: T11 TRec hoisting, T12 payload explosion+qualified,
         T13 chains, T14 alias/merge, T15 pending stubs, T16 objects/self,
@@ -111,3 +118,21 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
   Gradual typing reads both names as Unknown. Same §0 trap family as
   FRICTIONS #1's fnsig workaround. Not fixed here (recorded per user
   instruction: record bugs midway, go on).
+- BUG (Nim backend, pre-existing): a value-returning call as a bare
+  statement emits an un-discarded Nim call — `{self: c} bump` alone on a
+  line dies in the Nim backend with "expression 'bump(c)' is of type 'int'
+  and has to be used (or discarded)". Needs a `discard ` prefix on
+  dropped-result statements (Odin already has genDroppedResult plumbing).
+- BUG (checker, pre-existing): `items[0] = 0` where items is a PARAM
+  typechecks — bracket assignment bypasses the TK-TY15 write-through-param
+  rule — then dies in the Nim backend (`setAt` wants var). The checker
+  should reject at the bracket-assign site.
+- D slices alias on assignment where Tuck/Nim seqs copy — verified
+  divergent (b[0]=50 wrote a[0] before the fix). Emitter now .dups every
+  Seq-typed assignment except fresh list literals. KNOWN GAP: a record
+  containing a Seq field still shallow-copies the slice on struct assign;
+  needs a probe + per-field dup (or a postblit) when records-with-seqs
+  actually appear.
+- D function templates instantiate per call site, so pending stubs and
+  generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
+  boxing, same monomorphization story.

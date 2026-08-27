@@ -19,6 +19,8 @@ import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+import lowering                # getFieldsForType
+from codegen_odin_util import odinErrCode  # shared record-shape hash
 from mangle import mangleName
 
 type
@@ -32,6 +34,7 @@ type
     realModules: Table[string, Module]
     moduleName: string
     tmpCounter: int
+    currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
 
 proc dUnsupported(construct: string): string =
   ## The D backend refuses what it cannot yet emit — loudly, at emission
@@ -51,13 +54,28 @@ const dPrims = {
   "bool": "bool", "str": "string", "void": "void", "unit": "void",
 }.toTable
 
+proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef]): string
+
+proc importedTypeQualifierD(ctx: DCodegenCtx, name: string): string =
+  ## A type declared in an IMPORTED module lives in that module's D file, so
+  ## it must be referenced through the import alias (`time.tuck_Milliseconds`)
+  ## — D, like Odin, never merges module scopes. Port of the Odin helper.
+  for d in ctx.module.decls:
+    if d == nil or d.kind != dkType or d.name != name: continue
+    if not d.span.file.startsWith(ImportedTypeMarker & ":"): break
+    let origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
+    let pkg = origin.replace("-", "_")
+    if pkg != ctx.moduleName.replace("-", "_"): return pkg & "." & name
+    break
+  name
+
 proc dType(ctx: var DCodegenCtx, t: Type): string =
   if t == nil: return "void"
   case t.kind
   of tkNamed:
     if t.name in dPrims: dPrims[t.name]
     elif t.name == UnknownName or t.name == PendingName: "void"
-    else: t.name
+    else: ctx.importedTypeQualifierD(t.name)
   of tkApp:
     # Seq[T] is a native D dynamic array — same value-semantics contract as
     # the Nim backend's seq[T] (assignment copies; D slices alias, which the
@@ -71,11 +89,36 @@ proc dType(ctx: var DCodegenCtx, t: Type): string =
       dUnsupported("type application " & baseName & "[...]")
   of tkTuple: dUnsupported("tuple type")
   of tkFunc: dUnsupported("fn-typed value (fnsig)")
-  of tkRecord: dUnsupported("anonymous record type in this position")
+  of tkRecord: ctx.recStructNameD(t.fields)
   of tkSum: dUnsupported("inline sum type")
   of tkUnion: dUnsupported("union type")
   of tkEffect: ctx.dType(t.inner)   # [io] etc. — no type-level footprint yet
   of tkRename: ctx.dType(t.underlying)
+
+proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef]): string =
+  ## An anonymous record shape gets one hoisted named struct per distinct
+  ## field-name+type signature — same TRec_<fields>_<hash> naming as the
+  ## Odin backend (same FNV fold), so the two outputs read alike.
+  var sigParts: seq[string]
+  var typeStrs: seq[string]
+  for f in fields:
+    let ts = ctx.dType(f.typ)
+    typeStrs.add(ts)
+    sigParts.add(f.name & ":" & ts)
+  let sig = sigParts.join(",")
+  if sig in ctx.recShapes:
+    return ctx.recShapes[sig]
+  var nameParts: seq[string]
+  for f in fields: nameParts.add(f.name)
+  let name = "TRec_" & ctx.modPrefix & nameParts.join("_") & "_" &
+             toHex(odinErrCode(sig))
+  ctx.recShapes[sig] = name
+  var res = "struct " & name & " {\n"
+  for i, f in fields:
+    res.add("    " & typeStrs[i] & " " & f.name & ";\n")
+  res.add("}")
+  ctx.hoisted.add(res)
+  name
 
 # ---------------------------------------------------------- expressions --
 
@@ -106,6 +149,82 @@ proc genDLit(e: Expr): string =
   of lkStr: "\"" & e.litValue & "\""
   of lkInt, lkFloat, lkBool: e.litValue
   of lkUnit: ""
+
+proc hasUnknownTypeD(t: Type): bool =
+  if t == nil: return true
+  case t.kind
+  of tkNamed: t.name == UnknownName
+  of tkApp:
+    if hasUnknownTypeD(t.base): return true
+    for a in t.args:
+      if hasUnknownTypeD(a): return true
+    false
+  of tkRecord:
+    for f in t.fields:
+      if hasUnknownTypeD(f.typ): return true
+    false
+  of tkTuple:
+    for el in t.elems:
+      if hasUnknownTypeD(el): return true
+    false
+  else: false
+
+proc inferLitTypeD(e: Expr): Type =
+  ## Best-effort inference for sketch-mode literals — mirror of the Odin
+  ## backend's inferLitType.
+  if e != nil and semLayer.typeFor(e) != nil and
+     not hasUnknownTypeD(semLayer.typeFor(e)): return semLayer.typeFor(e)
+  if e != nil and e.kind == exkLit:
+    case e.litKind
+    of lkStr: return Type(kind: tkNamed, name: "str")
+    of lkBool: return Type(kind: tkNamed, name: "bool")
+    of lkFloat: return Type(kind: tkNamed, name: "float")
+    else: return Type(kind: tkNamed, name: "int")
+  return nil
+
+const dWideTypes = ["long", "double", "string", "bool", "void", "auto"]
+
+proc recCtorFromLiteralD(ctx: var DCodegenCtx, declFields: seq[FieldDef],
+                         litFields: seq[FieldInit]): string =
+  ## Named-argument struct literal — D's native `T(a: 1, b: 2)` (2.103+).
+  ## A field the literal omits stays .init, same zero-value story as Odin.
+  ## Narrow numeric fields cast explicitly: D's implicit conversions stop at
+  ## VRP over literals, and a long variable into a short field is an error.
+  let structName = ctx.recStructNameD(declFields)
+  var parts: seq[string]
+  for fd in declFields:
+    for f in litFields:
+      if f.name == fd.name:
+        let fieldD = ctx.dType(fd.typ)
+        let ex = ctx.genDExpr(f.value)
+        if fieldD notin dWideTypes and
+           (fieldD.startsWith("u") or fieldD.startsWith("i") or
+            fieldD in ["byte", "short", "float"]):
+          parts.add(fd.name & ": cast(" & fieldD & ")(" & ex & ")")
+        else:
+          parts.add(fd.name & ": " & ex)
+        break
+  structName & "(" & parts.join(", ") & ")"
+
+proc genDStructLit(ctx: var DCodegenCtx, e: Expr): string =
+  ## A struct literal outside call/return payload positions: land it on the
+  ## checker-stamped record shape, or hoist one inferred from the literal.
+  var declFields: seq[FieldDef]
+  if semLayer.typeFor(e) != nil:
+    declFields = getFieldsForType(ctx.module, semLayer.typeFor(e))
+  var allKnown = declFields.len > 0
+  for f in declFields:
+    if hasUnknownTypeD(f.typ): allKnown = false
+  if allKnown:
+    return ctx.recCtorFromLiteralD(declFields, e.fields)
+  var inferred: seq[FieldDef]
+  for f in e.fields:
+    var ft = inferLitTypeD(f.value)
+    if ft == nil:
+      return dUnsupported("struct literal with an uninferable field '" &
+                          f.name & "'")
+    inferred.add(FieldDef(name: f.name, typ: ft, span: e.span))
+  ctx.recCtorFromLiteralD(inferred, e.fields)
 
 proc expectedParamNamesD(ctx: var DCodegenCtx, e: Expr,
                          calleeStr: string): seq[string] =
@@ -147,6 +266,114 @@ proc genDCallArgs(ctx: var DCodegenCtx, e: Expr,
     return ctx.genDPayloadArgs(e, calleeStr)
   for a in e.args: result.add(ctx.genDExpr(a))
 
+proc explodeRecordArgD(ctx: var DCodegenCtx, e: Expr,
+                       calleeStr: string): string =
+  ## A record-typed VAR as the whole payload (`p advance`) explodes to the
+  ## fn's params by field, replaying the checker's mapping. Mirror of the
+  ## Odin backend's explodeRecordArg.
+  if e.args.len != 1 or e.args[0].kind != exkVar: return ""
+  let params = if semLayer.callParamsFor(e).len > 0: semLayer.callParamsFor(e)
+               else: lookupFnParams(ctx.module, calleeStr)
+  if params.len == 0: return ""
+  let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
+  if fields.len == 0: return ""
+  let resolved = semLayer.argFieldsFor(e)
+  var parts: seq[string]
+  for i, paramName in params:
+    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                    else: paramName
+    if fieldName notin fields: return ""
+    parts.add(ctx.genDExpr(e.args[0]) & "." & fieldName)
+  calleeStr & "(" & parts.join(", ") & ")"
+
+proc isRecordConstructionD(ctx: DCodegenCtx, e: Expr): bool =
+  e.args.len == 1 and e.args[0].kind == exkStruct and
+    e.callee != nil and e.callee.kind == exkVar and
+    isRecordType(ctx.module, e.callee.name)
+
+proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
+  ## `{fields} TypeName` — a named-argument struct literal of the DECLARED
+  ## type. Invariant-carrying types wait for M4's validate machinery: refuse
+  ## rather than construct without the check the Nim backend inserts.
+  if hasInvariants(ctx.module, e.callee.name):
+    return dUnsupported("constructing invariant-carrying type " &
+                        e.callee.name & " (M4)")
+  var parts: seq[string]
+  for f in e.args[0].fields:
+    parts.add(f.name & ": " & ctx.genDExpr(f.value))
+  e.callee.name & "(" & parts.join(", ") & ")"
+
+proc genDBake(ctx: var DCodegenCtx, e: Expr): string =
+  ## expr bake {slot: value, ...} — rebuild the record with slots overridden
+  ## (adding fields grows the shape). Port of genOdinBake.
+  if e.args[0].kind != exkVar: return ""
+  let recv = ctx.genDExpr(e.args[0])
+  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
+  if recvFields.len == 0: return ""
+  var declFields: seq[FieldDef]
+  for f in getFieldsForType(ctx.module, semLayer.typeFor(e.args[0])):
+    declFields.add(f)
+  var parts: seq[string]
+  for fname in recvFields:
+    var overridden = ""
+    for (name, valExpr) in e.args[1].fields.items:
+      if name == fname: overridden = ctx.genDExpr(valExpr)
+    parts.add(fname & ": " & (if overridden != "": overridden
+                              else: recv & "." & fname))
+  for (name, valExpr) in e.args[1].fields.items:
+    if name notin recvFields:
+      parts.add(name & ": " & ctx.genDExpr(valExpr))
+      var ft = inferLitTypeD(valExpr)
+      if ft == nil: ft = Type(kind: tkNamed, name: UnknownName, span: e.span)
+      declFields.add(FieldDef(name: name, typ: ft, span: e.span))
+  if parts.len == 0: return recv
+  ctx.recStructNameD(declFields) & "(" & parts.join(", ") & ")"
+
+proc genDAlias(ctx: var DCodegenCtx, e: Expr): string =
+  ## expr alias(old: new, ...) — rebuild as the renamed record shape.
+  if e.args[0].kind != exkVar or semLayer.typeFor(e.args[0]) == nil: return ""
+  let recvFields = getFieldsForType(ctx.module, semLayer.typeFor(e.args[0]))
+  if recvFields.len == 0: return ""
+  var newFields: seq[FieldDef]
+  var vals: seq[string]
+  let recv = ctx.genDExpr(e.args[0])
+  for (oldName, newExpr) in e.args[1].fields.items:
+    var ft: Type = nil
+    for rf in recvFields:
+      if rf.name == oldName: ft = rf.typ
+    if ft == nil or newExpr == nil or newExpr.kind != exkVar: return ""
+    newFields.add(FieldDef(name: newExpr.name, typ: ft, span: e.span))
+    vals.add(newExpr.name & ": " & recv & "." & oldName)
+  ctx.recStructNameD(newFields) & "(" & vals.join(", ") & ")"
+
+proc genDMerge(ctx: var DCodegenCtx, e: Expr): string =
+  ## {a, b} merge — flatten the records into one union shape.
+  var newFields: seq[FieldDef]
+  var vals: seq[string]
+  for (mname, mexpr) in e.args[0].fields.items:
+    if mexpr.kind != exkVar or semLayer.typeFor(mexpr) == nil: return ""
+    let recv = ctx.genDExpr(mexpr)
+    for f in getFieldsForType(ctx.module, semLayer.typeFor(mexpr)):
+      newFields.add(f)
+      vals.add(f.name & ": " & recv & "." & f.name)
+  if newFields.len == 0: return ""
+  ctx.recStructNameD(newFields) & "(" & vals.join(", ") & ")"
+
+proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
+                       calleeStr: string): string =
+  ## The compile-time combinators; any that declines returns "" and the call
+  ## proceeds as a plain one. Same order as the Odin backend.
+  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    return ctx.genDBake(e)
+  if ctx.isRecordConstructionD(e): return ctx.genDRecordCtor(e)
+  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
+    return ctx.genDAlias(e)
+  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
+    return ctx.genDMerge(e)
+  if calleeStr notin ["bake", "alias"]:
+    return ctx.explodeRecordArgD(e, calleeStr)
+  ""
+
 proc resolveDCallee(ctx: var DCodegenCtx, e: Expr): string =
   ## A bare-name callee (exkVar) resolves like an unqualified exkQualified:
   ## local declarations win, then the imports — D has no scope merge to do
@@ -158,8 +385,48 @@ proc resolveDCallee(ctx: var DCodegenCtx, e: Expr): string =
         return name.replace("-", "_") & "." & e.callee.name
   ctx.genDExpr(e.callee)
 
+proc memberProcNameD(objName, memberName: string): string =
+  ## Object members emit qualified (`Counter_bump`). D could overload the
+  ## bare name like Nim does, but the qualified spelling keeps the three
+  ## backends' output diffable and is what interface dispatch keys on.
+  objName & "_" & memberName
+
+proc memberOwnerD(ctx: DCodegenCtx, recvT: Type): string =
+  if recvT == nil or recvT.kind != tkNamed: return ""
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkObject and d.name == recvT.name: return d.name
+  ""
+
+proc memberRecvType(e: Expr): Type =
+  ## The receiver's type: args[0] itself (the checker's rewrite), or the
+  ## `self` field of a payload literal (`{self: c} bump`).
+  result = semLayer.typeFor(e.args[0])
+  if e.args[0].kind == exkStruct:
+    for f in e.args[0].fields:
+      if f.name == "self": result = semLayer.typeFor(f.value)
+
+proc ownerDeclares(ctx: DCodegenCtx, owner, fnName: string): bool =
+  for d in ctx.module.decls:
+    if d == nil or d.kind != dkObject or d.name != owner: continue
+    for mem in d.objMembers:
+      if mem != nil and mem.kind == dkFn and mem.name == fnName:
+        return true
+  false
+
+proc memberCalleeNameD(ctx: DCodegenCtx, e: Expr): string =
+  ## A member call: derive the qualified name from the receiver's type —
+  ## port of the Odin backend's memberCalleeName.
+  if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
+  let owner = ctx.memberOwnerD(memberRecvType(e))
+  if owner == "" or not ctx.ownerDeclares(owner, e.callee.name): return ""
+  memberProcNameD(owner, e.callee.name)
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
-  let calleeStr = ctx.resolveDCallee(e)
+  var calleeStr = ctx.resolveDCallee(e)
+  let member = ctx.memberCalleeNameD(e)
+  if member != "": calleeStr = member
+  let combinator = ctx.asCombinatorCallD(e, calleeStr)
+  if combinator != "": return combinator
   let args = ctx.genDCallArgs(e, calleeStr)
   if calleeStr == "echo":
     # `echo` is the builtin debug print; writeln is D's identical construct.
@@ -226,9 +493,12 @@ proc isLenOnSized(ctx: var DCodegenCtx, e: Expr): bool =
     rt.base.name == "Seq"
 
 proc genDField(ctx: var DCodegenCtx, e: Expr): string =
-  ## A `.name` access: a resolved call, the len property, or a plain read.
-  ## (Interface dispatch, actor fields, status tests arrive with their
-  ## milestones — the types involved cannot reach here yet.)
+  ## A `.name` access: a resolved call, the len property, an input param, or
+  ## a plain read. (Interface dispatch, actor fields, status tests arrive
+  ## with their milestones — the types involved cannot reach here yet.)
+  if e.receiver != nil and e.receiver.kind == exkVar and
+     e.receiver.name == "input" and ctx.currentParams.len > 0:
+    return e.fieldName   # `input.x` IS the param x
   if ctx.isLenOnSized(e):
     # cast: D's .length is size_t (unsigned); Tuck's len is a signed int.
     # Unsigned would poison later arithmetic (n - bigger wraps, comparisons
@@ -238,11 +508,19 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.genDExpr(semLayer.call(e))
   ctx.genDExpr(e.receiver) & "." & e.fieldName
 
+proc genDInputPayload(ctx: var DCodegenCtx): string =
+  ## `input` — the whole incoming payload, rebuilt as its record shape.
+  var vals: seq[string]
+  for p in ctx.currentParams: vals.add(p.name & ": " & p.name)
+  ctx.recStructNameD(ctx.currentParams) & "(" & vals.join(", ") & ")"
+
 proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
-  ## A bare name: a checker-stamped call, a pending hole, or a variable.
-  ## (input / self / enum tags arrive with their milestones.)
+  ## A bare name: a checker-stamped call, a pending hole, the whole incoming
+  ## payload, or a variable. (self / enum tags arrive with their milestones.)
   if semLayer.hasCall(e): return ctx.genDExpr(semLayer.call(e))
   if e.name == "...": return ""   # pending hole: compiles, does nothing
+  if e.name == "input" and ctx.currentParams.len > 0:
+    return ctx.genDInputPayload()
   e.name
 
 proc dDeclType(ctx: var DCodegenCtx, t: Type): string =
@@ -265,6 +543,22 @@ proc dDeclType(ctx: var DCodegenCtx, t: Type): string =
   of tkEffect: ctx.dDeclType(t.inner)
   of tkRename: ctx.dDeclType(t.underlying)
 
+proc isSeqTyped(t: Type): bool =
+  t != nil and t.kind == tkApp and t.base != nil and
+    t.base.kind == tkNamed and t.base.name == "Seq"
+
+proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
+  ## Tuck Seq assignment COPIES (Nim seq value semantics); a D slice
+  ## assignment ALIASES — `b = a; b[0] = 50` would write a[0] too, verified
+  ## divergent. `.dup` restores the copy. A fresh list literal owns its
+  ## storage and skips it; everything else (vars, fields, calls — a call
+  ## may return its own argument) pays the copy.
+  ## ponytail: unconditional dup beyond literals; revisit with the M7 perf
+  ## pass if a benchmark ever cares.
+  if e == nil or e.kind == exkList: return valStr
+  if isSeqTyped(semLayer.typeFor(e)): return "(" & valStr & ").dup"
+  valStr
+
 proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## First assignment to a name declares it, with the CHECKER'S type stated
   ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
@@ -272,7 +566,7 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## wraps in one backend and not the other. Verified with dmd; hidden
   ## Nim-ism #2. `auto` remains only for types the backend cannot state yet
   ## (sketch-mode Unknown included, where no arithmetic contract exists).
-  let valStr = ctx.genDExpr(e.assignVal)
+  let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
     var declT = ctx.dDeclType(semLayer.typeFor(e.target))
@@ -285,14 +579,15 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
 
 proc ownsLayoutD(s: Expr): bool =
   ## Constructs that emit their own indentation, braces and newlines.
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkChain}
 
 proc genDStmt(ctx: var DCodegenCtx, s: Expr): string =
   ## One statement inside a block: indent + expression + `;`, except the
   ## constructs that lay themselves out.
   if s != nil and ownsLayoutD(s):
     let code = ctx.genDExpr(s)
-    return if code == "": "" else: code & "\n"
+    if code == "": return ""
+    return if code.endsWith("\n"): code else: code & "\n"
   let code = ctx.genDExpr(s)
   if code == "": return ""
   ctx.indD & code & ";\n"
@@ -363,6 +658,29 @@ proc genDList(ctx: var DCodegenCtx, e: Expr): string =
   for item in e.items: parts.add(ctx.genDExpr(item))
   "[" & parts.join(", ") & "]"
 
+proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep,
+                   baseStr: string): string =
+  ## One `..` step: a mutator call reassigned into the base var, or a plain
+  ## field set. The checker resolved which; replay it.
+  if semLayer.stepCall(step) != nil:
+    return ctx.indD & baseStr & " = " &
+           ctx.genDCall(semLayer.stepCall(step)) & ";\n"
+  let valStr = if isSingleFieldPayload(step.arg):
+                 ctx.genDExpr(soleFieldValue(step.arg))
+               else: ""
+  ctx.indD & baseStr & "." & step.target.name & " = " & valStr & ";\n"
+
+proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
+  ## `x ..field {v} ..mutate {a}` — one plain statement per step.
+  ## (Invariant re-validation after the chain arrives with M4.)
+  let baseStr = ctx.genDExpr(e.base)
+  if e.base != nil:
+    let bt = semLayer.typeFor(e.base)
+    if bt != nil and bt.kind == tkNamed and hasInvariants(ctx.module, bt.name):
+      return dUnsupported("chain over invariant-carrying " & bt.name & " (M4)")
+  for step in e.steps:
+    result.add(ctx.genDChainStep(step, baseStr))
+
 proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   if e == nil: return ""
   case e.kind
@@ -370,12 +688,14 @@ proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   of exkVar: ctx.genDVarName(e)
   of exkField: ctx.genDField(e)
   of exkQualified: ctx.genDQualified(e)
-  of exkStruct: dUnsupported("struct literal outside a call payload")
+  of exkStruct: ctx.genDStructLit(e)
   of exkList: ctx.genDList(e)
-  of exkBracket: dUnsupported("bracket indexing")
-  of exkBracketAssign: dUnsupported("bracket assignment")
+  of exkBracket, exkBracketAssign:
+    # Indexing resolved to an at()/setAt() call by the checker; a type
+    # application never reaches codegen (mirrors both other backends).
+    if semLayer.hasCall(e): ctx.genDExpr(semLayer.call(e)) else: ""
   of exkCall: ctx.genDCall(e)
-  of exkChain: dUnsupported("call chain")
+  of exkChain: ctx.genDChain(e)
   of exkBinary: ctx.genDBinary(e)
   of exkUnary: ctx.genDUnary(e)
   of exkBlock: ctx.genDBlock(e)
@@ -394,10 +714,18 @@ proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
 
 # --------------------------------------------------------- declarations --
 
-proc genDParams(ctx: var DCodegenCtx, params: seq[Param]): string =
+proc genDParams(ctx: var DCodegenCtx, params: seq[Param],
+                refSelf = false): string =
+  ## `refSelf`: inside an object member, `self` is D's `ref` — the identical
+  ## construct to the `self: var T` the Nim backend emits (verified: two
+  ## bumps on one var really accumulate there, so the mutation must reach
+  ## the caller's value).
   var parts: seq[string]
   for p in params:
-    parts.add(ctx.dType(p.typ) & " " & p.name)
+    if refSelf and p.name == "self":
+      parts.add("ref " & ctx.dType(p.typ) & " " & p.name)
+    else:
+      parts.add(ctx.dType(p.typ) & " " & p.name)
   parts.join(", ")
 
 proc genDStmtOrBlock(ctx: var DCodegenCtx, body: Expr): string =
@@ -405,17 +733,63 @@ proc genDStmtOrBlock(ctx: var DCodegenCtx, body: Expr): string =
   if body.kind == exkBlock: ctx.genDBlock(body)
   else: ctx.genDStmt(body)
 
-proc genDFnDecl(ctx: var DCodegenCtx, d: Decl): string =
+proc injectTailReturnD(body: Expr, retTypeStr: string) =
+  ## Implicit return: the value flowing at the end of a fn body is its
+  ## result. Port of the Odin backend's injectTailReturn — this mutation is
+  ## exactly why each backend lowers its OWN deepCopy of the tree.
+  if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
+     retTypeStr != "void":
+    let lastS = body.stmts[^1]
+    if lastS.kind == exkChain:
+      if lastS.base != nil:
+        body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
+                            returnVal: lastS.base))
+    elif lastS.kind == exkMatch and lastS.subject != nil:
+      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
+    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
+                           exkWhile, exkBreak, exkContinue, exkAssign,
+                           exkBlock} and
+         not (lastS.kind == exkVar and lastS.name == "..."):
+      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
+
+proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
+                refSelf = false): string =
   if d.fnGenerics.len > 0: return dUnsupported("generic fn " & d.name)
   if d.isDecision: return dUnsupported("decision table " & d.name)
+  let fnName = if nameOverride != "": nameOverride else: d.name
   let retStr = ctx.dType(d.fnReturnType)
-  result = retStr & " " & d.name & "(" & ctx.genDParams(d.fnParams) & ") {\n"
+  injectTailReturnD(d.fnBody, retStr)
+  result = retStr & " " & fnName & "(" &
+           ctx.genDParams(d.fnParams, refSelf) & ") {\n"
   ctx.indent = 1
   ctx.definedVars.clear()
-  for p in d.fnParams: ctx.definedVars.incl(p.name)
+  ctx.currentParams = @[]
+  for p in d.fnParams:
+    ctx.definedVars.incl(p.name)
+    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
   result.add(ctx.genDStmtOrBlock(d.fnBody))
   ctx.indent = 0
+  ctx.currentParams = @[]
   result.add("}\n")
+
+proc genDObjectDecl(ctx: var DCodegenCtx, d: Decl): string =
+  ## `object` — a plain D struct plus its member fns as qualified free
+  ## procs. Composition (+Mixin) and satisfies arrive with M4's interface
+  ## work; invariants with M4's validate machinery.
+  if hasInvariants(ctx.module, d.name):
+    return dUnsupported("object " & d.name & " with invariants (M4)")
+  result = "struct " & d.name & " {\n"
+  for f in d.objFields:
+    result.add("    " & ctx.dType(f.typ) & " " & f.name & ";\n")
+  result.add("}\n\n")
+  for mem in d.objMembers:
+    if mem == nil: continue
+    if mem.kind == dkFn:
+      result.add(ctx.genDFnDecl(mem, memberProcNameD(d.name, mem.name),
+                                refSelf = true) & "\n")
+    elif isCompositionEntry(mem):
+      return dUnsupported("object composition (+Type) in " & d.name)
+    # `satisfies I` entries are conformance metadata, no code of their own
 
 proc dExternTodo(mem: Decl): string =
   ## Why this extern cannot emit a forwarder yet, or "" when it can. A TODO
@@ -442,7 +816,12 @@ proc genDExternFwd(ctx: var DCodegenCtx, mem: Decl): string =
   if todo != "": return todo
   let ret = mem.fnReturnType
   let emitName = if mem.externEmit != "": mem.externEmit else: mem.name
-  result = ctx.dType(ret) & " " & mem.name & "(" &
+  # A generic extern (`fn toStr[T]`) forwards as a D function template —
+  # the same construct the runtime's own toStr(T)(T) already is.
+  let tmplParams = if mem.fnGenerics.len > 0:
+                     "(" & mem.fnGenerics.join(", ") & ")"
+                   else: ""
+  result = ctx.dType(ret) & " " & mem.name & tmplParams & "(" &
            ctx.genDParams(mem.fnParams) & ") {\n"
   var args: seq[string]
   for p in mem.fnParams: args.add(p.name)
@@ -465,7 +844,41 @@ proc genDTypeDecl(ctx: var DCodegenCtx, d: Decl): string =
     var tags: seq[string]
     for v in body.variants: tags.add(v.name)
     return "enum " & d.name & " { " & tags.join(", ") & " }\n"
-  dUnsupported("type " & d.name & " (only payload-free sums emit yet)")
+  if body.kind == tkRecord:
+    # A named record is a plain D struct — the value type Tuck means.
+    var res = "struct " & d.name & " {\n"
+    for f in body.fields:
+      res.add("    " & ctx.dType(f.typ) & " " & f.name & ";\n")
+    res.add("}\n")
+    return res
+  if body.kind in {tkNamed, tkApp, tkRename, tkEffect}:
+    # `type Ms = int` and friends. The DISTINCTNESS was enforced by the
+    # checker; the emitted carrier is the underlying type, as in the Nim
+    # backend where the distinct is likewise erased for arithmetic.
+    let under = ctx.dDeclType(body)
+    if under != "": return "alias " & d.name & " = " & under & ";\n"
+    return dUnsupported("type alias " & d.name & " to an unmapped type")
+  dUnsupported("type " & d.name & " (sum-with-payload arrives in M4)")
+
+proc genDPendingStub(ctx: var DCodegenCtx, mem: Decl): string =
+  ## A pending fn runs as a stub: log to stderr (the Nim backend's stream —
+  ## the Odin one prints to stdout, a divergence recorded in the ledger),
+  ## return the zero value. The payload rides a template param exactly like
+  ## the Nim backend's generic stub, absorbing any record representation.
+  if mem.kind != dkFn: return ""
+  let retStr = ctx.dType(mem.fnReturnType)
+  let params = if mem.fnParams.len > 0: "(T)(T payload)" else: "()"
+  result = retStr & " " & mem.name & params & " {\n" &
+           "    stderr.writeln(\"TUCK PENDING: " & mem.name &
+           " invoked (not implemented)\");\n"
+  if retStr != "void":
+    result.add("    return typeof(return).init;\n")
+  result.add("}\n")
+
+proc genDPendingBlock(ctx: var DCodegenCtx, d: Decl): string =
+  for mem in d.mixinMembers:
+    let code = ctx.genDPendingStub(mem)
+    if code != "": result.add(code & "\n")
 
 proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""
@@ -475,7 +888,7 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
     return ""
   case d.kind
   of dkType: ctx.genDTypeDecl(d)
-  of dkObject: dUnsupported("object " & d.name)
+  of dkObject: ctx.genDObjectDecl(d)
   of dkRegistry: dUnsupported("registry " & d.name)
   of dkPool: dUnsupported("pool " & d.name)
   of dkFn:
@@ -483,7 +896,7 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
     else: ctx.genDFnDecl(d)
   of dkMixin: dUnsupported("mixin " & d.name)
   of dkExtern: ctx.genDExternBlock(d)
-  of dkPending: dUnsupported("pending block (M3)")
+  of dkPending: ctx.genDPendingBlock(d)
   of dkActor: dUnsupported("actor " & d.name & " (arrives with the Fiber runtime)")
   of dkTask: dUnsupported("task " & d.name & " (arrives with the Fiber runtime)")
   of dkExpr: ""   # top-level statements are collected by emitBody
@@ -529,8 +942,13 @@ proc dImports(ctx: DCodegenCtx, body, mains: string,
   ## backend (and D warns on unused imports under -w).
   if "rt." in body or "rt." in mains:
     result.add("import rt = tuck_rt;")
-  if "writeln(" in body or "writeln(" in mains:
-    result.add("import std.stdio : writeln;")
+  var stdioSyms: seq[string]
+  for sym in ["writeln", "stderr"]:
+    if (sym & "(" in body) or (sym & "(" in mains) or
+       (sym & "." in body) or (sym & "." in mains):
+      stdioSyms.add(sym)
+  if stdioSyms.len > 0:
+    result.add("import std.stdio : " & stdioSyms.join(", ") & ";")
   for modName in ctx.realModules.keys:
     let alias = modName.replace("-", "_")
     if (alias & ".") in body or (alias & ".") in mains:
