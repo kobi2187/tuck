@@ -9,6 +9,27 @@ two-backend discipline generalize" and "where do Nim-isms hide"; findings go
 in a DISCOVERIES section at the bottom of this ledger.
 
 ## Constraints
+
+**Portable runtime semantics (user, 2026-08-27).** Runtime semantics AND
+runtime characteristics must be identical across backends — a program's
+observable behaviour and its performance shape should not depend on which
+backend built it. That is why fibers/async/actors/scheduling ride on
+minicoro everywhere rather than each backend's native coroutines. Other
+subsystems should follow the same principle; today some are per-backend
+reimplementations (tuck_rt.nim / tuck_rt.odin / tuck_rt.d) rather than one
+shared library, which is a known divergence risk, not a design choice.
+Implication for M7: the D backend gets minicoro too, NOT core.thread.Fiber
+(supersedes the earlier plan note).
+
+**Idiomatic output is allowed, semantics are not negotiable (user).** Goldens
+exist, so D may emit its own idiomatic parallel of a construct rather than a
+transliteration of the Nim/Odin shape — and the codegen should be tweaked
+toward that best-looking output. The constraint is unchanged: whatever it
+emits must still deliver exactly what Tuck promises.
+
+**Refactor periodically (user).** Every few milestones, do a pass over the
+new code: simplify, improve readability, apply hindsight. Not only when the
+complexity gate complains.
 - Written in Nim like the rest: `compiler/codegen_d.nim` (+ `codegen_d_util.nim`
   if size demands), mirroring codegen_odin.nim's structure.
 - Pipeline invariants (CLAUDE.md): backend lowers its OWN deepCopy; `case` over
@@ -136,3 +157,8 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
 - D function templates instantiate per call site, so pending stubs and
   generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
   boxing, same monomorphization story.
+- BUG (Odin backend, pre-existing): a `match` whose arms are `return`
+  statements emits Odin's ternary with `return` inside it —
+  `return ((s == Kind.Dot) ? return 0 : ...)`, which is not valid Odin.
+  Found probing sum types for M4. The Nim backend emits a proper `case`
+  for the same source. D follows Nim's shape (final switch), not this.

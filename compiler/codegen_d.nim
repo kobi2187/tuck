@@ -56,6 +56,15 @@ const dPrims = {
 
 proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef]): string
 
+proc seqElem*(t: Type): Type =
+  ## The element type of a `Seq[T]`, or nil for anything else. One predicate
+  ## for the four places that used to re-test `tkApp and base.name == "Seq"`
+  ## by hand (type mapping, declaration types, .len, .dup).
+  if t != nil and t.kind == tkApp and t.base != nil and
+     t.base.kind == tkNamed and t.base.name == "Seq" and t.args.len == 1:
+    t.args[0]
+  else: nil
+
 proc importedTypeQualifierD(ctx: DCodegenCtx, name: string): string =
   ## A type declared in an IMPORTED module lives in that module's D file, so
   ## it must be referenced through the import alias (`time.tuck_Milliseconds`)
@@ -69,31 +78,56 @@ proc importedTypeQualifierD(ctx: DCodegenCtx, name: string): string =
     break
   name
 
-proc dType(ctx: var DCodegenCtx, t: Type): string =
-  if t == nil: return "void"
+type TypeMode = enum
+  ## How a type walk answers a type it cannot map.
+  tmRequired   ## a position that MUST have a type: die naming the construct
+  tmOptional   ## a declaration, which can fall back to `auto`: answer ""
+
+proc dTypeIn(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
+  ## The one type walk. It was two near-identical copies — dType (dies) and
+  ## dDeclType (returns "") — which is a shape that drifts: a mapping added
+  ## to one silently missed the other.
+  template giveUp(what: string): string =
+    if mode == tmRequired: dUnsupported(what) else: ""
+  if t == nil: return (if mode == tmRequired: "void" else: "")
   case t.kind
   of tkNamed:
     if t.name in dPrims: dPrims[t.name]
-    elif t.name == UnknownName or t.name == PendingName: "void"
+    elif t.name == UnknownName or t.name == PendingName:
+      # a declaration cannot state a sentinel; a signature position must
+      if mode == tmRequired: "void" else: ""
+    elif t.name.startsWith("<"): giveUp("type sentinel " & t.name)
     else: ctx.importedTypeQualifierD(t.name)
   of tkApp:
     # Seq[T] is a native D dynamic array — same value-semantics contract as
     # the Nim backend's seq[T] (assignment copies; D slices alias, which the
-    # emitter must compensate for at assignment sites — see the T17 audit).
-    if t.base != nil and t.base.kind == tkNamed and t.base.name == "Seq" and
-       t.args.len == 1:
-      ctx.dType(t.args[0]) & "[]"
-    else:
+    # emitter compensates for at assignment sites — see the T17 audit).
+    let elem = seqElem(t)
+    if elem == nil:
       let baseName = if t.base != nil and t.base.kind == tkNamed: t.base.name
                      else: "?"
-      dUnsupported("type application " & baseName & "[...]")
-  of tkTuple: dUnsupported("tuple type")
-  of tkFunc: dUnsupported("fn-typed value (fnsig)")
-  of tkRecord: ctx.recStructNameD(t.fields)
-  of tkSum: dUnsupported("inline sum type")
-  of tkUnion: dUnsupported("union type")
-  of tkEffect: ctx.dType(t.inner)   # [io] etc. — no type-level footprint yet
-  of tkRename: ctx.dType(t.underlying)
+      giveUp("type application " & baseName & "[...]")
+    else:
+      let elemStr = ctx.dTypeIn(elem, mode)
+      if elemStr == "": "" else: elemStr & "[]"
+  of tkTuple: giveUp("tuple type")
+  of tkFunc: giveUp("fn-typed value (fnsig)")
+  of tkRecord:
+    # A record shape is nameable in both modes — it hoists its own struct.
+    ctx.recStructNameD(t.fields)
+  of tkSum: giveUp("inline sum type")
+  of tkUnion: giveUp("union type")
+  of tkEffect: ctx.dTypeIn(t.inner, mode)  # [io]: no type-level footprint
+  of tkRename: ctx.dTypeIn(t.underlying, mode)
+
+proc dType(ctx: var DCodegenCtx, t: Type): string =
+  ## A type in a position that must have one — a param, a return, a field.
+  ctx.dTypeIn(t, tmRequired)
+
+proc dDeclType(ctx: var DCodegenCtx, t: Type): string =
+  ## A type for a variable declaration, or "" when it cannot be stated and
+  ## the caller should fall back to `auto`.
+  ctx.dTypeIn(t, tmOptional)
 
 proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef]): string =
   ## An anonymous record shape gets one hoisted named struct per distinct
@@ -489,8 +523,7 @@ proc isLenOnSized(ctx: var DCodegenCtx, e: Expr): bool =
   let rt = semLayer.typeFor(e.receiver)
   if rt == nil: return false
   if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
-  rt.kind == tkApp and rt.base != nil and rt.base.kind == tkNamed and
-    rt.base.name == "Seq"
+  seqElem(rt) != nil
 
 proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   ## A `.name` access: a resolved call, the len property, an input param, or
@@ -523,30 +556,6 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.genDInputPayload()
   e.name
 
-proc dDeclType(ctx: var DCodegenCtx, t: Type): string =
-  ## The declared type for a var, or "" when it cannot be stated — the safe
-  ## subset of dType that never dies (a decl can always fall back to auto,
-  ## an unsupported type in any OTHER position cannot).
-  if t == nil: return ""
-  case t.kind
-  of tkNamed:
-    if t.name in dPrims: dPrims[t.name]
-    elif t.name.startsWith("<"): ""   # <unknown> and the other sentinels
-    else: t.name
-  of tkApp:
-    if t.base != nil and t.base.kind == tkNamed and t.base.name == "Seq" and
-       t.args.len == 1:
-      let elem = ctx.dDeclType(t.args[0])
-      if elem == "": "" else: elem & "[]"
-    else: ""
-  of tkTuple, tkFunc, tkRecord, tkSum, tkUnion: ""
-  of tkEffect: ctx.dDeclType(t.inner)
-  of tkRename: ctx.dDeclType(t.underlying)
-
-proc isSeqTyped(t: Type): bool =
-  t != nil and t.kind == tkApp and t.base != nil and
-    t.base.kind == tkNamed and t.base.name == "Seq"
-
 proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
   ## Tuck Seq assignment COPIES (Nim seq value semantics); a D slice
   ## assignment ALIASES — `b = a; b[0] = 50` would write a[0] too, verified
@@ -556,7 +565,7 @@ proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
   ## ponytail: unconditional dup beyond literals; revisit with the M7 perf
   ## pass if a benchmark ever cares.
   if e == nil or e.kind == exkList: return valStr
-  if isSeqTyped(semLayer.typeFor(e)): return "(" & valStr & ").dup"
+  if seqElem(semLayer.typeFor(e)) != nil: return "(" & valStr & ").dup"
   valStr
 
 proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
@@ -733,32 +742,17 @@ proc genDStmtOrBlock(ctx: var DCodegenCtx, body: Expr): string =
   if body.kind == exkBlock: ctx.genDBlock(body)
   else: ctx.genDStmt(body)
 
-proc injectTailReturnD(body: Expr, retTypeStr: string) =
-  ## Implicit return: the value flowing at the end of a fn body is its
-  ## result. Port of the Odin backend's injectTailReturn — this mutation is
-  ## exactly why each backend lowers its OWN deepCopy of the tree.
-  if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
-     retTypeStr != "void":
-    let lastS = body.stmts[^1]
-    if lastS.kind == exkChain:
-      if lastS.base != nil:
-        body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
-                            returnVal: lastS.base))
-    elif lastS.kind == exkMatch and lastS.subject != nil:
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
-    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
-                           exkWhile, exkBreak, exkContinue, exkAssign,
-                           exkBlock} and
-         not (lastS.kind == exkVar and lastS.name == "..."):
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
-
 proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
   if d.fnGenerics.len > 0: return dUnsupported("generic fn " & d.name)
   if d.isDecision: return dUnsupported("decision table " & d.name)
   let fnName = if nameOverride != "": nameOverride else: d.name
   let retStr = ctx.dType(d.fnReturnType)
-  injectTailReturnD(d.fnBody, retStr)
+  # Implicit return: the value flowing at the end of a body is the result.
+  # ast_query's shared version, not a private port — the Odin backend kept
+  # its own copy and it has since drifted (no matchArmsReturn guard, so a
+  # tail match whose arms return gets wrapped in a value-position case).
+  injectTailReturn(d.fnBody, retStr)
   result = retStr & " " & fnName & "(" &
            ctx.genDParams(d.fnParams, refSelf) & ") {\n"
   ctx.indent = 1
