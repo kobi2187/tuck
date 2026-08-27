@@ -132,6 +132,22 @@ proc walkTabular(m: var Metrics, body: Expr) =
   walk(inner, body)
   m.complexity += inner.complexity
 
+proc walkMatch(m: var Metrics, e: Expr) =
+  ## The construct itself costs NOTHING — not +1 per arm, not even +1 total.
+  ## Arm bodies ARE measured; it is only the tabulation that is free.
+  walk(m, e.subject)
+  for arm in e.arms:
+    # A guard IS branching logic — it is a condition, not a table row.
+    if arm.guard != nil:
+      m.complexity += 1
+      walkTabular(m, arm.guard)
+    walkTabular(m, arm.body)
+
+proc walkSelect(m: var Metrics, e: Expr) =
+  for arm in e.selArms:
+    walkTabular(m, arm.arg)
+    walkTabular(m, arm.body)
+
 proc walk(m: var Metrics, e: Expr) =
   if e == nil: return
   m.note(e.span)
@@ -150,20 +166,8 @@ proc walk(m: var Metrics, e: Expr) =
     m.complexity += 1
     walk(m, e.iterable)
     walk(m, e.body)
-  of exkMatch:
-    # The construct itself costs NOTHING — not +1 per arm, not even +1 total.
-    # Arm bodies ARE measured; it is only the tabulation that is free.
-    walk(m, e.subject)
-    for arm in e.arms:
-      # A guard IS branching logic — it is a condition, not a table row.
-      if arm.guard != nil:
-        m.complexity += 1
-        walkTabular(m, arm.guard)
-      walkTabular(m, arm.body)
-  of exkSelect:
-    for arm in e.selArms:
-      walkTabular(m, arm.arg)
-      walkTabular(m, arm.body)
+  of exkMatch: walkMatch(m, e)
+  of exkSelect: walkSelect(m, e)
   of exkBinary:
     # Short-circuit operators fork: `a and b` may or may not evaluate b.
     # Arithmetic and comparison do not.
