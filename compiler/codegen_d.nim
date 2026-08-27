@@ -172,9 +172,127 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
 
 proc indD(ctx: DCodegenCtx): string = repeat(' ', ctx.indent * 4)
 
+proc dBinOp(op: BinOp): string =
+  ## D's `/` follows the operand type (integer operands truncate) — same
+  ## property as Odin, so both Tuck divisions map to `/` and the Tuck source
+  ## carries the distinction. `^` works on bools and ints alike.
+  case op
+  of boAdd: "+"
+  of boSub: "-"
+  of boMul: "*"
+  of boDivInt, boDivFloat: "/"
+  of boMod: "%"
+  of boEq: "=="
+  of boNeq: "!="
+  of boLt: "<"
+  of boGt: ">"
+  of boLe: "<="
+  of boGe: ">="
+  of boAnd: "&&"
+  of boOr: "||"
+  of boXor: "^"
+  of boRangeIncl, boRangeExcl: ""   # only meaningful inside foreach — genDFor
+
+proc isStringConcatD(e: Expr): bool =
+  ## `+` over strings — D's identical construct is the native `~`.
+  if e.binOp != boAdd or e.left == nil: return false
+  let lt = semLayer.typeFor(e.left)
+  lt != nil and lt.kind == tkNamed and lt.name in ["str", "string"]
+
+proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
+  if isStringConcatD(e):
+    return "(" & ctx.genDExpr(e.left) & " ~ " & ctx.genDExpr(e.right) & ")"
+  if e.binOp in {boRangeIncl, boRangeExcl}:
+    return dUnsupported("a range outside a for loop")
+  "(" & ctx.genDExpr(e.left) & " " & dBinOp(e.binOp) & " " &
+    ctx.genDExpr(e.right) & ")"
+
+proc genDUnary(ctx: var DCodegenCtx, e: Expr): string =
+  case e.unaryOp
+  of uoNeg: "-" & ctx.genDExpr(e.operand)
+  of uoNot: "!" & ctx.genDExpr(e.operand)
+  of uoComposition: dUnsupported("composition (+Type member)")
+  of uoPropagate: dUnsupported("expr? propagation (M4)")
+
+proc isLenOnSized(ctx: var DCodegenCtx, e: Expr): bool =
+  ## `.len` on a str or Seq — D spells the identical native property
+  ## `.length`. (The Nim backend emits `.len` untranslated because Nim
+  ## happens to share Tuck's spelling — a Nim-ism riding through.)
+  if e.fieldName != "len" or e.receiver == nil: return false
+  let rt = semLayer.typeFor(e.receiver)
+  if rt == nil: return false
+  if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
+  rt.kind == tkApp and rt.base != nil and rt.base.kind == tkNamed and
+    rt.base.name == "Seq"
+
+proc genDField(ctx: var DCodegenCtx, e: Expr): string =
+  ## A `.name` access: a resolved call, the len property, or a plain read.
+  ## (Interface dispatch, actor fields, status tests arrive with their
+  ## milestones — the types involved cannot reach here yet.)
+  if ctx.isLenOnSized(e):
+    # cast: D's .length is size_t (unsigned); Tuck's len is a signed int.
+    # Unsigned would poison later arithmetic (n - bigger wraps, comparisons
+    # promote) — hidden Nim-ism #3, Nim's .len is already signed.
+    return "cast(long) " & ctx.genDExpr(e.receiver) & ".length"
+  if semLayer.hasCall(e):
+    return ctx.genDExpr(semLayer.call(e))
+  ctx.genDExpr(e.receiver) & "." & e.fieldName
+
+proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
+  ## A bare name: a checker-stamped call, a pending hole, or a variable.
+  ## (input / self / enum tags arrive with their milestones.)
+  if semLayer.hasCall(e): return ctx.genDExpr(semLayer.call(e))
+  if e.name == "...": return ""   # pending hole: compiles, does nothing
+  e.name
+
+proc dDeclType(ctx: var DCodegenCtx, t: Type): string =
+  ## The declared type for a var, or "" when it cannot be stated — the safe
+  ## subset of dType that never dies (a decl can always fall back to auto,
+  ## an unsupported type in any OTHER position cannot).
+  if t == nil: return ""
+  case t.kind
+  of tkNamed:
+    if t.name in dPrims: dPrims[t.name]
+    elif t.name.startsWith("<"): ""   # <unknown> and the other sentinels
+    else: t.name
+  of tkApp:
+    if t.base != nil and t.base.kind == tkNamed and t.base.name == "Seq" and
+       t.args.len == 1:
+      let elem = ctx.dDeclType(t.args[0])
+      if elem == "": "" else: elem & "[]"
+    else: ""
+  of tkTuple, tkFunc, tkRecord, tkSum, tkUnion: ""
+  of tkEffect: ctx.dDeclType(t.inner)
+  of tkRename: ctx.dDeclType(t.underlying)
+
+proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
+  ## First assignment to a name declares it, with the CHECKER'S type stated
+  ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
+  ## the Nim backend's inference) makes it 64-bit — a value past 2^31 then
+  ## wraps in one backend and not the other. Verified with dmd; hidden
+  ## Nim-ism #2. `auto` remains only for types the backend cannot state yet
+  ## (sketch-mode Unknown included, where no arithmetic contract exists).
+  let valStr = ctx.genDExpr(e.assignVal)
+  if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
+    ctx.definedVars.incl(e.target.name)
+    var declT = ctx.dDeclType(semLayer.typeFor(e.target))
+    if declT == "": declT = ctx.dDeclType(semLayer.typeFor(e.assignVal))
+    if declT == "": declT = "auto"
+    return declT & " " & e.target.name & " = " & valStr
+  ctx.genDExpr(e.target) & " = " & valStr
+
+# --- statements & control flow -------------------------------------------
+
+proc ownsLayoutD(s: Expr): bool =
+  ## Constructs that emit their own indentation, braces and newlines.
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch}
+
 proc genDStmt(ctx: var DCodegenCtx, s: Expr): string =
-  ## One statement inside a block: indent + expression + `;` where D wants
-  ## one. Control-flow statements own their layout (none exist yet here).
+  ## One statement inside a block: indent + expression + `;`, except the
+  ## constructs that lay themselves out.
+  if s != nil and ownsLayoutD(s):
+    let code = ctx.genDExpr(s)
+    return if code == "": "" else: code & "\n"
   let code = ctx.genDExpr(s)
   if code == "": return ""
   ctx.indD & code & ";\n"
@@ -183,29 +301,91 @@ proc genDBlock(ctx: var DCodegenCtx, e: Expr): string =
   for s in e.stmts:
     result.add(ctx.genDStmt(s))
 
+proc genDNested(ctx: var DCodegenCtx, body: Expr): string =
+  ## A branch/loop body one level deeper, always brace-wrapped by the caller.
+  ctx.indent += 1
+  result = if body == nil: ""
+           elif body.kind == exkBlock: ctx.genDBlock(body)
+           else: ctx.genDStmt(body)
+  ctx.indent -= 1
+
+proc isValueIfD(e: Expr): bool =
+  ## A value-position `if` (both branches are plain expressions and the
+  ## checker stamped a type) emits as D's ternary. Mirrors ast_query's
+  ## isValueIf used by the Odin backend.
+  isValueIf(e)
+
+proc genDIf(ctx: var DCodegenCtx, e: Expr): string =
+  if isValueIfD(e):
+    return "(" & ctx.genDExpr(e.cond) & " ? " & ctx.genDExpr(e.thenBranch) &
+           " : " & ctx.genDExpr(e.elseBranch) & ")"
+  let ind = ctx.indD
+  result = ind & "if (" & ctx.genDExpr(e.cond) & ") {\n" &
+           ctx.genDNested(e.thenBranch)
+  if e.elseBranch != nil:
+    if e.elseBranch.kind == exkIf:
+      # `elif` chain: fold into `} else if (...)` rather than nesting.
+      let elseCode = ctx.genDIf(e.elseBranch)
+      result.add(ind & "} else " & elseCode.strip(chars = {' '}, trailing = false))
+      return
+    result.add(ind & "} else {\n" & ctx.genDNested(e.elseBranch))
+  result.add(ind & "}")
+
+proc genDWhile(ctx: var DCodegenCtx, e: Expr): string =
+  let cond = if e.whileCond == nil: "true" else: ctx.genDExpr(e.whileCond)
+  ctx.indD & "while (" & cond & ") {\n" & ctx.genDNested(e.whileBody) &
+    ctx.indD & "}"
+
+proc dForVars(e: Expr): string =
+  ## `for idx, item in xs:` — D's foreach yields the index natively, in the
+  ## same (index, value) order.
+  if e.iter != nil and e.iter.kind == pkTuple and e.iter.elems.len == 2:
+    genPatternStr(e.iter.elems[0]) & ", " & genPatternStr(e.iter.elems[1])
+  else: genPatternStr(e.iter)
+
+proc genDFor(ctx: var DCodegenCtx, e: Expr): string =
+  ## foreach over a range or a value. D ranges are exclusive; the inclusive
+  ## Tuck range adds one to the upper bound.
+  var iterStr: string
+  if e.iterable != nil and e.iterable.kind == exkBinary and
+     e.iterable.binOp in {boRangeIncl, boRangeExcl}:
+    let lo = ctx.genDExpr(e.iterable.left)
+    let hi = ctx.genDExpr(e.iterable.right)
+    iterStr = lo & " .. " & (if e.iterable.binOp == boRangeIncl: hi & " + 1"
+                             else: hi)
+  else:
+    iterStr = ctx.genDExpr(e.iterable)
+  ctx.indD & "foreach (" & dForVars(e) & "; " & iterStr & ") {\n" &
+    ctx.genDNested(e.body) & ctx.indD & "}"
+
+proc genDList(ctx: var DCodegenCtx, e: Expr): string =
+  var parts: seq[string]
+  for item in e.items: parts.add(ctx.genDExpr(item))
+  "[" & parts.join(", ") & "]"
+
 proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   if e == nil: return ""
   case e.kind
   of exkLit: genDLit(e)
-  of exkVar: e.name
-  of exkField: dUnsupported("field access")
+  of exkVar: ctx.genDVarName(e)
+  of exkField: ctx.genDField(e)
   of exkQualified: ctx.genDQualified(e)
   of exkStruct: dUnsupported("struct literal outside a call payload")
-  of exkList: dUnsupported("list literal")
+  of exkList: ctx.genDList(e)
   of exkBracket: dUnsupported("bracket indexing")
   of exkBracketAssign: dUnsupported("bracket assignment")
   of exkCall: ctx.genDCall(e)
   of exkChain: dUnsupported("call chain")
-  of exkBinary: dUnsupported("binary operator")
-  of exkUnary: dUnsupported("unary operator")
+  of exkBinary: ctx.genDBinary(e)
+  of exkUnary: ctx.genDUnary(e)
   of exkBlock: ctx.genDBlock(e)
-  of exkIf: dUnsupported("if")
+  of exkIf: ctx.genDIf(e)
   of exkMatch: dUnsupported("match")
-  of exkFor: dUnsupported("for")
-  of exkWhile: dUnsupported("while")
+  of exkFor: ctx.genDFor(e)
+  of exkWhile: ctx.genDWhile(e)
   of exkBreak: "break"
   of exkContinue: "continue"
-  of exkAssign: dUnsupported("assignment / let / var")
+  of exkAssign: ctx.genDAssign(e)
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: dUnsupported("raise")
   of exkImport: ""   # imports are assembled by dImports from realModules

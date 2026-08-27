@@ -1,0 +1,133 @@
+## Unit tests for the D backend, grown one milestone at a time — each
+## milestone of compiler/codegen_d.nim lands with its assertions here.
+##
+## Two layers, mirroring odin_backend:
+##   * emitsD/omitsD — the emitted text says what the backend decided
+##     (cheap, runs in --quick).
+##   * dmd build + RUN with an exit code — the decisions actually compute
+##     (a compile-only check cannot see a wrong value; exit codes can).
+##
+## Skips with a notice when dmd is absent, unless TUCK_REQUIRE_D=1.
+
+import std/[os, strutils]
+import ../harness
+
+proc runsD(t: var T, name: string, want: int, dmdExe: string) =
+  ## Build the current snippet's emitted D with dmd and run it, asserting
+  ## the exit code. Chained through the pool: emit -> dmd build -> run.
+  let e = t.needD()
+  let dir = t.curDir / "dlang"
+  let b = t.needCmdAfter(@[dmdExe, "-i", "-I" & dir, dir / "t.d",
+                           "-of=" & dir / "prog"],
+                         e, proc (dir: string) = discard, dir)
+  let r = t.needCmdAfter(@[dir / "prog"], b,
+                         proc (dir: string) = discard, dir)
+  if t.phase == pCollect: return
+  if t.skippedCmd(r): t.skip name; return
+  let (brc, bout) = t.resultOf(b)
+  if brc != 0:
+    t.no name, "dmd build failed: " & bout.strip().splitLines()[^1]
+    return
+  let (rc, output) = t.resultOf(r)
+  if rc == want: t.ok name
+  else: t.no name, "exit " & $rc & ", want " & $want & ": " & output.strip()
+
+proc run*(t: var T) =
+  let dmdExe = findDmd()
+  if dmdExe.len == 0:
+    if t.phase != pReport: return
+    if getEnv("TUCK_REQUIRE_D") == "1":
+      echo "FAIL: dmd not found and TUCK_REQUIRE_D=1"
+      t.failed.inc
+      return
+    echo "SKIP D backend check: dmd not found (set TUCK_REQUIRE_D=1 to require it)."
+    echo "d_backend.sh: 0 passed, 0 failed"
+    return
+
+  # --- Milestone 1: plumbing ---------------------------------------------
+  t.src """
+import console
+
+fn main() -> int:
+  {text: "hello from tuck"} printLine
+  return 7
+"""
+  t.emitsD "M1: entry module carries a valid D module header", "module t;"
+  t.emitsD "M1: cross-module call is qualified through the import alias",
+           r"console\.printLine\(""hello from tuck""\)"
+  t.emitsD "M1: value-returning fn main IS the exit code, via native int main",
+           r"int main\(\) \{\n    return cast\(int\) tuck_main\(\);"
+  t.emitsD "M1: Tuck int maps to 64-bit long, never D's 32-bit int",
+           r"long tuck_main\(\)"
+  t.runsD "M1: hello world builds with dmd and exits 7", 7, dmdExe
+
+  # --- Milestone 2: statements & scalars ---------------------------------
+  # T6-T9: declarations, arithmetic, control flow, ranges. The program's
+  # exit code is a sum every construct contributes to — a wrong branch, a
+  # wrong range bound or 32-bit wrap moves it.
+  t.src """
+fn main() -> int:
+  var acc = 0
+  for i in 1 ..< 11:
+    acc = acc + i
+  let d = 55 /i 5
+  let m = 55 % 7
+  let neg = 0 - 3
+  var w = 0
+  for w < 4:
+    w = w + 1
+  var skipped = 0
+  for i in 0 .. 4:
+    if i == 2:
+      continue
+    skipped = skipped + 1
+  return acc + d + m + neg + w + skipped
+"""
+  t.emitsD "M2: first assignment declares with the checker's 64-bit type",
+           "long acc = 0;"
+  t.emitsD "M2: exclusive range is D's native exclusive foreach",
+           r"foreach \(i; 1 \.\. 11\)"
+  t.emitsD "M2: inclusive range widens the upper bound by one",
+           r"foreach \(i; 0 \.\. 4 \+ 1\)"
+  t.emitsD "M2: while-form for emits a native while", r"while \(\(w < 4\)\)"
+  t.runsD "M2: control flow and arithmetic compute 77", 77, dmdExe
+
+  # T10 + leftovers: strings, loop:, value-if, list iteration, echo.
+  t.src """
+import console
+import seq
+
+fn main() -> int:
+  var s = "ab"
+  s = s + "cd"
+  {text: s} printLine
+  let n = s.len
+  var c = 0
+  loop:
+    c = c + 1
+    if c == 3:
+      break
+  let pick = if c == 3: 10 else: 20
+  let xs = [5, 6, 7]
+  var total = 0
+  for x in xs:
+    total = total + x
+  var idxSum = 0
+  for i, x in xs:
+    idxSum = idxSum + i
+  total echo
+  return n + c + pick + total + idxSum
+"""
+  t.emitsD "M2: string + is D's native concat, no runtime call",
+           r"s = \(s ~ ""cd""\)"
+  t.emitsD "M2: len is D's native length, cast back to Tuck's signed int",
+           r"cast\(long\) s\.length"
+  t.emitsD "M2: value-position if is D's native ternary",
+           r"\(\(c == 3\) \? 10 : 20\)"
+  t.emitsD "M2: index+value loop is D's native two-variable foreach",
+           r"foreach \(i, x; xs\)"
+  t.emitsD "M2: echo maps to writeln", r"writeln\(total\)"
+  t.omitsD "M2: nothing reaches for a runtime concat helper", "tuckConcat"
+  t.runsD "M2: strings, loop and lists compute 38", 38, dmdExe
+
+  t.finish()

@@ -11,6 +11,7 @@ import auto_alias
 import bare_variant
 import cli_smoke
 import complexity
+import d_backend
 import declarations
 import diagnostics
 import duplicates
@@ -49,6 +50,7 @@ let registry: seq[Entry] = @[
   ("bare_variant",        SuiteProc(bare_variant.run),        true),
   ("cli_smoke",           SuiteProc(cli_smoke.run),           false),
   ("complexity",          SuiteProc(complexity.run),          true),
+  ("d_backend",           SuiteProc(d_backend.run),           false),
   ("declarations",        SuiteProc(declarations.run),        false),
   ("diagnostics",         SuiteProc(diagnostics.run),         false),
   ("duplicates",          SuiteProc(duplicates.run),          true),
@@ -71,7 +73,7 @@ let registry: seq[Entry] = @[
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
-  ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     false),
+  ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("typecheck",           SuiteProc(typecheck.run),           true),
   ("uninit",              SuiteProc(uninit.run),              false),
   ("value_semantics",     SuiteProc(value_semantics.run),     false),

@@ -51,8 +51,18 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
   - [x] T4 --dlang compile path (mod_<name>.d files, aliased imports,
         resolveDCallee for bare-name cross-module calls)
   - [x] T5 --dlang build path (dmd -i -I<outDir>, _d suffix, skip if absent)
-- Now: [→] M2 statements & scalars: T6 let/var/assign, T7 ops, T8 if/while/loop,
-        T9 for/ranges/lists, T10 strings
+  - [x] M2 statements & scalars (T6-T10): let/var with checker-typed decls,
+        ops, if/ternary/while/loop/break/continue, foreach ranges (incl +1),
+        list literals, tuple foreach, strings (~ concat, .length cast),
+        field access (resolved calls, .len), echo→writeln. Probes exit
+        77 and 38 on both backends, stdout identical.
+  - [x] T28 pulled forward (user: unit tests after each part): harness
+        vEmitD verb + emitsD/omitsD/needD/findDmd, --quick includes D
+        emission, tests/suites/d_backend.nim (17 assertions incl. dmd
+        build+run via needCmdAfter chain). Grow it per milestone.
+- Now: [→] M3 records & calls: T11 TRec hoisting, T12 payload explosion+
+        qualified, T13 chains, T14 alias/merge, T15 pending stubs,
+        T16 objects/self, T17 slice-aliasing audit
 - Remaining:
   - [ ] M3 records & calls: T11 TRec hoisting, T12 payload explosion+qualified,
         T13 chains, T14 alias/merge, T15 pending stubs, T16 objects/self,
@@ -87,3 +97,17 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
 ## DISCOVERIES (the experiment's real product)
 - D `int` is 32-bit; Tuck/Nim/Odin `int` is 64. First Nim-ism found before
   writing a line: any backend assuming `int` widths silently truncates.
+- Nim-ism #2 (verified with dmd, wraps at 2^31): `auto x = 0` in D is a
+  32-bit int, while Nim's `var x = 0` infers 64-bit. The Nim backend gets
+  64-bit inference FREE from Nim; any other backend must state the
+  checker's type at every declaration. Fix: genDAssign emits the stamped
+  type (dDeclType), auto only for sketch-mode Unknown.
+- Nim-ism #3: `.len` rides through the Nim backend untranslated because
+  Nim shares Tuck's spelling AND signedness. D's `.length` is size_t
+  (unsigned) — poisons later arithmetic via promotion. Emitted as
+  `cast(long) x.length`.
+- Checker lets a PREFIX call slip through silently: `echo total` (wrong —
+  Tuck is postfix) typechecks and emits `total(echo)` in the Nim backend.
+  Gradual typing reads both names as Unknown. Same §0 trap family as
+  FRICTIONS #1's fnsig workaround. Not fixed here (recorded per user
+  instruction: record bugs midway, go on).

@@ -35,7 +35,7 @@ type
     ## a check is lex+parse+typecheck, an emit adds codegen, a build adds a
     ## full Nim compile-and-link (~0.85s, by far the most expensive thing a
     ## test does), and a run needs that build to have happened first.
-    vCheck, vEmit, vEmitOdin, vBuild, vRun
+    vCheck, vEmit, vEmitOdin, vEmitD, vBuild, vRun
 
   Phase* = enum
     pCollect, pReport
@@ -192,6 +192,8 @@ proc cmdFor*(t: T, idx: int): seq[string] =
                   "--root:" & t.root]
   of vEmitOdin: @[tuckExe, "c", it.dir / "t.tuck", "--odin",
                   "-o:" & it.dir / "odin", "--root:" & t.root]
+  of vEmitD:    @[tuckExe, "c", it.dir / "t.tuck", "--dlang",
+                  "-o:" & it.dir / "dlang", "--root:" & t.root]
   of vBuild:    @[tuckExe, "build", it.dir / "t.tuck", "-o:" & it.dir / "out",
                   "--root:" & t.root]
   of vRun:      @[it.dir / "out" / "t"]
@@ -366,6 +368,49 @@ proc omitsOdin*(t: var T, name, pattern: string) =
     t.no name, &"emitted Odin contains /{pattern}/ but should not"
   else:
     t.ok name
+
+proc emittedD(t: T, i: int): string =
+  let p = t.item(i).dir / "dlang" / "t.d"
+  if fileExists(p): readFile(p) else: ""
+
+proc emitsD*(t: var T, name, pattern: string) =
+  ## Same as `emits`, against the D backend's output. A failed emit is
+  ## reported AS a failed emit, never as "lacks pattern" (same lesson).
+  let i = t.need(vEmitD)
+  if t.phase == pCollect: return
+  if t.wasSkipped(i): t.skip name; return
+  if t.failedTo(i):
+    t.no name, "D emission failed: " & lastLine(t.item(i).output)
+  elif find(t.emittedD(i), re(pattern)) >= 0:
+    t.ok name
+  else:
+    t.no name, &"emitted D lacks /{pattern}/"
+
+proc omitsD*(t: var T, name, pattern: string) =
+  ## Same as `omits`, against the D backend's output.
+  let i = t.need(vEmitD)
+  if t.phase == pCollect: return
+  if t.wasSkipped(i): t.skip name; return
+  if t.failedTo(i):
+    t.no name, "D emission failed: " & lastLine(t.item(i).output)
+  elif find(t.emittedD(i), re(pattern)) >= 0:
+    t.no name, &"emitted D contains /{pattern}/ but should not"
+  else:
+    t.ok name
+
+proc needD*(t: var T): int =
+  ## The D-emission item for the current snippet — the emitted .d, its
+  ## modules and tuck_rt.d all land in <dir>/dlang, so a suite can point a
+  ## dmd build at it. Mirrors needOdin.
+  t.need(vEmitD)
+
+proc findDmd*(): string =
+  ## The D compiler, or "" when absent. Same shape as findOdin below.
+  result = findExe("dmd")
+  if result.len > 0: return
+  for c in ["/home/kl/apps/dmd2/linux/bin64/dmd"]:
+    if fileExists(c): return c
+  return ""
 
 # --- golden emission -----------------------------------------------------
 #

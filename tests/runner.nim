@@ -235,8 +235,8 @@ when isMainModule:
       maxVerb = vCheck        # types + effects only. The edit-loop gate.
       modeName = "check"
     elif a == "--quick":
-      maxVerb = vEmitOdin     # + codegen text: emits/omits/frozen goldens.
-      modeName = "quick"
+      maxVerb = vEmitD        # + codegen text: emits/omits/frozen goldens
+      modeName = "quick"      #   (Nim, Odin and D emission are all ~ms).
     elif a == "--full":
       maxVerb = vRun          # + nim build/run. Odin builds are gated by
       modeName = "full"       # TUCK_REQUIRE_ODIN in the suite that owns them.
