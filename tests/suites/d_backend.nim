@@ -56,7 +56,9 @@ fn main() -> int:
   t.emitsD "M1: cross-module call is qualified through the import alias",
            r"console\.printLine\(""hello from tuck""\)"
   t.emitsD "M1: value-returning fn main IS the exit code, via native int main",
-           r"int main\(\) \{\n    return cast\(int\) tuck_main\(\);"
+           r"int main\(string\[\] args\) \{"
+  t.emitsD "M1: the entry point hands the command line to the runtime",
+           r"rt\.tuckSetArgs\(args\);"
   t.emitsD "M1: Tuck int maps to 64-bit long, never D's 32-bit int",
            r"long tuck_main\(\)"
   t.runsD "M1: hello world builds with dmd and exits 7", 7, dmdExe
@@ -245,5 +247,67 @@ fn main() -> int:
            r"\(\(\) \{ final switch \(c\) \{"
   t.omitsD "M4: no chained ternary for a value match", r"\? 1 :"
   t.runsD "M4: value-position match yields the arm's value", 2, dmdExe
+
+  # --- T20: !T / ?T as a value carrier -----------------------------------
+  # Deliberately NOT D exceptions: Tuck's raise returns a value and .ok
+  # inspects a status, where an exception unwinds non-locally. Same three
+  # fields as tuck_rt.nim and tuck_rt.odin, same FNV error codes.
+  t.src """
+fn half({n: int}) -> !int [io]:
+  if n % 2 != 0:
+    return Error.odd
+  return n /i 2
+
+fn main() -> int [io]:
+  let a = {n: 20} half
+  let b = {n: 7} half
+  if a.ok:
+    if b.ok:
+      return 1
+    return a.value
+  return 99
+"""
+  t.emitsD "T20: a fallible fn returns the carrier, not a bare value",
+           r"rt\.TuckResult!\(long\) tuck_half\(long n\)"
+  t.emitsD "T20: raise RETURNS an error value, carrying a compile-folded code",
+           r"return rt\.terr!\(long\)\(0x[0-9A-F]{4} /\* odd \*/\)"
+  t.emitsD "T20: a value return wraps in tok", r"return rt\.tok\(\(n / 2\)\);"
+  t.emitsD "T20: .ok is a status test", r"a\.status == rt\.TuckStatus\.Ok"
+  t.omitsD "T20: no exceptions anywhere near the error path", r"\bthrow\b"
+  t.runsD "T20: the ok branch reads .value, the err branch does not", 10, dmdExe
+
+  # A record payload and !void — the two shapes that need the runtime's own
+  # types (a hoisted TRec, and TuckUnit for a result with nothing to carry).
+  t.src """
+fn readPort({port: int}) -> !{value: int} [io]:
+  if port > 3:
+    return Error.badPort
+  return {value: 42}
+
+fn touch({n: int}) -> !void [io]:
+  if n < 0:
+    return Error.negative
+  return
+
+fn main() -> int [io]:
+  let good = {port: 1} readPort
+  let bad = {port: 9} readPort
+  let t = {n: 5} touch
+  var acc = 0
+  if good.ok:
+    acc = acc + good.value.value
+  if bad.ok:
+    acc = acc + 1000
+  if t.ok:
+    acc = acc + 3
+  return acc
+"""
+  t.emitsD "T20: a record payload rides in the carrier",
+           r"rt\.TuckResult!\(TRec_value_[0-9A-F]{4}\) tuck_readPort"
+  t.emitsD "T20: !void carries the unit struct, which D has no builtin for",
+           r"rt\.TuckResult!\(rt\.TuckUnit\) tuck_touch"
+  t.emitsD "T20: a bare return in a fallible fn still wraps",
+           r"return rt\.tokVoid\(\);"
+  t.runsD "T20: err results never take the ok branch (42+3)", 45, dmdExe
 
   t.finish()

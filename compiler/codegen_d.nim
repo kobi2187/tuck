@@ -39,6 +39,9 @@ type
     moduleName: string
     tmpCounter: int
     currentParams: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
+    retWrapped: bool       # current fn returns !T/?T — returns auto-wrap
+    retInnerD: string      # D type of the payload (for terr!T)
+    retInnerT: Type        # payload Tuck type (typed struct-literal returns)
 
 proc dUnsupported(construct: string): string =
   ## The D backend refuses what it cannot yet emit — loudly, at emission
@@ -58,7 +61,8 @@ const dPrims = {
   "bool": "bool", "str": "string", "void": "void", "unit": "void",
 }.toTable
 
-proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef]): string
+proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef],
+                    owner = ""): string
 
 proc seqElem*(t: Type): Type =
   ## The element type of a `Seq[T]`, or nil for anything else. One predicate
@@ -66,6 +70,16 @@ proc seqElem*(t: Type): Type =
   ## by hand (type mapping, declaration types, .len, .dup).
   if t != nil and t.kind == tkApp and t.base != nil and
      t.base.kind == tkNamed and t.base.name == "Seq" and t.args.len == 1:
+    t.args[0]
+  else: nil
+
+proc bangInner*(t: Type): Type =
+  ## The payload of a `!T` / `?T` / `!?T`, or nil when the type is plain.
+  ## Both spellings are ONE carrier (rt.TuckResult) whose status says which
+  ## — see codegen.nim's bangInfo.
+  if t != nil and t.kind == tkApp and t.base != nil and
+     t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"] and
+     t.args.len == 1:
     t.args[0]
   else: nil
 
@@ -87,6 +101,32 @@ type TypeMode = enum
   tmRequired   ## a position that MUST have a type: die naming the construct
   tmOptional   ## a declaration, which can fall back to `auto`: answer ""
 
+proc dTypeIn(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string
+
+proc dAppType(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
+  ## The two type applications this backend maps: `Seq[T]` and the `!T`/`?T`
+  ## result carrier. Anything else is a gap named at the point of use.
+  ##
+  ## Seq[T] is a native D dynamic array — same value-semantics contract as
+  ## the Nim backend's seq[T] (assignment copies; D slices alias, which the
+  ## emitter compensates for at assignment sites — see the T17 audit).
+  let payload = bangInner(t)
+  if payload != nil:
+    # !T / ?T / !?T — ONE value carrier, the status says which. `!void` has
+    # no empty type to carry, so it carries the unit struct.
+    let inner = ctx.dTypeIn(payload, mode)
+    if inner == "": return ""
+    if inner == "void": return "rt.TuckResult!(rt.TuckUnit)"
+    return "rt.TuckResult!(" & inner & ")"
+  let elem = seqElem(t)
+  if elem != nil:
+    let elemStr = ctx.dTypeIn(elem, mode)
+    return if elemStr == "": "" else: elemStr & "[]"
+  let baseName = if t.base != nil and t.base.kind == tkNamed: t.base.name
+                 else: "?"
+  if mode == tmRequired: dUnsupported("type application " & baseName & "[...]")
+  else: ""
+
 proc dTypeIn(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## The one type walk. It was two near-identical copies — dType (dies) and
   ## dDeclType (returns "") — which is a shape that drifts: a mapping added
@@ -102,18 +142,7 @@ proc dTypeIn(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
       if mode == tmRequired: "void" else: ""
     elif t.name.startsWith("<"): giveUp("type sentinel " & t.name)
     else: ctx.importedTypeQualifierD(t.name)
-  of tkApp:
-    # Seq[T] is a native D dynamic array — same value-semantics contract as
-    # the Nim backend's seq[T] (assignment copies; D slices alias, which the
-    # emitter compensates for at assignment sites — see the T17 audit).
-    let elem = seqElem(t)
-    if elem == nil:
-      let baseName = if t.base != nil and t.base.kind == tkNamed: t.base.name
-                     else: "?"
-      giveUp("type application " & baseName & "[...]")
-    else:
-      let elemStr = ctx.dTypeIn(elem, mode)
-      if elemStr == "": "" else: elemStr & "[]"
+  of tkApp: ctx.dAppType(t, mode)
   of tkTuple: giveUp("tuple type")
   of tkFunc: giveUp("fn-typed value (fnsig)")
   of tkRecord:
@@ -133,10 +162,18 @@ proc dDeclType(ctx: var DCodegenCtx, t: Type): string =
   ## the caller should fall back to `auto`.
   ctx.dTypeIn(t, tmOptional)
 
-proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef]): string =
+proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef],
+                    owner = ""): string =
   ## An anonymous record shape gets one hoisted named struct per distinct
   ## field-name+type signature — same TRec_<fields>_<hash> naming as the
   ## Odin backend (same FNV fold), so the two outputs read alike.
+  ##
+  ## `owner`: the module that DECLARED the shape, when that is not this one.
+  ## A library module prefixes its hoisted names (modPrefix), so the same
+  ## shape is `TRec_fs_content_2C8C` there and `TRec_content_2C8C` here —
+  ## two distinct D types for one Tuck record. The caller must name the
+  ## declaring module's struct, through its import alias. (Odin never hit
+  ## this because `:=` infers the type and never spells it.)
   var sigParts: seq[string]
   var typeStrs: seq[string]
   for f in fields:
@@ -144,6 +181,12 @@ proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef]): string =
     typeStrs.add(ts)
     sigParts.add(f.name & ":" & ts)
   let sig = sigParts.join(",")
+  if owner != "" and owner != ctx.moduleName:
+    var nameParts: seq[string]
+    for f in fields: nameParts.add(f.name)
+    let alias = owner.replace("-", "_")
+    return alias & ".TRec_" & alias & "_" & nameParts.join("_") & "_" &
+           toHex(odinErrCode(sig))
   if sig in ctx.recShapes:
     return ctx.recShapes[sig]
   var nameParts: seq[string]
@@ -471,9 +514,48 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
     return "writeln(" & args.join(", ") & ")"
   calleeStr & "(" & args.join(", ") & ")"
 
+proc errCodeArg(ctx: DCodegenCtx, name: string): string =
+  ## An error code, folded at COMPILE time by the emitter rather than at
+  ## runtime — the same FNV value every backend produces for the same name
+  ## (verified: "Math.Odd" is 55587 in Nim, Odin and D alike).
+  "0x" & toHex(odinErrCode(name)) & " /* " & name & " */"
+
+proc genDRaise(ctx: var DCodegenCtx, e: Expr): string =
+  ## `err X` / `return Error.x` — an early return carrying the code. A
+  ## RETURNED value, never a thrown one: Tuck's failure is data.
+  let rv = e.raiseVal
+  let inner = if ctx.retInnerD != "": ctx.retInnerD else: "rt.TuckUnit"
+  if isErrEnumRef(ctx.module, rv):
+    let name = errNameFor(ctx.module, ctx.moduleName,
+                          rv.receiver.writtenName, rv.fieldName)
+    return "return rt.terr!(" & inner & ")(" & ctx.errCodeArg(name) & ")"
+  "return rt.terr!(" & inner & ")(cast(ushort)(" & ctx.genDExpr(rv) & "))"
+
+proc isErrorDotRef(v: Expr): bool =
+  ## `Error.name` — the app-wide error namespace, hashed by the emitter.
+  v.kind == exkField and v.receiver != nil and
+    v.receiver.kind == exkVar and v.receiver.name == "Error"
+
+proc genDWrappedReturn(ctx: var DCodegenCtx, v: Expr): string =
+  ## The return of a fallible fn: every value leaves wrapped in the carrier.
+  if v.kind == exkRaise: return ctx.genDRaise(v)
+  if isErrorDotRef(v):
+    return "return rt.terr!(" & ctx.retInnerD & ")(" &
+           ctx.errCodeArg(v.fieldName) & ")"
+  if v.kind == exkStruct and ctx.retInnerT != nil and
+     ctx.retInnerT.kind == tkRecord:
+    # typed literal: land it on the declared payload shape, casts included
+    return "return rt.tok(" &
+           ctx.recCtorFromLiteralD(ctx.retInnerT.fields, v.fields) & ")"
+  "return rt.tok(" & ctx.genDExpr(v) & ")"
+
 proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
-  if e.returnVal == nil: "return"
-  else: "return " & ctx.genDExpr(e.returnVal)
+  if e.returnVal == nil:
+    if ctx.retWrapped and ctx.retInnerD == "rt.TuckUnit":
+      return "return rt.tokVoid()"
+    return "return"
+  if ctx.retWrapped: return ctx.genDWrappedReturn(e.returnVal)
+  "return " & ctx.genDExpr(e.returnVal)
 
 proc indD(ctx: DCodegenCtx): string = repeat(' ', ctx.indent * 4)
 
@@ -517,7 +599,11 @@ proc genDUnary(ctx: var DCodegenCtx, e: Expr): string =
   of uoNeg: "-" & ctx.genDExpr(e.operand)
   of uoNot: "!" & ctx.genDExpr(e.operand)
   of uoComposition: dUnsupported("composition (+Type member)")
-  of uoPropagate: dUnsupported("expr? propagation (M4)")
+  of uoPropagate:
+    # `expr?` — forward failure or absence unchanged. Reaches codegen only
+    # if the rewrite pass did not desugar it; refuse rather than drop the
+    # propagation silently.
+    dUnsupported("expr? in this position")
 
 proc isLenOnSized(ctx: var DCodegenCtx, e: Expr): bool =
   ## `.len` on a str or Seq — D spells the identical native property
@@ -529,13 +615,22 @@ proc isLenOnSized(ctx: var DCodegenCtx, e: Expr): bool =
   if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
   seqElem(rt) != nil
 
+proc isResultStatusTest(e: Expr): bool =
+  ## `r.ok` on a !T/?T value is a STATUS TEST, not a field read.
+  if e.fieldName != "ok" or e.receiver == nil: return false
+  bangInner(semLayer.typeFor(e.receiver)) != nil
+
 proc genDField(ctx: var DCodegenCtx, e: Expr): string =
-  ## A `.name` access: a resolved call, the len property, an input param, or
-  ## a plain read. (Interface dispatch, actor fields, status tests arrive
-  ## with their milestones — the types involved cannot reach here yet.)
+  ## A `.name` access: a resolved call, a result's status, the len property,
+  ## an input param, or a plain read. (Interface dispatch and actor fields
+  ## arrive with their milestones.)
   if e.receiver != nil and e.receiver.kind == exkVar and
      e.receiver.name == "input" and ctx.currentParams.len > 0:
     return e.fieldName   # `input.x` IS the param x
+  if isResultStatusTest(e):
+    # parenthesised: a guard may negate it (`!r.ok`), and the `!` would
+    # otherwise bind to the receiver alone
+    return "(" & ctx.genDExpr(e.receiver) & ".status == rt.TuckStatus.Ok)"
   if ctx.isLenOnSized(e):
     # cast: D's .length is size_t (unsigned); Tuck's len is a signed int.
     # Unsigned would poison later arithmetic (n - bigger wraps, comparisons
@@ -583,6 +678,41 @@ proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
   if seqElem(semLayer.typeFor(e)) != nil: return "(" & valStr & ").dup"
   valStr
 
+proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
+  ## The imported module a call resolves into, or "" for a local one. A
+  ## record shape in that call's RESULT is declared over there, so naming
+  ## its type here has to go through the module (see recStructNameD).
+  if e == nil or e.kind != exkCall or e.callee == nil: return ""
+  if e.callee.kind == exkQualified and e.callee.modulePath.len > 0 and
+     e.callee.modulePath[0] in ctx.realModules:
+    return e.callee.modulePath[0]
+  let bare = if e.callee.kind == exkVar: e.callee.name
+             elif e.callee.kind == exkQualified: e.callee.qualName
+             else: ""
+  if bare == "" or ctx.module.declaresFnD(bare): return ""
+  for name, im in ctx.realModules:
+    if im.declaresFnD(bare): return name
+  ""
+
+proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
+  ## The declared D type for `let x = <val>`, naming a foreign record shape
+  ## through its owning module when the value came from one.
+  ##
+  ## The type is read from the VALUE first: the checker stamps the call, and
+  ## a `let` target often carries no stamp of its own (verified — the target
+  ## read back nil for `let r = {..} fs::readFile`).
+  var t = semLayer.typeFor(val)
+  if t == nil: t = semLayer.typeFor(target)
+  let owner = ctx.callOwnerModule(val)
+  if owner != "" and t != nil:
+    let payload = bangInner(t)
+    if payload != nil and payload.kind == tkRecord:
+      return "rt.TuckResult!(" &
+             ctx.recStructNameD(payload.fields, owner) & ")"
+    if t.kind == tkRecord:
+      return ctx.recStructNameD(t.fields, owner)
+  ctx.dDeclType(t)
+
 proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## First assignment to a name declares it, with the CHECKER'S type stated
   ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
@@ -593,8 +723,7 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
-    var declT = ctx.dDeclType(semLayer.typeFor(e.target))
-    if declT == "": declT = ctx.dDeclType(semLayer.typeFor(e.assignVal))
+    var declT = ctx.declTypeForValue(e.target, e.assignVal)
     if declT == "": declT = "auto"
     return declT & " " & e.target.name & " = " & valStr
   ctx.genDExpr(e.target) & " = " & valStr
@@ -800,7 +929,7 @@ proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   of exkContinue: "continue"
   of exkAssign: ctx.genDAssign(e)
   of exkReturn: ctx.genDReturn(e)
-  of exkRaise: dUnsupported("raise")
+  of exkRaise: ctx.genDRaise(e)
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkSend: dUnsupported("actor send (arrives with the Fiber runtime)")
   of exkSelect: dUnsupported("on select (arrives with the Fiber runtime)")
@@ -832,6 +961,17 @@ proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   if d.isDecision: return dUnsupported("decision table " & d.name)
   let fnName = if nameOverride != "": nameOverride else: d.name
   let retStr = ctx.dType(d.fnReturnType)
+  # A fallible fn wraps every return in the carrier; the arms below need to
+  # know the payload type to name terr!(T). Restored after the body, since
+  # a nested emission may set its own.
+  let payload = bangInner(d.fnReturnType)
+  ctx.retWrapped = payload != nil
+  ctx.retInnerT = payload
+  ctx.retInnerD =
+    if payload == nil: ""
+    else:
+      let inner = ctx.dType(payload)
+      if inner == "void": "rt.TuckUnit" else: inner
   # Implicit return: the value flowing at the end of a body is the result.
   # ast_query's shared version, not a private port — the Odin backend kept
   # its own copy and it has since drifted (no matchArmsReturn guard, so a
@@ -848,6 +988,9 @@ proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   result.add(ctx.genDStmtOrBlock(d.fnBody))
   ctx.indent = 0
   ctx.currentParams = @[]
+  ctx.retWrapped = false
+  ctx.retInnerD = ""
+  ctx.retInnerT = nil
   result.add("}\n")
 
 proc genDObjectDecl(ctx: var DCodegenCtx, d: Decl): string =
@@ -877,12 +1020,6 @@ proc dExternTodo(mem: Decl): string =
   if mem.externHeader != "" or mem.externLib != "" or mem.externImpl.len > 0:
     return "// D backend TODO: extern " & mem.name &
            " (C-header/lib/impl externs arrive in M5)\n"
-  let ret = mem.fnReturnType
-  # !T / ?T / !?T is tkApp(base "!"/"?"/"!?") — see codegen.nim bangInfo.
-  let fallible = ret != nil and ret.kind == tkApp and ret.base != nil and
-    ret.base.kind == tkNamed and ret.base.name in ["!", "?", "!?"]
-  if fallible or (ret != nil and ret.kind == tkRecord):
-    return "// D backend TODO: " & mem.name & " (needs TuckResult — M4)\n"
   ""
 
 proc genDExternFwd(ctx: var DCodegenCtx, mem: Decl): string =
@@ -899,11 +1036,21 @@ proc genDExternFwd(ctx: var DCodegenCtx, mem: Decl): string =
   let tmplParams = if mem.fnGenerics.len > 0:
                      "(" & mem.fnGenerics.join(", ") & ")"
                    else: ""
-  result = ctx.dType(ret) & " " & mem.name & tmplParams & "(" &
+  let retStr = ctx.dType(ret)
+  result = retStr & " " & mem.name & tmplParams & "(" &
            ctx.genDParams(mem.fnParams) & ") {\n"
   var args: seq[string]
   for p in mem.fnParams: args.add(p.name)
-  let call = "rt." & emitName & "(" & args.join(", ") & ")"
+  # A record-returning extern hands the runtime the shape to fill: the
+  # struct is named by THIS module (the emitter hoisted it), so the runtime
+  # takes it as a template argument rather than declaring a parallel copy.
+  let payload = bangInner(ret)
+  let shape = if ret != nil and ret.kind == tkRecord: retStr
+              elif payload != nil and payload.kind == tkRecord:
+                "rt.TuckResult!(" & ctx.dType(payload) & ")"
+              else: ""
+  let shapeArg = if shape != "": "!(" & shape & ")" else: ""
+  let call = "rt." & emitName & shapeArg & "(" & args.join(", ") & ")"
   let isVoid = ret == nil or ctx.dType(ret) == "void"
   result.add("    " & (if isVoid: call else: "return " & call) & ";\n")
   result.add("}\n")
@@ -1018,7 +1165,9 @@ proc dImports(ctx: DCodegenCtx, body, mains: string,
               inModuleDir = false): seq[string] =
   ## Only import what the emitted code references — same policy as the Odin
   ## backend (and D warns on unused imports under -w).
-  if "rt." in body or "rt." in mains:
+  # The entry point always calls rt.tuckSetArgs, so an entry module always
+  # needs the runtime; a library module only if its own body reached for it.
+  if "rt." in body or "rt." in mains or not inModuleDir:
     result.add("import rt = tuck_rt;")
   var stdioSyms: seq[string]
   for sym in ["writeln", "stderr"]:
@@ -1057,13 +1206,19 @@ proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
   let mainFn = mainDeclD(m)
   if mainFn == nil and mains == "": return ""
   let tuckMain = mangleName("main")
+  # The command line reaches std/sys through the runtime, which cannot read
+  # it for itself in D (no global argv the way Nim's os module has one), so
+  # the entry point hands it over. Emitted always: whether a program calls
+  # argCount is not knowable from the entry point alone, and the call is
+  # one assignment.
+  let seedArgs = "    rt.tuckSetArgs(args);\n"
+  let head = "(string[] args) {\n" & seedArgs & mains
   if mainFn != nil and mainFn.returnsValueD:
-    result = "int main() {\n" & mains &
-             "    return cast(int) " & tuckMain & "();\n}\n"
+    result = "int main" & head & "    return cast(int) " & tuckMain & "();\n}\n"
   elif mainFn != nil:
-    result = "void main() {\n" & mains & "    " & tuckMain & "();\n}\n"
+    result = "void main" & head & "    " & tuckMain & "();\n}\n"
   else:
-    result = "void main() {\n" & mains & "}\n"
+    result = "void main" & head & "}\n"
 
 proc newDCtx(m: Module, realModules: Table[string, Module],
              moduleName: string, modPrefix = ""): DCodegenCtx =

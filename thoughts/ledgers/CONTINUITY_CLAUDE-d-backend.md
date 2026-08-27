@@ -102,11 +102,23 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
         run-identical. PAYLOAD sums deferred: broken in Nim AND Odin too
         (see DISCOVERIES) — fix the authority first, in one pass for all
         three backends.
-  - [ ] M4 rest: T20 TuckResult, T21 error policy,
+  - [x] T20 !T/?T as TuckResult: carrier in tuck_rt.d (status/err/value,
+        tok/terr/tnone/tfwd/tokVoid/ok), NOT exceptions. Error codes are
+        folded by the emitter and match Nim/Odin exactly (verified:
+        "Math.Odd" == 55587 in all three). Wrapped returns, raise, .ok,
+        record payloads, !void. Runtime filled out along the way:
+        readFile/writeFile/appendFile/removeFile/fileExists, argCount/argAt
+        (entry point seeds them via rt.tuckSetArgs), getEnv (absence, not
+        error), nowMs, readLine. Examples 24-stdlib, 38, 39, 41 now run
+        byte-identical. New helper `tuckRec!(R, "field")` lets the runtime
+        fill the CALLER's hoisted record shape — Odin declares a parallel
+        struct per extern instead.
+  - [ ] M4 rest: T21 error policy,
         T22 invariants (version(tuckNoInvariants)), T23 interfaces,
         T24 decision tables+saturating+const+static assert
-  - [ ] Sweep status (44 examples): 13 compile clean, 22 die naming their
-        own task, 9 dmd-fail (5 are FFI = T26). Re-run after each task.
+  - [ ] Sweep status (44 examples): 15 compile clean, 21 die naming their
+        own task, 8 dmd-fail = 5 FFI (T26) + 2 tasks (M7) + saturating
+        (T24). Re-run after each task.
   - [ ] M5 modules & extern: T25 mod_*.d, T26 extern flavours, T27 emit_examples
   - [ ] M6 tests: T28 harness+d_backend suite, T29 example sweep
   - [ ] M7 concurrency (Fiber) — own plan when reached
@@ -163,6 +175,25 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
   containing a Seq field still shallow-copies the slice on struct assign;
   needs a probe + per-field dup (or a postblit) when records-with-seqs
   actually appear.
+- DIVERGENCE (Nim backend stricter than D, T20): `acc + good.value.value`
+  where acc is `int` and the payload field is `u16` compiles in D (implicit
+  widening) and FAILS in Nim ("type mismatch"). Same Tuck source, same
+  emitted access path — the difference is purely the target language's
+  arithmetic rules leaking through. This is exactly what ROADMAP's
+  2026-08-24 numeric ruling addresses: once conversion is always explicit
+  in the SOURCE, neither backend gets a say. Until then the two disagree
+  about which programs exist, which is a portability hole. Backends must
+  not paper over it independently — the fix belongs in the checker.
+- BUG (mine, fixed in T20): the same record shape hoisted under TWO names —
+  `TRec_fs_content_2C8C` in the declaring module (modPrefix) and
+  `TRec_content_2C8C` in the caller — so D saw two distinct types for one
+  Tuck record. Odin never hit it because `:=` infers and never spells the
+  type; stating declared types exposed it. Fixed by naming a foreign shape
+  through its owning module. Worth knowing: a backend that infers hides
+  cross-module identity bugs a backend that declares will find.
+- The checker often stamps a type on the CALL but not on the `let` target
+  (verified by instrumenting: target read nil for `let r = {..} fs::readFile`).
+  Read the value's type first, the target's second.
 - D function templates instantiate per call site, so pending stubs and
   generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
   boxing, same monomorphization story.
