@@ -8,7 +8,8 @@ TRec_code_CEC9 :: struct {
 }
 
 tuck_readOrGiveUp :: proc(fd: int) -> TRec_code_CEC9 {
-  return /* on select: not yet lowered for Odin */
+  /* on select: not yet lowered for Odin */
+  return {}
 }
 
 tuck_main :: proc () -> int {

@@ -1247,27 +1247,6 @@ proc ensureTrailingReturn(bodyStr: string, body: Expr, blockIndent: int): string
   return bodyStr & "\n" & "  ".repeat(blockIndent) & "  return {}"
 
 # Implicit return: the value flowing at the end of a fn body is its result.
-proc injectTailReturn(body: Expr, retTypeStr: string) =
-  if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
-     retTypeStr != "void":
-    let lastS = body.stmts[^1]
-    if lastS.kind == exkChain:
-      # a chain's value is its base var: keep the mutation statements,
-      # return the base afterwards (idempotent across backends — the shared
-      # AST may already carry the appended return)
-      if lastS.base != nil:
-        body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
-                            returnVal: lastS.base))
-    elif lastS.kind == exkMatch and lastS.subject != nil:
-      # `match subject:` with value arms is an EXPRESSION — the tail match is
-      # the fn's result (decision tables, subject == nil, keep row returns).
-      # Idempotent: the other backend may have wrapped it already.
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
-    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor, exkWhile, exkBreak, exkContinue,
-                           exkAssign, exkBlock} and
-       not (lastS.kind == exkVar and lastS.name == "..."):
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
-
 # Decision tables: packed single-switch when every column is enumerable,
 # otherwise a first-match if/else chain (mirrors codegen.nim).
 proc decisionHeader(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =

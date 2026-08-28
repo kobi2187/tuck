@@ -238,11 +238,14 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
 - D function templates instantiate per call site, so pending stubs and
   generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
   boxing, same monomorphization story.
-- BUG (Odin backend, pre-existing): a `match` whose arms are `return`
-  statements emits Odin's ternary with `return` inside it —
-  `return ((s == Kind.Dot) ? return 0 : ...)`, which is not valid Odin.
-  Found probing sum types for M4. The Nim backend emits a proper `case`
-  for the same source. D follows Nim's shape (final switch), not this.
+- BUG (Odin backend) — FIXED 2026-08-27. A `match` whose arms are `return`
+  statements emitted Odin's ternary with `return` inside it:
+  `return ((s == Kind.Dot) ? return 0 : ...)`, not valid Odin. ROOT CAUSE
+  was a duplicate: codegen_odin kept a private injectTailReturn missing the
+  `matchArmsReturn` guard the shared ast_query version has. Deleting the
+  copy WAS the fix — the duplication was the bug, not merely untidy. Now
+  emits a proper switch; verified it builds and runs on the real Odin
+  toolchain (exit 2, matching Nim and D).
 - BUG (both existing backends, pre-existing): **payload-carrying sum types
   do not work end to end.** `type Shape: | Dot | Line({length: int})` with
   `match s: Line: return s.length` typechecks, then:
