@@ -95,6 +95,61 @@ proc flattenRegistryRaise(e: Expr) =
                   name: "raise_" & fieldNode.receiver.name & "_" &
                         e.callee.callee.name)
 
+proc memberParams(e: Expr, inner: Expr, m: Module): seq[string] =
+  ## The member fn's parameter names, in order.
+  ##
+  ## The checker does not record callParams for a MEMBER call (finding F2 in
+  ## the stage-boundary audit), so fall back to the declaration. `findFn` does
+  ## NOT see object members — it walks top-level, mixin and extern fns —
+  ## whereas `allFns` yields exactly the set whose bodies lowering rewrites.
+  result = semLayer.callParamsFor(e)
+  if result.len > 0 or inner.callee.kind != exkVar: return
+  for d in m.allFns():
+    if d.name == inner.callee.name:
+      return d.paramNames()
+
+proc payloadArgsForMember(e: Expr, params: seq[string]): seq[Expr] =
+  ## The payload's fields, ordered to match the member's params and SKIPPING
+  ## the receiver — the resolved inner call already supplied it, and the
+  ## payload names `self` explicitly (it is an ordinary param, spec §5.1), so
+  ## passing it again would duplicate the argument.
+  let resolved = semLayer.argFieldsFor(e)
+  for i, paramName in params:
+    if paramName == "self": continue
+    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
+                    else: paramName
+    for field in e.args[0].fields:
+      if field[0] == fieldName:
+        result.add(field[1])
+        break
+
+proc flattenMemberCallPayload(e: Expr, m: Module) =
+  ## `{self: b, count: 7} b.grow` — a call whose CALLEE is a member access the
+  ## checker already resolved to its own call.
+  ##
+  ## Left alone the two calls nest: the callee emits `grow(b)` and the outer
+  ## call appends its arguments, giving `grow(b)(b, 7)` — which every backend
+  ## emitted, and which no target compiler accepts. `tuck ch` passed, so this
+  ## reached all three as identically-wrong output.
+  ##
+  ## Same shape as flattenRegistryRaise above, and fixed the same way: one
+  ## call, built once, here. Threading the receiver used to be left to the
+  ## backends "which see the receiver" — but a decision made in three places
+  ## was made wrong in three places.
+  if e.callee == nil or e.callee.kind != exkField: return
+  if not semLayer.hasCall(e.callee): return
+  let inner = semLayer.call(e.callee)
+  if inner == nil or inner.callee == nil: return
+  var merged: seq[Expr]
+  if inner.args.len > 0: merged.add(inner.args[0])   # the receiver
+  let params = memberParams(e, inner, m)
+  if params.len > 0 and e.args.len == 1 and e.args[0].kind == exkStruct:
+    merged.add(payloadArgsForMember(e, params))
+  else:
+    for a in e.args: merged.add(a)
+  e.callee = inner.callee
+  e.args = merged
+
 proc explodePayload(e: Expr) =
   ## `{a: 1, b: 2} f` -> `f(1, 2)`. One arg per declared param, in order.
   ##
@@ -168,6 +223,7 @@ proc lowerExpr(e: Expr, m: Module) =
 
   if e.kind == exkCall:
     flattenRegistryRaise(e)
+    flattenMemberCallPayload(e, m)
     explodePayload(e)
 
 # Entry point for the pass. Two phases, in this order: type bodies are

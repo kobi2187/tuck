@@ -69,6 +69,36 @@ Counted 2026-08-27: **codegen.nim 38, codegen_odin.nim 30, codegen_d.nim 22**.
   delete decl_index.nim rather than keep a cache for work that no longer
   happens.**
 
+- [x] **F5 — FIXED 2026-08-27.** `{payload} recv.member` emits a call-of-a-call — BUG, all three
+  backends.** `tuck ch` PASSES, then every backend emits
+  `tuck_Box_grow(b)(b, 7)` — the receiver appears twice and the result is
+  not valid Nim, Odin or D. The payload-prefix spelling
+  (`{self: b, count: 7} grow`) works and returns 8 everywhere, so it is
+  specifically the dot form carrying an explicit payload.
+  *Why it belongs on this list:* receiver threading for a member call was
+  left to emit ("a member fn's payload explosion belongs to the backends,
+  which see the receiver" — lowering.nim), and all three backends got it
+  identically wrong. A decision made in three places was made wrong in
+  three places.
+  *Fixed* by `lowering.flattenMemberCallPayload`: merge the resolved inner
+  call (which carries the receiver) with the outer call's payload into ONE
+  call, exploding the payload against the member's params and skipping
+  `self`. All three backends now emit `tuck_Box_grow(b, 7)` and return 8.
+  Two supporting notes worth keeping: `findFn` does NOT see object members
+  (it walks top-level/mixin/extern fns) — `allFns` does; and the checker
+  records no callParams for a member call, so the params come from the
+  declaration.
+
+- [ ] **F6. By-type payload matching does not run for MEMBER calls.**
+  `{n: 7, text: "abcd"} b.grow` against `grow({self, count: int, label: str})`
+  checks OK, then every backend drops the payload entirely and emits
+  `grow(b)` — the fields match no param BY NAME, and the checker's pass-2
+  by-type matching (checkCallArgs) never ran for this call, so there is no
+  mapping to replay. The same payload against a TOP-LEVEL fn works (returns
+  11), which is what makes this a checker gap rather than a lowering one.
+  *Fix:* run the by-type match for member calls too, recording argFields as
+  it does for a free fn.
+
 ## Order of work
 1. F1 (measurable target: the quadratic term disappears)
 2. F2 (then `delete-symbol` the three backends' fallbacks — its
