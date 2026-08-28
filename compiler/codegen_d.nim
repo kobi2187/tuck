@@ -51,6 +51,10 @@ type
                      # emit hot path (measured — see decl_index.nim)
     cLibs: HashSet[string]  # `lib:` specs from C-FFI extern blocks; each
                             # becomes a pragma(lib) at module top level
+    errPolicy: string       # from the `errors` declaration; "" = strict.
+                            # Only continue/exit reach codegen at all —
+                            # strict is a COMPILE ERROR the checker raises,
+                            # so a strict program has no drop sites left.
 
 proc dUnsupported(construct: string): string =
   ## The D backend refuses what it cannot yet emit — loudly, at emission
@@ -119,6 +123,22 @@ type TypeMode = enum
 
 proc dTypeIn(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string
 
+proc dFixedArray(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
+  ## A fixed-size array, or "" when this type is not one.
+  ##
+  ## D writes the element first and the size after — `T[N]` — where Odin
+  ## puts the size first (`[N]T`) and Nim spells it `array[N, T]`. Two
+  ## source spellings reach here: `Array[count, elem]` and the `elem *
+  ## count` product form.
+  if t.base == nil or t.base.kind != tkNamed or t.args.len != 2: return ""
+  let (elemIdx, sizeIdx) = case t.base.name
+                           of "Array": (1, 0)
+                           of "*": (0, 1)
+                           else: return ""
+  let inner = ctx.dTypeIn(t.args[elemIdx], mode)
+  if inner == "": return ""
+  inner & "[" & ctx.dTypeIn(t.args[sizeIdx], mode) & "]"
+
 proc dAppType(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## The two type applications this backend maps: `Seq[T]` and the `!T`/`?T`
   ## result carrier. Anything else is a gap named at the point of use.
@@ -138,6 +158,8 @@ proc dAppType(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   if elem != nil:
     let elemStr = ctx.dTypeIn(elem, mode)
     return if elemStr == "": "" else: elemStr & "[]"
+  let arr = ctx.dFixedArray(t, mode)
+  if arr != "": return arr
   let baseName = if t.base != nil and t.base.kind == tkNamed: t.base.name
                  else: "?"
   if mode == tmRequired: dUnsupported("type application " & baseName & "[...]")
@@ -530,6 +552,23 @@ proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
                 else: nil
   ctx.dSumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
+const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
+                     "dequeue", "hasRoom", "initMailbox"]
+  ## Runtime intrinsics that MUTATE their receiver, so it goes in by
+  ## reference. D takes `ref`, so the call site passes the value as-is —
+  ## unlike Odin, which needs an explicit `&`.
+
+const RtByValue = ["at", "setAt", "toStr", "tuckConcat", "errCode",
+                   "tuckSat", "tuckSatI", "tuckReportUnhandled"]
+  ## Runtime intrinsics taking their arguments as-is. Both lists qualify
+  ## explicitly: D has no cross-module scope merge, so `rt.` is required.
+
+proc genDRtCall(calleeStr: string, args: seq[string]): string =
+  ## A runtime intrinsic, or "" when the name is not one.
+  if calleeStr in RtByPointer or calleeStr in RtByValue:
+    return "rt." & calleeStr & "(" & args.join(", ") & ")"
+  ""
+
 proc taskRetTypeD(ctx: var DCodegenCtx, name: string): string =
   ## The D type a task hands back, for the result slot.
   for d in ctx.module.decls:
@@ -559,6 +598,8 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   let satT = ctx.idx.saturatingTypeIdx(calleeStr)
   if satT != nil and args.len == 1:
     return ctx.genDSaturatingCtor(satT, calleeStr, args[0])
+  let rt = genDRtCall(calleeStr, args)
+  if rt != "": return rt
   calleeStr & "(" & args.join(", ") & ")"
 
 proc errCodeArg(ctx: DCodegenCtx, name: string): string =
@@ -857,9 +898,32 @@ proc ownsLayoutD(s: Expr): bool =
   ## Constructs that emit their own indentation, braces and newlines.
   s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkChain}
 
+proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
+                       stmtCode: string): string =
+  ## A fallible result DROPPED in statement position (spec 4.9). The checker
+  ## recorded the site; here it is captured, tested, and handed to the global
+  ## handler.
+  ##
+  ## No value is fabricated — the result is discarded, not replaced with a
+  ## zero, which is what `continue` promises. Under `exit` the handler still
+  ## runs first: it is the hook for diagnostics, and the program stops after.
+  ctx.tmpCounter.inc
+  let tn = "tuckDrop" & $ctx.tmpCounter
+  let site = semLayer.shortcut(s)
+  let handler = mangleName("unhandled")
+  var onErr = handler & "(" & tn & ".err, \"" & site & "\");"
+  if ctx.errPolicy == "exit":
+    onErr.add(" rt.exit(1);")
+  ctx.indD & "{ auto " & tn & " = " & stmtCode & ";\n" &
+    ctx.indD & "  if (" & tn & ".status != rt.TuckStatus.Ok) { " & onErr &
+    " } }\n"
+
 proc genDStmt(ctx: var DCodegenCtx, s: Expr): string =
   ## One statement inside a block: indent + expression + `;`, except the
   ## constructs that lay themselves out.
+  if s != nil and semLayer.shortcut(s) != "":
+    let code = ctx.genDExpr(s)
+    if code != "": return ctx.genDDroppedResult(s, code)
   if s != nil and ownsLayoutD(s):
     let code = ctx.genDExpr(s)
     if code == "": return ""
@@ -1251,6 +1315,90 @@ proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   ctx.retInnerT = nil
   result.add("}\n")
 
+proc dBitConsts(bf: BitFieldInfo): string =
+  ## The shift, and for a range the width and mask. D's `enum` is a real
+  ## compile-time constant, so these fold away entirely.
+  result = "enum " & bf.prefix & "_SHIFT = " & bf.loBit & ";\n"
+  if bf.isRange:
+    result.add("enum " & bf.prefix & "_WIDTH = " & bf.hiBit & " - " &
+               bf.loBit & " + 1;\n")
+    result.add("enum uint " & bf.prefix & "_MASK = (1u << " & bf.prefix &
+               "_WIDTH) - 1;\n")
+
+proc dBitGetter(bf: BitFieldInfo, regName: string): string =
+  ## A range reads as a masked uint; a single bit reads as a bool.
+  let body = if bf.isRange:
+               "return (*" & regName & " >> " & bf.prefix & "_SHIFT) & " &
+                 bf.prefix & "_MASK;"
+             else:
+               "return (*" & regName & " & (1u << " & bf.prefix &
+                 "_SHIFT)) != 0;"
+  let retT = if bf.isRange: "uint" else: "bool"
+  retT & " " & bf.prefix & "_get() {\n    " & body & "\n}\n"
+
+proc dBitSetter(bf: BitFieldInfo, regName: string): string =
+  ## A range clears its mask before OR-ing the shifted value in; a single bit
+  ## sets or clears one mask.
+  if bf.isRange:
+    return "void " & bf.prefix & "_set(uint value) {\n" &
+           "    uint shifted = (value & " & bf.prefix & "_MASK) << " &
+             bf.prefix & "_SHIFT;\n" &
+           "    *" & regName & " = (*" & regName & " & ~(" & bf.prefix &
+             "_MASK << " & bf.prefix & "_SHIFT)) | shifted;\n}\n"
+  "void " & bf.prefix & "_set(bool value) {\n" &
+    "    if (value) *" & regName & " |= (1u << " & bf.prefix & "_SHIFT);\n" &
+    "    else *" & regName & " &= ~(1u << " & bf.prefix & "_SHIFT);\n}\n"
+
+proc genDErrHandler(ctx: var DCodegenCtx, d: Decl): string =
+  ## The `errors [policy: ...]` block's `on unhandled({code, site})` handler
+  ## (spec 4.9) — an ordinary function the drop sites call.
+  ##
+  ## Most of this feature is STATIC: `strict` is a compile error listing
+  ## every unhandled site, so a strict program reaches codegen with no drop
+  ## sites at all, and the SHORTCUTS report is the checker's. What is left
+  ## here is the handler itself and the call to it.
+  let handler = d.errHandler
+  if handler == nil: return ""   # strict: no handler, and no drop sites
+  ctx.definedVars.incl("code")
+  ctx.definedVars.incl("site")
+  ctx.indent = 1
+  var body = ctx.genDStmtOrBlock(handler.fnBody).strip()
+  ctx.indent = 0
+  ctx.definedVars.clear()
+  # A `...` placeholder body means "report it and carry on" — the same
+  # default the Nim backend forwards to.
+  if body == "" or body == ";":
+    body = "rt.tuckReportUnhandled(code, site);"
+  # Mangled deliberately: the handler is emitted here but CALLED from every
+  # drop site (genDDroppedResult), and the two must agree. The decl arrives
+  # unmangled because it hangs off the errors block rather than the module's
+  # top-level fn list.
+  "void " & mangleName(handler.name) & "(ushort code, string site) {\n    " &
+    body & "\n}\n"
+
+proc genDRegister(ctx: var DCodegenCtx, d: Decl): string =
+  ## A memory-mapped register (spec 8): named masks plus accessors reading
+  ## and writing through a typed pointer at the MMIO address.
+  ##
+  ## Same lowering as the Odin backend, for the same reason — neither has
+  ## Nim's `registerMMIO` macro to hand the layout to. The DECODING is
+  ## shared (ast_query.decodeBitField); only the spelling is here.
+  ##
+  ## `volatile` in spirit: the pointer is shared with hardware. D has no
+  ## volatile qualifier — core.volatile's volatileLoad/Store are the
+  ## supported spelling — so an optimiser is free to cache a read across
+  ## statements. Correct for the examples, and a real embedded target should
+  ## route these through core.volatile.
+  var consts: seq[string]
+  var accessors: seq[string]
+  for f in d.regFields:
+    let bf = decodeBitField(d.name, f)
+    consts.add(dBitConsts(bf))
+    if bf.canRead: accessors.add(dBitGetter(bf, d.name))
+    if bf.canWrite: accessors.add(dBitSetter(bf, d.name))
+  "__gshared uint* " & d.name & " = cast(uint*)(" & d.regAddress & ");\n" &
+    consts.join("") & accessors.join("")
+
 proc genDTaskDecl(ctx: var DCodegenCtx, d: Decl): string =
   ## `task name(...)` — an ordinary D function. What makes it a task is the
   ## CALL SITE: calling it schedules a coroutine, and binding its result
@@ -1558,7 +1706,12 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
   of dkType: ctx.genDTypeDecl(d)
   of dkObject: ctx.genDObjectDecl(d)
   of dkRegistry: dUnsupported("registry " & d.name)
-  of dkPool: dUnsupported("pool " & d.name)
+  of dkPool:
+    # spec 7.2: one module-level instance of a fixed-count pool.
+    # `Pool.acquire` reaches the runtime's generic proc — see the
+    # RtByPointer list, which routes it as rt.acquire(&Pool).
+    "__gshared rt.ObjectPool!(" & ctx.dType(d.poolElem) & ", " &
+      $d.poolCount & ") " & d.name & ";\n"
   of dkFn:
     if d.isPending or d.isExtern: ""   # pending: M3; bare extern fn: via block
     else: ctx.genDFnDecl(d)
@@ -1575,14 +1728,14 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
       "enum " & d.name & " = " & ctx.genDExpr(d.constVal) & ";\n"
     else:
       "immutable " & d.name & " = " & ctx.genDExpr(d.constVal) & ";\n"
-  of dkRegister: dUnsupported("register " & d.name)
+  of dkRegister: ctx.genDRegister(d)
   of dkStaticAssert:
     # D checks this at COMPILE time, natively — the identical construct.
     # (The Odin backend collects these into a runtime `assert` in its entry
     # point, because Odin's #assert does not reach here; Nim has
     # `static: assert`. D needs no such workaround.)
     "static assert(" & ctx.genDExpr(d.assertExpr) & ");\n"
-  of dkErrors: dUnsupported("errors policy (M4)")
+  of dkErrors: ctx.genDErrHandler(d)
   of dkImport: ""
   of dkSelect: dUnsupported("top-level on select (arrives with the Fiber runtime)")
   of dkFnSig: ctx.genDFnSig(d)
@@ -1692,9 +1845,12 @@ proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
 
 proc newDCtx(m: Module, realModules: Table[string, Module],
              moduleName: string, modPrefix = ""): DCodegenCtx =
-  DCodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
-              realModules: realModules, moduleName: moduleName,
-              modPrefix: modPrefix, idx: buildDeclIndex(m))
+  result = DCodegenCtx(definedVars: initHashSet[string](), indent: 0,
+                       module: m, realModules: realModules,
+                       moduleName: moduleName, modPrefix: modPrefix,
+                       idx: buildDeclIndex(m))
+  for d in m.decls:
+    if d != nil and d.kind == dkErrors: result.errPolicy = d.policyName
 
 proc emitD*(m: Module, realModules = initTable[string, Module](),
             moduleName = "main"): string =

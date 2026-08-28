@@ -540,4 +540,63 @@ fn main() -> int:
   t.runsD "task: schedule + await computes 42 through a real coroutine",
           42, dmdExe
 
+  # --- pools, registers, error policy ------------------------------------
+  t.src """
+pool Buffers = Array[8, u8] [count: 2]
+
+fn main() -> int:
+  let b = Buffers.acquire
+  if b.ok:
+    return 3
+  return 1
+"""
+  t.emitsD "pool: one module-level instance of a fixed-count pool",
+           r"__gshared rt\.ObjectPool!\(ubyte\[8\], 2\) tuck_Buffers;"
+  t.emitsD "pool: acquire reaches the runtime intrinsic",
+           r"rt\.acquire\(tuck_Buffers\)"
+  t.runsD "pool: acquire yields a slot while any is free", 3, dmdExe
+
+  t.src """
+register RCC_CR at 0x40021000:
+  HSION:   bit 0
+  HSITRIM: bits 3..7
+
+fn main() -> int:
+  return 0
+"""
+  t.emitsD "register: a typed pointer at the MMIO address",
+           r"__gshared uint\* tuck_RCC_CR = cast\(uint\*\)\(0x40021000\);"
+  t.emitsD "register: a single bit reads as a bool",
+           r"bool tuck_RCC_CR_HSION_get\(\)"
+  t.emitsD "register: a range gets a width and a mask",
+           r"enum uint tuck_RCC_CR_HSITRIM_MASK"
+
+  # Error policy (spec 4.9). MOSTLY STATIC: `strict` is a compile error
+  # listing every unhandled site, so a strict program reaches codegen with
+  # no drop sites at all, and the SHORTCUTS report is the checker's. What
+  # codegen owns is the handler and the call to it — `continue` carries on
+  # past the drop, `exit` stops after the handler has run.
+  t.src """
+errors [policy: continue]:
+  on unhandled({code: u16, site: str}):
+    ...
+
+fn readSensor({port: u8}) -> !{value: u16} [io]:
+  if port > 3:
+    return Error.badPort
+  return {value: 42}
+
+fn main() -> int [io]:
+  {port: 9} readSensor
+  return 7
+"""
+  t.emitsD "errors: the global handler is an ordinary fn",
+           r"void tuck_unhandled\(ushort code, string site\)"
+  t.emitsD "errors: a dropped result is captured, tested and routed",
+           r"if \(tuckDrop\d+\.status != rt\.TuckStatus\.Ok\) \{ tuck_unhandled"
+  t.omitsD "errors: continue fabricates no value — it just carries on",
+           r"rt\.exit\(1\);"
+  t.runsD "errors: continue runs the handler and reaches the next statement",
+          7, dmdExe
+
   t.finish()

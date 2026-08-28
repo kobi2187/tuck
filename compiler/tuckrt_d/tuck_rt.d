@@ -194,6 +194,47 @@ R readLine(R)()
     return tok(tuckRec!(P, "line")(line.idup));
 }
 
+/// A fixed-count object pool (spec 7.2). N slots decided at compile time, so
+/// the footprint is static — that is the whole point of the declaration.
+///
+/// `acquire` returns `?T`: exhaustion is ABSENCE, not an error. A count is a
+/// real-world fact and running out is backpressure, so the caller matches on
+/// it rather than handling a failure.
+struct ObjectPool(T, size_t Count)
+{
+    T[Count] storage;
+    ulong occupied;   /// ponytail: 64 slots max, matching the Odin runtime;
+                      /// widen to an array of words if a program needs more.
+}
+
+TuckResult!T acquire(T, size_t Count)(ref ObjectPool!(T, Count) pool)
+{
+    foreach (i; 0 .. Count)
+    {
+        if ((pool.occupied & (1UL << i)) == 0)
+        {
+            pool.occupied |= 1UL << i;
+            return tok(pool.storage[i]);
+        }
+    }
+    return tnone!T();
+}
+
+void release(T, size_t Count)(ref ObjectPool!(T, Count) pool, T item)
+{
+    // Which slot did this come from? The value was handed out from one of
+    // these cells, so match it back by equality — same rule as the Odin
+    // runtime, so a program behaves identically on either backend.
+    foreach (i; 0 .. Count)
+    {
+        if (pool.storage[i] == item)
+        {
+            pool.occupied &= ~(1UL << i);
+            return;
+        }
+    }
+}
+
 // std/fs — the filesystem. The error codes are the FsError variants the
 // Tuck declaration names, hashed the same way every backend hashes them.
 //

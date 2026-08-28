@@ -467,3 +467,34 @@ proc variantOwningField*(m: Module, typeName, fieldName: string): string =
       if f.name == fieldName: return v.name
   ""
 
+
+type
+  BitFieldInfo* = object
+    ## One `bit N` / `bits LO..HI` field of a memory-mapped register, decoded
+    ## from its declared type and attributes.
+    ##
+    ## The DECODING is target-independent — which bits, which directions —
+    ## so it lives here; only the spelling of the masks and accessors differs
+    ## per backend.
+    prefix*: string    ## <register>_<field>, shared by every emitted symbol
+    loBit*, hiBit*: string
+    isRange*: bool     ## a multi-bit field, not a single flag
+    canRead*, canWrite*: bool
+
+proc decodeBitField*(regName: string, f: FieldDef): BitFieldInfo =
+  ## `bits 3..7` is a multi-bit FIELD: shift by the low bit and mask the
+  ## width. A single `bit N` is the one-bit case of the same shape.
+  let bitVal = f.typ.name.replace("bit ", "").replace("bits ", "")
+  let dotPos = bitVal.find("..")
+  result.loBit = if dotPos >= 0: bitVal[0 ..< dotPos].strip() else: bitVal
+  result.hiBit = if dotPos >= 0: bitVal[dotPos + 2 .. ^1].strip() else: bitVal
+  result.isRange = dotPos >= 0 and result.loBit != result.hiBit
+  result.prefix = regName & "_" & f.name
+  var hasRead, hasWrite = false
+  for a in f.attrs:
+    if a.name == "read": hasRead = true
+    elif a.name == "write": hasWrite = true
+  # An unmarked field is readable AND writable; marking one direction opts
+  # out of the other.
+  result.canRead = hasRead or not hasWrite
+  result.canWrite = hasWrite or not hasRead
