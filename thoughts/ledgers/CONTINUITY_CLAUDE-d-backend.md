@@ -235,6 +235,24 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
   for the duplication; recording those params at the checker would remove
   the rest, and is the real fix. Deleting the backend copies before that
   would break the corpus — verified by instrumenting, not by reading.
+- PERF (measured 2026-08-27, user asked whether the Nim backend's `*Fast`
+  hash lookups would help the others): emit is QUADRATIC in all backends —
+  D's share of a compile went 0.03s / 0.11s / 0.38s for 200 / 500 / 1000
+  types, i.e. doubling n roughly quadruples the time. Nim is quadratic too,
+  with a smaller constant (0.04 / 0.16 / 0.43).
+  * compiler/decl_index.nim now shares the index shape (record/actor/task
+    names, invariant types, saturating types). Keyed by nothing: a Module is
+    a value object with no identity, so a global cache cannot be written
+    safely — the backend builds one and passes it.
+  * That alone barely moved the needle (0.84 -> 0.80): those five queries
+    were not the hot ones.
+  * THE REAL HOT SPOT, found by instrumenting: `getFieldsForType` prefers
+    the checker's recorded type edge (`semLayer.declForType`) and falls back
+    to a decl-list scan when it is missing — and the edge MISSES EVERY TIME
+    (200 fallbacks for 200 types). Each miss is a full scan, per node.
+    The fix belongs in the CHECKER (record the edge), not in a backend
+    cache. Same shape as the callParamsFor gap: work that belongs in an
+    earlier stage is being redone per-expression at emit time.
 - D function templates instantiate per call site, so pending stubs and
   generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
   boxing, same monomorphization story.

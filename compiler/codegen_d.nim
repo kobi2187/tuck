@@ -19,6 +19,7 @@ import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+import decl_index
 import lowering                # getFieldsForType
 # Shared, ctx-free helpers that happen to live in the Odin backend's util
 # module: the record-shape hash (so both backends name a shape alike) and the
@@ -45,6 +46,8 @@ type
     retInnerT: Type        # payload Tuck type (typed struct-literal returns)
     fieldVars: HashSet[string]  # inside an invariant: names that are fields
     fieldPrefix: string         # what those names are reached through
+    idx: DeclIndex   # O(1) name lookups; a scan here is quadratic over the
+                     # emit hot path (measured — see decl_index.nim)
 
 proc dUnsupported(construct: string): string =
   ## The D backend refuses what it cannot yet emit — loudly, at emission
@@ -362,7 +365,7 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
   for f in e.args[0].fields:
     parts.add(f.name & ": " & ctx.genDExpr(f.value))
   let ctor = e.callee.name & "(" & parts.join(", ") & ")"
-  if hasInvariants(ctx.module, e.callee.name):
+  if ctx.idx.hasInvariantsIdx(e.callee.name):
     return "__validated_" & e.callee.name & "(" & ctor & ")"
   ctor
 
@@ -422,6 +425,13 @@ proc genDMerge(ctx: var DCodegenCtx, e: Expr): string =
   if newFields.len == 0: return ""
   ctx.recStructNameD(newFields) & "(" & vals.join(", ") & ")"
 
+proc isRecordConstructionIdx(ctx: DCodegenCtx, e: Expr): bool =
+  ## isRecordConstruction, answered through the index rather than a scan.
+  e != nil and e.kind == exkCall and e.args.len == 1 and
+    e.args[0].kind == exkStruct and
+    e.callee != nil and e.callee.kind == exkVar and
+    ctx.idx.isRecordTypeIdx(e.callee.name)
+
 proc genDSaturatingCtor(ctx: var DCodegenCtx, satT: Type,
                         calleeStr, arg: string): string =
   ## spec 4.1: constructing a `[saturating]` type CLAMPS instead of
@@ -441,7 +451,7 @@ proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
   ## proceeds as a plain one. Same order as the Odin backend.
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genDBake(e)
-  if isRecordConstruction(ctx.module, e): return ctx.genDRecordCtor(e)
+  if ctx.isRecordConstructionIdx(e): return ctx.genDRecordCtor(e)
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genDAlias(e)
   if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
@@ -499,7 +509,7 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   if calleeStr == "echo":
     # `echo` is the builtin debug print; writeln is D's identical construct.
     return "writeln(" & args.join(", ") & ")"
-  let satT = ctx.module.saturatingType(calleeStr)
+  let satT = ctx.idx.saturatingTypeIdx(calleeStr)
   if satT != nil and args.len == 1:
     return ctx.genDSaturatingCtor(satT, calleeStr, args[0])
   calleeStr & "(" & args.join(", ") & ")"
@@ -548,7 +558,7 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
   let v = ctx.genDExpr(e.returnVal)
   # production site: handing back a value of an invariant-carrying type
   let rt = semLayer.typeFor(e.returnVal)
-  if rt != nil and rt.kind == tkNamed and hasInvariants(ctx.module, rt.name):
+  if rt != nil and rt.kind == tkNamed and ctx.idx.hasInvariantsIdx(rt.name):
     return "return __validated_" & rt.name & "(" & v & ")"
   "return " & v
 
@@ -910,7 +920,7 @@ proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
     result.add(ctx.genDChainStep(step, baseStr))
   if e.base != nil:
     let bt = semLayer.typeFor(e.base)
-    if bt != nil and bt.kind == tkNamed and hasInvariants(ctx.module, bt.name):
+    if bt != nil and bt.kind == tkNamed and ctx.idx.hasInvariantsIdx(bt.name):
       result.add(ctx.indD & "validate_" & bt.name & "(" & baseStr & ");\n")
 
 proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
@@ -1307,7 +1317,7 @@ proc newDCtx(m: Module, realModules: Table[string, Module],
              moduleName: string, modPrefix = ""): DCodegenCtx =
   DCodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
               realModules: realModules, moduleName: moduleName,
-              modPrefix: modPrefix)
+              modPrefix: modPrefix, idx: buildDeclIndex(m))
 
 proc emitD*(m: Module, realModules = initTable[string, Module](),
             moduleName = "main"): string =
