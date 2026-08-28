@@ -546,6 +546,13 @@ when isMainModule:
       if dirExists(rtSrcD):
         for f in walkFiles(rtSrcD / "*.d"):
           copyFile(f, outDir / extractFilename(f))
+      # The coroutine engine is the SAME vendored C library all three
+      # backends drive (compiler/vendor/minicoro), prebuilt as minicoro.a —
+      # that is what keeps concurrency semantics and performance shape from
+      # depending on which backend built the program.
+      let mcoSrc = getAppDir() / "compiler" / "tuckrt" / "minicoro.a"
+      if fileExists(mcoSrc):
+        copyFile(mcoSrc, outDir / "minicoro.a")
     let m = prog[^1].m
     if cmd in ["build", "b"]:
       # entry point: `fn main` runs when the binary starts. No main =
@@ -697,10 +704,15 @@ when isMainModule:
               if not mem.externLib.endsWith(".c"): continue
               let obj = outDir / mem.externLib.changeFileExt("o")
               if fileExists(obj): cObjs.add(" " & quoteShell(obj))
+          # The coroutine engine's C archive, linked when it is present —
+          # dmd -i pulls in tuck_coro.d, whose extern(C) declarations this
+          # resolves.
+          let mcoA = outDir / "minicoro.a"
+          let mcoArg = if fileExists(mcoA): " " & quoteShell(mcoA) else: ""
           let dCmd = quoteShell(dmdExe) & " -i" & dOpt &
                      " -I" & quoteShell(outDir) &
                      " -of=" & quoteShell(dBin) & " " &
-                     quoteShell(outDir / (base & ".d")) & cObjs
+                     quoteShell(outDir / (base & ".d")) & cObjs & mcoArg
           let dT0 = epochTime()
           let dRc = execShellCmd(dCmd)
           let dMs = (epochTime() - dT0) * 1000
