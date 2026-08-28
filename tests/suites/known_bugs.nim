@@ -621,4 +621,33 @@ fn main() -> int:
                      r"raise_tuck_AppEvents_LowMemory\(42\)")
   t.bugFixed "a registry raise in a task body is lowered"
 
+  # FIELD ACCESS ON A PRIMITIVE IS UNCHECKED.
+  #
+  # `s.wibble` on a str typechecks clean and becomes <unknown>. The cause is
+  # in missingFieldMessage: it declines to report when the receiver has no
+  # declared fields ("anything else falls through to gradual typing"), which
+  # is deliberate for SUM types but means every primitive receiver accepts
+  # every name.
+  #
+  # Found 2026-08-29 while investigating why `s.len` types as <unknown>.
+  # That turned out not to be about `len` at all: `len` is declared NOWHERE
+  # — not in std/str.tuck, not in std/seq.tuck, not in the runtime — so it
+  # has been resolving by luck in whichever backend spells it the same way.
+  # The Nim backend emits `.len` and lets NIM's len answer; the D backend had
+  # to hardcode the type because it could not.
+  #
+  # The fix is two steps and neither is small: declare `len` in std (which
+  # collides — `len` in both seq and str is ambiguous the moment a program
+  # imports both, and `Seq[T]` did not bind against `Seq[int]` in the
+  # attempt), and then make this rejection real.
+  t.src """
+fn main() -> int:
+  let s = "abcd"
+  let n = s.wibble
+  return 0
+"""
+  t.quietly: t.badCheck("field access on a primitive is rejected",
+                        "TK-TY")
+  t.bugOpen "field access on a primitive is rejected"
+
   t.finish()
