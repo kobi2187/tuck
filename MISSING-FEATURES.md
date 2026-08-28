@@ -15,6 +15,11 @@ is a summary.
 **How to get the real list:** `./run-all-tests.sh` prints every `OPEN` line.
 That is authoritative; this file explains them.
 
+**For everything else** — design gaps, unimplemented features, checker and
+backend bugs, diagnostics that misdiagnose — see `TODO.md`, which indexes
+all of it in one place by category. This file stays focused on the pinned
+open bugs and the measured async/concurrency gaps.
+
 ---
 
 ## A. Open bugs (4, all with a failing test that pins them)

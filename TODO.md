@@ -1,0 +1,228 @@
+# TODO — every known bug, gap and unfinished thing, in one place
+
+Collated 2026-08-29. This file is an INDEX, not a replacement: each entry
+says what is wrong, how confident we are, and where the full write-up lives.
+Fix an entry, delete it from here and update its source.
+
+**The suite is the authority.** `./tests/run` prints every `OPEN` line, and
+`tests/suites/end_to_end.nim` checks the count in `MISSING-FEATURES.md`
+against the number of `bugOpen` assertions, so those two cannot drift apart
+silently. Everything else here is prose and can.
+
+Sources collated:
+`MISSING-FEATURES.md` · `stdlib-project/FRICTIONS.md` ·
+`thoughts/shared/audits/stage-boundary-crossings.md` ·
+`thoughts/ledgers/CONTINUITY_CLAUDE-d-backend.md` ·
+`scratchpad/actor-playground/FINDINGS.md` ·
+`scratchpad/iface-playground/FINDINGS.md`
+
+Confidence key: **[repro]** reproduced by running · **[read]** read from the
+code, not run · **[design]** a decision that was never made.
+
+---
+
+## 1. Design gaps — a decision was never made
+
+These are not bugs. Nobody has ruled, so no implementation can be correct.
+
+- [ ] **[repro] Full-mailbox policy is unstated, and today it deadlocks.**
+  `send` is fire-and-forget and `[queue: N]` is a compile-time bound, so a
+  mailbox can fill. The spec never says whether it blocks, drops or raises.
+  Observed: it DROPS silently, and a `waitUntil` on the dropped work then
+  spins forever. All three backends agree because D was built to match
+  rather than invent a fourth behaviour. → FRICTIONS #9 (with the
+  2026-08-29 update), actor-playground FINDINGS.
+- [ ] **[repro] `send` without `waitUntil` never delivers.** 10 sends into a
+  queue of 4 with no wait leaves the actor untouched: `main` never yields,
+  so the daemon never runs. An actor program with no `waitUntil` and no task
+  does nothing at all. → same sources.
+- [ ] **[design] How `Seq` crosses a call boundary.** Emitted as a plain
+  value in/out — no `sink`, no `var` — so an append loop is O(n²) today.
+  The call-site spelling (`xs ..push {v}`) is already right either way, so
+  this is a lowering decision, not an API one. → FRICTIONS #8.
+- [ ] **[design] Correlation tokens for actor replies.** Decided in
+  principle: the token is a payload field the CALLER generates, and the
+  actor keeps a table (probably a hashtable, tracking finished values and
+  pending work). Nothing implemented; no codegen change expected since the
+  token rides as an ordinary parameter.
+- [ ] **[design] Recursive types have no expression.** Direct
+  self-containment is infinite-sized; the corpus works around it by indexing
+  into a flat `Seq`. Fine in an arena world, but currently forced rather
+  than chosen. Lands on `std.encoding`, `std.reflect`, ASTs, JSON.
+  → FRICTIONS #4, ROADMAP "slab allocator" experiment.
+- [ ] **[design] Hashing primitives.** `satisfies int: Hashable` is refused
+  (correctly — `satisfies` matches declared objects), which leaves
+  `Table[str, V]` with no way to hash its key. Blocks `alloc.map` and
+  `alloc.set` entirely. A `fnsig` hash slot needs no language change and is
+  the current front-runner. → FRICTIONS #6.
+
+## 2. Unimplemented / partial language features
+
+- [ ] **[repro] Generic `fnsig` does not parse.** `fnsig Mapper[T, U]` is a
+  parse error, which blocks every higher-order generic API. The dangerous
+  part is the workaround that LOOKS fine: a non-generic `fnsig` with bare
+  `T`/`U` typechecks because gradual typing reads them as `<unknown>`, so it
+  silently disables checking on the callback. → FRICTIONS #1.
+- [ ] **[repro] Generic `actor` does not parse.** Blocks a service actor
+  generic over its payload. Genuinely unclear whether it SHOULD exist — an
+  actor is a compile-time singleton, so "one instance, generic over T" may
+  be meaningless. Wants a ruling either way; today the error reads like a
+  parser gap. → FRICTIONS #2.
+- [ ] **[repro] Storing into a `fnsig` slot is not signature-checked.**
+  A `{a: str} -> str` fn sits in a `{x: int} -> bool` slot with no
+  complaint. Calling THROUGH a slot checks arity, so the gap is specifically
+  the store — which is `bake`'s whole contract. → FRICTIONS #3.
+- [ ] **[read] Effect propagation is require-declared, not inferred.** The
+  ruling is implicit propagation; the checker still makes you declare it.
+  → MISSING-FEATURES D, ROADMAP:26.
+- [ ] **[read] `[may_block]` has no checker meaning.** It parses and
+  propagates and does nothing. Its real job is the `[irq_safe]` treatment:
+  an `[irq_safe]` fn calling a `[may_block]` one should be a compile error,
+  exactly as §3.7 already specifies for `[irq_safe]` calling `[io]`.
+- [ ] **[read] Typed select sources.** `on select` lowers `read <fd>` and
+  `timeout <ms>` only. Dotted forms (`resp.ok`, `timeout.5s`) parse as
+  opaque strings. Blocks example 16. → MISSING-FEATURES B/C.
+- [ ] **[read] Numeric conversion work (ROADMAP ruling, ordered).**
+  (a) enforce no-implicit-conversion at binding sites — `compatible()` in
+  `typecheck.nim:263`, with the `strictKind` define already there to measure
+  the blast radius; (b) implement `~`/`^` so there is a way to say yes;
+  (c) implement `[wrapping]`/`[trapping]` for real, THEN switch the default.
+  Only `[saturating]` has codegen today. A default naming `[trapping]` is
+  theatre until trapping traps.
+- [ ] **[read] Invariants stay on in release (ROADMAP ruling 5).** Done in
+  the D backend (`version(tuckNoInvariants)`); the NIM backend still
+  hardcodes `when not defined(release)` into emitted code, so its invariants
+  cannot be kept in a release build at all.
+- [ ] **[design] Variant sets in fn signatures.** Semantics ruled
+  (`ProtocolStage<Login|Active>` narrows where a fn may be called); the
+  SPELLING is unsettled, since `[T]` and `[...]` are taken.
+
+## 3. Checker bugs
+
+- [ ] **[repro] Field access on a primitive is unchecked.** `s.wibble` on a
+  `str` typechecks clean and becomes `<unknown>`.
+  `typecheck.nim missingFieldMessage` declines to report when the receiver
+  has no declared fields — deliberate for sum types, but it means every
+  primitive receiver accepts every name. **Pinned:** `known_bugs`, bugOpen.
+  Related: `len` is declared NOWHERE (not std, not any runtime) and resolves
+  by luck in whichever backend spells it the same way. Declaring it needs
+  the `seq`/`str` ambiguity settled and `Seq[T]` binding against `Seq[int]`
+  — both hit and reverted. → MISSING-FEATURES A4.
+- [ ] **[repro] A member fn shadows a top-level fn of the same name.**
+  `collectSigs` registers members under their bare name in the same flat
+  `fnSigs`. Attempted and reverted: members must STAY there, because
+  `d.noise` resolves through `asFnByName`. Needs call resolution to
+  distinguish them. **Pinned:** `member_names`. → MISSING-FEATURES A1.
+- [ ] **[repro] A prefix call is accepted.** `echo total` (wrong — Tuck is
+  postfix) typechecks and emits `total(echo)`. Both names read as
+  `<unknown>` under gradual typing. Same trap family as the fnsig
+  workaround above. NOT pinned yet.
+- [ ] **[repro] By-type payload matching does not run for MEMBER calls.**
+  `{n: 7, text: "x"} b.grow` against `grow({self, count: int, label: str})`
+  checks OK and then drops the payload entirely. `payloadFields` reports
+  `shapeKnown=false` for a member call, so the claim passes never run. The
+  same payload against a top-level fn works. → audit F6.
+- [ ] **[repro] `declForType` is never recorded for inferred types.**
+  `resolveTypeNames` walks only types the user WROTE, so a type the checker
+  synthesized for an expression has no declaration edge and every consumer
+  re-derives it by name — a decl-list scan per node, which is why emit is
+  quadratic. A partial fix landed (`resolveInferredTypes`); it does not
+  reach these nodes, which arrive with `id=unset`. → audit F1.
+- [ ] **[repro] `callParamsFor` unrecorded for three categories** — pending
+  fns, distinct-type ctors, combinators. Every backend therefore keeps a
+  decl-scan fallback (~150 lines across three). Members were fixed
+  2026-08-27; these three remain. → audit F2.
+
+## 4. Compiler-internal issues (not user-visible)
+
+- [ ] **[repro] Emit is quadratic in every backend.** D's share of a compile
+  went 0.03s / 0.11s / 0.38s at 200 / 500 / 1000 types — doubling n
+  roughly quadruples it. Nim has the same curve with a smaller constant.
+  Cause is the decl-list scans above, not the emitters. → audit, SCORES.md.
+- [ ] **[read] `decl_index.nim` may be the wrong fix.** It makes emit-time
+  re-derivation cheap instead of removing it; measured gain was 0.84s →
+  0.80s. If F1/F2 land and the scans disappear, DELETE it rather than keep a
+  cache for work that no longer happens. → audit F4.
+- [ ] **[read] Marker plumbing is duplicated.** Two name→marker maps and two
+  marker→name maps, none sharing code. Adding an effect marker means four
+  edits. → MISSING-FEATURES D.
+- [ ] **[read] One C implementation of the runtime.** Nim, Odin and D
+  runtimes are mirrored BY HAND and have drifted repeatedly. Collapsing the
+  offload seam into one C file bound over the existing FFI removes the
+  class of bug. The coroutine engine already works this way (all three
+  drive the same vendored minicoro), which is the precedent.
+- [ ] **[read] Stage boundaries leak.** 90 emit-time queries across the
+  three backends re-derive facts an earlier stage should have recorded.
+  Rule: a question asked at emit means an earlier stage did not finish.
+  → the whole audit document.
+
+## 5. Backend bugs
+
+### Nim
+- [ ] **[repro] Invariants cannot be kept in a release build.** See §2.
+- [ ] **[repro] An actor handler containing a registry raise emits nothing
+  usable** — no proc for the handler at all (example 20). Same source fails
+  in D differently, so the cause is upstream of both.
+
+### Odin
+- [ ] **[repro] `.toStr` on an int does not compile** — "'n1' of type 'int'
+  has no field 'toStr'". → iface-playground FINDINGS.
+- [ ] **[repro] A list literal cannot reach a `Seq` parameter.**
+  `[dynamic]T` has no literal form. Needs statement hoisting in the emitter.
+  **Pinned:** `interface_seq`. → MISSING-FEATURES A2.
+- [ ] **[read] A task WITH ARGUMENTS emits a direct call**, so its body runs
+  on the main context and the first `tuckAwaitRead` panics. Unverified in
+  isolation — the example that would prove it hits an earlier `on select`
+  error first. → MISSING-FEATURES A.
+
+### D
+- [ ] **[repro] A value-position match whose arms are STATEMENTS wraps them
+  in `return`** — visible in example 20 as `case X: return self.state = ...`.
+  The value/statement decision must look at the arm bodies.
+- [ ] **[read] Records containing a `Seq` field shallow-copy the slice.**
+  Assignment `.dup`s a bare Seq, but a record holding one is copied
+  field-wise and the slice inside is shared. Needs a probe and a per-field
+  dup (or a postblit).
+- [ ] **[read] Registers are not `volatile`.** D has no volatile qualifier;
+  `core.volatile`'s load/store are the supported spelling. Correct for the
+  examples, wrong for a real embedded target.
+- [ ] **13 of 44 examples do not compile**, each for its own reason:
+  fnsig-as-value (03), mixins (04), inline sum type (08), an actor with no
+  handlers (15), `on select`'s TASK form which needs the reactor (29, 30),
+  plus 05, 12, 14, 16, 20, 34, 42 — several of which are upstream rather
+  than D. → ledger.
+
+### Cross-backend
+- [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**
+  `acc + payload.value` with `acc: int` and the field `u16` compiles in D
+  and fails in Nim. Same source, two answers about which programs exist.
+  The numeric-conversion ruling closes this; until then it is a portability
+  hole. → ledger.
+
+## 6. Diagnostics — right refusal, wrong message
+
+A cluster with one shape: the compiler is correct to refuse, but the message
+describes the parser's or backend's problem rather than the author's.
+FRICTIONS calls #7 the house standard — it names the type, the rule, the
+position, and a way forward.
+
+- [ ] **[repro] Reserved words in identifier positions** say "expected a
+  field name" while pointing AT one. Three instances found writing ordinary
+  stdlib types: `pending`, `error`, `when`. The reserved list is already
+  documented for the bracket case; the parser just does not consult it here.
+  → FRICTIONS #5, #5b, #5c.
+- [ ] **[repro] Direct recursive sum types fail in the BACKEND.** `tuck ch`
+  passes, then Nim reports `illegal recursion in type 'tuck_Expr'` — a
+  mangled name, in a file the author does not have open. Detect
+  self-containment at check time and say so in Tuck's terms, naming the
+  field and pointing at `Seq[T]`. → FRICTIONS #4.
+- [ ] **[repro] `satisfies` on a primitive** says "not a declared object in
+  scope", which sends the reader looking for a missing declaration. Saying
+  "primitives cannot satisfy interfaces" ends the search. → FRICTIONS #6.
+
+## 7. Known-broken examples
+
+- [ ] **16-actor-tasks-unified-syntax** — fails the CHECKER, not codegen:
+  `.fn {args}` on an undeclared method (the example needs a `pending:`
+  stub), plus dotted select sources. → MISSING-FEATURES B.
+- [ ] **20-embedded-mp3-player** — see the Nim and D entries above.
