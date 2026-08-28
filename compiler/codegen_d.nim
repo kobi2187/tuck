@@ -354,11 +354,6 @@ proc explodeRecordArgD(ctx: var DCodegenCtx, e: Expr,
     parts.add(ctx.genDExpr(e.args[0]) & "." & fieldName)
   calleeStr & "(" & parts.join(", ") & ")"
 
-proc isRecordConstructionD(ctx: DCodegenCtx, e: Expr): bool =
-  e.args.len == 1 and e.args[0].kind == exkStruct and
-    e.callee != nil and e.callee.kind == exkVar and
-    isRecordType(ctx.module, e.callee.name)
-
 proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
   ## `{fields} TypeName` — a named-argument struct literal of the DECLARED
   ## type. A production site: an invariant-carrying value validates before
@@ -446,7 +441,7 @@ proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
   ## proceeds as a plain one. Same order as the Odin backend.
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genDBake(e)
-  if ctx.isRecordConstructionD(e): return ctx.genDRecordCtor(e)
+  if isRecordConstruction(ctx.module, e): return ctx.genDRecordCtor(e)
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genDAlias(e)
   if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
@@ -470,12 +465,6 @@ proc memberProcNameD(objName, memberName: string): string =
   ## backends' output diffable and is what interface dispatch keys on.
   objName & "_" & memberName
 
-proc memberOwnerD(ctx: DCodegenCtx, recvT: Type): string =
-  if recvT == nil or recvT.kind != tkNamed: return ""
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkObject and d.name == recvT.name: return d.name
-  ""
-
 proc memberRecvType(e: Expr): Type =
   ## The receiver's type: args[0] itself (the checker's rewrite), or the
   ## `self` field of a payload literal (`{self: c} bump`).
@@ -496,7 +485,7 @@ proc memberCalleeNameD(ctx: DCodegenCtx, e: Expr): string =
   ## A member call: derive the qualified name from the receiver's type —
   ## port of the Odin backend's memberCalleeName.
   if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
-  let owner = ctx.memberOwnerD(memberRecvType(e))
+  let owner = memberOwner(ctx.module, memberRecvType(e))
   if owner == "" or not ctx.ownerDeclares(owner, e.callee.name): return ""
   memberProcNameD(owner, e.callee.name)
 
@@ -586,14 +575,8 @@ proc dBinOp(op: BinOp): string =
   of boXor: "^"
   of boRangeIncl, boRangeExcl: ""   # only meaningful inside foreach — genDFor
 
-proc isStringConcatD(e: Expr): bool =
-  ## `+` over strings — D's identical construct is the native `~`.
-  if e.binOp != boAdd or e.left == nil: return false
-  let lt = semLayer.typeFor(e.left)
-  lt != nil and lt.kind == tkNamed and lt.name in ["str", "string"]
-
 proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
-  if isStringConcatD(e):
+  if isStringConcat(e):
     return "(" & ctx.genDExpr(e.left) & " ~ " & ctx.genDExpr(e.right) & ")"
   if e.binOp in {boRangeIncl, boRangeExcl}:
     return dUnsupported("a range outside a for loop")
@@ -620,11 +603,6 @@ proc isLenOnSized(ctx: var DCodegenCtx, e: Expr): bool =
   if rt == nil: return false
   if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
   seqElem(rt) != nil
-
-proc isResultStatusTest(e: Expr): bool =
-  ## `r.ok` on a !T/?T value is a STATUS TEST, not a field read.
-  if e.fieldName != "ok" or e.receiver == nil: return false
-  bangInner(semLayer.typeFor(e.receiver)) != nil
 
 proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   ## A `.name` access: a resolved call, a result's status, the len property,
@@ -1298,11 +1276,6 @@ proc mainDeclD(m: Module): Decl =
       return d
   nil
 
-proc returnsValueD(d: Decl): bool =
-  d.fnReturnType != nil and
-    not (d.fnReturnType.kind == tkNamed and
-         d.fnReturnType.name in ["void", "unit"])
-
 proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
   ## Tuck's `fn main` is a plain fn; D's entry point calls it. A
   ## value-returning `fn main` IS the process exit code — D's `int main`
@@ -1323,7 +1296,7 @@ proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
   # one assignment.
   let seedArgs = "    rt.tuckSetArgs(args);\n"
   let head = "(string[] args) {\n" & seedArgs & mains
-  if mainFn != nil and mainFn.returnsValueD:
+  if mainFn != nil and mainFn.returnsValue:
     result = "int main" & head & "    return cast(int) " & tuckMain & "();\n}\n"
   elif mainFn != nil:
     result = "void main" & head & "    " & tuckMain & "();\n}\n"

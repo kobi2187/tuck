@@ -316,15 +316,6 @@ proc memberProcName*(objName, memberName: string): string =
   ## several types answering the same call is the whole point of a contract.
   objName & "_" & memberName
 
-proc memberOwner(ctx: OdinCodegenCtx, recvT: Type): string =
-  ## The object type a member call dispatches on, or "" when the receiver is
-  ## not an object (a record's `.fn` is a free fn and keeps its bare name).
-  if recvT == nil or recvT.kind != tkNamed: return ""
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkObject and d.name == recvT.name: return d.name
-  ""
-
-
 # Type-directed explosion: a record-typed VAR as the whole payload
 # (`p advance`) explodes to the fn's params by field name, in param order.
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
@@ -499,7 +490,7 @@ proc memberCalleeName(ctx: OdinCodegenCtx, e: Expr): string =
   ## (the checker's asFnByName rewrite). The DECLARATION emitted qualified, so
   ## the call has to match — derive the same name from the receiver's type.
   if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
-  let owner = ctx.memberOwner(semLayer.typeFor(e.args[0]))
+  let owner = memberOwner(ctx.module, semLayer.typeFor(e.args[0]))
   if owner == "": return ""
   for d in ctx.module.decls:
     if d == nil or d.kind != dkObject or d.name != owner: continue
@@ -524,11 +515,6 @@ proc genericCtorName(ctx: var OdinCodegenCtx, e: Expr, base: string): string =
   var gparts: seq[string]
   for a in t.args: gparts.add(ctx.odinType(a))
   qbase & "(" & gparts.join(", ") & ")"
-
-proc isRecordConstruction(ctx: OdinCodegenCtx, e: Expr): bool =
-  e.args.len == 1 and e.args[0].kind == exkStruct and
-    e.callee != nil and e.callee.kind == exkVar and
-    isRecordType(ctx.module, e.callee.name)
 
 proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Odin struct literal: `Type{field = value, ...}`, a value not a pointer.
@@ -603,7 +589,7 @@ proc asCombinatorCall(ctx: var OdinCodegenCtx, e: Expr,
   ## emitting one. Any that declines returns "" and the call proceeds.
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genOdinBake(e)
-  if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
+  if isRecordConstruction(ctx.module, e): return ctx.genRecordCtor(e)
   if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genOdinAlias(e)
   if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
@@ -884,13 +870,6 @@ proc genIfaceDispatch(ctx: var OdinCodegenCtx, e: Expr,
   "(proc(v: " & ic.iface & ") -> int {\n\tswitch v.tag {\n" &
     arms.join("\n") & "\n\t}\n\treturn 0\n})(" & recv & ")"
 
-proc isResultStatusTest(e: Expr): bool =
-  ## `r.ok` on a !T/?T value is a STATUS TEST, not a field.
-  if e.fieldName != "ok" or e.receiver == nil: return false
-  let rt = semLayer.typeFor(e.receiver)
-  rt != nil and rt.kind == tkApp and rt.base != nil and
-    rt.base.kind == tkNamed and rt.base.name in ["!", "?", "!?"]
-
 proc isInputField(ctx: OdinCodegenCtx, e: Expr): bool =
   ## `input.x` — the incoming payload's field is just the param.
   e.receiver != nil and e.receiver.kind == exkVar and
@@ -994,12 +973,6 @@ proc odinBinOp(op: BinOp): string =
   of boXor: "^"
   of boRangeIncl: "..="   # Odin spells inclusive ranges ..=
   of boRangeExcl: "..<"
-
-proc isStringConcat(e: Expr): bool =
-  ## `+` over strings is a runtime call, not an operator.
-  if e.binOp != boAdd or e.left == nil: return false
-  let lt = semLayer.typeFor(e.left)
-  lt != nil and lt.kind == tkNamed and lt.name in ["str", "string"]
 
 proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
   ## rt.tuckConcat — `concat` was the Beef runtime's name and never existed in
@@ -2300,11 +2273,6 @@ proc newOdinCtx(m: Module, realModules: Table[string, Module],
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       result.errPolicy = d.policyName
-
-proc returnsValue(d: Decl): bool =
-  ## Does this fn hand back something a caller can use?
-  d.fnReturnType != nil and
-    not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name == "void")
 
 proc mainDecl(m: Module): Decl =
   ## The program's entry fn, if it has one.

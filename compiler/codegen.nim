@@ -764,12 +764,6 @@ proc nimBinOp(op: BinOp): string =
   of boRangeIncl: ".."
   of boRangeExcl: "..<"
 
-proc isStringConcat(e: Expr): bool =
-  ## `+` over strings is a runtime call, not an operator.
-  if e.binOp != boAdd or e.left == nil: return false
-  let lt = semLayer.typeFor(e.left)
-  lt != nil and lt.kind == tkNamed and lt.name in ["str", "string"]
-
 proc genBinary(ctx: var CodegenCtx, e: Expr): string =
   if isStringConcat(e):
     return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"

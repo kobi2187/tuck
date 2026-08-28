@@ -386,3 +386,50 @@ proc inferLitType*(e: Expr): Type =
     of lkFloat: return Type(kind: tkNamed, name: "float")
     else: return Type(kind: tkNamed, name: "int")
   nil
+
+# --- backend-shared call/expression predicates ----------------------------
+#
+# Questions every backend asks of the same node and gets the same answer to.
+# They lived as private copies in each emitter, which is how one gets fixed
+# and the others do not — the injectTailReturn drift (an invalid-Odin bug for
+# any match-with-returns) was exactly that, so these are shared on purpose.
+#
+# The test for belonging here: the answer depends only on the AST and the
+# checker, never on the target language.
+
+proc isStringConcat*(e: Expr): bool =
+  ## `+` over strings. Every backend spells the RESULT differently (Nim `&`,
+  ## D `~`, a runtime call in Odin) but they all ask this same question.
+  if e == nil or e.kind != exkBinary: return false
+  if e.binOp != boAdd or e.left == nil: return false
+  let lt = semLayer.typeFor(e.left)
+  lt != nil and lt.kind == tkNamed and lt.name in ["str", "string"]
+
+proc isRecordConstruction*(m: Module, e: Expr): bool =
+  ## `{fields} TypeName` — a construction, not a call.
+  e != nil and e.kind == exkCall and e.args.len == 1 and
+    e.args[0].kind == exkStruct and
+    e.callee != nil and e.callee.kind == exkVar and
+    isRecordType(m, e.callee.name)
+
+proc isResultStatusTest*(e: Expr): bool =
+  ## `r.ok` on a !T/?T value is a STATUS test, not a field read.
+  if e == nil or e.kind != exkField: return false
+  if e.fieldName != "ok" or e.receiver == nil: return false
+  let rt = semLayer.typeFor(e.receiver)
+  rt != nil and rt.kind == tkApp and rt.base != nil and
+    rt.base.kind == tkNamed and rt.base.name in ["!", "?", "!?"]
+
+proc returnsValue*(d: Decl): bool =
+  ## Does this fn hand back something a caller can use?
+  d != nil and d.fnReturnType != nil and
+    not (d.fnReturnType.kind == tkNamed and
+         d.fnReturnType.name in ["void", "unit"])
+
+proc memberOwner*(m: Module, recvT: Type): string =
+  ## The object type a member call dispatches on, or "" when the receiver is
+  ## not an object (a record's `.fn` is a free fn and keeps its bare name).
+  if recvT == nil or recvT.kind != tkNamed: return ""
+  for d in m.decls:
+    if d != nil and d.kind == dkObject and d.name == recvT.name: return d.name
+  ""
