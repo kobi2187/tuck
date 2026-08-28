@@ -77,6 +77,12 @@ const dPrims = {
 proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef],
                     owner = ""): string
 
+proc dHandlerFnName*(name: string): string =
+  ## A registry handler is declared as `Registry.Event`, which is not a D
+  ## identifier — the dot becomes an underscore, matching the name the raise
+  ## proc calls.
+  name.replace(".", "_")
+
 proc dAlias*(moduleName: string): string =
   ## A Tuck module's name as a D identifier — the import alias at a use site
   ## and the `mod_<alias>` file it comes from. One spelling rule in one
@@ -1356,7 +1362,10 @@ proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
   if d.fnGenerics.len > 0: return dUnsupported("generic fn " & d.name)
   if d.isDecision: return ctx.genDDecisionTable(d)
-  let fnName = if nameOverride != "": nameOverride else: d.name
+  # A registry handler is declared as `Registry.Event`; the dot is not a D
+  # identifier character, and the raise proc calls the sanitised name.
+  let fnName = if nameOverride != "": nameOverride
+               else: dHandlerFnName(d.name)
   let retStr = ctx.dType(d.fnReturnType)
   # A fallible fn wraps every return in the carrier; the arms below need to
   # know the payload type to name terr!(T). Restored after the body, since
@@ -1478,6 +1487,65 @@ proc genDErrHandler(ctx: var DCodegenCtx, d: Decl): string =
   "void " & mangleName(handler.name) & "(ushort code, string site) {\n    " &
     body & "\n}\n"
 
+proc dRegistryEventStruct(ctx: var DCodegenCtx, d: Decl): string =
+  ## The event enum and the flat struct carrying every variant's fields,
+  ## deduped by name.
+  var variants: seq[string]
+  var fields: seq[string]
+  var seen = initHashSet[string]()
+  for v in d.variants:
+    variants.add(v.name)
+    for f in v.fields:
+      if f.name in seen: continue
+      seen.incl(f.name)
+      fields.add("    " & ctx.dType(f.typ) & " " & f.name & ";")
+  let fieldsBody = if fields.len > 0: fields.join("\n") & "\n" else: ""
+  "enum " & d.name & "Kind { " & variants.join(", ") & " }\n\n" &
+    "struct " & d.name & " {\n    " & d.name & "Kind kind;\n" &
+    fieldsBody & "}\n"
+
+proc dRegistryHandlerCalls(ctx: DCodegenCtx, d: Decl,
+                           v: VariantDef): string =
+  ## Every declared handler for this event, called with the event's fields.
+  ## The checker requires at least one — an event nothing listens to is a
+  ## signal that silently goes nowhere (spec Part 10).
+  let handlerName = d.name & "." & v.name
+  var calls: seq[string]
+  for decl in ctx.module.decls:
+    if decl == nil or decl.kind != dkFn or decl.name != handlerName: continue
+    var argNames: seq[string]
+    for f in v.fields: argNames.add(f.name)
+    calls.add("    " & dHandlerFnName(handlerName) & "(" &
+              argNames.join(", ") & ");")
+  if calls.len > 0: calls.join("\n") & "\n" else: ""
+
+proc dRegistryRaiseProc(ctx: var DCodegenCtx, d: Decl,
+                        v: VariantDef): string =
+  ## `raise_<Registry>_<Event>` — record the event as latest, then run its
+  ## handlers. Lowering already flattened `Registry.raise Event {...}` into
+  ## a call to this, so codegen never learns registries exist at the call
+  ## site.
+  var params: seq[string]
+  var assigns: seq[string]
+  for f in v.fields:
+    params.add(ctx.dType(f.typ) & " " & f.name)
+    assigns.add(f.name & ": " & f.name)
+  let assignStr = if assigns.len > 0: ", " & assigns.join(", ") else: ""
+  "void raise_" & d.name & "_" & v.name & "(" & params.join(", ") &
+    ") {\n    latest" & d.name & " = " & d.name & "(" & d.name & "Kind." &
+    v.name & assignStr & ");\n" & ctx.dRegistryHandlerCalls(d, v) & "}\n\n"
+
+proc genDRegistry(ctx: var DCodegenCtx, d: Decl): string =
+  ## An event registry (spec Part 10): the event type, the latest-event
+  ## global, and one raise proc per event.
+  ##
+  ## D resolves module-level declarations lazily like Odin, so a raise proc
+  ## may call a handler declared after it — no forward declarations needed.
+  result = ctx.dRegistryEventStruct(d) & "\n"
+  result.add("__gshared " & d.name & " latest" & d.name & ";\n\n")
+  for v in d.variants:
+    result.add(ctx.dRegistryRaiseProc(d, v))
+
 proc genDRegister(ctx: var DCodegenCtx, d: Decl): string =
   ## A memory-mapped register (spec 8): named masks plus accessors reading
   ## and writing through a typed pointer at the MMIO address.
@@ -1571,9 +1639,20 @@ proc genDDispatch(ctx: var DCodegenCtx, d: Decl,
     # set the flag the drain checks.
     var sdBody = ""
     if shutdownBody != nil:
+      # The shutdown arm reads and writes the actor's own fields just like
+      # any other arm, so it needs the same field context — without it
+      # `total = total` looked like a new local whose type nothing had
+      # settled, and the no-auto rule refused it.
+      let saved = ctx.fieldVars
+      let savedPrefix = ctx.fieldPrefix
+      ctx.fieldVars.clear()
+      for f in d.actorFields: ctx.fieldVars.incl(f.name)
+      ctx.fieldPrefix = "self."
       ctx.indent = 3
       sdBody = ctx.genDStmtOrBlock(shutdownBody)
       ctx.indent = 0
+      ctx.fieldVars = saved
+      ctx.fieldPrefix = savedPrefix
     cases.add("        case " & d.name & "MsgKind.msgShutdown:\n" & sdBody &
               "            self.finished = true;\n            break;\n")
   "void handleMsg_" & d.name & "(ref " & d.name & " self, " & d.name &
@@ -1942,7 +2021,7 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
   case d.kind
   of dkType: ctx.genDTypeDecl(d)
   of dkObject: ctx.genDObjectDecl(d)
-  of dkRegistry: dUnsupported("registry " & d.name)
+  of dkRegistry: ctx.genDRegistry(d)
   of dkPool:
     # spec 7.2: one module-level instance of a fixed-count pool.
     # `Pool.acquire` reaches the runtime's generic proc — see the

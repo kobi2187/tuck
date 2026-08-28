@@ -266,6 +266,16 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
     the mailbox untouched. An actor program with no waitUntil and no task
     does nothing at all.
   Both are upstream of any backend. Recorded, not papered over.
+- BUG (upstream, example 20): an actor `on` handler containing a registry
+  raise emits nothing usable in EITHER backend — the Nim output has no proc
+  for the handler at all, and the D output shows the un-flattened
+  `PlaybackStarted(tuck_SystemEvents.raise)` tree. lowering DOES walk actor
+  handlers (allFns -> members() yields dkActor.handlers), so the cause is
+  further up. Not a D bug; recorded rather than chased.
+- BUG (D, open): a value-position match whose arms are STATEMENTS wraps them
+  in `return` — visible in example 20 as `case X: return self.state = ...`.
+  The value/statement decision needs to look at the arm bodies, not just the
+  match's position.
 - D function templates instantiate per call site, so pending stubs and
   generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
   boxing, same monomorphization story.
