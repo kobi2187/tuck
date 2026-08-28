@@ -207,6 +207,18 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
 - The checker often stamps a type on the CALL but not on the `let` target
   (verified by instrumenting: target read nil for `let r = {..} fs::readFile`).
   Read the value's type first, the target's second.
+- RULE (user, 2026-08-27): the emitted D NEVER uses `auto` or `var`. Tuck
+  has a typechecker, so every declaration's type is a fact already
+  established; asking the target compiler to re-infer makes two inference
+  algorithms agree by luck, which is exactly how the 32-bit `auto x = 0`
+  divergence got in. A type the backend cannot state is a GAP, reported
+  loudly. Everything ELSE takes the idiomatic road, as long as it is
+  equivalent to the Tuck input.
+- BUG (checker, found by enforcing the rule above): `s.len` is stamped
+  `<unknown>` — a FAILED stamp, not a missing one. The Nim backend hides it
+  by emitting `var n = s.len` and letting Nim infer; the D backend cannot,
+  so it surfaced. Worked around by supplying `int` (what the language
+  guarantees) where isLenOnSized holds; the checker should stamp it.
 - D function templates instantiate per call site, so pending stubs and
   generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
   boxing, same monomorphization story.

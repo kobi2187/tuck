@@ -247,7 +247,9 @@ proc genDLit(e: Expr): string =
   of lkInt, lkFloat, lkBool: e.litValue
   of lkUnit: ""
 
-const dWideTypes = ["long", "double", "string", "bool", "void", "auto"]
+const dWideTypes = ["long", "double", "string", "bool", "void"]
+  ## Types a narrowing cast must NOT be applied to. No "auto": the emitter
+  ## never produces one (see genDAssign).
 
 proc recCtorFromLiteralD(ctx: var DCodegenCtx, declFields: seq[FieldDef],
                          litFields: seq[FieldInit]): string =
@@ -719,6 +721,14 @@ proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   ## read back nil for `let r = {..} fs::readFile`).
   var t = semLayer.typeFor(val)
   if t == nil: t = semLayer.typeFor(target)
+  # `.len` is `int` by definition of the language, but the checker types it
+  # <unknown> (verified by instrumenting: a STAMPED sentinel, not a missing
+  # stamp). The Nim backend never noticed because it emits `var n = s.len`
+  # and lets NIM infer — the hidden-inference dependency this backend exists
+  # to avoid. Supply the answer the language already guarantees.
+  if val != nil and val.kind == exkField and ctx.isLenOnSized(val) and
+     (t == nil or (t.kind == tkNamed and t.name == UnknownName)):
+    t = Type(kind: tkNamed, name: "int", span: val.span)
   let owner = ctx.callOwnerModule(val)
   if owner != "" and t != nil:
     let payload = bangInner(t)
@@ -734,13 +744,21 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
   ## the Nim backend's inference) makes it 64-bit — a value past 2^31 then
   ## wraps in one backend and not the other. Verified with dmd; hidden
-  ## Nim-ism #2. `auto` remains only for types the backend cannot state yet
-  ## (sketch-mode Unknown included, where no arithmetic contract exists).
+  ## Nim-ism #2.
+  ##
+  ## NEVER `auto`, and never `var`: Tuck HAS a typechecker, so every
+  ## declaration's type is a fact the compiler already established, and the
+  ## emitted code states it. Asking the target compiler to re-infer would
+  ## make the two inference algorithms agree by luck — which is exactly how
+  ## the 32-bit `auto x = 0` divergence got in. A type this backend cannot
+  ## state is a GAP, reported like any other, not a request for D to guess.
   let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
-    var declT = ctx.declTypeForValue(e.target, e.assignVal)
-    if declT == "": declT = "auto"
+    let declT = ctx.declTypeForValue(e.target, e.assignVal)
+    if declT == "":
+      return dUnsupported("a declaration of '" & e.target.name &
+                          "' whose type the checker did not settle")
     return declT & " " & e.target.name & " = " & valStr
   ctx.genDExpr(e.target) & " = " & valStr
 
