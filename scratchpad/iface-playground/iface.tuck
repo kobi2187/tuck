@@ -1,0 +1,39 @@
+# Interface semantics probe (spec 5.3). Claims under test:
+#   1. an interface value COPIES the concrete value in, not a reference
+#   2. dispatch picks the arm matching the stored tag
+#   3. mutating the original after wrapping does NOT change the wrapped copy
+interface Animal:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  satisfies Animal
+  volume: int
+
+  fn noise({self: Dog}) -> int:
+    return self.volume
+
+object Cat:
+  satisfies Animal
+  volume: int
+
+  fn noise({self: Cat}) -> int:
+    return self.volume * 100
+
+# takes the interface: the concrete value is wrapped at this boundary
+fn hear({a: Animal}) -> int:
+  return a.noise
+
+fn main() -> int:
+  var d = {volume: 3} Dog
+  let c = {volume: 5} Cat
+
+  # claim 1+3: wrap d (copies 3 in), THEN mutate d
+  let n1 = {a: d} hear
+  d ..volume {9}
+  let n2 = {a: d} hear      # a fresh wrap, so this one sees 9
+
+  # claim 2: a different satisfying type dispatches to ITS noise
+  let n3 = {a: c} hear      # 5 * 100 = 500
+
+  # 3 + 9 + 500 = 512
+  return n1 + n2 + n3

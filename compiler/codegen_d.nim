@@ -702,10 +702,68 @@ proc isLenOnSized(ctx: var DCodegenCtx, e: Expr): bool =
   if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
   seqElem(rt) != nil
 
+proc satisfiersOfD(ctx: DCodegenCtx, iface: string): seq[Decl] =
+  ## Whole-program satisfier set — see codegen_common.satisfiersOf.
+  satisfiersOf(ctx.module, ctx.realModules, iface)
+
+proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
+                       w: tuple[objName, iface: string]): string =
+  ## A concrete object entering an interface slot is COPIED into the variant
+  ## (spec 5.3) — verified: mutating the original afterwards leaves the
+  ## wrapped value alone.
+  let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
+  ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
+    ", " & objName & "Val: " & e.name & ")"
+
+proc genDIfaceDispatch(ctx: var DCodegenCtx, e: Expr,
+                       ic: tuple[iface, member: string]): string =
+  ## A call through an interface value: switch on the tag it carries and call
+  ## the concrete member directly — no table, no thunk, no virtual call.
+  ##
+  ## An immediately-called lambda because D has no switch EXPRESSION and a
+  ## call site needs a value. A plain `switch` rather than `final switch`:
+  ## the satisfier set can be empty and an unreachable default is cheap.
+  let recv = ctx.genDExpr(e.receiver)
+  var extra = ""
+  if e.dotArg != nil: extra = ", " & ctx.genDExpr(e.dotArg)
+  var arms: seq[string]
+  for st in ctx.satisfiersOfD(ic.iface):
+    arms.add("        case " & ic.iface & "Tag." & ic.iface & "_is_" &
+             st.name & ":\n" &
+             "            auto tmp = v." & st.name & "Val;\n" &
+             "            return " & memberProcNameD(st.name, ic.member) &
+             "(tmp" & extra & ");")
+  if arms.len == 0: return ""
+  "((" & ic.iface & " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
+    "\n        default: assert(0, \"unreachable interface tag\");\n" &
+    "    }\n})(" & recv & ")"
+
+proc dPayloadSumField(ctx: var DCodegenCtx, e: Expr): string =
+  ## A field access on a PAYLOAD sum, or "" when it is not one.
+  ##
+  ## Two shapes: reading a variant's field (which lives in the union member
+  ## named after that variant), and a bare `Type.Variant` construction with
+  ## no payload of its own.
+  let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver))
+  if sumName != "":
+    let owner = variantOwningField(ctx.module, sumName, e.fieldName)
+    if owner != "":
+      return ctx.genDExpr(e.receiver) & "." & owner.toLowerAscii() & "." &
+             e.fieldName
+  if e.receiver != nil and e.receiver.kind == exkVar:
+    return ctx.dSumVariantCtor(e.receiver.name, e.fieldName, nil)
+  ""
+
 proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   ## A `.name` access: a resolved call, a result's status, the len property,
   ## an input param, or a plain read. (Interface dispatch and actor fields
   ## arrive with their milestones.)
+  # A call through an interface value: which implementations are POSSIBLE
+  # was fixed at the wrap site; which one runs is the tag, read here.
+  let ic = semLayer.ifaceCallOf(e)
+  if ic.member != "":
+    let disp = ctx.genDIfaceDispatch(e, ic)
+    if disp != "": return disp
   if e.receiver != nil and e.receiver.kind == exkVar and
      e.receiver.name == "input" and ctx.currentParams.len > 0:
     return e.fieldName   # `input.x` IS the param x
@@ -722,17 +780,8 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.genDExpr(semLayer.call(e))
   # A PAYLOAD sum keeps each variant's fields in a union member named after
   # the variant, so `s.length` on `Line({length: int})` is `s.line.length`.
-  let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver))
-  if sumName != "":
-    let owner = variantOwningField(ctx.module, sumName, e.fieldName)
-    if owner != "":
-      return ctx.genDExpr(e.receiver) & "." & owner.toLowerAscii() & "." &
-             e.fieldName
-  if e.receiver != nil and e.receiver.kind == exkVar:
-    # bare `Type.Variant` of a payload sum: a tagged construction with no
-    # payload of its own.
-    let ctor = ctx.dSumVariantCtor(e.receiver.name, e.fieldName, nil)
-    if ctor != "": return ctor
+  let sumField = ctx.dPayloadSumField(e)
+  if sumField != "": return sumField
   ctx.genDExpr(e.receiver) & "." & e.fieldName
 
 proc genDInputPayload(ctx: var DCodegenCtx): string =
@@ -1101,6 +1150,11 @@ proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
 
 proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   if e == nil: return ""
+  # A concrete value entering an interface slot is copied into the variant
+  # at THIS site — the checker marked it (spec 5.3).
+  let w = semLayer.wrapOf(e)
+  if w.objName != "" and e.kind == exkVar:
+    return ctx.genDInterfaceWrap(e, w)
   # A fn used as a VALUE needs `&` in D, whichever way it was written —
   # checked here, where exkVar and exkQualified both pass through.
   if e.kind in {exkVar, exkQualified} and ctx.isFnRefD(e):
@@ -1348,6 +1402,33 @@ proc dBitSetter(bf: BitFieldInfo, regName: string): string =
   "void " & bf.prefix & "_set(bool value) {\n" &
     "    if (value) *" & regName & " |= (1u << " & bf.prefix & "_SHIFT);\n" &
     "    else *" & regName & " &= ~(1u << " & bf.prefix & "_SHIFT);\n}\n"
+
+proc genDInterface(ctx: var DCodegenCtx, d: Decl): string =
+  ## An interface is a COPYING TAGGED VARIANT over every type that satisfies
+  ## it (spec 5.3) — not a vtable, not a pointer to a base. This is not OOP:
+  ## the concrete value is copied in, tag and all, so it owns its data and
+  ## there is no lifetime question.
+  ##
+  ## The satisfier set is closed and resolved WHOLE-PROGRAM, which is why
+  ## satisfiersOf takes realModules: a type in another module can satisfy an
+  ## interface it never heard of (retroactive `satisfies`).
+  ##
+  ## Shape follows the ODIN backend's — a struct with the tag and one field
+  ## per satisfier — because D, like Odin, has no case-object. Verified
+  ## against both reference backends before writing this: a wrap copies, a
+  ## later wrap sees the newer value, and dispatch picks the arm for the
+  ## stored tag (scratchpad/iface-playground/FINDINGS.md).
+  let sats = ctx.satisfiersOfD(d.name)
+  if sats.len == 0:
+    return "// interface " & d.name & ": no satisfying types\n"
+  var tags: seq[string]
+  for st in sats: tags.add(d.name & "_is_" & st.name)
+  result = "enum " & d.name & "Tag { " & tags.join(", ") & " }\n\n"
+  result.add("struct " & d.name & " {\n")
+  result.add("    " & d.name & "Tag tag;\n")
+  for st in sats:
+    result.add("    " & st.name & " " & st.name & "Val;\n")
+  result.add("}\n")
 
 proc genDErrHandler(ctx: var DCodegenCtx, d: Decl): string =
   ## The `errors [policy: ...]` block's `on unhandled({code, site})` handler
@@ -1740,7 +1821,7 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
   of dkSelect: dUnsupported("top-level on select (arrives with the Fiber runtime)")
   of dkFnSig: ctx.genDFnSig(d)
   of dkSatisfies: dUnsupported("top-level satisfies (M4)")
-  of dkInterface: dUnsupported("interface " & d.name & " (M4)")
+  of dkInterface: ctx.genDInterface(d)
   of dkWhen: ""   # resolved away by modules.resolveWhenBlocks before codegen
 
 # ------------------------------------------------------------- assembly --

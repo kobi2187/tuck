@@ -1,0 +1,45 @@
+import ../../compiler/tuck_rt
+
+type tuck_Dog* = object
+  volume*: int
+
+type tuck_Cat* = object
+  volume*: int
+
+type AnimalTag* = enum Animal_is_tuck_Cat, Animal_is_tuck_Dog
+
+type Animal* = object
+  case tag*: AnimalTag
+  of Animal_is_tuck_Cat: tuck_CatVal*: tuck_Cat
+  of Animal_is_tuck_Dog: tuck_DogVal*: tuck_Dog
+
+proc noise*(self: var tuck_Dog): int =
+  return self.volume
+
+
+proc noise*(self: var tuck_Cat): int =
+  return (self.volume * 100)
+
+
+proc tuck_hear*(a: Animal): int =
+  return (block:
+    case a.tag
+    of Animal_is_tuck_Cat:
+      var tmp = a.tuck_CatVal
+      noise(tmp)
+    of Animal_is_tuck_Dog:
+      var tmp = a.tuck_DogVal
+      noise(tmp))
+
+proc tuck_main*(): int =
+  var d = tuck_Dog(volume: 3)
+  var c = tuck_Cat(volume: 5)
+  var n1 = tuck_hear(Animal(tag: Animal_is_tuck_Dog, tuck_DogVal: d))
+  d.volume = 9
+  var n2 = tuck_hear(Animal(tag: Animal_is_tuck_Dog, tuck_DogVal: d))
+  var n3 = tuck_hear(Animal(tag: Animal_is_tuck_Cat, tuck_CatVal: c))
+  return ((n1 + n2) + n3)
+
+
+when isMainModule:
+  quit(tuck_main())

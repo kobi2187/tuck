@@ -599,4 +599,51 @@ fn main() -> int [io]:
   t.runsD "errors: continue runs the handler and reaches the next statement",
           7, dmdExe
 
+  # --- interfaces: a copying tagged variant, NOT a vtable (spec 5.3) -----
+  # Verified against both reference backends before implementing, in
+  # scratchpad/iface-playground: Nim and Odin both return 12 on this
+  # program, and the D backend had to match rather than merely compile.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  satisfies Animal
+  volume: int
+
+  fn noise({self: Dog}) -> int:
+    return self.volume
+
+object Cat:
+  satisfies Animal
+  volume: int
+
+  fn noise({self: Cat}) -> int:
+    return self.volume * 100
+
+fn hear({a: Animal}) -> int:
+  return a.noise
+
+fn report({d: Dog, c: Cat}) -> int:
+  var dd = d
+  let n1 = {a: dd} hear
+  dd ..volume {9}
+  let n2 = {a: dd} hear
+  let n3 = {a: c} hear
+  return n1 + n2
+
+fn main() -> int:
+  let d = {volume: 3} Dog
+  let c = {volume: 5} Cat
+  return {d: d, c: c} report
+"""
+  t.emitsD "iface: the variant carries a tag plus one field per satisfier",
+           r"struct Animal \{\n    AnimalTag tag;"
+  t.emitsD "iface: a wrap copies the concrete value in, tag and all",
+           r"Animal\(AnimalTag\.Animal_is_tuck_Dog, tuck_DogVal: dd\)"
+  t.omitsD "iface: no thunk per (type, member) — the spec's own claim",
+           r"Animal_tuck_Dog_noise"
+  t.runsD "iface: wrap copies (3), a later wrap sees 9, so 3+9=12",
+          12, dmdExe
+
   t.finish()

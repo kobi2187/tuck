@@ -1,0 +1,35 @@
+import console
+
+interface Animal:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  satisfies Animal
+  volume: int
+
+  fn noise({self: Dog}) -> int:
+    return self.volume
+
+object Cat:
+  satisfies Animal
+  volume: int
+
+  fn noise({self: Cat}) -> int:
+    return self.volume * 100
+
+fn hear({a: Animal}) -> int:
+  return a.noise
+
+fn report({d: Dog, c: Cat}) -> int:
+  var dd = d
+  let n1 = {a: dd} hear      # wraps a COPY of dd (volume 3)
+  dd ..volume {9}
+  let n2 = {a: dd} hear      # fresh wrap, sees 9
+  let n3 = {a: c} hear       # Cat arm: 5 * 100
+  {text: "n1=" + n1.toStr + " n2=" + n2.toStr + " n3=" + n3.toStr} printLine
+  return n1 + n2
+
+fn main() -> int:
+  let d = {volume: 3} Dog
+  let c = {volume: 5} Cat
+  return {d: d, c: c} report
