@@ -502,7 +502,37 @@ proc memberCalleeNameD(ctx: DCodegenCtx, e: Expr): string =
   if owner == "" or not ctx.ownerDeclares(owner, e.callee.name): return ""
   memberProcNameD(owner, e.callee.name)
 
+proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
+                     payload: Expr): string =
+  ## `{payload} Type.Variant` — a tagged construction, not a call. A
+  ## payload-FREE sum is a plain D enum, where `Type.Variant` is already
+  ## valid, so this returns "" and the caller falls through.
+  let found = payloadSumVariant(ctx.module, typeName, variantName)
+  if found.isNone: return ""
+  let v = found.get
+  if v.fields.len == 0 or payload == nil:
+    return typeName & "(" & typeName & "Kind." & variantName & ")"
+  var parts: seq[string]
+  for f in v.fields:
+    for pf in payload.fields:
+      if pf[0] == f.name:
+        parts.add(f.name & ": " & ctx.genDExpr(pf[1]))
+        break
+  # A tagged struct is built by naming the discriminant and the variant's
+  # own union member — D's named struct literal reaches both.
+  typeName & "(" & typeName & "Kind." & variantName & ", " &
+    typeName & "_" & variantName & "(" & parts.join(", ") & "))"
+
+proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
+  if e.callee == nil or e.callee.kind != exkField or
+     e.callee.receiver == nil or e.callee.receiver.kind != exkVar: return ""
+  let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
+                else: nil
+  ctx.dSumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
+  let variant = ctx.asDSumVariantCall(e)
+  if variant != "": return variant
   var calleeStr = ctx.resolveDCallee(e)
   let member = ctx.memberCalleeNameD(e)
   if member != "": calleeStr = member
@@ -635,6 +665,19 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
     return "cast(long) " & ctx.genDExpr(e.receiver) & ".length"
   if semLayer.hasCall(e):
     return ctx.genDExpr(semLayer.call(e))
+  # A PAYLOAD sum keeps each variant's fields in a union member named after
+  # the variant, so `s.length` on `Line({length: int})` is `s.line.length`.
+  let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver))
+  if sumName != "":
+    let owner = variantOwningField(ctx.module, sumName, e.fieldName)
+    if owner != "":
+      return ctx.genDExpr(e.receiver) & "." & owner.toLowerAscii() & "." &
+             e.fieldName
+  if e.receiver != nil and e.receiver.kind == exkVar:
+    # bare `Type.Variant` of a payload sum: a tagged construction with no
+    # payload of its own.
+    let ctor = ctx.dSumVariantCtor(e.receiver.name, e.fieldName, nil)
+    if ctor != "": return ctor
   ctx.genDExpr(e.receiver) & "." & e.fieldName
 
 proc genDInputPayload(ctx: var DCodegenCtx): string =
@@ -847,6 +890,14 @@ proc dPatternStr(ctx: var DCodegenCtx, pat: Pattern): string =
   let tag = ctx.qualifyEnumTag(raw)
   if tag != "": tag else: raw
 
+proc dMatchSubject(ctx: var DCodegenCtx, e: Expr): string =
+  ## A PAYLOAD sum emits as a tagged struct, so a match dispatches on the
+  ## discriminant. A payload-free sum is a plain enum and matches directly.
+  let base = ctx.genDExpr(e.subject)
+  if payloadSumTypeName(ctx.module, semLayer.typeFor(e.subject)) != "":
+    base & ".kind"
+  else: base
+
 proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm): string =
   ## `case LABEL:` plus its body, indented one level in. Every arm breaks:
   ## D switch cases fall through by default where Tuck's arms never do, so
@@ -880,7 +931,7 @@ proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string =
   ## be `final` (D rejects a default there), so those emit a plain switch.
   if e.subject == nil: return dUnsupported("decision table (T24)")
   let kw = if hasWildArm(e): "switch" else: "final switch"
-  result = ctx.indD & kw & " (" & ctx.genDExpr(e.subject) & ") {\n"
+  result = ctx.indD & kw & " (" & ctx.dMatchSubject(e) & ") {\n"
   for arm in e.arms:
     result.add(ctx.genDMatchArm(arm))
   result.add(ctx.indD & "}")
@@ -892,6 +943,7 @@ proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
   ## statement form does.
   if e.subject == nil: return dUnsupported("decision table in value position")
   let kw = if hasWildArm(e): "switch" else: "final switch"
+  let subj = ctx.dMatchSubject(e)
   let saved = ctx.indent
   ctx.indent = 1
   var arms = ""
@@ -905,7 +957,7 @@ proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
                else: ctx.indD & "case " & label & ": "
     arms.add(head & "return " & ctx.genDExpr(arm.body) & ";\n")
   ctx.indent = saved
-  "(() { " & kw & " (" & ctx.genDExpr(e.subject) & ") {\n" & arms &
+  "(() { " & kw & " (" & subj & ") {\n" & arms &
     ctx.indD & "} })()"
 
 proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep,
@@ -1295,6 +1347,34 @@ proc genDExternBlock(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDExternFwd(mem)
     if code != "": result.add(code & "\n")
 
+proc genDPayloadSum(ctx: var DCodegenCtx, d: Decl, body: Type): string =
+  ## A PAYLOAD-carrying sum: a discriminant plus one struct per variant,
+  ## overlapped in a union.
+  ##
+  ## This is D's parallel of NIM's case-object, not of Odin's: Odin has a
+  ## native tagged union that carries its own tag and has no `.kind` field
+  ## (codegen_odin.nim's `X :: union {...}`), so the three backends do NOT
+  ## share a representation here and a fix for one is not a fix for another.
+  var res = "enum " & d.name & "Kind { "
+  var tags: seq[string]
+  for v in body.variants: tags.add(v.name)
+  res.add(tags.join(", ") & " }\n\n")
+  for v in body.variants:
+    if v.fields.len == 0: continue
+    res.add("struct " & d.name & "_" & v.name & " {\n")
+    for f in v.fields:
+      res.add("    " & ctx.dType(f.typ) & " " & f.name & ";\n")
+    res.add("}\n\n")
+  res.add("struct " & d.name & " {\n")
+  res.add("    " & d.name & "Kind kind;\n")
+  res.add("    union {\n")
+  for v in body.variants:
+    if v.fields.len == 0: continue
+    res.add("        " & d.name & "_" & v.name & " " &
+            v.name.toLowerAscii() & ";\n")
+  res.add("    }\n}\n")
+  res
+
 proc genDValidate(ctx: var DCodegenCtx, d: Decl): string =
   ## spec 4.7: an invariant-carrying type validates at every PRODUCTION
   ## site. Emitted behind `version(tuckNoInvariants)` — opt-OUT, so the
@@ -1355,7 +1435,8 @@ proc genDTypeDecl(ctx: var DCodegenCtx, d: Decl): string =
     let under = ctx.dDeclType(body)
     if under != "": return "alias " & d.name & " = " & under & ";\n"
     return dUnsupported("type alias " & d.name & " to an unmapped type")
-  dUnsupported("type " & d.name & " (sum-with-payload arrives in M4)")
+  if body.kind == tkSum: return ctx.genDPayloadSum(d, body)
+  dUnsupported("type " & d.name & " (unmapped type body)")
 
 proc genDPendingStub(ctx: var DCodegenCtx, mem: Decl): string =
   ## A pending fn runs as a stub: log to stderr (the Nim backend's stream —

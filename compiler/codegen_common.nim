@@ -22,6 +22,7 @@
 # Sits below both backends in the dependency DAG, alongside ast_query and
 # lowering — it imports those and nothing that imports either codegen module.
 import ast, lowering, ast_query, strutils, sets, tables, algorithm, options
+import ./ast_query
 
 proc satisfiersOf*(module: Module, realModules: Table[string, Module],
                    iface: string): seq[Decl] =
@@ -100,14 +101,6 @@ proc isDistinctAlias*(body: Type): bool =
       return true
   false
 
-proc sumHasPayload*(body: Type): bool =
-  ## Does any variant of this sum carry fields? The branch key for four
-  ## emitters: a fieldless sum is a plain enum in both targets, a
-  ## payload-carrying one needs a tagged representation.
-  if body == nil: return false
-  for v in body.variants:
-    if v.fields.len > 0: return true
-  false
 
 proc payloadSumVariant*(m: Module, typeName, variantName: string): Option[VariantDef] =
   ## The named variant of a PAYLOAD-carrying sum type. None when there is no

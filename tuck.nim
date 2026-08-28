@@ -683,10 +683,20 @@ when isMainModule:
           # Objects built from vendored C sources ride on the command line:
           # dmd's pragma(lib) is for SYSTEM libraries and would turn a path
           # into a -l<path> the linker cannot resolve.
+          #
+          # Only the objects THIS driver compiled from an `extern ... lib:
+          # "x.c"` — collected by name, not by sweeping the output tree. A
+          # walkDirRec over outDir also picked up Nim's .nimcache objects and
+          # any stale build product, which made the dmd link fail with
+          # duplicate and foreign symbols (observed, not theorised).
           var cObjs = ""
-          for f in walkDirRec(outDir):
-            if f.endsWith(".o") and not f.endsWith(base & ".o"):
-              cObjs.add(" " & quoteShell(f))
+          for d in m.decls:
+            if d == nil or d.kind != dkExtern: continue
+            for mem in d.mixinMembers:
+              if mem.kind != dkFn or not mem.isExtern: continue
+              if not mem.externLib.endsWith(".c"): continue
+              let obj = outDir / mem.externLib.changeFileExt("o")
+              if fileExists(obj): cObjs.add(" " & quoteShell(obj))
           let dCmd = quoteShell(dmdExe) & " -i" & dOpt &
                      " -I" & quoteShell(outDir) &
                      " -of=" & quoteShell(dBin) & " " &

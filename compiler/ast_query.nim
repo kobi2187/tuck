@@ -433,3 +433,37 @@ proc memberOwner*(m: Module, recvT: Type): string =
   for d in m.decls:
     if d != nil and d.kind == dkObject and d.name == recvT.name: return d.name
   ""
+
+proc sumHasPayload*(body: Type): bool =
+  ## Does any variant of this sum carry fields? The branch key for four
+  ## emitters: a fieldless sum is a plain enum in both targets, a
+  ## payload-carrying one needs a tagged representation.
+  if body == nil: return false
+  for v in body.variants:
+    if v.fields.len > 0: return true
+  false
+
+proc payloadSumTypeName*(m: Module, t: Type): string =
+  ## The name of the PAYLOAD-CARRYING sum type this value has, or "".
+  ##
+  ## Such a sum emits as a tagged union — a `kind` discriminant plus one
+  ## payload field per variant — so a match dispatches on `.kind` and a
+  ## variant's field is reached through the variant's own field, not off the
+  ## value directly. A payload-FREE sum is a plain enum and needs neither.
+  if t == nil or t.kind != tkNamed: return ""
+  let d = m.findDecl(dkType, t.name)
+  if d == nil or d.typeBody == nil or d.typeBody.kind != tkSum: return ""
+  if not sumHasPayload(d.typeBody): return ""
+  t.name
+
+proc variantOwningField*(m: Module, typeName, fieldName: string): string =
+  ## Which variant of a payload sum declares `fieldName`, or "". The emitted
+  ## payload lives in a field named after that variant, so `s.length` on a
+  ## `Line({length: int})` has to become `s.line.length`.
+  let d = m.findDecl(dkType, typeName)
+  if d == nil or d.typeBody == nil or d.typeBody.kind != tkSum: return ""
+  for v in d.typeBody.variants:
+    for f in v.fields:
+      if f.name == fieldName: return v.name
+  ""
+

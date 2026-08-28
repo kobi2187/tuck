@@ -698,6 +698,16 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
     # the rt-owned instance (main's waitUntil predicates read state this way)
     if ctx.isActorType(e.receiver.name):
       return actorSingletonName(e.receiver.name) & "." & e.fieldName
+  # A PAYLOAD sum stores each variant's fields in a field named after the
+  # variant, so `s.length` on `Line({length: int})` is `s.line.length`.
+  # Emitting the bare name produced an undeclared field, which is why a
+  # payload sum typechecked and then failed to build.
+  let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver))
+  if sumName != "":
+    let owner = variantOwningField(ctx.module, sumName, e.fieldName)
+    if owner != "":
+      return ctx.genExpr(e.receiver) & "." & owner.toLowerAscii() & "." &
+             e.fieldName
   ctx.genExpr(e.receiver) & "." & e.fieldName
 
 proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =
@@ -965,7 +975,13 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
   if e.subject == nil: return "discard"
   let ind = "  ".repeat(ctx.indent)
-  let subjectStr = ctx.genExpr(e.subject)
+  var subjectStr = ctx.genExpr(e.subject)
+  # A PAYLOAD-carrying sum emits as a tagged union, so the case dispatches
+  # on the discriminant. Without this it emitted `case s` over an object,
+  # which Nim rejects ("selector must be of an ordinal type") — and a
+  # payload sum therefore typechecked and then failed to build.
+  if payloadSumTypeName(ctx.module, semLayer.typeFor(e.subject)) != "":
+    subjectStr = subjectStr & ".kind"
   var cases: seq[string]
   var errMatch = false
   var hasWild = false
