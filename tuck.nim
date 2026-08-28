@@ -49,6 +49,7 @@ import compiler/mangle
 import compiler/codegen
 import compiler/codegen_odin
 import compiler/codegen_d
+import compiler/lowering_d
 import compiler/ast_serializer
 import compiler/modules
 import compiler/optimize
@@ -514,6 +515,11 @@ when isMainModule:
       for lm in dProg: rebaseImplPaths(lm, "d", outDir)
       for lm in dProg:
         lowerModule(lm.m)
+        # ...then the D backend's OWN lowering, on its private copy. Target
+        # semantics that differ from Tuck's (a D slice aliases where a Tuck
+        # Seq copies) are settled here as tree marks, so the emitter is left
+        # printing rather than deciding.
+        lowerModuleD(lm.m)
       for lm in dProg[0 ..< dProg.high]:
         let modDPath = outDir / ("mod_" & lm.name.replace("-", "_") & ".d")
         writeFile(modDPath, emitDModule(lm.name, lm.m, dReal))

@@ -26,6 +26,7 @@ import lowering                # getFieldsForType
 # appears they should move to a backend-neutral module.
 from codegen_odin_util import odinErrCode, enumTagOwner
 from mangle import mangleName
+from lowering_d import needsDup
 
 type
   DCodegenCtx = object
@@ -686,17 +687,14 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
     if tag != "": return tag
   e.name
 
-proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
-  ## Tuck Seq assignment COPIES (Nim seq value semantics); a D slice
-  ## assignment ALIASES — `b = a; b[0] = 50` would write a[0] too, verified
-  ## divergent. `.dup` restores the copy. A fresh list literal owns its
-  ## storage and skips it; everything else (vars, fields, calls — a call
-  ## may return its own argument) pays the copy.
-  ## ponytail: unconditional dup beyond literals; revisit with the M7 perf
-  ## pass if a benchmark ever cares.
-  if e == nil or e.kind == exkList: return valStr
-  if seqElem(semLayer.typeFor(e)) != nil: return "(" & valStr & ").dup"
-  valStr
+proc dupIfSeq(valStr: string, e: Expr): string =
+  ## Wrap in `.dup` if THIS BACKEND'S LOWERING marked the node.
+  ##
+  ## The decision — a D slice aliases where a Tuck Seq copies — is made in
+  ## lowering_d, not here; this reads the mark and prints. That split is the
+  ## point of the seam: the reasoning is inspectable and testable as a tree
+  ## pass, and the emitter stays a printer.
+  if needsDup(e): "(" & valStr & ").dup" else: valStr
 
 proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
   ## The imported module a call resolves into, or "" for a local one. A
@@ -752,7 +750,7 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## make the two inference algorithms agree by luck — which is exactly how
   ## the 32-bit `auto x = 0` divergence got in. A type this backend cannot
   ## state is a GAP, reported like any other, not a request for D to guess.
-  let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
+  let valStr = dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
     let declT = ctx.declTypeForValue(e.target, e.assignVal)

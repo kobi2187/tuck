@@ -424,4 +424,23 @@ fn main() -> int:
            r"add: &tuck_plus"
   t.runsD "fnsig: calling through the slot runs the referenced fn", 42, dmdExe
 
+  # --- the per-backend lowering seam -------------------------------------
+  # `.dup` is decided by lowering_d (a tree pass), not by the emitter. The
+  # assertion is the same either way — which is the point: the seam moved
+  # the reasoning without changing the meaning.
+  t.src """
+import seq
+
+fn main() -> int:
+  var a = [7, 8, 9]
+  var b = a
+  b[0] = 50
+  return a[0] + b[0]
+"""
+  t.emitsD "seam: lowering marks the Seq copy, the emitter only prints it",
+           r"long\[\] b = \(a\)\.dup;"
+  t.omitsD "seam: a fresh list literal owns its storage and needs no copy",
+           r"= \(\[7, 8, 9\]\)\.dup"
+  t.runsD "seam: writing b still never writes a (7+50)", 57, dmdExe
+
   t.finish()
