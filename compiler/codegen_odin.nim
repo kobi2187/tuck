@@ -53,6 +53,10 @@ type
                                         # the Nim side
     actorNames: HashSet[string]  # dkActor decl names in `module`, built once
     actorNamesBuilt: bool
+    unionBind: string   # inside `switch v in value`: the name bound to the
+                        # matched variant. A payload field is read through
+                        # IT, not off the subject — Odin's union has no
+                        # discriminant field to reach past.
     taskNames: HashSet[string]   # dkTask decl names, same one-shot index
     taskNamesBuilt: bool
 
@@ -730,7 +734,41 @@ proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
   else: return "return " & ctx.genOdinExpr(e.returnVal)
 
 # exkMatch in statement position: a real switch statement.
+proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
+                          sumName: string): string =
+  ## A match over a PAYLOAD union. Odin's tagged union carries its own tag
+  ## and has NO kind field, so the dispatch is `switch v in value` with the
+  ## variant STRUCT types as case labels, and the payload is reached through
+  ## the bound `v` (verified against the real Odin compiler before writing
+  ## this — `Shape_Line` as a case, `v.length` inside it).
+  ##
+  ## This is why the Nim and D backends' `.kind` dispatch is not portable
+  ## here: their case-object and tagged-struct both HAVE a discriminant
+  ## field, and Odin's union does not.
+  let ind = "  ".repeat(ctx.indent)
+  let subjectStr = ctx.genOdinExpr(e.subject)
+  var cases: seq[string]
+  let oldIndent = ctx.indent
+  let savedBind = ctx.unionBind
+  ctx.indent += 1
+  ctx.unionBind = "v"
+  for arm in e.arms:
+    let patStr = genPatternStr(arm.pattern)
+    let bodyStr = ctx.genOdinExpr(arm.body)
+    let caseLabel = if patStr == "_": "case:"
+                    else: "case " & sumName & "_" & patStr & ":"
+    if arm.body != nil and arm.body.kind == exkBlock:
+      cases.add(ind & caseLabel & "\n" & bodyStr)
+    else:
+      cases.add(ind & caseLabel & " " & bodyStr & ";")
+  ctx.indent = oldIndent
+  ctx.unionBind = savedBind
+  ind & "switch " & "v" & " in " & subjectStr & "\n" &
+    ind & "{\n" & cases.join("\n") & "\n" & ind & "}"
+
 proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
+  let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.subject))
+  if sumName != "": return ctx.genPayloadUnionMatch(e, sumName)
   let ind = "  ".repeat(ctx.indent)
   let subjectStr = ctx.genOdinExpr(e.subject)
   var cases: seq[string]
@@ -903,6 +941,16 @@ proc genCallOnReceiver(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
       direct.args[i] = e.receiver.base
   chainStmts & "\n" & chainStmts.indentPrefix & ctx.genOdinCall(direct)
 
+proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
+  ## Inside `switch v in value`, a payload field belongs to the BOUND
+  ## variant, not to the subject — Odin's union has no discriminant field to
+  ## reach past. "" when this is not that situation.
+  if ctx.unionBind == "" or e.receiver == nil or
+     e.receiver.kind != exkVar: return ""
+  if payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver)) == "":
+    return ""
+  ctx.unionBind & "." & e.fieldName
+
 proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: interface dispatch, an actor singleton's field, a
   ## status test, a resolved call, a sum-variant construction, or a plain read.
@@ -923,6 +971,8 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     # bare Type.Variant of a payload sum: kind-tagged construction
     let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
     if ctor != "": return ctor
+  let bound = ctx.boundVariantField(e)
+  if bound != "": return bound
   ctx.genOdinExpr(e.receiver) & "." & e.fieldName
 
 proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =
