@@ -166,6 +166,13 @@ proc setType*(r: var Resolution, e: Expr, t: Type) =
   ensureId(e)
   r.types[e.id] = t
 
+iterator allTypes*(r: Resolution): Type =
+  ## Every type the checker recorded for an expression. For passes that need
+  ## to finish a job over inferred types — resolving their declaration edge,
+  ## say — rather than over the types the user wrote.
+  for t in r.types.values:
+    if t != nil: yield t
+
 proc typeFor*(r: Resolution, e: Expr): Type =
   ## The checker's type for this node, or nil if it was never typed.
   if e == nil or not e.id.isSet: return nil

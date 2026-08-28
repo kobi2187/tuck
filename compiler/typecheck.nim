@@ -2681,6 +2681,18 @@ proc resolveTypeNames*(tc: TypeChecker, m: Module) =
   ## Run after collectSigs, when every declaration is known.
   for d in m.decls: resolveDeclTypeRefs(tc, d)
 
+proc resolveInferredTypes*(tc: TypeChecker) =
+  ## Point every INFERRED type at its declaration, the way resolveTypeNames
+  ## does for declared ones. Run after checking, when the semantic layer holds
+  ## a type for every expression.
+  ##
+  ## Without this the edge exists only for types the user WROTE, so anything
+  ## reading a type the checker worked out for itself has to re-derive the
+  ## declaration by name — a decl-list scan, once per node. That is a stage
+  ## boundary crossing: name resolution happening at emit time.
+  for t in semLayer.allTypes():
+    resolveTypeRefs(tc, t)
+
 # Pure functions are total: only [io]-marked functions (I/O, unknown input)
 # may declare fallible !T returns. The pure core provably cannot fail.
 proc checkFallibleNeedsIo(name: string, ret: Type, effects: seq[EffectMarker], span: Span) =
@@ -3277,6 +3289,15 @@ proc typecheckModule*(m: Module,
   for d in m.decls:
     failIfTopLevelStatement(d)
     tc.checkDecl(d)
+  # INFERRED types get their declaration edge too, now that every expression
+  # has been typed. resolveTypeNames above only walks types MENTIONED IN
+  # DECLARATIONS; the types the checker synthesizes for expressions never
+  # passed through it, so `declForType` missed on every one of them and every
+  # later consumer fell back to scanning the decl list by name — which is
+  # what made emit quadratic (measured: 200 misses for 200 types).
+  #
+  # Cheap: one walk of the types already recorded, resolving only tkNamed.
+  tc.resolveInferredTypes()
   tc.reportUnhandled(m)
 
 # Signature export for the .tuck-cache index: same collection walk the
