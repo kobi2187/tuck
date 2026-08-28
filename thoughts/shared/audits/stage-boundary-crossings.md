@@ -98,6 +98,18 @@ Counted 2026-08-27: **codegen.nim 38, codegen_odin.nim 30, codegen_d.nim 22**.
   11), which is what makes this a checker gap rather than a lowering one.
   *Fix:* run the by-type match for member calls too, recording argFields as
   it does for a free fn.
+  *PARTIAL 2026-08-27.* `recordCallParams` no longer restricts to
+  `topLevelFns`: an object MEMBER is recorded too (found via `fnDecls`, which
+  indexes members). Pending stubs stay excluded — their emitted params are
+  `({payload: T},)`, nothing like the declared ones — and so do TASKS, which
+  are scheduled rather than called; recording params for tasks broke
+  examples 28/29/30, verified not assumed.
+  *STILL OPEN:* the by-NAME cases now work end to end (mem2/mem3 return 8 on
+  both backends), but a by-TYPE payload is still dropped. Root cause is one
+  level deeper: `payloadFields` returns `shapeKnown=false` for a member call
+  (instrumented: "PAYLOAD shapeUnknown fn=grow"), so `claimByName`/
+  `claimByType` never run and there is no mapping to record. Fixing that is
+  a checker change inside payloadFields, not another recording site.
 
 ## Order of work
 1. F1 (measurable target: the quadratic term disappears)

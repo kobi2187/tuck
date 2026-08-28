@@ -1353,10 +1353,26 @@ proc recordCallParams(tc: var TypeChecker, fnName: string, params: seq[Param],
   ## Record the callee's params for lowering, which explodes a struct payload
   ## into positional args. Set before any early return, since lowering needs it
   ## whenever the callee resolved rather than only when the payload shape was
-  ## known — and ONLY for top-level fns, which are the only callees lowering
-  ## touches. A non-empty value therefore already means "safe to explode", so
-  ## lowering needs no second lookup to find that out.
-  if e.kind != exkCall or fnName notin tc.topLevelFns: return
+  ## known.
+  ##
+  ## Recorded for top-level fns and for OBJECT MEMBERS. The restriction to
+  ## top-level was justified by "the only callees lowering touches" — no
+  ## longer true since lowering learned to flatten a member call with an
+  ## explicit payload (flattenMemberCallPayload), which had to look the params
+  ## up from the declaration for want of this. A recorded fact beats a lookup:
+  ## the lookup cannot see a by-type match.
+  ##
+  ## TASKS stay excluded, deliberately: a task call is SCHEDULED rather than
+  ## called (spec §9.2), so the backends emit a spawn and must not have its
+  ## payload exploded underneath them. Recording params for tasks broke
+  ## examples 28/29/30 — verified, not assumed.
+  if e.kind != exkCall: return
+  if fnName notin tc.topLevelFns:
+    # A member fn: known to fnDecls (which indexes members too) but not to
+    # topLevelFns. Pending stubs stay out for the reason given above — their
+    # emitted params are ({payload: T},), nothing like the declared ones.
+    let d = tc.fnDecls.getOrDefault(fnName, nil)
+    if d == nil or d.kind != dkFn or d.isPending: return
   var names: seq[string]
   for p in params: names.add(p.name)
   setCallParams(semLayer, e, names)
