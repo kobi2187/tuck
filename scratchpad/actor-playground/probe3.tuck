@@ -1,0 +1,17 @@
+# Queue large enough (128) — does waitUntil then drain all 10?
+import scheduler
+
+actor Big [queue: 128]:
+  got: int = 0
+
+  on ping({n: int}):
+    got += n
+
+fn done() -> bool:
+  return Big.got >= 10
+
+fn main() -> int:
+  for i in 1 .. 10:
+    Big send ping {n: 1}
+  scheduler::waitUntil {pred: :done}
+  return Big.got

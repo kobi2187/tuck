@@ -782,6 +782,11 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   # the variant, so `s.length` on `Line({length: int})` is `s.line.length`.
   let sumField = ctx.dPayloadSumField(e)
   if sumField != "": return sumField
+  # `Counter.total` reads the actor SINGLETON's field — an actor is one
+  # instance per declared type, so the type name IS the instance.
+  if e.receiver != nil and e.receiver.kind == exkVar and
+     ctx.idx.isActorTypeIdx(e.receiver.name):
+    return actorSingletonName(e.receiver.name) & "." & e.fieldName
   ctx.genDExpr(e.receiver) & "." & e.fieldName
 
 proc genDInputPayload(ctx: var DCodegenCtx): string =
@@ -932,6 +937,10 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   let bound = ctx.genDBoundTaskCall(e)
   if bound != "": return bound
   let valStr = dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
+  # A FIELD is never a new local: inside an actor handler `total += n`
+  # assigns the singleton's field, so it must not be declared here.
+  if e.target.kind == exkVar and e.target.name in ctx.fieldVars:
+    return ctx.fieldPrefix & e.target.name & " = " & valStr
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
     let declT = ctx.declTypeForValue(e.target, e.assignVal)
@@ -1124,6 +1133,18 @@ proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
   "(() { " & kw & " (" & subj & ") {\n" & arms &
     ctx.indD & "} })()"
 
+proc genDSend(ctx: var DCodegenCtx, e: Expr): string =
+  ## `Actor send handler {payload}` — enqueue on the singleton's mailbox and
+  ## wake it. Fire-and-forget with no reply channel (spec 9.1): a caller that
+  ## wants a value polls a public field through waitUntil.
+  var sendArgs: seq[string]
+  if e.sendPayload != nil and e.sendPayload.kind == exkStruct:
+    for f in e.sendPayload.fields:
+      sendArgs.add(ctx.genDExpr(f.value))
+  let sep = if sendArgs.len > 0: ", " else: ""
+  "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(" &
+    actorSingletonName(e.sendActor) & sep & sendArgs.join(", ") & ")"
+
 proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep,
                    baseStr: string): string =
   ## One `..` step: a mutator call reassigned into the base var, or a plain
@@ -1187,7 +1208,7 @@ proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: ctx.genDRaise(e)
   of exkImport: ""   # imports are assembled by dImports from realModules
-  of exkSend: dUnsupported("actor send (arrives with the Fiber runtime)")
+  of exkSend: ctx.genDSend(e)
   of exkSelect: dUnsupported("on select (arrives with the Fiber runtime)")
 
 # --------------------------------------------------------- declarations --
@@ -1479,6 +1500,141 @@ proc genDRegister(ctx: var DCodegenCtx, d: Decl): string =
     if bf.canWrite: accessors.add(dBitSetter(bf, d.name))
   "__gshared uint* " & d.name & " = cast(uint*)(" & d.regAddress & ");\n" &
     consts.join("") & accessors.join("")
+
+proc msgVariantName(handlerName: string): string =
+  ## The message-enum tag a handler receives on. Same rule as the Odin
+  ## backend's (private there) — a one-line naming convention that both
+  ## envelopes must agree on; worth sharing if a third consumer appears.
+  "msg" & handlerName.capitalize()
+
+proc dActorFieldLines(ctx: var DCodegenCtx, d: Decl): seq[string] =
+  for f in d.actorFields:
+    result.add("    " & ctx.dType(f.typ) & " " & f.name & ";")
+
+proc genDMsgEnvelope(ctx: var DCodegenCtx, d: Decl,
+                     handlers: seq[ActorMsgHandler],
+                     variants: seq[string]): string =
+  ## The message enum and the envelope struct. Handler params ride in the
+  ## envelope, deduped by name.
+  var msgFields: seq[string]
+  var seen = initHashSet[string]()
+  for h in handlers:
+    for p in h.params:
+      if p.name in seen: continue
+      seen.incl(p.name)
+      msgFields.add("    " & ctx.dType(p.typ) & " " & p.name & ";")
+  "enum " & d.name & "MsgKind { " & variants.join(", ") & " }\n\n" &
+    "struct " & d.name & "Msg {\n" &
+    "    " & d.name & "MsgKind kind;\n" &
+    (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") & "}\n\n"
+
+proc genDActorState(ctx: var DCodegenCtx, d: Decl,
+                    hasShutdown: bool): string =
+  ## The actor's own fields, its mailbox, and — when it can be shut down —
+  ## the flag the drain checks.
+  var fields = ctx.dActorFieldLines(d)
+  fields.add("    rt.Mailbox!(" & d.name & "Msg, " & actorQueueSize(d) &
+             ") mailbox;")
+  if hasShutdown: fields.add("    bool finished;")
+  "struct " & d.name & " {\n" & fields.join("\n") & "\n}\n\n"
+
+proc genDHandlerCase(ctx: var DCodegenCtx, d: Decl,
+                     h: ActorMsgHandler): string =
+  ## One dispatch arm: the envelope's fields are already named as the
+  ## handler's params, so the body reads them directly.
+  let saved = ctx.fieldVars
+  let savedPrefix = ctx.fieldPrefix
+  ctx.fieldVars.clear()
+  for f in d.actorFields: ctx.fieldVars.incl(f.name)
+  ctx.fieldPrefix = "self."
+  ctx.definedVars.clear()
+  for p in h.params: ctx.definedVars.incl(p.name)
+  ctx.indent = 3
+  var body = ctx.genDStmtOrBlock(h.body)
+  ctx.indent = 0
+  ctx.fieldVars = saved
+  ctx.fieldPrefix = savedPrefix
+  var unpack = ""
+  for p in h.params:
+    unpack.add("            auto " & p.name & " = msg." & p.name & ";\n")
+  "        case " & d.name & "MsgKind." & msgVariantName(h.name) & ":\n" &
+    unpack & body & "            break;\n"
+
+proc genDDispatch(ctx: var DCodegenCtx, d: Decl,
+                  handlers: seq[ActorMsgHandler], shutdownBody: Expr,
+                  hasShutdown: bool): string =
+  ## The switch routing an envelope to its handler.
+  var cases: seq[string]
+  for h in handlers: cases.add(ctx.genDHandlerCase(d, h))
+  if hasShutdown:
+    # Stops the actor rather than adding a message: run the arm's body, then
+    # set the flag the drain checks.
+    var sdBody = ""
+    if shutdownBody != nil:
+      ctx.indent = 3
+      sdBody = ctx.genDStmtOrBlock(shutdownBody)
+      ctx.indent = 0
+    cases.add("        case " & d.name & "MsgKind.msgShutdown:\n" & sdBody &
+              "            self.finished = true;\n            break;\n")
+  "void handleMsg_" & d.name & "(ref " & d.name & " self, " & d.name &
+    "Msg msg) {\n    final switch (msg.kind) {\n" & cases.join("") &
+    "    }\n}\n\n"
+
+proc genDDrain(d: Decl, hasShutdown: bool): string =
+  ## The actor's coroutine body, as a DrainProc: drain what is waiting and
+  ## report whether any work happened. The runtime parks the coroutine when
+  ## it returns false and tuckNotifySend wakes it after a send.
+  ##
+  ## Shape differs from the Odin backend deliberately: there the drain loops
+  ## forever and yields itself, here the runtime owns the loop, so this
+  ## returns a bool. Same behaviour, one less place to get the yield wrong.
+  let singleton = actorSingletonName(d.name)
+  let finishedGuard = if hasShutdown:
+                        "    if (" & singleton & ".finished) return false;\n"
+                      else: ""
+  "bool drain_" & d.name & "() {\n" & finishedGuard &
+    "    bool did = false;\n" &
+    "    " & d.name & "Msg msg;\n" &
+    "    while (rt.dequeue(" & singleton & ".mailbox, msg)) {\n" &
+    "        handleMsg_" & d.name & "(" & singleton & ", msg);\n" &
+    "        did = true;\n    }\n    return did;\n}\n\n"
+
+proc genDSendHelper(ctx: var DCodegenCtx, d: Decl,
+                    h: ActorMsgHandler): string =
+  ## Enqueue an envelope. A FULL ring drops (spec 9.1) — matching the other
+  ## backends, and see the actor playground for what that costs today.
+  var params: seq[string]
+  var ctorArgs = d.name & "MsgKind." & msgVariantName(h.name)
+  for p in h.params:
+    params.add(ctx.dType(p.typ) & " " & p.name)
+    ctorArgs.add(", " & p.name)
+  let sep = if params.len > 0: ", " else: ""
+  "void send" & h.name.capitalize() & "_" & d.name & "(ref " & d.name &
+    " self" & sep & params.join(", ") & ") {\n" &
+    "    cast(void) rt.enqueue(self.mailbox, " & d.name & "Msg(" &
+    ctorArgs & "));\n    rt.tuckNotifySend();\n}\n\n"
+
+proc genDActor(ctx: var DCodegenCtx, d: Decl): string =
+  ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared
+  ## type, no construction, alive for the whole program. It emits its message
+  ## envelope, state struct, the singleton itself, dispatch, a drain and one
+  ## send helper per handler.
+  let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
+  var variants: seq[string]
+  for h in handlers: variants.add(msgVariantName(h.name))
+  if hasShutdown: variants.add("msgShutdown")
+  if variants.len == 0:
+    return dUnsupported("actor " & d.name & " with no message handlers")
+  result = ctx.genDMsgEnvelope(d, handlers, variants)
+  result.add(ctx.genDActorState(d, hasShutdown))
+  # One instance per declared actor: sends and field reads target it, so
+  # `Counter.total` means `counterSingleton.total`.
+  result.add("__gshared " & d.name & " " & actorSingletonName(d.name) &
+             ";\n\n")
+  result.add(ctx.genDDispatch(d, handlers, shutdownBody, hasShutdown))
+  result.add(genDDrain(d, hasShutdown))
+  for h in handlers:
+    result.add(ctx.genDSendHelper(d, h))
 
 proc genDTaskDecl(ctx: var DCodegenCtx, d: Decl): string =
   ## `task name(...)` — an ordinary D function. What makes it a task is the
@@ -1799,7 +1955,7 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
   of dkMixin: dUnsupported("mixin " & d.name)
   of dkExtern: ctx.genDExternBlock(d)
   of dkPending: ctx.genDPendingBlock(d)
-  of dkActor: dUnsupported("actor " & d.name & " (arrives with the actor runtime)")
+  of dkActor: ctx.genDActor(d)
   of dkTask: ctx.genDTaskDecl(d)
   of dkExpr: ""   # top-level statements are collected by emitBody
   of dkConst:
@@ -1894,11 +2050,12 @@ proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
   ## says exactly that natively (the Nim backend needs quit(), Odin
   ## os.exit(); this is the identical-construct rule paying off).
   var hasTasks = false
+  var actorNames: seq[string]
   for d in m.decls:
     if d == nil: continue
-    if d.kind == dkActor:
-      return dUnsupported("actor entry (arrives with the actor runtime)")
+    if d.kind == dkActor: actorNames.add(d.name)
     if d.kind == dkTask: hasTasks = true
+  let usesRuntime = hasTasks or actorNames.len > 0
   let mainFn = mainDeclD(m)
   if mainFn == nil and mains == "": return ""
   let tuckMain = mangleName("main")
@@ -1911,7 +2068,14 @@ proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
   # A program with tasks boots the scheduler before main and drives it
   # after, so anything main spawned and did not await still runs to
   # completion. Mirrors tuck.nim's Nim entry and the Odin one.
-  let boot = if hasTasks: "    rt.tuckAsyncInit();\n" else: ""
+  var boot = if usesRuntime: "    rt.tuckAsyncInit();\n" else: ""
+  # Every declared actor starts as a daemon BEFORE main — it is a singleton
+  # service alive for the whole program, not something main spawns.
+  for a in actorNames:
+    boot.add("    rt.tuckStartActor(&drain_" & a & ");\n")
+  # Drive the loop only when TASKS exist. Actors are daemons whose drain
+  # loops never finish, so running the scheduler for them after main would
+  # spin forever — main owns the lifecycle and ends the program itself.
   let drive = if hasTasks: "    rt.tuckRun();\n" else: ""
   let head = "(string[] args) {\n" & seedArgs & boot & mains
   if mainFn != nil and mainFn.returnsValue:

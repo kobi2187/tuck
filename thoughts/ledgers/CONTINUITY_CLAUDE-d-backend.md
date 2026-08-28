@@ -253,6 +253,19 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
     The fix belongs in the CHECKER (record the edge), not in a backend
     cache. Same shape as the callParamsFor gap: work that belongs in an
     earlier stage is being redone per-expression at emit time.
+- ACTOR POLICY GAPS (probed 2026-08-29, both reproduced on the NIM backend —
+  see scratchpad/actor-playground/FINDINGS.md and FRICTIONS.md #9's update):
+  * **A full mailbox drops silently, and waitUntil then hangs.** queue 4 +
+    10 sends + a predicate needing all 10 = spins forever. enqueue returns
+    false on a full ring and every caller discards it, so the sender cannot
+    tell and the predicate can never hold. The D backend matches this
+    deliberately rather than inventing a fourth behaviour: the policy is
+    unstated in spec 9.1, so choosing one is a LANGUAGE decision.
+  * **send without waitUntil never delivers.** 10 sends, no wait, got = 0 —
+    main never yields, so the daemon never runs and the program exits with
+    the mailbox untouched. An actor program with no waitUntil and no task
+    does nothing at all.
+  Both are upstream of any backend. Recorded, not papered over.
 - D function templates instantiate per call site, so pending stubs and
   generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
   boxing, same monomorphization story.

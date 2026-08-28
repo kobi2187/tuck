@@ -1,0 +1,12 @@
+# Same, but no waitUntil — just send 10 into a queue of 4 and read the state.
+# Tells us whether the extra sends were DROPPED (got < 10) or delivered.
+actor Small [queue: 4]:
+  got: int = 0
+
+  on ping({n: int}):
+    got += n
+
+fn main() -> int:
+  for i in 1 .. 10:
+    Small send ping {n: 1}
+  return Small.got

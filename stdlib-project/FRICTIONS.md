@@ -284,6 +284,38 @@ Note this is *not* the same as the reply question already resolved in
 `TUCK-TRANSLATION.md` — that was "how does a value come back"; this is
 "what happens to a message that can't fit."
 
+### UPDATE 2026-08-29 — the behaviour is now OBSERVED, and it deadlocks
+
+Probed while building the D backend's actors
+(`scratchpad/actor-playground/`), on the **Nim** backend, run not read:
+
+**A full mailbox silently DROPS, and a `waitUntil` on the dropped work then
+spins forever.** `[queue: 4]` with 10 sends plus
+`scheduler::waitUntil {pred: :done}` where `done` needs all 10 never
+terminates (killed at timeout). `enqueue` returns false on a full ring and
+every caller discards that bool, so the sender cannot tell, and the
+predicate it is waiting on can never become true.
+
+So the answer to "block, drop, or raise" is **drop, silently** — and the
+cost is not a lost message, it is a hung program. The three backends now
+agree on this because the D one was deliberately built to match rather than
+invent a fourth behaviour; changing it is a language decision for §9.1.
+
+Worth stating what a fix would need: `send` cannot return a value (that is
+settled), so the signal has to be either a policy that makes dropping
+impossible (block the sender) or something `waitUntil` can see — a
+"no progress possible" check, which is what the D runtime's own waitUntil
+approximates by breaking when the run queue empties.
+
+### A second gap, same probe: `send` without `waitUntil` never delivers
+
+10 sends into a queue of 4 with **no** wait leaves `got = 0`. `main` never
+yields, so the actor daemon never runs and the program exits with the
+mailbox untouched. A fire-and-forget send that never fires is at least
+surprising; it means an actor program without a `waitUntil` (or a task to
+drive the loop) does nothing at all. Also reproduced on the Nim backend, so
+it is upstream of any one backend.
+
 ## Pattern worth noting
 
 Four of these (1, 4, 5, 6) share a shape: **the compiler is right to
