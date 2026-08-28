@@ -219,6 +219,22 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
   by emitting `var n = s.len` and letting Nim infer; the D backend cannot,
   so it surfaced. Worked around by supplying `int` (what the language
   guarantees) where isLenOnSized holds; the checker should stamp it.
+- SEAM (2026-08-27): compiler/lowering_d.nim is the D backend's own lowering
+  pass, running after the shared lowerModule on this backend's deepCopy.
+  Rule for what belongs there: rewrites that exist because D's SEMANTICS
+  differ from Tuck's (the Seq .dup), not because D spells something
+  differently (`~`, `foreach`) — the latter stays in the emitter. Marks ride
+  a NodeId side-table: NOT sourceName (holds the user's written name for
+  diagnostics) and NOT the shared Resolution (this is a D-only fact). Ids are
+  global, so the table must not be cleared per module.
+- WHY THE BACKENDS STILL DUPLICATE PAYLOAD EXPLOSION (measured, not assumed):
+  shared lowering needs `semLayer.callParamsFor`, and the checker leaves it
+  EMPTY for pending fns, distinct-type ctors (`5 Milliseconds`) and the
+  combinators (`alias`). Every backend therefore keeps a decl-list-scan
+  fallback. Extending explodePayload to qualified callees removed one reason
+  for the duplication; recording those params at the checker would remove
+  the rest, and is the real fix. Deleting the backend copies before that
+  would break the corpus — verified by instrumenting, not by reading.
 - D function templates instantiate per call site, so pending stubs and
   generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
   boxing, same monomorphization story.

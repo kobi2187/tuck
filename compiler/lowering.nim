@@ -102,7 +102,19 @@ proc explodePayload(e: Expr) =
   ## only for top-level fns — so a non-empty value already means "safe to
   ## explode". A member fn's payload explosion belongs to the backends, which
   ## see the receiver, and a task is theirs to schedule.
-  if e.callee == nil or e.callee.kind != exkVar: return
+  ##
+  ## A QUALIFIED callee (`fs::readFile`) explodes here too — the checker's
+  ## mapping decides either way, so the callee's spelling was never a reason
+  ## to treat the two differently. It used to be excluded, which left every
+  ## backend re-implementing this loop for the qualified case.
+  ##
+  ## WHAT STILL REACHES THE BACKENDS, and why they keep a fallback: this
+  ## pass needs `callParamsFor`, and the checker leaves it EMPTY for pending
+  ## fns, distinct-type constructors (`5 Milliseconds`) and the combinators
+  ## (`alias`) — measured, not assumed. Those fall through to a decl-list
+  ## scan in the emitter. Filling them in at the checker is what would let
+  ## the backend copies go.
+  if e.callee == nil or e.callee.kind notin {exkVar, exkQualified}: return
   let expectedParams = semLayer.callParamsFor(e)
   if expectedParams.len == 0: return
   if e.args.len != 1 or e.args[0].kind != exkStruct: return
