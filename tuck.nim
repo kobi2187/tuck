@@ -527,6 +527,21 @@ when isMainModule:
       let dPath = outDir / (base & ".d")
       writeFile(dPath, emitD(dProg[^1].m, dReal, base))
       echo "wrote ", dPath
+      # A vendored `.c` an extern block binds: compile it to an object the
+      # dmd link step picks up. Same step the Odin path takes above — dmd,
+      # like odin, does not compile C itself.
+      for d in dProg[^1].m.decls:
+        if d == nil or d.kind != dkExtern: continue
+        for mem in d.mixinMembers:
+          if mem.kind != dkFn or not mem.isExtern: continue
+          if not mem.externLib.endsWith(".c"): continue
+          let cSrc = parentDir(path) / mem.externLib
+          if not fileExists(cSrc): continue
+          let obj = outDir / mem.externLib.changeFileExt("o")
+          createDir(obj.parentDir())
+          if execShellCmd("cc -c -fPIC " & quoteShell(cSrc) & " -o " &
+                          quoteShell(obj)) != 0:
+            die("tuck: failed to compile C source " & cSrc)
       let rtSrcD = getAppDir() / "compiler" / "tuckrt_d"
       if dirExists(rtSrcD):
         for f in walkFiles(rtSrcD / "*.d"):
@@ -665,10 +680,17 @@ when isMainModule:
           # -i compiles imported modules (mod_*.d, tuck_rt.d) automatically;
           # -O -release is the fast-code build, default is the fast build.
           let dOpt = if wantRelease: " -O -release" else: ""
+          # Objects built from vendored C sources ride on the command line:
+          # dmd's pragma(lib) is for SYSTEM libraries and would turn a path
+          # into a -l<path> the linker cannot resolve.
+          var cObjs = ""
+          for f in walkDirRec(outDir):
+            if f.endsWith(".o") and not f.endsWith(base & ".o"):
+              cObjs.add(" " & quoteShell(f))
           let dCmd = quoteShell(dmdExe) & " -i" & dOpt &
                      " -I" & quoteShell(outDir) &
                      " -of=" & quoteShell(dBin) & " " &
-                     quoteShell(outDir / (base & ".d"))
+                     quoteShell(outDir / (base & ".d")) & cObjs
           let dT0 = epochTime()
           let dRc = execShellCmd(dCmd)
           let dMs = (epochTime() - dT0) * 1000

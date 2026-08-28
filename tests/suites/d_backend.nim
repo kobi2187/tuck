@@ -473,4 +473,39 @@ fn main() -> int:
            r"default: return "
   t.runsD "decision: the table picks the first matching row", 3, dmdExe
 
+  # --- C FFI (spec: extern [c, header: ...]) -----------------------------
+  # THREE kinds of extern share the keyword and are not interchangeable:
+  # runtime (tuck_rt forwarder), C FFI (a real symbol), and shim
+  # (`impl: <backend> "module"`). These assertions cover the second.
+  t.src """
+extern [c, header: "math.h", lib: "m"]:
+  type CPoint = {x: i32, y: i32}
+  type CMode = {MODE_A = 3, MODE_B = 7}
+  fn hypot({x: f64, y: f64}) -> f64
+
+fn main() -> int:
+  return 0
+"""
+  t.emitsD "ffi: a C fn is a native extern(C) declaration, no header needed",
+           r"extern \(C\) double hypot\(double x, double y\);"
+  t.emitsD "ffi: a system library links through pragma(lib)",
+           r"pragma\(lib, ""m""\);"
+  t.emitsD "ffi: a C struct is declared field-for-field with the C ABI",
+           r"extern \(C\) struct CPoint \{"
+  t.emitsD "ffi: a C enum keeps its explicit values",
+           r"extern \(C\) enum CMode \{ MODE_A = 3, MODE_B = 7 \}"
+  t.runsD "ffi: a program binding libm builds and runs", 0, dmdExe
+
+  # An opaque handle: `type H = {}` is a typedef with no definition, so its
+  # size is unknown and it can only be held as a pointer.
+  t.src """
+extern [c, header: "stdio.h"]:
+  type CFile = {}
+
+fn main() -> int:
+  return 0
+"""
+  t.emitsD "ffi: a fieldless C type is an incomplete struct plus a pointer",
+           r"struct CFileObj;\nalias CFile = CFileObj\*;"
+
   t.finish()

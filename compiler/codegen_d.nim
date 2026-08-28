@@ -49,6 +49,8 @@ type
     fieldPrefix: string         # what those names are reached through
     idx: DeclIndex   # O(1) name lookups; a scan here is quadratic over the
                      # emit hot path (measured — see decl_index.nim)
+    cLibs: HashSet[string]  # `lib:` specs from C-FFI extern blocks; each
+                            # becomes a pragma(lib) at module top level
 
 proc dUnsupported(construct: string): string =
   ## The D backend refuses what it cannot yet emit — loudly, at emission
@@ -1089,6 +1091,25 @@ proc genDDecisionTable(ctx: var DCodegenCtx, d: Decl): string =
   retTypeStr & " " & d.name & "(" & ctx.genDParams(d.fnParams) & ") {\n" &
     body & "\n}\n"
 
+proc dCallConv(ctx: var DCodegenCtx, d: Decl): string =
+  ## `extern (C)` when this fn is used as a C CALLBACK — a D function
+  ## pointer and a C one are different types, so a plain fn's address cannot
+  ## be handed to C.
+  ##
+  ## Matched by SHAPE against the C callback signatures the module declares,
+  ## which is what the Odin backend does for the same reason.
+  ## ponytail: shape match, not reference tracking. A same-shape fn that
+  ## never crosses the boundary gets extern(C) harmlessly; tighten if that
+  ## ever matters.
+  for mem in ctx.module.externMembers():
+    if mem.kind != dkFnSig or not mem.sigIsCCallback or
+       mem.sigParams.len != d.fnParams.len: continue
+    var same = true
+    for i, sp in mem.sigParams:
+      if ctx.dType(sp.typ) != ctx.dType(d.fnParams[i].typ): same = false
+    if same: return "extern (C) "
+  ""
+
 proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
   if d.fnGenerics.len > 0: return dUnsupported("generic fn " & d.name)
@@ -1111,7 +1132,7 @@ proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # its own copy and it has since drifted (no matchArmsReturn guard, so a
   # tail match whose arms return gets wrapped in a value-position case).
   injectTailReturn(d.fnBody, retStr)
-  result = retStr & " " & fnName & "(" &
+  result = ctx.dCallConv(d) & retStr & " " & fnName & "(" &
            ctx.genDParams(d.fnParams, refSelf) & ") {\n"
   ctx.indent = 1
   ctx.definedVars.clear()
@@ -1145,14 +1166,53 @@ proc genDObjectDecl(ctx: var DCodegenCtx, d: Decl): string =
     # `satisfies I` entries are conformance metadata, no code of their own
 
 proc dExternTodo(mem: Decl): string =
-  ## Why this extern cannot emit a forwarder yet, or "" when it can. A TODO
+  ## Why this extern cannot emit a binding yet, or "" when it can. A TODO
   ## comment is visible in the output, and the D compiler names the missing
   ## symbol only if a call site actually references it — loud where it
   ## matters, without blocking every program that merely imports the module.
-  if mem.externHeader != "" or mem.externLib != "" or mem.externImpl.len > 0:
-    return "// D backend TODO: extern " & mem.name &
-           " (C-header/lib/impl externs arrive in M5)\n"
+  ##
+  ## THREE KINDS OF EXTERN, and they are not interchangeable:
+  ##   1. runtime  — no header, no impl: implemented by tuck_rt (forwarder)
+  ##   2. C FFI    — `header:` names a real C header: a native binding
+  ##   3. shim     — `impl: <backend> "module"`: a BACKEND-LANGUAGE module
+  ## Only the third is still unhandled here, and only when it names no `d`
+  ## module — there is nothing for this backend to point at.
+  if mem.externImpl.len > 0:
+    var hasD = false
+    for (backend, _) in mem.externImpl:
+      if backend == "d": hasD = true
+    if not hasD:
+      return "// D backend TODO: extern " & mem.name &
+             " needs an `impl: d \"...\"` module\n"
   ""
+
+proc genDCBinding(ctx: var DCodegenCtx, mem: Decl): string =
+  ## A real C symbol (spec: `extern [c, header: "zlib.h"]`). D declares the
+  ## prototype with the C calling convention and the linker resolves it —
+  ## the identical construct to Nim's {.importc, header.} and Odin's
+  ## `foreign` block, and simpler than either: D needs no header include,
+  ## because the declaration IS the binding.
+  ##
+  ## `[emit: "c_fn"]` names the C symbol when it differs from the Tuck name;
+  ## `pragma(mangle)` is what keeps the D-side name while linking against
+  ## the C one.
+  var params: seq[string]
+  for prm in mem.fnParams:
+    params.add(ctx.dType(prm.typ) & " " & prm.name)
+  let retStr = ctx.dType(mem.fnReturnType)
+  # The library this symbol lives in, collected for a top-level pragma(lib).
+  # A vendored `.c` is compiled to an object by the driver (as the Nim
+  # backend takes it via {.compile.}), so link the object.
+  if mem.externLib != "":
+    ctx.cLibs.incl(if mem.externLib.endsWith(".c"):
+                     mem.externLib[0 ..< mem.externLib.len - 2] & ".o"
+                   else: mem.externLib)
+  let cName = if mem.externEmit != "": mem.externEmit else: mem.name
+  let mangle = if cName != mem.name:
+                 " pragma(mangle, \"" & cName & "\")"
+               else: ""
+  "extern (C)" & mangle & " " & retStr & " " & mem.name & "(" &
+    params.join(", ") & ");\n"
 
 proc externShapeArg(ctx: var DCodegenCtx, ret: Type, retStr: string): string =
   ## A record-returning extern hands the runtime the shape to FILL, as a
@@ -1172,6 +1232,8 @@ proc genDExternFwd(ctx: var DCodegenCtx, mem: Decl): string =
   if mem.kind != dkFn: return ""
   let todo = dExternTodo(mem)
   if todo != "": return todo
+  # A C-header extern binds a real symbol rather than forwarding to tuck_rt.
+  if mem.externHeader != "": return ctx.genDCBinding(mem)
   let ret = mem.fnReturnType
   let retStr = ctx.dType(ret)
   let emitName = if mem.externEmit != "": mem.externEmit else: mem.name
@@ -1188,8 +1250,48 @@ proc genDExternFwd(ctx: var DCodegenCtx, mem: Decl): string =
   retStr & " " & mem.name & tmplParams & "(" &
     ctx.genDParams(mem.fnParams) & ") {\n" & "    " & body & ";\n" & "}\n"
 
+proc genDFnSig(ctx: var DCodegenCtx, d: Decl): string
+
+proc genDCType(ctx: var DCodegenCtx, mem: Decl): string =
+  ## A C type declared inside an `extern [c, header: ...]` block.
+  ##
+  ## A FIELDLESS one is an opaque handle — `typedef struct Foo Foo;` with no
+  ## definition — so its size is unknown and it can only be held as a
+  ## pointer. D spells that as an incomplete struct plus an alias to a
+  ## pointer at it, the same shape Nim's {.incompleteStruct.} + `ptr` gives.
+  ##
+  ## A struct WITH fields is declared field-for-field with the C calling
+  ## convention, so it passes by value with the C ABI.
+  if mem.typeBody == nil: return ""
+  # A C ENUM: `type Op = {OP_ADD = 10, ...}`. D's enum with explicit values
+  # is the identical construct, and extern(C) fixes its underlying type to
+  # the C one.
+  if mem.typeBody.kind == tkSum:
+    var tags: seq[string]
+    for v in mem.typeBody.variants:
+      tags.add(if v.value != "": v.name & " = " & v.value else: v.name)
+    return "extern (C) enum " & mem.name & " { " & tags.join(", ") & " }\n"
+  if mem.typeBody.kind != tkRecord: return ""
+  if mem.typeBody.fields.len == 0:
+    return "struct " & mem.name & "Obj;\n" &
+           "alias " & mem.name & " = " & mem.name & "Obj*;\n"
+  var res = "extern (C) struct " & mem.name & " {\n"
+  for f in mem.typeBody.fields:
+    res.add("    " & ctx.dType(f.typ) & " " & f.name & ";\n")
+  res.add("}\n")
+  res
+
 proc genDExternBlock(ctx: var DCodegenCtx, d: Decl): string =
   for mem in d.mixinMembers:
+    if mem == nil: continue
+    # A C struct or callback signature declared in the block, not a fn.
+    if mem.kind == dkType:
+      let t = ctx.genDCType(mem)
+      if t != "": result.add(t & "\n")
+      continue
+    if mem.kind == dkFnSig:
+      result.add(ctx.genDFnSig(mem) & "\n")
+      continue
     let code = ctx.genDExternFwd(mem)
     if code != "": result.add(code & "\n")
 
@@ -1377,6 +1479,14 @@ proc dImports(ctx: DCodegenCtx, body, mains: string,
   # needs the runtime; a library module only if its own body reached for it.
   if usesSymbol(code, "rt") or not inModuleDir:
     result.add("import rt = tuck_rt;")
+  # C libraries bound by an extern block. `pragma(lib, "z")` is a SYSTEM
+  # library — dmd turns it into -lz. An object file is not: dmd would emit
+  # `-lcffi/point.o` and the linker would hunt for a library by that name
+  # (verified). Objects go on the dmd command line instead, which the driver
+  # builds — see tuck.nim's --dlang build step.
+  for lib in ctx.cLibs:
+    if not (lib.endsWith(".o") or lib.endsWith(".a") or "/" in lib):
+      result.add("pragma(lib, \"" & lib & "\");")
   var stdioSyms: seq[string]
   for sym in ["writeln", "stderr"]:
     if usesSymbol(code, sym): stdioSyms.add(sym)
