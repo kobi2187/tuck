@@ -443,4 +443,34 @@ fn main() -> int:
            r"= \(\[7, 8, 9\]\)\.dup"
   t.runsD "seam: writing b still never writes a (7+50)", 57, dmdExe
 
+  # --- decision tables (spec 6.1) ----------------------------------------
+  # The combinatorics come from codegen_table, shared with the other two
+  # backends; only the spelling is D's. Enumerable columns collapse to one
+  # switch over a packed key.
+  t.src """
+type Priority:
+  | low
+  | high
+
+type Action:
+  | drop
+  | send
+
+decision route({p: Priority, urgent: bool}) -> Action:
+  | low   false -> drop
+  | low   true  -> send
+  | high  _     -> send
+
+fn main() -> int:
+  let a = {p: Priority.low, urgent: false} route
+  if a == Action.drop:
+    return 3
+  return 1
+"""
+  t.emitsD "decision: enumerable columns collapse to one packed-key switch",
+           r"switch \(cast\(long\)\(p\) \* 2 \+ cast\(long\)\(urgent\)\)"
+  t.emitsD "decision: a packed key is an int, so the last group is default",
+           r"default: return "
+  t.runsD "decision: the table picks the first matching row", 3, dmdExe
+
   t.finish()
