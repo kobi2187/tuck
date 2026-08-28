@@ -530,10 +530,24 @@ proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
                 else: nil
   ctx.dSumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
+proc taskRetTypeD(ctx: var DCodegenCtx, name: string): string =
+  ## The D type a task hands back, for the result slot.
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkTask and d.name == name:
+      return ctx.dType(d.taskReturnType)
+  "void"
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   let variant = ctx.asDSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.resolveDCallee(e)
+  # Calling a task in STATEMENT position schedules it and moves on —
+  # fire-and-forget (spec §9.2). A result-BOUND call is handled in
+  # genDAssign, which needs the target to build the slot.
+  if ctx.idx.isTaskNameIdx(calleeStr):
+    let args = ctx.genDCallArgs(e, calleeStr)
+    return "rt.tuckSpawn({ cast(void) " & calleeStr &
+           "(" & args.join(", ") & "); })"
   let member = ctx.memberCalleeNameD(e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCallD(e, calleeStr)
@@ -777,6 +791,37 @@ proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
       return ctx.recStructNameD(t.fields, owner)
   ctx.dDeclType(t)
 
+proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## `let r = {args} someTask` — spawn the task into a result slot and wait
+  ## for it. "" when this assignment is not a task call.
+  ##
+  ## Await, not block: inside a coroutine awaitResult yields so everything
+  ## else keeps running; in `main` (a plain fn, never a coroutine) it drives
+  ## the scheduler instead. Mirrors the Nim backend's newAsyncResult /
+  ## spawnResult / awaitResult triple.
+  let v = e.assignVal
+  if v == nil or v.kind != exkCall or v.callee == nil or
+     v.callee.kind != exkVar: return ""
+  if not ctx.idx.isTaskNameIdx(v.callee.name): return ""
+  let ret = ctx.taskRetTypeD(v.callee.name)
+  let args = ctx.genDCallArgs(v, v.callee.name)
+  let rawCall = v.callee.name & "(" & args.join(", ") & ")"
+  ctx.tmpCounter.inc
+  let slot = "tuckSlot" & $ctx.tmpCounter
+  # Three statements, laid out here — the caller strips its own indent and
+  # terminator for this shape (see genDStmt's boundTaskCall test).
+  var res = "auto " & slot & " = rt.newAsyncResult!(" & ret & ")();\n"
+  res.add(ctx.indD & "rt.spawnResult(" & slot & ", { return " & rawCall &
+          "; });\n")
+  let declT = ctx.dDeclType(semLayer.typeFor(e.target))
+  let targetDecl =
+    if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
+      ctx.definedVars.incl(e.target.name)
+      (if declT != "": declT else: ret) & " " & e.target.name
+    else: ctx.genDExpr(e.target)
+  res.add(ctx.indD & targetDecl & " = rt.awaitResult(" & slot & ")")
+  res
+
 proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## First assignment to a name declares it, with the CHECKER'S type stated
   ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
@@ -790,6 +835,12 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## make the two inference algorithms agree by luck — which is exactly how
   ## the 32-bit `auto x = 0` divergence got in. A type this backend cannot
   ## state is a GAP, reported like any other, not a request for D to guess.
+  # `let r = {args} someTask` — schedule the task AND await its result. It
+  # reads as an ordinary call at the source level, which is the point
+  # (spec §9.2): the effect marker is the async annotation, there is no
+  # await keyword.
+  let bound = ctx.genDBoundTaskCall(e)
+  if bound != "": return bound
   let valStr = dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
@@ -1200,6 +1251,24 @@ proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   ctx.retInnerT = nil
   result.add("}\n")
 
+proc genDTaskDecl(ctx: var DCodegenCtx, d: Decl): string =
+  ## `task name(...)` — an ordinary D function. What makes it a task is the
+  ## CALL SITE: calling it schedules a coroutine, and binding its result
+  ## awaits completion (spec §9.2). The body needs no marking of its own.
+  let retStr = ctx.dType(d.taskReturnType)
+  injectTailReturn(d.taskBody, retStr)
+  result = retStr & " " & d.name & "(" & ctx.genDParams(d.taskParams) & ") {\n"
+  ctx.indent = 1
+  ctx.definedVars.clear()
+  ctx.currentParams = @[]
+  for p in d.taskParams:
+    ctx.definedVars.incl(p.name)
+    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
+  result.add(ctx.genDStmtOrBlock(d.taskBody))
+  ctx.indent = 0
+  ctx.currentParams = @[]
+  result.add("}\n")
+
 proc genDObjectDecl(ctx: var DCodegenCtx, d: Decl): string =
   ## `object` — a plain D struct plus its member fns as qualified free
   ## procs. Composition (+Mixin) and satisfies arrive with the interface
@@ -1496,8 +1565,8 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
   of dkMixin: dUnsupported("mixin " & d.name)
   of dkExtern: ctx.genDExternBlock(d)
   of dkPending: ctx.genDPendingBlock(d)
-  of dkActor: dUnsupported("actor " & d.name & " (arrives with the Fiber runtime)")
-  of dkTask: dUnsupported("task " & d.name & " (arrives with the Fiber runtime)")
+  of dkActor: dUnsupported("actor " & d.name & " (arrives with the actor runtime)")
+  of dkTask: ctx.genDTaskDecl(d)
   of dkExpr: ""   # top-level statements are collected by emitBody
   of dkConst:
     # A literal is a true compile-time constant (`enum` is D's word for
@@ -1590,11 +1659,12 @@ proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
   ## value-returning `fn main` IS the process exit code — D's `int main`
   ## says exactly that natively (the Nim backend needs quit(), Odin
   ## os.exit(); this is the identical-construct rule paying off).
-  var hasRuntimeUsers = false
+  var hasTasks = false
   for d in m.decls:
-    if d != nil and d.kind in {dkActor, dkTask}: hasRuntimeUsers = true
-  if hasRuntimeUsers:
-    return dUnsupported("actor/task entry (arrives with the Fiber runtime)")
+    if d == nil: continue
+    if d.kind == dkActor:
+      return dUnsupported("actor entry (arrives with the actor runtime)")
+    if d.kind == dkTask: hasTasks = true
   let mainFn = mainDeclD(m)
   if mainFn == nil and mains == "": return ""
   let tuckMain = mangleName("main")
@@ -1604,13 +1674,21 @@ proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
   # argCount is not knowable from the entry point alone, and the call is
   # one assignment.
   let seedArgs = "    rt.tuckSetArgs(args);\n"
-  let head = "(string[] args) {\n" & seedArgs & mains
+  # A program with tasks boots the scheduler before main and drives it
+  # after, so anything main spawned and did not await still runs to
+  # completion. Mirrors tuck.nim's Nim entry and the Odin one.
+  let boot = if hasTasks: "    rt.tuckAsyncInit();\n" else: ""
+  let drive = if hasTasks: "    rt.tuckRun();\n" else: ""
+  let head = "(string[] args) {\n" & seedArgs & boot & mains
   if mainFn != nil and mainFn.returnsValue:
-    result = "int main" & head & "    return cast(int) " & tuckMain & "();\n}\n"
+    # The exit code is main's result, but tasks still get to finish first.
+    result = "int main" & head &
+             "    auto mainRc = " & tuckMain & "();\n" & drive &
+             "    return cast(int) mainRc;\n}\n"
   elif mainFn != nil:
-    result = "void main" & head & "    " & tuckMain & "();\n}\n"
+    result = "void main" & head & "    " & tuckMain & "();\n" & drive & "}\n"
   else:
-    result = "void main" & head & "}\n"
+    result = "void main" & head & drive & "}\n"
 
 proc newDCtx(m: Module, realModules: Table[string, Module],
              moduleName: string, modPrefix = ""): DCodegenCtx =

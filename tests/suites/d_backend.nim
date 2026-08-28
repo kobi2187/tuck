@@ -17,8 +17,12 @@ proc runsD(t: var T, name: string, want: int, dmdExe: string) =
   ## the exit code. Chained through the pool: emit -> dmd build -> run.
   let e = t.needD()
   let dir = t.curDir / "dlang"
+  # minicoro.a rides along: tuck_rt re-exports the coroutine engine, so
+  # every emitted program references its extern(C) symbols even when it
+  # spawns nothing. `tuck c --dlang` already copies the archive beside the
+  # emitted .d, so this just hands it to the linker.
   let b = t.needCmdAfter(@[dmdExe, "-i", "-I" & dir, dir / "t.d",
-                           "-of=" & dir / "prog"],
+                           dir / "minicoro.a", "-of=" & dir / "prog"],
                          e, proc (dir: string) = discard, dir)
   let r = t.needCmdAfter(@[dir / "prog"], b,
                          proc (dir: string) = discard, dir)
@@ -41,7 +45,7 @@ proc runsDWith(t: var T, name: string, want: int, dmdExe: string,
   let dir = t.curDir / "dlang"
   let bin = dir / ("prog_" & tag)
   let b = t.needCmdAfter(@[dmdExe, "-i", "-I" & dir] & flags &
-                         @[dir / "t.d", "-of=" & bin],
+                         @[dir / "t.d", dir / "minicoro.a", "-of=" & bin],
                          e, proc (dir: string) = discard, dir)
   let r = t.needCmdAfter(@[bin], b, proc (dir: string) = discard, dir)
   if t.phase == pCollect: return
@@ -507,5 +511,33 @@ fn main() -> int:
 """
   t.emitsD "ffi: a fieldless C type is an incomplete struct plus a pointer",
            r"struct CFileObj;\nalias CFile = CFileObj\*;"
+
+  # --- tasks on the shared minicoro engine (spec 9.2) --------------------
+  # Calling a task schedules a coroutine; binding its result awaits it. At
+  # the source level that reads as an ordinary call — the effect marker IS
+  # the async annotation, there is no await keyword.
+  t.src """
+fn stepIo({n: int}) -> {v: int} [io]:
+  return {v: n}
+
+task compute({base: int}) -> {r: int} [io]:
+  let a = {n: base} stepIo
+  let b = {n: base} stepIo
+  return {r: a.v + b.v}
+
+fn main() -> int:
+  let res = {base: 21} compute
+  return res.r
+"""
+  t.emitsD "task: a result-bound call spawns into a slot and awaits it",
+           r"rt\.spawnResult\(tuckSlot\d+, \{ return tuck_compute\(21\); \}\)"
+  t.emitsD "task: the await reads back through the slot",
+           r"= rt\.awaitResult\(tuckSlot\d+\);"
+  t.emitsD "task: a program with tasks boots the scheduler",
+           r"rt\.tuckAsyncInit\(\);"
+  t.emitsD "task: and drives it after main, so spawned work finishes",
+           r"rt\.tuckRun\(\);"
+  t.runsD "task: schedule + await computes 42 through a real coroutine",
+          42, dmdExe
 
   t.finish()

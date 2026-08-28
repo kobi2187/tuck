@@ -166,14 +166,63 @@ void destroyCoroutine(Coroutine* c)
 // One cooperative run queue on one thread (spec §9.4): no preemption, one
 // resume per tick. Tasks and actors are both coroutines on this queue.
 
-private __gshared Coroutine*[] readyQueue;
+// The run queue is MALLOC'd, not GC memory, and this is load-bearing.
+//
+// D's GC scans thread stacks conservatively. A coroutine runs on a minicoro
+// stack the GC was never told about, so a collection triggered from inside
+// one walks a stack it does not know and crashes — observed as a segfault
+// with a 0xdeaddeaddeaddead frame under gdb, at ~10k coroutines, which is
+// exactly where an append reallocated and tripped a collection.
+//
+// Appending to a GC array from a coroutine is therefore unsafe by
+// construction. A hand-managed ring avoids allocating on the coroutine
+// stack path entirely. (Nim disables its stack-walker for the same reason —
+// tuck_async.nim's mandatory --stackTrace:off; Odin has no GC and needs
+// neither.)
+private __gshared Coroutine** readyQueue;
+private __gshared size_t readyHead;   /// next to run
+private __gshared size_t readyTail;   /// next free slot
+private __gshared size_t readyCap;
 private __gshared bool stopped;
+
+private void growQueue()
+{
+    import core.stdc.stdlib : realloc;
+    size_t newCap = readyCap == 0 ? 64 : readyCap * 2;
+    auto p = cast(Coroutine**) realloc(readyQueue,
+                                       newCap * (Coroutine*).sizeof);
+    if (p is null) tuckCoroFail("out of memory growing the run queue");
+    readyQueue = p;
+    readyCap = newCap;
+}
+
+private size_t readyCount() { return readyTail - readyHead; }
 
 /// Put a coroutine on the run queue.
 void schedule(Coroutine* c)
 {
     if (c is null || c.state == CoroutineState.Finished) return;
-    readyQueue ~= c;
+    if (readyTail == readyCap)
+    {
+        // Reclaim the consumed prefix before growing: a long-running program
+        // would otherwise walk the buffer forever.
+        if (readyHead > 0)
+        {
+            import core.stdc.string : memmove;
+            memmove(readyQueue, readyQueue + readyHead,
+                    readyCount * (Coroutine*).sizeof);
+            readyTail -= readyHead;
+            readyHead = 0;
+        }
+        if (readyTail == readyCap) growQueue();
+    }
+    readyQueue[readyTail++] = c;
+}
+
+private Coroutine* takeReady()
+{
+    if (readyCount == 0) return null;
+    return readyQueue[readyHead++];
 }
 
 /// Create a coroutine for `fn` and queue it. The Tuck-facing spawn.
@@ -198,10 +247,9 @@ void tuckYield()
 /// to finish (mirrors tuck.nim's entry for the Nim backend).
 void tuckRun()
 {
-    while (!stopped && readyQueue.length > 0)
+    while (!stopped && readyCount > 0)
     {
-        auto c = readyQueue[0];
-        readyQueue = readyQueue[1 .. $];
+        auto c = takeReady();
         resume(c);
         // A coroutine that yielded re-queued itself in tuckYield; one that
         // parked on an fd will be re-queued by the reactor when it lands.
@@ -214,12 +262,66 @@ void tuckStop() { stopped = true; }
 
 void tuckAsyncInit()
 {
-    readyQueue.length = 0;
+    readyHead = 0;
+    readyTail = 0;
     stopped = false;
 }
 
 /// Fire-and-forget: schedule a task, do not wait for it (spec §9.2).
 void tuckSpawn(void delegate() fn) { cast(void) spawn(fn); }
+
+// ===========================================================================
+// Task results
+// ===========================================================================
+//
+// Calling a task SCHEDULES it; binding its result AWAITS completion, and at
+// the call site that reads exactly like a synchronous call (spec §9.2).
+
+/// One task's result slot.
+final class TuckAsyncResult(T)
+{
+    T value;
+    bool done;
+}
+
+TuckAsyncResult!T newAsyncResult(T)()
+{
+    return new TuckAsyncResult!T();
+}
+
+/// Schedule `fn`, storing its result in `slot` when it finishes.
+void spawnResult(T)(TuckAsyncResult!T slot, T delegate() fn)
+{
+    tuckSpawn({
+        slot.value = fn();
+        slot.done = true;
+    });
+}
+
+/// Wait for a task's result.
+///
+/// Inside a coroutine: yield until it lands, so everything else keeps
+/// running. In the MAIN context there is nothing to yield to, so drive the
+/// scheduler directly — `main` is a plain fn, not a coroutine, and this is
+/// what lets a task's result be bound there at all. Mirrors
+/// tuck_async.nim's awaitResult.
+T awaitResult(T)(TuckAsyncResult!T slot)
+{
+    if (inCoroutine())
+    {
+        while (!slot.done) tuckYield();
+    }
+    else
+    {
+        while (!slot.done && readyCount > 0)
+        {
+            auto c = takeReady();
+            resume(c);
+            if (c.state == CoroutineState.Finished) destroyCoroutine(c);
+        }
+    }
+    return slot.value;
+}
 
 /// An actor's drain loop is a daemon coroutine — queued like any other, but
 /// it never finishes on its own.

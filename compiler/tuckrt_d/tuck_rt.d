@@ -13,6 +13,11 @@ module tuck_rt;
 import std.stdio : stdout;
 import std.conv : text;
 
+// The coroutine engine is a separate file but the SAME facade: emitted code
+// reaches everything through `rt`, so tuck_rt re-exports it — mirroring
+// tuck_rt.nim, which fronts tuck_async the same way.
+public import tuck_coro;
+
 // std/console — terminal I/O (rt-implemented externs).
 void print(string s) { stdout.write(s); stdout.flush(); }
 void printLine(string s) { stdout.writeln(s); }

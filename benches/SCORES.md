@@ -14,6 +14,33 @@ the absolute figure. A >2x slowdown on any line is worth investigating.
 | actor throughput | messages drained | ~21 M msgs/sec |
 | compiler front-end | lex+parse+check | ~23k lines/sec |
 
+## D runtime joins — 2026-08-29
+
+Third backend on the same vendored minicoro. Same bench, same N=10000 K=100,
+`-O -release -inline`. The spawn figure is the one that matters for the
+portability claim: it is dominated by minicoro's stack allocation, so all
+three agreeing at ~0.18–0.19 M/sec is evidence the shared engine really is
+doing the work rather than each backend having its own.
+
+| Bench | Metric | Nim | Odin | D |
+|---|---|---|---|---|
+| async scale | coroutine spawn | 0.18 M/sec | 0.18 M/sec | 0.19 M/sec |
+| async scale | context switch | 1.27–1.33 M/sec | 1.94–2.09 M/sec | 3.48–3.55 M/sec |
+
+The switch figure is HIGHER than both, and it is not claimed as a win: the
+Nim and Odin rows were measured 2026-07-28 on a different machine state, so
+only the D row is same-session. What it does establish is the absence of a
+large gap in the wrong direction, which is what a porting bug would look
+like. Re-run all three interleaved before treating the ordering as real.
+
+**This bench earned its keep immediately.** At the default N=10000 the first
+D run SEGFAULTED where Nim and Odin are fine. gdb put it in the GC:
+appending to the GC-allocated run queue from inside a coroutine triggered a
+collection, and D's conservative GC then scanned a minicoro stack it had
+never been told about (0xdeaddeaddeaddead frame). The queue is now
+hand-managed malloc memory. The smaller tests — two coroutines interleaving
+— never allocated enough to trip it.
+
 ## Nim vs Odin runtime — 2026-07-28
 
 Both backends drive the SAME vendored minicoro, so this is not a language
