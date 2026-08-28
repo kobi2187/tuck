@@ -819,11 +819,35 @@ proc ownsItsLayout(s: Expr): bool =
   s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile} or
     isCallOnChain(s) or isChainBinding(s)
 
+proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
+  ## A call in STATEMENT position whose value nothing consumes. Nim rejects
+  ## a bare expression with a type ("has to be used (or discarded)"), so it
+  ## needs an explicit `discard` — `{self: c} bump` as its own line used to
+  ## emit code that did not compile.
+  ##
+  ## Only a plain call: a chain lays itself out, and the errors-policy path
+  ## has already wrapped its own drop site by the time this is asked.
+  if s == nil or s.kind != exkCall: return false
+  if semLayer.shortcut(s) != "": return false   # errors policy owns this one
+  # A TASK call in statement position is already wrapped in tuckSpawn(...),
+  # which is a void expression — discarding it is the very "no type (or is
+  # ambiguous)" error this proc exists to avoid, just one level out. The
+  # task's own return type says nothing about the emitted statement.
+  if s.callee != nil and s.callee.kind == exkVar and
+     ctx.isTaskName(s.callee.name): return false
+  let t = semLayer.typeFor(s)
+  if t == nil: return false
+  # `discard` over a void call is itself an error in Nim, so the question is
+  # whether there is anything TO discard.
+  not (t.kind == tkNamed and t.name in ["void", "unit", UnknownName])
+
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
   var code = ctx.genExpr(s)
   if code != "" and semLayer.shortcut(s) != "":
     code = ctx.genDroppedResult(s, code)
+  elif code != "" and ctx.stmtValueDropped(s):
+    code = "discard " & code
   if code == "": return ""
   if ownsItsLayout(s): code else: ind & "  " & code
 

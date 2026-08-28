@@ -2525,12 +2525,44 @@ proc synthBracket(tc: var TypeChecker, e: Expr): Type =
   setCall(semLayer, e, ic)
   tc.synthesize(ic)
 
+proc failIfMutatingIndexTarget(tc: var TypeChecker, e: Expr) =
+  ## `xs[i] = v` writes THROUGH `xs`, so it is bound by the same rules as
+  ## `..` (spec §7.1, §2.3): never through a parameter, which is a value the
+  ## caller owns, and not through a `let`.
+  ##
+  ## failIfMutatingLet guards only the chain form, so this path used to slip
+  ## past both: `items[0] = 0` on a param typechecked clean and then failed
+  ## in the Nim backend with an error about generated code the author never
+  ## wrote. Found while auditing stage boundaries for the D backend.
+  let br = e.brTarget
+  if br == nil or br.brReceiver == nil: return
+  let base = assignRoot(br.brReceiver)
+  if base == nil or base.kind != exkVar: return
+  let (found, b) = tc.lookup(base.name)
+  if not found: return
+  let whole = base.id == br.brReceiver.id
+  if b.isParam:
+    fail(dcTyParamMutation,
+         "cannot assign into " &
+         (if whole: "parameter '" & base.name & "'"
+          else: "a field of parameter '" & base.name & "'") &
+         " — a parameter is a value the caller owns, not a var. " &
+         "Fix: copy it first (`var s = " & base.name & "`), assign into the " &
+         "copy, and return it", e.span)
+  if not b.isVar:
+    fail(dcTyImmutable,
+         "cannot assign into " &
+         (if whole: "'" & base.name & "'"
+          else: "a field of '" & base.name & "'") &
+         " — it was declared with 'let'; use 'var'", e.span)
+
 proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
   let br = e.brTarget
   if br.brReceiver != nil and br.brReceiver.kind == exkVar and
      tc.typeDecls.hasKey(br.brReceiver.name):
     fail("Type Error: cannot assign into the type application '" &
          br.brReceiver.name & "[...]'", e.span)
+  tc.failIfMutatingIndexTarget(e)
   let recvT = tc.synthesize(br.brReceiver)
   let ac = tc.resolveIndex(br, e.brValue, recvT, e.span)
   setCall(semLayer, e, ac)

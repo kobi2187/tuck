@@ -109,6 +109,63 @@ fn main() -> int:
 """
   t.badCheck "assigning a scalar parameter is rejected", "TK-TY15"
 
+  # INDEXED assignment writes through the receiver just as surely as `..`
+  # does, so it is bound by the same rule. This path used to slip past the
+  # check entirely: it typechecked clean and then failed in the Nim backend
+  # with an error about generated code the author never wrote.
+  t.src """
+import seq
+
+fn zeroFirst({items: Seq[int]}) -> Seq[int]:
+  items[0] = 0
+  return items
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "indexed assignment into a parameter is rejected", "TK-TY15"
+
+  # The same path must respect immutability, not only ownership.
+  t.src """
+import seq
+
+fn main() -> int:
+  let a = [7, 8, 9]
+  a[0] = 50
+  return 0
+"""
+  t.badCheck "indexed assignment into a let is rejected", "TK-TY13"
+
+  # ...and must not over-reach: a local `var` is exactly what indexing is for.
+  t.src """
+import seq
+
+fn main() -> int:
+  var a = [7, 8, 9]
+  a[0] = 50
+  return a[0]
+"""
+  t.okCheck "indexed assignment into a local var still works"
+
+  # A value-returning call whose result nothing consumes is legal Tuck, and
+  # used to emit Nim that would not compile ("has to be used (or
+  # discarded)"). RUN rather than checked: the bug was in emission, so a
+  # clean check proved nothing.
+  t.src """
+object Counter:
+  total: int
+
+  fn bump({self: Counter}) -> int:
+    self ..total {self.total + 1}
+    return self.total
+
+fn main() -> int:
+  var c = {total: 0} Counter
+  {self: c} bump
+  return c.total
+"""
+  t.runs "a dropped value-returning call compiles and still runs", 1
+
   # Depth does not launder it: writing through `o.inner` still writes through
   # `o`, so the check follows a field path to its root binding.
   t.src """
