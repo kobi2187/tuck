@@ -191,11 +191,12 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
 - [ ] **[read] Registers are not `volatile`.** D has no volatile qualifier;
   `core.volatile`'s load/store are the supported spelling. Correct for the
   examples, wrong for a real embedded target.
-- [ ] **13 of 44 examples do not compile**, each for its own reason:
-  fnsig-as-value (03), mixins (04), inline sum type (08), an actor with no
-  handlers (15), `on select`'s TASK form which needs the reactor (29, 30),
-  plus 05, 12, 14, 16, 20, 34, 42 — several of which are upstream rather
-  than D. → ledger.
+- [ ] **5 of 44 examples do not compile** (was 13, 2026-08-29):
+  fnsig-as-value (03), mixins (04), `on select`'s TASK form which needs the
+  reactor (29, 30), and 16 — which fails the CHECKER, not codegen (§6).
+  FIXED since: the messageless actor (15), the inline sum type (08), and a
+  value-returning body the checker left open, which D and Odin reject where
+  Nim does not. → ledger.
 
 ### Cross-backend
 - [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**

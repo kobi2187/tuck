@@ -300,3 +300,48 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
   fixed first — a language-level gap, not a D one. Worth its own task
   after the backend, since fixing it in three backends at once is the
   cheapest moment.
+
+## 2026-08-29 — session 3
+
+D emits 39 of 44 examples (was 31). Three fixes, each verified by compiling
+the emitted D with dmd by hand, not merely by the emitter not dying:
+
+- **A messageless actor.** `actor X: ...` has no handlers and no shutdown,
+  so it has no message envelope — and therefore nothing to hold a mailbox
+  OF. Emits state + singleton only, matching Nim. `actorHasMessages` is
+  asked by both the actor emitter and the entry point, so they cannot drift
+  into starting a drain that was never emitted.
+- **A value-returning body the checker left open** (a `...` pending hole).
+  D rejects falling off the end; so does Odin (`return {}`); Nim does not.
+  A NIM-ISM found, which is what this experiment is for. D spells it
+  `return typeof(return).init` and needs no knowledge of the return type.
+- **An inline sum in a field position.** Hoists to `<Owner><Field>Kind`,
+  the name the other two backends already use. Its tags needed a hoist
+  table because `enumTagOwner` scans DECLARATIONS and an inline sum has
+  none — an emit-time re-derivation of a checker fact, and the table is the
+  tactical half of the fix.
+
+### The duplication was the bug again
+
+Chasing a zero-parameter member (`fn advance() -> int` on an object) found
+`self` being prepended AT EMIT TIME by each backend separately: codegen's
+genMemberFn and codegen_odin's genOdinMemberFn were the same twenty lines
+with one word different, and D had no copy — which is why D was the one
+that broke. Moved to `lowering.normalizeSelf`, which states only what is
+true everywhere (`self` exists; `Self` means the object); each backend
+keeps its own spelling of how self is passed (`var T` / `^T` / `ref T`).
+Re-emitting every example left the tracked .nim and .odin output byte
+identical.
+
+Third instance of the pattern in this project (after injectTailReturn and
+decl_index): a fact copied N places gets fixed in one, and the copy that
+does not exist yet is a bug waiting for its backend.
+
+### Still open, in order of what they need
+
+- 03 fnsig-as-value, 04 mixins — D emitter arms, self-contained.
+- 29/30 `on select` TASK form — needs the reactor (epoll+timerfd). The
+  big one.
+- 16 — fails the CHECKER, not codegen. Not a D task.
+- Inline sum with a DEFAULT (`state: {...} = Red`) still dies:
+  "type application <uninit>[...]". Not investigated.
