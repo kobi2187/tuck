@@ -307,6 +307,8 @@ proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef],
 # ---------------------------------------------------------- expressions --
 
 proc genDExpr(ctx: var DCodegenCtx, e: Expr): string
+proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep, into: string,
+                   base: Expr = nil, baseStr = ""): string
 
 proc declaresFnD(m: Module, name: string): bool =
   ## Same predicate as the Odin backend's declaresFn (private there).
@@ -819,6 +821,63 @@ proc dPayloadSumField(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.dSumVariantCtor(e.receiver.name, e.fieldName, nil)
   ""
 
+proc genDChainIntoTemp(ctx: var DCodegenCtx, e: Expr): (string, string) =
+  ## A chain in VALUE position: copy the base into a temp, run the steps on
+  ## the temp, and hand back (statements, tempName). The base is never
+  ## written, so a caller that wants the pre-chain value keeps its own var.
+  ctx.tmpCounter.inc
+  let tmp = "tuckChain" & $ctx.tmpCounter
+  let bt = semLayer.typeFor(e.base)
+  let tn = if bt == nil: "auto" else: ctx.dType(bt)
+  let baseStr = ctx.genDExpr(e.base)
+  # No leading indent on the seed: the statement emitter has already placed
+  # the first line, exactly as the Nim backend's indentPrefix arranges.
+  var stmts = tn & " " & tmp & " = " & baseStr & ";\n"
+  for step in e.steps:
+    stmts.add(ctx.genDChainStep(step, tmp, e.base, baseStr))
+  (stmts, tmp)
+
+proc genDCallOnChain(ctx: var DCodegenCtx, e: Expr): string =
+  ## A resolved `.fn` call whose RECEIVER is a `..` chain.
+  ##
+  ## A chain emits as STATEMENTS — one assignment per step — and statements
+  ## sequence, they do not nest. Splicing one into an argument slot produced
+  ## `tuck_startAudio(    self = tuck_loadEpisode(self, episode);\n)`, which
+  ## is not an expression in any of the three target languages. So the chain
+  ## runs into a temp first and the call takes that temp. Same shape as the
+  ## Nim backend's genCallOnReceiver.
+  ##
+  ## "" when the receiver is not a chain — the ordered-interpretation
+  ## pattern, so the caller falls through to the plain resolved call.
+  if e.receiver == nil or e.receiver.kind != exkChain: return ""
+  let call = semLayer.call(e)
+  if call == nil: return ""
+  let (chainStmts, tmp) = ctx.genDChainIntoTemp(e.receiver)
+  # Substituted by NodeId, NOT by reference: each backend emits from its own
+  # deepCopy, so the argument the CHECKER recorded and the receiver being
+  # walked here are different objects. The id is what survives the copy.
+  var direct = Expr(span: call.span, kind: exkCall, callee: call.callee,
+                    args: call.args)
+  let tmpExpr = Expr(span: e.span, kind: exkVar, name: tmp)
+  for i in 0 ..< direct.args.len:
+    if direct.args[i] != nil and direct.args[i].id == e.receiver.id:
+      direct.args[i] = tmpExpr
+  chainStmts & ctx.indD & ctx.genDExpr(direct)
+
+proc genDFieldRead(ctx: var DCodegenCtx, e: Expr): string =
+  ## A `.name` that is a READ, not a call — the tail of genDField once every
+  ## call-shaped interpretation has declined.
+  # A PAYLOAD sum keeps each variant's fields in a union member named after
+  # the variant, so `s.length` on `Line({length: int})` is `s.line.length`.
+  let sumField = ctx.dPayloadSumField(e)
+  if sumField != "": return sumField
+  # `Counter.total` reads the actor SINGLETON's field — an actor is one
+  # instance per declared type, so the type name IS the instance.
+  if e.receiver != nil and e.receiver.kind == exkVar and
+     ctx.idx.isActorTypeIdx(e.receiver.name):
+    return actorSingletonName(e.receiver.name) & "." & e.fieldName
+  ctx.genDExpr(e.receiver) & "." & e.fieldName
+
 proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   ## A `.name` access: a resolved call, a result's status, the len property,
   ## an input param, or a plain read. (Interface dispatch and actor fields
@@ -842,17 +901,12 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
     # promote) — hidden Nim-ism #3, Nim's .len is already signed.
     return "cast(long) " & ctx.genDExpr(e.receiver) & ".length"
   if semLayer.hasCall(e):
+    # A `..` chain as the receiver has to run into a temp first — see
+    # genDCallOnChain. Everything else is the plain resolved call.
+    let hoisted = ctx.genDCallOnChain(e)
+    if hoisted != "": return hoisted
     return ctx.genDExpr(semLayer.call(e))
-  # A PAYLOAD sum keeps each variant's fields in a union member named after
-  # the variant, so `s.length` on `Line({length: int})` is `s.line.length`.
-  let sumField = ctx.dPayloadSumField(e)
-  if sumField != "": return sumField
-  # `Counter.total` reads the actor SINGLETON's field — an actor is one
-  # instance per declared type, so the type name IS the instance.
-  if e.receiver != nil and e.receiver.kind == exkVar and
-     ctx.idx.isActorTypeIdx(e.receiver.name):
-    return actorSingletonName(e.receiver.name) & "." & e.fieldName
-  ctx.genDExpr(e.receiver) & "." & e.fieldName
+  ctx.genDFieldRead(e)
 
 proc genDInputPayload(ctx: var DCodegenCtx): string =
   ## `input` — the whole incoming payload, rebuilt as its record shape.
@@ -1214,17 +1268,23 @@ proc genDSend(ctx: var DCodegenCtx, e: Expr): string =
   "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(" &
     actorSingletonName(e.sendActor) & sep & sendArgs.join(", ") & ")"
 
-proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep,
-                   baseStr: string): string =
-  ## One `..` step: a mutator call reassigned into the base var, or a plain
-  ## field set. The checker resolved which; replay it.
+proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep, into: string,
+                   base: Expr = nil, baseStr = ""): string =
+  ## One `..` step, assigning through `into`. That is the base var when
+  ## nothing consumes the chain (the builder form updates it), or a temp
+  ## when something does and the base must be left alone.
+  ##
+  ## Each step's resolved call names the chain's BASE as its receiver, so
+  ## when `into` is a temp the receiver has to be threaded through — else
+  ## `a ..setN {5} ..setN {7}` emits two calls both reading `a` and the
+  ## first result is dropped. threadReceiver is shared with the Nim backend.
   if semLayer.stepCall(step) != nil:
-    return ctx.indD & baseStr & " = " &
-           ctx.genDCall(semLayer.stepCall(step)) & ";\n"
+    let call = threadReceiver(semLayer.stepCall(step), base, into, baseStr)
+    return ctx.indD & into & " = " & ctx.genDCall(call) & ";\n"
   let valStr = if isSingleFieldPayload(step.arg):
                  ctx.genDExpr(soleFieldValue(step.arg))
                else: ""
-  ctx.indD & baseStr & "." & step.target.name & " = " & valStr & ";\n"
+  ctx.indD & into & "." & step.target.name & " = " & valStr & ";\n"
 
 proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
   ## `x ..field {v} ..mutate {a}` — one plain statement per step, then a
@@ -1232,7 +1292,7 @@ proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
   ## value that flows on afterwards is a different one.
   let baseStr = ctx.genDExpr(e.base)
   for step in e.steps:
-    result.add(ctx.genDChainStep(step, baseStr))
+    result.add(ctx.genDChainStep(step, baseStr, e.base, baseStr))
   if e.base != nil:
     let bt = semLayer.typeFor(e.base)
     if bt != nil and bt.kind == tkNamed and ctx.idx.hasInvariantsIdx(bt.name):
@@ -1971,6 +2031,19 @@ proc genDExternBlock(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDExternFwd(mem)
     if code != "": result.add(code & "\n")
 
+proc genDMixinBlock(ctx: var DCodegenCtx, d: Decl): string =
+  ## A `mixin` is a named bucket of functions (spec §5.1), not a type.
+  ##
+  ## A member taking `self` MATERIALISES on every object that composes it —
+  ## lowering.composeObject has already spliced it in there — so emitting it
+  ## again here would define the same function twice. What is left is a
+  ## member that takes no self: an ordinary free function that happens to be
+  ## filed under a mixin.
+  for mem in d.mixinMembers:
+    if mem == nil or mem.kind != dkFn: continue
+    if mem.isPending or mem.fnBody == nil or takesSelf(mem): continue
+    result.add(ctx.genDFnDecl(mem) & "\n")
+
 proc genDPayloadSum(ctx: var DCodegenCtx, d: Decl, body: Type): string =
   ## A PAYLOAD-carrying sum: a discriminant plus one struct per variant,
   ## overlapped in a union.
@@ -2122,7 +2195,7 @@ proc genDDecl(ctx: var DCodegenCtx, d: Decl): string =
   of dkFn:
     if d.isPending or d.isExtern: ""   # pending: M3; bare extern fn: via block
     else: ctx.genDFnDecl(d)
-  of dkMixin: dUnsupported("mixin " & d.name)
+  of dkMixin: ctx.genDMixinBlock(d)
   of dkExtern: ctx.genDExternBlock(d)
   of dkPending: ctx.genDPendingBlock(d)
   of dkActor: ctx.genDActor(d)

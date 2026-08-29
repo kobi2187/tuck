@@ -140,12 +140,6 @@ proc resolveWrapNames*(m: Module, iface, objName: string): tuple[iface, obj: str
     if d.kind == dkInterface and src == iface: result.iface = d.name
     if d.kind == dkObject and src == objName: result.obj = d.name
 
-proc isCompositionEntry*(member: Decl): bool =
-  ## `+ Name` inside an object body — the entry that pulls another
-  ## declaration's members or data into this one.
-  member.kind == dkExpr and member.expr != nil and
-    member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
-    member.expr.operand != nil and member.expr.operand.kind == exkVar
 
 proc actorSingletonName*(actorType: string): string =
   ## An actor is a global singleton (spec §9): one instance per declared

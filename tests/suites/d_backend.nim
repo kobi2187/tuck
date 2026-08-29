@@ -707,4 +707,77 @@ fn main() -> int:
            r"delegate"
   t.runsD "bake: op=:plus then b=2, so 5+2", 7, dmdExe
 
+  # --- composition: `+ Type` merges FIELDS, `+ Mixin` merges FNS ---------
+  # Two different meanings for one `+` (spec §4.5, set union). Both are
+  # materialised by lowering.composeObject now, so all three backends see a
+  # plain object — before that each backend that had thought to do it kept
+  # its own copy of the walk, and D, having none, could not compose at all.
+  #
+  # `crank` also chains: a `..` step emits as STATEMENTS, and statements
+  # sequence rather than nest, so a chain feeding a later call runs into a
+  # temp first (genDCallOnChain).
+  t.src """
+type AudioPlayer:
+  volume: int
+
+mixin BulkOps:
+  fn bump(self, {by: int}) -> int:
+    return by * 2
+
+fn louder({self: Deck, step: int}) -> Deck:
+  self
+
+fn main() -> int:
+  var d = {volume: 7} Deck
+  return d.volume
+
+object Deck:
+  + AudioPlayer
+  + BulkOps
+
+  fn crank({step: int}) -> int:
+    self ..louder {step}
+    return self.volume
+"""
+  t.emitsD "compose: a composed type's field lands flat on the object",
+           r"struct tuck_Deck \{\n    long volume;"
+  t.emitsD "compose: a mixin fn materialises as a member of the object",
+           r"tuck_Deck_tuck_bump\(ref tuck_Deck self"
+  t.omitsD "compose: never embedded as a nested field",
+           r"tuck_AudioPlayer audioPlayer"
+  t.emitsD "chain: a standalone step writes back through the base",
+           r"self = tuck_louder\(self, step\);"
+  t.runsD "compose: the merged field is readable as the object's own", 7,
+          dmdExe
+
+  # A chain whose result IS consumed cannot write back through the base —
+  # `report(self = louder(self, step))` is an assignment in an argument slot,
+  # which none of the three targets accept. It runs into a temp instead, and
+  # each step reads the PREVIOUS step's result (threadReceiver, shared with
+  # the Nim backend) rather than the base.
+  t.src """
+fn louder({self: Deck, step: int}) -> Deck:
+  self
+
+fn report({self: Deck}) -> void:
+  return
+
+object Deck:
+  volume: int
+
+  fn crank({step: int}) -> void:
+    self ..louder {step} .report
+
+fn main() -> int:
+  var d = {volume: 5} Deck
+  return d.volume
+"""
+  t.emitsD "chain: a step feeding a call runs into a temp",
+           r"tuck_Deck tuckChain1 = self;"
+  t.emitsD "chain: the next step reads the temp, not the base",
+           r"tuckChain1 = tuck_louder\(tuckChain1, step\)"
+  t.omitsD "chain: the base itself is never written",
+           r"self = tuck_louder"
+  t.runsD "chain: the object is untouched, so volume is still 5", 5, dmdExe
+
   t.finish()

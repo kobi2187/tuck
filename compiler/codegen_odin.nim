@@ -1921,26 +1921,6 @@ proc genRtForwarder(ctx: var OdinCodegenCtx, mem: Decl, alias = "rt"): string =
       ind & "\treturn " & callStr & "\n"
   header & body & ind & "}\n"
 
-proc composeInto(ctx: var OdinCodegenCtx, compName, objName, ind: string,
-                 fields: var seq[string], members: var string): bool =
-  ## Materialise `+ compName` onto this object: a mixin's fns become member
-  ## fns, a record type's FIELDS MERGE IN (set union, spec §4.5). Mirrors the
-  ## Nim backend; only the emitted syntax differs. False if nothing by that
-  ## name is declared.
-  for cd in ctx.module.decls:
-    if cd == nil or cd.name != compName: continue
-    if cd.kind == dkMixin:   # composition names a real mixin, never a
-                             # pending/extern block
-      for mm in cd.mixinMembers:
-        if mm.kind == dkFn and mm.fnBody != nil:
-          members.add(ctx.genOdinMemberFn(mm, objName) & "\n")
-      return true
-    if cd.kind == dkType and cd.typeBody != nil and cd.typeBody.kind == tkRecord:
-      for f in cd.typeBody.fields:
-        fields.add(ind & "\t" & f.name & ": " & ctx.fieldType(objName, f) & ",")
-      return true
-  false
-
 proc genObjectDecl(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## A manager object: fields become an Odin struct, members and anything
   ## composed into it come back as package-level procs.
@@ -1949,10 +1929,11 @@ proc genObjectDecl(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
     fields.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
   var members = ""
   for member in d.objMembers:
+    # lowering.composeObject has already merged every RESOLVED `+ X`. What
+    # can still reach here is one that named nothing declared — a sketch.
     if isCompositionEntry(member):
-      let compName = member.expr.operand.name
-      if not ctx.composeInto(compName, d.name, ind, fields, members):
-        members.add(ind & "// + " & compName & " (undeclared — sketch)\n")
+      members.add(ind & "// + " & member.expr.operand.name &
+                  " (undeclared — sketch)\n")
     elif member.kind == dkFn:
       members.add(ctx.genOdinMemberFn(member, d.name) & "\n")
     else:
@@ -2022,12 +2003,6 @@ proc genErrHandler(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
     if body != "": result.add(body & "\n")
   result.add(ind & "}\n")
 
-proc takesSelf(m: Decl): bool =
-  ## A fn with a `self` param materializes at `+ mixin` composition, not
-  ## standalone.
-  for p in m.fnParams:
-    if p.name == "self": return true
-  false
 
 proc genCBinding(ctx: var OdinCodegenCtx, m: Decl): string =
   ## One `foreign` entry. `-> ret` is omitted entirely for void; "void" is

@@ -48,6 +48,7 @@ import ast_query
 import codegen_common
 import codegen_type   # genType: Tuck type -> Nim type text
 import codegen_table  # decision-table combinatorics (spec 6.1)
+import ./ast_query
 export genType        # re-exported: this file's public face is the backend
 
 type
@@ -1040,21 +1041,6 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
     cases.add(ind & "else: discard")
   "(case " & subjectStr & "\n" & cases.join("\n") & ")"
 
-proc threadReceiver(call, base: Expr, into, baseStr: string): Expr =
-  ## Each step's resolved call names the chain's BASE as its receiver. When
-  ## the chain runs into a temp, every step must read the PREVIOUS step's
-  ## result instead — otherwise `a ..setN {5} ..setN {7}` emits two calls both
-  ## reading `a`, and the first result is silently discarded.
-  ##
-  ## Matched by NodeId: each backend walks a deepCopy of the checked tree, so
-  ## the node the checker stored is not the node being walked here.
-  if into == baseStr or base == nil: return call
-  result = Expr(span: call.span, kind: exkCall, callee: call.callee,
-                args: call.args)
-  let intoExpr = Expr(span: call.span, kind: exkVar, name: into)
-  for i in 0 ..< result.args.len:
-    if result.args[i] != nil and result.args[i].id == base.id:
-      result.args[i] = intoExpr
 
 proc chainSteps(ctx: var CodegenCtx, e: Expr, into: string): string =
   ## The chain's steps, each assigning through `into`.
@@ -1594,32 +1580,6 @@ proc genRegistry(ctx: var CodegenCtx, d: Decl): string =
 
     return enumStr & typeStr & "\n" & globalVarStr & fwdDeclsStr & raiseProcsStr
 
-proc composeInto(ctx: var CodegenCtx, compName, objName: string,
-                 fields: var seq[string], members: var string): bool =
-  ## Materialise `+ compName` onto this object: a mixin's fns become member
-  ## fns (Self -> the object), a record type's FIELDS MERGE IN. False if
-  ## nothing by that name is declared.
-  ##
-  ## Merge, not embed: composition is set union (spec §4.5), the same as
-  ## `type M = A + B`. Embedding it as a nested `a: A` field made the two forms
-  ## of `+` mean different things, and the checker was already treating a
-  ## composed field as the object's own — so `self.x` typechecked and emitted
-  ## `self.x` against an object whose only field was `a`, which Nim rejected
-  ## with "undeclared field: 'x'".
-  for cd in ctx.module.decls:
-    if cd == nil or cd.name != compName: continue
-    if cd.kind == dkMixin:   # composition names a real mixin, never a
-                             # pending/extern block
-      for m in cd.mixinMembers:
-        if m.kind == dkFn and m.fnBody != nil:
-          members.add(ctx.genMemberFn(m, objName) & "\n")
-      return true
-    if cd.kind == dkType and cd.typeBody != nil and cd.typeBody.kind == tkRecord:
-      for f in cd.typeBody.fields:
-        fields.add("  " & f.name & "*: " & ctx.fieldType(objName, f))
-      return true
-  false
-
 proc genObjectDecl(ctx: var CodegenCtx, d: Decl): string =
   ## A manager object: its fields land in the type section, its members and
   ## anything composed into it come back as top-level procs.
@@ -1628,10 +1588,10 @@ proc genObjectDecl(ctx: var CodegenCtx, d: Decl): string =
     fields.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
   var members = ""
   for member in d.objMembers:
+    # lowering.composeObject has already merged every RESOLVED `+ X`. What
+    # can still reach here is one that named nothing declared — a sketch.
     if isCompositionEntry(member):
-      let compName = member.expr.operand.name
-      if not ctx.composeInto(compName, d.name, fields, members):
-        members.add("# + " & compName & " (undeclared — sketch)\n")
+      members.add("# + " & member.expr.operand.name & " (undeclared — sketch)\n")
     elif member.kind == dkFn:
       members.add(ctx.genMemberFn(member, d.name) & "\n")
     else:
@@ -1736,12 +1696,6 @@ proc genErrHandler(ctx: var CodegenCtx, d: Decl): string =
     let body = ctx.genErrHandlerBody(d.errHandler)
     if body != "": result.add(body & "\n")
 
-proc takesSelf(m: Decl): bool =
-  ## A fn with a `self` param materializes at `+ mixin` composition sites,
-  ## not standalone.
-  for p in m.fnParams:
-    if p.name == "self": return true
-  false
 
 proc genImportcBinding(m: Decl): string =
   ## A C-imported fn. [emit: "c_fn"] sets the importc name; else the Tuck name.

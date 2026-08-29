@@ -229,6 +229,50 @@ proc lowerExpr(e: Expr, m: Module) =
 # Entry point for the pass. Two phases, in this order: type bodies are
 # flattened first so the call-rewriting phase can look up a type's fields and
 # get a plain record back, whatever the source declared.
+proc mergeComposed(m: Module, d: Decl, compName: string,
+                   kept: var seq[Decl]): bool =
+  ## Merge one `+ compName` into object `d`. False when nothing by that name
+  ## is declared, which leaves the entry in place as a sketch.
+  for cd in m.decls:
+    if cd == nil or cd.name != compName: continue
+    if cd.kind == dkMixin:
+      for mm in cd.mixinMembers:
+        if mm != nil and mm.kind == dkFn and mm.fnBody != nil: kept.add(mm)
+      return true
+    if cd.kind == dkType and cd.typeBody != nil and
+       cd.typeBody.kind == tkRecord:
+      for f in cd.typeBody.fields: d.objFields.add(f)
+      return true
+  false
+
+proc composeObject(m: Module, d: Decl) =
+  ## Materialise every `+ X` entry in an object body, then drop the entry.
+  ##
+  ## `+` is SET UNION (spec §4.5), and it means two different things
+  ## depending on what it names:
+  ##   `+ AudioPlayer` — a record type: its FIELDS merge in flat.
+  ##   `+ BulkOperations` — a mixin: its FNS become members of this object.
+  ## Merge, not embed. Embedding a composed type as a nested field made the
+  ## two forms mean different things, and the checker already treats a
+  ## composed field as the object's own — `self.volume` typechecks, so the
+  ## field has to actually be there.
+  ##
+  ## This ran at EMIT TIME in both existing backends, as two copies of the
+  ## same walk (codegen.composeInto and codegen_odin's) differing only in
+  ## how a field line is spelled. It is a whole-program fact, so it belongs
+  ## here; each backend then emits a plain object and never learns that `+`
+  ## exists. An unresolved name is left in place for the backend to report
+  ## as a sketch, which is the one thing it does need to know.
+  var kept: seq[Decl]
+  for member in d.objMembers:
+    if member == nil: continue
+    if not isCompositionEntry(member):
+      kept.add(member)
+      continue
+    if not mergeComposed(m, d, member.expr.operand.name, kept):
+      kept.add(member)   # named nothing declared — sketch, the backend says so
+  d.objMembers = kept
+
 proc normalizeSelf(d: Decl) =
   ## An object member takes its object as `self`.
   ##
@@ -269,7 +313,11 @@ proc lowerModule*(m: Module) =
                         fields: getFieldsForType(m, d.typeBody),
                         attrs: d.typeBody.attrs)
 
-  for d in m.decls(dkObject): normalizeSelf(d)
+  # Composition first: a mixin fn spliced in here must still get its `self`
+  # from normalizeSelf below, so the order is load-bearing.
+  for d in m.decls(dkObject):
+    composeObject(m, d)
+    normalizeSelf(d)
 
   # Phase 2: rewrite call arguments (subset matching) in every fn body
   #

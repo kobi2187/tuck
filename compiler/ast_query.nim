@@ -498,3 +498,33 @@ proc decodeBitField*(regName: string, f: FieldDef): BitFieldInfo =
   # out of the other.
   result.canRead = hasRead or not hasWrite
   result.canWrite = hasWrite or not hasRead
+
+proc isCompositionEntry*(member: Decl): bool =
+  ## `+ Name` inside an object body — the entry that pulls another
+  ## declaration's members or data into this one.
+  member.kind == dkExpr and member.expr != nil and
+    member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
+    member.expr.operand != nil and member.expr.operand.kind == exkVar
+
+proc takesSelf*(m: Decl): bool =
+  ## A fn with a `self` param materializes at `+ mixin` composition sites,
+  ## not standalone.
+  for p in m.fnParams:
+    if p.name == "self": return true
+  false
+
+proc threadReceiver*(call, base: Expr, into, baseStr: string): Expr =
+  ## Each step's resolved call names the chain's BASE as its receiver. When
+  ## the chain runs into a temp, every step must read the PREVIOUS step's
+  ## result instead — otherwise `a ..setN {5} ..setN {7}` emits two calls both
+  ## reading `a`, and the first result is silently discarded.
+  ##
+  ## Matched by NodeId: each backend walks a deepCopy of the checked tree, so
+  ## the node the checker stored is not the node being walked here.
+  if into == baseStr or base == nil: return call
+  result = Expr(span: call.span, kind: exkCall, callee: call.callee,
+                args: call.args)
+  let intoExpr = Expr(span: call.span, kind: exkVar, name: into)
+  for i in 0 ..< result.args.len:
+    if result.args[i] != nil and result.args[i].id == base.id:
+      result.args[i] = intoExpr
