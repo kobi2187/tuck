@@ -214,6 +214,13 @@ just doesn't consult it when producing this message.
 
 ## 6. `satisfies` on a primitive — correct refusal, unhelpful message
 
+> **RESOLVED 2026-08-29 (message).** The refusal stands — a contract is
+> recorded on an object's declaration and dispatch reads it from there, so a
+> primitive has nowhere to put it. The message now classifies the subject
+> (TK-CO03) into primitive / `type` record / interface / undeclared, each with
+> its own way forward. For a primitive that is: wrap it in an object, or take
+> a `fnsig` slot. Pinned in `tests/suites/interfaces.nim`.
+
 ```tuck
 satisfies int: Hashable
 ```

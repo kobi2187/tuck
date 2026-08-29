@@ -118,6 +118,39 @@ proc checkSigMatch(want, got: Decl, objName, iname: string) =
       typeName(substSelf(want.fnReturnType, objName)))
   checkEffectSubset(want, got, objName, iname)
 
+proc whyNotAnObject(m: Module, name: string): string =
+  ## Why this name cannot carry a contract — the half of the message that
+  ## ends the search.
+  ##
+  ## The old message said only "not a declared object in scope", which fits a
+  ## TYPO and nothing else: a reader who wrote `satisfies int: Hashable`
+  ## deliberately goes looking for a declaration they never omitted. What the
+  ## author needs is which of the four cases they are in, and the way forward
+  ## for that case. Classifying by what the name IS costs no new table — the
+  ## module already holds every declaration.
+  for d in m.decls:
+    if d == nil or d.name != name: continue
+    case d.kind
+    of dkInterface:
+      return "'" & name & "' is an interface. A contract is attached to the " &
+             "object that IMPLEMENTS it, not to another contract."
+    of dkType:
+      return "'" & name & "' is a `type`, which declares data but no " &
+             "members, so there is nothing for the contract to check. " &
+             "Fix: declare it as an `object` instead."
+    of dkActor:
+      return "'" & name & "' is an actor. Actors are reached through their " &
+             "mailbox, never through interface dispatch."
+    else: discard
+  # Undeclared. Primitives are the lowercase closed set and never declared;
+  # anything else at this point is a name that was never brought into scope.
+  if name.len > 0 and name[0] in {'a'..'z'}:
+    return "'" & name & "' is a primitive. Primitives have no declaration to " &
+           "record the promise on. Fix: wrap it in an object with '" & name &
+           "' as a field, or take a `fnsig` slot instead of a contract."
+  return "'" & name & "' is not declared in this module. Fix: check the " &
+         "spelling, or import the module that declares it."
+
 proc applySatisfiesDecls(m: Module) =
   ## Fold every top-level `Obj satisfies Iface` into that object's own
   ## `satisfies` list, BEFORE conformance runs.
@@ -138,8 +171,11 @@ proc applySatisfiesDecls(m: Module) =
   for d in m.decls:
     if d == nil or d.kind != dkSatisfies: continue
     if d.name notin objs:
-      fail("Conformance Error: `" & d.name & " satisfies ...` names '" &
-           d.name & "', which is not a declared object in scope", d.span)
+      # No "Conformance Error:" prefix here — `withCode` supplies the category
+      # word. The uncoded sites in this file still write their own.
+      fail(dcCoNotAnObject,
+           "`" & d.name & " satisfies ...` needs an object, and " &
+           whyNotAnObject(m, d.name), d.span)
     let obj = objs[d.name]
     for iname in d.satisfyTargets:
       if iname notin obj.satisfies:

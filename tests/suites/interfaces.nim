@@ -285,7 +285,8 @@ satisfies Ghost: Speaker
 fn main() -> int:
   return 0
 """
-  t.badCheck "attaching to an undeclared object is reported", "not a declared object"
+  t.badCheck "attaching to an undeclared object is reported",
+             "not declared in this module"
 
   # --- contracts come before fields -----------------------------------------
   #
@@ -307,6 +308,49 @@ fn main() -> int:
   return 0
 """
   t.badCheck "a satisfies line after a field is rejected", "before the object's fields"
+
+  # --- satisfies on something that is not an object -------------------------
+  #
+  # The refusal is correct in all four cases — a contract is recorded on an
+  # object's declaration and dispatch reads it from there. What was wrong was
+  # the message: "not a declared object in scope" fits a TYPO and nothing
+  # else, so an author who wrote `satisfies int:` deliberately went looking
+  # for a declaration they never omitted. (FRICTIONS #6.)
+
+  const ifaceSrc = """
+interface Hashable:
+  fn hash({item: Self}) -> int
+"""
+
+  t.src ifaceSrc & """
+satisfies int: Hashable
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "satisfies on a primitive says it is a primitive",
+             "'int' is a primitive"
+
+  t.src ifaceSrc & """
+type Point = {x: int, y: int}
+satisfies Point: Hashable
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "satisfies on a `type` record says to use an object",
+             "declare it as an `object` instead"
+
+  t.src ifaceSrc & """
+interface Other:
+  fn go({item: Self}) -> int
+satisfies Other: Hashable
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "satisfies on an interface says a contract is not a subject",
+             "is an interface"
 
   # --- the existing example must stay honest --------------------------------
 

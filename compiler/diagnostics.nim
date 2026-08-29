@@ -82,6 +82,7 @@ type
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
     dcCoUnknownIface = "TK-CO02"        ## `satisfies` names no interface
+    dcCoNotAnObject = "TK-CO03"         ## `satisfies` subject is not an object
     dcDeGap = "TK-DE01"                 ## a decision table has an uncovered case
     dcDeOverlap = "TK-DE02"             ## two rows match the same input
     dcDeBadValue = "TK-DE03"            ## a cell is not a value of its column
@@ -324,6 +325,14 @@ proc ruleExplanation(d: DiagCode): string =
     "An object declaring `satisfies I` must implement every member of I, " &
     "with matching parameter names, types and order (spec 5.2)."
   of dcCoUnknownIface: "`satisfies` names something that is not an interface."
+  of dcCoNotAnObject:
+    "`X satisfies I` attaches a contract to an OBJECT — the promise is " &
+    "recorded on that object's declaration, and dispatch reads it from " &
+    "there. A primitive has no declaration to record it on, and neither " &
+    "does a plain `type` record: only `object` declares members, and a " &
+    "contract with no members to check is not a contract. To give a " &
+    "primitive interface-like behaviour, wrap it in an object with the " &
+    "primitive as a field, or pass a `fnsig` slot instead of a contract."
   of dcDeGap: "A decision table leaves a combination of inputs unmatched."
   of dcDeOverlap: "Two rows of a decision table match the same input."
   of dcDeBadValue: "A cell holds something that is not a value of its column."

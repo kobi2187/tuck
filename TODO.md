@@ -211,9 +211,6 @@ position, and a way forward.
   mangled name, in a file the author does not have open. Detect
   self-containment at check time and say so in Tuck's terms, naming the
   field and pointing at `Seq[T]`. → FRICTIONS #4.
-- [ ] **[repro] `satisfies` on a primitive** says "not a declared object in
-  scope", which sends the reader looking for a missing declaration. Saying
-  "primitives cannot satisfy interfaces" ends the search. → FRICTIONS #6.
 
 ## 7. Known-broken examples
 
