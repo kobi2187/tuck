@@ -206,11 +206,12 @@ describes the parser's or backend's problem rather than the author's.
 FRICTIONS calls #7 the house standard — it names the type, the rule, the
 position, and a way forward.
 
-- [ ] **[repro] Direct recursive sum types fail in the BACKEND.** `tuck ch`
-  passes, then Nim reports `illegal recursion in type 'tuck_Expr'` — a
-  mangled name, in a file the author does not have open. Detect
-  self-containment at check time and say so in Tuck's terms, naming the
-  field and pointing at `Seq[T]`. → FRICTIONS #4.
+- [ ] **[repro] MUTUALLY recursive types fail in the BACKEND.** `type A`
+  holding a `B` that holds an `A` emits both declarations in source order,
+  so Nim reports `undeclared identifier: 'tuck_B'` — with or without a `Seq`
+  in the cycle, which is what tells it apart from the sizing problem (fixed
+  2026-08-29, TK-TY17). A declaration-ORDERING bug in codegen: the emitter
+  needs to topologically sort type declarations, or forward-declare.
 
 ## 7. Known-broken examples
 

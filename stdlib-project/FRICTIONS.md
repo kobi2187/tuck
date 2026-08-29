@@ -94,6 +94,16 @@ the mismatch surfaces later as a backend type error, or not at all.
 
 ## 4. Direct recursive sum types fail in the *backend*, not the checker
 
+> **RESOLVED 2026-08-29 (detected at check time).** The refusal was always
+> right — Tuck has no references, so a field IS its value and a self-containing
+> type has no finite size. What was wrong is WHERE it was caught: the backend,
+> in the backend's words. `checkRecursiveTypes` now rejects it during `tuck ch`
+> (TK-TY17), naming the field that closes the cycle — or the route, for an
+> indirect one — and pointing at `Seq[T]`. `Array[N, T]` is correctly still
+> refused: it stores N elements inline and does not break the cycle.
+> MUTUAL recursion is a separate, still-open bug (declaration ordering in the
+> emitter, not sizing) — see TODO.md.
+
 ```tuck
 type Expr:
   | Lit({v: int})

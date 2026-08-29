@@ -147,6 +147,7 @@ export typecheck_flow
 import typecheck_transitions  # spec 4.4 sum-type transition graph
 import typecheck_decisions    # spec 6.1 decision-table analysis
 import typecheck_pointers     # pointers stay at the extern boundary
+import typecheck_recursion    # a type may not contain itself by value
 import typecheck_conformance  # spec 5.2 `satisfies` verification
 export typecheck_transitions
 
@@ -3329,6 +3330,10 @@ proc typecheckModule*(m: Module,
   tc.collectSigs(m.decls)
   tc.resolveTypeNames(m)
   checkPointers(tc.typeDeclsByName, m)  # pointers stay at the extern boundary
+  # Before checkDecl: a type with no finite size cannot be reasoned about, so
+  # the author should see THAT rather than a cascade about a type that cannot
+  # exist. Was caught only by the backend, in the backend's words.
+  checkRecursiveTypes(tc.typeDeclsByName, m)
   checkConformance(m)      # `satisfies I` means every I member is implemented
   tc.bindConsts(m)
   failIfDuplicateDecl(m)

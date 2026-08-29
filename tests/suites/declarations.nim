@@ -371,4 +371,64 @@ fn main() -> int:
 """
   t.okCheck "an arena with a real size is accepted"
 
+  # --- a type may not contain itself by value -------------------------------
+  #
+  # Was caught only by the BACKEND, in the backend's words: `tuck ch` passed,
+  # then Nim said `illegal recursion in type 'tuck_Expr'` — a mangled name in
+  # a generated file. (FRICTIONS #4.)
+
+  t.src """
+type Expr:
+  | Lit({v: int})
+  | Add({lhs: Expr, rhs: Expr})
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a sum variant containing its own type is rejected at check time",
+             "contains itself"
+
+  t.src """
+type Cell = {next: Cell, v: int}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a record field of its own type is rejected too", "field 'next'"
+
+  # Array is INLINE storage — N values, not a handle — so it does not break
+  # the cycle. Verified by building before the check existed.
+  t.src """
+type Tree:
+  | Leaf({v: int})
+  | Node({kids: Array[4, Tree]})
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "Array does not break a containment cycle", "contains itself"
+
+  # An indirect cycle names the ROUTE, not a field that stores something else.
+  t.src """
+type Inner = {back: Outer, n: int}
+type Outer = {mid: Inner}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an indirect cycle reports the route it takes",
+             "Inner -> Outer -> Inner"
+
+  # THE ESCAPE HATCH. A Seq is a growable handle, so this is finite and must
+  # keep building — it is how the corpus writes trees.
+  t.src """
+type Node:
+  | Leaf({v: int})
+  | Branch({kids: Seq[Node]})
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "recursion through Seq stays legal"
+
   t.finish()

@@ -78,6 +78,7 @@ type
     dcTyBadIndex = "TK-TY14"            ## an index is not an int, or not one index
     dcTyParamMutation = "TK-TY15"       ## `..` on a parameter (a value, not a var)
     dcTyUninitRead = "TK-TY16"          ## reading a field the construction skipped
+    dcTyInfiniteType = "TK-TY17"        ## a type contains itself by value
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -289,6 +290,13 @@ proc valueFitExplanation(d: DiagCode): string =
     "does. An object member mutating its own `self`, or an actor mutating " &
     "its own fields, is a different thing and stays legal: that is state the " &
     "callee owns."
+  of dcTyInfiniteType:
+    "A type that contains itself by value has no finite size — every value " &
+    "would hold another one. Tuck has no references, so a field IS its " &
+    "value and the cycle is real rather than a matter of representation. " &
+    "Fix: hold the recursive part as `Seq[T]`, a growable handle that stays " &
+    "finite because an empty Seq ends the chain. `Array[N, T]` does not " &
+    "work: it stores N elements inline."
   of dcTyUninitRead:
     "The construction did not supply this field and nothing has assigned it " &
     "since, so there is no value to read — only whatever the backend would " &
