@@ -345,3 +345,38 @@ does not exist yet is a bug waiting for its backend.
 - 16 — fails the CHECKER, not codegen. Not a D task.
 - Inline sum with a DEFAULT (`state: {...} = Red`) still dies:
   "type application <uninit>[...]". Not investigated.
+
+### Later the same day — 41 of 44
+
+- **fnsig (03).** `bake` is fully lowered before codegen, so what arrives is
+  plain record construction and the only missing piece was the type:
+  `alias BinOp = long function(long, long)`. `function`, NOT `delegate` —
+  D keeps them distinct and what fills a slot is a top-level fn with no
+  captured environment. Nim's {.closure.} and Odin's `proc` both accept a
+  bare proc where that is written, so neither backend had to choose.
+  NIM-ISM #3. Verified by running: 7 on both backends.
+- **Composition and mixins (04).** `+ X` means fields-merge for a record
+  type and fns-merge for a mixin. Moved to `lowering.composeObject`, which
+  runs before normalizeSelf so a spliced mixin fn still gets its `self`.
+  Deleted the two backend copies; tracked output byte identical.
+- **A chain feeding a call.** `self ..loadEpisode {episode} .startAudio`
+  emitted `tuck_startAudio(    self = tuck_loadEpisode(self, episode);\n)`.
+  A chain is STATEMENTS and statements sequence rather than nest, so it
+  runs into a temp. threadReceiver (moved to ast_query) makes each step
+  read the previous step's result — without it two steps both read the base
+  and the first result is silently dropped.
+
+### The duplication count is now five
+
+isCompositionEntry, takesSelf and threadReceiver joined injectTailReturn
+and normalizeSelf in ast_query/lowering. Every one was found the same way:
+the D backend lacked the copy, so D was where the bug showed. The pattern
+is reliable enough to use as a search strategy — a construct D gets wrong
+is worth checking for a duplicated implementation before writing a third.
+
+### Found, not fixed
+
+A member call WITH A PAYLOAD mis-binds `self`: `d.crank {step: 1}` against
+`fn crank({step: int})` reports "expects int but got Deck". Example 04
+declares `play` and never calls it, so no example catches this. Recorded in
+TODO §3.

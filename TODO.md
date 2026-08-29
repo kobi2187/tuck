@@ -116,6 +116,12 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   `fnSigs`. Attempted and reverted: members must STAY there, because
   `d.noise` resolves through `asFnByName`. Needs call resolution to
   distinguish them. **Pinned:** `member_names`. → MISSING-FEATURES A1.
+- [ ] **[repro] A member call with a payload mis-binds `self`.**
+  `d.crank {step: 1}` against `fn crank({step: int})` on an object reports
+  "argument to 'crank' expects int but got Deck" — the receiver is being
+  matched against the FIRST declared param instead of the `self` lowering
+  supplies. Found while testing composition; example 04 declares `play` and
+  never calls it, which is why no example catches this. Not pinned yet.
 - [ ] **[repro] A prefix call is accepted.** `echo total` (wrong — Tuck is
   postfix) typechecks and emits `total(echo)`. Both names read as
   `<unknown>` under gradual typing. Same trap family as the fnsig
@@ -191,12 +197,12 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
 - [ ] **[read] Registers are not `volatile`.** D has no volatile qualifier;
   `core.volatile`'s load/store are the supported spelling. Correct for the
   examples, wrong for a real embedded target.
-- [ ] **5 of 44 examples do not compile** (was 13, 2026-08-29):
-  fnsig-as-value (03), mixins (04), `on select`'s TASK form which needs the
-  reactor (29, 30), and 16 — which fails the CHECKER, not codegen (§6).
-  FIXED since: the messageless actor (15), the inline sum type (08), and a
-  value-returning body the checker left open, which D and Odin reject where
-  Nim does not. → ledger.
+- [ ] **3 of 44 examples do not compile** (was 13, 2026-08-29):
+  `on select`'s TASK form which needs the reactor (29, 30), and 16 — which
+  fails the CHECKER, not codegen (§6). FIXED since: the messageless actor
+  (15), the inline sum type (08), fnsig-as-value (03), composition and
+  mixins (04), and a value-returning body the checker left open, which D
+  and Odin reject where Nim does not. → ledger.
 
 ### Cross-backend
 - [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**
