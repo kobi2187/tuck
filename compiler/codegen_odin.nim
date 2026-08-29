@@ -1217,26 +1217,17 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string
 # ponytail: call sites don't take the address yet — nothing in the
 # examples calls a member fn; wire it when one does.
 proc genOdinMemberFn(ctx: var OdinCodegenCtx, m: Decl, objName: string): string =
-  let selfType = Type(span: m.span, kind: tkNamed, name: "^" & objName)
-  let plainSelf = Type(span: m.span, kind: tkNamed, name: objName)
-  var params: seq[Param]
-  var hasSelf = false
-  for p in m.fnParams:
-    var pt = p.typ
-    if pt != nil and pt.kind == tkNamed and pt.name == "Self": pt = plainSelf
-    if p.name == "self":
-      hasSelf = true
-      params.add(Param(name: "self", typ: selfType, span: p.span))
-    else:
-      params.add(Param(name: p.name, typ: pt, span: p.span))
-  if not hasSelf:
-    params = @[Param(name: "self", typ: selfType, span: m.span)] & params
-  var ret = m.fnReturnType
-  if ret != nil and ret.kind == tkNamed and ret.name == "Self": ret = plainSelf
+  # lowering.normalizeSelf has already given the member its `self` parameter
+  # and resolved `Self` to the object. What is left is the ODIN spelling:
+  # self is a pointer, `^T`, so a mutation reaches the caller's value.
+  var params = m.fnParams
+  for i in 0 ..< params.len:
+    if params[i].name == "self":
+      params[i].typ = Type(span: m.span, kind: tkNamed, name: "^" & objName)
   let copy = Decl(span: m.span, kind: dkFn, name: memberProcName(objName, m.name),
                   fnParams: params,
-                  fnReturnType: ret, fnBody: m.fnBody, fnEffects: m.fnEffects,
-                  fnGenerics: m.fnGenerics)
+                  fnReturnType: m.fnReturnType, fnBody: m.fnBody,
+                  fnEffects: m.fnEffects, fnGenerics: m.fnGenerics)
   # `self` is a POINTER here, so every mention in the body needs a deref —
   # `self^` reads the value and `self^ = x` writes through to the caller.
   let oldPtrSelf = ctx.ptrSelf

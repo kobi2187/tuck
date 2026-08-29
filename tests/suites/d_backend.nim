@@ -646,4 +646,35 @@ fn main() -> int:
   t.runsD "iface: wrap copies (3), a later wrap sees 9, so 3+9=12",
           12, dmdExe
 
+  # --- an inline sum in a field, and a member that declares no params ----
+  # Two gaps that met in one program. `{Red, Yellow, Green}` is a sum with
+  # no declaration, so it hoists to <Owner><Field>Kind — the same name the
+  # Nim and Odin backends give it — and its tags must be qualified, since
+  # a D enum member does not leak into module scope.
+  #
+  # `advance` declares no parameters at all. `self` is supplied by
+  # lowering.normalizeSelf now, not by each backend for itself; before that
+  # this emitted a fn taking nothing whose body still said `self`.
+  t.src """
+object Light:
+  state: {Red, Yellow, Green}
+
+  fn advance() -> int:
+    return match self.state:
+      Red:    1
+      Green:  2
+      Yellow: 3
+
+fn main() -> int:
+  let l = {state: Green} Light
+  return l.advance
+"""
+  t.emitsD "inline sum: hoisted under <Owner><Field>Kind",
+           r"enum tuck_LightStateKind \{ Red, Yellow, Green \}"
+  t.emitsD "inline sum: a tag is qualified — D enum members do not leak",
+           r"case tuck_LightStateKind\.Green:"
+  t.emitsD "member with no declared params still takes self",
+           r"tuck_Light_advance\(ref tuck_Light self\)"
+  t.runsD "inline sum: state Green selects the second arm", 2, dmdExe
+
   t.finish()

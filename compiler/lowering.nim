@@ -229,6 +229,37 @@ proc lowerExpr(e: Expr, m: Module) =
 # Entry point for the pass. Two phases, in this order: type bodies are
 # flattened first so the call-rewriting phase can look up a type's fields and
 # get a plain record back, whatever the source declared.
+proc normalizeSelf(d: Decl) =
+  ## An object member takes its object as `self`.
+  ##
+  ## This was re-derived at emit time by BOTH existing backends (codegen's
+  ## genMemberFn and codegen_odin's genOdinMemberFn held the same twenty
+  ## lines with one word different), and the D backend had no copy at all —
+  ## which is how a zero-parameter member came to emit a fn taking nothing
+  ## and a body still mentioning `self`.
+  ##
+  ## Only the two facts that are the same everywhere move here: `self`
+  ## EXISTS, and the placeholder type `Self` means this object. HOW self is
+  ## passed stays a backend question — Nim spells it `var T`, Odin `^T`,
+  ## D `ref T` — decided from the parameter's name at emit time.
+  ##
+  ## Idempotent: a member that already declares `self` is left alone.
+  let objType = Type(span: d.span, kind: tkNamed, name: d.name)
+  for mem in d.objMembers:
+    if mem == nil or mem.kind != dkFn: continue
+    var hasSelf = false
+    for i in 0 ..< mem.fnParams.len:
+      if mem.fnParams[i].name == "self": hasSelf = true
+      let pt = mem.fnParams[i].typ
+      if pt != nil and pt.kind == tkNamed and pt.name == "Self":
+        mem.fnParams[i].typ = objType
+    if mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
+       mem.fnReturnType.name == "Self":
+      mem.fnReturnType = objType
+    if not hasSelf:
+      mem.fnParams = @[Param(name: "self", typ: objType, span: mem.span)] &
+                     mem.fnParams
+
 proc lowerModule*(m: Module) =
   ## Rewrite a module in place into the simpler form the backends expect.
   # Phase 1: union / rename type bodies collapse to plain records
@@ -237,6 +268,8 @@ proc lowerModule*(m: Module) =
       d.typeBody = Type(span: d.typeBody.span, kind: tkRecord,
                         fields: getFieldsForType(m, d.typeBody),
                         attrs: d.typeBody.attrs)
+
+  for d in m.decls(dkObject): normalizeSelf(d)
 
   # Phase 2: rewrite call arguments (subset matching) in every fn body
   #
