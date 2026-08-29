@@ -1358,6 +1358,18 @@ proc dCallConv(ctx: var DCodegenCtx, d: Decl): string =
     if same: return "extern (C) "
   ""
 
+proc dTrailingReturn(body: Expr, retStr: string, indent: int): string =
+  ## D rejects a value-returning function that can fall off the end, so a
+  ## body the checker left open (a `...` pending hole, or a tail the checker
+  ## already proved exhaustive by other means) gets a zero-value return.
+  ## `typeof(return)` names the type without repeating it, so this works for
+  ## a carrier, a record or a scalar alike. Odin needs the same thing and
+  ## spells it `return {}` (codegen_odin ensureTrailingReturn).
+  if retStr == "void": return ""
+  if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
+     body.stmts[^1].kind in {exkReturn, exkRaise}: return ""
+  "    ".repeat(indent) & "return typeof(return).init;\n"
+
 proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
   if d.fnGenerics.len > 0: return dUnsupported("generic fn " & d.name)
@@ -1392,6 +1404,7 @@ proc genDFnDecl(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
     ctx.definedVars.incl(p.name)
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
   result.add(ctx.genDStmtOrBlock(d.fnBody))
+  result.add(dTrailingReturn(d.fnBody, retStr, 1))
   ctx.indent = 0
   ctx.currentParams = @[]
   ctx.retWrapped = false
@@ -1596,14 +1609,27 @@ proc genDMsgEnvelope(ctx: var DCodegenCtx, d: Decl,
     "    " & d.name & "MsgKind kind;\n" &
     (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") & "}\n\n"
 
+proc actorHasMessages(d: Decl): bool =
+  ## Whether this actor has anything to receive. A specimen actor
+  ## (`actor X: ...`) has no handlers and no shutdown, so it gets no
+  ## envelope type, no mailbox and no drain — and the entry point must not
+  ## try to start one. Both sites ask THIS, so they cannot disagree.
+  let (handlers, _, hasShutdown) = collectHandlers(d)
+  handlers.len > 0 or hasShutdown
+
 proc genDActorState(ctx: var DCodegenCtx, d: Decl,
-                    hasShutdown: bool): string =
+                    hasShutdown: bool, hasMessages: bool): string =
   ## The actor's own fields, its mailbox, and — when it can be shut down —
   ## the flag the drain checks.
   var fields = ctx.dActorFieldLines(d)
-  fields.add("    rt.Mailbox!(" & d.name & "Msg, " & actorQueueSize(d) &
-             ") mailbox;")
+  # No handlers means no envelope type exists, so there is nothing to hold a
+  # mailbox OF. Such an actor is a specimen (`actor X: ...`) and emits only
+  # its state, matching what the Nim backend emits for the same source.
+  if hasMessages:
+    fields.add("    rt.Mailbox!(" & d.name & "Msg, " & actorQueueSize(d) &
+               ") mailbox;")
   if hasShutdown: fields.add("    bool finished;")
+  if fields.len == 0: fields.add("    // no state")
   "struct " & d.name & " {\n" & fields.join("\n") & "\n}\n\n"
 
 proc genDHandlerCase(ctx: var DCodegenCtx, d: Decl,
@@ -1702,14 +1728,15 @@ proc genDActor(ctx: var DCodegenCtx, d: Decl): string =
   var variants: seq[string]
   for h in handlers: variants.add(msgVariantName(h.name))
   if hasShutdown: variants.add("msgShutdown")
-  if variants.len == 0:
-    return dUnsupported("actor " & d.name & " with no message handlers")
-  result = ctx.genDMsgEnvelope(d, handlers, variants)
-  result.add(ctx.genDActorState(d, hasShutdown))
+  let hasMessages = variants.len > 0
+  if hasMessages:
+    result = ctx.genDMsgEnvelope(d, handlers, variants)
+  result.add(ctx.genDActorState(d, hasShutdown, hasMessages))
   # One instance per declared actor: sends and field reads target it, so
   # `Counter.total` means `counterSingleton.total`.
   result.add("__gshared " & d.name & " " & actorSingletonName(d.name) &
              ";\n\n")
+  if not hasMessages: return
   result.add(ctx.genDDispatch(d, handlers, shutdownBody, hasShutdown))
   result.add(genDDrain(d, hasShutdown))
   for h in handlers:
@@ -1729,6 +1756,7 @@ proc genDTaskDecl(ctx: var DCodegenCtx, d: Decl): string =
     ctx.definedVars.incl(p.name)
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
   result.add(ctx.genDStmtOrBlock(d.taskBody))
+  result.add(dTrailingReturn(d.taskBody, retStr, 1))
   ctx.indent = 0
   ctx.currentParams = @[]
   result.add("}\n")
@@ -2123,18 +2151,27 @@ proc mainDeclD(m: Module): Decl =
       return d
   nil
 
+proc dBootSequence(m: Module, hasTasks: bool): string =
+  ## What runs BEFORE main: the scheduler, then every actor as a daemon.
+  ## An actor is a singleton service alive for the whole program, not
+  ## something main spawns — but one with no messages has no drain to start
+  ## (actorHasMessages), so it is skipped here exactly as it is skipped in
+  ## genDActor.
+  var daemons: seq[string]
+  for d in m.decls:
+    if d != nil and d.kind == dkActor and actorHasMessages(d):
+      daemons.add("    rt.tuckStartActor(&drain_" & d.name & ");\n")
+  if not hasTasks and daemons.len == 0: return ""
+  "    rt.tuckAsyncInit();\n" & daemons.join("")
+
 proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
   ## Tuck's `fn main` is a plain fn; D's entry point calls it. A
   ## value-returning `fn main` IS the process exit code — D's `int main`
   ## says exactly that natively (the Nim backend needs quit(), Odin
   ## os.exit(); this is the identical-construct rule paying off).
   var hasTasks = false
-  var actorNames: seq[string]
   for d in m.decls:
-    if d == nil: continue
-    if d.kind == dkActor: actorNames.add(d.name)
-    if d.kind == dkTask: hasTasks = true
-  let usesRuntime = hasTasks or actorNames.len > 0
+    if d != nil and d.kind == dkTask: hasTasks = true
   let mainFn = mainDeclD(m)
   if mainFn == nil and mains == "": return ""
   let tuckMain = mangleName("main")
@@ -2147,11 +2184,7 @@ proc genDEntryPoint(ctx: DCodegenCtx, m: Module, mains: string): string =
   # A program with tasks boots the scheduler before main and drives it
   # after, so anything main spawned and did not await still runs to
   # completion. Mirrors tuck.nim's Nim entry and the Odin one.
-  var boot = if usesRuntime: "    rt.tuckAsyncInit();\n" else: ""
-  # Every declared actor starts as a daemon BEFORE main — it is a singleton
-  # service alive for the whole program, not something main spawns.
-  for a in actorNames:
-    boot.add("    rt.tuckStartActor(&drain_" & a & ");\n")
+  let boot = dBootSequence(m, hasTasks)
   # Drive the loop only when TASKS exist. Actors are daemons whose drain
   # loops never finish, so running the scheduler for them after main would
   # spin forever — main owns the lifecycle and ends the program itself.
