@@ -224,3 +224,52 @@ position, and a way forward.
   `.fn {args}` on an undeclared method (the example needs a `pending:`
   stub), plus dotted select sources. → MISSING-FEATURES B.
 - [ ] **20-embedded-mp3-player** — see the Nim and D entries above.
+
+## 8. Object member receivers alias — undecided, needs a ruling
+
+Found 2026-08-29 while probing the stateful-value question. NOT fixed: the
+resolution is a language decision, not a codegen one, and it was left open.
+
+**The facts, all reproduced by building and running:**
+
+- Chains are CORRECT and uniform. `c ..bump` emits `c = bump(c)` in every
+  backend — return-value assignment, no aliasing. `checkMutatorCall`
+  (`typecheck.nim:1188`) enforces the contract: a `..` mutator must return the
+  receiver's type. Records prove the whole path: `let b = a ..withPort {p:8080}`
+  leaves `a` at 1 and gives `b` 8080.
+- The DIRECT call has no such contract. `{self: c} bump` emits `bump(c)` with
+  `self: var Counter` (`codegen.nim:1315`, unconditional — no body analysis
+  exists anywhere in the compiler). The member mutates the CALLER's object.
+  `let r = c.bump` gives `r.n=1` AND `c.n=1`; value semantics says `c.n=0`.
+- A READ-ONLY member cannot be called on a parameter. `p.sum` where `sum`
+  mutates nothing fails in Nim with `expression 'p' is immutable, not 'var'`.
+  Legal Tuck, rejected in the backend's words. Works on a local, because Nim's
+  `var T` binds any addressable location — which is why every existing test
+  misses it (they all use locals).
+- **The three backends disagree.** Nim: `var self`, aliases. D: `ref self`,
+  aliases, and `tests/suites/d_backend.nim:185` RUNS a program asserting the
+  receiver mutates across two direct calls (expects 9). Odin: declares `^T`
+  but its call sites never pass an address — its own comment says
+  `# ponytail: call sites don't take the address yet`.
+- `value_semantics.nim:383` is the only Nim-side coverage and is `okCheck` —
+  typechecks a member that mutates `self`, never calls it. That is how this
+  survived.
+
+**The ruling needed:** are function arguments copied, `self` included?
+- If YES (`self` is an argument like any other): `var self` dies in all three
+  backends, the read-only-on-param defect and Odin's unwired call sites both
+  fall out for free, `d_backend.nim:185` is asserting the wrong thing and gets
+  rewritten to the chain form, and a member that writes `self` but does not
+  return the object type becomes a silent no-op — example 04's
+  `fn play({episode: Episode}) -> void` is exactly that shape, and probably
+  wants rejecting the way `checkMutatorCall` already rejects it for chains.
+- If NO (object members are the language's one aliasing construct): it needs
+  saying in the spec, `let c` is genuinely unsafe through a member call, and
+  the read-only-on-param defect needs the body analysis that does not exist
+  in order to emit a plain `self` for non-mutating members.
+
+Related and separate: `{self: Self}` declares but cannot be CALLED —
+`argument to 'louder' expects Self but got Player`. `Self` is substituted in
+five places (`typecheck.nim:529/532`, both backends, conformance) but not on
+the call path. `value_semantics.nim:391` uses this exact shape and only
+`okCheck`s it.
