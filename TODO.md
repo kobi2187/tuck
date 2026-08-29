@@ -211,12 +211,25 @@ describes the parser's or backend's problem rather than the author's.
 FRICTIONS calls #7 the house standard — it names the type, the rule, the
 position, and a way forward.
 
-- [ ] **[repro] MUTUALLY recursive types fail in the BACKEND.** `type A`
-  holding a `B` that holds an `A` emits both declarations in source order,
-  so Nim reports `undeclared identifier: 'tuck_B'` — with or without a `Seq`
-  in the cycle, which is what tells it apart from the sizing problem (fixed
-  2026-08-29, TK-TY17). A declaration-ORDERING bug in codegen: the emitter
-  needs to topologically sort type declarations, or forward-declare.
+- [ ] **[repro] Mutually recursive types THROUGH `Seq` fail in the NIM
+  backend only.** `type A = {b: Seq[B]}` + `type B = {a: Seq[A]}` is finite
+  and legal (Seq is a handle), passes `tuck ch`, then Nim reports
+  `undeclared identifier: 'tuck_B'`. Odin and D emit it correctly — they
+  resolve type names module-wide.
+
+  NOT an ordering bug (an earlier note here said so; no order can satisfy a
+  cycle). It is GROUPING: Nim resolves mutual type references only within one
+  `type` block, and the emitter writes a separate `type` section per
+  declaration — 11 sites in `codegen.nim`. Verified in plain Nim: identical
+  declarations fail as separate sections, compile when merged.
+
+  ATTEMPTED 2026-08-29, reverted. Post-processing `genOrderedDecls`'s
+  `typePart` into one indented block works for the emission itself, but
+  `genDeclsOfKind(dkType)` also emits `proc`s (invariants, `{.borrow.}`
+  operators) that must NOT move inside the block, and every `emits` golden
+  matching `type X* = ...` on one line then needs reshaping. That golden
+  churn is a bigger diff than fixing the 11 sites properly, for a bug with no
+  reported user. Do it at the 11 sites, or not yet.
 
 ## 7. Known-broken examples
 
