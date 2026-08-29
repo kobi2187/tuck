@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
 proc tuck_playTrack*(id: int, name: string, length: int): void =

@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 
 proc tuck_classify*(n: int): int =
   if (n < 0):

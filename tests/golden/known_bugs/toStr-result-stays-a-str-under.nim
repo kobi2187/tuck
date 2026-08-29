@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 import str
 
 proc tuck_main*(): int =

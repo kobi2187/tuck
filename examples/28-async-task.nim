@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
 proc tuck_stepIo*(n: int): tuple[v: int] =

@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 import scheduler
 
 type tuck_SinkMsgKind* = enum msgPing

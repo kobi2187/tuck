@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 
 type tuck_P* = object
   n*: int

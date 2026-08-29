@@ -474,4 +474,17 @@ fn main() -> int:
 """
   t.okCheck "declaring the effect satisfies the budget"
 
+  # Mutually recursive types THROUGH `Seq` are finite and legal — a Seq is a
+  # handle. Nim resolves mutual type references only within ONE `type` block
+  # and each emit site writes its own, so this failed with
+  # `undeclared identifier: 'tuck_B'`. Odin and D always resolved module-wide.
+  t.src """
+type A = {b: Seq[B]}
+type B = {a: Seq[A]}
+
+fn main() -> int:
+  return 0
+"""
+  t.runs "mutually recursive types through Seq build", 0
+
   t.finish()

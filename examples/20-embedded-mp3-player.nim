@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
 type tuck_Hz* = distinct uint32
@@ -104,7 +105,7 @@ proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
   of msgPlay:
     let rate = msg.rate
     if true:
-      (case self.state
+      (case self.state.kind
       of Idle:
         if true:
           self.state = tuck_PlayerState(kind: Decoding, decoding: (sampleRate: rate))
@@ -119,7 +120,7 @@ proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
         discard)
   of msgPause:
     if true:
-      (case self.state
+      (case self.state.kind
       of Decoding:
         self.state = tuck_PlayerState(kind: Paused)
       of Idle:

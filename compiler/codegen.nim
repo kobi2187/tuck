@@ -1973,7 +1973,14 @@ proc emitNim*(m: Module, rtImport = "../compiler/tuck_rt",
               moduleName = "main"): string =
   var ctx = newCodegenCtx(m, realModules, moduleName)
   let body = ctx.genOrderedDecls(m)
-  result = "import " & rtImport & "\n"
+  # Nim resolves mutual type references only within ONE `type` block, and each
+  # emit site writes its own — so `type A = {b: Seq[B]}` + `type B = {a: Seq[A]}`
+  # (finite and legal, Seq is a handle) failed with `undeclared identifier`.
+  # Odin and D resolve module-wide and never had this.
+  # ponytail: one pragma instead of merging 11 emit sites into a single block;
+  # do that if codeReordering ever bites.
+  result = "{.experimental: \"codeReordering\".}\n"
+  result.add("import " & rtImport & "\n")
   result.add(genRtExport(m))
   result.add(genImplImports(m))
   result.add(genLinkFlags(m))

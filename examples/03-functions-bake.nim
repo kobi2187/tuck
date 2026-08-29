@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
 type tuck_BinOp* = proc(a: int, b: int): int {.closure.}

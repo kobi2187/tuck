@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 {.compile: "cffi/point.c".}
 import sys

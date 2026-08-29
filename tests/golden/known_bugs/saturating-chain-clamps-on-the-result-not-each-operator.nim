@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 
 type tuck_SafeRPM* = distinct uint16
 proc `+`*(a, b: tuck_SafeRPM): tuck_SafeRPM {.borrow.}

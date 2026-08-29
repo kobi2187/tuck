@@ -136,24 +136,24 @@ handleMsg_tuck_Decoder :: proc(self: ^tuck_Decoder, msg: tuck_DecoderMsg) {
 	switch msg.kind {
 	case .msgPlay:
 		rate := msg.rate
-    switch (self.state)
+    switch v in self.state
     {
-    case tuck_PlayerStateKind.Idle:
+    case tuck_PlayerState_Idle:
         self.state = tuck_PlayerState_Decoding{sampleRate = rate}
         PlaybackStarted(tuck_SystemEvents.raise)
         tuck_DAC_CR.EN = true
-    case tuck_PlayerStateKind.Paused:
+    case tuck_PlayerState_Paused:
         self.state = tuck_PlayerState_Decoding{sampleRate = rate}
         PlaybackStarted(tuck_SystemEvents.raise)
         tuck_DAC_CR.EN = true
-    case tuck_PlayerStateKind.Decoding: ;
+    case tuck_PlayerState_Decoding: ;
     }
 	case .msgPause:
-    switch (self.state)
+    switch v in self.state
     {
-    case tuck_PlayerStateKind.Decoding: self.state = tuck_PlayerState_Paused{};
-    case tuck_PlayerStateKind.Idle: ;
-    case tuck_PlayerStateKind.Paused: ;
+    case tuck_PlayerState_Decoding: self.state = tuck_PlayerState_Paused{};
+    case tuck_PlayerState_Idle: ;
+    case tuck_PlayerState_Paused: ;
     }
     tuck_DAC_CR.EN = false
 	case .msgStop:

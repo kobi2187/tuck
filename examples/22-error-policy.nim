@@ -1,3 +1,4 @@
+{.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
 proc tuck_unhandled*(code: uint16, site: string) =
