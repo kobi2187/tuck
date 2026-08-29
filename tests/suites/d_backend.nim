@@ -677,4 +677,34 @@ fn main() -> int:
            r"tuck_Light_advance\(ref tuck_Light self\)"
   t.runsD "inline sum: state Green selects the second arm", 2, dmdExe
 
+  # --- bake: a fn-typed slot is a FUNCTION POINTER, not a delegate -------
+  # bake is fully lowered before codegen — what arrives is plain record
+  # construction, so the only D-specific question is how to spell the type.
+  # `function` and `delegate` are distinct types in D and what fills the
+  # slot is a top-level fn with no captured environment. Nim's {.closure.}
+  # and Odin's `proc` both accept a plain proc, so neither backend had to
+  # make this choice.
+  t.src """
+fnsig BinOp = {a: int, b: int} -> int
+
+fn plus({a: int, b: int}) -> int:
+  return a + b
+
+fn applyOperation({a: int, b: int, op: BinOp}) -> int:
+  op.invoke {a, b}
+
+fn main() -> int:
+  let x = {a: 5, b: 10}
+  let withOp = x bake {op: :plus}
+  let smaller = withOp bake {b: 2}
+  return smaller applyOperation
+"""
+  t.emitsD "fnsig: a function pointer, spelled with an alias",
+           r"alias tuck_BinOp = long function\(long a, long b\)"
+  t.emitsD "fnsig: filling the slot takes the fn's address",
+           r"op: &tuck_plus"
+  t.omitsD "fnsig: never a delegate — nothing here captures",
+           r"delegate"
+  t.runsD "bake: op=:plus then b=2, so 5+2", 7, dmdExe
+
   t.finish()

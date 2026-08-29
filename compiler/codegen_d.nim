@@ -135,6 +135,7 @@ type TypeMode = enum
 
 proc dTypeIn(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string
 proc dInlineSum(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string
+proc dFuncType(ctx: var DCodegenCtx, t: Type): string
 
 proc dFixedArray(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## A fixed-size array, or "" when this type is not one.
@@ -177,6 +178,21 @@ proc dAppType(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
                  else: "?"
   if mode == tmRequired: dUnsupported("type application " & baseName & "[...]")
   else: ""
+
+proc dFuncType(ctx: var DCodegenCtx, t: Type): string =
+  ## A fn-typed value (`fnsig BinOp = {a: int, b: int} -> int`, or a `:plus`
+  ## reference the checker resolved). D spells it `R function(P...)`.
+  ##
+  ## `function`, NOT `delegate`: the two are distinct types in D, and what
+  ## reaches a slot here is a top-level fn with no captured environment.
+  ## Nim's `{.closure.}` and Odin's `proc` both accept a plain proc where a
+  ## closure type is written, so neither had to make this choice. The call
+  ## site takes the address (`&plus`) — isFnRefD already emits that.
+  var ps: seq[string]
+  for p in t.params: ps.add(ctx.dTypeIn(p, tmRequired))
+  let r = if t.result == nil: "void"
+          else: ctx.dTypeIn(t.result, tmRequired)
+  r & " function(" & ps.join(", ") & ")"
 
 proc dInlineSum(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## A sum written INLINE in a field position (`state: {Red, Yellow, Green}`).
@@ -222,7 +238,7 @@ proc dTypeIn(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
     else: ctx.importedTypeQualifierD(t.name)
   of tkApp: ctx.dAppType(t, mode)
   of tkTuple: giveUp("tuple type")
-  of tkFunc: giveUp("fn-typed value (fnsig)")
+  of tkFunc: ctx.dFuncType(t)
   of tkRecord:
     # A record shape is nameable in both modes — it hoists its own struct.
     ctx.recStructNameD(t.fields)
