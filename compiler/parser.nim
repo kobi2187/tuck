@@ -316,7 +316,11 @@ proc parseSigGenerics(p: var Parser): seq[string] =
 proc parseSigName(p: var Parser, what: string): string =
   ## The declared name, possibly a module-qualified sketch stub
   ## (`fn http::get(...)`).
-  result = p.expect(tkIdent,
+  ##
+  ## `expectMemberName`, not `expect(tkIdent)`: a declared name is a name-only
+  ## position, so an attribute word is just a name here — `fn error(...)` in a
+  ## `pending:` block is the log level's verb, not the `[error: E]` attribute.
+  result = p.expectMemberName(
                     "Expected function name in " & what & " declaration").value
   if p.current().kind != tkColonColon: return
   discard p.advance()

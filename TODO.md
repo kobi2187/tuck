@@ -206,11 +206,6 @@ describes the parser's or backend's problem rather than the author's.
 FRICTIONS calls #7 the house standard — it names the type, the rule, the
 position, and a way forward.
 
-- [ ] **[repro] Reserved words in identifier positions** say "expected a
-  field name" while pointing AT one. Three instances found writing ordinary
-  stdlib types: `pending`, `error`, `when`. The reserved list is already
-  documented for the bracket case; the parser just does not consult it here.
-  → FRICTIONS #5, #5b, #5c.
 - [ ] **[repro] Direct recursive sum types fail in the BACKEND.** `tuck ch`
   passes, then Nim reports `illegal recursion in type 'tuck_Expr'` — a
   mangled name, in a file the author does not have open. Detect

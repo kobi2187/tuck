@@ -129,6 +129,11 @@ own terms — naming the field, and pointing at `Seq[T]` as the fix.
 
 ## 5. `pending` is reserved and cannot be a field name
 
+> **RESOLVED 2026-08-29 (message).** `pending` stays reserved — it opens a real
+> construct — but the diagnostic now names it: "… — `pending` is a reserved
+> word and cannot be used as a name here" (TK-PA08). Pinned in
+> `tests/suites/diagnostics.nim`.
+
 ```tuck
 type Q = {pending: Seq[FetchResult]}
 ```
@@ -150,6 +155,13 @@ mentions that the word is reserved or why.
 ---
 
 ## 5b. `error` is reserved and cannot be a function name
+
+> **RESOLVED 2026-08-29 (fixed, not a message).** This one was a real gap.
+> `error` is an ATTRIBUTE word (`tkAttr`), reserved only inside brackets, and
+> `expectMemberName` has always accepted those — but `parseSigName` used a bare
+> `expect(tkIdent)` and so refused them. It now calls `expectMemberName` like
+> every other name-only position, and `fn error(...)` in a `pending:` block
+> parses. `std.log` can have its natural verb.
 
 ```tuck
 pending:
@@ -176,6 +188,9 @@ likely shared: say which word is reserved and why.
 
 ## 5c. `when` is reserved and cannot be a field name
 
+> **RESOLVED 2026-08-29 (message).** Same fix as #5 — `when` stays reserved,
+> the diagnostic now names it.
+
 ```tuck
 type ZonedTime = {when: DateTime, zone: Zone, offsetSec: i32}
 ```
@@ -189,6 +204,13 @@ name / function name" while pointing at one. A reserved word used in an
 identifier position should say so by name. The full list is already
 documented in `LANGUAGE-OVERVIEW.md` §3 for the bracket case; the parser
 just doesn't consult it when producing this message.
+
+> **Correction, 2026-08-29.** They turned out to be TWO problems, not one.
+> `pending` and `when` are KEYWORDS — correctly rejected, so the fix was the
+> message. `error` is an ATTRIBUTE word, which the language already permits as
+> a plain name; one call site had simply not been given the shared helper. The
+> giveaway was that `{error: str}` and `{priority: str}` parsed fine as fields
+> all along — only the `pending:`/`extern:` fn-name position refused them.
 
 ## 6. `satisfies` on a primitive — correct refusal, unhelpful message
 

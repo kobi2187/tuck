@@ -93,8 +93,18 @@ proc expectMemberName*(p: var Parser, msg: string): Token =
   ## This is what lets reservation be total without stealing ordinary words
   ## from the user. Type names are Capitalized, so a lowercase field named
   ## `priority` never collides with the type `Priority` either.
+  ##
+  ## A KEYWORD is different: `pending` and `when` open real constructs, so
+  ## they stay reserved even here. The author still deserves to be told which
+  ## word collided — "expected a field name" while pointing at one reads as a
+  ## parser fault rather than a naming one.
   if p.current().kind in {tkIdent, tkAttr}:
     return p.advance()
+  let t = p.current()
+  if t.value.len > 0 and t.value[0] in {'a'..'z'} and
+     t.kind notin {tkIndent, tkDedent, tkNewline, tkEOF}:
+    p.reportError(msg & " — `" & t.value & "` is a reserved word and cannot " &
+                  "be used as a name here", dc = dcPaReservedWord)
   p.reportError(msg)
 
 proc expectTypeName*(p: var Parser, what: string): Token =

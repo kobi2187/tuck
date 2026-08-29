@@ -39,6 +39,23 @@ fn main() -> void:
   t.src "ac:\n  t: int\n"
   let paIdx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck"])
 
+  # A KEYWORD in a name-only position must name the collision. Found writing
+  # stdlib types (FRICTIONS #5/#5c): "expected a field name" while pointing AT
+  # one reads as a parser fault, not a naming one.
+  t.src "type Q = {pending: str}\n"
+  let rwPendingIdx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck"])
+  t.src "type Z = {when: str}\n"
+  let rwWhenIdx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck"])
+
+  # An ATTRIBUTE word is NOT a keyword: it is reserved only inside brackets, so
+  # a name-only position takes it. `fn error(...)` is the log level's verb.
+  # (FRICTIONS #5b — this used to be a parse error in a `pending:` block.)
+  t.src """
+pending:
+  fn error({msg: str}) -> void
+"""
+  t.okCheck "an attribute word is a legal fn name in a pending block"
+
   # --- explain answers for every code --------------------------------------
   #
   # The registry is only useful if every code in it has an explanation. Walking
@@ -73,6 +90,16 @@ fn main() -> void:
       let ls = outp.splitLines()
       t.no "a misspelled top-level keyword carries TK-PA03",
            (if ls.len > 1: ls[1] else: outp)
+
+  for (label, idx, word) in [("`pending`", rwPendingIdx, "pending"),
+                             ("`when`", rwWhenIdx, "when")]:
+    let name = "a reserved word as a field name names " & label & " (TK-PA08)"
+    let (_, outp) = t.resultOf(idx)
+    if outp.contains("TK-PA08") and outp.contains("`" & word & "` is a reserved word"):
+      t.ok name
+    else:
+      let ls = outp.splitLines()
+      t.no name, (if ls.len > 1: ls[1] else: outp)
 
   var missing = 0
   for (c, i) in explainIdx:

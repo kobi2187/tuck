@@ -59,6 +59,7 @@ type
     dcPaDivision = "TK-PA05"            ## bare `/` — write `/i` or `/f`
     dcPaSatisfiesOrder = "TK-PA06"      ## `satisfies` after the object's fields
     dcPaStrayIndent = "TK-PA07"         ## indented line with nothing open above
+    dcPaReservedWord = "TK-PA08"        ## a reserved word used as a plain name
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -204,6 +205,14 @@ proc parseExplanation(d: DiagCode): string =
     "Usually the declaration it belongs to is missing, or its name is " &
     "misspelled so the compiler never opened a block. Fix: check the line " &
     "above — it should be a declaration ending in `:`."
+  of dcPaReservedWord:
+    "This word belongs to the language, so it cannot also be a name. " &
+    "Reservation is total — a keyword is reserved everywhere, which is what " &
+    "keeps `pending:` and `when TARGET == \"...\"` decidable no matter what " &
+    "the surrounding code declares. Fix: choose another name. (Attribute " &
+    "names like `error` and `priority` are NOT restricted here: they are " &
+    "reserved only inside brackets, so they stay usable as fields, " &
+    "parameters and function names.)"
   else: ""
 
 proc nameExplanation(d: DiagCode): string =
