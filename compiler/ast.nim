@@ -51,6 +51,7 @@ type
     emStack
     emPriority
 
+
   TypeAttr* = object
     name*: string
     value*: string
@@ -545,6 +546,28 @@ type
     path*: seq[string]
     decls*: seq[Decl]
     span*: Span
+
+func effectName*(e: EffectMarker): string =
+  ## How a marker is SPELLED IN SOURCE — what the author writes in the
+  ## bracket, and therefore the only spelling a diagnostic may print.
+  ##
+  ## Two call sites used to derive this mechanically from the enum name
+  ## (`($e)[2..^1].toLowerAscii`, `($e).replace("em","").toLowerAscii`), which
+  ## silently drops the underscore: `[may_block]` was reported as
+  ## `[mayblock]`, a word that appears nowhere in the language, so a reader
+  ## could not search for it. `no_alloc` and `irq_safe` had it too.
+  ##
+  ## Spelled out rather than derived: the case is exhaustive, so a new marker
+  ## fails to compile here until someone states its source spelling — which is
+  ## the whole reason a mechanical derivation was the wrong tool.
+  case e
+  of emIo: "io"
+  of emNoAlloc: "no_alloc"
+  of emIrqSafe: "irq_safe"
+  of emUnsafe: "unsafe"
+  of emMayBlock: "may_block"
+  of emStack: "stack"
+  of emPriority: "priority"
 
 proc enumDomain*(m: Module, t: Type): seq[string] =
   ## Values of an enumerable decision-table column: bool, or a fieldless sum

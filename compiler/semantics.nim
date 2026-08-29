@@ -117,7 +117,7 @@ proc checkExpr(c: var Checker, e: Expr, expected: seq[EffectMarker], currentFn: 
   # 2. Check the synthesized effects top-down against the expected budget
   for eff in actualEffects:
     if eff notin expected:
-      reportError("Semantic Error: Expression requires effect [" & ($eff).replace("em", "").toLowerAscii() & "], which is not allowed in context of '" & currentFn & "'", e.span)
+      reportError("Semantic Error: Expression requires effect [" & effectName(eff) & "], which is not allowed in context of '" & currentFn & "'", e.span)
 
 proc verifyDecl*(c: var Checker, d: Decl) =
   if d == nil: return

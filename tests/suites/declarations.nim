@@ -431,4 +431,47 @@ fn main() -> int:
 """
   t.okCheck "recursion through Seq stays legal"
 
+  # --- effect markers are reported the way they are SPELLED -----------------
+  #
+  # Two sites derived the name from the enum mechanically, which drops the
+  # underscore: `[may_block]` was reported as `[mayblock]`, a word that is not
+  # in the language, so a reader could not search for it.
+
+  t.src """
+fn slow({n: int}) -> int [may_block]:
+  return n
+
+fn handler({n: int}) -> int [irq_safe]:
+  return {n: n} slow
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an irq_safe fn may not call a may_block one", "may_block"
+
+  t.src """
+fn slow({n: int}) -> int [may_block]:
+  return n
+
+fn middle({n: int}) -> int:
+  return {n: n} slow
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "the obligation propagates to an undeclared caller",
+             "requires effect \\[may_block\\]"
+
+  t.src """
+fn slow({n: int}) -> int [may_block]:
+  return n
+
+fn middle({n: int}) -> int [may_block]:
+  return {n: n} slow
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "declaring the effect satisfies the budget"
+
   t.finish()

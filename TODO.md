@@ -75,10 +75,13 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
 - [ ] **[read] Effect propagation is require-declared, not inferred.** The
   ruling is implicit propagation; the checker still makes you declare it.
   → MISSING-FEATURES D, ROADMAP:26.
-- [ ] **[read] `[may_block]` has no checker meaning.** It parses and
-  propagates and does nothing. Its real job is the `[irq_safe]` treatment:
-  an `[irq_safe]` fn calling a `[may_block]` one should be a compile error,
-  exactly as §3.7 already specifies for `[irq_safe]` calling `[io]`.
+- [x] ~~**`[may_block]` has no checker meaning.**~~ STALE — verified
+  2026-08-29: it is enforced, by the general budget rule the spec describes
+  (§3.7: `[irq_safe]` calling `[io]` is "one instance of the general rule,
+  not a special case"). An `[irq_safe]` fn calling a `[may_block]` one is
+  rejected, and the obligation propagates to undeclared callers. Now pinned
+  in `declarations` — there was no effect-marker coverage at all, which is
+  how a misspelling in the message survived.
 - [ ] **[read] Typed select sources.** `on select` lowers `read <fd>` and
   `timeout <ms>` only. Dotted forms (`resp.ok`, `timeout.5s`) parse as
   opaque strings. Blocks example 16. → MISSING-FEATURES B/C.
@@ -143,9 +146,11 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   re-derivation cheap instead of removing it; measured gain was 0.84s →
   0.80s. If F1/F2 land and the scans disappear, DELETE it rather than keep a
   cache for work that no longer happens. → audit F4.
-- [ ] **[read] Marker plumbing is duplicated.** Two name→marker maps and two
-  marker→name maps, none sharing code. Adding an effect marker means four
-  edits. → MISSING-FEATURES D.
+- [ ] **[read] Marker plumbing is partly duplicated.** Two name→marker maps
+  remain (`parser.nim:123`, `parser_type.nim:199`). The two marker→name maps
+  were collapsed into `ast.effectName` on 2026-08-29 — they had DRIFTED, both
+  deriving the name from the enum and dropping the underscore, so
+  `[may_block]` printed as `[mayblock]`. → MISSING-FEATURES D.
 - [ ] **[read] One C implementation of the runtime.** Nim, Odin and D
   runtimes are mirrored BY HAND and have drifted repeatedly. Collapsing the
   offload seam into one C file bound over the existing FFI removes the

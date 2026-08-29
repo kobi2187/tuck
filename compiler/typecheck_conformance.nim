@@ -60,10 +60,6 @@ proc substSelf(t: Type, objName: string): Type =
                 args: args)
   t
 
-proc effectName(e: EffectMarker): string =
-  ## `emIo` reads as "io" in a diagnostic.
-  ($e)[2 .. ^1].toLowerAscii
-
 proc sigText(d: Decl): string =
   ## One line naming a signature, for both halves of a mismatch report.
   var ps: seq[string]
