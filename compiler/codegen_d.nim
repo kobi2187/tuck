@@ -538,10 +538,29 @@ proc genDSaturatingCtor(ctx: var DCodegenCtx, satT: Type,
   calleeStr & "(" & satFn & "!(" & satBase & ")(cast(" & widen & ")(" &
     arg & ")))"
 
+proc asParenBuiltinD(ctx: var DCodegenCtx, e: Expr, calleeStr: string): string =
+  ## `sizeof`/`alignof`/`offsetof` parse as ordinary calls
+  ## (parser_expr.ParenBuiltins), the identical call syntax as C and as
+  ## Tuck's own source — which is also valid Nim, so that backend's
+  ## emission is right by coincidence. D spells the first two as a POSTFIX
+  ## property (`T.sizeof`), not a call; Odin's own real spelling
+  ## (`size_of(T)`) differs too, unfixed there for the same reason — no
+  ## example has reached the line yet. `offsetof` has no example to verify
+  ## against and no clean 1:1 postfix form for an arbitrary field, so it
+  ## stays unsupported rather than guessed. "" when `calleeStr` names none
+  ## of these, so the caller falls through to a plain call.
+  if calleeStr in ["sizeof", "alignof"] and e.args.len == 1:
+    return ctx.genDExpr(e.args[0]) & "." & calleeStr
+  if calleeStr == "offsetof":
+    return dUnsupported("offsetof (no D translation verified yet)")
+  ""
+
 proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
   ## The compile-time combinators; any that declines returns "" and the call
   ## proceeds as a plain one. Same order as the Odin backend.
+  let builtin = ctx.asParenBuiltinD(e, calleeStr)
+  if builtin != "": return builtin
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genDBake(e)
   if ctx.isRecordConstructionIdx(e): return ctx.genDRecordCtor(e)
