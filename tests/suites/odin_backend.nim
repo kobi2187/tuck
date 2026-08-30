@@ -33,6 +33,7 @@ const
 32-duration-units
 33-ffi-zlib 34-ffi-cstring 35-ffi-struct 36-ffi-enum-callback 37-ffi-handle
 28-async-task 38-division 39-if-match-expr 40-saturating 41-tostr-concat
+29-task-timeout 30-async-read
 """
 
   # Examples with a known exit code: these must RUN, not merely compile.
@@ -53,9 +54,20 @@ const
   #   41-tostr-concat   0  postfix application + unqualified call + concat
   #   24-stdlib         0  writeFile then readFile THROUGH THE OFFLOAD WORKER —
   #                        compile-only could not see that the round trip works
+  #   29-task-timeout   2  a task WITH ARGUMENTS racing read fd vs timeout —
+  #                        `on select` in a task body was a hard-coded stub
+  #                        ("not yet lowered for Odin"), and a task taking
+  #                        arguments ran on the main context (no coroutine),
+  #                        panicking the moment it awaited. 30ms timeout
+  #                        beats the 500ms source, so read loses: code 2.
+  #   30-async-read     1  same race, opposite winner — the 5ms source beats
+  #                        the 100ms timeout, so read wins: code 1. Two
+  #                        outcomes of the same mechanism, not one path
+  #                        exercised twice.
   odinRun = """26-actor-run:55 27-actor-select:55 31-fnsig-callback:42 33-ffi-zlib:0 34-ffi-cstring:0
 35-ffi-struct:0 36-ffi-enum-callback:0 37-ffi-handle:0 28-async-task:42
-38-division:0 39-if-match-expr:0 40-saturating:0 41-tostr-concat:0 24-stdlib:0"""
+38-division:0 39-if-match-expr:0 40-saturating:0 41-tostr-concat:0 24-stdlib:0
+29-task-timeout:2 30-async-read:1"""
 
 proc projFor(base: string): string = outDir / base.replace("-", "_")
 
@@ -92,6 +104,24 @@ proc stage(base: string) =
     for f in walkFiles(exampleDir / "shim" / "*.odin"):
       copyFile(f, proj / "shim" / f.lastPathPart)
 
+proc stagePrep(base: string): proc (dir: string) =
+  ## A fresh closure over THIS `base`, for the build loop below.
+  ##
+  ## `let b = base` inside that loop looked like the standard fix for a
+  ## loop-captured closure, but it is NOT one: a plain `for` loop's `let`
+  ## is not a fresh binding per iteration in this Nim, and every closure
+  ## silently shared the LAST iteration's value. Every build's prep hook
+  ## called `stage()` on the SAME (final) example — proven with a two-line
+  ## repro (`for x in @["a","b","c"]: (let b = x; procs.add(proc() = echo
+  ## b))` prints "c" three times, not "a b c") — while every OTHER
+  ## example's package directory sat on whatever content was staged there
+  ## once, however long ago, and every "compile" check against it was
+  ## silently re-testing that stale copy forever. A proc PARAMETER, unlike
+  ## a loop-scoped `let`, genuinely gets its own binding per call — proven
+  ## with the same repro through a `makePrep(b): proc() = (proc() = echo
+  ## b)` indirection, which printed "a b c" correctly.
+  proc (dir: string) = stage(base)
+
 proc run*(t: var T) =
   let odinExe = findOdin()
   if odinExe.len == 0:
@@ -123,11 +153,10 @@ proc run*(t: var T) =
   var buildIdx: seq[tuple[base: string, idx: int]]
   for base in compileList:
     let proj = projFor(base)
-    let b = base
     buildIdx.add (base, t.needCmdAfter(
       @[odinExe, "build", proj, "-o:none", "-out:" & proj / "prog"],
       -1,
-      proc (dir: string) = stage(b),
+      stagePrep(base),
       proj))
 
   # The run layer. Registered against the build it needs, so the pool sequences
