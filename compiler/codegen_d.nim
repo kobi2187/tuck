@@ -307,6 +307,7 @@ proc recStructNameD(ctx: var DCodegenCtx, fields: seq[FieldDef],
 # ---------------------------------------------------------- expressions --
 
 proc genDExpr(ctx: var DCodegenCtx, e: Expr): string
+proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string
 proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep, into: string,
                    base: Expr = nil, baseStr = ""): string
 
@@ -1062,6 +1063,21 @@ proc genDStmt(ctx: var DCodegenCtx, s: Expr): string =
   if s != nil and semLayer.shortcut(s) != "":
     let code = ctx.genDExpr(s)
     if code != "": return ctx.genDDroppedResult(s, code)
+  # A match reached HERE is a statement by construction — genDStmt only
+  # ever runs on a block's own top-level statements, never on a nested
+  # expression — so it goes straight to genDMatchStmt, bypassing
+  # genDExpr's matchArmsReturn check entirely. That check answers a
+  # different question ("do this VALUE match's arms already return,
+  # so no further wrapping is needed") and answered it wrong here: arms
+  # with no explicit return, in a fn returning void, read as `false` and
+  # fell into the value/IIFE form — which then only had room for the
+  # arm's FIRST statement, stranding the rest as bare statements outside
+  # the switch. Mirrors Odin's genStmt, which has the identical direct
+  # dispatch for the identical reason.
+  if s != nil and s.kind == exkMatch and s.subject != nil:
+    let code = ctx.genDMatchStmt(s)
+    if code == "": return ""
+    return if code.endsWith("\n"): code else: code & "\n"
   if s != nil and ownsLayoutD(s):
     let code = ctx.genDExpr(s)
     if code == "": return ""
