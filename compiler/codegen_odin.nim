@@ -921,25 +921,6 @@ proc indentPrefix(code: string): string =
     if ch notin {' ', '\t'}: break
     result.add(ch)
 
-proc genCallOnReceiver(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
-  ## A resolved `.fn` call whose RECEIVER is a `..` chain. Twin of the Nim
-  ## backend's proc of the same name — the chain lowers to STATEMENTS, so it
-  ## is hoisted above the call rather than spliced into an argument slot,
-  ## where it would emit an assignment inside a call's parentheses.
-  ##
-  ## The argument is matched by NodeId, not by reference: tuck.nim gives each
-  ## backend a deepCopy of the checked tree, so the node the checker stored
-  ## and the node walked here are different objects.
-  if e.receiver == nil or e.receiver.kind != exkChain:
-    return ctx.genOdinCall(semLayer.call(e))
-  let chainStmts = ctx.genOdinExpr(e.receiver)
-  let call = semLayer.call(e)
-  var direct = Expr(span: call.span, kind: exkCall, callee: call.callee,
-                    args: call.args)
-  for i in 0 ..< direct.args.len:
-    if direct.args[i] != nil and direct.args[i].id == e.receiver.id:
-      direct.args[i] = e.receiver.base
-  chainStmts & "\n" & chainStmts.indentPrefix & ctx.genOdinCall(direct)
 
 proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
   ## Inside `switch v in value`, a payload field belongs to the BOUND
@@ -965,8 +946,10 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     # otherwise bind the `!` to the receiver alone
     return "(" & ctx.genOdinExpr(e.receiver) & ".status == .Ok)"
   if ctx.isInputField(e): return e.fieldName
-  # fieldName resolved to a fn call, not a field (checker-resolved)
-  if semLayer.hasCall(e): return ctx.genCallOnReceiver(e, ind)
+  # fieldName resolved to a fn call, not a field (checker-resolved). A `..`
+  # chain feeding this call was already hoisted into a temp by
+  # lowering.hoistChainCalls — the receiver here can never be exkChain.
+  if semLayer.hasCall(e): return ctx.genOdinCall(semLayer.call(e))
   if e.receiver != nil and e.receiver.kind == exkVar:
     # bare Type.Variant of a payload sum: kind-tagged construction
     let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)

@@ -10,9 +10,9 @@ proc tuck_startAudio*(self: tuck_App): void =
   return
 
 proc play*(self: var tuck_App, n: int): void =
-  var tuckChain1 = self
-  tuckChain1 = tuck_loadEp(tuckChain1, n)
-  tuck_startAudio(tuckChain1)
+  var tuckChain35 = self
+  tuckChain35 = tuck_loadEp(tuckChain35, n)
+  tuck_startAudio(tuckChain35)
 
 
 proc tuck_main*(): int =

@@ -646,40 +646,6 @@ proc indentPrefix(code: string): string =
     if ch notin {' ', '\t'}: break
     result.add(ch)
 
-proc genCallOnReceiver(ctx: var CodegenCtx, e: Expr, ind: string): string =
-  ## A resolved `.fn` call. When its RECEIVER is a `..` chain, the chain emits
-  ## as statements, not as an expression — so it is hoisted above the call,
-  ## run into a temp, and the call takes that temp.
-  ##
-  ##   self ..loadEp {n} .startAudio
-  ##     ->  var tuckChain1 = self
-  ##         tuckChain1 = tuck_loadEp(tuckChain1, n)
-  ##         tuck_startAudio(tuckChain1)
-  ##
-  ## `self` is left alone: a chain only writes back when it stands alone on a
-  ## line. Splicing the chain inline instead produced
-  ##   tuck_startAudio(self = tuck_loadEpisode(self, episode))
-  ## — an assignment in an argument slot, which Nim rejects with "expression
-  ## is immutable, not 'var'". Statements sequence; they do not nest.
-  if e.receiver == nil or e.receiver.kind != exkChain:
-    return ctx.genConstruction(semLayer.call(e))
-  # The chain runs into a TEMP — the base is not touched — and the call takes
-  # that temp as its receiver.
-  let (chainStmts, tmp) = ctx.genChainIntoTemp(e.receiver)
-  # Matched by NodeId, NOT by reference: tuck.nim hands each backend a
-  # deepCopy of the checked tree, so the argument the CHECKER stored in the
-  # resolved call and the receiver codegen is walking are different objects.
-  # The id is what survives the copy, which is what it exists for.
-  let call = semLayer.call(e)
-  var direct = Expr(span: call.span, kind: exkCall, callee: call.callee,
-                    args: call.args)
-  let tmpExpr = Expr(span: e.span, kind: exkVar, name: tmp)
-  for i in 0 ..< direct.args.len:
-    if direct.args[i] != nil and direct.args[i].id == e.receiver.id:
-      direct.args[i] = tmpExpr
-  # genExprChain indents every line it emits, so the call is placed at that
-  # same indent rather than at `ind`, which would be one level shallower.
-  chainStmts & "\n" & chainStmts.indentPrefix & ctx.genConstruction(direct)
 
 
 proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
@@ -690,7 +656,9 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   # set); which one runs is the tag, read here at the call.
   let ic = semLayer.ifaceCallOf(e)
   if ic.member != "": return ctx.genIfaceDispatch(e, ic, ind)
-  if semLayer.hasCall(e): return ctx.genCallOnReceiver(e, ind)
+  # A `..` chain feeding this call was already hoisted into a temp by
+  # lowering.hoistChainCalls — the receiver here can never be exkChain.
+  if semLayer.hasCall(e): return ctx.genConstruction(semLayer.call(e))
   if e.receiver != nil and e.receiver.kind == exkVar:
     # bare Type.Variant of a payload sum: kind-tagged construction
     let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
@@ -812,9 +780,10 @@ proc isChainBinding(s: Expr): bool =
 proc ownsItsLayout(s: Expr): bool =
   ## Nodes that carry their own indentation.
   ##
-  ## A `.fn` call whose RECEIVER is a chain belongs here too: the chain
-  ## lowers to statements (genCallOnReceiver), so the whole thing emits
-  ## multi-line and indents itself. Left out, genStmt added its own prefix on
+  ## A `.fn` call whose RECEIVER is a chain belongs here too — though
+  ## lowering.hoistChainCalls now rewrites that shape away before codegen
+  ## ever sees it, so isCallOnChain is permanently false in practice and
+  ## kept only as a second guard. Left out, genStmt added its own prefix on
   ## top of the chain's and produced 8 spaces against the block's 4 — which
   ## Nim rejects as invalid indentation.
   s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile} or

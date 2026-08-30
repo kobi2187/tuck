@@ -821,48 +821,7 @@ proc dPayloadSumField(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.dSumVariantCtor(e.receiver.name, e.fieldName, nil)
   ""
 
-proc genDChainIntoTemp(ctx: var DCodegenCtx, e: Expr): (string, string) =
-  ## A chain in VALUE position: copy the base into a temp, run the steps on
-  ## the temp, and hand back (statements, tempName). The base is never
-  ## written, so a caller that wants the pre-chain value keeps its own var.
-  ctx.tmpCounter.inc
-  let tmp = "tuckChain" & $ctx.tmpCounter
-  let bt = semLayer.typeFor(e.base)
-  let tn = if bt == nil: "auto" else: ctx.dType(bt)
-  let baseStr = ctx.genDExpr(e.base)
-  # No leading indent on the seed: the statement emitter has already placed
-  # the first line, exactly as the Nim backend's indentPrefix arranges.
-  var stmts = tn & " " & tmp & " = " & baseStr & ";\n"
-  for step in e.steps:
-    stmts.add(ctx.genDChainStep(step, tmp, e.base, baseStr))
-  (stmts, tmp)
 
-proc genDCallOnChain(ctx: var DCodegenCtx, e: Expr): string =
-  ## A resolved `.fn` call whose RECEIVER is a `..` chain.
-  ##
-  ## A chain emits as STATEMENTS — one assignment per step — and statements
-  ## sequence, they do not nest. Splicing one into an argument slot produced
-  ## `tuck_startAudio(    self = tuck_loadEpisode(self, episode);\n)`, which
-  ## is not an expression in any of the three target languages. So the chain
-  ## runs into a temp first and the call takes that temp. Same shape as the
-  ## Nim backend's genCallOnReceiver.
-  ##
-  ## "" when the receiver is not a chain — the ordered-interpretation
-  ## pattern, so the caller falls through to the plain resolved call.
-  if e.receiver == nil or e.receiver.kind != exkChain: return ""
-  let call = semLayer.call(e)
-  if call == nil: return ""
-  let (chainStmts, tmp) = ctx.genDChainIntoTemp(e.receiver)
-  # Substituted by NodeId, NOT by reference: each backend emits from its own
-  # deepCopy, so the argument the CHECKER recorded and the receiver being
-  # walked here are different objects. The id is what survives the copy.
-  var direct = Expr(span: call.span, kind: exkCall, callee: call.callee,
-                    args: call.args)
-  let tmpExpr = Expr(span: e.span, kind: exkVar, name: tmp)
-  for i in 0 ..< direct.args.len:
-    if direct.args[i] != nil and direct.args[i].id == e.receiver.id:
-      direct.args[i] = tmpExpr
-  chainStmts & ctx.indD & ctx.genDExpr(direct)
 
 proc genDFieldRead(ctx: var DCodegenCtx, e: Expr): string =
   ## A `.name` that is a READ, not a call — the tail of genDField once every
@@ -901,10 +860,8 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
     # promote) — hidden Nim-ism #3, Nim's .len is already signed.
     return "cast(long) " & ctx.genDExpr(e.receiver) & ".length"
   if semLayer.hasCall(e):
-    # A `..` chain as the receiver has to run into a temp first — see
-    # genDCallOnChain. Everything else is the plain resolved call.
-    let hoisted = ctx.genDCallOnChain(e)
-    if hoisted != "": return hoisted
+    # A `..` chain feeding this call was already hoisted into a temp by
+    # lowering.hoistChainCalls — the receiver here can never be exkChain.
     return ctx.genDExpr(semLayer.call(e))
   ctx.genDFieldRead(e)
 

@@ -773,9 +773,9 @@ fn main() -> int:
   return d.volume
 """
   t.emitsD "chain: a step feeding a call runs into a temp",
-           r"tuck_Deck tuckChain1 = self;"
+           r"tuck_Deck tuckChain\d+ = self;"
   t.emitsD "chain: the next step reads the temp, not the base",
-           r"tuckChain1 = tuck_louder\(tuckChain1, step\)"
+           r"tuckChain(\d+) = tuck_louder\(tuckChain\1, step\)"
   t.omitsD "chain: the base itself is never written",
            r"self = tuck_louder"
   t.runsD "chain: the object is untouched, so volume is still 5", 5, dmdExe
