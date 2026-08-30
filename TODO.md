@@ -116,12 +116,13 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   `fnSigs`. Attempted and reverted: members must STAY there, because
   `d.noise` resolves through `asFnByName`. Needs call resolution to
   distinguish them. **Pinned:** `member_names`. → MISSING-FEATURES A1.
-- [ ] **[repro] A member call with a payload mis-binds `self`.**
-  `d.crank {step: 1}` against `fn crank({step: int})` on an object reports
-  "argument to 'crank' expects int but got Deck" — the receiver is being
-  matched against the FIRST declared param instead of the `self` lowering
-  supplies. Found while testing composition; example 04 declares `play` and
-  never calls it, which is why no example catches this. Not pinned yet.
+- [x] **FIXED 2026-08-30** — a member call with a payload mis-bound self.
+  Two checker bugs (asPostfixApplication wrongly claimed a call carrying an
+  explicit dotArg payload; synthMethodCall checked the receiver against
+  the wrong slot for a member with no explicit self, distinguished from a
+  top-level mutator fn via `tc.topLevelFns`) plus one Odin codegen bug the
+  fix exposed (member calls never took the receiver's address, needed
+  since self is always `^T`). Verified identical on Nim/Odin/D.
 - [ ] **[repro] A prefix call is accepted.** `echo total` (wrong — Tuck is
   postfix) typechecks and emits `total(echo)`. Both names read as
   `<unknown>` under gradual typing. Same trap family as the fnsig
