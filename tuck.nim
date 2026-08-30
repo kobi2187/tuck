@@ -55,6 +55,7 @@ import compiler/lowering_d
 import compiler/ast_serializer
 import compiler/modules
 import compiler/optimize
+import compiler/pipeline
 
 proc usage() =
   stderr.writeLine """tuck — the Tuck compiler
@@ -80,6 +81,9 @@ options:
                 lets imports resolve regardless of cwd or binary location
   --target:NAME selects which `when TARGET == "NAME":` blocks compile in
                 (spec §8.3; any command). Unset = every such block is dropped.
+  --verify-stages (compile/build) run diagnostic assertions checking a tree
+                carries what the next pipeline stage needs (off by default —
+                see compiler/pipeline.nim).
   -O:PASS[,...] (compile/build) optimization passes. ON by default — every
                 pass is semantics-preserving. `-O:none` turns them all off,
                 which is the first thing to try if emitted code looks wrong.
@@ -233,7 +237,8 @@ proc importedEffects(loaded: seq[LoadedModule],
       result[modName & "::" & si.name] = si.effects
 
 proc checkOrDie(path: string, loaded: seq[LoadedModule],
-                sigOnly: Table[string, IndexEntry]): seq[string] =
+                sigOnly: Table[string, IndexEntry],
+                verifyStages = false): seq[string] =
   ## Typecheck, then verify effects. Order matters: typecheckProgram resets
   ## the semantic layer, so the effect pass must run AFTER it or its async
   ## call-site marks are wiped before codegen reads them.
@@ -245,6 +250,10 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   try:
     result = typecheckProgram(mods, preSigs)
     for lm in loaded: verifyModuleEffects(lm.m, imported)
+    if verifyStages:
+      var loadedMods: seq[Module]
+      for lm in loaded: loadedMods.add(lm.m)
+      assertAsyncEffectsConsistent(loadedMods)
   except SemanticError as err:
     # typecheckProgram errors already carry file:line:col; effects errors don't
     if ".tuck:" in err.msg: die(err.msg)
@@ -294,12 +303,13 @@ proc report(title, noun: string, entries: seq[string]) =
   echo title, " (", entries.len, " ", noun, "):"
   for entry in entries: echo "  ", entry
 
-proc checkProgram(path: string, needBodies = false): seq[LoadedModule] =
+proc checkProgram(path: string, needBodies = false,
+                  verifyStages = false): seq[LoadedModule] =
   var sigOnly: Table[string, IndexEntry]
   (result, sigOnly) = loadOrDie(path, needBodies)
   for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
   injectImportedTypes(result)  # imported types are visible unqualified
-  let shortcuts = checkOrDie(path, result, sigOnly)
+  let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
   # program checked clean: refresh the signature index for future checks
   updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
   report("PENDING", "unimplemented", pendingEntries(result, sigOnly))
@@ -348,6 +358,10 @@ when isMainModule:
     else: discard
   if backendFlagCount > 1:
     die("tuck: --odin and --dlang are mutually exclusive — one target per build")
+  # Diagnostic assertions that a tree carries what the next pipeline stage
+  # needs (compiler/pipeline.nim). Off by default — they walk the whole
+  # tree, and existing builds/tests should see no behavior or perf change.
+  let verifyStages = "--verify-stages" in opts
   # Optimization passes (compiler/optimize.nim) are ON by default — a pass
   # that only runs when asked for is a pass nothing exercises, and every one
   # here is required to be semantics-preserving.
@@ -419,7 +433,7 @@ when isMainModule:
     discard checkProgram(path)
     echo "OK (", elapsedMs(t0), ")"
   of "compile", "c", "build", "b":
-    let prog = checkProgram(path, needBodies = true)
+    let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
     var outDir = parentDir(path)
     for o in opts:
       if o.startsWith("-o:"): outDir = o[3 .. ^1]
@@ -450,6 +464,7 @@ when isMainModule:
     if optReport:
       report("OPTIMIZED", "site(s) rewritten", optHits)
     mangleProgram(progMods)
+    if verifyStages: assertMangleIdempotent(progMods)
     # Each backend lowers its OWN copy: lowering and the emitters both mutate
     # the tree (injectTailReturn), so a shared one would hand Beef whatever
     # Nim's pass left behind. Node ids survive the copy, so the Resolution
@@ -477,6 +492,10 @@ when isMainModule:
         let nimPath = outDir / (outName & ".nim")
         writeFile(nimPath, emitNim(lm.m, rtImport, nimReal, outName))
         echo "wrote ", nimPath
+      if verifyStages:
+        var nimMods: seq[Module]
+        for lm in nimProg: nimMods.add(lm.m)
+        assertNoChainFedCalls(nimMods)
     of bkOdin:
       var odProg: seq[LoadedModule]
       for lm in prog: odProg.add(LoadedModule(name: lm.name, path: lm.path,
@@ -486,6 +505,10 @@ when isMainModule:
       for lm in odProg: rebaseImplPaths(lm, "odin", outDir)
       for lm in odProg:
         lowerModule(lm.m)
+      if verifyStages:
+        var odMods: seq[Module]
+        for lm in odProg: odMods.add(lm.m)
+        assertNoChainFedCalls(odMods)
       for lm in odProg[0 ..< odProg.high]:
         # Odin packages are DIRECTORIES: an imported module becomes
         # mod_<name>/<name>.odin so `import fs "./mod_fs"` resolves.
@@ -543,6 +566,10 @@ when isMainModule:
         # Seq copies) are settled here as tree marks, so the emitter is left
         # printing rather than deciding.
         lowerModuleD(lm.m)
+      if verifyStages:
+        var dMods: seq[Module]
+        for lm in dProg: dMods.add(lm.m)
+        assertNoChainFedCalls(dMods)
       for lm in dProg[0 ..< dProg.high]:
         let modDPath = outDir / ("mod_" & lm.name.replace("-", "_") & ".d")
         writeFile(modDPath, emitDModule(lm.name, lm.m, dReal))

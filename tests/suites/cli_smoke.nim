@@ -571,6 +571,16 @@ proc run*(t: var T) =
       t.finish()
       return
 
+    # --verify-stages: diagnostic assertions (compiler/pipeline.nim) must not
+    # false-positive on real, working code. 29-task-timeout exercises both —
+    # an [io] async call to an extern, and (via --root) a second module —
+    # without needing a dedicated fixture.
+    if sh(@["./tuck", "c", "examples/29-task-timeout.tuck", "--verify-stages",
+            "-o:" & d, "--root:" & getCurrentDir()]).rc != 0:
+      t.no "tuck c --verify-stages", "nonzero exit on a working example"
+      t.finish()
+      return
+
     # fail-fast: type error must exit nonzero with file:line:col
     let bad = d.write("bad.tuck", "fn f({a: int}) -> int:\n  return \"nope\"\n")
     let (rc, outp) = check(bad)
