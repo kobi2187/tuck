@@ -187,9 +187,21 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   task-with-args, and a silent test-harness bug".
 
 ### D
-- [ ] **[repro] A value-position match whose arms are STATEMENTS wraps them
-  in `return`** — visible in example 20 as `case X: return self.state = ...`.
-  The value/statement decision must look at the arm bodies.
+- [x] **FIXED 2026-08-30** — a statement-position match with plain
+  (non-return) arms was routed through the VALUE dispatch, wrapping only
+  each arm's first statement in `return` and stranding the rest outside
+  the switch. genDStmt now dispatches exkMatch to genDMatchStmt directly,
+  matching Odin's own genStmt shape, instead of asking genDExpr's
+  matchArmsReturn (a different question — "does an expression-position
+  match's arm already return" — answered wrong when the match is a
+  statement to begin with).
+- [ ] **[repro] `sizeof(T)` does not compile in D.** D spells it `T.sizeof`
+  (postfix property), not a call. Nim's `sizeof(x)` genuinely matches its
+  syntax so that backend is accidentally right; Odin's own `sizeof(x)`
+  emission is ALSO wrong (`size_of(T)` is Odin's real spelling) but the
+  same example fails earlier on unrelated bugs, so it's never been
+  reached. Found chasing example 20 to a full dmd build. Cross-backend:
+  Odin needs the same fix once its own blockers clear.
 - [ ] **[read] Records containing a `Seq` field shallow-copy the slice.**
   Assignment `.dup`s a bare Seq, but a record holding one is copied
   field-wise and the slice inside is shared. Needs a probe and a per-field
