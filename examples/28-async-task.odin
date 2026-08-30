@@ -11,6 +11,18 @@ TRec_r_5BC4 :: struct {
 	r: int,
 }
 
+Env_tuck_compute :: struct {
+	base: int,
+	slot: ^rt.TuckAsyncResult(TRec_r_5BC4),
+}
+
+wrap_tuck_compute :: proc() {
+	e := (^Env_tuck_compute)(context.user_ptr)
+	e.slot.value = tuck_compute(e.base)
+	e.slot.done = true
+	free(e)
+}
+
 tuck_stepIo :: proc (n: int) -> TRec_v_9DF2 {
   return TRec_v_9DF2{v = n}
 }
@@ -22,7 +34,15 @@ tuck_compute :: proc(base: int) -> TRec_r_5BC4 {
 }
 
 tuck_main :: proc () -> int {
-  res := tuck_compute(21)
+  env0 := new(Env_tuck_compute)
+  env0.base = 21
+  slot0 := rt.newAsyncResult(TRec_r_5BC4)
+  env0.slot = slot0
+  savedCtx0 := context.user_ptr
+  context.user_ptr = env0
+  rt.tuckSpawn(wrap_tuck_compute)
+  context.user_ptr = savedCtx0
+  res := rt.awaitResult(slot0)
   return res.r
 }
 

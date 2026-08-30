@@ -578,3 +578,102 @@ waitUntil :: proc(pred: proc() -> bool) {
 stop :: proc() {
 	tuckStop()
 }
+
+// --- a demo async source ----------------------------------------------------
+// A REAL non-blocking source: a pipe whose write end is fed by a writer
+// coroutine after `ms` (a reactor-driven sleep, no OS thread — that would
+// fight the coroutine model). So the read fd genuinely becomes readable at
+// `ms`, and a task racing `read fd` against `timeout N` sees the true
+// winner: data if ms < N (read arm), timeout if ms > N. Mirrors
+// tuck_async.nim's openSource exactly — the runtimes must agree on what
+// "async" means, or a program's behaviour would depend on which backend
+// built it.
+//
+// Odin, unlike Nim, has NO implicit closures — a `proc()` literal cannot
+// read an outer local (verified: `x := 42; f := proc() { fmt.println(x) }`
+// fails "Undeclared name: x"). `context.user_ptr` is Odin's own mechanism
+// for exactly this, and it already threads correctly through THIS runtime's
+// coroutine boundary: newCoroutine snapshots `context` into `co.ctx` at
+// spawn time, and the C trampoline restores it before calling entryPoint —
+// so setting user_ptr right before tuckSpawn hands the writer coroutine
+// its data with no change to the shared coroutine API.
+OpenSourceEnv :: struct {
+	ms: int,
+	wr: linux.Fd,
+}
+
+openSourceWriter :: proc() {
+	env := (^OpenSourceEnv)(context.user_ptr)
+	tuckSleep(env.ms)
+	b: [1]u8 = {1}
+	_, _ = linux.write(env.wr, b[:])
+	linux.close(env.wr)
+	free(env)
+}
+
+// A plain record return, `{fd: int}` — the forwarder codegen emits
+// (Odin's genRtForwarder/forwardRecord) reads a named field off whatever
+// this returns, so a bare int (or Odin's named-return sugar, which is
+// still just int underneath) does not satisfy it. NetFd is the SAME
+// {fd: int} shape std/net's listen/accept already return; reused rather
+// than declaring a second identical struct.
+openSource :: proc(ms: int) -> NetFd {
+	pipes: [2]linux.Fd
+	if linux.pipe2(&pipes, {}) != .NONE do return NetFd{fd = -1}
+	env := new(OpenSourceEnv)
+	env.ms = ms
+	env.wr = pipes[1]
+	saved := context.user_ptr
+	context.user_ptr = env
+	tuckSpawn(openSourceWriter)
+	context.user_ptr = saved
+	return NetFd{fd = int(pipes[0])}
+}
+
+// --- task results -----------------------------------------------------------
+// A task returns a value: `let r = {args} fetch` schedules fetch with a
+// result slot, and reading `r` awaits that slot. TuckAsyncResult/
+// newAsyncResult/awaitResult mirror tuck_async.nim's trio, generic over T
+// the same way Odin's parametric polymorphism allows.
+//
+// There is no spawnResult here, unlike Nim. Nim's version takes a `body:
+// proc(): T {.closure.}` and lets the closure capture the task's real
+// arguments for free. Odin has no closures (verified: a proc literal
+// cannot read an outer local) — so args must travel through
+// context.user_ptr instead, THE SAME SLOT spawnResult itself would need for
+// `slot` and `body`. Two independent marshaling layers sharing one slot
+// collide: an early version had spawnResult stash {slot, body} in
+// context.user_ptr, tuckSpawn a wrapper that reads them back and calls
+// body() — but body (the CALLER's own generated wrapper) ALSO reads
+// context.user_ptr, expecting ITS OWN args struct, and instead got
+// spawnResult's. It segfaulted inside the coroutine, on `e.slot.done =
+// true`, in exactly the way "compiles and typechecks" cannot catch —
+// found only by running it (two independent probes, one per race
+// outcome, both traced with gdb to the exact write).
+//
+// The fix is one env, one wrapper, one context.user_ptr layer — matching
+// openSource's already-proven shape exactly. There is nothing generic left
+// for a runtime proc to do: the caller builds a per-call-site env carrying
+// both its own arguments AND the result slot, and a per-call-site wrapper
+// (which codegen generates, one per distinct task signature) reads it,
+// calls the real task, and writes the slot itself. tuckSpawn needs no
+// closure-shaped counterpart because the wrapper is already nullary.
+TuckAsyncResult :: struct($T: typeid) {
+	value: T,
+	done:  bool,
+}
+
+newAsyncResult :: proc($T: typeid) -> ^TuckAsyncResult(T) {
+	return new(TuckAsyncResult(T))
+}
+
+awaitResult :: proc(slot: ^TuckAsyncResult($T)) -> T {
+	for !slot.done {
+		if inCoroutine() {
+			coroYield()
+		} else {
+			if !runNext() do runOnce(1)
+		}
+	}
+	return slot.value
+}

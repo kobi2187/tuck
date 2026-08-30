@@ -59,6 +59,10 @@ type
                         # discriminant field to reach past.
     taskNames: HashSet[string]   # dkTask decl names, same one-shot index
     taskNamesBuilt: bool
+    taskArgsHoisted: HashSet[string]   # task names whose Env_/wrap_ pair is
+                                       # already hoisted — one signature per
+                                       # task, unlike anonymous records,
+                                       # so the task's own name IS the key
 
 proc isActorType(ctx: var OdinCodegenCtx, name: string): bool =
   ## O(1) after the first call. genOdinExpr's exkField arm asks this once per
@@ -1037,7 +1041,83 @@ proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): 
   ind & "\t" & tn & " := " & stmtCode & "\n" &
     ind & "\tif " & tn & ".status != .Ok { " & onErr & " }"
 
-proc ownsItsLayout(s: Expr): bool =
+proc isTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr): bool =
+  ## `let r = {args} someTask` — binding a task's result awaits it (spec
+  ## §9.2), and the task takes real arguments (a nullary task call is the
+  ## OTHER case, already spawned via genOdinCall's isTaskName branch).
+  e.kind == exkAssign and e.assignVal != nil and
+    e.assignVal.kind == exkCall and e.assignVal.callee != nil and
+    e.assignVal.callee.kind == exkVar and
+    ctx.isTaskName(e.assignVal.callee.name) and e.assignVal.args.len > 0
+
+proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## Spawn a task that takes real arguments, and await its result.
+  ##
+  ## Odin has no closures (verified: a proc literal cannot read an outer
+  ## local), so the Nim backend's approach — a closure capturing the call's
+  ## actual arguments — has no equivalent. Arguments travel through
+  ## context.user_ptr instead, into a per-signature wrapper hoisted once
+  ## and shared by every call to this task.
+  ##
+  ## ONE env, ONE context.user_ptr layer: an earlier version had a generic
+  ## rt.spawnResult marshal {slot, body} through context.user_ptr AND
+  ## expected the caller's own wrapper to read ITS OWN args through the
+  ## same slot — two layers sharing one slot collide, and it segfaulted
+  ## inside the coroutine (found only by running it, not by typechecking).
+  ## The env built here carries the task's arguments AND the result slot
+  ## together, so exactly one wrapper does the whole job: read args, call
+  ## the real task, write the slot.
+  let tname = e.assignVal.callee.name
+  let task = ctx.module.findFn(tname)
+  let params = task.paramNames()
+  let paramTypes = task.paramTypes()
+  let retType = if task.taskReturnType != nil: ctx.odinType(task.taskReturnType)
+                else: "void"
+  let envName = "Env_" & tname
+  let wrapName = "wrap_" & tname
+  if tname notin ctx.taskArgsHoisted:
+    ctx.taskArgsHoisted.incl(tname)
+    var fields: seq[string]
+    for i, p in params: fields.add("\t" & p & ": " & ctx.odinType(paramTypes[i]) & ",")
+    fields.add("\tslot: ^rt.TuckAsyncResult(" & retType & "),")
+    ctx.hoisted.add(envName & " :: struct {\n" & fields.join("\n") & "\n}")
+    var argExprs: seq[string]
+    for p in params: argExprs.add("e." & p)
+    ctx.hoisted.add(wrapName & " :: proc() {\n" &
+      "\te := (^" & envName & ")(context.user_ptr)\n" &
+      "\te.slot.value = " & tname & "(" & argExprs.join(", ") & ")\n" &
+      "\te.slot.done = true\n" &
+      "\tfree(e)\n}")
+  var argParts: seq[string]
+  if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
+    for pn in params:
+      for f in e.assignVal.args[0].fields:
+        if f.name == pn: argParts.add(ctx.genOdinExpr(f.value)); break
+  let envVar = "env" & $ctx.tmpCounter
+  let slotVar = "slot" & $ctx.tmpCounter
+  let savedVar = "savedCtx" & $ctx.tmpCounter
+  ctx.tmpCounter.inc
+  var lines: seq[string]
+  lines.add(ind & envVar & " := new(" & envName & ")")
+  for i, pn in params:
+    lines.add(ind & envVar & "." & pn & " = " & argParts[i])
+  lines.add(ind & slotVar & " := rt.newAsyncResult(" & retType & ")")
+  lines.add(ind & envVar & ".slot = " & slotVar)
+  lines.add(ind & savedVar & " := context.user_ptr")
+  lines.add(ind & "context.user_ptr = " & envVar)
+  lines.add(ind & "rt.tuckSpawn(" & wrapName & ")")
+  lines.add(ind & "context.user_ptr = " & savedVar)
+  let targetName = e.target.name
+  let assignOp = if e.target.kind == exkVar and targetName notin ctx.definedVars and
+                    targetName notin ctx.fieldVars:
+                   ctx.definedVars.incl(targetName)
+                   " := "
+                 else: " = "
+  lines.add(ind & ctx.genOdinExpr(e.target) & assignOp & "rt.awaitResult(" &
+            slotVar & ")")
+  lines.join("\n")
+
+proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
   ## Constructs that emit their own indentation and terminator.
   ##
   ## A `.fn` call over a chain receiver belongs here too — the chain lowers to
@@ -1046,6 +1126,7 @@ proc ownsItsLayout(s: Expr): bool =
   if s.kind == exkField and s.receiver != nil and
      s.receiver.kind == exkChain and semLayer.hasCall(s):
     return true
+  if ctx.isTaskArgsBind(s): return true
   s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain}
 
 proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
@@ -1057,7 +1138,7 @@ proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
     ownsLayout = true
   if code == "": return ""
   # Odin has no statement terminator
-  if ownsItsLayout(s) or ownsLayout: code else: ind & "  " & code
+  if ctx.ownsItsLayout(s) or ownsLayout: code else: ind & "  " & code
 
 proc genBlock(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## No braces here: Odin's block-owning constructs (proc, if, for) emit their
@@ -1097,6 +1178,8 @@ proc genIf(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
 
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
+  if ctx.isTaskArgsBind(e):
+    return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
   let targetStr = ctx.genOdinExpr(e.target)
   let valStr = ctx.genOdinExpr(e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
@@ -1154,6 +1237,41 @@ proc genSend(ctx: var OdinCodegenCtx, e: Expr): string =
   "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(&" &
     actorSingletonName(e.sendActor) & sep & sendArgs.join(", ") & ")"
 
+proc odinSelectTimeoutMs(ctx: var OdinCodegenCtx, arm: SelectArm): string =
+  ## The `timeout` arm's deadline as a plain int of milliseconds. Mirrors
+  ## the Nim backend's selectTimeoutMs exactly: `timeout {5.ms}` passes a
+  ## duration payload that unwraps to its single field; a bare `timeout 30`
+  ## is already an int literal and passes through.
+  let ms = ctx.genOdinExpr(soleFieldValue(arm.arg))
+  if arm.arg != nil and arm.arg.kind == exkLit: ms
+  else: "int(" & ms & ")"
+
+proc genOdinSelect(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## Task `on select` (spec §9.3): a `read <fd>` arm racing a `timeout <ms>`
+  ## arm via rt.tuckAwaitReadOrTimeout — true means the fd won (run the read
+  ## body), false means the deadline won. Mirrors the Nim backend's
+  ## genExprSelect; the actor form of `on select` (message arms, no timing)
+  ## is a SEPARATE construct lowered at the actor DECLARATION, not here —
+  ## this arm only ever sees the task's read/timeout race.
+  ##
+  ## The checker's failIfUnlowerableArm already refuses any arm shape but
+  ## these two before this is reached, so the fallback below is unreachable
+  ## for a checked program and stays only as a visible marker.
+  var readArm, timeoutArm: ptr SelectArm = nil
+  for arm in e.selArms.mitems:
+    case arm.sourceKind
+    of sskRead: readArm = addr arm
+    of sskTimeout: timeoutArm = addr arm
+    of sskTimeoutTyped, sskOther: discard
+  if readArm == nil or timeoutArm == nil:
+    return ind & "// select: only read+timeout arms supported (first cut)"
+  let fd = ctx.genOdinExpr(readArm.arg)
+  let ms = ctx.odinSelectTimeoutMs(timeoutArm[])
+  let readBody = ctx.genBranch(readArm.body, ind)
+  let toBody = ctx.genBranch(timeoutArm.body, ind)
+  "if rt.tuckAwaitReadOrTimeout(" & fd & ", " & ms & ") {\n" & readBody &
+    "\n" & ind & "} else {\n" & toBody & "\n" & ind & "}"
+
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
@@ -1183,12 +1301,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkRaise: ctx.genRaise(e)
   of exkChain: ctx.genChain(e, ind)
   of exkSend: ctx.genSend(e)
-  of exkSelect:
-    # ponytail: `on select` needs the reactor to race a read against a
-    # timeout per branch (rt.tuckAwaitReadOrTimeout is there for it). The
-    # branch lowering isn't wired yet; 27-actor-select / 29-task-timeout
-    # are the cases. Emits nothing rather than pretending to work.
-    "/* on select: not yet lowered for Odin */"
+  of exkSelect: ctx.genOdinSelect(e, ind)
   of exkImport: ""  # imports are declarations, never expression position
 
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string
@@ -2058,8 +2171,17 @@ proc genMixinMember(ctx: var OdinCodegenCtx, m: Decl, cBindings: var seq[string]
     if m.externLib != "": cLib = m.externLib
     return ""
   if m.externImpl.len > 0: return ctx.genImplForwarders(m)
-  if ctx.modPrefix != "": return ctx.genRtForwarder(m) & "\n"
-  ""
+  # rt-implemented (no header, no impl): forward to the runtime. Used to be
+  # gated on modPrefix != "" — a library module needs the forwarder so a
+  # CROSS-module caller has something to qualify (`console.printLine`
+  # reaches a real proc); the entry module was assumed never to declare its
+  # own rt-implemented extern, since std/* modules normally carry those.
+  # Examples 29/30 declare one directly (`openSource`, a demo async source)
+  # and broke that assumption: with no forwarder, the entry module's own
+  # bare call to it names nothing Odin has ever declared. The forwarder is
+  # harmless here too — a plain top-level proc in package main, same as any
+  # other top-level fn.
+  ctx.genRtForwarder(m) & "\n"
 
 proc genMixinBlock(ctx: var OdinCodegenCtx, d: Decl): string =
   ## Pending blocks parse as a mixin named "pending"; emit stubs for members.
