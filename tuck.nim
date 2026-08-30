@@ -40,6 +40,7 @@
 # entire design in types, run it end to end, then fill in bodies one at a time.
 # The PENDING block printed after a check is that list.
 import os, strutils, times, tables, std/json, osproc
+import jsony
 import lexer
 import compiler/ast
 import compiler/parser
@@ -68,6 +69,7 @@ commands:
   check, ch     parse + effect check + type check + pending report
   compile, c    check + transpile — one target: Nim, or --odin, or --dlang
   build, b      compile + nim c to a binary (fn main runs at start)
+  dump, d       run the pipeline up to --stage=X and print the tree
   explain CODE  what a diagnostic code means, e.g. `tuck explain TK-TY05`
 
 options:
@@ -84,6 +86,12 @@ options:
   --verify-stages (compile/build) run diagnostic assertions checking a tree
                 carries what the next pipeline stage needs (off by default —
                 see compiler/pipeline.nim).
+  --stage:X     (dump) which stage to stop at: lex, parse, load,
+                inject-types, typecheck, verify-effects, mangle, lowering,
+                emitting (default: emitting). lowering/emitting use the
+                same --odin/--dlang backend choice as compile/build.
+  --format:X    (dump) json (default, pretty-printed) or text (the same
+                data, unformatted — repr() does not compile for this tree)
   -O:PASS[,...] (compile/build) optimization passes. ON by default — every
                 pass is semantics-preserving. `-O:none` turns them all off,
                 which is the first thing to try if emitted code looks wrong.
@@ -236,19 +244,31 @@ proc importedEffects(loaded: seq[LoadedModule],
       result[si.name] = si.effects
       result[modName & "::" & si.name] = si.effects
 
+proc typecheckOnly(path: string, loaded: seq[LoadedModule],
+                   sigOnly: Table[string, IndexEntry]): seq[string] =
+  ## Just the typecheck half of the check pipeline. checkOrDie calls this
+  ## once and continues with effects; `tuck dump --stage=typecheck` calls it
+  ## and stops, which is the seam that split it out — before this, typecheck
+  ## and verify-effects shared one proc with no return point between them.
+  var mods: seq[tuple[name, path: string, m: Module]]
+  for lm in loaded: mods.add((lm.name, lm.path, lm.m))
+  var preSigs = initTable[string, seq[SigInfo]]()
+  for name, e in sigOnly: preSigs[name] = e.sigs
+  try:
+    result = typecheckProgram(mods, preSigs)
+  except SemanticError as err:
+    if ".tuck:" in err.msg: die(err.msg)
+    else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
+
 proc checkOrDie(path: string, loaded: seq[LoadedModule],
                 sigOnly: Table[string, IndexEntry],
                 verifyStages = false): seq[string] =
   ## Typecheck, then verify effects. Order matters: typecheckProgram resets
   ## the semantic layer, so the effect pass must run AFTER it or its async
   ## call-site marks are wiped before codegen reads them.
-  var mods: seq[tuple[name, path: string, m: Module]]
-  for lm in loaded: mods.add((lm.name, lm.path, lm.m))
-  var preSigs = initTable[string, seq[SigInfo]]()
-  for name, e in sigOnly: preSigs[name] = e.sigs
+  result = typecheckOnly(path, loaded, sigOnly)
   let imported = importedEffects(loaded, sigOnly)
   try:
-    result = typecheckProgram(mods, preSigs)
     for lm in loaded: verifyModuleEffects(lm.m, imported)
     if verifyStages:
       var loadedMods: seq[Module]
@@ -302,6 +322,26 @@ proc report(title, noun: string, entries: seq[string]) =
   if entries.len == 0: return
   echo title, " (", entries.len, " ", noun, "):"
   for entry in entries: echo "  ", entry
+
+proc dumpTree(mods: seq[Module], fmt: string, withSem = false) =
+  ## `tuck dump`'s output for a stage past parsing: the tree, and — once
+  ## something has actually resolved (typecheck onward) — the semLayer
+  ## side-table alongside it, keyed by NodeId.
+  ##
+  ## `--format:text` was meant to be stdlib `repr()` (zero new code) — it
+  ## does not compile here: Nim's effect checker rejects `repr` on this
+  ## tree's recursive ref-object shape at the CALL SITE ("can raise an
+  ## unlisted exception"), a real Nim limitation, not something a
+  ## try/except can catch since the rejection is at compile time. `text`
+  ## is the same jsony path as `json`, minus the `pretty()` formatting
+  ## pass — still zero new dependency, since jsony is already the one
+  ## this file uses.
+  var arr = newJArray()
+  for m in mods: arr.add(toJson(m))
+  var obj = newJObject()
+  obj["modules"] = arr
+  if withSem: obj["semLayer"] = semLayerJson(mods)
+  if fmt == "text": echo obj else: echo pretty(obj)
 
 proc checkProgram(path: string, needBodies = false,
                   verifyStages = false): seq[LoadedModule] =
@@ -432,6 +472,89 @@ when isMainModule:
   of "check", "ch":
     discard checkProgram(path)
     echo "OK (", elapsedMs(t0), ")"
+  of "dump", "d":
+    # Run the pipeline up to --stage=X and print the tree — a thin driver
+    # over the SAME procs `tuck c`/`tuck b` call, stopping early. `lex`/
+    # `parse` stay single-file, matching `tuck l`/`tuck p`'s existing
+    # meaning; `load` onward switches to the real multi-module pipeline,
+    # since there is no single-file version of typecheck to fall back to.
+    var stageStr = "emitting"
+    for o in opts:
+      if o.startsWith("--stage:"): stageStr = o[8 .. ^1]
+    var fmt = "json"
+    for o in opts:
+      if o.startsWith("--format:"): fmt = o[9 .. ^1]
+    case stageStr
+    of "lex":
+      let toks = lexOrDie(source)
+      let j = parseJson(jsony.toJson(toks))
+      if fmt == "text": echo j else: echo pretty(j)
+    of "parse":
+      let m = parseOrDie(source)
+      let j = toJson(m)
+      if fmt == "text": echo j else: echo pretty(j)
+    of "load", "inject-types", "typecheck", "verify-effects", "mangle",
+       "lowering", "emitting":
+      var sigOnly: Table[string, IndexEntry]
+      var loaded: seq[LoadedModule]
+      (loaded, sigOnly) = loadOrDie(path, needBodies = true)
+      for lm in loaded.mitems: resolveWhenBlocks(lm.m, buildTarget)
+      var mods: seq[Module]
+      for lm in loaded: mods.add(lm.m)
+      if stageStr == "load":
+        dumpTree(mods, fmt)
+      else:
+        injectImportedTypes(loaded)
+        if stageStr == "inject-types":
+          dumpTree(mods, fmt)
+        elif stageStr == "typecheck":
+          discard typecheckOnly(path, loaded, sigOnly)
+          dumpTree(mods, fmt, withSem = true)
+        else:
+          discard checkOrDie(path, loaded, sigOnly)
+          if stageStr == "verify-effects":
+            dumpTree(mods, fmt, withSem = true)
+          else:
+            discard optimizeProgram(mods, optPasses)
+            mangleProgram(mods)
+            if stageStr == "mangle":
+              dumpTree(mods, fmt, withSem = true)
+            else:
+              # lowering / emitting: exactly one backend, same choice as
+              # compile/build (default Nim, or --odin/--dlang).
+              var bProg: seq[LoadedModule]
+              for lm in loaded: bProg.add(LoadedModule(name: lm.name,
+                path: lm.path, m: deepCopy(lm.m)))
+              var bReal = initTable[string, Module]()
+              for lm in bProg[0 ..< bProg.high]: bReal[lm.name] = lm.m
+              let backendName = case backend
+                of bkNim: "nim"
+                of bkOdin: "odin"
+                of bkDlang: "d"
+              for lm in bProg: rebaseImplPaths(lm, backendName, ".")
+              for lm in bProg:
+                lowerModule(lm.m)
+                if backend == bkDlang: lowerModuleD(lm.m)
+              if stageStr == "lowering":
+                var bMods: seq[Module]
+                for lm in bProg: bMods.add(lm.m)
+                dumpTree(bMods, fmt)
+              else:
+                let dumpBase = extractFilename(path).changeFileExt("")
+                case backend
+                of bkNim:
+                  for lm in bProg: echo emitNim(lm.m, "tuck_rt", bReal, lm.name)
+                of bkOdin:
+                  for lm in bProg[0 ..< bProg.high]:
+                    echo emitOdinModule(lm.name, lm.m, bReal)
+                  echo emitOdin(bProg[^1].m, bReal, dumpBase)
+                of bkDlang:
+                  for lm in bProg[0 ..< bProg.high]:
+                    echo emitDModule(lm.name, lm.m, bReal)
+                  echo emitD(bProg[^1].m, bReal, dumpBase)
+    else:
+      die("tuck: no such stage: '" & stageStr & "' (lex, parse, load, " &
+          "inject-types, typecheck, verify-effects, mangle, lowering, emitting)")
   of "compile", "c", "build", "b":
     let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
     var outDir = parentDir(path)

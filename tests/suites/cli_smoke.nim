@@ -581,6 +581,16 @@ proc run*(t: var T) =
       t.finish()
       return
 
+    # tuck dump: a thin driver stopping early in the same pipeline, at two
+    # ends of it — a bare parse-adjacent stage and the final emitted source.
+    for stage in ["load", "emitting"]:
+      let (drc, dout) = sh(@["./tuck", "dump", "examples/07-comments.tuck",
+                             "--stage:" & stage, "--root:" & getCurrentDir()])
+      if drc != 0 or dout.strip().len == 0:
+        t.no "tuck dump --stage:" & stage, "nonzero exit or empty output"
+        t.finish()
+        return
+
     # fail-fast: type error must exit nonzero with file:line:col
     let bad = d.write("bad.tuck", "fn f({a: int}) -> int:\n  return \"nope\"\n")
     let (rc, outp) = check(bad)
