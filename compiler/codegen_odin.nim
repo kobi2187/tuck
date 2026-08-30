@@ -652,7 +652,18 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
-  let args = ctx.genCallArgs(e, calleeStr)
+  var args = ctx.genCallArgs(e, calleeStr)
+  # genOdinMemberFn gives EVERY member fn's self a pointer, `^T`,
+  # unconditionally — not just the ones that mutate it — so every call
+  # site has to pass `&receiver` to match, regardless of whether this
+  # particular member reads or writes self. This call shape (a direct
+  # `.fn {payload}` on a plain value, resolved via the checker's
+  # synthMethodCall) was never reachable before a prior checker bug
+  # rejected it outright, which is why the gap went unnoticed: every
+  # PASSING member call so far reached its receiver through the chain
+  # emitter instead, which threads an existing pointer through, never
+  # needing to take one here.
+  if member != "" and args.len > 0: args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted
   if ctx.isTaskName(calleeStr) and args.len == 0:

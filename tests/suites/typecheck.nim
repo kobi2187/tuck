@@ -702,6 +702,34 @@ fn main() -> void:
 """
   t.badCheck "'..' on a fn whose first param is not the receiver type", "first\\ parameter"
 
+  # An OBJECT MEMBER with no explicit self, called via `.fn {payload}`: the
+  # receiver fills self IMPLICITLY (added later by lowering, not something
+  # this signature carries), and every declared param — here just `step` —
+  # is matched from the payload by name. Confused with the mutator case
+  # above once: `crank`'s one declared param got checked against the
+  # receiver's type instead of self's ("expects int but got Deck"), because
+  # the two conventions share one proc (synthMethodCall) and only differ in
+  # whether the receiver fills params[0] or params[0] is genuinely absent.
+  t.src """
+object Deck:
+  volume: int
+
+  fn crank({step: int}) -> int:
+    return self.volume + step
+
+fn main() -> int:
+  var d = {volume: 5} Deck
+  return d.crank {step: 1}
+"""
+  t.okCheck "a member fn with no explicit self is called via .fn {payload}"
+  t.runs "the receiver fills self, the payload fills the rest: 5 + 1", 6
+  # genOdinMemberFn gives EVERY member fn's self a pointer, ^T,
+  # unconditionally — this call shape was unreachable before the checker
+  # fix above, and the emitted call passed the receiver by value, which
+  # Odin itself rejects ("Cannot assign value 'd' ... to '^tuck_Deck'").
+  t.emitsOdin "Odin passes the receiver by address to match self: ^T",
+              r"tuck_Deck_crank\(&d, 1\)"
+
   t.src """
 type Server:
   port: int

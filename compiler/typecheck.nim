@@ -303,16 +303,56 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
 # name), the braced struct fills the remaining parameters by name. Builds and
 # returns the positional exkCall node (receiver, then declared-order args),
 # ty-stamped with the fn's return type — codegen emits it as-is.
-proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
-                     recvT: Type, argStruct: Expr, sp: Span): Expr =
-  let sig = tc.fnSigs[fnName]
-  if sig.params.len == 0:
+proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
+                                  sig: FnSig, recvT: Type, sp: Span): bool =
+  ## Which slot the receiver of `d.crank {step: 1}` fills depends on whether
+  ## `fnName` is a TOP-LEVEL fn or an OBJECT MEMBER — two genuinely
+  ## different conventions synthMethodCall serves, told apart by
+  ## `tc.topLevelFns` (populated only for top=true declarations;
+  ## collectFnSig's own comment names object/type members as excluded).
+  ##
+  ## - A TOP-LEVEL fn used as a mutator (spec 5.1: "mutators take the
+  ##   receiver as their first param") — `fn withPort({count: int, value:
+  ##   int}) -> Server` called `server ..withPort {80}`. The receiver ALWAYS
+  ##   fills params[0], whatever it happens to be named (a top-level fn may
+  ##   spell it "self" explicitly — `fn loadEpisode({self: App, ...})` — or
+  ##   not, as here; either way it is the receiver's slot and gets checked
+  ##   against it), and the payload fills params[1..] by name.
+  ## - An OBJECT MEMBER fn, whose self is either an EXPLICIT first param
+  ##   (interface implementations declare `{self: Self}`, so the contract
+  ##   has something to check) or IMPLICIT — added later, during lowering
+  ##   (normalizeSelf), not something this signature carries at all. Only
+  ##   when the member itself names its first param "self" does the
+  ##   receiver get checked here and that param excluded from the by-name
+  ##   match below; otherwise self is fully absent from sig.params and
+  ##   EVERY declared param is matched by name, from index 0.
+  ##
+  ## Returns whether the receiver fills params[0] (so the caller knows
+  ## where the by-name match should start). Collapsing member fns into the
+  ## top-level rule (an earlier version of this fix did, checking only the
+  ## first param's NAME) broke exactly the mutator convention above:
+  ## `withPort`'s first param is "count", not "self", so it read as a
+  ## member with implicit self and skipped the type check spec 5.1
+  ## requires ("first parameter expects Server but the receiver is ..."
+  ## never fired, when it should have).
+  let isTopLevel = fnName in tc.topLevelFns
+  if isTopLevel and sig.params.len == 0:
     fail("Type Error: '" & fnName & "' takes no parameters — it cannot be " &
          "called as a method on " & typeName(recvT), sp)
-  if not tc.compatible(recvT, sig.params[0].typ):
+  let selfIsExplicit = sig.params.len > 0 and sig.params[0].name == "self"
+  result = isTopLevel or selfIsExplicit
+  if result and not tc.compatible(recvT, sig.params[0].typ):
     fail("Type Error: '" & fnName & "' first parameter expects " &
          typeName(sig.params[0].typ) & " but the receiver is " &
          typeName(recvT), sp)
+
+proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
+                     recvT: Type, argStruct: Expr, sp: Span): Expr =
+  ## `d.crank {step: 1}` — the receiver fills a slot, the payload fills the
+  ## rest by name. See failIfReceiverSlotMismatched for which slot and why.
+  let sig = tc.fnSigs[fnName]
+  let receiverFillsFirstParam =
+    tc.failIfReceiverSlotMismatched(fnName, sig, recvT, sp)
   var argFields: seq[FieldInit]
   if argStruct != nil:
     if argStruct.kind != exkStruct:
@@ -320,7 +360,8 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
            "' must be a struct literal: {name: value, ...}", argStruct.span)
     argFields = argStruct.fields
   var args: seq[Expr] = @[receiver]
-  for i in 1 ..< sig.params.len:
+  let startAt = if receiverFillsFirstParam: 1 else: 0
+  for i in startAt ..< sig.params.len:
     let p = sig.params[i]
     var found = false
     for f in argFields:
@@ -457,7 +498,17 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
   ## bodies: the same `a.b` spelling in a SIGNATURE is a type or field path.
   ## Returns nil for the explode shape (`server.describe`), which synthCall
   ## handles further down — this must fall through rather than claim it.
-  if tc.currentFn == "" or e.receiver == nil or
+  ## Also nil whenever an explicit payload is attached (`.fn {args}` —
+  ## `d.crank {step: 1}`): that is the METHOD form, always handled by
+  ## asFnByName's synthMethodCall (receiver fills self, the payload fills
+  ## the rest), never "the bare receiver IS the one declared param" this
+  ## proc exists for. Without this guard, a member fn with exactly one
+  ## SOURCE-visible param (self is added later, by lowering, not something
+  ## the checker's signature carries here) read as sig.params.len == 1 and
+  ## got claimed here first — checking the receiver's type against the
+  ## payload's own param instead of against self, and failing with a
+  ## confusing "expects int but got Deck".
+  if tc.currentFn == "" or e.receiver == nil or e.dotArg != nil or
      e.receiver.kind notin {exkLit, exkVar} or
      not tc.fnSigs.hasKey(e.fieldName): return nil
   let sig = tc.fnSigs[e.fieldName]
