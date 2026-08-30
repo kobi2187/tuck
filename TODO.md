@@ -195,13 +195,10 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   matchArmsReturn (a different question — "does an expression-position
   match's arm already return" — answered wrong when the match is a
   statement to begin with).
-- [ ] **[repro] `sizeof(T)` does not compile in D.** D spells it `T.sizeof`
-  (postfix property), not a call. Nim's `sizeof(x)` genuinely matches its
-  syntax so that backend is accidentally right; Odin's own `sizeof(x)`
-  emission is ALSO wrong (`size_of(T)` is Odin's real spelling) but the
-  same example fails earlier on unrelated bugs, so it's never been
-  reached. Found chasing example 20 to a full dmd build. Cross-backend:
-  Odin needs the same fix once its own blockers clear.
+- [x] **FIXED 2026-08-30** — `sizeof`/`alignof` now emit D's postfix
+  property (`T.sizeof`) instead of the call syntax dmd rejects. Odin's own
+  `sizeof(x)` emission is STILL wrong (real Odin spelling is `size_of(T)`)
+  — unfixed there since no example has reached that line yet (see below).
 - [ ] **[read] Records containing a `Seq` field shallow-copy the slice.**
   Assignment `.dup`s a bare Seq, but a record holding one is copied
   field-wise and the slice inside is shared. Needs a probe and a per-field
@@ -215,6 +212,19 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   (15), the inline sum type (08), fnsig-as-value (03), composition and
   mixins (04), and a value-returning body the checker left open, which D
   and Odin reject where Nim does not. → ledger.
+- [ ] **[repro] Example 20 is unverified on every backend past emit.**
+  Chasing its D build (match-statement fix, then sizeof) surfaced two
+  more blockers, both cross-backend and neither D-specific:
+  - `register DAC_CR at 0x...` field access (`DAC_CR.EN = true`) reaches
+    codegen as a raw `uint*`/`^u32` with no field — confirmed the SAME
+    error on a real Odin build of the same emitted source, so this is a
+    lowering/typecheck gap in register-field modeling, not a backend bug.
+  - A bare `discard` (no value to drop) is not a real construct in ANY
+    backend's grammar (`grep` for it turns up nothing in parser*.nim) —
+    it reaches codegen as a plain identifier and prints verbatim, which
+    happens to be valid Nim (coincidence, same shape as the sizeof bug),
+    unverified as valid Odin or D. Never caught because example 20 has
+    never been in any backend's compile- or run-checked list.
 
 ### Cross-backend
 - [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**
