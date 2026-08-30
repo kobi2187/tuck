@@ -181,10 +181,10 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
 - [ ] **[repro] A list literal cannot reach a `Seq` parameter.**
   `[dynamic]T` has no literal form. Needs statement hoisting in the emitter.
   **Pinned:** `interface_seq`. → MISSING-FEATURES A2.
-- [ ] **[read] A task WITH ARGUMENTS emits a direct call**, so its body runs
-  on the main context and the first `tuckAwaitRead` panics. Unverified in
-  isolation — the example that would prove it hits an earlier `on select`
-  error first. → MISSING-FEATURES A.
+- [x] **FIXED 2026-08-30** — `on select` in a task body was a stub; a task
+  WITH ARGUMENTS ran on the main context instead of a coroutine. Both fixed;
+  29/30 now run correctly under Odin. See commit "Odin task select,
+  task-with-args, and a silent test-harness bug".
 
 ### D
 - [ ] **[repro] A value-position match whose arms are STATEMENTS wraps them

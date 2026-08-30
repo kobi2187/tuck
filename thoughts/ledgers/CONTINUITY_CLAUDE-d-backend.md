@@ -380,3 +380,58 @@ A member call WITH A PAYLOAD mis-binds `self`: `d.crank {step: 1}` against
 `fn crank({step: int})` reports "expects int but got Deck". Example 04
 declares `play` and never calls it, so no example catches this. Recorded in
 TODO §3.
+
+## 2026-08-30 — Odin task select + task-with-args (unblocks 29/30's authority)
+
+Went to port the D reactor for 29/30 from Odin as reference — found Odin's
+own `on select` for the TASK form was a hard-coded stub, and task calls with
+arguments never actually ran as coroutines. Fixed both in Odin first, since
+D has nothing correct to port from otherwise. Odin now runs 29 (exit 2) and
+30 (exit 1) correctly — the two opposite outcomes of the same read-vs-timeout
+race, matching Nim exactly.
+
+Root causes, in order found:
+- `genOdinExpr`'s `exkSelect` arm was literally `"/* on select: not yet
+  lowered for Odin */"`. Only the TASK form hit it — actor `on select`
+  lowers separately at the declaration and already worked (verified: 27
+  genuinely computes 55). genOdinSelect races read-fd vs timeout via
+  rt.tuckAwaitReadOrTimeout, mirroring Nim's genExprSelect.
+- A task call WITH ARGUMENTS ran as a direct call, not tuckSpawn — Odin's
+  isTaskName+tuckSpawn path was NULLARY ONLY (documented, "designed, not
+  guessed" per thoughts/bugs-found-while-building-net.md #5). Fixed via
+  context.user_ptr, verified safe by reading newCoroutine/trampoline first
+  (co.ctx = context captured at spawn time, restored before entryPoint
+  runs). This ALSO turned out to be needed by 28-async-task, which passed
+  its exit-code check by accident — it has no fd op whose timing exposes
+  running on the wrong context.
+- openSource (the demo async source both examples need) had no Odin port;
+  the rt-forwarder for an extern in the ENTRY module was unconditionally
+  skipped ("or emit nothing (entry module)" — an assumption nobody's own
+  file would ever declare its own rt-implemented extern).
+
+A design mistake worth remembering: my first cut of the task-args fix had
+`spawnResult` ALSO use context.user_ptr, for its OWN {slot, body} — nested
+inside the caller's ALREADY-set env, and the two collided. Found only by
+RUNNING it (segfault, gdb to the exact line), not by typechecking or by
+reading the code. One env, one wrapper, one context.user_ptr layer per
+spawn is the actual rule — see the comment on TuckAsyncResult in
+tuck_coro.odin.
+
+### A fourth bug, found by regression-testing the first three
+
+Testing 29/30 needed `tests/odin_out` deleted and rebuilt fresh — something
+apparently never done before, since a stale one always happened to be lying
+around. That exposed: `for base in compileList: (let b = base; proc(dir) =
+stage(b))` does NOT give each closure a fresh `b` in this Nim — verified
+with a two-line repro printing the last iteration's value three times.
+Every build's prep hook was staging the SAME (last) example's package for
+EVERY OTHER example — 37 of 38 examples' `compile` checks had been silently
+re-testing whatever stale content happened to be sitting in their directory
+from god-knows-when, not the current emitted output. Fixed by routing the
+capture through a proc parameter (`stagePrep(base): proc(dir) = stage(base)`
+— a parameter DOES get its own binding per call, verified with the same
+repro shape) and confirmed stable across three independent cold starts.
+
+This is worth generalizing: `let x = loopVar` inside a `for` loop, captured
+by a closure built in that same loop, is NOT a safe pattern in this Nim —
+grep for it before trusting a similar loop elsewhere.
