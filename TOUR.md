@@ -304,7 +304,8 @@ name, or a path to a vendored `.c`), so no build plumbing is needed at the
 call site. Everything works identically on both backends.
 
 `tuck build --nim:"--os:standalone --cpu:arm"` forwards cross-compilation
-flags; `--odin` builds the same program through the Odin backend.
+flags; `--odin` builds the same program through the Odin backend instead
+of Nim (one target per build — run again with `--dlang` for a third).
 
 ## 15. Actors (API today, runtime tomorrow)
 

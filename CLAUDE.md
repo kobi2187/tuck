@@ -52,7 +52,7 @@ reason the modes exist.
 ./tuck l  file.tuck        # lex     — dump tokens
 ./tuck p  file.tuck        # parse   — dump the tree (--ast for JSON)
 ./tuck ch file.tuck        # check   — types + effects, no output
-./tuck c  file.tuck        # compile — emit .nim (--odin for .odin)
+./tuck c  file.tuck        # compile — emit one target: Nim, --odin, or --dlang
 ./tuck b  file.tuck        # build   — emit and link a binary
 ./tuck explain TK-TY15     # what a diagnostic means, and how to fix it
 ```

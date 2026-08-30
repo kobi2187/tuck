@@ -4,7 +4,8 @@
 #   tuck lex     file.tuck        (l)   tokens to stdout
 #   tuck parse   file.tuck        (p)   syntax check; --ast dumps JSON
 #   tuck check   file.tuck        (ch)  effects + types + PENDING report
-#   tuck compile file.tuck        (c)   check + emit .nim (--odin for .odin too)
+#   tuck compile file.tuck        (c)   check + emit — one target: Nim by
+#                                        default, or --odin, or --dlang
 #
 # THE DRIVER — this is where the pipeline is actually sequenced. If you want to
 # see the whole compiler in one screen, read `checkProgram` below:
@@ -20,7 +21,8 @@
 #
 #   mangle        mangle.nim       tuck_ prefix so emitted names cannot collide
 #   lower         lowering.nim     rewrite fancy constructs into dull ones
-#   emit          codegen*.nim     print Nim source, and Odin if asked
+#   emit          codegen*.nim     print source for ONE backend: Nim by
+#                                  default, or Odin/D if asked
 #
 # TWO ORDERING FACTS THAT ARE EASY TO GET WRONG:
 #
@@ -63,14 +65,16 @@ commands:
   lex, l        tokenize and print the token stream
   parse, p      parse; prints OK or the first syntax error
   check, ch     parse + effect check + type check + pending report
-  compile, c    check + transpile to Nim (and Odin with --odin)
+  compile, c    check + transpile — one target: Nim, or --odin, or --dlang
   build, b      compile + nim c to a binary (fn main runs at start)
   explain CODE  what a diagnostic code means, e.g. `tuck explain TK-TY05`
 
 options:
   --ast         (parse) dump the AST as JSON to stdout
-  --odin        (compile) also emit .odin files
-  --dlang       (compile) also emit .d files
+  --odin        (compile/build) target Odin instead of Nim
+  --dlang       (compile/build) target D instead of Nim
+                (--odin and --dlang are mutually exclusive; Nim is the
+                default target when neither is given)
   -o:DIR        (compile/build) output directory (default: next to source)
   --root:DIR    import search base for std/ and sibling modules (any command);
                 lets imports resolve regardless of cwd or binary location
@@ -325,9 +329,25 @@ when isMainModule:
     if o.startsWith("--root:"): projectRoot = o[7 .. ^1]
   # `--target:NAME` selects which `when TARGET == "...":` blocks (spec §8.3)
   # compile in; see modules.resolveWhenBlocks. Unset = "" = every such block
-  # is dropped (fails closed, not toward guessing a platform).
+  # is dropped (fails closed, not toward guessing a platform). Unrelated to
+  # backend selection below — this picks embedded/cross-compile targets, not
+  # which compiler backend runs.
   for o in opts:
     if o.startsWith("--target:"): buildTarget = o[9 .. ^1]
+  # A build targets exactly ONE backend: Nim by default, or --odin, or
+  # --dlang — mutually exclusive, never additive. Nim used to emit
+  # unconditionally regardless of these flags; getting a second backend's
+  # output alongside it now costs a second invocation, not a second flag.
+  type Backend = enum bkNim, bkOdin, bkDlang
+  var backend = bkNim
+  var backendFlagCount = 0
+  for o in opts:
+    case o
+    of "--odin": backend = bkOdin; inc backendFlagCount
+    of "--dlang": backend = bkDlang; inc backendFlagCount
+    else: discard
+  if backendFlagCount > 1:
+    die("tuck: --odin and --dlang are mutually exclusive — one target per build")
   # Optimization passes (compiler/optimize.nim) are ON by default — a pass
   # that only runs when asked for is a pass nothing exercises, and every one
   # here is required to be semantics-preserving.
@@ -434,27 +454,30 @@ when isMainModule:
     # the tree (injectTailReturn), so a shared one would hand Beef whatever
     # Nim's pass left behind. Node ids survive the copy, so the Resolution
     # built during checking stays reachable from either clone.
-    var nimProg: seq[LoadedModule]
-    for lm in prog: nimProg.add(LoadedModule(name: lm.name, path: lm.path,
-                                             m: deepCopy(lm.m)))
-    var nimReal = initTable[string, Module]()
-    for lm in nimProg[0 ..< nimProg.high]: nimReal[lm.name] = lm.m
-    # `impl: nim "./shim/x"` — the author writes the path relative to their OWN
-    # .tuck file, which is the only place they can see it from. The emitted
-    # import has to be relative to the OUTPUT dir instead, and -o: moves that
-    # around, so rebase here rather than making the author think about it.
-    # A leading ./ or ../ marks a path; anything else ("std/strutils",
-    # "core:strings") is a target-language module name and rides through.
-    for lm in nimProg: rebaseImplPaths(lm, "nim", outDir)
-    # imported modules first (each its own Nim file), entry module last
-    for lm in nimProg:
-      lowerModule(lm.m)
-      let isEntry = lm.path == nimProg[^1].path
-      let outName = if isEntry: base else: lm.name
-      let nimPath = outDir / (outName & ".nim")
-      writeFile(nimPath, emitNim(lm.m, rtImport, nimReal, outName))
-      echo "wrote ", nimPath
-    if "--odin" in opts:
+    case backend
+    of bkNim:
+      var nimProg: seq[LoadedModule]
+      for lm in prog: nimProg.add(LoadedModule(name: lm.name, path: lm.path,
+                                               m: deepCopy(lm.m)))
+      var nimReal = initTable[string, Module]()
+      for lm in nimProg[0 ..< nimProg.high]: nimReal[lm.name] = lm.m
+      # `impl: nim "./shim/x"` — the author writes the path relative to their
+      # OWN .tuck file, which is the only place they can see it from. The
+      # emitted import has to be relative to the OUTPUT dir instead, and -o:
+      # moves that around, so rebase here rather than making the author think
+      # about it. A leading ./ or ../ marks a path; anything else
+      # ("std/strutils", "core:strings") is a target-language module name and
+      # rides through.
+      for lm in nimProg: rebaseImplPaths(lm, "nim", outDir)
+      # imported modules first (each its own Nim file), entry module last
+      for lm in nimProg:
+        lowerModule(lm.m)
+        let isEntry = lm.path == nimProg[^1].path
+        let outName = if isEntry: base else: lm.name
+        let nimPath = outDir / (outName & ".nim")
+        writeFile(nimPath, emitNim(lm.m, rtImport, nimReal, outName))
+        echo "wrote ", nimPath
+    of bkOdin:
       var odProg: seq[LoadedModule]
       for lm in prog: odProg.add(LoadedModule(name: lm.name, path: lm.path,
                                               m: deepCopy(lm.m)))
@@ -503,7 +526,7 @@ when isMainModule:
           if execShellCmd("cc -c -fPIC " & quoteShell(cSrc) & " -o " &
                           quoteShell(obj)) != 0:
             die("tuck: failed to compile C source " & cSrc)
-    if "--dlang" in opts:
+    of bkDlang:
       # Third backend, same discipline: its own deepCopy (lowering mutates),
       # one .d file per module (D modules are files, unlike Odin's package
       # directories), runtime rides along as a sibling tuck_rt.d.
@@ -577,86 +600,95 @@ when isMainModule:
         echo "library (no fn main): emitted code only, no binary"
         echo "OK (", elapsedMs(t0), ")"
         quit(0)
-      let mainNim = outDir / (base & ".nim")
-      # ONE Tuck runtime (compiler/tuck_async, arsenal engine): actors AND tasks
-      # are cooperative coroutines. Any program with actors or tasks imports it,
-      # inits it, registers its actor singletons before main, and — for tasks —
-      # drives to completion after main. Actors are daemons; main owns the
-      # lifecycle and waits on public state via scheduler::waitUntil.
-      let usesRuntime = actorNames.len > 0 or hasTasks
-      var boot = ""
-      var asyncInit = ""
-      var asyncDrive = ""
-      if usesRuntime:
-        let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
-        writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
-        asyncInit = "  tuckAsyncInit()\n"
-        for a in actorNames: boot.add("  registerActor" & a & "()\n")
-        if hasTasks: asyncDrive = "\n  tuckRun()"
-      # a value-returning main IS the process exit code. When the runtime drives
-      # tasks after main, keep main's return as the exit code via mainRc.
-      # `fn main` is mangled like every other user fn, so the entry calls the
-      # prefixed symbol.
-      let tuckMain = mangleName("main") & "()"
-      let mainCall =
-        if hasTasks and mainReturns: "let mainRc = " & tuckMain
-        elif mainReturns: "quit(" & tuckMain & ")"
-        else: tuckMain
-      let asyncExit = if hasTasks and mainReturns: "\n  quit(mainRc)" else: ""
-      writeFile(mainNim, readFile(mainNim) &
-        "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
-        asyncDrive & asyncExit & "\n")
-      # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
-      var nimFlags = ""
-      for o in opts:
-        if o.startsWith("--nim:"): nimFlags = o[6 .. ^1]
-      # Nim module names can't start with a digit or contain dashes
+      # Nim module names can't start with a digit or contain dashes. Hoisted
+      # here (backend-agnostic, needed by all three build arms below) rather
+      # than computed once per backend.
+      let wantRelease = "--release" in opts
       var binBase = base.replace("-", "_")
       if binBase.len > 0 and binBase[0] in {'0' .. '9'}: binBase = "m_" & binBase
-      let binNim = outDir / (binBase & ".nim")
-      if binNim != mainNim: copyFile(mainNim, binNim)
-      let binPath = outDir / binBase
-      # Async programs need Nim's stack-walker OFF (it corrupts the switched
-      # coroutine stack — mandatory, see tuck_async). tuck_rt is the single
-      # facade and imports tuck_async, so EVERY build needs these flags even
-      # for a pure program (the async paths are linked, just not used).
-      # No --path: the coroutine engine is vendored in compiler/tuck_coro.nim.
-      let asyncFlags = " --stackTrace:off --lineTrace:off "
-      # Default to the FAST path, not the fast-binary path: -d:release and
-      # -d:danger cost seconds of optimisation the edit/run loop never wants.
-      # `--opt:none` plus a quick C compiler is the shortest route to a
-      # runnable binary; `--release` opts into the slow, fast-code build.
-      let wantRelease = "--release" in opts
-      let speedFlags =
-        if wantRelease: " -d:release "
-        else: " --opt:none -d:tuckFast " & pickFastCC()
-      # Nim derives its cache dir from the MODULE NAME, so two tuck builds of
-      # different programs that happen to share a basename (every `t.tuck` in
-      # a test suite) collide in ~/.cache/nim/t_d — one build's C output
-      # answering the other's link, nondeterministically, only under
-      # concurrency. Pin the cache next to the output instead: unique per
-      # build by construction, and it makes `tuck build` self-contained.
-      #
-      # TUCK_NIMCACHE overrides that for callers who can guarantee no
-      # concurrent build shares it. The runtime (tuck_rt, tuck_async,
-      # tuck_coro, vendored minicoro) is identical for every program, so
-      # compiling it once instead of per build takes a hello-world from 0.85s
-      # to 0.27s. The test suite sets this PER SCRIPT: builds within one
-      # script are sequential, so they share safely, while concurrent scripts
-      # keep separate caches and the collision above stays impossible.
-      let sharedCache = getEnv("TUCK_NIMCACHE")
-      let nimCache = if sharedCache != "": sharedCache
-                     else: outDir / ".nimcache" / binBase
-      let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
-                   speedFlags & " --nimcache:" & quoteShell(nimCache) &
-                   " -o:" & quoteShell(binPath) & " " &
-                   quoteShell(binNim)
-      let nimT0 = epochTime()
-      let rc = execShellCmd(nimCmd)
-      let buildMs = (epochTime() - nimT0) * 1000
-      if rc != 0: die("tuck: nim compilation failed")
-      echo "built ", binPath, "  ", reportBuild(binPath, buildMs)
-      if "--odin" in opts:
+      case backend
+      of bkNim:
+        let mainNim = outDir / (base & ".nim")
+        # ONE Tuck runtime (compiler/tuck_async, arsenal engine): actors AND
+        # tasks are cooperative coroutines. Any program with actors or tasks
+        # imports it, inits it, registers its actor singletons before main,
+        # and — for tasks — drives to completion after main. Actors are
+        # daemons; main owns the lifecycle and waits on public state via
+        # scheduler::waitUntil.
+        let usesRuntime = actorNames.len > 0 or hasTasks
+        var boot = ""
+        var asyncInit = ""
+        var asyncDrive = ""
+        if usesRuntime:
+          let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
+          writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
+          asyncInit = "  tuckAsyncInit()\n"
+          for a in actorNames: boot.add("  registerActor" & a & "()\n")
+          if hasTasks: asyncDrive = "\n  tuckRun()"
+        # a value-returning main IS the process exit code. When the runtime
+        # drives tasks after main, keep main's return as the exit code via
+        # mainRc. `fn main` is mangled like every other user fn, so the entry
+        # calls the prefixed symbol.
+        let tuckMain = mangleName("main") & "()"
+        let mainCall =
+          if hasTasks and mainReturns: "let mainRc = " & tuckMain
+          elif mainReturns: "quit(" & tuckMain & ")"
+          else: tuckMain
+        let asyncExit = if hasTasks and mainReturns: "\n  quit(mainRc)" else: ""
+        writeFile(mainNim, readFile(mainNim) &
+          "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
+          asyncDrive & asyncExit & "\n")
+        # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
+        var nimFlags = ""
+        for o in opts:
+          if o.startsWith("--nim:"): nimFlags = o[6 .. ^1]
+        let binNim = outDir / (binBase & ".nim")
+        if binNim != mainNim: copyFile(mainNim, binNim)
+        let binPath = outDir / binBase
+        # Async programs need Nim's stack-walker OFF (it corrupts the
+        # switched coroutine stack — mandatory, see tuck_async). tuck_rt is
+        # the single facade and imports tuck_async, so EVERY build needs
+        # these flags even for a pure program (the async paths are linked,
+        # just not used). No --path: the coroutine engine is vendored in
+        # compiler/tuck_coro.nim.
+        let asyncFlags = " --stackTrace:off --lineTrace:off "
+        # Default to the FAST path, not the fast-binary path: -d:release and
+        # -d:danger cost seconds of optimisation the edit/run loop never
+        # wants. `--opt:none` plus a quick C compiler is the shortest route
+        # to a runnable binary; `--release` opts into the slow, fast-code
+        # build.
+        let speedFlags =
+          if wantRelease: " -d:release "
+          else: " --opt:none -d:tuckFast " & pickFastCC()
+        # Nim derives its cache dir from the MODULE NAME, so two tuck builds
+        # of different programs that happen to share a basename (every
+        # `t.tuck` in a test suite) collide in ~/.cache/nim/t_d — one
+        # build's C output answering the other's link, nondeterministically,
+        # only under concurrency. Pin the cache next to the output instead:
+        # unique per build by construction, and it makes `tuck build`
+        # self-contained.
+        #
+        # TUCK_NIMCACHE overrides that for callers who can guarantee no
+        # concurrent build shares it. The runtime (tuck_rt, tuck_async,
+        # tuck_coro, vendored minicoro) is identical for every program, so
+        # compiling it once instead of per build takes a hello-world from
+        # 0.85s to 0.27s. The test suite sets this PER SCRIPT: builds within
+        # one script are sequential, so they share safely, while concurrent
+        # scripts keep separate caches and the collision above stays
+        # impossible.
+        let sharedCache = getEnv("TUCK_NIMCACHE")
+        let nimCache = if sharedCache != "": sharedCache
+                       else: outDir / ".nimcache" / binBase
+        let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
+                     speedFlags & " --nimcache:" & quoteShell(nimCache) &
+                     " -o:" & quoteShell(binPath) & " " &
+                     quoteShell(binNim)
+        let nimT0 = epochTime()
+        let rc = execShellCmd(nimCmd)
+        let buildMs = (epochTime() - nimT0) * 1000
+        if rc != 0: die("tuck: nim compilation failed")
+        echo "built ", binPath, "  ", reportBuild(binPath, buildMs)
+      of bkOdin:
         let odinExe = if findExe("odin") != "": findExe("odin")
                       elif fileExists("/home/kl/apps/Odin/odin"): "/home/kl/apps/Odin/odin"
                       else: ""
@@ -678,7 +710,7 @@ when isMainModule:
             echo "tuck: odin compilation failed"
           else:
             echo "built ", odinBin, "  ", reportBuild(odinBin, odMs)
-      if "--dlang" in opts:
+      of bkDlang:
         let dmdExe = findExe("dmd")
         if dmdExe == "":
           echo "tuck: dmd not found on PATH — skipping D build"

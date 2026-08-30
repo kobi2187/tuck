@@ -277,6 +277,11 @@ when isMainModule:
   # `tuck c`, NOT `tuck build`: all this stage owes odin_backend is the emitted
   # .odin. `build` additionally links a Nim binary per example, which nothing
   # here reads.
+  #
+  # Before backends became mutually exclusive targets, `--odin` also emitted
+  # `.nim` for free, so this call silently refreshed examples/*.nim too — an
+  # undocumented side effect nothing here (or in odin_backend) ever read.
+  # That no longer happens, on purpose.
   var nTuck = 0
   for f in walkFiles("examples/*.tuck"): nTuck.inc
   var emitSecs = "0.0"

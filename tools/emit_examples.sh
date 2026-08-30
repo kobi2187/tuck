@@ -18,16 +18,23 @@ cd "$(dirname "$0")/.."
 # Stale output for a since-deleted example would otherwise linger forever.
 rm -f examples/*.nim examples/*.odin
 
-emitted=0
+# One invocation now emits exactly one target — --odin no longer rides
+# alongside a free Nim emission — so refreshing both tracked corpora needs
+# two calls per example instead of one.
+emitted_nim=0
+emitted_odin=0
 for f in examples/*.tuck; do
-  if ./tuck c "$f" --odin --root:"$(pwd)" > /dev/null 2>&1; then
-    emitted=$((emitted + 1))
+  if ./tuck c "$f" --root:"$(pwd)" > /dev/null 2>&1; then
+    emitted_nim=$((emitted_nim + 1))
   else
-    printf '  did not emit: %s\n' "$(basename "$f")"
+    printf '  did not emit (nim): %s\n' "$(basename "$f")"
+  fi
+  if ./tuck c "$f" --odin --root:"$(pwd)" > /dev/null 2>&1; then
+    emitted_odin=$((emitted_odin + 1))
+  else
+    printf '  did not emit (odin): %s\n' "$(basename "$f")"
   fi
 done
 
-printf 'emitted %s of %s examples -> %s .nim, %s .odin\n' \
-  "$emitted" "$(ls examples/*.tuck | wc -l)" \
-  "$(ls examples/*.nim 2>/dev/null | wc -l)" \
-  "$(ls examples/*.odin 2>/dev/null | wc -l)"
+printf 'emitted %s .nim, %s .odin of %s examples\n' \
+  "$emitted_nim" "$emitted_odin" "$(ls examples/*.tuck | wc -l)"

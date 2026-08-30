@@ -17,10 +17,13 @@ Tuck is a systems language that transpiles to **Nim** and to **Odin**. The
 compiler is a single Nim binary, `tuck`, built from `tuck.nim` plus `lexer.nim`
 plus `compiler/*.nim` — about 18k lines. It reads a `.tuck` file, loads that
 file's import closure, typechecks it, verifies its effect declarations, and
-(for `compile`/`build`) emits target source next to the input. `tuck build`
-additionally shells out to `nim c` (and `odin build` with `--odin`) to link a
-binary. The entry point is `tuck.nim`; its header comment is the pipeline in
-order, and `checkProgram` (`tuck.nim:252`) is the whole compiler on one screen.
+(for `compile`/`build`) emits source for exactly ONE target next to the
+input — Nim by default, or `--odin`, or `--dlang` (mutually exclusive; two
+targets need two invocations). `tuck build` additionally shells out to
+`nim c` (or `odin build`, or `dmd`, matching whichever target was picked)
+to link a binary. The entry point is `tuck.nim`; its header comment is the
+pipeline in order, and `checkProgram` (`tuck.nim:252`) is the whole compiler
+on one screen.
 
 Commands: `lex`/`l`, `parse`/`p`, `check`/`ch`, `compile`/`c`, `build`/`b`,
 `explain CODE`. Everything is fail-fast — the first error prints with

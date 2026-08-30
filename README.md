@@ -67,7 +67,7 @@ can go unverified while the suite reports green.
 
 ```sh
 ./tuck check  file.tuck      # types + effects, no output
-./tuck compile file.tuck     # emit .nim (add --odin for .odin)
+./tuck compile file.tuck     # emit — one target: Nim, or --odin, or --dlang
 ./tuck build  file.tuck      # emit and link a binary
 ./tuck explain TK-TY15       # what a diagnostic code means, and how to fix it
 ```
