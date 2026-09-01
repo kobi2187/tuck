@@ -135,12 +135,12 @@ void handleMsg_tuck_Decoder(ref tuck_Decoder self, tuck_DecoderMsg msg) {
             final switch (self.state.kind) {
             case tuck_PlayerStateKind.Idle:
                 self.state = tuck_PlayerState(tuck_PlayerStateKind.Decoding, tuck_PlayerState_Decoding(sampleRate: rate));
-                PlaybackStarted(tuck_SystemEvents.raise);
+                raise_tuck_SystemEvents_PlaybackStarted();
                 tuck_DAC_CR_EN_set(true);
                 break;
             case tuck_PlayerStateKind.Paused:
                 self.state = tuck_PlayerState(tuck_PlayerStateKind.Decoding, tuck_PlayerState_Decoding(sampleRate: rate));
-                PlaybackStarted(tuck_SystemEvents.raise);
+                raise_tuck_SystemEvents_PlaybackStarted();
                 tuck_DAC_CR_EN_set(true);
                 break;
             case tuck_PlayerStateKind.Decoding:
@@ -161,7 +161,7 @@ void handleMsg_tuck_Decoder(ref tuck_Decoder self, tuck_DecoderMsg msg) {
             break;
         case tuck_DecoderMsgKind.msgStop:
             self.state = tuck_PlayerState(tuck_PlayerStateKind.Idle);
-            PlaybackStopped(tuck_SystemEvents.raise);
+            raise_tuck_SystemEvents_PlaybackStopped();
             tuck_DAC_CR_EN_set(false);
             break;
     }

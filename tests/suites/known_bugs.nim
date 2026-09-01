@@ -621,6 +621,32 @@ fn main() -> int:
                      r"raise_tuck_AppEvents_LowMemory\(42\)")
   t.bugFixed "a registry raise in a task body is lowered"
 
+  # A PAYLOAD-FREE registry raise emitted swapped, nonsensical code.
+  # Found 2026-09-01 chasing example 20: `Registry.raise Event` (no
+  # payload) parses to a DIFFERENT, single-level exkCall shape than
+  # `Registry.raise Event {payload}` does (the shape the fix above
+  # already covered) — flattenRegistryRaise's guard only ever matched the
+  # with-payload shape, so a payload-free raise fell through untouched and
+  # codegen read the event name as the CALLEE and `Registry.raise` as its
+  # one argument: `PlaybackStarted(tuck_SystemEvents.raise)`. Nim's own
+  # `discard` keyword-coincidence trick that masked other bugs this
+  # session did NOT apply here — this one was broken on all three
+  # backends identically, since lowering is shared.
+  t.src """
+registry Sys:
+  | Started
+
+on Sys.Started():
+  discard
+
+fn main() -> int:
+  Sys.raise Started
+  return 0
+"""
+  t.quietly: t.emits("a payload-free registry raise is lowered",
+                     r"raise_tuck_Sys_Started\(\)")
+  t.bugFixed "a payload-free registry raise is lowered"
+
   # FIELD ACCESS ON A PRIMITIVE IS UNCHECKED.
   #
   # `s.wibble` on a str typechecks clean and becomes <unknown>. The cause is

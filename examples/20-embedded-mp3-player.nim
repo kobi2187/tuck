@@ -109,12 +109,12 @@ proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
       of Idle:
         if true:
           self.state = tuck_PlayerState(kind: Decoding, decoding: (sampleRate: rate))
-          PlaybackStarted(tuck_SystemEvents.raise)
+          raise_tuck_SystemEvents_PlaybackStarted()
           tuck_DAC_CR.EN = true
       of Paused:
         if true:
           self.state = tuck_PlayerState(kind: Decoding, decoding: (sampleRate: rate))
-          PlaybackStarted(tuck_SystemEvents.raise)
+          raise_tuck_SystemEvents_PlaybackStarted()
           tuck_DAC_CR.EN = true
       of Decoding:
         discard)
@@ -131,7 +131,7 @@ proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
   of msgStop:
     if true:
       self.state = tuck_PlayerState(kind: Idle)
-      PlaybackStopped(tuck_SystemEvents.raise)
+      raise_tuck_SystemEvents_PlaybackStopped()
       tuck_DAC_CR.EN = false
 
 proc draintuck_Decoder(): bool {.gcsafe.} =

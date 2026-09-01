@@ -82,18 +82,59 @@ proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
 proc lowerExpr(e: Expr, m: Module)
 
 proc flattenRegistryRaise(e: Expr) =
-  ## `Registry.raise SomeEvent` — a call whose callee is a call whose argument
-  ## is a field access. Flatten it to a plain call to `raise_Registry_Event`,
-  ## which codegen emits like any other and never learns registries exist.
-  if e.callee == nil or e.callee.kind != exkCall: return
-  if e.callee.callee == nil or e.callee.callee.kind != exkVar: return
-  if e.callee.args.len != 1 or e.callee.args[0].kind != exkField: return
-  let fieldNode = e.callee.args[0]
+  ## `Registry.raise Event` — Tuck's ordinary postfix-call grammar applied
+  ## twice over, and the two arities parse to two DIFFERENT shapes:
+  ##
+  ##   no payload:   `Registry.raise Event`
+  ##                 ONE exkCall: callee = Event (exkVar), args = [the
+  ##                 `.raise` field access].
+  ##
+  ##   with payload: `Registry.raise Event {payload}`
+  ##                 `{payload}` is applied to `Registry.raise Event` as
+  ##                 ITS OWN callee-expression — Tuck's standard
+  ##                 `{payload} calleeExpr` form, where calleeExpr here
+  ##                 happens to be a call. So this is a DOUBLY-NESTED
+  ##                 exkCall: outer.args = [payload struct], outer.callee =
+  ##                 an exkCall whose OWN callee = Event and args = [the
+  ##                 `.raise` field access].
+  ##
+  ## Both flatten to a plain call to `raise_Registry_Event` — which every
+  ## backend already generates (codegen.nim's genRegistry,
+  ## codegen_odin.nim's registry codegen) and emits like any other call,
+  ## never learning registries exist.
+  ##
+  ## The no-payload shape was never actually matched here: the ORIGINAL
+  ## guard checked only for the doubly-nested (with-payload) shape — right
+  ## for `known_bugs.nim`'s own regression test (`AppEvents.raise LowMemory
+  ## {remaining: 42}`), which is why that one passed — but a payload-free
+  ## raise (`SystemEvents.raise PlaybackStarted`, the only kind example 20
+  ## uses) is the SINGLE-level shape, which the guard's `e.callee.kind ==
+  ## exkCall` check always rejected. This pass was therefore a silent
+  ## no-op for every payload-free raise in the corpus, and codegen fell
+  ## through to a plain call reading the event name as the function and
+  ## `Registry.raise` as its one argument
+  ## ("PlaybackStarted(tuck_SystemEvents.raise)"). Confirmed by dumping
+  ## the real AST (`tuck p --ast`) for both shapes side by side.
+  var fieldNode, eventNameNode: Expr = nil
+  var payloadArgs: seq[Expr] = @[]
+  if e.callee != nil and e.callee.kind == exkCall and
+     e.callee.callee != nil and e.callee.callee.kind == exkVar and
+     e.callee.args.len == 1 and e.callee.args[0].kind == exkField:
+    fieldNode = e.callee.args[0]
+    eventNameNode = e.callee.callee
+    payloadArgs = e.args
+  elif e.callee != nil and e.callee.kind == exkVar and
+       e.args.len == 1 and e.args[0].kind == exkField:
+    fieldNode = e.args[0]
+    eventNameNode = e.callee
+  else:
+    return
   if fieldNode.receiver == nil or fieldNode.receiver.kind != exkVar: return
   if fieldNode.fieldName != "raise": return
   e.callee = Expr(span: e.span, kind: exkVar,
                   name: "raise_" & fieldNode.receiver.name & "_" &
-                        e.callee.callee.name)
+                        eventNameNode.name)
+  e.args = payloadArgs
 
 proc memberParams(e: Expr, inner: Expr, m: Module): seq[string] =
   ## The member fn's parameter names, in order.
@@ -311,10 +352,21 @@ proc lowerExpr(e: Expr, m: Module) =
      exkDiscard, exkImport, exkSend, exkSelect:
     discard
 
+  # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
+  # payload-bearing raise (`Registry.raise Event {payload}`) is a call whose
+  # OWN callee is itself a call (`Event(Registry.raise)`) — a shape that,
+  # read on its own, is INDISTINGUISHABLE from a complete, payload-free
+  # raise (`Registry.raise Event`). Recursing into children first (as every
+  # other pass here does) reaches that inner call before the outer one, so
+  # it matches the payload-free case and rewrites itself — corrupting the
+  # shape the OUTER call needed to recognize by the time control returns.
+  # Found exactly this way: emitted `raise_X_Y()(42)`, a call ALREADY
+  # flattened (empty parens) wrapped in a second, unflattened application.
+  if e.kind == exkCall: flattenRegistryRaise(e)
+
   for c in e.children: lowerExpr(c, m)
 
   if e.kind == exkCall:
-    flattenRegistryRaise(e)
     flattenMemberCallPayload(e, m)
     explodePayload(e)
 

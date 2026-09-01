@@ -140,11 +140,11 @@ handleMsg_tuck_Decoder :: proc(self: ^tuck_Decoder, msg: tuck_DecoderMsg) {
     {
     case tuck_PlayerState_Idle:
         self.state = tuck_PlayerState_Decoding{sampleRate = rate}
-        PlaybackStarted(tuck_SystemEvents.raise)
+        raise_tuck_SystemEvents_PlaybackStarted()
         tuck_DAC_CR_EN_set(true)
     case tuck_PlayerState_Paused:
         self.state = tuck_PlayerState_Decoding{sampleRate = rate}
-        PlaybackStarted(tuck_SystemEvents.raise)
+        raise_tuck_SystemEvents_PlaybackStarted()
         tuck_DAC_CR_EN_set(true)
     case tuck_PlayerState_Decoding: ;
     }
@@ -158,7 +158,7 @@ handleMsg_tuck_Decoder :: proc(self: ^tuck_Decoder, msg: tuck_DecoderMsg) {
     tuck_DAC_CR_EN_set(false)
 	case .msgStop:
     self.state = tuck_PlayerState_Idle{}
-    PlaybackStopped(tuck_SystemEvents.raise)
+    raise_tuck_SystemEvents_PlaybackStopped()
     tuck_DAC_CR_EN_set(false)
 	}
 }

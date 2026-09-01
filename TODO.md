@@ -394,53 +394,67 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   fields, both read and chain-mutate write — no `runs` check, since a
   register's address is real MMIO hardware, unsafe to dereference on a
   test machine.
-  **Found in the process, NOT fixed, confirmed cross-backend (same
-  symptom on Odin and D):**
-  - [ ] **`SystemEvents.raise PlaybackStarted` emits swapped/nonsensical
-    code — ROOT CAUSE FOUND, fix is small and precise, just not applied.**
-    Emits as `PlaybackStarted(tuck_SystemEvents.raise)`. Confirmed via
-    `tuck p --ast` on a minimal repro (`registry Sys: | Started` /
-    `fn main() -> void: Sys.raise Started`): the parser produces ONE
-    `exkCall` — `callee = exkVar("Started")`, `args = [exkField(receiver:
-    exkVar("Sys"), fieldName: "raise")]` — i.e. structurally
-    `Started(Sys.raise)`, with the raised event's name as the CALLEE and
-    `Registry.raise` as the (sole) ARGUMENT.
-    `lowering.nim`'s `flattenRegistryRaise` (called from `lowerExpr`'s
-    `of exkCall:` arm) is SUPPOSED to rewrite exactly this into a plain
-    call to `raise_<Registry>_<Event>`, but its guard checks for a
-    DIFFERENT, doubly-nested shape that the parser never actually
-    produces: `if e.callee.kind != exkCall: return` — expecting `e`'s
-    OWN callee to itself be a call, when the real callee is a bare
-    `exkVar` (the event name) and the `.raise` field access is inside
-    `e.args[0]`, not inside `e.callee`. The guard therefore always
-    returns immediately without matching, so the pass is a no-op for
-    every registry raise in the corpus, and codegen falls through to a
-    plain call — which reads `PlaybackStarted` as the function and
-    `SystemEvents.raise` as its one argument, exactly matching the
-    observed output.
-    The fix (verified by inspection against the real AST shape above,
-    not yet applied or tested): change the guard in
-    `flattenRegistryRaise` to match on `e.callee.kind == exkVar` and
-    `e.args[0].kind == exkField` directly (dropping the nested-call
-    check entirely), i.e.:
-    ```nim
-    proc flattenRegistryRaise(e: Expr) =
-      if e.callee == nil or e.callee.kind != exkVar: return
-      if e.args.len != 1 or e.args[0].kind != exkField: return
-      let fieldNode = e.args[0]
-      if fieldNode.receiver == nil or fieldNode.receiver.kind != exkVar: return
-      if fieldNode.fieldName != "raise": return
-      e.callee = Expr(span: e.span, kind: exkVar,
-                      name: "raise_" & fieldNode.receiver.name & "_" &
-                            e.callee.name)
-    ```
-    Since this rewrites `e.callee` in place and drops nothing about
-    `e.args`, a stray payload argument (an event WITH a payload, e.g.
-    `HardwareError({code: u8})`) needs checking separately — not
-    verified whether `e.args[0]` is always exactly the `.raise` field
-    node alone, or whether a payload event adds a second arg that this
-    rewrite would need to preserve. Worth a probe with a payload-carrying
-    `raise` before trusting the fix on example 20's `HardwareError` path.
+  - [x] **FIXED 2026-09-01 — `SystemEvents.raise PlaybackStarted` emitted
+    swapped/nonsensical code.** Emitted as
+    `PlaybackStarted(tuck_SystemEvents.raise)`. Two bugs stacked, both in
+    `lowering.nim`'s `flattenRegistryRaise`:
+    1. **Wrong shape assumed.** `Registry.raise Event` (no payload) parses
+       to ONE `exkCall` — `callee = exkVar(Event)`, `args = [exkField(
+       receiver: Registry, fieldName: "raise")]` (confirmed via `tuck p
+       --ast`). The OLD guard only matched a DOUBLY-nested shape
+       (`e.callee.kind == exkCall`), which is the shape a WITH-payload
+       raise parses to (`Registry.raise Event {payload}` — the payload
+       applies to `Registry.raise Event` as its own callee-expression,
+       Tuck's ordinary `{payload} calleeExpr` form, where calleeExpr
+       happens to be a call) — so the guard was actually RIGHT for that
+       shape (matching `known_bugs.nim`'s own passing regression test,
+       `AppEvents.raise LowMemory {remaining: 42}`) but never matched the
+       no-payload shape at all, which is the ONLY kind example 20 (or any
+       current example) uses. Fixed by checking BOTH shapes.
+    2. **Order-of-traversal corruption, found only by testing the fix
+       against the with-payload case and getting `raise_X_Y()(42)`
+       instead of `raise_X_Y(42)`.** `lowerExpr`'s generic walk recurses
+       into a node's CHILDREN before running the exkCall-specific passes
+       on the node itself. For a with-payload raise, the INNER call
+       (`Event(Registry.raise)`) is a CHILD of the outer one, and once
+       shape 1 above could ALSO match a no-payload raise, that same inner
+       call — read on its own, bottom-up, before the outer pass ever
+       runs — looks exactly like a complete, standalone no-payload raise.
+       It got flattened in place (with its args cleared to `[]`) before
+       the outer `flattenRegistryRaise` ever got a chance to see the
+       pristine two-level shape it needed. Fixed by moving
+       `flattenRegistryRaise`'s call to BEFORE the recursive descent for
+       `exkCall` nodes specifically (`flattenMemberCallPayload`/
+       `explodePayload` still run after, since they need already-lowered
+       children).
+    Both bugs live in the SHARED `lowering.nim`, so the fix benefits all
+    three backends from one change — confirmed by re-emitting examples:
+    Nim's OWN example 20 output had the identical swapped bug all along
+    (never previously checked directly; only the separate, unrelated
+    Nim registry-type indentation bug — see below — had blocked noticing
+    it via a full build).
+    Verified: a minimal no-payload probe (`registry Sys: | Started` /
+    `Sys.raise Started`) builds and runs correctly on Nim, Odin AND D
+    (all print the emitted `raise_tuck_Sys_Started()` call and exit as
+    expected); the with-payload `known_bugs.nim` regression test still
+    passes; example 20's Odin build **now fully builds and runs** (the
+    `discard`/`sizeof`/register/raise fixes together clear every Odin
+    blocker). D still fails on the separate, already-recorded `!void`
+    bare-`return` bug below — untouched by this fix, as expected. Full
+    `./tests/run` green; `examples/20-embedded-mp3-player.{nim,odin,d}`
+    re-emitted, diff reviewed on all three (every swapped raise call
+    became the correct `raise_tuck_<Registry>_<Event>(...)` form, nothing
+    else changed).
+    One incidental discovery found live-debugging this (not a bug, a
+    genuine design question, see backlog below): a second `on
+    Registry.Event(...):` handler for the SAME event is rejected today,
+    but only because a handler is represented as an ordinary top-level
+    `fn` named `"Registry.Event"`, which collides with Tuck's general
+    "every top-level name is declared once" rule — NOT a deliberate
+    one-handler-per-event design. `genRegistry`'s codegen already scans
+    for and calls EVERY matching handler decl in a loop, so multiple
+    handlers would already fan out correctly if the naming collision
+    were resolved.
   - [ ] **D-only: a bare `return` inside a fn returning `!void`
     (`rt.TuckResult!(rt.TuckUnit)`) emits as bare `return;`** — a D type
     mismatch ("return expression expected"), in `streamReader`'s
@@ -454,9 +468,10 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
     equivalent doesn't skip. Worth checking `codegen_d.nim`'s
     `genDReturn` against `codegen_odin.nim`'s `genReturnStmt` for exactly
     this case before assuming the fix shape.
-  Neither chased further this session; example 20 is closer (register
-  access and `discard`/`sizeof` all fixed) but still not fully verified
-  end to end on any backend but Nim.
+  Not chased further this session. Example 20 now **fully builds and
+  runs on Odin** (register access, `discard`, `sizeof`, and the raise bug
+  above all fixed) — D is the only backend still blocked, by the one
+  remaining item directly above.
 
 ### Cross-backend
 - [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**
