@@ -874,18 +874,20 @@ fn main() -> int [io]:
   # Examples with a known exit code — RUN, not merely compile. Mirrors
   # odin_backend's odinRun (see there for what each program computes).
   #
-  # NOT yet included, found broken while building this sweep (TODO.md §6):
-  #   34-ffi-cstring       `tuck b --dlang` fails: "undefined identifier
-  #                        zlibVersion" — the emitted .d never declares the
-  #                        extern binding dmd needs, though `tuck c` alone
-  #                        (no dmd) reports success.
-  #   35/36/37 (ffi-struct/enum-callback/handle) all link cffi/point.o
-  #            TWICE ("multiple definition of `counterBump`") — tuck.nim's
-  #            D build path passes the same object file to dmd more than
-  #            once. All three compile fine (dCompile above), only the
-  #            dmd BUILD step fails.
+  # NOT yet included: 34-ffi-cstring. `zlibVersion` is declared
+  # `impl: nim "./shim/zlib_shim", odin "./shim"` — a per-backend shim, no
+  # header binding — and there is no `impl: d "..."` entry. This is NOT a
+  # bug: dExternTodo (codegen_d.nim) correctly refuses to emit a binding
+  # when no `d` impl exists, so `tuck c` succeeds (nothing calls it yet)
+  # and `tuck b`/dmd fails loudly the moment main() does, naming the
+  # missing symbol — exactly the designed behaviour for an unimplemented
+  # shim. Closing this needs real `impl: d` support in codegen_d.nim
+  # (import + forwarder generation, mirroring genImplForwarders in
+  # codegen_odin.nim) plus a written examples/shim/zlib_shim.d — a real
+  # feature, not a fix, and not attempted here.
   const dRun = """26-actor-run:55 27-actor-select:55 31-fnsig-callback:42
-33-ffi-zlib:0 28-async-task:42 38-division:0 39-if-match-expr:0
+33-ffi-zlib:0 35-ffi-struct:0 36-ffi-enum-callback:0 37-ffi-handle:0
+28-async-task:42 38-division:0 39-if-match-expr:0
 40-saturating:0 41-tostr-concat:0 24-stdlib:0 29-task-timeout:2
 30-async-read:1"""
 
@@ -899,6 +901,10 @@ fn main() -> int [io]:
                                   "--dlang", "-o:" & proj,
                                   "--root:" & t.root]))
 
+  # RUN uses `tuck b`, NOT a hand-assembled dmd invocation: some of these
+  # (35/36/37) link a vendored C object, and only tuck.nim's own build path
+  # knows how to compile and collect that — duplicating its cObjs logic here
+  # would be a second copy of a fact that already lives in one place.
   var dRunIdx: seq[tuple[base: string, want: int, idx: int]]
   if dmdExe.len > 0:
     for entry in dRun.split({' ', '\n'}):
@@ -906,15 +912,13 @@ fn main() -> int [io]:
       let parts = entry.split(':')
       let base = parts[0]
       let want = parseInt(parts[1])
-      var dep = -1
-      for (b, i) in dBuildIdx:
-        if b == base: dep = i
-      let proj = dProjFor(base)
-      let bin = proj / "prog"
-      let buildI = t.needCmdAfter(
-        @[dmdExe, "-i", "-I" & proj, proj / (base & ".d"),
-          proj / "minicoro.a", "-of=" & bin],
-        dep, proc (dir: string) = discard, proj)
+      let proj = dProjFor(base) & "_run"
+      var binBase = base.replace("-", "_")
+      if binBase.len > 0 and binBase[0] in {'0' .. '9'}: binBase = "m_" & binBase
+      let bin = proj / (binBase & "_d")
+      let buildI = t.needCmd(@["./tuck", "b", "examples/" & base & ".tuck",
+                               "--dlang", "-o:" & proj, "--root:" & t.root],
+                             verb = vBuild)
       dRunIdx.add (base, want, t.needCmdAfter(@[bin], buildI,
                                               proc (dir: string) = discard,
                                               proj))

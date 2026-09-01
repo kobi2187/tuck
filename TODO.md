@@ -242,6 +242,31 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   append/remove/fileExists-after-removal not covered by any example.
   `d_backend` suite gained one `runsD` regression test for the full
   round trip.
+- [x] **FIXED 2026-09-01** — D examples 35-ffi-struct/36-ffi-enum-callback/
+  37-ffi-handle failed to LINK (`ld: multiple definition of counterBump`),
+  found while adding `d_backend`'s example sweep. Root cause: one
+  `extern [... lib: "point.c"]:` block commonly declares several fns
+  sharing that one C source, and `tuck.nim`'s D build step collected the
+  compiled object once per matching FN rather than once per unique OBJECT
+  PATH — the same `.o` landed on the dmd command line twice (or three
+  times), so the linker saw every symbol in it duplicated. Fixed with a
+  `HashSet[string]` of already-added object paths. All three compiled fine
+  under `tuck c` before this (only the `tuck b`/dmd link step failed), so
+  the bug was invisible to `d_backend`'s existing compile-only checks —
+  found only by actually running the sweep's build+run step, not by
+  reading the code. All three now build and run (exit 0), added to
+  `d_backend`'s `dRun` list.
+- [ ] **NOT a bug — a missing feature.** 34-ffi-cstring's `zlibVersion`
+  is declared `impl: nim "./shim/zlib_shim", odin "./shim"` with no
+  `impl: d "..."` entry. `dExternTodo` (codegen_d.nim) correctly refuses
+  to emit a binding when no `d` impl exists, so `tuck c` succeeds and
+  `tuck b`/dmd fails loudly the moment `main()` calls it, naming the
+  missing symbol — exactly the designed behaviour for an unimplemented
+  shim, not a defect. Closing this needs real `impl: d` support in
+  codegen_d.nim (import + forwarder generation, mirroring
+  `genImplForwarders` in codegen_odin.nim: an aliased `import <alias> =
+  <module>;` plus a wrapper fn calling `<alias>.<name>(...)`) and a
+  written `examples/shim/zlib_shim.d` — sized but not started.
 - [ ] **[repro] Example 20 is unverified on every backend past emit.**
   Chasing its D build (match-statement fix, then sizeof) surfaced two
   more blockers, both cross-backend and neither D-specific:

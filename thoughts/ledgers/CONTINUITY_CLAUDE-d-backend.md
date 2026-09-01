@@ -152,10 +152,31 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
         already correct here; only Odin and the checker needed fixing.
         Full writeup: TODO.md §3, commit 7356d30.
 
-**Current sweep (2026-09-01): 43 of 44 examples compile under `--dlang`.**
-One remains:
+**Current sweep (2026-09-01): 43 of 44 examples compile under `--dlang`, and
+the sweep is now a PERMANENT regression check** (`d_backend`'s example
+sweep, mirroring odin_backend's odinCompile/odinRun — not just a ledger
+note anymore). Of the run-checked ones, 13 of 14 pass; one remains
+deliberately excluded (a missing feature, not a bug — see below).
+One example remains uncompiled:
   - **16-actor-tasks-unified-syntax** — fails the CHECKER (undeclared
     methods in an aspirational specimen), not codegen. Not a D task.
+
+  - [x] **FIXED 2026-09-01, same day** — 35-ffi-struct/36-ffi-enum-callback/
+        37-ffi-handle all failed to LINK ("multiple definition of
+        counterBump"), found while adding the sweep's run-checked list.
+        `tuck.nim`'s D build step collected a `lib: "point.c"` extern
+        block's compiled object once per matching FN, not once per unique
+        object PATH — the same `.o` rode the dmd command line 2-3 times.
+        Fixed with a `HashSet[string]` of already-added paths. All three
+        now build and run (exit 0). Full writeup: TODO.md §6.
+  - **34-ffi-cstring — NOT a bug, a missing feature, left out of the
+    run-checked list on purpose.** `zlibVersion` is `impl: nim "...",
+    odin "..."` with no `impl: d "..."` entry; `dExternTodo` correctly
+    refuses a binding, so `tuck b`/dmd fails loudly naming the missing
+    symbol — the designed outcome for an unimplemented shim. Real
+    `impl: d` support (import + forwarder generation, mirroring
+    `genImplForwarders` in codegen_odin.nim) plus `examples/shim/
+    zlib_shim.d` would close it — sized, not started.
 
   - [x] **M7 concurrency reactor — DONE 2026-09-01.** Ported Odin's
         epoll+timerfd reactor into tuck_coro.d: `IoWaiter`/`EventLoop`,
