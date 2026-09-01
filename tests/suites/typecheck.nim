@@ -1996,4 +1996,21 @@ fn main() -> int:
   t.src "fn main() -> void:\n\nfn other() -> int:\n  return 0\n"
   t.badCheck "an empty block is rejected, not silently accepted", "TK-PA09"
 
+  # --- sizeof/alignof: Odin's real builtin is size_of/align_of ------------
+  # `sizeof(T)`/`alignof(T)` (parser_expr.ParenBuiltins) is also valid Nim
+  # syntax, so that backend's emission was right by coincidence; Odin's own
+  # builtin is spelled size_of/align_of, unfixed until this. Confirmed
+  # broken by direct run before the fix: emitted `sizeof(int)` failed with
+  # "Undeclared name: sizeof" building the Odin output directly.
+  t.src """
+fn main() -> int:
+  return sizeof(int)
+"""
+  t.emitsOdin "Odin spells it size_of, not sizeof", r"size_of\(int\)"
+  t.src """
+fn main() -> int:
+  return alignof(int)
+"""
+  t.emitsOdin "...and align_of, not alignof", r"align_of\(int\)"
+
   t.finish()

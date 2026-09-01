@@ -197,9 +197,40 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   match's arm already return" — answered wrong when the match is a
   statement to begin with).
 - [x] **FIXED 2026-08-30** — `sizeof`/`alignof` now emit D's postfix
-  property (`T.sizeof`) instead of the call syntax dmd rejects. Odin's own
-  `sizeof(x)` emission is STILL wrong (real Odin spelling is `size_of(T)`)
-  — unfixed there since no example has reached that line yet (see below).
+  property (`T.sizeof`) instead of the call syntax dmd rejects.
+- [x] **FIXED 2026-09-01 — Odin's own `sizeof`/`alignof` misspelling.**
+  Odin's real builtins are `size_of(T)`/`align_of(T)` (still call syntax,
+  unlike D's postfix property) — the emitter printed `sizeof`/`alignof`
+  verbatim, which is ALSO valid Nim, so that backend's emission was right
+  by coincidence, same shape as the D bug above. `asParenBuiltinOdin`
+  (codegen_odin.nim), mirroring `asParenBuiltinD`, rewrites the callee
+  name; `offsetof` stays unhandled (no example needs it, and Odin has no
+  existing "unsupported construct" helper the way D's `dUnsupported` is —
+  falls through to a plain call, so the Odin compiler itself reports
+  "undeclared name: offsetof" if one is ever emitted, an honest failure).
+  Verified directly: `sizeof(int)`/`alignof(int)` both build and run,
+  returning 8 on Odin, matching Nim exactly.
+  **Found in the process, NOT fixed — a real, separate D bug, one layer
+  deeper than the "postfix vs call" spelling already fixed above:**
+  `sizeof(int)` on D emits `int.sizeof` (D's own NATIVE 32-bit `int`,
+  never translated) instead of `long.sizeof` (Tuck's `int` = D's `long`,
+  per the type table) — confirmed by direct run, giving 4 instead of 8.
+  `asParenBuiltinD`'s `ctx.genDExpr(e.args[0])` prints a paren-builtin's
+  type argument as a plain expression, with no awareness that it names a
+  TYPE — the same treatment would ALSO misspell `sizeof(SomeUserRecord)`
+  as the bare Tuck name rather than the mangled `tuck_SomeUserRecord` D
+  struct actually declares. Root cause is one level UP from either
+  backend's emitter: the checker has no dedicated typing path for a
+  paren-builtin's argument at all — it types via the SAME silent-
+  `unknownType`-on-no-match fallback (`synthBareVariant`) that `discard`
+  was riding, confirmed by re-reading that code path, not just observed
+  behaviorally. Fixing this properly means giving `sizeof`/`alignof`/
+  `offsetof`'s argument a real, checker-recognized "this names a type"
+  path, THEN routing it through each backend's existing primitive-type
+  table (`dPrims`) and name-mangling (`mangleName`) — sized, not started.
+  No test added for D's broken state (would need `bugOpen` in
+  known_bugs.nim); recorded here instead, since chasing it now is outside
+  this fix's scope.
 - [x] **FIXED 2026-09-01** — records containing a `Seq` field shallow-copied
   the slice: assignment `.dup`'d a bare Seq, but a record holding one was
   copied field-wise and the slice inside was shared (confirmed by direct
@@ -332,12 +363,12 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   re-emitted (now correct, empty-body code instead of an undefined
   reference) and reviewed.
 - [ ] **[repro] Example 20 is unverified on every backend past emit.**
-  Two blockers remain, both cross-backend and neither D-specific
-  (confirmed directly building Odin's own emission):
+  Down to one blocker after `discard` and Odin's `sizeof` both landed
+  2026-09-01 (confirmed: Odin's own build no longer mentions either in
+  its errors):
   - `register DAC_CR at 0x...` field access (`DAC_CR.EN = true`) reaches
     codegen as a raw `uint*`/`^u32` with no field — a lowering/typecheck
     gap in register-field modeling, not a backend bug.
-  - `sizeof(T)` — see the Odin misspelling entry below.
 
 ### Cross-backend
 - [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**

@@ -591,10 +591,33 @@ const RtByValue = ["at", "setAt", "toStr", "tuckConcat", "errCode",
   ## through `using static Rt`; Odin has no such import, so both lists
   ## qualify explicitly.
 
+proc asParenBuiltinOdin(ctx: var OdinCodegenCtx, e: Expr,
+                        calleeStr: string): string =
+  ## `sizeof`/`alignof`/`offsetof` parse as ordinary calls
+  ## (parser_expr.ParenBuiltins), the identical call syntax as C and as
+  ## Tuck's own source — which is also valid Nim, so that backend's
+  ## emission is right by coincidence. Odin's real spelling is
+  ## `size_of(T)`/`align_of(T)` (a genuine builtin name, still call
+  ## syntax — unlike D, which spells these as a postfix property), so this
+  ## is a name rewrite, not a shape change. `offsetof` has no example to
+  ## verify against and no verified Odin translation, so — mirroring
+  ## codegen_d.nim's stance on the same gap — it is left alone here rather
+  ## than guessed: "" falls through to a plain call, and the Odin compiler
+  ## itself reports "undeclared name: offsetof" if one is ever emitted.
+  ## "" when `calleeStr` names none of these, so the caller falls through
+  ## to a plain call.
+  if calleeStr == "sizeof" and e.args.len == 1:
+    return "size_of(" & ctx.genOdinExpr(e.args[0]) & ")"
+  if calleeStr == "alignof" and e.args.len == 1:
+    return "align_of(" & ctx.genOdinExpr(e.args[0]) & ")"
+  ""
+
 proc asCombinatorCall(ctx: var OdinCodegenCtx, e: Expr,
                       calleeStr: string): string =
   ## The compile-time combinators, each of which rewrites the call rather than
   ## emitting one. Any that declines returns "" and the call proceeds.
+  let builtin = ctx.asParenBuiltinOdin(e, calleeStr)
+  if builtin != "": return builtin
   if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
     return ctx.genOdinBake(e)
   if isRecordConstruction(ctx.module, e): return ctx.genRecordCtor(e)

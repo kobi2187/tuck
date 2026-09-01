@@ -203,7 +203,7 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
-	assert((sizeof(tuck_Volume) == 1))
+	assert((size_of(tuck_Volume) == 1))
 	rt.tuckAsyncInit()
 	rt.tuckStartActor(drain_tuck_Decoder)
 	tuck_main()
