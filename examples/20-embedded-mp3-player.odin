@@ -113,7 +113,7 @@ tuck_streamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(r
       if !(buf.status == .Ok) {
           return rt.tokVoid()
       }
-      tuck_DMA1_CH3.EN = true
+      tuck_DMA1_CH3_EN_set(true)
       rt.release(&tuck_BufferPool, buf.value)
   }
   return {}
@@ -141,11 +141,11 @@ handleMsg_tuck_Decoder :: proc(self: ^tuck_Decoder, msg: tuck_DecoderMsg) {
     case tuck_PlayerState_Idle:
         self.state = tuck_PlayerState_Decoding{sampleRate = rate}
         PlaybackStarted(tuck_SystemEvents.raise)
-        tuck_DAC_CR.EN = true
+        tuck_DAC_CR_EN_set(true)
     case tuck_PlayerState_Paused:
         self.state = tuck_PlayerState_Decoding{sampleRate = rate}
         PlaybackStarted(tuck_SystemEvents.raise)
-        tuck_DAC_CR.EN = true
+        tuck_DAC_CR_EN_set(true)
     case tuck_PlayerState_Decoding: ;
     }
 	case .msgPause:
@@ -155,11 +155,11 @@ handleMsg_tuck_Decoder :: proc(self: ^tuck_Decoder, msg: tuck_DecoderMsg) {
     case tuck_PlayerState_Idle: ;
     case tuck_PlayerState_Paused: ;
     }
-    tuck_DAC_CR.EN = false
+    tuck_DAC_CR_EN_set(false)
 	case .msgStop:
     self.state = tuck_PlayerState_Idle{}
     PlaybackStopped(tuck_SystemEvents.raise)
-    tuck_DAC_CR.EN = false
+    tuck_DAC_CR_EN_set(false)
 	}
 }
 
@@ -186,16 +186,16 @@ sendStop_tuck_Decoder :: proc(self: ^tuck_Decoder) {
 }
 
 tuck_SystemEvents_PlaybackStarted :: proc () {
-  tuck_DAC_CR.EN = true
+  tuck_DAC_CR_EN_set(true)
 }
 
 tuck_SystemEvents_PlaybackStopped :: proc () {
-  tuck_DAC_CR.EN = false
+  tuck_DAC_CR_EN_set(false)
 }
 
 tuck_SystemEvents_HardwareError :: proc (code: u8) {
   failed := code
-  tuck_DAC_CR.EN = false
+  tuck_DAC_CR_EN_set(false)
 }
 
 tuck_main :: proc () {

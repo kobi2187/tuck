@@ -855,6 +855,11 @@ proc genDFieldRead(ctx: var DCodegenCtx, e: Expr): string =
   if e.receiver != nil and e.receiver.kind == exkVar and
      ctx.idx.isActorTypeIdx(e.receiver.name):
     return actorSingletonName(e.receiver.name) & "." & e.fieldName
+  # A register field is a raw pointer with no real field — reading it means
+  # calling the getter genDRegister already emitted for it.
+  if e.receiver != nil and e.receiver.kind == exkVar:
+    let prefix = registerAccessorPrefix(ctx.module, e.receiver.name, e.fieldName)
+    if prefix != "": return prefix & "_get()"
   ctx.genDExpr(e.receiver) & "." & e.fieldName
 
 proc genDField(ctx: var DCodegenCtx, e: Expr): string =
@@ -1063,6 +1068,11 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
       return dUnsupported("a declaration of '" & e.target.name &
                           "' whose type the checker did not settle")
     return declT & " " & e.target.name & " = " & valStr
+  if e.target.kind == exkField and e.target.receiver != nil and
+     e.target.receiver.kind == exkVar:
+    let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.name,
+                                        e.target.fieldName)
+    if prefix != "": return prefix & "_set(" & valStr & ")"
   ctx.genDExpr(e.target) & " = " & valStr
 
 # --- statements & control flow -------------------------------------------
@@ -1291,6 +1301,10 @@ proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep, into: string,
   let valStr = if isSingleFieldPayload(step.arg):
                  ctx.genDExpr(soleFieldValue(step.arg))
                else: ""
+  # A register field is a raw pointer with no real field — writing it means
+  # calling the setter genDRegister already emitted for it.
+  let prefix = registerAccessorPrefix(ctx.module, into, step.target.name)
+  if prefix != "": return ctx.indD & prefix & "_set(" & valStr & ");\n"
   ctx.indD & into & "." & step.target.name & " = " & valStr & ";\n"
 
 proc genDChain(ctx: var DCodegenCtx, e: Expr): string =

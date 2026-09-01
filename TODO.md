@@ -362,13 +362,46 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   `./tests/run` green; `examples/20-embedded-mp3-player.{odin,d}`
   re-emitted (now correct, empty-body code instead of an undefined
   reference) and reviewed.
-- [ ] **[repro] Example 20 is unverified on every backend past emit.**
-  Down to one blocker after `discard` and Odin's `sizeof` both landed
-  2026-09-01 (confirmed: Odin's own build no longer mentions either in
-  its errors):
-  - `register DAC_CR at 0x...` field access (`DAC_CR.EN = true`) reaches
-    codegen as a raw `uint*`/`^u32` with no field — a lowering/typecheck
-    gap in register-field modeling, not a backend bug.
+- [x] **FIXED 2026-09-01 — register field access.** `DAC_CR.EN` reached
+  codegen as a raw `uint*`/`^u32` with no field. NOT a missing-accessor
+  bug: `genRegister`/`genDRegister` already generate real, CORRECT
+  `<reg>_<field>_get`/`_set` procs doing the mask/shift math (Odin's is
+  even more complete than Nim's own `registerMMIO` macro — it handles a
+  bit RANGE; Nim's macro only ever handled a single bit). The actual gap
+  was that field ACCESS SITES never called them: `genFieldAccess`/
+  `genAssign`/`genChainStep` (Odin) and `genDFieldRead`/`genDAssign`/
+  `genDChainStep` (D) all fell through to ordinary `.field` syntax on the
+  raw pointer regardless. Fixed with one shared predicate,
+  `registerAccessorPrefix` (ast_query.nim, reused by both backends' three
+  call sites each): does `receiver.fieldName` name a real register field,
+  and if so, what's the `<reg>_<field>` prefix `genRegister` already
+  emitted for it.
+  A THIRD layer surfaced fixing this: the checker never gave a register
+  field READ a real type either — `DAC_CR.EN` fell through `synthVar`'s
+  ordinary bare-name resolution and silently became `unknownType`, same
+  fallback `discard` was riding. Harmless for Nim (no explicit type
+  needed) and Odin (`:=` infers from the accessor's own return type), but
+  D's "never `auto`, state the checker's type explicitly" policy turned
+  it into a real failure the moment a register read was bound to a
+  variable. Fixed with `registerFieldType` (typecheck.nim): `bool` for a
+  single `bit N`, `u32` for a `bits LO..HI` range, matching exactly what
+  the generated accessors return.
+  Verified: example 20's Odin and D builds no longer mention `DAC_CR`/
+  `register` in their errors at all — confirmed by direct build, and by
+  the tracked `.odin`/`.d` diff (every `tuck_DAC_CR.EN = x` line became
+  `tuck_DAC_CR_EN_set(x)`, nothing else changed). `declarations` suite
+  gained 6 regressions (3 Odin, 3 D) covering both single-bit and range
+  fields, both read and chain-mutate write — no `runs` check, since a
+  register's address is real MMIO hardware, unsafe to dereference on a
+  test machine.
+  **Found in the process, NOT fixed, confirmed cross-backend (same
+  symptom on Odin and D):** `SystemEvents.raise PlaybackStarted` emits
+  as `PlaybackStarted(tuck_SystemEvents.raise)` — swapped/nonsensical,
+  an event-registry raise codegen bug, unrelated to registers. Also
+  D-only: a bare `return` inside a fn returning `!void` (`rt.TuckResult
+  !(rt.TuckUnit)`) emits as bare `return;`, a D type mismatch (`return`
+  expression expected) — `streamReader`'s early-return-on-error path.
+  Neither chased; example 20 is closer but still not fully verified.
 
 ### Cross-backend
 - [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**

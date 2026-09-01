@@ -509,6 +509,20 @@ proc decodeBitField*(regName: string, f: FieldDef): BitFieldInfo =
   result.canRead = hasRead or not hasWrite
   result.canWrite = hasWrite or not hasRead
 
+proc registerAccessorPrefix*(m: Module, regName, fieldName: string): string =
+  ## The `<regName>_<fieldName>` accessor prefix genRegister/genDRegister
+  ## already emit for this field (matching `decodeBitField`'s own `prefix`
+  ## exactly), or "" if `regName` names no register or the register has no
+  ## such field. A `.field` access on a register name must call the
+  ## generated `<prefix>_get()`/`<prefix>_set(v)` — the register itself is
+  ## a raw pointer with no real field, so ordinary field syntax on it is
+  ## always wrong, never merely unimplemented.
+  for d in m.decls:
+    if d == nil or d.kind != dkRegister or d.name != regName: continue
+    for f in d.regFields:
+      if f.name == fieldName: return regName & "_" & fieldName
+  ""
+
 proc isCompositionEntry*(member: Decl): bool =
   ## `+ Name` inside an object body — the entry that pulls another
   ## declaration's members or data into this one.

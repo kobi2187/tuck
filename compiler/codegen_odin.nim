@@ -992,6 +992,10 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     # bare Type.Variant of a payload sum: kind-tagged construction
     let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
     if ctor != "": return ctor
+    # A register field is a raw pointer with no real field — reading it
+    # means calling the getter genRegister already emitted for it.
+    let prefix = registerAccessorPrefix(ctx.module, e.receiver.name, e.fieldName)
+    if prefix != "": return prefix & "_get()"
   let bound = ctx.boundVariantField(e)
   if bound != "": return bound
   ctx.genOdinExpr(e.receiver) & "." & e.fieldName
@@ -1214,13 +1218,17 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
   if ctx.isTaskArgsBind(e):
     return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
-  let targetStr = ctx.genOdinExpr(e.target)
   let valStr = ctx.genOdinExpr(e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:
     ctx.definedVars.incl(e.target.name)
     return e.target.name & " := " & valStr
-  targetStr & " = " & valStr
+  if e.target.kind == exkField and e.target.receiver != nil and
+     e.target.receiver.kind == exkVar:
+    let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.name,
+                                        e.target.fieldName)
+    if prefix != "": return prefix & "_set(" & valStr & ")"
+  ctx.genOdinExpr(e.target) & " = " & valStr
 
 proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `return err X` is the raise, not a wrapped return value.
@@ -1231,12 +1239,15 @@ proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =
 
 proc genChainStep(ctx: var OdinCodegenCtx, step: ChainStep, baseStr,
                   ind: string): string =
-  ## One step: a mutator call reassigned into the base var, or a field set.
+  ## One step: a mutator call reassigned into the base var, a register
+  ## field's setter, or a field set.
   if semLayer.stepCall(step) != nil:
     return ind & baseStr & " = " & ctx.genOdinCall(semLayer.stepCall(step))
   let valStr = if isSingleFieldPayload(step.arg):
                  ctx.genOdinExpr(soleFieldValue(step.arg))
                else: ""
+  let prefix = registerAccessorPrefix(ctx.module, baseStr, step.target.name)
+  if prefix != "": return ind & prefix & "_set(" & valStr & ")"
   ind & baseStr & "." & step.target.name & " = " & valStr
 
 proc genChainRevalidate(ctx: OdinCodegenCtx, e: Expr, baseStr,

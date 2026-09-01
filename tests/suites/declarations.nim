@@ -305,6 +305,41 @@ fn main() -> void:
 """
   t.badCheck "two register fields claiming one bit are rejected", "TK-RE04"
 
+  # A `.field` access on a register is not an ordinary field: the register
+  # is a raw pointer, so it has none. genRegister/genDRegister already
+  # generate real `<reg>_<field>_get`/`_set` accessors doing the mask/shift
+  # math (matching Nim's registerMMIO macro) — the bug was that Odin/D field
+  # ACCESS SITES never called them, and emitted raw `.field` syntax instead
+  # (confirmed directly: `'DAC_CR' of type '^u32' has no field 'EN'`
+  # building example 20's own Odin output). No `runs` check here: a
+  # register's address is real MMIO hardware, unsafe to dereference on a
+  # test machine — codegen-shape coverage is what a raw pointer's semantics
+  # allow.
+  t.src """
+register CTRL at 0x40007400:
+  EN: bit 0 [read, write]
+  MODE: bits 3..5 [read, write]
+
+fn main() -> int:
+  CTRL ..EN {true}
+  let en = CTRL.EN
+  CTRL ..MODE {5}
+  let m = CTRL.MODE
+  return 0
+"""
+  t.emitsOdin "register: a chain-mutate write calls the generated setter",
+              r"tuck_CTRL_EN_set\(true\)"
+  t.emitsOdin "register: a plain read calls the generated getter",
+              r"tuck_CTRL_EN_get\(\)"
+  t.omitsOdin "register: never raw field syntax on the pointer",
+              r"CTRL\.EN"
+  t.emitsD "register: a chain-mutate write calls the generated setter",
+           r"tuck_CTRL_EN_set\(true\)"
+  t.emitsD "register: a plain read calls the generated getter",
+           r"tuck_CTRL_EN_get\(\)"
+  t.omitsD "register: never raw field syntax on the pointer",
+           r"CTRL\.EN"
+
   t.src """
 register RCC at 0x40021000:
   ON: bit 0 [read, write]

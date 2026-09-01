@@ -804,6 +804,29 @@ proc registerFieldAccess(m: Module, regName, fieldName: string):
       return (true, sawRead, sawWrite)
   (false, false, false)
 
+proc registerFieldType(m: Module, regName, fieldName: string, span: Span): Type =
+  ## A register field's type — matching what the generated accessor
+  ## actually returns (genRegister/genDRegister's bitGetter/dBitGetter): a
+  ## single `bit N` reads as `bool`, a `bits LO..HI` range reads as `u32`.
+  ##
+  ## Without this, `DAC_CR.EN` fell through synthVar's ordinary bare-name
+  ## resolution — a register is a DECLARATION, not a local, fn or sum
+  ## variant, so it silently became `unknownType`, the exact fallback
+  ## `discard` was riding (see synthBareVariant). Harmless for Nim (no
+  ## explicit type needed) and Odin (`:=` infers from the accessor call's
+  ## own native return type), but D's "never `auto`, state the checker's
+  ## type explicitly" policy turns it into a real failure: `let en =
+  ## DAC_CR.EN` had no type to declare `en` with.
+  for d in m.decls:
+    if d == nil or d.kind != dkRegister or d.name != regName: continue
+    for f in d.regFields:
+      if f.name != fieldName: continue
+      let (lo, hi, ok) = regBits(f)
+      if not ok: return unknownType(span)
+      return Type(span: span, kind: tkNamed,
+                  name: (if lo == hi: "bool" else: "u32"))
+  nil
+
 proc failIfRegisterAccess(tc: var TypeChecker, e: Expr) =
   ## spec 8.1: "Writing to a read-only field is a compile error. Reading a
   ## write-only field is a compile error." Neither was one — a `[read]` field
@@ -837,6 +860,9 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   ## interface dispatch. Try them in two groups: what the syntax alone can
   ## settle, then what needs the receiver's type.
   tc.failIfRegisterAccess(e)   # spec 8.1: no reading a [write] field
+  if e.receiver != nil and e.receiver.kind == exkVar:
+    let regT = registerFieldType(tc.module, e.receiver.name, e.fieldName, e.span)
+    if regT != nil: return regT
   result = tc.syntacticFieldForm(e)
   if result != nil: return
   let rawT = tc.synthesize(e.receiver)

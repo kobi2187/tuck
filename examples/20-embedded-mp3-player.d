@@ -107,7 +107,7 @@ rt.TuckResult!(rt.TuckUnit) tuck_streamReader(ubyte streamId, uint[] chunks) {
         if (!(buf.status == rt.TuckStatus.Ok)) {
             return;
         }
-        tuck_DMA1_CH3.EN = true;
+        tuck_DMA1_CH3_EN_set(true);
         rt.release(tuck_BufferPool, buf.value);
     }
     return typeof(return).init;
@@ -136,12 +136,12 @@ void handleMsg_tuck_Decoder(ref tuck_Decoder self, tuck_DecoderMsg msg) {
             case tuck_PlayerStateKind.Idle:
                 self.state = tuck_PlayerState(tuck_PlayerStateKind.Decoding, tuck_PlayerState_Decoding(sampleRate: rate));
                 PlaybackStarted(tuck_SystemEvents.raise);
-                tuck_DAC_CR.EN = true;
+                tuck_DAC_CR_EN_set(true);
                 break;
             case tuck_PlayerStateKind.Paused:
                 self.state = tuck_PlayerState(tuck_PlayerStateKind.Decoding, tuck_PlayerState_Decoding(sampleRate: rate));
                 PlaybackStarted(tuck_SystemEvents.raise);
-                tuck_DAC_CR.EN = true;
+                tuck_DAC_CR_EN_set(true);
                 break;
             case tuck_PlayerStateKind.Decoding:
                 break;
@@ -157,12 +157,12 @@ void handleMsg_tuck_Decoder(ref tuck_Decoder self, tuck_DecoderMsg msg) {
             case tuck_PlayerStateKind.Paused:
                 break;
             }
-            tuck_DAC_CR.EN = false;
+            tuck_DAC_CR_EN_set(false);
             break;
         case tuck_DecoderMsgKind.msgStop:
             self.state = tuck_PlayerState(tuck_PlayerStateKind.Idle);
             PlaybackStopped(tuck_SystemEvents.raise);
-            tuck_DAC_CR.EN = false;
+            tuck_DAC_CR_EN_set(false);
             break;
     }
 }
@@ -196,16 +196,16 @@ void sendStop_tuck_Decoder(ref tuck_Decoder self) {
 static assert((tuck_Volume.sizeof == 1));
 
 void tuck_SystemEvents_PlaybackStarted() {
-    tuck_DAC_CR.EN = true;
+    tuck_DAC_CR_EN_set(true);
 }
 
 void tuck_SystemEvents_PlaybackStopped() {
-    tuck_DAC_CR.EN = false;
+    tuck_DAC_CR_EN_set(false);
 }
 
 void tuck_SystemEvents_HardwareError(ubyte code) {
     ubyte failed = code;
-    tuck_DAC_CR.EN = false;
+    tuck_DAC_CR_EN_set(false);
 }
 
 void tuck_main() {
