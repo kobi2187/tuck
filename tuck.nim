@@ -39,7 +39,7 @@
 # unimplemented, so the program still compiles AND runs. You can sketch an
 # entire design in types, run it end to end, then fill in bodies one at a time.
 # The PENDING block printed after a check is that list.
-import os, strutils, times, tables, std/json, osproc
+import os, strutils, times, tables, std/json, osproc, std/sets
 import jsony
 import lexer
 import compiler/ast
@@ -878,6 +878,12 @@ when isMainModule:
           # walkDirRec over outDir also picked up Nim's .nimcache objects and
           # any stale build product, which made the dmd link fail with
           # duplicate and foreign symbols (observed, not theorised).
+          # One `extern [... lib: "x.c"]:` block commonly declares several
+          # fns sharing that one C source (point.c's counterBump AND
+          # counterFree, say) — collect by unique OBJECT PATH, not once per
+          # matching fn, or the same .o rides the dmd command line twice and
+          # the linker sees every symbol in it twice ("multiple definition").
+          var seenObjs: HashSet[string]
           var cObjs = ""
           for d in m.decls:
             if d == nil or d.kind != dkExtern: continue
@@ -885,7 +891,10 @@ when isMainModule:
               if mem.kind != dkFn or not mem.isExtern: continue
               if not mem.externLib.endsWith(".c"): continue
               let obj = outDir / mem.externLib.changeFileExt("o")
-              if fileExists(obj): cObjs.add(" " & quoteShell(obj))
+              if obj in seenObjs: continue
+              if fileExists(obj):
+                seenObjs.incl(obj)
+                cObjs.add(" " & quoteShell(obj))
           # The coroutine engine's C archive, linked when it is present —
           # dmd -i pulls in tuck_coro.d, whose extern(C) declarations this
           # resolves.

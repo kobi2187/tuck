@@ -23,6 +23,7 @@ tests/auto_alias_out/
 examples/*.bf
 compiler/tuckrt/minicoro.a
 tests/odin_out/
+tests/d_out/
 tests/escape_solver
 tests/interface_repr_slice
 compiler/escape
