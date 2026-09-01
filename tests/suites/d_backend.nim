@@ -457,6 +457,28 @@ fn main() -> int:
            r"= \(\[7, 8, 9\]\)\.dup"
   t.runsD "seam: writing b still never writes a (7+50)", 57, dmdExe
 
+  # A D struct copies field-for-field, so a Seq-typed FIELD's copy is only
+  # the slice header — the SAME aliasing hazard as a bare Seq assignment,
+  # one level down. Found by direct probe (no example exercised this):
+  # `b = a` on a record with a Seq field let `b.items[0] = 999` also write
+  # through `a.items[0]`.
+  t.src """
+import seq
+
+type Bag:
+  tag: int
+  items: Seq[int]
+
+fn main() -> int:
+  var a = {tag: 1, items: [10, 20, 30]} Bag
+  var b = a
+  b.items[0] = 999
+  return a.items[0]
+"""
+  t.emitsD "seam: a record's Seq FIELD is dup'd too, not just a bare Seq",
+           r"tuckRecDup\d+\.items = tuckRecDup\d+\.items\.dup;"
+  t.runsD "seam: writing b.items never writes a.items (still 10)", 10, dmdExe
+
   # --- decision tables (spec 6.1) ----------------------------------------
   # The combinatorics come from codegen_table, shared with the other two
   # backends; only the spelling is D's. Enumerable columns collapse to one

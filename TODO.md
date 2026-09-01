@@ -200,10 +200,25 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   property (`T.sizeof`) instead of the call syntax dmd rejects. Odin's own
   `sizeof(x)` emission is STILL wrong (real Odin spelling is `size_of(T)`)
   — unfixed there since no example has reached that line yet (see below).
-- [ ] **[read] Records containing a `Seq` field shallow-copy the slice.**
-  Assignment `.dup`s a bare Seq, but a record holding one is copied
-  field-wise and the slice inside is shared. Needs a probe and a per-field
-  dup (or a postblit).
+- [x] **FIXED 2026-09-01** — records containing a `Seq` field shallow-copied
+  the slice: assignment `.dup`'d a bare Seq, but a record holding one was
+  copied field-wise and the slice inside was shared (confirmed by direct
+  probe: `b = a; b.items[0] = 999` also changed `a.items[0]`, disguised by
+  exit-code truncation — 999 mod 256 = 231, easy to misread as a different
+  bug). Fixed with a per-field dup at the marking pass (lowering_d.nim's
+  `markSeqCopies`/`seqFieldNames`), not a postblit: extends the existing
+  `.dup`-marking seam rather than introducing a second mechanism. The
+  emitter rebuilds the record through a temp (`(() { auto t = <val>; t.f =
+  t.f.dup; return t; })()`) so a call-valued RHS is evaluated once, not
+  once per Seq field. `seqElem` (was duplicated between codegen_d.nim and
+  lowering_d.nim as `seqElemT`) moved to ast_query.nim as the one shared
+  predicate. One known imprecision, accepted rather than chased: a fresh
+  `{fields} TypeName` construction parses as an exkCall (payload-call
+  syntax) with no "this is fresh" node kind to exempt it the way a bare
+  `[1,2,3]` list literal already is — so a freshly-constructed record with
+  a Seq field pays one redundant `.dup` (correctness over the extra
+  allocation, not a wrong answer). `d_backend` gained two regression
+  assertions (emitsD + runsD).
 - [ ] **[read] Registers are not `volatile`.** D has no volatile qualifier;
   `core.volatile`'s load/store are the supported spelling. Correct for the
   examples, wrong for a real embedded target.
