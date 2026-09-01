@@ -900,8 +900,26 @@ when isMainModule:
           # resolves.
           let mcoA = outDir / "minicoro.a"
           let mcoArg = if fileExists(mcoA): " " & quoteShell(mcoA) else: ""
+          # `impl: d "..."` modules. Unlike Nim's `import ./shim/x` or
+          # Odin's `import "./shim"` (both a path baked into the import
+          # itself), a D `import` is a bare module name resolved only
+          # through `-I` search paths — so the shim's directory rides the
+          # dmd command line instead of anything rebased or copied. `m` here
+          # is the pre-rebase tree (shared across all three backends' build
+          # phase), so `module` is still author-relative to `path`, exactly
+          # like `externLib` above.
+          var implDirs: HashSet[string]
+          for d in m.decls:
+            if d == nil or d.kind != dkExtern: continue
+            for mem in d.mixinMembers:
+              if mem.kind != dkFn or not mem.isExtern: continue
+              for (backend, module) in mem.externImpl:
+                if backend != "d": continue
+                implDirs.incl(parentDir(path) / module.parentDir())
+          var implIArgs = ""
+          for dir in implDirs: implIArgs.add(" -I" & quoteShell(dir))
           let dCmd = quoteShell(dmdExe) & " -i" & dOpt &
-                     " -I" & quoteShell(outDir) &
+                     " -I" & quoteShell(outDir) & implIArgs &
                      " -of=" & quoteShell(dBin) & " " &
                      quoteShell(outDir / (base & ".d")) & cObjs & mcoArg
           let dT0 = epochTime()

@@ -532,6 +532,22 @@ fn main() -> int:
            r"extern \(C\) enum CMode \{ MODE_A = 3, MODE_B = 7 \}"
   t.runsD "ffi: a program binding libm builds and runs", 0, dmdExe
 
+  # The third kind: `impl: <backend> "module"` — bodies live in a
+  # hand-written module per backend, not tuck_rt and not a real C header.
+  # Emit-only (no runsD): a real end-to-end build+run of this shape is
+  # 34-ffi-cstring, in the example sweep below.
+  t.src """
+extern [impl: d "./shim/whatever"]:
+  fn zlibVersion() -> str
+
+fn main() -> int:
+  return 0
+"""
+  t.emitsD "ffi: an impl: d shim imports the aliased module by bare name",
+           r"import whatever;"
+  t.emitsD "ffi: ...and the forwarder calls into it, not the runtime",
+           r"return whatever\.zlibVersion\(\);"
+
   # An opaque handle: `type H = {}` is a typedef with no definition, so its
   # size is unknown and it can only be held as a pointer.
   t.src """
@@ -896,20 +912,14 @@ fn main() -> int [io]:
   # Examples with a known exit code — RUN, not merely compile. Mirrors
   # odin_backend's odinRun (see there for what each program computes).
   #
-  # NOT yet included: 34-ffi-cstring. `zlibVersion` is declared
-  # `impl: nim "./shim/zlib_shim", odin "./shim"` — a per-backend shim, no
-  # header binding — and there is no `impl: d "..."` entry. This is NOT a
-  # bug: dExternTodo (codegen_d.nim) correctly refuses to emit a binding
-  # when no `d` impl exists, so `tuck c` succeeds (nothing calls it yet)
-  # and `tuck b`/dmd fails loudly the moment main() does, naming the
-  # missing symbol — exactly the designed behaviour for an unimplemented
-  # shim. Closing this needs real `impl: d` support in codegen_d.nim
-  # (import + forwarder generation, mirroring genImplForwarders in
-  # codegen_odin.nim) plus a written examples/shim/zlib_shim.d — a real
-  # feature, not a fix, and not attempted here.
+  # 34-ffi-cstring: `zlibVersion` is `impl: nim "./shim/zlib_shim",
+  # odin "./shim", d "./shim/zlib_shim"` — real `impl: d` support landed in
+  # codegen_d.nim (genDImplFwd + implMods, mirroring genImplForwarders in
+  # codegen_odin.nim) and examples/shim/zlib_shim.d, so this is no longer
+  # the unimplemented-shim gap it used to be.
   const dRun = """26-actor-run:55 27-actor-select:55 31-fnsig-callback:42
-33-ffi-zlib:0 35-ffi-struct:0 36-ffi-enum-callback:0 37-ffi-handle:0
-28-async-task:42 38-division:0 39-if-match-expr:0
+33-ffi-zlib:0 34-ffi-cstring:0 35-ffi-struct:0 36-ffi-enum-callback:0
+37-ffi-handle:0 28-async-task:42 38-division:0 39-if-match-expr:0
 40-saturating:0 41-tostr-concat:0 24-stdlib:0 29-task-timeout:2
 30-async-read:1"""
 

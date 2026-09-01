@@ -271,17 +271,22 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   found only by actually running the sweep's build+run step, not by
   reading the code. All three now build and run (exit 0), added to
   `d_backend`'s `dRun` list.
-- [ ] **NOT a bug — a missing feature.** 34-ffi-cstring's `zlibVersion`
-  is declared `impl: nim "./shim/zlib_shim", odin "./shim"` with no
-  `impl: d "..."` entry. `dExternTodo` (codegen_d.nim) correctly refuses
-  to emit a binding when no `d` impl exists, so `tuck c` succeeds and
-  `tuck b`/dmd fails loudly the moment `main()` calls it, naming the
-  missing symbol — exactly the designed behaviour for an unimplemented
-  shim, not a defect. Closing this needs real `impl: d` support in
-  codegen_d.nim (import + forwarder generation, mirroring
-  `genImplForwarders` in codegen_odin.nim: an aliased `import <alias> =
-  <module>;` plus a wrapper fn calling `<alias>.<name>(...)`) and a
-  written `examples/shim/zlib_shim.d` — sized but not started.
+- [x] **FIXED 2026-09-01** — `impl: d "..."` shim support landed in
+  codegen_d.nim: `genDImplFwd` (a forwarder calling `<alias>.<name>(...)`,
+  mirroring `genImplForwarders` in codegen_odin.nim) and `implMods` (alias
+  -> module, feeding `dImports`'s `import <alias>;` line). Unlike Nim's
+  `import ./shim/x` or Odin's `import "./shim"` — both a path baked into
+  the import itself — a D `import` is a bare module name resolved only
+  through `-I` search paths, so there is nothing to rebase or copy: the
+  shim's directory rides `tuck.nim`'s dmd command line as an extra `-I`
+  instead (computed from the pre-rebase tree, exactly like the existing
+  `.c`-object handling does for `externLib`). `examples/34-ffi-cstring.tuck`
+  gained a `d "./shim/zlib_shim"` entry alongside its existing `nim`/`odin`
+  ones, and `examples/shim/zlib_shim.d` was written (D's own FFI spelling:
+  `pragma(mangle, "zlibVersion")` + `fromStringz(...).idup`). Verified:
+  builds and runs (prints the real libz version, exit 0), added to
+  `d_backend`'s `dRun` list; two `emitsD` regressions added for the
+  import/forwarder shape.
 - [ ] **[repro] Example 20 is unverified on every backend past emit.**
   Chasing its D build (match-statement fix, then sizeof) surfaced two
   more blockers, both cross-backend and neither D-specific:

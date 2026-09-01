@@ -17,7 +17,7 @@
 import sys
 import console
 
-extern [impl: nim "./shim/zlib_shim", odin "./shim"]:
+extern [impl: nim "./shim/zlib_shim", odin "./shim", d "./shim/zlib_shim"]:
   fn zlibVersion() -> str
 
 extern [c, header: "zlib.h", lib: "z"]:

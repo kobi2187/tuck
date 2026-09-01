@@ -57,6 +57,8 @@ type
                      # emit hot path (measured — see decl_index.nim)
     cLibs: HashSet[string]  # `lib:` specs from C-FFI extern blocks; each
                             # becomes a pragma(lib) at module top level
+    implMods: Table[string, string]  # `impl: d "..."` alias -> module path,
+                            # mirrors codegen_odin.nim's implMods
     errPolicy: string       # from the `errors` declaration; "" = strict.
                             # Only continue/exit reach codegen at all —
                             # strict is a COMPILE ERROR the checker raises,
@@ -88,6 +90,12 @@ proc dHandlerFnName*(name: string): string =
   ## identifier — the dot becomes an underscore, matching the name the raise
   ## proc calls.
   name.replace(".", "_")
+
+proc dImplAlias*(module: string): string =
+  ## Module alias for an `impl: d "..."` spec — the file's own D module
+  ## name, which is just the last path segment. Mirrors codegen_odin.nim's
+  ## implAlias, minus the ':' handling: D import paths use only '/'.
+  if '/' in module: module.rsplit('/', 1)[^1] else: module
 
 proc dAlias*(moduleName: string): string =
   ## A Tuck module's name as a D identifier — the import alias at a use site
@@ -1995,10 +2003,29 @@ proc externShapeArg(ctx: var DCodegenCtx, ret: Type, retStr: string): string =
     return "!(rt.TuckResult!(" & ctx.dType(payload) & "))"
   ""
 
+proc genDImplFwd(ctx: var DCodegenCtx, mem: Decl, module: string): string =
+  ## `impl: d "..."` — the bodies live in a named D module rather than the
+  ## runtime. Mirrors genImplForwarders (codegen_odin.nim): a local
+  ## forwarder into the aliased module, so call sites read exactly like
+  ## Nim's/Odin's own bare-name reach. `tuck.nim`'s D build step adds the
+  ## module's directory as an extra dmd `-I`, since a D `import` is a bare
+  ## module name, not a path — there is nothing to rebase or copy here.
+  let alias = dImplAlias(module)
+  ctx.implMods[alias] = module
+  let retStr = ctx.dType(mem.fnReturnType)
+  var args: seq[string]
+  for p in mem.fnParams: args.add(p.name)
+  let call = alias & "." & mem.name & "(" & args.join(", ") & ")"
+  let body = if retStr == "void": call else: "return " & call
+  retStr & " " & mem.name & "(" & ctx.genDParams(mem.fnParams) & ") {\n" &
+    "    " & body & ";\n" & "}\n"
+
 proc genDExternFwd(ctx: var DCodegenCtx, mem: Decl): string =
   ## An rt-implemented extern emits a forwarder calling `rt.<name>` — D has
   ## no cross-module scope merge that would make the bare name resolve.
   if mem.kind != dkFn: return ""
+  for (backend, module) in mem.externImpl:
+    if backend == "d": return ctx.genDImplFwd(mem, module)
   let todo = dExternTodo(mem)
   if todo != "": return todo
   # A C-header extern binds a real symbol rather than forwarding to tuck_rt.
@@ -2312,6 +2339,12 @@ proc dImports(ctx: DCodegenCtx, body, mains: string,
     let alias = dAlias(modName)
     if usesSymbol(code, alias):
       result.add("import " & alias & " = mod_" & alias & ";")
+  # `impl: d "..."` modules — a bare module name, unlike Nim's/Odin's own
+  # relative-path imports, so tuck.nim's build step resolves it with an
+  # extra dmd `-I` rather than anything rebased or copied here.
+  for alias in ctx.implMods.keys:
+    if usesSymbol(code, alias):
+      result.add("import " & alias & ";")
 
 proc mainDeclD(m: Module): Decl =
   let tuckMain = mangleName("main")
