@@ -93,6 +93,7 @@ run). Writes beside the source file, or into -o:DIR if given.
   --root:DIR   import search base (for std/ and sibling modules)
   --target:NAME  select which `when TARGET == "NAME":` blocks compile in
   --verify-stages  run extra pipeline-ordering assertions (off by default)
+  -v, --verbose  echo before/after every pipeline stage, with its own timing
   -O:PASS[,...]  choose optimization passes; `-O:none` disables them all
   --max-complexity:N, --max-fn-lines:N  per-function size budget
 
@@ -179,6 +180,8 @@ options:
   --verify-stages (compile/build) run diagnostic assertions checking a tree
                 carries what the next pipeline stage needs (off by default —
                 see compiler/pipeline.nim).
+  -v, --verbose (check/compile/build) echo before/after every named
+                pipeline stage (compiler/pipeline.nim), timing each one.
   --stage:X     (dump) which stage to stop at: lex, parse, load,
                 inject-types, typecheck, verify-effects, mangle, lowering,
                 emitting (default: emitting). lowering/emitting use the
@@ -230,6 +233,18 @@ proc dieSyntax(err: ref SyntaxError) {.noreturn.} =
 
 proc elapsedMs(t0: float): string =
   formatFloat((epochTime() - t0) * 1000, ffDecimal, 1) & " ms"
+
+# `-v` — echo before and after every named pipeline stage (compiler/pipeline.nim),
+# timing each one. Off by default: this is diagnostic, not something every
+# check/compile/build should print.
+var verboseMode = false
+
+proc vBegin(stage: PipelineStage): float =
+  if verboseMode: stderr.writeLine "-- " & $stage & " starting"
+  epochTime()
+
+proc vEnd(stage: PipelineStage, t0: float) =
+  if verboseMode: stderr.writeLine "-- " & $stage & " done (" & elapsedMs(t0) & ")"
 
 # Pick the quickest C backend available that can build the runtime.
 proc pickFastCC(): string =
@@ -308,6 +323,8 @@ proc loadOrDie(path: string, needBodies: bool):
   ## Load the program and its import closure. Without bodies the signature
   ## index answers for the imports, which is what makes `check` cheap.
   var sigOnly = initTable[string, IndexEntry]()
+  let t0 = vBegin(psLoad)
+  defer: vEnd(psLoad, t0)
   try:
     if needBodies: return (loadProgram(path), sigOnly)
     return loadProgramIndexed(path)
@@ -347,6 +364,8 @@ proc typecheckOnly(path: string, loaded: seq[LoadedModule],
   for lm in loaded: mods.add((lm.name, lm.path, lm.m))
   var preSigs = initTable[string, seq[SigInfo]]()
   for name, e in sigOnly: preSigs[name] = e.sigs
+  let t0 = vBegin(psTypecheck)
+  defer: vEnd(psTypecheck, t0)
   try:
     result = typecheckProgram(mods, preSigs)
   except SemanticError as err:
@@ -361,6 +380,8 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   ## call-site marks are wiped before codegen reads them.
   result = typecheckOnly(path, loaded, sigOnly)
   let imported = importedEffects(loaded, sigOnly)
+  let t0 = vBegin(psVerifyEffects)
+  defer: vEnd(psVerifyEffects, t0)
   try:
     for lm in loaded: verifyModuleEffects(lm.m, imported)
     if verifyStages:
@@ -441,7 +462,10 @@ proc checkProgram(path: string, needBodies = false,
   var sigOnly: Table[string, IndexEntry]
   (result, sigOnly) = loadOrDie(path, needBodies)
   for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
-  injectImportedTypes(result)  # imported types are visible unqualified
+  block:
+    let t0 = vBegin(psInjectTypes)
+    injectImportedTypes(result)  # imported types are visible unqualified
+    vEnd(psInjectTypes, t0)
   let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
   # program checked clean: refresh the signature index for future checks
   updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
@@ -563,6 +587,7 @@ when isMainModule:
   # `--release` promotes the size report from a list to a failure. Read here
   # rather than in the build arm because the check runs before it.
   sizeIsError = "--release" in opts
+  verboseMode = "-v" in opts or "--verbose" in opts
   let t0 = epochTime()
 
   case cmd
@@ -692,7 +717,10 @@ when isMainModule:
     let optHits = optimizeProgram(progMods, optPasses)
     if optReport:
       report("OPTIMIZED", "site(s) rewritten", optHits)
-    mangleProgram(progMods)
+    block:
+      let t0 = vBegin(psMangle)
+      mangleProgram(progMods)
+      vEnd(psMangle, t0)
     if verifyStages: assertMangleIdempotent(progMods)
     # Each backend lowers its OWN copy: lowering and the emitters both mutate
     # the tree (injectTailReturn), so a shared one would hand Beef whatever
@@ -713,14 +741,20 @@ when isMainModule:
       # ("std/strutils", "core:strings") is a target-language module name and
       # rides through.
       for lm in nimProg: rebaseImplPaths(lm, "nim", outDir)
-      # imported modules first (each its own Nim file), entry module last
-      for lm in nimProg:
-        lowerModule(lm.m)
-        let isEntry = lm.path == nimProg[^1].path
-        let outName = if isEntry: base else: lm.name
-        let nimPath = outDir / (outName & ".nim")
-        writeFile(nimPath, emitNim(lm.m, rtImport, nimReal, outName))
-        echo "wrote ", nimPath
+      block:
+        let t0 = vBegin(psLowering)
+        for lm in nimProg: lowerModule(lm.m)
+        vEnd(psLowering, t0)
+      block:
+        let t0 = vBegin(psEmitting)
+        # imported modules first (each its own Nim file), entry module last
+        for lm in nimProg:
+          let isEntry = lm.path == nimProg[^1].path
+          let outName = if isEntry: base else: lm.name
+          let nimPath = outDir / (outName & ".nim")
+          writeFile(nimPath, emitNim(lm.m, rtImport, nimReal, outName))
+          echo "wrote ", nimPath
+        vEnd(psEmitting, t0)
       if verifyStages:
         var nimMods: seq[Module]
         for lm in nimProg: nimMods.add(lm.m)
@@ -732,23 +766,28 @@ when isMainModule:
       var odReal = initTable[string, Module]()
       for lm in odProg[0 ..< odProg.high]: odReal[lm.name] = lm.m
       for lm in odProg: rebaseImplPaths(lm, "odin", outDir)
-      for lm in odProg:
-        lowerModule(lm.m)
+      block:
+        let t0 = vBegin(psLowering)
+        for lm in odProg: lowerModule(lm.m)
+        vEnd(psLowering, t0)
       if verifyStages:
         var odMods: seq[Module]
         for lm in odProg: odMods.add(lm.m)
         assertNoChainFedCalls(odMods)
-      for lm in odProg[0 ..< odProg.high]:
-        # Odin packages are DIRECTORIES: an imported module becomes
-        # mod_<name>/<name>.odin so `import fs "./mod_fs"` resolves.
-        let modDir = outDir / ("mod_" & lm.name.replace("-", "_"))
-        createDir(modDir)
-        let modOdPath = modDir / (lm.name.replace("-", "_") & ".odin")
-        writeFile(modOdPath, emitOdinModule(lm.name, lm.m, odReal))
-        echo "wrote ", modOdPath
-      let odPath = outDir / (base & ".odin")
-      writeFile(odPath, emitOdin(odProg[^1].m, odReal, base))
-      echo "wrote ", odPath
+      block:
+        let t0 = vBegin(psEmitting)
+        for lm in odProg[0 ..< odProg.high]:
+          # Odin packages are DIRECTORIES: an imported module becomes
+          # mod_<name>/<name>.odin so `import fs "./mod_fs"` resolves.
+          let modDir = outDir / ("mod_" & lm.name.replace("-", "_"))
+          createDir(modDir)
+          let modOdPath = modDir / (lm.name.replace("-", "_") & ".odin")
+          writeFile(modOdPath, emitOdinModule(lm.name, lm.m, odReal))
+          echo "wrote ", modOdPath
+        let odPath = outDir / (base & ".odin")
+        writeFile(odPath, emitOdin(odProg[^1].m, odReal, base))
+        echo "wrote ", odPath
+        vEnd(psEmitting, t0)
       # The emitted package imports `./tuckrt`, so the runtime rides along.
       let rtSrc = getAppDir() / "compiler" / "tuckrt"
       if dirExists(rtSrc):
@@ -788,24 +827,30 @@ when isMainModule:
       var dReal = initTable[string, Module]()
       for lm in dProg[0 ..< dProg.high]: dReal[lm.name] = lm.m
       for lm in dProg: rebaseImplPaths(lm, "d", outDir)
-      for lm in dProg:
-        lowerModule(lm.m)
-        # ...then the D backend's OWN lowering, on its private copy. Target
-        # semantics that differ from Tuck's (a D slice aliases where a Tuck
-        # Seq copies) are settled here as tree marks, so the emitter is left
-        # printing rather than deciding.
-        lowerModuleD(lm.m)
+      block:
+        let t0 = vBegin(psLowering)
+        for lm in dProg:
+          lowerModule(lm.m)
+          # ...then the D backend's OWN lowering, on its private copy. Target
+          # semantics that differ from Tuck's (a D slice aliases where a Tuck
+          # Seq copies) are settled here as tree marks, so the emitter is left
+          # printing rather than deciding.
+          lowerModuleD(lm.m)
+        vEnd(psLowering, t0)
       if verifyStages:
         var dMods: seq[Module]
         for lm in dProg: dMods.add(lm.m)
         assertNoChainFedCalls(dMods)
-      for lm in dProg[0 ..< dProg.high]:
-        let modDPath = outDir / ("mod_" & lm.name.replace("-", "_") & ".d")
-        writeFile(modDPath, emitDModule(lm.name, lm.m, dReal))
-        echo "wrote ", modDPath
-      let dPath = outDir / (base & ".d")
-      writeFile(dPath, emitD(dProg[^1].m, dReal, base))
-      echo "wrote ", dPath
+      block:
+        let t0 = vBegin(psEmitting)
+        for lm in dProg[0 ..< dProg.high]:
+          let modDPath = outDir / ("mod_" & lm.name.replace("-", "_") & ".d")
+          writeFile(modDPath, emitDModule(lm.name, lm.m, dReal))
+          echo "wrote ", modDPath
+        let dPath = outDir / (base & ".d")
+        writeFile(dPath, emitD(dProg[^1].m, dReal, base))
+        echo "wrote ", dPath
+        vEnd(psEmitting, t0)
       # A vendored `.c` an extern block binds: compile it to an object the
       # dmd link step picks up. Same step the Odin path takes above — dmd,
       # like odin, does not compile C itself.

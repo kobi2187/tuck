@@ -663,14 +663,24 @@ the call path. `value_semantics.nim:391` uses this exact shape and only
   file), `tuck explain TK-TY05`, bare `tuck` — each prints what it should
   and exits 0 or 2 correctly. `./tests/run` green (CLI usage text isn't
   asserted on anywhere).
-  Still open, same ask, NOT done: **`tuck build`/`tuck c` verbose flag**
-  (`-v`, report every stage and operation as it runs) — no verbosity flag
-  exists at all (confirmed: `grep -n "verbose"` in `tuck.nim` finds
-  nothing). Not designed —
-  would presumably hook the same `PipelineStage` enum the `--verify-stages`
-  work already introduced (`compiler/pipeline.nim`), echoing a line per
-  stage transition rather than (or alongside) running the verification
-  assertions.
+- [x] **FIXED 2026-09-01** — `-v`/`--verbose`: echoes "starting"/"done
+  (Xms)" around each of the 7 named `PipelineStage`s (`compiler/pipeline.nim`)
+  a run actually executes, off by default. Landed as a `verboseMode` global
+  + `vBegin`/`vEnd(stage)` helpers in `tuck.nim`, wired into the shared
+  `loadOrDie`/`checkProgram`/`checkOrDie`/`typecheckOnly` procs (so `check`,
+  `compile` and `build` all get psLoad/psInjectTypes/psTypecheck/
+  psVerifyEffects for free) plus psMangle/psLowering/psEmitting in the
+  compile/build backend arms. The Nim arm's lowering+emit used to be ONE
+  interleaved per-module loop; split into two loops (lower all, then emit
+  all) to give each stage its own timing — verified behavior-unchanged
+  (each module's lowering was already independent of another's emit).
+  Verified by hand: `-v` on `check`/`compile`(all 3 backends)/`build` prints
+  exactly the stages that ran for that command, nothing without the flag.
+  `./tests/run` green (no test asserts on this stderr output).
+  NOT done, out of scope for this entry: the final native-compiler
+  invocation (`nim c`/`odin build`/`dmd`) is not a named `PipelineStage`
+  and was left alone — it already prints its own unconditional "built ...
+  (Xms)" line regardless of `-v`.
 - [ ] **Registry: multiple handlers per event (C#-delegate-style).**
   Confirmed live (2026-09-01, chasing the registry-raise bug above): a
   second `on Registry.Event(...):` for the SAME event is rejected today
