@@ -28,7 +28,7 @@ import lowering                # getFieldsForType
 # appears they should move to a backend-neutral module.
 from codegen_odin_util import odinErrCode, enumTagOwner
 from mangle import mangleName
-from lowering_d import needsDup
+from lowering_d import needsDup, recordDupFields
 
 type
   DCodegenCtx = object
@@ -57,6 +57,8 @@ type
                      # emit hot path (measured — see decl_index.nim)
     cLibs: HashSet[string]  # `lib:` specs from C-FFI extern blocks; each
                             # becomes a pragma(lib) at module top level
+    implMods: Table[string, string]  # `impl: d "..."` alias -> module path,
+                            # mirrors codegen_odin.nim's implMods
     errPolicy: string       # from the `errors` declaration; "" = strict.
                             # Only continue/exit reach codegen at all —
                             # strict is a COMPILE ERROR the checker raises,
@@ -89,6 +91,12 @@ proc dHandlerFnName*(name: string): string =
   ## proc calls.
   name.replace(".", "_")
 
+proc dImplAlias*(module: string): string =
+  ## Module alias for an `impl: d "..."` spec — the file's own D module
+  ## name, which is just the last path segment. Mirrors codegen_odin.nim's
+  ## implAlias, minus the ':' handling: D import paths use only '/'.
+  if '/' in module: module.rsplit('/', 1)[^1] else: module
+
 proc dAlias*(moduleName: string): string =
   ## A Tuck module's name as a D identifier — the import alias at a use site
   ## and the `mod_<alias>` file it comes from. One spelling rule in one
@@ -96,14 +104,6 @@ proc dAlias*(moduleName: string): string =
   ## named `net-http` ends up half-translated.
   moduleName.replace("-", "_")
 
-proc seqElem*(t: Type): Type =
-  ## The element type of a `Seq[T]`, or nil for anything else. One predicate
-  ## for the four places that used to re-test `tkApp and base.name == "Seq"`
-  ## by hand (type mapping, declaration types, .len, .dup).
-  if t != nil and t.kind == tkApp and t.base != nil and
-     t.base.kind == tkNamed and t.base.name == "Seq" and t.args.len == 1:
-    t.args[0]
-  else: nil
 
 proc bangInner*(t: Type): Type =
   ## The payload of a `!T` / `?T` / `!?T`, or nil when the type is plain.
@@ -936,14 +936,29 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
     if tag != "": return tag
   e.name
 
-proc dupIfSeq(valStr: string, e: Expr): string =
-  ## Wrap in `.dup` if THIS BACKEND'S LOWERING marked the node.
+proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
+  ## Wrap in `.dup` (a bare Seq), or reconstruct with per-field `.dup`s (a
+  ## record holding one or more Seq fields), if THIS BACKEND'S LOWERING
+  ## marked the node.
   ##
-  ## The decision — a D slice aliases where a Tuck Seq copies — is made in
-  ## lowering_d, not here; this reads the mark and prints. That split is the
-  ## point of the seam: the reasoning is inspectable and testable as a tree
-  ## pass, and the emitter stays a printer.
-  if needsDup(e): "(" & valStr & ").dup" else: valStr
+  ## The decision — a D slice aliases where a Tuck Seq copies, and a D
+  ## struct's bitwise field-for-field copy carries that aliasing one level
+  ## down into any Seq-typed FIELD — is made in lowering_d, not here; this
+  ## reads the mark and prints. That split is the point of the seam: the
+  ## reasoning is inspectable and testable as a tree pass, and the emitter
+  ## stays a printer.
+  if needsDup(e): return "(" & valStr & ").dup"
+  let fields = recordDupFields(e)
+  if fields.len == 0: return valStr
+  # A D struct has no `.dup` of its own (only a slice does), so the record
+  # is rebuilt: take the value once into a temp (never re-evaluate `valStr`
+  # — it may be a call), then `.dup` just the fields that need it.
+  ctx.tmpCounter.inc
+  let tmp = "tuckRecDup" & $ctx.tmpCounter
+  var fixups = ""
+  for f in fields: fixups.add(tmp & "." & f & " = " & tmp & "." & f & ".dup; ")
+  "(() { auto " & tmp & " = " & valStr & "; " & fixups & "return " & tmp &
+    "; })()"
 
 proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
   ## The imported module a call resolves into, or "" for a local one. A
@@ -1036,7 +1051,7 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   # await keyword.
   let bound = ctx.genDBoundTaskCall(e)
   if bound != "": return bound
-  let valStr = dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
+  let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   # A FIELD is never a new local: inside an actor handler `total += n`
   # assigns the singleton's field, so it must not be declared here.
   if e.target.kind == exkVar and e.target.name in ctx.fieldVars:
@@ -1988,10 +2003,29 @@ proc externShapeArg(ctx: var DCodegenCtx, ret: Type, retStr: string): string =
     return "!(rt.TuckResult!(" & ctx.dType(payload) & "))"
   ""
 
+proc genDImplFwd(ctx: var DCodegenCtx, mem: Decl, module: string): string =
+  ## `impl: d "..."` — the bodies live in a named D module rather than the
+  ## runtime. Mirrors genImplForwarders (codegen_odin.nim): a local
+  ## forwarder into the aliased module, so call sites read exactly like
+  ## Nim's/Odin's own bare-name reach. `tuck.nim`'s D build step adds the
+  ## module's directory as an extra dmd `-I`, since a D `import` is a bare
+  ## module name, not a path — there is nothing to rebase or copy here.
+  let alias = dImplAlias(module)
+  ctx.implMods[alias] = module
+  let retStr = ctx.dType(mem.fnReturnType)
+  var args: seq[string]
+  for p in mem.fnParams: args.add(p.name)
+  let call = alias & "." & mem.name & "(" & args.join(", ") & ")"
+  let body = if retStr == "void": call else: "return " & call
+  retStr & " " & mem.name & "(" & ctx.genDParams(mem.fnParams) & ") {\n" &
+    "    " & body & ";\n" & "}\n"
+
 proc genDExternFwd(ctx: var DCodegenCtx, mem: Decl): string =
   ## An rt-implemented extern emits a forwarder calling `rt.<name>` — D has
   ## no cross-module scope merge that would make the bare name resolve.
   if mem.kind != dkFn: return ""
+  for (backend, module) in mem.externImpl:
+    if backend == "d": return ctx.genDImplFwd(mem, module)
   let todo = dExternTodo(mem)
   if todo != "": return todo
   # A C-header extern binds a real symbol rather than forwarding to tuck_rt.
@@ -2305,6 +2339,12 @@ proc dImports(ctx: DCodegenCtx, body, mains: string,
     let alias = dAlias(modName)
     if usesSymbol(code, alias):
       result.add("import " & alias & " = mod_" & alias & ";")
+  # `impl: d "..."` modules — a bare module name, unlike Nim's/Odin's own
+  # relative-path imports, so tuck.nim's build step resolves it with an
+  # extra dmd `-I` rather than anything rebased or copied here.
+  for alias in ctx.implMods.keys:
+    if usesSymbol(code, alias):
+      result.add("import " & alias & ";")
 
 proc mainDeclD(m: Module): Decl =
   let tuckMain = mangleName("main")

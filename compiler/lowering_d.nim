@@ -22,21 +22,21 @@
 # What does NOT belong here: anything derived from checker facts, which every
 # backend needs identically. That is lowering.nim's job, and moving it here
 # would just re-create the duplication this pass exists to end.
-import ast, options, sets
+import ast, options, sets, tables
 import resolution
 import ast_query
-
-proc seqElemT(t: Type): Type =
-  ## The element type of a `Seq[T]`, or nil. Local copy of the emitter's
-  ## predicate: this pass sits BELOW codegen_d in the dependency order, so
-  ## it cannot import from it.
-  if t != nil and t.kind == tkApp and t.base != nil and
-     t.base.kind == tkNamed and t.base.name == "Seq" and t.args.len == 1:
-    t.args[0]
-  else: nil
+import lowering  # getFieldsForType
 
 proc isSeqValued(e: Expr): bool =
-  e != nil and seqElemT(semLayer.typeFor(e)) != nil
+  e != nil and seqElem(semLayer.typeFor(e)) != nil
+
+proc seqFieldNames(m: Module, t: Type): seq[string] =
+  ## Names of `t`'s fields whose own type is `Seq[T]` — a D struct copies by
+  ## value field-for-field, but a `T[]` field's copy is only the slice
+  ## HEADER, so any Seq field aliases across the copy exactly the way a bare
+  ## Seq assignment does. "" (never nil) when `t` is not a record at all.
+  for f in getFieldsForType(m, t):
+    if seqElem(f.typ) != nil: result.add(f.name)
 
 # `.dup` — the one place D's semantics genuinely differ from Tuck's.
 #
@@ -64,48 +64,75 @@ var dupSites: HashSet[NodeId]
   ## closure and must NOT be cleared between them — tuck.nim lowers every
   ## module before emitting any of them.
 
+var recordDupSites: Table[NodeId, seq[string]]
+  ## Same idea as `dupSites`, for a RECORD-valued expression that has one or
+  ## more Seq-typed fields: a D struct copies field-for-field, so the fields
+  ## NAMED HERE are exactly the ones whose copy is only a slice header and
+  ## needs `.dup` — the emitter reconstructs the record with those fields
+  ## replaced rather than appending a bare `.dup` (a D struct has no `.dup`
+  ## at all; only a slice does).
+
 proc needsDup*(e: Expr): bool =
-  ## Did this backend's lowering mark this expression as needing a copy?
+  ## Did this backend's lowering mark this expression as needing a bare
+  ## `.dup` (a Seq-valued expression copied by name)?
   e != nil and e.id.isSet and e.id in dupSites
 
-proc markSeqCopies(e: Expr) =
-  ## Mark every Seq-valued expression whose VALUE is being bound to a name,
-  ## so the emitter copies rather than aliases.
+proc recordDupFields*(e: Expr): seq[string] =
+  ## The Seq-typed field names this backend's lowering marked for a
+  ## per-field dup, or "" if `e` was not marked this way.
+  if e != nil and e.id.isSet and e.id in recordDupSites: recordDupSites[e.id]
+  else: @[]
+
+proc markSeqCopies(m: Module, e: Expr) =
+  ## Mark every Seq-valued OR Seq-field-holding expression whose VALUE is
+  ## being bound to a name, so the emitter copies rather than aliases.
   if e == nil: return
   case e.kind
   of exkAssign:
-    if e.assignVal != nil and e.assignVal.kind != exkList and
-       isSeqValued(e.assignVal):
-      ensureId(e.assignVal)
-      dupSites.incl(e.assignVal.id)
-    markSeqCopies(e.target)
-    markSeqCopies(e.assignVal)
+    if e.assignVal != nil and e.assignVal.kind != exkList:
+      if isSeqValued(e.assignVal):
+        ensureId(e.assignVal)
+        dupSites.incl(e.assignVal.id)
+      else:
+        # `{fields} TypeName` (a record construction) parses as an exkCall
+        # over an exkStruct payload, same as any other postfix application —
+        # there is no "this is a fresh literal" node kind to exempt the way
+        # exkList exempts a fresh Seq literal above. A construction call's
+        # own Seq fields are already fresh too, so marking it costs one
+        # redundant `.dup` rather than a wrong one — correctness over the
+        # extra allocation.
+        let fields = seqFieldNames(m, semLayer.typeFor(e.assignVal))
+        if fields.len > 0:
+          ensureId(e.assignVal)
+          recordDupSites[e.assignVal.id] = fields
+    markSeqCopies(m, e.target)
+    markSeqCopies(m, e.assignVal)
   of exkBlock:
-    for s in e.stmts: markSeqCopies(s)
+    for s in e.stmts: markSeqCopies(m, s)
   of exkIf:
-    markSeqCopies(e.cond)
-    markSeqCopies(e.thenBranch)
-    markSeqCopies(e.elseBranch)
+    markSeqCopies(m, e.cond)
+    markSeqCopies(m, e.thenBranch)
+    markSeqCopies(m, e.elseBranch)
   of exkFor:
-    markSeqCopies(e.iterable)
-    markSeqCopies(e.body)
+    markSeqCopies(m, e.iterable)
+    markSeqCopies(m, e.body)
   of exkWhile:
-    markSeqCopies(e.whileCond)
-    markSeqCopies(e.whileBody)
+    markSeqCopies(m, e.whileCond)
+    markSeqCopies(m, e.whileBody)
   of exkMatch:
-    markSeqCopies(e.subject)
-    for arm in e.arms: markSeqCopies(arm.body)
+    markSeqCopies(m, e.subject)
+    for arm in e.arms: markSeqCopies(m, arm.body)
   of exkCall:
-    for a in e.args: markSeqCopies(a)
-  of exkReturn: markSeqCopies(e.returnVal)
+    for a in e.args: markSeqCopies(m, a)
+  of exkReturn: markSeqCopies(m, e.returnVal)
   else: discard
 
 proc lowerModuleD*(m: Module) =
   ## The D backend's own lowering. Runs AFTER lowerModule, on this backend's
   ## private copy of the tree.
   for fn in m.allFns():
-    markSeqCopies(fn.fnBody)
+    markSeqCopies(m, fn.fnBody)
   for d in m.decls(dkTask):
-    markSeqCopies(d.taskBody)
+    markSeqCopies(m, d.taskBody)
   for d in m.decls(dkExpr):
-    markSeqCopies(d.expr)
+    markSeqCopies(m, d.expr)

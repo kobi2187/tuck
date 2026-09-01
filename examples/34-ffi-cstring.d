@@ -4,8 +4,11 @@ import rt = tuck_rt;
 pragma(lib, "z");
 import sys = mod_sys;
 import console = mod_console;
+import zlib_shim;
 
-// D backend TODO: extern zlibVersion needs an `impl: d "..."` module
+string zlibVersion() {
+    return zlib_shim.zlibVersion();
+}
 
 
 extern (C) ulong compressBound(ulong sourceLen);

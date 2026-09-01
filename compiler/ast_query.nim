@@ -52,6 +52,16 @@ template capitalize*(s: string): string = capitalizeAscii(s)
 # bury the intent; named here, the call site reads as the question it asks.
 # Add a helper rather than open-coding the loop again.
 
+proc seqElem*(t: Type): Type =
+  ## The element type of a `Seq[T]`, or nil for anything else. One predicate
+  ## for the several places that used to re-test `tkApp and base.name ==
+  ## "Seq"` by hand — the D backend's own type mapping, declaration types,
+  ## `.len`/`.dup` decisions, and lowering_d's Seq-copy marking pass.
+  if t != nil and t.kind == tkApp and t.base != nil and
+     t.base.kind == tkNamed and t.base.name == "Seq" and t.args.len == 1:
+    t.args[0]
+  else: nil
+
 proc sourceKind*(arm: SelectArm): SelectSourceKind =
   ## What a task select arm's source string means.
   ##
