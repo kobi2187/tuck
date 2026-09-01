@@ -395,13 +395,68 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   register's address is real MMIO hardware, unsafe to dereference on a
   test machine.
   **Found in the process, NOT fixed, confirmed cross-backend (same
-  symptom on Odin and D):** `SystemEvents.raise PlaybackStarted` emits
-  as `PlaybackStarted(tuck_SystemEvents.raise)` — swapped/nonsensical,
-  an event-registry raise codegen bug, unrelated to registers. Also
-  D-only: a bare `return` inside a fn returning `!void` (`rt.TuckResult
-  !(rt.TuckUnit)`) emits as bare `return;`, a D type mismatch (`return`
-  expression expected) — `streamReader`'s early-return-on-error path.
-  Neither chased; example 20 is closer but still not fully verified.
+  symptom on Odin and D):**
+  - [ ] **`SystemEvents.raise PlaybackStarted` emits swapped/nonsensical
+    code — ROOT CAUSE FOUND, fix is small and precise, just not applied.**
+    Emits as `PlaybackStarted(tuck_SystemEvents.raise)`. Confirmed via
+    `tuck p --ast` on a minimal repro (`registry Sys: | Started` /
+    `fn main() -> void: Sys.raise Started`): the parser produces ONE
+    `exkCall` — `callee = exkVar("Started")`, `args = [exkField(receiver:
+    exkVar("Sys"), fieldName: "raise")]` — i.e. structurally
+    `Started(Sys.raise)`, with the raised event's name as the CALLEE and
+    `Registry.raise` as the (sole) ARGUMENT.
+    `lowering.nim`'s `flattenRegistryRaise` (called from `lowerExpr`'s
+    `of exkCall:` arm) is SUPPOSED to rewrite exactly this into a plain
+    call to `raise_<Registry>_<Event>`, but its guard checks for a
+    DIFFERENT, doubly-nested shape that the parser never actually
+    produces: `if e.callee.kind != exkCall: return` — expecting `e`'s
+    OWN callee to itself be a call, when the real callee is a bare
+    `exkVar` (the event name) and the `.raise` field access is inside
+    `e.args[0]`, not inside `e.callee`. The guard therefore always
+    returns immediately without matching, so the pass is a no-op for
+    every registry raise in the corpus, and codegen falls through to a
+    plain call — which reads `PlaybackStarted` as the function and
+    `SystemEvents.raise` as its one argument, exactly matching the
+    observed output.
+    The fix (verified by inspection against the real AST shape above,
+    not yet applied or tested): change the guard in
+    `flattenRegistryRaise` to match on `e.callee.kind == exkVar` and
+    `e.args[0].kind == exkField` directly (dropping the nested-call
+    check entirely), i.e.:
+    ```nim
+    proc flattenRegistryRaise(e: Expr) =
+      if e.callee == nil or e.callee.kind != exkVar: return
+      if e.args.len != 1 or e.args[0].kind != exkField: return
+      let fieldNode = e.args[0]
+      if fieldNode.receiver == nil or fieldNode.receiver.kind != exkVar: return
+      if fieldNode.fieldName != "raise": return
+      e.callee = Expr(span: e.span, kind: exkVar,
+                      name: "raise_" & fieldNode.receiver.name & "_" &
+                            e.callee.name)
+    ```
+    Since this rewrites `e.callee` in place and drops nothing about
+    `e.args`, a stray payload argument (an event WITH a payload, e.g.
+    `HardwareError({code: u8})`) needs checking separately — not
+    verified whether `e.args[0]` is always exactly the `.raise` field
+    node alone, or whether a payload event adds a second arg that this
+    rewrite would need to preserve. Worth a probe with a payload-carrying
+    `raise` before trusting the fix on example 20's `HardwareError` path.
+  - [ ] **D-only: a bare `return` inside a fn returning `!void`
+    (`rt.TuckResult!(rt.TuckUnit)`) emits as bare `return;`** — a D type
+    mismatch ("return expression expected"), in `streamReader`'s
+    early-return-on-error path (`if !(buf.status == ...): return`).
+    Not investigated beyond the observed symptom: Nim and Odin's `!void`
+    early-return presumably wraps the bare `return` in the right
+    ok/err-carrying value (`return rt.tokVoid()` matches Odin's own
+    emission of the SAME construct, confirmed in the diff reviewed for
+    the register fix above), so D's `genDReturn` likely has an early-out
+    for a value-less `return` that skips the `!void`-wrapping step Odin's
+    equivalent doesn't skip. Worth checking `codegen_d.nim`'s
+    `genDReturn` against `codegen_odin.nim`'s `genReturnStmt` for exactly
+    this case before assuming the fix shape.
+  Neither chased further this session; example 20 is closer (register
+  access and `discard`/`sizeof` all fixed) but still not fully verified
+  end to end on any backend but Nim.
 
 ### Cross-backend
 - [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**
@@ -470,3 +525,44 @@ Related and separate: `{self: Self}` declares but cannot be CALLED —
 five places (`typecheck.nim:529/532`, both backends, conformance) but not on
 the call path. `value_semantics.nim:391` uses this exact shape and only
 `okCheck`s it.
+
+## 9. Backlog — raised in conversation, not yet started
+
+- [ ] **Actor threading model.** Today all actors AND tasks share one
+  cooperative scheduler on one OS thread (spec §9.4) — no preemption, an
+  actor with a slow handler blocks everything else. User's proposal
+  (2026-09-01): thread-per-actor (or a small pool), since actors are
+  singleton services, few per program (user's estimate: <10), and already
+  safe by value semantics (a message is copied into the mailbox before
+  crossing — spec-guaranteed, verified by existing tests: "a record sent
+  to an actor is copied into the mailbox"). Two concrete gaps identified
+  as needing solving, not yet designed:
+  1. **`waitUntil`'s public-field polling has zero synchronization.**
+     Reads a field directly, safe only because nothing is ever actually
+     concurrent today. Needs either atomics/a lock/seqlock-style
+     versioning on every actor field read, or a spec-level move to
+     message-based state exposure instead of direct-field polling.
+  2. **The mailbox is deliberately lock-free BECAUSE nothing is
+     concurrent** — `Mailbox.enqueue`/`dequeue` in all three runtimes are
+     explicitly documented as lock-free "since the scheduler is
+     cooperative on ONE thread — sends and drains never interleave."
+     Thread-per-actor makes every `send` a genuine MPSC produce against
+     the actor's own consumer thread.
+  User's proposed direction for both: a lock-free MPSC ring for the
+  mailbox, plus a mutex around public actor fields. Assessed as sound and
+  buildable (concrete primitives exist in all three backends: `std/
+  atomics` in Nim, `core:sync`/atomic ops in Odin, `core.atomic` in D) —
+  no exotic new mechanism needed. NOT designed or started: needs a real
+  design pass (thread-per-actor vs. a pool, exact synchronization
+  primitive per backend, and reconciling with the project's own
+  portable-runtime-characteristics rule — Nim's ARC across threads,
+  Odin's GC-free threads and D's GC-aware threads are three different
+  starting points for "make this safe," a bigger lift than the current
+  single-thread model was specifically chosen to dodge).
+- [ ] **CLI usage/help is thin.** User tried `tuck dump` with no
+  arguments and got no usage explanation for what it needs. Ask
+  (2026-09-01): every `tuck <command>` that needs extra parameters
+  should explain its own usage when invoked without them, and there
+  should be a `tuck help <command>` giving easy-to-understand,
+  per-command help — not investigated at all yet (no read of `tuck.nim`'s
+  current arg-parsing/usage-banner code done for this specifically).
