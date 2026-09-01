@@ -167,14 +167,39 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   three backends re-derive facts an earlier stage should have recorded.
   Rule: a question asked at emit means an earlier stage did not finish.
   → the whole audit document.
-- [ ] **[read] `synthVar`'s lookup chain ends in a silent `unknownType`,
-  not an error.** `typecheck.nim`: local lookup → nullary-call →
-  `synthBareVariant` → falls through with no diagnostic. Root cause found
-  behind THREE separate bugs this session (`discard` riding a checker gap,
-  register-field reads resolving to Unknown, and a `sizeof` type-argument
-  case) — each looked like an unrelated feature gap until traced back here.
-  Fix: last arm should report an error naming the identifier, never
-  silently return `unknownType`.
+- [ ] **[tried, reverted] `synthVar`'s lookup chain ends in a silent
+  `unknownType`, not an error — fixing it is bigger than it looks.**
+  `typecheck.nim`: local lookup → nullary-call → `synthBareVariant` →
+  falls through with no diagnostic. Confirmed live: a genuinely undefined
+  bare identifier (`totallyUndefinedName`) passes `tuck ch` with exit 0.
+  Root cause behind three earlier bugs this session (`discard`,
+  register-field reads, a `sizeof` type-argument) before each got its own
+  dedicated upstream check.
+  Tried the direct fix (report `dcTyUndeclared` instead of returning
+  `unknownType` from `synthBareVariant`) and ran the full suite: broke
+  60+ assertions across `typecheck`, `value_semantics`, `declarations`,
+  `bare_variant`, `object_composition`, every `d_backend`/Odin/D example
+  compile, and `cli_smoke`. Widened the exemption (known type/object/
+  interface/actor decls + a primitive-name set) and re-ran: fixed
+  `value_semantics` but a NEW, larger wave surfaced — `Green` (an inline
+  sum variant), `AppEvents` (a registry name), `Bufs`/`Buffers` (pool
+  names), `Helpers`/`BulkOps` (mixin names), `CTRL` (a register name) all
+  hit the same fallback as bare values, none tracked in any table
+  `synthBareVariant` can see.
+  **Real finding: a bare Capitalized name is a legal VALUE-position
+  reference to at least seven different declaration kinds** (sum variant,
+  object/type/interface, actor singleton, registry, pool, mixin, register)
+  each resolved by its own ad hoc mechanism scattered across the checker,
+  with no single registry of "every declared name, and what kind of thing
+  it names" to check a name against before giving up. Reported-vs-silent
+  is not the real bug; the missing piece is that name resolution itself
+  is not centralized. Reverted rather than keep widening an allowlist
+  test-failure-by-test-failure — that path just rebuilds the same
+  scattered-registry problem one exemption at a time. A real fix needs a
+  single "what does this bare name declare, if anything" lookup that
+  every one of these ad hoc mechanisms defers to, with the actual
+  synthVar case as the correctly-strict fallback once that lookup exists.
+  Left `git checkout`-clean; `./tests/run` green.
 - [ ] **[read] `lowerExpr`'s children-recursion order is per-pass, not a
   rule.** `lowering.nim`: `flattenRegistryRaise` now runs BEFORE the
   `for c in e.children: lowerExpr(c, m)` loop (moved there to fix the
