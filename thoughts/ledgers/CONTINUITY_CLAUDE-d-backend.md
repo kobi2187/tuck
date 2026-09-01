@@ -129,12 +129,52 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
         (tkFunc), not the node kind — a `:ref` arrives as exkVar or
         exkQualified depending on spelling (verified by instrumenting).
         Example 31 runs 42 on both.
-  - [ ] M4 rest: T21 error policy, T23 interfaces, T24 decision tables
-  - [ ] Sweep status (44 examples): 17 compile clean, 20 die naming their
-        own task, 7 dmd-fail = 5 FFI (T26) + 2 tasks (M7).
-  - [ ] M5 modules & extern: T25 mod_*.d, T26 extern flavours, T27 emit_examples
-  - [ ] M6 tests: T28 harness+d_backend suite, T29 example sweep
-  - [ ] M7 concurrency (Fiber) — own plan when reached
+  - [x] M4 rest, M5, M6 — DONE. This section was stale (last touched when
+        the sweep was 17/44); all of T21 error policy, T23 interfaces, T24
+        decision tables, T25 mod_*.d, T26 extern flavours, T27
+        emit_examples, T28 harness+d_backend suite, T29 example sweep
+        happened across the sessions logged below and are not re-listed
+        per-task here — see TODO.md's own D section for the live,
+        currently-accurate list of what remains.
+  - [x] 2026-08-30: the D match-statement bug (below, "BUG (D, open)")
+        fixed — genDStmt now dispatches a statement-position exkMatch to
+        genDMatchStmt directly, mirroring Odin's genStmt, instead of
+        asking genDExpr's matchArmsReturn (a value-position question).
+  - [x] 2026-08-30: sizeof/alignof fixed — D's postfix property (`T.sizeof`)
+        instead of the call syntax Nim happens to share and dmd rejects.
+        `offsetof` stays an explicit dUnsupported, no example to verify a
+        translation against.
+  - [x] 2026-08-30: a member call with a payload mis-bound self — two
+        checker bugs (asPostfixApplication's dotArg guard; synthMethodCall
+        conflating the top-level-mutator and object-member-implicit-self
+        conventions) plus one Odin codegen bug the fix exposed (member
+        calls never took the receiver's address for self: ^T). D was
+        already correct here; only Odin and the checker needed fixing.
+        Full writeup: TODO.md §3, commit 7356d30.
+
+**Current sweep (2026-08-30, reconfirmed): 41 of 44 examples compile under
+`--dlang`.** Three remain:
+  - **16-actor-tasks-unified-syntax** — fails the CHECKER (undeclared
+    methods in an aspirational specimen), not codegen. Not a D task.
+  - **29-task-timeout, 30-async-read** — need the reactor. Sized precisely
+    below (M7): D's coroutine engine and task-with-args already work;
+    only epoll/timerfd/tuckAwaitReadOrTimeout/openSource are missing.
+
+  - [ ] M7 concurrency — PARTIALLY DONE, not Fiber: D uses minicoro, same
+        as Odin (per line 21/55 above — this label was stale). tuck_coro.d
+        already has the coroutine engine (spawn/schedule/tuckYield/tuckRun,
+        spawnResult/awaitResult) — and task-with-args needs NO marshalling
+        here at all, unlike Odin's context.user_ptr workaround, since D's
+        delegates capture arguments as real closures. What's still missing
+        is the REACTOR: no epoll/timerfd, no tuckAwaitRead/
+        tuckAwaitReadOrTimeout, no openSource — confirmed absent by reading
+        tuck_coro.d's full proc list. That's the actual size of 29/30 for
+        D — porting Odin's epoll+timerfd reactor, own plan when reached.
+        Odin's own reactor (compiler/tuckrt/tuck_coro.odin) is the
+        reference to port from — it already works (29/30 pass under
+        --odin as of 2026-08-30) and names the exact six syscalls needed
+        (epoll_create1, epoll_ctl, epoll_wait, timerfd_create,
+        timerfd_settime, close).
 
 ## Open Questions
 - UNCONFIRMED: D sum-type shape — mirror Odin (tag enum + one struct holding
@@ -272,10 +312,13 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
   `PlaybackStarted(tuck_SystemEvents.raise)` tree. lowering DOES walk actor
   handlers (allFns -> members() yields dkActor.handlers), so the cause is
   further up. Not a D bug; recorded rather than chased.
-- BUG (D, open): a value-position match whose arms are STATEMENTS wraps them
-  in `return` — visible in example 20 as `case X: return self.state = ...`.
-  The value/statement decision needs to look at the arm bodies, not just the
-  match's position.
+- BUG (D) — FIXED 2026-08-30. A statement-position match whose arms are
+  plain statements wrapped them in `return` — visible in example 20 as
+  `case X: return self.state = ...`, with the rest of the arm's statements
+  stranded outside the switch entirely. genDStmt now dispatches exkMatch
+  straight to genDMatchStmt when reached as a statement, bypassing
+  genDExpr's matchArmsReturn (a value-position question) — mirrors Odin's
+  genStmt, which already had this exact direct dispatch.
 - D function templates instantiate per call site, so pending stubs and
   generic externs (`toStr[T]`) map 1:1 onto Nim's generic procs — no
   boxing, same monomorphization story.
@@ -374,12 +417,13 @@ the D backend lacked the copy, so D was where the bug showed. The pattern
 is reliable enough to use as a search strategy — a construct D gets wrong
 is worth checking for a duplicated implementation before writing a third.
 
-### Found, not fixed
+### Found, fixed 2026-08-30
 
-A member call WITH A PAYLOAD mis-binds `self`: `d.crank {step: 1}` against
-`fn crank({step: int})` reports "expects int but got Deck". Example 04
-declares `play` and never calls it, so no example catches this. Recorded in
-TODO §3.
+A member call WITH A PAYLOAD mis-bound `self`: `d.crank {step: 1}` against
+`fn crank({step: int})` reported "expects int but got Deck". Example 04
+declares `play` and never calls it, so no example caught this at the time.
+Fixed — two checker bugs plus one Odin codegen bug the fix exposed; see the
+2026-08-30 entry below and TODO.md §3, commit 7356d30.
 
 ## 2026-08-30 — Odin task select + task-with-args (unblocks 29/30's authority)
 
@@ -435,3 +479,32 @@ repro shape) and confirmed stable across three independent cold starts.
 This is worth generalizing: `let x = loopVar` inside a `for` loop, captured
 by a closure built in that same loop, is NOT a safe pattern in this Nim —
 grep for it before trusting a similar loop elsewhere.
+
+## 2026-08-30 — session 5: three more fixes, D holds at 41/44
+
+Picked smaller items off TODO §5 while the reactor (M7, above) stays its
+own task. All three verified by running the emitted code, not just by it
+compiling.
+
+- **D match-statement bug fixed** (see the DISCOVERIES entry above, no
+  longer "open"). Chasing it to a full dmd build of example 20 surfaced
+  the sizeof bug next.
+- **sizeof/alignof fixed.** D's postfix property, not the call syntax
+  Nim/C/Tuck share. Chasing example 20 further past this hit register
+  field access on a raw pointer — the SAME error a real Odin build of the
+  same emitted source gives, confirming it's a pre-existing, cross-backend
+  lowering/typecheck gap in register modeling, not a D bug. Recorded in
+  TODO §3/§5, not chased — along with a second finding, a bare `discard`
+  no-op that is not a real construct in ANY backend's grammar and has
+  apparently never actually been run on any of the three, since example
+  20 was never in any backend's compile- or run-checked list.
+- **Member-call-with-payload self-binding fixed** (TODO §3). Two checker
+  bugs plus one Odin codegen bug the fix exposed — full writeup in TODO.md
+  and commit 7356d30. D itself needed no change; this was upstream.
+
+D's own remaining gap is exactly what it was before this session: the
+epoll+timerfd reactor for 29/30 (M7 above). Everything else found this
+session was either D-specific-and-fixed (match statement, sizeof) or
+upstream-and-fixed (the member-call bug) or upstream-and-recorded
+(register field access, `discard`, both example-20-only and pre-existing
+on every backend).
