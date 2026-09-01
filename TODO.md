@@ -167,6 +167,43 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   three backends re-derive facts an earlier stage should have recorded.
   Rule: a question asked at emit means an earlier stage did not finish.
   → the whole audit document.
+- [ ] **[read] `synthVar`'s lookup chain ends in a silent `unknownType`,
+  not an error.** `typecheck.nim`: local lookup → nullary-call →
+  `synthBareVariant` → falls through with no diagnostic. Root cause found
+  behind THREE separate bugs this session (`discard` riding a checker gap,
+  register-field reads resolving to Unknown, and a `sizeof` type-argument
+  case) — each looked like an unrelated feature gap until traced back here.
+  Fix: last arm should report an error naming the identifier, never
+  silently return `unknownType`.
+- [ ] **[read] `lowerExpr`'s children-recursion order is per-pass, not a
+  rule.** `lowering.nim`: `flattenRegistryRaise` now runs BEFORE the
+  `for c in e.children: lowerExpr(c, m)` loop (moved there to fix the
+  `SystemEvents.raise` double-call bug this session); `flattenMemberCallPayload`/
+  `explodePayload` still run AFTER it, because they need already-lowered
+  children. The ordering is correct today only because I hand-traced one
+  bug into it — nothing enforces a new pass picks the right side. A wrong
+  side silently corrupts the AST (no compile error), which is exactly what
+  happened before the fix. Needs either a comment convention every future
+  pass must read, or (better) `PipelineStage`/`requireOrder` from the
+  saved CLI/pipeline plan turned into an actual per-pass ordering check.
+- [ ] **[read] No real "indexing" stage — two `buildDeclIndex`s, same
+  name, different shape.** `compiler/decl_index.nim`'s `DeclIndex` is
+  built lazily per backend, on demand, at codegen time; `codegen.nim` has
+  a SECOND, differently-shaped proc also named `buildDeclIndex` for its
+  own use. Nothing checks the two agree. Neither is a whole-program gate
+  anything else waits on, despite reading like one.
+- [ ] **[repro] `tuck c f.tuck --odin` emits BOTH `.nim` and `.odin`,
+  unconditionally.** Nim backend has no `if` guard at all in `tuck.nim`;
+  `--odin`/`--dlang` are additive on top, not alternatives. Already
+  planned: single-target `case backend of bkNim/bkOdin/bkDlang` — see
+  saved plan `fancy-yawning-karp.md` Phase 1 (drafted, not applied).
+- [ ] **[read] `checkOrDie`'s typecheck→verify-effects ordering is
+  enforced only by a comment.** Typechecking resets the shared `semLayer`
+  side-table; `verifyModuleEffects` must run after or async call-site
+  marks are wiped before codegen reads them. No assertion catches a
+  future reordering. Saved plan's Phase 2 (`PipelineStage` enum +
+  `requireOrder`, `--verify-stages` opt-in) targets this directly —
+  drafted, not applied.
 
 ## 5. Backend bugs
 
