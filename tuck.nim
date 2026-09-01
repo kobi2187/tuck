@@ -94,6 +94,7 @@ run). Writes beside the source file, or into -o:DIR if given.
   --target:NAME  select which `when TARGET == "NAME":` blocks compile in
   --verify-stages  run extra pipeline-ordering assertions (off by default)
   -v, --verbose  echo before/after every pipeline stage, with its own timing
+  -vv            also echo each stage's per-module sub-steps, individually timed
   -O:PASS[,...]  choose optimization passes; `-O:none` disables them all
   --max-complexity:N, --max-fn-lines:N  per-function size budget
 
@@ -182,6 +183,10 @@ options:
                 see compiler/pipeline.nim).
   -v, --verbose (check/compile/build) echo before/after every named
                 pipeline stage (compiler/pipeline.nim), timing each one.
+                -vv also echoes each stage's per-module sub-steps,
+                each individually timed (where the stage has a real
+                per-module hook — some stages run whole-program in one
+                call and only note a module count instead).
   --stage:X     (dump) which stage to stop at: lex, parse, load,
                 inject-types, typecheck, verify-effects, mangle, lowering,
                 emitting (default: emitting). lowering/emitting use the
@@ -235,16 +240,26 @@ proc elapsedMs(t0: float): string =
   formatFloat((epochTime() - t0) * 1000, ffDecimal, 1) & " ms"
 
 # `-v` — echo before and after every named pipeline stage (compiler/pipeline.nim),
-# timing each one. Off by default: this is diagnostic, not something every
-# check/compile/build should print.
-var verboseMode = false
+# timing each one. `-vv` additionally echoes each stage's per-module
+# sub-steps, each with its OWN timing. Off by default: this is diagnostic,
+# not something every check/compile/build should print.
+var verboseLevel = 0
 
 proc vBegin(stage: PipelineStage): float =
-  if verboseMode: stderr.writeLine "-- " & $stage & " starting"
+  if verboseLevel >= 1: stderr.writeLine "-- " & $stage & " starting"
   epochTime()
 
 proc vEnd(stage: PipelineStage, t0: float) =
-  if verboseMode: stderr.writeLine "-- " & $stage & " done (" & elapsedMs(t0) & ")"
+  if verboseLevel >= 1: stderr.writeLine "-- " & $stage & " done (" & elapsedMs(t0) & ")"
+
+proc vSub(name: string, t0: float) =
+  if verboseLevel >= 2:
+    stderr.writeLine "     " & name & " (" & elapsedMs(t0) & ")"
+
+proc vSubNote(msg: string) =
+  ## Like vSub, but for a sub-step with no individual timing worth showing
+  ## (the underlying call has no per-item hook to time separately).
+  if verboseLevel >= 2: stderr.writeLine "     " & msg
 
 # Pick the quickest C backend available that can build the runtime.
 proc pickFastCC(): string =
@@ -326,8 +341,8 @@ proc loadOrDie(path: string, needBodies: bool):
   let t0 = vBegin(psLoad)
   defer: vEnd(psLoad, t0)
   try:
-    if needBodies: return (loadProgram(path), sigOnly)
-    return loadProgramIndexed(path)
+    if needBodies: result = (loadProgram(path), sigOnly)
+    else: result = loadProgramIndexed(path)
   except ModuleError as err:
     die(path & ": " & err.msg)
   except SyntaxError as err:
@@ -335,6 +350,10 @@ proc loadOrDie(path: string, needBodies: bool):
     # it does not know which FILE it was reading; modules.nim does, and says so
     # by prefixing the path onto the message before re-raising.
     dieSyntax(err)
+  # No per-module timing here: loadProgram(Indexed) loads the whole import
+  # closure in one call, with no per-module hook to time individually — the
+  # sub-step is just naming what came back.
+  for lm in result[0]: vSubNote("loaded " & lm.name)
 
 proc importedEffects(loaded: seq[LoadedModule],
                      sigOnly: Table[string, IndexEntry]):
@@ -367,7 +386,10 @@ proc typecheckOnly(path: string, loaded: seq[LoadedModule],
   let t0 = vBegin(psTypecheck)
   defer: vEnd(psTypecheck, t0)
   try:
+    # Whole-program in one call (a call can name a decl in another module) —
+    # no per-module hook to time individually.
     result = typecheckProgram(mods, preSigs)
+    vSubNote($mods.len & " module(s)")
   except SemanticError as err:
     if ".tuck:" in err.msg: die(err.msg)
     else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
@@ -383,7 +405,10 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
   try:
-    for lm in loaded: verifyModuleEffects(lm.m, imported)
+    for lm in loaded:
+      let ts = epochTime()
+      verifyModuleEffects(lm.m, imported)
+      vSub(lm.name, ts)
     if verifyStages:
       var loadedMods: seq[Module]
       for lm in loaded: loadedMods.add(lm.m)
@@ -465,6 +490,9 @@ proc checkProgram(path: string, needBodies = false,
   block:
     let t0 = vBegin(psInjectTypes)
     injectImportedTypes(result)  # imported types are visible unqualified
+    # Whole-program, cross-module (a type's visibility depends on OTHER
+    # modules' imports) — no per-module hook to time individually.
+    vSubNote($result.len & " module(s)")
     vEnd(psInjectTypes, t0)
   let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
   # program checked clean: refresh the signature index for future checks
@@ -587,7 +615,12 @@ when isMainModule:
   # `--release` promotes the size report from a list to a failure. Read here
   # rather than in the build arm because the check runs before it.
   sizeIsError = "--release" in opts
-  verboseMode = "-v" in opts or "--verbose" in opts
+  # `-v` = level 1, `-vv` = level 2 (adds per-module sub-steps), `--verbose`
+  # = level 1. Whichever flag asks loudest wins if more than one is given.
+  for o in opts:
+    if o == "--verbose": verboseLevel = max(verboseLevel, 1)
+    elif o.len >= 2 and o[0] == '-' and o[1 .. ^1].strip(chars = {'v'}) == "":
+      verboseLevel = max(verboseLevel, o.len - 1)
   let t0 = epochTime()
 
   case cmd
@@ -720,6 +753,8 @@ when isMainModule:
     block:
       let t0 = vBegin(psMangle)
       mangleProgram(progMods)
+      # Whole-program, once, over the shared Resolution — no per-module hook.
+      vSubNote($progMods.len & " module(s)")
       vEnd(psMangle, t0)
     if verifyStages: assertMangleIdempotent(progMods)
     # Each backend lowers its OWN copy: lowering and the emitters both mutate
@@ -743,17 +778,22 @@ when isMainModule:
       for lm in nimProg: rebaseImplPaths(lm, "nim", outDir)
       block:
         let t0 = vBegin(psLowering)
-        for lm in nimProg: lowerModule(lm.m)
+        for lm in nimProg:
+          let ts = epochTime()
+          lowerModule(lm.m)
+          vSub(lm.name, ts)
         vEnd(psLowering, t0)
       block:
         let t0 = vBegin(psEmitting)
         # imported modules first (each its own Nim file), entry module last
         for lm in nimProg:
+          let ts = epochTime()
           let isEntry = lm.path == nimProg[^1].path
           let outName = if isEntry: base else: lm.name
           let nimPath = outDir / (outName & ".nim")
           writeFile(nimPath, emitNim(lm.m, rtImport, nimReal, outName))
           echo "wrote ", nimPath
+          vSub(lm.name, ts)
         vEnd(psEmitting, t0)
       if verifyStages:
         var nimMods: seq[Module]
@@ -768,7 +808,10 @@ when isMainModule:
       for lm in odProg: rebaseImplPaths(lm, "odin", outDir)
       block:
         let t0 = vBegin(psLowering)
-        for lm in odProg: lowerModule(lm.m)
+        for lm in odProg:
+          let ts = epochTime()
+          lowerModule(lm.m)
+          vSub(lm.name, ts)
         vEnd(psLowering, t0)
       if verifyStages:
         var odMods: seq[Module]
@@ -777,6 +820,7 @@ when isMainModule:
       block:
         let t0 = vBegin(psEmitting)
         for lm in odProg[0 ..< odProg.high]:
+          let ts = epochTime()
           # Odin packages are DIRECTORIES: an imported module becomes
           # mod_<name>/<name>.odin so `import fs "./mod_fs"` resolves.
           let modDir = outDir / ("mod_" & lm.name.replace("-", "_"))
@@ -784,9 +828,12 @@ when isMainModule:
           let modOdPath = modDir / (lm.name.replace("-", "_") & ".odin")
           writeFile(modOdPath, emitOdinModule(lm.name, lm.m, odReal))
           echo "wrote ", modOdPath
+          vSub(lm.name, ts)
+        let tsEntry = epochTime()
         let odPath = outDir / (base & ".odin")
         writeFile(odPath, emitOdin(odProg[^1].m, odReal, base))
         echo "wrote ", odPath
+        vSub(odProg[^1].name, tsEntry)
         vEnd(psEmitting, t0)
       # The emitted package imports `./tuckrt`, so the runtime rides along.
       let rtSrc = getAppDir() / "compiler" / "tuckrt"
@@ -830,12 +877,14 @@ when isMainModule:
       block:
         let t0 = vBegin(psLowering)
         for lm in dProg:
+          let ts = epochTime()
           lowerModule(lm.m)
           # ...then the D backend's OWN lowering, on its private copy. Target
           # semantics that differ from Tuck's (a D slice aliases where a Tuck
           # Seq copies) are settled here as tree marks, so the emitter is left
           # printing rather than deciding.
           lowerModuleD(lm.m)
+          vSub(lm.name, ts)
         vEnd(psLowering, t0)
       if verifyStages:
         var dMods: seq[Module]
@@ -844,12 +893,16 @@ when isMainModule:
       block:
         let t0 = vBegin(psEmitting)
         for lm in dProg[0 ..< dProg.high]:
+          let ts = epochTime()
           let modDPath = outDir / ("mod_" & lm.name.replace("-", "_") & ".d")
           writeFile(modDPath, emitDModule(lm.name, lm.m, dReal))
           echo "wrote ", modDPath
+          vSub(lm.name, ts)
+        let tsEntry = epochTime()
         let dPath = outDir / (base & ".d")
         writeFile(dPath, emitD(dProg[^1].m, dReal, base))
         echo "wrote ", dPath
+        vSub(dProg[^1].name, tsEntry)
         vEnd(psEmitting, t0)
       # A vendored `.c` an extern block binds: compile it to an object the
       # dmd link step picks up. Same step the Odin path takes above — dmd,
