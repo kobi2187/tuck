@@ -5,6 +5,6 @@ type tuck_Temperature* = object
   celsius*: float32
 
 proc validate*(self: tuck_Temperature) =
-  when not defined(release):
-    assert((self.celsius >= -273.15), "Invariant violated: (self.celsius >= -273.15)")
+  when not defined(tuckNoInvariants):
+    if not ((self.celsius >= -273.15)): tuckInvariantFailed("(self.celsius >= -273.15)", "tuck_Temperature")
 

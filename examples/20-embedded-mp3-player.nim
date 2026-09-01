@@ -43,8 +43,8 @@ type tuck_Volume* = object
   level*: uint8
 
 proc validate*(self: tuck_Volume) =
-  when not defined(release):
-    assert((self.level <= 100), "Invariant violated: (self.level <= 100)")
+  when not defined(tuckNoInvariants):
+    if not ((self.level <= 100)): tuckInvariantFailed("(self.level <= 100)", "tuck_Volume")
 
 type tuck_SystemEventsKind* = enum PlaybackStarted, PlaybackStopped, HardwareError
 type tuck_SystemEvents* = ref object

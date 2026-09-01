@@ -1378,10 +1378,15 @@ proc genRecordType(ctx: var CodegenCtx, d: Decl): string =
       for member in d.typeMembers:
         if member.kind == dkExpr:
           let condStr = checkCtx.genExpr(member.expr)
-          invariantChecks.add("  assert(" & condStr & ", \"Invariant violated: " & condStr & "\")")
+          # NOT `assert`: `-d:release` strips it outright, which is exactly
+          # the build where a violated invariant means corrupt data.
+          # ROADMAP's 2026-08-25 ruling 5 says invariants stay on in release,
+          # opt-out only — `tuckNoInvariants` is that opt-out, independent of
+          # `release`/`danger` (mirrors the D backend's `tuckNoInvariants`).
+          invariantChecks.add("  if not (" & condStr & "): tuckInvariantFailed(\"" &
+                              condStr.replace("\"", "'") & "\", \"" & d.name & "\")")
       if invariantChecks.len > 0:
-        # spec 4.7: stripped in release builds — the proc empties out and inlines away
-        res.add("\nproc validate*(self: " & d.name & ") =\n  when not defined(release):\n" &
+        res.add("\nproc validate*(self: " & d.name & ") =\n  when not defined(tuckNoInvariants):\n" &
                 invariantChecks.join("\n").indent(2) & "\n")
       # manager types carry functionality: member fns join the catalog
       for member in d.typeMembers:

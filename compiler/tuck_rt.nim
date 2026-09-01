@@ -123,6 +123,18 @@ proc tfwd*[T](status: TuckStatus, err: uint16): TuckResult[T] {.inline.} =
 proc tuckReportUnhandled*(code: uint16, site: string) =
   stderr.writeLine("TUCK UNHANDLED: error " & $code & " at " & site)
 
+proc tuckInvariantFailed*(cond, typeName: string) =
+  ## An invariant violation (spec 4.7) — abort naming the condition.
+  ##
+  ## NOT Nim's `assert`: `-d:release` strips asserts outright by default, so
+  ## a guard built on one silently evaporates in exactly the build where a
+  ## violated invariant means corrupt data. ROADMAP's 2026-08-25 ruling 5
+  ## says invariants stay on in release by default, opt-out only, so the
+  ## check has to be real code the optimizer keeps — same fix as the D
+  ## backend's `tuckInvariantFailed`, from the direction Nim needed it.
+  stderr.writeLine("Invariant violated on " & typeName & ": " & cond)
+  quit(1)
+
 type
   BumpArena*[Size: static int] = object
     buffer*: array[Size, byte]

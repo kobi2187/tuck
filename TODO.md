@@ -92,10 +92,19 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   (c) implement `[wrapping]`/`[trapping]` for real, THEN switch the default.
   Only `[saturating]` has codegen today. A default naming `[trapping]` is
   theatre until trapping traps.
-- [ ] **[read] Invariants stay on in release (ROADMAP ruling 5).** Done in
-  the D backend (`version(tuckNoInvariants)`); the NIM backend still
-  hardcodes `when not defined(release)` into emitted code, so its invariants
-  cannot be kept in a release build at all.
+- [x] **FIXED 2026-09-01** — Nim's invariants used to hardcode
+  `when not defined(release)` AND emit Nim's `assert(...)`, which is
+  itself release-stripped — a double bug, since even removing the `when`
+  wouldn't have kept the check. Added `tuckInvariantFailed*(cond,
+  typeName: string)` to `tuck_rt.nim` (mirroring the D backend's own),
+  changed `genType`'s emission to `when not defined(tuckNoInvariants): if
+  not (cond): tuckInvariantFailed(...)` — opt-out flag, independent of
+  `release`/`danger`. Verified: built the emitted `.nim` directly with
+  `-d:release` and a violated invariant still aborts (exit 1); with
+  `-d:release -d:tuckNoInvariants` it does not (exit 0). Odin's own
+  `assert(cond)` (unconditional, no release gate at all) was NOT touched —
+  out of scope for this entry, worth checking separately whether Odin's
+  `-o:speed`/ODIN_DISABLE_ASSERT has the same class of bug.
 - [ ] **[design] Variant sets in fn signatures.** Semantics ruled
   (`ProtocolStage<Login|Active>` narrows where a fn may be called); the
   SPELLING is unsettled, since `[T]` and `[...]` are taken.
