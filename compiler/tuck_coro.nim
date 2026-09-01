@@ -15,7 +15,6 @@
 ## Upstream: github.com/kobi2187/arsenal — keep edits minimal so this stays
 ## diffable against it.
 
-import std/deques
 import std/nativesockets
 import std/options
 import std/os
@@ -381,16 +380,40 @@ type
     entryPoint: CoroutineProc
     backend: UnifiedBackend
 
-proc `=destroy`*(c: var CoroutineObj) =
-  ## Destructor - clean up backend resources.
+type
+  Coroutine* = ptr CoroutineObj
+    ## High-level coroutine wrapper providing a safe interface.
+    ##
+    ## A RAW POINTER, manually allocated — not `ref CoroutineObj`, and that is
+    ## a deliberate ARC decision, not the default. Under `ref`, the ready
+    ## queue (a Deque[Coroutine]) inserted a genuine incref/decref pair on
+    ## every push/pop — measured (benches/SCORES.md, 2026-07-28) at 1.55x the
+    ## cost of a pointer deque, and it is exactly the same class of cost
+    ## `activeCoroutine` being a `ptr` instead of `ref` already removed from
+    ## the switch itself. `alloc0`/`dealloc` replace `new`/ARC's automatic
+    ## `=destroy`; `destroyCoroutine` below is now the explicit reap step
+    ## that `=destroy` used to run implicitly.
+    ##
+    ## Safe for the SAME reason D's and Odin's raw-pointer coroutines are
+    ## safe: `--mm:arc` is pure deterministic refcounting, never a tracing
+    ## collector — there is no "scan the stack for live roots" step for ARC
+    ## to fail at the way a tracing GC's would on an unregistered minicoro
+    ## stack. The one thing manual allocation loses that `=destroy` gave for
+    ## free is running field destructors on free: `dealloc` does not do that,
+    ## so `destroyCoroutine` resets `entryPoint` to nil first (decref-ing its
+    ## captured closure environment, if any) before freeing the block.
+
+proc destroyCoroutine*(c: Coroutine) =
+  ## Explicit reap step, mirroring tuckrt/tuck_coro.odin's/tuck_coro.d's
+  ## destroyCoroutine — the code `ref CoroutineObj`'s `=destroy` used to run
+  ## automatically. Call exactly once, when a coroutine is observed finished
+  ## and is about to be dropped (see runNext).
+  if c == nil: return
   if c.backend.handle != nil:
     destroy(c.backend)
+  c.entryPoint = nil   # decref the closure's captured environment, if any
+  dealloc(c)
 
-type
-  Coroutine* = ref CoroutineObj
-    ## High-level coroutine wrapper providing a safe interface.
-    ## Automatically manages the underlying backend.
-  
 # =============================================================================
 # Error Helpers
 # =============================================================================
@@ -415,18 +438,16 @@ var activeCoroutine {.threadvar.}: ptr CoroutineObj
   ## every read compiled to an `eqcopy` CALL plus an error-flag branch in the
   ## generated C — twice per context switch, on the hottest path there is.
   ##
-  ## Safe because this is a VIEW, never an owner: a running coroutine is kept
-  ## alive by `resume`'s own `c` parameter (a ref held for the whole call,
-  ## including across the switch), and by the scheduler's readyQueue /
-  ## currentCoro. activeCoroutine is only ever set to a coroutine that one of
-  ## those already owns, and cleared before that owner releases it.
+  ## `Coroutine` (below) is ALSO a raw pointer now, manually allocated —
+  ## a coroutine is never garbage collected, only explicitly reaped by
+  ## `destroyCoroutine` once `runNext` observes it finished. So this and
+  ## `Coroutine` are the same representation; `running()` is a plain read.
 
 proc running*(): Coroutine =
   ## Get the currently running coroutine, or nil if not in a coroutine.
-  ## Converts the view back to a ref for callers, which re-establishes
-  ## ownership for as long as they hold it.
-  if activeCoroutine == nil: nil
-  else: cast[Coroutine](activeCoroutine)
+  ## `Coroutine` and `activeCoroutine`'s own type are now the same raw
+  ## pointer, so this is a plain read — no view-to-owner conversion needed.
+  activeCoroutine
 
 proc inCoroutine*(): bool =
   ## Check if currently executing within a coroutine.
@@ -471,8 +492,12 @@ else:
 
 proc newCoroutine*(fn: CoroutineProc, stackSize: int = DefaultStackSize): Coroutine =
   ## Create a new coroutine with the given entry point.
-  
-  new(result)
+  ##
+  ## Manually allocated (`alloc0`, not `new`) — see Coroutine's own doc
+  ## comment. `alloc0` zero-inits the block, so `entryPoint` starts as a
+  ## valid empty closure (nil funcptr, nil env) before the assignment below
+  ## gives it a real one.
+  result = cast[Coroutine](alloc0(sizeof(CoroutineObj)))
   result.state = csReady
   result.entryPoint = fn
   
@@ -507,11 +532,10 @@ proc resume*(c: Coroutine) {.raises: [].} =
 
   c.state = csRunning
 
-  # The `c` parameter is itself a ref held for the duration of this call, so
-  # it keeps the coroutine alive across the switch — activeCoroutine is a
-  # convenience view, not an owner.
+  # `c` and `activeCoroutine` are the same pointer type now (both raw,
+  # manually allocated) — no view/owner distinction, no cast needed.
   let prevCoro = activeCoroutine
-  activeCoroutine = cast[ptr CoroutineObj](c)
+  activeCoroutine = c
 
   # No try/finally: with `raises: []` nothing here can unwind, so the
   # restore below always runs and the guard only costs code size.
@@ -556,16 +580,6 @@ proc coroYield*() {.stackTrace: off, raises: [].} =
 # Moved to top of file
 
 
-# =============================================================================
-# Cleanup
-# =============================================================================
-
-proc destroy*(c: Coroutine) =
-  ## Explicitly destroy a coroutine.
-  if c.backend.handle != nil:
-    destroy(c.backend)
-  c.state = csFinished
-
 {.pop.}
 
 # ===========================================================================
@@ -587,17 +601,50 @@ template dbg(args: varargs[untyped]) =
 type
   Scheduler* = object
     ## Simple round-robin coroutine scheduler.
-    readyQueue: Deque[Coroutine]
+    ##
+    ## The ready queue is a MANUALLY MANAGED ring buffer (realloc/moveMem),
+    ## not `Deque[Coroutine]` — mirrors tuck_coro.d's readyQueue exactly, for
+    ## the exact reason recorded there and in benches/SCORES.md (2026-07-28):
+    ## a `Deque[Coroutine]` inserted a genuine incref/decref pair on every
+    ## push/pop when `Coroutine` was `ref`, measured at 1.55x the cost of a
+    ## pointer deque. `Coroutine` is a raw pointer now (see its own doc
+    ## comment), so a GC-aware container buys nothing here and only pays the
+    ## Deque's own generic overhead (bounds checks, wraparound arithmetic) on
+    ## top. No `Coroutine` here is ever ARC-owned — none of this needs `=copy`
+    ## or `=destroy` hooks, unlike Deque[ref T]'s storage.
+    readyQueue: ptr UncheckedArray[Coroutine]
+    readyHead, readyTail, readyCap: int   ## next-to-run, next-free-slot, capacity
     currentCoro: Coroutine
 
 var globalScheduler {.threadvar.}: Scheduler
   ## Thread-local scheduler instance
 
+proc readyCount(s: Scheduler): int {.inline.} = s.readyTail - s.readyHead
+
+proc growReadyQueue(s: var Scheduler) =
+  let newCap = if s.readyCap == 0: 64 else: s.readyCap * 2
+  let p = cast[ptr UncheckedArray[Coroutine]](
+    realloc(s.readyQueue, newCap * sizeof(Coroutine)))
+  s.readyQueue = p
+  s.readyCap = newCap
+
 proc ready*(coro: Coroutine) =
   ## Add a coroutine to the ready queue.
-  if coro != nil and not coro.isFinished():
-    dbg "[Scheduler] Adding coroutine to readyQueue. New len: ", globalScheduler.readyQueue.len + 1
-    globalScheduler.readyQueue.addLast(coro)
+  if coro == nil or coro.isFinished(): return
+  dbg "[Scheduler] Adding coroutine to readyQueue. New len: ", globalScheduler.readyCount + 1
+  if globalScheduler.readyTail == globalScheduler.readyCap:
+    # Reclaim the consumed prefix before growing: a long-running program
+    # would otherwise walk the buffer forever.
+    if globalScheduler.readyHead > 0:
+      moveMem(addr globalScheduler.readyQueue[0],
+              addr globalScheduler.readyQueue[globalScheduler.readyHead],
+              globalScheduler.readyCount * sizeof(Coroutine))
+      globalScheduler.readyTail -= globalScheduler.readyHead
+      globalScheduler.readyHead = 0
+    if globalScheduler.readyTail == globalScheduler.readyCap:
+      growReadyQueue(globalScheduler)
+  globalScheduler.readyQueue[globalScheduler.readyTail] = coro
+  inc globalScheduler.readyTail
 
 proc schedule*(coro: Coroutine) =
   ## Alias for ready - add coroutine to scheduler.
@@ -608,17 +655,24 @@ proc spawn*(fn: proc() {.closure, gcsafe.}): Coroutine =
   result = newCoroutine(fn)
   ready(result)
 
+proc takeReady(): Coroutine =
+  if globalScheduler.readyCount == 0: return nil
+  result = globalScheduler.readyQueue[globalScheduler.readyHead]
+  inc globalScheduler.readyHead
+
 proc runNext*(): bool =
   ## Run the next coroutine in the ready queue.
   ## Returns false if no coroutines are ready.
-  if globalScheduler.readyQueue.len == 0:
+  let coro = takeReady()
+  if coro == nil:
     return false
 
-  let coro = globalScheduler.readyQueue.popFirst()
-  dbg "[Scheduler] Popped coroutine from readyQueue. Remaining len: ", globalScheduler.readyQueue.len
+  dbg "[Scheduler] Popped coroutine from readyQueue. Remaining len: ", globalScheduler.readyCount
   if coro.isFinished():
-    # Skip finished coroutines
-    return globalScheduler.readyQueue.len > 0
+    # Defensive: `ready` already refuses to queue a finished coroutine, so
+    # this should not happen in practice. Reap rather than leak if it does.
+    destroyCoroutine(coro)
+    return globalScheduler.readyCount > 0
 
   globalScheduler.currentCoro = coro
   dbg "[Scheduler] Resuming coroutine..."
@@ -626,8 +680,13 @@ proc runNext*(): bool =
   dbg "[Scheduler] Coroutine returned/suspended."
   globalScheduler.currentCoro = nil
 
-  # If coroutine suspended (not finished), it will be re-added
-  # by whoever wakes it up
+  # No re-queue decision made here: every yield point already made it.
+  # tuckYield re-schedules itself before suspending; an I/O park (tuck_async's
+  # gLoop.waitFor*) deliberately does not — the reactor re-queues those once
+  # their fd/timer fires. A coroutine observed finished is reaped here, the
+  # one place that sees every coroutine exactly once per run.
+  if coro.isFinished():
+    destroyCoroutine(coro)
   return true
 
 proc runAll*() =
@@ -641,7 +700,7 @@ proc runUntilEmpty*() =
 
 proc hasPending*(): bool =
   ## Check if there are pending coroutines.
-  globalScheduler.readyQueue.len > 0
+  globalScheduler.readyCount > 0
 
 proc currentCoroutine*(): Coroutine =
   ## Get the currently running coroutine (scheduler context).
