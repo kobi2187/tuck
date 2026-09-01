@@ -33,6 +33,47 @@ only the D row is same-session. What it does establish is the absence of a
 large gap in the wrong direction, which is what a porting bug would look
 like. Re-run all three interleaved before treating the ordering as real.
 
+### 2026-09-01 — re-run interleaved, same session: the D switch lead is real
+
+Built and ran all three fresh, back to back, same box, same N=10000 K=100:
+
+| Bench | Metric | Nim | Odin | D |
+|---|---|---|---|---|
+| async scale | coroutine spawn | 0.19–0.22 M/sec | 0.23–0.24 M/sec | 0.16–0.24 M/sec |
+| async scale | context switch | 2.41–2.43 M/sec | 2.87–2.97 M/sec | 3.30–3.54 M/sec |
+
+Spawn agrees within noise (shared minicoro stack alloc, same C on all three —
+the portability check this bench exists for). Switch does not: D beats Odin
+by ~20%, Nim by ~45%, consistently across three runs each. Found by reading
+each scheduler's hot path, not guessing:
+
+- **Nim pays ARC refcounts.** The readyQueue is `Deque[Coroutine]` with
+  `Coroutine = ref CoroutineObj` — every `addLast`/`popFirst` bumps a
+  refcount. Already identified 2026-07-28 below ("1.55x the cost of a
+  pointer deque"); this just reconfirms it under a fresh build.
+- **Odin pays a map lookup this workload never needs.** `runNext`'s
+  post-resume line is `if !isFinished(coro) && !coro_parked(coro) { queue.push_back(...) }`,
+  and `coro_parked` does `gLoop.inited && (rawptr(c) in gLoop.parked)` — a
+  hash-map probe on EVERY switch. `tuckAsyncInit` calls `initLoop()`
+  unconditionally, so `gLoop.inited` is always true and a pure-`tuckYield`
+  program (no I/O, no timers, no `on select`) pays a lookup into a
+  permanently empty map on every single context switch. This is real,
+  general overhead, not specific to select/await use — every Odin program
+  pays it.
+- **D pays neither.** The ready queue is a raw malloc'd `Coroutine*` ring
+  (no GC, so no refcounting — same reason the ready queue can't be GC
+  memory at all: a coroutine's own stack isn't scanned). `tuckYield`
+  explicitly re-schedules itself before suspending, so nothing needs to ask
+  "was this one parked?" after a resume — unlike Odin's generic `runNext`,
+  which has to serve both the plain-yield path and the reactor-parked path
+  through one function and uses the map check to tell them apart.
+
+Not a bug on Odin's side — its design trades a small per-switch cost for a
+single, uniform requeue path that also handles I/O parking. D's ring buffer
+is faster here only because plain yielding and I/O parking are two separate
+call sites that each already know which case they're in, so nothing needs
+checking after the fact.
+
 **This bench earned its keep immediately.** At the default N=10000 the first
 D run SEGFAULTED where Nim and Odin are fine. gdb put it in the GC:
 appending to the GC-allocated run queue from inside a coroutine triggered a
