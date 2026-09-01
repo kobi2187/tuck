@@ -207,12 +207,25 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
 - [ ] **[read] Registers are not `volatile`.** D has no volatile qualifier;
   `core.volatile`'s load/store are the supported spelling. Correct for the
   examples, wrong for a real embedded target.
-- [ ] **3 of 44 examples do not compile** (was 13, 2026-08-29):
-  `on select`'s TASK form which needs the reactor (29, 30), and 16 — which
-  fails the CHECKER, not codegen (§6). FIXED since: the messageless actor
-  (15), the inline sum type (08), fnsig-as-value (03), composition and
-  mixins (04), and a value-returning body the checker left open, which D
-  and Odin reject where Nim does not. → ledger.
+- [x] **FIXED 2026-09-01** — the reactor (epoll+timerfd) landed in
+  `tuck_coro.d`, porting `tuckrt/tuck_coro.odin`'s event loop: `IoWaiter`/
+  `EventLoop`, `armTimer`/`watchFd`/`unwatch`, `tuckAwaitRead`/
+  `tuckAwaitWrite`/`tuckSleep`/`tuckAwaitReadOrTimeout`, `runOnce`, and
+  `tuckRun` now polls `epoll_wait` instead of stopping when the ready queue
+  drains. Used druntime's own bindings (`core.sys.linux.epoll`,
+  `core.sys.linux.sys.timerfd`) rather than hand-declared externs, unlike
+  Odin. `genDSelect` (codegen_d.nim) replaces the `dUnsupported` stub for
+  `exkSelect`, mirroring `genOdinSelect`. `openSource` landed in
+  `tuck_rt.d` using a real D closure over `{ms, wr}` — no
+  `context.user_ptr` marshaling layer needed, since D (unlike Odin) has
+  real closures. 29-task-timeout (exit 2) and 30-async-read (exit 1) both
+  build and run correctly; two `runsD` regression assertions added to
+  `d_backend` suite. **1 of 44 examples does not compile**: 16, which
+  fails the CHECKER, not codegen (§6). FIXED since (was 13, 2026-08-29):
+  the messageless actor (15), the inline sum type (08), fnsig-as-value
+  (03), composition and mixins (04), a value-returning body the checker
+  left open (which D and Odin reject where Nim does not), and the reactor
+  (29, 30). → ledger.
 - [ ] **[repro] Example 20 is unverified on every backend past emit.**
   Chasing its D build (match-statement fix, then sizeof) surfaced two
   more blockers, both cross-backend and neither D-specific:

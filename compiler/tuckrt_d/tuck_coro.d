@@ -15,13 +15,15 @@
 // status from D against this same archive, and a coroutine suspended
 // mid-body and resumed correctly.
 //
-// Linux only, like the Odin runtime. The reactor (epoll/timerfd) lands with
-// the awaiting primitives; this file is the scheduler foundation those sit
-// on.
+// Linux only, like the Odin runtime.
 module tuck_coro;
 
 import core.stdc.stdlib : abort;
 import std.stdio : stderr;
+import core.sys.posix.unistd : read, write, close, pipe2;
+import core.sys.linux.epoll;
+import core.sys.linux.sys.timerfd;
+import core.sys.posix.time : CLOCK_MONOTONIC, itimerspec;
 
 // ===========================================================================
 // minicoro bindings
@@ -243,18 +245,204 @@ void tuckYield()
     suspend();
 }
 
-/// Drive the queue until it drains. Called after `main` so spawned tasks get
-/// to finish (mirrors tuck.nim's entry for the Nim backend).
+// ===========================================================================
+// Event loop / reactor  (epoll + timerfd; mirrors tuckrt/tuck_coro.odin)
+// ===========================================================================
+//
+// druntime ships real bindings for both syscalls (core.sys.linux.epoll,
+// core.sys.linux.sys.timerfd) — no foreign-C declarations needed, unlike
+// Odin which hand-declares the six calls itself.
+//
+// The ring-buffer scheduler above never auto-requeues a coroutine that
+// suspends: `tuckYield` re-schedules itself before suspending, and
+// `parkCurrent` below deliberately does not, leaving the reactor as the
+// only thing that puts a parked coroutine back on the queue. Odin's
+// scheduler runs on a generic `queue.Queue` whose runNext always requeues
+// on the way out, so it needs an explicit `parked` set to suppress that for
+// an I/O-waiting coroutine. This ring buffer needs no such set — the
+// "don't requeue automatically" behaviour Odin has to opt into is simply
+// how this scheduler already works.
+
+private struct IoWaiter
+{
+    Coroutine* coro;
+    bool isTimer;
+}
+
+private struct EventLoop
+{
+    int epfd = -1;
+    IoWaiter[int] waiters;   // fd -> who is parked on it
+    bool inited;
+}
+
+private __gshared EventLoop gLoop;
+
+private void initLoop()
+{
+    if (gLoop.inited) return;
+    gLoop.epfd = epoll_create1(0);
+    if (gLoop.epfd < 0) tuckCoroFail("epoll_create1 failed");
+    gLoop.inited = true;
+}
+
+private void parkCurrent(int fd, bool isTimer)
+{
+    auto c = activeCoroutine;
+    if (c is null) tuckCoroFail("cannot await outside a coroutine");
+    gLoop.waiters[fd] = IoWaiter(c, isTimer);
+    suspend();
+}
+
+/// Arm a one-shot timerfd for `ms` milliseconds and register it with epoll.
+/// Returns false (leaving `tfd` unset) on any syscall failure.
+private bool armTimer(out int tfd, long ms)
+{
+    tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    if (tfd < 0) return false;
+    itimerspec spec;
+    spec.it_value.tv_sec = cast(typeof(spec.it_value.tv_sec))(ms / 1000);
+    spec.it_value.tv_nsec =
+        cast(typeof(spec.it_value.tv_nsec))((ms % 1000) * 1_000_000);
+    if (timerfd_settime(tfd, 0, &spec, null) != 0)
+    {
+        close(tfd);
+        return false;
+    }
+    epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = tfd;
+    if (epoll_ctl(gLoop.epfd, EPOLL_CTL_ADD, tfd, &ev) != 0)
+    {
+        close(tfd);
+        return false;
+    }
+    return true;
+}
+
+private bool watchFd(int fd, bool write_)
+{
+    epoll_event ev;
+    ev.events = write_ ? EPOLLOUT : EPOLLIN;
+    ev.data.fd = fd;
+    return epoll_ctl(gLoop.epfd, EPOLL_CTL_ADD, fd, &ev) == 0;
+}
+
+private void unwatch(int fd, bool isTimer)
+{
+    epoll_ctl(gLoop.epfd, EPOLL_CTL_DEL, fd, null);
+    gLoop.waiters.remove(fd);
+    if (isTimer) close(fd);
+}
+
+/// Suspend until `fd` is readable.
+void tuckAwaitRead(long fd)
+{
+    initLoop();
+    auto ifd = cast(int) fd;
+    if (!watchFd(ifd, false)) return;
+    parkCurrent(ifd, false);
+    unwatch(ifd, false);
+}
+
+void tuckAwaitWrite(long fd)
+{
+    initLoop();
+    auto ifd = cast(int) fd;
+    if (!watchFd(ifd, true)) return;
+    parkCurrent(ifd, true);
+    unwatch(ifd, false);
+}
+
+/// Cooperative sleep: suspend this coroutine for `ms`, driven by the reactor.
+void tuckSleep(long ms)
+{
+    initLoop();
+    int tfd;
+    if (!armTimer(tfd, ms)) return;
+    parkCurrent(tfd, true);
+    unwatch(tfd, true);
+}
+
+/// Suspend until `fd` is readable OR timeoutMs elapses. Returns true if
+/// readable, false if it timed out — the operation-timeout primitive
+/// (spec §9.3). Whichever side loses the race is torn down here; leaving it
+/// registered would later wake a coroutine that has moved on.
+bool tuckAwaitReadOrTimeout(long fd, long timeoutMs)
+{
+    initLoop();
+    auto rfd = cast(int) fd;
+    if (!watchFd(rfd, false)) return false;
+    int tfd;
+    if (!armTimer(tfd, timeoutMs))
+    {
+        unwatch(rfd, false);
+        return false;
+    }
+
+    auto c = activeCoroutine;
+    if (c is null) tuckCoroFail("cannot await outside a coroutine");
+    gLoop.waiters[rfd] = IoWaiter(c, false);
+    gLoop.waiters[tfd] = IoWaiter(c, true);
+    suspend();
+
+    // Exactly one side fired and was removed by runOnce; whichever is still
+    // registered lost the race.
+    bool readable = (rfd !in gLoop.waiters);
+    unwatch(rfd, false);
+    unwatch(tfd, true);
+    return readable;
+}
+
+/// Process one batch of events. Returns true if anything was resumed.
+private bool runOnce(int timeoutMs = 100)
+{
+    initLoop();
+    epoll_event[64] events;
+    int n = epoll_wait(gLoop.epfd, events.ptr, 64, timeoutMs);
+    if (n <= 0) return false;
+
+    // A read racing a timeout can land BOTH sides in one batch, so a
+    // coroutine already resumed in this pass must not be queued twice.
+    bool[Coroutine*] resumed;
+    foreach (i; 0 .. n)
+    {
+        int fd = events[i].data.fd;
+        auto wp = fd in gLoop.waiters;
+        if (wp is null) continue;
+        auto w = *wp;
+        gLoop.waiters.remove(fd);
+        if (w.coro !in resumed)
+        {
+            resumed[w.coro] = true;
+            schedule(w.coro);
+        }
+    }
+    return true;
+}
+
+/// Run one coroutine off the ready queue, reaping it if it finished.
+private void stepOne()
+{
+    auto c = takeReady();
+    resume(c);
+    if (c.state == CoroutineState.Finished) destroyCoroutine(c);
+}
+
+/// Run until nothing is ready AND nothing is waiting on the reactor.
 void tuckRun()
 {
-    while (!stopped && readyCount > 0)
+    initLoop();
+    stopped = false;
+    while (!stopped)
     {
-        auto c = takeReady();
-        resume(c);
-        // A coroutine that yielded re-queued itself in tuckYield; one that
-        // parked on an fd will be re-queued by the reactor when it lands.
-        if (c.state == CoroutineState.Finished)
-            destroyCoroutine(c);
+        while (readyCount > 0) stepOne();
+        // Checked AFTER the drain so a coroutine that called stop() in this
+        // pass is honoured immediately, rather than after another 100ms
+        // parked in epoll_wait.
+        if (stopped) break;
+        if (gLoop.waiters.length == 0 && readyCount == 0) break;
+        runOnce(100);
     }
 }
 
@@ -265,6 +453,7 @@ void tuckAsyncInit()
     readyHead = 0;
     readyTail = 0;
     stopped = false;
+    initLoop();
 }
 
 /// Fire-and-forget: schedule a task, do not wait for it (spec §9.2).
@@ -307,18 +496,14 @@ void spawnResult(T)(TuckAsyncResult!T slot, T delegate() fn)
 /// tuck_async.nim's awaitResult.
 T awaitResult(T)(TuckAsyncResult!T slot)
 {
-    if (inCoroutine())
+    while (!slot.done)
     {
-        while (!slot.done) tuckYield();
-    }
-    else
-    {
-        while (!slot.done && readyCount > 0)
-        {
-            auto c = takeReady();
-            resume(c);
-            if (c.state == CoroutineState.Finished) destroyCoroutine(c);
-        }
+        if (inCoroutine())
+            tuckYield();
+        else if (readyCount > 0)
+            stepOne();
+        else
+            runOnce(1);
     }
     return slot.value;
 }
@@ -379,10 +564,11 @@ void waitUntil(bool function() pred)
 {
     while (!pred())
     {
-        if (readyCount == 0) break;   // nothing left to run: no progress possible
-        auto c = takeReady();
-        resume(c);
-        if (c.state == CoroutineState.Finished) destroyCoroutine(c);
+        // Nothing queued and nothing parked on the reactor: no progress
+        // possible, and spinning further would never make pred() true.
+        if (readyCount == 0 && gLoop.waiters.length == 0) break;
+        if (readyCount > 0) stepOne();
+        else runOnce(10);
     }
 }
 

@@ -1054,7 +1054,7 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
 
 proc ownsLayoutD(s: Expr): bool =
   ## Constructs that emit their own indentation, braces and newlines.
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkChain}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkChain, exkSelect}
 
 proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
                        stmtCode: string): string =
@@ -1290,6 +1290,40 @@ proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
     if bt != nil and bt.kind == tkNamed and ctx.idx.hasInvariantsIdx(bt.name):
       result.add(ctx.indD & "validate_" & bt.name & "(" & baseStr & ");\n")
 
+proc dSelectTimeoutMs(ctx: var DCodegenCtx, arm: SelectArm): string =
+  ## The `timeout` arm's deadline as a plain int-of-milliseconds expression.
+  ## Mirrors the Nim/Odin backends' selectTimeoutMs exactly: `timeout {5.ms}`
+  ## unwraps its single-field payload; a bare `timeout 30` is already a
+  ## literal and passes through untouched.
+  ctx.genDExpr(soleFieldValue(arm.arg))
+
+proc genDSelect(ctx: var DCodegenCtx, e: Expr): string =
+  ## Task `on select` (spec §9.3): a `read <fd>` arm racing a `timeout <ms>`
+  ## arm via rt.tuckAwaitReadOrTimeout — true means the fd won (run the read
+  ## body), false means the deadline won. Mirrors codegen_odin.nim's
+  ## genOdinSelect. rt.tuckAwaitReadOrTimeout takes Tuck `int` (D `long`)
+  ## for both fd and timeoutMs, so no narrowing cast is needed here — the
+  ## narrowing to a real C `int` happens inside tuck_coro.d, once, at the
+  ## syscall boundary.
+  ##
+  ## The checker's failIfUnlowerableArm already refuses any arm shape but
+  ## these two before this is reached, so the fallback below is unreachable
+  ## for a checked program and stays only as a visible marker.
+  var readArm, timeoutArm: ptr SelectArm = nil
+  for arm in e.selArms.mitems:
+    case arm.sourceKind
+    of sskRead: readArm = addr arm
+    of sskTimeout: timeoutArm = addr arm
+    of sskTimeoutTyped, sskOther: discard
+  if readArm == nil or timeoutArm == nil:
+    return ctx.indD & "// select: only read+timeout arms supported (first cut)\n"
+  let fd = ctx.genDExpr(readArm.arg)
+  let ms = ctx.dSelectTimeoutMs(timeoutArm[])
+  let readBody = ctx.genDNested(readArm.body)
+  let toBody = ctx.genDNested(timeoutArm.body)
+  ctx.indD & "if (rt.tuckAwaitReadOrTimeout(" & fd & ", " & ms & ")) {\n" &
+    readBody & ctx.indD & "} else {\n" & toBody & ctx.indD & "}\n"
+
 proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   if e == nil: return ""
   # A concrete value entering an interface slot is copied into the variant
@@ -1330,7 +1364,7 @@ proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   of exkRaise: ctx.genDRaise(e)
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkSend: ctx.genDSend(e)
-  of exkSelect: dUnsupported("on select (arrives with the Fiber runtime)")
+  of exkSelect: ctx.genDSelect(e)
 
 # --------------------------------------------------------- declarations --
 

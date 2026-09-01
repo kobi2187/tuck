@@ -152,29 +152,60 @@ see memory d-backend-semantics-identical. !T = TuckResult value, no exceptions.
         already correct here; only Odin and the checker needed fixing.
         Full writeup: TODO.md §3, commit 7356d30.
 
-**Current sweep (2026-08-30, reconfirmed): 41 of 44 examples compile under
-`--dlang`.** Three remain:
+**Current sweep (2026-09-01): 43 of 44 examples compile under `--dlang`.**
+One remains:
   - **16-actor-tasks-unified-syntax** — fails the CHECKER (undeclared
     methods in an aspirational specimen), not codegen. Not a D task.
-  - **29-task-timeout, 30-async-read** — need the reactor. Sized precisely
-    below (M7): D's coroutine engine and task-with-args already work;
-    only epoll/timerfd/tuckAwaitReadOrTimeout/openSource are missing.
 
-  - [ ] M7 concurrency — PARTIALLY DONE, not Fiber: D uses minicoro, same
-        as Odin (per line 21/55 above — this label was stale). tuck_coro.d
-        already has the coroutine engine (spawn/schedule/tuckYield/tuckRun,
-        spawnResult/awaitResult) — and task-with-args needs NO marshalling
-        here at all, unlike Odin's context.user_ptr workaround, since D's
-        delegates capture arguments as real closures. What's still missing
-        is the REACTOR: no epoll/timerfd, no tuckAwaitRead/
-        tuckAwaitReadOrTimeout, no openSource — confirmed absent by reading
-        tuck_coro.d's full proc list. That's the actual size of 29/30 for
-        D — porting Odin's epoll+timerfd reactor, own plan when reached.
-        Odin's own reactor (compiler/tuckrt/tuck_coro.odin) is the
-        reference to port from — it already works (29/30 pass under
-        --odin as of 2026-08-30) and names the exact six syscalls needed
-        (epoll_create1, epoll_ctl, epoll_wait, timerfd_create,
-        timerfd_settime, close).
+  - [x] **M7 concurrency reactor — DONE 2026-09-01.** Ported Odin's
+        epoll+timerfd reactor into tuck_coro.d: `IoWaiter`/`EventLoop`,
+        `armTimer`/`watchFd`/`unwatch`, `tuckAwaitRead`/`tuckAwaitWrite`/
+        `tuckSleep`/`tuckAwaitReadOrTimeout`, `runOnce`, and `tuckRun`
+        rewritten to poll `epoll_wait` instead of stopping when the ready
+        queue empties. Used druntime's own `core.sys.linux.epoll` /
+        `core.sys.linux.sys.timerfd` bindings rather than hand-declaring
+        the six syscalls the way Odin's `foreign import` block does.
+        `openSource` landed in tuck_rt.d (not tuck_coro.d — it needs
+        `tuckRec`, which lives there, and `tuck_rt.d` already re-exports
+        `tuck_coro` publicly so `tuckSpawn`/`tuckSleep` are in scope
+        unqualified) using a REAL D closure over `{ms, wr}` — no
+        `context.user_ptr` marshaling at all, confirming the ledger's
+        earlier prediction that D's delegates make this simpler than
+        Odin's workaround.
+        One scheduler-shape discovery worth keeping: D's hand-rolled ring
+        buffer (readyHead/readyTail) never auto-requeues a suspended
+        coroutine — only `tuckYield` explicitly reschedules itself before
+        suspending, so `parkCurrent` parking a coroutine on an fd needs NO
+        extra bookkeeping to keep it out of the ready queue. Odin's
+        scheduler runs on a generic `queue.Queue` whose `runNext` always
+        re-appends on the way out, so IT needs an explicit `parked` set to
+        suppress that for an I/O wait. The D port ended up simpler here,
+        not because of a design choice but because the two backends'
+        pre-existing scheduler DATA STRUCTURES have different default
+        behaviour on this exact point.
+        `codegen_d.nim` gained `genDSelect`/`dSelectTimeoutMs`, replacing
+        the `dUnsupported` stub for `exkSelect` — mirrors
+        `genOdinSelect` exactly, one difference: rt.tuckAwaitReadOrTimeout
+        takes Tuck `int` (D `long`) for both fd and timeoutMs, so codegen
+        emits no narrowing cast at all — the cast to a real C `int` happens
+        once, inside tuck_coro.d, at the syscall boundary, rather than at
+        every call site the way `int(ms)` appears in the Nim/Odin emitters.
+        Verified: `tuck b --dlang examples/29-task-timeout.tuck` and
+        `examples/30-async-read.tuck` both build and exit with the right
+        code (2 and 1). Two `runsD` assertions added to `d_backend` suite
+        (embedding the same program text as 29/30) so this is a permanent
+        regression guard, not just a manual sweep fact. Full `./tests/run`
+        green (112/112 in d_backend, unchanged elsewhere).
+        NOT done in this pass, deliberately out of scope: `tuckSubmitBlocking`
+        (the worker-thread offload seam for blocking fs calls) — std/fs's
+        D implementations (readFile/writeFile/etc in tuck_rt.d) still block
+        the whole process inline, exactly as their own comments already
+        said they would "until the coroutine runtime lands." That comment
+        is now stale in the narrow sense that the coroutine runtime HAS
+        landed; wiring fs through the offload seam is a distinct, sizeable
+        follow-up (matching runtime CHARACTERISTICS across backends, not
+        just semantics — see the portable-runtime constraint above), not
+        needed for 29/30, and not attempted here.
 
 ## Open Questions
 - UNCONFIRMED: D sum-type shape — mirror Odin (tag enum + one struct holding
@@ -382,10 +413,11 @@ does not exist yet is a bug waiting for its backend.
 
 ### Still open, in order of what they need
 
-- 03 fnsig-as-value, 04 mixins — D emitter arms, self-contained.
-- 29/30 `on select` TASK form — needs the reactor (epoll+timerfd). The
-  big one.
-- 16 — fails the CHECKER, not codegen. Not a D task.
+- 03 fnsig-as-value, 04 mixins — D emitter arms, self-contained. FIXED,
+  see "Later the same day" below.
+- 29/30 `on select` TASK form — needed the reactor (epoll+timerfd).
+  FIXED 2026-09-01, see the sweep note above this section.
+- 16 — fails the CHECKER, not codegen. Not a D task. Still open.
 - Inline sum with a DEFAULT (`state: {...} = Red`) still dies:
   "type application <uninit>[...]". Not investigated.
 

@@ -780,4 +780,43 @@ fn main() -> int:
            r"self = tuck_louder"
   t.runsD "chain: the object is untouched, so volume is still 5", 5, dmdExe
 
+  # --- reactor: epoll+timerfd (examples 29/30) ----------------------------
+  # `on select` racing a real async read against a timeout (spec §9.3) —
+  # the two outcomes the tuck_coro.d reactor added this session must produce.
+  t.src """
+import time
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd          -> {}:  return {code: 1}
+    | timeout {30.ms}  -> {}:  return {code: 2}
+
+fn main() -> int:
+  let src = {ms: 500} openSource
+  let r = {fd: src.fd} readOrGiveUp
+  return r.code
+"""
+  t.runsD "reactor: a 30ms timeout beats a 500ms source (code 2)", 2, dmdExe
+
+  t.src """
+import time
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd           -> {}:  return {code: 1}
+    | timeout {100.ms}  -> {}:  return {code: 2}
+
+fn main() -> int:
+  let src = {ms: 5} openSource
+  let r = {fd: src.fd} readOrGiveUp
+  return r.code
+"""
+  t.runsD "reactor: a 5ms source beats a 100ms timeout (code 1)", 1, dmdExe
+
   t.finish()

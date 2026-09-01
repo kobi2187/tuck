@@ -12,6 +12,7 @@ module tuck_rt;
 
 import std.stdio : stdout;
 import std.conv : text;
+import core.sys.posix.unistd : pipe2, write, close;
 
 // The coroutine engine is a separate file but the SAME facade: emitted code
 // reaches everything through `rt`, so tuck_rt re-exports it — mirroring
@@ -398,4 +399,31 @@ void sleepMs(uint ms)
     import core.thread : Thread;
     import core.time : msecs;
     Thread.sleep(msecs(ms));
+}
+
+// --- a demo async source -----------------------------------------------
+// A REAL non-blocking source: a pipe whose write end is fed by a writer
+// coroutine after `ms` (a reactor-driven sleep, no OS thread). The read fd
+// genuinely becomes readable at `ms`, so a task racing `read fd` against
+// `timeout N` sees the true winner. Mirrors tuck_async.nim's openSource and
+// tuckrt/tuck_coro.odin's openSource — the runtimes must agree on what
+// "async" means, or a program's behaviour would depend on which backend
+// built it.
+//
+// Unlike the Odin port, D HAS real closures, so the writer coroutine simply
+// captures `ms` and the write fd by delegate — no context.user_ptr
+// marshaling layer is needed (that machinery exists only because Odin's
+// `proc()` literals cannot read an outer local).
+R openSource(R)(long ms)
+{
+    int[2] pipes;
+    if (pipe2(pipes, 0) != 0) return tuckRec!(R, "fd")(-1L);
+    auto wr = pipes[1];
+    tuckSpawn({
+        tuckSleep(ms);
+        ubyte[1] b = [1];
+        write(wr, b.ptr, 1);
+        close(wr);
+    });
+    return tuckRec!(R, "fd")(cast(long) pipes[0]);
 }
