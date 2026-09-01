@@ -138,7 +138,8 @@ resume :: proc(c: ^Coroutine) {
 	}
 }
 
-coroYield :: proc() {
+@(private)
+parkSuspend :: proc() {
 	c := activeCoroutine
 	if c == nil {
 		panic("tuck: cannot yield outside a coroutine")
@@ -146,6 +147,23 @@ coroYield :: proc() {
 	c.state = .Suspended
 	mco_yield(mco_running())
 	c.state = .Running
+}
+
+// Cooperative yield: re-schedule THIS coroutine, then suspend. Every plain-
+// yield call site (actor drains, tuckYield, waitUntil, awaitResult) goes
+// through this, so a resume always re-queues at exactly the yield point that
+// asked for it — never a second-guess made by runNext after the fact by
+// checking whether this suspension happened to be an I/O park. An I/O park
+// (parkCurrent, tuckAwaitReadOrTimeout) must NOT self-requeue — the reactor
+// re-queues those once the fd/timer actually fires — so those call
+// parkSuspend directly instead of this.
+coroYield :: proc() {
+	c := activeCoroutine
+	if c == nil {
+		panic("tuck: cannot yield outside a coroutine")
+	}
+	ready(c)
+	parkSuspend()
 }
 
 destroyCoroutine :: proc(c: ^Coroutine) {
@@ -214,6 +232,10 @@ runNext :: proc() -> bool {
 
 	coro := queue.pop_front(&globalScheduler.readyQueue)
 	if isFinished(coro) {
+		// Defensive: `ready` already refuses to queue a finished coroutine,
+		// so this should not happen in practice. Destroy rather than leak
+		// if it ever does.
+		destroyCoroutine(coro)
 		return queue.len(globalScheduler.readyQueue) > 0
 	}
 
@@ -221,11 +243,13 @@ runNext :: proc() -> bool {
 	resume(coro)
 	globalScheduler.currentCoro = nil
 
-	// A coroutine parked on I/O or a timer is re-queued by the reactor when
-	// its event fires. A plain coroYield() has no waker at all, so it is
-	// re-queued here — otherwise cooperative yielding would silently drop it.
-	if !isFinished(coro) && !coro_parked(coro) {
-		queue.push_back(&globalScheduler.readyQueue, coro)
+	// No re-queue decision made here: every suspend point already made it.
+	// coroYield() re-schedules itself before suspending; parkCurrent and
+	// tuckAwaitReadOrTimeout deliberately do not — the reactor re-queues
+	// those once their fd/timer fires. A coroutine that finished is reaped
+	// here, the one place that sees every coroutine exactly once per run.
+	if isFinished(coro) {
+		destroyCoroutine(coro)
 	}
 	return true
 }
@@ -248,19 +272,12 @@ IoWaiter :: struct {
 EventLoop :: struct {
 	epfd:    linux.Fd,
 	waiters: map[linux.Fd]IoWaiter,
-	// Coroutines parked on this loop; runNext must NOT re-queue them.
-	parked:  map[rawptr]bool,
 	stopped: bool,
 	inited:  bool,
 }
 
 @(private)
 gLoop: EventLoop
-
-@(private)
-coro_parked :: proc(c: ^Coroutine) -> bool {
-	return gLoop.inited && (rawptr(c) in gLoop.parked)
-}
 
 @(private)
 initLoop :: proc() {
@@ -271,7 +288,6 @@ initLoop :: proc() {
 	}
 	gLoop.epfd = fd
 	gLoop.waiters = make(map[linux.Fd]IoWaiter)
-	gLoop.parked = make(map[rawptr]bool)
 	gLoop.inited = true
 }
 
@@ -282,9 +298,7 @@ parkCurrent :: proc(fd: linux.Fd, isTimer: bool) {
 		panic("tuck: cannot await outside a coroutine")
 	}
 	gLoop.waiters[fd] = IoWaiter{coro = c, isTimer = isTimer}
-	gLoop.parked[rawptr(c)] = true
-	coroYield()
-	delete_key(&gLoop.parked, rawptr(c))
+	parkSuspend()
 }
 
 @(private)
@@ -372,9 +386,7 @@ tuckAwaitReadOrTimeout :: proc(fd: int, timeoutMs: int) -> bool {
 	}
 	gLoop.waiters[rfd] = IoWaiter{coro = c, isTimer = false}
 	gLoop.waiters[tfd] = IoWaiter{coro = c, isTimer = true}
-	gLoop.parked[rawptr(c)] = true
-	coroYield()
-	delete_key(&gLoop.parked, rawptr(c))
+	parkSuspend()
 
 	// Exactly one side fired and was removed by runOnce; whichever is still
 	// registered lost the race.
@@ -401,7 +413,6 @@ runOnce :: proc(timeoutMs: int = 100) -> bool {
 		delete_key(&gLoop.waiters, fd)
 		if rawptr(w.coro) not_in resumed {
 			resumed[rawptr(w.coro)] = true
-			delete_key(&gLoop.parked, rawptr(w.coro))
 			ready(w.coro)
 		}
 	}
