@@ -74,6 +74,53 @@ is faster here only because plain yielding and I/O parking are two separate
 call sites that each already know which case they're in, so nothing needs
 checking after the fact.
 
+### 2026-09-01 — Nim: Deque[ref Coroutine] → manual pointer ring
+
+Applied the same fix to Nim that D and Odin's rings already had: `Coroutine`
+was `ref CoroutineObj` (ARC-managed), and the ready queue was
+`Deque[Coroutine]` — every `addLast`/`popFirst` genuine incref/decref, the
+exact cost already identified 2026-07-28 below ("1.55x the cost of a
+pointer deque"), just never acted on until now.
+
+`Coroutine` is now `ptr CoroutineObj`, allocated with `alloc0`/freed with
+`dealloc`, matching tuck_coro.d's `Coroutine*` exactly. Safe for the same
+reason D's and Odin's raw pointers are: `--mm:arc` is pure deterministic
+refcounting, never a tracing/scanning collector, so there is no "GC can't
+find this root on an unregistered coroutine stack" hazard the way a
+tracing GC has — ARC tracks liveness by explicit inc/dec at assignment
+sites, not by scanning, so moving the CONTAINER off the GC heap changes
+nothing about how the closure captured in `entryPoint` stays alive. The one
+thing manual allocation loses that ARC's `=destroy` gave for free: running
+field destructors on free. `dealloc` doesn't do that, so the new
+`destroyCoroutine` resets `entryPoint` to nil (decref-ing its closure
+environment) before freeing the block — otherwise a captured environment
+would leak silently.
+
+`destroyCoroutine` is called explicitly wherever `runNext` observes a
+coroutine finished — the ONE case Nim didn't already handle for free via
+ARC's automatic destructor, since raw `ptr` values are never automatically
+destructed.
+
+Interleaved-adjacent (same session as the Odin fix and D benchmarks above):
+
+| Bench | Metric | Nim (before) | Nim (after) |
+|---|---|---|---|
+| async scale | coroutine spawn | 0.19–0.22 M/sec | 0.20–0.23 M/sec |
+| async scale | context switch | 2.41–2.43 M/sec | 2.59–2.70 M/sec |
+
+~10% faster — real, but smaller than Odin's ~25% gain from removing its
+map lookup. Consistent with the queue being only ONE of several costs on
+Nim's switch path (closure invocation, other ARC bookkeeping in `resume`/
+`coroYield`'s surrounding code) rather than the dominant one, unlike
+Odin's map probe which WAS the dominant one. Nim still trails D (~3.3–3.5
+M/sec) and the now-fixed Odin (~3.6–3.7 M/sec) — the remaining gap is
+somewhere else in the switch path, not chased further this session.
+
+Verified: `./tests/run` full suite green (every actor/task/select example
+compiles AND runs under the Nim backend, the suite's default mode). Direct
+runs of 26-actor-run (55), 28-async-task (42), 29-task-timeout (2), and
+30-async-read (1) all confirmed by hand, not just via the suite.
+
 **This bench earned its keep immediately.** At the default N=10000 the first
 D run SEGFAULTED where Nim and Odin are fine. gdb put it in the GC:
 appending to the GC-allocated run queue from inside a coroutine triggered a
