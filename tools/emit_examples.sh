@@ -1,5 +1,5 @@
 #!/bin/bash
-# Re-emit every example's Nim and Odin, in place, next to its .tuck source.
+# Re-emit every example's Nim, Odin and D, in place, next to its .tuck source.
 #
 # The emitted code is TRACKED (see .gitignore). This script is how you refresh
 # it: run it after any codegen change, then read `git diff examples/` — that
@@ -16,13 +16,17 @@ cd "$(dirname "$0")/.."
 [ -x ./tuck ] || nim c --hints:off --warnings:off -o:tuck tuck.nim
 
 # Stale output for a since-deleted example would otherwise linger forever.
-rm -f examples/*.nim examples/*.odin
+# tuck_coro.d/tuck_rt.d/minicoro.a are D's copied runtime, not per-example
+# output (gitignored, same reason as Odin's examples/tuckrt/) — deleted and
+# regenerated here anyway so a stale copy never lingers between runs.
+rm -f examples/*.nim examples/*.odin examples/*.d examples/minicoro.a
 
-# One invocation now emits exactly one target — --odin no longer rides
-# alongside a free Nim emission — so refreshing both tracked corpora needs
-# two calls per example instead of one.
+# One invocation now emits exactly one target — --odin/--dlang no longer ride
+# alongside a free Nim emission — so refreshing all three tracked corpora
+# needs three calls per example instead of one.
 emitted_nim=0
 emitted_odin=0
+emitted_d=0
 for f in examples/*.tuck; do
   if ./tuck c "$f" --root:"$(pwd)" > /dev/null 2>&1; then
     emitted_nim=$((emitted_nim + 1))
@@ -34,7 +38,12 @@ for f in examples/*.tuck; do
   else
     printf '  did not emit (odin): %s\n' "$(basename "$f")"
   fi
+  if ./tuck c "$f" --dlang --root:"$(pwd)" > /dev/null 2>&1; then
+    emitted_d=$((emitted_d + 1))
+  else
+    printf '  did not emit (d): %s\n' "$(basename "$f")"
+  fi
 done
 
-printf 'emitted %s .nim, %s .odin of %s examples\n' \
-  "$emitted_nim" "$emitted_odin" "$(ls examples/*.tuck | wc -l)"
+printf 'emitted %s .nim, %s .odin, %s .d of %s examples\n' \
+  "$emitted_nim" "$emitted_odin" "$emitted_d" "$(ls examples/*.tuck | wc -l)"

@@ -11,7 +11,7 @@ tests/beef_out/
 tests/beef_backend
 tests/auto_alias_out/
 # Emitted backend output lands next to the .tuck source, and is TRACKED on
-# purpose: the generated Nim and Odin is the compiler's real product, and
+# purpose: the generated Nim, Odin and D is the compiler's real product, and
 # keeping it in the tree is the only way a change to codegen is visible as a
 # diff rather than something you have to run the compiler to notice.
 #
@@ -32,6 +32,13 @@ examples/m_*
 examples/cffi/*.o
 examples/tuckrt/
 examples/mod_*/
+# D's runtime copies beside the emitted .d — flat files, not a directory
+# (Odin's equivalent copy nests under examples/tuckrt/ above), but the same
+# rationale: identical content regardless of which example produced it, so
+# tracking it would be per-example noise, not per-example output.
+examples/tuck_coro.d
+examples/tuck_rt.d
+examples/minicoro.a
 tests/.smoke_*
 tools/__pycache__/
 tools/cyc

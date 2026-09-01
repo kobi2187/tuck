@@ -453,6 +453,24 @@ proc unifiedDiff(want, got: string, ctx: int): string =
     outp.add "+" & b[j]
   outp.join("\n")
 
+proc compareGolden(t: var T, name, ext, got: string) =
+  ## Shared bless/compare core for `frozen`/`frozenD`: `got` is already the
+  ## fully backend-filtered emitted text, so only the golden's file extension
+  ## differs per backend.
+  let dir = "tests/golden" / t.name
+  let want = dir / (slugify(name) & "." & ext)
+  if t.bless:
+    createDir(dir)
+    writeFile(want, got)
+    t.ok name & " (blessed)"
+    return
+  if not fileExists(want):
+    t.no name, "no golden yet — verify the behaviour, then --bless"
+    return
+  let expected = readFile(want)
+  if expected == got: t.ok name
+  else: t.no name, "emission changed:\n" & unifiedDiff(expected, got, 8)
+
 proc frozen*(t: var T, name: string) =
   let i = t.need(vEmit)
   if t.phase == pCollect: return
@@ -460,8 +478,6 @@ proc frozen*(t: var T, name: string) =
   if t.failedTo(i):
     t.no name, "emission failed: " & lastLine(t.item(i).output)
     return
-  let dir = "tests/golden" / t.name
-  let want = dir / (slugify(name) & ".nim")
   # The runtime import is a path relative to the OUTPUT directory, which is a
   # scratch dir — machine-specific, and no part of what is being asserted.
   #
@@ -474,18 +490,20 @@ proc frozen*(t: var T, name: string) =
   for line in raw.split('\n'):
     if line.startsWith("import ") and line.endsWith("compiler/tuck_rt"): continue
     keep.add line
-  let got = keep.join("\n")
-  if t.bless:
-    createDir(dir)
-    writeFile(want, got)
-    t.ok name & " (blessed)"
+  t.compareGolden(name, "nim", keep.join("\n"))
+
+proc frozenD*(t: var T, name: string) =
+  ## Same as `frozen`, against the D backend's emitted output. D's
+  ## `import rt = tuck_rt;` names no path (unlike Nim's machine-relative
+  ## `import .../compiler/tuck_rt`), so there is no import line to filter
+  ## before comparing.
+  let i = t.need(vEmitD)
+  if t.phase == pCollect: return
+  if t.wasSkipped(i): t.skip name; return
+  if t.failedTo(i):
+    t.no name, "D emission failed: " & lastLine(t.item(i).output)
     return
-  if not fileExists(want):
-    t.no name, "no golden yet — verify the behaviour, then --bless"
-    return
-  let expected = readFile(want)
-  if expected == got: t.ok name
-  else: t.no name, "emission changed:\n" & unifiedDiff(expected, got, 8)
+  t.compareGolden(name, "d", t.emittedD(i))
 
 # --- known-bug tri-state -----------------------------------------------
 #

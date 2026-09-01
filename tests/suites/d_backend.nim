@@ -1,11 +1,20 @@
 ## Unit tests for the D backend, grown one milestone at a time — each
 ## milestone of compiler/codegen_d.nim lands with its assertions here.
 ##
-## Two layers, mirroring odin_backend:
+## Three layers, mirroring odin_backend:
 ##   * emitsD/omitsD — the emitted text says what the backend decided
 ##     (cheap, runs in --quick).
-##   * dmd build + RUN with an exit code — the decisions actually compute
-##     (a compile-only check cannot see a wrong value; exit codes can).
+##   * dmd build + RUN with an exit code, against a hand-written snippet —
+##     the decisions actually compute (a compile-only check cannot see a
+##     wrong value; exit codes can).
+##   * the example sweep at the bottom of `run*` — every gated example in
+##     examples/ builds under --dlang, and the ones with a known exit code
+##     (mirroring odin_backend's odinCompile/odinRun) must run it. This is
+##     what turns "43 of 44 examples compile" from a one-off, hand-run sweep
+##     recorded in a ledger into a permanent regression a red assertion
+##     would catch. No staging step is needed here, unlike Odin's: `tuck c
+##     --dlang -o:DIR` already copies tuck_coro.d/tuck_rt.d/minicoro.a into
+##     DIR itself, so dmd just needs `-i -IDIR`.
 ##
 ## Skips with a notice when dmd is absent, unless TUCK_REQUIRE_D=1.
 
@@ -88,6 +97,7 @@ fn main() -> int:
   t.emitsD "M1: Tuck int maps to 64-bit long, never D's 32-bit int",
            r"long tuck_main\(\)"
   t.runsD "M1: hello world builds with dmd and exits 7", 7, dmdExe
+  t.frozenD "M1: hello world's full emitted D is stable"
 
   # --- Milestone 2: statements & scalars ---------------------------------
   # T6-T9: declarations, arithmetic, control flow, ranges. The program's
@@ -845,5 +855,85 @@ fn main() -> int [io]:
 """
   t.runsD "fs: write, append, read-back, remove — all through the worker", 0,
           dmdExe
+
+  # --- example sweep: every gated example builds under --dlang -------------
+  # Same corpus as odin_backend's odinCompile, minus 16 (fails the CHECKER,
+  # not codegen — not a backend task, see TODO.md §6).
+  const dCompile = """
+01-data-flow 02-builder-mutation 03-functions-bake 04-sum-types-interface
+05-actors-effects 06-transitions-example 07-comments 08-actors_isolated_state
+09-decision-table 10-invariants 11-embedded-feature
+12-transition-the-ctor-exception 13-arena-mem 15-type-attributes 17-input-merge
+18-alias 19-event-registry 21-decision-bitmask 22-error-policy 23-units
+24-stdlib 25-pools 26-actor-run 27-actor-select 31-fnsig-callback
+32-duration-units 33-ffi-zlib 34-ffi-cstring 35-ffi-struct
+36-ffi-enum-callback 37-ffi-handle 28-async-task 38-division
+39-if-match-expr 40-saturating 41-tostr-concat 29-task-timeout 30-async-read
+"""
+
+  # Examples with a known exit code — RUN, not merely compile. Mirrors
+  # odin_backend's odinRun (see there for what each program computes).
+  #
+  # NOT yet included, found broken while building this sweep (TODO.md §6):
+  #   34-ffi-cstring       `tuck b --dlang` fails: "undefined identifier
+  #                        zlibVersion" — the emitted .d never declares the
+  #                        extern binding dmd needs, though `tuck c` alone
+  #                        (no dmd) reports success.
+  #   35/36/37 (ffi-struct/enum-callback/handle) all link cffi/point.o
+  #            TWICE ("multiple definition of `counterBump`") — tuck.nim's
+  #            D build path passes the same object file to dmd more than
+  #            once. All three compile fine (dCompile above), only the
+  #            dmd BUILD step fails.
+  const dRun = """26-actor-run:55 27-actor-select:55 31-fnsig-callback:42
+33-ffi-zlib:0 28-async-task:42 38-division:0 39-if-match-expr:0
+40-saturating:0 41-tostr-concat:0 24-stdlib:0 29-task-timeout:2
+30-async-read:1"""
+
+  proc dProjFor(base: string): string = "tests/d_out" / base.replace("-", "_")
+
+  var dBuildIdx: seq[tuple[base: string, idx: int]]
+  for w in dCompile.split({' ', '\n'}):
+    if w.len == 0: continue
+    let proj = dProjFor(w)
+    dBuildIdx.add (w, t.needCmd(@["./tuck", "c", "examples/" & w & ".tuck",
+                                  "--dlang", "-o:" & proj,
+                                  "--root:" & t.root]))
+
+  var dRunIdx: seq[tuple[base: string, want: int, idx: int]]
+  if dmdExe.len > 0:
+    for entry in dRun.split({' ', '\n'}):
+      if entry.len == 0: continue
+      let parts = entry.split(':')
+      let base = parts[0]
+      let want = parseInt(parts[1])
+      var dep = -1
+      for (b, i) in dBuildIdx:
+        if b == base: dep = i
+      let proj = dProjFor(base)
+      let bin = proj / "prog"
+      let buildI = t.needCmdAfter(
+        @[dmdExe, "-i", "-I" & proj, proj / (base & ".d"),
+          proj / "minicoro.a", "-of=" & bin],
+        dep, proc (dir: string) = discard, proj)
+      dRunIdx.add (base, want, t.needCmdAfter(@[bin], buildI,
+                                              proc (dir: string) = discard,
+                                              proj))
+
+  if t.phase == pReport:
+    for (base, i) in dBuildIdx:
+      if t.skippedCmd(i): t.skip "d compile " & base
+      else:
+        let (rc, outp) = t.resultOf(i)
+        if rc == 0: t.ok "d compile " & base
+        else:
+          let last = if outp.strip.len == 0: "" else: outp.strip.splitLines()[^1]
+          t.no "d compile " & base, last
+
+    for (base, want, i) in dRunIdx:
+      if t.skippedCmd(i): t.skip "d run " & base; continue
+      let (rc, outp) = t.resultOf(i)
+      if rc == want: t.ok "d run " & base & " -> " & $want
+      else: t.no "d run " & base,
+                  "exit " & $rc & ", want " & $want & ": " & outp.strip()
 
   t.finish()
