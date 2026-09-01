@@ -298,10 +298,17 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   that one backend by coincidence — Odin and D both failed to build with
   "undeclared name: discard" (confirmed directly), the same shape as the
   sizeof bug below.
-  Added `exkDiscard` as a genuine AST node (`discard` / `discard <expr>`,
-  a keyword like `return`), touching every exhaustive dispatch the
-  compiler itself flagged by building after adding the enum value:
-  lexer, parser (`parseDiscardExpr`, mirrors `parseReturnExpr`),
+  Added `exkDiscard` as a genuine AST node — bare `discard` (nothing
+  before it) is prefix, a keyword like `return`; dropping a VALUE is
+  `<expr> discard`, POSTFIX (`parseStatementExpr`, checked after every
+  statement-position expression, not a leading keyword) to match Tuck's
+  own grain — `{payload} fnName`, chains, `.fn {args}` all read value
+  first, action after, and a leading `discard <expr>` read backwards
+  against that (caught in review: the first cut had it prefix-with-value,
+  matching Nim's own spelling too literally instead of Tuck's). Touched
+  every exhaustive dispatch the compiler itself flagged by building after
+  adding the enum value: lexer, parser (`parseDiscardExpr` for the bare
+  form, mirrors `parseReturnExpr`),
   parser_stringify, complexity, lowering (generic child-walk), typecheck
   (`synthDiscard` — types `discardVal` if present, but the STATEMENT's
   own type is always unit, which is what makes it the sanctioned escape

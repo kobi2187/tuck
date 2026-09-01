@@ -1986,10 +1986,10 @@ fn main() -> int:
 import fs
 
 fn main() -> int:
-  discard {path: "/tmp/tuck-typecheck-discard.txt"} fs::readFile
+  {path: "/tmp/tuck-typecheck-discard.txt"} fs::readFile discard
   return 3
 """
-  t.okCheck "discard <expr> is the sanctioned way to drop it"
+  t.okCheck "<expr> discard is the sanctioned way to drop it, postfix"
 
   # A ':' with nothing inside — no statement, no discard — is a parse error
   # (TK-PA09), not silently accepted as an empty body.

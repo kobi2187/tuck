@@ -15,6 +15,7 @@ proc parseExpr*(p: var Parser): Expr
 proc parseChainExpr(p: var Parser): Expr
 proc parsePattern*(p: var Parser): Pattern
 proc parseBlock*(p: var Parser): Expr
+proc parseStatementExpr(p: var Parser): Expr
 
 proc parsePattern*(p: var Parser): Pattern =
   let sp = p.getSpan()
@@ -105,7 +106,7 @@ proc parseBraceBlock(p: var Parser, sp: Span): Expr =
   discard p.advance()
   var stmts: seq[Expr]
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-    stmts.add(p.parseExpr())
+    stmts.add(p.parseStatementExpr())
     if p.current().kind == tkNewline:
       discard p.advance()
   discard p.expect(tkRBrace)
@@ -509,13 +510,13 @@ proc parseReturnExpr(p: var Parser, sp: Span): Expr =
   Expr(span: sp, kind: exkReturn, returnVal: val)
 
 proc parseDiscardExpr(p: var Parser, sp: Span): Expr =
-  ## A bare `discard` is a pure no-op statement; `discard <expr>` evaluates
-  ## the expression and silently drops its value — an explicit opt-out of
-  ## the checker's dropped-result diagnostics, spelled the same as Nim's.
+  ## A bare `discard`, with nothing before it, is a pure no-op statement.
+  ## Dropping a VALUE is spelled `<expr> discard` instead (see parseBlock) —
+  ## postfix, like every other Tuck construct that acts on a value already
+  ## in hand (`{payload} fnName`, chains, `.fn {args}`); a leading `discard
+  ## <expr>` would read backwards against that grain.
   discard p.advance()
-  let val = if p.current().kind in {tkNewline, tkDedent}: nil
-            else: p.parseExpr()
-  Expr(span: sp, kind: exkDiscard, discardVal: val)
+  Expr(span: sp, kind: exkDiscard, discardVal: nil)
 
 proc parseMatchArm(p: var Parser): MatchArm =
   ## `| Pat -> body` and `Pat: body` are the same arm. The arrow form matches
@@ -623,6 +624,19 @@ proc parseExpr*(p: var Parser): Expr =
     return Expr(span: sp, kind: exkAssign, target: left, assignVal: value)
   return left
 
+proc parseStatementExpr(p: var Parser): Expr =
+  ## One statement: an expression, optionally suffixed with `discard` to
+  ## drop its value — postfix, matching Tuck's own grain (`{payload}
+  ## fnName`, chains, `.fn {args}`): the value comes first, what happens to
+  ## it after. A LEADING bare `discard` (nothing to drop) is a separate,
+  ## unrelated case, handled by parseDiscardExpr inside parseExpr itself.
+  let e = p.parseExpr()
+  if p.current().kind == tkDiscard:
+    let dsp = p.getSpan()
+    discard p.advance()
+    return Expr(span: dsp, kind: exkDiscard, discardVal: e)
+  e
+
 proc parseBlock*(p: var Parser): Expr =
   ## An indented block, OR — when the body continues on the same line — a
   ## single expression (ruling R2/R3: `let x = if c: 1 else: 2`). Returning
@@ -630,7 +644,7 @@ proc parseBlock*(p: var Parser): Expr =
   ## keeps the value obvious to the checker and both emitters.
   let sp = p.getSpan()
   if p.current().kind notin {tkNewline, tkEOF}:
-    return p.parseExpr()
+    return p.parseStatementExpr()
   discard p.expect(tkNewline)
   while p.current().kind == tkNewline:
     discard p.advance()
@@ -644,7 +658,7 @@ proc parseBlock*(p: var Parser): Expr =
     if p.current().kind == tkNewline:
       discard p.advance()
       continue
-    stmts.add(p.parseExpr())
+    stmts.add(p.parseStatementExpr())
     if p.current().kind == tkNewline:
       discard p.advance()
   discard p.expect(tkDedent)
