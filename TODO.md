@@ -581,3 +581,42 @@ the call path. `value_semantics.nim:391` uses this exact shape and only
   should be a `tuck help <command>` giving easy-to-understand,
   per-command help — not investigated at all yet (no read of `tuck.nim`'s
   current arg-parsing/usage-banner code done for this specifically).
+  Same theme, added 2026-09-01: **`tuck build` (and presumably `tuck c`)
+  should have a `-v`/verbose flag reporting every stage and operation as
+  it runs** — currently there is NO verbosity flag at all (confirmed:
+  `grep -n "verbose"` in `tuck.nim` finds nothing). Not designed —
+  would presumably hook the same `PipelineStage` enum the `--verify-stages`
+  work already introduced (`compiler/pipeline.nim`), echoing a line per
+  stage transition rather than (or alongside) running the verification
+  assertions.
+- [ ] **Registry: multiple handlers per event (C#-delegate-style).**
+  Confirmed live (2026-09-01, chasing the registry-raise bug above): a
+  second `on Registry.Event(...):` for the SAME event is rejected today
+  purely because a handler is an ordinary top-level `fn` named
+  `"Registry.Event"`, colliding with Tuck's general "every top-level name
+  is declared once" rule — not a deliberate one-handler-per-event design
+  (no diagnostic code exists for "duplicate handler," only `dcRgDuplicate`
+  for "more than one registry in a program", a different rule). The
+  registry itself is already a WHOLE-PROGRAM concept, not per-module:
+  `checkRegistry` takes every loaded module in the import closure
+  (`collectRegistries`/`collectHandlers` both scan all of `mods`), so a
+  registry in one module and a handler in another already works today —
+  confirmed by reading `checkRegistry`'s signature and callers, not
+  assumed.
+  `genRegistry`'s codegen (`compiler/codegen.nim`) ALREADY fans out to
+  every matching handler: `for decl in ctx.module.decls: if decl.kind ==
+  dkFn and decl.name == handlerName: handlerCalls.add(...)` — a LOOP,
+  not an assignment — so if two decls named `"Registry.Event"` could
+  coexist, both would already be invoked, in whatever order
+  `ctx.module.decls` iterates them. NOT designed: the naming scheme that
+  would let multiple handlers coexist (an ordered list of handler decls
+  under one event, not one uniquely-named decl per event), ORDERING
+  semantics user flagged as unclear (declaration order within a file is
+  one candidate; cross-module ordering is genuinely ambiguous and would
+  need a real ruling, not an assumption), and a way to REPORT every
+  handler's declared location (user's ask) — possibly an extension of
+  `tuck dump` (the existing `--stage` dump machinery) rather than a new
+  command, not investigated. Odin/D's own registry codegen
+  (`codegen_odin.nim`'s registry section) was not checked for the same
+  fan-out behavior Nim's `genRegistry` has — verify it mirrors this
+  before assuming the fix is codegen-symmetric across backends.
