@@ -58,10 +58,102 @@ import compiler/modules
 import compiler/optimize
 import compiler/pipeline
 
-proc usage() =
+const CommandHelp = {
+  "lex": """tuck lex file.tuck
+tuck l file.tuck
+
+Tokenize the file and print each token, one per line, as
+line:column  KIND  value
+
+No extra flags. Fails on the first character it cannot tokenize.""",
+  "parse": """tuck parse file.tuck [--ast]
+tuck p file.tuck [--ast]
+
+Parse the file and print "OK" plus a declaration count, or the first
+syntax error with file:line:col.
+
+  --ast    print the parsed tree as JSON instead of the OK line""",
+  "check": """tuck check file.tuck
+tuck ch file.tuck
+
+Parse, then run the effect checker and type checker, then print a
+PENDING report (stub functions still unimplemented) and a size
+report. Prints "OK" if everything checks out; otherwise the first
+type or effect error with file:line:col.""",
+  "compile": """tuck compile file.tuck [--odin | --dlang] [-o:DIR] [options]
+tuck c file.tuck [--odin | --dlang] [-o:DIR] [options]
+
+Check, then transpile to source for ONE backend: Nim by default, or
+--odin, or --dlang (these two are mutually exclusive — pick one per
+run). Writes beside the source file, or into -o:DIR if given.
+
+  --odin       target Odin instead of Nim
+  --dlang      target D instead of Nim
+  -o:DIR       output directory
+  --root:DIR   import search base (for std/ and sibling modules)
+  --target:NAME  select which `when TARGET == "NAME":` blocks compile in
+  --verify-stages  run extra pipeline-ordering assertions (off by default)
+  -O:PASS[,...]  choose optimization passes; `-O:none` disables them all
+  --max-complexity:N, --max-fn-lines:N  per-function size budget
+
+See `tuck help build` for the flags shared with build, or run
+`tuck` with no arguments for the full option reference.""",
+  "build": """tuck build file.tuck [--odin | --dlang] [-o:DIR] [options]
+tuck b file.tuck [--odin | --dlang] [-o:DIR] [options]
+
+Everything `tuck compile` does, then invokes the backend's own
+compiler (nim c / odin build / dmd) to link a runnable binary.
+fn main runs when the binary starts.
+
+Takes every `tuck compile` flag, plus:
+  --nim:FLAGS  extra flags passed through to `nim c`, e.g.
+               --nim:"--os:standalone --cpu:arm"
+  --release    promote the size-budget report to a build failure
+
+Run `tuck help compile` for the rest of the shared flags.""",
+  "dump": """tuck dump file.tuck [--stage:X] [--format:X] [options]
+tuck d file.tuck [--stage:X] [--format:X] [options]
+
+Run the real compiler pipeline up to one named stage and print the
+tree it produced there — useful for seeing what a stage actually
+did without running the whole build.
+
+  --stage:X   which stage to stop at: lex, parse, load, inject-types,
+              typecheck, verify-effects, mangle, lowering, emitting
+              (default: emitting)
+  --format:X  json (default, pretty-printed) or text (repr(), for
+              trees that do not serialize to JSON)
+
+`lowering` and `emitting` pick a backend the same way `compile`
+does: Nim by default, or --odin, or --dlang.""",
+  "explain": """tuck explain CODE
+
+Print what a diagnostic code means and how to fix it, e.g.:
+
+  tuck explain TK-TY05
+
+Codes look like TK-XXNN and appear in every type/effect/parse error
+tuck prints. This is the one command that takes a CODE, not a file."""
+}.toTable
+
+const CommandAliases = {"l": "lex", "p": "parse", "ch": "check",
+                         "c": "compile", "b": "build", "d": "dump"}.toTable
+
+proc printCommandHelp(cmd: string, code = 0) =
+  let key = CommandAliases.getOrDefault(cmd, cmd)
+  if CommandHelp.hasKey(key):
+    echo CommandHelp[key]
+    quit(code)
+  stderr.writeLine "tuck: no such command: '" & cmd & "'"
+  stderr.writeLine "  known commands: lex, parse, check, compile, build, dump, explain"
+  stderr.writeLine "  run `tuck help` for the full list, or `tuck help <command>` for one of these"
+  quit(2)
+
+proc usage(code = 2) =
   stderr.writeLine """tuck — the Tuck compiler
 
 usage: tuck <command> <file.tuck> [options]
+       tuck help [command]   detailed usage for one command
 
 commands:
   lex, l        tokenize and print the token stream
@@ -71,6 +163,7 @@ commands:
   build, b      compile + nim c to a binary (fn main runs at start)
   dump, d       run the pipeline up to --stage=X and print the tree
   explain CODE  what a diagnostic code means, e.g. `tuck explain TK-TY05`
+  help, -h, --help [command]  this message, or one command's own usage
 
 options:
   --ast         (parse) dump the AST as JSON to stdout
@@ -108,7 +201,7 @@ options:
 
   Functions over either budget are REPORTED worst-first, and only fail the
   build under --release."""
-  quit(2)
+  quit(code)
 
 proc die(msg: string) =
   stderr.writeLine msg
@@ -357,7 +450,20 @@ proc checkProgram(path: string, needBodies = false,
   sizeReport(path, result)
 
 when isMainModule:
-  if paramCount() < 2: usage()
+  # `help`/`-h`/`--help` take an optional COMMAND, never a file — answered
+  # before the paramCount check below, which would otherwise treat a bare
+  # `tuck help` (no command) as a missing-argument error instead of a request.
+  if paramCount() >= 1 and paramStr(1) in ["help", "-h", "--help"]:
+    if paramCount() < 2: usage(0)
+    else: printCommandHelp(paramStr(2))
+  if paramCount() < 2:
+    # A known command with no file (`tuck dump`, `tuck compile`, ...) gets its
+    # own focused usage rather than the full banner — it already said what it
+    # wants to do, it's just missing the argument to do it with.
+    if paramCount() == 1 and
+       CommandHelp.hasKey(CommandAliases.getOrDefault(paramStr(1), paramStr(1))):
+      printCommandHelp(paramStr(1), code = 2)
+    usage()
   let cmd = paramStr(1)
   # `explain` takes a CODE, not a file — answered before the file check below.
   if cmd == "explain":

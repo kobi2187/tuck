@@ -645,17 +645,28 @@ the call path. `value_semantics.nim:391` uses this exact shape and only
   Odin's GC-free threads and D's GC-aware threads are three different
   starting points for "make this safe," a bigger lift than the current
   single-thread model was specifically chosen to dodge).
-- [ ] **CLI usage/help is thin.** User tried `tuck dump` with no
-  arguments and got no usage explanation for what it needs. Ask
-  (2026-09-01): every `tuck <command>` that needs extra parameters
-  should explain its own usage when invoked without them, and there
-  should be a `tuck help <command>` giving easy-to-understand,
-  per-command help — not investigated at all yet (no read of `tuck.nim`'s
-  current arg-parsing/usage-banner code done for this specifically).
-  Same theme, added 2026-09-01: **`tuck build` (and presumably `tuck c`)
-  should have a `-v`/verbose flag reporting every stage and operation as
-  it runs** — currently there is NO verbosity flag at all (confirmed:
-  `grep -n "verbose"` in `tuck.nim` finds nothing). Not designed —
+- [x] **FIXED 2026-09-01** — CLI usage/help was thin: `tuck dump` with no
+  arguments fell through to the generic paramCount check, which either
+  dumped the full 50-line banner or (for `tuck help dump` specifically)
+  tried to open "dump" as a filename and died with "no such file". Added
+  `tuck help [command]` / `-h` / `--help` (bare = full banner, exit 0;
+  with a command name = that command's own focused usage, exit 0; unknown
+  command name = short error + known-commands list, exit 2) via a
+  `CommandHelp` table + `CommandAliases` (l/p/ch/c/b/d → full names) in
+  `tuck.nim`. Also: a KNOWN command invoked with no file (`tuck dump`,
+  `tuck build`, ...) now prints that command's own focused help instead
+  of the full banner — same content as `tuck help <command>`, but exit 2
+  (it's still a missing-argument error, not a help request) rather than 0.
+  `tuck explain CODE` untouched (already had its own path). Verified all
+  paths by hand: `tuck help`, `tuck -h`, `tuck help dump`, `tuck help
+  build`, `tuck help bogus`, `tuck dump` (no file), `tuck build` (no
+  file), `tuck explain TK-TY05`, bare `tuck` — each prints what it should
+  and exits 0 or 2 correctly. `./tests/run` green (CLI usage text isn't
+  asserted on anywhere).
+  Still open, same ask, NOT done: **`tuck build`/`tuck c` verbose flag**
+  (`-v`, report every stage and operation as it runs) — no verbosity flag
+  exists at all (confirmed: `grep -n "verbose"` in `tuck.nim` finds
+  nothing). Not designed —
   would presumably hook the same `PipelineStage` enum the `--verify-stages`
   work already introduced (`compiler/pipeline.nim`), echoing a line per
   stage transition rather than (or alongside) running the verification
