@@ -461,13 +461,26 @@ proc parseTaskDecl(p: var Parser, sp: Span): Decl =
   let body = p.parseBlock()
   return Decl(span: sp, kind: dkTask, name: name, taskParams: params, taskReturnType: retType, taskEffects: effects, taskBody: body)
 
+proc parseGenericParams(p: var Parser): seq[string] =
+  ## `type Box[T]` — generic params are Uppercase idents; attrs are lowercase,
+  ## which is what tells `Box[T]` apart from `u16 [saturating]`.
+  if not (p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+          p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A'..'Z'}): return
+  discard p.advance()
+  while p.current().kind notin {tkRBracket, tkEOF}:
+    result.add(p.expect(tkIdent, "Expected generic parameter name").value)
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBracket)
+
 # type Name[T] [attrs] = alias | : body (fields / | variants / transitions / invariant:)
-# fnsig NAME = {params} -> ret — a named function-signature type (spec D#10c).
-# params read exactly like a fn's ({a: int, b: int}); ret accepts anything a fn
-# returns (a {struct}, a bare type, void, or !T/?T). NAME then usable as a type.
+# fnsig NAME[T, ...] = {params} -> ret — a named function-signature type
+# (spec D#10c). params read exactly like a fn's ({a: int, b: int}); ret
+# accepts anything a fn returns (a {struct}, a bare type, void, or !T/?T).
+# NAME then usable as a type, `Mapper[int, str]` once instantiated.
 proc parseFnSigDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()  # eat `fnsig`
   let name = p.expectTypeName("fnsig").value
+  let generics = p.parseGenericParams()
   discard p.expect(tkAssign)
   # params: a brace record `{a: T, b: U}` (or `{}` for none) — reuse parseType,
   # which yields a tkRecord, then lift its fields to named Params.
@@ -482,18 +495,8 @@ proc parseFnSigDecl(p: var Parser, sp: Span): Decl =
   let ret = p.parseType()
   if p.current().kind == tkNewline:
     discard p.advance()
-  return Decl(span: sp, kind: dkFnSig, name: name, sigParams: params, sigReturn: ret)
-
-proc parseGenericParams(p: var Parser): seq[string] =
-  ## `type Box[T]` — generic params are Uppercase idents; attrs are lowercase,
-  ## which is what tells `Box[T]` apart from `u16 [saturating]`.
-  if not (p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
-          p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A'..'Z'}): return
-  discard p.advance()
-  while p.current().kind notin {tkRBracket, tkEOF}:
-    result.add(p.expect(tkIdent, "Expected generic parameter name").value)
-    if p.current().kind == tkComma: discard p.advance()
-  discard p.expect(tkRBracket)
+  return Decl(span: sp, kind: dkFnSig, name: name, sigGenerics: generics,
+              sigParams: params, sigReturn: ret)
 
 proc parseAliasBody(p: var Parser, sp: Span, name: string,
                     generics: seq[string], attrs: seq[TypeAttr]): Decl =

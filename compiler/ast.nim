@@ -519,9 +519,12 @@ type
       # module may state several separate lines for the same object.
       satisfyTargets*: seq[string]
     of dkFnSig:
-      # `fnsig NAME = {params} -> ret` — a named function-signature type (a
-      # named delegate). NAME becomes usable as a type for slots/callbacks;
-      # the checker validates calls through it (arity/param-types/ret).
+      # `fnsig NAME[T, ...] = {params} -> ret` — a named function-signature
+      # type (a named delegate). NAME becomes usable as a type for
+      # slots/callbacks; the checker validates calls through it
+      # (arity/param-types/ret), substituting `generics` from a slot's own
+      # type args (`Mapper[int, str]`) when non-empty.
+      sigGenerics*: seq[string]
       sigParams*: seq[Param]
       sigReturn*: Type
       # declared INSIDE an `extern [c, ...]` block: a C function pointer, so it

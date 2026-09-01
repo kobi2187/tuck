@@ -64,6 +64,12 @@ type
                                        # task, unlike anonymous records,
                                        # so the task's own name IS the key
 
+proc odinUnsupported(construct: string): string =
+  ## The Odin backend refuses what it cannot yet emit — loudly, at emission
+  ## time, naming the construct. Silent wrong code is the one forbidden
+  ## outcome (mirrors the D backend's dUnsupported).
+  quit("tuck: Odin backend does not yet support " & construct, 1)
+
 proc isActorType(ctx: var OdinCodegenCtx, name: string): bool =
   ## O(1) after the first call. genOdinExpr's exkField arm asks this once per
   ## FIELD ACCESS in the whole program; a decl-list scan there is the same
@@ -2373,6 +2379,14 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   of dkFnSig:
     # `fnsig NAME = {params} -> ret` → a named Odin proc type, used for
     # callback slots. The Beef backend has no arm for this at all.
+    #
+    # Generic (`fnsig NAME[T, ...]`): Odin's proc TYPES are not parametric
+    # the way Nim's `proc(...): U {.closure.}` type alias is — there is no
+    # direct equivalent to emit yet (Odin's own generics are `$T` parapoly
+    # procs, a different mechanism). Die loudly rather than emit the bare
+    # `T`/`U` names as if they were real, undeclared types.
+    if d.sigGenerics.len > 0:
+      discard odinUnsupported("a generic fnsig ('" & d.name & "')")
     var params: seq[string]
     for prm in d.sigParams:
       params.add(prm.name & ": " & ctx.odinType(prm.typ))

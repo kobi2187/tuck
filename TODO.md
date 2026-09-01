@@ -58,11 +58,48 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
 
 ## 2. Unimplemented / partial language features
 
-- [ ] **[repro] Generic `fnsig` does not parse.** `fnsig Mapper[T, U]` is a
-  parse error, which blocks every higher-order generic API. The dangerous
-  part is the workaround that LOOKS fine: a non-generic `fnsig` with bare
-  `T`/`U` typechecks because gradual typing reads them as `<unknown>`, so it
-  silently disables checking on the callback. → FRICTIONS #1.
+- [x] **FIXED 2026-09-01** — Generic `fnsig` did not parse (`fnsig
+  Mapper[T, U]` was a parse error, blocking every higher-order generic
+  API — the dangerous workaround it forced, a non-generic fnsig with bare
+  `T`/`U` reading as `<unknown>` under gradual typing and silently
+  disabling checking, is gone with it). Fixed at three layers:
+  - **Parser**: `parseFnSigDecl` now calls the existing `parseGenericParams`
+    (shared with `type Box[T]`) right after the name, storing the result on
+    a new `Decl.sigGenerics` field. `parseGenericParams` moved earlier in
+    `parser.nim` (was defined after its first caller needed it).
+  - **Checker**: `checkThroughFnSig` used to require `slotT.kind == tkNamed`
+    — a generic instantiation (`Mapper[int, str]`) is `tkApp`, so it fell
+    through and was silently treated as an untyped slot. New
+    `genericFnSigSig` substitutes the slot's own concrete type args
+    directly (no inference needed — they're already known from where the
+    slot is declared, unlike an ordinary call's generics) via the existing
+    `substituteType` helper, into a fresh `FnSig` that `checkCallArgs`
+    validates normally. Kept in a SEPARATE `TypeChecker.fnSigGenerics`
+    table rather than reusing `fnSigs[name].generics` — that field feeds
+    the payload-inference machinery any direct call by name goes through,
+    and touching it risked misfiring on the unrelated (dubious, unsupported)
+    case of calling a fnsig type name directly as if it were a function.
+  - **Codegen**: fixed a THIRD bug this surfaced — the Nim backend's
+    `dkFnSig` emission ignored generics entirely, producing `type
+    tuck_Mapper* = proc(value: T): U {.closure.}` (T/U as literal
+    undeclared names) then instantiating it as `tuck_Mapper[int, string]`,
+    which does not compile. Now emits the real Nim generic alias syntax,
+    `type tuck_Mapper*[T, U] = proc(...)`, mirroring the existing
+    `d.generics`-to-`[T, U]` pattern already used for `type X[T]`.
+    Odin has no equivalent to a parametric proc-type alias (Odin generics
+    are `$T` parapoly procs, a different mechanism) and was silently
+    emitting invalid Odin (`Undeclared name: T`) before this fix; added
+    `odinUnsupported` (mirroring the D backend's existing `dUnsupported`)
+    so it now dies loudly naming the construct instead. D's own generic
+    type-application path already died loudly on this shape unprompted —
+    confirmed, not touched.
+  Verified: end-to-end build+run on the Nim backend (a generic `Mapper[T,
+  U]` stored in a struct field, called through it, exit code checked);
+  Odin and D both refuse cleanly instead of emitting bad output. 5 new
+  regression assertions in `tests/suites/typecheck.nim` (2 checker,
+  2 emit-shape, 1 runs-end-to-end) — written and confirmed RED (real
+  parse error) before the fix, all green after. `./tests/run` full suite
+  green; `tools/emit_examples.sh` — no example uses this yet, no diff.
 - [ ] **[repro] Generic `actor` does not parse.** Blocks a service actor
   generic over its payload. Genuinely unclear whether it SHOULD exist — an
   actor is a compile-time singleton, so "one instance, generic over T" may

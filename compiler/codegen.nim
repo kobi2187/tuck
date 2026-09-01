@@ -1769,8 +1769,9 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     # int (*)(int, int)"), and a captured environment has nowhere to live on
     # the C side anyway, so C callbacks are necessarily non-capturing.
     let conv = if d.sigIsCCallback: "{.cdecl.}" else: "{.closure.}"
-    return "type " & d.name & "* = proc(" & params.join(", ") & "): " &
-           retStr & " " & conv & "\n"
+    let sGen = if d.sigGenerics.len > 0: "[" & d.sigGenerics.join(", ") & "]" else: ""
+    return "type " & d.name & "*" & sGen & " = proc(" & params.join(", ") &
+           "): " & retStr & " " & conv & "\n"
   of dkInterface:
     # An interface value is a VARIANT over the types that satisfy it: a tag
     # plus the object itself, copied in (spec §5.3). Copy, not a pointer to

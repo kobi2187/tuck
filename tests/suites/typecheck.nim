@@ -1832,6 +1832,60 @@ fn use({c: Calc}) -> int:
 """
   t.badCheck "a call through a fnsig slot checks arity", "Adder"
 
+  # Generic fnsig (TODO.md §2): `fnsig Mapper[T, U]` used to be a parse
+  # error, which blocked every higher-order generic API. A slot typed
+  # `Mapper[int, str]` must validate calls through it against int/str, not
+  # silently accept anything under gradual typing's bare-T/U workaround.
+  t.src """
+fnsig Mapper[T, U] = {value: T} -> U
+
+type Box = {mapFn: Mapper[int, str]}
+
+fn use({b: Box}) -> str:
+  return {value: 1} b.mapFn
+"""
+  t.okCheck "generic fnsig parses and checks a correctly-typed call through it"
+
+  t.src """
+fnsig Mapper[T, U] = {value: T} -> U
+
+type Box = {mapFn: Mapper[int, str]}
+
+fn use({b: Box}) -> str:
+  return {value: "wrong type"} b.mapFn
+"""
+  t.badCheck "generic fnsig rejects a call whose arg type doesn't match T", "Type Error"
+
+  t.src """
+fnsig Mapper[T, U] = {value: T} -> U
+
+type Box = {mapFn: Mapper[int, str]}
+"""
+  t.emits "generic fnsig emits a real Nim generic proc-type alias",
+          r"tuck_Mapper\*\[T, U\] = proc\(value: T\): U \{\.closure\.\}"
+  t.emits "generic fnsig field instantiates concrete type args",
+          r"tuck_Mapper\[int, string\]"
+
+  t.src """
+fnsig Mapper[T, U] = {value: T} -> U
+
+type Box = {mapFn: Mapper[int, str]}
+
+fn double({value: int}) -> str:
+  return "doubled"
+
+fn use({b: Box}) -> str:
+  return {value: 5} b.mapFn
+
+fn main() -> int:
+  let b = {mapFn: double} Box
+  let r = {b} use
+  if r == "doubled":
+    return 7
+  return 0
+"""
+  t.runs "generic fnsig instantiation runs end to end through the Nim backend", 7
+
   t.src """
 fn playTrack({id: int, name: str, ok: bool}) -> void:
   ...

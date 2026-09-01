@@ -634,17 +634,45 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
                                          name: e.fieldName)))
   tc.fnSigs[qualified].ret
 
+proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
+                     sp: Span): FnSig =
+  ## `Mapper[int, str]`'s concrete signature: substitute the fnsig's own
+  ## declared generics (`fnSigGenerics[name]`) with the SLOT's own type args
+  ## directly — known outright from where the slot is declared, unlike an
+  ## ordinary generic call's params, which infer bindings from arguments.
+  let gs = tc.fnSigGenerics[name]
+  if gs.len != args.len:
+    fail("Type Error: '" & name & "' takes " & $gs.len &
+         " type argument(s), got " & $args.len, sp)
+  var b = initTable[string, Type]()
+  for i in 0 ..< gs.len: b[gs[i]] = args[i]
+  let base = tc.fnSigs[name]
+  var params: seq[Param]
+  for p in base.params:
+    params.add(Param(name: p.name, typ: substituteType(p.typ, b), span: p.span))
+  (params, substituteType(base.ret, b), newSeq[string](), base.effects)
+
 proc checkThroughFnSig(tc: var TypeChecker, slotT: Type, call: Expr): Type =
-  ## A call THROUGH a slot whose type is a `fnsig` NAME: validate the arguments
+  ## A call THROUGH a slot whose type is a `fnsig` NAME — bare (`Adder`) or
+  ## generic-instantiated (`Mapper[int, str]`): validate the arguments
   ## against the named signature and yield its return type. nil when the slot
   ## names no signature, so the caller can decide what an untyped slot means.
   ## Shared by both spellings of the same operation — `{args} c.op`
   ## (asIndirectCall) and `c.op.invoke {args}` (asSlotInvoke).
-  if slotT == nil or slotT.kind != tkNamed or slotT.name notin tc.fnSigNames:
+  var name = ""
+  var sig: FnSig
+  if slotT != nil and slotT.kind == tkNamed and slotT.name in tc.fnSigNames:
+    name = slotT.name
+    sig = tc.fnSigs[name]
+  elif slotT != nil and slotT.kind == tkApp and slotT.base != nil and
+       slotT.base.kind == tkNamed and slotT.base.name in tc.fnSigNames and
+       tc.fnSigGenerics.hasKey(slotT.base.name):
+    name = slotT.base.name
+    sig = tc.genericFnSigSig(name, slotT.args, slotT.span)
+  else:
     return nil
-  let sig = tc.fnSigs[slotT.name]
   var bindings = initTable[string, Type]()
-  tc.checkCallArgs(slotT.name, sig, call, bindings)
+  tc.checkCallArgs(name, sig, call, bindings)
   sig.ret
 
 proc invokeArgs(tc: var TypeChecker, e: Expr): seq[Expr] =
@@ -2712,6 +2740,7 @@ proc collectFnSigType(tc: var TypeChecker, d: Decl) =
   tc.fnSigs[d.name] = (d.sigParams, d.sigReturn,
                        newSeq[string](), newSeq[EffectMarker]())
   tc.fnSigNames.incl(d.name)
+  if d.sigGenerics.len > 0: tc.fnSigGenerics[d.name] = d.sigGenerics
 
 proc collectPoolSigs(tc: var TypeChecker, d: Decl) =
   ## spec 7.2: a pool exposes two ordinary fns. Registering them as normal

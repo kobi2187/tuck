@@ -39,6 +39,13 @@ type
     fnSigs*: Table[string, FnSig]
     typeDecls*: Table[string, Type]
     typeGenerics*: Table[string, seq[string]]  # generic type decls: Box -> @["T"]
+    fnSigGenerics*: Table[string, seq[string]] # generic fnsig decls: Mapper -> @["T", "U"]
+      ## Kept SEPARATE from `fnSigs[name].generics` (always left empty for a
+      ## fnsig entry) rather than reusing it: that field feeds the ordinary
+      ## payload-inference machinery (checkPayloadCall/substituteParams) any
+      ## direct call by name would go through, and a fnsig's generics are
+      ## resolved a different way — directly from a SLOT's own declared type
+      ## args (`Mapper[int, str]`), never inferred from a call's arguments.
     currentGenerics*: HashSet[string]          # type params of the fn body being checked
     scopes*: seq[Table[string, Binding]]
     currentRet*: Type
