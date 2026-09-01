@@ -71,7 +71,7 @@ type
     # Keywords
     tkFn, tkLet, tkVar, tkConst, tkIf, tkElif, tkElse,
     tkFor, tkIn, tkMatch, tkReturn, tkType,
-    tkLoop, tkBreak, tkContinue,
+    tkLoop, tkBreak, tkContinue, tkDiscard,
     tkObject, tkMixin, tkInterface, tkActor, tkTask, tkFnsig,
     tkPending, tkOn, tkSelect, tkRegistry,
     tkDecision, tkPool, tkArena, tkRegister,
@@ -119,7 +119,7 @@ const keywords = {
   "if": tkIf, "elif": tkElif, "else": tkElse,
   "for": tkFor, "in": tkIn, "match": tkMatch,
   "loop": tkLoop, "break": tkBreak, "continue": tkContinue,
-  "return": tkReturn, "type": tkType,
+  "return": tkReturn, "type": tkType, "discard": tkDiscard,
   "object": tkObject, "mixin": tkMixin, "interface": tkInterface,
   "actor": tkActor, "task": tkTask, "fnsig": tkFnsig,
   "on": tkOn, "select": tkSelect,

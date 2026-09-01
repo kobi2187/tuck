@@ -110,6 +110,7 @@ proc toString*(e: Expr): string =
     return e.target.toString() & " = " & e.assignVal.toString()
   of exkReturn: return "return " & optToString(e.returnVal)
   of exkRaise: return "raise " & optToString(e.raiseVal)
+  of exkDiscard: return "discard " & optToString(e.discardVal)
   of exkImport:
     return "import"
   of exkSend:

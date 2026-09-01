@@ -913,6 +913,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkMatch: ctx.genExprMatch(e)
   of exkReturn: ctx.genReturn(e)
   of exkRaise: ctx.genRaise(e)
+  of exkDiscard:
+    # Nim's own `discard` is the identical construct, spelling and all.
+    if e.discardVal != nil: "discard " & ctx.genExpr(e.discardVal)
+    else: "discard"
   of exkChain: ctx.genExprChain(e)
   of exkSend: ctx.genExprSend(e)
   of exkSelect: ctx.genExprSelect(e)

@@ -1960,4 +1960,40 @@ fn main() -> void:
 """
   t.okCheck "explicit alias still works alongside auto-matching"
 
+  # --- discard: an explicit, checked no-op / value-drop ---------------------
+  # Was previously an unresolved bare identifier riding synthBareVariant's
+  # silent Unknown fallback — parsed and typechecked as a sketch placeholder,
+  # then failed at the TARGET compiler with "undeclared name: discard" on
+  # Odin/D (Nim's own real `discard` keyword masked the gap by coincidence).
+  t.src """
+fn main() -> int:
+  discard
+  return 7
+"""
+  t.runs "bare discard is a real no-op, not a sketch placeholder", 7
+
+  t.src """
+import fs
+
+fn main() -> int:
+  {path: "/tmp/tuck-typecheck-discard.txt"} fs::readFile
+  return 3
+"""
+  t.badCheck "dropping a fallible result without discard is still rejected",
+             "unhandled error result"
+
+  t.src """
+import fs
+
+fn main() -> int:
+  discard {path: "/tmp/tuck-typecheck-discard.txt"} fs::readFile
+  return 3
+"""
+  t.okCheck "discard <expr> is the sanctioned way to drop it"
+
+  # A ':' with nothing inside — no statement, no discard — is a parse error
+  # (TK-PA09), not silently accepted as an empty body.
+  t.src "fn main() -> void:\n\nfn other() -> int:\n  return 0\n"
+  t.badCheck "an empty block is rejected, not silently accepted", "TK-PA09"
+
   t.finish()

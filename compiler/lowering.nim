@@ -308,7 +308,7 @@ proc lowerExpr(e: Expr, m: Module) =
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkCall,
      exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkMatch, exkFor,
      exkWhile, exkBreak, exkContinue, exkAssign, exkReturn, exkRaise,
-     exkImport, exkSend, exkSelect:
+     exkDiscard, exkImport, exkSend, exkSelect:
     discard
 
   for c in e.children: lowerExpr(c, m)

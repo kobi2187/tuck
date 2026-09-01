@@ -287,19 +287,50 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   builds and runs (prints the real libz version, exit 0), added to
   `d_backend`'s `dRun` list; two `emitsD` regressions added for the
   import/forwarder shape.
+- [x] **FIXED 2026-09-01 — `discard` is now a real construct, and a deeper
+  bug it was riding on is closed too.** `discard` was an unresolved bare
+  identifier: `synthVar` fell through lookup → nullary-call → sum-type-
+  variant, and `synthBareVariant` returned `unknownType` SILENTLY when
+  none matched — meaning ANY undeclared bare identifier (confirmed with
+  `someUndeclaredNonsenseName`, even in a `return` value position) passed
+  `tuck ch` clean and only failed downstream, at the TARGET compiler.
+  Nim's own real `discard` keyword happened to make example 20 "work" on
+  that one backend by coincidence — Odin and D both failed to build with
+  "undeclared name: discard" (confirmed directly), the same shape as the
+  sizeof bug below.
+  Added `exkDiscard` as a genuine AST node (`discard` / `discard <expr>`,
+  a keyword like `return`), touching every exhaustive dispatch the
+  compiler itself flagged by building after adding the enum value:
+  lexer, parser (`parseDiscardExpr`, mirrors `parseReturnExpr`),
+  parser_stringify, complexity, lowering (generic child-walk), typecheck
+  (`synthDiscard` — types `discardVal` if present, but the STATEMENT's
+  own type is always unit, which is what makes it the sanctioned escape
+  from the dropped-fallible-result diagnostic), and all three codegens
+  (Nim: literal `discard` — the identical construct; Odin: `_ = expr`,
+  its own native value-drop, or nothing for bare; D: a bare expression
+  statement, which D already permits unused, or nothing for bare).
+  **Also, per user request: an empty block (`:` opening nothing — no
+  statement, no discard) is now a parse error (TK-PA09)**, not silently
+  accepted — closes the gap `discard` was hiding in one direction, and
+  catches a genuinely-empty stub the OTHER direction (found immediately:
+  11-embedded-feature's `processISR` had a comment-only body; fixed by
+  adding `discard`, byte-identical Nim/Odin/D output either way since
+  those backends already had an empty-body fallback that happened to
+  print the same thing).
+  Verified: example 20's Odin build no longer mentions `discard` in its
+  errors at all — the two REMAINING failures there are exactly the two
+  other items below (register field access, `sizeof`), not a discard
+  problem. `typecheck` suite gained 4 regression assertions. Full
+  `./tests/run` green; `examples/20-embedded-mp3-player.{odin,d}`
+  re-emitted (now correct, empty-body code instead of an undefined
+  reference) and reviewed.
 - [ ] **[repro] Example 20 is unverified on every backend past emit.**
-  Chasing its D build (match-statement fix, then sizeof) surfaced two
-  more blockers, both cross-backend and neither D-specific:
+  Two blockers remain, both cross-backend and neither D-specific
+  (confirmed directly building Odin's own emission):
   - `register DAC_CR at 0x...` field access (`DAC_CR.EN = true`) reaches
-    codegen as a raw `uint*`/`^u32` with no field — confirmed the SAME
-    error on a real Odin build of the same emitted source, so this is a
-    lowering/typecheck gap in register-field modeling, not a backend bug.
-  - A bare `discard` (no value to drop) is not a real construct in ANY
-    backend's grammar (`grep` for it turns up nothing in parser*.nim) —
-    it reaches codegen as a plain identifier and prints verbatim, which
-    happens to be valid Nim (coincidence, same shape as the sizeof bug),
-    unverified as valid Odin or D. Never caught because example 20 has
-    never been in any backend's compile- or run-checked list.
+    codegen as a raw `uint*`/`^u32` with no field — a lowering/typecheck
+    gap in register-field modeling, not a backend bug.
+  - `sizeof(T)` — see the Odin misspelling entry below.
 
 ### Cross-backend
 - [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**

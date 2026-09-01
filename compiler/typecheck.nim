@@ -2326,6 +2326,17 @@ proc synthReturn(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(e.returnVal)
   unitType(e.span)
 
+proc synthDiscard(tc: var TypeChecker, e: Expr): Type =
+  ## `discard <expr>` evaluates and silently drops a value — the explicit,
+  ## intentional escape from the dropped-fallible-result diagnostic (spec
+  ## 4.9): the STATEMENT's own type is unit regardless of what `discardVal`
+  ## synthesizes to, so synthStmt's dropped-result check (which reads the
+  ## statement's type, not what is nested inside it) never fires. Bare
+  ## `discard` is a pure no-op.
+  if e.discardVal != nil:
+    discard tc.synthesize(e.discardVal)
+  unitType(e.span)
+
 proc errEnumsOwning(tc: TypeChecker, variant: string): seq[string] =
   ## Which of the current fn's declared error enums have this variant.
   for en in tc.currentErrTypes:
@@ -2506,6 +2517,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkAssign: tc.synthAssign(e)
   of exkReturn: tc.synthReturn(e)
   of exkRaise: tc.synthRaise(e)
+  of exkDiscard: tc.synthDiscard(e)
   of exkChain: tc.synthChain(e)
   of exkSend: tc.synthSend(e)
   of exkSelect: tc.synthSelect(e)

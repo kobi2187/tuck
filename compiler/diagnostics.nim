@@ -60,6 +60,7 @@ type
     dcPaSatisfiesOrder = "TK-PA06"      ## `satisfies` after the object's fields
     dcPaStrayIndent = "TK-PA07"         ## indented line with nothing open above
     dcPaReservedWord = "TK-PA08"        ## a reserved word used as a plain name
+    dcPaEmptyBlock = "TK-PA09"          ## a `:` opens nothing — no `discard`, no statement
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -215,6 +216,12 @@ proc parseExplanation(d: DiagCode): string =
     "names like `error` and `priority` are NOT restricted here: they are " &
     "reserved only inside brackets, so they stay usable as fields, " &
     "parameters and function names.)"
+  of dcPaEmptyBlock:
+    "A `:` opened a block with nothing inside it — no statement, and no " &
+    "`discard`. An empty body reads as an accident (a stray blank line, a " &
+    "forgotten implementation) rather than a deliberate no-op, so it is " &
+    "never inferred either way. Fix: write `discard` if doing nothing here " &
+    "is intentional, or add the statement that was meant to go here."
   else: ""
 
 proc nameExplanation(d: DiagCode): string =

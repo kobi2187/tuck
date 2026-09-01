@@ -239,6 +239,7 @@ type
     exkAssign
     exkReturn
     exkRaise
+    exkDiscard   # `discard` / `discard <expr>` — an explicit, silent value drop
     exkImport
     exkSend      # `ActorType send handler {payload}` — enqueue to an actor
     exkSelect    # task-body `on select:` — wait on read/timeout branches
@@ -312,6 +313,8 @@ type
       returnVal*: Expr
     of exkRaise:
       raiseVal*: Expr
+    of exkDiscard:
+      discardVal*: Expr   # nil = bare `discard`, a pure no-op statement
     of exkImport:
       path*: seq[string]
     of exkSend:
@@ -712,6 +715,7 @@ iterator children*(e: Expr): Expr =
       yield e.assignVal
     of exkReturn: yield e.returnVal
     of exkRaise: yield e.raiseVal
+    of exkDiscard: yield e.discardVal
     of exkSend: yield e.sendPayload
     of exkSelect:
       for arm in e.selArms:

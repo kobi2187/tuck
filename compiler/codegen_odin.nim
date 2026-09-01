@@ -1310,6 +1310,12 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkMatch: (if e.subject != nil: ctx.genMatchExpr(e) else: "")
   of exkReturn: ctx.genReturnStmt(e)
   of exkRaise: ctx.genRaise(e)
+  of exkDiscard:
+    # Odin has no `discard` keyword; `_ = expr` is its own native value-drop
+    # (same construct Go uses). A bare `discard` has nothing to drop, so it
+    # emits nothing — genStmt already skips an empty statement cleanly.
+    if e.discardVal != nil: "_ = " & ctx.genOdinExpr(e.discardVal)
+    else: ""
   of exkChain: ctx.genChain(e, ind)
   of exkSend: ctx.genSend(e)
   of exkSelect: ctx.genOdinSelect(e, ind)

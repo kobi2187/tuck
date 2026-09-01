@@ -1377,6 +1377,11 @@ proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   of exkAssign: ctx.genDAssign(e)
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: ctx.genDRaise(e)
+  of exkDiscard:
+    # D already allows an expression statement's value to go unused, no
+    # keyword needed — the identical construct to Tuck's `discard <expr>`.
+    # A bare `discard` has nothing to drop, so it emits nothing.
+    if e.discardVal != nil: ctx.genDExpr(e.discardVal) else: ""
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkSend: ctx.genDSend(e)
   of exkSelect: ctx.genDSelect(e)

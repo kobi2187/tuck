@@ -209,7 +209,6 @@ void tuck_SystemEvents_HardwareError(ubyte code) {
 }
 
 void tuck_main() {
-    discard;
 }
 
 void main(string[] args) {

@@ -210,6 +210,8 @@ proc walk(m: var Metrics, e: Expr) =
     walk(m, e.returnVal)
   of exkRaise:
     walk(m, e.raiseVal)
+  of exkDiscard:
+    walk(m, e.discardVal)
   of exkSend:
     walk(m, e.sendPayload)
   of exkLit, exkVar, exkQualified, exkBreak, exkContinue, exkImport:

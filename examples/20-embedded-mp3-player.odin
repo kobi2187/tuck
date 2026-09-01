@@ -199,7 +199,7 @@ tuck_SystemEvents_HardwareError :: proc (code: u8) {
 }
 
 tuck_main :: proc () {
-  discard
+
 }
 
 main :: proc() {

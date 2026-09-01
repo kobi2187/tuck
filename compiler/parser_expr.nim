@@ -508,6 +508,15 @@ proc parseReturnExpr(p: var Parser, sp: Span): Expr =
             else: p.parseExpr()
   Expr(span: sp, kind: exkReturn, returnVal: val)
 
+proc parseDiscardExpr(p: var Parser, sp: Span): Expr =
+  ## A bare `discard` is a pure no-op statement; `discard <expr>` evaluates
+  ## the expression and silently drops its value — an explicit opt-out of
+  ## the checker's dropped-result diagnostics, spelled the same as Nim's.
+  discard p.advance()
+  let val = if p.current().kind in {tkNewline, tkDedent}: nil
+            else: p.parseExpr()
+  Expr(span: sp, kind: exkDiscard, discardVal: val)
+
 proc parseMatchArm(p: var Parser): MatchArm =
   ## `| Pat -> body` and `Pat: body` are the same arm. The arrow form matches
   ## decision tables and select arms, so one shape reads across every
@@ -578,6 +587,7 @@ proc parseExpr*(p: var Parser): Expr =
   of tkLet, tkVar: return p.parseBinding(sp, mutable = curr.kind == tkVar)
   of tkIf, tkElif: return p.parseIfExpr(sp)
   of tkReturn: return p.parseReturnExpr(sp)
+  of tkDiscard: return p.parseDiscardExpr(sp)
   of tkMatch: return p.parseMatchExpr(sp)
   of tkFor: return p.parseForExpr(sp)
   of tkLoop: return p.parseLoopExpr(sp)
@@ -625,7 +635,9 @@ proc parseBlock*(p: var Parser): Expr =
   while p.current().kind == tkNewline:
     discard p.advance()
   if p.current().kind != tkIndent:
-    return Expr(span: sp, kind: exkBlock, stmts: @[])
+    p.reportError("A ':' opened a block with nothing inside it. Write " &
+                  "'discard' if doing nothing here is intentional.",
+                  line = sp.line, col = sp.col, dc = dcPaEmptyBlock)
   discard p.expect(tkIndent)
   var stmts: seq[Expr]
   while p.current().kind != tkDedent and p.current().kind != tkEOF:
@@ -636,5 +648,9 @@ proc parseBlock*(p: var Parser): Expr =
     if p.current().kind == tkNewline:
       discard p.advance()
   discard p.expect(tkDedent)
+  if stmts.len == 0:
+    p.reportError("A ':' opened a block with nothing inside it. Write " &
+                  "'discard' if doing nothing here is intentional.",
+                  line = sp.line, col = sp.col, dc = dcPaEmptyBlock)
   return Expr(span: sp, kind: exkBlock, stmts: stmts)
 
