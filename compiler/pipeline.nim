@@ -107,6 +107,48 @@ proc assertAsyncEffectsConsistent*(mods: seq[Module]) =
       " call(s) marked async do not resolve to an [io] declaration — " &
       "the async mark and the call's own resolved declaration disagree")
 
+proc walkNoUnknownTypes(e: Expr, bad: var seq[Expr]) =
+  if e == nil: return
+  # Only a node the checker actually SYNTHESIZED a type for counts — most
+  # nodes (declarations, patterns, statement-level constructs) never go
+  # through `tc.synthesize` and have no recorded type at all (`typeFor`
+  # returns nil), which is not evidence of anything. Only a type the
+  # checker recorded AS `UnknownName` — its "I could not work this out"
+  # sentinel — is the real signal: every OTHER gradual-typing marker
+  # (`<typeparam>`, `<pending>`, `<emptyrec>`) means something legitimate,
+  # not a gap, so this checks the exact name rather than reusing
+  # ast_query's `hasUnknownType` (which also treats a nil type as unknown —
+  # right for a backend about to emit one, wrong for "was this even typed
+  # at all").
+  let t = semLayer.typeFor(e)
+  if t != nil and t.kind == tkNamed and t.name == UnknownName: bad.add(e)
+  for c in e.children: walkNoUnknownTypes(c, bad)
+
+proc assertNoUnknownTypes*(mods: seq[Module]) =
+  ## After psTypecheck: no expression may still carry the checker's own
+  ## "I could not work this out" marker. Gradual typing has real, deliberate
+  ## holes (a `pending:` stub, a generic's type param inside its own body) —
+  ## none of those are `UnknownName`, they are their own distinct sentinels.
+  ## A node that reaches here still tagged `UnknownName` means some checker
+  ## path returned it instead of reporting — `synthBareVariant`'s old
+  ## silent fallback was exactly this, caught only by hand after three
+  ## unrelated bugs rode through it (discard, register-field reads, a
+  ## sizeof argument) before each got its own dedicated fix. This turns
+  ## that class of bug into an immediate, located failure instead of a
+  ## silent pass-through to codegen.
+  var bad: seq[Expr]
+  for m in mods:
+    for fn in m.allFns(): walkNoUnknownTypes(fn.fnBody, bad)
+    for d in m.decls(dkTask): walkNoUnknownTypes(d.taskBody, bad)
+    for d in m.decls(dkExpr): walkNoUnknownTypes(d.expr, bad)
+  if bad.len > 0:
+    var lines: seq[string]
+    for e in bad: lines.add($e.span.line & ":" & $e.span.col)
+    raise newException(ValueError,
+      "pipeline: " & $bad.len & " expression(s) still carry the checker's " &
+      "<unknown> marker after typecheck (a checker gap, not a real error) " &
+      "at " & lines.join(", "))
+
 proc allMangled(name: string): bool =
   name.len == 0 or name.startsWith("tuck_")
 

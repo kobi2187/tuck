@@ -246,6 +246,35 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   every one of these ad hoc mechanisms defers to, with the actual
   synthVar case as the correctly-strict fallback once that lookup exists.
   Left `git checkout`-clean; `./tests/run` green.
+- [x] **FIXED (the tool) 2026-09-01, but [repro] 16 real gaps it found are
+  NOT fixed** — `assertNoUnknownTypes` (`compiler/pipeline.nim`), gated on
+  `--verify-stages`: walks every fn/task/const body after typecheck and
+  fails loudly if any expression's recorded type is still exactly the
+  checker's `UnknownName` ("<unknown>") sentinel — deliberately narrower
+  than `ast_query.hasUnknownType` (which also treats a nil/never-typed node
+  as unknown, and treats `<typeparam>`/`<pending>`/`<emptyrec>` — all
+  legitimate gradual-typing markers, not gaps — the same as a real one).
+  Also fixed in passing: `tuck ch` never threaded `--verify-stages` into
+  `checkProgram` at all (silently accepted and ignored the flag) — none of
+  the THREE existing pipeline assertions (this one, mangle-idempotency,
+  async-effects-consistency) had ever actually run under `tuck check`
+  before this. Only `tuck c`/`tuck b` wired it correctly.
+  Turning it on found the synthVar gap above is not rare: **16 of 44
+  examples** carry `<unknown>` past typecheck — `04, 05, 08, 11, 14, 15,
+  18, 19, 20 (39 sites — worst by far), 22, 25, 26, 27, 29, 30, 42`.
+  A quick read of a few sites: 29/30's `task ... [io]:` + `on select:`
+  return-type handling, several actor `send`/registry `raise` sites
+  (matching the `Sink`/`AppEvents`/`CTRL` shapes the reverted synthVar fix
+  above already named). NOT individually investigated past that — this is
+  the concrete, itemized version of the same root cause, not new bugs. Had
+  to swap the existing `tuck c --verify-stages` smoke-test fixture
+  (`tests/suites/cli_smoke.nim`) off `examples/29-task-timeout.tuck` (now
+  correctly caught as dirty) onto `examples/28-async-task.tuck` (clean) so
+  the gate keeps passing while these stay open; a regression test for the
+  assertion itself (catches a genuinely undefined bare name, does NOT
+  false-positive on 28 or the rest of the clean 28/44) is in the same file.
+  Real fix for the 16 gaps is the same one synthVar needs: the central
+  name-registry lookup, above.
 - [ ] **[read] `lowerExpr`'s children-recursion order is per-pass, not a
   rule.** `lowering.nim`: `flattenRegistryRaise` now runs BEFORE the
   `for c in e.children: lowerExpr(c, m)` loop (moved there to fix the

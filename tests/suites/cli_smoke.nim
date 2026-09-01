@@ -572,12 +572,38 @@ proc run*(t: var T) =
       return
 
     # --verify-stages: diagnostic assertions (compiler/pipeline.nim) must not
-    # false-positive on real, working code. 29-task-timeout exercises both —
-    # an [io] async call to an extern, and (via --root) a second module —
-    # without needing a dedicated fixture.
-    if sh(@["./tuck", "c", "examples/29-task-timeout.tuck", "--verify-stages",
+    # false-positive on real, working code. 28-async-task exercises an [io]
+    # async task without needing a dedicated fixture.
+    #
+    # NOT 29-task-timeout (the original fixture here): assertNoUnknownTypes
+    # (added 2026-09-01) found it — and 15 other examples — genuinely leak
+    # the checker's <unknown> marker past typecheck, via `on select`'s
+    # return-type handling in 29's case. Real, pre-existing gaps, not a test
+    # fixture problem — see TODO.md's "assertNoUnknownTypes found 16
+    # examples leaking <unknown>" entry for the full list before picking a
+    # different example back up here.
+    if sh(@["./tuck", "c", "examples/28-async-task.tuck", "--verify-stages",
             "-o:" & d, "--root:" & getCurrentDir()]).rc != 0:
       t.no "tuck c --verify-stages", "nonzero exit on a working example"
+      t.finish()
+      return
+
+    # The other direction: assertNoUnknownTypes must actually FIRE on a real
+    # gap. A bare identifier resolving to nothing rides synthBareVariant's
+    # silent fallback all the way to `tuck ch` exit 0 WITHOUT the flag; WITH
+    # it, the checker's own <unknown> marker on that exact node must be
+    # caught before typecheck's caller ever sees a clean result.
+    let undefSrc = d.write("undef.tuck",
+      "fn main() -> int:\n  totallyUndefinedName\n  0\n")
+    if sh(@["./tuck", "ch", undefSrc]).rc != 0:
+      t.no "assertNoUnknownTypes: baseline", "an undefined bare name should " &
+           "still typecheck clean WITHOUT --verify-stages (checker gap, not fixed here)"
+      t.finish()
+      return
+    let (vrc, vout) = sh(@["./tuck", "ch", undefSrc, "--verify-stages"])
+    if vrc == 0 or "<unknown>" notin vout:
+      t.no "assertNoUnknownTypes: catches it", "expected a nonzero exit " &
+           "naming <unknown>, got rc=" & $vrc & ": " & vout.splitLines()[^1]
       t.finish()
       return
 

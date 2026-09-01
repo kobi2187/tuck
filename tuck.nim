@@ -424,6 +424,10 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   ## the semantic layer, so the effect pass must run AFTER it or its async
   ## call-site marks are wiped before codegen reads them.
   result = typecheckOnly(path, loaded, sigOnly)
+  if verifyStages:
+    var checkedMods: seq[Module]
+    for lm in loaded: checkedMods.add(lm.m)
+    assertNoUnknownTypes(checkedMods)
   let imported = importedEffects(loaded, sigOnly)
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
@@ -659,7 +663,7 @@ when isMainModule:
       echo pretty(toJson(m))
     echo "OK — ", m.decls.len, " top-level declarations (", elapsedMs(t0), ")"
   of "check", "ch":
-    discard checkProgram(path)
+    discard checkProgram(path, verifyStages = verifyStages)
     echo "OK (", elapsedMs(t0), ")"
   of "dump", "d":
     # Run the pipeline up to --stage=X and print the tree — a thin driver
