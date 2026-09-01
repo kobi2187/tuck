@@ -226,6 +226,22 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   (03), composition and mixins (04), a value-returning body the checker
   left open (which D and Odin reject where Nim does not), and the reactor
   (29, 30). → ledger.
+- [x] **FIXED 2026-09-01** — std/fs (`readFile`/`writeFile`/`appendFile`/
+  `removeFile`) now offload through `tuckSubmitBlocking` onto the worker
+  thread the reactor's fix added, instead of blocking the whole process
+  inline. Matches `tuck_rt.nim`/`tuckrt/tuck_rt.odin`'s runtime
+  CHARACTERISTICS, not just their semantics: other coroutines, actors and
+  timers now keep running during a file op on D too. Raw C calls
+  (open/read/write/close/unlink), not `std.file`: the request crosses the
+  `tuckSubmitBlocking` boundary as a MALLOC'd struct, because a GC-managed
+  result reachable only from the calling coroutine's unscanned minicoro
+  stack while it is parked is not safe to hold onto — same hazard the
+  scheduler's own malloc'd ready queue already exists to avoid. `fileExists`
+  stays un-offloaded (a stat is cheap; matches both other backends).
+  Verified: example 24's write→read round trip, plus a probe exercising
+  append/remove/fileExists-after-removal not covered by any example.
+  `d_backend` suite gained one `runsD` regression test for the full
+  round trip.
 - [ ] **[repro] Example 20 is unverified on every backend past emit.**
   Chasing its D build (match-statement fix, then sizeof) surfaced two
   more blockers, both cross-backend and neither D-specific:

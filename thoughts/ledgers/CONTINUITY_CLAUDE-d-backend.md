@@ -196,16 +196,30 @@ One remains:
         (embedding the same program text as 29/30) so this is a permanent
         regression guard, not just a manual sweep fact. Full `./tests/run`
         green (112/112 in d_backend, unchanged elsewhere).
-        NOT done in this pass, deliberately out of scope: `tuckSubmitBlocking`
-        (the worker-thread offload seam for blocking fs calls) — std/fs's
-        D implementations (readFile/writeFile/etc in tuck_rt.d) still block
-        the whole process inline, exactly as their own comments already
-        said they would "until the coroutine runtime lands." That comment
-        is now stale in the narrow sense that the coroutine runtime HAS
-        landed; wiring fs through the offload seam is a distinct, sizeable
-        follow-up (matching runtime CHARACTERISTICS across backends, not
-        just semantics — see the portable-runtime constraint above), not
-        needed for 29/30, and not attempted here.
+        Deliberately NOT done in this pass: `tuckSubmitBlocking` (the
+        worker-thread offload seam for blocking fs calls) — flagged then,
+        wired up next.
+
+  - [x] **fs offload — DONE 2026-09-01, same day.** `tuckSubmitBlocking`
+        (generic `BlockingFn = void function(void*)`, a request pipe, one
+        daemon `core.thread.Thread` started lazily on first use) landed in
+        tuck_coro.d, mirroring `tuckrt/tuck_coro.odin`'s primitive exactly
+        at the runtime-primitive layer. `tuck_rt.d`'s readFile/writeFile/
+        appendFile/removeFile were rewritten off `std.file` onto raw C
+        calls (open/read/write/close/unlink) so the request crosses the
+        offload boundary as a MALLOC'd `FileReq`, not GC memory — the
+        SAME hazard the ready queue's own comment already documents (a
+        GC-managed object reachable only from the calling coroutine's
+        unscanned minicoro stack while it is parked is not safe to hold
+        across a collection). `fileExists` stays un-offloaded, matching
+        both other backends (a stat is cheap; the round trip would cost
+        more than the call). Verified: example 24's write→read round trip,
+        plus a hand-written probe exercising append/remove/fileExists-
+        after-removal — no example covers those three. One `runsD`
+        regression test added to `d_backend` (113/113, full `./tests/run`
+        green). D's runtime CHARACTERISTICS now match Nim's and Odin's
+        for fs, not just its semantics: other coroutines, actors and
+        timers keep running during a file op on all three backends.
 
 ## Open Questions
 - UNCONFIRMED: D sum-type shape — mirror Odin (tag enum + one struct holding

@@ -12,7 +12,7 @@ module tuck_rt;
 
 import std.stdio : stdout;
 import std.conv : text;
-import core.sys.posix.unistd : pipe2, write, close;
+import core.sys.posix.unistd : pipe2, read, write, close;
 
 // The coroutine engine is a separate file but the SAME facade: emitted code
 // reaches everything through `rt`, so tuck_rt re-exports it — mirroring
@@ -285,36 +285,184 @@ void release(T, size_t Count)(ref ObjectPool!(T, Count) pool, T item)
 // std/fs — the filesystem. The error codes are the FsError variants the
 // Tuck declaration names, hashed the same way every backend hashes them.
 //
-// Blocking calls, deliberately for now: the Nim runtime offloads these to a
-// worker so other coroutines keep running, and this must do the same once
-// the coroutine runtime lands (portable runtime CHARACTERISTICS, not just
-// semantics). Single-task programs cannot tell the difference yet.
+// These all block: a regular file is always "ready" to epoll, so the
+// reactor cannot await one. They run on the worker via tuckSubmitBlocking
+// (tuck_coro.d), which parks the calling coroutine on a completion pipe —
+// mirrors tuck_rt.nim and tuckrt/tuck_rt.odin, now that the coroutine
+// runtime is here to offload onto (portable runtime CHARACTERISTICS, not
+// just semantics: a program must not behave as if every other coroutine,
+// actor and timer froze for the duration of a file read, regardless of
+// which backend built it).
+//
+// Raw C calls, not std.file: the worker's request crosses the
+// tuckSubmitBlocking boundary as a MALLOC'd struct (see tuckSubmitBlocking's
+// own comment) — a GC-managed std.file result reachable only from the
+// calling coroutine's unscanned minicoro stack while it is parked is not
+// safe to hold onto. Growing the read buffer with malloc/realloc mirrors
+// tuck_rt.nim's fileWorker exactly, for the identical reason.
+
+private enum FileOp : ubyte { Read, Write, Append, Remove }
+private enum FsIoStatus : ubyte { Ok, NotFound, IoFailed, AccessDenied }
+
+private struct FileReq
+{
+    FileOp op;
+    const(char)* path;    // NUL-terminated; alive for the whole call
+    const(void)* data;    // write/append payload; alive for the whole call
+    size_t dataLen;
+    void* outBuf;         // Read: malloc'd by the worker, freed by the caller
+    size_t outLen;
+    FsIoStatus status = FsIoStatus.Ok;
+}
+
+private void fileWorker(void* arg)
+{
+    import core.stdc.stdlib : malloc, realloc, free;
+    import core.stdc.errno : errno, ENOENT;
+    import core.sys.posix.fcntl : open, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC,
+        O_APPEND;
+    import core.sys.posix.unistd : unlink;
+
+    auto r = cast(FileReq*) arg;
+    final switch (r.op)
+    {
+    case FileOp.Remove:
+        if (unlink(r.path) != 0)
+            r.status = errno == ENOENT ? FsIoStatus.NotFound
+                                        : FsIoStatus.AccessDenied;
+        break;
+    case FileOp.Write, FileOp.Append:
+        int flags = O_WRONLY | O_CREAT |
+                    (r.op == FileOp.Append ? O_APPEND : O_TRUNC);
+        int fd = open(r.path, flags, 0x1A4);   // 0o644
+        if (fd < 0) { r.status = FsIoStatus.AccessDenied; break; }
+        size_t off = 0;
+        auto p = cast(const(ubyte)*) r.data;
+        while (off < r.dataLen)
+        {
+            auto n = write(fd, p + off, r.dataLen - off);
+            if (n <= 0) { r.status = FsIoStatus.AccessDenied; break; }
+            off += n;
+        }
+        close(fd);
+        break;
+    case FileOp.Read:
+        int fd = open(r.path, O_RDONLY, 0);
+        if (fd < 0)
+        {
+            r.status = errno == ENOENT ? FsIoStatus.NotFound
+                                        : FsIoStatus.IoFailed;
+            break;
+        }
+        // Grow-on-demand with malloc, not a GC array: the worker's result
+        // must survive a collection triggered while the calling coroutine
+        // (the only thing that will ever reference it) is parked on an
+        // unscanned stack. Starts at 64K and doubles, so an ordinary file
+        // is one allocation.
+        size_t cap = 65536;
+        auto buf = malloc(cap);
+        size_t len = 0;
+        while (true)
+        {
+            if (len == cap)
+            {
+                cap *= 2;
+                auto bigger = realloc(buf, cap);
+                if (bigger is null)
+                {
+                    free(buf);
+                    close(fd);
+                    r.status = FsIoStatus.IoFailed;
+                    return;
+                }
+                buf = bigger;
+            }
+            auto n = read(fd, cast(ubyte*) buf + len, cap - len);
+            if (n < 0)
+            {
+                free(buf);
+                close(fd);
+                r.status = FsIoStatus.IoFailed;
+                return;
+            }
+            if (n == 0) break;
+            len += n;
+        }
+        close(fd);
+        r.outBuf = buf;
+        r.outLen = len;
+        break;
+    }
+}
+
+/// Set up the request on the SCHEDULER thread, hand it to the worker, park.
+/// `path`/`data` are copied into malloc'd, NUL-terminated buffers that stay
+/// alive for the whole call — the coroutine cannot proceed until the worker
+/// signals, so the worker's view of them is always valid.
+private FileReq runFileOp(FileOp op, string path, string data = "")
+{
+    import core.stdc.stdlib : malloc, free;
+    import core.stdc.string : memcpy;
+
+    auto pathBuf = cast(char*) malloc(path.length + 1);
+    memcpy(pathBuf, path.ptr, path.length);
+    pathBuf[path.length] = 0;
+    char* dataBuf;
+    if (data.length > 0)
+    {
+        dataBuf = cast(char*) malloc(data.length);
+        memcpy(dataBuf, data.ptr, data.length);
+    }
+
+    FileReq req;
+    req.op = op;
+    req.path = pathBuf;
+    req.data = dataBuf;
+    req.dataLen = data.length;
+    tuckSubmitBlocking(&fileWorker, &req);
+
+    free(pathBuf);
+    if (dataBuf !is null) free(dataBuf);
+    return req;
+}
+
+/// One place mapping a worker outcome onto the FsError variants declared in
+/// std/fs.tuck. Exhaustive, so a new FsIoStatus is a compile error here
+/// rather than a silently wrong error code at four call sites.
+private ushort fsErrCode(FsIoStatus s)
+{
+    final switch (s)
+    {
+    case FsIoStatus.NotFound:     return errCode("fs/FsError.NotFound");
+    case FsIoStatus.AccessDenied: return errCode("fs/FsError.AccessDenied");
+    case FsIoStatus.Ok, FsIoStatus.IoFailed:
+        return errCode("fs/FsError.IoFailed");
+    }
+}
+
 R readFile(R)(string path)
 {
-    import std.file : exists, read, FileException;
+    import core.stdc.stdlib : free;
     alias P = typeof(R.value);
-    if (!exists(path))
-        return terr!P(errCode("fs/FsError.NotFound"));
-    try
-        return tok(tuckRec!(P, "content")(cast(string) read(path)));
-    catch (Exception)
-        return terr!P(errCode("fs/FsError.IoFailed"));
+    auto r = runFileOp(FileOp.Read, path);
+    if (r.status != FsIoStatus.Ok) return terr!P(fsErrCode(r.status));
+    auto content = (cast(char*) r.outBuf)[0 .. r.outLen].idup;
+    if (r.outBuf !is null) free(r.outBuf);
+    return tok(tuckRec!(P, "content")(content));
 }
 
 TuckResult!TuckUnit writeFile(string path, string content)
 {
-    import std.file : write;
-    try
-    {
-        write(path, content);
-        return tokVoid();
-    }
-    catch (Exception)
-        return terr!TuckUnit(errCode("fs/FsError.IoFailed"));
+    auto r = runFileOp(FileOp.Write, path, content);
+    if (r.status != FsIoStatus.Ok) return terr!TuckUnit(fsErrCode(r.status));
+    return tokVoid();
 }
 
 /// NOT a result: a stat that says "no" is an answer, not a failure — the
-/// Tuck declaration returns a plain bool and the Nim runtime agrees.
+/// Tuck declaration returns a plain bool and the Nim runtime agrees. NOT
+/// offloaded either: a stat is a metadata lookup, microseconds on any live
+/// filesystem, and paying a thread handoff plus a pipe round-trip would
+/// cost more than the call — mirrors the Nim and Odin runtimes.
 bool fileExists(string path)
 {
     import std.file : exists;
@@ -323,28 +471,16 @@ bool fileExists(string path)
 
 TuckResult!TuckUnit removeFile(string path)
 {
-    import std.file : remove, exists;
-    if (!exists(path))
-        return terr!TuckUnit(errCode("fs/FsError.NotFound"));
-    try
-    {
-        remove(path);
-        return tokVoid();
-    }
-    catch (Exception)
-        return terr!TuckUnit(errCode("fs/FsError.IoFailed"));
+    auto r = runFileOp(FileOp.Remove, path);
+    if (r.status != FsIoStatus.Ok) return terr!TuckUnit(fsErrCode(r.status));
+    return tokVoid();
 }
 
 TuckResult!TuckUnit appendFile(string path, string content)
 {
-    import std.file : append;
-    try
-    {
-        append(path, content);
-        return tokVoid();
-    }
-    catch (Exception)
-        return terr!TuckUnit(errCode("fs/FsError.IoFailed"));
+    auto r = runFileOp(FileOp.Append, path, content);
+    if (r.status != FsIoStatus.Ok) return terr!TuckUnit(fsErrCode(r.status));
+    return tokVoid();
 }
 
 // std/sys — process control and the command line. argCount/argAt exclude

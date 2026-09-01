@@ -460,6 +460,102 @@ void tuckAsyncInit()
 void tuckSpawn(void delegate() fn) { cast(void) spawn(fn); }
 
 // ===========================================================================
+// The offload seam  (mirrors tuckrt/tuck_coro.odin's tuckSubmitBlocking)
+// ===========================================================================
+//
+// A blocking operation cannot be made to yield: a regular file is always
+// "ready" to epoll, so the reactor is structurally incapable of awaiting one.
+// The work runs on a worker thread and signals completion by writing one byte
+// to a pipe the reactor already watches, which resumes the parked coroutine.
+//
+// `fn`/`arg` are a raw C-style callback, not a delegate: `arg` is a caller-
+// owned MALLOC'd request (see tuck_rt.d's FileReq), never a GC pointer whose
+// only live reference sits on the calling coroutine's minicoro stack — that
+// stack is not GC-scanned (same reason the ready queue above is malloc'd,
+// not a GC array), so nothing here may hand the worker a bare `new`'d
+// object and expect it to survive a collection while the coroutine is
+// parked. The worker thread ITSELF is safe to allocate GC memory on (D's
+// Thread registers with the collector), but the boundary crossing is not.
+alias BlockingFn = void function(void*);
+
+private struct BlockingReq
+{
+    BlockingFn fn;
+    void* arg;
+    int doneFd;
+}
+
+private __gshared bool gBlockingStarted;
+private __gshared int[2] gReqPipe;
+
+private void blockingWorker()
+{
+    while (true)
+    {
+        BlockingReq req;
+        auto buf = (cast(ubyte*)&req)[0 .. BlockingReq.sizeof];
+        auto n = read(gReqPipe[0], buf.ptr, buf.length);
+        if (n != cast(ptrdiff_t) buf.length) break;
+        req.fn(req.arg);
+        ubyte[1] b = [1];
+        write(req.doneFd, b.ptr, 1);
+        close(req.doneFd);
+    }
+}
+
+private void ensureBlockingThread()
+{
+    // Started on first use: a program that never blocks never pays for a
+    // thread. One worker, process lifetime, never joined — it parks in
+    // read() on the request pipe when idle. `isDaemon` so it never keeps
+    // the process alive on its own.
+    if (gBlockingStarted) return;
+    int[2] fds;
+    if (pipe2(fds, 0) != 0) return;
+    gReqPipe = fds;
+    import core.thread : Thread;
+    auto th = new Thread(&blockingWorker);
+    th.isDaemon = true;
+    th.start();
+    gBlockingStarted = true;
+}
+
+/// Run `fn(arg)` off the scheduler thread and SUSPEND this coroutine until it
+/// finishes. The scheduler, the reactor, every actor and every timer keep
+/// running meanwhile.
+///
+/// Called outside a coroutine this runs inline: there is nothing to yield to,
+/// and parking would deadlock.
+void tuckSubmitBlocking(BlockingFn fn, void* arg)
+{
+    if (activeCoroutine is null)
+    {
+        fn(arg);
+        return;
+    }
+    initLoop();
+    ensureBlockingThread();
+    if (!gBlockingStarted)
+    {
+        fn(arg);   // no worker: better inline than not at all
+        return;
+    }
+    int[2] done;
+    if (pipe2(done, 0) != 0)
+    {
+        fn(arg);
+        return;
+    }
+    auto req = BlockingReq(fn, arg, done[1]);
+    auto buf = (cast(ubyte*)&req)[0 .. BlockingReq.sizeof];
+    write(gReqPipe[1], buf.ptr, buf.length);
+    tuckAwaitRead(done[0]);   // the reactor resumes us when the byte lands
+    ubyte[1] b;
+    read(done[0], b.ptr, 1);
+    close(done[0]);
+}
+
+// ===========================================================================
 // Task results
 // ===========================================================================
 //

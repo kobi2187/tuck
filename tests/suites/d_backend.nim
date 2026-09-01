@@ -819,4 +819,31 @@ fn main() -> int:
 """
   t.runsD "reactor: a 5ms source beats a 100ms timeout (code 1)", 1, dmdExe
 
+  # --- fs: offloaded through the worker thread (tuckSubmitBlocking) ------
+  # write, append, read-back, remove, then confirm removal — round-tripping
+  # every FileOp arm through the SAME worker seam the reactor tests above
+  # exercise for I/O awaiting. A compile-only check could not see any of
+  # this: it takes running to know the malloc'd request round-trips the
+  # right bytes back across the pipe.
+  t.src """
+import fs
+
+fn main() -> int [io]:
+  let w = {path: "/tmp/tuck-d-backend-fsprobe.txt", content: "one"} fs::writeFile
+  if not w.ok: return 1
+  let a = {path: "/tmp/tuck-d-backend-fsprobe.txt", content: "-two"} fs::appendFile
+  if not a.ok: return 2
+  let r = {path: "/tmp/tuck-d-backend-fsprobe.txt"} fs::readFile
+  if not r.ok: return 3
+  if r.value.content != "one-two": return 4
+  let d = {path: "/tmp/tuck-d-backend-fsprobe.txt"} fs::removeFile
+  if not d.ok: return 5
+  if {path: "/tmp/tuck-d-backend-fsprobe.txt"} fs::fileExists: return 6
+  let r2 = {path: "/tmp/tuck-d-backend-fsprobe.txt"} fs::readFile
+  if r2.ok: return 7
+  return 0
+"""
+  t.runsD "fs: write, append, read-back, remove — all through the worker", 0,
+          dmdExe
+
   t.finish()
