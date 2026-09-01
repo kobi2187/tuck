@@ -236,6 +236,13 @@ proc dieSyntax(err: ref SyntaxError) {.noreturn.} =
   stderr.writeLine ""
   quit(1)
 
+proc dieSemanticError(path: string, err: ref SemanticError) {.noreturn.} =
+  ## typecheckProgram's own errors already carry file:line:col in `err.msg`
+  ## (they name a `.tuck:` file); effect errors from verifyModuleEffects do
+  ## not, so those get the CALLING file's path prefixed here instead.
+  if ".tuck:" in err.msg: die(err.msg)
+  else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
+
 proc elapsedMs(t0: float): string =
   formatFloat((epochTime() - t0) * 1000, ffDecimal, 1) & " ms"
 
@@ -292,15 +299,27 @@ proc reportBuild(binPath: string, buildMs: float): string =
     discard
   "(" & formatFloat(buildMs, ffDecimal, 0) & " ms, " & sizeStr & ")"
 
-proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
-  ## Rewrite `impl: <backend> "..."` module paths from source-relative (what the
-  ## author wrote, and the only frame of reference they have) to output-relative
-  ## (what the emitted import needs). `-o:` moves the output around, so this is
-  ## the compiler's job rather than something the author tracks.
+proc rebasedImplModule(module, srcDir, outDir: string): string =
+  ## Rewrite one `impl: <backend> "..."` module string from source-relative
+  ## (what the author wrote, and the only frame of reference they have) to
+  ## output-relative (what the emitted import needs), or return it unchanged
+  ## if it isn't a path at all.
   ##
   ## Only ./ and ../ forms are paths. "std/strutils" and "core:strings" are
   ## module names in the backend's own namespace and pass through untouched —
   ## the same distinction Nim and Odin themselves draw.
+  if not (module.startsWith("./") or module.startsWith("../")): return module
+  let abs = normalizedPath(srcDir / module)
+  result = relativePath(abs, outDir).replace('\\', '/')
+  # Keep an explicit relative marker. relativePath returns a BARE name for a
+  # sibling ("shim"), and Odin reads a bare import path as a COLLECTION name
+  # (like "core:"), not a directory — it fails with "Path does not exist".
+  # Nim accepts either, so ./ is right for both.
+  if not (result.startsWith("./") or result.startsWith("../")): result = "./" & result
+
+proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
+  ## `-o:` moves the output around, so rebasing `impl:` paths is the
+  ## compiler's job rather than something the author tracks.
   let srcDir = parentDir(absolutePath(lm.path))
   for d in lm.m.decls:
     if d == nil or d.kind != dkExtern: continue
@@ -308,16 +327,8 @@ proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
       if mem.kind != dkFn or not mem.isExtern: continue
       for i in 0 ..< mem.externImpl.len:
         if mem.externImpl[i].backend != backend: continue
-        let module = mem.externImpl[i].module
-        if not (module.startsWith("./") or module.startsWith("../")): continue
-        let abs = normalizedPath(srcDir / module)
-        var rel = relativePath(abs, outDir).replace('\\', '/')
-        # Keep an explicit relative marker. relativePath returns a BARE name
-        # for a sibling ("shim"), and Odin reads a bare import path as a
-        # COLLECTION name (like "core:"), not a directory — it fails with
-        # "Path does not exist". Nim accepts either, so ./ is right for both.
-        if not (rel.startsWith("./") or rel.startsWith("../")): rel = "./" & rel
-        mem.externImpl[i].module = rel
+        mem.externImpl[i].module =
+          rebasedImplModule(mem.externImpl[i].module, srcDir, outDir)
 
 proc lexOrDie(source: string): seq[Token] =
   ## `tuck lex` — the tokens, or the diagnostic and exit.
@@ -355,6 +366,22 @@ proc loadOrDie(path: string, needBodies: bool):
   # sub-step is just naming what came back.
   for lm in result[0]: vSubNote("loaded " & lm.name)
 
+proc addLoadedEffects(result: var Table[string, seq[EffectMarker]],
+                      loaded: seq[LoadedModule]) =
+  for lm in loaded:
+    for d in lm.m.decls:
+      if d == nil or d.kind != dkFn: continue
+      result[d.name] = d.fnEffects
+      result[lm.name & "::" & d.name] = d.fnEffects
+
+proc addSigOnlyEffects(result: var Table[string, seq[EffectMarker]],
+                       sigOnly: Table[string, IndexEntry]) =
+  for modName, entry in sigOnly:
+    for si in entry.sigs:
+      if "::" in si.name: continue
+      result[si.name] = si.effects
+      result[modName & "::" & si.name] = si.effects
+
 proc importedEffects(loaded: seq[LoadedModule],
                      sigOnly: Table[string, IndexEntry]):
                        Table[string, seq[EffectMarker]] =
@@ -362,16 +389,8 @@ proc importedEffects(loaded: seq[LoadedModule],
   ## both places an import can come from: modules loaded with bodies, and
   ## modules resolved to signatures only from the cached index. Keyed bare and
   ## qualified, because a call may name either (`readFile` or `fs::readFile`).
-  for lm in loaded:
-    for d in lm.m.decls:
-      if d == nil or d.kind != dkFn: continue
-      result[d.name] = d.fnEffects
-      result[lm.name & "::" & d.name] = d.fnEffects
-  for modName, entry in sigOnly:
-    for si in entry.sigs:
-      if "::" in si.name: continue
-      result[si.name] = si.effects
-      result[modName & "::" & si.name] = si.effects
+  addLoadedEffects(result, loaded)
+  addSigOnlyEffects(result, sigOnly)
 
 proc typecheckOnly(path: string, loaded: seq[LoadedModule],
                    sigOnly: Table[string, IndexEntry]): seq[string] =
@@ -391,8 +410,12 @@ proc typecheckOnly(path: string, loaded: seq[LoadedModule],
     result = typecheckProgram(mods, preSigs)
     vSubNote($mods.len & " module(s)")
   except SemanticError as err:
-    if ".tuck:" in err.msg: die(err.msg)
-    else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
+    dieSemanticError(path, err)
+
+proc verifyEffectsAssertions(loaded: seq[LoadedModule]) =
+  var loadedMods: seq[Module]
+  for lm in loaded: loadedMods.add(lm.m)
+  assertAsyncEffectsConsistent(loadedMods)
 
 proc checkOrDie(path: string, loaded: seq[LoadedModule],
                 sigOnly: Table[string, IndexEntry],
@@ -409,14 +432,9 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
       let ts = epochTime()
       verifyModuleEffects(lm.m, imported)
       vSub(lm.name, ts)
-    if verifyStages:
-      var loadedMods: seq[Module]
-      for lm in loaded: loadedMods.add(lm.m)
-      assertAsyncEffectsConsistent(loadedMods)
+    if verifyStages: verifyEffectsAssertions(loaded)
   except SemanticError as err:
-    # typecheckProgram errors already carry file:line:col; effects errors don't
-    if ".tuck:" in err.msg: die(err.msg)
-    else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
+    dieSemanticError(path, err)
 
 proc sizeReport(path: string, loaded: seq[LoadedModule]) =
   ## Print every function over the size budget, worst first — and on a release
@@ -444,17 +462,24 @@ proc sizeReport(path: string, loaded: seq[LoadedModule]) =
         "(--release requires them under it; raise with --max-complexity:N / " &
         "--max-fn-lines:N, or :0 to disable)")
 
-proc pendingEntries(loaded: seq[LoadedModule],
-                    sigOnly: Table[string, IndexEntry]): seq[string] =
-  ## Every unimplemented fn across the program, qualified when it lives in an
-  ## imported module rather than the one being checked.
+proc addLoadedPending(result: var seq[string], loaded: seq[LoadedModule]) =
   for lm in loaded:
     for entry in pendingReport(lm.m):
       if lm.path != loaded[^1].path: result.add(lm.name & "::" & entry)
       else: result.add(entry)
+
+proc addSigOnlyPending(result: var seq[string],
+                       sigOnly: Table[string, IndexEntry]) =
   for name, e in sigOnly:
     for si in e.sigs:
       if si.isPending: result.add(name & "::" & sigLine(si))
+
+proc pendingEntries(loaded: seq[LoadedModule],
+                    sigOnly: Table[string, IndexEntry]): seq[string] =
+  ## Every unimplemented fn across the program, qualified when it lives in an
+  ## imported module rather than the one being checked.
+  addLoadedPending(result, loaded)
+  addSigOnlyPending(result, sigOnly)
 
 proc report(title, noun: string, entries: seq[string]) =
   ## One `TITLE (n noun):` block with its indented entries, or nothing at all.
