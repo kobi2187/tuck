@@ -982,9 +982,8 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   let ic = semLayer.ifaceCallOf(e)
   if ic.member != "": return ctx.genIfaceDispatch(e, ic)
   # `Counter.total` reads the actor SINGLETON's field, not a type's.
-  if e.receiver != nil and e.receiver.kind == exkVar and
-     ctx.isActorType(e.receiver.name):
-    return actorSingletonName(e.receiver.name) & "." & e.fieldName
+  if e.receiver != nil and e.receiver.kind == exkActorRef:
+    return actorSingletonName(e.receiver.refName) & "." & e.fieldName
   if isResultStatusTest(e):
     # parenthesised: a guard may negate it (`!r.ok`), and `!x == y` would
     # otherwise bind the `!` to the receiver alone
@@ -998,9 +997,10 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     # bare Type.Variant of a payload sum: kind-tagged construction
     let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
     if ctor != "": return ctor
+  if e.receiver != nil and e.receiver.kind == exkRegisterRef:
     # A register field is a raw pointer with no real field — reading it
     # means calling the getter genRegister already emitted for it.
-    let prefix = registerAccessorPrefix(ctx.module, e.receiver.name, e.fieldName)
+    let prefix = registerAccessorPrefix(ctx.module, e.receiver.refName, e.fieldName)
     if prefix != "": return prefix & "_get()"
   let bound = ctx.boundVariantField(e)
   if bound != "": return bound
@@ -1230,8 +1230,8 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
     ctx.definedVars.incl(e.target.name)
     return e.target.name & " := " & valStr
   if e.target.kind == exkField and e.target.receiver != nil and
-     e.target.receiver.kind == exkVar:
-    let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.name,
+     e.target.receiver.kind == exkRegisterRef:
+    let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
     if prefix != "": return prefix & "_set(" & valStr & ")"
   ctx.genOdinExpr(e.target) & " = " & valStr

@@ -632,8 +632,8 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   ## ordinary field-access syntax whose receiver happens to name a type. The
   ## proc was called asQualifiedMemberCall, which read as though the two were
   ## the same mechanism; they are not, and never were.
-  if e.receiver == nil or e.receiver.kind != exkVar: return nil
-  let qualified = e.receiver.name & "." & e.fieldName
+  if e.receiver == nil or e.receiver.kind != exkPoolRef: return nil
+  let qualified = e.receiver.refName & "." & e.fieldName
   if not tc.fnSigs.hasKey(qualified): return nil
   let extra = unwrapSingleField(e.dotArg)
   let args = if extra != nil: @[e.receiver, extra] else: @[e.receiver]
@@ -840,6 +840,15 @@ proc registerFieldAccess(m: Module, regName, fieldName: string):
       return (true, sawRead, sawWrite)
   (false, false, false)
 
+proc actorFieldType(m: Module, actorName, fieldName: string): Type =
+  ## An actor singleton's own declared field type (`Counter.total`) — nil
+  ## if `actorName` names no actor, or that actor has no such field.
+  for d in m.decls(dkActor):
+    if d.name != actorName: continue
+    for f in d.actorFields:
+      if f.name == fieldName: return f.typ
+  nil
+
 proc registerFieldType(m: Module, regName, fieldName: string, span: Span): Type =
   ## A register field's type — matching what the generated accessor
   ## actually returns (genRegister/genDRegister's bitGetter/dBitGetter): a
@@ -873,21 +882,21 @@ proc failIfRegisterAccess(tc: var TypeChecker, e: Expr) =
   ## naming a `register` declaration, which is unambiguous: a register is a
   ## declaration, not a value, so nothing else can be named there.
   if e == nil: return
-  if e.kind == exkChain and e.base != nil and e.base.kind == exkVar:
+  if e.kind == exkChain and e.base != nil and e.base.kind == exkRegisterRef:
     for step in e.steps:
       if step.op != coDotDot or step.target == nil: continue
-      let acc = registerFieldAccess(tc.module, e.base.name, step.target.name)
+      let acc = registerFieldAccess(tc.module, e.base.refName, step.target.name)
       if acc.found and not acc.canWrite:
         fail(dcReReadOnly,
-             "register field '" & e.base.name & "." & step.target.name &
+             "register field '" & e.base.refName & "." & step.target.name &
              "' is declared [read] — writing it is a compile error (spec " &
              "§8.1). On hardware the write is ignored or has an undocumented " &
              "side effect", step.span)
-  if e.kind == exkField and e.receiver != nil and e.receiver.kind == exkVar:
-    let acc = registerFieldAccess(tc.module, e.receiver.name, e.fieldName)
+  if e.kind == exkField and e.receiver != nil and e.receiver.kind == exkRegisterRef:
+    let acc = registerFieldAccess(tc.module, e.receiver.refName, e.fieldName)
     if acc.found and not acc.canRead:
       fail(dcReWriteOnly,
-           "register field '" & e.receiver.name & "." & e.fieldName &
+           "register field '" & e.receiver.refName & "." & e.fieldName &
            "' is declared [write] — reading it is a compile error (spec " &
            "§8.1); a write-only field reads back undefined", e.span)
 
@@ -896,9 +905,12 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   ## interface dispatch. Try them in two groups: what the syntax alone can
   ## settle, then what needs the receiver's type.
   tc.failIfRegisterAccess(e)   # spec 8.1: no reading a [write] field
-  if e.receiver != nil and e.receiver.kind == exkVar:
-    let regT = registerFieldType(tc.module, e.receiver.name, e.fieldName, e.span)
+  if e.receiver != nil and e.receiver.kind == exkRegisterRef:
+    let regT = registerFieldType(tc.module, e.receiver.refName, e.fieldName, e.span)
     if regT != nil: return regT
+  if e.receiver != nil and e.receiver.kind == exkActorRef:
+    let actT = actorFieldType(tc.module, e.receiver.refName, e.fieldName)
+    if actT != nil: return actT
   result = tc.syntacticFieldForm(e)
   if result != nil: return
   let rawT = tc.synthesize(e.receiver)
@@ -1336,7 +1348,20 @@ proc checkChainStep(tc: var TypeChecker, step: var ChainStep, e: Expr,
 proc synthChain(tc: var TypeChecker, e: Expr): Type =
   ## A `..` chain stays on its base var: every step either sets a field or
   ## calls a mutator that returns the receiver's type.
-  result = tc.synthesize(e.base)
+  ##
+  ## A register/actor/registry/pool/mixin base (spec 8.1's `CTRL ..EN
+  ## {true}` register write is the only real case) has no such "own type"
+  ## to stay on — it is a pure side effect, not a builder chain. Synthesize
+  ## it as `unit` directly rather than the base's OWN synthesizeKind arm,
+  ## which exists only so a stray direct-synthesize elsewhere stays
+  ## exhaustive and would otherwise leak a fake "type named after the
+  ## register" out of the enclosing fn body.
+  case e.base.kind
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+    discard tc.synthesize(e.base)
+    result = Type(span: e.span, kind: tkNamed, name: "unit")
+  else:
+    result = tc.synthesize(e.base)
   tc.failIfMutatingLet(e)
   tc.failIfRegisterAccess(e)   # spec 8.1: no writing a [read] field
   let recvT = tc.resolve(result)
@@ -3545,8 +3570,8 @@ proc raisedEventsIn(e: Expr, into: var seq[tuple[reg, ev: string, sp: Span,
      e.callee.args.len == 1 and e.callee.args[0].kind == exkField:
     let f = e.callee.args[0]
     if f.fieldName == "raise" and f.receiver != nil and
-       f.receiver.kind == exkVar:
-      into.add((f.receiver.name, e.callee.callee.name, e.span,
+       f.receiver.kind == exkRegistryRef:
+      into.add((f.receiver.refName, e.callee.callee.name, e.span,
                 if e.args.len == 1: e.args[0] else: nil))
   for c in e.children: raisedEventsIn(c, into)
 

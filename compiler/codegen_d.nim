@@ -852,13 +852,12 @@ proc genDFieldRead(ctx: var DCodegenCtx, e: Expr): string =
   if sumField != "": return sumField
   # `Counter.total` reads the actor SINGLETON's field — an actor is one
   # instance per declared type, so the type name IS the instance.
-  if e.receiver != nil and e.receiver.kind == exkVar and
-     ctx.idx.isActorTypeIdx(e.receiver.name):
-    return actorSingletonName(e.receiver.name) & "." & e.fieldName
+  if e.receiver != nil and e.receiver.kind == exkActorRef:
+    return actorSingletonName(e.receiver.refName) & "." & e.fieldName
   # A register field is a raw pointer with no real field — reading it means
   # calling the getter genDRegister already emitted for it.
-  if e.receiver != nil and e.receiver.kind == exkVar:
-    let prefix = registerAccessorPrefix(ctx.module, e.receiver.name, e.fieldName)
+  if e.receiver != nil and e.receiver.kind == exkRegisterRef:
+    let prefix = registerAccessorPrefix(ctx.module, e.receiver.refName, e.fieldName)
     if prefix != "": return prefix & "_get()"
   ctx.genDExpr(e.receiver) & "." & e.fieldName
 
@@ -1069,8 +1068,8 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
                           "' whose type the checker did not settle")
     return declT & " " & e.target.name & " = " & valStr
   if e.target.kind == exkField and e.target.receiver != nil and
-     e.target.receiver.kind == exkVar:
-    let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.name,
+     e.target.receiver.kind == exkRegisterRef:
+    let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
     if prefix != "": return prefix & "_set(" & valStr & ")"
   ctx.genDExpr(e.target) & " = " & valStr

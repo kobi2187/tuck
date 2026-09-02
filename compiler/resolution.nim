@@ -27,6 +27,21 @@ type
     # is a scan of the declaration list per question.
     decls*: Table[NodeId, Decl]        # id -> the declaration itself
     declOf*: Table[NodeId, NodeId]     # referring node -> declaration id
+    # Whole-program name -> Decl, for the five kinds a bare Capitalized name
+    # can reference OUTRIGHT (not through `decls`/`declOf`, which are
+    # per-NODE edges recorded once a reference is already known — these are
+    # the NAME->Decl step that answers "is this string a declared actor/
+    # register/registry/pool/mixin" at all). Built once, whole-program, by
+    # resolveDeclRefs (compiler/resolve_refs.nim) between load and
+    # typecheck; consulted only there, to rewrite a matching exkVar into
+    # the matching exkActorRef/exkRegisterRef/exkRegistryRef/exkPoolRef/
+    # exkMixinRef. Not a general-purpose lookup for other passes to grow
+    # dependent on — those should use declFor on the rewritten reference.
+    actorNames*: Table[string, Decl]
+    registerNames*: Table[string, Decl]
+    registryNames*: Table[string, Decl]
+    poolNames*: Table[string, Decl]
+    mixinNames*: Table[string, Decl]
     # How a call's payload maps onto its callee's parameters, decided once by
     # checkCallArgs. `argFields[i]` names the payload FIELD that satisfies
     # param i — matched by name, or by type when the names differ — and

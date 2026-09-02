@@ -246,6 +246,58 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   every one of these ad hoc mechanisms defers to, with the actual
   synthVar case as the correctly-strict fallback once that lookup exists.
   Left `git checkout`-clean; `./tests/run` green.
+  **MOSTLY FIXED 2026-09-01, properly this time** — not the lookup-table
+  patch above (rejected on review: still guessing at the use site from a
+  generic `exkVar`). Instead, five dedicated AST node kinds —
+  `exkActorRef`/`exkRegisterRef`/`exkRegistryRef`/`exkPoolRef`/`exkMixinRef`
+  (`compiler/ast.nim`) — resolved ONCE, whole-program, by a new pass
+  (`compiler/resolve_refs.nim`, new `psResolveDeclRefs` pipeline stage
+  between inject-types and typecheck) that builds five name→Decl tables
+  (extending `resolution.nim`'s existing `Resolution` sidecar) and rewrites
+  every matching bare `exkVar` before typecheck ever sees it. Ambiguity
+  (same name declared twice for one construct) is now a real, located
+  compile error. Ordinary `synthVar`/`synthBareVariant` never sees these
+  five names again — no exemption list, because there is nothing left to
+  exempt for these five.
+  Updated every real consumer (filtering out ~15 UNRELATED `receiver.kind
+  == exkVar` hits along the way — ordinary local-variable narrowing,
+  the `Error.name`/`input.x` magic identifiers, sum-variant construction —
+  confirmed by reading each, not touched): `typecheck.nim`'s
+  `failIfRegisterAccess`/`registerFieldType`/`synthFieldAccess` (register +
+  new `actorFieldType` for actor field reads)/`asStaticMemberCall` (pool)/
+  `raisedEventsIn` (registry raise validation), `lowering.nim`'s
+  `flattenRegistryRaise`, and the register/actor field-access arms in all
+  three backends (`codegen.nim`, `codegen_odin.nim`, `codegen_d.nim`).
+  Found and fixed one genuinely NEW bug this surfaced: `synthChain` used to
+  synthesize a `..` chain's own type as "whatever its base's type is" —
+  fine for a builder-pattern object, wrong for a register write (`CTRL
+  ..EN {true}`), which used to synthesize the base as `Unknown` (exempted
+  from the "flows X out of body" check) and now correctly resolves to a
+  real type — except a register/actor/registry/pool/mixin base has no
+  real "own type" to flow anywhere. Fixed: these five bases synthesize the
+  chain itself as `unit`, matching their actual (side-effect-only)
+  semantics.
+  Result: 13 of the original 16 `<unknown>`-leaking examples down to **7**
+  (`04, 05, 08, 15, 18, 19, 20 (9 sites, down from 39), 22`) — zero
+  regressions (`./tests/run` full green except the pre-existing, deferred
+  complexity-count ratchet; `tools/emit_examples.sh` — byte-identical
+  output across the whole corpus, confirmed twice). Regression tests in
+  `cli_smoke.nim` for both the checker fixes and the new node kinds.
+  **The remaining 7 are a DIFFERENT, sibling bug, confirmed by direct AST
+  dump** (`tuck dump --stage:typecheck --format:json` on a minimal
+  registry-raise probe): the registry NAME half of `AppEvents.raise
+  SensorFailure {...}` now resolves correctly (`AppEvents` → real type),
+  but `SensorFailure` — the EVENT VARIANT name — is still Unknown. A
+  registry event is effectively an inline sum-type variant scoped to the
+  registry, and `sumTypeOwning`/`allVariants` don't recognize it the same
+  way a top-level `type X: | A | B` variant is recognized — the SAME
+  family of gap as the already-tracked inline-sum-variant bug
+  (`08-actors_isolated_state`), not one of the five constructs this fix
+  targeted. **Left `synthBareVariant`'s fallback returning `unknownType`,
+  NOT tightened to a hard `fail()`** (the plan's Phase 4) — doing so now
+  would turn every valid registry-event raise in the corpus into a hard
+  compile error. Phase 4 needs this sibling gap (event-variant names, both
+  inline-sum and registry-scoped) fixed first.
 - [x] **FIXED (the tool) 2026-09-01, but [repro] 16 real gaps it found are
   NOT fixed** — `assertNoUnknownTypes` (`compiler/pipeline.nim`), gated on
   `--verify-stages`: walks every fn/task/const body after typecheck and

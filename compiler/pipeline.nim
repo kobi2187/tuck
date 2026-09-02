@@ -25,6 +25,9 @@ type
   PipelineStage* = enum
     psLoad          ## loadOrDie/loadProgram: lex+parse+import-closure
     psInjectTypes   ## injectImportedTypes
+    psResolveDeclRefs ## resolve_refs.resolveDeclRefs — bare actor/register/
+                      ## registry/pool/mixin names become their own node
+                      ## kind before typecheck ever sees them as exkVar
     psTypecheck     ## typecheckProgram
     psVerifyEffects ## verifyModuleEffects — after psTypecheck: typechecking
                     ## resets the shared semantic layer, so async call-site

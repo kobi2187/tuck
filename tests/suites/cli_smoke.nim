@@ -634,6 +634,23 @@ proc run*(t: var T) =
         t.finish()
         return
 
+    # Dedicated AST node kinds (exkActorRef/exkRegisterRef/exkRegistryRef/
+    # exkPoolRef/exkMixinRef — compiler/ast.nim, resolved once between load
+    # and typecheck by compiler/resolve_refs.nim) replaced the string-keyed
+    # exkVar guessing at every use site. Fixes actor field access
+    # (Counter.total), pool member calls (Bufs.acquire), and the registry
+    # NAME half of a raise (AppEvents.raise ...) — the EVENT name half
+    # (SensorFailure) is a sibling of the already-tracked inline-sum-variant
+    # gap, not fixed here (see TODO.md).
+    for ex in ["26-actor-run", "27-actor-select", "42-net-echo",
+               "25-pools", "11-embedded-feature"]:
+      if sh(@["./tuck", "ch", "examples/" & ex & ".tuck", "--verify-stages",
+              "--root:" & getCurrentDir()]).rc != 0:
+        t.no "assertNoUnknownTypes: dedicated ref node kinds",
+             "examples/" & ex & ".tuck should pass --verify-stages now"
+        t.finish()
+        return
+
     # tuck dump: a thin driver stopping early in the same pipeline, at two
     # ends of it — a bare parse-adjacent stage and the final emitted source.
     for stage in ["load", "emitting"]:

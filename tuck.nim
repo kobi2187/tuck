@@ -57,6 +57,7 @@ import compiler/ast_serializer
 import compiler/modules
 import compiler/optimize
 import compiler/pipeline
+import compiler/resolve_refs
 
 const CommandHelp = {
   "lex": """tuck lex file.tuck
@@ -121,8 +122,8 @@ tree it produced there — useful for seeing what a stage actually
 did without running the whole build.
 
   --stage:X   which stage to stop at: lex, parse, load, inject-types,
-              typecheck, verify-effects, mangle, lowering, emitting
-              (default: emitting)
+              resolve-refs, typecheck, verify-effects, mangle, lowering,
+              emitting (default: emitting)
   --format:X  json (default, pretty-printed) or text (repr(), for
               trees that do not serialize to JSON)
 
@@ -188,9 +189,10 @@ options:
                 per-module hook — some stages run whole-program in one
                 call and only note a module count instead).
   --stage:X     (dump) which stage to stop at: lex, parse, load,
-                inject-types, typecheck, verify-effects, mangle, lowering,
-                emitting (default: emitting). lowering/emitting use the
-                same --odin/--dlang backend choice as compile/build.
+                inject-types, resolve-refs, typecheck, verify-effects,
+                mangle, lowering, emitting (default: emitting).
+                lowering/emitting use the same --odin/--dlang backend
+                choice as compile/build.
   --format:X    (dump) json (default, pretty-printed) or text (the same
                 data, unformatted — repr() does not compile for this tree)
   -O:PASS[,...] (compile/build) optimization passes. ON by default — every
@@ -523,6 +525,14 @@ proc checkProgram(path: string, needBodies = false,
     # modules' imports) — no per-module hook to time individually.
     vSubNote($result.len & " module(s)")
     vEnd(psInjectTypes, t0)
+  block:
+    let t0 = vBegin(psResolveDeclRefs)
+    try:
+      resolveDeclRefs(result)
+    except SemanticError as err:
+      dieSemanticError(path, err)
+    vSubNote($result.len & " module(s)")
+    vEnd(psResolveDeclRefs, t0)
   let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
   # program checked clean: refresh the signature index for future checks
   updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
@@ -686,8 +696,8 @@ when isMainModule:
       let m = parseOrDie(source)
       let j = toJson(m)
       if fmt == "text": echo j else: echo pretty(j)
-    of "load", "inject-types", "typecheck", "verify-effects", "mangle",
-       "lowering", "emitting":
+    of "load", "inject-types", "resolve-refs", "typecheck", "verify-effects",
+       "mangle", "lowering", "emitting":
       var sigOnly: Table[string, IndexEntry]
       var loaded: seq[LoadedModule]
       (loaded, sigOnly) = loadOrDie(path, needBodies = true)
@@ -700,54 +710,59 @@ when isMainModule:
         injectImportedTypes(loaded)
         if stageStr == "inject-types":
           dumpTree(mods, fmt)
-        elif stageStr == "typecheck":
-          discard typecheckOnly(path, loaded, sigOnly)
-          dumpTree(mods, fmt, withSem = true)
         else:
-          discard checkOrDie(path, loaded, sigOnly)
-          if stageStr == "verify-effects":
+          resolveDeclRefs(loaded)
+          if stageStr == "resolve-refs":
+            dumpTree(mods, fmt)
+          elif stageStr == "typecheck":
+            discard typecheckOnly(path, loaded, sigOnly)
             dumpTree(mods, fmt, withSem = true)
           else:
-            discard optimizeProgram(mods, optPasses)
-            mangleProgram(mods)
-            if stageStr == "mangle":
+            discard checkOrDie(path, loaded, sigOnly)
+            if stageStr == "verify-effects":
               dumpTree(mods, fmt, withSem = true)
             else:
-              # lowering / emitting: exactly one backend, same choice as
-              # compile/build (default Nim, or --odin/--dlang).
-              var bProg: seq[LoadedModule]
-              for lm in loaded: bProg.add(LoadedModule(name: lm.name,
-                path: lm.path, m: deepCopy(lm.m)))
-              var bReal = initTable[string, Module]()
-              for lm in bProg[0 ..< bProg.high]: bReal[lm.name] = lm.m
-              let backendName = case backend
-                of bkNim: "nim"
-                of bkOdin: "odin"
-                of bkDlang: "d"
-              for lm in bProg: rebaseImplPaths(lm, backendName, ".")
-              for lm in bProg:
-                lowerModule(lm.m)
-                if backend == bkDlang: lowerModuleD(lm.m)
-              if stageStr == "lowering":
-                var bMods: seq[Module]
-                for lm in bProg: bMods.add(lm.m)
-                dumpTree(bMods, fmt)
+              discard optimizeProgram(mods, optPasses)
+              mangleProgram(mods)
+              if stageStr == "mangle":
+                dumpTree(mods, fmt, withSem = true)
               else:
-                let dumpBase = extractFilename(path).changeFileExt("")
-                case backend
-                of bkNim:
-                  for lm in bProg: echo emitNim(lm.m, "tuck_rt", bReal, lm.name)
-                of bkOdin:
-                  for lm in bProg[0 ..< bProg.high]:
-                    echo emitOdinModule(lm.name, lm.m, bReal)
-                  echo emitOdin(bProg[^1].m, bReal, dumpBase)
-                of bkDlang:
-                  for lm in bProg[0 ..< bProg.high]:
-                    echo emitDModule(lm.name, lm.m, bReal)
-                  echo emitD(bProg[^1].m, bReal, dumpBase)
+                # lowering / emitting: exactly one backend, same choice as
+                # compile/build (default Nim, or --odin/--dlang).
+                var bProg: seq[LoadedModule]
+                for lm in loaded: bProg.add(LoadedModule(name: lm.name,
+                  path: lm.path, m: deepCopy(lm.m)))
+                var bReal = initTable[string, Module]()
+                for lm in bProg[0 ..< bProg.high]: bReal[lm.name] = lm.m
+                let backendName = case backend
+                  of bkNim: "nim"
+                  of bkOdin: "odin"
+                  of bkDlang: "d"
+                for lm in bProg: rebaseImplPaths(lm, backendName, ".")
+                for lm in bProg:
+                  lowerModule(lm.m)
+                  if backend == bkDlang: lowerModuleD(lm.m)
+                if stageStr == "lowering":
+                  var bMods: seq[Module]
+                  for lm in bProg: bMods.add(lm.m)
+                  dumpTree(bMods, fmt)
+                else:
+                  let dumpBase = extractFilename(path).changeFileExt("")
+                  case backend
+                  of bkNim:
+                    for lm in bProg: echo emitNim(lm.m, "tuck_rt", bReal, lm.name)
+                  of bkOdin:
+                    for lm in bProg[0 ..< bProg.high]:
+                      echo emitOdinModule(lm.name, lm.m, bReal)
+                    echo emitOdin(bProg[^1].m, bReal, dumpBase)
+                  of bkDlang:
+                    for lm in bProg[0 ..< bProg.high]:
+                      echo emitDModule(lm.name, lm.m, bReal)
+                    echo emitD(bProg[^1].m, bReal, dumpBase)
     else:
       die("tuck: no such stage: '" & stageStr & "' (lex, parse, load, " &
-          "inject-types, typecheck, verify-effects, mangle, lowering, emitting)")
+          "inject-types, resolve-refs, typecheck, verify-effects, mangle, " &
+          "lowering, emitting)")
   of "compile", "c", "build", "b":
     let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
     var outDir = parentDir(path)

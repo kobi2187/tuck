@@ -663,10 +663,10 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
     # bare Type.Variant of a payload sum: kind-tagged construction
     let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
     if ctor != "": return ctor
+  if e.receiver != nil and e.receiver.kind == exkActorRef:
     # `ActorType.field` — an actor is a singleton; read its public field off
     # the rt-owned instance (main's waitUntil predicates read state this way)
-    if ctx.isActorType(e.receiver.name):
-      return actorSingletonName(e.receiver.name) & "." & e.fieldName
+    return actorSingletonName(e.receiver.refName) & "." & e.fieldName
   # A PAYLOAD sum stores each variant's fields in a field named after the
   # variant, so `s.length` on `Line({length: int})` is `s.line.length`.
   # Emitting the bare name produced an undeclared field, which is why a

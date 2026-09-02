@@ -129,10 +129,11 @@ proc flattenRegistryRaise(e: Expr) =
     eventNameNode = e.callee
   else:
     return
-  if fieldNode.receiver == nil or fieldNode.receiver.kind != exkVar: return
+  if fieldNode.receiver == nil or fieldNode.receiver.kind != exkRegistryRef:
+    return
   if fieldNode.fieldName != "raise": return
   e.callee = Expr(span: e.span, kind: exkVar,
-                  name: "raise_" & fieldNode.receiver.name & "_" &
+                  name: "raise_" & fieldNode.receiver.refName & "_" &
                         eventNameNode.name)
   e.args = payloadArgs
 
