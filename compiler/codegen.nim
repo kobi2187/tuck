@@ -72,7 +72,6 @@ type
     moduleName: string    # error codes hash over "module/Enum.Variant"
     recordNames: HashSet[string]     # names of record types in `module` (O(1) lookup)
     invariantNames: HashSet[string]  # names of invariant-carrying types in `module`
-    actorNames: HashSet[string]      # names of dkActor decls in `module`
     taskNames: HashSet[string]       # names of dkTask decls in `module`
     # Answers for the three questions genConstruction asks about EVERY call:
     # is the callee a [saturating] type, an extern with an invariant-carrying
@@ -127,14 +126,15 @@ proc buildDeclIndex(ctx: var CodegenCtx) =
     # construction emitted `tuck_Dog("rex")` and Nim rejected it.
     of dkObject: ctx.recordNames.incl(d.name)
     of dkType: ctx.indexTypeDecl(d)
-    of dkActor: ctx.actorNames.incl(d.name)
     of dkTask: ctx.taskNames.incl(d.name)
     # Everything else contributes no NAME to this index. Listed rather than
     # left to `else`, so a new DeclKind that should be indexed is a compile
-    # error here instead of a lookup that quietly returns false.
-    of dkFn, dkMixin, dkExtern, dkPending, dkPool, dkFnSig, dkRegistry,
-       dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
-       dkSelect, dkSatisfies, dkInterface, dkWhen: discard
+    # error here instead of a lookup that quietly returns false. dkActor is
+    # here, not its own arm: exkActorRef (resolve_refs.nim) now resolves
+    # actor references before this index would ever be asked about one.
+    of dkFn, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkFnSig,
+       dkRegistry, dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors,
+       dkImport, dkSelect, dkSatisfies, dkInterface, dkWhen: discard
   ctx.indexExterns()
   ctx.indexBuilt = true
 
@@ -165,10 +165,6 @@ proc externEmitNameFast(ctx: var CodegenCtx, fnName: string): string =
   ## externEmitName's answer, from the index.
   ctx.buildDeclIndex()
   ctx.externEmits.getOrDefault(fnName, "")
-
-proc isActorType(ctx: var CodegenCtx, name: string): bool =
-  ctx.buildDeclIndex()
-  name in ctx.actorNames
 
 proc isTaskName(ctx: var CodegenCtx, name: string): bool =
   ## Reads the index built once in buildDeclIndex, not a per-call scan of

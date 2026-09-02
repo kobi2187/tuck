@@ -51,8 +51,6 @@ type
                                         # a local forwarder calling <alias>.<fn>
                                         # — call sites stay unqualified, as on
                                         # the Nim side
-    actorNames: HashSet[string]  # dkActor decl names in `module`, built once
-    actorNamesBuilt: bool
     unionBind: string   # inside `switch v in value`: the name bound to the
                         # matched variant. A payload field is read through
                         # IT, not off the subject — Odin's union has no
@@ -69,17 +67,6 @@ proc odinUnsupported(construct: string): string =
   ## time, naming the construct. Silent wrong code is the one forbidden
   ## outcome (mirrors the D backend's dUnsupported).
   quit("tuck: Odin backend does not yet support " & construct, 1)
-
-proc isActorType(ctx: var OdinCodegenCtx, name: string): bool =
-  ## O(1) after the first call. genOdinExpr's exkField arm asks this once per
-  ## FIELD ACCESS in the whole program; a decl-list scan there is the same
-  ## O(fns x accesses) mistake fixed for lowering, the effect checker's
-  ## task-spawn check, and the Nim backend's isActorType/isTaskName.
-  if not ctx.actorNamesBuilt:
-    for d in ctx.module.decls:
-      if d != nil and d.kind == dkActor: ctx.actorNames.incl(d.name)
-    ctx.actorNamesBuilt = true
-  name in ctx.actorNames
 
 proc isTaskName(ctx: var OdinCodegenCtx, name: string): bool =
   ## Mirrors the Nim backend. Calling a task SCHEDULES it as a coroutine
