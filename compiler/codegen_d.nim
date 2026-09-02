@@ -1368,6 +1368,8 @@ proc genDExpr(ctx: var DCodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: genDLit(e)
   of exkVar: ctx.genDVarName(e)
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+    e.refName
   of exkField: ctx.genDField(e)
   of exkQualified: ctx.genDQualified(e)
   of exkStruct: ctx.genDStructLit(e)

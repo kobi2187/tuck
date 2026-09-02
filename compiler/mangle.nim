@@ -134,6 +134,11 @@ proc mangleType(t: Type, names: HashSet[string]) =
   if t.kind == tkNamed and t.name in names: renameType(t)
   for c in t.children: mangleType(c, names)
 
+proc mangleRefName(e: Expr, names: HashSet[string]) =
+  ## Same treatment as exkSend's sendActor: a bare name naming a top-level
+  ## declaration, renamed to match that declaration's own mangled name.
+  if e.refName in names: e.refName = mangleName(e.refName)
+
 proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string]) =
   ## `locals` shadows: a param or `let` named the same as a global refers to
   ## the local, so it must NOT be renamed.
@@ -189,6 +194,8 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string]) =
     for arm in e.selArms:
       mangleExpr(arm.arg, names, locals)
       mangleExpr(arm.body, names, locals)
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+    mangleRefName(e, names)
   else: discard
 
 proc mangleFnBody(d: Decl, names: HashSet[string]) =

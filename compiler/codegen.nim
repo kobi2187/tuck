@@ -895,6 +895,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: genLit(e)
   of exkVar: ctx.genVar(e)
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+    e.refName
   of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
   of exkCall: ctx.genCallExpr(e)

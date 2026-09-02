@@ -2584,6 +2584,14 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkSend: tc.synthSend(e)
   of exkSelect: tc.synthSelect(e)
   of exkQualified, exkImport: tc.synthQualified(e)
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+    # A reference to a declaration, not a value — same shape as a bare sum
+    # variant (synthBareVariant), named after the declaration itself. Field
+    # access on one of these (synthFieldAccess) special-cases the receiver's
+    # KIND directly and never reaches this generically; this arm exists so
+    # the dispatch stays exhaustive and a stray direct synthesize (there
+    # should be none) gets a real type instead of a crash or Unknown.
+    Type(span: e.span, kind: tkNamed, name: e.refName)
 
 # A bracket's meaning comes from its RECEIVER, which only the checker knows:
 # a declared type name is a type application (`Array[128, u8]`), anything

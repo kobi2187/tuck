@@ -243,6 +243,17 @@ type
     exkImport
     exkSend      # `ActorType send handler {payload}` — enqueue to an actor
     exkSelect    # task-body `on select:` — wait on read/timeout branches
+    # The five below replace a bare exkVar that names a non-value
+    # declaration outright — resolveDeclRefs (compiler/resolve_refs.nim)
+    # rewrites the matching exkVar into one of these, between load and
+    # typecheck, once, against the real declaration list. synthVar's
+    # local/nullary-call/sum-variant chain never sees these names at all
+    # afterward, so it never has to guess at them by string comparison.
+    exkActorRef     # a bare actor singleton name (`Sink` in `Sink.seen`)
+    exkRegisterRef  # a bare memory-mapped register name (`CTRL` in `CTRL.EN`)
+    exkRegistryRef  # a bare registry name (`AppEvents` in `AppEvents.raise X`)
+    exkPoolRef      # a bare pool name (`Bufs` in `Bufs.acquire`)
+    exkMixinRef     # a bare mixin name (`Helpers` in `+ Helpers`)
 
   Expr* = ref object of Node
     sourceName*: Option[string]  ## see SourceName note below
@@ -323,6 +334,11 @@ type
       sendPayload*: Expr    # the `{...}` struct literal, or nil
     of exkSelect:
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
+    of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+      refName*: string  # the resolved name; the Decl itself is one
+                        # declFor(semLayer, e) away (resolution.nim) once
+                        # resolveDeclRefs links it — not stored here, so
+                        # this node stays small and deepCopy/JSON-safe
 
   LitKind* = enum
     lkInt, lkFloat, lkStr, lkBool, lkUnit
@@ -675,7 +691,9 @@ iterator children*(e: Expr): Expr =
   ## caller wants plain omission and can be named in this comment.
   if e != nil:
     case e.kind
-    of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue: discard
+    of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue,
+       exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+      discard
     of exkField:
       yield e.receiver
       yield e.dotArg

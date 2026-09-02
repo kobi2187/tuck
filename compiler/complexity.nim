@@ -214,7 +214,8 @@ proc walk(m: var Metrics, e: Expr) =
     walk(m, e.discardVal)
   of exkSend:
     walk(m, e.sendPayload)
-  of exkLit, exkVar, exkQualified, exkBreak, exkContinue, exkImport:
+  of exkLit, exkVar, exkQualified, exkBreak, exkContinue, exkImport,
+     exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     discard
 
 proc measure(body: Expr): tuple[complexity, lines: int] =
