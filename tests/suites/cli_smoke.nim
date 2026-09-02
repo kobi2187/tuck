@@ -607,6 +607,18 @@ proc run*(t: var T) =
       t.finish()
       return
 
+    # 14-task.tuck was one of the 16 examples assertNoUnknownTypes caught
+    # (found via rr + a breakpoint on unknownType — the exact call site was
+    # asResultIntrospection's `.err` arm, self-documented as "code;
+    # enum-typed later" and never finished). Now fixed to yield u16 (the
+    # runtime's TuckResult.err field type); this is its regression guard.
+    if sh(@["./tuck", "ch", "examples/14-task.tuck", "--verify-stages",
+            "--root:" & getCurrentDir()]).rc != 0:
+      t.no "assertNoUnknownTypes: .err is typed, not <unknown>",
+           "examples/14-task.tuck (err resp.err) should pass --verify-stages now"
+      t.finish()
+      return
+
     # tuck dump: a thin driver stopping early in the same pipeline, at two
     # ends of it — a bare parse-adjacent stage and the final emitted source.
     for stage in ["load", "emitting"]:

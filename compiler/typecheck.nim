@@ -406,7 +406,15 @@ proc asResultIntrospection(tc: var TypeChecker, e: Expr): Type =
   case e.fieldName
   of "ok": Type(span: e.span, kind: tkNamed, name: "bool")
   of "value": tc.unwrapGuarded(e, recvT)
-  else: unknownType(e.span)  # .err — code; enum-typed later
+  else: Type(span: e.span, kind: tkNamed, name: "u16")
+    # .err — the runtime's real carrier type (TuckResult.err: uint16,
+    # tuck_rt.nim). `match r.err:` validates its arms against the fn's
+    # declared [error: E] enum separately (matchErrEnums, keyed off the
+    # RECEIVER's name, not this synthesized type), so giving `.err` its
+    # real numeric type here does not touch that path — it only means a
+    # dynamic re-raise (`err resp.err`) carries a real type instead of
+    # riding the checker's own "could not work it out" sentinel through
+    # to codegen.
 
 proc hasVariant(t: Type, name: string): bool =
   ## Does this sum type declare a variant by this name?

@@ -262,11 +262,24 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   Turning it on found the synthVar gap above is not rare: **16 of 44
   examples** carry `<unknown>` past typecheck — `04, 05, 08, 11, 14, 15,
   18, 19, 20 (39 sites — worst by far), 22, 25, 26, 27, 29, 30, 42`.
-  A quick read of a few sites: 29/30's `task ... [io]:` + `on select:`
-  return-type handling, several actor `send`/registry `raise` sites
-  (matching the `Sink`/`AppEvents`/`CTRL` shapes the reverted synthVar fix
-  above already named). NOT individually investigated past that — this is
-  the concrete, itemized version of the same root cause, not new bugs. Had
+  **14 FIXED 2026-09-01** (down to 15 remaining) — root-caused with `rr`
+  time-travel debugging (a single breakpoint on `unknownType()`, reverse
+  to the ONE call site, no bisection needed): `asResultIntrospection`'s
+  `.err` arm (typecheck.nim, right below `.ok`/`.value`) had its own
+  self-documented TODO, `else: unknownType(e.span)  # .err — code;
+  enum-typed later` — a dynamic re-raise (`err resp.err`, spec-blessed,
+  not obscure) hits it every time. Now yields `u16`, the runtime's real
+  `TuckResult.err` field type (`tuck_rt.nim`); confirmed this does not
+  touch `match r.err:`'s SEPARATE arm-validation path (`matchErrEnums`,
+  keyed off the receiver's name via `varErrTypes`, never reads `.err`'s
+  own synthesized type). Regression test added to `cli_smoke.nim`
+  (`examples/14-task.tuck` now passes `--verify-stages`).
+  The remaining 15 sites (29/30's `on select:` return-type handling,
+  several actor `send`/registry `raise` sites matching the
+  `Sink`/`AppEvents`/`CTRL` shapes the reverted synthVar fix above
+  already named) are NOT individually root-caused yet — `rr` + the same
+  `unknownType()` breakpoint technique is the proven way in; this is the
+  concrete, itemized version of the same class of gap, not new bugs. Had
   to swap the existing `tuck c --verify-stages` smoke-test fixture
   (`tests/suites/cli_smoke.nim`) off `examples/29-task-timeout.tuck` (now
   correctly caught as dirty) onto `examples/28-async-task.tuck` (clean) so
