@@ -11,6 +11,9 @@ proc unknownType*(sp: Span): Type =
   ## The checker could not work this type out. A GAP — every one found so far
   ## turned out to be a bug it was hiding, so prefer one of the named sentinels
   ## below whenever the situation actually has a name.
+  when defined(traceUnknown):
+    stderr.writeLine("unknownType at " & $sp.line & ":" & $sp.col & "\n" &
+                      getStackTrace())
   Type(span: sp, kind: tkNamed, name: UnknownName)
 
 proc typeParamType*(sp: Span): Type =

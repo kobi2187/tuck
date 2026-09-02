@@ -289,11 +289,47 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   skips it) but NOT in `assertNoUnknownTypes`'s narrower `UnknownName`-only
   check. `synthSelect` now returns `branchOutcomeType(e.span)`. Regression
   tests added to `cli_smoke.nim` for both examples.
-  The remaining 13 sites (several actor `send`/registry `raise` sites
-  matching the `Sink`/`AppEvents`/`CTRL` shapes the reverted synthVar fix
-  above already named) are NOT individually root-caused yet — `rr` + the
-  `unknownType()` breakpoint technique is the proven way in; this is the
-  concrete, itemized version of the same class of gap, not new bugs. Had
+  **Remaining 13 examples ROOT-CAUSED 2026-09-01 (not fixed — same
+  architecture gap as the reverted synthVar entry, confirmed, not
+  guessed).** Used bulk instrumentation instead of one-by-one `rr`
+  sessions once the count made that worthwhile: a permanent, opt-in
+  `when defined(traceUnknown): stderr.writeLine(sp, getStackTrace())`
+  in `unknownType()` (`typecheck_util.nim`) — zero cost when undefined,
+  build with `-d:traceUnknown --stacktrace:on` to use it — dumped every
+  hit across all 13 in one pass, filtered to the immediate caller. Every
+  hit collapses into four leaf sites, and only two are genuinely new
+  information:
+  - `synthBareVariant` (typecheck.nim ~2078, by far the most common) —
+    THE SAME reverted synthVar gap: a bare Capitalized name (actor,
+    registry, inline sum variant, pool) resolving through no central
+    lookup.
+  - `synthCall`'s final fallback ("Nothing claims it -> Unknown,
+    gradually", ~2008) — the SAME gap one level up: `{payload} Name`
+    where `Name` resolves to nothing known. Not new; same missing
+    registry.
+  - `synthFieldAccess`'s fallback (~913) traces to the ALREADY-PINNED
+    §3 bug ("Field access on a primitive is unchecked", `known_bugs`,
+    `bugOpen`) — `failUnresolvedFieldAccess` declines to report when
+    `unresolvedFieldMessage` returns an empty message, by the same
+    deliberate-for-sum-types carve-out §3 already documents. Not new;
+    already tracked with its own marker.
+  - `bindArmPattern`'s "v1: any other pattern-bound name enters scope
+    as Unknown" (~1115) IS a new angle worth naming: `example
+    08-actors_isolated_state`'s `match state: Red: Green` has an
+    INLINE sum type (`state: {Red, Yellow, Green}`) whose arm patterns
+    are real variants, but `tc.allVariants(trackedType)` apparently
+    does not recognize them as such for an inline (not top-level
+    `type X: | A | B`) declaration — so a genuine variant pattern
+    falls into the branch meant for an arbitrary bind-name. Still the
+    same underlying disease (a declared name — here, an inline
+    variant — not resolving through a lookup that knows about it) but
+    a THIRD entry point into it, not just synthVar/synthCall's two.
+  Conclusion: not four distinct bugs, essentially one (plus the
+  already-pinned §3 one). Whack-a-moling per-example fixes here would
+  repeat the reverted synthVar attempt's mistake — widen the same gap
+  narrowly, case by case. Left as diagnosed-but-unfixed on purpose;
+  the central name-registry lookup is the real fix, same as synthVar.
+  Had
   to swap the existing `tuck c --verify-stages` smoke-test fixture
   (`tests/suites/cli_smoke.nim`) off `examples/29-task-timeout.tuck` (now
   correctly caught as dirty) onto `examples/28-async-task.tuck` (clean) so
