@@ -619,6 +619,21 @@ proc run*(t: var T) =
       t.finish()
       return
 
+    # 29/30 (task-timeout, async-read): `on select:` as a task's tail
+    # expression synthesized bare unknownType — a DELIBERATE "leave it
+    # unknown, the bodies carry the returns" design (synthSelect), not a
+    # checker gap, but riding the wrong sentinel for it. Now returns
+    # branchOutcomeType (its own new ast.BranchOutcomeName), which
+    # isUnknown() still treats as "don't judge the tail" (tailIsImplicitReturn
+    # unaffected) but assertNoUnknownTypes correctly leaves alone.
+    for ex in ["29-task-timeout", "30-async-read"]:
+      if sh(@["./tuck", "ch", "examples/" & ex & ".tuck", "--verify-stages",
+              "--root:" & getCurrentDir()]).rc != 0:
+        t.no "assertNoUnknownTypes: on select is a branch outcome, not <unknown>",
+             "examples/" & ex & ".tuck should pass --verify-stages now"
+        t.finish()
+        return
+
     # tuck dump: a thin driver stopping early in the same pipeline, at two
     # ends of it — a bare parse-adjacent stage and the final emitted source.
     for stage in ["load", "emitting"]:

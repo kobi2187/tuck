@@ -355,6 +355,11 @@ const
                                   # an absence of one
   AfterErrorName* = "<afterror>"  # a dummy returned after fail() has already
                                   # reported; nothing should ever check it
+  BranchOutcomeName* = "<branchoutcome>"  # `on select:` as a task's own
+                                  # tail: each arm returns explicitly, so
+                                  # the construct's OWN synthesized value
+                                  # is never consumed — not a gap, just
+                                  # nothing to report a type for
   UninitName* = "<uninit>"        # a declared field the construction did not
                                   # supply. Wraps the field's own type
                                   # (`<uninit>[int]`), rides with the value so

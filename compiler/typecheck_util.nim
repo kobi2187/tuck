@@ -32,6 +32,13 @@ proc afterErrorType*(sp: Span): Type =
   ## exists only because the code path needs a Type to return.
   Type(span: sp, kind: tkNamed, name: AfterErrorName)
 
+proc branchOutcomeType*(sp: Span): Type =
+  ## `on select:` as a task's own tail expression: every arm returns
+  ## explicitly, so nothing ever reads the construct's own synthesized
+  ## value — there is no real type to report, and unlike `unknownType`
+  ## this is not a gap the checker failed to work out.
+  Type(span: sp, kind: tkNamed, name: BranchOutcomeName)
+
 proc isTypeParam*(t: Type): bool =
   t != nil and t.kind == tkNamed and t.name == TypeParamName
 
@@ -44,7 +51,7 @@ proc isUnknown*(t: Type): bool =
   ## to UnknownName alone is what finally makes a checker gap an error.
   t == nil or (t.kind == tkNamed and
                t.name in [UnknownName, TypeParamName, PendingName,
-                          EmptyRecName, AfterErrorName])
+                          EmptyRecName, AfterErrorName, BranchOutcomeName])
 
 const NumericNames* = ["int", "i8", "i16", "i32", "i64",
                        "u8", "u16", "u32", "u64", "usize",

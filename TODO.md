@@ -274,10 +274,24 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   keyed off the receiver's name via `varErrTypes`, never reads `.err`'s
   own synthesized type). Regression test added to `cli_smoke.nim`
   (`examples/14-task.tuck` now passes `--verify-stages`).
-  The remaining 15 sites (29/30's `on select:` return-type handling,
-  several actor `send`/registry `raise` sites matching the
-  `Sink`/`AppEvents`/`CTRL` shapes the reverted synthVar fix above
-  already named) are NOT individually root-caused yet — `rr` + the same
+  **29/30 FIXED 2026-09-01** (down to 13 remaining) — same technique,
+  different shape: `synthSelect`'s `on select:` (a task's tail expression)
+  deliberately returned bare `unknownType`, commented "leave it unknown,
+  the bodies carry the returns" — a real design choice (every arm
+  returns explicitly), not a checker gap, just riding the wrong sentinel.
+  `tailIsImplicitReturn`'s `isUnknown(bodyT): return false` gate is
+  exactly what makes this design work (skip the tail-type check when the
+  tail "cannot be judged") — so the fix could not just give it a concrete
+  type; there isn't one. Added a SIXTH named sentinel,
+  `ast.BranchOutcomeName` ("<branchoutcome>") + `branchOutcomeType()`
+  (`typecheck_util.nim`, same pattern as `typeParamType`/`pendingType`/
+  etc.), included in `isUnknown`'s list (so `tailIsImplicitReturn` still
+  skips it) but NOT in `assertNoUnknownTypes`'s narrower `UnknownName`-only
+  check. `synthSelect` now returns `branchOutcomeType(e.span)`. Regression
+  tests added to `cli_smoke.nim` for both examples.
+  The remaining 13 sites (several actor `send`/registry `raise` sites
+  matching the `Sink`/`AppEvents`/`CTRL` shapes the reverted synthVar fix
+  above already named) are NOT individually root-caused yet — `rr` + the
   `unknownType()` breakpoint technique is the proven way in; this is the
   concrete, itemized version of the same class of gap, not new bugs. Had
   to swap the existing `tuck c --verify-stages` smoke-test fixture

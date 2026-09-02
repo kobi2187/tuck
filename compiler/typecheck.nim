@@ -2543,7 +2543,7 @@ proc synthSelect(tc: var TypeChecker, e: Expr): Type =
     failIfUnlowerableArm(arm)
     if arm.arg != nil: discard tc.synthesize(arm.arg)
     discard tc.synthesize(arm.body)
-  unknownType(e.span)
+  branchOutcomeType(e.span)
 
 proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   ## `:name` with no module path is a FUNCTION REFERENCE (`{add: :plus}`,
