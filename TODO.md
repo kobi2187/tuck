@@ -213,8 +213,9 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   three backends re-derive facts an earlier stage should have recorded.
   Rule: a question asked at emit means an earlier stage did not finish.
   → the whole audit document.
-- [ ] **[tried, reverted] `synthVar`'s lookup chain ends in a silent
-  `unknownType`, not an error — fixing it is bigger than it looks.**
+- [x] **[tried, reverted, then FIXED 2026-09-03] `synthVar`'s lookup chain
+  ends in a silent `unknownType`, not an error — fixing it is bigger than
+  it looks.**
   `typecheck.nim`: local lookup → nullary-call → `synthBareVariant` →
   falls through with no diagnostic. Confirmed live: a genuinely undefined
   bare identifier (`totallyUndefinedName`) passes `tuck ch` with exit 0.
@@ -470,6 +471,51 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   twice now) is finally in scope — zero known legitimate bare-name shapes
   reach that fallback any more. `./tests/run` green throughout (bar the
   pre-existing, deferred complexity-count ratchet, now 28); `emit_examples.sh`
+  diff empty.
+  **FALLBACK TIGHTENED 2026-09-03** — `synthBareVariant`'s final fallthrough
+  is now `fail(dcTyUndeclared, ...)` instead of silent `unknownType`, closing
+  the original finding above. Doing so surfaced FOUR more legitimate shapes
+  the fallback was quietly carrying, each fixed on its own terms rather than
+  re-widening a name-string allowlist:
+  1. **A fn WITH params, referenced bare (not called).** `{mapFn: double}
+     Box` filling a `Mapper[int, str]` fnsig slot — `applyBakeOverride`'s own
+     comment already documented this as deliberately Unknown ("fn refs come
+     through as Unknown and pass gradually"), so `synthVar` now returns
+     `unknownType` for this case explicitly, ahead of `synthBareVariant`,
+     instead of it happening to land there by accident.
+  2. **`sizeof`/`alignof`/`offsetof`'s argument is a TYPE name, not a
+     value** — `sizeof(int)` synthesized `int` as an ordinary bare
+     identifier and had nowhere to resolve it from. Root-caused instead of
+     patched: added `ParenBuiltinNames` and skip synthesizing the args in
+     `synthCall` entirely (codegen already reads them as text, never as a
+     typed expression — synthesizing them as values was never correct,
+     just previously tolerated).
+  3. **Assigning a bare inline-sum variant to an already-typed target**
+     (`state = Green` where `state: {Red, Yellow, Green}`, OUTSIDE any
+     match) — the arm-body fix above only reached match arms.
+     `expectedVariantType` (renamed from `matchSubjectType`, same
+     mechanism, now documented as covering both) is additionally set by
+     `synthAssignVal` around the RHS, from the target's own type.
+  4. **A bare inline-sum variant filling a construction field**
+     (`{state: Green} Light`) — needed the SAME target-type hint, but
+     per-field: added `fieldTypeHints: Table[string, Type]` (field name ->
+     declared type), populated by `asNamedCallee` from `declaredFieldsOf`
+     before synthesizing a construction's args, consulted by both
+     `synthStruct` (the first pass, typing the literal) AND
+     `suppliedFieldTypes` (constructedType's SECOND, independent pass over
+     the same field values, to read back holes without the `<uninit>`
+     stamp — missed on the first attempt: hints were restored between the
+     two passes, so the second one saw nothing).
+  5. **Real bug alongside the above, unrelated to hints:** actor handlers
+     using `self.field` had `self` NEVER bound at all — `checkActorDecl`
+     bound every field bare but not `self` itself, unlike `checkObjectDecl`
+     which already binds both. `self.hits = n` inside an `on` handler
+     synthesized `self` as silently-unknown and rode through on gradual
+     typing; now bound the same way `checkObjectDecl` does.
+  Found via the full suite (not the 44 examples — those were all already
+  clean): 6 failures the first tightening attempt caused, each traced with
+  a real reduction before being fixed, never patched blind. `./tests/run`
+  green (bar the same pre-existing complexity ratchet); `emit_examples.sh`
   diff empty.
 - [ ] **[read] `lowerExpr`'s children-recursion order is per-pass, not a
   rule.** `lowering.nim`: `flattenRegistryRaise` now runs BEFORE the

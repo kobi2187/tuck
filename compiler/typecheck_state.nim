@@ -58,14 +58,25 @@ type
                                   # is the implicit return, not a discard
     transitionCtx*: bool          # constructing THROUGH transitionTo: sealed
                                   # non-initial variants are legal there
-    matchSubjectType*: Type       # the enclosing match's subject type, in
-                                  # scope while synthesizing an arm's BODY
-                                  # (nil outside one). An inline sum type
-                                  # (`state: {Red, Yellow, Green}`) has no
-                                  # name to look up in typeDecls, so a bare
-                                  # variant used as a VALUE inside the arm
-                                  # (not just as the arm's pattern) has
-                                  # nowhere else to learn its type from.
+    expectedVariantType*: Type     # the type a bare variant used as a VALUE
+                                  # (not a pattern) is expected to be, in
+                                  # scope while synthesizing a match arm's
+                                  # body or an assignment's RHS (nil
+                                  # otherwise). An inline sum type (`state:
+                                  # {Red, Yellow, Green}`) has no name to
+                                  # look up in typeDecls, so `state = Green`
+                                  # has nowhere else to learn Green's type
+                                  # from but the assignment target's own.
+    fieldTypeHints*: Table[string, Type]  # field name -> declared type, for
+                                  # the struct literal synthStruct is
+                                  # CURRENTLY walking, set by asNamedCallee
+                                  # from the constructed type's own fields
+                                  # before descending (empty otherwise).
+                                  # `{state: Green} Light` needs this the
+                                  # same way `state = Green` needs
+                                  # expectedVariantType — Green has no name
+                                  # to look up unless something ambient
+                                  # says which field it is filling.
     distinctNames*: HashSet[string]   # distinct types: nominal, never widened
     fnSigNames*: HashSet[string]      # `fnsig NAME` — named function-signature types
     fnDecls*: Table[string, Decl]     # the DECLARATION behind each fnSigs entry,

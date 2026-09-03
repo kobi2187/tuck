@@ -1176,10 +1176,10 @@ proc synthArm(tc: var TypeChecker, arm: MatchArm, subjT: Type, trackedVar,
   ## One arm, typed in its own scope with the subject narrowed.
   tc.pushScope()
   tc.bindArmPattern(arm, subjT, trackedVar, trackedType)
-  let savedSubjectType = tc.matchSubjectType
-  tc.matchSubjectType = subjT
+  let savedSubjectType = tc.expectedVariantType
+  tc.expectedVariantType = subjT
   result = tc.synthesize(arm.body)
-  tc.matchSubjectType = savedSubjectType
+  tc.expectedVariantType = savedSubjectType
   tc.popScope()
 
 proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
@@ -1968,10 +1968,17 @@ proc suppliedFieldTypes(tc: var TypeChecker, e: Expr): Table[string, Type] =
   ##
   ## Synthesized here rather than read back from semLayer: the stamp is
   ## deliberately stripped of `<uninit>` markers (codegen must never see one),
-  ## and the marker is exactly what this needs.
+  ## and the marker is exactly what this needs. Mirrors synthStruct's own
+  ## per-field expectedVariantType hint: this walks the same fields a SECOND
+  ## time (asNamedCallee's own synthesize pass is the first), bypassing
+  ## synthStruct entirely, so a bare inline-sum-variant field value needs
+  ## the same hint set here too or it resolves once and fails the next.
   if e.args.len == 1 and e.args[0] != nil and e.args[0].kind == exkStruct:
     for f in e.args[0].fields:
+      let savedExpected = tc.expectedVariantType
+      if tc.fieldTypeHints.hasKey(f.name): tc.expectedVariantType = tc.fieldTypeHints[f.name]
       result[f.name] = tc.synthesize(f.value)
+      tc.expectedVariantType = savedExpected
 
 proc constructedField(d: FieldDef, supplied: Table[string, Type],
                       sp: Span, holes: var bool): FieldDef =
@@ -2012,6 +2019,17 @@ proc constructedType(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   var fs: seq[FieldDef]
   for d in declared: fs.add(constructedField(d, supplied, e.span, holes))
   if holes: Type(span: e.span, kind: tkRecord, fields: fs) else: nominal
+
+const ParenBuiltinNames = ["sizeof", "alignof", "offsetof"]
+  ## Mirrors parser_expr.ParenBuiltins (not imported here — the checker
+  ## deliberately does not depend on the parser stage). `sizeof(int)` reads
+  ## like a call, but `int` names a TYPE, not a value in scope — codegen
+  ## already reads it as bare text (asParenBuiltinOdin/D), never as a typed
+  ## expression. Synthesizing the arg as an ordinary value used to be
+  ## tolerated only because a bare unresolved name silently degraded to
+  ## Unknown; now that synthBareVariant's fallback is a real error, a
+  ## primitive type name (int, str, ...) has nowhere to resolve FROM as a
+  ## value — it was never one.
 
 proc synthArgsUnknown(tc: var TypeChecker, e: Expr): Type =
   ## Type the arguments for their side effects and give up on the result. The
@@ -2061,8 +2079,17 @@ proc asNamedCallee(tc: var TypeChecker, e: Expr, calleeName: string): Type =
     # typeDecls: `resolve` unwraps anything found there to its body, and an
     # object is NOMINAL. So the gate asks both tables while the result stays
     # the name either way.
+    let savedHints = tc.fieldTypeHints
+    tc.fieldTypeHints = initTable[string, Type]()
+    for fd in tc.declaredFieldsOf(e, calleeName): tc.fieldTypeHints[fd.name] = fd.typ
     for a in e.args: discard tc.synthesize(a)
-    return tc.constructedType(e, calleeName)
+    # constructedType -> suppliedFieldTypes re-synthesizes the same field
+    # values a SECOND time (to read back each field's type without the
+    # <uninit> stamp) — the hints must still be live for that pass too, or
+    # a bare inline-sum-variant field value resolves once and fails the next.
+    result = tc.constructedType(e, calleeName)
+    tc.fieldTypeHints = savedHints
+    return result
   if tc.fnSigs.hasKey(calleeName):
     return tc.asDeclaredCall(e, calleeName)
   if registryEventOwner(calleeName) != "":
@@ -2084,6 +2111,10 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## then a name (distinct / construction / declared fn), then a callee that
   ## is not a bare name at all. Nothing claims it -> Unknown, gradually.
   let calleeName = tc.calleeNameOf(e)
+  if calleeName in ParenBuiltinNames:
+    # Args are type names, not values — see ParenBuiltinNames. Result is
+    # always a plain size/offset.
+    return Type(span: e.span, kind: tkNamed, name: "int")
   result = tc.asRestructuringBuiltin(e, calleeName)
   if result != nil: return
   result = tc.asNamedCallee(e, calleeName)
@@ -2170,13 +2201,14 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   if owner != "": return Type(span: e.span, kind: tkNamed, name: owner)
   let regOwner = registryEventOwner(e.name)
   if regOwner != "": return Type(span: e.span, kind: tkNamed, name: regOwner)
-  if tc.matchSubjectType != nil:
+  if tc.expectedVariantType != nil:
     # Inline sum type (no name to find in typeDecls): the enclosing match's
-    # subject IS the type, if this name is one of its variants.
-    let subjBody = tc.resolve(tc.matchSubjectType)
+    # subject, or the assignment target's own type, IS the type, if this
+    # name is one of its variants.
+    let subjBody = tc.resolve(tc.expectedVariantType)
     if subjBody != nil and subjBody.kind == tkSum and
        hasVariant(subjBody, e.name):
-      return tc.matchSubjectType
+      return tc.expectedVariantType
   if tc.typeDecls.hasKey(e.name) or tc.objDecls.hasKey(e.name):
     # A declared type/object name used bare, as a VALUE — `+ AudioPlayer`
     # composition is the shape found here, but this is the same "type name
@@ -2184,14 +2216,33 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
     # position (`{fields} TypeName` construction); this is its bare-name
     # sibling, not a new exemption invented for this one call site.
     return Type(span: e.span, kind: tkNamed, name: e.name)
+  # Every legitimate shape a bare Capitalized-or-lowercase name can be —
+  # local, nullary call, sum variant, registry event, pending marker,
+  # declared type/object name, inline sum variant inside a match arm — is
+  # handled above. Nothing genuine reaches here any more (confirmed by
+  # assertNoUnknownTypes across all 44 examples, TODO.md); a name that does
+  # is undefined, and gradual typing's <unknown> sentinel is for a
+  # constrained TYPE the checker cannot pin down yet, not a NAME the
+  # program never declared at all.
+  fail(dcTyUndeclared, "'" & e.name & "' is not declared — no local, fn, " &
+       "sum-type variant, registry event or type by that name is in scope",
+       e.span)
   unknownType(e.span)
 
 proc synthVar(tc: var TypeChecker, e: Expr): Type =
-  ## A bare name: a binding in scope, else a nullary call, else a variant.
+  ## A bare name: a binding in scope, else a nullary call, a fn REFERENCE,
+  ## else a variant.
   let (found, b) = tc.lookup(e.name)
   if found: b.typ
   elif tc.fnSigs.hasKey(e.name) and tc.fnSigs[e.name].params.len == 0:
     tc.synthNullaryCall(e)
+  elif tc.fnSigs.hasKey(e.name):
+    # A fn WITH params, referenced bare rather than called: a bake/fnsig
+    # target (`{mapFn: double} Box` filling a Mapper[int, str] slot).
+    # Deliberately Unknown, not a gap — applyBakeOverride's own comment
+    # already documents this: "fn refs come through as Unknown and pass
+    # gradually", v1 has no first-class fn-value type to give it instead.
+    unknownType(e.span)
   else:
     tc.synthBareVariant(e)
 
@@ -2200,7 +2251,10 @@ proc synthStruct(tc: var TypeChecker, e: Expr): Type =
   var fs: seq[FieldDef]
   for f in e.fields:
     tc.checkFieldValue(f.name, f.value)
+    let savedExpected = tc.expectedVariantType
+    if tc.fieldTypeHints.hasKey(f.name): tc.expectedVariantType = tc.fieldTypeHints[f.name]
     fs.add(FieldDef(name: f.name, typ: tc.synthesize(f.value), span: f.value.span))
+    tc.expectedVariantType = savedExpected
   Type(span: e.span, kind: tkRecord, fields: fs)
 
 proc synthList(tc: var TypeChecker, e: Expr): Type =
@@ -2431,7 +2485,10 @@ proc synthAssignVal(tc: var TypeChecker, e: Expr, targetT: Type): Type =
                 tc.transType(targetT) != ""
   let prevCtx = tc.transitionCtx
   if tracked: tc.transitionCtx = true
+  let savedExpected = tc.expectedVariantType
+  tc.expectedVariantType = targetT
   result = tc.synthesize(e.assignVal)
+  tc.expectedVariantType = savedExpected
   tc.transitionCtx = prevCtx
 
 proc checkTransition(tc: var TypeChecker, e: Expr, targetT: Type) =
@@ -3291,10 +3348,14 @@ proc checkActorQueue(d: Decl) =
            "fails on the first send)", attr.span)
 
 proc checkActorDecl(tc: var TypeChecker, d: Decl) =
-  ## Handlers see the actor's fields.
+  ## Handlers see the actor's fields, bare AND through `self` — mirrors
+  ## checkObjectDecl. Nothing bound `self` here before; a handler spelling
+  ## `self.field` synthesized `self` as a silently-unknown name and rode
+  ## through on gradual typing, same shape as `result` in checkHandler below.
   checkActorQueue(d)
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
+  tc.bindName("self", Type(span: d.span, kind: tkNamed, name: d.name), true)
   for h in d.handlers: tc.checkHandler(h)
   tc.popScope()
 

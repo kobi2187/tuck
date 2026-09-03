@@ -588,22 +588,20 @@ proc run*(t: var T) =
       t.finish()
       return
 
-    # The other direction: assertNoUnknownTypes must actually FIRE on a real
-    # gap. A bare identifier resolving to nothing rides synthBareVariant's
-    # silent fallback all the way to `tuck ch` exit 0 WITHOUT the flag; WITH
-    # it, the checker's own <unknown> marker on that exact node must be
-    # caught before typecheck's caller ever sees a clean result.
+    # STALE as of 2026-09-03 — this used to assert the checker gap survived
+    # WITHOUT --verify-stages (a bare identifier resolving to nothing rode
+    # synthBareVariant's silent fallback all the way to exit 0). synthVar's
+    # lookup chain now ends in a real diagnostic (TK-TY03), so the flag is no
+    # longer load-bearing for this case at all: rejected either way.
     let undefSrc = d.write("undef.tuck",
       "fn main() -> int:\n  totallyUndefinedName\n  0\n")
-    if sh(@["./tuck", "ch", undefSrc]).rc != 0:
-      t.no "assertNoUnknownTypes: baseline", "an undefined bare name should " &
-           "still typecheck clean WITHOUT --verify-stages (checker gap, not fixed here)"
+    if sh(@["./tuck", "ch", undefSrc]).rc == 0:
+      t.no "an undefined bare name is rejected without needing --verify-stages",
+           "expected a nonzero exit"
       t.finish()
       return
-    let (vrc, vout) = sh(@["./tuck", "ch", undefSrc, "--verify-stages"])
-    if vrc == 0 or "<unknown>" notin vout:
-      t.no "assertNoUnknownTypes: catches it", "expected a nonzero exit " &
-           "naming <unknown>, got rc=" & $vrc & ": " & vout.splitLines()[^1]
+    if sh(@["./tuck", "ch", undefSrc, "--verify-stages"]).rc == 0:
+      t.no "...and with it", "expected a nonzero exit"
       t.finish()
       return
 

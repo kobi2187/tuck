@@ -2100,4 +2100,15 @@ fn main() -> int:
 """
   t.emitsOdin "...and align_of, not alignof", r"align_of\(int\)"
 
+  # synthVar's lookup chain (local -> nullary call -> bare variant) used to
+  # end in a silent unknownType, not an error: a genuinely undefined bare
+  # name passed tuck ch with exit 0. Tightened now that assertNoUnknownTypes
+  # confirms nothing legitimate still reaches that fallback (TODO.md).
+  t.src """
+fn main() -> int:
+  return totallyUndefinedName
+"""
+  t.badCheck "a genuinely undefined bare name is rejected, not <unknown>",
+             "totallyUndefinedName"
+
   t.finish()
