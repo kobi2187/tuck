@@ -50,6 +50,10 @@ import compiler/typecheck
 import compiler/lowering
 import compiler/mangle
 import compiler/codegen
+import compiler/codegen_emit  # emitNim: genDecl/genExpr sit below this in
+                              # the import order, so tuck.nim reaches the
+                              # Nim backend's entry point from here, not
+                              # compiler/codegen directly.
 import compiler/codegen_odin
 import compiler/codegen_d
 import compiler/lowering_d
