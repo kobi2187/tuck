@@ -27,6 +27,22 @@
 # `pending:` blocks work — declare the signature, leave the body for later, and
 # keep running the program in the meantime.
 #
+# WHY THIS FILE IS STILL LARGE. Four satellites already split out
+# (typecheck_compat/collect/registry/module.nim) — everything that never
+# calls `tc.synthesize`. What's left cannot split further under plain
+# `import`: `synthesizeKind`'s dispatch, the per-declaration orchestration
+# (`checkDecl`/`checkFnBody`/`checkObjectDecl`/`checkActorDecl`/...), and
+# the program-level entry points (`typecheckModule`/`typecheckProgram`) are
+# ALL in one mutually-recursive closure — not just synthesizeKind's direct
+# dispatch, but everything that calls `tc.synthesize` OR is called by
+# something that does. Two more splits were attempted and abandoned for
+# exactly this reason (see the file-splitting plan's history) — a satellite
+# that calls `tc.synthesize` can never be imported once this file already
+# imports it for something else. Nim's `include` would sidestep this (one
+# compilation unit, no module boundary) but was explicitly declined to
+# keep the existing `import`-only style. Don't re-attempt splitting this
+# closure without either accepting `include` or a callback/hook table.
+#
 # ---------------------------------------------------------------------------
 # THE PART WORTH READING: synthFieldAccess, further down.
 #
