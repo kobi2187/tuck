@@ -450,19 +450,27 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   confirmed by temporarily reverting the `tc.resolve()` call: the suite
   does go red without it (the existing "unlocks the edge" test, as it
   happens, not the new one — together they cover both directions now).
-  **1 of 16 remains, NOT fixed, precisely scoped**:
-  `08-actors_isolated_state`'s arm BODIES (`match state: Red: Green` —
-  the VALUE `Green`, not the pattern `Red`) are bare inline-sum-variant
-  references outside any pattern position, so `bindArmPattern`'s fix
-  does not reach them — they go through ordinary `synthBareVariant` via
-  `sumTypeOwning`, which still only scans NAMED types. Fixing this needs
-  propagating the enclosing match's expected/subject type INTO ordinary
-  expression synthesis for a bare variant reference used as a plain
-  VALUE, not just as a pattern — a genuinely different, harder shape
-  (bidirectional inference into an arm body) than every fix above,
-  deliberately not attempted in the same pass. `./tests/run` green
-  throughout (bar the pre-existing, deferred complexity-count ratchet);
-  `emit_examples.sh` diff reviewed at every step.
+  **16/16 FIXED 2026-09-03** — the last one, `08-actors_isolated_state`'s
+  arm BODIES (`match state: Red: Green` — the VALUE `Green`, not the
+  pattern `Red`), are bare inline-sum-variant references outside any
+  pattern position, so `bindArmPattern`'s fix didn't reach them: they
+  went through ordinary `synthBareVariant` via `sumTypeOwning`, which
+  only scans NAMED types, and an inline type (`state: {Red, Yellow,
+  Green}`) has no name to look up at all. Fixed by adding
+  `matchSubjectType*: Type` to `TypeChecker` (`typecheck_state.nim`,
+  beside `transitionCtx`) — `synthArm` (`typecheck.nim`) sets/restores it
+  around `tc.synthesize(arm.body)`, and `synthBareVariant` consults it
+  (via `tc.resolve` + `hasVariant`, same pair `bindArmPattern` uses)
+  before falling through to `unknownType`. Scoped to arm-body synthesis
+  only, save/restore handles nested matches over different subjects
+  correctly. All 44 examples now pass `--verify-stages` except
+  `16-actor-tasks-unified-syntax` (a pre-existing, unrelated undeclared-fn
+  error, not an `<unknown>`-type leak). `synthVar`/`synthBareVariant`'s
+  final fallback tightening (`fail()` instead of `unknownType`, deferred
+  twice now) is finally in scope — zero known legitimate bare-name shapes
+  reach that fallback any more. `./tests/run` green throughout (bar the
+  pre-existing, deferred complexity-count ratchet, now 28); `emit_examples.sh`
+  diff empty.
 - [ ] **[read] `lowerExpr`'s children-recursion order is per-pass, not a
   rule.** `lowering.nim`: `flattenRegistryRaise` now runs BEFORE the
   `for c in e.children: lowerExpr(c, m)` loop (moved there to fix the

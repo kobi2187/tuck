@@ -1176,7 +1176,10 @@ proc synthArm(tc: var TypeChecker, arm: MatchArm, subjT: Type, trackedVar,
   ## One arm, typed in its own scope with the subject narrowed.
   tc.pushScope()
   tc.bindArmPattern(arm, subjT, trackedVar, trackedType)
+  let savedSubjectType = tc.matchSubjectType
+  tc.matchSubjectType = subjT
   result = tc.synthesize(arm.body)
+  tc.matchSubjectType = savedSubjectType
   tc.popScope()
 
 proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
@@ -2167,6 +2170,13 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   if owner != "": return Type(span: e.span, kind: tkNamed, name: owner)
   let regOwner = registryEventOwner(e.name)
   if regOwner != "": return Type(span: e.span, kind: tkNamed, name: regOwner)
+  if tc.matchSubjectType != nil:
+    # Inline sum type (no name to find in typeDecls): the enclosing match's
+    # subject IS the type, if this name is one of its variants.
+    let subjBody = tc.resolve(tc.matchSubjectType)
+    if subjBody != nil and subjBody.kind == tkSum and
+       hasVariant(subjBody, e.name):
+      return tc.matchSubjectType
   if tc.typeDecls.hasKey(e.name) or tc.objDecls.hasKey(e.name):
     # A declared type/object name used bare, as a VALUE — `+ AudioPlayer`
     # composition is the shape found here, but this is the same "type name

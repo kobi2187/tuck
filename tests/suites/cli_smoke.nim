@@ -682,6 +682,22 @@ proc run*(t: var T) =
         t.finish()
         return
 
+    # 08: the last of the original 16 — not a magic identifier or a ref
+    # kind, but a genuinely different shape. `state = match state: Red:
+    # Green ...` over an INLINE sum type (`state: {Red, Yellow, Green}`,
+    # no name to look up in typeDecls). The pattern side (bindArmPattern)
+    # already resolves via the subject's own Type; the arm BODY (`Green`
+    # as a plain VALUE) went through ordinary synthBareVariant, which had
+    # no way to learn an inline type's variants at all. Fixed by carrying
+    # the match's subject type on the checker (matchSubjectType) for the
+    # duration of synthesizing each arm's body.
+    if sh(@["./tuck", "ch", "examples/08-actors_isolated_state.tuck",
+            "--verify-stages", "--root:" & getCurrentDir()]).rc != 0:
+      t.no "assertNoUnknownTypes: inline sum-type variant as an arm's value",
+           "examples/08-actors_isolated_state.tuck should pass --verify-stages now"
+      t.finish()
+      return
+
     # tuck dump: a thin driver stopping early in the same pipeline, at two
     # ends of it — a bare parse-adjacent stage and the final emitted source.
     for stage in ["load", "emitting"]:

@@ -58,6 +58,14 @@ type
                                   # is the implicit return, not a discard
     transitionCtx*: bool          # constructing THROUGH transitionTo: sealed
                                   # non-initial variants are legal there
+    matchSubjectType*: Type       # the enclosing match's subject type, in
+                                  # scope while synthesizing an arm's BODY
+                                  # (nil outside one). An inline sum type
+                                  # (`state: {Red, Yellow, Green}`) has no
+                                  # name to look up in typeDecls, so a bare
+                                  # variant used as a VALUE inside the arm
+                                  # (not just as the arm's pattern) has
+                                  # nowhere else to learn its type from.
     distinctNames*: HashSet[string]   # distinct types: nominal, never widened
     fnSigNames*: HashSet[string]      # `fnsig NAME` — named function-signature types
     fnDecls*: Table[string, Decl]     # the DECLARATION behind each fnSigs entry,
