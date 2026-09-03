@@ -166,3 +166,13 @@ proc resolveDeclRefs*(prog: seq[LoadedModule]) =
     for fn in lm.m.allFns(): resolveRefsIn(fn.fnBody)
     for d in lm.m.decls(dkTask): resolveRefsIn(d.taskBody)
     for d in lm.m.decls(dkExpr): resolveRefsIn(d.expr)
+    # `+ Name` composition (spec 5.1) parses as a dkExpr MEMBER of the
+    # composing object/type/mixin/interface — `ast_query.members` is the
+    # exhaustive "everything nested inside this decl" iterator (allFns
+    # above already covers member FNS the same way; this is its dkExpr
+    # sibling). Missed initially: `+ BulkOperations` (a mixin) stayed
+    # exkVar, unrewritten, all the way to typecheck.
+    for d in lm.m.decls:
+      if d == nil: continue
+      for mem in d.members():
+        if mem != nil and mem.kind == dkExpr: resolveRefsIn(mem.expr)

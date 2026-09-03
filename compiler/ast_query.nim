@@ -525,10 +525,21 @@ proc registerAccessorPrefix*(m: Module, regName, fieldName: string): string =
 
 proc isCompositionEntry*(member: Decl): bool =
   ## `+ Name` inside an object body — the entry that pulls another
-  ## declaration's members or data into this one.
+  ## declaration's members or data into this one. The operand is `exkVar`
+  ## when `Name` is a type/object (resolve_refs.nim's rewrite pass does not
+  ## touch those), or `exkMixinRef` when it is a mixin (resolved before
+  ## typecheck ever sees it as a bare name).
   member.kind == dkExpr and member.expr != nil and
     member.expr.kind == exkUnary and member.expr.unaryOp == uoComposition and
-    member.expr.operand != nil and member.expr.operand.kind == exkVar
+    member.expr.operand != nil and
+    member.expr.operand.kind in {exkVar, exkMixinRef}
+
+proc compositionTargetName*(member: Decl): string =
+  ## The name `+ Name` composes in — call only where `isCompositionEntry`
+  ## already returned true. Same reason as the proc above: exkVar carries
+  ## `.name`, exkMixinRef carries `.refName`.
+  let operand = member.expr.operand
+  if operand.kind == exkMixinRef: operand.refName else: operand.name
 
 proc takesSelf*(m: Decl): bool =
   ## A fn with a `self` param materializes at `+ mixin` composition sites,

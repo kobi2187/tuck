@@ -651,6 +651,37 @@ proc run*(t: var T) =
         t.finish()
         return
 
+    # 19-event-registry: the registry NAME half of `AppEvents.raise
+    # SensorFailure` resolves (exkRegistryRef, above); the EVENT name
+    # half (SensorFailure) is a bare Capitalized name synthBareVariant's
+    # sumTypeOwning never finds — a registry event, not a top-level sum
+    # type. registryEventOwner (typecheck.nim) fixes it.
+    if sh(@["./tuck", "ch", "examples/19-event-registry.tuck",
+            "--verify-stages", "--root:" & getCurrentDir()]).rc != 0:
+      t.no "assertNoUnknownTypes: registry event names",
+           "examples/19-event-registry.tuck should pass --verify-stages now"
+      t.finish()
+      return
+
+    # 04, 15, 18, 20, 22: three more magic-identifier / bare-type-name
+    # gaps in synthBareVariant, found chasing the registry fix above —
+    # "..." (the pending-hole marker, parsed as a literal exkVar), a
+    # declared type/object name used bare (`+ AudioPlayer` composition),
+    # and `Error.name` (spec 4.9's error namespace) on a plain `return`
+    # (codegen already special-cased it; typecheck never did). Also fixed:
+    # `+ Mixin` composition's operand went from exkVar to exkMixinRef in
+    # the previous plan and broke isCompositionEntry/compositionTargetName
+    # for the mixin case specifically — real bug, not just a typing gap.
+    for ex in ["04-sum-types-interface", "05-actors-effects",
+               "15-type-attributes", "18-alias", "20-embedded-mp3-player",
+               "22-error-policy"]:
+      if sh(@["./tuck", "ch", "examples/" & ex & ".tuck", "--verify-stages",
+              "--root:" & getCurrentDir()]).rc != 0:
+        t.no "assertNoUnknownTypes: magic identifiers and composition",
+             "examples/" & ex & ".tuck should pass --verify-stages now"
+        t.finish()
+        return
+
     # tuck dump: a thin driver stopping early in the same pipeline, at two
     # ends of it — a bare parse-adjacent stage and the final emitted source.
     for stage in ["load", "emitting"]:

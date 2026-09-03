@@ -66,9 +66,9 @@ tuck_PodcastApp_tuck_setMany :: proc (self: ^tuck_PodcastApp, pairs: [dynamic]tu
 }
 
 tuck_PodcastApp_play :: proc (self: ^tuck_PodcastApp, episode: tuck_Episode) {
-  tuckChain55 := self^
-  tuckChain55 = tuck_loadEpisode(tuckChain55, episode)
-  tuck_startAudio(tuckChain55)
+  tuckChain58 := self^
+  tuckChain58 = tuck_loadEpisode(tuckChain58, episode)
+  tuck_startAudio(tuckChain58)
 }
 
 

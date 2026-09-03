@@ -165,7 +165,25 @@ proc resetResolution*() =
   ## Called by typecheckProgram, which owns this layer's lifecycle. A field
   ## added to Resolution is initialised in ONE place now — the two copies of
   ## this literal had to be kept in step by hand.
+  ##
+  ## The five whole-program name tables are the one exception: resolve_refs.
+  ## resolveDeclRefs populates them ONCE, before typecheckProgram runs (so
+  ## the exkVar-rewriting pass it does has something to rewrite AGAINST),
+  ## and typecheck-time consumers (registryEventOwner) need them to survive
+  ## THIS reset to still be there. Carried across rather than rebuilt here,
+  ## because rebuilding would need the whole loaded program again, which
+  ## this proc does not have — resolveDeclRefs already did that scan once.
+  let actorNames = semLayer.actorNames
+  let registerNames = semLayer.registerNames
+  let registryNames = semLayer.registryNames
+  let poolNames = semLayer.poolNames
+  let mixinNames = semLayer.mixinNames
   semLayer = newResolution()
+  semLayer.actorNames = actorNames
+  semLayer.registerNames = registerNames
+  semLayer.registryNames = registryNames
+  semLayer.poolNames = poolNames
+  semLayer.mixinNames = mixinNames
 
 proc setStepCall*(r: var Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call

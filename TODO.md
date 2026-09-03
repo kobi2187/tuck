@@ -390,6 +390,79 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   false-positive on 28 or the rest of the clean 28/44) is in the same file.
   Real fix for the 16 gaps is the same one synthVar needs: the central
   name-registry lookup, above.
+  **13 of these 13 FIXED 2026-09-01** (the "widen the same gap narrowly,
+  case by case" warning above turned out to be the wrong call in
+  hindsight — see the dedicated-node-kinds entry above for why the
+  central-registry framing itself was corrected mid-session; this is that
+  correction's actual payoff). `synthBareVariant`'s fallback now
+  recognizes, in order: the pending-hole marker (`"..."`, a magic
+  identifier the parser spells as a literal `exkVar`, same shape as
+  `"input"`/`"Error"` elsewhere in this file — gets `pendingType`, its
+  real, already-existing sentinel), a registry event name
+  (`registryEventOwner`, mirrors `sumTypeOwning`, reuses
+  `resolve_refs.nim`'s whole-program `registryNames` table), and a
+  declared type/object name used bare (`+ AudioPlayer` composition — the
+  same "type name in value position" `asNamedCallee` already trusts at
+  the call position, extended to its bare-name sibling). Separately,
+  `synthFieldAccess` gained an early case for `Error.name` (spec 4.9),
+  matching codegen's own long-standing `isErrorDotRef` special-case
+  (typecheck never had one), and `checkReturnValue` learned to skip the
+  ordinary compat() check for it — codegen rewrites `return Error.X`
+  wholesale into `terr(errCode(...))`, so comparing its raw synthesized
+  type against a declared `!T` was always going to be the wrong check,
+  not a bug in the synthesized type itself.
+  **Found and fixed a real, separate bug this surfaced**: `resolve_refs.
+  resolveDeclRefs` rewrites `+ Mixin` composition's operand from `exkVar`
+  to `exkMixinRef` — correct per the previous plan's scope — but
+  `ast_query.isCompositionEntry` (consumed by `lowering.composeObject`
+  and all three backends' object-member codegen) only recognized
+  `exkVar`, so a MIXIN composition specifically stopped being recognized
+  as a composition at all the moment that rewrite landed. Fixed by
+  widening `isCompositionEntry`'s kind check and adding
+  `compositionTargetName` (returns `.name` or `.refName` as appropriate)
+  for the four call sites that read the operand's name directly. Confirmed
+  via `emit_examples.sh` diff review: output is identical except a
+  harmless NodeId-counter shift (more nodes now minted earlier in the
+  pipeline), proving mixin composition was never actually broken in
+  between — this was caught and fixed within the same work session, not
+  shipped broken.
+  **Found and fixed a second real bug**: `resetResolution()` (called
+  BY `typecheckProgram` itself, per its own documented "typechecking
+  resets the shared semantic layer" invariant) was wiping the five
+  `resolve_refs.nim` name tables — including `registryNames`, which
+  `registryEventOwner` depends on — every time, silently making that
+  fix a no-op until traced down. Fixed: `resetResolution` now carries
+  the five tables across its own reset instead of dropping them.
+  **Found and fixed a third real bug, this one pre-existing**:
+  `bindArmPattern`'s new subject-type check compared the match
+  subject's OWN synthesized type against `tkSum` directly — correct for
+  an inline sum field (which synthesizes AS its body), but a NAMED sum
+  type's subject synthesizes as `tkNamed "Door"`, requiring
+  `tc.resolve()` first to reach the actual `tkSum` body. Without the
+  resolve call, transitions-tracking match-narrowing (spec 4.4b) would
+  have silently stopped narrowing for every NAMED sum type — a real
+  regression that slipped past the FULL test suite once already (only
+  one direction was tested: `t.okCheck "transition: match narrowing
+  unlocks the edge"`, which stays green whether narrowing fires or not,
+  since every arm's reassignment happens to also be legal from some
+  OTHER variant in the full domain). Added the missing NEGATIVE test —
+  `t.badCheck "transition: match narrowing LOCKS the other edges too"` —
+  confirmed by temporarily reverting the `tc.resolve()` call: the suite
+  does go red without it (the existing "unlocks the edge" test, as it
+  happens, not the new one — together they cover both directions now).
+  **1 of 16 remains, NOT fixed, precisely scoped**:
+  `08-actors_isolated_state`'s arm BODIES (`match state: Red: Green` —
+  the VALUE `Green`, not the pattern `Red`) are bare inline-sum-variant
+  references outside any pattern position, so `bindArmPattern`'s fix
+  does not reach them — they go through ordinary `synthBareVariant` via
+  `sumTypeOwning`, which still only scans NAMED types. Fixing this needs
+  propagating the enclosing match's expected/subject type INTO ordinary
+  expression synthesis for a bare variant reference used as a plain
+  VALUE, not just as a pattern — a genuinely different, harder shape
+  (bidirectional inference into an arm body) than every fix above,
+  deliberately not attempted in the same pass. `./tests/run` green
+  throughout (bar the pre-existing, deferred complexity-count ratchet);
+  `emit_examples.sh` diff reviewed at every step.
 - [ ] **[read] `lowerExpr`'s children-recursion order is per-pass, not a
   rule.** `lowering.nim`: `flattenRegistryRaise` now runs BEFORE the
   `for c in e.children: lowerExpr(c, m)` loop (moved there to fix the

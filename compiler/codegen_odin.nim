@@ -2074,7 +2074,7 @@ proc genObjectDecl(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
     # lowering.composeObject has already merged every RESOLVED `+ X`. What
     # can still reach here is one that named nothing declared — a sketch.
     if isCompositionEntry(member):
-      members.add(ind & "// + " & member.expr.operand.name &
+      members.add(ind & "// + " & compositionTargetName(member) &
                   " (undeclared — sketch)\n")
     elif member.kind == dkFn:
       members.add(ctx.genOdinMemberFn(member, d.name) & "\n")

@@ -79,9 +79,9 @@ rt.TuckResult!(rt.TuckUnit) tuck_PodcastApp_tuck_setMany(ref tuck_PodcastApp sel
 }
 
 void tuck_PodcastApp_play(ref tuck_PodcastApp self, tuck_Episode episode) {
-    tuck_PodcastApp tuckChain55 = self;
-    tuckChain55 = tuck_loadEpisode(tuckChain55, episode);
-    tuck_startAudio(tuckChain55);
+    tuck_PodcastApp tuckChain58 = self;
+    tuckChain58 = tuck_loadEpisode(tuckChain58, episode);
+    tuck_startAudio(tuckChain58);
 }
 
 

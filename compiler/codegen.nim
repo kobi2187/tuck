@@ -1567,7 +1567,7 @@ proc genObjectDecl(ctx: var CodegenCtx, d: Decl): string =
     # lowering.composeObject has already merged every RESOLVED `+ X`. What
     # can still reach here is one that named nothing declared — a sketch.
     if isCompositionEntry(member):
-      members.add("# + " & member.expr.operand.name & " (undeclared — sketch)\n")
+      members.add("# + " & compositionTargetName(member) & " (undeclared — sketch)\n")
     elif member.kind == dkFn:
       members.add(ctx.genMemberFn(member, d.name) & "\n")
     else:

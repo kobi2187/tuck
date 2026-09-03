@@ -900,6 +900,19 @@ proc failIfRegisterAccess(tc: var TypeChecker, e: Expr) =
            "' is declared [write] — reading it is a compile error (spec " &
            "§8.1); a write-only field reads back undefined", e.span)
 
+proc registryEventOwner(variant: string): string =
+  ## Mirrors sumTypeOwning, for the ONE OTHER place a bare Capitalized name
+  ## is a value: a registry's own declared event (spec Part 10). Reuses
+  ## resolve_refs.nim's whole-program registryNames table (already resolves
+  ## a registry declared in an imported module, which a tc.module.decls
+  ## scan would miss). "A program declares ONE registry" (checkRegistry's
+  ## own RULE 1) means there is at most one to check here, unlike sum
+  ## types' first-wins scan across possibly many.
+  for name, d in semLayer.registryNames:
+    for v in d.variants:
+      if v.name == variant: return name
+  ""
+
 proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   ## `x.name` is many things — a field read, a call, a variant construction, an
   ## interface dispatch. Try them in two groups: what the syntax alone can
@@ -911,6 +924,21 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   if e.receiver != nil and e.receiver.kind == exkActorRef:
     let actT = actorFieldType(tc.module, e.receiver.refName, e.fieldName)
     if actT != nil: return actT
+  if e.receiver != nil and e.receiver.kind == exkRegistryRef and
+     e.fieldName == "raise":
+    # `Registry.raise` — not a real field, the raise-call grammar's own
+    # marker (lowering.flattenRegistryRaise/raisedEventsIn read the AST
+    # shape directly, never this type). `unit`, matching the whole raise
+    # call's own type (asNamedCallee's registryEventOwner branch) — never
+    # a real value, so never something a real type should be built for.
+    return Type(span: e.span, kind: tkNamed, name: "unit")
+  if e.receiver != nil and e.receiver.kind == exkVar and e.receiver.name == "Error":
+    # `Error.name` (spec 4.9) — the app-wide error namespace, hashed to a
+    # numeric code at emit time (codegen*.nim's own isErrorDotRef/
+    # genReturn special-case, matched the SAME way: receiver named
+    # literally "Error", never a real declaration). u16 matches the same
+    # runtime carrier type `.err` already resolves to (asResultIntrospection).
+    return Type(span: e.span, kind: tkNamed, name: "u16")
   result = tc.syntacticFieldForm(e)
   if result != nil: return
   let rawT = tc.synthesize(e.receiver)
@@ -1116,21 +1144,38 @@ proc qualifyErrArm(tc: TypeChecker, arm: var MatchArm, errEnums: seq[string]) =
   arm.pattern = Pattern(span: arm.pattern.span, kind: pkVar,
                         name: owners[0] & "." & aname)
 
-proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, trackedVar,
-                    trackedType: string) =
+proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, subjT: Type,
+                    trackedVar, trackedType: string) =
   ## A variant pattern narrows the subject and does NOT bind the name;
   ## v1: any other pattern-bound name enters scope as Unknown.
+  ##
+  ## "Is this pattern a real variant" and "should reassignment through it
+  ## be TRACKED" are two different questions — trackedVar/trackedType only
+  ## answer the second one (spec 4.4b's reassignment bookkeeping, which
+  ## needs a NAMED sum type with a `transitions:` block). The first
+  ## question is answered directly from subjT, which works for an INLINE
+  ## sum type too (`state: {Red, Yellow, Green}` has no name to look up in
+  ## tc.typeDecls at all) — a real variant with nothing to track just skips
+  ## the tracking half, same as a named-but-transitionless sum type already
+  ## does today.
   if arm.pattern == nil or arm.pattern.kind != pkVar: return
-  if trackedVar != "" and arm.pattern.name in tc.allVariants(trackedType):
-    tc.varVariants[trackedVar] = @[arm.pattern.name]
+  # A NAMED sum type's subject synthesizes as `tkNamed "Door"`, not the
+  # tkSum body directly (only an INLINE sum field type — no name to look
+  # up at all — synthesizes AS its own tkSum body). tc.resolve unwraps the
+  # name for the named case and is a no-op for the inline one (already not
+  # tkNamed), so one call covers both.
+  let subjBody = tc.resolve(subjT)
+  if subjBody != nil and subjBody.kind == tkSum and
+     hasVariant(subjBody, arm.pattern.name):
+    if trackedVar != "": tc.varVariants[trackedVar] = @[arm.pattern.name]
   else:
     tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
 
-proc synthArm(tc: var TypeChecker, arm: MatchArm, trackedVar,
+proc synthArm(tc: var TypeChecker, arm: MatchArm, subjT: Type, trackedVar,
               trackedType: string): Type =
   ## One arm, typed in its own scope with the subject narrowed.
   tc.pushScope()
-  tc.bindArmPattern(arm, trackedVar, trackedType)
+  tc.bindArmPattern(arm, subjT, trackedVar, trackedType)
   result = tc.synthesize(arm.body)
   tc.popScope()
 
@@ -1142,7 +1187,7 @@ proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
          typeName(armT) & " vs " & typeName(t), sp)
   if isUnknown(armT): armT = t
 
-proc synthArms(tc: var TypeChecker, e: Expr, trackedVar,
+proc synthArms(tc: var TypeChecker, e: Expr, subjT: Type, trackedVar,
                trackedType: string): Type =
   ## Type every arm from the same entry state; the after-match state is the
   ## union of the arm exits (spec 4.4b).
@@ -1152,7 +1197,7 @@ proc synthArms(tc: var TypeChecker, e: Expr, trackedVar,
   result = unknownType(e.span)
   for arm in e.arms:
     tc.varVariants = entryVariants
-    let t = tc.synthArm(arm, trackedVar, trackedType)
+    let t = tc.synthArm(arm, subjT, trackedVar, trackedType)
     mergedExit = if firstArm: tc.varVariants
                  else: mergeVariants(mergedExit, tc.varVariants)
     firstArm = false
@@ -1207,7 +1252,7 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   let errEnums = tc.matchErrEnums(e.subject)
   if errEnums.len > 0:
     for arm in e.arms.mitems: tc.qualifyErrArm(arm, errEnums)
-  result = tc.synthArms(e, trackedVar, trackedType)
+  result = tc.synthArms(e, subjT, trackedVar, trackedType)
   tc.checkExhaustive(e, tc.matchDomain(subjT, trackedType, errEnums))
 
 # === CHAINS AND MUTATION ===================================================
@@ -2017,6 +2062,18 @@ proc asNamedCallee(tc: var TypeChecker, e: Expr, calleeName: string): Type =
     return tc.constructedType(e, calleeName)
   if tc.fnSigs.hasKey(calleeName):
     return tc.asDeclaredCall(e, calleeName)
+  if registryEventOwner(calleeName) != "":
+    # `Registry.raise Event` / `Registry.raise Event {payload}` — Event as
+    # a CALLEE (its `.raise` argument is the other half of the same shape,
+    # typed separately by synthFieldAccess's own exkRegistryRef case).
+    # lowering.flattenRegistryRaise reads this call's AST shape directly,
+    # never this type. `unit`, not the registry's name: this call sits in
+    # TAIL position in a `fn ... -> void:` whose only statement is the
+    # raise (spec's fire-and-forget shape) — a real named type here fails
+    # the "flows X out of body" check the same way a register chain-write
+    # used to fail it before that one was given `unit` too (synthChain).
+    for a in e.args: discard tc.synthesize(a)
+    return Type(span: e.span, kind: tkNamed, name: "unit")
   nil
 
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
@@ -2098,9 +2155,26 @@ proc synthNullaryCall(tc: var TypeChecker, e: Expr): Type =
 proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
   ## qualified form of the same thing, handled by the field-access path.
+  if e.name == "...":
+    # The pending-hole marker (parser_expr.nim parses it as a literal
+    # exkVar named "...", same magic-identifier shape as "input"/"Error"
+    # elsewhere in this file — codegen's genVar already special-cases it
+    # to `discard`). Its real sentinel already exists (pendingType,
+    # "declared, not implemented" — spec §5.4); it was riding unknownType
+    # by accident, not by design, same as every other fix in this proc.
+    return pendingType(e.span)
   let owner = tc.sumTypeOwning(e.name)
-  if owner != "": Type(span: e.span, kind: tkNamed, name: owner)
-  else: unknownType(e.span)
+  if owner != "": return Type(span: e.span, kind: tkNamed, name: owner)
+  let regOwner = registryEventOwner(e.name)
+  if regOwner != "": return Type(span: e.span, kind: tkNamed, name: regOwner)
+  if tc.typeDecls.hasKey(e.name) or tc.objDecls.hasKey(e.name):
+    # A declared type/object name used bare, as a VALUE — `+ AudioPlayer`
+    # composition is the shape found here, but this is the same "type name
+    # in value position" case asNamedCallee already trusts at the CALL
+    # position (`{fields} TypeName` construction); this is its bare-name
+    # sibling, not a new exemption invented for this one call site.
+    return Type(span: e.span, kind: tkNamed, name: e.name)
+  unknownType(e.span)
 
 proc synthVar(tc: var TypeChecker, e: Expr): Type =
   ## A bare name: a binding in scope, else a nullary call, else a variant.
@@ -2389,11 +2463,28 @@ proc synthAssign(tc: var TypeChecker, e: Expr): Type =
     tc.synthReassign(e)
   unitType(e.span)
 
+proc isErrorDotRef(v: Expr): bool =
+  ## `Error.name` (spec 4.9) — the app-wide error namespace, matched the
+  ## same way codegen*.nim's own isErrorDotRef/genReturn special-case
+  ## already does: receiver named literally "Error", never a real
+  ## declaration.
+  v != nil and v.kind == exkField and v.receiver != nil and
+    v.receiver.kind == exkVar and v.receiver.name == "Error"
+
 proc checkReturnValue(tc: var TypeChecker, e: Expr) =
   ## `return [d, c]` where the fn returns Seq[Animal]: the list literal takes
   ## its element type from the first item, so it must be wrapped element by
   ## element against the RETURN type — the same treatment a call argument
   ## gets, at the other position where an expected type is known.
+  if isErrorDotRef(e.returnVal):
+    # codegen*.nim rewrites this into `terr(errCode(...))` wholesale — the
+    # SAME implicit wrap `err X` (synthRaise) gets, just spelled as a plain
+    # `return` instead of the `err` keyword. Synthesize for its side
+    # effects (checkFieldValue-style validation, if any) but skip the
+    # ordinary compat() check: comparing its raw u16 against a declared
+    # !T is exactly the mismatch this construct exists to bypass.
+    discard tc.synthesize(e.returnVal)
+    return
   let what = "return value of '" & tc.currentFn & "'"
   let retIface = tc.ifaceElemSlot(tc.currentRet)
   if retIface != "" and e.returnVal.kind == exkList:

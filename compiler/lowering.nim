@@ -415,7 +415,7 @@ proc composeObject(m: Module, d: Decl) =
     if not isCompositionEntry(member):
       kept.add(member)
       continue
-    if not mergeComposed(m, d, member.expr.operand.name, kept):
+    if not mergeComposed(m, d, compositionTargetName(member), kept):
       kept.add(member)   # named nothing declared — sketch, the backend says so
   d.objMembers = kept
 

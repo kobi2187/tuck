@@ -1240,6 +1240,39 @@ fn slam({d: Door}) -> void:
 """
   t.okCheck "transition: match narrowing unlocks the edge"
 
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+  transitions:
+    Closed -> Open
+    Open   -> Closed
+    Closed -> Locked
+    Locked -> Closed
+
+fn slam({d: Door}) -> void:
+  var x = d
+  match x:
+    Open: x = Door.Locked
+    Closed: x = Door.Open
+    Locked: x = Door.Closed
+  return
+"""
+  t.badCheck "transition: match narrowing LOCKS the other edges too",
+             "Open\\ ->\\ Locked"
+  # Regression guard for a real near-miss: bindArmPattern's "is this
+  # pattern a real variant" check used to compare the match SUBJECT's own
+  # synthesized type directly against tkSum — correct for an inline sum
+  # field, but a NAMED type's subject synthesizes as `tkNamed "Door"`, not
+  # tkSum, so this exact arm never narrowed x to {Open} at all; x kept
+  # entering the arm with the full, unnarrowed variant set, and this
+  # illegal Open -> Locked transition passed clean. Only caught by testing
+  # the NEGATIVE direction — the existing "unlocks the edge" test above
+  # stays green either way, since every arm here happens to reassign to a
+  # transition some OTHER variant in the full set also permits.
+
   # Variant state is per BINDING. An inner `var s` is a different variable
   # whose state must not merge into the outer one when its scope ends —
   # keyed by name alone it did, widening the outer to {Idle|Running} and
