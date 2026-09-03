@@ -59,6 +59,8 @@ import compiler/codegen_odin_emit  # emitOdin/emitOdinModule: same reasoning
                                     # as codegen_emit above, for the Odin
                                     # backend.
 import compiler/codegen_d
+import compiler/codegen_d_emit  # emitD/emitDModule: same reasoning as
+                                # codegen_emit above, for the D backend.
 import compiler/lowering_d
 import compiler/ast_serializer
 import compiler/modules
