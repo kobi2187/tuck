@@ -462,6 +462,29 @@ proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
     return f.typ
   nil
 
+proc substituteSelf(pt: Type, selfT: Type): Type =
+  ## `Self` in a contract member's signature means the interface value
+  ## itself here — the callee only ever sees the contract, not the
+  ## concrete type behind it.
+  if pt != nil and pt.kind == tkNamed and pt.name == "Self": selfT else: pt
+
+proc bindIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type, mem: Decl): Type =
+  ## One contract member matched `e.fieldName`: substitute `Self`, record
+  ## the call shape for lowering, and answer with the substituted return
+  ## type.
+  let selfT = Type(span: e.span, kind: tkNamed, name: recvT.name)
+  var params: seq[Param]
+  for p in mem.fnParams:
+    params.add(Param(name: p.name, typ: substituteSelf(p.typ, selfT), span: p.span))
+  let ret = substituteSelf(mem.fnReturnType, selfT)
+  let extra = unwrapSingleField(e.dotArg)
+  let args = if extra != nil: @[e.receiver, extra] else: @[e.receiver]
+  setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
+                            callee: Expr(span: e.span, kind: exkVar,
+                                         name: e.fieldName)))
+  semLayer.markIfaceCall(e, recvT.name, mem.name)
+  ret
+
 proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `a.noise` where `a` is an interface value — resolved against the CONTRACT,
   ## which is all the callee knows about its argument.
@@ -474,23 +497,7 @@ proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   let iface = tc.ifaceDecls[recvT.name]
   for mem in iface.ifaceMembers:
     if mem == nil or mem.kind != dkFn or mem.name != e.fieldName: continue
-    # `Self` in the contract is the interface here: the callee holds an
-    # interface value, not the concrete type behind it.
-    let selfT = Type(span: e.span, kind: tkNamed, name: recvT.name)
-    var params: seq[Param]
-    for p in mem.fnParams:
-      var pt = p.typ
-      if pt != nil and pt.kind == tkNamed and pt.name == "Self": pt = selfT
-      params.add(Param(name: p.name, typ: pt, span: p.span))
-    var ret = mem.fnReturnType
-    if ret != nil and ret.kind == tkNamed and ret.name == "Self": ret = selfT
-    let extra = unwrapSingleField(e.dotArg)
-    let args = if extra != nil: @[e.receiver, extra] else: @[e.receiver]
-    setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
-                              callee: Expr(span: e.span, kind: exkVar,
-                                           name: e.fieldName)))
-    semLayer.markIfaceCall(e, recvT.name, mem.name)
-    return ret
+    return tc.bindIfaceCall(e, recvT, mem)
   # The receiver IS an interface, so a name the contract lacks is an error
   # here rather than something for a later arm to try.
   var names: seq[string]

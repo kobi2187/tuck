@@ -191,6 +191,50 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
 
 ## 4. Compiler-internal issues (not user-visible)
 
+- [x] **FIXED 2026-09-04 — file-size ceiling: split the four giant compiler
+  files, then closed the complexity ratchet the splits happened to open
+  slack in.** `typecheck.nim` (2380→1966 code lines), `codegen.nim`
+  (1745→606), `codegen_odin.nim` (1791→728), `codegen_d.nim` (1595→741),
+  via `nimtools move-symbol`. Real constraint found mid-work: a file
+  built around ONE mutually-recursive dispatch (`synthesizeKind`/
+  `genExpr`/`genOdinExpr`/`genDExpr`) can only be split along edges that
+  go ONE way under plain `import` — Nim disallows circular module
+  imports, so a satellite that calls back into the file that already
+  imports it cannot exist. `typecheck.nim`'s call graph turned out to
+  have edges going both directions almost everywhere (not just
+  `synthesizeKind`'s direct dispatch — anything reachable from
+  `tc.synthesize`, including per-declaration and per-program
+  orchestration), so only 4 truly leaf satellites came out clean
+  (`typecheck_compat.nim`, `typecheck_collect.nim`,
+  `typecheck_registry.nim`, `typecheck_module.nim`); two more
+  (`typecheck_decl.nim`, `typecheck_program.nim`) were planned and
+  abandoned once `bindConsts`'s move proved the constraint. All three
+  codegen backends, by contrast, are a clean LINEAR chain
+  (expr ← decl ← orchestration), so each split fully into 4 files with no
+  such wall — `codegen_ctx/decl/emit.nim`,
+  `codegen_odin_ctx/decl/emit.nim`, `codegen_d_ctx/decl/emit.nim`.
+  `nimtools move-symbol` needed `--force` + a hand-added forward
+  declaration for every mutually-recursive group it refused outright
+  (correctly), and separately left behind, silently, several real
+  artifacts across the ~10 extractions: three broken empty-body
+  duplicate procs (stranded forward declarations with a stray `=` and no
+  body) and two consts it logged as "Extracted" but that stayed in the
+  source file, only surfacing as compile errors in the destination.
+  Caught by a scripted scan (grep for `proc NAME(...) =` immediately
+  followed, past blanks/comments/type-blocks, by another `proc NAME`) run
+  after every multi-symbol move, plus a manual byte-for-byte diff of
+  every moved proc body against git history before trusting each
+  extraction. `tuck.nim` now imports `codegen_emit`/`codegen_odin_emit`/
+  `codegen_d_emit` for the three `emit*` entry points instead of the
+  three base files directly, since each base file sits BELOW its own
+  decl/emit satellites in the import order. CLAUDE.md's decl-dispatch
+  `else` citations updated to the new file:line locations. The splitting
+  itself freed up two routines' worth of complexity-ratchet slack
+  (`genReturn` in `codegen.nim`, `asInterfaceCall` in `typecheck.nim` —
+  both had real extractable sub-logic, not flat dispatch tables), closing
+  `tests/suites/complexity.nim`'s pre-existing HEAVY-gate failure (28
+  routines at cc>=15, limit 26) exactly to the wire (26 at cc>=15, limit
+  26) — `./tests/run` fully green for the first time this session.
 - [ ] **[repro] Emit is quadratic in every backend.** D's share of a compile
   went 0.03s / 0.11s / 0.38s at 200 / 500 / 1000 types — doubling n
   roughly quadruples it. Nim has the same curve with a smaller constant.

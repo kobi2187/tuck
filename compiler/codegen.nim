@@ -364,36 +364,42 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
 # literals, invariant-carrying returns, or a plain return.
+proc genReturnTypedLit(ctx: var CodegenCtx, v: Expr): string =
+  ## `return {value: 42}` against a declared payload record: cast numeric
+  ## fields to their declared Nim type so the literal matches
+  ## `tuple[value: uint16]` instead of defaulting to `int`.
+  var parts: seq[string]
+  for f in v.fields:
+    var fieldNim = ""
+    for fd in ctx.retInnerT.fields:
+      if fd.name == f.name: fieldNim = genType(fd.typ)
+    let ex = ctx.genExpr(f.value)
+    if fieldNim != "" and fieldNim notin ["int", "float", "string", "bool"] and
+       (fieldNim.startsWith("uint") or fieldNim.startsWith("int") or
+        fieldNim.startsWith("float")):
+      parts.add(f.name & ": " & fieldNim & "(" & ex & ")")
+    else:
+      parts.add(f.name & ": " & ex)
+  "return tok((" & parts.join(", ") & "))"
+
+proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
+  ## `return` inside a fn declared `-> !T`/`-> ?T`: the value auto-wraps.
+  if v.kind == exkRaise:
+    return ctx.genExpr(v)  # err X already emits the full error return
+  if v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
+     v.receiver.name == "Error":
+    # Error.name → app-wide 16-bit code, hashed at Nim compile time
+    return "return terr[" & ctx.retInnerNim & "](errCode(\"" & v.fieldName & "\"))"
+  if v.kind == exkStruct and ctx.retInnerT != nil and ctx.retInnerT.kind == tkRecord:
+    return ctx.genReturnTypedLit(v)
+  "return tok(" & ctx.genExpr(v) & ")"
+
 proc genReturn(ctx: var CodegenCtx, e: Expr): string =
   if e.returnVal == nil:
     if ctx.retWrapped and ctx.retInnerNim == "tuple[]": return "return tokVoid()"
     else: return "return"
   elif ctx.retWrapped:
-    let v = e.returnVal
-    if v.kind == exkRaise:
-      return ctx.genExpr(v)  # err X already emits the full error return
-    elif v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
-       v.receiver.name == "Error":
-      # Error.name → app-wide 16-bit code, hashed at Nim compile time
-      return "return terr[" & ctx.retInnerNim & "](errCode(\"" & v.fieldName & "\"))"
-    elif v.kind == exkStruct and ctx.retInnerT != nil and ctx.retInnerT.kind == tkRecord:
-      # Typed literal: cast numeric fields to the declared payload field type
-      # so `return {value: 42}` matches tuple[value: uint16]
-      var parts: seq[string]
-      for f in v.fields:
-        var fieldNim = ""
-        for fd in ctx.retInnerT.fields:
-          if fd.name == f.name: fieldNim = genType(fd.typ)
-        let ex = ctx.genExpr(f.value)
-        if fieldNim != "" and fieldNim notin ["int", "float", "string", "bool"] and
-           (fieldNim.startsWith("uint") or fieldNim.startsWith("int") or
-            fieldNim.startsWith("float")):
-          parts.add(f.name & ": " & fieldNim & "(" & ex & ")")
-        else:
-          parts.add(f.name & ": " & ex)
-      return "return tok((" & parts.join(", ") & "))"
-    else:
-      return "return tok(" & ctx.genExpr(v) & ")"
+    return ctx.genWrappedReturn(e.returnVal)
   elif ctx.retInvName != "":
     # production site: return value of an invariant-carrying type
     ctx.tmpCounter.inc
