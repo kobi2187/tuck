@@ -826,6 +826,44 @@ the call path. `value_semantics.nim:391` uses this exact shape and only
   Odin's GC-free threads and D's GC-aware threads are three different
   starting points for "make this safe," a bigger lift than the current
   single-thread model was specifically chosen to dodge).
+- [ ] **Coroutine starvation: no preemption for a CPU-bound loop.**
+  Related to the actor-threading item above but a separate concern — even
+  with the current single-thread cooperative scheduler kept as-is, a `for`/
+  `while` loop (or a long call chain) that never crosses an `[io]` boundary
+  never yields, and starves every other actor/task sharing that one thread.
+  Spec §9.4's "no preemption" is a deliberate simplification with this
+  exact known risk, not yet hit by any example/test.
+  User's proposal (2026-09-01): a per-coroutine budget counter,
+  decremented at safepoints, forcing a yield at zero — a counter instead
+  of a monotonic-clock read, since the syscall cost of the latter would
+  dwarf the check itself. Design settled in discussion, NOT implemented:
+  - **Where to decrement**: UNCONDITIONALLY, at every loop back-edge
+    (`for`/`while`) and every user-function call, in every function,
+    everywhere — no reachability analysis. User's own call after hearing
+    the alternative: "prefer the simplistic unconditional insertion at
+    every fn and loop back-edge." Cost is one decrement + one branch per
+    iteration/call, negligible next to real loop-body work in any
+    realistic program.
+  - **Reachability analysis is NOT needed for correctness**, only as an
+    optional later optimization to SKIP inserting the check in code
+    provably never scheduled cooperatively. If ever pursued: the correct
+    root set is {every `dkActor` handler body, every `dkTask` body, `fn
+    main`} — NOT "reachable from an `[io]`-marked function" as originally
+    framed. `[io]` marks an async YIELD BOUNDARY (already lowered
+    automatically today); it says nothing about which call graph actually
+    executes on a coroutine. A plain, never-`[io]` helper called deep
+    inside a task's call graph needs the safepoint exactly as much as an
+    `[io]` one does.
+  - **Mechanism should just work with minicoro**: it is a stackful
+    coroutine library, so a mid-loop yield-and-resume needs no state-
+    machine transform — the loop's locals live on the coroutine's own
+    stack across the yield. NOT verified this session; confirm before
+    building (check `compiler/tuck_coro.nim` / the vendored minicoro
+    source for the actual yield/resume call shape).
+  Touches lowering + all three backends' loop/call emission if built —
+  scoped as a real feature, not a quick patch. No known failing case
+  yet; logged for when one appears, or when actor threading (above) makes
+  this more urgent by putting more independent work on fewer schedulers.
 - [x] **FIXED 2026-09-01** — CLI usage/help was thin: `tuck dump` with no
   arguments fell through to the generic paramCount check, which either
   dumped the full 50-line banner or (for `tuck help dump` specifically)
