@@ -55,6 +55,9 @@ import compiler/codegen_emit  # emitNim: genDecl/genExpr sit below this in
                               # Nim backend's entry point from here, not
                               # compiler/codegen directly.
 import compiler/codegen_odin
+import compiler/codegen_odin_emit  # emitOdin/emitOdinModule: same reasoning
+                                    # as codegen_emit above, for the Odin
+                                    # backend.
 import compiler/codegen_d
 import compiler/lowering_d
 import compiler/ast_serializer
