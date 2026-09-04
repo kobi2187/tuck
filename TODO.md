@@ -222,21 +222,6 @@ as a *class*, not just nine individual entries; see `INTEGRATION.md`'s
 "Sequencing" section for why the interface-dispatch one specifically blocks
 that design's whole premise.
 
-- [ ] **[repro] `match`-narrowed field access on a sum type reads the
-  FIRST declared variant's storage, not the matched arm's.**
-  `config-schema-validator`. Two variants sharing a field name (`A({field:
-  str})`, `B({field: str})`), both `match` arms doing `return v.field`ing
-  — both emit `v.a.field` regardless of which arm matched. Typechecks
-  clean, crashes at runtime the moment the wrong variant's tag doesn't
-  match: `field 'a' is not accessible for type 'tuck_V' using 'kind = B'
-  [FieldDefect]`.
-- [ ] **[repro] Sum-type variant construction under a `?T`-wrapped target
-  type silently drops payload fields.** `config-schema-validator`.
-  `V.MissingField {field: "name"}` returned directly from a `?V`-returning
-  fn emits `tuck_V(kind: MissingField)` — no `field` set anywhere. The
-  identical construction from a non-optional-returning fn emits the field
-  correctly. Loss happens at construction, not at the `tok()` wrap;
-  binding to a `let` first doesn't help.
 - [ ] **[repro] `Seq` bracket indexing (`xs[i]`/`xs[i] = v`) silently
   requires `import seq`, and the failure is a broken Nim compile, not a
   Tuck diagnostic.** `sudoku-solver`. `./tuck ch` with no `import seq`
