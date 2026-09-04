@@ -210,6 +210,136 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   `requireOrder`, `--verify-stages` opt-in) targets this directly —
   drafted, not applied.
 
+## 4.5 Found by the stdlib-project dogfooding pass (2026-09-04)
+
+Seven agents each built a small real app under `stdlib-project/apps/`
+against the actual compiler (not the design docs) — full reports in each
+app's own `FINDINGS.md`. Nine distinct, reproduced bugs surfaced. All of
+them share one shape: `./tuck ch` reports `OK`, and the failure — a broken
+Nim/Odin build, a runtime crash, or (bug 4 below) silently wrong output —
+only shows up one or two stages later. That gap is the pattern worth fixing
+as a *class*, not just nine individual entries; see `INTEGRATION.md`'s
+"Sequencing" section for why the interface-dispatch one specifically blocks
+that design's whole premise.
+
+- [ ] **[repro] Interface dispatch is broken for any method with payload
+  beyond `self`.** Found independently by `doc-convert-tester` AND
+  `config-schema-validator`. `codec.encode {key, val}` through an
+  interface-typed value emits `encode(tmp, (key: key, val: val))` — the
+  payload packed into ONE Nim named tuple — while the concrete implementer
+  is emitted `proc encode(self: var T; key: string; val: string)` —
+  fields splatted positionally. Root cause: `genIfaceDispatch`
+  (`compiler/codegen.nim` ~line 465)'s `extra` computation. Never caught
+  by `tests/suites/interface_dispatch.nim`/`interfaces.nim` because every
+  tested method there is either self-only or never dispatched through an
+  interface-typed value with extra payload — exactly the untested seam a
+  real "one interface, many implementers" app immediately hits. **Highest
+  priority of this batch**: almost every real capability fn has payload
+  beyond `self`, so this blocks `interface` as a general dispatch
+  mechanism, not just these two apps.
+- [ ] **[repro] A bare `return` in a `?T`-returning fn reads back as
+  PRESENT with zero-valued fields, not absent.** `config-schema-validator`.
+  `tuck_rt.nim`'s `TuckStatus` enum has `tsOk` as its first variant, so a
+  Nim proc falling through a bare `return` returns its zero-valued
+  `TuckResult`, whose `status` defaults to `tsOk`. `tnone[T]()` exists for
+  exactly this and is never emitted by any codegen path (`grep -rn tnone
+  compiler/*.nim` — defined, never called). Fix: a bare `return` inside a
+  `?T`/`!?T`-returning fn must lower to `return tnone[T]()`, not a bare
+  Nim `return`. **Most consequential of the nine** — no error, no crash,
+  just the wrong answer, and "a bare return for the nothing-to-report
+  case" is the natural way to write one.
+- [ ] **[repro] `match`-narrowed field access on a sum type reads the
+  FIRST declared variant's storage, not the matched arm's.**
+  `config-schema-validator`. Two variants sharing a field name (`A({field:
+  str})`, `B({field: str})`), both `match` arms doing `return v.field`ing
+  — both emit `v.a.field` regardless of which arm matched. Typechecks
+  clean, crashes at runtime the moment the wrong variant's tag doesn't
+  match: `field 'a' is not accessible for type 'tuck_V' using 'kind = B'
+  [FieldDefect]`.
+- [ ] **[repro] Sum-type variant construction under a `?T`-wrapped target
+  type silently drops payload fields.** `config-schema-validator`.
+  `V.MissingField {field: "name"}` returned directly from a `?V`-returning
+  fn emits `tuck_V(kind: MissingField)` — no `field` set anywhere. The
+  identical construction from a non-optional-returning fn emits the field
+  correctly. Loss happens at construction, not at the `tok()` wrap;
+  binding to a `let` first doesn't help.
+- [ ] **[repro] `Seq` bracket indexing (`xs[i]`/`xs[i] = v`) silently
+  requires `import seq`, and the failure is a broken Nim compile, not a
+  Tuck diagnostic.** `sudoku-solver`. `./tuck ch` with no `import seq`
+  reports `OK`; `./tuck b` fails with `undeclared identifier: 'seq_at'`.
+  Root cause: `typecheck.nim`'s `indexCallee` (~line 2708) always resolves
+  bracket indexing to a qualified `seq::at`/`seq::setAt` call regardless of
+  whether `seq` was actually imported; `codegen.nim`'s `genQualified`
+  (~line 60) falls back to `modName & "_" & qualName` mangling (meant for
+  C-style externs) when the module isn't in `ctx.realModules`, producing
+  the nonexistent `seq_at`. Two fix shapes: make the bracket sugar imply
+  `seq` automatically (it's baked into the language, not a std call the
+  user spelled out), or have the CHECKER reject a `Seq` index with no
+  `import seq` in scope, with a real diagnostic.
+- [ ] **[repro] Unqualified `readFile` (and likely `writeFile`) collides
+  with Nim's own `std/syncio` proc of the same name.** `diff-patch`.
+  `import fs` + unqualified `{path: ...} readFile` typechecks clean;
+  `./tuck b` fails with `ambiguous call; both syncio.readFile(...) and
+  tuck_rt.readFile(...) match`. The Nim backend emits stdlib extern calls
+  as bare names, and Nim's own `system`/`std/syncio` auto-exports a
+  same-named proc. Workaround: call qualified (`fs::readFile`). Fix
+  candidates: mangle stdlib extern names in the Nim backend so they can't
+  collide with Nim's own auto-imported names, or always qualify stdlib
+  extern calls at emission regardless of source spelling.
+- [ ] **[repro] `const b = a + 1` (referencing another `const`, pure
+  arithmetic) is rejected as impure.** `diff-patch`. `Const Error: 'const
+  b' must be a pure compile-time expression` — contradicts
+  LANGUAGE-OVERVIEW.md §1's stated definition of "pure" (rejects `[io]`
+  calls and record construction; says nothing excluding a reference to an
+  already-defined numeric const).
+- [ ] **[repro] `distinct X = f32`/`f64` cannot build on the Nim backend.**
+  `math-toolkit-cli`. `compiler/codegen_decl.nim:275` unconditionally
+  emits borrowed `div`/`mod` for every `distinct` type; Nim has no
+  `div`/`mod` for floats. `./tuck ch` passes, `./tuck b` fails with a Nim
+  type mismatch on `div`. Odin and D both emit fine for the same source —
+  Nim-backend-specific. Blocks LANGUAGE-OVERVIEW's own recommended
+  unit-safety pattern (`distinct Miles = f64`) for any non-integer unit.
+  Fix: skip `div`/`mod` in `genAliasType` when the base type is
+  `f32`/`f64`.
+- [ ] **[repro] `mod`/`div` as infix word-operators don't parse as binary
+  ops — swallowed by bare-call postfix sugar.** `git-lite`. Parenthesized
+  form fails to parse (`Expected 'RParen' here, found '1000000007'`);
+  unparenthesized form compiles but silently DROPS the right operand,
+  emitting `mod(((acc*131)+v))`, then fails at the Nim stage with `missing
+  parameter: y`. `nimBinOp` (`codegen.nim:562-571`) has real `boDivInt`/
+  `boMod` cases that are simply unreachable from the parser.
+- [ ] **[repro] Same-named methods on different objects resolve to
+  whichever was declared LAST, outside interface dispatch.** `git-lite`.
+  `Blob.hash`/`Commit.hash`, called via `receiver.method` or `{self: x}
+  method` (not through an interface-typed value), always pick the last
+  declaration regardless of the receiver's real type — contradicts
+  LANGUAGE-OVERVIEW.md's claim that this overloads on `self`. Exact error:
+  `argument to 'hash' expects Commit but got Blob` even when the receiver
+  genuinely was a `Blob`. Works correctly ONLY through an interface-typed
+  value. Workaround: a wrapper fn taking the interface type and always
+  calling through it.
+- [ ] **[repro] A fallible call used as an implicit tail-return
+  double-wraps when the enclosing fn's return type is already that same
+  `!T`.** `git-lite`. `got 'TuckResult[TuckResult[tuple[]]]' but expected
+  'TuckResult[tuple[]]'`. Workaround: the explicit `let w = ...; if not
+  w.ok: err w.err` guard shape instead of an implicit tail-return.
+- [ ] **[read] `Seq[Interface]` list literals only pick up the interface
+  type when each element is first bound to its own `var`/`let`.**
+  `config-schema-validator`, non-blocking. `[{} A, {} B]` inline inside a
+  `Seq[Rule]`-typed list literal keeps each element's concrete-type
+  unification and fails; `var a = {} A; var b = {} B; [a, b]` works.
+  `tests/suites/interface_seq.nim` already exercises the working
+  (pre-bound) form, so not a regression — but a real trap for the first
+  natural thing someone tries to write with a heterogeneous list.
+- [ ] **[read] Doc bug, not a compiler bug: `satisfies` must come
+  immediately after `object Name:`, before any field.** `git-lite`.
+  LANGUAGE-OVERVIEW.md's own `Dog` example puts a field first.
+- [ ] **[read] No string escape sequences at all** — `\"` is a lexical
+  error (`Unexpected character: \`), not silently mis-lexed.
+  `spellchecker`. Worth stating explicitly in LANGUAGE-OVERVIEW.md §0,
+  since every reader's first instinct is `\"`; workaround is single-quote
+  string delimiters.
+
 ## 5. Backend bugs
 
 ### Nim
