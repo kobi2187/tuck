@@ -122,9 +122,12 @@ need this same retrofit a second time later.
 
 ## Open questions, not resolved here
 
-- Exact tag spelling and where it's declared on a package (its own
-  package-level block or manifest file, deliberately distinct from a
-  decl's `[io]`-style effect-attribute list — undecided).
+- Exact tag spelling and format — leaning toward a manifest file (YAML or
+  similar) sitting in the package's own directory, read by whatever package
+  manager/directory convention eventually resolves packages, rather than a
+  Tuck-source declaration. Deliberately distinct from a decl's `[io]`-style
+  effect-attribute list either way. Not fully specified: the manifest's
+  exact shape, and how a build's resolver locates and reads it.
 - Whether tag requirement is stated per-build (a CLI flag, `--target`-style)
   or per-`import` (closer to source-level opt-in) — this session's
   discussion leaned toward per-build, matching the offline-default goal, but
