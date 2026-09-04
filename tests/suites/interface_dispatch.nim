@@ -112,4 +112,36 @@ fn main() -> int:
   t.emits    "it is still a branch of the variant",  "tuck_GhostVal"
   t.runs     "and the program runs",                 1
 
+  # A method with payload beyond `self` must splat that payload positionally
+  # at the call site, matching the concrete implementer's exploded params —
+  # not pack it into one Nim tuple, which the implementer never declared.
+  t.src """
+interface Codec:
+  fn encode({self: Self, key: str, val: str}) -> str
+
+object A:
+  satisfies Codec
+  n: int
+  fn encode({self: A, key: str, val: str}) -> str:
+    return key + "=" + val
+
+object B:
+  satisfies Codec
+  n: int
+  fn encode({self: B, key: str, val: str}) -> str:
+    return key + ":" + val
+
+fn run({c: Codec, key: str, val: str}) -> str:
+  return c.encode {key: key, val: val}
+
+fn main() -> int:
+  var a = {n: 1} A
+  {text: ({c: a, key: "k", val: "v"} run)} printLine
+  return 0
+"""
+  t.okCheck  "interface method with payload beyond self checks"
+  t.omits    "payload is not packed into one tuple", "encode\\(tmp, \\(key:"
+  t.emits    "payload is splatted positionally",     "encode\\(tmp, key, val\\)"
+  t.outputs  "and dispatches correctly with the right args", "k=v"
+
   t.finish()

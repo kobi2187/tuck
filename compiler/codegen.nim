@@ -450,6 +450,20 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   elif e.name in ctx.fieldVars: "self." & e.name
   else: e.name
 
+proc genIfaceExtraArgs(ctx: var CodegenCtx, memberDecl: Decl,
+                       dotArg: Expr): string =
+  ## The payload beyond `self`, splatted positionally to match the concrete
+  ## member's own declared params — never packed into one Nim tuple, which is
+  ## what the receiver's `encode(self, key, val)` signature actually expects.
+  if dotArg == nil: return ""
+  if memberDecl == nil: return ", " & ctx.genExpr(dotArg)
+  var extra: seq[string]
+  for i, pname in memberDecl.paramNames():
+    if i == 0: continue  # self
+    extra.add(ctx.payloadFieldArg(dotArg, pname))
+  if extra.len == 0: return ""
+  ", " & extra.join(", ")
+
 proc genIfaceDispatch(ctx: var CodegenCtx, e: Expr,
                       ic: tuple[iface, member: string], ind: string): string =
   ## Dispatch is a `case` on the tag calling the concrete member fn directly —
@@ -461,10 +475,9 @@ proc genIfaceDispatch(ctx: var CodegenCtx, e: Expr,
   ## the payload rather than passing the field of an immutable value. Mutation
   ## hits that copy, which is the semantics: an interface value OWNS its data.
   let recv = ctx.genExpr(e.receiver)
-  var extra = ""
-  if e.dotArg != nil: extra = ", " & ctx.genExpr(e.dotArg)
   var arms: seq[string]
   for s in ctx.satisfiersOf(ic.iface):
+    let extra = ctx.genIfaceExtraArgs(findObjectMember(s, ic.member), e.dotArg)
     arms.add(ind & "  of " & ic.iface & "_is_" & s.name & ":\n" &
              ind & "    var tmp = " & recv & "." & s.name & "Val\n" &
              ind & "    " & ic.member & "(tmp" & extra & ")")

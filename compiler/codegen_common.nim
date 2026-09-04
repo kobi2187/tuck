@@ -24,6 +24,13 @@
 import ast, lowering, ast_query, strutils, sets, tables, algorithm, options
 import ./ast_query
 
+proc findObjectMember*(obj: Decl, name: string): Decl =
+  ## The member fn named `name` declared inside object `obj`, or nil — the
+  ## satisfier-specific counterpart to `findFn`, which resolves by name alone
+  ## and cannot tell two same-named methods on different objects apart.
+  for mem in obj.members():
+    if mem != nil and mem.kind == dkFn and mem.name == name: return mem
+
 proc satisfiersOf*(module: Module, realModules: Table[string, Module],
                    iface: string): seq[Decl] =
   ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.

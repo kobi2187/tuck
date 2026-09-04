@@ -651,6 +651,20 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   if foreign != "": return foreign
   e.name
 
+proc genIfaceExtraArgs(ctx: var OdinCodegenCtx, memberDecl: Decl,
+                       dotArg: Expr): string =
+  ## The payload beyond `self`, splatted positionally to match the concrete
+  ## member's own declared params — never packed into one struct literal,
+  ## which is not what the receiver's exploded params expect.
+  if dotArg == nil: return ""
+  if memberDecl == nil: return ", " & ctx.genOdinExpr(dotArg)
+  var extra: seq[string]
+  for i, pname in memberDecl.paramNames():
+    if i == 0: continue  # self
+    extra.add(ctx.payloadFieldArg(dotArg, pname))
+  if extra.len == 0: return ""
+  ", " & extra.join(", ")
+
 proc genIfaceDispatch(ctx: var OdinCodegenCtx, e: Expr,
                       ic: tuple[iface, member: string]): string =
   ## A call through an interface value: switch on the tag the value carries and
@@ -658,10 +672,9 @@ proc genIfaceDispatch(ctx: var OdinCodegenCtx, e: Expr,
   ## immediately-called closure because Odin has no switch EXPRESSION, and a
   ## call site needs a value.
   let recv = ctx.genOdinExpr(e.receiver)
-  var extra = ""
-  if e.dotArg != nil: extra = ", " & ctx.genOdinExpr(e.dotArg)
   var arms: seq[string]
   for st in ctx.satisfiersOf(ic.iface):
+    let extra = ctx.genIfaceExtraArgs(findObjectMember(st, ic.member), e.dotArg)
     arms.add("\t\tcase ." & ic.iface & "_is_" & st.name & ":\n" &
              "\t\t\ttmp := v." & st.name & "Val\n" &
              "\t\t\treturn " & memberProcName(st.name, ic.member) &

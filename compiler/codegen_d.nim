@@ -532,6 +532,20 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
   ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
     ", " & objName & "Val: " & e.name & ")"
 
+proc genDIfaceExtraArgs(ctx: var DCodegenCtx, memberDecl: Decl,
+                        dotArg: Expr): string =
+  ## The payload beyond `self`, splatted positionally to match the concrete
+  ## member's own declared params — never packed into one struct literal,
+  ## which is not what the receiver's exploded params expect.
+  if dotArg == nil: return ""
+  if memberDecl == nil: return ", " & ctx.genDExpr(dotArg)
+  var extra: seq[string]
+  for i, pname in memberDecl.paramNames():
+    if i == 0: continue  # self
+    extra.add(ctx.payloadFieldArgD(dotArg, pname))
+  if extra.len == 0: return ""
+  ", " & extra.join(", ")
+
 proc genDIfaceDispatch(ctx: var DCodegenCtx, e: Expr,
                        ic: tuple[iface, member: string]): string =
   ## A call through an interface value: switch on the tag it carries and call
@@ -541,10 +555,9 @@ proc genDIfaceDispatch(ctx: var DCodegenCtx, e: Expr,
   ## call site needs a value. A plain `switch` rather than `final switch`:
   ## the satisfier set can be empty and an unreachable default is cheap.
   let recv = ctx.genDExpr(e.receiver)
-  var extra = ""
-  if e.dotArg != nil: extra = ", " & ctx.genDExpr(e.dotArg)
   var arms: seq[string]
   for st in ctx.satisfiersOfD(ic.iface):
+    let extra = ctx.genDIfaceExtraArgs(findObjectMember(st, ic.member), e.dotArg)
     arms.add("        case " & ic.iface & "Tag." & ic.iface & "_is_" &
              st.name & ":\n" &
              "            auto tmp = v." & st.name & "Val;\n" &
