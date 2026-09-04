@@ -128,10 +128,14 @@ need this same retrofit a second time later.
   Tuck-source declaration. Deliberately distinct from a decl's `[io]`-style
   effect-attribute list either way. Not fully specified: the manifest's
   exact shape, and how a build's resolver locates and reads it.
-- Whether tag requirement is stated per-build (a CLI flag, `--target`-style)
-  or per-`import` (closer to source-level opt-in) — this session's
-  discussion leaned toward per-build, matching the offline-default goal, but
-  it wasn't settled to the level a written contract needs.
+- Where the BUILD's own tag requirement is stated — three live options, not
+  narrowed down: a CLI flag (`--target`-style), or in-code at the top of
+  `main`'s own module (`embedded-only`, `strict`-something — stays in code,
+  no separate file to maintain), or the two combined (a flag that sets what
+  an in-code declaration can only narrow). Whichever is picked, the
+  standing constraint is: **stay minimal, no admin overhead** — even the
+  per-PACKAGE manifest above (if it happens at all) must be small enough
+  that nobody feels like they're doing config busywork to use a package.
 - Ambiguity behavior when MULTIPLE tag-compatible packages satisfy the same
   interface in one build — first-registered wins, explicit disambiguation
   required, or something else. Not discussed.
