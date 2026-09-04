@@ -4,3 +4,16 @@
 extern:
   fn at[T]({items: Seq[T], index: int}) -> T
   fn setAt[T]({items: Seq[T], index: int, value: T}) -> void
+  # `push` returns the grown seq rather than mutating `items` in place —
+  # `at`/`setAt` mutate through a receiver the caller already owns as a
+  # `var`, but growing can reallocate, so there is no shared backing store
+  # to mutate through. Value semantics, same convention as std/random's
+  # threaded state: `xs = {items: xs, value: v} push`.
+  fn push[T]({items: Seq[T], value: T}) -> Seq[T]
+  # No `len` here: declaring one collides fatally with Nim's own seq
+  # internals inside tuck_rt.nim itself (every `add`/`newSeq`/`setLen`
+  # there expands an unqualified `len` call that becomes ambiguous the
+  # moment a sibling `len` exists in that module) — tried and reverted,
+  # see tuck_rt.nim's comment on `push`. `Seq.len`'s existing
+  # accidental-UFCS resolution (TODO.md §3) remains the only way to get
+  # a count until that's fixed properly.

@@ -135,6 +135,29 @@ ushort errCode(string name)
     return cast(ushort)((h ^ (h >> 16)) & 0xFFFF);
 }
 
+// std/math — elementary float functions, direct passthroughs to std.math.
+double sqrt(double value)
+{
+    import std.math : stdSqrt = sqrt;
+    return stdSqrt(value);
+}
+
+double pow(double base, double exp)
+{
+    import std.math : stdPow = pow;
+    return stdPow(base, exp);
+}
+
+// std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit);
+// this is the runtime, arbitrary-length variant.
+ulong hash(string data)
+{
+    ulong h = 14695981039346656037UL;
+    foreach (char c; data)
+        h = (h ^ cast(ulong) c) * 1099511628211UL;
+    return h;
+}
+
 // seq access. Bounds are a PRECONDITION: violating one is a program error
 // that aborts with the site, not an error value (mirrors tuck_rt.nim's
 // IndexDefect; D's own bounds check would say the same thing, but this
@@ -163,6 +186,14 @@ void setAt(T)(ref T[] items, long index, T value)
     items[index] = value;
 }
 
+/// Value semantics: `~` always allocates a fresh array rather than growing
+/// `items` in place (unlike `~=`, which may reuse spare capacity from the
+/// same backing GC block) — `items` is never mutated by this call.
+T[] push(T)(T[] items, T value)
+{
+    return items ~ [value];
+}
+
 string charAt(string s, long index)
 {
     tuckSeqBounds(index, cast(long) s.length, "charAt");
@@ -173,6 +204,18 @@ bool containsChar(string s, string ch)
 {
     import std.algorithm : canFind;
     return s.canFind(ch);
+}
+
+string[] splitLines(string s)
+{
+    import std.string : stdSplitLines = splitLines;
+    return stdSplitLines(s);
+}
+
+int ord(string ch)
+{
+    tuckSeqBounds(0, cast(long) ch.length, "ord");
+    return cast(int) ch[0];
 }
 
 /// Fill the CALLER's record shape from named values.
@@ -479,6 +522,24 @@ bool fileExists(string path)
 {
     import std.file : exists;
     return exists(path);
+}
+
+/// Idempotent by an explicit existence check, same as the Nim and Odin
+/// runtimes, so all three backends agree on the same contract rather than
+/// relying on each platform's own already-exists behavior for mkdir -p.
+TuckResult!TuckUnit makeDir(string path)
+{
+    import std.file : exists, mkdirRecurse, FileException;
+    if (exists(path)) return tokVoid();
+    try
+    {
+        mkdirRecurse(path);
+        return tokVoid();
+    }
+    catch (FileException e)
+    {
+        return terr!TuckUnit(errCode("fs/FsError.IoFailed"));
+    }
 }
 
 TuckResult!TuckUnit removeFile(string path)

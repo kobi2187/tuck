@@ -1,0 +1,9 @@
+# std/hash — non-cryptographic string hashing. Implemented by tuck_rt.
+# FNV-1a; same algorithm and constants already used internally by the
+# compiler itself (mangling, typecheck_registry) — ported here as a real
+# stdlib function rather than left as a compiler-only implementation
+# detail. Not a security primitive: no collision resistance guarantee
+# against a hostile input. See stdlib-project/modules/core/hash/API.tuck.md
+# for the fuller Hashable design this is a first slice of.
+extern:
+  fn hash({data: str}) -> u64

@@ -13,6 +13,7 @@
 package tuckrt
 
 import "core:fmt"
+import "core:math"
 import "core:os"
 import "core:strings"
 import "core:sys/linux"
@@ -101,6 +102,17 @@ setAt :: proc(items: []$T, index: int, value: T) {
 	items[index] = value
 }
 
+// Value semantics: allocates its own backing array rather than growing
+// `items` in place, so `items`'s own backing store is never shared with
+// (and never mutated through) the result — a plain-value append on a
+// [dynamic]T copy would still share the source memory below capacity.
+push :: proc(items: [dynamic]$T, value: T) -> [dynamic]T {
+	result := make([dynamic]T, len(items))
+	copy(result[:], items[:])
+	append(&result, value)
+	return result
+}
+
 charAt :: proc(s: string, index: int) -> string {
 	assert(index >= 0 && index < len(s), "charAt: index out of bounds")
 	return strings.clone(string([]u8{s[index]}))
@@ -108,6 +120,18 @@ charAt :: proc(s: string, index: int) -> string {
 
 containsChar :: proc(s: string, ch: string) -> bool {
 	return strings.contains(s, ch)
+}
+
+splitLines :: proc(s: string) -> [dynamic]string {
+	lines, _ := strings.split_lines(s)
+	result := make([dynamic]string, len(lines))
+	copy(result[:], lines[:])
+	return result
+}
+
+ord :: proc(ch: string) -> int {
+	assert(len(ch) > 0, "ord: index 0 out of bounds for seq of length 0")
+	return int(ch[0])
 }
 
 // `[saturating]` (spec 4.1): clamp at the type's bounds instead of wrapping.
@@ -122,6 +146,25 @@ tuckSatI :: proc($T: typeid, v: i64) -> T {
 	if v > i64(max(T)) do return max(T)
 	if v < i64(min(T)) do return min(T)
 	return T(v)
+}
+
+// std/math — elementary float functions, direct passthroughs to core:math.
+sqrt :: proc(value: f64) -> f64 {
+	return math.sqrt(value)
+}
+
+pow :: proc(base, exp: f64) -> f64 {
+	return math.pow(base, exp)
+}
+
+// std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit,
+// compile-time-oriented); this is the runtime, arbitrary-length variant.
+hash :: proc(data: string) -> u64 {
+	h: u64 = 14695981039346656037
+	for c in transmute([]u8)data {
+		h = (h ~ u64(c)) * 1099511628211
+	}
+	return h
 }
 
 // spec 7.2: a fixed byte buffer handed out by bumping a cursor. No
@@ -376,6 +419,21 @@ removeFile :: proc(path: string) -> TuckResult(TuckUnit) {
 // than the call. Mirrors the Nim side.
 fileExists :: proc(path: string) -> bool {
 	return os.exists(path)
+}
+
+// Idempotent by an explicit existence check, same as the Nim runtime, so
+// all three backends agree on the same contract rather than relying on
+// each platform's own already-exists behavior for mkdir -p.
+makeDir :: proc(path: string) -> TuckResult(TuckUnit) {
+	if os.exists(path) do return tokVoid()
+	err := os.make_directory_all(path)
+	if err != nil {
+		if err == os.General_Error.Not_Exist {
+			return terr(TuckUnit, errCode("fs/FsError.NotFound"))
+		}
+		return terr(TuckUnit, errCode("fs/FsError.IoFailed"))
+	}
+	return tokVoid()
 }
 
 // --- std/io ---

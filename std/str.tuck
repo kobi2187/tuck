@@ -9,3 +9,7 @@ extern:
   fn toStr[T]({value: T}) -> str
   fn charAt({s: str, index: int}) -> str
   fn containsChar({s: str, ch: str}) -> bool
+  fn splitLines({s: str}) -> Seq[str]
+  # `ch` is a length-1 str, same convention as charAt's result. Indexing an
+  # empty str is a bounds precondition violation, same as at/setAt.
+  fn ord({ch: str}) -> int

@@ -10,3 +10,8 @@ extern:
   fn appendFile({path: str, content: str}) -> !void [io, error: FsError]
   fn fileExists({path: str}) -> bool [io]
   fn removeFile({path: str}) -> !void [io, error: FsError]
+  # Idempotent: succeeds if the directory already exists. Creates any
+  # missing parent directories (mkdir -p), same as writeFile's own
+  # comment on wanting a real init path for any app that bootstraps a
+  # store directory.
+  fn makeDir({path: str}) -> !void [io, error: FsError]

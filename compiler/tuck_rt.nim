@@ -2,6 +2,7 @@
 ## Shared Tuck compiler runtime implementation for static environments.
 import std/macros
 import std/strutils
+import std/math as stdmath
 
 type
   AccessMode* = enum
@@ -77,9 +78,33 @@ proc charAt*(s: string, index: int): string =
 
 proc containsChar*(s: string, ch: string): bool = strutils.contains(s, ch)
 
+proc splitLines*(s: string): seq[string] = strutils.splitLines(s)
+
+proc ord*(ch: string): int =
+  tuckSeqBounds(0, ch.len, "ord")
+  system.ord(ch[0])
+
 proc setAt*[T](items: var seq[T], index: int, value: T) =
   tuckSeqBounds(index, items.len, "setAt")
   items[index] = value
+
+# Value semantics: `items` is copied on return, same as any other Tuck
+# record/seq — growing the result never mutates the caller's seq, unlike
+# setAt's in-place write through a `var` receiver.
+#
+# No sibling `len` extern: a top-level `proc len*[T](items: seq[T]): int`
+# in THIS module makes every seq operation inside tuck_rt.nim itself —
+# `add`, `newSeq`, `setLen`, all of which expand unqualified `len(x)` deep
+# in Nim's own seqs_v2.nim templates — an ambiguous call between
+# `system.len` and this module's own `len`. Not the readFile-style
+# caller-side collision (that one is dodgeable by qualifying the call
+# site); this one fires from inside tuck_rt.nim's own module scope no
+# matter how a caller spells it, so there is no workaround short of not
+# declaring it. `Seq.len`'s existing accidental-UFCS behavior (TODO.md §3)
+# is the only way to get a count today.
+proc push*[T](items: seq[T], value: T): seq[T] =
+  result = items
+  result.add(value)
 
 proc tuckConcat*(a, b: string): string {.inline.} = a & b
 
@@ -389,6 +414,18 @@ proc fileExists*(path: string): bool = os.fileExists(path)
   ## filesystem. Paying a thread handoff and a pipe round-trip for it would
   ## cost more than the call.
 
+proc makeDir*(path: string): TuckResult[tuple[]] =
+  ## NOT offloaded, same rationale as fileExists. Idempotent by an explicit
+  ## check rather than relying on os.createDir's own already-exists
+  ## behavior, so all three backends agree on the same contract.
+  if os.dirExists(path): return tokVoid()
+  try:
+    os.createDir(path)
+    tokVoid()
+  except OSError as e:
+    if e.errorCode == 13: fsErr[tuple[]](iosAccessDenied)
+    else: fsErr[tuple[]](iosIoFailed)
+
 proc print*(text: string) = stdout.write(text)
 proc printLine*(text: string) = stdout.writeLine(text)
 
@@ -645,6 +682,17 @@ proc rollRange*(state, inc: uint64, low, high: int64):
   let (newState, value) = pcgStep(state, inc)
   let span = uint64(high - low + 1)
   (state: newState, inc: inc, value: low + int64(uint64(value) mod span))
+
+# std/math — elementary float functions, direct passthroughs to Nim's own.
+proc sqrt*(value: float64): float64 = stdmath.sqrt(value)
+proc pow*(base, exp: float64): float64 = stdmath.pow(base, exp)
+
+# std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit,
+# compile-time only); this is the runtime, arbitrary-length variant.
+proc hash*(data: string): uint64 =
+  result = 14695981039346656037'u64
+  for c in data:
+    result = (result xor uint64(ord(c))) * 1099511628211'u64
 
 # The single runtime facade: tuck_rt re-exports the async runtime so every
 # emitted program imports ONLY tuck_rt and reaches rt AND async names

@@ -1,0 +1,4 @@
+# std/math — elementary float functions. Implemented by tuck_rt.
+extern:
+  fn sqrt({value: f64}) -> f64
+  fn pow({base: f64, exp: f64}) -> f64
