@@ -1,0 +1,61 @@
+# sudoku-solver — the "needs nothing above core/alloc" control case.
+#
+# Deliberately small: one hardcoded 9x9 puzzle, solved by plain backtracking
+# search over a flat 81-cell Seq[int] (0 = blank). No file I/O, no generator,
+# no difficulty rating — see FINDINGS.md for what the full APP.md spec wants
+# versus what this slice proves.
+#
+# ponytail: backtracking alone, no naked/hidden-single propagation pass —
+# it is the smallest thing that actually solves a real puzzle; add
+# propagation only if a harder puzzle needs the speed.
+import console
+import str
+import seq
+
+object Board:
+  cells: Seq[int]
+
+  fn valid({self: Board, row: int, col: int, val: int}) -> bool:
+    for c in 0 ..< 9:
+      if self.cells[row * 9 + c] == val:
+        return false
+    for r in 0 ..< 9:
+      if self.cells[r * 9 + col] == val:
+        return false
+    let boxRow = (row /i 3) * 3
+    let boxCol = (col /i 3) * 3
+    for r in boxRow ..< boxRow + 3:
+      for c in boxCol ..< boxCol + 3:
+        if self.cells[r * 9 + c] == val:
+          return false
+    return true
+
+  fn solve({self: Board, pos: int}) -> bool:
+    if pos == 81:
+      return true
+    if self.cells[pos] != 0:
+      return {self: self, pos: pos + 1} solve
+    let row = pos /i 9
+    let col = pos % 9
+    for val in 1 .. 9:
+      if {self: self, row: row, col: col, val: val} valid:
+        self.cells[pos] = val
+        if {self: self, pos: pos + 1} solve:
+          return true
+        self.cells[pos] = 0
+    return false
+
+  fn printGrid({self: Board}) -> void [io]:
+    for r in 0 ..< 9:
+      var line = ""
+      for c in 0 ..< 9:
+        line = line + self.cells[r * 9 + c].toStr + " "
+      {text: line} printLine
+
+fn main() -> void [io]:
+  var board = {cells: [5,3,0,0,7,0,0,0,0, 6,0,0,1,9,5,0,0,0, 0,9,8,0,0,0,0,6,0, 8,0,0,0,6,0,0,0,3, 4,0,0,8,0,3,0,0,1, 7,0,0,0,2,0,0,0,6, 0,6,0,0,0,0,2,8,0, 0,0,0,4,1,9,0,0,5, 0,0,0,0,8,0,0,7,9]} Board
+  let solved = {self: board, pos: 0} solve
+  if solved:
+    {self: board} printGrid
+  else:
+    {text: "no solution found"} printLine

@@ -1,0 +1,78 @@
+# doc-convert-tester — small real slice of the APP.md ambition.
+#
+# The full spec wants Markdown/HTML/CSV/JSON/TOML with Unicode-normalization
+# round-trip fuzzing. That needs std.encoding, std.i18n, std.testing, none of
+# which exist yet (only the tiered API.tuck.md proposals do). What DOES exist
+# to test today is the actual claim under APP.md's "Why this is a good
+# validation target": "one Codec interface, many formats" — same
+# encode/decode calling convention regardless of format. This file builds
+# exactly that shape with two toy formats and a round-trip check, plus a
+# `pending:` stub standing in for a third, harder format (quoted CSV).
+import console
+import str
+
+interface Codec:
+  fn encode({key: str, val: str}) -> str
+  fn decode({data: str}) -> {key: str, val: str}
+
+object KvCodec:
+  satisfies Codec
+
+  fn encode({key: str, val: str}) -> str:
+    return key + "=" + val
+
+  fn decode({data: str}) -> {key: str, val: str}:
+    return {s: data, sep: "="} splitOnce
+
+object CsvCodec:
+  satisfies Codec
+
+  fn encode({key: str, val: str}) -> str:
+    return key + "," + val
+
+  fn decode({data: str}) -> {key: str, val: str}:
+    return {s: data, sep: ","} splitOnce
+
+fn findSep({s: str, sep: str}) -> int:
+  var i = 0
+  var idx = 0 - 1
+  for _ in 1 .. s.len:
+    let c = {s: s, index: i} charAt
+    if c == sep and idx == 0 - 1:
+      idx = i
+    i = i + 1
+  return idx
+
+fn sliceStr({s: str, start: int, count: int}) -> str:
+  var acc = ""
+  var i = start
+  for _ in 1 .. count:
+    acc = acc + {s: s, index: i} charAt
+    i = i + 1
+  return acc
+
+fn splitOnce({s: str, sep: str}) -> {key: str, val: str}:
+  let idx = {s: s, sep: sep} findSep
+  let left = {s: s, start: 0, count: idx} sliceStr
+  let right = {s: s, start: idx + 1, count: s.len - idx - 1} sliceStr
+  return {key: left, val: right}
+
+# A third, harder format (quoted CSV with embedded separators) — sketched as
+# a typed hole rather than hand-rolled, per the app's "prefer pending:" note.
+pending:
+  fn encodeQuoted({key: str, val: str}) -> str
+
+fn checkRoundTrip({codec: Codec, name: str, key: str, val: str}) -> void [io]:
+  let encoded = codec.encode {key: key, val: val}
+  let decoded = codec.decode {data: encoded}
+  let ok = decoded.key == key and decoded.val == val
+  {text: name + " roundtrip(" + key + ", " + val + ") -> " + encoded + " -> ok=" + ok.toStr} printLine
+
+fn main() -> void [io]:
+  let kv = KvCodec
+  let csv = CsvCodec
+  {codec: kv, name: "kv", key: "title", val: "hello world"} checkRoundTrip
+  {codec: csv, name: "csv", key: "author", val: "kobi"} checkRoundTrip
+
+  let stub = {key: "a", val: "b"} encodeQuoted
+  {text: "pending encodeQuoted stub result: " + stub} printLine

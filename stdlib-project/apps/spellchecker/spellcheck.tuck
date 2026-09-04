@@ -1,0 +1,116 @@
+# spellchecker — small real slice of the full app (see APP.md for the
+# ambitious version: multi-language segmentation, Markdown/URL exclusion,
+# frequency-ranked suggestions, batch mode).
+#
+# This slice: a hardcoded dictionary, whitespace tokenization of a hardcoded
+# sentence, dictionary lookup, and a Levenshtein-distance suggestion for
+# unknown words. Real Unicode word segmentation (the hard part per APP.md)
+# is NOT attempted — tokenize below only splits on the space character.
+#
+# `pending:` sketches the shape of loading a real dictionary from disk,
+# which this slice does not need (the dictionary is a literal below) but
+# any real spellchecker eventually would.
+import console
+import str
+
+pending:
+  fn loadDictionaryFile({path: str}) -> Seq[str]
+
+fn main() -> void [io]:
+  let dictionary = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "spelling", "checker", "language", "compiler", "hello", "world"]
+  let text = "the quik brown fox jumps ovar the lazi dog"
+
+  let tokens = {text: text} tokenize
+
+  for word in tokens:
+    if word == "":
+      continue
+    if {word: word, dict: dictionary} isKnown:
+      {text: word + " -- OK"} printLine
+    else:
+      let best = {word: word, dict: dictionary} bestMatch
+      let msg = word + " -- unknown, did you mean '" + best.word + "'? (distance " + best.dist.toStr + ")"
+      {text: msg} printLine
+
+# Splits on the space character only. Real word-boundary segmentation across
+# scripts (hyphenation, contractions, CJK/Thai with no spaces at all) is a
+# genuinely different, much harder problem — flagged, not solved, here.
+fn tokenize({text: str}) -> Seq[str]:
+  var result = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
+  var count = 0
+  var current = ""
+  let n = text.len
+  var i = 0
+  for _ in 1 .. n:
+    let c = {s: text, index: i} charAt
+    if c == " ":
+      if current != "":
+        {items: result, index: count, value: current} setAt
+        count = count + 1
+        current = ""
+    else:
+      current = current + c
+    i = i + 1
+  if current != "":
+    {items: result, index: count, value: current} setAt
+  result
+
+fn isKnown({word: str, dict: Seq[str]}) -> bool:
+  for w in dict:
+    if w == word:
+      return true
+  false
+
+fn bestMatch({word: str, dict: Seq[str]}) -> {word: str, dist: int}:
+  var bestWord = ""
+  var bestDist = 9999
+  for w in dict:
+    let d = {a: word, b: w} levenshtein
+    if d < bestDist:
+      bestDist = d
+      bestWord = w
+  {word: bestWord, dist: bestDist}
+
+fn minOf3({a: int, b: int, c: int}) -> int:
+  var m = a
+  if b < m:
+    m = b
+  if c < m:
+    m = c
+  m
+
+# Single-row Levenshtein DP. Words are assumed to fit in 12 characters
+# (the fixed row size below) — fine for this hardcoded slice, not a general
+# bound. A real dictionary app would need a `Seq` that can grow, which the
+# current `std/seq` (at/setAt only, no push/make) does not offer; see
+# FINDINGS.md.
+fn levenshtein({a: str, b: str}) -> int:
+  let la = a.len
+  let lb = b.len
+  var row = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  var j = 0
+  for _ in 0 .. lb:
+    {items: row, index: j, value: j} setAt
+    j = j + 1
+
+  var i = 1
+  for _ in 1 .. la:
+    var prevDiag = {items: row, index: 0} at
+    {items: row, index: 0, value: i} setAt
+    let ca = {s: a, index: i - 1} charAt
+    var jj = 1
+    for _ in 1 .. lb:
+      let temp = {items: row, index: jj} at
+      let cb = {s: b, index: jj - 1} charAt
+      let costVal = if ca == cb: 0 else: 1
+      let delCost = {items: row, index: jj} at + 1
+      let insCost = {items: row, index: jj - 1} at + 1
+      let subCost = prevDiag + costVal
+      let cell = {a: delCost, b: insCost, c: subCost} minOf3
+      {items: row, index: jj, value: cell} setAt
+      prevDiag = temp
+      jj = jj + 1
+    i = i + 1
+
+  {items: row, index: lb} at

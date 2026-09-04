@@ -1,0 +1,123 @@
+# git-lite — minimal content-addressed blob store, the smallest real slice
+# of the full git-lite spec (see APP.md: init/add/commit/log/checkout,
+# compression, a real commit-graph walk). No compression, no real
+# cryptographic hash, no graph traversal — just: hash content, write it
+# once to a file named by its own hash, read it back, and verify the round
+# trip; plus one commit record (message + parent hash + blob hash) hashed
+# and stored the same way, to exercise one level of the object graph.
+#
+# weakHash below is a NON-cryptographic placeholder. There is no ord() /
+# byte-value accessor for str in std/str today, so it derives a per-char
+# value via linear position in a fixed alphabet instead of a real byte
+# value — see FINDINGS.md for the real hash primitive this app wants.
+import console
+import fs
+import str
+
+interface GitObject:
+  fn hash({self: Self}) -> str
+  fn serialize({self: Self}) -> str
+
+object Blob:
+  satisfies GitObject
+  content: str
+  fn hash({self: Blob}) -> str:
+    return {s: self.content} weakHash
+  fn serialize({self: Blob}) -> str:
+    return self.content
+
+object Commit:
+  satisfies GitObject
+  message: str
+  parentHash: str
+  blobHash: str
+  fn hash({self: Commit}) -> str:
+    return {s: self.serialize} weakHash
+  fn serialize({self: Commit}) -> str:
+    return "commit\nparent:" + self.parentHash + "\nblob:" + self.blobHash + "\nmessage:" + self.message
+
+fn charIndex({alphabet: str, c: str}) -> int:
+  var i = 0
+  let n = alphabet.len
+  for _ in 1 .. n:
+    let a = {s: alphabet, index: i} charAt
+    if a == c:
+      return i
+    i = i + 1
+  return -1
+
+fn clampMod({value: int, limit: int}) -> int:
+  var v = value
+  for v >= limit:
+    v = v - limit
+  return v
+
+fn weakHash({s: str}) -> str:
+  let alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:-_/\n"
+  let limit = 1000000007
+  var acc = 0
+  var i = 0
+  let n = s.len
+  for _ in 1 .. n:
+    let c = {s: s, index: i} charAt
+    let idx = {alphabet: alphabet, c: c} charIndex
+    let v = idx + 1
+    let acc2 = acc * 131 + v
+    acc = {value: acc2, limit: limit} clampMod
+    i = i + 1
+  return acc.toStr
+
+fn hashOf({obj: GitObject}) -> str:
+  return obj.hash
+
+fn storeObject({root: str, obj: GitObject}) -> !void [io, error: FsError]:
+  let h = obj.hash
+  let path = root + "/" + h
+  if {path: path} fs::fileExists:
+    {text: "  dedup hit, already stored: " + h} printLine
+    return
+  let w = {path: path, content: obj.serialize} fs::writeFile
+  if not w.ok:
+    err w.err
+
+fn loadObject({root: str, hash: str}) -> !{content: str} [io, error: FsError]:
+  let path = root + "/" + hash
+  let r = {path: path} fs::readFile
+  if not r.ok:
+    err r.err
+  {content: r.value.content}
+
+fn main() -> void [io]:
+  let root = "/tmp/tuck-git-lite-out/.gl-lite/objects"
+
+  let blob = {content: "hello, git-lite"} Blob
+  let bs = {root: root, obj: blob} storeObject
+  if not bs.ok:
+    {text: "store blob failed"} printLine
+    return
+
+  # same content again — should hit the dedup path, not rewrite the file
+  let bs2 = {root: root, obj: blob} storeObject
+  if not bs2.ok:
+    {text: "store blob (again) failed"} printLine
+    return
+
+  let blobHash = {obj: blob} hashOf
+  let commit = {message: "first commit", parentHash: "", blobHash: blobHash} Commit
+  let cs = {root: root, obj: commit} storeObject
+  if not cs.ok:
+    {text: "store commit failed"} printLine
+    return
+
+  let loaded = {root: root, hash: blobHash} loadObject
+  if not loaded.ok:
+    {text: "load blob failed"} printLine
+    return
+
+  if loaded.value.content == blob.content:
+    {text: "OK: blob round-tripped by hash " + blobHash} printLine
+  else:
+    {text: "FAIL: round trip mismatch"} printLine
+
+  let commitHash = {obj: commit} hashOf
+  {text: "commit hash: " + commitHash} printLine

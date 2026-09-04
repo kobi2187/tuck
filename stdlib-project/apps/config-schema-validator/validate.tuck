@@ -1,0 +1,104 @@
+# config-schema-validator — a small, real slice of APP.md's ambition.
+#
+# Scope: no TOML/YAML, no file/line/column tracking. One hardcoded Config
+# record, three validation rules dispatched through one `interface`, every
+# violation collected (not just the first).
+import console
+import str
+
+type Config:
+  name: str
+  environment: str
+  maxConnections: int
+  debug: bool
+
+# Violation started life as a sum type (MissingField/OutOfRange/InvalidEnum,
+# each with its own payload) so a `describe` fn could `match` on it. Two real
+# compiler bugs blocked that (see FINDINGS.md, repros included):
+#   1. constructing a sum-type variant whose target type is `?T`-wrapped
+#      silently drops the payload fields at codegen — even with one variant.
+#   2. `v.field` inside a `match` arm always reads the FIRST declared
+#      variant's storage, not the narrowed arm's — a runtime FieldDefect
+#      the moment two variants share a field name.
+# A plain record sidesteps both and is still enough to report every
+# violation with structured, per-field detail.
+# `found` instead of `?Violation` optional-absence: a FOURTH real bug (see
+# FINDINGS.md, repro included) — a bare `return` in a `?T`-returning fn
+# lowers to Nim's bare `return`, which returns the proc's zero-valued
+# `TuckResult`. `TuckStatus`'s first variant is `tsOk`, so the zero value
+# IS "ok" — absence silently reads back as presence-with-empty-fields.
+# `tuck_rt.tnone[T]()` exists for exactly this and is never emitted by the
+# compiler. An explicit boolean is the only representation this compiler
+# currently lowers correctly.
+type Violation:
+  found: bool
+  field: str
+  message: str
+
+# `check` takes only `self` — no second whole-record param. Passing one
+# (`fn check({self: Self, config: Config})`) hits a THIRD real bug: interface
+# dispatch codegen wraps every extra field into a Nim named-tuple literal
+# instead of passing it positionally (`check(tmp, (config: config))` against
+# a proc expecting `(self, config: tuck_Config)` — a straight type mismatch,
+# reproduced in FINDINGS.md). Baking the value each rule checks into the rule
+# object at construction time sidesteps it, and reads better besides: a rule
+# is a fully-formed check, not a check plus data handed in separately.
+interface Rule:
+  fn check({self: Self}) -> Violation [io]
+
+object NameRequiredRule:
+  satisfies Rule
+  value: str
+  fn check({self: NameRequiredRule}) -> Violation [io]:
+    if self.value == "":
+      return {found: true, field: "name", message: "missing required field"} Violation
+    return {found: false, field: "", message: ""} Violation
+
+object RangeRule:
+  satisfies Rule
+  field: str
+  value: int
+  min: int
+  max: int
+  fn check({self: RangeRule}) -> Violation [io]:
+    if self.value < self.min or self.value > self.max:
+      let detail = self.value.toStr + " is out of range [" + self.min.toStr + ", " + self.max.toStr + "]"
+      return {found: true, field: self.field, message: detail} Violation
+    return {found: false, field: "", message: ""} Violation
+
+object EnvironmentEnumRule:
+  satisfies Rule
+  value: str
+  fn check({self: EnvironmentEnumRule}) -> Violation [io]:
+    if self.value == "dev" or self.value == "staging" or self.value == "prod":
+      return {found: false, field: "", message: ""} Violation
+    let detail = "'" + self.value + "' is not one of: dev, staging, prod"
+    return {found: true, field: "environment", message: detail} Violation
+
+fn countViolations({rules: Seq[Rule]}) -> int [io]:
+  var violations = 0
+  for rule in rules:
+    let result = rule.check
+    if result.found:
+      violations = violations + 1
+      {text: "VIOLATION [" + result.field + "]: " + result.message} printLine
+  return violations
+
+fn sampleConfig() -> Config:
+  return {name: "", environment: "prod-ish", maxConnections: 500, debug: true} Config
+
+fn ruleSet({config: Config}) -> Seq[Rule]:
+  var nameRule = {value: config.name} NameRequiredRule
+  var connRule = {field: "maxConnections", value: config.maxConnections, min: 1, max: 100} RangeRule
+  var envRule = {value: config.environment} EnvironmentEnumRule
+  return [nameRule, connRule, envRule]
+
+fn report({violations: int}) -> void [io]:
+  if violations == 0:
+    {text: "config is valid"} printLine
+  else:
+    {text: violations.toStr + " violation(s) found"} printLine
+
+fn main() -> void [io]:
+  let rules = {config: sampleConfig} ruleSet
+  {violations: {rules: rules} countViolations} report

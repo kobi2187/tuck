@@ -1,0 +1,114 @@
+# diff-patch (slice) — line-level LCS diff of two small text files.
+#
+# Scope: reads a.txt/b.txt, splits into lines, runs a real LCS dynamic-program
+# over the lines, and prints unified-style +/-/unchanged lines. No hunk
+# headers, no --check mode, no patch application — see FINDINGS.md.
+#
+# Storage note: std/seq has only at/setAt (no push/append; see FINDINGS.md),
+# so both the line list and the DP table are preallocated fixed-size Seq
+# literals (maxLines slots, a flat (maxLines+1)^2 table) rather than grown
+# dynamically. Fine for a small demo, a real ceiling for bigger inputs.
+import fs
+import console
+import str
+import seq
+
+type LineSet = {lines: Seq[str], count: int}
+
+const maxLines = 8
+const stride = 9
+
+fn splitLines({content: str}) -> LineSet:
+  var lines = ["", "", "", "", "", "", "", ""]
+  var count = 0
+  var current = ""
+  let n = content.len
+  for i in 0 ..< n:
+    let ch = {s: content, index: i} charAt
+    if ch == "\n":
+      lines[count] = current
+      count = count + 1
+      current = ""
+    else:
+      current = current + ch
+  if not (current == ""):
+    lines[count] = current
+    count = count + 1
+  {lines: lines, count: count} LineSet
+
+fn lcsTable({a: LineSet, b: LineSet}) -> Seq[int]:
+  var dp = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+  for i in 1 .. a.count:
+    for j in 1 .. b.count:
+      let la = {items: a.lines, index: i - 1} at
+      let lb = {items: b.lines, index: j - 1} at
+      if la == lb:
+        let prev = {items: dp, index: (i - 1) * stride + (j - 1)} at
+        dp[i * stride + j] = prev + 1
+      else:
+        let up = {items: dp, index: (i - 1) * stride + j} at
+        let left = {items: dp, index: i * stride + (j - 1)} at
+        if up >= left:
+          dp[i * stride + j] = up
+        else:
+          dp[i * stride + j] = left
+  dp
+
+# Backtracks the DP table from (a.count, b.count) to (0, 0), collecting one
+# prefixed line per step. Emitted in reverse (last decision first), so the
+# caller prints the ops array back-to-front to restore source order.
+fn printDiff({a: LineSet, b: LineSet, dp: Seq[int]}) -> void [io]:
+  var ops = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
+  var opCount = 0
+  var i = a.count
+  var j = b.count
+  loop:
+    if i == 0:
+      if j == 0:
+        break
+    if i > 0:
+      if j > 0:
+        let la = {items: a.lines, index: i - 1} at
+        let lb = {items: b.lines, index: j - 1} at
+        if la == lb:
+          ops[opCount] = "  " + la
+          opCount = opCount + 1
+          i = i - 1
+          j = j - 1
+          continue
+    var takeAdd = j > 0
+    if i > 0:
+      if j > 0:
+        let up = {items: dp, index: (i - 1) * stride + j} at
+        let left = {items: dp, index: i * stride + (j - 1)} at
+        if up >= left:
+          takeAdd = false
+    if takeAdd:
+      let lb2 = {items: b.lines, index: j - 1} at
+      ops[opCount] = "+ " + lb2
+      opCount = opCount + 1
+      j = j - 1
+      continue
+    let la2 = {items: a.lines, index: i - 1} at
+    ops[opCount] = "- " + la2
+    opCount = opCount + 1
+    i = i - 1
+
+  for k in 0 ..< opCount:
+    let idx = opCount - 1 - k
+    let line = {items: ops, index: idx} at
+    {text: line} printLine
+
+fn main() -> void [io]:
+  let ra = {path: "stdlib-project/apps/diff-patch/a.txt"} fs::readFile
+  let rb = {path: "stdlib-project/apps/diff-patch/b.txt"} fs::readFile
+  if not ra.ok:
+    {text: "could not read a.txt"} printLine
+    return
+  if not rb.ok:
+    {text: "could not read b.txt"} printLine
+    return
+  let a = {content: ra.value.content} splitLines
+  let b = {content: rb.value.content} splitLines
+  let dp = {a: a, b: b} lcsTable
+  {a: a, b: b, dp: dp} printDiff

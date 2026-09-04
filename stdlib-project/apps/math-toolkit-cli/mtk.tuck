@@ -1,0 +1,76 @@
+# math-toolkit-cli — small real slice: unit conversion + descriptive stats.
+#
+# Scope cut from APP.md (see FINDINGS.md): no CSV/JSON parsing, no currency
+# conversion, no Decimal money math, no configurable rounding mode. Just two
+# subcommands worth of real numeric work over hardcoded inputs.
+#
+# `distinct Miles = f64` (the unit-safe design LANGUAGE-OVERVIEW recommends,
+# same pattern as std/time's Milliseconds) does not build on the Nim backend:
+# codegen_decl.nim:275 unconditionally emits borrowed `div`/`mod` operators
+# for every distinct type, and Nim has no `div`/`mod` for floats. See
+# FINDINGS.md for the exact repro. Plain f64 params are used here instead.
+import console
+import str
+import seq
+
+fn milesToKm({miles: f64}) -> f64:
+  miles * 1.60934
+
+fn kmToMiles({km: f64}) -> f64:
+  km /f 1.60934
+
+fn celsiusToFahrenheit({celsius: f64}) -> f64:
+  celsius * 9.0 /f 5.0 + 32.0
+
+pending:
+  fn sqrt({x: f64}) -> f64
+
+fn mean({data: Seq[f64], count: f64}) -> f64:
+  var total = 0.0
+  for x in data:
+    total = total + x
+  total /f count
+
+fn variance({data: Seq[f64], avg: f64, count: f64}) -> f64:
+  var total = 0.0
+  for x in data:
+    let diff = x - avg
+    total = total + diff * diff
+  total /f count
+
+fn stddev({v: f64}) -> f64:
+  {x: v} sqrt
+
+fn median({sorted: Seq[f64]}) -> f64:
+  # ponytail: fixed 7-element dataset, so the middle index is a constant —
+  # a general percentile fn needs a real sort + size (Seq has no .len today,
+  # see FINDINGS.md), out of scope for this slice.
+  {items: sorted, index: 3} at
+
+fn runConversions() -> void [io]:
+  let miles = 26.2
+  let km = {miles: miles} milesToKm
+  {text: "Marathon distance: " + miles.toStr + " mi = " + km.toStr + " km"} printLine
+
+  let backToMiles = {km: km} kmToMiles
+  {text: "Round-trip back: " + backToMiles.toStr + " mi"} printLine
+
+  let bodyTempC = 37.0
+  let bodyTempF = {celsius: bodyTempC} celsiusToFahrenheit
+  {text: "Body temp: " + bodyTempC.toStr + " C = " + bodyTempF.toStr + " F"} printLine
+
+fn runStats() -> void [io]:
+  # Hardcoded sample, pre-sorted ascending (see median's note above).
+  let sample = [9.0, 12.0, 15.0, 18.0, 20.0, 22.5, 30.0]
+  let count = 7.0
+
+  let avg = {data: sample, count: count} mean
+  let varc = {data: sample, avg: avg, count: count} variance
+  let sd = {v: varc} stddev
+  let med = {sorted: sample} median
+
+  {text: "Stats over sample: mean=" + avg.toStr + " variance=" + varc.toStr + " stddev=" + sd.toStr + " median=" + med.toStr} printLine
+
+fn main() -> void [io]:
+  runConversions
+  runStats

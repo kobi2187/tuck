@@ -1,0 +1,6 @@
+alpha
+bravo
+charline
+delta
+foxtrot
+echo
