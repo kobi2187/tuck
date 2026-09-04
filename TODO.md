@@ -222,21 +222,6 @@ as a *class*, not just nine individual entries; see `INTEGRATION.md`'s
 "Sequencing" section for why the interface-dispatch one specifically blocks
 that design's whole premise.
 
-- [ ] **[repro] Interface dispatch is broken for any method with payload
-  beyond `self`.** Found independently by `doc-convert-tester` AND
-  `config-schema-validator`. `codec.encode {key, val}` through an
-  interface-typed value emits `encode(tmp, (key: key, val: val))` — the
-  payload packed into ONE Nim named tuple — while the concrete implementer
-  is emitted `proc encode(self: var T; key: string; val: string)` —
-  fields splatted positionally. Root cause: `genIfaceDispatch`
-  (`compiler/codegen.nim` ~line 465)'s `extra` computation. Never caught
-  by `tests/suites/interface_dispatch.nim`/`interfaces.nim` because every
-  tested method there is either self-only or never dispatched through an
-  interface-typed value with extra payload — exactly the untested seam a
-  real "one interface, many implementers" app immediately hits. **Highest
-  priority of this batch**: almost every real capability fn has payload
-  beyond `self`, so this blocks `interface` as a general dispatch
-  mechanism, not just these two apps.
 - [ ] **[repro] A bare `return` in a `?T`-returning fn reads back as
   PRESENT with zero-valued fields, not absent.** `config-schema-validator`.
   `tuck_rt.nim`'s `TuckStatus` enum has `tsOk` as its first variant, so a
