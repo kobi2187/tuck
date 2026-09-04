@@ -58,15 +58,20 @@ type
                                   # is the implicit return, not a discard
     transitionCtx*: bool          # constructing THROUGH transitionTo: sealed
                                   # non-initial variants are legal there
-    expectedVariantType*: Type     # the type a bare variant used as a VALUE
-                                  # (not a pattern) is expected to be, in
-                                  # scope while synthesizing a match arm's
-                                  # body or an assignment's RHS (nil
-                                  # otherwise). An inline sum type (`state:
-                                  # {Red, Yellow, Green}`) has no name to
-                                  # look up in typeDecls, so `state = Green`
-                                  # has nowhere else to learn Green's type
-                                  # from but the assignment target's own.
+    expectedType*: Type       # the type context expects the expression
+                                  # currently being synthesized to have (nil
+                                  # otherwise) — the checker's one expected-
+                                  # type channel, fed from a match arm's
+                                  # subject, an assignment's target, a `check`
+                                  # call's own `expected`, or (via
+                                  # fieldTypeHints below) a construction/call
+                                  # payload's declared field type. Consulted
+                                  # only by synthBareVariant: an inline sum
+                                  # type (`state: {Red, Yellow, Green}`) has
+                                  # no name to look up in typeDecls, so a
+                                  # bare variant used as a VALUE (not a
+                                  # pattern) has nowhere else to learn its
+                                  # type from.
     fieldTypeHints*: Table[string, Type]  # field name -> declared type, for
                                   # the struct literal synthStruct is
                                   # CURRENTLY walking, set by asNamedCallee
@@ -74,7 +79,7 @@ type
                                   # before descending (empty otherwise).
                                   # `{state: Green} Light` needs this the
                                   # same way `state = Green` needs
-                                  # expectedVariantType — Green has no name
+                                  # expectedType — Green has no name
                                   # to look up unless something ambient
                                   # says which field it is filling.
     distinctNames*: HashSet[string]   # distinct types: nominal, never widened

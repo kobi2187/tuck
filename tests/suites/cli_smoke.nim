@@ -696,6 +696,40 @@ proc run*(t: var T) =
       t.finish()
       return
 
+    # Two more expected-type sites, unified under expectedType/fieldTypeHints
+    # (typecheck_state.nim) rather than patched one-off: `check`'s single
+    # call site (checkReturnValue) now propagates the declared return type
+    # into synthesis, and payloadFields' struct branch does the same from
+    # the callee's declared param types — an ORDINARY fn call's payload,
+    # not a construction (asNamedCallee's fieldTypeHints already covered
+    # that case).
+    let retSrc = d.write("retexpected.tuck", """
+fn advance() -> {Red, Yellow, Green}:
+  return Green
+
+fn main() -> int:
+  return 0
+""")
+    if sh(@["./tuck", "ch", retSrc, "--verify-stages"]).rc != 0:
+      t.no "expectedType: a bare inline-sum variant returned against a declared return type",
+           "should typecheck clean"
+      t.finish()
+      return
+
+    let payloadSrc = d.write("payloadexpected.tuck", """
+fn setLight({state: {Red, Yellow, Green}}) -> void:
+  return
+
+fn main() -> int:
+  {state: Green} setLight
+  return 0
+""")
+    if sh(@["./tuck", "ch", payloadSrc, "--verify-stages"]).rc != 0:
+      t.no "fieldTypeHints: a bare inline-sum variant in an ordinary call's payload",
+           "should typecheck clean"
+      t.finish()
+      return
+
     # tuck dump: a thin driver stopping early in the same pipeline, at two
     # ends of it — a bare parse-adjacent stage and the final emitted source.
     for stage in ["load", "emitting"]:

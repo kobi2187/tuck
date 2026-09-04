@@ -561,6 +561,33 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   a real reduction before being fixed, never patched blind. `./tests/run`
   green (bar the same pre-existing complexity ratchet); `emit_examples.sh`
   diff empty.
+  **UNIFIED 2026-09-04** — checked whether needing four ad hoc fixes to
+  reach the state above meant the expected-type mechanism itself was
+  under-designed rather than the four call sites being unrelated (user's
+  question). Two of the four turned out unrelated (the fn-ref gradual-
+  typing exception, `sizeof`'s type-name-as-syntax) and one was a plain
+  missing feature (`self` unbound), but `expectedVariantType`/
+  `fieldTypeHints` really was one recurring gap patched twice with two
+  separate ambient fields — and reading `typecheck.nim`'s full outline
+  found there was NO general expected-type mechanism at all before this:
+  `check(tc, e, expected, what)` synthesized `e` bottom-up and only
+  compared to `expected` AFTERWARD, never fed it into the synthesis.
+  Renamed `expectedVariantType` → `expectedType` (the field itself was
+  already general, only the name wasn't) and added two setters mirroring
+  the existing four exactly: `check` now sets `tc.expectedType = expected`
+  around its own `tc.synthesize(e)` — fixing `checkReturnValue` (its one
+  caller) for free, and any FUTURE caller of `check` automatically;
+  `payloadFields`'s struct branch (an ORDINARY fn call's payload, not a
+  construction — `{state: Green} someFn`) now builds `fieldTypeHints` from
+  `sig.params` the same way `asNamedCallee` already builds it from
+  `declaredFieldsOf`. No other call sites needed touching —
+  `synthDeclAssign` has no declared-type slot to propagate from (Tuck has
+  no `var x: T = ...` form). Two new `--verify-stages` regressions in
+  `cli_smoke.nim` (return value, ordinary-call payload), both red before
+  the fix and green after. `./tests/run` fully green including the
+  ratchet; `emit_examples.sh` diff empty; full 44-example sweep clean
+  (the one pre-existing `16-actor-tasks-unified-syntax` failure is
+  unrelated — an undeclared-fn error, not an `<unknown>`-type leak).
 - [ ] **[read] `lowerExpr`'s children-recursion order is per-pass, not a
   rule.** `lowering.nim`: `flattenRegistryRaise` now runs BEFORE the
   `for c in e.children: lowerExpr(c, m)` loop (moved there to fix the

@@ -1078,10 +1078,10 @@ proc synthArm(tc: var TypeChecker, arm: MatchArm, subjT: Type, trackedVar,
   ## One arm, typed in its own scope with the subject narrowed.
   tc.pushScope()
   tc.bindArmPattern(arm, subjT, trackedVar, trackedType)
-  let savedSubjectType = tc.expectedVariantType
-  tc.expectedVariantType = subjT
+  let savedSubjectType = tc.expectedType
+  tc.expectedType = subjT
   result = tc.synthesize(arm.body)
-  tc.expectedVariantType = savedSubjectType
+  tc.expectedType = savedSubjectType
   tc.popScope()
 
 proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
@@ -1321,7 +1321,10 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
 
 proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
   if e == nil or expected == nil: return
+  let savedExpected = tc.expectedType
+  tc.expectedType = expected
   let actual = tc.synthesize(e)
+  tc.expectedType = savedExpected
   if not tc.compatible(actual, expected):
     fail("Type Error: " & what & " expects " & typeName(expected) &
          " but got " & typeName(actual), e.span)
@@ -1502,8 +1505,15 @@ proc payloadFields(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
   ## payload, which is let through unchecked.
   if arg.kind == exkStruct:
     shapeKnown = true
+    let savedHints = tc.fieldTypeHints
+    tc.fieldTypeHints = initTable[string, Type]()
+    for p in sig.params: tc.fieldTypeHints[p.name] = p.typ
     for f in arg.fields:
+      let savedExpected = tc.expectedType
+      if tc.fieldTypeHints.hasKey(f.name): tc.expectedType = tc.fieldTypeHints[f.name]
       result.add((f.name, tc.synthesize(f.value), f.value.span))
+      tc.expectedType = savedExpected
+    tc.fieldTypeHints = savedHints
     return
   let t = tc.synthesize(arg)
   if isUnknown(t): return
@@ -1871,16 +1881,16 @@ proc suppliedFieldTypes(tc: var TypeChecker, e: Expr): Table[string, Type] =
   ## Synthesized here rather than read back from semLayer: the stamp is
   ## deliberately stripped of `<uninit>` markers (codegen must never see one),
   ## and the marker is exactly what this needs. Mirrors synthStruct's own
-  ## per-field expectedVariantType hint: this walks the same fields a SECOND
+  ## per-field expectedType hint: this walks the same fields a SECOND
   ## time (asNamedCallee's own synthesize pass is the first), bypassing
   ## synthStruct entirely, so a bare inline-sum-variant field value needs
   ## the same hint set here too or it resolves once and fails the next.
   if e.args.len == 1 and e.args[0] != nil and e.args[0].kind == exkStruct:
     for f in e.args[0].fields:
-      let savedExpected = tc.expectedVariantType
-      if tc.fieldTypeHints.hasKey(f.name): tc.expectedVariantType = tc.fieldTypeHints[f.name]
+      let savedExpected = tc.expectedType
+      if tc.fieldTypeHints.hasKey(f.name): tc.expectedType = tc.fieldTypeHints[f.name]
       result[f.name] = tc.synthesize(f.value)
-      tc.expectedVariantType = savedExpected
+      tc.expectedType = savedExpected
 
 proc constructedField(d: FieldDef, supplied: Table[string, Type],
                       sp: Span, holes: var bool): FieldDef =
@@ -2098,14 +2108,14 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   if owner != "": return Type(span: e.span, kind: tkNamed, name: owner)
   let regOwner = registryEventOwner(e.name)
   if regOwner != "": return Type(span: e.span, kind: tkNamed, name: regOwner)
-  if tc.expectedVariantType != nil:
+  if tc.expectedType != nil:
     # Inline sum type (no name to find in typeDecls): the enclosing match's
     # subject, or the assignment target's own type, IS the type, if this
     # name is one of its variants.
-    let subjBody = tc.resolve(tc.expectedVariantType)
+    let subjBody = tc.resolve(tc.expectedType)
     if subjBody != nil and subjBody.kind == tkSum and
        hasVariant(subjBody, e.name):
-      return tc.expectedVariantType
+      return tc.expectedType
   if tc.typeDecls.hasKey(e.name) or tc.objDecls.hasKey(e.name):
     # A declared type/object name used bare, as a VALUE — `+ AudioPlayer`
     # composition is the shape found here, but this is the same "type name
@@ -2148,10 +2158,10 @@ proc synthStruct(tc: var TypeChecker, e: Expr): Type =
   var fs: seq[FieldDef]
   for f in e.fields:
     tc.checkFieldValue(f.name, f.value)
-    let savedExpected = tc.expectedVariantType
-    if tc.fieldTypeHints.hasKey(f.name): tc.expectedVariantType = tc.fieldTypeHints[f.name]
+    let savedExpected = tc.expectedType
+    if tc.fieldTypeHints.hasKey(f.name): tc.expectedType = tc.fieldTypeHints[f.name]
     fs.add(FieldDef(name: f.name, typ: tc.synthesize(f.value), span: f.value.span))
-    tc.expectedVariantType = savedExpected
+    tc.expectedType = savedExpected
   Type(span: e.span, kind: tkRecord, fields: fs)
 
 proc synthList(tc: var TypeChecker, e: Expr): Type =
@@ -2382,10 +2392,10 @@ proc synthAssignVal(tc: var TypeChecker, e: Expr, targetT: Type): Type =
                 tc.transType(targetT) != ""
   let prevCtx = tc.transitionCtx
   if tracked: tc.transitionCtx = true
-  let savedExpected = tc.expectedVariantType
-  tc.expectedVariantType = targetT
+  let savedExpected = tc.expectedType
+  tc.expectedType = targetT
   result = tc.synthesize(e.assignVal)
-  tc.expectedVariantType = savedExpected
+  tc.expectedType = savedExpected
   tc.transitionCtx = prevCtx
 
 proc checkTransition(tc: var TypeChecker, e: Expr, targetT: Type) =
