@@ -61,6 +61,7 @@ type
     dcPaStrayIndent = "TK-PA07"         ## indented line with nothing open above
     dcPaReservedWord = "TK-PA08"        ## a reserved word used as a plain name
     dcPaEmptyBlock = "TK-PA09"          ## a `:` opens nothing — no `discard`, no statement
+    dcPaNoWhile = "TK-PA10"             ## `while` — Tuck spells it `for <cond>:`
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -222,6 +223,13 @@ proc parseExplanation(d: DiagCode): string =
     "forgotten implementation) rather than a deliberate no-op, so it is " &
     "never inferred either way. Fix: write `discard` if doing nothing here " &
     "is intentional, or add the statement that was meant to go here."
+  of dcPaNoWhile:
+    "Tuck has no `while` keyword — `while` is an ordinary, unreserved " &
+    "identifier, so `while cond:` parses `while` as a bare name and then " &
+    "fails on what follows. `for` covers both counted and conditional " &
+    "loops: `for x in 1 .. 10:` counts, and `for <condition>:` (no `in`) " &
+    "is the while-equivalent — it lowers straight to a native while loop. " &
+    "Fix: `for i < 10:` instead of `while i < 10:`."
   else: ""
 
 proc nameExplanation(d: DiagCode): string =

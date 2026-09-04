@@ -34,6 +34,37 @@ fn main() -> void:
 """
   t.badCheck "an unresolvable name carries TK-TY03", "TK-TY03"
 
+  # `while` is not a keyword — it's an ordinary identifier — so a `while
+  # cond:` attempt must be caught by SHAPE (leading `while`, a `:` before the
+  # line ends) and pointed at `for <cond>:`, not left to fail deep inside
+  # expression parsing with no hint toward the real spelling.
+  t.src """
+fn main() -> void:
+  var i = 0
+  while i < 10:
+    i = i + 1
+"""
+  t.badCheck "a while-shaped statement carries TK-PA10", "TK-PA10"
+
+  # The real while-equivalent (`for <cond>:`, no `in`) must keep working —
+  # this is the fix `for` covers both counted and conditional loops.
+  t.src """
+fn main() -> void:
+  var i = 0
+  for i < 10:
+    i = i + 1
+"""
+  t.okCheck "for <condition>: (the while-equivalent) still typechecks"
+
+  # `while` as a plain identifier (not statement-leading, no trailing `:`
+  # at depth 0) must never trip the shape check.
+  t.src """
+fn main() -> void:
+  let while = 5
+  return
+"""
+  t.okCheck "'while' as an ordinary variable name is unaffected"
+
   # A parse rejection carries its code in the [stage code] tag rather than the
   # message body, so this asserts the tag the driver prints.
   t.src "ac:\n  t: int\n"

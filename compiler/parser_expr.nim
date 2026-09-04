@@ -624,12 +624,37 @@ proc parseExpr*(p: var Parser): Expr =
     return Expr(span: sp, kind: exkAssign, target: left, assignVal: value)
   return left
 
+proc looksLikeWhileAttempt(p: Parser): bool =
+  ## `while` is not a Tuck keyword — an ordinary, unreserved identifier — so
+  ## `while cond:` parses `while` as a bare name and fails somewhere inside
+  ## `cond`, with no hint the real spelling is `for cond:`. Detected by shape
+  ## rather than by treating `while` as reserved: a `:` follows before the
+  ## line ends, at bracket depth 0 (so `while` used as an ordinary value in a
+  ## record/call literal on the same line, e.g. `{a: while}`, never trips
+  ## this — only the specific "opens a block" shape does).
+  if p.current().kind != tkIdent or p.current().value != "while": return false
+  var depth = 0
+  var i = 1
+  while true:
+    let t = p.peek(i)
+    case t.kind
+    of tkNewline, tkEOF: return false
+    of tkLParen, tkLBracket, tkLBrace: inc depth
+    of tkRParen, tkRBracket, tkRBrace: dec depth
+    of tkColon:
+      if depth == 0: return true
+    else: discard
+    inc i
+
 proc parseStatementExpr(p: var Parser): Expr =
   ## One statement: an expression, optionally suffixed with `discard` to
   ## drop its value — postfix, matching Tuck's own grain (`{payload}
   ## fnName`, chains, `.fn {args}`): the value comes first, what happens to
   ## it after. A LEADING bare `discard` (nothing to drop) is a separate,
   ## unrelated case, handled by parseDiscardExpr inside parseExpr itself.
+  if p.looksLikeWhileAttempt():
+    p.reportError("Tuck has no 'while' — write 'for " & p.peek(1).value &
+                  " ...:' instead", dc = dcPaNoWhile)
   let e = p.parseExpr()
   if p.current().kind == tkDiscard:
     let dsp = p.getSpan()
