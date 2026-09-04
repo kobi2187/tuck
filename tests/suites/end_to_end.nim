@@ -64,6 +64,15 @@ fn main() -> int:
   t.emits     "Nim backend emits the decision fn",  "classifyPacket"
   t.emitsOdin "Odin backend emits the decision fn", "classifyPacket"
 
+  # Temperature's invariant must survive -d:release: genType used to gate it
+  # behind `when not defined(release)` AND emit Nim's own `assert(...)`,
+  # itself release-stripped — a double bug (fixed 2026-09-01), never pinned.
+  # The opt-out is tuckNoInvariants, independent of release/danger.
+  t.emits "an invariant check survives -d:release (tuckNoInvariants, not release)",
+          r"when not defined\(tuckNoInvariants\):"
+  t.emits "...and calls tuckInvariantFailed, not Nim's own release-stripped assert",
+          r"tuckInvariantFailed\(""\(self\.celsius"
+
   # The AST serializer has to survive every one of those node kinds. A decision
   # table is a dkFn carrying isDecision, not a kind of its own — checking the
   # flag proves the table reached the serializer rather than being flattened.
