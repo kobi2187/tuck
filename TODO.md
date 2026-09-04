@@ -153,11 +153,6 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   re-derivation cheap instead of removing it; measured gain was 0.84s →
   0.80s. If F1/F2 land and the scans disappear, DELETE it rather than keep a
   cache for work that no longer happens. → audit F4.
-- [ ] **[read] Marker plumbing is partly duplicated.** Two name→marker maps
-  remain (`parser.nim:123`, `parser_type.nim:199`). The two marker→name maps
-  were collapsed into `ast.effectName` on 2026-08-29 — they had DRIFTED, both
-  deriving the name from the enum and dropping the underscore, so
-  `[may_block]` printed as `[mayblock]`. → MISSING-FEATURES D.
 - [ ] **[read] One C implementation of the runtime.** Nim, Odin and D
   runtimes are mirrored BY HAND and have drifted repeatedly. Collapsing the
   offload seam into one C file bound over the existing FFI removes the

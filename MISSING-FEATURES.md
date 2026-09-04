@@ -88,9 +88,6 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   job is the `[irq_safe]` treatment — an `[irq_safe]` fn calling a
   `[may_block]` one should be a compile error, exactly as spec §3.7 already
   specifies for `[irq_safe]` calling `[io]`.
-- **Marker plumbing is duplicated.** Two name→marker maps (`parser.nim:117`,
-  `parser_type.nim:184`) and two marker→name maps (`typecheck.nim:2040`,
-  `semantics.nim:152`), none sharing code. Adding a marker means four edits.
 - **Postfix binds tighter than operators** (`x + y sys::exit`) with no
   precedence hint in the error.
 

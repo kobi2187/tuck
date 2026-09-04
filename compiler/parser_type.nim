@@ -184,6 +184,28 @@ proc parsePrimaryType(p: var Parser): Type =
   else:
     p.reportError("Unexpected token in type expression: " & $curr.kind)
 
+# Maps an effect-marker identifier (`io`, `no_alloc`, ...) to its
+# EffectMarker, or returns false for anything else. The `[...]` effect
+# bracket has multiple callers (here, and parseSigBlock/parseTaskDecl/
+# parseFnDecl in parser_decl_kinds.nim) and each wraps this same
+# name->marker mapping in its own handling of `error:`/`emit:` sub-clauses
+# and its own reaction to an unrecognized name (silently ignore vs. report
+# an error) — those reactions differ enough between callers that forcing
+# them into one loop would need a mode flag, so only the mapping itself is
+# shared. Lives here, not in parser_decl_kinds.nim, because that module
+# already imports this one for parseType — the reverse import would cycle.
+proc effectMarkerFromName*(name: string, marker: var EffectMarker): bool =
+  case name
+  of "io": marker = emIo
+  of "no_alloc": marker = emNoAlloc
+  of "irq_safe": marker = emIrqSafe
+  of "unsafe": marker = emUnsafe
+  of "may_block": marker = emMayBlock
+  of "stack": marker = emStack
+  of "priority": marker = emPriority
+  else: return false
+  return true
+
 # Effect markers written after a return type (`-> T [io]`) parse as attrs on T —
 # or on the payload inside a !/? wrapper. Harvest them off wherever they landed.
 proc harvestEffects*(t: Type, effects: var seq[EffectMarker],
@@ -191,15 +213,9 @@ proc harvestEffects*(t: Type, effects: var seq[EffectMarker],
   if t == nil: return
   var kept: seq[TypeAttr]
   for a in t.attrs:
-    case a.name
-    of "io": effects.add(emIo)
-    of "no_alloc": effects.add(emNoAlloc)
-    of "irq_safe": effects.add(emIrqSafe)
-    of "unsafe": effects.add(emUnsafe)
-    of "may_block": effects.add(emMayBlock)
-    of "stack": effects.add(emStack)
-    of "priority": effects.add(emPriority)
-    of "error": errorTypes.add(a.value)  # [error: FsError | NetError]
+    var marker: EffectMarker
+    if effectMarkerFromName(a.name, marker): effects.add(marker)
+    elif a.name == "error": errorTypes.add(a.value)  # [error: FsError | NetError]
     else: kept.add(a)
   t.attrs = kept
   if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and

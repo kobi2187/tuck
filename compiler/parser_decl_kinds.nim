@@ -55,26 +55,6 @@ proc parseBareParam*(p: var Parser, pSp: Span): Param =
   discard p.expect(tkColon)
   Param(name: paramName, typ: p.parseType(), span: pSp)
 
-# Maps an effect-marker identifier (`io`, `no_alloc`, ...) to its
-# EffectMarker, or returns false for anything else. The `[...]` effect
-# bracket has three callers (parseSigBlock, parseTaskDecl, parseFnDecl) and
-# each wraps this same name->marker mapping in its own handling of
-# `error:`/`emit:` sub-clauses and its own reaction to an unrecognized name
-# (silently ignore vs. report an error) — those reactions differ enough
-# between callers that forcing them into one loop would need a mode flag,
-# so only the mapping itself is shared.
-proc effectMarkerFromName*(name: string, marker: var EffectMarker): bool =
-  case name
-  of "io": marker = emIo
-  of "no_alloc": marker = emNoAlloc
-  of "irq_safe": marker = emIrqSafe
-  of "unsafe": marker = emUnsafe
-  of "may_block": marker = emMayBlock
-  of "stack": marker = emStack
-  of "priority": marker = emPriority
-  else: return false
-  return true
-
 # [packed, align: 2, ...] — attribute bracket on a declaration (appends,
 # since some callers pre-seed attrs)
 proc parseDeclAttrs*(p: var Parser, attrs: var seq[TypeAttr]) =
