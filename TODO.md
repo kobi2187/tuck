@@ -142,6 +142,29 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   fns, distinct-type ctors, combinators. Every backend therefore keeps a
   decl-scan fallback (~150 lines across three). Members were fixed
   2026-08-27; these three remain. → audit F2.
+- [ ] **[repro] A local variable named after a backend keyword breaks that
+  backend, silently mistranslated to broken output.** `var out = ""` in a
+  Tuck fn body compiles clean (`out` is not a Tuck keyword) and emits
+  literal `var out = ""` into the Nim backend — `out` is a Nim keyword
+  (var-param direction), so the emitted file fails with `identifier
+  expected, but got 'keyword out'`. Found live writing
+  `stdlib-project/apps/cli-hangman/hangman.tuck` (2026-09-04); worked
+  around there by renaming the local, not fixed here. `compiler/mangle.nim`
+  states its own design as: globals get a `tuck_` prefix so user names
+  cannot collide with a runtime proc OR a backend keyword; "LOCALS AND
+  PARAMS [are] not global, cannot collide" is given as the reason to skip
+  them. That reasoning conflates two DIFFERENT collision classes: a local
+  genuinely cannot collide with another TUCK name (correct, no fix needed),
+  but it can still collide with the HOST LANGUAGE's own reserved word —
+  scope only protects against the first kind. `genVar` (`codegen.nim:451`)
+  and the analogous Odin/D local-emission sites all write `e.name` verbatim
+  with zero escaping. Two fix shapes, a real design choice, not attempted:
+  (a) mangle every local too, uniform with globals, but doubles identifier
+  length everywhere and reshapes every golden file; (b) keep locals bare by
+  default and rename only the ones that collide with a per-backend reserved
+  set, which means backends stop being "dumb" about names (mangle.nim's own
+  stated design goal) since each backend's keyword list has to live
+  somewhere central this pass can query.
 
 ## 4. Compiler-internal issues (not user-visible)
 

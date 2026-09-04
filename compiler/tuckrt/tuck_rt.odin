@@ -101,6 +101,15 @@ setAt :: proc(items: []$T, index: int, value: T) {
 	items[index] = value
 }
 
+charAt :: proc(s: string, index: int) -> string {
+	assert(index >= 0 && index < len(s), "charAt: index out of bounds")
+	return strings.clone(string([]u8{s[index]}))
+}
+
+containsChar :: proc(s: string, ch: string) -> bool {
+	return strings.contains(s, ch)
+}
+
 // `[saturating]` (spec 4.1): clamp at the type's bounds instead of wrapping.
 // VALUE SEMANTICS, not an assertion — never stripped in release, because
 // removing it would change results. Runs on a wider intermediate so a chain

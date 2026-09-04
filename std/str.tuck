@@ -1,3 +1,11 @@
 # std/str — text conversion. Implemented by tuck_rt.
+#
+# No char type exists in Tuck today, and str indexing has no syntax — a
+# one-character result is spelled as a length-1 str, same as every other
+# string here. `charAt`/`containsChar` are the minimal pair a masked-display
+# app (hangman) needs; `.len` is used elsewhere but declared NOWHERE (a
+# known bug, TODO.md §3 — it currently resolves only by Nim UFCS accident).
 extern:
   fn toStr[T]({value: T}) -> str
+  fn charAt({s: str, index: int}) -> str
+  fn containsChar({s: str, ch: str}) -> bool

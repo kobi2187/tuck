@@ -163,6 +163,18 @@ void setAt(T)(ref T[] items, long index, T value)
     items[index] = value;
 }
 
+string charAt(string s, long index)
+{
+    tuckSeqBounds(index, cast(long) s.length, "charAt");
+    return [s[index]].idup;
+}
+
+bool containsChar(string s, string ch)
+{
+    import std.algorithm : canFind;
+    return s.canFind(ch);
+}
+
 /// Fill the CALLER's record shape from named values.
 ///
 /// A record-returning extern (`fn argCount() -> {count: int}`) is declared in

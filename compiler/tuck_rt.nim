@@ -1,6 +1,7 @@
 # compiler/tuck_rt.nim
 ## Shared Tuck compiler runtime implementation for static environments.
 import std/macros
+import std/strutils
 
 type
   AccessMode* = enum
@@ -69,6 +70,12 @@ proc tuckSeqBounds(index, length: int, op: string) =
 proc at*[T](items: seq[T], index: int): T =
   tuckSeqBounds(index, items.len, "at")
   items[index]
+
+proc charAt*(s: string, index: int): string =
+  tuckSeqBounds(index, s.len, "charAt")
+  $s[index]
+
+proc containsChar*(s: string, ch: string): bool = strutils.contains(s, ch)
 
 proc setAt*[T](items: var seq[T], index: int, value: T) =
   tuckSeqBounds(index, items.len, "setAt")
@@ -227,7 +234,7 @@ proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
 #
 # Imported HERE rather than at the facade below because the blocking externs
 # route through tuck_async.tuckSubmitBlocking — see readLine.
-import std/[os, times, syncio]
+import std/[os, times, syncio, sysrand]
 import ./tuck_async
 from std/posix import nil
 template posixRead(fd: cint, buf: pointer, n: int): int =
@@ -608,6 +615,36 @@ proc sleepMs*(ms: uint32) =
   ## system.running(Thread) in scope, which otherwise wins overload resolution.
   if inCoroutine(): tuckSleep(int(ms))
   else: os.sleep(int(ms))   # no scheduler to yield to
+
+# std/random — PCG32 (O'Neill 2014). State is threaded through every call
+# as plain fields (state, inc), not an object: see std/random.tuck's header
+# for why a named cross-boundary type isn't an option today.
+const pcgMult = 6364136223846793005'u64
+
+proc pcgStep(state, inc: uint64): tuple[state: uint64, value: uint32] =
+  let newState = state * pcgMult + inc
+  let xorshifted = uint32(((state shr 18) xor state) shr 27)
+  let rot = int(state shr 59)
+  let value = (xorshifted shr rot) or (xorshifted shl ((-rot) and 31))
+  (state: newState, value: value)
+
+proc newDice*(seed: uint64): tuple[state: uint64, inc: uint64] =
+  let inc = (seed shl 1) or 1'u64
+  let (warm, _) = pcgStep(0'u64, inc)
+  let (state, _) = pcgStep(warm + seed, inc)
+  (state: state, inc: inc)
+
+proc newDiceFromOs*(): tuple[state: uint64, inc: uint64] =
+  var seed: uint64
+  let bytes = sysrand.urandom(sizeof(seed))
+  copyMem(addr seed, unsafeAddr bytes[0], sizeof(seed))
+  newDice(seed)
+
+proc rollRange*(state, inc: uint64, low, high: int64):
+    tuple[state: uint64, inc: uint64, value: int64] =
+  let (newState, value) = pcgStep(state, inc)
+  let span = uint64(high - low + 1)
+  (state: newState, inc: inc, value: low + int64(uint64(value) mod span))
 
 # The single runtime facade: tuck_rt re-exports the async runtime so every
 # emitted program imports ONLY tuck_rt and reaches rt AND async names

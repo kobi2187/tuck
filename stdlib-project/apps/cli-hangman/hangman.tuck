@@ -1,0 +1,60 @@
+# cli-hangman — first stab at using the (amended) stdlib for real.
+#
+# Amendments this app needed, made in std/ alongside this file:
+#   - std/random: a PCG32-backed word picker (newDice/rollRange), state
+#     threaded as plain fields since a NAMED record can't cross an extern
+#     boundary today — see std/random.tuck's header.
+#   - std/str: charAt/containsChar — there was no way to inspect a str's
+#     characters at all before this.
+import console
+import random
+import str
+import sys
+
+fn main() -> void [io]:
+  let words = ["tuck", "compiler", "actor", "effect", "lexer"]
+  var dice = newDiceFromOs
+  let pickRoll = {state: dice.state, inc: dice.inc, low: 0, high: 4} rollRange
+  dice = {state: pickRoll.state, inc: pickRoll.inc}
+  let secret = {items: words, index: pickRoll.value} at
+
+  var guessed = ""
+  var lives = 6
+
+  for turn in 1 .. 20:
+    let masked = maskWord {word: secret, guessed: guessed}
+    {text: "Word: " + masked + "   Lives: " + lives.toStr} printLine
+
+    if lives == 0:
+      {text: "You lose. The word was: " + secret} printLine
+      0 exit
+    if masked == secret:
+      {text: "You win!"} printLine
+      0 exit
+
+    {text: "Guess a letter: "} print
+    let input = readLine
+    if not input.ok:
+      {text: "\ngoodbye"} printLine
+      return
+    let g = {s: input.value.line, index: 0} charAt
+
+    if {s: secret, ch: g} containsChar:
+      guessed = guessed + g
+    else:
+      lives = lives - 1
+
+  {text: "Out of turns."} printLine
+
+fn maskWord({word: str, guessed: str}) -> str:
+  var disp = ""
+  var i = 0
+  let n = word.len
+  for _ in 1 .. n:
+    let c = {s: word, index: i} charAt
+    if {s: guessed, ch: c} containsChar:
+      disp = disp + c
+    else:
+      disp = disp + "_"
+    i = i + 1
+  disp
