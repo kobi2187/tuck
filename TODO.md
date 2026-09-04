@@ -201,8 +201,6 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   in D differently, so the cause is upstream of both.
 
 ### Odin
-- [ ] **[repro] `.toStr` on an int does not compile** — "'n1' of type 'int'
-  has no field 'toStr'". → iface-playground FINDINGS.
 - [ ] **[repro] A list literal cannot reach a `Seq` parameter.**
   `[dynamic]T` has no literal form. Needs statement hoisting in the emitter.
   **Pinned:** `interface_seq`. → MISSING-FEATURES A2.
