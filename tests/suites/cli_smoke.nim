@@ -571,6 +571,47 @@ proc run*(t: var T) =
       t.finish()
       return
 
+    # tuck help / -h / a known command with no file: previously untested —
+    # `tuck dump` with no args fell through to either the full banner or (for
+    # `tuck help dump` specifically) tried to open "dump" as a filename and
+    # died with "no such file" (fixed 2026-09-01, never pinned).
+    block:
+      let bare = sh(@["./tuck", "help"])
+      if bare.rc != 0 or "tuck" notin bare.output:
+        t.no "tuck help", "expected exit 0 and a usage banner"
+        t.finish()
+        return
+      let cmdHelp = sh(@["./tuck", "help", "dump"])
+      if cmdHelp.rc != 0 or "dump" notin cmdHelp.output:
+        t.no "tuck help dump", "expected exit 0 and dump's own usage"
+        t.finish()
+        return
+      let bogus = sh(@["./tuck", "help", "bogus"])
+      if bogus.rc != 2 or "no such command" notin bogus.output:
+        t.no "tuck help bogus", "expected exit 2 naming the unknown command"
+        t.finish()
+        return
+      let noFile = sh(@["./tuck", "dump"])
+      if noFile.rc != 2 or "dump" notin noFile.output:
+        t.no "tuck dump (no file)", "expected exit 2 and dump's own usage"
+        t.finish()
+        return
+
+    # -v: prints "stage starting"/"stage done" for every PipelineStage a run
+    # actually executes (fixed 2026-09-01, never pinned) — off by default.
+    block:
+      let quiet = sh(@["./tuck", "ch", "examples/07-comments.tuck"])
+      if quiet.rc != 0 or "psLoad" in quiet.output:
+        t.no "tuck ch (no -v)", "expected no stage timing output"
+        t.finish()
+        return
+      let verbose = sh(@["./tuck", "ch", "examples/07-comments.tuck", "-v"])
+      if verbose.rc != 0 or "psLoad" notin verbose.output or
+         "psTypecheck" notin verbose.output:
+        t.no "tuck ch -v", "expected psLoad/psTypecheck stage timing output"
+        t.finish()
+        return
+
     # --verify-stages: diagnostic assertions (compiler/pipeline.nim) must not
     # false-positive on real, working code. 28-async-task exercises an [io]
     # async task without needing a dedicated fixture.
