@@ -30,13 +30,15 @@ compiler error instead.
 package backs an interface by declaring an `object` and using `satisfies` —
 Tuck's existing conformance mechanism, unchanged. What's new is that a
 package also carries a TAG SET describing what it's suitable for, inherited
-by everything it satisfies. Tags reuse Tuck's existing effect-attribute
-vocabulary (`[io]`, `[no_alloc]`, `[irq_safe]`, `[may_block]`) rather than
-invent a parallel one, extended with package-level qualities mirroring this
-project's own tier split: `core` (no heap, no OS), `alloc`, `std`, `sys`,
-`platform`, plus cross-cutting qualities like `portable`/`realtime`. A
-package that only needs a stack and never allocates tags itself `[core,
-no_alloc]`; a POSIX filesystem backing tags itself `[std]` or `[sys]`.
+by everything it satisfies. These tags are their OWN, ad hoc vocabulary —
+not a generalization of Tuck's effect attributes (`[io]`, `[no_alloc]`,
+`[irq_safe]`, `[may_block]`). Effect attributes are a per-function, checker-
+enforced contract about what a body of code DOES; package tags are a
+per-package, resolver-level label about what a package is SUITABLE FOR
+(`portable`, `realtime`, `embedded`), unrelated machinery even where a name
+might look similar. They may still mirror this project's tier split (`core`,
+`alloc`, `std`, `sys`, `platform`) as a starting vocabulary, but that's a
+naming convenience, not a reuse of the effects system.
 
 **Packages can introduce NEW interfaces, not only implement existing ones.**
 This is not a special case — it's the default expectation. `std` does not
@@ -64,11 +66,14 @@ because there is nothing yet to fragment.
 is permissive — an unconstrained build accepts any tag-compatible package,
 which is what keeps the offline-weekend-project path a zero-config default
 (see below). A build targeting embedded/no-alloc work states its
-requirement (`[core, no_alloc]`, or similar — exact spelling TBD, likely
-riding the same `--target`/`when TARGET` lever `tests/suites/when_target.nim`
-already exercises, generalized from "which conditional block" to "which
-package"). Resolution only considers packages whose tags satisfy the
-build's stated requirement.
+requirement (`core, no_alloc`, or similar ad hoc list — exact spelling and
+syntax TBD, and deliberately NOT the `[...]` effect-attribute bracket, to
+keep the two mechanisms visually as well as semantically separate). This
+could ride the same `--target`/`when TARGET` lever
+`tests/suites/when_target.nim` already exercises, generalized from "which
+conditional block" to "which package" — or it could be its own flag
+entirely; not decided. Resolution only considers packages whose tags
+satisfy the build's stated requirement.
 
 **The diagnostic this whole mechanism exists to produce**: using a
 capability with no tag-matching, interface-satisfying package wired into the
@@ -117,9 +122,9 @@ need this same retrofit a second time later.
 
 ## Open questions, not resolved here
 
-- Exact tag spelling and where it's declared on a package (a package-level
-  attribute block, analogous to a decl's `[io]` list, or a separate
-  manifest file — undecided).
+- Exact tag spelling and where it's declared on a package (its own
+  package-level block or manifest file, deliberately distinct from a
+  decl's `[io]`-style effect-attribute list — undecided).
 - Whether tag requirement is stated per-build (a CLI flag, `--target`-style)
   or per-`import` (closer to source-level opt-in) — this session's
   discussion leaned toward per-build, matching the offline-default goal, but
