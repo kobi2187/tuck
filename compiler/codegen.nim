@@ -513,8 +513,11 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   # lowering.hoistChainCalls — the receiver here can never be exkChain.
   if semLayer.hasCall(e): return ctx.genConstruction(semLayer.call(e))
   if e.receiver != nil and e.receiver.kind == exkVar:
-    # bare Type.Variant of a payload sum: kind-tagged construction
-    let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
+    # bare Type.Variant of a payload sum: kind-tagged construction. The
+    # payload, if any, arrives as `.fn {args}`'s dotArg — passing nil here
+    # silently dropped every field a `Type.Variant {payload}` construction
+    # supplied.
+    let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
     if ctor != "": return ctor
   if e.receiver != nil and e.receiver.kind == exkActorRef:
     # `ActorType.field` — an actor is a singleton; read its public field off
@@ -526,10 +529,16 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   # payload sum typechecked and then failed to build.
   let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver))
   if sumName != "":
-    let owner = variantOwningField(ctx.module, sumName, e.fieldName)
+    # Inside a match arm that narrowed this subject to one variant, that
+    # variant is the ONLY one this access can mean — never re-derive from
+    # field name alone, which picks whichever variant happens to declare it
+    # first. Keyed by the receiver's emitted text (see genExprMatch).
+    let receiverStr = ctx.genExpr(e.receiver)
+    var owner = ""
+    if ctx.matchNarrowed.hasKey(receiverStr): owner = ctx.matchNarrowed[receiverStr]
+    if owner == "": owner = variantOwningField(ctx.module, sumName, e.fieldName)
     if owner != "":
-      return ctx.genExpr(e.receiver) & "." & owner.toLowerAscii() & "." &
-             e.fieldName
+      return receiverStr & "." & owner.toLowerAscii() & "." & e.fieldName
   ctx.genExpr(e.receiver) & "." & e.fieldName
 
 proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =
@@ -829,6 +838,7 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
   if e.subject == nil: return "discard"
   let ind = "  ".repeat(ctx.indent)
   var subjectStr = ctx.genExpr(e.subject)
+  let subjectRecvStr = subjectStr  # pre-".kind": what genFieldAccess re-emits
   # A PAYLOAD-carrying sum emits as a tagged union, so the case dispatches
   # on the discriminant. Without this it emitted `case s` over an object,
   # which Nim rejects ("selector must be of an ordinal type") — and a
@@ -851,6 +861,17 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
       let dot = arm.pattern.name.find(".")
       patStr = "errCode(\"" & errNameFor(ctx.module, ctx.moduleName,
         arm.pattern.name[0 ..< dot], arm.pattern.name[dot+1 .. ^1]) & "\")"
+    # A variant pattern narrows the subject's storage for the arm body:
+    # `v.field` inside `A: ...` must read `v.a.field`, not whichever variant
+    # happens to declare `field` first. Keyed by the subject's EMITTED text
+    # rather than just a bare var name, so `match r.value:` narrows just as
+    # well as `match v:` — genFieldAccess re-emits the same receiver text to
+    # look this up.
+    var narrowedKey = ""
+    if e.subject != nil and arm.pattern != nil and
+       arm.pattern.kind == pkVar and "." notin arm.pattern.name:
+      narrowedKey = subjectRecvStr
+      ctx.matchNarrowed[narrowedKey] = arm.pattern.name
     # Arms sit one level in from the `case`, and a BLOCK body one level
     # further. Both must be derived from ctx.indent — a match nested in a
     # fn body is not at column 0, and a block body self-indents from the
@@ -864,6 +885,7 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
     else:
       let bodyStr = ctx.genExpr(arm.body)
       cases.add(ind & "of " & patStr & ":\n" & ind & "  " & bodyStr)
+    if narrowedKey != "": ctx.matchNarrowed.del(narrowedKey)
   if errMatch and not hasWild:
     # the code space is uint16 — the declared variants never cover it
     cases.add(ind & "else: discard")

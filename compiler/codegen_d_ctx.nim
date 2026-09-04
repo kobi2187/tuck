@@ -42,6 +42,9 @@ type
                             # instead of dying. Empty everywhere else.
     fieldVars*: HashSet[string]  # inside an invariant: names that are fields
     fieldPrefix*: string         # what those names are reached through
+    matchNarrowed*: Table[string, string]  # subject text -> the variant a
+                                            # match arm currently narrows it
+                                            # to (see codegen.nim's twin)
     idx*: DeclIndex   # O(1) name lookups; a scan here is quadratic over the
                      # emit hot path (measured — see decl_index.nim)
     cLibs*: HashSet[string]  # `lib:` specs from C-FFI extern blocks; each

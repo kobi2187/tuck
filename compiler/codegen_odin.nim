@@ -730,8 +730,11 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   # lowering.hoistChainCalls — the receiver here can never be exkChain.
   if semLayer.hasCall(e): return ctx.genOdinCall(semLayer.call(e))
   if e.receiver != nil and e.receiver.kind == exkVar:
-    # bare Type.Variant of a payload sum: kind-tagged construction
-    let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, nil)
+    # bare Type.Variant of a payload sum: kind-tagged construction. The
+    # payload, if any, arrives as `.fn {args}`'s dotArg — passing nil here
+    # silently dropped every field a `Type.Variant {payload}` construction
+    # supplied.
+    let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
     if ctor != "": return ctor
   if e.receiver != nil and e.receiver.kind == exkRegisterRef:
     # A register field is a raw pointer with no real field — reading it

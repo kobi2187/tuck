@@ -578,12 +578,21 @@ proc dPayloadSumField(ctx: var DCodegenCtx, e: Expr): string =
   ## no payload of its own.
   let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver))
   if sumName != "":
-    let owner = variantOwningField(ctx.module, sumName, e.fieldName)
+    # Inside a match arm that narrowed this subject to one variant, that
+    # variant is the ONLY one this access can mean — never re-derive from
+    # field name alone, which picks whichever variant happens to declare it
+    # first (see codegen.nim's twin fix).
+    let receiverStr = ctx.genDExpr(e.receiver)
+    var owner = ""
+    if ctx.matchNarrowed.hasKey(receiverStr): owner = ctx.matchNarrowed[receiverStr]
+    if owner == "": owner = variantOwningField(ctx.module, sumName, e.fieldName)
     if owner != "":
-      return ctx.genDExpr(e.receiver) & "." & owner.toLowerAscii() & "." &
-             e.fieldName
+      return receiverStr & "." & owner.toLowerAscii() & "." & e.fieldName
   if e.receiver != nil and e.receiver.kind == exkVar:
-    return ctx.dSumVariantCtor(e.receiver.name, e.fieldName, nil)
+    # The payload, if any, arrives as `.fn {args}`'s dotArg — passing nil
+    # here silently dropped every field a `Type.Variant {payload}`
+    # construction supplied.
+    return ctx.dSumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
   ""
 
 
@@ -955,7 +964,7 @@ proc dMatchSubject(ctx: var DCodegenCtx, e: Expr): string =
     base & ".kind"
   else: base
 
-proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm): string =
+proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
   ## `case LABEL:` plus its body, indented one level in. Every arm breaks:
   ## D switch cases fall through by default where Tuck's arms never do, so
   ## the break is the semantics, not decoration. (A body ending in `return`
@@ -963,10 +972,19 @@ proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm): string =
   if arm.guard != nil:
     return dUnsupported("a guarded match arm (M4b)")
   let label = ctx.dPatternStr(arm.pattern)
-  let head = if arm.pattern != nil and arm.pattern.kind == pkWild:
-               ctx.indD & "default:\n"
+  let isWild = arm.pattern != nil and arm.pattern.kind == pkWild
+  let head = if isWild: ctx.indD & "default:\n"
              else: ctx.indD & "case " & label & ":\n"
+  # A variant pattern narrows the subject's storage for the arm body:
+  # `v.field` must read the MATCHED variant's union member, not whichever
+  # variant happens to declare `field` first (see codegen.nim's twin fix).
+  var narrowed = false
+  if narrowKey != "" and not isWild and arm.pattern.kind == pkVar and
+     "." notin arm.pattern.name:
+    ctx.matchNarrowed[narrowKey] = arm.pattern.name
+    narrowed = true
   let body = ctx.genDNested(arm.body)
+  if narrowed: ctx.matchNarrowed.del(narrowKey)
   let ends = body.strip()
   let needsBreak = not (ends.endsWith("return;") or
                         ends.contains("return ") and ends.endsWith(";") and
@@ -988,9 +1006,10 @@ proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string =
   ## be `final` (D rejects a default there), so those emit a plain switch.
   if e.subject == nil: return dUnsupported("decision table (T24)")
   let kw = if hasWildArm(e): "switch" else: "final switch"
+  let narrowKey = ctx.genDExpr(e.subject)
   result = ctx.indD & kw & " (" & ctx.dMatchSubject(e) & ") {\n"
   for arm in e.arms:
-    result.add(ctx.genDMatchArm(arm))
+    result.add(ctx.genDMatchArm(arm, narrowKey))
   result.add(ctx.indD & "}")
 
 proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
@@ -1001,6 +1020,7 @@ proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
   if e.subject == nil: return dUnsupported("decision table in value position")
   let kw = if hasWildArm(e): "switch" else: "final switch"
   let subj = ctx.dMatchSubject(e)
+  let narrowKey = ctx.genDExpr(e.subject)
   let saved = ctx.indent
   ctx.indent = 1
   var arms = ""
@@ -1009,10 +1029,16 @@ proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
       ctx.indent = saved
       return dUnsupported("a guarded match arm (M4b)")
     let label = ctx.dPatternStr(arm.pattern)
-    let head = if arm.pattern != nil and arm.pattern.kind == pkWild:
-                 ctx.indD & "default: "
+    let isWild = arm.pattern != nil and arm.pattern.kind == pkWild
+    let head = if isWild: ctx.indD & "default: "
                else: ctx.indD & "case " & label & ": "
-    arms.add(head & "return " & ctx.genDExpr(arm.body) & ";\n")
+    var narrowed = false
+    if not isWild and arm.pattern.kind == pkVar and "." notin arm.pattern.name:
+      ctx.matchNarrowed[narrowKey] = arm.pattern.name
+      narrowed = true
+    let armBody = ctx.genDExpr(arm.body)
+    if narrowed: ctx.matchNarrowed.del(narrowKey)
+    arms.add(head & "return " & armBody & ";\n")
   ctx.indent = saved
   "(() { " & kw & " (" & subj & ") {\n" & arms &
     ctx.indD & "} })()"

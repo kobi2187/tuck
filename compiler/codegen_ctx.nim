@@ -42,6 +42,10 @@ type
     externInvRets*: Table[string, string]  # extern fn -> invariant ret type
     externEmits*: Table[string, string]    # extern fn -> [emit: "..."] name
     indexBuilt: bool                 # the sets above are populated?
+    matchNarrowed*: Table[string, string]  # var name -> the variant a match
+                                            # arm currently narrows it to, so
+                                            # `v.field` inside the arm reads
+                                            # the MATCHED variant's storage
 
 proc cCallbackSig*(m: Module): string =
   ## The name of a C-callback fnsig declared in an extern block, or "".

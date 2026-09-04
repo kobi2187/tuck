@@ -702,4 +702,50 @@ fn main() -> int:
   t.quietly: t.runs("a bare return in a ?T fn reads back as absent, not present", 0)
   t.bugFixed "a bare return in a ?T fn reads back as absent, not present"
 
+  # N+1. `match`-narrowed field access on a payload sum read the FIRST
+  # declared variant's storage, not the matched arm's — `v.field` inside
+  # EVERY arm of `match v: A: ... B: ...` emitted `v.a.field` regardless of
+  # which arm matched, because `variantOwningField` picks whichever variant
+  # declares that field name first with no notion of "which arm is this".
+  # Typechecks clean, crashes at runtime the moment the wrong variant's tag
+  # doesn't match: Nim's `FieldDefect`. Found 2026-09-04 by the
+  # stdlib-project dogfooding pass. FIXED 2026-09-04: codegen now tracks,
+  # per match arm, which variant the subject is narrowed to (keyed by the
+  # subject's own emitted text, so `match r.value:` narrows as well as
+  # `match v:`) and consults that before falling back to the first-match
+  # scan. All three backends (Nim keyed by matchNarrowed; Odin already got
+  # this right via its per-case `switch v in value` union bind; D given the
+  # same fix as Nim).
+  t.src """
+type V:
+  | A {field: str}
+  | B {field: str}
+
+fn describe({v: V}) -> str:
+  match v:
+    A: return v.field
+    B: return v.field
+
+fn main() -> int:
+  var b = V.B {field: "bee"}
+  {text: ({v: b} describe)} printLine
+  return 0
+"""
+  t.quietly: t.outputs("a match arm reads its OWN variant's field, not the first declared one",
+                        "bee")
+  t.bugFixed "a match arm reads its OWN variant's field, not the first declared one"
+
+  # N+2. Bare `Type.Variant {payload}` sum construction silently dropped
+  # every field: `genFieldAccess`'s "bare Type.Variant" branch called
+  # `sumVariantCtor(..., nil)` unconditionally, discarding `e.dotArg` — the
+  # `{payload}` a caller actually wrote. Found alongside N+1 while
+  # reproducing it (the SAME source above prints an empty line without this
+  # fix, since `V.B {field: "bee"}` built a fieldless `B` regardless of the
+  # match-narrowing fix). FIXED 2026-09-04: pass `e.dotArg` through instead
+  # of `nil` in all three backends (`sumVariantCtor`/`dSumVariantCtor` all
+  # had the same bug at this call site).
+  t.quietly: t.omits("bare variant construction is not built fieldless",
+                     "tuck_V\\(kind: B\\)\\)")
+  t.bugFixed "bare variant construction is not built fieldless"
+
   t.finish()
