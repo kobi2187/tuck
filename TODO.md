@@ -222,17 +222,6 @@ as a *class*, not just nine individual entries; see `INTEGRATION.md`'s
 "Sequencing" section for why the interface-dispatch one specifically blocks
 that design's whole premise.
 
-- [ ] **[repro] A bare `return` in a `?T`-returning fn reads back as
-  PRESENT with zero-valued fields, not absent.** `config-schema-validator`.
-  `tuck_rt.nim`'s `TuckStatus` enum has `tsOk` as its first variant, so a
-  Nim proc falling through a bare `return` returns its zero-valued
-  `TuckResult`, whose `status` defaults to `tsOk`. `tnone[T]()` exists for
-  exactly this and is never emitted by any codegen path (`grep -rn tnone
-  compiler/*.nim` — defined, never called). Fix: a bare `return` inside a
-  `?T`/`!?T`-returning fn must lower to `return tnone[T]()`, not a bare
-  Nim `return`. **Most consequential of the nine** — no error, no crash,
-  just the wrong answer, and "a bare return for the nothing-to-report
-  case" is the natural way to write one.
 - [ ] **[repro] `match`-narrowed field access on a sum type reads the
   FIRST declared variant's storage, not the matched arm's.**
   `config-schema-validator`. Two variants sharing a field name (`A({field:
