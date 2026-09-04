@@ -161,11 +161,6 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   a SECOND, differently-shaped proc also named `buildDeclIndex` for its
   own use. Nothing checks the two agree. Neither is a whole-program gate
   anything else waits on, despite reading like one.
-- [ ] **[repro] `tuck c f.tuck --odin` emits BOTH `.nim` and `.odin`,
-  unconditionally.** Nim backend has no `if` guard at all in `tuck.nim`;
-  `--odin`/`--dlang` are additive on top, not alternatives. Already
-  planned: single-target `case backend of bkNim/bkOdin/bkDlang` — see
-  saved plan `fancy-yawning-karp.md` Phase 1 (drafted, not applied).
 - [ ] **[read] `checkOrDie`'s typecheck→verify-effects ordering is
   enforced only by a comment.** Typechecking resets the shared `semLayer`
   side-table; `verifyModuleEffects` must run after or async call-site

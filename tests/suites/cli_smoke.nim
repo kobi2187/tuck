@@ -612,6 +612,32 @@ proc run*(t: var T) =
         t.finish()
         return
 
+    # tuck c <file> [--odin | --dlang]: emits ONLY the requested backend's
+    # file, never the others alongside it. TODO.md carried this as an open
+    # bug ("emits BOTH .nim and .odin, unconditionally") but `tuck.nim`'s
+    # `case backend of bkNim/bkOdin/bkDlang` dispatch (line ~597) already
+    # guards it correctly — checked directly, the entry was stale. Pinning
+    # the already-correct behavior since nothing did before.
+    block:
+      for (flag, ext, other) in [("", "nim", "odin"), ("--odin", "odin", "nim"),
+                                ("--dlang", "d", "nim")]:
+        let outDir = caseDir("singletarget_" & (if ext == "": "nim" else: ext))
+        var argv = @["./tuck", "c", "examples/07-comments.tuck", "-o:" & outDir]
+        if flag != "": argv.add(flag)
+        if sh(argv).rc != 0:
+          t.no "tuck c " & flag, "expected exit 0"
+          t.finish()
+          return
+        if not fileExists(outDir / "07-comments." & ext):
+          t.no "tuck c " & flag & " emits ." & ext, "file missing"
+          t.finish()
+          return
+        if fileExists(outDir / "07-comments." & other):
+          t.no "tuck c " & flag & " does not also emit ." & other,
+               "found an unrequested backend's output alongside it"
+          t.finish()
+          return
+
     # --verify-stages: diagnostic assertions (compiler/pipeline.nim) must not
     # false-positive on real, working code. 28-async-task exercises an [io]
     # async task without needing a dedicated fixture.
