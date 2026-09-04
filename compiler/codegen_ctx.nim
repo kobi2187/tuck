@@ -21,6 +21,7 @@ type
     typeSection*: seq[string]  # object type headers — emitted with the types,
                               # ahead of every proc (Nim needs decl-before-use)
     retWrapped*: bool      # current fn returns !T/?T → returns auto-wrap
+    retAbsentCapable*: bool  # return type is ?T/!?T → bare return means tnone
     retInnerNim*: string   # Nim type of the payload (for terr[T])
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return sites

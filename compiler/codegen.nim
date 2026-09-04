@@ -396,7 +396,9 @@ proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
 
 proc genReturn(ctx: var CodegenCtx, e: Expr): string =
   if e.returnVal == nil:
-    if ctx.retWrapped and ctx.retInnerNim == "tuple[]": return "return tokVoid()"
+    if ctx.retWrapped and ctx.retAbsentCapable:
+      return "return tnone[" & ctx.retInnerNim & "]()"
+    elif ctx.retWrapped and ctx.retInnerNim == "tuple[]": return "return tokVoid()"
     else: return "return"
   elif ctx.retWrapped:
     return ctx.genWrappedReturn(e.returnVal)

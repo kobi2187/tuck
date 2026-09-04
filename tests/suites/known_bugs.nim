@@ -676,4 +676,30 @@ fn main() -> int:
                         "TK-TY")
   t.bugOpen "field access on a primitive is rejected"
 
+  # N. A bare `return` inside a `?T`/`!?T`-returning fn read back as PRESENT
+  # with zero-valued fields, not absent. `TuckStatus`'s first variant is
+  # `tsOk`, so a Nim proc falling through a bare `return` defaulted its
+  # zero-valued `TuckResult` to `status: tsOk`. `tnone[T]()` existed for
+  # exactly this and no codegen path ever emitted it — silently wrong output,
+  # no error, no crash. Found 2026-09-04 by the stdlib-project dogfooding
+  # pass. FIXED 2026-09-04: `genReturn` (all three backends) now emits
+  # `tnone[T]()` for a bare return when the declared return type is `?T`/
+  # `!?T` — tracked separately from plain `retWrapped`, which a bare `!T`
+  # (no absence, only Ok/Err) also sets and must keep meaning "return
+  # success with a zero value".
+  t.src """
+fn find({n: int}) -> ?int:
+  if n > 0:
+    return n
+  return
+
+fn main() -> int:
+  let r = {n: -1} find
+  if r.ok:
+    return 1
+  return 0
+"""
+  t.quietly: t.runs("a bare return in a ?T fn reads back as absent, not present", 0)
+  t.bugFixed "a bare return in a ?T fn reads back as absent, not present"
+
   t.finish()

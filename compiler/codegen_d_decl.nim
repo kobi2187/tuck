@@ -759,6 +759,7 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # a nested emission may set its own.
   let payload = bangInner(d.fnReturnType)
   ctx.retWrapped = payload != nil
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
   ctx.retInnerT = payload
   ctx.retInnerD =
     if payload == nil: ""
@@ -783,6 +784,7 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   ctx.indent = 0
   ctx.currentParams = @[]
   ctx.retWrapped = false
+  ctx.retAbsentCapable = false
   ctx.retInnerD = ""
   ctx.retInnerT = nil
   result.add("}\n")

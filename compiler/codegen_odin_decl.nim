@@ -238,6 +238,7 @@ proc enterReturnContext*(ctx: var OdinCodegenCtx, d: Decl) =
   ## validate on the way out.
   let (wrapped, innerOdin, innerT) = ctx.odinBangInfo(d.fnReturnType)
   ctx.retWrapped = wrapped
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
   ctx.retInnerOdin = innerOdin
   ctx.retInnerT = innerT
   ctx.retInvName =
@@ -248,6 +249,7 @@ proc enterReturnContext*(ctx: var OdinCodegenCtx, d: Decl) =
 
 proc leaveReturnContext*(ctx: var OdinCodegenCtx) =
   ctx.retWrapped = false
+  ctx.retAbsentCapable = false
   ctx.retInnerOdin = ""
   ctx.retInnerT = nil
   ctx.retInvName = ""
@@ -775,6 +777,7 @@ proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   let oldIndent = ctx.indent
   (ctx.retWrapped, ctx.retInnerOdin, ctx.retInnerT) =
     ctx.odinBangInfo(d.taskReturnType)
+  ctx.retAbsentCapable = absentCapable(d.taskReturnType)
   injectTailReturn(d.taskBody, retTypeStr)
   var bodyStr = ctx.genOdinExpr(d.taskBody)
   if d.taskBody != nil and d.taskBody.kind != exkBlock:
@@ -784,6 +787,7 @@ proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
     bodyStr = ensureTrailingReturn(bodyStr, d.taskBody, oldIndent)
   ctx.indent = oldIndent
   ctx.retWrapped = false
+  ctx.retAbsentCapable = false
   ctx.retInnerOdin = ""
   ctx.retInnerT = nil
   ctx.definedVars = oldVars

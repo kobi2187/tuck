@@ -132,6 +132,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     let oldIndent = ctx.indent
     let (bw, binner, binnerT) = bangInfo(d.fnReturnType)
     ctx.retWrapped = bw
+    ctx.retAbsentCapable = absentCapable(d.fnReturnType)
     ctx.retInnerNim = binner
     ctx.retInnerT = binnerT
     ctx.retInvName =
@@ -142,6 +143,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
     ctx.indent = oldIndent
     ctx.retWrapped = false
+    ctx.retAbsentCapable = false
     ctx.definedVars = oldVars
     return header & "\n" & bodyStr & "\n"
 
@@ -469,6 +471,7 @@ proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
   let oldIndent = ctx.indent
   let oldInTask = ctx.inTask
   (ctx.retWrapped, ctx.retInnerNim, ctx.retInnerT) = bangInfo(d.taskReturnType)
+  ctx.retAbsentCapable = absentCapable(d.taskReturnType)
   injectTailReturn(d.taskBody, retTypeStr)
   ctx.inTask = true
   # A task lowers to a proc, so its body needs no scope of its own either.
@@ -476,6 +479,7 @@ proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
   ctx.inTask = oldInTask
   ctx.indent = oldIndent
   ctx.retWrapped = false
+  ctx.retAbsentCapable = false
   ctx.definedVars = oldVars
   header & "\n" & bodyStr & "\n"
 

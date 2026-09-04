@@ -456,6 +456,8 @@ proc genDWrappedReturn(ctx: var DCodegenCtx, v: Expr): string =
 
 proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
   if e.returnVal == nil:
+    if ctx.retWrapped and ctx.retAbsentCapable:
+      return "return rt.tnone!(" & ctx.retInnerD & ")()"
     if ctx.retWrapped and ctx.retInnerD == "rt.TuckUnit":
       return "return rt.tokVoid()"
     return "return"

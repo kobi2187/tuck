@@ -470,11 +470,16 @@ proc genRaise(ctx: var OdinCodegenCtx, e: Expr): string =
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
 # literals, invariant-carrying returns, or a plain return.
+proc genOdinBareReturn(ctx: OdinCodegenCtx): string =
+  ## A `return` with no value: absent (?T/!?T), void success (!void), or a
+  ## plain Odin `return` otherwise.
+  if ctx.retWrapped and ctx.retAbsentCapable: "return rt.tnone(" & ctx.retInnerOdin & ")"
+  elif ctx.retWrapped and ctx.retInnerOdin == "rt.TuckUnit": "return rt.tokVoid()"
+  else: "return"
+
 proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
   if e.returnVal == nil:
-    if ctx.retWrapped and ctx.retInnerOdin == "rt.TuckUnit":
-      return "return rt.tokVoid()"
-    else: return "return"
+    return ctx.genOdinBareReturn()
   elif ctx.retWrapped:
     let v = e.returnVal
     if v.kind == exkRaise:

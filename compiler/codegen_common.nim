@@ -24,6 +24,13 @@
 import ast, lowering, ast_query, strutils, sets, tables, algorithm, options
 import ./ast_query
 
+proc absentCapable*(t: Type): bool =
+  ## Does this fn's declared return type admit `tsAbsent` — `?T` or `!?T`? A
+  ## plain `!T` has no absence, only Ok/Err, so a bare `return` there means
+  ## success with a zero value, not "nothing to report".
+  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+    t.base.name in ["?", "!?"] and t.args.len == 1
+
 proc findObjectMember*(obj: Decl, name: string): Decl =
   ## The member fn named `name` declared inside object `obj`, or nil — the
   ## satisfier-specific counterpart to `findFn`, which resolves by name alone
