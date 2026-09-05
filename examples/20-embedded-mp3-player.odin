@@ -108,13 +108,13 @@ __validated_tuck_Volume :: proc(v: tuck_Volume) -> tuck_Volume {
 }
 
 tuck_streamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(rt.TuckUnit) {
-  for i in chunks {
-      buf := rt.acquire(&tuck_BufferPool)
-      if !(buf.status == .Ok) {
+  for tuck_i in chunks {
+      tuck_buf := rt.acquire(&tuck_BufferPool)
+      if !(tuck_buf.status == .Ok) {
           return rt.tokVoid()
       }
       tuck_DMA1_CH3_EN_set(true)
-      rt.release(&tuck_BufferPool, buf.value)
+      rt.release(&tuck_BufferPool, tuck_buf.value)
   }
   return {}
 }
@@ -194,7 +194,7 @@ tuck_SystemEvents_PlaybackStopped :: proc () {
 }
 
 tuck_SystemEvents_HardwareError :: proc (code: u8) {
-  failed := code
+  tuck_failed := code
   tuck_DAC_CR_EN_set(false)
 }
 

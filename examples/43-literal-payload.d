@@ -12,10 +12,10 @@ long tuck_addTen(long value) {
 }
 
 void tuck_main() {
-    long a = tuck_double(5);
-    long b = tuck_addTen(tuck_double(10));
-    long total = (a + b);
-    sys.exit(total);
+    long tuck_a = tuck_double(5);
+    long tuck_b = tuck_addTen(tuck_double(10));
+    long tuck_total = (tuck_a + tuck_b);
+    sys.exit(tuck_total);
 }
 
 void main(string[] args) {

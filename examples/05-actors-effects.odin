@@ -38,7 +38,7 @@ handleMsg_tuck_Counter :: proc(self: ^tuck_Counter, msg: tuck_CounterMsg) {
 		n := msg.n
     self.count = (self.count + n)
 	case .msgGet:
-    result := TRec_count_F963{count = self.count}
+    tuck_result := TRec_count_F963{count = self.count}
 	}
 }
 

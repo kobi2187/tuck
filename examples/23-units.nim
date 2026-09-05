@@ -19,6 +19,6 @@ proc tuck_delay*(ms: tuck_Milliseconds): tuple[done: bool] =
   return (done: true)
 
 proc tuck_main*(): void =
-  var r = tuck_delay(tuck_ms(5))
+  var tuck_r = tuck_delay(tuck_ms(5))
   return
 

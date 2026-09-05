@@ -13,10 +13,10 @@ proc tuck_start*(self: tuck_ServerConfig): bool =
   return true
 
 proc tuck_main*(): void =
-  var server = tuck_ServerConfig(port: 0, timeout: 0, running: false)
-  server = tuck_ServerConfig(port: 80, timeout: 30, running: false)
-  server.port = 8080
-  server.timeout = 60
-  var ok = tuck_start(server)
+  var tuck_server = tuck_ServerConfig(port: 0, timeout: 0, running: false)
+  tuck_server = tuck_ServerConfig(port: 80, timeout: 30, running: false)
+  tuck_server.port = 8080
+  tuck_server.timeout = 60
+  var tuck_ok = tuck_start(tuck_server)
   return
 

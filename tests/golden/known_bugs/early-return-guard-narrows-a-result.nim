@@ -4,9 +4,9 @@ proc tuck_readIt*(n: int): TuckResult[tuple[v: int]] =
   return tok((v: n))
 
 proc tuck_main*(): int =
-  var r = tuck_readIt(5)
-  if not r.ok:
+  var tuck_r = tuck_readIt(5)
+  if not tuck_r.ok:
     if true:
       return 0
-  return r.value.v
+  return tuck_r.value.v
 

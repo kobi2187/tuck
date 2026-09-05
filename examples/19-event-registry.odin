@@ -26,12 +26,12 @@ tuck_triggerEvent :: proc () {
 }
 
 tuck_AppEvents_SensorFailure :: proc (port: u8, reason: string) {
-  x := port
-  y := reason
+  tuck_x := port
+  tuck_y := reason
 }
 
 tuck_AppEvents_LowMemory :: proc (remaining: u32) {
-  left := remaining
+  tuck_left := remaining
 }
 
 main :: proc() {

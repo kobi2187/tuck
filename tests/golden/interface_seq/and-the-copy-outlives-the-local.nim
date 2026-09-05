@@ -25,8 +25,8 @@ proc tuck_pick*(a: Animal): Animal =
   return a
 
 proc tuck_makeOne*(): Animal =
-  var d = tuck_Dog(name: "rex")
-  return tuck_pick(Animal(tag: Animal_is_tuck_Dog, tuck_DogVal: d))
+  var tuck_d = tuck_Dog(name: "rex")
+  return tuck_pick(Animal(tag: Animal_is_tuck_Dog, tuck_DogVal: tuck_d))
 
 proc tuck_hear*(a: Animal): int =
   return (block:
@@ -39,6 +39,6 @@ proc tuck_hear*(a: Animal): int =
       noise(tmp))
 
 proc tuck_main*(): int =
-  var a = tuck_makeOne()
-  return tuck_hear(a)
+  var tuck_a = tuck_makeOne()
+  return tuck_hear(tuck_a)
 

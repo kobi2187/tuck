@@ -15,11 +15,11 @@ tuck_start :: proc (self: tuck_ServerConfig) -> bool {
 }
 
 tuck_main :: proc () {
-  server := tuck_ServerConfig{port = 0, timeout = 0, running = false}
-  server = tuck_ServerConfig{port = 80, timeout = 30, running = false}
-  server.port = 8080
-  server.timeout = 60
-  ok := tuck_start(server)
+  tuck_server := tuck_ServerConfig{port = 0, timeout = 0, running = false}
+  tuck_server = tuck_ServerConfig{port = 80, timeout = 30, running = false}
+  tuck_server.port = 8080
+  tuck_server.timeout = 60
+  tuck_ok := tuck_start(tuck_server)
   return
 }
 

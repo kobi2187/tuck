@@ -5,8 +5,8 @@ proc tuck_playTrack*(id: int, name: string, length: int): void =
   discard
 
 proc tuck_main*(): void =
-  var externalTrack = (trackId: 42, title: "Slow Jam", durationMs: 215000)
-  var playerInput = (id: externalTrack.trackId, name: externalTrack.title, length: externalTrack.durationMs)
-  tuck_playTrack(playerInput.id, playerInput.name, playerInput.length)
+  var tuck_externalTrack = (trackId: 42, title: "Slow Jam", durationMs: 215000)
+  var tuck_playerInput = (id: tuck_externalTrack.trackId, name: tuck_externalTrack.title, length: tuck_externalTrack.durationMs)
+  tuck_playTrack(tuck_playerInput.id, tuck_playerInput.name, tuck_playerInput.length)
   return
 

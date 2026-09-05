@@ -4,13 +4,13 @@ import fs
 import console
 
 proc tuck_main*(): void =
-  var w = fs.writeFile("/tmp/tuck-demo.txt", "hello from tuck")
-  if w.ok:
+  var tuck_w = fs.writeFile("/tmp/tuck-demo.txt", "hello from tuck")
+  if tuck_w.ok:
     if true:
-      var r = fs.readFile("/tmp/tuck-demo.txt")
-      if r.ok:
+      var tuck_r = fs.readFile("/tmp/tuck-demo.txt")
+      if tuck_r.ok:
         if true:
-          console.printLine(r.value.content)
+          console.printLine(tuck_r.value.content)
           return
   console.printLine("stdlib demo failed")
 

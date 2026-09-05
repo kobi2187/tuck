@@ -59,8 +59,8 @@ tuck_ready :: proc () -> bool {
 }
 
 tuck_main :: proc () -> int {
-  for i in (1 ..= 10) {
-      sendAdd_tuck_Accumulator(&tuck_AccumulatorSingleton, i)
+  for tuck_i in (1 ..= 10) {
+      sendAdd_tuck_Accumulator(&tuck_AccumulatorSingleton, tuck_i)
   }
   sendFinish_tuck_Accumulator(&tuck_AccumulatorSingleton)
   scheduler.waitUntil(tuck_ready)

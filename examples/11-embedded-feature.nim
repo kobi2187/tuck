@@ -48,10 +48,10 @@ proc tuck_processISR*(event: tuck_SensorEvent): void =
 
 var tuck_UartBuffer* = ObjectPool[array[64, uint8], 8]()
 proc tuck_handleUart*(): void =
-  var buf = acquire(tuck_UartBuffer)
-  if not buf.ok:
+  var tuck_buf = acquire(tuck_UartBuffer)
+  if not tuck_buf.ok:
     if true:
       return
-  release(tuck_UartBuffer, buf.value)
+  release(tuck_UartBuffer, tuck_buf.value)
   return
 

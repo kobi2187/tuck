@@ -16,10 +16,10 @@ foreign z {
 }
 
 tuck_main :: proc () {
-  v := zlibVersion()
-  console.printLine(v)
-  b := compressBound(1000)
-  if (b == 1013) {
+  tuck_v := zlibVersion()
+  console.printLine(tuck_v)
+  tuck_b := compressBound(1000)
+  if (tuck_b == 1013) {
       sys.exit(0)
   }
   sys.exit(1)

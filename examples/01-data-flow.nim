@@ -22,17 +22,17 @@ proc tuck_playTrack*[T](payload: T): void =
 
 
 proc tuck_main*(): void =
-  var request = (url: "example.com", timeout: tuck_ms(5))
-  var response = tuck_selectEpisodes(tuck_parse(tuck_fetch(request)))
-  var feed = tuck_fetch("https://example.com/feed")
-  if feed.hasNew:
+  var tuck_request = (url: "example.com", timeout: tuck_ms(5))
+  var tuck_response = tuck_selectEpisodes(tuck_parse(tuck_fetch(tuck_request)))
+  var tuck_feed = tuck_fetch("https://example.com/feed")
+  if tuck_feed.hasNew:
     if true:
-      tuck_process(feed.episodes)
+      tuck_process(tuck_feed.episodes)
   else:
     if true:
-      tuck_log(feed.metadata)
-  var externalTrack = (trackId: 101, title: "Deep Dive", durationMs: 212000)
-  var normalizedTrack = (id: externalTrack.trackId, name: externalTrack.title, length: externalTrack.durationMs)
-  tuck_playTrack(normalizedTrack)
+      tuck_log(tuck_feed.metadata)
+  var tuck_externalTrack = (trackId: 101, title: "Deep Dive", durationMs: 212000)
+  var tuck_normalizedTrack = (id: tuck_externalTrack.trackId, name: tuck_externalTrack.title, length: tuck_externalTrack.durationMs)
+  tuck_playTrack(tuck_normalizedTrack)
   return
 

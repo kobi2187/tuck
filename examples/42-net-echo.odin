@@ -42,23 +42,23 @@ sendPut_tuck_Result :: proc(self: ^tuck_Result, c: int) {
 }
 
 tuck_serve :: proc(lfd: int) {
-  c := net.accept(lfd)
-  if (c.status == .Ok) {
-      req := net.recv(c.value.fd, 256)
-      s := net.send(c.value.fd, "pong")
-      net.close(c.value.fd)
+  tuck_c := net.accept(lfd)
+  if (tuck_c.status == .Ok) {
+      tuck_req := net.recv(tuck_c.value.fd, 256)
+      tuck_s := net.send(tuck_c.value.fd, "pong")
+      net.close(tuck_c.value.fd)
   }
   return
 }
 
 tuck_client :: proc(port: int) {
-  c := net.connect("127.0.0.1", port)
-  if (c.status == .Ok) {
-      s := net.send(c.value.fd, "ping")
-      r := net.recv(c.value.fd, 256)
-      net.close(c.value.fd)
-      if (r.status == .Ok) {
-          if (r.value.data == "pong") {
+  tuck_c := net.connect("127.0.0.1", port)
+  if (tuck_c.status == .Ok) {
+      tuck_s := net.send(tuck_c.value.fd, "ping")
+      tuck_r := net.recv(tuck_c.value.fd, 256)
+      net.close(tuck_c.value.fd)
+      if (tuck_r.status == .Ok) {
+          if (tuck_r.value.data == "pong") {
               sendPut_tuck_Result(&tuck_ResultSingleton, 42)
               return
           }
@@ -75,12 +75,12 @@ tuck_done :: proc () -> bool {
 }
 
 tuck_main :: proc () -> int {
-  l := net.listen(34593)
-  if (l.status == .Ok) {
-      tuck_serve(l.value.fd)
+  tuck_l := net.listen(34593)
+  if (tuck_l.status == .Ok) {
+      tuck_serve(tuck_l.value.fd)
       tuck_client(34593)
       scheduler.waitUntil(tuck_done)
-      net.close(l.value.fd)
+      net.close(tuck_l.value.fd)
       scheduler.stop()
       return tuck_ResultSingleton.code
   }

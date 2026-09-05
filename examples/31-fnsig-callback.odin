@@ -13,9 +13,9 @@ tuck_plus :: proc (a: int, b: int) -> int {
 }
 
 tuck_main :: proc () {
-  c := tuck_Calc{add = tuck_plus}
-  r := c.add(40, 2)
-  sys.exit(r)
+  tuck_c := tuck_Calc{add = tuck_plus}
+  tuck_r := tuck_c.add(40, 2)
+  sys.exit(tuck_r)
 }
 
 main :: proc() {

@@ -10,7 +10,7 @@ proc tuck_readOrGiveUp*(fd: int): tuple[code: int] =
     return (code: 2)
 
 proc tuck_main*(): int =
-  var src = openSource(5)
-  var r = (let tuckSlot0 = newAsyncResult[tuple[code: int]](); spawnResult(tuckSlot0, proc(): tuple[code: int] {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_readOrGiveUp(src.fd))); awaitResult(tuckSlot0))
-  return r.code
+  var tuck_src = openSource(5)
+  var tuck_r = (let tuckSlot0 = newAsyncResult[tuple[code: int]](); spawnResult(tuckSlot0, proc(): tuple[code: int] {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_readOrGiveUp(tuck_src.fd))); awaitResult(tuckSlot0))
+  return tuck_r.code
 

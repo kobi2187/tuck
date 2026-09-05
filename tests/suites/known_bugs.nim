@@ -767,7 +767,7 @@ fn main() -> void [io]:
   t.quietly: t.outputs("bracket indexing needs no 'import seq'", "99\n")
   t.bugFixed "bracket indexing needs no 'import seq'"
   t.emits "...and lowers to the reserved intrinsic, not a qualified seq call",
-          r"tuckSetAt\(xs, 0, 99\)"
+          r"tuckSetAt\(tuck_xs, 0, 99\)"
   t.omits "...so no seq_at identifier is ever emitted", "seq_at"
 
   # P. `distinct X = f32/f64` could not build on the Nim backend at all:

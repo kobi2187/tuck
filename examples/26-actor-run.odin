@@ -43,8 +43,8 @@ tuck_sumReady :: proc () -> bool {
 }
 
 tuck_main :: proc () -> int {
-  for i in (1 ..= 10) {
-      sendAdd_tuck_Counter(&tuck_CounterSingleton, i)
+  for tuck_i in (1 ..= 10) {
+      sendAdd_tuck_Counter(&tuck_CounterSingleton, tuck_i)
   }
   scheduler.waitUntil(tuck_sumReady)
   return tuck_CounterSingleton.total

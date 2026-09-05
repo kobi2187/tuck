@@ -45,11 +45,11 @@ proc transitionTo*(self: var tuck_MqttSession, target: tuck_MqttSession) =
   self = target
 
 proc tuck_main*(): void =
-  var config = tuck_Config(url: "https://example.com")
-  var feed = tuck_Feed(title: "Deep Dive")
-  var p = tuck_PlayerState(kind: Ready, ready: (config: config, feed: feed))
-  var fresh = tuck_MqttSession(kind: Disconnected)
-  var socket = tuck_Socket(fd: 3)
-  var session = tuck_MqttSession(kind: Connected, connected: (socket: socket, keepalive: 60))
+  var tuck_config = tuck_Config(url: "https://example.com")
+  var tuck_feed = tuck_Feed(title: "Deep Dive")
+  var tuck_p = tuck_PlayerState(kind: Ready, ready: (config: tuck_config, feed: tuck_feed))
+  var tuck_fresh = tuck_MqttSession(kind: Disconnected)
+  var tuck_socket = tuck_Socket(fd: 3)
+  var tuck_session = tuck_MqttSession(kind: Connected, connected: (socket: tuck_socket, keepalive: 60))
   return
 

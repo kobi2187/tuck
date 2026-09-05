@@ -102,13 +102,13 @@ tuck_Volume __validated_tuck_Volume(tuck_Volume v)
 }
 
 rt.TuckResult!(rt.TuckUnit) tuck_streamReader(ubyte streamId, uint[] chunks) {
-    foreach (i; chunks) {
-        rt.TuckResult!(ubyte[512]) buf = rt.acquire(tuck_BufferPool);
-        if (!(buf.status == rt.TuckStatus.Ok)) {
+    foreach (tuck_i; chunks) {
+        rt.TuckResult!(ubyte[512]) tuck_buf = rt.acquire(tuck_BufferPool);
+        if (!(tuck_buf.status == rt.TuckStatus.Ok)) {
             return;
         }
         tuck_DMA1_CH3_EN_set(true);
-        rt.release(tuck_BufferPool, buf.value);
+        rt.release(tuck_BufferPool, tuck_buf.value);
     }
     return typeof(return).init;
 }
@@ -204,7 +204,7 @@ void tuck_SystemEvents_PlaybackStopped() {
 }
 
 void tuck_SystemEvents_HardwareError(ubyte code) {
-    ubyte failed = code;
+    ubyte tuck_failed = code;
     tuck_DAC_CR_EN_set(false);
 }
 

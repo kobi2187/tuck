@@ -11,17 +11,17 @@ struct tuck_Jar {
 }
 
 void tuck_main() {
-    long n = 99;
-    string s = (str.toStr(n) ~ " bottles");
-    console.printLine(s);
-    string t = (str.toStr(n) ~ " more");
-    console.printLine(t);
-    tuck_Jar j = tuck_Jar(count: 7, label: "jam");
-    long c = j.count;
-    string u = ((j.label ~ ": ") ~ str.toStr(c));
-    console.printLine(u);
-    if ((s == "99 bottles")) {
-        if ((u == "jam: 7")) {
+    long tuck_n = 99;
+    string tuck_s = (str.toStr(tuck_n) ~ " bottles");
+    console.printLine(tuck_s);
+    string tuck_t = (str.toStr(tuck_n) ~ " more");
+    console.printLine(tuck_t);
+    tuck_Jar tuck_j = tuck_Jar(count: 7, label: "jam");
+    long tuck_c = tuck_j.count;
+    string tuck_u = ((tuck_j.label ~ ": ") ~ str.toStr(tuck_c));
+    console.printLine(tuck_u);
+    if ((tuck_s == "99 bottles")) {
+        if ((tuck_u == "jam: 7")) {
             sys.exit(0);
         }
     }

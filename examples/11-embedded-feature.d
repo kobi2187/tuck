@@ -43,11 +43,11 @@ void tuck_processISR(tuck_SensorEvent event) {
 __gshared rt.ObjectPool!(ubyte[64], 8) tuck_UartBuffer;
 
 void tuck_handleUart() {
-    rt.TuckResult!(ubyte[64]) buf = rt.acquire(tuck_UartBuffer);
-    if (!(buf.status == rt.TuckStatus.Ok)) {
+    rt.TuckResult!(ubyte[64]) tuck_buf = rt.acquire(tuck_UartBuffer);
+    if (!(tuck_buf.status == rt.TuckStatus.Ok)) {
         return;
     }
-    rt.release(tuck_UartBuffer, buf.value);
+    rt.release(tuck_UartBuffer, tuck_buf.value);
     return;
 }
 

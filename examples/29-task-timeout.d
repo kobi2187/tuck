@@ -26,11 +26,11 @@ TRec_code_C9C6 tuck_readOrGiveUp(long fd) {
 }
 
 long tuck_main() {
-    TRec_fd_EC6A src = openSource(500);
+    TRec_fd_EC6A tuck_src = openSource(500);
     auto tuckSlot1 = rt.newAsyncResult!(TRec_code_C9C6)();
-    rt.spawnResult(tuckSlot1, { return tuck_readOrGiveUp(src.fd); });
-    TRec_code_C9C6 r = rt.awaitResult(tuckSlot1);
-    return r.code;
+    rt.spawnResult(tuckSlot1, { return tuck_readOrGiveUp(tuck_src.fd); });
+    TRec_code_C9C6 tuck_r = rt.awaitResult(tuckSlot1);
+    return tuck_r.code;
 }
 
 int main(string[] args) {

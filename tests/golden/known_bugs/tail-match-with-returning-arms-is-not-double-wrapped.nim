@@ -6,12 +6,12 @@ proc tuck_describe*(l: tuck_Light): int =
   (case l
   of Red:
     if true:
-      var a = 1
-      return a
+      var tuck_a = 1
+      return tuck_a
   of Green:
     if true:
-      var b = 2
-      return b)
+      var tuck_b = 2
+      return tuck_b)
 
 proc tuck_main*(): int =
   return tuck_describe(tuck_Light.Green)

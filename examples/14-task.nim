@@ -10,9 +10,9 @@ proc tuck_parse*[T](payload: T): tuple[feed: tuck_Feed] =
 
 
 proc tuck_fetchFeed*(url: string): TuckResult[tuple[feed: tuck_Feed]] =
-  var resp = http.tuck_get(url)
-  if resp.ok:
+  var tuck_resp = http.tuck_get(url)
+  if tuck_resp.ok:
     if true:
-      return tok(tuck_parse(resp.value.body))
-  return terr[tuple[feed: tuck_Feed]](uint16(resp.err))
+      return tok(tuck_parse(tuck_resp.value.body))
+  return terr[tuple[feed: tuck_Feed]](uint16(tuck_resp.err))
 

@@ -18,10 +18,10 @@ tuck_addTwo :: proc "c" (a: i32, b: i32) -> i32 {
 }
 
 tuck_main :: proc () {
-  m := applyOp(Op.OP_MUL, 6, 7)
-  c := callBack(tuck_addTwo, 40, 2)
-  if (m == 42) {
-      if (c == 1042) {
+  tuck_m := applyOp(Op.OP_MUL, 6, 7)
+  tuck_c := callBack(tuck_addTwo, 40, 2)
+  if (tuck_m == 42) {
+      if (tuck_c == 1042) {
           sys.exit(0)
       }
   }

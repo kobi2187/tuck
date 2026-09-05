@@ -59,17 +59,17 @@ tuck_playTrack :: proc(payload: $T) {
 
 
 tuck_main :: proc () {
-  request := TRec_url_timeout_E49C{url = "example.com", timeout = time.tuck_ms(5)}
-  response := tuck_selectEpisodes(tuck_parse(tuck_fetch(request)))
-  feed := tuck_fetch("https://example.com/feed")
-  if feed.hasNew {
-      tuck_process(feed.episodes)
+  tuck_request := TRec_url_timeout_E49C{url = "example.com", timeout = time.tuck_ms(5)}
+  tuck_response := tuck_selectEpisodes(tuck_parse(tuck_fetch(tuck_request)))
+  tuck_feed := tuck_fetch("https://example.com/feed")
+  if tuck_feed.hasNew {
+      tuck_process(tuck_feed.episodes)
   } else {
-      tuck_log(feed.metadata)
+      tuck_log(tuck_feed.metadata)
   }
-  externalTrack := TRec_trackId_title_durationMs_80A6{trackId = 101, title = "Deep Dive", durationMs = 212000}
-  normalizedTrack := TRec_id_name_length_19B2{id = externalTrack.trackId, name = externalTrack.title, length = externalTrack.durationMs}
-  tuck_playTrack(normalizedTrack)
+  tuck_externalTrack := TRec_trackId_title_durationMs_80A6{trackId = 101, title = "Deep Dive", durationMs = 212000}
+  tuck_normalizedTrack := TRec_id_name_length_19B2{id = tuck_externalTrack.trackId, name = tuck_externalTrack.title, length = tuck_externalTrack.durationMs}
+  tuck_playTrack(tuck_normalizedTrack)
   return
 }
 

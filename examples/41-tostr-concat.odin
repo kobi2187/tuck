@@ -11,17 +11,17 @@ tuck_Jar :: struct {
 }
 
 tuck_main :: proc () {
-  n := 99
-  s := rt.tuckConcat(str.toStr(n), " bottles")
-  console.printLine(s)
-  t := rt.tuckConcat(str.toStr(n), " more")
-  console.printLine(t)
-  j := tuck_Jar{count = 7, label = "jam"}
-  c := j.count
-  u := rt.tuckConcat(rt.tuckConcat(j.label, ": "), str.toStr(c))
-  console.printLine(u)
-  if (s == "99 bottles") {
-      if (u == "jam: 7") {
+  tuck_n := 99
+  tuck_s := rt.tuckConcat(str.toStr(tuck_n), " bottles")
+  console.printLine(tuck_s)
+  tuck_t := rt.tuckConcat(str.toStr(tuck_n), " more")
+  console.printLine(tuck_t)
+  tuck_j := tuck_Jar{count = 7, label = "jam"}
+  tuck_c := tuck_j.count
+  tuck_u := rt.tuckConcat(rt.tuckConcat(tuck_j.label, ": "), str.toStr(tuck_c))
+  console.printLine(tuck_u)
+  if (tuck_s == "99 bottles") {
+      if (tuck_u == "jam: 7") {
           sys.exit(0)
       }
   }

@@ -27,7 +27,7 @@ proc handleMsg*(self: tuck_Counter, msg: tuck_CounterMsg) =
       self.count = (self.count + n)
   of msgGet:
     if true:
-      var result = (count: self.count)
+      var tuck_result = (count: self.count)
 
 proc draintuck_Counter(): bool {.gcsafe.} =
   {.cast(gcsafe).}:

@@ -122,12 +122,12 @@ fn main() -> int:
   return acc + d + m + neg + w + skipped
 """
   t.emitsD "M2: first assignment declares with the checker's 64-bit type",
-           "long acc = 0;"
+           "long tuck_acc = 0;"
   t.emitsD "M2: exclusive range is D's native exclusive foreach",
-           r"foreach \(i; 1 \.\. 11\)"
+           r"foreach \(tuck_i; 1 \.\. 11\)"
   t.emitsD "M2: inclusive range widens the upper bound by one",
-           r"foreach \(i; 0 \.\. 4 \+ 1\)"
-  t.emitsD "M2: while-form for emits a native while", r"while \(\(w < 4\)\)"
+           r"foreach \(tuck_i; 0 \.\. 4 \+ 1\)"
+  t.emitsD "M2: while-form for emits a native while", r"while \(\(tuck_w < 4\)\)"
   t.runsD "M2: control flow and arithmetic compute 77", 77, dmdExe
 
   # T10 + leftovers: strings, loop:, value-if, list iteration, echo.
@@ -157,14 +157,14 @@ fn main() -> int:
   return n + c + pick + total + idxSum
 """
   t.emitsD "M2: string + is D's native concat, no runtime call",
-           r"s = \(s ~ ""cd""\)"
+           r"tuck_s = \(tuck_s ~ ""cd""\)"
   t.emitsD "M2: len is D's native length, cast back to Tuck's signed int",
-           r"cast\(long\) s\.length"
+           r"cast\(long\) tuck_s\.length"
   t.emitsD "M2: value-position if is D's native ternary",
-           r"\(\(c == 3\) \? 10 : 20\)"
+           r"\(\(tuck_c == 3\) \? 10 : 20\)"
   t.emitsD "M2: index+value loop is D's native two-variable foreach",
-           r"foreach \(i, x; xs\)"
-  t.emitsD "M2: echo maps to writeln", r"writeln\(total\)"
+           r"foreach \(tuck_i, tuck_x; tuck_xs\)"
+  t.emitsD "M2: echo maps to writeln", r"writeln\(tuck_total\)"
   t.omitsD "M2: nothing reaches for a runtime concat helper", "tuckConcat"
   t.runsD "M2: strings, loop and lists compute 38", 38, dmdExe
 
@@ -230,7 +230,7 @@ fn main() -> int:
   return x + a[0] + b[0]
 """
   t.emitsD "M3: Seq assignment restores value semantics with .dup",
-           r"long\[\] b = \(a\)\.dup;"
+           r"long\[\] tuck_b = \(tuck_a\)\.dup;"
   t.runsD "M3: writing b never writes a (7+7+50)", 64, dmdExe
 
   # --- Milestone 4: sum types and match ----------------------------------
@@ -280,7 +280,7 @@ fn main() -> int:
   return code
 """
   t.emitsD "M4: value-position match keeps the exhaustive switch in a lambda",
-           r"\(\(\) \{ final switch \(c\) \{"
+           r"\(\(\) \{ final switch \(tuck_c\) \{"
   t.omitsD "M4: no chained ternary for a value match", r"\? 1 :"
   t.runsD "M4: value-position match yields the arm's value", 2, dmdExe
 
@@ -452,7 +452,7 @@ fn main() -> int:
   return a[0] + b[0]
 """
   t.emitsD "seam: lowering marks the Seq copy, the emitter only prints it",
-           r"long\[\] b = \(a\)\.dup;"
+           r"long\[\] tuck_b = \(tuck_a\)\.dup;"
   t.omitsD "seam: a fresh list literal owns its storage and needs no copy",
            r"= \(\[7, 8, 9\]\)\.dup"
   t.runsD "seam: writing b still never writes a (7+50)", 57, dmdExe
@@ -688,7 +688,7 @@ fn main() -> int:
   t.emitsD "iface: the variant carries a tag plus one field per satisfier",
            r"struct Animal \{\n    AnimalTag tag;"
   t.emitsD "iface: a wrap copies the concrete value in, tag and all",
-           r"Animal\(AnimalTag\.Animal_is_tuck_Dog, tuck_DogVal: dd\)"
+           r"Animal\(AnimalTag\.Animal_is_tuck_Dog, tuck_DogVal: tuck_dd\)"
   t.omitsD "iface: no thunk per (type, member) — the spec's own claim",
            r"Animal_tuck_Dog_noise"
   t.runsD "iface: wrap copies (3), a later wrap sees 9, so 3+9=12",

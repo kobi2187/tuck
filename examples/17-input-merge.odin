@@ -28,8 +28,8 @@ tuck_header :: proc (episode: tuck_Episode, n: int) -> string {
 }
 
 tuck_play :: proc (episode: tuck_Episode, prefs: tuck_PlayerPrefs) -> string {
-  ctx := TRec_title_duration_playSpeed_volume_speed_F007{title = episode.title, duration = episode.duration, playSpeed = episode.playSpeed, volume = prefs.volume, speed = prefs.speed}
-  return tuck_describe(ctx.title, ctx.volume)
+  tuck_ctx := TRec_title_duration_playSpeed_volume_speed_F007{title = episode.title, duration = episode.duration, playSpeed = episode.playSpeed, volume = prefs.volume, speed = prefs.speed}
+  return tuck_describe(tuck_ctx.title, tuck_ctx.volume)
 }
 
 main :: proc() {

@@ -28,9 +28,9 @@ tuck_stepIo :: proc (n: int) -> TRec_v_9DF2 {
 }
 
 tuck_compute :: proc(base: int) -> TRec_r_5BC4 {
-  a := tuck_stepIo(base)
-  b := tuck_stepIo(base)
-  return TRec_r_5BC4{r = (a.v + b.v)}
+  tuck_a := tuck_stepIo(base)
+  tuck_b := tuck_stepIo(base)
+  return TRec_r_5BC4{r = (tuck_a.v + tuck_b.v)}
 }
 
 tuck_main :: proc () -> int {
@@ -42,8 +42,8 @@ tuck_main :: proc () -> int {
   context.user_ptr = env0
   rt.tuckSpawn(wrap_tuck_compute)
   context.user_ptr = savedCtx0
-  res := rt.awaitResult(slot0)
-  return res.r
+  tuck_res := rt.awaitResult(slot0)
+  return tuck_res.r
 }
 
 main :: proc() {

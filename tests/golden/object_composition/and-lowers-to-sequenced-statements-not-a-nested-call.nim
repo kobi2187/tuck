@@ -16,6 +16,6 @@ proc play*(self: var tuck_App, n: int): void =
 
 
 proc tuck_main*(): int =
-  var a = tuck_App(n: 1)
+  var tuck_a = tuck_App(n: 1)
   return 0
 

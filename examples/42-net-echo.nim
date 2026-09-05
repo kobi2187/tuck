@@ -35,24 +35,24 @@ proc registerActortuck_Result*() =
   tuckStartActor(draintuck_Result)
 
 proc tuck_serve*(lfd: int): void =
-  var c = net.accept(lfd)
-  if c.ok:
+  var tuck_c = net.accept(lfd)
+  if tuck_c.ok:
     if true:
-      var req = net.recv(c.value.fd, 256)
-      var s = net.send(c.value.fd, "pong")
-      net.close(c.value.fd)
+      var tuck_req = net.recv(tuck_c.value.fd, 256)
+      var tuck_s = net.send(tuck_c.value.fd, "pong")
+      net.close(tuck_c.value.fd)
   return
 
 proc tuck_client*(port: int): void =
-  var c = net.connect("127.0.0.1", port)
-  if c.ok:
+  var tuck_c = net.connect("127.0.0.1", port)
+  if tuck_c.ok:
     if true:
-      var s = net.send(c.value.fd, "ping")
-      var r = net.recv(c.value.fd, 256)
-      net.close(c.value.fd)
-      if r.ok:
+      var tuck_s = net.send(tuck_c.value.fd, "ping")
+      var tuck_r = net.recv(tuck_c.value.fd, 256)
+      net.close(tuck_c.value.fd)
+      if tuck_r.ok:
         if true:
-          if (r.value.data == "pong"):
+          if (tuck_r.value.data == "pong"):
             if true:
               discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(kind: msgPut, c: 42))
               tuckNotifySend()
@@ -68,13 +68,13 @@ proc tuck_done*(): bool =
   return tuck_ResultSingleton.ready
 
 proc tuck_main*(): int =
-  var l = net.listen(34593)
-  if l.ok:
+  var tuck_l = net.listen(34593)
+  if tuck_l.ok:
     if true:
-      tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_serve(l.value.fd)))
+      tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_serve(tuck_l.value.fd)))
       tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_client(34593)))
       scheduler.waitUntil(tuck_done)
-      net.close(l.value.fd)
+      net.close(tuck_l.value.fd)
       scheduler.stop()
       return tuck_ResultSingleton.code
   return 1

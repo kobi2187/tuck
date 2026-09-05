@@ -18,8 +18,8 @@ tuck_fetch :: proc(payload: $T) -> TRec_status_2372 {
 
 
 tuck_main :: proc () {
-  config := TRec_url_timeout_91DC{url = "https://api.example.com", timeout = 100}
-  result := tuck_fetch(config)
+  tuck_config := TRec_url_timeout_91DC{url = "https://api.example.com", timeout = 100}
+  tuck_result := tuck_fetch(tuck_config)
   return
 }
 

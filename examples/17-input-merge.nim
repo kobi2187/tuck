@@ -17,6 +17,6 @@ proc tuck_header*(episode: tuck_Episode, n: int): string =
   return episode.title
 
 proc tuck_play*(episode: tuck_Episode, prefs: tuck_PlayerPrefs): string =
-  var ctx = (title: episode.title, duration: episode.duration, playSpeed: episode.playSpeed, volume: prefs.volume, speed: prefs.speed)
-  return tuck_describe(ctx.title, ctx.volume)
+  var tuck_ctx = (title: episode.title, duration: episode.duration, playSpeed: episode.playSpeed, volume: prefs.volume, speed: prefs.speed)
+  return tuck_describe(tuck_ctx.title, tuck_ctx.volume)
 

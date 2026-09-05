@@ -11,10 +11,10 @@ proc counterBump*(c: Counter, by: int32): int32 {.importc: "counterBump", header
 proc counterFree*(c: Counter): void {.importc: "counterFree", header: "point.h".}
 
 proc tuck_main*(): void =
-  var h = counterNew(100)
-  var t = counterBump(h, 5)
-  counterFree(h)
-  if (t == 105):
+  var tuck_h = counterNew(100)
+  var tuck_t = counterBump(tuck_h, 5)
+  counterFree(tuck_h)
+  if (tuck_t == 105):
     if true:
       tuck_rt.exit(0)
   tuck_rt.exit(1)

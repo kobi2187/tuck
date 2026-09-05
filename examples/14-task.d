@@ -19,10 +19,10 @@ TRec_feed_A1A6 tuck_parse(T)(T payload) {
 
 
 rt.TuckResult!(TRec_feed_A1A6) tuck_fetchFeed(string url) {
-    rt.TuckResult!(http.TRec_http_body_12C4) resp = http.tuck_get(url);
-    if ((resp.status == rt.TuckStatus.Ok)) {
-        return tuck_parse(resp.value.body);
+    rt.TuckResult!(http.TRec_http_body_12C4) tuck_resp = http.tuck_get(url);
+    if ((tuck_resp.status == rt.TuckStatus.Ok)) {
+        return tuck_parse(tuck_resp.value.body);
     }
-    return rt.terr!(rt.TuckUnit)(cast(ushort)(resp.err));
+    return rt.terr!(rt.TuckUnit)(cast(ushort)(tuck_resp.err));
 }
 

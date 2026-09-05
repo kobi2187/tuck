@@ -97,7 +97,7 @@ fn main() -> void:
   let n = p advance
   return
 """), d / "out")
-  mustContain(d / "out" / "p.nim", "advance(p.position, p.step)")
+  mustContain(d / "out" / "p.nim", "advance(tuck_p.position, tuck_p.step)")
   mustExit(d / "out" / "p", 0)
   removeDir(d)
 

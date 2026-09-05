@@ -12,8 +12,8 @@ proc `<=`*(a, b: tuck_SafeRPM): bool {.borrow.}
 proc `$`*(a: tuck_SafeRPM): string {.borrow.}
 
 proc tuck_main*(): int =
-  var s = tuck_SafeRPM(tuckSat[uint16](uint64(70000)))
-  if (s == tuck_SafeRPM(tuckSat[uint16](uint64(65535)))):
+  var tuck_s = tuck_SafeRPM(tuckSat[uint16](uint64(70000)))
+  if (tuck_s == tuck_SafeRPM(tuckSat[uint16](uint64(65535)))):
     if true:
       return 1
   return 2

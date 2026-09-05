@@ -11,10 +11,10 @@ tuck_addTen :: proc (value: int) -> int {
 }
 
 tuck_main :: proc () {
-  a := tuck_double(5)
-  b := tuck_addTen(tuck_double(10))
-  total := (a + b)
-  sys.exit(total)
+  tuck_a := tuck_double(5)
+  tuck_b := tuck_addTen(tuck_double(10))
+  tuck_total := (tuck_a + tuck_b)
+  sys.exit(tuck_total)
 }
 
 main :: proc() {

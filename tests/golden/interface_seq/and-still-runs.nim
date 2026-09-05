@@ -22,14 +22,14 @@ proc noise*(self: var tuck_Cat): int =
 
 
 proc tuck_count*(xs: seq[tuck_Dog]): int =
-  var s = 0
-  for d in xs:
+  var tuck_s = 0
+  for tuck_d in xs:
     if true:
-      s = (s + 1)
-  return s
+      tuck_s = (tuck_s + 1)
+  return tuck_s
 
 proc tuck_main*(): int =
-  var a = tuck_Dog(name: "rex")
-  var b = tuck_Dog(name: "fido")
-  return tuck_count(@[a, b])
+  var tuck_a = tuck_Dog(name: "rex")
+  var tuck_b = tuck_Dog(name: "fido")
+  return tuck_count(@[tuck_a, tuck_b])
 

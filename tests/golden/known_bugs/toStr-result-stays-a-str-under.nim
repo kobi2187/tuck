@@ -2,7 +2,7 @@
 import str
 
 proc tuck_main*(): int =
-  var n = 3
-  var s = tuckConcat(tuck_rt.toStr(n), " bottles")
+  var tuck_n = 3
+  var tuck_s = tuckConcat(tuck_rt.toStr(tuck_n), " bottles")
   return 0
 

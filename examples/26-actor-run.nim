@@ -35,9 +35,9 @@ proc tuck_sumReady*(): bool =
   return (tuck_CounterSingleton.total == 55)
 
 proc tuck_main*(): int =
-  for i in (1 .. 10):
+  for tuck_i in (1 .. 10):
     if true:
-      discard enqueue(tuck_CounterSingleton.mailbox, tuck_CounterMsg(kind: msgAdd, n: i))
+      discard enqueue(tuck_CounterSingleton.mailbox, tuck_CounterMsg(kind: msgAdd, n: tuck_i))
       tuckNotifySend()
   scheduler.waitUntil(tuck_sumReady)
   return tuck_CounterSingleton.total

@@ -40,17 +40,17 @@ tuck_readOrGiveUp :: proc(fd: int) -> TRec_code_CEC9 {
 }
 
 tuck_main :: proc () -> int {
-  src := openSource(5)
+  tuck_src := openSource(5)
   env0 := new(Env_tuck_readOrGiveUp)
-  env0.fd = src.fd
+  env0.fd = tuck_src.fd
   slot0 := rt.newAsyncResult(TRec_code_CEC9)
   env0.slot = slot0
   savedCtx0 := context.user_ptr
   context.user_ptr = env0
   rt.tuckSpawn(wrap_tuck_readOrGiveUp)
   context.user_ptr = savedCtx0
-  r := rt.awaitResult(slot0)
-  return r.code
+  tuck_r := rt.awaitResult(slot0)
+  return tuck_r.code
 }
 
 main :: proc() {

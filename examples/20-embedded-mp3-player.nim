@@ -79,14 +79,14 @@ registerMMIO(tuck_DMA1_CH3, 0x40020030):
 
 var tuck_BufferPool* = ObjectPool[array[512, uint8], 4]()
 proc tuck_streamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[]] =
-  for i in chunks:
+  for tuck_i in chunks:
     if true:
-      var buf = acquire(tuck_BufferPool)
-      if not buf.ok:
+      var tuck_buf = acquire(tuck_BufferPool)
+      if not tuck_buf.ok:
         if true:
           return tokVoid()
       tuck_DMA1_CH3.EN = true
-      release(tuck_BufferPool, buf.value)
+      release(tuck_BufferPool, tuck_buf.value)
 
 type tuck_DecoderMsgKind* = enum msgPlay, msgPause, msgStop
 type tuck_DecoderMsg* = object
@@ -153,7 +153,7 @@ proc tuck_SystemEvents_PlaybackStopped*(): void =
   tuck_DAC_CR.EN = false
 
 proc tuck_SystemEvents_HardwareError*(code: uint8): void =
-  var failed = code
+  var tuck_failed = code
   tuck_DAC_CR.EN = false
 
 proc tuck_main*(): void =

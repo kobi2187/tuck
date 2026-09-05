@@ -29,12 +29,12 @@ void tuck_triggerEvent() {
 }
 
 void tuck_AppEvents_SensorFailure(ubyte port, string reason) {
-    ubyte x = port;
-    string y = reason;
+    ubyte tuck_x = port;
+    string tuck_y = reason;
 }
 
 void tuck_AppEvents_LowMemory(uint remaining) {
-    uint left = remaining;
+    uint tuck_left = remaining;
 }
 
 static assert((1 == 1));

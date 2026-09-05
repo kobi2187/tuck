@@ -46,23 +46,23 @@ void sendPut_tuck_Result(ref tuck_Result self, long c) {
 
 
 void tuck_serve(long lfd) {
-    rt.TuckResult!(net.TRec_net_fd_EC6A) c = net.accept(lfd);
-    if ((c.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(net.TRec_net_data_F9C9) req = net.recv(c.value.fd, 256);
-        rt.TuckResult!(net.TRec_net_sent_18CB) s = net.send(c.value.fd, "pong");
-        net.close(c.value.fd);
+    rt.TuckResult!(net.TRec_net_fd_EC6A) tuck_c = net.accept(lfd);
+    if ((tuck_c.status == rt.TuckStatus.Ok)) {
+        rt.TuckResult!(net.TRec_net_data_F9C9) tuck_req = net.recv(tuck_c.value.fd, 256);
+        rt.TuckResult!(net.TRec_net_sent_18CB) tuck_s = net.send(tuck_c.value.fd, "pong");
+        net.close(tuck_c.value.fd);
     }
     return;
 }
 
 void tuck_client(long port) {
-    rt.TuckResult!(net.TRec_net_fd_EC6A) c = net.connect("127.0.0.1", port);
-    if ((c.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(net.TRec_net_sent_18CB) s = net.send(c.value.fd, "ping");
-        rt.TuckResult!(net.TRec_net_data_F9C9) r = net.recv(c.value.fd, 256);
-        net.close(c.value.fd);
-        if ((r.status == rt.TuckStatus.Ok)) {
-            if ((r.value.data == "pong")) {
+    rt.TuckResult!(net.TRec_net_fd_EC6A) tuck_c = net.connect("127.0.0.1", port);
+    if ((tuck_c.status == rt.TuckStatus.Ok)) {
+        rt.TuckResult!(net.TRec_net_sent_18CB) tuck_s = net.send(tuck_c.value.fd, "ping");
+        rt.TuckResult!(net.TRec_net_data_F9C9) tuck_r = net.recv(tuck_c.value.fd, 256);
+        net.close(tuck_c.value.fd);
+        if ((tuck_r.status == rt.TuckStatus.Ok)) {
+            if ((tuck_r.value.data == "pong")) {
                 sendPut_tuck_Result(tuck_ResultSingleton, 42);
                 return;
             }
@@ -79,12 +79,12 @@ bool tuck_done() {
 }
 
 long tuck_main() {
-    rt.TuckResult!(net.TRec_net_fd_EC6A) l = net.listen(34593);
-    if ((l.status == rt.TuckStatus.Ok)) {
-        rt.tuckSpawn({ cast(void) tuck_serve(l.value.fd); });
+    rt.TuckResult!(net.TRec_net_fd_EC6A) tuck_l = net.listen(34593);
+    if ((tuck_l.status == rt.TuckStatus.Ok)) {
+        rt.tuckSpawn({ cast(void) tuck_serve(tuck_l.value.fd); });
         rt.tuckSpawn({ cast(void) tuck_client(34593); });
         scheduler.waitUntil(&tuck_done);
-        net.close(l.value.fd);
+        net.close(tuck_l.value.fd);
         scheduler.stop();
         return tuck_ResultSingleton.code;
     }

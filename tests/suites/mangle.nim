@@ -76,7 +76,13 @@ fn main() -> int:
   t.emits "field access stays bare", "p\\.x"
   t.omits "fields are NOT mangled",  "tuck_x"
 
-  # Locals and params shadow: a local named like a global keeps its own name.
+  # PARAMS stay bare — a param name is a contract, not a free identifier: it
+  # is the payload field a caller binds by name, it becomes an envelope
+  # struct's field for a task or actor handler, and `self` is matched
+  # literally by every backend. LOCALS carry no second meaning, so they are
+  # mangled like everything else the compiler emits — `var out = ""` is legal
+  # Tuck and a syntax error in Nim, and scope never protected a local from
+  # the BACKEND's own names.
   t.src """
 fn helper({value: int}) -> int:
   return value
@@ -85,8 +91,9 @@ fn main() -> int:
   let value = 7
   return {value: value} helper
 """
-  t.emits "params stay bare",          "value: int"
-  t.omits "params/locals NOT mangled", "tuck_value"
+  t.emits "params stay bare",              "value: int"
+  t.emits "a local IS mangled",            "tuck_value = 7"
+  t.emits "...and its references follow",  r"helper\(tuck_value\)"
 
   # Externs bind a foreign symbol BY NAME, so they must survive verbatim —
   # this is the FFI escape hatch an explicit attribute would extend.

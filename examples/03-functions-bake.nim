@@ -10,9 +10,9 @@ proc tuck_applyOperation*(a: int, b: int, op: tuck_BinOp): int =
   return op(a, b)
 
 proc tuck_main*(): void =
-  var x = (a: 5, b: 10)
-  var withOp = (a: x.a, b: x.b, op: tuck_plus)
-  var smaller = (a: withOp.a, b: 2, op: withOp.op)
-  var r = tuck_applyOperation(smaller.a, smaller.b, smaller.op)
+  var tuck_x = (a: 5, b: 10)
+  var tuck_withOp = (a: tuck_x.a, b: tuck_x.b, op: tuck_plus)
+  var tuck_smaller = (a: tuck_withOp.a, b: 2, op: tuck_withOp.op)
+  var tuck_r = tuck_applyOperation(tuck_smaller.a, tuck_smaller.b, tuck_smaller.op)
   return
 

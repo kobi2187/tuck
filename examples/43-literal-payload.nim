@@ -9,8 +9,8 @@ proc tuck_addTen*(value: int): int =
   return (value + 10)
 
 proc tuck_main*(): void =
-  var a = tuck_double(5)
-  var b = tuck_addTen(tuck_double(10))
-  var total = (a + b)
-  sys.exit(total)
+  var tuck_a = tuck_double(5)
+  var tuck_b = tuck_addTen(tuck_double(10))
+  var tuck_total = (tuck_a + tuck_b)
+  sys.exit(tuck_total)
 

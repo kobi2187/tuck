@@ -16,7 +16,7 @@ proc tuck_fetch*[T](payload: T): tuple[status: int] =
 
 
 proc tuck_main*(): void =
-  var config = (url: "https://api.example.com", timeout: 100)
-  var result = tuck_fetch(config)
+  var tuck_config = (url: "https://api.example.com", timeout: 100)
+  var tuck_result = tuck_fetch(tuck_config)
   return
 

@@ -10,10 +10,10 @@ import console
 proc compressBound*(sourceLen: uint64): uint64 {.importc: "compressBound", header: "zlib.h".}
 
 proc tuck_main*(): void =
-  var v = zlibVersion()
-  tuck_rt.printLine(v)
-  var b = compressBound(1000)
-  if (b == 1013):
+  var tuck_v = zlibVersion()
+  tuck_rt.printLine(tuck_v)
+  var tuck_b = compressBound(1000)
+  if (tuck_b == 1013):
     if true:
       tuck_rt.exit(0)
   tuck_rt.exit(1)

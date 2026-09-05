@@ -60,17 +60,17 @@ void tuck_playTrack(T)(T payload) {
 
 
 void tuck_main() {
-    TRec_url_timeout_E49C request = TRec_url_timeout_E49C(url: "example.com", timeout: time.tuck_ms(5));
-    TRec_episodes_E40E response = tuck_selectEpisodes(tuck_parse(tuck_fetch(request)));
-    TRec_hasNew_episodes_metadata_D43C feed = tuck_fetch("https://example.com/feed");
-    if (feed.hasNew) {
-        tuck_process(feed.episodes);
+    TRec_url_timeout_E49C tuck_request = TRec_url_timeout_E49C(url: "example.com", timeout: time.tuck_ms(5));
+    TRec_episodes_E40E tuck_response = tuck_selectEpisodes(tuck_parse(tuck_fetch(tuck_request)));
+    TRec_hasNew_episodes_metadata_D43C tuck_feed = tuck_fetch("https://example.com/feed");
+    if (tuck_feed.hasNew) {
+        tuck_process(tuck_feed.episodes);
     } else {
-        tuck_log(feed.metadata);
+        tuck_log(tuck_feed.metadata);
     }
-    TRec_trackId_title_durationMs_BF03 externalTrack = TRec_trackId_title_durationMs_BF03(trackId: 101, title: "Deep Dive", durationMs: 212000);
-    TRec_id_name_length_EE3E normalizedTrack = TRec_id_name_length_EE3E(id: externalTrack.trackId, name: externalTrack.title, length: externalTrack.durationMs);
-    tuck_playTrack(normalizedTrack);
+    TRec_trackId_title_durationMs_BF03 tuck_externalTrack = TRec_trackId_title_durationMs_BF03(trackId: 101, title: "Deep Dive", durationMs: 212000);
+    TRec_id_name_length_EE3E tuck_normalizedTrack = TRec_id_name_length_EE3E(id: tuck_externalTrack.trackId, name: tuck_externalTrack.title, length: tuck_externalTrack.durationMs);
+    tuck_playTrack(tuck_normalizedTrack);
     return;
 }
 

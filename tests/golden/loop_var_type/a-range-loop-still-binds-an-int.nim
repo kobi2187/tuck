@@ -1,9 +1,9 @@
 {.experimental: "codeReordering".}
 
 proc tuck_main*(): int =
-  var s = 0
-  for i in (0 ..< 4):
+  var tuck_s = 0
+  for tuck_i in (0 ..< 4):
     if true:
-      s = (s + i)
-  return s
+      tuck_s = (tuck_s + tuck_i)
+  return tuck_s
 

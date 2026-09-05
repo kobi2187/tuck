@@ -66,12 +66,12 @@ struct tuck_MqttSession {
 }
 
 void tuck_main() {
-    tuck_Config config = tuck_Config(url: "https://example.com");
-    tuck_Feed feed = tuck_Feed(title: "Deep Dive");
-    tuck_PlayerState p = tuck_PlayerState(tuck_PlayerStateKind.Ready, tuck_PlayerState_Ready(config: config, feed: feed));
-    tuck_MqttSession fresh = tuck_MqttSession(tuck_MqttSessionKind.Disconnected);
-    tuck_Socket socket = tuck_Socket(fd: 3);
-    tuck_MqttSession session = tuck_MqttSession(tuck_MqttSessionKind.Connected, tuck_MqttSession_Connected(socket: socket, keepalive: 60));
+    tuck_Config tuck_config = tuck_Config(url: "https://example.com");
+    tuck_Feed tuck_feed = tuck_Feed(title: "Deep Dive");
+    tuck_PlayerState tuck_p = tuck_PlayerState(tuck_PlayerStateKind.Ready, tuck_PlayerState_Ready(config: tuck_config, feed: tuck_feed));
+    tuck_MqttSession tuck_fresh = tuck_MqttSession(tuck_MqttSessionKind.Disconnected);
+    tuck_Socket tuck_socket = tuck_Socket(fd: 3);
+    tuck_MqttSession tuck_session = tuck_MqttSession(tuck_MqttSessionKind.Connected, tuck_MqttSession_Connected(socket: tuck_socket, keepalive: 60));
     return;
 }
 

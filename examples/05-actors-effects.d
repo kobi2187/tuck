@@ -36,7 +36,7 @@ void handleMsg_tuck_Counter(ref tuck_Counter self, tuck_CounterMsg msg) {
             self.count = (self.count + n);
             break;
         case tuck_CounterMsgKind.msgGet:
-            TRec_count_66EB result = TRec_count_66EB(count: self.count);
+            TRec_count_66EB tuck_result = TRec_count_66EB(count: self.count);
             break;
     }
 }

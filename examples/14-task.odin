@@ -19,11 +19,11 @@ tuck_parse :: proc(payload: $T) -> TRec_feed_A1A6 {
 
 
 tuck_fetchFeed :: proc(url: string) -> rt.TuckResult(TRec_feed_A1A6) {
-  resp := http.tuck_get(url)
-  if (resp.status == .Ok) {
-      return rt.tok(tuck_parse(resp.value.body))
+  tuck_resp := http.tuck_get(url)
+  if (tuck_resp.status == .Ok) {
+      return rt.tok(tuck_parse(tuck_resp.value.body))
   }
-  return rt.terr(TRec_feed_A1A6, u16(resp.err))
+  return rt.terr(TRec_feed_A1A6, u16(tuck_resp.err))
 }
 
 main :: proc() {

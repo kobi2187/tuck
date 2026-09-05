@@ -25,10 +25,10 @@ proc tuck_triggerEvent*(): void =
   raise_tuck_AppEvents_SensorFailure(1, "timeout")
 
 proc tuck_AppEvents_SensorFailure*(port: uint8, reason: string): void =
-  var x = port
-  var y = reason
+  var tuck_x = port
+  var tuck_y = reason
 
 proc tuck_AppEvents_LowMemory*(remaining: uint32): void =
-  var left = remaining
+  var tuck_left = remaining
 
 static: assert((1 == 1))

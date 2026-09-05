@@ -17,9 +17,9 @@ TRec_ok_64D7 tuck_budget(time.tuck_Milliseconds d) {
 }
 
 void tuck_main() {
-    TRec_ok_64D7 r = tuck_budget(time.tuck_ms(5));
-    long n = tuck_asInt(time.tuck_ms(42));
-    sys.exit(n);
+    TRec_ok_64D7 tuck_r = tuck_budget(time.tuck_ms(5));
+    long tuck_n = tuck_asInt(time.tuck_ms(42));
+    sys.exit(tuck_n);
 }
 
 void main(string[] args) {

@@ -728,7 +728,7 @@ fn main() -> int:
   # fix above, and the emitted call passed the receiver by value, which
   # Odin itself rejects ("Cannot assign value 'd' ... to '^tuck_Deck'").
   t.emitsOdin "Odin passes the receiver by address to match self: ^T",
-              r"tuck_Deck_crank\(&d, 1\)"
+              r"tuck_Deck_crank\(&tuck_d, 1\)"
 
   t.src """
 type Server:

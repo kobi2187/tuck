@@ -14,9 +14,9 @@ extern (C) Point makesPoint(int x, int y);
 
 
 void tuck_main() {
-    Point p = makesPoint(3, 7);
-    int r = takesPoint(p);
-    if ((r == 307)) {
+    Point tuck_p = makesPoint(3, 7);
+    int tuck_r = takesPoint(tuck_p);
+    if ((tuck_r == 307)) {
         sys.exit(0);
     }
     sys.exit(1);

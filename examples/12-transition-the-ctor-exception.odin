@@ -85,12 +85,12 @@ transitionTo_tuck_MqttSession :: proc(self: ^tuck_MqttSession, target: tuck_Mqtt
 }
 
 tuck_main :: proc () {
-  config := tuck_Config{url = "https://example.com"}
-  feed := tuck_Feed{title = "Deep Dive"}
-  p := tuck_PlayerState_Ready{config = config, feed = feed}
-  fresh := tuck_MqttSession_Disconnected{}
-  socket := tuck_Socket{fd = 3}
-  session := tuck_MqttSession_Connected{socket = socket, keepalive = 60}
+  tuck_config := tuck_Config{url = "https://example.com"}
+  tuck_feed := tuck_Feed{title = "Deep Dive"}
+  tuck_p := tuck_PlayerState_Ready{config = tuck_config, feed = tuck_feed}
+  tuck_fresh := tuck_MqttSession_Disconnected{}
+  tuck_socket := tuck_Socket{fd = 3}
+  tuck_session := tuck_MqttSession_Connected{socket = tuck_socket, keepalive = 60}
   return
 }
 

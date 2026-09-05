@@ -16,9 +16,9 @@ tuck_budget :: proc (d: time.tuck_Milliseconds) -> TRec_ok_64D7 {
 }
 
 tuck_main :: proc () {
-  r := tuck_budget(time.tuck_ms(5))
-  n := tuck_asInt(time.tuck_ms(42))
-  sys.exit(n)
+  tuck_r := tuck_budget(time.tuck_ms(5))
+  tuck_n := tuck_asInt(time.tuck_ms(42))
+  sys.exit(tuck_n)
 }
 
 main :: proc() {

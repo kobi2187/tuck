@@ -22,20 +22,20 @@ proc noise*(self: var tuck_Cat): int =
 
 
 proc tuck_total*(xs: seq[Animal]): int =
-  var s = 0
-  for a in xs:
+  var tuck_s = 0
+  for tuck_a in xs:
     if true:
-      s = (s + (block:
-        case a.tag
+      tuck_s = (tuck_s + (block:
+        case tuck_a.tag
         of Animal_is_tuck_Cat:
-          var tmp = a.tuck_CatVal
+          var tmp = tuck_a.tuck_CatVal
           noise(tmp)
         of Animal_is_tuck_Dog:
-          var tmp = a.tuck_DogVal
+          var tmp = tuck_a.tuck_DogVal
           noise(tmp)))
-  return s
+  return tuck_s
 
 proc tuck_main*(): int =
-  var d = tuck_Dog(name: "rex")
-  return tuck_total(@[Animal(tag: Animal_is_tuck_Dog, tuck_DogVal: d)])
+  var tuck_d = tuck_Dog(name: "rex")
+  return tuck_total(@[Animal(tag: Animal_is_tuck_Dog, tuck_DogVal: tuck_d)])
 

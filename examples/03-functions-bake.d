@@ -24,10 +24,10 @@ long tuck_applyOperation(long a, long b, tuck_BinOp op) {
 }
 
 void tuck_main() {
-    TRec_a_b_2128 x = TRec_a_b_2128(a: 5, b: 10);
-    TRec_a_b_op_1096 withOp = TRec_a_b_op_1096(a: x.a, b: x.b, op: &tuck_plus);
-    TRec_a_b_op_1096 smaller = TRec_a_b_op_1096(a: withOp.a, b: 2, op: withOp.op);
-    long r = tuck_applyOperation(smaller.a, smaller.b, smaller.op);
+    TRec_a_b_2128 tuck_x = TRec_a_b_2128(a: 5, b: 10);
+    TRec_a_b_op_1096 tuck_withOp = TRec_a_b_op_1096(a: tuck_x.a, b: tuck_x.b, op: &tuck_plus);
+    TRec_a_b_op_1096 tuck_smaller = TRec_a_b_op_1096(a: tuck_withOp.a, b: 2, op: tuck_withOp.op);
+    long tuck_r = tuck_applyOperation(tuck_smaller.a, tuck_smaller.b, tuck_smaller.op);
     return;
 }
 

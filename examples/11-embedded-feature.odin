@@ -44,11 +44,11 @@ tuck_processISR :: proc (event: tuck_SensorEvent) {
 tuck_UartBuffer: rt.ObjectPool([64]u8, 8)
 
 tuck_handleUart :: proc () {
-  buf := rt.acquire(&tuck_UartBuffer)
-  if !(buf.status == .Ok) {
+  tuck_buf := rt.acquire(&tuck_UartBuffer)
+  if !(tuck_buf.status == .Ok) {
       return
   }
-  rt.release(&tuck_UartBuffer, buf.value)
+  rt.release(&tuck_UartBuffer, tuck_buf.value)
   return
 }
 
