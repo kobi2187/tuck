@@ -816,4 +816,35 @@ fn main() -> void [io]:
   t.emits "...because runtime externs emit qualified", r"tuck_rt\.readFile\("
   t.emits "...writeFile too, the other name Nim auto-exports", r"tuck_rt\.writeFile\("
 
+  # R. `const b = a + 1` — a const naming ANOTHER const — was rejected as
+  # "not a pure compile-time expression", though LANGUAGE-OVERVIEW §1's own
+  # definition of pure excludes only [io] calls and record construction.
+  # constCheck simply had no exkVar case, so any bare name fell to the
+  # blanket rejection. Found 2026-09-04 (diff-patch).
+  t.src """
+import console
+import str
+
+const a = 8
+const b = a + 1
+
+fn main() -> void [io]:
+  {text: b.toStr} printLine
+"""
+  t.quietly: t.outputs("a const may name another const", "9\n")
+  t.bugFixed "a const may name another const"
+
+  # ...but a name that is NOT a const still has no compile-time value.
+  t.src """
+fn f({x: int}) -> int:
+  return x
+
+const bad = x + 1
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a const naming a non-const is still rejected, by name",
+             "names 'x', which is not a const"
+
   t.finish()

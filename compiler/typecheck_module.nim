@@ -81,6 +81,22 @@ proc constCheck*(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
     constCheck(tc, m, cname, e.right, sp)
   of exkField: constCheckField(tc, m, cname, e, sp)
   of exkCall: constCheckCall(tc, m, cname, e, sp)
+  of exkVar:
+    # A const may name ANOTHER const: still pure compile-time data, and the
+    # backend's own const evaluator resolves the reference. Every other thing
+    # a bare name can be (a param, a local) has no compile-time value at all,
+    # so it keeps the rejection — with the name in the message, rather than
+    # the old blanket "not a pure expression" that fired even for the legal
+    # case and contradicted LANGUAGE-OVERVIEW §1's own definition of pure.
+    var isConst = false
+    for d in m.decls:
+      if d != nil and d.kind == dkConst and d.name == e.name:
+        isConst = true
+        break
+    if not isConst:
+      fail("Const Error: 'const " & cname & "' names '" & e.name &
+           "', which is not a const — a const's value must be known at " &
+           "compile time", sp)
   else:
     fail("Const Error: 'const " & cname & "' must be a pure " &
          "compile-time expression", sp)

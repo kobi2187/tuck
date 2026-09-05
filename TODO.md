@@ -222,12 +222,6 @@ as a *class*, not just nine individual entries; see `INTEGRATION.md`'s
 "Sequencing" section for why the interface-dispatch one specifically blocks
 that design's whole premise.
 
-- [ ] **[repro] `const b = a + 1` (referencing another `const`, pure
-  arithmetic) is rejected as impure.** `diff-patch`. `Const Error: 'const
-  b' must be a pure compile-time expression` — contradicts
-  LANGUAGE-OVERVIEW.md §1's stated definition of "pure" (rejects `[io]`
-  calls and record construction; says nothing excluding a reference to an
-  already-defined numeric const).
 - [ ] **[repro] `mod`/`div` as infix word-operators don't parse as binary
   ops — swallowed by bare-call postfix sugar.** `git-lite`. Parenthesized
   form fails to parse (`Expected 'RParen' here, found '1000000007'`);
