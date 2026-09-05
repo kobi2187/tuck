@@ -9,8 +9,11 @@ actor Counter:
   on increment({n: int}):
     count += n
 
-  on get() -> {count: int}:
-    result = {count}
+  # No return type: an actor message is fire-and-forget (spec 9.1), and
+  # there is no reply channel yet. A caller reads the public field instead:
+  # `Counter.count`.
+  on reset():
+    count = 0
 
 fn readSensor({port: u8}) -> !{value: u16} [io]:
   ...

@@ -1,57 +1,55 @@
-## `result` inside an actor handler carries the handler's declared return type.
+## `result` is GONE, and a handler may not declare a return type.
 ##
-## It was bound to nothing at all, so it synthesized as Unknown — and Unknown is
-## compatible with everything, so `result = <anything>` was accepted and every
-## later use went unchecked. One of the gaps a strict-typing experiment
-## surfaced; the sentinel had been hiding it.
+## History, because the shape of the fix is the point. `result` was bound
+## inside a handler to the handler's declared return type. Nothing bound it
+## before that, so it synthesized as Unknown and every assignment was
+## accepted; binding it made the type real. But two problems survived:
 ##
-## A handler with NO return type gets no binding, which is why `result = ...`
-## there should be an undeclared-name error — still open below, because
-## undeclared names are unchecked generally (not an actor problem).
+##   1. Nothing ever checked that `result` was ASSIGNED. A path that skipped
+##      it yielded whatever the backend zero-inits — exactly what TK-TY16
+##      refuses for a record field nobody set. A zero is not a value.
+##   2. Nothing COLLECTED it. `handleMsg` returns nothing, so `result = x`
+##      emitted a local the emitter then discarded. The declared return type
+##      promised a reply the runtime cannot deliver: an actor message is
+##      fire-and-forget (spec 9.1) and correlation tokens are designed, not
+##      implemented (TODO.md section 1).
+##
+## Ruling 2026-09-06: reject the return type (TK-AC02), which removes the only
+## thing `result` was bound to, and `result` with it. It is now an ordinary
+## undeclared name. The reply gap stays visible rather than looking supported.
 
 import ../harness
 
 proc run*(t: var T) =
+  # A handler declaring a return type is the construct that cannot be honoured.
   t.src """
 actor Counter:
   count: int = 0
 
   on get() -> {count: int}:
-    result = {count}
+    count = count
 
 fn main() -> int:
   return 0
 """
-  t.okCheck "assigning the declared shape to result is fine"
+  t.badCheck "a handler may not declare a return type", "TK-AC02"
+  t.badCheck "...and the message says why: no reply channel",
+             "cannot reply yet"
 
-  t.src """
-actor Counter:
-  count: int = 0
-
-  on get() -> {count: int}:
-    result = "not a record"
-
-fn main() -> int:
-  return 0
-"""
-  t.badCheck "assigning the wrong type to result is caught", "result|count|str"
-
-  # A handler with no return type has no result to assign.
+  # With nothing to bind it to, `result` is just a name nobody declared.
   t.src """
 actor Counter:
   count: int = 0
 
   on bump({n: int}):
-    result = {count}
+    result = n
 
 fn main() -> int:
   return 0
 """
-  t.quietly: t.badCheck("a void handler has no result", "result")
-  t.bugFixed "a void handler's result is rejected (same cause)"
+  t.badCheck "`result` in a handler is an undeclared name", "result"
 
-  # The actor's own fields still resolve inside a handler — a regression guard,
-  # since binding result must not disturb the field scope.
+  # A handler with no return type is the normal shape and still works.
   t.src """
 actor Counter:
   count: int = 0
@@ -62,11 +60,41 @@ actor Counter:
 fn main() -> int:
   return 0
 """
-  t.okCheck "actor fields still resolve in a handler"
+  t.okCheck "a handler with no return type is fine"
 
-  # Assigning to a name nothing declares — not actor-specific, it is unchecked in
-  # a plain fn too. The assignment target synthesizes as Unknown and Unknown
-  # accepts anything, so the typo never surfaces.
+  # `-> void` is NOT a reply claim: it carries nothing and means exactly what
+  # omitting the type means. Only a type that would carry a VALUE back
+  # promises something there is no channel for. The first version of this
+  # rule rejected `-> void` too and broke three existing actors.
+  t.src """
+actor Counter:
+  count: int = 0
+
+  on bump({n: int}) -> void:
+    count += n
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "an explicit `-> void` handler is still fine"
+
+  # The actor's own fields still resolve inside a handler — a regression guard,
+  # since removing the `result` binding must not disturb the field scope.
+  t.src """
+actor Counter:
+  count: int = 0
+
+  on bump({n: int}):
+    count += n
+    self.count += 0
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "actor fields still resolve, bare and through self"
+
+  # Assigning to a name nothing declares. Not actor-specific — it is the same
+  # rule in a plain fn, which is where the fix landed.
   t.src """
 actor Counter:
   count: int = 0

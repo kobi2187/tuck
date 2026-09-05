@@ -579,12 +579,16 @@ Counter send add {n: i}          # send
 Counter.total                    # read public state
 ```
 
-Handlers may return, assigning `result`:
+A handler may not declare a value return type: a message is fire-and-forget
+(spec §9.1) and there is no reply channel yet — correlation tokens are
+designed, not implemented. `-> void` is fine (it claims nothing). A caller
+reads a public field instead (`Counter.total`), or the actor sends a message
+back. Rejected as `TK-AC02`.
 
-```tuck
-on get() -> {count: int}:
-  result = {count}
-```
+There is no `result`. It used to be bound inside a handler to the declared
+return type, with nothing checking it was ever assigned and nothing collecting
+it — the emitted `handleMsg` returns nothing, so it became a discarded local.
+A fn returns with `return`.
 
 `on select` gives message arms plus a reserved `shutdown`:
 
@@ -597,10 +601,9 @@ on select:
 
 Run-verified 55 on both backends.
 
-> ⚠️ **OPEN ×2** — `result` in a *void* handler is not rejected, and an
-> **undeclared assignment target is not caught anywhere**: `nosuchfield += n`
-> typechecks, in actors *and in plain fns*, where the real fix belongs
-> (`tests/suites/actor_result.nim`).
+Both of the gaps this section used to flag are closed: an undeclared
+assignment target is caught (in actors and plain fns alike), and `result` is
+gone entirely (`tests/suites/actor_result.nim`).
 
 > ⚠️ **OPEN — a generic `fnsig` does not parse.** `fnsig Mapper[T, U] = {x: T} -> U`
 > fails with `Expected 'Assign' here, found '['` — `fnsig` has no

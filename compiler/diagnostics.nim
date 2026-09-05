@@ -83,6 +83,7 @@ type
     dcTyUninitRead = "TK-TY16"          ## reading a field the construction skipped
     dcTyInfiniteType = "TK-TY17"        ## a type contains itself by value
     dcTyDroppedValue = "TK-TY18"        ## a call's value is dropped in statement position
+    dcTyMissingReturnValue = "TK-TY19"  ## bare `return` where a value is required
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -111,6 +112,7 @@ type
     # here is a rule the spec already states; the codes are what makes the
     # rejection Tuck's rather than the backend's.
     dcAcQueueSize = "TK-AC01"           ## an actor's [queue: N] is not a positive count
+    dcAcHandlerReturn = "TK-AC02"       ## a handler declares a return type; actors cannot reply yet
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
     dcIvNotBool = "TK-IV02"             ## an invariant predicate is not a bool
@@ -322,6 +324,14 @@ proc valueFitExplanation(d: DiagCode): string =
     "Fix: hold the recursive part as `Seq[T]`, a growable handle that stays " &
     "finite because an empty Seq ends the chain. `Array[N, T]` does not " &
     "work: it stores N elements inline."
+  of dcTyMissingReturnValue:
+    "A bare `return` in a fn that declares a value type would hand back " &
+    "whatever the backend zero-inits, which is the same thing TK-TY16 " &
+    "refuses for a field nobody set: a zero is not a value. It stays legal " &
+    "where the type SAYS so — `void` and `!void` carry nothing, and `?T`/" &
+    "`!?T` lower a bare return to `tnone`, because absence is a declared " &
+    "state there. Fix: return a value, or declare the return type `?T` if " &
+    "\"nothing to return\" is a real outcome for this fn."
   of dcTyDroppedValue:
     "A call in statement position produced a value nothing receives. The " &
     "result is computed and thrown away, which is almost always a mistake — " &
@@ -408,6 +418,15 @@ proc ruleExplanation(d: DiagCode): string =
     "(spec 7.2, 7.3). So the number must be positive: zero or negative is " &
     "not a smaller reservation, it is one that cannot hold anything. Fix: " &
     "give a real count or size."
+  of dcAcHandlerReturn:
+    "A handler declared a return type, but an actor message is " &
+    "fire-and-forget (spec 9.1) and there is no reply channel: correlation " &
+    "tokens are designed and not implemented. The declared type therefore " &
+    "promises something nothing can deliver — before this was rejected, the " &
+    "value was assigned to a local the emitter then discarded. Fix: drop the " &
+    "return type and expose the value as a public field the caller reads " &
+    "(`Counter.total`), or have the caller pass its own address and send a " &
+    "message back."
   of dcAcQueueSize:
     "An actor's `[queue: N]` is the exact capacity of its mailbox ring, so N " &
     "must be a positive whole number. Zero or negative is not a smaller " &
@@ -529,6 +548,7 @@ const ForeignSpellings*: seq[tuple[foreign, tuck, note: string]] = @[
   ("min", "", "not in std yet"),
   ("max", "", "not in std yet"),
   ("sort", "", "not in std yet — std/seq has at/setAt/push"),
+  ("result", "", "no implicit result — return a value, or bind a local"),
   # Names that exist in most stdlibs and not (yet) in this one. Saying so
   # outright beats "not declared", which reads as a typo the user has to go
   # hunting for.

@@ -8,7 +8,7 @@ type tuck_Feed* = object
 type tuck_PodcastApp* = object
   discard
 
-type tuck_CounterMsgKind* = enum msgIncrement, msgGet
+type tuck_CounterMsgKind* = enum msgIncrement, msgReset
 type tuck_CounterMsg* = object
   kind*: tuck_CounterMsgKind
   n*: int
@@ -25,9 +25,9 @@ proc handleMsg*(self: tuck_Counter, msg: tuck_CounterMsg) =
     let n = msg.n
     if true:
       self.count = (self.count + n)
-  of msgGet:
+  of msgReset:
     if true:
-      var tuck_result = (count: self.count)
+      self.count = 0
 
 proc draintuck_Counter(): bool {.gcsafe.} =
   {.cast(gcsafe).}:

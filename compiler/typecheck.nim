@@ -2541,12 +2541,42 @@ proc checkReturnValue(tc: var TypeChecker, e: Expr) =
   else:
     tc.check(e.returnVal, tc.currentRet, what)
 
+proc carriesNothing(t: Type): bool =
+  ## May a `return` with NO value satisfy this declared return type?
+  ##
+  ## Only where the type itself says nothing is a legitimate outcome: `void`
+  ## and `unit` carry nothing at all, `!void` is success carrying nothing, and
+  ## `?T`/`!?T` make absence a declared state (a bare return lowers to
+  ## `tnone`). Everywhere else a bare return would hand back whatever the
+  ## backend zero-inits — the same thing TK-TY16 refuses for a field nobody
+  ## set.
+  if t == nil: return true
+  if t.kind == tkNamed and t.name in ["void", "unit"]: return true
+  if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed:
+    if t.base.name in ["?", "!?"]: return true
+    if t.base.name == "!" and t.args.len == 1 and t.args[0] != nil and
+       t.args[0].kind == tkNamed and t.args[0].name in ["void", "unit"]:
+      return true
+  false
+
+proc failIfReturnNeedsValue(tc: TypeChecker, e: Expr) =
+  ## A bare `return` in a fn declaring a value type.
+  if carriesNothing(tc.currentRet): return
+  let rt = typeName(tc.currentRet)
+  fail(dcTyMissingReturnValue,
+       "'" & tc.currentFn & "' returns " & rt & ", so `return` needs a " &
+       "value here — a bare return would hand back whatever the backend " &
+       "zero-inits. Fix: return a value, or declare `-> ?" & rt &
+       "` if \"nothing to return\" is a real state for this fn", e.span)
+
 proc synthReturn(tc: var TypeChecker, e: Expr): Type =
   ## A return checks its value against the fn's declared return type.
   if e.returnVal != nil and tc.currentRet != nil:
     tc.checkReturnValue(e)
   elif e.returnVal != nil:
     discard tc.synthesize(e.returnVal)
+  else:
+    tc.failIfReturnNeedsValue(e)
   unitType(e.span)
 
 proc synthDiscard(tc: var TypeChecker, e: Expr): Type =
@@ -3064,13 +3094,29 @@ proc checkObjectDecl(tc: var TypeChecker, d: Decl) =
   tc.popScope()
 
 proc checkHandler(tc: var TypeChecker, h: Decl) =
-  ## `result` inside a handler IS its declared return type. Nothing bound it,
-  ## so it synthesized as Unknown and every assignment to it was accepted. A
-  ## handler with no return type gets no binding at all, which makes
-  ## `result = ...` the undeclared-name error it should be.
+  ## A handler may not declare a return type: an actor message is
+  ## fire-and-forget (spec 9.1) and there is no reply channel — correlation
+  ## tokens are designed, not implemented (TODO.md section 1). The type
+  ## promised something nothing could deliver, and the value went into a local
+  ## the emitter discarded.
+  ##
+  ## This is also why `result` is gone. It was bound here to the declared
+  ## return type, with no definite-assignment check, so a path that never
+  ## assigned it yielded a zero — the thing TK-TY16 refuses for a field nobody
+  ## set. With no return type to bind it to, `result` is now an ordinary
+  ## undeclared name, which is what it always should have been.
+  # `-> void` is not a reply claim — it carries nothing and means exactly
+  # what omitting the type means, so it stays legal. Only a type that would
+  # carry a VALUE back promises something there is no channel for.
+  if h != nil and h.kind == dkFn and h.fnReturnType != nil and
+     not (h.fnReturnType.kind == tkNamed and
+          h.fnReturnType.name in ["void", "unit"]):
+    fail(dcAcHandlerReturn,
+         "handler '" & h.name & "' declares a return type, but an actor " &
+         "cannot reply yet — a message is fire-and-forget. Fix: drop the " &
+         "return type and expose the value as a public field the caller " &
+         "reads (`Counter.total`), or send a message back", h.span)
   tc.pushScope()
-  if h != nil and h.kind == dkFn and h.fnReturnType != nil:
-    tc.bindName("result", h.fnReturnType, true)
   tc.checkDecl(h)
   tc.popScope()
 
