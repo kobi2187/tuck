@@ -521,6 +521,30 @@ const ForeignSpellings*: seq[tuple[foreign, tuck, note: string]] = @[
   ("min", "", "not in std yet"),
   ("max", "", "not in std yet"),
   ("sort", "", "not in std yet — std/seq has at/setAt/push"),
+  # Names that exist in most stdlibs and not (yet) in this one. Saying so
+  # outright beats "not declared", which reads as a typo the user has to go
+  # hunting for.
+  ("map", "", "no iterator combinators in std yet — write a `for` loop"),
+  ("filter", "", "no iterator combinators in std yet — write a `for` loop"),
+  ("reduce", "", "no iterator combinators in std yet — write a `for` loop"),
+  ("each", "", "iteration is `for x in xs:`"),
+  ("foreach", "", "iteration is `for x in xs:`"),
+  ("join", "", "not in std yet — `+` concatenates two strs"),
+  ("concat", "+", "`+` concatenates two strs"),
+  ("trim", "", "not in std yet — std/str has toStr/charAt/containsChar/splitLines/ord"),
+  ("upper", "", "no case conversion in std yet"),
+  ("lower", "", "no case conversion in std yet"),
+  ("substring", "", "not in std yet — charAt reads one character"),
+  ("slice", "", "not in std yet — charAt reads one character"),
+  ("parseInt", "", "no string-to-number parsing in std yet"),
+  ("toInt", "", "no string-to-number parsing in std yet"),
+  ("printf", "", "build the str with `+` and toStr, then printLine"),
+  ("sprintf", "toStr", "std/str, plus `+` to concatenate"),
+  ("assert", "static_assert", "compile-time only; `invariant:` states a runtime one"),
+  ("panic", "", "no runtime abort in std — an unhandled `!T` reports itself"),
+  # A builtin that is real but POSTFIX, so the prefix spelling reads as an
+  # undeclared name.
+  ("echo", "", "`echo` is postfix: write `x echo`, not `echo x`"),
 ]
   ## What someone reasonably typed -> what Tuck calls it. One table, so a
   ## wrong guess gets the same answer wherever it surfaces (the parser for

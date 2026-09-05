@@ -104,6 +104,23 @@ fn main() -> int:
 """
   t.badCheck "...and so does a `.fn {args}` call on one", "did you mean `toStr`"
 
+  # A name std genuinely lacks says so, rather than reading as a typo the
+  # user has to go hunting for.
+  t.src """
+fn main() -> int:
+  return map
+"""
+  t.badCheck "a name std does not have says so, with what to write instead",
+             "no iterator combinators in std yet"
+
+  # `echo` is real but POSTFIX, so the prefix spelling reads as undeclared.
+  t.src """
+fn main() -> int:
+  return echo
+"""
+  t.badCheck "a postfix-only builtin written prefix names the right shape",
+             "`echo` is postfix"
+
   # A parse rejection carries its code in the [stage code] tag rather than the
   # message body, so this asserts the tag the driver prints.
   t.src "ac:\n  t: int\n"
