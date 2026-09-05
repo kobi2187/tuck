@@ -274,7 +274,15 @@ proc genAliasType*(d: Decl): string =
       if isDistinctAlias(d.typeBody):
         # Nim distinct + borrowed ops: same bits, incompatible type
         var res = "type " & d.name & "* = distinct " & typeBodyStr & "\n"
-        for op in ["+", "-", "*", "div", "mod"]:
+        # `div`/`mod` are INTEGER ops in Nim — borrowing them for a float
+        # base makes the type fail to compile the moment it is declared,
+        # which is what blocked the language's own recommended unit-safety
+        # pattern (`distinct Miles = f64`, mirroring std/time's u32 units)
+        # for every non-integer unit.
+        let isFloat = typeBodyStr in ["float32", "float64", "float"]
+        let arith = if isFloat: @["+", "-", "*"]
+                    else: @["+", "-", "*", "div", "mod"]
+        for op in arith:
           res.add("proc `" & op & "`*(a, b: " & d.name & "): " & d.name & " {.borrow.}\n")
         for op in ["==", "<", "<="]:
           res.add("proc `" & op & "`*(a, b: " & d.name & "): bool {.borrow.}\n")

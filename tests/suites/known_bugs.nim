@@ -770,4 +770,27 @@ fn main() -> void [io]:
           r"tuckSetAt\(xs, 0, 99\)"
   t.omits "...so no seq_at identifier is ever emitted", "seq_at"
 
+  # P. `distinct X = f32/f64` could not build on the Nim backend at all:
+  # genAliasType borrowed `div`/`mod` for EVERY distinct type, and Nim has
+  # neither for floats, so the type failed to compile the moment it was
+  # declared. That blocked LANGUAGE-OVERVIEW's own recommended unit-safety
+  # pattern (distinct Miles = f64, mirroring std/time's u32 durations) for
+  # every non-integer unit. Found 2026-09-04 (math-toolkit-cli).
+  t.src """
+import console
+
+distinct Miles = f64
+
+fn asMiles(value: f64) -> Miles:
+  value Miles
+
+fn main() -> void [io]:
+  let d = 12.5 asMiles
+  {text: "ok"} printLine
+"""
+  t.quietly: t.outputs("a distinct over a float base builds", "ok\n")
+  t.bugFixed "a distinct over a float base builds"
+  t.omits "...and borrows no integer div for it", r"`div`\*\(a, b: tuck_Miles\)"
+  t.emits "...while still borrowing the ops floats do have", r"`\+`\*\(a, b: tuck_Miles\)"
+
   t.finish()

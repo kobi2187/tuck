@@ -238,15 +238,6 @@ that design's whole premise.
   LANGUAGE-OVERVIEW.md §1's stated definition of "pure" (rejects `[io]`
   calls and record construction; says nothing excluding a reference to an
   already-defined numeric const).
-- [ ] **[repro] `distinct X = f32`/`f64` cannot build on the Nim backend.**
-  `math-toolkit-cli`. `compiler/codegen_decl.nim:275` unconditionally
-  emits borrowed `div`/`mod` for every `distinct` type; Nim has no
-  `div`/`mod` for floats. `./tuck ch` passes, `./tuck b` fails with a Nim
-  type mismatch on `div`. Odin and D both emit fine for the same source —
-  Nim-backend-specific. Blocks LANGUAGE-OVERVIEW's own recommended
-  unit-safety pattern (`distinct Miles = f64`) for any non-integer unit.
-  Fix: skip `div`/`mod` in `genAliasType` when the base type is
-  `f32`/`f64`.
 - [ ] **[repro] `mod`/`div` as infix word-operators don't parse as binary
   ops — swallowed by bare-call postfix sugar.** `git-lite`. Parenthesized
   form fails to parse (`Expected 'RParen' here, found '1000000007'`);
@@ -277,9 +268,6 @@ that design's whole premise.
   `tests/suites/interface_seq.nim` already exercises the working
   (pre-bound) form, so not a regression — but a real trap for the first
   natural thing someone tries to write with a heterogeneous list.
-- [ ] **[read] Doc bug, not a compiler bug: `satisfies` must come
-  immediately after `object Name:`, before any field.** `git-lite`.
-  LANGUAGE-OVERVIEW.md's own `Dog` example puts a field first.
 - [ ] **[read] No string escape sequences at all** — `\"` is a lexical
   error (`Unexpected character: \`), not silently mis-lexed.
   `spellchecker`. Worth stating explicitly in LANGUAGE-OVERVIEW.md §0,

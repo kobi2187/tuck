@@ -181,11 +181,14 @@ is `advance(p.position, p.step)` (`tests/suites/cli_smoke.nim`).
 
 ```tuck
 object Dog:
-  name: str
   satisfies Speaker
+  name: str
   fn speak({volume: int}) -> str:
     return self.name
 ```
+
+`satisfies` comes FIRST, before any field — state the contract, then the
+data. A field above it is a parse error (`TK-PA06`).
 
 Objects carry fields, `+ Composed` entries, `satisfies` lines, member fns, and
 `self`. Two objects may share a member fn name — Nim overloads on `self`, Odin
@@ -349,8 +352,8 @@ interface Animal:
   fn noise({self: Self}) -> int
 
 object Dog:
-  name: str
   satisfies Animal
+  name: str
   fn noise({self: Dog}) -> int:
     return 1
 
