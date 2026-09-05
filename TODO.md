@@ -224,6 +224,35 @@ that design's whole premise.
   `spellchecker`. Worth stating explicitly in LANGUAGE-OVERVIEW.md §0,
   since every reader's first instinct is `\"`; workaround is single-quote
   string delimiters.
+- [ ] **[design] A PARAM named after a backend keyword still breaks that
+  backend.** The 2026-09-04 mangling change closed this for LOCALS (`var
+  out = ""` builds everywhere now) but deliberately stopped at params, so
+  `fn f({out: str})` is still a Nim syntax error in emitted code — same
+  failure, one step over.
+  Params were tried and reverted in that same change, and the reason is
+  the design question, not an implementation snag: **a param name is not a
+  free identifier, it is a contract with the field layer.** Three distinct
+  pairings break if it moves alone —
+  (a) it is the payload field a caller binds BY NAME (`{path: "x"}
+  readFile` matches `path` to the param), and codegen's payload explosion
+  re-matches `recordFieldNames` against param names at emit time;
+  (b) a task's params ARE the fields of the envelope struct its spawn
+  packs, and an actor handler's params are the message envelope's fields —
+  renaming references left the envelope naming `fd` while the body read
+  `tuck_fd` (reproduced: Odin `Undeclared name: tuck_fd` in 29/30, `tuck_base`
+  in 28, `undeclared field 'n' for tuck_WorkerMsg` on Nim);
+  (c) `self` is matched literally by every backend (`tuck_self.total cannot
+  be assigned to`).
+  So the fix is not "mangle params too" — it is deciding whether the FIELD
+  layer moves with them (envelope fields, payload field names and `self`
+  all mangled in lockstep) or whether params stay a stable public contract
+  and collisions there are instead REJECTED at declaration with a
+  diagnostic naming the backend keyword. The second is much cheaper and
+  loses nothing a user wants; the first is what "everything gets the
+  prefix" would actually require. Undecided on purpose — revisit when the
+  field-name question comes up on its own terms, since `ForeignSpellings`
+  and the reserved-word diagnostics already give the rejecting path a
+  natural home.
 
 ## 5. Backend bugs
 
