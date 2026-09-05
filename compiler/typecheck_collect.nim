@@ -21,7 +21,10 @@ proc failIfPendingClash*(tc: TypeChecker, d: Decl) =
 proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   ## A fn joins the signature catalog, and is indexed so a resolved call can
   ## point at this declaration rather than describe it by name.
-  tc.fnSigs[d.name] = (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects)
+  # ADD, not set: two objects may each declare a member of the same name, and
+  # evicting the first is what made `b.hash` on a Blob check against Commit's
+  # signature.
+  tc.addFnSig(d.name, (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects))
   indexDecl(semLayer, d)
   tc.fnDecls[d.name] = d
   # NOT pending: a pending fn emits a generic one-payload stub
@@ -44,8 +47,8 @@ proc collectFnSigType*(tc: var TypeChecker, d: Decl) =
   ## mark NAME as a fnsig so a call through a NAME-typed slot is validated.
   ## A signature TYPE declares no effects of its own — what gets baked into
   ## the slot carries them.
-  tc.fnSigs[d.name] = (d.sigParams, d.sigReturn,
-                       newSeq[string](), newSeq[EffectMarker]())
+  tc.setFnSig(d.name, (d.sigParams, d.sigReturn,
+                       newSeq[string](), newSeq[EffectMarker]()))
   tc.fnSigNames.incl(d.name)
   if d.sigGenerics.len > 0: tc.fnSigGenerics[d.name] = d.sigGenerics
 
@@ -56,12 +59,12 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
   ## return type.
   let optElem = Type(span: d.span, kind: tkApp, args: @[d.poolElem],
                      base: Type(span: d.span, kind: tkNamed, name: "?"))
-  tc.fnSigs[d.name & ".acquire"] = (newSeq[Param](), optElem,
-                                    newSeq[string](), newSeq[EffectMarker]())
-  tc.fnSigs[d.name & ".release"] =
+  tc.setFnSig(d.name & ".acquire", (newSeq[Param](), optElem,
+                                    newSeq[string](), newSeq[EffectMarker]()))
+  tc.setFnSig(d.name & ".release",
     (@[Param(name: "slot", typ: d.poolElem, span: d.span)],
      Type(span: d.span, kind: tkNamed, name: "void"),
-     newSeq[string](), newSeq[EffectMarker]())
+     newSeq[string](), newSeq[EffectMarker]()))
 
 proc collectTypeDecl*(tc: var TypeChecker, d: Decl) =
   ## A type's body joins the type table; manager types carry functionality, so
@@ -114,8 +117,8 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.knownModules.incl(d.name)
     of dkFn: tc.collectFnSig(d, top)
     of dkTask:
-      tc.fnSigs[d.name] = (d.taskParams, d.taskReturnType,
-                           newSeq[string](), d.taskEffects)
+      tc.setFnSig(d.name, (d.taskParams, d.taskReturnType,
+                           newSeq[string](), d.taskEffects))
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
     of dkType: tc.collectTypeDecl(d)

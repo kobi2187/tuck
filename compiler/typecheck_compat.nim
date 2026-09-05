@@ -76,7 +76,7 @@ proc fnRefCompatible*(tc: TypeChecker, a, e: Type): bool =
   ## which is a tkNamed. Match the reference against the named signature's
   ## shape — otherwise the pair falls through to the record check and every
   ## callback argument is rejected (`expects BinOp but got <type>`).
-  let sig = tc.fnSigs[e.name]
+  let sig = tc.sigOf(e.name)
   if a.params.len != sig.params.len: return false
   for i, p in sig.params:
     if not tc.compatible(a.params[i], p.typ): return false

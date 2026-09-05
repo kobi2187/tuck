@@ -245,7 +245,7 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                      recvT: Type, argStruct: Expr, sp: Span): Expr =
   ## `d.crank {step: 1}` — the receiver fills a slot, the payload fills the
   ## rest by name. See failIfReceiverSlotMismatched for which slot and why.
-  let sig = tc.fnSigs[fnName]
+  let sig = tc.sigOf(fnName)
   let receiverFillsFirstParam =
     tc.failIfReceiverSlotMismatched(fnName, sig, recvT, sp)
   var argFields: seq[FieldInit]
@@ -414,7 +414,7 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
   if tc.currentFn == "" or e.receiver == nil or e.dotArg != nil or
      e.receiver.kind notin {exkLit, exkVar} or
      not tc.fnSigs.hasKey(e.fieldName): return nil
-  let sig = tc.fnSigs[e.fieldName]
+  let sig = tc.sigOf(e.fieldName)
   let recvT = tc.synthesize(e.receiver)
   # An interface receiver belongs to asInterfaceCall: `noise` is in fnSigs
   # because some OBJECT declares a member by that name, and matching against
@@ -542,7 +542,7 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
                             callee: Expr(span: e.span, kind: exkVar,
                                          name: e.fieldName)))
-  tc.fnSigs[qualified].ret
+  tc.sigOf(qualified).ret
 
 proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
                      sp: Span): FnSig =
@@ -556,7 +556,7 @@ proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
          " type argument(s), got " & $args.len, sp)
   var b = initTable[string, Type]()
   for i in 0 ..< gs.len: b[gs[i]] = args[i]
-  let base = tc.fnSigs[name]
+  let base = tc.sigOf(name)
   var params: seq[Param]
   for p in base.params:
     params.add(Param(name: p.name, typ: substituteType(p.typ, b), span: p.span))
@@ -573,7 +573,7 @@ proc checkThroughFnSig(tc: var TypeChecker, slotT: Type, call: Expr): Type =
   var sig: FnSig
   if slotT != nil and slotT.kind == tkNamed and slotT.name in tc.fnSigNames:
     name = slotT.name
-    sig = tc.fnSigs[name]
+    sig = tc.sigOf(name)
   elif slotT != nil and slotT.kind == tkApp and slotT.base != nil and
        slotT.base.kind == tkNamed and slotT.base.name in tc.fnSigNames and
        tc.fnSigGenerics.hasKey(slotT.base.name):
@@ -1820,7 +1820,7 @@ proc asGenericConstruction(tc: var TypeChecker, e: Expr,
 
 proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   ## A call to a fn with a known signature.
-  let sig = tc.fnSigs[calleeName]
+  let sig = tc.sigOf(calleeName)
   # The name resolved here; record the edge so later passes read the answer
   # instead of scanning the decl list to re-derive it.
   if tc.fnDecls.hasKey(calleeName):
@@ -2066,7 +2066,7 @@ proc checkFieldValue(tc: var TypeChecker, fieldName: string, val: Expr) =
   ## returns nothing or declares effects.
   let fn = appliedFnName(val)
   if fn == "" or not tc.fnSigs.hasKey(fn): return
-  if returnsNothing(tc.fnSigs[fn]):
+  if returnsNothing(tc.sigOf(fn)):
     fail("Type Error: '" & fn & "' returns nothing, so it cannot fill field '" &
          fieldName & "' — a record field needs a value", val.span)
   let effects = tc.declaredEffects(fn)
@@ -2145,7 +2145,7 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
   ## else a variant.
   let (found, b) = tc.lookup(e.name)
   if found: b.typ
-  elif tc.fnSigs.hasKey(e.name) and tc.fnSigs[e.name].params.len == 0:
+  elif tc.fnSigs.hasKey(e.name) and tc.sigOf(e.name).params.len == 0:
     tc.synthNullaryCall(e)
   elif tc.fnSigs.hasKey(e.name):
     # A fn WITH params, referenced bare rather than called: a bake/fnsig
@@ -2646,7 +2646,7 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   ## backend can emit a typed callable rather than an opaque pointer.
   if e.modulePath.len != 0 or not tc.fnSigs.hasKey(e.qualName):
     return unknownType(e.span)
-  let sig = tc.fnSigs[e.qualName]
+  let sig = tc.sigOf(e.qualName)
   var ps: seq[Type]
   for p in sig.params: ps.add(p.typ)
   Type(span: e.span, kind: tkFunc, params: ps, result: sig.ret)
@@ -3236,7 +3236,7 @@ proc bindConsts*(tc: var TypeChecker, m: Module) =
       tc.bindName(d.name, tc.synthesize(d.constVal), false)
 
 proc typecheckModule*(m: Module,
-                      externSigs = initTable[string, FnSig](),
+                      externSigs = initTable[string, seq[FnSig]](),
                       externPending = initTable[string, Span]()): seq[string] {.discardable.} =
   var tc = newModuleChecker(m, externSigs, externPending)
   tc.pushScope()  # module-level scope: consts visible across decls
@@ -3270,17 +3270,21 @@ proc typecheckModule*(m: Module,
 # checker uses (nested fns in objects/mixins/actors included).
 proc moduleSigs*(m: Module): seq[SigInfo] =
   var tc = TypeChecker(module: m,
-                       fnSigs: initTable[string, FnSig](),
+                       fnSigs: initTable[string, seq[FnSig]](),
                        typeDecls: initTable[string, Type](),
                        distinctNames: initHashSet[string](),
                        errPolicy: "strict")
   tc.collectSigs(m.decls)
   tc.resolveTypeNames(m)
-  for name, sig in tc.fnSigs:
-    result.add(SigInfo(name: name, params: sig.params, ret: sig.ret,
-                       generics: sig.generics, effects: sig.effects,
-                       isPending: tc.pendingFns.hasKey(name),
-                       line: tc.pendingFns.getOrDefault(name).line))
+  # One SigInfo PER OVERLOAD: the index is a flat seq keyed by nothing, so
+  # repeated names are already how it carries several, and dropping all but
+  # one here would re-create the eviction bug across a module boundary.
+  for name, sigs in tc.fnSigs:
+    for sig in sigs:
+      result.add(SigInfo(name: name, params: sig.params, ret: sig.ret,
+                         generics: sig.generics, effects: sig.effects,
+                         isPending: tc.pendingFns.hasKey(name),
+                         line: tc.pendingFns.getOrDefault(name).line))
 
 # Whole-program checking, order-independent: pass 1 collects EVERY module's
 # signatures; pass 2 checks bodies against the full picture. `mods` is
@@ -3309,7 +3313,7 @@ type
   ProgramSigs = object
     ## What every module exports, gathered before any module is checked, so an
     ## import can be resolved regardless of declaration order.
-    byMod: Table[string, Table[string, FnSig]]
+    byMod: Table[string, Table[string, seq[FnSig]]]
     pendByMod: Table[string, Table[string, Span]]
     importsByMod: Table[string, seq[string]]
 
@@ -3318,7 +3322,7 @@ type
     ## `bareOwner` remembers which import claimed each unqualified name, so a
     ## genuine collision between two imports is reported rather than silently
     ## resolved.
-    extern: Table[string, FnSig]
+    extern: Table[string, seq[FnSig]]
     pending: Table[string, Span]
     bareOwner: Table[string, string]
 
@@ -3336,7 +3340,7 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
   ## Every module's signatures and pending fns, before any body is checked.
   for (name, path, m) in mods:
     var tc = TypeChecker(module: m,
-                         fnSigs: initTable[string, FnSig](),
+                         fnSigs: initTable[string, seq[FnSig]](),
                          typeDecls: initTable[string, Type](),
                          distinctNames: initHashSet[string](),
                          errPolicy: "strict")
@@ -3349,7 +3353,7 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
     result.pendByMod[name] = tc.pendingFns
     result.importsByMod[name] = moduleImports(m)
 
-proc addBare(scope: var ImportScope, fname, imp: string, sig: FnSig) =
+proc addBare(scope: var ImportScope, fname, imp: string, sig: seq[FnSig]) =
   ## Claim an unqualified name for an import, or report the collision.
   if scope.bareOwner.hasKey(fname) and scope.bareOwner[fname] != imp:
     fail("Type Error: '" & fname & "' is exported by both '" &
@@ -3375,7 +3379,7 @@ proc importPrebuilt(scope: var ImportScope, preSigs: Table[string, seq[SigInfo]]
   ## Bring in a module whose signatures came from an index rather than source.
   for si in preSigs.getOrDefault(imp):
     if "::" in si.name: continue
-    let sig: FnSig = (si.params, si.ret, si.generics, si.effects)
+    let sig: seq[FnSig] = @[(si.params, si.ret, si.generics, si.effects)]
     scope.extern[imp & "::" & si.name] = sig
     scope.addBare(si.name, imp, sig)
     if si.isPending:

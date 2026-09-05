@@ -101,7 +101,7 @@ proc constCheck*(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
     fail("Const Error: 'const " & cname & "' must be a pure " &
          "compile-time expression", sp)
 
-proc newModuleChecker*(m: Module, externSigs: Table[string, FnSig],
+proc newModuleChecker*(m: Module, externSigs: Table[string, seq[FnSig]],
                       externPending: Table[string, Span]): TypeChecker =
   ## A checker seeded with what this module's imports export.
   result = TypeChecker(module: m,
@@ -249,4 +249,4 @@ proc declaredEffects*(tc: TypeChecker, fnName: string): seq[EffectMarker] =
   ## The effects declared on `fnName`, empty if it has none or is unknown.
   ## Reads the signature table rather than scanning declarations, so this
   ## answers for imported fns too — their effects ride in through the index.
-  if tc.fnSigs.hasKey(fnName): tc.fnSigs[fnName].effects else: @[]
+  if tc.fnSigs.hasKey(fnName): tc.sigOf(fnName).effects else: @[]

@@ -36,7 +36,15 @@ type
                  effects: seq[EffectMarker]]
   TypeChecker* = object
     module*: Module
-    fnSigs*: Table[string, FnSig]
+    fnSigs*: Table[string, seq[FnSig]]
+      ## Name -> every signature declared under it, not one. Two objects may
+      ## each declare a `hash` member, and a flat name->sig table let the
+      ## second overwrite the first, so `b.hash` on a Blob was checked
+      ## against Commit's signature and rejected — the receiver's own type
+      ## never got a say. The list keeps them all; `sigOf` picks when the
+      ## receiver is known and otherwise answers exactly as the flat table
+      ## did (the last one registered), which is what keeps every call site
+      ## that cannot know a receiver behaving as before.
     typeDecls*: Table[string, Type]
     typeGenerics*: Table[string, seq[string]]  # generic type decls: Box -> @["T"]
     fnSigGenerics*: Table[string, seq[string]] # generic fnsig decls: Mapper -> @["T", "U"]
@@ -132,6 +140,30 @@ type
       ## would turn each of those into a scope-stack walk — a bigger, subtler
       ## diff at exactly the places merge bugs live, to delete this log. The
       ## log is the cheaper correct answer; leave it.
+
+proc addFnSig*(tc: var TypeChecker, name: string, sig: FnSig) =
+  ## Register one signature under `name`, keeping any already there. A second
+  ## `hash` does not evict the first — that eviction WAS the bug.
+  if tc.fnSigs.hasKey(name): tc.fnSigs[name].add(sig)
+  else: tc.fnSigs[name] = @[sig]
+
+proc setFnSig*(tc: var TypeChecker, name: string, sig: FnSig) =
+  ## Register `name` as having exactly this signature, discarding any others.
+  ## For entries that genuinely have one meaning — a pool's generated
+  ## `.acquire`/`.release`, a `fnsig` type — where a second registration is a
+  ## re-registration rather than an overload.
+  tc.fnSigs[name] = @[sig]
+
+proc sigOf*(tc: TypeChecker, name: string): FnSig =
+  ## The signature for `name` when the caller has no receiver to choose by.
+  ## Answers with the LAST registered, which is exactly what the old flat
+  ## table held after the same sequence of writes — so every site that cannot
+  ## know a receiver keeps its current behaviour.
+  tc.fnSigs[name][^1]
+
+proc sigsOf*(tc: TypeChecker, name: string): seq[FnSig] =
+  ## Every signature declared under `name`.
+  if tc.fnSigs.hasKey(name): tc.fnSigs[name] else: @[]
 
 proc pushScope*(tc: var TypeChecker) =
   tc.scopes.add(initTable[string, Binding]())
