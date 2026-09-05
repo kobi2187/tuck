@@ -117,6 +117,7 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.knownModules.incl(d.name)
     of dkFn: tc.collectFnSig(d, top)
     of dkTask:
+      tc.taskNames.incl(d.name)
       tc.setFnSig(d.name, (d.taskParams, d.taskReturnType,
                            newSeq[string](), d.taskEffects))
     of dkFnSig: tc.collectFnSigType(d)

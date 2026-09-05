@@ -110,6 +110,11 @@ type
     objDecls*: Table[string, Decl]    # `object NAME` — to answer "does this
                                       # object declare `satisfies I`" at a call
                                       # site without rescanning the decl list
+    taskNames*: HashSet[string]       # `task` decls. A bare task call is a
+                                      # fire-and-forget SPAWN (spec §9.2) —
+                                      # binding it is what awaits a result —
+                                      # so dropping its value is the point,
+                                      # not an oversight to report.
     topLevelFns*: HashSet[string]     # plain top-level `fn` decls: the only
                                       # callees lowering explodes payloads for
                                       # (tasks and member fns are the backends')

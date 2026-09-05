@@ -147,10 +147,11 @@ fn main() -> int:
 """
   t.okCheck "indexed assignment into a local var still works"
 
-  # A value-returning call whose result nothing consumes is legal Tuck, and
-  # used to emit Nim that would not compile ("has to be used (or
-  # discarded)"). RUN rather than checked: the bug was in emission, so a
-  # clean check proved nothing.
+  # A value-returning call whose result nothing consumes needs an explicit
+  # `discard` (TK-TY18, 2026-09-05 — silence used to be legal). The emission
+  # path this guards is unchanged: it used to emit Nim that would not compile
+  # ("has to be used (or discarded)"). RUN rather than checked, because the
+  # bug was in emission and a clean check proved nothing.
   t.src """
 object Counter:
   total: int
@@ -161,7 +162,7 @@ object Counter:
 
 fn main() -> int:
   var c = {total: 0} Counter
-  {self: c} bump
+  {self: c} bump discard
   return c.total
 """
   t.runs "a dropped value-returning call compiles and still runs", 1

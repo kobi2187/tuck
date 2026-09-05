@@ -2249,6 +2249,42 @@ proc noteDroppedResult(tc: var TypeChecker, s: Expr, last: Type) =
   else:
     tc.unhandledSites.add(typeName(last) & " discarded at " & site)
 
+proc isSpawnCall(tc: TypeChecker, s: Expr): bool =
+  ## A bare task call is a fire-and-forget SPAWN, not a dropped value:
+  ## binding it is what schedules AND awaits (spec §9.2). Reporting it would
+  ## demand a `discard` on the documented way to start background work.
+  s.kind == exkCall and s.callee != nil and s.callee.kind == exkVar and
+    s.callee.name in tc.taskNames
+
+proc receivesNothing(tc: TypeChecker, blk, s: Expr, t: Type): bool =
+  ## Is this statement a call whose value genuinely goes nowhere?
+  ##
+  ## `void`/`unit` is the normal statement case. A fallible `!T` has its own
+  ## stricter rule (noteDroppedResult), so wrappers are left to it rather
+  ## than reported twice. Unknown is gradual typing and never accused.
+  if s == nil or t == nil: return false
+  if not (s.kind == exkCall or semLayer.hasCall(s)): return false
+  if isUnknown(t) or isWrapper(t): return false
+  if t.kind == tkNamed and t.name in ["void", "unit"]: return false
+  if tc.isImplicitReturn(blk, s) or isControlFlowExit(s): return false
+  not tc.isSpawnCall(s)
+
+proc failIfValueDropped(tc: var TypeChecker, blk, s: Expr, t: Type) =
+  ## A CALL in statement position whose value nothing receives.
+  ##
+  ## `5 double` on a line of its own computes a value and throws it away.
+  ## Binding it, returning it, or an explicit `discard` all say what was
+  ## meant; silence does not.
+  ##
+  ## Restricted to CALLS on purpose. A `..` chain is a mutation written as a
+  ## statement and carries the receiver's type; an assignment is not a call.
+  ## Neither is dropping anything.
+  if not tc.receivesNothing(blk, s, t): return
+  fail(dcTyDroppedValue,
+       "this call produces " & typeName(t) & ", which nothing receives — " &
+       "bind it (`let x = ...`), return it, or write `discard` after it if " &
+       "dropping the value is deliberate", s.span)
+
 proc synthStmt(tc: var TypeChecker, blk, s: Expr, narrowed: var seq[string]): Type =
   ## One statement of a block: type it, apply any early-return narrowing,
   ## and report it if it drops a fallible result.
@@ -2261,6 +2297,7 @@ proc synthStmt(tc: var TypeChecker, blk, s: Expr, narrowed: var seq[string]): Ty
   if isWrapper(result) and not tc.isImplicitReturn(blk, s) and
      not isControlFlowExit(s):
     tc.noteDroppedResult(s, result)
+  tc.failIfValueDropped(blk, s, result)
 
 proc synthBlock(tc: var TypeChecker, e: Expr): Type =
   ## A block's type is its last statement's.

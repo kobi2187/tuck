@@ -82,6 +82,7 @@ type
     dcTyParamMutation = "TK-TY15"       ## `..` on a parameter (a value, not a var)
     dcTyUninitRead = "TK-TY16"          ## reading a field the construction skipped
     dcTyInfiniteType = "TK-TY17"        ## a type contains itself by value
+    dcTyDroppedValue = "TK-TY18"        ## a call's value is dropped in statement position
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -321,6 +322,13 @@ proc valueFitExplanation(d: DiagCode): string =
     "Fix: hold the recursive part as `Seq[T]`, a growable handle that stays " &
     "finite because an empty Seq ends the chain. `Array[N, T]` does not " &
     "work: it stores N elements inline."
+  of dcTyDroppedValue:
+    "A call in statement position produced a value nothing receives. The " &
+    "result is computed and thrown away, which is almost always a mistake — " &
+    "and where it is not, saying so keeps the reader from having to guess. " &
+    "Fix: bind it (`let x = ...`), return it, or write `discard` after it to " &
+    "say the drop is deliberate. A fn returning `void` is unaffected, and a " &
+    "fallible `!T` has its own rule (TK-TY04), which is stricter."
   of dcTyUninitRead:
     "The construction did not supply this field and nothing has assigned it " &
     "since, so there is no value to read — only whatever the backend would " &

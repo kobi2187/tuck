@@ -2111,4 +2111,52 @@ fn main() -> int:
   t.badCheck "a genuinely undefined bare name is rejected, not <unknown>",
              "totallyUndefinedName"
 
+  # A CALL in statement position whose value nothing receives (TK-TY18).
+  # `5 double` on its own line computes an int and throws it away; binding,
+  # returning, or an explicit `discard` all say what was meant.
+  t.src """
+fn double({n: int}) -> int:
+  return n + n
+
+fn main() -> int:
+  5 double
+  return 0
+"""
+  t.badCheck "a dropped call value is rejected", "TK-TY18"
+
+  t.src """
+fn double({n: int}) -> int:
+  return n + n
+
+fn main() -> int:
+  let a = 5 double
+  5 double discard
+  return a
+"""
+  t.okCheck "binding it or discarding it are both accepted"
+
+  # A void fn is the ordinary statement case and is untouched.
+  t.src """
+import console
+
+fn shout({msg: str}) -> void [io]:
+  {text: msg} printLine
+
+fn main() -> void [io]:
+  {msg: "hi"} shout
+"""
+  t.okCheck "a void call in statement position is unaffected"
+
+  # A bare TASK call is a fire-and-forget spawn (spec 9.2) -- binding it is
+  # what awaits -- so dropping its value is the point, not an oversight.
+  t.src """
+task work({n: int}) -> {r: int} [io]:
+  return {r: n}
+
+fn main() -> void [io]:
+  {n: 1} work
+  return
+"""
+  t.okCheck "a bare task call is a spawn, not a dropped value"
+
   t.finish()

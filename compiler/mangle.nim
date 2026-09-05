@@ -228,7 +228,7 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string],
   # for those it matters WHICH children are visited and in what order.
   of exkField, exkStruct, exkList, exkBracket, exkBracketAssign, exkCall,
      exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile, exkReturn,
-     exkRaise:
+     exkRaise, exkDiscard:
     for c in e.children: mangleExpr(c, names, locals, fields)
   of exkMatch:
     mangleExpr(e.subject, names, locals, fields)
