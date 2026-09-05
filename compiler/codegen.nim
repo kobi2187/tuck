@@ -384,10 +384,23 @@ proc genReturnTypedLit(ctx: var CodegenCtx, v: Expr): string =
       parts.add(f.name & ": " & ex)
   "return tok((" & parts.join(", ") & "))"
 
+proc isResultCarrier(t: Type): bool =
+  ## Is this type ALREADY a `!T`/`?T`/`!?T` — the carrier itself, rather than
+  ## a payload that needs wrapping into one?
+  t != nil and t.kind == tkApp and t.base != nil and
+    t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"]
+
 proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
   ## `return` inside a fn declared `-> !T`/`-> ?T`: the value auto-wraps.
   if v.kind == exkRaise:
     return ctx.genExpr(v)  # err X already emits the full error return
+  # ...unless it is already one. `return {..} writeFile` inside a fn that
+  # itself returns `!void` is a PASS-THROUGH, not a value to wrap: wrapping
+  # built TuckResult[TuckResult[tuple[]]], which typechecked clean here and
+  # failed in the Nim compile. The checker's own type for the expression is
+  # what tells the two apart.
+  if isResultCarrier(semLayer.typeFor(v)):
+    return "return " & ctx.genExpr(v)
   if v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
      v.receiver.name == "Error":
     # Error.name → app-wide 16-bit code, hashed at Nim compile time
@@ -420,7 +433,7 @@ proc genIndented(ctx: var CodegenCtx, e: Expr): string =
   result = ctx.genExpr(e)
   ctx.indent = saved
 
-proc genInterfaceWrap(e: Expr, ifaceName, objName: string): string =
+proc genInterfaceWrap(inner, ifaceName, objName: string): string =
   ## A concrete object entering an interface slot is COPIED into the variant
   ## (spec §5.3): `Animal(tag: Animal_is_Dog, DogVal: d)`. The backend
   ## generates the right copy for managed fields, and the value owns its data
@@ -428,11 +441,12 @@ proc genInterfaceWrap(e: Expr, ifaceName, objName: string): string =
   ## question. Mutation through it hits the copy, which is the same rule
   ## records and actor messages already follow.
   ##
-  ## The wrapped expression is a variable (the only form the checker marks),
-  ## so its name is emitted directly rather than re-entering genExpr, which
-  ## would see the same mark and recurse forever.
+  ## Takes the inner value ALREADY emitted: it is not always a bare name —
+  ## `[{n: 1} A, {n: 2} B]` reaching a Seq[Rule] wraps two construction
+  ## calls, and emitting `e.name` for those produced an empty field and an
+  ## unwrapped element that Nim then typed as seq[tuck_A].
   ifaceName & "(tag: " & ifaceName & "_is_" & objName & ", " &
-    objName & "Val: " & e.name & ")"
+    objName & "Val: " & inner & ")"
 
 proc genLit(e: Expr): string =
   case e.litKind
@@ -753,9 +767,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
   let w = semLayer.wrapOf(e)
-  if w.objName != "" and e.kind == exkVar:
+  if w.objName != "" and e.id notin ctx.wrapping:
     let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
-    return genInterfaceWrap(e, ifaceName, objName)
+    ctx.wrapping.incl(e.id)
+    let inner = ctx.genExpr(e)
+    ctx.wrapping.excl(e.id)
+    return genInterfaceWrap(inner, ifaceName, objName)
   case e.kind
   of exkLit: genLit(e)
   of exkVar: ctx.genVar(e)

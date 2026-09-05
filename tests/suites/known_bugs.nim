@@ -847,4 +847,30 @@ fn main() -> int:
   t.badCheck "a const naming a non-const is still rejected, by name",
              "names 'x', which is not a const"
 
+  # S. A fallible call used as an implicit tail-return DOUBLE-WRAPPED when the
+  # enclosing fn already returns that same !T: genWrappedReturn wrapped
+  # unconditionally, building TuckResult[TuckResult[tuple[]]]. Typechecked
+  # clean, failed the Nim compile. A value whose own type is already the
+  # carrier is a pass-through. Found 2026-09-04 (git-lite).
+  t.src """
+import fs
+import console
+
+fn save({path: str, body: str}) -> !void [io, error: FsError]:
+  return {path: path, content: body} writeFile
+
+fn main() -> void [io]:
+  let ok = {path: "/tmp/tuck-tailret.txt", body: "hi"} save
+  if ok.ok:
+    {text: "wrote"} printLine
+  let bad = {path: "/nonexistent-dir-xyz/f.txt", body: "hi"} save
+  if not bad.ok:
+    {text: "failure propagated"} printLine
+"""
+  t.quietly: t.outputs("a fallible tail-return is not double-wrapped",
+                       "wrote\nfailure propagated\n")
+  t.bugFixed "a fallible tail-return is not double-wrapped"
+  t.omits "...and the pass-through is not re-wrapped in tok",
+          r"tok\(tuck_rt\.writeFile"
+
   t.finish()

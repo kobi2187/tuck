@@ -26,6 +26,11 @@ type
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return sites
     tmpCounter*: int
+    wrapping*: HashSet[NodeId]
+      ## Nodes whose interface wrap is being emitted right now. The wrap has
+      ## to render its inner value through genExpr (a construction call is
+      ## not a bare name), and genExpr would see the same mark again — this
+      ## breaks that cycle without unmarking anything.
     inTask*: bool          # emitting a task body — [io] calls become async yields
     errPolicy*: string     # from the errors declaration; "" = strict
     realModules*: Table[string, Module]  # imported modules emitted as own Nim files

@@ -204,19 +204,6 @@ as a *class*, not just nine individual entries; see `INTEGRATION.md`'s
 "Sequencing" section for why the interface-dispatch one specifically blocks
 that design's whole premise.
 
-- [ ] **[repro] A fallible call used as an implicit tail-return
-  double-wraps when the enclosing fn's return type is already that same
-  `!T`.** `git-lite`. `got 'TuckResult[TuckResult[tuple[]]]' but expected
-  'TuckResult[tuple[]]'`. Workaround: the explicit `let w = ...; if not
-  w.ok: err w.err` guard shape instead of an implicit tail-return.
-- [ ] **[read] `Seq[Interface]` list literals only pick up the interface
-  type when each element is first bound to its own `var`/`let`.**
-  `config-schema-validator`, non-blocking. `[{} A, {} B]` inline inside a
-  `Seq[Rule]`-typed list literal keeps each element's concrete-type
-  unification and fails; `var a = {} A; var b = {} B; [a, b]` works.
-  `tests/suites/interface_seq.nim` already exercises the working
-  (pre-bound) form, so not a regression — but a real trap for the first
-  natural thing someone tries to write with a heterogeneous list.
 - [ ] **[read] No string escape sequences at all** — `\"` is a lexical
   error (`Unexpected character: \`), not silently mis-lexed.
   `spellchecker`. Worth stating explicitly in LANGUAGE-OVERVIEW.md §0,

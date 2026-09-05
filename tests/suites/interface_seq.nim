@@ -191,4 +191,38 @@ fn main() -> int:
 """
   t.okCheck "returning a Seq of interface values built from locals"
   t.frozen     "and every element survives"
+  # An INLINE list literal reaching a Seq[Interface] slot wraps each element,
+  # same as pre-bound variables did. Was: the wrap was emitted only for
+  # exkVar, so `[{n: 1} A, {n: 2} B]` passed its constructions through raw and
+  # Nim typed the seq from the first one — "got tuck_B but expected tuck_A",
+  # after typechecking clean. Found 2026-09-04 (config-schema-validator).
+  t.src """
+interface Rule:
+  fn check({self: Self}) -> int
+
+object A:
+  satisfies Rule
+  n: int
+  fn check({self: A}) -> int:
+    return 1
+
+object B:
+  satisfies Rule
+  n: int
+  fn check({self: B}) -> int:
+    return 2
+
+fn total({rules: Seq[Rule]}) -> int:
+  var s = 0
+  for r in rules:
+    s = s + r.check
+  return s
+
+fn main() -> int:
+  return {rules: [{n: 1} A, {n: 2} B]} total
+"""
+  t.runs "an inline list literal wraps each element for a Seq[Interface]", 3
+  t.emits "...each with its own tag, not passed through raw",
+          r"Rule\(tag: Rule_is_tuck_B, tuck_BVal: tuck_B\(n: 2\)\)"
+
   t.finish()
