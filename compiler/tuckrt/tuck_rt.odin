@@ -92,14 +92,26 @@ tuckConcat :: proc(a, b: string) -> string {
 
 // seq access. Bounds are a PRECONDITION: violating one is a program error,
 // not an error value the caller matches.
-at :: proc(items: []$T, index: int) -> T {
+// `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's
+// `at` — brackets are grammar, so they must work without `import seq`,
+// and the reserved `tuck` prefix keeps them clear of a user's own `at`.
+// std/seq.tuck's `at`/`setAt` stay as the explicit spelling, delegating.
+tuckAt :: proc(items: []$T, index: int) -> T {
 	assert(index >= 0 && index < len(items), "at: index out of bounds")
 	return items[index]
 }
 
-setAt :: proc(items: []$T, index: int, value: T) {
+at :: proc(items: []$T, index: int) -> T {
+	return tuckAt(items, index)
+}
+
+tuckSetAt :: proc(items: []$T, index: int, value: T) {
 	assert(index >= 0 && index < len(items), "setAt: index out of bounds")
 	items[index] = value
+}
+
+setAt :: proc(items: []$T, index: int, value: T) {
+	tuckSetAt(items, index, value)
 }
 
 // Value semantics: allocates its own backing array rather than growing

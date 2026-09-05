@@ -309,7 +309,8 @@ const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
                      "dequeue", "hasRoom", "initMailbox"]
   ## Runtime intrinsics whose receiver they MUTATE, so it goes in by pointer.
 
-const RtByValue = ["at", "setAt", "toStr", "tuckConcat", "errCode",
+const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "toStr",
+                   "tuckConcat", "errCode",
                    "tuckSat", "tuckSatI", "tuckReportUnhandled"]
   ## Runtime intrinsics taking their arguments as-is. Beef reached these
   ## through `using static Rt`; Odin has no such import, so both lists

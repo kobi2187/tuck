@@ -174,16 +174,30 @@ private void tuckSeqBounds(long index, long length, string op)
     }
 }
 
-T at(T)(T[] items, long index)
+/// `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's
+/// `at` — brackets are grammar, so they must work without `import seq`,
+/// and the reserved `tuck` prefix keeps them clear of a user's own `at`.
+/// std/seq.tuck's `at`/`setAt` stay as the explicit spelling, delegating.
+T tuckAt(T)(T[] items, long index)
 {
     tuckSeqBounds(index, cast(long) items.length, "at");
     return items[index];
 }
 
-void setAt(T)(ref T[] items, long index, T value)
+T at(T)(T[] items, long index)
+{
+    return tuckAt(items, index);
+}
+
+void tuckSetAt(T)(ref T[] items, long index, T value)
 {
     tuckSeqBounds(index, cast(long) items.length, "setAt");
     items[index] = value;
+}
+
+void setAt(T)(ref T[] items, long index, T value)
+{
+    tuckSetAt(items, index, value);
 }
 
 /// Value semantics: `~` always allocates a fresh array rather than growing

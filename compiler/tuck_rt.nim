@@ -68,9 +68,16 @@ proc tuckSeqBounds(index, length: int, op: string) =
     raise newException(IndexDefect,
       op & ": index " & $index & " out of bounds for seq of length " & $length)
 
-proc at*[T](items: seq[T], index: int): T =
+# `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's `at` —
+# brackets are grammar, so they must work without `import seq`, and the
+# reserved `tuck` prefix (same convention as tuckConcat/tuckSat above) is
+# what keeps them from colliding with a user's own `fn at`. std/seq.tuck's
+# `at`/`setAt` stay as the explicit spelling and delegate here.
+proc tuckAt*[T](items: seq[T], index: int): T =
   tuckSeqBounds(index, items.len, "at")
   items[index]
+
+proc at*[T](items: seq[T], index: int): T = tuckAt(items, index)
 
 proc charAt*(s: string, index: int): string =
   tuckSeqBounds(index, s.len, "charAt")
@@ -84,9 +91,12 @@ proc ord*(ch: string): int =
   tuckSeqBounds(0, ch.len, "ord")
   system.ord(ch[0])
 
-proc setAt*[T](items: var seq[T], index: int, value: T) =
+proc tuckSetAt*[T](items: var seq[T], index: int, value: T) =
   tuckSeqBounds(index, items.len, "setAt")
   items[index] = value
+
+proc setAt*[T](items: var seq[T], index: int, value: T) =
+  tuckSetAt(items, index, value)
 
 # Value semantics: `items` is copied on return, same as any other Tuck
 # record/seq — growing the result never mutates the caller's seq, unlike

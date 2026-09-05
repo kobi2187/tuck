@@ -2705,16 +2705,33 @@ proc typeAppFromBracket(tc: var TypeChecker, e: Expr, name: string): Type =
   Type(span: e.span, kind: tkApp,
        base: Type(span: e.span, kind: tkNamed, name: name), args: args)
 
+proc seqElem(recvT: Type): Type =
+  ## The element type of a `Seq[T]` receiver, or nil when it isn't one.
+  ## Bracket indexing on a Seq is SUGAR, not a std call the user spelled
+  ## out, so its type comes straight off the receiver — never from a
+  ## declared signature that may or may not be in scope.
+  if recvT != nil and recvT.kind == tkApp and recvT.base != nil and
+     recvT.base.kind == tkNamed and recvT.base.name == "Seq" and
+     recvT.args.len == 1:
+    return recvT.args[0]
+  nil
+
 proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
                  sp: Span): Expr =
-  # A Seq comes from std/seq; any other type supplies its own `at`/`setAt`.
-  # (fnSigs is keyed by name alone — no overloading — so Seq's must stay
-  # qualified to avoid colliding with a user type's.)
-  let isSeq = recvT != nil and recvT.kind == tkApp and recvT.base != nil and
-              recvT.base.kind == tkNamed and recvT.base.name == "Seq"
-  if isSeq:
-    return Expr(span: sp, kind: exkQualified, modulePath: @["seq"],
-                qualName: fnName)
+  # A Seq index lowers to a RESERVED RUNTIME INTRINSIC, not to a call into
+  # std/seq. `tuckAt`/`tuckSetAt` are always linked (tuck_rt is imported by
+  # every emitted file, unconditionally), so the sugar works whether or not
+  # the source wrote `import seq` — which it never had to, the brackets
+  # being grammar rather than a library call. The `tuck` prefix is the same
+  # reserved-name convention tuckConcat/tuckSat/tuckSeqBounds already use,
+  # so a user's own `fn at` can never collide with it; that collision is
+  # the reason this used to be spelled as a qualified `seq::at` instead,
+  # and qualifying is what made the sugar depend on an import it never
+  # declared — typechecking clean, then emitting a `seq_at` that exists
+  # nowhere.
+  if seqElem(recvT) != nil:
+    return Expr(span: sp, kind: exkVar,
+                name: if fnName == "at": "tuckAt" else: "tuckSetAt")
   if fnName notin tc.fnSigs:
     let tn = if recvT == nil: "unknown" else: typeName(recvT)
     fail("Type Error: type '" & tn & "' is not indexable — define '" &
@@ -2747,6 +2764,12 @@ proc synthBracket(tc: var TypeChecker, e: Expr): Type =
   let recvT = tc.synthesize(e.brReceiver)
   let ic = tc.resolveIndex(e, nil, recvT, e.span)
   setCall(semLayer, e, ic)
+  # A Seq index is typed off the RECEIVER, not by synthesizing the stamped
+  # call: `tuckAt` is an intrinsic with no declared signature to look up, and
+  # routing it through fnSigs is what used to leave `xs[i]` as `<unknown>`
+  # whenever std/seq wasn't imported.
+  let elem = seqElem(recvT)
+  if elem != nil: return elem
   tc.synthesize(ic)
 
 proc failIfMutatingIndexTarget(tc: var TypeChecker, e: Expr) =
@@ -2790,6 +2813,12 @@ proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
   let recvT = tc.synthesize(br.brReceiver)
   let ac = tc.resolveIndex(br, e.brValue, recvT, e.span)
   setCall(semLayer, e, ac)
+  # Same as synthBracket: a Seq write is checked against the element type
+  # off the receiver and yields void, with no signature lookup.
+  let elem = seqElem(recvT)
+  if elem != nil:
+    tc.check(e.brValue, elem, "assigning into " & typeName(recvT))
+    return Type(span: e.span, kind: tkNamed, name: "void")
   tc.synthesize(ac)
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type =

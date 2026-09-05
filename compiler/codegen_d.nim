@@ -375,7 +375,8 @@ const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
   ## reference. D takes `ref`, so the call site passes the value as-is —
   ## unlike Odin, which needs an explicit `&`.
 
-const RtByValue = ["at", "setAt", "toStr", "tuckConcat", "errCode",
+const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "toStr",
+                   "tuckConcat", "errCode",
                    "tuckSat", "tuckSatI", "tuckReportUnhandled"]
   ## Runtime intrinsics taking their arguments as-is. Both lists qualify
   ## explicitly: D has no cross-module scope merge, so `rt.` is required.

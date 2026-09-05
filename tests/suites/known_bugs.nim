@@ -748,4 +748,26 @@ fn main() -> int:
                      "tuck_V\\(kind: B\\)\\)")
   t.bugFixed "bare variant construction is not built fieldless"
 
+  # O. `xs[i]` is GRAMMAR, so it must work with no `import seq` — it used to
+  # resolve to a qualified `seq::at`, which typechecked as <unknown> (no
+  # signature in scope to look up) and then emitted `seq_at`, an identifier
+  # that exists nowhere. Now it lowers to the reserved runtime intrinsics
+  # tuckAt/tuckSetAt, which every emitted file already links via tuck_rt —
+  # no import, no module qualification, no collision with a user's own `at`.
+  # Found 2026-09-04 by the stdlib-project dogfooding pass (sudoku-solver).
+  t.src """
+import console
+import str
+
+fn main() -> void [io]:
+  var xs = [1, 2, 3]
+  xs[0] = 99
+  {text: xs[0].toStr} printLine
+"""
+  t.quietly: t.outputs("bracket indexing needs no 'import seq'", "99\n")
+  t.bugFixed "bracket indexing needs no 'import seq'"
+  t.emits "...and lowers to the reserved intrinsic, not a qualified seq call",
+          r"tuckSetAt\(xs, 0, 99\)"
+  t.omits "...so no seq_at identifier is ever emitted", "seq_at"
+
   t.finish()
