@@ -805,6 +805,34 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkSelect: ctx.genExprSelect(e)
   of exkImport: ""  # imports are declarations, never expression position
 
+proc hasBracketBase(e: Expr): bool =
+  ## Does this target chain bottom out in an index?
+  if e == nil: return false
+  case e.kind
+  of exkBracket: true
+  of exkField: hasBracketBase(e.receiver)
+  else: false
+
+proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
+  ## Emitting an assignment TARGET. A bracket index must address the element
+  ## IN PLACE: the read path resolves `xs[i]` to a tuckAt() call, which
+  ## returns a COPY, so `xs[i].f = v` assigned into a temporary and the
+  ## backend rejected it ("cannot be assigned to") after the checker had
+  ## passed it clean. Direct indexing is what every backend spells here, and
+  ## it keeps its own bounds check.
+  ##
+  ## Only the bracket case diverges; anything else defers to the normal
+  ## emitter, which knows about field vars, stamped calls and the rest.
+  if e == nil: return ""
+  if not hasBracketBase(e): return ctx.genExpr(e)
+  case e.kind
+  of exkBracket:
+    ctx.genExpr(e.brReceiver) & "[" &
+      ctx.genExpr(e.brArgs[0]) & "]"
+  of exkField:
+    ctx.genAssignTarget(e.receiver) & "." & e.fieldName
+  else: ctx.genExpr(e)
+
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
   # `let r = {args} task` — a RESULT-bound task call: schedule the task with
   # a result slot and await it (the caller yields if it's a coroutine, or
@@ -844,7 +872,7 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
     let (stmts, tmp) = ctx.genChainIntoTemp(valSrc)
     prelude = stmts & "\n" & stmts.indentPrefix
     valSrc = Expr(span: valSrc.span, kind: exkVar, name: tmp)
-  let targetStr = ctx.genExpr(e.target)
+  let targetStr = ctx.genAssignTarget(e.target)
   let valStr = ctx.genExpr(valSrc)
   if e.target.kind == exkVar:
     let name = e.target.name
@@ -852,6 +880,14 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
       ctx.definedVars.incl(name)
       return prelude & "var " & name & " = " & valStr
   prelude & targetStr & " = " & valStr
+
+proc matchArmHead(pat: Pattern, patStr: string): string =
+  ## The branch label for one match arm. A WILDCARD is the catch-all, which
+  ## Nim spells `else`, not `of _` — `_` is Nim's ignore-identifier and
+  ## illegal as a branch label, so a `_` arm emitted code that would not
+  ## compile ("the special identifier '_' is ignored in declarations") after
+  ## the checker had passed it. Odin and D already emit `default:` here.
+  if pat != nil and pat.kind == pkWild: "else" else: "of " & patStr
 
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
   if e.subject == nil: return "discard"
@@ -895,15 +931,16 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
     # further. Both must be derived from ctx.indent — a match nested in a
     # fn body is not at column 0, and a block body self-indents from the
     # same counter, so hardcoding the widths mismatched the two.
+    let armHead = matchArmHead(arm.pattern, patStr)
     if arm.body != nil and arm.body.kind == exkBlock:
       let oldIndent = ctx.indent
       ctx.indent += 1          # body lines land under the `of`
       let bodyStr = ctx.genExpr(arm.body)
       ctx.indent = oldIndent
-      cases.add(ind & "of " & patStr & ":\n" & bodyStr)
+      cases.add(ind & armHead & ":\n" & bodyStr)
     else:
       let bodyStr = ctx.genExpr(arm.body)
-      cases.add(ind & "of " & patStr & ":\n" & ind & "  " & bodyStr)
+      cases.add(ind & armHead & ":\n" & ind & "  " & bodyStr)
     if narrowedKey != "": ctx.matchNarrowed.del(narrowedKey)
   if errMatch and not hasWild:
     # the code space is uint16 — the declared variants never cover it

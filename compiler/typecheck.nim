@@ -2199,11 +2199,30 @@ proc synthStruct(tc: var TypeChecker, e: Expr): Type =
   Type(span: e.span, kind: tkRecord, fields: fs)
 
 proc synthList(tc: var TypeChecker, e: Expr): Type =
-  ## A list literal takes its element type from the first item.
+  ## A list literal takes its element type from its first item — or, when it
+  ## has no items, from the place it is GOING: the expected-type channel
+  ## carries a declared `Seq[T]` in a parameter, field or return position.
+  ##
+  ## With neither, the element type is genuinely unknown and the emitted
+  ## code is an untyped empty sequence the backend cannot name ("cannot infer
+  ## the type of the sequence"). That used to pass the checker and fail at
+  ## the Nim compile; it is TK-TY20 now.
   var elemT = unknownType(e.span)
   for item in e.items:
     let t = tc.synthesize(item)
     if isUnknown(elemT): elemT = t
+  if isUnknown(elemT) and tc.expectedType != nil:
+    let want = tc.resolve(tc.expectedType)
+    if want != nil and want.kind == tkApp and want.base != nil and
+       want.base.kind == tkNamed and want.base.name in ["Seq", "Array"] and
+       want.args.len > 0:
+      elemT = want.args[^1]
+  if isUnknown(elemT) and e.items.len == 0:
+    fail(dcTyUntypedEmptyList,
+         "this empty list has no element type — nothing here says what it " &
+         "holds. Fix: seed it with its first element (`[firstItem]`), or " &
+         "pass it directly into a `Seq[T]` position that gives it a type",
+         e.span)
   Type(span: e.span, kind: tkApp,
        base: Type(span: e.span, kind: tkNamed, name: "Seq"), args: @[elemT])
 

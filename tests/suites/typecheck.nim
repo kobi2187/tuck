@@ -2159,4 +2159,36 @@ fn main() -> void [io]:
 """
   t.okCheck "a bare task call is a spawn, not a dropped value"
 
+  # An empty list has no element type unless something supplies one. It used
+  # to typecheck and emit an untyped `@[]` the backend could not name
+  # ("cannot infer the type of the sequence"). Found 2026-09-06.
+  t.src """
+import seq
+fn main() -> int:
+  var acc = []
+  return 0
+"""
+  t.badCheck "an untyped empty list is rejected", "TK-TY20"
+  t.badCheck "...naming how to give it one", "seed it with its first element"
+
+  # ...but the expected type supplies one where there is a declared Seq[T].
+  t.src """
+import seq
+fn take({xs: Seq[int]}) -> int:
+  return 0
+
+fn main() -> int:
+  return {xs: []} take
+"""
+  t.okCheck "an empty list takes its element type from a Seq[T] parameter"
+
+  # A reserved word as a variable name names the WORD that collided, instead
+  # of "Expected variable name" pointing at a good-looking name.
+  t.src """
+fn main() -> int:
+  var pending = 1
+  return pending
+"""
+  t.badCheck "a reserved word as a variable name says which word", "reserved word"
+
   t.finish()

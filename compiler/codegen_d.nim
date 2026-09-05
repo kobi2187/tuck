@@ -791,6 +791,34 @@ proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   res.add(ctx.indD & targetDecl & " = rt.awaitResult(" & slot & ")")
   res
 
+proc hasBracketBase(e: Expr): bool =
+  ## Does this target chain bottom out in an index?
+  if e == nil: return false
+  case e.kind
+  of exkBracket: true
+  of exkField: hasBracketBase(e.receiver)
+  else: false
+
+proc genDAssignTarget(ctx: var DCodegenCtx, e: Expr): string =
+  ## Emitting an assignment TARGET. A bracket index must address the element
+  ## IN PLACE: the read path resolves `xs[i]` to a tuckAt() call, which
+  ## returns a COPY, so `xs[i].f = v` assigned into a temporary and the
+  ## backend rejected it ("cannot be assigned to") after the checker had
+  ## passed it clean. Direct indexing is what every backend spells here, and
+  ## it keeps its own bounds check.
+  ##
+  ## Only the bracket case diverges; anything else defers to the normal
+  ## emitter, which knows about field vars, stamped calls and the rest.
+  if e == nil: return ""
+  if not hasBracketBase(e): return ctx.genDExpr(e)
+  case e.kind
+  of exkBracket:
+    ctx.genDExpr(e.brReceiver) & "[" &
+      ctx.genDExpr(e.brArgs[0]) & "]"
+  of exkField:
+    ctx.genDAssignTarget(e.receiver) & "." & e.fieldName
+  else: ctx.genDExpr(e)
+
 proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## First assignment to a name declares it, with the CHECKER'S type stated
   ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
@@ -827,7 +855,7 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
     if prefix != "": return prefix & "_set(" & valStr & ")"
-  ctx.genDExpr(e.target) & " = " & valStr
+  ctx.genDAssignTarget(e.target) & " = " & valStr
 
 # --- statements & control flow -------------------------------------------
 

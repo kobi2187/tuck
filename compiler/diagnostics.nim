@@ -84,6 +84,7 @@ type
     dcTyInfiniteType = "TK-TY17"        ## a type contains itself by value
     dcTyDroppedValue = "TK-TY18"        ## a call's value is dropped in statement position
     dcTyMissingReturnValue = "TK-TY19"  ## bare `return` where a value is required
+    dcTyUntypedEmptyList = "TK-TY20"    ## `[]` with nothing to say what it holds
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -324,6 +325,15 @@ proc valueFitExplanation(d: DiagCode): string =
     "Fix: hold the recursive part as `Seq[T]`, a growable handle that stays " &
     "finite because an empty Seq ends the chain. `Array[N, T]` does not " &
     "work: it stores N elements inline."
+  of dcTyUntypedEmptyList:
+    "An empty list literal carries no element type, and nothing around it " &
+    "supplies one. A list takes its type from its first item, or from the " &
+    "place it is going (a parameter or field declared `Seq[T]`), and `var " &
+    "xs = []` has neither — the emitted code would be an untyped empty " &
+    "sequence the backend cannot name. Fix: seed it with the first element " &
+    "(`var xs = [firstItem]`), or pass it straight into the `Seq[T]` " &
+    "position that gives it a type. There is no local type annotation to " &
+    "write instead."
   of dcTyMissingReturnValue:
     "A bare `return` in a fn that declares a value type would hand back " &
     "whatever the backend zero-inits, which is the same thing TK-TY16 " &

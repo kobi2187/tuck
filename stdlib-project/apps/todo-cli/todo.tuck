@@ -1,0 +1,49 @@
+# todo-cli — add, list, complete, and filter by priority.
+#
+# A slice of APP.md's full ambition: no file storage, no query language, no
+# recurrence. Enough to exercise the combinations a real CLI reaches for —
+# sum types + `match`, a Seq of records, in-place element update, filtering
+# into an accumulator, and string building for output.
+import console
+import str
+import seq
+
+type Priority:
+  | Low
+  | Normal
+  | Urgent
+
+type Task:
+  title: str
+  prio: Priority
+  done: bool
+
+fn label({p: Priority}) -> str:
+  match p:
+    Low: return "low"
+    Normal: return "normal"
+    Urgent: return "URGENT"
+
+fn render({t: Task}) -> str:
+  let mark = if t.done: "[x]" else: "[ ]"
+  return mark + " " + t.title + " (" + {p: t.prio} label + ")"
+
+fn main() -> void [io]:
+  var tasks = [{title: "buy milk", prio: Priority.Normal, done: false} Task]
+  # A continuation line must indent by exactly one 2-space level, never by
+  # visual alignment (TK-LX06), so this payload stays on one line.
+  tasks = {items: tasks, value: {title: "ship it", prio: Priority.Urgent, done: false} Task} push
+
+  # complete the first task IN PLACE — the element is addressed directly
+  tasks[0].done = true
+
+  {text: "all:"} printLine
+  for t in tasks:
+    {text: "  " + {t: t} render} printLine
+
+  var urgent = 0
+  for t in tasks:
+    match t.prio:
+      Urgent: urgent = urgent + 1
+      _: discard
+  {text: "urgent: " + urgent.toStr} printLine

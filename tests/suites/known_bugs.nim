@@ -873,4 +873,50 @@ fn main() -> void [io]:
   t.omits "...and the pass-through is not re-wrapped in tok",
           r"tok\(tuck_rt\.writeFile"
 
+  # T. `xs[i].field = v` assigned into a COPY. The read path resolves a
+  # bracket to tuckAt(), which returns by value, so an assignment target
+  # built on one emitted `tuckAt(xs, 0).done = true` — rejected by the
+  # backend ("cannot be assigned to") after the checker passed it clean.
+  # An assignment TARGET now addresses the element directly. Found
+  # 2026-09-06 grilling todo-cli; all three backends had it.
+  t.src """
+import seq
+import console
+import str
+
+type Task:
+  title: str
+  done: bool
+
+fn main() -> void [io]:
+  var tasks = [{title: "a", done: false} Task, {title: "b", done: false} Task]
+  tasks[0].done = true
+  {text: tasks[0].done.toStr} printLine
+"""
+  t.quietly: t.outputs("an indexed element's field can be assigned", "true\n")
+  t.bugFixed "an indexed element's field can be assigned"
+  t.emits "...addressing the element, not a tuckAt copy", r"tuck_tasks\[0\]\.done = true"
+
+  # U. A wildcard match arm emitted `of _:` on the Nim backend. `_` is Nim's
+  # ignore-identifier and illegal as a branch label, so the catch-all failed
+  # to compile after typechecking clean. Odin and D already emitted their
+  # `default:`. Found 2026-09-06 grilling todo-cli.
+  t.src """
+type P:
+  | A
+  | B
+
+fn main() -> int:
+  let p = P.A
+  var n = 0
+  match p:
+    A: n = 1
+    _: discard
+  return n
+"""
+  t.quietly: t.runs("a wildcard match arm is the catch-all", 1)
+  t.bugFixed "a wildcard match arm is the catch-all"
+  t.emits "...emitted as else, not `of _`", r"else:"
+  t.omits "...so no `of _` branch label is emitted", r"of _:"
+
   t.finish()

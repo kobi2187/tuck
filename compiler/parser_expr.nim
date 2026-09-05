@@ -510,7 +510,11 @@ proc parseSelectExpr(p: var Parser): Expr =
 proc parseBinding(p: var Parser, sp: Span, mutable: bool): Expr =
   ## `let name = value` / `var name = value`.
   discard p.advance()
-  let name = p.expect(tkIdent, "Expected variable name").value
+  # expectMemberName, not a bare expect(tkIdent): it names the WORD that
+  # collided when a reserved one is used as a variable (`var pending = ...`
+  # reported "Expected variable name" while pointing straight at a perfectly
+  # good-looking name, which reads as a parser fault rather than a naming one).
+  let name = p.expectMemberName("Expected variable name").value
   discard p.expect(tkAssign)
   Expr(span: sp, kind: exkAssign, assignVal: p.parseExpr(), isDecl: true,
        isMutable: mutable, target: Expr(span: sp, kind: exkVar, name: name))
