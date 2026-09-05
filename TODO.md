@@ -100,6 +100,14 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   `fnSigs`. Attempted and reverted: members must STAY there, because
   `d.noise` resolves through `asFnByName`. Needs call resolution to
   distinguish them. **Pinned:** `member_names`. → MISSING-FEATURES A1.
+  UPDATE 2026-09-05: `fnSigs` now holds EVERY signature under a name
+  (`Table[string, seq[FnSig]]`) and receiver-driven selection landed for
+  the two member-call paths, which fixed the sibling bug (two objects each
+  declaring `hash`). This one is the remaining half: `{n: 41} noise` has no
+  receiver, so choosing between a member `noise` and a top-level one has to
+  select by PAYLOAD SHAPE (which candidate's required params the supplied
+  fields cover) in `asDeclaredCall`. The table can finally represent the
+  choice — the earlier attempt was reverted partly because it could not.
 - [ ] **[repro] Two statements on one line, no separator, are silently
   accepted as two statements.** `echo total`'s ORIGINAL framing ("both
   names read as `<unknown>`") is now stale — `synthVar`'s fallback
@@ -196,16 +204,6 @@ as a *class*, not just nine individual entries; see `INTEGRATION.md`'s
 "Sequencing" section for why the interface-dispatch one specifically blocks
 that design's whole premise.
 
-- [ ] **[repro] Same-named methods on different objects resolve to
-  whichever was declared LAST, outside interface dispatch.** `git-lite`.
-  `Blob.hash`/`Commit.hash`, called via `receiver.method` or `{self: x}
-  method` (not through an interface-typed value), always pick the last
-  declaration regardless of the receiver's real type — contradicts
-  LANGUAGE-OVERVIEW.md's claim that this overloads on `self`. Exact error:
-  `argument to 'hash' expects Commit but got Blob` even when the receiver
-  genuinely was a `Blob`. Works correctly ONLY through an interface-typed
-  value. Workaround: a wrapper fn taking the interface type and always
-  calling through it.
 - [ ] **[repro] A fallible call used as an implicit tail-return
   double-wraps when the enclosing fn's return type is already that same
   `!T`.** `git-lite`. `got 'TuckResult[TuckResult[tuple[]]]' but expected

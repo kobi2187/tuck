@@ -241,11 +241,36 @@ proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
          typeName(sig.params[0].typ) & " but the receiver is " &
          typeName(recvT), sp)
 
+proc sigForReceiver(tc: var TypeChecker, name: string, recvT: Type): FnSig =
+  ## The overload of `name` whose FIRST param accepts this receiver.
+  ##
+  ## Two objects may each declare a member of the same name — `Blob.hash` and
+  ## `Commit.hash` — and the name alone cannot tell them apart. Selecting by
+  ## the receiver is what makes `b.hash` on a Blob reach Blob's, rather than
+  ## whichever was registered last (which rejected the caller's correct code
+  ## with "expects Commit but got Blob").
+  ##
+  ## Falls back to the last registered when nothing matches, so a genuine
+  ## mismatch still reports against a real signature and reads as it always
+  ## did. One candidate is the overwhelming common case and takes the same
+  ## path either way.
+  let all = tc.sigsOf(name)
+  if all.len <= 1 or recvT == nil: return tc.sigOf(name)
+  for sig in all:
+    if sig.params.len == 0: continue
+    let pt = sig.params[0].typ
+    if pt == nil: continue
+    if pt.kind == tkNamed and pt.name in sig.generics: return sig  # accepts any
+    if tc.compatible(recvT, pt): return sig
+  tc.sigOf(name)
+
 proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                      recvT: Type, argStruct: Expr, sp: Span): Expr =
   ## `d.crank {step: 1}` — the receiver fills a slot, the payload fills the
   ## rest by name. See failIfReceiverSlotMismatched for which slot and why.
-  let sig = tc.sigOf(fnName)
+  ## The receiver also PICKS the overload, so two objects may each declare a
+  ## member of this name.
+  let sig = tc.sigForReceiver(fnName, recvT)
   let receiverFillsFirstParam =
     tc.failIfReceiverSlotMismatched(fnName, sig, recvT, sp)
   var argFields: seq[FieldInit]
@@ -414,8 +439,9 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
   if tc.currentFn == "" or e.receiver == nil or e.dotArg != nil or
      e.receiver.kind notin {exkLit, exkVar} or
      not tc.fnSigs.hasKey(e.fieldName): return nil
-  let sig = tc.sigOf(e.fieldName)
   let recvT = tc.synthesize(e.receiver)
+  # The RECEIVER picks the overload — synthesized first for that reason.
+  let sig = tc.sigForReceiver(e.fieldName, recvT)
   # An interface receiver belongs to asInterfaceCall: `noise` is in fnSigs
   # because some OBJECT declares a member by that name, and matching against
   # that object's signature here would reject the interface ("expects Dog but

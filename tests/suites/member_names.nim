@@ -105,4 +105,69 @@ fn main() -> int:
   t.quietly: t.okCheck("a member fn and a top-level fn may share a name")
   t.bugOpen "member fn shadows a top-level fn of the same name"
 
+  # Two objects may each declare a member of the same name: the RECEIVER picks
+  # which, not whichever registered last. Was: fnSigs was keyed by name alone,
+  # so Commit.hash evicted Blob.hash and `b.hash` on a Blob was checked against
+  # Commit's signature — "argument to 'hash' expects Commit but got Blob",
+  # accusing correct code. Found 2026-09-04 (git-lite); fixed by holding every
+  # signature under a name and selecting on the receiver's type.
+  t.src """
+object Blob:
+  data: str
+  fn hash({self: Blob}) -> int:
+    return 11
+
+object Commit:
+  msg: str
+  fn hash({self: Commit}) -> int:
+    return 22
+
+fn main() -> int:
+  let b = {data: "x"} Blob
+  let c = {msg: "y"} Commit
+  return b.hash + c.hash
+"""
+  t.runs "same-named members dispatch on the receiver, not declaration order", 33
+
+  # The same selection through the `.fn {args}` form, where the receiver fills
+  # one slot and the payload the rest.
+  t.src """
+object Blob:
+  n: int
+  fn grow({self: Blob, by: int}) -> int:
+    return self.n + by
+
+object Commit:
+  n: int
+  fn grow({self: Commit, by: int}) -> int:
+    return self.n * by
+
+fn main() -> int:
+  let b = {n: 10} Blob
+  let c = {n: 10} Commit
+  return b.grow {by: 5} + c.grow {by: 5}
+"""
+  t.runs "...and through '.fn {args}' too", 65
+
+  # A receiver that matches NEITHER overload is still rejected — selection
+  # falls back to a real signature so the message names one.
+  t.src """
+object Blob:
+  fn hash({self: Blob}) -> int:
+    return 1
+
+object Commit:
+  fn hash({self: Commit}) -> int:
+    return 2
+
+type Other:
+  x: int
+
+fn main() -> int:
+  let o = {x: 1} Other
+  return o.hash
+"""
+  t.badCheck "a receiver matching no overload is still rejected", "hash"
+
+
   t.finish()
