@@ -219,8 +219,10 @@ proc mutatorFillsFields*(tc: TypeChecker, fnName: string): HashSet[string] =
   ## Empty for anything unscannable — an imported or pending fn, or a body
   ## whose returned value is not a plain local. See collectFieldWrites for why
   ## erring empty is the safe direction here.
-  if not tc.fnDecls.hasKey(fnName): return
-  let d = tc.fnDecls[fnName]
+  # The TOP-LEVEL fn of this name: the call being analysed named it directly,
+  # so an object member that happens to share the name is a different fn and
+  # scanning ITS body answered about code this call never reaches.
+  let d = tc.topLevelDeclOfFn(fnName)
   if d == nil or d.kind != dkFn or d.fnBody == nil: return
   # Which local is returned? Only a bare `return name` is traceable.
   var returned = ""
@@ -239,8 +241,7 @@ proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
   ## record is fine. An unknown callee (imported, pending, a fn slot) has no
   ## body to scan and answers empty too — permissive, matching how the rest of
   ## the checker degrades when it cannot see something.
-  if not tc.fnDecls.hasKey(fnName): return @[]
-  let d = tc.fnDecls[fnName]
+  let d = tc.topLevelDeclOfFn(fnName)
   if d == nil or d.kind != dkFn or d.fnBody == nil: return @[]
   var reads: HashSet[string]
   collectFieldReads(param, d.fnBody, reads)

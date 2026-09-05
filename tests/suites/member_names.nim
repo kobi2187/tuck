@@ -103,7 +103,7 @@ fn main() -> int:
   return {n: 41} noise
 """
   t.quietly: t.okCheck("a member fn and a top-level fn may share a name")
-  t.bugOpen "member fn shadows a top-level fn of the same name"
+  t.bugFixed "member fn shadows a top-level fn of the same name"
 
   # Two objects may each declare a member of the same name: the RECEIVER picks
   # which, not whichever registered last. Was: fnSigs was keyed by name alone,

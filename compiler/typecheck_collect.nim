@@ -26,7 +26,7 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   # signature.
   tc.addFnSig(d.name, (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects))
   indexDecl(semLayer, d)
-  tc.fnDecls[d.name] = d
+  tc.addFnDecl(d.name, d)
   # NOT pending: a pending fn emits a generic one-payload stub
   # (genPendingStub), so its real params are ({payload: T},) — nothing like its
   # DECLARED params, which is what topLevelFns's consumers (lowering,

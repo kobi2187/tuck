@@ -92,9 +92,13 @@ type
                                   # says which field it is filling.
     distinctNames*: HashSet[string]   # distinct types: nominal, never widened
     fnSigNames*: HashSet[string]      # `fnsig NAME` — named function-signature types
-    fnDecls*: Table[string, Decl]     # the DECLARATION behind each fnSigs entry,
-                                      # so a resolved call can be recorded as an
-                                      # edge to it (resolution.resolveTo)
+    fnDecls*: Table[string, seq[Decl]]
+      ## The DECLARATIONS behind each fnSigs entry, so a resolved call can be
+      ## recorded as an edge to one (resolution.resolveTo). A LIST for the
+      ## same reason fnSigs is: an object member and a top-level fn may share
+      ## a name, and keeping one evicted the other — the uninit-field analysis
+      ## then scanned the WRONG body and rejected correct code ("'peek' reads
+      ## field 'b'" when the top-level `peek` reads only `a`).
     typeDeclsByName*: Table[string, Decl]  # same, for type declarations: lets a
                                       # tkNamed reference be resolved to the
                                       # decl it names instead of carrying only
@@ -141,6 +145,27 @@ type
       ## diff at exactly the places merge bugs live, to delete this log. The
       ## log is the cheaper correct answer; leave it.
 
+proc addFnDecl*(tc: var TypeChecker, name: string, d: Decl) =
+  ## Record one declaration under `name`, keeping any already there.
+  if tc.fnDecls.hasKey(name): tc.fnDecls[name].add(d)
+  else: tc.fnDecls[name] = @[d]
+
+proc declOfFn*(tc: TypeChecker, name: string): Decl =
+  ## The declaration for `name` when the caller has no way to choose — the
+  ## last registered, matching what the flat table held. nil when unknown.
+  if not tc.fnDecls.hasKey(name) or tc.fnDecls[name].len == 0: return nil
+  tc.fnDecls[name][^1]
+
+proc topLevelDeclOfFn*(tc: TypeChecker, name: string): Decl =
+  ## The TOP-LEVEL fn named `name`, preferred over an object member of the
+  ## same name. A call written `{r: x} peek` names the free fn; a member is
+  ## reached through a receiver and is not what this call resolves to.
+  ## Falls back to whatever is registered when there is no top-level one.
+  if not tc.fnDecls.hasKey(name): return nil
+  for d in tc.fnDecls[name]:
+    if d != nil and d.name in tc.topLevelFns: return d
+  tc.declOfFn(name)
+
 proc addFnSig*(tc: var TypeChecker, name: string, sig: FnSig) =
   ## Register one signature under `name`, keeping any already there. A second
   ## `hash` does not evict the first — that eviction WAS the bug.
@@ -160,6 +185,18 @@ proc sigOf*(tc: TypeChecker, name: string): FnSig =
   ## table held after the same sequence of writes — so every site that cannot
   ## know a receiver keeps its current behaviour.
   tc.fnSigs[name][^1]
+
+proc sigOfCallByName*(tc: TypeChecker, name: string): FnSig =
+  ## The signature for a call that NAMES a fn (`{r: x} peek`) rather than
+  ## reaching one through a receiver. Prefers the top-level fn, since that is
+  ## what such a call resolves to — an object member sharing the name is
+  ## reached only via a receiver, and picking it demanded a `self` the caller
+  ## had no reason to pass. Derived from the decl itself rather than by index,
+  ## so it cannot drift out of step with fnSigs' own ordering.
+  let d = tc.topLevelDeclOfFn(name)
+  if d != nil and d.kind == dkFn:
+    return (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects)
+  tc.sigOf(name)
 
 proc sigsOf*(tc: TypeChecker, name: string): seq[FnSig] =
   ## Every signature declared under `name`.

@@ -1489,7 +1489,7 @@ proc recordCallParams(tc: var TypeChecker, fnName: string, params: seq[Param],
     # A member fn: known to fnDecls (which indexes members too) but not to
     # topLevelFns. Pending stubs stay out for the reason given above — their
     # emitted params are ({payload: T},), nothing like the declared ones.
-    let d = tc.fnDecls.getOrDefault(fnName, nil)
+    let d = tc.declOfFn(fnName)
     if d == nil or d.kind != dkFn or d.isPending: return
   var names: seq[string]
   for p in params: names.add(p.name)
@@ -1845,12 +1845,16 @@ proc asGenericConstruction(tc: var TypeChecker, e: Expr,
        base: Type(span: e.span, kind: tkNamed, name: calleeName))
 
 proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
-  ## A call to a fn with a known signature.
-  let sig = tc.sigOf(calleeName)
+  ## A call to a fn with a known signature. NAMES the callee, so a top-level
+  ## fn wins over an object member of the same name.
+  let sig = tc.sigOfCallByName(calleeName)
   # The name resolved here; record the edge so later passes read the answer
   # instead of scanning the decl list to re-derive it.
-  if tc.fnDecls.hasKey(calleeName):
-    resolveTo(semLayer, e, tc.fnDecls[calleeName])
+  # A payload call names a fn directly, so prefer the top-level one over an
+  # object member that shares the name.
+  let calleeDecl = tc.topLevelDeclOfFn(calleeName)
+  if calleeDecl != nil:
+    resolveTo(semLayer, e, calleeDecl)
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(calleeName, sig, e, bindings)
   if sig.generics.len == 0: return sig.ret
