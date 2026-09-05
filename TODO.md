@@ -222,13 +222,6 @@ as a *class*, not just nine individual entries; see `INTEGRATION.md`'s
 "Sequencing" section for why the interface-dispatch one specifically blocks
 that design's whole premise.
 
-- [ ] **[repro] `mod`/`div` as infix word-operators don't parse as binary
-  ops — swallowed by bare-call postfix sugar.** `git-lite`. Parenthesized
-  form fails to parse (`Expected 'RParen' here, found '1000000007'`);
-  unparenthesized form compiles but silently DROPS the right operand,
-  emitting `mod(((acc*131)+v))`, then fails at the Nim stage with `missing
-  parameter: y`. `nimBinOp` (`codegen.nim:562-571`) has real `boDivInt`/
-  `boMod` cases that are simply unreachable from the parser.
 - [ ] **[repro] Same-named methods on different objects resolve to
   whichever was declared LAST, outside interface dispatch.** `git-lite`.
   `Blob.hash`/`Commit.hash`, called via `receiver.method` or `{self: x}

@@ -376,6 +376,17 @@ proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
   of tkIdent:
     if p.isSendStep(expr): return p.chainSend(expr, sp)
     if p.isAliasStep(): return p.parseAliasStep(expr)
+    # `a mod b` / `a div b` are word-operators in Nim, Pascal and Python, and
+    # neither is one here — `%` and `/i` are. Without this they parse as a
+    # postfix CALL (`mod(a)`) and the right operand is dropped on the floor,
+    # typechecking clean and emitting silently wrong code, which is the worst
+    # possible answer to a spelling someone reasonably reached for.
+    if p.current().value in ["mod", "div"]:
+      p.reportError("`" & p.current().value & "` is not an operator in Tuck" &
+                    spellingHint(p.current().value) &
+                    " A bare word here parses as a postfix call and silently " &
+                    "drops the right operand.",
+                    dc = dcPaWordOperator)
     if p.current().value notin NonCallIdents:
       return p.parsePostfixCall(expr, sp)
   else: discard

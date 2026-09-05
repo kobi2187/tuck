@@ -65,6 +65,45 @@ fn main() -> void:
 """
   t.okCheck "'while' as an ordinary variable name is unaffected"
 
+  # `mod`/`div` are word-operators elsewhere; here they'd parse as a postfix
+  # call and DROP the right operand (`a mod b` -> `mod(a)`), typechecking
+  # clean and emitting wrong code. Rejected by shape, naming the real spelling.
+  t.src """
+fn main() -> int:
+  let a = 17
+  let b = a mod 5
+  return b
+"""
+  t.badCheck "an infix 'mod' carries TK-PA11 and names '%'", "TK-PA11"
+
+  t.src """
+fn main() -> int:
+  let a = 17
+  let b = a div 5
+  return b
+"""
+  t.badCheck "an infix 'div' points at '/i'", "did you mean `/i`"
+
+  # The same shared table (diagnostics.ForeignSpellings) answers a wrong FN
+  # name wherever it lands, not just keywords in the parser.
+  t.src """
+fn main() -> int:
+  return sort
+"""
+  t.badCheck "an undeclared name someone reaches for gets the spelling",
+             "Tuck has no `sort`"
+
+  t.src """
+type P:
+  n: int
+
+fn main() -> int:
+  let p = {n: 1} P
+  let x = p.toString {a: 1}
+  return 0
+"""
+  t.badCheck "...and so does a `.fn {args}` call on one", "did you mean `toStr`"
+
   # A parse rejection carries its code in the [stage code] tag rather than the
   # message body, so this asserts the tag the driver prints.
   t.src "ac:\n  t: int\n"

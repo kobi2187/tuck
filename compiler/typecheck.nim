@@ -627,7 +627,7 @@ proc unresolvedFieldMessage(e: Expr, recvT: Type, fields: seq[FieldDef]): Diag =
     return (dcTyUndeclared,
             "'" & e.fieldName & "' is called with arguments here but is not " &
             "declared — a `.fn {args}` call needs a declared fn (add one, or " &
-            "a `pending:` stub)")
+            "a `pending:` stub)" & spellingHint(e.fieldName))
   if isLiteralPayload(e.receiver):
     # The rewrite pass turned a bare literal receiver into the payload
     # `{value: n}` (`5.ms` is `{value: 5} .ms`), so by here BOTH lookups have
@@ -639,7 +639,7 @@ proc unresolvedFieldMessage(e: Expr, recvT: Type, fields: seq[FieldDef]): Diag =
             "'" & e.fieldName & "' is neither a field of " & typeName(recvT) &
             " nor a fn in scope — a literal applied to a name wraps as that " &
             "payload, so `" & e.fieldName & "` must be a declared fn. Is an " &
-            "`import` missing?")
+            "`import` missing?" & spellingHint(e.fieldName))
   missingFieldMessage(e, recvT, fields)
 
 proc failUnresolvedFieldAccess(tc: TypeChecker, e: Expr, recvT: Type,
@@ -2131,8 +2131,12 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   # is undefined, and gradual typing's <unknown> sentinel is for a
   # constrained TYPE the checker cannot pin down yet, not a NAME the
   # program never declared at all.
+  # A name Tuck spells differently gets the spelling, not just "not declared"
+  # — the whole point of the shared table (diagnostics.ForeignSpellings) is
+  # that a wrong guess is answered the same way wherever it lands.
   fail(dcTyUndeclared, "'" & e.name & "' is not declared — no local, fn, " &
-       "sum-type variant, registry event or type by that name is in scope",
+       "sum-type variant, registry event or type by that name is in scope" &
+       spellingHint(e.name),
        e.span)
   unknownType(e.span)
 

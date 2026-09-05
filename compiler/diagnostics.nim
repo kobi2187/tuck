@@ -62,6 +62,7 @@ type
     dcPaReservedWord = "TK-PA08"        ## a reserved word used as a plain name
     dcPaEmptyBlock = "TK-PA09"          ## a `:` opens nothing — no `discard`, no statement
     dcPaNoWhile = "TK-PA10"             ## `while` — Tuck spells it `for <cond>:`
+    dcPaWordOperator = "TK-PA11"        ## `mod`/`div` — Tuck spells them `%`/`/i`
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -223,6 +224,14 @@ proc parseExplanation(d: DiagCode): string =
     "forgotten implementation) rather than a deliberate no-op, so it is " &
     "never inferred either way. Fix: write `discard` if doing nothing here " &
     "is intentional, or add the statement that was meant to go here."
+  of dcPaWordOperator:
+    "`mod` and `div` are word-operators in Nim, Pascal and Python; in Tuck " &
+    "they are `%` and `/i`. Left alone, a bare word between two operands " &
+    "parses as a POSTFIX CALL on the left one (`a mod b` becomes `mod(a)`) " &
+    "and the right operand is silently dropped — the expression typechecks " &
+    "and emits wrong code, which is why this is rejected outright. Fix: " &
+    "`a % b` for modulo, `a /i b` for truncating integer division, `a /f b` " &
+    "for float division."
   of dcPaNoWhile:
     "Tuck has no `while` keyword — `while` is an ordinary, unreserved " &
     "identifier, so `while cond:` parses `while` as a bare name and then " &
@@ -470,3 +479,63 @@ proc explainCode*(code: string): string =
   ## pastes back. The lexer reports codes as strings (it sits below this module
   ## and cannot import the enum), so this is the lookup both sides share.
   explanationOf(parseCode(code))
+
+const ForeignSpellings*: seq[tuple[foreign, tuck, note: string]] = @[
+  # Word operators and keywords other languages have and Tuck spells
+  # differently. The parser rejects these by shape before they can silently
+  # mis-parse; the entries here are what makes the message say the RIGHT
+  # spelling rather than just "unexpected".
+  ("mod", "%", "modulo is an operator, not a word"),
+  ("div", "/i", "integer division truncates; `/f` divides as float"),
+  ("while", "for <condition>:", "`for` covers counted AND conditional loops"),
+  ("elseif", "elif", ""),
+  # Function names someone reaches for from another stdlib. These reach the
+  # user through the CHECKER's undeclared-name path, which is where a wrong
+  # guess actually lands.
+  ("print", "printLine", "std/console; `print` exists too, without the newline"),
+  ("println", "printLine", "std/console"),
+  ("puts", "printLine", "std/console"),
+  ("toString", "toStr", "std/str"),
+  ("str", "toStr", "std/str"),
+  ("format", "toStr", "std/str, plus `+` to concatenate"),
+  ("length", "len", "on a Seq"),
+  ("size", "len", "on a Seq"),
+  ("count", "len", "on a Seq"),
+  ("append", "push", "std/seq — value semantics, it RETURNS the grown seq"),
+  ("add", "push", "std/seq — value semantics, it RETURNS the grown seq"),
+  ("split", "splitLines", "std/str splits on newlines only, for now"),
+  ("contains", "containsChar", "std/str, for a length-1 str"),
+  ("indexOf", "containsChar", "std/str only answers yes/no, for now"),
+  ("charCodeAt", "ord", "std/str"),
+  ("chr", "charAt", "std/str — a length-1 str, there is no char type"),
+  ("readFileSync", "readFile", "std/fs"),
+  ("writeFileSync", "writeFile", "std/fs"),
+  ("mkdir", "makeDir", "std/fs — creates parents, idempotent"),
+  ("exists", "fileExists", "std/fs"),
+  ("random", "rollRange", "std/random, over a Dice you thread yourself"),
+  ("rand", "rollRange", "std/random"),
+  ("now", "nowMs", "std/time"),
+  ("sleep", "sleepMs", "std/time"),
+  ("abs", "", "not in std yet — std/math has sqrt and pow only"),
+  ("floor", "", "not in std yet — std/math has sqrt and pow only"),
+  ("min", "", "not in std yet"),
+  ("max", "", "not in std yet"),
+  ("sort", "", "not in std yet — std/seq has at/setAt/push"),
+]
+  ## What someone reasonably typed -> what Tuck calls it. One table, so a
+  ## wrong guess gets the same answer wherever it surfaces (the parser for
+  ## keywords and operators, the checker for fn names) instead of each site
+  ## inventing its own hint or, worse, saying nothing.
+
+proc spellingHint*(name: string): string =
+  ## "Did you mean" text for a name Tuck doesn't have, or "" when the name
+  ## isn't one anybody has been observed to reach for. Kept as a suffix the
+  ## caller appends, so each diagnostic keeps its own phrasing.
+  for (foreign, tuck, note) in ForeignSpellings:
+    if foreign != name: continue
+    if tuck.len == 0:
+      return " — Tuck has no `" & name & "`" &
+             (if note.len > 0: " (" & note & ")" else: "")
+    return " — did you mean `" & tuck & "`?" &
+           (if note.len > 0: " (" & note & ")" else: "")
+  ""
