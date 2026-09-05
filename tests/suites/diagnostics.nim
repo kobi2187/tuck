@@ -121,6 +121,34 @@ fn main() -> int:
   t.badCheck "a postfix-only builtin written prefix names the right shape",
              "`echo` is postfix"
 
+  # A call written backwards. Calls are POSTFIX, so a LITERAL can never
+  # continue a chain — reaching one means the argument was written after the
+  # callee. Was: the chain just ended, `double` became one statement and `5`
+  # another, and the argument was silently dropped (emitted `tuck_double`
+  # and `5` as two dead statements, after typechecking clean).
+  t.src """
+fn double({n: int}) -> int:
+  return n + n
+
+fn main() -> int:
+  double 5
+  return 0
+"""
+  t.badCheck "a backwards call carries TK-PA04", "TK-PA04"
+  t.badCheck "...and names the postfix spelling", "write `5 double`"
+
+  # The correct spellings still parse.
+  t.src """
+fn double({n: int}) -> int:
+  return n + n
+
+fn main() -> int:
+  let a = 5 double
+  let b = {n: 5} double
+  return a + b
+"""
+  t.okCheck "both postfix spellings still parse"
+
   # A parse rejection carries its code in the [stage code] tag rather than the
   # message body, so this asserts the tag the driver prints.
   t.src "ac:\n  t: int\n"

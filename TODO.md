@@ -108,33 +108,6 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   select by PAYLOAD SHAPE (which candidate's required params the supplied
   fields cover) in `asDeclaredCall`. The table can finally represent the
   choice — the earlier attempt was reverted partly because it could not.
-- [ ] **[repro] Two statements on one line, no separator, are silently
-  accepted as two statements.** `echo total`'s ORIGINAL framing ("both
-  names read as `<unknown>`") is now stale — `synthVar`'s fallback
-  tightening (2026-09-04) makes an undefined bare name like `echo` a hard
-  error on its own. The REAL, still-open bug: `double 5` where `double` IS
-  declared (takes a param) compiles clean, emitting `tuck_double` and `5`
-  as two separate dropped statements — confirmed directly (`tuck c`,
-  inspected the emitted Nim). Root cause identified, a fix attempted and
-  reverted (2026-09-04): `parser_expr.nim`'s `parseBlock`/`parseBraceBlock`
-  statement loops advance a newline if present but never REQUIRE one
-  between statements, so two bare atoms on one line parse as two
-  statements with nothing catching it. The naive fix — reject unless the
-  next token is `tkNewline`/`tkDedent`/`tkEOF` — broke 30 real tests: a
-  `tkDedent` closing an INNER block (the body of an `if`/`match`/`for`/
-  `while`) is consumed inside that inner `parseBlock` call, so by the time
-  control returns to the OUTER statement loop, the separator between that
-  compound statement and its next SIBLING is already gone — indistinguishable,
-  by token kind alone, from `double 5`'s missing separator. The real fix
-  needs to compare LINE NUMBERS (only reject when the next token starts on
-  the SAME line as the statement just parsed ended, not merely "no
-  newline/dedent token is sitting right here") — needs the parser to know
-  where the previous token's span actually ENDED, which may not currently
-  be tracked; check `Parser`'s state in `parser_base.nim` before attempting
-  this again. `dcPaCallSyntax` (`TK-PA04`) exists in `diagnostics.nim` but
-  is never actually raised anywhere — likely meant for exactly this family
-  but never wired up; reuse it (or add a fresh code just past
-  `dcPaEmptyBlock`/`TK-PA09`) once the line-comparison version is built.
 - [ ] **[repro] By-type payload matching does not run for MEMBER calls.**
   `{n: 7, text: "x"} b.grow` against `grow({self, count: int, label: str})`
   checks OK and then drops the payload entirely. `payloadFields` reports

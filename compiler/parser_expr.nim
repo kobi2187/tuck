@@ -353,6 +353,13 @@ proc isEffectAnnotation(p: Parser): bool =
   p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
     p.peek(2).kind == tkRBracket
 
+proc exprName(e: Expr): string =
+  ## A short spelling of the expression a message is about — the name when it
+  ## is one, else a placeholder, since this only ever reports on a chain base.
+  if e != nil and e.kind == exkVar: e.name
+  elif e != nil and e.kind == exkField: e.fieldName
+  else: "that"
+
 proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
   ## One postfix continuation. `done` is set when nothing continues the chain,
   ## which is what ends the loop.
@@ -389,6 +396,20 @@ proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
                     dc = dcPaWordOperator)
     if p.current().value notin NonCallIdents:
       return p.parsePostfixCall(expr, sp)
+  of tkIntLit, tkFloatLit, tkStrLit:
+    # A LITERAL cannot continue a chain. Calls are postfix, so an argument
+    # precedes its callee — `5 double`, never `double 5`. Reaching here means
+    # the argument was written AFTER the name, and without this the chain
+    # simply ends: `double` becomes one statement and `5` another, the
+    # argument silently dropped. That typechecked clean and emitted
+    # `tuck_double` and `5` as two dead statements.
+    p.reportError(
+      "`" & exprName(expr) & " " & p.current().value &
+      "` is a call written backwards. Calls are POSTFIX in Tuck — the " &
+      "argument comes first: write `" & p.current().value & " " &
+      exprName(expr) & "`, or `{field: " & p.current().value & "} " &
+      exprName(expr) & "` to name the payload field.",
+      dc = dcPaCallSyntax)
   else: discard
   done = true
   expr
