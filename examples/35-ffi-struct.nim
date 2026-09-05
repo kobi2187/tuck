@@ -15,6 +15,6 @@ proc tuck_main*(): void =
   var r = takesPoint(p)
   if (r == 307):
     if true:
-      exit(0)
-  exit(1)
+      tuck_rt.exit(0)
+  tuck_rt.exit(1)
 

@@ -336,7 +336,9 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
   ##
   ## extern [emit: "..."] renames the emitted call to the real runtime/C proc.
   let emitName = ctx.externEmitName(calleeStr)
-  let callName = if emitName != "": emitName else: calleeStr
+  let callName = if emitName != "": emitName
+                 elif ctx.isRuntimeExtern(calleeStr): "tuck_rt." & calleeStr
+                 else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
   if ctx.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, call)
   if ctx.externInvRetFast(calleeStr) != "": return ctx.genValidatedCall(call)

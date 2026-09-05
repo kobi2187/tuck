@@ -16,6 +16,6 @@ proc tuck_main*(): void =
   counterFree(h)
   if (t == 105):
     if true:
-      exit(0)
-  exit(1)
+      tuck_rt.exit(0)
+  tuck_rt.exit(1)
 

@@ -41,6 +41,13 @@ type
     saturatingTypes*: Table[string, Type]  # name -> underlying type
     externInvRets*: Table[string, string]  # extern fn -> invariant ret type
     externEmits*: Table[string, string]    # extern fn -> [emit: "..."] name
+    rtExterns*: HashSet[string]      # externs the RUNTIME implements (no
+                                     # [c, header:] binding), across the whole
+                                     # program — their calls emit qualified as
+                                     # `tuck_rt.name` so a std name can never
+                                     # be ambiguous against one Nim's own
+                                     # system/syncio auto-exports (readFile
+                                     # and writeFile collide outright)
     indexBuilt: bool                 # the sets above are populated?
     matchNarrowed*: Table[string, string]  # var name -> the variant a match
                                             # arm currently narrows it to, so
@@ -72,6 +79,21 @@ proc indexTypeDecl*(ctx: var CodegenCtx, d: Decl) =
         ctx.saturatingTypes[d.name] = d.typeBody
         break
 
+proc indexRuntimeExterns(ctx: var CodegenCtx) =
+  ## Runtime-backed externs from the WHOLE program, not just this module: the
+  ## collision this guards against happens at the CALL site, and the call is
+  ## in the importer while the `extern:` declaring it sits in the imported
+  ## module (`import fs` + a bare `readFile` call is exactly that shape).
+  ## An extern with a `[c, header:]` binding is NOT one of these — its name
+  ## is the C symbol and must survive verbatim.
+  for m in ctx.realModules.values:
+    for d in m.decls:
+      if d == nil or d.kind != dkExtern: continue
+      for mem in d.mixinMembers:
+        if mem.kind == dkFn and mem.isExtern and mem.externHeader == "" and
+           mem.externEmit == "":
+          ctx.rtExterns.incl(mem.name)
+
 proc indexExterns*(ctx: var CodegenCtx) =
   ## Externs are a SECOND pass: an extern's invariant-carrying return type is
   ## looked up in invariantNames, which the first pass has to finish filling
@@ -85,6 +107,7 @@ proc indexExterns*(ctx: var CodegenCtx) =
       if mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
          mem.fnReturnType.name in ctx.invariantNames:
         ctx.externInvRets[mem.name] = mem.fnReturnType.name
+  ctx.indexRuntimeExterns()
 
 proc satisfiersOf*(ctx: CodegenCtx, iface: string): seq[Decl] =
   ## Whole-program satisfier set — see codegen_common.satisfiersOf.
@@ -191,3 +214,12 @@ proc externEmitName*(ctx: var CodegenCtx, fnName: string): string =
   ## The Nim/C proc name to emit for an extern with `[emit: "..."]`, or "" if
   ## it uses its Tuck name (the default).
   ctx.externEmitNameFast(fnName)
+
+proc isRuntimeExtern*(ctx: var CodegenCtx, fnName: string): bool =
+  ## Is this call target an extern the RUNTIME implements? Those emit
+  ## qualified (`tuck_rt.name`) — Nim auto-exports `readFile`/`writeFile`
+  ## from std/syncio into every module, so a bare call to std/fs's own is
+  ## an "ambiguous call" the user never wrote and cannot see. Odin and D
+  ## already qualify every runtime call as `rt.name` for the same reason.
+  ctx.buildDeclIndex()
+  fnName in ctx.rtExterns

@@ -20,6 +20,6 @@ proc tuck_main*(): void =
     if true:
       if (c == 1042):
         if true:
-          exit(0)
-  exit(1)
+          tuck_rt.exit(0)
+  tuck_rt.exit(1)
 

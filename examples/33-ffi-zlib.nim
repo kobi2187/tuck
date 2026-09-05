@@ -9,6 +9,6 @@ proc tuck_main*(): void =
   var b = compressBound(1000)
   if (b == 1013):
     if true:
-      exit(0)
-  exit(1)
+      tuck_rt.exit(0)
+  tuck_rt.exit(1)
 

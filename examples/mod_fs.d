@@ -28,4 +28,8 @@ rt.TuckResult!(rt.TuckUnit) removeFile(string path) {
     return rt.removeFile(path);
 }
 
+rt.TuckResult!(rt.TuckUnit) makeDir(string path) {
+    return rt.makeDir(path);
+}
+
 

@@ -793,4 +793,27 @@ fn main() -> void [io]:
   t.omits "...and borrows no integer div for it", r"`div`\*\(a, b: tuck_Miles\)"
   t.emits "...while still borrowing the ops floats do have", r"`\+`\*\(a, b: tuck_Miles\)"
 
+  # Q. An UNQUALIFIED call to a runtime-backed extern collided with Nim's
+  # own auto-exported proc of the same name: `import fs` + `{path: ...}
+  # readFile` typechecked clean, then failed the Nim compile with "ambiguous
+  # call; both syncio.readFile and tuck_rt.readFile match" — a name the
+  # author never wrote and cannot see. Runtime externs now emit qualified
+  # (tuck_rt.name), which is what Odin and D already did with rt.name.
+  # Found 2026-09-04 (diff-patch).
+  t.src """
+import fs
+import console
+
+fn main() -> void [io]:
+  let w = {path: "/tmp/tuck-rtextern.txt", content: "hi"} writeFile
+  if w.ok:
+    let r = {path: "/tmp/tuck-rtextern.txt"} readFile
+    if r.ok:
+      {text: r.value.content} printLine
+"""
+  t.quietly: t.outputs("an unqualified runtime extern does not collide with Nim's own", "hi\n")
+  t.bugFixed "an unqualified runtime extern does not collide with Nim's own"
+  t.emits "...because runtime externs emit qualified", r"tuck_rt\.readFile\("
+  t.emits "...writeFile too, the other name Nim auto-exports", r"tuck_rt\.writeFile\("
+
   t.finish()

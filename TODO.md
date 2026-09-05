@@ -222,16 +222,6 @@ as a *class*, not just nine individual entries; see `INTEGRATION.md`'s
 "Sequencing" section for why the interface-dispatch one specifically blocks
 that design's whole premise.
 
-- [ ] **[repro] Unqualified `readFile` (and likely `writeFile`) collides
-  with Nim's own `std/syncio` proc of the same name.** `diff-patch`.
-  `import fs` + unqualified `{path: ...} readFile` typechecks clean;
-  `./tuck b` fails with `ambiguous call; both syncio.readFile(...) and
-  tuck_rt.readFile(...) match`. The Nim backend emits stdlib extern calls
-  as bare names, and Nim's own `system`/`std/syncio` auto-exports a
-  same-named proc. Workaround: call qualified (`fs::readFile`). Fix
-  candidates: mangle stdlib extern names in the Nim backend so they can't
-  collide with Nim's own auto-imported names, or always qualify stdlib
-  extern calls at emission regardless of source spelling.
 - [ ] **[repro] `const b = a + 1` (referencing another `const`, pure
   arithmetic) is rejected as impure.** `diff-patch`. `Const Error: 'const
   b' must be a pure compile-time expression` — contradicts
