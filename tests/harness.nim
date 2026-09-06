@@ -649,6 +649,73 @@ proc stageOdinPkg*(dir, odinSrc: string) =
   if fileExists("compiler/tuckrt/minicoro.a"):
     copyFile("compiler/tuckrt/minicoro.a", dir / "tuckrt" / "minicoro.a")
 
+# --- the host-acceptance assertion ---------------------------------------
+#
+# `hostBuilds NAME` asserts that every host compiler available ACCEPTS the
+# emitted program, on all three backends. It is strictly weaker than `runs`
+# (no exit code, no runtime behaviour) and far stronger than `emits`, which
+# matches a regex against generated text and therefore asserts the shape of a
+# STRING — not that anything will compile it.
+#
+# It exists because of the dominant bug class in this compiler: a shape the
+# CHECKER permits and an emitter only partly handles. `tuck ch` reports OK,
+# the emitted text looks plausible, and the host compiler rejects it, naming
+# generated code the author never wrote. Every architectural defect found on
+# 2026-09-06 was this: `op: <uninit>(tuck_BinOp)` on Odin, D refusing
+# `<uninit>[...]`, and D declaring `TRec_a_b_op_5F99 x = tuck_Ctx(...)`.
+# `okCheck` cannot see any of them and neither can `emits`.
+#
+# It is three legs, not one, because two of the three were backend-specific:
+# the Nim backend was accidentally immune (it lets Nim infer the type), so an
+# assertion that stopped at Nim would have reported green on both.
+#
+# Registered at vBuild, so `--check` skips it. Builds dominate the clock,
+# which is the whole reason the modes exist.
+#
+# A missing toolchain skips ITS leg rather than the assertion: reporting SKIP
+# because dmd is absent would hide a real Odin failure. The pass message says
+# which backends actually ran, so a green line cannot be misread as three.
+
+proc hostBuilds*(t: var T, name: string) =
+  let nimB = t.need(vBuild)
+  let odinExe = findOdin()
+  let dmdExe = findDmd()
+
+  var odinB = -1
+  if odinExe.len > 0:
+    let e = t.needOdin()
+    let proj = t.curDir / "odinpkg"
+    let src = t.curDir / "odin" / "t.odin"
+    odinB = t.needCmdAfter(@[odinExe, "build", proj, "-o:none",
+                             "-out:" & proj / "prog"], e,
+                           proc (dir: string) = stageOdinPkg(dir, src), proj)
+  var dB = -1
+  if dmdExe.len > 0:
+    let e = t.needD()
+    let dir = t.curDir / "dlang"
+    dB = t.needCmdAfter(@[dmdExe, "-i", "-I" & dir, dir / "t.d",
+                          dir / "minicoro.a", "-of=" & dir / "prog"],
+                        e, proc (dir: string) = discard, dir)
+  if t.phase == pCollect: return
+  if t.wasSkipped(nimB): t.skip name; return
+
+  var ran: seq[string]
+  if t.failedTo(nimB):
+    t.no name, "nim rejected the emitted code: " &
+               tailLines(t.item(nimB).output, 2)
+    return
+  ran.add "nim"
+  for (label, idx) in [("odin", odinB), ("d", dB)]:
+    if idx < 0: continue
+    if t.skippedCmd(idx): continue
+    let (rc, output) = t.resultOf(idx)
+    if rc != 0:
+      t.no name, label & " rejected the emitted code: " &
+                 tailLines(output, 2)
+      return
+    ran.add label
+  t.ok name & "  [" & ran.join(", ") & "]"
+
 proc rewind*(t: var T) =
   ## Reset the per-body cursors between the collect and report passes. The
   ## work items and their results stay; only the position in the body resets.
