@@ -141,6 +141,15 @@ proc dAppType*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## Seq[T] is a native D dynamic array — same value-semantics contract as
   ## the Nim backend's seq[T] (assignment copies; D slices alias, which the
   ## emitter compensates for at assignment sites — see the T17 audit).
+  # `<uninit>[T]` is the checker's marker for a field the construction did not
+  # supply. It is not a type the backend emits — the emitted record keeps its
+  # declared field types exactly (see ast.UninitName) — so it erases here, as
+  # it already did on the Nim and Odin paths.
+  # (spelled out rather than importing typecheck_util's isUninit: codegen
+  # sits BELOW the checker, and UninitName is ast's)
+  if t.base != nil and t.base.kind == tkNamed and t.base.name == UninitName and
+     t.args.len == 1:
+    return ctx.dTypeIn(t.args[0], mode)
   let payload = bangInner(t)
   if payload != nil:
     # !T / ?T / !?T — ONE value carrier, the status says which. `!void` has

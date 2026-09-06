@@ -1,0 +1,7 @@
+type P:
+  a: int
+  b: int
+fn main() -> int:
+  let x = {a: 5} P
+  let y = x with {b: 2}
+  return y.b - 2

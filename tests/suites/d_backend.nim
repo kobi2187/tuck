@@ -735,6 +735,8 @@ fn main() -> int:
   t.src """
 fnsig BinOp = {a: int, b: int} -> int
 
+type Ctx = {a: int, b: int, op: BinOp}
+
 fn plus({a: int, b: int}) -> int:
   return a + b
 
@@ -742,7 +744,7 @@ fn applyOperation({a: int, b: int, op: BinOp}) -> int:
   op.invoke {a, b}
 
 fn main() -> int:
-  let x = {a: 5, b: 10}
+  let x = {a: 5, b: 10} Ctx
   let withOp = x bake {op: :plus}
   let smaller = withOp bake {b: 2}
   return smaller applyOperation

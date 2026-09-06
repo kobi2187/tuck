@@ -271,8 +271,9 @@ proc retype*(tc: var TypeChecker, name: string, typ: Type) =
       tc.scopes[i][name].typ = typ
       return
 
-proc filled(t: Type, field: string): Type =
+proc filled*(t: Type, field: string): Type =
   ## `t` with the marker off `field`, or off every field when `field` is "".
+  ## Exported for asWithCall, which fills holes the same way a write does.
   if t == nil or t.kind != tkRecord: return t
   var fs: seq[FieldDef]
   for f in t.fields:

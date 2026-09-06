@@ -1,0 +1,8 @@
+fnsig BinOp = {a: int, b: int} -> int
+type Ctx = {a: int, b: int, op: BinOp}
+fn plus({a: int, b: int}) -> int:
+  return a + b
+fn main() -> int:
+  let x = {a: 5, b: 10, op: :plus} Ctx
+  let y = x bake {op: :plus}
+  return 0

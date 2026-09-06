@@ -141,6 +141,13 @@ proc odinTupleType*(ctx: var OdinCodegenCtx, t: Type): string =
 proc odinAppType*(ctx: var OdinCodegenCtx, t: Type): string =
   ## Odin puts the size BEFORE the element type: [N]T, not T[N].
   if t.base.kind == tkNamed:
+    # `<uninit>[T]` marks a field the construction did not supply. It is not
+    # a type any backend emits — the emitted record keeps its declared field
+    # types exactly (ast.UninitName) — so it erases here. It leaked as
+    # `op: <uninit>(tuck_BinOp)` the first time an example constructed a
+    # record with a hole; the D backend had the identical gap.
+    if t.base.name == UninitName and t.args.len == 1:
+      return ctx.odinType(t.args[0])
     case t.base.name
     of "*":       # elem * count — sized array
       return "[" & ctx.odinType(t.args[1]) & "]" & ctx.odinType(t.args[0])

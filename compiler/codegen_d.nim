@@ -775,6 +775,12 @@ proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   if val != nil and val.kind == exkField and ctx.isLenOnSized(val) and
      (t == nil or (t.kind == tkNamed and t.name == UnknownName)):
     t = Type(kind: tkNamed, name: "int", span: val.span)
+  # A record CONSTRUCTION is the declared type by name, whatever shape the
+  # checker stamped. Constructing with a field left unset stamps a structural
+  # record (the hole rides on the type), and reading the shape emitted
+  # `TRec_a_b_op_5F99 x = tuck_Ctx(...)` — a type mismatch dmd rejects. Nim
+  # and Odin never saw it: they let the host infer the declared type.
+  if ctx.isRecordConstructionIdx(val): return val.callee.name
   let owner = ctx.callOwnerModule(val)
   if owner != "" and t != nil:
     let payload = bangInner(t)

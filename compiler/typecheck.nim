@@ -1788,29 +1788,49 @@ proc asMergeCall(tc: var TypeChecker, e: Expr): Type =
   if fields.len == 0: return unknownType(e.span)
   Type(span: e.span, kind: tkRecord, fields: fields)
 
-proc applyBakeOverride(tc: var TypeChecker, fields: var seq[FieldDef],
+proc applyBakeOverride(tc: var TypeChecker, recvT: Type,
+                       fields: var seq[FieldDef],
                        name: string, valExpr: Expr) =
-  ## One `slot: value` from a bake payload: override the field if it exists,
-  ## otherwise ADD it. A value override keeps the field's declared type; fn
-  ## refs come through as Unknown and pass gradually.
+  ## One `slot: value` from a bake payload. The slot must already be DECLARED
+  ## on the receiver: bake fixes a field in place, it never widens the record
+  ## (2026-09-06 ruling — adding is `merge`'s job). It used to add instead,
+  ## which let `examples/03-functions-bake.tuck` bake an `op` its context
+  ## struct never declared, and silently turned a named record into an
+  ## anonymous one. A value keeps the field's declared type; fn refs come
+  ## through as Unknown and pass gradually.
   let vt = tc.synthesize(valExpr)
   for f in fields.mitems:
     if f.name != name: continue
-    if not isUnknown(vt) and not tc.compatible(vt, f.typ):
+    # A field the construction skipped is `<uninit>[T]`. Supplying it is a
+    # WRITE, and unwrapUninit is the helper for "what shape is this?" as
+    # opposed to "may I read it?" — comparing against the marked type made
+    # `{a: 5} P` then `bake {b: 2}` report `expects int <uninit> but got int`.
+    # The write also fills the hole, so the marker comes off.
+    let declared = unwrapUninit(f.typ)
+    if not isUnknown(vt) and not tc.compatible(vt, declared):
       fail("Type Error: bake override '" & name & "' expects " &
-           typeName(f.typ) & " but got " & typeName(vt), valExpr.span)
+           typeName(declared) & " but got " & typeName(vt), valExpr.span)
+    f.typ = declared
     return
-  fields.add(FieldDef(name: name, typ: vt, span: valExpr.span))
+  fail(dcTyNoSuchField,
+       "'" & typeName(recvT) & "' has no field '" & name &
+       "' — `bake` FIXES a declared slot to a value, it cannot add one. " &
+       "Fix: declare the slot on the record (a fn slot is a `fnsig` field, " &
+       "left unset at construction until a bake fills it), or use `merge`, " &
+       "which is the combinator that widens a record",
+       valExpr.span)
 
 proc asBakeCall(tc: var TypeChecker, e: Expr): Type =
-  ## `expr bake {slot: :fn, arg: value, ...}` — compile-time partial
-  ## application: rebuild the context struct with slots filled or argument
-  ## values overridden.
+  ## `expr bake {slot: :fn, arg: value, ...}` — partial application: fix a
+  ## DECLARED slot of the context struct to a value, so callers downstream no
+  ## longer supply it. Fixing a `fnsig` slot is what narrows the call.
   let recvT = tc.resolve(tc.synthesize(e.combRecv))
   var fields = tc.fieldsOf(recvT)
+  if fields.len == 0:                 # sketch receiver — stays gradual
+    for (_, valExpr) in e.combArg.fields.items: discard tc.synthesize(valExpr)
+    return unknownType(e.span)
   for (name, valExpr) in e.combArg.fields.items:
-    tc.applyBakeOverride(fields, name, valExpr)
-  if fields.len == 0: return unknownType(e.span)
+    tc.applyBakeOverride(recvT, fields, name, valExpr)
   Type(span: e.span, kind: tkRecord, fields: fields)
 
 proc asWithCall(tc: var TypeChecker, e: Expr): Type =
@@ -1832,10 +1852,11 @@ proc asWithCall(tc: var TypeChecker, e: Expr): Type =
   if fields.len == 0:
     for (_, valExpr) in e.combArg.fields.items: discard tc.synthesize(valExpr)
     return recvT                      # sketch receiver — stays gradual
+  var supplied: seq[string]
   for (name, valExpr) in e.combArg.fields.items:
     var declared: Type = nil
     for f in fields:
-      if f.name == name: declared = f.typ
+      if f.name == name: declared = unwrapUninit(f.typ)
     if declared == nil:
       fail(dcTyNoSuchField,
            "'" & typeName(recvT) & "' has no field '" & name &
@@ -1846,7 +1867,13 @@ proc asWithCall(tc: var TypeChecker, e: Expr): Type =
     if not isUnknown(vt) and not tc.compatible(vt, declared):
       fail("Type Error: `with` field '" & name & "' expects " &
            typeName(declared) & " but got " & typeName(vt), valExpr.span)
-  recvT
+    supplied.add(name)
+  # Writing a field the construction skipped FILLS it, so the result must no
+  # longer carry `<uninit>` there — otherwise reading it back is TK-TY16 over
+  # a hole that was just plugged. Only an anonymous record can carry markers;
+  # a named receiver resolves to its declaration, which has none.
+  result = recvT
+  for name in supplied: result = filled(result, name)
 
 proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
                            gs: seq[string],

@@ -884,6 +884,10 @@ fn main() -> void:
   t.badCheck "alias source field must exist on the receiver", "does\\ not\\ exist"
 
   t.src """
+fnsig BinOp = {a: int, b: int} -> int
+
+type Ctx = {a: int, b: int, op: BinOp}
+
 fn add({a: int, b: int}) -> int:
   return a + b
 
@@ -891,13 +895,27 @@ fn consume({a: int, b: int}) -> int:
   return a + b
 
 fn main() -> void:
-  let x = {a: 5, b: 10}
+  let x = {a: 5, b: 10} Ctx
   let y = x bake {op: :add}
   let z = y bake {b: 2}
   let r = {a: z.a, b: z.b} consume
   return
 """
-  t.okCheck "bake fills a fn slot and overrides values; result is typed"
+  t.okCheck "bake fills a declared fn slot and overrides values; result is typed"
+
+  # bake FIXES a declared slot; it never widens the record. The slot for a
+  # function is a `fnsig` field left unset at construction until a bake fills
+  # it — `examples/03-functions-bake.tuck` baked an `op` its context struct
+  # never declared, and the checker allowed it (2026-09-06 ruling).
+  t.src """
+fn main() -> void:
+  let x = {a: 5, b: 10}
+  let y = x bake {op: 3}
+  return
+"""
+  t.badCheck "bake cannot add a field the receiver has not got", "TK-TY21"
+  t.badCheck "...and it points at merge, which is the one that widens",
+             "use `merge`"
 
   t.src """
 fn main() -> void:

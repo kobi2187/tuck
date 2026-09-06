@@ -117,22 +117,6 @@ fn main() -> int:
   # `else` rejected the new kind, and no test noticed.
   t.src """
 const BASE = {a: 1, b: 2}
-const WIDER = BASE bake {c: 3}
-const UPDATED = BASE with {b: 9}
-
-fn main() -> int:
-  return WIDER.c - UPDATED.b + 6
-"""
-  t.okCheck "a const may hold a combinator"
-  t.runs "...and it evaluates at compile time", 0
-
-  # A const may hold a combinator: it is a pure compile-time rewrite of its
-  # operands. This went unguarded while the combinators were calls with a
-  # magic callee name (constCheckCallee allow-listed the four strings), and
-  # promoting them to exkCombinator nodes silently broke it — constCheck's
-  # `else` rejected the new kind, and no test noticed.
-  t.src """
-const BASE = {a: 1, b: 2}
 const FIXED = BASE bake {b: 9}
 const UPDATED = BASE with {a: 4}
 
