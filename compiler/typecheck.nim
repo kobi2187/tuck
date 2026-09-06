@@ -1752,10 +1752,10 @@ proc failIfDuplicateField(fields: seq[FieldDef], f: FieldDef, sp: Span,
 proc asAliasCall(tc: var TypeChecker, e: Expr): Type =
   ## `expr alias(old: new, ...)` — restructure: the same values under renamed
   ## fields. The result is a REAL record type; consumers check against it.
-  let recvT = tc.resolve(tc.synthesize(e.args[0]))
+  let recvT = tc.resolve(tc.synthesize(e.combRecv))
   let recvFields = tc.fieldsOf(recvT)
   var fields: seq[FieldDef]
-  for (oldName, newExpr) in e.args[1].fields.items:
+  for (oldName, newExpr) in e.combArg.fields.items:
     let ft = aliasedFieldType(recvFields, oldName)
     if ft == nil and recvFields.len > 0:
       fail("Type Error: alias source field '" & oldName &
@@ -1774,7 +1774,7 @@ proc asMergeCall(tc: var TypeChecker, e: Expr): Type =
   ## `{a, b} merge` — flatten the UNION of the member structs' fields into
   ## one flat struct.
   var fields: seq[FieldDef]
-  for (mname, mexpr) in e.args[0].fields.items:
+  for (mname, mexpr) in e.combRecv.fields.items:
     let mt = tc.resolve(tc.synthesize(mexpr))
     if isUnknown(mt): continue  # sketch member — stays gradual
     let mfs = tc.fieldsOf(mt)
@@ -1806,9 +1806,9 @@ proc asBakeCall(tc: var TypeChecker, e: Expr): Type =
   ## `expr bake {slot: :fn, arg: value, ...}` — compile-time partial
   ## application: rebuild the context struct with slots filled or argument
   ## values overridden.
-  let recvT = tc.resolve(tc.synthesize(e.args[0]))
+  let recvT = tc.resolve(tc.synthesize(e.combRecv))
   var fields = tc.fieldsOf(recvT)
-  for (name, valExpr) in e.args[1].fields.items:
+  for (name, valExpr) in e.combArg.fields.items:
     tc.applyBakeOverride(fields, name, valExpr)
   if fields.len == 0: return unknownType(e.span)
   Type(span: e.span, kind: tkRecord, fields: fields)
@@ -1827,12 +1827,12 @@ proc asWithCall(tc: var TypeChecker, e: Expr): Type =
   ## `with` therefore cannot introduce a field: a grown shape is no longer
   ## the type the receiver was. That rule is `with`'s alone — `bake` builds
   ## up a context struct and is free to widen it.
-  let recvT = tc.synthesize(e.args[0])
+  let recvT = tc.synthesize(e.combRecv)
   let fields = tc.fieldsOf(tc.resolve(recvT))
   if fields.len == 0:
-    for (_, valExpr) in e.args[1].fields.items: discard tc.synthesize(valExpr)
+    for (_, valExpr) in e.combArg.fields.items: discard tc.synthesize(valExpr)
     return recvT                      # sketch receiver — stays gradual
-  for (name, valExpr) in e.args[1].fields.items:
+  for (name, valExpr) in e.combArg.fields.items:
     var declared: Type = nil
     for f in fields:
       if f.name == name: declared = f.typ
@@ -2021,26 +2021,21 @@ proc synthArgsAs(tc: var TypeChecker, e: Expr, name: string): Type =
   for a in e.args: discard tc.synthesize(a)
   Type(span: e.span, kind: tkNamed, name: name)
 
-proc asRestructuringBuiltin(tc: var TypeChecker, e: Expr,
-                            calleeName: string): Type =
-  ## `alias` / `merge` / `bake` / `with` — the builtins that rearrange a record's
-  ## fields rather than calling anything. Each wants a specific argument
-  ## shape; a wrong shape is not an error, it degrades to Unknown so sketch
-  ## code keeps compiling.
-  case calleeName
-  of "alias":
-    if e.args.len == 2 and e.args[1].kind == exkStruct: tc.asAliasCall(e)
-    else: tc.synthArgsUnknown(e)
-  of "merge":
-    if e.args.len == 1 and e.args[0].kind == exkStruct: tc.asMergeCall(e)
-    else: nil                      # `merge` is also an ordinary name
-  of "bake":
-    if e.args.len == 2 and e.args[1].kind == exkStruct: tc.asBakeCall(e)
-    else: tc.synthArgsUnknown(e)
-  of "with":
-    if e.args.len == 2 and e.args[1].kind == exkStruct: tc.asWithCall(e)
-    else: nil                      # `with` is also an ordinary name
-  else: nil
+proc synthCombinator(tc: var TypeChecker, e: Expr): Type =
+  ## The record combinators. Each wants a struct payload; a wrong shape is not
+  ## an error, it degrades to Unknown so sketch code keeps compiling.
+  let needsPayload = e.comb != ckMerge
+  let haveStruct = if needsPayload: e.combArg != nil and
+                                    e.combArg.kind == exkStruct
+                   else: e.combRecv != nil and e.combRecv.kind == exkStruct
+  if not haveStruct:
+    for c in e.children: discard tc.synthesize(c)
+    return unknownType(e.span)
+  case e.comb
+  of ckAlias: tc.asAliasCall(e)
+  of ckMerge: tc.asMergeCall(e)
+  of ckBake: tc.asBakeCall(e)
+  of ckWith: tc.asWithCall(e)
 
 proc asNamedCallee(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   ## A callee that resolved to a NAME: a distinct conversion, a generic or
@@ -2087,16 +2082,15 @@ proc asNamedCallee(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   nil
 
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
-  ## What `{payload} name` means, in priority order: a restructuring builtin,
-  ## then a name (distinct / construction / declared fn), then a callee that
-  ## is not a bare name at all. Nothing claims it -> Unknown, gradually.
+  ## What `{payload} name` means, in priority order: a name (distinct /
+  ## construction / declared fn), then a callee that is not a bare name at
+  ## all. Nothing claims it -> Unknown, gradually. The record combinators are
+  ## NOT here — they are exkCombinator nodes the parser already decided on.
   let calleeName = tc.calleeNameOf(e)
   if calleeName in ParenBuiltinNames:
     # Args are type names, not values — see ParenBuiltinNames. Result is
     # always a plain size/offset.
     return Type(span: e.span, kind: tkNamed, name: "int")
-  result = tc.asRestructuringBuiltin(e, calleeName)
-  if result != nil: return
   result = tc.asNamedCallee(e, calleeName)
   if result != nil: return
   if e.callee != nil and e.callee.kind != exkVar:
@@ -2815,6 +2809,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkBracket: tc.synthBracket(e)
   of exkBracketAssign: tc.synthBracketAssign(e)
   of exkCall: tc.synthCall(e)
+  of exkCombinator: tc.synthCombinator(e)
   of exkBinary: tc.synthBinary(e)
   of exkUnary: tc.synthUnary(e)
   of exkBlock: tc.synthBlock(e)

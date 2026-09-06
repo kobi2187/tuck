@@ -121,6 +121,9 @@ proc resolveRefsIn(e: Expr) =
   of exkCall:
     e.callee = resolveVarSlot(e.callee)
     for i in 0 ..< e.args.len: e.args[i] = resolveVarSlot(e.args[i])
+  of exkCombinator:
+    e.combRecv = resolveVarSlot(e.combRecv)
+    e.combArg = resolveVarSlot(e.combArg)
   of exkChain:
     e.base = resolveVarSlot(e.base)
     for s in e.steps.mitems: resolveRefsIn(s.arg)

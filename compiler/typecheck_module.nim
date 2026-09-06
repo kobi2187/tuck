@@ -39,9 +39,9 @@ proc constCheckField*(tc: TypeChecker, m: Module, cname: string, e: Expr,
 
 proc constCheckCallee*(tc: TypeChecker, m: Module, cname, callee: string,
                       sp: Span) =
-  ## What a const's call may name: a compile-time combinator, a distinct base
-  ## conversion, or a declared pure fn.
-  if callee in ["bake", "merge", "alias", "with"]: return
+  ## What a const's call may name: a distinct base conversion or a declared
+  ## pure fn. The record combinators are not here any more — they are
+  ## exkCombinator nodes, allowed by their own arm in constCheck.
   if tc.distinctNames.contains(callee): return  # base conversion
   if tc.typeDecls.hasKey(callee) and tc.typeDecls[callee].kind == tkRecord:
     fail("Const Error: 'const " & cname & "' cannot hold a record " &
@@ -81,6 +81,15 @@ proc constCheck*(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
     constCheck(tc, m, cname, e.right, sp)
   of exkField: constCheckField(tc, m, cname, e, sp)
   of exkCall: constCheckCall(tc, m, cname, e, sp)
+  of exkCombinator:
+    # A combinator is a pure compile-time rewrite of its operands — that is
+    # why the four names were in constCheckCallee's allow-list while they
+    # were still calls. As nodes they need this arm, and the `else` below
+    # silently rejected them until it was written: `const W = BASE bake
+    # {c: 3}` compiled at HEAD and stopped compiling, with no test covering
+    # a const combinator to notice.
+    constCheck(tc, m, cname, e.combRecv, sp)
+    constCheck(tc, m, cname, e.combArg, sp)
   of exkVar:
     # A const may name ANOTHER const: still pure compile-time data, and the
     # backend's own const evaluator resolves the reference. Every other thing

@@ -85,6 +85,15 @@ proc toString*(e: Expr): string =
   of exkCall:
     if e.args.len == 0: return e.callee.toString()
     return e.callee.toString() & listToString(e.args, "(", ")")
+  of exkCombinator:
+    # Round-trips to the surface spelling: postfix, receiver first.
+    let nm = (case e.comb
+              of ckBake: "bake"
+              of ckWith: "with"
+              of ckAlias: "alias"
+              of ckMerge: "merge")
+    if e.combArg == nil: return e.combRecv.toString() & " " & nm
+    return e.combRecv.toString() & " " & nm & " " & e.combArg.toString()
   of exkChain: return chainToString(e)
   of exkBinary:
     return e.left.toString() & " " & opStr(e.binOp) & " " & e.right.toString()

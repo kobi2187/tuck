@@ -1,0 +1,9 @@
+type Pt:
+  x: int
+  y: int
+
+fn main() -> int:
+  let merge = 3
+  let a = {x: 1, y: 2} Pt
+  let b = a with {x: merge}
+  return b.x - 3

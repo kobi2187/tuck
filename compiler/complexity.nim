@@ -184,6 +184,10 @@ proc walk(m: var Metrics, e: Expr) =
   of exkCall:
     walk(m, e.callee)
     for a in e.args: walk(m, a)
+  of exkCombinator:
+    # A rewrite, not a branch: no fork to count, just the operands.
+    walk(m, e.combRecv)
+    walk(m, e.combArg)
   of exkChain:
     walk(m, e.base)
     for step in e.steps:

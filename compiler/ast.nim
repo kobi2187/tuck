@@ -249,11 +249,26 @@ type
     # typecheck, once, against the real declaration list. synthVar's
     # local/nullary-call/sum-variant chain never sees these names at all
     # afterward, so it never has to guess at them by string comparison.
+    exkCombinator   # bake / with / alias / merge — see CombKind below
     exkActorRef     # a bare actor singleton name (`Sink` in `Sink.seen`)
     exkRegisterRef  # a bare memory-mapped register name (`CTRL` in `CTRL.EN`)
     exkRegistryRef  # a bare registry name (`AppEvents` in `AppEvents.raise X`)
     exkPoolRef      # a bare pool name (`Bufs` in `Bufs.acquire`)
     exkMixinRef     # a bare mixin name (`Helpers` in `+ Helpers`)
+
+  CombKind* = enum
+    ## The record combinators. One family, one shape — a receiver and a struct
+    ## payload, producing a record — so one node kind carrying which, exactly
+    ## as exkBinary carries a BinOp rather than there being an exkAdd. They
+    ## were `exkCall` with a magic callee name until 2026-09-06, matched by
+    ## string in the checker and again in all three backends: 29 string
+    ## literals across 7 files, every one of which had to be found by hand to
+    ## add a combinator, and any missed one failing silently. A new arm here
+    ## breaks every backend's `case` at compile time instead.
+    ckBake     ## `recv bake {slot: value}` — fix a slot; partial application
+    ckWith     ## `recv with {field: value}` — copy, replace, SAME type
+    ckAlias    ## `recv alias(old: new)` — the same values, renamed
+    ckMerge    ## `{a, b} merge` — flatten the union of the members' fields
 
   Expr* = ref object of Node
     sourceName*: Option[string]  ## see SourceName note below
@@ -334,6 +349,10 @@ type
       sendPayload*: Expr    # the `{...}` struct literal, or nil
     of exkSelect:
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
+    of exkCombinator:
+      comb*: CombKind
+      combRecv*: Expr   # the receiver; for ckMerge, the struct OF members
+      combArg*: Expr    # the payload struct; nil for ckMerge
     of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
       refName*: string  # the resolved name; the Decl itself is one
                         # declFor(semLayer, e) away (resolution.nim) once

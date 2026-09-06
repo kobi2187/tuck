@@ -227,8 +227,8 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string],
   # own — exkFor, exkAssign, exkMatch — is spelled out below instead, because
   # for those it matters WHICH children are visited and in what order.
   of exkField, exkStruct, exkList, exkBracket, exkBracketAssign, exkCall,
-     exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile, exkReturn,
-     exkRaise, exkDiscard:
+     exkCombinator, exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile,
+     exkReturn, exkRaise, exkDiscard:
     for c in e.children: mangleExpr(c, names, locals, fields)
   of exkMatch:
     mangleExpr(e.subject, names, locals, fields)
@@ -244,7 +244,14 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string],
       mangleExpr(arm.body, names, locals, fields)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     mangleRefName(e, names)
-  else: discard
+  # Nothing to rename, and spelled out rather than left to `else: discard`.
+  # The `else` that used to close this case swallowed exkCombinator when it
+  # was added: the emitted Nim read `(a: x.a, op: plus)` beside a
+  # `var tuck_x`, because the declaration was renamed and the reference
+  # inside the combinator was not. Every kind is listed now, so the next one
+  # stops the build here instead.
+  of exkLit, exkBreak, exkContinue, exkImport:
+    discard
 
 proc mangleFnBody(d: Decl, names: HashSet[string],
                   fields: HashSet[string] = initHashSet[string]()) =

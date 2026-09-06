@@ -152,22 +152,22 @@ proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
 # Ported from codegen.nim; neither Beef nor this backend had an arm for it,
 # so `bake` used to fall through to a plain call and emit nonsense.
 proc genOdinBake(ctx: var OdinCodegenCtx, e: Expr): string =
-  if e.args[0].kind != exkVar: return ""  # ponytail: no expr-position temp
-  let recv = ctx.genOdinExpr(e.args[0])
-  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
+  if e.combRecv.kind != exkVar: return ""  # ponytail: no expr-position temp
+  let recv = ctx.genOdinExpr(e.combRecv)
+  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.combRecv))
   if recvFields.len == 0: return ""
   var declFields: seq[FieldDef]
-  for f in getFieldsForType(ctx.module, semLayer.typeFor(e.args[0])):
+  for f in getFieldsForType(ctx.module, semLayer.typeFor(e.combRecv)):
     declFields.add(f)
   var parts: seq[string]
   for fname in recvFields:
     var overridden = ""
-    for (name, valExpr) in e.args[1].fields.items:
+    for (name, valExpr) in e.combArg.fields.items:
       if name == fname: overridden = ctx.genOdinExpr(valExpr)
     parts.add(fname & " = " & (if overridden != "": overridden
                                else: recv & "." & fname))
   # a name the receiver doesn't have ADDS a field, so the shape grows
-  for (name, valExpr) in e.args[1].fields.items:
+  for (name, valExpr) in e.combArg.fields.items:
     if name notin recvFields:
       parts.add(name & " = " & ctx.genOdinExpr(valExpr))
       var ft = inferLitType(valExpr)
@@ -181,15 +181,15 @@ proc genOdinBake(ctx: var OdinCodegenCtx, e: Expr): string =
 # got), so a named record rebuilds through its own struct name rather than a
 # synthesized TRec shape.
 proc genOdinWith(ctx: var OdinCodegenCtx, e: Expr): string =
-  if e.args[0].kind != exkVar: return ""  # ponytail: no expr-position temp
-  let recvT = semLayer.typeFor(e.args[0])
+  if e.combRecv.kind != exkVar: return ""  # ponytail: no expr-position temp
+  let recvT = semLayer.typeFor(e.combRecv)
   let recvFields = recordFieldNames(ctx.module, recvT)
   if recvFields.len == 0: return ""
-  let recv = ctx.genOdinExpr(e.args[0])
+  let recv = ctx.genOdinExpr(e.combRecv)
   var parts: seq[string]
   for fname in recvFields:
     var overridden = ""
-    for (name, valExpr) in e.args[1].fields.items:
+    for (name, valExpr) in e.combArg.fields.items:
       if name == fname: overridden = ctx.genOdinExpr(valExpr)
     parts.add(fname & " = " & (if overridden != "": overridden
                                else: recv & "." & fname))
@@ -207,13 +207,13 @@ proc genOdinWith(ctx: var OdinCodegenCtx, e: Expr): string =
 # ponytail: exkVar receivers only (no expr-position temp);
 # falls back to pass-through otherwise.
 proc genOdinAlias(ctx: var OdinCodegenCtx, e: Expr): string =
-  if e.args[0].kind != exkVar or semLayer.typeFor(e.args[0]) == nil: return ""
-  let recvFields = getFieldsForType(ctx.module, semLayer.typeFor(e.args[0]))
+  if e.combRecv.kind != exkVar or semLayer.typeFor(e.combRecv) == nil: return ""
+  let recvFields = getFieldsForType(ctx.module, semLayer.typeFor(e.combRecv))
   if recvFields.len == 0: return ""
   var newFields: seq[FieldDef]
   var vals: seq[string]
-  let recv = ctx.genOdinExpr(e.args[0])
-  for (oldName, newExpr) in e.args[1].fields.items:
+  let recv = ctx.genOdinExpr(e.combRecv)
+  for (oldName, newExpr) in e.combArg.fields.items:
     var ft: Type = nil
     for rf in recvFields:
       if rf.name == oldName: ft = rf.typ
@@ -227,7 +227,7 @@ proc genOdinAlias(ctx: var OdinCodegenCtx, e: Expr): string =
 proc genOdinMerge(ctx: var OdinCodegenCtx, e: Expr): string =
   var newFields: seq[FieldDef]
   var vals: seq[string]
-  for (mname, mexpr) in e.args[0].fields.items:
+  for (mname, mexpr) in e.combRecv.fields.items:
     if mexpr.kind != exkVar or semLayer.typeFor(mexpr) == nil: return ""
     let recv = ctx.genOdinExpr(mexpr)
     for f in getFieldsForType(ctx.module, semLayer.typeFor(mexpr)):
@@ -364,17 +364,14 @@ proc asParenBuiltinOdin(ctx: var OdinCodegenCtx, e: Expr,
     return "align_of(" & ctx.genOdinExpr(e.args[0]) & ")"
   ""
 
-proc asTwoArgCombinator(ctx: var OdinCodegenCtx, e: Expr,
-                        calleeStr: string): string =
-  ## `recv <name> {…}` — the combinators taking a receiver and a struct.
-  ## One shape, so one arity test: a `case` here costs a single branch
-  ## instead of the two-predicate `if` each name needed on its own.
-  if e.args.len != 2 or e.args[1].kind != exkStruct: return ""
-  case calleeStr
-  of "with": ctx.genOdinWith(e)
-  of "bake": ctx.genOdinBake(e)
-  of "alias": ctx.genOdinAlias(e)
-  else: ""
+proc genOdinCombinator(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Each combinator REWRITES its operands into a struct literal rather than
+  ## emitting a call. Exhaustive: a new CombKind stops the build here.
+  case e.comb
+  of ckWith: ctx.genOdinWith(e)
+  of ckBake: ctx.genOdinBake(e)
+  of ckAlias: ctx.genOdinAlias(e)
+  of ckMerge: ctx.genOdinMerge(e)
 
 proc asCombinatorCall(ctx: var OdinCodegenCtx, e: Expr,
                       calleeStr: string): string =
@@ -382,14 +379,8 @@ proc asCombinatorCall(ctx: var OdinCodegenCtx, e: Expr,
   ## emitting one. Any that declines returns "" and the call proceeds.
   let builtin = ctx.asParenBuiltinOdin(e, calleeStr)
   if builtin != "": return builtin
-  let two = ctx.asTwoArgCombinator(e, calleeStr)
-  if two != "": return two
   if isRecordConstruction(ctx.module, e): return ctx.genRecordCtor(e)
-  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genOdinMerge(e)
-  if calleeStr notin TwoArgCombinators:
-    return ctx.explodeRecordArg(e, calleeStr)
-  ""
+  return ctx.explodeRecordArg(e, calleeStr)
 
 proc genSaturatingCtor(ctx: var OdinCodegenCtx, satT: Type,
                        calleeStr, arg: string): string =
@@ -414,9 +405,6 @@ proc genRtCall(calleeStr: string, args: seq[string]): string =
 proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
                      args: seq[string]): string =
   ## The emission forms, once the arguments are built.
-  if calleeStr in ["bake", "with"]:
-    return args[0] & "(" & args[1..^1].join(", ") & ")"
-  if calleeStr == "alias": return args[0]
   let satT = ctx.module.saturatingType(calleeStr)
   if satT != nil and args.len == 1:
     return ctx.genSaturatingCtor(satT, calleeStr, args[0])
@@ -1143,6 +1131,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
   of exkCall: ctx.genOdinCall(e)
+  of exkCombinator: ctx.genOdinCombinator(e)
   of exkStruct: ctx.genStructLit(e)
   of exkList: ctx.genList(e)
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)

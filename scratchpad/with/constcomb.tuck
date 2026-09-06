@@ -1,0 +1,5 @@
+const BASE = {a: 1, b: 2}
+const WIDER = BASE bake {c: 3}
+
+fn main() -> int:
+  return WIDER.c - 3

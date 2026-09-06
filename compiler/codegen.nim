@@ -93,22 +93,22 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
 # inlined; an earlier comment here claimed Nim monomorphized it, which the
 # emitted `type tuck_BinOp = proc(...) {.closure.}` contradicts.
 proc genBake(ctx: var CodegenCtx, e: Expr): string =
-  var recv = ctx.genExpr(e.args[0])
+  var recv = ctx.genExpr(e.combRecv)
   var prefix = ""
-  if e.args[0].kind != exkVar:
+  if e.combRecv.kind != exkVar:
     ctx.tmpCounter.inc
     let tmp = "tuckBake" & $ctx.tmpCounter
     prefix = "let " & tmp & " = " & recv & "; "
     recv = tmp
-  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
+  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.combRecv))
   var parts: seq[string]
   for fname in recvFields:
     var overridden = ""
-    for (name, valExpr) in e.args[1].fields.items:
+    for (name, valExpr) in e.combArg.fields.items:
       if name == fname: overridden = ctx.genExpr(valExpr)
     parts.add(fname & ": " & (if overridden != "": overridden
                               else: recv & "." & fname))
-  for (name, valExpr) in e.args[1].fields.items:
+  for (name, valExpr) in e.combArg.fields.items:
     if name notin recvFields:
       parts.add(name & ": " & ctx.genExpr(valExpr))
   if parts.len == 0: return recv  # unknown receiver shape — pass through
@@ -127,22 +127,22 @@ proc withFieldParts(ctx: var CodegenCtx, e: Expr, recv: string,
   ## payload names it, else the receiver's own value carried across.
   for fname in names:
     var overridden = ""
-    for (name, valExpr) in e.args[1].fields.items:
+    for (name, valExpr) in e.combArg.fields.items:
       if name == fname: overridden = ctx.genExpr(valExpr)
     result.add(fname & ": " & (if overridden != "": overridden
                                else: recv & "." & fname))
 
 proc genWith(ctx: var CodegenCtx, e: Expr): string =
-  let recvT = semLayer.typeFor(e.args[0])
+  let recvT = semLayer.typeFor(e.combRecv)
   var names = recordFieldNames(ctx.module, recvT)
   let named = names.len > 0 and recvT.kind == tkNamed and
               ctx.isRecordTypeFast(recvT.name)
   if names.len == 0:                    # sketch receiver: the overrides are
-    for (name, _) in e.args[1].fields.items: names.add(name)   # all there is
-  if names.len == 0: return ctx.genExpr(e.args[0])
-  var recv = ctx.genExpr(e.args[0])
+    for (name, _) in e.combArg.fields.items: names.add(name)   # all there is
+  if names.len == 0: return ctx.genExpr(e.combRecv)
+  var recv = ctx.genExpr(e.combRecv)
   var prefix = ""
-  if e.args[0].kind != exkVar:
+  if e.combRecv.kind != exkVar:
     ctx.tmpCounter.inc
     let tmp = "tuckWith" & $ctx.tmpCounter
     prefix = "let " & tmp & " = " & recv & "; "
@@ -161,7 +161,7 @@ proc genWith(ctx: var CodegenCtx, e: Expr): string =
 proc genMerge(ctx: var CodegenCtx, e: Expr): string =
   var parts: seq[string]
   var prefix = ""
-  for (mname, mexpr) in e.args[0].fields.items:
+  for (mname, mexpr) in e.combRecv.fields.items:
     var recv = ctx.genExpr(mexpr)
     if mexpr.kind != exkVar:
       ctx.tmpCounter.inc
@@ -170,7 +170,7 @@ proc genMerge(ctx: var CodegenCtx, e: Expr): string =
       recv = tmp
     for f in recordFieldNames(ctx.module, semLayer.typeFor(mexpr)):
       parts.add(f & ": " & recv & "." & f)
-  if parts.len == 0: return ctx.genExpr(e.args[0])  # sketch members
+  if parts.len == 0: return ctx.genExpr(e.combRecv)  # sketch members
   if prefix == "": "(" & parts.join(", ") & ")"
   else: "(" & prefix & "(" & parts.join(", ") & "))"
 
@@ -178,15 +178,15 @@ proc genMerge(ctx: var CodegenCtx, e: Expr): string =
 # (new1: x.old1, new2: x.old2, ...). Non-var receivers bind to a temp first
 # (no double evaluation).
 proc genAlias(ctx: var CodegenCtx, e: Expr): string =
-  var recv = ctx.genExpr(e.args[0])
+  var recv = ctx.genExpr(e.combRecv)
   var prefix = ""
-  if e.args[0].kind != exkVar:
+  if e.combRecv.kind != exkVar:
     ctx.tmpCounter.inc
     let tmp = "tuckAlias" & $ctx.tmpCounter
     prefix = "let " & tmp & " = " & recv & "; "
     recv = tmp
   var parts: seq[string]
-  for (oldName, newExpr) in e.args[1].fields.items:
+  for (oldName, newExpr) in e.combArg.fields.items:
     parts.add(newExpr.name & ": " & recv & "." & oldName)
   if prefix == "": "(" & parts.join(", ") & ")"
   else: "(" & prefix & "(" & parts.join(", ") & "))"
@@ -331,29 +331,15 @@ proc genCallArgs(ctx: var CodegenCtx, e: Expr, calleeStr: string): seq[string] =
     return ctx.genPayloadArgs(e, calleeStr)
   for a in e.args: result.add(ctx.genExpr(a))
 
-proc asTwoArgCombinator(ctx: var CodegenCtx, e: Expr,
-                        calleeStr: string): string =
-  ## `recv <name> {…}` — the combinators taking a receiver and a struct.
-  ## One shape, so one arity test: a `case` here costs a single branch
-  ## instead of the two-predicate `if` each name needed on its own.
-  if e.args.len != 2 or e.args[1].kind != exkStruct: return ""
-  case calleeStr
-  of "alias": ctx.genAlias(e)
-  of "with": ctx.genWith(e)
-  of "bake": ctx.genBake(e)
-  else: ""
-
-proc asCombinatorCall(ctx: var CodegenCtx, e: Expr,
-                      calleeStr: string): string =
-  ## The compile-time combinators, each of which rewrites the call rather than
-  ## emitting one. Any that declines returns "" and the call proceeds.
-  let two = ctx.asTwoArgCombinator(e, calleeStr)
-  if two != "": return two
-  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genMerge(e)
-  if calleeStr notin TwoArgCombinators:
-    return ctx.explodeRecordArg(e, calleeStr)
-  ""
+proc genCombinator(ctx: var CodegenCtx, e: Expr): string =
+  ## Each combinator REWRITES its operands into a record literal rather than
+  ## emitting a call. The `case` is exhaustive: a new CombKind stops the
+  ## build here instead of silently emitting nothing.
+  case e.comb
+  of ckAlias: ctx.genAlias(e)
+  of ckWith: ctx.genWith(e)
+  of ckBake: ctx.genBake(e)
+  of ckMerge: ctx.genMerge(e)
 
 proc genSaturatingCtor(satBase, calleeStr, arg: string): string =
   ## spec 4.1: constructing a [saturating] type clamps instead of wrapping.
@@ -402,9 +388,6 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
 proc genCallWithArgs(ctx: var CodegenCtx, calleeStr: string,
                      args: seq[string]): string =
   ## The emission forms, once the arguments are built.
-  if calleeStr in ["bake", "with"]:
-    return args[0] & "(" & args[1..^1].join(", ") & ")"
-  if calleeStr == "alias": return args[0]
   let satBase = ctx.saturatingBase(calleeStr)
   if satBase != "" and args.len == 1:
     return genSaturatingCtor(satBase, calleeStr, args[0])
@@ -415,7 +398,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
   let calleeStr = ctx.genExpr(e.callee)
-  let combinator = ctx.asCombinatorCall(e, calleeStr)
+  let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
   let args = ctx.genCallArgs(e, calleeStr)
   ctx.genCallWithArgs(calleeStr, args)
@@ -837,6 +820,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
   of exkCall: ctx.genCallExpr(e)
+  of exkCombinator: ctx.genCombinator(e)
   of exkStruct: ctx.genStruct(e)
   of exkList: ctx.genList(e)
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)

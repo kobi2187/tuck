@@ -195,21 +195,21 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
 proc genDBake(ctx: var DCodegenCtx, e: Expr): string =
   ## expr bake {slot: value, ...} — rebuild the record with slots overridden
   ## (adding fields grows the shape). Port of genOdinBake.
-  if e.args[0].kind != exkVar: return ""
-  let recv = ctx.genDExpr(e.args[0])
-  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
+  if e.combRecv.kind != exkVar: return ""
+  let recv = ctx.genDExpr(e.combRecv)
+  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.combRecv))
   if recvFields.len == 0: return ""
   var declFields: seq[FieldDef]
-  for f in getFieldsForType(ctx.module, semLayer.typeFor(e.args[0])):
+  for f in getFieldsForType(ctx.module, semLayer.typeFor(e.combRecv)):
     declFields.add(f)
   var parts: seq[string]
   for fname in recvFields:
     var overridden = ""
-    for (name, valExpr) in e.args[1].fields.items:
+    for (name, valExpr) in e.combArg.fields.items:
       if name == fname: overridden = ctx.genDExpr(valExpr)
     parts.add(fname & ": " & (if overridden != "": overridden
                               else: recv & "." & fname))
-  for (name, valExpr) in e.args[1].fields.items:
+  for (name, valExpr) in e.combArg.fields.items:
     if name notin recvFields:
       parts.add(name & ": " & ctx.genDExpr(valExpr))
       var ft = inferLitType(valExpr)
@@ -222,15 +222,15 @@ proc genDWith(ctx: var DCodegenCtx, e: Expr): string =
   ## expr with {field: value, ...} — the copy-modify-return shortcut. Unlike
   ## bake, the type is PRESERVED (TK-TY21 refuses a name the record has not
   ## got), so a named record rebuilds through its own struct name.
-  if e.args[0].kind != exkVar: return ""
-  let recvT = semLayer.typeFor(e.args[0])
+  if e.combRecv.kind != exkVar: return ""
+  let recvT = semLayer.typeFor(e.combRecv)
   let recvFields = recordFieldNames(ctx.module, recvT)
   if recvFields.len == 0: return ""
-  let recv = ctx.genDExpr(e.args[0])
+  let recv = ctx.genDExpr(e.combRecv)
   var parts: seq[string]
   for fname in recvFields:
     var overridden = ""
-    for (name, valExpr) in e.args[1].fields.items:
+    for (name, valExpr) in e.combArg.fields.items:
       if name == fname: overridden = ctx.genDExpr(valExpr)
     parts.add(fname & ": " & (if overridden != "": overridden
                               else: recv & "." & fname))
@@ -244,13 +244,13 @@ proc genDWith(ctx: var DCodegenCtx, e: Expr): string =
 
 proc genDAlias(ctx: var DCodegenCtx, e: Expr): string =
   ## expr alias(old: new, ...) — rebuild as the renamed record shape.
-  if e.args[0].kind != exkVar or semLayer.typeFor(e.args[0]) == nil: return ""
-  let recvFields = getFieldsForType(ctx.module, semLayer.typeFor(e.args[0]))
+  if e.combRecv.kind != exkVar or semLayer.typeFor(e.combRecv) == nil: return ""
+  let recvFields = getFieldsForType(ctx.module, semLayer.typeFor(e.combRecv))
   if recvFields.len == 0: return ""
   var newFields: seq[FieldDef]
   var vals: seq[string]
-  let recv = ctx.genDExpr(e.args[0])
-  for (oldName, newExpr) in e.args[1].fields.items:
+  let recv = ctx.genDExpr(e.combRecv)
+  for (oldName, newExpr) in e.combArg.fields.items:
     var ft: Type = nil
     for rf in recvFields:
       if rf.name == oldName: ft = rf.typ
@@ -263,7 +263,7 @@ proc genDMerge(ctx: var DCodegenCtx, e: Expr): string =
   ## {a, b} merge — flatten the records into one union shape.
   var newFields: seq[FieldDef]
   var vals: seq[string]
-  for (mname, mexpr) in e.args[0].fields.items:
+  for (mname, mexpr) in e.combRecv.fields.items:
     if mexpr.kind != exkVar or semLayer.typeFor(mexpr) == nil: return ""
     let recv = ctx.genDExpr(mexpr)
     for f in getFieldsForType(ctx.module, semLayer.typeFor(mexpr)):
@@ -309,17 +309,14 @@ proc asParenBuiltinD(ctx: var DCodegenCtx, e: Expr, calleeStr: string): string =
     return dUnsupported("offsetof (no D translation verified yet)")
   ""
 
-proc asTwoArgCombinatorD(ctx: var DCodegenCtx, e: Expr,
-                         calleeStr: string): string =
-  ## `recv <name> {…}` — the combinators taking a receiver and a struct.
-  ## One shape, so one arity test: a `case` here costs a single branch
-  ## instead of the two-predicate `if` each name needed on its own.
-  if e.args.len != 2 or e.args[1].kind != exkStruct: return ""
-  case calleeStr
-  of "with": ctx.genDWith(e)
-  of "bake": ctx.genDBake(e)
-  of "alias": ctx.genDAlias(e)
-  else: ""
+proc genDCombinator(ctx: var DCodegenCtx, e: Expr): string =
+  ## Each combinator REWRITES its operands into a struct literal rather than
+  ## emitting a call. Exhaustive: a new CombKind stops the build here.
+  case e.comb
+  of ckWith: ctx.genDWith(e)
+  of ckBake: ctx.genDBake(e)
+  of ckAlias: ctx.genDAlias(e)
+  of ckMerge: ctx.genDMerge(e)
 
 proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
@@ -327,14 +324,8 @@ proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
   ## proceeds as a plain one. Same order as the Odin backend.
   let builtin = ctx.asParenBuiltinD(e, calleeStr)
   if builtin != "": return builtin
-  let two = ctx.asTwoArgCombinatorD(e, calleeStr)
-  if two != "": return two
   if ctx.isRecordConstructionIdx(e): return ctx.genDRecordCtor(e)
-  if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genDMerge(e)
-  if calleeStr notin TwoArgCombinators:
-    return ctx.explodeRecordArgD(e, calleeStr)
-  ""
+  return ctx.explodeRecordArgD(e, calleeStr)
 
 proc resolveDCallee(ctx: var DCodegenCtx, e: Expr): string =
   ## A bare-name callee (exkVar) resolves like an unqualified exkQualified:
@@ -1212,6 +1203,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     # application never reaches codegen (mirrors both other backends).
     if semLayer.hasCall(e): ctx.genDExpr(semLayer.call(e)) else: ""
   of exkCall: ctx.genDCall(e)
+  of exkCombinator: ctx.genDCombinator(e)
   of exkChain: ctx.genDChain(e)
   of exkBinary: ctx.genDBinary(e)
   of exkUnary: ctx.genDUnary(e)

@@ -143,6 +143,9 @@ iterator children*(e: Expr): Expr =
     of exkCall:
       yield e.callee
       for a in e.args: yield a
+    of exkCombinator:
+      yield e.combRecv
+      yield e.combArg
     of exkChain:
       yield e.base
       for s in e.steps:
