@@ -153,6 +153,33 @@ server ..withDefaults ..port {8080} ..timeout {60}     # examples/02:22
 Either sets a field or calls a mutator whose first param is the receiver; the
 result is reassigned. On a `let` → `declared with 'let'` (`tests/suites/typecheck.nim`).
 
+Its real meaning is the BUILDER pattern — setting up fields, which a
+record-centric language does constantly — so it gets a construct of its own.
+
+### `with` — the copy-modify-return shortcut
+
+```tuck
+fn complete({self: Task}) -> Task:
+  return self with {done: true}
+```
+
+A copy of the receiver with the named fields replaced, as one expression. It
+exists because value semantics makes `..` illegal on a parameter (TK-TY15), so
+every "mutating" fn used to spell the dance by hand:
+
+```tuck
+var s = self          # what `with` replaces
+s ..done {true}
+return s
+```
+
+From the outside `.complete` reads as mutation; inside, the fn works on a copy
+and returns it, and the caller's binding is untouched. `with` keeps the
+receiver's TYPE, which is what lets the result satisfy `-> Task` — so it
+cannot introduce a field (`TK-TY21`); widening a record is `merge`'s job. It
+is a soft keyword: only `with {` makes it the combinator, so `with` is still
+usable as an ordinary name. (`tests/suites/with_update.nim`)
+
 ---
 
 ## 3. Types

@@ -111,6 +111,47 @@ proc genBake(ctx: var CodegenCtx, e: Expr): string =
   if prefix == "": "(" & parts.join(", ") & ")"
   else: "(" & prefix & "(" & parts.join(", ") & "))"
 
+# expr with {field: value, ...} — the copy-modify-return shortcut. It shares
+# bake's SHAPE but not its emission: `with` preserves the receiver's type
+# (TK-TY21 refuses a name the record has not got), so a NAMED record rebuilds
+# through its own constructor. Emitting bake's anonymous tuple here compiled
+# to `got tuple[...] but expected tuck_Task = object` — a report about
+# generated code, from a fn body the author wrote correctly.
+proc withFieldParts(ctx: var CodegenCtx, e: Expr, recv: string,
+                    names: seq[string]): seq[string] =
+  ## Each field of the result, in declared order: the override when the
+  ## payload names it, else the receiver's own value carried across.
+  for fname in names:
+    var overridden = ""
+    for (name, valExpr) in e.args[1].fields.items:
+      if name == fname: overridden = ctx.genExpr(valExpr)
+    result.add(fname & ": " & (if overridden != "": overridden
+                               else: recv & "." & fname))
+
+proc genWith(ctx: var CodegenCtx, e: Expr): string =
+  let recvT = semLayer.typeFor(e.args[0])
+  var names = recordFieldNames(ctx.module, recvT)
+  let named = names.len > 0 and recvT.kind == tkNamed and
+              ctx.isRecordTypeFast(recvT.name)
+  if names.len == 0:                    # sketch receiver: the overrides are
+    for (name, _) in e.args[1].fields.items: names.add(name)   # all there is
+  if names.len == 0: return ctx.genExpr(e.args[0])
+  var recv = ctx.genExpr(e.args[0])
+  var prefix = ""
+  if e.args[0].kind != exkVar:
+    ctx.tmpCounter.inc
+    let tmp = "tuckWith" & $ctx.tmpCounter
+    prefix = "let " & tmp & " = " & recv & "; "
+    recv = tmp
+  let parts = ctx.withFieldParts(e, recv, names)
+  var lit = (if named: genType(recvT) else: "") & "(" & parts.join(", ") & ")"
+  # an updated record is a production site too: its invariants must hold
+  if named and ctx.hasInvariantsFast(recvT.name):
+    ctx.tmpCounter.inc
+    let tmp = "tuckInv" & $ctx.tmpCounter
+    lit = "(let " & tmp & " = " & lit & "; validate(" & tmp & "); " & tmp & ")"
+  if prefix == "": lit else: "(" & prefix & lit & ")"
+
 # {a, b} merge — flatten: one struct carrying the union of the members'
 # fields (collisions rejected by the checker).
 proc genMerge(ctx: var CodegenCtx, e: Expr): string =
@@ -286,17 +327,27 @@ proc genCallArgs(ctx: var CodegenCtx, e: Expr, calleeStr: string): seq[string] =
     return ctx.genPayloadArgs(e, calleeStr)
   for a in e.args: result.add(ctx.genExpr(a))
 
+proc asTwoArgCombinator(ctx: var CodegenCtx, e: Expr,
+                        calleeStr: string): string =
+  ## `recv <name> {…}` — the combinators taking a receiver and a struct.
+  ## One shape, so one arity test: a `case` here costs a single branch
+  ## instead of the two-predicate `if` each name needed on its own.
+  if e.args.len != 2 or e.args[1].kind != exkStruct: return ""
+  case calleeStr
+  of "alias": ctx.genAlias(e)
+  of "with": ctx.genWith(e)
+  of "bake": ctx.genBake(e)
+  else: ""
+
 proc asCombinatorCall(ctx: var CodegenCtx, e: Expr,
                       calleeStr: string): string =
   ## The compile-time combinators, each of which rewrites the call rather than
   ## emitting one. Any that declines returns "" and the call proceeds.
-  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return ctx.genAlias(e)
-  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return ctx.genBake(e)
+  let two = ctx.asTwoArgCombinator(e, calleeStr)
+  if two != "": return two
   if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
     return ctx.genMerge(e)
-  if calleeStr notin ["bake", "alias"]:
+  if calleeStr notin TwoArgCombinators:
     return ctx.explodeRecordArg(e, calleeStr)
   ""
 
@@ -347,7 +398,8 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
 proc genCallWithArgs(ctx: var CodegenCtx, calleeStr: string,
                      args: seq[string]): string =
   ## The emission forms, once the arguments are built.
-  if calleeStr == "bake": return args[0] & "(" & args[1..^1].join(", ") & ")"
+  if calleeStr in ["bake", "with"]:
+    return args[0] & "(" & args[1..^1].join(", ") & ")"
   if calleeStr == "alias": return args[0]
   let satBase = ctx.saturatingBase(calleeStr)
   if satBase != "" and args.len == 1:

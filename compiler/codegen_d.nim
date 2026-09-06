@@ -218,6 +218,30 @@ proc genDBake(ctx: var DCodegenCtx, e: Expr): string =
   if parts.len == 0: return recv
   ctx.recStructNameD(declFields) & "(" & parts.join(", ") & ")"
 
+proc genDWith(ctx: var DCodegenCtx, e: Expr): string =
+  ## expr with {field: value, ...} — the copy-modify-return shortcut. Unlike
+  ## bake, the type is PRESERVED (TK-TY21 refuses a name the record has not
+  ## got), so a named record rebuilds through its own struct name.
+  if e.args[0].kind != exkVar: return ""
+  let recvT = semLayer.typeFor(e.args[0])
+  let recvFields = recordFieldNames(ctx.module, recvT)
+  if recvFields.len == 0: return ""
+  let recv = ctx.genDExpr(e.args[0])
+  var parts: seq[string]
+  for fname in recvFields:
+    var overridden = ""
+    for (name, valExpr) in e.args[1].fields.items:
+      if name == fname: overridden = ctx.genDExpr(valExpr)
+    parts.add(fname & ": " & (if overridden != "": overridden
+                              else: recv & "." & fname))
+  if recvT.kind != tkNamed or not ctx.idx.isRecordTypeIdx(recvT.name):
+    return ctx.recStructNameD(getFieldsForType(ctx.module, recvT)) &
+           "(" & parts.join(", ") & ")"
+  let ctor = recvT.name & "(" & parts.join(", ") & ")"
+  if ctx.idx.hasInvariantsIdx(recvT.name):
+    return "__validated_" & recvT.name & "(" & ctor & ")"
+  ctor
+
 proc genDAlias(ctx: var DCodegenCtx, e: Expr): string =
   ## expr alias(old: new, ...) — rebuild as the renamed record shape.
   if e.args[0].kind != exkVar or semLayer.typeFor(e.args[0]) == nil: return ""
@@ -285,20 +309,30 @@ proc asParenBuiltinD(ctx: var DCodegenCtx, e: Expr, calleeStr: string): string =
     return dUnsupported("offsetof (no D translation verified yet)")
   ""
 
+proc asTwoArgCombinatorD(ctx: var DCodegenCtx, e: Expr,
+                         calleeStr: string): string =
+  ## `recv <name> {…}` — the combinators taking a receiver and a struct.
+  ## One shape, so one arity test: a `case` here costs a single branch
+  ## instead of the two-predicate `if` each name needed on its own.
+  if e.args.len != 2 or e.args[1].kind != exkStruct: return ""
+  case calleeStr
+  of "with": ctx.genDWith(e)
+  of "bake": ctx.genDBake(e)
+  of "alias": ctx.genDAlias(e)
+  else: ""
+
 proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
   ## The compile-time combinators; any that declines returns "" and the call
   ## proceeds as a plain one. Same order as the Odin backend.
   let builtin = ctx.asParenBuiltinD(e, calleeStr)
   if builtin != "": return builtin
-  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return ctx.genDBake(e)
+  let two = ctx.asTwoArgCombinatorD(e, calleeStr)
+  if two != "": return two
   if ctx.isRecordConstructionIdx(e): return ctx.genDRecordCtor(e)
-  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return ctx.genDAlias(e)
   if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
     return ctx.genDMerge(e)
-  if calleeStr notin ["bake", "alias"]:
+  if calleeStr notin TwoArgCombinators:
     return ctx.explodeRecordArgD(e, calleeStr)
   ""
 

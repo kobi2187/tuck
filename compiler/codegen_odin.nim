@@ -176,6 +176,33 @@ proc genOdinBake(ctx: var OdinCodegenCtx, e: Expr): string =
   if parts.len == 0: return recv
   return ctx.recStructName(declFields) & "{" & parts.join(", ") & "}"
 
+# expr with {field: value, ...} — the copy-modify-return shortcut. Unlike
+# bake, the type is PRESERVED (TK-TY21 refuses a name the record has not
+# got), so a named record rebuilds through its own struct name rather than a
+# synthesized TRec shape.
+proc genOdinWith(ctx: var OdinCodegenCtx, e: Expr): string =
+  if e.args[0].kind != exkVar: return ""  # ponytail: no expr-position temp
+  let recvT = semLayer.typeFor(e.args[0])
+  let recvFields = recordFieldNames(ctx.module, recvT)
+  if recvFields.len == 0: return ""
+  let recv = ctx.genOdinExpr(e.args[0])
+  var parts: seq[string]
+  for fname in recvFields:
+    var overridden = ""
+    for (name, valExpr) in e.args[1].fields.items:
+      if name == fname: overridden = ctx.genOdinExpr(valExpr)
+    parts.add(fname & " = " & (if overridden != "": overridden
+                               else: recv & "." & fname))
+  if recvT.kind != tkNamed or not isRecordType(ctx.module, recvT.name):
+    # a structural shape (no declared name) still lands on its TRec struct
+    return ctx.recStructName(getFieldsForType(ctx.module, recvT)) &
+           "{" & parts.join(", ") & "}"
+  let ctor = recvT.name & "{" & parts.join(", ") & "}"
+  # an updated record is a production site too: its invariants must hold
+  if hasInvariants(ctx.module, recvT.name):
+    return "__validated_" & recvT.name & "(" & ctor & ")"
+  ctor
+
 # expr alias(old: new, ...) — rebuild as the renamed TRec shape.
 # ponytail: exkVar receivers only (no expr-position temp);
 # falls back to pass-through otherwise.
@@ -337,20 +364,30 @@ proc asParenBuiltinOdin(ctx: var OdinCodegenCtx, e: Expr,
     return "align_of(" & ctx.genOdinExpr(e.args[0]) & ")"
   ""
 
+proc asTwoArgCombinator(ctx: var OdinCodegenCtx, e: Expr,
+                        calleeStr: string): string =
+  ## `recv <name> {…}` — the combinators taking a receiver and a struct.
+  ## One shape, so one arity test: a `case` here costs a single branch
+  ## instead of the two-predicate `if` each name needed on its own.
+  if e.args.len != 2 or e.args[1].kind != exkStruct: return ""
+  case calleeStr
+  of "with": ctx.genOdinWith(e)
+  of "bake": ctx.genOdinBake(e)
+  of "alias": ctx.genOdinAlias(e)
+  else: ""
+
 proc asCombinatorCall(ctx: var OdinCodegenCtx, e: Expr,
                       calleeStr: string): string =
   ## The compile-time combinators, each of which rewrites the call rather than
   ## emitting one. Any that declines returns "" and the call proceeds.
   let builtin = ctx.asParenBuiltinOdin(e, calleeStr)
   if builtin != "": return builtin
-  if calleeStr == "bake" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return ctx.genOdinBake(e)
+  let two = ctx.asTwoArgCombinator(e, calleeStr)
+  if two != "": return two
   if isRecordConstruction(ctx.module, e): return ctx.genRecordCtor(e)
-  if calleeStr == "alias" and e.args.len == 2 and e.args[1].kind == exkStruct:
-    return ctx.genOdinAlias(e)
   if calleeStr == "merge" and e.args.len == 1 and e.args[0].kind == exkStruct:
     return ctx.genOdinMerge(e)
-  if calleeStr notin ["bake", "alias"]:
+  if calleeStr notin TwoArgCombinators:
     return ctx.explodeRecordArg(e, calleeStr)
   ""
 
@@ -377,7 +414,8 @@ proc genRtCall(calleeStr: string, args: seq[string]): string =
 proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
                      args: seq[string]): string =
   ## The emission forms, once the arguments are built.
-  if calleeStr == "bake": return args[0] & "(" & args[1..^1].join(", ") & ")"
+  if calleeStr in ["bake", "with"]:
+    return args[0] & "(" & args[1..^1].join(", ") & ")"
   if calleeStr == "alias": return args[0]
   let satT = ctx.module.saturatingType(calleeStr)
   if satT != nil and args.len == 1:

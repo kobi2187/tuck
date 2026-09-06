@@ -24,6 +24,10 @@
 import ast, lowering, ast_query, strutils, sets, tables, algorithm, options
 import ./ast_query
 
+const TwoArgCombinators* = ["bake", "alias", "with"]
+  ## The combinators written `recv <name> {…}`. A name in here is a rewrite,
+  ## never a call, so it must not fall through to record-arg explosion.
+
 proc absentCapable*(t: Type): bool =
   ## Does this fn's declared return type admit `tsAbsent` — `?T` or `!?T`? A
   ## plain `!T` has no absence, only Ok/Err, so a bare `return` there means

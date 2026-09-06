@@ -85,6 +85,7 @@ type
     dcTyDroppedValue = "TK-TY18"        ## a call's value is dropped in statement position
     dcTyMissingReturnValue = "TK-TY19"  ## bare `return` where a value is required
     dcTyUntypedEmptyList = "TK-TY20"    ## `[]` with nothing to say what it holds
+    dcTyNoSuchField = "TK-TY21"         ## `with` naming a field the record has not got
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -334,6 +335,14 @@ proc valueFitExplanation(d: DiagCode): string =
     "(`var xs = [firstItem]`), or pass it straight into the `Seq[T]` " &
     "position that gives it a type. There is no local type annotation to " &
     "write instead."
+  of dcTyNoSuchField:
+    "`with` is the copy-modify-return shortcut: it copies the receiver, " &
+    "replaces the fields you name, and hands back the SAME type — which is " &
+    "what lets `return self with {done: true}` satisfy `-> Task`. So every " &
+    "name must already be a field of that record and keep its declared " &
+    "type; a grown shape would no longer be the type the receiver was. Fix: " &
+    "check the spelling against the type's declaration, or use `merge`, " &
+    "which is the combinator that widens a record on purpose."
   of dcTyMissingReturnValue:
     "A bare `return` in a fn that declares a value type would hand back " &
     "whatever the backend zero-inits, which is the same thing TK-TY16 " &

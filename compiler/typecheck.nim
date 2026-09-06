@@ -1813,6 +1813,41 @@ proc asBakeCall(tc: var TypeChecker, e: Expr): Type =
   if fields.len == 0: return unknownType(e.span)
   Type(span: e.span, kind: tkRecord, fields: fields)
 
+proc asWithCall(tc: var TypeChecker, e: Expr): Type =
+  ## `expr with {field: value, ...}` — the copy-modify-return shortcut, as
+  ## one expression: a copy of the receiver with the named fields replaced,
+  ## and nothing else changed.
+  ##
+  ## Type preservation is the point. It is what lets a fn write
+  ## `return self with {done: true}` and satisfy `-> Task`, instead of the
+  ## dance TK-TY15 otherwise dictates (`var s = self` / chain / `return s`).
+  ## The NAMED type is what the result is, and what a message should say —
+  ## resolving is only for reading the fields out.
+  ##
+  ## `with` therefore cannot introduce a field: a grown shape is no longer
+  ## the type the receiver was. That rule is `with`'s alone — `bake` builds
+  ## up a context struct and is free to widen it.
+  let recvT = tc.synthesize(e.args[0])
+  let fields = tc.fieldsOf(tc.resolve(recvT))
+  if fields.len == 0:
+    for (_, valExpr) in e.args[1].fields.items: discard tc.synthesize(valExpr)
+    return recvT                      # sketch receiver — stays gradual
+  for (name, valExpr) in e.args[1].fields.items:
+    var declared: Type = nil
+    for f in fields:
+      if f.name == name: declared = f.typ
+    if declared == nil:
+      fail(dcTyNoSuchField,
+           "'" & typeName(recvT) & "' has no field '" & name &
+           "' — `with` replaces a record's existing fields, it cannot add " &
+           "one. Fix: check the spelling against the type's declaration",
+           valExpr.span)
+    let vt = tc.synthesize(valExpr)
+    if not isUnknown(vt) and not tc.compatible(vt, declared):
+      fail("Type Error: `with` field '" & name & "' expects " &
+           typeName(declared) & " but got " & typeName(vt), valExpr.span)
+  recvT
+
 proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
                            gs: seq[string],
                            bindings: var Table[string, Type]) =
@@ -1988,7 +2023,7 @@ proc synthArgsAs(tc: var TypeChecker, e: Expr, name: string): Type =
 
 proc asRestructuringBuiltin(tc: var TypeChecker, e: Expr,
                             calleeName: string): Type =
-  ## `alias` / `merge` / `bake` — the three builtins that rearrange a record's
+  ## `alias` / `merge` / `bake` / `with` — the builtins that rearrange a record's
   ## fields rather than calling anything. Each wants a specific argument
   ## shape; a wrong shape is not an error, it degrades to Unknown so sketch
   ## code keeps compiling.
@@ -2002,6 +2037,9 @@ proc asRestructuringBuiltin(tc: var TypeChecker, e: Expr,
   of "bake":
     if e.args.len == 2 and e.args[1].kind == exkStruct: tc.asBakeCall(e)
     else: tc.synthArgsUnknown(e)
+  of "with":
+    if e.args.len == 2 and e.args[1].kind == exkStruct: tc.asWithCall(e)
+    else: nil                      # `with` is also an ordinary name
   else: nil
 
 proc asNamedCallee(tc: var TypeChecker, e: Expr, calleeName: string): Type =

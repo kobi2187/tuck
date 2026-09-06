@@ -41,7 +41,7 @@ proc constCheckCallee*(tc: TypeChecker, m: Module, cname, callee: string,
                       sp: Span) =
   ## What a const's call may name: a compile-time combinator, a distinct base
   ## conversion, or a declared pure fn.
-  if callee in ["bake", "merge", "alias"]: return
+  if callee in ["bake", "merge", "alias", "with"]: return
   if tc.distinctNames.contains(callee): return  # base conversion
   if tc.typeDecls.hasKey(callee) and tc.typeDecls[callee].kind == tkRecord:
     fail("Const Error: 'const " & cname & "' cannot hold a record " &

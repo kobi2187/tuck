@@ -1,0 +1,113 @@
+## `with` — the record UPDATE, and the shortcut it exists for.
+##
+## Tuck is value-semantic: TK-TY15 refuses `..` on a parameter, so a fn that
+## "mutates" its receiver had to spell the dance by hand —
+##
+##   fn complete({self: Task}) -> Task:
+##     var s = self
+##     s ..done {true}
+##     return s
+##
+## `self with {done: true}` is that, as one expression. The property that
+## makes it work is TYPE PRESERVATION: `with` returns the receiver's own type,
+## so the result satisfies `-> Task`. `bake` deliberately does not — it is
+## partial application and may GROW the shape — which is why bake could not
+## be the shortcut even though it shares the emission.
+##
+## The type-preservation rule has a codegen half that `tuck ch` cannot see:
+## a named record must rebuild through its own constructor. Emitting bake's
+## anonymous tuple typechecked clean and then failed the Nim compile with
+## `got tuple[...] but expected tuck_Task = object` — hence the run assertions.
+
+import ../harness
+
+const Task = """
+type Task:
+  title: str
+  done: bool
+  score: int
+"""
+
+proc run*(t: var T) =
+  t.src Task & """
+fn complete({self: Task}) -> Task:
+  return self with {done: true}
+
+fn main() -> int:
+  let a = {title: "x", done: false, score: 1} Task
+  let b = a.complete
+  if b.done and b.title == "x" and b.score == 1:
+    return 0
+  return 1
+"""
+  t.okCheck "`with` in return position satisfies the receiver's own type"
+  t.runs "the untouched fields carry over, the named one is replaced", 0
+
+  # The receiver is NOT modified — the whole point of value semantics is that
+  # the caller's binding is untouched.
+  t.src Task & """
+fn complete({self: Task}) -> Task:
+  return self with {done: true}
+
+fn main() -> int:
+  let a = {title: "x", done: false, score: 1} Task
+  let b = a.complete
+  if a.done:
+    return 1
+  if not b.done:
+    return 2
+  return 0
+"""
+  t.runs "the receiver is unchanged; `with` returns a copy", 0
+
+  # Several fields at once, and an expression (not just a literal) as a value.
+  t.src Task & """
+fn bump({self: Task, n: int}) -> Task:
+  return self with {score: self.score + n, title: "bumped"}
+
+fn main() -> int:
+  let a = {title: "x", done: false, score: 1} Task
+  let b = {self: a, n: 4} bump
+  if b.score == 5 and b.title == "bumped" and not b.done:
+    return 0
+  return 1
+"""
+  t.runs "several fields, and a value computed from the receiver", 0
+
+  # A named record must rebuild through its own constructor. This is the
+  # assertion that fails if the emission ever reverts to bake's bare tuple.
+  t.emits "a named record rebuilds through its constructor, not a tuple",
+          "tuck_Task\\(title: .bumped., done: self\\.done"
+  t.emitsOdin "...and Odin uses its own struct literal",
+              r"tuck_Task\{title = "
+
+  # A field the record has not got. `bake` would ADD it and silently change
+  # the type; `with` refuses, because a grown shape is no longer a Task.
+  t.src Task & """
+fn main() -> int:
+  let a = {title: "x", done: false, score: 1} Task
+  let b = a with {dnoe: true}
+  return 0
+"""
+  t.badCheck "a misspelled field is rejected, not added", "TK-TY21"
+  t.badCheck "...and the message names the type and the field", "'Task' has no field 'dnoe'"
+
+  # A field that exists but is given the wrong type.
+  t.src Task & """
+fn main() -> int:
+  let a = {title: "x", done: false, score: 1} Task
+  let b = a with {score: "seven"}
+  return 0
+"""
+  t.badCheck "a wrong-typed value is rejected", "expects int"
+
+  # `with` is a SOFT keyword: only `with {` makes it the combinator, so the
+  # word is still available as an ordinary name.
+  t.src """
+fn main() -> int:
+  let with = 3
+  return with - 3
+"""
+  t.okCheck "`with` is still usable as a plain name"
+
+  t.finish()

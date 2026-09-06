@@ -315,11 +315,18 @@ proc chainBracket(p: var Parser, expr: Expr, sp: Span): Expr =
   Expr(span: sp, kind: exkBracket, brReceiver: expr,
        brArgs: p.parseCommaList(tkRBracket))
 
-proc chainBake(p: var Parser, expr: Expr, sp: Span): Expr =
+proc chainCombinator(p: var Parser, expr: Expr, sp: Span,
+                     name: string): Expr =
+  ## `recv <name> {…}` — the two-argument combinators, which are ordinary
+  ## postfix calls with a reserved callee: `bake` (partial application) and
+  ## `with` (record update). Same shape, different meaning downstream.
   discard p.advance()
   let arg = p.parsePrimaryExpr()
   Expr(span: sp, kind: exkCall, args: @[expr, arg],
-       callee: Expr(span: sp, kind: exkVar, name: "bake"))
+       callee: Expr(span: sp, kind: exkVar, name: name))
+
+proc chainBake(p: var Parser, expr: Expr, sp: Span): Expr =
+  p.chainCombinator(expr, sp, "bake")
 
 proc chainBuiltinCall(p: var Parser, expr: Expr, sp: Span): Expr =
   discard p.advance()
@@ -340,6 +347,12 @@ proc chainSend(p: var Parser, expr: Expr, sp: Span): Expr =
 proc isSendStep(p: Parser, expr: Expr): bool =
   p.current().kind == tkIdent and p.current().value == "send" and
     expr.kind == exkVar and p.peek().kind == tkIdent
+
+proc isWithStep(p: Parser): bool =
+  ## `with` is a soft keyword: only a `{` after it makes it the update
+  ## combinator, so `with` stays available as an ordinary name.
+  p.current().kind == tkIdent and p.current().value == "with" and
+    p.peek().kind == tkLBrace
 
 proc isAliasStep(p: Parser): bool =
   p.current().kind == tkIdent and p.current().value == "alias" and
@@ -383,6 +396,7 @@ proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
   of tkIdent:
     if p.isSendStep(expr): return p.chainSend(expr, sp)
     if p.isAliasStep(): return p.parseAliasStep(expr)
+    if p.isWithStep(): return p.chainCombinator(expr, sp, "with")
     # `a mod b` / `a div b` are word-operators in Nim, Pascal and Python, and
     # neither is one here — `%` and `/i` are. Without this they parse as a
     # postfix CALL (`mod(a)`) and the right operand is dropped on the floor,

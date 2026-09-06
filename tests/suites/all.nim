@@ -36,6 +36,7 @@ import optimize
 import pointer_containment
 import syntax_ceilings
 import typecheck
+import with_update
 import uninit
 import value_semantics
 import when_target
@@ -75,6 +76,7 @@ let registry: seq[Entry] = @[
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("typecheck",           SuiteProc(typecheck.run),           true),
+  ("with_update",         SuiteProc(with_update.run),         true),
   ("uninit",              SuiteProc(uninit.run),              false),
   ("value_semantics",     SuiteProc(value_semantics.run),     false),
   ("when_target",         SuiteProc(when_target.run),         false),
