@@ -1,0 +1,22 @@
+# A small in-memory repository: add/find/remove over a Seq of records
+import io
+import seq
+
+type Task:
+  id: int
+  title: str
+
+pending:
+  fn addTask({tasks: Seq[Task], item: Task}) -> Seq[Task]
+  fn findTask({tasks: Seq[Task], id: int}) -> ?Task
+  fn removeTask({tasks: Seq[Task], id: int}) -> Seq[Task]
+
+fn main() -> void [io]:
+  var tasks = [{id: 1, title: "Write spec"} Task]
+  tasks = {tasks, item: {id: 2, title: "Review PR"} Task} addTask
+  let found = {tasks, id: 2} findTask
+  let title = found unwrapOr {default: {id: 0, title: "none"} Task}
+  {text: title.title} printLine
+  tasks = {tasks, id: 1} removeTask
+  {value: tasks.len} toStr printLine
+  return

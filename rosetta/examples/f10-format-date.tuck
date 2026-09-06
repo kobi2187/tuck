@@ -1,0 +1,16 @@
+# Format a date as a display string
+import io
+
+type Date:
+  year: int
+  month: int
+  day: int
+
+pending:
+  fn formatDate({date: Date}) -> str
+
+fn main() -> void [io]:
+  let today = {year: 2026, month: 7, day: 25} Date
+  let display = {date: today} formatDate
+  {text: display} printLine
+  return

@@ -1,0 +1,20 @@
+# rs11 — decision table alongside sum types and match, for-in-range mix.
+# Stresses: decision rows (->), sum type param, for range loop.
+import io
+
+type Priority:
+  | High
+  | Low
+
+decision route({priority: Priority, encrypted: bool}) -> int:
+  | High  true  -> 1
+  | High  false -> 2
+  | Low   _     -> 3
+
+fn main() -> void [io]:
+  var total = 0
+  for i in 0 ..< 3:
+    let p = {priority: High Priority, encrypted: i == 0} route
+    total = total + p
+  {value: total} toStr printLine
+  return

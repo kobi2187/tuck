@@ -1,0 +1,16 @@
+# Bubble sort a fixed-size list in place
+import io
+import seq
+
+fn main() -> void [io]:
+  var xs = [5, 3, 8, 1, 9, 2]
+  let n = xs.len
+  for i in 0 ..< n:
+    for j in 0 ..< n - 1 - i:
+      if xs[j] > xs[j + 1]:
+        let tmp = xs[j]
+        xs[j] = xs[j + 1]
+        xs[j + 1] = tmp
+  for n in xs:
+    {value: n} toStr printLine
+  return

@@ -1,0 +1,6 @@
+import io
+import str
+fn main() -> int:
+  let name = "tuck"
+  {text: "hello, " + name} io::printLine
+  return 0

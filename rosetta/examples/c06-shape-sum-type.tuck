@@ -1,0 +1,19 @@
+# Sum type for a shape, with match computing area
+import io
+
+type Shape:
+  | Circle({r: int})
+  | Square({side: int})
+
+fn area({s: Shape}) -> int:
+  match s:
+    Circle: s.r * s.r * 3
+    Square: s.side * s.side
+    _: 0
+
+fn main() -> void [io]:
+  let c = {r: 5} Circle
+  let sq = {side: 4} Square
+  {value: {s: c} area} toStr printLine
+  {value: {s: sq} area} toStr printLine
+  return

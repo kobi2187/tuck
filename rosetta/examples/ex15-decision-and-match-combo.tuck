@@ -1,0 +1,35 @@
+# decision table feeding a match, plus nested struct + mutation chain combo
+import io
+
+type Tier:
+  | Bronze({})
+  | Silver({})
+  | Gold({})
+
+decision tierFor({points: int, years: int}) -> int:
+  | 0    _  -> 0
+  | _    0  -> 1
+  | _    _  -> 2
+
+type Account:
+  points: int
+  years: int
+  bonus: int
+
+fn addBonus({self: Account}) -> Account:
+  return {points: self.points, years: self.years, bonus: self.bonus + 10} Account
+
+fn tierName({code: int}) -> str:
+  match code:
+    0: "bronze"
+    1: "silver"
+    2: "gold"
+    _: "unknown"
+
+fn main() -> void [io]:
+  var acct = {points: 500, years: 3, bonus: 0} Account
+  acct ..addBonus ..addBonus
+  let code = {points: acct.points, years: acct.years} tierFor
+  {text: {code: code} tierName} printLine
+  {value: acct.bonus} toStr printLine
+  return

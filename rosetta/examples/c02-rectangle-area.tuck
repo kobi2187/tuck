@@ -1,0 +1,20 @@
+# Rectangle struct: compute area and perimeter
+import io
+
+type Rectangle:
+  width: int
+  height: int
+
+fn area({self: Rectangle}) -> int:
+  return self.width * self.height
+
+fn perimeter({self: Rectangle}) -> int:
+  return 2 * (self.width + self.height)
+
+fn main() -> void [io]:
+  let r = {width: 4, height: 5} Rectangle
+  let a = r area
+  let p = r perimeter
+  {value: a} toStr printLine
+  {value: p} toStr printLine
+  return

@@ -1,0 +1,22 @@
+# Binary search in a sorted fixed-size list
+import io
+import seq
+
+fn main() -> void [io]:
+  let xs = [1, 3, 5, 7, 9, 11, 13]
+  let target = 9
+  var lo = 0
+  var hi = xs.len - 1
+  var idx = -1
+  for lo <= hi:
+    let mid = (lo + hi) / 2
+    if xs[mid] == target:
+      idx = mid
+      break
+    else:
+      if xs[mid] < target:
+        lo = mid + 1
+      else:
+        hi = mid - 1
+  {value: idx} toStr printLine
+  return

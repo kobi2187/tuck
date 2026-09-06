@@ -1,0 +1,11 @@
+# Absolute value of an integer
+import io
+
+pending:
+  fn abs({value: int}) -> int
+
+fn main() -> void [io]:
+  let n = -42
+  let result = {value: n} abs
+  {value: result} toStr printLine
+  return

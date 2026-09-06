@@ -1,0 +1,15 @@
+# Count elements matching a predicate (even numbers)
+import io
+import seq
+
+fn isEven({n: int}) -> bool:
+  n % 2 == 0
+
+pending:
+  fn count({items: Seq[int], pred: fn}) -> int
+
+fn main() -> void [io]:
+  let xs = [1, 2, 3, 4, 5, 6, 7, 8]
+  let evens = {items: xs, pred: :isEven} count
+  {value: evens} toStr printLine
+  return

@@ -1,0 +1,10 @@
+# Trim leading/trailing whitespace
+import io
+
+pending:
+  fn trim({text: str}) -> str
+
+fn main() -> void [io]:
+  let s = "   padded   "
+  {text: {text: s} trim} printLine
+  return

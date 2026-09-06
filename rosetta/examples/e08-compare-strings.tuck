@@ -1,0 +1,17 @@
+# Compare two strings for equality and ordering
+import io
+
+pending:
+  fn lessThan({a: str, b: str}) -> bool
+
+fn main() -> void [io]:
+  let a = "apple"
+  let b = "banana"
+  if a == b:
+    {text: "equal"} printLine
+  else:
+    if {a, b} lessThan:
+      {text: "a < b"} printLine
+    else:
+      {text: "a >= b"} printLine
+  return

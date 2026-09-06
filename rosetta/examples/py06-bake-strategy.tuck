@@ -1,0 +1,22 @@
+# bake partial application + fnsig callback type, chosen by :name fn ref
+import io
+
+fnsig Op = {a: int, b: int} -> int
+
+fn plus({a: int, b: int}) -> int:
+  return a + b
+
+fn times({a: int, b: int}) -> int:
+  return a * b
+
+fn applyOp({a: int, b: int, op: Op}) -> int:
+  return {a, b} op
+
+fn main() -> void [io]:
+  let ctx = {a: 3, b: 4, op: :plus}
+  let withPlus = ctx bake {op: :plus}
+  let withTimes = ctx bake {op: :times}
+  let sum = withPlus applyOp
+  let product = withTimes applyOp
+  {value: sum + product} toStr printLine
+  return

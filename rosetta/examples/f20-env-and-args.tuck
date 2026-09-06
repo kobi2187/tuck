@@ -1,0 +1,11 @@
+# Environment and command-line argument access
+import io
+import sys
+
+fn main() -> void [io]:
+  let count = {} argCount
+  {value: count.count} toStr printLine
+  let home = {name: "HOME"} getEnv
+  let path = home unwrapOr {default: "unset"}
+  {text: path} printLine
+  return

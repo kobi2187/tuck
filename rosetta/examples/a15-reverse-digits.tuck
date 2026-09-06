@@ -1,0 +1,11 @@
+# Reverse the decimal digits of a number
+import io
+
+fn main() -> void [io]:
+  var n = 12345
+  var reversed = 0
+  for n != 0:
+    reversed = reversed * 10 + n % 10
+    n = n / 10
+  {value: reversed} toStr printLine
+  return

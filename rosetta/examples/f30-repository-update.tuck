@@ -1,0 +1,19 @@
+# Repository: update a record in place by id (add/find/update/remove family)
+import io
+import seq
+
+type Account:
+  id: int
+  balance: int
+
+pending:
+  fn updateBalance({accounts: Seq[Account], id: int, balance: int}) -> Seq[Account]
+  fn findById({accounts: Seq[Account], id: int}) -> ?Account
+
+fn main() -> void [io]:
+  var accounts = [{id: 1, balance: 100} Account, {id: 2, balance: 50} Account]
+  accounts = {accounts, id: 1, balance: 175} updateBalance
+  let found = {accounts, id: 1} findById
+  let acct = found unwrapOr {id: 0, balance: 0} Account
+  {value: acct.balance} toStr printLine
+  return

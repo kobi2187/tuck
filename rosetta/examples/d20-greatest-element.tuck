@@ -1,0 +1,14 @@
+# Greatest element, appended via a growable seq to show the push gap too
+import io
+import seq
+
+pending:
+  fn max({items: Seq[int]}) -> int
+  fn push({items: Seq[int], value: int}) -> Seq[int]
+
+fn main() -> void [io]:
+  var xs = [7, 2, 9, 4, 1]
+  xs = {items: xs, value: 20} push
+  let hi = {items: xs} max
+  {value: hi} toStr printLine
+  return

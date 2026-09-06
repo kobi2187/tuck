@@ -1,0 +1,17 @@
+# rs14 — generic fn with fnsig-typed callback param (map-shaped), pending impl.
+# Stresses: fn generic + fnsig param combined, :name ref passed as arg.
+import io
+
+fnsig IntPredicate = {value: int} -> bool
+
+fn isEven({value: int}) -> bool:
+  value % 2 == 0
+
+pending:
+  fn countMatching[T]({items: Seq[T], pred: IntPredicate}) -> int
+
+fn main() -> void [io]:
+  let xs = [1, 2, 3, 4, 5, 6]
+  let n = {items: xs, pred: :isEven} countMatching
+  {value: n} toStr printLine
+  return

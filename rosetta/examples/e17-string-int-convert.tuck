@@ -1,0 +1,11 @@
+# Convert string to int and back
+import io
+
+pending:
+  fn parseInt({text: str}) -> !int [io]
+
+fn main() -> void [io]:
+  let n = {text: "42"} parseInt
+  let back = {value: n} toStr
+  {text: back} printLine
+  return

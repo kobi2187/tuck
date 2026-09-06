@@ -1,0 +1,11 @@
+# Extract a substring by start and length
+import io
+
+pending:
+  fn substring({text: str, start: int, length: int}) -> str
+
+fn main() -> void [io]:
+  let s = "hello, tuck"
+  let sub = {text: s, start: 7, length: 4} substring
+  {text: sub} printLine
+  return

@@ -1,0 +1,13 @@
+# Least common multiple, built on gcd
+import io
+
+pending:
+  fn gcd({a: int, b: int}) -> int
+
+fn main() -> void [io]:
+  let x = 4
+  let y = 6
+  let g = {a: x, b: y} gcd
+  let l = x * y / g
+  {value: l} toStr printLine
+  return

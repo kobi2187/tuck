@@ -1,0 +1,34 @@
+# rs03 — match on sum type with payload bindings, nested match, guards.
+# Stresses: `| Variant({fields})` sum decl, match arm payload binding, nesting.
+import io
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+fn area({shape: Shape}) -> int:
+  match shape:
+    Circle: shape.r * shape.r * 3
+    Rect: shape.w * shape.h
+    _: 0
+
+fn describe({shape: Shape}) -> str:
+  # NOTE: nesting a bool `match` here hits DISCOVERIES #4 (match-on-bool
+  # fails exhaustiveness with both arms present) — use if/else instead,
+  # the documented working idiom, while still nesting inside the outer
+  # sum-type match.
+  match shape:
+    Circle:
+      if shape.r > 10:
+        "big circle"
+      else:
+        "small circle"
+    Rect: "rect"
+    _: "unknown"
+
+fn main() -> void [io]:
+  let c = {r: 5} Circle
+  let a = {shape: c} area
+  {value: a} toStr printLine
+  {text: {shape: c} describe} printLine
+  return

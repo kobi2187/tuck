@@ -1,0 +1,13 @@
+# Basic conditional structures: grade a score with elif
+# (the natural form for a chain of conditions)
+import io
+
+fn main() -> void [io]:
+  let score = 82
+  if score >= 90:
+    {text: "A"} printLine
+  elif score >= 80:
+    {text: "B"} printLine
+  else:
+    {text: "C"} printLine
+  return

@@ -1,0 +1,23 @@
+# random module design: [io] effect markers on nondeterministic fns
+import io
+
+pending:
+  fn randomInt({low: int, high: int}) -> int [io]
+  fn randomBool() -> bool [io]
+  fn choice[T]({items: Seq[T]}) -> T [io]
+
+fn rollDie() -> int [io]:
+  return {low: 1, high: 6} randomInt
+
+fn main() -> void [io]:
+  let r = {} rollDie
+  let flag = {} randomBool
+  let xs = [10, 20, 30]
+  let picked = {items: xs} choice
+  {value: r} toStr printLine
+  {value: picked} toStr printLine
+  if flag:
+    {text: "heads"} printLine
+  else:
+    {text: "tails"} printLine
+  return

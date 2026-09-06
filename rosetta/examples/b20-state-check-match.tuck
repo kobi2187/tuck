@@ -1,0 +1,15 @@
+# Simple state check via match on a sum type
+import io
+
+type Light:
+  | Red({})
+  | Yellow({})
+  | Green({})
+
+fn main() -> void [io]:
+  let signal = {} Green
+  match signal:
+    Red: {text: "stop"} printLine
+    Yellow: {text: "caution"} printLine
+    Green: {text: "go"} printLine
+  return

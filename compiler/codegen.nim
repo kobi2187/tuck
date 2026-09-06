@@ -86,8 +86,12 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
 # same subset matching the checker verified. Fields come from the checker's
 # ty stamp on the arg node.
 # expr bake {slot: :fn, arg: v, ...} — rebuild the context struct with slots
-# filled / values overridden / new fields added. Nim monomorphizes fn-typed
-# params downstream, so calls through baked slots are direct.
+# fixed to values; a name the receiver has not got introduces a slot, which is
+# how a context grows toward the params of the fn it is heading for. (`with`
+# is the one that may NOT widen — see genWith.) A fnsig field emits as a
+# {.closure.} proc value, so a call through a baked slot is indirect, not
+# inlined; an earlier comment here claimed Nim monomorphized it, which the
+# emitted `type tuck_BinOp = proc(...) {.closure.}` contradicts.
 proc genBake(ctx: var CodegenCtx, e: Expr): string =
   var recv = ctx.genExpr(e.args[0])
   var prefix = ""

@@ -389,19 +389,48 @@ fn applyOperation({a: int, b: int, op: fn}) -> {result: int}:
 
 ### 3.5 `bake` — Compile-Time Specialization
 
-`bake` replaces a function-field placeholder with a concrete function reference at
-compile time. It is a Factor-language-inspired quotation — the compiler rewrites
-the IR, swapping the placeholder for the concrete function, then inlines. No
-runtime cost, no boxing:
+`bake` is partial application — Factor's `fry`. A struct is a function's
+context; `bake` fixes one of its slots to a value, so callers downstream no
+longer supply it. The slot may hold an argument value or a function reference
+(`:name`), and fixing a function reference is what makes the *call* narrow:
+once the function to invoke is set, the context is invoked with just its value
+fields.
 
 ```tuck
-let x = {a: 5, b: 10, someFunc}
-let y = x.bake {someFunc: :add}
-# y is now exactly: {a: 5, b: 10} with add inlined at the call site
+fnsig BinOp = {a: int, b: int} -> int
+
+fn plus({a: int, b: int}) -> int:
+  return a + b
+
+fn applyOperation({a: int, b: int, op: BinOp}) -> int:
+  op.invoke {a, b}
+
+let x = {a: 5, b: 10}
+let withOp = x bake {op: :plus}   # fix the fn slot
+let smaller = withOp bake {b: 2}  # fix an argument value too
+let r = smaller applyOperation    # nothing further to supply
 ```
 
-`bake` unifies partial application, dependency injection, and the strategy pattern
-into one compile-time operation.
+Three things this example is load-bearing about, each of which an earlier
+draft of this section got wrong (`examples/03-functions-bake.tuck` is the
+version that compiles):
+
+- **`bake` is postfix, not a field access.** `x bake {…}`. `bake` is a
+  reserved word, so `x.bake` is `TK-PA08`.
+- **The slot need not already be on the receiver.** `x` is `{a, b}`; the bake
+  introduces `op`, and the shape is checked against the params of the fn the
+  context is heading for. Growing a context struct this way is bake's job —
+  contrast `with` (§3.4), which replaces a field of a DECLARED record and may
+  never widen it, because its result has to still be that record's type.
+- **Nothing is removed.** The baked slot stays in the struct carrying its
+  fixed value; `applyOperation` receives it. What narrows is the argument list
+  at the call site, not the record.
+
+`bake` unifies partial application, dependency injection, and the strategy
+pattern into one operation. It is not currently a zero-cost one: a `fnsig`
+field emits as a Nim `{.closure.}` proc value passed at runtime, so a baked
+call is an indirect call, not an inlined one. Monomorphizing the slot is an
+open optimization, not present behaviour.
 
 ### 3.6 Function Prefix Modifiers — proposed, then dropped
 

@@ -1,0 +1,14 @@
+# FizzBuzz-style branch driven by a value parsed from a string
+import io
+
+pending:
+  fn parseInt({text: str}) -> int
+
+fn main() -> void [io]:
+  let raw = "42"
+  let n = {text: raw} parseInt
+  if n % 2 == 0:
+    {text: "even"} printLine
+  else:
+    {text: "odd"} printLine
+  return

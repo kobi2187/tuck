@@ -1,0 +1,13 @@
+# Boolean values and printing them
+import io
+
+fn main() -> void [io]:
+  let isReady = true
+  let isDone = false
+  if isReady:
+    {text: "ready"} printLine
+  if isDone:
+    {text: "done"} printLine
+  else:
+    {text: "not done"} printLine
+  return

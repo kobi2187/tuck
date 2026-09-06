@@ -1,0 +1,11 @@
+# alias renames incoming fields to the local call shape
+import io
+
+pending:
+  fn playTrack({id: int, name: str}) -> void [io]
+
+fn main() -> void [io]:
+  let externalTrack = {trackId: 101, title: "Deep Dive"}
+  let track = externalTrack alias(trackId: id, title: name)
+  track playTrack
+  return

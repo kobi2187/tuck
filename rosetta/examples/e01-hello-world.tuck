@@ -1,0 +1,6 @@
+# Hello, world
+import io
+
+fn main() -> void [io]:
+  {text: "Hello, world!"} printLine
+  return

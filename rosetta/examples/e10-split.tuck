@@ -1,0 +1,10 @@
+# Split a string on a delimiter
+import io
+
+pending:
+  fn split({text: str, sep: str}) -> Seq[str]
+
+fn main() -> void [io]:
+  let parts = {text: "a,b,c", sep: ","} split
+  {value: parts.len} toStr printLine
+  return

@@ -1,0 +1,16 @@
+# Filter a list, keeping elements matching a predicate
+import io
+import seq
+
+fn isEven({n: int}) -> bool:
+  n % 2 == 0
+
+pending:
+  fn filter({items: Seq[int], pred: fn}) -> Seq[int]
+
+fn main() -> void [io]:
+  let xs = [1, 2, 3, 4, 5, 6]
+  let evens = {items: xs, pred: :isEven} filter
+  for n in evens:
+    {value: n} toStr printLine
+  return

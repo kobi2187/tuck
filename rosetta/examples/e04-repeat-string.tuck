@@ -1,0 +1,10 @@
+# Repeat a string n times
+import io
+
+pending:
+  fn repeat({text: str, times: int}) -> str
+
+fn main() -> void [io]:
+  let out = {text: "ab", times: 3} repeat
+  {text: out} printLine
+  return

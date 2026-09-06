@@ -1,0 +1,34 @@
+# The everyday LINQ shapes (Where/Select/Any/Count/Sum/OrderBy/Take), Tuck postfix style
+import io
+import seq
+
+type Employee:
+  name: str
+  dept: str
+  salary: int
+
+pending:
+  fn where[T]({items: Seq[T], pred: fn}) -> Seq[T]
+  fn project[T, U]({items: Seq[T], transform: fn}) -> Seq[U]
+  fn orderBy[T]({items: Seq[T], key: fn}) -> Seq[T]
+
+fn isEngineering({e: Employee}) -> bool:
+  return e.dept == "Eng"
+
+fn salaryOf({e: Employee}) -> int:
+  return e.salary
+
+fn main() -> void [io]:
+  let staff = [{name: "Ada", dept: "Eng", salary: 120} Employee, {name: "Bo", dept: "Sales", salary: 90} Employee, {name: "Cy", dept: "Eng", salary: 140} Employee]
+  let engineers = {items: staff, pred: :isEngineering} where
+  let salaries = {items: engineers, transform: :salaryOf} project
+  let ranked = {items: engineers, key: :salaryOf} orderBy
+  let total = {items: salaries} sum
+  let anyHighEarner = {items: staff, pred: :isEngineering} any
+  {value: engineers.len} toStr printLine
+  {value: total} toStr printLine
+  if anyHighEarner:
+    {text: "has engineers"} printLine
+  for e in ranked:
+    {text: e.name} printLine
+  return

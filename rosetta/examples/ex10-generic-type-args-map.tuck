@@ -1,0 +1,16 @@
+# generic type args on invented fns; chained indexing grid[i][j]
+import io
+import seq
+
+pending:
+  fn at2d[T]({rows: Seq[Seq[T]], i: int, j: int}) -> T
+
+fn main() -> void [io]:
+  var grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+  let center = grid[1][1]
+  {value: center} toStr printLine
+  {value: grid[0][2]} toStr printLine
+  {value: grid[2][0]} toStr printLine
+  grid[0][0] = 99
+  {value: grid[0][0]} toStr printLine
+  return

@@ -1,0 +1,18 @@
+# Compare two strings case-insensitively
+import io
+
+pending:
+  fn upper({text: str}) -> str
+
+fn equalsIgnoreCase({a: str, b: str}) -> bool:
+  let ua = {text: a} upper
+  let ub = {text: b} upper
+  return ua == ub
+
+fn main() -> void [io]:
+  let same = {a: "Ada", b: "ADA"} equalsIgnoreCase
+  if same:
+    {text: "match"} printLine
+  else:
+    {text: "no match"} printLine
+  return

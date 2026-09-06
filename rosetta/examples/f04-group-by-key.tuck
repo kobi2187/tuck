@@ -1,0 +1,19 @@
+# Group records by a key field
+import io
+import seq
+
+type Order:
+  customer: str
+  amount: int
+
+pending:
+  fn groupBy[T]({items: Seq[T], keyOf: fn}) -> Map[str, Seq[T]]
+
+fn customerOf({order: Order}) -> str:
+  return order.customer
+
+fn main() -> void [io]:
+  let orders = [{customer: "Ada", amount: 10} Order, {customer: "Bo", amount: 5} Order, {customer: "Ada", amount: 7} Order]
+  let byCustomer = {items: orders, keyOf: :customerOf} groupBy
+  {value: byCustomer.len} toStr printLine
+  return

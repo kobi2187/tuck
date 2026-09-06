@@ -1,0 +1,18 @@
+# Validate input with a result type instead of throwing
+import io
+
+type ValidationError:
+  | TooShort
+  | TooLong
+
+pending:
+  fn validateUsername({name: str}) -> !str [io, error: ValidationError]
+
+fn main() -> void [io]:
+  let name = "ada"
+  let result = {name} validateUsername
+  if result.ok:
+    {text: "valid"} printLine
+  else:
+    {text: "invalid"} printLine
+  return

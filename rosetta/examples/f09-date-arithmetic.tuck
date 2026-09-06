@@ -1,0 +1,19 @@
+# Date arithmetic: add days, difference between two dates
+import io
+
+type Date:
+  year: int
+  month: int
+  day: int
+
+pending:
+  fn addDays({date: Date, days: int}) -> Date
+  fn daysBetween({a: Date, b: Date}) -> int
+
+fn main() -> void [io]:
+  let start = {year: 2026, month: 7, day: 20} Date
+  let later = {date: start, days: 10} addDays
+  let gap = {a: start, b: later} daysBetween
+  {value: later.day} toStr printLine
+  {value: gap} toStr printLine
+  return

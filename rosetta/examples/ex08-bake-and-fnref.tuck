@@ -1,0 +1,20 @@
+# bake partial application + :name fn refs passed through two layers
+import io
+
+fn withinRange({low: int, high: int, value: int}) -> bool:
+  return value >= low and value <= high
+
+fn isAdultAge({low: int, high: int, value: int}) -> bool:
+  return value >= low and value <= high
+
+pending:
+  fn countMatching({items: Seq[int], pred: fn}) -> int
+
+fn main() -> void [io]:
+  let ctx = {low: 18, high: 65, value: 0}
+  let checkAdult = ctx bake {low: 18, high: 65}
+  let ages = [5, 12, 18, 30, 65, 70, 90]
+  let ref = :isAdultAge
+  {value: {low: 18, high: 65, value: 30} checkAdult} toStr printLine
+  {value: {low: 18, high: 65, value: 90} checkAdult} toStr printLine
+  return

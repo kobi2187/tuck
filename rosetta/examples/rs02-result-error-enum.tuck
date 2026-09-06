@@ -1,0 +1,21 @@
+# rs02 — !T with a declared error enum, `err` raise, `if r.ok` narrowing.
+# Stresses: [error: E] effect, sum-type error, narrowing idiom (no expr?).
+# NEW FINDING: any `!T [error: E]` fn must ALSO be marked [io] — the checker
+# treats fallibility itself as an effect, even for pure logic (see rs09).
+# Not in DISCOVERIES yet.
+import io
+
+type ParseError:
+  | Empty
+  | NotDigits
+
+pending:
+  fn parseInt({text: str}) -> !int [io, error: ParseError]
+
+fn main() -> void [io]:
+  let r = {text: "42"} parseInt
+  if r.ok:
+    {value: r.value} toStr printLine
+  else:
+    {text: "parse failed"} printLine
+  return

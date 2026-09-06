@@ -1,0 +1,12 @@
+# Uppercase / lowercase a string
+import io
+
+pending:
+  fn upper({text: str}) -> str
+  fn lower({text: str}) -> str
+
+fn main() -> void [io]:
+  let s = "Tuck Lang"
+  {text: {text: s} upper} printLine
+  {text: {text: s} lower} printLine
+  return

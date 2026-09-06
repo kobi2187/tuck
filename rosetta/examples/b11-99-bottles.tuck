@@ -1,0 +1,10 @@
+# 99 bottles of beer (shortened to 3 for a small demo)
+import io
+
+fn main() -> void [io]:
+  var bottles = 3
+  for bottles > 0:
+    {value: bottles} toStr printLine
+    bottles -= 1
+  {text: "no more bottles"} printLine
+  return

@@ -1,0 +1,16 @@
+# Map/transform a list (double each element)
+import io
+import seq
+
+fn double({n: int}) -> int:
+  n * 2
+
+pending:
+  fn map({items: Seq[int], transform: fn}) -> Seq[int]
+
+fn main() -> void [io]:
+  let xs = [1, 2, 3, 4, 5]
+  let doubled = {items: xs, transform: :double} map
+  for n in doubled:
+    {value: n} toStr printLine
+  return

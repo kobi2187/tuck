@@ -1,0 +1,15 @@
+# Smallest and largest element of a list
+import io
+import seq
+
+pending:
+  fn min({items: Seq[int]}) -> int
+  fn max({items: Seq[int]}) -> int
+
+fn main() -> void [io]:
+  let xs = [7, 2, 9, 4, 1, 8]
+  let lo = {items: xs} min
+  let hi = {items: xs} max
+  {value: lo} toStr printLine
+  {value: hi} toStr printLine
+  return

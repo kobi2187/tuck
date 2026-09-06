@@ -1,0 +1,7 @@
+# Length of a string
+import io
+
+fn main() -> void [io]:
+  let s = "hello, tuck"
+  {value: s.len} toStr printLine
+  return

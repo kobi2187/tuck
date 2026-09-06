@@ -1,0 +1,10 @@
+# Factorial of a number, computed iteratively
+import io
+
+fn main() -> void [io]:
+  let n = 10
+  var acc = 1
+  for i in 1 .. n:
+    acc = acc * i
+  {value: acc} toStr printLine
+  return

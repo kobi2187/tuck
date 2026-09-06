@@ -1,0 +1,19 @@
+# rs06 — distinct newtype, invariant block, unit-type-ish usage.
+# Stresses: `distinct X = int`, invariant:, constructing via postfix TypeName.
+import io
+
+distinct Meters = int
+
+type Temperature:
+  celsius: int
+  invariant:
+    celsius >= -273
+
+fn addMeters({a: Meters, b: Meters}) -> Meters:
+  a Meters
+
+fn main() -> void [io]:
+  let m = 5 Meters
+  let t = {celsius: 20} Temperature
+  {value: t.celsius} toStr printLine
+  return

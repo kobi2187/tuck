@@ -1,0 +1,18 @@
+# rs01 — opt combinators: unwrapOr chained postfix.
+# Stresses: ?T in signature, postfix chains, pending: with 1-field payloads.
+# NOTE: calling a postfix fn directly on a bare ?T value (e.g. `name.doubled`)
+# is REJECTED by the checker ("unhandled ?int — pass it to a handling
+# function or propagate") — a NEW finding, not in DISCOVERIES yet. Passing
+# the ?T as an explicit payload field (as below) is accepted; only the
+# implicit self-postfix form on ?T triggers it. Keep as evidence.
+import io
+
+pending:
+  fn findUser({id: int}) -> ?int
+  fn unwrapOr({self: ?int, default: int}) -> int
+
+fn main() -> void [io]:
+  let name = {id: 1} findUser
+  let out = {self: name, default: 0} unwrapOr
+  {value: out} toStr printLine
+  return

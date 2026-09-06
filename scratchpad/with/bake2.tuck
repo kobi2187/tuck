@@ -1,0 +1,10 @@
+type Task:
+  title: str
+  done: bool
+
+fn main() -> int:
+  let t = {title: "x", done: false} Task
+  let b = t bake {done: true}
+  if b.done and b.title == "x":
+    return 0
+  return 1

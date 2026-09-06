@@ -1,0 +1,9 @@
+# Area of a right triangle from base and height
+import io
+
+fn main() -> void [io]:
+  let base = 10
+  let height = 6
+  let area = base * height / 2
+  {value: area} toStr printLine
+  return

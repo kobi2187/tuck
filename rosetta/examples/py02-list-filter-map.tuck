@@ -1,0 +1,19 @@
+# list parity: filter/map/count with :name fn refs, generics in signatures
+import io
+import seq
+
+pending:
+  fn isEven({n: int}) -> bool
+  fn double({n: int}) -> int
+  fn filter[T]({items: Seq[T], pred: fn}) -> Seq[T]
+  fn map[T, U]({items: Seq[T], transform: fn}) -> Seq[U]
+  fn count[T]({items: Seq[T], pred: fn}) -> int
+
+fn main() -> void [io]:
+  let xs = [1, 2, 3, 4, 5, 6, 7, 8]
+  let evens = {items: xs, pred: :isEven} filter
+  let doubled = {items: evens, transform: :double} map
+  let n = {items: xs, pred: :isEven} count
+  {value: n} toStr printLine
+  {value: doubled[0]} toStr printLine
+  return

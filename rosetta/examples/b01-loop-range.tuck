@@ -1,0 +1,7 @@
+# Loop over a range and print each value
+import io
+
+fn main() -> void [io]:
+  for i in 1 .. 5:
+    {value: i} toStr printLine
+  return

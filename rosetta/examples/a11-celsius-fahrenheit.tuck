@@ -1,0 +1,8 @@
+# Convert Celsius to Fahrenheit
+import io
+
+fn main() -> void [io]:
+  let celsius = 100
+  let fahrenheit = celsius * 9 / 5 + 32
+  {value: fahrenheit} toStr printLine
+  return

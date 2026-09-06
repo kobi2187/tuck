@@ -1,0 +1,14 @@
+# Loop-with-guard driven by a random number (coin flip until heads)
+import io
+
+pending:
+  fn randomBool({}) -> bool
+
+fn main() -> void [io]:
+  var flips = 0
+  for flips < 1000:
+    flips += 1
+    if {} randomBool:
+      break
+  {value: flips} toStr printLine
+  return

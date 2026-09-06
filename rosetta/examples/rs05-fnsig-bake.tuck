@@ -1,0 +1,19 @@
+# rs05 — fnsig callback type, bake partial application, :name fn refs.
+# Stresses: fnsig decl, bake, :name literal, passing fn-typed param.
+import io
+
+fnsig Combiner = {a: int, b: int} -> int
+
+fn add({a: int, b: int}) -> int:
+  a + b
+
+fn applyCombiner({a: int, b: int, op: Combiner}) -> int:
+  {a: a, b: b} op
+
+fn main() -> void [io]:
+  let five = {a: 2, b: 3} add
+  let addFive = add bake {a: 5}
+  let result = {a: 2, b: 3, op: :add} applyCombiner
+  {value: five} toStr printLine
+  {value: result} toStr printLine
+  return

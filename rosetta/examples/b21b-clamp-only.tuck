@@ -1,0 +1,10 @@
+# Isolated repro: does the `clamp` pending stub genuinely execute?
+import io
+
+pending:
+  fn clamp({value: int, low: int, high: int}) -> int
+
+fn main() -> void [io]:
+  let bounded = {value: 137, low: 0, high: 100} clamp
+  {value: bounded} toStr printLine
+  return

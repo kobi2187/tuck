@@ -1,0 +1,16 @@
+# Dictionary/map: build a lookup table, get and insert by key
+import io
+
+pending:
+  fn empty({}) -> Map[str, int]
+  fn set({map: Map[str, int], key: str, value: int}) -> Map[str, int]
+  fn get({map: Map[str, int], key: str}) -> ?int
+
+fn main() -> void [io]:
+  var prices = {} empty
+  prices = prices set {key: "apple", value: 3}
+  prices = prices set {key: "pear", value: 2}
+  let found = prices get {key: "apple"}
+  let price = found unwrapOr {default: 0}
+  {value: price} toStr printLine
+  return

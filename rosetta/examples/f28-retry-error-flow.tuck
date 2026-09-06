@@ -1,0 +1,24 @@
+# A simple retry loop around a fallible operation
+import io
+
+type FetchError:
+  | Timeout
+  | Unreachable
+
+pending:
+  fn fetchStatus({url: str}) -> !int [io, error: FetchError]
+
+fn main() -> void [io]:
+  var attempt = 0
+  var succeeded = false
+  for attempt < 3:
+    attempt += 1
+    let result = {url: "https://example.test/health"} fetchStatus
+    if result.ok:
+      succeeded = true
+      break
+  if succeeded:
+    {text: "reachable"} printLine
+  else:
+    {text: "gave up"} printLine
+  return

@@ -1,0 +1,19 @@
+# alias(...) rename, then merge into one context struct
+import io
+
+type ExternalTrack:
+  trackId: int
+  title: str
+
+type Prefs:
+  volume: int
+
+fn main() -> void [io]:
+  let externalTrack = {trackId: 7, title: "Nightswim"} ExternalTrack
+  let prefs = {volume: 80} Prefs
+  let track = externalTrack alias(trackId: id, title: name)
+  let ctx = {track, prefs} merge
+  {value: ctx.id} toStr printLine
+  {text: ctx.name} printLine
+  {value: ctx.volume} toStr printLine
+  return

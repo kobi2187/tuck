@@ -1,0 +1,12 @@
+# Write a file, read it back, and print the current time
+import io
+import fs
+import time
+
+fn main() -> void [io]:
+  {path: "scratch.txt", content: "hello from tuck"} writeFile
+  let got = {path: "scratch.txt"} readFile
+  {text: got.content} printLine
+  let now = nowMs
+  {value: now.ms} toStr printLine
+  return

@@ -1,0 +1,10 @@
+# Random numbers: a random int in a range
+import io
+
+pending:
+  fn randomInt({low: int, high: int}) -> int [io]
+
+fn main() -> void [io]:
+  let roll = {low: 1, high: 6} randomInt
+  {value: roll} toStr printLine
+  return

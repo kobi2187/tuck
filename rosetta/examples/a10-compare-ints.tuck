@@ -1,0 +1,14 @@
+# Compare two integers and report the relation
+import io
+
+fn main() -> void [io]:
+  let a = 7
+  let b = 12
+  if a < b:
+    {text: "a is smaller"} printLine
+  else:
+    if a > b:
+      {text: "a is larger"} printLine
+    else:
+      {text: "a equals b"} printLine
+  return

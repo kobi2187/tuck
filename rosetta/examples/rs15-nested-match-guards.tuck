@@ -1,0 +1,33 @@
+# rs15 — deeper nested match on sum type inside another match, catch-all `_`.
+# Stresses: nested match-in-match, `_` catch-all, sum type with 3 variants.
+import io
+
+type Op:
+  | Add
+  | Sub
+  | Mul
+
+fn apply({op: Op, a: int, b: int}) -> int:
+  match op:
+    Add: a + b
+    Sub: a - b
+    Mul: a * b
+    _: 0
+
+fn describeResult({op: Op, a: int, b: int}) -> str:
+  # NOTE: nesting a bool `match` here hits DISCOVERIES #4 (match-on-bool
+  # fails exhaustiveness with both arms present) — use if/else instead.
+  match op:
+    Add:
+      let r = {op: op, a: a, b: b} apply
+      if r > 0:
+        "positive sum"
+      else:
+        "nonpositive sum"
+    _: "other op"
+
+fn main() -> void [io]:
+  let sum = {op: Add, a: 3, b: 4} apply
+  {value: sum} toStr printLine
+  {text: {op: Add, a: 3, b: 4} describeResult} printLine
+  return

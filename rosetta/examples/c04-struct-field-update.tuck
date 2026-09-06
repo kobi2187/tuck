@@ -1,0 +1,14 @@
+# Struct field update via the mutation operator `..`
+import io
+
+type Counter:
+  count: int
+
+fn bump({self: Counter}) -> Counter:
+  return {count: self.count + 1} Counter
+
+fn main() -> void [io]:
+  var c = {count: 0} Counter
+  c ..bump ..bump ..bump
+  {value: c.count} toStr printLine
+  return

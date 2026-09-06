@@ -1,0 +1,11 @@
+# StringBuilder-style accumulation: build up a report string across a loop
+import io
+import seq
+
+fn main() -> void [io]:
+  let lines = ["first line", "second line", "third line"]
+  var report = ""
+  for line in lines:
+    report = report + line + "\n"
+  {text: report} printLine
+  return

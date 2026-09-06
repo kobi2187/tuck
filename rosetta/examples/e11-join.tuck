@@ -1,0 +1,11 @@
+# Join a list of strings with a separator
+import io
+
+pending:
+  fn join({items: Seq[str], sep: str}) -> str
+
+fn main() -> void [io]:
+  let parts = ["red", "green", "blue"]
+  let joined = {items: parts, sep: ", "} join
+  {text: joined} printLine
+  return

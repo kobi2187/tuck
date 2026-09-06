@@ -1,0 +1,11 @@
+# Replace all occurrences of a substring
+import io
+
+pending:
+  fn replace({text: str, target: str, replacement: str}) -> str
+
+fn main() -> void [io]:
+  let s = "cats and cats"
+  let out = {text: s, target: "cats", replacement: "dogs"} replace
+  {text: out} printLine
+  return

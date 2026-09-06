@@ -1,0 +1,9 @@
+# Concatenate two strings
+import io
+
+fn main() -> void [io]:
+  let a = "foo"
+  let b = "bar"
+  let joined = a + b
+  {text: joined} printLine
+  return

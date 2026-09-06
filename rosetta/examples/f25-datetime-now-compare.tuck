@@ -1,0 +1,21 @@
+# DateTime.Now-style: current date, add hours, compare two points in time
+import io
+import time
+
+type Date:
+  year: int
+  month: int
+  day: int
+
+pending:
+  fn today() -> Date [io]
+  fn addHours({at: Date, hours: int}) -> Date
+  fn isBefore({a: Date, b: Date}) -> bool
+
+fn main() -> void [io]:
+  let now = today
+  let later = {at: now, hours: 5} addHours
+  let earlier = {a: now, b: later} isBefore
+  if earlier:
+    {text: "now is before later"} printLine
+  return

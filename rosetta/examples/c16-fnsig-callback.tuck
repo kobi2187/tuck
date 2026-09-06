@@ -1,0 +1,15 @@
+# fnsig: a named fn signature used as a callback parameter type
+import io
+
+fnsig Adder = {a: int, b: int} -> int
+
+fn plus({a: int, b: int}) -> int:
+  return a + b
+
+fn applyWith({a: int, b: int, op: Adder}) -> int:
+  return {a, b} op
+
+fn main() -> void [io]:
+  let r = {a: 3, b: 4, op: :plus} applyWith
+  {value: r} toStr printLine
+  return

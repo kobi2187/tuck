@@ -1,0 +1,31 @@
+# match with several arm shapes: payload sum type, enum-like, bool, wildcard
+import io
+
+type Shape:
+  | Circle({r: int})
+  | Square({side: int})
+  | Point({})
+
+fn describe({s: Shape}) -> str:
+  match s:
+    Circle: "circle"
+    Square: "square"
+    _: "point"
+
+# NOTE: match on bool is a known checker bug (DISCOVERIES.md #4 — fails
+# exhaustiveness even with both arms present). Using if/else here instead.
+fn boolLabel({flag: bool}) -> str:
+  if flag:
+    return "yes"
+  else:
+    return "no"
+
+fn main() -> void [io]:
+  let c = {r: 5} Circle
+  let sq = {side: 2} Square
+  let p = {} Point
+  {text: {s: c} describe} printLine
+  {text: {s: sq} describe} printLine
+  {text: {s: p} describe} printLine
+  {text: {flag: true} boolLabel} printLine
+  return

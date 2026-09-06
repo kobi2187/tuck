@@ -1,0 +1,26 @@
+# distinct unit types, postfix unit application (5.ms style), fmt tier
+import io
+import time
+
+distinct Meters = int
+distinct Seconds2 = int
+
+fn m(value: int) -> Meters:
+  value Meters
+
+fn sec(value: int) -> Seconds2:
+  value Seconds2
+
+pending:
+  fn toFixed({value: float, places: int}) -> str
+
+fn main() -> void [io]:
+  let distance = 100.m
+  let duration = 9.sec
+  let delay = 5.ms
+  {text: "distance set"} printLine
+  {text: "duration set"} printLine
+  {value: delay} toStr printLine
+  let pace = {value: 12.5, places: 2} toFixed
+  {text: pace} printLine
+  return

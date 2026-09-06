@@ -1,0 +1,31 @@
+# Long field list on one struct, exercised via multiple accessors
+import io
+
+type Order:
+  id: int
+  customerName: str
+  itemCount: int
+  subtotal: int
+  taxRate: int
+  shipping: int
+  discount: int
+  total: int
+  isPriority: bool
+  isPaid: bool
+
+fn describeOrder({o: Order}) -> str:
+  if o.isPriority and o.isPaid:
+    return "priority-paid"
+  else:
+    if o.isPriority:
+      return "priority-unpaid"
+    else:
+      return "standard"
+
+fn main() -> void [io]:
+  let o = {id: 1001, customerName: "Ada", itemCount: 3, subtotal: 300, taxRate: 8, shipping: 10, discount: 0, total: 324, isPriority: true, isPaid: true} Order
+  {value: o.id} toStr printLine
+  {text: o.customerName} printLine
+  {value: o.total} toStr printLine
+  {text: {o: o} describeOrder} printLine
+  return

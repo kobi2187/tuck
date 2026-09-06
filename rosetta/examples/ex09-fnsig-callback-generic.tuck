@@ -1,0 +1,25 @@
+# fnsig-typed callback field, threaded through a generic fn
+import io
+import seq
+
+fnsig Combiner = {a: int, b: int} -> int
+
+fn plus({a: int, b: int}) -> int:
+  return a + b
+
+fn times({a: int, b: int}) -> int:
+  return a * b
+
+fn applyTwice({a: int, b: int, op: Combiner}) -> int:
+  let once = {a: a, b: b} op
+  return {a: once, b: b} op
+
+pending:
+  fn reduce[T, Acc]({items: Seq[T], init: Acc, step: fn}) -> Acc
+
+fn main() -> void [io]:
+  let r1 = {a: 3, b: 4, op: :plus} applyTwice
+  let r2 = {a: 3, b: 4, op: :times} applyTwice
+  {value: r1} toStr printLine
+  {value: r2} toStr printLine
+  return

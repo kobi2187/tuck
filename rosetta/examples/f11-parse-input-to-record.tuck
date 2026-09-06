@@ -1,0 +1,18 @@
+# Parse a raw string into a record
+import io
+
+type Point:
+  x: int
+  y: int
+
+pending:
+  fn parsePoint({text: str}) -> !Point [io, error: str]
+
+fn main() -> void [io]:
+  let raw = "3,4"
+  let result = {text: raw} parsePoint
+  if result.ok:
+    {text: "parsed"} printLine
+  else:
+    {text: "parse failed"} printLine
+  return

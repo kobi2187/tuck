@@ -1,0 +1,11 @@
+# Count occurrences of a character in a string
+import io
+
+pending:
+  fn countOccurrences({text: str, needle: str}) -> int
+
+fn main() -> void [io]:
+  let s = "mississippi"
+  let n = {text: s, needle: "s"} countOccurrences
+  {value: n} toStr printLine
+  return

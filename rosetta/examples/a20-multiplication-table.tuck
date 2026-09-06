@@ -1,0 +1,8 @@
+# Multiplication table for a single row (n times 1..10)
+import io
+
+fn main() -> void [io]:
+  let n = 7
+  for i in 1 .. 10:
+    {value: n * i} toStr printLine
+  return

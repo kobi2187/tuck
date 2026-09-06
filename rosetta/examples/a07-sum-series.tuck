@@ -1,0 +1,9 @@
+# Sum of the first N natural numbers
+import io
+
+fn main() -> void [io]:
+  var total = 0
+  for i in 1 .. 100:
+    total = total + i
+  {value: total} toStr printLine
+  return

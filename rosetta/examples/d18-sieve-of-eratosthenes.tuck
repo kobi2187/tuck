@@ -1,0 +1,16 @@
+# Sieve of Eratosthenes up to 30
+import io
+import seq
+
+fn main() -> void [io]:
+  var isComposite = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
+  for i in 2 ..< 31:
+    if not isComposite[i]:
+      var j = i * i
+      for j < 31:
+        isComposite[j] = true
+        j = j + i
+  for i in 2 ..< 31:
+    if not isComposite[i]:
+      {value: i} toStr printLine
+  return

@@ -1,0 +1,11 @@
+# Sum the decimal digits of a number
+import io
+
+fn main() -> void [io]:
+  var n = 9875
+  var total = 0
+  for n != 0:
+    total = total + n % 10
+    n = n / 10
+  {value: total} toStr printLine
+  return

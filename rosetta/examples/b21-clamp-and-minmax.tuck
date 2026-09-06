@@ -1,0 +1,15 @@
+# Clamp a value into a range, using min/max helpers
+import io
+
+pending:
+  fn min({a: int, b: int}) -> int
+  fn max({a: int, b: int}) -> int
+  fn clamp({value: int, low: int, high: int}) -> int
+
+fn main() -> void [io]:
+  let raw = 137
+  let bounded = {value: raw, low: 0, high: 100} clamp
+  {value: bounded} toStr printLine
+  {value: {a: 3, b: 9} min} toStr printLine
+  {value: {a: 3, b: 9} max} toStr printLine
+  return

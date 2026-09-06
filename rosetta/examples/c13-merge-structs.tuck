@@ -1,0 +1,16 @@
+# merge two structs into one context struct
+import io
+
+type Episode:
+  title: str
+
+type Prefs:
+  volume: int
+
+fn main() -> void [io]:
+  let episode = {title: "Pilot"} Episode
+  let prefs = {volume: 80} Prefs
+  let ctx = {episode, prefs} merge
+  {text: ctx.title} printLine
+  {value: ctx.volume} toStr printLine
+  return

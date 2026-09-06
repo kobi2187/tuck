@@ -1,0 +1,13 @@
+# Remove duplicates from a list, preserving first-seen order
+import io
+import seq
+
+pending:
+  fn dedup({items: Seq[int]}) -> Seq[int]
+
+fn main() -> void [io]:
+  let xs = [1, 2, 2, 3, 1, 4, 3, 5]
+  let unique = {items: xs} dedup
+  for n in unique:
+    {value: n} toStr printLine
+  return

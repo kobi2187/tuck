@@ -1,0 +1,12 @@
+# Pad and align text into fixed-width columns
+import io
+
+pending:
+  fn padRight({text: str, width: int}) -> str
+  fn padLeft({text: str, width: int}) -> str
+
+fn main() -> void [io]:
+  let name = {text: "Ada", width: 10} padRight
+  let score = {text: "97", width: 5} padLeft
+  {text: name + score} printLine
+  return

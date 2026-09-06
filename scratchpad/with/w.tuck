@@ -1,0 +1,18 @@
+type Task:
+  title: str
+  done: bool
+  score: int
+
+fn complete({self: Task}) -> Task:
+  return self with {done: true}
+
+fn rescore({self: Task, n: int}) -> Task:
+  return self with {score: n, done: false}
+
+fn main() -> int:
+  let t = {title: "write it", done: false, score: 1} Task
+  let d = t.complete
+  let r = {self: d, n: 7} rescore
+  if d.done and r.score == 7 and not r.done and r.title == "write it":
+    return 0
+  return 1

@@ -1,0 +1,17 @@
+# A result-returning fn (!T) with error propagation via `?`
+import io
+
+fn divide({a: int, b: int}) -> !int:
+  if b == 0:
+    return "division by zero" fail
+  else:
+    return a / b
+
+fn compute({a: int, b: int}) -> !int:
+  let r = {a, b} divide?
+  return r + 1
+
+fn main() -> void [io]:
+  let result = {a: 10, b: 2} compute
+  {value: result} toStr printLine
+  return

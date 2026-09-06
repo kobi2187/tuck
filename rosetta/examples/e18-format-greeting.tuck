@@ -1,0 +1,8 @@
+# Build a formatted greeting from parts
+import io
+
+fn main() -> void [io]:
+  let name = "Ada"
+  let greeting = "Hello, " + name + "!"
+  {text: greeting} printLine
+  return

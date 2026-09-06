@@ -1,0 +1,27 @@
+# decision table: 3-column tabular logic, Elixir-cond-like but data-driven
+import io
+
+type Priority:
+  | High({})
+  | Medium({})
+  | Low({})
+
+decision routeAlert({priority: Priority, encrypted: bool, retries: int}) -> int:
+  | High   true   0 -> 1
+  | High   true   _ -> 2
+  | High   false  _ -> 3
+  | Medium _      0 -> 4
+  | Medium _      _ -> 5
+  | Low    _      _ -> 6
+  # `retries: int` is an OPEN domain (unlike Priority/bool), so the compiler
+  # cannot prove completeness without an all-`_` catch-all row
+  | _      _      _ -> 0
+
+fn main() -> void [io]:
+  let a = {priority: {} High, encrypted: true, retries: 0} routeAlert
+  let b = {priority: {} Medium, encrypted: false, retries: 2} routeAlert
+  let c = {priority: {} Low, encrypted: true, retries: 9} routeAlert
+  {value: a} toStr printLine
+  {value: b} toStr printLine
+  {value: c} toStr printLine
+  return

@@ -1,0 +1,25 @@
+# set parity, loop:/break/continue mixed with while-style for, enumerate-ish index+value
+import io
+import seq
+
+pending:
+  fn add[T]({s: Set[T], value: T}) -> Set[T]
+  fn has[T]({s: Set[T], value: T}) -> bool
+  fn emptySet() -> Set[int]
+
+fn main() -> void [io]:
+  var s = {} emptySet
+  let xs = [3, 1, 4, 1, 5, 9, 2, 6]
+  var i = 0
+  loop:
+    if i >= xs.len:
+      break
+    if xs[i] % 2 == 0:
+      i += 1
+      continue
+    s = {s: s, value: xs[i]} add
+    i += 1
+  for idx, val in xs:
+    if {s: s, value: val} has:
+      {value: idx} toStr printLine
+  return

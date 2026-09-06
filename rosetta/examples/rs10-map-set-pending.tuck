@@ -1,0 +1,13 @@
+# rs10 — proposed Map[K,V]/Set[T] surface exercised via pending: stubs.
+# Stresses: multi-param generic type Map[K, V], multi-field pending: payload.
+import io
+
+pending:
+  fn insert({self: int, key: str, value: int}) -> int
+  fn get({self: int, key: str}) -> ?int
+
+fn main() -> void [io]:
+  let m = {self: 0, key: "a", value: 1} insert
+  let found = {self: m, key: "a"} get
+  {value: m} toStr printLine
+  return

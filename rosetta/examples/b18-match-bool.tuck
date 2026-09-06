@@ -1,0 +1,9 @@
+# Match on a bool value
+import io
+
+fn main() -> void [io]:
+  let isOpen = true
+  match isOpen:
+    true: {text: "open"} printLine
+    false: {text: "closed"} printLine
+  return

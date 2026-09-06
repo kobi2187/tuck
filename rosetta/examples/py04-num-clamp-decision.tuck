@@ -1,0 +1,27 @@
+# num parity: decision table dispatch, negative literals, mixed operator precedence
+import io
+
+pending:
+  fn clamp({value: int, low: int, high: int}) -> int
+  fn sign({n: int}) -> int
+
+type Band:
+  | Low({})
+  | Mid({})
+  | High({})
+
+decision classify({band: Band, negative: bool}) -> int:
+  | Low  true  -> -1
+  | Low  false -> 0
+  | Mid  _     -> 1
+  | High _     -> 2
+
+fn main() -> void [io]:
+  let a = -5
+  let b = {value: a, low: 0, high: 10} clamp
+  let s = {n: -42} sign
+  let neg = a < 0
+  let band = {} Low
+  let r = {band: band, negative: neg} classify
+  {value: b + s * r} toStr printLine
+  return

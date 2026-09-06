@@ -1,0 +1,11 @@
+# Format a float to a fixed number of decimal places
+import io
+
+pending:
+  fn toFixed({value: float, decimals: int}) -> str
+
+fn main() -> void [io]:
+  let price = 19.5
+  let formatted = {value: price, decimals: 2} toFixed
+  {text: formatted} printLine
+  return

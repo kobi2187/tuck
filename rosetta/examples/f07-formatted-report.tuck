@@ -1,0 +1,18 @@
+# Build a small formatted report via string interpolation-style concat
+import io
+
+type LineItem:
+  name: str
+  qty: int
+
+fn describeLine({item: LineItem}) -> str:
+  let a = "  " + item.name
+  let b = a + " x"
+  return b + {value: item.qty} toStr
+
+fn main() -> void [io]:
+  let items = [{name: "Widget", qty: 3} LineItem, {name: "Gadget", qty: 1} LineItem]
+  {text: "Order summary:"} printLine
+  for it in items:
+    {text: {item: it} describeLine} printLine
+  return

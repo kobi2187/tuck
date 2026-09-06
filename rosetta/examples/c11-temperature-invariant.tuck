@@ -1,0 +1,12 @@
+# A Temperature type with an invariant: must stay >= absolute zero
+import io
+
+type Temperature:
+  celsius: int
+  invariant:
+    celsius >= -273
+
+fn main() -> void [io]:
+  let room = {celsius: 21} Temperature
+  {value: room.celsius} toStr printLine
+  return

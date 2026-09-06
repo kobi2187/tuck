@@ -1,0 +1,24 @@
+# Find first match, any/all predicates over a list
+import io
+import seq
+
+pending:
+  fn findFirst({items: Seq[int], pred: fn}) -> ?int
+  fn any({items: Seq[int], pred: fn}) -> bool
+  fn all({items: Seq[int], pred: fn}) -> bool
+
+fn isEven({value: int}) -> bool:
+  return value % 2 == 0
+
+fn main() -> void [io]:
+  let xs = [1, 3, 5, 8, 9]
+  let firstEven = {items: xs, pred: :isEven} findFirst
+  let hasEven = {items: xs, pred: :isEven} any
+  let allEven = {items: xs, pred: :isEven} all
+  let found = firstEven unwrapOr {default: -1}
+  {value: found} toStr printLine
+  if hasEven:
+    {text: "has even"} printLine
+  if allEven:
+    {text: "all even"} printLine
+  return

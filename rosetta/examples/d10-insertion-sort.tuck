@@ -1,0 +1,16 @@
+# Insertion sort a fixed-size list in place
+import io
+import seq
+
+fn main() -> void [io]:
+  var xs = [5, 3, 8, 1, 9, 2]
+  for i in 1 ..< xs.len:
+    let key = xs[i]
+    var j = i - 1
+    for j >= 0 and xs[j] > key:
+      xs[j + 1] = xs[j]
+      j = j - 1
+    xs[j + 1] = key
+  for n in xs:
+    {value: n} toStr printLine
+  return

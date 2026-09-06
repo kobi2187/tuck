@@ -1,0 +1,23 @@
+# generic type args, ?T optional, !T result in signatures
+import io
+
+pending:
+  fn firstOf[T]({items: Seq[T]}) -> ?T
+  fn unwrapOr[T]({self: ?T, default: T}) -> T
+  fn parseInt({text: str}) -> !int [io]
+  fn safeDivide({a: int, b: int}) -> !int [io]
+
+fn main() -> void [io]:
+  let xs = [10, 20, 30]
+  let maybeFirst = {items: xs} firstOf
+  let first = {self: maybeFirst, default: 0} unwrapOr
+  let parsed = {text: "42"} parseInt
+  if parsed.ok:
+    {value: parsed.value} toStr printLine
+  else:
+    {text: "parse failed"} printLine
+  let divided = {a: 10, b: 2} safeDivide
+  if divided.ok:
+    {value: divided.value} toStr printLine
+  {value: first} toStr printLine
+  return

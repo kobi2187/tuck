@@ -1,0 +1,11 @@
+# Ternary-style choice via if/else assigning to a var
+# (Tuck has no `if` expression, so this is the natural workaround)
+import io
+
+fn main() -> void [io]:
+  let n = 7
+  var label = "even"
+  if n % 2 != 0:
+    label = "odd"
+  {text: label} printLine
+  return

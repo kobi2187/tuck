@@ -1,0 +1,10 @@
+# Classify a number as even or odd
+import io
+
+fn main() -> void [io]:
+  let n = 17
+  if n % 2 == 0:
+    {text: "even"} printLine
+  else:
+    {text: "odd"} printLine
+  return

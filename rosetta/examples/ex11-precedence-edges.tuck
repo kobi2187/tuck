@@ -1,0 +1,22 @@
+# Operator/postfix-call precedence edges: `x + y fnName` binds as `x + (y fnName)`
+import io
+
+fn double({n: int}) -> int:
+  return n * 2
+
+fn main() -> void [io]:
+  let a = 3
+  let b = 4
+  # postfix call binds tighter than + - so this is a + (b double)
+  let r1 = a + {n: b} double
+  # comparisons vs arithmetic: (a + b) < (a * b) since + - beat comparisons
+  let r2 = a + b < a * b
+  # and/or lowest: (r2 and true) or false
+  let r3 = r2 and true or false
+  # range vs comparison precedence in a for is separate syntax, not tested here
+  let r4 = not r2 and a < b
+  {value: r1} toStr printLine
+  {value: r2} toStr printLine
+  {value: r3} toStr printLine
+  {value: r4} toStr printLine
+  return

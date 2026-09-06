@@ -1,0 +1,17 @@
+# 5-deep postfix chain over strings, Elixir-pipe-shaped text pipeline
+import io
+
+pending:
+  fn trim({text: str}) -> str
+  fn lower({text: str}) -> str
+  fn split({text: str, sep: str}) -> Seq[str]
+  fn join({items: Seq[str], sep: str}) -> str
+  fn upper({text: str}) -> str
+
+fn main() -> void [io]:
+  let raw = "  Hello, World, Again  "
+  # mid-chain steps that need extra args use the `.name {args}` method form;
+  # bare postfix (`trim`, `lower`, `upper`) is for single-payload steps
+  let out = {text: raw} trim lower .split {sep: ", "} .join {sep: "-"} upper
+  {text: out} printLine
+  return

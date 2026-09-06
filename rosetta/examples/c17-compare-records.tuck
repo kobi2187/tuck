@@ -1,0 +1,16 @@
+# Compare two Point records for equality via the built-in `==`
+import io
+
+type Point:
+  x: int
+  y: int
+
+fn main() -> void [io]:
+  let p1 = {x: 1, y: 2} Point
+  let p2 = {x: 1, y: 2} Point
+  let p3 = {x: 3, y: 4} Point
+  let eq1 = p1 == p2
+  let eq2 = p1 == p3
+  {value: eq1} toStr printLine
+  {value: eq2} toStr printLine
+  return

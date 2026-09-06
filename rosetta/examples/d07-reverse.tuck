@@ -1,0 +1,17 @@
+# Reverse a fixed-size list in place
+import io
+import seq
+
+fn main() -> void [io]:
+  var xs = [1, 2, 3, 4, 5]
+  var lo = 0
+  var hi = xs.len - 1
+  for lo < hi:
+    let tmp = xs[lo]
+    xs[lo] = xs[hi]
+    xs[hi] = tmp
+    lo = lo + 1
+    hi = hi - 1
+  for n in xs:
+    {value: n} toStr printLine
+  return

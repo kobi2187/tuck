@@ -1,0 +1,14 @@
+# int.TryParse-style: parse without throwing, convert between types
+import io
+
+pending:
+  fn tryParseInt({text: str}) -> ?int
+
+fn main() -> void [io]:
+  let raw = "42"
+  let parsed = {text: raw} tryParseInt
+  let value = parsed unwrapOr {default: 0}
+  let asFloat = {value: value} toFloat
+  {value: value} toStr printLine
+  {value: asFloat} toStr printLine
+  return

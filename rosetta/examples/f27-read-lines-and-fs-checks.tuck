@@ -1,0 +1,18 @@
+# Read all lines from a file, check existence, join a path
+import io
+import fs
+
+pending:
+  fn readLines({path: str}) -> !Seq[str] [io, error: FsError]
+  fn joinPath({dir: str, file: str}) -> str
+
+fn main() -> void [io]:
+  let path = {dir: "data", file: "input.txt"} joinPath
+  let exists = {path} fileExists
+  if exists:
+    let result = {path} readLines
+    if result.ok:
+      {text: "read ok"} printLine
+  else:
+    {text: "missing file"} printLine
+  return

@@ -1,0 +1,6 @@
+type T:
+  a: int
+
+fn main() -> int:
+  var xs = []
+  return 0

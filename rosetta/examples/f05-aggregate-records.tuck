@@ -1,0 +1,23 @@
+# Aggregate over records: sum/average/count of amount
+import io
+import seq
+
+type Sale:
+  amount: int
+
+pending:
+  fn sumBy[T]({items: Seq[T], pick: fn}) -> int
+  fn averageBy[T]({items: Seq[T], pick: fn}) -> float
+
+fn amountOf({sale: Sale}) -> int:
+  return sale.amount
+
+fn main() -> void [io]:
+  let sales = [{amount: 100} Sale, {amount: 250} Sale, {amount: 75} Sale]
+  let total = {items: sales, pick: :amountOf} sumBy
+  let avg = {items: sales, pick: :amountOf} averageBy
+  let count = sales.len
+  {value: total} toStr printLine
+  {value: avg} toStr printLine
+  {value: count} toStr printLine
+  return

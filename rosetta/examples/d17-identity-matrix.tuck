@@ -1,0 +1,12 @@
+# Build and print a 3x3 identity matrix
+import io
+import seq
+
+fn main() -> void [io]:
+  var m = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+  for i in 0 ..< 3:
+    m[i][i] = 1
+  for row in m:
+    for n in row:
+      {value: n} toStr printLine
+  return

@@ -1,0 +1,17 @@
+# rs04 — generic params [T], Seq[T], nested generics Seq[Seq[int]].
+# Stresses: fn generic decl, nested generic type syntax, indexed access.
+import io
+import seq
+
+pending:
+  fn transposeRow({grid: Seq[Seq[int]], row: int}) -> Seq[int]
+
+fn firstOf[T]({items: Seq[T]}) -> T:
+  {items: items, index: 0} at
+
+fn main() -> void [io]:
+  let grid = [[1, 2], [3, 4]]
+  let x = {items: grid, index: 0} at
+  let first = {items: x} firstOf
+  {value: first} toStr printLine
+  return

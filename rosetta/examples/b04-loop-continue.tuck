@@ -1,0 +1,11 @@
+# Loop with continue: sum only the even numbers
+import io
+
+fn main() -> void [io]:
+  var total = 0
+  for i in 1 .. 10:
+    if i % 2 != 0:
+      continue
+    total += i
+  {value: total} toStr printLine
+  return

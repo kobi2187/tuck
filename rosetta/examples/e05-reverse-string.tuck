@@ -1,0 +1,10 @@
+# Reverse a string
+import io
+
+pending:
+  fn reverse({text: str}) -> str
+
+fn main() -> void [io]:
+  let s = "tuck lang"
+  {text: {text: s} reverse} printLine
+  return

@@ -1,0 +1,14 @@
+# Running totals (prefix sums) of a fixed-size list
+import io
+import seq
+
+fn main() -> void [io]:
+  let xs = [3, 1, 4, 1, 5, 9]
+  var totals = [0, 0, 0, 0, 0, 0]
+  var running = 0
+  for i, n in xs:
+    running = running + n
+    totals[i] = running
+  for n in totals:
+    {value: n} toStr printLine
+  return

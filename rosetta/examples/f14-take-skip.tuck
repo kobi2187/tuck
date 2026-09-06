@@ -1,0 +1,15 @@
+# Take the first N and skip the first N elements of a list
+import io
+import seq
+
+pending:
+  fn take[T]({items: Seq[T], count: int}) -> Seq[T]
+  fn skip[T]({items: Seq[T], count: int}) -> Seq[T]
+
+fn main() -> void [io]:
+  let xs = [10, 20, 30, 40, 50]
+  let first = {items: xs, count: 2} take
+  let rest = {items: xs, count: 2} skip
+  {value: first.len} toStr printLine
+  {value: rest.len} toStr printLine
+  return

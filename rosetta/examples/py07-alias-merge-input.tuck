@@ -1,0 +1,26 @@
+# alias() field rename, merge flatten, input — reshaping data
+import io
+
+type Raw:
+  userId: int
+  fullName: str
+
+type Session:
+  active: bool
+
+pending:
+  fn greet({id: int, name: str}) -> void [io]
+
+fn describe({userId: int, fullName: str, active: bool}) -> void [io]:
+  let all = input
+  {text: all.fullName} printLine
+  return
+
+fn main() -> void [io]:
+  let raw = {userId: 7, fullName: "Ada"} Raw
+  let session = {active: true} Session
+  let ctx = {raw, session} merge
+  {userId: ctx.userId, fullName: ctx.fullName, active: ctx.active} describe
+  let renamed = raw alias(userId: id, fullName: name)
+  renamed greet
+  return

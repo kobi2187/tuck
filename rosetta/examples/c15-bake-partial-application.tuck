@@ -1,0 +1,15 @@
+# bake: partial application over a two-argument fn
+import io
+
+fn add({a: int, b: int}) -> int:
+  return a + b
+
+fn applyAdd({a: int, b: int}) -> int:
+  return a + b
+
+fn main() -> void [io]:
+  let ctx = {a: 5, b: 10}
+  let withFive = ctx bake {a: 5}
+  let result = withFive applyAdd
+  {value: result} toStr printLine
+  return

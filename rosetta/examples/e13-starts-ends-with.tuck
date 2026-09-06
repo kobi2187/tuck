@@ -1,0 +1,14 @@
+# Check string prefix and suffix
+import io
+
+pending:
+  fn startsWith({text: str, prefix: str}) -> bool
+  fn endsWith({text: str, suffix: str}) -> bool
+
+fn main() -> void [io]:
+  let s = "tuck_lexer.nim"
+  if {text: s, prefix: "tuck"} startsWith:
+    {text: "starts with tuck"} printLine
+  if {text: s, suffix: ".nim"} endsWith:
+    {text: "ends with .nim"} printLine
+  return

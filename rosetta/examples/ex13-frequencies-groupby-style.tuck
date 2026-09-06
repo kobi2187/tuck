@@ -1,0 +1,18 @@
+# Elixir Enum.frequencies / Ruby #tally style counting, via invented pending fns
+import io
+import seq
+
+pending:
+  fn frequencies({items: Seq[int]}) -> Seq[int]
+  fn partition({items: Seq[int], pred: fn}) -> Seq[int]
+
+fn isEven({n: int}) -> bool:
+  return n % 2 == 0
+
+fn main() -> void [io]:
+  let xs = [1, 1, 2, 2, 2, 3, 4, 4, 4, 4]
+  let freq = {items: xs} frequencies
+  let parts = {items: xs, pred: :isEven} partition
+  {value: freq.len} toStr printLine
+  {value: parts.len} toStr printLine
+  return

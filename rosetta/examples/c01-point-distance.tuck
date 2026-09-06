@@ -1,0 +1,21 @@
+# Point struct: construct two points and compute the distance between them
+import io
+
+type Point:
+  x: int
+  y: int
+
+pending:
+  fn sqrt({value: int}) -> int
+
+fn distance({a: Point, b: Point}) -> int:
+  let dx = a.x - b.x
+  let dy = a.y - b.y
+  return {value: dx * dx + dy * dy} sqrt
+
+fn main() -> void [io]:
+  let p1 = {x: 0, y: 0} Point
+  let p2 = {x: 3, y: 4} Point
+  let d = {a: p1, b: p2} distance
+  {value: d} toStr printLine
+  return

@@ -1,0 +1,8 @@
+type Task:
+  title: str
+  done: bool
+
+fn main() -> int:
+  let t = {title: "x", done: false} Task
+  let b = t bake {nosuchfield: 42}
+  return 0

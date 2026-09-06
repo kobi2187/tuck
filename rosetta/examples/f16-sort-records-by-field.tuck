@@ -1,0 +1,20 @@
+# Sort records by a single field, ascending
+import io
+import seq
+
+type Product:
+  name: str
+  price: int
+
+pending:
+  fn sortByField[T]({items: Seq[T], field: fn}) -> Seq[T]
+
+fn priceOf({product: Product}) -> int:
+  return product.price
+
+fn main() -> void [io]:
+  let products = [{name: "Chair", price: 80} Product, {name: "Pen", price: 2} Product, {name: "Desk", price: 150} Product]
+  let sorted = {items: products, field: :priceOf} sortByField
+  for p in sorted:
+    {text: p.name} printLine
+  return

@@ -1,0 +1,10 @@
+# Integer power via a pow function
+import io
+
+pending:
+  fn pow({base: int, exp: int}) -> int
+
+fn main() -> void [io]:
+  let result = {base: 2, exp: 10} pow
+  {value: result} toStr printLine
+  return

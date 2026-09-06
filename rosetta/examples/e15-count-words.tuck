@@ -1,0 +1,11 @@
+# Count words in a sentence
+import io
+
+pending:
+  fn split({text: str, sep: str}) -> Seq[str]
+
+fn main() -> void [io]:
+  let sentence = "the quick brown fox jumps"
+  let words = {text: sentence, sep: " "} split
+  {value: words.len} toStr printLine
+  return

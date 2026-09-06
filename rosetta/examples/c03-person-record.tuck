@@ -1,0 +1,20 @@
+# A Person record with a greeting fn and a formatted description
+import io
+
+type Person:
+  name: str
+  age: int
+
+pending:
+  fn describe({self: Person}) -> str
+
+fn greet({self: Person}) -> void [io]:
+  {text: self.name} printLine
+  return
+
+fn main() -> void [io]:
+  let alice = {name: "Alice", age: 30} Person
+  alice greet
+  {value: alice.age} toStr printLine
+  {text: alice describe} printLine
+  return

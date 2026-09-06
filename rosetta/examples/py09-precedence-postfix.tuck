@@ -1,0 +1,26 @@
+# operator precedence edge cases: postfix binds tighter than operators
+import io
+
+pending:
+  fn double({n: int}) -> int
+  fn negate({n: int}) -> int
+
+fn main() -> void [io]:
+  let a = 3
+  let b = 4
+  # postfix call binds tighter than +, so this is a + (b double)
+  let sum1 = a + b.double
+  # explicit parens to get the other grouping
+  let sum2 = (a + b).double
+  # unary minus combined with postfix and multiplication precedence
+  let x = -a * b + {n: a} negate
+  # comparison vs arithmetic precedence
+  let cmp = a + b > b * 2 and a < b or a == a
+  {value: sum1} toStr printLine
+  {value: sum2} toStr printLine
+  {value: x} toStr printLine
+  if cmp:
+    {text: "cmp true"} printLine
+  else:
+    {text: "cmp false"} printLine
+  return

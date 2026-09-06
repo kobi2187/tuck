@@ -1,0 +1,22 @@
+# map parity: Map[K,V] generic type args, get/set/has, nested struct literals
+import io
+
+type Bucket:
+  key: str
+  count: int
+
+pending:
+  fn get[K, V]({m: Map[K, V], key: K}) -> ?V
+  fn set[K, V]({m: Map[K, V], key: K, value: V}) -> Map[K, V]
+  fn has[K, V]({m: Map[K, V], key: K}) -> bool
+  fn emptyMap() -> Map[str, Bucket]
+
+fn main() -> void [io]:
+  let m0 = {} emptyMap
+  let m1 = {m: m0, key: "fruit", value: {key: "fruit", count: 3} Bucket} set
+  let present = {m: m1, key: "fruit"} has
+  if present:
+    {text: "found"} printLine
+  else:
+    {text: "missing"} printLine
+  return

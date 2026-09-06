@@ -1,0 +1,17 @@
+# str parity: split/join/trim/case chained as multi-step postfix calls
+import io
+
+pending:
+  fn split({text: str, sep: str}) -> Seq[str]
+  fn join({items: Seq[str], sep: str}) -> str
+  fn upper({text: str}) -> str
+  fn trim({text: str}) -> str
+
+fn main() -> void [io]:
+  let raw = "  alpha,beta,gamma  "
+  let cleaned = raw.trim
+  let shouted = cleaned.upper
+  let parts = {text: shouted, sep: ","} split
+  let rejoined = {items: parts, sep: "-"} join
+  {text: rejoined} printLine
+  return

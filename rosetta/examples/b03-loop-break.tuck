@@ -1,0 +1,11 @@
+# Loop with an early break once a target is found
+import io
+
+fn main() -> void [io]:
+  var found = 0
+  for i in 1 .. 100:
+    if i * i > 50:
+      found = i
+      break
+  {value: found} toStr printLine
+  return

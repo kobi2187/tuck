@@ -1,0 +1,6 @@
+import io
+import str
+fn main() -> int:
+  let n = 42
+  {text: n.toStr + " bottles"} io::printLine
+  return 0

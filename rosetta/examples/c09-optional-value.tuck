@@ -1,0 +1,11 @@
+# Optional value handling with ?T, unwrapped with a default
+import io
+
+pending:
+  fn findUser({id: int}) -> ?str
+
+fn main() -> void [io]:
+  let maybeName = {id: 42} findUser
+  let name = maybeName unwrapOr {default: "unknown"}
+  {text: name} printLine
+  return

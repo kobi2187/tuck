@@ -1,0 +1,15 @@
+# rs08 — operator precedence edges: postfix binds tighter than operators.
+# Stresses: `x + y fn` parses as `x + (y fn)`; parens to override.
+import io
+
+fn double({value: int}) -> int:
+  value * 2
+
+fn main() -> void [io]:
+  let a = 3
+  let b = 4
+  let unparen = a + {value: b} double
+  let parened = {value: a + b} double
+  {value: unparen} toStr printLine
+  {value: parened} toStr printLine
+  return

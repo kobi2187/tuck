@@ -1,0 +1,35 @@
+# Nested struct literals, 4 levels deep, long field lists
+import io
+
+type Address:
+  street: str
+  city: str
+  zip: int
+
+type Company:
+  name: str
+  hq: Address
+
+type Manager:
+  name: str
+  employer: Company
+
+type Employee:
+  name: str
+  age: int
+  home: Address
+  manager: Manager
+
+fn main() -> void [io]:
+  let hq = {street: "1 Infinite Loop", city: "Cupertino", zip: 95014} Address
+  let employer = {name: "Acme", hq: hq} Company
+  let boss = {name: "Grace", employer: employer} Manager
+  let home = {street: "42 Main St", city: "Springfield", zip: 62704} Address
+  let e = {name: "Ada", age: 30, home: home, manager: boss} Employee
+  {text: e.name} printLine
+  {text: e.home.city} printLine
+  {text: e.manager.name} printLine
+  {text: e.manager.employer.name} printLine
+  {text: e.manager.employer.hq.city} printLine
+  {value: e.manager.employer.hq.zip} toStr printLine
+  return

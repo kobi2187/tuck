@@ -1,0 +1,12 @@
+# Sign check and absolute value — everyday numeric branching
+import io
+
+pending:
+  fn abs({n: int}) -> int
+  fn sign({n: int}) -> int
+
+fn main() -> void [io]:
+  let n = -14
+  {value: {n: n} abs} toStr printLine
+  {value: {n: n} sign} toStr printLine
+  return

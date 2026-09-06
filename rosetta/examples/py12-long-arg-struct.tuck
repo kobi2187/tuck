@@ -1,0 +1,28 @@
+# long argument structs, many named fields, nested if/else
+import io
+
+type Config:
+  width: int
+  height: int
+  depth: int
+  scale: int
+  offsetX: int
+  offsetY: int
+  label: str
+  enabled: bool
+
+pending:
+  fn volumeOf({width: int, height: int, depth: int, scale: int, offsetX: int, offsetY: int, label: str, enabled: bool}) -> int
+
+fn main() -> void [io]:
+  let cfg = {width: 4, height: 5, depth: 6, scale: 2, offsetX: 0, offsetY: 0, label: "box", enabled: true} Config
+  var v = 0
+  if cfg.enabled:
+    if cfg.scale > 1:
+      v = {width: cfg.width, height: cfg.height, depth: cfg.depth, scale: cfg.scale, offsetX: cfg.offsetX, offsetY: cfg.offsetY, label: cfg.label, enabled: cfg.enabled} volumeOf
+    else:
+      v = cfg.width * cfg.height * cfg.depth
+  else:
+    v = 0
+  {value: v} toStr printLine
+  return

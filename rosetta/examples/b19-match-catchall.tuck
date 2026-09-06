@@ -1,0 +1,10 @@
+# Match with a catch-all arm
+import io
+
+fn main() -> void [io]:
+  let day = 3
+  match day:
+    1: {text: "Monday"} printLine
+    2: {text: "Tuesday"} printLine
+    _: {text: "some other day"} printLine
+  return

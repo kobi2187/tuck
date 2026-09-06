@@ -1,7 +1,11 @@
-# `bake` — compile-time partial application (Factor-style fry).
-# A struct is the fn's context. bake fills slots: a fn reference (:name)
-# or argument values. Slots emit as generic params, so calls through a
-# baked slot are direct — no boxing, no runtime dispatch.
+# `bake` — partial application (Factor-style fry).
+# A struct is the fn's context. bake FIXES a slot to a value: a fn
+# reference (:name) or an argument value, so callers downstream no longer
+# supply it. Fixing the fn reference is what narrows the call — once `op`
+# is set, the context is invoked with just its value fields.
+# The slot stays in the struct carrying its value; nothing is removed.
+# A fnsig field emits as a closure proc value, so the call through a baked
+# slot is indirect. Monomorphizing it is an open optimization.
 
 fnsig BinOp = {a: int, b: int} -> int
 

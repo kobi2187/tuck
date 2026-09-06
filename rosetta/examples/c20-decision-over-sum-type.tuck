@@ -1,0 +1,17 @@
+# decision table dispatching over a sum-type-derived priority + a bool
+import io
+
+type Priority:
+  | High({})
+  | Low({})
+
+decision route({priority: Priority, encrypted: bool}) -> int:
+  | High  true  -> 1
+  | High  false -> 2
+  | Low   _     -> 3
+
+fn main() -> void [io]:
+  let p = {} High
+  let r = {priority: p, encrypted: true} route
+  {value: r} toStr printLine
+  return

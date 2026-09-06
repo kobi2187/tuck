@@ -1,0 +1,19 @@
+# An enum-like sum type for Color, matched to a name
+import io
+
+type Color:
+  | Red({})
+  | Green({})
+  | Blue({})
+
+fn name({c: Color}) -> str:
+  match c:
+    Red: "red"
+    Green: "green"
+    Blue: "blue"
+    _: "unknown"
+
+fn main() -> void [io]:
+  let col = {} Green
+  {text: {c: col} name} printLine
+  return

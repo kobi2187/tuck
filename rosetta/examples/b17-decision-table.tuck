@@ -1,0 +1,16 @@
+# Decision table for tabular logic
+import io
+
+type Priority:
+  | High({})
+  | Low({})
+
+decision route({priority: Priority, encrypted: bool}) -> int:
+  | High  true  -> 1
+  | High  false -> 2
+  | Low   _     -> 3
+
+fn main() -> void [io]:
+  let a = {priority: {} High, encrypted: true} route
+  {value: a} toStr printLine
+  return

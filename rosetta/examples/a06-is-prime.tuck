@@ -1,0 +1,17 @@
+# Primality test by trial division
+import io
+
+fn main() -> void [io]:
+  let n = 29
+  var isPrime = true
+  if n < 2:
+    isPrime = false
+  else:
+    for i in 2 ..< n:
+      if n % i == 0:
+        isPrime = false
+  if isPrime:
+    {text: "prime"} printLine
+  else:
+    {text: "not prime"} printLine
+  return

@@ -1,0 +1,20 @@
+# Sort a list of records with a custom comparer (by age descending)
+import io
+import seq
+
+type Person:
+  name: str
+  age: int
+
+pending:
+  fn sortBy[T]({items: Seq[T], compare: fn}) -> Seq[T]
+
+fn olderFirst({a: Person, b: Person}) -> bool:
+  return a.age > b.age
+
+fn main() -> void [io]:
+  let people = [{name: "Ada", age: 36} Person, {name: "Bo", age: 22} Person, {name: "Cy", age: 58} Person]
+  let sorted = {items: people, compare: :olderFirst} sortBy
+  for p in sorted:
+    {text: p.name} printLine
+  return

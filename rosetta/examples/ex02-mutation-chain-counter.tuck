@@ -1,0 +1,19 @@
+# `..` mutation chain: 5 deep, mixing two different mutator fns
+import io
+
+type Counter:
+  count: int
+  step: int
+
+fn bump({self: Counter}) -> Counter:
+  return {count: self.count + self.step, step: self.step} Counter
+
+fn doubleStep({self: Counter}) -> Counter:
+  return {count: self.count, step: self.step * 2} Counter
+
+fn main() -> void [io]:
+  var c = {count: 0, step: 1} Counter
+  c ..bump ..bump ..doubleStep ..bump ..bump
+  {value: c.count} toStr printLine
+  {value: c.step} toStr printLine
+  return

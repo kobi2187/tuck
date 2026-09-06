@@ -1,0 +1,7 @@
+# Read a line from stdin and echo it back
+import io
+
+fn main() -> void [io]:
+  let input = readLine
+  {text: input.line} printLine
+  return

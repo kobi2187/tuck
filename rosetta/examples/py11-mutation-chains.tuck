@@ -1,0 +1,18 @@
+# .. mutation chains, var reassignment, indexed write chains
+import io
+import seq
+
+fn main() -> void [io]:
+  var xs = [1, 2, 3, 4, 5]
+  var total = 0
+  for i in 0 ..< xs.len:
+    xs[i] = xs[i] * 2
+    total += xs[i]
+  var acc = 0
+  for i in 1 .. 5:
+    acc = acc + i
+    acc *= 1
+  {value: total} toStr printLine
+  {value: acc} toStr printLine
+  {value: xs[0]} toStr printLine
+  return

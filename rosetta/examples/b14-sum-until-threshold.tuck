@@ -1,0 +1,12 @@
+# Sum numbers 1, 2, 3, ... until the running total passes a threshold
+import io
+
+fn main() -> void [io]:
+  let threshold = 50
+  var total = 0
+  var n = 0
+  for total <= threshold:
+    n += 1
+    total += n
+  {value: total} toStr printLine
+  return

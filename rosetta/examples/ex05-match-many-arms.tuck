@@ -1,0 +1,26 @@
+# match with many arm shapes over a sum type (Elixir-cond-like exhaustive match)
+import io
+
+type HttpStatus:
+  | Ok({})
+  | Created({})
+  | NotFound({})
+  | Forbidden({})
+  | ServerError({code: int})
+
+fn describe({status: HttpStatus}) -> str:
+  match status:
+    Ok: "ok"
+    Created: "created"
+    NotFound: "missing"
+    Forbidden: "denied"
+    ServerError: "server failed"
+
+fn main() -> void [io]:
+  let a = {} Ok
+  let b = {} NotFound
+  let c = {code: 500} ServerError
+  {text: {status: a} describe} printLine
+  {text: {status: b} describe} printLine
+  {text: {status: c} describe} printLine
+  return

@@ -1,0 +1,18 @@
+# Min and max of a fixed-size list
+import io
+import seq
+
+pending:
+  fn max({a: int, b: int}) -> int
+  fn min({a: int, b: int}) -> int
+
+fn main() -> void [io]:
+  let xs = [7, 2, 9, 4, 1, 8]
+  var lo = xs[0]
+  var hi = xs[0]
+  for n in xs:
+    lo = {a: lo, b: n} min
+    hi = {a: hi, b: n} max
+  {value: lo} toStr printLine
+  {value: hi} toStr printLine
+  return

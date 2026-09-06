@@ -1,0 +1,20 @@
+# Parse a CSV-ish line into a record
+import io
+
+type Row:
+  name: str
+  age: int
+
+pending:
+  fn splitFields({line: str, sep: str}) -> Seq[str]
+  fn parseRow({fields: Seq[str]}) -> !Row [io, error: str]
+
+fn main() -> void [io]:
+  let line = "Ada,36"
+  let fields = {line, sep: ","} splitFields
+  let row = {fields} parseRow
+  if row.ok:
+    {text: "parsed a row"} printLine
+  else:
+    {text: "bad row"} printLine
+  return

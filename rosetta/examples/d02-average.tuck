@@ -1,0 +1,13 @@
+# Average of a fixed-size list of ints
+import io
+import seq
+
+pending:
+  fn sum({items: Seq[int]}) -> int
+
+fn main() -> void [io]:
+  let xs = [3, 1, 4, 1, 5, 9]
+  let total = {items: xs} sum
+  let avg = total / xs.len
+  {value: avg} toStr printLine
+  return

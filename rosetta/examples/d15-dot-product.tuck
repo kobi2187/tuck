@@ -1,0 +1,12 @@
+# Dot product of two equal-length vectors
+import io
+import seq
+
+fn main() -> void [io]:
+  let a = [1, 2, 3]
+  let b = [4, 5, 6]
+  var total = 0
+  for i in 0 ..< a.len:
+    total = total + a[i] * b[i]
+  {value: total} toStr printLine
+  return

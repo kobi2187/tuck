@@ -1,0 +1,12 @@
+# Build a "stars" string in a loop — needs a repeat/pad helper
+# since there are no growable sequences and no string-repeat builtin.
+import io
+
+pending:
+  fn repeated({text: str, times: int}) -> str
+
+fn main() -> void [io]:
+  for i in 1 .. 5:
+    let bar = {text: "*", times: i} repeated
+    {text: bar} printLine
+  return

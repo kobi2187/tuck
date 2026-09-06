@@ -1,0 +1,14 @@
+# Detect whether a string is a palindrome
+import io
+
+pending:
+  fn reverse({text: str}) -> str
+
+fn main() -> void [io]:
+  let s = "level"
+  let backwards = {text: s} reverse
+  if s == backwards:
+    {text: "palindrome"} printLine
+  else:
+    {text: "not a palindrome"} printLine
+  return

@@ -1,0 +1,17 @@
+# Nested structs: an Address inside a Person
+import io
+
+type Address:
+  city: str
+  zip: int
+
+type Person:
+  name: str
+  home: Address
+
+fn main() -> void [io]:
+  let home = {city: "Springfield", zip: 12345} Address
+  let p = {name: "Bob", home: home} Person
+  {text: p.home.city} printLine
+  {value: p.home.zip} toStr printLine
+  return

@@ -1,0 +1,14 @@
+# Distinct unit types: Meters vs Feet, prevented from mixing directly
+import io
+
+distinct Meters = int
+distinct Feet = int
+
+fn feetToMeters({f: Feet}) -> Meters:
+  return f * 0.3048
+
+fn main() -> void [io]:
+  let height = 10 Feet
+  let inMeters = {f: height} feetToMeters
+  {value: inMeters} toStr printLine
+  return

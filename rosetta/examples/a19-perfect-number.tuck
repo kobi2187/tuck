@@ -1,0 +1,14 @@
+# Perfect number check: sum of proper divisors equals the number
+import io
+
+pending:
+  fn sumProperDivisors({value: int}) -> int
+
+fn main() -> void [io]:
+  let n = 28
+  let total = {value: n} sumProperDivisors
+  if total == n:
+    {text: "perfect"} printLine
+  else:
+    {text: "not perfect"} printLine
+  return

@@ -1,0 +1,9 @@
+# Enumerate a list with both index and value
+import io
+
+fn main() -> void [io]:
+  let names = ["Ada", "Bo", "Cy"]
+  for idx, name in names:
+    let line = {value: idx} toStr
+    {text: line + " " + name} printLine
+  return

@@ -1,0 +1,18 @@
+# TryGetValue-style pattern: look up a key without a throw on miss
+import io
+
+pending:
+  fn empty({}) -> Map[str, int]
+  fn set({map: Map[str, int], key: str, value: int}) -> Map[str, int]
+  fn tryGet({map: Map[str, int], key: str}) -> ?int
+
+fn main() -> void [io]:
+  var stock = {} empty
+  stock = stock set {key: "widgets", value: 40}
+  let found = stock tryGet {key: "gadgets"}
+  let quantity = found unwrapOr {default: -1}
+  if quantity < 0:
+    {text: "unknown item"} printLine
+  else:
+    {text: "in stock"} printLine
+  return

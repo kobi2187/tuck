@@ -1,0 +1,13 @@
+# Early return from a function once a condition is met
+import io
+
+fn firstDivisor({n: int}) -> int:
+  for d in 2 .. 100:
+    if n % d == 0:
+      return d
+  return n
+
+fn main() -> void [io]:
+  let result = {n: 91} firstDivisor
+  {value: result} toStr printLine
+  return

@@ -1,0 +1,10 @@
+# Countdown from 5 to liftoff
+import io
+
+fn main() -> void [io]:
+  var n = 5
+  for n > 0:
+    {value: n} toStr printLine
+    n -= 1
+  {text: "liftoff"} printLine
+  return

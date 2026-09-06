@@ -1,0 +1,15 @@
+# Logical operations: and, or, not
+import io
+
+fn main() -> void [io]:
+  let a = true
+  let b = false
+  if a and b:
+    {text: "both"} printLine
+  else:
+    {text: "not both"} printLine
+  if a or b:
+    {text: "at least one"} printLine
+  if not b:
+    {text: "b is false"} printLine
+  return

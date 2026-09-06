@@ -1,0 +1,12 @@
+# Greatest common divisor via Euclid's algorithm
+import io
+
+fn main() -> void [io]:
+  var a = 48
+  var b = 18
+  for b != 0:
+    let t = b
+    b = a % b
+    a = t
+  {value: a} toStr printLine
+  return

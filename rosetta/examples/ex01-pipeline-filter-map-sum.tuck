@@ -1,0 +1,22 @@
+# Elixir-pipe-shaped pipeline: filter |> map |> sum, 3-deep postfix chain
+import io
+import seq
+
+pending:
+  fn filter[T]({items: Seq[T], pred: fn}) -> Seq[T]
+  fn map[T, U]({items: Seq[T], transform: fn}) -> Seq[U]
+  fn sum({items: Seq[int]}) -> int
+
+fn isEven({n: int}) -> bool:
+  return n % 2 == 0
+
+fn double({n: int}) -> int:
+  return n * 2
+
+fn main() -> void [io]:
+  let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  # `.name {args}` is Tuck's mid-chain call-with-extra-args form —
+  # NOT Elixir's `|> map(fn)`, which the parser rejects outright
+  let total = {items: xs, pred: :isEven} filter .map {transform: :double} sum
+  {value: total} toStr printLine
+  return

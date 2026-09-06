@@ -1,0 +1,15 @@
+# Contains / index-of a value in a list
+import io
+import seq
+
+pending:
+  fn contains({items: Seq[int], value: int}) -> bool
+  fn indexOf({items: Seq[int], value: int}) -> int
+
+fn main() -> void [io]:
+  let xs = [4, 8, 15, 16, 23, 42]
+  let found = {items: xs, value: 16} contains
+  let idx = {items: xs, value: 16} indexOf
+  {value: found} toStr printLine
+  {value: idx} toStr printLine
+  return

@@ -1,0 +1,13 @@
+# rs13 — proposed std/str fns via pending:, plus result-returning parseInt.
+# Stresses: multiple pending: decls, str payloads, chained postfix on str.
+import io
+
+pending:
+  fn split({text: str, sep: str}) -> Seq[str]
+  fn upper({text: str}) -> str
+  fn trim({text: str}) -> str
+
+fn main() -> void [io]:
+  let cleaned = {text: "  hello  "} trim .upper
+  {text: cleaned} printLine
+  return

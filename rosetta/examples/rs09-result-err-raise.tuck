@@ -1,0 +1,22 @@
+# rs09 — !T return, `err` raises inside a user fn (not just extern/pending).
+# Stresses: err keyword, error enum, effect marker, if r.ok in caller.
+# NEW FINDING: fallible `!T [error: E]` fns must be marked [io] even though
+# safeDiv does no I/O — the checker ties fallibility to the io effect.
+import io
+
+type DivError:
+  | DivByZero
+
+fn safeDiv({a: int, b: int}) -> !int [io, error: DivError]:
+  if b == 0:
+    err DivByZero
+  else:
+    a / b
+
+fn main() -> void [io]:
+  let r = {a: 10, b: 2} safeDiv
+  if r.ok:
+    {value: r.value} toStr printLine
+  else:
+    {text: "div error"} printLine
+  return

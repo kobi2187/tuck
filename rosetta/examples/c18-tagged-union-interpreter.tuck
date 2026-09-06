@@ -1,0 +1,21 @@
+# A tiny tagged-union interpreter: Add/Sub expression evaluator
+import io
+
+type Expr:
+  | Add({lhs: int, rhs: int})
+  | Sub({lhs: int, rhs: int})
+  | Lit({value: int})
+
+fn eval({e: Expr}) -> int:
+  match e:
+    Add: e.lhs + e.rhs
+    Sub: e.lhs - e.rhs
+    Lit: e.value
+    _: 0
+
+fn main() -> void [io]:
+  let a = {lhs: 3, rhs: 4} Add
+  let s = {lhs: 10, rhs: 6} Sub
+  {value: {e: a} eval} toStr printLine
+  {value: {e: s} eval} toStr printLine
+  return

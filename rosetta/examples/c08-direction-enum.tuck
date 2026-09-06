@@ -1,0 +1,19 @@
+# Direction sum type with a decision table for movement deltas
+import io
+
+type Direction:
+  | North({})
+  | South({})
+  | East({})
+  | West({})
+
+decision dy({d: Direction}) -> int:
+  | North -> 1
+  | South -> -1
+  | East  -> 0
+  | West  -> 0
+
+fn main() -> void [io]:
+  let d = {} North
+  {value: {d: d} dy} toStr printLine
+  return

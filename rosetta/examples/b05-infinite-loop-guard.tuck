@@ -1,0 +1,11 @@
+# Infinite loop with a guard condition that breaks it
+import io
+
+fn main() -> void [io]:
+  var n = 1
+  loop:
+    if n > 16:
+      break
+    n = n * 2
+  {value: n} toStr printLine
+  return

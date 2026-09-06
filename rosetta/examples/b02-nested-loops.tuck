@@ -1,0 +1,8 @@
+# Nested loops: print a small multiplication grid
+import io
+
+fn main() -> void [io]:
+  for i in 1 .. 3:
+    for j in 1 .. 3:
+      {value: i * j} toStr printLine
+  return

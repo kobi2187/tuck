@@ -1,0 +1,13 @@
+# Zip two lists into pairwise sums (fixed-size, equal length)
+import io
+import seq
+
+fn main() -> void [io]:
+  let a = [1, 2, 3, 4]
+  let b = [10, 20, 30, 40]
+  var sums = [0, 0, 0, 0]
+  for i in 0 ..< a.len:
+    sums[i] = a[i] + b[i]
+  for n in sums:
+    {value: n} toStr printLine
+  return

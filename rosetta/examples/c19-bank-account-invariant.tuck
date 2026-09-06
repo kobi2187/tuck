@@ -1,0 +1,19 @@
+# Bank account balance with a non-negative invariant
+import io
+
+type Account:
+  balance: int
+  invariant:
+    balance >= 0
+
+fn deposit({self: Account, amount: int}) -> Account:
+  return {balance: self.balance + amount} Account
+
+fn withdraw({self: Account, amount: int}) -> Account:
+  return {balance: self.balance - amount} Account
+
+fn main() -> void [io]:
+  var acc = {balance: 100} Account
+  acc ..deposit {amount: 50} ..withdraw {amount: 30}
+  {value: acc.balance} toStr printLine
+  return
