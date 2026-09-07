@@ -19,6 +19,7 @@ import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+import record_shape  # what a combinator PRODUCES, decided once for all backends
 import decl_index
 import codegen_table  # decision-table combinatorics, shared with both backends
 import lowering                # getFieldsForType
@@ -192,85 +193,31 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
     return "__validated_" & e.callee.name & "(" & ctor & ")"
   ctor
 
-proc genDBake(ctx: var DCodegenCtx, e: Expr): string =
-  ## expr bake {slot: value, ...} — rebuild the record with slots overridden
-  ## (adding fields grows the shape). Port of genOdinBake.
-  if e.combRecv.kind != exkVar: return ""
-  let recv = ctx.genDExpr(e.combRecv)
-  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.combRecv))
-  if recvFields.len == 0: return ""
-  var declFields: seq[FieldDef]
-  for f in getFieldsForType(ctx.module, semLayer.typeFor(e.combRecv)):
-    declFields.add(f)
+# The four record combinators share one emitter; what each PRODUCES is
+# decided in record_shape.nim. D's part is only its own syntax: a struct
+# literal takes `name: value`, and a structural shape lands on a hoisted
+# struct rather than an anonymous tuple.
+#
+# ponytail: exkVar receivers only, matching the Odin backend — a non-var
+# receiver declines and the call proceeds as a plain one.
+proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
+  if s.ctor == ckPassThrough: return ""
+  for r in s.receivers:
+    if r.kind != exkVar or semLayer.typeFor(r) == nil: return ""
   var parts: seq[string]
-  for fname in recvFields:
-    var overridden = ""
-    for (name, valExpr) in e.combArg.fields.items:
-      if name == fname: overridden = ctx.genDExpr(valExpr)
-    parts.add(fname & ": " & (if overridden != "": overridden
-                              else: recv & "." & fname))
-  for (name, valExpr) in e.combArg.fields.items:
-    if name notin recvFields:
-      parts.add(name & ": " & ctx.genDExpr(valExpr))
-      var ft = inferLitType(valExpr)
-      if ft == nil: ft = Type(kind: tkNamed, name: UnknownName, span: e.span)
-      declFields.add(FieldDef(name: name, typ: ft, span: e.span))
-  if parts.len == 0: return recv
-  ctx.recStructNameD(declFields) & "(" & parts.join(", ") & ")"
-
-proc genDWith(ctx: var DCodegenCtx, e: Expr): string =
-  ## expr with {field: value, ...} — the copy-modify-return shortcut. Unlike
-  ## bake, the type is PRESERVED (TK-TY21 refuses a name the record has not
-  ## got), so a named record rebuilds through its own struct name.
-  if e.combRecv.kind != exkVar: return ""
-  let recvT = semLayer.typeFor(e.combRecv)
-  let recvFields = recordFieldNames(ctx.module, recvT)
-  if recvFields.len == 0: return ""
-  let recv = ctx.genDExpr(e.combRecv)
-  var parts: seq[string]
-  for fname in recvFields:
-    var overridden = ""
-    for (name, valExpr) in e.combArg.fields.items:
-      if name == fname: overridden = ctx.genDExpr(valExpr)
-    parts.add(fname & ": " & (if overridden != "": overridden
-                              else: recv & "." & fname))
-  if recvT.kind != tkNamed or not ctx.idx.isRecordTypeIdx(recvT.name):
-    return ctx.recStructNameD(getFieldsForType(ctx.module, recvT)) &
-           "(" & parts.join(", ") & ")"
-  let ctor = recvT.name & "(" & parts.join(", ") & ")"
-  if ctx.idx.hasInvariantsIdx(recvT.name):
-    return "__validated_" & recvT.name & "(" & ctor & ")"
+  for f in s.fields:
+    let value = case f.src
+                of vsExpr: ctx.genDExpr(f.value)
+                of vsProject: ctx.genDExpr(f.fromExpr) & "." & f.fromField
+    parts.add(f.name & ": " & value)
+  if parts.len == 0: return ""
+  if s.ctor == ckStructural:
+    return ctx.recStructNameD(s.declFields) & "(" & parts.join(", ") & ")"
+  let ctor = s.typeName & "(" & parts.join(", ") & ")"
+  # a rebuilt record is a production site too: its invariants must hold
+  if s.invariantsOwed: return "__validated_" & s.typeName & "(" & ctor & ")"
   ctor
 
-proc genDAlias(ctx: var DCodegenCtx, e: Expr): string =
-  ## expr alias(old: new, ...) — rebuild as the renamed record shape.
-  if e.combRecv.kind != exkVar or semLayer.typeFor(e.combRecv) == nil: return ""
-  let recvFields = getFieldsForType(ctx.module, semLayer.typeFor(e.combRecv))
-  if recvFields.len == 0: return ""
-  var newFields: seq[FieldDef]
-  var vals: seq[string]
-  let recv = ctx.genDExpr(e.combRecv)
-  for (oldName, newExpr) in e.combArg.fields.items:
-    var ft: Type = nil
-    for rf in recvFields:
-      if rf.name == oldName: ft = rf.typ
-    if ft == nil or newExpr == nil or newExpr.kind != exkVar: return ""
-    newFields.add(FieldDef(name: newExpr.name, typ: ft, span: e.span))
-    vals.add(newExpr.name & ": " & recv & "." & oldName)
-  ctx.recStructNameD(newFields) & "(" & vals.join(", ") & ")"
-
-proc genDMerge(ctx: var DCodegenCtx, e: Expr): string =
-  ## {a, b} merge — flatten the records into one union shape.
-  var newFields: seq[FieldDef]
-  var vals: seq[string]
-  for (mname, mexpr) in e.combRecv.fields.items:
-    if mexpr.kind != exkVar or semLayer.typeFor(mexpr) == nil: return ""
-    let recv = ctx.genDExpr(mexpr)
-    for f in getFieldsForType(ctx.module, semLayer.typeFor(mexpr)):
-      newFields.add(f)
-      vals.add(f.name & ": " & recv & "." & f.name)
-  if newFields.len == 0: return ""
-  ctx.recStructNameD(newFields) & "(" & vals.join(", ") & ")"
 
 proc isRecordConstructionIdx(ctx: DCodegenCtx, e: Expr): bool =
   ## isRecordConstruction, answered through the index rather than a scan.
@@ -310,13 +257,7 @@ proc asParenBuiltinD(ctx: var DCodegenCtx, e: Expr, calleeStr: string): string =
   ""
 
 proc genDCombinator(ctx: var DCodegenCtx, e: Expr): string =
-  ## Each combinator REWRITES its operands into a struct literal rather than
-  ## emitting a call. Exhaustive: a new CombKind stops the build here.
-  case e.comb
-  of ckWith: ctx.genDWith(e)
-  of ckBake: ctx.genDBake(e)
-  of ckAlias: ctx.genDAlias(e)
-  of ckMerge: ctx.genDMerge(e)
+  ctx.renderShape(shapeOf(ctx.module, e))
 
 proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =

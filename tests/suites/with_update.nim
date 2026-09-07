@@ -146,4 +146,27 @@ fn main() -> int:
   t.hostBuilds "...and every backend can actually emit it"
   t.runs "...and it runs", 0
 
+  # All four combinators through the one shape module, on all three backends.
+  # Twelve near-identical procs became three adapters over record_shape.nim;
+  # this is the assertion that says the adapters agree.
+  t.src """
+type Point:
+  x: int
+  y: int
+
+type Label:
+  tag: str
+
+fn main() -> int:
+  let p = {x: 1, y: 2} Point
+  let l = {tag: "here"} Label
+  let moved = p with {y: 9}
+  let named = p alias(x: across, y: down)
+  let both = {a: p, b: l} merge
+  let fixed = p bake {x: 5}
+  return moved.y + named.across + both.x + fixed.x - 16
+"""
+  t.okCheck "with / alias / merge / bake in one program"
+  t.hostBuilds "...and all three backends emit code their host compiler takes"
+
   t.finish()

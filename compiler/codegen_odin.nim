@@ -15,6 +15,7 @@ import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_table  # decision-table combinatorics, shared with the Nim backend
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
 export odinLibSpec, odinErrCode
@@ -151,90 +152,32 @@ proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
 # expr bake {slot: value, ...} — rebuild the record with slots overridden.
 # Ported from codegen.nim; neither Beef nor this backend had an arm for it,
 # so `bake` used to fall through to a plain call and emit nonsense.
-proc genOdinBake(ctx: var OdinCodegenCtx, e: Expr): string =
-  if e.combRecv.kind != exkVar: return ""  # ponytail: no expr-position temp
-  let recv = ctx.genOdinExpr(e.combRecv)
-  let recvFields = recordFieldNames(ctx.module, semLayer.typeFor(e.combRecv))
-  if recvFields.len == 0: return ""
-  var declFields: seq[FieldDef]
-  for f in getFieldsForType(ctx.module, semLayer.typeFor(e.combRecv)):
-    declFields.add(f)
+# The four record combinators share one emitter; what each PRODUCES is
+# decided in record_shape.nim. Odin's part is only its own syntax: a struct
+# literal takes `name = value`, and a structural shape lands on a hoisted
+# TRec struct rather than an anonymous tuple.
+#
+# ponytail: exkVar receivers only. A non-var receiver would need a temp and
+# this backend has no expression-position `let`, so it declines and the call
+# proceeds as a plain one — exactly what the four hand-written procs did.
+proc renderShape(ctx: var OdinCodegenCtx, s: RecordShape): string =
+  if s.ctor == ckPassThrough: return ""
+  for r in s.receivers:
+    if r.kind != exkVar or semLayer.typeFor(r) == nil: return ""
   var parts: seq[string]
-  for fname in recvFields:
-    var overridden = ""
-    for (name, valExpr) in e.combArg.fields.items:
-      if name == fname: overridden = ctx.genOdinExpr(valExpr)
-    parts.add(fname & " = " & (if overridden != "": overridden
-                               else: recv & "." & fname))
-  # a name the receiver doesn't have ADDS a field, so the shape grows
-  for (name, valExpr) in e.combArg.fields.items:
-    if name notin recvFields:
-      parts.add(name & " = " & ctx.genOdinExpr(valExpr))
-      var ft = inferLitType(valExpr)
-      if ft == nil: ft = Type(kind: tkNamed, name: UnknownName, span: e.span)
-      declFields.add(FieldDef(name: name, typ: ft, span: e.span))
-  if parts.len == 0: return recv
-  return ctx.recStructName(declFields) & "{" & parts.join(", ") & "}"
-
-# expr with {field: value, ...} — the copy-modify-return shortcut. Unlike
-# bake, the type is PRESERVED (TK-TY21 refuses a name the record has not
-# got), so a named record rebuilds through its own struct name rather than a
-# synthesized TRec shape.
-proc genOdinWith(ctx: var OdinCodegenCtx, e: Expr): string =
-  if e.combRecv.kind != exkVar: return ""  # ponytail: no expr-position temp
-  let recvT = semLayer.typeFor(e.combRecv)
-  let recvFields = recordFieldNames(ctx.module, recvT)
-  if recvFields.len == 0: return ""
-  let recv = ctx.genOdinExpr(e.combRecv)
-  var parts: seq[string]
-  for fname in recvFields:
-    var overridden = ""
-    for (name, valExpr) in e.combArg.fields.items:
-      if name == fname: overridden = ctx.genOdinExpr(valExpr)
-    parts.add(fname & " = " & (if overridden != "": overridden
-                               else: recv & "." & fname))
-  if recvT.kind != tkNamed or not isRecordType(ctx.module, recvT.name):
-    # a structural shape (no declared name) still lands on its TRec struct
-    return ctx.recStructName(getFieldsForType(ctx.module, recvT)) &
-           "{" & parts.join(", ") & "}"
-  let ctor = recvT.name & "{" & parts.join(", ") & "}"
-  # an updated record is a production site too: its invariants must hold
-  if hasInvariants(ctx.module, recvT.name):
-    return "__validated_" & recvT.name & "(" & ctor & ")"
+  for f in s.fields:
+    let value = case f.src
+                of vsExpr: ctx.genOdinExpr(f.value)
+                of vsProject: ctx.genOdinExpr(f.fromExpr) & "." & f.fromField
+    parts.add(f.name & " = " & value)
+  if parts.len == 0: return ""
+  if s.ctor == ckStructural:
+    return ctx.recStructName(s.declFields) & "{" & parts.join(", ") & "}"
+  let ctor = s.typeName & "{" & parts.join(", ") & "}"
+  # a rebuilt record is a production site too: its invariants must hold
+  if s.invariantsOwed: return "__validated_" & s.typeName & "(" & ctor & ")"
   ctor
 
-# expr alias(old: new, ...) — rebuild as the renamed TRec shape.
-# ponytail: exkVar receivers only (no expr-position temp);
-# falls back to pass-through otherwise.
-proc genOdinAlias(ctx: var OdinCodegenCtx, e: Expr): string =
-  if e.combRecv.kind != exkVar or semLayer.typeFor(e.combRecv) == nil: return ""
-  let recvFields = getFieldsForType(ctx.module, semLayer.typeFor(e.combRecv))
-  if recvFields.len == 0: return ""
-  var newFields: seq[FieldDef]
-  var vals: seq[string]
-  let recv = ctx.genOdinExpr(e.combRecv)
-  for (oldName, newExpr) in e.combArg.fields.items:
-    var ft: Type = nil
-    for rf in recvFields:
-      if rf.name == oldName: ft = rf.typ
-    if ft == nil or newExpr == nil or newExpr.kind != exkVar: return ""
-    newFields.add(FieldDef(name: newExpr.name, typ: ft, span: e.span))
-    vals.add(newExpr.name & " = " & recv & "." & oldName)
-  let recName = ctx.recStructName(newFields)
-  return recName & "{" & vals.join(", ") & "}"
-
-# {a, b} merge — flatten into the union TRec shape (mirrors codegen.nim)
-proc genOdinMerge(ctx: var OdinCodegenCtx, e: Expr): string =
-  var newFields: seq[FieldDef]
-  var vals: seq[string]
-  for (mname, mexpr) in e.combRecv.fields.items:
-    if mexpr.kind != exkVar or semLayer.typeFor(mexpr) == nil: return ""
-    let recv = ctx.genOdinExpr(mexpr)
-    for f in getFieldsForType(ctx.module, semLayer.typeFor(mexpr)):
-      newFields.add(f)
-      vals.add(f.name & " = " & recv & "." & f.name)
-  if newFields.len == 0: return ""
-  return ctx.recStructName(newFields) & "{" & vals.join(", ") & "}"
 
 proc asSumVariantCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `Type.Variant {payload}` — a kind-tagged construction, not a call.
@@ -365,13 +308,7 @@ proc asParenBuiltinOdin(ctx: var OdinCodegenCtx, e: Expr,
   ""
 
 proc genOdinCombinator(ctx: var OdinCodegenCtx, e: Expr): string =
-  ## Each combinator REWRITES its operands into a struct literal rather than
-  ## emitting a call. Exhaustive: a new CombKind stops the build here.
-  case e.comb
-  of ckWith: ctx.genOdinWith(e)
-  of ckBake: ctx.genOdinBake(e)
-  of ckAlias: ctx.genOdinAlias(e)
-  of ckMerge: ctx.genOdinMerge(e)
+  ctx.renderShape(shapeOf(ctx.module, e))
 
 proc asCombinatorCall(ctx: var OdinCodegenCtx, e: Expr,
                       calleeStr: string): string =
