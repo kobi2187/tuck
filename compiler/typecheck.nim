@@ -188,6 +188,56 @@ proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type
 proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                    bindings: var Table[string, Type])  # asSlotInvoke calls it
 
+# === THE EXPECTED-TYPE CHANNEL =============================================
+#
+# `expectedType` is what the context wants the expression being synthesized to
+# be, and `fieldTypeHints` is the same thing per field name for a payload or
+# record literal. Both are AMBIENT: set before a recursive synthesize, read an
+# arbitrary depth down, restored after.
+#
+# They were set and restored by hand at six sites, three of which were the
+# same four lines character for character. That is the shape where forgetting
+# a restore is silent — the channel is not wrong, it is STALE, so a later
+# sibling synthesizes against a type meant for an earlier one and the result
+# is a type, not a crash.
+#
+# So the save/restore is a template that cannot be half-written, and the
+# per-field idiom is one named proc. Not a parameter on `synthesize`: that
+# would put an argument on ~200 recursive call sites, almost all of them
+# passing nil, for the same guarantee these thirty lines give.
+
+template withExpected(tc: var TypeChecker, want: Type, body: untyped) =
+  ## Run `body` with the expected-type channel set to `want`, restoring it
+  ## afterwards whatever `body` does — including raising, which is how every
+  ## diagnostic leaves.
+  let savedExpected = tc.expectedType
+  tc.expectedType = want
+  try: body
+  finally: tc.expectedType = savedExpected
+
+template withFieldHints(tc: var TypeChecker, hints: Table[string, Type],
+                        body: untyped) =
+  ## The same, for the per-field-name channel.
+  let savedHints = tc.fieldTypeHints
+  tc.fieldTypeHints = hints
+  try: body
+  finally: tc.fieldTypeHints = savedHints
+
+proc synthFieldValue(tc: var TypeChecker, f: FieldInit): Type =
+  ## One field of a payload or record literal, synthesized under the DECLARED
+  ## type of the field it is going into when there is one — which is what lets
+  ## a bare sum-variant name, or an empty list, resolve against the shape it is
+  ## heading for rather than on its own.
+  ##
+  ## Fields are synthesized TWICE for a construction (asNamedCallee walks them,
+  ## then synthStruct walks them again), so both walks have to apply the hint
+  ## or the second one undoes the first. Having one proc is what keeps them
+  ## agreeing.
+  let want = if tc.fieldTypeHints.hasKey(f.name): tc.fieldTypeHints[f.name]
+             else: tc.expectedType
+  tc.withExpected(want):
+    result = tc.synthesize(f.value)
+
 # === FIELD ACCESS: WHAT `a.b` MEANS ========================================
 # The ordered dispatch documented at the top of this file — seven different
 # things share one spelling, and the ORDER is the language rule. Each `as*`
@@ -1104,10 +1154,8 @@ proc synthArm(tc: var TypeChecker, arm: MatchArm, subjT: Type, trackedVar,
   ## One arm, typed in its own scope with the subject narrowed.
   tc.pushScope()
   tc.bindArmPattern(arm, subjT, trackedVar, trackedType)
-  let savedSubjectType = tc.expectedType
-  tc.expectedType = subjT
-  result = tc.synthesize(arm.body)
-  tc.expectedType = savedSubjectType
+  tc.withExpected(subjT):
+    result = tc.synthesize(arm.body)
   tc.popScope()
 
 proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
@@ -1347,10 +1395,9 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
 
 proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
   if e == nil or expected == nil: return
-  let savedExpected = tc.expectedType
-  tc.expectedType = expected
-  let actual = tc.synthesize(e)
-  tc.expectedType = savedExpected
+  var actual: Type
+  tc.withExpected(expected):
+    actual = tc.synthesize(e)
   if not tc.compatible(actual, expected):
     fail("Type Error: " & what & " expects " & typeName(expected) &
          " but got " & typeName(actual), e.span)
@@ -1531,15 +1578,11 @@ proc payloadFields(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
   ## payload, which is let through unchecked.
   if arg.kind == exkStruct:
     shapeKnown = true
-    let savedHints = tc.fieldTypeHints
-    tc.fieldTypeHints = initTable[string, Type]()
-    for p in sig.params: tc.fieldTypeHints[p.name] = p.typ
-    for f in arg.fields:
-      let savedExpected = tc.expectedType
-      if tc.fieldTypeHints.hasKey(f.name): tc.expectedType = tc.fieldTypeHints[f.name]
-      result.add((f.name, tc.synthesize(f.value), f.value.span))
-      tc.expectedType = savedExpected
-    tc.fieldTypeHints = savedHints
+    var hints = initTable[string, Type]()
+    for p in sig.params: hints[p.name] = p.typ
+    tc.withFieldHints(hints):
+      for f in arg.fields:
+        result.add((f.name, tc.synthFieldValue(f), f.value.span))
     return
   let t = tc.synthesize(arg)
   if isUnknown(t): return
@@ -1979,10 +2022,7 @@ proc suppliedFieldTypes(tc: var TypeChecker, e: Expr): Table[string, Type] =
   ## the same hint set here too or it resolves once and fails the next.
   if e.args.len == 1 and e.args[0] != nil and e.args[0].kind == exkStruct:
     for f in e.args[0].fields:
-      let savedExpected = tc.expectedType
-      if tc.fieldTypeHints.hasKey(f.name): tc.expectedType = tc.fieldTypeHints[f.name]
-      result[f.name] = tc.synthesize(f.value)
-      tc.expectedType = savedExpected
+      result[f.name] = tc.synthFieldValue(f)
 
 proc constructedField(d: FieldDef, supplied: Table[string, Type],
                       sp: Span, holes: var bool): FieldDef =
@@ -2081,16 +2121,16 @@ proc asNamedCallee(tc: var TypeChecker, e: Expr, calleeName: string): Type =
     # typeDecls: `resolve` unwraps anything found there to its body, and an
     # object is NOMINAL. So the gate asks both tables while the result stays
     # the name either way.
-    let savedHints = tc.fieldTypeHints
-    tc.fieldTypeHints = initTable[string, Type]()
-    for fd in tc.declaredFieldsOf(e, calleeName): tc.fieldTypeHints[fd.name] = fd.typ
-    for a in e.args: discard tc.synthesize(a)
+    var hints = initTable[string, Type]()
+    for fd in tc.declaredFieldsOf(e, calleeName): hints[fd.name] = fd.typ
     # constructedType -> suppliedFieldTypes re-synthesizes the same field
     # values a SECOND time (to read back each field's type without the
-    # <uninit> stamp) — the hints must still be live for that pass too, or
-    # a bare inline-sum-variant field value resolves once and fails the next.
-    result = tc.constructedType(e, calleeName)
-    tc.fieldTypeHints = savedHints
+    # <uninit> stamp), so BOTH passes sit inside the hints — a bare
+    # inline-sum-variant field value resolves once and fails the next
+    # otherwise.
+    tc.withFieldHints(hints):
+      for a in e.args: discard tc.synthesize(a)
+      result = tc.constructedType(e, calleeName)
     return result
   if tc.fnSigs.hasKey(calleeName):
     return tc.asDeclaredCall(e, calleeName)
@@ -2251,10 +2291,8 @@ proc synthStruct(tc: var TypeChecker, e: Expr): Type =
   var fs: seq[FieldDef]
   for f in e.fields:
     tc.checkFieldValue(f.name, f.value)
-    let savedExpected = tc.expectedType
-    if tc.fieldTypeHints.hasKey(f.name): tc.expectedType = tc.fieldTypeHints[f.name]
-    fs.add(FieldDef(name: f.name, typ: tc.synthesize(f.value), span: f.value.span))
-    tc.expectedType = savedExpected
+    fs.add(FieldDef(name: f.name, typ: tc.synthFieldValue(f),
+                    span: f.value.span))
   Type(span: e.span, kind: tkRecord, fields: fs)
 
 proc synthList(tc: var TypeChecker, e: Expr): Type =
@@ -2541,10 +2579,8 @@ proc synthAssignVal(tc: var TypeChecker, e: Expr, targetT: Type): Type =
                 tc.transType(targetT) != ""
   let prevCtx = tc.transitionCtx
   if tracked: tc.transitionCtx = true
-  let savedExpected = tc.expectedType
-  tc.expectedType = targetT
-  result = tc.synthesize(e.assignVal)
-  tc.expectedType = savedExpected
+  tc.withExpected(targetT):
+    result = tc.synthesize(e.assignVal)
   tc.transitionCtx = prevCtx
 
 proc checkTransition(tc: var TypeChecker, e: Expr, targetT: Type) =
