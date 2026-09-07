@@ -10,6 +10,7 @@
 # CONST PURITY: a `const` initialiser must be computable without running the
 # program — no io, no calls that could. Small recursive walk, no coupling to
 # synthesis.
+import resolution
 import ast, tables, sets, strutils
 import ast_query, lowering
 import typecheck_state
@@ -204,7 +205,7 @@ proc failIfDuplicateTypeMembers*(m: Module, d: Decl) =
   if d.typeBody.kind in {tkUnion, tkRename}:
     # `type C = A + B`, and the rename form that resolves a collision —
     # getFieldsForType flattens both, applying renames on the way
-    failIfComposedCollision(d.name, getFieldsForType(m, d.typeBody), d.span)
+    failIfComposedCollision(d.name, getFieldsForType(semLayer, m, d.typeBody), d.span)
   elif d.typeBody.kind == tkRecord:
     failIfDuplicateMember("field", d.name, fieldNames(d.typeBody.fields))
   elif d.typeBody.kind == tkSum:

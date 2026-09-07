@@ -105,8 +105,8 @@ proc genDStructLit(ctx: var DCodegenCtx, e: Expr): string =
   ## A struct literal outside call/return payload positions: land it on the
   ## checker-stamped record shape, or hoist one inferred from the literal.
   var declFields: seq[FieldDef]
-  if semLayer.typeFor(e) != nil:
-    declFields = getFieldsForType(ctx.module, semLayer.typeFor(e))
+  if ctx.res.typeFor(e) != nil:
+    declFields = getFieldsForType(ctx.res, ctx.module, ctx.res.typeFor(e))
   var allKnown = declFields.len > 0
   for f in declFields:
     if hasUnknownType(f.typ): allKnown = false
@@ -129,7 +129,7 @@ proc expectedParamNamesD(ctx: var DCodegenCtx, e: Expr,
      e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
     return lookupFnParams(ctx.realModules[e.callee.modulePath[0]],
                           e.callee.qualName)
-  if semLayer.callParamsFor(e).len > 0: return semLayer.callParamsFor(e)
+  if ctx.res.callParamsFor(e).len > 0: return ctx.res.callParamsFor(e)
   lookupFnParams(ctx.module, calleeStr)
 
 proc payloadFieldArgD(ctx: var DCodegenCtx, payload: Expr,
@@ -143,13 +143,13 @@ proc payloadFieldArgD(ctx: var DCodegenCtx, payload: Expr,
 proc genDPayloadArgs(ctx: var DCodegenCtx, e: Expr,
                      calleeStr: string): seq[string] =
   ## A payload's fields, ordered to match the callee's params. The checker
-  ## already decided which field feeds each param (semLayer.argFieldsFor);
+  ## already decided which field feeds each param (ctx.res.argFieldsFor);
   ## replay that decision, never re-derive it.
   let expected = ctx.expectedParamNamesD(e, calleeStr)
   if expected.len == 0:
     for f in e.args[0].fields: result.add(ctx.genDExpr(f.value))
     return
-  let resolved = semLayer.argFieldsFor(e)
+  let resolved = ctx.res.argFieldsFor(e)
   for i, paramName in expected:
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
                     else: paramName
@@ -167,12 +167,12 @@ proc explodeRecordArgD(ctx: var DCodegenCtx, e: Expr,
   ## fn's params by field, replaying the checker's mapping. Mirror of the
   ## Odin backend's explodeRecordArg.
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  let params = if semLayer.callParamsFor(e).len > 0: semLayer.callParamsFor(e)
+  let params = if ctx.res.callParamsFor(e).len > 0: ctx.res.callParamsFor(e)
                else: lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
-  let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
+  let fields = recordFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.args[0]))
   if fields.len == 0: return ""
-  let resolved = semLayer.argFieldsFor(e)
+  let resolved = ctx.res.argFieldsFor(e)
   var parts: seq[string]
   for i, paramName in params:
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
@@ -203,7 +203,7 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
 proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
   if s.ctor == ckPassThrough: return ""
   for r in s.receivers:
-    if r.kind != exkVar or semLayer.typeFor(r) == nil: return ""
+    if r.kind != exkVar or ctx.res.typeFor(r) == nil: return ""
   var parts: seq[string]
   for f in s.fields:
     let value = case f.src
@@ -257,7 +257,7 @@ proc asParenBuiltinD(ctx: var DCodegenCtx, e: Expr, calleeStr: string): string =
   ""
 
 proc genDCombinator(ctx: var DCodegenCtx, e: Expr): string =
-  ctx.renderShape(shapeOf(ctx.module, e))
+  ctx.renderShape(shapeOf(ctx.module, ctx.res, e))
 
 proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
@@ -283,13 +283,13 @@ proc memberProcNameD*(objName, memberName: string): string =
   ## backends' output diffable and is what interface dispatch keys on.
   objName & "_" & memberName
 
-proc memberRecvType(e: Expr): Type =
+proc memberRecvType(res: Resolution, e: Expr): Type =
   ## The receiver's type: args[0] itself (the checker's rewrite), or the
   ## `self` field of a payload literal (`{self: c} bump`).
-  result = semLayer.typeFor(e.args[0])
+  result = res.typeFor(e.args[0])
   if e.args[0].kind == exkStruct:
     for f in e.args[0].fields:
-      if f.name == "self": result = semLayer.typeFor(f.value)
+      if f.name == "self": result = res.typeFor(f.value)
 
 proc ownerDeclares(ctx: DCodegenCtx, owner, fnName: string): bool =
   for d in ctx.module.decls:
@@ -303,7 +303,7 @@ proc memberCalleeNameD(ctx: DCodegenCtx, e: Expr): string =
   ## A member call: derive the qualified name from the receiver's type —
   ## port of the Odin backend's memberCalleeName.
   if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
-  let owner = memberOwner(ctx.module, memberRecvType(e))
+  let owner = memberOwner(ctx.module, memberRecvType(ctx.res, e))
   if owner == "" or not ctx.ownerDeclares(owner, e.callee.name): return ""
   memberProcNameD(owner, e.callee.name)
 
@@ -431,7 +431,7 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
   if ctx.retWrapped: return ctx.genDWrappedReturn(e.returnVal)
   let v = ctx.genDExpr(e.returnVal)
   # production site: handing back a value of an invariant-carrying type
-  let rt = semLayer.typeFor(e.returnVal)
+  let rt = ctx.res.typeFor(e.returnVal)
   if rt != nil and rt.kind == tkNamed and ctx.idx.hasInvariantsIdx(rt.name):
     return "return __validated_" & rt.name & "(" & v & ")"
   "return " & v
@@ -483,7 +483,7 @@ proc isLenOnSized(ctx: var DCodegenCtx, e: Expr): bool =
   ## `.length`. (The Nim backend emits `.len` untranslated because Nim
   ## happens to share Tuck's spelling — a Nim-ism riding through.)
   if e.fieldName != "len" or e.receiver == nil: return false
-  let rt = semLayer.typeFor(e.receiver)
+  let rt = ctx.res.typeFor(e.receiver)
   if rt == nil: return false
   if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
   seqElem(rt) != nil
@@ -543,7 +543,7 @@ proc dPayloadSumField(ctx: var DCodegenCtx, e: Expr): string =
   ## Two shapes: reading a variant's field (which lives in the union member
   ## named after that variant), and a bare `Type.Variant` construction with
   ## no payload of its own.
-  let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver))
+  let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver))
   if sumName != "":
     # Inside a match arm that narrowed this subject to one variant, that
     # variant is the ONLY one this access can mean — never re-derive from
@@ -588,7 +588,7 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   ## arrive with their milestones.)
   # A call through an interface value: which implementations are POSSIBLE
   # was fixed at the wrap site; which one runs is the tag, read here.
-  let ic = semLayer.ifaceCallOf(e)
+  let ic = ctx.res.ifaceCallOf(e)
   if ic.member != "":
     let disp = ctx.genDIfaceDispatch(e, ic)
     if disp != "": return disp
@@ -604,10 +604,10 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
     # Unsigned would poison later arithmetic (n - bigger wraps, comparisons
     # promote) — hidden Nim-ism #3, Nim's .len is already signed.
     return "cast(long) " & ctx.genDExpr(e.receiver) & ".length"
-  if semLayer.hasCall(e):
+  if ctx.res.hasCall(e):
     # A `..` chain feeding this call was already hoisted into a temp by
     # lowering.hoistChainCalls — the receiver here can never be exkChain.
-    return ctx.genDExpr(semLayer.call(e))
+    return ctx.genDExpr(ctx.res.call(e))
   ctx.genDFieldRead(e)
 
 proc genDInputPayload(ctx: var DCodegenCtx): string =
@@ -644,14 +644,14 @@ proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool =
   ## exkVar or exkQualified depending on how it was written, but its type is
   ## a function type either way (verified — `{add: :plus}` reaches codegen
   ## as exkQualified).
-  if e == nil or semLayer.hasCall(e): return false
-  let t = semLayer.typeFor(e)
+  if e == nil or ctx.res.hasCall(e): return false
+  let t = ctx.res.typeFor(e)
   t != nil and t.kind == tkFunc
 
 proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a pending hole, the whole incoming
   ## payload, an enum tag, or a variable.
-  if semLayer.hasCall(e): return ctx.genDExpr(semLayer.call(e))
+  if ctx.res.hasCall(e): return ctx.genDExpr(ctx.res.call(e))
   if e.name == "...": return ""   # pending hole: compiles, does nothing
   if e.name == "input" and ctx.currentParams.len > 0:
     return ctx.genDInputPayload()
@@ -672,8 +672,8 @@ proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
   ## reads the mark and prints. That split is the point of the seam: the
   ## reasoning is inspectable and testable as a tree pass, and the emitter
   ## stays a printer.
-  if needsDup(e): return "(" & valStr & ").dup"
-  let fields = recordDupFields(e)
+  if needsDup(ctx.res, e): return "(" & valStr & ").dup"
+  let fields = recordDupFields(ctx.res, e)
   if fields.len == 0: return valStr
   # A D struct has no `.dup` of its own (only a slice does), so the record
   # is rebuilt: take the value once into a temp (never re-evaluate `valStr`
@@ -706,8 +706,8 @@ proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   ## The type is read from the VALUE first: the checker stamps the call, and
   ## a `let` target often carries no stamp of its own (verified — the target
   ## read back nil for `let r = {..} fs::readFile`).
-  var t = semLayer.typeFor(val)
-  if t == nil: t = semLayer.typeFor(target)
+  var t = ctx.res.typeFor(val)
+  if t == nil: t = ctx.res.typeFor(target)
   # `.len` is `int` by definition of the language, but the checker types it
   # <unknown> (verified by instrumenting: a STAMPED sentinel, not a missing
   # stamp). The Nim backend never noticed because it emits `var n = s.len`
@@ -754,7 +754,7 @@ proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   var res = "auto " & slot & " = rt.newAsyncResult!(" & ret & ")();\n"
   res.add(ctx.indD & "rt.spawnResult(" & slot & ", { return " & rawCall &
           "; });\n")
-  let declT = ctx.dDeclType(semLayer.typeFor(e.target))
+  let declT = ctx.dDeclType(ctx.res.typeFor(e.target))
   let targetDecl =
     if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
       ctx.definedVars.incl(e.target.name)
@@ -846,7 +846,7 @@ proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
   ## runs first: it is the hook for diagnostics, and the program stops after.
   ctx.tmpCounter.inc
   let tn = "tuckDrop" & $ctx.tmpCounter
-  let site = semLayer.shortcut(s)
+  let site = ctx.res.shortcut(s)
   let handler = mangleName("unhandled")
   var onErr = handler & "(" & tn & ".err, \"" & site & "\");"
   if ctx.errPolicy == "exit":
@@ -858,7 +858,7 @@ proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
 proc genDStmt*(ctx: var DCodegenCtx, s: Expr): string =
   ## One statement inside a block: indent + expression + `;`, except the
   ## constructs that lay themselves out.
-  if s != nil and semLayer.shortcut(s) != "":
+  if s != nil and ctx.res.shortcut(s) != "":
     let code = ctx.genDExpr(s)
     if code != "": return ctx.genDDroppedResult(s, code)
   # A match reached HERE is a statement by construction — genDStmt only
@@ -961,7 +961,7 @@ proc dMatchSubject(ctx: var DCodegenCtx, e: Expr): string =
   ## A PAYLOAD sum emits as a tagged struct, so a match dispatches on the
   ## discriminant. A payload-free sum is a plain enum and matches directly.
   let base = ctx.genDExpr(e.subject)
-  if payloadSumTypeName(ctx.module, semLayer.typeFor(e.subject)) != "":
+  if payloadSumTypeName(ctx.module, ctx.res.typeFor(e.subject)) != "":
     base & ".kind"
   else: base
 
@@ -1066,8 +1066,8 @@ proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep, into: string,
   ## when `into` is a temp the receiver has to be threaded through — else
   ## `a ..setN {5} ..setN {7}` emits two calls both reading `a` and the
   ## first result is dropped. threadReceiver is shared with the Nim backend.
-  if semLayer.stepCall(step) != nil:
-    let call = threadReceiver(semLayer.stepCall(step), base, into, baseStr)
+  if ctx.res.stepCall(step) != nil:
+    let call = threadReceiver(ctx.res.stepCall(step), base, into, baseStr)
     return ctx.indD & into & " = " & ctx.genDCall(call) & ";\n"
   let valStr = if isSingleFieldPayload(step.arg):
                  ctx.genDExpr(soleFieldValue(step.arg))
@@ -1086,7 +1086,7 @@ proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
   for step in e.steps:
     result.add(ctx.genDChainStep(step, baseStr, e.base, baseStr))
   if e.base != nil:
-    let bt = semLayer.typeFor(e.base)
+    let bt = ctx.res.typeFor(e.base)
     if bt != nil and bt.kind == tkNamed and ctx.idx.hasInvariantsIdx(bt.name):
       result.add(ctx.indD & "validate_" & bt.name & "(" & baseStr & ");\n")
 
@@ -1128,7 +1128,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   if e == nil: return ""
   # A concrete value entering an interface slot is copied into the variant
   # at THIS site — the checker marked it (spec 5.3).
-  let w = semLayer.wrapOf(e)
+  let w = ctx.res.wrapOf(e)
   if w.objName != "" and e.kind == exkVar:
     return ctx.genDInterfaceWrap(e, w)
   # A fn used as a VALUE needs `&` in D, whichever way it was written —
@@ -1148,7 +1148,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkBracket, exkBracketAssign:
     # Indexing resolved to an at()/setAt() call by the checker; a type
     # application never reaches codegen (mirrors both other backends).
-    if semLayer.hasCall(e): ctx.genDExpr(semLayer.call(e)) else: ""
+    if ctx.res.hasCall(e): ctx.genDExpr(ctx.res.call(e)) else: ""
   of exkCall: ctx.genDCall(e)
   of exkCombinator: ctx.genDCombinator(e)
   of exkChain: ctx.genDChain(e)

@@ -53,16 +53,16 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 # (`p advance`) explodes to the fn's params by field name, in param order.
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  # Prefers the checker's own resolution (semLayer.callParamsFor, set in
+  # Prefers the checker's own resolution (ctx.res.callParamsFor, set in
   # checkCallArgs) over a decl-list scan — mirrors the Nim backend's fix.
-  let params = if semLayer.callParamsFor(e).len > 0: semLayer.callParamsFor(e)
+  let params = if ctx.res.callParamsFor(e).len > 0: ctx.res.callParamsFor(e)
                else: lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
-  let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
+  let fields = recordFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.args[0]))
   if fields.len == 0: return ""
   # The checker already decided which field feeds each param (they may differ
   # in name, having been matched by type); prefer its mapping over the name.
-  let resolved = semLayer.argFieldsFor(e)
+  let resolved = ctx.res.argFieldsFor(e)
   var parts: seq[string]
   for i, paramName in params:
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
@@ -99,8 +99,8 @@ proc recCtorFromLiteral(ctx: var OdinCodegenCtx, declFields: seq[FieldDef],
 # shape hoists a named struct from the literal's own inferred field types.
 proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
   var declFields: seq[FieldDef]
-  if semLayer.typeFor(e) != nil:
-    declFields = getFieldsForType(ctx.module, semLayer.typeFor(e))
+  if ctx.res.typeFor(e) != nil:
+    declFields = getFieldsForType(ctx.res, ctx.module, ctx.res.typeFor(e))
   var allKnown = declFields.len > 0
   for f in declFields:
     if hasUnknownType(f.typ): allKnown = false
@@ -163,7 +163,7 @@ proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
 proc renderShape(ctx: var OdinCodegenCtx, s: RecordShape): string =
   if s.ctor == ckPassThrough: return ""
   for r in s.receivers:
-    if r.kind != exkVar or semLayer.typeFor(r) == nil: return ""
+    if r.kind != exkVar or ctx.res.typeFor(r) == nil: return ""
   var parts: seq[string]
   for f in s.fields:
     let value = case f.src
@@ -192,7 +192,7 @@ proc memberCalleeName(ctx: OdinCodegenCtx, e: Expr): string =
   ## (the checker's asFnByName rewrite). The DECLARATION emitted qualified, so
   ## the call has to match — derive the same name from the receiver's type.
   if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
-  let owner = memberOwner(ctx.module, semLayer.typeFor(e.args[0]))
+  let owner = memberOwner(ctx.module, ctx.res.typeFor(e.args[0]))
   if owner == "": return ""
   for d in ctx.module.decls:
     if d == nil or d.kind != dkObject or d.name != owner: continue
@@ -211,7 +211,7 @@ proc genericCtorName(ctx: var OdinCodegenCtx, e: Expr, base: string): string =
   ## correctly. Odin never merges package scopes: a package member is ALWAYS
   ## `pkg.name`.
   let qbase = ctx.importedTypeQualifier(base)
-  let t = semLayer.typeFor(e)
+  let t = ctx.res.typeFor(e)
   if t == nil or t.kind != tkApp or t.base == nil or
      t.base.kind != tkNamed or t.base.name != base: return qbase
   var gparts: seq[string]
@@ -238,7 +238,7 @@ proc expectedParamNames(ctx: var OdinCodegenCtx, e: Expr,
      e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
     return lookupFnParams(ctx.realModules[e.callee.modulePath[0]],
                           e.callee.qualName)
-  if semLayer.callParamsFor(e).len > 0: return semLayer.callParamsFor(e)
+  if ctx.res.callParamsFor(e).len > 0: return ctx.res.callParamsFor(e)
   lookupFnParams(ctx.module, calleeStr)
 
 proc payloadFieldArg(ctx: var OdinCodegenCtx, payload: Expr,
@@ -257,8 +257,8 @@ proc genPayloadArgs(ctx: var OdinCodegenCtx, e: Expr,
     for f in e.args[0].fields: result.add(ctx.genOdinExpr(f.value))
     return
   # The checker's mapping wins: a field matched by TYPE carries its own name,
-  # not the param's (see checkCallArgs / semLayer.argFieldsFor).
-  let resolved = semLayer.argFieldsFor(e)
+  # not the param's (see checkCallArgs / ctx.res.argFieldsFor).
+  let resolved = ctx.res.argFieldsFor(e)
   for i, paramName in expected:
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
                     else: paramName
@@ -308,7 +308,7 @@ proc asParenBuiltinOdin(ctx: var OdinCodegenCtx, e: Expr,
   ""
 
 proc genOdinCombinator(ctx: var OdinCodegenCtx, e: Expr): string =
-  ctx.renderShape(shapeOf(ctx.module, e))
+  ctx.renderShape(shapeOf(ctx.module, ctx.res, e))
 
 proc asCombinatorCall(ctx: var OdinCodegenCtx, e: Expr,
                       calleeStr: string): string =
@@ -498,7 +498,7 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
     ind & "{\n" & cases.join("\n") & "\n" & ind & "}"
 
 proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
-  let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.subject))
+  let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.subject))
   if sumName != "": return ctx.genPayloadUnionMatch(e, sumName)
   let ind = "  ".repeat(ctx.indent)
   let subjectStr = ctx.genOdinExpr(e.subject)
@@ -606,7 +606,7 @@ proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string =
 proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, an enum tag, or
   ## a plain variable.
-  if semLayer.hasCall(e): return ctx.genOdinExpr(semLayer.call(e))
+  if ctx.res.hasCall(e): return ctx.genOdinExpr(ctx.res.call(e))
   if e.name == "...": return ""  # pending hole: compiles, does nothing
   if e.name == "input" and ctx.currentParams.len > 0: return ctx.genInputPayload()
   if e.name == "self" and ctx.ptrSelf: return "self^"  # member fn: deref
@@ -672,14 +672,14 @@ proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
   ## reach past. "" when this is not that situation.
   if ctx.unionBind == "" or e.receiver == nil or
      e.receiver.kind != exkVar: return ""
-  if payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver)) == "":
+  if payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver)) == "":
     return ""
   ctx.unionBind & "." & e.fieldName
 
 proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: interface dispatch, an actor singleton's field, a
   ## status test, a resolved call, a sum-variant construction, or a plain read.
-  let ic = semLayer.ifaceCallOf(e)
+  let ic = ctx.res.ifaceCallOf(e)
   if ic.member != "": return ctx.genIfaceDispatch(e, ic)
   # `Counter.total` reads the actor SINGLETON's field, not a type's.
   if e.receiver != nil and e.receiver.kind == exkActorRef:
@@ -692,7 +692,7 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   # fieldName resolved to a fn call, not a field (checker-resolved). A `..`
   # chain feeding this call was already hoisted into a temp by
   # lowering.hoistChainCalls — the receiver here can never be exkChain.
-  if semLayer.hasCall(e): return ctx.genOdinCall(semLayer.call(e))
+  if ctx.res.hasCall(e): return ctx.genOdinCall(ctx.res.call(e))
   if e.receiver != nil and e.receiver.kind == exkVar:
     # bare Type.Variant of a payload sum: kind-tagged construction. The
     # payload, if any, arrives as `.fn {args}`'s dotArg — passing nil here
@@ -712,7 +712,7 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
 proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Indexing resolved to an at() call; a type application never reaches
   ## codegen, so an unresolved bracket emits nothing.
-  if semLayer.hasCall(e): ctx.genOdinExpr(semLayer.call(e)) else: ""
+  if ctx.res.hasCall(e): ctx.genOdinExpr(ctx.res.call(e)) else: ""
 
 proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Odin infers the element type from context: `{a, b}` as a compound literal.
@@ -779,7 +779,7 @@ proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): 
   ## continue/exit policy: a dropped result routes to the global handler.
   ctx.tmpCounter.inc
   let tn = "tuckDrop" & $ctx.tmpCounter
-  let site = semLayer.shortcut(s)
+  let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
                 "tuck_unhandled(" & tn & ".err, \"" & site &
                   "\"); panic(\"unhandled error\")"
@@ -871,7 +871,7 @@ proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
   ## statements, so the whole thing is multi-line and indents itself. Mirrors
   ## the Nim backend.
   if s.kind == exkField and s.receiver != nil and
-     s.receiver.kind == exkChain and semLayer.hasCall(s):
+     s.receiver.kind == exkChain and ctx.res.hasCall(s):
     return true
   if ctx.isTaskArgsBind(s): return true
   s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain}
@@ -880,7 +880,7 @@ proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
   var ownsLayout = s.kind == exkMatch and s.subject != nil
   var code = if ownsLayout: ctx.genMatchStmt(s) else: ctx.genOdinExpr(s)
-  if code != "" and semLayer.shortcut(s) != "":
+  if code != "" and ctx.res.shortcut(s) != "":
     code = ctx.genDroppedResult(s, code, ind)
     ownsLayout = true
   if code == "": return ""
@@ -978,8 +978,8 @@ proc genChainStep(ctx: var OdinCodegenCtx, step: ChainStep, baseStr,
                   ind: string): string =
   ## One step: a mutator call reassigned into the base var, a register
   ## field's setter, or a field set.
-  if semLayer.stepCall(step) != nil:
-    return ind & baseStr & " = " & ctx.genOdinCall(semLayer.stepCall(step))
+  if ctx.res.stepCall(step) != nil:
+    return ind & baseStr & " = " & ctx.genOdinCall(ctx.res.stepCall(step))
   let valStr = if isSingleFieldPayload(step.arg):
                  ctx.genOdinExpr(soleFieldValue(step.arg))
                else: ""
@@ -991,7 +991,7 @@ proc genChainRevalidate(ctx: OdinCodegenCtx, e: Expr, baseStr,
                         ind: string): string =
   ## A mutation site: an invariant-carrying var re-validates after the chain.
   if e.base == nil: return ""
-  let bt = semLayer.typeFor(e.base)
+  let bt = ctx.res.typeFor(e.base)
   if bt == nil or bt.kind != tkNamed or not hasInvariants(ctx.module, bt.name):
     return ""
   ind & "validate_" & bt.name & "(" & baseStr & ")"
@@ -1057,7 +1057,7 @@ proc genOdinSelect(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
-  let w = semLayer.wrapOf(e)
+  let w = ctx.res.wrapOf(e)
   if w.objName != "" and e.kind == exkVar:
     return ctx.genInterfaceWrap(e, w)
   case e.kind

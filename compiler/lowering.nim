@@ -33,37 +33,37 @@ import ast
 import resolution, strutils
 import ast_query
 
-proc getFieldsForType*(m: Module, t: Type): seq[FieldDef]
+proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef]
 
-proc namedTypeFields(m: Module, t: Type): seq[FieldDef] =
+proc namedTypeFields(res: Resolution, m: Module, t: Type): seq[FieldDef] =
   ## The fields behind a NAME. Follows the edge the checker recorded
   ## (resolveTypeNames) rather than matching t.name against the decl list — the
   ## name is what the user wrote, the edge is what it means, and after mangling
   ## the two differ.
-  var d = semLayer.declForType(t)
+  var d = res.declForType(t)
   if d == nil: d = m.findDecl(dkType, t.name)
   if d == nil: return @[]
   # An object keeps its fields in objFields, not typeBody, and `+ Record`
   # merges more in — composedFields answers both. Records fall through to
   # their body as before.
   if d.kind != dkType: return composedFields(m, d)
-  getFieldsForType(m, d.typeBody)
+  getFieldsForType(res, m, d.typeBody)
 
-proc renamedFields(m: Module, t: Type): seq[FieldDef] =
+proc renamedFields(res: Resolution, m: Module, t: Type): seq[FieldDef] =
   ## The underlying type's fields, with `renames` applied to their names.
-  result = getFieldsForType(m, t.underlying)
+  result = getFieldsForType(res, m, t.underlying)
   for f in result.mitems:
     for r in t.renames:
       if f.name == r[0]:
         f.name = r[1]
         break
 
-proc unionFields(m: Module, t: Type): seq[FieldDef] =
+proc unionFields(res: Resolution, m: Module, t: Type): seq[FieldDef] =
   ## Every member's fields, concatenated — a union is flattened, not tagged.
   for mem in t.members:
-    result.add(getFieldsForType(m, mem))
+    result.add(getFieldsForType(res, m, mem))
 
-proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
+proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef] =
   ## The fields of a type, whichever way it was written: an inline record has
   ## them directly, a named type needs its declaration looked up, a union or
   ## rename needs its members flattened first. Callers asking "what fields does
@@ -71,15 +71,15 @@ proc getFieldsForType*(m: Module, t: Type): seq[FieldDef] =
   if t == nil: return @[]
   case t.kind
   of tkRecord: t.fields
-  of tkNamed: namedTypeFields(m, t)
-  of tkUnion: unionFields(m, t)
-  of tkRename: renamedFields(m, t)
+  of tkNamed: namedTypeFields(res, m, t)
+  of tkUnion: unionFields(res, m, t)
+  of tkRename: renamedFields(res, m, t)
   # Named rather than `else: discard`: these kinds genuinely have no fields to
   # flatten, and saying so per kind means a new TypeKind stops compiling here
   # rather than silently answering "no fields".
   of tkTuple, tkApp, tkFunc, tkSum, tkEffect: @[]
 
-proc lowerExpr(e: Expr, m: Module)
+proc lowerExpr(res: Resolution, e: Expr, m: Module)
 
 proc flattenRegistryRaise(e: Expr) =
   ## `Registry.raise Event` — Tuck's ordinary postfix-call grammar applied
@@ -137,25 +137,25 @@ proc flattenRegistryRaise(e: Expr) =
                         eventNameNode.name)
   e.args = payloadArgs
 
-proc memberParams(e: Expr, inner: Expr, m: Module): seq[string] =
+proc memberParams(res: Resolution, e: Expr, inner: Expr, m: Module): seq[string] =
   ## The member fn's parameter names, in order.
   ##
   ## The checker does not record callParams for a MEMBER call (finding F2 in
   ## the stage-boundary audit), so fall back to the declaration. `findFn` does
   ## NOT see object members — it walks top-level, mixin and extern fns —
   ## whereas `allFns` yields exactly the set whose bodies lowering rewrites.
-  result = semLayer.callParamsFor(e)
+  result = res.callParamsFor(e)
   if result.len > 0 or inner.callee.kind != exkVar: return
   for d in m.allFns():
     if d.name == inner.callee.name:
       return d.paramNames()
 
-proc payloadArgsForMember(e: Expr, params: seq[string]): seq[Expr] =
+proc payloadArgsForMember(res: Resolution, e: Expr, params: seq[string]): seq[Expr] =
   ## The payload's fields, ordered to match the member's params and SKIPPING
   ## the receiver — the resolved inner call already supplied it, and the
   ## payload names `self` explicitly (it is an ordinary param, spec §5.1), so
   ## passing it again would duplicate the argument.
-  let resolved = semLayer.argFieldsFor(e)
+  let resolved = res.argFieldsFor(e)
   for i, paramName in params:
     if paramName == "self": continue
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
@@ -165,7 +165,7 @@ proc payloadArgsForMember(e: Expr, params: seq[string]): seq[Expr] =
         result.add(field[1])
         break
 
-proc flattenMemberCallPayload(e: Expr, m: Module) =
+proc flattenMemberCallPayload(res: Resolution, e: Expr, m: Module) =
   ## `{self: b, count: 7} b.grow` — a call whose CALLEE is a member access the
   ## checker already resolved to its own call.
   ##
@@ -179,20 +179,20 @@ proc flattenMemberCallPayload(e: Expr, m: Module) =
   ## backends "which see the receiver" — but a decision made in three places
   ## was made wrong in three places.
   if e.callee == nil or e.callee.kind != exkField: return
-  if not semLayer.hasCall(e.callee): return
-  let inner = semLayer.call(e.callee)
+  if not res.hasCall(e.callee): return
+  let inner = res.call(e.callee)
   if inner == nil or inner.callee == nil: return
   var merged: seq[Expr]
   if inner.args.len > 0: merged.add(inner.args[0])   # the receiver
-  let params = memberParams(e, inner, m)
+  let params = memberParams(res, e, inner, m)
   if params.len > 0 and e.args.len == 1 and e.args[0].kind == exkStruct:
-    merged.add(payloadArgsForMember(e, params))
+    merged.add(payloadArgsForMember(res, e, params))
   else:
     for a in e.args: merged.add(a)
   e.callee = inner.callee
   e.args = merged
 
-proc explodePayload(e: Expr) =
+proc explodePayload(res: Resolution, e: Expr) =
   ## `{a: 1, b: 2} f` -> `f(1, 2)`. One arg per declared param, in order.
   ##
   ## The checker recorded the callee's params when it resolved the call, and
@@ -212,7 +212,7 @@ proc explodePayload(e: Expr) =
   ## scan in the emitter. Filling them in at the checker is what would let
   ## the backend copies go.
   if e.callee == nil or e.callee.kind notin {exkVar, exkQualified}: return
-  let expectedParams = semLayer.callParamsFor(e)
+  let expectedParams = res.callParamsFor(e)
   if expectedParams.len == 0: return
   if e.args.len != 1 or e.args[0].kind != exkStruct: return
 
@@ -223,7 +223,7 @@ proc explodePayload(e: Expr) =
   # by name here would miss exactly those, and the unmatched-param fallback
   # below would then emit `none` in their place.
   let originalStruct = e.args[0]
-  let resolved = semLayer.argFieldsFor(e)
+  let resolved = res.argFieldsFor(e)
   var newArgs: seq[Expr]
   for i, paramName in expectedParams:
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
@@ -239,17 +239,17 @@ proc explodePayload(e: Expr) =
                        litValue: "none"))
   e.args = newArgs
 
-proc chainOnFieldCall(e: Expr): bool =
+proc chainOnFieldCall(res: Resolution, e: Expr): bool =
   ## True when `e` is a resolved `.fn` call whose RECEIVER is a `..` chain —
   ## `self ..loadEpisode {n} .startAudio`. Purely syntactic: no checker
   ## input needed beyond the call semLayer already resolved.
   e != nil and e.kind == exkField and e.receiver != nil and
-    e.receiver.kind == exkChain and semLayer.hasCall(e)
+    e.receiver.kind == exkChain and res.hasCall(e)
 
-proc rethreadCall(call: Expr, oldId: NodeId, replacement: Expr): Expr =
+proc rethreadCall(res: Resolution, call: Expr, oldId: NodeId, replacement: Expr): Expr =
   ## A copy of `call` with every argument matching `oldId` swapped for
   ## `replacement`. NEVER mutates `call` itself: `call` came from
-  ## `semLayer.call`/`stepCall`, a table SHARED across all three backends
+  ## `res.call`/`stepCall`, a table SHARED across all three backends
   ## (NodeIds survive each backend's deepCopy, so a lookup by id returns the
   ## same object to all of them). Writing through it here once corrupted the
   ## OTHER backends' output — Nim's pass ran first and rewrote a step call's
@@ -263,7 +263,7 @@ proc rethreadCall(call: Expr, oldId: NodeId, replacement: Expr): Expr =
     if args[i] != nil and args[i].id == oldId: args[i] = replacement
   Expr(span: call.span, kind: exkCall, callee: call.callee, args: args)
 
-proc hoistOneChainCall(e: Expr): seq[Expr] =
+proc hoistOneChainCall(res: Resolution, e: Expr): seq[Expr] =
   ## Rewrite one `field-on-chain` node into the statements it actually means:
   ## the chain's own steps, ending with the resolved call reading the LAST
   ## step's result instead of the chain's base.
@@ -282,7 +282,7 @@ proc hoistOneChainCall(e: Expr): seq[Expr] =
   ## This chain does not stand alone: something consumes its result, so it
   ## runs on a fresh copy.
   let chain = e.receiver
-  let call = semLayer.call(e)
+  let call = res.call(e)
   let tmp = "tuckChain" & $uint32(newNodeId())
   let tmpVar = Expr(span: chain.span, kind: exkVar, name: tmp)
   var stmts: seq[Expr]
@@ -297,9 +297,9 @@ proc hoistOneChainCall(e: Expr): seq[Expr] =
   for step in chain.steps:
     let stepAssign = Expr(span: step.span, kind: exkAssign, target: tmpVar,
                           assignVal: nil, isDecl: false, isMutable: false)
-    let sc = semLayer.stepCall(step)
+    let sc = res.stepCall(step)
     if sc != nil:
-      stepAssign.assignVal = rethreadCall(sc, chain.base.id, tmpVar)
+      stepAssign.assignVal = rethreadCall(res, sc, chain.base.id, tmpVar)
     else:
       # a plain field set — `..field {v}`, no call to thread
       let valStr = if isSingleFieldPayload(step.arg): soleFieldValue(step.arg)
@@ -308,10 +308,10 @@ proc hoistOneChainCall(e: Expr): seq[Expr] =
                                receiver: tmpVar, fieldName: step.target.name)
       stepAssign.assignVal = valStr
     stmts.add(stepAssign)
-  stmts.add(rethreadCall(call, chain.id, tmpVar))
+  stmts.add(rethreadCall(res, call, chain.id, tmpVar))
   stmts
 
-proc hoistChainCalls(e: Expr) =
+proc hoistChainCalls(res: Resolution, e: Expr) =
   ## Find every field-on-chain node reachable from `e` and replace it in its
   ## enclosing STATEMENT LIST with the temp-and-steps form. Only a block's
   ## own stmts are a statement list; everywhere else is an expression
@@ -322,16 +322,16 @@ proc hoistChainCalls(e: Expr) =
   if e.kind == exkBlock:
     var rewritten: seq[Expr]
     for s in e.stmts:
-      if chainOnFieldCall(s):
-        rewritten.add(hoistOneChainCall(s))
+      if chainOnFieldCall(res, s):
+        rewritten.add(hoistOneChainCall(res, s))
       else:
         rewritten.add(s)
     e.stmts = rewritten
-    for s in e.stmts: hoistChainCalls(s)
+    for s in e.stmts: hoistChainCalls(res, s)
     return
-  for c in e.children: hoistChainCalls(c)
+  for c in e.children: hoistChainCalls(res, c)
 
-proc lowerExpr(e: Expr, m: Module) =
+proc lowerExpr(res: Resolution, e: Expr, m: Module) =
   ## Rewrite one expression and everything under it.
   ##
   ## The traversal is `ast.children`; only two node kinds do anything beyond
@@ -342,8 +342,8 @@ proc lowerExpr(e: Expr, m: Module) =
   if e == nil: return
   case e.kind
   of exkBracket, exkBracketAssign:
-    let c = semLayer.call(e)
-    if c != nil: lowerExpr(c, m)
+    let c = res.call(e)
+    if c != nil: lowerExpr(res, c, m)
     return
   # Every other kind walks its children generically. Listed rather than
   # `else: discard` so adding an ExprKind forces a decision here.
@@ -366,11 +366,11 @@ proc lowerExpr(e: Expr, m: Module) =
   # flattened (empty parens) wrapped in a second, unflattened application.
   if e.kind == exkCall: flattenRegistryRaise(e)
 
-  for c in e.children: lowerExpr(c, m)
+  for c in e.children: lowerExpr(res, c, m)
 
   if e.kind == exkCall:
-    flattenMemberCallPayload(e, m)
-    explodePayload(e)
+    flattenMemberCallPayload(res, e, m)
+    explodePayload(res, e)
 
 # Entry point for the pass. Two phases, in this order: type bodies are
 # flattened first so the call-rewriting phase can look up a type's fields and
@@ -450,21 +450,21 @@ proc normalizeSelf(d: Decl) =
       mem.fnParams = @[Param(name: "self", typ: objType, span: mem.span)] &
                      mem.fnParams
 
-proc hoistTopLevelChainCall(body: Expr): Expr =
+proc hoistTopLevelChainCall(res: Resolution, body: Expr): Expr =
   ## A one-statement fn body (`fn f(): x .y`) has no enclosing block for
   ## hoistChainCalls to rewrite into — synthesize one when the body itself
   ## is a field-on-chain call. Every other body is returned unchanged.
-  if chainOnFieldCall(body):
-    Expr(span: body.span, kind: exkBlock, stmts: hoistOneChainCall(body))
+  if chainOnFieldCall(res, body):
+    Expr(span: body.span, kind: exkBlock, stmts: hoistOneChainCall(res, body))
   else: body
 
-proc lowerModule*(m: Module) =
+proc lowerModule*(res: Resolution, m: Module) =
   ## Rewrite a module in place into the simpler form the backends expect.
   # Phase 1: union / rename type bodies collapse to plain records
   for d in m.decls(dkType):
     if d.typeBody != nil and d.typeBody.kind in {tkUnion, tkRename}:
       d.typeBody = Type(span: d.typeBody.span, kind: tkRecord,
-                        fields: getFieldsForType(m, d.typeBody),
+                        fields: getFieldsForType(res, m, d.typeBody),
                         attrs: d.typeBody.attrs)
 
   # Composition first: a mixin fn spliced in here must still get its `self`
@@ -483,12 +483,12 @@ proc lowerModule*(m: Module) =
   # tree, which is not valid Nim. rewrite.nim's own comment recorded this gap
   # before it was fixed here.
   for fn in m.allFns():
-    lowerExpr(fn.fnBody, m)
-    fn.fnBody = hoistTopLevelChainCall(fn.fnBody)
-    hoistChainCalls(fn.fnBody)
+    lowerExpr(res, fn.fnBody, m)
+    fn.fnBody = hoistTopLevelChainCall(res, fn.fnBody)
+    hoistChainCalls(res, fn.fnBody)
   for d in m.decls(dkTask):
-    lowerExpr(d.taskBody, m)
-    d.taskBody = hoistTopLevelChainCall(d.taskBody)
-    hoistChainCalls(d.taskBody)
+    lowerExpr(res, d.taskBody, m)
+    d.taskBody = hoistTopLevelChainCall(res, d.taskBody)
+    hoistChainCalls(res, d.taskBody)
   for d in m.decls(dkExpr):
-    lowerExpr(d.expr, m)
+    lowerExpr(res, d.expr, m)

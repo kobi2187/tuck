@@ -405,7 +405,8 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
   var checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](),
                                 fieldVars: initHashSet[string](),
                                 fieldPrefix: "self.", indent: 0,
-                                module: ctx.module, realModules: ctx.realModules)
+                                module: ctx.module, realModules: ctx.realModules,
+                                res: ctx.res)
   for f in d.typeBody.fields:
     checkCtx.fieldVars.incl(f.name)
   for member in d.typeMembers:
@@ -501,7 +502,7 @@ proc newHandlerCtx*(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
                           fieldVars: initHashSet[string](),
                           fieldPrefix: "self.", indent: ctx.indent + 1,
                           module: ctx.module, realModules: ctx.realModules,
-                          errPolicy: ctx.errPolicy)
+                          errPolicy: ctx.errPolicy, res: ctx.res)
   for f in d.actorFields:
     result.fieldVars.incl(f.name)
 

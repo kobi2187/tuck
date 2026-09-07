@@ -139,7 +139,7 @@ proc mangleRefName(e: Expr, names: HashSet[string]) =
   ## declaration, renamed to match that declaration's own mangled name.
   if e.refName in names: e.refName = mangleName(e.refName)
 
-proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string],
+proc mangleExpr(res: Resolution, e: Expr, names: HashSet[string], locals: var HashSet[string],
                 fields: HashSet[string] = initHashSet[string]())
 
 proc bindLoopVars(pat: Pattern, locals: var HashSet[string]) =
@@ -156,18 +156,18 @@ proc bindLoopVars(pat: Pattern, locals: var HashSet[string]) =
     for el in pat.elems: bindLoopVars(el, locals)
   else: discard
 
-proc mangleFor(e: Expr, names: HashSet[string], locals: var HashSet[string],
+proc mangleFor(res: Resolution, e: Expr, names: HashSet[string], locals: var HashSet[string],
                fields: HashSet[string]) =
   ## The loop variable is a local for the body's duration — bound here, so
   ## renamed here, with the written name added to the body's scope so its
   ## references rename to match. Pattern carries no sourceName slot, and
   ## nothing reads a loop variable's written name back the way a decl's is.
-  mangleExpr(e.iterable, names, locals, fields)
+  mangleExpr(res, e.iterable, names, locals, fields)
   var inner = locals
   bindLoopVars(e.iter, inner)
-  mangleExpr(e.body, names, inner, fields)
+  mangleExpr(res, e.body, names, inner, fields)
 
-proc mangleAssign(e: Expr, names: HashSet[string], locals: var HashSet[string],
+proc mangleAssign(res: Resolution, e: Expr, names: HashSet[string], locals: var HashSet[string],
                   fields: HashSet[string]) =
   ## `let x = ...` introduces a local that shadows from here on. Value FIRST,
   ## then the name becomes local — so `let x = x` reads the outer one. A bare
@@ -175,15 +175,15 @@ proc mangleAssign(e: Expr, names: HashSet[string], locals: var HashSet[string],
   ## so every later reference renames to match. A name that is one of the
   ## enclosing actor's/type's fields is never a new local — it is a field
   ## write the backend spells `self.name`.
-  mangleExpr(e.assignVal, names, locals, fields)
+  mangleExpr(res, e.assignVal, names, locals, fields)
   if e.target != nil and e.target.kind == exkVar and
      e.target.name notin fields:
     locals.incl(e.target.name)
     renameVar(e.target)
   else:
-    mangleExpr(e.target, names, locals, fields)
+    mangleExpr(res, e.target, names, locals, fields)
 
-proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string],
+proc mangleExpr(res: Resolution, e: Expr, names: HashSet[string], locals: var HashSet[string],
                 fields: HashSet[string] = initHashSet[string]()) =
   ## `locals` holds the names bound INSIDE this body — params, `let`/`var`
   ## bindings, loop variables — under the name the USER wrote.
@@ -203,8 +203,8 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string],
   # nullary call living in the SEMANTIC LAYER, not in this tree. Backends emit
   # that stamped expression instead of the exkVar, so it must be renamed too —
   # missing it declares tuck_ready while still calling ready().
-  if semLayer.hasCall(e):
-    mangleExpr(semLayer.call(e), names, locals, fields)
+  if res.hasCall(e):
+    mangleExpr(res, res.call(e), names, locals, fields)
 
   case e.kind
   of exkVar:
@@ -229,19 +229,19 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string],
   of exkField, exkStruct, exkList, exkBracket, exkBracketAssign, exkCall,
      exkCombinator, exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile,
      exkReturn, exkRaise, exkDiscard:
-    for c in e.children: mangleExpr(c, names, locals, fields)
+    for c in e.children: mangleExpr(res, c, names, locals, fields)
   of exkMatch:
-    mangleExpr(e.subject, names, locals, fields)
-    for arm in e.arms: mangleExpr(arm.body, names, locals, fields)
-  of exkFor: mangleFor(e, names, locals, fields)
-  of exkAssign: mangleAssign(e, names, locals, fields)
+    mangleExpr(res, e.subject, names, locals, fields)
+    for arm in e.arms: mangleExpr(res, arm.body, names, locals, fields)
+  of exkFor: mangleFor(res, e, names, locals, fields)
+  of exkAssign: mangleAssign(res, e, names, locals, fields)
   of exkSend:
     if e.sendActor in names: e.sendActor = mangleName(e.sendActor)
-    mangleExpr(e.sendPayload, names, locals, fields)
+    mangleExpr(res, e.sendPayload, names, locals, fields)
   of exkSelect:
     for arm in e.selArms:
-      mangleExpr(arm.arg, names, locals, fields)
-      mangleExpr(arm.body, names, locals, fields)
+      mangleExpr(res, arm.arg, names, locals, fields)
+      mangleExpr(res, arm.body, names, locals, fields)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     mangleRefName(e, names)
   # Nothing to rename, and spelled out rather than left to `else: discard`.
@@ -253,7 +253,7 @@ proc mangleExpr(e: Expr, names: HashSet[string], locals: var HashSet[string],
   of exkLit, exkBreak, exkContinue, exkImport:
     discard
 
-proc mangleFnBody(d: Decl, names: HashSet[string],
+proc mangleFnBody(res: Resolution, d: Decl, names: HashSet[string],
                   fields: HashSet[string] = initHashSet[string]()) =
   # Params are NOT renamed, and so are passed as `fields` rather than as
   # locals: a param name is a CONTRACT, not a free identifier. It is the
@@ -265,14 +265,14 @@ proc mangleFnBody(d: Decl, names: HashSet[string],
   var locals = initHashSet[string]()
   var paramNames = fields
   for p in d.fnParams: paramNames.incl(p.name)
-  mangleExpr(d.fnBody, names, locals, paramNames)
+  mangleExpr(res, d.fnBody, names, locals, paramNames)
   for p in d.fnParams: mangleType(p.typ, names)
   mangleType(d.fnReturnType, names)
 
-proc mangleMember(mem: Decl, names: HashSet[string],
+proc mangleMember(res: Resolution, mem: Decl, names: HashSet[string],
                   fields: HashSet[string] = initHashSet[string]())
 
-proc mangleMember(mem: Decl, names: HashSet[string],
+proc mangleMember(res: Resolution, mem: Decl, names: HashSet[string],
                   fields: HashSet[string] = initHashSet[string]()) =
   ## Members nest: a `pending:` block inside an object parses as a mixin whose
   ## own members are fns, so walking one level would miss their types — that
@@ -281,12 +281,12 @@ proc mangleMember(mem: Decl, names: HashSet[string],
   if mem == nil: return
   case mem.kind
   of dkFn:
-    mangleFnBody(mem, names, fields)
+    mangleFnBody(res, mem, names, fields)
   of dkExpr:
     var l = initHashSet[string]()
-    mangleExpr(mem.expr, names, l, fields)
+    mangleExpr(res, mem.expr, names, l, fields)
   of dkMixin, dkExtern, dkPending:
-    for inner in mem.mixinMembers: mangleMember(inner, names, fields)
+    for inner in mem.mixinMembers: mangleMember(res, inner, names, fields)
   of dkType:
     mangleType(mem.typeBody, names)
     # A manager type's members read its fields as bare names (codegen seeds
@@ -294,15 +294,15 @@ proc mangleMember(mem: Decl, names: HashSet[string],
     var inner = fields
     if mem.typeBody != nil and mem.typeBody.kind == tkRecord:
       for f in mem.typeBody.fields: inner.incl(f.name)
-    for m2 in mem.typeMembers: mangleMember(m2, names, inner)
+    for m2 in mem.typeMembers: mangleMember(res, m2, names, inner)
   of dkObject:
     for f in mem.objFields: mangleType(f.typ, names)
-    for inner in mem.objMembers: mangleMember(inner, names)
+    for inner in mem.objMembers: mangleMember(res, inner, names)
   else: discard
 
-proc mangleModuleWith(m: Module, names: HashSet[string])
+proc mangleModuleWith(res: Resolution, m: Module, names: HashSet[string])
 
-proc mangleDeclRefs(d: Decl, names: HashSet[string]) =
+proc mangleDeclRefs(res: Resolution, d: Decl, names: HashSet[string]) =
   ## Rename every reference INSIDE a declaration, before the declaration
   ## itself is renamed.
   ##
@@ -317,7 +317,7 @@ proc mangleDeclRefs(d: Decl, names: HashSet[string]) =
   # their param/return types, which ownTypes above already covered —
   # harmless, since mangleName skips an already-prefixed name.
   if d.kind == dkFn:
-    mangleFnBody(d, names)
+    mangleFnBody(res, d, names)
   elif d.kind == dkTask:
     # Same rule as a fn's params, and for the sharper version of the same
     # reason: a task's params ARE the fields of the envelope struct its
@@ -326,13 +326,13 @@ proc mangleDeclRefs(d: Decl, names: HashSet[string]) =
     var locals = initHashSet[string]()
     var paramNames = initHashSet[string]()
     for p in d.taskParams: paramNames.incl(p.name)
-    mangleExpr(d.taskBody, names, locals, paramNames)
+    mangleExpr(res, d.taskBody, names, locals, paramNames)
   else:
     # Everything else owning an expression — dkExpr, dkConst, dkStaticAssert,
     # a select arm — has no parameters, so each gets a fresh empty scope.
     for e in d.ownExprs:
       var l = initHashSet[string]()
-      mangleExpr(e, names, l)
+      mangleExpr(res, e, names, l)
 
   # An actor's handlers read its fields as bare names (`total += n` assigns
   # the singleton's field), so those names must reach the walk as fields —
@@ -343,9 +343,12 @@ proc mangleDeclRefs(d: Decl, names: HashSet[string]) =
     for f in d.actorFields: ownFields.incl(f.name)
   elif d.kind == dkType and d.typeBody != nil and d.typeBody.kind == tkRecord:
     for f in d.typeBody.fields: ownFields.incl(f.name)
-  for mem in d.childDecls: mangleMember(mem, names, ownFields)
+  for mem in d.childDecls: mangleMember(res, mem, names, ownFields)
 
-proc mangleProgram*(mods: seq[Module]) =
+proc mangleProgram*(res: Resolution, mods: seq[Module]) =
+  ## `res` is the semantic layer typechecking produced — taken as an argument
+  ## so this stage cannot run before the one that fills it.
+  ##
   ## Mangle a whole import closure — the entry module plus every module it
   ## imports — in ONE pass, then the shared Resolution.
   ##
@@ -356,7 +359,7 @@ proc mangleProgram*(mods: seq[Module]) =
   ##
   ## The Resolution is a GLOBAL side-table keyed by node id holding the Types
   ## the checker inferred and the call Exprs it stamped. Backends read it
-  ## constantly (`getFieldsForType(m, semLayer.typeFor(e))`), so a Type still
+  ## constantly (`getFieldsForType(m, res.typeFor(e))`), so a Type still
   ## naming `Episode` after its module declares `tuck_Episode` resolves to
   ## nothing and the backend silently falls back — that is how `merge` began
   ## emitting a call to an undeclared name. It is shared by every backend, so
@@ -365,20 +368,20 @@ proc mangleProgram*(mods: seq[Module]) =
   if names.len == 0: return
 
   for m in mods:
-    mangleModuleWith(m, names)
+    mangleModuleWith(res, m, names)
 
   # Type and Expr are ref objects, so renaming through the value the table
   # yields updates what the table holds — no write-back needed.
-  for t in semLayer.types.values:
+  for t in res.types.values:
     mangleType(t, names)
   # Stamped call Exprs are renamed here too; mangleExpr's own recursion into
-  # semLayer.call() is then redundant but harmless, mangleName being
+  # res.call() is then redundant but harmless, mangleName being
   # idempotent.
   var locals = initHashSet[string]()
-  for e in semLayer.calls.values:
-    mangleExpr(e, names, locals)
+  for e in res.calls.values:
+    mangleExpr(res, e, names, locals)
 
-proc mangleModuleWith(m: Module, names: HashSet[string]) =
+proc mangleModuleWith(res: Resolution, m: Module, names: HashSet[string]) =
   ## Rename every manglable declaration in this module and every reference to
   ## one, resolving against the PROGRAM-WIDE name set so cross-module
   ## references land on the same symbol the target module produced.
@@ -386,7 +389,7 @@ proc mangleModuleWith(m: Module, names: HashSet[string]) =
   for d in m.decls:
     if d == nil: continue
     # references inside bodies, before the declaration itself is renamed
-    mangleDeclRefs(d, names)
+    mangleDeclRefs(res, d, names)
 
   # now the declarations themselves
   for d in m.decls:

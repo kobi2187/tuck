@@ -51,10 +51,10 @@ proc runtimeUsers*(m: Module, actorNames: var seq[string],
     if d.kind == dkActor: actorNames.add(d.name)
     elif d.kind == dkTask: hasTasks = true
 
-proc emitOdinModule*(name: string, m: Module,
+proc emitOdinModule*(name: string, m: Module, res: Resolution,
                      realModules = initTable[string, Module]()): string =
   let pkg = name.replace("-", "_")
-  var ctx = newOdinCtx(m, realModules, name, modPrefix = pkg & "_")
+  var ctx = newOdinCtx(m, realModules, name, res, modPrefix = pkg & "_")
   let (body, _) = ctx.emitBody(m)
   # Odin package names are GLOBAL, not scoped to their directory, so a Tuck
   # module called `io` or `os` would collide with core:io / core:os. The
@@ -156,10 +156,13 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
 # body actually referenced rather than emitted wholesale.
 const odinPackage = "package main\n\n"
 
-proc emitOdin*(m: Module,
+proc emitOdin*(m: Module, res: Resolution,
                realModules = initTable[string, Module](),
                moduleName = "main"): string =
-  var ctx = newOdinCtx(m, realModules, moduleName)
+  ## `res` is the semantic layer typechecking produced. Taking it as an
+  ## argument is the point: this stage cannot run before the one that fills
+  ## it, and now the signature says so instead of a comment on checkOrDie.
+  var ctx = newOdinCtx(m, realModules, moduleName, res)
   let (body, mains) = ctx.emitBody(m)
   result = odinPackage
   let imports = ctx.odinImports(m, body, mains, realModules)

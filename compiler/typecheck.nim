@@ -1882,7 +1882,7 @@ proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
   if e.args.len != 1 or e.args[0].kind != exkStruct:
     for a in e.args: discard tc.synthesize(a)
     return
-  let declFields = getFieldsForType(tc.module, tc.typeDecls[calleeName])
+  let declFields = getFieldsForType(semLayer, tc.module, tc.typeDecls[calleeName])
   for f in e.args[0].fields:
     let ft = tc.synthesize(f.value)
     for df in declFields:
@@ -1964,7 +1964,7 @@ proc declaredFieldsOf(tc: TypeChecker, e: Expr, calleeName: string): seq[FieldDe
   if tc.objDecls.hasKey(calleeName):
     composedFields(tc.module, tc.objDecls[calleeName])
   else:
-    getFieldsForType(tc.module, Type(span: e.span, kind: tkNamed,
+    getFieldsForType(semLayer, tc.module, Type(span: e.span, kind: tkNamed,
                                      name: calleeName))
 
 proc suppliedFieldTypes(tc: var TypeChecker, e: Expr): Table[string, Type] =

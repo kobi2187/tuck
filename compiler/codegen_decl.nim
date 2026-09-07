@@ -247,7 +247,9 @@ proc genRecordType*(ctx: var CodegenCtx, d: Decl): string =
       # Tier 1 records are value types (spec §7.1) — plain object, not ref
       var res = "type " & d.name & "*" & tGen & " = object\n" & fieldsBody & "\n"
       var invariantChecks: seq[string]
-      var checkCtx = CodegenCtx(definedVars: initHashSet[string](), fieldVars: initHashSet[string](), indent: 0)
+      var checkCtx = CodegenCtx(definedVars: initHashSet[string](),
+                                fieldVars: initHashSet[string](), indent: 0,
+                                res: ctx.res)
       for f in d.typeBody.fields:
         checkCtx.fieldVars.incl(f.name)
       for member in d.typeMembers:
@@ -333,7 +335,7 @@ proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
   var hctx = CodegenCtx(definedVars: initHashSet[string](),
                         fieldVars: initHashSet[string](), indent: 2,
                         realModules: ctx.realModules, module: ctx.module,
-                        moduleName: ctx.moduleName)
+                        moduleName: ctx.moduleName, res: ctx.res)
   for f in d.actorFields:
     hctx.fieldVars.incl(f.name)
   # a block body self-indents; a single-expression arm body needs the arm indent

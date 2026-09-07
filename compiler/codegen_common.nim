@@ -21,6 +21,7 @@
 #
 # Sits below both backends in the dependency DAG, alongside ast_query and
 # lowering — it imports those and nothing that imports either codegen module.
+import resolution
 import ast, lowering, ast_query, strutils, sets, tables, algorithm, options
 import ./ast_query
 
@@ -210,9 +211,10 @@ proc fieldNames(fields: seq[FieldDef]): seq[string] =
   ## Just the names, in order, off a field list.
   for f in fields: result.add(f.name)
 
-proc recordFieldNames*(module: Module, t: Type): seq[string] =
+proc recordFieldNames*(res: Resolution, module: Module,
+                       t: Type): seq[string] =
   ## Field names of a record type, in declaration order — the shared
   ## question behind bake's slot rebuild and postfix field explosion in
   ## both backends.
   if not hasKnownFields(t): return @[]
-  fieldNames(getFieldsForType(module, t))
+  fieldNames(getFieldsForType(res, module, t))

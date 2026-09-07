@@ -5,6 +5,7 @@
 # field lists). The synthesis, flow, and validation modules all operate on a
 # `var TypeChecker` threaded through their signatures, so this type and its core
 # operations live here for them to import.
+import resolution
 import ast, lowering, tables, sets
 import typecheck_util
 
@@ -319,7 +320,7 @@ proc fieldsOf*(tc: TypeChecker, t: Type): seq[FieldDef] =
     let gs = tc.typeGenerics[t.base.name]
     for i in 0 ..< gs.len: b[gs[i]] = t.args[i]
     let body = tc.typeDecls[t.base.name]
-    for f in getFieldsForType(tc.module, body):
+    for f in getFieldsForType(semLayer, tc.module, body):
       result.add(FieldDef(name: f.name, typ: substituteType(f.typ, b), span: f.span))
     return
-  getFieldsForType(tc.module, t)
+  getFieldsForType(semLayer, tc.module, t)

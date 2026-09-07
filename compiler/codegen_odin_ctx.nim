@@ -6,11 +6,17 @@
 # in codegen_odin.nim.
 import ast, tables, sets, strutils
 import ast_query
+import resolution
 import codegen_common
 import codegen_odin_util
 
 type
   OdinCodegenCtx* = object
+    res*: Resolution
+      ## The semantic layer this emission reads. Handed over by the pipeline
+      ## rather than reached for: which is what makes the stage ordering —
+      ## typecheck fills it, everything after reads it — visible instead of a
+      ## comment on checkOrDie.
     definedVars*: HashSet[string]
     fieldVars*: HashSet[string]
     fieldPrefix*: string   # "this." in methods, "self." in static validate procs
@@ -311,14 +317,15 @@ proc memberProcName*(objName, memberName: string): string =
   objName & "_" & memberName
 
 proc newOdinCtx*(m: Module, realModules: Table[string, Module],
-                moduleName: string, modPrefix = ""): OdinCodegenCtx =
+                moduleName: string, res: Resolution,
+                modPrefix = ""): OdinCodegenCtx =
   ## indent 0: Odin declarations are top-level in a package, with no enclosing
   ## class the way Beef/C# needed one.
   result = OdinCodegenCtx(definedVars: initHashSet[string](),
                           fieldVars: initHashSet[string](),
                           fieldPrefix: "self.", indent: 0, module: m,
                           realModules: realModules, moduleName: moduleName,
-                          modPrefix: modPrefix)
+                          modPrefix: modPrefix, res: res)
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       result.errPolicy = d.policyName

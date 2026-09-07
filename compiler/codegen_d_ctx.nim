@@ -5,6 +5,7 @@
 # recursive expression/decl codegen in codegen_d.nim.
 import ast, tables, sets, strutils
 import ast_query
+import resolution
 import decl_index
 from codegen_odin_util import odinErrCode, enumTagOwner
 
@@ -20,6 +21,11 @@ const dPrims = {
 
 type
   DCodegenCtx* = object
+    res*: Resolution
+      ## The semantic layer this emission reads. Handed over by the pipeline
+      ## rather than reached for: which is what makes the stage ordering —
+      ## typecheck fills it, everything after reads it — visible instead of a
+      ## comment on checkOrDie.
     definedVars*: HashSet[string]
     indent*: int           # statement indent, in 4-space levels
     module*: Module
@@ -295,10 +301,11 @@ proc recStructNameD*(ctx: var DCodegenCtx, fields: seq[FieldDef],
   name
 
 proc newDCtx*(m: Module, realModules: Table[string, Module],
-             moduleName: string, modPrefix = ""): DCodegenCtx =
+             moduleName: string, res: Resolution,
+             modPrefix = ""): DCodegenCtx =
   result = DCodegenCtx(definedVars: initHashSet[string](), indent: 0,
                        module: m, realModules: realModules,
                        moduleName: moduleName, modPrefix: modPrefix,
-                       idx: buildDeclIndex(m))
+                       idx: buildDeclIndex(m), res: res)
   for d in m.decls:
     if d != nil and d.kind == dkErrors: result.errPolicy = d.policyName

@@ -137,7 +137,7 @@ proc genCombinator(ctx: var CodegenCtx, e: Expr): string =
             of ckWith: "tuckWith"
             of ckAlias: "tuckAlias"
             of ckMerge: "tuckMerge"
-  ctx.renderShape(shapeOf(ctx.module, e), tag)
+  ctx.renderShape(shapeOf(ctx.module, ctx.res, e), tag)
 
 proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   # ponytail: exkVar args only — repeating any other expr risks double
@@ -145,14 +145,14 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   if e.args.len != 1 or e.args[0].kind != exkVar: return ""
   # Same O(1)-vs-scan tradeoff as genConstruction's struct-literal branch: prefer
   # checker's own resolution when it recorded one.
-  let params = if semLayer.callParamsFor(e).len > 0: semLayer.callParamsFor(e)
+  let params = if ctx.res.callParamsFor(e).len > 0: ctx.res.callParamsFor(e)
                else: lookupFnParams(ctx.module, calleeStr)
   if params.len == 0: return ""
-  let fields = recordFieldNames(ctx.module, semLayer.typeFor(e.args[0]))
+  let fields = recordFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.args[0]))
   if fields.len == 0: return ""
   # The checker already decided which field feeds each param (they may differ
   # in name, having been matched by type); prefer its mapping over re-deriving.
-  let resolved = semLayer.argFieldsFor(e)
+  let resolved = ctx.res.argFieldsFor(e)
   var parts: seq[string]
   for i, paramName in params:
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
@@ -203,7 +203,7 @@ proc bangInfo*(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
 # was easy and silent, so they are one proc now.
 proc genericCtorName(ctx: var CodegenCtx, e: Expr, base: string): string =
   ## A generic type: the checker's ty stamp carries the inferred instantiation.
-  let t = semLayer.typeFor(e)
+  let t = ctx.res.typeFor(e)
   if t == nil or t.kind != tkApp or t.base == nil or
      t.base.kind != tkNamed or t.base.name != base: return base
   var gparts: seq[string]
@@ -242,14 +242,14 @@ proc expectedParamNames(ctx: var CodegenCtx, e: Expr,
   ##
   ## Three sources, in order: a QUALIFIED callee's params live in the other
   ## module and must be looked up there; otherwise the checker's own
-  ## resolution (semLayer.callParamsFor, set in checkCallArgs) answers in
+  ## resolution (ctx.res.callParamsFor, set in checkCallArgs) answers in
   ## O(1); the decl-list scan is the last resort for calls the checker left
   ## unresolved, and is a scan per call expression, so it must stay last.
   if e.callee != nil and e.callee.kind == exkQualified and
      e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
     return lookupFnParams(ctx.realModules[e.callee.modulePath[0]],
                           e.callee.qualName)
-  if semLayer.callParamsFor(e).len > 0: return semLayer.callParamsFor(e)
+  if ctx.res.callParamsFor(e).len > 0: return ctx.res.callParamsFor(e)
   lookupFnParams(ctx.module, calleeStr)
 
 proc payloadFieldArg(ctx: var CodegenCtx, payload: Expr,
@@ -268,7 +268,7 @@ proc genPayloadArgs(ctx: var CodegenCtx, e: Expr,
     return
   # The checker's mapping wins: it matches by name first and then by type, so
   # a field may feed a param it shares no name with.
-  let resolved = semLayer.argFieldsFor(e)
+  let resolved = ctx.res.argFieldsFor(e)
   for i, paramName in expected:
     let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
                     else: paramName
@@ -376,7 +376,7 @@ proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
   # built TuckResult[TuckResult[tuple[]]], which typechecked clean here and
   # failed in the Nim compile. The checker's own type for the expression is
   # what tells the two apart.
-  if isResultCarrier(semLayer.typeFor(v)):
+  if isResultCarrier(ctx.res.typeFor(v)):
     return "return " & ctx.genExpr(v)
   if v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
      v.receiver.name == "Error":
@@ -439,7 +439,7 @@ proc genInputPayload(ctx: CodegenCtx): string =
 proc genVar(ctx: var CodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, or a plain
   ## variable.
-  if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e))
+  if ctx.res.hasCall(e): ctx.genExpr(ctx.res.call(e))
   elif e.name == "...": "discard"   # pending hole
   elif e.name == "input" and ctx.currentParams.len > 0: ctx.genInputPayload()
   elif e.name in ctx.fieldVars: "self." & e.name
@@ -500,11 +500,11 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   if ctx.isInputField(e): return e.fieldName
   # Which implementations are POSSIBLE was fixed at the wrap sites (the demand
   # set); which one runs is the tag, read here at the call.
-  let ic = semLayer.ifaceCallOf(e)
+  let ic = ctx.res.ifaceCallOf(e)
   if ic.member != "": return ctx.genIfaceDispatch(e, ic, ind)
   # A `..` chain feeding this call was already hoisted into a temp by
   # lowering.hoistChainCalls — the receiver here can never be exkChain.
-  if semLayer.hasCall(e): return ctx.genConstruction(semLayer.call(e))
+  if ctx.res.hasCall(e): return ctx.genConstruction(ctx.res.call(e))
   if e.receiver != nil and e.receiver.kind == exkVar:
     # bare Type.Variant of a payload sum: kind-tagged construction. The
     # payload, if any, arrives as `.fn {args}`'s dotArg — passing nil here
@@ -520,7 +520,7 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   # variant, so `s.length` on `Line({length: int})` is `s.line.length`.
   # Emitting the bare name produced an undeclared field, which is why a
   # payload sum typechecked and then failed to build.
-  let sumName = payloadSumTypeName(ctx.module, semLayer.typeFor(e.receiver))
+  let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver))
   if sumName != "":
     # Inside a match arm that narrowed this subject to one variant, that
     # variant is the ONLY one this access can mean — never re-derive from
@@ -539,7 +539,7 @@ proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =
   ## annotation). Cooperative-yield first cut: yield so other tasks progress,
   ## then perform the call. (Real fd-await lands with the async externs.)
   let base = ctx.genConstruction(e)
-  if semLayer.isAsync(e) and ctx.inTask: "(tuckYield(); " & base & ")"
+  if ctx.res.isAsync(e) and ctx.inTask: "(tuckYield(); " & base & ")"
   else: base
 
 proc genStruct(ctx: var CodegenCtx, e: Expr): string =
@@ -555,7 +555,7 @@ proc genList(ctx: var CodegenCtx, e: Expr): string =
 proc genCallResolved(ctx: var CodegenCtx, e: Expr): string =
   ## Indexing resolved to an at() call; a type application never reaches
   ## codegen, so an unresolved bracket emits nothing.
-  if semLayer.hasCall(e): ctx.genExpr(semLayer.call(e)) else: ""
+  if ctx.res.hasCall(e): ctx.genExpr(ctx.res.call(e)) else: ""
 
 proc loopVarNames(iter: Pattern): string =
   ## The name(s) a `for` binds. Nim's `for a, b in xs` needs both spelled out.
@@ -615,24 +615,24 @@ proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
   ctx.tmpCounter.inc
   let tn = "tuckDrop" & $ctx.tmpCounter
-  let site = semLayer.shortcut(s)
+  let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
                 "(tuck_unhandled(" & tn & ".err, \"" & site & "\"); quit(1))"
               else:
                 "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
   "(let " & tn & " = " & stmtCode & "; (if not " & tn & ".ok: " & onErr & "))"
 
-proc isCallOnChain(s: Expr): bool =
+proc isCallOnChain(res: Resolution, s: Expr): bool =
   ## `self ..loadEp {n} .startAudio` — a resolved call whose receiver is a
   ## chain. The chain lowers to statements, so the whole thing is multi-line.
   s.kind == exkField and s.receiver != nil and
-    s.receiver.kind == exkChain and semLayer.hasCall(s)
+    s.receiver.kind == exkChain and res.hasCall(s)
 
 proc isChainBinding(s: Expr): bool =
   ## `var b = a ..setN {5}` — the chain runs into a temp above the binding.
   s.kind == exkAssign and s.assignVal != nil and s.assignVal.kind == exkChain
 
-proc ownsItsLayout(s: Expr): bool =
+proc ownsItsLayout(res: Resolution, s: Expr): bool =
   ## Nodes that carry their own indentation.
   ##
   ## A `.fn` call whose RECEIVER is a chain belongs here too — though
@@ -642,7 +642,7 @@ proc ownsItsLayout(s: Expr): bool =
   ## top of the chain's and produced 8 spaces against the block's 4 — which
   ## Nim rejects as invalid indentation.
   s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile} or
-    isCallOnChain(s) or isChainBinding(s)
+    isCallOnChain(res, s) or isChainBinding(s)
 
 proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   ## A call in STATEMENT position whose value nothing consumes. Nim rejects
@@ -653,14 +653,14 @@ proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   ## Only a plain call: a chain lays itself out, and the errors-policy path
   ## has already wrapped its own drop site by the time this is asked.
   if s == nil or s.kind != exkCall: return false
-  if semLayer.shortcut(s) != "": return false   # errors policy owns this one
+  if ctx.res.shortcut(s) != "": return false   # errors policy owns this one
   # A TASK call in statement position is already wrapped in tuckSpawn(...),
   # which is a void expression — discarding it is the very "no type (or is
   # ambiguous)" error this proc exists to avoid, just one level out. The
   # task's own return type says nothing about the emitted statement.
   if s.callee != nil and s.callee.kind == exkVar and
      ctx.isTaskName(s.callee.name): return false
-  let t = semLayer.typeFor(s)
+  let t = ctx.res.typeFor(s)
   if t == nil: return false
   # `discard` over a void call is itself an error in Nim, so the question is
   # whether there is anything TO discard.
@@ -669,12 +669,12 @@ proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
   var code = ctx.genExpr(s)
-  if code != "" and semLayer.shortcut(s) != "":
+  if code != "" and ctx.res.shortcut(s) != "":
     code = ctx.genDroppedResult(s, code)
   elif code != "" and ctx.stmtValueDropped(s):
     code = "discard " & code
   if code == "": return ""
-  if ownsItsLayout(s): code else: ind & "  " & code
+  if ownsItsLayout(ctx.res, s): code else: ind & "  " & code
 
 proc genStmts(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## The statements of a block, indented one level, with no scope around them.
@@ -743,7 +743,7 @@ proc genRaise(ctx: var CodegenCtx, e: Expr): string =
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
-  let w = semLayer.wrapOf(e)
+  let w = ctx.res.wrapOf(e)
   if w.objName != "" and e.id notin ctx.wrapping:
     let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
     ctx.wrapping.incl(e.id)
@@ -876,7 +876,7 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
   # on the discriminant. Without this it emitted `case s` over an object,
   # which Nim rejects ("selector must be of an ordinal type") — and a
   # payload sum therefore typechecked and then failed to build.
-  if payloadSumTypeName(ctx.module, semLayer.typeFor(e.subject)) != "":
+  if payloadSumTypeName(ctx.module, ctx.res.typeFor(e.subject)) != "":
     subjectStr = subjectStr & ".kind"
   var cases: seq[string]
   var errMatch = false
@@ -936,8 +936,8 @@ proc chainSteps(ctx: var CodegenCtx, e: Expr, into: string): string =
   let baseStr = ctx.genExpr(e.base)
   var lines: seq[string]
   for step in e.steps:
-    if semLayer.stepCall(step) != nil:
-      let call = threadReceiver(semLayer.stepCall(step), e.base, into, baseStr)
+    if ctx.res.stepCall(step) != nil:
+      let call = threadReceiver(ctx.res.stepCall(step), e.base, into, baseStr)
       lines.add(ind & into & " = " & ctx.genConstruction(call))
     else:
       var valStr = ""
@@ -945,9 +945,9 @@ proc chainSteps(ctx: var CodegenCtx, e: Expr, into: string): string =
         valStr = ctx.genExpr(soleFieldValue(step.arg))
       lines.add(ind & into & "." & step.target.name & " = " & valStr)
   # mutation site: an invariant-carrying var re-validates after the chain
-  if e.base != nil and semLayer.typeFor(e.base) != nil and
-     semLayer.typeFor(e.base).kind == tkNamed and
-     ctx.hasInvariantsFast(semLayer.typeFor(e.base).name):
+  if e.base != nil and ctx.res.typeFor(e.base) != nil and
+     ctx.res.typeFor(e.base).kind == tkNamed and
+     ctx.hasInvariantsFast(ctx.res.typeFor(e.base).name):
     lines.add(ind & "validate(" & into & ")")
   lines.join("\n")
 

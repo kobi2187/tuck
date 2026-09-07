@@ -44,6 +44,7 @@ import jsony
 import lexer
 import compiler/ast
 import compiler/parser
+import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
 import compiler/complexity
 import compiler/typecheck
@@ -732,7 +733,7 @@ when isMainModule:
               dumpTree(mods, fmt, withSem = true)
             else:
               discard optimizeProgram(mods, optPasses)
-              mangleProgram(mods)
+              mangleProgram(semLayer, mods)
               if stageStr == "mangle":
                 dumpTree(mods, fmt, withSem = true)
               else:
@@ -749,8 +750,8 @@ when isMainModule:
                   of bkDlang: "d"
                 for lm in bProg: rebaseImplPaths(lm, backendName, ".")
                 for lm in bProg:
-                  lowerModule(lm.m)
-                  if backend == bkDlang: lowerModuleD(lm.m)
+                  lowerModule(semLayer, lm.m)
+                  if backend == bkDlang: lowerModuleD(semLayer, lm.m)
                 if stageStr == "lowering":
                   var bMods: seq[Module]
                   for lm in bProg: bMods.add(lm.m)
@@ -759,15 +760,15 @@ when isMainModule:
                   let dumpBase = extractFilename(path).changeFileExt("")
                   case backend
                   of bkNim:
-                    for lm in bProg: echo emitNim(lm.m, "tuck_rt", bReal, lm.name)
+                    for lm in bProg: echo emitNim(lm.m, semLayer, "tuck_rt", bReal, lm.name)
                   of bkOdin:
                     for lm in bProg[0 ..< bProg.high]:
-                      echo emitOdinModule(lm.name, lm.m, bReal)
-                    echo emitOdin(bProg[^1].m, bReal, dumpBase)
+                      echo emitOdinModule(lm.name, lm.m, semLayer, bReal)
+                    echo emitOdin(bProg[^1].m, semLayer, bReal, dumpBase)
                   of bkDlang:
                     for lm in bProg[0 ..< bProg.high]:
-                      echo emitDModule(lm.name, lm.m, bReal)
-                    echo emitD(bProg[^1].m, bReal, dumpBase)
+                      echo emitDModule(lm.name, lm.m, semLayer, bReal)
+                    echo emitD(bProg[^1].m, semLayer, bReal, dumpBase)
     else:
       die("tuck: no such stage: '" & stageStr & "' (lex, parse, load, " &
           "inject-types, resolve-refs, typecheck, verify-effects, mangle, " &
@@ -805,7 +806,7 @@ when isMainModule:
       report("OPTIMIZED", "site(s) rewritten", optHits)
     block:
       let t0 = vBegin(psMangle)
-      mangleProgram(progMods)
+      mangleProgram(semLayer, progMods)
       # Whole-program, once, over the shared Resolution — no per-module hook.
       vSubNote($progMods.len & " module(s)")
       vEnd(psMangle, t0)
@@ -833,7 +834,7 @@ when isMainModule:
         let t0 = vBegin(psLowering)
         for lm in nimProg:
           let ts = epochTime()
-          lowerModule(lm.m)
+          lowerModule(semLayer, lm.m)
           vSub(lm.name, ts)
         vEnd(psLowering, t0)
       block:
@@ -844,7 +845,7 @@ when isMainModule:
           let isEntry = lm.path == nimProg[^1].path
           let outName = if isEntry: base else: lm.name
           let nimPath = outDir / (outName & ".nim")
-          writeFile(nimPath, emitNim(lm.m, rtImport, nimReal, outName))
+          writeFile(nimPath, emitNim(lm.m, semLayer, rtImport, nimReal, outName))
           echo "wrote ", nimPath
           vSub(lm.name, ts)
         vEnd(psEmitting, t0)
@@ -863,7 +864,7 @@ when isMainModule:
         let t0 = vBegin(psLowering)
         for lm in odProg:
           let ts = epochTime()
-          lowerModule(lm.m)
+          lowerModule(semLayer, lm.m)
           vSub(lm.name, ts)
         vEnd(psLowering, t0)
       if verifyStages:
@@ -879,12 +880,12 @@ when isMainModule:
           let modDir = outDir / ("mod_" & lm.name.replace("-", "_"))
           createDir(modDir)
           let modOdPath = modDir / (lm.name.replace("-", "_") & ".odin")
-          writeFile(modOdPath, emitOdinModule(lm.name, lm.m, odReal))
+          writeFile(modOdPath, emitOdinModule(lm.name, lm.m, semLayer, odReal))
           echo "wrote ", modOdPath
           vSub(lm.name, ts)
         let tsEntry = epochTime()
         let odPath = outDir / (base & ".odin")
-        writeFile(odPath, emitOdin(odProg[^1].m, odReal, base))
+        writeFile(odPath, emitOdin(odProg[^1].m, semLayer, odReal, base))
         echo "wrote ", odPath
         vSub(odProg[^1].name, tsEntry)
         vEnd(psEmitting, t0)
@@ -931,12 +932,12 @@ when isMainModule:
         let t0 = vBegin(psLowering)
         for lm in dProg:
           let ts = epochTime()
-          lowerModule(lm.m)
+          lowerModule(semLayer, lm.m)
           # ...then the D backend's OWN lowering, on its private copy. Target
           # semantics that differ from Tuck's (a D slice aliases where a Tuck
           # Seq copies) are settled here as tree marks, so the emitter is left
           # printing rather than deciding.
-          lowerModuleD(lm.m)
+          lowerModuleD(semLayer, lm.m)
           vSub(lm.name, ts)
         vEnd(psLowering, t0)
       if verifyStages:
@@ -948,12 +949,12 @@ when isMainModule:
         for lm in dProg[0 ..< dProg.high]:
           let ts = epochTime()
           let modDPath = outDir / ("mod_" & lm.name.replace("-", "_") & ".d")
-          writeFile(modDPath, emitDModule(lm.name, lm.m, dReal))
+          writeFile(modDPath, emitDModule(lm.name, lm.m, semLayer, dReal))
           echo "wrote ", modDPath
           vSub(lm.name, ts)
         let tsEntry = epochTime()
         let dPath = outDir / (base & ".d")
-        writeFile(dPath, emitD(dProg[^1].m, dReal, base))
+        writeFile(dPath, emitD(dProg[^1].m, semLayer, dReal, base))
         echo "wrote ", dPath
         vSub(dProg[^1].name, tsEntry)
         vEnd(psEmitting, t0)

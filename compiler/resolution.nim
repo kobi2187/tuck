@@ -10,7 +10,12 @@ import tables, sets
 import ast
 
 type
-  Resolution* = object
+  Resolution* = ref object
+    ## A REF, so it can be handed from stage to stage rather than reached for.
+    ## As a plain object every `proc(res: Resolution)` would have copied a
+    ## dozen tables; as a ref the pipeline can pass the one layer along and
+    ## the pass-ordering constraint stops being a comment.
+    ##
     ## Sugar that turned out to be a call. One table, because callNode,
     ## varCallNode, brCallNode and brAssignNode were always the same idea:
     ## `x.f`, a bare nullary `f`, `xs[i]` and `xs[i] = v` all resolve to an
@@ -146,7 +151,7 @@ proc ifaceCallOf*(r: Resolution, e: Expr): tuple[iface, member: string] =
 #
 # Cleared at the start of each check so repeated in-process runs (the test
 # suites) never see a previous program's entries.
-proc newResolution(): Resolution =
+proc newResolution*(): Resolution =
   Resolution(calls: initTable[NodeId, Expr](),
              types: initTable[NodeId, Type](),
              shortcuts: initTable[NodeId, string](),

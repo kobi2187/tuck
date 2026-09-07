@@ -131,14 +131,14 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   else:
     result = "void main" & head & drive & "}\n"
 
-proc emitDModule*(name: string, m: Module,
+proc emitDModule*(name: string, m: Module, res: Resolution,
                   realModules = initTable[string, Module]()): string =
   ## A library module (import target): file mod_<name>.d, module mod_<name>.
   ## The import alias at the use site keeps the Tuck name, so calls read
   ## `console.printLine` — and the mod_ prefix keeps a Tuck module called
   ## `std` or `core` from colliding with D's own top-level packages.
   let alias = dAlias(name)
-  var ctx = newDCtx(m, realModules, name, modPrefix = alias & "_")
+  var ctx = newDCtx(m, realModules, name, res, modPrefix = alias & "_")
   let (body, _) = ctx.emitDBody(m)
   result = "module mod_" & alias & ";\n\n"
   let imports = ctx.dImports(body, "", inModuleDir = true)
@@ -148,10 +148,14 @@ proc emitDModule*(name: string, m: Module,
     result.add(h & "\n\n")
   result.add(body)
 
-proc emitD*(m: Module, realModules = initTable[string, Module](),
+proc emitD*(m: Module, res: Resolution,
+            realModules = initTable[string, Module](),
             moduleName = "main"): string =
   ## The entry module: declarations, then D's own `main` calling tuck_main.
-  var ctx = newDCtx(m, realModules, moduleName)
+  ## `res` is the semantic layer typechecking produced. Taking it as an
+  ## argument is the point: this stage cannot run before the one that fills
+  ## it, and now the signature says so instead of a comment on checkOrDie.
+  var ctx = newDCtx(m, realModules, moduleName, res)
   let (body, mains) = ctx.emitDBody(m)
   result = "module " & dModuleName(moduleName) & ";\n\n"
   let imports = ctx.dImports(body, mains)

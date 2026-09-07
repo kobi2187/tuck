@@ -75,15 +75,13 @@ proc overrideFor(payload: Expr, fname: string): Expr =
 proc passThrough(e: Expr): RecordShape =
   RecordShape(ctor: ckPassThrough, passThrough: e)
 
-proc structuralFields(m: Module, recvT: Type, payload: Expr,
+proc structuralFields(m: Module, res: Resolution, recvT: Type, payload: Expr,
                       names: seq[string]): seq[FieldDef] =
   ## The declared field list a synthesized struct is named after. Known
   ## receiver fields first, then anything the payload supplies that the
   ## receiver has not got — which only happens for a SKETCH receiver, since
   ## the checker rejects a widening bake or with (TK-TY21).
-  result = getFieldsForType(m, recvT)
-  for f in result:
-    discard
+  result = getFieldsForType(res, m, recvT)
   for n in names:
     var known = false
     for f in result:
@@ -93,7 +91,8 @@ proc structuralFields(m: Module, recvT: Type, payload: Expr,
     if ft == nil: ft = Type(kind: tkNamed, name: UnknownName)
     result.add FieldDef(name: n, typ: ft)
 
-proc updateShape*(m: Module, e: Expr, preserveType: bool): RecordShape =
+proc updateShape*(m: Module, res: Resolution, e: Expr,
+                  preserveType: bool): RecordShape =
   ## `recv with {…}` and `recv bake {…}` — the same shape. Both replace the
   ## values of fields the receiver already declares (widening is `merge`'s
   ## job), so they differ in exactly one thing, and it is this flag: `with`
@@ -102,8 +101,8 @@ proc updateShape*(m: Module, e: Expr, preserveType: bool): RecordShape =
   ## implementations so the difference is one word, and so making bake preserve
   ## its type too — now that it provably cannot widen — is a one-word change
   ## rather than a second rewrite.
-  let recvT = semLayer.typeFor(e.combRecv)
-  var names = recordFieldNames(m, recvT)
+  let recvT = res.typeFor(e.combRecv)
+  var names = recordFieldNames(res, m, recvT)
   let named = preserveType and names.len > 0 and recvT.kind == tkNamed and
               isRecordType(m, recvT.name)
   if names.len == 0:                 # sketch receiver: the payload is all
@@ -122,13 +121,13 @@ proc updateShape*(m: Module, e: Expr, preserveType: bool): RecordShape =
     result.invariantsOwed = hasInvariants(m, recvT.name)
   else:
     result.ctor = ckStructural
-    result.declFields = structuralFields(m, recvT, e.combArg, names)
+    result.declFields = structuralFields(m, res, recvT, e.combArg, names)
 
-proc aliasShape*(m: Module, e: Expr): RecordShape =
+proc aliasShape*(m: Module, res: Resolution, e: Expr): RecordShape =
   ## `recv alias(old: new, …)` — the same values under renamed fields. The
   ## result is always a new shape, so never the receiver's own type.
-  let recvT = semLayer.typeFor(e.combRecv)
-  let recvFields = getFieldsForType(m, recvT)
+  let recvT = res.typeFor(e.combRecv)
+  let recvFields = getFieldsForType(res, m, recvT)
   for (oldName, newExpr) in e.combArg.fields.items:
     if newExpr == nil or newExpr.kind != exkVar: return passThrough(e.combRecv)
     var ft: Type = nil
@@ -140,23 +139,23 @@ proc aliasShape*(m: Module, e: Expr): RecordShape =
   result.ctor = ckStructural
   result.receivers = @[e.combRecv]
 
-proc mergeShape*(m: Module, e: Expr): RecordShape =
+proc mergeShape*(m: Module, res: Resolution, e: Expr): RecordShape =
   ## `{a, b} merge` — the union of the members' fields, flattened. Collisions
   ## are the checker's problem; by here the names are known distinct.
   for (_, mexpr) in e.combRecv.fields.items:
-    let mt = semLayer.typeFor(mexpr)
-    for f in getFieldsForType(m, mt):
+    let mt = res.typeFor(mexpr)
+    for f in getFieldsForType(res, m, mt):
       result.fields.add project(f.name, mexpr, f.name)
       result.declFields.add f
     result.receivers.add mexpr
   if result.fields.len == 0: return passThrough(e.combRecv)  # sketch members
   result.ctor = ckStructural
 
-proc shapeOf*(m: Module, e: Expr): RecordShape =
+proc shapeOf*(m: Module, res: Resolution, e: Expr): RecordShape =
   ## The one entry point. Exhaustive on CombKind, so a new combinator stops
   ## the build here rather than silently producing nothing.
   case e.comb
-  of ckWith:  updateShape(m, e, preserveType = true)
-  of ckBake:  updateShape(m, e, preserveType = false)
-  of ckAlias: aliasShape(m, e)
-  of ckMerge: mergeShape(m, e)
+  of ckWith:  updateShape(m, res, e, preserveType = true)
+  of ckBake:  updateShape(m, res, e, preserveType = false)
+  of ckAlias: aliasShape(m, res, e)
+  of ckMerge: mergeShape(m, res, e)

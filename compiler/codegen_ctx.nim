@@ -8,11 +8,17 @@
 # codegen in codegen.nim.
 import ast, tables, sets, strutils
 import ast_query
+import resolution
 import codegen_common
 import codegen_type
 
 type
   CodegenCtx* = object
+    res*: Resolution
+      ## The semantic layer this emission reads. Handed over by the pipeline
+      ## rather than reached for: which is what makes the stage ordering —
+      ## typecheck fills it, everything after reads it — visible instead of a
+      ## comment on checkOrDie.
     definedVars*: HashSet[string]
     fieldVars*: HashSet[string]
     indent*: int
@@ -141,9 +147,10 @@ proc fieldType*(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
   return genType(f.typ)
 
 proc newCodegenCtx*(m: Module, realModules: Table[string, Module],
-                   moduleName: string): CodegenCtx =
+                   moduleName: string, res: Resolution): CodegenCtx =
   result = CodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
-                      realModules: realModules, moduleName: moduleName)
+                      realModules: realModules, moduleName: moduleName,
+                      res: res)
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       result.errPolicy = d.policyName

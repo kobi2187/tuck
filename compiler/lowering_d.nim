@@ -27,15 +27,15 @@ import resolution
 import ast_query
 import lowering  # getFieldsForType
 
-proc isSeqValued(e: Expr): bool =
-  e != nil and seqElem(semLayer.typeFor(e)) != nil
+proc isSeqValued(res: Resolution, e: Expr): bool =
+  e != nil and seqElem(res.typeFor(e)) != nil
 
-proc seqFieldNames(m: Module, t: Type): seq[string] =
+proc seqFieldNames(res: Resolution, m: Module, t: Type): seq[string] =
   ## Names of `t`'s fields whose own type is `Seq[T]` — a D struct copies by
   ## value field-for-field, but a `T[]` field's copy is only the slice
   ## HEADER, so any Seq field aliases across the copy exactly the way a bare
   ## Seq assignment does. "" (never nil) when `t` is not a record at all.
-  for f in getFieldsForType(m, t):
+  for f in getFieldsForType(res, m, t):
     if seqElem(f.typ) != nil: result.add(f.name)
 
 # `.dup` — the one place D's semantics genuinely differ from Tuck's.
@@ -72,25 +72,25 @@ var recordDupSites: Table[NodeId, seq[string]]
   ## replaced rather than appending a bare `.dup` (a D struct has no `.dup`
   ## at all; only a slice does).
 
-proc needsDup*(e: Expr): bool =
+proc needsDup*(res: Resolution, e: Expr): bool =
   ## Did this backend's lowering mark this expression as needing a bare
   ## `.dup` (a Seq-valued expression copied by name)?
   e != nil and e.id.isSet and e.id in dupSites
 
-proc recordDupFields*(e: Expr): seq[string] =
+proc recordDupFields*(res: Resolution, e: Expr): seq[string] =
   ## The Seq-typed field names this backend's lowering marked for a
   ## per-field dup, or "" if `e` was not marked this way.
   if e != nil and e.id.isSet and e.id in recordDupSites: recordDupSites[e.id]
   else: @[]
 
-proc markSeqCopies(m: Module, e: Expr) =
+proc markSeqCopies(res: Resolution, m: Module, e: Expr) =
   ## Mark every Seq-valued OR Seq-field-holding expression whose VALUE is
   ## being bound to a name, so the emitter copies rather than aliases.
   if e == nil: return
   case e.kind
   of exkAssign:
     if e.assignVal != nil and e.assignVal.kind != exkList:
-      if isSeqValued(e.assignVal):
+      if isSeqValued(res, e.assignVal):
         ensureId(e.assignVal)
         dupSites.incl(e.assignVal.id)
       else:
@@ -101,38 +101,38 @@ proc markSeqCopies(m: Module, e: Expr) =
         # own Seq fields are already fresh too, so marking it costs one
         # redundant `.dup` rather than a wrong one — correctness over the
         # extra allocation.
-        let fields = seqFieldNames(m, semLayer.typeFor(e.assignVal))
+        let fields = seqFieldNames(res, m, res.typeFor(e.assignVal))
         if fields.len > 0:
           ensureId(e.assignVal)
           recordDupSites[e.assignVal.id] = fields
-    markSeqCopies(m, e.target)
-    markSeqCopies(m, e.assignVal)
+    markSeqCopies(res, m, e.target)
+    markSeqCopies(res, m, e.assignVal)
   of exkBlock:
-    for s in e.stmts: markSeqCopies(m, s)
+    for s in e.stmts: markSeqCopies(res, m, s)
   of exkIf:
-    markSeqCopies(m, e.cond)
-    markSeqCopies(m, e.thenBranch)
-    markSeqCopies(m, e.elseBranch)
+    markSeqCopies(res, m, e.cond)
+    markSeqCopies(res, m, e.thenBranch)
+    markSeqCopies(res, m, e.elseBranch)
   of exkFor:
-    markSeqCopies(m, e.iterable)
-    markSeqCopies(m, e.body)
+    markSeqCopies(res, m, e.iterable)
+    markSeqCopies(res, m, e.body)
   of exkWhile:
-    markSeqCopies(m, e.whileCond)
-    markSeqCopies(m, e.whileBody)
+    markSeqCopies(res, m, e.whileCond)
+    markSeqCopies(res, m, e.whileBody)
   of exkMatch:
-    markSeqCopies(m, e.subject)
-    for arm in e.arms: markSeqCopies(m, arm.body)
+    markSeqCopies(res, m, e.subject)
+    for arm in e.arms: markSeqCopies(res, m, arm.body)
   of exkCall:
-    for a in e.args: markSeqCopies(m, a)
-  of exkReturn: markSeqCopies(m, e.returnVal)
+    for a in e.args: markSeqCopies(res, m, a)
+  of exkReturn: markSeqCopies(res, m, e.returnVal)
   else: discard
 
-proc lowerModuleD*(m: Module) =
+proc lowerModuleD*(res: Resolution, m: Module) =
   ## The D backend's own lowering. Runs AFTER lowerModule, on this backend's
   ## private copy of the tree.
   for fn in m.allFns():
-    markSeqCopies(m, fn.fnBody)
+    markSeqCopies(res, m, fn.fnBody)
   for d in m.decls(dkTask):
-    markSeqCopies(m, d.taskBody)
+    markSeqCopies(res, m, d.taskBody)
   for d in m.decls(dkExpr):
-    markSeqCopies(m, d.expr)
+    markSeqCopies(res, m, d.expr)
