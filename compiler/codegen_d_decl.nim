@@ -379,7 +379,7 @@ proc genDPayloadSum*(ctx: var DCodegenCtx, d: Decl, body: Type): string =
   for v in body.variants:
     if v.fields.len == 0: continue
     res.add("        " & d.name & "_" & v.name & " " &
-            v.name.toLowerAscii() & ";\n")
+            sumPayloadField(v.name) & ";\n")
   res.add("    }\n}\n")
   res
 

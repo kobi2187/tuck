@@ -17,11 +17,15 @@
 # (JSON, ASTs). `Array[N, T]` is INLINE storage and does NOT break the cycle:
 # it is N values, not a handle. Both were verified by building.
 #
-# NOT COVERED: mutual recursion (`type A` holding a `B` that holds an `A`).
-# It fails differently — the emitter writes the two declarations in source
-# order and Nim reports `undeclared identifier: 'tuck_B'`, with or without a
-# Seq in the cycle. That is a declaration-ORDERING bug in codegen, not a
-# sizing one, and wants its own fix.
+# MUTUAL RECURSION WORKS. `type A` holding a `Seq[B]` that holds a `Seq[A]`
+# builds and runs on all three backends, in both the record and the sum shape,
+# whichever order the two are declared in — verified 2026-09-08 by building and
+# running one of each. This comment used to say the opposite (an `undeclared
+# identifier: 'tuck_B'` decl-ordering bug); whatever fixed it, the claim
+# outlived it. `tests/suites/recursive_types.nim` pins both shapes now.
+#
+# Still rejected, correctly: a cycle with NO handle container in it. That is
+# what this check is for, and it is a sizing question, not an ordering one.
 #
 # Why this lifts out of typecheck.nim, like its siblings: every question is
 # about a DECLARED type and is answered from the declaration table alone.

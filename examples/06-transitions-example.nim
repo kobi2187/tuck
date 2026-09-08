@@ -10,9 +10,9 @@ type tuck_Feed* = object
 type tuck_PodcastPlayerLifecycleKind* = enum Unloaded, Loading, Ready
 type tuck_PodcastPlayerLifecycle* = object
   case kind*: tuck_PodcastPlayerLifecycleKind
-  of Unloaded: unloaded*: tuple[config: tuck_Config]
-  of Loading: loading*: tuple[config: tuck_Config, progress: int]
-  of Ready: ready*: tuple[config: tuck_Config, feed: tuck_Feed]
+  of Unloaded: tuck_unloaded*: tuple[config: tuck_Config]
+  of Loading: tuck_loading*: tuple[config: tuck_Config, progress: int]
+  of Ready: tuck_ready*: tuple[config: tuck_Config, feed: tuck_Feed]
 proc canTransition*(frm, to: tuck_PodcastPlayerLifecycleKind): bool =
   case frm
   of Unloaded: to in {Loading}

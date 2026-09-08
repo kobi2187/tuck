@@ -677,6 +677,42 @@ proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
     return ""
   ctx.unionBind & "." & e.fieldName
 
+proc fieldByReceiverKind(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## The two `.name` readings decided by what the RECEIVER is rather than by
+  ## what the field is: a bare `Type.Variant` construction, and a register
+  ## field (a raw pointer with no real field, so reading it means calling the
+  ## getter genRegister emitted). "" when the receiver is neither.
+  if e.receiver == nil: return ""
+  case e.receiver.kind
+  of exkVar:
+    # The payload, if any, arrives as `.fn {args}`'s dotArg — passing nil here
+    # silently dropped every field a `Type.Variant {payload}` supplied.
+    ctx.sumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
+  of exkRegisterRef:
+    let prefix = registerAccessorPrefix(ctx.module, e.receiver.refName,
+                                        e.fieldName)
+    if prefix == "": "" else: prefix & "_get()"
+  else: ""
+
+proc assertedVariantField(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Reading a payload field of a union-typed value OUTSIDE a type switch.
+  ##
+  ## Odin's union carries no discriminant field to reach past, so the variant
+  ## has to be ASSERTED: `x.(Shape_Rect).w`. Which variant it is comes from the
+  ## same question the other two backends ask — who declares this field —
+  ## except they can spell the answer as a plain `.rect.w` because they have a
+  ## tag field and Odin does not.
+  ##
+  ## This became reachable when a payload-sum local started being declared at
+  ## the UNION type (see unionDeclType). Before that the local was typed as the
+  ## variant struct, so a direct `.w` worked and `switch v in x` did not.
+  if e.receiver == nil: return ""
+  let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver))
+  if sumName == "": return ""
+  let owner = variantOwningField(ctx.module, sumName, e.fieldName)
+  if owner == "": return ""
+  ctx.genOdinExpr(e.receiver) & ".(" & sumName & "_" & owner & ")." & e.fieldName
+
 proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: interface dispatch, an actor singleton's field, a
   ## status test, a resolved call, a sum-variant construction, or a plain read.
@@ -694,20 +730,12 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   # chain feeding this call was already hoisted into a temp by
   # lowering.hoistChainCalls — the receiver here can never be exkChain.
   if ctx.res.hasCall(e): return ctx.genOdinCall(ctx.res.call(e))
-  if e.receiver != nil and e.receiver.kind == exkVar:
-    # bare Type.Variant of a payload sum: kind-tagged construction. The
-    # payload, if any, arrives as `.fn {args}`'s dotArg — passing nil here
-    # silently dropped every field a `Type.Variant {payload}` construction
-    # supplied.
-    let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
-    if ctor != "": return ctor
-  if e.receiver != nil and e.receiver.kind == exkRegisterRef:
-    # A register field is a raw pointer with no real field — reading it
-    # means calling the getter genRegister already emitted for it.
-    let prefix = registerAccessorPrefix(ctx.module, e.receiver.refName, e.fieldName)
-    if prefix != "": return prefix & "_get()"
+  let byRef = ctx.fieldByReceiverKind(e)
+  if byRef != "": return byRef
   let bound = ctx.boundVariantField(e)
   if bound != "": return bound
+  let asserted = ctx.assertedVariantField(e)
+  if asserted != "": return asserted
   ctx.genOdinExpr(e.receiver) & "." & e.fieldName
 
 proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =
@@ -978,6 +1006,22 @@ proc seqFieldFixups(ctx: var OdinCodegenCtx, target: string, e: Expr): string =
     result.add("; " & target & "." & f & " = rt.tuckSeqCopy(" &
                target & "." & f & ")")
 
+proc unionDeclType(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## The union type name, when this value belongs to a payload sum.
+  ##
+  ## Odin's tagged union has no tag FIELD — a variant simply IS its own struct
+  ## type — so `x := Node_Block{...}` declares x as the STRUCT. A later
+  ## `switch v in x` then reports "Invalid type for this type switch
+  ## expression, got 'tuck_Node_Block'". Naming the union in the declaration is
+  ## what puts the value into it; the other backends carry a `.kind` field and
+  ## never had the question.
+  let t = ctx.res.typeFor(e)
+  if t == nil or t.kind != tkNamed: return ""
+  let d = findDecl(ctx.module, dkType, t.name)
+  if d == nil or d.typeBody == nil or d.typeBody.kind != tkSum: return ""
+  if not sumHasPayload(d.typeBody): return ""
+  t.name
+
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
   if ctx.isTaskArgsBind(e):
@@ -986,8 +1030,10 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:
     ctx.definedVars.incl(e.target.name)
-    return e.target.name & " := " & valStr &
-           ctx.seqFieldFixups(e.target.name, e.assignVal)
+    let ut = ctx.unionDeclType(e.assignVal)
+    let decl = if ut == "": e.target.name & " := " & valStr
+               else: e.target.name & ": " & ut & " = " & valStr
+    return decl & ctx.seqFieldFixups(e.target.name, e.assignVal)
   if e.target.kind == exkField and e.target.receiver != nil and
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,

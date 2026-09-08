@@ -13,9 +13,9 @@ type tuck_Socket* = object
 type tuck_PlayerStateKind* = enum Unloaded, Loading, Ready
 type tuck_PlayerState* = object
   case kind*: tuck_PlayerStateKind
-  of Unloaded: unloaded*: tuple[config: tuck_Config]
-  of Loading: loading*: tuple[config: tuck_Config, progress: int]
-  of Ready: ready*: tuple[config: tuck_Config, feed: tuck_Feed]
+  of Unloaded: tuck_unloaded*: tuple[config: tuck_Config]
+  of Loading: tuck_loading*: tuple[config: tuck_Config, progress: int]
+  of Ready: tuck_ready*: tuple[config: tuck_Config, feed: tuck_Feed]
 proc canTransition*(frm, to: tuck_PlayerStateKind): bool =
   case frm
   of Unloaded: to in {Loading}
@@ -30,9 +30,9 @@ type tuck_MqttSessionKind* = enum Disconnected, Connecting, Connected, Subscribi
 type tuck_MqttSession* = object
   case kind*: tuck_MqttSessionKind
   of Disconnected: discard
-  of Connecting: connecting*: tuple[host: string, port: uint16]
-  of Connected: connected*: tuple[socket: tuck_Socket, keepalive: uint16]
-  of Subscribing: subscribing*: tuple[socket: tuck_Socket, topic: string]
+  of Connecting: tuck_connecting*: tuple[host: string, port: uint16]
+  of Connected: tuck_connected*: tuple[socket: tuck_Socket, keepalive: uint16]
+  of Subscribing: tuck_subscribing*: tuple[socket: tuck_Socket, topic: string]
 proc canTransition*(frm, to: tuck_MqttSessionKind): bool =
   case frm
   of Disconnected: to in {Connecting}
@@ -47,9 +47,9 @@ proc transitionTo*(self: var tuck_MqttSession, target: tuck_MqttSession) =
 proc tuck_main*(): void =
   var tuck_config = tuck_Config(url: "https://example.com")
   var tuck_feed = tuck_Feed(title: "Deep Dive")
-  var tuck_p = tuck_PlayerState(kind: Ready, ready: (config: tuck_config, feed: tuck_feed))
+  var tuck_p = tuck_PlayerState(kind: Ready, tuck_ready: (config: tuck_config, feed: tuck_feed))
   var tuck_fresh = tuck_MqttSession(kind: Disconnected)
   var tuck_socket = tuck_Socket(fd: 3)
-  var tuck_session = tuck_MqttSession(kind: Connected, connected: (socket: tuck_socket, keepalive: 60))
+  var tuck_session = tuck_MqttSession(kind: Connected, tuck_connected: (socket: tuck_socket, keepalive: 60))
   return
 

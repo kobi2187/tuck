@@ -29,9 +29,9 @@ struct tuck_PodcastPlayerLifecycle_Ready {
 struct tuck_PodcastPlayerLifecycle {
     tuck_PodcastPlayerLifecycleKind kind;
     union {
-        tuck_PodcastPlayerLifecycle_Unloaded unloaded;
-        tuck_PodcastPlayerLifecycle_Loading loading;
-        tuck_PodcastPlayerLifecycle_Ready ready;
+        tuck_PodcastPlayerLifecycle_Unloaded tuck_unloaded;
+        tuck_PodcastPlayerLifecycle_Loading tuck_loading;
+        tuck_PodcastPlayerLifecycle_Ready tuck_ready;
     }
 }
 

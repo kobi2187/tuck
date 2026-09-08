@@ -181,7 +181,7 @@ proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
       if pf[0] == f.name: valStr = ctx.genExpr(pf[1])
     parts.add(f.name & ": " & valStr)
   typeName & "(kind: " & variantName & ", " &
-    variantName.toLowerAscii() & ": (" & parts.join(", ") & "))"
+    sumPayloadField(variantName) & ": (" & parts.join(", ") & "))"
 
 proc bangInfo*(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
   if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
@@ -531,7 +531,7 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
     if ctx.matchNarrowed.hasKey(receiverStr): owner = ctx.matchNarrowed[receiverStr]
     if owner == "": owner = variantOwningField(ctx.module, sumName, e.fieldName)
     if owner != "":
-      return receiverStr & "." & owner.toLowerAscii() & "." & e.fieldName
+      return receiverStr & "." & sumPayloadField(owner) & "." & e.fieldName
   ctx.genExpr(e.receiver) & "." & e.fieldName
 
 proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =

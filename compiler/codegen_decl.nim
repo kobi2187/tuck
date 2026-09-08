@@ -208,7 +208,7 @@ proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
             var parts: seq[string]
             for f in v.fields:
               parts.add(f.name & ": " & genType(f.typ))
-            res.add("  of " & v.name & ": " & v.name.toLowerAscii() &
+            res.add("  of " & v.name & ": " & sumPayloadField(v.name) &
                     "*: tuple[" & parts.join(", ") & "]\n")
       else:
         res.add("type " & d.name & "* = enum ")

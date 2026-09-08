@@ -23,10 +23,10 @@ type tuck_Pair* = object
 type tuck_PodcastPlayerLifecycleKind* = enum Unloaded, Loading, Ready, Error
 type tuck_PodcastPlayerLifecycle* = object
   case kind*: tuck_PodcastPlayerLifecycleKind
-  of Unloaded: unloaded*: tuple[config: tuck_Config]
-  of Loading: loading*: tuple[config: tuck_Config, progress: int]
-  of Ready: ready*: tuple[config: tuck_Config, feed: tuck_Feed, audio: tuck_AudioPlayer]
-  of Error: error*: tuple[config: tuck_Config, reason: string]
+  of Unloaded: tuck_unloaded*: tuple[config: tuck_Config]
+  of Loading: tuck_loading*: tuple[config: tuck_Config, progress: int]
+  of Ready: tuck_ready*: tuple[config: tuck_Config, feed: tuck_Feed, audio: tuck_AudioPlayer]
+  of Error: tuck_error*: tuple[config: tuck_Config, reason: string]
 
 type tuck_PodcastApp* = object
   volume*: int

@@ -27,7 +27,7 @@ type tuck_PlayerStateKind* = enum Idle, Decoding, Paused
 type tuck_PlayerState* = object
   case kind*: tuck_PlayerStateKind
   of Idle: discard
-  of Decoding: decoding*: tuple[sampleRate: tuck_Hz]
+  of Decoding: tuck_decoding*: tuple[sampleRate: tuck_Hz]
   of Paused: discard
 proc canTransition*(frm, to: tuck_PlayerStateKind): bool =
   case frm
@@ -108,12 +108,12 @@ proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
       (case self.state.kind
       of Idle:
         if true:
-          self.state = tuck_PlayerState(kind: Decoding, decoding: (sampleRate: rate))
+          self.state = tuck_PlayerState(kind: Decoding, tuck_decoding: (sampleRate: rate))
           raise_tuck_SystemEvents_PlaybackStarted()
           tuck_DAC_CR.EN = true
       of Paused:
         if true:
-          self.state = tuck_PlayerState(kind: Decoding, decoding: (sampleRate: rate))
+          self.state = tuck_PlayerState(kind: Decoding, tuck_decoding: (sampleRate: rate))
           raise_tuck_SystemEvents_PlaybackStarted()
           tuck_DAC_CR.EN = true
       of Decoding:

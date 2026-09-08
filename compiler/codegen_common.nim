@@ -25,6 +25,23 @@ import resolution
 import ast, lowering, ast_query, strutils, sets, tables, algorithm, options
 import ./ast_query
 
+proc sumPayloadField*(variantName: string): string =
+  ## The struct/object field a payload variant's data sits in.
+  ##
+  ## It was the variant name lowercased, which is an identifier the AUTHOR did
+  ## not write and cannot see — so when it collided with a host keyword the
+  ## report named generated code. `| Block({...})` emitted `of Block: block*:`
+  ## and Nim answered "identifier expected, but got 'keyword block'". Every
+  ## realistic AST or IR type has a variant called Block, If, Case, Var or
+  ## Return, so this was waiting for the first tree anyone wrote.
+  ##
+  ## `tuck_` is the same prefix mangle.nim puts on every other generated name,
+  ## for the same reason: a generated identifier must not be able to collide
+  ## with anything in the target language. Shared by the declaration site and
+  ## every read site in both backends that carry one — Odin has no such field,
+  ## it binds the union member directly.
+  "tuck_" & variantName.toLowerAscii()
+
 proc absentCapable*(t: Type): bool =
   ## Does this fn's declared return type admit `tsAbsent` — `?T` or `!?T`? A
   ## plain `!T` has no absence, only Ok/Err, so a bare `return` there means

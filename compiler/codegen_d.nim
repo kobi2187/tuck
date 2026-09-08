@@ -330,7 +330,7 @@ proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
   # unbuildable on this backend. The union is anonymous, so its members are
   # members of the struct and a named literal reaches them.
   typeName & "(kind: " & typeName & "Kind." & variantName & ", " &
-    variantName.toLowerAscii() & ": " &
+    sumPayloadField(variantName) & ": " &
     typeName & "_" & variantName & "(" & parts.join(", ") & "))"
 
 proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
@@ -559,7 +559,7 @@ proc dPayloadSumField(ctx: var DCodegenCtx, e: Expr): string =
     if ctx.matchNarrowed.hasKey(receiverStr): owner = ctx.matchNarrowed[receiverStr]
     if owner == "": owner = variantOwningField(ctx.module, sumName, e.fieldName)
     if owner != "":
-      return receiverStr & "." & owner.toLowerAscii() & "." & e.fieldName
+      return receiverStr & "." & sumPayloadField(owner) & "." & e.fieldName
   if e.receiver != nil and e.receiver.kind == exkVar:
     # The payload, if any, arrives as `.fn {args}`'s dotArg — passing nil
     # here silently dropped every field a `Type.Variant {payload}`

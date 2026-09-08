@@ -128,4 +128,84 @@ fn main() -> int:
   t.hostBuilds "...and builds on every backend"
   t.runs "...and that copy does not alias either", 0
 
+  # --- 5. mutual recursion, both shapes ----------------------------------
+  # typecheck_recursion.nim used to say this failed in codegen with
+  # `undeclared identifier`, a decl-ordering bug. It does not: both shapes
+  # build and run on all three backends, in the order that forward-references.
+  # The comment outlived whatever fixed it.
+  t.src """
+type Stmt:
+  | Emit({args: Seq[Expr]})
+  | Nop
+
+type Expr:
+  | Num({value: int})
+  | Group({body: Seq[Stmt]})
+
+fn main() -> int:
+  let n = Expr.Num {value: 7}
+  return n.value - 7
+"""
+  t.okCheck "two sum types that reach each other are accepted"
+  t.hostBuilds "...and build on every backend, declared forward-referencing"
+  t.runs "...and run", 0
+
+  t.src """
+type Outer:
+  label: int
+  inner: Seq[Inner]
+
+type Inner:
+  tag: int
+  back: Seq[Outer]
+
+fn depth({o: Outer}) -> int:
+  var d = 1
+  for i in o.inner:
+    for b in i.back:
+      d = d + 1
+  return d
+
+fn main() -> int:
+  let leaf = {label: 2, inner: []} Outer
+  let mid = {tag: 5, back: [leaf]} Inner
+  let top = {label: 1, inner: [mid]} Outer
+  return {o: top} depth - 2
+"""
+  t.okCheck "two RECORDS that reach each other are accepted"
+  t.hostBuilds "...and build on every backend"
+  t.runs "...and a walk crosses the cycle", 0
+
+  # A cycle with no handle in it is still a sizing error, which is what
+  # TK-TY17 is actually for.
+  t.src """
+type Cell:
+  value: int
+  next: Cell
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a record containing itself by value is still rejected", "TK-TY17"
+
+  # --- 6. a variant named after a host keyword ---------------------------
+  # The payload field was the variant name lowercased, an identifier the
+  # author never wrote: `| Block({...})` emitted `of Block: block*:` and Nim
+  # said "identifier expected, but got 'keyword block'". Every realistic AST
+  # type has a Block, If, Case, Var or Return.
+  t.src """
+type Node:
+  | Block({count: int})
+  | Case({tag: int})
+
+fn main() -> int:
+  let b = Node.Block {count: 7}
+  match b:
+    Block: return b.count - 7
+    Case: return 1
+"""
+  t.okCheck "variants named after host keywords check"
+  t.hostBuilds "...and every backend emits a name that cannot collide"
+  t.runs "...and the payload reads back through a match", 0
+
   t.finish()
