@@ -62,7 +62,7 @@ import compiler/codegen_odin_emit  # emitOdin/emitOdinModule: same reasoning
 import compiler/codegen_d
 import compiler/codegen_d_emit  # emitD/emitDModule: same reasoning as
                                 # codegen_emit above, for the D backend.
-import compiler/lowering_d
+import compiler/lowering_seqcopy
 import compiler/ast_serializer
 import compiler/modules
 import compiler/optimize
@@ -751,7 +751,7 @@ when isMainModule:
                 for lm in bProg: rebaseImplPaths(lm, backendName, ".")
                 for lm in bProg:
                   lowerModule(semLayer, lm.m)
-                  if backend == bkDlang: lowerModuleD(semLayer, lm.m)
+                  if backend in {bkDlang, bkOdin}: markSeqCopiesIn(semLayer, lm.m)
                 if stageStr == "lowering":
                   var bMods: seq[Module]
                   for lm in bProg: bMods.add(lm.m)
@@ -865,6 +865,11 @@ when isMainModule:
         for lm in odProg:
           let ts = epochTime()
           lowerModule(semLayer, lm.m)
+          # ...then the Seq-copy marks. Odin's `[dynamic]T` aliases on
+          # assignment exactly as D's slice does — verified by spike, the same
+          # program exiting 1 on Nim and D and 99 here — so both backends run
+          # the same analysis and each emits its own repair.
+          markSeqCopiesIn(semLayer, lm.m)
           vSub(lm.name, ts)
         vEnd(psLowering, t0)
       if verifyStages:
@@ -933,11 +938,11 @@ when isMainModule:
         for lm in dProg:
           let ts = epochTime()
           lowerModule(semLayer, lm.m)
-          # ...then the D backend's OWN lowering, on its private copy. Target
+          # ...then the Seq-copy marks, on this backend's private copy. Target
           # semantics that differ from Tuck's (a D slice aliases where a Tuck
           # Seq copies) are settled here as tree marks, so the emitter is left
           # printing rather than deciding.
-          lowerModuleD(semLayer, lm.m)
+          markSeqCopiesIn(semLayer, lm.m)
           vSub(lm.name, ts)
         vEnd(psLowering, t0)
       if verifyStages:

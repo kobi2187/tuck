@@ -12,7 +12,7 @@ import codegen_table
 import codegen_d_ctx
 from codegen_odin_util import odinErrCode, enumTagOwner
 from mangle import mangleName
-from lowering_d import needsDup, recordDupFields
+from lowering_seqcopy import needsDup, recordDupFields
 import ./codegen_d
 
 proc dColumnOrdinal*(ctx: var DCodegenCtx, domain: seq[string],

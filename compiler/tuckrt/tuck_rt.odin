@@ -102,6 +102,17 @@ tuckConcat :: proc(a, b: string) -> string {
 // Seq field reported "Cannot determine polymorphic type from parameter:
 // '[dynamic]int' to '[]$T'". So reading a Seq by index did not compile on this
 // backend at all; nothing in the corpus indexed one.
+// A Tuck `Seq` assignment COPIES. Odin's `[dynamic]T` assignment copies the
+// HEADER, so both names then view one buffer and `b[0] = 99` writes `a[0]`.
+// Verified divergent: the same program exits 1 on Nim and D and 99 here.
+// lowering_seqcopy marks the sites; this is what the emitter prints there.
+tuckSeqCopy :: proc(items: [dynamic]$T) -> [dynamic]T {
+	out: [dynamic]T
+	reserve(&out, len(items))
+	for v in items { append(&out, v) }
+	return out
+}
+
 tuckAt_slice :: proc(items: []$T, index: int) -> T {
 	assert(index >= 0 && index < len(items), "at: index out of bounds")
 	return items[index]

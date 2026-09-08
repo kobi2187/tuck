@@ -15,6 +15,7 @@ import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+from lowering_seqcopy import needsDup, recordDupFields
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_table  # decision-table combinatorics, shared with the Nim backend
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
@@ -715,10 +716,18 @@ proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =
   if ctx.res.hasCall(e): ctx.genOdinExpr(ctx.res.call(e)) else: ""
 
 proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
-  ## Odin infers the element type from context: `{a, b}` as a compound literal.
+  ## `[dynamic]T{a, b}` — the element type SPELLED OUT, not inferred.
+  ##
+  ## A bare `{a, b}` works where context supplies the type (a struct literal's
+  ## field), and nowhere else: `var xs = [1, 2]` emitted `tuck_a := {1, 2}`
+  ## and Odin reported "Missing type in compound literal". The checker has
+  ## already stamped this node's type, so naming it costs nothing and is
+  ## correct in both positions.
   var parts: seq[string]
   for item in e.items: parts.add(ctx.genOdinExpr(item))
-  "{" & parts.join(", ") & "}"
+  let t = ctx.res.typeFor(e)
+  let prefix = if t == nil or seqElem(t) == nil: "" else: ctx.odinType(t)
+  prefix & "{" & parts.join(", ") & "}"
 
 proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## Odin's range-for yields the index natively, so `for idx, item in xs:`
@@ -951,21 +960,41 @@ proc genOdinAssignTarget(ctx: var OdinCodegenCtx, e: Expr): string =
     ctx.genOdinAssignTarget(e.receiver) & "." & e.fieldName
   else: ctx.genOdinExpr(e)
 
+proc copyIfSeq(ctx: var OdinCodegenCtx, valStr: string, e: Expr): string =
+  ## A bare Seq being bound to a name. `[dynamic]T` assignment copies the
+  ## HEADER, so both names then view one buffer — where a Tuck `Seq`
+  ## assignment copies. lowering_seqcopy decides which sites need a real copy
+  ## (the same analysis the D backend uses for its `.dup`); this prints Odin's.
+  if needsDup(ctx.res, e): "rt.tuckSeqCopy(" & valStr & ")"
+  else: valStr
+
+proc seqFieldFixups(ctx: var OdinCodegenCtx, target: string, e: Expr): string =
+  ## A RECORD carrying Seq fields: the struct copy is field-for-field, so each
+  ## Seq field's copy is a header aliasing the source. Emitted as statements
+  ## AFTER the assignment rather than around the value: Odin's procedure
+  ## literal does not capture locals, so the expression form D uses
+  ## (`(){ ... }()`) reports `Undeclared name` for the very value it wraps.
+  for f in recordDupFields(ctx.res, e):
+    result.add("; " & target & "." & f & " = rt.tuckSeqCopy(" &
+               target & "." & f & ")")
+
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
   if ctx.isTaskArgsBind(e):
     return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
-  let valStr = ctx.genOdinExpr(e.assignVal)
+  let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:
     ctx.definedVars.incl(e.target.name)
-    return e.target.name & " := " & valStr
+    return e.target.name & " := " & valStr &
+           ctx.seqFieldFixups(e.target.name, e.assignVal)
   if e.target.kind == exkField and e.target.receiver != nil and
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
     if prefix != "": return prefix & "_set(" & valStr & ")"
-  ctx.genOdinAssignTarget(e.target) & " = " & valStr
+  let tgt = ctx.genOdinAssignTarget(e.target)
+  tgt & " = " & valStr & ctx.seqFieldFixups(tgt, e.assignVal)
 
 proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `return err X` is the raise, not a wrapped return value.

@@ -96,4 +96,36 @@ fn main() -> int:
   t.hostBuilds "...and all three backends emit code their host compiler takes"
   t.runs "...and the tree walk computes 3 + 4", 0
 
+  # --- 4. value semantics through a Seq-carrying record -------------------
+  # The language's central claim, and it did not hold on Odin: a
+  # `[dynamic]T` assignment copies the HEADER, so two names viewed one
+  # buffer. The same program exited 1 on Nim and D and 99 here. D was
+  # already correct only because lowering_d inserted `.dup`; that analysis
+  # is backend-neutral and now lives in lowering_seqcopy, shared by both.
+  t.src """
+type Bag:
+  items: Seq[int]
+
+fn main() -> int:
+  var a = {items: [1, 2]} Bag
+  var b = a
+  b.items[0] = 99
+  return a.items[0] - 1
+"""
+  t.okCheck "copying a record that carries a Seq checks"
+  t.hostBuilds "...and builds on every backend"
+  t.runs "...and the copy does NOT alias its source", 0
+
+  # A bare Seq, the same question one level down.
+  t.src """
+fn main() -> int:
+  var a = [1, 2]
+  var b = a
+  b[0] = 99
+  return a[0] - 1
+"""
+  t.okCheck "copying a bare Seq checks"
+  t.hostBuilds "...and builds on every backend"
+  t.runs "...and that copy does not alias either", 0
+
   t.finish()

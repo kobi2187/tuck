@@ -22,117 +22,16 @@
 # What does NOT belong here: anything derived from checker facts, which every
 # backend needs identically. That is lowering.nim's job, and moving it here
 # would just re-create the duplication this pass exists to end.
-import ast, options, sets, tables
+#
+# WHAT USED TO LIVE HERE: the Seq-copy analysis. Odin turned out to alias
+# exactly as D does, so the reasoning moved to lowering_seqcopy.nim and both
+# backends share it; only the repair each prints is its own.
+import ast
 import resolution
-import ast_query
-import lowering  # getFieldsForType
-
-proc isSeqValued(res: Resolution, e: Expr): bool =
-  e != nil and seqElem(res.typeFor(e)) != nil
-
-proc seqFieldNames(res: Resolution, m: Module, t: Type): seq[string] =
-  ## Names of `t`'s fields whose own type is `Seq[T]` — a D struct copies by
-  ## value field-for-field, but a `T[]` field's copy is only the slice
-  ## HEADER, so any Seq field aliases across the copy exactly the way a bare
-  ## Seq assignment does. "" (never nil) when `t` is not a record at all.
-  for f in getFieldsForType(res, m, t):
-    if seqElem(f.typ) != nil: result.add(f.name)
-
-# `.dup` — the one place D's semantics genuinely differ from Tuck's.
-#
-# A Tuck `Seq` assignment COPIES (the Nim backend gets this from Nim's own
-# seq value semantics). A D dynamic-array assignment ALIASES: `b = a` makes
-# both names view one buffer, so `b[0] = 50` writes `a[0]` too. Verified
-# divergent before this existed.
-#
-# A fresh list literal owns its storage and needs no copy; everything else
-# does, including a call result, since a call may hand back its own argument.
-var dupSites: HashSet[NodeId]
-  ## Expressions the emitter must wrap in `.dup`, keyed by node id — the same
-  ## side-table shape the checker's own Resolution uses.
-  ##
-  ## NOT `sourceName`: that field holds the name the USER wrote, for
-  ## diagnostics, and `writtenName` reads it — borrowing it would corrupt
-  ## error messages. And not the shared Resolution either: this is a D-only
-  ## fact, so it lives with the D pass that decides it.
-  ##
-  ## Node ids survive the per-backend deepCopy (that is what makes the
-  ## checker's tables reachable from a cloned tree), so a mark set here is
-  ## still findable when the emitter walks this backend's copy. They are
-  ## GLOBAL rather than per-module (ast.newNodeId counts once for the whole
-  ## program), so this table accumulates across every module in the import
-  ## closure and must NOT be cleared between them — tuck.nim lowers every
-  ## module before emitting any of them.
-
-var recordDupSites: Table[NodeId, seq[string]]
-  ## Same idea as `dupSites`, for a RECORD-valued expression that has one or
-  ## more Seq-typed fields: a D struct copies field-for-field, so the fields
-  ## NAMED HERE are exactly the ones whose copy is only a slice header and
-  ## needs `.dup` — the emitter reconstructs the record with those fields
-  ## replaced rather than appending a bare `.dup` (a D struct has no `.dup`
-  ## at all; only a slice does).
-
-proc needsDup*(res: Resolution, e: Expr): bool =
-  ## Did this backend's lowering mark this expression as needing a bare
-  ## `.dup` (a Seq-valued expression copied by name)?
-  e != nil and e.id.isSet and e.id in dupSites
-
-proc recordDupFields*(res: Resolution, e: Expr): seq[string] =
-  ## The Seq-typed field names this backend's lowering marked for a
-  ## per-field dup, or "" if `e` was not marked this way.
-  if e != nil and e.id.isSet and e.id in recordDupSites: recordDupSites[e.id]
-  else: @[]
-
-proc markSeqCopies(res: Resolution, m: Module, e: Expr) =
-  ## Mark every Seq-valued OR Seq-field-holding expression whose VALUE is
-  ## being bound to a name, so the emitter copies rather than aliases.
-  if e == nil: return
-  case e.kind
-  of exkAssign:
-    if e.assignVal != nil and e.assignVal.kind != exkList:
-      if isSeqValued(res, e.assignVal):
-        ensureId(e.assignVal)
-        dupSites.incl(e.assignVal.id)
-      else:
-        # `{fields} TypeName` (a record construction) parses as an exkCall
-        # over an exkStruct payload, same as any other postfix application —
-        # there is no "this is a fresh literal" node kind to exempt the way
-        # exkList exempts a fresh Seq literal above. A construction call's
-        # own Seq fields are already fresh too, so marking it costs one
-        # redundant `.dup` rather than a wrong one — correctness over the
-        # extra allocation.
-        let fields = seqFieldNames(res, m, res.typeFor(e.assignVal))
-        if fields.len > 0:
-          ensureId(e.assignVal)
-          recordDupSites[e.assignVal.id] = fields
-    markSeqCopies(res, m, e.target)
-    markSeqCopies(res, m, e.assignVal)
-  of exkBlock:
-    for s in e.stmts: markSeqCopies(res, m, s)
-  of exkIf:
-    markSeqCopies(res, m, e.cond)
-    markSeqCopies(res, m, e.thenBranch)
-    markSeqCopies(res, m, e.elseBranch)
-  of exkFor:
-    markSeqCopies(res, m, e.iterable)
-    markSeqCopies(res, m, e.body)
-  of exkWhile:
-    markSeqCopies(res, m, e.whileCond)
-    markSeqCopies(res, m, e.whileBody)
-  of exkMatch:
-    markSeqCopies(res, m, e.subject)
-    for arm in e.arms: markSeqCopies(res, m, arm.body)
-  of exkCall:
-    for a in e.args: markSeqCopies(res, m, a)
-  of exkReturn: markSeqCopies(res, m, e.returnVal)
-  else: discard
+import lowering_seqcopy
 
 proc lowerModuleD*(res: Resolution, m: Module) =
   ## The D backend's own lowering. Runs AFTER lowerModule, on this backend's
   ## private copy of the tree.
-  for fn in m.allFns():
-    markSeqCopies(res, m, fn.fnBody)
-  for d in m.decls(dkTask):
-    markSeqCopies(res, m, d.taskBody)
-  for d in m.decls(dkExpr):
-    markSeqCopies(res, m, d.expr)
+  markSeqCopiesIn(res, m)
+

@@ -29,7 +29,7 @@ import lowering                # getFieldsForType
 # appears they should move to a backend-neutral module.
 from codegen_odin_util import odinErrCode, enumTagOwner
 from mangle import mangleName
-from lowering_d import needsDup, recordDupFields
+from lowering_seqcopy import needsDup, recordDupFields
 import ./codegen_d_ctx
 
 # Type emission, the ctx type, and dPrims (the D primitive-name table) now
