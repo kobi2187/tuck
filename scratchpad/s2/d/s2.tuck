@@ -1,0 +1,39 @@
+# Spike 2: the LOWERED form, written by hand.
+#
+# The user would write:
+#   type Expr:
+#     | Num({value: int})
+#     | Add({left: Expr, right: Expr})
+#
+# and this is what the compiler would have to produce: the recursive edges
+# become indices, and the value carries its own storage plus a root.
+
+type ExprNode:
+  | Num({value: int})
+  | Add({left: int, right: int})
+
+type Expr:
+  slots: Seq[ExprNode]
+  root: int
+
+# Expr.Num {value: n}  ->  a one-slot tree
+fn mkNum({value: int}) -> Expr:
+  return {slots: [ExprNode.Num {value: value}], root: 0} Expr
+
+# Expr.Add {left: a, right: b}  ->  concatenate both storages, shifting b's
+# indices past a's, then append the Add node pointing at both roots.
+fn shift({n: ExprNode, by: int}) -> ExprNode:
+  match n:
+    Num: return n
+    Add: return ExprNode.Add {left: n.left + by, right: n.right + by}
+
+fn mkAdd({left: Expr, right: Expr}) -> Expr:
+  var slots = left.slots
+  let off = 0
+  for s in right.slots:
+    slots = {items: slots, value: {n: s, by: 0} shift} push
+  return {slots: slots, root: 0} Expr
+
+fn main() -> int:
+  let a = {value: 3} mkNum
+  return a.slots[a.root].value - 3

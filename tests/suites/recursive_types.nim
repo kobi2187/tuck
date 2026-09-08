@@ -208,4 +208,55 @@ fn main() -> int:
   t.hostBuilds "...and every backend emits a name that cannot collide"
   t.runs "...and the payload reads back through a match", 0
 
+  # --- 7. a variant construction's payload is CHECKED ---------------------
+  # It was not, because it was never synthesized: `Type.Variant {payload}`
+  # parses as an exkField carrying a dotArg, and asVariantConstruction
+  # answered with the owner's type and returned. So both of these passed
+  # `tuck ch`, and — the same cause — nothing inside a payload had a stamped
+  # type, which is why a field access in one lost its variant projection and
+  # emitted `n.left` where `n.tuck_add.left` was meant.
+  t.src """
+type N:
+  | Num({value: int})
+
+fn main() -> int:
+  let a = N.Num {value: "a string, not an int"}
+  return 0
+"""
+  t.badCheck "a wrong-typed variant payload field is rejected", "TK-TY22"
+  t.badCheck "...and the message names the variant and the field",
+             "variant 'Num' field 'value' expects int"
+
+  t.src """
+type N:
+  | Num({value: int})
+
+fn main() -> int:
+  let a = N.Num {nosuchfield: 1}
+  return 0
+"""
+  t.badCheck "a misspelled variant payload field is rejected", "TK-TY22"
+  t.badCheck "...and the message lists what the variant does declare",
+             "it declares value"
+
+  # The projection that the missing stamp broke.
+  t.src """
+type N:
+  | Num({value: int})
+  | Add({left: int, right: int})
+
+fn shifted({n: N, by: int}) -> N:
+  match n:
+    Num: return n
+    Add: return N.Add {left: n.left + by, right: n.right + by}
+
+fn main() -> int:
+  let a = N.Add {left: 1, right: 2}
+  let b = {n: a, by: 10} shifted
+  return b.left - 11
+"""
+  t.okCheck "a field read INSIDE a variant payload checks"
+  t.hostBuilds "...and every backend projects it through the right variant"
+  t.runs "...and reads the value it was narrowed to", 0
+
   t.finish()

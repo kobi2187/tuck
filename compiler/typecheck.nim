@@ -418,6 +418,45 @@ proc sealedEntryOnly(tc: TypeChecker, t: Type, e: Expr): bool =
   isSealed(t) and t.variants.len > 0 and e.fieldName != t.variants[0].name and
     not e.ctorUnsafe and not tc.transitionCtx
 
+proc checkVariantPayload(tc: var TypeChecker, declared: Type, variant: string,
+                         payload: Expr, sp: Span) =
+  ## The `{payload}` of a `Type.Variant {payload}` construction, checked
+  ## against what that variant declares.
+  ##
+  ## Nothing checked it, because nothing SYNTHESIZED it: a variant
+  ## construction parses as an exkField carrying a dotArg, and
+  ## asVariantConstruction answered with the owner's type and returned. So
+  ## `N.Num {value: "a string"}` and `N.Num {nosuchfield: 1}` both passed
+  ## `tuck ch` — and, downstream, the payload's own expressions had no
+  ## stamped type either, which is why a field access inside one lost its
+  ## variant projection and emitted `n.left` where `n.tuck_add.left` was
+  ## meant (found by hand-writing the lowered form of a recursive type).
+  if payload == nil or payload.kind != exkStruct: return
+  var fields: seq[FieldDef]
+  for v in declared.variants:
+    if v.name == variant: fields = v.fields
+  var names: seq[string]
+  for f in fields: names.add(f.name)
+  let declaredNames = names.join(", ")
+  var hints = initTable[string, Type]()
+  for f in fields: hints[f.name] = f.typ
+  tc.withFieldHints(hints):
+    for pf in payload.fields:
+      var declaredT: Type = nil
+      for f in fields:
+        if f.name == pf.name: declaredT = f.typ
+      let vt = tc.synthFieldValue(pf)
+      if declaredT == nil:
+        fail(dcTyVariantPayload,
+             "variant '" & variant & "' has no field '" & pf.name &
+             "' — it declares " & (if fields.len == 0: "no payload at all"
+                                   else: declaredNames),
+             pf.value.span)
+      if not isUnknown(vt) and not tc.compatible(vt, declaredT):
+        fail(dcTyVariantPayload,
+             "variant '" & variant & "' field '" & pf.name & "' expects " &
+             typeName(declaredT) & " but got " & typeName(vt), pf.value.span)
+
 proc asVariantConstruction(tc: var TypeChecker, e: Expr): Type =
   ## `Type.Variant` — constructing a sum type's variant by name.
   if e.receiver == nil or e.receiver.kind != exkVar or
@@ -429,6 +468,7 @@ proc asVariantConstruction(tc: var TypeChecker, e: Expr): Type =
          " cannot be constructed directly — sealed types start at '" &
          declared.variants[0].name & "'; reach '" & e.fieldName &
          "' via transitions, or mark [unsafe] for deserialization", e.span)
+  tc.checkVariantPayload(declared, e.fieldName, e.dotArg, e.span)
   Type(span: e.span, kind: tkNamed, name: e.receiver.name)
 
 proc unwrapSingleField(arg: Expr): Expr =

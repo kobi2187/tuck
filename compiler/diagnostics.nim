@@ -86,6 +86,7 @@ type
     dcTyMissingReturnValue = "TK-TY19"  ## bare `return` where a value is required
     dcTyUntypedEmptyList = "TK-TY20"    ## `[]` with nothing to say what it holds
     dcTyNoSuchField = "TK-TY21"         ## `with` naming a field the record has not got
+    dcTyVariantPayload = "TK-TY22"      ## a sum variant's payload does not match its declaration
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -335,6 +336,14 @@ proc valueFitExplanation(d: DiagCode): string =
     "(`var xs = [firstItem]`), or pass it straight into the `Seq[T]` " &
     "position that gives it a type. There is no local type annotation to " &
     "write instead."
+  of dcTyVariantPayload:
+    "A `Type.Variant {payload}` construction supplies the fields that variant " &
+    "DECLARES, and only those, each at its declared type. This went " &
+    "unchecked for a long time — the payload of a variant construction was " &
+    "never synthesized at all, so a wrong type and a misspelled name both " &
+    "passed, and the emitted code then read the payload through whichever " &
+    "variant happened to declare that field first. Fix: check the name and " &
+    "the type against the variant's declaration."
   of dcTyNoSuchField:
     "`with` is the copy-modify-return shortcut: it copies the receiver, " &
     "replaces the fields you name, and hands back the SAME type — which is " &
