@@ -1115,7 +1115,11 @@ when isMainModule:
           let odRc = execShellCmd(odinCmd)
           let odMs = (epochTime() - odT0) * 1000
           if odRc != 0:
-            echo "tuck: odin compilation failed"
+            # `die`, not `echo`. Printing and carrying on meant `tuck b --odin`
+            # exited 0 with a failed host compile, so every suite assertion
+            # that reads the exit code was blind to it — the Nim arm has always
+            # used `die`. See the D arm below for what that cost.
+            die("tuck: odin compilation failed")
           else:
             echo "built ", odinBin, "  ", reportBuild(odinBin, odMs)
       of bkDlang:
@@ -1184,7 +1188,10 @@ when isMainModule:
           let dRc = execShellCmd(dCmd)
           let dMs = (epochTime() - dT0) * 1000
           if dRc != 0:
-            echo "tuck: dmd compilation failed"
+            # `die`, not `echo`. This is why a broken D emission sat in the
+            # corpus green: `tuck b --dlang` reported the dmd error on stdout
+            # and then exited 0, so d_backend's example sweep could not see it.
+            die("tuck: dmd compilation failed")
           else:
             echo "built ", dBin, "  ", reportBuild(dBin, dMs)
     echo "OK (", elapsedMs(t0), ")"

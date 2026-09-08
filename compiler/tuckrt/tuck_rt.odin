@@ -96,23 +96,37 @@ tuckConcat :: proc(a, b: string) -> string {
 // `at` — brackets are grammar, so they must work without `import seq`,
 // and the reserved `tuck` prefix keeps them clear of a user's own `at`.
 // std/seq.tuck's `at`/`setAt` stay as the explicit spelling, delegating.
-tuckAt :: proc(items: []$T, index: int) -> T {
+// Each comes in a SLICE and a DYNAMIC form, grouped. Tuck's `Seq[T]` emits as
+// `[dynamic]T`, and while Odin converts a dynamic array to a slice implicitly
+// in an ordinary call, it will NOT do so while inferring `$T` — `xs[0]` on a
+// Seq field reported "Cannot determine polymorphic type from parameter:
+// '[dynamic]int' to '[]$T'". So reading a Seq by index did not compile on this
+// backend at all; nothing in the corpus indexed one.
+tuckAt_slice :: proc(items: []$T, index: int) -> T {
 	assert(index >= 0 && index < len(items), "at: index out of bounds")
 	return items[index]
 }
 
-at :: proc(items: []$T, index: int) -> T {
-	return tuckAt(items, index)
+tuckAt_dyn :: proc(items: [dynamic]$T, index: int) -> T {
+	return tuckAt_slice(items[:], index)
 }
 
-tuckSetAt :: proc(items: []$T, index: int, value: T) {
+tuckAt :: proc{tuckAt_slice, tuckAt_dyn}
+
+at :: proc{tuckAt_slice, tuckAt_dyn}
+
+tuckSetAt_slice :: proc(items: []$T, index: int, value: T) {
 	assert(index >= 0 && index < len(items), "setAt: index out of bounds")
 	items[index] = value
 }
 
-setAt :: proc(items: []$T, index: int, value: T) {
-	tuckSetAt(items, index, value)
+tuckSetAt_dyn :: proc(items: [dynamic]$T, index: int, value: T) {
+	tuckSetAt_slice(items[:], index, value)
 }
+
+tuckSetAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
+
+setAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
 
 // Value semantics: allocates its own backing array rather than growing
 // `items` in place, so `items`'s own backing store is never shared with

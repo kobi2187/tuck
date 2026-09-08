@@ -134,12 +134,12 @@ void handleMsg_tuck_Decoder(ref tuck_Decoder self, tuck_DecoderMsg msg) {
             auto rate = msg.rate;
             final switch (self.state.kind) {
             case tuck_PlayerStateKind.Idle:
-                self.state = tuck_PlayerState(tuck_PlayerStateKind.Decoding, tuck_PlayerState_Decoding(sampleRate: rate));
+                self.state = tuck_PlayerState(kind: tuck_PlayerStateKind.Decoding, decoding: tuck_PlayerState_Decoding(sampleRate: rate));
                 raise_tuck_SystemEvents_PlaybackStarted();
                 tuck_DAC_CR_EN_set(true);
                 break;
             case tuck_PlayerStateKind.Paused:
-                self.state = tuck_PlayerState(tuck_PlayerStateKind.Decoding, tuck_PlayerState_Decoding(sampleRate: rate));
+                self.state = tuck_PlayerState(kind: tuck_PlayerStateKind.Decoding, decoding: tuck_PlayerState_Decoding(sampleRate: rate));
                 raise_tuck_SystemEvents_PlaybackStarted();
                 tuck_DAC_CR_EN_set(true);
                 break;

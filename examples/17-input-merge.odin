@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package main
 
 TRec_title_duration_playSpeed_volume_speed_F007 :: struct {

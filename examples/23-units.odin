@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package main
 
 TRec_done_7275 :: struct {

@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package main
 
 import sys "./mod_sys"

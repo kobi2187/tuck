@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package main
 
 TRec_a_b_op_6BF3 :: struct {

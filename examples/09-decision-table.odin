@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package main
 
 tuck_Priority :: enum { high, low }

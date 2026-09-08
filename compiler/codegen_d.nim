@@ -323,9 +323,14 @@ proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
       if pf[0] == f.name:
         parts.add(f.name & ": " & ctx.genDExpr(pf[1]))
         break
-  # A tagged struct is built by naming the discriminant and the variant's
-  # own union member — D's named struct literal reaches both.
-  typeName & "(" & typeName & "Kind." & variantName & ", " &
+  # A tagged struct is built by NAMING the discriminant and the variant's own
+  # union member. Positionally, the second argument binds to the union's FIRST
+  # member whatever variant this is, so `Shape.Rect` built a `Shape_Circle`
+  # slot and dmd rejected it — every payload variant after the first was
+  # unbuildable on this backend. The union is anonymous, so its members are
+  # members of the struct and a named literal reaches them.
+  typeName & "(kind: " & typeName & "Kind." & variantName & ", " &
+    variantName.toLowerAscii() & ": " &
     typeName & "_" & variantName & "(" & parts.join(", ") & "))"
 
 proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =

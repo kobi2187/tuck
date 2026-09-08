@@ -931,9 +931,18 @@ fn main() -> int [io]:
   for w in dCompile.split({' ', '\n'}):
     if w.len == 0: continue
     let proj = dProjFor(w)
-    dBuildIdx.add (w, t.needCmd(@["./tuck", "c", "examples/" & w & ".tuck",
+    # `b`, not `c`. This swept with `tuck c` — EMISSION only — so "d compile
+    # <example>" asserted that Tuck produced a .d file, never that dmd accepts
+    # it. Odin's twin sweep has always run `odin build`. Under the weaker
+    # assertion, `12-transition-the-ctor-exception.d` sat in the corpus
+    # constructing MqttSession.Connected into the `connecting` union member,
+    # green, until a spike compiled it by hand.
+    #
+    # vBuild because it is now a real backend compile: registered as vCheck it
+    # would run in `--check` and cost a second apiece, defeating the mode.
+    dBuildIdx.add (w, t.needCmd(@["./tuck", "b", "examples/" & w & ".tuck",
                                   "--dlang", "-o:" & proj,
-                                  "--root:" & t.root]))
+                                  "--root:" & t.root], verb = vBuild))
 
   # RUN uses `tuck b`, NOT a hand-assembled dmd invocation: some of these
   # (35/36/37) link a vendored C object, and only tuck.nim's own build path

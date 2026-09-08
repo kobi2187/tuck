@@ -11,6 +11,15 @@ import ast_query
 import codegen_common
 import codegen_odin_ctx
 import codegen_odin_util
+
+# Odin refuses a compound literal for a `[dynamic]T` unless the file opts in:
+# "Compound literals of dynamic types are disabled by default". Tuck's `Seq[T]`
+# IS `[dynamic]T`, so `{items: [3, 4]} Bag` — a Seq literal in any record
+# field — did not compile on this backend at all. The corpus never caught it
+# because no example builds a Seq inside a record. The directive must lead the
+# file, before `package`.
+const odinFeatures = "#+feature dynamic-literals\n"
+
 from mangle import mangleName
 import ./codegen_odin_decl
 import ./codegen_odin
@@ -60,7 +69,7 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   # module called `io` or `os` would collide with core:io / core:os. The
   # emitted package carries a tuck_ prefix; the import alias at the use site
   # keeps the Tuck name, so qualified calls still read as `io.printLine`.
-  var res = "package tuck_" & pkg & "\n\n"
+  var res = odinFeatures & "package tuck_" & pkg & "\n\n"
   # This file lives in mod_<pkg>/, so siblings are one level up.
   var imports: seq[string]
   if "fmt." in body: imports.add("import \"core:fmt\"")
@@ -154,7 +163,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
 
 # Odin errors on unused imports, so the header is assembled from what the
 # body actually referenced rather than emitted wholesale.
-const odinPackage = "package main\n\n"
+const odinPackage = odinFeatures & "package main\n\n"
 
 proc emitOdin*(m: Module, res: Resolution,
                realModules = initTable[string, Module](),

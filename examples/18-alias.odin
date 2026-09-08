@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package main
 
 TRec_trackId_title_durationMs_80A6 :: struct {
