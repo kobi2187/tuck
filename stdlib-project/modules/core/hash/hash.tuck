@@ -1,0 +1,56 @@
+# core.hash — non-cryptographic hashing.
+#
+# FNV-1a, 64-bit. Not a security primitive: no collision resistance against a
+# hostile input. `alloc.map` and `alloc.set` are written on this, which is why
+# it comes second in the build order — six modules want a map.
+#
+# WRITTEN IN TUCK, deliberately. The same fold exists hand-mirrored in
+# tuck_rt.nim, tuck_rt.odin and tuck_rt.d today; only the pieces that CANNOT
+# be expressed in Tuck earn a backend shim, and a fold over bytes is not one
+# of them. The primitives it stands on — bitXor, and the byte of a character —
+# are shims; this is not.
+import bits
+import str
+
+fn fnvOffsetBasis() -> u64:
+  return 14695981039346656037
+
+fn fnvPrime() -> u64:
+  return 1099511628211
+
+# One step of the fold: mix the byte in, THEN multiply. That order is what
+# makes it FNV-1a rather than FNV-1, and it is the reason the low bits of the
+# input reach the high bits of the digest.
+fn fnvStep({acc: u64, octet: u64}) -> u64:
+  let mixed = {a: acc, b: octet} bitXor
+  return mixed * fnvPrime
+
+fn hashStr({data: str}) -> u64:
+  var h = fnvOffsetBasis
+  for i in 0 .. data.len - 1:
+    let ch = {s: data, index: i} charAt
+    let code = {ch: ch} ord
+    h = {acc: h, octet: {value: code} u64} fnvStep
+  return h
+
+# Combining two digests, for a record or a tuple key. Feeding the second
+# digest through the same step keeps one mixing rule rather than inventing a
+# second one here.
+fn combine({a: u64, b: u64}) -> u64:
+  return {acc: a, octet: b} fnvStep
+
+fn main() -> int:
+  # FNV-1a of "" is the offset basis, by definition — an empty fold.
+  if {data: ""} hashStr != fnvOffsetBasis:
+    return 1
+  # Distinct inputs, distinct digests; and the same input twice agrees.
+  let a = {data: "hello"} hashStr
+  let b = {data: "world"} hashStr
+  if a == b:
+    return 2
+  if a != {data: "hello"} hashStr:
+    return 3
+  # Order matters: FNV-1a is not a sum.
+  if {data: "ab"} hashStr == {data: "ba"} hashStr:
+    return 4
+  return 0

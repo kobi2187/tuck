@@ -1,0 +1,312 @@
+# core.num — arithmetic that says what happens on overflow, and an integer
+# used as a small set of flags.
+#
+# WRITTEN IN TUCK. The only shims underneath are std/bits (the six bit
+# operations, which have no operator spelling) and the primitive conversions.
+# Everything here is ordinary Tuck on top of those.
+#
+# What the Nim design had and this does NOT: the `addClamped`/`addWrapped`
+# families. Tuck says that once, on the type — `type SafeRPM = u16
+# [saturating]` — so every ordinary `+` obeys it and no call site can forget.
+# See API.tuck.md. The `try*` family survives because "there is no valid
+# answer" (overflow OR divide-by-zero) is a different question from "clamp
+# it", and `?T` is its carrier: present is the answer, a bare `return` is
+# absence.
+import bits
+import seq
+
+type ByteOrder:
+  | Big
+  | Little
+
+# --- the bounds, as values -------------------------------------------------
+# i64's minimum has no literal spelling: `-9223372036854775808` lexes as the
+# POSITIVE 9223372036854775808 first, which is past i64's max and so types as
+# u64. Deriving it from the max avoids the question entirely.
+fn i64Max() -> i64:
+  return 9223372036854775807
+
+fn i64Min() -> i64:
+  return 0 - i64Max - 1
+
+# --- arithmetic that can decline to answer ---------------------------------
+# Every check is written BEFORE the operation, never after: testing the result
+# of an overflow that already happened is testing a value the language never
+# promised.
+fn tryAdd({a: i64, b: i64}) -> i64?:
+  if b > 0 and a > i64Max - b:
+    return
+  if b < 0 and a < i64Min - b:
+    return
+  return a + b
+
+fn trySub({a: i64, b: i64}) -> i64?:
+  if b < 0 and a > i64Max + b:
+    return
+  if b > 0 and a < i64Min + b:
+    return
+  return a - b
+
+# The four sign quadrants, each tested against the bound that quadrant can
+# cross. Every branch divides by one of the operands, so tryMul's zero guard
+# has to come first — this proc is only ever asked about non-zero pairs.
+fn mulFits({a: i64, b: i64}) -> bool:
+  if a > 0:
+    if b > 0:
+      return a <= i64Max /i b
+    return b >= i64Min /i a
+  if b > 0:
+    return a >= i64Min /i b
+  return a >= i64Max /i b
+
+fn tryMul({a: i64, b: i64}) -> i64?:
+  if a == 0 or b == 0:
+    return 0
+  if not {a: a, b: b} mulFits:
+    return
+  return a * b
+
+# Two ways to have no answer, one shape for both: zero divisor, and the single
+# overflowing division (i64Min /i -1 has no representable result).
+fn tryDiv({a: i64, b: i64}) -> i64?:
+  if b == 0:
+    return
+  if a == i64Min and b == 0 - 1:
+    return
+  return a /i b
+
+# --- an integer as a set of flags ------------------------------------------
+# u64 throughout, per std/bits: a right shift on a signed type is arithmetic,
+# which is never what a mask wants.
+fn bitMask({at: int}) -> u64:
+  return {a: 1, by: at} shiftLeft
+
+fn hasBit({x: u64, at: int}) -> bool:
+  return {a: x, b: {at: at} bitMask} bitAnd != 0
+
+fn withBit({x: u64, at: int}) -> u64:
+  return {a: x, b: {at: at} bitMask} bitOr
+
+fn withoutBit({x: u64, at: int}) -> u64:
+  return {a: x, b: {a: {at: at} bitMask} bitNot} bitAnd
+
+fn flipBit({x: u64, at: int}) -> u64:
+  return {a: x, b: {at: at} bitMask} bitXor
+
+fn countBits({x: u64}) -> int:
+  var n = 0
+  for i in 0 .. 63:
+    if {x: x, at: i} hasBit:
+      n = n + 1
+  return n
+
+# Absent when nothing is set, rather than the traditional "returns the bit
+# width" sentinel that every caller forgets to check.
+fn lowestSetBit({x: u64}) -> int?:
+  for i in 0 .. 63:
+    if {x: x, at: i} hasBit:
+      return i
+  return
+
+fn highestSetBit({x: u64}) -> int?:
+  var best = 0 - 1
+  for i in 0 .. 63:
+    if {x: x, at: i} hasBit:
+      best = i
+  if best < 0:
+    return
+  return best
+
+# Present only when EXACTLY one bit is set — sudoku's naked single, in one
+# call rather than `countBits == 1` followed by `lowestSetBit`.
+fn onlyBit({x: u64}) -> int?:
+  if {x: x} countBits != 1:
+    return
+  for i in 0 .. 63:
+    if {x: x, at: i} hasBit:
+      return i
+  return
+
+# An empty `Seq[int]`. `[]` alone is TK-TY20 (no element type) and a local
+# carries no type annotation, so the element type comes from a return type.
+fn noIndices() -> Seq[int]:
+  return []
+
+fn noBytes() -> Seq[u8]:
+  return []
+
+# Named for what you get — the positions that are set, lowest first. Returns a
+# Seq rather than iterating, so the allocation is visible in the type.
+fn setBits({x: u64}) -> Seq[int]:
+  var acc = noIndices
+  for i in 0 .. 63:
+    if {x: x, at: i} hasBit:
+      acc = {items: acc, value: i} push
+  return acc
+
+# --- binary formats --------------------------------------------------------
+# One place decides where byte `index` lives, so `toBytes` and `fromBytes`
+# cannot disagree about an endianness.
+fn shiftFor({order: ByteOrder, index: int}) -> int:
+  match order:
+    Big: return 56 - index * 8
+    Little: return index * 8
+
+fn byteAt({value: u64, shift: int}) -> u8:
+  let moved = {a: value, by: shift} shiftRight
+  return {value: {a: moved, b: 255} bitAnd} u8
+
+fn toBytes({value: u64, order: ByteOrder}) -> Seq[u8]:
+  var acc = noBytes
+  for i in 0 .. 7:
+    let shift = {order: order, index: i} shiftFor
+    acc = {items: acc, value: {value: value, shift: shift} byteAt} push
+  return acc
+
+# Absent on the wrong length — eight bytes or no answer.
+fn fromBytes({bytes: Seq[u8], order: ByteOrder}) -> u64?:
+  if bytes.len != 8:
+    return
+  var acc = {value: 0} u64
+  for i in 0 .. 7:
+    let octet = {value: bytes[i]} u64
+    let shift = {order: order, index: i} shiftFor
+    acc = {a: acc, b: {a: octet, by: shift} shiftLeft} bitOr
+  return acc
+
+# --- the module's own checks ----------------------------------------------
+# Three groups, because Tuck's SIZE report holds a fn to cc 6 / 8 lines and
+# the stdlib obeys the language's own rule. Each returns 0 or the code of
+# the first thing that was wrong.
+fn checkArith() -> int:
+  let over = {a: i64Max, b: 1} tryAdd
+  if over.ok:
+    return 1
+  let fine = {a: i64Max, b: 0 - 1} tryAdd
+  if not fine.ok:
+    return 2
+  if fine.value != i64Max - 1:
+    return 3
+  return checkArithRest
+
+fn checkArithRest() -> int:
+  let under = {a: i64Min, b: 1} trySub
+  if under.ok:
+    return 4
+  let big2 = {a: i64Max, b: 2} tryMul
+  if big2.ok:
+    return 5
+  let negMin = {a: i64Min, b: 0 - 1} tryMul
+  if negMin.ok:
+    return 6
+  return checkDiv
+
+fn checkDiv() -> int:
+  let prod = {a: 3, b: 4} tryMul
+  if not prod.ok:
+    return 7
+  if prod.value != 12:
+    return 8
+  let byZero = {a: 1, b: 0} tryDiv
+  if byZero.ok:
+    return 9
+  let q = {a: 7, b: 2} tryDiv
+  if not q.ok:
+    return 10
+  if q.value != 3:
+    return 11
+  return 0
+
+fn threeFlags() -> u64:
+  var flags = {value: 0} u64
+  flags = {x: flags, at: 0} withBit
+  flags = {x: flags, at: 5} withBit
+  return {x: flags, at: 63} withBit
+
+fn checkBits() -> int:
+  let flags = threeFlags
+  if {x: flags} countBits != 3:
+    return 12
+  if not {x: flags, at: 5} hasBit:
+    return 13
+  if {x: flags, at: 4} hasBit:
+    return 14
+  return {flags: flags} checkBitSearch
+
+fn checkBitSearch({flags: u64}) -> int:
+  let lo = {x: flags} lowestSetBit
+  if not lo.ok:
+    return 15
+  if lo.value != 0:
+    return 16
+  let hi = {x: flags} highestSetBit
+  if not hi.ok:
+    return 17
+  if hi.value != 63:
+    return 18
+  return {flags: flags} checkBitSets
+
+fn checkBitSets({flags: u64}) -> int:
+  let positions = {x: flags} setBits
+  if positions.len != 3:
+    return 19
+  # More than one bit set, so there is no only-bit.
+  let several = {x: flags} onlyBit
+  if several.ok:
+    return 20
+  return checkOneBit
+
+fn checkOneBit() -> int:
+  let one = {x: {value: 0} u64, at: 7} withBit
+  let only = {x: one} onlyBit
+  if not only.ok:
+    return 21
+  if only.value != 7:
+    return 22
+  return {one: one} checkBitUndo
+
+fn checkBitUndo({one: u64}) -> int:
+  # withoutBit and flipBit are inverses of withBit here.
+  if {x: {x: one, at: 7} withoutBit} countBits != 0:
+    return 23
+  if {x: {x: one, at: 7} flipBit} countBits != 0:
+    return 24
+  # Nothing set means no lowest bit — absence, not a sentinel.
+  let empty = {x: {value: 0} u64} lowestSetBit
+  if empty.ok:
+    return 25
+  return 0
+
+fn checkBytes() -> int:
+  # 258 is 0x0102: the two orders disagree about which end the 2 lands on.
+  let v = {value: 258} u64
+  let big = {value: v, order: ByteOrder.Big} toBytes
+  if big.len != 8:
+    return 26
+  if big[7] != {value: 2} u8:
+    return 27
+  let little = {value: v, order: ByteOrder.Little} toBytes
+  if little[0] != {value: 2} u8:
+    return 28
+  return {v: v, big: big} checkRoundTrip
+
+fn checkRoundTrip({v: u64, big: Seq[u8]}) -> int:
+  let back = {bytes: big, order: ByteOrder.Big} fromBytes
+  if not back.ok:
+    return 29
+  if back.value != v:
+    return 30
+  let oneByte = {items: noBytes, value: {value: 1} u8} push
+  let short = {bytes: oneByte, order: ByteOrder.Big} fromBytes
+  if short.ok:
+    return 31
+  return 0
+
+fn main() -> int:
+  let arith = checkArith
+  if arith != 0:
+    return arith
+  let bits = checkBits
+  if bits != 0:
+    return bits
+  return checkBytes

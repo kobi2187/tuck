@@ -1,0 +1,26 @@
+# std/bits — bit operations. Implemented by tuck_rt.
+#
+# Tuck has no bitwise OPERATORS, and that is a live language question rather
+# than an oversight: `|` is already sum-variant syntax, and a word operator is
+# refused outright (TK-PA11 — `mod`/`div` "parses as a postfix call and
+# silently drops the right operand"). So `&`, `^`, `<<` have no agreed
+# spelling.
+#
+# These need none. They are ordinary postfix calls, declared the same way
+# std/seq.tuck declares `at`/`setAt`, and everything that wants bits is
+# written against them — core.num's bitset half, core.hash's FNV-1a fold.
+# If operators arrive later, no caller that used these has to change.
+#
+# u64 throughout. Bit work belongs on the widest UNSIGNED type: Tuck's `int`
+# is signed, where a right shift is arithmetic (sign-extending) rather than
+# logical, which is almost never what a mask wants.
+extern:
+  fn bitAnd({a: u64, b: u64}) -> u64
+  fn bitOr({a: u64, b: u64}) -> u64
+  fn bitXor({a: u64, b: u64}) -> u64
+  fn bitNot({a: u64}) -> u64
+  # A shift at or past 64 is 0, not undefined. C leaves `x << 64` undefined
+  # and all three backends inherit that from their own codegen, so the runtime
+  # guards it once rather than three times.
+  fn shiftLeft({a: u64, by: int}) -> u64
+  fn shiftRight({a: u64, by: int}) -> u64
