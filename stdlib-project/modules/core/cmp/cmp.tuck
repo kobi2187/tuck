@@ -33,6 +33,30 @@ fn isBefore({o: Order}) -> bool:
     Same: return false
     After: return false
 
+# The generic half. `smaller`/`larger`/`clamped` are the three every other
+# module reaches for, and they are what made generic fns worth fixing on the
+# Odin and D backends — until then only Nim could emit one, and nothing in the
+# corpus was generic enough to notice.
+fn smaller[T]({a: T, b: T}) -> T:
+  if a < b:
+    return a
+  return b
+
+fn larger[T]({a: T, b: T}) -> T:
+  if a < b:
+    return b
+  return a
+
+# Pinned into [low, high]. `low` wins a contradictory range rather than the
+# call failing: a clamp with low > high is a caller bug, but silently
+# returning `high` there would hide it behind a plausible-looking value.
+fn clamped[T]({x: T, low: T, high: T}) -> T:
+  if x < low:
+    return low
+  if high < x:
+    return high
+  return x
+
 fn main() -> int:
   let f = {o: Order.Before} flipped
   let t = {o: Order.Same, next: Order.After} breakTiesWith
@@ -40,4 +64,7 @@ fn main() -> int:
     return 1
   if {o: t} isBefore:
     return 2
-  return 0
+  let s = {a: 3, b: 9} smaller
+  let l = {a: 3, b: 9} larger
+  let c = {x: 42, low: 0, high: 10} clamped
+  return s + l - c - 2
