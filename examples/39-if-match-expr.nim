@@ -2,6 +2,8 @@
 import ../compiler/tuck_rt
 import sys
 
+proc tuck_main*(): void
+
 type tuck_Color* = enum Red, Green, Blue
 
 proc tuck_main*(): void =

@@ -1,6 +1,9 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_playTrack*(id: int, name: string, length: int): void
+proc tuck_main*(): void
+
 proc tuck_playTrack*(id: int, name: string, length: int): void =
   discard
 

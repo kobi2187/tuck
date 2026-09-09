@@ -1,5 +1,7 @@
 {.experimental: "codeReordering".}
 
+proc tuck_main*(): int
+
 proc tuck_main*(): int =
   var tuck_s = 0
   for tuck_i in (0 ..< 4):

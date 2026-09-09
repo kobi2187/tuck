@@ -1,5 +1,8 @@
 {.experimental: "codeReordering".}
 
+proc tuck_classify*(n: int): int
+proc tuck_main*(): int
+
 proc tuck_classify*(n: int): int =
   if (n < 0):
     if true:

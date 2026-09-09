@@ -1,6 +1,8 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_readSensor*(port: uint8): TuckResult[tuple[value: uint16]]
+
 type tuck_Feed* = object
   title*: string
   episodeCount*: int

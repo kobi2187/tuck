@@ -2,6 +2,9 @@
 import ../compiler/tuck_rt
 import sys
 
+proc tuck_plus*(a: int, b: int): int
+proc tuck_main*(): void
+
 type tuck_Adder* = proc(a: int, b: int): int {.closure.}
 
 type tuck_Calc* = object

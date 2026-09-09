@@ -3,6 +3,8 @@ import ../compiler/tuck_rt
 {.compile: "cffi/point.c".}
 import sys
 
+proc tuck_main*(): void
+
 type Point* {.importc: "Point", header: "point.h", bycopy.} = object
   x*: int32
   y*: int32

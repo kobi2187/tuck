@@ -2,6 +2,8 @@
 import ../compiler/tuck_rt
 import time
 
+proc tuck_main*(): void
+
 proc tuck_fetch*[T](payload: T): tuple[hasNew: bool, episodes: int, metadata: string] =
   stderr.writeLine("TUCK PENDING: tuck_fetch invoked (not implemented)")
 

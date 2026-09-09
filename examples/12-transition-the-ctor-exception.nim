@@ -1,6 +1,8 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_main*(): void
+
 type tuck_Config* = object
   url*: string
 

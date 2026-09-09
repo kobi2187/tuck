@@ -2,6 +2,10 @@
 import ../compiler/tuck_rt
 export tuck_rt
 
+proc tuck_ms*(value: uint32): tuck_Milliseconds
+proc tuck_us*(value: uint32): tuck_Microseconds
+proc tuck_s*(value: uint32): tuck_Seconds
+
 type tuck_Milliseconds* = distinct uint32
 proc `+`*(a, b: tuck_Milliseconds): tuck_Milliseconds {.borrow.}
 proc `-`*(a, b: tuck_Milliseconds): tuck_Milliseconds {.borrow.}

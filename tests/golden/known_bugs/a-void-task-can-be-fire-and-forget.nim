@@ -1,6 +1,9 @@
 {.experimental: "codeReordering".}
 import scheduler
 
+proc tuck_done*(): bool
+proc tuck_main*(): int
+
 type tuck_SinkMsgKind* = enum msgPing
 type tuck_SinkMsg* = object
   kind*: tuck_SinkMsgKind

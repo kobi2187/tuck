@@ -1,5 +1,9 @@
 {.experimental: "codeReordering".}
 
+proc tuck_loadEp*(self: tuck_App, n: int): tuck_App
+proc tuck_startAudio*(self: tuck_App): void
+proc tuck_main*(): int
+
 type tuck_App* = object
   n*: int
 

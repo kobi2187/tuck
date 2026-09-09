@@ -1,6 +1,10 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_withDefaults*(self: tuck_ServerConfig): tuck_ServerConfig
+proc tuck_start*(self: tuck_ServerConfig): bool
+proc tuck_main*(): void
+
 type tuck_ServerConfig* = object
   port*: int
   timeout*: uint32

@@ -1,6 +1,11 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_SystemEvents_PlaybackStarted*(): void
+proc tuck_SystemEvents_PlaybackStopped*(): void
+proc tuck_SystemEvents_HardwareError*(code: uint8): void
+proc tuck_main*(): void
+
 type tuck_Hz* = distinct uint32
 proc `+`*(a, b: tuck_Hz): tuck_Hz {.borrow.}
 proc `-`*(a, b: tuck_Hz): tuck_Hz {.borrow.}

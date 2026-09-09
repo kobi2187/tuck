@@ -1,6 +1,10 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_plus*(a: int, b: int): int
+proc tuck_applyOperation*(a: int, b: int, op: tuck_BinOp): int
+proc tuck_main*(): void
+
 type tuck_BinOp* = proc(a: int, b: int): int {.closure.}
 
 type tuck_Ctx* = object

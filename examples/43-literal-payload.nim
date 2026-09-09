@@ -2,6 +2,10 @@
 import ../compiler/tuck_rt
 import sys
 
+proc tuck_double*(value: int): int
+proc tuck_addTen*(value: int): int
+proc tuck_main*(): void
+
 proc tuck_double*(value: int): int =
   return (value * 2)
 

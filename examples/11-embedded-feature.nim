@@ -1,6 +1,9 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_processISR*(event: tuck_SensorEvent): void
+proc tuck_handleUart*(): void
+
 type tuck_SafeRPM* = distinct uint16
 proc `+`*(a, b: tuck_SafeRPM): tuck_SafeRPM {.borrow.}
 proc `-`*(a, b: tuck_SafeRPM): tuck_SafeRPM {.borrow.}

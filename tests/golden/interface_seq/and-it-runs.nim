@@ -1,5 +1,8 @@
 {.experimental: "codeReordering".}
 
+proc tuck_total*(xs: seq[Animal]): int
+proc tuck_main*(): int
+
 type tuck_Dog* = object
   name*: string
 

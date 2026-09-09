@@ -2,6 +2,8 @@
 import ../compiler/tuck_rt
 import sys
 
+proc tuck_main*(): void
+
 proc tuck_main*(): void =
   var tuck_q = (7 div 2)
   var tuck_r = (7.0 / 2.0)

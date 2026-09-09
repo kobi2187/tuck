@@ -1,5 +1,8 @@
 {.experimental: "codeReordering".}
 
+proc tuck_readIt*(n: int): TuckResult[tuple[v: int]]
+proc tuck_main*(): int
+
 proc tuck_readIt*(n: int): TuckResult[tuple[v: int]] =
   return tok((v: n))
 

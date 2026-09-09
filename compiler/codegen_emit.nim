@@ -116,4 +116,7 @@ proc emitNim*(m: Module, res: Resolution,
   for h in ctx.hoisted:
     result.add(h & "\n")
   if ctx.hoisted.len > 0: result.add("\n")
+  # Ahead of the body: codeReordering handles TYPES but not mutually recursive
+  # PROCS — see fnForwardDecls.
+  result.add(fnForwardDecls(m))
   result.add(body)

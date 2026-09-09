@@ -3,6 +3,9 @@ import ../compiler/tuck_rt
 {.compile: "cffi/point.c".}
 import sys
 
+proc tuck_addTwo*(a: int32, b: int32): int32
+proc tuck_main*(): void
+
 type tuck_BinOp* = proc(a: int32, b: int32): int32 {.cdecl.}
 
 type Op* = enum OP_ADD = 10, OP_MUL = 20, OP_NEG = 30

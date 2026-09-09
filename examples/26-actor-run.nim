@@ -2,6 +2,9 @@
 import ../compiler/tuck_rt
 import scheduler
 
+proc tuck_sumReady*(): bool
+proc tuck_main*(): int
+
 type tuck_CounterMsgKind* = enum msgAdd
 type tuck_CounterMsg* = object
   kind*: tuck_CounterMsgKind

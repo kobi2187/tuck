@@ -1,5 +1,7 @@
 {.experimental: "codeReordering".}
 
+proc tuck_main*(): int
+
 type tuck_Priority* = enum high, low
 
 proc tuck_route*(priority: tuck_Priority, encrypted: bool): int =

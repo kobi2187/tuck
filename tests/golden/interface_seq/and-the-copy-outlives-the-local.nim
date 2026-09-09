@@ -1,5 +1,10 @@
 {.experimental: "codeReordering".}
 
+proc tuck_pick*(a: Animal): Animal
+proc tuck_makeOne*(): Animal
+proc tuck_hear*(a: Animal): int
+proc tuck_main*(): int
+
 type tuck_Dog* = object
   name*: string
 

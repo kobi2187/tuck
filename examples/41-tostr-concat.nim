@@ -4,6 +4,8 @@ import str
 import console
 import sys
 
+proc tuck_main*(): void
+
 type tuck_Jar* = object
   count*: int
   label*: string

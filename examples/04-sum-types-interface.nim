@@ -1,6 +1,9 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_loadEpisode*(self: tuck_PodcastApp, episode: tuck_Episode): tuck_PodcastApp
+proc tuck_startAudio*(self: tuck_PodcastApp): void
+
 type tuck_Config* = object
   url*: string
 

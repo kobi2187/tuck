@@ -1,6 +1,10 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_describe*(title: string, volume: int): string
+proc tuck_header*(episode: tuck_Episode, n: int): string
+proc tuck_play*(episode: tuck_Episode, prefs: tuck_PlayerPrefs): string
+
 type tuck_Episode* = object
   title*: string
   duration*: uint32

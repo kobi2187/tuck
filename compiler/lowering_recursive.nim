@@ -49,10 +49,15 @@ proc recursiveSumNames(m: Module): HashSet[string] =
       result.incl(d.name)
 
 proc boxEdgeDecls(m: Module, names: HashSet[string]):
-    Table[string, HashSet[string]] =
-  ## Rewrite each recursive edge's DECLARATION to `Seq[T]`, and report which
-  ## field names were rewritten, per owning type — the expression rewrites
-  ## below need to recognise exactly those.
+    Table[string, Table[string, string]] =
+  ## Rewrite each recursive edge's DECLARATION to `Seq[T]`, and report the
+  ## rewritten fields per owning type as `field -> element type name`.
+  ##
+  ## The ELEMENT type, not the owner's. They differ the moment recursion is
+  ## mutual: `Expr.Block {body: Stmt}` is an edge of Expr whose element is a
+  ## Stmt. Stamping the owner there produced `[dynamic]tuck_Expr{tuck_w}` for
+  ## a Stmt value — which only Odin reported, because Nim and D infer a list
+  ## literal's element type and Odin makes you name it.
   ##
   ## A direct `tkNamed` only. A field already written `Seq[T]` needs nothing,
   ## and one holding `Array[N, T]` is a genuine sizing error TK-TY17 still
@@ -60,21 +65,21 @@ proc boxEdgeDecls(m: Module, names: HashSet[string]):
   for d in m.decls:
     if d == nil or d.kind != dkType or d.name notin names: continue
     if d.typeBody == nil or d.typeBody.kind != tkSum: continue
-    var boxed = initHashSet[string]()
+    var boxed = initTable[string, string]()
     for v in d.typeBody.variants.mitems:
       for f in v.fields.mitems:
         if f.typ != nil and f.typ.kind == tkNamed and f.typ.name in names:
-          boxed.incl(f.name)
+          boxed[f.name] = f.typ.name
           f.typ = seqOf(f.typ)
     if boxed.len > 0: result[d.name] = boxed
 
-proc edgeOwner(res: Resolution, e: Expr,
-               edges: Table[string, HashSet[string]]): string =
-  ## The recursive sum this field access reads an EDGE of, or "".
+proc edgeElem(res: Resolution, e: Expr,
+              edges: Table[string, Table[string, string]]): string =
+  ## The ELEMENT type name this field access reads an edge of, or "".
   if e == nil or e.kind != exkField or e.receiver == nil: return ""
   let t = res.typeFor(e.receiver)
   if t == nil or t.kind != tkNamed or not edges.hasKey(t.name): return ""
-  if e.fieldName in edges[t.name]: t.name else: ""
+  if edges[t.name].hasKey(e.fieldName): edges[t.name][e.fieldName] else: ""
 
 proc wrapValue(res: Resolution, value: Expr, elemT: Type): Expr =
   ## `x` -> `[x]`. The list node is STAMPED: the Odin backend spells a list
@@ -122,7 +127,7 @@ proc variantOf(e: Expr): tuple[owner, variant: string] =
   (f.receiver.name, f.fieldName)
 
 proc rewriteExpr(res: Resolution, e: Expr,
-                 edges: Table[string, HashSet[string]]) =
+                 edges: Table[string, Table[string, string]]) =
   if e == nil: return
   for c in e.children: rewriteExpr(res, c, edges)
 
@@ -133,13 +138,14 @@ proc rewriteExpr(res: Resolution, e: Expr,
     let (owner, _) = variantOf(e)
     if edges.hasKey(owner):
       for i in 0 ..< payload.fields.len:
-        if payload.fields[i].name notin edges[owner]: continue
-        let elemT = Type(span: e.span, kind: tkNamed, name: owner)
+        if not edges[owner].hasKey(payload.fields[i].name): continue
+        let elemT = Type(span: e.span, kind: tkNamed,
+                         name: edges[owner][payload.fields[i].name])
         payload.fields[i].value = wrapValue(res, payload.fields[i].value, elemT)
 
-  let owner = edgeOwner(res, e, edges)
-  if owner != "" and not res.hasCall(e):
-    unwrapRead(res, e, Type(span: e.span, kind: tkNamed, name: owner))
+  let elem = edgeElem(res, e, edges)
+  if elem != "" and not res.hasCall(e):
+    unwrapRead(res, e, Type(span: e.span, kind: tkNamed, name: elem))
 
 proc boxRecursiveEdges*(res: Resolution, m: Module) =
   ## Runs inside lowerModule, on the backend's own copy of the tree.

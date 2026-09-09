@@ -1,6 +1,8 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_main*(): int
+
 type tuck_SafeRPM* = distinct uint16
 proc `+`*(a, b: tuck_SafeRPM): tuck_SafeRPM {.borrow.}
 proc `-`*(a, b: tuck_SafeRPM): tuck_SafeRPM {.borrow.}

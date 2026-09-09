@@ -1,5 +1,8 @@
 {.experimental: "codeReordering".}
 
+proc tuck_both*(ps: seq[tuck_P], qs: seq[tuck_Q]): int
+proc tuck_main*(): int
+
 type tuck_P* = object
   n*: int
 

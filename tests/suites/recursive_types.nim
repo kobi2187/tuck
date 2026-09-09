@@ -381,4 +381,62 @@ fn main() -> int:
   t.badCheck "an Array edge is still rejected — N inline copies is no handle",
              "TK-TY17"
 
+  # --- 11. mutual recursion, written the obvious way ----------------------
+  # Two sums that hold each other, no Seq in sight. Both edges box.
+  t.src """
+type Stmt:
+  | Nop
+  | Wrap({inner: Expr})
+
+type Expr:
+  | Num({value: int})
+  | Block({body: Stmt})
+
+fn evalE({e: Expr}) -> int:
+  match e:
+    Num: return e.value
+    Block: return {s: e.body} evalS
+
+fn evalS({s: Stmt}) -> int:
+  match s:
+    Nop: return 0
+    Wrap: return {e: s.inner} evalE
+
+fn main() -> int:
+  let n = Expr.Num {value: 7}
+  let w = Stmt.Wrap {inner: n}
+  let b = Expr.Block {body: w}
+  return {e: b} evalE - 7
+"""
+  t.okCheck "two sums holding each other are accepted"
+  t.hostBuilds "...and every backend builds the pair"
+  t.runs "...and the walk crosses both types", 0
+
+  # --- 12. mutually recursive FUNCTIONS -----------------------------------
+  # Nothing to do with recursive types, and broken on Nim alone:
+  # `{.experimental: "codeReordering".}` does not carry mutually recursive
+  # PROCS, so `isEven` calling an `isOdd` declared below it reported
+  # `undeclared identifier`. Odin and D resolve top-level declarations
+  # order-independently, so this compiled on two backends out of three.
+  t.src """
+fn isEven({n: int}) -> bool:
+  if n == 0:
+    return true
+  return {n: n - 1} isOdd
+
+fn isOdd({n: int}) -> bool:
+  if n == 0:
+    return false
+  return {n: n - 1} isEven
+
+fn main() -> int:
+  if {n: 4} isEven:
+    return 0
+  return 1
+"""
+  t.okCheck "mutually recursive fns check"
+  t.emits "the Nim backend forward-declares them", r"proc tuck_isOdd\*\(n: int\): bool\n"
+  t.hostBuilds "...and every backend builds them"
+  t.runs "...and 4 is even", 0
+
   t.finish()

@@ -2,6 +2,9 @@
 import ../compiler/tuck_rt
 import scheduler
 
+proc tuck_ready*(): bool
+proc tuck_main*(): int
+
 type tuck_AccumulatorMsgKind* = enum msgAdd, msgFinish, msgShutdown
 type tuck_AccumulatorMsg* = object
   kind*: tuck_AccumulatorMsgKind

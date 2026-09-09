@@ -1,6 +1,10 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_admit*(id: uint32): int
+proc tuck_drainOnce*(): int
+proc tuck_main*(): int
+
 type tuck_Session* = object
   clientId*: uint32
   bytesIn*: uint32

@@ -3,6 +3,8 @@ import ../compiler/tuck_rt
 export tuck_rt
 import time
 
+proc tuck_main*(): int
+
 proc tuck_readOrGiveUp*(fd: int): tuple[code: int] =
   if tuckAwaitReadOrTimeout(fd, int(tuck_ms(30))):
     return (code: 1)

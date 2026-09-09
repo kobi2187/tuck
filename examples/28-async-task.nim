@@ -1,6 +1,9 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_stepIo*(n: int): tuple[v: int]
+proc tuck_main*(): int
+
 proc tuck_stepIo*(n: int): tuple[v: int] =
   return (v: n)
 

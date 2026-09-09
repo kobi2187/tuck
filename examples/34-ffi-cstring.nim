@@ -7,6 +7,8 @@ export zlib_shim
 import sys
 import console
 
+proc tuck_main*(): void
+
 proc compressBound*(sourceLen: uint64): uint64 {.importc: "compressBound", header: "zlib.h".}
 
 proc tuck_main*(): void =

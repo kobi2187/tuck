@@ -3,6 +3,8 @@ import ../compiler/tuck_rt
 import fs
 import console
 
+proc tuck_main*(): void
+
 proc tuck_main*(): void =
   var tuck_w = fs.writeFile("/tmp/tuck-demo.txt", "hello from tuck")
   if tuck_w.ok:

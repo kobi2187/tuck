@@ -3,6 +3,10 @@ import ../compiler/tuck_rt
 import sys
 import time
 
+proc tuck_asInt*(d: tuck_Milliseconds): int
+proc tuck_budget*(d: tuck_Milliseconds): tuple[ok: bool]
+proc tuck_main*(): void
+
 proc tuck_asInt*(d: tuck_Milliseconds): int =
   return 42
 

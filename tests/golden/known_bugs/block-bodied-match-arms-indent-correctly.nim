@@ -1,5 +1,8 @@
 {.experimental: "codeReordering".}
 
+proc tuck_describe*(l: tuck_Light): int
+proc tuck_main*(): int
+
 type tuck_Light* = enum Red, Green
 
 proc tuck_describe*(l: tuck_Light): int =

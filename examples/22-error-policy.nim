@@ -1,6 +1,9 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_readSensor*(port: uint8): TuckResult[tuple[value: uint16]]
+proc tuck_poll*(port: uint8): int
+
 proc tuck_unhandled*(code: uint16, site: string) =
   tuckReportUnhandled(code, site)
 

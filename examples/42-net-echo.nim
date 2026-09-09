@@ -3,6 +3,9 @@ import ../compiler/tuck_rt
 import net
 import scheduler
 
+proc tuck_done*(): bool
+proc tuck_main*(): int
+
 type tuck_ResultMsgKind* = enum msgPut
 type tuck_ResultMsg* = object
   kind*: tuck_ResultMsgKind

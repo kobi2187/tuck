@@ -1,5 +1,7 @@
 {.experimental: "codeReordering".}
 
+proc tuck_main*(): int
+
 type tuck_A* = object
   x*: int
 

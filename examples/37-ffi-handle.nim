@@ -3,6 +3,8 @@ import ../compiler/tuck_rt
 {.compile: "cffi/point.c".}
 import sys
 
+proc tuck_main*(): void
+
 type CounterObj {.importc: "Counter", header: "point.h", incompleteStruct.} = object
 type Counter* = ptr CounterObj
 

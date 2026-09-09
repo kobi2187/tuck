@@ -1,6 +1,10 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_ms*(value: uint32): tuck_Milliseconds
+proc tuck_delay*(ms: tuck_Milliseconds): tuple[done: bool]
+proc tuck_main*(): void
+
 type tuck_Milliseconds* = distinct uint32
 proc `+`*(a, b: tuck_Milliseconds): tuck_Milliseconds {.borrow.}
 proc `-`*(a, b: tuck_Milliseconds): tuck_Milliseconds {.borrow.}

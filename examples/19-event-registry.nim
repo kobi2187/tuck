@@ -1,6 +1,10 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_triggerEvent*(): void
+proc tuck_AppEvents_SensorFailure*(port: uint8, reason: string): void
+proc tuck_AppEvents_LowMemory*(remaining: uint32): void
+
 type tuck_AppEventsKind* = enum SensorFailure, LowMemory
 type tuck_AppEvents* = ref object
     kind*: tuck_AppEventsKind

@@ -89,6 +89,15 @@ proc genDecisionFn*(ctx: var CodegenCtx, d: Decl, fnNameSanitized: string): stri
     return ctx.genPackedTable(d, header, domains, comboCount)
   ctx.genConditionChain(d, header)
 
+proc fnHeaderNim*(name, genericStr: string, params: seq[string],
+                  retTypeStr, inlineStr: string): string =
+  ## A fn's Nim signature, without the trailing ` =`. Shared by the definition
+  ## and by the forward declaration emitNim writes ahead of the body, so the
+  ## two cannot drift — Nim rejects a forward declaration whose signature
+  ## differs from its definition by so much as a pragma.
+  "proc " & name & "*" & genericStr & "(" & params.join(", ") & "): " &
+    retTypeStr & inlineStr
+
 proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     if d.isPending:
       return genPendingStub(d)
@@ -125,7 +134,8 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     # Generic fns pass their type params straight through — Nim monomorphizes
     let genericStr = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]" else: ""
     let inlineStr = if d.isInline: " {.inline.}" else: ""
-    let header = "proc " & fnNameSanitized & "*" & genericStr & "(" & params.join(", ") & "): " & retTypeStr & inlineStr & " ="
+    let header = fnHeaderNim(fnNameSanitized, genericStr, params, retTypeStr,
+                             inlineStr) & " ="
     let oldVars = ctx.definedVars
     for p in d.fnParams:
       ctx.definedVars.incl(p.name)
@@ -692,3 +702,27 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return result
   else:
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
+
+proc fnForwardDecls*(m: Module): string =
+  ## Forward-declare every top-level fn, so a call may precede its definition.
+  ##
+  ## `{.experimental: "codeReordering".}` was carrying this, and it does NOT
+  ## carry mutually recursive PROCS: `isEven` calling `isOdd` declared below it
+  ## reported `undeclared identifier: 'tuck_isOdd'`. Odin and D resolve
+  ## top-level declarations order-independently and never had the problem, so
+  ## a pair of mutually recursive fns compiled on two backends out of three.
+  ##
+  ## The pragma stays for TYPES, which is what emitNim's comment there is
+  ## about, and which it does handle.
+  for d in m.decls(dkFn):
+    if d == nil or d.isPending or d.isDecision or d.isDecisionTable(): continue
+    if d.isExtern: continue
+    var params: seq[string]
+    for p in d.fnParams: params.add(p.name & ": " & genType(p.typ))
+    let ret = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
+    let gen = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]"
+              else: ""
+    let inl = if d.isInline: " {.inline.}" else: ""
+    result.add(fnHeaderNim(d.name.replace(".", "_"), gen, params, ret, inl) &
+               "\n")
+  if result.len > 0: result.add("\n")
