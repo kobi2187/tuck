@@ -32,6 +32,7 @@
 import ast
 import resolution, strutils
 import ast_query
+import lowering_recursive   # recursive sum edges get a Seq handle
 
 proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef]
 
@@ -460,6 +461,10 @@ proc hoistTopLevelChainCall(res: Resolution, body: Expr): Expr =
 
 proc lowerModule*(res: Resolution, m: Module) =
   ## Rewrite a module in place into the simpler form the backends expect.
+  # A recursive sum has no finite size as written, so its edges get a handle
+  # before anything tries to emit one. First, because the phases below read
+  # field types.
+  boxRecursiveEdges(res, m)
   # Phase 1: union / rename type bodies collapse to plain records
   for d in m.decls(dkType):
     if d.typeBody != nil and d.typeBody.kind in {tkUnion, tkRename}:

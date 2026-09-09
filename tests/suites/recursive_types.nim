@@ -313,4 +313,72 @@ fn main() -> int:
 """
   t.okCheck "a payload field types outside a match as well"
 
+  # --- 10. THE FEATURE: a recursive sum, written the obvious way ----------
+  # `| Add({left: Expr, right: Expr})` has no finite size as written, which
+  # is what TK-TY17 rejected, and its advice was to write `Seq[Expr]` by
+  # hand. lowering_recursive writes it instead: the edge declaration becomes
+  # `Seq[T]`, a construction wraps (`@[x]`), and a read unwraps (`tuckAt(x, 0)`).
+  t.src """
+type Expr:
+  | Num({value: int})
+  | Add({left: Expr, right: Expr})
+
+fn total({e: Expr}) -> int:
+  match e:
+    Num: return e.value
+    Add: return {e: e.left} total + {e: e.right} total
+
+fn main() -> int:
+  let a = Expr.Num {value: 3}
+  let b = Expr.Num {value: 4}
+  let s = Expr.Add {left: a, right: b}
+  let t = Expr.Add {left: s, right: s}
+  return {e: t} total - 14
+"""
+  t.okCheck "a sum whose variant holds its own type is accepted"
+  t.emits "the edge declaration becomes a handle", r"left: seq\[tuck_Expr\]"
+  t.emits "a construction wraps the value", r"left: @\[tuck_a\]"
+  t.emits "a read unwraps it", r"tuckAt\(e\.tuck_add\.left, 0\)"
+  t.hostBuilds "...and every backend's host compiler accepts the result"
+  t.runs "...and the tree walks: (3+4)+(3+4)", 0
+
+  # Value semantics all the way down: a Seq handle COPIES on assignment, so
+  # a subtree used twice is two subtrees, not one shared node.
+  t.src """
+type Expr:
+  | Num({value: int})
+  | Add({left: Expr, right: Expr})
+
+fn main() -> int:
+  var a = Expr.Num {value: 3}
+  let s = Expr.Add {left: a, right: a}
+  a = Expr.Num {value: 99}
+  match s:
+    Num: return 1
+    Add: return s.left.value - 3
+"""
+  t.okCheck "a subtree is a value, not a reference"
+  t.runs "...so rebinding its source does not change the tree", 0
+
+  # What is still rejected, and why each is different.
+  t.src """
+type Cell = {next: Cell, v: int}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a RECORD containing itself is still rejected", "TK-TY17"
+  t.badCheck "...because it has no variant to end the chain", "field 'next'"
+
+  t.src """
+type Tree:
+  | Leaf({v: int})
+  | Node({kids: Array[4, Tree]})
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an Array edge is still rejected — N inline copies is no handle",
+             "TK-TY17"
+
   t.finish()

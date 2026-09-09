@@ -411,6 +411,13 @@ fn main() -> int:
   # Was caught only by the BACKEND, in the backend's words: `tuck ch` passed,
   # then Nim said `illegal recursion in type 'tuck_Expr'` — a mangled name in
   # a generated file. (FRICTIONS #4.)
+  #
+  # A recursive SUM is no longer among them, as of the recursive-types work:
+  # its variants end the chain, so it is finite once its edges are handles,
+  # and lowering_recursive makes them handles. This assertion said "rejected"
+  # and is kept, inverted, rather than deleted — the behaviour it pinned is
+  # exactly what changed. `tests/suites/recursive_types.nim` carries the
+  # positive cases end to end.
 
   t.src """
 type Expr:
@@ -420,8 +427,7 @@ type Expr:
 fn main() -> int:
   return 0
 """
-  t.badCheck "a sum variant containing its own type is rejected at check time",
-             "contains itself"
+  t.okCheck "a sum variant containing its own type is ACCEPTED (was rejected)"
 
   t.src """
 type Cell = {next: Cell, v: int}

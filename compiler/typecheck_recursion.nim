@@ -89,7 +89,8 @@ iterator reachedTypeNames(t: Type, throughHandles: bool): string =
       # cannot name a declared type inline from a field position here.
 
 proc findCycle(decls: Table[string, Decl], start: string,
-               throughHandles = false):
+               throughHandles = false,
+               boxed = initHashSet[string]()):
     tuple[found: bool, field: string, path: seq[string]] =
   ## Walk the inline-containment graph from `start`, looking for the way back
   ## to it. Reports the FIELD that closes the cycle, which is the one line the
@@ -99,7 +100,15 @@ proc findCycle(decls: Table[string, Decl], start: string,
   while stack.len > 0:
     let (name, viaField, path) = stack.pop()
     if not decls.hasKey(name): continue
+    # A field of a recursive sum whose type IS one of those sums becomes a
+    # handle in lowering_recursive, so it breaks the cycle just as a hand-
+    # written `Seq[T]` does. `Array[N, T]` does NOT: the walk reaches T
+    # through the application's argument rather than as the field's own type,
+    # so it is not boxable and stays a sizing error.
+    let ownerBoxes = name in boxed
     for f in fieldsOf(decls[name]):
+      if ownerBoxes and f.typ != nil and f.typ.kind == tkNamed and
+         f.typ.name in boxed: continue
       for inner in reachedTypeNames(f.typ, throughHandles):
         let closing = if path.len == 1: f.name else: viaField
         if inner == start:
@@ -127,10 +136,25 @@ proc markRecursiveSums*(decls: Table[string, Decl], m: Module) =
 
 proc checkRecursiveTypes*(decls: Table[string, Decl], m: Module) =
   ## Reject a type that contains itself by value, before any backend sees it.
+  ##
+  ## A recursive SUM is no longer one of them. Its variants end the chain — a
+  ## value is one variant, and the ones that do not recur are the base cases —
+  ## so it is finite the moment its edges are handles, and lowering_recursive
+  ## makes them handles. That is the `Seq[Expr]` this check used to demand the
+  ## author write by hand.
+  ##
+  ## A RECORD still fails: no variants, so nothing ends the chain and every
+  ## value really would be infinite. So does an edge this pass cannot box,
+  ## `Array[N, Self]` above all — N inline copies is not a handle.
+  var boxable = initHashSet[string]()
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.typeBody != nil and
+       d.typeBody.kind == tkSum and d.typeBody.recursive:
+      boxable.incl(d.name)
   for d in m.decls:
     if d == nil or d.kind notin {dkType, dkObject}: continue
     if d.name.len == 0: continue
-    let (found, field, path) = findCycle(decls, d.name)
+    let (found, field, path) = findCycle(decls, d.name, boxed = boxable)
     if not found: continue
     # A one-hop cycle and a multi-hop one need different sentences. Saying
     # "field 'back' stores a value of 'Inner'" when it actually stores an

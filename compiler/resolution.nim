@@ -76,7 +76,7 @@ proc ensureId*(e: Expr) =
   ## the semantic layer.
   if e != nil and not e.id.isSet: e.id = newNodeId()
 
-proc setCall*(r: var Resolution, e: Expr, call: Expr) =
+proc setCall*(r: Resolution, e: Expr, call: Expr) =
   if e == nil: return
   ensureId(e)
   r.calls[e.id] = call
@@ -89,7 +89,7 @@ proc call*(r: Resolution, e: Expr): Expr =
 proc hasCall*(r: Resolution, e: Expr): bool =
   e != nil and e.id.isSet and r.calls.hasKey(e.id)
 
-proc markAsync*(r: var Resolution, e: Expr) =
+proc markAsync*(r: Resolution, e: Expr) =
   ## Flag a call site as async — its callee carries [io], so codegen emits the
   ## suspend/await transform (the effect marker IS the async annotation).
   if e == nil: return
@@ -99,7 +99,7 @@ proc markAsync*(r: var Resolution, e: Expr) =
 proc isAsync*(r: Resolution, e: Expr): bool =
   e != nil and e.id.isSet and e.id in r.asyncCalls
 
-proc markWrap*(r: var Resolution, e: Expr, objName, iface: string) =
+proc markWrap*(r: Resolution, e: Expr, objName, iface: string) =
   ## Flag an expression as an interface wrap: a concrete object entering an
   ## interface slot. Codegen emits the tagged variant here rather than the bare
   ## value, copying the object in, and records the pair as demanded so the
@@ -113,7 +113,7 @@ proc wrapOf*(r: Resolution, e: Expr): tuple[objName, iface: string] =
   if e == nil or not e.id.isSet: return (objName: "", iface: "")
   r.wraps.getOrDefault(e.id, (objName: "", iface: ""))
 
-proc markIfaceCall*(r: var Resolution, e: Expr, iface, member: string) =
+proc markIfaceCall*(r: Resolution, e: Expr, iface, member: string) =
   ## Flag `a.noise` as a call THROUGH an interface value: codegen switches on
   ## the value's tag rather than emitting a direct call, because which
   ## implementation runs is carried by the value, not known here.
@@ -190,7 +190,7 @@ proc resetResolution*() =
   semLayer.poolNames = poolNames
   semLayer.mixinNames = mixinNames
 
-proc setStepCall*(r: var Resolution, s: ChainStep, call: Expr) =
+proc setStepCall*(r: Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call
 
 proc stepCall*(r: Resolution, s: ChainStep): Expr =
@@ -199,7 +199,7 @@ proc stepCall*(r: Resolution, s: ChainStep): Expr =
 
 # --- types and shortcut sites ----------------------------------------------
 
-proc setType*(r: var Resolution, e: Expr, t: Type) =
+proc setType*(r: Resolution, e: Expr, t: Type) =
   if e == nil: return
   ensureId(e)
   r.types[e.id] = t
@@ -218,11 +218,11 @@ proc typeFor*(r: Resolution, e: Expr): Type =
 
 # --- name resolution ---------------------------------------------------------
 
-proc indexDecl*(r: var Resolution, d: Decl) =
+proc indexDecl*(r: Resolution, d: Decl) =
   ## Register a declaration so references can point at it.
   if d != nil and d.id.isSet: r.decls[d.id] = d
 
-proc resolveTo*(r: var Resolution, e: Expr, d: Decl) =
+proc resolveTo*(r: Resolution, e: Expr, d: Decl) =
   ## Record that this expression refers to that declaration. Called where the
   ## checker already resolved the name, so the answer costs nothing to keep.
   if e == nil or d == nil or not d.id.isSet: return
@@ -237,7 +237,7 @@ proc declFor*(r: Resolution, e: Expr): Decl =
   if not r.declOf.hasKey(e.id): return nil
   r.decls.getOrDefault(r.declOf[e.id], nil)
 
-proc resolveTypeTo*(r: var Resolution, t: Type, d: Decl) =
+proc resolveTypeTo*(r: Resolution, t: Type, d: Decl) =
   ## Record that this type reference names that declaration. A tkNamed carries
   ## a name because that is what the user wrote; this is what it MEANS.
   if t == nil or d == nil or not d.id.isSet: return
@@ -251,7 +251,7 @@ proc declForType*(r: Resolution, t: Type): Decl =
   if not r.declOf.hasKey(t.id): return nil
   r.decls.getOrDefault(r.declOf[t.id], nil)
 
-proc setArgFields*(r: var Resolution, e: Expr, fields: seq[string]) =
+proc setArgFields*(r: Resolution, e: Expr, fields: seq[string]) =
   ## Which payload field feeds each param, in param order.
   if e == nil: return
   ensureId(e)
@@ -263,7 +263,7 @@ proc argFieldsFor*(r: Resolution, e: Expr): seq[string] =
   if e == nil or not e.id.isSet: return @[]
   r.argFields.getOrDefault(e.id, @[])
 
-proc setCallParams*(r: var Resolution, e: Expr, params: seq[string]) =
+proc setCallParams*(r: Resolution, e: Expr, params: seq[string]) =
   ## The callee's parameter names, in declaration order.
   if e == nil: return
   ensureId(e)
@@ -275,7 +275,7 @@ proc callParamsFor*(r: Resolution, e: Expr): seq[string] =
   if e == nil or not e.id.isSet: return @[]
   r.callParams.getOrDefault(e.id, @[])
 
-proc setShortcut*(r: var Resolution, e: Expr, site: string) =
+proc setShortcut*(r: Resolution, e: Expr, site: string) =
   if e == nil: return
   ensureId(e)
   r.shortcuts[e.id] = site
