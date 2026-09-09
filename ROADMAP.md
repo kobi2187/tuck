@@ -516,17 +516,39 @@ Cost is bounded: it's additive, and abandoning it leaves the tree no worse.
 
 ### 2. Slab allocator — the value-semantics answer for trees
 
-**The problem, from the stdlib translation** (`stdlib-project/`): Tuck is
-value-based with no `ref`, and that is load-bearing for the Tier-1 safety
-argument. Recursive *data* works through `Seq` (a JSON tree typechecks and
-builds), but two things don't:
+**Direct self-containment: DONE, 2026-09-09.** `Add({left: Expr, right: Expr})`
+now checks, builds and runs on all three backends —
+`compiler/lowering_recursive.nim` gives each recursive edge a `Seq[T]` handle,
+a construction wraps and a read unwraps, and none of it is visible: `e.left` is
+an `Expr` and `match` is unchanged. Mutual recursion works too, in either
+declaration order. `examples/44-recursive-tree.tuck`,
+`tests/suites/recursive_types.nim`.
 
-- **Direct self-containment** — `Add({left: Expr, right: Expr})` is
-  infinite-sized; it typechecks and then fails in the backend with
-  `illegal recursion in type` (see `stdlib-project/FRICTIONS.md` #4).
-- **By-reference node identity** — a linked list or an intrusive tree
-  where you hold a cursor into the structure. `alloc.list` was dropped
-  over this.
+That also answers this section's ergonomics question — it is `n.left`, not
+`tree.child(n, 0)` — and it settles the index-vs-slab one for THIS use: the
+handle is not user-visible, so there is no index to mismatch.
+
+Getting there cost 18 fixes, of which exactly ONE was about recursion. The
+rest were pre-existing defects no program had reached: D could not construct a
+payload variant after the first, Odin could not build or index a `Seq` in a
+record, Odin ALIASED where Tuck copies, a variant payload was never
+type-checked or even synthesized, mutually recursive fns did not compile on
+Nim, and `==` on a payload sum was broken on all three backends — silently
+returning the wrong answer on D. The lesson is in the ratio.
+
+**What remains here:**
+
+- **By-reference node identity** — a linked list or an intrusive tree where
+  you hold a cursor into the structure. `alloc.list` was dropped over this,
+  and boxing does not help: a handle copies, so there is no stable identity to
+  hold. This is the real remaining case for a slab.
+- **Sharing.** Two parents holding "the same" child hold two children, and
+  replacing a subtree copies it. A DAG cannot be expressed, and a wide tree
+  costs an allocation per edge. An arena-and-index representation would fix
+  both, and can replace the boxing behind the same author-facing surface —
+  which is why the boxing lives in a pass rather than in the emitters. The
+  arena form was built and run by hand first (all three backends, correct)
+  before the boxed one was chosen for being a tenth the machinery.
 
 **The idea:** a slab — one owned arena of homogeneous slots plus integer
 indices into it. Indices are ordinary values, so nothing about the
@@ -542,8 +564,6 @@ Open questions the experiment should answer:
 - Can index-vs-slab mismatches be caught? A raw `int` index into the wrong
   slab is exactly the class of bug `ref` types prevent; a `distinct` index
   per slab type might recover that.
-- Ergonomics: `tree.child(n, 0)` versus `n.left`. If it stays clumsy,
-  users will reach for externs instead — which is the status quo.
 
 **Why not just rely on externs:** a user shouldn't have to leave the
 language to build a tree. Worth solving inside Tuck even if externs remain

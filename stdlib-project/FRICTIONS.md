@@ -94,15 +94,28 @@ the mismatch surfaces later as a backend type error, or not at all.
 
 ## 4. Direct recursive sum types fail in the *backend*, not the checker
 
-> **RESOLVED 2026-08-29 (detected at check time).** The refusal was always
-> right — Tuck has no references, so a field IS its value and a self-containing
-> type has no finite size. What was wrong is WHERE it was caught: the backend,
-> in the backend's words. `checkRecursiveTypes` now rejects it during `tuck ch`
-> (TK-TY17), naming the field that closes the cycle — or the route, for an
-> indirect one — and pointing at `Seq[T]`. `Array[N, T]` is correctly still
-> refused: it stores N elements inline and does not break the cycle.
-> MUTUAL recursion is a separate, still-open bug (declaration ordering in the
-> emitter, not sizing) — see TODO.md.
+> **RESOLVED 2026-09-09 — it now WORKS.** The snippet below checks, builds and
+> runs on all three backends, exactly as written.
+>
+> The first fix (2026-08-29) moved the refusal from the backend to the checker,
+> which was right as far as it went: TK-TY17 named the field closing the cycle
+> and pointed at `Seq[T]`. But that still made the author write the workaround.
+> `compiler/lowering_recursive.nim` writes it instead — each recursive edge
+> becomes a `Seq[T]` handle, a construction wraps and a read unwraps — and none
+> of it is visible: `e.left` is an `Expr`, `match` is unchanged.
+>
+> A HANDLE, not a pointer, so a subtree is a VALUE: two parents holding "the
+> same" child hold two children. The cost is that a subtree cannot be shared
+> and replacing one copies it.
+>
+> MUTUAL recursion works too, in either declaration order — the "declaration
+> ordering" bug this note referred to had already been fixed for types, and
+> the one that was still real (mutually recursive FNS on Nim) is fixed now.
+> `Array[N, T]` is correctly still refused: it stores N elements inline and is
+> not a handle. So is a RECORD containing itself — it has no variant to end
+> the chain.
+>
+> `examples/44-recursive-tree.tuck`, `tests/suites/recursive_types.nim`.
 
 ```tuck
 type Expr:
