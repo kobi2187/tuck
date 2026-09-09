@@ -842,6 +842,10 @@ fn main() -> int:
     "e31": ("examples/31-fnsig-callback.tuck", "m_31_fnsig_callback", 42),
     "e32": ("examples/32-duration-units.tuck", "m_32_duration_units", 42),
     "e43": ("examples/43-literal-payload.tuck", "m_43_literal_payload", 40),
+    # Run-gated on Nim as well as Odin and D. It was compile-gated here and
+    # RUN on the other two, which is the gap that lets a Nim-side regression
+    # through on a program whose whole claim is what it computes.
+    "e44": ("examples/44-recursive-tree.tuck", "m_44_recursive_tree", 0),
   }
 
   var work: seq[Work]
