@@ -264,6 +264,42 @@ return Red                                 # bare, unqualified — carries its s
 > (`tests/suites/bare_variant.nim`). The fix belongs in `compatible`, which does not
 > compare sum types nominally.
 
+#### A sum may contain ITSELF
+
+```tuck
+type Expr:
+  | Num({value: int})
+  | Neg({operand: Expr})            # one child
+  | Add({left: Expr, right: Expr})  # two
+```
+
+Written literally this has no finite size — a field IS its value, so every
+`Expr` would hold two more. The compiler gives each recursive edge a **handle**
+(`compiler/lowering_recursive.nim`): the field becomes `Seq[Expr]`, a
+construction wraps its value, a read unwraps it. None of that is visible —
+`e.left` is an `Expr`, and `match` is unchanged.
+
+It works because a sum's variants END the chain: the ones that do not recur are
+the base cases. A **record** containing itself has no such base case and is
+still `TK-TY17`; so is `Array[N, Self]` anywhere in the cycle, which stores N
+values inline and is not a handle at all.
+
+A handle rather than a pointer, and that is the whole point: **a subtree is a
+value.** Two parents holding "the same" child hold two children, and editing
+one cannot reach the other — the aliasing that value semantics exists to
+prevent does not come back in through trees. The cost is that a subtree cannot
+be SHARED, and replacing one copies it.
+
+Mutual recursion works the same way, in either declaration order:
+
+```tuck
+type Stmt: | Nop | Wrap({inner: Expr})
+type Expr: | Num({value: int}) | Block({body: Stmt})
+```
+
+`examples/44-recursive-tree.tuck` builds and evaluates one, run-gated on all
+three backends; `tests/suites/recursive_types.nim` carries the rest.
+
 ### match
 
 Two arm styles, both real (`examples/39:13`):

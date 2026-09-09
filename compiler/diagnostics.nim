@@ -323,10 +323,17 @@ proc valueFitExplanation(d: DiagCode): string =
   of dcTyInfiniteType:
     "A type that contains itself by value has no finite size — every value " &
     "would hold another one. Tuck has no references, so a field IS its " &
-    "value and the cycle is real rather than a matter of representation. " &
-    "Fix: hold the recursive part as `Seq[T]`, a growable handle that stays " &
-    "finite because an empty Seq ends the chain. `Array[N, T]` does not " &
-    "work: it stores N elements inline."
+    "value and the cycle is real rather than a matter of representation.\n\n" &
+    "A recursive SUM does not land here. Its variants end the chain — the " &
+    "ones that do not recur are the base cases — so the compiler gives each " &
+    "recursive edge a handle and `| Add({left: Expr, right: Expr})` simply " &
+    "works. A handle rather than a pointer, so a subtree stays a VALUE: two " &
+    "parents holding the same child hold two children, and editing one " &
+    "cannot reach the other.\n\n" &
+    "What still lands here: a RECORD containing itself, which has no variant " &
+    "to end the chain — make it a sum, or hold the recursive part as " &
+    "`Seq[T]` by hand. And `Array[N, T]` anywhere in the cycle, which stores " &
+    "N values INLINE and so is not a handle at all."
   of dcTyUntypedEmptyList:
     "An empty list literal carries no element type, and nothing around it " &
     "supplies one. A list takes its type from its first item, or from the " &

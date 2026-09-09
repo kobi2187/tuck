@@ -134,6 +134,39 @@ proc markRecursiveSums*(decls: Table[string, Decl], m: Module) =
     if d.typeBody == nil or d.typeBody.kind != tkSum: continue
     d.typeBody.recursive = findCycle(decls, d.name, throughHandles = true).found
 
+proc infiniteTypeMessage(d: Decl, field: string, path: seq[string]): string =
+  ## The two ways to arrive at TK-TY17 want opposite advice, and giving a sum
+  ## the record's advice would be actively wrong: a recursive sum's edges are
+  ## given handles automatically, so `kids: Tree` already works and only the
+  ## wrapping is the problem.
+  # A one-hop cycle and a multi-hop one need different sentences. Saying
+  # "field 'back' stores a value of 'Inner'" when it actually stores an
+  # 'Outer' sends the author to the wrong line, so the indirect case shows
+  # the route instead.
+  let how =
+    if path.len <= 2:
+      "field '" & field & "' stores a value of '" & d.name & "'"
+    else:
+      "it is reached again through " & path.join(" -> ") &
+      ", starting at field '" & field & "'"
+  let fix =
+    if d.kind == dkType and d.typeBody != nil and d.typeBody.kind == tkSum:
+      "A recursive sum's edges are given handles for you, so `" & field &
+      ": " & d.name & "` on its own is fine — it is the wrapping that is " &
+      "not. `Array[N, " & d.name & "]` stores N values INLINE, so it " &
+      "propagates the size exactly as a plain field does. Fix: drop the " &
+      "Array (`" & field & ": " & d.name & "`) for one child, or use " &
+      "`Seq[" & d.name & "]` for many."
+    else:
+      "A record has no variant to end the chain, so every value really " &
+      "would be infinite. Fix: make it a SUM type — a variant that does " &
+      "not recur is the base case, and a recursive sum's edges are given " &
+      "handles for you — or hold the recursive part as `Seq[" & d.name &
+      "]` by hand. (`Array[N, " & d.name & "]` does NOT work either: it " &
+      "stores N inline.)"
+  "'" & d.name & "' contains itself: " & how & ", so its size would be " &
+    "infinite. Tuck has no references, so a field IS its value. " & fix
+
 proc checkRecursiveTypes*(decls: Table[string, Decl], m: Module) =
   ## Reject a type that contains itself by value, before any backend sees it.
   ##
@@ -160,16 +193,4 @@ proc checkRecursiveTypes*(decls: Table[string, Decl], m: Module) =
     # "field 'back' stores a value of 'Inner'" when it actually stores an
     # 'Outer' sends the author to the wrong line, so the indirect case shows
     # the route instead.
-    let how =
-      if path.len <= 2:
-        "field '" & field & "' stores a value of '" & d.name & "'"
-      else:
-        "it is reached again through " & path.join(" -> ") &
-        ", starting at field '" & field & "'"
-    fail(dcTyInfiniteType,
-         "'" & d.name & "' contains itself: " & how & ", so its size would " &
-         "be infinite. Tuck has no references, so a field IS its value. " &
-         "Fix: hold the recursive part as `Seq[" & d.name & "]`, a growable " &
-         "handle that stays finite because an empty Seq ends the chain. " &
-         "(`Array[N, " & d.name & "]` does NOT work: it stores N inline.)",
-         d.span)
+    fail(dcTyInfiniteType, infiniteTypeMessage(d, field, path), d.span)
