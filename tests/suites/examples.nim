@@ -53,7 +53,7 @@ const gated = """
 23-units 24-stdlib 25-pools 26-actor-run 27-actor-select 28-async-task
 29-task-timeout 30-async-read 31-fnsig-callback 32-duration-units
 33-ffi-zlib 34-ffi-cstring 35-ffi-struct 36-ffi-enum-callback
-38-division 39-if-match-expr 40-saturating 41-tostr-concat 42-net-echo
+38-division 39-if-match-expr 40-saturating 41-tostr-concat 44-recursive-tree 42-net-echo
 43-literal-payload
 http
 """

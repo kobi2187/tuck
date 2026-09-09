@@ -439,4 +439,41 @@ fn main() -> int:
   t.hostBuilds "...and every backend builds them"
   t.runs "...and 4 is even", 0
 
+  # --- 13. the shape a real program has -----------------------------------
+  # One sum carrying, at once: a direct self edge, a Seq-OF-self that was
+  # already legal and must NOT be boxed twice, a non-recursive payload field,
+  # and a payload-free variant.
+  t.src """
+type Json:
+  | JNull
+  | JNum({n: int})
+  | JArr({items: Seq[Json]})
+  | JTag({label: str, inner: Json})
+
+fn size({v: Json}) -> int:
+  match v:
+    JNull: return 0
+    JNum: return 1
+    JArr:
+      var total = 0
+      for it in v.items:
+        total = total + {v: it} size
+      return total
+    JTag: return 1 + {v: v.inner} size
+
+fn main() -> int:
+  let a = Json.JNum {n: 1}
+  let b = Json.JNum {n: 2}
+  let arr = Json.JArr {items: [a, b]}
+  let tagged = Json.JTag {label: "wrapped", inner: arr}
+  return {v: tagged} size - 3
+"""
+  t.okCheck "a JSON-shaped recursive sum checks"
+  t.emits "an already-handled Seq edge is not boxed twice",
+          r"items: seq\[tuck_Json\]"
+  t.emits "a direct edge gains exactly one handle",
+          r"label: string, inner: seq\[tuck_Json\]"
+  t.hostBuilds "...and every backend emits it"
+  t.runs "...and the walk counts 3 nodes", 0
+
   t.finish()

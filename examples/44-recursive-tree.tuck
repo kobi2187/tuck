@@ -1,0 +1,46 @@
+# Recursive sum types — a tree, written the obvious way.
+#
+# `| Add({left: Expr, right: Expr})` has no finite size as WRITTEN: a field is
+# its value, so every Expr would hold two more. Tuck has no references, so
+# there is nothing to make the chain end.
+#
+# The compiler gives each recursive edge a HANDLE instead — the field becomes
+# `Seq[Expr]`, a construction wraps its value and a read unwraps it — so the
+# type is finite and the author never writes any of it. A handle rather than a
+# pointer because a Seq assignment COPIES: a subtree is a value, so two parents
+# holding "the same" child hold two children, and editing one cannot reach the
+# other. That is the whole reason a tree is expressible here at all.
+#
+# Mutual recursion works the same way; see `Stmt` and `Expr` in
+# tests/suites/recursive_types.nim.
+
+type Expr:
+  | Num({value: int})
+  | Neg({operand: Expr})
+  | Add({left: Expr, right: Expr})
+
+fn eval({e: Expr}) -> int:
+  match e:
+    Num: return e.value
+    Neg: return 0 - {e: e.operand} eval
+    Add: return {e: e.left} eval + {e: e.right} eval
+
+fn depth({e: Expr}) -> int:
+  match e:
+    Num: return 1
+    Neg: return 1 + {e: e.operand} depth
+    Add:
+      let l = {e: e.left} depth
+      let r = {e: e.right} depth
+      if l > r:
+        return 1 + l
+      return 1 + r
+
+fn main() -> int:
+  # (3 + 4) + -(3 + 4)  ==  0, and the tree is 4 deep.
+  let three = Expr.Num {value: 3}
+  let four = Expr.Num {value: 4}
+  let sum = Expr.Add {left: three, right: four}
+  let neg = Expr.Neg {operand: sum}
+  let whole = Expr.Add {left: sum, right: neg}
+  return {e: whole} eval + {e: whole} depth - 4
