@@ -259,4 +259,18 @@ fn main() -> int:
   t.hostBuilds "...and every backend projects it through the right variant"
   t.runs "...and reads the value it was narrowed to", 0
 
+  # --- 8. `.len` on a Seq -------------------------------------------------
+  # Nim spells it `.len`, D `.length`, Odin `len(xs)`. The D backend
+  # translated it during its own audit ("hidden Nim-ism #3"); Odin did not,
+  # so `xs.len` reported "has no field 'len'". Nothing in the corpus took
+  # the length of a Seq.
+  t.src """
+fn main() -> int:
+  let xs = [1, 2, 3]
+  return xs.len - 3
+"""
+  t.okCheck "`.len` on a Seq checks"
+  t.hostBuilds "...and every backend spells it its own way"
+  t.runs "...and counts", 0
+
   t.finish()

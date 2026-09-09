@@ -677,6 +677,18 @@ proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
     return ""
   ctx.unionBind & "." & e.fieldName
 
+proc isLenOnSized(ctx: var OdinCodegenCtx, e: Expr): bool =
+  ## `.len` on a str or Seq. Odin spells it as a CALL, `len(xs)`, not a field,
+  ## so `xs.len` reported "'tuck_xs' of type '[dynamic]int' has no field 'len'".
+  ## The D backend has had this since its own audit ("hidden Nim-ism #3"); the
+  ## Nim backend emits `.len` untranslated only because Nim happens to share
+  ## Tuck's spelling.
+  if e.fieldName != "len" or e.receiver == nil: return false
+  let rt = ctx.res.typeFor(e.receiver)
+  if rt == nil: return false
+  if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
+  seqElem(rt) != nil
+
 proc fieldByReceiverKind(ctx: var OdinCodegenCtx, e: Expr): string =
   ## The two `.name` readings decided by what the RECEIVER is rather than by
   ## what the field is: a bare `Type.Variant` construction, and a register
@@ -730,6 +742,7 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   # chain feeding this call was already hoisted into a temp by
   # lowering.hoistChainCalls — the receiver here can never be exkChain.
   if ctx.res.hasCall(e): return ctx.genOdinCall(ctx.res.call(e))
+  if ctx.isLenOnSized(e): return "len(" & ctx.genOdinExpr(e.receiver) & ")"
   let byRef = ctx.fieldByReceiverKind(e)
   if byRef != "": return byRef
   let bound = ctx.boundVariantField(e)
