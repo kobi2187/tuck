@@ -72,7 +72,15 @@ proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
 proc genDLit(e: Expr): string =
   case e.litKind
   of lkStr: "\"" & e.litValue & "\""
-  of lkInt, lkFloat, lkBool: e.litValue
+  of lkInt:
+    # `L`, because Tuck's `int` is D's `long` and a bare D integer literal is
+    # `int` — 32-bit. Everywhere else there is a declared type to convert to,
+    # so this was invisible; the first place D INFERS from a literal is a
+    # generic call, where `twice(5)` instantiated `T = int` and then would not
+    # assign to the `long[]` the declared return type says it is.
+    if '.' in e.litValue or 'e' in e.litValue: e.litValue
+    else: e.litValue & "L"
+  of lkFloat, lkBool: e.litValue
   of lkUnit: ""
 
 const dWideTypes = ["long", "double", "string", "bool", "void"]

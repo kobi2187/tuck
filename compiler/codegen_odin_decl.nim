@@ -207,20 +207,55 @@ proc cCallbackConvention*(ctx: var OdinCodegenCtx, d: Decl): string =
     if same: return "\"c\" "
   ""
 
+proc markFirstTypeParam(ty, g: string): string =
+  ## `T` -> `$T` on its first appearance in a rendered type, so Odin infers it
+  ## from the argument. Word-boundary matched: `Tail` must not become `$Tail`,
+  ## and `[dynamic]T` must become `[dynamic]$T`.
+  var i = 0
+  while i + g.len <= ty.len:
+    if ty[i ..< i + g.len] == g:
+      let beforeOk = i == 0 or ty[i - 1] notin IdentChars
+      let afterOk = i + g.len == ty.len or ty[i + g.len] notin IdentChars
+      if beforeOk and afterOk:
+        return ty[0 ..< i] & "$" & ty[i ..< ty.len]
+    i.inc
+  ty
+
 proc fnParamList*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## Records pass BY VALUE. The checker binds every param isVar:true, but a
   ## Tuck mutator returns the updated record and the caller assigns it back
   ## (`server = withDefaults(server)`), so no pointer is needed — and Odin
   ## proc params aren't addressable, so `&arg` at the call site is illegal.
   ##
-  ## Generic fns come first: Odin's parametric polymorphism marks type params
-  ## with `$`.
+  ## A type param is INFERRED from the first parameter that mentions it —
+  ## `proc(a: $T, b: T)` — not declared ahead of them as `$T: typeid`.
+  ##
+  ## The explicit form is real Odin, but it makes T an ARGUMENT: the call site
+  ## then has to pass the type, and Tuck's does not. `{a: 3, b: 5} smaller`
+  ## emitted `tuck_smaller(3, 5)` against `proc($T: typeid, a: T, b: T)` and
+  ## Odin reported "Parameter 'b' of type 'typeid' is missing in procedure
+  ## call". Inference is also what this backend's own runtime uses for exactly
+  ## these shapes — `tuckAt :: proc(items: []$T, index: int) -> T`.
+  ##
+  ## Nothing in the corpus is a generic fn, which is why a backend that could
+  ## not emit one went unnoticed.
   var params: seq[string]
-  for g in d.fnGenerics: params.add("$" & g & ": typeid")
+  var bound: HashSet[string]
   ctx.fnAsParam = true
   for p in d.fnParams:
-    params.add(p.name & ": " & ctx.odinType(p.typ))
+    var ty = ctx.odinType(p.typ)
+    for g in d.fnGenerics:
+      if g in bound: continue
+      let marked = markFirstTypeParam(ty, g)
+      if marked != ty:
+        ty = marked
+        bound.incl(g)
+    params.add(p.name & ": " & ty)
   ctx.fnAsParam = false
+  # A type param no parameter mentions cannot be inferred; it stays explicit
+  # so the failure is Odin's to report rather than a silently dropped param.
+  for g in d.fnGenerics:
+    if g notin bound: params.insert("$" & g & ": typeid", 0)
   params.join(", ")
 
 proc fnHeader*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): string =

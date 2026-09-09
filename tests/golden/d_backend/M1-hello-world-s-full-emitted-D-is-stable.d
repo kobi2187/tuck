@@ -5,7 +5,7 @@ import console = mod_console;
 
 long tuck_main() {
     console.printLine("hello from tuck");
-    return 7;
+    return 7L;
 }
 
 int main(string[] args) {

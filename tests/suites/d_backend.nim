@@ -122,12 +122,12 @@ fn main() -> int:
   return acc + d + m + neg + w + skipped
 """
   t.emitsD "M2: first assignment declares with the checker's 64-bit type",
-           "long tuck_acc = 0;"
+           "long tuck_acc = 0L;"
   t.emitsD "M2: exclusive range is D's native exclusive foreach",
-           r"foreach \(tuck_i; 1 \.\. 11\)"
+           r"foreach \(tuck_i; 1L \.\. 11L\)"
   t.emitsD "M2: inclusive range widens the upper bound by one",
-           r"foreach \(tuck_i; 0 \.\. 4 \+ 1\)"
-  t.emitsD "M2: while-form for emits a native while", r"while \(\(tuck_w < 4\)\)"
+           r"foreach \(tuck_i; 0L \.\. 4L \+ 1\)"
+  t.emitsD "M2: while-form for emits a native while", r"while \(\(tuck_w < 4L\)\)"
   t.runsD "M2: control flow and arithmetic compute 77", 77, dmdExe
 
   # T10 + leftovers: strings, loop:, value-if, list iteration, echo.
@@ -161,7 +161,7 @@ fn main() -> int:
   t.emitsD "M2: len is D's native length, cast back to Tuck's signed int",
            r"cast\(long\) tuck_s\.length"
   t.emitsD "M2: value-position if is D's native ternary",
-           r"\(\(tuck_c == 3\) \? 10 : 20\)"
+           r"\(\(tuck_c == 3L\) \? 10L : 20L\)"
   t.emitsD "M2: index+value loop is D's native two-variable foreach",
            r"foreach \(tuck_i, tuck_x; tuck_xs\)"
   t.emitsD "M2: echo maps to writeln", r"writeln\(tuck_total\)"
@@ -212,7 +212,7 @@ fn main() -> int:
   t.emitsD "M3: member fn is a qualified free proc with ref self",
            r"long tuck_Counter_bump\(ref tuck_Counter self\)"
   t.emitsD "M3: record construction is a named-argument struct literal",
-           r"tuck_Counter\(total: 0, step: 3\)"
+           r"tuck_Counter\(total: 0L, step: 3L\)"
   t.runsD "M3: self mutation persists across calls (6+6-3)", 9, dmdExe
 
   # T17: Tuck Seq assignment copies; a bare D slice assignment would alias.
@@ -307,7 +307,7 @@ fn main() -> int [io]:
            r"rt\.TuckResult!\(long\) tuck_half\(long n\)"
   t.emitsD "T20: raise RETURNS an error value, carrying a compile-folded code",
            r"return rt\.terr!\(long\)\(0x[0-9A-F]{4} /\* odd \*/\)"
-  t.emitsD "T20: a value return wraps in tok", r"return rt\.tok\(\(n / 2\)\);"
+  t.emitsD "T20: a value return wraps in tok", r"return rt\.tok\(\(n / 2L\)\);"
   t.emitsD "T20: .ok is a status test", r"a\.status == rt\.TuckStatus\.Ok"
   t.omitsD "T20: no exceptions anywhere near the error path", r"\bthrow\b"
   t.runsD "T20: the ok branch reads .value, the err branch does not", 10, dmdExe
@@ -401,7 +401,7 @@ fn main() -> int:
   return 1
 """
   t.emitsD "T24: a saturating ctor clamps through the runtime, widened first",
-           r"rt\.tuckSat!\(ushort\)\(cast\(ulong\)\(70000\)\)"
+           r"rt\.tuckSat!\(ushort\)\(cast\(ulong\)\(70000L\)\)"
   t.runsD "T24: 70000 CLAMPS to 65535 rather than wrapping to 4464",
           12, dmdExe
 
@@ -414,7 +414,7 @@ fn main() -> int:
   return LIMIT
 """
   t.emitsD "T24: a literal const is a D compile-time enum",
-           r"enum tuck_LIMIT = 8;"
+           r"enum tuck_LIMIT = 8L;"
   t.emitsD "T24: static assert is checked by D at compile time, natively",
            r"static assert\("
   t.runsD "T24: the const reads back as its value", 8, dmdExe
@@ -578,7 +578,7 @@ fn main() -> int:
   return res.r
 """
   t.emitsD "task: a result-bound call spawns into a slot and awaits it",
-           r"rt\.spawnResult\(tuckSlot\d+, \{ return tuck_compute\(21\); \}\)"
+           r"rt\.spawnResult\(tuckSlot\d+, \{ return tuck_compute\(21L\); \}\)"
   t.emitsD "task: the await reads back through the slot",
            r"= rt\.awaitResult\(tuckSlot\d+\);"
   t.emitsD "task: a program with tasks boots the scheduler",

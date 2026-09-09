@@ -1,0 +1,43 @@
+# core.cmp — ordering. The lowest building block: everything that sorts,
+# searches or de-duplicates is written on top of this.
+#
+# Freestanding: no allocator, no OS, no externs. Pure Tuck.
+
+type Order:
+  | Before
+  | Same
+  | After
+
+interface Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+# Reverse an ordering — what a descending sort needs.
+fn flipped({o: Order}) -> Order:
+  match o:
+    Before: return Order.After
+    Same: return Order.Same
+    After: return Order.Before
+
+# Compose two orderings: the first decides unless it is a tie, in which case
+# the second does. This is how a multi-key sort is written — `byLast
+# breakTiesWith byFirst`.
+fn breakTiesWith({o: Order, next: Order}) -> Order:
+  match o:
+    Same: return next
+    Before: return Order.Before
+    After: return Order.After
+
+fn isBefore({o: Order}) -> bool:
+  match o:
+    Before: return true
+    Same: return false
+    After: return false
+
+fn main() -> int:
+  let f = {o: Order.Before} flipped
+  let t = {o: Order.Same, next: Order.After} breakTiesWith
+  if {o: f} isBefore:
+    return 1
+  if {o: t} isBefore:
+    return 2
+  return 0

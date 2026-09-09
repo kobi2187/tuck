@@ -765,7 +765,6 @@ proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
 
 proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
-  if d.fnGenerics.len > 0: return dUnsupported("generic fn " & d.name)
   if d.isDecision: return ctx.genDDecisionTable(d)
   # A registry handler is declared as `Registry.Event`; the dot is not a D
   # identifier character, and the raise proc calls the sanitised name.
@@ -789,7 +788,16 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # its own copy and it has since drifted (no matchArmsReturn guard, so a
   # tail match whose arms return gets wrapped in a value-position case).
   injectTailReturn(d.fnBody, retStr)
-  result = ctx.dCallConv(d) & retStr & " " & fnName & "(" &
+  # A generic fn is a D TEMPLATE: `T smaller(T)(T a, T b)`. D infers the
+  # template argument from the call, so the call site is unchanged — which is
+  # what the runtime's own `T[] push(T)(T[] items, T value)` relies on.
+  #
+  # This backend used to refuse outright (`dUnsupported "generic fn"`).
+  # Nothing in the corpus is a generic fn, so a whole language feature was
+  # missing from a backend with nothing to notice.
+  let tmplStr = if d.fnGenerics.len > 0: "(" & d.fnGenerics.join(", ") & ")"
+                else: ""
+  result = ctx.dCallConv(d) & retStr & " " & fnName & tmplStr & "(" &
            ctx.genDParams(d.fnParams, refSelf) & ") {\n"
   ctx.indent = 1
   ctx.definedVars.clear()
