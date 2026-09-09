@@ -1,6 +1,8 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc `==`*(a, b: tuck_Expr): bool {.noSideEffect.}
+
 proc tuck_eval*(e: tuck_Expr): int
 proc tuck_depth*(e: tuck_Expr): int
 proc tuck_main*(): int
@@ -11,6 +13,13 @@ type tuck_Expr* = object
   of Num: tuck_num*: tuple[value: int]
   of Neg: tuck_neg*: tuple[operand: seq[tuck_Expr]]
   of Add: tuck_add*: tuple[left: seq[tuck_Expr], right: seq[tuck_Expr]]
+
+proc `==`*(a, b: tuck_Expr): bool {.noSideEffect.} =
+  if a.kind != b.kind: return false
+  case a.kind
+  of Num: a.tuck_num == b.tuck_num
+  of Neg: a.tuck_neg == b.tuck_neg
+  of Add: a.tuck_add == b.tuck_add
 
 proc tuck_eval*(e: tuck_Expr): int =
   (case e.kind

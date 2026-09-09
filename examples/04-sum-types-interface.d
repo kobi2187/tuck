@@ -57,6 +57,15 @@ struct tuck_PodcastPlayerLifecycle {
         tuck_PodcastPlayerLifecycle_Ready tuck_ready;
         tuck_PodcastPlayerLifecycle_Error tuck_error;
     }
+    bool opEquals(const tuck_PodcastPlayerLifecycle o) const {
+        if (kind != o.kind) return false;
+        final switch (kind) {
+        case tuck_PodcastPlayerLifecycleKind.Unloaded: return tuck_unloaded == o.tuck_unloaded;
+        case tuck_PodcastPlayerLifecycleKind.Loading: return tuck_loading == o.tuck_loading;
+        case tuck_PodcastPlayerLifecycleKind.Ready: return tuck_ready == o.tuck_ready;
+        case tuck_PodcastPlayerLifecycleKind.Error: return tuck_error == o.tuck_error;
+        }
+    }
 }
 
 // interface Storable: no satisfying types

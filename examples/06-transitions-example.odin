@@ -30,6 +30,36 @@ tag_tuck_PodcastPlayerLifecycle :: proc(v: tuck_PodcastPlayerLifecycle) -> tuck_
 	}
 	return .Unloaded
 }
+
+tuck_PodcastPlayerLifecycle_eq :: proc(a, b: tuck_PodcastPlayerLifecycle) -> bool {
+  if av, aok := a.(tuck_PodcastPlayerLifecycle_Unloaded); aok {
+    _ = av
+    bv, bok := b.(tuck_PodcastPlayerLifecycle_Unloaded)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    return true
+  }
+  if av, aok := a.(tuck_PodcastPlayerLifecycle_Loading); aok {
+    _ = av
+    bv, bok := b.(tuck_PodcastPlayerLifecycle_Loading)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    if av.progress != bv.progress { return false }
+    return true
+  }
+  if av, aok := a.(tuck_PodcastPlayerLifecycle_Ready); aok {
+    _ = av
+    bv, bok := b.(tuck_PodcastPlayerLifecycle_Ready)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    if av.feed != bv.feed { return false }
+    return true
+  }
+  return false
+}
 canTransition_tuck_PodcastPlayerLifecycle :: proc(frm: tuck_PodcastPlayerLifecycleKind, to: tuck_PodcastPlayerLifecycleKind) -> bool {
 	switch frm {
 	case .Unloaded: return to == .Loading

@@ -82,6 +82,32 @@ tag_tuck_PlayerState :: proc(v: tuck_PlayerState) -> tuck_PlayerStateKind {
 	}
 	return .Idle
 }
+
+tuck_PlayerState_eq :: proc(a, b: tuck_PlayerState) -> bool {
+  if av, aok := a.(tuck_PlayerState_Idle); aok {
+    _ = av
+    bv, bok := b.(tuck_PlayerState_Idle)
+    _ = bv
+    if !bok { return false }
+    return true
+  }
+  if av, aok := a.(tuck_PlayerState_Decoding); aok {
+    _ = av
+    bv, bok := b.(tuck_PlayerState_Decoding)
+    _ = bv
+    if !bok { return false }
+    if av.sampleRate != bv.sampleRate { return false }
+    return true
+  }
+  if av, aok := a.(tuck_PlayerState_Paused); aok {
+    _ = av
+    bv, bok := b.(tuck_PlayerState_Paused)
+    _ = bv
+    if !bok { return false }
+    return true
+  }
+  return false
+}
 canTransition_tuck_PlayerState :: proc(frm: tuck_PlayerStateKind, to: tuck_PlayerStateKind) -> bool {
 	switch frm {
 	case .Idle: return to == .Decoding

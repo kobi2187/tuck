@@ -815,6 +815,16 @@ proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
   if isStringConcat(e):
     return "rt.tuckConcat(" & ctx.genOdinExpr(e.left) & ", " &
            ctx.genOdinExpr(e.right) & ")"
+  # A payload sum is a union, and Odin refuses to compare one that is not
+  # "simply comparable" — which any recursive sum is not, its edges being
+  # dynamic arrays. Odin has no operator overloading, so the comparison is a
+  # generated PROC (genSumEqProc) and the call site routes to it.
+  if e.binOp in {boEq, boNeq}:
+    let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.left))
+    if sumName != "":
+      let call = sumName & "_eq(" & ctx.genOdinExpr(e.left) & ", " &
+                 ctx.genOdinExpr(e.right) & ")"
+      return if e.binOp == boEq: call else: "(!" & call & ")"
   "(" & ctx.genOdinExpr(e.left) & " " & odinBinOp(e.binOp) & " " &
     ctx.genOdinExpr(e.right) & ")"
 

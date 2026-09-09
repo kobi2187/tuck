@@ -24,6 +24,14 @@ struct tuck_Expr {
         tuck_Expr_Neg tuck_neg;
         tuck_Expr_Add tuck_add;
     }
+    bool opEquals(const tuck_Expr o) const {
+        if (kind != o.kind) return false;
+        final switch (kind) {
+        case tuck_ExprKind.Num: return tuck_num == o.tuck_num;
+        case tuck_ExprKind.Neg: return tuck_neg == o.tuck_neg;
+        case tuck_ExprKind.Add: return tuck_add == o.tuck_add;
+        }
+    }
 }
 
 long tuck_eval(tuck_Expr e) {

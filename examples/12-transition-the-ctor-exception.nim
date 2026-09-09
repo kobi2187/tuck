@@ -1,6 +1,9 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc `==`*(a, b: tuck_PlayerState): bool {.noSideEffect.}
+proc `==`*(a, b: tuck_MqttSession): bool {.noSideEffect.}
+
 proc tuck_main*(): void
 
 type tuck_Config* = object
@@ -18,6 +21,13 @@ type tuck_PlayerState* = object
   of Unloaded: tuck_unloaded*: tuple[config: tuck_Config]
   of Loading: tuck_loading*: tuple[config: tuck_Config, progress: int]
   of Ready: tuck_ready*: tuple[config: tuck_Config, feed: tuck_Feed]
+
+proc `==`*(a, b: tuck_PlayerState): bool {.noSideEffect.} =
+  if a.kind != b.kind: return false
+  case a.kind
+  of Unloaded: a.tuck_unloaded == b.tuck_unloaded
+  of Loading: a.tuck_loading == b.tuck_loading
+  of Ready: a.tuck_ready == b.tuck_ready
 proc canTransition*(frm, to: tuck_PlayerStateKind): bool =
   case frm
   of Unloaded: to in {Loading}
@@ -35,6 +45,14 @@ type tuck_MqttSession* = object
   of Connecting: tuck_connecting*: tuple[host: string, port: uint16]
   of Connected: tuck_connected*: tuple[socket: tuck_Socket, keepalive: uint16]
   of Subscribing: tuck_subscribing*: tuple[socket: tuck_Socket, topic: string]
+
+proc `==`*(a, b: tuck_MqttSession): bool {.noSideEffect.} =
+  if a.kind != b.kind: return false
+  case a.kind
+  of Disconnected: true
+  of Connecting: a.tuck_connecting == b.tuck_connecting
+  of Connected: a.tuck_connected == b.tuck_connected
+  of Subscribing: a.tuck_subscribing == b.tuck_subscribing
 proc canTransition*(frm, to: tuck_MqttSessionKind): bool =
   case frm
   of Disconnected: to in {Connecting}

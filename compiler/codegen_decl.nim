@@ -191,6 +191,35 @@ proc genTransitionProcs*(d: Decl, kindName: string, hasPayload: bool): string =
               "  self = target\n")
       return res
 
+proc genSumEquality(d: Decl): string =
+  ## `==` for a payload sum.
+  ##
+  ## Nim's structural `==` for objects walks `fields`, and that iterator does
+  ## not work over a CASE object: comparing two of them reported "parallel
+  ## 'fields' iterator does not work for 'case' objects", pointing into
+  ## Nim's system.nim. So `a == b` on any payload sum failed to build — with
+  ## or without recursion, and on this backend alone. Odin compares its
+  ## tagged union natively and D its tagged struct, so this compiled on two
+  ## backends out of three.
+  ##
+  ## Same tag, then the ACTIVE payload only. Comparing the inactive branches
+  ## is what Nim refuses and would be meaningless anyway — a union's other
+  ## arms hold whatever was last written there.
+  ## `{.noSideEffect.}` is explicit because Nim cannot INFER it through
+  ## recursion, and a recursive sum's `==` is recursive by construction:
+  ## comparing two `Add`s compares their `seq[Expr]` edges, which compares
+  ## two more Exprs. Without the pragma that reported "'==' can have side
+  ## effects" from inside Nim's own comparisons.nim.
+  result = "\nproc `==`*(a, b: " & d.name & "): bool {.noSideEffect.} =\n" &
+           "  if a.kind != b.kind: return false\n" &
+           "  case a.kind\n"
+  for v in d.typeBody.variants:
+    if v.fields.len == 0:
+      result.add("  of " & v.name & ": true\n")
+    else:
+      let f = sumPayloadField(v.name)
+      result.add("  of " & v.name & ": a." & f & " == b." & f & "\n")
+
 proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
       let hasPayload = sumHasPayload(d.typeBody)
       let hasTransitions = d.typeBody.transitions.len > 0
@@ -226,6 +255,8 @@ proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
         for v in d.typeBody.variants: tags.add(v.name)
         res.add(tags.join(", ") & "\n")
 
+      if hasPayload:
+        res.add(genSumEquality(d))
       if hasTransitions:
         # transition matrix: pure predicate + checked assignment
         res.add(genTransitionProcs(d, kindName, hasPayload))
@@ -702,6 +733,18 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     return result
   else:
     return "# [codegen] ignored decl kind " & $d.kind & "\n"
+
+proc sumEqForwardDecls*(m: Module): string =
+  ## The generated `==` operators, forward-declared for the same reason the
+  ## fns below are: two sums that hold each other need each other's `==`, and
+  ## whichever is emitted second is undeclared at the first one's use. Mutual
+  ## recursion between TYPES made this reachable the moment `==` was
+  ## generated at all.
+  for d in m.decls(dkType):
+    if d == nil or d.typeBody == nil or d.typeBody.kind != tkSum: continue
+    if not sumHasPayload(d.typeBody): continue
+    result.add("proc `==`*(a, b: " & d.name & "): bool {.noSideEffect.}\n")
+  if result.len > 0: result.add("\n")
 
 proc fnForwardDecls*(m: Module): string =
   ## Forward-declare every top-level fn, so a call may precede its definition.

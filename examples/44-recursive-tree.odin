@@ -16,6 +16,44 @@ tuck_Expr_Add :: struct {
 }
 tuck_Expr :: union {tuck_Expr_Num, tuck_Expr_Neg, tuck_Expr_Add}
 
+tuck_Expr_eq :: proc(a, b: tuck_Expr) -> bool {
+  if av, aok := a.(tuck_Expr_Num); aok {
+    _ = av
+    bv, bok := b.(tuck_Expr_Num)
+    _ = bv
+    if !bok { return false }
+    if av.value != bv.value { return false }
+    return true
+  }
+  if av, aok := a.(tuck_Expr_Neg); aok {
+    _ = av
+    bv, bok := b.(tuck_Expr_Neg)
+    _ = bv
+    if !bok { return false }
+    if len(av.operand) != len(bv.operand) { return false }
+    for i := 0; i < len(av.operand); i += 1 {
+      if !tuck_Expr_eq(av.operand[i], bv.operand[i]) { return false }
+    }
+    return true
+  }
+  if av, aok := a.(tuck_Expr_Add); aok {
+    _ = av
+    bv, bok := b.(tuck_Expr_Add)
+    _ = bv
+    if !bok { return false }
+    if len(av.left) != len(bv.left) { return false }
+    for i := 0; i < len(av.left); i += 1 {
+      if !tuck_Expr_eq(av.left[i], bv.left[i]) { return false }
+    }
+    if len(av.right) != len(bv.right) { return false }
+    for i := 0; i < len(av.right); i += 1 {
+      if !tuck_Expr_eq(av.right[i], bv.right[i]) { return false }
+    }
+    return true
+  }
+  return false
+}
+
 tuck_eval :: proc (e: tuck_Expr) -> int {
   switch v in e
   {

@@ -380,7 +380,25 @@ proc genDPayloadSum*(ctx: var DCodegenCtx, d: Decl, body: Type): string =
     if v.fields.len == 0: continue
     res.add("        " & d.name & "_" & v.name & " " &
             sumPayloadField(v.name) & ";\n")
-  res.add("    }\n}\n")
+  res.add("    }\n")
+  # A struct's DEFAULT opEquals compares a union bitwise, which is right by
+  # accident when every variant is plain data and silently WRONG as soon as
+  # one is not: two structurally identical trees compared unequal because
+  # their `T[]` edges are different pointers. It compiled and gave the wrong
+  # answer, which is worse than the Nim backend's refusal to compile the same
+  # program at all. Same tag, then the ACTIVE payload only — the inactive
+  # union arms hold whatever was last written there.
+  res.add("    bool opEquals(const " & d.name & " o) const {\n")
+  res.add("        if (kind != o.kind) return false;\n")
+  res.add("        final switch (kind) {\n")
+  for v in body.variants:
+    let tag = "case " & d.name & "Kind." & v.name & ": "
+    if v.fields.len == 0:
+      res.add("        " & tag & "return true;\n")
+    else:
+      let f = sumPayloadField(v.name)
+      res.add("        " & tag & "return " & f & " == o." & f & ";\n")
+  res.add("        }\n    }\n}\n")
   res
 
 proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =

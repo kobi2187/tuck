@@ -476,4 +476,52 @@ fn main() -> int:
   t.hostBuilds "...and every backend emits it"
   t.runs "...and the walk counts 3 nodes", 0
 
+  # --- 14. `==` on a payload sum ------------------------------------------
+  # Nim's structural `==` for objects walks `fields`, and that iterator does
+  # not work over a CASE object — "parallel 'fields' iterator does not work
+  # for 'case' objects", pointing into Nim's own system.nim. So comparing any
+  # payload sum failed to build, with or without recursion, on this backend
+  # alone: Odin compares its tagged union natively and D its tagged struct.
+  t.src """
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+fn main() -> int:
+  let a = Shape.Circle {r: 3}
+  let b = Shape.Circle {r: 3}
+  let c = Shape.Rect {w: 3, h: 3}
+  if a == b:
+    if a == c:
+      return 1
+    return 0
+  return 2
+"""
+  t.okCheck "comparing a payload sum checks"
+  t.emits "Nim gets a generated ==", r"proc `==`\*\(a, b: tuck_Shape\)"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...same variant and payload is equal; a different variant is not", 0
+
+  # And through a RECURSIVE sum, where `==` recurses by construction: two
+  # Adds compare their `seq[Expr]` edges, which compares two more Exprs. Nim
+  # cannot INFER noSideEffect through that, so the generated proc declares it.
+  t.src """
+type Expr:
+  | Num({value: int})
+  | Add({left: Expr, right: Expr})
+
+fn main() -> int:
+  let a = Expr.Add {left: Expr.Num {value: 1}, right: Expr.Num {value: 2}}
+  let b = Expr.Add {left: Expr.Num {value: 1}, right: Expr.Num {value: 2}}
+  let c = Expr.Add {left: Expr.Num {value: 9}, right: Expr.Num {value: 2}}
+  if a == b:
+    if a == c:
+      return 1
+    return 0
+  return 2
+"""
+  t.okCheck "comparing a RECURSIVE sum checks"
+  t.hostBuilds "...and every backend builds the recursive =="
+  t.runs "...and compares whole trees structurally", 0
+
   t.finish()

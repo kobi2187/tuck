@@ -78,6 +78,14 @@ struct tuck_PlayerState {
     union {
         tuck_PlayerState_Decoding tuck_decoding;
     }
+    bool opEquals(const tuck_PlayerState o) const {
+        if (kind != o.kind) return false;
+        final switch (kind) {
+        case tuck_PlayerStateKind.Idle: return true;
+        case tuck_PlayerStateKind.Decoding: return tuck_decoding == o.tuck_decoding;
+        case tuck_PlayerStateKind.Paused: return true;
+        }
+    }
 }
 
 __gshared rt.ObjectPool!(ubyte[512], 4) tuck_BufferPool;

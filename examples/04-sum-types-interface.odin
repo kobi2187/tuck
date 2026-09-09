@@ -46,6 +46,46 @@ tuck_PodcastPlayerLifecycle_Error :: struct {
 }
 tuck_PodcastPlayerLifecycle :: union {tuck_PodcastPlayerLifecycle_Unloaded, tuck_PodcastPlayerLifecycle_Loading, tuck_PodcastPlayerLifecycle_Ready, tuck_PodcastPlayerLifecycle_Error}
 
+tuck_PodcastPlayerLifecycle_eq :: proc(a, b: tuck_PodcastPlayerLifecycle) -> bool {
+  if av, aok := a.(tuck_PodcastPlayerLifecycle_Unloaded); aok {
+    _ = av
+    bv, bok := b.(tuck_PodcastPlayerLifecycle_Unloaded)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    return true
+  }
+  if av, aok := a.(tuck_PodcastPlayerLifecycle_Loading); aok {
+    _ = av
+    bv, bok := b.(tuck_PodcastPlayerLifecycle_Loading)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    if av.progress != bv.progress { return false }
+    return true
+  }
+  if av, aok := a.(tuck_PodcastPlayerLifecycle_Ready); aok {
+    _ = av
+    bv, bok := b.(tuck_PodcastPlayerLifecycle_Ready)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    if av.feed != bv.feed { return false }
+    if av.audio != bv.audio { return false }
+    return true
+  }
+  if av, aok := a.(tuck_PodcastPlayerLifecycle_Error); aok {
+    _ = av
+    bv, bok := b.(tuck_PodcastPlayerLifecycle_Error)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    if av.reason != bv.reason { return false }
+    return true
+  }
+  return false
+}
+
 // interface Storable: no satisfying types
 
 tuck_loadEpisode :: proc (self: tuck_PodcastApp, episode: tuck_Episode) -> tuck_PodcastApp {

@@ -1,6 +1,8 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc `==`*(a, b: tuck_PlayerState): bool {.noSideEffect.}
+
 proc tuck_SystemEvents_PlaybackStarted*(): void
 proc tuck_SystemEvents_PlaybackStopped*(): void
 proc tuck_SystemEvents_HardwareError*(code: uint8): void
@@ -34,6 +36,13 @@ type tuck_PlayerState* = object
   of Idle: discard
   of Decoding: tuck_decoding*: tuple[sampleRate: tuck_Hz]
   of Paused: discard
+
+proc `==`*(a, b: tuck_PlayerState): bool {.noSideEffect.} =
+  if a.kind != b.kind: return false
+  case a.kind
+  of Idle: true
+  of Decoding: a.tuck_decoding == b.tuck_decoding
+  of Paused: true
 proc canTransition*(frm, to: tuck_PlayerStateKind): bool =
   case frm
   of Idle: to in {Decoding}

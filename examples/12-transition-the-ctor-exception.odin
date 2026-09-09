@@ -34,6 +34,36 @@ tag_tuck_PlayerState :: proc(v: tuck_PlayerState) -> tuck_PlayerStateKind {
 	}
 	return .Unloaded
 }
+
+tuck_PlayerState_eq :: proc(a, b: tuck_PlayerState) -> bool {
+  if av, aok := a.(tuck_PlayerState_Unloaded); aok {
+    _ = av
+    bv, bok := b.(tuck_PlayerState_Unloaded)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    return true
+  }
+  if av, aok := a.(tuck_PlayerState_Loading); aok {
+    _ = av
+    bv, bok := b.(tuck_PlayerState_Loading)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    if av.progress != bv.progress { return false }
+    return true
+  }
+  if av, aok := a.(tuck_PlayerState_Ready); aok {
+    _ = av
+    bv, bok := b.(tuck_PlayerState_Ready)
+    _ = bv
+    if !bok { return false }
+    if av.config != bv.config { return false }
+    if av.feed != bv.feed { return false }
+    return true
+  }
+  return false
+}
 canTransition_tuck_PlayerState :: proc(frm: tuck_PlayerStateKind, to: tuck_PlayerStateKind) -> bool {
 	switch frm {
 	case .Unloaded: return to == .Loading
@@ -70,6 +100,44 @@ tag_tuck_MqttSession :: proc(v: tuck_MqttSession) -> tuck_MqttSessionKind {
 	case tuck_MqttSession_Subscribing: return .Subscribing
 	}
 	return .Disconnected
+}
+
+tuck_MqttSession_eq :: proc(a, b: tuck_MqttSession) -> bool {
+  if av, aok := a.(tuck_MqttSession_Disconnected); aok {
+    _ = av
+    bv, bok := b.(tuck_MqttSession_Disconnected)
+    _ = bv
+    if !bok { return false }
+    return true
+  }
+  if av, aok := a.(tuck_MqttSession_Connecting); aok {
+    _ = av
+    bv, bok := b.(tuck_MqttSession_Connecting)
+    _ = bv
+    if !bok { return false }
+    if av.host != bv.host { return false }
+    if av.port != bv.port { return false }
+    return true
+  }
+  if av, aok := a.(tuck_MqttSession_Connected); aok {
+    _ = av
+    bv, bok := b.(tuck_MqttSession_Connected)
+    _ = bv
+    if !bok { return false }
+    if av.socket != bv.socket { return false }
+    if av.keepalive != bv.keepalive { return false }
+    return true
+  }
+  if av, aok := a.(tuck_MqttSession_Subscribing); aok {
+    _ = av
+    bv, bok := b.(tuck_MqttSession_Subscribing)
+    _ = bv
+    if !bok { return false }
+    if av.socket != bv.socket { return false }
+    if av.topic != bv.topic { return false }
+    return true
+  }
+  return false
 }
 canTransition_tuck_MqttSession :: proc(frm: tuck_MqttSessionKind, to: tuck_MqttSessionKind) -> bool {
 	switch frm {

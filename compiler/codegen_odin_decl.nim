@@ -365,6 +365,59 @@ proc genPayloadUnion*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
   if hasTransitions:
     result.add(genTagProjection(d, kindName, ind))
 
+proc sumNamesIn(m: Module): HashSet[string] =
+  for d in m.decls(dkType):
+    if d != nil and d.typeBody != nil and d.typeBody.kind == tkSum and
+       sumHasPayload(d.typeBody):
+      result.incl(d.name)
+
+proc odinFieldNeq(f: FieldDef, ind: string, sums: HashSet[string]): string =
+  ## The lines that return false when this field differs.
+  ##
+  ## Odin will not compare anything holding a dynamic array — not the union,
+  ## not the variant struct, not the array — so a Seq field is compared
+  ## element by element, and an element that is itself a payload sum goes
+  ## through that sum's own generated `_eq`.
+  let elem = seqElem(f.typ)
+  if elem == nil:
+    return ind & "if av." & f.name & " != bv." & f.name & " { return false }\n"
+  result = ind & "if len(av." & f.name & ") != len(bv." & f.name &
+           ") { return false }\n"
+  result.add(ind & "for i := 0; i < len(av." & f.name & "); i += 1 {\n")
+  let a = "av." & f.name & "[i]"
+  let b = "bv." & f.name & "[i]"
+  if elem.kind == tkNamed and elem.name in sums:
+    result.add(ind & "  if !" & elem.name & "_eq(" & a & ", " & b &
+               ") { return false }\n")
+  else:
+    result.add(ind & "  if " & a & " != " & b & " { return false }\n")
+  result.add(ind & "}\n")
+
+proc genSumEqProc(d: Decl, ind: string, sums: HashSet[string]): string =
+  ## Structural `==` for a payload sum, as a PROC: Odin has no operator
+  ## overloading, so codegen_odin's genBinary routes `==`/`!=` here.
+  ##
+  ## Odin refuses to compare a union that is not "simply comparable", and a
+  ## recursive sum never is — its edges are dynamic arrays, and neither the
+  ## union nor the variant struct nor the array itself can be compared with
+  ## `==`. So every field is compared explicitly. A type assertion on each
+  ## side picks the ACTIVE variant; the union carries its own tag, so there is
+  ## no kind field to check first.
+  result = "\n" & ind & d.name & "_eq :: proc(a, b: " & d.name &
+           ") -> bool {\n"
+  for v in d.typeBody.variants:
+    let vName = d.name & "_" & v.name
+    result.add(ind & "  if av, aok := a.(" & vName & "); aok {\n")
+    result.add(ind & "    _ = av\n")
+    result.add(ind & "    bv, bok := b.(" & vName & ")\n")
+    result.add(ind & "    _ = bv\n")
+    result.add(ind & "    if !bok { return false }\n")
+    for f in v.fields:
+      result.add(odinFieldNeq(f, ind & "    ", sums))
+    result.add(ind & "    return true\n")
+    result.add(ind & "  }\n")
+  result.add(ind & "  return false\n" & ind & "}\n")
+
 proc genSumType*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## A sum type is a plain enum unless it carries payloads or declares
   ## transitions.
@@ -380,6 +433,7 @@ proc genSumType*(ctx: var OdinCodegenCtx, d: Decl): string =
              ctx.genPayloadUnion(d, kindName, hasTransitions, ind)
            else:
              ind & d.name & " :: enum { " & variantTagList(d) & " }\n"
+  if hasPayload: result.add(genSumEqProc(d, ind, sumNamesIn(ctx.module)))
   if hasTransitions:
     # transition matrix: pure predicate + checked assignment
     result.add(ctx.genTransitionProcs(d, kindName, hasPayload))

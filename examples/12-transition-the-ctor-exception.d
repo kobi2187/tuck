@@ -37,6 +37,14 @@ struct tuck_PlayerState {
         tuck_PlayerState_Loading tuck_loading;
         tuck_PlayerState_Ready tuck_ready;
     }
+    bool opEquals(const tuck_PlayerState o) const {
+        if (kind != o.kind) return false;
+        final switch (kind) {
+        case tuck_PlayerStateKind.Unloaded: return tuck_unloaded == o.tuck_unloaded;
+        case tuck_PlayerStateKind.Loading: return tuck_loading == o.tuck_loading;
+        case tuck_PlayerStateKind.Ready: return tuck_ready == o.tuck_ready;
+        }
+    }
 }
 
 enum tuck_MqttSessionKind { Disconnected, Connecting, Connected, Subscribing }
@@ -62,6 +70,15 @@ struct tuck_MqttSession {
         tuck_MqttSession_Connecting tuck_connecting;
         tuck_MqttSession_Connected tuck_connected;
         tuck_MqttSession_Subscribing tuck_subscribing;
+    }
+    bool opEquals(const tuck_MqttSession o) const {
+        if (kind != o.kind) return false;
+        final switch (kind) {
+        case tuck_MqttSessionKind.Disconnected: return true;
+        case tuck_MqttSessionKind.Connecting: return tuck_connecting == o.tuck_connecting;
+        case tuck_MqttSessionKind.Connected: return tuck_connected == o.tuck_connected;
+        case tuck_MqttSessionKind.Subscribing: return tuck_subscribing == o.tuck_subscribing;
+        }
     }
 }
 
