@@ -805,6 +805,32 @@ proc syntacticFieldForm(tc: var TypeChecker, e: Expr): Type =
   if result == nil: result = tc.asPostfixApplication(e)
   if result == nil: result = tc.asVariantConstruction(e)
 
+proc asLengthOf(tc: var TypeChecker, e: Expr, recvT: Type): Type =
+  ## `xs.len` / `s.len` — an `int`, by definition of the language.
+  ##
+  ## It was declared NOWHERE and typed `<unknown>`. It reached the right code
+  ## anyway because each backend resolves a length independently (Nim's `.len`
+  ## by UFCS, and isLenOnSized in the Odin and D emitters), so the gap only
+  ## showed with --verify-stages — the same shape as a variant payload field
+  ## having no type: gradual typing carrying an Unknown past a checker that
+  ## should have known.
+  ##
+  ## Untyped is not harmless here. `let n = xs.len` made `n` Unknown, so every
+  ## comparison, every piece of arithmetic and every argument built from a
+  ## length went unchecked — and a length is the first thing any data
+  ## structure is written on.
+  ##
+  ## An intrinsic rather than a `std/seq` declaration, for the same reason
+  ## `xs[i]` is one: it is grammar, it must work without an import, and
+  ## std/seq.tuck records why a `len` cannot live there at all (it collides
+  ## with Nim's own seq internals inside tuck_rt.nim).
+  if e.fieldName != "len" or e.dotArg != nil: return nil
+  let t = tc.resolve(recvT)
+  if t == nil: return nil
+  if seqElem(t) == nil and not (t.kind == tkNamed and t.name in ["str", "string"]):
+    return nil
+  Type(span: e.span, kind: tkNamed, name: "int")
+
 proc typedFieldForm(tc: var TypeChecker, e: Expr, recvT: Type,
                     fields: seq[FieldDef]): Type =
   ## The arms that need the receiver's TYPE. Order matters once: an interface
@@ -813,6 +839,7 @@ proc typedFieldForm(tc: var TypeChecker, e: Expr, recvT: Type,
   ## object declared one — rejecting the receiver ("expects Dog but got
   ## Animal"), or worse, silently picking the wrong object's member.
   result = tc.asPlainField(e, fields, recvT)
+  if result == nil: result = tc.asLengthOf(e, recvT)
   if result == nil: result = tc.asVariantPayloadField(e, recvT)
   if result == nil: result = tc.asStaticMemberCall(e)
   if result == nil: result = tc.asInterfaceCall(e, recvT)

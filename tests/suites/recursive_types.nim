@@ -273,6 +273,22 @@ fn main() -> int:
   t.hostBuilds "...and every backend spells it its own way"
   t.runs "...and counts", 0
 
+  # And it is an INT to the checker, not `<unknown>`. It was undeclared
+  # everywhere and reached the right code only because each backend resolves
+  # a length independently — so `let n = xs.len` made `n` Unknown and every
+  # comparison, sum and argument built from a length went unchecked. A length
+  # is the first thing any data structure is written on.
+  t.src """
+fn takesStr({s: str}) -> int:
+  return 0
+
+fn main() -> int:
+  let xs = [1, 2, 3]
+  return {s: xs.len} takesStr
+"""
+  t.badCheck "a length is an int, and using one as a str is rejected",
+             "expects str but got int"
+
   # --- 9. a variant payload field HAS a type ------------------------------
   # It did not, to the checker. getFieldsForType answers `@[]` for a sum on
   # purpose (a sum has no fields of its own), so a payload access matched no
