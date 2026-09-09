@@ -32,7 +32,7 @@ openSource :: proc(ms: int) -> TRec_fd_A79D {
 
 
 tuck_readOrGiveUp :: proc(fd: int) -> TRec_code_CEC9 {
-  if rt.tuckAwaitReadOrTimeout(fd, int(time.tuck_ms(100))) {
+  if rt.tuckAwaitReadOrTimeout(fd, int(time.tuck_ms(u32(100)))) {
     return TRec_code_CEC9{code = 1}
   } else {
     return TRec_code_CEC9{code = 2}

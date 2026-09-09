@@ -14,7 +14,7 @@ proc tuck_budget*(d: tuck_Milliseconds): tuple[ok: bool] =
   return (ok: true)
 
 proc tuck_main*(): void =
-  var tuck_r = tuck_budget(tuck_ms(5))
-  var tuck_n = tuck_asInt(tuck_ms(42))
+  var tuck_r = tuck_budget(tuck_ms(5'u32))
+  var tuck_n = tuck_asInt(tuck_ms(42'u32))
   sys.exit(tuck_n)
 

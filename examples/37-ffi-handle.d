@@ -14,13 +14,13 @@ extern (C) void counterFree(Counter c);
 
 
 void tuck_main() {
-    Counter tuck_h = counterNew(100);
-    int tuck_t = counterBump(tuck_h, 5);
+    Counter tuck_h = counterNew(100L);
+    int tuck_t = counterBump(tuck_h, 5L);
     counterFree(tuck_h);
-    if ((tuck_t == 105)) {
-        sys.exit(0);
+    if ((tuck_t == 105L)) {
+        sys.exit(0L);
     }
-    sys.exit(1);
+    sys.exit(1L);
 }
 
 void main(string[] args) {

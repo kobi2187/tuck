@@ -6,7 +6,7 @@ import time
 proc tuck_main*(): int
 
 proc tuck_readOrGiveUp*(fd: int): tuple[code: int] =
-  if tuckAwaitReadOrTimeout(fd, int(tuck_ms(100))):
+  if tuckAwaitReadOrTimeout(fd, int(tuck_ms(100'u32))):
     return (code: 1)
   else:
     return (code: 2)

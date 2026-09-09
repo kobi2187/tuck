@@ -24,7 +24,7 @@ proc tuck_playTrack*[T](payload: T): void =
 
 
 proc tuck_main*(): void =
-  var tuck_request = (url: "example.com", timeout: tuck_ms(5))
+  var tuck_request = (url: "example.com", timeout: tuck_ms(5'u32))
   var tuck_response = tuck_selectEpisodes(tuck_parse(tuck_fetch(tuck_request)))
   var tuck_feed = tuck_fetch("https://example.com/feed")
   if tuck_feed.hasNew:

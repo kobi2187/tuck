@@ -315,8 +315,15 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
   ##
   ## extern [emit: "..."] renames the emitted call to the real runtime/C proc.
   let emitName = ctx.externEmitName(calleeStr)
+  # A PRIMITIVE conversion — `{value: n} u64` — names a Tuck type, and the
+  # backend's name for it is not the same word: `u64(n)` reached Nim as an
+  # undeclared identifier because Nim spells it `uint64`. The same table
+  # genType uses answers it; nimPrimitive returns its argument unchanged for
+  # anything that is not a primitive, so a fn named like a type is unaffected.
+  let prim = nimPrimitive(calleeStr)
   let callName = if emitName != "": emitName
                  elif ctx.isRuntimeExtern(calleeStr): "tuck_rt." & calleeStr
+                 elif prim != calleeStr: prim
                  else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
   if ctx.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, call)
@@ -425,9 +432,41 @@ proc genInterfaceWrap(inner, ifaceName, objName: string): string =
   ifaceName & "(tag: " & ifaceName & "_is_" & objName & ", " &
     objName & "Val: " & inner & ")"
 
-proc genLit(e: Expr): string =
+const NimLitSuffix = {
+  "u8": "'u8", "u16": "'u16", "u32": "'u32", "u64": "'u64",
+  "i8": "'i8", "i16": "'i16", "i32": "'i32", "i64": "'i64",
+}.toTable
+  ## Nim's literal suffixes, for a literal whose width the checker settled but
+  ## whose spelling would otherwise default to `int`. `int` itself is absent
+  ## on purpose: it is Nim's default and suffixing every ordinary number would
+  ## churn every golden for nothing.
+
+proc genLit(ctx: CodegenCtx, e: Expr): string =
   case e.litKind
   of lkStr: "\"" & e.litValue & "\""
+  of lkInt:
+    # An integer literal past the signed range is a u64 literal and has to say
+    # so. Nim reads a bare one as `int` and refuses it — "number out of range:
+    # '14695981039346656037'" — which is FNV-1a's offset basis, so every hash
+    # constant in the stdlib lands here. Same shape as the D backend's `L`
+    # suffix: a literal in an INFERRED position must carry its own width.
+    const i64Max = "9223372036854775807"
+    let digits = e.litValue.allCharsInSet({'0'..'9'})
+    # Compare by LENGTH first: lexicographic order only agrees with numeric
+    # order for equal-length digit strings, and "10000000000000000000" (20
+    # digits) sorts BELOW i64Max (19) by first character.
+    let tooBig = digits and (e.litValue.len > i64Max.len or
+                             (e.litValue.len == i64Max.len and
+                              e.litValue > i64Max))
+    if tooBig: return e.litValue & "'u64"
+    # Otherwise take the width the CHECKER settled on. A literal has no width
+    # of its own — the place it is going does — so `fn f() -> u64: return 3`
+    # must emit a uint64 literal or Nim reports "got 'int64' ... but expected
+    # 'uint64'". synthLit reads the same expected-type channel to decide it.
+    let t = ctx.res.typeFor(e)
+    if t != nil and t.kind == tkNamed and t.name in NimLitSuffix:
+      return e.litValue & NimLitSuffix[t.name]
+    e.litValue
   else: e.litValue
 
 proc genInputPayload(ctx: CodegenCtx): string =
@@ -751,7 +790,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     ctx.wrapping.excl(e.id)
     return genInterfaceWrap(inner, ifaceName, objName)
   case e.kind
-  of exkLit: genLit(e)
+  of exkLit: ctx.genLit(e)
   of exkVar: ctx.genVar(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     e.refName

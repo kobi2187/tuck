@@ -19,7 +19,7 @@ TRec_status_0031 tuck_fetch(T)(T payload) {
 
 
 void tuck_main() {
-    TRec_url_timeout_7FEF tuck_config = TRec_url_timeout_7FEF(url: "https://api.example.com", timeout: 100);
+    TRec_url_timeout_7FEF tuck_config = TRec_url_timeout_7FEF(url: "https://api.example.com", timeout: 100L);
     TRec_status_0031 tuck_result = tuck_fetch(tuck_config);
     return;
 }

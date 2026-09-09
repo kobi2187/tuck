@@ -33,9 +33,9 @@ proc tuck_drainOnce*(): int =
 
 proc tuck_main*(): int =
   var tuck_admitted = 0
-  tuck_admitted = (tuck_admitted + tuck_admit(1))
-  tuck_admitted = (tuck_admitted + tuck_admit(2))
-  tuck_admitted = (tuck_admitted + tuck_admit(3))
+  tuck_admitted = (tuck_admitted + tuck_admit(1'u32))
+  tuck_admitted = (tuck_admitted + tuck_admit(2'u32))
+  tuck_admitted = (tuck_admitted + tuck_admit(3'u32))
   var tuck_drained = tuck_drainOnce()
   return (tuck_admitted + tuck_drained)
 

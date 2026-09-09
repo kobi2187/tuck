@@ -32,7 +32,7 @@ void handleMsg_tuck_Counter(ref tuck_Counter self, tuck_CounterMsg msg) {
             self.count = (self.count + n);
             break;
         case tuck_CounterMsgKind.msgReset:
-            self.count = 0;
+            self.count = 0L;
             break;
     }
 }

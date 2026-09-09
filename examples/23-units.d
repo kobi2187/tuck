@@ -17,7 +17,7 @@ TRec_done_7275 tuck_delay(tuck_Milliseconds ms) {
 }
 
 void tuck_main() {
-    TRec_done_7275 tuck_r = tuck_delay(tuck_ms(5));
+    TRec_done_7275 tuck_r = tuck_delay(tuck_ms(5L));
     return;
 }
 

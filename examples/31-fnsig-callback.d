@@ -15,7 +15,7 @@ long tuck_plus(long a, long b) {
 
 void tuck_main() {
     tuck_Calc tuck_c = tuck_Calc(add: &tuck_plus);
-    long tuck_r = tuck_c.add(40, 2);
+    long tuck_r = tuck_c.add(40L, 2L);
     sys.exit(tuck_r);
 }
 

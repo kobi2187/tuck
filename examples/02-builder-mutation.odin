@@ -8,7 +8,7 @@ tuck_ServerConfig :: struct {
 }
 
 tuck_withDefaults :: proc (self: tuck_ServerConfig) -> tuck_ServerConfig {
-  return tuck_ServerConfig{port = 80, timeout = 30, running = false}
+  return tuck_ServerConfig{port = 80, timeout = u32(30), running = false}
 }
 
 tuck_start :: proc (self: tuck_ServerConfig) -> bool {
@@ -16,8 +16,8 @@ tuck_start :: proc (self: tuck_ServerConfig) -> bool {
 }
 
 tuck_main :: proc () {
-  tuck_server := tuck_ServerConfig{port = 0, timeout = 0, running = false}
-  tuck_server = tuck_ServerConfig{port = 80, timeout = 30, running = false}
+  tuck_server := tuck_ServerConfig{port = 0, timeout = u32(0), running = false}
+  tuck_server = tuck_ServerConfig{port = 80, timeout = u32(30), running = false}
   tuck_server.port = 8080
   tuck_server.timeout = 60
   tuck_ok := tuck_start(tuck_server)

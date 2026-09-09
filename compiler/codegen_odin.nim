@@ -282,6 +282,8 @@ const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
 
 const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "toStr",
                    "tuckConcat", "errCode", "push",
+                   "bitAnd", "bitOr", "bitXor", "bitNot",
+                   "shiftLeft", "shiftRight",
                    "tuckSat", "tuckSatI", "tuckReportUnhandled"]
   ## Runtime intrinsics taking their arguments as-is. Beef reached these
   ## through `using static Rt`; Odin has no such import, so both lists
@@ -521,7 +523,11 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
       let dot = arm.pattern.name.find(".")
       caseVal = errCodeLit(errNameFor(ctx.module, ctx.moduleName, arm.pattern.name[0 ..< dot],
                                           arm.pattern.name[dot+1 .. ^1]))
-    let caseLabel = if patStr == "_": "default:"
+    # Odin's catch-all is a BARE `case:` — `default` is not a keyword there,
+    # so `default: break;` parsed as a variable declaration ("Missing variable
+    # type or initialization"). Nothing caught it because the only error
+    # match in the corpus was built on Nim alone.
+    let caseLabel = if patStr == "_": "case:"
                     elif caseVal != "": "case " & caseVal & ":"
                     else: "case " & ctx.patternValue(patStr) & ":"
     if arm.body != nil and arm.body.kind == exkBlock:
@@ -529,7 +535,7 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
     else:
       cases.add(ind & caseLabel & " " & bodyStr & ";")
   if errMatch and not hasWild:
-    cases.add(ind & "default: break;")
+    cases.add(ind & "case:  // no arm; the fn's own fallthrough answers")
   ctx.indent = oldIndent
   return ind & "switch (" & subjectStr & ")\n" & ind & "{\n" &
          cases.join("\n") & "\n" & ind & "}"
@@ -583,9 +589,23 @@ proc genInterfaceWrap(ctx: var OdinCodegenCtx, e: Expr,
   ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
     objName & "Val = " & e.name & "}"
 
-proc genLit(e: Expr): string =
+const OdinWidthNames = ["u8", "u16", "u32", "u64",
+                        "i8", "i16", "i32", "i64", "f32"]
+
+proc genLit(ctx: var OdinCodegenCtx, e: Expr): string =
   case e.litKind
   of lkStr: "\"" & e.litValue & "\""
+  of lkInt, lkFloat:
+    # A bare Odin literal is `int` (or `f64`), and Odin does not convert
+    # between it and a fixed-width type implicitly: `return rt.tok(0)` in an
+    # `-> i64?` fn is "Cannot assign 'TuckResult($T=int)' to
+    # 'TuckResult($T=i64)'". So a literal in an INFERRED position spells its
+    # own width, the same reason Nim gets a `'u64` suffix and D an `L` — and
+    # from the same source, the width the checker settled on in synthLit.
+    let t = ctx.res.typeFor(e)
+    if t != nil and t.kind == tkNamed and t.name in OdinWidthNames:
+      return t.name & "(" & e.litValue & ")"
+    e.litValue
   else: e.litValue
 
 proc genInputPayload(ctx: var OdinCodegenCtx): string =
@@ -1173,7 +1193,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if w.objName != "" and e.kind == exkVar:
     return ctx.genInterfaceWrap(e, w)
   case e.kind
-  of exkLit: genLit(e)
+  of exkLit: ctx.genLit(e)
   of exkVar: ctx.genVar(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     e.refName

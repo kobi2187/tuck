@@ -9,7 +9,7 @@ struct tuck_ServerConfig {
 }
 
 tuck_ServerConfig tuck_withDefaults(tuck_ServerConfig self) {
-    return tuck_ServerConfig(port: 80, timeout: 30, running: false);
+    return tuck_ServerConfig(port: 80L, timeout: 30L, running: false);
 }
 
 bool tuck_start(tuck_ServerConfig self) {
@@ -17,10 +17,10 @@ bool tuck_start(tuck_ServerConfig self) {
 }
 
 void tuck_main() {
-    tuck_ServerConfig tuck_server = tuck_ServerConfig(port: 0, timeout: 0, running: false);
-    tuck_server = tuck_ServerConfig(port: 80, timeout: 30, running: false);
-    tuck_server.port = 8080;
-    tuck_server.timeout = 60;
+    tuck_ServerConfig tuck_server = tuck_ServerConfig(port: 0L, timeout: 0L, running: false);
+    tuck_server = tuck_ServerConfig(port: 80L, timeout: 30L, running: false);
+    tuck_server.port = 8080L;
+    tuck_server.timeout = 60L;
     bool tuck_ok = tuck_start(tuck_server);
     return;
 }

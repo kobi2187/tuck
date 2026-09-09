@@ -22,7 +22,7 @@ TRec_r_4E67 tuck_compute(long base) {
 
 long tuck_main() {
     auto tuckSlot1 = rt.newAsyncResult!(TRec_r_4E67)();
-    rt.spawnResult(tuckSlot1, { return tuck_compute(21); });
+    rt.spawnResult(tuckSlot1, { return tuck_compute(21L); });
     TRec_r_4E67 tuck_res = rt.awaitResult(tuckSlot1);
     return tuck_res.r;
 }

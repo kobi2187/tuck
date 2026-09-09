@@ -208,6 +208,29 @@ T[] push(T)(T[] items, T value)
     return items ~ [value];
 }
 
+/// Bit operations. Tuck has no bitwise OPERATORS — `|` is already sum-variant
+/// syntax and a word operator is refused (TK-PA11) — so these are ordinary
+/// postfix calls declared in std/bits.tuck, the same shape std/seq.tuck uses
+/// for at/setAt. Everything that wants bits is written against them.
+ulong bitAnd(ulong a, ulong b) { return a & b; }
+ulong bitOr(ulong a, ulong b) { return a | b; }
+ulong bitXor(ulong a, ulong b) { return a ^ b; }
+ulong bitNot(ulong a) { return ~a; }
+
+/// A shift at or past the width is 0, not undefined — C leaves `x << 64`
+/// undefined and each backend inherits that, so the guard lives here.
+ulong shiftLeft(ulong a, long by)
+{
+    if (by >= 64 || by < 0) return 0;
+    return a << by;
+}
+
+ulong shiftRight(ulong a, long by)
+{
+    if (by >= 64 || by < 0) return 0;
+    return a >> by;
+}
+
 string charAt(string s, long index)
 {
     tuckSeqBounds(index, cast(long) s.length, "charAt");

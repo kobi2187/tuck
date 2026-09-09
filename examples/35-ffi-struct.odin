@@ -16,7 +16,7 @@ foreign point {
 }
 
 tuck_main :: proc () {
-  tuck_p := makesPoint(3, 7)
+  tuck_p := makesPoint(i32(3), i32(7))
   tuck_r := takesPoint(tuck_p)
   if (tuck_r == 307) {
       sys.exit(0)

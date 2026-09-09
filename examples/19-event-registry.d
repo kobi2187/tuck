@@ -25,7 +25,7 @@ void raise_tuck_AppEvents_LowMemory(uint remaining) {
 
 
 void tuck_triggerEvent() {
-    raise_tuck_AppEvents_SensorFailure(1, "timeout");
+    raise_tuck_AppEvents_SensorFailure(1L, "timeout");
 }
 
 void tuck_AppEvents_SensorFailure(ubyte port, string reason) {
@@ -37,5 +37,5 @@ void tuck_AppEvents_LowMemory(uint remaining) {
     uint tuck_left = remaining;
 }
 
-static assert((1 == 1));
+static assert((1L == 1L));
 

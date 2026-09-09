@@ -98,8 +98,8 @@ void validate_tuck_Volume(tuck_Volume self)
 {
     version (tuckNoInvariants) {} else
     {
-        if (!((self.level <= 100)))
-            rt.tuckInvariantFailed("(self.level <= 100)", "tuck_Volume");
+        if (!((self.level <= 100L)))
+            rt.tuckInvariantFailed("(self.level <= 100L)", "tuck_Volume");
     }
 }
 
@@ -201,7 +201,7 @@ void sendStop_tuck_Decoder(ref tuck_Decoder self) {
 }
 
 
-static assert((tuck_Volume.sizeof == 1));
+static assert((tuck_Volume.sizeof == 1L));
 
 void tuck_SystemEvents_PlaybackStarted() {
     tuck_DAC_CR_EN_set(true);

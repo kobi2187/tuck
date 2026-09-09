@@ -17,14 +17,14 @@ extern (C) int tuck_addTwo(int a, int b) {
 }
 
 void tuck_main() {
-    int tuck_m = applyOp(Op.OP_MUL, 6, 7);
-    int tuck_c = callBack(&tuck_addTwo, 40, 2);
-    if ((tuck_m == 42)) {
-        if ((tuck_c == 1042)) {
-            sys.exit(0);
+    int tuck_m = applyOp(Op.OP_MUL, 6L, 7L);
+    int tuck_c = callBack(&tuck_addTwo, 40L, 2L);
+    if ((tuck_m == 42L)) {
+        if ((tuck_c == 1042L)) {
+            sys.exit(0L);
         }
     }
-    sys.exit(1);
+    sys.exit(1L);
 }
 
 void main(string[] args) {

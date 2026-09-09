@@ -60,7 +60,7 @@ tuck_playTrack :: proc(payload: $T) {
 
 
 tuck_main :: proc () {
-  tuck_request := TRec_url_timeout_E49C{url = "example.com", timeout = time.tuck_ms(5)}
+  tuck_request := TRec_url_timeout_E49C{url = "example.com", timeout = time.tuck_ms(u32(5))}
   tuck_response := tuck_selectEpisodes(tuck_parse(tuck_fetch(tuck_request)))
   tuck_feed := tuck_fetch("https://example.com/feed")
   if tuck_feed.hasNew {

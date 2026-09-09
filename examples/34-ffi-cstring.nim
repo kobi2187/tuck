@@ -14,7 +14,7 @@ proc compressBound*(sourceLen: uint64): uint64 {.importc: "compressBound", heade
 proc tuck_main*(): void =
   var tuck_v = zlibVersion()
   tuck_rt.printLine(tuck_v)
-  var tuck_b = compressBound(1000)
+  var tuck_b = compressBound(1000'u64)
   if (tuck_b == 1013):
     if true:
       tuck_rt.exit(0)

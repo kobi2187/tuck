@@ -43,11 +43,11 @@ void sendAdd_tuck_Counter(ref tuck_Counter self, long n) {
 
 
 bool tuck_sumReady() {
-    return (tuck_CounterSingleton.total == 55);
+    return (tuck_CounterSingleton.total == 55L);
 }
 
 long tuck_main() {
-    foreach (tuck_i; 1 .. 10 + 1) {
+    foreach (tuck_i; 1L .. 10L + 1) {
         sendAdd_tuck_Counter(tuck_CounterSingleton, tuck_i);
     }
     scheduler.waitUntil(&tuck_sumReady);

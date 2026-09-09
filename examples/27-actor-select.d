@@ -62,7 +62,7 @@ bool tuck_ready() {
 }
 
 long tuck_main() {
-    foreach (tuck_i; 1 .. 10 + 1) {
+    foreach (tuck_i; 1L .. 10L + 1) {
         sendAdd_tuck_Accumulator(tuck_AccumulatorSingleton, tuck_i);
     }
     sendFinish_tuck_Accumulator(tuck_AccumulatorSingleton);

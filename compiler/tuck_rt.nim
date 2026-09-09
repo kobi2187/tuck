@@ -116,6 +116,35 @@ proc push*[T](items: seq[T], value: T): seq[T] =
   result = items
   result.add(value)
 
+# --- bit operations -------------------------------------------------------
+#
+# Tuck has no bitwise OPERATORS. `|` is already sum-variant syntax, and a
+# word operator is refused outright (TK-PA11: `mod`/`div` "parses as a postfix
+# call and silently drops the right operand"), so the spelling of `&`/`^`/`<<`
+# is a language-surface question with no answer yet.
+#
+# These are the answer that needs no syntax: ordinary postfix calls, declared
+# in std/bits.tuck exactly the way std/seq.tuck declares at/setAt. Everything
+# that wants bits — core.num's whole bitset half, core.hash's FNV-1a fold —
+# is written against these, and swapping in real operators later changes no
+# caller that used them.
+#
+# u64 throughout: bit work is on the widest unsigned type, and Tuck's own
+# `int` is signed, where a shift would be arithmetic rather than logical.
+proc bitAnd*(a, b: uint64): uint64 {.inline.} = a and b
+proc bitOr*(a, b: uint64): uint64 {.inline.} = a or b
+proc bitXor*(a, b: uint64): uint64 {.inline.} = a xor b
+proc bitNot*(a: uint64): uint64 {.inline.} = not a
+
+proc shiftLeft*(a: uint64, by: int): uint64 {.inline.} =
+  ## A shift at or past the width is 0, not undefined. C leaves `x << 64`
+  ## undefined and the three backends inherit that from their own codegen, so
+  ## the guard is here rather than in each of them.
+  if by >= 64 or by < 0: 0'u64 else: a shl by
+
+proc shiftRight*(a: uint64, by: int): uint64 {.inline.} =
+  if by >= 64 or by < 0: 0'u64 else: a shr by
+
 proc tuckConcat*(a, b: string): string {.inline.} = a & b
 
 # `[saturating]` (spec 4.1): clamp at the type's bounds instead of wrapping.

@@ -9,7 +9,7 @@ struct TRec_ok_64D7 {
 }
 
 long tuck_asInt(time.tuck_Milliseconds d) {
-    return 42;
+    return 42L;
 }
 
 TRec_ok_64D7 tuck_budget(time.tuck_Milliseconds d) {
@@ -17,8 +17,8 @@ TRec_ok_64D7 tuck_budget(time.tuck_Milliseconds d) {
 }
 
 void tuck_main() {
-    TRec_ok_64D7 tuck_r = tuck_budget(time.tuck_ms(5));
-    long tuck_n = tuck_asInt(time.tuck_ms(42));
+    TRec_ok_64D7 tuck_r = tuck_budget(time.tuck_ms(5L));
+    long tuck_n = tuck_asInt(time.tuck_ms(42L));
     sys.exit(tuck_n);
 }
 

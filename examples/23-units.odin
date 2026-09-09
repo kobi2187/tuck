@@ -16,7 +16,7 @@ tuck_delay :: proc (ms: tuck_Milliseconds) -> TRec_done_7275 {
 }
 
 tuck_main :: proc () {
-  tuck_r := tuck_delay(tuck_ms(5))
+  tuck_r := tuck_delay(tuck_ms(u32(5)))
   return
 }
 

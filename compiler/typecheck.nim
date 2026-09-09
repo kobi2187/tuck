@@ -1246,12 +1246,29 @@ proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, subjT: Type,
   else:
     tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
 
+proc variantHint(tc: TypeChecker, subjT: Type): Type =
+  ## What an arm BODY should be synthesized against. The channel exists here
+  ## for one reason — it was called `expectedVariantType` before it was
+  ## generalised — so that a BARE VARIANT in an arm body (`Red`, not
+  ## `Light.Red`) resolves against the sum the subject came from.
+  ##
+  ## So only a sum type is offered. Anything else is a hint the body never
+  ## asked for and can only be wrong: `match r.err: Empty: 42 sys::exit`
+  ## has a u16 subject, and offering that width to the arm made the literal
+  ## `42'u16`, which Nim's `exit(int)` then refused.
+  let r = tc.resolve(subjT)
+  if r == nil: return nil
+  if r.kind == tkSum: return subjT
+  if r.kind == tkNamed and tc.typeDecls.hasKey(r.name) and
+     tc.typeDecls[r.name].kind == tkSum: return subjT
+  nil
+
 proc synthArm(tc: var TypeChecker, arm: MatchArm, subjT: Type, trackedVar,
               trackedType: string): Type =
   ## One arm, typed in its own scope with the subject narrowed.
   tc.pushScope()
   tc.bindArmPattern(arm, subjT, trackedVar, trackedType)
-  tc.withExpected(subjT):
+  tc.withExpected(tc.variantHint(subjT)):
     result = tc.synthesize(arm.body)
   tc.popScope()
 
@@ -2209,6 +2226,14 @@ proc asNamedCallee(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   if calleeName in tc.distinctNames:
     # Calling a distinct type's name converts from its base (Nim-native)
     return tc.synthArgsAs(e, calleeName)
+  if calleeName in NumericNames and not tc.fnSigs.hasKey(calleeName):
+    # `{value: n} u64` — a primitive CONVERSION, which read as an unclaimed
+    # call and typed Unknown. Nim and Odin infer a local's type from its
+    # initializer so it went unseen there; D declares one and refused, "a
+    # declaration whose type the checker did not settle". A conversion is the
+    # only way to cross widths in a language with no implicit ones, so every
+    # `u64`-typed stdlib fn taking an `int` needs it.
+    return tc.synthArgsAs(e, calleeName)
   if tc.typeGenerics.hasKey(calleeName):
     return tc.asGenericConstruction(e, calleeName)
   if not tc.fnSigs.hasKey(calleeName) and
@@ -2301,14 +2326,49 @@ proc checkFieldValue(tc: var TypeChecker, fieldName: string, val: Expr) =
          fieldName & "' — build the record from pure values and do the " &
          "effectful call on its own line", val.span)
 
-proc litTypeName(k: LitKind): string =
+proc litTypeName(k: LitKind, value = ""): string =
   ## The primitive type a literal denotes.
+  ##
+  ## An integer literal PAST the signed 64-bit range denotes a `u64`, not an
+  ## `int` — it does not fit in one. Typing it `int` produced a D declaration
+  ## `long x = 14695981039346656037L;` and "signed integer overflow"; FNV-1a's
+  ## offset basis is exactly that constant, so every hash in the stdlib meets
+  ## it. Compared by LENGTH first, since lexicographic order only agrees with
+  ## numeric order for equal-length digit strings.
+  const i64Max = "9223372036854775807"
   case k
-  of lkInt: "int"
+  of lkInt:
+    if value.len > i64Max.len or
+       (value.len == i64Max.len and value > i64Max): "u64"
+    else: "int"
   of lkFloat: "float"
   of lkStr: "str"
   of lkBool: "bool"
   of lkUnit: "unit"
+
+proc synthLit(tc: var TypeChecker, e: Expr): Type =
+  ## A literal's type, taking the context's when there is one.
+  ##
+  ## An integer literal is an `int` on its own, and that is wrong wherever the
+  ## context wants another width: `fn fnvPrime() -> u64: return 1099511628211`
+  ## emitted an int64 into a uint64 return and Nim refused it. A literal has no
+  ## width of its own — the place it is going does — which is the same
+  ## expected-type channel a bare sum variant and an empty list already read.
+  ##
+  ## NUMERIC ONLY, and only when the literal is already numeric: a str literal
+  ## in an int position is a real type error and must stay one.
+  let base = litTypeName(e.litKind, e.litValue)
+  if e.litKind notin {lkInt, lkFloat}: return Type(span: e.span, kind: tkNamed,
+                                                   name: base)
+  ## The expected type is UNWRAPPED first: `fn f() -> i64?: return 0` puts an
+  ## `?i64` in the channel, and codegen wraps the literal itself (`tok(0)`), so
+  ## the width the literal must carry is the payload's. Without this the
+  ## literal stays `int` and Nim refuses `TuckResult[int] -> TuckResult[int64]`.
+  let want = unwrapEffect(tc.resolve(tc.expectedType))
+  if want != nil and want.kind == tkNamed and want.name in NumericNames and
+     base in NumericNames:
+    return Type(span: e.span, kind: tkNamed, name: want.name)
+  Type(span: e.span, kind: tkNamed, name: base)
 
 proc synthNullaryCall(tc: var TypeChecker, e: Expr): Type =
   ## spec 2.3: a bare name IS a call — `f`, `.f` and `.f {}` are one form.
@@ -2961,7 +3021,7 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
 
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   case e.kind
-  of exkLit: Type(span: e.span, kind: tkNamed, name: litTypeName(e.litKind))
+  of exkLit: tc.synthLit(e)
   of exkVar: tc.synthVar(e)
   of exkField: tc.synthFieldAccess(e)
   of exkStruct: tc.synthStruct(e)

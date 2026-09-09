@@ -19,6 +19,21 @@ const dPrims = {
   "bool": "bool", "str": "string", "void": "void", "unit": "void",
 }.toTable
 
+const DCastablePrims* = ["long", "byte", "short", "int",
+                         "ubyte", "ushort", "uint", "ulong",
+                         "float", "double", "bool"]
+  ## The D spellings a Tuck conversion call may `cast` to — every numeric
+  ## width and bool. `string` and `void` are in dPrims but not here: casting
+  ## an int to `string` in D reinterprets the bytes, which is never what
+  ## `{value: n} str` would mean.
+
+proc dPrimName*(name: string): string =
+  ## D's spelling of a Tuck primitive, or "" when the name is not one. Used
+  ## for a CONVERSION call (`{value: n} u64`), where the callee names a type
+  ## rather than a fn — a local declaration reaches the same table through
+  ## dType, but the call site had nothing.
+  if name in dPrims: dPrims[name] else: ""
+
 type
   DCodegenCtx* = object
     res*: Resolution

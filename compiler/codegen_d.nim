@@ -79,6 +79,11 @@ proc genDLit(e: Expr): string =
     # generic call, where `twice(5)` instantiated `T = int` and then would not
     # assign to the `long[]` the declared return type says it is.
     if '.' in e.litValue or 'e' in e.litValue: e.litValue
+    # `UL` past the signed range: `L` alone makes it a signed long and dmd
+    # reports "signed integer overflow" on FNV-1a's offset basis.
+    elif e.litValue.len > 19 or
+         (e.litValue.len == 19 and e.litValue > "9223372036854775807"):
+      e.litValue & "UL"
     else: e.litValue & "L"
   of lkFloat, lkBool: e.litValue
   of lkUnit: ""
@@ -356,6 +361,8 @@ const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
 
 const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "toStr",
                    "tuckConcat", "errCode", "push",
+                   "bitAnd", "bitOr", "bitXor", "bitNot",
+                   "shiftLeft", "shiftRight",
                    "tuckSat", "tuckSatI", "tuckReportUnhandled"]
   ## Runtime intrinsics taking their arguments as-is. Both lists qualify
   ## explicitly: D has no cross-module scope merge, so `rt.` is required.
@@ -377,6 +384,22 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   let variant = ctx.asDSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.resolveDCallee(e)
+  # A PRIMITIVE conversion — `{value: n} u64` — names a Tuck type, and D's
+  # name for it is a different word: `u64(n)` reached dmd as an undefined
+  # identifier because D spells it `ulong`. The same table dType uses answers
+  # it. Odin needed no equivalent: its own primitive names ARE Tuck's.
+  let prim = dPrimName(calleeStr)
+  if prim != "" and prim != calleeStr:
+    let arg = ctx.genDCallArgs(e, calleeStr).join(", ")
+    # NARROWING needs a cast, not a type constructor: `ubyte(x)` where x is a
+    # ulong is "cannot implicitly convert expression of type ulong to ubyte" —
+    # D's `T(x)` only performs the conversions it would do implicitly. Tuck's
+    # conversion call is explicit BY CONSTRUCTION (the author wrote the type
+    # name), so `cast` is what it means. Numeric and bool only: `str` is in the
+    # same table but converting to it is `toStr`, never a reinterpretation.
+    if prim in DCastablePrims:
+      return "cast(" & prim & ")(" & arg & ")"
+    return prim & "(" & arg & ")"
   # Calling a task in STATEMENT position schedules it and moves on —
   # fire-and-forget (spec §9.2). A result-BOUND call is handled in
   # genDAssign, which needs the target to build the slot.
@@ -985,6 +1008,17 @@ proc dPatternStr(ctx: var DCodegenCtx, pat: Pattern): string =
   ## One arm's pattern as a D case label. A bare tag qualifies to its enum;
   ## a literal stands as written.
   let raw = genPatternStr(pat)
+  # `match r.err:` dispatches on the u16 CODE the carrier holds, so an arm
+  # naming a variant of an error enum is the folded code, not the enum tag —
+  # `case E.Empty:` reached dmd as "undefined identifier `E`" (the type is
+  # emitted as `tuck_E`, and the subject is not of it anyway). Same treatment
+  # the Odin backend already gives it; nothing caught it because the only
+  # error match in the corpus was built on Nim alone.
+  if pat != nil and pat.kind == pkVar and "." in pat.name:
+    let dot = pat.name.find(".")
+    return ctx.errCodeArg(errNameFor(ctx.module, ctx.moduleName,
+                                     pat.name[0 ..< dot],
+                                     pat.name[dot + 1 .. ^1]))
   let tag = ctx.qualifyEnumTag(raw)
   if tag != "": tag else: raw
 
@@ -1031,17 +1065,32 @@ proc hasWildArm(e: Expr): bool =
     if arm.pattern != nil and arm.pattern.kind == pkWild: return true
   false
 
+proc isErrMatch(e: Expr): bool =
+  ## `match r.err:` — the arms name variants of an error enum, and the
+  ## subject is the u16 code the carrier holds, not an enum value.
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkVar and
+       "." in arm.pattern.name: return true
+  false
+
 proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string =
   ## `final switch` — D's own exhaustiveness check, which is exactly the
   ## guarantee Tuck's match makes, so the compiler re-verifies the arm set
   ## rather than the emitter trusting it. An arm set WITH a wildcard cannot
   ## be `final` (D rejects a default there), so those emit a plain switch.
   if e.subject == nil: return dUnsupported("decision table (T24)")
-  let kw = if hasWildArm(e): "switch" else: "final switch"
+  # An error match dispatches on a u16, and `final switch` is enum-only in D
+  # — so it is a plain switch, which then REQUIRES a default arm.
+  let errM = isErrMatch(e)
+  let kw = if hasWildArm(e) or errM: "switch" else: "final switch"
   let narrowKey = ctx.genDExpr(e.subject)
   result = ctx.indD & kw & " (" & ctx.dMatchSubject(e) & ") {\n"
   for arm in e.arms:
     result.add(ctx.genDMatchArm(arm, narrowKey))
+  if errM and not hasWildArm(e):
+    ctx.indent += 1
+    result.add(ctx.indD & "default: break;  // no arm; the fn falls through\n")
+    ctx.indent -= 1
   result.add(ctx.indD & "}")
 
 proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =

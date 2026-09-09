@@ -90,6 +90,27 @@ tuckConcat :: proc(a, b: string) -> string {
 	return strings.concatenate({a, b})
 }
 
+// Bit operations. Tuck has no bitwise OPERATORS — `|` is already sum-variant
+// syntax and a word operator is refused (TK-PA11) — so these are ordinary
+// postfix calls declared in std/bits.tuck, the same shape std/seq.tuck uses
+// for at/setAt. Everything that wants bits is written against them.
+bitAnd :: proc(a, b: u64) -> u64 { return a & b }
+bitOr :: proc(a, b: u64) -> u64 { return a | b }
+bitXor :: proc(a, b: u64) -> u64 { return a ~ b }
+bitNot :: proc(a: u64) -> u64 { return ~a }
+
+// A shift at or past the width is 0, not undefined — C leaves `x << 64`
+// undefined and each backend inherits that, so the guard lives here.
+shiftLeft :: proc(a: u64, by: int) -> u64 {
+	if by >= 64 || by < 0 { return 0 }
+	return a << u64(by)
+}
+
+shiftRight :: proc(a: u64, by: int) -> u64 {
+	if by >= 64 || by < 0 { return 0 }
+	return a >> u64(by)
+}
+
 // seq access. Bounds are a PRECONDITION: violating one is a program error,
 // not an error value the caller matches.
 // `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's

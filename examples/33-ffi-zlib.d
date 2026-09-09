@@ -8,11 +8,11 @@ extern (C) ulong compressBound(ulong sourceLen);
 
 
 void tuck_main() {
-    ulong tuck_b = compressBound(1000);
-    if ((tuck_b == 1013)) {
-        sys.exit(0);
+    ulong tuck_b = compressBound(1000L);
+    if ((tuck_b == 1013L)) {
+        sys.exit(0L);
     }
-    sys.exit(1);
+    sys.exit(1L);
 }
 
 void main(string[] args) {

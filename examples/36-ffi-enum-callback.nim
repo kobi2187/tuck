@@ -17,8 +17,8 @@ proc tuck_addTwo*(a: int32, b: int32): int32 =
   return (a + b)
 
 proc tuck_main*(): void =
-  var tuck_m = applyOp(Op.OP_MUL, 6, 7)
-  var tuck_c = callBack(cast[tuck_BinOp](tuck_addTwo), 40, 2)
+  var tuck_m = applyOp(Op.OP_MUL, 6'i32, 7'i32)
+  var tuck_c = callBack(cast[tuck_BinOp](tuck_addTwo), 40'i32, 2'i32)
   if (tuck_m == 42):
     if true:
       if (tuck_c == 1042):

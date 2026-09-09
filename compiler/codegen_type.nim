@@ -31,7 +31,7 @@ proc widenOddWidth(name: string): string =
     else: base & "64"
   else: name
 
-proc nimPrimitive(name: string): string =
+proc nimPrimitive*(name: string): string =
   ## Tuck's primitive names to Nim's. A pure lookup, split out of genType so
   ## the dispatch there is about type SHAPES (named, tuple, app, record...)
   ## rather than being dominated by one long table of scalar names.

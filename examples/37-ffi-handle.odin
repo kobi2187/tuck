@@ -14,8 +14,8 @@ foreign point {
 }
 
 tuck_main :: proc () {
-  tuck_h := counterNew(100)
-  tuck_t := counterBump(tuck_h, 5)
+  tuck_h := counterNew(i32(100))
+  tuck_t := counterBump(tuck_h, i32(5))
   counterFree(tuck_h)
   if (tuck_t == 105) {
       sys.exit(0)

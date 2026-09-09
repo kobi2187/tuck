@@ -39,9 +39,9 @@ tuck_drainOnce :: proc () -> int {
 
 tuck_main :: proc () -> int {
   tuck_admitted := 0
-  tuck_admitted = (tuck_admitted + tuck_admit(1))
-  tuck_admitted = (tuck_admitted + tuck_admit(2))
-  tuck_admitted = (tuck_admitted + tuck_admit(3))
+  tuck_admitted = (tuck_admitted + tuck_admit(u32(1)))
+  tuck_admitted = (tuck_admitted + tuck_admit(u32(2)))
+  tuck_admitted = (tuck_admitted + tuck_admit(u32(3)))
   tuck_drained := tuck_drainOnce()
   return (tuck_admitted + tuck_drained)
 }

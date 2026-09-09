@@ -5,15 +5,15 @@ import rt = tuck_rt;
 alias tuck_SafeRPM = ushort;
 
 long tuck_main() {
-    tuck_SafeRPM tuck_over = tuck_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(70000)));
-    tuck_SafeRPM tuck_ok = tuck_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(1200)));
-    if ((tuck_over == tuck_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(65535))))) {
-        if ((tuck_ok == tuck_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(1200))))) {
-            return 0;
+    tuck_SafeRPM tuck_over = tuck_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(70000L)));
+    tuck_SafeRPM tuck_ok = tuck_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(1200L)));
+    if ((tuck_over == tuck_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(65535L))))) {
+        if ((tuck_ok == tuck_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(1200L))))) {
+            return 0L;
         }
-        return 2;
+        return 2L;
     }
-    return 1;
+    return 1L;
 }
 
 int main(string[] args) {

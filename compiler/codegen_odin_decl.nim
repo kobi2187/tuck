@@ -754,13 +754,16 @@ proc forwarderParamType*(ctx: var OdinCodegenCtx, p: Param, mem: Decl): string =
   ## is a PREDICATE the runtime calls, so it needs a callable proc type —
   ## `rawptr` would not convert at the rt boundary.
   ##
-  ## Odin marks a polymorphic param at the DECLARATION site: `value: $T`, not
-  ## `value: T`. Without the sigil T is an undeclared name, so any generic
-  ## extern forwarder (std/str's toStr) failed to compile.
+  ## The `$T` marking is NOT done here — genRtForwarder does it with
+  ## markFirstTypeParam, the same proc fnParamList uses. It used to be a
+  ## second copy of the rule that tested for a bare named `T`, which
+  ## `Seq[T]` (rendered `[dynamic]T`) is not: std/seq's `push` came out as
+  ## `proc(items: [dynamic]T, value: $T)` — the sigil on the wrong param and
+  ## `T` in the first one undeclared, so every backend but Nim lost `push`
+  ## the moment a module imported std/seq rather than calling it bare.
   let named = p.typ != nil and p.typ.kind == tkNamed
   if named and p.typ.name == "fn": return "proc() -> bool"
-  result = ctx.odinType(p.typ)
-  if named and p.typ.name in mem.fnGenerics: result = "$" & result
+  ctx.odinType(p.typ)
 
 proc recordFromFields*(ctx: var OdinCodegenCtx, fields: seq[FieldDef],
                       source: string): string =
@@ -804,8 +807,18 @@ proc genRtForwarder*(ctx: var OdinCodegenCtx, mem: Decl, alias = "rt"): string =
   let ind = "  ".repeat(ctx.indent)
   var params: seq[string]
   var argNames: seq[string]
+  # A type param is inferred from the FIRST parameter that mentions it,
+  # wherever it sits in that parameter's type — exactly fnParamList's rule.
+  var bound: HashSet[string]
   for p in mem.fnParams:
-    params.add(p.name & ": " & ctx.forwarderParamType(p, mem))
+    var ty = ctx.forwarderParamType(p, mem)
+    for g in mem.fnGenerics:
+      if g in bound: continue
+      let marked = markFirstTypeParam(ty, g)
+      if marked != ty:
+        ty = marked
+        bound.incl(g)
+    params.add(p.name & ": " & ty)
     argNames.add(p.name)
   let callStr = alias & "." & mem.name & "(" & argNames.join(", ") & ")"
   let (bw, _, binnerT) = ctx.odinBangInfo(mem.fnReturnType)
