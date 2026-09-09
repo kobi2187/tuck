@@ -132,6 +132,23 @@ proc importedTypeQualifier*(ctx: OdinCodegenCtx, name: string): string =
     break
   name
 
+proc qualifyEnumOwner*(ctx: OdinCodegenCtx, owner: string): string =
+  ## An enum owner reached through its module when the TYPE it belongs to was
+  ## imported. `importedTypeQualifier` above already does this for a type in
+  ## TYPE position; a bare tag and a match-arm label are the two places the
+  ## same name appears in VALUE position, and neither was qualified — so a sum
+  ## declared in another module produced `tuck_Order.Before` and "Undeclared
+  ## name" beside a correctly qualified `cmp.tuck_flipped`.
+  ##
+  ## `enumTagOwner` answers `TKind` for a payload sum, so the decl whose
+  ## origin to look up is that name minus the suffix.
+  let typeName = if owner.endsWith("Kind"): owner[0 ..< owner.len - 4]
+                 else: owner
+  let origin = moduleDeclaringType(ctx.module, typeName)
+  if origin.len == 0: return owner
+  let pkg = origin.replace("-", "_")
+  if pkg == ctx.moduleName.replace("-", "_"): owner else: pkg & "." & owner
+
 proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   ## A name the primitive table did not cover.
   if isOddBitWidth(t.name): roundedIntType(t.name)

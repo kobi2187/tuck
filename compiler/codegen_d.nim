@@ -621,6 +621,15 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
     # A `..` chain feeding this call was already hoisted into a temp by
     # lowering.hoistChainCalls — the receiver here can never be exkChain.
     return ctx.genDExpr(ctx.res.call(e))
+  # `Order.Before` where `Order` is declared in an IMPORTED module. The type
+  # has to be named THROUGH that module, exactly as importDeclaring already
+  # does for a foreign call — D has no cross-module scope merge. Without this
+  # the variant emitted as a bare `tuck_Order.Before` and dmd reported an
+  # undefined identifier, while the call beside it was correctly qualified.
+  if e.receiver != nil and e.receiver.kind == exkVar:
+    let owner = moduleDeclaringType(ctx.module, e.receiver.name)
+    if owner != "":
+      return dAlias(owner) & "." & e.receiver.name & "." & e.fieldName
   ctx.genDFieldRead(e)
 
 proc genDInputPayload(ctx: var DCodegenCtx): string =
@@ -645,7 +654,16 @@ proc qualifyEnumTag*(ctx: DCodegenCtx, name: string): string =
   if ctx.inlineTagOwner.hasKey(name):
     return ctx.inlineTagOwner[name] & "." & name
   let owner = enumTagOwner(ctx.module, name)
-  if owner == "": "" else: owner & "." & name
+  if owner == "": return ""
+  # The owner may be an IMPORTED type, in which case the enum lives in that
+  # module and has to be reached through it — same rule as the construction
+  # site above. `enumTagOwner` answers `TKind` for a payload sum, so the type
+  # whose origin to look up is that name minus the suffix.
+  let typeName = if owner.endsWith("Kind"): owner[0 ..< owner.len - 4]
+                 else: owner
+  let origin = moduleDeclaringType(ctx.module, typeName)
+  if origin == "": owner & "." & name
+  else: dAlias(origin) & "." & owner & "." & name
 
 proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool =
   ## A `:fnRef` filling a callback slot — a declared fn named as a VALUE

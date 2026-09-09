@@ -648,6 +648,15 @@ proc stageOdinPkg*(dir, odinSrc: string) =
     copyFile(f, dir / "tuckrt" / f.lastPathPart)
   if fileExists("compiler/tuckrt/minicoro.a"):
     copyFile("compiler/tuckrt/minicoro.a", dir / "tuckrt" / "minicoro.a")
+  # An IMPORTED Tuck module emits as a sibling `mod_<name>/` package that the
+  # main file imports by relative path, so it has to be staged too. Without
+  # this a multi-module program failed here with `import cmp "./mod_cmp"` —
+  # the compiler had emitted it correctly and the staging simply left it
+  # behind, which reads as a backend bug and is not one.
+  for d in walkDirs(odinSrc.parentDir / "mod_*"):
+    createDir(dir / d.lastPathPart)
+    for f in walkFiles(d / "*.odin"):
+      copyFile(f, dir / d.lastPathPart / f.lastPathPart)
 
 # --- the host-acceptance assertion ---------------------------------------
 #

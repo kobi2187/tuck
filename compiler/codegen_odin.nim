@@ -411,7 +411,7 @@ proc odinBangInfo*(ctx: var OdinCodegenCtx, t: Type):
 proc patternValue*(ctx: OdinCodegenCtx, patStr: string): string =
   if patStr.len == 0: return patStr
   let owner = enumTagOwner(ctx.module, patStr)
-  if owner != "": return owner & "." & patStr
+  if owner != "": return ctx.qualifyEnumOwner(owner) & "." & patStr
   if patStr[0] in {'A'..'Z'}: return "." & patStr
   patStr
 
@@ -616,7 +616,7 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   # bare enum tag: qualify with its declared owner (Odin has no module-global
   # enum members the way Nim does)
   let owner = enumTagOwner(ctx.module, e.name)
-  if owner != "": return owner & "." & e.name
+  if owner != "": return ctx.qualifyEnumOwner(owner) & "." & e.name
   let foreign = ctx.qualifiedForeignFn(e.name)
   if foreign != "": return foreign
   e.name
@@ -689,6 +689,18 @@ proc isLenOnSized(ctx: var OdinCodegenCtx, e: Expr): bool =
   if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
   seqElem(rt) != nil
 
+proc importedTypeMember(ctx: OdinCodegenCtx, e: Expr): string =
+  ## `Order.Before` where `Order` came from an IMPORTED module: the type lives
+  ## in that module's package and has to be reached through it, exactly as
+  ## importedTypeQualifier already does in TYPE position. "" when the receiver
+  ## is not an imported type name.
+  if e.receiver == nil or e.receiver.kind != exkVar: return ""
+  let origin = moduleDeclaringType(ctx.module, e.receiver.name)
+  if origin.len == 0: return ""
+  let pkg = origin.replace("-", "_")
+  if pkg == ctx.moduleName.replace("-", "_"): return ""
+  pkg & "." & e.receiver.name & "." & e.fieldName
+
 proc fieldByReceiverKind(ctx: var OdinCodegenCtx, e: Expr): string =
   ## The two `.name` readings decided by what the RECEIVER is rather than by
   ## what the field is: a bare `Type.Variant` construction, and a register
@@ -749,6 +761,8 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   if bound != "": return bound
   let asserted = ctx.assertedVariantField(e)
   if asserted != "": return asserted
+  let imported = ctx.importedTypeMember(e)
+  if imported != "": return imported
   ctx.genOdinExpr(e.receiver) & "." & e.fieldName
 
 proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =

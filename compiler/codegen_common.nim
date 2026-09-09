@@ -56,6 +56,33 @@ proc findObjectMember*(obj: Decl, name: string): Decl =
   for mem in obj.members():
     if mem != nil and mem.kind == dkFn and mem.name == name: return mem
 
+proc moduleDeclaringType*(module: Module, name: string): string =
+  ## The imported module a TYPE came from, or "" when this module declares it.
+  ##
+  ## `injectImportedTypes` makes an imported type visible unqualified by
+  ## inserting a COPY into the importer's own decl list, stamped with
+  ## `ImportedTypeMarker & ":" & origin` in its span. So the importer holds
+  ## both kinds and the marker is the only thing telling them apart — asking
+  ## `findDecl` whether the type is local answers "yes" for both.
+  ##
+  ## The D backend already qualified foreign CALLABLES (importDeclaring —
+  ## "D has no cross-module scope merge, so every foreign call has to be
+  ## qualified") and Odin already qualified foreign TYPES in type position
+  ## (importedTypeQualifier). Neither qualified a type used as a VALUE
+  ## receiver, so `Order.Before` on a sum from another module emitted bare and
+  ## both backends reported an undeclared name — beside a correctly qualified
+  ## `cmp.tuck_flipped` on the same line.
+  ##
+  ## Nim never showed it: `import cmp` merges names, so the bare form
+  ## resolves. That is why a two-module program compiled on one backend of
+  ## three, and why the stdlib design's "modules rely on each other" had never
+  ## been exercised.
+  for d in module.decls:
+    if d == nil or d.kind != dkType or d.name != name: continue
+    if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
+    return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
+  ""
+
 proc satisfiersOf*(module: Module, realModules: Table[string, Module],
                    iface: string): seq[Decl] =
   ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.

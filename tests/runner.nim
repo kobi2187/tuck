@@ -265,8 +265,22 @@ when isMainModule:
        else: "== stage 1: tuck is current, not rebuilt ==")
   var ts1 = getMonoTime()
   if mustBuild:
-    if execCmd("nim c --hints:off --warnings:off -o:tuck tuck.nim") != 0:
+    # Build BESIDE the binary, then rename over it. `nim c -o:tuck` truncates
+    # ./tuck in place, and Linux refuses to exec a file open for writing —
+    # ETXTBSY, which Nim surfaces as "Permission denied". Any `./tuck` still
+    # running from a previous invocation (or a straggler in this one) turned
+    # that into a burst of unrelated-looking failures:
+    #
+    #   FAIL  mutually recursive fns check
+    #         Could not find command: './tuck'. OS error: Permission denied
+    #
+    # Intermittent, ~1 run in 5, and it named whichever assertions happened to
+    # be in flight — which is why it read as a flaky TEST rather than a race
+    # over the compiler binary. A rename is atomic and leaves the old inode
+    # alive for anything still executing it.
+    if execCmd("nim c --hints:off --warnings:off -o:tuck.new tuck.nim") != 0:
       quit "FAIL: cannot build tuck", 1
+    moveFile("tuck.new", "tuck")
   let nimSecs = secs(ts1)
   echo &"  {nimSecs}s, tuck binary {getFileSize(\"tuck\") div 1024}K"
 

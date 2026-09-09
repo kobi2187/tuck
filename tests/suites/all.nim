@@ -38,6 +38,7 @@ import syntax_ceilings
 import typecheck
 import recursive_types
 import generics
+import cross_module
 import with_update
 import uninit
 import value_semantics
@@ -80,6 +81,7 @@ let registry: seq[Entry] = @[
   ("typecheck",           SuiteProc(typecheck.run),           true),
   ("recursive_types",     SuiteProc(recursive_types.run),     true),
   ("generics",            SuiteProc(generics.run),            true),
+  ("cross_module",        SuiteProc(cross_module.run),        true),
   ("with_update",         SuiteProc(with_update.run),         true),
   ("uninit",              SuiteProc(uninit.run),              false),
   ("value_semantics",     SuiteProc(value_semantics.run),     false),
