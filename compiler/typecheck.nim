@@ -3514,6 +3514,10 @@ proc typecheckModule*(m: Module,
   # Before checkDecl: a type with no finite size cannot be reasoned about, so
   # the author should see THAT rather than a cascade about a type that cannot
   # exist. Was caught only by the backend, in the backend's words.
+  # Mark before checking: the mark is about SHAPE (is this a tree?) and the
+  # check about SIZE (is it finite?), and a sum can be both recursive and
+  # legal — `| Add {kids: Seq[Expr]}` is marked here and passes below.
+  markRecursiveSums(tc.typeDeclsByName, m)
   checkRecursiveTypes(tc.typeDeclsByName, m)
   checkConformance(m)      # `satisfies I` means every I member is implemented
   tc.bindConsts(m)

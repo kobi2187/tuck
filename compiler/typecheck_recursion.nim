@@ -59,11 +59,17 @@ proc fieldsOf(d: Decl): seq[FieldDef] =
   of dkObject: d.objFields
   else: @[]
 
-iterator inlineTypeNames(t: Type): string =
-  ## The type names this field stores INLINE — the ones whose size counts
-  ## toward its own. Descends through the shapes that store their argument by
-  ## value and stops at a handle container, which is what makes `Seq[Expr]`
-  ## finite while `Array[4, Expr]` is not.
+iterator reachedTypeNames(t: Type, throughHandles: bool): string =
+  ## The type names this field reaches.
+  ##
+  ## `throughHandles = false` — the names stored INLINE, whose size counts
+  ## toward its own. Stops at a handle container, which is what makes
+  ## `Seq[Expr]` finite while `Array[4, Expr]` is not. That is the SIZE
+  ## question, and TK-TY17's.
+  ##
+  ## `throughHandles = true` — every name reached at all. That is the SHAPE
+  ## question: `Seq[Expr]` inside `Expr` still makes a tree, and a pass that
+  ## has to REPRESENT one needs to know. See markRecursiveSums.
   var stack = @[t]
   while stack.len > 0:
     let cur = stack.pop()
@@ -71,7 +77,7 @@ iterator inlineTypeNames(t: Type): string =
     case cur.kind
     of tkNamed: yield cur.name
     of tkApp:
-      if cur.base != nil and cur.base.kind == tkNamed and
+      if not throughHandles and cur.base != nil and cur.base.kind == tkNamed and
          cur.base.name in HandleContainers:
         discard              # behind a handle: contributes no inline size
       else:
@@ -82,7 +88,8 @@ iterator inlineTypeNames(t: Type): string =
       # tkFunc is a code pointer, tkUnion/tkEffect/tkRename/tkRecord/tkSum
       # cannot name a declared type inline from a field position here.
 
-proc findCycle(decls: Table[string, Decl], start: string):
+proc findCycle(decls: Table[string, Decl], start: string,
+               throughHandles = false):
     tuple[found: bool, field: string, path: seq[string]] =
   ## Walk the inline-containment graph from `start`, looking for the way back
   ## to it. Reports the FIELD that closes the cycle, which is the one line the
@@ -93,7 +100,7 @@ proc findCycle(decls: Table[string, Decl], start: string):
     let (name, viaField, path) = stack.pop()
     if not decls.hasKey(name): continue
     for f in fieldsOf(decls[name]):
-      for inner in inlineTypeNames(f.typ):
+      for inner in reachedTypeNames(f.typ, throughHandles):
         let closing = if path.len == 1: f.name else: viaField
         if inner == start:
           return (true, closing, path & inner)
@@ -101,6 +108,22 @@ proc findCycle(decls: Table[string, Decl], start: string):
         seen.incl(inner)
         stack.add((inner, closing, path & inner))
   (false, "", @[])
+
+proc markRecursiveSums*(decls: Table[string, Decl], m: Module) =
+  ## Set `recursive` on every sum type that reaches itself, by any route.
+  ##
+  ## Runs BEFORE checkRecursiveTypes and answers a different question: not
+  ## "does this have a finite size?" but "is this a tree?". A sum holding
+  ## `Seq[Self]` is legal today and still recursive; one holding a bare `Self`
+  ## is recursive AND currently rejected by the check below.
+  ##
+  ## Sums only. A record reaching itself is a sizing error with no shape to
+  ## represent — there is no variant to end the chain, so every value would be
+  ## infinite. That stays TK-TY17.
+  for d in m.decls:
+    if d == nil or d.kind != dkType or d.name.len == 0: continue
+    if d.typeBody == nil or d.typeBody.kind != tkSum: continue
+    d.typeBody.recursive = findCycle(decls, d.name, throughHandles = true).found
 
 proc checkRecursiveTypes*(decls: Table[string, Decl], m: Module) =
   ## Reject a type that contains itself by value, before any backend sees it.

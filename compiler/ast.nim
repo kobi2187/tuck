@@ -112,6 +112,17 @@ type
     of tkSum:
       variants*: seq[VariantDef]
       transitions*: seq[Transition]
+      recursive*: bool
+        ## This sum reaches ITSELF through one of its variants' payloads —
+        ## directly (`| Add {left: Expr}`) or through any number of hops
+        ## (`Stmt` -> `Expr` -> `Stmt`), and whether or not a handle container
+        ## breaks the cycle. Computed by typecheck_recursion.markRecursiveSums,
+        ## never written by an author.
+        ##
+        ## Distinct from the question TK-TY17 asks. That one is about SIZE and
+        ## stops at a handle, so `Seq[Expr]` is finite and legal. This one is
+        ## about SHAPE: a tree is a tree either way, and the passes that care
+        ## about representing one need to know.
     of tkUnion:
       members*: seq[Type]
     of tkEffect:
