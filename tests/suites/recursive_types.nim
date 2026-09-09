@@ -273,4 +273,44 @@ fn main() -> int:
   t.hostBuilds "...and every backend spells it its own way"
   t.runs "...and counts", 0
 
+  # --- 9. a variant payload field HAS a type ------------------------------
+  # It did not, to the checker. getFieldsForType answers `@[]` for a sum on
+  # purpose (a sum has no fields of its own), so a payload access matched no
+  # arm of the field-form chain and fell through to Unknown. Gradual typing
+  # then carried that Unknown to codegen, where variantOwningField did the
+  # projection independently and correctly — so nothing looked wrong until
+  # something needed the TYPE.
+  t.src """
+type Bag:
+  | Empty
+  | Items({xs: Seq[int]})
+
+fn first({b: Bag}) -> int:
+  match b:
+    Empty: return 0
+    Items: return b.xs[0]
+
+fn main() -> int:
+  let b = Bag.Items {xs: [7, 8]}
+  return {b: b} first - 7
+"""
+  t.okCheck "indexing a Seq-typed payload field inside a match arm checks"
+  t.hostBuilds "...and builds on every backend"
+  t.runs "...and reads the element", 0
+
+  # Outside a match too: the variant that DECLARES the name decides, which is
+  # the rule codegen already followed.
+  t.src """
+type Bag:
+  | Empty
+  | Items({xs: Seq[int]})
+
+fn noMatch({b: Bag}) -> int:
+  return b.xs[0]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a payload field types outside a match as well"
+
   t.finish()

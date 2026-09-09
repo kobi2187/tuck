@@ -578,6 +578,35 @@ proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
     return f.typ
   nil
 
+proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
+  ## `v.field` where `v` is a payload SUM. The field belongs to a VARIANT, not
+  ## to the sum, and getFieldsForType answers `@[]` for a sum on purpose — so
+  ## nothing claimed the access and it fell through to Unknown.
+  ##
+  ## Which means the CHECKER never knew a payload field's type. Gradual typing
+  ## carried the Unknown all the way to codegen, where variantOwningField did
+  ## the projection independently and correctly, so this was invisible until
+  ## something needed the type: `b.xs[0]` on a `Seq[int]` payload reported
+  ## "type '<unknown>' is not indexable". A wrong-typed use was never caught.
+  ##
+  ## Inside a match arm the subject is narrowed and that variant decides;
+  ## outside, the variant DECLARING the name does — the same rule codegen
+  ## follows, and the same first-wins ambiguity, which is why narrowing is
+  ## consulted first.
+  let body = tc.resolve(recvT)
+  if body == nil or body.kind != tkSum: return nil
+  var narrowed: seq[string]
+  if e.receiver != nil and e.receiver.kind == exkVar and
+     tc.varVariants.hasKey(e.receiver.name):
+    narrowed = tc.varVariants[e.receiver.name]
+  for v in body.variants:
+    if narrowed.len > 0 and v.name notin narrowed: continue
+    for f in v.fields:
+      if f.name != e.fieldName: continue
+      if isUninit(f.typ): failUninitRead(e.fieldName, f.typ, e.span)
+      return f.typ
+  nil
+
 proc substituteSelf(pt: Type, selfT: Type): Type =
   ## `Self` in a contract member's signature means the interface value
   ## itself here — the callee only ever sees the contract, not the
@@ -784,6 +813,7 @@ proc typedFieldForm(tc: var TypeChecker, e: Expr, recvT: Type,
   ## object declared one — rejecting the receiver ("expects Dog but got
   ## Animal"), or worse, silently picking the wrong object's member.
   result = tc.asPlainField(e, fields, recvT)
+  if result == nil: result = tc.asVariantPayloadField(e, recvT)
   if result == nil: result = tc.asStaticMemberCall(e)
   if result == nil: result = tc.asInterfaceCall(e, recvT)
   if result == nil: result = tc.asFnByName(e, recvT)
