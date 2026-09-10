@@ -201,7 +201,17 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
   var parts: seq[string]
   for f in e.args[0].fields:
     parts.add(f.name & ": " & ctx.genDExpr(f.value))
-  let ctor = e.callee.name & "(" & parts.join(", ") & ")"
+  # A GENERIC type is a D template, so the construction names the
+  # instantiation: `Pair!(string, long)(...)`. The arguments come from the
+  # type the checker stamped on this very call — D cannot infer them from a
+  # named-argument literal.
+  var name = e.callee.name
+  if ctx.declaredGenericD(name):
+    let t = ctx.res.typeFor(e)
+    if t != nil and t.kind == tkApp:
+      let inst = ctx.dDeclType(t)
+      if inst != "": name = inst
+  let ctor = name & "(" & parts.join(", ") & ")"
   if ctx.idx.hasInvariantsIdx(e.callee.name):
     return "__validated_" & e.callee.name & "(" & ctor & ")"
   ctor
@@ -753,6 +763,21 @@ proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
              else: ""
   ctx.importDeclaring(bare)
 
+proc ctorDeclType(ctx: var DCodegenCtx, val: Expr): string =
+  ## A record CONSTRUCTION is the declared type BY NAME, whatever shape the
+  ## checker stamped: constructing with a field left unset stamps a
+  ## structural record (the hole rides on the type), which emitted
+  ## `TRec_a_b_op_5F99 x = tuck_Ctx(...)` — a mismatch dmd rejects.
+  ##
+  ## Except a GENERIC one, whose declared type is the instantiation
+  ## (`Pair!(string, long)`), not the bare template name. "" when `val` is
+  ## not a record construction.
+  if not ctx.isRecordConstructionIdx(val): return ""
+  if ctx.declaredGenericD(val.callee.name):
+    let inst = ctx.dDeclType(ctx.res.typeFor(val))
+    if inst != "": return inst
+  val.callee.name
+
 proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   ## The declared D type for `let x = <val>`, naming a foreign record shape
   ## through its owning module when the value came from one.
@@ -770,12 +795,8 @@ proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   if val != nil and val.kind == exkField and ctx.isLenOnSized(val) and
      (t == nil or (t.kind == tkNamed and t.name == UnknownName)):
     t = Type(kind: tkNamed, name: "int", span: val.span)
-  # A record CONSTRUCTION is the declared type by name, whatever shape the
-  # checker stamped. Constructing with a field left unset stamps a structural
-  # record (the hole rides on the type), and reading the shape emitted
-  # `TRec_a_b_op_5F99 x = tuck_Ctx(...)` — a type mismatch dmd rejects. Nim
-  # and Odin never saw it: they let the host infer the declared type.
-  if ctx.isRecordConstructionIdx(val): return val.callee.name
+  let ctorT = ctx.ctorDeclType(val)
+  if ctorT != "": return ctorT
   let owner = ctx.callOwnerModule(val)
   if owner != "" and t != nil:
     let payload = bangInner(t)

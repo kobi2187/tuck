@@ -21,6 +21,16 @@ proc typeParamType*(sp: Span): Type =
   ## site. `fn identity[T]({x: T}) -> T` checks its body once with T abstract.
   Type(span: sp, kind: tkNamed, name: TypeParamName)
 
+proc typeParamNamed*(sp: Span, g: string): Type =
+  ## The same abstraction, but carrying WHICH parameter it is —
+  ## `<typeparam:K>`. Every `T` in a body used to collapse to one nameless
+  ## sentinel, so `fn mk[K, V]({k: K, v: V}) -> Pair[K, V]` could not
+  ## construct its own return type: the checker saw two indistinguishable
+  ## abstractions and reported "cannot infer generic parameter 'K'".
+  ## Everything that treated a type param as unknown still does — the name
+  ## is read only where a binding needs to know which one it was.
+  Type(span: sp, kind: tkNamed, name: NamedTypeParamPrefix & g & ">")
+
 proc pendingType*(sp: Span): Type =
   ## Declared, not implemented (spec §5.4). Deliberately permissive: the whole
   ## point of the walking skeleton is that the program compiles and runs.
@@ -43,7 +53,15 @@ proc branchOutcomeType*(sp: Span): Type =
   Type(span: sp, kind: tkNamed, name: BranchOutcomeName)
 
 proc isTypeParam*(t: Type): bool =
-  t != nil and t.kind == tkNamed and t.name == TypeParamName
+  t != nil and t.kind == tkNamed and
+    (t.name == TypeParamName or t.name.startsWith(NamedTypeParamPrefix))
+
+proc typeParamName*(t: Type): string =
+  ## Which type parameter a `<typeparam:K>` stands for, or "" for the
+  ## nameless form.
+  if t == nil or t.kind != tkNamed: return ""
+  if not t.name.startsWith(NamedTypeParamPrefix): return ""
+  t.name[NamedTypeParamPrefix.len .. ^2]
 
 proc isPending*(t: Type): bool =
   t != nil and t.kind == tkNamed and t.name == PendingName
@@ -53,8 +71,9 @@ proc isUnknown*(t: Type): bool =
   ## behaviour while the meanings are separated one at a time. Narrowing this
   ## to UnknownName alone is what finally makes a checker gap an error.
   t == nil or (t.kind == tkNamed and
-               t.name in [UnknownName, TypeParamName, PendingName,
-                          EmptyRecName, AfterErrorName, BranchOutcomeName])
+               (t.name in [UnknownName, TypeParamName, PendingName,
+                           EmptyRecName, AfterErrorName, BranchOutcomeName] or
+                t.name.startsWith(NamedTypeParamPrefix)))
 
 const NumericNames* = ["int", "i8", "i16", "i32", "i64",
                        "u8", "u16", "u32", "u64", "usize",

@@ -1523,7 +1523,18 @@ proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
 proc inferBindings(tc: TypeChecker, declared, actual: Type,
                    generics: seq[string], bindings: var Table[string, Type],
                    fnName: string, sp: Span) =
-  if declared == nil or actual == nil or isUnknown(actual): return
+  if declared == nil or actual == nil: return
+  # A value whose type is the ENCLOSING fn's type param binds the parameter
+  # to that param by NAME: `fn mk[K, V]({k: K, v: V}) -> Pair[K, V]` builds
+  # `Pair[K, V]`, not a pair of indistinguishable abstractions. Without this
+  # every `T` in a body collapsed to one nameless sentinel that isUnknown
+  # then discarded, and constructing a generic type inside a generic fn was
+  # "cannot infer generic parameter 'K'".
+  var actual = actual
+  let gname = typeParamName(actual)
+  if gname != "":
+    actual = Type(span: actual.span, kind: tkNamed, name: gname)
+  elif isUnknown(actual): return
   case declared.kind
   of tkNamed:
     if declared.name in generics:
@@ -2047,12 +2058,33 @@ proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
         tc.inferBindings(df.typ, ft, gs, bindings, calleeName, f.value.span)
         break
 
+proc seedFromExpected(tc: var TypeChecker, calleeName: string,
+                      gs: seq[string], bindings: var Table[string, Type]) =
+  ## Take the type params from the context when it names this very type —
+  ## `-> Table[K, V]` around a `{...} Table`. Only an application of the same
+  ## base with the right arity says anything; anything else is left to the
+  ## payload.
+  let want = tc.resolve(unwrapEffect(tc.expectedType))
+  if want == nil or want.kind != tkApp or want.base == nil: return
+  if want.base.kind != tkNamed or want.base.name != calleeName: return
+  if want.args.len != gs.len: return
+  for i, g in gs:
+    if want.args[i] != nil and not isUnknown(want.args[i]):
+      bindings[g] = want.args[i]
+
 proc asGenericConstruction(tc: var TypeChecker, e: Expr,
                            calleeName: string): Type =
   ## `{value: 5} Box` — infer the type params from the payload fields; the ty
   ## stamp lets codegen emit the explicit Box[int](...) Nim needs.
   let gs = tc.typeGenerics[calleeName]
   var bindings = initTable[string, Type]()
+  # The EXPECTED type seeds the bindings before the payload refines them:
+  # `fn newTable[K, V]() -> Table[K, V]: return {entries: []} Table` has
+  # nothing in the payload to infer K and V from — the answer is in the
+  # return type the context already knows. Seeding first also makes the
+  # per-field hints computable, which is what lets the `[]` in that payload
+  # find its element type instead of dying as TK-TY20.
+  tc.seedFromExpected(calleeName, gs, bindings)
   tc.inferConstructionArgs(e, calleeName, gs, bindings)
   var gargs: seq[Type]
   for g in gs:
@@ -3300,7 +3332,7 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   # site. The body is checked once against that abstraction; each instantiation
   # is rechecked by the backend.
   var gsub = initTable[string, Type]()
-  for g in generics: gsub[g] = typeParamType(Span())
+  for g in generics: gsub[g] = typeParamNamed(Span(), g)
 
   let savedVariants = tc.varVariants
   let prevBody = tc.bodyBlock

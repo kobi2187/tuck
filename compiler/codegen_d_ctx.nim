@@ -130,6 +130,15 @@ proc importedTypeQualifierD*(ctx: DCodegenCtx, name: string): string =
     break
   name
 
+proc declaredGenericD*(ctx: DCodegenCtx, name: string): bool =
+  ## Is `name` a type this module declares (or imports) WITH type parameters?
+  ## That is what makes `Name[args]` a template instantiation rather than an
+  ## unmapped application.
+  for d in ctx.module.decls:
+    if d != nil and d.kind == dkType and d.name == name:
+      return d.generics.len > 0
+  false
+
 proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string
   ## Forward-declared: dFixedArray/dAppType below recurse into it before
   ## its own definition.
@@ -155,6 +164,36 @@ proc dFixedArray*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   if inner == "": return ""
   inner & "[" & ctx.dTypeIn(t.args[sizeIdx], mode) & "]"
 
+proc dResultCarrier(ctx: var DCodegenCtx, t: Type,
+                    mode: TypeMode): tuple[isCarrier: bool, text: string] =
+  ## `!T` / `?T` / `!?T` — ONE value carrier, the status says which. `!void`
+  ## has no empty type to carry, so it carries the unit struct. The flag is
+  ## separate from the text because a carrier whose PAYLOAD cannot be stated
+  ## still answers "" (fall back to `auto`) rather than falling through to
+  ## the mappings below.
+  let payload = bangInner(t)
+  if payload == nil: return (false, "")
+  let inner = ctx.dTypeIn(payload, mode)
+  if inner == "": return (true, "")
+  if inner == "void": return (true, "rt.TuckResult!(rt.TuckUnit)")
+  (true, "rt.TuckResult!(" & inner & ")")
+
+proc dGenericApp(ctx: var DCodegenCtx, t: Type, baseName: string,
+                 mode: TypeMode): string =
+  ## A user GENERIC type applied to arguments — `Pair[str, int]`. D spells a
+  ## parameterised struct as a template, so the use site is
+  ## `Pair!(string, long)`; genDTypeDecl emits the declaration with the same
+  ## parameter list.
+  var args: seq[string]
+  for a in t.args:
+    let one = ctx.dTypeIn(a, mode)
+    if one == "":
+      if mode == tmRequired:
+        return dUnsupported("type application " & baseName & "[...]")
+      return ""
+    args.add(one)
+  ctx.importedTypeQualifierD(baseName) & "!(" & args.join(", ") & ")"
+
 proc dAppType*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## The two type applications this backend maps: `Seq[T]` and the `!T`/`?T`
   ## result carrier. Anything else is a gap named at the point of use.
@@ -171,14 +210,8 @@ proc dAppType*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   if t.base != nil and t.base.kind == tkNamed and t.base.name == UninitName and
      t.args.len == 1:
     return ctx.dTypeIn(t.args[0], mode)
-  let payload = bangInner(t)
-  if payload != nil:
-    # !T / ?T / !?T — ONE value carrier, the status says which. `!void` has
-    # no empty type to carry, so it carries the unit struct.
-    let inner = ctx.dTypeIn(payload, mode)
-    if inner == "": return ""
-    if inner == "void": return "rt.TuckResult!(rt.TuckUnit)"
-    return "rt.TuckResult!(" & inner & ")"
+  let carrier = ctx.dResultCarrier(t, mode)
+  if carrier.isCarrier: return carrier.text
   let elem = seqElem(t)
   if elem != nil:
     let elemStr = ctx.dTypeIn(elem, mode)
@@ -187,6 +220,13 @@ proc dAppType*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   if arr != "": return arr
   let baseName = if t.base != nil and t.base.kind == tkNamed: t.base.name
                  else: "?"
+  # A user GENERIC type applied to arguments — `Pair[str, int]`. D spells a
+  # parameterised struct as a template, so the use site is `Pair!(string,
+  # long)`; the declaration is emitted with the same parameter list by
+  # genDTypeDecl. Only a type this module can actually see is spelled this
+  # way, so an unmapped application still reports itself.
+  if baseName != "?" and ctx.declaredGenericD(baseName):
+    return ctx.dGenericApp(t, baseName, mode)
   if mode == tmRequired: dUnsupported("type application " & baseName & "[...]")
   else: ""
 

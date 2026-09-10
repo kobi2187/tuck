@@ -844,9 +844,23 @@ proc genDMixinBlock*(ctx: var DCodegenCtx, d: Decl): string =
     if mem.isPending or mem.fnBody == nil or takesSelf(mem): continue
     result.add(ctx.genDFnDecl(mem) & "\n")
 
+proc genDGenericRecord(ctx: var DCodegenCtx, d: Decl, body: Type): string =
+  ## A generic RECORD is a D template struct — `struct Pair(K, V)`. Same
+  ## answer the generic-fn fix reached: D's parameterisation IS templates,
+  ## and the type params stay as written inside the body. Only a record: a
+  ## parameterised enum has no meaning, and a parameterised payload sum is a
+  ## separate shape this has not been asked for yet.
+  if body == nil or body.kind != tkRecord:
+    return dUnsupported("generic type " & d.name)
+  var res = "struct " & d.name & "(" & d.generics.join(", ") & ") {\n"
+  for f in body.fields:
+    res.add("    " & ctx.dFieldType(d.name, f) & " " & f.name & ";\n")
+  res.add("}\n")
+  res
+
 proc genDTypeDecl*(ctx: var DCodegenCtx, d: Decl): string =
-  if d.generics.len > 0: return dUnsupported("generic type " & d.name)
   let body = d.typeBody
+  if d.generics.len > 0: return ctx.genDGenericRecord(d, body)
   if body == nil: return ""
   if body.kind == tkSum and not sumHasPayload(body):
     # A payload-free sum is exactly a D enum — same construct, same checks.

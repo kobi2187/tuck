@@ -196,4 +196,39 @@ fn main() -> int:
   t.hostBuilds "...and every backend builds the forwarder"
   t.runs "...and the pushed element is there", 0
 
+  # --- a generic TYPE, and constructing one inside a generic fn ------------
+  # The gate on the whole `alloc` tier: `Table[K, V]`, `Deque[T]`, `List[T]`
+  # are all this shape. Two things were missing.
+  #
+  # D had no generic types at all (`dUnsupported "generic type"`). Its
+  # parameterisation IS templates, the same answer the generic-FN fix
+  # reached: `struct Pair(K, V)`, instantiated `Pair!(string, long)` at the
+  # use site — which the construction has to spell, since D cannot infer a
+  # template's arguments from a named-argument literal.
+  #
+  # And every `T` in a generic body collapsed to ONE nameless abstraction, so
+  # a fn could not construct its own return type: the checker saw two
+  # indistinguishable sentinels and said "cannot infer generic parameter
+  # 'K'". A type param now carries which one it is.
+  t.src """
+type Pair[K, V]:
+  key: K
+  value: V
+
+fn mk[K, V]({k: K, v: V}) -> Pair[K, V]:
+  return {key: k, value: v} Pair
+
+fn main() -> int:
+  let p = {k: "a", v: 5} mk
+  let q = {key: "b", value: 7} Pair
+  return p.value + q.value - 12
+"""
+  t.okCheck "a generic type checks, built from a generic fn's own params"
+  t.emitsD "D declares it as a template struct",
+           r"struct tuck_Pair\(K, V\)"
+  t.emitsD "...and the use site names the instantiation",
+           r"tuck_Pair!\(string, long\)"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and the fields hold what was put in them", 0
+
   t.finish()

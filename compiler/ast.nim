@@ -392,6 +392,11 @@ const ImportedTypeMarker* = "<imported>"
 const
   UnknownName* = "<unknown>"      # the checker could not tell — a GAP, and the
                                   # long-term goal is for this to be an error
+  NamedTypeParamPrefix* = "<typeparam:"
+    ## A type param that knows WHICH one it is: `<typeparam:K>`. Same
+    ## abstraction as TypeParamName below and treated as unknown everywhere
+    ## the same way; the name is read only where a generic binding has to
+    ## tell K from V (constructing a generic type inside a generic fn).
   TypeParamName* = "<typeparam>"  # a generic's T inside its own body: not
                                   # unknown, but ANY type, fixed per call site
   PendingName* = "<pending>"      # declared, not implemented (spec §5.4). The
