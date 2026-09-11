@@ -80,6 +80,36 @@ this instead of describing unbuilt syntax.
 - Type wrapper position: both accepted — `int?` == `?int`, canonical
   postfix; combos `T?!`/`T!?` equivalent.
 
+## User rulings (2026-09-11) — generic constraints are COMPILE TIME
+
+Raised by `core.slice`: a slice is a for loop over indices, which wants an
+`Indexable`-style contract, which raised "what about regular types?" —
+`satisfies` takes an `object`, and a `type` is refused outright (TK-CO03,
+"declares data but no members, so there is nothing for the contract to
+check").
+
+**Ruling: everything in this area is compile time.** A constraint on a type
+parameter is checked at the instantiation site and has no runtime
+representation. Interface VALUES keep their present meaning — a tagged
+variant, object-only, dispatching at run time. One name may serve both
+positions; the position decides which it is.
+
+Measured before the ruling, and the reason it is a small feature rather than
+a new mechanism:
+
+- A generic fn over an unconstrained `C` whose body calls `count` and indexes
+  `c[0]` ALREADY checks and runs on Nim, Odin and D. Tuck is structurally
+  duck-typed inside a generic body today.
+- So the capability exists and the CHECK is what is missing. `firstOr[C, T]`
+  accepts an `int` for `C` and fails in dmd or Odin — a host error about a
+  Tuck program, which is the "agree by luck" failure the D backend exists to
+  prevent.
+
+Blocks nothing today: `core.slice` and the deduplicated `find`/`has`/
+`indexOf` can be written unconstrained and gain the constraint later.
+Also the other half of what `core.iter` needs, alongside generic `fnsig`
+on Odin and D.
+
 ## User rulings (2026-07-11) — resource registry (spec §7.4, design only)
 - Global per-kind registry in tuck_rt (slot table = pool §7.2 machinery);
   user code holds u32 index+generation HANDLES (Tier-1 values), refs stay in
