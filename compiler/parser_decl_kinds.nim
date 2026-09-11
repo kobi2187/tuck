@@ -715,7 +715,7 @@ proc parseSignatureTail*(p: var Parser, retType: Type,
                         strict = true): SignatureTail =
   ## The effects and error enums, harvested from the return type and then
   ## from the attribute bracket.
-  harvestEffects(retType, result.effects, result.errTypes)
+  harvestEffects(retType, result.effects, result.errTypes, result.emit)
   p.parseEffectList(result.effects, result.errTypes, result.emit, strict)
 
 # registry Name: | Variant {fields} — global event registry (spec 10)
@@ -837,7 +837,17 @@ proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
     retType = p.parseType()
   var effects: seq[EffectMarker]
   var taskErrTypes: seq[string]
-  harvestEffects(retType, effects, taskErrTypes)
+  # A task has a BODY, so `[emit: "..."]` — which names the runtime or C
+  # symbol an EXTERN binds to — means nothing here. Harvested only so it can
+  # be refused: dropping it silently is the swallow that hid the whole
+  # emit-after-return-type bug in the first place.
+  var taskEmit = ""
+  let emitSp = p.getSpan()
+  harvestEffects(retType, effects, taskErrTypes, taskEmit)
+  if taskEmit != "":
+    p.reportError("[emit: \"" & taskEmit & "\"] names the runtime symbol an " &
+                  "extern binds to; a task has a body of its own",
+                  emitSp.line, emitSp.col)
   if p.current().kind == tkLBracket:
     discard p.advance()
     while p.current().kind != tkRBracket and p.current().kind != tkEOF:

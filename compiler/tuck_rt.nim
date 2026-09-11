@@ -112,7 +112,7 @@ proc setAt*[T](items: var seq[T], index: int, value: T) =
 # matter how a caller spells it, so there is no workaround short of not
 # declaring it. `Seq.len`'s existing accidental-UFCS behavior (TODO.md §3)
 # is the only way to get a count today.
-proc count*[T](items: seq[T]): int = items.len
+proc count*[T](items: seq[T]): int = system.len(items)
   ## PROTOCOLS.md's verb for "how many". Named `count` rather than `len`
   ## precisely so it does not make every unqualified `len` in this module
   ## ambiguous — see std/seq.tuck.

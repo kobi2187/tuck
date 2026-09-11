@@ -209,19 +209,28 @@ proc effectMarkerFromName*(name: string, marker: var EffectMarker): bool =
 # Effect markers written after a return type (`-> T [io]`) parse as attrs on T —
 # or on the payload inside a !/? wrapper. Harvest them off wherever they landed.
 proc harvestEffects*(t: Type, effects: var seq[EffectMarker],
-                     errorTypes: var seq[string]) =
+                     errorTypes: var seq[string], emit: var string) =
+  ## `emit` is harvested here for the same reason `error` is: a bracket
+  ## written after the RETURN TYPE is parsed as attributes ON that type, so
+  ## parseEffectList never sees it. `[error: E]` was already lifted out; the
+  ## `[emit: "..."]` beside it was silently kept as a type attribute and
+  ## dropped, so an extern declaring the runtime symbol it binds to was
+  ## ignored — `fn len[T]({...}) -> int [emit: "rtSeqLen"]` emitted a call to
+  ## `len`, not `rtSeqLen`. (The same swallow TK-PA12 notes for unknown
+  ## markers; this is the half of it that was load-bearing.)
   if t == nil: return
   var kept: seq[TypeAttr]
   for a in t.attrs:
     var marker: EffectMarker
     if effectMarkerFromName(a.name, marker): effects.add(marker)
     elif a.name == "error": errorTypes.add(a.value)  # [error: FsError | NetError]
+    elif a.name == "emit": emit = a.value
     else: kept.add(a)
   t.attrs = kept
   if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      t.base.name in ["!", "?", "!?"]:
     for arg in t.args:
-      harvestEffects(arg, effects, errorTypes)
+      harvestEffects(arg, effects, errorTypes, emit)
 
 proc parseType*(p: var Parser): Type =
   let sp = p.getSpan()

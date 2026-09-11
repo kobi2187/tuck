@@ -14,9 +14,15 @@ extern:
   # makes `count(target)` the verb for "how many" across every collection, so
   # a Seq answering `count` is what the convention already said it should do.
   #
-  # It also dodges the reason `len` could not be declared: a runtime `len`
-  # made every unqualified `len` call inside tuck_rt.nim ambiguous with it
-  # (tried and reverted). Naming the protocol verb correctly removes the
-  # collision rather than working around it, and `.len` stays as the
-  # accessor sugar it always was.
+  # It also dodges the reason `len` could not be declared, which is STILL
+  # LIVE — re-tested 2026-09-11, after the mangling fixes, in case those had
+  # cleared it. They had not, because it is not a mangling problem: a runtime
+  # `len(items: seq[T])` is ambiguous with `system.len` at every unqualified
+  # `.len` inside tuck_rt.nim itself ("ambiguous call; both system.len and
+  # tuck_rt.len match"). `.len` stays as the accessor sugar it always was.
+  #
+  # Worth knowing for anyone re-testing: compiling tuck_rt.nim ALONE passes.
+  # The ambiguity sits in a generic body, and Nim does not check one until it
+  # is instantiated — so the standalone compile is a false negative and only
+  # a program that calls `count` shows it.
   fn count[T]({items: Seq[T]}) -> int

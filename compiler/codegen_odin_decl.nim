@@ -847,7 +847,11 @@ proc genRtForwarder*(ctx: var OdinCodegenCtx, mem: Decl, alias = "rt"): string =
         bound.incl(g)
     params.add(p.name & ": " & ty)
     argNames.add(p.name)
-  let callStr = alias & "." & mem.name & "(" & argNames.join(", ") & ")"
+  # `[emit: "..."]` names the REAL runtime symbol, which may differ from the
+  # name Tuck sees — std/seq's `len` binds to `rtSeqLen`, because a runtime
+  # proc actually called `len` is ambiguous with Nim's own.
+  let rtName = if mem.externEmit != "": mem.externEmit else: mem.name
+  let callStr = alias & "." & rtName & "(" & argNames.join(", ") & ")"
   let (bw, _, binnerT) = ctx.odinBangInfo(mem.fnReturnType)
   let retTypeStr = if mem.fnReturnType != nil: ctx.odinType(mem.fnReturnType)
                    else: "void"
