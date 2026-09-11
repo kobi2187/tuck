@@ -262,3 +262,20 @@ proc recordFieldNames*(res: Resolution, module: Module,
   ## both backends.
   if not hasKnownFields(t): return @[]
   fieldNames(getFieldsForType(res, module, t))
+
+const NimShadowingModuleNames* = [
+  "seq", "string", "int", "float", "bool", "byte", "char", "set", "array",
+  "range", "ref", "ptr", "cstring", "openArray", "varargs", "pointer",
+]
+  ## Tuck module names that would shadow a Nim TYPE if imported under their
+  ## own name. `import seq` binds the module symbol to `seq`, and the next
+  ## `seq[tuck_Entry[K, V]]` in that file is "cannot instantiate the 'seq'
+  ## module". Only these are aliased: Nim merges module scopes, so an
+  ## unnecessary alias would break every `module::fn` call site, which is
+  ## exactly what a blanket aliasing pass did.
+
+proc nimModuleName*(name: string): string =
+  ## What an imported Tuck module is CALLED in the emitted Nim — its own name,
+  ## unless that name would shadow a builtin type. The import and every
+  ## qualified use go through this one proc so they cannot disagree.
+  if name in NimShadowingModuleNames: "tuck_mod_" & name else: name

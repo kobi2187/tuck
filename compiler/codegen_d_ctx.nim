@@ -285,6 +285,12 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
     elif t.name == UnknownName or t.name == PendingName:
       # a declaration cannot state a sentinel; a signature position must
       if mode == tmRequired: "void" else: ""
+    elif t.name.startsWith(NamedTypeParamPrefix):
+      # `<typeparam:K>` — the checker's name for a type param inside its own
+      # generic body. In the EMITTED code that is just `K`, which the template
+      # parameter list has already introduced. Without this, indexing a
+      # `Seq[Entry[K, V]]` inside a generic fn had no statable type.
+      t.name[NamedTypeParamPrefix.len .. ^2]
     elif t.name.startsWith("<"): giveUp("type sentinel " & t.name)
     else: ctx.importedTypeQualifierD(t.name)
   of tkApp: ctx.dAppType(t, mode)

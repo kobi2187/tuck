@@ -2052,7 +2052,20 @@ proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
     return
   let declFields = getFieldsForType(semLayer, tc.module, tc.typeDecls[calleeName])
   for f in e.args[0].fields:
-    let ft = tc.synthesize(f.value)
+    # Each field is synthesized UNDER its declared type, with whatever the
+    # bindings already know substituted in — the same treatment
+    # synthFieldValue gives a non-generic construction. It is what lets the
+    # `[]` in `fn newTable[K, V]() -> Table[K, V]: return {entries: []} Table`
+    # find its element type instead of dying as TK-TY20: seedFromExpected has
+    # already bound K and V from the return type by the time this runs.
+    var want: Type = nil
+    for df in declFields:
+      if df.name == f.name:
+        want = substituteType(df.typ, bindings)
+        break
+    var ft: Type
+    tc.withExpected(want):
+      ft = tc.synthesize(f.value)
     for df in declFields:
       if df.name == f.name:
         tc.inferBindings(df.typ, ft, gs, bindings, calleeName, f.value.span)
@@ -2702,7 +2715,18 @@ proc rememberErrTypes(tc: var TypeChecker, name: string, val: Expr) =
 
 proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
   ## A fresh binding. spec 4.4b: a tracked type starts at the RHS's set.
-  let valT = tc.synthesize(e.assignVal)
+  ##
+  ## A STATED type is both the expected type for the value and what the name
+  ## is bound at — `var acc: Seq[int] = []` is the whole reason the form
+  ## exists, and an empty list only resolves if the expectation reaches it
+  ## before it synthesizes.
+  var valT: Type
+  if e.declType != nil:
+    let want = tc.resolve(e.declType)
+    tc.check(e.assignVal, want, "'" & e.target.name & "'")
+    valT = want
+  else:
+    valT = tc.synthesize(e.assignVal)
   tc.bindName(e.target.name, valT, e.isMutable)
   let tn = tc.transType(valT)
   if tn != "":

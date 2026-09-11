@@ -892,7 +892,11 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.fieldPrefix & e.target.name & " = " & valStr
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
-    let declT = ctx.declTypeForValue(e.target, e.assignVal)
+    # A STATED type is the answer outright — this backend already refuses to
+    # let D re-infer, so an author's annotation is exactly the fact it wants.
+    let stated = if e.declType != nil: ctx.dDeclType(e.declType) else: ""
+    let declT = if stated != "": stated
+                else: ctx.declTypeForValue(e.target, e.assignVal)
     if declT == "":
       return dUnsupported("a declaration of '" & e.target.name &
                           "' whose type the checker did not settle")

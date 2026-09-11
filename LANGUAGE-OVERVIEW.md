@@ -184,6 +184,20 @@ usable as an ordinary name. (`tests/suites/with_update.nim`)
 
 ## 3. Types
 
+### A local may state its type
+
+```tuck
+var acc: Seq[int] = []                       # inference has nothing to go on
+let rooms: Table[str, int] = {entries: []} Table
+let n = 3                                     # ...and usually it does
+```
+
+Inference is the normal case. The annotation exists for values that carry no
+type of their own: an empty list is `TK-TY20` on its own, and a generic
+construction with nothing in its payload to infer from takes its type
+parameters from the annotation. A value that does not match the stated type is
+rejected (`tests/suites/generics.nim`).
+
 ### Records — `type`, value semantics
 
 ```tuck

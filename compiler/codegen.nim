@@ -68,7 +68,7 @@ proc genQualified(ctx: CodegenCtx, e: Expr): string =
     let cb = cCallbackSig(ctx.module)
     if cb != "": return "cast[" & cb & "](" & e.qualName & ")"
     return e.qualName
-  elif modName in ctx.realModules: modName & "." & e.qualName
+  elif modName in ctx.realModules: nimModuleName(modName) & "." & e.qualName
   else: modName & "_" & e.qualName
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string
@@ -895,7 +895,12 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
     let name = e.target.name
     if name notin ctx.definedVars and name notin ctx.fieldVars:
       ctx.definedVars.incl(name)
-      return prelude & "var " & name & " = " & valStr
+      # A STATED type is emitted: `var acc: seq[int] = @[]`. Nim would infer
+      # here as it always has, but the point of the annotation is the values
+      # it cannot infer from — an empty list, a nullary generic call — so the
+      # declaration says what the author said.
+      let declared = if e.declType != nil: ": " & genType(e.declType) else: ""
+      return prelude & "var " & name & declared & " = " & valStr
   prelude & targetStr & " = " & valStr
 
 proc matchArmHead(pat: Pattern, patStr: string): string =

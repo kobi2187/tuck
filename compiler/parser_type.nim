@@ -268,3 +268,8 @@ proc parseType*(p: var Parser): Type =
       break
   return res
 
+
+# Make `parseType` reachable from the expression layer, which sits BELOW this
+# module in the parser DAG and cannot import it. `let x: T = v` is the only
+# crossing; see parser_base.parseTypeHook.
+parseTypeHook = parseType

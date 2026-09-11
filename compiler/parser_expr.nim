@@ -540,9 +540,19 @@ proc parseBinding(p: var Parser, sp: Span, mutable: bool): Expr =
   # reported "Expected variable name" while pointing straight at a perfectly
   # good-looking name, which reads as a parser fault rather than a naming one).
   let name = p.expectMemberName("Expected variable name").value
+  # `let name: T = value` — the type is OPTIONAL and inference is still the
+  # normal case. It exists for the values that carry no type of their own: an
+  # empty list (TK-TY20) and a nullary generic call have nothing to infer
+  # from, and before this the only way to name their type was a fn whose
+  # RETURN type said it.
+  var declType: Type = nil
+  if p.current().kind == tkColon and parseTypeHook != nil:
+    discard p.advance()
+    declType = parseTypeHook(p)
   discard p.expect(tkAssign)
   Expr(span: sp, kind: exkAssign, assignVal: p.parseExpr(), isDecl: true,
-       isMutable: mutable, target: Expr(span: sp, kind: exkVar, name: name))
+       isMutable: mutable, declType: declType,
+       target: Expr(span: sp, kind: exkVar, name: name))
 
 proc parseElseBranch(p: var Parser): Expr =
   ## `elif C: B` is sugar for `else: (if C: B)` — the nested if lands in

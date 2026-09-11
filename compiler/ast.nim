@@ -346,6 +346,11 @@ type
       target*, assignVal*: Expr
       isDecl*: bool     # true for `let x = ...` / `var x = ...`
       isMutable*: bool  # true only for `var`
+      declType*: Type   # `let x: T = ...` — the type the author STATED, or
+                        # nil when they left it to inference. It is what an
+                        # empty collection or a nullary generic call has to
+                        # read to know what it is: `var t: Table[str, int] =
+                        # newTable` has nothing else to go on.
     of exkReturn:
       returnVal*: Expr
     of exkRaise:

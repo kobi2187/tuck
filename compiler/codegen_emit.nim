@@ -62,9 +62,15 @@ proc linkPragma*(lib: string): string =
   else: "{.passL: \"-l" & lib & "\".}\n"
 
 proc genModuleImports*(m: Module, realModules: Table[string, Module]): string =
+  ## A module whose name would shadow a Nim TYPE is imported under an alias —
+  ## see nimModuleName. Everything else keeps its own name, because this
+  ## backend DOES spell `module.fn` for a `module::fn` call and an alias there
+  ## would name something Nim has never heard of.
   for d in m.decls:
     if d != nil and d.kind == dkImport and d.name in realModules:
-      result.add("import " & d.name & "\n")
+      let asName = nimModuleName(d.name)
+      result.add(if asName == d.name: "import " & d.name & "\n"
+                 else: "import " & d.name & " as " & asName & "\n")
 
 proc genOrderedDecls*(ctx: var CodegenCtx, m: Module): string =
   ## Nim needs decl-before-use; Tuck is order-independent. So: type

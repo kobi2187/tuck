@@ -127,18 +127,10 @@ fn onlyBit({x: u64}) -> int?:
       return i
   return
 
-# An empty `Seq[int]`. `[]` alone is TK-TY20 (no element type) and a local
-# carries no type annotation, so the element type comes from a return type.
-fn noIndices() -> Seq[int]:
-  return []
-
-fn noBytes() -> Seq[u8]:
-  return []
-
 # Named for what you get — the positions that are set, lowest first. Returns a
 # Seq rather than iterating, so the allocation is visible in the type.
 fn setBits({x: u64}) -> Seq[int]:
-  var acc = noIndices
+  var acc: Seq[int] = []
   for i in 0 .. 63:
     if {x: x, at: i} hasBit:
       acc = {items: acc, value: i} push
@@ -157,7 +149,7 @@ fn byteAt({value: u64, shift: int}) -> u8:
   return {value: {a: moved, b: 255} bitAnd} u8
 
 fn toBytes({value: u64, order: ByteOrder}) -> Seq[u8]:
-  var acc = noBytes
+  var acc: Seq[u8] = []
   for i in 0 .. 7:
     let shift = {order: order, index: i} shiftFor
     acc = {items: acc, value: {value: value, shift: shift} byteAt} push
@@ -167,7 +159,7 @@ fn toBytes({value: u64, order: ByteOrder}) -> Seq[u8]:
 fn fromBytes({bytes: Seq[u8], order: ByteOrder}) -> u64?:
   if bytes.len != 8:
     return
-  var acc = {value: 0} u64
+  var acc: u64 = 0
   for i in 0 .. 7:
     let octet = {value: bytes[i]} u64
     let shift = {order: order, index: i} shiftFor
@@ -218,7 +210,7 @@ fn checkDiv() -> int:
   return 0
 
 fn threeFlags() -> u64:
-  var flags = {value: 0} u64
+  var flags: u64 = 0
   flags = {x: flags, at: 0} withBit
   flags = {x: flags, at: 5} withBit
   return {x: flags, at: 63} withBit
@@ -296,7 +288,7 @@ fn checkRoundTrip({v: u64, big: Seq[u8]}) -> int:
     return 29
   if back.value != v:
     return 30
-  let oneByte = {items: noBytes, value: {value: 1} u8} push
+  let oneByte: Seq[u8] = [{value: 1} u8]
   let short = {bytes: oneByte, order: ByteOrder.Big} fromBytes
   if short.ok:
     return 31

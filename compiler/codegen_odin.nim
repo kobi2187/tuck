@@ -1087,7 +1087,10 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:
     ctx.definedVars.incl(e.target.name)
-    let ut = ctx.unionDeclType(e.assignVal)
+    # A STATED type wins over both `:=` inference and the union-naming case:
+    # the author wrote it precisely because the value cannot say what it is.
+    let stated = if e.declType != nil: ctx.odinType(e.declType) else: ""
+    let ut = if stated != "": stated else: ctx.unionDeclType(e.assignVal)
     let decl = if ut == "": e.target.name & " := " & valStr
                else: e.target.name & ": " & ut & " = " & valStr
     return decl & ctx.seqFieldFixups(e.target.name, e.assignVal)

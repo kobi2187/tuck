@@ -231,4 +231,65 @@ fn main() -> int:
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the fields hold what was put in them", 0
 
+  # --- a STATED type on a local -------------------------------------------
+  # `let x: T = v` / `var x: T = v`. Inference is still the normal case; this
+  # exists for the values that carry no type of their own. Before it, the only
+  # way to name an empty collection's element type was a fn whose RETURN type
+  # said it, and `alloc.map` needed five such fns to say "empty".
+  t.src """
+fn main() -> int:
+  var acc: Seq[int] = []
+  for i in 0 .. 2:
+    acc = {items: acc, value: i} push
+  let n: int = 3
+  var total: u64 = 0
+  total = total + 1
+  return acc.len - n + {value: total} int - 1
+"""
+  t.okCheck "a stated type on a local checks"
+  t.emits "Nim states it too rather than re-inferring", r"var tuck_acc: seq\[int\]"
+  t.hostBuilds "...and every backend accepts the declaration"
+  t.runs "...and the empty seq fills up", 0
+
+  t.src """
+fn main() -> int:
+  let n: int = "nope"
+  return 0
+"""
+  t.badCheck "a value that does not match the stated type is rejected",
+             "expects int but got str"
+
+  # A generic construction under a stated type binds the type params from the
+  # ANNOTATION — so there is no need for a nullary `newTable[K, V]()`, which
+  # nothing could ever infer K and V for.
+  t.src """
+type Box[K, V]:
+  keys: Seq[K]
+  vals: Seq[V]
+
+fn main() -> int:
+  var b: Box[str, int] = {keys: [], vals: []} Box
+  b = {keys: {items: b.keys, value: "a"} push, vals: b.vals} Box
+  return b.keys.len - b.vals.len - 1
+"""
+  t.okCheck "a generic construction takes its params from the stated type"
+  t.hostBuilds "...on every backend"
+  t.runs "...and the two fields are independent", 0
+
+  # A Tuck module may be named after a HOST type. `import seq` bound the
+  # module symbol to `seq` in the emitted Nim, shadowing Nim's own `seq`, and
+  # the next `seq[tuck_Entry[K, V]]` in that file was "cannot instantiate the
+  # 'seq' module". Imports are aliased now.
+  t.src """
+import seq
+
+fn main() -> int:
+  var xs: Seq[int] = []
+  xs = {items: xs, value: 4} push
+  return xs.len - 1
+"""
+  t.okCheck "a module named after a host type checks"
+  t.hostBuilds "...and does not shadow it in the emitted code"
+  t.runs "...and Seq still works beside it", 0
+
   t.finish()

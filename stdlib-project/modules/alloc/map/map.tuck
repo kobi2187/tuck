@@ -1,0 +1,147 @@
+# alloc.map — a key/value table.
+#
+# Tuck has no map at all: `Seq[T]` and `Array[N, T]` are the whole collection
+# surface, which is why this is the highest-value module in the alloc tier —
+# six modules downstream want one.
+#
+# REPRESENTATION: a Seq of entries, scanned linearly. That is deliberate and
+# it is not the end state. The API is opaque to callers — nothing here hands
+# out an index or a bucket — so open addressing over two parallel Seqs can
+# replace the inside without touching a single call site. It waits on a
+# measurement, not on a design.
+#
+# Value semantics all the way: every mutating verb RETURNS the new table, the
+# same convention std/seq's `push` follows, because a Seq can reallocate and
+# there is no shared backing store to write through.
+import seq
+
+type Entry[K, V]:
+  key: K
+  value: V
+
+type Table[K, V]:
+  entries: Seq[Entry[K, V]]
+
+# There is no `newTable` fn, and that is the point: a construction under a
+# stated type IS the constructor. `var rooms: Table[str, int] = {entries: []}
+# Table` binds K and V from the annotation, so a nullary generic fn — which
+# nothing could ever infer K and V for — is not needed.
+
+# The one scan every other verb is written on: where `key` lives, or -1.
+# Returning an int rather than `int?` is on purpose — this is private
+# machinery, and the callers all want to branch on it rather than guard it.
+fn indexOf[K, V]({t: Table[K, V], key: K}) -> int:
+  for i in 0 .. t.entries.len - 1:
+    let e = t.entries[i]
+    if e.key == key:
+      return i
+  return 0 - 1
+
+fn has[K, V]({t: Table[K, V], key: K}) -> bool:
+  return {t: t, key: key} indexOf >= 0
+
+fn count[K, V]({t: Table[K, V]}) -> int:
+  return t.entries.len
+
+fn get[K, V]({t: Table[K, V], key: K}) -> V?:
+  let at = {t: t, key: key} indexOf
+  if at < 0:
+    return
+  return t.entries[at].value
+
+# Replaces in place when the key is present, appends when it is not — so a
+# table never holds two entries for one key, which is what makes the linear
+# scan's FIRST hit the right one.
+fn set[K, V]({t: Table[K, V], key: K, value: V}) -> Table[K, V]:
+  let at = {t: t, key: key} indexOf
+  var es = t.entries
+  let fresh = {key: key, value: value} Entry
+  if at >= 0:
+    es[at] = fresh
+    return {entries: es} Table
+  es = {items: es, value: fresh} push
+  return {entries: es} Table
+
+# Rust's `entry(k).or_insert(v)` in one verb: the existing value wins.
+fn getOrSet[K, V]({t: Table[K, V], key: K, value: V}) -> Table[K, V]:
+  if {t: t, key: key} has:
+    return t
+  return {t: t, key: key, value: value} set
+
+# Rebuilt without the key rather than shuffled in place: order is not part of
+# this type's contract, and a rebuild is the one form that says so.
+fn remove[K, V]({t: Table[K, V], key: K}) -> Table[K, V]:
+  var es: Seq[Entry[K, V]] = []
+  for i in 0 .. t.entries.len - 1:
+    let e = t.entries[i]
+    if e.key != key:
+      es = {items: es, value: e} push
+  return {entries: es} Table
+
+fn clear[K, V]({t: Table[K, V]}) -> Table[K, V]:
+  let empty: Seq[Entry[K, V]] = []
+  return {entries: empty} Table
+
+fn keys[K, V]({t: Table[K, V]}) -> Seq[K]:
+  var acc: Seq[K] = []
+  for i in 0 .. t.entries.len - 1:
+    acc = {items: acc, value: t.entries[i].key} push
+  return acc
+
+fn values[K, V]({t: Table[K, V]}) -> Seq[V]:
+  var acc: Seq[V] = []
+  for i in 0 .. t.entries.len - 1:
+    acc = {items: acc, value: t.entries[i].value} push
+  return acc
+
+fn pairs[K, V]({t: Table[K, V]}) -> Seq[Entry[K, V]]:
+  return t.entries
+
+fn main() -> int:
+  var rooms: Table[str, int] = {entries: []} Table
+  rooms = {t: rooms, key: "lobby", value: 1} set
+  rooms = {t: rooms, key: "attic", value: 2} set
+  if {t: rooms} count != 2:
+    return 1
+  let lobby = {t: rooms, key: "lobby"} get
+  if not lobby.ok:
+    return 2
+  if lobby.value != 1:
+    return 3
+  # An absent key is absence, not a zero.
+  let missing = {t: rooms, key: "cellar"} get
+  if missing.ok:
+    return 4
+  # set REPLACES; it never grows the table for a key already in it.
+  rooms = {t: rooms, key: "lobby", value: 9} set
+  if {t: rooms} count != 2:
+    return 5
+  let again = {t: rooms, key: "lobby"} get
+  if not again.ok:
+    return 6
+  if again.value != 9:
+    return 14
+  # getOrSet leaves an existing value alone.
+  rooms = {t: rooms, key: "lobby", value: 99} getOrSet
+  let kept = {t: rooms, key: "lobby"} get
+  if not kept.ok:
+    return 7
+  if kept.value != 9:
+    return 15
+  if not {t: rooms, key: "attic"} has:
+    return 8
+  rooms = {t: rooms, key: "attic"} remove
+  if {t: rooms, key: "attic"} has:
+    return 9
+  if {t: rooms} count != 1:
+    return 10
+  let ks = {t: rooms} keys
+  if ks.len != 1:
+    return 11
+  let vs = {t: rooms} values
+  if vs.len != 1:
+    return 12
+  rooms = {t: rooms} clear
+  if {t: rooms} count != 0:
+    return 13
+  return 0

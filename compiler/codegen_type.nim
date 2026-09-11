@@ -112,7 +112,13 @@ proc genSumType(t: Type): string =
 proc genType*(t: Type): string =
   if t == nil: return "void"
   case t.kind
-  of tkNamed: nimPrimitive(t.name)
+  of tkNamed:
+    # `<typeparam:K>` is the checker's name for a type param inside its own
+    # generic body; emitted, it is just `K` — already introduced by the
+    # generic's own parameter list.
+    if t.name.startsWith(NamedTypeParamPrefix):
+      t.name[NamedTypeParamPrefix.len .. ^2]
+    else: nimPrimitive(t.name)
   of tkTuple:
     var parts: seq[string]
     for e in t.elems: parts.add(genType(e))

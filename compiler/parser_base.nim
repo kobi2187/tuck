@@ -153,3 +153,16 @@ template indentedBlock*(p: var Parser, body: untyped) =
     else:
       body
   discard p.expect(tkDedent)
+
+var parseTypeHook*: proc(p: var Parser): Type {.nimcall.} = nil
+  ## parser_type's `parseType`, reachable from the EXPRESSION layer.
+  ##
+  ## The parser is a DAG on purpose — parser_expr sits at the bottom and calls
+  ## neither parseType nor parseDecl — and `let x: T = v` is the one place the
+  ## grammar genuinely crosses back: a type appears inside an expression-level
+  ## binding. A direct call would make the two modules mutually recursive and
+  ## cost the layering everywhere else; one indirection here does not.
+  ##
+  ## parser_type installs it at module init. Nil means the type layer was
+  ## never imported, which only a unit test of the expression layer alone can
+  ## produce — the binding then behaves as it did before annotations existed.

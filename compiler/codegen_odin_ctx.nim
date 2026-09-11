@@ -206,6 +206,10 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
   if t == nil: return "void"
   case t.kind
   of tkNamed:
+    # `<typeparam:K>` is the checker's name for a type param inside its own
+    # generic body; emitted, it is just `K`.
+    if t.name.startsWith(NamedTypeParamPrefix):
+      return t.name[NamedTypeParamPrefix.len .. ^2]
     case t.name
     # Tuck's fixed-width names ARE Odin's spelling (u8, i32, f64) — most of
     # this table is identity.
