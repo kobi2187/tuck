@@ -10,10 +10,13 @@ extern:
   # to mutate through. Value semantics, same convention as std/random's
   # threaded state: `xs = {items: xs, value: v} push`.
   fn push[T]({items: Seq[T], value: T}) -> Seq[T]
-  # No `len` here: declaring one collides fatally with Nim's own seq
-  # internals inside tuck_rt.nim itself (every `add`/`newSeq`/`setLen`
-  # there expands an unqualified `len` call that becomes ambiguous the
-  # moment a sibling `len` exists in that module) — tried and reverted,
-  # see tuck_rt.nim's comment on `push`. `Seq.len`'s existing
-  # accidental-UFCS resolution (TODO.md §3) remains the only way to get
-  # a count until that's fixed properly.
+  # `count`, not `len` — and that is the FIX, not a workaround. PROTOCOLS.md
+  # makes `count(target)` the verb for "how many" across every collection, so
+  # a Seq answering `count` is what the convention already said it should do.
+  #
+  # It also dodges the reason `len` could not be declared: a runtime `len`
+  # made every unqualified `len` call inside tuck_rt.nim ambiguous with it
+  # (tried and reverted). Naming the protocol verb correctly removes the
+  # collision rather than working around it, and `.len` stays as the
+  # accessor sugar it always was.
+  fn count[T]({items: Seq[T]}) -> int

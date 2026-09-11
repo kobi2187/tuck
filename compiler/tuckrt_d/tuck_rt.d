@@ -11,7 +11,7 @@
 module tuck_rt;
 
 import std.stdio : stdout;
-import std.conv : text;
+import std.conv : text, to;
 import std.array : join;
 import core.sys.posix.unistd : pipe2, read, write, close;
 
@@ -204,6 +204,23 @@ void setAt(T)(ref T[] items, long index, T value)
 /// Value semantics: `~` always allocates a fresh array rather than growing
 /// `items` in place (unlike `~=`, which may reuse spare capacity from the
 /// same backing GC block) — `items` is never mutated by this call.
+long count(T)(T[] items) { return cast(long) items.length; }
+
+long byteCount(string t) { return cast(long) t.length; }
+
+ubyte byteAt(string t, long index)
+{
+    tuckSeqBounds(index, cast(long) t.length, "byteAt");
+    return cast(ubyte) t[index];
+}
+
+/// Absent, not an error: "that text is not a number" has a legitimate no.
+TuckResult!double parseFloat(string t)
+{
+    try { return tok(to!double(t)); }
+    catch (Exception) { return tnone!double(); }
+}
+
 /// One pass — `acc ~= part` on a string in a loop is O(n^2).
 string joinStr(string[] parts, string sep)
 {

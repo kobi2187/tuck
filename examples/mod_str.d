@@ -26,4 +26,16 @@ string joinStr(string[] parts, string sep) {
     return rt.joinStr(parts, sep);
 }
 
+ubyte byteAt(string t, long index) {
+    return rt.byteAt(t, index);
+}
+
+long byteCount(string t) {
+    return rt.byteCount(t);
+}
+
+rt.TuckResult!(double) parseFloat(string t) {
+    return rt.parseFloat(t);
+}
+
 

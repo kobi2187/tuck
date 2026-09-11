@@ -395,4 +395,49 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.runs "...and the value is there", 0
 
+  # --- the primitives the stdlib stands on --------------------------------
+  # `count` is PROTOCOLS.md's verb for "how many", and naming it that is what
+  # made it declarable at all: a runtime `len` made every unqualified `len`
+  # inside tuck_rt.nim ambiguous with it, so `.len` had resolved by UFCS
+  # accident and was declared nowhere.
+  #
+  # A `str` is BYTES — `charAt` returns a one-byte str — so a byte fold used
+  # to spell `{ch: {s: t, index: i} charAt} ord`, two calls and a temporary to
+  # read one byte. `byteAt`/`byteCount` name the operation, and say which of
+  # bytes-or-runes "how long" means.
+  #
+  # `parseFloat` is the one text conversion that cannot be written in Tuck:
+  # correctly rounded decimal-to-binary is an algorithm, not a fold, and a
+  # hand-rolled one would differ between backends. `parseInt` is deliberately
+  # NOT a primitive — it is an honest fold over digits.
+  t.src """
+import seq
+import str
+
+fn main() -> int:
+  let xs: Seq[int] = [1, 2, 3]
+  if {items: xs} count != 3:
+    return 1
+  let t = "AB"
+  if {t: t} byteCount != 2:
+    return 2
+  if {t: t, index: 0} byteAt != {value: 65} u8:
+    return 3
+  if {t: t, index: 1} byteAt != {value: 66} u8:
+    return 4
+  let f = {t: "2.5"} parseFloat
+  if not f.ok:
+    return 5
+  if f.value != 2.5:
+    return 6
+  # Not-a-number is ABSENCE, not an error: the question has a legitimate no.
+  let bad = {t: "zz"} parseFloat
+  if bad.ok:
+    return 7
+  return 0
+"""
+  t.okCheck "the stdlib primitives check"
+  t.hostBuilds "...and every backend implements them"
+  t.runs "...with the same answers on each", 0
+
   t.finish()

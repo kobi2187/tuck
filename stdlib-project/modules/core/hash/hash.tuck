@@ -7,8 +7,13 @@
 # WRITTEN IN TUCK, deliberately. The same fold exists hand-mirrored in
 # tuck_rt.nim, tuck_rt.odin and tuck_rt.d today; only the pieces that CANNOT
 # be expressed in Tuck earn a backend shim, and a fold over bytes is not one
-# of them. The primitives it stands on — bitXor, and the byte of a character —
+# of them. The primitives it stands on — bitXor, and the byte at an index —
 # are shims; this is not.
+#
+# The fold reads BYTES, and now says so. It used to spell each one
+# `{ch: {s: data, index: i} charAt} ord` — take a one-byte str, then ask for
+# its code point — two calls and a temporary to read one byte. `byteAt` is
+# that operation named.
 import bits
 import str
 
@@ -27,10 +32,8 @@ fn fnvStep({acc: u64, octet: u64}) -> u64:
 
 fn hashStr({data: str}) -> u64:
   var h = fnvOffsetBasis
-  for i in 0 .. data.len - 1:
-    let ch = {s: data, index: i} charAt
-    let code = {ch: ch} ord
-    h = {acc: h, octet: {value: code} u64} fnvStep
+  for i in 0 .. {t: data} byteCount - 1:
+    h = {acc: h, octet: {value: {t: data, index: i} byteAt} u64} fnvStep
   return h
 
 # Combining two digests, for a record or a tuple key. Feeding the second

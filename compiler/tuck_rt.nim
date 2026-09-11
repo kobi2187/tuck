@@ -112,6 +112,17 @@ proc setAt*[T](items: var seq[T], index: int, value: T) =
 # matter how a caller spells it, so there is no workaround short of not
 # declaring it. `Seq.len`'s existing accidental-UFCS behavior (TODO.md §3)
 # is the only way to get a count today.
+proc count*[T](items: seq[T]): int = items.len
+  ## PROTOCOLS.md's verb for "how many". Named `count` rather than `len`
+  ## precisely so it does not make every unqualified `len` in this module
+  ## ambiguous — see std/seq.tuck.
+
+proc byteCount*(s: string): int = s.len
+
+proc byteAt*(s: string, index: int): uint8 =
+  tuckSeqBounds(index, s.len, "byteAt")
+  uint8(s[index])
+
 proc joinStr*(parts: seq[string], sep: string): string =
   ## One pass, one allocation path — `acc = acc & part` in a loop is O(n^2).
   parts.join(sep)
@@ -190,6 +201,12 @@ proc terr*[T](code: uint16): TuckResult[T] {.inline.} =
 
 proc tnone*[T](): TuckResult[T] {.inline.} =
   TuckResult[T](status: tsAbsent)
+
+proc parseFloat*(s: string): TuckResult[float] =
+  ## Absent, not an error: "that text is not a number" is a question with a
+  ## legitimate no, which is what `?T` is for.
+  try: tok(strutils.parseFloat(s))
+  except ValueError: tnone[float]()
 
 proc tfwd*[T](status: TuckStatus, err: uint16): TuckResult[T] {.inline.} =
   ## `?` propagation: forward failure OR absence unchanged (status-preserving)
