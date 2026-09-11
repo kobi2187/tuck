@@ -707,6 +707,18 @@ proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
     params.add(Param(name: p.name, typ: substituteType(p.typ, b), span: p.span))
   (params, substituteType(base.ret, b), newSeq[string](), base.effects)
 
+proc namesAFnSig*(tc: TypeChecker, slotT: Type): bool =
+  ## Does this type NAME a declared `fnsig` — bare (`Adder`) or
+  ## generic-instantiated (`Mapper[int, str]`)? A fnsig name does NOT resolve
+  ## to a tkFunc, so asking `resolve(t).kind == tkFunc` answers no for every
+  ## one of them; the name has to be looked up. Same test checkThroughFnSig
+  ## makes, lifted so a caller can ask before committing to that path.
+  if slotT == nil: return false
+  if slotT.kind == tkNamed: return slotT.name in tc.fnSigNames
+  if slotT.kind == tkApp and slotT.base != nil and slotT.base.kind == tkNamed:
+    return slotT.base.name in tc.fnSigNames
+  false
+
 proc checkThroughFnSig(tc: var TypeChecker, slotT: Type, call: Expr): Type =
   ## A call THROUGH a slot whose type is a `fnsig` NAME — bare (`Adder`) or
   ## generic-instantiated (`Mapper[int, str]`): validate the arguments
@@ -2337,6 +2349,18 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   if result != nil: return
   if e.callee != nil and e.callee.kind != exkVar:
     return tc.asIndirectCall(e)
+  # A bare name that is a fnsig-typed BINDING, not a declared fn: `{} make`
+  # where `make: Thunk` is a parameter. asIndirectCall already validates a
+  # call through a fnsig slot and yields its return type — it was simply
+  # unreachable for a bare name, so calling a fn-typed parameter typed as
+  # Unknown. Nim and Odin infer a local from its initialiser and never
+  # noticed; D declares one and refused, "a declaration whose type the
+  # checker did not settle". The case that matters is an actor handler
+  # invoking a fn it was SENT.
+  if calleeName != "":
+    let (found, b) = tc.lookup(calleeName)
+    if found and namesAFnSig(tc, tc.resolve(b.typ)):
+      return tc.asIndirectCall(e)
   return tc.synthArgsUnknown(e)
 
 # === THE SPINE: ONE synth* PER EXPRESSION KIND =============================

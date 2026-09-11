@@ -109,6 +109,66 @@ fn quiet() -> void:
   t.badCheck "an [io] call inside a send payload is still an effect",
              "requires effect \\[io\\]"
 
+  # A SEND CARRIES A FN, and the actor invokes it. This is the answer to
+  # "when is a send's payload evaluated": a value is computed by the sender,
+  # a fn reference is computed by the RECEIVER, and the second is what you
+  # want when the work belongs on the actor's side.
+  #
+  # It also dissolves the question TK-PA13 raised. A call nested in a payload
+  # (`{n: {} noisy}`) is refused, and hoisting it to a `let` is WRONG for a
+  # send — that evaluates once, where the nested call ran per send. `:fnRef`
+  # is neither: nothing is computed at the send at all.
+  #
+  # What this needed: calling a fnsig-typed BINDING by bare name. That path
+  # typed as Unknown, because asIndirectCall — which already validates a call
+  # through a fnsig slot — was unreachable for a bare-name callee. Nim and
+  # Odin infer a local from its initialiser and never noticed; D declares one
+  # and refused.
+  t.src """
+fnsig Thunk = {} -> int
+
+actor Sink:
+  total: int
+
+  on ping({make: Thunk}) -> void:
+    let v = {} make
+    self.total = self.total + v
+
+fn five() -> int:
+  return 5
+
+fn main() -> int:
+  Sink send ping {make: :five}
+  return 0
+"""
+  t.okCheck "a send may carry a fn reference"
+  t.hostBuilds "...and every backend emits the actor that invokes it"
+  t.runs "...and it runs", 0
+
+  # The same, with ARGUMENTS: the fn and what to apply it to travel together,
+  # and the actor does the applying.
+  t.src """
+fnsig Adder = {n: int} -> int
+
+actor Sink:
+  total: int
+
+  on add({op: Adder, n: int}) -> void:
+    let v = {n: n} op
+    self.total = self.total + v
+
+fn twice({n: int}) -> int:
+  return n * 2
+
+fn main() -> int:
+  Sink send add {op: :twice, n: 21}
+  return 0
+"""
+  t.okCheck "a send may carry a fn and its argument"
+  t.hostBuilds "...on every backend"
+  t.runs "...and the actor applies it", 0
+
+
   # scheduler::stop ends the loop even with a coroutine still parked. The
   # scheduler otherwise returns only when NOTHING is waiting, so a program that
   # parks on an fd nobody will feed — a server's accept loop — runs forever.
