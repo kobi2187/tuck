@@ -66,6 +66,32 @@ rt.TuckResult!(long) tuck_tryDiv(long a, long b) {
     return rt.tok((a / b));
 }
 
+long tuck_sign(long x) {
+    if ((x > 0L)) {
+        return 1L;
+    }
+    if ((x < 0L)) {
+        return (0L - 1L);
+    }
+    return 0L;
+}
+
+rt.TuckResult!(long) tuck_absI64(long x) {
+    if ((x == tuck_i64Min())) {
+        return rt.tnone!(long)();
+    }
+    if ((x < 0L)) {
+        return rt.tok((0L - x));
+    }
+    return rt.tok(x);
+}
+
+ulong tuck_midpoint(ulong a, ulong b) {
+    ulong tuck_xored = bits.bitXor(a, b);
+    ulong tuck_halfXor = bits.shiftRight(tuck_xored, 1L);
+    return (bits.bitAnd(a, b) + tuck_halfXor);
+}
+
 ulong tuck_bitMask(long at) {
     return bits.shiftLeft(1L, at);
 }
@@ -351,6 +377,37 @@ long tuck_checkRoundTrip(ulong v, ubyte[] big) {
     return 0L;
 }
 
+long tuck_checkSignAndMid() {
+    if ((tuck_sign(5L) != 1L)) {
+        return 40L;
+    }
+    if ((tuck_sign((0L - 5L)) != (0L - 1L))) {
+        return 41L;
+    }
+    if ((tuck_sign(0L) != 0L)) {
+        return 42L;
+    }
+    rt.TuckResult!(long) tuck_a5 = tuck_absI64((0L - 5L));
+    if (!(tuck_a5.status == rt.TuckStatus.Ok)) {
+        return 43L;
+    }
+    if ((tuck_a5.value != 5L)) {
+        return 43L;
+    }
+    rt.TuckResult!(long) tuck_absent = tuck_absI64(tuck_i64Min());
+    if ((tuck_absent.status == rt.TuckStatus.Ok)) {
+        return 44L;
+    }
+    if ((tuck_midpoint(4L, 10L) != 7L)) {
+        return 45L;
+    }
+    ulong tuck_near = bits.bitNot(0L);
+    if ((tuck_midpoint(tuck_near, tuck_near) != tuck_near)) {
+        return 46L;
+    }
+    return 0L;
+}
+
 long tuck_main() {
     long tuck_arith = tuck_checkArith();
     if ((tuck_arith != 0L)) {
@@ -360,7 +417,11 @@ long tuck_main() {
     if ((tuck_bits != 0L)) {
         return tuck_bits;
     }
-    return tuck_checkBytes();
+    long tuck_bytes = tuck_checkBytes();
+    if ((tuck_bytes != 0L)) {
+        return tuck_bytes;
+    }
+    return tuck_checkSignAndMid();
 }
 
 int main(string[] args) {

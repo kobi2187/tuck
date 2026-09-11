@@ -161,10 +161,30 @@ tuckSetAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
 
 setAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
 
+// `Array[N, T]` needs its OWN pair, separate from tuckAt/tuckSetAt above.
+// core.array's `at`/`setAt` cannot be plain Tuck functions using `items[i]`:
+// the bracket-index dispatch routes to whatever `fn at` is in scope, which —
+// inside `at`'s OWN body — is `at` itself. A Tuck-body `at` for Array[N, T]
+// self-recurses infinitely rather than indexing. std/seq.tuck's `at`/`setAt`
+// dodge this because THIS proc, not a Tuck fn, is what the bracket actually
+// lowers to; core.array's `at`/`setAt` must be `extern` declarations bound
+// to these, with no Tuck body to recurse in — same shape, one container over.
+tuckArrayAt :: proc(items: [$N]$T, index: int) -> T {
+	assert(index >= 0 && index < N, "at: index out of bounds")
+	return items[index]
+}
+
+tuckArraySetAt :: proc(items: ^[$N]$T, index: int, value: T) {
+	assert(index >= 0 && index < N, "setAt: index out of bounds")
+	items[index] = value
+}
+
 // Value semantics: allocates its own backing array rather than growing
 // `items` in place, so `items`'s own backing store is never shared with
 // (and never mutated through) the result — a plain-value append on a
 // [dynamic]T copy would still share the source memory below capacity.
+getLength :: proc(x: $T) -> int { return len(x) }
+
 count :: proc(items: [dynamic]$T) -> int { return len(items) }
 
 byteCount :: proc(t: string) -> int { return len(t) }

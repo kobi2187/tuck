@@ -10,6 +10,9 @@ proc tuck_trySub*(a: int64, b: int64): TuckResult[int64]
 proc tuck_mulFits*(a: int64, b: int64): bool
 proc tuck_tryMul*(a: int64, b: int64): TuckResult[int64]
 proc tuck_tryDiv*(a: int64, b: int64): TuckResult[int64]
+proc tuck_sign*(x: int64): int
+proc tuck_absI64*(x: int64): TuckResult[int64]
+proc tuck_midpoint*(a: uint64, b: uint64): uint64
 proc tuck_bitMask*(at: int): uint64
 proc tuck_hasBit*(x: uint64, at: int): bool
 proc tuck_withBit*(x: uint64, at: int): uint64
@@ -35,6 +38,7 @@ proc tuck_checkOneBit*(): int
 proc tuck_checkBitUndo*(one: uint64): int
 proc tuck_checkBytes*(): int
 proc tuck_checkRoundTrip*(v: uint64, big: sink seq[uint8]): int
+proc tuck_checkSignAndMid*(): int
 proc tuck_main*(): int
 
 type tuck_ByteOrder* = enum Big, Little
@@ -92,6 +96,29 @@ proc tuck_tryDiv*(a: int64, b: int64): TuckResult[int64] =
     if true:
       return tnone[int64]()
   return tok((a div b))
+
+proc tuck_sign*(x: int64): int =
+  if (x > 0):
+    if true:
+      return 1
+  if (x < 0):
+    if true:
+      return (0 - 1)
+  return 0
+
+proc tuck_absI64*(x: int64): TuckResult[int64] =
+  if (x == tuck_i64Min()):
+    if true:
+      return tnone[int64]()
+  if (x < 0):
+    if true:
+      return tok((0'i64 - x))
+  return tok(x)
+
+proc tuck_midpoint*(a: uint64, b: uint64): uint64 =
+  var tuck_xored = tuck_rt.bitXor(a, b)
+  var tuck_halfXor = tuck_rt.shiftRight(tuck_xored, 1)
+  return (tuck_rt.bitAnd(a, b) + tuck_halfXor)
 
 proc tuck_bitMask*(at: int): uint64 =
   return tuck_rt.shiftLeft(1'u64, at)
@@ -184,7 +211,7 @@ proc tuck_toBytes*(value: uint64, order: tuck_ByteOrder): seq[uint8] =
   return tuck_acc
 
 proc tuck_fromBytes*(bytes: seq[uint8], order: tuck_ByteOrder): TuckResult[uint64] =
-  if (bytes.len != 8):
+  if (getLength(bytes) != 8):
     if true:
       return tnone[uint64]()
   var tuck_acc: uint64 = 0'u64
@@ -284,7 +311,7 @@ proc tuck_checkBitSearch*(flags: uint64): int =
 
 proc tuck_checkBitSets*(flags: uint64): int =
   var tuck_positions = tuck_setBits(flags)
-  if (tuck_positions.len != 3):
+  if (getLength(tuck_positions) != 3):
     if true:
       return 19
   var tuck_several = tuck_onlyBit(flags)
@@ -324,7 +351,7 @@ proc tuck_checkBitUndo*(one: uint64): int =
 proc tuck_checkBytes*(): int =
   var tuck_v = uint64(258)
   var tuck_big = tuck_toBytes(tuck_v, tuck_ByteOrder.Big)
-  if (tuck_big.len != 8):
+  if (getLength(tuck_big) != 8):
     if true:
       return 26
   if (tuck_rt.tuckAt(tuck_big, 7) != uint8(2)):
@@ -351,6 +378,36 @@ proc tuck_checkRoundTrip*(v: uint64, big: sink seq[uint8]): int =
       return 31
   return 0
 
+proc tuck_checkSignAndMid*(): int =
+  if (tuck_sign(5'i64) != 1):
+    if true:
+      return 40
+  if (tuck_sign((0'i64 - 5'i64)) != (0 - 1)):
+    if true:
+      return 41
+  if (tuck_sign(0'i64) != 0):
+    if true:
+      return 42
+  var tuck_a5 = tuck_absI64((0'i64 - 5'i64))
+  if not tuck_a5.ok:
+    if true:
+      return 43
+  if (tuck_a5.value != 5):
+    if true:
+      return 43
+  var tuck_absent = tuck_absI64(tuck_i64Min())
+  if tuck_absent.ok:
+    if true:
+      return 44
+  if (tuck_midpoint(4'u64, 10'u64) != 7):
+    if true:
+      return 45
+  var tuck_near = tuck_rt.bitNot(0'u64)
+  if (tuck_midpoint(tuck_near, tuck_near) != tuck_near):
+    if true:
+      return 46
+  return 0
+
 proc tuck_main*(): int =
   var tuck_arith = tuck_checkArith()
   if (tuck_arith != 0):
@@ -360,7 +417,11 @@ proc tuck_main*(): int =
   if (tuck_bits != 0):
     if true:
       return tuck_bits
-  return tuck_checkBytes()
+  var tuck_bytes = tuck_checkBytes()
+  if (tuck_bytes != 0):
+    if true:
+      return tuck_bytes
+  return tuck_checkSignAndMid()
 
 
 when isMainModule:

@@ -19,4 +19,8 @@ count :: proc(items: [dynamic]$T) -> int {
 	return rt.count(items)
 }
 
+len :: proc(items: $T) -> int {
+	return rt.getLength(items)
+}
+
 

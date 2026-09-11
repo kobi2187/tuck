@@ -75,6 +75,38 @@ fn tryDiv({a: i64, b: i64}) -> i64?:
     return
   return a /i b
 
+# --- sign and magnitude ------------------------------------------------------
+
+fn sign({x: i64}) -> int:
+  if x > 0:
+    return 1
+  if x < 0:
+    return 0 - 1
+  return 0
+
+# i64Min has no positive counterpart (its magnitude is one past i64Max) —
+# `absI64` still declines to answer there, same shape as the try* family
+# above, rather than silently returning i64Min unchanged like a naive `abs`.
+fn absI64({x: i64}) -> i64?:
+  if x == i64Min:
+    return
+  if x < 0:
+    return 0 - x
+  return x
+
+# The overflow-safe midpoint: `(a + b) / 2` overflows the moment `a + b`
+# would, which is exactly the range a binary search walks toward. This is
+# the textbook fix — split the sum into its bitwise AND and the halved XOR,
+# so the intermediate never exceeds either input — and the natural
+# companion to try*'s own "say what happens on overflow" stance, since a
+# naive midpoint doesn't even get the chance to decline. `u64`, not `i64`:
+# the bit trick wants the raw pattern, and a search bound is never negative
+# anyway — the same reason `bitAnd`/`bitXor` below are u64-only.
+fn midpoint({a: u64, b: u64}) -> u64:
+  let xored = {a: a, b: b} bitXor
+  let halfXor = {a: xored, by: 1} shiftRight
+  return {a: a, b: b} bitAnd + halfXor
+
 # --- an integer as a set of flags ------------------------------------------
 # u64 throughout, per std/bits: a right shift on a signed type is arithmetic,
 # which is never what a mask wants.
@@ -306,6 +338,29 @@ fn checkRoundTrip({v: u64, big: Seq[u8]}) -> int:
     return 31
   return 0
 
+fn checkSignAndMid() -> int:
+  if {x: 5} sign != 1:
+    return 40
+  if {x: 0 - 5} sign != 0 - 1:
+    return 41
+  if {x: 0} sign != 0:
+    return 42
+  let a5 = {x: 0 - 5} absI64
+  if not a5.ok:
+    return 43
+  if a5.value != 5:
+    return 43
+  let absent = {x: i64Min} absI64
+  if absent.ok:
+    return 44
+  if {a: 4, b: 10} midpoint != 7:
+    return 45
+  # the whole point: this would overflow under a naive (a + b) / 2
+  let near = {a: 0} bitNot
+  if {a: near, b: near} midpoint != near:
+    return 46
+  return 0
+
 fn main() -> int:
   let arith = checkArith
   if arith != 0:
@@ -313,4 +368,7 @@ fn main() -> int:
   let bits = checkBits
   if bits != 0:
     return bits
-  return checkBytes
+  let bytes = checkBytes
+  if bytes != 0:
+    return bytes
+  return checkSignAndMid

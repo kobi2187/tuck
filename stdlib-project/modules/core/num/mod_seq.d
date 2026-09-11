@@ -18,4 +18,8 @@ long count(T)(T[] items) {
     return rt.count(items);
 }
 
+long len(T)(T items) {
+    return rt.getLength(items);
+}
+
 

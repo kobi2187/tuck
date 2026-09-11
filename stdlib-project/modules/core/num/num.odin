@@ -4,6 +4,7 @@ package main
 import "core:os"
 import rt "./tuckrt"
 import bits "./mod_bits"
+import seq "./mod_seq"
 
 tuck_ByteOrder :: enum { Big, Little }
 
@@ -66,6 +67,32 @@ tuck_tryDiv :: proc (a: i64, b: i64) -> rt.TuckResult(i64) {
       return rt.tnone(i64)
   }
   return rt.tok((a / b))
+}
+
+tuck_sign :: proc (x: i64) -> int {
+  if (x > 0) {
+      return 1
+  }
+  if (x < 0) {
+      return (0 - 1)
+  }
+  return 0
+}
+
+tuck_absI64 :: proc (x: i64) -> rt.TuckResult(i64) {
+  if (x == tuck_i64Min()) {
+      return rt.tnone(i64)
+  }
+  if (x < 0) {
+      return rt.tok((i64(0) - x))
+  }
+  return rt.tok(x)
+}
+
+tuck_midpoint :: proc (a: u64, b: u64) -> u64 {
+  tuck_xored := bits.bitXor(a, b)
+  tuck_halfXor := bits.shiftRight(tuck_xored, 1)
+  return (bits.bitAnd(a, b) + tuck_halfXor)
 }
 
 tuck_bitMask :: proc (at: int) -> u64 {
@@ -173,7 +200,7 @@ tuck_toBytes :: proc (value: u64, order: tuck_ByteOrder) -> [dynamic]u8 {
 }
 
 tuck_fromBytes :: proc (bytes: [dynamic]u8, order: tuck_ByteOrder) -> rt.TuckResult(u64) {
-  if (len(bytes) != 8) {
+  if (seq.len(bytes) != 8) {
       return rt.tnone(u64)
   }
   tuck_acc: u64 = u64(0)
@@ -280,7 +307,7 @@ tuck_checkBitSearch :: proc (flags: u64) -> int {
 
 tuck_checkBitSets :: proc (flags: u64) -> int {
   tuck_positions := rt.tuckSeqCopy(tuck_setBits(flags))
-  if (len(tuck_positions) != 3) {
+  if (seq.len(tuck_positions) != 3) {
       return 19
   }
   tuck_several := tuck_onlyBit(flags)
@@ -323,7 +350,7 @@ tuck_checkBitUndo :: proc (one: u64) -> int {
 tuck_checkBytes :: proc () -> int {
   tuck_v := u64(258)
   tuck_big := rt.tuckSeqCopy(tuck_toBytes(tuck_v, tuck_ByteOrder.Big))
-  if (len(tuck_big) != 8) {
+  if (seq.len(tuck_big) != 8) {
       return 26
   }
   if (rt.tuckAt(tuck_big, 7) != u8(2)) {
@@ -352,6 +379,37 @@ tuck_checkRoundTrip :: proc (v: u64, big: [dynamic]u8) -> int {
   return 0
 }
 
+tuck_checkSignAndMid :: proc () -> int {
+  if (tuck_sign(i64(5)) != 1) {
+      return 40
+  }
+  if (tuck_sign((i64(0) - i64(5))) != (0 - 1)) {
+      return 41
+  }
+  if (tuck_sign(i64(0)) != 0) {
+      return 42
+  }
+  tuck_a5 := tuck_absI64((i64(0) - i64(5)))
+  if !(tuck_a5.status == .Ok) {
+      return 43
+  }
+  if (tuck_a5.value != 5) {
+      return 43
+  }
+  tuck_absent := tuck_absI64(tuck_i64Min())
+  if (tuck_absent.status == .Ok) {
+      return 44
+  }
+  if (tuck_midpoint(u64(4), u64(10)) != 7) {
+      return 45
+  }
+  tuck_near := bits.bitNot(u64(0))
+  if (tuck_midpoint(tuck_near, tuck_near) != tuck_near) {
+      return 46
+  }
+  return 0
+}
+
 tuck_main :: proc () -> int {
   tuck_arith := tuck_checkArith()
   if (tuck_arith != 0) {
@@ -361,7 +419,11 @@ tuck_main :: proc () -> int {
   if (tuck_bits != 0) {
       return tuck_bits
   }
-  return tuck_checkBytes()
+  tuck_bytes := tuck_checkBytes()
+  if (tuck_bytes != 0) {
+      return tuck_bytes
+  }
+  return tuck_checkSignAndMid()
 }
 
 main :: proc() {
