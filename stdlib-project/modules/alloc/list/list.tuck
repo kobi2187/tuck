@@ -1,0 +1,261 @@
+# alloc.list — a doubly-linked chain, by INDEX rather than by reference.
+#
+# THIS MODULE WAS REJECTED, AND THE REJECTION IS NOW WRONG. The design said:
+# "In Tuck it cannot be written at all. A doubly-linked list is nodes holding
+# references to other nodes; Tier 1 has no `ref`, and both of its narrow wins
+# depend on holding a position BY REFERENCE, which is the same thing."
+#
+# An index is not a reference. Every node lives in one `Seq[Node[T]]` that the
+# chain owns, and `next`/`prev` are plain `int`s into it — so the structure is
+# expressible with no `ref`, no pointer, and no escape from value semantics.
+# That is the same move the compiler makes for recursive sum types, which
+# reach their children through a handle rather than an address.
+#
+# WHICH WIN SURVIVES, AND WHICH DOES NOT. Insert and remove at a position you
+# already hold are O(1) — that is the reason to reach for a chain, and it
+# works. O(1) SPLICE of two chains does NOT survive: each chain owns its own
+# node array, so joining two means renumbering one of them, which is O(n).
+# Recovering that would need both chains in one shared arena, which is the
+# resource registry's job. Said plainly rather than left to be discovered.
+#
+# A POSITION IS A HANDLE, not an ordinal. `at {pos: 3}` is "the node stored at
+# slot 3", not "the fourth element" — removing a node leaves its slot behind
+# rather than shifting everything after it, which is exactly what makes the
+# removal O(1). `toSeq` is how you get order.
+import seq
+
+# `next`/`prev` of -1 mean "no node there". A sum type would say that more
+# honestly, but every read would then cost a match, on a field that is
+# compared far more often than it is inspected.
+type Node[T]:
+  value: T
+  next: int
+  prev: int
+
+type Chain[T]:
+  nodes: Seq[Node[T]]
+  head: int
+  tail: int
+  size: int
+
+fn nowhere() -> int:
+  return 0 - 1
+
+fn count[T]({c: Chain[T]}) -> int:
+  return c.size
+
+fn isEmpty[T]({c: Chain[T]}) -> bool:
+  return c.size == 0
+
+fn at[T]({c: Chain[T], pos: int}) -> T?:
+  if pos < 0 or pos >= c.nodes.len:
+    return
+  return c.nodes[pos].value
+
+fn firstPos[T]({c: Chain[T]}) -> int:
+  return c.head
+
+fn lastPos[T]({c: Chain[T]}) -> int:
+  return c.tail
+
+fn nextPos[T]({c: Chain[T], pos: int}) -> int:
+  if pos < 0 or pos >= c.nodes.len:
+    return nowhere
+  return c.nodes[pos].next
+
+fn prevPos[T]({c: Chain[T], pos: int}) -> int:
+  if pos < 0 or pos >= c.nodes.len:
+    return nowhere
+  return c.nodes[pos].prev
+
+fn first[T]({c: Chain[T]}) -> T?:
+  return {c: c, pos: c.head} at
+
+fn last[T]({c: Chain[T]}) -> T?:
+  return {c: c, pos: c.tail} at
+
+# Rewriting one link. Every structural change below is spelled with these two
+# rather than reaching into the node array, so the "-1 means nowhere"
+# convention lives in one place.
+fn linkNext[T]({ns: Seq[Node[T]], pos: int, to: int}) -> Seq[Node[T]]:
+  if pos < 0:
+    return ns
+  var out = ns
+  let n = out[pos]
+  out[pos] = {value: n.value, next: to, prev: n.prev} Node
+  return out
+
+fn linkPrev[T]({ns: Seq[Node[T]], pos: int, to: int}) -> Seq[Node[T]]:
+  if pos < 0:
+    return ns
+  var out = ns
+  let n = out[pos]
+  out[pos] = {value: n.value, next: n.next, prev: to} Node
+  return out
+
+# --- adding ----------------------------------------------------------------
+fn append[T]({c: Chain[T], value: T}) -> Chain[T]:
+  let slot = c.nodes.len
+  var ns = c.nodes
+  ns = {items: ns, value: {value: value, next: nowhere, prev: c.tail} Node} push
+  ns = {ns: ns, pos: c.tail, to: slot} linkNext
+  let h = if c.head < 0: slot else: c.head
+  return {nodes: ns, head: h, tail: slot, size: c.size + 1} Chain
+
+fn prepend[T]({c: Chain[T], value: T}) -> Chain[T]:
+  let slot = c.nodes.len
+  var ns = c.nodes
+  ns = {items: ns, value: {value: value, next: c.head, prev: nowhere} Node} push
+  ns = {ns: ns, pos: c.head, to: slot} linkPrev
+  let t = if c.tail < 0: slot else: c.tail
+  return {nodes: ns, head: slot, tail: t, size: c.size + 1} Chain
+
+# THE WIN: O(1), whatever the chain's length, because `pos` is already held.
+fn insertAfter[T]({c: Chain[T], pos: int, value: T}) -> Chain[T]:
+  if pos < 0 or pos >= c.nodes.len:
+    return c
+  let slot = c.nodes.len
+  let after = c.nodes[pos].next
+  var ns = c.nodes
+  ns = {items: ns, value: {value: value, next: after, prev: pos} Node} push
+  ns = {ns: ns, pos: pos, to: slot} linkNext
+  ns = {ns: ns, pos: after, to: slot} linkPrev
+  let t = if after < 0: slot else: c.tail
+  return {nodes: ns, head: c.head, tail: t, size: c.size + 1} Chain
+
+# --- removing --------------------------------------------------------------
+# ALSO O(1). The node's slot stays behind rather than shifting everything
+# after it — that is what a handle buys, and why `pos` is not an ordinal.
+fn removeAt[T]({c: Chain[T], pos: int}) -> Chain[T]:
+  if pos < 0 or pos >= c.nodes.len:
+    return c
+  let before = c.nodes[pos].prev
+  let after = c.nodes[pos].next
+  var ns = c.nodes
+  ns = {ns: ns, pos: before, to: after} linkNext
+  ns = {ns: ns, pos: after, to: before} linkPrev
+  let h = if pos == c.head: after else: c.head
+  let t = if pos == c.tail: before else: c.tail
+  return {nodes: ns, head: h, tail: t, size: c.size - 1} Chain
+
+# --- reading in order ------------------------------------------------------
+# The walk is the only place order lives, since slots do not carry it.
+fn toSeq[T]({c: Chain[T]}) -> Seq[T]:
+  var out: Seq[T] = []
+  var pos = c.head
+  for pos >= 0:
+    out = {items: out, value: c.nodes[pos].value} push
+    pos = c.nodes[pos].next
+  return out
+
+# O(n) — see the header. Renumbering is what a per-chain node array costs.
+fn concat[T]({a: Chain[T], b: Chain[T]}) -> Chain[T]:
+  var out = a
+  let bs = {c: b} toSeq
+  for i in 0 .. bs.len - 1:
+    out = {c: out, value: bs[i]} append
+  return out
+
+# --- the module's own checks ----------------------------------------------
+fn emptyChain() -> Chain[int]:
+  return {nodes: [], head: nowhere, tail: nowhere, size: 0} Chain
+
+fn oneTwoThree() -> Chain[int]:
+  var c = emptyChain
+  c = {c: c, value: 1} append
+  c = {c: c, value: 2} append
+  return {c: c, value: 3} append
+
+fn checkBuild() -> int:
+  let e = emptyChain
+  if not {c: e} isEmpty:
+    return 1
+  let noHead = {c: e} first
+  if noHead.ok:
+    return 2
+  let c = oneTwoThree
+  if {c: c} count != 3:
+    return 3
+  let f = {c: c} first
+  if not f.ok:
+    return 4
+  if f.value != 1:
+    return 5
+  let l = {c: c} last
+  if not l.ok:
+    return 6
+  if l.value != 3:
+    return 7
+  return checkOrder
+
+fn checkOrder() -> int:
+  let xs = {c: oneTwoThree} toSeq
+  if xs.len != 3:
+    return 8
+  if xs[0] != 1:
+    return 9
+  if xs[2] != 3:
+    return 10
+  # prepend puts it at the front, and the walk proves the links both ways.
+  let p = {c: oneTwoThree, value: 0} prepend
+  let ps = {c: p} toSeq
+  if ps[0] != 0:
+    return 11
+  if ps[3] != 3:
+    return 12
+  return checkHandles
+
+fn checkHandles() -> int:
+  let c = oneTwoThree
+  # A position is a HANDLE. Walking gives the second node's slot.
+  let second = {c: c, pos: {c: c} firstPos} nextPos
+  let v = {c: c, pos: second} at
+  if not v.ok:
+    return 13
+  if v.value != 2:
+    return 14
+  # Insert after a held position — O(1), and order says it landed.
+  let ins = {c: c, pos: second, value: 99} insertAfter
+  let isq = {c: ins} toSeq
+  if isq.len != 4:
+    return 15
+  if isq[2] != 99:
+    return 16
+  return checkRemoval
+
+fn checkRemoval() -> int:
+  let c = oneTwoThree
+  let second = {c: c, pos: {c: c} firstPos} nextPos
+  let cut = {c: c, pos: second} removeAt
+  if {c: cut} count != 2:
+    return 17
+  let cs = {c: cut} toSeq
+  if cs.len != 2:
+    return 18
+  if cs[0] != 1:
+    return 19
+  if cs[1] != 3:
+    return 20
+  # Removing the head moves it.
+  let noHead = {c: c, pos: {c: c} firstPos} removeAt
+  let hs = {c: noHead} toSeq
+  if hs[0] != 2:
+    return 21
+  # The original is untouched — a chain is a value.
+  if {c: c} count != 3:
+    return 22
+  return checkConcat
+
+fn checkConcat() -> int:
+  let joined = {a: oneTwoThree, b: oneTwoThree} concat
+  if {c: joined} count != 6:
+    return 23
+  let js = {c: joined} toSeq
+  if js.len != 6:
+    return 24
+  if js[3] != 1:
+    return 25
+  return 0
+
+fn main() -> int:
+  return checkBuild
