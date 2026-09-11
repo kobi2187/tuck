@@ -373,14 +373,14 @@ proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
   ctx.dSumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
 const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
-                     "dequeue", "hasRoom", "initMailbox"]
+                     "dequeue", "hasRoom", "initMailbox", "tuckArraySetAt"]
   ## Runtime intrinsics that MUTATE their receiver, so it goes in by
   ## reference. D takes `ref`, so the call site passes the value as-is —
   ## unlike Odin, which needs an explicit `&`.
 
-const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "toStr",
-                   "tuckConcat", "errCode", "push", "joinStr", "fromBytes",
-                   "bitAnd", "bitOr", "bitXor", "bitNot",
+const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "tuckArrayAt",
+                   "toStr", "tuckConcat", "errCode", "push", "joinStr",
+                   "fromBytes", "bitAnd", "bitOr", "bitXor", "bitNot",
                    "shiftLeft", "shiftRight",
                    "tuckSat", "tuckSatI", "tuckReportUnhandled"]
   ## Runtime intrinsics taking their arguments as-is. Both lists qualify
@@ -536,15 +536,26 @@ proc genDUnary(ctx: var DCodegenCtx, e: Expr): string =
     # propagation silently.
     dUnsupported("expr? in this position")
 
+proc isFixedArray(t: Type): bool =
+  ## `Array[N, T]`, the OTHER sized container besides `Seq[T]`. Kept separate
+  ## from `seqElem` rather than folding it in there: `seqElem` also drives
+  ## deep-copy marking and D's own `.dup` decisions (lowering_seqcopy,
+  ## codegen_d_ctx), and `Array[N, T]` is already a value with no separate
+  ## copy-marking story — widening `seqElem` would pull that machinery onto
+  ## a container it was never written for.
+  t != nil and t.kind == tkApp and t.base != nil and
+    t.base.kind == tkNamed and t.base.name == "Array"
+
 proc isLenOnSized(ctx: var DCodegenCtx, e: Expr): bool =
-  ## `.len` on a str or Seq — D spells the identical native property
-  ## `.length`. (The Nim backend emits `.len` untranslated because Nim
-  ## happens to share Tuck's spelling — a Nim-ism riding through.)
+  ## `.len` on a str, Seq or fixed Array — D spells all three the identical
+  ## native property `.length`, including a static `T[N]`. (The Nim backend
+  ## emits `.len` untranslated because Nim happens to share Tuck's spelling —
+  ## a Nim-ism riding through.)
   if e.fieldName != "len" or e.receiver == nil: return false
   let rt = ctx.res.typeFor(e.receiver)
   if rt == nil: return false
   if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
-  seqElem(rt) != nil
+  seqElem(rt) != nil or isFixedArray(rt)
 
 proc satisfiersOfD*(ctx: DCodegenCtx, iface: string): seq[Decl] =
   ## Whole-program satisfier set — see codegen_common.satisfiersOf.

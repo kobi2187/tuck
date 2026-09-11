@@ -98,6 +98,24 @@ proc tuckSetAt*[T](items: var seq[T], index: int, value: T) =
 proc setAt*[T](items: var seq[T], index: int, value: T) =
   tuckSetAt(items, index, value)
 
+# `Array[N, T]` needs its OWN pair, separate from tuckAt/tuckSetAt above.
+# core.array's `at`/`setAt` cannot be plain Tuck functions using `items[i]`:
+# the bracket-index dispatch (typecheck.nim's indexCallee) routes to whatever
+# `fn at` is in scope, which — inside `at`'s OWN body — is `at` itself. A
+# Tuck-body `at` for Array[N, T] self-recurses infinitely rather than
+# indexing. std/seq.tuck's `at`/`setAt` dodge this because THIS proc, not a
+# Tuck fn, is what the bracket actually lowers to; core.array's `at`/`setAt`
+# must be `extern` declarations bound to these, with no Tuck body to recurse
+# in — same shape, one container over.
+proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): T =
+  tuckSeqBounds(index, N, "at")
+  items[index]
+
+proc tuckArraySetAt*[N: static int, T](items: var array[N, T], index: int,
+                                       value: T) =
+  tuckSeqBounds(index, N, "setAt")
+  items[index] = value
+
 # Value semantics: `items` is copied on return, same as any other Tuck
 # record/seq — growing the result never mutates the caller's seq, unlike
 # setAt's in-place write through a `var` receiver.

@@ -592,9 +592,20 @@ proc genStruct(ctx: var CodegenCtx, e: Expr): string =
   "(" & parts.join(", ") & ")"
 
 proc genList(ctx: var CodegenCtx, e: Expr): string =
+  ## `@[a, b]` for a `Seq[T]` (Nim's dynamic seq), bare `[a, b]` for an
+  ## `Array[N, T]` (Nim's fixed `array[N, T]`, which Nim itself infers as a
+  ## STATIC array from a bracket literal with no `@`) — the checker already
+  ## says which one this literal IS (synthList), so ask it rather than
+  ## guessing. Getting this wrong is the bug that shipped once: a Seq-shaped
+  ## `@[1, 2, 3, 4]` landed in a field declared `array[4, int]` and Nim
+  ## rejected it outright.
   var items: seq[string]
   for it in e.items: items.add(ctx.genExpr(it))
-  "@[" & items.join(", ") & "]"
+  let t = ctx.res.typeFor(e)
+  let isArray = t != nil and t.kind == tkApp and t.base != nil and
+                t.base.kind == tkNamed and t.base.name == "Array"
+  if isArray: "[" & items.join(", ") & "]"
+  else: "@[" & items.join(", ") & "]"
 
 proc genCallResolved(ctx: var CodegenCtx, e: Expr): string =
   ## Indexing resolved to an at() call; a type application never reaches

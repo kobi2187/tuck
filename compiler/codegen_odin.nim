@@ -277,12 +277,17 @@ proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr,
   for a in e.args: result.add(ctx.genOdinExpr(a))
 
 const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
-                     "dequeue", "hasRoom", "initMailbox"]
+                     "dequeue", "hasRoom", "initMailbox", "tuckArraySetAt"]
   ## Runtime intrinsics whose receiver they MUTATE, so it goes in by pointer.
+  ## `tuckArraySetAt` joins this list, not RtByValue below, because Odin's
+  ## fixed `[N]T` is a real value type — unlike `[dynamic]T`/`[]T`, whose
+  ## header aliases the backing store even passed by value. Mutating a
+  ## by-value `[N]T` parameter would mutate a copy and the caller would
+  ## never see it.
 
-const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "toStr",
-                   "tuckConcat", "errCode", "push", "joinStr", "fromBytes",
-                   "bitAnd", "bitOr", "bitXor", "bitNot",
+const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "tuckArrayAt",
+                   "toStr", "tuckConcat", "errCode", "push", "joinStr",
+                   "fromBytes", "bitAnd", "bitOr", "bitXor", "bitNot",
                    "shiftLeft", "shiftRight",
                    "tuckSat", "tuckSatI", "tuckReportUnhandled"]
   ## Runtime intrinsics taking their arguments as-is. Beef reached these
@@ -708,9 +713,22 @@ proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
     return ""
   ctx.unionBind & "." & e.fieldName
 
+proc isFixedArray(t: Type): bool =
+  ## `Array[N, T]`, the OTHER sized container besides `Seq[T]`. Kept separate
+  ## from `seqElem` rather than folding it in there: `seqElem` also drives
+  ## deep-copy marking and D's `.dup` decisions (lowering_seqcopy,
+  ## codegen_d_ctx), and `Array[N, T]` is already a value with no separate
+  ## copy-marking story — widening `seqElem` would pull that machinery onto
+  ## a container it was never written for.
+  t != nil and t.kind == tkApp and t.base != nil and
+    t.base.kind == tkNamed and t.base.name == "Array"
+
 proc isLenOnSized(ctx: var OdinCodegenCtx, e: Expr): bool =
-  ## `.len` on a str or Seq. Odin spells it as a CALL, `len(xs)`, not a field,
-  ## so `xs.len` reported "'tuck_xs' of type '[dynamic]int' has no field 'len'".
+  ## `.len` on a str, Seq or fixed Array. Odin spells it as a CALL,
+  ## `len(xs)`, not a field, so `xs.len` reported "'tuck_xs' of type
+  ## '[dynamic]int' has no field 'len'" — and, for a fixed `[N]T`, "has no
+  ## field 'len'" again, since Odin's fixed arrays have no `.len` member
+  ## either; `len()` is the only spelling that works on both.
   ## The D backend has had this since its own audit ("hidden Nim-ism #3"); the
   ## Nim backend emits `.len` untranslated only because Nim happens to share
   ## Tuck's spelling.
@@ -718,7 +736,7 @@ proc isLenOnSized(ctx: var OdinCodegenCtx, e: Expr): bool =
   let rt = ctx.res.typeFor(e.receiver)
   if rt == nil: return false
   if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
-  seqElem(rt) != nil
+  seqElem(rt) != nil or isFixedArray(rt)
 
 proc importedTypeMember(ctx: OdinCodegenCtx, e: Expr): string =
   ## `Order.Before` where `Order` came from an IMPORTED module: the type lives
@@ -812,7 +830,8 @@ proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
   var parts: seq[string]
   for item in e.items: parts.add(ctx.genOdinExpr(item))
   let t = ctx.res.typeFor(e)
-  let prefix = if t == nil or seqElem(t) == nil: "" else: ctx.odinType(t)
+  let prefix = if t == nil or (seqElem(t) == nil and not isFixedArray(t)): ""
+               else: ctx.odinType(t)
   prefix & "{" & parts.join(", ") & "}"
 
 proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =

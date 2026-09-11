@@ -2566,7 +2566,8 @@ proc synthStruct(tc: var TypeChecker, e: Expr): Type =
 proc synthList(tc: var TypeChecker, e: Expr): Type =
   ## A list literal takes its element type from its first item — or, when it
   ## has no items, from the place it is GOING: the expected-type channel
-  ## carries a declared `Seq[T]` in a parameter, field or return position.
+  ## carries a declared `Seq[T]` or `Array[N, T]` in a parameter, field or
+  ## return position.
   ##
   ## With neither, the element type is genuinely unknown and the emitted
   ## code is an untyped empty sequence the backend cannot name ("cannot infer
@@ -2576,20 +2577,46 @@ proc synthList(tc: var TypeChecker, e: Expr): Type =
   for item in e.items:
     let t = tc.synthesize(item)
     if isUnknown(elemT): elemT = t
-  if isUnknown(elemT) and tc.expectedType != nil:
+  # The literal's OWN base name defaults to Seq — but when it's going into a
+  # declared Array[N, T] slot, it has to BECOME an Array[N, T] itself, not a
+  # Seq that merely resembles one. Getting this wrong is exactly the bug that
+  # shipped once: the checker accepted a Seq-typed literal against an
+  # Array-typed field (Seq and Array agreed on nothing here to catch it), and
+  # every backend then emitted a dynamic-array literal — `@[1, 2, 3, 4]` in
+  # Nim, `[dynamic]int{...}` in Odin — into a fixed-size slot, rejected by
+  # every host compiler. Returning the REAL Array[N, T] here means ordinary
+  # `compatible()` catches a wrong size or a wrong target honestly, and
+  # codegen can tell the two literal shapes apart by the type it already has.
+  var baseName = "Seq"
+  var sizeArg: Type = nil
+  if tc.expectedType != nil:
     let want = tc.resolve(tc.expectedType)
     if want != nil and want.kind == tkApp and want.base != nil and
        want.base.kind == tkNamed and want.base.name in ["Seq", "Array"] and
        want.args.len > 0:
-      elemT = want.args[^1]
+      if isUnknown(elemT): elemT = want.args[^1]
+      if want.base.name == "Array" and want.args.len == 2:
+        baseName = "Array"
+        sizeArg = want.args[0]
+        # `sizeArg.name` is only a real digit count when the target names a
+        # CONCRETE Array[4, T] — inside a fn generic over the size itself
+        # (`Array[N, T]`), it is the type-param name "N", not a number, and
+        # there is nothing to compare the literal's length against yet.
+        if sizeArg != nil and sizeArg.kind == tkNamed and
+           allCharsInSet(sizeArg.name, {'0'..'9'}) and
+           sizeArg.name != $e.items.len:
+          fail("Type Error: this list has " & $e.items.len &
+               " element(s) but Array[" & sizeArg.name &
+               ", _] needs exactly " & sizeArg.name, e.span)
   if isUnknown(elemT) and e.items.len == 0:
     fail(dcTyUntypedEmptyList,
          "this empty list has no element type — nothing here says what it " &
          "holds. Fix: seed it with its first element (`[firstItem]`), or " &
          "pass it directly into a `Seq[T]` position that gives it a type",
          e.span)
+  let args = if baseName == "Array": @[sizeArg, elemT] else: @[elemT]
   Type(span: e.span, kind: tkApp,
-       base: Type(span: e.span, kind: tkNamed, name: "Seq"), args: @[elemT])
+       base: Type(span: e.span, kind: tkNamed, name: baseName), args: args)
 
 proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   ## `not` yields bool; every other unary keeps its operand's type.

@@ -771,6 +771,29 @@ proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   for h in handlers:
     result.add(ctx.genDSendHelper(d, h))
 
+proc dTemplateParamList(generics: seq[string], params: seq[Param]): string =
+  ## A generic fn is a D template — `T smaller(T)(T a, T b)` — and D treats
+  ## every bare name in that list as a TYPE parameter. `Array[N, T]` breaks
+  ## that: `N` is the array's LENGTH, a VALUE, and `T[N] items` is only
+  ## legal D once `N` is declared `size_t N` — bare `N` reported "template
+  ## `fn` is not callable using argument types `(long[4], long)`", D having
+  ## silently failed to match the array length against a type parameter.
+  ## Find which generic names are actually a size slot (`Array`'s first type
+  ## argument, by position) among this fn's own params, and declare only
+  ## those as `size_t`; everything else stays an ordinary type parameter.
+  var sizeNames: seq[string]
+  for p in params:
+    let t = p.typ
+    if t != nil and t.kind == tkApp and t.base != nil and
+       t.base.kind == tkNamed and t.base.name == "Array" and
+       t.args.len == 2 and t.args[0] != nil and t.args[0].kind == tkNamed and
+       t.args[0].name in generics:
+      sizeNames.add(t.args[0].name)
+  var parts: seq[string]
+  for g in generics:
+    parts.add(if g in sizeNames: "size_t " & g else: g)
+  parts.join(", ")
+
 proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
   if d.isDecision: return ctx.genDDecisionTable(d)
@@ -803,7 +826,8 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # This backend used to refuse outright (`dUnsupported "generic fn"`).
   # Nothing in the corpus is a generic fn, so a whole language feature was
   # missing from a backend with nothing to notice.
-  let tmplStr = if d.fnGenerics.len > 0: "(" & d.fnGenerics.join(", ") & ")"
+  let tmplStr = if d.fnGenerics.len > 0:
+                  "(" & dTemplateParamList(d.fnGenerics, d.fnParams) & ")"
                 else: ""
   # A fn that threads a container through (`f(c, ...) -> c`) is emitted TWICE:
   # the real body as `f_moved`, which may read its container param without a
