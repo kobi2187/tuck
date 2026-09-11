@@ -52,6 +52,9 @@ import compiler/typecheck
 import compiler/lowering
 import compiler/mangle
 import compiler/codegen
+import compiler/codegen_common  # nimModuleName: the ENTRY module's own name
+                                 # needs the same shadowing check an import
+                                 # already gets — see the outName fix below
 import compiler/codegen_emit  # emitNim: genDecl/genExpr sit below this in
                               # the import order, so tuck.nim reaches the
                               # Nim backend's entry point from here, not
@@ -849,7 +852,26 @@ when isMainModule:
         for lm in nimProg:
           let ts = epochTime()
           let isEntry = lm.path == nimProg[^1].path
-          let outName = if isEntry: base else: lm.name
+          # `nimModuleName` already exists to keep an IMPORTED module from
+          # shadowing a Nim builtin type (`import seq` binding the module
+          # symbol to `seq`, so the next `seq[T]` in that file can't
+          # instantiate it) — the file's OWN name needs the identical check.
+          # A Tuck module named `array` emitted `array.nim`, and Nim then
+          # read `SomeGeneric[array[N, T]]()` — an ordinary generic
+          # instantiation elsewhere in the SAME pattern that a bare `T`
+          # never triggers — as an INDEX into something named `array`,
+          # confusing the module's own filename for the builtin type
+          # constructor. The stdlib names its own modules `core.array`,
+          # `alloc.set`, `alloc.string` — several already collide with this
+          # exact list, so this is a real trap waiting for the next one,
+          # not a corner case.
+          # Only the ENTRY module's file needs this: a dependency module's
+          # file already keeps its plain name on disk (genModuleImports
+          # aliases the SYMBOL at the import site instead — `import seq as
+          # tuck_mod_seq` still opens a file literally called seq.nim).
+          # Aliasing the file here too broke that: the import line still
+          # says `seq`, but no file by that name exists anymore.
+          let outName = if isEntry: nimModuleName(base) else: lm.name
           let nimPath = outDir / (outName & ".nim")
           writeFile(nimPath, emitNim(lm.m, semLayer, rtImport, nimReal, outName))
           echo "wrote ", nimPath
@@ -1027,7 +1049,12 @@ when isMainModule:
       if binBase.len > 0 and binBase[0] in {'0' .. '9'}: binBase = "m_" & binBase
       case backend
       of bkNim:
-        let mainNim = outDir / (base & ".nim")
+        # Same aliasing as the emission step above: the FILE on disk is
+        # named through `nimModuleName`, so every later step that needs to
+        # find it again has to ask the same question rather than re-deriving
+        # the raw `base` and reading a file that was never written under
+        # that name.
+        let mainNim = outDir / (nimModuleName(base) & ".nim")
         # ONE Tuck runtime (compiler/tuck_async, arsenal engine): actors AND
         # tasks are cooperative coroutines. Any program with actors or tasks
         # imports it, inits it, registers its actor singletons before main,
@@ -1061,7 +1088,13 @@ when isMainModule:
         var nimFlags = ""
         for o in opts:
           if o.startsWith("--nim:"): nimFlags = o[6 .. ^1]
-        let binNim = outDir / (binBase & ".nim")
+        # `binNim` is the file nim c actually COMPILES — needs the same
+        # collision check as mainNim (dashes already forced binBase through
+        # a rewrite for exactly this "the name on disk isn't always the
+        # name Nim can compile" reason). `binPath`/`nimCache` below stay on
+        # the unaliased `binBase`: the FINAL BINARY keeps the name a user
+        # asked for regardless of what the intermediate source is called.
+        let binNim = outDir / (nimModuleName(binBase) & ".nim")
         if binNim != mainNim: copyFile(mainNim, binNim)
         let binPath = outDir / binBase
         # Async programs need Nim's stack-walker OFF (it corrupts the

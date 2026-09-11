@@ -391,6 +391,20 @@ proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
 proc genReturn(ctx: var CodegenCtx, e: Expr): string =
   if e.returnVal == nil:
     if ctx.retWrapped and ctx.retAbsentCapable:
+      # `tnone[T]()` for a plain T (a bare generic param or an ordinary named
+      # type) — but NOT when T's Nim text is itself a compound instantiation
+      # like `array[N, T]`. In a file that also declares another
+      # sufficiently generic-heavy fn (found with `?Array[N, T]` alongside a
+      # `chunk[T]` doing nested Seq-of-Seq construction), Nim misread
+      # `tnone[array[N, T]]()`'s brackets as an INDEX expression rather than
+      # a generic instantiation — "type mismatch ... Expected [] on array" —
+      # even though the identical file compiles fine with either piece
+      # removed alone. Spelling out what `tnone[T]()` does internally
+      # sidesteps the bracket ambiguity for exactly the compound case;
+      # kept narrow because the plain-T form is otherwise unaffected and a
+      # blanket switch reintroduces the same ambiguity from the other side.
+      if '[' in ctx.retInnerNim:
+        return "return TuckResult[" & ctx.retInnerNim & "](status: tsAbsent)"
       return "return tnone[" & ctx.retInnerNim & "]()"
     elif ctx.retWrapped and ctx.retInnerNim == "tuple[]": return "return tokVoid()"
     else: return "return"
