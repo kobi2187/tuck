@@ -875,6 +875,12 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
       ctx.definedVars.incl(e.target.name)
       return "var " & e.target.name & " = " & spawn
     return ctx.genExpr(e.target) & " = " & spawn
+  # `xs = {items: xs, ...} push` appends in place: the old value is dead the
+  # instant the new one lands, so the copy `push` owes value semantics is
+  # unobservable here. See codegen_common.selfAppendValue.
+  let appended = selfAppendValue(ctx.res, e)
+  if appended != nil:
+    return e.target.name & ".add(" & ctx.genExpr(appended) & ")"
   # A chain being BOUND is consumed, so it runs into a temp and leaves its
   # base alone — `var b = a ..setN {n: 5}` must not touch `a`. The statements
   # are hoisted above the binding, which then reads the temp.

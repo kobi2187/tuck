@@ -888,6 +888,10 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   # await keyword.
   let bound = ctx.genDBoundTaskCall(e)
   if bound != "": return bound
+  # An append assigned back to its own argument is an in-place append.
+  let appended = selfAppendValue(ctx.res, e)
+  if appended != nil:
+    return e.target.name & " ~= " & ctx.genDExpr(appended)
   let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   # A FIELD is never a new local: inside an actor handler `total += n`
   # assigns the singleton's field, so it must not be declared here.

@@ -312,3 +312,55 @@ proc isResultCarrierType*(t: Type): bool =
   ## `first`/`last` — one-liners delegating to `at` — found both.
   t != nil and t.kind == tkApp and t.base != nil and
     t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"]
+
+proc plainVarAssign(e: Expr): bool =
+  ## `x = <value>` where x is a bare name and this is not its declaration.
+  e != nil and e.kind == exkAssign and not e.isDecl and
+    e.target != nil and e.target.kind == exkVar
+
+proc isRtPushCall(call: Expr): bool =
+  ## A runtime `push` with its payload still a struct literal. Matched on the
+  ## UNMANGLED name: mangling runs before codegen, so a user's own `fn push`
+  ## is `tuck_push` here and only the runtime's is `push`.
+  call != nil and call.kind == exkCall and call.args.len == 1 and
+    call.callee != nil and call.callee.kind == exkVar and
+    call.callee.name == "push" and
+    call.args[0] != nil and call.args[0].kind == exkStruct
+
+proc pushCallOf(res: Resolution, e: Expr): Expr =
+  ## The runtime `push` call this plain assignment's value is, or nil.
+  if not plainVarAssign(e): return nil
+  var call = e.assignVal
+  if call != nil and res.hasCall(call): call = res.call(call)
+  if not isRtPushCall(call): return nil
+  call
+
+proc selfAppendValue*(res: Resolution, e: Expr): Expr =
+  ## `xs = {items: xs, value: v} push` — an append whose result is assigned
+  ## back to its own argument. Returns `v`, or nil when the statement is not
+  ## that shape.
+  ##
+  ## WHY THIS IS A SPECIAL CASE AND NOT AN OPTIMISATION PASS. The runtime's
+  ## `push` returns a NEW seq, because value semantics forbid writing through
+  ## a parameter — so every append copies the whole sequence and a build loop
+  ## is O(n^2). Measured: 50k/100k appends took 1.29s/5.24s in release, a
+  ## ratio of 4.06 on a doubled input.
+  ##
+  ## But `xs = push(xs, v)` is provably a MOVE: the old value of `xs` is dead
+  ## the instant the new one is assigned, so nothing can observe the
+  ## difference between copying it and appending in place. Every backend's
+  ## host already has an amortised append (`add` / `append` / `~=`), so this
+  ## needs no new runtime — only for the emitters to recognise the shape.
+  ##
+  let call = pushCallOf(res, e)
+  if call == nil: return nil
+  # The payload is still a STRUCT at this point — the positional explosion
+  # happens in the emitters — so the two arguments are read by the names
+  # std/seq declares them with.
+  var items, value: Expr
+  for f in call.args[0].fields:
+    if f.name == "items": items = f.value
+    elif f.name == "value": value = f.value
+  if items == nil or value == nil: return nil
+  if items.kind != exkVar or items.name != e.target.name: return nil
+  value

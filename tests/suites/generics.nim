@@ -341,4 +341,41 @@ fn main() -> int:
   t.hostBuilds "...and no backend does"
   t.runs "...and the payload survives one level", 0
 
+  # --- an append assigned back to itself is an IN-PLACE append ------------
+  # `push` returns a NEW seq because value semantics forbid writing through a
+  # parameter, so a build loop copied the whole sequence every iteration:
+  # 50k/100k appends took 1.29s/5.24s in release, a ratio of 4.06 on a
+  # doubled input — textbook O(n^2).
+  #
+  # `xs = push(xs, v)` is provably a MOVE: the old value dies the instant the
+  # new one lands, so nothing can observe the copy. Every host already has an
+  # amortised append, so the emitters just recognise the shape. 100k appends
+  # now measure 0.00s on all three.
+  t.src """
+import seq
+
+fn main() -> int:
+  var a: Seq[int] = [1, 2]
+  # `b` is a COPY — appending to `a` must not reach it.
+  let b = a
+  a = {items: a, value: 3} push
+  if a.len != 3:
+    return 1
+  if b.len != 2:
+    return 2
+  # A NON-self append still copies: `c` must not be `a`.
+  let c = {items: a, value: 9} push
+  if c.len != 4:
+    return 3
+  if a.len != 3:
+    return 4
+  return 0
+"""
+  t.okCheck "a self-append checks"
+  t.emits "Nim appends in place", r"tuck_a\.add\(3\)"
+  t.emitsOdin "Odin appends in place", r"append\(&tuck_a, 3\)"
+  t.emitsD "D appends in place", r"tuck_a ~= 3L"
+  t.hostBuilds "...on every backend"
+  t.runs "...and a copy taken beforehand is untouched", 0
+
   t.finish()

@@ -1096,6 +1096,10 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
   if ctx.isTaskArgsBind(e):
     return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
+  # An append assigned back to its own argument is an in-place append.
+  let appended = selfAppendValue(ctx.res, e)
+  if appended != nil:
+    return "append(&" & e.target.name & ", " & ctx.genOdinExpr(appended) & ")"
   let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:
