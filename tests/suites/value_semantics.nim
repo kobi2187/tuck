@@ -458,4 +458,67 @@ fn main() -> int:
   t.emits "an actor handler binds its payload as an immutable copy",
           "let s = msg\\.s"
 
+  # --- the MOVED twin -------------------------------------------------------
+  # A threaded-container fn (`f(c, ...) -> c`) is emitted twice on the
+  # backends with no move analysis of their own: the real body as `f_moved`,
+  # free to read its container param without a defensive copy, and a one-line
+  # `f` that copies and delegates. Only `x = f(x, ...)` — an immediate
+  # overwrite, so the old value is provably dead — calls the twin.
+  #
+  # These assertions are the CORRECTNESS half. The speed half is measured,
+  # not asserted: 50k iterations went 1.26s -> 0.00s on D and 7.64s -> 0.00s
+  # on Odin, where an append from a shared buffer CLOBBERS (verified against
+  # raw Odin: two appends off one source both wrote index 3).
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn addTo({b: Bag, value: int}) -> Bag:
+  var xs = b.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Bag
+
+fn setFirst({b: Bag, value: int}) -> Bag:
+  var xs = b.items
+  xs[0] = value
+  return {items: xs} Bag
+
+fn main() -> int:
+  var bag: Bag = {items: [1, 2]} Bag
+  # NOT a self-assign: `bag` stays live, so every one of these must COPY.
+  let other = {b: bag, value: 9} addTo
+  if other.items.len != 3:
+    return 1
+  if bag.items.len != 2:
+    return 2
+  let changed = {b: bag, value: 99} setFirst
+  if changed.items[0] != 99:
+    return 3
+  if bag.items[0] != 1:
+    return 4
+  # Two calls from ONE live source must not share a buffer.
+  let a1 = {b: bag, value: 10} addTo
+  let a2 = {b: bag, value: 20} addTo
+  if a1.items[2] != 10:
+    return 5
+  if a2.items[2] != 20:
+    return 6
+  # ...and the self-assign takes the moved path.
+  bag = {b: bag, value: 7} addTo
+  if bag.items.len != 3:
+    return 7
+  if bag.items[2] != 7:
+    return 8
+  return 0
+"""
+  t.okCheck "a threaded-container fn checks"
+  t.emitsD "D emits the moved twin", r"tuck_addTo_moved\(tuck_Bag b"
+  t.emitsD "...and the wrapper copies before delegating", r"b\.items = b\.items\.dup"
+  t.emitsOdin "Odin emits it too", r"tuck_addTo_moved :: proc"
+  t.omits "Nim needs no twin — it has sink", r"_moved"
+  t.hostBuilds "...and every backend builds them"
+  t.runs "a live source still copies; only the self-assign moves", 0
+
   t.finish()

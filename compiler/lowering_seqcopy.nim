@@ -29,7 +29,7 @@ import lowering  # getFieldsForType
 proc isSeqValued(res: Resolution, e: Expr): bool =
   e != nil and seqElem(res.typeFor(e)) != nil
 
-proc seqFieldNames(res: Resolution, m: Module, t: Type): seq[string] =
+proc seqFieldNames*(res: Resolution, m: Module, t: Type): seq[string] =
   ## Names of `t`'s fields whose own type is `Seq[T]` — a D struct copies by
   ## value field-for-field, but a `T[]` field's copy is only the slice
   ## HEADER, so any Seq field aliases across the copy exactly the way a bare

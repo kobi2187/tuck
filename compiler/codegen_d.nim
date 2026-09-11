@@ -739,6 +739,11 @@ proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
   ## reads the mark and prints. That split is the point of the seam: the
   ## reasoning is inspectable and testable as a tree pass, and the emitter
   ## stays a printer.
+  # Inside a MOVED twin the first parameter belongs to this call — the caller
+  # proved its old value dead by assigning the result straight back over it —
+  # so reading through it needs no defensive copy.
+  if ctx.movedParam != "" and rootBindingName(e) == ctx.movedParam:
+    return valStr
   if needsDup(ctx.res, e): return "(" & valStr & ").dup"
   let fields = recordDupFields(ctx.res, e)
   if fields.len == 0: return valStr
@@ -810,6 +815,16 @@ proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
       return ctx.recStructNameD(t.fields, owner)
   ctx.dDeclType(t)
 
+proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## `x = f(x, ...)` on a threaded-container fn: call the MOVED twin, which
+  ## may have the container destructively, and skip the defensive copy on the
+  ## result — it IS the moved value. "" when this is not that shape.
+  let threaded = selfThreadedCall(ctx.res, ctx.module, e)
+  if threaded == nil: return ""
+  let name = movedName(ctx.resolveDCallee(threaded))
+  e.target.name & " = " & name & "(" &
+    ctx.genDCallArgs(threaded, threaded.callee.name).join(", ") & ")"
+
 proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   ## `let r = {args} someTask` — spawn the task into a result slot and wait
   ## for it. "" when this assignment is not a task call.
@@ -869,6 +884,18 @@ proc genDAssignTarget(ctx: var DCodegenCtx, e: Expr): string =
     ctx.genDAssignTarget(e.receiver) & "." & e.fieldName
   else: ctx.genDExpr(e)
 
+proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string =
+  ## A name's FIRST assignment declares it, with its type stated. A STATED
+  ## type wins outright — this backend already refuses to let D re-infer, so
+  ## an author's annotation is exactly the fact it wants.
+  let stated = if e.declType != nil: ctx.dDeclType(e.declType) else: ""
+  let declT = if stated != "": stated
+              else: ctx.declTypeForValue(e.target, e.assignVal)
+  if declT == "":
+    return dUnsupported("a declaration of '" & e.target.name &
+                        "' whose type the checker did not settle")
+  declT & " " & e.target.name & " = " & valStr
+
 proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## First assignment to a name declares it, with the CHECKER'S type stated
   ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
@@ -892,6 +919,11 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   let appended = selfAppendValue(ctx.res, e)
   if appended != nil:
     return e.target.name & " ~= " & ctx.genDExpr(appended)
+  # Same fact one level up: a threaded-container call assigned back over its
+  # own argument may take it destructively, so it calls the MOVED twin — and
+  # the result needs no defensive dup either, since it IS the moved value.
+  let movedCall = ctx.genDMovedCall(e)
+  if movedCall != "": return movedCall
   let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   # A FIELD is never a new local: inside an actor handler `total += n`
   # assigns the singleton's field, so it must not be declared here.
@@ -899,15 +931,7 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.fieldPrefix & e.target.name & " = " & valStr
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
-    # A STATED type is the answer outright — this backend already refuses to
-    # let D re-infer, so an author's annotation is exactly the fact it wants.
-    let stated = if e.declType != nil: ctx.dDeclType(e.declType) else: ""
-    let declT = if stated != "": stated
-                else: ctx.declTypeForValue(e.target, e.assignVal)
-    if declT == "":
-      return dUnsupported("a declaration of '" & e.target.name &
-                          "' whose type the checker did not settle")
-    return declT & " " & e.target.name & " = " & valStr
+    return ctx.genDLocalDecl(e, valStr)
   if e.target.kind == exkField and e.target.receiver != nil and
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,

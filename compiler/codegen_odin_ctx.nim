@@ -31,6 +31,9 @@ type
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return
     tmpCounter*: int
+    movedParam*: string    # while emitting a fn's MOVED twin: the param it
+                           # takes destructively, so reading through it needs
+                           # no defensive copy (see codegen_common)
     errPolicy*: string     # from the errors declaration; "" = strict
     realModules*: Table[string, Module]  # imported modules emitted as own Odin files
     staticAsserts*: seq[string]  # collected into one `static this()` block

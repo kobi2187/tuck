@@ -13,6 +13,7 @@ import codegen_table
 import codegen_odin_ctx
 import codegen_odin_util
 from mangle import mangleName
+from lowering_seqcopy import seqFieldNames
 import ./codegen_odin
 
 const DefaultMailboxSize = "8"
@@ -319,10 +320,36 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   let savedVars = ctx.definedVars
   for p in d.fnParams: ctx.definedVars.incl(p.name)
   ctx.enterReturnContext(d)
+  # A threaded-container fn is emitted twice: the real body as `f_moved`,
+  # free to read its container param without a defensive copy, and a one-line
+  # `f` that copies and delegates. See codegen_common's MOVED twin note — the
+  # D backend does the same thing with `.dup`.
+  let movedP = movedFnParam(ctx.res, ctx.module, d)
+  let savedMoved = ctx.movedParam
+  ctx.movedParam = movedP
   let bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars
-  header & "\n" & bodyStr & "\n" & ind & "}\n"
+  if movedP == "":
+    return header & "\n" & bodyStr & "\n" & ind & "}\n"
+  let twinName = movedName(d.name.replace(".", "_"))
+  var argNames: seq[string]
+  for p in d.fnParams: argNames.add(p.name)
+  var wrap = header & "\n"
+  wrap.add(ind & "  " & movedP & " := " & movedP & "\n")
+  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
+  if fields.len == 0:
+    wrap.add(ind & "  " & movedP & " = rt.tuckSeqCopy(" & movedP & ")\n")
+  else:
+    for f in fields:
+      wrap.add(ind & "  " & movedP & "." & f & " = rt.tuckSeqCopy(" &
+               movedP & "." & f & ")\n")
+  wrap.add(ind & "  return " & twinName & "(" & argNames.join(", ") & ")\n")
+  wrap.add(ind & "}\n\n")
+  let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
+                                  twinName & " :: proc")
+  wrap & twinHeader & "\n" & bodyStr & "\n" & ind & "}\n"
 
 proc genTransitionProcs*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
                         hasPayload: bool): string =

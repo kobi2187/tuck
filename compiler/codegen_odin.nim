@@ -1063,7 +1063,10 @@ proc copyIfSeq(ctx: var OdinCodegenCtx, valStr: string, e: Expr): string =
   ## HEADER, so both names then view one buffer — where a Tuck `Seq`
   ## assignment copies. lowering_seqcopy decides which sites need a real copy
   ## (the same analysis the D backend uses for its `.dup`); this prints Odin's.
-  if needsDup(ctx.res, e): "rt.tuckSeqCopy(" & valStr & ")"
+  # Inside a MOVED twin the container param belongs to this call, so reading
+  # through it needs no defensive copy.
+  if ctx.movedParam != "" and rootBindingName(e) == ctx.movedParam: valStr
+  elif needsDup(ctx.res, e): "rt.tuckSeqCopy(" & valStr & ")"
   else: valStr
 
 proc seqFieldFixups(ctx: var OdinCodegenCtx, target: string, e: Expr): string =
@@ -1100,6 +1103,13 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   let appended = selfAppendValue(ctx.res, e)
   if appended != nil:
     return "append(&" & e.target.name & ", " & ctx.genOdinExpr(appended) & ")"
+  # Same fact one level up: a threaded-container call assigned back over its
+  # own argument calls the MOVED twin, and needs no fix-up copies after it.
+  let threaded = selfThreadedCall(ctx.res, ctx.module, e)
+  if threaded != nil:
+    let base = ctx.genOdinExpr(threaded.callee)
+    return e.target.name & " = " & movedName(base) & "(" &
+           ctx.genCallArgs(threaded, base).join(", ") & ")"
   let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:

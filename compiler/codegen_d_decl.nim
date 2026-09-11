@@ -11,6 +11,7 @@ import codegen_common
 import codegen_table
 import codegen_d_ctx
 from codegen_odin_util import odinErrCode, enumTagOwner
+from lowering_seqcopy import seqFieldNames
 from mangle import mangleName
 from lowering_seqcopy import needsDup, recordDupFields
 import ./codegen_d
@@ -797,8 +798,37 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # missing from a backend with nothing to notice.
   let tmplStr = if d.fnGenerics.len > 0: "(" & d.fnGenerics.join(", ") & ")"
                 else: ""
-  result = ctx.dCallConv(d) & retStr & " " & fnName & tmplStr & "(" &
-           ctx.genDParams(d.fnParams, refSelf) & ") {\n"
+  # A fn that threads a container through (`f(c, ...) -> c`) is emitted TWICE:
+  # the real body as `f_moved`, which may read its container param without a
+  # defensive `.dup`, and a one-line `f` that dups and delegates. A call site
+  # that proves the old value dead — `x = f(x, ...)`, an immediate overwrite —
+  # calls the twin; everything else calls `f` and is unchanged.
+  #
+  # Both dups have to go together or neither pays: measured on a 50k loop,
+  # dropping the caller's alone gave 1.26s -> 0.69s and dropping the callee's
+  # alone 0.76s, both still quadratic; dropping both gave 0.00s.
+  #
+  # A WRAPPER rather than a second body: the body is emitted once, so the two
+  # cannot drift, and an unrecognised call site merely misses the speedup
+  # instead of aliasing a live value.
+  let movedP = if refSelf or nameOverride != "": "" else: movedFnParam(ctx.res, ctx.module, d)
+  let emitName = if movedP != "": movedName(fnName) else: fnName
+  if movedP != "":
+    result = ctx.dCallConv(d) & retStr & " " & fnName & tmplStr & "(" &
+             ctx.genDParams(d.fnParams, refSelf) & ") {\n"
+    var argNames: seq[string]
+    for p in d.fnParams: argNames.add(p.name)
+    let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
+    if fields.len == 0:
+      result.add("    " & movedP & " = " & movedP & ".dup;\n")
+    else:
+      for f in fields:
+        result.add("    " & movedP & "." & f & " = " & movedP & "." & f & ".dup;\n")
+    result.add("    return " & movedName(fnName) & "(" & argNames.join(", ") & ");\n}\n\n")
+  result.add(ctx.dCallConv(d) & retStr & " " & emitName & tmplStr & "(" &
+             ctx.genDParams(d.fnParams, refSelf) & ") {\n")
+  let savedMoved = ctx.movedParam
+  ctx.movedParam = movedP
   ctx.indent = 1
   ctx.definedVars.clear()
   ctx.currentParams = @[]
@@ -813,6 +843,7 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   ctx.retAbsentCapable = false
   ctx.retInnerD = ""
   ctx.retInnerT = nil
+  ctx.movedParam = savedMoved
   result.add("}\n")
 
 proc genDObjectDecl*(ctx: var DCodegenCtx, d: Decl): string =

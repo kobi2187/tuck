@@ -24,6 +24,7 @@
 import resolution
 import ast, lowering, ast_query, strutils, sets, tables, algorithm, options
 import ./ast_query
+from lowering_seqcopy import seqFieldNames
 
 proc sumPayloadField*(variantName: string): string =
   ## The struct/object field a payload variant's data sits in.
@@ -425,3 +426,126 @@ proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
   ## which is the safe answer for anything the analysis did not reach.
   if not ownsHeap(m, p.typ): return false
   hasLastUse(res, body, p.name)
+
+# --- the MOVED twin ---------------------------------------------------------
+#
+# A fn that threads a container through — `f(c, ...) -> c`, which is the shape
+# value semantics forces on every container verb — is emitted twice on the
+# backends that have no move analysis of their own: the real body as `f_moved`,
+# free to read its container param without a defensive copy, and a one-line `f`
+# that copies and delegates.
+#
+# Soundness is SYNTACTIC, not analytical. `x = f(x, ...)` overwrites its own
+# argument, so the old value is dead the instant the new one lands and value
+# semantics guarantees nothing else was looking at it. No liveness to get
+# wrong, and an unrecognised call site merely misses the speedup.
+#
+# Both copies have to go together or neither pays: measured on a 50k loop in D,
+# dropping the caller's alone gave 1.26s -> 0.69s and dropping the callee's
+# alone 0.76s — both still quadratic. Dropping both gave 0.00s.
+
+proc ownsHeapType*(m: Module, t: Type): bool = ownsHeap(m, t)
+
+proc twinnableFn(d: Decl): bool =
+  ## A plain fn with a body and at least one parameter — and not `self`,
+  ## which an object member already takes by pointer.
+  d != nil and d.kind == dkFn and d.fnBody != nil and
+    not d.isExtern and not d.isPending and not d.isDecision and
+    d.fnParams.len > 0 and d.fnReturnType != nil and
+    d.fnParams[0].name != "self"
+
+proc sameTypeName(a, b: Type): bool =
+  ## Do two types name the same thing? `Bag` and `Bag`, or `Set[T]` and
+  ## `Set[T]` — a GENERIC container is a tkApp, and the whole alloc tier is
+  ## generic, so restricting this to tkNamed meant not one stdlib module
+  ## qualified.
+  if a == nil or b == nil or a.kind != b.kind: return false
+  case a.kind
+  of tkNamed: a.name == b.name
+  of tkApp:
+    a.base != nil and b.base != nil and a.base.kind == tkNamed and
+      b.base.kind == tkNamed and a.base.name == b.base.name and
+      a.args.len == b.args.len
+  else: false
+
+proc threadsBackSameType(d: Decl, p: Param): bool =
+  ## Does the fn hand back the very type its first parameter came in as?
+  sameTypeName(p.typ, d.fnReturnType)
+
+proc genericBaseBody(m: Module, t: Type): Type =
+  ## A GENERIC application's declared body — `Set[T]` -> `Set`'s record.
+  ## getFieldsForType answers @[] for every tkApp on purpose (most are `Seq`
+  ## or a `!T` carrier, which have no declaration), so the lookup is done
+  ## here rather than by widening a function the whole compiler shares.
+  if t == nil or t.kind != tkApp or t.base == nil or t.base.kind != tkNamed:
+    return nil
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.name == t.base.name:
+      return d.typeBody
+  nil
+
+proc movedCopyFields*(res: Resolution, m: Module, t: Type): seq[string] =
+  ## The Seq-typed FIELDS a MOVED wrapper must copy, resolving a generic
+  ## application to its declared body. ONE definition, used by the predicate
+  ## and by both backends' wrappers — they disagreed once, and the wrapper
+  ## then emitted `s = s.dup` for a `Set[T]`, which dmd answers with "none of
+  ## the overloads of template `object.dup` are callable".
+  result = seqFieldNames(res, m, t)
+  if result.len == 0:
+    result = seqFieldNames(res, m, genericBaseBody(m, t))
+
+proc copyableContainer(res: Resolution, m: Module, t: Type): bool =
+  ## Can the wrapper actually spell the copy it owes — a Seq, or a record
+  ## with Seq fields? `str` owns heap and is NOT this: the copy helper is
+  ## Seq-shaped, and emitting it for a string param gave "Cannot assign
+  ## 'rt.tuckSeqCopy(title)' of type '[dynamic]T' to 'string'".
+  seqElem(t) != nil or movedCopyFields(res, m, t).len > 0
+
+proc movedFnParam*(res: Resolution, m: Module, d: Decl): string =
+  ## The parameter a MOVED twin would take destructively, or "".
+  ##
+  ## Narrow on purpose, and narrower than "owns heap": the FIRST parameter,
+  ## when the fn hands back that same type AND the wrapper can actually spell
+  ## the copy it owes — a Seq, or a record with Seq fields.
+  ##
+  ## `str` owns heap and is NOT eligible: the wrapper's copy helper is
+  ## Seq-shaped, and emitting it for a string param gave "Cannot assign
+  ## 'rt.tuckSeqCopy(title)' of type '[dynamic]T' to 'string'". `self` is not
+  ## eligible either — an object member already takes it by pointer, which is
+  ## the opposite convention.
+  ##
+  ## The corpus found both. The twin is emitted for every fn that qualifies,
+  ## so unlike the CALL-SITE rewrite (where an unrecognised shape merely
+  ## misses the speedup) getting this predicate wrong breaks compilation.
+  if not twinnableFn(d): return ""
+  let p = d.fnParams[0]
+  if not threadsBackSameType(d, p): return ""
+  if not copyableContainer(res, m, p.typ): return ""
+  p.name
+
+proc movedName*(fnName: string): string = fnName & "_moved"
+
+proc rootBindingName*(e: Expr): string =
+  ## The name a field path is rooted at: `b` for `b`, `b.items`, `b.a.b`.
+  ## "" when the path is not rooted at a plain name.
+  var cur = e
+  while cur != nil and cur.kind == exkField and cur.receiver != nil:
+    cur = cur.receiver
+  if cur != nil and cur.kind == exkVar: cur.name else: ""
+
+proc selfThreadedCall*(res: Resolution, m: Module, e: Expr): Expr =
+  ## `x = f(x, ...)` on a threaded-container fn. Returns the CALL, or nil.
+  if not plainVarAssign(e): return nil
+  var call = e.assignVal
+  if call != nil and res.hasCall(call): call = res.call(call)
+  if call == nil or call.kind != exkCall: return nil
+  if call.callee == nil or call.callee.kind != exkVar: return nil
+  if movedFnParam(res, m, m.findFn(call.callee.name)) == "": return nil
+  # The moved parameter is the FIRST one and must BE the variable assigned.
+  # A resolved user call is already exploded positionally by the time it
+  # reaches here (a payload call like std/seq's `push` is not, and is handled
+  # by selfAppendValue above).
+  if call.args.len >= 1 and call.args[0] != nil and
+     call.args[0].kind == exkVar and call.args[0].name == e.target.name:
+    return call
+  nil

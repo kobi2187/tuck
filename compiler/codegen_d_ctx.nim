@@ -72,6 +72,9 @@ type
                             # becomes a pragma(lib) at module top level
     implMods*: Table[string, string]  # `impl: d "..."` alias -> module path,
                             # mirrors codegen_odin.nim's implMods
+    movedParam*: string      # while emitting a fn's MOVED twin: the param
+                             # it takes destructively, so a read of it needs
+                             # no defensive .dup (the caller proved it dead)
     errPolicy*: string       # from the `errors` declaration; "" = strict.
                             # Only continue/exit reach codegen at all —
                             # strict is a COMPILE ERROR the checker raises,
