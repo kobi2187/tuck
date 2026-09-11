@@ -13,3 +13,9 @@ extern:
   # `ch` is a length-1 str, same convention as charAt's result. Indexing an
   # empty str is a bounds precondition violation, same as at/setAt.
   fn ord({ch: str}) -> int
+  # Concatenating in a loop is O(n^2) — `acc = acc + part` copies the whole
+  # string each time, and unlike a Seq append there is no in-place form for
+  # the emitters to recognise (measured: 3.5x on Odin for a doubled input).
+  # Every host stdlib joins in one pass, so this is a primitive rather than
+  # something alloc.string could write for itself.
+  fn joinStr({parts: Seq[str], sep: str}) -> str

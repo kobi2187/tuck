@@ -164,6 +164,11 @@ setAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
 // `items` in place, so `items`'s own backing store is never shared with
 // (and never mutated through) the result — a plain-value append on a
 // [dynamic]T copy would still share the source memory below capacity.
+joinStr :: proc(parts: [dynamic]string, sep: string) -> string {
+	// One pass — `acc = concat(acc, part)` in a loop is O(n^2).
+	return strings.join(parts[:], sep)
+}
+
 push :: proc(items: [dynamic]$T, value: T) -> [dynamic]T {
 	result := make([dynamic]T, len(items))
 	copy(result[:], items[:])

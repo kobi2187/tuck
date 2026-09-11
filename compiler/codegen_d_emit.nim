@@ -29,13 +29,30 @@ proc emitDBody*(ctx: var DCodegenCtx, m: Module): tuple[body, mains: string] =
       if code != "": body.add(code & "\n")
   (body, mainStmts.join(""))
 
+const DShadowingModuleNames* = [
+  "string", "wstring", "dstring", "size_t", "ptrdiff_t", "object",
+  "alias", "byte", "ubyte", "short", "ushort", "int", "uint", "long",
+  "ulong", "float", "double", "real", "bool", "char", "wchar", "dchar",
+  "void", "cent", "ucent", "ifloat", "idouble", "ireal",
+]
+  ## Names that are a D type or keyword. A Tuck module may be called any of
+  ## them — `alias` and `string` both turned up in the stdlib within an hour
+  ## of each other.
+
 proc dModuleName*(base: string): string =
   ## A D module name must be a valid identifier; example files are named
   ## like `01-data-flow`. Hyphens become underscores and a leading digit
   ## gets a prefix — the FILE keeps its own name (only imported modules
   ## need name==file, and those are mod_<name> which never start digital).
+  ## A module named after a D TYPE shadows it for the whole file: a module
+  ## named `string` emitted `module string;` and every `string` below it was
+  ## "module `string` is used as a type". Same class as a Tuck module named
+  ## `seq` shadowing Nim's own — see codegen_common.nimModuleName. Only the
+  ## ENTRY module needs the rename; a library module is emitted as
+  ## `mod_<name>`, which cannot collide.
   result = dAlias(base)
   if result.len > 0 and result[0] in {'0' .. '9'}: result = "_" & result
+  if result in DShadowingModuleNames: result = "tuck_mod_" & result
 
 proc usesSymbol*(code, sym: string): bool =
   ## Does the emitted text call or qualify `sym`? Both spellings, because a

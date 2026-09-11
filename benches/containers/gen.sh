@@ -94,6 +94,25 @@ fn main() -> int:
   return d.text.len - $N
 EOF
 
+mk str_builder <<EOF
+import seq
+import str
+type Builder:
+  chunks: Seq[str]
+fn add({b: Builder, text: str}) -> Builder:
+  var xs = b.chunks
+  xs = {items: xs, value: text} push
+  return {chunks: xs} Builder
+fn built({b: Builder}) -> str:
+  return {parts: b.chunks, sep: ""} joinStr
+fn main() -> int:
+  var b: Builder = {chunks: []} Builder
+  for i in 0 .. $N - 1:
+    b = {b: b, text: "x"} add
+  let out = {b: b} built
+  return out.len - $N
+EOF
+
 mk seq_setat <<EOF
 import seq
 type Bag:

@@ -22,4 +22,8 @@ long ord(string ch) {
     return rt.ord(ch);
 }
 
+string joinStr(string[] parts, string sep) {
+    return rt.joinStr(parts, sep);
+}
+
 

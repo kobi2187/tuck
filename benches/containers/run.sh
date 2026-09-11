@@ -38,7 +38,7 @@ row() {  # name flag suffix
 
 echo "N=$N vs N=$N2   (ratio ~2 = linear, ~4 = a copy per iteration)"
 printf "\n%-14s %-8s %7s %7s %7s\n" "pattern" "backend" "t(N)" "t(2N)" "ratio"
-for p in seq_push rec_thread chain_form generic_box two_fields str_concat seq_setat read_only; do
+for p in seq_push rec_thread chain_form generic_box two_fields str_concat str_builder seq_setat read_only; do
   printf "%-14s " "$p";      row "$p" ""        ""
   printf "\n%-14s " "";      row "$p" "--odin"  "_odin"
   printf "\n%-14s " "";      row "$p" "--dlang" "_d"

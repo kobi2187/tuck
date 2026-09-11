@@ -112,6 +112,10 @@ proc setAt*[T](items: var seq[T], index: int, value: T) =
 # matter how a caller spells it, so there is no workaround short of not
 # declaring it. `Seq.len`'s existing accidental-UFCS behavior (TODO.md §3)
 # is the only way to get a count today.
+proc joinStr*(parts: seq[string], sep: string): string =
+  ## One pass, one allocation path — `acc = acc & part` in a loop is O(n^2).
+  parts.join(sep)
+
 proc push*[T](items: seq[T], value: T): seq[T] =
   result = items
   result.add(value)

@@ -370,7 +370,7 @@ const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
   ## unlike Odin, which needs an explicit `&`.
 
 const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "toStr",
-                   "tuckConcat", "errCode", "push",
+                   "tuckConcat", "errCode", "push", "joinStr",
                    "bitAnd", "bitOr", "bitXor", "bitNot",
                    "shiftLeft", "shiftRight",
                    "tuckSat", "tuckSatI", "tuckReportUnhandled"]

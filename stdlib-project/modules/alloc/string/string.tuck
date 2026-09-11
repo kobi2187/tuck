@@ -1,0 +1,220 @@
+# alloc.string — building text.
+#
+# THE POINT OF THIS MODULE IS THE BUILDER, and it is here because a benchmark
+# said so. `acc = acc + part` in a loop copies the whole string every
+# iteration; `benches/containers` measured it at 3.5x on a doubled input on
+# Odin, which is quadratic. Nim and D happen to absorb it, which is exactly
+# the kind of "fast on one backend" that the bench exists to catch.
+#
+# The fix reuses what already works rather than adding machinery. A Builder
+# holds its pieces in a `Seq[str]` and appends to THAT — a Seq append is
+# already O(1) amortised on all three backends (the in-place append and the
+# MOVED twin) — then joins once at the end. Linear, with nothing new in the
+# compiler except `joinStr`, which every host stdlib already has and which no
+# amount of Tuck could write faster.
+#
+#     var b: Builder = {chunks: []} Builder
+#     for line in lines:
+#       b ..add {text: line}
+#     let out = {b: b} built
+#
+# The freeform verbs below are the rest of the declared API. They are honest
+# about cost: `append` IS `+`, so it is fine once and wrong in a loop — which
+# is what `add` is for.
+import seq
+import str
+
+type Builder:
+  chunks: Seq[str]
+
+# O(1) amortised — but ONLY in this spelling. The push must be its own
+# self-assignment (`xs = {items: xs, ...} push`); nesting it straight into the
+# construction, `{chunks: {items: b.chunks, ...} push} Builder`, is not the
+# shape the in-place append recognises, and the builder measured 4.1x — fully
+# quadratic, the very thing it exists to avoid. benches/containers caught it;
+# reading the code did not.
+fn add({b: Builder, text: str}) -> Builder:
+  var xs = b.chunks
+  xs = {items: xs, value: text} push
+  return {chunks: xs} Builder
+
+fn built({b: Builder}) -> str:
+  return {parts: b.chunks, sep: ""} joinStr
+
+fn builtWith({b: Builder, sep: str}) -> str:
+  return {parts: b.chunks, sep: sep} joinStr
+
+fn pieces({b: Builder}) -> int:
+  return b.chunks.len
+
+fn clearBuilder({b: Builder}) -> Builder:
+  let empty: Seq[str] = []
+  return {chunks: empty} Builder
+
+# --- freeform verbs over `str` ---------------------------------------------
+# One concatenation is one concatenation. In a LOOP, use a Builder — this is
+# the O(n^2) shape the module exists to give an alternative to.
+fn append({t: str, other: str}) -> str:
+  return t + other
+
+fn clear({t: str}) -> str:
+  return ""
+
+fn join({parts: Seq[str], sep: str}) -> str:
+  return {parts: parts, sep: sep} joinStr
+
+# Tuck has no substring syntax and no char type, so a slice is a fold over
+# `charAt` — through a Builder, so it stays linear rather than rebuilding the
+# prefix on every character.
+fn slice({t: str, fromByte: int, toByte: int}) -> str:
+  var b: Builder = {chunks: []} Builder
+  for i in fromByte .. toByte - 1:
+    if i >= 0 and i < t.len:
+      b = {b: b, text: {s: t, index: i} charAt} add
+  return {b: b} built
+
+fn repeat({t: str, times: int}) -> str:
+  var b: Builder = {chunks: []} Builder
+  for i in 0 .. times - 1:
+    b = {b: b, text: t} add
+  return {b: b} built
+
+fn insertAt({t: str, index: int, other: str}) -> str:
+  let head = {t: t, fromByte: 0, toByte: index} slice
+  let tail = {t: t, fromByte: index, toByte: t.len} slice
+  return head + other + tail
+
+fn removeRange({t: str, fromByte: int, toByte: int}) -> str:
+  let head = {t: t, fromByte: 0, toByte: fromByte} slice
+  let tail = {t: t, fromByte: toByte, toByte: t.len} slice
+  return head + tail
+
+# --- padding ---------------------------------------------------------------
+# `fill` is a str, not a Rune: Tuck has no char type, and std/str already
+# spells a single character as a length-1 str (see charAt).
+fn padLeft({t: str, width: int, fill: str}) -> str:
+  var b: Builder = {chunks: []} Builder
+  for i in 0 .. width - t.len - 1:
+    b = {b: b, text: fill} add
+  b = {b: b, text: t} add
+  return {b: b} built
+
+fn padRight({t: str, width: int, fill: str}) -> str:
+  var b: Builder = {chunks: []} Builder
+  b = {b: b, text: t} add
+  for i in 0 .. width - t.len - 1:
+    b = {b: b, text: fill} add
+  return {b: b} built
+
+# --- search and replace ----------------------------------------------------
+# Naive scan: O(n*m). A real matcher is a separate decision, and this module
+# has no benchmark saying it is the bottleneck — unlike the builder, which
+# did.
+fn matchesAt({t: str, at: int, what: str}) -> bool:
+  if at + what.len > t.len:
+    return false
+  for i in 0 .. what.len - 1:
+    if {s: t, index: at + i} charAt != {s: what, index: i} charAt:
+      return false
+  return true
+
+fn indexOf({t: str, what: str}) -> int?:
+  if what.len == 0:
+    return 0
+  for i in 0 .. t.len - what.len:
+    if {t: t, at: i, what: what} matchesAt:
+      return i
+  return
+
+fn contains({t: str, what: str}) -> bool:
+  let at = {t: t, what: what} indexOf
+  return at.ok
+
+# `into` rather than the API doc's `with`: a param is the one name the mangle
+# pass leaves alone, so `with` — a D keyword — emitted
+# `string tuck_replace(string t, string what, string with)` and dmd answered
+# "found `with` when expecting `)`". Recorded in known_bugs; renamed here so
+# the module ships.
+fn replace({t: str, what: str, into: str}) -> str:
+  if what.len == 0:
+    return t
+  var b: Builder = {chunks: []} Builder
+  var i = 0
+  for i < t.len:
+    if {t: t, at: i, what: what} matchesAt:
+      b = {b: b, text: into} add
+      i = i + what.len
+    else:
+      b = {b: b, text: {s: t, index: i} charAt} add
+      i = i + 1
+  return {b: b} built
+
+# --- the module's own checks ----------------------------------------------
+fn checkBuilder() -> int:
+  var b: Builder = {chunks: []} Builder
+  b = {b: b, text: "a"} add
+  b = {b: b, text: "b"} add
+  b = {b: b, text: "c"} add
+  if {b: b} pieces != 3:
+    return 1
+  if {b: b} built != "abc":
+    return 2
+  if {b: b, sep: "-"} builtWith != "a-b-c":
+    return 3
+  let empty = {b: b} clearBuilder
+  if {b: empty} pieces != 0:
+    return 4
+  if {b: empty} built != "":
+    return 5
+  return checkSlice
+
+fn checkSlice() -> int:
+  if {t: "hello", fromByte: 1, toByte: 3} slice != "el":
+    return 6
+  # Out-of-range ends clamp rather than abort.
+  if {t: "hi", fromByte: 0, toByte: 99} slice != "hi":
+    return 7
+  if {t: "ab", times: 3} repeat != "ababab":
+    return 8
+  if {t: "hello", index: 2, other: "XY"} insertAt != "heXYllo":
+    return 9
+  if {t: "hello", fromByte: 1, toByte: 3} removeRange != "hlo":
+    return 10
+  return checkPadAndReplace
+
+fn checkPadAndReplace() -> int:
+  if {t: "7", width: 3, fill: "0"} padLeft != "007":
+    return 11
+  if {t: "7", width: 3, fill: "."} padRight != "7..":
+    return 12
+  # Already wide enough: unchanged, never truncated.
+  if {t: "abcd", width: 2, fill: "0"} padLeft != "abcd":
+    return 13
+  if {t: "a,b,c", what: ",", into: ";"} replace != "a;b;c":
+    return 14
+  if {t: "aaa", what: "aa", into: "b"} replace != "ba":
+    return 15
+  let parts: Seq[str] = ["x", "y"]
+  if {parts: parts, sep: "+"} join != "x+y":
+    return 16
+  return checkSearch
+
+fn checkSearch() -> int:
+  let at = {t: "hello", what: "ll"} indexOf
+  if not at.ok:
+    return 17
+  if at.value != 2:
+    return 18
+  let missing = {t: "hello", what: "zz"} indexOf
+  if missing.ok:
+    return 19
+  if not {t: "hello", what: "hell"} contains:
+    return 20
+  if {t: "abc", other: "d"} append != "abcd":
+    return 21
+  if {t: "abc"} clear != "":
+    return 22
+  return 0
+
+fn main() -> int:
+  return checkBuilder

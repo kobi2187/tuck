@@ -319,13 +319,16 @@ At N=8000, every pattern is linear on every backend except one:
 | two_fields | record with two Seq fields | linear | linear | linear |
 | seq_setat | element writes through a record | linear | linear | linear |
 | read_only | container in, scalar out | linear | linear | linear |
-| **str_concat** | building a string by `+` | linear | **3.5x** | linear |
+| str_concat | building a string by `+` | linear | **3.0x** | linear |
+| str_builder | alloc.string's Builder | linear | linear | linear |
 
-**str_concat on Odin is the one open case.** `str` is deliberately outside
-the twin: the wrapper's copy helper is Seq-shaped, and emitting it for a
-string parameter gave "Cannot assign 'rt.tuckSeqCopy(title)' of type
-'[dynamic]T' to 'string'". A string BUILDER (alloc.string) is the real answer
-rather than widening the twin — Nim and D already absorb it.
+**str_concat on Odin stays quadratic on purpose.** `str` is outside the twin:
+the wrapper's copy helper is Seq-shaped, and emitting it for a string
+parameter gave "Cannot assign 'rt.tuckSeqCopy(title)' of type '[dynamic]T' to
+'string'". The answer is a BUILDER, not a wider twin — `alloc.string` holds
+its pieces in a `Seq[str]` (already linear) and joins once, and the
+str_builder row is that, measured. Widening the mechanism to cover strings
+would have bought the same thing and cost a new copy helper.
 
 Three of these lines were found BY this bench rather than by reasoning:
 `chain_form` was quadratic on Odin and D because the chain emitter writes its
