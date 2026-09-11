@@ -3,8 +3,8 @@ import ../compiler/tuck_rt
 
 proc `==`*(a, b: tuck_Expr): bool {.noSideEffect.}
 
-proc tuck_eval*(e: tuck_Expr): int
-proc tuck_depth*(e: tuck_Expr): int
+proc tuck_eval*(e: sink tuck_Expr): int
+proc tuck_depth*(e: sink tuck_Expr): int
 proc tuck_main*(): int
 
 type tuck_ExprKind* = enum Num, Neg, Add
@@ -21,7 +21,7 @@ proc `==`*(a, b: tuck_Expr): bool {.noSideEffect.} =
   of Neg: a.tuck_neg == b.tuck_neg
   of Add: a.tuck_add == b.tuck_add
 
-proc tuck_eval*(e: tuck_Expr): int =
+proc tuck_eval*(e: sink tuck_Expr): int =
   (case e.kind
   of Num:
     return e.tuck_num.value
@@ -30,7 +30,7 @@ proc tuck_eval*(e: tuck_Expr): int =
   of Add:
     return (tuck_eval(tuck_rt.tuckAt(e.tuck_add.left, 0)) + tuck_eval(tuck_rt.tuckAt(e.tuck_add.right, 0))))
 
-proc tuck_depth*(e: tuck_Expr): int =
+proc tuck_depth*(e: sink tuck_Expr): int =
   (case e.kind
   of Num:
     return 1

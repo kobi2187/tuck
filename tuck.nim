@@ -46,6 +46,7 @@ import compiler/ast
 import compiler/parser
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
+import compiler/analysis_lastuse
 import compiler/complexity
 import compiler/typecheck
 import compiler/lowering
@@ -436,6 +437,11 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   ## the semantic layer, so the effect pass must run AFTER it or its async
   ## call-site marks are wiped before codegen reads them.
   result = typecheckOnly(path, loaded, sigOnly)
+  # Last-use facts, whole-program and ONCE. After typecheck because that
+  # resets the semantic layer (same constraint the effect pass below has);
+  # before the per-backend deepCopies because the answer is about the
+  # PROGRAM, not about which language it is being emitted into.
+  for lm in loaded: markLastUses(semLayer, lm.m)
   if verifyStages:
     var checkedMods: seq[Module]
     for lm in loaded: checkedMods.add(lm.m)

@@ -1,9 +1,9 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_describe*(title: string, volume: int): string
+proc tuck_describe*(title: sink string, volume: int): string
 proc tuck_header*(episode: tuck_Episode, n: int): string
-proc tuck_play*(episode: tuck_Episode, prefs: tuck_PlayerPrefs): string
+proc tuck_play*(episode: sink tuck_Episode, prefs: tuck_PlayerPrefs): string
 
 type tuck_Episode* = object
   title*: string
@@ -14,13 +14,13 @@ type tuck_PlayerPrefs* = object
   volume*: int
   speed*: float
 
-proc tuck_describe*(title: string, volume: int): string =
+proc tuck_describe*(title: sink string, volume: int): string =
   return title
 
 proc tuck_header*(episode: tuck_Episode, n: int): string =
   return episode.title
 
-proc tuck_play*(episode: tuck_Episode, prefs: tuck_PlayerPrefs): string =
+proc tuck_play*(episode: sink tuck_Episode, prefs: tuck_PlayerPrefs): string =
   var tuck_ctx = (title: episode.title, duration: episode.duration, playSpeed: episode.playSpeed, volume: prefs.volume, speed: prefs.speed)
   return tuck_describe(tuck_ctx.title, tuck_ctx.volume)
 

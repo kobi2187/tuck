@@ -98,6 +98,28 @@ proc fnHeaderNim*(name, genericStr: string, params: seq[string],
   "proc " & name & "*" & genericStr & "(" & params.join(", ") & "): " &
     retTypeStr & inlineStr
 
+proc nimFnParams*(res: Resolution, m: Module, d: Decl): seq[string] =
+  ## The emitted parameter list, built ONCE — genFnDecl and fnForwardDecls
+  ## both need it and Nim requires them to agree exactly, so a `sink` added
+  ## to one and not the other is "type mismatch" on the forward declaration.
+  ##
+  ## PARAMS ARE NEVER `var`. In Nim, `var` on a parameter is not write
+  ## permission — it is a by-reference pass — so emitting it for every record
+  ## param meant a callee could write through to the CALLER's record, which
+  ## spec §7.1 says is impossible. A fn that read like a preview
+  ## (`{acct, fee} afterFee`) silently withdrew the money. Dropping it is
+  ## free: verified in the emitted C, a `var Big` param and a plain `Big`
+  ## param have byte-identical signatures (both `Big*`). The exception is
+  ## `self` in an object member, emitted by genMemberFn below.
+  ##
+  ## `sink` is not write permission either: it says the CALLER is finished
+  ## with the value, so the callee may move out of it rather than copy. Which
+  ## parameters qualify is our own analysis's answer (analysis_lastuse), not
+  ## Nim's inference — Odin and D are handed the same fact.
+  for p in d.fnParams:
+    let move = if paramIsMovable(res, m, d.fnBody, p): "sink " else: ""
+    result.add(p.name & ": " & move & genType(p.typ))
+
 proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     if d.isPending:
       return genPendingStub(d)
@@ -108,28 +130,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     if d.isDecision or d.isDecisionTable():
       return ctx.genDecisionFn(d, fnNameSanitized)
 
-    var params: seq[string]
-    for p in d.fnParams:
-      # PARAMS ARE NEVER `var`. In Nim, `var` on a parameter is not write
-      # permission — it is a by-reference pass — so emitting it for every
-      # record param meant a callee could write through to the CALLER's
-      # record, which spec §7.1 says is impossible. A fn that read like a
-      # preview (`{acct, fee} afterFee`) silently withdrew the money.
-      #
-      # Dropping it is free: verified in the emitted C, a `var Big` param and
-      # a plain `Big` param have byte-identical signatures (both `Big*`) —
-      # Nim already passes a large object by hidden reference. Only the write
-      # permission goes away, which is the whole point.
-      #
-      # A mutator does not need it either: it returns the updated record and
-      # the caller assigns it back (`server = withDefaults(server)`), which is
-      # what codegen_odin.nim's fnParamList has always relied on — that
-      # backend never emitted a pointer here, and rejected the same programs
-      # Nim silently accepted.
-      #
-      # The exception is `self` in an object member, emitted by genMemberFn
-      # below: that mutates state the object OWNS (spec §5.1).
-      params.add(p.name & ": " & genType(p.typ))
+    let params = nimFnParams(ctx.res, ctx.module, d)
     let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
     # Generic fns pass their type params straight through — Nim monomorphizes
     let genericStr = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]" else: ""
@@ -760,8 +761,7 @@ proc fnForwardDecls*(m: Module): string =
   for d in m.decls(dkFn):
     if d == nil or d.isPending or d.isDecision or d.isDecisionTable(): continue
     if d.isExtern: continue
-    var params: seq[string]
-    for p in d.fnParams: params.add(p.name & ": " & genType(p.typ))
+    let params = nimFnParams(semLayer, m, d)
     let ret = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
     let gen = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]"
               else: ""

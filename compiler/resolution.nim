@@ -69,6 +69,10 @@ type
     wraps*: Table[NodeId, tuple[objName, iface: string]]
     ifacePairs*: HashSet[tuple[objName, iface: string]]
     ifaceCalls*: Table[NodeId, tuple[iface, member: string]]
+    lastUses*: HashSet[NodeId]
+      ## Nodes analysis_lastuse proved are a local's FINAL read, so the copy
+      ## made for them is unobservable and may be a move. A set rather than a
+      ## table: the only question asked is yes/no.
 
 proc ensureId*(e: Expr) =
   ## Nodes minted after the parse boundary (checker-synthesized calls) have
@@ -162,7 +166,8 @@ proc newResolution*(): Resolution =
              callParams: initTable[NodeId, seq[string]](),
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
-             ifaceCalls: initTable[NodeId, tuple[iface, member: string]]())
+             ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
+             lastUses: initHashSet[NodeId]())
 
 var semLayer* = newResolution()
 
@@ -285,3 +290,15 @@ proc shortcut*(r: Resolution, e: Expr): string =
   ## to the global handler.
   if e == nil or not e.id.isSet: return ""
   r.shortcuts.getOrDefault(e.id, "")
+
+proc markLastUse*(r: Resolution, e: Expr) =
+  ## Record that `e` is the final read of its binding.
+  if e == nil: return
+  ensureId(e)
+  r.lastUses.incl(e.id)
+
+proc isLastUse*(r: Resolution, e: Expr): bool =
+  ## Was `e` proved to be a binding's final read? False for anything the
+  ## analysis did not reach, which is the safe answer: an unproved use is
+  ## copied exactly as it always was.
+  e != nil and e.id in r.lastUses
