@@ -13,6 +13,8 @@ import parser_base
 import parser_expr
 import parser_stringify
 import parser_type
+import host_keywords
+import diagnostics
 
 type
   SignatureTail* = tuple[effects: seq[EffectMarker], errTypes: seq[string],
@@ -28,6 +30,19 @@ type
     lib: string      # a bare library name, decorated per backend
     impls: seq[tuple[backend, module: string]]
 
+proc failIfHostKeyword*(p: Parser, name: string, sp: Span) =
+  ## A parameter keeps the name the author wrote — mangle.nim prefixes every
+  ## other user name but deliberately leaves params alone — so a word some
+  ## backend reserves reaches its compiler verbatim and breaks there.
+  ## Refused here rather than renamed, so the emitted code keeps saying what
+  ## the source says. See compiler/host_keywords.nim for why the list is
+  ## measured rather than copied.
+  if isHostKeyword(name):
+    p.reportError("'" & name & "' is a keyword in one of Tuck's backends, so " &
+                  "it cannot be a parameter name — the emitted code would " &
+                  "carry it through verbatim. Fix: choose another name",
+                  sp.line, sp.col, dcPaHostKeyword)
+
 # `(params)` — a fn/task/decision/sig parameter list. Each param is either
 # brace-destructured (`{a: T, b: U}`, one entry per field) or bare
 # (`name: Type`), with a bare `self` (no `: Type`) special-cased to `Self`.
@@ -38,7 +53,9 @@ proc parseBraceParams*(p: var Parser, pSp: Span, params: var seq[Param]) =
   ## its own Param sharing the group's span. Assumes the opening `{`.
   discard p.advance()
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+    let nameSp = p.getSpan()
     let paramName = p.expectMemberName("Expected parameter name").value
+    p.failIfHostKeyword(paramName, nameSp)
     discard p.expect(tkColon)
     let paramType = p.parseType()
     params.add(Param(name: paramName, typ: paramType, span: pSp))
@@ -49,7 +66,9 @@ proc parseBraceParams*(p: var Parser, pSp: Span, params: var seq[Param]) =
 proc parseBareParam*(p: var Parser, pSp: Span): Param =
   ## Parses one `name: Type` param. A bare `self` (no `: Type` follows) is
   ## the implicit-Self special case: it types itself as `Self`.
+  let nameSp = p.getSpan()
   let paramName = p.expectMemberName("Expected parameter name").value
+  p.failIfHostKeyword(paramName, nameSp)
   if paramName == "self" and p.current().kind != tkColon:
     return Param(name: paramName, typ: Type(span: pSp, kind: tkNamed, name: "Self"), span: pSp)
   discard p.expect(tkColon)

@@ -63,6 +63,7 @@ type
     dcPaEmptyBlock = "TK-PA09"          ## a `:` opens nothing — no `discard`, no statement
     dcPaNoWhile = "TK-PA10"             ## `while` — Tuck spells it `for <cond>:`
     dcPaWordOperator = "TK-PA11"        ## `mod`/`div` — Tuck spells them `%`/`/i`
+    dcPaHostKeyword = "TK-PA12"         ## a param named after a backend's keyword
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -230,6 +231,17 @@ proc parseExplanation(d: DiagCode): string =
     "forgotten implementation) rather than a deliberate no-op, so it is " &
     "never inferred either way. Fix: write `discard` if doing nothing here " &
     "is intentional, or add the statement that was meant to go here."
+  of dcPaHostKeyword:
+    "A PARAMETER may not be named after a keyword of any backend Tuck emits " &
+    "to. Every other user name gets a `tuck_` prefix that cannot clash, but a " &
+    "parameter keeps the name you wrote — so `fn replace({t: str, what: str, " &
+    "with: str})` emitted `string tuck_replace(string t, string what, string " &
+    "with)` and dmd answered \"found `with` when expecting `)`\". " &
+    "The word is refused here rather than renamed for you, so the emitted " &
+    "code keeps saying what the source says. The list is MEASURED against " &
+    "dmd, nim and odin rather than copied from their manuals: `body` and " &
+    "`string` are not on it, because those hosts accept them. Fix: choose " &
+    "another name."
   of dcPaWordOperator:
     "`mod` and `div` are word-operators in Nim, Pascal and Python; in Tuck " &
     "they are `%` and `/i`. Left alone, a bare word between two operands " &

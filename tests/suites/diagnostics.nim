@@ -76,6 +76,34 @@ fn main() -> int:
 """
   t.badCheck "an infix 'mod' carries TK-PA11 and names '%'", "TK-PA11"
 
+  # TK-PA12 — a parameter named after a BACKEND's keyword. Every other user
+  # name gets a `tuck_` prefix; a parameter keeps what the author wrote, so
+  # the word reaches that host verbatim. alloc.string found it: `with` gave
+  # dmd "found `with` when expecting `)`".
+  t.src """
+fn replace({t: str, what: str, with: str}) -> str:
+  return t
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a param named after a backend keyword is refused", "TK-PA12"
+
+  # The list is MEASURED against dmd/nim/odin, not copied from their manuals,
+  # and these two are why that matters: both appear in D's reference keyword
+  # list, and dmd accepts both as parameter names (`body` is contextual since
+  # 2.101; `string` is an alias in object.d, not a keyword). Copying would
+  # have rejected examples/14-task.tuck, which has used `body` all along.
+  t.src """
+fn take({body: str, string: str}) -> str:
+  return body + string
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "...but a word the hosts actually accept is still a legal param"
+
+
   t.src """
 fn main() -> int:
   let a = 17
