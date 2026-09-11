@@ -25,10 +25,13 @@
   next natural step once this pass resumes.
   - Also usable inline on a parameter's own type: `{item: Sortable +
     Hashable}`, no generic-param-list ceremony needed.
-  - Found, not fixed, real pre-existing bug: `{x: expr} f.someField`
-    (chaining a field access directly onto a call's result) skips argument
-    type-checking on that call entirely. Reproduced with a plain
-    non-generic call, unrelated to groups. Worth its own investigation.
+  - FIXED (commit 8379955): `{x: expr} f.someField` now rejected —
+    TK-TY23. Ruling: only a call/ctor may follow `{payload}`, nothing
+    chains onto the result. First attempt (gate on capitalization in the
+    parser) broke `examples/31`'s legitimate `{a,b} c.add` slot call —
+    `lowercase.lowercase` in both cases, undecidable without name
+    resolution. Real fix is in the checker (`asIndirectCall`), not the
+    parser.
 - Proposed extending done modules (user: "propose... very useful
   primitives... match the vision/style/idioms"). Two of four proposals were
   WRONG on inspection, both caught by verifying before building:
