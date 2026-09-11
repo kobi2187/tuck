@@ -1,5 +1,4 @@
 # core.contracts.collection — container protocols. Declarations only.
-# Element-typed groups need `group G[E]` — not yet parseable. Listed below.
 
 group Countable:
   fn len({self: Self}) -> int
@@ -10,35 +9,30 @@ group Emptyable:
 group Clearable:
   fn clear({self: Self}) -> Self
 
-# blocked on generic groups:
-#
-# group Indexable[E]:
-#   fn at({self: Self, index: int}) -> E
-#
-# group Sliceable[E]:
-#   fn slice({self: Self, from: int, upto: int}) -> Self
-#
-# group Appendable[E]:
-#   fn push({self: Self, item: E}) -> Self
-#
-# group Removable[E]:
-#   fn pop({self: Self}) -> Option[E]
-#
-# group Keyed[K, V]:
-#   fn get({self: Self, key: K}) -> Option[V]
-#   fn put({self: Self, key: K, value: V}) -> Self
-#   fn hasKey({self: Self, key: K}) -> bool
-#
-# group SetLike[E]:
-#   fn contains({self: Self, item: E}) -> bool
-#   fn insert({self: Self, item: E}) -> Self
-#   fn remove({self: Self, item: E}) -> Self
-#
-# group Iterable[E, I]:
-#   fn iterate({self: Self}) -> I
-#
-# group Iterator[E]:
-#   fn next({self: Self}) -> Option[E]
-#
-# group Buildable[E]:
-#   fn fromSeq({items: Seq[E]}) -> Self
+group Indexable[E]:
+  fn at({self: Self, index: int}) -> E
+
+group Sliceable[E]:
+  fn slice({self: Self, start: int, upto: int}) -> Self
+
+group Appendable[E]:
+  fn push({self: Self, item: E}) -> Self
+
+group Removable[E]:
+  fn pop({self: Self}) -> Option[E]
+
+group Keyed[K, V]:
+  fn get({self: Self, key: K}) -> Option[V]
+  fn put({self: Self, key: K, value: V}) -> Self
+  fn hasKey({self: Self, key: K}) -> bool
+
+group SetLike[E]:
+  fn contains({self: Self, item: E}) -> bool
+  fn insert({self: Self, item: E}) -> Self
+  fn remove({self: Self, item: E}) -> Self
+
+group Iterator[E]:
+  fn next({self: Self}) -> Option[E]
+
+group Buildable[E]:
+  fn fromSeq({items: Seq[E]}) -> Self
