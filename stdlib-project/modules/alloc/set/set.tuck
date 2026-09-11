@@ -1,0 +1,150 @@
+# alloc.set — a set of distinct values.
+#
+# A set is a map with no values, and this is written as one: the same linear
+# scan over a Seq, the same opaque API, and it will inherit whatever
+# representation alloc.map settles on when that is measured rather than
+# guessed.
+#
+# Value semantics: every mutating verb RETURNS the new set. `add` on a value
+# already present gives back an equal set rather than a second copy of it,
+# which is what "set" means.
+import seq
+
+type Set[T]:
+  items: Seq[T]
+
+# There is no `newSet` fn: a construction under a stated type IS the
+# constructor. `var seen: Set[str] = {items: []} Set` binds T from the
+# annotation, and a nullary generic fn is something nothing could ever infer
+# T for.
+
+fn has[T]({s: Set[T], value: T}) -> bool:
+  for i in 0 .. s.items.len - 1:
+    if s.items[i] == value:
+      return true
+  return false
+
+fn count[T]({s: Set[T]}) -> int:
+  return s.items.len
+
+fn toSeq[T]({s: Set[T]}) -> Seq[T]:
+  return s.items
+
+# Already present is not an error and not a duplicate — it is a no-op that
+# still hands back a set, so `..add` reads the same either way.
+fn add[T]({s: Set[T], value: T}) -> Set[T]:
+  if {s: s, value: value} has:
+    return s
+  return {items: {items: s.items, value: value} push} Set
+
+# Rebuilt without the value. Order is not part of this type's contract, and a
+# rebuild is the one form that says so.
+fn remove[T]({s: Set[T], value: T}) -> Set[T]:
+  var kept: Seq[T] = []
+  for i in 0 .. s.items.len - 1:
+    let item = s.items[i]
+    if item != value:
+      kept = {items: kept, value: item} push
+  return {items: kept} Set
+
+# --- set algebra -----------------------------------------------------------
+# The plain mathematical names, because this is the one place where the
+# mathematical word IS the everyday word. All three are written on `add`, so
+# the no-duplicates rule is enforced in exactly one place.
+fn union[T]({a: Set[T], b: Set[T]}) -> Set[T]:
+  var out = a
+  for i in 0 .. b.items.len - 1:
+    out = {s: out, value: b.items[i]} add
+  return out
+
+fn intersect[T]({a: Set[T], b: Set[T]}) -> Set[T]:
+  var out: Set[T] = {items: []} Set
+  for i in 0 .. a.items.len - 1:
+    let item = a.items[i]
+    if {s: b, value: item} has:
+      out = {s: out, value: item} add
+  return out
+
+fn difference[T]({a: Set[T], b: Set[T]}) -> Set[T]:
+  var out: Set[T] = {items: []} Set
+  for i in 0 .. a.items.len - 1:
+    let item = a.items[i]
+    if not {s: b, value: item} has:
+      out = {s: out, value: item} add
+  return out
+
+# --- the module's own checks ----------------------------------------------
+fn threeWords() -> Set[str]:
+  var s: Set[str] = {items: []} Set
+  s = {s: s, value: "a"} add
+  s = {s: s, value: "b"} add
+  return {s: s, value: "c"} add
+
+fn checkBasics() -> int:
+  var s: Set[str] = {items: []} Set
+  s = {s: s, value: "a"} add
+  # Adding the same value twice leaves one.
+  s = {s: s, value: "a"} add
+  if {s: s} count != 1:
+    return 1
+  if not {s: s, value: "a"} has:
+    return 2
+  if {s: s, value: "z"} has:
+    return 3
+  return checkRemove
+
+fn checkRemove() -> int:
+  var s = threeWords
+  if {s: s} count != 3:
+    return 4
+  s = {s: s, value: "b"} remove
+  if {s: s} count != 2:
+    return 5
+  if {s: s, value: "b"} has:
+    return 6
+  # Removing what is not there is a no-op, not an error.
+  s = {s: s, value: "zzz"} remove
+  if {s: s} count != 2:
+    return 7
+  return 0
+
+fn twoOnly() -> Set[str]:
+  var t: Set[str] = {items: []} Set
+  t = {s: t, value: "b"} add
+  return {s: t, value: "d"} add
+
+fn checkAlgebra() -> int:
+  let a = threeWords      # a b c
+  let b = twoOnly         # b d
+  let both = {a: a, b: b} union
+  if {s: both} count != 4:
+    return 8
+  let common = {a: a, b: b} intersect
+  if {s: common} count != 1:
+    return 9
+  if not {s: common, value: "b"} has:
+    return 10
+  return {a: a, b: b} checkDifference
+
+fn checkDifference({a: Set[str], b: Set[str]}) -> int:
+  let only = {a: a, b: b} difference
+  if {s: only} count != 2:
+    return 11
+  if {s: only, value: "b"} has:
+    return 12
+  if not {s: only, value: "a"} has:
+    return 13
+  # difference is not symmetric: b minus a keeps only d.
+  let other = {a: b, b: a} difference
+  if {s: other} count != 1:
+    return 14
+  let seq = {s: other} toSeq
+  if seq.len != 1:
+    return 15
+  return 0
+
+fn main() -> int:
+  let basics = checkBasics
+  if basics != 0:
+    return basics
+  return checkAlgebra
