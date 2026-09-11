@@ -200,6 +200,17 @@ proc parsePrimaryExpr(p: var Parser): Expr =
   if curr.kind == tkColon and p.peek().kind == tkIdent:
     discard p.advance()
     let name = p.expect(tkIdent).value
+    # `:mod::fn` — a reference to another module's fn. The module has to be
+    # kept: without it the reference degrades to a bare `:fn`, which the flat
+    # signature table still resolves and Nim's and Odin's own scope merge
+    # still emits correctly, so the loss stayed invisible until D — which
+    # decides "reference, not call" from the checker's type — emitted
+    # `mod.fn` where `&mod.fn` was meant.
+    if p.current().kind == tkColonColon and p.peek().kind == tkIdent:
+      discard p.advance()
+      let member = p.expect(tkIdent).value
+      return Expr(span: sp, kind: exkQualified, modulePath: @[name],
+                  qualName: member)
     return Expr(span: sp, kind: exkQualified, modulePath: @[], qualName: name)
   if curr.kind == tkMinus:
     discard p.advance()

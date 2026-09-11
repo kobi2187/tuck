@@ -65,4 +65,39 @@ fn smaller[T]({a: T, b: T}) -> T:
               r"case cmp\.tuck_Order\."
   t.emitsD "...on D as well", r"case cmp\.tuck_Order\."
 
+  # --- a fn reference filling an imported module's fnsig slot ---------------
+  # Four separate gaps, each hiding the next. The parser dropped the module
+  # from `:provider::firstWins`, leaving a bare `:firstWins`; synthQualified
+  # typed a module-qualified reference Unknown; Unknown satisfies every slot,
+  # so the call checked clean; and Nim's and Odin's own scope merge then
+  # emitted a bare name that linked anyway. Only D said anything, because it
+  # decides "reference, not call" from the checker's type and so emitted
+  # `provider.tuck_firstWins` where `&provider.tuck_firstWins` was meant.
+  # Under it all, an imported `fnsig` was not recognised as a signature type
+  # at all: fnSigNames never crossed the import boundary.
+  t.src """
+import verbs
+import provider
+
+fn main() -> int:
+  let r = {a: 3, b: 9, better: :provider::firstWins} pick
+  return r - 3
+"""
+  t.addFile("verbs.tuck", """fnsig Better[T] = {x: T, y: T} -> bool
+
+fn pick[T]({a: T, b: T, better: Better[T]}) -> T:
+  let ok = {x: a, y: b} better
+  if ok:
+    return a
+  return b
+""")
+  t.addFile("provider.tuck", """fn firstWins({x: int, y: int}) -> bool:
+  return x < y
+""")
+  t.okCheck "a fn reference fills an imported module's generic fnsig slot"
+  t.emitsD "D takes the address of the qualified fn, not a no-arg call",
+           r"&provider\.tuck_firstWins"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and the imported callback is the one invoked", 0
+
   t.finish()

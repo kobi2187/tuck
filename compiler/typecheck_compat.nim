@@ -111,6 +111,32 @@ proc appCompatible*(tc: TypeChecker, a, e: Type): bool =
     if not tc.compatible(a.args[i], e.args[i]): return false
   true
 
+proc importedFnSigInstance(tc: TypeChecker, t: Type): Type =
+  ## `Mapper[int, str]` -> the tkFunc it stands for, for a `fnsig` declared in
+  ## ANOTHER module. Built from the signature tables rather than the decl,
+  ## which is the only form an imported fnsig reaches this module in. nil when
+  ## the name is not a known generic fnsig, so the caller falls through.
+  if t == nil or t.kind != tkApp or t.base == nil or t.base.kind != tkNamed:
+    return nil
+  let name = t.base.name
+  if name notin tc.fnSigNames or not tc.fnSigs.hasKey(name): return nil
+  let generics = tc.fnSigGenerics.getOrDefault(name)
+  if generics.len == 0 or generics.len != t.args.len: return nil
+  let sig = tc.fnSigs[name][^1]
+  var binds = initTable[string, Type]()
+  for i, g in generics: binds[g] = t.args[i]
+  var ps: seq[Type]
+  for prm in sig.params: ps.add(substParams(prm.typ, binds))
+  Type(span: t.span, kind: tkFunc, params: ps,
+       result: substParams(sig.ret, binds))
+
+proc fnSigSlotInstance(tc: TypeChecker, t: Type): Type =
+  ## The tkFunc a generic fnsig slot stands for, wherever the fnsig was
+  ## declared: this module's decl first, then the imported form rebuilt from
+  ## the signature tables.
+  result = fnSigInstance(tc.module, t)
+  if result == nil: result = tc.importedFnSigInstance(t)
+
 type FnRefVerdict = enum
   vUndecided,   ## not a fn-ref question at all — fall through to the rest
   vYes, vNo
@@ -128,7 +154,12 @@ proc fnRefVerdict(tc: TypeChecker, a, e: Type): FnRefVerdict =
   if e.kind == tkNamed and tc.fnSigs.hasKey(e.name):
     return if tc.fnRefCompatible(a, e): vYes else: vNo
   if e.kind == tkApp:
-    let inst = fnSigInstance(tc.module, e)
+    # Either module's fnsig: fnSigInstance reads the DECL and so only ever
+    # sees this module's own. Without the imported half an imported
+    # `Mapper[int, U]` slot fell through to the record check and was rejected
+    # as "expects Mapper[int, U] but got <type>" — the same symptom this arm
+    # was added for, one module boundary further out.
+    let inst = tc.fnSigSlotInstance(e)
     if inst == nil: return vUndecided
     return if tc.compatible(a, inst): vYes else: vNo
   if e.kind != tkFunc: return vUndecided

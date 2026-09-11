@@ -3330,13 +3330,24 @@ proc synthSelect(tc: var TypeChecker, e: Expr): Type =
   branchOutcomeType(e.span)
 
 proc synthQualified(tc: var TypeChecker, e: Expr): Type =
-  ## `:name` with no module path is a FUNCTION REFERENCE (`{add: :plus}`,
-  ## `waitUntil {pred: :ready}`). Resolving it to a real tkFunc keeps the
-  ## signature — params and result — instead of erasing it to Unknown, so a
-  ## backend can emit a typed callable rather than an opaque pointer.
-  if e.modulePath.len != 0 or not tc.fnSigs.hasKey(e.qualName):
+  ## `:name` is a FUNCTION REFERENCE (`{add: :plus}`, `waitUntil {pred:
+  ## :ready}`). Resolving it to a real tkFunc keeps the signature — params and
+  ## result — instead of erasing it to Unknown, so a backend can emit a typed
+  ## callable rather than an opaque pointer.
+  ##
+  ## `:mod::name` resolves the same way, through the `mod::name` key the
+  ## imported signatures are already filed under. It used to fall to Unknown,
+  ## and gradual typing then hid the miss: Unknown satisfies every parameter,
+  ## so the call checked clean and Nim and Odin emitted a bare name that
+  ## happened to work. D did not — it decides "reference, not call" from the
+  ## checker's type, saw no tkFunc, and emitted `mod.fn` where `&mod.fn` was
+  ## meant, which D reads as a no-argument call.
+  let key =
+    if e.modulePath.len != 0: e.modulePath[0] & "::" & e.qualName
+    else: e.qualName
+  if not tc.fnSigs.hasKey(key):
     return unknownType(e.span)
-  let sig = tc.sigOf(e.qualName)
+  let sig = tc.sigOf(key)
   var ps: seq[Type]
   for p in sig.params: ps.add(p.typ)
   Type(span: e.span, kind: tkFunc, params: ps, result: sig.ret)
@@ -3944,8 +3955,16 @@ proc bindConsts*(tc: var TypeChecker, m: Module) =
 
 proc typecheckModule*(m: Module,
                       externSigs = initTable[string, seq[FnSig]](),
-                      externPending = initTable[string, Span]()): seq[string] {.discardable.} =
+                      externPending = initTable[string, Span](),
+                      externFnSigTypes = initTable[string, seq[string]]()): seq[string] {.discardable.} =
   var tc = newModuleChecker(m, externSigs, externPending)
+  # An imported `fnsig` is a signature TYPE, not just another callable. Seed
+  # that before collectSigs so a slot typed `Mapper[int, str]` from another
+  # module is recognised as a signature slot; locals added afterwards win, as
+  # they do for every other imported name.
+  for n, generics in externFnSigTypes:
+    tc.fnSigNames.incl(n)
+    if generics.len > 0: tc.fnSigGenerics[n] = generics
   tc.pushScope()  # module-level scope: consts visible across decls
   # Group declarations, collected on their own, BEFORE the real collectSigs
   # below: desugaring an inline `{x: Sortable + Hashable}` bound has to run
@@ -4038,6 +4057,15 @@ type
     byMod: Table[string, Table[string, seq[FnSig]]]
     pendByMod: Table[string, Table[string, Span]]
     importsByMod: Table[string, seq[string]]
+    fnSigTypesByMod: Table[string, Table[string, seq[string]]]
+                              ## `fnsig NAME` declarations, name -> its generic
+                              ## params (empty seq for a non-generic one). A
+                              ## fnsig's call SHAPE already travelled with the
+                              ## signatures above; what did not was the fact
+                              ## that the name IS a fnsig, which lives in a
+                              ## separate set and stayed module-local — so an
+                              ## imported `Mapper[T, U]` slot was not
+                              ## recognised as a signature slot at all.
 
   ImportScope = object
     ## The names an importing module can see. `extern` holds both spellings;
@@ -4047,6 +4075,7 @@ type
     extern: Table[string, seq[FnSig]]
     pending: Table[string, Span]
     bareOwner: Table[string, string]
+    fnSigTypes: Table[string, seq[string]]  ## imported `fnsig` names -> generics
 
 proc withModulePrefix(err: ref SemanticError, path: string): ref SemanticError =
   ## Prefix a module-local error with the file it came from.
@@ -4074,6 +4103,10 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
     result.byMod[name] = tc.fnSigs
     result.pendByMod[name] = tc.pendingFns
     result.importsByMod[name] = moduleImports(m)
+    var sigTypes: Table[string, seq[string]]
+    for n in tc.fnSigNames:
+      sigTypes[n] = tc.fnSigGenerics.getOrDefault(n)
+    result.fnSigTypesByMod[name] = sigTypes
 
 proc addBare(scope: var ImportScope, fname, imp: string, sig: seq[FnSig]) =
   ## Claim an unqualified name for an import, or report the collision.
@@ -4095,6 +4128,8 @@ proc importChecked(scope: var ImportScope, sigs: ProgramSigs, imp: string) =
   for fname, sp in sigs.pendByMod.getOrDefault(imp):
     if "::" notin fname:
       scope.pending[imp & "::" & fname] = sp
+  for fname, generics in sigs.fnSigTypesByMod.getOrDefault(imp):
+    scope.fnSigTypes[fname] = generics
 
 proc importPrebuilt(scope: var ImportScope, preSigs: Table[string, seq[SigInfo]],
                     imp: string) =
@@ -4131,6 +4166,6 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
   for (name, path, m) in mods:
     let scope = importScopeFor(sigs, preSigs, name)
     try:
-      result = typecheckModule(m, scope.extern, scope.pending)
+      result = typecheckModule(m, scope.extern, scope.pending, scope.fnSigTypes)
     except SemanticError as err:
       raise withModulePrefix(err, path)

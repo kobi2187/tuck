@@ -578,7 +578,7 @@ proc threadReceiver*(call, base: Expr, into, baseStr: string): Expr =
 # Nothing is lost by erasing it: a fn type is structural in all three targets,
 # so there was no nominal identity to keep.
 
-proc substParams(t: Type, binds: Table[string, Type]): Type =
+proc substParams*(t: Type, binds: Table[string, Type]): Type =
   ## `t` with every type-param NAME replaced by what it was bound to.
   if t == nil: return nil
   case t.kind
