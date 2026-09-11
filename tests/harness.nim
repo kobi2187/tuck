@@ -97,6 +97,16 @@ var tuckExe* = "./tuck"
 # it was classified slow and skipped entirely in the inner loop.
 var maxVerb* = vRun   ## default: everything except what needs the Odin toolchain
 
+var quietPasses* = false
+  ## `--quiet`: suppress PASS/SKIP lines so a full run's output is short
+  ## enough to read without grepping past hundreds of them for the one FAIL
+  ## that matters. Counters still increment — only the per-line echo is
+  ## skipped — so the final "N passed, M failed" summary is unaffected.
+  ## Separate from `T.quiet` above: that one is per-ASSERTION (bugFixed/
+  ## bugOpen re-interpreting an expected failure) and silences the outcome
+  ## entirely, counters included; this one is session-wide and never hides
+  ## a real failure.
+
 # --- reporting -----------------------------------------------------------
 #
 # `quiet` makes the assertions RECORD their outcome in `lastOk` without
@@ -108,7 +118,7 @@ proc ok*(t: var T, name: string) =
   t.lastSkipped = false
   if t.quiet: return
   t.passed.inc
-  echo &"  PASS  {name}"
+  if not quietPasses: echo &"  PASS  {name}"
 
 proc no*(t: var T, name, why: string) =
   t.lastOk = false
@@ -127,7 +137,8 @@ proc skip*(t: var T, name: string) =
   t.lastSkipped = true
   if t.quiet: return
   t.skipped.inc
-  echo &"  SKIP  {name} (needs a backend build; run without --check/--quick)"
+  if not quietPasses:
+    echo &"  SKIP  {name} (needs a backend build; run without --check/--quick)"
 
 template quietly*(t: var T, body: untyped) =
   ## Run an assertion for its OUTCOME only, then read it with bugFixed/bugOpen:

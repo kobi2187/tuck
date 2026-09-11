@@ -24,6 +24,7 @@
 #   tests/run --quick             check-only, no `tuck build`
 #   tests/run --check             `tuck ch` only
 #   tests/run --bless             re-bless goldens
+#   tests/run --quiet             suppress PASS/SKIP lines, FAILs only
 set -eu
 cd "$(dirname "$0")/.."
 

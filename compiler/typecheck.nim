@@ -2331,11 +2331,39 @@ proc synthCalleeType(tc: var TypeChecker, e: Expr): Type =
   result = tc.synthesize(e.callee)  # variant constructions carry their type
   tc.transitionCtx = prevCtx
 
+proc failIfChainAfterPayloadCall(tc: TypeChecker, e: Expr) =
+  ## `{x: v} takesInt.len` — the callee LOOKS like `{args} c.op` (calling
+  ## through a slot, examples/31-fnsig-callback.tuck's `{a, b} c.add`), and
+  ## the parser cannot tell them apart: both are `name.field` as a payload
+  ## callee. What decides it is whether the base name is a real value that
+  ## could HOLD a field — `c` is (a `let`-bound variable), a plain top-level
+  ## `fn` is not. `takesInt.len` can only be the OTHER thing: a chain landed
+  ## on `.len` meaning to read the CALL's result, `{x: v} takesInt` — TK-PA14,
+  ## the sibling of TK-PA13's "a call inside a payload" for the direction a
+  ## payload call chains OUT rather than nests IN.
+  ##
+  ## Not just a style rule: this shape used to reach codegen as one
+  ## expression and skip verifying the call's own arguments against its
+  ## declared params entirely (found spiking the `group` feature; reproduced
+  ## with an ordinary non-generic call — `{x: "not an int"} takesInt.len`
+  ## passed where `takesInt` declares `x: int`).
+  if e.callee == nil or e.callee.kind != exkField: return
+  let recv = e.callee.receiver
+  if recv == nil or recv.kind != exkVar: return
+  if recv.name notin tc.topLevelFns: return
+  fail(dcTyChainAfterPayloadCall,
+       "'" & recv.name & "' is a fn, not a value with a '" &
+       e.callee.fieldName & "' field — `{payload} " & recv.name &
+       "." & e.callee.fieldName & "` reads as a call chained onto the " &
+       "result of `{payload} " & recv.name & "`. Bind it to a `let` " &
+       "first, then chain from the name.", e.span)
+
 proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
   ## A callee that is not a bare name. Calling THROUGH a fnsig-typed slot
   ## (`{args} c.op` where op: Adder) validates the args against the named
   ## signature and yields its return type; anything else keeps the callee's
   ## own type.
+  tc.failIfChainAfterPayloadCall(e)
   result = tc.synthCalleeType(e)
   let viaSig = tc.checkThroughFnSig(tc.resolve(result), e)
   if viaSig != nil: return viaSig

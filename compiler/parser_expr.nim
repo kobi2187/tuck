@@ -84,6 +84,13 @@ proc isStructLiteral(p: Parser): bool =
       return true
   return false
 
+proc exprName(e: Expr): string =
+  ## A short spelling of the expression a message is about — the name when it
+  ## is one, else a placeholder, since this only ever reports on a chain base.
+  if e != nil and e.kind == exkVar: e.name
+  elif e != nil and e.kind == exkField: e.fieldName
+  else: "that"
+
 proc nestedPayloadCall(e: Expr): Expr =
   ## A field whose VALUE IS a payload call — the shape `{...} fn` sitting
   ## directly where a value belongs. Returns that call, or nil.
@@ -116,6 +123,34 @@ proc failIfCallInPayload(p: Parser, value: Expr) =
   p.reportError("a call inside a payload — bind it to a `let` first, then " &
                 "use the name here", bad.span.line, bad.span.col,
                 dcPaCallInPayload)
+
+proc failIfChainAfterPayloadCall(p: Parser, called: Expr) =
+  ## `{x: expr} f.someField` — the sibling rule to failIfCallInPayload, in
+  ## the opposite direction: not a call NESTED inside a payload, but a chain
+  ## continuing STRAIGHT OUT of one. `{payload} fnName` is meant to read as
+  ## a complete application, same as TK-PA13 means a payload field to hold
+  ## only a value — nothing chains directly off its result; bind it first.
+  ##
+  ## Not just style: this shape used to reach the checker as one expression
+  ## and skip verifying the call's OWN arguments against its declared
+  ## params entirely — found spiking the `group` feature, reproduced with
+  ## an ordinary non-generic call (`{x: "not an int"} takesInt.len` passed
+  ## where `takesInt` declares `x: int`). Refusing the shape at parse time
+  ## removes the gap instead of patching whatever let it through.
+  ## Narrowed to `..` only: a `.` immediately after the call is now always
+  ## consumed upstream (parsePostfixCall's own dotted-callee loop), ambiguous
+  ## between a qualified constructor, a slot call, and a genuine chain onto
+  ## a call's result — see typecheck.nim's failIfChainAfterPayloadCall for
+  ## where that disambiguation, needing name resolution, actually happens.
+  ## `..` has no such ambiguity: a builder-mutation chain never continues a
+  ## qualified name or a slot call, so this stays a parse-time rejection.
+  if called == nil or called.kind != exkCall or called.args.len != 1 or
+     called.args[0] == nil or called.args[0].kind != exkStruct: return
+  if p.current().kind != tkDotDot: return
+  p.reportError("a builder chain after `{payload} " & exprName(called.callee) &
+                "` — bind it to a `let` first, then chain from the name",
+                called.span.line, called.span.col,
+                dcPaChainAfterPayloadCall)
 
 # {a: 1, b} — struct literal; a bare name is shorthand for name: name
 proc parseStructLiteral(p: var Parser, sp: Span): Expr =
@@ -266,8 +301,18 @@ proc parsePostfixCall(p: var Parser, expr: Expr, sp: Span): Expr =
     return Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
   let callee = p.advance().value
   var calleeExpr = Expr(span: sp, kind: exkVar, name: callee)
-  # Qualified postfix: the callee may be a dotted path; construction flows
-  # payload-first like any call
+  # Qualified postfix: the callee may be a dotted path — `{a, b} Shape.Circle`
+  # (a qualified sum-variant constructor) and `{a, b} c.add` (calling THROUGH
+  # a variable's fnsig-typed field/slot, examples/31-fnsig-callback.tuck) are
+  # both this shape, and the parser genuinely cannot tell them apart from
+  # `{x: v} takesInt.len` (a call chained onto a PLAIN FN's result, which
+  # should be rejected) — all three are `lowercase-or-uppercase.lowercase`
+  # syntactically, and only the checker knows whether the base name is a
+  # type, a variable holding a callable slot, or an ordinary function with
+  # no fields at all. Tried gating this on capitalization first; broke
+  # example 31, which is the identical shape with a variable base. Left
+  # greedy here on purpose — failIfChainAfterPayloadCall (typecheck.nim)
+  # does the actual rejection, once name resolution can tell the cases apart.
   while p.current().kind == tkDot:
     discard p.advance()
     let fname = p.expectMemberName("Expected name after '.'").value
@@ -408,13 +453,6 @@ proc isEffectAnnotation(p: Parser): bool =
   p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
     p.peek(2).kind == tkRBracket
 
-proc exprName(e: Expr): string =
-  ## A short spelling of the expression a message is about — the name when it
-  ## is one, else a placeholder, since this only ever reports on a chain base.
-  if e != nil and e.kind == exkVar: e.name
-  elif e != nil and e.kind == exkField: e.fieldName
-  else: "that"
-
 proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
   ## One postfix continuation. `done` is set when nothing continues the chain,
   ## which is what ends the loop.
@@ -455,7 +493,9 @@ proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
                     "drops the right operand.",
                     dc = dcPaWordOperator)
     if p.current().value notin NonCallIdents:
-      return p.parsePostfixCall(expr, sp)
+      let called = p.parsePostfixCall(expr, sp)
+      p.failIfChainAfterPayloadCall(called)
+      return called
   of tkIntLit, tkFloatLit, tkStrLit:
     # A LITERAL cannot continue a chain. Calls are postfix, so an argument
     # precedes its callee — `5 double`, never `double 5`. Reaching here means

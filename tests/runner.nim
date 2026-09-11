@@ -42,6 +42,8 @@
 ##   tests/run --check          the edit-loop gate
 ##   tests/run --quick          + codegen text and goldens
 ##   tests/run --bless          rewrite goldens (was TUCK_BLESS=1)
+##   tests/run --quiet          suppress PASS/SKIP lines — only FAIL and
+##                              the per-suite/final summaries print
 ##   tests/run --jobs:N         override the pool bound
 
 import std/[os, osproc, strutils, strformat, times, monotimes, streams, sequtils,
@@ -241,6 +243,7 @@ when isMainModule:
       maxVerb = vRun          # + nim build/run. Odin builds are gated by
       modeName = "full"       # TUCK_REQUIRE_ODIN in the suite that owns them.
     elif a == "--bless": bless = true
+    elif a == "--quiet": quietPasses = true
     elif a.startsWith("--jobs:"): jobs = parseInt(a[7 .. ^1])
     elif a.startsWith("--"): quit "unknown flag: " & a
     else: want.add a

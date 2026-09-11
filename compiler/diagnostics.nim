@@ -65,6 +65,10 @@ type
     dcPaWordOperator = "TK-PA11"        ## `mod`/`div` — Tuck spells them `%`/`/i`
     dcPaHostKeyword = "TK-PA12"         ## a param named after a backend's keyword
     dcPaCallInPayload = "TK-PA13"       ## a payload call nested inside a payload
+    dcPaChainAfterPayloadCall = "TK-PA14" ## `..` chained straight onto a bare
+                                          ## `{payload} fn` call (parse-time;
+                                          ## the `.field` sibling case needs
+                                          ## name resolution — see TK-TY23)
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -89,6 +93,12 @@ type
     dcTyUntypedEmptyList = "TK-TY20"    ## `[]` with nothing to say what it holds
     dcTyNoSuchField = "TK-TY21"         ## `with` naming a field the record has not got
     dcTyVariantPayload = "TK-TY22"      ## a sum variant's payload does not match its declaration
+    dcTyChainAfterPayloadCall = "TK-TY23" ## `.field` chained straight onto a
+                                          ## bare `{payload} fn` call's result —
+                                          ## the fn's own name resolves to a
+                                          ## plain top-level fn, not a value
+                                          ## with fields, so this can only be a
+                                          ## chain onto the call, not a slot call
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -242,6 +252,20 @@ proc parseExplanation(d: DiagCode): string =
     "performance bug unwriteable: `xs = {items: xs, ...} push` appends IN " &
     "PLACE, but the same call nested inside a construction does not, and " &
     "alloc.string shipped quadratic for exactly that reason."
+  of dcPaChainAfterPayloadCall:
+    "`{payload} fnName` is a complete statement's worth of value on its " &
+    "own — a call or a construction, nothing more may follow the same " &
+    "closing brace. Bind it to a `let` first, then chain from the name: " &
+    "`let r = {x: v} f` and then `r..step {..}`, not `{x: v} f..step {..}`."
+  of dcTyChainAfterPayloadCall:
+    "`{payload} fnName.field` reads as `{payload} c.op` (a call THROUGH a " &
+    "fnsig-typed slot) unless `fnName` cannot possibly hold one — a plain " &
+    "top-level `fn` has no fields at all, so the only other reading left " &
+    "is a call chained onto ITS result: `{payload} fnName` first, `.field` " &
+    "second. Bind it to a `let` first, then chain from the name: " &
+    "`let r = {x: v} f` and then `r.field`, not `{x: v} f.field`. Not only " &
+    "style: this shape used to reach codegen as one expression and skip " &
+    "verifying the call's OWN arguments against its declared params entirely."
   of dcPaHostKeyword:
     "A PARAMETER may not be named after a keyword of any backend Tuck emits " &
     "to. Every other user name gets a `tuck_` prefix that cannot clash, but a " &
