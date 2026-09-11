@@ -1,0 +1,352 @@
+# core.str — reading text.
+#
+# TWO LEVELS, BOTH FIRST-CLASS, and the name always says which you are at.
+#
+#   RUNES are the main position. Text is Unicode, `runeAt`/`runes` decode
+#   UTF-8, and anything that could split a character mid-sequence works in
+#   runes rather than bytes.
+#
+#   CHARS are the ASCII path, kept because most parsing IS ASCII — digits,
+#   separators, keywords — and decoding a rune to compare against `,` is
+#   work for nothing. A `Char` is one byte and only means anything below 128.
+#
+# Both are PLAIN types, not `distinct`: a Rune is a code point and a Char is
+# a byte, and wrapping either in a newtype would buy a cast at every call
+# site and no checking Tuck can actually perform.
+#
+# The BUILDING verbs are not here — `alloc.string` holds append/join/pad and
+# the Builder. This module only reads. That split is a documentation choice
+# rather than a type-enforced one, since one `str` sits under both.
+# FILE NAME: `text.tuck`, not `str.tuck`. A module that imports `str` and is
+# itself called `str` resolves the import to ITSELF — "import cycle through
+# str.tuck" — because the resolver looks in the local directory first. The
+# module this file provides is still core.str; only the file had to move out
+# of the way of the shim it stands on.
+import seq
+import str
+
+type Rune = u32
+type Char = u8
+
+# --- bytes, the substrate --------------------------------------------------
+fn isEmpty({t: str}) -> bool:
+  return {t: t} byteCount == 0
+
+fn charAtByte({t: str, index: int}) -> Char?:
+  if index < 0 or index >= {t: t} byteCount:
+    return
+  return {t: t, index: index} byteAt
+
+# --- UTF-8 -----------------------------------------------------------------
+# A lead byte says how many bytes the character occupies. Everything below is
+# written on this one table, so the rule lives in one place.
+fn runeWidth({lead: u8}) -> int:
+  let b = {value: lead} int
+  if b < 128:
+    return 1
+  if b < 224:
+    return 2
+  if b < 240:
+    return 3
+  return 4
+
+fn continuationBits({t: str, index: int}) -> int:
+  # The low six bits of a continuation byte; 0 if the index ran off the end,
+  # which only a malformed string reaches.
+  if index >= {t: t} byteCount:
+    return 0
+  return {value: {t: t, index: index} byteAt} int % 64
+
+fn leadBits({lead: u8, width: int}) -> int:
+  let b = {value: lead} int
+  if width == 1:
+    return b
+  if width == 2:
+    return b % 32
+  if width == 3:
+    return b % 16
+  return b % 8
+
+# The rune beginning at a BYTE offset. Absent past the end — a byte offset is
+# how UTF-8 is indexed, and asking past the end is a legitimate no.
+fn runeAt({t: str, at: int}) -> Rune?:
+  if at < 0 or at >= {t: t} byteCount:
+    return
+  let lead = {t: t, index: at} byteAt
+  let width = {lead: lead} runeWidth
+  var acc = {lead: lead, width: width} leadBits
+  for i in 1 .. width - 1:
+    acc = acc * 64 + {t: t, index: at + i} continuationBits
+  return {value: acc} u32
+
+# Where the NEXT rune starts. The one step every rune walk takes.
+fn nextRune({t: str, at: int}) -> int:
+  return at + {lead: {t: t, index: at} byteAt} runeWidth
+
+fn runeCount({t: str}) -> int:
+  var n = 0
+  var at = 0
+  for at < {t: t} byteCount:
+    n = n + 1
+    at = {t: t, at: at} nextRune
+  return n
+
+fn noRunes() -> Seq[Rune]:
+  return []
+
+fn runes({t: str}) -> Seq[Rune]:
+  var acc = noRunes
+  var at = 0
+  for at < {t: t} byteCount:
+    let r = {t: t, at: at} runeAt
+    if r.ok:
+      acc = {items: acc, value: r.value} push
+    at = {t: t, at: at} nextRune
+  return acc
+
+# --- encoding back ---------------------------------------------------------
+# The inverse fold. `fromBytes` is the primitive underneath: Tuck can READ
+# bytes but cannot build text out of arbitrary ones.
+fn noBytes() -> Seq[u8]:
+  return []
+
+fn encodeRune({r: Rune, into: Seq[u8]}) -> Seq[u8]:
+  let v = {value: r} int
+  var out = into
+  if v < 128:
+    return {items: out, value: {value: v} u8} push
+  if v < 2048:
+    out = {items: out, value: {value: 192 + v /i 64} u8} push
+    return {items: out, value: {value: 128 + v % 64} u8} push
+  if v < 65536:
+    out = {items: out, value: {value: 224 + v /i 4096} u8} push
+    out = {items: out, value: {value: 128 + v /i 64 % 64} u8} push
+    return {items: out, value: {value: 128 + v % 64} u8} push
+  out = {items: out, value: {value: 240 + v /i 262144} u8} push
+  out = {items: out, value: {value: 128 + v /i 4096 % 64} u8} push
+  out = {items: out, value: {value: 128 + v /i 64 % 64} u8} push
+  return {items: out, value: {value: 128 + v % 64} u8} push
+
+fn fromRunes({rs: Seq[Rune]}) -> str:
+  var bytes = noBytes
+  for i in 0 .. {items: rs} count - 1:
+    bytes = {r: rs[i], into: bytes} encodeRune
+  return {bytes: bytes} fromBytes
+
+# --- searching, in BYTES because a match is a byte range -------------------
+# Finding a substring needs no decoding: UTF-8 is self-synchronising, so a
+# byte-wise match can never land inside a character it did not mean to.
+fn matchesAt({t: str, at: int, what: str}) -> bool:
+  let n = {t: what} byteCount
+  if at + n > {t: t} byteCount:
+    return false
+  for i in 0 .. n - 1:
+    if {t: t, index: at + i} byteAt != {t: what, index: i} byteAt:
+      return false
+  return true
+
+fn find({t: str, what: str}) -> int?:
+  if {t: what} byteCount == 0:
+    return 0
+  for i in 0 .. {t: t} byteCount - {t: what} byteCount:
+    if {t: t, at: i, what: what} matchesAt:
+      return i
+  return
+
+fn has({t: str, what: str}) -> bool:
+  let at = {t: t, what: what} find
+  return at.ok
+
+fn startsWith({t: str, prefix: str}) -> bool:
+  return {t: t, at: 0, what: prefix} matchesAt
+
+fn endsWith({t: str, suffix: str}) -> bool:
+  let at = {t: t} byteCount - {t: suffix} byteCount
+  if at < 0:
+    return false
+  return {t: t, at: at, what: suffix} matchesAt
+
+# --- slicing ---------------------------------------------------------------
+# Byte offsets, and absent when they do not name a range. Plain `str?`: the
+# answer is one string, so the type says one string.
+fn slice({t: str, start: int, stop: int}) -> str?:
+  if start < 0 or stop > {t: t} byteCount or start > stop:
+    return
+  var out = noBytes
+  for i in start .. stop - 1:
+    out = {items: out, value: {t: t, index: i} byteAt} push
+  return {bytes: out} fromBytes
+
+fn noParts() -> Seq[str]:
+  return []
+
+fn split({t: str, at: str}) -> Seq[str]:
+  var parts = noParts
+  if {t: at} byteCount == 0:
+    return {items: parts, value: t} push
+  var start = 0
+  var i = 0
+  for i <= {t: t} byteCount - {t: at} byteCount:
+    if {t: t, at: i, what: at} matchesAt:
+      let piece = {t: t, start: start, stop: i} slice
+      if piece.ok:
+        parts = {items: parts, value: piece.value} push
+      i = i + {t: at} byteCount
+      start = i
+    else:
+      i = i + 1
+  let last = {t: t, start: start, stop: {t: t} byteCount} slice
+  if last.ok:
+    parts = {items: parts, value: last.value} push
+  return parts
+
+# --- ASCII ----------------------------------------------------------------
+# Space, tab, newline, carriage return. Trimming is ASCII-only on purpose:
+# Unicode whitespace is a table, not a rule, and a table belongs in a module
+# that says it carries one.
+fn isSpaceByte({b: u8}) -> bool:
+  let v = {value: b} int
+  return v == 32 or v == 9 or v == 10 or v == 13
+
+fn trimStart({t: str}) -> str:
+  var i = 0
+  for i < {t: t} byteCount:
+    if not {b: {t: t, index: i} byteAt} isSpaceByte:
+      break
+    i = i + 1
+  let out = {t: t, start: i, stop: {t: t} byteCount} slice
+  if not out.ok:
+    return ""
+  return out.value
+
+fn trimEnd({t: str}) -> str:
+  var n = {t: t} byteCount
+  for n > 0:
+    if not {b: {t: t, index: n - 1} byteAt} isSpaceByte:
+      break
+    n = n - 1
+  let out = {t: t, start: 0, stop: n} slice
+  if not out.ok:
+    return ""
+  return out.value
+
+fn trim({t: str}) -> str:
+  return {t: {t: t} trimStart} trimEnd
+
+# ASCII case only, and the name does not pretend otherwise. Unicode case
+# folding is a table plus locale rules; `toLower` on a Turkish `I` is a
+# different answer, and guessing it here would be worse than not offering it.
+fn lowerByte({b: u8}) -> u8:
+  let v = {value: b} int
+  if v >= 65 and v <= 90:
+    return {value: v + 32} u8
+  return b
+
+fn upperByte({b: u8}) -> u8:
+  let v = {value: b} int
+  if v >= 97 and v <= 122:
+    return {value: v - 32} u8
+  return b
+
+fn toLowerAscii({t: str}) -> str:
+  var out = noBytes
+  for i in 0 .. {t: t} byteCount - 1:
+    out = {items: out, value: {b: {t: t, index: i} byteAt} lowerByte} push
+  return {bytes: out} fromBytes
+
+fn toUpperAscii({t: str}) -> str:
+  var out = noBytes
+  for i in 0 .. {t: t} byteCount - 1:
+    out = {items: out, value: {b: {t: t, index: i} byteAt} upperByte} push
+  return {bytes: out} fromBytes
+
+# --- the module's own checks ----------------------------------------------
+fn checkAscii() -> int:
+  if not {t: ""} isEmpty:
+    return 1
+  if {t: "a"} isEmpty:
+    return 2
+  let c = {t: "abc", index: 1} charAtByte
+  if not c.ok:
+    return 3
+  if {value: c.value} int != 98:
+    return 4
+  let past = {t: "abc", index: 9} charAtByte
+  if past.ok:
+    return 5
+  return checkSearch
+
+fn checkSearch() -> int:
+  let at = {t: "hello", what: "ll"} find
+  if not at.ok:
+    return 6
+  if at.value != 2:
+    return 7
+  let missing = {t: "hello", what: "zz"} find
+  if missing.ok:
+    return 8
+  if not {t: "hello", what: "ell"} has:
+    return 9
+  if not {t: "hello", prefix: "he"} startsWith:
+    return 10
+  if not {t: "hello", suffix: "lo"} endsWith:
+    return 11
+  if {t: "hi", suffix: "longer"} endsWith:
+    return 12
+  return checkSliceSplit
+
+fn checkSliceSplit() -> int:
+  let s = {t: "hello", start: 1, stop: 3} slice
+  if not s.ok:
+    return 13
+  if s.value != "el":
+    return 14
+  let bad = {t: "hi", start: 0, stop: 99} slice
+  if bad.ok:
+    return 15
+  let parts = {t: "a,b,c", at: ","} split
+  if {items: parts} count != 3:
+    return 16
+  if parts[0] != "a":
+    return 17
+  if parts[2] != "c":
+    return 18
+  return checkTrimCase
+
+fn checkTrimCase() -> int:
+  if {t: "  hi  "} trim != "hi":
+    return 19
+  if {t: "  hi"} trimStart != "hi":
+    return 20
+  if {t: "hi  "} trimEnd != "hi":
+    return 21
+  if {t: "   "} trim != "":
+    return 22
+  if {t: "AbC"} toLowerAscii != "abc":
+    return 23
+  if {t: "AbC"} toUpperAscii != "ABC":
+    return 24
+  return checkRunes
+
+fn checkRunes() -> int:
+  # "héllo" — the é is two bytes, so byteCount and runeCount disagree, which
+  # is the entire reason runes are the main position.
+  let s = "héllo"
+  if {t: s} byteCount != 6:
+    return 25
+  if {t: s} runeCount != 5:
+    return 26
+  let r = {t: s, at: 1} runeAt
+  if not r.ok:
+    return 27
+  if {value: r.value} int != 233:
+    return 28
+  if {items: {t: s} runes} count != 5:
+    return 29
+  # Decode and re-encode is the identity.
+  if {rs: {t: s} runes} fromRunes != s:
+    return 30
+  return 0
+
+fn main() -> int:
+  return checkAscii

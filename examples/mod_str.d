@@ -38,4 +38,8 @@ rt.TuckResult!(double) parseFloat(string t) {
     return rt.parseFloat(t);
 }
 
+string fromBytes(ubyte[] bytes) {
+    return rt.fromBytes(bytes);
+}
+
 

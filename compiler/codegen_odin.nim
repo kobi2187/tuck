@@ -281,7 +281,7 @@ const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
   ## Runtime intrinsics whose receiver they MUTATE, so it goes in by pointer.
 
 const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "toStr",
-                   "tuckConcat", "errCode", "push", "joinStr",
+                   "tuckConcat", "errCode", "push", "joinStr", "fromBytes",
                    "bitAnd", "bitOr", "bitXor", "bitNot",
                    "shiftLeft", "shiftRight",
                    "tuckSat", "tuckSatI", "tuckReportUnhandled"]

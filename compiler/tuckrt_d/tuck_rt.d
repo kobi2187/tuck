@@ -208,6 +208,11 @@ long count(T)(T[] items) { return cast(long) items.length; }
 
 long byteCount(string t) { return cast(long) t.length; }
 
+string fromBytes(ubyte[] bytes)
+{
+    return cast(string) bytes.idup;
+}
+
 ubyte byteAt(string t, long index)
 {
     tuckSeqBounds(index, cast(long) t.length, "byteAt");

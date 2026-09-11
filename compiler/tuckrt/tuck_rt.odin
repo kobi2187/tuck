@@ -169,6 +169,10 @@ count :: proc(items: [dynamic]$T) -> int { return len(items) }
 
 byteCount :: proc(t: string) -> int { return len(t) }
 
+fromBytes :: proc(bytes: [dynamic]u8) -> string {
+	return strings.clone_from_bytes(bytes[:])
+}
+
 byteAt :: proc(t: string, index: int) -> u8 {
 	assert(index >= 0 && index < len(t), "byteAt: index out of bounds")
 	return t[index]

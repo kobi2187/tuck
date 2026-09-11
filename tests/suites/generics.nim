@@ -440,4 +440,24 @@ fn main() -> int:
   t.hostBuilds "...and every backend implements them"
   t.runs "...with the same answers on each", 0
 
+  # A CONVERSION types its argument with no expectation — the source is
+  # whatever it already is, and the target is what comes out. Letting the
+  # target reach the argument stamped the LITERAL in `{value: v + 32} u8` as
+  # u8 while `v` stayed an int, and Nim answered "type mismatch: tuck_v +
+  # 32'u8". Found writing core.str's ASCII case fold.
+  t.src """
+fn lowerByte({b: u8}) -> u8:
+  let v = {value: b} int
+  if v >= 65 and v <= 90:
+    return {value: v + 32} u8
+  return b
+
+fn main() -> int:
+  let got = {b: {value: 65} u8} lowerByte
+  return {value: got} int - 97
+"""
+  t.okCheck "a conversion over an expression checks"
+  t.hostBuilds "...on every backend"
+  t.runs "...and converts the whole expression, not each literal", 0
+
   t.finish()

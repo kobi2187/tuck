@@ -2244,7 +2244,15 @@ proc synthArgsUnknown(tc: var TypeChecker, e: Expr): Type =
 proc synthArgsAs(tc: var TypeChecker, e: Expr, name: string): Type =
   ## Type the arguments, then answer with a named type regardless — a
   ## conversion, where the args are checked but the result is the target type.
-  for a in e.args: discard tc.synthesize(a)
+  ##
+  ## The argument is typed with NO expectation, which is the whole point of a
+  ## conversion: the source is whatever it already is, and the target is what
+  ## comes out. Letting the target reach the argument made
+  ## `{value: v + 32} u8` stamp the LITERAL as u8 while `v` stayed an int,
+  ## and Nim answered "type mismatch: tuck_v + 32'u8". Found writing
+  ## core.str's ASCII case fold.
+  tc.withExpected(nil):
+    for a in e.args: discard tc.synthesize(a)
   Type(span: e.span, kind: tkNamed, name: name)
 
 proc synthCombinator(tc: var TypeChecker, e: Expr): Type =

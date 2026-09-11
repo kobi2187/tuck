@@ -119,6 +119,10 @@ proc count*[T](items: seq[T]): int = items.len
 
 proc byteCount*(s: string): int = s.len
 
+proc fromBytes*(bytes: seq[uint8]): string =
+  result = newString(bytes.len)
+  for i, b in bytes: result[i] = char(b)
+
 proc byteAt*(s: string, index: int): uint8 =
   tuckSeqBounds(index, s.len, "byteAt")
   uint8(s[index])

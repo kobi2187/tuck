@@ -34,3 +34,9 @@ extern:
   # is an honest fold over digits, and core.convert writes it in Tuck on
   # core.num's overflow-checked arithmetic.
   fn parseFloat({t: str}) -> float?
+  # The one direction Tuck cannot go by itself: bytes ARE readable
+  # (`byteAt`), but there is no way to BUILD a str from arbitrary bytes —
+  # `charAt` only ever hands back bytes that were already in a str. Encoding
+  # a rune to UTF-8 is a fold Tuck can write; emitting the resulting bytes as
+  # text is not.
+  fn fromBytes({bytes: Seq[u8]}) -> str
