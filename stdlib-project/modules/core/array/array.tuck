@@ -1,0 +1,116 @@
+# core.array — vocabulary over Tuck's built-in Array[N, T], not a wrapper
+# type. Array[N, T] IS the fixed-size, value-typed, never-allocating
+# collection this module is about, same relationship the Nim design had to
+# Nim's own array[N, T].
+#
+# `at`/`setAt` cannot be written as plain Tuck functions using `items[i]`:
+# the bracket-index sugar always routes to whatever `fn at` is in scope,
+# which — inside `at`'s OWN body — is `at` itself, an infinite self-recursion
+# (see compiler/tuck_rt.nim's tuckArrayAt for the fuller account). So this
+# module's accessor calls the runtime primitive by ordinary name, never by
+# bracket, and the primitive itself is `extern` — no Tuck body to recurse in.
+import seq
+
+extern:
+  fn tuckArrayAt[N, T]({items: Array[N, T], index: int}) -> T
+  fn tuckArraySetAt[N, T]({items: Array[N, T], index: int, value: T}) -> void
+
+# `?T` for bounds safety, matching core.iter/alloc.vec's own `at`/`find` —
+# an out-of-range index is a normal, expected outcome here (unlike the raw
+# runtime primitive above, which panics; that's the right default for
+# std/seq's `[]` sugar, wrong for a library fn a caller is meant to guard).
+fn atFixed[N, T]({items: Array[N, T], index: int}) -> T?:
+  let n = items.len
+  if index < 0 or index >= n:
+    return
+  return {items: items, index: index} tuckArrayAt
+
+# Returns a NEW array with the value set, not a mutation through `items` —
+# the house convention every other container verb follows (alloc.vec's own
+# `setAt` returns a new Seq for the same reason). It also sidesteps a real
+# Nim constraint: `items` is an ordinary, non-`var` payload field, so it
+# cannot forward into `tuckArraySetAt`'s `var` parameter directly — `out`,
+# a local var holding a copy, can.
+fn setAtFixed[N, T]({items: Array[N, T], index: int, value: T}) -> Array[N, T]?:
+  var out = items
+  if index < 0 or index >= out.len:
+    return
+  {items: out, index: index, value: value} tuckArraySetAt
+  return out
+
+# --- ordinary vocabulary over a Seq — no Array involved, no indexing gap ---
+
+fn countOf[T]({items: Seq[T], value: T}) -> int:
+  var n = 0
+  for i in 0 .. items.len - 1:
+    if items[i] == value:
+      n = n + 1
+  return n
+
+fn chunk[T]({items: Seq[T], size: int}) -> Seq[Seq[T]]:
+  var out: Seq[Seq[T]] = []
+  if size <= 0:
+    return out
+  var i = 0
+  for i < items.len:
+    var piece: Seq[T] = []
+    var j = i
+    for j < items.len and j < i + size:
+      piece = {items: piece, value: items[j]} push
+      j = j + 1
+    out = {items: out, value: piece} push
+    i = i + size
+  return out
+
+# --- self-check --------------------------------------------------------------
+
+type Board:
+  cells: Array[4, int]
+
+fn checkAccess() -> int:
+  var b = {cells: [10, 20, 30, 40]} Board
+  let r0 = {items: b.cells, index: 0} atFixed
+  if not r0.ok:
+    return 1
+  if r0.value != 10:
+    return 2
+  let bad = {items: b.cells, index: 99} atFixed
+  if bad.ok:
+    return 3
+  let wrote = {items: b.cells, index: 1, value: 99} setAtFixed
+  if not wrote.ok:
+    return 4
+  let r1 = {items: wrote.value, index: 1} atFixed
+  if not r1.ok:
+    return 5
+  if r1.value != 99:
+    return 6
+  let failedWrite = {items: b.cells, index: 0 - 1, value: 5} setAtFixed
+  if failedWrite.ok:
+    return 7
+  return 0
+
+fn checkCountAndChunk() -> int:
+  let xs: Seq[int] = [1, 2, 2, 3, 2, 4]
+  if {items: xs, value: 2} countOf != 3:
+    return 10
+  if {items: xs, value: 9} countOf != 0:
+    return 11
+  let parts = {items: xs, size: 4} chunk
+  if parts.len != 2:
+    return 12
+  if parts[0].len != 4 or parts[1].len != 2:
+    return 13
+  if parts[1][0] != 2 or parts[1][1] != 4:
+    return 14
+  let empty: Seq[int] = []
+  let emptyChunks = {items: empty, size: 3} chunk
+  if emptyChunks.len != 0:
+    return 15
+  return 0
+
+fn main() -> int:
+  let a = checkAccess
+  if a != 0:
+    return a
+  return checkCountAndChunk

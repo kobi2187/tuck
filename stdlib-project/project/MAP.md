@@ -14,7 +14,7 @@ superseding the "stream fork blocked" framing for tree-shaped data).
 - [x] core.convert    (status: done)
 - [x] core.str        (status: done — runes main position, char for ASCII)
 - [x] core.iter       (status: done — plain :fnRef adapters, sum/sort scoped to int pending a constraint ruling)
-- [ ] core.array      (status: unscoped — no compiler blocker)
+- [x] core.array      (status: done — atFixed/setAtFixed/countOf/chunk; needed real Array[N,T] primitives, see DISCOVERIES)
 - [ ] core.slice      (status: unscoped — needs an Indexable-shaped interface per user ruling, "via simple for loop and indices")
 - [ ] core.types      (status: unscoped — no compiler blocker)
 - [ ] core.error      (status: unscoped — no compiler blocker)

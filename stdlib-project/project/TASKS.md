@@ -27,10 +27,21 @@ Follow-ons filed, not blocking, not scheduled this pass:
   payload-prefix (`{items: xs, ...} filter`) does
 
 ## T-02: core.array
-Status: pending
+Status: DONE
 Maps to: MAP.md core.array
 Interfaces: `stdlib-project/modules/core/array/API.tuck.md`
-Acceptance criteria: same bar as T-01; no compiler blocker known
+Acceptance criteria: same bar as T-01 — all met.
+
+Turned out NOT blocker-free: Array[N,T] had never been indexed, sized, or
+constructed from a literal anywhere in the corpus. Four compiler bugs found
+and fixed (commit 672f6f6): no indexing primitive existed (bracket sugar
+self-recurses through a Tuck-body `at`), `.len` failed on Odin/D for Array,
+list literals always built a Seq even against a declared Array[N,T] field,
+D's generic template params didn't distinguish a size value from a type.
+Then a FIFTH, unrelated to Array specifically (commit e973a25): a Tuck
+module literally named `array` collides with Nim's builtin `array[N,T]` —
+general fix, benefits any future module named after a Nim builtin
+(`seq`/`set`/`string`/...).
 
 ## T-03: core.types
 Status: pending
