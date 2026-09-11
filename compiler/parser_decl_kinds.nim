@@ -324,24 +324,31 @@ proc parseQualifiedName*(p: var Parser): string =
     result.add("." & p.expect(tkIdent,
                               "Expected qualified name component").value)
 
-proc parseBracketedNames*(p: var Parser, what: string): (seq[string], seq[seq[string]]) =
+proc parseBracketedNames*(p: var Parser, what: string): (seq[string], seq[seq[Type]]) =
   ## `[A, B, C]` — a comma-separated name list in brackets, each optionally
-  ## followed by `: Bound (+ Bound)*` (spec §5.5) — `[T: Sortable + Hashable]`.
-  ## Returns the bare names and, parallel to them, each one's required group
-  ## names (empty seq = unconstrained). Sole caller is parseFnDecl, so this
-  ## grew the bound syntax in place rather than growing a second near-copy of
-  ## itself beside it.
+  ## followed by `: Bound (+ Bound)*` (spec §5.5) — `[T: Sortable + Hashable]`,
+  ## `[C: Indexable[E], E]`. Returns the bare names and, parallel to them, each
+  ## one's required groups as TYPES (empty seq = unconstrained), so a generic
+  ## group keeps its arguments.
+  ##
+  ## Each bound goes through parseType, which is what makes `Indexable[E]`
+  ## work without a second type grammar here. parseType also folds `A + B`
+  ## into one tkUnion, so the `+`-joined form arrives as a single member list
+  ## and is flattened back out — the bounds are separate requirements, not a
+  ## composed type.
   if p.current().kind != tkLBracket: return
   discard p.advance()
   while p.current().kind notin {tkRBracket, tkEOF}:
     result[0].add(p.expect(tkIdent, "Expected " & what).value)
-    var bounds: seq[string]
+    var bounds: seq[Type]
     if p.current().kind == tkColon:
       discard p.advance()
-      bounds.add(p.expect(tkIdent, "Expected a group name after ':'").value)
-      while p.current().kind == tkPlus:
-        discard p.advance()
-        bounds.add(p.expect(tkIdent, "Expected a group name after '+'").value)
+      let t = p.parseType()
+      if t != nil and t.kind == tkUnion:
+        for m in t.members:
+          if m != nil: bounds.add(m)
+      elif t != nil:
+        bounds.add(t)
     result[1].add(bounds)
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBracket)
@@ -973,7 +980,13 @@ proc parseGroupDecl*(p: var Parser, sp: Span): Decl =
   ## rejected the same way dkInterface itself rejected sharing dkMixin's —
   ## the two are checked by different code at different times, and a flag
   ## just relocates the "which kind is this" question rather than answering it.
+  ##
+  ## `group NAME[E]:` declares the group's own type parameters, which a use
+  ## site supplies (`[C: Indexable[int]]`). They are NOT bounded themselves —
+  ## a bound on a group's own parameter would be a second constraint system
+  ## to check, and nothing needs one yet.
   discard p.advance()
   let name = p.expectTypeName("group").value
-  Decl(span: sp, kind: dkGroup, name: name,
+  let (generics, _) = p.parseBracketedNames("group type parameter")
+  Decl(span: sp, kind: dkGroup, name: name, groupGenerics: generics,
        groupMembers: p.parseSigBlock("group"))

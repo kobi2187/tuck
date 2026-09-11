@@ -231,4 +231,75 @@ fn main() -> int:
   t.badCheck "satisfying a group name fails, distinctly from a missing interface",
     "is a group.*not an interface"
 
+  # --- a GENERIC group: the element type no container type can reveal -------
+  # `Indexable[E]` is the shape every collection contract needs and no value
+  # contract does: `Self` is the container, and nothing recovers what it holds.
+  # E appears nowhere in firstOf's arguments, so the call site cannot infer it
+  # the ordinary way — it is solved from the conformance itself, by unifying
+  # the requirement against the `at` that Row actually declares. That is what
+  # an associated type does in Rust and Swift, reached through the group's own
+  # parameters instead of a second declaration form.
+  t.src """
+group Indexable[E]:
+  fn at({self: Self, index: int}) -> E
+  fn len({self: Self}) -> int
+
+type Row = {cells: Seq[int]}
+
+fn at({self: Row, index: int}) -> int:
+  return self.cells[index]
+
+fn len({self: Row}) -> int:
+  return self.cells.len
+
+fn firstOf[C: Indexable[E], E]({c: C}) -> E:
+  return {self: c, index: 0} at
+
+fn main() -> int:
+  let r = {cells: [7, 8]} Row
+  let v = {c: r} firstOf
+  return v - 7
+"""
+  t.okCheck "a generic group's parameter is solved from the conformance"
+
+  # The bound's arity is the group's, not a free choice.
+  t.src """
+group Indexable[E]:
+  fn at({self: Self, index: int}) -> E
+
+type Row = {cells: Seq[int]}
+
+fn at({self: Row, index: int}) -> int:
+  return self.cells[index]
+
+fn firstOf[C: Indexable]({c: C}) -> int:
+  return {self: c, index: 0} at
+
+fn main() -> int:
+  let r = {cells: [7, 8]} Row
+  return {c: r} firstOf - 7
+"""
+  t.badCheck "a generic group named with no arguments is rejected", "E"
+
+  # An explicit argument is a STATED requirement, never a hole to re-solve:
+  # `Indexable[str]` against a Row whose `at` returns int has to fail.
+  t.src """
+group Indexable[E]:
+  fn at({self: Self, index: int}) -> E
+
+type Row = {cells: Seq[int]}
+
+fn at({self: Row, index: int}) -> int:
+  return self.cells[index]
+
+fn firstOf[C: Indexable[str], E]({c: C}) -> E:
+  return {self: c, index: 0} at
+
+fn main() -> int:
+  let r = {cells: [7, 8]} Row
+  let v = {c: r} firstOf
+  return 0
+"""
+  t.badCheck "an explicit group argument is not re-solved to fit", "str"
+
   t.finish()

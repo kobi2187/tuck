@@ -545,10 +545,16 @@ type
       poolCount*: int
     of dkFn:
       fnGenerics*: seq[string]
-      fnGenericBounds*: seq[seq[string]] # parallel to fnGenerics; bounds[i] =
-                                          # the `group` names required for
+      fnGenericBounds*: seq[seq[Type]]   # parallel to fnGenerics; bounds[i] =
+                                          # the `group`s required for
                                           # fnGenerics[i] (`[T: A + B]`), empty
-                                          # seq = unconstrained. Kept SEPARATE
+                                          # seq = unconstrained. A TYPE, not a
+                                          # name, so a generic group carries its
+                                          # arguments: `[C: Indexable[E], E]` is
+                                          # a tkApp whose args supply the
+                                          # group's own parameters, exactly as
+                                          # `Self` supplies the bound type.
+                                          # Kept SEPARATE
                                           # from fnGenerics itself (rather than
                                           # widening its element type) because
                                           # every codegen backend reads
@@ -590,6 +596,15 @@ type
     of dkInterface:
       ifaceMembers*: seq[Decl]  # body-less dkFn sigs — the requirements
     of dkGroup:
+      groupGenerics*: seq[string]
+                                # `group Indexable[E]` — the group's OWN type
+                                # parameters, bound at each use site
+                                # (`[C: Indexable[int]]`). Distinct from `Self`,
+                                # which is the bounded type itself and needs no
+                                # declaring: a container's ELEMENT type cannot
+                                # be recovered from the container type alone,
+                                # which is why every collection contract needs
+                                # this and no value contract does.
       groupMembers*: seq[Decl]  # body-less dkFn sigs — same shape as
                                  # ifaceMembers, checked at a different time
     of dkActor:

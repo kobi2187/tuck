@@ -56,6 +56,13 @@ type
       ## resolved a different way — directly from a SLOT's own declared type
       ## args (`Mapper[int, str]`), never inferred from a call's arguments.
     currentGenerics*: HashSet[string]          # type params of the fn body being checked
+    currentBounds*: Table[string, seq[Type]]
+                           ## while checking a generic body: type param -> the
+                           ## groups bounding it. A call to a requirement's
+                           ## name on a value of that param is typed from the
+                           ## GROUP, so the body is checked once against the
+                           ## contract instead of resolving to whichever
+                           ## concrete fn happens to share the name.
     scopes*: seq[Table[string, Binding]]
     currentRet*: Type
     currentFn*: string

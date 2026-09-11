@@ -1713,25 +1713,150 @@ proc recordCallParams(tc: var TypeChecker, fnName: string, params: seq[Param],
   for p in params: names.add(p.name)
   setCallParams(semLayer, e, names)
 
-proc groupMemberSigText(want: Decl, selfT: Type): string =
+proc groupNameOf*(t: Type): string =
+  ## The group a bound names, written bare (`Sortable`) or applied
+  ## (`Indexable[E]`). "" when the type names no group at all.
+  if t == nil: return ""
+  if t.kind == tkNamed: return t.name
+  if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed:
+    return t.base.name
+  ""
+
+proc groupBindings(g: Decl, bound: Type): Table[string, Type] =
+  ## A generic group's own parameters bound to what the use site supplied:
+  ## `group Indexable[E]` under `[C: Indexable[int]]` binds E to int. Empty
+  ## for a non-generic group, and empty when the arity does not match — the
+  ## caller reports that as its own error rather than substituting halfway.
+  if g.groupGenerics.len == 0: return
+  let args = if bound != nil and bound.kind == tkApp: bound.args else: @[]
+  if args.len != g.groupGenerics.len: return
+  for i, name in g.groupGenerics: result[name] = args[i]
+
+proc substituteGroup(t: Type, selfT: Type, binds: Table[string, Type]): Type =
+  ## A requirement's type read at one instantiation: `Self` becomes the bound
+  ## type, and the group's own parameters become the use site's arguments.
+  ## Both in one place, because every reader of a requirement needs both and
+  ## a half-substituted type is a silently wrong one.
+  result = substituteSelf(t, selfT)
+  if binds.len > 0 and result != nil: result = substituteType(result, binds)
+
+proc groupMemberSigText(want: Decl, selfT: Type,
+                        binds: Table[string, Type]): string =
   ## One required signature, `Self` read as the concrete type it is being
   ## checked against — the group-bound sibling of typecheck_conformance's
   ## own sigText, which reads `Self` as an object's name instead.
   var ps: seq[string]
   for p in want.fnParams:
-    ps.add(p.name & ": " & typeName(substituteSelf(p.typ, selfT)))
+    ps.add(p.name & ": " & typeName(substituteGroup(p.typ, selfT, binds)))
   result = "fn " & want.name & "({" & ps.join(", ") & "})"
-  let ret = substituteSelf(want.fnReturnType, selfT)
+  let ret = substituteGroup(want.fnReturnType, selfT, binds)
   if ret != nil: result.add(" -> " & typeName(ret))
 
-proc checkOneGroupBound(tc: TypeChecker, groupName: string, concreteT: Type,
-                        paramName, fnName: string, sp: Span) =
+proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
+                      binds: Table[string, Type], groupName, paramName,
+                      fnName: string, sp: Span) =
+  ## One requirement against what `concreteT` actually declares.
+  if not tc.fnSigs.hasKey(want.name):
+    fail("Conformance Error: '" & typeName(concreteT) & "', bound to '" &
+         paramName & ": " & groupName & "' in '" & fnName &
+         "', does not provide\n    " &
+         groupMemberSigText(want, concreteT, binds) &
+         "\n  (declare a free fn matching that shape for " &
+         typeName(concreteT) & ")", sp)
+    return
+  let got = tc.sigOf(want.name)
+  let wantParams = want.fnParams
+  if wantParams.len != got.params.len:
+    fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
+         "' takes " & $got.params.len & " parameter(s), group '" &
+         groupName & "' requires " & $wantParams.len, sp)
+    return
+  for i in 0 ..< wantParams.len:
+    let w = wantParams[i]
+    let gp = got.params[i]
+    if w.name != gp.name:
+      fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
+           want.name & "' names parameter " & $(i + 1) & " '" & gp.name &
+           "', group '" & groupName & "' calls it '" & w.name &
+           "' (payload fields bind by name)", sp)
+    elif not tc.compatible(gp.typ, substituteGroup(w.typ, concreteT, binds)):
+      fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
+           want.name & "' parameter '" & w.name & "' is " &
+           typeName(gp.typ) & ", group '" & groupName & "' requires " &
+           typeName(substituteGroup(w.typ, concreteT, binds)), sp)
+  let wantRet = substituteGroup(want.fnReturnType, concreteT, binds)
+  if wantRet != nil and not tc.compatible(got.ret, wantRet):
+    fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
+         "' returns " & typeName(got.ret) & ", group '" & groupName &
+         "' requires " & typeName(wantRet), sp)
+
+proc groupArgHoles(binds: Table[string, Type],
+                   fnGenerics: seq[string]): Table[string, string] =
+  ## Which of a group's own parameters the use site left open, and which of
+  ## the enclosing fn's type params each one stands for. A hole is written
+  ## plainly (`Indexable[E]`, a tkNamed naming one of the fn's generics) or
+  ## already carries the type-param sentinel, depending on whether the call
+  ## site managed to bind it.
+  for gp, arg in binds:
+    var n = typeParamName(arg)
+    if n == "" and arg != nil and arg.kind == tkNamed and arg.name in fnGenerics:
+      n = arg.name
+    if n != "": result[gp] = n
+
+proc unifyRequirements(tc: TypeChecker, g: Decl, concreteT: Type,
+                       solved: var Table[string, Type],
+                       fnName: string, sp: Span) =
+  ## Unify every requirement, `Self` read as the concrete type, against the fn
+  ## that type actually declares. Whatever the group's parameters have to be
+  ## for that to hold is what they are.
+  for want in g.groupMembers:
+    if want == nil or want.kind != dkFn or not tc.fnSigs.hasKey(want.name):
+      continue
+    let got = tc.sigOf(want.name)
+    for i, w in want.fnParams:
+      if i < got.params.len:
+        tc.inferBindings(substituteSelf(w.typ, concreteT), got.params[i].typ,
+                         g.groupGenerics, solved, fnName, sp)
+    tc.inferBindings(substituteSelf(want.fnReturnType, concreteT), got.ret,
+                     g.groupGenerics, solved, fnName, sp)
+
+proc solveGroupArgs(tc: TypeChecker, g: Decl, concreteT: Type,
+                    binds: var Table[string, Type],
+                    outer: var Table[string, Type],
+                    fnGenerics: seq[string], fnName: string, sp: Span) =
+  ## `fn firstOf[C: Indexable[E], E]({c: C}) -> E` — E appears nowhere in the
+  ## arguments, so the call site cannot infer it the ordinary way. Solve it
+  ## from the CONFORMANCE instead: unify each requirement (with `Self` read as
+  ## the concrete type) against the fn that concrete type actually declares,
+  ## and whatever `E` has to be for that to hold is what E is. This is what an
+  ## associated type does in Rust and Swift, arrived at through the group's
+  ## own parameters rather than a second declaration form.
+  ##
+  ## Only ever fills parameters the use site left as a type param. An explicit
+  ## `Indexable[int]` is a stated requirement, not a hole, and stays stated —
+  ## a mismatch against it has to be reported, not quietly re-solved.
+  if g.groupGenerics.len == 0: return
+  let holes = groupArgHoles(binds, fnGenerics)
+  if holes.len == 0: return
+  var solved: Table[string, Type]
+  tc.unifyRequirements(g, concreteT, solved, fnName, sp)
+  for gp, outerName in holes:
+    if solved.hasKey(gp) and solved[gp] != nil:
+      binds[gp] = solved[gp]
+      outer[outerName] = solved[gp]
+
+proc checkOneGroupBound(tc: TypeChecker, bound: Type, concreteT: Type,
+                        paramName, fnName: string,
+                        bindings: var Table[string, Type],
+                        fnGenerics: seq[string], sp: Span) =
   ## Spec §5.5: does `concreteT` provide a free fn matching every signature
-  ## `groupName` requires, `Self` read as `concreteT`? No attach statement to
+  ## the bound's group requires, `Self` read as `concreteT` and the group's
+  ## own parameters read as the bound's arguments? No attach statement to
   ## consult — the check is fresh, structural-but-named, at this one
   ## instantiation. `tc.groupDecls`, never `tc.ifaceDecls`: a `[T: Speaker]`
   ## naming an INTERFACE is a different mistake with its own message (see
   ## whyNotAnObject's dkGroup arm for the inverse case).
+  let groupName = groupNameOf(bound)
   if not tc.groupDecls.hasKey(groupName):
     if tc.ifaceDecls.hasKey(groupName):
       fail("Type Error: '" & groupName & "' is an interface, not a group " &
@@ -1742,43 +1867,20 @@ proc checkOneGroupBound(tc: TypeChecker, groupName: string, concreteT: Type,
          "' is not a declared group", sp)
     return
   let g = tc.groupDecls[groupName]
+  let supplied = if bound != nil and bound.kind == tkApp: bound.args.len else: 0
+  if supplied != g.groupGenerics.len:
+    fail("Type Error: group '" & groupName & "' takes " &
+         $g.groupGenerics.len & " type parameter(s), bound on '" & paramName &
+         "' in '" & fnName & "' supplies " & $supplied, sp)
+    return
+  var binds = groupBindings(g, bound)
+  tc.solveGroupArgs(g, concreteT, binds, bindings, fnGenerics, fnName, sp)
   for want in g.groupMembers:
     if want == nil or want.kind != dkFn: continue
-    if not tc.fnSigs.hasKey(want.name):
-      fail("Conformance Error: '" & typeName(concreteT) & "', bound to '" &
-           paramName & ": " & groupName & "' in '" & fnName &
-           "', does not provide\n    " & groupMemberSigText(want, concreteT) &
-           "\n  (declare a free fn matching that shape for " &
-           typeName(concreteT) & ")", sp)
-      continue
-    let got = tc.sigOf(want.name)
-    let wantParams = want.fnParams
-    if wantParams.len != got.params.len:
-      fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
-           "' takes " & $got.params.len & " parameter(s), group '" &
-           groupName & "' requires " & $wantParams.len, sp)
-      continue
-    for i in 0 ..< wantParams.len:
-      let w = wantParams[i]
-      let gp = got.params[i]
-      if w.name != gp.name:
-        fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
-             want.name & "' names parameter " & $(i + 1) & " '" & gp.name &
-             "', group '" & groupName & "' calls it '" & w.name &
-             "' (payload fields bind by name)", sp)
-      elif not tc.compatible(gp.typ, substituteSelf(w.typ, concreteT)):
-        fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
-             want.name & "' parameter '" & w.name & "' is " &
-             typeName(gp.typ) & ", group '" & groupName & "' requires " &
-             typeName(substituteSelf(w.typ, concreteT)), sp)
-    let wantRet = substituteSelf(want.fnReturnType, concreteT)
-    if wantRet != nil and not tc.compatible(got.ret, wantRet):
-      fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
-           "' returns " & typeName(got.ret) & ", group '" & groupName &
-           "' requires " & typeName(wantRet), sp)
+    tc.checkGroupMember(want, concreteT, binds, groupName, paramName, fnName, sp)
 
 proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string,
-                               bindings: Table[string, Type], sp: Span) =
+                               bindings: var Table[string, Type], sp: Span) =
   ## After a generic fn's type params are bound to concrete types, verify
   ## every `[T: Group]` bound actually holds (spec §5.5). Looked up from the
   ## ORIGINAL declaration rather than threaded through FnSig or the
@@ -1804,8 +1906,13 @@ proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string,
         if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == paramName:
           reportedName = p.name
           break
-    for groupName in bounds:
-      tc.checkOneGroupBound(groupName, concreteT, reportedName, fnName, sp)
+    for bound in bounds:
+      # A generic group's arguments are usually written in terms of the fn's
+      # OTHER type params — `[C: Indexable[E], E]`. Bind them the same way the
+      # bounded param itself was bound, so the requirement is checked against
+      # the element type the call actually supplied rather than the letter E.
+      tc.checkOneGroupBound(substituteType(bound, bindings), concreteT,
+                            reportedName, fnName, bindings, d.fnGenerics, sp)
 
 proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
                     t: Type, bindings: var Table[string, Type]): bool =
@@ -1910,7 +2017,7 @@ proc failIfCalleeReadsHole(tc: var TypeChecker, fnName, paramName: string,
        " — set " & (if hit.len == 1: "it" else: "them") & " before the call",
        af.span)
 
-proc groupNamesOfUnion(tc: TypeChecker, t: Type): seq[string] =
+proc groupNamesOfUnion(tc: TypeChecker, t: Type): seq[Type] =
   ## `{x: Sortable + Hashable}` — a bound written directly on a PARAMETER's
   ## type, spec §5.5's other spelling of a group bound (alongside
   ## `fn f[T: Sortable + Hashable]`). Parses as an ordinary type composition
@@ -1925,9 +2032,9 @@ proc groupNamesOfUnion(tc: TypeChecker, t: Type): seq[string] =
   ## on its own terms rather than guessed at here).
   if t == nil or t.kind != tkUnion: return
   for m in t.members:
-    if m == nil or m.kind != tkNamed or not tc.groupDecls.hasKey(m.name):
+    if m == nil or not tc.groupDecls.hasKey(groupNameOf(m)):
       return @[]
-  for m in t.members: result.add(m.name)
+  for m in t.members: result.add(m)
 
 proc desugarGroupBoundParams(tc: var TypeChecker, m: Module) =
   ## Rewrites `{x: Sortable + Hashable}` into an ordinary bound generic —
@@ -2542,12 +2649,59 @@ proc asNamedCallee(tc: var TypeChecker, e: Expr, calleeName: string): Type =
     return Type(span: e.span, kind: tkNamed, name: "unit")
   nil
 
+proc payloadCarriesTypeParam(tc: var TypeChecker, e: Expr, tp: string): bool =
+  ## Does this call's payload actually hold a value of the type param `tp`?
+  ## The gate on group-requirement typing: `{self: c, index: 0} at` inside
+  ## `[C: Indexable[E]]` is the group's `at` only because `c` is the C, and
+  ## an unrelated call to a same-named concrete fn must not be hijacked.
+  proc isParam(t: Type, tp: string): bool =
+    # A type param reaches here spelled `<typeparam:C>`, not `C` — the same
+    # sentinel inferBindings reads through typeParamName.
+    t != nil and (typeParamName(t) == tp or
+                  (t.kind == tkNamed and t.name == tp))
+  for a in e.args:
+    let t = tc.resolve(tc.synthesize(a))
+    if t == nil: continue
+    if isParam(t, tp): return true
+    if t.kind == tkRecord:
+      for f in t.fields:
+        if isParam(f.typ, tp): return true
+  false
+
+proc asGroupRequirement(tc: var TypeChecker, e: Expr, calleeName: string): Type =
+  ## Inside `fn firstOf[C: Indexable[E], E]`, a call to `at` on the C IS the
+  ## group's `at` — typed from the requirement with `Self` read as C and the
+  ## group's own parameters read as the bound's arguments. Without this the
+  ## call resolves to whichever concrete `at` the flat table holds and the
+  ## body is checked against that one type, which is both wrong and defeats
+  ## the point of the bound.
+  ##
+  ## Runs BEFORE asNamedCallee, unlike every other resolution here, and is
+  ## safe to: payloadCarriesTypeParam means it only ever claims a call whose
+  ## receiver is the bounded parameter itself.
+  if calleeName == "" or tc.currentBounds.len == 0: return nil
+  for tp, bounds in tc.currentBounds:
+    for bound in bounds:
+      let gname = groupNameOf(bound)
+      if not tc.groupDecls.hasKey(gname): continue
+      let g = tc.groupDecls[gname]
+      for want in g.groupMembers:
+        if want == nil or want.kind != dkFn or want.name != calleeName:
+          continue
+        if not tc.payloadCarriesTypeParam(e, tp): continue
+        let selfT = Type(span: e.span, kind: tkNamed, name: tp)
+        return substituteGroup(want.fnReturnType, selfT, groupBindings(g, bound))
+  nil
+
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
-  ## What `{payload} name` means, in priority order: a name (distinct /
-  ## construction / declared fn), then a callee that is not a bare name at
-  ## all. Nothing claims it -> Unknown, gradually. The record combinators are
-  ## NOT here — they are exkCombinator nodes the parser already decided on.
+  ## What `{payload} name` means, in priority order: a group requirement on a
+  ## bounded type param, then a name (distinct / construction / declared fn),
+  ## then a callee that is not a bare name at all. Nothing claims it ->
+  ## Unknown, gradually. The record combinators are NOT here — they are
+  ## exkCombinator nodes the parser already decided on.
   let calleeName = tc.calleeNameOf(e)
+  let viaGroup = tc.asGroupRequirement(e, calleeName)
+  if viaGroup != nil: return viaGroup
   if calleeName in ParenBuiltinNames:
     # Args are type names, not values — see ParenBuiltinNames. Result is
     # always a plain size/offset.
@@ -3686,7 +3840,12 @@ proc checkFnDecl(tc: var TypeChecker, d: Decl) =
     return
   checkFallibleNeedsIo(d.name, d.fnReturnType, d.fnEffects, d.span)
   tc.currentErrTypes = d.fnErrorTypes
+  tc.currentBounds = initTable[string, seq[Type]]()
+  for i, g in d.fnGenerics:
+    if i < d.fnGenericBounds.len and d.fnGenericBounds[i].len > 0:
+      tc.currentBounds[g] = d.fnGenericBounds[i]
   tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody, d.fnGenerics)
+  tc.currentBounds = initTable[string, seq[Type]]()
   tc.currentErrTypes = @[]
 
 proc checkObjectDecl(tc: var TypeChecker, d: Decl) =
