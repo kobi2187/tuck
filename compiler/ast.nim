@@ -491,6 +491,19 @@ type
                 # mixin hold a cstring past the pointer rule (see
                 # checkPointerContainment) — the same mistake twice would be
                 # careless.
+    dkGroup     # `group NAME:` — a compile-time bound for a generic type
+                # parameter (spec §5.5). Same requirement-list body grammar as
+                # dkInterface, but resolved and discarded entirely before
+                # codegen: no dispatch, no tag, no copying-variant
+                # representation, and — unlike dkInterface/dkSatisfies — no
+                # type ever declares it belongs to one. `fn f[T: Sortable]`
+                # checks, at each instantiation, that the concrete T has a
+                # free fn matching the requirement; nothing is ever attached.
+                # Its own kind rather than reusing dkInterface with a flag:
+                # the two are checked at completely different times (object
+                # declaration vs generic instantiation) by completely
+                # different code paths, and a flag would just move the "which
+                # kind is this really" question one field over.
     dkWhen      # `when TARGET == "value":` — compile-time platform selection
                 # (spec §8.3). Resolved by modules.resolveWhenBlocks right after
                 # load, BEFORE typecheck ever runs: a non-matching block's decls
@@ -532,6 +545,18 @@ type
       poolCount*: int
     of dkFn:
       fnGenerics*: seq[string]
+      fnGenericBounds*: seq[seq[string]] # parallel to fnGenerics; bounds[i] =
+                                          # the `group` names required for
+                                          # fnGenerics[i] (`[T: A + B]`), empty
+                                          # seq = unconstrained. Kept SEPARATE
+                                          # from fnGenerics itself (rather than
+                                          # widening its element type) because
+                                          # every codegen backend reads
+                                          # fnGenerics directly to emit a
+                                          # generic parameter list, and a bound
+                                          # is erased before codegen ever runs
+                                          # — nothing there needs to change or
+                                          # even know this field exists.
       fnParams*: seq[Param]
       fnReturnType*: Type
       fnEffects*: seq[EffectMarker]
@@ -564,6 +589,9 @@ type
       whenDecls*: seq[Decl]     # top-level declarations gated by this block
     of dkInterface:
       ifaceMembers*: seq[Decl]  # body-less dkFn sigs — the requirements
+    of dkGroup:
+      groupMembers*: seq[Decl]  # body-less dkFn sigs — same shape as
+                                 # ifaceMembers, checked at a different time
     of dkActor:
       attrs*: seq[TypeAttr]
       actorFields*: seq[FieldDef]

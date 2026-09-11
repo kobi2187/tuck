@@ -141,7 +141,7 @@ proc declaredName*(d: Decl): string =
   ## one that introduces none (an expression, an import, the errors block).
   case d.kind
   of dkFn, dkType, dkObject, dkActor, dkTask, dkConst, dkRegistry, dkPool,
-     dkFnSig, dkInterface, dkRegister: d.name
+     dkFnSig, dkInterface, dkGroup, dkRegister: d.name
   else: ""
 
 proc failIfDuplicateDecl*(m: Module) =
@@ -232,7 +232,7 @@ proc failIfDuplicateMembers*(m: Module) =
       failIfDuplicateTypeMembers(m, d)
     of dkRegistry, dkPool, dkMixin, dkExtern, dkPending, dkExpr, dkConst,
        dkRegister, dkStaticAssert, dkErrors, dkImport, dkInterface,
-       dkSelect, dkFnSig, dkSatisfies:
+       dkGroup, dkSelect, dkFnSig, dkSatisfies:
       discard  # no field/param set of their own to check
     of dkWhen:
       discard  # never reaches here — resolveWhenBlocks runs before typecheck

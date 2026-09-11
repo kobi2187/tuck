@@ -1,0 +1,234 @@
+## `group` — a compile-time bound for generics (spec §5.5).
+##
+## Distinct from `interface`: no dispatch, no tag, no copying-variant
+## representation, and no attach statement. `fn f[T: Sortable]` checks, at
+## each instantiation, that the concrete T has a free fn matching the
+## requirement — the same shape-matching a `:fnRef` already gets against a
+## `fnsig`. Fully resolved and discarded before codegen ever runs.
+
+import ../harness
+
+proc run*(t: var T) =
+  # --- the declaration and a passing bound ----------------------------------
+  t.src """
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+type Order:
+  | Before
+  | Same
+  | After
+
+type Box = {value: int}
+
+fn compare({self: Box, other: Box}) -> Order:
+  if self.value < other.value:
+    return Order.Before
+  if self.value > other.value:
+    return Order.After
+  return Order.Same
+
+fn smallerOf[T: Sortable]({a: T, b: T}) -> T:
+  let c = {self: a, other: b} compare
+  match c:
+    Before: return a
+    Same: return a
+    After: return b
+
+fn main() -> int:
+  let b1 = {value: 1} Box
+  let b2 = {value: 2} Box
+  let s = {a: b1, b: b2} smallerOf
+  return s.value - 1
+"""
+  t.okCheck "a group bound checks against a concrete type providing the shape"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and runs", 0
+
+  # --- a missing member names the group and the shape it required ----------
+  t.src """
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+type NoCompare = {value: int}
+
+fn smallerOf[T: Sortable]({a: T, b: T}) -> T:
+  return a
+
+fn main() -> int:
+  let n1 = {value: 1} NoCompare
+  let n2 = {value: 2} NoCompare
+  let s = {a: n1, b: n2} smallerOf
+  return 0
+"""
+  t.badCheck "a concrete type missing the required shape fails, naming both",
+    "'NoCompare', bound to 'T: Sortable' in 'smallerOf', does not provide"
+
+  # --- multiple groups on one type param, `+`-joined ------------------------
+  t.src """
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+group Hashable:
+  fn hashOf({self: Self}) -> u64
+
+type Order:
+  | Before
+  | Same
+  | After
+
+type Box = {value: int}
+
+fn compare({self: Box, other: Box}) -> Order:
+  return Order.Same
+
+fn hashOf({self: Box}) -> u64:
+  return 0
+
+fn needsBoth[T: Sortable + Hashable]({a: T}) -> u64:
+  return {self: a} hashOf
+
+fn main() -> int:
+  let b = {value: 1} Box
+  if {a: b} needsBoth != 0:
+    return 1
+  return 0
+"""
+  t.okCheck "multiple `+`-joined groups on one type param check"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and runs", 0
+
+  t.src """
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+group Hashable:
+  fn hashOf({self: Self}) -> u64
+
+type Order:
+  | Before
+  | Same
+  | After
+
+type Box = {value: int}
+
+fn compare({self: Box, other: Box}) -> Order:
+  return Order.Same
+
+fn needsBoth[T: Sortable + Hashable]({a: T}) -> u64:
+  return 0
+
+fn main() -> int:
+  let b = {value: 1} Box
+  return {a: b} needsBoth - 0
+"""
+  t.badCheck "one missing group among several names exactly that one",
+    "'Box', bound to 'T: Hashable' in 'needsBoth', does not provide"
+
+  # --- the bound written directly on a parameter's type ---------------------
+  t.src """
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+group Hashable:
+  fn hashOf({self: Self}) -> u64
+
+type Order:
+  | Before
+  | Same
+  | After
+
+type Box = {value: int}
+
+fn compare({self: Box, other: Box}) -> Order:
+  return Order.Same
+
+fn hashOf({self: Box}) -> u64:
+  return 0
+
+fn describe({item: Sortable + Hashable}) -> u64:
+  return {self: item} hashOf
+
+fn main() -> int:
+  let b = {value: 1} Box
+  if {item: b} describe != 0:
+    return 1
+  return 0
+"""
+  t.okCheck "a bound written directly on a parameter's type checks too"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and runs", 0
+
+  t.src """
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+group Hashable:
+  fn hashOf({self: Self}) -> u64
+
+type Order:
+  | Before
+  | Same
+  | After
+
+type NoHash = {value: int}
+
+fn compare({self: NoHash, other: NoHash}) -> Order:
+  return Order.Same
+
+fn describe({item: Sortable + Hashable}) -> u64:
+  return 0
+
+fn main() -> int:
+  let n = {value: 1} NoHash
+  return {item: n} describe - 0
+"""
+  t.badCheck "an inline bound's error names the PARAMETER, not the synthesized type param",
+    "'NoHash', bound to 'item: Hashable' in 'describe', does not provide"
+
+  # --- wrong keyword, both directions ----------------------------------------
+  t.src """
+interface Speaker:
+  fn speak({volume: int}) -> str
+
+object Dog:
+  satisfies Speaker
+  name: str
+
+  fn speak({volume: int}) -> str:
+    return self.name
+
+fn announce[T: Speaker]({who: T}) -> str:
+  return {volume: 1} who.speak
+
+fn main() -> int:
+  let d = Dog {name: "Rex"}
+  let s = {who: d} announce
+  return s.len - 3
+"""
+  t.badCheck "naming an interface as a generic bound fails, distinctly from a missing group",
+    "is an interface, not a group"
+
+  t.src """
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+type Order:
+  | Before
+  | Same
+  | After
+
+object Box:
+  satisfies Sortable
+  value: int
+
+  fn compare({self: Self, other: Self}) -> Order:
+    return Order.Same
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "satisfying a group name fails, distinctly from a missing interface",
+    "is a group.*not an interface"
+
+  t.finish()

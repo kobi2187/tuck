@@ -108,6 +108,18 @@ type
                                       # from typeDeclsByName because an
                                       # interface is NOT a type: it has no size
                                       # and nothing is ever an instance of one.
+    groupDecls*: Table[string, Decl]  # `group NAME` (spec §5.5). Separate
+                                      # from ifaceDecls even though both hold
+                                      # a body-less requirement list: a group
+                                      # is looked up when a generic type
+                                      # parameter is bound (`[T: Sortable]`),
+                                      # never when an object declares
+                                      # `satisfies` — different callers, at a
+                                      # different pipeline stage, and mixing
+                                      # the two tables would let a `satisfies
+                                      # SomeGroup` or a `[T: SomeInterface]`
+                                      # silently resolve instead of failing
+                                      # with a message naming the mistake.
     objDecls*: Table[string, Decl]    # `object NAME` — to answer "does this
                                       # object declare `satisfies I`" at a call
                                       # site without rescanning the decl list

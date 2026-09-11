@@ -995,4 +995,6 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   of dkFnSig: ctx.genDFnSig(d)
   of dkSatisfies: dUnsupported("top-level satisfies (M4)")
   of dkInterface: ctx.genDInterface(d)
+  of dkGroup: ""  # a compile-time bound only (spec §5.5) — fully resolved
+                  # and discarded before codegen ever runs, nothing to emit
   of dkWhen: ""   # resolved away by modules.resolveWhenBlocks before codegen

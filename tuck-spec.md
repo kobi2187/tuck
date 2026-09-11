@@ -1036,6 +1036,73 @@ object PodcastApp:
 Compiler flags control runtime behavior of `pending` functions: trap (default in
 debug), return zero value (release stub), or log and continue.
 
+### 5.5 Groups — a compile-time bound for generics
+
+A `group` names a required shape for a generic type parameter — the thing
+`fn sort[T]` reaches for when it needs to say "any `T`, as long as it can be
+compared," without paying for `interface`'s dispatch machinery and without
+`interface`'s restriction to `object`.
+
+```tuck
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+fn sort[T: Sortable]({items: Seq[T]}) -> Seq[T]:
+  ...
+```
+
+The body is the identical requirement-list grammar `interface` already
+uses (§5.2) — a `group` and an `interface` can share the same shape of
+declaration; what differs is what happens with it afterward.
+
+**Nominal, but with no attach statement.** The group has a name, and that
+name is written explicitly at the point of use (`[T: Sortable]`) — this is
+not structural/duck-typed matching by an unnamed shape. But no type ever
+declares `satisfies SomeGroup`, and none is needed: whichever concrete type
+a bound type parameter is instantiated with, the compiler looks for a free
+function matching the group's required signature (`Self` substituted for
+that concrete type) and accepts or rejects — the same shape-matching a
+`:name` fn reference already gets against a `fnsig` (§4.x). A type
+"belongs" to a group purely by having the right function in scope, checked
+fresh at every instantiation; it never has to say so.
+
+**Multiple groups on one type parameter, `+`-separated:**
+
+```tuck
+fn sortAndDedup[T: Sortable + Hashable]({items: Seq[T]}) -> Seq[T]:
+  ...
+```
+
+matching Rust's own multi-bound syntax. This `+` and type composition's
+`+` (§4.5, `type X = A + B`) are unambiguous by position alone: composition
+`+` only ever follows `type Name =`; bound `+` only ever appears inside a
+generic parameter list's `[...]`.
+
+**Zero runtime cost, by construction.** A `group` bound is a compile-time
+proof requirement only — no tag, no vtable, no copying-variant
+representation. An accepted generic instantiation monomorphizes exactly as
+an unconstrained one does; the bound only changes what the checker demands
+before emitting it, never what gets emitted.
+
+**Why not just extend `interface`/`satisfies` to `type`.** `satisfies`
+needs a bounded, enumerable member set to check against — an `object`'s own
+body gives it one; a plain `type` does not (its associated functions are
+free-standing and unbounded, added anywhere, anytime). That restriction is
+real, not arbitrary: `interface` dispatch (§5.3) needs a closed, taggable
+type for its copying-tagged-variant representation, which is a genuinely
+object-shaped need (heterogeneous collections mixing several concrete
+types under one interface value). A `group` bound has no such need — it is
+resolved and discarded entirely at compile time, so it was given its own,
+lighter mechanism rather than stretching `interface` to cover a job its
+representation was never built for.
+
+**Open question, deliberately not settled here:** whether the function(s)
+that let a concrete type satisfy a `group` must live alongside that type's
+own declaration, or may arrive from a separate module — a type and a
+"package" fulfilling a group's requirements for it, brought in by import
+rather than written next to the type. Left open until there is a real case
+to settle it against, rather than guessed at now.
+
 ---
 
 ## Part 6: Correctness Features

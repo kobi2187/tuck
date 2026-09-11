@@ -130,6 +130,10 @@ proc whyNotAnObject(m: Module, name: string): string =
     of dkInterface:
       return "'" & name & "' is an interface. A contract is attached to the " &
              "object that IMPLEMENTS it, not to another contract."
+    of dkGroup:
+      return "'" & name & "' is a group (spec §5.5), not an interface — " &
+             "groups bound a generic type parameter (`[T: " & name &
+             "]`) and are never attached with `satisfies`."
     of dkType:
       return "'" & name & "' is a `type`, which declares data but no " &
              "members, so there is nothing for the contract to check. " &
@@ -208,6 +212,17 @@ proc checkConformance*(m: Module) =
     if d == nil or d.kind != dkObject or d.satisfies.len == 0: continue
     for iname in d.satisfies:
       if iname notin ifaces:
+        # A group (spec §5.5) shares interface's requirement-list body
+        # grammar, so `satisfies SomeGroup` parses fine and only fails here
+        # — worth a message that names the actual mistake rather than the
+        # generic "no interface by that name" a typo would also produce.
+        let g = m.findDecl(dkGroup, iname)
+        if g != nil:
+          fail("Conformance Error: object '" & d.name & "' satisfies '" &
+               iname & "', but '" & iname & "' is a group (spec §5.5), not " &
+               "an interface — groups bound a generic type parameter " &
+               "(`[T: " & iname & "]`) and are never attached with " &
+               "`satisfies`", d.span)
         fail("Conformance Error: object '" & d.name & "' satisfies '" & iname &
              "' but no interface by that name is declared", d.span)
       checkSatisfiesIface(d, ifaces[iname], iname)

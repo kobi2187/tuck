@@ -202,7 +202,7 @@ proc buildDeclIndex*(ctx: var CodegenCtx) =
     # actor references before this index would ever be asked about one.
     of dkFn, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkFnSig,
        dkRegistry, dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors,
-       dkImport, dkSelect, dkSatisfies, dkInterface, dkWhen: discard
+       dkImport, dkSelect, dkSatisfies, dkInterface, dkGroup, dkWhen: discard
   ctx.indexExterns()
   ctx.indexBuilt = true
 

@@ -126,6 +126,8 @@ iterator members*(d: Decl): Decl =
       for mem in d.handlers: (if mem != nil: yield mem)
     of dkInterface:
       for mem in d.ifaceMembers: (if mem != nil: yield mem)
+    of dkGroup:
+      for mem in d.groupMembers: (if mem != nil: yield mem)
     # Every remaining kind, named rather than caught by `else: discard`, so a
     # new DeclKind fails to compile here and gets decided instead of skipped.
     #

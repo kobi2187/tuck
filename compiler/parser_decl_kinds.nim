@@ -324,12 +324,25 @@ proc parseQualifiedName*(p: var Parser): string =
     result.add("." & p.expect(tkIdent,
                               "Expected qualified name component").value)
 
-proc parseBracketedNames*(p: var Parser, what: string): seq[string] =
-  ## `[A, B, C]` — a comma-separated name list in brackets.
+proc parseBracketedNames*(p: var Parser, what: string): (seq[string], seq[seq[string]]) =
+  ## `[A, B, C]` — a comma-separated name list in brackets, each optionally
+  ## followed by `: Bound (+ Bound)*` (spec §5.5) — `[T: Sortable + Hashable]`.
+  ## Returns the bare names and, parallel to them, each one's required group
+  ## names (empty seq = unconstrained). Sole caller is parseFnDecl, so this
+  ## grew the bound syntax in place rather than growing a second near-copy of
+  ## itself beside it.
   if p.current().kind != tkLBracket: return
   discard p.advance()
   while p.current().kind notin {tkRBracket, tkEOF}:
-    result.add(p.expect(tkIdent, "Expected " & what).value)
+    result[0].add(p.expect(tkIdent, "Expected " & what).value)
+    var bounds: seq[string]
+    if p.current().kind == tkColon:
+      discard p.advance()
+      bounds.add(p.expect(tkIdent, "Expected a group name after ':'").value)
+      while p.current().kind == tkPlus:
+        discard p.advance()
+        bounds.add(p.expect(tkIdent, "Expected a group name after '+'").value)
+    result[1].add(bounds)
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBracket)
 
@@ -468,9 +481,9 @@ proc parseSatisfyTargets*(p: var Parser): seq[string] =
     result.add(p.expect(tkIdent,
                         "Expected an interface name after ','").value)
 
-const TopLevelKeywords = "fn, type, object, actor, task, interface, mixin, " &
-  "fnsig, registry, decision, pending, distinct, const, import, extern, " &
-  "errors, register, pool, arena, satisfies, static_assert, when"
+const TopLevelKeywords = "fn, type, object, actor, task, interface, group, " &
+  "mixin, fnsig, registry, decision, pending, distinct, const, import, " &
+  "extern, errors, register, pool, arena, satisfies, static_assert, when"
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in parser.nim's
   ## contextualDecl.
@@ -876,12 +889,13 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
     isInline = true
     discard p.advance()
   let name = p.parseQualifiedName()
-  let generics = p.parseBracketedNames("generic parameter name")
+  let (generics, genericBounds) = p.parseBracketedNames("generic parameter name")
   let params = parseParamList(p)
   let retType = p.parseReturnType()
   let sig = p.parseSignatureTail(retType)
   let body = p.parseOptionalBody()
   Decl(span: sp, kind: dkFn, name: name, fnGenerics: generics,
+       fnGenericBounds: genericBounds,
        fnParams: params, fnReturnType: retType, fnEffects: sig.effects,
        fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline)
 
@@ -949,3 +963,17 @@ proc parseInterfaceDecl*(p: var Parser, sp: Span): Decl =
   let name = p.expectTypeName("interface").value
   Decl(span: sp, kind: dkInterface, name: name,
        ifaceMembers: p.parseSigBlock("interface"))
+
+proc parseGroupDecl*(p: var Parser, sp: Span): Decl =
+  ## `group NAME:` (spec §5.5) — same body grammar as `interface`, a
+  ## body-less sig block. What differs is entirely on the CHECKING side: an
+  ## interface is attached to an object and dispatched at runtime; a group
+  ## bounds a generic type parameter and is resolved, then discarded, at
+  ## compile time. Sharing dkInterface's arm with a flag was considered and
+  ## rejected the same way dkInterface itself rejected sharing dkMixin's —
+  ## the two are checked by different code at different times, and a flag
+  ## just relocates the "which kind is this" question rather than answering it.
+  discard p.advance()
+  let name = p.expectTypeName("group").value
+  Decl(span: sp, kind: dkGroup, name: name,
+       groupMembers: p.parseSigBlock("group"))

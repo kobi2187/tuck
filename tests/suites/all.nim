@@ -26,6 +26,7 @@ import interface_dispatch
 import interface_seq
 import interface_wrap
 import interfaces
+import groups
 import known_bugs
 import loop_var_type
 import mangle
@@ -69,6 +70,7 @@ let registry: seq[Entry] = @[
   ("interface_seq",       SuiteProc(interface_seq.run),       false),
   ("interface_wrap",      SuiteProc(interface_wrap.run),      true),
   ("interfaces",          SuiteProc(interfaces.run),          true),
+  ("groups",              SuiteProc(groups.run),              true),
   ("known_bugs",          SuiteProc(known_bugs.run),          false),
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
   ("mangle",              SuiteProc(mangle.run),              true),

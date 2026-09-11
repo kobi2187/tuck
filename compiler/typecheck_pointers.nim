@@ -188,6 +188,8 @@ proc checkPointerContainment(decls: TypeDecls, d: Decl, inExtern = false) =
     for m in d.mixinMembers: checkPointerContainment(decls, m, inExtern)
   of dkInterface:
     for m in d.ifaceMembers: checkPointerContainment(decls, m, inExtern)
+  of dkGroup:
+    for m in d.groupMembers: checkPointerContainment(decls, m, inExtern)
   of dkPool: failIfPointer(decls, d.poolElem, "a pool element type", d.span)
   of dkFnSig: checkFnSigPointers(decls, d, inExtern)
   of dkRegistry: checkRegistryPointers(decls, d)

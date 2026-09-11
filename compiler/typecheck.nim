@@ -1713,6 +1713,100 @@ proc recordCallParams(tc: var TypeChecker, fnName: string, params: seq[Param],
   for p in params: names.add(p.name)
   setCallParams(semLayer, e, names)
 
+proc groupMemberSigText(want: Decl, selfT: Type): string =
+  ## One required signature, `Self` read as the concrete type it is being
+  ## checked against — the group-bound sibling of typecheck_conformance's
+  ## own sigText, which reads `Self` as an object's name instead.
+  var ps: seq[string]
+  for p in want.fnParams:
+    ps.add(p.name & ": " & typeName(substituteSelf(p.typ, selfT)))
+  result = "fn " & want.name & "({" & ps.join(", ") & "})"
+  let ret = substituteSelf(want.fnReturnType, selfT)
+  if ret != nil: result.add(" -> " & typeName(ret))
+
+proc checkOneGroupBound(tc: TypeChecker, groupName: string, concreteT: Type,
+                        paramName, fnName: string, sp: Span) =
+  ## Spec §5.5: does `concreteT` provide a free fn matching every signature
+  ## `groupName` requires, `Self` read as `concreteT`? No attach statement to
+  ## consult — the check is fresh, structural-but-named, at this one
+  ## instantiation. `tc.groupDecls`, never `tc.ifaceDecls`: a `[T: Speaker]`
+  ## naming an INTERFACE is a different mistake with its own message (see
+  ## whyNotAnObject's dkGroup arm for the inverse case).
+  if not tc.groupDecls.hasKey(groupName):
+    if tc.ifaceDecls.hasKey(groupName):
+      fail("Type Error: '" & groupName & "' is an interface, not a group " &
+           "(spec §5.5) — a generic bound needs a `group`, declared for " &
+           "exactly this; interfaces stay attached to objects with " &
+           "`satisfies`", sp)
+    fail("Type Error: '" & groupName & "' used as a bound on '" & paramName &
+         "' is not a declared group", sp)
+    return
+  let g = tc.groupDecls[groupName]
+  for want in g.groupMembers:
+    if want == nil or want.kind != dkFn: continue
+    if not tc.fnSigs.hasKey(want.name):
+      fail("Conformance Error: '" & typeName(concreteT) & "', bound to '" &
+           paramName & ": " & groupName & "' in '" & fnName &
+           "', does not provide\n    " & groupMemberSigText(want, concreteT) &
+           "\n  (declare a free fn matching that shape for " &
+           typeName(concreteT) & ")", sp)
+      continue
+    let got = tc.sigOf(want.name)
+    let wantParams = want.fnParams
+    if wantParams.len != got.params.len:
+      fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
+           "' takes " & $got.params.len & " parameter(s), group '" &
+           groupName & "' requires " & $wantParams.len, sp)
+      continue
+    for i in 0 ..< wantParams.len:
+      let w = wantParams[i]
+      let gp = got.params[i]
+      if w.name != gp.name:
+        fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
+             want.name & "' names parameter " & $(i + 1) & " '" & gp.name &
+             "', group '" & groupName & "' calls it '" & w.name &
+             "' (payload fields bind by name)", sp)
+      elif not tc.compatible(gp.typ, substituteSelf(w.typ, concreteT)):
+        fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
+             want.name & "' parameter '" & w.name & "' is " &
+             typeName(gp.typ) & ", group '" & groupName & "' requires " &
+             typeName(substituteSelf(w.typ, concreteT)), sp)
+    let wantRet = substituteSelf(want.fnReturnType, concreteT)
+    if wantRet != nil and not tc.compatible(got.ret, wantRet):
+      fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
+           "' returns " & typeName(got.ret) & ", group '" & groupName &
+           "' requires " & typeName(wantRet), sp)
+
+proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string,
+                               bindings: Table[string, Type], sp: Span) =
+  ## After a generic fn's type params are bound to concrete types, verify
+  ## every `[T: Group]` bound actually holds (spec §5.5). Looked up from the
+  ## ORIGINAL declaration rather than threaded through FnSig or the
+  ## cross-module signature cache: a bound is erased before codegen and
+  ## only needs enforcing where the generic fn is declared, in THIS module —
+  ## widening the cache format for every caller was the bigger, riskier
+  ## change for a mechanism with no cross-module case yet to justify it.
+  let d = tc.module.findDecl(dkFn, fnName)
+  if d == nil or d.fnGenericBounds.len == 0: return
+  for i, paramName in d.fnGenerics:
+    if i >= d.fnGenericBounds.len: continue
+    let bounds = d.fnGenericBounds[i]
+    if bounds.len == 0 or not bindings.hasKey(paramName): continue
+    let concreteT = bindings[paramName]
+    if concreteT == nil or isUnknown(concreteT): continue
+    # An inline `{x: Sortable + Hashable}` bound desugars to a fresh
+    # `TuckGroupParamN` type param (desugarGroupBoundParams) — meaningless in a
+    # message the author never wrote. Report the VALUE parameter's own
+    # name instead, found by which param this synthesized name ended up on.
+    var reportedName = paramName
+    if paramName.startsWith("TuckGroupParam"):
+      for p in d.fnParams:
+        if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == paramName:
+          reportedName = p.name
+          break
+    for groupName in bounds:
+      tc.checkOneGroupBound(groupName, concreteT, reportedName, fnName, sp)
+
 proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
                     t: Type, bindings: var Table[string, Type]): bool =
   ## A single-param fn whose param accepts the value WHOLE takes it as-is
@@ -1735,6 +1829,7 @@ proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
     return true
   if sig.generics.len > 0:
     tc.inferBindings(param.typ, t, sig.generics, bindings, fnName, arg.span)
+    tc.checkGroupBoundsSatisfied(fnName, bindings, arg.span)
   let expected = substituteType(param.typ, bindings)
   if tc.compatible(t, expected): return true
   if tc.fieldsOf(t).len == 0:
@@ -1774,6 +1869,8 @@ proc substituteParams(tc: var TypeChecker, fnName: string, sig: FnSig,
       if af.name == p.name:
         tc.inferBindings(p.typ, af.typ, sig.generics, bindings, fnName, af.span)
         break
+  if argFields.len > 0:
+    tc.checkGroupBoundsSatisfied(fnName, bindings, argFields[0].span)
   for p in sig.params:
     result.add(Param(name: p.name, typ: substituteType(p.typ, bindings),
                      span: p.span))
@@ -1812,6 +1909,47 @@ proc failIfCalleeReadsHole(tc: var TypeChecker, fnName, paramName: string,
        " of '" & paramName & "', which this call leaves " & UninitName &
        " — set " & (if hit.len == 1: "it" else: "them") & " before the call",
        af.span)
+
+proc groupNamesOfUnion(tc: TypeChecker, t: Type): seq[string] =
+  ## `{x: Sortable + Hashable}` — a bound written directly on a PARAMETER's
+  ## type, spec §5.5's other spelling of a group bound (alongside
+  ## `fn f[T: Sortable + Hashable]`). Parses as an ordinary type composition
+  ## (`+` already means "union these types' fields" — `type X = A + B`,
+  ## §4.5) because the syntax genuinely is shared; nothing about the grammar
+  ## marks a difference. What decides it is what the names on either side
+  ## OF `+` actually declare: a `type` composes (real fields, real
+  ## union); a `group` cannot — it has none — so `+` between group names can
+  ## only mean the OTHER thing `+` does. Returns the group names when every
+  ## member resolves to a `group`, empty when even one does not (a real
+  ## composition, or a mix — treated as composition and left to fail there
+  ## on its own terms rather than guessed at here).
+  if t == nil or t.kind != tkUnion: return
+  for m in t.members:
+    if m == nil or m.kind != tkNamed or not tc.groupDecls.hasKey(m.name):
+      return @[]
+  for m in t.members: result.add(m.name)
+
+proc desugarGroupBoundParams(tc: var TypeChecker, m: Module) =
+  ## Rewrites `{x: Sortable + Hashable}` into an ordinary bound generic —
+  ## `fn f[TuckGroupParam0: Sortable + Hashable]({x: TuckGroupParam0})` — ONCE, here, right
+  ## after group declarations are known and before anything else looks at a
+  ## param's type. Every downstream consumer (body checking via
+  ## substituteParams/checkWholeBind, call-site binding, codegen) already
+  ## handles a named bound generic correctly and needs no separate case for
+  ## the inline spelling — the alternative, teaching each of those the union
+  ## shape directly, was tried first and meant re-deriving "is this really a
+  ## bound" at every one of them instead of once, here.
+  for d in m.decls:
+    if d == nil or d.kind != dkFn: continue
+    var nextIdx = 0
+    for p in d.fnParams.mitems:
+      let names = tc.groupNamesOfUnion(p.typ)
+      if names.len == 0: continue
+      let freshName = "TuckGroupParam" & $nextIdx
+      inc nextIdx
+      d.fnGenerics.add(freshName)
+      d.fnGenericBounds.add(names)
+      p.typ = Type(span: p.typ.span, kind: tkNamed, name: freshName)
 
 proc checkNamedField(tc: var TypeChecker, fnName: string, p: Param,
                      af: ArgField, e: Expr) =
@@ -3774,6 +3912,17 @@ proc typecheckModule*(m: Module,
                       externPending = initTable[string, Span]()): seq[string] {.discardable.} =
   var tc = newModuleChecker(m, externSigs, externPending)
   tc.pushScope()  # module-level scope: consts visible across decls
+  # Group declarations, collected on their own, BEFORE the real collectSigs
+  # below: desugaring an inline `{x: Sortable + Hashable}` bound has to run
+  # before collectSigs caches this fn's `generics` list, or the freshly
+  # added `TuckGroupParamN` type param never makes it into the cache and a fn whose
+  # ONLY generic is this inline spelling is wrongly treated as non-generic
+  # downstream. collectSigs also populates groupDecls (among everything
+  # else) — this just does that one piece early, groupDecls being the only
+  # part desugaring needs.
+  for d in m.decls:
+    if d != nil and d.kind == dkGroup: tc.groupDecls[d.name] = d
+  tc.desugarGroupBoundParams(m)
   tc.collectSigs(m.decls)
   tc.resolveTypeNames(m)
   checkPointers(tc.typeDeclsByName, m)  # pointers stay at the extern boundary

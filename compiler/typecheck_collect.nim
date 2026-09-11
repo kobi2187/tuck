@@ -129,6 +129,10 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       # requirements, not callable functions. Registering them would put
       # `noise` in the flat table with no body behind it.
       tc.ifaceDecls[d.name] = d
+    of dkGroup:
+      # Same reasoning as dkInterface, into its own table — see groupDecls'
+      # own comment in typecheck_state.nim for why they aren't shared.
+      tc.groupDecls[d.name] = d
     of dkMixin, dkExtern, dkPending: tc.collectSigs(d.mixinMembers, top = false)
     of dkActor: tc.collectSigs(d.handlers)
     of dkErrors: tc.collectErrPolicy(d)
