@@ -2347,16 +2347,23 @@ proc failIfChainAfterPayloadCall(tc: TypeChecker, e: Expr) =
   ## declared params entirely (found spiking the `group` feature; reproduced
   ## with an ordinary non-generic call — `{x: "not an int"} takesInt.len`
   ## passed where `takesInt` declares `x: int`).
+  ##
+  ## Walks to the BASE of the dotted chain, not just one hop — a plain fn
+  ## invalidates the whole chain regardless of depth. `{x: 1}
+  ## takesInt.invoke.len` (found the same way, chaining `.invoke` — the
+  ## fn-ref invocation operator — onto a plain call before reading `.len`)
+  ## is the identical mistake one field deeper; checking only `e.callee`'s
+  ## immediate receiver missed it.
   if e.callee == nil or e.callee.kind != exkField: return
-  let recv = e.callee.receiver
-  if recv == nil or recv.kind != exkVar: return
-  if recv.name notin tc.topLevelFns: return
+  var base = e.callee.receiver
+  while base != nil and base.kind == exkField: base = base.receiver
+  if base == nil or base.kind != exkVar: return
+  if base.name notin tc.topLevelFns: return
   fail(dcTyChainAfterPayloadCall,
-       "'" & recv.name & "' is a fn, not a value with a '" &
-       e.callee.fieldName & "' field — `{payload} " & recv.name &
-       "." & e.callee.fieldName & "` reads as a call chained onto the " &
-       "result of `{payload} " & recv.name & "`. Bind it to a `let` " &
-       "first, then chain from the name.", e.span)
+       "'" & base.name & "' is a fn, not a value with fields — " &
+       "`{payload} " & base.name & "` is a complete call; whatever " &
+       "follows it reads as chained onto its RESULT, which needs a `let` " &
+       "first, not more dots on the same line.", e.span)
 
 proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
   ## A callee that is not a bare name. Calling THROUGH a fnsig-typed slot
