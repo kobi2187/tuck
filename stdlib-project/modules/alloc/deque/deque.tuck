@@ -1,0 +1,165 @@
+# alloc.deque — a queue you can add to and take from at either end.
+#
+# `Ring[T]`, the name the Nim design chose over `Deque` because it says what
+# it is rather than abbreviating "double-ended queue". It does not collide
+# with anything in Tuck.
+#
+# REPRESENTATION: one `Seq[T]`, front at index 0. `pushBack` is O(1)
+# amortised; `pushFront` and `popFront` rebuild, so they are O(n). That is
+# honest rather than ideal — a real ring buffer keeps a head offset and wraps
+# — and it is deliberate for the same reason alloc.map scans linearly: the
+# API hands out no index, so the inside can be replaced without touching a
+# call site, and it waits on a measurement rather than a guess.
+#
+# The API doc argues this module is the one most likely to want a `pool`
+# backing: its use cases (work queues, sliding windows, fixed-size histories)
+# are exactly the "at most N of these exist at once" shape, which would buy
+# bounded memory AND an honest backpressure story (`acquire` returning `?T`).
+# That needs the resource registry, which is designed and unbuilt, so it is
+# recorded here rather than half-done.
+import seq
+
+type Ring[T]:
+  items: Seq[T]
+
+# No `newRing`: a construction under a stated type IS the constructor —
+# `var work: Ring[int] = {items: []} Ring` binds T from the annotation.
+
+fn count[T]({r: Ring[T]}) -> int:
+  return r.items.len
+
+fn isEmpty[T]({r: Ring[T]}) -> bool:
+  return r.items.len == 0
+
+fn first[T]({r: Ring[T]}) -> T?:
+  if r.items.len == 0:
+    return
+  return r.items[0]
+
+fn last[T]({r: Ring[T]}) -> T?:
+  if r.items.len == 0:
+    return
+  return r.items[r.items.len - 1]
+
+# O(1) amortised — the push is its own self-assignment, which is the shape
+# the in-place append recognises. Nesting it into the construction instead
+# (`{items: {items: r.items, ...} push} Ring`) is NOT that shape and makes
+# this quadratic; alloc.string's Builder shipped with exactly that bug.
+fn pushBack[T]({r: Ring[T], value: T}) -> Ring[T]:
+  var xs = r.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Ring
+
+# O(n): everything shifts. Named plainly rather than hidden behind a
+# same-cost-looking sibling of pushBack.
+fn pushFront[T]({r: Ring[T], value: T}) -> Ring[T]:
+  var xs: Seq[T] = []
+  xs = {items: xs, value: value} push
+  for i in 0 .. r.items.len - 1:
+    xs = {items: xs, value: r.items[i]} push
+  return {items: xs} Ring
+
+# Both halves in one optional payload: absence means the ring was empty, so
+# there is no "popped nothing" value to invent. Same shape alloc.vec's `pop`
+# uses, for the same reason.
+fn popBack[T]({r: Ring[T]}) -> {rest: Ring[T], value: T}?:
+  let n = r.items.len
+  if n == 0:
+    return
+  let top = r.items[n - 1]
+  var xs: Seq[T] = []
+  for i in 0 .. n - 2:
+    xs = {items: xs, value: r.items[i]} push
+  return {rest: {items: xs} Ring, value: top}
+
+fn popFront[T]({r: Ring[T]}) -> {rest: Ring[T], value: T}?:
+  let n = r.items.len
+  if n == 0:
+    return
+  let head = r.items[0]
+  var xs: Seq[T] = []
+  for i in 1 .. n - 1:
+    xs = {items: xs, value: r.items[i]} push
+  return {rest: {items: xs} Ring, value: head}
+
+fn clear[T]({r: Ring[T]}) -> Ring[T]:
+  let empty: Seq[T] = []
+  return {items: empty} Ring
+
+fn toSeq[T]({r: Ring[T]}) -> Seq[T]:
+  return r.items
+
+# --- the module's own checks ----------------------------------------------
+fn checkEnds() -> int:
+  var q: Ring[int] = {items: []} Ring
+  if not {r: q} isEmpty:
+    return 1
+  # An empty ring has no ends — absence, not a zero.
+  let noEnd = {r: q} first
+  if noEnd.ok:
+    return 2
+  q = {r: q, value: 2} pushBack
+  q = {r: q, value: 3} pushBack
+  q = {r: q, value: 1} pushFront
+  # 1 2 3
+  if {r: q} count != 3:
+    return 3
+  let f = {r: q} first
+  if not f.ok:
+    return 4
+  if f.value != 1:
+    return 5
+  let l = {r: q} last
+  if not l.ok:
+    return 6
+  if l.value != 3:
+    return 7
+  return checkPops
+
+fn threeUp() -> Ring[int]:
+  var q: Ring[int] = {items: []} Ring
+  q = {r: q, value: 1} pushBack
+  q = {r: q, value: 2} pushBack
+  return {r: q, value: 3} pushBack
+
+fn checkPops() -> int:
+  let q = threeUp
+  let back = {r: q} popBack
+  if not back.ok:
+    return 8
+  if back.value.value != 3:
+    return 9
+  if {r: back.value.rest} count != 2:
+    return 10
+  let front = {r: q} popFront
+  if not front.ok:
+    return 11
+  if front.value.value != 1:
+    return 12
+  if {r: front.value.rest} count != 2:
+    return 13
+  # The original is untouched by either — this is a value, not a handle.
+  if {r: q} count != 3:
+    return 14
+  return checkEmptyPops
+
+fn checkEmptyPops() -> int:
+  let empty: Ring[int] = {items: []} Ring
+  let b = {r: empty} popBack
+  if b.ok:
+    return 15
+  let f = {r: empty} popFront
+  if f.ok:
+    return 16
+  let cleared = {r: threeUp} clear
+  if {r: cleared} count != 0:
+    return 17
+  let xs = {r: threeUp} toSeq
+  if xs.len != 3:
+    return 18
+  if xs[0] != 1:
+    return 19
+  return 0
+
+fn main() -> int:
+  return checkEnds
