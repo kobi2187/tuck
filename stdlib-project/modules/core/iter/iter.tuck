@@ -1,0 +1,291 @@
+# core.iter — adapters and terminals over Seq[T], via fn references.
+#
+# Tuck has no closures: nothing captures the enclosing scope. So the Rust
+# `.iter().filter(|x| ...)` shape doesn't port. What DOES port is `fnsig` +
+# `:name` (a fn reference) — a named signature, and a plain top-level fn that
+# satisfies it. See API.tuck.md for the fuller argument; the short version is
+# that a `:fnRef` argument is exactly as cheap as Zig's `context, fn` pair and
+# needs no closure machinery at all.
+#
+# `bake`-based adapter STORAGE (the doc's "reused query" section) is left out
+# here: plain construction (`{items: xs, test: :isPositive} Query`) already
+# gives a storable, nominal, zero-cost record, which is all that section
+# actually needed. `bake` itself has a real bug (drops fields into a raw
+# tuple instead of the named type) tracked separately — it doesn't block this
+# module.
+#
+# Terminals return values; adapters return a new Seq. No hidden allocation:
+# a chain like `{items: {items: xs, test: :p} filter, f: :g} map` is visibly
+# two new sequences, matching the "no *hidden* allocation" tier ruling.
+
+import seq
+
+fnsig Mapper[T, U] = {x: T} -> U
+fnsig Predicate[T] = {x: T} -> bool
+fnsig Combiner[T, A] = {acc: A, x: T} -> A
+fnsig Action[T] = {x: T} -> void
+
+# --- adapters: Seq[T] in, Seq[_] out ----------------------------------------
+
+fn map[T, U]({items: Seq[T], f: Mapper[T, U]}) -> Seq[U]:
+  var out: Seq[U] = []
+  for i in 0 .. items.len - 1:
+    let v = {x: items[i]} f
+    out = {items: out, value: v} push
+  return out
+
+fn filter[T]({items: Seq[T], test: Predicate[T]}) -> Seq[T]:
+  var out: Seq[T] = []
+  for i in 0 .. items.len - 1:
+    let v = items[i]
+    if {x: v} test:
+      out = {items: out, value: v} push
+  return out
+
+fn reject[T]({items: Seq[T], test: Predicate[T]}) -> Seq[T]:
+  var out: Seq[T] = []
+  for i in 0 .. items.len - 1:
+    let v = items[i]
+    if not ({x: v} test):
+      out = {items: out, value: v} push
+  return out
+
+fn take[T]({items: Seq[T], n: int}) -> Seq[T]:
+  var out: Seq[T] = []
+  var i = 0
+  for i < items.len and i < n:
+    out = {items: out, value: items[i]} push
+    i = i + 1
+  return out
+
+fn skip[T]({items: Seq[T], n: int}) -> Seq[T]:
+  var out: Seq[T] = []
+  var i = n
+  for i < items.len:
+    out = {items: out, value: items[i]} push
+    i = i + 1
+  return out
+
+fn numbered[T]({items: Seq[T]}) -> Seq[{index: int, value: T}]:
+  var out: Seq[{index: int, value: T}] = []
+  for i in 0 .. items.len - 1:
+    out = {items: out, value: {index: i, value: items[i]}} push
+  return out
+
+fn zip[T, U]({items: Seq[T], other: Seq[U]}) -> Seq[{left: T, right: U}]:
+  var out: Seq[{left: T, right: U}] = []
+  var n = items.len
+  if other.len < n:
+    n = other.len
+  var i = 0
+  for i < n:
+    out = {items: out, value: {left: items[i], right: other[i]}} push
+    i = i + 1
+  return out
+
+fn append[T]({items: Seq[T], other: Seq[T]}) -> Seq[T]:
+  var out = items
+  for i in 0 .. other.len - 1:
+    out = {items: out, value: other[i]} push
+  return out
+
+fn prepend[T]({items: Seq[T], other: Seq[T]}) -> Seq[T]:
+  var out = other
+  for i in 0 .. items.len - 1:
+    out = {items: out, value: items[i]} push
+  return out
+
+fn concat[T]({items: Seq[Seq[T]]}) -> Seq[T]:
+  var out: Seq[T] = []
+  for i in 0 .. items.len - 1:
+    let inner = items[i]
+    for j in 0 .. inner.len - 1:
+      out = {items: out, value: inner[j]} push
+  return out
+
+fn reverse[T]({items: Seq[T]}) -> Seq[T]:
+  var out: Seq[T] = []
+  var i = items.len - 1
+  for i >= 0:
+    out = {items: out, value: items[i]} push
+    i = i - 1
+  return out
+
+# --- terminals: Seq[T] in, a value out --------------------------------------
+
+fn reduce[T, A]({items: Seq[T], start: A, combine: Combiner[T, A]}) -> A:
+  var acc = start
+  for i in 0 .. items.len - 1:
+    acc = {acc: acc, x: items[i]} combine
+  return acc
+
+fn each[T]({items: Seq[T], f: Action[T]}) -> void:
+  for i in 0 .. items.len - 1:
+    {x: items[i]} f
+
+fn find[T]({items: Seq[T], test: Predicate[T]}) -> T?:
+  for i in 0 .. items.len - 1:
+    let v = items[i]
+    if {x: v} test:
+      return v
+  return
+
+fn any[T]({items: Seq[T], test: Predicate[T]}) -> bool:
+  for i in 0 .. items.len - 1:
+    if {x: items[i]} test:
+      return true
+  return false
+
+fn all[T]({items: Seq[T], test: Predicate[T]}) -> bool:
+  for i in 0 .. items.len - 1:
+    if not ({x: items[i]} test):
+      return false
+  return true
+
+fn sum({items: Seq[int]}) -> int:
+  var acc = 0
+  for i in 0 .. items.len - 1:
+    acc = acc + items[i]
+  return acc
+
+fn sort({items: Seq[int]}) -> Seq[int]:
+  # Insertion sort. Not the fastest, but honest: no hidden comparator
+  # protocol, no unstable-vs-stable question to answer yet. Revisit once a
+  # bench names a real cost.
+  var out = items
+  var i = 1
+  for i < out.len:
+    let key = out[i]
+    var j = i - 1
+    for j >= 0 and out[j] > key:
+      {items: out, index: j + 1, value: out[j]} setAt
+      j = j - 1
+    {items: out, index: j + 1, value: key} setAt
+    i = i + 1
+  return out
+
+# --- self-check --------------------------------------------------------------
+
+fn isPositive({x: int}) -> bool:
+  return x > 0
+
+fn double({x: int}) -> int:
+  return x * 2
+
+fn addUp({acc: int, x: int}) -> int:
+  return acc + x
+
+fn recordEach({x: int}) -> void:
+  return
+
+fn checkFilterMap() -> int:
+  let xs: Seq[int] = [0 - 3, 1, 4, 0 - 1, 5, 9]
+  let live = {items: xs, test: :isPositive} filter
+  if live.len != 4:
+    return 1
+  let doubled = {items: live, f: :double} map
+  if doubled[0] != 2 or doubled[3] != 18:
+    return 2
+  let gone = {items: xs, test: :isPositive} reject
+  if gone.len != 2:
+    return 3
+  return 0
+
+fn checkSlices() -> int:
+  let xs: Seq[int] = [0 - 3, 1, 4, 0 - 1, 5, 9]
+  let first2 = {items: xs, n: 2} take
+  if first2.len != 2 or first2[1] != 1:
+    return 4
+  let rest = {items: xs, n: 2} skip
+  if rest.len != xs.len - 2 or rest[0] != 4:
+    return 5
+  let nums = {items: xs} numbered
+  if nums[0].index != 0 or nums[2].value != 4:
+    return 6
+  return 0
+
+fn checkJoins() -> int:
+  let xs: Seq[int] = [0 - 3, 1, 4, 0 - 1, 5, 9]
+  let first2 = {items: xs, n: 2} take
+  let rest = {items: xs, n: 2} skip
+  let ys: Seq[int] = [10, 20]
+  let paired = {items: xs, other: ys} zip
+  if paired.len != 2 or paired[1].left != 1 or paired[1].right != 20:
+    return 7
+  let joined = {items: first2, other: rest} append
+  if joined.len != xs.len:
+    return 8
+  let front = {items: rest, other: first2} prepend
+  if front.len != xs.len or front[0] != first2[0]:
+    return 9
+  let nested: Seq[Seq[int]] = [first2, rest]
+  let flat = {items: nested} concat
+  if flat.len != xs.len:
+    return 10
+  let backwards = {items: first2} reverse
+  if backwards[0] != first2[1] or backwards[1] != first2[0]:
+    return 11
+  return 0
+
+fn checkAdapters() -> int:
+  let a = checkFilterMap
+  if a != 0:
+    return a
+  let b = checkSlices
+  if b != 0:
+    return b
+  return checkJoins
+
+fn checkReduceFind() -> int:
+  let xs: Seq[int] = [0 - 3, 1, 4, 0 - 1, 5, 9]
+  let total = {items: xs, start: 0, combine: :addUp} reduce
+  if total != 15:
+    return 20
+  {items: xs, f: :recordEach} each
+  let hit = {items: xs, test: :isPositive} find
+  if not hit.ok:
+    return 21
+  if hit.value != 1:
+    return 21
+  let noneHit = {items: [0 - 1, 0 - 2], test: :isPositive} find
+  if noneHit.ok:
+    return 22
+  return 0
+
+fn checkPredicates() -> int:
+  let xs: Seq[int] = [0 - 3, 1, 4, 0 - 1, 5, 9]
+  if not ({items: xs, test: :isPositive} any):
+    return 23
+  if {items: xs, test: :isPositive} all:
+    return 24
+  let miss = {items: xs, test: :isPositive} filter
+  if {items: miss} sum != 19:
+    return 25
+  return 0
+
+fn checkTerminals() -> int:
+  let a = checkReduceFind
+  if a != 0:
+    return a
+  return checkPredicates
+
+fn checkOrder() -> int:
+  let xs: Seq[int] = [5, 3, 0 - 1, 4, 4, 9, 0]
+  let sorted = {items: xs} sort
+  var i = 1
+  for i < sorted.len:
+    if sorted[i - 1] > sorted[i]:
+      return 30
+    i = i + 1
+  if sorted[0] != 0 - 1 or sorted[sorted.len - 1] != 9:
+    return 31
+  return 0
+
+fn main() -> int:
+  let a = checkAdapters
+  if a != 0:
+    return a
+  let t = checkTerminals
+  if t != 0:
+    return t
+  return checkOrder

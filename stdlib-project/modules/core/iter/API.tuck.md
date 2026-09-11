@@ -34,75 +34,82 @@ fnsig Predicate[T] = {x: T} -> bool
 fnsig Combiner[T, A] = {acc: A, x: T} -> A
 fnsig Action[T] = {x: T} -> void
 
-pending:
-  fn map[T, U]({items: Seq[T], f: Mapper[T, U]}) -> Seq[U]
-  fn filter[T]({items: Seq[T], test: Predicate[T]}) -> Seq[T]
-  fn reject[T]({items: Seq[T], test: Predicate[T]}) -> Seq[T]
-  fn take[T]({items: Seq[T], n: int}) -> Seq[T]
-  fn skip[T]({items: Seq[T], n: int}) -> Seq[T]
-  fn numbered[T]({items: Seq[T]}) -> Seq[{index: int, value: T}]
-  fn zip[T, U]({items: Seq[T], other: Seq[U]}) -> Seq[{left: T, right: U}]
-  fn append[T]({items: Seq[T], other: Seq[T]}) -> Seq[T]
-  fn prepend[T]({items: Seq[T], other: Seq[T]}) -> Seq[T]
-  fn concat[T]({items: Seq[Seq[T]]}) -> Seq[T]
+fn map[T, U]({items: Seq[T], f: Mapper[T, U]}) -> Seq[U]
+fn filter[T]({items: Seq[T], test: Predicate[T]}) -> Seq[T]
+fn reject[T]({items: Seq[T], test: Predicate[T]}) -> Seq[T]
+fn take[T]({items: Seq[T], n: int}) -> Seq[T]
+fn skip[T]({items: Seq[T], n: int}) -> Seq[T]
+fn numbered[T]({items: Seq[T]}) -> Seq[{index: int, value: T}]
+fn zip[T, U]({items: Seq[T], other: Seq[U]}) -> Seq[{left: T, right: U}]
+fn append[T]({items: Seq[T], other: Seq[T]}) -> Seq[T]
+fn prepend[T]({items: Seq[T], other: Seq[T]}) -> Seq[T]
+fn concat[T]({items: Seq[Seq[T]]}) -> Seq[T]
+fn reverse[T]({items: Seq[T]}) -> Seq[T]
 
-  fn reduce[T, A]({items: Seq[T], start: A, combine: Combiner[T, A]}) -> A
-  fn each[T]({items: Seq[T], f: Action[T]}) -> void
-  fn count[T]({items: Seq[T]}) -> int
-  fn find[T]({items: Seq[T], test: Predicate[T]}) -> T?
-  fn any[T]({items: Seq[T], test: Predicate[T]}) -> bool
-  fn all[T]({items: Seq[T], test: Predicate[T]}) -> bool
-  fn sum[T]({items: Seq[T]}) -> T
-  fn sort[T]({items: Seq[T]}) -> Seq[T]
-  fn reverse[T]({items: Seq[T]}) -> Seq[T]
+fn reduce[T, A]({items: Seq[T], start: A, combine: Combiner[T, A]}) -> A
+fn each[T]({items: Seq[T], f: Action[T]}) -> void
+fn find[T]({items: Seq[T], test: Predicate[T]}) -> T?
+fn any[T]({items: Seq[T], test: Predicate[T]}) -> bool
+fn all[T]({items: Seq[T], test: Predicate[T]}) -> bool
+fn sum({items: Seq[int]}) -> int          # int only — see note below
+fn sort({items: Seq[int]}) -> Seq[int]    # int only — see note below
 ```
+
+`sum` and `sort` are **not generic** here, unlike the rest: `sum` needs `+`
+and `sort` needs `>` on `T`, and Tuck has no trait/constraint bound yet to
+say "any `T` with `+`" or "any `T` that's `Ord`" — the ROADMAP-GRAPH ruling
+on generic constraints is compile-time-only and still open on mechanism.
+Writing them fully generic would typecheck today (gradual typing accepts
+`+`/`>` on an unconstrained `T`) but would be silently unenforced rather than
+actually generic — the same trap §0 warns against for bare unbound type
+params. Scoped to `int` until that ruling lands; widening later is additive.
 
 ## In use
 
-**The ordinary case — just pass `:fnRef` at the call site.** No `bake`, no
-declared wrapper record; the fn parameter is already typed by the
-signature in `keep`'s own declaration:
+**Pass `:fnRef` at the call site, payload-prefix form.** No `bake`, no
+declared wrapper record; the fn parameter is typed by the signature in
+`filter`'s own declaration, and `T`/`U` infer from the payload's fields:
 
 ```tuck
 fn isPositive({x: int}) -> bool:
   return x > 0
 
-let live = readings.filter {test: :isPositive}        # postfix, reads best
-let live2 = {items: readings, test: :isPositive} filter   # payload-prefix, same call
+let live = {items: readings, test: :isPositive} filter
 ```
 
-**`bake` is for when the context is reused** — pre-fill the operation once,
-call it many times, or hand the filled record somewhere else:
+The receiver-postfix spelling (`readings.filter {test: :isPositive}`) does
+**not** currently infer the generic — `expects Seq[T] but the receiver is
+Seq[int]` — a real, separate bug in the receiver-call inference path
+(payload-prefix and receiver-postfix are two different codegen entry points
+for the same call; only one runs generic binding today). Use the
+payload-prefix form until that's fixed.
+
+**A reused query is a plain construction, not `bake`.** Construction goes
+through the type's real constructor and keeps its nominal type; `bake`
+re-assembles a *structural* record and currently loses both the nominal type
+and, in the generic case, silently drops fields not named in the bake call
+(compiler bug, tracked separately — not blocking on this module):
 
 ```tuck
-type IntQuery = {items: Seq[int], test: IntPred}
-let q = {items: readings} IntQuery bake {test: :isPositive}
-let live3 = q filter
+type Query[T]:
+  items: Seq[T]
+  test: Predicate[T]
+
+let q: Query[int] = {items: readings, test: :isPositive} Query
+let live = {q: q} runQuery
 ```
 
-Here the `IntQuery` annotation is load-bearing: `bake` matches the
-signature **declared on the record's slot**, so the record needs a declared
-type for the slot to have one. Both forms verified (`./tuck ch`: `OK`). See
-`TUCK-TRANSLATION.md` for the checker gap where a mismatched fn reference
-is currently accepted regardless.
+## Verification status
+Fully verified, all three backends, `./tuck ch` + `hostBuilds` + `runs 0`
+(`iter.tuck`'s own `main`). The generic-fnsig gap this section used to
+describe (`fnsig Mapper[T, U] = ...` failing to parse) is fixed — it parses
+and infers correctly, including the case where a type param (`U` in
+`Mapper[T, U]`) appears only in the fnsig's return and has to be inferred
+through the `:fnRef`'s own shape rather than from a payload field.
 
-## Verification status — read this before trusting the block above
-**The generic form above does not compile today**, and the reason is a
-recorded language gap, not a design error: `fnsig Mapper[T, U] = ...` fails
-to parse (`Expected 'Assign' here, found '['` — `fnsig` has no
-type-parameter slot, though `fn` and `type` both do). Filed as an `⚠️ OPEN`
-callout in `LANGUAGE-OVERVIEW.md` §13. Written here as it *will* read once
-that's fixed, per direct guidance.
-
-What **is** verified: the identical API with every `[T]` replaced by
-concrete `int` typechecks completely (`./tuck ch`: `OK`, 10/10 `PENDING`),
-and `base bake {test: :isPositive}` binds. So the shape is proven; only the
-generic spelling waits on the parser.
-
-Avoided deliberately: writing `fnsig Mapper = {x: T} -> U` with bare
-unbound `T`/`U`. That *appears* to typecheck, but only because gradual
-typing reads them as `Unknown` — the §0 trap where sketch code and a broken
-tree look identical. A fake pass would be worse than a recorded gap.
+`count[T]` is **not** re-declared here — `alloc.vec` already owns it and
+there is no cross-module import path between sibling `stdlib-project/modules`
+directories yet, so it stays where it lives rather than being duplicated.
 
 ## Notes
 - **`Listable[T]` (the "implement `list` and get every adapter") concept is
