@@ -16,6 +16,19 @@
   syntaxes, one broken inference path. Narrow, not iter-blocking.
 - `core.iter`'s API.tuck.md doc is STALE: says `fnsig Mapper[T, U] = ...`
   fails to parse. It parses; the doc predates the generic-fnsig-on-Odin/D work.
+- Language feature landed (compiler commit 4379a0b, not stdlib-project
+  scoped): `group` — spec §5.5, a named/nominal compile-time-only bound for
+  generics (`fn sort[T: Sortable]`). Grew directly out of the interface
+  survey below: `core.cmp`'s `interface Sortable` is now the wrong
+  declaration kind for what it's used for — should become `group Sortable`
+  (drops the never-used dispatch machinery it never needed) — not done yet,
+  next natural step once this pass resumes.
+  - Also usable inline on a parameter's own type: `{item: Sortable +
+    Hashable}`, no generic-param-list ceremony needed.
+  - Found, not fixed, real pre-existing bug: `{x: expr} f.someField`
+    (chaining a field access directly onto a call's result) skips argument
+    type-checking on that call entirely. Reproduced with a plain
+    non-generic call, unrelated to groups. Worth its own investigation.
 - Proposed extending done modules (user: "propose... very useful
   primitives... match the vision/style/idioms"). Two of four proposals were
   WRONG on inspection, both caught by verifying before building:
