@@ -24,6 +24,7 @@
 #           are std/scheduler's `Predicate` and examples/03's `BinOp`.
 import ast, sets, tables
 import typecheck_state
+import ast_query
 import typecheck_util
 
 proc compatible*(tc: TypeChecker, actual, expected: Type): bool
@@ -110,6 +111,33 @@ proc appCompatible*(tc: TypeChecker, a, e: Type): bool =
     if not tc.compatible(a.args[i], e.args[i]): return false
   true
 
+type FnRefVerdict = enum
+  vUndecided,   ## not a fn-ref question at all — fall through to the rest
+  vYes, vNo
+
+proc fnRefVerdict(tc: TypeChecker, a, e: Type): FnRefVerdict =
+  ## Everything a bare `:fnRef` (always a tkFunc) can be asked to satisfy.
+  ## THREE shapes, because a signature can be written down three ways:
+  ##   `Adder`          a named fnsig      -> tkNamed, look it up
+  ##   `Mapper[int, U]` a generic fnsig    -> tkApp, substitute then compare
+  ##   an inline `{x: int} -> int`         -> tkFunc, compare directly
+  ## The tkApp arm is the one that was missing: the argument fell through to
+  ## the record check and was rejected as "expects Mapper[int, int] but got
+  ## <type>". `fnSigInstance` is the same substitution the emitters use, so
+  ## the checker and codegen cannot disagree about what the slot means.
+  if e.kind == tkNamed and tc.fnSigs.hasKey(e.name):
+    return if tc.fnRefCompatible(a, e): vYes else: vNo
+  if e.kind == tkApp:
+    let inst = fnSigInstance(tc.module, e)
+    if inst == nil: return vUndecided
+    return if tc.compatible(a, inst): vYes else: vNo
+  if e.kind != tkFunc: return vUndecided
+  if a.params.len != e.params.len: return vNo
+  for i, p in e.params:
+    if not tc.compatible(a.params[i], p): return vNo
+  if a.result == nil or e.result == nil: return vYes
+  if tc.compatible(a.result, e.result): vYes else: vNo
+
 proc compatible*(tc: TypeChecker, actual, expected: Type): bool =
   ## May a value of `actual` flow where `expected` is wanted?
   var a, e: Type
@@ -125,8 +153,9 @@ proc compatible*(tc: TypeChecker, actual, expected: Type): bool =
     else: return true
   if a.kind == tkNamed and e.kind == tkNamed:
     return tc.nominalCompatible(a, e)
-  if a.kind == tkFunc and e.kind == tkNamed and tc.fnSigs.hasKey(e.name):
-    return tc.fnRefCompatible(a, e)
+  if a.kind == tkFunc:
+    let verdict = tc.fnRefVerdict(a, e)
+    if verdict != vUndecided: return verdict == vYes
   let eFields = if e.kind == tkRecord: e.fields else: tc.fieldsOf(e)
   if eFields.len > 0 or e.kind == tkRecord:
     return tc.recordCompatible(a, eFields)

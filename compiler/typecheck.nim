@@ -1543,6 +1543,29 @@ proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
 
 proc inferBindings(tc: TypeChecker, declared, actual: Type,
                    generics: seq[string], bindings: var Table[string, Type],
+                   fnName: string, sp: Span)
+
+proc inferThroughFnSigSlot(tc: TypeChecker, declared, actual: Type,
+                           generics: seq[string],
+                           bindings: var Table[string, Type],
+                           fnName: string, sp: Span) =
+  ## `f: Mapper[T, U]` given `:double`. A type param that appears ONLY in the
+  ## fnsig's RETURN has no other slot to be inferred from, so it stays unbound
+  ## and the argument is rejected against `Mapper[int, U]`. Expand the slot
+  ## into the signature it stands for and unify that structurally against the
+  ## fn-ref's own shape, which is what supplies `U`.
+  if actual.kind != tkFunc: return
+  if declared.base == nil or declared.base.kind != tkNamed: return
+  if declared.base.name notin tc.fnSigNames: return
+  let sig = tc.genericFnSigSig(declared.base.name, declared.args, sp)
+  if sig.params.len != actual.params.len: return
+  for i in 0 ..< sig.params.len:
+    tc.inferBindings(sig.params[i].typ, actual.params[i], generics,
+                     bindings, fnName, sp)
+  tc.inferBindings(sig.ret, actual.result, generics, bindings, fnName, sp)
+
+proc inferBindings(tc: TypeChecker, declared, actual: Type,
+                   generics: seq[string], bindings: var Table[string, Type],
                    fnName: string, sp: Span) =
   if declared == nil or actual == nil: return
   # A value whose type is the ENCLOSING fn's type param binds the parameter
@@ -1572,6 +1595,8 @@ proc inferBindings(tc: TypeChecker, declared, actual: Type,
       tc.inferBindings(declared.base, actual.base, generics, bindings, fnName, sp)
       for i in 0 ..< declared.args.len:
         tc.inferBindings(declared.args[i], actual.args[i], generics, bindings, fnName, sp)
+    else:
+      tc.inferThroughFnSigSlot(declared, actual, generics, bindings, fnName, sp)
   of tkRecord:
     let aFields = if actual.kind == tkRecord: actual.fields else: tc.fieldsOf(actual)
     for df in declared.fields:

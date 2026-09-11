@@ -532,4 +532,32 @@ fn main() -> int:
   t.hostBuilds "...and every backend emits the substituted signature"
   t.runs "...and the predicate filters", 0
 
+  # --- a fn-ref straight into a generic fnsig PARAMETER ---------------------
+  # Two separate gaps, both visible only here. (1) compatibility: `:double`
+  # synthesizes a bare tkFunc while the slot is `Mapper[int, int]`, a tkApp —
+  # the fn-ref rule only knew tkNamed, so the arg was rejected as a record.
+  # (2) inference: `U` occurs ONLY in the fnsig's RETURN, so nothing else in
+  # the payload can bind it; the slot has to be expanded into the signature it
+  # stands for and unified against the fn-ref's own shape.
+  t.src """
+fnsig Mapper[T, U] = {x: T} -> U
+
+fn map[T, U]({items: Seq[T], f: Mapper[T, U]}) -> Seq[U]:
+  var out: Seq[U] = []
+  for i in 0 .. items.len - 1:
+    let v = {x: items[i]} f
+    out = {items: out, value: v} push
+  return out
+
+fn double({x: int}) -> int:
+  return x * 2
+
+fn main() -> int:
+  let doubled = {items: [1, 2, 3], f: :double} map
+  return doubled[2] - 6
+"""
+  t.okCheck "a fn-ref satisfies a generic fnsig parameter"
+  t.hostBuilds "...and every backend emits it"
+  t.runs "...and the mapping runs", 0
+
   t.finish()
