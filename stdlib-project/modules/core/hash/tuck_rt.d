@@ -201,9 +201,30 @@ void setAt(T)(ref T[] items, long index, T value)
     tuckSetAt(items, index, value);
 }
 
+/// `Array[N, T]` needs its OWN pair, separate from tuckAt/tuckSetAt above.
+/// core.array's `atFixed` cannot be a plain Tuck function using `items[i]`:
+/// the bracket-index dispatch routes to whatever `fn at` is in scope, which —
+/// inside `at`'s OWN body — is `at` itself, so a Tuck-body `at` for
+/// `Array[N, T]` would self-recurse infinitely rather than indexing.
+/// core.array's accessor calls THIS directly by name (an ordinary call, not
+/// bracket sugar), so there is no body to recurse in.
+T tuckArrayAt(T, size_t N)(T[N] items, long index)
+{
+    tuckSeqBounds(index, cast(long) N, "at");
+    return items[index];
+}
+
+void tuckArraySetAt(T, size_t N)(ref T[N] items, long index, T value)
+{
+    tuckSeqBounds(index, cast(long) N, "setAt");
+    items[index] = value;
+}
+
 /// Value semantics: `~` always allocates a fresh array rather than growing
 /// `items` in place (unlike `~=`, which may reuse spare capacity from the
 /// same backing GC block) — `items` is never mutated by this call.
+long getLength(T)(T x) { return cast(long) x.length; }
+
 long count(T)(T[] items) { return cast(long) items.length; }
 
 long byteCount(string t) { return cast(long) t.length; }

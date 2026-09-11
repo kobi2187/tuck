@@ -10,12 +10,14 @@
 # of them. The primitives it stands on — bitXor, and the byte at an index —
 # are shims; this is not.
 #
-# The fold reads BYTES, and now says so. It used to spell each one
-# `{ch: {s: data, index: i} charAt} ord` — take a one-byte str, then ask for
-# its code point — two calls and a temporary to read one byte. `byteAt` is
-# that operation named.
+# `hashBytes` is THE primitive — everything else builds a `Seq[u8]` and
+# folds it. `hashStr` used to read a `str`'s bytes inline, which meant str
+# was privileged: any future encoding (once a `core.encoding` module exists)
+# would have had to duplicate the fold instead of just producing bytes and
+# handing them here. One fold, everything else is "turn this into bytes."
 import bits
 import str
+import seq
 
 fn fnvOffsetBasis() -> u64:
   return 14695981039346656037
@@ -30,19 +32,71 @@ fn fnvStep({acc: u64, octet: u64}) -> u64:
   let mixed = {a: acc, b: octet} bitXor
   return mixed * fnvPrime
 
-fn hashStr({data: str}) -> u64:
+fn hashBytes({data: Seq[u8]}) -> u64:
   var h = fnvOffsetBasis
-  for i in 0 .. {t: data} byteCount - 1:
-    let b = {t: data, index: i} byteAt
-    let octet = {value: b} u64
+  for i in 0 .. data.len - 1:
+    let octet = {value: data[i]} u64
     h = {acc: h, octet: octet} fnvStep
   return h
+
+fn strBytes({t: str}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in 0 .. {t: t} byteCount - 1:
+    let b = {t: t, index: i} byteAt
+    out = {items: out, value: b} push
+  return out
+
+fn hashStr({data: str}) -> u64:
+  let bytes = {t: data} strBytes
+  return {data: bytes} hashBytes
+
+fn u64Bytes({x: u64}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  var i = 0
+  for i < 8:
+    let shifted = {a: x, by: i * 8} shiftRight
+    let octet = {a: shifted, b: 255} bitAnd
+    let b = {value: octet} u8
+    out = {items: out, value: b} push
+    i = i + 1
+  return out
+
+# A fingerprint for an int key (a cache key, a dedup set) without going
+# through text first. Standalone: this does not change how alloc.map/
+# alloc.set represent anything (both still scan; see map.tuck's own note
+# that a hash-bucket rewrite waits on a measurement, not on this existing).
+fn hashU64({x: u64}) -> u64:
+  let bytes = {x: x} u64Bytes
+  return {data: bytes} hashBytes
 
 # Combining two digests, for a record or a tuple key. Feeding the second
 # digest through the same step keeps one mixing rule rather than inventing a
 # second one here.
 fn combine({a: u64, b: u64}) -> u64:
   return {acc: a, octet: b} fnvStep
+
+fn checkHashBytes() -> int:
+  let empty: Seq[u8] = []
+  if {data: empty} hashBytes != fnvOffsetBasis:
+    return 5
+  return 0
+
+fn checkHashU64() -> int:
+  # Unlike hashBytes([]), hashU64(0) is NOT the bare offset basis — it still
+  # folds 8 zero bytes through the fold, and each step multiplies by the
+  # prime even when the byte is 0. Just check it agrees with itself.
+  if {x: 0} hashU64 != {x: 0} hashU64:
+    return 10
+  let a = {x: 1} hashU64
+  let b = {x: 2} hashU64
+  if a == b:
+    return 11
+  if a != {x: 1} hashU64:
+    return 12
+  # byte order matters here too: 1 and 256 differ only in which byte is set
+  if {x: 1} hashU64 == {x: 256} hashU64:
+    return 13
+  return 0
 
 fn main() -> int:
   # FNV-1a of "" is the offset basis, by definition — an empty fold.
@@ -58,4 +112,7 @@ fn main() -> int:
   # Order matters: FNV-1a is not a sum.
   if {data: "ab"} hashStr == {data: "ba"} hashStr:
     return 4
-  return 0
+  let bytes = checkHashBytes
+  if bytes != 0:
+    return bytes
+  return checkHashU64
