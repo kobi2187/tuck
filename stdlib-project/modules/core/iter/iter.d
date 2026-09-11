@@ -220,24 +220,27 @@ bool tuck_all(T)(T[] items, bool function(T) test) {
     return true;
 }
 
-long tuck_sum(long[] items) {
-    long tuck_acc = 0L;
-    foreach (tuck_i; 0L .. (cast(long) items.length - 1L) + 1) {
+rt.TuckResult!(T) tuck_sum(T)(T[] items) {
+    if ((cast(long) items.length == 0L)) {
+        return rt.tnone!(T)();
+    }
+    T tuck_acc = rt.tuckAt(items, 0L);
+    foreach (tuck_i; 1L .. (cast(long) items.length - 1L) + 1) {
         tuck_acc = (tuck_acc + rt.tuckAt(items, tuck_i));
     }
-    return tuck_acc;
+    return rt.tok(tuck_acc);
 }
 
-long[] tuck_sort(long[] items) {
+T[] tuck_sort(T)(T[] items) {
     items = items.dup;
     return tuck_sort_moved(items);
 }
 
-long[] tuck_sort_moved(long[] items) {
-    long[] tuck_out = items;
+T[] tuck_sort_moved(T)(T[] items) {
+    T[] tuck_out = items;
     long tuck_i = 1L;
     while ((tuck_i < cast(long) tuck_out.length)) {
-        long tuck_key = rt.tuckAt(tuck_out, tuck_i);
+        T tuck_key = rt.tuckAt(tuck_out, tuck_i);
         long tuck_j = (tuck_i - 1L);
         while (((tuck_j >= 0L) && (rt.tuckAt(tuck_out, tuck_j) > tuck_key))) {
             seq.setAt(tuck_out, (tuck_j + 1L), rt.tuckAt(tuck_out, tuck_j));
@@ -370,8 +373,17 @@ long tuck_checkPredicates() {
         return 24L;
     }
     long[] tuck_miss = (tuck_filter(tuck_xs, &tuck_isPositive)).dup;
-    if ((tuck_sum(tuck_miss) != 19L)) {
+    rt.TuckResult!(long) tuck_total = tuck_sum(tuck_miss);
+    if (!(tuck_total.status == rt.TuckStatus.Ok)) {
         return 25L;
+    }
+    if ((tuck_total.value != 19L)) {
+        return 25L;
+    }
+    long[] tuck_noItems = [];
+    rt.TuckResult!(long) tuck_emptySum = tuck_sum(tuck_noItems);
+    if ((tuck_emptySum.status == rt.TuckStatus.Ok)) {
+        return 26L;
     }
     return 0L;
 }

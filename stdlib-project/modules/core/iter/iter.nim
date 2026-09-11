@@ -18,8 +18,8 @@ proc tuck_each*[T](items: seq[T], f: tuck_Action[T]): void
 proc tuck_find*[T](items: seq[T], test: tuck_Predicate[T]): TuckResult[T]
 proc tuck_any*[T](items: seq[T], test: tuck_Predicate[T]): bool
 proc tuck_all*[T](items: seq[T], test: tuck_Predicate[T]): bool
-proc tuck_sum*(items: seq[int]): int
-proc tuck_sort*(items: sink seq[int]): seq[int]
+proc tuck_sum*[T](items: seq[T]): TuckResult[T]
+proc tuck_sort*[T](items: sink seq[T]): seq[T]
 proc tuck_isPositive*(x: int): bool
 proc tuck_double*(x: int): int
 proc tuck_addUp*(acc: int, x: int): int
@@ -178,14 +178,17 @@ proc tuck_all*[T](items: seq[T], test: tuck_Predicate[T]): bool =
           return false
   return true
 
-proc tuck_sum*(items: seq[int]): int =
-  var tuck_acc = 0
-  for tuck_i in (0 .. (getLength(items) - 1)):
+proc tuck_sum*[T](items: seq[T]): TuckResult[T] =
+  if (getLength(items) == 0):
+    if true:
+      return tnone[T]()
+  var tuck_acc = tuck_rt.tuckAt(items, 0)
+  for tuck_i in (1 .. (getLength(items) - 1)):
     if true:
       tuck_acc = (tuck_acc + tuck_rt.tuckAt(items, tuck_i))
-  return tuck_acc
+  return tok(tuck_acc)
 
-proc tuck_sort*(items: sink seq[int]): seq[int] =
+proc tuck_sort*[T](items: sink seq[T]): seq[T] =
   var tuck_out = items
   var tuck_i = 1
   while (tuck_i < getLength(tuck_out)):
@@ -312,9 +315,18 @@ proc tuck_checkPredicates*(): int =
     if true:
       return 24
   var tuck_miss = tuck_filter(tuck_xs, tuck_isPositive)
-  if (tuck_sum(tuck_miss) != 19):
+  var tuck_total = tuck_sum(tuck_miss)
+  if not tuck_total.ok:
     if true:
       return 25
+  if (tuck_total.value != 19):
+    if true:
+      return 25
+  var tuck_noItems: seq[int] = @[]
+  var tuck_emptySum = tuck_sum(tuck_noItems)
+  if tuck_emptySum.ok:
+    if true:
+      return 26
   return 0
 
 proc tuck_checkTerminals*(): int =

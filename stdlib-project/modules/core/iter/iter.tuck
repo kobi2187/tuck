@@ -142,16 +142,24 @@ fn all[T]({items: Seq[T], test: Predicate[T]}) -> bool:
       return false
   return true
 
-fn sum({items: Seq[int]}) -> int:
-  var acc = 0
-  for i in 0 .. items.len - 1:
+fn sum[T]({items: Seq[T]}) -> T?:
+  # `?T`, not a bare `T` starting at 0: a real generic has no numeric zero to
+  # seed from (there's no "any T with +" bound to ask for one), so an empty
+  # Seq is genuinely absent rather than a silent 0. `reduce` is the verb for
+  # "I have my own seed" — this is the one for "just add them up".
+  if items.len == 0:
+    return
+  var acc = items[0]
+  for i in 1 .. items.len - 1:
     acc = acc + items[i]
   return acc
 
-fn sort({items: Seq[int]}) -> Seq[int]:
-  # Insertion sort. Not the fastest, but honest: no hidden comparator
-  # protocol, no unstable-vs-stable question to answer yet. Revisit once a
-  # bench names a real cost.
+fn sort[T]({items: Seq[T]}) -> Seq[T]:
+  # Insertion sort. Not the fastest, but honest: no unstable-vs-stable
+  # question to answer yet. Revisit once a bench names a real cost. Generic
+  # over `T` the same way core.cmp's smaller/larger are: an ordinary bound
+  # type param and the plain `<`/`>` operators, not a constraint mechanism —
+  # Tuck doesn't have one, and this doesn't need one.
   var out = items
   var i = 1
   for i < out.len:
@@ -259,8 +267,15 @@ fn checkPredicates() -> int:
   if {items: xs, test: :isPositive} all:
     return 24
   let miss = {items: xs, test: :isPositive} filter
-  if {items: miss} sum != 19:
+  let total = {items: miss} sum
+  if not total.ok:
     return 25
+  if total.value != 19:
+    return 25
+  let noItems: Seq[int] = []
+  let emptySum = {items: noItems} sum
+  if emptySum.ok:
+    return 26
   return 0
 
 fn checkTerminals() -> int:

@@ -51,18 +51,24 @@ fn each[T]({items: Seq[T], f: Action[T]}) -> void
 fn find[T]({items: Seq[T], test: Predicate[T]}) -> T?
 fn any[T]({items: Seq[T], test: Predicate[T]}) -> bool
 fn all[T]({items: Seq[T], test: Predicate[T]}) -> bool
-fn sum({items: Seq[int]}) -> int          # int only — see note below
-fn sort({items: Seq[int]}) -> Seq[int]    # int only — see note below
+fn sum[T]({items: Seq[T]}) -> T?
+fn sort[T]({items: Seq[T]}) -> Seq[T]
 ```
 
-`sum` and `sort` are **not generic** here, unlike the rest: `sum` needs `+`
-and `sort` needs `>` on `T`, and Tuck has no trait/constraint bound yet to
-say "any `T` with `+`" or "any `T` that's `Ord`" — the ROADMAP-GRAPH ruling
-on generic constraints is compile-time-only and still open on mechanism.
-Writing them fully generic would typecheck today (gradual typing accepts
-`+`/`>` on an unconstrained `T`) but would be silently unenforced rather than
-actually generic — the same trap §0 warns against for bare unbound type
-params. Scoped to `int` until that ruling lands; widening later is additive.
+Both ARE generic — `core.cmp.smaller[T]`/`larger[T]` already prove `<` on a
+properly bound `[T]` works fine, checked honestly at each real call site
+against the concrete type. There is no constraint mechanism, and none is
+needed here: the earlier concern (a prior draft of this doc scoped both to
+`int`, worried this was the same trap as an UNBOUND fnsig type param) was a
+different situation entirely — a `fnsig Mapper = {x: T} -> U` with no `[T,
+U]` on the fnsig itself really does silently read as `Unknown`, but an
+ordinary `fn sort[T](...)`'s `T` is bound and checked, same as any other
+generic fn in this file. Verified on all three backends.
+
+`sum` returns `?T`, not a bare `T` starting at 0: a real generic has no
+numeric zero to seed an empty fold from. `reduce` is the verb for "I have my
+own seed"; this is the one for "just add them up", and an empty `Seq` is
+genuinely absent rather than a silently wrong 0.
 
 ## In use
 

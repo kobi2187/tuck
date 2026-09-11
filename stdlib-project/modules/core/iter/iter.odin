@@ -233,21 +233,24 @@ tuck_all :: proc (items: [dynamic]$T, test: proc(T) -> bool) -> bool {
   return true
 }
 
-tuck_sum :: proc (items: [dynamic]int) -> int {
-  tuck_acc := 0
-  for tuck_i in (0 ..= (seq.len(items) - 1)) {
+tuck_sum :: proc (items: [dynamic]$T) -> rt.TuckResult(T) {
+  if (seq.len(items) == 0) {
+      return rt.tnone(T)
+  }
+  tuck_acc := rt.tuckAt(items, 0)
+  for tuck_i in (1 ..= (seq.len(items) - 1)) {
       tuck_acc = (tuck_acc + rt.tuckAt(items, tuck_i))
   }
-  return tuck_acc
+  return rt.tok(tuck_acc)
 }
 
-tuck_sort :: proc (items: [dynamic]int) -> [dynamic]int {
+tuck_sort :: proc (items: [dynamic]$T) -> [dynamic]T {
   items := items
   items = rt.tuckSeqCopy(items)
   return tuck_sort_moved(items)
 }
 
-tuck_sort_moved :: proc (items: [dynamic]int) -> [dynamic]int {
+tuck_sort_moved :: proc (items: [dynamic]$T) -> [dynamic]T {
   tuck_out := items
   tuck_i := 1
   for (tuck_i < seq.len(tuck_out)) {
@@ -384,8 +387,17 @@ tuck_checkPredicates :: proc () -> int {
       return 24
   }
   tuck_miss := rt.tuckSeqCopy(tuck_filter(tuck_xs, tuck_isPositive))
-  if (tuck_sum(tuck_miss) != 19) {
+  tuck_total := tuck_sum(tuck_miss)
+  if !(tuck_total.status == .Ok) {
       return 25
+  }
+  if (tuck_total.value != 19) {
+      return 25
+  }
+  tuck_noItems: [dynamic]int = [dynamic]int{}
+  tuck_emptySum := tuck_sum(tuck_noItems)
+  if (tuck_emptySum.status == .Ok) {
+      return 26
   }
   return 0
 }
