@@ -1,0 +1,192 @@
+# core.convert — changing a value's type, and saying what may be lost.
+#
+# Every conversion here answers one of three shapes, and the shape IS the
+# contract:
+#
+#   `-> i32?`   it might not fit, and absence says so
+#   `-> i32`    it always answers, by clamping — the name says `Clamped`
+#   `-> f32`    it always answers, by approximating — the name says `Approx`
+#
+# A conversion that can silently lose information without saying which of
+# these it is does not belong in this module.
+#
+# WHAT IS NOT HERE, ON PURPOSE:
+#
+#   `intToStr` / `floatToStr` — `toStr` in std/str is already generic and
+#   already handles both (verified, not assumed). A second spelling of one
+#   operation is the thing PROTOCOLS.md forbids.
+#
+#   `parseFloat` — it is a PRIMITIVE in std/str, because correctly rounded
+#   decimal-to-binary is a real algorithm and a hand-rolled one would differ
+#   between backends. Call it there; wrapping it here would add a name
+#   without adding a capability.
+#
+#   `parseInt` IS here, and in Tuck, because it is an honest fold over digits.
+#   That is the line: a shim is for what Tuck cannot say, not for what it has
+#   not been asked to say yet.
+import str
+
+# --- the bounds, as values -------------------------------------------------
+# i64's minimum has no literal spelling (`-9223372036854775808` lexes as the
+# positive value first, which is past i64's max), so it is derived.
+fn i64Max() -> i64:
+  return 9223372036854775807
+
+fn i64Min() -> i64:
+  return 0 - i64Max - 1
+
+fn i32Max() -> i64:
+  return 2147483647
+
+fn i32Min() -> i64:
+  return 0 - i32Max - 1
+
+# --- narrowing -------------------------------------------------------------
+# Absent when it does not fit. `int?` rather than a `{value: i32}?` wrapper:
+# the answer is one number, so the type says one number.
+fn toNarrow({x: i64}) -> i32?:
+  if x < i32Min or x > i32Max:
+    return
+  return {value: x} i32
+
+# Always answers, by pinning at the edge. The name carries the behaviour so a
+# call site cannot mistake it for the checked one.
+fn toNarrowClamped({x: i64}) -> i32:
+  if x < i32Min:
+    return {value: i32Min} i32
+  if x > i32Max:
+    return {value: i32Max} i32
+  return {value: x} i32
+
+fn toApprox({x: float}) -> f32:
+  return {value: x} f32
+
+# --- parsing ---------------------------------------------------------------
+# Digits are bytes, and `byteAt` reads one. ASCII '0' is 48.
+fn digitOf({t: str, index: int}) -> int?:
+  let b = {value: {t: t, index: index} byteAt} int
+  if b < 48 or b > 57:
+    return
+  return b - 48
+
+fn isSign({t: str, index: int}) -> bool:
+  let b = {value: {t: t, index: index} byteAt} int
+  return b == 43 or b == 45
+
+fn isNegative({t: str}) -> bool:
+  if {t: t} byteCount == 0:
+    return false
+  return {value: {t: t, index: 0} byteAt} int == 45
+
+# Absent on anything that is not a whole number: empty text, a stray
+# character, a sign with no digits after it, or a value past i64. Overflow is
+# checked BEFORE it happens — testing the result of an overflow that already
+# occurred is testing a value the language never promised.
+fn parseInt({t: str}) -> i64?:
+  let n = {t: t} byteCount
+  if n == 0:
+    return
+  var start = 0
+  if {t: t, index: 0} isSign:
+    start = 1
+  if start >= n:
+    return
+  let neg = {t: t} isNegative
+  return {t: t, start: start, count: n, neg: neg} accumulate
+
+fn accumulate({t: str, start: int, count: int, neg: bool}) -> i64?:
+  var acc: i64 = 0
+  for i in start .. count - 1:
+    let d = {t: t, index: i} digitOf
+    if not d.ok:
+      return
+    let step = {acc: acc, digit: d.value, neg: neg} addDigit
+    if not step.ok:
+      return
+    acc = step.value
+  return acc
+
+# One digit, with the bound tested first. A negative number is accumulated
+# DOWNWARD rather than built positive and negated, so i64's minimum — which
+# has no positive counterpart — parses like any other value.
+fn addDigit({acc: i64, digit: int, neg: bool}) -> i64?:
+  let d = {value: digit} i64
+  if neg:
+    if acc < (i64Min + d) /i 10:
+      return
+    return acc * 10 - d
+  if acc > (i64Max - d) /i 10:
+    return
+  return acc * 10 + d
+
+# --- the module's own checks ----------------------------------------------
+fn checkNarrow() -> int:
+  let ok = {x: 1000} toNarrow
+  if not ok.ok:
+    return 1
+  if {value: ok.value} int != 1000:
+    return 2
+  # Past i32: absent, not wrapped.
+  let past = {x: 3000000000} toNarrow
+  if past.ok:
+    return 3
+  if {value: {x: 3000000000} toNarrowClamped} i64 != i32Max:
+    return 4
+  if {value: {x: 0 - 3000000000} toNarrowClamped} i64 != i32Min:
+    return 5
+  return checkParseOk
+
+fn checkParseOk() -> int:
+  let a = {t: "123"} parseInt
+  if not a.ok:
+    return 6
+  if a.value != 123:
+    return 7
+  let b = {t: "-45"} parseInt
+  if not b.ok:
+    return 8
+  if b.value != 0 - 45:
+    return 9
+  let c = {t: "+7"} parseInt
+  if not c.ok:
+    return 10
+  if c.value != 7:
+    return 11
+  return checkParseEdges
+
+fn checkParseEdges() -> int:
+  # i64's minimum has no positive counterpart, so a parser that builds the
+  # value positive and negates cannot read it. This one accumulates downward.
+  let lo = {t: "-9223372036854775808"} parseInt
+  if not lo.ok:
+    return 12
+  if lo.value != i64Min:
+    return 13
+  let hi = {t: "9223372036854775807"} parseInt
+  if not hi.ok:
+    return 14
+  if hi.value != i64Max:
+    return 15
+  # One past: absent, not wrapped.
+  let over = {t: "9223372036854775808"} parseInt
+  if over.ok:
+    return 16
+  return checkParseBad
+
+fn checkParseBad() -> int:
+  let empty = {t: ""} parseInt
+  if empty.ok:
+    return 17
+  let lone = {t: "-"} parseInt
+  if lone.ok:
+    return 18
+  let trailing = {t: "12x"} parseInt
+  if trailing.ok:
+    return 19
+  let letters = {t: "x"} parseInt
+  if letters.ok:
+    return 20
+  return 0
+
+fn main() -> int:
+  return checkNarrow
