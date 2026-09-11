@@ -165,6 +165,8 @@ setAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
 // `items` in place, so `items`'s own backing store is never shared with
 // (and never mutated through) the result — a plain-value append on a
 // [dynamic]T copy would still share the source memory below capacity.
+getLength :: proc(x: $T) -> int { return len(x) }
+
 count :: proc(items: [dynamic]$T) -> int { return len(items) }
 
 byteCount :: proc(t: string) -> int { return len(t) }

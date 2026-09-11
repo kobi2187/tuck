@@ -204,6 +204,8 @@ void setAt(T)(ref T[] items, long index, T value)
 /// Value semantics: `~` always allocates a fresh array rather than growing
 /// `items` in place (unlike `~=`, which may reuse spare capacity from the
 /// same backing GC block) — `items` is never mutated by this call.
+long getLength(T)(T x) { return cast(long) x.length; }
+
 long count(T)(T[] items) { return cast(long) items.length; }
 
 long byteCount(string t) { return cast(long) t.length; }

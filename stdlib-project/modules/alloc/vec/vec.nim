@@ -22,13 +22,13 @@ proc tuck_checkPop*(): int
 proc tuck_main*(): int
 
 proc tuck_count*[T](items: sink seq[T]): int =
-  return items.len
+  return len(items)
 
 proc tuck_isEmpty*[T](items: sink seq[T]): bool =
-  return (items.len == 0)
+  return (len(items) == 0)
 
 proc tuckfn_at*[T](items: sink seq[T], index: int): TuckResult[T] =
-  if ((index < 0) or (index >= items.len)):
+  if ((index < 0) or (index >= len(items))):
     if true:
       return tnone[T]()
   return tok(tuck_rt.tuckAt(items, index))
@@ -37,10 +37,10 @@ proc tuck_first*[T](items: sink seq[T]): TuckResult[T] =
   return tuckfn_at(items, 0)
 
 proc tuck_last*[T](items: sink seq[T]): TuckResult[T] =
-  return tuckfn_at(items, (items.len - 1))
+  return tuckfn_at(items, (len(items) - 1))
 
 proc tuckfn_setAt*[T](items: sink seq[T], index: int, value: T): seq[T] =
-  if ((index < 0) or (index >= items.len)):
+  if ((index < 0) or (index >= len(items))):
     if true:
       return items
   var tuck_out = items
@@ -52,7 +52,7 @@ proc tuck_clear*[T](items: seq[T]): seq[T] =
   return tuck_empty
 
 proc tuck_has*[T](items: seq[T], value: T): bool =
-  for tuck_i in (0 .. (items.len - 1)):
+  for tuck_i in (0 .. (len(items) - 1)):
     if true:
       if (tuck_rt.tuckAt(items, tuck_i) == value):
         if true:
@@ -60,7 +60,7 @@ proc tuck_has*[T](items: seq[T], value: T): bool =
   return false
 
 proc tuck_indexOf*[T](items: seq[T], value: T): TuckResult[int] =
-  for tuck_i in (0 .. (items.len - 1)):
+  for tuck_i in (0 .. (len(items) - 1)):
     if true:
       if (tuck_rt.tuckAt(items, tuck_i) == value):
         if true:
@@ -69,20 +69,20 @@ proc tuck_indexOf*[T](items: seq[T], value: T): TuckResult[int] =
 
 proc tuck_insertAt*[T](items: seq[T], index: int, value: T): seq[T] =
   var tuck_out: seq[T] = @[]
-  for tuck_i in (0 .. (items.len - 1)):
+  for tuck_i in (0 .. (len(items) - 1)):
     if true:
       if (tuck_i == index):
         if true:
           tuck_out.add(value)
       tuck_out.add(tuck_rt.tuckAt(items, tuck_i))
-  if (index >= items.len):
+  if (index >= len(items)):
     if true:
       tuck_out.add(value)
   return tuck_out
 
 proc tuck_removeAt*[T](items: seq[T], index: int): seq[T] =
   var tuck_out: seq[T] = @[]
-  for tuck_i in (0 .. (items.len - 1)):
+  for tuck_i in (0 .. (len(items) - 1)):
     if true:
       if (tuck_i != index):
         if true:
@@ -90,11 +90,11 @@ proc tuck_removeAt*[T](items: seq[T], index: int): seq[T] =
   return tuck_out
 
 proc tuck_pop*[T](items: sink seq[T]): TuckResult[tuple[rest: seq[T], value: T]] =
-  if (items.len == 0):
+  if (len(items) == 0):
     if true:
       return tnone[tuple[rest: seq[T], value: T]]()
-  var tuck_top = tuck_rt.tuckAt(items, (items.len - 1))
-  var tuck_rest = tuck_removeAt(items, (items.len - 1))
+  var tuck_top = tuck_rt.tuckAt(items, (len(items) - 1))
+  var tuck_rest = tuck_removeAt(items, (len(items) - 1))
   return tok((rest: tuck_rest, value: tuck_top))
 
 proc tuck_checkReads*(): int =
@@ -173,14 +173,14 @@ proc tuck_checkEdits*(): int =
     if true:
       return 17
   var tuck_ins = tuck_insertAt(tuck_xs, 1, 15)
-  if (tuck_ins.len != 4):
+  if (len(tuck_ins) != 4):
     if true:
       return 18
   if (tuck_rt.tuckAt(tuck_ins, 1) != 15):
     if true:
       return 19
   var tuck_del = tuck_removeAt(tuck_xs, 0)
-  if (tuck_del.len != 2):
+  if (len(tuck_del) != 2):
     if true:
       return 20
   if (tuck_rt.tuckAt(tuck_del, 0) != 20):
@@ -206,7 +206,7 @@ proc tuck_checkPop*(): int =
     if true:
       return 25
   var tuck_cleared = tuck_clear(tuck_xs)
-  if (tuck_cleared.len != 0):
+  if (len(tuck_cleared) != 0):
     if true:
       return 26
   return 0

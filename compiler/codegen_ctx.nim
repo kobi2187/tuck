@@ -105,6 +105,23 @@ proc indexRuntimeExterns(ctx: var CodegenCtx) =
            mem.externEmit == "":
           ctx.rtExterns.incl(mem.name)
 
+proc indexImportedEmits(ctx: var CodegenCtx) =
+  ## An IMPORTED module's externs, for their `[emit:]` names only. This
+  ## backend calls them UNQUALIFIED — Nim merges module scopes — so the emit
+  ## name has to be known here or the call goes out under the Tuck name.
+  ## std/seq's `len` is the case: it binds to `getLength`, and without this
+  ## the emitted `len(xs)` resolved to Nim's own `system.len` instead. It
+  ## worked, which is the problem — a host symbol answering by coincidence is
+  ## what an emit name exists to prevent. (Odin and D route through their
+  ## module forwarder, which already honoured it, so only the backend that
+  ## merges scopes could miss it.)
+  for m in ctx.realModules.values:
+    for d in m.decls:
+      if d == nil or d.kind != dkExtern: continue
+      for mem in d.mixinMembers:
+        if mem.kind == dkFn and mem.isExtern and mem.externEmit != "":
+          ctx.externEmits[mem.name] = mem.externEmit
+
 proc indexExterns*(ctx: var CodegenCtx) =
   ## Externs are a SECOND pass: an extern's invariant-carrying return type is
   ## looked up in invariantNames, which the first pass has to finish filling
@@ -118,6 +135,15 @@ proc indexExterns*(ctx: var CodegenCtx) =
       if mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
          mem.fnReturnType.name in ctx.invariantNames:
         ctx.externInvRets[mem.name] = mem.fnReturnType.name
+  # An IMPORTED module's externs too. This backend calls them UNQUALIFIED —
+  # Nim merges module scopes — so the emit name has to be known here or the
+  # call goes out under the Tuck name. std/seq's `len` is the case: it binds
+  # to `getLength`, and without this the emitted `len(xs)` resolved to Nim's
+  # own `system.len` instead. It worked, which is the problem: a host symbol
+  # answering by coincidence is what the emit name exists to prevent.
+  # (Odin and D route through their module forwarder, which already honoured
+  # it — so only the backend that merges scopes could miss it.)
+  ctx.indexImportedEmits()
   ctx.indexRuntimeExterns()
 
 proc satisfiersOf*(ctx: CodegenCtx, iface: string): seq[Decl] =

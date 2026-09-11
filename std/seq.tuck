@@ -26,3 +26,7 @@ extern:
   # is instantiated — so the standalone compile is a false negative and only
   # a program that calls `count` shows it.
   fn count[T]({items: Seq[T]}) -> int
+  # `.len` under its own name, and FULLY GENERIC — `T`, not `Seq[T]` — because
+  # it has to answer for a str as well. `[emit:]` points at `getLength`, since
+  # a runtime proc called `len` is ambiguous with Nim's own.
+  fn len[T]({items: T}) -> int [emit: "getLength"]

@@ -140,11 +140,11 @@ proc tuck_main*(): int =
     if true:
       return 10
   var tuck_ks = tuck_keys(tuck_rooms)
-  if (tuck_ks.len != 1):
+  if (len(tuck_ks) != 1):
     if true:
       return 11
   var tuck_vs = tuck_values(tuck_rooms)
-  if (tuck_vs.len != 1):
+  if (len(tuck_vs) != 1):
     if true:
       return 12
   tuck_rooms = tuck_clear(tuck_rooms)

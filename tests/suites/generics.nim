@@ -468,4 +468,30 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.runs "...and converts the whole expression, not each literal", 0
 
+  # `len` is DECLARED now, not a UFCS accident. Two things had to be true,
+  # and the first attempt got the second wrong:
+  #
+  #   The runtime proc cannot be CALLED `len` — that is ambiguous with
+  #   `system.len` at every unqualified `.len` inside tuck_rt.nim, and only
+  #   once a generic body is instantiated, so compiling that file alone is a
+  #   false negative. `[emit: "getLength"]` names the real symbol.
+  #
+  #   And it must be generic over T, NOT over Seq[T]. `.len` answers for a
+  #   str as well; a `Seq[T]`-only signature made `s.len` on a string resolve
+  #   to it — "expects Seq[T] but got str".
+  t.src """
+import seq
+
+fn main() -> int:
+  let xs: Seq[int] = [1, 2, 3]
+  let s = "abcd"
+  let a = {items: xs} len
+  let b = {items: s} len
+  return a + b - 7
+"""
+  t.okCheck "len is declared, and answers for a Seq and a str alike"
+  t.emits "the emitted call names the runtime symbol, not `len`", r"getLength"
+  t.hostBuilds "...on every backend"
+  t.runs "...with the same two answers", 0
+
   t.finish()

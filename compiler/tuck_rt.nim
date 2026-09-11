@@ -112,6 +112,12 @@ proc setAt*[T](items: var seq[T], index: int, value: T) =
 # matter how a caller spells it, so there is no workaround short of not
 # declaring it. `Seq.len`'s existing accidental-UFCS behavior (TODO.md §3)
 # is the only way to get a count today.
+proc getLength*[T](x: T): int = system.len(x)
+  ## Behind `len`. Named so nothing can be ambiguous with it: a runtime proc
+  ## actually called `len` collides with `system.len` at every unqualified
+  ## `.len` in this module. FULLY GENERIC on purpose — `len` has to answer for
+  ## a Seq AND a str, which a `seq[T]`-only signature cannot.
+
 proc count*[T](items: seq[T]): int = system.len(items)
   ## PROTOCOLS.md's verb for "how many". Named `count` rather than `len`
   ## precisely so it does not make every unqualified `len` in this module
