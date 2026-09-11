@@ -1,0 +1,21 @@
+# core.contracts.value — value protocols. Declarations only.
+
+type Order:
+  | Before
+  | Same
+  | After
+
+group Equatable:
+  fn equals({self: Self, other: Self}) -> bool
+
+group Comparable:
+  fn compare({self: Self, other: Self}) -> Order
+
+group Hashable:
+  fn hashOf({self: Self}) -> u64
+
+group Showable:
+  fn toStr({self: Self}) -> str
+
+group Cloneable:
+  fn clone({self: Self}) -> Self

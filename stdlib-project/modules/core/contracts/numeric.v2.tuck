@@ -1,0 +1,31 @@
+# core.contracts.numeric — arithmetic protocols. Declarations only.
+
+group Addable:
+  fn add({self: Self, other: Self}) -> Self
+
+group Subtractable:
+  fn sub({self: Self, other: Self}) -> Self
+
+group Multipliable:
+  fn mul({self: Self, other: Self}) -> Self
+
+group Divisible:
+  fn div({self: Self, other: Self}) -> Self
+  fn rem({self: Self, other: Self}) -> Self
+
+group Negatable:
+  fn negate({self: Self}) -> Self
+
+group Bitwise:
+  fn bitAnd({self: Self, other: Self}) -> Self
+  fn bitOr({self: Self, other: Self}) -> Self
+  fn bitXor({self: Self, other: Self}) -> Self
+  fn bitNot({self: Self}) -> Self
+
+group Shiftable:
+  fn shiftLeft({self: Self, by: int}) -> Self
+  fn shiftRight({self: Self, by: int}) -> Self
+
+group Absolute:
+  fn abs({self: Self}) -> Self
+  fn signOf({self: Self}) -> int

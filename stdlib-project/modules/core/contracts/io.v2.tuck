@@ -1,0 +1,13 @@
+# core.contracts.io — byte-stream protocols. Declarations only.
+
+group Readable:
+  fn read({self: Self, into: Seq[u8]}) -> int [io]
+
+group Writable:
+  fn write({self: Self, bytes: Seq[u8]}) -> int [io]
+
+group Flushable:
+  fn flush({self: Self}) -> void [io]
+
+group Closeable:
+  fn close({self: Self}) -> void [io]
