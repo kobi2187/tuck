@@ -1204,6 +1204,11 @@ proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep, into: string,
   ## first result is dropped. threadReceiver is shared with the Nim backend.
   if ctx.res.stepCall(step) != nil:
     let call = threadReceiver(ctx.res.stepCall(step), base, into, baseStr)
+    # The BUILDER form writes back through the base, so the old value is dead
+    # exactly as in `x = f(x, ...)` — take the MOVED twin.
+    if movedCallInto(ctx.res, ctx.module, call, into):
+      return ctx.indD & into & " = " & movedName(ctx.resolveDCallee(call)) &
+             "(" & ctx.genDCallArgs(call, call.callee.name).join(", ") & ");\n"
     return ctx.indD & into & " = " & ctx.genDCall(call) & ";\n"
   let valStr = if isSingleFieldPayload(step.arg):
                  ctx.genDExpr(soleFieldValue(step.arg))

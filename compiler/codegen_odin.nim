@@ -1141,7 +1141,14 @@ proc genChainStep(ctx: var OdinCodegenCtx, step: ChainStep, baseStr,
   ## One step: a mutator call reassigned into the base var, a register
   ## field's setter, or a field set.
   if ctx.res.stepCall(step) != nil:
-    return ind & baseStr & " = " & ctx.genOdinCall(ctx.res.stepCall(step))
+    let call = ctx.res.stepCall(step)
+    # The BUILDER form writes back through the base, so the old value is dead
+    # exactly as in `x = f(x, ...)` — take the MOVED twin.
+    if movedCallInto(ctx.res, ctx.module, call, baseStr):
+      let nm = movedName(ctx.genOdinExpr(call.callee))
+      return ind & baseStr & " = " & nm & "(" &
+             ctx.genCallArgs(call, ctx.genOdinExpr(call.callee)).join(", ") & ")"
+    return ind & baseStr & " = " & ctx.genOdinCall(call)
   let valStr = if isSingleFieldPayload(step.arg):
                  ctx.genOdinExpr(soleFieldValue(step.arg))
                else: ""

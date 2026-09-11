@@ -294,3 +294,42 @@ to remove.
 Caveat on target: measured on x86-64 with a large cache. On a Cortex-M with
 no cache and no allocator the case is *stronger*, not weaker — `ref` needs a
 heap that Tier 1 deliberately does not have.
+
+## Container copying — 2026-09-11
+
+`bash benches/containers/run.sh [N]` builds each pattern at N and 2N on all
+three backends. **The RATIO is the reading**, not the seconds: ~2 is linear,
+~4 is a copy per iteration. Absolute times are machine-specific and the
+patterns are deliberately small so the suite stays quick.
+
+Value semantics makes every container verb return a new container, so the
+naive emission copies on each call. Three mechanisms remove the copies where
+nothing can observe them: an append assigned back to itself becomes a native
+append, a threaded-container fn gets a MOVED twin (Odin, D), and `sink` says
+the same thing to Nim.
+
+At N=8000, every pattern is linear on every backend except one:
+
+| pattern | what it exercises | Nim | Odin | D |
+|---|---|---|---|---|
+| seq_push | `xs = {items: xs, ...} push` | linear | linear | linear |
+| rec_thread | record-wrapped container, plain call | linear | linear | linear |
+| chain_form | the `..` builder spelling | linear | linear | linear |
+| generic_box | `Box[T]` — a GENERIC container | linear | linear | linear |
+| two_fields | record with two Seq fields | linear | linear | linear |
+| seq_setat | element writes through a record | linear | linear | linear |
+| read_only | container in, scalar out | linear | linear | linear |
+| **str_concat** | building a string by `+` | linear | **3.5x** | linear |
+
+**str_concat on Odin is the one open case.** `str` is deliberately outside
+the twin: the wrapper's copy helper is Seq-shaped, and emitting it for a
+string parameter gave "Cannot assign 'rt.tuckSeqCopy(title)' of type
+'[dynamic]T' to 'string'". A string BUILDER (alloc.string) is the real answer
+rather than widening the twin — Nim and D already absorb it.
+
+Three of these lines were found BY this bench rather than by reasoning:
+`chain_form` was quadratic on Odin and D because the chain emitter writes its
+own assignment and never reached the twin routing, and `generic_box` was
+quadratic on NIM because its `sink` predicate had not learned that a generic
+application owns whatever its declared body owns. Both are fixed above; the
+row that remains is the honest one.

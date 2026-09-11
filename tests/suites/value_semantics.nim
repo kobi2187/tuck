@@ -521,4 +521,35 @@ fn main() -> int:
   t.hostBuilds "...and every backend builds them"
   t.runs "a live source still copies; only the self-assign moves", 0
 
+  # The BUILDER spelling `x ..f {...}` is the one TUCK-TRANSLATION.md
+  # recommends, and the chain emitter writes its own assignment rather than
+  # routing through genAssign — so it missed the twin entirely and measured
+  # 3.5x on Odin / 3.3x on D while the plain form was already linear.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn addTo({b: Bag, value: int}) -> Bag:
+  var xs = b.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Bag
+
+fn main() -> int:
+  var bag: Bag = {items: []} Bag
+  for i in 0 .. 2:
+    bag ..addTo {value: i}
+  if bag.items.len != 3:
+    return 1
+  if bag.items[2] != 2:
+    return 2
+  return 0
+"""
+  t.okCheck "the builder form checks"
+  t.emitsD "D routes the builder step to the twin", r"tuck_addTo_moved\("
+  t.emitsOdin "so does Odin", r"tuck_addTo_moved\("
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and the chain still appends each step", 0
+
   t.finish()

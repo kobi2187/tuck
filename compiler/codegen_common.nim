@@ -376,6 +376,19 @@ proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
 
 proc ownsHeap(m: Module, t: Type, depth = 0): bool
 
+proc genericBaseBody(m: Module, t: Type): Type =
+  ## A GENERIC application's declared body — `Set[T]` -> `Set`'s record.
+  ## getFieldsForType answers @[] for every tkApp on purpose (most are `Seq`
+  ## or a `!T` carrier, which have no declaration), so the lookup is done
+  ## here rather than by widening a function the whole compiler shares.
+  if t == nil or t.kind != tkApp or t.base == nil or t.base.kind != tkNamed:
+    return nil
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.name == t.base.name:
+      return d.typeBody
+  nil
+
+
 proc anyOwnsHeap(m: Module, ts: seq[Type], depth: int): bool =
   for t in ts:
     if ownsHeap(m, t, depth): return true
@@ -410,8 +423,13 @@ proc ownsHeap(m: Module, t: Type, depth = 0): bool =
   of tkNamed: namedOwnsHeap(m, t.name, depth + 1)
   of tkApp:
     # Seq[T] owns a buffer outright; a `!T`/`?T` carrier, or an Array, owns
-    # whatever its arguments do.
+    # whatever its arguments do. A GENERIC USER TYPE — `Box[T]`, `Set[T]`,
+    # `Table[K, V]` — owns whatever its DECLARED BODY does: without this the
+    # whole alloc tier read as owning nothing, and the container-threading
+    # benchmark was linear on Odin and D (which look through the twin's own
+    # predicate) and quadratic on Nim, which consults this one.
     if t.base != nil and t.base.kind == tkNamed and t.base.name == "Seq": true
+    elif ownsHeap(m, genericBaseBody(m, t), depth + 1): true
     else: anyOwnsHeap(m, t.args, depth + 1)
   of tkRecord: fieldsOwnHeap(m, t.fields, depth + 1)
   of tkSum: sumOwnsHeap(m, t, depth + 1)
@@ -472,18 +490,6 @@ proc threadsBackSameType(d: Decl, p: Param): bool =
   ## Does the fn hand back the very type its first parameter came in as?
   sameTypeName(p.typ, d.fnReturnType)
 
-proc genericBaseBody(m: Module, t: Type): Type =
-  ## A GENERIC application's declared body — `Set[T]` -> `Set`'s record.
-  ## getFieldsForType answers @[] for every tkApp on purpose (most are `Seq`
-  ## or a `!T` carrier, which have no declaration), so the lookup is done
-  ## here rather than by widening a function the whole compiler shares.
-  if t == nil or t.kind != tkApp or t.base == nil or t.base.kind != tkNamed:
-    return nil
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == t.base.name:
-      return d.typeBody
-  nil
-
 proc movedCopyFields*(res: Resolution, m: Module, t: Type): seq[string] =
   ## The Seq-typed FIELDS a MOVED wrapper must copy, resolving a generic
   ## application to its declared body. ONE definition, used by the predicate
@@ -533,6 +539,27 @@ proc rootBindingName*(e: Expr): string =
     cur = cur.receiver
   if cur != nil and cur.kind == exkVar: cur.name else: ""
 
+proc movedCallInto*(res: Resolution, m: Module, call: Expr,
+                    targetName: string): bool =
+  ## Is `call` a threaded-container call whose FIRST argument is the very
+  ## variable its result is being written back into? Then the old value is
+  ## dead and the MOVED twin may have it.
+  ##
+  ## Shared by the two spellings that reach it: a plain `x = f(x, ...)`, and
+  ## the BUILDER chain `x ..f {...}`, which the chain emitter writes as an
+  ## assignment of its own rather than routing through genAssign. The chain
+  ## form is the one TUCK-TRANSLATION.md recommends, and it was the shape
+  ## still measuring quadratic on Odin (3.5x) and D (3.3x) when only the
+  ## plain form was recognised.
+  if call == nil or call.kind != exkCall: return false
+  if call.callee == nil or call.callee.kind != exkVar: return false
+  if movedFnParam(res, m, m.findFn(call.callee.name)) == "": return false
+  # A resolved user call is already exploded positionally by the time it
+  # reaches here (a payload call like std/seq's `push` is not, and is handled
+  # by selfAppendValue).
+  call.args.len >= 1 and call.args[0] != nil and
+    call.args[0].kind == exkVar and call.args[0].name == targetName
+
 proc selfThreadedCall*(res: Resolution, m: Module, e: Expr): Expr =
   ## `x = f(x, ...)` on a threaded-container fn. Returns the CALL, or nil.
   if not plainVarAssign(e): return nil
@@ -540,12 +567,5 @@ proc selfThreadedCall*(res: Resolution, m: Module, e: Expr): Expr =
   if call != nil and res.hasCall(call): call = res.call(call)
   if call == nil or call.kind != exkCall: return nil
   if call.callee == nil or call.callee.kind != exkVar: return nil
-  if movedFnParam(res, m, m.findFn(call.callee.name)) == "": return nil
-  # The moved parameter is the FIRST one and must BE the variable assigned.
-  # A resolved user call is already exploded positionally by the time it
-  # reaches here (a payload call like std/seq's `push` is not, and is handled
-  # by selfAppendValue above).
-  if call.args.len >= 1 and call.args[0] != nil and
-     call.args[0].kind == exkVar and call.args[0].name == e.target.name:
-    return call
+  if movedCallInto(res, m, call, e.target.name): return call
   nil
