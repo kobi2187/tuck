@@ -64,19 +64,22 @@ fn toApprox({x: float}) -> f32:
 # --- parsing ---------------------------------------------------------------
 # Digits are bytes, and `byteAt` reads one. ASCII '0' is 48.
 fn digitOf({t: str, index: int}) -> int?:
-  let b = {value: {t: t, index: index} byteAt} int
+  let raw = {t: t, index: index} byteAt
+  let b = {value: raw} int
   if b < 48 or b > 57:
     return
   return b - 48
 
 fn isSign({t: str, index: int}) -> bool:
-  let b = {value: {t: t, index: index} byteAt} int
+  let raw = {t: t, index: index} byteAt
+  let b = {value: raw} int
   return b == 43 or b == 45
 
 fn isNegative({t: str}) -> bool:
   if {t: t} byteCount == 0:
     return false
-  return {value: {t: t, index: 0} byteAt} int == 45
+  let lead = {t: t, index: 0} byteAt
+  return {value: lead} int == 45
 
 # Absent on anything that is not a whole number: empty text, a stray
 # character, a sign with no digits after it, or a value past i64. Overflow is
@@ -130,9 +133,11 @@ fn checkNarrow() -> int:
   let past = {x: 3000000000} toNarrow
   if past.ok:
     return 3
-  if {value: {x: 3000000000} toNarrowClamped} i64 != i32Max:
+  let hi = {x: 3000000000} toNarrowClamped
+  if {value: hi} i64 != i32Max:
     return 4
-  if {value: {x: 0 - 3000000000} toNarrowClamped} i64 != i32Min:
+  let lo = {x: 0 - 3000000000} toNarrowClamped
+  if {value: lo} i64 != i32Min:
     return 5
   return checkParseOk
 

@@ -3,7 +3,6 @@ package main
 
 import "core:os"
 import rt "./tuckrt"
-import seq "./mod_seq"
 
 tuck_Set :: struct($T: typeid) {
 	items: [dynamic]T,
@@ -36,7 +35,9 @@ tuck_add_moved :: proc (s: tuck_Set($T), value: T) -> tuck_Set(T) {
   if tuck_has(s, value) {
       return s
   }
-  return tuck_Set(T){items = seq.push(s.items, value)}
+  tuck_xs := s.items
+  append(&tuck_xs, value)
+  return tuck_Set(T){items = tuck_xs}
 }
 
 tuck_remove :: proc (s: tuck_Set($T), value: T) -> tuck_Set(T) {

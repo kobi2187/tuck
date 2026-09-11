@@ -130,11 +130,13 @@ fn main() -> int:
 import bits
 
 fn lowByte({x: u64}) -> u8:
-  return {value: {a: x, b: 255} bitAnd} u8
+  let low = {a: x, b: 255} bitAnd
+  return {value: low} u8
 
 fn main() -> int:
   let v = {value: 258} u64
-  return {value: {x: v} lowByte} int - 2
+  let b = {x: v} lowByte
+  return {value: b} int - 2
 """
   t.okCheck "a narrowing conversion checks"
   t.emitsD "D casts rather than constructing", r"cast\(ubyte\)"
@@ -263,13 +265,16 @@ fn main() -> int:
   # ANNOTATION — so there is no need for a nullary `newTable[K, V]()`, which
   # nothing could ever infer K and V for.
   t.src """
+import seq
+
 type Box[K, V]:
   keys: Seq[K]
   vals: Seq[V]
 
 fn main() -> int:
   var b: Box[str, int] = {keys: [], vals: []} Box
-  b = {keys: {items: b.keys, value: "a"} push, vals: b.vals} Box
+  let ks = {items: b.keys, value: "a"} push
+  b = {keys: ks, vals: b.vals} Box
   return b.keys.len - b.vals.len - 1
 """
   t.okCheck "a generic construction takes its params from the stated type"
@@ -421,9 +426,11 @@ fn main() -> int:
   let t = "AB"
   if {t: t} byteCount != 2:
     return 2
-  if {t: t, index: 0} byteAt != {value: 65} u8:
+  let a65 = {value: 65} u8
+  if {t: t, index: 0} byteAt != a65:
     return 3
-  if {t: t, index: 1} byteAt != {value: 66} u8:
+  let a66 = {value: 66} u8
+  if {t: t, index: 1} byteAt != a66:
     return 4
   let f = {t: "2.5"} parseFloat
   if not f.ok:
@@ -453,7 +460,8 @@ fn lowerByte({b: u8}) -> u8:
   return b
 
 fn main() -> int:
-  let got = {b: {value: 65} u8} lowerByte
+  let sixtyFive = {value: 65} u8
+  let got = {b: sixtyFive} lowerByte
   return {value: got} int - 97
 """
   t.okCheck "a conversion over an expression checks"

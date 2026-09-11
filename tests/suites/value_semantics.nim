@@ -259,7 +259,8 @@ fn deepen({o: Outer}) -> Outer:
   return s
 
 fn main() -> int:
-  var orig = {inner: {n: 1} Inner, tag: 0} Outer
+  let seed = {n: 1} Inner
+  var orig = {inner: seed, tag: 0} Outer
   let changed = {o: orig} deepen
   let origOk = orig.inner.n == 1 and orig.tag == 0
   let newOk = changed.inner.n == 99 and changed.tag == 7

@@ -73,19 +73,24 @@ tuck_bitMask :: proc (at: int) -> u64 {
 }
 
 tuck_hasBit :: proc (x: u64, at: int) -> bool {
-  return (bits.bitAnd(x, tuck_bitMask(at)) != 0)
+  tuck_mask := tuck_bitMask(at)
+  return (bits.bitAnd(x, tuck_mask) != 0)
 }
 
 tuck_withBit :: proc (x: u64, at: int) -> u64 {
-  return bits.bitOr(x, tuck_bitMask(at))
+  tuck_mask := tuck_bitMask(at)
+  return bits.bitOr(x, tuck_mask)
 }
 
 tuck_withoutBit :: proc (x: u64, at: int) -> u64 {
-  return bits.bitAnd(x, bits.bitNot(tuck_bitMask(at)))
+  tuck_mask := tuck_bitMask(at)
+  tuck_keep := bits.bitNot(tuck_mask)
+  return bits.bitAnd(x, tuck_keep)
 }
 
 tuck_flipBit :: proc (x: u64, at: int) -> u64 {
-  return bits.bitXor(x, tuck_bitMask(at))
+  tuck_mask := tuck_bitMask(at)
+  return bits.bitXor(x, tuck_mask)
 }
 
 tuck_countBits :: proc (x: u64) -> int {
@@ -153,14 +158,16 @@ tuck_shiftFor :: proc (order: tuck_ByteOrder, index: int) -> int {
 
 tuck_byteAt :: proc (value: u64, shift: int) -> u8 {
   tuck_moved := bits.shiftRight(value, shift)
-  return u8(bits.bitAnd(tuck_moved, u64(255)))
+  tuck_low := bits.bitAnd(tuck_moved, u64(255))
+  return u8(tuck_low)
 }
 
 tuck_toBytes :: proc (value: u64, order: tuck_ByteOrder) -> [dynamic]u8 {
   tuck_acc: [dynamic]u8 = [dynamic]u8{}
   for tuck_i in (0 ..= 7) {
       tuck_shift := tuck_shiftFor(order, tuck_i)
-      append(&tuck_acc, tuck_byteAt(value, tuck_shift))
+      tuck_b := tuck_byteAt(value, tuck_shift)
+      append(&tuck_acc, tuck_b)
   }
   return tuck_acc
 }
@@ -173,7 +180,8 @@ tuck_fromBytes :: proc (bytes: [dynamic]u8, order: tuck_ByteOrder) -> rt.TuckRes
   for tuck_i in (0 ..= 7) {
       tuck_octet := u64(rt.tuckAt(bytes, tuck_i))
       tuck_shift := tuck_shiftFor(order, tuck_i)
-      tuck_acc = bits.bitOr(tuck_acc, bits.shiftLeft(tuck_octet, tuck_shift))
+      tuck_placed := bits.shiftLeft(tuck_octet, tuck_shift)
+      tuck_acc = bits.bitOr(tuck_acc, tuck_placed)
   }
   return rt.tok(tuck_acc)
 }
@@ -283,7 +291,8 @@ tuck_checkBitSets :: proc (flags: u64) -> int {
 }
 
 tuck_checkOneBit :: proc () -> int {
-  tuck_one := tuck_withBit(u64(u64(0)), 7)
+  tuck_zero := u64(0)
+  tuck_one := tuck_withBit(tuck_zero, 7)
   tuck_only := tuck_onlyBit(tuck_one)
   if !(tuck_only.status == .Ok) {
       return 21
@@ -295,13 +304,16 @@ tuck_checkOneBit :: proc () -> int {
 }
 
 tuck_checkBitUndo :: proc (one: u64) -> int {
-  if (tuck_countBits(tuck_withoutBit(one, 7)) != 0) {
+  tuck_cleared := tuck_withoutBit(one, 7)
+  if (tuck_countBits(tuck_cleared) != 0) {
       return 23
   }
-  if (tuck_countBits(tuck_flipBit(one, 7)) != 0) {
+  tuck_flipped := tuck_flipBit(one, 7)
+  if (tuck_countBits(tuck_flipped) != 0) {
       return 24
   }
-  tuck_empty := tuck_lowestSetBit(u64(u64(0)))
+  tuck_none0 := u64(0)
+  tuck_empty := tuck_lowestSetBit(tuck_none0)
   if (tuck_empty.status == .Ok) {
       return 25
   }

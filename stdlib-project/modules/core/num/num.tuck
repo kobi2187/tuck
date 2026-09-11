@@ -82,16 +82,21 @@ fn bitMask({at: int}) -> u64:
   return {a: 1, by: at} shiftLeft
 
 fn hasBit({x: u64, at: int}) -> bool:
-  return {a: x, b: {at: at} bitMask} bitAnd != 0
+  let mask = {at: at} bitMask
+  return {a: x, b: mask} bitAnd != 0
 
 fn withBit({x: u64, at: int}) -> u64:
-  return {a: x, b: {at: at} bitMask} bitOr
+  let mask = {at: at} bitMask
+  return {a: x, b: mask} bitOr
 
 fn withoutBit({x: u64, at: int}) -> u64:
-  return {a: x, b: {a: {at: at} bitMask} bitNot} bitAnd
+  let mask = {at: at} bitMask
+  let keep = {a: mask} bitNot
+  return {a: x, b: keep} bitAnd
 
 fn flipBit({x: u64, at: int}) -> u64:
-  return {a: x, b: {at: at} bitMask} bitXor
+  let mask = {at: at} bitMask
+  return {a: x, b: mask} bitXor
 
 fn countBits({x: u64}) -> int:
   var n = 0
@@ -146,13 +151,15 @@ fn shiftFor({order: ByteOrder, index: int}) -> int:
 
 fn byteAt({value: u64, shift: int}) -> u8:
   let moved = {a: value, by: shift} shiftRight
-  return {value: {a: moved, b: 255} bitAnd} u8
+  let low = {a: moved, b: 255} bitAnd
+  return {value: low} u8
 
 fn toBytes({value: u64, order: ByteOrder}) -> Seq[u8]:
   var acc: Seq[u8] = []
   for i in 0 .. 7:
     let shift = {order: order, index: i} shiftFor
-    acc = {items: acc, value: {value: value, shift: shift} byteAt} push
+    let b = {value: value, shift: shift} byteAt
+    acc = {items: acc, value: b} push
   return acc
 
 # Absent on the wrong length — eight bytes or no answer.
@@ -163,7 +170,8 @@ fn fromBytes({bytes: Seq[u8], order: ByteOrder}) -> u64?:
   for i in 0 .. 7:
     let octet = {value: bytes[i]} u64
     let shift = {order: order, index: i} shiftFor
-    acc = {a: acc, b: {a: octet, by: shift} shiftLeft} bitOr
+    let placed = {a: octet, by: shift} shiftLeft
+    acc = {a: acc, b: placed} bitOr
   return acc
 
 # --- the module's own checks ----------------------------------------------
@@ -249,7 +257,8 @@ fn checkBitSets({flags: u64}) -> int:
   return checkOneBit
 
 fn checkOneBit() -> int:
-  let one = {x: {value: 0} u64, at: 7} withBit
+  let zero = {value: 0} u64
+  let one = {x: zero, at: 7} withBit
   let only = {x: one} onlyBit
   if not only.ok:
     return 21
@@ -259,12 +268,15 @@ fn checkOneBit() -> int:
 
 fn checkBitUndo({one: u64}) -> int:
   # withoutBit and flipBit are inverses of withBit here.
-  if {x: {x: one, at: 7} withoutBit} countBits != 0:
+  let cleared = {x: one, at: 7} withoutBit
+  if {x: cleared} countBits != 0:
     return 23
-  if {x: {x: one, at: 7} flipBit} countBits != 0:
+  let flipped = {x: one, at: 7} flipBit
+  if {x: flipped} countBits != 0:
     return 24
   # Nothing set means no lowest bit — absence, not a sentinel.
-  let empty = {x: {value: 0} u64} lowestSetBit
+  let none0 = {value: 0} u64
+  let empty = {x: none0} lowestSetBit
   if empty.ok:
     return 25
   return 0

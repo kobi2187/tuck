@@ -9,6 +9,7 @@ import strutils, tables
 import ast
 import ../lexer
 import parser_base
+import diagnostics
 
 # internal mutual recursion within the expression grammar
 proc parseExpr*(p: var Parser): Expr
@@ -83,6 +84,39 @@ proc isStructLiteral(p: Parser): bool =
       return true
   return false
 
+proc nestedPayloadCall(e: Expr): Expr =
+  ## A field whose VALUE IS a payload call — the shape `{...} fn` sitting
+  ## directly where a value belongs. Returns that call, or nil.
+  ##
+  ## DIRECTLY, not at any depth. A construction inside a list inside a payload
+  ## (`{ps: [{n: 1} P]}`) is a list of values and reads as one; walking into
+  ## every child refused it too, along with 18 assertions across six suites.
+  ## The shape worth refusing is the one where the field value itself is an
+  ## application, because that is where a `let` adds a name and a place.
+  ##
+  ## A nested record LITERAL is not one either: `{point: {x: 1, y: 2}} Thing`
+  ## holds a value, not an application.
+  if e == nil: return nil
+  if e.kind == exkCall and e.args.len == 1 and e.args[0] != nil and
+     e.args[0].kind == exkStruct:
+    return e
+  nil
+
+proc failIfCallInPayload(p: Parser, value: Expr) =
+  ## A payload field holds a VALUE. A call nested inside one goes to a `let`
+  ## first, so it has a name and a place.
+  ##
+  ## This is not only a readability rule. The in-place append is SYNTACTIC —
+  ## `xs = {items: xs, ...} push` appends in place, and the same call nested
+  ## inside a construction does not — so alloc.string's Builder shipped
+  ## quadratic from one nested spelling. Under this rule that line does not
+  ## parse.
+  let bad = nestedPayloadCall(value)
+  if bad == nil: return
+  p.reportError("a call inside a payload — bind it to a `let` first, then " &
+                "use the name here", bad.span.line, bad.span.col,
+                dcPaCallInPayload)
+
 # {a: 1, b} — struct literal; a bare name is shorthand for name: name
 proc parseStructLiteral(p: var Parser, sp: Span): Expr =
   discard p.advance()
@@ -93,6 +127,7 @@ proc parseStructLiteral(p: var Parser, sp: Span): Expr =
     if p.current().kind == tkColon:
       discard p.advance()
       valExpr = p.parseExpr()
+      p.failIfCallInPayload(valExpr)
     else:
       valExpr = Expr(span: sp, kind: exkVar, name: name)
     fields.add((name, valExpr))

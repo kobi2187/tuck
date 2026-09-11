@@ -15,6 +15,7 @@ package tuckrt
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:sys/linux"
 import "core:time"
@@ -164,6 +165,31 @@ setAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
 // `items` in place, so `items`'s own backing store is never shared with
 // (and never mutated through) the result — a plain-value append on a
 // [dynamic]T copy would still share the source memory below capacity.
+count :: proc(items: [dynamic]$T) -> int { return len(items) }
+
+byteCount :: proc(t: string) -> int { return len(t) }
+
+fromBytes :: proc(bytes: [dynamic]u8) -> string {
+	return strings.clone_from_bytes(bytes[:])
+}
+
+byteAt :: proc(t: string, index: int) -> u8 {
+	assert(index >= 0 && index < len(t), "byteAt: index out of bounds")
+	return t[index]
+}
+
+parseFloat :: proc(t: string) -> TuckResult(f64) {
+	// Absent, not an error: "that text is not a number" has a legitimate no.
+	v, ok := strconv.parse_f64(t)
+	if !ok { return tnone(f64) }
+	return tok(v)
+}
+
+joinStr :: proc(parts: [dynamic]string, sep: string) -> string {
+	// One pass — `acc = concat(acc, part)` in a loop is O(n^2).
+	return strings.join(parts[:], sep)
+}
+
 push :: proc(items: [dynamic]$T, value: T) -> [dynamic]T {
 	result := make([dynamic]T, len(items))
 	copy(result[:], items[:])

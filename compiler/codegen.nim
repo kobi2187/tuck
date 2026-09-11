@@ -407,10 +407,20 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
 proc genIndented(ctx: var CodegenCtx, e: Expr): string =
   ## Emit a nested body one level deeper, restoring the indent afterwards.
   ## Twin of codegen_odin's genIndented.
+  ## A nested body is its own SCOPE, so a name declared inside it is gone
+  ## afterwards. `definedVars` is what decides declaration-vs-assignment, and
+  ## it was keyed by bare name with no scope at all: a second `let lead` in a
+  ## SIBLING branch saw the name already present and emitted an assignment to
+  ## a variable the first branch had taken out of scope — "undeclared
+  ## identifier: tuck_lead". Restoring the set afterwards makes the emitted
+  ## scoping match Tuck's. (The same shape as the checker's name-keyed
+  ## shadow bug; this is its codegen twin.)
   let saved = ctx.indent
+  let savedVars = ctx.definedVars
   ctx.indent += 1
   result = ctx.genExpr(e)
   ctx.indent = saved
+  ctx.definedVars = savedVars
 
 proc genInterfaceWrap(inner, ifaceName, objName: string): string =
   ## A concrete object entering an interface slot is COPIED into the variant

@@ -103,7 +103,7 @@ fn noisy() -> int [io]:
   return 5
 
 fn quiet() -> void:
-  Sink send ping {n: {} noisy}
+  Sink send ping {n: noisy}
   return
 """
   t.badCheck "an [io] call inside a send payload is still an effect",

@@ -14,4 +14,8 @@ T[] push(T)(T[] items, T value) {
     return rt.push(items, value);
 }
 
+long count(T)(T[] items) {
+    return rt.count(items);
+}
+
 

@@ -97,16 +97,21 @@ proc tuck_bitMask*(at: int): uint64 =
   return tuck_rt.shiftLeft(1'u64, at)
 
 proc tuck_hasBit*(x: uint64, at: int): bool =
-  return (tuck_rt.bitAnd(x, tuck_bitMask(at)) != 0)
+  var tuck_mask = tuck_bitMask(at)
+  return (tuck_rt.bitAnd(x, tuck_mask) != 0)
 
 proc tuck_withBit*(x: uint64, at: int): uint64 =
-  return tuck_rt.bitOr(x, tuck_bitMask(at))
+  var tuck_mask = tuck_bitMask(at)
+  return tuck_rt.bitOr(x, tuck_mask)
 
 proc tuck_withoutBit*(x: uint64, at: int): uint64 =
-  return tuck_rt.bitAnd(x, tuck_rt.bitNot(tuck_bitMask(at)))
+  var tuck_mask = tuck_bitMask(at)
+  var tuck_keep = tuck_rt.bitNot(tuck_mask)
+  return tuck_rt.bitAnd(x, tuck_keep)
 
 proc tuck_flipBit*(x: uint64, at: int): uint64 =
-  return tuck_rt.bitXor(x, tuck_bitMask(at))
+  var tuck_mask = tuck_bitMask(at)
+  return tuck_rt.bitXor(x, tuck_mask)
 
 proc tuck_countBits*(x: uint64): int =
   var tuck_n = 0
@@ -166,14 +171,16 @@ proc tuck_shiftFor*(order: tuck_ByteOrder, index: int): int =
 
 proc tuck_byteAt*(value: uint64, shift: int): uint8 =
   var tuck_moved = tuck_rt.shiftRight(value, shift)
-  return uint8(tuck_rt.bitAnd(tuck_moved, 255'u64))
+  var tuck_low = tuck_rt.bitAnd(tuck_moved, 255'u64)
+  return uint8(tuck_low)
 
 proc tuck_toBytes*(value: uint64, order: tuck_ByteOrder): seq[uint8] =
   var tuck_acc: seq[uint8] = @[]
   for tuck_i in (0 .. 7):
     if true:
       var tuck_shift = tuck_shiftFor(order, tuck_i)
-      tuck_acc.add(tuck_byteAt(value, tuck_shift))
+      var tuck_b = tuck_byteAt(value, tuck_shift)
+      tuck_acc.add(tuck_b)
   return tuck_acc
 
 proc tuck_fromBytes*(bytes: seq[uint8], order: tuck_ByteOrder): TuckResult[uint64] =
@@ -185,7 +192,8 @@ proc tuck_fromBytes*(bytes: seq[uint8], order: tuck_ByteOrder): TuckResult[uint6
     if true:
       var tuck_octet = uint64(tuck_rt.tuckAt(bytes, tuck_i))
       var tuck_shift = tuck_shiftFor(order, tuck_i)
-      tuck_acc = tuck_rt.bitOr(tuck_acc, tuck_rt.shiftLeft(tuck_octet, tuck_shift))
+      var tuck_placed = tuck_rt.shiftLeft(tuck_octet, tuck_shift)
+      tuck_acc = tuck_rt.bitOr(tuck_acc, tuck_placed)
   return tok(tuck_acc)
 
 proc tuck_checkArith*(): int =
@@ -286,7 +294,8 @@ proc tuck_checkBitSets*(flags: uint64): int =
   return tuck_checkOneBit()
 
 proc tuck_checkOneBit*(): int =
-  var tuck_one = tuck_withBit(uint64(0'u64), 7)
+  var tuck_zero = uint64(0)
+  var tuck_one = tuck_withBit(tuck_zero, 7)
   var tuck_only = tuck_onlyBit(tuck_one)
   if not tuck_only.ok:
     if true:
@@ -297,13 +306,16 @@ proc tuck_checkOneBit*(): int =
   return tuck_checkBitUndo(tuck_one)
 
 proc tuck_checkBitUndo*(one: uint64): int =
-  if (tuck_countBits(tuck_withoutBit(one, 7)) != 0):
+  var tuck_cleared = tuck_withoutBit(one, 7)
+  if (tuck_countBits(tuck_cleared) != 0):
     if true:
       return 23
-  if (tuck_countBits(tuck_flipBit(one, 7)) != 0):
+  var tuck_flipped = tuck_flipBit(one, 7)
+  if (tuck_countBits(tuck_flipped) != 0):
     if true:
       return 24
-  var tuck_empty = tuck_lowestSetBit(uint64(0'u64))
+  var tuck_none0 = uint64(0)
+  var tuck_empty = tuck_lowestSetBit(tuck_none0)
   if tuck_empty.ok:
     if true:
       return 25

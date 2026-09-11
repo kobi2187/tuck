@@ -187,7 +187,7 @@ fn total({xs: Seq[Animal]}) -> int:
   return s
 
 fn main() -> int:
-  return {xs: {} makeMany} total
+  return {xs: makeMany} total
 """
   t.okCheck "returning a Seq of interface values built from locals"
   t.frozen     "and every element survives"

@@ -33,7 +33,9 @@ fn fnvStep({acc: u64, octet: u64}) -> u64:
 fn hashStr({data: str}) -> u64:
   var h = fnvOffsetBasis
   for i in 0 .. {t: data} byteCount - 1:
-    h = {acc: h, octet: {value: {t: data, index: i} byteAt} u64} fnvStep
+    let b = {t: data, index: i} byteAt
+    let octet = {value: b} u64
+    h = {acc: h, octet: octet} fnvStep
   return h
 
 # Combining two digests, for a record or a tuple key. Feeding the second

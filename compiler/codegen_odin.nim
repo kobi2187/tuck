@@ -570,10 +570,18 @@ proc genIndented*(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Emit a nested body one level deeper, restoring the indent afterwards.
   ## Every block-owning construct needs this, and each used to spell out the
   ## save/increment/restore by hand.
+  ## A nested body is its own SCOPE, so a name declared inside it is gone
+  ## afterwards. `definedVars` decides declaration-vs-assignment and was keyed
+  ## by bare name with no scope: a second `let lead` in a SIBLING branch saw
+  ## the name present and emitted an assignment to a variable the first branch
+  ## had taken out of scope. Restoring the set makes emitted scoping match
+  ## Tuck's — the codegen twin of the checker's name-keyed shadow bug.
   let saved = ctx.indent
+  let savedVars = ctx.definedVars
   ctx.indent += 1
   result = ctx.genOdinExpr(e)
   ctx.indent = saved
+  ctx.definedVars = savedVars
 
 proc genUnindented(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Emit an expression with no indentation — for a value position, where a

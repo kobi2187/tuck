@@ -136,7 +136,8 @@ fn run({c: Codec, key: str, val: str}) -> str:
 
 fn main() -> int:
   var a = {n: 1} A
-  {text: ({c: a, key: "k", val: "v"} run)} printLine
+  let line1 = {c: a, key: "k", val: "v"} run
+  {text: line1} printLine
   return 0
 """
   t.okCheck  "interface method with payload beyond self checks"

@@ -64,6 +64,7 @@ type
     dcPaNoWhile = "TK-PA10"             ## `while` — Tuck spells it `for <cond>:`
     dcPaWordOperator = "TK-PA11"        ## `mod`/`div` — Tuck spells them `%`/`/i`
     dcPaHostKeyword = "TK-PA12"         ## a param named after a backend's keyword
+    dcPaCallInPayload = "TK-PA13"       ## a payload call nested inside a payload
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -231,6 +232,16 @@ proc parseExplanation(d: DiagCode): string =
     "forgotten implementation) rather than a deliberate no-op, so it is " &
     "never inferred either way. Fix: write `discard` if doing nothing here " &
     "is intentional, or add the statement that was meant to go here."
+  of dcPaCallInPayload:
+    "A payload field holds a VALUE — a literal, a name, a field read, an " &
+    "expression over those. A call nested inside one goes to a `let` first, " &
+    "so it has a name and a place: `let b = {value: v} u8` and then " &
+    "`{items: xs, value: b} push`. A nested record LITERAL is still fine " &
+    "(`{point: {x: 1, y: 2}} Thing`) — what is refused is a `{...}` applied " &
+    "to a callee. Besides reading better, this makes a whole class of " &
+    "performance bug unwriteable: `xs = {items: xs, ...} push` appends IN " &
+    "PLACE, but the same call nested inside a construction does not, and " &
+    "alloc.string shipped quadratic for exactly that reason."
   of dcPaHostKeyword:
     "A PARAMETER may not be named after a keyword of any backend Tuck emits " &
     "to. Every other user name gets a `tuck_` prefix that cannot clash, but a " &

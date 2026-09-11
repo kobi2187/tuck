@@ -1000,11 +1000,19 @@ proc genDBlock(ctx: var DCodegenCtx, e: Expr): string =
 
 proc genDNested(ctx: var DCodegenCtx, body: Expr): string =
   ## A branch/loop body one level deeper, always brace-wrapped by the caller.
+  ## A nested body is its own SCOPE, so a name declared inside it is gone
+  ## afterwards. `definedVars` decides declaration-vs-assignment and was keyed
+  ## by bare name with no scope: a second `let lead` in a SIBLING branch saw
+  ## the name present and emitted an assignment to a variable the first branch
+  ## had taken out of scope. Restoring the set makes emitted scoping match
+  ## Tuck's — the codegen twin of the checker's name-keyed shadow bug.
+  let savedVars = ctx.definedVars
   ctx.indent += 1
   result = if body == nil: ""
            elif body.kind == exkBlock: ctx.genDBlock(body)
            else: ctx.genDStmt(body)
   ctx.indent -= 1
+  ctx.definedVars = savedVars
 
 proc isValueIfD(e: Expr): bool =
   ## A value-position `if` (both branches are plain expressions and the

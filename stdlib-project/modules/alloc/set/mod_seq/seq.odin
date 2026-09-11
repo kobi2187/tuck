@@ -15,4 +15,8 @@ push :: proc(items: [dynamic]$T, value: T) -> [dynamic]T {
 	return rt.push(items, value)
 }
 
+count :: proc(items: [dynamic]$T) -> int {
+	return rt.count(items)
+}
+
 

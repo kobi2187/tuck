@@ -102,6 +102,13 @@ proc synthesizeExpr(c: var Checker, e: Expr): seq[EffectMarker] =
   for child in e.children:
     res = unionEffects(res, c.synthesizeExpr(child))
   if e.kind == exkCall: c.callEffects(e, res)
+  # A BARE NULLARY CALL is an exkVar the checker stamped with its call — spec
+  # 2.3, "a bare name IS a call". It never reached callEffects, so `let x =
+  # noisy` in a fn declaring no effects passed clean, and so did every other
+  # spelling that is not a literal `{...} f`. The construct was only visible
+  # through the verbose `{} noisy`, which IS an exkCall; TK-PA13 removed that
+  # spelling from payloads and the hole surfaced immediately.
+  elif semLayer.hasCall(e): c.callEffects(semLayer.call(e), res)
   res
 
 proc checkExpr(c: var Checker, e: Expr, expected: seq[EffectMarker], currentFn: string) =

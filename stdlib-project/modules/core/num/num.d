@@ -71,19 +71,24 @@ ulong tuck_bitMask(long at) {
 }
 
 bool tuck_hasBit(ulong x, long at) {
-    return (bits.bitAnd(x, tuck_bitMask(at)) != 0L);
+    ulong tuck_mask = tuck_bitMask(at);
+    return (bits.bitAnd(x, tuck_mask) != 0L);
 }
 
 ulong tuck_withBit(ulong x, long at) {
-    return bits.bitOr(x, tuck_bitMask(at));
+    ulong tuck_mask = tuck_bitMask(at);
+    return bits.bitOr(x, tuck_mask);
 }
 
 ulong tuck_withoutBit(ulong x, long at) {
-    return bits.bitAnd(x, bits.bitNot(tuck_bitMask(at)));
+    ulong tuck_mask = tuck_bitMask(at);
+    ulong tuck_keep = bits.bitNot(tuck_mask);
+    return bits.bitAnd(x, tuck_keep);
 }
 
 ulong tuck_flipBit(ulong x, long at) {
-    return bits.bitXor(x, tuck_bitMask(at));
+    ulong tuck_mask = tuck_bitMask(at);
+    return bits.bitXor(x, tuck_mask);
 }
 
 long tuck_countBits(ulong x) {
@@ -152,14 +157,16 @@ long tuck_shiftFor(tuck_ByteOrder order, long index) {
 
 ubyte tuck_byteAt(ulong value, long shift) {
     ulong tuck_moved = bits.shiftRight(value, shift);
-    return cast(ubyte)(bits.bitAnd(tuck_moved, 255L));
+    ulong tuck_low = bits.bitAnd(tuck_moved, 255L);
+    return cast(ubyte)(tuck_low);
 }
 
 ubyte[] tuck_toBytes(ulong value, tuck_ByteOrder order) {
     ubyte[] tuck_acc = [];
     foreach (tuck_i; 0L .. 7L + 1) {
         long tuck_shift = tuck_shiftFor(order, tuck_i);
-        tuck_acc ~= tuck_byteAt(value, tuck_shift);
+        ubyte tuck_b = tuck_byteAt(value, tuck_shift);
+        tuck_acc ~= tuck_b;
     }
     return tuck_acc;
 }
@@ -172,7 +179,8 @@ rt.TuckResult!(ulong) tuck_fromBytes(ubyte[] bytes, tuck_ByteOrder order) {
     foreach (tuck_i; 0L .. 7L + 1) {
         ulong tuck_octet = cast(ulong)(rt.tuckAt(bytes, tuck_i));
         long tuck_shift = tuck_shiftFor(order, tuck_i);
-        tuck_acc = bits.bitOr(tuck_acc, bits.shiftLeft(tuck_octet, tuck_shift));
+        ulong tuck_placed = bits.shiftLeft(tuck_octet, tuck_shift);
+        tuck_acc = bits.bitOr(tuck_acc, tuck_placed);
     }
     return rt.tok(tuck_acc);
 }
@@ -282,7 +290,8 @@ long tuck_checkBitSets(ulong flags) {
 }
 
 long tuck_checkOneBit() {
-    ulong tuck_one = tuck_withBit(cast(ulong)(0L), 7L);
+    ulong tuck_zero = cast(ulong)(0L);
+    ulong tuck_one = tuck_withBit(tuck_zero, 7L);
     rt.TuckResult!(long) tuck_only = tuck_onlyBit(tuck_one);
     if (!(tuck_only.status == rt.TuckStatus.Ok)) {
         return 21L;
@@ -294,13 +303,16 @@ long tuck_checkOneBit() {
 }
 
 long tuck_checkBitUndo(ulong one) {
-    if ((tuck_countBits(tuck_withoutBit(one, 7L)) != 0L)) {
+    ulong tuck_cleared = tuck_withoutBit(one, 7L);
+    if ((tuck_countBits(tuck_cleared) != 0L)) {
         return 23L;
     }
-    if ((tuck_countBits(tuck_flipBit(one, 7L)) != 0L)) {
+    ulong tuck_flipped = tuck_flipBit(one, 7L);
+    if ((tuck_countBits(tuck_flipped) != 0L)) {
         return 24L;
     }
-    rt.TuckResult!(long) tuck_empty = tuck_lowestSetBit(cast(ulong)(0L));
+    ulong tuck_none0 = cast(ulong)(0L);
+    rt.TuckResult!(long) tuck_empty = tuck_lowestSetBit(tuck_none0);
     if ((tuck_empty.status == rt.TuckStatus.Ok)) {
         return 25L;
     }

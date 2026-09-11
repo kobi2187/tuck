@@ -55,7 +55,8 @@ fn continuationBits({t: str, index: int}) -> int:
   # which only a malformed string reaches.
   if index >= {t: t} byteCount:
     return 0
-  return {value: {t: t, index: index} byteAt} int % 64
+  let b = {t: t, index: index} byteAt
+  return {value: b} int % 64
 
 fn leadBits({lead: u8, width: int}) -> int:
   let b = {value: lead} int
@@ -81,7 +82,8 @@ fn runeAt({t: str, at: int}) -> Rune?:
 
 # Where the NEXT rune starts. The one step every rune walk takes.
 fn nextRune({t: str, at: int}) -> int:
-  return at + {lead: {t: t, index: at} byteAt} runeWidth
+  let lead = {t: t, index: at} byteAt
+  return at + {lead: lead} runeWidth
 
 fn runeCount({t: str}) -> int:
   var n = 0
@@ -114,18 +116,28 @@ fn encodeRune({r: Rune, into: Seq[u8]}) -> Seq[u8]:
   let v = {value: r} int
   var out = into
   if v < 128:
-    return {items: out, value: {value: v} u8} push
+    let b = {value: v} u8
+    return {items: out, value: b} push
   if v < 2048:
-    out = {items: out, value: {value: 192 + v /i 64} u8} push
-    return {items: out, value: {value: 128 + v % 64} u8} push
+    let lead = {value: 192 + v /i 64} u8
+    out = {items: out, value: lead} push
+    let tail = {value: 128 + v % 64} u8
+    return {items: out, value: tail} push
   if v < 65536:
-    out = {items: out, value: {value: 224 + v /i 4096} u8} push
-    out = {items: out, value: {value: 128 + v /i 64 % 64} u8} push
-    return {items: out, value: {value: 128 + v % 64} u8} push
-  out = {items: out, value: {value: 240 + v /i 262144} u8} push
-  out = {items: out, value: {value: 128 + v /i 4096 % 64} u8} push
-  out = {items: out, value: {value: 128 + v /i 64 % 64} u8} push
-  return {items: out, value: {value: 128 + v % 64} u8} push
+    let lead = {value: 224 + v /i 4096} u8
+    out = {items: out, value: lead} push
+    let mid = {value: 128 + v /i 64 % 64} u8
+    out = {items: out, value: mid} push
+    let tail = {value: 128 + v % 64} u8
+    return {items: out, value: tail} push
+  let lead = {value: 240 + v /i 262144} u8
+  out = {items: out, value: lead} push
+  let hi = {value: 128 + v /i 4096 % 64} u8
+  out = {items: out, value: hi} push
+  let mid = {value: 128 + v /i 64 % 64} u8
+  out = {items: out, value: mid} push
+  let tail = {value: 128 + v % 64} u8
+  return {items: out, value: tail} push
 
 fn fromRunes({rs: Seq[Rune]}) -> str:
   var bytes = noBytes
@@ -174,7 +186,8 @@ fn slice({t: str, start: int, stop: int}) -> str?:
     return
   var out = noBytes
   for i in start .. stop - 1:
-    out = {items: out, value: {t: t, index: i} byteAt} push
+    let b = {t: t, index: i} byteAt
+    out = {items: out, value: b} push
   return {bytes: out} fromBytes
 
 fn noParts() -> Seq[str]:
@@ -195,7 +208,8 @@ fn split({t: str, at: str}) -> Seq[str]:
       start = i
     else:
       i = i + 1
-  let last = {t: t, start: start, stop: {t: t} byteCount} slice
+  let n = {t: t} byteCount
+  let last = {t: t, start: start, stop: n} slice
   if last.ok:
     parts = {items: parts, value: last.value} push
   return parts
@@ -211,10 +225,12 @@ fn isSpaceByte({b: u8}) -> bool:
 fn trimStart({t: str}) -> str:
   var i = 0
   for i < {t: t} byteCount:
-    if not {b: {t: t, index: i} byteAt} isSpaceByte:
+    let b = {t: t, index: i} byteAt
+    if not {b: b} isSpaceByte:
       break
     i = i + 1
-  let out = {t: t, start: i, stop: {t: t} byteCount} slice
+  let n = {t: t} byteCount
+  let out = {t: t, start: i, stop: n} slice
   if not out.ok:
     return ""
   return out.value
@@ -222,7 +238,8 @@ fn trimStart({t: str}) -> str:
 fn trimEnd({t: str}) -> str:
   var n = {t: t} byteCount
   for n > 0:
-    if not {b: {t: t, index: n - 1} byteAt} isSpaceByte:
+    let b = {t: t, index: n - 1} byteAt
+    if not {b: b} isSpaceByte:
       break
     n = n - 1
   let out = {t: t, start: 0, stop: n} slice
@@ -231,7 +248,8 @@ fn trimEnd({t: str}) -> str:
   return out.value
 
 fn trim({t: str}) -> str:
-  return {t: {t: t} trimStart} trimEnd
+  let head = {t: t} trimStart
+  return {t: head} trimEnd
 
 # ASCII case only, and the name does not pretend otherwise. Unicode case
 # folding is a table plus locale rules; `toLower` on a Turkish `I` is a
@@ -251,13 +269,17 @@ fn upperByte({b: u8}) -> u8:
 fn toLowerAscii({t: str}) -> str:
   var out = noBytes
   for i in 0 .. {t: t} byteCount - 1:
-    out = {items: out, value: {b: {t: t, index: i} byteAt} lowerByte} push
+    let b = {t: t, index: i} byteAt
+    let low = {b: b} lowerByte
+    out = {items: out, value: low} push
   return {bytes: out} fromBytes
 
 fn toUpperAscii({t: str}) -> str:
   var out = noBytes
   for i in 0 .. {t: t} byteCount - 1:
-    out = {items: out, value: {b: {t: t, index: i} byteAt} upperByte} push
+    let b = {t: t, index: i} byteAt
+    let up = {b: b} upperByte
+    out = {items: out, value: up} push
   return {bytes: out} fromBytes
 
 # --- the module's own checks ----------------------------------------------
@@ -341,10 +363,12 @@ fn checkRunes() -> int:
     return 27
   if {value: r.value} int != 233:
     return 28
-  if {items: {t: s} runes} count != 5:
+  let rs = {t: s} runes
+  if {items: rs} count != 5:
     return 29
   # Decode and re-encode is the identity.
-  if {rs: {t: s} runes} fromRunes != s:
+  let rs2 = {t: s} runes
+  if {rs: rs2} fromRunes != s:
     return 30
   return 0
 

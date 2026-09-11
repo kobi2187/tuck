@@ -35,7 +35,9 @@ fn toSeq[T]({s: Set[T]}) -> Seq[T]:
 fn add[T]({s: Set[T], value: T}) -> Set[T]:
   if {s: s, value: value} has:
     return s
-  return {items: {items: s.items, value: value} push} Set
+  var xs = s.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Set
 
 # Rebuilt without the value. Order is not part of this type's contract, and a
 # rebuild is the one form that says so.

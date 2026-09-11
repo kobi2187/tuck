@@ -97,7 +97,8 @@ fn linkPrev[T]({ns: Seq[Node[T]], pos: int, to: int}) -> Seq[Node[T]]:
 fn append[T]({c: Chain[T], value: T}) -> Chain[T]:
   let slot = c.nodes.len
   var ns = c.nodes
-  ns = {items: ns, value: {value: value, next: nowhere, prev: c.tail} Node} push
+  let fresh = {value: value, next: nowhere, prev: c.tail} Node
+  ns = {items: ns, value: fresh} push
   ns = {ns: ns, pos: c.tail, to: slot} linkNext
   let h = if c.head < 0: slot else: c.head
   return {nodes: ns, head: h, tail: slot, size: c.size + 1} Chain
@@ -105,7 +106,8 @@ fn append[T]({c: Chain[T], value: T}) -> Chain[T]:
 fn prepend[T]({c: Chain[T], value: T}) -> Chain[T]:
   let slot = c.nodes.len
   var ns = c.nodes
-  ns = {items: ns, value: {value: value, next: c.head, prev: nowhere} Node} push
+  let fresh = {value: value, next: c.head, prev: nowhere} Node
+  ns = {items: ns, value: fresh} push
   ns = {ns: ns, pos: c.head, to: slot} linkPrev
   let t = if c.tail < 0: slot else: c.tail
   return {nodes: ns, head: slot, tail: t, size: c.size + 1} Chain
@@ -117,7 +119,8 @@ fn insertAfter[T]({c: Chain[T], pos: int, value: T}) -> Chain[T]:
   let slot = c.nodes.len
   let after = c.nodes[pos].next
   var ns = c.nodes
-  ns = {items: ns, value: {value: value, next: after, prev: pos} Node} push
+  let fresh = {value: value, next: after, prev: pos} Node
+  ns = {items: ns, value: fresh} push
   ns = {ns: ns, pos: pos, to: slot} linkNext
   ns = {ns: ns, pos: after, to: slot} linkPrev
   let t = if after < 0: slot else: c.tail
@@ -208,7 +211,8 @@ fn checkOrder() -> int:
 fn checkHandles() -> int:
   let c = oneTwoThree
   # A position is a HANDLE. Walking gives the second node's slot.
-  let second = {c: c, pos: {c: c} firstPos} nextPos
+  let head = {c: c} firstPos
+  let second = {c: c, pos: head} nextPos
   let v = {c: c, pos: second} at
   if not v.ok:
     return 13
@@ -225,7 +229,8 @@ fn checkHandles() -> int:
 
 fn checkRemoval() -> int:
   let c = oneTwoThree
-  let second = {c: c, pos: {c: c} firstPos} nextPos
+  let head = {c: c} firstPos
+  let second = {c: c, pos: head} nextPos
   let cut = {c: c, pos: second} removeAt
   if {c: cut} count != 2:
     return 17
@@ -237,7 +242,8 @@ fn checkRemoval() -> int:
   if cs[1] != 3:
     return 20
   # Removing the head moves it.
-  let noHead = {c: c, pos: {c: c} firstPos} removeAt
+  let head2 = {c: c} firstPos
+  let noHead = {c: c, pos: head2} removeAt
   let hs = {c: noHead} toSeq
   if hs[0] != 2:
     return 21

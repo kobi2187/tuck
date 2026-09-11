@@ -39,7 +39,9 @@ proc tuck_add*[T](s: sink tuck_Set[T], value: T): tuck_Set[T] =
   if tuck_has(s, value):
     if true:
       return s
-  return tuck_Set[T](items: tuck_rt.push(s.items, value))
+  var tuck_xs = s.items
+  tuck_xs.add(value)
+  return tuck_Set[T](items: tuck_xs)
 
 proc tuck_remove*[T](s: tuck_Set[T], value: T): tuck_Set[T] =
   var tuck_kept: seq[T] = @[]

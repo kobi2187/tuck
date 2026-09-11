@@ -728,7 +728,8 @@ fn describe({v: V}) -> str:
 
 fn main() -> int:
   var b = V.B {field: "bee"}
-  {text: ({v: b} describe)} printLine
+  let line2 = {v: b} describe
+  {text: line2} printLine
   return 0
 """
   t.quietly: t.outputs("a match arm reads its OWN variant's field, not the first declared one",

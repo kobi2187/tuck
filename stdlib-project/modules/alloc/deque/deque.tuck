@@ -70,7 +70,8 @@ fn popBack[T]({r: Ring[T]}) -> {rest: Ring[T], value: T}?:
   var xs: Seq[T] = []
   for i in 0 .. n - 2:
     xs = {items: xs, value: r.items[i]} push
-  return {rest: {items: xs} Ring, value: top}
+  let rest = {items: xs} Ring
+  return {rest: rest, value: top}
 
 fn popFront[T]({r: Ring[T]}) -> {rest: Ring[T], value: T}?:
   let n = r.items.len
@@ -80,7 +81,8 @@ fn popFront[T]({r: Ring[T]}) -> {rest: Ring[T], value: T}?:
   var xs: Seq[T] = []
   for i in 1 .. n - 1:
     xs = {items: xs, value: r.items[i]} push
-  return {rest: {items: xs} Ring, value: head}
+  let rest = {items: xs} Ring
+  return {rest: rest, value: head}
 
 fn clear[T]({r: Ring[T]}) -> Ring[T]:
   let empty: Seq[T] = []

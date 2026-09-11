@@ -33,7 +33,9 @@ tuck_Set!(T) tuck_add_moved(T)(tuck_Set!(T) s, T value) {
     if (tuck_has(s, value)) {
         return s;
     }
-    return tuck_Set!(T)(items: seq.push(s.items, value));
+    T[] tuck_xs = s.items;
+    tuck_xs ~= value;
+    return tuck_Set!(T)(items: tuck_xs);
 }
 
 tuck_Set!(T) tuck_remove(T)(tuck_Set!(T) s, T value) {
