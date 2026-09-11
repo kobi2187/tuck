@@ -2,19 +2,19 @@ module _22_error_policy;
 
 import rt = tuck_rt;
 
-struct TRec_value_B36B {
-    ushort value;
+struct TRec_value(T_value) {
+    T_value value;
 }
 
 void tuck_unhandled(ushort code, string site) {
     rt.tuckReportUnhandled(code, site);
 }
 
-rt.TuckResult!(TRec_value_B36B) tuck_readSensor(ubyte port) {
+rt.TuckResult!(TRec_value!(ushort)) tuck_readSensor(ubyte port) {
     if ((port > 3L)) {
-        return rt.terr!(TRec_value_B36B)(0x2DDC /* badPort */);
+        return rt.terr!(TRec_value!(ushort))(0x2DDC /* badPort */);
     }
-    return rt.tok(TRec_value_B36B(value: cast(ushort)(42L)));
+    return rt.tok(TRec_value!(ushort)(value: cast(ushort)(42L)));
 }
 
 long tuck_poll(ubyte port) {

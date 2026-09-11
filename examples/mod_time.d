@@ -2,8 +2,8 @@ module mod_time;
 
 import rt = tuck_rt;
 
-struct TRec_time_ms_2794 {
-    ulong ms;
+struct TRec_time_ms(T_ms) {
+    T_ms ms;
 }
 
 alias tuck_Milliseconds = uint;
@@ -24,8 +24,8 @@ tuck_Seconds tuck_s(uint value) {
     return tuck_Seconds(value);
 }
 
-TRec_time_ms_2794 nowMs() {
-    return rt.nowMs!(TRec_time_ms_2794)();
+TRec_time_ms!(ulong) nowMs() {
+    return rt.nowMs!(TRec_time_ms!(ulong))();
 }
 
 void sleepMs(uint ms) {

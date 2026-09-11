@@ -83,26 +83,33 @@ proc recStructName*(ctx: var OdinCodegenCtx, fields: seq[FieldDef]): string =
   ## Record shapes become hoisted structs, giving every shape a stable
   ## nominal type for construction and field access. Odin needs no
   ## constructor: struct literals take named fields (`Name{a = 1, b = 2}`).
-  var sigParts: seq[string]
+  ##
+  ## PARAMETERISED by its own field types, for the reason spelled out on the
+  ## D backend's twin: a shape mentioning a type param (`{rest: Seq[T],
+  ## value: T}`) hoisted a struct with no `T` in scope — "Undeclared name: T"
+  ## — and the generic and substituted ends named two different structs for
+  ## one Tuck type. `TRec_rest_value([dynamic]T, T)` and
+  ## `TRec_rest_value([dynamic]int, int)` are the same template, so they
+  ## agree by construction when T is int.
   var typeStrs: seq[string]
-  for f in fields:
-    let ts = ctx.odinType(f.typ)
-    typeStrs.add(ts)
-    sigParts.add(f.name & ":" & ts)
-  let sig = sigParts.join(",")
-  if sig in ctx.recShapes:
-    return ctx.recShapes[sig]
   var nameParts: seq[string]
-  for f in fields: nameParts.add(f.name)
-  let name = "TRec_" & ctx.modPrefix & nameParts.join("_") & "_" &
-             toHex(odinErrCode(sig))
-  ctx.recShapes[sig] = name
-  var res = name & " :: struct {\n"
-  for i, f in fields:
-    res.add("\t" & f.name & ": " & typeStrs[i] & ",\n")
-  res.add("}")
-  ctx.hoisted.add(res)
-  return name
+  for f in fields:
+    typeStrs.add(ctx.odinType(f.typ))
+    nameParts.add(f.name)
+  let args = "(" & typeStrs.join(", ") & ")"
+  let name = "TRec_" & ctx.modPrefix & nameParts.join("_")
+  if name notin ctx.recShapes:
+    ctx.recShapes[name] = name
+    var params: seq[string]
+    for f in fields: params.add("$T_" & f.name)
+    var decl: seq[string]
+    for p in params: decl.add(p & ": typeid")
+    var res = name & " :: struct " & "(" & decl.join(", ") & ") {\n"
+    for i, f in fields:
+      res.add("\t" & f.name & ": T_" & f.name & ",\n")
+    res.add("}")
+    ctx.hoisted.add(res)
+  return name & args
 
 proc isOddBitWidth*(name: string): bool =
   ## `u2`, `u12` — a width a decision table produced that no machine type has.

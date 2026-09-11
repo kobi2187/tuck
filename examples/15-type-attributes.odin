@@ -3,8 +3,8 @@ package main
 
 import rt "./tuckrt"
 
-TRec_value_638E :: struct {
-	value: u16,
+TRec_value :: struct ($T_value: typeid) {
+	value: T_value,
 }
 
 tuck_EthernetFrame :: struct {
@@ -33,7 +33,7 @@ drain_tuck_UartDriver :: proc() {
 	for { rt.coroYield() }
 }
 
-tuck_readSensor :: proc (port: u8) -> rt.TuckResult(TRec_value_638E) {
+tuck_readSensor :: proc (port: u8) -> rt.TuckResult(TRec_value(u16)) {
 
   return {}
 }

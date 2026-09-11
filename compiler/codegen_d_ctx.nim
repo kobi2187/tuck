@@ -324,42 +324,50 @@ proc dFieldType*(ctx: var DCodegenCtx, owner: string, f: FieldDef): string =
 
 proc recStructNameD*(ctx: var DCodegenCtx, fields: seq[FieldDef],
                     owner = ""): string =
-  ## An anonymous record shape gets one hoisted named struct per distinct
-  ## field-name+type signature — same TRec_<fields>_<hash> naming as the
-  ## Odin backend (same FNV fold), so the two outputs read alike.
+  ## An anonymous record shape hoists as a TEMPLATE parameterised by its own
+  ## field types — `struct TRec_rest_value(T_rest, T_value)` — and every use
+  ## site names an instantiation of it.
+  ##
+  ## It used to be one struct per distinct field-name+TYPE signature, named
+  ## with a hash of that signature. That cannot express a shape mentioning a
+  ## type param: `fn pop[T]({items: Seq[T]}) -> {rest: Seq[T], value: T}?`
+  ## hoisted `struct TRec_rest_value_E4D0 { T[] rest; T value; }` with no `T`
+  ## in scope — "undefined identifier `T`". And the two ends disagreed even
+  ## in principle: the callee hoisted the shape with `T`, while the caller
+  ## hoisted the SUBSTITUTED shape with `long`, so they hashed to two
+  ## different structs for one Tuck type.
+  ##
+  ## Parameterising by field type fixes both at once and needs nothing from
+  ## the checker: the generic site writes `TRec_rest_value!(T[], T)`, the
+  ## concrete site writes `TRec_rest_value!(long[], long)`, and when `T` is
+  ## `long` those ARE the same instantiation. The name is keyed on field
+  ## names alone, so no hash is needed and the emitted type says what it
+  ## holds instead of hiding it behind four hex digits.
   ##
   ## `owner`: the module that DECLARED the shape, when that is not this one.
-  ## A library module prefixes its hoisted names (modPrefix), so the same
-  ## shape is `TRec_fs_content_2C8C` there and `TRec_content_2C8C` here —
-  ## two distinct D types for one Tuck record. The caller must name the
-  ## declaring module's struct, through its import alias. (Odin never hit
-  ## this because `:=` infers the type and never spells it.)
-  var sigParts: seq[string]
+  ## A library module prefixes its hoisted names (modPrefix), so the caller
+  ## must name the declaring module's template through its import alias.
+  ## (Odin never hit this because `:=` infers the type and never spells it.)
   var typeStrs: seq[string]
-  for f in fields:
-    let ts = ctx.dType(f.typ)
-    typeStrs.add(ts)
-    sigParts.add(f.name & ":" & ts)
-  let sig = sigParts.join(",")
-  if owner != "" and owner != ctx.moduleName:
-    var nameParts: seq[string]
-    for f in fields: nameParts.add(f.name)
-    let alias = dAlias(owner)
-    return alias & ".TRec_" & alias & "_" & nameParts.join("_") & "_" &
-           toHex(odinErrCode(sig))
-  if sig in ctx.recShapes:
-    return ctx.recShapes[sig]
   var nameParts: seq[string]
-  for f in fields: nameParts.add(f.name)
-  let name = "TRec_" & ctx.modPrefix & nameParts.join("_") & "_" &
-             toHex(odinErrCode(sig))
-  ctx.recShapes[sig] = name
-  var res = "struct " & name & " {\n"
-  for i, f in fields:
-    res.add("    " & typeStrs[i] & " " & f.name & ";\n")
-  res.add("}")
-  ctx.hoisted.add(res)
-  name
+  for f in fields:
+    typeStrs.add(ctx.dType(f.typ))
+    nameParts.add(f.name)
+  let args = "!(" & typeStrs.join(", ") & ")"
+  if owner != "" and owner != ctx.moduleName:
+    let alias = dAlias(owner)
+    return alias & ".TRec_" & alias & "_" & nameParts.join("_") & args
+  let name = "TRec_" & ctx.modPrefix & nameParts.join("_")
+  if name notin ctx.recShapes:
+    ctx.recShapes[name] = name
+    var params: seq[string]
+    for f in fields: params.add("T_" & f.name)
+    var res = "struct " & name & "(" & params.join(", ") & ") {\n"
+    for i, f in fields:
+      res.add("    " & params[i] & " " & f.name & ";\n")
+    res.add("}")
+    ctx.hoisted.add(res)
+  name & args
 
 proc newDCtx*(m: Module, realModules: Table[string, Module],
              moduleName: string, res: Resolution,

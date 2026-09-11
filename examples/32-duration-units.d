@@ -4,20 +4,20 @@ import rt = tuck_rt;
 import sys = mod_sys;
 import time = mod_time;
 
-struct TRec_ok_64D7 {
-    bool ok;
+struct TRec_ok(T_ok) {
+    T_ok ok;
 }
 
 long tuck_asInt(time.tuck_Milliseconds d) {
     return 42L;
 }
 
-TRec_ok_64D7 tuck_budget(time.tuck_Milliseconds d) {
-    return TRec_ok_64D7(ok: true);
+TRec_ok!(bool) tuck_budget(time.tuck_Milliseconds d) {
+    return TRec_ok!(bool)(ok: true);
 }
 
 void tuck_main() {
-    TRec_ok_64D7 tuck_r = tuck_budget(time.tuck_ms(5L));
+    TRec_ok!(bool) tuck_r = tuck_budget(time.tuck_ms(5L));
     long tuck_n = tuck_asInt(time.tuck_ms(42L));
     sys.exit(tuck_n);
 }

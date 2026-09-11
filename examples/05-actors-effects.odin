@@ -4,12 +4,12 @@ package main
 import "core:fmt"
 import rt "./tuckrt"
 
-TRec_value_638E :: struct {
-	value: u16,
+TRec_value :: struct ($T_value: typeid) {
+	value: T_value,
 }
 
-TRec_feed_A1A6 :: struct {
-	feed: tuck_Feed,
+TRec_feed :: struct ($T_feed: typeid) {
+	feed: T_feed,
 }
 
 tuck_Feed :: struct {
@@ -57,7 +57,7 @@ sendReset_tuck_Counter :: proc(self: ^tuck_Counter) {
 	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{kind = .msgReset})
 }
 
-tuck_readSensor :: proc (port: u8) -> rt.TuckResult(TRec_value_638E) {
+tuck_readSensor :: proc (port: u8) -> rt.TuckResult(TRec_value(u16)) {
 
   return {}
 }
@@ -65,7 +65,7 @@ tuck_readSensor :: proc (port: u8) -> rt.TuckResult(TRec_value_638E) {
 tuck_PodcastApp :: struct {
 }
 
-fetchFeed :: proc(payload: $T) -> rt.TuckResult(TRec_feed_A1A6) {
+fetchFeed :: proc(payload: $T) -> rt.TuckResult(TRec_feed(tuck_Feed)) {
 	fmt.println("TUCK PENDING: fetchFeed invoked (not implemented)")
 	return {}
 }

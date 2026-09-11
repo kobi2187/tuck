@@ -4,16 +4,16 @@ package main
 import sys "./mod_sys"
 import time "./mod_time"
 
-TRec_ok_64D7 :: struct {
-	ok: bool,
+TRec_ok :: struct ($T_ok: typeid) {
+	ok: T_ok,
 }
 
 tuck_asInt :: proc (d: time.tuck_Milliseconds) -> int {
   return 42
 }
 
-tuck_budget :: proc (d: time.tuck_Milliseconds) -> TRec_ok_64D7 {
-  return TRec_ok_64D7{ok = true}
+tuck_budget :: proc (d: time.tuck_Milliseconds) -> TRec_ok(bool) {
+  return TRec_ok(bool){ok = true}
 }
 
 tuck_main :: proc () {

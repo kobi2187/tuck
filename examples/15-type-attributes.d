@@ -2,8 +2,8 @@ module _15_type_attributes;
 
 import rt = tuck_rt;
 
-struct TRec_value_B36B {
-    ushort value;
+struct TRec_value(T_value) {
+    T_value value;
 }
 
 struct tuck_EthernetFrame {
@@ -38,7 +38,7 @@ struct tuck_UartDriver {
 __gshared tuck_UartDriver tuck_UartDriverSingleton;
 
 
-rt.TuckResult!(TRec_value_B36B) tuck_readSensor(ubyte port) {
+rt.TuckResult!(TRec_value!(ushort)) tuck_readSensor(ubyte port) {
     return typeof(return).init;
 }
 

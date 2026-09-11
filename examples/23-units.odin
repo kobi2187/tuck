@@ -1,8 +1,8 @@
 #+feature dynamic-literals
 package main
 
-TRec_done_7275 :: struct {
-	done: bool,
+TRec_done :: struct ($T_done: typeid) {
+	done: T_done,
 }
 
 tuck_Milliseconds :: distinct u32
@@ -11,8 +11,8 @@ tuck_ms :: proc (value: u32) -> tuck_Milliseconds {
   return tuck_Milliseconds(value)
 }
 
-tuck_delay :: proc (ms: tuck_Milliseconds) -> TRec_done_7275 {
-  return TRec_done_7275{done = true}
+tuck_delay :: proc (ms: tuck_Milliseconds) -> TRec_done(bool) {
+  return TRec_done(bool){done = true}
 }
 
 tuck_main :: proc () {

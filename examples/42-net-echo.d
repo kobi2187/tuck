@@ -46,20 +46,20 @@ void sendPut_tuck_Result(ref tuck_Result self, long c) {
 
 
 void tuck_serve(long lfd) {
-    rt.TuckResult!(net.TRec_net_fd_EC6A) tuck_c = net.accept(lfd);
+    rt.TuckResult!(net.TRec_net_fd!(long)) tuck_c = net.accept(lfd);
     if ((tuck_c.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(net.TRec_net_data_F9C9) tuck_req = net.recv(tuck_c.value.fd, 256L);
-        rt.TuckResult!(net.TRec_net_sent_18CB) tuck_s = net.send(tuck_c.value.fd, "pong");
+        rt.TuckResult!(net.TRec_net_data!(string)) tuck_req = net.recv(tuck_c.value.fd, 256L);
+        rt.TuckResult!(net.TRec_net_sent!(long)) tuck_s = net.send(tuck_c.value.fd, "pong");
         net.close(tuck_c.value.fd);
     }
     return;
 }
 
 void tuck_client(long port) {
-    rt.TuckResult!(net.TRec_net_fd_EC6A) tuck_c = net.connect("127.0.0.1", port);
+    rt.TuckResult!(net.TRec_net_fd!(long)) tuck_c = net.connect("127.0.0.1", port);
     if ((tuck_c.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(net.TRec_net_sent_18CB) tuck_s = net.send(tuck_c.value.fd, "ping");
-        rt.TuckResult!(net.TRec_net_data_F9C9) tuck_r = net.recv(tuck_c.value.fd, 256L);
+        rt.TuckResult!(net.TRec_net_sent!(long)) tuck_s = net.send(tuck_c.value.fd, "ping");
+        rt.TuckResult!(net.TRec_net_data!(string)) tuck_r = net.recv(tuck_c.value.fd, 256L);
         net.close(tuck_c.value.fd);
         if ((tuck_r.status == rt.TuckStatus.Ok)) {
             if ((tuck_r.value.data == "pong")) {
@@ -79,7 +79,7 @@ bool tuck_done() {
 }
 
 long tuck_main() {
-    rt.TuckResult!(net.TRec_net_fd_EC6A) tuck_l = net.listen(34593L);
+    rt.TuckResult!(net.TRec_net_fd!(long)) tuck_l = net.listen(34593L);
     if ((tuck_l.status == rt.TuckStatus.Ok)) {
         rt.tuckSpawn({ cast(void) tuck_serve(tuck_l.value.fd); });
         rt.tuckSpawn({ cast(void) tuck_client(34593L); });

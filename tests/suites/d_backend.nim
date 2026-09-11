@@ -179,8 +179,11 @@ fn main() -> int:
   let page = {url: "x"} fetch
   return page.hits
 """
-  t.emitsD "M3: record shape hoists as a named TRec struct",
-           r"struct TRec_hits_title_[0-9A-F]{4} \{"
+  # Parameterised by its field types, so one template serves the generic
+  # shape (`{rest: Seq[T], value: T}`) and every substituted one alike —
+  # they used to hash to two different structs for one Tuck type.
+  t.emitsD "M3: record shape hoists as a TRec template",
+           r"struct TRec_hits_title\(T_hits, T_title\) \{"
   t.emitsD "M3: pending stub is a function template",
            r"tuck_fetch\(T\)\(T payload\) \{"
   t.emitsD "M3: pending stub logs to stderr like the Nim backend",
@@ -339,7 +342,7 @@ fn main() -> int [io]:
   return acc
 """
   t.emitsD "T20: a record payload rides in the carrier",
-           r"rt\.TuckResult!\(TRec_value_[0-9A-F]{4}\) tuck_readPort"
+           r"rt\.TuckResult!\(TRec_value!\(long\)\) tuck_readPort"
   t.emitsD "T20: !void carries the unit struct, which D has no builtin for",
            r"rt\.TuckResult!\(rt\.TuckUnit\) tuck_touch"
   t.emitsD "T20: a bare return in a fallible fn still wraps",

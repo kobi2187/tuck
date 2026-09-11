@@ -2,14 +2,14 @@ module mod_fs;
 
 import rt = tuck_rt;
 
-struct TRec_fs_content_2C8C {
-    string content;
+struct TRec_fs_content(T_content) {
+    T_content content;
 }
 
 enum tuck_FsError { NotFound, AccessDenied, IoFailed }
 
-rt.TuckResult!(TRec_fs_content_2C8C) readFile(string path) {
-    return rt.readFile!(rt.TuckResult!(TRec_fs_content_2C8C))(path);
+rt.TuckResult!(TRec_fs_content!(string)) readFile(string path) {
+    return rt.readFile!(rt.TuckResult!(TRec_fs_content!(string)))(path);
 }
 
 rt.TuckResult!(rt.TuckUnit) writeFile(string path, string content) {

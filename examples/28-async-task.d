@@ -2,28 +2,28 @@ module _28_async_task;
 
 import rt = tuck_rt;
 
-struct TRec_v_6D09 {
-    long v;
+struct TRec_v(T_v) {
+    T_v v;
 }
 
-struct TRec_r_4E67 {
-    long r;
+struct TRec_r(T_r) {
+    T_r r;
 }
 
-TRec_v_6D09 tuck_stepIo(long n) {
-    return TRec_v_6D09(v: n);
+TRec_v!(long) tuck_stepIo(long n) {
+    return TRec_v!(long)(v: n);
 }
 
-TRec_r_4E67 tuck_compute(long base) {
-    TRec_v_6D09 tuck_a = tuck_stepIo(base);
-    TRec_v_6D09 tuck_b = tuck_stepIo(base);
-    return TRec_r_4E67(r: (tuck_a.v + tuck_b.v));
+TRec_r!(long) tuck_compute(long base) {
+    TRec_v!(long) tuck_a = tuck_stepIo(base);
+    TRec_v!(long) tuck_b = tuck_stepIo(base);
+    return TRec_r!(long)(r: (tuck_a.v + tuck_b.v));
 }
 
 long tuck_main() {
-    auto tuckSlot1 = rt.newAsyncResult!(TRec_r_4E67)();
+    auto tuckSlot1 = rt.newAsyncResult!(TRec_r!(long))();
     rt.spawnResult(tuckSlot1, { return tuck_compute(21L); });
-    TRec_r_4E67 tuck_res = rt.awaitResult(tuckSlot1);
+    TRec_r!(long) tuck_res = rt.awaitResult(tuckSlot1);
     return tuck_res.r;
 }
 

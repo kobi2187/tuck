@@ -3,23 +3,23 @@ package main
 
 import "core:fmt"
 
-TRec_status_2372 :: struct {
-	status: int,
+TRec_status :: struct ($T_status: typeid) {
+	status: T_status,
 }
 
-TRec_url_timeout_91DC :: struct {
-	url: string,
-	timeout: int,
+TRec_url_timeout :: struct ($T_url: typeid, $T_timeout: typeid) {
+	url: T_url,
+	timeout: T_timeout,
 }
 
-tuck_fetch :: proc(payload: $T) -> TRec_status_2372 {
+tuck_fetch :: proc(payload: $T) -> TRec_status(int) {
 	fmt.println("TUCK PENDING: tuck_fetch invoked (not implemented)")
 	return {}
 }
 
 
 tuck_main :: proc () {
-  tuck_config := TRec_url_timeout_91DC{url = "https://api.example.com", timeout = 100}
+  tuck_config := TRec_url_timeout(string, int){url = "https://api.example.com", timeout = 100}
   tuck_result := tuck_fetch(tuck_config)
   return
 }
