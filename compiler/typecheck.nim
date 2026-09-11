@@ -762,6 +762,15 @@ proc asSlotInvoke(tc: var TypeChecker, e: Expr): Type =
                   args: tc.invokeArgs(e))
   setCall(semLayer, e, call)
   result = tc.checkThroughFnSig(slotT, call)
+  # A BARE FN REFERENCE — `:twice .invoke {n: 21}` — is not a fnsig NAME. The
+  # checker resolves `:twice` straight to a tkFunc carrying the signature, so
+  # checkThroughFnSig (which looks a name up in fnSigNames) answers nil for
+  # it and the invoke typed as Unknown. Nim and Odin infer the local from its
+  # initialiser and never noticed; D declares one and refused. The signature
+  # is right there on the type, so read it.
+  if result == nil and slotT != nil and slotT.kind == tkFunc:
+    for a in call.args: discard tc.synthesize(a)
+    result = slotT.result
   if result == nil: result = unknownType(e.span)
 
 type Diag = tuple[code: DiagCode, msg: string]

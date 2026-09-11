@@ -168,6 +168,49 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.runs "...and the actor applies it", 0
 
+  # `.invoke` reaches a BARE fn reference too, not only a fnsig-typed slot.
+  # All four spellings of "call this fn value" now agree:
+  #
+  #   :twice .invoke {n: 21}    a bare reference
+  #   c.op.invoke {n: 10}       a slot on a record
+  #   f.invoke {n: 5}           a fnsig-typed binding
+  #   {n: n} op                 the same binding, payload-first
+  #
+  # The first typed as Unknown: a `:fnRef` resolves straight to a tkFunc
+  # carrying its signature, and checkThroughFnSig looks names up in
+  # fnSigNames — so it answered nil for the one case where the signature was
+  # sitting on the type already.
+  #
+  # D also needed the `&` taken off in CALLEE position: `&f` is how D spells
+  # taking a fn's address, and `&f(x)` takes the address of the RESULT —
+  # "cannot take address of expression because it is not an lvalue".
+  t.src """
+fnsig Adder = {n: int} -> int
+
+type Calc:
+  op: Adder
+
+fn twice({n: int}) -> int:
+  return n * 2
+
+fn viaSlot({c: Calc}) -> int:
+  return c.op.invoke {n: 10}
+
+fn viaBinding({f: Adder}) -> int:
+  return f.invoke {n: 5}
+
+fn main() -> int:
+  let c = {op: :twice} Calc
+  let a = :twice .invoke {n: 21}
+  let b = {c: c} viaSlot
+  let d = {f: :twice} viaBinding
+  return a + b + d - 72
+"""
+  t.okCheck "invoke reaches a bare fn reference, a slot and a binding alike"
+  t.hostBuilds "...on every backend"
+  t.runs "...and all three spellings compute the same way", 0
+
+
 
   # scheduler::stop ends the loop even with a coroutine still parked. The
   # scheduler otherwise returns only when NOTHING is waiting, so a program that

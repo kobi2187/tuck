@@ -38,6 +38,7 @@ import ./codegen_d_ctx
 # ---------------------------------------------------------- expressions --
 
 proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string
+proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool
 proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string
 proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep, into: string,
                    base: Expr = nil, baseStr = ""): string
@@ -298,6 +299,14 @@ proc resolveDCallee(ctx: var DCodegenCtx, e: Expr): string =
   if e.callee != nil and e.callee.kind == exkVar:
     let owner = ctx.importDeclaring(e.callee.name)
     if owner != "": return dAlias(owner) & "." & e.callee.name
+  # A fn reference in CALLEE position is not a value: `&f` is how D spells
+  # taking its address, and `&f(x)` parses as taking the address of the
+  # RESULT — "cannot take address of expression because it is not an
+  # lvalue". `:twice .invoke {n: 21}` resolves to a call whose callee IS the
+  # reference, so the `&` has to come off here.
+  if e.callee != nil and e.callee.kind == exkQualified and
+     ctx.isFnRefD(e.callee):
+    return ctx.genDQualified(e.callee)
   ctx.genDExpr(e.callee)
 
 proc memberProcNameD*(objName, memberName: string): string =
