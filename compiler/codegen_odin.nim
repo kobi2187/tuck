@@ -451,6 +451,9 @@ proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
     let v = e.returnVal
     if v.kind == exkRaise:
       return ctx.genRaise(v)  # err X already emits the full error return
+    elif isResultCarrierType(ctx.res.typeFor(v)):
+      # Already a carrier: pass it through rather than wrapping it twice.
+      return "return " & ctx.genOdinExpr(v)
     elif v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
        v.receiver.name == "Error":
       # Error.name → app-wide 16-bit code, hashed by the emitter

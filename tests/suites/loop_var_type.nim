@@ -113,10 +113,10 @@ fn main() -> int:
   t.src """
 fn walk({xs: Seq[int]}) -> int:
   var n = 0
-  var at = 0
-  for at < xs.len:
-    n = n + xs[at]
-    at = at + 1
+  var idx = 0
+  for idx < xs.len:
+    n = n + xs[idx]
+    idx = idx + 1
   return n
 
 fn main() -> int:
@@ -124,7 +124,7 @@ fn main() -> int:
 """
   t.okCheck "a conditional for checks"
   t.omitsOdin "Odin has no `while` keyword", r"while \("
-  t.emitsOdin "...it is a bare `for` with a condition", r"for \(tuck_at < "
+  t.emitsOdin "...it is a bare `for` with a condition", r"for \(tuck_idx < "
   t.hostBuilds "...and every backend builds it"
   t.runs "...and it counts the whole seq", 0
 

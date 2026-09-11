@@ -323,6 +323,7 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
   let prim = nimPrimitive(calleeStr)
   let callName = if emitName != "": emitName
                  elif ctx.isRuntimeExtern(calleeStr): "tuck_rt." & calleeStr
+                 elif nimRtCallee(calleeStr) != calleeStr: nimRtCallee(calleeStr)
                  elif prim != calleeStr: prim
                  else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
@@ -368,12 +369,6 @@ proc genReturnTypedLit(ctx: var CodegenCtx, v: Expr): string =
       parts.add(f.name & ": " & ex)
   "return tok((" & parts.join(", ") & "))"
 
-proc isResultCarrier(t: Type): bool =
-  ## Is this type ALREADY a `!T`/`?T`/`!?T` — the carrier itself, rather than
-  ## a payload that needs wrapping into one?
-  t != nil and t.kind == tkApp and t.base != nil and
-    t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"]
-
 proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
   ## `return` inside a fn declared `-> !T`/`-> ?T`: the value auto-wraps.
   if v.kind == exkRaise:
@@ -383,7 +378,7 @@ proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
   # built TuckResult[TuckResult[tuple[]]], which typechecked clean here and
   # failed in the Nim compile. The checker's own type for the expression is
   # what tells the two apart.
-  if isResultCarrier(ctx.res.typeFor(v)):
+  if isResultCarrierType(ctx.res.typeFor(v)):
     return "return " & ctx.genExpr(v)
   if v.kind == exkField and v.receiver != nil and v.receiver.kind == exkVar and
      v.receiver.name == "Error":
@@ -482,7 +477,7 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   elif e.name == "...": "discard"   # pending hole
   elif e.name == "input" and ctx.currentParams.len > 0: ctx.genInputPayload()
   elif e.name in ctx.fieldVars: "self." & e.name
-  else: e.name
+  else: nimRtCallee(e.name)
 
 proc genIfaceExtraArgs(ctx: var CodegenCtx, memberDecl: Decl,
                        dotArg: Expr): string =

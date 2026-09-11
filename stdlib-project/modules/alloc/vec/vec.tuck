@@ -1,0 +1,187 @@
+# alloc.vec — the verbs a growable sequence wants.
+#
+# NO new type. `Seq[T]` already IS Tuck's growable sequence, and a `Vec[T]`
+# wrapper beside it would be the second thing meaning the same thing. So this
+# module is verbs over the built-in, and `at`/`setAt` deliberately keep the
+# spellings std/seq already uses rather than inventing new ones.
+#
+# EVERY MUTATOR RETURNS THE NEW VALUE. Value semantics (TK-TY15) forbids
+# writing through a parameter, so `push` does not append in place. This is the
+# single biggest ergonomic difference from the Nim design, and it is pervasive
+# here because this module is all mutators. The call-site spelling that makes
+# it read well is `..`: `xs ..push {value: 4}`.
+#
+# Known cost, not a settled semantic: a Seq crossing a call boundary is a real
+# copy today, so an append loop is O(n^2). That is a codegen question — how a
+# Seq crosses a call boundary is Tuck's own decision — and it affects
+# alloc.string, alloc.deque, alloc.map and alloc.set identically.
+import seq
+
+fn count[T]({items: Seq[T]}) -> int:
+  return items.len
+
+fn isEmpty[T]({items: Seq[T]}) -> bool:
+  return items.len == 0
+
+# Absence, not a sentinel and not an abort: `at` here is the CHECKED read.
+# std/seq's `at` treats an out-of-range index as a program error, which is the
+# right call for the primitive and the wrong one for a lookup that might miss.
+fn at[T]({items: Seq[T], index: int}) -> T?:
+  if index < 0 or index >= items.len:
+    return
+  return items[index]
+
+fn first[T]({items: Seq[T]}) -> T?:
+  return {items: items, index: 0} at
+
+fn last[T]({items: Seq[T]}) -> T?:
+  return {items: items, index: items.len - 1} at
+
+# Out of range leaves the seq alone rather than growing or aborting — the
+# caller that wants a failure asks `at` first.
+fn setAt[T]({items: Seq[T], index: int, value: T}) -> Seq[T]:
+  if index < 0 or index >= items.len:
+    return items
+  var out = items
+  out[index] = value
+  return out
+
+fn clear[T]({items: Seq[T]}) -> Seq[T]:
+  var empty: Seq[T] = []
+  return empty
+
+fn has[T]({items: Seq[T], value: T}) -> bool:
+  for i in 0 .. items.len - 1:
+    if items[i] == value:
+      return true
+  return false
+
+fn indexOf[T]({items: Seq[T], value: T}) -> int?:
+  for i in 0 .. items.len - 1:
+    if items[i] == value:
+      return i
+  return
+
+# An index past the end appends; a negative one prepends. Both are the
+# clamping reading, which is what every caller means by "put it there".
+fn insertAt[T]({items: Seq[T], index: int, value: T}) -> Seq[T]:
+  var out: Seq[T] = []
+  for i in 0 .. items.len - 1:
+    if i == index:
+      out = {items: out, value: value} push
+    out = {items: out, value: items[i]} push
+  if index >= items.len:
+    out = {items: out, value: value} push
+  return out
+
+fn removeAt[T]({items: Seq[T], index: int}) -> Seq[T]:
+  var out: Seq[T] = []
+  for i in 0 .. items.len - 1:
+    if i != index:
+      out = {items: out, value: items[i]} push
+  return out
+
+# Both halves in one optional payload: absence means the seq was empty, so
+# there is no "popped nothing" value to invent.
+fn pop[T]({items: Seq[T]}) -> {rest: Seq[T], value: T}?:
+  if items.len == 0:
+    return
+  let top = items[items.len - 1]
+  let rest = {items: items, index: items.len - 1} removeAt
+  return {rest: rest, value: top}
+
+# --- the module's own checks ----------------------------------------------
+fn checkReads() -> int:
+  let xs: Seq[int] = [10, 20, 30]
+  if {items: xs} count != 3:
+    return 1
+  let empty: Seq[int] = []
+  if not {items: empty} isEmpty:
+    return 2
+  let got = {items: xs, index: 1} at
+  if not got.ok:
+    return 3
+  if got.value != 20:
+    return 4
+  # Out of range is absence, not an abort.
+  let past = {items: xs, index: 9} at
+  if past.ok:
+    return 5
+  return checkEnds
+
+fn checkEnds() -> int:
+  let xs: Seq[int] = [10, 20, 30]
+  let f = {items: xs} first
+  if not f.ok:
+    return 6
+  if f.value != 10:
+    return 7
+  let l = {items: xs} last
+  if not l.ok:
+    return 8
+  if l.value != 30:
+    return 9
+  # first/last of an empty seq are absent, not a zero.
+  let empty: Seq[int] = []
+  let absent = {items: empty} first
+  if absent.ok:
+    return 10
+  return checkSearch
+
+fn checkSearch() -> int:
+  let xs: Seq[int] = [10, 20, 30]
+  if not {items: xs, value: 20} has:
+    return 11
+  if {items: xs, value: 99} has:
+    return 12
+  let idx = {items: xs, value: 30} indexOf
+  if not idx.ok:
+    return 13
+  if idx.value != 2:
+    return 14
+  let missing = {items: xs, value: 99} indexOf
+  if missing.ok:
+    return 15
+  return checkEdits
+
+fn checkEdits() -> int:
+  let xs: Seq[int] = [10, 20, 30]
+  let set = {items: xs, index: 1, value: 99} setAt
+  if set[1] != 99:
+    return 16
+  # The original is untouched — this is a copy, not a write-through.
+  if xs[1] != 20:
+    return 17
+  let ins = {items: xs, index: 1, value: 15} insertAt
+  if ins.len != 4:
+    return 18
+  if ins[1] != 15:
+    return 19
+  let del = {items: xs, index: 0} removeAt
+  if del.len != 2:
+    return 20
+  if del[0] != 20:
+    return 21
+  return checkPop
+
+fn checkPop() -> int:
+  let xs: Seq[int] = [10, 20, 30]
+  let p = {items: xs} pop
+  if not p.ok:
+    return 22
+  if p.value.value != 30:
+    return 23
+  if p.value.rest.len != 2:
+    return 24
+  # Popping an empty seq is absence — both halves or neither.
+  let empty: Seq[int] = []
+  let absent = {items: empty} pop
+  if absent.ok:
+    return 25
+  let cleared = {items: xs} clear
+  if cleared.len != 0:
+    return 26
+  return 0
+
+fn main() -> int:
+  return checkReads

@@ -279,3 +279,36 @@ proc nimModuleName*(name: string): string =
   ## unless that name would shadow a builtin type. The import and every
   ## qualified use go through this one proc so they cannot disagree.
   if name in NimShadowingModuleNames: "tuck_mod_" & name else: name
+
+const RtIntrinsicNames* = [
+  "tuckAt", "tuckSetAt", "tuckConcat", "tuckSat", "tuckSatI",
+  "tuckSeqBounds", "tuckSeqCopy", "tuckSpawn", "tuckSetArgs",
+]
+  ## Runtime helpers the compiler INTRODUCES — a `xs[i]` lowers to `tuckAt`,
+  ## a `[saturating]` construction to `tuckSat`. They carry the reserved
+  ## `tuck` prefix so a user fn cannot collide with them... which is true of
+  ## every backend except the one that matters most.
+  ##
+  ## Nim identifiers ignore underscores and case after the first character,
+  ## so the user fn `at` — emitted `tuck_at` — IS `tuckAt` to Nim. A stdlib
+  ## module defining `fn at` silently rebound every `xs[i]` in the program to
+  ## itself, and the failure surfaced as a type error about double-wrapping
+  ## somewhere else entirely. Qualifying the runtime side closes the whole
+  ## class rather than renaming one helper out of the way.
+
+proc nimRtCallee*(name: string): string =
+  ## A runtime intrinsic, spelled so Nim cannot fold a user fn into it.
+  if name in RtIntrinsicNames: "tuck_rt." & name else: name
+
+proc isResultCarrierType*(t: Type): bool =
+  ## Is this type ALREADY a `!T`/`?T`/`!?T` — the carrier itself, rather than
+  ## a payload that needs wrapping into one?
+  ##
+  ## Every backend's wrapped-return emitter needs it: `return {..} at` inside
+  ## a fn that itself returns `?T` is a PASS-THROUGH, not a value to wrap.
+  ## Wrapping built TuckResult[TuckResult[T]], which typechecks clean here and
+  ## fails in the host compile. The Nim backend learned this when `!void`
+  ## pass-through bit it; Odin and D never got the twin, and alloc.vec's
+  ## `first`/`last` — one-liners delegating to `at` — found both.
+  t != nil and t.kind == tkApp and t.base != nil and
+    t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"]

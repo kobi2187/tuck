@@ -55,11 +55,33 @@ import ast, strutils, sets, tables, std/options
 import resolution
 
 const TuckNamePrefix* = "tuck_"
+const FoldSafePrefix* = "tuckfn_"
+
+const RtFoldableIntrinsics = [
+  "at", "setAt", "concat", "sat", "satI",
+  "seqBounds", "seqCopy", "spawn", "setArgs",
+]
+  ## User fn names whose ORDINARY mangling collides with a runtime intrinsic
+  ## — on Nim, and only on Nim, because Nim identifiers ignore underscores
+  ## and case after the first character. `fn at` mangles to `tuck_at`, which
+  ## IS `tuckAt` to Nim, so the module both rebinds every `xs[i]` in the
+  ## program to itself and then reports the user's own call as ambiguous.
+  ##
+  ## The list is the intrinsics the COMPILER introduces (see
+  ## codegen_common.RtIntrinsicNames), spelled as the user name that would
+  ## fold into each. alloc.vec found it: its API deliberately keeps std/seq's
+  ## `at`/`setAt` spellings rather than inventing new ones.
 
 proc mangleName*(name: string): string =
   ## Idempotent: re-running the pass over an already-lowered tree is a no-op,
   ## which matters because each backend lowers its own deepCopy.
-  if name.len == 0 or name.startsWith(TuckNamePrefix): return name
+  ##
+  ## Mangled in ONE place for all three backends, so a name is spelled the
+  ## same everywhere even though only Nim can fold it. Nothing in the corpus
+  ## carries a folding name, so this changes no existing output.
+  if name.len == 0 or name.startsWith(TuckNamePrefix) or
+     name.startsWith(FoldSafePrefix): return name
+  if name in RtFoldableIntrinsics: return FoldSafePrefix & name
   TuckNamePrefix & name
 
 proc rememberSource(slot: var Option[string], name: string) =

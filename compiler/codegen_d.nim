@@ -457,6 +457,9 @@ proc isErrorDotRef(v: Expr): bool =
 proc genDWrappedReturn(ctx: var DCodegenCtx, v: Expr): string =
   ## The return of a fallible fn: every value leaves wrapped in the carrier.
   if v.kind == exkRaise: return ctx.genDRaise(v)
+  # Already a carrier: pass it through rather than wrapping it twice.
+  if isResultCarrierType(ctx.res.typeFor(v)):
+    return "return " & ctx.genDExpr(v)
   if isErrorDotRef(v):
     return "return rt.terr!(" & ctx.retInnerD & ")(" &
            ctx.errCodeArg(v.fieldName) & ")"

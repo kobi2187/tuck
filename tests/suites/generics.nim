@@ -292,4 +292,53 @@ fn main() -> int:
   t.hostBuilds "...and does not shadow it in the emitted code"
   t.runs "...and Seq still works beside it", 0
 
+  # --- a user fn whose name folds into a runtime intrinsic ----------------
+  # Nim identifiers ignore underscores and case after the first character, so
+  # `fn at` — mangled `tuck_at` — IS `tuckAt`, the intrinsic every `xs[i]`
+  # lowers to. The module rebound indexing to itself, then reported the
+  # user's own call as ambiguous. alloc.vec found it: its API deliberately
+  # keeps std/seq's `at`/`setAt` spellings.
+  t.src """
+fn at({items: Seq[int], index: int}) -> int?:
+  if index < 0 or index >= items.len:
+    return
+  return items[index]
+
+fn main() -> int:
+  let xs: Seq[int] = [10, 20, 30]
+  let r = {items: xs, index: 1} at
+  if not r.ok:
+    return 1
+  return r.value - xs[1]
+"""
+  t.okCheck "a fn named after a runtime intrinsic checks"
+  t.emits "it is mangled out of the intrinsic's way", r"tuckfn_at"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...with indexing still reaching the intrinsic", 0
+
+  # --- an already-wrapped return is a pass-through ------------------------
+  # `return {..} at` inside a fn that itself returns `?T` wraps a value that
+  # is already a carrier — TuckResult[TuckResult[T]], which typechecks clean
+  # and fails in the host compile. Nim learned this when `!void` pass-through
+  # bit it; Odin and D never got the twin.
+  t.src """
+fn lookUp({items: Seq[int], index: int}) -> int?:
+  if index < 0 or index >= items.len:
+    return
+  return items[index]
+
+fn firstOf({items: Seq[int]}) -> int?:
+  return {items: items, index: 0} lookUp
+
+fn main() -> int:
+  let r = {items: [7, 8]} firstOf
+  if not r.ok:
+    return 1
+  return r.value - 7
+"""
+  t.okCheck "returning an already-wrapped value checks"
+  t.omits "Nim does not wrap it twice", r"tok\(tuck_lookUp"
+  t.hostBuilds "...and no backend does"
+  t.runs "...and the payload survives one level", 0
+
   t.finish()

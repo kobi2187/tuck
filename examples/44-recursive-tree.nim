@@ -26,20 +26,20 @@ proc tuck_eval*(e: tuck_Expr): int =
   of Num:
     return e.tuck_num.value
   of Neg:
-    return (0 - tuck_eval(tuckAt(e.tuck_neg.operand, 0)))
+    return (0 - tuck_eval(tuck_rt.tuckAt(e.tuck_neg.operand, 0)))
   of Add:
-    return (tuck_eval(tuckAt(e.tuck_add.left, 0)) + tuck_eval(tuckAt(e.tuck_add.right, 0))))
+    return (tuck_eval(tuck_rt.tuckAt(e.tuck_add.left, 0)) + tuck_eval(tuck_rt.tuckAt(e.tuck_add.right, 0))))
 
 proc tuck_depth*(e: tuck_Expr): int =
   (case e.kind
   of Num:
     return 1
   of Neg:
-    return (1 + tuck_depth(tuckAt(e.tuck_neg.operand, 0)))
+    return (1 + tuck_depth(tuck_rt.tuckAt(e.tuck_neg.operand, 0)))
   of Add:
     if true:
-      var tuck_l = tuck_depth(tuckAt(e.tuck_add.left, 0))
-      var tuck_r = tuck_depth(tuckAt(e.tuck_add.right, 0))
+      var tuck_l = tuck_depth(tuck_rt.tuckAt(e.tuck_add.left, 0))
+      var tuck_r = tuck_depth(tuck_rt.tuckAt(e.tuck_add.right, 0))
       if (tuck_l > tuck_r):
         if true:
           return (1 + tuck_l)
