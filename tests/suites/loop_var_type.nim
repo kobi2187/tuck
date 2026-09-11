@@ -105,4 +105,27 @@ fn main() -> int:
   t.okCheck "nested loops keep separate element types"
   t.frozen  "and compute correctly"
 
+  # --- the CONDITIONAL loop ------------------------------------------------
+  # `for <cond>:` is Tuck's while, and it had never been built on Odin —
+  # which has exactly one loop keyword and does not spell it `while`:
+  # "Undeclared name: while. Suggestion: Did you mean 'for'?". Nim and D both
+  # accept `while`, so two of three backends hid it.
+  t.src """
+fn walk({xs: Seq[int]}) -> int:
+  var n = 0
+  var at = 0
+  for at < xs.len:
+    n = n + xs[at]
+    at = at + 1
+  return n
+
+fn main() -> int:
+  return {xs: [10, 20, 12]} walk - 42
+"""
+  t.okCheck "a conditional for checks"
+  t.omitsOdin "Odin has no `while` keyword", r"while \("
+  t.emitsOdin "...it is a bare `for` with a condition", r"for \(tuck_at < "
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and it counts the whole seq", 0
+
   t.finish()

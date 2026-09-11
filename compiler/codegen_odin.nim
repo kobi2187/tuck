@@ -816,8 +816,18 @@ proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ind & "for " & vars & " in " & iterStr & " {\n" & bodyStr & "\n" & ind & "}"
 
 proc genWhile(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
-  let condStr = if e.whileCond == nil: "true" else: ctx.genOdinExpr(e.whileCond)
-  ind & "while (" & condStr & ")\n" & ctx.genIndented(e.whileBody)
+  ## `for <cond>:` (and bare `loop:`) — Odin has ONE loop keyword and `while`
+  ## is not it: the emitted `while (c)` was "Undeclared name: while.
+  ## Suggestion: Did you mean 'for'?". Nim and D both accept `while`, which
+  ## is why nothing in the corpus caught it — Tuck's conditional loop had
+  ## never been built on Odin.
+  ##
+  ## A condition-less `loop:` is Odin's bare `for { }`, not `for true { }`.
+  let bodyStr = ctx.genIndented(e.whileBody)
+  if e.whileCond == nil:
+    return ind & "for {\n" & bodyStr & "\n" & ind & "}"
+  ind & "for " & ctx.genOdinExpr(e.whileCond) & " {\n" & bodyStr &
+    "\n" & ind & "}"
 
 proc odinBinOp(op: BinOp): string =
   ## Odin's `/` follows the operand type (integer operands give integer
