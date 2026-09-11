@@ -1172,8 +1172,12 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     # direct equivalent to emit yet (Odin's own generics are `$T` parapoly
     # procs, a different mechanism). Die loudly rather than emit the bare
     # `T`/`U` names as if they were real, undeclared types.
-    if d.sigGenerics.len > 0:
-      discard odinUnsupported("a generic fnsig ('" & d.name & "')")
+    # A GENERIC fnsig emits NOTHING. Odin proc types are not parametric (its
+    # generics are `$T` parapoly on PROCS, a different mechanism), so there
+    # is no named type to declare — every USE spells the substituted
+    # signature inline instead. Nothing is lost: a fn type is structural
+    # here, so there was no nominal identity to keep.
+    if d.sigGenerics.len > 0: return ""
     var params: seq[string]
     for prm in d.sigParams:
       params.add(prm.name & ": " & ctx.odinType(prm.typ))

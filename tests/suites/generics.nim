@@ -494,4 +494,42 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.runs "...with the same two answers", 0
 
+  # --- a GENERIC fnsig -----------------------------------------------------
+  # The last thing blocking core.iter, and both backends refused it outright:
+  # "Odin backend does not yet support a generic fnsig", "D backend does not
+  # yet support type application tuck_Pred[...]".
+  #
+  # The declaration now emits NOTHING and every USE spells the substituted
+  # signature inline. Odin's proc TYPES are not parametric — its generics are
+  # `$T` parapoly on procs, a different mechanism — and D's alias cannot carry
+  # the parameter either ("undefined identifier `T`"). Nothing is lost by
+  # erasing the name: a fn type is structural in all three targets, so there
+  # was no nominal identity to keep.
+  t.src """
+fnsig Pred[T] = {value: T} -> bool
+
+type Filter[T]:
+  test: Pred[T]
+
+fn isEven({value: int}) -> bool:
+  return value /i 2 * 2 == value
+
+fn keep[T]({f: Filter[T], items: Seq[T]}) -> Seq[T]:
+  var out: Seq[T] = []
+  for i in 0 .. items.len - 1:
+    let v = items[i]
+    if {value: v} f.test:
+      out = {items: out, value: v} push
+  return out
+
+fn main() -> int:
+  let f: Filter[int] = {test: :isEven} Filter
+  let got = {f: f, items: [1, 2, 3, 4]} keep
+  return got.len - 2
+"""
+  t.okCheck "a generic fnsig checks"
+  t.omitsD "D declares no alias for it", r"alias tuck_Pred"
+  t.hostBuilds "...and every backend emits the substituted signature"
+  t.runs "...and the predicate filters", 0
+
   t.finish()

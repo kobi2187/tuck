@@ -459,6 +459,13 @@ proc genDFnSig*(ctx: var DCodegenCtx, d: Decl): string =
   ## is a baked record whose body reads the record's own fields), so a bare
   ## pointer loses nothing and is what a C callback needs anyway. Nim has to
   ## reach for {.cdecl.} on the C path for exactly this reason.
+  # A GENERIC fnsig emits NOTHING — every USE spells the substituted
+  # signature inline instead (see ast_query.fnSigInstance). An alias cannot
+  # carry the parameter: `alias Pred = bool function(T value)` reached dmd as
+  # "undefined identifier `T`". Same answer as the Odin backend, for the same
+  # reason: a fn type is structural here, so there is no nominal identity to
+  # lose by erasing the name.
+  if d.sigGenerics.len > 0: return ""
   var params: seq[string]
   for prm in d.sigParams:
     params.add(ctx.dType(prm.typ) & " " & prm.name)

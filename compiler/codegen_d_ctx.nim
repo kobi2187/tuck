@@ -228,6 +228,10 @@ proc dAppType*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   # long)`; the declaration is emitted with the same parameter list by
   # genDTypeDecl. Only a type this module can actually see is spelled this
   # way, so an unmapped application still reports itself.
+  # A generic fnsig application is the signature itself, substituted. The
+  # declaration emits nothing — see codegen_common.fnSigInstance.
+  let sigInst = fnSigInstance(ctx.module, t)
+  if sigInst != nil: return ctx.dTypeIn(sigInst, mode)
   if baseName != "?" and ctx.declaredGenericD(baseName):
     return ctx.dGenericApp(t, baseName, mode)
   if mode == tmRequired: dUnsupported("type application " & baseName & "[...]")

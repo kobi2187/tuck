@@ -34,7 +34,7 @@
 # sizes — 32,000 lines still checks in about a third of a second. The fix, when
 # a real program makes it hurt, is a name -> decl table built once per module
 # and shared by every pass, not micro-optimizing the scan.
-import ast, strutils
+import ast, strutils, tables
 import resolution
 export strutils.repeat, strutils.capitalizeAscii
 
@@ -563,3 +563,44 @@ proc threadReceiver*(call, base: Expr, into, baseStr: string): Expr =
   for i in 0 ..< result.args.len:
     if result.args[i] != nil and result.args[i].id == base.id:
       result.args[i] = intoExpr
+
+# --- a GENERIC fnsig ---------------------------------------------------------
+#
+# `fnsig Pred[T] = {value: T} -> bool` has no named counterpart to emit. Odin's
+# proc TYPES are not parametric (its generics are `$T` parapoly on PROCS, a
+# different mechanism), and D's templated alias would need instantiating at
+# every use anyway. So the declaration emits NOTHING and each use site spells
+# the substituted signature inline — `Pred[int]` becomes the function type
+# taking an int.
+#
+# Nothing is lost by erasing it: a fn type is structural in all three targets,
+# so there was no nominal identity to keep.
+
+proc substParams(t: Type, binds: Table[string, Type]): Type =
+  ## `t` with every type-param NAME replaced by what it was bound to.
+  if t == nil: return nil
+  case t.kind
+  of tkNamed:
+    if binds.hasKey(t.name): binds[t.name] else: t
+  of tkApp:
+    var args: seq[Type]
+    for a in t.args: args.add(substParams(a, binds))
+    Type(span: t.span, kind: tkApp, base: substParams(t.base, binds), args: args)
+  else: t
+
+proc fnSigInstance*(m: Module, t: Type): Type =
+  ## `Pred[int]` -> the tkFunc it stands for, with T substituted. nil when `t`
+  ## is not a generic fnsig application, so a caller can fall through to its
+  ## ordinary handling.
+  if t == nil or t.kind != tkApp or t.base == nil or t.base.kind != tkNamed:
+    return nil
+  for d in m.decls:
+    if d == nil or d.kind != dkFnSig or d.name != t.base.name: continue
+    if d.sigGenerics.len == 0 or d.sigGenerics.len != t.args.len: return nil
+    var binds = initTable[string, Type]()
+    for i, g in d.sigGenerics: binds[g] = t.args[i]
+    var ps: seq[Type]
+    for prm in d.sigParams: ps.add(substParams(prm.typ, binds))
+    return Type(span: t.span, kind: tkFunc, params: ps,
+                result: substParams(d.sigReturn, binds))
+  nil

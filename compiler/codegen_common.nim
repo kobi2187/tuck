@@ -569,3 +569,4 @@ proc selfThreadedCall*(res: Resolution, m: Module, e: Expr): Expr =
   if call.callee == nil or call.callee.kind != exkVar: return nil
   if movedCallInto(res, m, call, e.target.name): return call
   nil
+

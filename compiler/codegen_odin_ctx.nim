@@ -263,7 +263,13 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     of "fn": (if ctx.fnAsParam: "$T" else: "proc()")
     else: ctx.odinNamedFallback(t)
   of tkTuple: ctx.odinTupleType(t)
-  of tkApp: ctx.odinAppType(t)
+  of tkApp:
+    # A generic fnsig application is the SIGNATURE, substituted — the
+    # declaration emits nothing, because Odin's proc types are not
+    # parametric. See codegen_common.fnSigInstance.
+    let sigInst = fnSigInstance(ctx.module, t)
+    if sigInst != nil: ctx.odinFuncType(sigInst)
+    else: ctx.odinAppType(t)
   of tkFunc: ctx.odinFuncType(t)
   of tkRecord:
     recStructName(ctx, t.fields)
