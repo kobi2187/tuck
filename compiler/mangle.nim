@@ -198,6 +198,10 @@ proc mangleAssign(res: Resolution, e: Expr, names: HashSet[string], locals: var 
   ## enclosing actor's/type's fields is never a new local — it is a field
   ## write the backend spells `self.name`.
   mangleExpr(res, e.assignVal, names, locals, fields)
+  # `let x: T = ...` — the STATED type names a declaration like any other
+  # type reference does, so it renames with the rest. Missing this emitted
+  # the user's own `Bag` beside the declaration's `tuck_Bag`.
+  if e.declType != nil: mangleType(e.declType, names)
   if e.target != nil and e.target.kind == exkVar and
      e.target.name notin fields:
     locals.incl(e.target.name)

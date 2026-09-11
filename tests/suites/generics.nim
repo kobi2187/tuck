@@ -378,4 +378,21 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.runs "...and a copy taken beforehand is untouched", 0
 
+  # A STATED type names a declaration like any other type reference, so it
+  # has to rename with the rest — the mangle pass did not walk the new
+  # declType field, and the annotation emitted the user's own `Bag` beside
+  # the declaration's `tuck_Bag`.
+  t.src """
+type Bag:
+  items: Seq[int]
+
+fn main() -> int:
+  var bag: Bag = {items: [1, 2]} Bag
+  return bag.items.len - 2
+"""
+  t.okCheck "a stated USER type on a local checks"
+  t.emits "the annotation is mangled with the declaration", r"tuck_bag: tuck_Bag"
+  t.hostBuilds "...on every backend"
+  t.runs "...and the value is there", 0
+
   t.finish()
