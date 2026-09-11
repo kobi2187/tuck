@@ -16,6 +16,25 @@
   syntaxes, one broken inference path. Narrow, not iter-blocking.
 - `core.iter`'s API.tuck.md doc is STALE: says `fnsig Mapper[T, U] = ...`
   fails to parse. It parses; the doc predates the generic-fnsig-on-Odin/D work.
+- Proposed extending done modules (user: "propose... very useful
+  primitives... match the vision/style/idioms"). Two of four proposals were
+  WRONG on inspection, both caught by verifying before building:
+  - `core.convert.intToStr` — already exists as `std/str.tuck`'s generic
+    `toStr[T]`, explicitly noted in convert.tuck's own header ("WHAT IS NOT
+    HERE, ON PURPOSE"). Verified it actually works (all 3 backends) rather
+    than trusting the comment.
+  - `core.cmp.Comparator[T]` fnsig for a generic `core.iter.sortBy` — turned
+    out unnecessary: `cmp.smaller[T]`/`larger[T]` already prove an ordinary
+    bound `[T]` generic works fine with bare `<`, so `sum`/`sort` just
+    needed to BE generic, no fnRef indirection needed. Direct steer: "you
+    must figure out the correct primitives, even if we do a top-down
+    design" — landed on the simpler, already-proven mechanism instead.
+  - Built: `core.num` (sign/absI64/midpoint), `core.hash` (hashBytes as the
+    real primitive + hashU64, prompted directly: "hash should of course be
+    based on bytes").
+  - Factor-lang's stdlib named as inspiration for a FUTURE round (user: "too
+    many modules, but get inspiration for cool functionality") — not
+    consulted yet, noted for next pass.
 - `Array[N, T]` had never been indexed, sized, or literal-constructed
   anywhere in the corpus before `core.array`. Four bugs, all found spiking
   its first fn: no indexing primitive (bracket sugar routes to whatever
