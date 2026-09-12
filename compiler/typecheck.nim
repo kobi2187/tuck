@@ -1686,6 +1686,16 @@ proc checkIfaceElems(tc: var TypeChecker, iname: string, argExpr: Expr,
   for item in argExpr.items:
     let t = tc.synthesize(item)
     tc.checkIfaceArg(iname, t, item, what)
+  # The list IS a Seq of the interface once its elements are wrapped, so say
+  # so. Left as `Seq[Dog]` — the first element's concrete type — Odin emitted
+  # `[dynamic]tuck_Dog{Animal{...}, Animal{...}}`: an element type naming one
+  # implementation, holding values of the variant. Odin spells a dynamic
+  # array literal's element type out, so it was the one backend that could
+  # not paper over the mismatch.
+  setType(semLayer, argExpr,
+          Type(span: argExpr.span, kind: tkApp,
+               base: Type(span: argExpr.span, kind: tkNamed, name: "Seq"),
+               args: @[Type(span: argExpr.span, kind: tkNamed, name: iname)]))
 
 type
   ArgField = tuple[name: string, typ: Type, span: Span]

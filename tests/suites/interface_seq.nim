@@ -68,17 +68,31 @@ fn total({xs: Seq[Animal]}) -> int:
 
 fn main() -> int:
   var d = {name: "rex"} Dog
-  var c = {name: "tom"} Cat
+  var c = {lives: 9} Cat
   return {xs: [d, c]} total
 """
-  # Asserted at the EMISSION level, because lib.sh cannot run `odin build` (only
-  # odin_backend.sh can). The observable is the inline BRACED COMPOUND LITERAL at
-  # the call site — `tuck_total({Animal{...}})` — which is precisely what Odin
-  # rejects with "Compound literals of dynamic types are disabled by default".
-  # The fix is statement hoisting: declare a temp, append to it, pass the temp.
-  # When that lands this literal disappears and the assertion flips.
+  # FIXED 2026-09-12, and not by the statement hoisting this comment used to
+  # predict. Two separate things were wrong:
+  #
+  # 1. `#+feature dynamic-literals` (already emitted) answers the
+  #    "Compound literals of dynamic types are disabled by default" half.
+  # 2. The real defect was the ELEMENT TYPE. checkIfaceElems wrapped each
+  #    element into the variant but left the list's own type as `Seq[Dog]` —
+  #    the first element's concrete type — so Odin emitted
+  #    `[dynamic]tuck_Dog{Animal{...}, Animal{...}}`: an element type naming
+  #    one implementation, holding values of the variant. Odin spells a
+  #    dynamic array literal's element type out, which is why it was the one
+  #    backend that could not paper over the mismatch.
+  #
+  # The snippet above ALSO constructed `Cat` with `{name: "tom"}` while Cat
+  # declares `lives: int`. That is a plain type error; it rode in on Unknown,
+  # and removing the sentinel turned it into the hard error it always was —
+  # which is why this assertion could not pass even once the emitter was
+  # right.
   t.quietly: t.omitsOdin "", "tuck_total\\(\\{"
-  t.bugOpen "Odin: a list literal can reach a Seq parameter"
+  t.bugFixed "Odin: a list literal can reach a Seq parameter"
+  t.emitsOdin "...the element type is the INTERFACE, not the first element's type",
+              r"\[dynamic\]Animal\{"
 
   # A single-element list still works — the common degenerate case.
   t.src IFACE & """
