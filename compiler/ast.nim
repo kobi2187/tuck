@@ -611,6 +611,7 @@ type
       taskParams*: seq[Param]
       taskReturnType*: Type
       taskEffects*: seq[EffectMarker]
+      taskErrorTypes*: seq[string]  ## `[error: E | F]` — what it can raise
       taskBody*: Expr
     of dkSatisfies:
       # `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL.

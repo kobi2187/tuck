@@ -99,6 +99,8 @@ type
                                           ## plain top-level fn, not a value
                                           ## with fields, so this can only be a
                                           ## chain onto the call, not a slot call
+    dcTyErrNeedsList = "TK-TY24"        ## a fn raises but declares no
+                                        ## `[error: ...]` list
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -281,6 +283,17 @@ proc parseExplanation(d: DiagCode): string =
     "dmd, nim and odin rather than copied from their manuals: `body` and " &
     "`string` are not on it, because those hosts accept them. Fix: choose " &
     "another name."
+  of dcTyErrNeedsList:
+    "A fn whose body contains `err` must name the enums it can raise, in its " &
+    "effect bracket: `[io, error: FsError | NetError]`. The list is not " &
+    "decoration — it is what the compiler validates BOTH sides against. A " &
+    "raise site is checked against it (`err AccesDenied` is caught as a typo " &
+    "only because the list says which enum to look in), and so is the " &
+    "CONSUMER's `match r.err`: an arm naming a variant that exists nowhere " &
+    "used to be accepted when the producer declared no list, and emitted " &
+    "`of Wibble:` straight into the host compiler. Re-raising (`err r.err`) " &
+    "counts as raising — the caller still needs to know what can come out. " &
+    "Fix: add `[error: <Enum>]`, listing every enum this fn can return."
   of dcPaWordOperator:
     "`mod` and `div` are word-operators in Nim, Pascal and Python; in Tuck " &
     "they are `%` and `/i`. Left alone, a bare word between two operands " &

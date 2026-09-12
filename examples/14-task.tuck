@@ -5,8 +5,10 @@ type Feed = {episodes: int}
 pending:
   fn parse({body: str}) -> {feed: Feed}
 
-task fetchFeed({url: str}) -> !{feed: Feed} [io]:
+task fetchFeed({url: str}) -> !{feed: Feed} [io, error: HttpError]:
   let resp = {url} http::get   # [io] → compiler inserts yield here automatically
   if resp.ok:
     return {body: resp.value.body} parse
-  err resp.err                 # re-raise: same code, this fn's result type
+  err resp.err                 # re-raise: same code, this fn's result type.
+                               # Re-raising counts as raising, so the [error:]
+                               # list above is required (TK-TY24).

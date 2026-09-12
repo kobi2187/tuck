@@ -845,34 +845,26 @@ proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
   if p.current().kind == tkArrow:
     discard p.advance()
     retType = p.parseType()
-  var effects: seq[EffectMarker]
-  var taskErrTypes: seq[string]
   # A task has a BODY, so `[emit: "..."]` — which names the runtime or C
   # symbol an EXTERN binds to — means nothing here. Harvested only so it can
   # be refused: dropping it silently is the swallow that hid the whole
   # emit-after-return-type bug in the first place.
-  var taskEmit = ""
+  #
+  # The bracket itself is `parseSignatureTail`, the same one `fn` uses. It was
+  # a hand-rolled second copy until 2026-09-12, and the copy had never learned
+  # `[error: E]` — so a task that raised had no way to name what it raises,
+  # which is exactly what TK-TY24 now requires.
   let emitSp = p.getSpan()
-  harvestEffects(retType, effects, taskErrTypes, taskEmit)
-  if taskEmit != "":
-    p.reportError("[emit: \"" & taskEmit & "\"] names the runtime symbol an " &
+  let sig = p.parseSignatureTail(retType)
+  if sig.emit != "":
+    p.reportError("[emit: \"" & sig.emit & "\"] names the runtime symbol an " &
                   "extern binds to; a task has a body of its own",
                   emitSp.line, emitSp.col)
-  if p.current().kind == tkLBracket:
-    discard p.advance()
-    while p.current().kind != tkRBracket and p.current().kind != tkEOF:
-      let effSp = p.getSpan()
-      let effName = p.expectAttrName("Expected effect marker").value
-      var eff: EffectMarker
-      if not effectMarkerFromName(effName, eff):
-        p.reportError("Unknown effect marker: " & effName, effSp.line, effSp.col)
-      effects.add(eff)
-      if p.current().kind == tkComma:
-        discard p.advance()
-    discard p.expect(tkRBracket)
   discard p.expect(tkColon)
   let body = p.parseBlock()
-  return Decl(span: sp, kind: dkTask, name: name, taskParams: params, taskReturnType: retType, taskEffects: effects, taskBody: body)
+  return Decl(span: sp, kind: dkTask, name: name, taskParams: params,
+              taskReturnType: retType, taskEffects: sig.effects,
+              taskErrorTypes: sig.errTypes, taskBody: body)
 
 # fn name[T]({params}) -> ret [effects]: body — also `on select` arms and event handlers
 proc parseFnDecl*(p: var Parser, sp: Span): Decl =

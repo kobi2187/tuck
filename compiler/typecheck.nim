@@ -3591,6 +3591,19 @@ proc synthRaise(tc: var TypeChecker, e: Expr): Type =
   if tc.currentRet == nil or not isWrapper(tc.currentRet):
     fail("Type Error: 'err' raises into a fallible result, so '" &
          tc.currentFn & "' must declare a !T return type", e.span)
+  # A fn that raises must NAME what it can raise. The list is what both sides
+  # are validated against: without it a raise site is still checked (the
+  # variant must exist on the enum it names), but the CONSUMER's `match r.err`
+  # is not checked at all — an arm naming nothing reached the host compiler as
+  # `of Wibble:`. Ruled 2026-09-12: require the bracket whenever the body
+  # raises, re-raises included, since a caller still needs to know what can
+  # come out.
+  if tc.currentErrTypes.len == 0:
+    fail(dcTyErrNeedsList,
+         "'" & tc.currentFn & "' raises but declares no error " &
+         "list — add [error: <Enum>] to its effect bracket, naming every " &
+         "enum it can return. Without it a caller's `match r.err` cannot be " &
+         "checked", e.span)
   let rv = e.raiseVal
   if rv != nil and rv.kind == exkVar: tc.resolveBareErr(e, rv)
   elif tc.isQualifiedErr(rv): tc.checkQualifiedErr(e, rv)
@@ -4262,7 +4275,9 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   of dkFn: tc.checkFnDecl(d)
   of dkTask:
     checkFallibleNeedsIo(d.name, d.taskReturnType, d.taskEffects, d.span)
+    tc.currentErrTypes = d.taskErrorTypes
     tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)
+    tc.currentErrTypes = @[]
   of dkExpr: discard tc.synthesize(d.expr)
   of dkObject: tc.checkObjectDecl(d)
   of dkMixin, dkExtern, dkPending:

@@ -387,11 +387,18 @@ fn fetchIt({url: str}) -> !{content: str} [io, error: FsError | NetError]:
 """
   t.badCheck "err raise: variant ambiguous across listed enums", "ambiguous"
 
+  # `err r.err` re-raises a code the callee produced. Since 2026-09-12 the
+  # re-raiser must still declare what it can return (TK-TY24) — a caller
+  # matching on ITS errors needs a list to be checked against, and a code
+  # passing through is still a code coming out.
   t.src """
-fn mightFail({n: int}) -> !{amount: int} [io]:
+type CalcError:
+  | Overflow
+
+fn mightFail({n: int}) -> !{amount: int} [io, error: CalcError]:
   return {amount: n}
 
-fn use({n: int}) -> !{total: int} [io]:
+fn use({n: int}) -> !{total: int} [io, error: CalcError]:
   let r = {n} mightFail
   if r.ok:
     return {total: r.value.amount}
@@ -2220,5 +2227,93 @@ fn main() -> int:
   return pending
 """
   t.badCheck "a reserved word as a variable name says which word", "reserved word"
+
+  # --- a fn that raises must NAME what it raises (TK-TY24) ----------------
+  #
+  # Ruled 2026-09-12. The `[error: E]` list is what BOTH sides are validated
+  # against, and without it the consumer's `match r.err` was checked against
+  # nothing: an arm naming a variant that exists nowhere was accepted and
+  # emitted `of Wibble:` straight into the host compiler, which answered
+  # "undeclared identifier". Requiring the bracket at the raise site closes
+  # it at the root — a producer that can raise always says what it can raise.
+  t.src """
+type FsError:
+  | NotFound
+
+fn load({path: str}) -> !int [io]:
+  return err FsError.NotFound
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a fn that raises without an error list is refused", "TK-TY24"
+
+  # Re-raising counts: the caller still needs to know what can come out.
+  t.src """
+type FsError:
+  | NotFound
+
+fn load({path: str}) -> !int [io, error: FsError]:
+  return err FsError.NotFound
+
+fn wrap({path: str}) -> !int [io]:
+  let r = {path: path} load
+  if r.ok:
+    return r.value
+  return err r.err
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "re-raising without an error list is refused too", "TK-TY24"
+
+  # The point of the rule: with the list present, the CONSUMER is checked.
+  t.src """
+type FsError:
+  | NotFound
+
+fn load({path: str}) -> !int [io, error: FsError]:
+  return err FsError.NotFound
+
+fn use({path: str}) -> int [io]:
+  let r = {path: path} load
+  if r.ok:
+    return r.value
+  match r.err:
+    Wibble: return 1
+    _: return 2
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a match arm naming no variant is refused", "not a variant"
+
+  # A TASK can declare the list too. It could not until 2026-09-12: its
+  # bracket was a hand-rolled copy of parseSignatureTail that had never
+  # learned `error:`, so a task that raised had no way to comply with the
+  # rule above. `examples/14-task.tuck` is exactly that shape.
+  t.src """
+type HttpError:
+  | Unreachable
+
+task fetch({url: str}) -> !int [io, error: HttpError]:
+  err HttpError.Unreachable
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a task may declare its error list"
+
+  t.src """
+type HttpError:
+  | Unreachable
+
+task fetch({url: str}) -> !int [io, error: HttpError]:
+  err HttpError.Nope
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and a task's raise is validated against it", "not a variant"
 
   t.finish()
