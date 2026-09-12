@@ -4153,7 +4153,8 @@ proc bindConsts*(tc: var TypeChecker, m: Module) =
 proc typecheckModule*(m: Module,
                       externSigs = initTable[string, seq[FnSig]](),
                       externPending = initTable[string, Span](),
-                      externFnSigTypes = initTable[string, seq[string]]()): seq[string] {.discardable.} =
+                      externFnSigTypes = initTable[string, seq[string]](),
+                      externGroups = initTable[string, Decl]()): seq[string] {.discardable.} =
   var tc = newModuleChecker(m, externSigs, externPending)
   # An imported `fnsig` is a signature TYPE, not just another callable. Seed
   # that before collectSigs so a slot typed `Mapper[int, str]` from another
@@ -4162,6 +4163,9 @@ proc typecheckModule*(m: Module,
   for n, generics in externFnSigTypes:
     tc.fnSigNames.incl(n)
     if generics.len > 0: tc.fnSigGenerics[n] = generics
+  # Imported groups seed before the local ones are collected, so a local
+  # declaration of the same name still wins.
+  for gname, gd in externGroups: tc.groupDecls[gname] = gd
   tc.pushScope()  # module-level scope: consts visible across decls
   # Group declarations, collected on their own, BEFORE the real collectSigs
   # below: desugaring an inline `{x: Sortable + Hashable}` bound has to run
@@ -4254,6 +4258,14 @@ type
     byMod: Table[string, Table[string, seq[FnSig]]]
     pendByMod: Table[string, Table[string, Span]]
     importsByMod: Table[string, seq[string]]
+    groupsByMod: Table[string, Table[string, Decl]]
+                              ## `group` declarations, by module. A bound names
+                              ## a group, and a stdlib states its contracts in
+                              ## one module for every other to be written
+                              ## against — so a group that stopped at its own
+                              ## module made the whole arrangement impossible
+                              ## ("'Comparable' used as a bound on 'T' is not a
+                              ## declared group").
     fnSigTypesByMod: Table[string, Table[string, seq[string]]]
                               ## `fnsig NAME` declarations, name -> its generic
                               ## params (empty seq for a non-generic one). A
@@ -4273,6 +4285,7 @@ type
     pending: Table[string, Span]
     bareOwner: Table[string, string]
     fnSigTypes: Table[string, seq[string]]  ## imported `fnsig` names -> generics
+    groups: Table[string, Decl]             ## imported `group` declarations
 
 proc withModulePrefix(err: ref SemanticError, path: string): ref SemanticError =
   ## Prefix a module-local error with the file it came from.
@@ -4300,6 +4313,7 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
     result.byMod[name] = tc.fnSigs
     result.pendByMod[name] = tc.pendingFns
     result.importsByMod[name] = moduleImports(m)
+    result.groupsByMod[name] = tc.groupDecls
     var sigTypes: Table[string, seq[string]]
     for n in tc.fnSigNames:
       sigTypes[n] = tc.fnSigGenerics.getOrDefault(n)
@@ -4327,6 +4341,8 @@ proc importChecked(scope: var ImportScope, sigs: ProgramSigs, imp: string) =
       scope.pending[imp & "::" & fname] = sp
   for fname, generics in sigs.fnSigTypesByMod.getOrDefault(imp):
     scope.fnSigTypes[fname] = generics
+  for gname, d in sigs.groupsByMod.getOrDefault(imp):
+    scope.groups[gname] = d
 
 proc importPrebuilt(scope: var ImportScope, preSigs: Table[string, seq[SigInfo]],
                     imp: string) =
@@ -4363,6 +4379,7 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
   for (name, path, m) in mods:
     let scope = importScopeFor(sigs, preSigs, name)
     try:
-      result = typecheckModule(m, scope.extern, scope.pending, scope.fnSigTypes)
+      result = typecheckModule(m, scope.extern, scope.pending,
+                               scope.fnSigTypes, scope.groups)
     except SemanticError as err:
       raise withModulePrefix(err, path)

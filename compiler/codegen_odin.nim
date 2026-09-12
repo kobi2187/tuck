@@ -537,10 +537,14 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   ctx.indent += 1
   var errMatch = false
   var hasWild = false
+  var overEnum = false
   for arm in e.arms:
     if arm.pattern != nil and arm.pattern.kind == pkWild: hasWild = true
     if arm.pattern != nil and arm.pattern.kind == pkVar and
        "." in arm.pattern.name: errMatch = true
+    elif arm.pattern != nil and
+         enumTagOwner(ctx.module, genPatternStr(arm.pattern)) != "":
+      overEnum = true
   for arm in e.arms:
     let patStr = genPatternStr(arm.pattern)
     let bodyStr = ctx.genOdinExpr(arm.body)
@@ -564,7 +568,17 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   if errMatch and not hasWild:
     cases.add(ind & "case:  // no arm; the fn's own fallthrough answers")
   ctx.indent = oldIndent
-  return ind & "switch (" & subjectStr & ")\n" & ind & "{\n" &
+  # Odin checks enum exhaustiveness BEFORE the default arm, so a bare `case:`
+  # does not excuse an unlisted variant: `match c: After: ...; _: ...` over a
+  # three-variant sum was rejected with "Unhandled switch cases: Before, Same"
+  # even though the wildcard handles both. `#partial` is Odin's own opt-out,
+  # and is exactly what a wildcard arm means. Verified against odin directly,
+  # not inferred: the same switch compiles with the prefix and not without.
+  # ENUM ONLY. `#partial` is Odin's opt-out from enum exhaustiveness; applied
+  # to a switch over error CODES — plain integers, where no exhaustiveness
+  # check runs — odin rejects the prefix itself.
+  let sw = if hasWild and overEnum: "#partial switch (" else: "switch ("
+  return ind & sw & subjectStr & ")\n" & ind & "{\n" &
          cases.join("\n") & "\n" & ind & "}"
 
 # exkMatch in value position: a ternary chain (Beef has no switch expression).

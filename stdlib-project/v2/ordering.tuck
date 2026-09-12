@@ -1,0 +1,59 @@
+# v2.ordering — the Comparable satisfier for primitives, and the verbs it unlocks.
+
+import value
+
+fn compare[T]({self: T, other: T}) -> Order:
+  if self < other:
+    return Order.Before
+  if self > other:
+    return Order.After
+  return Order.Same
+
+fn equals[T]({self: T, other: T}) -> bool:
+  return self == other
+
+fn minOf[T: Comparable]({a: T, b: T}) -> T:
+  let c = {self: a, other: b} compare
+  match c:
+    After: return b
+    _: return a
+
+fn maxOf[T: Comparable]({a: T, b: T}) -> T:
+  let c = {self: a, other: b} compare
+  match c:
+    Before: return b
+    _: return a
+
+fn clamped[T: Comparable]({value: T, low: T, high: T}) -> T:
+  let lifted = {a: value, b: low} maxOf
+  return {a: lifted, b: high} minOf
+
+fn isBefore[T: Comparable]({a: T, b: T}) -> bool:
+  let c = {self: a, other: b} compare
+  match c:
+    Before: return true
+    _: return false
+
+fn isAfter[T: Comparable]({a: T, b: T}) -> bool:
+  let c = {self: a, other: b} compare
+  match c:
+    After: return true
+    _: return false
+
+fn isSame[T: Comparable]({a: T, b: T}) -> bool:
+  let c = {self: a, other: b} compare
+  match c:
+    Same: return true
+    _: return false
+
+fn flipped({o: Order}) -> Order:
+  match o:
+    Before: return Order.After
+    Same: return Order.Same
+    After: return Order.Before
+
+fn breakTiesWith({o: Order, next: Order}) -> Order:
+  match o:
+    Same: return next
+    Before: return Order.Before
+    After: return Order.After
