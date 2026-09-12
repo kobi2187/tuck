@@ -27,7 +27,7 @@ language's safety argument spends its budget forbidding.
 
 Tuck's own answer is already visible in the real `std/*` modules: pass
 `Seq[T]` (or `Array[N, T]`, or `str`) **by value**, and rely on rule #4 —
-records are *"passed without copying… both backends emit a pointer; the
+records are *"passed without copying… every backend emits a pointer; the
 guarantee is in the checker, not a copy."* That is the same zero-copy
 outcome `View[T]` was designed to get, obtained by a checker rule instead
 of a stored pointer, with no way for the caller to write through it

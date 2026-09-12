@@ -34,7 +34,7 @@ auditing this compiler, who read a payload binding as a checker bug and nearly
 | 1 | `{wrong: 1} f` should fail — the name is wrong | **Legal.** A payload field claims a parameter BY TYPE when unambiguous, so a producer's output feeds a consumer with different names, no `alias()` needed. Wrong *types* still fail. | §2 |
 | 2 | Extra payload fields are an error | **Ignored.** Subset matching: pass a big struct to a small signature. | §2 |
 | 3 | `getFive` is a function reference | **A call.** A bare name invokes. `:getFive` is the reference. | §2 |
-| 4 | Records are copied when passed | **Passed without copying** — but with value semantics enforced: a callee cannot write through a parameter (`TK-TY15`). Both backends emit a pointer; the guarantee is in the checker, not a copy. | §3, §7.1 |
+| 4 | Records are copied when passed | **Passed without copying** — but with value semantics enforced: a callee cannot write through a parameter (`TK-TY15`). Every backend emits a pointer (D spells it `ref`); the guarantee is in the checker, not a copy. | §3, §7.1 |
 | 5 | `..` is a range | **`..name` mutates** a `var`; a range is spaced (`0 .. n`). Whitespace distinguishes them. | §16 |
 | 6 | `/` divides | **Not an operator.** `/i` is integer divide, `/f` float. Bare `/` is a parse error. | §7 |
 | 7 | Interfaces are pointers/vtables | **A copying tagged variant.** An interface value OWNS its data; dispatch is a switch on a tag. | §5 |
@@ -547,7 +547,7 @@ budget /i= 8
 Why (`examples/38:1`): Nim's `/` returns float even for two ints; Odin's
 follows the operand type. Leaving it to inference meant *the same source could
 produce different arithmetic per backend*. Mixed operands are a type error, not
-a silent widen. Run-gated 0 on both backends.
+a silent widen. Run-gated 0 on every backend.
 
 ### Overflow attributes
 
@@ -557,13 +557,16 @@ type PacketSeq  = u8  [wrapping]
 type ErrorCount = u32 [trapping]
 ```
 
-`[saturating]` is fully run-gated on both backends: `70000 SafeRPM` → 65535
+`[saturating]` is fully run-gated on every backend: `70000 SafeRPM` → 65535
 (wrapping would give 4464). **The clamp is a store-guard, not per-operator** —
 `a + b - c` with all 60000 yields 60000, not 5535, because clamping runs on a
 wider intermediate (`tests/suites/known_bugs.nim`).
 
-An overflow attribute **implies `distinct`** on both backends
-(`tests/suites/known_bugs.nim`).
+An overflow attribute **implies `distinct`** — `distinct uint16` in Nim,
+`distinct u16` in Odin (`tests/suites/known_bugs.nim`). D emits
+`alias tuck_SafeRPM = ushort`, which is not a distinct type there; the
+separation is enforced by Tuck's checker either way, so no program means
+something different, but the emitted D does not carry it.
 
 > **`[wrapping]` and `[trapping]` have no behavioural test** — declaration-only.
 
@@ -636,7 +639,7 @@ First-match-wins, run-verified: row `| 2 64 _ -> 3` is the first match for
 
 **Implementation:** a decision table is a `dkFn` carrying `isDecision`, not its
 own AST node kind (`tests/suites/end_to_end.nim`). The combinatorics live in
-`compiler/codegen_table.nim`, shared by both backends.
+`compiler/codegen_table.nim`, shared by every backend.
 
 ---
 
@@ -685,7 +688,7 @@ on select:
   | shutdown -> {}:   total = total
 ```
 
-Run-verified 55 on both backends.
+Run-verified 55 on every backend.
 
 Both of the gaps this section used to flag are closed: an undeclared
 assignment target is caught (in actors and plain fns alike), and `result` is
@@ -864,7 +867,7 @@ extern [c, header: "zlib.h", lib: "z"]:
 Types declared *inside* an extern block are foreign. Structs by value both
 directions, C enums with explicit values (`= 10` is load-bearing — a
 mis-numbered tag is silently the wrong constant at the ABI boundary), and
-callbacks all run-gated on both backends.
+callbacks all run-gated on every backend.
 
 **(d) Opaque handles** — a fieldless extern type:
 
@@ -915,7 +918,7 @@ let c = {add: :plus} Calc
 let r = {a: 40, b: 2} c.add
 ```
 
-Run-gated 42 on both backends.
+Run-gated 42 on every backend.
 
 > ⚠️ **OPEN — storing into a `fnsig` slot is not signature-checked.** A
 > plainly mismatched fn reference is accepted: with
@@ -944,7 +947,7 @@ no boxing, no runtime dispatch. `merge` rejects a field-name collision
 (`collides`) and a non-struct member (`must be a struct`).
 
 > **`bake` is checked and emitted but never run** — example 03 is compile-gated
-> on both backends with no run gate.
+> on every backend with no run gate.
 
 ---
 
@@ -1053,10 +1056,10 @@ Queries that ask the AST a question live in `codegen_common.nim` and are shared.
 Emitters, which interleave traversal with target syntax, stay twinned and
 diffable.
 
-Current coverage: **41 examples compile-gated**, 36 Odin compiles, 14 Odin runs
-pinned to exact exit codes.
+Current coverage: **43 compile-gated** examples, 39 Odin compiles, 42 D compiles, 17 Odin runs and 17 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
 
-Nim-only so far: task select/timeouts (29, 30), `42-net-echo`, `14-task`.
+Nim-only so far: `42-net-echo` and `14-task`. Task select/timeouts (29, 30)
+are no longer on that list — both are run-gated on Odin and D as well.
 
 > **The gate lists ARE the coverage.** Anything off a list is unchecked — that
 > is how an Odin actor emitting undefined send procs, and a `24-stdlib` whose

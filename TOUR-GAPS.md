@@ -28,9 +28,9 @@ this project uses *exit codes* because of this gap — that's telling.
 
 ## 2. ~~String concatenation emits invalid code~~ FIXED 2026-07-13 — `+` is concat
 
-`"hello, " + name` works: codegen routes str `+` through the rt layer
-(`tuckConcat` on both backends) — one abstraction over the backend, not a
-hardcoded operator.
+`"hello, " + name` works: codegen routes str `+` through the backend's own
+concatenation — `tuckConcat` in the Nim and Odin runtimes, D's native `~` —
+one decision in codegen, not a hardcoded operator at each site.
 
 ### (original finding)
 

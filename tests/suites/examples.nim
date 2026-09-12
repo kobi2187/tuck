@@ -95,4 +95,41 @@ proc run*(t: var T) =
       else:
         echo "  skip  " & name & " (not gated) — " & last
 
+  # LANGUAGE-OVERVIEW.md states the coverage as four numbers. A number in
+  # prose drifts the moment a gate list grows, and nothing notices — it said
+  # "41 compile-gated, 36 Odin compiles, 14 Odin runs" when the lists held 43,
+  # 39 and 17, and did not mention the D backend at all. Read the lists and
+  # the sentence, and make them agree.
+  if t.phase == pReport:
+    let repo = t.root
+    let doc = readFile(repo / "LANGUAGE-OVERVIEW.md")
+    proc listLen(repo, path, marker: string): int =
+      let src = readFile(repo / path)
+      let at = src.find(marker)
+      if at < 0: return -1
+      let opens = src.find("\"\"\"", at)
+      let closes = src.find("\"\"\"", opens + 3)
+      if opens < 0 or closes < 0: return -1
+      for w in src[opens + 3 ..< closes].split():
+        if w.len > 0 and not w.startsWith("#"): inc result
+    # splitWhitespace, not gatedSet.len: `split()` yields an empty string for
+    # the newline right after `"""` and again before it, so the set is two
+    # longer than the list.
+    let counts = [("compile-gated", gated.splitWhitespace().len),
+                  ("Odin compiles", listLen(repo, "tests/suites/odin_backend.nim", "odinCompile =")),
+                  ("D compiles", listLen(repo, "tests/suites/d_backend.nim", "dCompile =")),
+                  ("Odin runs", listLen(repo, "tests/suites/odin_backend.nim", "odinRun =")),
+                  ("D runs", listLen(repo, "tests/suites/d_backend.nim", "dRun ="))]
+    var wrong: seq[string]
+    for (label, n) in counts:
+      if n < 0: wrong.add(label & ": could not read the gate list")
+      elif ($n & " " & label) notin doc:
+        wrong.add(label & ": the suite gates " & $n &
+                  ", LANGUAGE-OVERVIEW does not say so")
+    if wrong.len == 0:
+      t.ok "LANGUAGE-OVERVIEW's coverage numbers match the gate lists"
+    else:
+      t.no "LANGUAGE-OVERVIEW's coverage numbers match the gate lists",
+           wrong.join("; ")
+
   t.finish()

@@ -27,7 +27,7 @@ type Counter = {}
 ```
 
 Structs by value both directions, C enums with explicit values, and
-callbacks are all run-gated on both backends.
+callbacks are all run-gated on every backend.
 
 ## What the Nim design contributed that's worth keeping as *rules*, not code
 

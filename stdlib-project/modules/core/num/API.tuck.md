@@ -18,7 +18,7 @@ type SafeRPM   = u16 [saturating]   # clamps at 65535
 type PacketSeq = u8  [wrapping]
 ```
 
-`[saturating]` is run-gated on both backends (`examples/40-saturating.tuck`:
+`[saturating]` is run-gated on every backend (`examples/40-saturating.tuck`:
 `70000 SafeRPM` → 65535, where wrapping would give 4464), and the clamp runs
 on a *wider intermediate*, so a value is checked against the type's real
 bounds rather than after it has already wrapped. An overflow attribute also
@@ -32,7 +32,7 @@ one call site out of twenty; the Tuck version cannot.
 
 ⚠️ **The feature is not finished, and this file is written against where
 it's going, not only where it is.** Only `[saturating]` is actually
-run-gated on both backends. `[wrapping]` and `[trapping]` are
+run-gated on every backend. `[wrapping]` and `[trapping]` are
 **declaration-only — no behavioural test** (`LANGUAGE-OVERVIEW.md` §11
 says so outright), and `~T` lossy conversion is "named as a future ruling
 only" (§17). So `type PacketSeq = u8 [wrapping]` below parses and declares

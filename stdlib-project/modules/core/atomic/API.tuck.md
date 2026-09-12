@@ -33,7 +33,7 @@ to be primitive *to*.
 
 - **Cross-task shared counters/flags** — an actor's own fields. `Counter
   send add {n}` then reading `Counter.total` is the whole pattern, and
-  `examples/26-actor-run.tuck` run-verifies it (55 on both backends). The
+  `examples/26-actor-run.tuck` run-verifies it (55 on every backend). The
   isolation is structural, not enforced by an atomic instruction.
 - **Main loop ↔ interrupt handler** — this one is genuinely *not* covered
   and shouldn't be papered over. `platform.interrupt`'s ISRs are
