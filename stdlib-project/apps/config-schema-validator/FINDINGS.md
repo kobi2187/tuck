@@ -82,7 +82,7 @@ using 'kind = B' [FieldDefect]`.
 tuple instead of passing it positionally, when the interface method takes a
 param besides `self`.** Minimal repro (`tuck b`):
 
-```tuck
+```tuck-rejected
 type Config:
   n: int
 

@@ -57,7 +57,7 @@ pending:
   fnsig KeyOf = {x: Task} -> int
   type SortBy = {items: Seq[Task], key: KeyOf}
 
-  let byPriority = {items: tasks} SortBy bake {key: :priority}
+  let byRank = {items: tasks} SortBy bake {key: :rank}
   ```
 
   **The declared type is load-bearing, not decoration.** `bake` fills a

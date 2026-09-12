@@ -5,7 +5,7 @@
 orthogonal question this file asks: what does a *specific kind of developer*
 do, repeatedly, across every app they'll ever build in that field — and does
 the stdlib serve the workflow, not just a feature checklist. Every citation
-below points at a real `modules/<tier>/<name>/API.nim.md`; every gap was
+below points at a real `modules/<tier>/<name>/API.tuck.md`; every gap was
 grep-confirmed absent, the same discipline `COMPARISON.md` used, so nothing
 here is guessed from a module name.
 
@@ -59,7 +59,7 @@ function — not the handler itself.
   doesn't want; the primitive that's actually load-bearing for nearly every
   app is "run a parameterized query, get typed rows back," which is a much
   smaller thing than an ORM and should be scoped that small.
-  **Specified in Extension round 4** — `modules/std/db/API.nim.md`, interface
+  **Specified in Extension round 4** — `modules/std/db/API.tuck.md`, interface
   at rung A with the bundled `sqlite` submodule at rung B1, exactly this
   shape.
 - **Schema migrations.** **Real gap**, distinct from the driver question —
@@ -123,7 +123,7 @@ real-time discipline `INDEX.md`'s mp3-player finding already forced into
   hits were all the word "surface" used to mean "API surface," not a
   graphics one). This is the finding carried to the synthesis section below,
   shared with desktop and mobile — not repeated in full here. **Specified in
-  Extension round 4** — `modules/sys/window/API.nim.md`.
+  Extension round 4** — `modules/sys/window/API.tuck.md`.
 - **Fixed-timestep update loop.** Trivially built from `sys.time::Instant`
   (already validated, allocation-free per-call) — no gap, just a documented
   pattern, the same resolution as the web backend's health-check item.
@@ -141,7 +141,7 @@ real-time discipline `INDEX.md`'s mp3-player finding already forced into
   (churns faster than a language release cycle) than to sqlite's (stable C
   ABI). Recommend rung B, not rung A — a blessed device-I/O package, not std
   (revised to B1 under the corrected offline reading below). **Specified in
-  Extension round 4** — `modules/sys/audio/API.nim.md`, scoped exactly to
+  Extension round 4** — `modules/sys/audio/API.tuck.md`, scoped exactly to
   the thin baseline this paragraph describes.
 - **Spatial/collision math (vectors, AABB, ray/shape tests).** **Real gap.**
   `std.math` (checked directly) covers `Decimal`, unit conversion, and
@@ -150,7 +150,7 @@ real-time discipline `INDEX.md`'s mp3-player finding already forced into
   priority-queue case in `COMPARISON.md` than to a churny external concern.
   Recommend rung A, scoped tightly: vector/matrix types and basic
   intersection tests, not a physics engine. **Specified in Extension round
-  4** — `modules/core/geom/API.nim.md`, `core` tier per the "no heap needed"
+  4** — `modules/core/geom/API.tuck.md`, `core` tier per the "no heap needed"
   reasoning above.
 - **Asset loading (textures, models, levels).** Partially covered: file I/O
   is `sys.fs`, and structured formats decode through `std.encoding` — but
@@ -188,7 +188,7 @@ copy of itself someone just launched.
 
 - **Window/surface creation + input polling.** Same gap as game, covered
   once in the synthesis section. **Specified in Extension round 4** —
-  `modules/sys/window/API.nim.md`.
+  `modules/sys/window/API.tuck.md`.
 - **Config/settings persistence.** Covered: `std.encoding` (TOML/JSON) +
   `sys.fs` for the file itself — no gap, a documented composition.
 - **File-system watching.** **Already covered**, and worth stating plainly
@@ -296,7 +296,7 @@ sensor hardware, not a wrapped abstraction over it.
   foundation, and vendor bindings belong at rung B/C.
 - **Window/surface + input.** Same shared gap as game/desktop, covered once
   in the synthesis. **Specified in Extension round 4** —
-  `modules/sys/window/API.nim.md`.
+  `modules/sys/window/API.tuck.md`.
 - **Local persistent storage with migrations.** Same DB/migration gap
   already named for web backend — mobile is the second consumer of that
   same primitive, not a separate one; noted once in the synthesis.
@@ -308,7 +308,7 @@ sensor hardware, not a wrapped abstraction over it.
   specific "queued writes survive a kill, flush and reconcile once online"
   primitive this domain needs constantly. Carried to the synthesis as the
   single most load-bearing offline-specific finding in this document.
-  **Specified in Extension round 4** — `modules/std/queue/API.nim.md`'s
+  **Specified in Extension round 4** — `modules/std/queue/API.tuck.md`'s
   `DurableQueue[T]`. Writing the actual composition (rather than leaving it
   as "compose two existing modules") surfaced questions the original
   finding hadn't answered — crash-safe framing, at-least-once ack accounting
@@ -363,7 +363,7 @@ app's own scenario needed them.
   vendor's watchdog peripheral does the same three things: arm, feed,
   configure timeout) — recommend rung A, scoped as small as `platform.power`
   already is. **Specified in Extension round 4** —
-  `modules/platform/watchdog/API.nim.md`.
+  `modules/platform/watchdog/API.tuck.md`.
 - **Field firmware updates (OTA/DFU).** **Real gap**, and a harder one.
   Grep for `\bota\b`/`firmware.update`/`bootload` across `modules/platform/`
   returns nothing beyond the bootloader itself. Unlike the watchdog, this
@@ -409,7 +409,7 @@ OS but no allocator-optional story — closer to `sys.net`'s shape than
 surface, poll events, hand back a buffer/context) rather than anything
 resembling a toolkit. This is the single highest-leverage finding in this
 document by consumer count. **Specified in Extension round 4** —
-`modules/sys/window/API.nim.md`, exactly this scope.
+`modules/sys/window/API.tuck.md`, exactly this scope.
 
 ### Finding B: a query/row-mapping primitive, shared by web backend and mobile — SPECIFIED, `std.db`
 
@@ -441,7 +441,7 @@ documented composition pattern rather than a new module — revised once
 writing the actual composition surfaced real design questions ("the recipe"
 wasn't as simple as this paragraph assumed): crash-safe record framing,
 replay ordering, and idempotent ack accounting across a kill mid-write.
-**Specified in Extension round 4** — `modules/std/queue/API.nim.md`'s
+**Specified in Extension round 4** — `modules/std/queue/API.tuck.md`'s
 `DurableQueue[T]`.
 
 ### What's needed by every domain (the real "absolutely need" bar)
@@ -479,7 +479,7 @@ pass doesn't mistake "domain-specific" for "forgotten."
 | Audio output/mixing (thin PCM baseline) | game | **B1** (revised) | **Specified** — `sys.audio` | Bundled minimal surface; fancier engines (spatial audio, DSP chains) stay B2/C on top of it |
 | Field firmware update (OTA/DFU) | embedded | B2 | Open | Vendor-varies; offline-safe fallback (physical debugger flashing) already exists, unlike the DB/audio cases |
 
-Nine of twelve findings are now specified (design-only — `API.nim.md`
+Nine of twelve findings are now specified (design-only — `API.tuck.md`
 signatures and types, no implementation, per `INDEX.md`'s Extension round 4).
 The remaining three are the TTY predicate (a proc-level addition to
 `std.cli`, not yet written), schema migrations (a natural extension of

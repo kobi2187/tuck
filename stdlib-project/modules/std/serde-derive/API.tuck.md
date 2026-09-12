@@ -19,8 +19,10 @@ Write the codec by hand, against `std.encoding`'s `Json` tree:
 
 ```tuck
 fn toJson({t: Task}) -> Json:
-  return {keys: ["id", "title", "done"],
-          vals: [{n: t.id} Json.JNum, {s: t.title} Json.JStr, {b: t.done} Json.JBool]} Json.JObj
+  let id = {n: t.id} Json.JNum
+  let title = {s: t.title} Json.JStr
+  let done = {b: t.done} Json.JBool
+  return {keys: ["id", "title", "done"], vals: [id, title, done]} Json.JObj
 ```
 
 Mechanical, and exactly the boilerplate the module exists to remove — for

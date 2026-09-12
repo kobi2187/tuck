@@ -93,7 +93,7 @@ rung B (a blessed, independently-versioned package, following
 `Microsoft.Data.Sqlite`'s precedent exactly), while the *interface* it
 implements ships at rung A. That interface is the piece that actually prevents
 fragmentation — see below. **Specified in `DOMAINS.md`'s Extension round
-4** — `modules/std/db/API.nim.md` (the rung-A interface) with a bundled
+4** — `modules/std/db/API.tuck.md` (the rung-A interface) with a bundled
 `sqlite` submodule, revised to rung **B1** once `DOMAINS.md`'s offline
 analysis established that fetch-on-demand blocks the offline case this
 recommendation exists for; see that file's synthesis for the correction.
@@ -108,7 +108,7 @@ platform-specific and belong at rung B — Go's own precedent supports this
 split exactly: `runtime/pprof`'s *measurement* is std, but `go tool pprof`'s
 *visualization* shells out to Graphviz, an external tool. Measurement in the
 box, presentation/heavy tooling not. **The measurement half is specified**
-— `modules/std/perf/API.nim.md`, exactly this split, added in `DOMAINS.md`'s
+— `modules/std/perf/API.tuck.md`, exactly this split, added in `DOMAINS.md`'s
 Extension round 4.
 
 ## Domain lessons from Go, Rust, Zig, .NET, and V

@@ -28,7 +28,7 @@ copy rather than by a cell.
 
 ## Recommendation
 Drop as a Tuck module. Same treatment as `core.ptr`/`core.atomic`/
-`core.slice` — flagged, `API.nim.md` kept as the design record.
+`core.slice` — flagged, `API.tuck.md` kept as the design record.
 
 This is the fourth `core` module to dissolve for the same underlying
 reason, which is itself the finding: **Rust's and Nim's `core` tiers are

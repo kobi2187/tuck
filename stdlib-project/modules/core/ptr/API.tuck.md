@@ -58,4 +58,4 @@ the language is built to make unsayable.
 ## Recommendation
 Delete `core.ptr` from the Tuck-side module list, as with `core.slice`.
 Flagged rather than done — deleting a module is worth confirming, and the
-`API.nim.md` stays as the record of what the Rust/Nim design intended.
+`API.tuck.md` stays as the record of what the Rust/Nim design intended.

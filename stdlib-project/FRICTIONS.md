@@ -45,7 +45,7 @@ unbound type names in a `fnsig` so the workaround can't look green.
 
 ## 2. Generic `actor` does not parse
 
-```tuck
+```tuck-rejected
 actor Box[T] [queue: 4]:
 ```
 ```
@@ -136,7 +136,7 @@ open.
 **This is not a language gap** — recursion through a `Seq` works fine and is
 the right shape anyway:
 
-```tuck
+```tuck-rejected
 | JArr({items: Seq[Json]})     # typechecks and builds
 ```
 
@@ -157,7 +157,7 @@ own terms — naming the field, and pointing at `Seq[T]` as the fix.
 > word and cannot be used as a name here" (TK-PA08). Pinned in
 > `tests/suites/diagnostics.nim`.
 
-```tuck
+```tuck-rejected
 type Q = {pending: Seq[FetchResult]}
 ```
 ```
@@ -214,7 +214,7 @@ likely shared: say which word is reserved and why.
 > **RESOLVED 2026-08-29 (message).** Same fix as #5 — `when` stays reserved,
 > the diagnostic now names it.
 
-```tuck
+```tuck-rejected
 type ZonedTime = {when: DateTime, zone: Zone, offsetSec: i32}
 ```
 

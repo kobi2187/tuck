@@ -72,10 +72,14 @@ pending:
 ```tuck
 let a = {x: 1.0, y: 2.0} Vec2
 let b = {x: 3.0, y: 4.0} Vec2
-let box1 = {min: {x: 0.0, y: 0.0} Vec2, max: {x: 5.0, y: 5.0} Vec2} Aabb2
-let box2 = {min: {x: 1.0, y: 1.0} Vec2, max: {x: 6.0, y: 6.0} Vec2} Aabb2
+let lo1 = {x: 0.0, y: 0.0} Vec2
+let hi1 = {x: 5.0, y: 5.0} Vec2
+let lo2 = {x: 1.0, y: 1.0} Vec2
+let hi2 = {x: 6.0, y: 6.0} Vec2
+let box1 = {min: lo1, max: hi1} Aabb2
+let box2 = {min: lo2, max: hi2} Aabb2
 if {a: box1, b: box2} overlaps:
-  resolveCollision(a, b)
+  {a: a, b: b} resolveCollision
 ```
 
 ## Open questions carried from the Nim design, unresolved here too

@@ -1,5 +1,11 @@
 # Comparison: functionality coverage against mature stdlibs
 
+> **The `API.nim.md` files were deleted on 2026-09-12.** Every module that
+> had a Tuck twin keeps only its `API.tuck.md`; `core/simd` and `sys/ble`
+> still have the Nim-shaped file because they have no Tuck version yet.
+> Text below that describes the two-file pilot is kept as the record of
+> what happened, not as a description of the tree.
+
 Before massaging the 65 modules onto Tuck's actual syntax and idioms, this checks
 the *functionality* against libraries that have been battle-tested for decades.
 Purpose: catch a missing capability now, while adding a module is cheap, rather
@@ -77,7 +83,7 @@ finishes a 2-day project without writing fundamentals").
    be a full relational engine — even an embedded key-sorted store (LMDB/leveldb
    shape) would close most of the gap `alloc.map` can't.
    **Specified in `DOMAINS.md`'s Extension round 4** —
-   `modules/std/db/API.nim.md`, a `database/sql`-shaped query interface with
+   `modules/std/db/API.tuck.md`, a `database/sql`-shaped query interface with
    a bundled `sqlite` submodule, resolved through `GOVERNANCE.md`'s rung
    model rather than picked ad hoc.
 
@@ -88,7 +94,7 @@ finishes a 2-day project without writing fundamentals").
    "where did the time go" or "how many of X happened" — a real absence for a
    systems-facing stdlib specifically, more than for a scripting one.
    **Specified in `DOMAINS.md`'s Extension round 4** —
-   `modules/std/perf/API.nim.md` (`Stopwatch`/`Counter`/`Histogram`),
+   `modules/std/perf/API.tuck.md` (`Stopwatch`/`Counter`/`Histogram`),
    measurement only; sampling profilers and flamegraphs stay external per
    `GOVERNANCE.md`'s split.
 

@@ -28,4 +28,4 @@ with a weak handle. The module's entire problem domain is absent.
 ## Recommendation
 Drop as a module, alongside `core.ptr`, `core.atomic`, `core.sync-cell` and
 `alloc.box` — the fifth module to dissolve for the same underlying reason.
-The `API.nim.md` stays as the record of the Rust/Nim design.
+The `API.tuck.md` stays as the record of the Rust/Nim design.

@@ -1,5 +1,11 @@
 # Translating the design corpus into real Tuck
 
+> **The `API.nim.md` files were deleted on 2026-09-12.** Every module that
+> had a Tuck twin keeps only its `API.tuck.md`; `core/simd` and `sys/ble`
+> still have the Nim-shaped file because they have no Tuck version yet.
+> Text below that describes the two-file pilot is kept as the record of
+> what happened, not as a description of the tree.
+
 Every `API.md`/`API.nim.md` pair in this project was brainstormed by someone
 who hadn't seen Tuck yet, scoped to *functionality*, not idiom (per direct
 guidance). This file records what actually happened translating a first

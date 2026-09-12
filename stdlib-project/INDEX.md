@@ -1,5 +1,11 @@
 # Index: Module API Designs, Validated Against Application Scenarios
 
+> **The `API.nim.md` files were deleted on 2026-09-12.** Every module that
+> had a Tuck twin keeps only its `API.tuck.md`; `core/simd` and `sys/ble`
+> still have the Nim-shaped file because they have no Tuck version yet.
+> Text below that describes the two-file pilot is kept as the record of
+> what happened, not as a description of the tree.
+
 This directory is the follow-up to `REPORT.md`'s comparative stdlib study and unified proposal. Per the proposal's five tiers, every module named in Part IV now has its own folder under `modules/<tier>/<module>/API.md` containing a concrete API sketch (types and signatures, not just prose), the real-world API(s) it's modeled on, and a "validated by applications" section that traces specific design decisions back to a specific application's concrete requirement. Eleven medium-complexity application ideas live under `apps/<name>/APP.md` and were used as the validation harness — analysis only, nothing here was implemented or run.
 
 72 modules (including three submodules — `std.crypto::x509`, `std.encoding::ics`, `std.db::sqlite` — and eight new top-level modules — `sys.ble` (round 2) and `sys.window`, `sys.audio`, `std.db`, `core.geom`, `platform.watchdog`, `std.perf`, `std.queue` (round 4) — added across four extension rounds), 26 applications, ~100,000 words of design analysis. See "Extension round 1/2/3/4" below the coverage matrix for what was added after the initial pass and why.

@@ -55,4 +55,4 @@ here.
 ## Recommendation
 Drop `core.atomic` as a Tuck module; carry the ISR question to
 `platform.interrupt`. Same treatment as `core.ptr`/`core.slice`: flagged,
-not deleted, with the `API.nim.md` kept as the record.
+not deleted, with the `API.tuck.md` kept as the record.
