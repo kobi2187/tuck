@@ -377,15 +377,19 @@ Depending on what you're curious about:
 
 ### A trick worth knowing: exhaustive dispatch as a free check
 
-`compiler/ast_serializer.nim` has no `else` branch anywhere — every `case` over
-a node kind handles every kind. That isn't tidiness; it's a cheap correctness
-check. Add a node kind to `ast.nim` and the serializer stops compiling until
-someone handles it, so the dump always shows whatever the parser actually
-built.
+Codegen's big `case` over node kinds has no `else` branch — every kind is
+handled. That isn't tidiness; it's a cheap correctness check. Add a node kind
+to `ast.nim` and every backend that has not handled it stops compiling.
 
 The general move: **when a `case` covers an enum, prefer no `else`.** You trade
 a one-minute chore whenever the enum grows for a compile error instead of a
-silent gap. Codegen does the same thing for the same reason.
+silent gap.
+
+`compiler/ast_serializer.nim` used to be the example here, and it is now the
+counter-example: it no longer hand-writes a `case` at all. jsony walks the
+type instead, which cannot drift — the hand-written version had silently
+stopped emitting 7 ExprKinds and 9 DeclKinds, which is worst precisely when
+you reach for a dump.
 
 ## Running it
 

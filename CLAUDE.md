@@ -111,9 +111,9 @@ so a new AST node kind produces a compile error in every backend that has not
 handled it; `else: discard` trades that guarantee for a silent gap. Length is not
 the enemy; nesting is — arms delegate to small named procs, the dispatch stays
 flat. Note this is the *rule*, not yet the tree: both codegen decl dispatches
-currently end in `else` (`codegen_decl.nim:679`, `codegen_odin_decl.nim:1071`), and
+currently end in `else` (`codegen_decl.nim:835`, `codegen_odin_decl.nim:1224`), and
 `ast_serializer.nim` no longer hand-writes a `case` at all — it delegates to
-`jsony`. `COMPILER-TOUR.md` still describes the superseded serializer design.
+`jsony`.
 
 **Each construct gets its own AST node kind.** `on select` got real `exkSelect` /
 `dkSelect` nodes rather than being smuggled in as a `match` with a fake subject.
