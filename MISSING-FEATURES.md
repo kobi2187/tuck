@@ -73,6 +73,13 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   the hang, not the right long-term shape.
 - **Typed select sources.** `on select` lowers `read <fd>` / `timeout <ms>`
   only. Blocks example 16 (see B).
+- **The D runtime has no networking.** `listen`, `accept`, `connect`,
+  `sendAll` and `recvSome` exist in `compiler/tuck_rt.nim` and not in
+  `compiler/tuckrt_d/tuck_rt.d`, so `examples/42-net-echo` emits valid D that
+  cannot link ("undefined identifier `listen` in module `tuck_rt`"). Codegen
+  is fine; the runtime is the gap, and it is why that example is deliberately
+  absent from the D compile gate. A third hand-mirrored runtime is exactly
+  the drift the item below is about.
 - **One C implementation of the runtime.** The Nim and Odin runtimes are
   mirrored by hand and have drifted three times already (see
   `thoughts/bugs-found-while-building-net.md`). Collapsing the offload seam
