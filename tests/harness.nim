@@ -623,13 +623,8 @@ proc buildsAllowed*(): bool = maxVerb >= vBuild
   ## `tuck build` + run steps and dominates a full run, so `--check` and
   ## `--quick` skip it wholesale rather than pretending to filter it.
 
-proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
-  ## Run a command NOW and wait. The pool is for work that is independent;
-  ## this is for the sequences — build, run what was built, grep what it
-  ## printed — where each step needs the one before. cli_smoke is all of that
-  ## shape, and expressing ~100 sequential dependencies as pool edges would
-  ## obscure rather than parallelize it.
-  assert argv.len > 0
+proc shOnce(argv: seq[string]): tuple[rc: int, output: string, ebadf: string]
+           {.gcsafe.} =
   let child = startProcess(argv[0], args = argv[1 .. ^1],
                            options = {poUsePath, poStdErrToStdOut})
   # Reading a child's pipe has been seen to fail with EBADF ("Bad file
@@ -649,12 +644,36 @@ proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
     readFailed = getCurrentExceptionMsg()
   let rc = child.waitForExit()
   child.close()
-  if readFailed.len > 0:
-    let failRc = if rc == 0: 126 else: rc
-    return (failRc,
-            "could not read the output of `" & argv.join(" ") & "`: " &
-              readFailed & " (transient; see MISSING-FEATURES F)")
-  (rc, output)
+  (rc, output, readFailed)
+
+proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
+  ## Run a command NOW and wait. The pool is for work that is independent;
+  ## this is for the sequences — build, run what was built, grep what it
+  ## printed — where each step needs the one before. cli_smoke is all of that
+  ## shape, and expressing ~100 sequential dependencies as pool edges would
+  ## obscure rather than parallelize it.
+  ##
+  ## RETRIED ONCE ON EBADF, because everything structural has been ruled out.
+  ## The failure was hunted on 2026-09-12: it happens with the suite's collect
+  ## passes running strictly sequentially and no pool alive, so it is not a
+  ## race between our own children; the fd count is flat at 4 across all 40
+  ## suites, so it is not a leak; the limit is 1M, so it is not exhaustion;
+  ## and `cli_smoke` alone will not reproduce it in six consecutive runs. What
+  ## is left is a transient below osproc, and the right answer to a transient
+  ## on a freshly spawned child is to spawn it again.
+  ##
+  ## Narrow on purpose: ONLY a failed READ retries, never a command that ran
+  ## and failed. The commands this drives are builds and the programs they
+  ## produce, both idempotent. A second EBADF is reported as a failure with
+  ## the command and the errno, so a systematic breakage still fails loudly.
+  assert argv.len > 0
+  var (rc, output, ebadf) = shOnce(argv)
+  if ebadf.len == 0: return (rc, output)
+  (rc, output, ebadf) = shOnce(argv)
+  if ebadf.len == 0: return (rc, output)
+  let failRc = if rc == 0: 126 else: rc
+  (failRc, "could not read the output of `" & argv.join(" ") & "` TWICE: " &
+           ebadf & " (see issue #31)")
 
 proc findOdin*(): string =
   ## The Odin compiler, or "" if it is not installed. Two suites need it —

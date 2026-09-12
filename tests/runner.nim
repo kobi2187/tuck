@@ -153,9 +153,26 @@ proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
       readErr = getCurrentExceptionMsg()
     items[idx].rc = p.waitForExit()
     if readErr.len > 0:
-      items[idx].output = "could not read child output: " & readErr &
-                          " (transient; see MISSING-FEATURES F)"
-      if items[idx].rc == 0: items[idx].rc = 126
+      # Retried once, for the reasons on `harness.sh`: everything structural
+      # was ruled out on 2026-09-12, so a transient read failure on a
+      # freshly spawned child is answered by spawning it again. Only a
+      # failed READ retries — a command that ran and failed is left alone.
+      let argv = argvOf(idx)
+      var again = false
+      if argv.len > 0:
+        try:
+          let p2 = startProcess(argv[0], args = argv[1 .. ^1],
+                                options = {poUsePath, poStdErrToStdOut})
+          items[idx].output = p2.outputStream.readAll()
+          items[idx].rc = p2.waitForExit()
+          p2.close()
+          again = true
+        except IOError, OSError:
+          again = false
+      if not again:
+        items[idx].output = "could not read child output TWICE: " & readErr &
+                            " (see issue #31)"
+        if items[idx].rc == 0: items[idx].rc = 126
     items[idx].done = true
     p.close()
     running.delete(reaped)
