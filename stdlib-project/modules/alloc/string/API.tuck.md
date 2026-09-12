@@ -24,11 +24,13 @@ pending:
   fn padRight({t: str, width: int, fill: Rune}) -> str
 ```
 
-Call sites use `..`, per `TUCK-TRANSLATION.md`:
+`..` is rejected here — checked directly, same reason as `alloc.vec`:
+`append` returns a new `str`, nothing to mutate through. Call-site spelling
+is plain reassignment:
 
 ```tuck
 var line = "hello"
-line ..append {other: ", world"}
+line = {t: line, other: ", world"} append
 ```
 
 ## Notes

@@ -1,3 +1,7 @@
+**Status: pre-`group` design, superseded — see TASKS.md T-08.** Written
+before `group` shipped. `interface Sortable` below was never implemented;
+the real design is `group Sortable` plus primitive `compare` overloads.
+
 # core.cmp — Tuck translation
 
 ## Shape decision

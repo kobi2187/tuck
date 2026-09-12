@@ -261,6 +261,14 @@ fn main() -> int:
   return v - 7
 """
   t.okCheck "a generic group's parameter is solved from the conformance"
+  # E is mentioned by no parameter, so no host language can infer it. Each
+  # backend is handed the solved arguments in its own spelling.
+  t.emits "Nim gets explicit type arguments", r"tuck_firstOf\[tuck_Row, int\]"
+  t.emitsOdin "Odin passes the typeid it declared", r"tuck_firstOf\(int, tuck_r\)"
+  t.emitsD "D gets explicit template arguments",
+           r"tuck_firstOf!\(tuck_Row, long\)"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and runs", 0
 
   # The bound's arity is the group's, not a free choice.
   t.src """
@@ -301,5 +309,59 @@ fn main() -> int:
   return 0
 """
   t.badCheck "an explicit group argument is not re-solved to fit", "str"
+
+  # --- the bound written on the ARGUMENT, single and generic ---------------
+  # `{item: Sortable + Hashable}` already worked; a SINGLE bound did not,
+  # because only the `+`-joined form arrives as a tkUnion and that was the
+  # only shape recognised. One bound is just the type.
+  t.src """
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+type Order:
+  | Before
+  | Same
+  | After
+
+type Box = {value: int}
+
+fn compare({self: Box, other: Box}) -> Order:
+  return Order.Same
+
+fn describe({item: Sortable}) -> int:
+  let c = {self: item, other: item} compare
+  return 0
+
+fn main() -> int:
+  let b = {value: 1} Box
+  return {item: b} describe
+"""
+  t.okCheck "a single group bound on a parameter, with no `+`, is a bound"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and runs", 0
+
+  # A GENERIC group on a parameter. The group's argument is an ordinary type
+  # param of the fn — declared, not conjured, so nothing has to guess whether
+  # `Indexable[int]` names a type or introduces one.
+  t.src """
+group Indexable[E]:
+  fn at({self: Self, index: int}) -> E
+
+type Row = {cells: Seq[int]}
+
+fn at({self: Row, index: int}) -> int:
+  return self.cells[index]
+
+fn firstOf[E]({c: Indexable[E]}) -> E:
+  return {self: c, index: 0} at
+
+fn main() -> int:
+  let r = {cells: [7, 8]} Row
+  let v = {c: r} firstOf
+  return v - 7
+"""
+  t.okCheck "a generic group bound written on the parameter"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and runs", 0
 
   t.finish()

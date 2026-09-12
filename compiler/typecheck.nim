@@ -1914,6 +1914,38 @@ proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string,
       tc.checkOneGroupBound(substituteType(bound, bindings), concreteT,
                             reportedName, fnName, bindings, d.fnGenerics, sp)
 
+proc recordCallTypeArgs(tc: TypeChecker, d: Decl,
+                        bindings: Table[string, Type], e: Expr) =
+  ## Hand codegen the type arguments it cannot work out for itself.
+  ##
+  ## A type param mentioned by some parameter is inferred by every backend's
+  ## own host language, and passing it explicitly would only add noise. One
+  ## mentioned by NONE of them cannot be — `fn firstOf[C: Indexable[E], E]({c: C}) -> E`
+  ## has E solved from the group conformance, which is knowledge no host
+  ## language has. Nim answers "cannot instantiate: 'E'", Odin declares the
+  ## param as `$E: typeid` and then finds it missing at the call, and D cannot
+  ## match the template. So the whole argument list is recorded, in
+  ## declaration order, and each backend spells it its own way.
+  if d == nil or d.kind != dkFn or d.fnGenerics.len == 0: return
+  var needsExplicit = false
+  for g in d.fnGenerics:
+    var mentioned = false
+    for p in d.fnParams:
+      if typeMentionsName(p.typ, g):
+        mentioned = true
+        break
+    if not mentioned:
+      needsExplicit = true
+      break
+  if not needsExplicit: return
+  var args: seq[Type]
+  for g in d.fnGenerics:
+    if not bindings.hasKey(g): return
+    let t = bindings[g]
+    if t == nil or isUnknown(t): return
+    args.add(t)
+  setCallTypeArgs(semLayer, e, args)
+
 proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
                     t: Type, bindings: var Table[string, Type]): bool =
   ## A single-param fn whose param accepts the value WHOLE takes it as-is
@@ -2030,7 +2062,12 @@ proc groupNamesOfUnion(tc: TypeChecker, t: Type): seq[Type] =
   ## member resolves to a `group`, empty when even one does not (a real
   ## composition, or a mix — treated as composition and left to fail there
   ## on its own terms rather than guessed at here).
-  if t == nil or t.kind != tkUnion: return
+  if t == nil: return
+  # A SINGLE bound — `{item: Sortable}`, `{c: Indexable[E]}` — is not a union
+  # at all; it is just the type. Only the `+`-joined form arrives as one.
+  if t.kind != tkUnion:
+    if tc.groupDecls.hasKey(groupNameOf(t)): return @[t]
+    return @[]
   for m in t.members:
     if m == nil or not tc.groupDecls.hasKey(groupNameOf(m)):
       return @[]
@@ -2413,6 +2450,7 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(calleeName, sig, e, bindings)
   if sig.generics.len == 0: return sig.ret
+  tc.recordCallTypeArgs(calleeDecl, bindings, e)
   # Unbound type params degrade to Unknown (gradual, like sketch code)
   for g in sig.generics:
     if not bindings.hasKey(g):

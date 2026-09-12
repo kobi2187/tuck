@@ -29,12 +29,13 @@ pending:
   fn clear[K, V]({t: Table[K, V]}) -> Table[K, V]
 ```
 
-Call sites use `..`, per `TUCK-TRANSLATION.md`:
+`..` is rejected here, same reason as `alloc.vec`/`alloc.set`: `set` returns
+a new `Table`, nothing to mutate through. Call-site spelling is plain
+reassignment:
 
 ```tuck
-var rooms = newTable
-rooms ..set {key: "lobby", value: room}
-rooms.get {key: "lobby"} .ifSome(r): ...
+var rooms: Table[str, Room] = {entries: []} Table
+rooms = {t: rooms, key: "lobby", value: room} set
 ```
 
 ## Notes on the translation
@@ -58,18 +59,15 @@ rooms.get {key: "lobby"} .ifSome(r): ...
 
 ## Two things this module needs that Tuck doesn't have yet
 
-1. **Hashing primitive keys.** `satisfies` is for matching *objects* (and
-   possibly named types) to interfaces — **not primitives**, by design; it
-   is not an oversight to be worked around. Verified that the compiler says
-   so plainly: `satisfies int: Hashable` → *"names 'int', which is not a
-   declared object in scope"*.
-
-   So `Table[str, V]` — the commonest map there is — cannot get its key
-   hashing from an interface. The remaining options are a built-in hash for
-   primitive key types, or `Table` taking a hash as a `fnsig` slot (which
-   composes with `bake` and would also serve the `FastHash`/`SafeHash`
-   choice below). The `fnsig` route looks more Tuck-idiomatic and needs no
-   language change — recommended, not decided.
+1. **Hashing primitive keys — unblocked by `group`, not decided.**
+   `satisfies` can't attach a primitive to an interface (`satisfies int:
+   Hashable` → *"names 'int', which is not a declared object in scope"*),
+   which is what blocked this. `group Hashable` doesn't have that problem —
+   it's structural, no attach statement — so `Table[str, V]`'s key hashing
+   is unblocked once core.hash gives `int`/`str` a `hashOf` overload
+   (TASKS.md T-08). Still undecided: `FastHash` vs `SafeHash` (below) is a
+   choice a bare `group Hashable` bound can't express — that part still
+   wants a `fnsig` slot or a constructor pair, on top of the bound.
 2. **A DoS-resistant default.** `INDEX.md`'s round-0 finding #8 was that
    `alloc.map` should default to SipHash with FNV as opt-out, because
    `chat-server`'s keys are attacker-chosen nicknames. That reasoning is

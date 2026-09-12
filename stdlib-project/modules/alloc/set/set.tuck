@@ -31,7 +31,10 @@ fn toSeq[T]({s: Set[T]}) -> Seq[T]:
   return s.items
 
 # Already present is not an error and not a duplicate — it is a no-op that
-# still hands back a set, so `..add` reads the same either way.
+# still hands back a set. Call-site spelling is plain reassignment,
+# `seen = {s: seen, value: word} add` — checked, `seen ..add {..}` is
+# rejected, same reason as vec.tuck's own note: no mutation here to spell
+# that way, `..` is for objects and real builders only.
 fn add[T]({s: Set[T], value: T}) -> Set[T]:
   if {s: s, value: value} has:
     return s

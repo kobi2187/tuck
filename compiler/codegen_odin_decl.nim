@@ -254,10 +254,14 @@ proc fnParamList*(ctx: var OdinCodegenCtx, d: Decl): string =
     params.add(p.name & ": " & ty)
   ctx.fnAsParam = false
   # A type param no parameter mentions cannot be inferred; it stays explicit
-  # so the failure is Odin's to report rather than a silently dropped param.
+  # and the call site passes the type (see genOdinCall's callTypeArgsFor).
+  # Built as a prefix rather than repeated insert(0): two such params would
+  # otherwise come out in reverse declaration order, and the call site orders
+  # its arguments by the declaration.
+  var typeParams: seq[string]
   for g in d.fnGenerics:
-    if g notin bound: params.insert("$" & g & ": typeid", 0)
-  params.join(", ")
+    if g notin bound: typeParams.add("$" & g & ": typeid")
+  (typeParams & params).join(", ")
 
 proc fnHeader*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): string =
   ## Names arrive already mangled by the lowering pass (compiler/mangle.nim),

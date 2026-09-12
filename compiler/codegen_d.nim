@@ -439,6 +439,15 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.genDSaturatingCtor(satT, calleeStr, args[0])
   let rt = genDRtCall(calleeStr, args)
   if rt != "": return rt
+  # A type param mentioned by no parameter cannot be deduced from the call, so
+  # D gets the template arguments spelled out: `tuck_firstOf!(Row, long)(r)`.
+  # Recorded by the checker only where that is the case — see
+  # recordCallTypeArgs — so an ordinary generic call is untouched.
+  let targs = ctx.res.callTypeArgsFor(e)
+  if targs.len > 0:
+    var parts: seq[string]
+    for t in targs: parts.add(ctx.dType(t))
+    return calleeStr & "!(" & parts.join(", ") & ")(" & args.join(", ") & ")"
   calleeStr & "(" & args.join(", ") & ")"
 
 proc errCodeArg(ctx: DCodegenCtx, name: string): string =

@@ -8,8 +8,11 @@
 # EVERY MUTATOR RETURNS THE NEW VALUE. Value semantics (TK-TY15) forbids
 # writing through a parameter, so `push` does not append in place. This is the
 # single biggest ergonomic difference from the Nim design, and it is pervasive
-# here because this module is all mutators. The call-site spelling that makes
-# it read well is `..`: `xs ..push {value: 4}`.
+# here because this module is all mutators. Call-site spelling is plain
+# reassignment: `xs = {items: xs, value: 4} push`. `..` is for actual
+# mutation (an object's own `self..field`, a real builder) — checked
+# directly: `xs ..push {value: 4}` is rejected, "missing required field
+# 'items'". This module has no mutation to spell that way.
 #
 # Known cost, not a settled semantic: a Seq crossing a call boundary is a real
 # copy today, so an append loop is O(n^2). That is a codegen question — how a

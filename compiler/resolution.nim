@@ -54,6 +54,13 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    callTypeArgs*: Table[NodeId, seq[Type]]
+                    ## The concrete types a generic call resolved its callee's
+                    ## type params to, in the callee's declaration order. Only
+                    ## recorded where a backend cannot recover them: a type
+                    ## param that appears in no parameter (`[C: Indexable[E], E]`
+                    ## returning E) is solved from the group conformance, and
+                    ## no host language can infer it from the arguments.
     # Interface wraps (spec §5.3). `wraps` marks the expression where a concrete
     # object enters an interface slot, so codegen emits the tagged variant there
     # instead of the bare value. `ifacePairs` is the DEMAND SET: exactly the
@@ -164,6 +171,7 @@ proc newResolution*(): Resolution =
              declOf: initTable[NodeId, NodeId](),
              argFields: initTable[NodeId, seq[string]](),
              callParams: initTable[NodeId, seq[string]](),
+             callTypeArgs: initTable[NodeId, seq[Type]](),
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
              ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
@@ -279,6 +287,19 @@ proc callParamsFor*(r: Resolution, e: Expr): seq[string] =
   ## may be exploded (a member fn, a task) — callers leave the call alone.
   if e == nil or not e.id.isSet: return @[]
   r.callParams.getOrDefault(e.id, @[])
+
+proc setCallTypeArgs*(r: Resolution, e: Expr, args: seq[Type]) =
+  ## The callee's type arguments, in its own generic-parameter order.
+  if e == nil or args.len == 0: return
+  ensureId(e)
+  r.callTypeArgs[e.id] = args
+
+proc callTypeArgsFor*(r: Resolution, e: Expr): seq[Type] =
+  ## Empty when the call needs no explicit type arguments — which is the
+  ## common case, since a type param mentioned by a parameter is inferred by
+  ## every backend's own host language.
+  if e == nil or not e.id.isSet: return @[]
+  r.callTypeArgs.getOrDefault(e.id, @[])
 
 proc setShortcut*(r: Resolution, e: Expr, site: string) =
   if e == nil: return

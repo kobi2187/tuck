@@ -13,9 +13,12 @@
 # compiler except `joinStr`, which every host stdlib already has and which no
 # amount of Tuck could write faster.
 #
+# `..` is rejected here — checked directly: `add` returns a new `Builder`,
+# nothing to mutate through. Call-site spelling is plain reassignment:
+#
 #     var b: Builder = {chunks: []} Builder
 #     for line in lines:
-#       b ..add {text: line}
+#       b = {b: b, text: line} add
 #     let out = {b: b} built
 #
 # The freeform verbs below are the rest of the declared API. They are honest

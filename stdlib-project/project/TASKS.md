@@ -72,6 +72,36 @@ Blocked on: what interface shape backs "Indexable" — user's own framing
 Status: pending
 Depends on: T-05 (core.fmt)
 
+## T-08: group Sortable/Hashable — unify primitives and records under one bound
+Status: pending
+Depends on: `group` (shipped, `tests/suites/groups.nim`)
+
+`group` satisfaction is structural: any free `fn compare({self: T, other: T})
+-> Order` matching shape satisfies `T: Sortable`, checked per instantiation,
+no attach statement. Costs nothing at runtime either — Tuck monomorphizes
+generics per concrete `T`, so `{self: a, other: b} compare` resolves to the
+concrete overload at the call site same as any other overloaded call; `group`
+only adds the compile-time check that the overload exists before codegen. Design: give `int`/`str` explicit `compare`/`hashOf`
+overloads in core.cmp/core.hash so primitives satisfy `Sortable`/`Hashable`
+for free, same as any record that defines its own `compare`/`hashOf`. That
+unifies two currently-separate paths:
+- `core.cmp`'s `smaller`/`larger`/`clamped[T]` and `core.iter`'s `sort[T]`/
+  `sum[T]` all use bare `<`/`>`/`+` on an unconstrained `[T]` — their own
+  comments say "no constraint mechanism yet", which predates `group` and is
+  now stale.
+- `alloc.set`/`alloc.map` scan linearly with `==`, blocked from hashing
+  because there was no way to require `hashOf` — `group Hashable` removes
+  that block.
+
+Once primitives carry `compare`, add `sortBy`/`min`/`max[T: Sortable]` to
+core.cmp — real verbs, not possible on top of bare `<` for arbitrary records.
+
+Docs marked against this (pre-`group`, needs the rewrite above):
+`core/cmp/API.tuck.md`, `alloc/set/API.tuck.md` (its Hashable-blocked note).
+`alloc/vec`, `alloc/map`, `alloc/string`'s API.tuck.md had a separate,
+unrelated mistake (`..` claimed for a plain value-returning call — it's
+builder-mutation only) — fixed directly, not part of this task.
+
 ## Blocked — not scheduled this pass (resource registry, spec §7.4)
 - core.mem, core.ptr — need the resource registry
 - core.atomic, core.sync-cell — need [nocopy]/F25 (non-copyable values)

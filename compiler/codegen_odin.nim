@@ -363,6 +363,25 @@ proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
   if rt != "": return rt
   ""
 
+proc odinTypeArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
+  ## Odin declares a type param no parameter mentions as a leading
+  ## `$E: typeid`, which makes the type an ARGUMENT — so the call has to pass
+  ## it. Unlike Nim's `[C, E]` and D's `!(C, E)`, only the UN-INFERRED ones are
+  ## passed, in declaration order, because the rest Odin still deduces from the
+  ## values. Without this Odin reported "Parameter 'c' of type '$C' is missing
+  ## in procedure call" — it had matched the value against the typeid slot.
+  let targs = ctx.res.callTypeArgsFor(e)
+  if targs.len == 0: return @[]
+  let d = ctx.res.declFor(e)
+  if d == nil or d.kind != dkFn or d.fnGenerics.len != targs.len: return @[]
+  for i, g in d.fnGenerics:
+    var mentioned = false
+    for p in d.fnParams:
+      if typeMentionsName(p.typ, g):
+        mentioned = true
+        break
+    if not mentioned: result.add(ctx.odinType(targs[i]))
+
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
@@ -403,7 +422,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     # direct call, which is wrong the moment it awaits; see
     # thoughts/bugs-found-while-building-net.md.
     return "rt.tuckSpawn(proc() { " & calleeStr & "() })"
-  return calleeStr & "(" & args.join(", ") & ")"
+  return calleeStr & "(" & (ctx.odinTypeArgs(e) & args).join(", ") & ")"
 
 proc odinBangInfo*(ctx: var OdinCodegenCtx, t: Type):
     tuple[wrapped: bool, inner: string, innerT: Type] =

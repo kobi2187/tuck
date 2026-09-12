@@ -67,33 +67,20 @@ container" modules.
 call boundary is Tuck's own decision to make — nothing here should be read
 as importing Nim's or Rust's answer.
 
-**`..` is the right call-site spelling — verified.** `xs ..push {value: 4}`
-typechecks and lowers to:
-
-```nim
-var xs = @[1, 2, 3]
-xs = tuck_push(xs, 4)
-```
-
-So the signatures above are correct as written, and callers use `..` rather
-than rebinding by hand:
+**`..` was assumed to work here — it does not.** Checked directly:
+`xs ..push {value: 4}` is rejected, "missing required field 'items'".
+`..` is for actual mutation — an object's own `self..field`, a real
+builder — and `push` isn't one; it takes `items` as an ordinary param and
+returns a new `Seq`, same as everything else here. Call-site spelling is
+plain reassignment:
 
 ```tuck
 var xs = [1, 2, 3]
-xs ..push {value: 4}        # not: xs = {items: xs, value: 4} push
+xs = {items: xs, value: 4} push
 ```
 
-That is the idiomatic Tuck shape (`server ..withDefaults ..port {8080}` is
-the same pattern), and it reads far better than the rebinding form.
-
-**Whether it is also *fast* is a backend question this pass could not
-settle.** `xs = tuck_push(xs, 4)` is a self-assignment: Nim's ARC/ORC may
-be able to move rather than copy, since `xs`'s old value is dead
-immediately after. If it does, appends are amortized O(1) and there is no
-problem at all. If it doesn't, the loop is O(n²).
-
-**Recommended next step:** benchmark an append loop (`benches/` already
-exists for exactly this kind of question) before committing the whole
-`alloc` tier to this shape. If the copy is real, the fix is a compiler
-one — teach lowering to emit an in-place mutation for `..` on an owned
-`var` — not an API redesign, since the spelling above is already right.
+**Whether that's fast is settled, not open.** This was flagged as an open
+backend question — it isn't anymore. The compiler now detects exactly this
+shape (`xs = {items: xs, ...} push`) and appends in place instead of
+copying; measured O(n) instead of O(n²) on all three backends
+(`benches/containers`).

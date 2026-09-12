@@ -1,3 +1,7 @@
+**Status: pre-`group` design, superseded — see TASKS.md T-08.** The
+Hashable-blocked note below predates `group`; `group Hashable` removes that
+block. The `..` call-site shown is also wrong — see the fix inline.
+
 # alloc.set — Tuck translation
 
 ## Shape decision
@@ -21,14 +25,17 @@ pending:
   fn toSeq[T]({s: Set[T]}) -> Seq[T]
 ```
 
-Call sites use `..` (`seen ..add {value: word}`), per
-`TUCK-TRANSLATION.md`.
+`..` is rejected here — checked directly, same reason as `alloc.vec`: no
+mutation to spell that way, `add` returns a new `Set`. Call-site spelling is
+plain reassignment: `seen = {s: seen, value: word} add`.
 
 ## Notes
-- **Blocked on the same hashing question as `alloc.map`** — primitives
-  cannot be attached to a `Hashable` interface via top-level `satisfies`
-  (verified: *"names 'int', which is not a declared object in scope"*).
-  `Set[str]` is `spellchecker`'s core type, so this is not a corner case.
+- **Hashing was blocked on `satisfies`, not anymore.** `satisfies` can't
+  attach primitives to an interface (verified: *"names 'int', which is not
+  a declared object in scope"*) — but `group Hashable` is structural, no
+  attach statement, so `int`/`str` satisfy it the moment core.hash gives
+  them a `hashOf` overload (TASKS.md T-08). `Set[str]` is
+  `spellchecker`'s core type, so this is not a corner case.
 - **`union`/`intersect`/`difference` keep their plain names.** Set algebra
   is one place the mathematical word *is* the everyday word — no Haskell
   smell, and Ruby uses the same three.

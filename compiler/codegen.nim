@@ -339,6 +339,17 @@ proc genCallWithArgs(ctx: var CodegenCtx, calleeStr: string,
     return genSaturatingCtor(satBase, calleeStr, args[0])
   ctx.genPlainCall(calleeStr, args)
 
+proc withTypeArgs(ctx: CodegenCtx, calleeStr: string, e: Expr): string =
+  ## `tuck_firstOf` -> `tuck_firstOf[tuck_Row, int]` when the checker recorded
+  ## type arguments for this call. It does so only where no backend can infer
+  ## them — a type param mentioned by no parameter — so the explicit form
+  ## appears exactly where Nim would otherwise say "cannot instantiate".
+  let targs = ctx.res.callTypeArgsFor(e)
+  if targs.len == 0: return calleeStr
+  var parts: seq[string]
+  for t in targs: parts.add(genType(t))
+  calleeStr & "[" & parts.join(", ") & "]"
+
 proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
   let variant = ctx.asSumVariantCall(e)
@@ -347,7 +358,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
   let args = ctx.genCallArgs(e, calleeStr)
-  ctx.genCallWithArgs(calleeStr, args)
+  ctx.genCallWithArgs(ctx.withTypeArgs(calleeStr, e), args)
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
 # literals, invariant-carrying returns, or a plain return.

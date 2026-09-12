@@ -363,6 +363,39 @@ proc injectTailReturn*(body: Expr, retTypeStr: string) =
 # and both had grown a private byte-identical copy. Shared here rather than
 # in one backend's util module, since neither owns the question.
 
+proc typeMentionsName*(t: Type, name: string): bool
+
+proc anyMentionName(ts: seq[Type], name: string): bool =
+  for t in ts:
+    if typeMentionsName(t, name): return true
+  false
+
+proc fieldsMentionName(fs: seq[FieldDef], name: string): bool =
+  for f in fs:
+    if typeMentionsName(f.typ, name): return true
+  false
+
+proc typeMentionsName*(t: Type, name: string): bool =
+  ## Does `name` appear anywhere in this type as written? Answers whether a
+  ## type param is reachable from a parameter list at all — the predicate both
+  ## the checker (deciding a call needs explicit type arguments) and the Odin
+  ## backend (deciding which ones to pass) ask, so it is one proc.
+  ##
+  ## Every arm named rather than caught by a fallthrough: Type is a variant
+  ## object, so reading `members` on a tkApp is a FieldDefect at runtime, not a
+  ## compile error — which is exactly how a first cut of this crashed the
+  ## checker on `Mapper[int, str]`.
+  if t == nil or name == "": return false
+  case t.kind
+  of tkNamed: t.name == name
+  of tkTuple: anyMentionName(t.elems, name)
+  of tkApp: typeMentionsName(t.base, name) or anyMentionName(t.args, name)
+  of tkFunc: anyMentionName(t.params, name) or typeMentionsName(t.result, name)
+  of tkRecord: fieldsMentionName(t.fields, name)
+  of tkUnion: anyMentionName(t.members, name)
+  of tkEffect: typeMentionsName(t.inner, name)
+  else: false
+
 proc hasUnknownType*(t: Type): bool =
   ## Does this type contain the checker's "I could not work it out" marker
   ## anywhere inside it? A backend that must spell a type needs to know
