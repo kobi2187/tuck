@@ -546,6 +546,15 @@ type
     isRange*: bool     ## a multi-bit field, not a single flag
     canRead*, canWrite*: bool
 
+proc chainStepMember*(step: ChainStep): string =
+  ## The member a `..` step names. A field set and a local mutator write a
+  ## bare name; `..mod::fn` writes a qualified one, whose target is an
+  ## exkQualified node — Expr is a variant object, so reading `.name` on that
+  ## is a runtime FieldDefect rather than a compile error.
+  if step.target == nil: ""
+  elif step.target.kind == exkQualified: step.target.qualName
+  else: step.target.name
+
 proc decodeBitField*(regName: string, f: FieldDef): BitFieldInfo =
   ## `bits 3..7` is a multi-bit FIELD: shift by the low bit and mask the
   ## width. A single `bit N` is the one-bit case of the same shape.

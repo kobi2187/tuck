@@ -80,14 +80,6 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## D. Design items with a ruling, not yet built
 
-- **`register` field access does not compile on Nim.** Any use of a register
-  field, read or write, fails with `undeclared field`. Codegen emits a field
-  access (`tuck_RCC_CR.HSION = true`) while the runtime's `registerMMIO`
-  macro generates standalone procs plus a FIELD-LESS ref object — the two
-  halves disagree about the interface they share. Odin and D both emit
-  shift/mask accessors and build. Fix belongs in one of the two: either the
-  macro grows fields, or Nim codegen calls the procs the way Odin and D call
-  theirs.
 - **The event registry emits invalid Nim.** A registry whose event carries a
   payload emits a type whose fields are indented inconsistently —
   `kind*:` at four spaces, `code*:` at two — which nim rejects as "invalid
@@ -115,7 +107,9 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   Its siblings are in three different states. §7.2 `pool` WORKS — verified
   behaviourally: `count: 2` hands out two, reports absence on the third, and
   recycles after a release, identically on all three backends. §8.1
-  `register` works on Odin and D only (see below).
+  `register` now works on all three (fixed 2026-09-12: the Nim backend's
+  `registerMMIO` macro was dropped for ordinary emitted code, matching Odin
+  and D).
 - **Three token kinds are dead.** `tkArena`, `tkPool` and `tkRegister` are
   declared in `TokenKind` and referenced nowhere else — the lexer emits none
   of them, so `arena`/`pool`/`register` (and `extern`, `errors`, `resource`)

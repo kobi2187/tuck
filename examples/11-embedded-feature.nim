@@ -41,10 +41,25 @@ type tuck_SensorEvent* = object
   channel*: uint8
   reading*: uint16
 
-registerMMIO(tuck_RCC_CR, 0x40021000):
-  HSION: bit(0, ReadWrite)
-  HSIRDY: bit(1, ReadOnly)
-  HSITRIM: bit(3..7, ReadWrite)
+var tuck_RCC_CR = cast[ptr uint32](0x40021000)
+const tuck_RCC_CR_HSION_SHIFT = 0
+const tuck_RCC_CR_HSIRDY_SHIFT = 1
+const tuck_RCC_CR_HSITRIM_SHIFT = 3
+const tuck_RCC_CR_HSITRIM_WIDTH = 7 - 3 + 1
+const tuck_RCC_CR_HSITRIM_MASK = (1'u32 shl tuck_RCC_CR_HSITRIM_WIDTH) - 1
+proc tuck_RCC_CR_HSION_get*(): bool {.inline.} =
+  (tuck_RCC_CR[] and (1'u32 shl tuck_RCC_CR_HSION_SHIFT)) != 0
+proc tuck_RCC_CR_HSION_set*(value: bool) {.inline.} =
+  let mask = 1'u32 shl tuck_RCC_CR_HSION_SHIFT
+  if value: tuck_RCC_CR[] = tuck_RCC_CR[] or mask
+  else: tuck_RCC_CR[] = tuck_RCC_CR[] and not mask
+proc tuck_RCC_CR_HSIRDY_get*(): bool {.inline.} =
+  (tuck_RCC_CR[] and (1'u32 shl tuck_RCC_CR_HSIRDY_SHIFT)) != 0
+proc tuck_RCC_CR_HSITRIM_get*(): uint32 {.inline.} =
+  (tuck_RCC_CR[] shr tuck_RCC_CR_HSITRIM_SHIFT) and tuck_RCC_CR_HSITRIM_MASK
+proc tuck_RCC_CR_HSITRIM_set*(value: uint32) {.inline.} =
+  let shifted = (value and tuck_RCC_CR_HSITRIM_MASK) shl tuck_RCC_CR_HSITRIM_SHIFT
+  tuck_RCC_CR[] = (tuck_RCC_CR[] and not (tuck_RCC_CR_HSITRIM_MASK shl tuck_RCC_CR_HSITRIM_SHIFT)) or shifted
 
 proc tuck_processISR*(event: tuck_SensorEvent): void =
   discard

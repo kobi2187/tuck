@@ -1394,11 +1394,15 @@ than lumping them together:
 - **§7.2 `pool` works.** Verified behaviourally, not by inspection: a pool
   with `count: 2` hands out two, reports absence on the third, and recycles
   after a `release`, identically on Nim, Odin and D.
-- **§8.1 `register` works on Odin and D only.** Both emit shift/mask
-  accessors. On NIM, any use of a register field — read or write — fails to
-  compile: codegen emits a field access (`tuck_RCC_CR.HSION = true`) while
-  the runtime's `registerMMIO` macro generates standalone procs and a
-  field-less ref object. The two halves disagree about the interface.
+- **§8.1 `register` works on all three backends.** Each emits a mutable
+  pointer at the MMIO address, named shift constants, and get/set accessors
+  doing the mask/shift arithmetic. Nim used to hand the layout to a
+  `registerMMIO` macro in the runtime instead, and the two halves disagreed
+  about what they produced — the macro made standalone procs and a
+  field-less ref object while codegen emitted a field access, so every
+  register read and write failed with "undeclared field". Ruling 2026-09-12:
+  drop the macro, emit ordinary code like the other two. One shape to
+  understand, and the call sites are shared.
 - **§7.3 `arena` is unimplemented**, as above.
 
 That none of this was noticed has one cause, recorded here because it applies

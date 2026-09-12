@@ -83,13 +83,37 @@ proc raise_tuck_SystemEvents_HardwareError*(code: uint8) =
   tuck_SystemEvents_HardwareError(code)
 
 
-registerMMIO(tuck_DAC_CR, 0x40007400):
-  EN: bit(0, ReadWrite)
-  BOFF: bit(1, ReadWrite)
+var tuck_DAC_CR = cast[ptr uint32](0x40007400)
+const tuck_DAC_CR_EN_SHIFT = 0
+const tuck_DAC_CR_BOFF_SHIFT = 1
+proc tuck_DAC_CR_EN_get*(): bool {.inline.} =
+  (tuck_DAC_CR[] and (1'u32 shl tuck_DAC_CR_EN_SHIFT)) != 0
+proc tuck_DAC_CR_EN_set*(value: bool) {.inline.} =
+  let mask = 1'u32 shl tuck_DAC_CR_EN_SHIFT
+  if value: tuck_DAC_CR[] = tuck_DAC_CR[] or mask
+  else: tuck_DAC_CR[] = tuck_DAC_CR[] and not mask
+proc tuck_DAC_CR_BOFF_get*(): bool {.inline.} =
+  (tuck_DAC_CR[] and (1'u32 shl tuck_DAC_CR_BOFF_SHIFT)) != 0
+proc tuck_DAC_CR_BOFF_set*(value: bool) {.inline.} =
+  let mask = 1'u32 shl tuck_DAC_CR_BOFF_SHIFT
+  if value: tuck_DAC_CR[] = tuck_DAC_CR[] or mask
+  else: tuck_DAC_CR[] = tuck_DAC_CR[] and not mask
 
-registerMMIO(tuck_DMA1_CH3, 0x40020030):
-  EN: bit(0, ReadWrite)
-  TCIE: bit(1, ReadWrite)
+var tuck_DMA1_CH3 = cast[ptr uint32](0x40020030)
+const tuck_DMA1_CH3_EN_SHIFT = 0
+const tuck_DMA1_CH3_TCIE_SHIFT = 1
+proc tuck_DMA1_CH3_EN_get*(): bool {.inline.} =
+  (tuck_DMA1_CH3[] and (1'u32 shl tuck_DMA1_CH3_EN_SHIFT)) != 0
+proc tuck_DMA1_CH3_EN_set*(value: bool) {.inline.} =
+  let mask = 1'u32 shl tuck_DMA1_CH3_EN_SHIFT
+  if value: tuck_DMA1_CH3[] = tuck_DMA1_CH3[] or mask
+  else: tuck_DMA1_CH3[] = tuck_DMA1_CH3[] and not mask
+proc tuck_DMA1_CH3_TCIE_get*(): bool {.inline.} =
+  (tuck_DMA1_CH3[] and (1'u32 shl tuck_DMA1_CH3_TCIE_SHIFT)) != 0
+proc tuck_DMA1_CH3_TCIE_set*(value: bool) {.inline.} =
+  let mask = 1'u32 shl tuck_DMA1_CH3_TCIE_SHIFT
+  if value: tuck_DMA1_CH3[] = tuck_DMA1_CH3[] or mask
+  else: tuck_DMA1_CH3[] = tuck_DMA1_CH3[] and not mask
 
 var tuck_BufferPool* = ObjectPool[array[512, uint8], 4]()
 proc tuck_streamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[]] =
@@ -99,7 +123,7 @@ proc tuck_streamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[
       if not tuck_buf.ok:
         if true:
           return tokVoid()
-      tuck_DMA1_CH3.EN = true
+      tuck_DMA1_CH3_EN_set(true)
       release(tuck_BufferPool, tuck_buf.value)
 
 type tuck_DecoderMsgKind* = enum msgPlay, msgPause, msgStop
@@ -124,12 +148,12 @@ proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
         if true:
           self.state = tuck_PlayerState(kind: Decoding, tuck_decoding: (sampleRate: rate))
           raise_tuck_SystemEvents_PlaybackStarted()
-          tuck_DAC_CR.EN = true
+          tuck_DAC_CR_EN_set(true)
       of Paused:
         if true:
           self.state = tuck_PlayerState(kind: Decoding, tuck_decoding: (sampleRate: rate))
           raise_tuck_SystemEvents_PlaybackStarted()
-          tuck_DAC_CR.EN = true
+          tuck_DAC_CR_EN_set(true)
       of Decoding:
         discard)
   of msgPause:
@@ -141,12 +165,12 @@ proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
         discard
       of Paused:
         discard)
-      tuck_DAC_CR.EN = false
+      tuck_DAC_CR_EN_set(false)
   of msgStop:
     if true:
       self.state = tuck_PlayerState(kind: Idle)
       raise_tuck_SystemEvents_PlaybackStopped()
-      tuck_DAC_CR.EN = false
+      tuck_DAC_CR_EN_set(false)
 
 proc draintuck_Decoder(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
@@ -161,14 +185,14 @@ proc registerActortuck_Decoder*() =
 
 static: assert((sizeof(tuck_Volume) == 1))
 proc tuck_SystemEvents_PlaybackStarted*(): void =
-  tuck_DAC_CR.EN = true
+  tuck_DAC_CR_EN_set(true)
 
 proc tuck_SystemEvents_PlaybackStopped*(): void =
-  tuck_DAC_CR.EN = false
+  tuck_DAC_CR_EN_set(false)
 
 proc tuck_SystemEvents_HardwareError*(code: uint8): void =
   var tuck_failed = code
-  tuck_DAC_CR.EN = false
+  tuck_DAC_CR_EN_set(false)
 
 proc tuck_main*(): void =
   discard

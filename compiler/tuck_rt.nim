@@ -8,49 +8,6 @@ type
   AccessMode* = enum
     ReadOnly, WriteOnly, ReadWrite
 
-macro registerMMIO*(name: untyped, address: static[int], body: untyped): untyped =
-  result = newStmtList()
-  
-  # Generate: type name* = ref object
-  let typeSection = newTree(nnkTypeSection,
-    newTree(nnkTypeDef,
-      postfix(name, "*"),
-      newEmptyNode(),
-      newTree(nnkRefTy, newTree(nnkObjectTy, newEmptyNode(), newEmptyNode(), newEmptyNode()))
-    )
-  )
-  result.add(typeSection)
-  
-  for child in body:
-    if child.kind in {nnkCall, nnkCommand} and child.len >= 2:
-      let fieldName = child[0]
-      let bitCall = child[1]
-      if bitCall.kind == nnkCall and bitCall.len >= 3:
-        let bitIndex = bitCall[1]
-        let modeName = bitCall[2].repr
-        
-        # Getter
-        let getterNode = quote do:
-          proc `fieldName`*(): bool {.inline.} =
-            let p = cast[ptr uint32](`address`)
-            return (p[] and (1'u32 shl `bitIndex`)) != 0
-        result.add(getterNode)
-        
-        # Setter
-        if modeName == "ReadWrite" or modeName == "WriteOnly":
-          let setterNameNode = newIdentNode("`" & fieldName.repr & "=`")
-          let setterNode = quote do:
-            proc `setterNameNode`*(val: bool) {.inline.} =
-              let p = cast[ptr uint32](`address`)
-              if val:
-                p[] = p[] or (1'u32 shl `bitIndex`)
-              else:
-                p[] = p[] and not(1'u32 shl `bitIndex`)
-          result.add(setterNode)
-
-# --- Errors and absence: !T / ?T lower to one value type (no alloc, no nil) ---
-# ?T is an option: absence is a first-class state, not a reserved error code.
-# !T uses tsOk/tsErr, ?T uses tsOk/tsAbsent, !?T may be any of the three.
 type
   TuckStatus* = enum
     tsOk, tsErr, tsAbsent

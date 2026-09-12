@@ -538,7 +538,7 @@ proc genDRegister*(ctx: var DCodegenCtx, d: Decl): string =
   ## and writing through a typed pointer at the MMIO address.
   ##
   ## Same lowering as the Odin backend, for the same reason — neither has
-  ## Nim's `registerMMIO` macro to hand the layout to. The DECODING is
+  ## a macro to hand the layout to; Nim's dropped its own in 2026-09. The DECODING is
   ## shared (ast_query.decodeBitField); only the spelling is here.
   ##
   ## `volatile` in spirit: the pointer is shared with hardware. D has no

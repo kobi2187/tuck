@@ -1107,7 +1107,7 @@ proc bitSetter*(bf: BitField, regName, ind: string): string =
       "^ &~= mask }\n" & ind & "}\n"
 
 proc genRegister*(ctx: OdinCodegenCtx, d: Decl, ind: string): string =
-  ## Memory-mapped register. Nim emits a `registerMMIO` macro call and Beef an
+  ## Memory-mapped register. Every backend now lowers this the same way —
   ## attribute; Odin has neither, so the bits become named masks plus a typed
   ## pointer at the MMIO address — the accessors read/write through it.
   var consts: seq[string]

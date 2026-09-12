@@ -546,17 +546,66 @@ proc bitAccessMode*(f: FieldDef): string =
   elif hasWrite and not hasRead: "WriteOnly"
   else: "ReadWrite"
 
+proc nimBitConsts*(bf: BitFieldInfo): string =
+  ## The shift, and for a range the width and mask. `const` so they fold away.
+  result = "const " & bf.prefix & "_SHIFT = " & bf.loBit & "\n"
+  if bf.isRange:
+    result.add("const " & bf.prefix & "_WIDTH = " & bf.hiBit & " - " &
+               bf.loBit & " + 1\n")
+    result.add("const " & bf.prefix & "_MASK = (1'u32 shl " & bf.prefix &
+               "_WIDTH) - 1\n")
+
+proc nimBitGetter*(bf: BitFieldInfo, regName: string): string =
+  ## A range reads as a masked uint32; a single bit reads as a bool.
+  let body = if bf.isRange:
+               "  (" & regName & "[] shr " & bf.prefix & "_SHIFT) and " &
+                 bf.prefix & "_MASK\n"
+             else:
+               "  (" & regName & "[] and (1'u32 shl " & bf.prefix &
+                 "_SHIFT)) != 0\n"
+  let retT = if bf.isRange: "uint32" else: "bool"
+  "proc " & bf.prefix & "_get*(): " & retT & " {.inline.} =\n" & body
+
+proc nimBitSetter*(bf: BitFieldInfo, regName: string): string =
+  ## A range clears its mask before OR-ing the shifted value in; a single bit
+  ## sets or clears one mask.
+  if bf.isRange:
+    return "proc " & bf.prefix & "_set*(value: uint32) {.inline.} =\n" &
+           "  let shifted = (value and " & bf.prefix & "_MASK) shl " &
+             bf.prefix & "_SHIFT\n" &
+           "  " & regName & "[] = (" & regName & "[] and not (" & bf.prefix &
+             "_MASK shl " & bf.prefix & "_SHIFT)) or shifted\n"
+  "proc " & bf.prefix & "_set*(value: bool) {.inline.} =\n" &
+    "  let mask = 1'u32 shl " & bf.prefix & "_SHIFT\n" &
+    "  if value: " & regName & "[] = " & regName & "[] or mask\n" &
+    "  else: " & regName & "[] = " & regName & "[] and not mask\n"
+
 proc genRegister*(d: Decl): string =
-  ## Memory-mapped register. Nim has a `registerMMIO` macro that takes the
-  ## bit layout directly, so this backend hands it the fields — the Odin
-  ## backend, which has no such macro, lowers the same declaration to named
-  ## masks plus accessor procs.
-  var fields: seq[string]
+  ## A memory-mapped register (spec 8.1): named shift constants plus
+  ## accessors reading and writing through a typed pointer at the MMIO
+  ## address — the SAME lowering Odin and D use, sharing
+  ## ast_query.decodeBitField; only the spelling is here.
+  ##
+  ## This used to hand the layout to a `registerMMIO` macro in the runtime,
+  ## and the two halves disagreed about what they produced: the macro made
+  ## standalone procs and a FIELD-LESS ref object while codegen emitted a
+  ## field access, so every read or write of a register field failed to
+  ## compile with "undeclared field". Ruling 2026-09-12: drop the macro, emit
+  ## ordinary code like the other two backends. One shape to understand, and
+  ## the call sites are shared.
+  var consts: seq[string]
+  var accessors: seq[string]
   for f in d.regFields:
-    let bitVal = f.typ.name.replace("bit ", "").replace("bits ", "")
-    fields.add("  " & f.name & ": bit(" & bitVal & ", " & bitAccessMode(f) & ")")
-  "registerMMIO(" & d.name & ", " & d.regAddress & "):\n" &
-    fields.join("\n") & "\n"
+    let bf = decodeBitField(d.name, f)
+    consts.add(nimBitConsts(bf))
+    if bf.canRead: accessors.add(nimBitGetter(bf, d.name))
+    if bf.canWrite: accessors.add(nimBitSetter(bf, d.name))
+  # `var`, not `let`: Nim lowers a `let` pointer to a const one in C, and
+  # writing through it is "assignment of read-only location". The pointee is
+  # hardware — Odin's `:=` and D's `__gshared` are mutable for the same
+  # reason.
+  "var " & d.name & " = cast[ptr uint32](" & d.regAddress & ")\n" &
+    consts.join("") & accessors.join("")
 
 proc declaredErrNames*(ctx: CodegenCtx): seq[string] =
   ## Every "module/Enum.Variant" this module declares. Error enums are

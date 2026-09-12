@@ -585,6 +585,13 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
     # `ActorType.field` — an actor is a singleton; read its public field off
     # the rt-owned instance (main's waitUntil predicates read state this way)
     return actorSingletonName(e.receiver.refName) & "." & e.fieldName
+  if e.receiver != nil and e.receiver.kind == exkRegisterRef:
+    # `REG.FIELD` — a register is a raw pointer with no real field, so a read
+    # is the getter genRegister emitted for it. Same shape the Odin and D
+    # backends use, through the same shared helper.
+    let regPrefix = registerAccessorPrefix(ctx.module, e.receiver.refName,
+                                           e.fieldName)
+    if regPrefix != "": return regPrefix & "_get()"
   # A PAYLOAD sum stores each variant's fields in a field named after the
   # variant, so `s.length` on `Line({length: int})` is `s.line.length`.
   # Emitting the bare name produced an undeclared field, which is why a
@@ -1034,7 +1041,15 @@ proc chainSteps(ctx: var CodegenCtx, e: Expr, into: string): string =
       var valStr = ""
       if isSingleFieldPayload(step.arg):
         valStr = ctx.genExpr(soleFieldValue(step.arg))
-      lines.add(ind & into & "." & step.target.name & " = " & valStr)
+      # A register field is a raw pointer with no real field — writing it
+      # means calling the setter genRegister emitted for it, exactly as the
+      # Odin and D backends do through the same shared helper.
+      let regPrefix = registerAccessorPrefix(ctx.module, into,
+                                             chainStepMember(step))
+      if regPrefix != "":
+        lines.add(ind & regPrefix & "_set(" & valStr & ")")
+      else:
+        lines.add(ind & into & "." & step.target.name & " = " & valStr)
   # mutation site: an invariant-carrying var re-validates after the chain
   if e.base != nil and ctx.res.typeFor(e.base) != nil and
      ctx.res.typeFor(e.base).kind == tkNamed and

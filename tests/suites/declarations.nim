@@ -308,7 +308,7 @@ fn main() -> void:
   # A `.field` access on a register is not an ordinary field: the register
   # is a raw pointer, so it has none. genRegister/genDRegister already
   # generate real `<reg>_<field>_get`/`_set` accessors doing the mask/shift
-  # math (matching Nim's registerMMIO macro) — the bug was that Odin/D field
+  # math — the bug was that Odin/D field
   # ACCESS SITES never called them, and emitted raw `.field` syntax instead
   # (confirmed directly: `'DAC_CR' of type '^u32' has no field 'EN'`
   # building example 20's own Odin output). No `runs` check here: a
@@ -339,6 +339,19 @@ fn main() -> int:
            r"tuck_CTRL_EN_get\(\)"
   t.omitsD "register: never raw field syntax on the pointer",
            r"CTRL\.EN"
+  # NIM HAD NO ASSERTIONS HERE, which is exactly how it stayed broken: it
+  # emitted a `registerMMIO` macro call whose generated procs did not match
+  # the field access codegen emitted, so every register read and write failed
+  # with "undeclared field". Ruling 2026-09-12: drop the macro, emit ordinary
+  # code like the other two. `hostBuilds` is the half that matters — the
+  # macro version EMITTED fine and only failed when nim compiled the result,
+  # and no register example has an `fn main`, so nothing ever compiled one.
+  t.emits "register: Nim calls the generated setter too",
+          r"tuck_CTRL_EN_set\(true\)"
+  t.emits "register: Nim calls the generated getter too",
+          r"tuck_CTRL_EN_get\(\)"
+  t.omits "register: Nim never emits raw field syntax either", r"CTRL\.EN"
+  t.hostBuilds "register: every backend's host compiler accepts the accessors"
 
   t.src """
 register RCC at 0x40021000:
