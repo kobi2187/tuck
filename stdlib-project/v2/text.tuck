@@ -7,6 +7,7 @@
 # `compare` is deliberately NOT redeclared here — v2/ordering's generic one
 # already covers str, and a second would be a collision.
 
+import seq
 import str
 import value
 

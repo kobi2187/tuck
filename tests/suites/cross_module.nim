@@ -21,6 +21,7 @@
 ## position (importedTypeQualifier); neither qualified a type used as a value
 ## receiver or as a match-arm label.
 
+import os
 import ../harness
 
 proc run*(t: var T) =
@@ -140,5 +141,57 @@ fn main() -> int:
   t.badCheck "...but writing it bare names both owners and asks which",
     "'step' is exported by 2 imports"
 
+
+  # --- the signature index must not hide an imported type ------------------
+  # An IndexEntry carries a module's fn signatures and NOTHING else, so a
+  # module served from the index contributed no type declarations:
+  # injectImportedTypes found none to copy and the importer could not see the
+  # name at all. The same hole swallows imported groups, their bounds, and
+  # fnsig names, all of which are gathered from fully loaded modules only.
+  #
+  # It stayed invisible because the missing name resolved to Unknown, which is
+  # compatible with everything — the program checked clean on a warm cache and
+  # failed on a cold one, or the reverse, depending on which ran first.
+  # Removing Unknown turned it into the hard error it always was.
+  #
+  # Pinning it needs TWO checks in one directory: the first writes the index,
+  # the second reads it. Every other assertion here runs `tuck ch` once, which
+  # is exactly why the suite never caught this.
+  t.src """
+import base
+
+fn main() -> int:
+  let o = Order.Before
+  match o:
+    Before: return 0
+    _: return 1
+"""
+  t.addFile("base.tuck", """type Order:
+  | Before
+  | Same
+  | After
+""")
+  t.addFile("second.tuck", """import base
+
+fn main() -> int:
+  let o = Order.After
+  match o:
+    After: return 0
+    _: return 1
+""")
+  let cold = t.needCmd @[tuckExe, "ch", t.cur / "t.tuck", "--root:" & t.root]
+  let warm = t.needCmdAfter(@[tuckExe, "ch", t.cur / "second.tuck",
+                              "--root:" & t.root],
+                            cold, proc (dir: string) = discard, t.cur, vCheck)
+  if t.phase == pReport:
+    let (rc1, out1) = t.resultOf(cold)
+    if rc1 == 0: t.ok "an imported sum resolves on a cold index"
+    else: t.no "an imported sum resolves on a cold index", out1
+    if t.skippedCmd(warm):
+      t.ok "...and on a warm one (skipped)"
+    else:
+      let (rc2, out2) = t.resultOf(warm)
+      if rc2 == 0: t.ok "...and still resolves once the index is warm"
+      else: t.no "...and still resolves once the index is warm", out2
 
   t.finish()

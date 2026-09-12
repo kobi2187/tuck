@@ -15,6 +15,7 @@
 # degrades badly; `withCapacity` takes the size up front. Growth is a rehash
 # into a larger table — add it when a caller measurably needs it.
 
+import seq
 import value
 import collection
 import hash_fnv1a_str

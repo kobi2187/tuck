@@ -158,6 +158,24 @@ type
     cachedAt*: int64                      # unix seconds, informational
     deps*: seq[tuple[name, hash: string]] # dep set at index time
     sigs*: seq[SigInfo]
+    byNameOnly*: bool
+      ## Does this module declare anything an importer resolves BY NAME rather
+      ## than by calling — a type, object, interface, group or fnsig?
+      ##
+      ## The entry carries fn signatures and nothing else, so a module served
+      ## from the index contributes no type declarations: injectImportedTypes
+      ## finds none to copy, and the importer cannot see the name at all. The
+      ## same hole swallows imported groups, their bounds, and fnsig names,
+      ## which are gathered from fully loaded modules only.
+      ##
+      ## It went unseen because the missing name used to resolve to Unknown,
+      ## which is compatible with everything — the program checked clean on a
+      ## warm cache and failed on a cold one, or the reverse, depending on
+      ## which ran first. Removing Unknown turned it into the hard error it
+      ## always was.
+      ##
+      ## Such a module loads in full. The index still serves modules that
+      ## export only callables, which is what it was measured on.
 
   SigIndex = object
     stamp: string   # compiler build stamp; mismatch = whole index stale
@@ -203,6 +221,7 @@ proc entryValid(idx: Table[string, IndexEntry], dir, name: string,
   let path = resolvedImportPath(dir, name)
   if path == "" or not fileExists(path): return false
   let e = idx[name]
+  if e.byNameOnly: return false   # the entry cannot carry what importers need
   if e.srcHash != srcHashOf(path): return false
   for (dep, h) in e.deps:
     if not idx.hasKey(dep) or idx[dep].srcHash != h: return false
@@ -225,11 +244,17 @@ proc updateIndex*(dir: string, mods: seq[LoadedModule],
       let ipath = resolvedImportPath(lm.path.parentDir, imp)
       if ipath != "" and fileExists(ipath):
         deps.add((imp, srcHashOf(ipath)))
+    var byName = false
+    for d in lm.m.decls:
+      if d != nil and d.kind in {dkType, dkObject, dkInterface, dkGroup, dkFnSig}:
+        byName = true
+        break
     idx.entries[lm.name] = IndexEntry(
       srcHash: srcHashOf(lm.path),
       cachedAt: getTime().toUnix,
       deps: deps,
-      sigs: sigsOf(lm.m))
+      sigs: sigsOf(lm.m),
+      byNameOnly: byName)
   try:
     createDir(indexPathFor(dir).parentDir)
     writeFile(indexPathFor(dir), pack(idx))
