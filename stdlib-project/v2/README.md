@@ -54,9 +54,8 @@ Written down rather than worked around, because each is a language question:
   a `map` that returns "the same container, different element" — cannot be
   written. This is why the collection verbs are written against `Indexable[E]`
   and return `Seq`, rather than against an abstract container.
-- **No visibility marker.** Every top-level name is exported, which is why the
-  swap rule below is about names giving up their bare form rather than about
-  keeping helpers private.
+(A fourth — no visibility marker — is fixed: `public:` states a module's
+export list, see below.)
 
 A contract module imports nothing. Everything else imports the contracts it is
 written against. Nobody imports downward.
