@@ -985,4 +985,95 @@ fn main() -> int:
   t.quietly: t.badCheck "writing a [read] register field is rejected", "read"
   t.bugOpen "writing a [read] register field is rejected"
 
+  # 15. Group conformance resolves the required member BY NAME and takes the
+  # last declaration, ignoring the receiver. Two objects each providing the
+  # group's member is the ordinary case — that is what a group is FOR — and
+  # whichever is declared first is then reported as not conforming, naming
+  # the other one's `self`. Swap the two object declarations and the same
+  # program checks. Found 2026-09-12 writing a two-detector app against a
+  # `Sensing` group. Sibling of the member-call selection fixed 2026-09-05;
+  # that fix reached the call paths, not this one.
+  t.src """
+group Sensing:
+  fn reads({self: Self}) -> int
+
+object A:
+  a: u8
+  fn reads({self: A}) -> int:
+    return 1
+
+object B:
+  b: u8
+  fn reads({self: B}) -> int:
+    return 2
+
+fn one[T: Sensing]({x: T}) -> int:
+  return {self: x} reads
+
+fn main() -> int:
+  let p = {a: 1} A
+  return {x: p} one
+"""
+  t.quietly: t.okCheck "a group bound picks the member of the RECEIVER's type"
+  t.bugOpen "a group bound picks the member of the RECEIVER's type"
+
+  # 16. On NIM ONLY, an assignment to a register field lowers to the GETTER:
+  # `R.W = true` emits `tuck_R_W_get() = true`, which nim answers with
+  # "cannot be assigned to". The setter is emitted correctly right above it
+  # and simply never called. Odin and D both emit `tuck_R_W_set(true)` from
+  # the same source, so this is one backend's lowering, not the checker.
+  #
+  # The `..` chain form is fine on every backend — `R ..W {true}` emits the
+  # setter — which is why the corpus never caught it: examples/20 uses the
+  # chain form throughout.
+  t.src """
+register R at 0x40011000:
+  W: bit 0 [read, write]
+
+fn plain() -> void:
+  R.W = true
+  return
+
+fn main() -> int:
+  {} plain
+  return 0
+"""
+  t.quietly: t.hostBuilds "a register field assignment emits the setter"
+  t.bugOpen "a register field assignment emits the setter"
+
+  # 17. On ODIN ONLY, the dispatch closure for an interface method is typed
+  # `-> int` regardless of what the method returns, so any interface method
+  # returning an enum (or anything else non-int) fails to compile:
+  #   Cannot assign value '(proc(v: Detector) -> int)(d)' of type 'int'
+  #   to 'tuck_Demand' in return statement
+  # Nim and D build the same source. Odin has no switch expression, so its
+  # dispatch is wrapped in a closure (docs/interfaces.md) — the closure's
+  # return type is what is wrong.
+  t.src """
+type Demand:
+  | quiet
+  | busy
+
+interface Detector:
+  fn reads({self: Self}) -> Demand
+
+object Loop:
+  satisfies Detector
+  lane: u8
+  fn reads({self: Loop}) -> Demand:
+    return Demand.busy
+
+fn poll({d: Detector}) -> Demand:
+  return d.reads
+
+fn main() -> int:
+  let l = {lane: 1} Loop
+  let d = {d: l} poll
+  match d:
+    quiet: return 0
+    busy: return 1
+"""
+  t.quietly: t.hostBuilds "an interface method may return an enum"
+  t.bugOpen "an interface method may return an enum"
+
   t.finish()
