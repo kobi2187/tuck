@@ -292,6 +292,22 @@ fn main() -> int [io]:
 """
   t.runs "std/net does a real TCP round trip", 9
 
+  # The pool must drain a child that outruns the 64K pipe buffer. It did not
+  # until 2026-09-12: it polled for exit and read afterwards, so a child
+  # blocked in `write()` never exited, was never selected, and was never
+  # drained — the pool spun forever. Nothing in the suite emits that much
+  # today, which is why it stayed latent; this assertion is the thing that
+  # emits that much.
+  let big = t.needCmd(@["/bin/sh", "-c", "yes ABCDEFGHIJ | head -c 200000"])
+  if t.phase == pReport:
+    let (rc, outp) = t.resultOf(big)
+    if rc == 0 and outp.len >= 200000:
+      t.ok "the pool drains a child that outruns the pipe buffer (" &
+           $outp.len & " bytes)"
+    else:
+      t.no "the pool drains a child that outruns the pipe buffer",
+           "rc " & $rc & ", got " & $outp.len & " bytes of 200000"
+
   if t.phase != pReport: return
 
   block:

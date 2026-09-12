@@ -126,17 +126,23 @@ proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
           pending.dec
       break
 
-    # Wait for one to finish. Output is drained as it exits rather than in
-    # registration order, so a child that fills the 64K pipe buffer cannot
-    # wedge the pool behind an earlier one nobody is reading yet.
-    var reaped = -1
-    while reaped < 0:
-      for k, r in running:
-        if not r.p.running:
-          reaped = k
-          break
-      if reaped < 0: sleep(2)
-    let (p, idx) = running[reaped]
+    # Harvest one, by READING ITS PIPE TO EOF rather than by polling for its
+    # exit. The two are not interchangeable: children run with
+    # poStdErrToStdOut, so each has ONE pipe with a 64 KiB kernel buffer, and
+    # a child that writes past it blocks in `write()`. Blocked, it never
+    # exits; never exiting, an "is it done yet" scan never selects it; never
+    # selected, nobody ever drains it. The pool then spins on `sleep(2)`
+    # forever. (This is what the code did until 2026-09-12, under a comment
+    # asserting the opposite. A 200 KB child hung a spike for 8 s and 3748
+    # spins; reading first drains it in 0.00 s.)
+    #
+    # `readAll` blocks exactly as long as that child holds stdout open, which
+    # is the right amount of time to wait, and the reader is always running so
+    # the buffer can always move. Concurrency is unaffected — it comes from
+    # `startProcess`, not from the harvest order; all that is given up is
+    # reaping in completion order.
+    let (p, idx) = running[0]
+    let reaped = 0
     # Same EBADF guard as harness.sh: an intermittent failure to read a
     # child's pipe must fail THAT item with the reason, not abort the pool
     # and with it every other suite's results.
