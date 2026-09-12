@@ -1,0 +1,33 @@
+# v2.hash_fnv1a_str — Hashable for str, by FNV-1a.
+#
+# ONE ALGORITHM PER MODULE, so it can be replaced. A program imports exactly
+# the hash it wants; importing two is reported as a collision rather than
+# silently resolved, which is the guardrail rather than a limitation. See
+# README.md.
+
+import str
+import bits
+import value
+
+fn fnvOffsetBasis() -> u64:
+  return 14695981039346656037
+
+fn fnvPrime() -> u64:
+  return 1099511628211
+
+fn fnvStep({acc: u64, octet: u64}) -> u64:
+  let mixed = {a: acc, b: octet} bitXor
+  return mixed * fnvPrime
+
+fn hashOf({self: str}) -> u64:
+  var h = fnvOffsetBasis
+  for i in 0 .. {t: self} byteCount - 1:
+    let b = {t: self, index: i} byteAt
+    let octet = {value: b} u64
+    h = {acc: h, octet: octet} fnvStep
+  return h
+
+fn bucketOf[T: Hashable]({value: T, buckets: int}) -> int:
+  let h = {self: value} hashOf
+  let low = {a: h, b: 1073741823} bitAnd
+  return {value: low} int % buckets

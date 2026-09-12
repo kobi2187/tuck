@@ -1,0 +1,202 @@
+# v2.text — str's satisfiers, and the verbs they unlock.
+#
+# str's ENCODING, not its hashing: `hashOf` lives in a hash_* module, one per
+# algorithm, so the algorithm can be swapped without touching this. See
+# README.md.
+#
+# `compare` is deliberately NOT redeclared here — v2/ordering's generic one
+# already covers str, and a second would be a collision.
+
+import str
+import value
+
+fn toStr({self: str}) -> str:
+  return self
+
+fn isEmpty({self: str}) -> bool:
+  return {t: self} byteCount == 0
+
+# --- UTF-8: runes are the main position ------------------------------------
+# Text is Unicode. A byte offset is how UTF-8 is INDEXED — asking for the rune
+# at a byte offset is the honest interface, because seeking to "rune 5" costs
+# a walk either way and pretending otherwise hides that cost.
+#
+# A lead byte says how many bytes the character occupies; every decode below
+# is written on this one table, so the rule lives in a single place.
+
+type Rune = u32
+
+fn runeWidth({lead: u8}) -> int:
+  let b = {value: lead} int
+  if b < 128:
+    return 1
+  if b < 224:
+    return 2
+  if b < 240:
+    return 3
+  return 4
+
+fn continuationBits({self: str, index: int}) -> int:
+  # The low six bits of a continuation byte; 0 when the index ran off the end,
+  # which only a malformed string reaches.
+  if index >= {t: self} byteCount:
+    return 0
+  let b = {t: self, index: index} byteAt
+  return {value: b} int % 64
+
+fn leadBits({lead: u8, width: int}) -> int:
+  let b = {value: lead} int
+  if width == 1:
+    return b
+  if width == 2:
+    return b % 32
+  if width == 3:
+    return b % 16
+  return b % 8
+
+fn runeAt({self: str, at: int}) -> Rune?:
+  if at < 0 or at >= {t: self} byteCount:
+    return
+  let lead = {t: self, index: at} byteAt
+  let width = {lead: lead} runeWidth
+  var acc = {lead: lead, width: width} leadBits
+  for i in 1 .. width - 1:
+    acc = acc * 64 + {self: self, index: at + i} continuationBits
+  return {value: acc} u32
+
+fn nextRune({self: str, at: int}) -> int:
+  ## Where the NEXT rune starts — the one step every rune walk takes.
+  let lead = {t: self, index: at} byteAt
+  return at + {lead: lead} runeWidth
+
+fn runeCount({self: str}) -> int:
+  var n = 0
+  var at = 0
+  for at < {t: self} byteCount:
+    n = n + 1
+    at = {self: self, at: at} nextRune
+  return n
+
+fn noRunes() -> Seq[Rune]:
+  return []
+
+fn runes({self: str}) -> Seq[Rune]:
+  var acc = noRunes
+  var at = 0
+  for at < {t: self} byteCount:
+    let r = {self: self, at: at} runeAt
+    if r.ok:
+      acc = {items: acc, value: r.value} push
+    at = {self: self, at: at} nextRune
+  return acc
+
+# --- encoding back ----------------------------------------------------------
+fn noBytes() -> Seq[u8]:
+  return []
+
+fn encodeRune({r: Rune, into: Seq[u8]}) -> Seq[u8]:
+  let v = {value: r} int
+  var out = into
+  if v < 128:
+    let b = {value: v} u8
+    return {items: out, value: b} push
+  if v < 2048:
+    let lead = {value: 192 + v /i 64} u8
+    out = {items: out, value: lead} push
+    let tail = {value: 128 + v % 64} u8
+    return {items: out, value: tail} push
+  if v < 65536:
+    let lead = {value: 224 + v /i 4096} u8
+    out = {items: out, value: lead} push
+    let mid = {value: 128 + v /i 64 % 64} u8
+    out = {items: out, value: mid} push
+    let tail = {value: 128 + v % 64} u8
+    return {items: out, value: tail} push
+  let lead = {value: 240 + v /i 262144} u8
+  out = {items: out, value: lead} push
+  let hi = {value: 128 + v /i 4096 % 64} u8
+  out = {items: out, value: hi} push
+  let mid = {value: 128 + v /i 64 % 64} u8
+  out = {items: out, value: mid} push
+  let tail = {value: 128 + v % 64} u8
+  return {items: out, value: tail} push
+
+fn fromRunes({rs: Seq[Rune]}) -> str:
+  var bytes = noBytes
+  for i in 0 .. rs.len - 1:
+    bytes = {r: rs[i], into: bytes} encodeRune
+  return {bytes: bytes} fromBytes
+
+# --- the Encodable satisfier ------------------------------------------------
+# `toBytes` is str's UTF-8 encoding, which is what str already IS — so this is
+# a copy out to a byte sequence, not a transformation.
+fn toBytes({self: str}) -> Seq[u8]:
+  var out = noBytes
+  for i in 0 .. {t: self} byteCount - 1:
+    let b = {t: self, index: i} byteAt
+    out = {items: out, value: b} push
+  return out
+
+fn decoded({bytes: Seq[u8]}) -> str:
+  ## The inverse. NOT named `fromBytes`: that name belongs to the primitive
+  ## this calls, and Tuck has one name per module.
+  return {bytes: bytes} fromBytes
+
+# --- UTF-16, as an ENCODING rather than a second string type ---------------
+# `str` is UTF-8 and stays UTF-8: that is what all three backends' own string
+# type already is (Nim's string is bytes, Odin's is UTF-8, D's `string` is
+# immutable(char)[]). A second storage form would mean a second string type
+# and two of every verb, which is the mistake Rust, Go and Swift all avoid —
+# each keeps one storage and offers UTF-16 as a conversion.
+#
+# So this is where UTF-16 belongs: at the boundary that needs it — Windows
+# wide APIs, Java/JS/C# interop, a UTF-16 file — and nowhere else.
+
+fn noUnits() -> Seq[u16]:
+  return []
+
+fn encodeUtf16({r: Rune, into: Seq[u16]}) -> Seq[u16]:
+  ## One rune to one unit, or to a surrogate PAIR above the BMP. The pair is
+  ## the whole reason a UTF-16 index is not a rune index.
+  let v = {value: r} int
+  var out = into
+  if v < 65536:
+    let u = {value: v} u16
+    return {items: out, value: u} push
+  let rest = v - 65536
+  let hi = {value: 55296 + rest /i 1024} u16
+  out = {items: out, value: hi} push
+  let lo = {value: 56320 + rest % 1024} u16
+  return {items: out, value: lo} push
+
+fn toUtf16({self: str}) -> Seq[u16]:
+  var out = noUnits
+  let rs = {self: self} runes
+  for i in 0 .. rs.len - 1:
+    out = {r: rs[i], into: out} encodeUtf16
+  return out
+
+fn isHighSurrogate({unit: int}) -> bool:
+  return unit >= 55296 and unit < 56320
+
+fn isLowSurrogate({unit: int}) -> bool:
+  return unit >= 56320 and unit < 57344
+
+fn fromUtf16({units: Seq[u16]}) -> str:
+  ## A lone surrogate is passed through as the code point it literally is,
+  ## rather than dropped or replaced: this is a decoder, and silently editing
+  ## malformed input is how a round-trip stops being one.
+  var rs = noRunes
+  var i = 0
+  for i < units.len:
+    let u = {value: units[i]} int
+    var v = u
+    if {unit: u} isHighSurrogate and i + 1 < units.len:
+      let nxt = {value: units[i + 1]} int
+      if {unit: nxt} isLowSurrogate:
+        v = 65536 + (u - 55296) * 1024 + (nxt - 56320)
+        i = i + 1
+    let r = {value: v} u32
+    rs = {items: rs, value: r} push
+    i = i + 1
+  return {rs: rs} fromRunes
