@@ -931,4 +931,24 @@ fn main() -> int:
   t.emits "...emitted as else, not `of _`", r"else:"
   t.omits "...so no `of _` branch label is emitted", r"of _:"
 
+  # 12. An attribute name is reserved only INSIDE brackets — that is what the
+  # TK-PA08 diagnostic itself says: "Attribute names like `error` and
+  # `priority` are NOT restricted here: they are reserved only inside
+  # brackets, so they stay usable as fields, parameters and function names."
+  # A field really is allowed. A function name and a parameter name are not,
+  # so two thirds of that sentence is false. Found 2026-09-12 writing
+  # `bake {key: :priority}` in core/cmp's API doc.
+  t.src """
+type T:
+  priority: int
+
+fn priority({x: int}) -> int:
+  return x
+
+fn main() -> int:
+  return {x: 1} priority
+"""
+  t.quietly: t.okCheck "an attribute name is free outside brackets"
+  t.bugOpen "an attribute name is free outside brackets"
+
   t.finish()

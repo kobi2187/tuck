@@ -22,15 +22,25 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (0)
+## A. Open bugs (1)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
-None. Both entries that stood here are fixed and locked in as
-regression guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the
-qualified mutator in a `..` chain.
+**A1 — an attribute name is reserved everywhere, not just inside brackets.**
+`priority` names a field fine, but `fn priority(...)` is "Expected function or
+event name" and `{priority: int}` as a parameter is rejected too. The TK-PA08
+diagnostic states the intended rule in its own text — attribute names "are
+reserved only inside brackets, so they stay usable as fields, parameters and
+function names" — so the compiler contradicts its own explanation on two of
+those three. Test: `known_bugs`, "an attribute name is free outside brackets".
+Found 2026-09-12 writing `bake {key: :priority}` in `core/cmp`'s API doc; the
+doc now says `:rank` to work around it.
+
+The two entries that stood here before are fixed and locked in as regression
+guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the qualified
+mutator in a `..` chain.
 
 **Tracked but without a test yet — attempted to reproduce this session,
 blocked by a separate issue:** on Odin a task WITH ARGUMENTS is claimed to
