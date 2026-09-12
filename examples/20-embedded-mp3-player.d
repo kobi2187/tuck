@@ -113,7 +113,7 @@ rt.TuckResult!(rt.TuckUnit) tuck_streamReader(ubyte streamId, uint[] chunks) {
     foreach (tuck_i; chunks) {
         rt.TuckResult!(ubyte[512]) tuck_buf = rt.acquire(tuck_BufferPool);
         if (!(tuck_buf.status == rt.TuckStatus.Ok)) {
-            return;
+            return rt.tokVoid();
         }
         tuck_DMA1_CH3_EN_set(true);
         rt.release(tuck_BufferPool, tuck_buf.value);

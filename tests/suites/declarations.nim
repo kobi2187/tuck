@@ -386,6 +386,30 @@ fn main() -> int:
   t.hostBuilds "...and every backend's host compiler accepts it"
   t.runs "...and it runs", 0
 
+  # An early `return` inside a FALLIBLE TASK. genDFnDecl set the D backend's
+  # return context (retWrapped/retInnerD) and genDTaskDecl did not, so a bare
+  # return in a `task ... -> !void` emitted `return;` from a function typed
+  # rt.TuckResult — "`return` expression expected". Nim and Odin accepted the
+  # same shape, which is why only D ever said so.
+  t.src """
+pool BufferPool = Array[512, u8] [count: 2]
+
+task streamReader({streamId: u8, chunks: Seq[u32]}) -> !void [io]:
+  for i in chunks:
+    let buf = BufferPool.acquire
+    if not buf.ok:
+      return
+    BufferPool.release {buf.value}
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "an early return inside a fallible task checks"
+  t.emitsD "D wraps it in the carrier rather than returning nothing",
+           r"return rt\.tokVoid\(\)"
+  t.hostBuilds "...and every backend's host compiler accepts it"
+  t.runs "...and it runs", 0
+
   t.src """
 register RCC at 0x40021000:
   ON: bit 0 [read, write]

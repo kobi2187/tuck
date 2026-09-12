@@ -175,6 +175,14 @@ Verified fixed earlier on 2026-08-05:
 
 ## F. Watch-outs the test suite does not cover
 
+- **Odin compiles a DIRECTORY as one package.** `tuck b FILE --odin` in a
+  directory that already holds other emitted `.odin` files fails with
+  "Redeclaration of 'main'" (or of any shared symbol) naming a file you did
+  not build — `examples/` holds 44 of them. Not a compiler defect: the Odin
+  suite stages each example into its own package dir for exactly this reason,
+  and a scratch directory with two emitted files behaves the same way.
+  Mistaken for a compiler bug twice in one session, hence this entry.
+
 - **`Mailbox.lock`** was free under `--threads:off`; programs now build with
   `--threads:on`, so it is real uncontended cost on every message. Sends still
   only happen on the scheduler thread, so it currently protects nothing.

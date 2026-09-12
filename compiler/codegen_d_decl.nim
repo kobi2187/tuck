@@ -519,6 +519,20 @@ proc genDTaskDecl*(ctx: var DCodegenCtx, d: Decl): string =
   ## CALL SITE: calling it schedules a coroutine, and binding its result
   ## awaits completion (spec §9.2). The body needs no marking of its own.
   let retStr = ctx.dType(d.taskReturnType)
+  # A task's return type is fallible exactly as a fn's can be, and a bare
+  # `return` inside one has to produce the carrier — `return;` in a function
+  # returning TuckResult is "`return` expression expected". genDFnDecl set
+  # these three and genDTaskDecl did not, so every early return in a
+  # `task ... -> !void` emitted D that would not compile.
+  let payload = bangInner(d.taskReturnType)
+  ctx.retWrapped = payload != nil
+  ctx.retAbsentCapable = absentCapable(d.taskReturnType)
+  ctx.retInnerT = payload
+  ctx.retInnerD =
+    if payload == nil: ""
+    else:
+      let inner = ctx.dType(payload)
+      if inner == "void": "rt.TuckUnit" else: inner
   injectTailReturn(d.taskBody, retStr)
   result = retStr & " " & d.name & "(" & ctx.genDParams(d.taskParams) & ") {\n"
   ctx.indent = 1
@@ -531,6 +545,10 @@ proc genDTaskDecl*(ctx: var DCodegenCtx, d: Decl): string =
   result.add(dTrailingReturn(d.taskBody, retStr, 1))
   ctx.indent = 0
   ctx.currentParams = @[]
+  ctx.retWrapped = false
+  ctx.retAbsentCapable = false
+  ctx.retInnerT = nil
+  ctx.retInnerD = ""
   result.add("}\n")
 
 proc genDRegister*(ctx: var DCodegenCtx, d: Decl): string =

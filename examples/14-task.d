@@ -21,8 +21,8 @@ TRec_feed!(tuck_Feed) tuck_parse(T)(T payload) {
 rt.TuckResult!(TRec_feed!(tuck_Feed)) tuck_fetchFeed(string url) {
     rt.TuckResult!(http.TRec_http_body!(string)) tuck_resp = http.tuck_get(url);
     if ((tuck_resp.status == rt.TuckStatus.Ok)) {
-        return tuck_parse(tuck_resp.value.body);
+        return rt.tok(tuck_parse(tuck_resp.value.body));
     }
-    return rt.terr!(rt.TuckUnit)(cast(ushort)(tuck_resp.err));
+    return rt.terr!(TRec_feed!(tuck_Feed))(cast(ushort)(tuck_resp.err));
 }
 
