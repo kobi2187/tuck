@@ -314,12 +314,25 @@ the call path. `value_semantics.nim:391` uses this exact shape and only
     described as siblings when the three were in three different states.
   - README's document trust ranking exists precisely because this keeps
     happening, which is a workaround rather than a fix.
+  **MEASURED (2026-09-12): 53 of 343 ```tuck blocks in the repo's markdown do
+  not parse**, and that is after excluding the two shapes a doc legitimately
+  shows (TK-PA03 a top-level statement, TK-PA09 a signature with no body).
+  Eight are in the spec itself. Worked examples of what "wrong syntax" means
+  here:
+  - `tuck-spec.md` shows `poll()` / `done()` — Tuck has NO paren-call syntax,
+    and the parser has a dedicated diagnostic saying so.
+  - `TOUR.md` shows `io::printLine` — `io` is a reserved attribute name now,
+    so the module-qualified form no longer parses.
+  `tools/doc_snippets` measures this and `--list` names every offender; the
+  `doc_snippets` suite ratchets the count so it cannot grow while the real
+  work waits.
+
   The shape of the work: decide per document whether it is NORMATIVE (the
   spec: must match the compiler, and a gap gets a "Status: not implemented"
   note like §6.3 and now §7.3) or a NARRATIVE (tours, articles: may lag, and
   should say as of when). Then reconcile each against the compiler, since the
   compiler is the authority the README already names. `tuck validate`'s
-  coverage report is one mechanical input for the syntax half.
+  coverage report is the other mechanical input.
 
 - [ ] **Actor threading model.** Today all actors AND tasks share one
   cooperative scheduler on one OS thread (spec §9.4) — no preemption, an
