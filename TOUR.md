@@ -61,8 +61,9 @@ arithmetic over them. Nothing runs at startup. Runtime state has three
 homes: pass it down from main, let an actor own it, or the resource
 registry (§7.4).
 
-⚠ `const timeout = 5.ms` is rejected — unit sugar is a fn call, and const
-initializers can't call (gap 6).
+`const timeout = 5.ms` works: a const initializer may call a pure fn, and
+`5.ms` is postfix application of `std/time`'s `ms`. `[io]` calls and record
+constructions are still rejected — `Const Error: 'const k' must be pure`.
 
 ## 4. Mutation is explicit: `..` on a var
 

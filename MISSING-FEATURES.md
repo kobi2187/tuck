@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (1)
+## A. Open bugs (2)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -37,6 +37,15 @@ function names" — so the compiler contradicts its own explanation on two of
 those three. Test: `known_bugs`, "an attribute name is free outside brackets".
 Found 2026-09-12 writing `bake {key: :priority}` in `core/cmp`'s API doc; the
 doc now says `:rank` to work around it.
+
+**A2 — a fn with no declared return type accepts `return x`, and emits Nim
+that does not compile.** `fn f({x: int}):` followed by `return x` passes
+`tuck ch`, then `tuck c` writes `proc tuck_f*(x: int): void = return x` and
+`nim c` answers "no return type declared". Whether omitting `->` should be
+rejected outright or should mean `void` is a ruling; returning a value from
+such a fn is wrong under either. Test: `known_bugs`, "a value returned from a
+fn with no return type is rejected". Found 2026-09-12 checking TUTORIAL.md's
+claim that a return type is mandatory — it is not.
 
 The two entries that stood here before are fixed and locked in as regression
 guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the qualified

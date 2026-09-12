@@ -7,9 +7,15 @@ It is intentionally small, focused on the language shape rather than implementat
 
 Tuck is a postfix / concatenative-inspired language built around one strong rule:
 
-- every function receives exactly one named struct argument
+- a call always passes one named struct, and its fields bind to the
+  function's parameters by name
 
 That struct carries the data. If a function needs more than one value, they are grouped into one struct.
+
+A *declaration* may write its parameters braced (`fn f({x: int, y: int})`) or
+bare (`fn f(x: int, y: int)`) — the call site looks the same either way, and
+`std/time`'s `fn ms(value: u32) -> Milliseconds` uses the bare form. Braced is
+the idiom, because it names the payload the caller will build.
 
 ## 2. Named structs
 
@@ -27,7 +33,10 @@ let response = request fetch parse episodes
 
 ## 3. Function signatures
 
-All functions take one named struct argument and must declare a return type.
+Declare the return type. It is the idiom everywhere in this repo, and it is
+what makes a `!T` or `?T` result visible at the call site. (The compiler does
+not currently insist — a fn with no `->` is accepted, which is
+MISSING-FEATURES A2, not a style you should copy.)
 
 ```tuck
 fn classify({celsius: f32}) -> {state: ThermalState}:

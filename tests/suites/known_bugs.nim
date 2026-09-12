@@ -951,4 +951,20 @@ fn main() -> int:
   t.quietly: t.okCheck "an attribute name is free outside brackets"
   t.bugOpen "an attribute name is free outside brackets"
 
+  # 13. A fn that declares no return type still accepts `return x`, and the
+  # emitted Nim is `proc tuck_f*(x: int): void = return x`, which nim rejects
+  # with "no return type declared". `tuck ch` says OK, so the gap reaches
+  # codegen. Correct either way: whether omitting `->` should be rejected
+  # outright or should mean void, returning a VALUE from such a fn is wrong.
+  # Found 2026-09-12 checking TUTORIAL.md's "must declare a return type".
+  t.src """
+fn f({x: int}):
+  return x
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "a value returned from a fn with no return type is rejected", "return"
+  t.bugOpen "a value returned from a fn with no return type is rejected"
+
   t.finish()
