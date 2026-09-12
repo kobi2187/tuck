@@ -64,13 +64,16 @@ everywhere, which is why the corpus never caught it — examples/20 uses the
 chain form throughout. Test: `known_bugs`, "a register field assignment emits
 the setter".
 
-**A6 — on Odin only, an interface method may not return an enum.** The
-dispatch closure is typed `-> int` whatever the method returns: "Cannot assign
-value '(proc(v: Detector) -> int)(d)' of type 'int' to 'tuck_Demand'". Odin
-has no switch expression so its dispatch is wrapped in a closure
+**A6 — on Odin only, an interface method may only return `int`.** The dispatch
+closure is emitted as `proc(v: Iface) -> int` whatever the method returns, so
+it is right by luck for `int` and wrong for everything else: an enum, `bool`,
+`u8` and a record were all measured and all fail ("Cannot assign value
+'(proc(v: Detector) -> int)(d)' of type 'int' to 'tuck_Demand'"). Odin has no
+switch expression so its dispatch is wrapped in a closure
 (`docs/interfaces.md`); the closure's return type is what is wrong. Nim and D
-build the same source. Test: `known_bugs`, "an interface method may return an
-enum".
+build all five. An interface whose methods return `bool` — a `Validator`, a
+`Predicate` — is Nim/D-only today and nothing says so until the Odin build
+runs. Test: `known_bugs`, "an interface method may return an enum".
 
 **A4 — a group bound picks the member of whichever type was declared LAST.**
 Two objects each providing the group's member is the ordinary case, and
