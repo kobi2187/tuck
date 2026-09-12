@@ -298,6 +298,29 @@ the call path. `value_semantics.nim:391` uses this exact shape and only
 
 ## 9. Backlog — raised in conversation, not yet started
 
+- [ ] **The markdown is off from reality, and reads badly for a newcomer**
+  (user, 2026-09-12). Not a tidy-up: the docs assert things that are not
+  true, which is worse than silence because a reader has no way to tell.
+  Concrete instances found in ONE session:
+  - spec §7.3 described `arena` scope analysis in the present tense while
+    `arena` parses to an empty type and drops its body (fixed by adding a
+    status note, not by implementing).
+  - spec §8.1 read as though `register` worked everywhere; every field read
+    and write failed to compile on Nim.
+  - `COMPILER-TOUR.md` still describes the hand-written AST serializer that
+    `ast_serializer.nim` replaced with jsony (CLAUDE.md already flags this).
+  - `MISSING-FEATURES.md`'s open-bug count is checked by the suite, but its
+    prose sections drift freely — the `register`/`arena`/`pool` trio were
+    described as siblings when the three were in three different states.
+  - README's document trust ranking exists precisely because this keeps
+    happening, which is a workaround rather than a fix.
+  The shape of the work: decide per document whether it is NORMATIVE (the
+  spec: must match the compiler, and a gap gets a "Status: not implemented"
+  note like §6.3 and now §7.3) or a NARRATIVE (tours, articles: may lag, and
+  should say as of when). Then reconcile each against the compiler, since the
+  compiler is the authority the README already names. `tuck validate`'s
+  coverage report is one mechanical input for the syntax half.
+
 - [ ] **Actor threading model.** Today all actors AND tasks share one
   cooperative scheduler on one OS thread (spec §9.4) — no preemption, an
   actor with a slow handler blocks everything else. User's proposal
