@@ -19,8 +19,9 @@ interface Animal:
   fn noise({self: Self}) -> int
 ```
 
-An object declares conformance with a `satisfies` line in its body, beside the
-`+` composition lines. One object may satisfy several interfaces:
+An object declares conformance with a `satisfies` line at the top of its body,
+before the fields and the `+` composition lines. One object may satisfy several
+interfaces:
 
 ```tuck
 object Dog:
@@ -149,17 +150,18 @@ The variant must be able to hold any satisfying type, so each one is a branch
 whether or not a given program ever wraps it. That needs the whole-program set,
 which `satisfies` declares and codegen collects across the module closure.
 
-### Both backends
+### Every backend
 
-Nim and Odin emit the same structure from one source; only the spelling differs:
+Nim, Odin and D emit the same structure from one source; only the spelling
+differs:
 
-| | Nim | Odin |
-|---|---|---|
-| variant | `case tag*: AnimalTag` | `tag: AnimalTag` + payload fields |
-| construction | `Animal(tag: …, tuck_DogVal: d)` | `Animal{tag = …, tuck_DogVal = d}` |
-| dispatch | `case a.tag` (an expression) | `switch v.tag` inside a closure, since Odin has no switch expression |
+| | Nim | Odin | D |
+|---|---|---|---|
+| variant | `case tag*: AnimalTag` | `tag: AnimalTag` + payload fields | `AnimalTag tag;` + one field per branch |
+| construction | `Animal(tag: …, tuck_DogVal: d)` | `Animal{tag = …, tuck_DogVal = d}` | `Animal(AnimalTag.…, tuck_DogVal: d)` |
+| dispatch | `case a.tag` (an expression) | `switch v.tag` inside a closure, since Odin has no switch expression | `switch (v.tag)` inside a function |
 
-Both produce 42 for the example above.
+All three produce 42 for the example above.
 
 ---
 

@@ -153,7 +153,7 @@ The `Resolution` object holds:
 | `wraps` / `ifacePairs` / `ifaceCalls` | interface wrapping, demand-driven (spec §5.3) |
 
 There is **one global instance**, `semLayer`. Single-writer in two senses: in
-PHASE (checker writes; lowering and both backends only read; `mangleProgram` is
+PHASE (checker writes; lowering and the backends only read; `mangleProgram` is
 the one exception and runs before the copies) and in THREAD (tuck is built
 `--threads:off`). Parallel module checking would need this sharded per module
 and merged at the join — and `ast.globalNodeCounter` breaks first, and silently

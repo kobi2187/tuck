@@ -269,20 +269,20 @@ already-lowered code.
 
 The general principle: **shrink the language before you emit it.** Every
 construct eliminated here is one that each backend doesn't need to know about —
-and with two backends, that saving doubles.
+and with three backends, that saving triples.
 
 ---
 
 ## Stage 8 — Codegen: printing it out
 
 **Files:** `compiler/codegen.nim` (Nim), `compiler/codegen_odin.nim` (Odin),
-`compiler/codegen_common.nim` (the shared bits)
+`compiler/codegen_d.nim` (D), `compiler/codegen_common.nim` (the shared bits)
 
 The final stage walks the tree and prints source code in the target language.
 It's the least mysterious stage — mostly string building — but there are two
 things worth noticing.
 
-**One: the shape of a code generator.** Both backends are built around a big
+**One: the shape of a code generator.** Every backend is built around a big
 `case` over node kinds, one arm per kind. Those `case` statements are
 deliberately left whole, even though they're long, because Nim errors on a
 missing arm. Add a new node kind and the compiler immediately tells you every
@@ -348,16 +348,16 @@ Dependencies point one way only. Nothing below depends on anything above it:
        |             |              |
        +-------------+--------------+
                      |
-              codegen_common                    what both backends share
-                 /        \
-          codegen        codegen_odin           the two emitters
-                 \        /
+              codegen_common                    what the backends share
+              /       |       \
+       codegen  codegen_odin  codegen_d         the three emitters
+              \       |       /
                    tuck.nim                     the driver
 ```
 
 If you're adding something, this tells you where it goes. A new question about
 the tree belongs in `ast_query`. A new check belongs in `typecheck`. A new
-emitted construct belongs in both backends — and if you find yourself writing
+emitted construct belongs in every backend — and if you find yourself writing
 the same non-syntax logic twice, that's `codegen_common` calling.
 
 ---

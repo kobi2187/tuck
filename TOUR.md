@@ -302,7 +302,7 @@ makes it foreign: structs are passed and returned by value, a fieldless type
 is an opaque handle, `{A = 10}` pins an enum to the header's numbering, and a
 `fnsig` becomes a C function pointer. `lib:` names the library to link (a bare
 name, or a path to a vendored `.c`), so no build plumbing is needed at the
-call site. Everything works identically on both backends.
+call site. Everything works identically on every backend.
 
 `tuck build --nim:"--os:standalone --cpu:arm"` forwards cross-compilation
 flags; `--odin` builds the same program through the Odin backend instead

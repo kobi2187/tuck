@@ -2,8 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Tuck is a systems language that transpiles to **Nim** and **Odin**. The compiler
-itself is written in Nim. Two backends, one checked AST.
+Tuck is a systems language that transpiles to **Nim**, **Odin** and **D**. The
+compiler itself is written in Nim. Three backends, one checked AST.
 
 ## Read first
 
@@ -120,7 +120,7 @@ currently end in `else` (`codegen_decl.nim:679`, `codegen_odin_decl.nim:1071`), 
 The clever reuse always costs more later, because every downstream stage has to
 learn the trick.
 
-**Both backends lower their own deep copy** of the checked AST (`config.nims`
+**Each backend lowers its own deep copy** of the checked AST (`config.nims`
 enables `--deepcopy:on` for this). Lowering mutates in place; sharing one tree
 means the second backend lowers already-lowered code.
 
