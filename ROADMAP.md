@@ -504,7 +504,12 @@ and those must stay green.
   Scheduler §9.4 is done (see Partial above).
 - Stack-depth budgets `[stack: N]` §6.2
 - Complexity limit §6.3 (ruling: hard error)
-- Error.x validated against a declared error enum
+- ~~Error.x validated against a declared error enum~~ MOSTLY DONE, verified
+  2026-09-12: raise sites are validated (variant typo, shorthand typo,
+  cross-enum) with or without a declared list, and `match r.err` arms are
+  validated when the producer declares `[error: …]`. The remaining gap is
+  narrow: with NO declared list, an arm naming a nonexistent variant is
+  accepted and emits `of Wibble:`, which nim refuses. See issue #35
 - ~~Visibility (pub/private)~~ DONE 2026-09-11: a `public:` block lists bare
   names, and the restriction reaches all three backends' visibility markers.
   Imported types resolve by bare name across a module boundary. STILL
