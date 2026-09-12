@@ -194,4 +194,121 @@ fn main() -> int:
       if rc2 == 0: t.ok "...and still resolves once the index is warm"
       else: t.no "...and still resolves once the index is warm", out2
 
+  # --- `public:` — the module's export list --------------------------------
+  # Bare names, whitespace-separated. Tuck has no overloading, so a name IS
+  # the signature: an export list repeating parameters would be a second copy
+  # to keep in step with the declaration, and the first thing to go stale.
+  #
+  # The case it exists for: two modules implementing ONE contract share their
+  # internal helper names by nature. Before this, importing both collided on
+  # a helper neither meant to share.
+  t.src """
+import lib
+
+fn main() -> int:
+  let m = {v: 7} Box
+  return {self: m} get - 7
+"""
+  t.addFile("lib.tuck", """public:
+  get Box
+
+type Box = {v: int}
+
+fn get({self: Box}) -> int:
+  return self.v
+
+fn helper({n: int}) -> int:
+  return n + 1
+""")
+  # Check-level only: CONSTRUCTING an imported record is broken on the D
+  # backend independently of `public:` (without a public block the same
+  # program fails as "undefined identifier tuck_Box"), so building this one
+  # would assert someone else's bug.
+  t.okCheck "an exported name and type are visible to the importer"
+
+  t.src """
+import lib
+
+fn main() -> int:
+  return {n: 1} helper - 2
+"""
+  t.addFile("lib.tuck", """public:
+  get
+
+fn get({n: int}) -> int:
+  return n
+
+fn helper({n: int}) -> int:
+  return n + 1
+""")
+  t.badCheck "a name left out of the list is not visible", "'helper' is not a declared callable"
+
+  # Private means private: qualifying does not reach past the list.
+  t.src """
+import lib
+
+fn main() -> int:
+  return {n: 1} lib::helper - 2
+"""
+  t.addFile("lib.tuck", """public:
+  get
+
+fn get({n: int}) -> int:
+  return n
+
+fn helper({n: int}) -> int:
+  return n + 1
+""")
+  t.badCheck "...not even qualified", "module 'lib' has no function 'helper'"
+
+  # A name in the list that nothing declares is a typo, and a silent one: the
+  # module would simply export less than its author believes.
+  t.src """
+import lib
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile("lib.tuck", """public:
+  get nosuch
+
+fn get({n: int}) -> int:
+  return n
+""")
+  t.badCheck "an exported name the module does not declare is refused",
+    "'nosuch' is exported by the `public:` block"
+
+  # The payoff: two implementations of one contract, each with its own
+  # internal `step`, both imported.
+  t.src """
+import alpha
+import beta
+
+fn main() -> int:
+  let a = {n: 1} alpha::run
+  let b = {n: 1} beta::run
+  return a + b - 103
+"""
+  t.addFile("alpha.tuck", """public:
+  run
+
+fn step({n: int}) -> int:
+  return n + 1
+
+fn run({n: int}) -> int:
+  return {n: n} step
+""")
+  t.addFile("beta.tuck", """public:
+  run
+
+fn step({n: int}) -> int:
+  return n + 100
+
+fn run({n: int}) -> int:
+  return {n: n} step
+""")
+  t.okCheck "two implementations sharing a private helper name both import"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and each reaches its own helper", 0
+
   t.finish()

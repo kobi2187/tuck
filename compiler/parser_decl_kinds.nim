@@ -990,3 +990,30 @@ proc parseGroupDecl*(p: var Parser, sp: Span): Decl =
   let (generics, _) = p.parseBracketedNames("group type parameter")
   Decl(span: sp, kind: dkGroup, name: name, groupGenerics: generics,
        groupMembers: p.parseSigBlock("group"))
+
+proc parsePublicDecl*(p: var Parser, sp: Span): Decl =
+  ## `public:` — the module's export list. Bare NAMES, whitespace-separated,
+  ## across as many lines as it takes:
+  ##
+  ##     public:
+  ##       get put hasKey
+  ##       StrMap
+  ##
+  ## No parameters, no arity, no return type. Tuck has no overloading
+  ## (ROADMAP 2026-08-24), so a name IS the signature — an export list that
+  ## repeated the signature would be a second copy to keep in step with the
+  ## declaration, and the first thing to go stale.
+  ##
+  ## One list covers every kind of name a module can export — fns, types,
+  ## objects, groups, fnsigs — because an importer resolves all of them the
+  ## same way: by name.
+  discard p.advance()  # eat 'public'
+  discard p.expect(tkColon)
+  discard p.expect(tkNewline)
+  var names: seq[string]
+  p.indentedBlock:
+    while p.current().kind notin {tkNewline, tkEOF}:
+      names.add(p.expect(tkIdent,
+                          "Expected an exported name in the `public:` block").value)
+    if p.current().kind == tkNewline: discard p.advance()
+  Decl(span: sp, kind: dkPublic, name: "", publicNames: names)

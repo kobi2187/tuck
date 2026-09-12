@@ -20,6 +20,9 @@ import value
 import collection
 import hash_fnv1a_str
 
+public:
+  StrMap withCapacity get put hasKey count isEmpty
+
 type StrMap[V] = {slots: Seq[int], keys: Seq[str], vals: Seq[V]}
 
 fn noSlots() -> Seq[int]:

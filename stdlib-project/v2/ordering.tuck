@@ -2,6 +2,10 @@
 
 import value
 
+public:
+  compare equals minOf maxOf clamped
+  isBefore isAfter isSame flipped breakTiesWith
+
 fn compare[T]({self: T, other: T}) -> Order:
   if self < other:
     return Order.Before

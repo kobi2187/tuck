@@ -990,7 +990,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
     # `static: assert`. D needs no such workaround.)
     "static assert(" & ctx.genDExpr(d.assertExpr) & ");\n"
   of dkErrors: ctx.genDErrHandler(d)
-  of dkImport: ""
+  of dkImport, dkPublic: ""
   of dkSelect: dUnsupported("top-level on select (arrives with the Fiber runtime)")
   of dkFnSig: ctx.genDFnSig(d)
   of dkSatisfies: dUnsupported("top-level satisfies (M4)")

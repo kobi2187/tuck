@@ -54,7 +54,8 @@ proc buildDeclIndex*(m: Module): DeclIndex =
     # error here instead of a lookup that quietly returns false.
     of dkFn, dkMixin, dkExtern, dkPending, dkPool, dkFnSig, dkRegistry,
        dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
-       dkSelect, dkSatisfies, dkInterface, dkGroup, dkWhen: discard
+       dkSelect, dkSatisfies, dkInterface, dkGroup, dkWhen,
+       dkPublic: discard
 
 proc isRecordTypeIdx*(idx: DeclIndex, name: string): bool =
   name in idx.recordNames

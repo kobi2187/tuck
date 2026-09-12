@@ -9,6 +9,9 @@ import str
 import bits
 import value
 
+public:
+  hashOf bucketOf
+
 fn fnvOffsetBasis() -> u64:
   return 14695981039346656037
 

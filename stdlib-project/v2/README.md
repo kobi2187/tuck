@@ -79,11 +79,31 @@ import hash_fnv1a_str     # or hash_xxh64_str, or a binding to an external lib
 Nothing else in the program changes. A verb bounded by `[T: Hashable]` is
 written once and works against whichever `hashOf` is in scope.
 
-**One satisfier per group per program.** Tuck has no overloading: a second
-`fn hashOf` in a module is "declared twice", and two imported modules both
-exporting one is reported as a collision rather than silently resolved. That
-is the guardrail, not a limitation — it makes "which hash is this program
-using" a question with exactly one answer, visible in the import list.
+**`public:` states the contract surface.** Bare names, whitespace-separated,
+across as many lines as it takes:
+
+```tuck
+public:
+  hashOf combined bucketOf
+```
+
+No parameters, no arity, no return type — Tuck has no overloading, so a name
+IS the signature, and a list repeating it would be a second copy to keep in
+step. One list covers every kind of name (fn, type, object, group, fnsig),
+because an importer resolves all of them the same way.
+
+A module with no `public:` block exports everything, which is what every
+module written before the block existed relies on.
+
+This is what lets two implementations of one contract coexist: they share
+their internal helper names by nature — `fnvStep` is in both hash modules —
+and only the listed names ever reach an importer.
+
+**One satisfier per group per program** still holds for the CONTRACT names.
+A second `fn hashOf` in a module is "declared twice"; two imported modules
+both exporting one gives the bare name up, and it stays reachable as
+`mod::hashOf`. That makes "which hash is this program using" a question with
+exactly one answer, visible at the call.
 
 The practical consequence: a hash module is per algorithm *and* per key kind,
 because one `hashOf` cannot cover both `str` and numbers. `hash_fnv1a_num` and

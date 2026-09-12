@@ -11,6 +11,11 @@ import seq
 import str
 import value
 
+public:
+  Rune toStr isEmpty runeAt nextRune runeCount runes
+  encodeRune fromRunes toBytes decoded
+  toUtf16 fromUtf16
+
 fn toStr({self: str}) -> str:
   return self
 

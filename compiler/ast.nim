@@ -493,6 +493,11 @@ type
                 # declaration vs generic instantiation) by completely
                 # different code paths, and a flag would just move the "which
                 # kind is this really" question one field over.
+    dkPublic    # `public:` — the module's export list, bare names only.
+                # Tuck has no overloading (ROADMAP 2026-08-24), so a name is
+                # the whole signature and an export list needs nothing else:
+                # no parameters, no arity, no return type to keep in step with
+                # the declaration it names.
     dkWhen      # `when TARGET == "value":` — compile-time platform selection
                 # (spec §8.3). Resolved by modules.resolveWhenBlocks right after
                 # load, BEFORE typecheck ever runs: a non-matching block's decls
@@ -579,6 +584,8 @@ type
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin, dkExtern, dkPending:
       mixinMembers*: seq[Decl]
+    of dkPublic:
+      publicNames*: seq[string]
     of dkWhen:
       whenTargetValue*: string  # the string literal on the RHS of `TARGET ==`
       whenDecls*: seq[Decl]     # top-level declarations gated by this block

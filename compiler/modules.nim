@@ -56,6 +56,7 @@
 import os, strutils, hashes, sets, tables, times
 import msgpack4nim
 import ast, parser, rewrite
+import ast_query   # exportedNames — one definition, shared with the checker
 import ../lexer
 
 type
@@ -335,9 +336,16 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
       if d != nil and d.kind == dkType and not d.span.file.startsWith(ImportedTypeMarker):
         own.add(d)
     typesByName[lm.name] = own
+  # A module's `public:` list, if it has one, decides which of its types an
+  # importer may see. Without a list everything is visible, as it was before
+  # the block existed.
+  var exportsByName = initTable[string, (bool, HashSet[string])]()
+  for lm in prog: exportsByName[lm.name] = exportedNames(lm.m)
   for i in 0 ..< prog.len:
     for imp in importsOf(prog[i].m):
+      let (restricted, allowed) = exportsByName.getOrDefault(imp, (false, initHashSet[string]()))
       for td in typesByName.getOrDefault(imp):
+        if restricted and td.name notin allowed: continue
         let marked = Decl(kind: dkType, name: td.name, generics: td.generics,
                           typeBody: td.typeBody, typeMembers: td.typeMembers,
                           span: Span(line: td.span.line, col: td.span.col,

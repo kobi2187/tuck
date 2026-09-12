@@ -4490,14 +4490,30 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
       tc.resolveTypeNames(m)
     except SemanticError as err:
       raise withModulePrefix(err, path)
-    result.byMod[name] = tc.fnSigs
+    # `public:` decides what leaves this module. Filtered HERE, at the one
+    # place a module's names are gathered for its importers, rather than at
+    # each of the four consumers — the module's own checking reads its decls
+    # directly and still sees everything it declared.
+    let (restricted, allowed) = exportedNames(m)
+    proc visible(n: string): bool =
+      not restricted or n in allowed or "::" in n
+    var sigs: Table[string, seq[FnSig]]
+    for n, sg in tc.fnSigs:
+      if visible(n): sigs[n] = sg
+    result.byMod[name] = sigs
     result.pendByMod[name] = tc.pendingFns
     result.importsByMod[name] = moduleImports(m)
-    result.groupsByMod[name] = tc.groupDecls
-    result.boundsByMod[name] = tc.groupBoundsOf
+    var groups: Table[string, Decl]
+    for n, gd in tc.groupDecls:
+      if visible(n): groups[n] = gd
+    result.groupsByMod[name] = groups
+    var bounds: Table[string, seq[seq[Type]]]
+    for n, bs in tc.groupBoundsOf:
+      if visible(n): bounds[n] = bs
+    result.boundsByMod[name] = bounds
     var sigTypes: Table[string, seq[string]]
     for n in tc.fnSigNames:
-      sigTypes[n] = tc.fnSigGenerics.getOrDefault(n)
+      if visible(n): sigTypes[n] = tc.fnSigGenerics.getOrDefault(n)
     result.fnSigTypesByMod[name] = sigTypes
 
 proc addBare(scope: var ImportScope, fname, imp: string, sig: seq[FnSig]) =

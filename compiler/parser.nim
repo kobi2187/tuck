@@ -232,6 +232,7 @@ proc parseDecl*(p: var Parser): Decl =
   of tkDistinct: return p.parseDistinctDecl(sp)
   of tkInterface: return p.parseInterfaceDecl(sp)
   of tkGroup: return p.parseGroupDecl(sp)
+  of tkPublic: return p.parsePublicDecl(sp)
   of tkMixin: return p.parseMixinDecl(sp)
   of tkPlus: return p.parseCompositionDecl(sp)
   of tkConst: return p.parseConstDecl(sp)

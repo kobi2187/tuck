@@ -34,7 +34,7 @@
 # sizes — 32,000 lines still checks in about a third of a second. The fix, when
 # a real program makes it hurt, is a name -> decl table built once per module
 # and shared by every pass, not micro-optimizing the scan.
-import ast, strutils, tables
+import ast, strutils, tables, sets
 import resolution
 export strutils.repeat, strutils.capitalizeAscii
 
@@ -110,6 +110,26 @@ proc cExternFn*(m: Module, name: string): Decl =
     if mem.name == name and mem.externHeader != "": return mem
   nil
 
+proc exportedNames*(m: Module): (bool, HashSet[string]) =
+  ## `public:` — the names this module lets an importer see, and whether it
+  ## said anything at all.
+  ##
+  ## A module with NO public block exports everything, which is what every
+  ## module written before the block existed relies on. A module WITH one
+  ## exports exactly the listed names: the list is the contract surface, and
+  ## a name absent from it is the module's own business.
+  ##
+  ## One list for every kind of name — fn, type, object, group, fnsig —
+  ## because an importer resolves all of them the same way, by name. Tuck has
+  ## no overloading, so the name alone is unambiguous.
+  var names = initHashSet[string]()
+  var declared = false
+  for d in m.decls:
+    if d != nil and d.kind == dkPublic:
+      declared = true
+      for n in d.publicNames: names.incl(n)
+  (declared, names)
+
 iterator members*(d: Decl): Decl =
   ## The declarations nested inside another, whichever field holds them.
   ## Callers that just want "everything inside this decl" should not have to
@@ -139,7 +159,7 @@ iterator members*(d: Decl): Decl =
     # body as a result.
     of dkTask, dkFn, dkRegistry, dkPool, dkExpr, dkConst, dkRegister,
        dkStaticAssert, dkErrors, dkImport, dkSelect, dkFnSig, dkSatisfies,
-       dkWhen: discard
+       dkWhen, dkPublic: discard
 
 proc declaredFields*(d: Decl): seq[FieldDef] =
   ## The fields a declaration introduces, whichever field holds them. A record

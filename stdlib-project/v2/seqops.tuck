@@ -3,6 +3,9 @@
 import value
 import collection
 
+public:
+  at count isEmpty firstOf lastOf atOr countOf
+
 fn at[T]({self: Seq[T], index: int}) -> T:
   return self[index]
 

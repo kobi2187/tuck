@@ -213,6 +213,7 @@ iterator childDecls*(d: Decl): Decl =
       for m in d.ifaceMembers: yield m
     of dkGroup:
       for m in d.groupMembers: yield m
+    of dkPublic: discard   # a list of NAMES, not declarations
     of dkActor:
       for h in d.handlers: yield h
     of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
@@ -257,7 +258,7 @@ iterator ownTypes*(d: Decl): Type =
     # members — childDecls reaches those.
     of dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkMixin, dkExtern, dkPending, dkInterface,
-       dkGroup, dkWhen:
+       dkGroup, dkWhen, dkPublic:
       discard
 
 iterator ownExprs*(d: Decl): Expr =
@@ -278,7 +279,7 @@ iterator ownExprs*(d: Decl): Expr =
       for arm in d.selectArms: yield arm.body
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
        dkGroup, dkActor, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
-       dkFnSig, dkSatisfies:
+       dkFnSig, dkSatisfies, dkPublic:
       discard
 
 proc assignIds*(e: Expr, next: var uint32) =

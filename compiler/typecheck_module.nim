@@ -220,6 +220,22 @@ proc failIfDuplicateMembers*(m: Module) =
     case d.kind
     of dkFn:
       failIfDuplicateMember("parameter", d.name, paramNames(d.fnParams))
+    of dkPublic:
+      var exported: seq[(string, Span)]
+      for n in d.publicNames: exported.add((n, d.span))
+      failIfDuplicateMember("exported name", "public", exported)
+      # A name in the list that nothing declares is a typo, and a silent one:
+      # the module simply exports less than its author believes. Caught here,
+      # where the list is, rather than at whichever importer misses it.
+      for n in d.publicNames:
+        var found = false
+        for other in m.decls:
+          if other != nil and other.kind != dkPublic and other.name == n:
+            found = true
+            break
+        if not found:
+          fail("Structure Error: '" & n & "' is exported by the `public:` " &
+               "block but this module declares no such name", d.span)
     of dkTask:
       failIfDuplicateMember("parameter", d.name, paramNames(d.taskParams))
     of dkObject:
