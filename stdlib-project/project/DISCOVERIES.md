@@ -74,3 +74,17 @@
   (`fancy-yawning-karp.md`) was stale and got deleted once confirmed. Direct
   field cycles lower to a synthesized `Seq[T]` handle automatically, no
   annotation. Verified fresh with a Leaf/Branch spike, all 3 backends, exit 0.
+- DESIGN RULING (user, 2026-09-12): the stdlib should LEVERAGE Tuck's own
+  features rather than port shapes from other standard libraries. `Option` is
+  the worked example — Tuck spells absence `T?`, built into the language with
+  `.ok`/`.value` narrowing the checker enforces, so an `Option[T]` type is
+  redundant vocabulary. (The v2 contracts had exactly that mistake: `Option[V]`
+  was an undeclared name that gradual typing swallowed for four commits; fixed
+  in 9fbc224 by writing `V?`.) The general form: before adding a stdlib type,
+  ask whether a language feature already says it — and if so, the stdlib's job
+  is to SHOW that spelling, not to wrap it.
+- DESIGN RULING (user, 2026-09-12): what the stdlib contains is decided by
+  what the APPS actually need, not by parity with other stdlibs. The apps
+  under `stdlib-project/apps/` are the demand signal, in both directions —
+  they say which modules earn their place, and they are where Tuck's own
+  idioms get demonstrated. A contract nothing asks for is speculative.

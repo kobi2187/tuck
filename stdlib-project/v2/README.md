@@ -35,6 +35,31 @@ ONE algorithm each, interchangeable:
 contract is agreed first and satisfied later, and several here are deliberately
 ahead of any code.
 
+## Use Tuck's own features, not another stdlib's shapes
+
+Before adding a type, ask whether the language already says it. If it does,
+the stdlib's job is to SHOW that spelling rather than wrap it.
+
+`Option` is the worked example. Tuck spells absence `T?` — built in, with
+`.ok`/`.value` narrowing the checker enforces, so a guard is not a
+convention but a rule. An `Option[T]` type would be redundant vocabulary
+sitting on top of a language feature.
+
+The v2 contracts made exactly that mistake at first: they were written with
+`Option[V]`, a name nothing declares, and gradual typing swallowed it for
+four commits before anyone noticed the contracts meant nothing. They say
+`V?` now.
+
+The same question applies to every borrowed shape — an error type where `!T`
+already exists, a result wrapper, a comparison enum where a built-in ordering
+would do. Parity with another language's standard library is not a reason.
+
+**The apps decide what the library holds.** `stdlib-project/apps/` is the
+demand signal in both directions: it says which modules earn their place, and
+it is where Tuck's own idioms get demonstrated. A contract nothing asks for
+is speculative — several of the groups here are deliberately ahead of any
+code, and they stay honest only while something is actually waiting on them.
+
 ## What a contract cannot say yet
 
 Written down rather than worked around, because each is a language question:
