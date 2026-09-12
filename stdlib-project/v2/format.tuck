@@ -1,0 +1,14 @@
+# v2.contracts.format — rendering protocols. Declarations only.
+#
+# Distinct from value.Showable, which is "one human-readable rendering, no
+# options". These take a spec, and are what a formatter calls.
+
+group Formattable:
+  fn formatted({self: Self, spec: str}) -> str
+
+group Padded:
+  fn padLeft({self: Self, width: int, fill: str}) -> str
+  fn padRight({self: Self, width: int, fill: str}) -> str
+
+group Radixed:
+  fn inRadix({self: Self, radix: int}) -> str

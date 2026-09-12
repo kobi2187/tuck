@@ -1,0 +1,14 @@
+# v2.contracts.memory — size and lifetime protocols. Declarations only.
+#
+# Sized is answerable today. The lifetime half is declared against the
+# resource registry (spec 7.4) that does not exist yet: these state the shape
+# the registry has to satisfy, and nothing implements them until it lands.
+
+group Sized:
+  fn byteSize({self: Self}) -> int
+
+group Disposable:
+  fn dispose({self: Self}) -> void [io]
+
+group Borrowable[V]:
+  fn borrowed({self: Self}) -> V

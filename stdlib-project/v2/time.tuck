@@ -1,0 +1,19 @@
+# v2.contracts.time — instants and durations. Declarations only.
+#
+# An INSTANT is a point, a DURATION is a length, and the two are different
+# types on purpose: adding two instants is meaningless, and a single "time
+# number" is what makes that mistake writeable.
+
+group Duration:
+  fn inNanos({self: Self}) -> u64
+  fn plus({self: Self, other: Self}) -> Self
+
+group Instant[D]:
+  fn since({self: Self, earlier: Self}) -> D
+  fn plusDuration({self: Self, by: D}) -> Self
+
+group Clock[I]:
+  fn now({self: Self}) -> I [io]
+
+group Monotonic:
+  fn isMonotonic({self: Self}) -> bool

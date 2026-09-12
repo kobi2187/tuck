@@ -1,0 +1,25 @@
+# v2.contracts.concurrency — protocols for things that wait. Declarations only.
+#
+# Each carries [io], so the effect rides the contract: a verb bounded by one is
+# itself [io], checked, without re-annotating at every use.
+#
+# Scheduling is NOT a contract here. Tuck's tasks, `on select` and the fiber
+# runtime are language constructs with one implementation per backend
+# (minicoro everywhere, by the portable-runtime rule); a group would imply
+# they were swappable, and they are not.
+
+group Awaitable[E]:
+  fn awaited({self: Self}) -> E [io]
+
+group Sendable[E]:
+  fn send({self: Self, value: E}) -> bool [io]
+
+group Receivable[E]:
+  fn receive({self: Self}) -> Option[E] [io]
+
+group Closable:
+  fn closeChannel({self: Self}) -> void [io]
+
+group Cancellable:
+  fn cancel({self: Self}) -> void [io]
+  fn isCancelled({self: Self}) -> bool

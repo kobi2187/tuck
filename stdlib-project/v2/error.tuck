@@ -1,0 +1,17 @@
+# v2.contracts.error — failure protocols. Declarations only.
+#
+# Tuck's own `!T` is the primary failure channel; these are for the types that
+# DESCRIBE a failure, not for replacing it.
+
+group Describable:
+  fn message({self: Self}) -> str
+
+group Coded:
+  fn codeOf({self: Self}) -> int
+
+group Recoverable:
+  fn isRetryable({self: Self}) -> bool
+
+# A failure that carries the one beneath it — a chain, not a stack trace.
+group Caused[E]:
+  fn causeOf({self: Self}) -> Option[E]

@@ -5,10 +5,58 @@ Three kinds of module, and the rule that keeps big implementations swappable.
 ## The layout
 
 ```
-value / collection / numeric / io / convert   contracts only — `group` declarations
-ordering / seqops / text                      a concern: its satisfiers and its verbs
-hash_fnv1a_num / hash_fnv1a_str               ONE algorithm each, interchangeable
+contracts only — `group` declarations, no code:
+  value        Equatable Comparable Hashable Showable Cloneable        (+ Order)
+  numeric      Addable Subtractable Multipliable Divisible Negatable
+               Bitwise Shiftable Absolute
+  math         Rounded Rooted Transcendental Checked
+  collection   Countable Emptyable Clearable Indexable[E] Sliceable[E]
+               Appendable[E] Removable[E] Keyed[K,V] SetLike[E]
+               Iterator[E] Buildable[E]
+  range        Stepped Measured[D] Spanned[E]
+  io           Readable Writable Flushable Closeable Seekable           (+ Whence)
+  convert      Parsable Encodable Decodable Defaultable
+  serde        Sink EncodableTo[S] DecodableFrom[S]
+  error        Describable Coded Recoverable Caused[E]
+  format       Formattable Padded Radixed
+  time         Duration Instant[D] Clock[I] Monotonic
+  concurrency  Awaitable[E] Sendable[E] Receivable[E] Closable Cancellable
+  random       RandomSource Distributed[E]
+  memory       Sized Disposable Borrowable[V]
+
+a concern — its satisfiers and its verbs:
+  ordering / seqops / text
+
+ONE algorithm each, interchangeable:
+  hash_fnv1a_num / hash_fnv1a_str
 ```
+
+63 groups. Implementations follow the contracts, not the other way round: a
+contract is agreed first and satisfied later, and several here are deliberately
+ahead of any code.
+
+## What a contract cannot say yet
+
+Written down rather than worked around, because each is a language question:
+
+- **No-self requirements.** `fn zero() -> Self`, `fn default() -> Self`,
+  `fn decodeFrom({source: S}) -> Option[Self]` — nothing in the arguments says
+  which type to pick, and Tuck cannot infer a type param that appears only in
+  the return. They are declared where they are genuinely the right shape
+  (`convert.Defaultable`, `serde.DecodableFrom`) and unusable until that is
+  settled. `numeric` avoids the problem instead: sum and product take a seed,
+  the way Rust's `fold` and Ruby's `inject(0)` do, so no identity element is
+  ever required.
+- **No refinement.** `group Comparable: Equatable` is a parse error, so a verb
+  needing both writes `[T: Equatable + Comparable]`. Pure ergonomics — `+`
+  already says it.
+- **No higher-kinded parameters.** `Mappable[F]` where `F` is itself generic —
+  a `map` that returns "the same container, different element" — cannot be
+  written. This is why the collection verbs are written against `Indexable[E]`
+  and return `Seq`, rather than against an abstract container.
+- **No visibility marker.** Every top-level name is exported, which is why the
+  swap rule below is about names giving up their bare form rather than about
+  keeping helpers private.
 
 A contract module imports nothing. Everything else imports the contracts it is
 written against. Nobody imports downward.

@@ -1,0 +1,15 @@
+# v2.contracts.random — sources of randomness. Declarations only.
+#
+# A source is a VALUE that yields the next number and the advanced state, not
+# a hidden global: that is what makes a seeded run reproducible, and it is the
+# only shape that works the same on all three backends.
+#
+# No [io]: a pseudo-random source is pure. A source reading the OS entropy
+# pool is a different thing and carries [io] at its own declaration.
+
+group RandomSource:
+  fn nextU64({self: Self}) -> {value: u64, source: Self}
+  fn seeded({self: Self, seed: u64}) -> Self
+
+group Distributed[E]:
+  fn sample({self: Self, source: E}) -> {value: Self, source: E}

@@ -1,0 +1,19 @@
+# v2.contracts.range — interval and stepping protocols. Declarations only.
+#
+# `lowest`/`highest` would be no-self requirements (`fn lowest() -> Self`),
+# which Tuck cannot resolve — nothing in the arguments says which type to pick.
+# So a bound is asked of a VALUE here, which is also what a generic algorithm
+# actually has to hand.
+
+group Stepped:
+  fn next({self: Self}) -> Self
+  fn previous({self: Self}) -> Self
+
+group Measured[D]:
+  fn distanceTo({self: Self, other: Self}) -> D
+  fn advancedBy({self: Self, by: D}) -> Self
+
+group Spanned[E]:
+  fn lowerBound({self: Self}) -> E
+  fn upperBound({self: Self}) -> E
+  fn holds({self: Self, value: E}) -> bool

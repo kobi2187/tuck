@@ -1,0 +1,29 @@
+# v2.contracts.math — the numeric operations beyond arithmetic. Declarations only.
+#
+# Split from numeric.tuck because these are where the types diverge: an int
+# rounds trivially and has no square root worth the name, a float has both.
+# A verb that needs one should say so rather than take "a number".
+
+group Rounded:
+  fn floorOf({self: Self}) -> Self
+  fn ceilOf({self: Self}) -> Self
+  fn roundedOf({self: Self}) -> Self
+  fn truncatedOf({self: Self}) -> Self
+
+group Rooted:
+  fn sqrtOf({self: Self}) -> Self
+  fn powOf({self: Self, exponent: Self}) -> Self
+
+group Transcendental:
+  fn expOf({self: Self}) -> Self
+  fn lnOf({self: Self}) -> Self
+  fn sinOf({self: Self}) -> Self
+  fn cosOf({self: Self}) -> Self
+  fn tanOf({self: Self}) -> Self
+
+# Every float is one of three things, and a total order is not one of them.
+# A verb sorting floats has to decide what NaN means; this is how it asks.
+group Checked:
+  fn isNaN({self: Self}) -> bool
+  fn isInfinite({self: Self}) -> bool
+  fn isFinite({self: Self}) -> bool

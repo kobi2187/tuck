@@ -1,0 +1,28 @@
+# v2.contracts.serde — structured encoding. Declarations only.
+#
+# Distinct from convert.Encodable, which is bytes in and bytes out. These are
+# about STRUCTURE: a value describes itself to a sink that decides the format,
+# so one `encodeTo` serves JSON, CBOR and a debug dump alike.
+#
+# The sink is a type parameter rather than an interface: a group is resolved
+# and discarded at compile time, so the format costs nothing at runtime.
+
+group Sink:
+  fn beginMap({self: Self}) -> Self
+  fn endMap({self: Self}) -> Self
+  fn beginList({self: Self}) -> Self
+  fn endList({self: Self}) -> Self
+  fn putKey({self: Self, key: str}) -> Self
+  fn putStr({self: Self, value: str}) -> Self
+  fn putInt({self: Self, value: int}) -> Self
+  fn putBool({self: Self, value: bool}) -> Self
+  fn putNull({self: Self}) -> Self
+
+group EncodableTo[S]:
+  fn encodeTo({self: Self, sink: S}) -> S
+
+# Decoding is stated but NOT yet usable: `decodeFrom` has to produce a Self
+# the arguments never mention, and Tuck cannot infer a type param that appears
+# only in the return. Declared so the shape is agreed; see README.md.
+group DecodableFrom[S]:
+  fn decodeFrom({source: S}) -> Option[Self]
