@@ -25,4 +25,4 @@ group EncodableTo[S]:
 # the arguments never mention, and Tuck cannot infer a type param that appears
 # only in the return. Declared so the shape is agreed; see README.md.
 group DecodableFrom[S]:
-  fn decodeFrom({source: S}) -> Option[Self]
+  fn decodeFrom({source: S}) -> Self?

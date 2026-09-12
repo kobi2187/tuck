@@ -1,13 +1,13 @@
 # core.contracts.convert — conversion and encoding protocols. Declarations only.
 
 group Parsable:
-  fn parse({text: str}) -> Option[Self]
+  fn parse({text: str}) -> Self?
 
 group Encodable:
   fn toBytes({self: Self}) -> Seq[u8]
 
 group Decodable:
-  fn fromBytes({bytes: Seq[u8]}) -> Option[Self]
+  fn fromBytes({bytes: Seq[u8]}) -> Self?
 
 group Defaultable:
   fn default() -> Self

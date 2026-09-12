@@ -14,4 +14,4 @@ group Recoverable:
 
 # A failure that carries the one beneath it — a chain, not a stack trace.
 group Caused[E]:
-  fn causeOf({self: Self}) -> Option[E]
+  fn causeOf({self: Self}) -> E?

@@ -15,7 +15,7 @@ group Sendable[E]:
   fn send({self: Self, value: E}) -> bool [io]
 
 group Receivable[E]:
-  fn receive({self: Self}) -> Option[E] [io]
+  fn receive({self: Self}) -> E? [io]
 
 group Closable:
   fn closeChannel({self: Self}) -> void [io]

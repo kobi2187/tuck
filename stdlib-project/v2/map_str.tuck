@@ -1,0 +1,96 @@
+# v2.map_str — Keyed[str, V] on open addressing with linear probing.
+#
+# THE HASH IS CHOSEN BY THE IMPORT on the line below, and that is the only
+# line to change to use another one. It has to be imported HERE rather than
+# left to the caller: a group requirement called from a generic body emits an
+# unqualified call, and a module that does not import its provider emits a
+# name its own backend output cannot resolve.
+#
+# Open addressing rather than chaining: one Seq per field and no per-entry
+# allocation, which is the shape that behaves the same on all three backends.
+# A slot holds entry index + 1, so 0 means empty and no separate state array
+# is needed.
+#
+# ponytail: FIXED CAPACITY, no resize. Beyond about 70% load, linear probing
+# degrades badly; `withCapacity` takes the size up front. Growth is a rehash
+# into a larger table — add it when a caller measurably needs it.
+
+import value
+import collection
+import hash_fnv1a_str
+
+type StrMap[V] = {slots: Seq[int], keys: Seq[str], vals: Seq[V]}
+
+fn noSlots() -> Seq[int]:
+  return []
+
+fn noKeys() -> Seq[str]:
+  return []
+
+fn withCapacity[V]({capacity: int, empty: V}) -> StrMap[V]:
+  ## `empty` is a value of V the map never returns — it exists only because a
+  ## Seq[V] has to be given an element type the checker can see, and Tuck has
+  ## no way to ask a type param for a default (see README: no-self
+  ## requirements).
+  var s = noSlots
+  for i in 0 .. capacity - 1:
+    s = {items: s, value: 0} push
+  var k = noKeys
+  var v: Seq[V] = []
+  return {slots: s, keys: k, vals: v} StrMap
+
+fn slotFor[V]({self: StrMap[V], key: str}) -> int:
+  ## The slot this key owns, or the first free one on its probe path. Returns
+  ## the INDEX INTO slots, never the entry index.
+  let cap = self.slots.len
+  var i = {value: key, buckets: cap} bucketOf
+  var seen = 0
+  for seen < cap:
+    let entry = self.slots[i]
+    if entry == 0:
+      return i
+    if self.keys[entry - 1] == key:
+      return i
+    i = i + 1
+    if i >= cap:
+      i = 0
+    seen = seen + 1
+  return 0 - 1
+
+fn hasKey[V]({self: StrMap[V], key: str}) -> bool:
+  let i = {self: self, key: key} slotFor
+  if i < 0:
+    return false
+  return self.slots[i] != 0
+
+fn get[V]({self: StrMap[V], key: str}) -> V?:
+  let i = {self: self, key: key} slotFor
+  if i < 0:
+    return
+  let entry = self.slots[i]
+  if entry == 0:
+    return
+  return self.vals[entry - 1]
+
+fn put[V]({self: StrMap[V], key: str, value: V}) -> StrMap[V]:
+  ## Replaces in place when the key is present, appends otherwise. A full
+  ## table leaves the map unchanged rather than looping — the fixed-capacity
+  ## ceiling, reported by the caller comparing `count` against what it put in.
+  let i = {self: self, key: key} slotFor
+  if i < 0:
+    return self
+  var out = self
+  let entry = out.slots[i]
+  if entry != 0:
+    out.vals[entry - 1] = value
+    return out
+  out.keys = {items: out.keys, value: key} push
+  out.vals = {items: out.vals, value: value} push
+  out.slots[i] = out.keys.len
+  return out
+
+fn count[V]({self: StrMap[V]}) -> int:
+  return self.keys.len
+
+fn isEmpty[V]({self: StrMap[V]}) -> bool:
+  return self.keys.len == 0

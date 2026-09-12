@@ -415,4 +415,62 @@ fn countOf[C: Countable]({c: C}) -> int:
   t.hostBuilds "...and every backend builds it"
   t.runs "...and runs", 0
 
+  # --- a two-parameter group satisfied by a generic record -----------------
+  # `Keyed[K, V]` is the shape the whole Hashable chain was built for: the
+  # satisfier is a generic RECORD type, not a builtin, and the group has two
+  # parameters of which only one is the element. `put` returns Self, so the
+  # conformance check has to read Self as the concrete `Table[int]` and the
+  # provider's own `V` as int at the same time.
+  t.src """
+import contracts
+import table
+
+fn getOr[M: Keyed[str, int]]({m: M, key: str, fallback: int}) -> int:
+  let v = {self: m, key: key} get
+  if not v.ok:
+    return fallback
+  return v.value
+
+fn main() -> int:
+  var t = {seed: 0} emptyTable
+  t = {self: t, key: "x", value: 7} put
+  let hit = {m: t, key: "x", fallback: 99} getOr
+  let missed = {m: t, key: "y", fallback: 99} getOr
+  if hit != 7:
+    return 1
+  if missed != 99:
+    return 2
+  return 0
+"""
+  t.addFile("contracts.tuck", """
+group Keyed[K, V]:
+  fn get({self: Self, key: K}) -> V?
+  fn put({self: Self, key: K, value: V}) -> Self
+""")
+  t.addFile("table.tuck", """
+import contracts
+
+type Table[V] = {keys: Seq[str], vals: Seq[V]}
+
+fn emptyTable[V]({seed: V}) -> Table[V]:
+  var k: Seq[str] = []
+  var v: Seq[V] = []
+  return {keys: k, vals: v} Table
+
+fn get[V]({self: Table[V], key: str}) -> V?:
+  for i in 0 .. self.keys.len - 1:
+    if self.keys[i] == key:
+      return self.vals[i]
+  return
+
+fn put[V]({self: Table[V], key: str, value: V}) -> Table[V]:
+  var out = self
+  out.keys = {items: out.keys, value: key} push
+  out.vals = {items: out.vals, value: value} push
+  return out
+""")
+  t.okCheck "a two-parameter group satisfied by a generic record type"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and the bounded verb reads through the contract", 0
+
   t.finish()
