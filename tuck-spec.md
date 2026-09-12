@@ -1388,10 +1388,26 @@ the word: it has no `fn main`, so it claims only "this is how the construct
 is written". The scope analysis described above is part of the unbuilt work,
 not a guarantee in force.
 
-Contrast §7.2's `pool` and §8.1's `register`, which ARE implemented end to
-end — each has its own declaration kind and reaches both backends. The three
-are often named together as sibling declaration forms, and on that point the
-prose is ahead of the compiler for exactly one of them.
+Its siblings are in three different states, which is worth stating rather
+than lumping them together:
+
+- **§7.2 `pool` works.** Verified behaviourally, not by inspection: a pool
+  with `count: 2` hands out two, reports absence on the third, and recycles
+  after a `release`, identically on Nim, Odin and D.
+- **§8.1 `register` works on Odin and D only.** Both emit shift/mask
+  accessors. On NIM, any use of a register field — read or write — fails to
+  compile: codegen emits a field access (`tuck_RCC_CR.HSION = true`) while
+  the runtime's `registerMMIO` macro generates standalone procs and a
+  field-less ref object. The two halves disagree about the interface.
+- **§7.3 `arena` is unimplemented**, as above.
+
+That none of this was noticed has one cause, recorded here because it applies
+to every hardware-facing feature: the examples demonstrating them have no
+`fn main`, so `tuck build` treats each as a LIBRARY build and stops after
+emitting. The emitted code is never handed to nim/odin/dmd, so invalid output
+is invisible to the gate. The one example that does have a `main` and uses
+these features, `20-embedded-mp3-player`, fails to build on all three
+backends today.
 
 ### 7.4 The Resource Registry
 

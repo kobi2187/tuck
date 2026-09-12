@@ -80,6 +80,29 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## D. Design items with a ruling, not yet built
 
+- **`register` field access does not compile on Nim.** Any use of a register
+  field, read or write, fails with `undeclared field`. Codegen emits a field
+  access (`tuck_RCC_CR.HSION = true`) while the runtime's `registerMMIO`
+  macro generates standalone procs plus a FIELD-LESS ref object — the two
+  halves disagree about the interface they share. Odin and D both emit
+  shift/mask accessors and build. Fix belongs in one of the two: either the
+  macro grows fields, or Nim codegen calls the procs the way Odin and D call
+  theirs.
+- **The event registry emits invalid Nim.** A registry whose event carries a
+  payload emits a type whose fields are indented inconsistently —
+  `kind*:` at four spaces, `code*:` at two — which nim rejects as "invalid
+  indentation". Reproduces via `examples/20-embedded-mp3-player`.
+- **`tuck build` on a file with no `fn main` never compiles what it emits.**
+  That is the documented library-build behaviour (§2.3b), but it is also why
+  both defects above went unseen: every example demonstrating `register`,
+  `arena` or the event registry is main-less, so the gate checks EMISSION and
+  stops. The emitted code is never handed to nim/odin/dmd. The one example
+  using these features that does have a `main`,
+  `examples/20-embedded-mp3-player`, fails to build on ALL THREE backends
+  today while sitting on the gate list.
+  This is the sharp form of §F's "gate lists are the real coverage": a
+  feature can be listed, emitted, and entirely unexercised.
+
 - **`arena` parses and does nothing** (spec §7.3, now marked "not
   implemented" there). There is no `dkArena` kind and no backend support:
   `parseArenaDecl` reads the body and discards it, returning a `type` of the
@@ -89,8 +112,10 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   (no `fn main`), so the corpus is not claiming otherwise — but nothing
   before this said so out loud. Found by `tuck validate`, which is what that
   tool is for.
-  Its siblings differ: §7.2 `pool` and §8.1 `register` are implemented end to
-  end, each with its own declaration kind, reaching both backends.
+  Its siblings are in three different states. §7.2 `pool` WORKS — verified
+  behaviourally: `count: 2` hands out two, reports absence on the third, and
+  recycles after a release, identically on all three backends. §8.1
+  `register` works on Odin and D only (see below).
 - **Three token kinds are dead.** `tkArena`, `tkPool` and `tkRegister` are
   declared in `TokenKind` and referenced nowhere else — the lexer emits none
   of them, so `arena`/`pool`/`register` (and `extern`, `errors`, `resource`)
