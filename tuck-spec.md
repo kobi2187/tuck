@@ -1183,11 +1183,19 @@ satisfies the group, with no attach statement and no `impl` block. A
 satisfier covering many types is written once, generically, rather than once
 per type.
 
-*Implementation limit, not a language rule:* a requirement called from
-inside a generic body emits an unqualified call, so today the module
-declaring the bounded verb must itself be able to see a satisfier. A
-standard library sidesteps this by keeping a concern's satisfier and its
-verbs in one module.
+*Implementation limit, not a language rule:* on the ODIN backend the
+provider's module must not import the module declaring the group. Odin has no
+late-bound symbol, so a requirement call is emitted qualified and the
+abstraction's module imports the provider's — which Odin rejects outright as
+a cyclic import if the provider imports the abstraction back (a plain
+arrangement: the satisfier needs the group's own `Order` type). Putting the
+shared types in a third module removes the cycle, which is the layout a
+standard library wants anyway.
+
+Nim and D have no such restriction. Nim binds a generic body's symbols at
+definition scope, so a requirement is emitted with `mixin`, moving resolution
+to each instantiation site — no import at all, and therefore correct in both
+arrangements. D qualifies and imports like Odin but tolerates the cycle.
 
 ---
 

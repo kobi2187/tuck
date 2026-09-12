@@ -1758,15 +1758,6 @@ proc recordCallParams(tc: var TypeChecker, fnName: string, params: seq[Param],
   for p in params: names.add(p.name)
   setCallParams(semLayer, e, names)
 
-proc groupNameOf*(t: Type): string =
-  ## The group a bound names, written bare (`Sortable`) or applied
-  ## (`Indexable[E]`). "" when the type names no group at all.
-  if t == nil: return ""
-  if t.kind == tkNamed: return t.name
-  if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed:
-    return t.base.name
-  ""
-
 proc groupBindings(g: Decl, bound: Type): Table[string, Type] =
   ## A generic group's own parameters bound to what the use site supplied:
   ## `group Indexable[E]` under `[C: Indexable[int]]` binds E to int. Empty

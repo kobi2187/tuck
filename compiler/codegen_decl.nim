@@ -5,6 +5,7 @@
 # mixin/decision-table/err-handler. Calls INTO codegen.nim's genExpr for fn
 # bodies (one-way: genExpr never calls back into anything here).
 import ast, strutils, sets, tables
+import mangle   # mangleName — a requirement's emitted spelling, for `mixin`
 import resolution
 import ast_query
 import codegen_common, codegen_type, codegen_table
@@ -125,6 +126,42 @@ proc nimFnParams*(res: Resolution, m: Module, d: Decl): seq[string] =
     let move = if paramIsMovable(res, m, d.fnBody, p): "sink " else: ""
     result.add(p.name & ": " & move & genType(p.typ))
 
+proc groupMixins(ctx: CodegenCtx, d: Decl): string =
+  ## `mixin` for every requirement a group-bounded generic may call.
+  ##
+  ## Nim binds symbols in a generic body at DEFINITION scope. A group's whole
+  ## point is that the satisfying fn arrives from somewhere the abstraction
+  ## does not know — so the module declaring `fn smallerOf[T: Sortable]` has
+  ## no `compare` in scope and Nim answers "undeclared identifier". `mixin`
+  ## marks the name open: resolution moves to each INSTANTIATION site, where
+  ## the concrete type's provider is visible. That is exactly what a group
+  ## bound means, so the mapping is one-to-one.
+  ##
+  ## Deliberately NOT the Odin/D approach of importing the provider's module.
+  ## Importing works for them, but it makes the abstraction depend on its
+  ## implementations, and it CANNOT work when the provider imports the
+  ## abstraction back — a plain arrangement (`compare` needs the group's
+  ## `Order`) that Odin rejects outright as a cyclic import. `mixin` adds no
+  ## import at all, so it is correct in both shapes.
+  if d.kind != dkFn or d.fnGenericBounds.len == 0: return ""
+  var names: seq[string]
+  for bounds in d.fnGenericBounds:
+    for b in bounds:
+      let gname = groupNameOf(b)
+      if gname == "": continue
+      var g = ctx.module.findDecl(dkGroup, gname)
+      if g == nil:
+        for _, im in ctx.realModules:
+          g = im.findDecl(dkGroup, gname)
+          if g != nil: break
+      if g == nil: continue
+      for want in g.groupMembers:
+        if want == nil or want.kind != dkFn: continue
+        let n = mangleName(want.name)
+        if n notin names: names.add(n)
+  if names.len == 0: return ""
+  "  mixin " & names.join(", ") & "\n"
+
 proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     if d.isPending:
       return genPendingStub(d)
@@ -162,7 +199,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.retWrapped = false
     ctx.retAbsentCapable = false
     ctx.definedVars = oldVars
-    return header & "\n" & bodyStr & "\n"
+    return header & "\n" & groupMixins(ctx, d) & bodyStr & "\n"
 
 proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
   ## lowering.normalizeSelf has already given the member its `self`

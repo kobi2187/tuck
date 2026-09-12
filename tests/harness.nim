@@ -632,9 +632,28 @@ proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
   assert argv.len > 0
   let child = startProcess(argv[0], args = argv[1 .. ^1],
                            options = {poUsePath, poStdErrToStdOut})
-  let output = child.outputStream.readAll()
+  # Reading a child's pipe has been seen to fail with EBADF ("Bad file
+  # descriptor") intermittently during a full run — twice, never on demand,
+  # and with the fd limit at 1M so exhaustion is not it. Unhandled it aborts
+  # the ENTIRE run with a stack trace, which is how the first occurrences
+  # arrived: no command named, no suite named, nothing to reproduce from.
+  #
+  # Caught here so the next one identifies itself. NOT swallowed: the item
+  # fails, carrying the command and the errno, so a transient is a reported
+  # failure rather than a crash and a real breakage still fails.
+  var output = ""
+  var readFailed = ""
+  try:
+    output = child.outputStream.readAll()
+  except IOError, OSError:
+    readFailed = getCurrentExceptionMsg()
   let rc = child.waitForExit()
   child.close()
+  if readFailed.len > 0:
+    let failRc = if rc == 0: 126 else: rc
+    return (failRc,
+            "could not read the output of `" & argv.join(" ") & "`: " &
+              readFailed & " (transient; see MISSING-FEATURES F)")
   (rc, output)
 
 proc findOdin*(): string =

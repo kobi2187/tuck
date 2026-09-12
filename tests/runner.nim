@@ -137,8 +137,19 @@ proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
           break
       if reaped < 0: sleep(2)
     let (p, idx) = running[reaped]
-    items[idx].output = p.outputStream.readAll()
+    # Same EBADF guard as harness.sh: an intermittent failure to read a
+    # child's pipe must fail THAT item with the reason, not abort the pool
+    # and with it every other suite's results.
+    var readErr = ""
+    try:
+      items[idx].output = p.outputStream.readAll()
+    except IOError, OSError:
+      readErr = getCurrentExceptionMsg()
     items[idx].rc = p.waitForExit()
+    if readErr.len > 0:
+      items[idx].output = "could not read child output: " & readErr &
+                          " (transient; see MISSING-FEATURES F)"
+      if items[idx].rc == 0: items[idx].rc = 126
     items[idx].done = true
     p.close()
     running.delete(reaped)

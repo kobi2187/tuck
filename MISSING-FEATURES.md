@@ -182,6 +182,15 @@ Verified fixed earlier on 2026-08-05:
 
 ## F. Watch-outs the test suite does not cover
 
+- **An intermittent `Bad file descriptor` reading a child's output.** Seen
+  twice in full runs (once aborting cli_smoke with a stack trace, once as
+  recursive_types 72/73) and never reproducible on demand — three consecutive
+  full runs clean, and the fd limit is 1M so exhaustion is not it. The runner
+  is single-threaded, so it is not a concurrent-spawn race either. UNDIAGNOSED.
+  Both read sites (harness.sh and the runner's reap) now catch it and fail
+  that ITEM with the command and the errno, rather than letting one transient
+  abort the whole run with no command named — which is why the first two
+  occurrences left nothing to work from. The next one will identify itself.
 - **Odin compiles a DIRECTORY as one package.** `tuck b FILE --odin` in a
   directory that already holds other emitted `.odin` files fails with
   "Redeclaration of 'main'" (or of any shared symbol) naming a file you did

@@ -474,4 +474,58 @@ fn put[V]({self: Table[V], key: str, value: V}) -> Table[V]:
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the bounded verb reads through the contract", 0
 
+  # --- the provider in a THIRD module the abstraction does not import ------
+  # The arrangement a stdlib is made of: contracts in one module, a concrete
+  # type's satisfier in another, the bounded verb in a third, and a caller
+  # importing what it needs.
+  #
+  # Nim binds symbols in a generic body at DEFINITION scope, so the module
+  # declaring the verb had no `compare` and answered "undeclared identifier".
+  # `mixin` marks the requirement open and resolution moves to each
+  # INSTANTIATION site — which is exactly what a group bound means. Odin and
+  # D instead qualify and import the provider, which works here and is why
+  # only Nim ever failed.
+  t.src """
+import types
+import contracts
+import ints
+
+fn main() -> int:
+  let s = {a: 3, b: 9} smallerOf
+  return s - 3
+"""
+  t.addFile("types.tuck", """type Order:
+  | Before
+  | Same
+  | After
+""")
+  t.addFile("contracts.tuck", """import types
+
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+fn smallerOf[T: Sortable]({a: T, b: T}) -> T:
+  let c = {self: a, other: b} compare
+  match c:
+    Before: return a
+    Same: return a
+    After: return b
+""")
+  t.addFile("ints.tuck", """import types
+
+fn compare({self: int, other: int}) -> Order:
+  if self < other:
+    return Order.Before
+  if self > other:
+    return Order.After
+  return Order.Same
+""")
+  t.okCheck "a group, its satisfier and its verb in three separate modules"
+  # No emitted-text assertion: the `mixin` lands in contracts.nim, and these
+  # assertions read the ENTRY module. hostBuilds is the guard that matters
+  # anyway — without the mixin, nim rejects the emitted contracts.nim with
+  # "undeclared identifier: 'tuck_compare'".
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and the right provider is called", 0
+
   t.finish()

@@ -546,6 +546,15 @@ type
     isRange*: bool     ## a multi-bit field, not a single flag
     canRead*, canWrite*: bool
 
+proc groupNameOf*(t: Type): string =
+  ## The group a bound names, written bare (`Sortable`) or applied
+  ## (`Indexable[E]`). "" when the type names no group at all.
+  if t == nil: return ""
+  if t.kind == tkNamed: return t.name
+  if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed:
+    return t.base.name
+  ""
+
 proc chainStepMember*(step: ChainStep): string =
   ## The member a `..` step names. A field set and a local mutator write a
   ## bare name; `..mod::fn` writes a qualified one, whose target is an
