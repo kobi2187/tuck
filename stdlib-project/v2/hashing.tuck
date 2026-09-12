@@ -1,0 +1,47 @@
+# v2.hashing — the Hashable satisfier for numeric values, and its verbs.
+#
+# FNV-1a, restated here rather than imported from modules/core/hash: an import
+# resolves only within the importing file's own directory (or std/), so a v2
+# module cannot reach the v1 generation at all. Same algorithm, same constants.
+# Not a security primitive — no collision resistance against hostile input.
+#
+# ONE satisfier per group per program, because Tuck has no overloading: a
+# second `fn hashOf` is "declared twice in this module", and two modules each
+# exporting one collide at the importer, which is reported rather than
+# resolved. So this one is generic over everything that converts to u64.
+# `str`'s own hashing is a separate module for exactly that reason.
+
+import bits
+import value
+
+fn fnvOffsetBasis() -> u64:
+  return 14695981039346656037
+
+fn fnvPrime() -> u64:
+  return 1099511628211
+
+fn fnvStep({acc: u64, octet: u64}) -> u64:
+  let mixed = {a: acc, b: octet} bitXor
+  return mixed * fnvPrime
+
+fn hashOf[T]({self: T}) -> u64:
+  let n = {value: self} u64
+  var h = fnvOffsetBasis
+  for i in 0 .. 7:
+    let shifted = {a: n, by: i * 8} shiftRight
+    let octet = {a: shifted, b: 255} bitAnd
+    h = {acc: h, octet: octet} fnvStep
+  return h
+
+fn combined({a: u64, b: u64}) -> u64:
+  return {acc: a, octet: b} fnvStep
+
+fn bucketOf[T: Hashable]({value: T, buckets: int}) -> int:
+  let h = {self: value} hashOf
+  # Mask to 30 bits BEFORE converting. Converting the whole digest raised
+  # "value out of range" on Nim at runtime while Odin and D returned 0 —
+  # OBSERVED here, not isolated: a minimal `1 shiftLeft 63` converts the same
+  # way on all three. So the mask is what this verb needs regardless, and the
+  # conversion's behaviour on a digest-sized value is a question still open.
+  let low = {a: h, b: 1073741823} bitAnd
+  return {value: low} int % buckets
