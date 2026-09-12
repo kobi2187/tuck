@@ -107,6 +107,7 @@ type
     of tkFunc:
       params*: seq[Type]
       result*: Type
+      paramNames*: seq[string]
     of tkRecord:
       fields*: seq[FieldDef]
     of tkSum:
@@ -382,21 +383,9 @@ type
   # lowering, marked with this span.file so codegen skips re-emitting them.
 const ImportedTypeMarker* = "<imported>"
 
-# The checker's gradual-typing sentinel: undeclared symbols synthesize this
-# named type; codegen treats it as "no type information".
-#
-# BEING SPLIT UP. One sentinel was doing several unrelated jobs, and because
-# `compatible` treats it as matching everything, every one of those jobs
-# silently disabled type checking wherever its value flowed. Measured: making
-# it incompatible breaks 15 checks, of which only the generic ones are a real
-# need — the rest were bugs it was hiding (a loop variable's element type, an
-# object's fields, an interface argument, actor `result`, `Error.X`).
-#
-# Each distinct meaning gets its own name so the checker can be strict about
-# the one that means "I could not work it out":
+# Legal type sentinels represent explicit abstraction or compiler bookkeeping.
+# A missing type is reported before it can be stamped onto the typed AST.
 const
-  UnknownName* = "<unknown>"      # the checker could not tell — a GAP, and the
-                                  # long-term goal is for this to be an error
   NamedTypeParamPrefix* = "<typeparam:"
     ## A type param that knows WHICH one it is: `<typeparam:K>`. Same
     ## abstraction as TypeParamName below and treated as unknown everywhere

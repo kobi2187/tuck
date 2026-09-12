@@ -289,7 +289,7 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   case t.kind
   of tkNamed:
     if t.name in dPrims: dPrims[t.name]
-    elif t.name == UnknownName or t.name == PendingName:
+    elif t.name == PendingName:
       # a declaration cannot state a sentinel; a signature position must
       if mode == tmRequired: "void" else: ""
     elif t.name.startsWith(NamedTypeParamPrefix):

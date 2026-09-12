@@ -250,7 +250,7 @@ proc lookupFnParams*(m: Module, name: string): seq[string] =
 proc hasKnownFields(t: Type): bool =
   ## Is `t` a type whose fields we could possibly look up? False for nil
   ## and for the sketch-mode "unknown" placeholder type.
-  t != nil and not (t.kind == tkNamed and t.name == UnknownName)
+  t != nil
 
 proc fieldNames(fields: seq[FieldDef]): seq[string] =
   ## Just the names, in order, off a field list.

@@ -36,6 +36,7 @@ proc run*(t: var T) =
   # values can prove each param received the field intended for it.
   t.src """
 import console
+import str
 
 fn describe({id: int, name: str, ratio: float}) -> str:
   return name + "/" + id.toStr + "/" + ratio.toStr
@@ -51,6 +52,7 @@ fn main() -> void [io]:
   # auto-matching must key on type, never on position.
   t.src """
 import console
+import str
 
 fn join({first: str, second: int}) -> str:
   return first + "/" + second.toStr
@@ -66,6 +68,7 @@ fn main() -> void [io]:
   # must not be stolen by the type pass, and vice versa.
   t.src """
 import console
+import str
 
 fn join({count: int, label: str}) -> str:
   return label + "/" + count.toStr
@@ -82,6 +85,7 @@ fn main() -> void [io]:
   # swapped mapping would print "n999/1" here and still compile fine.
   t.src """
 import console
+import str
 
 fn join({id: int, size: int}) -> str:
   return "n" + id.toStr + "/" + size.toStr
@@ -96,6 +100,7 @@ fn main() -> void [io]:
   # Regression: explicit alias() must keep producing the correct assignment.
   t.src """
 import console
+import str
 
 fn describe({id: int, name: str, length: int}) -> str:
   return name + "/" + id.toStr + "/" + length.toStr

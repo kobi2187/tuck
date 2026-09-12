@@ -744,7 +744,7 @@ proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   if t == nil: return false
   # `discard` over a void call is itself an error in Nim, so the question is
   # whether there is anything TO discard.
-  not (t.kind == tkNamed and t.name in ["void", "unit", UnknownName])
+  not (t.kind == tkNamed and t.name in ["void", "unit"])
 
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.

@@ -171,7 +171,9 @@ import ./typecheck_registry
 import ./typecheck_module
 export typecheck_transitions
 
-# UnknownName now lives in ast.nim (codegen needs it for typed-AST checks)
+proc checkFnValueCall(tc: var TypeChecker, fnT: Type, e: Expr): Type
+
+# Type sentinels live in ast.nim; missing types never reach codegen
 # Stateless helpers now live in typecheck_util; the TypeChecker state object +
 # scope/resolve/fieldsOf now live in typecheck_state (both imported above).
 # The compatibility relation (`compatible` and its helpers) now lives in
@@ -452,7 +454,7 @@ proc checkVariantPayload(tc: var TypeChecker, declared: Type, variant: string,
              "' — it declares " & (if fields.len == 0: "no payload at all"
                                    else: declaredNames),
              pf.value.span)
-      if not isUnknown(vt) and not tc.compatible(vt, declaredT):
+      if not isFlexible(vt) and not tc.compatible(vt, declaredT):
         fail(dcTyVariantPayload,
              "variant '" & variant & "' field '" & pf.name & "' expects " &
              typeName(declaredT) & " but got " & typeName(vt), pf.value.span)
@@ -587,7 +589,7 @@ proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## carried the Unknown all the way to codegen, where variantOwningField did
   ## the projection independently and correctly, so this was invisible until
   ## something needed the type: `b.xs[0]` on a `Seq[int]` payload reported
-  ## "type '<unknown>' is not indexable". A wrong-typed use was never caught.
+  ## "type 'missing type' is not indexable". A wrong-typed use was never caught.
   ##
   ## Inside a match arm the subject is narrowed and that variant decides;
   ## outside, the variant DECLARING the name does — the same rule codegen
@@ -708,12 +710,10 @@ proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
   (params, substituteType(base.ret, b), newSeq[string](), base.effects)
 
 proc namesAFnSig*(tc: TypeChecker, slotT: Type): bool =
-  ## Does this type NAME a declared `fnsig` — bare (`Adder`) or
-  ## generic-instantiated (`Mapper[int, str]`)? A fnsig name does NOT resolve
-  ## to a tkFunc, so asking `resolve(t).kind == tkFunc` answers no for every
-  ## one of them; the name has to be looked up. Same test checkThroughFnSig
-  ## makes, lifted so a caller can ask before committing to that path.
+  ## Does this type represent a callable slot, either a named `fnsig` or a
+  ## first-class function value?
   if slotT == nil: return false
+  if slotT.kind == tkFunc: return true
   if slotT.kind == tkNamed: return slotT.name in tc.fnSigNames
   if slotT.kind == tkApp and slotT.base != nil and slotT.base.kind == tkNamed:
     return slotT.base.name in tc.fnSigNames
@@ -754,8 +754,7 @@ proc invokeArgs(tc: var TypeChecker, e: Expr): seq[Expr] =
 
 proc asSlotInvoke(tc: var TypeChecker, e: Expr): Type =
   ## `slot.invoke {args}` — a call through a baked fn slot. A slot typed by a
-  ## `fnsig` is checked against that signature; an untyped one has nothing to
-  ## check against and stays gradual.
+  ## `fnsig` is checked against that signature; an untyped one is rejected.
   if e.fieldName != "invoke": return nil
   let slotT = tc.resolve(tc.synthesize(e.receiver))
   let call = Expr(span: e.span, kind: exkCall, callee: e.receiver,
@@ -769,20 +768,29 @@ proc asSlotInvoke(tc: var TypeChecker, e: Expr): Type =
   # initialiser and never noticed; D declares one and refused. The signature
   # is right there on the type, so read it.
   if result == nil and slotT != nil and slotT.kind == tkFunc:
-    for a in call.args: discard tc.synthesize(a)
-    result = slotT.result
-  if result == nil: result = unknownType(e.span)
+    result = tc.checkFnValueCall(slotT, call)
+  if result == nil:
+    fail("Type Error: value before '.invoke' is not a callable function slot",
+         e.span)
 
 type Diag = tuple[code: DiagCode, msg: string]
   ## A diagnostic under construction: the code to look up, and what to say.
   ## An empty msg means "nothing definite enough to report".
 
+proc isOpenReceiver(t: Type): bool =
+  ## A receiver with no closed field surface: `Self` (the composer's type,
+  ## not yet known inside a mixin body) or one of the checker's own
+  ## intentionally-abstract sentinels. A missing field cannot be refused
+  ## against these — there is nothing definite enough to report — so the
+  ## access stays gradual instead of failing.
+  if t == nil: return true
+  if t.kind == tkNamed and t.name == "Self": return true
+  isFlexible(t)
+
 proc missingFieldMessage(e: Expr, recvT: Type, fields: seq[FieldDef]): Diag =
-  ## Known record, missing field, no matching fn: the payoff error. Sum types
-  ## carry variant fields we don't track per-variant in v1, so only a plain
-  ## record is flagged; anything else falls through to gradual typing.
-  if fields.len == 0: return (dcNone, "")
-  if recvT.kind != tkRecord: return (dcNone, "")
+  ## A resolved receiver has a closed field surface. Variant payload fields
+  ## are checked before this helper; everything else missing is a real error.
+  if isOpenReceiver(recvT): return (dcNone, "")
   (dcTyNoField, "no field '" & e.fieldName & "' on type " & typeName(recvT))
 
 proc unresolvedFieldMessage(e: Expr, recvT: Type, fields: seq[FieldDef]): Diag =
@@ -829,7 +837,7 @@ proc syntacticFieldForm(tc: var TypeChecker, e: Expr): Type =
 proc asLengthOf(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `xs.len` / `s.len` — an `int`, by definition of the language.
   ##
-  ## It was declared NOWHERE and typed `<unknown>`. It reached the right code
+  ## It was declared NOWHERE and typed `missing type`. It reached the right code
   ## anyway because each backend resolves a length independently (Nim's `.len`
   ## by UFCS, and isLenOnSized in the Odin and D emitters), so the gap only
   ## showed with --verify-stages — the same shape as a variant payload field
@@ -963,7 +971,10 @@ proc registerFieldType(m: Module, regName, fieldName: string, span: Span): Type 
     for f in d.regFields:
       if f.name != fieldName: continue
       let (lo, hi, ok) = regBits(f)
-      if not ok: return unknownType(span)
+      if not ok:
+        fail("Type Error: malformed register field '" & regName & "." &
+             fieldName & "", span)
+        return nil
       return Type(span: span, kind: tkNamed,
                   name: (if lo == hi: "bool" else: "u32"))
   nil
@@ -1046,7 +1057,7 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   result = tc.typedFieldForm(e, recvT, fields)
   if result != nil: return
   tc.failUnresolvedFieldAccess(e, recvT, fields)
-  return unknownType(e.span)
+  return afterErrorType(e.span)
 
 # === OPERATORS =============================================================
 # Arithmetic, division (`/i` vs `/f` — Tuck has no bare `/`), comparison,
@@ -1082,13 +1093,13 @@ proc failIfUnhandled(lt, rt: Type, e: Expr) =
 
 proc failIfMismatched(tc: TypeChecker, lt, rt: Type, what: string, sp: Span) =
   ## Both sides of an arithmetic or comparison operator must agree.
-  if not isUnknown(lt) and not isUnknown(rt) and not tc.compatible(lt, rt):
+  if not isFlexible(lt) and not isFlexible(rt) and not tc.compatible(lt, rt):
     fail("Type Error: " & what & " between " & typeName(lt) & " and " &
          typeName(rt), sp)
 
 proc widerOperand(lt, rt: Type): Type =
   ## The type an arithmetic result carries.
-  if isUnknown(lt): rt else: lt
+  if isFlexible(lt): rt else: lt
 
 proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   tc.failIfMismatched(lt, rt, "arithmetic", e.span)
@@ -1102,7 +1113,7 @@ proc failIfWrongDivKind(lt, rt: Type, e: Expr) =
   let opName = if wantFloat: "/f" else: "/i"
   let alternative = if wantFloat: "/i" else: "/f"
   for (t, side) in operands(lt, rt, e):
-    if isUnknown(t): continue
+    if isFlexible(t): continue
     if wantFloat != (typeName(t) in FloatTypeNames):
       fail("Type Error: `" & opName & "` takes " &
            (if wantFloat: "float" else: "integer") & " operands, got " &
@@ -1121,7 +1132,7 @@ proc synthComparison(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
 proc synthRange(lt, rt: Type, e: Expr): Type =
   ## Range bounds must be integers.
   for (t, side) in operands(lt, rt, e):
-    if not isUnknown(t) and typeName(t) notin IntegerTypeNames:
+    if not isFlexible(t) and typeName(t) notin IntegerTypeNames:
       fail("Type Error: range bounds must be integers, got " & typeName(t),
            side.span)
   Type(span: e.span, kind: tkNamed, name: "range")
@@ -1136,7 +1147,7 @@ proc synthBoolOp(lt, rt: Type, e: Expr): Type =
   ## Strictly boolean. `or` is NOT an unwrap operator: a failed result is
   ## handled with .ok / match r.err, never by falling through to a default.
   for (t, side) in operands(lt, rt, e):
-    if isUnknown(t) or isOptional(t): continue  # ?T = "is present"
+    if isFlexible(t) or isOptional(t): continue  # ?T = "is present"
     if not (t != nil and t.kind == tkNamed and t.name == "bool"):
       fail("Type Error: '" & boolOpName(e.binOp) & "' expects bool, got " &
            typeName(t), side.span)
@@ -1163,7 +1174,7 @@ proc checkCondition(tc: var TypeChecker, cond: Expr, sp: Span) =
   if isWrapper(condT):
     fail("Type Error: unhandled " & typeName(condT) & " in condition — pass " &
          "it to a handling function or propagate with '?'", cond.span)
-  if not isUnknown(condT) and
+  if not isFlexible(condT) and
      not tc.compatible(condT, Type(span: sp, kind: tkNamed, name: "bool")):
     fail("Type Error: if condition must be bool, got " & typeName(condT),
          cond.span)
@@ -1199,11 +1210,11 @@ proc synthIf(tc: var TypeChecker, e: Expr): Type =
   ## Branches that produce values must agree on the type.
   tc.checkCondition(e.cond, e.span)
   let (thenT, elseT) = tc.synthBranches(e, tc.okGuardName(e.cond))
-  if e.elseBranch != nil and not isUnknown(thenT) and not isUnknown(elseT) and
+  if e.elseBranch != nil and not isFlexible(thenT) and not isFlexible(elseT) and
      not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
     fail("Type Error: if branches produce different types: " &
          typeName(thenT) & " vs " & typeName(elseT), e.span)
-  if isUnknown(thenT): elseT else: thenT
+  if isFlexible(thenT): elseT else: thenT
 
 proc matchErrEnums(tc: TypeChecker, subject: Expr): seq[string] =
   ## `match r.err` — the producer's declared error enums, if the subject is
@@ -1243,7 +1254,7 @@ proc qualifyErrArm(tc: TypeChecker, arm: var MatchArm, errEnums: seq[string]) =
 proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, subjT: Type,
                     trackedVar, trackedType: string) =
   ## A variant pattern narrows the subject and does NOT bind the name;
-  ## v1: any other pattern-bound name enters scope as Unknown.
+  ## an ordinary pattern binds the subject's actual type.
   ##
   ## "Is this pattern a real variant" and "should reassignment through it
   ## be TRACKED" are two different questions — trackedVar/trackedType only
@@ -1265,7 +1276,7 @@ proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, subjT: Type,
      hasVariant(subjBody, arm.pattern.name):
     if trackedVar != "": tc.varVariants[trackedVar] = @[arm.pattern.name]
   else:
-    tc.bindName(arm.pattern.name, unknownType(arm.pattern.span), false)
+    tc.bindName(arm.pattern.name, subjT, false)
 
 proc variantHint(tc: TypeChecker, subjT: Type): Type =
   ## What an arm BODY should be synthesized against. The channel exists here
@@ -1295,11 +1306,11 @@ proc synthArm(tc: var TypeChecker, arm: MatchArm, subjT: Type, trackedVar,
 
 proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
   ## Every arm must produce the same type.
-  if not isUnknown(t) and not isUnknown(armT) and
+  if not isFlexible(t) and not isFlexible(armT) and
      not tc.compatible(t, armT) and not tc.compatible(armT, t):
     fail("Type Error: match arms produce different types: " &
          typeName(armT) & " vs " & typeName(t), sp)
-  if isUnknown(armT): armT = t
+  if isFlexible(armT): armT = t
 
 proc synthArms(tc: var TypeChecker, e: Expr, subjT: Type, trackedVar,
                trackedType: string): Type =
@@ -1308,7 +1319,7 @@ proc synthArms(tc: var TypeChecker, e: Expr, subjT: Type, trackedVar,
   let entryVariants = tc.varVariants
   var mergedExit: Table[string, seq[string]]
   var firstArm = true
-  result = unknownType(e.span)
+  result = nil
   for arm in e.arms:
     tc.varVariants = entryVariants
     let t = tc.synthArm(arm, subjT, trackedVar, trackedType)
@@ -1571,14 +1582,14 @@ proc inferBindings(tc: TypeChecker, declared, actual: Type,
   # A value whose type is the ENCLOSING fn's type param binds the parameter
   # to that param by NAME: `fn mk[K, V]({k: K, v: V}) -> Pair[K, V]` builds
   # `Pair[K, V]`, not a pair of indistinguishable abstractions. Without this
-  # every `T` in a body collapsed to one nameless sentinel that isUnknown
+  # every `T` in a body collapsed to one nameless sentinel that isFlexible
   # then discarded, and constructing a generic type inside a generic fn was
   # "cannot infer generic parameter 'K'".
   var actual = actual
   let gname = typeParamName(actual)
   if gname != "":
     actual = Type(span: actual.span, kind: tkNamed, name: gname)
-  elif isUnknown(actual): return
+  elif isFlexible(actual): return
   case declared.kind
   of tkNamed:
     if declared.name in generics:
@@ -1640,7 +1651,7 @@ proc checkIfaceArg(tc: var TypeChecker, iname: string, argT: Type,
   ## concrete type is known — the callee sees only the interface. Recording it
   ## also demands the (object, interface) pair, which is what makes variant
   ## emission demand-driven rather than one-per-`satisfies`.
-  if argT == nil or isUnknown(argT): return   # gradual: let it flow
+  if argT == nil or isFlexible(argT): return   # gradual: let it flow
   let objName = if argT.kind == tkNamed: argT.name else: ""
   # Already an interface value of the SAME interface — passing one onward is
   # just handing over the pair, so there is nothing to wrap. Without this,
@@ -1943,7 +1954,7 @@ proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string, sig: FnSig,
     let bounds = allBounds[i]
     if bounds.len == 0 or not bindings.hasKey(paramName): continue
     let concreteT = bindings[paramName]
-    if concreteT == nil or isUnknown(concreteT): continue
+    if concreteT == nil or isFlexible(concreteT): continue
     # An inline `{x: Sortable + Hashable}` bound desugars to a fresh
     # `TuckGroupParamN` type param (desugarGroupBoundParams) — meaningless in a
     # message the author never wrote. Report the VALUE parameter's own
@@ -1996,7 +2007,7 @@ proc recordCallTypeArgs(tc: TypeChecker, sig: FnSig,
   for g in sig.generics:
     if not bindings.hasKey(g): return
     let t = bindings[g]
-    if t == nil or isUnknown(t): return
+    if t == nil or isFlexible(t): return
     args.add(t)
   setCallTypeArgs(semLayer, e, args)
 
@@ -2044,7 +2055,7 @@ proc payloadFields(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
         result.add((f.name, tc.synthFieldValue(f), f.value.span))
     return
   let t = tc.synthesize(arg)
-  if isUnknown(t): return
+  if isFlexible(t): return
   if sig.params.len == 1 and tc.checkWholeBind(fnName, sig, arg, t, bindings):
     return
   let fs = tc.fieldsOf(t)
@@ -2257,6 +2268,18 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
     for a in e.args: discard tc.synthesize(a)
 
 # === CALL SYNTHESIS ========================================================
+proc checkFnValueCall(tc: var TypeChecker, fnT: Type, e: Expr): Type =
+  if fnT == nil or fnT.kind != tkFunc:
+    fail("Type Error: expression is not callable", e.span)
+  var params: seq[Param]
+  for i, typ in fnT.params:
+    let name = if i < fnT.paramNames.len: fnT.paramNames[i] else: "arg" & $i
+    params.add(Param(name: name, typ: typ, span: e.span))
+  let sig: FnSig = (params: params, ret: fnT.result, generics: @[], effects: @[])
+  var bindings = initTable[string, Type]()
+  tc.checkCallArgs("<function>", sig, e, bindings)
+  sig.ret
+
 # What `{payload} name` MEANS: a construction, a restructuring builtin
 # (alias/merge/bake), a distinct conversion, or a plain call. synthCall is the
 # ordered chain that decides which — the same "first arm that claims it wins"
@@ -2307,14 +2330,14 @@ proc asAliasCall(tc: var TypeChecker, e: Expr): Type =
   var fields: seq[FieldDef]
   for (oldName, newExpr) in e.combArg.fields.items:
     let ft = aliasedFieldType(recvFields, oldName)
-    if ft == nil and recvFields.len > 0:
+    if ft == nil:
       fail("Type Error: alias source field '" & oldName &
            "' does not exist on " & typeName(recvT), e.span)
     if newExpr == nil or newExpr.kind != exkVar:
       fail("Type Error: alias target must be a plain field name: " &
            oldName & ": newName", e.span)
     let renamed = FieldDef(name: newExpr.name, span: e.span,
-                           typ: (if ft == nil: unknownType(e.span) else: ft))
+                           typ: ft)
     failIfDuplicateField(fields, renamed, e.span, "alias",
                          "two sources renamed onto the same target")
     fields.add(renamed)
@@ -2326,7 +2349,9 @@ proc asMergeCall(tc: var TypeChecker, e: Expr): Type =
   var fields: seq[FieldDef]
   for (mname, mexpr) in e.combRecv.fields.items:
     let mt = tc.resolve(tc.synthesize(mexpr))
-    if isUnknown(mt): continue  # sketch member — stays gradual
+    if mt == nil:
+      fail("Type Error: merge member '" & mname & " has no known type",
+           mexpr.span)
     let mfs = tc.fieldsOf(mt)
     if mfs.len == 0:
       fail("Type Error: merge member '" & mname & "' must be a struct, " &
@@ -2335,7 +2360,8 @@ proc asMergeCall(tc: var TypeChecker, e: Expr): Type =
       failIfDuplicateField(fields, f, e.span, "merge",
                            "the same name is contributed by two members")
       fields.add(f)
-  if fields.len == 0: return unknownType(e.span)
+  if fields.len == 0:
+    fail("Type Error: merge needs at least one typed record member", e.span)
   Type(span: e.span, kind: tkRecord, fields: fields)
 
 proc applyBakeOverride(tc: var TypeChecker, recvT: Type,
@@ -2357,7 +2383,7 @@ proc applyBakeOverride(tc: var TypeChecker, recvT: Type,
     # `{a: 5} P` then `bake {b: 2}` report `expects int <uninit> but got int`.
     # The write also fills the hole, so the marker comes off.
     let declared = unwrapUninit(f.typ)
-    if not isUnknown(vt) and not tc.compatible(vt, declared):
+    if not isFlexible(vt) and not tc.compatible(vt, declared):
       fail("Type Error: bake override '" & name & "' expects " &
            typeName(declared) & " but got " & typeName(vt), valExpr.span)
     f.typ = declared
@@ -2376,9 +2402,8 @@ proc asBakeCall(tc: var TypeChecker, e: Expr): Type =
   ## longer supply it. Fixing a `fnsig` slot is what narrows the call.
   let recvT = tc.resolve(tc.synthesize(e.combRecv))
   var fields = tc.fieldsOf(recvT)
-  if fields.len == 0:                 # sketch receiver — stays gradual
-    for (_, valExpr) in e.combArg.fields.items: discard tc.synthesize(valExpr)
-    return unknownType(e.span)
+  if fields.len == 0:
+    fail("Type Error: bake receiver has no declared fields", e.span)
   for (name, valExpr) in e.combArg.fields.items:
     tc.applyBakeOverride(recvT, fields, name, valExpr)
   Type(span: e.span, kind: tkRecord, fields: fields)
@@ -2414,7 +2439,7 @@ proc asWithCall(tc: var TypeChecker, e: Expr): Type =
            "one. Fix: check the spelling against the type's declaration",
            valExpr.span)
     let vt = tc.synthesize(valExpr)
-    if not isUnknown(vt) and not tc.compatible(vt, declared):
+    if not isFlexible(vt) and not tc.compatible(vt, declared):
       fail("Type Error: `with` field '" & name & "' expects " &
            typeName(declared) & " but got " & typeName(vt), valExpr.span)
     supplied.add(name)
@@ -2464,7 +2489,7 @@ proc seedFromExpected(tc: var TypeChecker, calleeName: string,
   if want.base.kind != tkNamed or want.base.name != calleeName: return
   if want.args.len != gs.len: return
   for i, g in gs:
-    if want.args[i] != nil and not isUnknown(want.args[i]):
+    if want.args[i] != nil and not isFlexible(want.args[i]):
       bindings[g] = want.args[i]
 
 proc asGenericConstruction(tc: var TypeChecker, e: Expr,
@@ -2503,13 +2528,19 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
     resolveTo(semLayer, e, calleeDecl)
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(calleeName, sig, e, bindings)
-  if sig.generics.len == 0: return sig.ret
+  # A fn with no `->` declares no return type; its body is statements, so a
+  # call to it yields unit. Without this the resolved call answers nil and
+  # falls into synthCall's undeclared-callee error — the callee IS declared,
+  # only its result type is absent.
+  let ret = if sig.ret == nil: Type(span: e.span, kind: tkNamed, name: "unit")
+            else: sig.ret
+  if sig.generics.len == 0: return ret
   tc.recordCallTypeArgs(sig, bindings, e)
-  # Unbound type params degrade to Unknown (gradual, like sketch code)
   for g in sig.generics:
     if not bindings.hasKey(g):
-      bindings[g] = unknownType(e.span)
-  substituteType(sig.ret, bindings)
+      fail("Type Error: cannot infer generic parameter '" & g & "' of call to '" &
+           calleeName & "'", e.span)
+  substituteType(ret, bindings)
 
 proc viaTransitionChain(e: Expr): bool =
   ## Is this construction fed by a transitionTo chain? That is a transition,
@@ -2564,6 +2595,32 @@ proc failIfChainAfterPayloadCall(tc: TypeChecker, e: Expr) =
        "follows it reads as chained onto its RESULT, which needs a `let` " &
        "first, not more dots on the same line.", e.span)
 
+proc isRegistryRaiseCall(e: Expr): bool =
+  e != nil and e.callee != nil and e.callee.kind == exkCall and
+    e.callee.callee != nil and e.callee.callee.kind == exkVar and
+    registryEventOwner(e.callee.callee.name) != ""
+
+proc asVariantPayloadCall(tc: var TypeChecker, e: Expr): Type =
+  ## `{payload} Type.Variant` — the payload-first spelling of the same
+  ## construction `Type.Variant {payload}` is. The callee already answered
+  ## with the owner type (asVariantConstruction, including the sealed rule),
+  ## but it never saw the payload — that rides on this outer call, so the
+  ## payload is validated here against the variant's declared fields and the
+  ## call answers the owner type. Anything that is not literally
+  ## `TypeName.Variant` declines, so calling a sum-valued FIELD still fails
+  ## below as calling a non-callable.
+  if e.callee == nil or e.callee.kind != exkField: return nil
+  let recv = e.callee.receiver
+  if recv == nil or recv.kind != exkVar: return nil
+  if not tc.typeDecls.hasKey(recv.name): return nil
+  let declared = tc.typeDecls[recv.name]
+  if declared.kind != tkSum or not declared.hasVariant(e.callee.fieldName):
+    return nil
+  if e.args.len != 1 or e.args[0] == nil or e.args[0].kind != exkStruct:
+    return nil
+  tc.checkVariantPayload(declared, e.callee.fieldName, e.args[0], e.span)
+  Type(span: e.span, kind: tkNamed, name: recv.name)
+
 proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
   ## A callee that is not a bare name. Calling THROUGH a fnsig-typed slot
   ## (`{args} c.op` where op: Adder) validates the args against the named
@@ -2571,9 +2628,29 @@ proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
   ## own type.
   tc.failIfChainAfterPayloadCall(e)
   result = tc.synthCalleeType(e)
-  let viaSig = tc.checkThroughFnSig(tc.resolve(result), e)
+  let calleeT = tc.resolve(result)
+  let viaSig = tc.checkThroughFnSig(calleeT, e)
   if viaSig != nil: return viaSig
+  if calleeT != nil and calleeT.kind == tkFunc:
+    return tc.checkFnValueCall(calleeT, e)
+  let viaVariant = tc.asVariantPayloadCall(e)
+  if viaVariant != nil: return viaVariant
+  if calleeT == nil or isFlexible(calleeT):
+    # The callee side never resolved to a type with a known shape — an
+    # abstract receiver (`who.speak` with `who: T`), an open `Self`, or an
+    # already-reported error flowing through. There is nothing callable OR
+    # uncallable here, so judging the call is impossible; check the args
+    # for their side effects and keep the callee's own type, exactly as
+    # the old gradual tail did. A CONCRETE non-callable still falls
+    # through to the error below.
+    for a in e.args: discard tc.synthesize(a)
+    if result != nil: return result
+    return afterErrorType(e.span)
+  if isRegistryRaiseCall(e):
+    for a in e.args: discard tc.synthesize(a)
+    return result
   for a in e.args: discard tc.synthesize(a)
+  fail("Type Error: expression is not callable", e.span)
 
 proc declaredFieldsOf(tc: TypeChecker, e: Expr, calleeName: string): seq[FieldDef] =
   ## The fields a construction is measured against.
@@ -2652,13 +2729,6 @@ const ParenBuiltinNames = ["sizeof", "alignof", "offsetof"]
   ## primitive type name (int, str, ...) has nowhere to resolve FROM as a
   ## value — it was never one.
 
-proc synthArgsUnknown(tc: var TypeChecker, e: Expr): Type =
-  ## Type the arguments for their side effects and give up on the result. The
-  ## gradual escape hatch: the call itself is not understood, but its
-  ## arguments still have to check out.
-  for a in e.args: discard tc.synthesize(a)
-  unknownType(e.span)
-
 proc synthArgsAs(tc: var TypeChecker, e: Expr, name: string): Type =
   ## Type the arguments, then answer with a named type regardless — a
   ## conversion, where the args are checked but the result is the target type.
@@ -2674,15 +2744,13 @@ proc synthArgsAs(tc: var TypeChecker, e: Expr, name: string): Type =
   Type(span: e.span, kind: tkNamed, name: name)
 
 proc synthCombinator(tc: var TypeChecker, e: Expr): Type =
-  ## The record combinators. Each wants a struct payload; a wrong shape is not
-  ## an error, it degrades to Unknown so sketch code keeps compiling.
+  ## The record combinators each require a struct payload.
   let needsPayload = e.comb != ckMerge
   let haveStruct = if needsPayload: e.combArg != nil and
                                     e.combArg.kind == exkStruct
                    else: e.combRecv != nil and e.combRecv.kind == exkStruct
   if not haveStruct:
-    for c in e.children: discard tc.synthesize(c)
-    return unknownType(e.span)
+    fail("Type Error: record combinator requires a struct payload", e.span)
   case e.comb
   of ckAlias: tc.asAliasCall(e)
   of ckMerge: tc.asMergeCall(e)
@@ -2788,9 +2856,9 @@ proc asGroupRequirement(tc: var TypeChecker, e: Expr, calleeName: string): Type 
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## What `{payload} name` means, in priority order: a group requirement on a
   ## bounded type param, then a name (distinct / construction / declared fn),
-  ## then a callee that is not a bare name at all. Nothing claims it ->
-  ## Unknown, gradually. The record combinators are NOT here — they are
-  ## exkCombinator nodes the parser already decided on.
+  ## then a callee that is not a bare name at all. Nothing claims it is an
+  ## error. The record combinators are NOT here — they are exkCombinator
+  ## nodes the parser already decided on.
   let calleeName = tc.calleeNameOf(e)
   # A name two imports both export gave up its bare form (addBare). It is
   # still reachable qualified; written bare, it is reported HERE, where the
@@ -2809,6 +2877,13 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     # Args are type names, not values — see ParenBuiltinNames. Result is
     # always a plain size/offset.
     return Type(span: e.span, kind: tkNamed, name: "int")
+  if calleeName == "echo":
+    # `x echo` — the host print, emitted natively by every backend (Nim's
+    # own echo, Odin's fmt.println, D's writeln). The parser already
+    # refuses the prefix form (TK-PA04), so anything named echo reaching
+    # here is the legal postfix shape. Yields unit, like any statement.
+    for a in e.args: discard tc.synthesize(a)
+    return Type(span: e.span, kind: tkNamed, name: "unit")
   result = tc.asNamedCallee(e, calleeName)
   if result != nil: return
   if e.callee != nil and e.callee.kind != exkVar:
@@ -2825,7 +2900,10 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
     let (found, b) = tc.lookup(calleeName)
     if found and namesAFnSig(tc, tc.resolve(b.typ)):
       return tc.asIndirectCall(e)
-  return tc.synthArgsUnknown(e)
+  for a in e.args: discard tc.synthesize(a)
+  let shown = if calleeName != "": calleeName else: "<expression>"
+  fail(dcTyUndeclared, "'" & shown & "' is not a declared callable" &
+       (if calleeName != "": spellingHint(calleeName) else: ""), e.span)
 
 # === THE SPINE: ONE synth* PER EXPRESSION KIND =============================
 # Everything above is reached FROM here. synthesizeKind is the case over
@@ -2954,8 +3032,8 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   # local, nullary call, sum variant, registry event, pending marker,
   # declared type/object name, inline sum variant inside a match arm — is
   # handled above. Nothing genuine reaches here any more (confirmed by
-  # assertNoUnknownTypes across all 44 examples, TODO.md); a name that does
-  # is undefined, and gradual typing's <unknown> sentinel is for a
+  # assertNoMissingTypes across all 44 examples, TODO.md); a name that does
+  # is undefined, and gradual typing's missing type sentinel is for a
   # constrained TYPE the checker cannot pin down yet, not a NAME the
   # program never declared at all.
   # A name Tuck spells differently gets the spelling, not just "not declared"
@@ -2965,7 +3043,7 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
        "sum-type variant, registry event or type by that name is in scope" &
        spellingHint(e.name),
        e.span)
-  unknownType(e.span)
+  afterErrorType(e.span)
 
 proc synthVar(tc: var TypeChecker, e: Expr): Type =
   ## A bare name: a binding in scope, else a nullary call, a fn REFERENCE,
@@ -2975,12 +3053,13 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
   elif tc.fnSigs.hasKey(e.name) and tc.sigOf(e.name).params.len == 0:
     tc.synthNullaryCall(e)
   elif tc.fnSigs.hasKey(e.name):
-    # A fn WITH params, referenced bare rather than called: a bake/fnsig
-    # target (`{mapFn: double} Box` filling a Mapper[int, str] slot).
-    # Deliberately Unknown, not a gap — applyBakeOverride's own comment
-    # already documents this: "fn refs come through as Unknown and pass
-    # gradually", v1 has no first-class fn-value type to give it instead.
-    unknownType(e.span)
+    let sig = tc.sigOf(e.name)
+    var ps: seq[Type]
+    var names: seq[string]
+    for p in sig.params:
+      ps.add(p.typ)
+      names.add(p.name)
+    Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret)
   else:
     tc.synthBareVariant(e)
 
@@ -3003,10 +3082,10 @@ proc synthList(tc: var TypeChecker, e: Expr): Type =
   ## code is an untyped empty sequence the backend cannot name ("cannot infer
   ## the type of the sequence"). That used to pass the checker and fail at
   ## the Nim compile; it is TK-TY20 now.
-  var elemT = unknownType(e.span)
+  var elemT: Type = nil
   for item in e.items:
     let t = tc.synthesize(item)
-    if isUnknown(elemT): elemT = t
+    if isFlexible(elemT): elemT = t
   # The literal's OWN base name defaults to Seq — but when it's going into a
   # declared Array[N, T] slot, it has to BECOME an Array[N, T] itself, not a
   # Seq that merely resembles one. Getting this wrong is exactly the bug that
@@ -3024,7 +3103,7 @@ proc synthList(tc: var TypeChecker, e: Expr): Type =
     if want != nil and want.kind == tkApp and want.base != nil and
        want.base.kind == tkNamed and want.base.name in ["Seq", "Array"] and
        want.args.len > 0:
-      if isUnknown(elemT): elemT = want.args[^1]
+      if isFlexible(elemT): elemT = want.args[^1]
       if want.base.name == "Array" and want.args.len == 2:
         baseName = "Array"
         sizeArg = want.args[0]
@@ -3038,7 +3117,7 @@ proc synthList(tc: var TypeChecker, e: Expr): Type =
           fail("Type Error: this list has " & $e.items.len &
                " element(s) but Array[" & sizeArg.name &
                ", _] needs exactly " & sizeArg.name, e.span)
-  if isUnknown(elemT) and e.items.len == 0:
+  if isFlexible(elemT) and e.items.len == 0:
     fail(dcTyUntypedEmptyList,
          "this empty list has no element type — nothing here says what it " &
          "holds. Fix: seed it with its first element (`[firstItem]`), or " &
@@ -3105,7 +3184,7 @@ proc receivesNothing(tc: TypeChecker, blk, s: Expr, t: Type): bool =
   ## than reported twice. Unknown is gradual typing and never accused.
   if s == nil or t == nil: return false
   if not (s.kind == exkCall or semLayer.hasCall(s)): return false
-  if isUnknown(t) or isWrapper(t): return false
+  if isFlexible(t) or isWrapper(t): return false
   if t.kind == tkNamed and t.name in ["void", "unit"]: return false
   if tc.isImplicitReturn(blk, s) or isControlFlowExit(s): return false
   not tc.isSpawnCall(s)
@@ -3149,7 +3228,7 @@ proc synthBlock(tc: var TypeChecker, e: Expr): Type =
   ## where statements are sequenced, and undone when the block ends.
   tc.pushScope()
   var narrowed: seq[string]
-  result = unknownType(e.span)
+  result = Type(span: e.span, kind: tkNamed, name: "unit")
   for s in e.stmts:
     result = tc.synthStmt(e, s, narrowed)
   # Unwind BEFORE popScope: the narrowing lives on the binding, and a guard
@@ -3166,16 +3245,17 @@ proc unitType(sp: Span): Type =
 proc elementType(tc: var TypeChecker, iterT: Type, sp: Span): Type =
   ## The element type an iterable yields.
   ##
-  ## An unrecognised iterable stays Unknown rather than failing: a stdlib
-  ## container or a sketch-mode value should not become an error here.
+  ## Iteration requires a known element type; otherwise loop-body checking
+  ## would silently lose the type of every bound variable.
   if iterT != nil and iterT.kind == tkApp and iterT.base != nil and
      iterT.base.kind == tkNamed and iterT.base.name in ["Seq", "Array"] and
      iterT.args.len >= 1:
-    iterT.args[^1]   # Array[N, T] carries its length first
+    return iterT.args[^1]   # Array[N, T] carries its length first
   elif iterT != nil and iterT.kind == tkNamed and iterT.name == "range":
-    Type(span: sp, kind: tkNamed, name: "int")
+    return Type(span: sp, kind: tkNamed, name: "int")
   else:
-    unknownType(sp)
+    fail("Type Error: value is not an iterable with a known element type",
+         sp)
 
 proc bindLoopVars(tc: var TypeChecker, iter: Pattern, elemT: Type) =
   ## Bind the loop variable(s). `for idx, item in xs:` binds idx as int.
@@ -3214,7 +3294,7 @@ proc synthWhile(tc: var TypeChecker, e: Expr): Type =
   ## A while condition must be bool.
   if e.whileCond != nil:
     let ct = tc.synthesize(e.whileCond)
-    if not isUnknown(ct) and typeName(ct) != "bool":
+    if not isFlexible(ct) and typeName(ct) != "bool":
       fail("Type Error: loop condition must be bool, got " & typeName(ct),
            e.whileCond.span)
   tc.synthLoopBody(e.whileBody)
@@ -3603,11 +3683,15 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
     if e.modulePath.len != 0: e.modulePath[0] & "::" & e.qualName
     else: e.qualName
   if not tc.fnSigs.hasKey(key):
-    return unknownType(e.span)
+    fail(dcTyUndeclared, "'" & key & "' is not a declared function" &
+         spellingHint(e.qualName), e.span)
   let sig = tc.sigOf(key)
   var ps: seq[Type]
-  for p in sig.params: ps.add(p.typ)
-  Type(span: e.span, kind: tkFunc, params: ps, result: sig.ret)
+  var names: seq[string]
+  for p in sig.params:
+    ps.add(p.typ)
+    names.add(p.name)
+  Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret)
 
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   case e.kind
@@ -3711,7 +3795,7 @@ proc resolveIndex(tc: var TypeChecker, br: Expr, value: Expr,
          $br.brArgs.len, sp)
   let idx = br.brArgs[0]
   let idxT = tc.synthesize(idx)
-  if not isUnknown(idxT) and not (idxT.kind == tkNamed and idxT.name == "int"):
+  if not isFlexible(idxT) and not (idxT.kind == tkNamed and idxT.name == "int"):
     fail("Type Error: index must be int, got " & typeName(idxT), idx.span)
   var fields = @[("items", br.brReceiver), ("index", idx)]
   if value != nil:
@@ -3729,7 +3813,7 @@ proc synthBracket(tc: var TypeChecker, e: Expr): Type =
   setCall(semLayer, e, ic)
   # A Seq index is typed off the RECEIVER, not by synthesizing the stamped
   # call: `tuckAt` is an intrinsic with no declared signature to look up, and
-  # routing it through fnSigs is what used to leave `xs[i]` as `<unknown>`
+  # routing it through fnSigs is what used to leave `xs[i]` as `missing type`
   # whenever std/seq wasn't imported.
   let elem = seqElem(recvT)
   if elem != nil: return elem
@@ -3785,7 +3869,7 @@ proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
   tc.synthesize(ac)
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type =
-  if e == nil: return unknownType(Span())
+  if e == nil: return afterErrorType(Span())
   result = tc.synthesizeKind(e)
   # Two different consumers, two different answers. The RETURNED type keeps
   # the `<uninit>` marker, because that is how it rides with the value —
@@ -3874,7 +3958,7 @@ proc tailIsImplicitReturn(tc: TypeChecker, body: Expr, bodyT, ret: Type): bool =
   if ret == nil or body == nil: return false
   if body.kind != exkBlock or body.stmts.len == 0: return false
   if body.stmts[^1].kind in {exkReturn, exkRaise}: return false
-  if isUnknown(bodyT): return false
+  if isFlexible(bodyT): return false
   bodyT.kind != tkNamed or bodyT.name notin ["unit", "void"]
 
 proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
@@ -3936,6 +4020,26 @@ proc checkDecisionTable(tc: var TypeChecker, d: Decl) =
 
 proc checkDecl(tc: var TypeChecker, d: Decl)
 
+proc checkBoundNames(tc: TypeChecker, d: Decl) =
+  ## A bound naming an interface is wrong at the declaration itself — no
+  ## instantiation can redeem it, and the body (checked next, against the
+  ## bound's contract) would otherwise fail first with a downstream artifact
+  ## like "expression is not callable", masking the real mistake. Only the
+  ## interface-vs-group confusion is judged here: whether a bound names a
+  ## real group, and whether a concrete type satisfies it, both need the
+  ## instantiation and stay where they are. Same message as the
+  ## instantiation-time check; whichever fires first, the author reads one.
+  for i, g in d.fnGenerics:
+    if i >= d.fnGenericBounds.len: continue
+    for bound in d.fnGenericBounds[i]:
+      let n = groupNameOf(bound)
+      if tc.groupDecls.hasKey(n): continue
+      if tc.ifaceDecls.hasKey(n):
+        fail("Type Error: '" & n & "' is an interface, not a group " &
+             "(spec §5.5) — a generic bound needs a `group`, declared for " &
+             "exactly this; interfaces stay attached to objects with " &
+             "`satisfies`", d.span)
+
 proc checkFnDecl(tc: var TypeChecker, d: Decl) =
   ## A decision table is checked as a table; anything else as a fn body.
   if d.isDecision:
@@ -3947,6 +4051,7 @@ proc checkFnDecl(tc: var TypeChecker, d: Decl) =
   for i, g in d.fnGenerics:
     if i < d.fnGenericBounds.len and d.fnGenericBounds[i].len > 0:
       tc.currentBounds[g] = d.fnGenericBounds[i]
+  tc.checkBoundNames(d)
   tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody, d.fnGenerics)
   tc.currentBounds = initTable[string, seq[Type]]()
   tc.currentErrTypes = @[]
@@ -4006,7 +4111,7 @@ proc checkInvariants(tc: var TypeChecker, d: Decl) =
   var known: HashSet[string]
   for f in d.typeBody.fields: known.incl(f.name)
 
-  proc failIfUnknownName(tc: var TypeChecker, e: Expr, owner: string) =
+  proc failIfUndeclaredName(tc: var TypeChecker, e: Expr, owner: string) =
     ## Every bare name in the predicate must be one of this type's fields.
     ##
     ## Checked on the NAMES rather than on the predicate's synthesized type,
@@ -4023,18 +4128,18 @@ proc checkInvariants(tc: var TypeChecker, d: Decl) =
              "own fields, since that is all that is in scope where it runs",
              e.span)
     of exkBinary:
-      tc.failIfUnknownName(e.left, owner); tc.failIfUnknownName(e.right, owner)
-    of exkUnary: tc.failIfUnknownName(e.operand, owner)
-    of exkField: tc.failIfUnknownName(e.receiver, owner)
+      tc.failIfUndeclaredName(e.left, owner); tc.failIfUndeclaredName(e.right, owner)
+    of exkUnary: tc.failIfUndeclaredName(e.operand, owner)
+    of exkField: tc.failIfUndeclaredName(e.receiver, owner)
     of exkCall:
-      for a in e.args: tc.failIfUnknownName(a, owner)
+      for a in e.args: tc.failIfUndeclaredName(a, owner)
     else: discard
 
   tc.pushScope()
   for f in d.typeBody.fields: tc.bindName(f.name, f.typ, false)
   for member in d.typeMembers:
     if member == nil or member.kind != dkExpr or member.expr == nil: continue
-    tc.failIfUnknownName(member.expr, d.name)
+    tc.failIfUndeclaredName(member.expr, d.name)
     let t = tc.synthesize(member.expr)
     if not (t.kind == tkNamed and t.name == "bool"):
       fail(dcIvNotBool,

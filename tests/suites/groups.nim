@@ -449,6 +449,7 @@ group Keyed[K, V]:
 """)
   t.addFile("table.tuck", """
 import contracts
+import seq
 
 type Table[V] = {keys: Seq[str], vals: Seq[V]}
 

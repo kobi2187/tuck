@@ -104,7 +104,7 @@ proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
     declFields = getFieldsForType(ctx.res, ctx.module, ctx.res.typeFor(e))
   var allKnown = declFields.len > 0
   for f in declFields:
-    if hasUnknownType(f.typ): allKnown = false
+    if hasMissingType(f.typ): allKnown = false
   if allKnown:
     return ctx.recCtorFromLiteral(declFields, e.fields)
   if e.fields.len == 1:
@@ -122,7 +122,7 @@ proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
   var inferred: seq[FieldDef]
   for f in e.fields:
     var ft = inferLitType(f.value)
-    if ft == nil: ft = Type(kind: tkNamed, name: UnknownName, span: e.span)
+    if ft == nil: raise newException(ValueError, "Odin: struct literal field has no type")
     inferred.add(FieldDef(name: f.name, typ: ft, span: e.span))
   return ctx.recCtorFromLiteral(inferred, e.fields)
 

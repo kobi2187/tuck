@@ -116,6 +116,8 @@ fn main() -> int:
   # at the call site, matching the concrete implementer's exploded params —
   # not pack it into one Nim tuple, which the implementer never declared.
   t.src """
+import console
+
 interface Codec:
   fn encode({self: Self, key: str, val: str}) -> str
 

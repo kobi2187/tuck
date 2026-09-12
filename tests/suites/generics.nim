@@ -239,6 +239,8 @@ fn main() -> int:
   # way to name an empty collection's element type was a fn whose RETURN type
   # said it, and `alloc.map` needed five such fns to say "empty".
   t.src """
+import seq
+
 fn main() -> int:
   var acc: Seq[int] = []
   for i in 0 .. 2:
@@ -506,6 +508,8 @@ fn main() -> int:
   # erasing the name: a fn type is structural in all three targets, so there
   # was no nominal identity to keep.
   t.src """
+import seq
+
 fnsig Pred[T] = {value: T} -> bool
 
 type Filter[T]:
@@ -540,6 +544,8 @@ fn main() -> int:
   # the payload can bind it; the slot has to be expanded into the signature it
   # stands for and unified against the fn-ref's own shape.
   t.src """
+import seq
+
 fnsig Mapper[T, U] = {x: T} -> U
 
 fn map[T, U]({items: Seq[T], f: Mapper[T, U]}) -> Seq[U]:

@@ -159,7 +159,7 @@ tuck_main :: proc () {
   tuck_p: tuck_PlayerState = tuck_PlayerState_Ready{config = tuck_config, feed = tuck_feed}
   tuck_fresh: tuck_MqttSession = tuck_MqttSession_Disconnected{}
   tuck_socket := tuck_Socket{fd = 3}
-  tuck_session: tuck_MqttSession = tuck_MqttSession_Connected{socket = tuck_socket, keepalive = 60}
+  tuck_session: tuck_MqttSession = tuck_MqttSession_Connected{socket = tuck_socket, keepalive = u16(60)}
   return
 }
 

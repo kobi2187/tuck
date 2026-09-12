@@ -123,7 +123,7 @@ proc genDStructLit(ctx: var DCodegenCtx, e: Expr): string =
     declFields = getFieldsForType(ctx.res, ctx.module, ctx.res.typeFor(e))
   var allKnown = declFields.len > 0
   for f in declFields:
-    if hasUnknownType(f.typ): allKnown = false
+    if hasMissingType(f.typ): allKnown = false
   if allKnown:
     return ctx.recCtorFromLiteralD(declFields, e.fields)
   var inferred: seq[FieldDef]
@@ -830,7 +830,7 @@ proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   # and lets NIM infer — the hidden-inference dependency this backend exists
   # to avoid. Supply the answer the language already guarantees.
   if val != nil and val.kind == exkField and ctx.isLenOnSized(val) and
-     (t == nil or (t.kind == tkNamed and t.name == UnknownName)):
+     (t == nil):
     t = Type(kind: tkNamed, name: "int", span: val.span)
   let ctorT = ctx.ctorDeclType(val)
   if ctorT != "": return ctorT

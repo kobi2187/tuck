@@ -396,25 +396,25 @@ proc typeMentionsName*(t: Type, name: string): bool =
   of tkEffect: typeMentionsName(t.inner, name)
   else: false
 
-proc hasUnknownType*(t: Type): bool =
+proc hasMissingType*(t: Type): bool =
   ## Does this type contain the checker's "I could not work it out" marker
   ## anywhere inside it? A backend that must spell a type needs to know
   ## before it tries.
   if t == nil: return true
   case t.kind
-  of tkNamed: t.name == UnknownName
+  of tkNamed: false
   of tkApp:
-    if hasUnknownType(t.base): return true
+    if hasMissingType(t.base): return true
     for a in t.args:
-      if hasUnknownType(a): return true
+      if hasMissingType(a): return true
     false
   of tkRecord:
     for f in t.fields:
-      if hasUnknownType(f.typ): return true
+      if hasMissingType(f.typ): return true
     false
   of tkTuple:
     for el in t.elems:
-      if hasUnknownType(el): return true
+      if hasMissingType(el): return true
     false
   else: false
 
@@ -423,7 +423,7 @@ proc inferLitType*(e: Expr): Type =
   ## where a shape still has to be emitted. The checker's own stamp wins when
   ## it says anything useful.
   if e != nil and semLayer.typeFor(e) != nil and
-     not hasUnknownType(semLayer.typeFor(e)): return semLayer.typeFor(e)
+     not hasMissingType(semLayer.typeFor(e)): return semLayer.typeFor(e)
   if e != nil and e.kind == exkLit:
     case e.litKind
     of lkStr: return Type(kind: tkNamed, name: "str")
@@ -635,7 +635,10 @@ proc fnSigInstance*(m: Module, t: Type): Type =
     var binds = initTable[string, Type]()
     for i, g in d.sigGenerics: binds[g] = t.args[i]
     var ps: seq[Type]
-    for prm in d.sigParams: ps.add(substParams(prm.typ, binds))
-    return Type(span: t.span, kind: tkFunc, params: ps,
+    var names: seq[string]
+    for prm in d.sigParams:
+      ps.add(substParams(prm.typ, binds))
+      names.add(prm.name)
+    return Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
                 result: substParams(d.sigReturn, binds))
   nil

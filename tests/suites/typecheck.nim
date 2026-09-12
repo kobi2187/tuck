@@ -302,6 +302,9 @@ errors [policy: continue]:
 type ParseError:
   | Empty
 
+fn missing({path: str}) -> bool:
+  return path == ""
+
 fn parseTitle({raw: str}) -> !str [io, error: ParseError]:
   if raw == "":
     err Empty
@@ -319,6 +322,9 @@ fn parseTitle({raw: str}) -> !str [io, error: ParseError]:
 type FsError:
   | NotFound
   | AccessDenied
+
+fn missing({path: str}) -> bool:
+  return path == ""
 
 fn readIt({path: str}) -> !{content: str} [io, error: FsError]:
   if {path} missing:
@@ -357,6 +363,9 @@ type FsError:
 type NetError:
   | Timeout
   | Refused
+
+fn slow({url: str}) -> bool:
+  return url == ""
 
 fn fetchIt({url: str}) -> !{content: str} [io, error: FsError | NetError]:
   if {url} slow:
@@ -650,7 +659,7 @@ fn main() -> void:
   let feed = {url: "https://x"} fetch parse
   return
 """
-  t.okCheck "unknown callee flows through"
+  t.badCheck "unknown callee is rejected", "not a declared callable"
 
   t.src """
 fn main() -> void:
@@ -1476,7 +1485,7 @@ fn go() -> void:
 fn go() -> void:
   {volume: 3} audio::play
 """
-  t.okCheck "unknown module prefix stays gradual"
+  t.badCheck "unknown module prefix is rejected", "not a declared function"
 
   t.src """
 fn identity[T]({x: T}) -> T:
@@ -1508,6 +1517,9 @@ fn main() -> void:
   t.badCheck "generic binding conflict", "'T'"
 
   t.src """
+extern:
+  fn head[T]({xs: Seq[T]}) -> T
+
 fn firstOf[T]({xs: Seq[T]}) -> T:
   return {xs} head
 

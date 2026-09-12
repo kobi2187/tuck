@@ -7,15 +7,6 @@ import ast, semantics, tables, strutils, sets
 import diagnostics
 export diagnostics   # every fail() caller needs the codes
 
-proc unknownType*(sp: Span): Type =
-  ## The checker could not work this type out. A GAP — every one found so far
-  ## turned out to be a bug it was hiding, so prefer one of the named sentinels
-  ## below whenever the situation actually has a name.
-  when defined(traceUnknown):
-    stderr.writeLine("unknownType at " & $sp.line & ":" & $sp.col & "\n" &
-                      getStackTrace())
-  Type(span: sp, kind: tkNamed, name: UnknownName)
-
 proc typeParamType*(sp: Span): Type =
   ## A generic's `T` inside its own body: not unknown, ANY type, fixed per call
   ## site. `fn identity[T]({x: T}) -> T` checks its body once with T abstract.
@@ -48,7 +39,7 @@ proc afterErrorType*(sp: Span): Type =
 proc branchOutcomeType*(sp: Span): Type =
   ## `on select:` as a task's own tail expression: every arm returns
   ## explicitly, so nothing ever reads the construct's own synthesized
-  ## value — there is no real type to report, and unlike `unknownType`
+  ## value — there is no real type to report, and unlike `the old missing-type sentinel`
   ## this is not a gap the checker failed to work out.
   Type(span: sp, kind: tkNamed, name: BranchOutcomeName)
 
@@ -66,13 +57,13 @@ proc typeParamName*(t: Type): string =
 proc isPending*(t: Type): bool =
   t != nil and t.kind == tkNamed and t.name == PendingName
 
-proc isUnknown*(t: Type): bool =
-  ## True for every sentinel, so existing call sites keep their present
-  ## behaviour while the meanings are separated one at a time. Narrowing this
-  ## to UnknownName alone is what finally makes a checker gap an error.
+proc isFlexible*(t: Type): bool =
+  ## True only for types that are intentionally abstract or exist solely as
+  ## control-flow bookkeeping. Missing types are represented by nil during
+  ## local inference and are never stamped onto the typed AST.
   t == nil or (t.kind == tkNamed and
-               (t.name in [UnknownName, TypeParamName, PendingName,
-                           EmptyRecName, AfterErrorName, BranchOutcomeName] or
+               (t.name in [TypeParamName, PendingName, EmptyRecName,
+                           AfterErrorName, BranchOutcomeName] or
                 t.name.startsWith(NamedTypeParamPrefix)))
 
 const NumericNames* = ["int", "i8", "i16", "i32", "i64",
@@ -178,6 +169,11 @@ proc substituteType*(t: Type, b: Table[string, Type]): Type =
     for a in t.args: args.add(substituteType(a, b))
     Type(span: t.span, kind: tkApp, attrs: t.attrs,
          base: substituteType(t.base, b), args: args)
+  of tkFunc:
+    var ps: seq[Type]
+    for p in t.params: ps.add(substituteType(p, b))
+    Type(span: t.span, kind: tkFunc, params: ps, paramNames: t.paramNames,
+         result: substituteType(t.result, b))
   of tkRecord:
     var fields: seq[FieldDef]
     for f in t.fields:

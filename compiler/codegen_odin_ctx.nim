@@ -162,7 +162,7 @@ proc qualifyEnumOwner*(ctx: OdinCodegenCtx, owner: string): string =
 proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   ## A name the primitive table did not cover.
   if isOddBitWidth(t.name): roundedIntType(t.name)
-  elif t.name == UnknownName: "any"  # sketch mode: no type information
+
   else: ctx.importedTypeQualifier(t.name)
 
 proc odinTupleType*(ctx: var OdinCodegenCtx, t: Type): string =

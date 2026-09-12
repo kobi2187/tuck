@@ -448,7 +448,7 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   if verifyStages:
     var checkedMods: seq[Module]
     for lm in loaded: checkedMods.add(lm.m)
-    assertNoUnknownTypes(checkedMods)
+    assertNoMissingTypes(checkedMods)
   let imported = importedEffects(loaded, sigOnly)
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)

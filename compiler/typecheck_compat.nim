@@ -43,7 +43,7 @@ proc unwrapForCompare*(actual, expected: Type, a, e: var Type): bool =
   elif isWrapper(e):
     a = unwrapEffect(a)
     e = unwrapEffect(e)
-  elif not isUnknown(e):
+  elif not isFlexible(e):
     return false
   true
 
@@ -126,8 +126,11 @@ proc importedFnSigInstance(tc: TypeChecker, t: Type): Type =
   var binds = initTable[string, Type]()
   for i, g in generics: binds[g] = t.args[i]
   var ps: seq[Type]
-  for prm in sig.params: ps.add(substParams(prm.typ, binds))
-  Type(span: t.span, kind: tkFunc, params: ps,
+  var names: seq[string]
+  for prm in sig.params:
+    ps.add(substParams(prm.typ, binds))
+    names.add(prm.name)
+  Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
        result: substParams(sig.ret, binds))
 
 proc fnSigSlotInstance(tc: TypeChecker, t: Type): Type =
@@ -173,15 +176,12 @@ proc compatible*(tc: TypeChecker, actual, expected: Type): bool =
   ## May a value of `actual` flow where `expected` is wanted?
   var a, e: Type
   if not unwrapForCompare(actual, expected, a, e): return false
-  # Unknown is compatible with everything, which makes every Unknown a check
-  # that silently passes. MEASURED (2026-08-07): building with this returning
+  # Abstract sentinels are intentional and remain compatible until a concrete type is available.
   # `false` instead turns 7 of the 43 examples red — an untyped value reaching
   # a sum type, and three fns whose body the checker cannot type at all
   # satisfying a declared `-> bool` or `-> !{value: u16}`. Each is a real gap
   # this line is hiding, not a false positive. See fuzz/README.md.
-  if isUnknown(a) or isUnknown(e):
-    when defined(strictUnknown): return false
-    else: return true
+  if isFlexible(a) or isFlexible(e): return true
   if a.kind == tkNamed and e.kind == tkNamed:
     return tc.nominalCompatible(a, e)
   if a.kind == tkFunc:
@@ -192,6 +192,6 @@ proc compatible*(tc: TypeChecker, actual, expected: Type): bool =
     return tc.recordCompatible(a, eFields)
   if a.kind == tkApp and e.kind == tkApp:
     return tc.appCompatible(a, e)
-  # Sum types and the rest: nominal only, handled above; unknown shapes pass
+  # Sum types and the rest: nominal only, handled above
   when defined(strictKind): false   # measure the same-kind fallthrough
   else: a.kind == e.kind

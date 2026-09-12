@@ -1,4 +1,4 @@
-# Missing Features & Gaps — snapshot 2026-08-11
+# Missing Features & Gaps — snapshot 2026-09-12
 
 Every claim below was re-verified against the compiler on the date in the
 heading. The previous snapshot (2026-08-05) had drifted less than most: its
@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (3, all with a failing test that pins them)
+## A. Open bugs (2, all with a failing test that pins them)
 
 Each has a regression test written as the CORRECT behaviour, marked `bug_open`.
 Fixing one means flipping the marker to `bug_fixed`, which locks it in.
@@ -31,8 +31,6 @@ Fixing one means flipping the marker to `bug_fixed`, which locks it in.
 |---|---|---|---|
 | 1 | Odin: a list literal cannot reach a `Seq` parameter. `[dynamic]T` has no literal form, only `append`, and Odin rejects the inline braced compound literal at the call site. A plain `Seq[Record]` fails identically, so it is not interface-specific. Needs statement hoisting in the Odin emitter (declare, append, then pass). | interface_seq | `codegen_odin.nim` |
 | 2 | A QUALIFIED mutator in a `..` chain destroys the receiver: `cfg ..mod::fn ..f1 {60}` emits `tuck_withDefaults.f1 = 60`. **This is a PARSER bug, not codegen** (verified 2026-08-13 by dumping both trees with `tuck p --ast`): the qualified form parses to a chain whose base is `exkQualified{modulePath: [""], qualName: "withDefaults"}` with ONE step — `cfg` is gone — while the unqualified form parses to two steps with base `cfg`. `chainQualified` (parser_expr.nim:284) receives the chain node, fails its `expr.kind == exkVar` test so the module name becomes `""`, and returns a fresh node, discarding its input. It **cannot be caught in the checker**: `synthQualified` types that orphan as Unknown (its `modulePath` is `[""]`, length 1), and under gradual typing an unknown receiver cannot disprove a step — the checker is unable to tell "the user is sketching" from "the parser destroyed this tree". Tightening `checkChainStep` was tried and reverted as a no-op. | known_bugs | `parser_expr.nim` `chainQualified` — parse time is the only place |
-| 3 | **Field access on a primitive is unchecked.** `s.wibble` on a `str` typechecks clean and becomes `<unknown>`. `missingFieldMessage` declines to report when the receiver has no declared fields — deliberate for sum types, but it means every primitive receiver accepts every name. Found 2026-08-29 while investigating why `s.len` types as `<unknown>`: that is not about `len` either, since **`len` is declared nowhere** — not in `std/str.tuck`, not in `std/seq.tuck`, not in any runtime — so it has been resolving by luck in whichever backend spells it the same way (Nim emits `.len` and lets Nim's own `len` answer; the D backend had to hardcode the type). Fixing it is two steps: declare `len` in std, which needs the `seq`/`str` ambiguity settled and `Seq[T]` binding against `Seq[int]` (both hit in the attempt), and then make this rejection real. | known_bugs | `typecheck.nim` `missingFieldMessage` + a `len` declaration in `std/` |
-
 **Tracked but without a test yet — attempted to reproduce this session,
 blocked by a separate issue:** on Odin a task WITH ARGUMENTS is claimed to
 still emit a direct call, so its body would run on the main context and the
@@ -91,6 +89,8 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **Field access on a primitive is rejected.** Resolved receivers now have a closed field surface; an undeclared field reports `TK-TY02` instead of manufacturing a missing type.
 
 Fixed 2026-08-05, later in the same day (7 open bugs -> 3):
 

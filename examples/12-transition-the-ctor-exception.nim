@@ -70,6 +70,6 @@ proc tuck_main*(): void =
   var tuck_p = tuck_PlayerState(kind: Ready, tuck_ready: (config: tuck_config, feed: tuck_feed))
   var tuck_fresh = tuck_MqttSession(kind: Disconnected)
   var tuck_socket = tuck_Socket(fd: 3)
-  var tuck_session = tuck_MqttSession(kind: Connected, tuck_connected: (socket: tuck_socket, keepalive: 60))
+  var tuck_session = tuck_MqttSession(kind: Connected, tuck_connected: (socket: tuck_socket, keepalive: 60'u16))
   return
 

@@ -7,6 +7,7 @@
 # operations live here for them to import.
 import resolution
 import ast, lowering, tables, sets
+import ast_query
 import typecheck_util
 
 type
@@ -349,8 +350,20 @@ proc resolve*(tc: TypeChecker, t: Type, depth = 0): Type =
 
 # Field list of a type, resolving named/union/rename via lowering's helper.
 # `Box[int]` resolves through the generic decl with T substituted.
+proc actorDeclOf(tc: TypeChecker, name: string): Decl =
+  ## The actor declaration named `name`, if one is in scope. Actors are
+  ## nominal like objects but are NOT in objDecls: that table also gates
+  ## `{...} Name` construction and `satisfies` lookup, neither of which
+  ## applies to a singleton actor — this stays a field-lookup-only path.
+  tc.module.findDecl(dkActor, name)
+
 proc fieldsOf*(tc: TypeChecker, t: Type): seq[FieldDef] =
   if t == nil: return @[]
+  if t.kind == tkNamed and tc.objDecls.hasKey(t.name):
+    return composedFields(tc.module, tc.objDecls[t.name])
+  if t.kind == tkNamed:
+    let ad = tc.actorDeclOf(t.name)
+    if ad != nil: return composedFields(tc.module, ad)
   if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      tc.typeGenerics.hasKey(t.base.name) and
      tc.typeGenerics[t.base.name].len == t.args.len:

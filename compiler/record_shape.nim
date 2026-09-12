@@ -88,7 +88,7 @@ proc structuralFields(m: Module, res: Resolution, recvT: Type, payload: Expr,
       if f.name == n: known = true
     if known: continue
     var ft = inferLitType(overrideFor(payload, n))
-    if ft == nil: ft = Type(kind: tkNamed, name: UnknownName)
+    if ft == nil: raise newException(ValueError, "record shape field has no type")
     result.add FieldDef(name: n, typ: ft)
 
 proc updateShape*(m: Module, res: Resolution, e: Expr,

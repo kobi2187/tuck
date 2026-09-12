@@ -647,7 +647,7 @@ fn main() -> int:
                      r"raise_tuck_Sys_Started\(\)")
   t.bugFixed "a payload-free registry raise is lowered"
 
-  # FIELD ACCESS ON A PRIMITIVE IS UNCHECKED.
+  # FIELD ACCESS ON A PRIMITIVE IS CHECKED.
   #
   # `s.wibble` on a str typechecks clean and becomes <unknown>. The cause is
   # in missingFieldMessage: it declines to report when the receiver has no
@@ -674,7 +674,7 @@ fn main() -> int:
 """
   t.quietly: t.badCheck("field access on a primitive is rejected",
                         "TK-TY")
-  t.bugOpen "field access on a primitive is rejected"
+  t.bugFixed "field access on a primitive is rejected"
 
   # N. A bare `return` inside a `?T`/`!?T`-returning fn read back as PRESENT
   # with zero-valued fields, not absent. `TuckStatus`'s first variant is
@@ -717,6 +717,8 @@ fn main() -> int:
   # this right via its per-case `switch v in value` union bind; D given the
   # same fix as Nim).
   t.src """
+import console
+
 type V:
   | A {field: str}
   | B {field: str}
