@@ -1,7 +1,7 @@
 # core.contracts.collection — container protocols. Declarations only.
 
 group Countable:
-  fn len({self: Self}) -> int
+  fn count({self: Self}) -> int
 
 group Emptyable:
   fn isEmpty({self: Self}) -> bool

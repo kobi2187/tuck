@@ -364,4 +364,55 @@ fn main() -> int:
   t.hostBuilds "...and every backend builds it"
   t.runs "...and runs", 0
 
+  # --- the stdlib arrangement: contracts in one module, verbs in another ----
+  # Three things had to cross the import boundary for this to work, and none
+  # of them did: the GROUP itself (a bound naming it answered "not a declared
+  # group"), the generic fn's BOUNDS (looked up from a declaration this module
+  # does not have, so nothing was checked and nothing solved), and the solved
+  # TYPE ARGUMENTS (recorded against a decl, so a cross-module call silently
+  # emitted a type param no backend could instantiate).
+  #
+  # The satisfier is generic itself — one `at` for every element type — so the
+  # provider has to be instantiated before the group's E can be read off it,
+  # or E binds to the letter T.
+  t.src """
+import contracts
+import seqops
+
+fn main() -> int:
+  let xs = [7, 8, 9]
+  let a = {c: xs} firstOf
+  let n = {c: xs} countOf
+  if a != 7:
+    return 1
+  if n != 3:
+    return 2
+  return 0
+"""
+  t.addFile("contracts.tuck", """
+group Indexable[E]:
+  fn at({self: Self, index: int}) -> E
+
+group Countable:
+  fn count({self: Self}) -> int
+""")
+  t.addFile("seqops.tuck", """
+import contracts
+
+fn at[T]({self: Seq[T], index: int}) -> T:
+  return self[index]
+
+fn count[T]({self: Seq[T]}) -> int:
+  return self.len
+
+fn firstOf[C: Indexable[E] + Countable, E]({c: C}) -> E:
+  return {self: c, index: 0} at
+
+fn countOf[C: Countable]({c: C}) -> int:
+  return {self: c} count
+""")
+  t.okCheck "a generic group, its satisfier and its verbs across modules"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and runs", 0
+
   t.finish()

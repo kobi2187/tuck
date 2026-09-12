@@ -1752,6 +1752,20 @@ proc groupMemberSigText(want: Decl, selfT: Type,
   let ret = substituteGroup(want.fnReturnType, selfT, binds)
   if ret != nil: result.add(" -> " & typeName(ret))
 
+proc providerBindings(tc: TypeChecker, want: Decl, got: FnSig, concreteT: Type,
+                      binds: Table[string, Type], fnName: string,
+                      sp: Span): Table[string, Type] =
+  ## The fn satisfying a group is usually generic itself — `Seq` satisfies
+  ## `Indexable[E]` through `fn at[T]({self: Seq[T], index: int}) -> T`,
+  ## written once for every element type. Solve ITS type params against the
+  ## requirement read at this instantiation, so everything downstream compares
+  ## `Seq[int]` with `Seq[int]` rather than with the letter T.
+  if got.generics.len == 0: return
+  for i, w in want.fnParams:
+    if i < got.params.len:
+      tc.inferBindings(got.params[i].typ, substituteGroup(w.typ, concreteT, binds),
+                       got.generics, result, fnName, sp)
+
 proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
                       binds: Table[string, Type], groupName, paramName,
                       fnName: string, sp: Span) =
@@ -1765,6 +1779,7 @@ proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
          typeName(concreteT) & ")", sp)
     return
   let got = tc.sigOf(want.name)
+  let prov = tc.providerBindings(want, got, concreteT, binds, fnName, sp)
   let wantParams = want.fnParams
   if wantParams.len != got.params.len:
     fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
@@ -1774,20 +1789,22 @@ proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
   for i in 0 ..< wantParams.len:
     let w = wantParams[i]
     let gp = got.params[i]
+    let gpTyp = substituteType(gp.typ, prov)
     if w.name != gp.name:
       fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
            want.name & "' names parameter " & $(i + 1) & " '" & gp.name &
            "', group '" & groupName & "' calls it '" & w.name &
            "' (payload fields bind by name)", sp)
-    elif not tc.compatible(gp.typ, substituteGroup(w.typ, concreteT, binds)):
+    elif not tc.compatible(gpTyp, substituteGroup(w.typ, concreteT, binds)):
       fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
            want.name & "' parameter '" & w.name & "' is " &
-           typeName(gp.typ) & ", group '" & groupName & "' requires " &
+           typeName(gpTyp) & ", group '" & groupName & "' requires " &
            typeName(substituteGroup(w.typ, concreteT, binds)), sp)
   let wantRet = substituteGroup(want.fnReturnType, concreteT, binds)
-  if wantRet != nil and not tc.compatible(got.ret, wantRet):
+  let gotRet = substituteType(got.ret, prov)
+  if wantRet != nil and not tc.compatible(gotRet, wantRet):
     fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
-         "' returns " & typeName(got.ret) & ", group '" & groupName &
+         "' returns " & typeName(gotRet) & ", group '" & groupName &
          "' requires " & typeName(wantRet), sp)
 
 proc groupArgHoles(binds: Table[string, Type],
@@ -1809,15 +1826,27 @@ proc unifyRequirements(tc: TypeChecker, g: Decl, concreteT: Type,
   ## Unify every requirement, `Self` read as the concrete type, against the fn
   ## that type actually declares. Whatever the group's parameters have to be
   ## for that to hold is what they are.
+  ##
+  ## TWO levels, because the fn satisfying a group is usually generic itself:
+  ## `Seq` satisfies `Indexable[E]` through `fn at[T]({self: Seq[T], index:
+  ## int}) -> T`, written once for every element type. Unifying the
+  ## requirement straight against that signature binds E to the letter T
+  ## rather than to int. So the PROVIDER is instantiated first — its own type
+  ## params solved from the concrete type — and only then is the requirement
+  ## read off the instantiated signature.
   for want in g.groupMembers:
     if want == nil or want.kind != dkFn or not tc.fnSigs.hasKey(want.name):
       continue
     let got = tc.sigOf(want.name)
+    let prov = tc.providerBindings(want, got, concreteT,
+                                   initTable[string, Type](), fnName, sp)
     for i, w in want.fnParams:
       if i < got.params.len:
-        tc.inferBindings(substituteSelf(w.typ, concreteT), got.params[i].typ,
+        tc.inferBindings(substituteSelf(w.typ, concreteT),
+                         substituteType(got.params[i].typ, prov),
                          g.groupGenerics, solved, fnName, sp)
-    tc.inferBindings(substituteSelf(want.fnReturnType, concreteT), got.ret,
+    tc.inferBindings(substituteSelf(want.fnReturnType, concreteT),
+                     substituteType(got.ret, prov),
                      g.groupGenerics, solved, fnName, sp)
 
 proc solveGroupArgs(tc: TypeChecker, g: Decl, concreteT: Type,
@@ -1879,20 +1908,23 @@ proc checkOneGroupBound(tc: TypeChecker, bound: Type, concreteT: Type,
     if want == nil or want.kind != dkFn: continue
     tc.checkGroupMember(want, concreteT, binds, groupName, paramName, fnName, sp)
 
-proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string,
+proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string, sig: FnSig,
                                bindings: var Table[string, Type], sp: Span) =
   ## After a generic fn's type params are bound to concrete types, verify
-  ## every `[T: Group]` bound actually holds (spec §5.5). Looked up from the
-  ## ORIGINAL declaration rather than threaded through FnSig or the
-  ## cross-module signature cache: a bound is erased before codegen and
-  ## only needs enforcing where the generic fn is declared, in THIS module —
-  ## widening the cache format for every caller was the bigger, riskier
-  ## change for a mechanism with no cross-module case yet to justify it.
+  ## every `[T: Group]` bound actually holds (spec §5.5).
+  ##
+  ## Read from groupBoundsOf, which travels with the signatures, rather than
+  ## from the declaration: a call to a generic fn in ANOTHER module has no
+  ## declaration here, so the decl-keyed lookup silently skipped every
+  ## cross-module call — no bound enforced, and no group parameter solved
+  ## either, which left the call with a type param nothing could instantiate.
+  ## That is the call a stdlib is made of: the verbs live in their own module.
+  if not tc.groupBoundsOf.hasKey(fnName): return
+  let allBounds = tc.groupBoundsOf[fnName]
   let d = tc.module.findDecl(dkFn, fnName)
-  if d == nil or d.fnGenericBounds.len == 0: return
-  for i, paramName in d.fnGenerics:
-    if i >= d.fnGenericBounds.len: continue
-    let bounds = d.fnGenericBounds[i]
+  for i, paramName in sig.generics:
+    if i >= allBounds.len: continue
+    let bounds = allBounds[i]
     if bounds.len == 0 or not bindings.hasKey(paramName): continue
     let concreteT = bindings[paramName]
     if concreteT == nil or isUnknown(concreteT): continue
@@ -1901,7 +1933,7 @@ proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string,
     # message the author never wrote. Report the VALUE parameter's own
     # name instead, found by which param this synthesized name ended up on.
     var reportedName = paramName
-    if paramName.startsWith("TuckGroupParam"):
+    if paramName.startsWith("TuckGroupParam") and d != nil:
       for p in d.fnParams:
         if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == paramName:
           reportedName = p.name
@@ -1912,9 +1944,9 @@ proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string,
       # bounded param itself was bound, so the requirement is checked against
       # the element type the call actually supplied rather than the letter E.
       tc.checkOneGroupBound(substituteType(bound, bindings), concreteT,
-                            reportedName, fnName, bindings, d.fnGenerics, sp)
+                            reportedName, fnName, bindings, sig.generics, sp)
 
-proc recordCallTypeArgs(tc: TypeChecker, d: Decl,
+proc recordCallTypeArgs(tc: TypeChecker, sig: FnSig,
                         bindings: Table[string, Type], e: Expr) =
   ## Hand codegen the type arguments it cannot work out for itself.
   ##
@@ -1926,11 +1958,17 @@ proc recordCallTypeArgs(tc: TypeChecker, d: Decl,
   ## param as `$E: typeid` and then finds it missing at the call, and D cannot
   ## match the template. So the whole argument list is recorded, in
   ## declaration order, and each backend spells it its own way.
-  if d == nil or d.kind != dkFn or d.fnGenerics.len == 0: return
+  ##
+  ## Read off the SIGNATURE, not the declaration: a call to a generic fn in
+  ## ANOTHER module has no decl in this one, and that is exactly the call a
+  ## stdlib makes — the verbs live in their module and are called from every
+  ## other. Keyed on the decl, every cross-module call silently recorded
+  ## nothing and emitted an un-instantiable call.
+  if sig.generics.len == 0: return
   var needsExplicit = false
-  for g in d.fnGenerics:
+  for g in sig.generics:
     var mentioned = false
-    for p in d.fnParams:
+    for p in sig.params:
       if typeMentionsName(p.typ, g):
         mentioned = true
         break
@@ -1939,7 +1977,7 @@ proc recordCallTypeArgs(tc: TypeChecker, d: Decl,
       break
   if not needsExplicit: return
   var args: seq[Type]
-  for g in d.fnGenerics:
+  for g in sig.generics:
     if not bindings.hasKey(g): return
     let t = bindings[g]
     if t == nil or isUnknown(t): return
@@ -1968,7 +2006,7 @@ proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
     return true
   if sig.generics.len > 0:
     tc.inferBindings(param.typ, t, sig.generics, bindings, fnName, arg.span)
-    tc.checkGroupBoundsSatisfied(fnName, bindings, arg.span)
+    tc.checkGroupBoundsSatisfied(fnName, sig, bindings, arg.span)
   let expected = substituteType(param.typ, bindings)
   if tc.compatible(t, expected): return true
   if tc.fieldsOf(t).len == 0:
@@ -2009,7 +2047,7 @@ proc substituteParams(tc: var TypeChecker, fnName: string, sig: FnSig,
         tc.inferBindings(p.typ, af.typ, sig.generics, bindings, fnName, af.span)
         break
   if argFields.len > 0:
-    tc.checkGroupBoundsSatisfied(fnName, bindings, argFields[0].span)
+    tc.checkGroupBoundsSatisfied(fnName, sig, bindings, argFields[0].span)
   for p in sig.params:
     result.add(Param(name: p.name, typ: substituteType(p.typ, bindings),
                      span: p.span))
@@ -2450,7 +2488,7 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(calleeName, sig, e, bindings)
   if sig.generics.len == 0: return sig.ret
-  tc.recordCallTypeArgs(calleeDecl, bindings, e)
+  tc.recordCallTypeArgs(sig, bindings, e)
   # Unbound type params degrade to Unknown (gradual, like sketch code)
   for g in sig.generics:
     if not bindings.hasKey(g):
@@ -4154,7 +4192,8 @@ proc typecheckModule*(m: Module,
                       externSigs = initTable[string, seq[FnSig]](),
                       externPending = initTable[string, Span](),
                       externFnSigTypes = initTable[string, seq[string]](),
-                      externGroups = initTable[string, Decl]()): seq[string] {.discardable.} =
+                      externGroups = initTable[string, Decl](),
+                      externBounds = initTable[string, seq[seq[Type]]]()): seq[string] {.discardable.} =
   var tc = newModuleChecker(m, externSigs, externPending)
   # An imported `fnsig` is a signature TYPE, not just another callable. Seed
   # that before collectSigs so a slot typed `Mapper[int, str]` from another
@@ -4166,6 +4205,7 @@ proc typecheckModule*(m: Module,
   # Imported groups seed before the local ones are collected, so a local
   # declaration of the same name still wins.
   for gname, gd in externGroups: tc.groupDecls[gname] = gd
+  for fname, bs in externBounds: tc.groupBoundsOf[fname] = bs
   tc.pushScope()  # module-level scope: consts visible across decls
   # Group declarations, collected on their own, BEFORE the real collectSigs
   # below: desugaring an inline `{x: Sortable + Hashable}` bound has to run
@@ -4258,6 +4298,8 @@ type
     byMod: Table[string, Table[string, seq[FnSig]]]
     pendByMod: Table[string, Table[string, Span]]
     importsByMod: Table[string, seq[string]]
+    boundsByMod: Table[string, Table[string, seq[seq[Type]]]]
+                              ## each module's generic fns' group bounds
     groupsByMod: Table[string, Table[string, Decl]]
                               ## `group` declarations, by module. A bound names
                               ## a group, and a stdlib states its contracts in
@@ -4286,6 +4328,7 @@ type
     bareOwner: Table[string, string]
     fnSigTypes: Table[string, seq[string]]  ## imported `fnsig` names -> generics
     groups: Table[string, Decl]             ## imported `group` declarations
+    bounds: Table[string, seq[seq[Type]]]   ## imported fns' group bounds
 
 proc withModulePrefix(err: ref SemanticError, path: string): ref SemanticError =
   ## Prefix a module-local error with the file it came from.
@@ -4314,6 +4357,7 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
     result.pendByMod[name] = tc.pendingFns
     result.importsByMod[name] = moduleImports(m)
     result.groupsByMod[name] = tc.groupDecls
+    result.boundsByMod[name] = tc.groupBoundsOf
     var sigTypes: Table[string, seq[string]]
     for n in tc.fnSigNames:
       sigTypes[n] = tc.fnSigGenerics.getOrDefault(n)
@@ -4343,6 +4387,10 @@ proc importChecked(scope: var ImportScope, sigs: ProgramSigs, imp: string) =
     scope.fnSigTypes[fname] = generics
   for gname, d in sigs.groupsByMod.getOrDefault(imp):
     scope.groups[gname] = d
+  for fname, bs in sigs.boundsByMod.getOrDefault(imp):
+    if "::" notin fname:
+      scope.bounds[fname] = bs
+      scope.bounds[imp & "::" & fname] = bs
 
 proc importPrebuilt(scope: var ImportScope, preSigs: Table[string, seq[SigInfo]],
                     imp: string) =
@@ -4380,6 +4428,6 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
     let scope = importScopeFor(sigs, preSigs, name)
     try:
       result = typecheckModule(m, scope.extern, scope.pending,
-                               scope.fnSigTypes, scope.groups)
+                               scope.fnSigTypes, scope.groups, scope.bounds)
     except SemanticError as err:
       raise withModulePrefix(err, path)

@@ -25,6 +25,10 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   # evicting the first is what made `b.hash` on a Blob check against Commit's
   # signature.
   tc.addFnSig(d.name, (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects))
+  for b in d.fnGenericBounds:
+    if b.len > 0:
+      tc.groupBoundsOf[d.name] = d.fnGenericBounds
+      break
   indexDecl(semLayer, d)
   tc.addFnDecl(d.name, d)
   # NOT pending: a pending fn emits a generic one-payload stub

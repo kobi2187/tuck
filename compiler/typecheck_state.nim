@@ -115,6 +115,14 @@ type
                                       # from typeDeclsByName because an
                                       # interface is NOT a type: it has no size
                                       # and nothing is ever an instance of one.
+    groupBoundsOf*: Table[string, seq[seq[Type]]]
+                                      ## fn name -> its generic params' group
+                                      ## bounds, parallel to the signature's
+                                      ## `generics`. Kept beside fnSigs rather
+                                      ## than read off the declaration because
+                                      ## a call to a generic fn in ANOTHER
+                                      ## module has no declaration here — and
+                                      ## that is the call a stdlib is made of.
     groupDecls*: Table[string, Decl]  # `group NAME` (spec §5.5). Separate
                                       # from ifaceDecls even though both hold
                                       # a body-less requirement list: a group

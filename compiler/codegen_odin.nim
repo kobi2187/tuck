@@ -372,7 +372,17 @@ proc odinTypeArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   ## in procedure call" — it had matched the value against the typeid slot.
   let targs = ctx.res.callTypeArgsFor(e)
   if targs.len == 0: return @[]
-  let d = ctx.res.declFor(e)
+  # The resolved edge only exists for a callee declared in THIS module; a call
+  # into another one has to find the declaration across the import closure, and
+  # that is the ordinary case for a stdlib verb.
+  var d = ctx.res.declFor(e)
+  if d == nil and e.callee != nil:
+    let want = (if e.callee.kind == exkVar: e.callee.name else: e.callee.qualName)
+    d = ctx.module.findFn(want)
+    if d == nil:
+      for _, im in ctx.realModules:
+        d = im.findFn(want)
+        if d != nil: break
   if d == nil or d.kind != dkFn or d.fnGenerics.len != targs.len: return @[]
   for i, g in d.fnGenerics:
     var mentioned = false

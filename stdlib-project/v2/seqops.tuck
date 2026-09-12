@@ -1,0 +1,31 @@
+# v2.seqops — Seq satisfies the container contracts, and the verbs that follow.
+
+import value
+import collection
+
+fn at[T]({self: Seq[T], index: int}) -> T:
+  return self[index]
+
+fn count[T]({self: Seq[T]}) -> int:
+  return self.len
+
+fn isEmpty[T]({self: Seq[T]}) -> bool:
+  return self.len == 0
+
+fn firstOf[C: Indexable[E] + Countable, E]({c: C}) -> E:
+  return {self: c, index: 0} at
+
+fn lastOf[C: Indexable[E] + Countable, E]({c: C}) -> E:
+  let n = {self: c} count
+  return {self: c, index: n - 1} at
+
+fn atOr[C: Indexable[E] + Countable, E]({c: C, index: int, fallback: E}) -> E:
+  let n = {self: c} count
+  if index < 0:
+    return fallback
+  if index >= n:
+    return fallback
+  return {self: c, index: index} at
+
+fn countOf[C: Countable]({c: C}) -> int:
+  return {self: c} count
