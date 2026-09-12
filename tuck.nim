@@ -708,7 +708,10 @@ when isMainModule:
     let (verdict, consumed, stats) = validateTokens(toks)
     var parserOk = true
     try:
-      discard parseOrDie(source)
+      # `parseSource`, not `parseOrDie`: the latter PRINTS and quits, so the
+      # "both reject" and "grammar is too permissive" verdicts could never be
+      # reached — half a cross-check is not one.
+      discard parseSource(source)
     except CatchableError, Defect:
       parserOk = false
     let specOk = verdict == vOk
@@ -717,6 +720,10 @@ when isMainModule:
            " | ", stats.known, " declaration(s) matched a stated rule, ",
            stats.unknown, " fell to the escape hatch (",
            elapsedMs(t0), ")"
+      echo "  statements: ", stats.stmts, " stated, ", stats.stmtEscapes,
+           " escaped"
+      if stats.stmtForms.len > 0:
+        echo "  statement forms not stated: ", stats.stmtForms.join(", ")
       if stats.forms.len > 0:
         echo "  not stated by the grammar: ", stats.forms.join(", ")
     elif parserOk and not specOk:

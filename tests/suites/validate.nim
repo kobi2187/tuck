@@ -31,6 +31,7 @@ proc run*(t: var T) =
 
   var disagreed: seq[string]
   var known, unknown = 0
+  var stmts, stmtEscapes = 0
   for (f, i) in idx:
     if t.skippedCmd(i): continue
     let (rc, outp) = t.resultOf(i)
@@ -49,6 +50,15 @@ proc run*(t: var T) =
             known += parseInt(w)
           elif j + 1 < nums.len and nums[j + 1] == "fell":
             unknown += parseInt(w)
+    # "  statements: N stated, M escaped"
+    for line in outp.splitLines():
+      if not line.contains("statements:"): continue
+      let nums = line.strip().split(' ')
+      for j, w in nums:
+        if w.len == 0 or not w.allCharsInSet({'0'..'9'}): continue
+        if j + 1 < nums.len and nums[j + 1] == "stated,": stmts += parseInt(w)
+        elif j + 1 < nums.len and nums[j + 1] == "escaped":
+          stmtEscapes += parseInt(w)
 
   if disagreed.len == 0:
     t.ok "the spec grammar and the parser agree across the corpus"
@@ -59,7 +69,7 @@ proc run*(t: var T) =
   # The floor moves UP by hand, the way the complexity ratchet does. It is set
   # to what the tree states today; a grammar edit that describes less than it
   # did is the thing this catches.
-  const CoverageFloor = 95
+  const CoverageFloor = 100
   let total = known + unknown
   let pct = if total == 0: 0 else: known * 100 div total
   if total == 0:
@@ -70,3 +80,20 @@ proc run*(t: var T) =
   else:
     t.no "grammar coverage stays at or above the floor",
          $pct & "% of " & $total & " declarations, floor " & $CoverageFloor & "%"
+
+  # The same floor one level down. Statements are where this session's real
+  # bugs lived — `:mod::fn` losing its module, `..mod::fn` destroying the
+  # receiver — so a body that goes through the escape hatch is exactly the
+  # blind spot worth ratcheting.
+  const StmtFloor = 100
+  let stmtTotal = stmts + stmtEscapes
+  let stmtPct = if stmtTotal == 0: 0 else: stmts * 100 div stmtTotal
+  if stmtTotal == 0:
+    t.skip "statement coverage stays at or above the floor (no corpus)"
+  elif stmtPct >= StmtFloor:
+    t.ok "statement coverage stays at or above the floor (" & $stmtPct &
+         "% of " & $stmtTotal & " statements, floor " & $StmtFloor & "%)"
+  else:
+    t.no "statement coverage stays at or above the floor",
+         $stmtPct & "% of " & $stmtTotal & " statements, floor " &
+         $StmtFloor & "%"

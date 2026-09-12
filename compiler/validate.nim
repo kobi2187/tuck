@@ -38,7 +38,7 @@
 # so the coverage number is honest — an unhelpful validator is one that
 # quietly accepts everything.
 
-import npeg, strutils
+import npeg, strutils, tables
 import ../lexer
 
 proc tokensOf*(source: string): seq[Token] =
@@ -64,8 +64,23 @@ type Stats* = object
   ## What the grammar actually covered. Without this the validator is
   ## vacuous: `unknown` accepts any declaration it does not state, so a file
   ## can "agree" while the grammar described none of it.
+  ##
+  ## COUNTING IS POSITION-KEYED, and that is not a detail. npeg runs a rule's
+  ## code block the moment the rule matches, and a PEG backtracks: a plain
+  ## `inc` counts every attempt, including the ones an ordered choice threw
+  ## away. Measured that way this corpus reported 1519 declarations where it
+  ## has 313. So each site records itself under its subject offset and the
+  ## last writer at an offset wins — alternatives are tried in order, so the
+  ## surviving one is the last to have run there.
+  sites*: Table[int, string]
+    ## subject offset -> tag: "d:" a declaration, "s:" a statement, then
+    ## either "known" or the first token of what escaped
   known*: int      ## declarations a stated rule matched
   unknown*: int    ## declarations that fell through to the escape hatch
+  stmts*: int      ## statements a stated rule matched
+  stmtEscapes*: int ## statements that fell through
+  stmtForms*: seq[string]
+    ## the FIRST token of each escaped statement, same purpose one level down
   forms*: seq[string]
     ## the FIRST token of each escaped declaration — the whole point of the
     ## report, since it names which spec constructs are still unwritten here
@@ -77,6 +92,11 @@ let tuckGrammar = peg("module", st: Stats):
   # and a rule wanting "any one token" has to say so.
   tok       <- +(1 - ' ') * ' '
   nl        <- "tkNewline "
+  # The lexer emits no tkNewline for a file's LAST line: it goes straight to
+  # tkDedent/EOF. A statement rule that demands `nl` therefore fails on the
+  # last line of every block that ends the file — which is why every
+  # statement ends on `eol`, not on `nl`.
+  eol       <- nl | &"tkDedent " | !1
   name      <- "tkIdent " | "tkAttr "
 
   # A balanced indented block, contents unexamined. This is the seam between
@@ -85,7 +105,114 @@ let tuckGrammar = peg("module", st: Stats):
   # A `##` doc comment is DISCARDED by the lexer but leaves its line's
   # tkNewline, so a header can be followed by several newlines before the
   # block opens — hence `+nl` at every block-taking rule rather than `nl`.
-  blk       <- "tkIndent " * *(blk | (!"tkDedent " * tok)) * "tkDedent "
+  # `blk` states its STATEMENTS where it can and counts what it cannot — the
+  # same honesty the declaration level uses, one layer down. `rawBlk` is the
+  # old soup, kept for blocks that are not statement lists at all: a decision
+  # table's rows, a register's bit layout, an interface's requirement list.
+  rawBlk    <- "tkIndent " * *(rawBlk | (!"tkDedent " * tok)) * "tkDedent "
+  blk       <- "tkIndent " * +stmtLine * "tkDedent "
+  # A body that holds DECLARATIONS rather than statements — an actor's
+  # handlers, a group's requirements, a conditional compilation block. It
+  # reuses `decl`, so nested declarations are counted like top-level ones.
+  declBlk   <- "tkIndent " * +decl * "tkDedent "
+  # A body of MEMBERS: a type's fields, an actor's state, a registry's or sum
+  # type's variants. Neither statements nor declarations — its own shape.
+  memberBlk <- "tkIndent " * +member * "tkDedent "
+  member    <- *nl * (memberCounted | knownCounted | unknownCounted) * *nl
+  memberCounted <- >(fieldDecl | variantDecl | composeMember | blockMember |
+                     ellipsisStmt):
+    st.sites[capture[0].si] = "d:known"
+  fieldDecl <- name * "tkColon " * typeExpr * *attrs * ?("tkAssign " * expr) * eol
+  variantDecl <- "tkPipe " * name * ?params * eol
+  # `+ AudioPlayer` — mixin composition, one line per mixin.
+  composeMember <- "tkPlus " * typeExpr * eol
+  # `invariant:` and friends: a named block inside a type or actor body.
+  # `invariant` lexes as tkAttr, which `name` already covers.
+  blockMember <- name * "tkColon " * +nl * blk
+
+  # --- statements ---------------------------------------------------------
+  stmtLine  <- *nl * (stmtCounted | unknownStmt) * *nl
+  stmtCounted <- >stmt:
+    st.sites[capture[0].si] = "s:known"
+  unknownStmt <- >(!"tkDedent " * tok * *(!nl * !"tkDedent " * tok) * eol *
+                   ?rawBlk):
+    st.sites[capture[0].si] = "s:" & ($1).split(' ')[0]
+
+  stmt      <- letStmt | varStmt | returnStmt | ifStmt | forStmt | loopStmt |
+               matchStmt | onStmt | ellipsisStmt | simpleStmt | transRow |
+               assignStmt | exprStmt
+  letStmt   <- ("tkLet " | "tkConst ") * name * ?("tkColon " * typeExpr) *
+               "tkAssign " * (matchTail | ifTail | (expr * eol))
+  varStmt   <- "tkVar " * name * ?("tkColon " * typeExpr) *
+               (("tkAssign " * (matchTail | ifTail | (expr * eol))) | eol)
+  returnStmt<- "tkReturn " * ?expr * eol
+  # Two shapes share one keyword: a block `if` whose `else` opens a new line,
+  # and an inline `if c: a else: b` where the whole thing is one expression.
+  ifTail    <- ("tkIf " | "tkElif ") * expr * "tkColon " *
+               ((+nl * blk * *elsePart) | (expr * (inlineElse | eol)))
+  inlineElse<- ("tkElse " * "tkColon " * expr * eol) |
+               ("tkElif " * expr * "tkColon " * expr * (inlineElse | eol))
+  ifStmt    <- ifTail
+  elsePart  <- *nl * (("tkElif " * expr * "tkColon " * ((+nl * blk) | (expr * eol))) |
+                      ("tkElse " * "tkColon " * ((+nl * blk) | (expr * eol))))
+  forStmt   <- "tkFor " * ((name * "tkIn " * expr) | expr) * "tkColon " * +nl * blk
+  loopStmt  <- "tkLoop " * "tkColon " * +nl * blk
+  # Arms are a table, not a statement list — `rawBlk` on purpose, the same
+  # deferral the decision-table and register-layout blocks get.
+  matchTail <- "tkMatch " * expr * "tkColon " * +nl * rawBlk
+  matchStmt <- matchTail
+  # An assignment's right side may itself be a block-valued `match`.
+  assignStmt<- expr * assignOp * (matchTail | ifTail | (expr * eol))
+  assignOp  <- "tkAssign " | "tkPlusAssign " | "tkMinusAssign " |
+               "tkStarAssign " | "tkSlashAssign " | "tkSlashIntAssign " |
+               "tkSlashFloatAssign "
+  # `on select:` is a declaration at file level and a statement inside a body;
+  # same form either way. Arms are a table, so `rawBlk`.
+  onStmt    <- onForm
+  # `...` is the spec's "unwritten body" placeholder. The lexer has no
+  # ellipsis token, so it arrives as `..` followed by `.`.
+  ellipsisStmt <- "tkDotDot " * "tkDot " * eol
+  exprStmt  <- expr * eol
+  # A row of a `transitions:` table. It can only be stated here, not given
+  # its own block rule: the subject is token KINDS, so `transitions` is
+  # indistinguishable from any other identifier followed by a colon.
+  transRow  <- name * "tkArrow " * name * eol
+  simpleStmt<- ("tkBreak " | "tkContinue " | "tkDiscard ") * eol
+
+  # --- expressions --------------------------------------------------------
+  # Postfix by construction: a payload precedes the name it applies to
+  # (`{a: 1} f`), and every continuation — field, chain-mutate, module
+  # qualification, bake — attaches to what is already there.
+  expr      <- unary * *(binOp * unary)
+  unary     <- *("tkMinus " | "tkNot ") * postfix
+  postfix   <- primary * *contin
+  contin    <- ("tkDot " * name) |
+               ("tkDotDot " * name * ?structLit) |
+               ("tkColonColon " * name) |
+               ("tkBake " * structLit) |
+               # `alias(old: new, ...)` — the one parenthesised argument list
+               # in a language with no paren calls. `alias` itself lexes as a
+               # plain identifier, so this is a continuation, not a keyword.
+               ("tkLParen " * fieldInit * *("tkComma " * fieldInit) *
+                "tkRParen ") |
+               ("tkLBracket " * expr * *("tkComma " * expr) * "tkRBracket ") |
+               structLit |
+               name
+  primary   <- fnRef | structLit | listLit | parenExpr | literal | name
+  fnRef     <- "tkColon " * name * ?("tkColonColon " * name)
+  structLit <- "tkLBrace " * ?(fieldInit * *("tkComma " * fieldInit)) * "tkRBrace "
+  # A payload field is `name: expr`, or a BARE expression — `{8080}` is the
+  # shorthand for `{value: 8080}`, so the field name is optional in a way a
+  # `name`-first rule cannot express.
+  fieldInit <- (name * "tkColon " * expr) | expr
+  listLit   <- "tkLBracket " * ?(expr * *("tkComma " * expr)) * "tkRBracket "
+  parenExpr <- "tkLParen " * expr * "tkRParen "
+  literal   <- "tkIntLit " | "tkFloatLit " | "tkStrLit " | "tkTrue " |
+               "tkFalse " | "tkNone "
+  binOp     <- "tkPlus " | "tkMinus " | "tkStar " | "tkPercent " |
+               "tkSlashInt " | "tkSlashFloat " | "tkEq " | "tkNeq " |
+               "tkLt " | "tkGt " | "tkLte " | "tkGte " | "tkAnd " | "tkOr " |
+               "tkRange " | "tkRangeLt "
 
   # --- types --------------------------------------------------------------
   # `?T` / `!T` / `!?T` prefixes, `T?` / `T!` suffixes, `A[B, C]`
@@ -116,18 +243,20 @@ let tuckGrammar = peg("module", st: Stats):
 
   # --- declarations -------------------------------------------------------
   importDecl<- "tkImport " * name * nl
-  publicDecl<- "tkPublic " * "tkColon " * +nl * blk
+  publicDecl<- "tkPublic " * "tkColon " * +nl * rawBlk
   fnDecl    <- "tkFn " * name * ?generics * params * sigTail * "tkColon " * +nl * ?blk
+  # An interface requirement is a signature with no colon and no body.
+  fnReqDecl <- "tkFn " * name * ?generics * params * sigTail * eol
   fnSigDecl <- "tkFnsig " * name * ?generics * "tkAssign " * typeExpr *
                ?retType * nl
-  groupDecl <- "tkGroup " * name * ?generics * "tkColon " * +nl * blk
-  ifaceDecl <- "tkInterface " * name * "tkColon " * +nl * blk
+  groupDecl <- "tkGroup " * name * ?generics * "tkColon " * +nl * declBlk
+  ifaceDecl <- "tkInterface " * name * "tkColon " * +nl * declBlk
   # spec 4.6: a type may carry attributes — `type EthernetFrame [packed,
   # align: 2]:`
   typeDecl  <- "tkType " * name * ?generics * *attrs *
-               (("tkAssign " * typeExpr * nl) | ("tkColon " * +nl * blk))
+               (("tkAssign " * typeExpr * nl) | ("tkColon " * +nl * memberBlk))
   objectDecl<- ("tkObject " | "tkActor " | "tkMixin " | "tkRegistry ") *
-               name * *attrs * "tkColon " * +nl * blk
+               name * *attrs * "tkColon " * +nl * memberBlk
   constDecl <- "tkConst " * name * "tkAssign " * *(!nl * tok) * nl
   taskDecl  <- "tkTask " * name * ?params * sigTail * "tkColon " * +nl * ?blk
 
@@ -143,28 +272,32 @@ let tuckGrammar = peg("module", st: Stats):
   # spec 7.2: `pool NAME = Type [count: N]`
   poolDecl  <- word * name * "tkAssign " * typeExpr * *attrs * nl
   # spec 7.3: `arena NAME [size: N]:` + block
-  arenaDecl <- word * name * *attrs * "tkColon " * +nl * blk
+  arenaDecl <- word * name * *attrs * "tkColon " * +nl * rawBlk
   # spec 8.1: `register NAME at ADDR:` + block of bit fields
-  regDecl   <- word * name * word * ("tkIntLit " | name) * "tkColon " * +nl * blk
+  regDecl   <- word * name * word * ("tkIntLit " | name) * "tkColon " * +nl * rawBlk
   # `extern:` / `extern [c, ...]:` — a block of signatures (spec 11 / FFI)
-  externDecl<- word * *attrs * "tkColon " * +nl * blk
+  externDecl<- word * *attrs * "tkColon " * +nl * rawBlk
   # spec 5.4: `pending:` — the walking skeleton block
-  pendingDecl <- "tkPending " * "tkColon " * +nl * blk
+  pendingDecl <- "tkPending " * "tkColon " * +nl * rawBlk
   # spec 4.2: `distinct NAME = Type`
   distinctDecl<- "tkDistinct " * name * "tkAssign " * typeExpr * *attrs * nl
   # spec 8.2
   staticAssertDecl <- "tkStaticAssert " * *(!nl * tok) * nl
   # spec 6.1: `decision NAME(params) -> T:` + table
-  decisionDecl <- "tkDecision " * name * ?params * sigTail * "tkColon " * +nl * blk
+  decisionDecl <- "tkDecision " * name * ?params * sigTail * "tkColon " * +nl * rawBlk
   # spec 9.3 / Part 10: `on select:`, and the event-registry handler form
   # `on Registry.Event({payload}):`. The payload carries its own tkColon, so
   # the head cannot be scanned as "everything up to the first colon".
   dotted    <- name * *("tkDot " * name)
-  onDecl    <- "tkOn " * ("tkSelect " | dotted) * ?params * "tkColon " * +nl * blk
+  # `on select:` arms are a table (`| chan -> {payload}: body`); an event
+  # handler's body is an ordinary statement list. One keyword, two bodies.
+  onForm    <- "tkOn " * (("tkSelect " * "tkColon " * +nl * rawBlk) |
+                          (dotted * ?params * sigTail * "tkColon " * +nl * blk))
+  onDecl    <- onForm
   # spec 8.3: `when TARGET == "x":` + block
-  whenDecl  <- "tkWhen " * *(!"tkColon " * !nl * tok) * "tkColon " * +nl * blk
+  whenDecl  <- "tkWhen " * *(!"tkColon " * !nl * tok) * "tkColon " * +nl * declBlk
 
-  known     <- importDecl | publicDecl | fnDecl | fnSigDecl | groupDecl |
+  known     <- importDecl | publicDecl | fnDecl | fnReqDecl | fnSigDecl | groupDecl |
                ifaceDecl | typeDecl | objectDecl | constDecl | taskDecl |
                pendingDecl | distinctDecl | staticAssertDecl | decisionDecl |
                onDecl | whenDecl |
@@ -173,19 +306,24 @@ let tuckGrammar = peg("module", st: Stats):
   # A declaration the grammar does not state. Consumed so the file still
   # parses, and COUNTED by the caller so coverage is reported rather than
   # assumed — see validate().
-  unknown   <- +(!nl * tok) * nl * ?blk
+  # `tok` would happily eat a tkDedent, and an escape hatch that swallows a
+  # block terminator unbalances every enclosing block — which showed up as
+  # phantom "tkDedent" declarations and forced retries that corrupted the
+  # coverage count. An unstated declaration is a LINE plus an opaque block.
+  unknown   <- +(!nl * !"tkDedent " * tok) * nl * ?rawBlk
 
   decl      <- *nl * (knownCounted | unknownCounted) * *nl
-  knownCounted   <- known:
-    inc st.known
+  knownCounted   <- >known:
+    st.sites[capture[0].si] = "d:known"
   unknownCounted <- >unknown:
-    inc st.unknown
-    let head = ($1).split(' ')[0]
-    if head notin st.forms: st.forms.add(head)
+    st.sites[capture[0].si] = "d:" & ($1).split(' ')[0]
   # A file ending inside an indented block closes it at EOF, so the stream can
   # end with dedents that belong to no declaration. Allowed here rather than
   # inside `blk`, which must stay balanced.
-  module    <- *nl * *decl * *("tkDedent " | nl) * !1
+  # Stray dedents are skipped between TOP-LEVEL declarations only: a block
+  # this grammar defers on leaves its terminators behind. `decl` itself must
+  # not skip them, or a nested one eats the dedent that closes its own block.
+  module    <- *nl * *(decl * *("tkDedent " | nl)) * !1
 
 type Verdict* = enum
   vOk          ## the grammar accepts this file
@@ -198,6 +336,18 @@ proc validateTokens*(toks: seq[Token]): (Verdict, int, Stats) =
   let subject = symbolize(toks)
   var st = Stats()
   let m = tuckGrammar.match(subject, st)
+  for _, tag in st.sites:
+    let form = tag[2 .. ^1]
+    if tag[0] == 'd':
+      if form == "known": inc st.known
+      else:
+        inc st.unknown
+        if form notin st.forms: st.forms.add(form)
+    else:
+      if form == "known": inc st.stmts
+      else:
+        inc st.stmtEscapes
+        if form notin st.stmtForms: st.stmtForms.add(form)
   if m.ok and m.matchLen >= subject.len: (vOk, m.matchLen, st)
   else: (vRejected, m.matchLen, st)
 
