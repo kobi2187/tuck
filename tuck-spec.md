@@ -340,11 +340,11 @@ just the last statement in the body), and no labels — ever.
 
 ```tuck
 loop:                        # infinite (while-true)
-  poll()
-  if done(): break
+  poll
+  if done: break
 
-for ready():                 # while-style — condition directly after for
-  tick()
+for ready:                 # while-style — condition directly after for
+  tick
 
 for i in 0 .. 10:            # inclusive range (Nim convention), 0..10
   ...

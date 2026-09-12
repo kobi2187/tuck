@@ -39,7 +39,7 @@ interface Streamable:
 
 interface Seekable:
   fn position({self: Self}) -> i64 [io]
-  fn seek({self: Self, offset: i64, from: Anchor}) -> i64 [io]
+  fn seek({self: Self, offset: i64, whence: Anchor}) -> i64 [io]
 
 pending:
   fn read({s: Streamable, n: int}) -> !{data: Seq[u8]} [io, error: IoError]

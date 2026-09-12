@@ -62,8 +62,8 @@ pending:
   fn writePin({pin: int, level: PinLevel}) -> void
   fn enableInterrupt({pin: int, edge: Edge}) -> {vector: int}?
 
-  fn i2cRead({bus: int, addr: u8, reg: u8, count: int, timeoutMs: u32}) -> !{data: Seq[u8]} [io, error: I2cError]
-  fn i2cWrite({bus: int, addr: u8, reg: u8, data: Seq[u8], timeoutMs: u32}) -> !void [io, error: I2cError]
+  fn i2cRead({bus: int, device: u8, reg: u8, count: int, timeoutMs: u32}) -> !{data: Seq[u8]} [io, error: I2cError]
+  fn i2cWrite({bus: int, device: u8, reg: u8, data: Seq[u8], timeoutMs: u32}) -> !void [io, error: I2cError]
 
   fn spiTransfer({bus: int, tx: Seq[u8], timeoutMs: u32}) -> !{rx: Seq[u8]} [io, error: SpiError]
   fn spiWrite({bus: int, tx: Seq[u8], timeoutMs: u32}) -> !void [io, error: SpiError]

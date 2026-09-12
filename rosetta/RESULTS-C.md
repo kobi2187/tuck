@@ -90,7 +90,7 @@ batch.
 ### module `opt` (optional-value handling — 1 example, but structural)
 
 ```tuck
-fn unwrapOr[T]({self: ?T, default: T}) -> T
+fn unwrapOr[T]({self: ?T, fallback: T}) -> T
 ```
 Needed by: c09. `?T` optional types are a language feature with essentially
 no accompanying stdlib — there's no way to get a plain value out of an

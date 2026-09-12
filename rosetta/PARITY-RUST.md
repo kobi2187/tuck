@@ -36,7 +36,7 @@ entry below is flagged:
 ```tuck
 fn isSome[T]({self: ?T}) -> bool                              # [fn]  Option::is_some
 fn isNone[T]({self: ?T}) -> bool                               # [fn]  Option::is_none
-fn unwrapOr[T]({self: ?T, default: T}) -> T                    # [fn]  Option::unwrap_or  (VERIFIED — see #13)
+fn unwrapOr[T]({self: ?T, fallback: T}) -> T                    # [fn]  Option::unwrap_or  (VERIFIED — see #13)
 fn unwrapOrElse[T]({self: ?T, fallback: fnsig}) -> T           # [fn]  Option::unwrap_or_else
 fn expect[T]({self: ?T, message: str}) -> T                    # [fn]  Option::expect — panics with message
 fn map[T, U]({self: ?T, transform: fnsig}) -> ?U               # [fn]  Option::map
@@ -51,7 +51,7 @@ fn orElse[T]({self: ?T, fallback: ?T}) -> ?T                   # [fn]  Option::o
 ```tuck
 fn isOk[T]({self: !T}) -> bool                                 # [fn]  Result::is_ok
 fn isErr[T]({self: !T}) -> bool                                # [fn]  Result::is_err
-fn unwrapOr[T]({self: !T, default: T}) -> T                    # [fn]  Result::unwrap_or
+fn unwrapOr[T]({self: !T, fallback: T}) -> T                    # [fn]  Result::unwrap_or
 fn unwrapOrElse[T]({self: !T, fallback: fnsig}) -> T           # [fn]  Result::unwrap_or_else
 fn expect[T]({self: !T, message: str}) -> T                    # [fn]  Result::expect — panics with message
 fn map[T, U]({self: !T, transform: fnsig}) -> !U               # [fn]  Result::map
@@ -162,7 +162,7 @@ fn binarySearch({items: Seq[int], target: int}) -> ?int   # slice::binary_search
 
 # std/str (Rust: str methods)
 fn find({text: str, needle: str}) -> ?int                 # str::find -> byte index
-fn replace({text: str, from: str, to: str}) -> str        # str::replace
+fn replace({text: str, needle: str, to: str}) -> str        # str::replace
 fn startsWith({text: str, prefix: str}) -> bool           # str::starts_with
 fn endsWith({text: str, suffix: str}) -> bool             # str::ends_with
 

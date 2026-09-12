@@ -22,7 +22,7 @@ proc run*(t: var T) =
   # Lowered by hand as documents are reconciled against the compiler. Never
   # raise it: a new rejected block means a doc just gained syntax the language
   # does not have.
-  const RejectedCeiling = 53
+  const RejectedCeiling = 34
 
   let i = t.needCmd(@["./tools/doc_snippets"])
   if t.phase != pReport: return

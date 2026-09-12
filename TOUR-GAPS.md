@@ -10,14 +10,14 @@ Ordered by how hard they blocked natural expression.
 ## 1. ~~Cannot print a number~~ FIXED 2026-07-13 — generic `toStr`
 
 `std/str` ships `fn toStr[T]({value: T}) -> str` (one generic extern over
-the runtime): `{text: n.toStr} io::printLine` prints 42. Interpolation
+the runtime): `{text: n.toStr} printLine` prints 42. Interpolation
 remains future sugar.
 
 ### (original finding)
 
 ```tuck
 let n = 42
-{text: n} io::printLine   # Type Error: expects str but got int
+{text: n} printLine   # Type Error: expects str but got int
 ```
 
 The very first thing a tutorial does (print a computed value) is not

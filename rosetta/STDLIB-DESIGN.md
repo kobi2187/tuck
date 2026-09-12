@@ -137,13 +137,13 @@ operation is worse than either name alone.
 
 ```tuck
 fn empty[K, V]({}) -> Map[K, V]
-fn set[K, V]({map: Map[K, V], key: K, value: V}) -> Map[K, V]
-fn get[K, V]({map: Map[K, V], key: K}) -> ?V             # note: no throwing variant — see §6, no exceptions in Tuck
-fn containsKey[K, V]({map: Map[K, V], key: K}) -> bool
-fn remove[K, V]({map: Map[K, V], key: K}) -> Map[K, V]
-fn len[K, V]({map: Map[K, V]}) -> int
-fn keys[K, V]({map: Map[K, V]}) -> Seq[K]
-fn values[K, V]({map: Map[K, V]}) -> Seq[V]
+fn set[K, V]({table: Map[K, V], key: K, value: V}) -> Map[K, V]
+fn get[K, V]({table: Map[K, V], key: K}) -> ?V             # note: no throwing variant — see §6, no exceptions in Tuck
+fn containsKey[K, V]({table: Map[K, V], key: K}) -> bool
+fn remove[K, V]({table: Map[K, V], key: K}) -> Map[K, V]
+fn len[K, V]({table: Map[K, V]}) -> int
+fn keys[K, V]({table: Map[K, V]}) -> Seq[K]
+fn values[K, V]({table: Map[K, V]}) -> Seq[V]
 ```
 
 **On `get` vs `tryGet`:** batch F's `f01` reached for `get`, `f22` reached
@@ -313,7 +313,7 @@ fn seeded({seed: int}) -> void [io]                  # sets the process-global g
 ### std/opt — Tier 1
 
 ```tuck
-fn unwrapOr[T]({self: ?T, default: T}) -> T
+fn unwrapOr[T]({self: ?T, fallback: T}) -> T
 fn isSome[T]({self: ?T}) -> bool
 fn isNone[T]({self: ?T}) -> bool
 fn map[T, U]({self: ?T, transform: fn}) -> ?U
@@ -334,7 +334,7 @@ both were independently reached for in this batch alone.
 ### std/result — blocked, see §4.3
 
 ```tuck
-fn unwrapOr[T, E]({self: !T, default: T}) -> T
+fn unwrapOr[T, E]({self: !T, fallback: T}) -> T
 fn isOk[T, E]({self: !T}) -> bool
 fn mapErr[T, E, E2]({self: !T, transform: fn}) -> !T
 ```

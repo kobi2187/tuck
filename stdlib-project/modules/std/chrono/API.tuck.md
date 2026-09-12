@@ -36,7 +36,7 @@ pending:
   fn at({d: Date, t: TimeOfDay}) -> DateTime
   fn addPeriod({d: Date, p: Period}) -> Date
   fn weekdayOf({d: Date}) -> Weekday
-  fn daysBetween({from: Date, to: Date}) -> i32
+  fn daysBetween({start: Date, to: Date}) -> i32
   fn parseDate({t: str}) -> Date?
   fn formatDate({d: Date, pattern: str}) -> str
 ```

@@ -38,7 +38,7 @@ the driver has a sanctioned form. Verified compiling:
 extern [c, header: "sqlite3.h", lib: "sqlite3"]:
   type Sqlite3 = {}                                    # opaque handle
   type Stmt = {}
-  fn sqlite3_open({path: cstring, out: Sqlite3}) -> i32 [emit: "sqlite3_open"]
+  fn sqlite3_open({path: cstring, handle: Sqlite3}) -> i32 [emit: "sqlite3_open"]
   fn sqlite3_close({db: Sqlite3}) -> i32 [emit: "sqlite3_close"]
   fn sqlite3_step({s: Stmt}) -> i32 [emit: "sqlite3_step"]
 ```

@@ -159,7 +159,7 @@ fn sortBy[T]({items: Seq[T], key: fn}) -> Seq[T]   # gated on prereq 6
 fn startsWith / endsWith / replace / substring / repeat / countOccurrences
 
 # std/opt
-fn unwrapOr[T]({self: ?T, default: T}) -> T   # first thing anyone does to ?T
+fn unwrapOr[T]({self: ?T, fallback: T}) -> T   # first thing anyone does to ?T
 ```
 
 ## 5. Tier 3 — nice to have

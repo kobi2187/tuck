@@ -18,7 +18,7 @@ pending:
   fn findFirst({id: int, subject: str}) -> Match?
   fn findAll({id: int, subject: str}) -> Seq[Match]
   fn matches({id: int, subject: str}) -> bool
-  fn replaceAll({id: int, subject: str, with: str}) -> str
+  fn replaceAll({id: int, subject: str, replacement: str}) -> str
   fn splitBy({id: int, subject: str}) -> Seq[str]
   fn groupOf({id: int, subject: str, index: int}) -> Match?
   fn fromGlob({glob: str}) -> !{id: int} [io, error: RegexError]

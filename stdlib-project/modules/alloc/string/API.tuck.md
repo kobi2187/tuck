@@ -19,7 +19,7 @@ pending:
   fn clear({t: str}) -> str
   fn repeat({t: str, times: int}) -> str
   fn join({parts: Seq[str], sep: str}) -> str
-  fn replace({t: str, what: str, with: str}) -> str
+  fn replace({t: str, what: str, replacement: str}) -> str
   fn padLeft({t: str, width: int, fill: Rune}) -> str
   fn padRight({t: str, width: int, fill: Rune}) -> str
 ```

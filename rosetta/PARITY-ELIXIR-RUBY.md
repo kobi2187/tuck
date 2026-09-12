@@ -182,7 +182,7 @@ fn containsText({text: str, needle: str}) -> bool             # Elixir String.co
 fn padLeading({text: str, width: int, pad: str}) -> str        # Elixir String.pad_leading/3 — rename of STDLIB-PROPOSAL's `padLeft` to the Elixir spelling since this batch is specifically arguing for Elixir alignment; Ruby's rjust is the same idea, different name — Elixir spelling wins per this batch's mandate
 fn padTrailing({text: str, width: int, pad: str}) -> str       # Elixir String.pad_trailing/3 (Ruby ljust)
 fn graphemes({text: str}) -> Seq[str]                            # Elixir String.graphemes/1 / Ruby String#chars — explicitly a Tier-3-until-char-type-lands item; see §3 rejections, codepoint correctness is a real trap here
-fn slice({text: str, from: int, to: int}) -> str                # Elixir String.slice/2, Ruby String#[range] — byte-semantics caveat inherited from charAt's existing prereq-5 note
+fn slice({text: str, start: int, to: int}) -> str                # Elixir String.slice/2, Ruby String#[range] — byte-semantics caveat inherited from charAt's existing prereq-5 note
 fn squeeze({text: str}) -> str                                   # Ruby String#squeeze — collapse runs of repeated chars; Tier 3, no Elixir equivalent, include only if demand shows up
 ```
 
@@ -190,7 +190,7 @@ fn squeeze({text: str}) -> str                                   # Ruby String#s
 
 ```tuck
 # Tier 1 — blocked on Map[K,V] existing as a type at all (DISCOVERIES.md #18)
-fn get[K, V]({entries: Map[K, V], key: K, default: V}) -> V     # Map.get/3 with EXPLICIT default param, not Ruby's Hash.new(default) constructor-time default — Elixir's call-site default is the better fit for a language with no object construction ceremony; matches this batch's std/opt default-value pattern (`unwrapOr`) for consistency
+fn get[K, V]({entries: Map[K, V], key: K, fallback: V}) -> V     # Map.get/3 with EXPLICIT default param, not Ruby's Hash.new(default) constructor-time default — Elixir's call-site default is the better fit for a language with no object construction ceremony; matches this batch's std/opt default-value pattern (`unwrapOr`) for consistency
 fn put[K, V]({entries: Map[K, V], key: K, value: V}) -> Map[K, V]   # Map.put/3 / Hash#[]=, but returns a NEW map — Tuck has no mutable-in-place collection story yet beyond the `xs[i]=v` array sugar, so treat Map as value-semantic like everything else here until proven otherwise
 fn hasKey[K, V]({entries: Map[K, V], key: K}) -> bool             # Map.has_key?/2 / Hash#key? — predicate-prefix convention from §1
 fn keys[K, V]({entries: Map[K, V]}) -> Seq[K]                     # Map.keys/1 / Hash#keys
@@ -205,7 +205,7 @@ fn getAndUpdate[K, V]({entries: Map[K, V], key: K, update: fn}) -> {entries: Map
 ### std/opt (existing module; `Keyword`/`{:ok,_}` comparison)
 
 ```tuck
-fn unwrapOr[T]({self: ?T, default: T}) -> T    # EXISTING PROPOSAL, unchanged
+fn unwrapOr[T]({self: ?T, fallback: T}) -> T    # EXISTING PROPOSAL, unchanged
 ```
 
 Elixir's `{:ok, value}` / `{:error, reason}` tuple convention plus `with`

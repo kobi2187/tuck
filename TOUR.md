@@ -12,10 +12,10 @@ graphs — rather than hand-coded.
 ## 1. A program is declarations + main
 
 ```tuck
-import io
+import console
 
 fn main() -> void [io]:
-  {text: "hello, tuck"} io::printLine
+  {text: "hello, tuck"} printLine
 ```
 
 *(runs)* — There are no top-level statements, not even `let`. A module
@@ -23,7 +23,7 @@ declares things; `main` runs. `tuck build file.tuck` makes a binary; a
 file without `main` builds as a library. `[io]` marks the effect: pure
 fns can't call io fns.
 
-⚠ Printing a *number* is not expressible yet — `io::printLine` wants
+⚠ Printing a *number* is not expressible yet — `printLine` wants
 `str` and there is no int→str or interpolation (gap 1).
 
 ## 2. Structs flow; fns pick what they need
@@ -153,7 +153,7 @@ decision route({priority: Priority, encrypted: bool}) -> int:
 ## 8. Errors are values
 
 ```tuck
-import io
+import console
 
 type ParseError:
   | Empty
@@ -167,7 +167,7 @@ fn parseTitle({raw: str}) -> !str [io, error: ParseError]:
 fn main() -> void [io]:
   let r = {raw: "hello"} parseTitle
   if r.ok:
-    {text: r.value} io::printLine
+    {text: r.value} printLine
   return
 ```
 

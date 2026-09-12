@@ -70,7 +70,7 @@ fn startsWith({text: str, prefix: str}) -> bool             # str.startswith()  
 fn endsWith({text: str, suffix: str}) -> bool               # str.endswith()         TIER 2
 fn contains({text: str, needle: str}) -> bool               # needle in str          TIER 2
 fn indexOf({text: str, needle: str}) -> int                 # str.find()  (-1 miss, NOT ValueError like str.index()) TIER 2
-fn replace({text: str, old: str, new: str}) -> str          # str.replace()          TIER 2
+fn replace({text: str, old: str, replacement: str}) -> str          # str.replace()          TIER 2
 fn substring({text: str, start: int, stop: int}) -> str     # str[start:stop]        TIER 2
 fn repeat({text: str, times: int}) -> str                   # str * n                TIER 2
 fn countOccurrences({text: str, needle: str}) -> int        # str.count()            TIER 2
@@ -182,7 +182,7 @@ strings.
 ## std/opt — `?T` helpers
 
 ```tuck
-fn unwrapOr[T]({self: ?T, default: T}) -> T                        # x if x is not None else default   TIER 2  # NOTE: Discoveries #13 — unwrapOr currently emits a curried call, verify before relying on it
+fn unwrapOr[T]({self: ?T, fallback: T}) -> T                        # x if x is not None else fallback   TIER 2  # NOTE: Discoveries #13 — unwrapOr currently emits a curried call, verify before relying on it
 fn isSome[T]({self: ?T}) -> bool                                    # x is not None            TIER 2
 fn isNone[T]({self: ?T}) -> bool                                    # x is None                TIER 2
 ```
