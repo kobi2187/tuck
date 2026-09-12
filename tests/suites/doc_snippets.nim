@@ -11,6 +11,12 @@
 ##   TK-PA03  a top-level statement — an illustrative line, not a module
 ##   TK-PA09  a block opened with nothing inside — a signature shown alone
 ##
+## A FRAGMENT IS CHECKED TO ITS LAST LINE. TK-PA03 stops the parser at the
+## first top-level statement, so for 40 blocks everything after that line was
+## never read — a cheat sheet showed five `for` headers and only the first was
+## ever seen. The tool now re-parses the tail inside a generated `fn`; a block
+## whose tail still fails is reported separately and must be zero.
+##
 ## A ```tuck-rejected fence inverts the assertion. Some blocks show rejected
 ## code on purpose — a spec illustrating a compile error, a FRICTIONS entry
 ## recording what the language will not express, a ROADMAP sketch of syntax
@@ -53,6 +59,21 @@ proc run*(t: var T) =
     t.no "documented Tuck: rejected blocks grew",
          $rejected & " rejected, ceiling " & $RejectedCeiling &
          " — run tools/doc_snippets --list"
+
+  # Fragments whose tail the parser never reached.
+  var loose = -1
+  for w in outp.split({' ', '\n'}):
+    if loose == -2: loose = (try: parseInt(w) except: -1)
+    if w == "TAILS:": loose = -2
+  if loose < 0:
+    t.no "every fragment is checked to its last line",
+         "could not read the unverified-tail count from: " & outp.strip()
+  elif loose == 0:
+    t.ok "every fragment is checked to its last line"
+  else:
+    t.no "every fragment is checked to its last line",
+         $loose & " fragment(s) have an unparsed tail — " &
+         "run tools/doc_snippets --why"
 
   # The inverted half. A tuck-rejected block that parses is a doc claiming the
   # compiler says no when it no longer does.

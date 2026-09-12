@@ -1437,7 +1437,7 @@ GC; cleanup is policy, not accident.
 **Declaration.** Resource *kinds* are user-declared, an open set — a UDP
 library declares its own kind the same way a module declares its error enums:
 
-```tuck
+```tuck-rejected
 resources:
   net  [cap: 10_000, on_full: error, sweep_batch: 100]
   file [cap: 8, on_finish: flush]
@@ -1688,17 +1688,17 @@ registry AppEvents:
 **Three operations:**
 
 ```tuck
+# Handle — declare the one handler for an event, in a manager or actor
+on AppEvents.SensorFailure({port: u8, reason: str}):
+  {port: port, reason: reason} warnSensorFailed
+  {index: port} restartMonitor
+
 # Raise — signal an event from anywhere
 AppEvents.raise SensorFailure {port: 1, reason: "timeout"}
 
-# Handle — declare the one handler for an event, in a manager or actor
-on AppEvents.SensorFailure({port, reason}):
-  log.warn "sensor {port} failed"
-  monitors[port].restart
-
 # Query — poll current state
 if AppEvents.latest is LowMemory:
-  caches.flush
+  {} flushCaches
 ```
 
 **Compiler guarantees:**

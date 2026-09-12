@@ -34,7 +34,8 @@ proc main() =
     if f.endsWith(".md") and "/.git/" notin f: files.add(f)
   var total, okCount, fragCount, badCount = 0
   var rejTotal, rejStale = 0
-  var bad, why, stale: seq[string]
+  var pa03, pa09, unverified = 0
+  var bad, why, stale, loose: seq[string]
   let tmp = getTempDir() / "tuckdocsnip"
   createDir(tmp)
   # The fence's own indentation is markdown structure, not Tuck: a block
@@ -75,7 +76,41 @@ proc main() =
         continue
       total.inc
       if rc == 0: okCount.inc
-      elif "TK-PA03" in outp or "TK-PA09" in outp: fragCount.inc
+      elif "TK-PA03" in outp:
+        # A top-level statement stops the parser at the FIRST such line, so
+        # everything after it went unread — 40 blocks were "fragments" with
+        # an unchecked tail. Wrap the block in a function and parse again:
+        # if that succeeds every line has been seen. If it does not, the
+        # block mixes declarations with statements (legitimate) or the tail
+        # is wrong (not), so it is listed rather than counted as verified.
+        # TK-PA03 names the line it stopped on. Everything before it is
+        # declarations that already parsed, so only the tail from that line
+        # needs a function around it. Wrapping the whole block instead would
+        # fail on the leading `type`/`fn` and hide the real tail errors.
+        var at = 0
+        for part in outp.split({' ', ','}):
+          if at == -1: at = (try: parseInt(part) except: 0); break
+          if part == "line": at = -1
+        if at <= 0: at = 1
+        var wrapped = ""
+        let lines = body.splitLines()
+        for i, ln in lines:
+          if i < at - 1: wrapped.add(ln & "\n")
+        wrapped.add("\nfn tuckDocFragment() -> void:\n")
+        for i, ln in lines:
+          if i >= at - 1:
+            wrapped.add(if ln.len == 0: "\n" else: "  " & ln & "\n")
+        writeFile(snip, wrapped)
+        let (wOut, wRc) = execCmdEx(tuckExe & " p " & snip & " 2>&1")
+        if wRc == 0:
+          pa03.inc
+          fragCount.inc
+        else:
+          unverified.inc
+          loose.add(f.relativePath(root) & ":" & $line)
+          why.add("fragment tail unverified (TK-PA03, and wrapping it in a " &
+                  "fn gives)\n" & wOut.strip() & "\n--- block ---\n" & body)
+      elif "TK-PA09" in outp: pa09.inc; fragCount.inc
       else:
         badCount.inc
         bad.add(f.relativePath(root) & ":" & $line)
@@ -83,13 +118,16 @@ proc main() =
   if paramCount() > 0 and paramStr(1) == "--list":
     for b in bad: echo b
     for b in stale: echo b, "  (tuck-rejected, but it parses now)"
+    for b in loose: echo b, "  (fragment tail unverified)"
   elif paramCount() > 0 and paramStr(1) == "--why":
-    for i, b in bad:
+    for i, b in bad & loose:
       echo "========== ", b
       echo why[i]
   for b in stale: echo b, ": tagged tuck-rejected, but it parses now"
   echo "tuck blocks: ", total, "  parse: ", okCount,
        "  fragments (TK-PA03/09): ", fragCount, "  REJECTED: ", badCount
+  echo "  of the fragments: TK-PA03 ", pa03, ", TK-PA09 ", pa09,
+       "  UNVERIFIED TAILS: ", unverified
   echo "tuck-rejected blocks: ", rejTotal, "  still rejected: ",
        rejTotal - rejStale, "  STALE (now parse): ", rejStale
 

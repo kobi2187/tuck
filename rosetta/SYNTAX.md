@@ -94,11 +94,15 @@ match shape:               # arms are `pattern: value`
   _: 0
 
 for i in 0 ..< 10:         # exclusive range
+  ...
 for i in 1 .. 10:          # inclusive range (SPACES around `..` required)
+  ...
 for item in items:
+  ...
 for idx, item in items:    # index + value
+  ...
 for b != 0:                # while-style: a real CONDITION goes here.
-                           # (Do not write the literal word `cond` — it would
+  ...                      # (Do not write the literal word `cond` — it would
                            # be read as a variable named cond.)
 loop:                      # infinite
   break

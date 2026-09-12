@@ -121,12 +121,16 @@ registry AppEvents:
 AppEvents.raise SensorFailure {port: 1, reason: "timeout"}
 ```
 
-If you adopt `upon` for handlers, the handler syntax can be written as:
+A handler is declared with `on`, naming the event and restating its payload:
 
 ```tuck
-upon AppEvents.SensorFailure({port, reason}):
-  log.warn "sensor {port} failed"
+on AppEvents.SensorFailure({port: u8, reason: str}):
+  {port: port, reason: reason} warnSensorFailed
 ```
+
+Every declared event needs a handler — an event nothing listens to is a signal
+that goes nowhere, which is the failure the one-registry design exists to
+prevent.
 
 ## 10. Summary of conventions
 
