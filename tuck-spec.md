@@ -1376,6 +1376,23 @@ Anything allocated from an arena cannot outlive the arena. The compiler enforces
 this via scope analysis. No per-object free, no fragmentation, worst-case
 allocation time is a pointer increment.
 
+**Status: not implemented.** The syntax above parses, and that is all. There
+is no `dkArena` declaration kind and no backend support: `parseArenaDecl`
+reads the body and then discards it, returning a `type` of the arena's name
+with an EMPTY record body. So a file using an arena compiles, allocates
+nothing, resets nothing, and its block is absent from the tree — do not read
+a successful `tuck check` on one as the feature working.
+
+`examples/13-arena-mem.tuck` is a syntax specimen in the sense README gives
+the word: it has no `fn main`, so it claims only "this is how the construct
+is written". The scope analysis described above is part of the unbuilt work,
+not a guarantee in force.
+
+Contrast §7.2's `pool` and §8.1's `register`, which ARE implemented end to
+end — each has its own declaration kind and reaches both backends. The three
+are often named together as sibling declaration forms, and on that point the
+prose is ahead of the compiler for exactly one of them.
+
 ### 7.4 The Resource Registry
 
 Scope-based RAII is the wrong model for OS resources. A hot loop that opens and

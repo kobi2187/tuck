@@ -80,6 +80,25 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## D. Design items with a ruling, not yet built
 
+- **`arena` parses and does nothing** (spec §7.3, now marked "not
+  implemented" there). There is no `dkArena` kind and no backend support:
+  `parseArenaDecl` reads the body and discards it, returning a `type` of the
+  arena's name with an empty record body. A file using an arena therefore
+  CHECKS CLEAN while allocating nothing and resetting nothing, and its block
+  is absent from the tree. `examples/13-arena-mem.tuck` is a syntax specimen
+  (no `fn main`), so the corpus is not claiming otherwise — but nothing
+  before this said so out loud. Found by `tuck validate`, which is what that
+  tool is for.
+  Its siblings differ: §7.2 `pool` and §8.1 `register` are implemented end to
+  end, each with its own declaration kind, reaching both backends.
+- **Three token kinds are dead.** `tkArena`, `tkPool` and `tkRegister` are
+  declared in `TokenKind` and referenced nowhere else — the lexer emits none
+  of them, so `arena`/`pool`/`register` (and `extern`, `errors`, `resource`)
+  arrive as `tkIdent` and are recognised by spelling. `pool` and `register`
+  parse correctly that way, so being contextual is not itself the defect;
+  the dead kinds are just misleading. Either make them real keywords or
+  delete them. (`tkSymbol` is dead too, and says so: "legacy fallback".)
+
 - **Effect propagation is require-declared, not inferred.** The ruling is
   implicit propagation; the checker still makes you declare. `ROADMAP.md:26`.
 - **`[may_block]` has no checker meaning.** It parses and propagates. Its real
