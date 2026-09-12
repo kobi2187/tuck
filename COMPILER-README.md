@@ -477,9 +477,9 @@ name to `QUICK` in `regen.py` if the suite is check-only.
 
 ## 8. The quality gates
 
-### Cyclomatic complexity ratchet — `tests/suites/complexity.nim`, `tools/cc.nim`
+### Cyclomatic complexity ratchet — `tests/suites/complexity.nim`, `tools/cyc.nim`
 
-Measured on the **real Nim AST**, not a regex: `tools/cc.nim` parses each file
+Measured on the **real Nim AST**, not a regex: `tools/cyc.nim` parses each file
 with the Nim compiler's own parser and walks the tree. The predecessor matched
 `if|elif|while|and|or|except` as text, which overcounted words inside string
 literals (a three-arm `case` whose arms were English sentences scored 8) and
@@ -497,7 +497,7 @@ by hand as procs are split, **never raised to accommodate new code**:
 The live values are the `const` block at the top of
 `tests/suites/complexity.nim` — read them there rather than from here; they
 ratchet down as the tree improves and any number quoted in prose goes stale.
-Run `./tools/cc --gate 64 --debt N --heavy N compiler/*.nim lexer.nim tuck.nim`
+Run `./tools/cyc --gate 64 --debt N --heavy N compiler/*.nim lexer.nim tuck.nim`
 to see the current figures and the ranked worst offenders.
 
 DEBT and HEAVY replaced a plain COUNT of procs over 5, which weighted a cc=6
@@ -515,17 +515,17 @@ body contains zero branch points is a lookup-table entry written in
 control-flow syntax; charging one apiece made a 21-kind AST dispatch outscore
 genuinely knotty code, taxing exactly the shape this tree wants (`ast.children`,
 `clearIds`). Measured by recursing into the arm — anything that loops, tests, or
-short-circuits still counts in full (`tools/cc.nim isDispatchArm`). Turning this
+short-circuits still counts in full (`tools/cyc.nim isDispatchArm`). Turning this
 on moved the honest debt 1964 → 1476 with no code change.
 
-`tools/cc` prints "tighten --debt/--heavy to N" whenever the real figure is
+`tools/cyc` prints "tighten --debt/--heavy to N" whenever the real figure is
 below the gate, so slack reports itself. Build it once (it imports Nim's
 compiler sources, so it needs the install root on the path):
 
 ```sh
 nim c --path:$(dirname $(dirname $(readlink -f $(command -v nim)))) \
-    -o:tools/cc tools/cc.nim
-tools/cc compiler/*.nim lexer.nim tuck.nim | head -20   # the ranked table
+    -o:tools/cyc tools/cyc.nim
+tools/cyc compiler/*.nim lexer.nim tuck.nim | head -20   # the ranked table
 ```
 
 ### Every diagnostic code needs an `explain` body
@@ -600,7 +600,7 @@ otherwise), raise it from the rule, and add a `badCheck`. Explanations are
 grouped `case` tables reached through `explanationOf` → `typeExplanation` →
 `valueFitExplanation` and friends, so an arm in an existing table is a pure
 dispatch arm and costs nothing; only a genuinely new decision does. Run
-`tools/cc` if the ratchet complains and put the reason in `complexity.nim`.
+`tools/cyc` if the ratchet complains and put the reason in `complexity.nim`.
 
 ---
 

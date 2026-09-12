@@ -20,6 +20,15 @@
 ## tuck-rejected block that starts parsing fails, which is how a roadmap item
 ## that quietly landed, or a friction that was quietly fixed, gets found.
 ##
+## IT ALSO CHECKS PATH CITATIONS. A doc that points at `tools/cc.nim` after
+## the file became `tools/cyc.nim` sends the reader nowhere, and nothing else
+## notices. Every `tests/suites/…`, `examples/…`, `std/…`, `compiler/…`,
+## `tools/…` and `benches/…` path mentioned in markdown must exist.
+##
+## Dated records are exempt: `thoughts/` and `docs/superpowers/` hold handoffs
+## and plans that describe the tree as it was on a date. Updating those would
+## falsify the record, which is the opposite of accuracy.
+##
 ## Usage: tools/doc_snippets [--list|--why]
 ##   --list  name the offenders
 ##   --why   name them AND print the diagnostic plus the block, which is what
@@ -115,20 +124,51 @@ proc main() =
         badCount.inc
         bad.add(f.relativePath(root) & ":" & $line)
         why.add(outp.strip() & "\n--- block ---\n" & body)
+  # --- path citations -----------------------------------------------------
+  var deadPaths: seq[string]
+  # The lookbehind matters: without it `modules/std/db/API.tuck.md` matches as
+  # a citation of `std/db/API.tuck`, which does not exist. `std/` is left out
+  # of the prefix list on purpose — it collides with Nim's own `std/` imports.
+  let pathRe = re(r"(?<![\w./-])(tests/suites/|examples/|compiler/|tools/|benches/)[\w./-]*\.(nim|tuck|sh|odin|d|md)")
+  for f in files:
+    let rel = f.relativePath(root)
+    if rel.startsWith("thoughts/") or rel.startsWith("docs/superpowers/"):
+      continue
+    var lineNo = 0
+    for line in readFile(f).splitLines():
+      inc lineNo
+      # A FORWARD REFERENCE IS NOT A DEAD LINK. An unchecked task box names
+      # the file the task will create, and "a new X.nim" says so in words.
+      # Both are plans; only a path presented as existing has to exist.
+      if "- [ ]" in line: continue
+      var at = 0
+      while true:
+        let b = line.findBounds(pathRe, at)
+        if b.first < 0: break
+        let cited = line[b.first .. b.last]
+        let before = line[0 ..< b.first]
+        if not before.endsWith("new `") and not before.endsWith("new ") and
+           not fileExists(root / cited):
+          deadPaths.add(rel & ":" & $lineNo & " -> " & cited)
+        at = b.last + 1
+
   if paramCount() > 0 and paramStr(1) == "--list":
     for b in bad: echo b
     for b in stale: echo b, "  (tuck-rejected, but it parses now)"
     for b in loose: echo b, "  (fragment tail unverified)"
+    for b in deadPaths: echo b
   elif paramCount() > 0 and paramStr(1) == "--why":
     for i, b in bad & loose:
       echo "========== ", b
       echo why[i]
   for b in stale: echo b, ": tagged tuck-rejected, but it parses now"
+  for b in deadPaths: echo b, ": cited path does not exist"
   echo "tuck blocks: ", total, "  parse: ", okCount,
        "  fragments (TK-PA03/09): ", fragCount, "  REJECTED: ", badCount
   echo "  of the fragments: TK-PA03 ", pa03, ", TK-PA09 ", pa09,
        "  UNVERIFIED TAILS: ", unverified
   echo "tuck-rejected blocks: ", rejTotal, "  still rejected: ",
        rejTotal - rejStale, "  STALE (now parse): ", rejStale
+  echo "DEAD PATH CITATIONS: ", deadPaths.len
 
 main()

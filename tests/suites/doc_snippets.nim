@@ -11,6 +11,11 @@
 ##   TK-PA03  a top-level statement — an illustrative line, not a module
 ##   TK-PA09  a block opened with nothing inside — a signature shown alone
 ##
+## PATH CITATIONS ARE CHECKED TOO: every `tests/suites/…`, `examples/…`,
+## `compiler/…`, `tools/…` and `benches/…` path mentioned in markdown must
+## exist. Dated records (`thoughts/`, `docs/superpowers/`) are exempt, and so
+## is a forward reference — an unchecked task box, or "a new X.nim".
+##
 ## A FRAGMENT IS CHECKED TO ITS LAST LINE. TK-PA03 stops the parser at the
 ## first top-level statement, so for 40 blocks everything after that line was
 ## never read — a cheat sheet showed five `for` headers and only the first was
@@ -74,6 +79,21 @@ proc run*(t: var T) =
     t.no "every fragment is checked to its last line",
          $loose & " fragment(s) have an unparsed tail — " &
          "run tools/doc_snippets --why"
+
+  # Path citations. A doc pointing at `tools/cc.nim` after the file became
+  # `tools/cyc.nim` sends the reader nowhere and nothing else notices.
+  var dead = -1
+  for w in outp.split({' ', '\n'}):
+    if dead == -2: dead = (try: parseInt(w) except: -1)
+    if w == "CITATIONS:": dead = -2
+  if dead < 0:
+    t.no "every cited repo path exists",
+         "could not read the dead-citation count from: " & outp.strip()
+  elif dead == 0:
+    t.ok "every cited repo path exists"
+  else:
+    t.no "every cited repo path exists",
+         $dead & " citation(s) point at nothing — run tools/doc_snippets --list"
 
   # The inverted half. A tuck-rejected block that parses is a doc claiming the
   # compiler says no when it no longer does.

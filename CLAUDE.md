@@ -89,7 +89,7 @@ without re-emitted output is incomplete. (`.bf` Beef output stays ignored.)
 
 **Ratchets only move one way.** `tests/suites/complexity.nim` holds CEILING
 (no proc may exceed), DEBT (sum of `cc - 5` over every proc above 5) and HEAVY
-(procs at `cc >= 15`), measured on the real Nim AST by `tools/cc.nim`. They are
+(procs at `cc >= 15`), measured on the real Nim AST by `tools/cyc.nim`. They are
 set to whatever the tree currently is and are **lowered by hand, never raised**.
 The gate prints "tighten --debt/--heavy to N" when it has slack.
 `MISSING-FEATURES.md`'s open-bug count is likewise checked against the suite by
