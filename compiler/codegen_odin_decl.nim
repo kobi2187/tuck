@@ -269,7 +269,14 @@ proc fnHeader*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): strin
   ## point — it is tuck_main by the time it gets here.
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   let inlinePrefix = if d.isInline: ind & "@(require_results=false)\n" else: ""
-  inlinePrefix & ind & d.name.replace(".", "_") & " :: proc " &
+  # The `public:` block reaching the emitted artifact (spec 2.3c). An Odin
+  # symbol is visible to its whole package by default; `@(private)` narrows
+  # it to the file, which is the closest thing Odin has to a module-private
+  # name and is exactly the scope one Tuck module occupies. Absent for an
+  # exported name, and for every module with no public block.
+  let visPrefix = if isExportedDecl(ctx.module, d): ""
+                  else: ind & "@(private)\n"
+  visPrefix & inlinePrefix & ind & d.name.replace(".", "_") & " :: proc " &
     ctx.cCallbackConvention(d) & "(" & ctx.fnParamList(d) & ")" & retStr & " {"
 
 proc enterReturnContext*(ctx: var OdinCodegenCtx, d: Decl) =

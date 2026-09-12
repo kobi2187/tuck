@@ -225,7 +225,6 @@ fn helper({n: int}) -> int:
   # program fails as "undefined identifier tuck_Box"), so building this one
   # would assert someone else's bug.
   t.okCheck "an exported name and type are visible to the importer"
-
   t.src """
 import lib
 
@@ -242,6 +241,35 @@ fn helper({n: int}) -> int:
   return n + 1
 """)
   t.badCheck "a name left out of the list is not visible", "'helper' is not a declared callable"
+
+  # `public:` reaches the EMITTED ARTIFACT, not just the checker. A private
+  # helper appearing as a public symbol in a library someone links against is
+  # wrong on its own terms, and is a link-time collision waiting to happen.
+  # Each backend in its own spelling: Nim's `*`, D's `private`, Odin's
+  # `@(private)` — file scope, the closest thing Odin has to module-private
+  # and exactly the scope one Tuck module occupies.
+  t.src """
+public:
+  shown
+
+fn shown({n: int}) -> int:
+  return n + 1
+
+fn hidden({n: int}) -> int:
+  return n + 2
+
+fn main() -> int:
+  let a = {n: 1} shown
+  let b = {n: 1} hidden
+  return a + b - 5
+"""
+  t.okCheck "a module may export some of its own names"
+  t.emits "Nim stars the exported name", r"proc tuck_shown\*"
+  t.omits "...and leaves the unexported one unstarred", r"proc tuck_hidden\*"
+  t.emitsD "D marks the unexported one private", r"private long tuck_hidden"
+  t.emitsOdin "Odin marks the unexported one private", r"@\(private\)"
+  t.hostBuilds "...and every backend still builds it"
+  t.runs "...and a private name is still callable from inside its module", 0
 
   # Private means private: qualifying does not reach past the list.
   t.src """

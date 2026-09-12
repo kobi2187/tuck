@@ -73,7 +73,7 @@ let registry: seq[Entry] = @[
   ("interfaces",          SuiteProc(interfaces.run),          true),
   ("groups",              SuiteProc(groups.run),              true),
   ("known_bugs",          SuiteProc(known_bugs.run),          false),
-  ("validate",            SuiteProc(validate.run),            false),
+  ("validate",            SuiteProc(validate.run),            true),
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
   ("mangle",              SuiteProc(mangle.run),              true),
   ("member_names",        SuiteProc(member_names.run),        true),

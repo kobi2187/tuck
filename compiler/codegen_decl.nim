@@ -90,13 +90,18 @@ proc genDecisionFn*(ctx: var CodegenCtx, d: Decl, fnNameSanitized: string): stri
   ctx.genConditionChain(d, header)
 
 proc fnHeaderNim*(name, genericStr: string, params: seq[string],
-                  retTypeStr, inlineStr: string): string =
+                  retTypeStr, inlineStr: string, exported = true): string =
   ## A fn's Nim signature, without the trailing ` =`. Shared by the definition
   ## and by the forward declaration emitNim writes ahead of the body, so the
   ## two cannot drift — Nim rejects a forward declaration whose signature
   ## differs from its definition by so much as a pragma.
-  "proc " & name & "*" & genericStr & "(" & params.join(", ") & "): " &
-    retTypeStr & inlineStr
+  ##
+  ## `exported` is the `public:` block reaching the emitted artifact (spec
+  ## 2.3c): a name the module does not export gets no `*`, so it is invisible
+  ## outside the emitted Nim module too, not merely to the Tuck checker.
+  ## Defaults true — a module with no public block exports everything.
+  "proc " & name & (if exported: "*" else: "") & genericStr &
+    "(" & params.join(", ") & "): " & retTypeStr & inlineStr
 
 proc nimFnParams*(res: Resolution, m: Module, d: Decl): seq[string] =
   ## The emitted parameter list, built ONCE — genFnDecl and fnForwardDecls
@@ -136,7 +141,8 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     let genericStr = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]" else: ""
     let inlineStr = if d.isInline: " {.inline.}" else: ""
     let header = fnHeaderNim(fnNameSanitized, genericStr, params, retTypeStr,
-                             inlineStr) & " ="
+                             inlineStr,
+                             isExportedDecl(ctx.module, d)) & " ="
     let oldVars = ctx.definedVars
     for p in d.fnParams:
       ctx.definedVars.incl(p.name)
@@ -823,6 +829,6 @@ proc fnForwardDecls*(m: Module): string =
     let gen = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]"
               else: ""
     let inl = if d.isInline: " {.inline.}" else: ""
-    result.add(fnHeaderNim(d.name.replace(".", "_"), gen, params, ret, inl) &
-               "\n")
+    result.add(fnHeaderNim(d.name.replace(".", "_"), gen, params, ret, inl,
+                           isExportedDecl(m, d)) & "\n")
   if result.len > 0: result.add("\n")

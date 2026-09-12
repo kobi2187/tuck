@@ -44,6 +44,14 @@ proc dRowCondition*(ctx: var DCodegenCtx, d: Decl, arm: MatchArm): string =
                 (if tag != "": tag else: patStr))
   conds.join(" && ")
 
+proc dVisibility*(ctx: DCodegenCtx, d: Decl): string =
+  ## The `public:` block reaching the emitted artifact (spec 2.3c). D defaults
+  ## to public at module scope, so a name the module does not export is marked
+  ## `private` — invisible outside the emitted D module, not merely to the
+  ## Tuck checker. "" for an exported name, and for every module with no
+  ## public block, which exports everything.
+  if isExportedDecl(ctx.module, d): "" else: "private "
+
 proc dCallConv*(ctx: var DCodegenCtx, d: Decl): string =
   ## `extern (C)` when this fn is used as a C CALLBACK — a D function
   ## pointer and a C one are different types, so a plain fn's address cannot
@@ -863,7 +871,7 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   let movedP = if refSelf or nameOverride != "": "" else: movedFnParam(ctx.res, ctx.module, d)
   let emitName = if movedP != "": movedName(fnName) else: fnName
   if movedP != "":
-    result = ctx.dCallConv(d) & retStr & " " & fnName & tmplStr & "(" &
+    result = ctx.dVisibility(d) & ctx.dCallConv(d) & retStr & " " & fnName & tmplStr & "(" &
              ctx.genDParams(d.fnParams, refSelf) & ") {\n"
     var argNames: seq[string]
     for p in d.fnParams: argNames.add(p.name)
@@ -874,7 +882,7 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
       for f in fields:
         result.add("    " & movedP & "." & f & " = " & movedP & "." & f & ".dup;\n")
     result.add("    return " & movedName(fnName) & "(" & argNames.join(", ") & ");\n}\n\n")
-  result.add(ctx.dCallConv(d) & retStr & " " & emitName & tmplStr & "(" &
+  result.add(ctx.dVisibility(d) & ctx.dCallConv(d) & retStr & " " & emitName & tmplStr & "(" &
              ctx.genDParams(d.fnParams, refSelf) & ") {\n")
   let savedMoved = ctx.movedParam
   ctx.movedParam = movedP

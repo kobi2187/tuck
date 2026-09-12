@@ -22,7 +22,7 @@
 # Sits below both backends in the dependency DAG, alongside ast_query and
 # lowering — it imports those and nothing that imports either codegen module.
 import resolution
-import ast, lowering, ast_query, strutils, sets, tables, algorithm, options
+import ast, lowering, ast_query, ast_ops, strutils, sets, tables, algorithm, options
 import ./ast_query
 from lowering_seqcopy import seqFieldNames
 
@@ -570,3 +570,18 @@ proc selfThreadedCall*(res: Resolution, m: Module, e: Expr): Expr =
   if movedCallInto(res, m, call, e.target.name): return call
   nil
 
+
+
+proc isExportedDecl*(m: Module, d: Decl): bool =
+  ## Does this declaration leave its module (spec 2.3c)?
+  ##
+  ## A module with NO `public:` block exports everything, which is what every
+  ## module written before the block existed relies on — and what keeps every
+  ## emitted golden unchanged. A module WITH one exports the listed names and
+  ## nothing else.
+  ##
+  ## The list holds what the AUTHOR WROTE, so the comparison is against
+  ## writtenName, never the mangled identifier the backends emit.
+  if d == nil: return true
+  let (restricted, allowed) = exportedNames(m)
+  (not restricted) or writtenName(d) in allowed
