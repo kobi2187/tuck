@@ -60,7 +60,7 @@ and reads as a builder chain:
 
 ```tuck
 var server = ServerConfig {}
-server ..port {8080} ..timeout {30.seconds} ..start
+server ..port {8080} ..timeout {30.s}
 ```
 
 ## Errors are values, and the pure core cannot fail

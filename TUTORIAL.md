@@ -16,7 +16,7 @@ That struct carries the data. If a function needs more than one value, they are 
 A simple value is always a struct with named fields.
 
 ```tuck
-let request = {url: "example.com", timeout: 5.seconds}
+let request = {url: "example.com", timeout: 5.s}
 ```
 
 The struct can flow through postfix application.
@@ -40,17 +40,26 @@ The one-argument rule keeps the language uniform and avoids positional ambiguity
 
 Tuck distinguishes two kinds of chaining:
 
-- `..` — builder / mutation style. Returns `self` so you can continue mutating.
+- `..` — builder / mutation style. Each step either sets a field or calls a
+  mutator, and the result goes back into the same `var`, so the chain
+  continues.
 - implicit whitespace — regular functional invocation. Passes the previous struct into the next function.
 
 Example:
 
 ```tuck
 var server = ServerConfig {}
-server ..port {8080} ..timeout {30.seconds} ..start
+server ..port {8080} ..timeout {30.s}
+let ok = server.start
 ```
 
-Use whitespace when the next step is a pure or terminal operation.
+`..start` would be a compile error here: `start` returns `bool`, and a `..`
+step must return the receiver's type. Use whitespace or `.` when the next step
+is a pure or terminal operation.
+
+The chain also needs a `var`. `..` on a parameter is TK-TY15 — a parameter is
+a value the caller owns — so copy it first (`var s = p`), chain on the copy,
+and return that.
 
 ## 5. Objects and composition
 
@@ -91,11 +100,13 @@ When you need app state plus a request, keep them in one struct.
 
 ```tuck
 fn play({app: PodcastApp, episode: Episode}) -> void:
-  let ctx = {app, episode} merge
-  ctx ..loadEpisode startAudio
+  var current = app
+  current ..loadEpisode {episode: episode}
+  {app: current, episode: episode} startAudio
 ```
 
-This keeps the function signature uniform and easy to refactor.
+This keeps the function signature uniform and easy to refactor. Note the
+copy: `app` is a parameter, so it cannot be the target of a `..` chain.
 
 ## 8. Pure concatenative module calls
 
@@ -154,13 +165,18 @@ type Episode:
 object PodcastApp:
   host: str
   library: Seq[Episode]
+  currentEpisode: Episode
+  lastPlayed: str
 
 fn play({app: PodcastApp, episode: Episode}) -> void:
-  let ctx = {app, episode} merge
-  ctx ..loadEpisode startAudio
+  var current = app
+  current ..loadEpisode {episode: episode}
+  {app: current, episode: episode} startAudio
 
-fn loadEpisode({app: PodcastApp, episode: Episode}) -> PodcastApp:
-  app ..currentEpisode {episode} ..lastPlayed {episode.title}
+fn loadEpisode({self: PodcastApp, episode: Episode}) -> PodcastApp:
+  var next = self
+  next ..currentEpisode {episode} ..lastPlayed {episode.title}
+  return next
 
 fn startAudio({app: PodcastApp, episode: Episode}) -> void:
   {episode: episode, source: app} audio::play

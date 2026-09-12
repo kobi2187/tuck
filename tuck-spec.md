@@ -166,7 +166,7 @@ fn withDefaults({self: ServerConfig}) -> ServerConfig: ...
 fn start({self: ServerConfig}) -> bool: ...
 
 var server = {port: 0, timeout: 0} ServerConfig
-server ..withDefaults ..port {8080} ..timeout {60.seconds}
+server ..withDefaults ..port {8080} ..timeout {60}
 let ok = server.start   # NOT ..start — start returns bool, not the receiver
 ```
 
