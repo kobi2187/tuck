@@ -967,4 +967,22 @@ fn main() -> int:
   t.quietly: t.badCheck "a value returned from a fn with no return type is rejected", "return"
   t.bugOpen "a value returned from a fn with no return type is rejected"
 
+  # 14. Register access permissions are enforced in one direction only.
+  # Reading a `[write]` field is TK-RE02, as tuck-spec 8.1 says; WRITING a
+  # `[read]` field is accepted, and the emitted Nim is
+  # `tuck_RCC_HSIRDY_get() = true` — nim answers "cannot be assigned to",
+  # because a read-only field emits no setter. Found 2026-09-12 checking the
+  # spec's claim that both directions are compile errors.
+  t.src """
+register RCC at 0x40021000:
+  HSION:  bit 0
+  HSIRDY: bit 1     [read]
+
+fn main() -> int:
+  RCC.HSIRDY = true
+  return 0
+"""
+  t.quietly: t.badCheck "writing a [read] register field is rejected", "read"
+  t.bugOpen "writing a [read] register field is rejected"
+
   t.finish()

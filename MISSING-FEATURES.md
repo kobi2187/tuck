@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (2)
+## A. Open bugs (3)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -46,6 +46,15 @@ rejected outright or should mean `void` is a ruling; returning a value from
 such a fn is wrong under either. Test: `known_bugs`, "a value returned from a
 fn with no return type is rejected". Found 2026-09-12 checking TUTORIAL.md's
 claim that a return type is mandatory — it is not.
+
+**A3 — a `[read]` register field can be written, and the emission does not
+compile.** tuck-spec 8.1 states both directions: reading a `[write]` field is
+an error, writing a `[read]` field is an error. Only the first is enforced
+(`TK-RE02`). The second passes `tuck ch`, then emits
+`tuck_RCC_HSIRDY_get() = true` — a read-only field emits no setter — and `nim
+c` answers "cannot be assigned to". Test: `known_bugs`, "writing a [read]
+register field is rejected". Found 2026-09-12 auditing the spec's error
+claims.
 
 The two entries that stood here before are fixed and locked in as regression
 guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the qualified
