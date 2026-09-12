@@ -28,6 +28,7 @@ import interface_wrap
 import interfaces
 import groups
 import known_bugs
+import validate
 import loop_var_type
 import mangle
 import member_names
@@ -72,6 +73,7 @@ let registry: seq[Entry] = @[
   ("interfaces",          SuiteProc(interfaces.run),          true),
   ("groups",              SuiteProc(groups.run),              true),
   ("known_bugs",          SuiteProc(known_bugs.run),          false),
+  ("validate",            SuiteProc(validate.run),            false),
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
   ("mangle",              SuiteProc(mangle.run),              true),
   ("member_names",        SuiteProc(member_names.run),        true),

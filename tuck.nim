@@ -44,6 +44,7 @@ import jsony
 import lexer
 import compiler/ast
 import compiler/parser
+import compiler/validate   # the spec-side grammar, for `tuck validate`
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
 import compiler/analysis_lastuse
@@ -154,7 +155,8 @@ tuck prints. This is the one command that takes a CODE, not a file."""
 }.toTable
 
 const CommandAliases = {"l": "lex", "p": "parse", "ch": "check",
-                         "c": "compile", "b": "build", "d": "dump"}.toTable
+                         "c": "compile", "b": "build", "d": "dump",
+                         "v": "validate"}.toTable
 
 proc printCommandHelp(cmd: string, code = 0) =
   let key = CommandAliases.getOrDefault(cmd, cmd)
@@ -694,6 +696,41 @@ when isMainModule:
   of "check", "ch":
     discard checkProgram(path, verifyStages = verifyStages)
     echo "OK (", elapsedMs(t0), ")"
+  of "validate", "v":
+    # The SPEC grammar's opinion of this file, cross-checked against the
+    # parser's. Both run; a disagreement is the output, because a
+    # disagreement is the only thing here worth anyone's attention.
+    #
+    # Not on the build path and never will be: `tuck build` uses the real
+    # parser. This is a second reader kept deliberately naive.
+    let source = readFile(path)
+    let toks = tokensOf(source)
+    let (verdict, consumed, stats) = validateTokens(toks)
+    var parserOk = true
+    try:
+      discard parseOrDie(source)
+    except CatchableError, Defect:
+      parserOk = false
+    let specOk = verdict == vOk
+    if specOk == parserOk:
+      echo "AGREE — both ", (if specOk: "accept" else: "reject"),
+           " | ", stats.known, " declaration(s) matched a stated rule, ",
+           stats.unknown, " fell to the escape hatch (",
+           elapsedMs(t0), ")"
+      if stats.forms.len > 0:
+        echo "  not stated by the grammar: ", stats.forms.join(", ")
+    elif parserOk and not specOk:
+      let t = tokenAt(toks, consumed)
+      echo "DISAGREE — the parser accepts this, the spec grammar does not"
+      echo "  stopped at line ", t.line, ":", t.column, " (", $t.kind,
+           (if t.value.len > 0: " '" & t.value & "'" else: ""), ")"
+      echo "  one of: the parser accepts an undocumented form, or the " &
+           "grammar is incomplete"
+      quit(1)
+    else:
+      echo "DISAGREE — the spec grammar accepts this, the parser does not"
+      echo "  the parser rejects a form the grammar describes"
+      quit(1)
   of "dump", "d":
     # Run the pipeline up to --stage=X and print the tree — a thin driver
     # over the SAME procs `tuck c`/`tuck b` call, stopping early. `lex`/
