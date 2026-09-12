@@ -217,6 +217,44 @@ is `fn main`, period (ruling 2026-07-13).
 - Rationale: predictable startup (no hidden module-init order), effects
   stay on fns only, and both backends share one entry mechanism.
 
+### 2.3c `public:` — the module's export surface
+
+A module may state which of its names an importer can see. Bare names,
+whitespace-separated, over as many lines as it takes:
+
+```tuck
+public:
+  hashOf combined bucketOf
+  StrMap
+```
+
+No parameters, no arity, no return type. Tuck has no function overloading
+(ruling 2026-08-24), so a name IS the signature — an export list repeating
+it would be a second copy of the declaration to keep in step, and the first
+thing to go stale.
+
+- **One list, every kind of name.** Functions, types, objects, groups and
+  `fnsig`s all go in the same list, because an importer resolves all of them
+  the same way: by name.
+- **No block means everything is exported.** A module that says nothing
+  exports its whole top level, which is what every module written before the
+  block existed relies on.
+- **Private means private.** A name left out is unreachable from another
+  module in every form, `mod::name` included. It is the module's own
+  business.
+- **A listed name the module does not declare is an error.** That typo is
+  silent otherwise: the module simply exports less than its author believes.
+
+The motivating case is implementation swapping. Two modules implementing one
+contract share their INTERNAL helper names by nature — an FNV-1a hash for
+strings and one for integers both want a `fnvStep` — and without a
+visibility marker, importing both collided on a name neither meant to share.
+With export lists, only the contract names ever meet.
+
+When two imports do export the same name, that name gives up its unqualified
+form and stays reachable as `mod::name`; the error is reported where the
+bare name is written, not at the import (§5.5).
+
 ### 2.4b `input` and `merge`
 
 **`input`** is a reserved name: the fn's whole incoming payload as one
@@ -1096,12 +1134,60 @@ resolved and discarded entirely at compile time, so it was given its own,
 lighter mechanism rather than stretching `interface` to cover a job its
 representation was never built for.
 
-**Open question, deliberately not settled here:** whether the function(s)
-that let a concrete type satisfy a `group` must live alongside that type's
-own declaration, or may arrive from a separate module — a type and a
-"package" fulfilling a group's requirements for it, brought in by import
-rather than written next to the type. Left open until there is a real case
-to settle it against, rather than guessed at now.
+**Generic groups — `group Indexable[E]`.** A group may take its own type
+parameters, supplied where the bound is written:
+
+```tuck
+group Indexable[E]:
+  fn at({self: Self, index: int}) -> E
+
+fn firstOf[C: Indexable[E], E]({c: C}) -> E:
+  return {self: c, index: 0} at
+```
+
+`Self` is the bounded type; the group's parameters are everything `Self`
+cannot reveal. A container's ELEMENT type is the motivating case: nothing
+recovers it from the container type alone, which is why every collection
+contract needs this and no value contract does.
+
+**The group's parameters are solved from the conformance.** In `firstOf`
+above, `E` appears nowhere in the arguments, so no call site can infer it
+the ordinary way. It is solved by unifying the requirement — `Self` read as
+the concrete type — against the function that concrete type actually
+declares, and whatever `E` must be for that to hold is what `E` is. This is
+what an associated type does in Rust and Swift, reached through the group's
+own parameters rather than a second declaration form. A satisfier is itself
+usually generic (`fn at[T]({self: Seq[T], index: int}) -> T` serves every
+element type), so it is instantiated first and the group's parameters read
+off the result.
+
+An argument written explicitly is a stated requirement, never a hole to
+re-solve: `[C: Indexable[str]]` against a container of `int` is an error.
+
+**A bound may be written on a parameter instead of a type parameter** —
+`fn describe({item: Sortable})`, `fn firstOf[E]({c: Indexable[E]})`. This is
+the same bound; it desugars to a fresh type parameter. A group's arguments
+there are ordinary declared type parameters of the function, so nothing has
+to guess whether `Indexable[int]` names a type or introduces one.
+
+**Settled: the satisfying function may live in another module.** The open
+question earlier drafts left here — whether the function(s) letting a
+concrete type satisfy a group must sit beside that type's declaration — is
+answered: they may arrive from anywhere, brought in by import. A group
+declared in one module, a satisfier in another and a bounded verb in a third
+is the arrangement a standard library is made of, and it is the intended
+one.
+
+Satisfaction stays IMPLICIT: a plain free function of the right shape
+satisfies the group, with no attach statement and no `impl` block. A
+satisfier covering many types is written once, generically, rather than once
+per type.
+
+*Implementation limit, not a language rule:* a requirement called from
+inside a generic body emits an unqualified call, so today the module
+declaring the bounded verb must itself be able to see a satisfier. A
+standard library sidesteps this by keeping a concern's satisfier and its
+verbs in one module.
 
 ---
 
