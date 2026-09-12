@@ -119,13 +119,18 @@ let tuckGrammar = peg("module", st: Stats):
   # type's variants. Neither statements nor declarations — its own shape.
   memberBlk <- "tkIndent " * +member * "tkDedent "
   member    <- *nl * (memberCounted | knownCounted | unknownCounted) * *nl
-  memberCounted <- >(fieldDecl | variantDecl | composeMember | blockMember |
-                     ellipsisStmt):
+  memberCounted <- >(fieldDecl | variantDecl | composeMember | satisfiesMember |
+                     blockMember | ellipsisStmt):
     st.sites[capture[0].si] = "d:known"
   fieldDecl <- name * "tkColon " * typeExpr * *attrs * ?("tkAssign " * expr) * eol
   variantDecl <- "tkPipe " * name * ?params * eol
   # `+ AudioPlayer` — mixin composition, one line per mixin.
   composeMember <- "tkPlus " * typeExpr * eol
+  # `satisfies Storable` — conformance. `satisfies` is NOT a keyword to the
+  # lexer; it arrives as tkIdent, so this is two identifiers on a line and
+  # can only be stated positionally, inside a member block. `fieldDecl` is
+  # tried first, so `lane: int` is never mistaken for it.
+  satisfiesMember <- word * name * eol
   # `invariant:` and friends: a named block inside a type or actor body.
   # `invariant` lexes as tkAttr, which `name` already covers.
   blockMember <- name * "tkColon " * +nl * blk

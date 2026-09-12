@@ -1,0 +1,187 @@
+import scheduler
+
+# A signalled intersection.
+#
+# Every construct here earns its place: the hardware is a `register`, the
+# phase order is a `transitions` table, the policy is a `decision` table the
+# compiler proves complete, the controller is an `actor` because it owns
+# state and takes messages, and the two detector kinds are an `interface`
+# because the controller must not care which one it is holding.
+
+register SIGNAL_OUT at 0x40011000:
+  NS_GREEN: bit 0 [read, write]
+  EW_GREEN: bit 1 [read, write]
+  WALK:     bit 2 [read, write]
+
+register DETECT_IN at 0x40011004:
+  NS_LOOP: bit 0 [read]
+  EW_LOOP: bit 1 [read]
+
+registry Intersection:
+  | PhaseChanged({to: u8})
+  | Preempted({source: u8})
+
+# The phase order is data, not `if`s. A reassignment the table does not list
+# is a compile error, so "green to green with no clearing interval" cannot
+# be written.
+type Phase:
+  | NorthSouth
+  | NsClearing
+  | EastWest
+  | EwClearing
+  transitions:
+    NorthSouth -> NsClearing
+    NsClearing -> EastWest
+    EastWest -> EwClearing
+    EwClearing -> NorthSouth
+
+type Demand:
+  | quiet
+  | northSouth
+  | eastWest
+  | both
+
+# The whole policy, exhaustively. Delete a row and the compiler names the
+# combination that no longer has an answer; add a row an earlier one already
+# covers and it names that instead.
+decision nextPhase({current: Phase, demand: Demand, preempt: bool}) -> Phase:
+  | NorthSouth  _          true  -> Phase.NsClearing
+  | NsClearing  _          true  -> Phase.EastWest
+  | EastWest    _          true  -> Phase.EwClearing
+  | EwClearing  _          true  -> Phase.NorthSouth
+  | NorthSouth  eastWest   false -> Phase.NsClearing
+  | NorthSouth  both       false -> Phase.NsClearing
+  | NorthSouth  _          false -> Phase.NorthSouth
+  | NsClearing  _          false -> Phase.EastWest
+  | EastWest    northSouth false -> Phase.EwClearing
+  | EastWest    both       false -> Phase.EwClearing
+  | EastWest    _          false -> Phase.EastWest
+  | EwClearing  _          false -> Phase.NorthSouth
+
+# --- the detectors ------------------------------------------------------
+#
+# Two kinds of hardware answer the same question. The controller holds a
+# `Detector` and never learns which one it has: an interface value here is a
+# tagged variant that COPIES, so there is no pointer and no lifetime to
+# reason about.
+
+# The contract returns a BITMASK, not a Demand: bit 0 is north-south, bit 1
+# is east-west. That is the shape the hardware gives, and it is also the only
+# return type Odin's interface dispatch handles today (#40).
+interface Detector:
+  fn reads({self: Self}) -> int
+
+# A role, mixed into both detectors rather than inherited by either.
+mixin Diagnosable:
+  fn healthy(self) -> bool:
+    return true
+
+object LoopDetector:
+  satisfies Detector
+  + Diagnosable
+  # `int`, not `u8`: returning a `u8` where the contract says `int` passes
+  # the checker and is then rejected by nim and accepted by D — issue #16,
+  # the implicit-numeric-conversion hole, met head on.
+  lane: int
+
+  # On target this reads DETECT_IN.NS_LOOP / .EW_LOOP. A register is a
+  # HARDWARE address, so dereferencing one on a hosted OS segfaults — which
+  # is why nothing in this program's running path touches a register, and why
+  # the handlers below are compiled but never raised here.
+  fn reads({self: LoopDetector}) -> int:
+    return self.lane
+
+object CameraDetector:
+  satisfies Detector
+  + Diagnosable
+  confidence: u8
+
+  fn reads({self: CameraDetector}) -> int:
+    if self.confidence > 80:
+      return 3
+    return 0
+
+# --- the controller -----------------------------------------------------
+#
+# An actor because it OWNS the phase and is driven by messages. One instance
+# exists, by declaration; there is nothing to construct and nothing to pass
+# around.
+
+actor Signals [queue: 8]:
+  phase: Phase = Phase.NorthSouth
+  cycles: int = 0
+
+  on sense({demand: Demand, preempt: bool}):
+    let want = {current: self.phase, demand: demand, preempt: preempt} nextPhase
+    self.phase = want
+    self.cycles = self.cycles + 1
+
+on Intersection.PhaseChanged({to: u8}):
+  SIGNAL_OUT ..WALK {false}
+
+on Intersection.Preempted({source: u8}):
+  SIGNAL_OUT ..NS_GREEN {false}
+
+# --- generic over "anything with a duration" ----------------------------
+#
+# A group is a COMPILE-TIME bound: resolved and discarded before codegen, so
+# the call below is direct, with no dispatch and no boxing. Satisfaction is
+# implicit — a free fn of the right shape is the implementation, and there is
+# no attach statement anywhere.
+#
+# One provider here on purpose: a group with two is issue #38.
+
+group Timed:
+  fn seconds({self: Self}) -> int
+
+type Interval = {ticks: int}
+
+fn seconds({self: Interval}) -> int:
+  return self.ticks /i 10
+
+fn longEnough[T: Timed]({span: T, atLeast: int}) -> bool:
+  return ({self: span} seconds) >= atLeast
+
+fn phaseIndex({p: Phase}) -> int:
+  match p:
+    NorthSouth: return 0
+    NsClearing: return 1
+    EastWest: return 2
+    EwClearing: return 3
+
+# The interface, used the way it is meant to be: the caller holds the
+# contract and never learns which detector it has.
+fn poll({d: Detector}) -> Demand:
+  let bits = d.reads
+  match bits:
+    1: return Demand.northSouth
+    2: return Demand.eastWest
+    3: return Demand.both
+    _: return Demand.quiet
+
+fn settled() -> bool:
+  return Signals.cycles > 2
+
+# Same call, two concrete types, one tagged-variant copy each. A payload
+# field holds a VALUE, so each call is bound to a name first (TK-PA13).
+fn report({d: Detector}) -> void:
+  let demand = {d: d} poll
+  Signals send sense {demand: demand, preempt: false}
+  return
+
+fn drive() -> void:
+  let loops = {lane: 1} LoopDetector
+  let camera = {confidence: 91} CameraDetector
+  {d: camera} report
+  Signals send sense {demand: Demand.quiet, preempt: false}
+  {d: loops} report
+  return
+
+fn main() -> int:
+  let clearing = {ticks: 45} Interval
+  let ok = {span: clearing, atLeast: 4} longEnough
+  if not ok:
+    return 9
+  {} drive
+  scheduler::waitUntil {pred: :settled}
+  return {p: Signals.phase} phaseIndex
