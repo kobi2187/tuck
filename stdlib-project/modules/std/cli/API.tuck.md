@@ -12,7 +12,7 @@ type ArgKind:
   | AText
   | ANumber
 
-type ArgSpec = {name: str, short: str, kind: ArgKind, help: str, required: bool}
+type ArgSpec = {name: str, shortName: str, kind: ArgKind, help: str, required: bool}
 type Command = {name: str, help: str, args: Seq[ArgSpec], subcommands: Seq[Command]}
 type Args = {values: Seq[{key: str, value: str}], positional: Seq[str]}
 

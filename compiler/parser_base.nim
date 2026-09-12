@@ -8,6 +8,7 @@ import strutils
 import ../lexer
 import ast
 import diagnostics
+import host_keywords
 export diagnostics   # every reportError caller needs the codes
 
 type
@@ -166,3 +167,24 @@ var parseTypeHook*: proc(p: var Parser): Type {.nimcall.} = nil
   ## parser_type installs it at module init. Nil means the type layer was
   ## never imported, which only a unit test of the expression layer alone can
   ## produce — the binding then behaves as it did before annotations existed.
+
+proc failIfHostKeyword*(p: Parser, name: string, sp: Span,
+                        what = "parameter") =
+  ## A parameter and a FIELD both keep the name the author wrote — mangle.nim
+  ## prefixes every other user name but leaves these alone — so a word some
+  ## backend reserves reaches its compiler verbatim and breaks there. Refused
+  ## here rather than renamed, so the emitted code keeps saying what the
+  ## source says. See compiler/host_keywords.nim for why the list is measured
+  ## rather than copied.
+  ##
+  ## Fields were the unguarded half: `type T:\n  out: str` emitted
+  ## `out*: string` and nim answered "identifier expected, but found
+  ## \'keyword out\'"; D broke on the same shape. Guarding only params was
+  ## also inconsistent in a way a user would feel, since a payload field binds
+  ## to a parameter BY NAME — a field the author cannot pass to a parameter
+  ## they are not allowed to declare.
+  if isHostKeyword(name):
+    p.reportError("\'" & name & "\' is a keyword in one of Tuck\'s backends, so " &
+                  "it cannot be a " & what & " name — the emitted code would " &
+                  "carry it through verbatim. Fix: choose another name",
+                  sp.line, sp.col, dcPaHostKeyword)

@@ -63,7 +63,7 @@ type
     dcPaEmptyBlock = "TK-PA09"          ## a `:` opens nothing — no `discard`, no statement
     dcPaNoWhile = "TK-PA10"             ## `while` — Tuck spells it `for <cond>:`
     dcPaWordOperator = "TK-PA11"        ## `mod`/`div` — Tuck spells them `%`/`/i`
-    dcPaHostKeyword = "TK-PA12"         ## a param named after a backend's keyword
+    dcPaHostKeyword = "TK-PA12"         ## a param or field named after a backend's keyword
     dcPaCallInPayload = "TK-PA13"       ## a payload call nested inside a payload
     dcPaChainAfterPayloadCall = "TK-PA14" ## `..` chained straight onto a bare
                                           ## `{payload} fn` call (parse-time;
@@ -267,11 +267,15 @@ proc parseExplanation(d: DiagCode): string =
     "style: this shape used to reach codegen as one expression and skip " &
     "verifying the call's OWN arguments against its declared params entirely."
   of dcPaHostKeyword:
-    "A PARAMETER may not be named after a keyword of any backend Tuck emits " &
-    "to. Every other user name gets a `tuck_` prefix that cannot clash, but a " &
-    "parameter keeps the name you wrote — so `fn replace({t: str, what: str, " &
-    "with: str})` emitted `string tuck_replace(string t, string what, string " &
-    "with)` and dmd answered \"found `with` when expecting `)`\". " &
+    "A PARAMETER or a FIELD may not be named after a keyword of any backend " &
+    "Tuck emits to. Every other user name gets a `tuck_` prefix that cannot " &
+    "clash, but these two keep the name you wrote — so `fn replace({t: str, " &
+    "what: str, with: str})` emitted `string tuck_replace(string t, string " &
+    "what, string with)` and dmd answered \"found `with` when expecting " &
+    "`)`\", and `type T:` with a field `out` emitted `out*: string`, which " &
+    "nim refuses the same way. Both halves matter together: a payload field " &
+    "binds to a parameter BY NAME, so a field you could declare but never " &
+    "pass would be a worse hole than either one alone. " &
     "The word is refused here rather than renamed for you, so the emitted " &
     "code keeps saying what the source says. The list is MEASURED against " &
     "dmd, nim and odin rather than copied from their manuals: `body` and " &

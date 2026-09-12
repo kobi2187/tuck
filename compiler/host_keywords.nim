@@ -1,13 +1,19 @@
 # compiler/host_keywords.nim
 #
-# WORDS NO PARAMETER MAY BE NAMED, because some backend reserves them.
+# WORDS NO PARAMETER OR FIELD MAY BE NAMED, because some backend reserves them.
 #
-# A parameter is the one identifier mangle.nim deliberately leaves alone. Its
-# charter says locals and params "are not global, cannot collide" — true of
-# other declarations, FALSE of the target language's own keywords. alloc.string
-# found it: a parameter named `with` emitted
+# A parameter and a field are the identifiers mangle.nim deliberately leaves
+# alone. Its charter says locals and params "are not global, cannot collide" —
+# true of other declarations, FALSE of the target language's own keywords.
+# alloc.string found the parameter half: a parameter named `with` emitted
 # `string tuck_replace(string t, string what, string with)` and dmd answered
 # "found `with` when expecting `)`".
+#
+# The FIELD half went unguarded until 2026-09-12: `type T:` with a field `out`
+# emitted `out*: string`, which nim and dmd both refuse (odin happens to
+# accept that particular word, which is exactly why the list is a union). The
+# two belong together — a payload field binds to a parameter BY NAME, so
+# guarding only one leaves a field you can declare and never pass.
 #
 # REJECTED, NOT RENAMED. Mangling the parameter would change every emitted
 # signature for a name the author picked and can see, to work around a word

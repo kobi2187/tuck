@@ -86,6 +86,7 @@ proc parseBraceType(p: var Parser, sp: Span): Type =
     while p.current().kind != tkRBrace and p.current().kind != tkEOF:
       let fSp = p.getSpan()
       let name = p.expectMemberName("Expected field name in record definition").value
+      p.failIfHostKeyword(name, fSp, "field")
       discard p.expect(tkColon)
       let typ = p.parseType()
       fields.add(FieldDef(name: name, typ: typ, attrs: @[], span: fSp))

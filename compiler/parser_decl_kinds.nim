@@ -30,19 +30,6 @@ type
     lib: string      # a bare library name, decorated per backend
     impls: seq[tuple[backend, module: string]]
 
-proc failIfHostKeyword*(p: Parser, name: string, sp: Span) =
-  ## A parameter keeps the name the author wrote — mangle.nim prefixes every
-  ## other user name but deliberately leaves params alone — so a word some
-  ## backend reserves reaches its compiler verbatim and breaks there.
-  ## Refused here rather than renamed, so the emitted code keeps saying what
-  ## the source says. See compiler/host_keywords.nim for why the list is
-  ## measured rather than copied.
-  if isHostKeyword(name):
-    p.reportError("'" & name & "' is a keyword in one of Tuck's backends, so " &
-                  "it cannot be a parameter name — the emitted code would " &
-                  "carry it through verbatim. Fix: choose another name",
-                  sp.line, sp.col, dcPaHostKeyword)
-
 # `(params)` — a fn/task/decision/sig parameter list. Each param is either
 # brace-destructured (`{a: T, b: U}`, one entry per field) or bare
 # (`name: Type`), with a bare `self` (no `: Type`) special-cased to `Self`.
@@ -160,6 +147,7 @@ proc parseObjectField*(p: var Parser): FieldDef =
   ## `name: Type` — one field. A `= default` is parsed and dropped.
   let fSp = p.getSpan()
   let fName = p.expectMemberName("Expected field or member name in object").value
+  p.failIfHostKeyword(fName, fSp, "field")
   discard p.expect(tkColon)
   let fType = p.parseType()
   if p.current().kind == tkAssign:
@@ -240,6 +228,7 @@ proc parseBraceFields*(p: var Parser): seq[FieldDef] =
   while p.current().kind notin {tkRBrace, tkEOF}:
     let fSp = p.getSpan()
     let fName = p.expectMemberName("Expected variant field name").value
+    p.failIfHostKeyword(fName, fSp, "field")
     discard p.expect(tkColon)
     result.add(FieldDef(name: fName, typ: p.parseType(), attrs: @[], span: fSp))
     if p.current().kind == tkComma: discard p.advance()
@@ -284,6 +273,7 @@ proc parseTypeField*(p: var Parser): FieldDef =
   ## dropped: defaults are not carried on the type today.
   let fSp = p.getSpan()
   let fName = p.expectMemberName("Expected field or variant in type").value
+  p.failIfHostKeyword(fName, fSp, "field")
   discard p.expect(tkColon)
   let fType = p.parseType()
   if p.current().kind == tkAssign:

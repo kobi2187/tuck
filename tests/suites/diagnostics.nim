@@ -89,6 +89,68 @@ fn main() -> int:
 """
   t.badCheck "a param named after a backend keyword is refused", "TK-PA12"
 
+  # The FIELD half of TK-PA12, unguarded until 2026-09-12. A field keeps the
+  # author's name for the same reason a parameter does, so `out` emitted
+  # `out*: string` and nim answered "identifier expected, but found 'keyword
+  # out'"; dmd broke on the same shape. Odin ACCEPTS `out`, which is exactly
+  # why the list is a union rather than one host's.
+  #
+  # Guarding only parameters was also inconsistent in a way an author feels:
+  # a payload field binds to a parameter BY NAME, so a field you may declare
+  # but may never pass is a worse hole than either half alone.
+  t.src """
+type T:
+  out: str
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a type field named after a backend keyword is refused", "TK-PA12"
+
+  t.src """
+object O:
+  out: str
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an object field named after a backend keyword is refused", "TK-PA12"
+
+  t.src """
+type S:
+  | A({out: int})
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a variant payload field named after a backend keyword is refused",
+             "TK-PA12"
+
+  # An inline record reaches the same rule, which is what covers a `fnsig`'s
+  # payload — it emits as a function-pointer signature carrying the names.
+  t.src """
+fnsig S = {out: int} -> bool
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a fnsig payload field named after a backend keyword is refused",
+             "TK-PA12"
+
+  # The near miss stays legal, and builds everywhere — the rule is the list,
+  # not a prefix match on it.
+  t.src """
+type T:
+  outer: str
+  shortly: int
+
+fn main() -> int:
+  let v = {outer: "x", shortly: 1} T
+  return v.shortly - 1
+"""
+  t.okCheck "a field merely RESEMBLING a backend keyword is fine"
+  t.hostBuilds "...and every backend's host compiler accepts it"
+
   # The list is MEASURED against dmd/nim/odin, not copied from their manuals,
   # and these two are why that matters: both appear in D's reference keyword
   # list, and dmd accepts both as parameter names (`body` is contextual since
