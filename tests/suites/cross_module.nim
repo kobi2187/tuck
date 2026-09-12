@@ -100,4 +100,45 @@ fn pick[T]({a: T, b: T, better: Better[T]}) -> T:
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the imported callback is the one invoked", 0
 
+  # --- two imports exporting one name -------------------------------------
+  # The name gives up its BARE form and stays reachable qualified; the error
+  # moves from import time to use. This is what makes an implementation
+  # swappable: two modules implementing one contract share their internal
+  # helper names by nature, and Tuck has no way to mark a name private, so
+  # failing at the import meant a program could not use two implementations
+  # at once — an ordinary thing to want (a str-keyed map and an int-keyed one).
+  t.src """
+import alpha
+import beta
+
+fn main() -> int:
+  return {n: 1} alpha::step - 2
+"""
+  t.addFile("alpha.tuck", """fn step({n: int}) -> int:
+  return n + 1
+""")
+  t.addFile("beta.tuck", """fn step({n: int}) -> int:
+  return n + 100
+""")
+  t.okCheck "two imports may export one name, reached qualified"
+  t.hostBuilds "...and every backend builds it"
+  t.runs "...and the qualified one is the one called", 0
+
+  t.src """
+import alpha
+import beta
+
+fn main() -> int:
+  return {n: 1} step
+"""
+  t.addFile("alpha.tuck", """fn step({n: int}) -> int:
+  return n + 1
+""")
+  t.addFile("beta.tuck", """fn step({n: int}) -> int:
+  return n + 100
+""")
+  t.badCheck "...but writing it bare names both owners and asks which",
+    "'step' is exported by 2 imports"
+
+
   t.finish()

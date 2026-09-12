@@ -1766,11 +1766,26 @@ proc providerBindings(tc: TypeChecker, want: Decl, got: FnSig, concreteT: Type,
       tc.inferBindings(got.params[i].typ, substituteGroup(w.typ, concreteT, binds),
                        got.generics, result, fnName, sp)
 
+proc requirementKey(tc: TypeChecker, member, fnName: string): string =
+  ## Which `hashOf` satisfies a bound — the one visible to the module that
+  ## DECLARES the bounded fn, not the one visible to the caller. A program may
+  ## import two implementations of the same contract; the verb was written
+  ## against exactly one of them, and re-resolving at the call site would make
+  ## a correct verb unsatisfiable the moment a second implementation is in
+  ## scope.
+  let owner =
+    if "::" in fnName: fnName.split("::")[0]
+    else: tc.bareOwnerOf.getOrDefault(fnName)
+  if owner != "" and tc.fnSigs.hasKey(owner & "::" & member):
+    return owner & "::" & member
+  member
+
 proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
                       binds: Table[string, Type], groupName, paramName,
                       fnName: string, sp: Span) =
   ## One requirement against what `concreteT` actually declares.
-  if not tc.fnSigs.hasKey(want.name):
+  let key = tc.requirementKey(want.name, fnName)
+  if not tc.fnSigs.hasKey(key):
     fail("Conformance Error: '" & typeName(concreteT) & "', bound to '" &
          paramName & ": " & groupName & "' in '" & fnName &
          "', does not provide\n    " &
@@ -1778,7 +1793,7 @@ proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
          "\n  (declare a free fn matching that shape for " &
          typeName(concreteT) & ")", sp)
     return
-  let got = tc.sigOf(want.name)
+  let got = tc.sigOf(key)
   let prov = tc.providerBindings(want, got, concreteT, binds, fnName, sp)
   let wantParams = want.fnParams
   if wantParams.len != got.params.len:
@@ -1835,9 +1850,10 @@ proc unifyRequirements(tc: TypeChecker, g: Decl, concreteT: Type,
   ## params solved from the concrete type — and only then is the requirement
   ## read off the instantiated signature.
   for want in g.groupMembers:
-    if want == nil or want.kind != dkFn or not tc.fnSigs.hasKey(want.name):
+    let key = tc.requirementKey(want.name, fnName)
+    if want == nil or want.kind != dkFn or not tc.fnSigs.hasKey(key):
       continue
-    let got = tc.sigOf(want.name)
+    let got = tc.sigOf(key)
     let prov = tc.providerBindings(want, got, concreteT,
                                    initTable[string, Type](), fnName, sp)
     for i, w in want.fnParams:
@@ -2776,6 +2792,17 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## Unknown, gradually. The record combinators are NOT here — they are
   ## exkCombinator nodes the parser already decided on.
   let calleeName = tc.calleeNameOf(e)
+  # A name two imports both export gave up its bare form (addBare). It is
+  # still reachable qualified; written bare, it is reported HERE, where the
+  # author wrote it, rather than at the import that merely made it possible.
+  # A local declaration of the same name wins, as it does for any import.
+  if calleeName != "" and tc.ambiguousImports.hasKey(calleeName) and
+     tc.topLevelDeclOfFn(calleeName) == nil:
+    let owners = tc.ambiguousImports[calleeName]
+    fail("Type Error: '" & calleeName & "' is exported by " &
+         $owners.len & " imports (" & owners.join(", ") &
+         ") — call it as '" & owners[0] & "::" & calleeName &
+         "' to say which", e.span)
   let viaGroup = tc.asGroupRequirement(e, calleeName)
   if viaGroup != nil: return viaGroup
   if calleeName in ParenBuiltinNames:
@@ -4193,7 +4220,9 @@ proc typecheckModule*(m: Module,
                       externPending = initTable[string, Span](),
                       externFnSigTypes = initTable[string, seq[string]](),
                       externGroups = initTable[string, Decl](),
-                      externBounds = initTable[string, seq[seq[Type]]]()): seq[string] {.discardable.} =
+                      externBounds = initTable[string, seq[seq[Type]]](),
+                      externAmbiguous = initTable[string, seq[string]](),
+                      externBareOwner = initTable[string, string]()): seq[string] {.discardable.} =
   var tc = newModuleChecker(m, externSigs, externPending)
   # An imported `fnsig` is a signature TYPE, not just another callable. Seed
   # that before collectSigs so a slot typed `Mapper[int, str]` from another
@@ -4206,6 +4235,8 @@ proc typecheckModule*(m: Module,
   # declaration of the same name still wins.
   for gname, gd in externGroups: tc.groupDecls[gname] = gd
   for fname, bs in externBounds: tc.groupBoundsOf[fname] = bs
+  tc.ambiguousImports = externAmbiguous
+  tc.bareOwnerOf = externBareOwner
   tc.pushScope()  # module-level scope: consts visible across decls
   # Group declarations, collected on their own, BEFORE the real collectSigs
   # below: desugaring an inline `{x: Sortable + Hashable}` bound has to run
@@ -4329,6 +4360,7 @@ type
     fnSigTypes: Table[string, seq[string]]  ## imported `fnsig` names -> generics
     groups: Table[string, Decl]             ## imported `group` declarations
     bounds: Table[string, seq[seq[Type]]]   ## imported fns' group bounds
+    ambiguous: Table[string, seq[string]]   ## name -> every import exporting it
 
 proc withModulePrefix(err: ref SemanticError, path: string): ref SemanticError =
   ## Prefix a module-local error with the file it came from.
@@ -4364,12 +4396,25 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
     result.fnSigTypesByMod[name] = sigTypes
 
 proc addBare(scope: var ImportScope, fname, imp: string, sig: seq[FnSig]) =
-  ## Claim an unqualified name for an import, or report the collision.
+  ## Claim an unqualified name for an import, or — when a second import
+  ## exports the same name — give the bare form up entirely.
+  ##
+  ## The name stays reachable as `mod::name` from every module that exports
+  ## it; what it loses is the right to be written bare. The error moves from
+  ## IMPORT time to USE: importing two modules that happen to share a helper
+  ## name is legal, and only actually writing the ambiguous bare name is not.
+  ##
+  ## That is what makes an implementation swappable. Two modules implementing
+  ## one algorithm family share their internal helper names by nature
+  ## (`fnvStep` in both hash_fnv1a_num and hash_fnv1a_str), and Tuck has no
+  ## way to mark a name private — every top-level name is exported. Failing at
+  ## import time meant a program could not hold a str-keyed map and an
+  ## int-keyed one at once, which is an ordinary thing to want.
   if scope.bareOwner.hasKey(fname) and scope.bareOwner[fname] != imp:
-    fail("Type Error: '" & fname & "' is exported by both '" &
-         scope.bareOwner[fname] & "' and '" & imp & "' — call it as '" &
-         scope.bareOwner[fname] & "::" & fname & "' or '" & imp & "::" &
-         fname & "' to disambiguate", Span())
+    if not scope.ambiguous.hasKey(fname):
+      scope.ambiguous[fname] = @[scope.bareOwner[fname]]
+    scope.ambiguous[fname].add(imp)
+    scope.extern.del(fname)
   elif not scope.bareOwner.hasKey(fname):
     scope.bareOwner[fname] = imp
     scope.extern[fname] = sig
@@ -4428,6 +4473,7 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
     let scope = importScopeFor(sigs, preSigs, name)
     try:
       result = typecheckModule(m, scope.extern, scope.pending,
-                               scope.fnSigTypes, scope.groups, scope.bounds)
+                               scope.fnSigTypes, scope.groups, scope.bounds,
+                               scope.ambiguous, scope.bareOwner)
     except SemanticError as err:
       raise withModulePrefix(err, path)

@@ -115,6 +115,17 @@ type
                                       # from typeDeclsByName because an
                                       # interface is NOT a type: it has no size
                                       # and nothing is ever an instance of one.
+    bareOwnerOf*: Table[string, string]
+                                      ## imported name -> the module it came
+                                      ## from, so a bound can be resolved in
+                                      ## the namespace of the module that
+                                      ## declares the bounded fn
+    ambiguousImports*: Table[string, seq[string]]
+                                      ## A name exported by more than one
+                                      ## import. It is reachable only as
+                                      ## `mod::name`; writing it bare is the
+                                      ## error, and it is reported where it is
+                                      ## written rather than at the import.
     groupBoundsOf*: Table[string, seq[seq[Type]]]
                                       ## fn name -> its generic params' group
                                       ## bounds, parallel to the signature's
