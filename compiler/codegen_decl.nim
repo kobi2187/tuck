@@ -454,11 +454,21 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
 
     let enumStr = "type " & msgEnumName & "* = enum " & enumVariants.join(", ") & "\n"
     let fieldsBody = if fieldsStr.len > 0: fieldsStr.join("\n") else: ""
-    let typeStr = "type " & d.name & "* = ref object\n    kind*: " & msgEnumName & "\n" & fieldsBody & "\n"
+    # TWO spaces, matching the payload fields built above. This line used to
+    # indent `kind*` by four while every payload field used two, which nim
+    # rejects outright ("invalid indentation") — so ANY registry whose event
+    # carries a payload emitted Nim that could not compile. Invisible because
+    # no registry example has an `fn main`, making `tuck build` a library
+    # build that never hands the output to nim.
+    let typeStr = "type " & d.name & "* = ref object\n  kind*: " & msgEnumName & "\n" & fieldsBody & "\n"
     let globalVarStr = "var latest" & d.name & "*: " & d.name & "\n\n"
 
-    # Forward-declare handler procs: raise procs call them before their definition
-    var fwdDeclsStr = ""
+    # NO forward declarations for the handlers HERE. A handler is an ordinary
+    # top-level fn and the file's own forward-declaration block already
+    # declares it; emitting a second one made the proc declared TWICE, which
+    # the emitted file's `{.experimental: "codeReordering".}` rejects —
+    # "implementation of 'tuck_SystemEvents_PlaybackStarted' expected", with
+    # the implementation sitting further down the same file.
     var raiseProcsStr = ""
     for v in d.variants:
       var params: seq[string]
@@ -477,13 +487,11 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
           var argNames: seq[string]
           for f in v.fields: argNames.add(f.name)
           handlerCalls.add("  " & handlerNameSanitized & "(" & argNames.join(", ") & ")")
-          let retStr = if decl.fnReturnType != nil: genType(decl.fnReturnType) else: "void"
-          fwdDeclsStr.add("proc " & handlerNameSanitized & "*(" & paramStr & "): " & retStr & "\n")
 
       let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
       raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(kind: " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
 
-    return enumStr & typeStr & "\n" & globalVarStr & fwdDeclsStr & raiseProcsStr
+    return enumStr & typeStr & "\n" & globalVarStr & raiseProcsStr
 
 proc genObjectDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## A manager object: its fields land in the type section, its members and

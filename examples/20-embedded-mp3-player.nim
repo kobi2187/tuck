@@ -62,14 +62,11 @@ proc validate*(self: tuck_Volume) =
 
 type tuck_SystemEventsKind* = enum PlaybackStarted, PlaybackStopped, HardwareError
 type tuck_SystemEvents* = ref object
-    kind*: tuck_SystemEventsKind
+  kind*: tuck_SystemEventsKind
   code*: uint8
 
 var latesttuck_SystemEvents*: tuck_SystemEvents
 
-proc tuck_SystemEvents_PlaybackStarted*(): void
-proc tuck_SystemEvents_PlaybackStopped*(): void
-proc tuck_SystemEvents_HardwareError*(code: uint8): void
 proc raise_tuck_SystemEvents_PlaybackStarted*() =
   latesttuck_SystemEvents = tuck_SystemEvents(kind: PlaybackStarted)
   tuck_SystemEvents_PlaybackStarted()

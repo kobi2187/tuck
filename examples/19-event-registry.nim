@@ -7,15 +7,13 @@ proc tuck_AppEvents_LowMemory*(remaining: uint32): void
 
 type tuck_AppEventsKind* = enum SensorFailure, LowMemory
 type tuck_AppEvents* = ref object
-    kind*: tuck_AppEventsKind
+  kind*: tuck_AppEventsKind
   port*: uint8
   reason*: string
   remaining*: uint32
 
 var latesttuck_AppEvents*: tuck_AppEvents
 
-proc tuck_AppEvents_SensorFailure*(port: uint8, reason: string): void
-proc tuck_AppEvents_LowMemory*(remaining: uint32): void
 proc raise_tuck_AppEvents_SensorFailure*(port: uint8, reason: string) =
   latesttuck_AppEvents = tuck_AppEvents(kind: SensorFailure, port: port, reason: reason)
   tuck_AppEvents_SensorFailure(port, reason)

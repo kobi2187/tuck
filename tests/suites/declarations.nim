@@ -353,6 +353,39 @@ fn main() -> int:
   t.omits "register: Nim never emits raw field syntax either", r"CTRL\.EN"
   t.hostBuilds "register: every backend's host compiler accepts the accessors"
 
+  # An event registry whose event carries a PAYLOAD. Two defects lived here,
+  # both invisible for the same reason as the register ones: no registry
+  # example has an `fn main`, so `tuck build` was a library build that never
+  # handed the emitted Nim to nim.
+  #   1. the generated type indented `kind*` by four spaces and its payload
+  #      fields by two — "invalid indentation", so it never compiled at all
+  #   2. handler procs were forward-declared a SECOND time by the registry,
+  #      on top of the file's own forward-declaration block. A proc declared
+  #      twice is what the emitted file's `codeReordering` pragma rejects:
+  #      "implementation of X expected", with the implementation right there
+  #      further down
+  t.src """
+registry SystemEvents:
+  | PlaybackStarted()
+  | HardwareError({code: u8})
+
+on SystemEvents.PlaybackStarted():
+  let a = 1
+
+on SystemEvents.HardwareError({code: u8}):
+  let b = code
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a registry with a payload-carrying event checks"
+  t.emits "the registry type indents every field alike", r"\n  kind\*: "
+  # The duplicate forward declaration has no emitted-text assertion: what
+  # made it a defect is that nim REFUSES it, so hostBuilds below is the guard
+  # that actually holds — and is the one this whole family was missing.
+  t.hostBuilds "...and every backend's host compiler accepts it"
+  t.runs "...and it runs", 0
+
   t.src """
 register RCC at 0x40021000:
   ON: bit 0 [read, write]
