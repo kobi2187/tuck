@@ -22,14 +22,16 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (1, with a failing test that pins it)
+## A. Open bugs (0)
 
-Each has a regression test written as the CORRECT behaviour, marked `bug_open`.
-Fixing one means flipping the marker to `bug_fixed`, which locks it in.
+A bug here has a regression test written as the CORRECT behaviour, marked
+`bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
+it in.
 
-| # | Bug | Test | Where the fix belongs |
-|---|---|---|---|
-| 1 | A QUALIFIED mutator in a `..` chain destroys the receiver: `cfg ..mod::fn ..f1 {60}` emits `tuck_withDefaults.f1 = 60`. **This is a PARSER bug, not codegen** (verified 2026-08-13 by dumping both trees with `tuck p --ast`): the qualified form parses to a chain whose base is `exkQualified{modulePath: [""], qualName: "withDefaults"}` with ONE step — `cfg` is gone — while the unqualified form parses to two steps with base `cfg`. `chainQualified` (parser_expr.nim:284) receives the chain node, fails its `expr.kind == exkVar` test so the module name becomes `""`, and returns a fresh node, discarding its input. It **cannot be caught in the checker**: `synthQualified` types that orphan as Unknown (its `modulePath` is `[""]`, length 1), and under gradual typing an unknown receiver cannot disprove a step — the checker is unable to tell "the user is sketching" from "the parser destroyed this tree". Tightening `checkChainStep` was tried and reverted as a no-op. | known_bugs | `parser_expr.nim` `chainQualified` — parse time is the only place |
+None. Both entries that stood here are fixed and locked in as
+regression guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the
+qualified mutator in a `..` chain.
+
 **Tracked but without a test yet — attempted to reproduce this session,
 blocked by a separate issue:** on Odin a task WITH ARGUMENTS is claimed to
 still emit a direct call, so its body would run on the main context and the

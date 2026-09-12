@@ -517,7 +517,16 @@ fn withDefaults({self: Big}) -> Big:
   return s
 """)
   t.quietly: t.omits "a qualified mutator in a chain does not emit a field-set on the function", "tuck_withDefaults\\.f"
-  t.bugOpen "a qualified mutator in a chain does not emit a field-set on the function"
+  t.bugFixed "a qualified mutator in a chain does not emit a field-set on the function"
+  # FIXED 2026-09-12, exactly where the entry said it had to be — parse time.
+  # `..mod::fn` was parsed as a `..` step whose target was the bare `mod`,
+  # after which the chain loop saw `::` and handed chainQualified the WHOLE
+  # CHAIN. That failed its `exkVar` test, so the module name became "" and it
+  # returned a fresh node, discarding the receiver. The `::` belongs to the
+  # step's target, so chainMutation reads it there; chainQualified now
+  # refuses a non-name left side instead of rebuilding from an empty module.
+  t.emits "...it calls the qualified mutator and threads the receiver",
+          r"bigmod\.tuck_withDefaults\(tuck_cfg\)"
 
   # 18. FIXED. Odin: an imported TYPE was emitted unqualified, so it did not
   # resolve. The emitter qualified an imported FN correctly

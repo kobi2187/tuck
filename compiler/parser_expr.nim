@@ -364,10 +364,22 @@ proc chainMutation(p: var Parser, expr: Expr, sp: Span): Expr =
   discard p.advance()
   let fieldName = p.expect(tkIdent,
                            "Expected builder field name after '..'").value
+  # `..mod::fn` — the step's target is QUALIFIED, and the `::` belongs to the
+  # target, not to the chain. Read here, because the chain loop sees `::`
+  # only after this step has already been attached: chainQualified would then
+  # receive the whole chain, fail its `exkVar` test, and return a fresh node
+  # built from an empty module name — silently discarding the receiver. That
+  # is how `cfg ..bigmod::withDefaults ..f1 {60}` came to emit
+  # `tuck_withDefaults.f1 = 60`, with `cfg` gone.
+  var target = Expr(span: sp, kind: exkVar, name: fieldName)
+  if p.current().kind == tkColonColon:
+    discard p.advance()
+    let member = p.expect(tkIdent, "Expected identifier after '::'").value
+    target = Expr(span: sp, kind: exkQualified, modulePath: @[fieldName],
+                  qualName: member)
   var arg: Expr = nil
   if p.current().kind == tkLBrace: arg = p.parsePrimaryExpr()
-  let step = ChainStep(op: coDotDot, arg: arg, span: sp,
-                       target: Expr(span: sp, kind: exkVar, name: fieldName))
+  let step = ChainStep(op: coDotDot, arg: arg, span: sp, target: target)
   if expr.kind == exkChain:
     expr.steps.add(step)
     return expr
@@ -377,7 +389,18 @@ proc chainQualified(p: var Parser, expr: Expr, sp: Span): Expr =
   ## `module::name`.
   discard p.advance()
   let name = p.expect(tkIdent, "Expected identifier after '::'").value
+  # A module qualifier names a MODULE, which is always a bare name. Anything
+  # else reaching here means the receiver is a larger expression that this
+  # would silently drop — refused rather than rebuilt from an empty module
+  # name, which produced the unfindable `::name`.
+  # Read the name BEFORE reporting: `expr.name` does not exist on any other
+  # kind, and Expr is a variant object, so touching it is a runtime
+  # FieldDefect rather than a compile error.
   let moduleName = if expr.kind == exkVar: expr.name else: ""
+  if moduleName == "":
+    p.reportError("'::' qualifies a MODULE name, so the left side must be a " &
+                  "plain module name — not a larger expression",
+                  sp.line, sp.col)
   Expr(span: sp, kind: exkQualified, modulePath: @[moduleName], qualName: name)
 
 proc skipEffectAnnotation(p: var Parser) =

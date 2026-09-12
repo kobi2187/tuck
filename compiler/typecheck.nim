@@ -1453,18 +1453,33 @@ proc checkFieldSet(tc: var TypeChecker, step: ChainStep, f: FieldDef,
     fail("Type Error: field '" & f.name & "' of " & typeName(recvT) & " is " &
          typeName(want) & " but got " & typeName(vt), valExpr.span)
 
+proc stepMember(step: ChainStep): string =
+  ## The member a `..` step names. A field set and a local mutator both write
+  ## a bare name; `..mod::fn` writes a qualified one, and the target is an
+  ## exkQualified node — Expr is a variant object, so reading `.name` on it is
+  ## a runtime FieldDefect rather than a compile error.
+  if step.target == nil: ""
+  elif step.target.kind == exkQualified: step.target.qualName
+  else: step.target.name
+
+proc stepCallee(step: ChainStep): Expr =
+  ## The callee a mutator step calls — the qualified node itself when the step
+  ## was written qualified, so the call resolves through the module it names
+  ## rather than through whatever happens to share the bare name.
+  if step.target != nil and step.target.kind == exkQualified: step.target
+  else: Expr(span: step.span, kind: exkVar, name: stepMember(step))
+
 proc mutatorReturnType(tc: var TypeChecker, step: var ChainStep, base: Expr,
                        recvT: Type): Type =
   ## Call the mutator, recording the call for codegen. Braced args pin the
   ## method form (receiver = first param); a bare `..fn` gets the same
   ## type-directed resolution as any other call.
   let sc = if step.arg != nil:
-             tc.synthMethodCall(step.target.name, base, recvT, step.arg,
+             tc.synthMethodCall(stepMember(step), base, recvT, step.arg,
                                 step.span)
            else:
              Expr(span: step.span, kind: exkCall, args: @[base],
-                  callee: Expr(span: step.span, kind: exkVar,
-                               name: step.target.name))
+                  callee: stepCallee(step))
   setStepCall(semLayer, step, sc)
   if step.arg != nil: semLayer.typeFor(sc) else: tc.synthesize(sc)
 
@@ -1476,7 +1491,7 @@ proc checkMutatorTransition(tc: var TypeChecker, step: ChainStep, base: Expr,
   if tn == "": return
   let cur = if tc.varVariants.hasKey(base.name): tc.varVariants[base.name]
             else: tc.allVariants(tn)
-  let next = tc.fnReturnVariants(step.target.name, tn)
+  let next = tc.fnReturnVariants(stepMember(step), tn)
   tc.checkTransSet(tn, cur, next, step.span)
   tc.varVariants[base.name] = next
 
@@ -1501,18 +1516,27 @@ proc checkChainStep(tc: var TypeChecker, step: var ChainStep, e: Expr,
   ## its body provably assigns, which is why `c ..configure` works without
   ## pretending a mutator touched fields it never mentions.
   let base = if e.base != nil and e.base.kind == exkVar: e.base.name else: ""
-  for f in fields:
-    if f.name == step.target.name:
-      tc.checkFieldSet(step, f, recvT)
-      if base != "": tc.clearUninit(base, step.target.name)
-      return
-  if tc.fnSigs.hasKey(step.target.name):
+  let member = stepMember(step)
+  # A QUALIFIED step is never a field set — a field belongs to the receiver,
+  # not to a module — so the field loop is skipped and the name is looked up
+  # the way it was written.
+  let qualified = step.target != nil and step.target.kind == exkQualified
+  let key = if qualified and step.target.modulePath.len > 0:
+              step.target.modulePath[0] & "::" & member
+            else: member
+  if not qualified:
+    for f in fields:
+      if f.name == member:
+        tc.checkFieldSet(step, f, recvT)
+        if base != "": tc.clearUninit(base, member)
+        return
+  if tc.fnSigs.hasKey(key) or tc.fnSigs.hasKey(member):
     tc.checkMutatorCall(step, e, baseT, recvT)
     if base != "":
-      for f in tc.mutatorFillsFields(step.target.name):
+      for f in tc.mutatorFillsFields(member):
         tc.clearUninit(base, f)
   elif recvT.kind == tkRecord:
-    fail("Type Error: no field or fn '" & step.target.name & "' on type " &
+    fail("Type Error: no field or fn '" & key & "' on type " &
          typeName(recvT), step.span)
 
 proc synthChain(tc: var TypeChecker, e: Expr): Type =
