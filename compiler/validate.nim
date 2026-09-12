@@ -82,6 +82,9 @@ let tuckGrammar = peg("module", st: Stats):
   # A balanced indented block, contents unexamined. This is the seam between
   # what the grammar states and what it defers: everything inside is token
   # soup, so a body is checked for STRUCTURE only.
+  # A `##` doc comment is DISCARDED by the lexer but leaves its line's
+  # tkNewline, so a header can be followed by several newlines before the
+  # block opens — hence `+nl` at every block-taking rule rather than `nl`.
   blk       <- "tkIndent " * *(blk | (!"tkDedent " * tok)) * "tkDedent "
 
   # --- types --------------------------------------------------------------
@@ -89,12 +92,16 @@ let tuckGrammar = peg("module", st: Stats):
   # application, `A + B` composition, and the record form.
   typeExpr  <- typePrefix * typeAtom * *typeSuffix * *typeCompose
   typePrefix<- *("tkQuestion " | "tkBang " | "tkBangQuestion ")
-  typeAtom  <- typeRecord | (name * ?typeArgs)
+  typeAtom  <- typeRecord | typeInlineSum | (name * ?typeArgs)
   typeArgs  <- "tkLBracket " * typeExpr * *("tkComma " * typeExpr) * "tkRBracket "
   typeSuffix<- "tkQuestion " | "tkBang " | "tkBangQuestion " |
                ("tkStar " * "tkIntLit ")
   typeCompose <- "tkPlus " * typeAtom
   typeRecord<- "tkLBrace " * ?(fieldDef * *("tkComma " * fieldDef)) * "tkRBrace "
+  # An INLINE SUM — `type Color = {Red, Green, Blue}`. Bare variant names, no
+  # field types, which is what tells it from a record: ordered after
+  # typeRecord so a record's `name:` still wins.
+  typeInlineSum <- "tkLBrace " * name * *("tkComma " * name) * "tkRBrace "
   fieldDef  <- name * "tkColon " * typeExpr
 
   # --- signatures ---------------------------------------------------------
@@ -109,21 +116,59 @@ let tuckGrammar = peg("module", st: Stats):
 
   # --- declarations -------------------------------------------------------
   importDecl<- "tkImport " * name * nl
-  publicDecl<- "tkPublic " * "tkColon " * nl * blk
-  fnDecl    <- "tkFn " * name * ?generics * params * sigTail * "tkColon " * nl * ?blk
+  publicDecl<- "tkPublic " * "tkColon " * +nl * blk
+  fnDecl    <- "tkFn " * name * ?generics * params * sigTail * "tkColon " * +nl * ?blk
   fnSigDecl <- "tkFnsig " * name * ?generics * "tkAssign " * typeExpr *
                ?retType * nl
-  groupDecl <- "tkGroup " * name * ?generics * "tkColon " * nl * blk
-  ifaceDecl <- "tkInterface " * name * "tkColon " * nl * blk
-  typeDecl  <- "tkType " * name * ?generics *
-               (("tkAssign " * typeExpr * nl) | ("tkColon " * nl * blk))
+  groupDecl <- "tkGroup " * name * ?generics * "tkColon " * +nl * blk
+  ifaceDecl <- "tkInterface " * name * "tkColon " * +nl * blk
+  # spec 4.6: a type may carry attributes — `type EthernetFrame [packed,
+  # align: 2]:`
+  typeDecl  <- "tkType " * name * ?generics * *attrs *
+               (("tkAssign " * typeExpr * nl) | ("tkColon " * +nl * blk))
   objectDecl<- ("tkObject " | "tkActor " | "tkMixin " | "tkRegistry ") *
-               name * *attrs * "tkColon " * nl * blk
+               name * *attrs * "tkColon " * +nl * blk
   constDecl <- "tkConst " * name * "tkAssign " * *(!nl * tok) * nl
-  taskDecl  <- "tkTask " * name * ?params * sigTail * "tkColon " * nl * ?blk
+  taskDecl  <- "tkTask " * name * ?params * sigTail * "tkColon " * +nl * ?blk
+
+  # --- forms whose head word is a plain identifier ------------------------
+  # `pool`, `arena`, `register`, `extern`, `errors` and `resource` read as
+  # declaration keywords in the spec, and the TokenKind enum even declares
+  # tkPool/tkArena/tkRegister — but the lexer emits none of them, so each
+  # arrives as tkIdent and is recognised by spelling. Written the same way
+  # here, deliberately, so this grammar describes the language as it is
+  # LEXED; whether they should be real keywords is a ruling, not a fact.
+  word      <- "tkIdent "
+
+  # spec 7.2: `pool NAME = Type [count: N]`
+  poolDecl  <- word * name * "tkAssign " * typeExpr * *attrs * nl
+  # spec 7.3: `arena NAME [size: N]:` + block
+  arenaDecl <- word * name * *attrs * "tkColon " * +nl * blk
+  # spec 8.1: `register NAME at ADDR:` + block of bit fields
+  regDecl   <- word * name * word * ("tkIntLit " | name) * "tkColon " * +nl * blk
+  # `extern:` / `extern [c, ...]:` — a block of signatures (spec 11 / FFI)
+  externDecl<- word * *attrs * "tkColon " * +nl * blk
+  # spec 5.4: `pending:` — the walking skeleton block
+  pendingDecl <- "tkPending " * "tkColon " * +nl * blk
+  # spec 4.2: `distinct NAME = Type`
+  distinctDecl<- "tkDistinct " * name * "tkAssign " * typeExpr * *attrs * nl
+  # spec 8.2
+  staticAssertDecl <- "tkStaticAssert " * *(!nl * tok) * nl
+  # spec 6.1: `decision NAME(params) -> T:` + table
+  decisionDecl <- "tkDecision " * name * ?params * sigTail * "tkColon " * +nl * blk
+  # spec 9.3 / Part 10: `on select:`, and the event-registry handler form
+  # `on Registry.Event({payload}):`. The payload carries its own tkColon, so
+  # the head cannot be scanned as "everything up to the first colon".
+  dotted    <- name * *("tkDot " * name)
+  onDecl    <- "tkOn " * ("tkSelect " | dotted) * ?params * "tkColon " * +nl * blk
+  # spec 8.3: `when TARGET == "x":` + block
+  whenDecl  <- "tkWhen " * *(!"tkColon " * !nl * tok) * "tkColon " * +nl * blk
 
   known     <- importDecl | publicDecl | fnDecl | fnSigDecl | groupDecl |
-               ifaceDecl | typeDecl | objectDecl | constDecl | taskDecl
+               ifaceDecl | typeDecl | objectDecl | constDecl | taskDecl |
+               pendingDecl | distinctDecl | staticAssertDecl | decisionDecl |
+               onDecl | whenDecl |
+               poolDecl | arenaDecl | regDecl | externDecl
 
   # A declaration the grammar does not state. Consumed so the file still
   # parses, and COUNTED by the caller so coverage is reported rather than

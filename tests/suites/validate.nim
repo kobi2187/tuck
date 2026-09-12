@@ -59,7 +59,7 @@ proc run*(t: var T) =
   # The floor moves UP by hand, the way the complexity ratchet does. It is set
   # to what the tree states today; a grammar edit that describes less than it
   # did is the thing this catches.
-  const CoverageFloor = 65
+  const CoverageFloor = 95
   let total = known + unknown
   let pct = if total == 0: 0 else: known * 100 div total
   if total == 0:
