@@ -190,7 +190,7 @@ longer parses.
 ### B2. §3.5's own `bake` example doesn't parse; only the un-shown form does
 
 Spec's worked example (`tuck-spec.md:328-330`):
-```tuck
+```tuck-rejected
 let y = x.bake {someFunc: :add}
 ```
 ```

@@ -142,7 +142,7 @@ fn max({a: int, b: int}) -> int   # most-reached-for pair in the corpus
 ```
 
 ## 4. Tier 2 — any developer expects these
-```tuck
+```tuck-rejected
 # std/num
 fn pow({base: int, exp: int}) -> int
 fn sqrt({value: int}) -> int      # C ranked #1: first wall in geometry code

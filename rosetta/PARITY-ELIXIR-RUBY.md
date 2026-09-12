@@ -20,7 +20,9 @@ list |> Enum.filter(&is_even/1) |> Enum.map(&(&1 * 2)) |> Enum.sum()
 ```
 
 ```tuck
-{items: xs, pred: :isEven} filter map({transform: :double}) sum
+let evens = {items: xs, pred: :isEven} filter
+let doubled = {items: evens, transform: :double} map
+let total = {items: doubled} sum
 ```
 
 Every `Enum` function takes the collection first *by convention*, not by

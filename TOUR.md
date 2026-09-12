@@ -245,14 +245,14 @@ rewrites; zero cost.
 interface Storable:
   fn save({item: Self}) -> !void [io]
 
-mixin bulkOperations:
+mixin BulkOperations:
   fn setMany(self, {pairs: Seq[Pair]}) -> !void [io]:
     ...
 
 object PodcastApp:
   + AudioPlayer        # a record type: embeds as a field (carries data)
   + NetworkClient
-  + bulkOperations     # a mixin: its fns materialize on this object
+  + BulkOperations     # a mixin: its fns materialize on this object
 
   fn play({episode: Episode}) -> void:
     self ..loadEpisode {episode} ..startAudio

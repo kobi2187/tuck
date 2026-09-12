@@ -261,7 +261,11 @@ type PlayerState:
   | Loading({config: Config, progress: int})
   | Ready({config: Config, feed: Feed})
 
-type Door: | Closed | Open | Locked     # payloadless
+type Door:                              # payloadless
+  | Closed
+  | Open
+  | Locked
+
 type Color = {Red, Green, Blue}         # inline
 ```
 
@@ -307,8 +311,13 @@ be SHARED, and replacing one copies it.
 Mutual recursion works the same way, in either declaration order:
 
 ```tuck
-type Stmt: | Nop | Wrap({inner: Expr})
-type Expr: | Num({value: int}) | Block({body: Stmt})
+type Stmt:
+  | Nop
+  | Wrap({inner: Expr})
+
+type Expr:
+  | Num({value: int})
+  | Block({body: Stmt})
 ```
 
 `examples/44-recursive-tree.tuck` builds and evaluates one, run-gated on all

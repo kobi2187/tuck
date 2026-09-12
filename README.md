@@ -50,6 +50,24 @@ are ordered by how much they have earned:
 If a document and the compiler disagree, **the compiler is right** and the
 document is a bug worth fixing.
 
+### Code blocks in the docs are tested
+
+Every ` ```tuck ` block in every markdown file is parsed by
+`tools/doc_snippets`, and the `doc_snippets` suite fails if any is rejected.
+A doc that teaches syntax the compiler does not have is worse than an
+omission, because a reader has no way to tell.
+
+Two blocks are legitimately not whole modules and are not counted: a
+top-level statement (TK-PA03) and a signature shown with an empty body
+(TK-PA09).
+
+Some blocks show rejected code **on purpose** — a spec illustrating a compile
+error, a `FRICTIONS.md` entry recording what the language will not express, a
+`ROADMAP.md` sketch of syntax that does not exist yet. Those are fenced
+` ```tuck-rejected ` and the assertion inverts: the suite fails if one starts
+parsing. That is how a roadmap item that quietly landed, or a friction that
+was quietly fixed, gets found.
+
 ## Build and test
 
 ```sh

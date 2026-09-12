@@ -179,7 +179,7 @@ because it reached codegen, not just diagnostics.
 
 ### Reproduce (against a compiler older than this commit)
 
-```tuck
+```tuck-rejected
 actor Sink:
   hits: int
   on ping({n: int}):

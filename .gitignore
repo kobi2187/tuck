@@ -43,6 +43,7 @@ examples/minicoro.a
 tests/.smoke_*
 tools/__pycache__/
 tools/cyc
+tools/doc_snippets
 
 # The compiled test runner (from tests/runner.nim). Dot-prefixed so it cannot
 # be mistaken for the entry point: `tests/run` is a tracked SCRIPT that builds

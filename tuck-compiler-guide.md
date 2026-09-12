@@ -609,12 +609,16 @@ structure.
 
 Given this expression:
 ```tuck
-let x = {a: 5, b: someFunc {10}}
+let b = {n: 10} someFunc
+let x = {a: 5, b: b}
 ```
 
-To know the type of `x`, you need to know the type of `{a: 5, b: someFunc {10}}`.
-To know that, you need to know the return type of `someFunc`. `someFunc` is in
-the signature table from pass 1. So you look it up — great.
+To know the type of `x`, you need to know the type of `{a: 5, b: b}`. To know
+that, you need to know the type of `b`, which is the return type of `someFunc`.
+`someFunc` is in the signature table from pass 1. So you look it up — great.
+
+(The call is bound to a `let` first because a payload field holds a *value*: a
+call nested inside a payload is TK-PA13.)
 
 But what about:
 ```tuck

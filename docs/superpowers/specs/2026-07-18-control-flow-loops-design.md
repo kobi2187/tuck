@@ -18,7 +18,7 @@ codegen time on embedded targets.
 
 ## Forms
 
-```tuck
+```tuck-rejected
 loop:                        # infinite (while-true)
   poll()
   if done(): break

@@ -11,9 +11,15 @@
 ##   TK-PA03  a top-level statement — an illustrative line, not a module
 ##   TK-PA09  a block opened with nothing inside — a signature shown alone
 ##
+## A ```tuck-rejected fence inverts the assertion. Some blocks show rejected
+## code on purpose — a spec illustrating a compile error, a FRICTIONS entry
+## recording what the language will not express, a ROADMAP sketch of syntax
+## that does not exist yet. Those are checked in REVERSE: one that starts
+## parsing fails the suite, which is how a roadmap item that quietly landed,
+## or a friction that was quietly fixed, gets found.
+##
 ## A RATCHET, like the complexity budget: the ceiling is whatever the tree has
-## today and is lowered by hand, never raised. Fixing docs is a separate,
-## larger job (TODO backlog); this stops the number growing while it waits.
+## today and is lowered by hand, never raised.
 
 import ../harness
 import strutils
@@ -22,7 +28,7 @@ proc run*(t: var T) =
   # Lowered by hand as documents are reconciled against the compiler. Never
   # raise it: a new rejected block means a doc just gained syntax the language
   # does not have.
-  const RejectedCeiling = 34
+  const RejectedCeiling = 0
 
   let i = t.needCmd(@["./tools/doc_snippets"])
   if t.phase != pReport: return
@@ -47,3 +53,21 @@ proc run*(t: var T) =
     t.no "documented Tuck: rejected blocks grew",
          $rejected & " rejected, ceiling " & $RejectedCeiling &
          " — run tools/doc_snippets --list"
+
+  # The inverted half. A tuck-rejected block that parses is a doc claiming the
+  # compiler says no when it no longer does.
+  var stale = -1
+  for w in outp.split({' ', '\n'}):
+    if stale == -2: stale = (try: parseInt(w) except: -1)
+    if w == "STALE": stale = -3
+    elif stale == -3 and w == "(now": stale = -3
+    elif stale == -3 and w == "parse):": stale = -2
+  if stale < 0:
+    t.no "no tuck-rejected block has started parsing",
+         "could not read the stale count from: " & outp.strip()
+  elif stale == 0:
+    t.ok "no tuck-rejected block has started parsing"
+  else:
+    t.no "no tuck-rejected block has started parsing",
+         $stale & " now parse — the doc says the compiler rejects them; " &
+         "run tools/doc_snippets --list"

@@ -172,7 +172,7 @@ lists *"implicit conversions"* among the things Tuck deliberately does not
 have. Today `compatible()` lets any numeric primitive match any other, so
 the rule isn't enforced.
 
-```tuck
+```tuck-rejected
 fn setDuty({channel: int, permille: u16}) -> void
 
 let wide: u32 = 70000
@@ -231,7 +231,7 @@ can carry a policy the way a `distinct` does. Not designed here.
 **A fn taking a transition-typed argument MAY declare which variants it
 accepts. Bare type = all variants (unchanged); a declared set narrows.**
 
-```tuck
+```tuck-rejected
 type ProtocolStage:
   | Handshake
   | Login

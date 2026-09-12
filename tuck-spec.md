@@ -642,7 +642,7 @@ type MqttSession [sealed]:
     Connected    -> Disconnected   # close
 ```
 
-```tuck
+```tuck-rejected
 let s = MqttSession.Disconnected        # fine — initial variant
 let s = MqttSession.Connected {..}      # compile error — sealed
 let s = MqttSession.Connected [unsafe] {..}  # allowed with explicit escape
@@ -863,7 +863,7 @@ One `errors` declaration per application selects one of three modes:
 ```tuck
 errors [policy: continue]:
   on unhandled({code: u16, site: str}):
-    log.warn "unhandled error {code} at {site}"
+    {code: code, site: site} logUnhandled
 ```
 
 - `strict` — every error is handled directly at its site (unwrapped under an
@@ -904,7 +904,10 @@ world:
 
 ```tuck
 # thermal.tuck
-type ThermalState: Critical | Hot | Normal
+type ThermalState:
+  | Critical
+  | Hot
+  | Normal
 
 fn classifyTemp({celsius: f32}) -> {state: ThermalState}:
   ...
@@ -916,7 +919,7 @@ their own:
 
 ```tuck
 # retry.mixins.tuck
-mixin withRetry:
+mixin WithRetry:
   fn attempt({maxTries: int}) -> !{result: Self}: ...
 ```
 
@@ -929,7 +932,7 @@ by the complexity limit):
 object PodcastPlayer:
   + PodcastState
   + AudioOutput
-  + withRetry
+  + WithRetry
   + PersistentCache
 
   fn play({episode: Episode}) -> void:
@@ -959,15 +962,15 @@ interface Storable:
   fn load({src: Path}) -> !Self [io]
 ```
 
-An object declares conformance with a `satisfies` line in its body, alongside
-the `+` composition lines it already carries. One object may satisfy several
-interfaces:
+An object declares conformance with a `satisfies` line at the top of its body,
+before the fields and the `+` composition lines — the contract is stated first,
+then the data. One object may satisfy several interfaces:
 
 ```tuck
 object Document:
+  satisfies Storable
   path: Path
   + Timestamped
-  satisfies Storable
 
   fn save({dest: Path}) -> !void [io]:
     ...
@@ -1224,7 +1227,8 @@ Large tables can be split into composed functions. One decision table calls anot
 the compiler inlines and builds one combined bitmask table underneath:
 
 ```tuck
-decision classifySize({bytes: u32}) -> SizeClass: ...
+decision classifySize({bytes: u32}) -> SizeClass:
+  | _ -> Small
 
 decision routePacket({priority: u2, encrypted: bool, bytes: u32}) -> Action:
   | high  true  Small  -> FastSecure
@@ -1461,8 +1465,8 @@ plain functions alike, and are declared exactly like effects (§3.7 —
 explicit, not inferred; a fn returning a resource it did not finish must
 declare the marker itself, same as any other effect):
 
-```tuck
-fn open(port: u16) -> UdpSocket! [io, resource: udp]
+```tuck-rejected
+fn open({port: u16}) -> UdpSocket! [io, resource: udp]
 ```
 
 An unknown kind in `[resource: k]` is a compile error, same as an undeclared

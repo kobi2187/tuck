@@ -33,7 +33,7 @@ entry below is flagged:
 
 ### std/opt (`?T`, modeled on `Option<T>`)
 
-```tuck
+```tuck-rejected
 fn isSome[T]({self: ?T}) -> bool                              # [fn]  Option::is_some
 fn isNone[T]({self: ?T}) -> bool                               # [fn]  Option::is_none
 fn unwrapOr[T]({self: ?T, fallback: T}) -> T                    # [fn]  Option::unwrap_or  (VERIFIED — see #13)
@@ -48,7 +48,7 @@ fn orElse[T]({self: ?T, fallback: ?T}) -> ?T                   # [fn]  Option::o
 
 ### std/result (`!T`, modeled on `Result<T, E>`)
 
-```tuck
+```tuck-rejected
 fn isOk[T]({self: !T}) -> bool                                 # [fn]  Result::is_ok
 fn isErr[T]({self: !T}) -> bool                                # [fn]  Result::is_err
 fn unwrapOr[T]({self: !T, fallback: T}) -> T                    # [fn]  Result::unwrap_or
@@ -91,7 +91,7 @@ don't block the stdlib catalogue on it.
 These are Rust analogues of fns STDLIB-PROPOSAL already tiered; listed here
 for traceability, not re-litigated.
 
-```tuck
+```tuck-rejected
 # std/seq  (Rust: Vec<T> / slice)
 fn push[T]({items: Seq[T], value: T}) -> Seq[T]        # Vec::push
 fn sum({items: Seq[int]}) -> int                        # Iterator::sum
@@ -117,7 +117,7 @@ fn parseInt({text: str}) -> !int                        # str::parse::<i64>()
 STDLIB-PROPOSAL already flags `Map[K,V]` absence as prereq 6b. Full surface,
 Rust-modeled:
 
-```tuck
+```tuck-rejected
 type Map[K, V]                                          # opaque; HashMap<K, V>
 
 fn insert[K, V]({self: Map[K, V], key: K, value: V}) -> Map[K, V]   # HashMap::insert
@@ -144,7 +144,7 @@ uses for `push` returning `Seq[T]`.
 
 ## 3. Tier 2
 
-```tuck
+```tuck-rejected
 # std/num (Rust: core::cmp, i64 methods)
 fn pow({base: int, exp: int}) -> int                     # i64::pow
 fn sqrt({value: int}) -> int                              # f64::sqrt, truncated

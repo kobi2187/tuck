@@ -99,8 +99,8 @@ calls and record constructions are rejected at the Tuck level.
 ```tuck
 match p:
   Stopped: 0        # colon
-decision route(...):
-  | high true -> 1  # arrow
+decision route({p: Phase}) -> int:
+  | _ -> 1          # arrow
 ```
 
 Both are "pattern to outcome" and they read differently. Small, but it's

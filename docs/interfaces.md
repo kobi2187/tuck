@@ -24,8 +24,8 @@ An object declares conformance with a `satisfies` line in its body, beside the
 
 ```tuck
 object Dog:
-  name: str
   satisfies Animal
+  name: str
 
   fn noise({self: Dog}) -> int:
     return 1
