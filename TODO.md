@@ -1,8 +1,15 @@
 # TODO — every known bug, gap and unfinished thing, in one place
 
-Collated 2026-08-29. This file is an INDEX, not a replacement: each entry
-says what is wrong, how confident we are, and where the full write-up lives.
-Fix an entry, delete it from here and update its source.
+Collated 2026-08-29, re-verified 2026-09-12. This file is an INDEX, not a
+replacement: each entry says what is wrong, how confident we are, and where
+the full write-up lives. Fix an entry, delete it from here and update its
+source.
+
+**Entries marked [verified 2026-09-12]** were re-run against the compiler on
+that date during the documentation audit. Everything else is carried over
+from 2026-08-29 with its original confidence key and has NOT been re-checked
+— four entries turned out to be already fixed when they were, so treat an
+unverified `[repro]` as a lead, not a fact.
 
 **The suite is the authority.** `./tests/run` prints every `OPEN` line, and
 `tests/suites/end_to_end.nim` checks the count in `MISSING-FEATURES.md`
@@ -20,6 +27,57 @@ Confidence key: **[repro]** reproduced by running · **[read]** read from the
 code, not run · **[design]** a decision that was never made.
 
 ---
+
+## 0. Open bugs pinned by the suite (3)
+
+These are the only entries with a failing assertion behind them:
+`tests/suites/known_bugs.nim` states the CORRECT behaviour and marks it
+`bugOpen`, and `end_to_end` checks the count against `MISSING-FEATURES.md`
+§A. Flip the marker to `bugFixed` when one starts passing. All three were
+found by the 2026-09-12 documentation audit, and all three share one shape:
+the checker says OK and the emitted source does not compile.
+
+- [ ] **A1 — an attribute name is reserved outside brackets too.**
+  `priority` names a FIELD fine, but `fn priority(...)` is "Expected
+  function or event name" and `{priority: int}` as a parameter is refused.
+  The TK-PA08 diagnostic's own text promises all three work. Whether to
+  narrow the reservation or the promise is a ruling.
+- [ ] **A2 — a fn with no declared return type accepts `return x`.**
+  `fn f({x: int}):` + `return x` passes `tuck ch`, emits
+  `proc tuck_f*(x: int): void = return x`, and nim answers "no return type
+  declared". Whether omitting `->` should be rejected or mean `void` is a
+  ruling; returning a value from such a fn is wrong either way.
+- [ ] **A3 — a `[read]` register field can be written.** Emits
+  `tuck_RCC_HSIRDY_get() = true` ("cannot be assigned to") because a
+  read-only field emits no setter. The reverse direction, reading a
+  `[write]` field, IS enforced (`TK-RE02`), so spec 8.1's symmetric claim
+  is half true.
+
+> Older entries below cite `MISSING-FEATURES A1`/`A2`/`A4`. Those numbers
+> referred to a previous §A list whose entries have since been fixed and
+> removed; they do NOT mean A1-A3 above. Follow the named suite instead.
+
+## 0.5 Fixed since the last collation — verified 2026-09-12
+
+Re-running the 2026-08-29 entries found four that no longer reproduce:
+
+- **Field access on a primitive is checked.** `s.wibble` on a `str` is now
+  `TK-TY02: no field 'wibble' on type str`. Was: typechecks clean and
+  becomes `<unknown>`. Very likely closed when `Unknown` was removed.
+- **`len` resolves properly.** `xs.len` on a `Seq[int]` checks.
+- **Generic `actor` parses.** `actor Box[T]:` is accepted by the parser.
+  Whether it should EXIST is still the open ruling (§2).
+- **`const` initializers may call a pure fn.** `const timeout = 5.ms`
+  works; TOUR.md carried a warning saying it was rejected.
+
+Two more changed symptom rather than being fixed — both now produce a hard
+error instead of silently doing the wrong thing, which is an improvement but
+not the stated correct behaviour:
+
+- A member fn shadowing a top-level fn: `{n: 41} noise` is now "missing
+  required field 'self'" rather than silently selecting the member.
+- By-type payload matching for member calls: same message, rather than
+  checking OK and dropping the payload.
 
 ## 1. Design gaps — a decision was never made
 
@@ -229,6 +287,17 @@ that design's whole premise.
   `core.volatile`'s load/store are the supported spelling. Correct for the
   examples, wrong for a real embedded target.
 ### Cross-backend
+- [ ] **[repro, verified 2026-09-12] `recursive_types` fails only under the
+  full parallel run.** `t.hostBuilds "...and every backend's host compiler
+  accepts it"` (the non-first-payload-variant case,
+  `tests/suites/recursive_types.nim:42`) failed once in a full `./tests/run`
+  and passed both in isolation and on the next full run. Seen twice before
+  as an intermittent `Bad file descriptor` reading a child's pipe; the
+  harness now catches that and names the command, and this occurrence did
+  NOT report EBADF — so there may be a second cause, most likely two suites
+  writing the same build directory under `--jobs`. Not reproducible on
+  demand. It was struck off the list on 2026-09-12 as "probably fixed
+  earlier"; this run says otherwise.
 - [ ] **[repro] The Nim backend is stricter than D on numeric mixing.**
   `acc + payload.value` with `acc: int` and the field `u16` compiles in D
   and fails in Nim. Same source, two answers about which programs exist.

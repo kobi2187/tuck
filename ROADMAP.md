@@ -488,7 +488,8 @@ and those must stay green.
 | match | — | exhaustiveness DONE: every match over a closed domain (sum type, bool, error enum) must cover all cases or end in `_`. Open domains (int/str) unchecked, as in Nim |
 | Effects | 3.7 | switch to implicit propagation (ruling above) |
 | ~~Beef backend~~ | — | REMOVED 2026-07-28. Frozen since the Odin backend landed, never compile-verified here (no BeefBuild), and every new construct meant a third unchecked emitter arm. Odin is the second backend |
-| Odin backend | — | 2026-08-05: 41 examples compile-gated, 15 run-gated on exit codes; coroutine runtime over minicoro; full C FFI parity; offload worker + std/net mirrored. Known gap: a task WITH ARGUMENTS is not spawned as a coroutine |
+| Odin backend | — | 2026-09-12: 39 examples compile-gated, 17 run-gated on exit codes; coroutine runtime over minicoro; full C FFI parity; offload worker + std/net mirrored. Known gap: a task WITH ARGUMENTS is not spawned as a coroutine |
+| D backend | — | 2026-09-12: 42 examples compile-gated, 17 run-gated on exit codes, own 994-line suite. Emits `alias T = base` where Nim/Odin emit `distinct`, and concatenates with native `~` rather than a runtime `tuckConcat`. Registers are not `volatile` |
 | C FFI | — | DONE 2026-07-28: functions, cstring, structs by value, enums with explicit values, callbacks, opaque handles — all run-verified against a real C library on BOTH backends. `lib:` links a system library or a vendored `.c` |
 | Control flow loops | 2.6/3.6b | DONE 2026-07-19: unified for (cond/iter/indexed), loop, break/continue (innermost, depth-checked), spaced-`..` ranges (Nim convention), fn inline ({.inline.}/[Inline]). Runtime-verified exit-17 smoke both backends. No labels ever (ruling); value-returning main = process exit code |
 
@@ -504,7 +505,12 @@ and those must stay green.
 - Stack-depth budgets `[stack: N]` §6.2
 - Complexity limit §6.3 (ruling: hard error)
 - Error.x validated against a declared error enum
-- Visibility (pub/private), imported types via `::`, nested module paths
+- ~~Visibility (pub/private)~~ DONE 2026-09-11: a `public:` block lists bare
+  names, and the restriction reaches all three backends' visibility markers.
+  Imported types resolve by bare name across a module boundary. STILL
+  MISSING: `mod::Type` in a TYPE position — `let p: geo::Point = …` is
+  "Expected `Assign` here, found `::`" (verified 2026-09-12). Nested module
+  paths untested.
 
 ## Broken-example map (2026-07-13: Nim gate 21/25, Beef 20/25)
 Remaining: 11 → when + pool + attr features (main-only ruling landed 2026-07-13); 16 → on select (actor-runtime
