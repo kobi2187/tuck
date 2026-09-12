@@ -1,7 +1,8 @@
 # Tuck
 
-A systems language for embedded and application work, transpiling to **Nim**
-and **Odin**. Every piece of data flows through the system as a named struct;
+A systems language for embedded and application work, transpiling to **Nim**,
+**Odin** and **D**. Every piece of data flows through the system as a named
+struct;
 the language restricts the shape of code so you can spend attention on the
 shape of data.
 
@@ -99,7 +100,8 @@ explain` is the fastest way to learn a rule you just tripped.
 lexer.nim          text -> tokens
 compiler/          parser -> rewrite -> typecheck -> semantics -> lowering -> codegen
   optimize.nim     OPTIONAL passes, off unless -O names them
-  tuckrt/          the Odin runtime (the Nim one is compiler/tuck_*.nim)
+  tuckrt/          the Odin runtime
+  tuckrt_d/        the D runtime (the Nim one is compiler/tuck_*.nim)
 std/               the standard library, in Tuck
 examples/          the corpus — see below
 tests/suites/      one .nim per suite; harness.nim holds the assertions

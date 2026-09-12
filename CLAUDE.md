@@ -162,7 +162,8 @@ lexer.nim          text -> tokens
 tuck.nim           the CLI driver; checkProgram is the whole pipeline
 compiler/          parser -> rewrite -> typecheck -> semantics -> lowering -> codegen
   optimize.nim     OPTIONAL passes, off unless -O names them
-  tuckrt/          the Odin runtime (the Nim one is compiler/tuck_*.nim)
+  tuckrt/          the Odin runtime
+  tuckrt_d/        the D runtime (the Nim one is compiler/tuck_*.nim)
 std/               the standard library, in Tuck
 tests/suites/      one .nim per suite; harness.nim holds the assertions
 tools/             cc.nim (complexity), emit_examples.sh
