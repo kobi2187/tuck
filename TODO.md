@@ -11,6 +11,11 @@ from 2026-08-29 with its original confidence key and has NOT been re-checked
 — four entries turned out to be already fixed when they were, so treat an
 unverified `[repro]` as a lead, not a fact.
 
+**These are also GitHub issues** — #4-#36 on kobi2187/tuck, posted 2026-09-12,
+one per entry. The issue is the place to discuss and the place to close;
+this file stays the index with the cross-references and the sources. If you
+close an issue, delete the entry here too, the way the header already says.
+
 **The suite is the authority.** `./tests/run` prints every `OPEN` line, and
 `tests/suites/end_to_end.nim` checks the count in `MISSING-FEATURES.md`
 against the number of `bugOpen` assertions, so those two cannot drift apart
