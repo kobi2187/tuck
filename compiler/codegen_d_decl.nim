@@ -160,10 +160,15 @@ proc genDErrHandler*(ctx: var DCodegenCtx, d: Decl): string =
   var body = ctx.genDStmtOrBlock(handler.fnBody).strip()
   ctx.indent = 0
   ctx.definedVars.clear()
-  # A `...` placeholder body means "report it and carry on" — the same
-  # default the Nim backend forwards to.
+  # rt logger FIRST, then the user's body — the same order Nim and Odin use
+  # (codegen_decl.genErrHandler, codegen_odin_decl.genErrHandler). D used to
+  # emit the logger only when the body was empty, so a D program with a
+  # handler of its own reported nothing: an error the other two backends
+  # printed was invisible here.
   if body == "" or body == ";":
     body = "rt.tuckReportUnhandled(code, site);"
+  else:
+    body = "rt.tuckReportUnhandled(code, site);\n    " & body
   # Mangled deliberately: the handler is emitted here but CALLED from every
   # drop site (genDDroppedResult), and the two must agree. The decl arrives
   # unmangled because it hangs off the errors block rather than the module's
