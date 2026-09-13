@@ -500,8 +500,10 @@ proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
       return "return rt.tok(" & ctx.recCtorFromLiteral(ctx.retInnerT.fields, v.fields) & ")"
     else:
       return "return rt.tok(" & ctx.genOdinExpr(v) & ")"
-  elif ctx.retInvName != "":
-    # production site: return value of an invariant-carrying type
+  elif ctx.retInvName != "" and not validatesItself(ctx.module, e.returnVal):
+    # production site: return value of an invariant-carrying type.
+    # `validatesItself` keeps a construction from being wrapped twice — it
+    # already validated at the construction site, on this same value.
     return "return __validated_" & ctx.retInvName & "(" &
            ctx.genOdinExpr(e.returnVal) & ")"
   else: return "return " & ctx.genOdinExpr(e.returnVal)

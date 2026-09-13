@@ -499,7 +499,10 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
   let v = ctx.genDExpr(e.returnVal)
   # production site: handing back a value of an invariant-carrying type
   let rt = ctx.res.typeFor(e.returnVal)
-  if rt != nil and rt.kind == tkNamed and ctx.idx.hasInvariantsIdx(rt.name):
+  # `validatesItself` keeps a construction from being wrapped twice — it
+  # already validated at the construction site, on this same value.
+  if rt != nil and rt.kind == tkNamed and ctx.idx.hasInvariantsIdx(rt.name) and
+     not validatesItself(ctx.module, e.returnVal):
     return "return __validated_" & rt.name & "(" & v & ")"
   "return " & v
 

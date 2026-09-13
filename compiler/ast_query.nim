@@ -243,6 +243,24 @@ proc hasInvariants*(m: Module, name: string): bool =
     if member.kind == dkExpr: return true
   false
 
+proc validatesItself*(m: Module, e: Expr): bool =
+  ## Does emitting this expression ALREADY validate its own invariants?
+  ##
+  ## A construction of an invariant-carrying type does: every backend wraps it
+  ## at the construction site. A `return` of that same expression then wrapped
+  ## it a SECOND time, on a value nothing touched in between —
+  ## `__validated_T(__validated_T(T{...}))` on Odin and D, and the same shape
+  ## with two nested `let`s on Nim. Correct, but twice the work, and an
+  ## invariant is arbitrary user code on a target where that is not free.
+  ##
+  ## Deliberately narrow: ONLY the expression node that IS the construction.
+  ## A variable, a field read, a call result — anything that could have been
+  ## produced elsewhere — must still be checked on the way out, because
+  ## nothing here proves where it came from.
+  if e == nil or e.kind != exkCall or e.callee == nil: return false
+  if e.callee.kind != exkVar: return false
+  hasInvariants(m, e.callee.name)
+
 proc externInvRet*(m: Module, fnName: string): string =
   ## An extern fn returning an invariant-carrying named type: values entering
   ## from outside the checked world validate at the CALL site (the body is not

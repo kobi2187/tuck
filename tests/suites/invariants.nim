@@ -136,4 +136,70 @@ fn main() -> int:
   t.quietly: t.runs "a pool slot is validated before it is handed out", 1
   t.bugOpen "a pool slot is validated before it is handed out"
 
+  # An invariant is validated ONCE for one construction (issue #51). Two
+  # independent rules each wrapped the expression and neither knew the other
+  # had: a construction of an invariant-carrying type validates at the
+  # construction site, and a fn returning such a type validates on the way
+  # out. `return {n: v} Live` satisfied both and got both —
+  # `__validated_T(__validated_T(T{...}))`, on a value nothing touched in
+  # between.
+  #
+  # Nothing in examples/ returns a constructed invariant type from a fn, so
+  # re-emitting the corpus produced no diff at all and would never have
+  # caught this.
+  t.src """
+type Live:
+  n: int
+  invariant:
+    n > 0
+
+fn make({v: int}) -> Live:
+  return {n: v} Live
+
+fn main() -> int:
+  let a = {v: 5} make
+  return a.n
+"""
+  t.runs "a constructed invariant type returned from a fn runs", 5
+  t.hostBuilds "...on every backend"
+  # The SECOND temp only exists when the value was wrapped twice.
+  t.omits "...validated once, not twice (Nim)", "tuckInv2"
+  t.omitsOdin "...validated once, not twice (Odin)",
+              "__validated_tuck_Live\\(__validated_"
+
+  # ...and the invariant still FIRES. Dropping a wrap must not drop the check.
+  t.src """
+type Live:
+  n: int
+  invariant:
+    n > 0
+
+fn make({v: int}) -> Live:
+  return {n: v} Live
+
+fn main() -> int:
+  let a = {v: 0} make
+  return a.n
+"""
+  t.runs "...and a violated invariant still aborts", 1
+
+  # A return that is NOT a construction keeps its wrap: nothing proves where
+  # that value came from, so it is still checked on the way out.
+  t.src """
+type Live:
+  n: int
+  invariant:
+    n > 0
+
+fn passThrough({x: Live}) -> Live:
+  return x
+
+fn main() -> int:
+  let a = {n: 5} Live
+  let b = {x: a} passThrough
+  return b.n
+"""
+  t.emits "a variable return is still validated", "validate\\(tuckInv1\\)"
+  t.emitsOdin "...on Odin too", "__validated_tuck_Live\\(x\\)"
+
   t.finish()

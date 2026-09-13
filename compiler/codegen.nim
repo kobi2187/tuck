@@ -421,8 +421,10 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
     else: return "return"
   elif ctx.retWrapped:
     return ctx.genWrappedReturn(e.returnVal)
-  elif ctx.retInvName != "":
-    # production site: return value of an invariant-carrying type
+  elif ctx.retInvName != "" and not validatesItself(ctx.module, e.returnVal):
+    # production site: return value of an invariant-carrying type.
+    # `validatesItself` keeps a construction from being wrapped twice — it
+    # already validated at the construction site, on this same value.
     ctx.tmpCounter.inc
     let tmp = "tuckInv" & $ctx.tmpCounter
     return "return (let " & tmp & " = " & ctx.genExpr(e.returnVal) & "; validate(" &
