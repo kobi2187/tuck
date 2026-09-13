@@ -1306,23 +1306,53 @@ fn main() -> int [io]:
   t.hostBuilds "...on every backend"
   t.bugFixed "an errors handler may call a fn"
 
-  # 23. A group-bounded generic does not BUILD on any backend, even with a
-  # single provider. The checker accepts it (#38 is fixed above); codegen
-  # emits three different names for one fn:
+  # 23. A group-bounded generic BUILDS AND RUNS when the provider is a free
+  # fn — which is the form spec 5.5 actually specifies: "the compiler looks
+  # for a FREE FUNCTION matching the group's required signature". Nothing
+  # covered this before, on any backend, because A4 made every realistic
+  # group program unreachable. It is the mechanism the whole v2 stdlib rests
+  # on, so it is pinned here as a passing guard rather than left to the
+  # check-only assertions in `groups`.
+  t.src """
+group Sensing:
+  fn reads({self: Self}) -> int
+
+object A:
+  a: u8
+
+fn reads({self: A}) -> int:
+  return 7
+
+fn one[T: Sensing]({x: T}) -> int:
+  return {self: x} reads
+
+fn main() -> int:
+  let p = {a: 1} A
+  return {x: p} one
+"""
+  t.runs "a group bound dispatches to a free fn", 7
+  t.hostBuilds "...on every backend"
+
+  # 24. ...but an object MEMBER accepted as the provider emits code no
+  # backend can build (issue #49). The member is emitted with a `var`
+  # receiver, which the generic's own non-var param cannot satisfy, and under
+  # a name the call site does not use:
   #
   #   proc reads*(self: var tuck_A): int    the member, UNMANGLED
-  #   mixin tuck_reads                      the mixin, mangled
-  #   return reads(x)                       the call, unmangled
+  #   mixin tuck_reads                      the mixin, MANGLED
+  #   return reads(x)                       the call, UNMANGLED
   #
-  # Nim then fails on the receiver instead: `reads` takes `var tuck_A` and
-  # `x` is a plain generic param, so "type mismatch ... [1] x: tuck_A". Odin
-  # emits the member as `tuck_A_reads` and calls `reads` — "Undeclared name".
-  # D says "undefined identifier `reads`".
+  # Odin emits the member as `tuck_A_reads` and calls `reads`, so there the
+  # NAME is the blocker rather than the receiver.
   #
-  # Separate from #38 and older: this reproduces with ONE provider, a shape
-  # that has always checked clean. No test covered it because #38 made every
-  # multi-provider group unreachable, and single-provider groups were only
-  # ever checked, never built.
+  # Whether this should BUILD or should be REJECTED is a ruling, not an
+  # oversight — spec 5.5 says a group is satisfied by a free fn, and its own
+  # "why not extend interface/satisfies to type" paragraph draws the line
+  # this way round: an object has a bounded member set and uses
+  # `satisfies Interface`; a group exists for plain types whose associated
+  # fns are free-standing. Under that reading the fix is a checker rejection
+  # naming both real options, not codegen. Either way today's behaviour —
+  # accept, then emit something unbuildable — is wrong.
   t.src """
 group Sensing:
   fn reads({self: Self}) -> int
@@ -1339,8 +1369,8 @@ fn main() -> int:
   let p = {a: 1} A
   return {x: p} one
 """
-  t.okCheck "a group-bounded generic checks with one provider"
-  t.quietly: t.runs("a group-bounded generic builds and runs", 7)
-  t.bugOpen "a group-bounded generic builds and runs"
+  t.quietly: t.runs("an object member satisfying a group is settled one way " &
+                    "or the other", 7)
+  t.bugOpen "an object member satisfying a group is settled one way or the other"
 
   t.finish()

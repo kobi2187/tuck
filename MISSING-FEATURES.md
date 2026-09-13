@@ -66,17 +66,23 @@ build all five. An interface whose methods return `bool` — a `Validator`, a
 `Predicate` — is Nim/D-only today and nothing says so until the Odin build
 runs. Test: `known_bugs`, "an interface method may return an enum".
 
-**A14 — a group-bounded generic does not BUILD on any backend.** The checker
-accepts it, then codegen emits three different names for one fn: the member
-unmangled (`proc reads*(self: var tuck_A)`), the mixin mangled
-(`mixin tuck_reads`), and the call unmangled (`return reads(x)`). Nim fails on
-the receiver first — `reads` wants `var tuck_A` and the generic param `x` is
-not one. Odin emits the member as `tuck_A_reads` and calls `reads`
-("Undeclared name"); D says "undefined identifier `reads`". Reproduces with a
-SINGLE provider, which has always checked clean — no test covered it because
-A4 made every multi-provider group unreachable and single-provider ones were
-only ever checked, never built. Test: `known_bugs`, "a group-bounded generic
-builds and runs".
+**A14 — an object MEMBER is accepted as a group provider, then emits code no
+backend can build.** The free-fn form works and is now pinned as a passing
+guard (`known_bugs`, "a group bound dispatches to a free fn", nim+odin+d,
+returns 7) — that is the form spec §5.5 specifies: *"the compiler looks for a
+free function matching the group's required signature"*. Declaring the same fn
+inside `object A:` instead also CHECKS, and then emits three names for one fn
+— the member unmangled (`proc reads*(self: var tuck_A)`), the mixin mangled
+(`mixin tuck_reads`), the call unmangled (`return reads(x)`). Nim trips first
+on the `var` receiver, which the generic's non-var param cannot satisfy; Odin
+emits the member as `tuck_A_reads` and calls `reads`, so there the name is the
+blocker. Whether this should build or be REJECTED is a ruling: §5.5's own "why
+not extend interface/satisfies to type" paragraph puts object members on the
+`satisfies Interface` side of the line and groups on the free-standing-fn
+side, which argues for a checker rejection naming both options rather than a
+codegen fix. Either way, accept-then-emit-unbuildable is wrong. Issue #49.
+Test: `known_bugs`, "an object member satisfying a group is settled one way or
+the other".
 
 **A8 — a pool hands out a slot without validating it.** `Slots.acquire` on a
 `pool Slots = Live [count: 2]` yields a zeroed slot, so with `invariant: n > 0`
