@@ -171,4 +171,69 @@ fn main() -> int:
   t.badCheck "an ordinary missing field keeps the alias advice",
              "alias\\ a\\ field\\ to\\ that\\ name"
 
+  # A RECEIVER call reaches the object's own member, even when a top-level fn
+  # of the same name could have taken the receiver's fields by explosion
+  # (issue #50). It used to pick the free fn, silently — a working build and
+  # the wrong function.
+  #
+  # The checker picked correctly all along; the choice was lost afterwards.
+  # It stamps a call node carrying the NAME, and mangling renamed that to the
+  # top-level fn's symbol, because a member is emitted under the name it was
+  # written with and a top-level fn is mangled. The checker now records the
+  # choice (resolution.markMemberRef) and mangling honours it.
+  t.src """
+object B:
+  n: int
+  fn noise({self: B}) -> int:
+    return self.n
+
+fn noise({n: int}) -> int:
+  return n + 1
+
+fn main() -> int:
+  let b = {n: 10} B
+  return b.noise
+"""
+  t.runs "a receiver call reaches the object's own member", 10
+  t.hostBuilds "...on every backend"
+  t.emits "...and Nim calls the member, not the mangled free fn", "noise\\(tuck_b\\)"
+
+  # BOTH forms in one program: the named payload call reaches the top-level
+  # fn (#19) and the receiver call reaches the member (#50). Each direction
+  # alone passed at some point while the other was broken, so they are pinned
+  # together.
+  t.src """
+object B:
+  n: int
+  fn noise({self: B}) -> int:
+    return self.n
+
+fn noise({n: int}) -> int:
+  return n + 1
+
+fn main() -> int:
+  let b = {n: 10} B
+  return ({n: 4} noise) + b.noise
+"""
+  t.runs "both call forms in one program reach different fns", 15
+  t.hostBuilds "...on every backend"
+
+  # The receiver's field names need not differ from the free fn's params —
+  # this shape used to emit `tuck_noise(tuck_b)`, passing a B where an int
+  # was declared, and only Nim caught it.
+  t.src """
+object B:
+  m: int
+  fn noise({self: B}) -> int:
+    return self.m
+
+fn noise({n: int}) -> int:
+  return n + 1
+
+fn main() -> int:
+  let b = {m: 10} B
+  return b.noise
+"""
+  t.runs "...whether or not the receiver's fields cover the free fn's params", 10
+
   t.finish()

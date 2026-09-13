@@ -76,6 +76,14 @@ type
     wraps*: Table[NodeId, tuple[objName, iface: string]]
     ifacePairs*: HashSet[tuple[objName, iface: string]]
     ifaceCalls*: Table[NodeId, tuple[iface, member: string]]
+    memberRefs*: HashSet[NodeId]
+      ## Call-position names the checker resolved to an OBJECT'S OWN MEMBER
+      ## rather than to a top-level fn of the same name. A member is emitted
+      ## under the name it was written with; a top-level fn is mangled. When
+      ## both exist the name alone cannot say which was meant, and mangling
+      ## renamed the member's call to the top-level fn's symbol — so `b.noise`
+      ## called the free `noise` and the member was emitted and never used
+      ## (issue #50). A set, because the only question is yes/no.
     lastUses*: HashSet[NodeId]
       ## Nodes analysis_lastuse proved are a local's FINAL read, so the copy
       ## made for them is unobservable and may be a move. A set rather than a
@@ -200,6 +208,7 @@ proc newResolution*(): Resolution =
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
              ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
+             memberRefs: initHashSet[NodeId](),
              lastUses: initHashSet[NodeId]())
 
 var semLayer* = newResolution()
@@ -336,6 +345,19 @@ proc shortcut*(r: Resolution, e: Expr): string =
   ## to the global handler.
   if e == nil or not e.id.isSet: return ""
   r.shortcuts.getOrDefault(e.id, "")
+
+proc markMemberRef*(r: Resolution, e: Expr) =
+  ## Record that this call-position name means an object's own member, so
+  ## mangling must leave it verbatim.
+  if e == nil: return
+  ensureId(e)
+  r.memberRefs.incl(e.id)
+
+proc isMemberRef*(r: Resolution, e: Expr): bool =
+  ## Did the checker resolve this name to an object's own member? False for
+  ## anything unmarked, which keeps every existing reference mangling exactly
+  ## as it did.
+  e != nil and e.id.isSet and e.id in r.memberRefs
 
 proc markLastUse*(r: Resolution, e: Expr) =
   ## Record that `e` is the final read of its binding.
