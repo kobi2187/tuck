@@ -2303,6 +2303,35 @@ proc soleFieldOfType(params: seq[Param], argFields: seq[ArgField],
     if result >= 0: return -1   # ambiguous
     result = ai
 
+proc receiverSideHint(tc: TypeChecker, fnName: string, p: Param): string =
+  ## The unfilled param is a RECEIVER — `self: Bx`, where Bx declares
+  ## `fnName` — so the payload was almost certainly written on the wrong side
+  ## of the name. `{count: 7} b.grow` is not a member call; the receiver goes
+  ## before the name and the payload after it.
+  ##
+  ## Worth its own sentence because the generic advice is UNFOLLOWABLE here:
+  ## "add it, or alias a field to that name" tells the author to pass a `self`
+  ## field, which is not a thing you pass — and never mentions the form that
+  ## works. Empty string when this is an ordinary missing field.
+  if fnName notin tc.objectMemberFns: return ""
+  if p.typ == nil or p.typ.kind != tkNamed: return ""
+  let owner = tc.typeDeclsByName.getOrDefault(p.typ.name)
+  if owner == nil: return ""
+  var declares = false
+  for m in owner.members:
+    if m != nil and m.kind == dkFn and m.name == fnName: declares = true
+  if not declares: return ""
+  # The fields are NOT echoed back. By the time this fires the payload has
+  # been reassociated by the mis-parse, so the names here are not the ones the
+  # author typed — printing them sent the reader after a field they never
+  # wrote.
+  "\n  '" & fnName & "' is declared inside " & p.typ.name &
+    ", so it is reached through a receiver:\n" &
+    "    <a " & p.typ.name & ">." & fnName & " {...}\n" &
+    "  The receiver goes before the name and the payload after it. A payload " &
+    "written\n  BEFORE a dotted name is a different form and supplies no " &
+    "receiver."
+
 proc claimByType(tc: var TypeChecker, fnName: string, params: seq[Param],
                  argFields: seq[ArgField], e: Expr, pending: seq[int],
                  claimed: var seq[bool], resolved: var seq[string]) =
@@ -2312,9 +2341,12 @@ proc claimByType(tc: var TypeChecker, fnName: string, params: seq[Param],
   for pi in pending:
     let candidate = soleFieldOfType(params, argFields, claimed, pi)
     if candidate < 0:
+      let hint = tc.receiverSideHint(fnName, params[pi])
+      let advice = if hint != "": hint
+                   else: " (add it, or alias a field to that name)"
       fail("Type Error: call to '" & fnName & "' is missing required field '" &
-           params[pi].name & ": " & typeName(params[pi].typ) &
-           "' (add it, or alias a field to that name)", e.span)
+           params[pi].name & ": " & typeName(params[pi].typ) & "'" & advice,
+           e.span)
     claimed[candidate] = true
     resolved[pi] = argFields[candidate].name
 

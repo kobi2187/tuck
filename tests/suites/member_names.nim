@@ -127,4 +127,48 @@ fn main() -> int:
 """
   t.runs "...whichever order the two are declared in", 42
 
+  # Writing the payload on the WRONG SIDE of a member call used to report
+  # "missing required field 'self: Bx' (add it, or alias a field to that
+  # name)" — advice that cannot be followed, since a receiver is not something
+  # you pass in the payload, and which never named the form that works. It now
+  # says which type declares the fn and shows the shape.
+  t.src """
+object Bx:
+  n: int
+  fn grow({self: Bx, count: int}) -> int:
+    return count
+
+fn main() -> int:
+  var b = {n: 1} Bx
+  return {count: 7} b.grow
+"""
+  t.badCheck "a payload on the wrong side names the type that declares the fn",
+             "declared\\ inside\\ Bx"
+  t.badCheck "...and shows the receiver form", "<a\\ Bx>\\.grow"
+
+  # ...and the RIGHT side still works, which is the form being pointed at.
+  t.src """
+object Bx:
+  n: int
+  fn grow({self: Bx, count: int}) -> int:
+    return count
+
+fn main() -> int:
+  var b = {n: 1} Bx
+  return b.grow {count: 7}
+"""
+  t.runs "...and the form it points at is the one that works", 7
+
+  # An ordinary missing field is NOT a receiver mistake and keeps the original
+  # advice — the hint must not swallow the common case.
+  t.src """
+fn grow({count: int, label: str}) -> int:
+  return count
+
+fn main() -> int:
+  return {count: 7} grow
+"""
+  t.badCheck "an ordinary missing field keeps the alias advice",
+             "alias\\ a\\ field\\ to\\ that\\ name"
+
   t.finish()
