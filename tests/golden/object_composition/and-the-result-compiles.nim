@@ -12,7 +12,7 @@ type tuck_Obj* = object
   x*: int
   y*: int
 
-proc total*(self: var tuck_Obj): int =
+proc tuck_Obj_total*(self: var tuck_Obj): int =
   return (self.x + self.y)
 
 

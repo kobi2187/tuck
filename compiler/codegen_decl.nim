@@ -211,7 +211,13 @@ proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
     if params[i].name == "self":
       params[i].typ = Type(span: m.span, kind: tkNamed,
                            name: "var " & objName)
-  let copy = Decl(span: m.span, kind: dkFn, name: m.name, fnParams: params,
+  # QUALIFIED, like Odin and D. Nim overloads on the self parameter's type so
+  # a bare `noise` compiled, but a bare name also collided with a top-level
+  # `noise` at mangling time and silently called the wrong one (#50). One
+  # naming rule across the three makes that collision impossible instead of
+  # resolving it by precedence.
+  let copy = Decl(span: m.span, kind: dkFn,
+                  name: memberProcName(objName, m.name), fnParams: params,
                   fnReturnType: m.fnReturnType, fnBody: m.fnBody,
                   fnEffects: m.fnEffects, fnGenerics: m.fnGenerics)
   ctx.genFnDecl(copy)

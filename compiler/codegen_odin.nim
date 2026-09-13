@@ -193,14 +193,8 @@ proc memberCalleeName(ctx: OdinCodegenCtx, e: Expr): string =
   ## (the checker's asFnByName rewrite). The DECLARATION emitted qualified, so
   ## the call has to match — derive the same name from the receiver's type.
   if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
-  let owner = memberOwner(ctx.module, ctx.res.typeFor(e.args[0]))
-  if owner == "": return ""
-  for d in ctx.module.decls:
-    if d == nil or d.kind != dkObject or d.name != owner: continue
-    for mem in d.objMembers:
-      if mem != nil and mem.kind == dkFn and mem.name == e.callee.name:
-        return memberProcName(owner, e.callee.name)
-  ""
+  memberCalleeOf(ctx.module, memberOwner(ctx.module, ctx.res.typeFor(e.args[0])),
+                 e.callee.name)
 
 proc genericCtorName(ctx: var OdinCodegenCtx, e: Expr, base: string): string =
   ## A generic type: the checker's ty stamp carries the inferred instantiation.

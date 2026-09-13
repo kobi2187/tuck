@@ -98,17 +98,17 @@ proc tuck_nextPhase*(current: tuck_Phase, demand: tuck_Demand, preempt: bool): t
   of 8, 9, 10, 11, 12, 13, 14, 15, 16, 20: return tuck_Phase.EastWest
   else: return tuck_Phase.EwClearing
 
-proc tuck_healthy*(self: var tuck_LoopDetector): bool =
+proc tuck_LoopDetector_tuck_healthy*(self: var tuck_LoopDetector): bool =
   return true
 
-proc reads*(self: var tuck_LoopDetector): int =
+proc tuck_LoopDetector_reads*(self: var tuck_LoopDetector): int =
   return self.lane
 
 
-proc tuck_healthy*(self: var tuck_CameraDetector): bool =
+proc tuck_CameraDetector_tuck_healthy*(self: var tuck_CameraDetector): bool =
   return true
 
-proc reads*(self: var tuck_CameraDetector): int =
+proc tuck_CameraDetector_reads*(self: var tuck_CameraDetector): int =
   if (self.confidence > 80):
     if true:
       return 3
@@ -180,10 +180,10 @@ proc tuck_poll*(d: Detector): tuck_Demand =
     case d.tag
     of Detector_is_tuck_CameraDetector:
       var tmp = d.tuck_CameraDetectorVal
-      reads(tmp)
+      tuck_CameraDetector_reads(tmp)
     of Detector_is_tuck_LoopDetector:
       var tmp = d.tuck_LoopDetectorVal
-      reads(tmp))
+      tuck_LoopDetector_reads(tmp))
   (case tuck_bits
   of 1:
     return tuck_Demand.northSouth

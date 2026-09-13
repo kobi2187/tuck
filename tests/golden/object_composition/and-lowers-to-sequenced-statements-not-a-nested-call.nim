@@ -13,7 +13,7 @@ proc tuck_loadEp*(self: tuck_App, n: int): tuck_App =
 proc tuck_startAudio*(self: tuck_App): void =
   return
 
-proc play*(self: var tuck_App, n: int): void =
+proc tuck_App_play*(self: var tuck_App, n: int): void =
   var tuckChain35 = self
   tuckChain35 = tuck_loadEp(tuckChain35, n)
   tuck_startAudio(tuckChain35)

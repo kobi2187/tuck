@@ -555,16 +555,12 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
   tc.failIfArgMismatched(sig, recvT, e)
   # Stamp a real call node so codegen emits `toStr(n)`, not `n.toStr`.
   let callee = Expr(span: e.span, kind: exkVar, name: e.fieldName)
-  # The receiver picked this overload. When it picked an object's OWN member
-  # while a top-level fn shares the name, say so: a member is emitted under
-  # the name it was written with and a top-level fn is mangled, so the name
-  # alone cannot carry the choice past this point. Mangling renamed the
-  # member's call to the top-level fn's symbol, which is how `b.noise` came
-  # to call the free `noise` while B's own member sat emitted and unused
-  # (issue #50).
+  # Nothing to disambiguate downstream: a member emits QUALIFIED on all three
+  # backends (resolution.memberProcName), so it cannot collide with a
+  # top-level fn of the same name. What is left is telling the AUTHOR, for
+  # whom the two spellings still read alike.
   if e.fieldName in tc.objectMemberFns and
      tc.topLevelFnDecl.hasKey(e.fieldName):
-    semLayer.markMemberRef(callee)
     warn(dcTyMemberShadowsFn,
          "'" & e.fieldName & "' names both " & typeName(recvT) &
          "'s own member and a top-level fn. The receiver is " &

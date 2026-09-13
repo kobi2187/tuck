@@ -9,7 +9,7 @@ type tuck_Obj* = object
   own*: int
   x*: int
 
-proc total*(self: var tuck_Obj): int =
+proc tuck_Obj_total*(self: var tuck_Obj): int =
   return (self.own + self.x)
 
 

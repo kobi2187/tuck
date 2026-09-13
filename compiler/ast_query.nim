@@ -518,6 +518,29 @@ proc memberOwner*(m: Module, recvT: Type): string =
     if d != nil and d.kind == dkObject and d.name == recvT.name: return d.name
   ""
 
+proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
+  ## The qualified name a member call must emit, or "" when `calleeName` is
+  ## not a member of `owner`.
+  ##
+  ## A member call arrives as a bare-name callee with the receiver as args[0]
+  ## (the checker's rewrite), so the name alone cannot say which fn is meant
+  ## once a top-level fn shares it. The receiver's TYPE can, and the
+  ## declaration emitted under exactly this name — deriving it here is what
+  ## keeps the two in step.
+  if owner == "": return ""
+  for d in m.decls:
+    if d == nil or d.kind != dkObject or d.name != owner: continue
+    for mem in d.objMembers:
+      if mem == nil or mem.kind != dkFn: continue
+      # The callee may arrive MANGLED and the member never is: mangling
+      # renames a module's own decls, not an object's members, so a stamped
+      # `noise` becomes `tuck_noise` whenever a top-level fn shares the name.
+      # Both spellings mean this member. Same comparison
+      # resolution.poolHandleName makes, for the same reason.
+      if mem.name == calleeName or "tuck_" & mem.name == calleeName:
+        return owner & "_" & mem.name
+  ""
+
 proc sumHasPayload*(body: Type): bool =
   ## Does any variant of this sum carry fields? The branch key for four
   ## emitters: a fieldless sum is a plain enum in both targets, a

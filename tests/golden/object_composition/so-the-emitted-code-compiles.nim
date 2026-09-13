@@ -8,7 +8,7 @@ type tuck_A* = object
 type tuck_Obj* = object
   x*: int
 
-proc get*(self: var tuck_Obj): int =
+proc tuck_Obj_get*(self: var tuck_Obj): int =
   return self.x
 
 

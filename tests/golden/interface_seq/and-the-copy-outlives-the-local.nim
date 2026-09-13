@@ -18,11 +18,11 @@ type Animal* = object
   of Animal_is_tuck_Cat: tuck_CatVal*: tuck_Cat
   of Animal_is_tuck_Dog: tuck_DogVal*: tuck_Dog
 
-proc noise*(self: var tuck_Dog): int =
+proc tuck_Dog_noise*(self: var tuck_Dog): int =
   return 1
 
 
-proc noise*(self: var tuck_Cat): int =
+proc tuck_Cat_noise*(self: var tuck_Cat): int =
   return 41
 
 
@@ -38,10 +38,10 @@ proc tuck_hear*(a: Animal): int =
     case a.tag
     of Animal_is_tuck_Cat:
       var tmp = a.tuck_CatVal
-      noise(tmp)
+      tuck_Cat_noise(tmp)
     of Animal_is_tuck_Dog:
       var tmp = a.tuck_DogVal
-      noise(tmp))
+      tuck_Dog_noise(tmp))
 
 proc tuck_main*(): int =
   var tuck_a = tuck_makeOne()

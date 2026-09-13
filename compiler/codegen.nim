@@ -354,7 +354,16 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
-  let calleeStr = ctx.genExpr(e.callee)
+  var calleeStr = ctx.genExpr(e.callee)
+  # A member call emits QUALIFIED, matching the declaration. Derived from the
+  # RECEIVER's type rather than the callee's name, because the name alone
+  # cannot say which fn is meant once a top-level fn shares it (#50).
+  if e.callee != nil and e.callee.kind == exkVar and e.args.len >= 1:
+    let qualified = memberCalleeOf(ctx.module,
+                                   memberOwner(ctx.module,
+                                               ctx.res.typeFor(e.args[0])),
+                                   e.callee.name)
+    if qualified != "": calleeStr = qualified
   let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
   let args = ctx.genCallArgs(e, calleeStr)
@@ -544,9 +553,12 @@ proc genIfaceDispatch(ctx: var CodegenCtx, e: Expr,
   var arms: seq[string]
   for s in ctx.satisfiersOf(ic.iface):
     let extra = ctx.genIfaceExtraArgs(findObjectMember(s, ic.member), e.dotArg)
+    # QUALIFIED, matching the declaration — the same name Odin and D have
+    # always used here (memberProcName(s.name, ic.member)).
     arms.add(ind & "  of " & ic.iface & "_is_" & s.name & ":\n" &
              ind & "    var tmp = " & recv & "." & s.name & "Val\n" &
-             ind & "    " & ic.member & "(tmp" & extra & ")")
+             ind & "    " & memberProcName(s.name, ic.member) &
+             "(tmp" & extra & ")")
   if arms.len == 0: return ""
   "(block:\n" & ind & "  case " & recv & ".tag\n" & arms.join("\n") & ")"
 

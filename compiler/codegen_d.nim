@@ -309,12 +309,6 @@ proc resolveDCallee(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.genDQualified(e.callee)
   ctx.genDExpr(e.callee)
 
-proc memberProcNameD*(objName, memberName: string): string =
-  ## Object members emit qualified (`Counter_bump`). D could overload the
-  ## bare name like Nim does, but the qualified spelling keeps the three
-  ## backends' output diffable and is what interface dispatch keys on.
-  objName & "_" & memberName
-
 proc memberRecvType(res: Resolution, e: Expr): Type =
   ## The receiver's type: args[0] itself (the checker's rewrite), or the
   ## `self` field of a payload literal (`{self: c} bump`).
@@ -335,9 +329,8 @@ proc memberCalleeNameD(ctx: DCodegenCtx, e: Expr): string =
   ## A member call: derive the qualified name from the receiver's type —
   ## port of the Odin backend's memberCalleeName.
   if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
-  let owner = memberOwner(ctx.module, memberRecvType(ctx.res, e))
-  if owner == "" or not ctx.ownerDeclares(owner, e.callee.name): return ""
-  memberProcNameD(owner, e.callee.name)
+  memberCalleeOf(ctx.module, memberOwner(ctx.module, memberRecvType(ctx.res, e)),
+                 e.callee.name)
 
 proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
                      payload: Expr): string =
@@ -611,7 +604,7 @@ proc genDIfaceDispatch(ctx: var DCodegenCtx, e: Expr,
     arms.add("        case " & ic.iface & "Tag." & ic.iface & "_is_" &
              st.name & ":\n" &
              "            auto tmp = v." & st.name & "Val;\n" &
-             "            return " & memberProcNameD(st.name, ic.member) &
+             "            return " & memberProcName(st.name, ic.member) &
              "(tmp" & extra & ");")
   if arms.len == 0: return ""
   "((" & ic.iface & " v) {\n    switch (v.tag) {\n" & arms.join("\n") &

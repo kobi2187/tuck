@@ -53,10 +53,10 @@ proc tuck_loadEpisode*(self: tuck_PodcastApp, episode: tuck_Episode): tuck_Podca
 proc tuck_startAudio*(self: tuck_PodcastApp): void =
   return
 
-proc tuck_setMany*(self: var tuck_PodcastApp, pairs: seq[tuck_Pair]): TuckResult[tuple[]] =
+proc tuck_PodcastApp_tuck_setMany*(self: var tuck_PodcastApp, pairs: seq[tuck_Pair]): TuckResult[tuple[]] =
   discard
 
-proc play*(self: var tuck_PodcastApp, episode: tuck_Episode): void =
+proc tuck_PodcastApp_play*(self: var tuck_PodcastApp, episode: tuck_Episode): void =
   var tuckChain58 = self
   tuckChain58 = tuck_loadEpisode(tuckChain58, episode)
   tuck_startAudio(tuckChain58)

@@ -331,17 +331,6 @@ proc satisfiersOf*(ctx: OdinCodegenCtx, iface: string): seq[Decl] =
   ## Whole-program satisfier set — see codegen_common.satisfiersOf.
   satisfiersOf(ctx.module, ctx.realModules, iface)
 
-proc memberProcName*(objName, memberName: string): string =
-  ## Object member fns emit qualified: `Dog.noise` -> `tuck_Dog_noise`.
-  ##
-  ## Nim tolerated a bare `noise` because it overloads on the `self` parameter's
-  ## type, so two objects' members were two overloads. Odin does not overload —
-  ## two `noise :: proc` at package level is "Redeclaration of 'noise' in this
-  ## scope", so `object Dog` and `object Cat` both having a `noise` emitted a
-  ## package that could not compile. Qualifying is also what interfaces need:
-  ## several types answering the same call is the whole point of a contract.
-  objName & "_" & memberName
-
 proc newOdinCtx*(m: Module, realModules: Table[string, Module],
                 moduleName: string, res: Resolution,
                 modPrefix = ""): OdinCodegenCtx =

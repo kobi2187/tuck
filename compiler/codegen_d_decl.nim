@@ -925,7 +925,7 @@ proc genDObjectDecl*(ctx: var DCodegenCtx, d: Decl): string =
   for mem in d.objMembers:
     if mem == nil: continue
     if mem.kind == dkFn:
-      result.add(ctx.genDFnDecl(mem, memberProcNameD(d.name, mem.name),
+      result.add(ctx.genDFnDecl(mem, memberProcName(d.name, mem.name),
                                 refSelf = true) & "\n")
     elif isCompositionEntry(mem):
       return dUnsupported("object composition (+Type) in " & d.name)
