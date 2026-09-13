@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (8)
+## A. Open bugs (7)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -95,23 +95,13 @@ read/write pair through the handle, plus a sanctioned way to give a cell's
 ADDRESS to an extern — the one place a raw pointer is legitimate. Test:
 `known_bugs`, "a pool slot can be read and written through its handle".
 
-**A13 — an `errors` handler body is never mangled, so it cannot call a fn.**
-The handler declaration is renamed (`tuck_record`), the call site inside the
-handler body is not (`record`), and all three backends fail to build with
-"undeclared identifier". Root cause: `dkErrors` sits in the `discard` arm of
-both Decl traversal iterators (`ast_ops.childDecls`, `ast_ops.ownExprs`), so
-`d.errHandler` is reached by nothing built on them, `mangle.mangleDeclRefs`
-included — the exhaustive-`case` guarantee did not catch it because the kind
-IS listed, it just yields nothing. This is spec 4.9's own example; §4.9 calls
-the handler "the hook for diagnostics machinery", every use of which is a
-call, so today only `...` and call-free bodies build. Issue #48. Test:
-`known_bugs`, "an errors handler may call a fn" — a `runs`, not an
-`okCheck`: the program checks clean and dies in the target compiler.
-
 A11 (release freeing the wrong slot and leaking), A5 (a register assignment
 lowering to the getter), A7 (an invariant not
-firing after a field assignment), A9 (a handler payload field named `kind`)
-and A10 (D building the envelope positionally) were all fixed on 2026-09-13 and are locked in as `bug_fixed`.
+firing after a field assignment), A9 (a handler payload field named `kind`),
+A10 (D building the envelope positionally) and A13 (an `errors` handler body
+never mangled, so it could not call a fn — `dkErrors` yielded nothing from
+`ast_ops.childDecls`, issue #48) were all fixed on 2026-09-13 and are locked
+in as `bug_fixed`.
 
 The two entries that stood here before are fixed and locked in as regression
 guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the qualified

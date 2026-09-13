@@ -216,8 +216,17 @@ iterator childDecls*(d: Decl): Decl =
     of dkPublic: discard   # a list of NAMES, not declarations
     of dkActor:
       for h in d.handlers: yield h
+    of dkErrors:
+      # The `on unhandled` handler is a real dkFn with params and a body, and
+      # it is the ONLY nested Decl that is not in a `seq`. It sat in the
+      # discard arm below, so nothing built on this iterator reached it:
+      # mangle left every call in the handler body naming the unmangled
+      # symbol, and assignIds gave its nodes no ids at all. The exhaustive
+      # `case` did not catch that — the kind WAS listed, it just yielded
+      # nothing.
+      yield d.errHandler
     of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
-       dkPool, dkRegister, dkErrors, dkImport, dkFnSig, dkSatisfies:
+       dkPool, dkRegister, dkImport, dkFnSig, dkSatisfies:
       discard
 
 iterator ownTypes*(d: Decl): Type =
@@ -276,7 +285,14 @@ iterator ownExprs*(d: Decl): Expr =
     of dkExpr: yield d.expr
     of dkStaticAssert: yield d.assertExpr
     of dkSelect:
-      for arm in d.selectArms: yield arm.body
+      # Both halves — `children(Expr)` yields arm.arg for the exkSelect twin
+      # and this must not diverge from it. Today the Decl-form parser
+      # (parser_decl_kinds.parseSelectArm) never fills `arg`, so this is
+      # latent rather than live; it costs one line to keep the two walks
+      # saying the same thing.
+      for arm in d.selectArms:
+        yield arm.arg
+        yield arm.body
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
        dkGroup, dkActor, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
        dkFnSig, dkSatisfies, dkPublic:

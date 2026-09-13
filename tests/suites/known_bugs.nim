@@ -1204,20 +1204,25 @@ fn main() -> int:
   t.quietly: t.runs "a pool slot can be read and written through its handle", 42
   t.bugOpen "a pool slot can be read and written through its handle"
 
-  # 22. An `errors` handler body is never mangled, so calling any fn from it
-  # fails to build on all three backends (issue #48). The DECLARATION is
-  # renamed to `tuck_record`; the call inside the handler still says `record`.
+  # 22. An `errors` handler body was never mangled, so calling any fn from it
+  # failed to build on all three backends (issue #48). The DECLARATION was
+  # renamed to `tuck_record`; the call inside the handler still said `record`.
   #
-  # Root cause: `dkErrors` is listed in the `discard` arm of BOTH Decl
-  # traversal iterators (ast_ops.childDecls:217, ast_ops.ownExprs:280), so
-  # `d.errHandler` is reached by nothing built on them — mangle.mangleDeclRefs
-  # among them. The exhaustive-`case` guarantee did not help here: the kind IS
-  # listed, it just yields nothing.
+  # Root cause: `dkErrors` sat in the `discard` arm of `ast_ops.childDecls`,
+  # so `d.errHandler` was reached by NOTHING built on that iterator — mangle,
+  # assignIds, clearIds and the checker's type-ref resolution alike. The
+  # exhaustive `case` did not catch it: the kind WAS listed, it just yielded
+  # nothing.
   #
   # This is spec 4.9's own example — the handler is documented as "the hook
-  # for diagnostics machinery", every use of which is a call. Note the
-  # assertion must RUN: the program checks clean and dies in nim/odin/dmd.
+  # for diagnostics machinery", every use of which is a call.
+  #
+  # The assertion RUNS and reads stdout rather than checking: the program
+  # passed `tuck ch` cleanly all along and died in nim/odin/dmd, and a build
+  # alone would not prove the handler's call actually happens at runtime.
   t.src """
+import console
+
 type E:
   | Boom
 
@@ -1225,7 +1230,8 @@ errors [policy: continue]:
   on unhandled({code: u16, site: str}):
     {code: code} record
 
-fn record({code: u16}) -> void:
+fn record({code: u16}) -> void [io]:
+  {text: "handler called a fn"} printLine
   return
 
 fn mayFail({n: int}) -> !int [io, error: E]:
@@ -1237,7 +1243,9 @@ fn main() -> int [io]:
   {n: -1} mayFail
   return 0
 """
-  t.quietly: t.runs("an errors handler may call a fn", 0)
-  t.bugOpen "an errors handler may call a fn"
+  t.runs "an errors handler may call a fn", 0
+  t.outputs "...and the call actually runs", "handler\\ called\\ a\\ fn"
+  t.hostBuilds "...on every backend"
+  t.bugFixed "an errors handler may call a fn"
 
   t.finish()
