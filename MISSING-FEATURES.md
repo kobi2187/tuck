@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (6)
+## A. Open bugs (8)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -86,6 +86,20 @@ declaring. Test: `known_bugs`, "a group bound picks the member of the
 RECEIVER's type". Found 2026-09-12 writing a two-detector app; sibling of the
 member-call selection fixed 2026-09-05, whose fix reached the call paths and
 not the conformance path.
+
+**A7 — an invariant does not fire after a field ASSIGNMENT.** `t ..celsius
+{-400}` validates; `t.celsius = -400` does not, and the program then reads a
+value of the type that breaks its own contract. Spec 4.7 says invariants fire
+"after mutation" without distinguishing the two spellings. Same shape as A5:
+the `..` chain form is wired up and the assignment form is the one nobody
+reached. Test: `invariants`, "an invariant fires after a field assignment".
+
+**A8 — a pool hands out a slot without validating it.** `Slots.acquire` on a
+`pool Slots = Live [count: 2]` yields a zeroed slot, so with `invariant: n > 0`
+the program can read `s.value.n == 0` — a value of the type that violates its
+own invariant, which is the one thing an invariant exists to prevent. Whether
+the fix is "acquire validates" or "a pooled type must have a valid zero" is a
+ruling. Test: `invariants`, "a pool slot is validated before it is handed out".
 
 The two entries that stood here before are fixed and locked in as regression
 guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the qualified

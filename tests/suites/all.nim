@@ -28,6 +28,7 @@ import interface_wrap
 import interfaces
 import groups
 import known_bugs
+import invariants
 import validate
 import doc_snippets
 import loop_var_type
@@ -74,6 +75,7 @@ let registry: seq[Entry] = @[
   ("interfaces",          SuiteProc(interfaces.run),          true),
   ("groups",              SuiteProc(groups.run),              true),
   ("known_bugs",          SuiteProc(known_bugs.run),          false),
+  ("invariants",          SuiteProc(invariants.run),          false),
   ("validate",            SuiteProc(validate.run),            true),
   ("doc_snippets",        SuiteProc(doc_snippets.run),        true),
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),

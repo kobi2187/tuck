@@ -752,7 +752,17 @@ body, not an attribute — §4.7)
 
 Invariants are runtime asserts — inserted by the compiler at every point where a
 value of that type is produced: construction, return value, after mutation, after
-deserialization. Stripped in release builds. Zero compiler complexity.
+deserialization. Zero compiler complexity.
+
+**They survive `--release`**, and are removed only by asking. A violated
+invariant usually means corrupt data rather than a slow loop, so the default is
+on everywhere and the opt-out is a dedicated define — `tuckNoInvariants`, which
+is independent of `release` (ruling, 2026-08-25; this replaced an earlier
+`when not defined(release)` that gave no way to keep them). Today that opt-out
+is honoured by the Nim backend and reachable with
+`tuck build --nim:"-d:tuckNoInvariants"`; the D backend emits the guard but
+`tuck build` has no flag that reaches it, and the Odin backend emits a bare
+`assert` with no guard at all.
 
 Block form only — `invariant:` inside the type body, one predicate per line:
 

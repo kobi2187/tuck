@@ -1,0 +1,137 @@
+## `invariant:` — the runtime asserts the compiler inserts wherever a value of
+## the type is PRODUCED (spec 4.7).
+##
+## The checker-level rules (TK-IV01 a predicate naming a field the type lacks,
+## TK-IV02 a non-boolean predicate) live in `declarations`. This suite is the
+## other half: does the assert actually fire, at every site the spec claims,
+## and is it reachable from every backend.
+##
+## `cli_smoke` already covers construction, return, `..` mutation and the
+## `!T` wrap — on Nim only, because that is the backend it builds. What is
+## here is the sites nobody covered, each with `hostBuilds` so a site that
+## works on Nim and not elsewhere is a failure rather than a silence.
+##
+## THE OPT-OUT IS NOT SYMMETRIC, and that is recorded rather than asserted:
+## the 2026-08-25 ruling made invariants survive `--release` behind a
+## `tuckNoInvariants` opt-out. Nim honours it and `--nim:` can set it; D emits
+## the guard but `tuck build` has no `--dmd:` to reach it; Odin emits a bare
+## `assert` with no guard at all. See the bugOpen at the end.
+
+import ../harness
+
+proc run*(t: var T) =
+  const temp = """
+type Temp:
+  celsius: int
+  invariant:
+    celsius >= -273
+"""
+
+  # --- a Seq element is a production site ---------------------------------
+  t.src temp & """
+fn main() -> int:
+  let xs = [{celsius: -400} Temp]
+  return 0
+"""
+  t.runs "an invariant fires on a Seq element", 1
+  t.outputs "...naming the type and the predicate", "Invariant violated"
+  t.hostBuilds "...and every backend emits it"
+
+  # --- a decision table's cell is a return site ---------------------------
+  t.src temp & """
+decision pick({hot: bool}) -> Temp:
+  | true  -> {celsius: -400} Temp
+  | false -> {celsius: 0} Temp
+
+fn main() -> int:
+  let t = {hot: true} pick
+  return 0
+"""
+  t.runs "an invariant fires on a decision table's cell", 1
+  t.hostBuilds "...on every backend"
+
+  # --- a task's return value ----------------------------------------------
+  t.src temp & """
+task read() -> Temp [io]:
+  return {celsius: -400} Temp
+
+fn main() -> int [io]:
+  let t = {} read
+  return 0
+"""
+  t.runs "an invariant fires on a task's return", 1
+  t.hostBuilds "...on every backend"
+
+  # --- wrapping into an interface -----------------------------------------
+  # The interface copies the value in, which is a production site for the
+  # copy. An object carrying a bad field cannot be laundered through a
+  # contract.
+  t.src temp & """
+interface Reads:
+  fn value({self: Self}) -> int
+
+object Sensor:
+  satisfies Reads
+  t: Temp
+  fn value({self: Sensor}) -> int:
+    return self.t.celsius
+
+fn take({r: Reads}) -> int:
+  return r.value
+
+fn main() -> int:
+  let bad = {celsius: -400} Temp
+  let s = {t: bad} Sensor
+  return {r: s} take
+"""
+  t.runs "an invariant fires before a value reaches an interface", 1
+  t.hostBuilds "...on every backend"
+
+  # --- and it does NOT fire where nothing is produced ----------------------
+  # A copy of an already-valid value is not a production site: it was checked
+  # when it was made. An invariant that fired here would be pure overhead.
+  t.src temp & """
+fn main() -> int:
+  let a = {celsius: 7} Temp
+  let b = a
+  return b.celsius
+"""
+  t.runs "copying a valid value does not re-validate", 7
+  t.hostBuilds "...on every backend"
+
+  # --- gap 1: the ASSIGNMENT form of a mutation ---------------------------
+  # `t ..celsius {-400}` validates (cli_smoke pins it). `t.celsius = -400`
+  # does not, and spec 4.7 says "after mutation" without distinguishing the
+  # two spellings. Same shape as the register bug in #39: the chain form is
+  # handled and the assignment form is the one nobody wired up.
+  t.src temp & """
+fn main() -> int:
+  var t = {celsius: 0} Temp
+  t.celsius = -400
+  return 0
+"""
+  t.quietly: t.runs "an invariant fires after a field assignment", 1
+  t.bugOpen "an invariant fires after a field assignment"
+
+  # --- gap 2: a pool hands out an unvalidated slot -------------------------
+  # `acquire` yields a zeroed slot. With an invariant the zero value violates,
+  # the program can read a value of the type that breaks its own contract —
+  # which is the one thing an invariant exists to prevent.
+  t.src """
+type Live:
+  n: int
+  invariant:
+    n > 0
+
+pool Slots = Live [count: 2]
+
+fn main() -> int:
+  let s = Slots.acquire
+  if s.ok:
+    return s.value.n
+  return 7
+"""
+  t.quietly: t.runs "a pool slot is validated before it is handed out", 1
+  t.bugOpen "a pool slot is validated before it is handed out"
+
+  t.finish()
