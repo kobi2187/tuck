@@ -2344,6 +2344,29 @@ fn main() -> int:
 """
   t.okCheck "an empty list takes its element type from a Seq[T] parameter"
 
+  # An `Array[N, T]` destination is exactly N wide, so the literal's length is
+  # checked against it rather than padded or truncated. Nothing pinned this
+  # until the proc deciding it (determineListBase) was split, at which point
+  # the suite would have stayed green either way.
+  t.src """
+fn take({xs: Array[3, int]}) -> int:
+  return 0
+
+fn main() -> int:
+  return {xs: [1, 2]} take
+"""
+  t.badCheck "a short list into Array[N, T] is rejected",
+             "has\\ 2\\ element\\(s\\)\\ but\\ Array\\[3,\\ _\\]"
+
+  t.src """
+fn take({xs: Array[3, int]}) -> int:
+  return 0
+
+fn main() -> int:
+  return {xs: [1, 2, 3]} take
+"""
+  t.okCheck "...and one of exactly N is accepted"
+
   # A reserved word as a variable name names the WORD that collided, instead
   # of "Expected variable name" pointing at a good-looking name.
   t.src """

@@ -129,7 +129,15 @@ const
   # the entries above this line are these very procs being CREATED to collapse
   # walks that had been written out by hand and had silently drifted apart.
   # Splitting them back up would re-open exactly the gap #48 came from.
-  HEAVY = 17
+  #
+  # 17 -> 16 (2026-09-13): determineListBase 15 -> 5, the one helper the pass
+  # above had extracted from synthList but left sitting ON the line. Dense
+  # rather than long (21 lines), so the split came from naming its two jobs
+  # per this file's taxonomy: asContainerWanted (an `as*` — nil for "the
+  # destination says nothing") and failIfArrayLengthMismatched (a `fail*`).
+  # That second one had NO test pinning it; one was added with the split,
+  # since a green suite proved nothing about it either way.
+  HEAVY = 16
   CC = "tools/cyc"
 
 proc run*(t: var T) =

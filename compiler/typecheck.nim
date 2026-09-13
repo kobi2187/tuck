@@ -3137,27 +3137,40 @@ proc synthStruct(tc: var TypeChecker, e: Expr): Type =
                     span: f.value.span))
   Type(span: e.span, kind: tkRecord, fields: fs)
 
+proc asContainerWanted(tc: var TypeChecker): Type =
+  ## The expected type, when it is the `Seq[T]` / `Array[N, T]` a list literal
+  ## can take its shape from. nil for "nothing here says", which is the
+  ## ordered-interpretation pattern the rest of this file uses.
+  if tc.expectedType == nil: return nil
+  let want = tc.resolve(tc.expectedType)
+  if want == nil or want.kind != tkApp or want.args.len == 0: return nil
+  if want.base == nil or want.base.kind != tkNamed: return nil
+  if want.base.name notin ["Seq", "Array"]: return nil
+  want
+
+proc failIfArrayLengthMismatched(size: Type, e: Expr) =
+  ## `Array[N, T]` is exactly N wide, so a literal of another length is an
+  ## error rather than something to pad or truncate.
+  ##
+  ## Only a LITERAL N is checked: a generic or const-named size is not known
+  ## here, and reporting it would be guessing.
+  if size == nil or size.kind != tkNamed: return
+  if not allCharsInSet(size.name, {'0'..'9'}): return
+  if size.name == $e.items.len: return
+  fail("Type Error: this list has " & $e.items.len &
+       " element(s) but Array[" & size.name &
+       ", _] needs exactly " & size.name, e.span)
+
 proc determineListBase(tc: var TypeChecker, e: Expr, elemT: var Type):
     tuple[baseName: string, sizeArg: Type] =
-  ## Determine if the list should be Seq or Array based on expected type.
-  var baseName = "Seq"
-  var sizeArg: Type = nil
-  if tc.expectedType != nil:
-    let want = tc.resolve(tc.expectedType)
-    if want != nil and want.kind == tkApp and want.base != nil and
-       want.base.kind == tkNamed and want.base.name in ["Seq", "Array"] and
-       want.args.len > 0:
-      if isFlexible(elemT): elemT = want.args[^1]
-      if want.base.name == "Array" and want.args.len == 2:
-        baseName = "Array"
-        sizeArg = want.args[0]
-        if sizeArg != nil and sizeArg.kind == tkNamed and
-           allCharsInSet(sizeArg.name, {'0'..'9'}) and
-           sizeArg.name != $e.items.len:
-          fail("Type Error: this list has " & $e.items.len &
-               " element(s) but Array[" & sizeArg.name &
-               ", _] needs exactly " & sizeArg.name, e.span)
-  (baseName, sizeArg)
+  ## Seq or Array, decided by where the list is GOING. Widens a still-flexible
+  ## element type to the one the destination declares on the way past.
+  let want = tc.asContainerWanted()
+  if want == nil: return ("Seq", nil)
+  if isFlexible(elemT): elemT = want.args[^1]
+  if want.base.name != "Array" or want.args.len != 2: return ("Seq", nil)
+  failIfArrayLengthMismatched(want.args[0], e)
+  ("Array", want.args[0])
 
 proc synthList(tc: var TypeChecker, e: Expr): Type =
   ## A list literal takes its element type from its first item — or, when it
