@@ -1712,6 +1712,27 @@ fn main({b: bool}) -> int [io]:
   t.badCheck "an inner binding does not inherit the outer's narrowing",
              "guard\\ it\\ first"
 
+  # The guard discipline is the point here, not what is behind it: `acquire`
+  # answers `?<Pool>Handle` since 2026-09-13, and a handle is OPAQUE — it
+  # names the cell and carries the tenancy, and has no fields to read. So the
+  # narrowing is exercised by RELEASING the handle, which is the operation a
+  # handle is for.
+  t.src """
+type Slot:
+  id: int
+
+pool Slots = Slot [count: 2]
+
+fn main() -> int:
+  let s = Slots.acquire
+  if not s.ok:
+    return 0
+  Slots.release {s.value}
+  return 1
+"""
+  t.okCheck "early-return guard works for ?T from a pool"
+
+  # And the handle really is opaque: there is nothing on it to read.
   t.src """
 type Slot:
   id: int
@@ -1724,7 +1745,7 @@ fn main() -> int:
     return 0
   return s.value.id
 """
-  t.okCheck "early-return guard works for ?T from a pool"
+  t.badCheck "a pool handle has no readable fields", "no field 'id'"
 
   t.src """
 fn main() -> int:

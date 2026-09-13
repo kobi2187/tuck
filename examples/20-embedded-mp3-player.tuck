@@ -43,7 +43,7 @@ type Volume:
 # 6. Cooperative StreamReader Task
 task streamReader({streamId: u8, chunks: Seq[u32]}) -> !void [io]:
   for i in chunks:
-    let buf = BufferPool.acquire   # ?Array[512, u8] — exhaustion is absence
+    let buf = BufferPool.acquire   # ?BufferPoolHandle — exhaustion is absence
     if not buf.ok:
       return
     # Implicitly yields control back to scheduler while waiting on DMA read

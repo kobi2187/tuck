@@ -392,36 +392,58 @@ void initMailbox(T, size_t Cap)(ref Mailbox!(T, Cap) mb) {}  // nothing to do
 struct ObjectPool(T, size_t Count)
 {
     T[Count] storage;
+    uint[Count] gen;  /// tenancy counter per cell; 0 = never handed out
     ulong occupied;   /// ponytail: 64 slots max, matching the Odin runtime;
                       /// widen to an array of words if a program needs more.
 }
 
-TuckResult!T acquire(T, size_t Count)(ref ObjectPool!(T, Count) pool)
+/// What `acquire` hands back: WHICH cell, and WHICH TENANCY of it. The value
+/// used to be the cell's contents, so the cell's identity was gone by the time
+/// `release` needed it — it matched by equality, every slot held the same zero
+/// value, and every release freed slot 0. Same shape in all three runtimes.
+struct PoolHandle
+{
+    int slot;
+    uint gen;
+}
+
+void tuckPoolMisuse(string what)
+{
+    // Aborts rather than returning: the alternative is the silent corruption
+    // this replaced.
+    import std.stdio : stderr;
+    import core.stdc.stdlib : abort;
+    stderr.writeln("TUCK POOL: ", what);
+    abort();
+}
+
+TuckResult!PoolHandle acquire(T, size_t Count)(ref ObjectPool!(T, Count) pool)
 {
     foreach (i; 0 .. Count)
     {
         if ((pool.occupied & (1UL << i)) == 0)
         {
             pool.occupied |= 1UL << i;
-            return tok(pool.storage[i]);
+            pool.gen[i] += 1;
+            return tok(PoolHandle(cast(int) i, pool.gen[i]));
         }
     }
-    return tnone!T();
+    return tnone!PoolHandle();
 }
 
-void release(T, size_t Count)(ref ObjectPool!(T, Count) pool, T item)
+void release(T, size_t Count)(ref ObjectPool!(T, Count) pool, PoolHandle h)
 {
-    // Which slot did this come from? The value was handed out from one of
-    // these cells, so match it back by equality — same rule as the Odin
-    // runtime, so a program behaves identically on either backend.
-    foreach (i; 0 .. Count)
-    {
-        if (pool.storage[i] == item)
-        {
-            pool.occupied &= ~(1UL << i);
-            return;
-        }
-    }
+    // The handle names the cell, so there is nothing to search for. Every way
+    // of being wrong is caught rather than absorbed.
+    const i = h.slot;
+    if (i < 0 || i >= Count)
+        tuckPoolMisuse("release of a handle that names no slot");
+    else if ((pool.occupied & (1UL << i)) == 0)
+        tuckPoolMisuse("double release");
+    else if (pool.gen[i] != h.gen)
+        tuckPoolMisuse("release of a stale handle");
+    else
+        pool.occupied &= ~(1UL << i);
 }
 
 // std/fs — the filesystem. The error codes are the FsError variants the

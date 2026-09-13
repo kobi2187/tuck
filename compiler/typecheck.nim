@@ -685,11 +685,21 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   let qualified = e.receiver.refName & "." & e.fieldName
   if not tc.fnSigs.hasKey(qualified): return nil
   let extra = unwrapSingleField(e.dotArg)
+  # The argument was never checked against the declared param: `Cells.release
+  # {42}` passed, and so did releasing one pool's handle into another. The
+  # signature has always said what it wants — nothing asked it.
+  let sig = tc.sigOf(qualified)
+  if extra != nil and sig.params.len == 1:
+    let got = tc.synthesize(extra)
+    if got != nil and not tc.compatible(got, sig.params[0].typ):
+      fail("Type Error: '" & qualified & "' expects " &
+           typeName(sig.params[0].typ) & " but got " & typeName(got) &
+           " — a pool's handle belongs to that pool", e.span)
   let args = if extra != nil: @[e.receiver, extra] else: @[e.receiver]
   setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
                             callee: Expr(span: e.span, kind: exkVar,
                                          name: e.fieldName)))
-  tc.sigOf(qualified).ret
+  sig.ret
 
 proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
                      sp: Span): FnSig =

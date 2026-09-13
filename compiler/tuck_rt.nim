@@ -229,25 +229,59 @@ proc reset*[Size: static int](arena: var BumpArena[Size]) =
 # spec 7.2: N slots of an arbitrary T plus an occupancy bitmask. Fixed size,
 # no fragmentation, O(1) release. Exhaustion is ABSENCE (?T), not nil and not
 # an error — the caller decides what running out means for its situation.
+proc tuckPoolMisuse*(what: string) =
+  ## A pool operation that cannot be honoured: a handle for a slot nobody
+  ## holds, or one whose tenancy has ended. Aborts rather than returning,
+  ## because the alternative is the silent corruption this replaced — a
+  ## release that matched the wrong cell freed a slot still in use and leaked
+  ## the one being returned, and said nothing.
+  stderr.writeLine("TUCK POOL: " & what)
+  quit(1)
+
 type
+  PoolHandle* = object
+    ## What `acquire` hands back: WHICH cell, and WHICH TENANCY of it.
+    ##
+    ## The value used to be the cell's contents, which meant the cell's
+    ## identity was gone by the time `release` needed it — it searched by
+    ## equality, every slot held the same zero value, and so every release
+    ## matched slot 0. Carrying the index is what makes release O(1) and
+    ## correct; carrying the generation is what makes a stale handle a caught
+    ## error instead of a write into someone else's slot.
+    ##
+    ## Opaque on the Tuck side: `<Pool>Handle` is emitted per pool as an alias
+    ## of this, so the CHECKER separates two pools' handles even though the
+    ## target type is shared (spec 7.4's "handles, not refs", reached through
+    ## 7.2's machinery, which 7.4 says is the same machinery).
+    slot*: int32
+    gen*: uint32
+
   ObjectPool*[T; Count: static int] = object
     storage*: array[Count, T]
+    gen*: array[Count, uint32]  ## tenancy counter per cell; 0 = never handed out
     occupied*: uint64        # ponytail: 64 slots max; widen to an array if needed
 
-proc acquire*[T; Count: static int](pool: var ObjectPool[T, Count]): TuckResult[T] =
+proc acquire*[T; Count: static int](pool: var ObjectPool[T, Count]): TuckResult[PoolHandle] =
   for i in 0 ..< Count:
     if (pool.occupied and (1'u64 shl i)) == 0:
       pool.occupied = pool.occupied or (1'u64 shl i)
-      return tok(pool.storage[i])
-  tnone[T]()
+      pool.gen[i] = pool.gen[i] + 1'u32
+      return tok(PoolHandle(slot: int32(i), gen: pool.gen[i]))
+  tnone[PoolHandle]()
 
-proc release*[T; Count: static int](pool: var ObjectPool[T, Count], item: T) =
-  # Which slot did this come from? Compare by address within the storage
-  # array — the value was handed out from one of these cells.
-  for i in 0 ..< Count:
-    if pool.storage[i] == item:
-      pool.occupied = pool.occupied and not(1'u64 shl i)
-      return
+proc release*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle) =
+  ## The handle names the cell, so there is nothing to search for and nothing
+  ## to guess. Every way of being wrong is caught rather than absorbed.
+  let i = int(h.slot)
+  if i < 0 or i >= Count:
+    tuckPoolMisuse("release of a handle that names no slot (" & $i & ")")
+  elif (pool.occupied and (1'u64 shl i)) == 0:
+    tuckPoolMisuse("double release of slot " & $i)
+  elif pool.gen[i] != h.gen:
+    tuckPoolMisuse("release of a stale handle for slot " & $i & ": tenancy " &
+                   $h.gen & ", slot is on " & $pool.gen[i])
+  else:
+    pool.occupied = pool.occupied and not(1'u64 shl i)
 
 import std/locks
 

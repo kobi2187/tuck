@@ -48,13 +48,22 @@ fn admit({id: u32}) -> int:
   return 0                       # at capacity: shed load
 
 
-# A slot is borrowed, not owned. Release returns it to the pool; the pool
-# is the owner, so release goes through the pool rather than the value
-# (the element may be a primitive with no methods at all).
+# A slot is borrowed, not owned. What `acquire` hands back is a HANDLE — it
+# names the cell and the tenancy, and has no readable fields — so release
+# goes through the pool, which is the owner.
+#
+# The handle is what makes release correct: a VALUE cannot say which cell it
+# came from, and when release searched by equality every slot held the same
+# zero value, so every release freed slot 0. It also makes a double release
+# and a stale handle caught errors rather than silent corruption, and one
+# pool's handle is a type error in another pool's release.
 fn drainOnce() -> int:
   let b = RxBuffers.acquire
   if b.ok:
-    # ... hand b.value to the DMA controller, wait for the transfer ...
+    # ... wait for the transfer ...
+    # (Reading or writing the cell the handle names is not yet expressible —
+    # MISSING-FEATURES A12. Today a pool answers "may I have one of the N?",
+    # which is the backpressure half of its job.)
     RxBuffers.release {b.value}
     return 1
   return 0                       # all 4 channels busy: try again later

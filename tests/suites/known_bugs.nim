@@ -1165,18 +1165,28 @@ fn take() -> int:
 fn main() -> int:
   let a = Cells.acquire
   let b = Cells.acquire
+  if not a.ok:
+    return 9
+  if not b.ok:
+    return 9
   Cells.release {a.value}
   Cells.release {b.value}
   return ({} take) + ({} take)
 """
-  t.quietly: t.runs "releasing every slot makes every slot available again", 2
-  t.bugOpen "releasing every slot makes every slot available again"
+  t.runs "releasing every slot makes every slot available again", 2
+  t.hostBuilds "...on every backend"
+  t.bugFixed "releasing every slot makes every slot available again"
 
-  # 21. `acquire` hands out a COPY of the slot, not the slot. Writing through
-  # what it returned and releasing does not change the pool's storage, so a
-  # pool cannot be used for the thing pools exist for — a DMA target, a frame
-  # buffer, anything hardware or another task fills in place. examples/25
-  # says "hand b.value to the DMA controller"; today that hands over a copy.
+  # 21. A pool slot cannot yet be READ or WRITTEN. `acquire` now answers with
+  # a handle that names the cell (which is what fixed release), but there is
+  # no spelling for "the cell this handle names" — so a pool still cannot be
+  # a DMA target, a frame buffer, or anything hardware or another task fills
+  # in place, which is what a pool is FOR. examples/25 says "hand b.value to
+  # the DMA controller"; b.value is the handle, and nothing takes it further.
+  #
+  # The design question is open (issue #45): a read/write pair through the
+  # handle, and a sanctioned way to hand a cell's ADDRESS to an extern for
+  # the DMA case, which is the one place a raw pointer is legitimate.
   t.src """
 type Cell:
   n: int
@@ -1187,15 +1197,11 @@ fn main() -> int:
   let a = Cells.acquire
   if not a.ok:
     return 90
-  var b = a.value
-  b ..n {42}
-  Cells.release {b}
-  let c = Cells.acquire
-  if not c.ok:
-    return 91
-  return c.value.n
+  Cells.write {h: a.value, value: {n: 42} Cell}
+  let back = Cells.read {h: a.value}
+  return back.n
 """
-  t.quietly: t.runs "a pool slot is storage, not a copy", 42
-  t.bugOpen "a pool slot is storage, not a copy"
+  t.quietly: t.runs "a pool slot can be read and written through its handle", 42
+  t.bugOpen "a pool slot can be read and written through its handle"
 
   t.finish()

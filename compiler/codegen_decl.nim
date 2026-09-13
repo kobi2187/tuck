@@ -775,6 +775,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   of dkPool:
     # spec 7.2: one static instance; acquire/release are the rt's generic
     # procs, reached as `Pool.acquire` -> `acquire(Pool)`.
+    # No per-pool handle type is emitted: the CHECKER keeps two pools' handles
+    # apart, so the target needs only the runtime's one `PoolHandle`, which
+    # each backend's type mapper answers with. Same shape as a group bound —
+    # resolved and discarded before codegen.
     return "var " & d.name & "* = ObjectPool[" & genType(d.poolElem) & ", " &
            $d.poolCount & "]()"
   of dkImport:

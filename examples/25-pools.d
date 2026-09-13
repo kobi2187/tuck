@@ -19,7 +19,7 @@ struct tuck_SensorReading {
 __gshared rt.ObjectPool!(tuck_SensorReading, 16) tuck_Readings;
 
 long tuck_admit(uint id) {
-    rt.TuckResult!(tuck_Session) tuck_s = rt.acquire(tuck_Sessions);
+    rt.TuckResult!(rt.PoolHandle) tuck_s = rt.acquire(tuck_Sessions);
     if ((tuck_s.status == rt.TuckStatus.Ok)) {
         return 1L;
     }
@@ -27,7 +27,7 @@ long tuck_admit(uint id) {
 }
 
 long tuck_drainOnce() {
-    rt.TuckResult!(ubyte[512]) tuck_b = rt.acquire(tuck_RxBuffers);
+    rt.TuckResult!(rt.PoolHandle) tuck_b = rt.acquire(tuck_RxBuffers);
     if ((tuck_b.status == rt.TuckStatus.Ok)) {
         rt.release(tuck_RxBuffers, tuck_b.value);
         return 1L;

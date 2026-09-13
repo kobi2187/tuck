@@ -7,6 +7,7 @@ import ast, semantics, tables, strutils, sets
 import diagnostics
 export diagnostics   # every fail() caller needs the codes
 
+
 proc typeParamType*(sp: Span): Type =
   ## A generic's `T` inside its own body: not unknown, ANY type, fixed per call
   ## site. `fn identity[T]({x: T}) -> T` checks its body once with T abstract.

@@ -111,7 +111,7 @@ tuck_Volume __validated_tuck_Volume(tuck_Volume v)
 
 rt.TuckResult!(rt.TuckUnit) tuck_streamReader(ubyte streamId, uint[] chunks) {
     foreach (tuck_i; chunks) {
-        rt.TuckResult!(ubyte[512]) tuck_buf = rt.acquire(tuck_BufferPool);
+        rt.TuckResult!(rt.PoolHandle) tuck_buf = rt.acquire(tuck_BufferPool);
         if (!(tuck_buf.status == rt.TuckStatus.Ok)) {
             return rt.tokVoid();
         }

@@ -292,29 +292,51 @@ reset :: proc(arena: ^BumpArena($Size)) {
 // spec 7.2: N slots of an arbitrary T plus an occupancy bitmask. Fixed size,
 // no fragmentation, O(1) release. Exhaustion is ABSENCE (?T), not nil and not
 // an error — the caller decides what running out means for its situation.
+// What `acquire` hands back: WHICH cell, and WHICH TENANCY of it. The value
+// used to be the cell's contents, so the cell's identity was gone by the time
+// `release` needed it — it matched by equality, every slot held the same zero
+// value, and every release freed slot 0. Same shape in all three runtimes.
+PoolHandle :: struct {
+	slot: i32,
+	gen:  u32,
+}
+
 ObjectPool :: struct($T: typeid, $Count: int) {
 	storage:  [Count]T,
+	gen:      [Count]u32, // tenancy counter per cell; 0 = never handed out
 	occupied: u64, // ponytail: 64 slots max; widen to an array if needed
 }
 
-acquire :: proc(pool: ^ObjectPool($T, $Count)) -> TuckResult(T) {
+tuckPoolMisuse :: proc(what: string) {
+	// Aborts rather than returning: the alternative is the silent corruption
+	// this replaced.
+	fmt.eprintln("TUCK POOL:", what)
+	os.exit(1)
+}
+
+acquire :: proc(pool: ^ObjectPool($T, $Count)) -> TuckResult(PoolHandle) {
 	for i in 0 ..< Count {
 		if (pool.occupied & (u64(1) << u64(i))) == 0 {
 			pool.occupied |= u64(1) << u64(i)
-			return tok(pool.storage[i])
+			pool.gen[i] += 1
+			return tok(PoolHandle{slot = i32(i), gen = pool.gen[i]})
 		}
 	}
-	return tnone(T)
+	return tnone(PoolHandle)
 }
 
-release :: proc(pool: ^ObjectPool($T, $Count), item: T) {
-	// Which slot did this come from? The value was handed out from one of
-	// these cells, so match it back by equality.
-	for i in 0 ..< Count {
-		if pool.storage[i] == item {
-			pool.occupied &~= u64(1) << u64(i)
-			return
-		}
+release :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) {
+	// The handle names the cell, so there is nothing to search for. Every way
+	// of being wrong is caught rather than absorbed.
+	i := int(h.slot)
+	if i < 0 || i >= Count {
+		tuckPoolMisuse("release of a handle that names no slot")
+	} else if (pool.occupied & (u64(1) << u64(i))) == 0 {
+		tuckPoolMisuse("double release")
+	} else if pool.gen[i] != h.gen {
+		tuckPoolMisuse("release of a stale handle")
+	} else {
+		pool.occupied &~= u64(1) << u64(i)
 	}
 }
 

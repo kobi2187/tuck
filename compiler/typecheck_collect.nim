@@ -61,14 +61,35 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
   ## signatures means `Pool.acquire` resolves through the same path as any
   ## other call — no special-case lookup, and the ?T falls out of the declared
   ## return type.
-  let optElem = Type(span: d.span, kind: tkApp, args: @[d.poolElem],
-                     base: Type(span: d.span, kind: tkNamed, name: "?"))
-  tc.setFnSig(d.name & ".acquire", (newSeq[Param](), optElem,
+  ## `acquire` yields a HANDLE, not the cell's contents. A value cannot name
+  ## the cell it came from, which is why `release` used to search by equality
+  ## and free the wrong slot; the handle carries the index and the tenancy.
+  ##
+  ## The handle type is PER POOL — `FrameBuffersHandle` is not
+  ## `SessionsHandle` — so releasing into the wrong pool is a type error here
+  ## rather than a runtime check. The emitted type is shared across pools;
+  ## only the checker separates them, the way a group's bound is resolved and
+  ## discarded before codegen.
+  let handle = Type(span: d.span, kind: tkNamed, name: poolHandleName(d.name))
+  let optHandle = Type(span: d.span, kind: tkApp, args: @[handle],
+                       base: Type(span: d.span, kind: tkNamed, name: "?"))
+  tc.setFnSig(d.name & ".acquire", (newSeq[Param](), optHandle,
                                     newSeq[string](), newSeq[EffectMarker]()))
   tc.setFnSig(d.name & ".release",
-    (@[Param(name: "slot", typ: d.poolElem, span: d.span)],
+    (@[Param(name: "slot", typ: handle, span: d.span)],
      Type(span: d.span, kind: tkNamed, name: "void"),
      newSeq[string](), newSeq[EffectMarker]()))
+  # Opaque: a record with no fields. Nothing to read, nothing to do
+  # arithmetic on, and `{} <Pool>Handle` yields a zeroed handle whose tenancy
+  # is 0 — which no live slot ever has, so a forged one is refused at release
+  # rather than silently accepted.
+  tc.typeDecls[poolHandleName(d.name)] =
+    Type(span: d.span, kind: tkRecord, fields: @[])
+  # Strictly nominal, through the mechanism `distinct` already uses: without
+  # it two pools' handles are both empty records and match STRUCTURALLY, so
+  # `B.release {aHandle}` type-checked. `distinctNames` is exactly the rule a
+  # handle wants — "no widening, no resolving through to the base type".
+  tc.distinctNames.incl(poolHandleName(d.name))
 
 proc collectTypeDecl*(tc: var TypeChecker, d: Decl) =
   ## A type's body joins the type table; manager types carry functionality, so

@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (8)
+## A. Open bugs (7)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -85,26 +85,18 @@ own invariant, which is the one thing an invariant exists to prevent. Whether
 the fix is "acquire validates" or "a pooled type must have a valid zero" is a
 ruling. Test: `invariants`, "a pool slot is validated before it is handed out".
 
-**A11 — `pool.release` frees the wrong slot, and slots leak.** All three
-runtimes match an item back to its cell BY VALUE (`pool.storage[i] == item`,
-mirrored deliberately). But `acquire` hands out a copy and nothing writes a
-slot, so every slot holds the same zero value and the scan always matches slot
-0. Releasing two items frees slot 0 twice and leaves slot 1 occupied forever:
-acquire both slots of a count-2 pool, release both, and only one comes back.
-The Nim runtime's own comment says "Compare by address within the storage
-array" — which is what it should do and does not. Test: `known_bugs`,
-"releasing every slot makes every slot available again".
+**A12 — a pool slot cannot be read or written.** `acquire` now answers with a
+handle that names the cell, which is what made `release` correct, but there is
+no spelling for "the cell this handle names". So a pool still cannot be a DMA
+target, a frame buffer, or anything hardware or another task fills in place —
+which is what pools are for. `examples/25` says "hand b.value to the DMA
+controller"; `b.value` is the handle and nothing takes it further. Wants a
+read/write pair through the handle, plus a sanctioned way to give a cell's
+ADDRESS to an extern — the one place a raw pointer is legitimate. Test:
+`known_bugs`, "a pool slot can be read and written through its handle".
 
-**A12 — `pool.acquire` hands out a COPY of the slot, not the slot.** Writing
-through what it returned and releasing does not change the pool's storage, so
-a pool cannot serve as a DMA target, a frame buffer, or anything hardware or
-another task fills in place — which is what pools are for. `examples/25` says
-"hand b.value to the DMA controller"; today that hands over a copy. The fix is
-a ruling on the API shape: `acquire` could return a handle the pool can map
-back to a slot (which also fixes A11), or the element could be addressable.
-Test: `known_bugs`, "a pool slot is storage, not a copy".
-
-A5 (a register assignment lowering to the getter), A7 (an invariant not
+A11 (release freeing the wrong slot and leaking), A5 (a register assignment
+lowering to the getter), A7 (an invariant not
 firing after a field assignment), A9 (a handler payload field named `kind`)
 and A10 (D building the envelope positionally) were all fixed on 2026-09-13 and are locked in as `bug_fixed`.
 

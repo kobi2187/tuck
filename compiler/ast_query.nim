@@ -52,6 +52,7 @@ template capitalize*(s: string): string = capitalizeAscii(s)
 # bury the intent; named here, the call site reads as the question it asks.
 # Add a helper rather than open-coding the loop again.
 
+
 proc seqElem*(t: Type): Type =
   ## The element type of a `Seq[T]`, or nil for anything else. One predicate
   ## for the several places that used to re-test `tkApp and base.name ==

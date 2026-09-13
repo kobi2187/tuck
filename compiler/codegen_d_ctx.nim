@@ -299,6 +299,7 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
       # `Seq[Entry[K, V]]` inside a generic fn had no statable type.
       t.name[NamedTypeParamPrefix.len .. ^2]
     elif t.name.startsWith("<"): giveUp("type sentinel " & t.name)
+    elif isPoolHandleType(ctx.module, t.name): "rt.PoolHandle"
     else: ctx.importedTypeQualifierD(t.name)
   of tkApp: ctx.dAppType(t, mode)
   of tkTuple: giveUp("tuple type")

@@ -6,7 +6,7 @@
 # tree for its target without carrying (or losing) semantic residue: ids
 # survive the copy, so these lookups still resolve.
 
-import tables, sets
+import tables, sets, strutils
 import ast
 
 type
@@ -80,6 +80,31 @@ type
       ## Nodes analysis_lastuse proved are a local's FINAL read, so the copy
       ## made for them is unobservable and may be a move. A set rather than a
       ## table: the only question asked is yes/no.
+
+proc poolHandleName*(pool: string): string = pool & "Handle"
+
+proc isPoolHandleType*(m: Module, name: string): bool =
+  ## Is this the handle type of some pool declared in this module?
+  ##
+  ## The checker gives every pool its OWN handle type so releasing into the
+  ## wrong pool is a type error; the backends need only the runtime's single
+  ## `PoolHandle`, so each type mapper answers every one of these with that.
+  ## The separation is resolved and discarded before codegen, exactly as a
+  ## group bound is.
+  if not name.endsWith("Handle"): return false
+  let pool = name[0 ..< name.len - "Handle".len]
+  for d in m.decls:
+    if d == nil or d.kind != dkPool: continue
+    # The pool's name is MANGLED by the time codegen asks (`tuck_Cells`); the
+    # handle type is not, because the checker synthesised it and mangling
+    # walks the AST, which never held it. Compare both spellings rather than
+    # teaching mangle about a type that does not exist in the tree. (The
+    # literal prefix rather than mangle.TuckNamePrefix: resolution sits below
+    # mangle in the import graph.)
+    if d.name == pool or d.name == "tuck_" & pool: return true
+  return false
+  ## The per-pool handle type's name. One place, because the checker names it,
+  ## every backend emits an alias for it, and mangling has to agree with both.
 
 proc ensureId*(e: Expr) =
   ## Nodes minted after the parse boundary (checker-synthesized calls) have
