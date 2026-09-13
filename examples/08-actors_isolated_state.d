@@ -7,7 +7,7 @@ enum tuck_TrafficLightStateKind { Red, Yellow, Green }
 enum tuck_TrafficLightMsgKind { msgNext }
 
 struct tuck_TrafficLightMsg {
-    tuck_TrafficLightMsgKind kind;
+    tuck_TrafficLightMsgKind tuckTag;
 }
 
 struct tuck_TrafficLight {
@@ -18,7 +18,7 @@ struct tuck_TrafficLight {
 __gshared tuck_TrafficLight tuck_TrafficLightSingleton;
 
 void handleMsg_tuck_TrafficLight(ref tuck_TrafficLight self, tuck_TrafficLightMsg msg) {
-    final switch (msg.kind) {
+    final switch (msg.tuckTag) {
         case tuck_TrafficLightMsgKind.msgNext:
             self.state = (() { final switch (self.state) {
     case tuck_TrafficLightStateKind.Red: return tuck_TrafficLightStateKind.Green;
@@ -40,7 +40,7 @@ bool drain_tuck_TrafficLight() {
 }
 
 void sendNext_tuck_TrafficLight(ref tuck_TrafficLight self) {
-    cast(void) rt.enqueue(self.mailbox, tuck_TrafficLightMsg(tuck_TrafficLightMsgKind.msgNext));
+    cast(void) rt.enqueue(self.mailbox, tuck_TrafficLightMsg(tuckTag: tuck_TrafficLightMsgKind.msgNext));
     rt.tuckNotifySend();
 }
 

@@ -9,24 +9,24 @@ tuck_Milliseconds :: distinct u32
 
 tuck_SystemEventsKind :: enum { PlaybackStarted, PlaybackStopped, HardwareError }
 tuck_SystemEvents :: struct {
-	kind: tuck_SystemEventsKind,
+	tuckTag: tuck_SystemEventsKind,
 	code: u8,
 }
 
 latesttuck_SystemEvents: tuck_SystemEvents
 
 raise_tuck_SystemEvents_PlaybackStarted :: proc() {
-	latesttuck_SystemEvents = tuck_SystemEvents{kind = .PlaybackStarted}
+	latesttuck_SystemEvents = tuck_SystemEvents{tuckTag = .PlaybackStarted}
 	tuck_SystemEvents_PlaybackStarted()
 }
 
 raise_tuck_SystemEvents_PlaybackStopped :: proc() {
-	latesttuck_SystemEvents = tuck_SystemEvents{kind = .PlaybackStopped}
+	latesttuck_SystemEvents = tuck_SystemEvents{tuckTag = .PlaybackStopped}
 	tuck_SystemEvents_PlaybackStopped()
 }
 
 raise_tuck_SystemEvents_HardwareError :: proc(code: u8) {
-	latesttuck_SystemEvents = tuck_SystemEvents{kind = .HardwareError, code = code}
+	latesttuck_SystemEvents = tuck_SystemEvents{tuckTag = .HardwareError, code = code}
 	tuck_SystemEvents_HardwareError(code)
 }
 
@@ -148,7 +148,7 @@ tuck_streamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(r
 
 tuck_DecoderMsgKind :: enum { msgPlay, msgPause, msgStop }
 tuck_DecoderMsg :: struct {
-	kind: tuck_DecoderMsgKind,
+	tuckTag: tuck_DecoderMsgKind,
 	rate: tuck_Hz,
 }
 tuck_Decoder :: struct {
@@ -160,7 +160,7 @@ tuck_Decoder :: struct {
 tuck_DecoderSingleton: tuck_Decoder
 
 handleMsg_tuck_Decoder :: proc(self: ^tuck_Decoder, msg: tuck_DecoderMsg) {
-	switch msg.kind {
+	switch msg.tuckTag {
 	case .msgPlay:
 		rate := msg.rate
     switch v in self.state
@@ -201,15 +201,15 @@ drain_tuck_Decoder :: proc() {
 }
 
 sendPlay_tuck_Decoder :: proc(self: ^tuck_Decoder, rate: tuck_Hz) {
-	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{kind = .msgPlay, rate = rate})
+	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{tuckTag = .msgPlay, rate = rate})
 }
 
 sendPause_tuck_Decoder :: proc(self: ^tuck_Decoder) {
-	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{kind = .msgPause})
+	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{tuckTag = .msgPause})
 }
 
 sendStop_tuck_Decoder :: proc(self: ^tuck_Decoder) {
-	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{kind = .msgStop})
+	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{tuckTag = .msgStop})
 }
 
 tuck_SystemEvents_PlaybackStarted :: proc () {

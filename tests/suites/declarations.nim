@@ -379,7 +379,10 @@ fn main() -> int:
   return 0
 """
   t.okCheck "a registry with a payload-carrying event checks"
-  t.emits "the registry type indents every field alike", r"\n  kind\*: "
+  # `tuckTag`, not `kind`: the registry type flattens every event's payload
+  # fields in beside its discriminator, so an event payload named `kind` used
+  # to emit the field twice. Codegen's own name moved; see codegen_common.
+  t.emits "the registry type indents every field alike", r"\n  tuckTag\*: "
   # The duplicate forward declaration has no emitted-text assertion: what
   # made it a defect is that nim REFUSES it, so hostBuilds below is the guard
   # that actually holds — and is the one this whole family was missing.

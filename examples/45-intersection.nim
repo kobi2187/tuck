@@ -76,18 +76,18 @@ proc tuck_DETECT_IN_EW_LOOP_get*(): bool {.inline.} =
 
 type tuck_IntersectionKind* = enum PhaseChanged, Preempted
 type tuck_Intersection* = ref object
-  kind*: tuck_IntersectionKind
+  tuckTag*: tuck_IntersectionKind
   to*: uint8
   source*: uint8
 
 var latesttuck_Intersection*: tuck_Intersection
 
 proc raise_tuck_Intersection_PhaseChanged*(to: uint8) =
-  latesttuck_Intersection = tuck_Intersection(kind: PhaseChanged, to: to)
+  latesttuck_Intersection = tuck_Intersection(tuckTag: PhaseChanged, to: to)
   tuck_Intersection_PhaseChanged(to)
 
 proc raise_tuck_Intersection_Preempted*(source: uint8) =
-  latesttuck_Intersection = tuck_Intersection(kind: Preempted, source: source)
+  latesttuck_Intersection = tuck_Intersection(tuckTag: Preempted, source: source)
   tuck_Intersection_Preempted(source)
 
 
@@ -117,7 +117,7 @@ proc reads*(self: var tuck_CameraDetector): int =
 
 type tuck_SignalsMsgKind* = enum msgSense
 type tuck_SignalsMsg* = object
-  kind*: tuck_SignalsMsgKind
+  tuckTag*: tuck_SignalsMsgKind
   demand*: tuck_Demand
   preempt*: bool
 
@@ -129,7 +129,7 @@ type tuck_Signals* = ref object
 let tuck_SignalsSingleton* = tuck_Signals()
 
 proc handleMsg*(self: tuck_Signals, msg: tuck_SignalsMsg) =
-  case msg.kind
+  case msg.tuckTag
   of msgSense:
     let demand = msg.demand
     let preempt = msg.preempt
@@ -199,7 +199,7 @@ proc tuck_settled*(): bool =
 
 proc tuck_report*(d: Detector): void =
   var tuck_demand = tuck_poll(d)
-  discard enqueue(tuck_SignalsSingleton.mailbox, tuck_SignalsMsg(kind: msgSense, demand: tuck_demand, preempt: false))
+  discard enqueue(tuck_SignalsSingleton.mailbox, tuck_SignalsMsg(tuckTag: msgSense, demand: tuck_demand, preempt: false))
   tuckNotifySend()
   return
 
@@ -207,7 +207,7 @@ proc tuck_drive*(): void =
   var tuck_loops = tuck_LoopDetector(lane: 1)
   var tuck_camera = tuck_CameraDetector(confidence: 91'u8)
   tuck_report(Detector(tag: Detector_is_tuck_CameraDetector, tuck_CameraDetectorVal: tuck_camera))
-  discard enqueue(tuck_SignalsSingleton.mailbox, tuck_SignalsMsg(kind: msgSense, demand: tuck_Demand.quiet, preempt: false))
+  discard enqueue(tuck_SignalsSingleton.mailbox, tuck_SignalsMsg(tuckTag: msgSense, demand: tuck_Demand.quiet, preempt: false))
   tuckNotifySend()
   tuck_report(Detector(tag: Detector_is_tuck_LoopDetector, tuck_LoopDetectorVal: tuck_loops))
   return

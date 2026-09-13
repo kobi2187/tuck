@@ -1102,8 +1102,8 @@ actor Pipe:
 fn main() -> int:
   return 0
 """
-  t.quietly: t.hostBuilds "an actor handler payload may have a field named 'kind'"
-  t.bugOpen "an actor handler payload may have a field named 'kind'"
+  t.hostBuilds "an actor handler payload may have a field named 'kind'"
+  t.bugFixed "an actor handler payload may have a field named 'kind'"
 
   # 19. On D ONLY, an actor's send helper constructs the message envelope
   # POSITIONALLY, so a second handler's payload lands in the first handler's
@@ -1134,8 +1134,8 @@ fn main() -> int:
   Sink send bump {n: 2}
   return 0
 """
-  t.quietly: t.hostBuilds "an actor may have two handlers with different payloads"
-  t.bugOpen "an actor may have two handlers with different payloads"
+  t.hostBuilds "an actor may have two handlers with different payloads"
+  t.bugFixed "an actor may have two handlers with different payloads"
 
   # 20. `release` frees the wrong slot, and a slot leaks. The runtime matches
   # the item back to its cell BY VALUE (`pool.storage[i] == item`, all three

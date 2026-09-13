@@ -62,21 +62,21 @@ proc validate*(self: tuck_Volume) =
 
 type tuck_SystemEventsKind* = enum PlaybackStarted, PlaybackStopped, HardwareError
 type tuck_SystemEvents* = ref object
-  kind*: tuck_SystemEventsKind
+  tuckTag*: tuck_SystemEventsKind
   code*: uint8
 
 var latesttuck_SystemEvents*: tuck_SystemEvents
 
 proc raise_tuck_SystemEvents_PlaybackStarted*() =
-  latesttuck_SystemEvents = tuck_SystemEvents(kind: PlaybackStarted)
+  latesttuck_SystemEvents = tuck_SystemEvents(tuckTag: PlaybackStarted)
   tuck_SystemEvents_PlaybackStarted()
 
 proc raise_tuck_SystemEvents_PlaybackStopped*() =
-  latesttuck_SystemEvents = tuck_SystemEvents(kind: PlaybackStopped)
+  latesttuck_SystemEvents = tuck_SystemEvents(tuckTag: PlaybackStopped)
   tuck_SystemEvents_PlaybackStopped()
 
 proc raise_tuck_SystemEvents_HardwareError*(code: uint8) =
-  latesttuck_SystemEvents = tuck_SystemEvents(kind: HardwareError, code: code)
+  latesttuck_SystemEvents = tuck_SystemEvents(tuckTag: HardwareError, code: code)
   tuck_SystemEvents_HardwareError(code)
 
 
@@ -125,7 +125,7 @@ proc tuck_streamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[
 
 type tuck_DecoderMsgKind* = enum msgPlay, msgPause, msgStop
 type tuck_DecoderMsg* = object
-  kind*: tuck_DecoderMsgKind
+  tuckTag*: tuck_DecoderMsgKind
   rate*: tuck_Hz
 
 type tuck_Decoder* = ref object
@@ -136,7 +136,7 @@ type tuck_Decoder* = ref object
 let tuck_DecoderSingleton* = tuck_Decoder()
 
 proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
-  case msg.kind
+  case msg.tuckTag
   of msgPlay:
     let rate = msg.rate
     if true:

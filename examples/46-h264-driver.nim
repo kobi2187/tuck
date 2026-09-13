@@ -90,7 +90,7 @@ proc tuck_route*(nal: tuck_NalKind, configured: bool, midFrame: bool): tuck_Acti
 
 type tuck_VideoKind* = enum FrameReady, Overrun, DecodeError
 type tuck_Video* = ref object
-  kind*: tuck_VideoKind
+  tuckTag*: tuck_VideoKind
   bytes*: int
   dropped*: int
   code*: uint8
@@ -98,21 +98,21 @@ type tuck_Video* = ref object
 var latesttuck_Video*: tuck_Video
 
 proc raise_tuck_Video_FrameReady*(bytes: int) =
-  latesttuck_Video = tuck_Video(kind: FrameReady, bytes: bytes)
+  latesttuck_Video = tuck_Video(tuckTag: FrameReady, bytes: bytes)
   tuck_Video_FrameReady(bytes)
 
 proc raise_tuck_Video_Overrun*(dropped: int) =
-  latesttuck_Video = tuck_Video(kind: Overrun, dropped: dropped)
+  latesttuck_Video = tuck_Video(tuckTag: Overrun, dropped: dropped)
   tuck_Video_Overrun(dropped)
 
 proc raise_tuck_Video_DecodeError*(code: uint8) =
-  latesttuck_Video = tuck_Video(kind: DecodeError, code: code)
+  latesttuck_Video = tuck_Video(tuckTag: DecodeError, code: code)
   tuck_Video_DecodeError(code)
 
 
 type tuck_PipelineMsgKind* = enum msgNal, msgOverrun
 type tuck_PipelineMsg* = object
-  kind*: tuck_PipelineMsgKind
+  tuckTag*: tuck_PipelineMsgKind
   nal*: tuck_NalKind
   midFrame*: bool
   n*: int
@@ -127,7 +127,7 @@ type tuck_Pipeline* = ref object
 let tuck_PipelineSingleton* = tuck_Pipeline()
 
 proc handleMsg*(self: tuck_Pipeline, msg: tuck_PipelineMsg) =
-  case msg.kind
+  case msg.tuckTag
   of msgNal:
     let nal = msg.nal
     let midFrame = msg.midFrame
@@ -185,7 +185,7 @@ proc tuck_Video_DecodeError*(code: uint8): void =
   tuck_VI_CTRL_ENABLE_set(false)
 
 proc tuck_feed*(nal: tuck_NalKind, midFrame: bool): void =
-  discard enqueue(tuck_PipelineSingleton.mailbox, tuck_PipelineMsg(kind: msgNal, nal: nal, midFrame: midFrame))
+  discard enqueue(tuck_PipelineSingleton.mailbox, tuck_PipelineMsg(tuckTag: msgNal, nal: nal, midFrame: midFrame))
   tuckNotifySend()
   return
 

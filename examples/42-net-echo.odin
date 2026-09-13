@@ -8,7 +8,7 @@ import net "./mod_net"
 
 tuck_ResultMsgKind :: enum { msgPut }
 tuck_ResultMsg :: struct {
-	kind: tuck_ResultMsgKind,
+	tuckTag: tuck_ResultMsgKind,
 	c: int,
 }
 tuck_Result :: struct {
@@ -20,7 +20,7 @@ tuck_Result :: struct {
 tuck_ResultSingleton: tuck_Result
 
 handleMsg_tuck_Result :: proc(self: ^tuck_Result, msg: tuck_ResultMsg) {
-	switch msg.kind {
+	switch msg.tuckTag {
 	case .msgPut:
 		c := msg.c
     self.code = c
@@ -39,7 +39,7 @@ drain_tuck_Result :: proc() {
 }
 
 sendPut_tuck_Result :: proc(self: ^tuck_Result, c: int) {
-	_ = rt.enqueue(&self.mailbox, tuck_ResultMsg{kind = .msgPut, c = c})
+	_ = rt.enqueue(&self.mailbox, tuck_ResultMsg{tuckTag = .msgPut, c = c})
 }
 
 tuck_serve :: proc(lfd: int) {

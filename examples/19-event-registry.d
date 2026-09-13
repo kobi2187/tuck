@@ -5,7 +5,7 @@ import rt = tuck_rt;
 enum tuck_AppEventsKind { SensorFailure, LowMemory }
 
 struct tuck_AppEvents {
-    tuck_AppEventsKind kind;
+    tuck_AppEventsKind tuckTag;
     ubyte port;
     string reason;
     uint remaining;

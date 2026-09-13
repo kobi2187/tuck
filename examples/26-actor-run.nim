@@ -7,7 +7,7 @@ proc tuck_main*(): int
 
 type tuck_CounterMsgKind* = enum msgAdd
 type tuck_CounterMsg* = object
-  kind*: tuck_CounterMsgKind
+  tuckTag*: tuck_CounterMsgKind
   n*: int
 
 type tuck_Counter* = ref object
@@ -17,7 +17,7 @@ type tuck_Counter* = ref object
 let tuck_CounterSingleton* = tuck_Counter()
 
 proc handleMsg*(self: tuck_Counter, msg: tuck_CounterMsg) =
-  case msg.kind
+  case msg.tuckTag
   of msgAdd:
     let n = msg.n
     if true:
@@ -40,7 +40,7 @@ proc tuck_sumReady*(): bool =
 proc tuck_main*(): int =
   for tuck_i in (1 .. 10):
     if true:
-      discard enqueue(tuck_CounterSingleton.mailbox, tuck_CounterMsg(kind: msgAdd, n: tuck_i))
+      discard enqueue(tuck_CounterSingleton.mailbox, tuck_CounterMsg(tuckTag: msgAdd, n: tuck_i))
       tuckNotifySend()
   scheduler.waitUntil(tuck_sumReady)
   return tuck_CounterSingleton.total

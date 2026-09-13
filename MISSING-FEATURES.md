@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (12)
+## A. Open bugs (10)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -101,29 +101,6 @@ own invariant, which is the one thing an invariant exists to prevent. Whether
 the fix is "acquire validates" or "a pooled type must have a valid zero" is a
 ruling. Test: `invariants`, "a pool slot is validated before it is handed out".
 
-**A9 — an actor handler payload field named `kind` collides with the
-generated envelope discriminator.** The envelope is emitted as `kind*:
-<Actor>MsgKind` plus the union of every handler's payload fields
-(`codegen_decl.nim:398`), so a payload field named `kind` is declared twice
-and all three backends refuse it — nim says "attempt to redefine: 'kind'".
-`tuck ch` says OK. `kind` is the ordinary name for tagged data, so this is a
-name a real program reaches for; found writing an H.264 driver whose handler
-took `{kind: NalKind}`. Same class as TK-PA12's host keywords — an invisible
-name colliding with one codegen owns — but for a GENERATED name, which that
-guard does not cover. Test: `known_bugs`, "an actor handler payload may have a
-field named 'kind'".
-
-**A10 — on D only, an actor's send helper builds the message envelope
-positionally.** The envelope holds the discriminator plus the union of every
-handler's payload fields, so a second handler's payload lands in the first
-handler's slot: `tuck_SinkMsg(tuck_SinkMsgKind.msgBump, n)` puts an `int`
-where a `Level` is declared and dmd refuses it. Nim emits the same
-construction by NAME and is correct; Odin builds too. It needs two handlers
-with non-empty payloads of different types, which is why `examples/20`
-survives — its later handlers take empty payloads, so positional and named
-agree. Test: `known_bugs`, "an actor may have two handlers with different
-payloads".
-
 **A11 — `pool.release` frees the wrong slot, and slots leak.** All three
 runtimes match an item back to its cell BY VALUE (`pool.storage[i] == item`,
 mirrored deliberately). But `acquire` hands out a copy and nothing writes a
@@ -142,6 +119,9 @@ another task fills in place — which is what pools are for. `examples/25` says
 a ruling on the API shape: `acquire` could return a handle the pool can map
 back to a slot (which also fixes A11), or the element could be addressable.
 Test: `known_bugs`, "a pool slot is storage, not a copy".
+
+A9 (a handler payload field named `kind`) and A10 (D building the envelope
+positionally) were fixed on 2026-09-13 and are locked in as `bug_fixed`.
 
 The two entries that stood here before are fixed and locked in as regression
 guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the qualified

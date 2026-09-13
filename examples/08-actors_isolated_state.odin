@@ -7,7 +7,7 @@ tuck_TrafficLightStateKind :: enum { Red, Yellow, Green }
 
 tuck_TrafficLightMsgKind :: enum { msgNext }
 tuck_TrafficLightMsg :: struct {
-	kind: tuck_TrafficLightMsgKind,
+	tuckTag: tuck_TrafficLightMsgKind,
 }
 tuck_TrafficLight :: struct {
 	state: tuck_TrafficLightStateKind,
@@ -17,7 +17,7 @@ tuck_TrafficLight :: struct {
 tuck_TrafficLightSingleton: tuck_TrafficLight
 
 handleMsg_tuck_TrafficLight :: proc(self: ^tuck_TrafficLight, msg: tuck_TrafficLightMsg) {
-	switch msg.kind {
+	switch msg.tuckTag {
 	case .msgNext:
     self.state = ((self.state == .Red) ? .Green : ((self.state == .Green) ? .Yellow : .Red))
 	}
@@ -34,7 +34,7 @@ drain_tuck_TrafficLight :: proc() {
 }
 
 sendNext_tuck_TrafficLight :: proc(self: ^tuck_TrafficLight) {
-	_ = rt.enqueue(&self.mailbox, tuck_TrafficLightMsg{kind = .msgNext})
+	_ = rt.enqueue(&self.mailbox, tuck_TrafficLightMsg{tuckTag = .msgNext})
 }
 
 main :: proc() {

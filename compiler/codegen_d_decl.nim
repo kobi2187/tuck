@@ -185,7 +185,7 @@ proc dRegistryEventStruct*(ctx: var DCodegenCtx, d: Decl): string =
       fields.add("    " & ctx.dType(f.typ) & " " & f.name & ";")
   let fieldsBody = if fields.len > 0: fields.join("\n") & "\n" else: ""
   "enum " & d.name & "Kind { " & variants.join(", ") & " }\n\n" &
-    "struct " & d.name & " {\n    " & d.name & "Kind kind;\n" &
+    "struct " & d.name & " {\n    " & d.name & "Kind " & TagField & ";\n" &
     fieldsBody & "}\n"
 
 proc dRegistryHandlerCalls*(ctx: DCodegenCtx, d: Decl,
@@ -227,7 +227,7 @@ proc genDMsgEnvelope*(ctx: var DCodegenCtx, d: Decl,
       msgFields.add("    " & ctx.dType(p.typ) & " " & p.name & ";")
   "enum " & d.name & "MsgKind { " & variants.join(", ") & " }\n\n" &
     "struct " & d.name & "Msg {\n" &
-    "    " & d.name & "MsgKind kind;\n" &
+    "    " & d.name & "MsgKind " & TagField & ";\n" &
     (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") & "}\n\n"
 
 proc actorHasMessages*(d: Decl): bool =
@@ -624,11 +624,17 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
                     h: ActorMsgHandler): string =
   ## Enqueue an envelope. A FULL ring drops (spec 9.1) — matching the other
   ## backends, and see the actor playground for what that costs today.
+  # NAMED arguments, not positional. The envelope holds the discriminator plus
+  # the union of EVERY handler's payload fields, so the fields of any handler
+  # but the first do not start at position 1 — positional construction put a
+  # second handler's payload into the first handler's slot, and dmd answered
+  # "cannot implicitly convert expression `n` of type `long` to `tuck_Level`".
+  # Nim has always emitted this by name; now D does too.
   var params: seq[string]
-  var ctorArgs = d.name & "MsgKind." & msgVariantName(h.name)
+  var ctorArgs = TagField & ": " & d.name & "MsgKind." & msgVariantName(h.name)
   for p in h.params:
     params.add(ctx.dType(p.typ) & " " & p.name)
-    ctorArgs.add(", " & p.name)
+    ctorArgs.add(", " & p.name & ": " & p.name)
   let sep = if params.len > 0: ", " else: ""
   "void send" & h.name.capitalize() & "_" & d.name & "(ref " & d.name &
     " self" & sep & params.join(", ") & ") {\n" &
@@ -743,7 +749,7 @@ proc genDDispatch*(ctx: var DCodegenCtx, d: Decl,
     cases.add("        case " & d.name & "MsgKind.msgShutdown:\n" & sdBody &
               "            self.finished = true;\n            break;\n")
   "void handleMsg_" & d.name & "(ref " & d.name & " self, " & d.name &
-    "Msg msg) {\n    final switch (msg.kind) {\n" & cases.join("") &
+    "Msg msg) {\n    final switch (msg." & TagField & ") {\n" & cases.join("") &
     "    }\n}\n\n"
 
 proc genDExternBlock*(ctx: var DCodegenCtx, d: Decl): string =

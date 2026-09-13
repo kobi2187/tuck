@@ -43,7 +43,7 @@ tuck_DETECT_IN_EW_LOOP_get :: proc() -> bool {
 
 tuck_IntersectionKind :: enum { PhaseChanged, Preempted }
 tuck_Intersection :: struct {
-	kind: tuck_IntersectionKind,
+	tuckTag: tuck_IntersectionKind,
 	to: u8,
 	source: u8,
 }
@@ -51,12 +51,12 @@ tuck_Intersection :: struct {
 latesttuck_Intersection: tuck_Intersection
 
 raise_tuck_Intersection_PhaseChanged :: proc(to: u8) {
-	latesttuck_Intersection = tuck_Intersection{kind = .PhaseChanged, to = to}
+	latesttuck_Intersection = tuck_Intersection{tuckTag = .PhaseChanged, to = to}
 	tuck_Intersection_PhaseChanged(to)
 }
 
 raise_tuck_Intersection_Preempted :: proc(source: u8) {
-	latesttuck_Intersection = tuck_Intersection{kind = .Preempted, source = source}
+	latesttuck_Intersection = tuck_Intersection{tuckTag = .Preempted, source = source}
 	tuck_Intersection_Preempted(source)
 }
 
@@ -126,7 +126,7 @@ tuck_CameraDetector_reads :: proc (self: ^tuck_CameraDetector) -> int {
 
 tuck_SignalsMsgKind :: enum { msgSense }
 tuck_SignalsMsg :: struct {
-	kind: tuck_SignalsMsgKind,
+	tuckTag: tuck_SignalsMsgKind,
 	demand: tuck_Demand,
 	preempt: bool,
 }
@@ -139,7 +139,7 @@ tuck_Signals :: struct {
 tuck_SignalsSingleton: tuck_Signals
 
 handleMsg_tuck_Signals :: proc(self: ^tuck_Signals, msg: tuck_SignalsMsg) {
-	switch msg.kind {
+	switch msg.tuckTag {
 	case .msgSense:
 		demand := msg.demand
 		preempt := msg.preempt
@@ -160,7 +160,7 @@ drain_tuck_Signals :: proc() {
 }
 
 sendSense_tuck_Signals :: proc(self: ^tuck_Signals, demand: tuck_Demand, preempt: bool) {
-	_ = rt.enqueue(&self.mailbox, tuck_SignalsMsg{kind = .msgSense, demand = demand, preempt = preempt})
+	_ = rt.enqueue(&self.mailbox, tuck_SignalsMsg{tuckTag = .msgSense, demand = demand, preempt = preempt})
 }
 
 tuck_Intersection_PhaseChanged :: proc (to: u8) {

@@ -7,7 +7,7 @@ import scheduler "./mod_scheduler"
 
 tuck_AccumulatorMsgKind :: enum { msgAdd, msgFinish, msgShutdown }
 tuck_AccumulatorMsg :: struct {
-	kind: tuck_AccumulatorMsgKind,
+	tuckTag: tuck_AccumulatorMsgKind,
 	n: int,
 }
 tuck_Accumulator :: struct {
@@ -20,7 +20,7 @@ tuck_Accumulator :: struct {
 tuck_AccumulatorSingleton: tuck_Accumulator
 
 handleMsg_tuck_Accumulator :: proc(self: ^tuck_Accumulator, msg: tuck_AccumulatorMsg) {
-	switch msg.kind {
+	switch msg.tuckTag {
 	case .msgAdd:
 		n := msg.n
 self.total = (self.total + n)
@@ -44,15 +44,15 @@ drain_tuck_Accumulator :: proc() {
 }
 
 sendAdd_tuck_Accumulator :: proc(self: ^tuck_Accumulator, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuck_AccumulatorMsg{kind = .msgAdd, n = n})
+	_ = rt.enqueue(&self.mailbox, tuck_AccumulatorMsg{tuckTag = .msgAdd, n = n})
 }
 
 sendFinish_tuck_Accumulator :: proc(self: ^tuck_Accumulator) {
-	_ = rt.enqueue(&self.mailbox, tuck_AccumulatorMsg{kind = .msgFinish})
+	_ = rt.enqueue(&self.mailbox, tuck_AccumulatorMsg{tuckTag = .msgFinish})
 }
 
 sendShutdown_tuck_Accumulator :: proc(self: ^tuck_Accumulator) {
-	_ = rt.enqueue(&self.mailbox, tuck_AccumulatorMsg{kind = .msgShutdown})
+	_ = rt.enqueue(&self.mailbox, tuck_AccumulatorMsg{tuckTag = .msgShutdown})
 }
 
 tuck_ready :: proc () -> bool {

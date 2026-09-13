@@ -8,7 +8,7 @@ proc tuck_main*(): int
 
 type tuck_ResultMsgKind* = enum msgPut
 type tuck_ResultMsg* = object
-  kind*: tuck_ResultMsgKind
+  tuckTag*: tuck_ResultMsgKind
   c*: int
 
 type tuck_Result* = ref object
@@ -19,7 +19,7 @@ type tuck_Result* = ref object
 let tuck_ResultSingleton* = tuck_Result()
 
 proc handleMsg*(self: tuck_Result, msg: tuck_ResultMsg) =
-  case msg.kind
+  case msg.tuckTag
   of msgPut:
     let c = msg.c
     if true:
@@ -57,13 +57,13 @@ proc tuck_client*(port: int): void =
         if true:
           if (tuck_r.value.data == "pong"):
             if true:
-              discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(kind: msgPut, c: 42))
+              discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(tuckTag: msgPut, c: 42))
               tuckNotifySend()
               return
-      discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(kind: msgPut, c: 3))
+      discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(tuckTag: msgPut, c: 3))
       tuckNotifySend()
       return
-  discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(kind: msgPut, c: 4))
+  discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(tuckTag: msgPut, c: 4))
   tuckNotifySend()
   return
 

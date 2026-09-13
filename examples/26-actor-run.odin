@@ -7,7 +7,7 @@ import scheduler "./mod_scheduler"
 
 tuck_CounterMsgKind :: enum { msgAdd }
 tuck_CounterMsg :: struct {
-	kind: tuck_CounterMsgKind,
+	tuckTag: tuck_CounterMsgKind,
 	n: int,
 }
 tuck_Counter :: struct {
@@ -18,7 +18,7 @@ tuck_Counter :: struct {
 tuck_CounterSingleton: tuck_Counter
 
 handleMsg_tuck_Counter :: proc(self: ^tuck_Counter, msg: tuck_CounterMsg) {
-	switch msg.kind {
+	switch msg.tuckTag {
 	case .msgAdd:
 		n := msg.n
     self.total = (self.total + n)
@@ -36,7 +36,7 @@ drain_tuck_Counter :: proc() {
 }
 
 sendAdd_tuck_Counter :: proc(self: ^tuck_Counter, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{kind = .msgAdd, n = n})
+	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{tuckTag = .msgAdd, n = n})
 }
 
 tuck_sumReady :: proc () -> bool {

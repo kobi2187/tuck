@@ -6,7 +6,7 @@ import scheduler = mod_scheduler;
 enum tuck_CounterMsgKind { msgAdd }
 
 struct tuck_CounterMsg {
-    tuck_CounterMsgKind kind;
+    tuck_CounterMsgKind tuckTag;
     long n;
 }
 
@@ -18,7 +18,7 @@ struct tuck_Counter {
 __gshared tuck_Counter tuck_CounterSingleton;
 
 void handleMsg_tuck_Counter(ref tuck_Counter self, tuck_CounterMsg msg) {
-    final switch (msg.kind) {
+    final switch (msg.tuckTag) {
         case tuck_CounterMsgKind.msgAdd:
             auto n = msg.n;
             self.total = (self.total + n);
@@ -37,7 +37,7 @@ bool drain_tuck_Counter() {
 }
 
 void sendAdd_tuck_Counter(ref tuck_Counter self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuck_CounterMsg(tuck_CounterMsgKind.msgAdd, n));
+    cast(void) rt.enqueue(self.mailbox, tuck_CounterMsg(tuckTag: tuck_CounterMsgKind.msgAdd, n: n));
     rt.tuckNotifySend();
 }
 

@@ -607,7 +607,7 @@ proc genMsgEnvelope*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHan
       msgFields.add(ind & "\t" & p.name & ": " & ctx.odinType(p.typ) & ",")
   ind & d.name & "MsgKind :: enum { " & variants.join(", ") & " }\n" &
     ind & d.name & "Msg :: struct {\n" &
-    ind & "\tkind: " & d.name & "MsgKind,\n" &
+    ind & "\t" & TagField & ": " & d.name & "MsgKind,\n" &
     (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") &
     ind & "}\n"
 
@@ -665,7 +665,7 @@ proc genDispatch*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandle
               ind & "\t\tself.finished = true")
   ctx.adoptHandlerCtx(hctx)
   ind & "handleMsg_" & d.name & " :: proc(self: ^" & d.name & ", msg: " &
-    d.name & "Msg) {\n" & ind & "\tswitch msg.kind {\n" & cases.join("\n") &
+    d.name & "Msg) {\n" & ind & "\tswitch msg." & TagField & " {\n" & cases.join("\n") &
     "\n" & ind & "\t}\n" & ind & "}\n"
 
 proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
@@ -687,7 +687,7 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
                    ind: string): string =
   ## Enqueue an envelope; a full ring drops (spec §9.1).
   var params: seq[string]
-  var ctorArgs = "kind = ." & msgVariantName(h.name)
+  var ctorArgs = TagField & " = ." & msgVariantName(h.name)
   for p in h.params:
     params.add(p.name & ": " & ctx.odinType(p.typ))
     ctorArgs.add(", " & p.name & " = " & p.name)
@@ -700,7 +700,7 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
 proc genShutdownSender*(d: Decl, ind: string): string =
   "\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" & d.name &
     ") {\n" & ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name &
-    "Msg{kind = .msgShutdown})\n" & ind & "}\n"
+    "Msg{" & TagField & " = .msgShutdown})\n" & ind & "}\n"
 
 proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An actor emits its message envelope, state struct, singleton, dispatch,
@@ -746,7 +746,7 @@ proc registryEventStruct*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string
   let fieldsBody = if fields.len > 0: fields.join("\n") & "\n" else: ""
   ind & d.name & "Kind :: enum { " & variants.join(", ") & " }\n" &
     ind & d.name & " :: struct {\n" &
-    ind & "\tkind: " & d.name & "Kind,\n" & fieldsBody & ind & "}\n"
+    ind & "\t" & TagField & ": " & d.name & "Kind,\n" & fieldsBody & ind & "}\n"
 
 proc registryHandlerCalls*(ctx: OdinCodegenCtx, d: Decl, v: VariantDef,
                           ind: string): string =
@@ -771,7 +771,7 @@ proc registryRaiseProc*(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,
     assigns.add(f.name & " = " & f.name)
   let assignStr = if assigns.len > 0: ", " & assigns.join(", ") else: ""
   ind & "raise_" & d.name & "_" & v.name & " :: proc(" & params.join(", ") &
-    ") {\n" & ind & "\tlatest" & d.name & " = " & d.name & "{kind = ." &
+    ") {\n" & ind & "\tlatest" & d.name & " = " & d.name & "{" & TagField & " = ." &
     v.name & assignStr & "}\n" & ctx.registryHandlerCalls(d, v, ind) &
     ind & "}\n\n"
 

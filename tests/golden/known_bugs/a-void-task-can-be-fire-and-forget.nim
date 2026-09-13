@@ -6,7 +6,7 @@ proc tuck_main*(): int
 
 type tuck_SinkMsgKind* = enum msgPing
 type tuck_SinkMsg* = object
-  kind*: tuck_SinkMsgKind
+  tuckTag*: tuck_SinkMsgKind
   n*: int
 
 type tuck_Sink* = ref object
@@ -16,7 +16,7 @@ type tuck_Sink* = ref object
 let tuck_SinkSingleton* = tuck_Sink()
 
 proc handleMsg*(self: tuck_Sink, msg: tuck_SinkMsg) =
-  case msg.kind
+  case msg.tuckTag
   of msgPing:
     let n = msg.n
     if true:
@@ -34,7 +34,7 @@ proc registerActortuck_Sink*() =
   tuckStartActor(draintuck_Sink)
 
 proc tuck_fire*(): void =
-  discard enqueue(tuck_SinkSingleton.mailbox, tuck_SinkMsg(kind: msgPing, n: 5))
+  discard enqueue(tuck_SinkSingleton.mailbox, tuck_SinkMsg(tuckTag: msgPing, n: 5))
   tuckNotifySend()
   return
 

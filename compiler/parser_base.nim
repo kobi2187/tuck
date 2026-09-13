@@ -9,6 +9,7 @@ import ../lexer
 import ast
 import diagnostics
 import host_keywords
+import codegen_common
 export diagnostics   # every reportError caller needs the codes
 
 type
@@ -183,6 +184,15 @@ proc failIfHostKeyword*(p: Parser, name: string, sp: Span,
   ## also inconsistent in a way a user would feel, since a payload field binds
   ## to a parameter BY NAME — a field the author cannot pass to a parameter
   ## they are not allowed to declare.
+  # `tuckTag` is codegen's own: an actor envelope and a registry event type
+  # carry it as their discriminator, beside the user's payload fields. Moving
+  # OUR name off `kind` fixed the collision an ordinary field name caused;
+  # refusing this one keeps it fixed instead of relocating the hole.
+  if name == TagField:
+    p.reportError("'" & name & "' is the name Tuck's own generated code uses " &
+                  "for an actor's and a registry's message tag, so it cannot " &
+                  "also be a " & what & " name. Fix: choose another name",
+                  sp.line, sp.col, dcPaHostKeyword)
   if isHostKeyword(name):
     p.reportError("\'" & name & "\' is a keyword in one of Tuck\'s backends, so " &
                   "it cannot be a " & what & " name — the emitted code would " &

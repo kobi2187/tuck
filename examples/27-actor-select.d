@@ -6,7 +6,7 @@ import scheduler = mod_scheduler;
 enum tuck_AccumulatorMsgKind { msgAdd, msgFinish, msgShutdown }
 
 struct tuck_AccumulatorMsg {
-    tuck_AccumulatorMsgKind kind;
+    tuck_AccumulatorMsgKind tuckTag;
     long n;
 }
 
@@ -20,7 +20,7 @@ struct tuck_Accumulator {
 __gshared tuck_Accumulator tuck_AccumulatorSingleton;
 
 void handleMsg_tuck_Accumulator(ref tuck_Accumulator self, tuck_AccumulatorMsg msg) {
-    final switch (msg.kind) {
+    final switch (msg.tuckTag) {
         case tuck_AccumulatorMsgKind.msgAdd:
             auto n = msg.n;
             self.total = (self.total + n);
@@ -47,12 +47,12 @@ bool drain_tuck_Accumulator() {
 }
 
 void sendAdd_tuck_Accumulator(ref tuck_Accumulator self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuck_AccumulatorMsg(tuck_AccumulatorMsgKind.msgAdd, n));
+    cast(void) rt.enqueue(self.mailbox, tuck_AccumulatorMsg(tuckTag: tuck_AccumulatorMsgKind.msgAdd, n: n));
     rt.tuckNotifySend();
 }
 
 void sendFinish_tuck_Accumulator(ref tuck_Accumulator self) {
-    cast(void) rt.enqueue(self.mailbox, tuck_AccumulatorMsg(tuck_AccumulatorMsgKind.msgFinish));
+    cast(void) rt.enqueue(self.mailbox, tuck_AccumulatorMsg(tuckTag: tuck_AccumulatorMsgKind.msgFinish));
     rt.tuckNotifySend();
 }
 

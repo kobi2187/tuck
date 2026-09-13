@@ -395,7 +395,8 @@ proc genMsgTypes*(handlers: seq[ActorMsgHandler], hasShutdown: bool,
         seen.incl(p.name)
         msgFields.add("  " & p.name & "*: " & genType(p.typ))
   let enumStr = "type " & msgEnumName & "* = enum " & enumVariants.join(", ") & "\n"
-  let envelopeStr = "type " & msgTypeName & "* = object\n  kind*: " & msgEnumName & "\n" &
+  let envelopeStr = "type " & msgTypeName & "* = object\n  " & TagField &
+                    "*: " & msgEnumName & "\n" &
                     (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "")
   enumStr & envelopeStr
 
@@ -437,7 +438,7 @@ proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
     # run the shutdown body, then mark finished so the drain goes inert; a
     # `return` in the arm body is a no-op statement here.
     handlerCases.add("  of msgShutdown:\n" & armBody(shutdownBody) & "\n    self.finished = true")
-  "proc handleMsg*(self: " & d.name & ", msg: " & msgTypeName & ") =\n  case msg.kind\n" &
+  "proc handleMsg*(self: " & d.name & ", msg: " & msgTypeName & ") =\n  case msg." & TagField & "\n" &
     handlerCases.join("\n") & "\n"
 
 proc genActorDrain*(msgTypeName, drainName, singleton: string, hasShutdown: bool): string =
@@ -503,7 +504,8 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
     # carries a payload emitted Nim that could not compile. Invisible because
     # no registry example has an `fn main`, making `tuck build` a library
     # build that never hands the output to nim.
-    let typeStr = "type " & d.name & "* = ref object\n  kind*: " & msgEnumName & "\n" & fieldsBody & "\n"
+    let typeStr = "type " & d.name & "* = ref object\n  " & TagField &
+                  "*: " & msgEnumName & "\n" & fieldsBody & "\n"
     let globalVarStr = "var latest" & d.name & "*: " & d.name & "\n\n"
 
     # NO forward declarations for the handlers HERE. A handler is an ordinary
@@ -532,7 +534,7 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
           handlerCalls.add("  " & handlerNameSanitized & "(" & argNames.join(", ") & ")")
 
       let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
-      raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(kind: " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
+      raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(" & TagField & ": " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
 
     return enumStr & typeStr & "\n" & globalVarStr & raiseProcsStr
 

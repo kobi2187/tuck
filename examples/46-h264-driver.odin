@@ -100,7 +100,7 @@ transitionTo_tuck_DecoderState :: proc(self: ^tuck_DecoderState, target: tuck_De
 
 tuck_VideoKind :: enum { FrameReady, Overrun, DecodeError }
 tuck_Video :: struct {
-	kind: tuck_VideoKind,
+	tuckTag: tuck_VideoKind,
 	bytes: int,
 	dropped: int,
 	code: u8,
@@ -109,24 +109,24 @@ tuck_Video :: struct {
 latesttuck_Video: tuck_Video
 
 raise_tuck_Video_FrameReady :: proc(bytes: int) {
-	latesttuck_Video = tuck_Video{kind = .FrameReady, bytes = bytes}
+	latesttuck_Video = tuck_Video{tuckTag = .FrameReady, bytes = bytes}
 	tuck_Video_FrameReady(bytes)
 }
 
 raise_tuck_Video_Overrun :: proc(dropped: int) {
-	latesttuck_Video = tuck_Video{kind = .Overrun, dropped = dropped}
+	latesttuck_Video = tuck_Video{tuckTag = .Overrun, dropped = dropped}
 	tuck_Video_Overrun(dropped)
 }
 
 raise_tuck_Video_DecodeError :: proc(code: u8) {
-	latesttuck_Video = tuck_Video{kind = .DecodeError, code = code}
+	latesttuck_Video = tuck_Video{tuckTag = .DecodeError, code = code}
 	tuck_Video_DecodeError(code)
 }
 
 
 tuck_PipelineMsgKind :: enum { msgNal, msgOverrun }
 tuck_PipelineMsg :: struct {
-	kind: tuck_PipelineMsgKind,
+	tuckTag: tuck_PipelineMsgKind,
 	nal: tuck_NalKind,
 	midFrame: bool,
 	n: int,
@@ -142,7 +142,7 @@ tuck_Pipeline :: struct {
 tuck_PipelineSingleton: tuck_Pipeline
 
 handleMsg_tuck_Pipeline :: proc(self: ^tuck_Pipeline, msg: tuck_PipelineMsg) {
-	switch msg.kind {
+	switch msg.tuckTag {
 	case .msgNal:
 		nal := msg.nal
 		midFrame := msg.midFrame
@@ -178,11 +178,11 @@ drain_tuck_Pipeline :: proc() {
 }
 
 sendNal_tuck_Pipeline :: proc(self: ^tuck_Pipeline, nal: tuck_NalKind, midFrame: bool) {
-	_ = rt.enqueue(&self.mailbox, tuck_PipelineMsg{kind = .msgNal, nal = nal, midFrame = midFrame})
+	_ = rt.enqueue(&self.mailbox, tuck_PipelineMsg{tuckTag = .msgNal, nal = nal, midFrame = midFrame})
 }
 
 sendOverrun_tuck_Pipeline :: proc(self: ^tuck_Pipeline, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuck_PipelineMsg{kind = .msgOverrun, n = n})
+	_ = rt.enqueue(&self.mailbox, tuck_PipelineMsg{tuckTag = .msgOverrun, n = n})
 }
 
 tuck_capture :: proc (want: int) -> int {

@@ -42,7 +42,7 @@ bool tuck_DETECT_IN_EW_LOOP_get() {
 enum tuck_IntersectionKind { PhaseChanged, Preempted }
 
 struct tuck_Intersection {
-    tuck_IntersectionKind kind;
+    tuck_IntersectionKind tuckTag;
     ubyte to;
     ubyte source;
 }
@@ -139,7 +139,7 @@ long tuck_CameraDetector_reads(ref tuck_CameraDetector self) {
 enum tuck_SignalsMsgKind { msgSense }
 
 struct tuck_SignalsMsg {
-    tuck_SignalsMsgKind kind;
+    tuck_SignalsMsgKind tuckTag;
     tuck_Demand demand;
     bool preempt;
 }
@@ -153,7 +153,7 @@ struct tuck_Signals {
 __gshared tuck_Signals tuck_SignalsSingleton;
 
 void handleMsg_tuck_Signals(ref tuck_Signals self, tuck_SignalsMsg msg) {
-    final switch (msg.kind) {
+    final switch (msg.tuckTag) {
         case tuck_SignalsMsgKind.msgSense:
             auto demand = msg.demand;
             auto preempt = msg.preempt;
@@ -175,7 +175,7 @@ bool drain_tuck_Signals() {
 }
 
 void sendSense_tuck_Signals(ref tuck_Signals self, tuck_Demand demand, bool preempt) {
-    cast(void) rt.enqueue(self.mailbox, tuck_SignalsMsg(tuck_SignalsMsgKind.msgSense, demand, preempt));
+    cast(void) rt.enqueue(self.mailbox, tuck_SignalsMsg(tuckTag: tuck_SignalsMsgKind.msgSense, demand: demand, preempt: preempt));
     rt.tuckNotifySend();
 }
 

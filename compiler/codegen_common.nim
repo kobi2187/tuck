@@ -26,6 +26,23 @@ import ast, lowering, ast_query, ast_ops, strutils, sets, tables, algorithm, opt
 import ./ast_query
 from lowering_seqcopy import seqFieldNames
 
+const TagField* = "tuckTag"
+  ## The discriminator an actor's message envelope and a registry's event type
+  ## carry. NOT `kind`: those two are the only generated types that flatten
+  ## user payload fields in beside a field of codegen's own, so a handler
+  ## taking `{kind: NalKind}` — the ordinary name for tagged data — emitted
+  ## `kind` twice and every backend refused it while `tuck ch` said OK.
+  ##
+  ## Moving Tuck's own name is the fix rather than reserving the user's:
+  ## nothing in Tuck source ever reads this field, so it is internal, and the
+  ## author keeps the name they wrote. A sum type is unaffected and keeps
+  ## `kind` — its payloads are namespaced per variant, so they never sit
+  ## beside the tag.
+  ##
+  ## `tuckTag` is not collision-PROOF (an author may still write a field of
+  ## that name), so `failIfHostKeyword` refuses it at the declaration, the
+  ## same way it refuses a host keyword.
+
 proc sumPayloadField*(variantName: string): string =
   ## The struct/object field a payload variant's data sits in.
   ##

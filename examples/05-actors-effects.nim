@@ -12,7 +12,7 @@ type tuck_PodcastApp* = object
 
 type tuck_CounterMsgKind* = enum msgIncrement, msgReset
 type tuck_CounterMsg* = object
-  kind*: tuck_CounterMsgKind
+  tuckTag*: tuck_CounterMsgKind
   n*: int
 
 type tuck_Counter* = ref object
@@ -22,7 +22,7 @@ type tuck_Counter* = ref object
 let tuck_CounterSingleton* = tuck_Counter()
 
 proc handleMsg*(self: tuck_Counter, msg: tuck_CounterMsg) =
-  case msg.kind
+  case msg.tuckTag
   of msgIncrement:
     let n = msg.n
     if true:

@@ -3,7 +3,7 @@ package main
 
 tuck_AppEventsKind :: enum { SensorFailure, LowMemory }
 tuck_AppEvents :: struct {
-	kind: tuck_AppEventsKind,
+	tuckTag: tuck_AppEventsKind,
 	port: u8,
 	reason: string,
 	remaining: u32,
@@ -12,12 +12,12 @@ tuck_AppEvents :: struct {
 latesttuck_AppEvents: tuck_AppEvents
 
 raise_tuck_AppEvents_SensorFailure :: proc(port: u8, reason: string) {
-	latesttuck_AppEvents = tuck_AppEvents{kind = .SensorFailure, port = port, reason = reason}
+	latesttuck_AppEvents = tuck_AppEvents{tuckTag = .SensorFailure, port = port, reason = reason}
 	tuck_AppEvents_SensorFailure(port, reason)
 }
 
 raise_tuck_AppEvents_LowMemory :: proc(remaining: u32) {
-	latesttuck_AppEvents = tuck_AppEvents{kind = .LowMemory, remaining = remaining}
+	latesttuck_AppEvents = tuck_AppEvents{tuckTag = .LowMemory, remaining = remaining}
 	tuck_AppEvents_LowMemory(remaining)
 }
 

@@ -9,7 +9,7 @@ alias tuck_Milliseconds = uint;
 enum tuck_SystemEventsKind { PlaybackStarted, PlaybackStopped, HardwareError }
 
 struct tuck_SystemEvents {
-    tuck_SystemEventsKind kind;
+    tuck_SystemEventsKind tuckTag;
     ubyte code;
 }
 
@@ -124,7 +124,7 @@ rt.TuckResult!(rt.TuckUnit) tuck_streamReader(ubyte streamId, uint[] chunks) {
 enum tuck_DecoderMsgKind { msgPlay, msgPause, msgStop }
 
 struct tuck_DecoderMsg {
-    tuck_DecoderMsgKind kind;
+    tuck_DecoderMsgKind tuckTag;
     tuck_Hz rate;
 }
 
@@ -137,7 +137,7 @@ struct tuck_Decoder {
 __gshared tuck_Decoder tuck_DecoderSingleton;
 
 void handleMsg_tuck_Decoder(ref tuck_Decoder self, tuck_DecoderMsg msg) {
-    final switch (msg.kind) {
+    final switch (msg.tuckTag) {
         case tuck_DecoderMsgKind.msgPlay:
             auto rate = msg.rate;
             final switch (self.state.kind) {
@@ -186,17 +186,17 @@ bool drain_tuck_Decoder() {
 }
 
 void sendPlay_tuck_Decoder(ref tuck_Decoder self, tuck_Hz rate) {
-    cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuck_DecoderMsgKind.msgPlay, rate));
+    cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuckTag: tuck_DecoderMsgKind.msgPlay, rate: rate));
     rt.tuckNotifySend();
 }
 
 void sendPause_tuck_Decoder(ref tuck_Decoder self) {
-    cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuck_DecoderMsgKind.msgPause));
+    cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuckTag: tuck_DecoderMsgKind.msgPause));
     rt.tuckNotifySend();
 }
 
 void sendStop_tuck_Decoder(ref tuck_Decoder self) {
-    cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuck_DecoderMsgKind.msgStop));
+    cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuckTag: tuck_DecoderMsgKind.msgStop));
     rt.tuckNotifySend();
 }
 

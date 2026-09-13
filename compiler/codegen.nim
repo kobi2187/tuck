@@ -1094,7 +1094,7 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   let singleton = actorSingletonName(e.sendActor)
   let msgType = e.sendActor & "Msg"
   let variant = "msg" & capitalize(e.sendHandler)
-  var ctorArgs = "kind: " & variant
+  var ctorArgs = TagField & ": " & variant
   if e.sendPayload != nil and e.sendPayload.kind == exkStruct:
     for f in e.sendPayload.fields:
       ctorArgs.add(", " & f.name & ": " & ctx.genExpr(f.value))

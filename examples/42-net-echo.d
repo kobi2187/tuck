@@ -7,7 +7,7 @@ import net = mod_net;
 enum tuck_ResultMsgKind { msgPut }
 
 struct tuck_ResultMsg {
-    tuck_ResultMsgKind kind;
+    tuck_ResultMsgKind tuckTag;
     long c;
 }
 
@@ -20,7 +20,7 @@ struct tuck_Result {
 __gshared tuck_Result tuck_ResultSingleton;
 
 void handleMsg_tuck_Result(ref tuck_Result self, tuck_ResultMsg msg) {
-    final switch (msg.kind) {
+    final switch (msg.tuckTag) {
         case tuck_ResultMsgKind.msgPut:
             auto c = msg.c;
             self.code = c;
@@ -40,7 +40,7 @@ bool drain_tuck_Result() {
 }
 
 void sendPut_tuck_Result(ref tuck_Result self, long c) {
-    cast(void) rt.enqueue(self.mailbox, tuck_ResultMsg(tuck_ResultMsgKind.msgPut, c));
+    cast(void) rt.enqueue(self.mailbox, tuck_ResultMsg(tuckTag: tuck_ResultMsgKind.msgPut, c: c));
     rt.tuckNotifySend();
 }
 

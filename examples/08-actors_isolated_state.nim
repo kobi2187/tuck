@@ -5,7 +5,7 @@ type tuck_TrafficLightStateKind* = enum Red, Yellow, Green
 
 type tuck_TrafficLightMsgKind* = enum msgNext
 type tuck_TrafficLightMsg* = object
-  kind*: tuck_TrafficLightMsgKind
+  tuckTag*: tuck_TrafficLightMsgKind
 
 type tuck_TrafficLight* = ref object
   state*: tuck_TrafficLightStateKind
@@ -14,7 +14,7 @@ type tuck_TrafficLight* = ref object
 let tuck_TrafficLightSingleton* = tuck_TrafficLight()
 
 proc handleMsg*(self: tuck_TrafficLight, msg: tuck_TrafficLightMsg) =
-  case msg.kind
+  case msg.tuckTag
   of msgNext:
     if true:
       self.state = (case self.state

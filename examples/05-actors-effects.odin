@@ -19,7 +19,7 @@ tuck_Feed :: struct {
 
 tuck_CounterMsgKind :: enum { msgIncrement, msgReset }
 tuck_CounterMsg :: struct {
-	kind: tuck_CounterMsgKind,
+	tuckTag: tuck_CounterMsgKind,
 	n: int,
 }
 tuck_Counter :: struct {
@@ -30,7 +30,7 @@ tuck_Counter :: struct {
 tuck_CounterSingleton: tuck_Counter
 
 handleMsg_tuck_Counter :: proc(self: ^tuck_Counter, msg: tuck_CounterMsg) {
-	switch msg.kind {
+	switch msg.tuckTag {
 	case .msgIncrement:
 		n := msg.n
     self.count = (self.count + n)
@@ -50,11 +50,11 @@ drain_tuck_Counter :: proc() {
 }
 
 sendIncrement_tuck_Counter :: proc(self: ^tuck_Counter, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{kind = .msgIncrement, n = n})
+	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{tuckTag = .msgIncrement, n = n})
 }
 
 sendReset_tuck_Counter :: proc(self: ^tuck_Counter) {
-	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{kind = .msgReset})
+	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{tuckTag = .msgReset})
 }
 
 tuck_readSensor :: proc (port: u8) -> rt.TuckResult(TRec_value(u16)) {

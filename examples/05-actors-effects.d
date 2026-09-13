@@ -14,7 +14,7 @@ struct tuck_Feed {
 enum tuck_CounterMsgKind { msgIncrement, msgReset }
 
 struct tuck_CounterMsg {
-    tuck_CounterMsgKind kind;
+    tuck_CounterMsgKind tuckTag;
     long n;
 }
 
@@ -26,7 +26,7 @@ struct tuck_Counter {
 __gshared tuck_Counter tuck_CounterSingleton;
 
 void handleMsg_tuck_Counter(ref tuck_Counter self, tuck_CounterMsg msg) {
-    final switch (msg.kind) {
+    final switch (msg.tuckTag) {
         case tuck_CounterMsgKind.msgIncrement:
             auto n = msg.n;
             self.count = (self.count + n);
@@ -48,12 +48,12 @@ bool drain_tuck_Counter() {
 }
 
 void sendIncrement_tuck_Counter(ref tuck_Counter self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuck_CounterMsg(tuck_CounterMsgKind.msgIncrement, n));
+    cast(void) rt.enqueue(self.mailbox, tuck_CounterMsg(tuckTag: tuck_CounterMsgKind.msgIncrement, n: n));
     rt.tuckNotifySend();
 }
 
 void sendReset_tuck_Counter(ref tuck_Counter self) {
-    cast(void) rt.enqueue(self.mailbox, tuck_CounterMsg(tuck_CounterMsgKind.msgReset));
+    cast(void) rt.enqueue(self.mailbox, tuck_CounterMsg(tuckTag: tuck_CounterMsgKind.msgReset));
     rt.tuckNotifySend();
 }
 

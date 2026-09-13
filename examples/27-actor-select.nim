@@ -7,7 +7,7 @@ proc tuck_main*(): int
 
 type tuck_AccumulatorMsgKind* = enum msgAdd, msgFinish, msgShutdown
 type tuck_AccumulatorMsg* = object
-  kind*: tuck_AccumulatorMsgKind
+  tuckTag*: tuck_AccumulatorMsgKind
   n*: int
 
 type tuck_Accumulator* = ref object
@@ -19,7 +19,7 @@ type tuck_Accumulator* = ref object
 let tuck_AccumulatorSingleton* = tuck_Accumulator()
 
 proc handleMsg*(self: tuck_Accumulator, msg: tuck_AccumulatorMsg) =
-  case msg.kind
+  case msg.tuckTag
   of msgAdd:
     let n = msg.n
     self.total = (self.total + n)
@@ -47,9 +47,9 @@ proc tuck_ready*(): bool =
 proc tuck_main*(): int =
   for tuck_i in (1 .. 10):
     if true:
-      discard enqueue(tuck_AccumulatorSingleton.mailbox, tuck_AccumulatorMsg(kind: msgAdd, n: tuck_i))
+      discard enqueue(tuck_AccumulatorSingleton.mailbox, tuck_AccumulatorMsg(tuckTag: msgAdd, n: tuck_i))
       tuckNotifySend()
-  discard enqueue(tuck_AccumulatorSingleton.mailbox, tuck_AccumulatorMsg(kind: msgFinish))
+  discard enqueue(tuck_AccumulatorSingleton.mailbox, tuck_AccumulatorMsg(tuckTag: msgFinish))
   tuckNotifySend()
   scheduler.waitUntil(tuck_ready)
   return tuck_AccumulatorSingleton.total
