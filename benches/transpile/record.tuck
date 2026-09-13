@@ -1,0 +1,20 @@
+# Kernel 2: a record crossing a call boundary. Tuck's claim is that records
+# are passed WITHOUT copying and the value guarantee lives in the checker,
+# so this should cost what the hand-written version costs.
+type Reading:
+  a: int
+  b: int
+  c: int
+  d: int
+  e: int
+  f: int
+
+fn score({r: Reading}) -> int:
+  return (r.a + r.c) + (r.e % 13)
+
+fn main() -> int:
+  var acc = 0
+  for i in 0 ..< 40000000:
+    let r = {a: i, b: 2, c: acc % 977, d: 4, e: i, f: 6} Reading
+    acc = acc + ({r: r} score)
+  return acc % 251

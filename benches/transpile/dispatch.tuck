@@ -1,0 +1,30 @@
+# Kernel 3: dispatch. An interface value in Tuck is a tagged variant that
+# COPIES — no vtable, no pointer — so the question is what that costs against
+# the same shape hand-written, and against Nim's own dynamic dispatch.
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+  | Tri({b: int, h: int})
+
+fn area({s: Shape}) -> int:
+  match s:
+    Circle: return (s.r * s.r) * 3
+    Rect: return s.w * s.h
+    Tri: return (s.b * s.h) /i 2
+
+fn one({i: int}) -> int:
+  let m = i % 3
+  if m == 0:
+    let c = Shape.Circle {r: i % 97}
+    return {s: c} area
+  if m == 1:
+    let r = Shape.Rect {w: i % 89, h: 3}
+    return {s: r} area
+  let t = Shape.Tri {b: i % 83, h: 4}
+  return {s: t} area
+
+fn main() -> int:
+  var acc = 0
+  for i in 0 ..< 40000000:
+    acc = acc + ({i: i} one)
+  return acc % 251

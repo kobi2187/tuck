@@ -51,3 +51,10 @@ tools/doc_snippets
 # indistinguishable from a fresh one — you could edit a suite, run it, and be
 # shown the previous version's result as green.
 tests/.runner-bin
+benches/transpile/.*
+benches/transpile/payload
+benches/transpile/record
+benches/transpile/dispatch
+benches/transpile/payload.nim
+benches/transpile/record.nim
+benches/transpile/dispatch.nim

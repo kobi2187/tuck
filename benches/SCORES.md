@@ -14,6 +14,63 @@ the absolute figure. A >2x slowdown on any line is worth investigating.
 | actor throughput | messages drained | ~21 M msgs/sec |
 | compiler front-end | lex+parse+check | ~23k lines/sec |
 
+## 2026-09-13 — what the TRANSPILER costs: Tuck-emitted vs hand-written Nim
+
+Every other bench here measures the runtime. This one measures the gap between
+what Tuck emits and what a programmer would have written by hand for the same
+job, in the same language, with the same flags — "am I paying for the
+abstraction?", asked directly. `bash benches/transpile/run.sh`.
+
+Three kernels, 40–60 M iterations each, `--release` against `-d:release`. Each
+pair returns its accumulator as the exit code, so a divergence in the answer
+shows up before any timing is believed.
+
+| Kernel | What it isolates | Tuck | hand-written Nim |
+|---|---|---|---|
+| payload call | `{a: i, b: acc} mix` vs `mix(i, acc)` | 0.183 s | 0.183 s |
+| record pass | a 6-field record crossing a call | 0.159 s | 0.159 s |
+| sum dispatch | `match` over a 3-variant sum | 0.078 s | 0.077 s |
+
+**No measurable overhead on any of them**, and the reason is visible in the
+emitted code rather than inferred from the clock:
+
+- The payload is **exploded at compile time**. `{a: i, b: acc} mix` emits
+  `tuck_mix(tuck_i, tuck_acc)` — a plain two-argument call. There is no struct
+  to build, so the one calling convention costs nothing against the ordinary
+  one.
+- A record parameter emits `proc tuck_score*(r: tuck_Reading): int` — the same
+  signature the hand-written version has. The value guarantee is in the
+  checker (TK-TY15), so codegen has nothing to add.
+
+### The dispatch design pays, against the alternative it replaces
+
+The row above compares Tuck's interface lowering against the *same shape*
+hand-written. The question worth asking is what that shape buys over the one a
+Nim programmer would reach for — inheritance and `method`:
+
+| dispatch, same answer (exit 62) | time |
+|---|---|
+| Tuck tagged variant | 0.078 s |
+| hand-written tagged variant | 0.077 s |
+| Nim `method` + `ref object` | 2.24 s |
+
+**29x.** Stated carefully: that figure is two costs together, not one. The
+`ref` design allocates per iteration AND dispatches through a vtable, and a
+programmer choosing `method` gets both — which is the point, since the
+comparison is between designs a person would actually write. It is not a claim
+that vtable dispatch alone costs 29x.
+
+This is the measurement behind `docs/interfaces.md`'s "no function table, no
+thunks, no pointers — and the optimizer can see through the whole thing".
+Previously that was a description of the emitted code; now it has a number.
+
+### Found while measuring
+
+`--release` REJECTS a function over the size budget (`TK-CX02`), rather than
+reporting it — the dispatch kernel had to be split and then built with
+`--max-fn-lines:20`. Spec §6.3's "ruling: hard error" is therefore implemented
+for release builds, which `ROADMAP.md` listed under Missing. Corrected there.
+
 ## D runtime joins — 2026-08-29
 
 Third backend on the same vendored minicoro. Same bench, same N=10000 K=100,

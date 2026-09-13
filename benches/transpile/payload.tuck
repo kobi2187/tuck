@@ -1,0 +1,11 @@
+# Kernel 1: the payload call. Tuck's one calling convention is
+# `{a: 1, b: 2} f`; the question is whether that costs anything against a
+# hand-written two-argument call in the same target language.
+fn mix({a: int, b: int}) -> int:
+  return (a * 3) + (b % 7)
+
+fn main() -> int:
+  var acc = 0
+  for i in 0 ..< 60000000:
+    acc = acc + ({a: i, b: acc} mix)
+  return acc % 251
