@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (10)
+## A. Open bugs (12)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -123,6 +123,25 @@ with non-empty payloads of different types, which is why `examples/20`
 survives — its later handlers take empty payloads, so positional and named
 agree. Test: `known_bugs`, "an actor may have two handlers with different
 payloads".
+
+**A11 — `pool.release` frees the wrong slot, and slots leak.** All three
+runtimes match an item back to its cell BY VALUE (`pool.storage[i] == item`,
+mirrored deliberately). But `acquire` hands out a copy and nothing writes a
+slot, so every slot holds the same zero value and the scan always matches slot
+0. Releasing two items frees slot 0 twice and leaves slot 1 occupied forever:
+acquire both slots of a count-2 pool, release both, and only one comes back.
+The Nim runtime's own comment says "Compare by address within the storage
+array" — which is what it should do and does not. Test: `known_bugs`,
+"releasing every slot makes every slot available again".
+
+**A12 — `pool.acquire` hands out a COPY of the slot, not the slot.** Writing
+through what it returned and releasing does not change the pool's storage, so
+a pool cannot serve as a DMA target, a frame buffer, or anything hardware or
+another task fills in place — which is what pools are for. `examples/25` says
+"hand b.value to the DMA controller"; today that hands over a copy. The fix is
+a ruling on the API shape: `acquire` could return a handle the pool can map
+back to a slot (which also fixes A11), or the element could be addressable.
+Test: `known_bugs`, "a pool slot is storage, not a copy".
 
 The two entries that stood here before are fixed and locked in as regression
 guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the qualified

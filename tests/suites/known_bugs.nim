@@ -1137,4 +1137,65 @@ fn main() -> int:
   t.quietly: t.hostBuilds "an actor may have two handlers with different payloads"
   t.bugOpen "an actor may have two handlers with different payloads"
 
+  # 20. `release` frees the wrong slot, and a slot leaks. The runtime matches
+  # the item back to its cell BY VALUE (`pool.storage[i] == item`, all three
+  # runtimes, deliberately mirrored) — but `acquire` hands out a COPY and
+  # nothing ever writes a slot, so every slot holds the same zero value and
+  # the scan always matches slot 0. Releasing two items frees slot 0 twice;
+  # slot 1 stays occupied forever.
+  #
+  # Observable without leaving Tuck: acquire both slots of a count-2 pool,
+  # release both, and only one comes back.
+  #
+  # The Nim runtime's own comment says "Compare by address within the storage
+  # array" — which is what it should do and does not. Found 2026-09-13 while
+  # writing an H.264 frame-buffer pool.
+  t.src """
+type Cell:
+  n: int
+
+pool Cells = Cell [count: 2]
+
+fn take() -> int:
+  let s = Cells.acquire
+  if s.ok:
+    return 1
+  return 0
+
+fn main() -> int:
+  let a = Cells.acquire
+  let b = Cells.acquire
+  Cells.release {a.value}
+  Cells.release {b.value}
+  return ({} take) + ({} take)
+"""
+  t.quietly: t.runs "releasing every slot makes every slot available again", 2
+  t.bugOpen "releasing every slot makes every slot available again"
+
+  # 21. `acquire` hands out a COPY of the slot, not the slot. Writing through
+  # what it returned and releasing does not change the pool's storage, so a
+  # pool cannot be used for the thing pools exist for — a DMA target, a frame
+  # buffer, anything hardware or another task fills in place. examples/25
+  # says "hand b.value to the DMA controller"; today that hands over a copy.
+  t.src """
+type Cell:
+  n: int
+
+pool Cells = Cell [count: 2]
+
+fn main() -> int:
+  let a = Cells.acquire
+  if not a.ok:
+    return 90
+  var b = a.value
+  b ..n {42}
+  Cells.release {b}
+  let c = Cells.acquire
+  if not c.ok:
+    return 91
+  return c.value.n
+"""
+  t.quietly: t.runs "a pool slot is storage, not a copy", 42
+  t.bugOpen "a pool slot is storage, not a copy"
+
   t.finish()
