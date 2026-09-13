@@ -66,17 +66,17 @@ build all five. An interface whose methods return `bool` — a `Validator`, a
 `Predicate` — is Nim/D-only today and nothing says so until the Odin build
 runs. Test: `known_bugs`, "an interface method may return an enum".
 
-**A4 — a group bound picks the member of whichever type was declared LAST.**
-Two objects each providing the group's member is the ordinary case, and
-whichever is declared first is then reported as not conforming, naming the
-other one's `self`: "'A's 'reads' parameter 'self' is B, group 'Sensing'
-requires A". Swapping the two object declarations makes the same program
-check, so acceptance depends on file order. One provider alone is fine. This
-blocks any group with more than one implementor — which is every group worth
-declaring. Test: `known_bugs`, "a group bound picks the member of the
-RECEIVER's type". Found 2026-09-12 writing a two-detector app; sibling of the
-member-call selection fixed 2026-09-05, whose fix reached the call paths and
-not the conformance path.
+**A14 — a group-bounded generic does not BUILD on any backend.** The checker
+accepts it, then codegen emits three different names for one fn: the member
+unmangled (`proc reads*(self: var tuck_A)`), the mixin mangled
+(`mixin tuck_reads`), and the call unmangled (`return reads(x)`). Nim fails on
+the receiver first — `reads` wants `var tuck_A` and the generic param `x` is
+not one. Odin emits the member as `tuck_A_reads` and calls `reads`
+("Undeclared name"); D says "undefined identifier `reads`". Reproduces with a
+SINGLE provider, which has always checked clean — no test covered it because
+A4 made every multi-provider group unreachable and single-provider ones were
+only ever checked, never built. Test: `known_bugs`, "a group-bounded generic
+builds and runs".
 
 **A8 — a pool hands out a slot without validating it.** `Slots.acquire` on a
 `pool Slots = Live [count: 2]` yields a zeroed slot, so with `invariant: n > 0`
@@ -95,6 +95,9 @@ read/write pair through the handle, plus a sanctioned way to give a cell's
 ADDRESS to an extern — the one place a raw pointer is legitimate. Test:
 `known_bugs`, "a pool slot can be read and written through its handle".
 
+A4 (a group bound picking the LAST-declared provider — the conformance site
+now selects by receiver type, the same way the two member-call paths have
+since 2026-09-05, issue #38),
 A11 (release freeing the wrong slot and leaking), A5 (a register assignment
 lowering to the getter), A7 (an invariant not
 firing after a field assignment), A9 (a handler payload field named `kind`),

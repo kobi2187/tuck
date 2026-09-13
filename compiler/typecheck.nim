@@ -293,7 +293,7 @@ proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
          typeName(sig.params[0].typ) & " but the receiver is " &
          typeName(recvT), sp)
 
-proc sigForReceiver(tc: var TypeChecker, name: string, recvT: Type): FnSig =
+proc sigForReceiver(tc: TypeChecker, name: string, recvT: Type): FnSig =
   ## The overload of `name` whose FIRST param accepts this receiver.
   ##
   ## Two objects may each declare a member of the same name — `Blob.hash` and
@@ -1862,7 +1862,17 @@ proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
          "\n  (declare a free fn matching that shape for " &
          typeName(concreteT) & ")", sp)
     return
-  let got = tc.sigOf(key)
+  # By the RECEIVER, not by the name alone. Two objects each providing the
+  # group's member is not an edge case — it is the only reason to declare a
+  # group at all, and `sigOf` answers with whichever was registered LAST, so
+  # the first-declared provider was checked against the other one's `self`
+  # and reported as non-conforming. Acceptance depended on the order two
+  # unrelated objects appeared in the file.
+  #
+  # Same selection the two member-call paths got on 2026-09-05 (synthMethodCall
+  # via sigForReceiver); the conformance path was not part of that fix and
+  # kept taking whatever the name lookup handed back.
+  let got = tc.sigForReceiver(key, concreteT)
   let prov = tc.providerBindings(want, got, concreteT, binds, fnName, sp)
   let wantParams = want.fnParams
   if wantParams.len != got.params.len:

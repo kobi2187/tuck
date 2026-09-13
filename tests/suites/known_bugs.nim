@@ -985,14 +985,21 @@ fn main() -> int:
   t.quietly: t.badCheck "writing a [read] register field is rejected", "read"
   t.bugOpen "writing a [read] register field is rejected"
 
-  # 15. Group conformance resolves the required member BY NAME and takes the
+  # 15. Group conformance resolved the required member BY NAME and took the
   # last declaration, ignoring the receiver. Two objects each providing the
   # group's member is the ordinary case — that is what a group is FOR — and
-  # whichever is declared first is then reported as not conforming, naming
-  # the other one's `self`. Swap the two object declarations and the same
-  # program checks. Found 2026-09-12 writing a two-detector app against a
-  # `Sensing` group. Sibling of the member-call selection fixed 2026-09-05;
-  # that fix reached the call paths, not this one.
+  # whichever was declared first was reported as not conforming, naming the
+  # other one's `self`, so acceptance depended on file order. Found
+  # 2026-09-12 writing a two-detector app against a `Sensing` group. Sibling
+  # of the member-call selection fixed 2026-09-05; that fix reached the two
+  # call paths (synthMethodCall via sigForReceiver) and not this one, which
+  # now uses the same selection. Issue #38.
+  #
+  # NOTE this is an okCheck and not a `runs`, deliberately: a group-bounded
+  # generic does not yet BUILD on any backend even with a single provider —
+  # the member is emitted under a different name than the call uses, and with
+  # a `var` receiver a generic param cannot satisfy. That is a separate
+  # codegen gap, pinned below as its own entry.
   t.src """
 group Sensing:
   fn reads({self: Self}) -> int
@@ -1014,8 +1021,59 @@ fn main() -> int:
   let p = {a: 1} A
   return {x: p} one
 """
-  t.quietly: t.okCheck "a group bound picks the member of the RECEIVER's type"
-  t.bugOpen "a group bound picks the member of the RECEIVER's type"
+  t.okCheck "a group bound picks the member of the RECEIVER's type"
+  t.bugFixed "a group bound picks the member of the RECEIVER's type"
+
+  # ...and the other direction, which passed even while the bug was open
+  # (whichever provider was declared LAST was the one the name lookup
+  # returned). Pinned so a future selection change cannot trade one order
+  # for the other and still look green.
+  t.src """
+group Sensing:
+  fn reads({self: Self}) -> int
+
+object A:
+  a: u8
+  fn reads({self: A}) -> int:
+    return 1
+
+object B:
+  b: u8
+  fn reads({self: B}) -> int:
+    return 2
+
+fn one[T: Sensing]({x: T}) -> int:
+  return {self: x} reads
+
+fn main() -> int:
+  let q = {b: 2} B
+  return {x: q} one
+"""
+  t.okCheck "...and the LAST-declared provider still conforms"
+
+  # The fallback still reports. Selection by receiver must not turn a genuine
+  # non-conformance into silence: C provides no `reads` at all.
+  t.src """
+group Sensing:
+  fn reads({self: Self}) -> int
+
+object A:
+  a: u8
+  fn reads({self: A}) -> int:
+    return 1
+
+object C:
+  c: u8
+
+fn one[T: Sensing]({x: T}) -> int:
+  return {self: x} reads
+
+fn main() -> int:
+  let r = {c: 3} C
+  return {x: r} one
+"""
+  t.badCheck "...and a type providing nothing is still refused",
+             "Conformance\\ Error"
 
   # 16. On NIM ONLY, an assignment to a register field lowers to the GETTER:
   # `R.W = true` emits `tuck_R_W_get() = true`, which nim answers with
@@ -1247,5 +1305,42 @@ fn main() -> int [io]:
   t.outputs "...and the call actually runs", "handler\\ called\\ a\\ fn"
   t.hostBuilds "...on every backend"
   t.bugFixed "an errors handler may call a fn"
+
+  # 23. A group-bounded generic does not BUILD on any backend, even with a
+  # single provider. The checker accepts it (#38 is fixed above); codegen
+  # emits three different names for one fn:
+  #
+  #   proc reads*(self: var tuck_A): int    the member, UNMANGLED
+  #   mixin tuck_reads                      the mixin, mangled
+  #   return reads(x)                       the call, unmangled
+  #
+  # Nim then fails on the receiver instead: `reads` takes `var tuck_A` and
+  # `x` is a plain generic param, so "type mismatch ... [1] x: tuck_A". Odin
+  # emits the member as `tuck_A_reads` and calls `reads` — "Undeclared name".
+  # D says "undefined identifier `reads`".
+  #
+  # Separate from #38 and older: this reproduces with ONE provider, a shape
+  # that has always checked clean. No test covered it because #38 made every
+  # multi-provider group unreachable, and single-provider groups were only
+  # ever checked, never built.
+  t.src """
+group Sensing:
+  fn reads({self: Self}) -> int
+
+object A:
+  a: u8
+  fn reads({self: A}) -> int:
+    return 7
+
+fn one[T: Sensing]({x: T}) -> int:
+  return {self: x} reads
+
+fn main() -> int:
+  let p = {a: 1} A
+  return {x: p} one
+"""
+  t.okCheck "a group-bounded generic checks with one provider"
+  t.quietly: t.runs("a group-bounded generic builds and runs", 7)
+  t.bugOpen "a group-bounded generic builds and runs"
 
   t.finish()
