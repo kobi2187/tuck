@@ -162,6 +162,13 @@ type
     topLevelFns*: HashSet[string]     # plain top-level `fn` decls: the only
                                       # callees lowering explodes payloads for
                                       # (tasks and member fns are the backends')
+    objectMemberFns*: HashSet[string]
+      ## Fn names declared INSIDE a `type` or `object` body. Distinct from
+      ## "not top-level": a mixin/extern/pending member is collected with
+      ## top = false too, but it becomes a free fn in every backend, so it is
+      ## not one of these. Used to tell a group's legal provider (a free fn)
+      ## from an object's own member, which belongs to the interface/satisfies
+      ## mechanism instead.
     topLevelFnDecl*: Table[string, Decl]
       ## The top-level decl ITSELF for each name in topLevelFns. Needed
       ## because that set holds NAMES: when an object member and a top-level

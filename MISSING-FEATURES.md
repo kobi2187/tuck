@@ -66,23 +66,22 @@ build all five. An interface whose methods return `bool` — a `Validator`, a
 `Predicate` — is Nim/D-only today and nothing says so until the Odin build
 runs. Test: `known_bugs`, "an interface method may return an enum".
 
-**A14 — an object MEMBER is accepted as a group provider, then emits code no
-backend can build.** The free-fn form works and is now pinned as a passing
-guard (`known_bugs`, "a group bound dispatches to a free fn", nim+odin+d,
-returns 7) — that is the form spec §5.5 specifies: *"the compiler looks for a
-free function matching the group's required signature"*. Declaring the same fn
-inside `object A:` instead also CHECKS, and then emits three names for one fn
-— the member unmangled (`proc reads*(self: var tuck_A)`), the mixin mangled
-(`mixin tuck_reads`), the call unmangled (`return reads(x)`). Nim trips first
-on the `var` receiver, which the generic's non-var param cannot satisfy; Odin
-emits the member as `tuck_A_reads` and calls `reads`, so there the name is the
-blocker. Whether this should build or be REJECTED is a ruling: §5.5's own "why
-not extend interface/satisfies to type" paragraph puts object members on the
-`satisfies Interface` side of the line and groups on the free-standing-fn
-side, which argues for a checker rejection naming both options rather than a
-codegen fix. Either way, accept-then-emit-unbuildable is wrong. Issue #49.
-Test: `known_bugs`, "an object member satisfying a group is settled one way or
-the other".
+**A14 — a group with two implementations cannot be used.** A group takes free
+fns — an object's own member belongs to the `interface`/`satisfies` mechanism
+instead, ruled 2026-09-13 and now refused with a message offering both routes.
+Two free fns of one name in a single module is a Structure Error, so the
+multi-provider case, which is the only reason to declare a group, is by
+construction the CROSS-MODULE case — also the stdlib's shape, a module per
+implementation. That then fails for a different reason: the bounded verb's body
+calls the requirement UNQUALIFIED, and two imports exporting that name trip the
+ambiguous-import rule before group dispatch is consulted — *"'reads' is exported
+by 2 imports (sensa, sensb) — call it as 'sensa::reads' to say which"*.
+Qualifying is exactly what the verb must not do; it has to reach whichever
+provider matches `T`. `requirementKey`'s own doc comment anticipates the
+situation ("a program may import two implementations of the same contract");
+the call site never asks it. SINGLE-provider groups work end to end on all
+three backends and are pinned, including cross-module. Issue #38. Test:
+`known_bugs`, "a group bound picks the provider of the RECEIVER's type".
 
 **A8 — a pool hands out a slot without validating it.** `Slots.acquire` on a
 `pool Slots = Live [count: 2]` yields a zeroed slot, so with `invariant: n > 0`

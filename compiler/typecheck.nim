@@ -1854,6 +1854,30 @@ proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
                       fnName: string, sp: Span) =
   ## One requirement against what `concreteT` actually declares.
   let key = tc.requirementKey(want.name, fnName)
+  # Tuck has TWO contract mechanisms, split by what they abstract over:
+  # `interface` for role objects, which opt in with `satisfies` and compose
+  # with `+`; `group` for plain types, which is the generics-facing one a
+  # bound like `[T: Sensing]` uses. A fn declared inside an object belongs to
+  # the object, so offering it to a group mixes the two — the author wants
+  # either a free fn or an interface.
+  #
+  # Rejected rather than left to codegen: an object member DID satisfy this
+  # check, and then no backend could build the result (issue #49). Saying it
+  # here says the same thing in the language the author wrote.
+  #
+  # Only when the name is an object/type member HERE and no free fn of that
+  # name exists. A provider from an IMPORTED module lands in neither table
+  # and must keep working — that is the shape every v2 stdlib contract has,
+  # pinned by "a group provider may live in another module".
+  if key in tc.objectMemberFns and not tc.topLevelFnDecl.hasKey(key):
+    fail("Conformance Error: '" & typeName(concreteT) & "' declares '" &
+         want.name & "' as an object member, and a group takes a free fn.\n" &
+         "  Either move it out of the object as\n    " &
+         groupMemberSigText(want, concreteT, binds) &
+         "\n  or declare an `interface` and have " & typeName(concreteT) &
+         " `satisfies` it — an interface is the mechanism for an object's " &
+         "own members, as a group is for plain types.", sp)
+    return
   if not tc.fnSigs.hasKey(key):
     fail("Conformance Error: '" & typeName(concreteT) & "', bound to '" &
          paramName & ": " & groupName & "' in '" & fnName &

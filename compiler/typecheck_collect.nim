@@ -106,6 +106,8 @@ proc collectTypeDecl*(tc: var TypeChecker, d: Decl) =
       if a.name == "distinct":
         tc.distinctNames.incl(d.name)
   tc.collectSigs(d.typeMembers, top = false)
+  for m in d.typeMembers:
+    if m != nil and m.kind == dkFn: tc.objectMemberFns.incl(m.name)
 
 proc collectObjectDecl*(tc: var TypeChecker, d: Decl) =
   ## `{fields} Obj` constructs an object, exactly as `{fields} Rec` constructs
@@ -122,6 +124,8 @@ proc collectObjectDecl*(tc: var TypeChecker, d: Decl) =
   tc.objDecls[d.name] = d
   tc.typeDeclsByName[d.name] = d
   tc.collectSigs(d.objMembers, top = false)
+  for m in d.objMembers:
+    if m != nil and m.kind == dkFn: tc.objectMemberFns.incl(m.name)
 
 proc collectErrPolicy*(tc: var TypeChecker, d: Decl) =
   ## The module's error policy, which decides what a dropped fallible result

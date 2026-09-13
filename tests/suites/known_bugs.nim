@@ -985,34 +985,35 @@ fn main() -> int:
   t.quietly: t.badCheck "writing a [read] register field is rejected", "read"
   t.bugOpen "writing a [read] register field is rejected"
 
-  # 15. Group conformance resolved the required member BY NAME and took the
-  # last declaration, ignoring the receiver. Two objects each providing the
-  # group's member is the ordinary case — that is what a group is FOR — and
-  # whichever was declared first was reported as not conforming, naming the
-  # other one's `self`, so acceptance depended on file order. Found
-  # 2026-09-12 writing a two-detector app against a `Sensing` group. Sibling
-  # of the member-call selection fixed 2026-09-05; that fix reached the two
-  # call paths (synthMethodCall via sigForReceiver) and not this one, which
-  # now uses the same selection. Issue #38.
+  # 15. Group conformance resolved the required provider BY NAME and took the
+  # last registered, ignoring the receiver — so with two providers in play,
+  # whichever came first was checked against the other one's `self` and
+  # reported as not conforming. Issue #38.
   #
-  # NOTE this is an okCheck and not a `runs`, deliberately: a group-bounded
-  # generic does not yet BUILD on any backend even with a single provider —
-  # the member is emitted under a different name than the call uses, and with
-  # a `var` receiver a generic param cannot satisfy. That is a separate
-  # codegen gap, pinned below as its own entry.
+  # TWO MODULES, not two decls in one. A group takes FREE fns (an object's own
+  # member is the interface/satisfies mechanism, pinned below), and two free
+  # fns of one name in a single module is a Structure Error — "every top-level
+  # name is declared once". So the multi-provider case is by construction the
+  # cross-module one, which is also the stdlib's shape: a module per
+  # implementation.
+  #
+  # The blocker is no longer conformance SELECTION. It is that the bounded
+  # verb's own body calls `reads` unqualified, and two imports exporting that
+  # name trip the ambiguous-import rule before group dispatch is consulted:
+  #
+  #   Type Error: 'reads' is exported by 2 imports (sensa, sensb) —
+  #               call it as 'sensa::reads' to say which
+  #
+  # Qualifying is exactly what the verb must not do — it has to reach whichever
+  # provider matches T. requirementKey's own doc comment anticipates the
+  # situation ("a program may import two implementations of the same
+  # contract"); the call site simply never asks it.
   t.src """
+import sensa
+import sensb
+
 group Sensing:
   fn reads({self: Self}) -> int
-
-object A:
-  a: u8
-  fn reads({self: A}) -> int:
-    return 1
-
-object B:
-  b: u8
-  fn reads({self: B}) -> int:
-    return 2
 
 fn one[T: Sensing]({x: T}) -> int:
   return {self: x} reads
@@ -1021,49 +1022,43 @@ fn main() -> int:
   let p = {a: 1} A
   return {x: p} one
 """
-  t.okCheck "a group bound picks the member of the RECEIVER's type"
-  t.bugFixed "a group bound picks the member of the RECEIVER's type"
+  t.addFile("sensa.tuck", """public:
+  A
+  reads
 
-  # ...and the other direction, which passed even while the bug was open
-  # (whichever provider was declared LAST was the one the name lookup
-  # returned). Pinned so a future selection change cannot trade one order
-  # for the other and still look green.
-  t.src """
-group Sensing:
-  fn reads({self: Self}) -> int
-
-object A:
+type A:
   a: u8
-  fn reads({self: A}) -> int:
-    return 1
 
-object B:
+fn reads({self: A}) -> int:
+  return 1
+""")
+  t.addFile("sensb.tuck", """public:
+  B
+  reads
+
+type B:
   b: u8
-  fn reads({self: B}) -> int:
-    return 2
 
-fn one[T: Sensing]({x: T}) -> int:
-  return {self: x} reads
+fn reads({self: B}) -> int:
+  return 20
+""")
+  t.quietly: t.okCheck("a group bound picks the provider of the RECEIVER's type")
+  t.bugOpen "a group bound picks the provider of the RECEIVER's type"
 
-fn main() -> int:
-  let q = {b: 2} B
-  return {x: q} one
-"""
-  t.okCheck "...and the LAST-declared provider still conforms"
-
-  # The fallback still reports. Selection by receiver must not turn a genuine
-  # non-conformance into silence: C provides no `reads` at all.
+  # A type providing nothing at all is still refused — selection by receiver
+  # must not turn a genuine non-conformance into silence.
   t.src """
 group Sensing:
   fn reads({self: Self}) -> int
 
-object A:
+type A:
   a: u8
-  fn reads({self: A}) -> int:
-    return 1
 
-object C:
+type C:
   c: u8
+
+fn reads({self: A}) -> int:
+  return 1
 
 fn one[T: Sensing]({x: T}) -> int:
   return {self: x} reads
@@ -1333,26 +1328,17 @@ fn main() -> int:
   t.runs "a group bound dispatches to a free fn", 7
   t.hostBuilds "...on every backend"
 
-  # 24. ...but an object MEMBER accepted as the provider emits code no
-  # backend can build (issue #49). The member is emitted with a `var`
-  # receiver, which the generic's own non-var param cannot satisfy, and under
-  # a name the call site does not use:
+  # 24. An object's own member does NOT satisfy a group (ruled 2026-09-13).
+  # Tuck has two contract mechanisms split by what they abstract over:
+  # `interface` for role objects, which opt in with `satisfies` and compose
+  # with `+`; `group` for plain types, which is the generics-facing one a
+  # bound uses. A fn declared inside an object belongs to that object, so
+  # offering it to a group mixes the two.
   #
-  #   proc reads*(self: var tuck_A): int    the member, UNMANGLED
-  #   mixin tuck_reads                      the mixin, MANGLED
-  #   return reads(x)                       the call, UNMANGLED
-  #
-  # Odin emits the member as `tuck_A_reads` and calls `reads`, so there the
-  # NAME is the blocker rather than the receiver.
-  #
-  # Whether this should BUILD or should be REJECTED is a ruling, not an
-  # oversight — spec 5.5 says a group is satisfied by a free fn, and its own
-  # "why not extend interface/satisfies to type" paragraph draws the line
-  # this way round: an object has a bounded member set and uses
-  # `satisfies Interface`; a group exists for plain types whose associated
-  # fns are free-standing. Under that reading the fix is a checker rejection
-  # naming both real options, not codegen. Either way today's behaviour —
-  # accept, then emit something unbuildable — is wrong.
+  # It used to CHECK and then emit code no backend could build — the member
+  # emitted under a name the call site did not use, with a `var` receiver a
+  # generic param cannot fill. Saying it at the group bound says the same
+  # thing in the language the author wrote rather than in generated Nim.
   t.src """
 group Sensing:
   fn reads({self: Self}) -> int
@@ -1369,8 +1355,8 @@ fn main() -> int:
   let p = {a: 1} A
   return {x: p} one
 """
-  t.quietly: t.runs("an object member satisfying a group is settled one way " &
-                    "or the other", 7)
-  t.bugOpen "an object member satisfying a group is settled one way or the other"
+  t.badCheck "an object member does not satisfy a group", "object\\ member"
+  t.badCheck "...and the message offers both real routes", "satisfies"
+  t.bugFixed "an object member satisfying a group is settled one way or the other"
 
   t.finish()
