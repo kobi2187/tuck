@@ -604,6 +604,10 @@ type
       groupMembers*: seq[Decl]  # body-less dkFn sigs — same shape as
                                  # ifaceMembers, checked at a different time
     of dkActor:
+      actorGenerics*: seq[string]
+        ## `actor Inbox[T]` — forwarded to the actor's own fields, so an
+        ## actor whose machinery says nothing about what it carries is
+        ## written once and reused per element type (spec 9.1).
       attrs*: seq[TypeAttr]
       actorFields*: seq[FieldDef]
       handlers*: seq[Decl]

@@ -136,14 +136,24 @@ proc parseObjectDecl(p: var Parser, sp: Span): Decl =
 proc parseActorDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()
   let name = p.expectTypeName("actor").value
+  # Type params FIRST, then attributes — `actor Inbox[T] [queue: 16]`, the
+  # same order and the same two procs `type Name[T] [attrs]` uses. Both are
+  # bracket groups, told apart by case: a generic param is Uppercase, an
+  # attribute lowercase (parseGenericParams).
+  #
+  # Without this, parseDeclAttrs ate the FIRST bracket group whatever it was,
+  # so `actor Box[T]:` parsed with `T` recorded as an attribute — it looked
+  # supported and meant nothing — and `actor Box[T] [queue: 4]` failed with
+  # "Expected `Colon` here, found `[`".
+  let generics = p.parseGenericParams()
   var attrs: seq[TypeAttr]
   p.parseDeclAttrs(attrs)
   discard p.expect(tkColon)
   var fields: seq[FieldDef]
   var members: seq[Decl]
   p.parseObjectBody(fields, members)
-  Decl(span: sp, kind: dkActor, name: name, attrs: attrs,
-       actorFields: fields, handlers: members)
+  Decl(span: sp, kind: dkActor, name: name, actorGenerics: generics,
+       attrs: attrs, actorFields: fields, handlers: members)
 
 proc parseMixinDecl(p: var Parser, sp: Span): Decl =
   discard p.advance()

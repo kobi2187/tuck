@@ -1708,6 +1708,34 @@ boundaries. Queue (mailbox) size is a compile-time constant — the ring buffer
 is sized to it exactly, so a full mailbox is a fixed, known capacity, not an
 unbounded allocation.
 
+**An actor may be generic.** A singleton and a type parameter are not in
+tension: the parameter is forwarded to the actor's own fields, so an actor
+whose machinery says nothing about what it carries can be reused for a second
+element type instead of being written twice.
+
+```tuck-rejected
+actor Inbox[T] [queue: 16]:
+  pending: Seq[T]
+  seen: int = 0
+
+  on put({item: T}) -> void:
+    pending ..push {item}
+    seen += 1
+```
+
+Fenced `tuck-rejected` because the HEADER is implemented and the forwarding is
+not: an actor field cannot yet hold a bracketed type at all — `pending:
+Seq[int]` is refused the same way, with or without a type parameter — so there
+is nowhere for `T` to be forwarded TO. The declaration form below is real
+today; the body above is what it is for.
+
+The type parameter list comes **before** the attribute list, and both are
+optional: `actor Inbox[T] [queue: 16]`, `actor Inbox[T]`, `actor Inbox
+[queue: 16]` and `actor Inbox` are all well-formed. Ordering is fixed rather
+than free because `[T]` and `[queue: 16]` are both bracket groups and nothing
+else distinguishes them — the same reason a `fn`'s generics precede its
+attributes.
+
 ### 9.2 Tasks
 
 Async operations with a defined completion. `[io]`-annotated function calls are

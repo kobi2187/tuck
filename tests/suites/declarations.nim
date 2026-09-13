@@ -601,4 +601,62 @@ fn main() -> int:
 """
   t.runs "mutually recursive types through Seq build", 0
 
+  # An actor may be generic (spec 9.1, ruled 2026-09-13): the type parameter is
+  # forwarded to the actor's own fields, so an actor whose machinery says
+  # nothing about what it carries is written once and reused per element type.
+  #
+  # Type params come BEFORE attributes, the same order and the same two procs
+  # `type Name[T] [attrs]` uses — both are bracket groups, told apart by case.
+  # parseDeclAttrs used to eat the FIRST group whatever it was, so
+  # `actor Box[T]:` parsed with T recorded as an ATTRIBUTE (it looked
+  # supported and meant nothing) and `actor Box[T] [queue: 4]` failed with
+  # "Expected `Colon` here, found `[`".
+  t.src """
+actor Box[T] [queue: 4]:
+  n: int = 0
+
+  on go():
+    n = 1
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "an actor takes type params AND attributes"
+
+  t.src """
+actor Box[T]:
+  n: int = 0
+
+  on go():
+    n = 1
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "...type params alone"
+
+  t.src """
+actor Box [queue: 4]:
+  n: int = 0
+
+  on go():
+    n = 1
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "...attributes alone"
+
+  t.src """
+actor Box:
+  n: int = 0
+
+  on go():
+    n = 1
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "...and neither"
+
   t.finish()
