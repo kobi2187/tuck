@@ -2764,6 +2764,34 @@ proc constructedField(d: FieldDef, supplied: Table[string, Type],
     return FieldDef(name: d.name, typ: vt, span: d.span)
   d
 
+proc failIfCtorFieldMistyped(tc: var TypeChecker, e: Expr, calleeName: string,
+                             declared: seq[FieldDef],
+                             supplied: Table[string, Type]) =
+  ## Every field a construction SUPPLIES must fit the type the declaration
+  ## gives it.
+  ##
+  ## Nothing checked this. `{n: "oops"} Holder` against `n: int` typed clean,
+  ## emitted `tuck_Holder(n: "oops")`, and the BACKEND's compiler reported it
+  ## — against generated code the author never wrote. The same hole is why a
+  ## `{a: str} -> str` fn could be stored in a `{x: int} -> bool` fnsig slot
+  ## (issue #13): the store was a construction field, and the `fnRefVerdict`
+  ## machinery that would have refused it was simply never reached. Calls
+  ## have had this check all along (checkArgField); constructions had not.
+  ##
+  ## Only SUPPLIED fields: a missing one is a hole, which constructedField
+  ## marks and TK-TY16 reports separately.
+  for d in declared:
+    if not supplied.hasKey(d.name): continue
+    let vt = supplied[d.name]
+    if vt == nil or d.typ == nil: continue
+    # An interface slot needs `satisfies`, which `compatible` cannot see —
+    # same exemption checkArgField makes for a param of interface type.
+    if tc.ifaceSlot(d.typ) != "": continue
+    if tc.compatible(vt, d.typ): continue
+    fail(dcTyCtorFieldType,
+         "field '" & d.name & "' of '" & calleeName & "' expects " &
+         typeName(d.typ) & " but got " & typeName(vt), e.span)
+
 proc constructedType(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   ## `{fields} TypeName` — the declared type, EXCEPT that any declared field
   ## the payload did not supply comes back marked `<uninit>`.
@@ -2780,6 +2808,7 @@ proc constructedType(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   let nominal = Type(span: e.span, kind: tkNamed, name: calleeName)
   if declared.len == 0: return nominal
   let supplied = tc.suppliedFieldTypes(e)
+  tc.failIfCtorFieldMistyped(e, calleeName, declared, supplied)
   var holes = false
   var fs: seq[FieldDef]
   for d in declared: fs.add(constructedField(d, supplied, e.span, holes))

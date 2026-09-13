@@ -103,6 +103,8 @@ type
     dcTyErrNeedsList = "TK-TY24"        ## a fn raises but declares no
                                         ## `[error: ...]` list
     dcTyUninspectedWrapper = "TK-TY25"  ## a `?T`/`!T` bound and never read
+    dcTyCtorFieldType = "TK-TY26"       ## a construction field does not fit its
+                                        ## declared type
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -312,6 +314,10 @@ proc parseExplanation(d: DiagCode): string =
     "on, return it, store it. Only ignoring it entirely is left. A `?T` " &
     "PARAMETER is exempt — that value is the caller's choice to pass, and a " &
     "callee that hands it straight through never reads it either."
+  of dcTyCtorFieldType:
+    "A field given in a construction does not fit the type the declaration " &
+    "gives it. This was unchecked: the value rode to codegen and only the " &
+    "BACKEND's compiler objected, in generated code the author never wrote."
   of dcPaWordOperator:
     "`mod` and `div` are word-operators in Nim, Pascal and Python; in Tuck " &
     "they are `%` and `/i`. Left alone, a bare word between two operands " &

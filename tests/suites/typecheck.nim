@@ -2528,4 +2528,78 @@ fn main() -> int:
 """
   t.okCheck "a ?T parameter the callee never reads is not an error"
 
+  # A construction's field values are checked against the DECLARED field
+  # types (TK-TY26). Nothing checked this: `{n: "oops"} Holder` against
+  # `n: int` typed clean, emitted `tuck_Holder(n: "oops")`, and the BACKEND's
+  # compiler reported it — against generated code the author never wrote.
+  # Calls had the check all along (checkArgField); constructions did not.
+  t.src """
+type Holder:
+  n: int
+
+fn main() -> int:
+  let h = {n: "oops"} Holder
+  return 0
+"""
+  t.badCheck "a construction field must fit its declared type", "TK-TY26"
+  t.badCheck "...naming both types", "expects\\ int\\ but\\ got\\ str"
+
+  # An object, not just a record type — same path, and the one the stdlib uses.
+  t.src """
+object Holder:
+  n: int
+
+fn main() -> int:
+  let h = {n: "oops"} Holder
+  return 0
+"""
+  t.badCheck "...on an object too", "TK-TY26"
+
+  # Issue #13: storing into a `fnsig` slot IS a construction field, which is
+  # why the fnRefVerdict machinery that would have refused it was never
+  # reached. Calling THROUGH a slot was checked; the store was not.
+  t.src """
+fnsig Slot = {x: int} -> bool
+
+type Holder:
+  f: Slot
+
+fn other({a: str}) -> str:
+  return a
+
+fn main() -> int:
+  let h = {f: :other} Holder
+  return 0
+"""
+  t.badCheck "a mismatched fn-ref cannot be stored in a fnsig slot", "TK-TY26"
+
+  # ...and the matching one still stores.
+  t.src """
+fnsig Slot = {x: int} -> bool
+
+type Holder:
+  f: Slot
+
+fn good({x: int}) -> bool:
+  return x > 0
+
+fn main() -> int:
+  let h = {f: :good} Holder
+  return 0
+"""
+  t.okCheck "...and a matching fn-ref still stores"
+
+  # A MISSING field is a hole, reported by TK-TY16, not by this check —
+  # the new rule looks only at fields actually supplied.
+  t.src """
+type Holder:
+  n: int
+  m: int
+
+fn main() -> int:
+  let h = {n: 1} Holder
+  return h.m
+"""
+  t.badCheck "a missing field is still a hole, not a type error", "TK-TY16"
+
   t.finish()
