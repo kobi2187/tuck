@@ -768,8 +768,16 @@ proc hostBuilds*(t: var T, name: string) =
     if t.skippedCmd(idx): continue
     let (rc, output) = t.resultOf(idx)
     if rc != 0:
-      t.no name, label & " rejected the emitted code: " &
-                 tailLines(output, 2)
+      # The rc is in the message on purpose. A host compiler that REJECTS a
+      # program prints a diagnostic; one that exits non-zero with an EMPTY
+      # buffer was killed, or its output was lost on the way back. Every
+      # occurrence of the recursive_types flake (issue #31) has looked like
+      # the second and thrown the number away, leaving nothing to tell the
+      # two apart.
+      let detail = if output.strip() == "": "NO OUTPUT"
+                   else: tailLines(output, 2)
+      t.no name, label & " rejected the emitted code (rc=" & $rc & "): " &
+                 detail
       return
     ran.add label
   t.ok name & "  [" & ran.join(", ") & "]"
