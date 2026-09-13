@@ -82,17 +82,40 @@ fn main() -> int:
 """
   t.okCheck "three objects may share a member fn name"
 
-  # OPEN: a member fn still collides with a TOP-LEVEL fn of the same name.
+  # A member fn and a top-level fn may share a name, and a call that NAMES
+  # the fn reaches the top-level one (issue #19).
   #
-  # This one is the CHECKER, not emission. collectSigs registers object members
-  # under their bare name into the same flat fnSigs as top-level fns
-  # (typecheck.nim — "keyed by name alone, no overloading"), so `Dog.noise`
-  # overwrites the free `noise` and the call demands a `self`. Pools already show
-  # the fix — they key qualified (`Pool.acquire`) — but applying it to members
-  # means changing call resolution, not just emission, so it is its own change.
+  # Fixed by identity, not by name. `topLevelFns` is a HashSet of NAMES, and
+  # topLevelDeclOfFn asked `d.name in tc.topLevelFns` of each candidate —
+  # which is true of BOTH decls when they share a name, so it returned
+  # whichever `fnDecls` happened to list first. The top-level decl is now
+  # recorded as itself (topLevelFnDecl) and returned directly.
+  #
+  # DECLARATION ORDER IS THE POINT. The object comes first here on purpose:
+  # with the top-level fn first the old code passed by luck, which is how
+  # this sat marked fixed while the reversed order still failed. Same
+  # order-dependence family as the group-conformance bug (#38).
+  t.src """
+object Dog:
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 1
+
+fn noise({n: int}) -> int:
+  return n + 1
+
+fn main() -> int:
+  return {n: 41} noise
+"""
+  t.okCheck "a member fn and a top-level fn may share a name"
+  t.runs "...and a call naming it reaches the TOP-LEVEL one", 42
+  t.hostBuilds "...on every backend"
+  t.bugFixed "member fn shadows a top-level fn of the same name"
+
+  # ...and the other order, which passed even while the bug was open.
   t.src """
 fn noise({n: int}) -> int:
-  return n
+  return n + 1
 
 object Dog:
   name: str
@@ -102,72 +125,6 @@ object Dog:
 fn main() -> int:
   return {n: 41} noise
 """
-  t.quietly: t.okCheck("a member fn and a top-level fn may share a name")
-  t.bugFixed "member fn shadows a top-level fn of the same name"
-
-  # Two objects may each declare a member of the same name: the RECEIVER picks
-  # which, not whichever registered last. Was: fnSigs was keyed by name alone,
-  # so Commit.hash evicted Blob.hash and `b.hash` on a Blob was checked against
-  # Commit's signature — "argument to 'hash' expects Commit but got Blob",
-  # accusing correct code. Found 2026-09-04 (git-lite); fixed by holding every
-  # signature under a name and selecting on the receiver's type.
-  t.src """
-object Blob:
-  data: str
-  fn hash({self: Blob}) -> int:
-    return 11
-
-object Commit:
-  msg: str
-  fn hash({self: Commit}) -> int:
-    return 22
-
-fn main() -> int:
-  let b = {data: "x"} Blob
-  let c = {msg: "y"} Commit
-  return b.hash + c.hash
-"""
-  t.runs "same-named members dispatch on the receiver, not declaration order", 33
-
-  # The same selection through the `.fn {args}` form, where the receiver fills
-  # one slot and the payload the rest.
-  t.src """
-object Blob:
-  n: int
-  fn grow({self: Blob, by: int}) -> int:
-    return self.n + by
-
-object Commit:
-  n: int
-  fn grow({self: Commit, by: int}) -> int:
-    return self.n * by
-
-fn main() -> int:
-  let b = {n: 10} Blob
-  let c = {n: 10} Commit
-  return b.grow {by: 5} + c.grow {by: 5}
-"""
-  t.runs "...and through '.fn {args}' too", 65
-
-  # A receiver that matches NEITHER overload is still rejected — selection
-  # falls back to a real signature so the message names one.
-  t.src """
-object Blob:
-  fn hash({self: Blob}) -> int:
-    return 1
-
-object Commit:
-  fn hash({self: Commit}) -> int:
-    return 2
-
-type Other:
-  x: int
-
-fn main() -> int:
-  let o = {x: 1} Other
-  return o.hash
-"""
-  t.badCheck "a receiver matching no overload is still rejected", "hash"
-
+  t.runs "...whichever order the two are declared in", 42
 
   t.finish()

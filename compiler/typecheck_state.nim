@@ -162,6 +162,12 @@ type
     topLevelFns*: HashSet[string]     # plain top-level `fn` decls: the only
                                       # callees lowering explodes payloads for
                                       # (tasks and member fns are the backends')
+    topLevelFnDecl*: Table[string, Decl]
+      ## The top-level decl ITSELF for each name in topLevelFns. Needed
+      ## because that set holds NAMES: when an object member and a top-level
+      ## fn share one, `d.name in topLevelFns` is true of both decls and
+      ## cannot tell them apart. Same shape of mistake as the name-keyed
+      ## narrowing noted below.
     knownModules*: HashSet[string]    # imported modules + qualified-pending prefixes
     currentErrTypes*: seq[string]     # [error: A | B] of the fn being checked
     # Narrowing (`if r.ok:`) used to live here as a HashSet[string] keyed by
@@ -210,9 +216,8 @@ proc topLevelDeclOfFn*(tc: TypeChecker, name: string): Decl =
   ## same name. A call written `{r: x} peek` names the free fn; a member is
   ## reached through a receiver and is not what this call resolves to.
   ## Falls back to whatever is registered when there is no top-level one.
+  if tc.topLevelFnDecl.hasKey(name): return tc.topLevelFnDecl[name]
   if not tc.fnDecls.hasKey(name): return nil
-  for d in tc.fnDecls[name]:
-    if d != nil and d.name in tc.topLevelFns: return d
   tc.declOfFn(name)
 
 proc addFnSig*(tc: var TypeChecker, name: string, sig: FnSig) =

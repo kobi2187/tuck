@@ -35,7 +35,9 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   # (genPendingStub), so its real params are ({payload: T},) — nothing like its
   # DECLARED params, which is what topLevelFns's consumers (lowering,
   # codegen's explodeRecordArg/genCall) would explode against.
-  if top and not d.isPending: tc.topLevelFns.incl(d.name)
+  if top and not d.isPending:
+    tc.topLevelFns.incl(d.name)
+    tc.topLevelFnDecl[d.name] = d
   if "::" in d.name:
     # qualified sketch stub legalizes its module prefix
     tc.knownModules.incl(d.name.split("::")[0])
