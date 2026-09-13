@@ -657,7 +657,7 @@ const OdinWidthNames = ["u8", "u16", "u32", "u64",
 
 proc genLit(ctx: var OdinCodegenCtx, e: Expr): string =
   case e.litKind
-  of lkStr: "\"" & e.litValue & "\""
+  of lkStr: "\"" & escapeStringLit(e.litValue) & "\""
   of lkInt, lkFloat:
     # A bare Odin literal is `int` (or `f64`), and Odin does not convert
     # between it and a fixed-width type implicitly: `return rt.tok(0)` in an

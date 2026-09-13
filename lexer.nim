@@ -296,19 +296,61 @@ proc handleEOF*(L: var Lexer) =
     L.pendingTokens.add(Token(kind: tkDedent, value: "", line: L.line, column: L.column))
   L.pendingTokens.add(Token(kind: tkEOF, value: "", line: L.line, column: L.column))
 
+proc escapeChar(L: var Lexer, c: char, line, col: int): char =
+  ## One escape, DECODED — the token carries the real character, so every
+  ## stage after this one sees the string the author meant rather than the
+  ## bytes they typed. Each backend re-escapes on the way out (see
+  ## resolution.escapeStringLit), which is what keeps one Tuck source meaning
+  ## the same thing on Nim, Odin and D.
+  ##
+  ## An unknown escape is REJECTED. Passing it through was the old behaviour
+  ## and it was not neutral: `"a\nb"` reached every backend as the two
+  ## characters `\` and `n`, which each host then read as a newline — so the
+  ## feature half-worked, undocumented, by way of whatever the target language
+  ## happened to define.
+  case c
+  of '\\': '\\'
+  of '"': '"'
+  of 'n': '\n'
+  of 't': '\t'
+  of 'r': '\r'
+  of '0': '\0'
+  else:
+    L.reportError("Unknown escape sequence '\\" & c &
+                  "' in a string literal. Tuck defines \\\\, \\\", \\n, " &
+                  "\\t, \\r and \\0.", line, col, "TK-LX07")
+    '\0'
+
 proc lexString*(L: var Lexer) =
   let startLine = L.line
   let startCol = L.column
   L.advance() # eat opening '"'
   let startPos = L.position
+  var escaped = false
   while L.peek() != '"' and L.peek() != '\0':
+    if L.peek() == '\\' and L.peek(1) != '\0':
+      escaped = true
+      L.advance()   # the backslash; the escaped char is eaten below, so a
+                    # `\"` does not end the literal
     L.advance()
-  if L.peek() == '"':
-    let val = L.source[startPos ..< L.position]   # one slice, not N appends
-    L.advance() # eat closing '"'
-    L.pendingTokens.add(Token(kind: tkStrLit, value: val, line: startLine, column: startCol))
-  else:
+  if L.peek() != '"':
     L.reportError("Unterminated string literal.", startLine, startCol)
+    return
+  let raw = L.source[startPos ..< L.position]
+  L.advance() # eat closing '"'
+  # The common literal holds no backslash at all, and keeps the single slice.
+  var val = raw
+  if escaped:
+    val = newStringOfCap(raw.len)
+    var i = 0
+    while i < raw.len:
+      if raw[i] == '\\' and i + 1 < raw.len:
+        val.add(L.escapeChar(raw[i + 1], startLine, startCol))
+        i += 2
+      else:
+        val.add(raw[i])
+        i += 1
+  L.pendingTokens.add(Token(kind: tkStrLit, value: val, line: startLine, column: startCol))
 
 proc lexNumber*(L: var Lexer) =
   let startLine = L.line

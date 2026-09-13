@@ -50,6 +50,7 @@ type
     dcLxIndent = "TK-LX04"              ## indentation does not match any level
     dcLxIndentWidth = "TK-LX06"         ## a step in that is not exactly 2 spaces
     dcLxNumber = "TK-LX05"              ## malformed numeric literal
+    dcLxBadEscape = "TK-LX07"           ## an escape sequence Tuck does not define
 
     # --- PA: parse --------------------------------------------------------
     dcPaExpectedExpr = "TK-PA01"        ## an expression was required here
@@ -204,6 +205,12 @@ proc lexExplanation(d: DiagCode): string =
     "because indentation is structure here — if any amount nested, two files " &
     "that look different could be the same program."
   of dcLxNumber: "A numeric literal the lexer cannot read."
+  of dcLxBadEscape:
+    "A backslash in a string literal begins an escape, and this is not one " &
+    "Tuck defines. The whole set is \\\\, \\\", \\n, \\t, \\r and \\0. " &
+    "An unknown escape is rejected rather than passed through, because " &
+    "passing it through would hand the backslash to whichever backend built " &
+    "the program and let the same source mean different things on each."
   else: ""
 
 proc parseExplanation(d: DiagCode): string =

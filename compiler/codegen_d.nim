@@ -72,7 +72,7 @@ proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
 
 proc genDLit(e: Expr): string =
   case e.litKind
-  of lkStr: "\"" & e.litValue & "\""
+  of lkStr: "\"" & escapeStringLit(e.litValue) & "\""
   of lkInt:
     # `L`, because Tuck's `int` is D's `long` and a bare D integer literal is
     # `int` — 32-bit. Everywhere else there is a declared type to convert to,

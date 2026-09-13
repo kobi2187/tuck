@@ -473,7 +473,7 @@ const NimLitSuffix = {
 
 proc genLit(ctx: CodegenCtx, e: Expr): string =
   case e.litKind
-  of lkStr: "\"" & e.litValue & "\""
+  of lkStr: "\"" & escapeStringLit(e.litValue) & "\""
   of lkInt:
     # An integer literal past the signed range is a u64 literal and has to say
     # so. Nim reads a bare one as `int` and refuses it — "number out of range:

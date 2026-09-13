@@ -348,3 +348,30 @@ proc isLastUse*(r: Resolution, e: Expr): bool =
   ## analysis did not reach, which is the safe answer: an unproved use is
   ## copied exactly as it always was.
   e != nil and e.id in r.lastUses
+
+proc escapeStringLit*(v: string): string =
+  ## A Tuck string literal, spelled for a target language.
+  ##
+  ## The lexer DECODES escapes, so `v` holds real characters — a literal
+  ## newline, a literal quote. Emitting it raw produced source the host could
+  ## not parse (an embedded `"` closed the literal early) or silently
+  ## reinterpreted. Escaping here is what makes the three backends agree.
+  ##
+  ## Lives in resolution.nim because it is the one module the checker and all
+  ## three backends already import; Nim, Odin and D accept this same spelling,
+  ## so there is nothing per-backend to say.
+  ##
+  ## `\x00` rather than `\0` for NUL: Nim reads `\0` in a string as an octal
+  ## escape it does not define, and the explicit hex form is accepted by all
+  ## three.
+  result = newStringOfCap(v.len)
+  for c in v:
+    case c
+    of '\\': result.add("\\\\")
+    of '"': result.add("\\\"")
+    of '\n': result.add("\\n")
+    of '\t': result.add("\\t")
+    of '\r': result.add("\\r")
+    of '\0': result.add("\\x00")
+    else: result.add(c)
+
