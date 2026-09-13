@@ -105,6 +105,8 @@ type
     dcTyUninspectedWrapper = "TK-TY25"  ## a `?T`/`!T` bound and never read
     dcTyCtorFieldType = "TK-TY26"       ## a construction field does not fit its
                                         ## declared type
+    dcTyMemberShadowsFn = "TK-TY27"     ## one name is both an object's member
+                                        ## and a top-level fn
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -179,14 +181,48 @@ proc categoryName*(d: DiagCode): string =
   of "CX": "Complexity"
   else: "Semantic"
 
-proc withCode*(d: DiagCode, msg: string): string =
-  ## `Type Error [TK-TY05]: composed field 'x' ...`
+const WarningCodes* = {dcTyMemberShadowsFn}
+  ## Codes that REPORT without stopping the build. Kept beside the registry
+  ## rather than inferred from the category letters, because severity is a
+  ## property of the individual diagnostic and not of its category — TY holds
+  ## both. `tuck explain` reads this so it cannot label a warning "Error".
+
+proc severityOf*(d: DiagCode): string =
+  if d in WarningCodes: "Warning" else: "Error"
+
+proc withSeverity*(d: DiagCode, severity, msg: string): string =
+  ## `Type Error [TK-TY05]: ...` / `Type Warning [TK-TY27]: ...`
   ##
   ## The category word stays: it is what a reader understands without a lookup,
   ## and the code is what they search for. An uncoded diagnostic passes through
   ## untouched, so a message keeps whatever prefix it already wrote itself.
   if d == dcNone: msg
-  else: categoryName(d) & " Error [" & $d & "]: " & msg
+  else: categoryName(d) & " " & severity & " [" & $d & "]: " & msg
+
+proc withCode*(d: DiagCode, msg: string): string =
+  withSeverity(d, "Error", msg)
+
+type PendingWarning* = tuple[msg: string, line, col: int]
+
+var warnings*: seq[PendingWarning]
+  ## Diagnostics that do NOT stop the build.
+  ##
+  ## Module-level for the same reason `fail` raises: a warning is reported
+  ## from deep inside the checker, where threading a collector through every
+  ## proc would touch far more than the warning is worth. Drained once by the
+  ## driver, which is the only thing that knows the FILE the line belongs to.
+
+proc warn*(d: DiagCode, msg: string, line, col: int) =
+  ## Report without stopping. Deduplicated on the exact text and position, so
+  ## a checker path reached twice does not say the same thing twice.
+  let w: PendingWarning = (withSeverity(d, "Warning", msg), line, col)
+  if w notin warnings: warnings.add(w)
+
+proc takeWarnings*(): seq[PendingWarning] =
+  ## Hand over what has accumulated and reset, so a second check in the same
+  ## process does not re-report the first one's findings.
+  result = warnings
+  warnings = @[]
 
 proc lexExplanation(d: DiagCode): string =
   ## LX — the bytes do not form tokens.
@@ -314,6 +350,13 @@ proc parseExplanation(d: DiagCode): string =
     "on, return it, store it. Only ignoring it entirely is left. A `?T` " &
     "PARAMETER is exempt — that value is the caller's choice to pass, and a " &
     "callee that hands it straight through never reads it either."
+  of dcTyMemberShadowsFn:
+    "One name is declared both as an object's own member and as a top-level " &
+    "fn. Both are reachable and they are different functions: a call through " &
+    "a RECEIVER (`b.noise`) reaches the member, and a call that NAMES the fn " &
+    "(`{n: 41} noise`) reaches the top-level one. That is not an error — it " &
+    "is worth saying out loud, because the two read alike and picking the " &
+    "wrong one compiles."
   of dcTyCtorFieldType:
     "A field given in a construction does not fit the type the declaration " &
     "gives it. This was unchecked: the value rode to codegen and only the " &

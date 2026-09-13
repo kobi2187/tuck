@@ -565,6 +565,12 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
   if e.fieldName in tc.objectMemberFns and
      tc.topLevelFnDecl.hasKey(e.fieldName):
     semLayer.markMemberRef(callee)
+    warn(dcTyMemberShadowsFn,
+         "'" & e.fieldName & "' names both " & typeName(recvT) &
+         "'s own member and a top-level fn. The receiver is " &
+         typeName(recvT) & ", so the MEMBER is used here. Write " &
+         "`{...} " & e.fieldName & "` to reach the top-level one.",
+         e.span.line, e.span.col)
   setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: @[e.receiver],
                             callee: callee))
   sig.ret
@@ -2659,6 +2665,18 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   let calleeDecl = tc.topLevelDeclOfFn(calleeName)
   if calleeDecl != nil:
     resolveTo(semLayer, e, calleeDecl)
+  # The other half of TK-TY27: this call NAMED the fn, so it reaches the
+  # top-level one while an object's member of the same name sits beside it.
+  # Said here as well as at the receiver form, because the confusion runs
+  # both ways — the two spellings read alike and each silently reaches the
+  # other's function if written the other way round.
+  if calleeName in tc.objectMemberFns and
+     tc.topLevelFnDecl.hasKey(calleeName):
+    warn(dcTyMemberShadowsFn,
+         "'" & calleeName & "' names both a top-level fn and an object's own " &
+         "member. This call names the fn, so the TOP-LEVEL one is used here. " &
+         "Write `<receiver>." & calleeName & "` to reach the member.",
+         e.span.line, e.span.col)
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(calleeName, sig, e, bindings)
   # A fn with no `->` declares no return type; its body is statements, so a

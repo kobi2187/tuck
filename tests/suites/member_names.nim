@@ -236,4 +236,48 @@ fn main() -> int:
 """
   t.runs "...whether or not the receiver's fields cover the free fn's params", 10
 
+  # TK-TY27 — the first WARNING severity in the tree. A name declared both as
+  # an object's member and as a top-level fn is legal and both are reachable,
+  # so this reports without stopping the build: the two spellings read alike
+  # and each silently reaches the other's function if written the other way
+  # round.
+  #
+  # Both call sites say it, each naming which fn IS used and how to reach the
+  # other — a warning that only says "ambiguous" would leave the reader where
+  # it found them.
+  t.src """
+object B:
+  n: int
+  fn noise({self: B}) -> int:
+    return self.n
+
+fn noise({n: int}) -> int:
+  return n + 1
+
+fn main() -> int:
+  let b = {n: 10} B
+  return ({n: 4} noise) + b.noise
+"""
+  t.okCheck "a shadowed name still CHECKS — a warning does not stop the build"
+  t.checkSays "...the receiver form says the member is used",
+              "the\\ MEMBER\\ is\\ used"
+  t.checkSays "...the named form says the top-level one is used",
+              "the\\ TOP-LEVEL\\ one\\ is\\ used"
+  t.checkSays "...under a Warning severity, not an Error",
+              "Type\\ Warning\\ \\[TK-TY27\\]"
+  t.runs "...and the program still runs, reaching both", 15
+
+  # No shadowing, no warning — the common case must stay silent.
+  t.src """
+object B:
+  n: int
+  fn noise({self: B}) -> int:
+    return self.n
+
+fn main() -> int:
+  let b = {n: 10} B
+  return b.noise
+"""
+  t.runs "an unshadowed member call is silent", 10
+
   t.finish()

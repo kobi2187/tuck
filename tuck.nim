@@ -555,6 +555,12 @@ proc checkProgram(path: string, needBodies = false,
     vSubNote($result.len & " module(s)")
     vEnd(psResolveDeclRefs, t0)
   let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
+  # Non-fatal diagnostics, printed at the offending line exactly as an error
+  # is — same file:line:col prefix — but the build carries on. Drained AFTER
+  # checkOrDie so a program that fails to check reports its error and nothing
+  # else; a warning beside a rejection is noise.
+  for w in takeWarnings():
+    stderr.writeLine(path & ":" & $w.line & ":" & $w.col & ": " & w.msg)
   # program checked clean: refresh the signature index for future checks
   updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
   report("PENDING", "unimplemented", pendingEntries(result, sigOnly))
@@ -583,7 +589,7 @@ when isMainModule:
     if dc == dcNone:
       die("tuck: no such diagnostic code: " & paramStr(2) &
           " (codes look like TK-TY05)")
-    echo $dc, "  ", categoryName(dc), " Error"
+    echo $dc, "  ", categoryName(dc), " ", severityOf(dc)
     echo "  ", explanationOf(dc)
     quit(0)
   let path = paramStr(2)
