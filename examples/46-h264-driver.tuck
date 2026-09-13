@@ -1,0 +1,165 @@
+import scheduler
+
+# An H.264 capture-and-decode driver — the embedded shape, end to end.
+#
+# NOT run-gated on D: this actor has two handlers with differently-typed
+# payloads, and D builds the message envelope positionally (MISSING-FEATURES
+# A10), so the second handler's payload lands in the first one's field.
+# The handler payload is `nal:` rather than `kind:` for the same reason —
+# `kind` is the envelope's own discriminator (A9).
+
+register VI_CTRL at 0x50000000:
+  ENABLE:    bit 0 [read, write]
+  FRAME_DONE: bit 1 [read]
+  OVERRUN:   bit 2 [read]
+
+register VI_DMA at 0x50000010:
+  ARMED: bit 0 [read, write]
+
+register DEC_CTRL at 0x50001000:
+  START: bit 0 [read, write]
+  BUSY:  bit 1 [read]
+  ERR:   bit 2 [read]
+
+# Four buffers because the capture peripheral has four DMA descriptors. Not a
+# tuning knob: a fifth could never be handed to the hardware.
+pool FrameBuffers = Array[4096, u8] [count: 4]
+
+type NalKind:
+  | nonIdr
+  | idr
+  | sps
+  | pps
+  | sei
+
+type Action:
+  | decode
+  | configure
+  | skip
+  | flushThenDecode
+
+# What to do with a NAL unit, given what the decoder already knows. The
+# compiler proves this covers every combination: delete a row and it names the
+# one left unanswered.
+decision route({nal: NalKind, configured: bool, midFrame: bool}) -> Action:
+  | sps     _     _     -> Action.configure
+  | pps     _     _     -> Action.configure
+  | sei     _     _     -> Action.skip
+  | idr     _     true  -> Action.flushThenDecode
+  | idr     _     false -> Action.decode
+  | nonIdr  false _     -> Action.skip
+  | nonIdr  true  _     -> Action.decode
+
+# A frame the driver will hand upward. The bounds are the peripheral's, so
+# they are facts about the hardware, not defensive programming.
+type Frame:
+  width: int
+  height: int
+  bytes: int
+  invariant:
+    width > 0
+    height > 0
+    width <= 1920
+    height <= 1080
+    bytes <= 4096
+
+type DecoderState:
+  | Idle
+  | Configured
+  | Decoding
+  | Draining
+  transitions:
+    Idle -> Configured
+    Configured -> Decoding
+    Decoding -> Draining
+    Draining -> Decoding
+    Decoding -> Configured
+    Draining -> Configured
+
+registry Video:
+  | FrameReady({bytes: int})
+  | Overrun({dropped: int})
+  | DecodeError({code: u8})
+
+# --- the pipeline -------------------------------------------------------
+#
+# An actor because it owns the decoder's state and is driven by interrupts
+# turning into messages. One instance, by declaration: there is one capture
+# peripheral on the board.
+
+actor Pipeline [queue: 8]:
+  state: DecoderState = DecoderState.Idle
+  decoded: int = 0
+  dropped: int = 0
+  configured: bool = false
+
+  on nal({nal: NalKind, midFrame: bool}):
+    let what = {nal: nal, configured: self.configured, midFrame: midFrame} route
+    match what:
+      configure:
+        self.configured = true
+        self.state = DecoderState.Configured
+      decode:
+        self.state = DecoderState.Decoding
+        self.decoded = self.decoded + 1
+      flushThenDecode:
+        self.state = DecoderState.Draining
+        self.decoded = self.decoded + 1
+      skip:
+        self.dropped = self.dropped + 1
+
+  on overrun({n: int}):
+    self.dropped = self.dropped + n
+
+# Capturing one frame. Pool exhaustion is BACKPRESSURE: dropping a frame is
+# the correct answer when all four descriptors are in flight, not an error to
+# propagate.
+fn capture({want: int}) -> int:
+  let slot = FrameBuffers.acquire
+  if not slot.ok:
+    Video.raise Overrun {dropped: 1}
+    return 0
+  VI_DMA ..ARMED {true}
+  FrameBuffers.release {slot.value}
+  return want
+
+on Video.FrameReady({bytes: int}):
+  DEC_CTRL ..START {true}
+
+on Video.Overrun({dropped: int}):
+  VI_CTRL ..ENABLE {false}
+
+on Video.DecodeError({code: u8}):
+  VI_CTRL ..ENABLE {false}
+
+fn feed({nal: NalKind, midFrame: bool}) -> void:
+  Pipeline send nal {nal: nal, midFrame: midFrame}
+  return
+
+fn drained() -> bool:
+  return (Pipeline.decoded + Pipeline.dropped) >= 5
+
+# One GOP as the peripheral would deliver it. `capture` above is the hardware
+# path and is not called here: a register is a physical address, so reading
+# one on a hosted OS segfaults. The decode pipeline is pure logic and runs.
+fn config() -> void:
+  {nal: NalKind.sps, midFrame: false} feed
+  {nal: NalKind.pps, midFrame: false} feed
+  return
+
+fn stream() -> void:
+  {} config
+  {nal: NalKind.idr, midFrame: false} feed
+  {nal: NalKind.nonIdr, midFrame: false} feed
+  {nal: NalKind.nonIdr, midFrame: false} feed
+  {nal: NalKind.sei, midFrame: false} feed
+  {nal: NalKind.idr, midFrame: true} feed
+  return
+
+fn main() -> int:
+  let f = {width: 1920, height: 1080, bytes: 4096} Frame
+  {} stream
+  scheduler::waitUntil {pred: :drained}
+  # sps+pps configure, idr and two nonIdr decode, sei skips, the last idr
+  # arrives mid-frame so it flushes and decodes: 4 decoded, 1 dropped.
+  return (Pipeline.decoded * 10) + Pipeline.dropped

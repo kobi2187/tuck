@@ -1076,4 +1076,65 @@ fn main() -> int:
   t.quietly: t.hostBuilds "an interface method may return an enum"
   t.bugOpen "an interface method may return an enum"
 
+  # 18. An actor's message envelope carries a generated `kind` discriminator,
+  # and a handler payload field of the same name lands beside it — so the
+  # emitted struct declares `kind` twice and every backend refuses it:
+  #   nim  "attempt to redefine: 'kind'"
+  # `tuck ch` says OK. `kind` is an ordinary field name for anything carrying
+  # tagged data (a NAL kind, a message kind, an event kind), so this is a
+  # name a real program reaches for. Found 2026-09-13 writing an H.264
+  # capture driver whose handler took `{kind: NalKind}`.
+  #
+  # The generated name is at codegen_decl.nim:398 (`kind*: <Actor>MsgKind`).
+  # Same class as TK-PA12's host keywords — a name the author cannot see
+  # colliding with one codegen owns — but for a GENERATED name, which that
+  # guard does not cover.
+  t.src """
+type NalKind:
+  | idr
+  | sps
+
+actor Pipe:
+  seen: int
+  on nal({kind: NalKind}):
+    self.seen = self.seen + 1
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.hostBuilds "an actor handler payload may have a field named 'kind'"
+  t.bugOpen "an actor handler payload may have a field named 'kind'"
+
+  # 19. On D ONLY, an actor's send helper constructs the message envelope
+  # POSITIONALLY, so a second handler's payload lands in the first handler's
+  # field. The envelope is {kind, lvl, n}; `bump {n: 2}` emits
+  #   tuck_SinkMsg(tuck_SinkMsgKind.msgBump, n)
+  # and dmd answers "cannot implicitly convert expression `n` of type `long`
+  # to `tuck_Level`". Nim emits `tuck_SinkMsg(kind: msgBump, n: 2)` — named,
+  # and correct — and Odin builds too.
+  #
+  # It needs TWO handlers with non-empty payloads of different types, which is
+  # why examples/20 survives: its later handlers take empty payloads, so
+  # positional and named agree. Found 2026-09-13 writing an H.264 driver.
+  t.src """
+type Level:
+  | low
+  | high
+
+actor Sink:
+  seen: int
+
+  on setLevel({lvl: Level}):
+    self.seen = self.seen + 1
+
+  on bump({n: int}):
+    self.seen = self.seen + n
+
+fn main() -> int:
+  Sink send bump {n: 2}
+  return 0
+"""
+  t.quietly: t.hostBuilds "an actor may have two handlers with different payloads"
+  t.bugOpen "an actor may have two handlers with different payloads"
+
   t.finish()
