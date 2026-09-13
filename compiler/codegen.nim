@@ -898,6 +898,35 @@ proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
     ctx.genAssignTarget(e.receiver) & "." & e.fieldName
   else: ctx.genExpr(e)
 
+proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
+                   prelude, targetStr, valStr: string): string =
+  ## A field assignment is a MUTATION SITE, exactly as a `..` chain step is,
+  ## and owes the same two things the chain has always paid:
+  ##
+  ##   1. A register field is a raw pointer with no real field, so writing it
+  ##      means CALLING the setter. `REG.F = v` emitted `REG_F_get() = v` and
+  ##      nim answered "cannot be assigned to" — the target was rendered with
+  ##      the READ emitter, which is what a read of a register spells. Odin
+  ##      and D already spelled the setter here (issue #39).
+  ##   2. An invariant-carrying value re-validates after it is written. The
+  ##      chain form did; the assignment form did not, on ANY backend, so
+  ##      `t.celsius = -400` left a value breaking its own contract in plain
+  ##      sight (issue #41).
+  ##
+  ## Both need the VALUE, so neither can live in `genAssignTarget`, which
+  ## renders a target alone.
+  if e.target != nil and e.target.kind == exkField and
+     e.target.receiver != nil and e.target.receiver.kind == exkRegisterRef:
+    let regPrefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
+                                           e.target.fieldName)
+    if regPrefix != "":
+      return prelude & regPrefix & "_set(" & valStr & ")"
+  result = prelude & targetStr & " = " & valStr
+  let owner = assignInvariantOwner(ctx.res, e)
+  if owner != "" and ctx.hasInvariantsFast(owner):
+    result.add("\n" & "  ".repeat(ctx.indent) & "validate(" &
+               ctx.genExpr(e.target.receiver) & ")")
+
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
   # `let r = {args} task` — a RESULT-bound task call: schedule the task with
   # a result slot and await it (the caller yields if it's a coroutine, or
@@ -955,7 +984,7 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
       # declaration says what the author said.
       let declared = if e.declType != nil: ": " & genType(e.declType) else: ""
       return prelude & "var " & name & declared & " = " & valStr
-  prelude & targetStr & " = " & valStr
+  ctx.genFieldWrite(e, prelude, targetStr, valStr)
 
 proc matchArmHead(pat: Pattern, patStr: string): string =
   ## The branch label for one match arm. A WILDCARD is the catch-all, which

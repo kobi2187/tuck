@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (10)
+## A. Open bugs (8)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -55,15 +55,6 @@ error claims. (The emission this originally blamed turned out to be A5, a
 separate and larger bug — the getter is emitted for EVERY register
 assignment, `[write]` fields included.)
 
-**A5 — on Nim only, a register field assignment lowers to the GETTER.**
-`R.W = true` emits `tuck_R_W_get() = true`; nim answers "cannot be assigned
-to". The setter is emitted correctly right above it and never called. Odin and
-D both emit `tuck_R_W_set(true)` from the same source, so this is one
-backend's lowering. The `..` chain form (`R ..W {true}`) is correct
-everywhere, which is why the corpus never caught it — examples/20 uses the
-chain form throughout. Test: `known_bugs`, "a register field assignment emits
-the setter".
-
 **A6 — on Odin only, an interface method may only return `int`.** The dispatch
 closure is emitted as `proc(v: Iface) -> int` whatever the method returns, so
 it is right by luck for `int` and wrong for everything else: an enum, `bool`,
@@ -86,13 +77,6 @@ declaring. Test: `known_bugs`, "a group bound picks the member of the
 RECEIVER's type". Found 2026-09-12 writing a two-detector app; sibling of the
 member-call selection fixed 2026-09-05, whose fix reached the call paths and
 not the conformance path.
-
-**A7 — an invariant does not fire after a field ASSIGNMENT.** `t ..celsius
-{-400}` validates; `t.celsius = -400` does not, and the program then reads a
-value of the type that breaks its own contract. Spec 4.7 says invariants fire
-"after mutation" without distinguishing the two spellings. Same shape as A5:
-the `..` chain form is wired up and the assignment form is the one nobody
-reached. Test: `invariants`, "an invariant fires after a field assignment".
 
 **A8 — a pool hands out a slot without validating it.** `Slots.acquire` on a
 `pool Slots = Live [count: 2]` yields a zeroed slot, so with `invariant: n > 0`
@@ -120,8 +104,9 @@ a ruling on the API shape: `acquire` could return a handle the pool can map
 back to a slot (which also fixes A11), or the element could be addressable.
 Test: `known_bugs`, "a pool slot is storage, not a copy".
 
-A9 (a handler payload field named `kind`) and A10 (D building the envelope
-positionally) were fixed on 2026-09-13 and are locked in as `bug_fixed`.
+A5 (a register assignment lowering to the getter), A7 (an invariant not
+firing after a field assignment), A9 (a handler payload field named `kind`)
+and A10 (D building the envelope positionally) were all fixed on 2026-09-13 and are locked in as `bug_fixed`.
 
 The two entries that stood here before are fixed and locked in as regression
 guards (`bug_fixed`): the Odin `Seq[Interface]` literal and the qualified

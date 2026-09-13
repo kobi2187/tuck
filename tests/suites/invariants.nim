@@ -99,19 +99,21 @@ fn main() -> int:
   t.runs "copying a valid value does not re-validate", 7
   t.hostBuilds "...on every backend"
 
-  # --- gap 1: the ASSIGNMENT form of a mutation ---------------------------
-  # `t ..celsius {-400}` validates (cli_smoke pins it). `t.celsius = -400`
-  # does not, and spec 4.7 says "after mutation" without distinguishing the
-  # two spellings. Same shape as the register bug in #39: the chain form is
-  # handled and the assignment form is the one nobody wired up.
+  # --- the ASSIGNMENT form of a mutation, fixed 2026-09-13 ----------------
+  # `t ..celsius {-400}` always validated; `t.celsius = -400` did not, on any
+  # backend, so spec 4.7's "after mutation" was only half true. Both spellings
+  # are mutation sites and both now re-validate, through one shared decision
+  # (codegen_common.assignInvariantOwner) so the backends cannot drift again.
   t.src temp & """
 fn main() -> int:
   var t = {celsius: 0} Temp
   t.celsius = -400
   return 0
 """
-  t.quietly: t.runs "an invariant fires after a field assignment", 1
-  t.bugOpen "an invariant fires after a field assignment"
+  t.runs "an invariant fires after a field assignment", 1
+  t.outputs "...with the same message the chain form gives", "Invariant violated"
+  t.hostBuilds "...on every backend"
+  t.bugFixed "an invariant fires after a field assignment"
 
   # --- gap 2: a pool hands out an unvalidated slot -------------------------
   # `acquire` yields a zeroed slot. With an invariant the zero value violates,

@@ -966,7 +966,14 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
     if prefix != "": return prefix & "_set(" & valStr & ")"
-  ctx.genDAssignTarget(e.target) & " = " & valStr
+  result = ctx.genDAssignTarget(e.target) & " = " & valStr
+  # A field assignment is a mutation site and re-validates, exactly as a `..`
+  # chain step does — one shared decision so the three backends cannot drift
+  # on which sites check. See codegen_common.assignInvariantOwner.
+  let owner = assignInvariantOwner(ctx.res, e)
+  if owner != "" and hasInvariants(ctx.module, owner):
+    result.add(";\n" & "    ".repeat(ctx.indent) & "validate_" & owner & "(" &
+               ctx.genDExpr(e.target.receiver) & ")")
 
 # --- statements & control flow -------------------------------------------
 

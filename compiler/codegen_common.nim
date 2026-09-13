@@ -43,6 +43,21 @@ const TagField* = "tuckTag"
   ## that name), so `failIfHostKeyword` refuses it at the declaration, the
   ## same way it refuses a host keyword.
 
+proc assignInvariantOwner*(res: Resolution, e: Expr): string =
+  ## The TYPE NAME whose invariants an assignment must re-check, or "" when
+  ## there are none to check. Shared by the three backends so a mutation site
+  ## cannot validate on one and stay silent on another — which is exactly how
+  ## the assignment form came to differ from the `..` chain form.
+  ##
+  ## Only a FIELD assignment mutates a value someone else can still see;
+  ## rebinding a whole var (`t = ...`) is a construction and validates where
+  ## it is built.
+  if e == nil or e.target == nil or e.target.kind != exkField: return ""
+  if e.target.receiver == nil: return ""
+  let t = res.typeFor(e.target.receiver)
+  if t == nil or t.kind != tkNamed: return ""
+  t.name
+
 proc sumPayloadField*(variantName: string): string =
   ## The struct/object field a payload variant's data sits in.
   ##

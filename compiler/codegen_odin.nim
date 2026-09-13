@@ -1165,6 +1165,17 @@ proc unionDeclType(ctx: var OdinCodegenCtx, e: Expr): string =
   if not sumHasPayload(d.typeBody): return ""
   t.name
 
+proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
+                        stmt: string): string =
+  ## A field assignment is a mutation site and re-validates, exactly as a `..`
+  ## chain step does. One shared decision across the backends, so they cannot
+  ## drift on WHICH sites check — see codegen_common.assignInvariantOwner.
+  result = stmt
+  let owner = assignInvariantOwner(ctx.res, e)
+  if owner != "" and hasInvariants(ctx.module, owner):
+    result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
+               ctx.genOdinExpr(e.target.receiver) & ")")
+
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
   if ctx.isTaskArgsBind(e):
@@ -1197,7 +1208,8 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
                                         e.target.fieldName)
     if prefix != "": return prefix & "_set(" & valStr & ")"
   let tgt = ctx.genOdinAssignTarget(e.target)
-  tgt & " = " & valStr & ctx.seqFieldFixups(tgt, e.assignVal)
+  ctx.withAssignValidate(e, tgt & " = " & valStr &
+                            ctx.seqFieldFixups(tgt, e.assignVal))
 
 proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `return err X` is the raise, not a wrapped return value.

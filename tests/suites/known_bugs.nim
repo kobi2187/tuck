@@ -1038,8 +1038,8 @@ fn main() -> int:
   {} plain
   return 0
 """
-  t.quietly: t.hostBuilds "a register field assignment emits the setter"
-  t.bugOpen "a register field assignment emits the setter"
+  t.hostBuilds "a register field assignment emits the setter"
+  t.bugFixed "a register field assignment emits the setter"
 
   # 17. On ODIN ONLY, the dispatch closure for an interface method is typed
   # `-> int` regardless of what the method returns, so any interface method
