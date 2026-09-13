@@ -1204,4 +1204,40 @@ fn main() -> int:
   t.quietly: t.runs "a pool slot can be read and written through its handle", 42
   t.bugOpen "a pool slot can be read and written through its handle"
 
+  # 22. An `errors` handler body is never mangled, so calling any fn from it
+  # fails to build on all three backends (issue #48). The DECLARATION is
+  # renamed to `tuck_record`; the call inside the handler still says `record`.
+  #
+  # Root cause: `dkErrors` is listed in the `discard` arm of BOTH Decl
+  # traversal iterators (ast_ops.childDecls:217, ast_ops.ownExprs:280), so
+  # `d.errHandler` is reached by nothing built on them — mangle.mangleDeclRefs
+  # among them. The exhaustive-`case` guarantee did not help here: the kind IS
+  # listed, it just yields nothing.
+  #
+  # This is spec 4.9's own example — the handler is documented as "the hook
+  # for diagnostics machinery", every use of which is a call. Note the
+  # assertion must RUN: the program checks clean and dies in nim/odin/dmd.
+  t.src """
+type E:
+  | Boom
+
+errors [policy: continue]:
+  on unhandled({code: u16, site: str}):
+    {code: code} record
+
+fn record({code: u16}) -> void:
+  return
+
+fn mayFail({n: int}) -> !int [io, error: E]:
+  if n > 0:
+    return n
+  return err E.Boom
+
+fn main() -> int [io]:
+  {n: -1} mayFail
+  return 0
+"""
+  t.quietly: t.runs("an errors handler may call a fn", 0)
+  t.bugOpen "an errors handler may call a fn"
+
   t.finish()
