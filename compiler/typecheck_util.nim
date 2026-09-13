@@ -91,6 +91,15 @@ proc isWrapper*(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["!", "?", "!?"] and t.args.len == 1
 
+proc isBangQuestion*(t: Type): bool =
+  ## `!?T` / `?!T` — the ONE wrapper carrying two independent questions: did
+  ## it fail, and is it there. Everywhere else the two collapse: a `!T` that
+  ## is not ok errored, a `?T` that is not ok is absent. Here `not ok` means
+  ## either, which is why this is the only type where a presence guard can
+  ## swallow an error.
+  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+    t.base.name == "!?" and t.args.len == 1
+
 proc unwrapEffect*(t: Type): Type =
   if isWrapper(t):
     return unwrapEffect(t.args[0])

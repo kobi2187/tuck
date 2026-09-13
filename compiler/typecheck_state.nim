@@ -12,7 +12,7 @@ import typecheck_util
 
 type
   Binding* = tuple[typ: Type, isVar: bool, isParam: bool, narrowed: bool,
-                   used: bool, span: Span]
+                   used: bool, errSeen: bool, span: Span, site: Expr]
     ## `isVar` is write permission; `isParam` says the name is a FUNCTION
     ## PARAMETER, which is a third thing rather than a flavour of the first.
     ##
@@ -71,6 +71,9 @@ type
     pendingFns*: Table[string, Span]
     implementedFns*: HashSet[string]
     errPolicy*: string            # strict (default) | continue | exit
+    wrapperFieldRead*: bool
+      ## Set while synthesizing the RECEIVER of `.ok`/`.value`, so a bare read
+      ## of a binding can be told from one — see markErrSeen.
     unhandledSites*: seq[string]  # strict: error list; continue/exit: SHORTCUTS
     bodyBlock*: Expr              # current fn's outermost block: its last stmt
                                   # is the implicit return, not a discard
@@ -271,7 +274,7 @@ proc popScope*(tc: var TypeChecker) =
       else: tc.varVariants.del(name)
 
 proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
-               isParam = false, span = Span()) =
+               isParam = false, span = Span(), site: Expr = nil) =
   ## A fresh binding is never narrowed: guarding is something that happens to
   ## a result AFTER it is bound, and a new binding of the same name is a
   ## different result.
@@ -281,7 +284,7 @@ proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
     let had = tc.varVariants.hasKey(name)
     tc.shadowedVariants[^1].add((name,
                                  (if had: tc.varVariants[name] else: @[]), had))
-  tc.scopes[^1][name] = (typ, isVar, isParam, false, false, span)
+  tc.scopes[^1][name] = (typ, isVar, isParam, false, false, false, span, site)
 
 proc setNarrowed*(tc: var TypeChecker, name: string, on: bool) =
   ## Mark the INNERMOST binding of `name` as guarded, or unmark it. Walks the
@@ -301,6 +304,29 @@ proc markUsed*(tc: var TypeChecker, name: string) =
     if tc.scopes[i].hasKey(name):
       tc.scopes[i][name].used = true
       return
+
+proc markErrSeen*(tc: var TypeChecker, name: string) =
+  ## The ERROR dimension of this binding was answered — `.err` was read, or
+  ## the whole value was passed on, returned or discarded. Distinct from
+  ## `used`: on a `!?T`, `if r.ok:` answers PRESENCE and leaves the error
+  ## question open, which is the one that must not vanish.
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      tc.scopes[i][name].errSeen = true
+      return
+
+proc unansweredErrors*(tc: TypeChecker): seq[(string, Span, Expr)] =
+  ## `!?T` bindings whose ERROR was never answered.
+  ##
+  ## Only `!?`. A plain `!T` is left alone deliberately: there `not r.ok` can
+  ## only mean "it errored", so guarding IS seeing the error path, which is
+  ## what spec 4.9 rules. A `?T` carries no error at all. `!?T` is the one
+  ## type where the two questions come apart, and where `if r.ok:` answers
+  ## the benign one while the dangerous one disappears.
+  if tc.scopes.len == 0: return
+  for name, b in tc.scopes[^1]:
+    if b.isParam or b.errSeen or b.typ == nil: continue
+    if isBangQuestion(b.typ): result.add((name, b.span, b.site))
 
 proc unhandledBindings*(tc: TypeChecker): seq[(string, Span)] =
   ## Wrapper-typed bindings in the innermost scope that were never read.
@@ -366,7 +392,7 @@ proc lookup*(tc: TypeChecker, name: string): tuple[found: bool, b: Binding] =
   for i in countdown(tc.scopes.high, 0):
     if tc.scopes[i].hasKey(name):
       return (true, tc.scopes[i][name])
-  return (false, (Type(nil), false, false, false, false, Span()))
+  return (false, (Type(nil), false, false, false, false, false, Span(), nil))
 
 # Resolve a named type to its declared body (aliases, one level at a time).
 proc resolve*(tc: TypeChecker, t: Type, depth = 0): Type =

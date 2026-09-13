@@ -318,6 +318,110 @@ fn parseTitle({raw: str}) -> !str [io, error: ParseError]:
   # catch a return of that bug: the spurious shortcut still CHECKS clean.
   t.omits "a guard clause emits no drop-site wrapper", "tuckDrop"
 
+  # `!?T` carries TWO questions — did it fail, and was it absent — over one
+  # tri-state carrier. `if r.ok:` is true only for tsOk, so it answers both at
+  # once and the error question silently closes with it. That is the swallow:
+  # the `err` path is reachable and nothing in the program ever looks at it.
+  t.src """
+type E:
+  | Boom
+
+fn both({n: int}) -> !?int [io, error: E]:
+  if n > 0:
+    return n
+  return err E.Boom
+
+fn main() -> int [io]:
+  let r = {n: -1} both
+  if r.ok:
+    return r.value
+  return 0
+"""
+  t.badCheck "!? guarded by r.ok leaves the error unanswered",
+             "answered\\ absence"
+
+  # The same guard over a plain `!T` answers the ONE question it has, so
+  # spec 4.9 is untouched: this must keep checking clean.
+  t.src """
+type E:
+  | Boom
+
+fn mayFail({n: int}) -> !int [io, error: E]:
+  if n > 0:
+    return n
+  return err E.Boom
+
+fn main() -> int [io]:
+  let r = {n: -1} mayFail
+  if r.ok:
+    return r.value
+  return 0
+"""
+  t.okCheck "!T guarded by r.ok is handled"
+
+  # And a `?T` has no error question at all.
+  t.src """
+fn maybe({n: int}) -> ?int:
+  if n > 0:
+    return n
+  return
+
+fn main() -> int:
+  let r = {n: -1} maybe
+  if r.ok:
+    return r.value
+  return 0
+"""
+  t.okCheck "?T guarded by r.ok is handled"
+
+  # Reading the error IS answering it.
+  t.src """
+type E:
+  | Boom
+
+fn both({n: int}) -> !?int [io, error: E]:
+  if n > 0:
+    return n
+  return err E.Boom
+
+fn main() -> int [io]:
+  let r = {n: -1} both
+  match r.err:
+    Boom: return 1
+"""
+  t.okCheck "!? answered by matching on r.err"
+
+  # Under `continue` the site routes to the global handler instead of being a
+  # compile error. The binding already NAMES its value, so the check reads it
+  # in place: wrapping it the way a dropped expression is wrapped emitted
+  # `let tuckDrop1 = var tuck_r = ...`, which is not valid Nim.
+  t.src """
+type E:
+  | Boom
+
+errors [policy: continue]:
+  on unhandled({code: u16, site: str}):
+    ...
+
+fn both({n: int}) -> !?int [io, error: E]:
+  if n > 0:
+    return n
+  return err E.Boom
+
+fn main() -> int [io]:
+  let r = {n: -1} both
+  if r.ok:
+    return r.value
+  return 0
+"""
+  t.okCheck "continue policy legalizes the !? error drop"
+  t.omits "a routed binding needs no temp", "tuckDrop"
+  # `status == tsErr`, not `not ok`: absence was answered by the guard and
+  # must not reach the handler.
+  t.emits "a routed binding tests for the ERROR only", "status\\ ==\\ tsErr"
+  t.emitsOdin "Odin routes the bound error too", "status\\ ==\\ \\.Err"
+  t.runs "a swallowed !? error reaches the handler and carries on", 0
+
   t.src """
 type FsError:
   | NotFound

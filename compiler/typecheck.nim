@@ -373,8 +373,17 @@ proc asResultIntrospection(tc: var TypeChecker, e: Expr): Type =
   ## unwrapping is a plain if rather than special syntax.
   if e.fieldName notin ["ok", "err", "value"] or e.receiver == nil or
      e.receiver.kind notin {exkVar, exkField}: return nil
+  # Set BEFORE the receiver is synthesized: synthVar reads this flag to tell a
+  # bare read (the whole value travels) from a presence read (`.ok`/`.value`,
+  # which answers only half of a `!?T`). Setting it afterwards marked the
+  # error answered by the very read that ignores it.
+  if e.receiver.kind == exkVar and e.fieldName != "err":
+    tc.wrapperFieldRead = true
   let recvT = tc.synthesize(e.receiver)
+  tc.wrapperFieldRead = false
   if not isWrapper(recvT): return nil
+  if e.receiver.kind == exkVar and e.fieldName == "err":
+    tc.markErrSeen(e.receiver.name)
   case e.fieldName
   of "ok": Type(span: e.span, kind: tkNamed, name: "bool")
   of "value": tc.unwrapGuarded(e, recvT)
@@ -3086,6 +3095,12 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
   let (found, b) = tc.lookup(e.name)
   if found:
     tc.markUsed(e.name)
+    # A BARE read hands the whole value somewhere — returned, passed on,
+    # discarded — so both questions travel with it. Reading it as the
+    # receiver of `.ok`/`.value` is not that, and asResultIntrospection says
+    # so by setting the flag before this runs.
+    if tc.wrapperFieldRead: tc.wrapperFieldRead = false
+    else: tc.markErrSeen(e.name)
     b.typ
   elif tc.fnSigs.hasKey(e.name) and tc.sigOf(e.name).params.len == 0:
     tc.synthNullaryCall(e)
@@ -3256,6 +3271,29 @@ proc synthStmt(tc: var TypeChecker, blk, s: Expr, narrowed: var seq[string]): Ty
     tc.noteDroppedResult(s, result)
   tc.failIfValueDropped(blk, s, result)
 
+proc noteUnansweredErrors(tc: var TypeChecker) =
+  ## A `!?T` whose ERROR was never answered. Reported through the SAME
+  ## machinery a dropped `!T` uses, not a diagnostic of its own, because it is
+  ## the same fact: an error nobody received. The policy therefore governs it
+  ## exactly as §4.9 says — `strict` lists it with every other unhandled site,
+  ## `continue`/`exit` hand it to the global handler.
+  ##
+  ## Only `!?T`. On a `!T`, `not r.ok` can only mean "it errored", so guarding
+  ## IS seeing the error path — which is the ruling §4.9 already made and this
+  ## does not disturb.
+  for (bname, bspan, bsite) in tc.unansweredErrors():
+    let site = tc.currentFn & " line " & $bspan.line & " (" & bname &
+               ": `if " & bname & ".ok:` answered absence, not the error)"
+    if tc.errPolicy in ["continue", "exit"]:
+      # The binding STATEMENT carries the shortcut, so codegen routes the
+      # error to the global handler right where the value is produced —
+      # which is what `continue` promises: hand it over, then carry on past
+      # that statement.
+      if bsite != nil: setShortcut(semLayer, bsite, site)
+      tc.unhandledSites.add("!? at " & site)
+    else:
+      tc.unhandledSites.add("!? discarded at " & site)
+
 proc failIfUninspected(tc: TypeChecker) =
   ## A wrapper bound and never read is unhandled, the same way one dropped in
   ## statement position is (TK-TY04). Checked at every scope exit, because
@@ -3285,6 +3323,7 @@ proc synthBlock(tc: var TypeChecker, e: Expr): Type =
   # leave that outer binding narrowed for the rest of the fn.
   for g in narrowed: tc.setNarrowed(g, false)
   tc.failIfUninspected()
+  tc.noteUnansweredErrors()
   tc.popScope()
 
 proc unitType(sp: Span): Type =
@@ -3379,7 +3418,7 @@ proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
     valT = want
   else:
     valT = tc.synthesize(e.assignVal)
-  tc.bindName(e.target.name, valT, e.isMutable, span = e.span)
+  tc.bindName(e.target.name, valT, e.isMutable, span = e.span, site = e)
   let tn = tc.transType(valT)
   if tn != "":
     tc.varVariants[e.target.name] = tc.exprVariants(tn, e.assignVal)

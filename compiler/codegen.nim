@@ -753,11 +753,32 @@ proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   # whether there is anything TO discard.
   not (t.kind == tkNamed and t.name in ["void", "unit"])
 
+proc genBoundErrorRouted(ctx: var CodegenCtx, s: Expr, stmtCode,
+                         ind: string): string =
+  ## continue/exit policy on a BINDING whose error was never answered — the
+  ## `!?T` case where `if r.ok:` settled absence and left the error open.
+  ##
+  ## `genDroppedResult` wraps a statement EXPRESSION in a temp, which a
+  ## binding is not: wrapping one produced `let tuckDrop1 = var tuck_r = ...`.
+  ## A binding already has a name, so the check reads it directly and needs no
+  ## temp at all.
+  let site = ctx.res.shortcut(s)
+  let name = if s.target != nil and s.target.kind == exkVar: s.target.name
+             else: ""
+  if name == "": return stmtCode
+  let onErr = if ctx.errPolicy == "exit":
+                "(tuck_unhandled(" & name & ".err, \"" & site &
+                  "\"); quit(1))"
+              else:
+                "tuck_unhandled(" & name & ".err, \"" & site & "\")"
+  stmtCode & "\n" & ind & "  if " & name & ".status == tsErr: " & onErr
+
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
   var code = ctx.genExpr(s)
   if code != "" and ctx.res.shortcut(s) != "":
-    code = ctx.genDroppedResult(s, code)
+    code = if s.kind == exkAssign: ctx.genBoundErrorRouted(s, code, ind)
+           else: ctx.genDroppedResult(s, code)
   elif code != "" and ctx.stmtValueDropped(s):
     code = "discard " & code
   if code == "": return ""

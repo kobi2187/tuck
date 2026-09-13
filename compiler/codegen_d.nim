@@ -1001,12 +1001,36 @@ proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
     ctx.indD & "  if (" & tn & ".status != rt.TuckStatus.Ok) { " & onErr &
     " } }\n"
 
+proc genDRoutedStmt(ctx: var DCodegenCtx, s: Expr, stmtCode: string): string =
+  ## Route an unanswered error to the global handler.
+  ##
+  ## Two shapes, because a BINDING is not an expression: capturing
+  ## `auto r = f();` in a temp would emit `auto tuckDrop1 = auto r = f();`,
+  ## and wrapping it in `{ }` would scope the binding away from the rest of
+  ## the block. A binding already names its value, so it is tested in place.
+  ##
+  ## It is also tested for `.Err` and not `!= .Ok`: a binding only reaches
+  ## here as the `!?T` case where `if r.ok:` answered ABSENCE and left the
+  ## error open, and an absence the author handled must not fire the handler.
+  if s == nil or s.kind != exkAssign or s.target == nil or
+     s.target.kind != exkVar:
+    return ctx.genDDroppedResult(s, stmtCode)
+  let site = ctx.res.shortcut(s)
+  let name = s.target.name
+  let handler = mangleName("unhandled")
+  var onErr = handler & "(" & name & ".err, \"" & site & "\");"
+  if ctx.errPolicy == "exit":
+    onErr.add(" rt.exit(1);")
+  ctx.indD & stmtCode & ";\n" &
+    ctx.indD & "if (" & name & ".status == rt.TuckStatus.Err) { " & onErr &
+    " }\n"
+
 proc genDStmt*(ctx: var DCodegenCtx, s: Expr): string =
   ## One statement inside a block: indent + expression + `;`, except the
   ## constructs that lay themselves out.
   if s != nil and ctx.res.shortcut(s) != "":
     let code = ctx.genDExpr(s)
-    if code != "": return ctx.genDDroppedResult(s, code)
+    if code != "": return ctx.genDRoutedStmt(s, code)
   # A match reached HERE is a statement by construction — genDStmt only
   # ever runs on a block's own top-level statements, never on a nested
   # expression — so it goes straight to genDMatchStmt, bypassing

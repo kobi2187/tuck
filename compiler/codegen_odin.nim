@@ -965,6 +965,29 @@ proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): 
   ind & "\t" & tn & " := " & stmtCode & "\n" &
     ind & "\tif " & tn & ".status != .Ok { " & onErr & " }"
 
+proc genRoutedStmt(ctx: var OdinCodegenCtx, s: Expr, stmtCode,
+                   ind: string): string =
+  ## Route an unanswered error to the global handler.
+  ##
+  ## Two shapes, because a BINDING is not an expression: capturing
+  ## `r := f()` in a temp would emit `tuckDrop1 := r := f()`. A binding
+  ## already names its value, so it is tested in place.
+  ##
+  ## It is also tested for `.Err` and not `!= .Ok`: a binding only reaches
+  ## here as the `!?T` case where `if r.ok:` answered ABSENCE and left the
+  ## error open, and an absence the author handled must not fire the handler.
+  if s.kind != exkAssign or s.target == nil or s.target.kind != exkVar:
+    return ctx.genDroppedResult(s, stmtCode, ind)
+  let site = ctx.res.shortcut(s)
+  let name = s.target.name
+  let onErr = if ctx.errPolicy == "exit":
+                "tuck_unhandled(" & name & ".err, \"" & site &
+                  "\"); panic(\"unhandled error\")"
+              else:
+                "tuck_unhandled(" & name & ".err, \"" & site & "\")"
+  ind & "\t" & stmtCode & "\n" &
+    ind & "\tif " & name & ".status == .Err { " & onErr & " }"
+
 proc isTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr): bool =
   ## `let r = {args} someTask` — binding a task's result awaits it (spec
   ## §9.2), and the task takes real arguments (a nullary task call is the
@@ -1058,7 +1081,7 @@ proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   var ownsLayout = s.kind == exkMatch and s.subject != nil
   var code = if ownsLayout: ctx.genMatchStmt(s) else: ctx.genOdinExpr(s)
   if code != "" and ctx.res.shortcut(s) != "":
-    code = ctx.genDroppedResult(s, code, ind)
+    code = ctx.genRoutedStmt(s, code, ind)
     ownsLayout = true
   if code == "": return ""
   # Odin has no statement terminator

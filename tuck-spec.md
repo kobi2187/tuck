@@ -924,6 +924,30 @@ three wrappers share one tri-state representation — `ok | err(code) | absent`
 — so `!?T` distinguishes failure from absence exactly, and error codes keep
 the full 16-bit space.
 
+**An `if r.ok` guard answers ONE question.** For `!T` and for `?T` that is the
+only question there is, so the guard is complete handling. `!?T` asks two —
+*did it fail* and *was it absent* — over the same tri-state carrier, and
+`r.ok` is true only for `ok`, so a bare guard collapses both into one branch
+and the error silently rides out with the absence:
+
+```tuck
+fn lookup({key: str}) -> !?Row [io, error: DbError]:
+  ...
+
+fn use({key: str}) -> int [io]:
+  let r = {key} lookup
+  if r.ok:                 # answers ABSENCE
+    return r.value.id
+  return 0                 # a DbError arrives here indistinguishable from a miss
+```
+
+So a `!?T` bound under an `if r.ok` guard and never otherwise inspected is
+**unhandled**, and the three modes treat it exactly as they treat any other
+unhandled error. Any of the four existing answers settles it: reading the
+error (`match r.err:`), returning `r` whole to the caller, passing it to a
+handling function, or `{key} lookup discard` to say plainly that it is
+dropped.
+
 ---
 
 ## Part 5: Interfaces, Mixins, and the Catalog Model
