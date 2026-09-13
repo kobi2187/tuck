@@ -48,8 +48,8 @@ void sendPut_tuck_Result(ref tuck_Result self, long c) {
 void tuck_serve(long lfd) {
     rt.TuckResult!(net.TRec_net_fd!(long)) tuck_c = net.accept(lfd);
     if ((tuck_c.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(net.TRec_net_data!(string)) tuck_req = net.recv(tuck_c.value.fd, 256L);
-        rt.TuckResult!(net.TRec_net_sent!(long)) tuck_s = net.send(tuck_c.value.fd, "pong");
+        net.recv(tuck_c.value.fd, 256L);
+        net.send(tuck_c.value.fd, "pong");
         net.close(tuck_c.value.fd);
     }
     return;
@@ -58,7 +58,7 @@ void tuck_serve(long lfd) {
 void tuck_client(long port) {
     rt.TuckResult!(net.TRec_net_fd!(long)) tuck_c = net.connect("127.0.0.1", port);
     if ((tuck_c.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(net.TRec_net_sent!(long)) tuck_s = net.send(tuck_c.value.fd, "ping");
+        net.send(tuck_c.value.fd, "ping");
         rt.TuckResult!(net.TRec_net_data!(string)) tuck_r = net.recv(tuck_c.value.fd, 256L);
         net.close(tuck_c.value.fd);
         if ((tuck_r.status == rt.TuckStatus.Ok)) {

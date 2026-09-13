@@ -3084,7 +3084,9 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
   ## A bare name: a binding in scope, else a nullary call, a fn REFERENCE,
   ## else a variant.
   let (found, b) = tc.lookup(e.name)
-  if found: b.typ
+  if found:
+    tc.markUsed(e.name)
+    b.typ
   elif tc.fnSigs.hasKey(e.name) and tc.sigOf(e.name).params.len == 0:
     tc.synthNullaryCall(e)
   elif tc.fnSigs.hasKey(e.name):
@@ -3254,6 +3256,17 @@ proc synthStmt(tc: var TypeChecker, blk, s: Expr, narrowed: var seq[string]): Ty
     tc.noteDroppedResult(s, result)
   tc.failIfValueDropped(blk, s, result)
 
+proc failIfUninspected(tc: TypeChecker) =
+  ## A wrapper bound and never read is unhandled, the same way one dropped in
+  ## statement position is (TK-TY04). Checked at every scope exit, because
+  ## that is where a binding's life ends and every chance to read it has
+  ## passed.
+  for (bname, bspan) in tc.unhandledBindings():
+    fail(dcTyUninspectedWrapper,
+         "'" & bname & "' is a result that is never read — " &
+         "guard it (`if " & bname & ".ok:`), pass it on, or return it",
+         bspan)
+
 proc synthBlock(tc: var TypeChecker, e: Expr): Type =
   ## A block's type is its last statement's.
   ##
@@ -3271,6 +3284,7 @@ proc synthBlock(tc: var TypeChecker, e: Expr): Type =
   # pushes its own scope, but `let r` sits outside it). Popping first would
   # leave that outer binding narrowed for the rest of the fn.
   for g in narrowed: tc.setNarrowed(g, false)
+  tc.failIfUninspected()
   tc.popScope()
 
 proc unitType(sp: Span): Type =
@@ -3365,7 +3379,7 @@ proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
     valT = want
   else:
     valT = tc.synthesize(e.assignVal)
-  tc.bindName(e.target.name, valT, e.isMutable)
+  tc.bindName(e.target.name, valT, e.isMutable, span = e.span)
   let tn = tc.transType(valT)
   if tn != "":
     tc.varVariants[e.target.name] = tc.exprVariants(tn, e.assignVal)
@@ -4045,6 +4059,7 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   tc.currentRet = nil
   tc.currentFn = ""
   tc.varVariants = savedVariants
+  tc.failIfUninspected()
   tc.popScope()
 
 # --- Decision tables (spec 6.1) ---------------------------------------------

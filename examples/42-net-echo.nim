@@ -41,8 +41,8 @@ proc tuck_serve*(lfd: int): void =
   var tuck_c = net.accept(lfd)
   if tuck_c.ok:
     if true:
-      var tuck_req = net.recv(tuck_c.value.fd, 256)
-      var tuck_s = net.send(tuck_c.value.fd, "pong")
+      discard net.recv(tuck_c.value.fd, 256)
+      discard net.send(tuck_c.value.fd, "pong")
       net.close(tuck_c.value.fd)
   return
 
@@ -50,7 +50,7 @@ proc tuck_client*(port: int): void =
   var tuck_c = net.connect("127.0.0.1", port)
   if tuck_c.ok:
     if true:
-      var tuck_s = net.send(tuck_c.value.fd, "ping")
+      discard net.send(tuck_c.value.fd, "ping")
       var tuck_r = net.recv(tuck_c.value.fd, 256)
       net.close(tuck_c.value.fd)
       if tuck_r.ok:

@@ -2337,4 +2337,68 @@ fn main() -> int:
 """
   t.badCheck "...and a task's raise is validated against it", "not a variant"
 
+  # --- TK-TY25: a result bound and never read ------------------------------
+  #
+  # Ruled 2026-09-13. Dropping a result in statement position was already an
+  # error; KEEPING it and ignoring it was not, which is the same omission with
+  # a name attached. It is the shape that forgets to check whether a pool
+  # handed out a slot — on the exhaustion path nobody tests.
+  const finder = """
+fn find({n: int}) -> ?int:
+  if n > 0:
+    return n
+  return
+"""
+  t.src finder & """
+fn main() -> int:
+  let r = {n: 1} find
+  return 0
+"""
+  t.badCheck "a result bound and never read is refused", "TK-TY25"
+
+  # Four things answer it, and each must be enough on its own.
+  t.src finder & """
+fn main() -> int:
+  let r = {n: 1} find
+  if r.ok:
+    return r.value
+  return 0
+"""
+  t.okCheck "...guarding it answers"
+
+  t.src finder & """
+fn main() -> ?int:
+  let r = {n: 1} find
+  return r
+"""
+  t.okCheck "...returning it answers"
+
+  t.src finder & """
+fn use({v: ?int}) -> int:
+  return 0
+
+fn main() -> int:
+  let r = {n: 1} find
+  return {v: r} use
+"""
+  t.okCheck "...passing it on answers"
+
+  t.src finder & """
+fn main() -> int:
+  {n: 1} find discard
+  return 0
+"""
+  t.okCheck "...and `discard` says plainly that it is dropped"
+
+  # A parameter is exempt: that value is the CALLER's choice to pass, and a
+  # callee that hands it straight through never reads it either.
+  t.src finder & """
+fn use({v: ?int}) -> int:
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a ?T parameter the callee never reads is not an error"
+
   t.finish()

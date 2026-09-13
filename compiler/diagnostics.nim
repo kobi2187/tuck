@@ -101,6 +101,7 @@ type
                                           ## chain onto the call, not a slot call
     dcTyErrNeedsList = "TK-TY24"        ## a fn raises but declares no
                                         ## `[error: ...]` list
+    dcTyUninspectedWrapper = "TK-TY25"  ## a `?T`/`!T` bound and never read
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -294,6 +295,16 @@ proc parseExplanation(d: DiagCode): string =
     "`of Wibble:` straight into the host compiler. Re-raising (`err r.err`) " &
     "counts as raising — the caller still needs to know what can come out. " &
     "Fix: add `[error: <Enum>]`, listing every enum this fn can return."
+  of dcTyUninspectedWrapper:
+    "A `?T` or `!T` was bound to a name and then never read. Dropping one in " &
+    "statement position was already an error (TK-TY04); KEEPING it and " &
+    "ignoring it was not, which is the same mistake with a name attached — " &
+    "and it is exactly the shape that forgets to check whether a pool handed " &
+    "out a slot, on the exhaustion path nobody tests. " &
+    "Reading it in ANY way discharges this: guard it (`if r.ok:`), pass it " &
+    "on, return it, store it. Only ignoring it entirely is left. A `?T` " &
+    "PARAMETER is exempt — that value is the caller's choice to pass, and a " &
+    "callee that hands it straight through never reads it either."
   of dcPaWordOperator:
     "`mod` and `div` are word-operators in Nim, Pascal and Python; in Tuck " &
     "they are `%` and `/i`. Left alone, a bare word between two operands " &

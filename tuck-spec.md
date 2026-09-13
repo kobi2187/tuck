@@ -848,6 +848,30 @@ examples use.
 Outside a guard the value is still the wrapped type, and returning it where a
 bare `T` is expected is a compile error.
 
+**A result must be answered, and binding it is not an answer.** Dropping one in
+statement position was always an error; *keeping* it and never reading it was
+not, which is the same omission with a name attached — and it is exactly the
+shape that forgets to check whether a pool handed out a slot, on the exhaustion
+path nobody tests. A `!T` or `?T` bound to a name and never read is
+**TK-TY25**.
+
+Four things answer it, and any of them will do:
+
+```tuck
+let r = {path: path} loadFeed
+if r.ok:                         # guard it
+  ...
+return r                         # pass it on
+{result: r} handle               # hand it to something else
+{path: path} loadFeed discard    # say plainly that it is dropped
+```
+
+`discard` is POSTFIX, like every other call: `expr discard`, not
+`discard expr`. Saying it is the point — the reader learns the drop was meant.
+
+A `?T` **parameter** is exempt: that value is the caller's choice to pass, and
+a callee that hands it straight through never reads it either.
+
 There is no propagation operator. Passing the burden upward is simply
 returning the whole result — the caller's signature then carries `!T` too,
 and the caller unwraps or passes it on. `or` is strictly boolean; it does

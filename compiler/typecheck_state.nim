@@ -11,7 +11,8 @@ import ast_query
 import typecheck_util
 
 type
-  Binding* = tuple[typ: Type, isVar: bool, isParam: bool, narrowed: bool]
+  Binding* = tuple[typ: Type, isVar: bool, isParam: bool, narrowed: bool,
+                   used: bool, span: Span]
     ## `isVar` is write permission; `isParam` says the name is a FUNCTION
     ## PARAMETER, which is a third thing rather than a flavour of the first.
     ##
@@ -270,7 +271,7 @@ proc popScope*(tc: var TypeChecker) =
       else: tc.varVariants.del(name)
 
 proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
-               isParam = false) =
+               isParam = false, span = Span()) =
   ## A fresh binding is never narrowed: guarding is something that happens to
   ## a result AFTER it is bound, and a new binding of the same name is a
   ## different result.
@@ -280,7 +281,7 @@ proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
     let had = tc.varVariants.hasKey(name)
     tc.shadowedVariants[^1].add((name,
                                  (if had: tc.varVariants[name] else: @[]), had))
-  tc.scopes[^1][name] = (typ, isVar, isParam, false)
+  tc.scopes[^1][name] = (typ, isVar, isParam, false, false, span)
 
 proc setNarrowed*(tc: var TypeChecker, name: string, on: bool) =
   ## Mark the INNERMOST binding of `name` as guarded, or unmark it. Walks the
@@ -290,6 +291,32 @@ proc setNarrowed*(tc: var TypeChecker, name: string, on: bool) =
     if tc.scopes[i].hasKey(name):
       tc.scopes[i][name].narrowed = on
       return
+
+proc markUsed*(tc: var TypeChecker, name: string) =
+  ## This binding was READ. A wrapper that is never read is never handled —
+  ## see `unhandledBindings`. Reading covers every legitimate answer: guarding
+  ## it, passing it on, returning it, storing it. Only ignoring it entirely is
+  ## left, which is what the rule is for.
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      tc.scopes[i][name].used = true
+      return
+
+proc unhandledBindings*(tc: TypeChecker): seq[(string, Span)] =
+  ## Wrapper-typed bindings in the innermost scope that were never read.
+  ##
+  ## `let r = {n: 1} find` and then nothing: a `?T` DROPPED in statement
+  ## position was already an error, and keeping it and ignoring it was not —
+  ## which is the shape that forgets to check whether a pool handed out a
+  ## slot, on the exhaustion path nobody tests.
+  ##
+  ## Params are exempt: a `?T` parameter the callee never reads is a value
+  ## the CALLER chose to pass, and refusing it would break passing a payload
+  ## straight through.
+  if tc.scopes.len == 0: return
+  for name, b in tc.scopes[^1]:
+    if b.isParam or b.used or b.typ == nil: continue
+    if isWrapper(b.typ): result.add((name, b.span))
 
 proc isNarrowed*(tc: TypeChecker, name: string): bool =
   ## Has the innermost binding of `name` been guarded?
@@ -339,7 +366,7 @@ proc lookup*(tc: TypeChecker, name: string): tuple[found: bool, b: Binding] =
   for i in countdown(tc.scopes.high, 0):
     if tc.scopes[i].hasKey(name):
       return (true, tc.scopes[i][name])
-  return (false, (Type(nil), false, false, false))
+  return (false, (Type(nil), false, false, false, false, Span()))
 
 # Resolve a named type to its declared body (aliases, one level at a time).
 proc resolve*(tc: TypeChecker, t: Type, depth = 0): Type =

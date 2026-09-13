@@ -45,8 +45,8 @@ sendPut_tuck_Result :: proc(self: ^tuck_Result, c: int) {
 tuck_serve :: proc(lfd: int) {
   tuck_c := net.accept(lfd)
   if (tuck_c.status == .Ok) {
-      tuck_req := net.recv(tuck_c.value.fd, 256)
-      tuck_s := net.send(tuck_c.value.fd, "pong")
+      _ = net.recv(tuck_c.value.fd, 256)
+      _ = net.send(tuck_c.value.fd, "pong")
       net.close(tuck_c.value.fd)
   }
   return
@@ -55,7 +55,7 @@ tuck_serve :: proc(lfd: int) {
 tuck_client :: proc(port: int) {
   tuck_c := net.connect("127.0.0.1", port)
   if (tuck_c.status == .Ok) {
-      tuck_s := net.send(tuck_c.value.fd, "ping")
+      _ = net.send(tuck_c.value.fd, "ping")
       tuck_r := net.recv(tuck_c.value.fd, 256)
       net.close(tuck_c.value.fd)
       if (tuck_r.status == .Ok) {

@@ -65,7 +65,7 @@ fn read() -> !Temperature [io]:
   return {celsius: -400} Temperature
 
 fn main() -> void [io]:
-  let r = {} read
+  {} read discard
   return
 """), d / "out4")
   mustAbort(d / "out4" / "wrap", "Invariant violated")

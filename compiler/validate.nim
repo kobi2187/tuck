@@ -177,7 +177,10 @@ let tuckGrammar = peg("module", st: Stats):
   # `...` is the spec's "unwritten body" placeholder. The lexer has no
   # ellipsis token, so it arrives as `..` followed by `.`.
   ellipsisStmt <- "tkDotDot " * "tkDot " * eol
-  exprStmt  <- expr * eol
+  # `{payload} fn discard` — the trailing `discard` is POSTFIX, like every
+  # other call in the language, and it is what says "this result is dropped
+  # on purpose" (TK-TY25). Bare `discard` on its own line is `simpleStmt`.
+  exprStmt  <- expr * ?"tkDiscard " * eol
   # A row of a `transitions:` table. It can only be stated here, not given
   # its own block rule: the subject is token KINDS, so `transitions` is
   # indistinguishable from any other identifier followed by a colon.

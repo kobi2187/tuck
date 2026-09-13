@@ -256,15 +256,15 @@ actor Result [queue: 8]:
 task serve({lfd: int}) -> {n: int} [io]:
   let c = {fd: lfd} net::accept
   if c.ok:
-    let req = {fd: c.value.fd, max: 256} net::recv
-    let s = {fd: c.value.fd, data: "pong"} net::send
+    {fd: c.value.fd, max: 256} net::recv discard
+    {fd: c.value.fd, data: "pong"} net::send discard
     {fd: c.value.fd} net::close
   return {n: 0}
 
 task client({port: int}) -> {n: int} [io]:
   let c = {host: "127.0.0.1", port: port} net::connect
   if c.ok:
-    let s = {fd: c.value.fd, data: "ping"} net::send
+    {fd: c.value.fd, data: "ping"} net::send discard
     let r = {fd: c.value.fd, max: 256} net::recv
     {fd: c.value.fd} net::close
     if r.ok:
