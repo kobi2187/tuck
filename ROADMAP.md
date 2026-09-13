@@ -503,7 +503,12 @@ and those must stay green.
   `timeout.5s`) still parse as opaque strings, which is what blocks ex 16.
   Scheduler §9.4 is done (see Partial above).
 - Stack-depth budgets `[stack: N]` §6.2
-- Complexity limit §6.3 (ruling: hard error)
+- ~~Complexity limit §6.3 (ruling: hard error)~~ IMPLEMENTED for release,
+  verified 2026-09-13: `tuck b --release` REJECTS a function over the budget
+  with `TK-CX02` ("--release requires them under it"), and a normal build
+  reports it. `--max-complexity:N` / `--max-fn-lines:N` raise it, `:0`
+  disables. BOTH halves are gated: `TK-CX01` for cyclomatic complexity and
+  `TK-CX02` for source lines, each verified by building a fn over each limit
 - ~~Error.x validated against a declared error enum~~ MOSTLY DONE, verified
   2026-09-12: raise sites are validated (variant typo, shorthand typo,
   cross-enum) with or without a declared list, and `match r.err` arms are
