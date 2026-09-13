@@ -528,4 +528,42 @@ fn compare({self: int, other: int}) -> Order:
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the right provider is called", 0
 
+  # BASELINE, captured before the object-member rule lands: a group provider
+  # declared in ANOTHER module. This is the shape the whole v2 stdlib has —
+  # the contract, the verb and the implementation each live in their own
+  # module — so any rule about WHICH fn may satisfy a group has to leave it
+  # working.
+  t.src """
+import shape
+import impl
+
+fn main() -> int:
+  let p = {a: 1} A
+  return {x: p} one
+"""
+  t.addFile("shape.tuck", """public:
+  A
+
+type A:
+  a: u8
+""")
+  t.addFile("impl.tuck", """public:
+  one
+  reads
+  Sensing
+
+import shape
+
+group Sensing:
+  fn reads({self: Self}) -> int
+
+fn reads({self: A}) -> int:
+  return 7
+
+fn one[T: Sensing]({x: T}) -> int:
+  return {self: x} reads
+""")
+  t.okCheck "a group provider may live in another module"
+  t.runs "...and the imported free fn is the one dispatched to", 7
+
   t.finish()
