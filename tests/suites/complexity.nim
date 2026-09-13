@@ -55,7 +55,7 @@ const
   # CEILING: no routine may exceed this. 64 -> 22 (2026-08-15) — it had been
   # set when scanNext sat at 38 and nothing has approached it since, so it was
   # gating nothing. Now one over the current worst.
-  CEILING = 22
+  CEILING = 21
 
   # HEAVY: how many routines may sit at cc>=15 — this tree's p90, and the point
   # where a `case` stops being dispatch and starts being a thing you trace.
@@ -111,7 +111,25 @@ const
   #     it until an earlier `else: discard` removal surfaced them.
   #   * assignIds(Expr) 20 -> 6, the last hand-rolled Expr walk. Now matches
   #     clearIds exactly: one exkChain arm for the step ids, then children.
-  HEAVY = 26
+  #
+  # 26 -> 17 and CEILING 22 -> 21 (2026-09-13), nine splits across four areas:
+  #   * codegen.nim genExprMatch 22, genExprAssign 21, genFieldAccess 16
+  #   * the Odin backend: genMatchStmt 22, odinType, odinTypeArgs, odinImports
+  #   * typecheck.nim synthList 20, inferBindings 19, synthCall 17,
+  #     synthFieldAccess 16, and four of the cc=15 band
+  #   * parser/analysis: parsePrimaryExpr 19, parsePattern 18,
+  #     checkTransitions 18, fnReturnVariants 17, exprVariants 16
+  # Verified as a pure refactor the only way a codegen change can be — the
+  # tracked .nim/.odin under examples/ came back byte-identical.
+  #
+  # What was deliberately NOT split, and should not be to buy ratchet points:
+  # the four AST traversal iterators (ast_ops.children x2, childDecls,
+  # ownTypes) and ast_query.members. They score 15-20 because their arms yield
+  # several fields apiece, but they ARE the canonical single walk — most of
+  # the entries above this line are these very procs being CREATED to collapse
+  # walks that had been written out by hand and had silently drifted apart.
+  # Splitting them back up would re-open exactly the gap #48 came from.
+  HEAVY = 17
   CC = "tools/cyc"
 
 proc run*(t: var T) =

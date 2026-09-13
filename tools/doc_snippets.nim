@@ -39,8 +39,15 @@ proc main() =
   let root = getCurrentDir()
   let tuckExe = root / "tuck"
   var files: seq[string]
+  # `.claude/worktrees/` holds full checkouts of this repo, so walking into one
+  # counts every doc a second time and reports its path citations as dead —
+  # they resolve against the worktree root, not this one. A worktree is
+  # present whenever an agent is mid-task, which made the suite fail for a
+  # reason that had nothing to do with the docs.
   for f in walkDirRec(root):
-    if f.endsWith(".md") and "/.git/" notin f: files.add(f)
+    if not f.endsWith(".md"): continue
+    if "/.git/" in f or "/.claude/" in f: continue
+    files.add(f)
   var total, okCount, fragCount, badCount = 0
   var rejTotal, rejStale = 0
   var pa03, pa09, unverified = 0
