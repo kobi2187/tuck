@@ -207,7 +207,16 @@ proc cmdFor*(t: T, idx: int): seq[string] =
                   "-o:" & it.dir / "dlang", "--root:" & t.root]
   of vBuild:    @[tuckExe, "build", it.dir / "t.tuck", "-o:" & it.dir / "out",
                   "--root:" & t.root]
-  of vRun:      @[it.dir / "out" / "t"]
+  # A RUN is wrapped in `timeout`. Without it one hanging program takes the
+  # whole suite with it, and that is not hypothetical — examples/20 hangs
+  # under Odin today (issue #28), which is exactly why it is compile-gated
+  # and not run-gated. A hang should cost one assertion, not the run.
+  #
+  # 10s is far above any honest assertion here: the slowest run in the tree
+  # is milliseconds, and the seconds in a suite are all BUILD time.
+  # `timeout` reports 124, so a hang reads as a distinct failure rather than
+  # as an ordinary wrong exit code.
+  of vRun:      @["timeout", "10", it.dir / "out" / "t"]
 
 proc need(t: var T, verb: Verb, dep = -1): int =
   ## Register a work item, or reuse one already registered for this snippet.
