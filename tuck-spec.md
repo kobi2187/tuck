@@ -101,6 +101,30 @@ fn main() -> void:
     feed.metadata log
 ```
 
+### 2.1b String Literals
+
+A string literal is written between double quotes. Six escape sequences are
+defined, and no others:
+
+| escape | meaning |
+|---|---|
+| `\\` | a backslash |
+| `\"` | a double quote |
+| `\n` | newline |
+| `\t` | tab |
+| `\r` | carriage return |
+| `\0` | NUL |
+
+```tuck
+{text: "say \"hi\""} printLine
+```
+
+A backslash followed by anything else is **TK-LX07**, not a literal backslash.
+Rejecting is the point: the compiler decodes escapes once, and each backend
+re-spells them for its own target, so one Tuck source means the same thing
+whether it is built through Nim, Odin or D. An escape passed through unchecked
+would be a character whose meaning the target language decided instead.
+
 ### 2.2 No Destructuring
 
 You do not unpack a struct into local variables. If you need a field, you access
