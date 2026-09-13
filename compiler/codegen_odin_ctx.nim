@@ -212,6 +212,46 @@ proc odinFuncType*(ctx: var OdinCodegenCtx, t: Type): string =
           else: ""
   "proc(" & ps.join(", ") & ")" & r
 
+proc odinNamedBuiltin(ctx: var OdinCodegenCtx, name: string): string =
+  ## Map Tuck builtin type names to Odin equivalents.
+  case name
+  of "void": "void"
+  of "u8": "u8"
+  of "u16": "u16"
+  of "u32": "u32"
+  of "u64": "u64"
+  of "i8": "i8"
+  of "i16": "i16"
+  of "i32": "i32"
+  of "i64": "i64"
+  of "int": "int"
+  of "string", "str": "string"
+  of "cstring": "cstring"
+  of "Buf": "[^]u8"
+  of "bool": "bool"
+  of "float": "f64"
+  of "f32": "f32"
+  of "f64": "f64"
+  of "usize": "uint"
+  of "Seq": "[dynamic]"
+  of "Array": "[]"
+  of "fn": (if ctx.fnAsParam: "$T" else: "proc()")
+  else: ""
+
+proc odinSumTypeName(ctx: var OdinCodegenCtx, t: Type): string =
+  ## Hoists anonymous enum variants as a named type, or returns "any" for tagged unions.
+  var allNoFields = true
+  for v in t.variants:
+    if v.fields.len > 0: allNoFields = false
+  if allNoFields and t.variants.len > 0:
+    var tags: seq[string]
+    for v in t.variants: tags.add(v.name)
+    let name = "TEnum_" & ctx.modPrefix & toHex(odinErrCode(tags.join(",")))
+    let decl = name & " :: enum { " & tags.join(", ") & " }"
+    if decl notin ctx.hoisted: ctx.hoisted.add(decl)
+    return name
+  return "any"
+
 proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
   if t == nil: return "void"
   case t.kind
@@ -220,48 +260,9 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     # generic body; emitted, it is just `K`.
     if t.name.startsWith(NamedTypeParamPrefix):
       return t.name[NamedTypeParamPrefix.len .. ^2]
-    case t.name
-    # Tuck's fixed-width names ARE Odin's spelling (u8, i32, f64) — most of
-    # this table is identity.
-    # "void" stays the internal sentinel (lots of `retTypeStr != "void"`
-    # checks depend on it); the `-> T` emission drops it instead.
-    of "void": "void"
-    of "u8": "u8"
-    of "u16": "u16"
-    of "u32": "u32"
-    of "u64": "u64"
-    of "i8": "i8"
-    of "i16": "i16"
-    of "i32": "i32"
-    of "i64": "i64"
-    of "int": "int"
-    of "string", "str": "string"
-    # C's char* — the FFI boundary type. Odin's `string` is a fat pointer
-    # (ptr + len), not a NUL-terminated C string, so the two are distinct.
-    of "cstring": "cstring"
-    # C's uint8_t* — see codegen_type.nim for why this is builtin rather than a
-    # user-declared extern type. `[^]u8` is Odin's multi-pointer: a pointer to
-    # an unknown number of u8, indexable, no length carried. `[dynamic]u8`
-    # (what Seq[u8] maps to) is a 40-byte struct, not a pointer.
-    of "Buf": "[^]u8"
-    of "bool": "bool"
-    of "float": "f64"
-    of "f32": "f32"
-    of "f64": "f64"
-    of "usize": "uint"
-    of "Seq": "[dynamic]"
-    of "Array": "[]"
-    # A bare `fn` with no declared signature is a BAKE SLOT: the concrete
-    # proc is filled in at the call site, so the param is polymorphic —
-    # `$T` mirrors the Nim backend's `auto`. A NAMED fnsig lands in the
-    # `else` branch below and keeps its own type name.
-    #
-    # As a struct FIELD there is no polymorphism to lean on, so it needs a
-    # concrete callable. tkFunc above covers the case where the checker
-    # resolved a `:name` reference and kept its signature; this is the
-    # fallback for a slot that was never given one.
-    of "fn": (if ctx.fnAsParam: "$T" else: "proc()")
-    else: ctx.odinNamedFallback(t)
+    let builtin = odinNamedBuiltin(ctx, t.name)
+    if builtin != "": return builtin
+    ctx.odinNamedFallback(t)
   of tkTuple: ctx.odinTupleType(t)
   of tkApp:
     # A generic fnsig application is the SIGNATURE, substituted — the
@@ -274,19 +275,7 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
   of tkRecord:
     recStructName(ctx, t.fields)
   of tkSum:
-    var allNoFields = true
-    for v in t.variants:
-      if v.fields.len > 0: allNoFields = false
-    if allNoFields and t.variants.len > 0:
-      # anonymous enum outside a field position: hoist under a shape name
-      var tags: seq[string]
-      for v in t.variants: tags.add(v.name)
-      let name = "TEnum_" & ctx.modPrefix & toHex(odinErrCode(tags.join(",")))
-      let decl = name & " :: enum { " & tags.join(", ") & " }"
-      if decl notin ctx.hoisted: ctx.hoisted.add(decl)
-      name
-    else:
-      "any"
+    odinSumTypeName(ctx, t)
   else:
     "rawptr"
 

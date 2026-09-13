@@ -238,8 +238,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: HashSet[string], locals: var Ha
     # neither a local nor a global — the backends emit it as `self.name`,
     # against a field this pass never renames. Checked first, or an actor
     # handler's `state = ...` would be mistaken for a new local.
-    if e.name in fields: discard
-    elif e.name in locals or e.name in names:
+    if e.name notin fields and (e.name in locals or e.name in names):
       renameVar(e)
   of exkQualified:
     # `:fnref` (no module path) and `http::get` (qualified) both resolve

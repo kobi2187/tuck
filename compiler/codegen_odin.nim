@@ -363,6 +363,18 @@ proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
   if rt != "": return rt
   ""
 
+proc findCalleeDecl(ctx: var OdinCodegenCtx, e: Expr): Decl =
+  ## Find the callee declaration, checking local first, then imported modules.
+  var d = ctx.res.declFor(e)
+  if d == nil and e.callee != nil:
+    let want = (if e.callee.kind == exkVar: e.callee.name else: e.callee.qualName)
+    d = ctx.module.findFn(want)
+    if d == nil:
+      for _, im in ctx.realModules:
+        d = im.findFn(want)
+        if d != nil: break
+  return d
+
 proc odinTypeArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   ## Odin declares a type param no parameter mentions as a leading
   ## `$E: typeid`, which makes the type an ARGUMENT — so the call has to pass
@@ -372,17 +384,7 @@ proc odinTypeArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   ## in procedure call" — it had matched the value against the typeid slot.
   let targs = ctx.res.callTypeArgsFor(e)
   if targs.len == 0: return @[]
-  # The resolved edge only exists for a callee declared in THIS module; a call
-  # into another one has to find the declaration across the import closure, and
-  # that is the ordinary case for a stdlib verb.
-  var d = ctx.res.declFor(e)
-  if d == nil and e.callee != nil:
-    let want = (if e.callee.kind == exkVar: e.callee.name else: e.callee.qualName)
-    d = ctx.module.findFn(want)
-    if d == nil:
-      for _, im in ctx.realModules:
-        d = im.findFn(want)
-        if d != nil: break
+  let d = findCalleeDecl(ctx, e)
   if d == nil or d.kind != dkFn or d.fnGenerics.len != targs.len: return @[]
   for i, g in d.fnGenerics:
     var mentioned = false
@@ -537,6 +539,26 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
   ind & "switch " & "v" & " in " & subjectStr & "\n" &
     ind & "{\n" & cases.join("\n") & "\n" & ind & "}"
 
+proc detectMatchPatterns(e: Expr, ctx: var OdinCodegenCtx): tuple[errMatch, hasWild, overEnum: bool] =
+  ## Analyze match arms to detect error patterns, wildcards, and enum tags.
+  var errMatch = false
+  var hasWild = false
+  var overEnum = false
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkWild:
+      hasWild = true
+    if arm.pattern != nil and arm.pattern.kind == pkVar and "." in arm.pattern.name:
+      errMatch = true
+    elif arm.pattern != nil and
+         enumTagOwner(ctx.module, genPatternStr(arm.pattern)) != "":
+      overEnum = true
+  return (errMatch, hasWild, overEnum)
+
+proc odinSwitchPrefix(errMatch, hasWild, overEnum: bool): string =
+  ## Determine the switch statement prefix based on match characteristics.
+  ## #partial is needed for enum exhaustiveness when a wildcard is present.
+  if hasWild and overEnum: "#partial switch (" else: "switch ("
+
 proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.subject))
   if sumName != "": return ctx.genPayloadUnionMatch(e, sumName)
@@ -545,16 +567,7 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   var cases: seq[string]
   let oldIndent = ctx.indent
   ctx.indent += 1
-  var errMatch = false
-  var hasWild = false
-  var overEnum = false
-  for arm in e.arms:
-    if arm.pattern != nil and arm.pattern.kind == pkWild: hasWild = true
-    if arm.pattern != nil and arm.pattern.kind == pkVar and
-       "." in arm.pattern.name: errMatch = true
-    elif arm.pattern != nil and
-         enumTagOwner(ctx.module, genPatternStr(arm.pattern)) != "":
-      overEnum = true
+  let (errMatch, hasWild, overEnum) = detectMatchPatterns(e, ctx)
   for arm in e.arms:
     let patStr = genPatternStr(arm.pattern)
     let bodyStr = ctx.genOdinExpr(arm.body)
@@ -578,16 +591,7 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   if errMatch and not hasWild:
     cases.add(ind & "case:  // no arm; the fn's own fallthrough answers")
   ctx.indent = oldIndent
-  # Odin checks enum exhaustiveness BEFORE the default arm, so a bare `case:`
-  # does not excuse an unlisted variant: `match c: After: ...; _: ...` over a
-  # three-variant sum was rejected with "Unhandled switch cases: Before, Same"
-  # even though the wildcard handles both. `#partial` is Odin's own opt-out,
-  # and is exactly what a wildcard arm means. Verified against odin directly,
-  # not inferred: the same switch compiles with the prefix and not without.
-  # ENUM ONLY. `#partial` is Odin's opt-out from enum exhaustiveness; applied
-  # to a switch over error CODES — plain integers, where no exhaustiveness
-  # check runs — odin rejects the prefix itself.
-  let sw = if hasWild and overEnum: "#partial switch (" else: "switch ("
+  let sw = odinSwitchPrefix(errMatch, hasWild, overEnum)
   return ind & sw & subjectStr & ")\n" & ind & "{\n" &
          cases.join("\n") & "\n" & ind & "}"
 

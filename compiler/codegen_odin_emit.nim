@@ -93,6 +93,22 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   res.add(body)
   res
 
+proc shouldImportFmt(body, mains: string): bool =
+  ## Check if fmt import is needed.
+  "fmt." in body or "fmt." in mains
+
+proc shouldImportOs(m: Module, body: string): bool =
+  ## Check if os import is needed.
+  let mainFn = mainDecl(m)
+  (mainFn != nil and mainFn.returnsValue) or "os." in body
+
+proc shouldImportRt(m: Module, body, mains: string): bool =
+  ## Check if runtime import is needed.
+  var actorNames: seq[string]
+  var hasTasks = false
+  runtimeUsers(m, actorNames, hasTasks)
+  actorNames.len > 0 or hasTasks or "rt." in body or "rt." in mains
+
 proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
                  realModules: Table[string, Module]): seq[string] =
   ## Only import what the emitted body actually uses — Odin rejects unused
@@ -101,16 +117,11 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   ##
   ## The runtime boot emits rt.* calls of its own, so the decision reads the
   ## DECLARATIONS too, not just the already-emitted body.
-  var actorNames: seq[string]
-  var hasTasks = false
-  runtimeUsers(m, actorNames, hasTasks)
-  let mainFn = mainDecl(m)
-  if "fmt." in body or "fmt." in mains:
+  if shouldImportFmt(body, mains):
     result.add("import \"core:fmt\"")
-  # a value-returning main exits through os.exit
-  if (mainFn != nil and mainFn.returnsValue) or "os." in body:
+  if shouldImportOs(m, body):
     result.add("import \"core:os\"")
-  if actorNames.len > 0 or hasTasks or "rt." in body or "rt." in mains:
+  if shouldImportRt(m, body, mains):
     result.add("import rt \"./tuckrt\"")
   # Imported Tuck modules are sibling packages (mod_<name>/), referenced
   # qualified as `<name>.fn` — import each one the body actually calls. The

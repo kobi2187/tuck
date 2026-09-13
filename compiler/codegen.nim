@@ -561,53 +561,40 @@ proc indentPrefix(code: string): string =
     if ch notin {' ', '\t'}: break
     result.add(ch)
 
+proc genTypeVariantCtor(ctx: var CodegenCtx, e: Expr): string =
+  ## Bare Type.Variant of a payload sum when receiver is exkVar.
+  if e.receiver == nil or e.receiver.kind != exkVar: return ""
+  ctx.sumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
 
+proc genPayloadSumField(ctx: var CodegenCtx, e: Expr): string =
+  ## Field access on a payload sum, accounting for narrowing in match arms.
+  let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver))
+  if sumName == "": return ""
+  let receiverStr = ctx.genExpr(e.receiver)
+  var owner = ""
+  if ctx.matchNarrowed.hasKey(receiverStr): owner = ctx.matchNarrowed[receiverStr]
+  if owner == "": owner = variantOwningField(ctx.module, sumName, e.fieldName)
+  if owner != "":
+    return receiverStr & "." & sumPayloadField(owner) & "." & e.fieldName
+  ""
 
 proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: a payload field, interface dispatch, a resolved call, a
   ## sum-variant construction, an actor singleton's field, or a plain read.
   if ctx.isInputField(e): return e.fieldName
-  # Which implementations are POSSIBLE was fixed at the wrap sites (the demand
-  # set); which one runs is the tag, read here at the call.
   let ic = ctx.res.ifaceCallOf(e)
   if ic.member != "": return ctx.genIfaceDispatch(e, ic, ind)
-  # A `..` chain feeding this call was already hoisted into a temp by
-  # lowering.hoistChainCalls — the receiver here can never be exkChain.
   if ctx.res.hasCall(e): return ctx.genConstruction(ctx.res.call(e))
-  if e.receiver != nil and e.receiver.kind == exkVar:
-    # bare Type.Variant of a payload sum: kind-tagged construction. The
-    # payload, if any, arrives as `.fn {args}`'s dotArg — passing nil here
-    # silently dropped every field a `Type.Variant {payload}` construction
-    # supplied.
-    let ctor = ctx.sumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
-    if ctor != "": return ctor
+  let ctor = ctx.genTypeVariantCtor(e)
+  if ctor != "": return ctor
   if e.receiver != nil and e.receiver.kind == exkActorRef:
-    # `ActorType.field` — an actor is a singleton; read its public field off
-    # the rt-owned instance (main's waitUntil predicates read state this way)
     return actorSingletonName(e.receiver.refName) & "." & e.fieldName
   if e.receiver != nil and e.receiver.kind == exkRegisterRef:
-    # `REG.FIELD` — a register is a raw pointer with no real field, so a read
-    # is the getter genRegister emitted for it. Same shape the Odin and D
-    # backends use, through the same shared helper.
     let regPrefix = registerAccessorPrefix(ctx.module, e.receiver.refName,
                                            e.fieldName)
     if regPrefix != "": return regPrefix & "_get()"
-  # A PAYLOAD sum stores each variant's fields in a field named after the
-  # variant, so `s.length` on `Line({length: int})` is `s.line.length`.
-  # Emitting the bare name produced an undeclared field, which is why a
-  # payload sum typechecked and then failed to build.
-  let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver))
-  if sumName != "":
-    # Inside a match arm that narrowed this subject to one variant, that
-    # variant is the ONLY one this access can mean — never re-derive from
-    # field name alone, which picks whichever variant happens to declare it
-    # first. Keyed by the receiver's emitted text (see genExprMatch).
-    let receiverStr = ctx.genExpr(e.receiver)
-    var owner = ""
-    if ctx.matchNarrowed.hasKey(receiverStr): owner = ctx.matchNarrowed[receiverStr]
-    if owner == "": owner = variantOwningField(ctx.module, sumName, e.fieldName)
-    if owner != "":
-      return receiverStr & "." & sumPayloadField(owner) & "." & e.fieldName
+  let sumField = ctx.genPayloadSumField(e)
+  if sumField != "": return sumField
   ctx.genExpr(e.receiver) & "." & e.fieldName
 
 proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =
@@ -919,6 +906,56 @@ proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
     ctx.genAssignTarget(e.receiver) & "." & e.fieldName
   else: ctx.genExpr(e)
 
+proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
+  ## Result-bound task call assignment with result slot and await.
+  if e.assignVal == nil or e.assignVal.kind != exkCall or
+     e.assignVal.callee == nil or e.assignVal.callee.kind != exkVar or
+     not ctx.isTaskName(e.assignVal.callee.name):
+    return ""
+  let tname = e.assignVal.callee.name
+  let ret = ctx.taskRetType(tname)
+  var argParts: seq[string]
+  if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
+    let expected = lookupFnParams(ctx.module, tname)
+    for pn in expected:
+      for f in e.assignVal.args[0].fields:
+        if f.name == pn: argParts.add(ctx.genExpr(f.value)); break
+  let rawCall = tname & "(" & argParts.join(", ") & ")"
+  let slot = "tuckSlot" & $ctx.tmpCounter
+  ctx.tmpCounter.inc
+  let spawn = "(let " & slot & " = newAsyncResult[" & ret & "](); " &
+              "spawnResult(" & slot & ", proc(): " & ret &
+              " {.closure, gcsafe.} = ({.cast(gcsafe).}: " & rawCall &
+              ")); awaitResult(" & slot & "))"
+  if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
+     e.target.name notin ctx.fieldVars:
+    ctx.definedVars.incl(e.target.name)
+    return "var " & e.target.name & " = " & spawn
+  ctx.genExpr(e.target) & " = " & spawn
+
+proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
+  ## Self-append: `xs = {items: xs, ...} push` appends in place.
+  let appended = selfAppendValue(ctx.res, e)
+  if appended == nil: return ""
+  e.target.name & ".add(" & ctx.genExpr(appended) & ")"
+
+proc prepareChainBinding(ctx: var CodegenCtx, valSrc: Expr): tuple[prelude: string, valSrc: Expr] =
+  ## Prepare chain binding: run statements into temp, return (stmts, temp).
+  if valSrc == nil or valSrc.kind != exkChain:
+    return ("", valSrc)
+  let (stmts, tmp) = ctx.genChainIntoTemp(valSrc)
+  let prelude = stmts & "\n" & stmts.indentPrefix
+  (prelude, Expr(span: valSrc.span, kind: exkVar, name: tmp))
+
+proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr, prelude: string): string =
+  ## Variable declaration with optional stated type.
+  let name = e.target.name
+  if name notin ctx.definedVars and name notin ctx.fieldVars:
+    ctx.definedVars.incl(name)
+    let declared = if e.declType != nil: ": " & genType(e.declType) else: ""
+    return prelude & "var " & name & declared & " = " & valStr
+  ""
+
 proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
                    prelude, targetStr, valStr: string): string =
   ## A field assignment is a MUTATION SITE, exactly as a `..` chain step is,
@@ -949,62 +986,16 @@ proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
                ctx.genExpr(e.target.receiver) & ")")
 
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
-  # `let r = {args} task` — a RESULT-bound task call: schedule the task with
-  # a result slot and await it (the caller yields if it's a coroutine, or
-  # drives the runtime if it's main). Distinct from a statement-position task
-  # call, which is fire-and-forget (concurrent).
-  if e.assignVal != nil and e.assignVal.kind == exkCall and
-     e.assignVal.callee != nil and e.assignVal.callee.kind == exkVar and
-     ctx.isTaskName(e.assignVal.callee.name):
-    let tname = e.assignVal.callee.name
-    let ret = ctx.taskRetType(tname)
-    # emit the raw call expression (args) by temporarily disabling the
-    # fire-and-forget spawn wrap: build the call directly
-    var argParts: seq[string]
-    if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
-      let expected = lookupFnParams(ctx.module, tname)
-      for pn in expected:
-        for f in e.assignVal.args[0].fields:
-          if f.name == pn: argParts.add(ctx.genExpr(f.value)); break
-    let rawCall = tname & "(" & argParts.join(", ") & ")"
-    let slot = "tuckSlot" & $ctx.tmpCounter
-    ctx.tmpCounter.inc
-    let spawn = "(let " & slot & " = newAsyncResult[" & ret & "](); " &
-                "spawnResult(" & slot & ", proc(): " & ret &
-                " {.closure, gcsafe.} = ({.cast(gcsafe).}: " & rawCall &
-                ")); awaitResult(" & slot & "))"
-    if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
-       e.target.name notin ctx.fieldVars:
-      ctx.definedVars.incl(e.target.name)
-      return "var " & e.target.name & " = " & spawn
-    return ctx.genExpr(e.target) & " = " & spawn
-  # `xs = {items: xs, ...} push` appends in place: the old value is dead the
-  # instant the new one lands, so the copy `push` owes value semantics is
-  # unobservable here. See codegen_common.selfAppendValue.
-  let appended = selfAppendValue(ctx.res, e)
-  if appended != nil:
-    return e.target.name & ".add(" & ctx.genExpr(appended) & ")"
-  # A chain being BOUND is consumed, so it runs into a temp and leaves its
-  # base alone — `var b = a ..setN {n: 5}` must not touch `a`. The statements
-  # are hoisted above the binding, which then reads the temp.
-  var prelude = ""
-  var valSrc = e.assignVal
-  if valSrc != nil and valSrc.kind == exkChain:
-    let (stmts, tmp) = ctx.genChainIntoTemp(valSrc)
-    prelude = stmts & "\n" & stmts.indentPrefix
-    valSrc = Expr(span: valSrc.span, kind: exkVar, name: tmp)
+  let taskResult = ctx.genTaskAssignment(e)
+  if taskResult != "": return taskResult
+  let appendResult = ctx.genSelfAppendAssignment(e)
+  if appendResult != "": return appendResult
+  let (prelude, valSrc) = ctx.prepareChainBinding(e.assignVal)
   let targetStr = ctx.genAssignTarget(e.target)
   let valStr = ctx.genExpr(valSrc)
   if e.target.kind == exkVar:
-    let name = e.target.name
-    if name notin ctx.definedVars and name notin ctx.fieldVars:
-      ctx.definedVars.incl(name)
-      # A STATED type is emitted: `var acc: seq[int] = @[]`. Nim would infer
-      # here as it always has, but the point of the annotation is the values
-      # it cannot infer from — an empty list, a nullary generic call — so the
-      # declaration says what the author said.
-      let declared = if e.declType != nil: ": " & genType(e.declType) else: ""
-      return prelude & "var " & name & declared & " = " & valStr
+    let declResult = ctx.genVarDeclaration(e, targetStr, valStr, prelude)
+    if declResult != "": return declResult
   ctx.genFieldWrite(e, prelude, targetStr, valStr)
 
 proc matchArmHead(pat: Pattern, patStr: string): string =
@@ -1015,61 +1006,55 @@ proc matchArmHead(pat: Pattern, patStr: string): string =
   ## the checker had passed it. Odin and D already emit `default:` here.
   if pat != nil and pat.kind == pkWild: "else" else: "of " & patStr
 
+proc analyzeMatchArms(e: Expr): tuple[errMatch: bool, hasWild: bool] =
+  ## Detect error matches and wildcard patterns in arms.
+  var errMatch = false
+  var hasWild = false
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkWild:
+      hasWild = true
+    if arm.pattern != nil and arm.pattern.kind == pkVar and "." in arm.pattern.name:
+      errMatch = true
+  (errMatch, hasWild)
+
+proc processMatchArm(ctx: var CodegenCtx, arm: MatchArm, patStr: var string,
+                     subjectRecvStr: string, ind: string): string =
+  ## Process one match arm, emitting its case branch with narrowing support.
+  if arm.pattern != nil and arm.pattern.kind == pkVar and "." in arm.pattern.name:
+    let dot = arm.pattern.name.find(".")
+    patStr = "errCode(\"" & errNameFor(ctx.module, ctx.moduleName,
+      arm.pattern.name[0 ..< dot], arm.pattern.name[dot+1 .. ^1]) & "\")"
+  var narrowedKey = ""
+  if arm.pattern != nil and arm.pattern.kind == pkVar and "." notin arm.pattern.name:
+    narrowedKey = subjectRecvStr
+    ctx.matchNarrowed[narrowedKey] = arm.pattern.name
+  let armHead = matchArmHead(arm.pattern, patStr)
+  var result: string
+  if arm.body != nil and arm.body.kind == exkBlock:
+    let oldIndent = ctx.indent
+    ctx.indent += 1
+    let bodyStr = ctx.genExpr(arm.body)
+    ctx.indent = oldIndent
+    result = ind & armHead & ":\n" & bodyStr
+  else:
+    let bodyStr = ctx.genExpr(arm.body)
+    result = ind & armHead & ":\n" & ind & "  " & bodyStr
+  if narrowedKey != "": ctx.matchNarrowed.del(narrowedKey)
+  result
+
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
   if e.subject == nil: return "discard"
   let ind = "  ".repeat(ctx.indent)
   var subjectStr = ctx.genExpr(e.subject)
-  let subjectRecvStr = subjectStr  # pre-".kind": what genFieldAccess re-emits
-  # A PAYLOAD-carrying sum emits as a tagged union, so the case dispatches
-  # on the discriminant. Without this it emitted `case s` over an object,
-  # which Nim rejects ("selector must be of an ordinal type") — and a
-  # payload sum therefore typechecked and then failed to build.
+  let subjectRecvStr = subjectStr
   if payloadSumTypeName(ctx.module, ctx.res.typeFor(e.subject)) != "":
     subjectStr = subjectStr & ".kind"
+  let (errMatch, hasWild) = analyzeMatchArms(e)
   var cases: seq[string]
-  var errMatch = false
-  var hasWild = false
-  for arm in e.arms:
-    if arm.pattern != nil and arm.pattern.kind == pkWild: hasWild = true
-    if arm.pattern != nil and arm.pattern.kind == pkVar and
-       "." in arm.pattern.name:
-      errMatch = true
   for arm in e.arms:
     var patStr = genPatternStr(arm.pattern)
-    if arm.pattern != nil and arm.pattern.kind == pkVar and
-       "." in arm.pattern.name:
-      # checker-qualified error variant: compare against the hashed id
-      let dot = arm.pattern.name.find(".")
-      patStr = "errCode(\"" & errNameFor(ctx.module, ctx.moduleName,
-        arm.pattern.name[0 ..< dot], arm.pattern.name[dot+1 .. ^1]) & "\")"
-    # A variant pattern narrows the subject's storage for the arm body:
-    # `v.field` inside `A: ...` must read `v.a.field`, not whichever variant
-    # happens to declare `field` first. Keyed by the subject's EMITTED text
-    # rather than just a bare var name, so `match r.value:` narrows just as
-    # well as `match v:` — genFieldAccess re-emits the same receiver text to
-    # look this up.
-    var narrowedKey = ""
-    if e.subject != nil and arm.pattern != nil and
-       arm.pattern.kind == pkVar and "." notin arm.pattern.name:
-      narrowedKey = subjectRecvStr
-      ctx.matchNarrowed[narrowedKey] = arm.pattern.name
-    # Arms sit one level in from the `case`, and a BLOCK body one level
-    # further. Both must be derived from ctx.indent — a match nested in a
-    # fn body is not at column 0, and a block body self-indents from the
-    # same counter, so hardcoding the widths mismatched the two.
-    let armHead = matchArmHead(arm.pattern, patStr)
-    if arm.body != nil and arm.body.kind == exkBlock:
-      let oldIndent = ctx.indent
-      ctx.indent += 1          # body lines land under the `of`
-      let bodyStr = ctx.genExpr(arm.body)
-      ctx.indent = oldIndent
-      cases.add(ind & armHead & ":\n" & bodyStr)
-    else:
-      let bodyStr = ctx.genExpr(arm.body)
-      cases.add(ind & armHead & ":\n" & ind & "  " & bodyStr)
-    if narrowedKey != "": ctx.matchNarrowed.del(narrowedKey)
+    cases.add(ctx.processMatchArm(arm, patStr, subjectRecvStr, ind))
   if errMatch and not hasWild:
-    # the code space is uint16 — the declared variants never cover it
     cases.add(ind & "else: discard")
   "(case " & subjectStr & "\n" & cases.join("\n") & ")"
 

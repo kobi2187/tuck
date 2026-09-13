@@ -998,6 +998,46 @@ proc registerFieldType(m: Module, regName, fieldName: string, span: Span): Type 
                   name: (if lo == hi: "bool" else: "u32"))
   nil
 
+proc checkRegisterChainWrite(tc: var TypeChecker, e: Expr) =
+  ## Check if a chain step tries to write a read-only register field.
+  if e == nil or e.kind != exkChain or e.base == nil or e.base.kind != exkRegisterRef:
+    return
+  for step in e.steps:
+    if step.op != coDotDot or step.target == nil: continue
+    let acc = registerFieldAccess(tc.module, e.base.refName, step.target.name)
+    if acc.found and not acc.canWrite:
+      fail(dcReReadOnly,
+           "register field '" & e.base.refName & "." & step.target.name &
+           "' is declared [read] — writing it is a compile error (spec " &
+           "§8.1). On hardware the write is ignored or has an undocumented " &
+           "side effect", step.span)
+
+proc checkRegisterFieldRead(tc: var TypeChecker, e: Expr) =
+  ## Check if a field access tries to read a write-only register field.
+  if e == nil or e.kind != exkField or e.receiver == nil or
+     e.receiver.kind != exkRegisterRef: return
+  let acc = registerFieldAccess(tc.module, e.receiver.refName, e.fieldName)
+  if acc.found and not acc.canRead:
+    fail(dcReWriteOnly,
+         "register field '" & e.receiver.refName & "." & e.fieldName &
+         "' is declared [write] — reading it is a compile error (spec " &
+         "§8.1); a write-only field reads back undefined", e.span)
+
+proc asSpecialFieldAccess(tc: var TypeChecker, e: Expr): Type =
+  ## Check for special field access cases: register, actor, registry.raise, Error namespace.
+  if e.receiver != nil and e.receiver.kind == exkRegisterRef:
+    let regT = registerFieldType(tc.module, e.receiver.refName, e.fieldName, e.span)
+    if regT != nil: return regT
+  if e.receiver != nil and e.receiver.kind == exkActorRef:
+    let actT = actorFieldType(tc.module, e.receiver.refName, e.fieldName)
+    if actT != nil: return actT
+  if e.receiver != nil and e.receiver.kind == exkRegistryRef and
+     e.fieldName == "raise":
+    return Type(span: e.span, kind: tkNamed, name: "unit")
+  if e.receiver != nil and e.receiver.kind == exkVar and e.receiver.name == "Error":
+    return Type(span: e.span, kind: tkNamed, name: "u16")
+  nil
+
 proc failIfRegisterAccess(tc: var TypeChecker, e: Expr) =
   ## spec 8.1: "Writing to a read-only field is a compile error. Reading a
   ## write-only field is a compile error." Neither was one — a `[read]` field
@@ -1007,24 +1047,8 @@ proc failIfRegisterAccess(tc: var TypeChecker, e: Expr) =
   ## ordinary field access (`DAC_CR.EN`). Both are recognised by the RECEIVER
   ## naming a `register` declaration, which is unambiguous: a register is a
   ## declaration, not a value, so nothing else can be named there.
-  if e == nil: return
-  if e.kind == exkChain and e.base != nil and e.base.kind == exkRegisterRef:
-    for step in e.steps:
-      if step.op != coDotDot or step.target == nil: continue
-      let acc = registerFieldAccess(tc.module, e.base.refName, step.target.name)
-      if acc.found and not acc.canWrite:
-        fail(dcReReadOnly,
-             "register field '" & e.base.refName & "." & step.target.name &
-             "' is declared [read] — writing it is a compile error (spec " &
-             "§8.1). On hardware the write is ignored or has an undocumented " &
-             "side effect", step.span)
-  if e.kind == exkField and e.receiver != nil and e.receiver.kind == exkRegisterRef:
-    let acc = registerFieldAccess(tc.module, e.receiver.refName, e.fieldName)
-    if acc.found and not acc.canRead:
-      fail(dcReWriteOnly,
-           "register field '" & e.receiver.refName & "." & e.fieldName &
-           "' is declared [write] — reading it is a compile error (spec " &
-           "§8.1); a write-only field reads back undefined", e.span)
+  tc.checkRegisterChainWrite(e)
+  tc.checkRegisterFieldRead(e)
 
 proc registryEventOwner(variant: string): string =
   ## Mirrors sumTypeOwning, for the ONE OTHER place a bare Capitalized name
@@ -1044,27 +1068,8 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   ## interface dispatch. Try them in two groups: what the syntax alone can
   ## settle, then what needs the receiver's type.
   tc.failIfRegisterAccess(e)   # spec 8.1: no reading a [write] field
-  if e.receiver != nil and e.receiver.kind == exkRegisterRef:
-    let regT = registerFieldType(tc.module, e.receiver.refName, e.fieldName, e.span)
-    if regT != nil: return regT
-  if e.receiver != nil and e.receiver.kind == exkActorRef:
-    let actT = actorFieldType(tc.module, e.receiver.refName, e.fieldName)
-    if actT != nil: return actT
-  if e.receiver != nil and e.receiver.kind == exkRegistryRef and
-     e.fieldName == "raise":
-    # `Registry.raise` — not a real field, the raise-call grammar's own
-    # marker (lowering.flattenRegistryRaise/raisedEventsIn read the AST
-    # shape directly, never this type). `unit`, matching the whole raise
-    # call's own type (asNamedCallee's registryEventOwner branch) — never
-    # a real value, so never something a real type should be built for.
-    return Type(span: e.span, kind: tkNamed, name: "unit")
-  if e.receiver != nil and e.receiver.kind == exkVar and e.receiver.name == "Error":
-    # `Error.name` (spec 4.9) — the app-wide error namespace, hashed to a
-    # numeric code at emit time (codegen*.nim's own isErrorDotRef/
-    # genReturn special-case, matched the SAME way: receiver named
-    # literally "Error", never a real declaration). u16 matches the same
-    # runtime carrier type `.err` already resolves to (asResultIntrospection).
-    return Type(span: e.span, kind: tkNamed, name: "u16")
+  result = tc.asSpecialFieldAccess(e)
+  if result != nil: return
   result = tc.syntacticFieldForm(e)
   if result != nil: return
   let rawT = tc.synthesize(e.receiver)
@@ -1528,6 +1533,16 @@ proc checkMutatorCall(tc: var TypeChecker, step: var ChainStep, e: Expr,
          step.span)
   tc.checkMutatorTransition(step, e.base, baseT)
 
+proc tryFieldSet(tc: var TypeChecker, member: string, fields: seq[FieldDef],
+                 step: var ChainStep, recvT: Type, baseName: string): bool =
+  ## Try to find and set a field. Returns true if found and handled.
+  for f in fields:
+    if f.name == member:
+      tc.checkFieldSet(step, f, recvT)
+      if baseName != "": tc.clearUninit(baseName, member)
+      return true
+  false
+
 proc checkChainStep(tc: var TypeChecker, step: var ChainStep, e: Expr,
                     baseT, recvT: Type, fields: seq[FieldDef]) =
   ## One `..name {args}` step: either it SETS a field or it calls a mutator.
@@ -1536,19 +1551,12 @@ proc checkChainStep(tc: var TypeChecker, step: var ChainStep, e: Expr,
   ## pretending a mutator touched fields it never mentions.
   let base = if e.base != nil and e.base.kind == exkVar: e.base.name else: ""
   let member = stepMember(step)
-  # A QUALIFIED step is never a field set — a field belongs to the receiver,
-  # not to a module — so the field loop is skipped and the name is looked up
-  # the way it was written.
   let qualified = step.target != nil and step.target.kind == exkQualified
   let key = if qualified and step.target.modulePath.len > 0:
               step.target.modulePath[0] & "::" & member
             else: member
-  if not qualified:
-    for f in fields:
-      if f.name == member:
-        tc.checkFieldSet(step, f, recvT)
-        if base != "": tc.clearUninit(base, member)
-        return
+  if not qualified and tc.tryFieldSet(member, fields, step, recvT, base):
+    return
   if tc.fnSigs.hasKey(key) or tc.fnSigs.hasKey(member):
     tc.checkMutatorCall(step, e, baseT, recvT)
     if base != "":
@@ -1618,6 +1626,20 @@ proc inferThroughFnSigSlot(tc: TypeChecker, declared, actual: Type,
                      bindings, fnName, sp)
   tc.inferBindings(sig.ret, actual.result, generics, bindings, fnName, sp)
 
+proc bindNamedParam(tc: TypeChecker, paramName: string, actual: Type,
+                    generics: seq[string], bindings: var Table[string, Type],
+                    fnName: string, sp: Span) =
+  ## Bind a generic type parameter by name if it matches a generic parameter.
+  if paramName notin generics: return
+  if bindings.hasKey(paramName):
+    if not tc.compatible(actual, bindings[paramName]) or
+       not tc.compatible(bindings[paramName], actual):
+      fail("Type Error: generic parameter '" & paramName & "' of '" &
+           fnName & "' bound to both " & typeName(bindings[paramName]) &
+           " and " & typeName(actual), sp)
+  else:
+    bindings[paramName] = actual
+
 proc inferBindings(tc: TypeChecker, declared, actual: Type,
                    generics: seq[string], bindings: var Table[string, Type],
                    fnName: string, sp: Span) =
@@ -1635,15 +1657,7 @@ proc inferBindings(tc: TypeChecker, declared, actual: Type,
   elif isFlexible(actual): return
   case declared.kind
   of tkNamed:
-    if declared.name in generics:
-      if bindings.hasKey(declared.name):
-        if not tc.compatible(actual, bindings[declared.name]) or
-           not tc.compatible(bindings[declared.name], actual):
-          fail("Type Error: generic parameter '" & declared.name & "' of '" &
-               fnName & "' bound to both " & typeName(bindings[declared.name]) &
-               " and " & typeName(actual), sp)
-      else:
-        bindings[declared.name] = actual
+    tc.bindNamedParam(declared.name, actual, generics, bindings, fnName, sp)
   of tkApp:
     if actual.kind == tkApp and declared.args.len == actual.args.len:
       tc.inferBindings(declared.base, actual.base, generics, bindings, fnName, sp)
@@ -1979,6 +1993,14 @@ proc checkOneGroupBound(tc: TypeChecker, bound: Type, concreteT: Type,
     if want == nil or want.kind != dkFn: continue
     tc.checkGroupMember(want, concreteT, binds, groupName, paramName, fnName, sp)
 
+proc reportedParamName(paramName: string, d: Decl): string =
+  ## Get the reported parameter name, accounting for desugared group param names.
+  result = paramName
+  if paramName.startsWith("TuckGroupParam") and d != nil:
+    for p in d.fnParams:
+      if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == paramName:
+        return p.name
+
 proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string, sig: FnSig,
                                bindings: var Table[string, Type], sp: Span) =
   ## After a generic fn's type params are bound to concrete types, verify
@@ -1999,16 +2021,7 @@ proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string, sig: FnSig,
     if bounds.len == 0 or not bindings.hasKey(paramName): continue
     let concreteT = bindings[paramName]
     if concreteT == nil or isFlexible(concreteT): continue
-    # An inline `{x: Sortable + Hashable}` bound desugars to a fresh
-    # `TuckGroupParamN` type param (desugarGroupBoundParams) — meaningless in a
-    # message the author never wrote. Report the VALUE parameter's own
-    # name instead, found by which param this synthesized name ended up on.
-    var reportedName = paramName
-    if paramName.startsWith("TuckGroupParam") and d != nil:
-      for p in d.fnParams:
-        if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == paramName:
-          reportedName = p.name
-          break
+    let reportedName = reportedParamName(paramName, d)
     for bound in bounds:
       # A generic group's arguments are usually written in terms of the fn's
       # OTHER type params — `[C: Indexable[E], E]`. Bind them the same way the
@@ -2897,6 +2910,25 @@ proc asGroupRequirement(tc: var TypeChecker, e: Expr, calleeName: string): Type 
         return substituteGroup(want.fnReturnType, selfT, groupBindings(g, bound))
   nil
 
+proc checkAmbiguousImports(tc: var TypeChecker, e: Expr, calleeName: string) =
+  ## Check if the callee name is ambiguously imported.
+  if calleeName == "" or not tc.ambiguousImports.hasKey(calleeName) or
+     tc.topLevelDeclOfFn(calleeName) != nil: return
+  let owners = tc.ambiguousImports[calleeName]
+  fail("Type Error: '" & calleeName & "' is exported by " &
+       $owners.len & " imports (" & owners.join(", ") &
+       ") — call it as '" & owners[0] & "::" & calleeName &
+       "' to say which", e.span)
+
+proc asBuiltinOrEchoCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
+  ## Check if the call is to a builtin (sizeof, alignof, etc.) or echo.
+  if calleeName in ParenBuiltinNames:
+    return Type(span: e.span, kind: tkNamed, name: "int")
+  if calleeName == "echo":
+    for a in e.args: discard tc.synthesize(a)
+    return Type(span: e.span, kind: tkNamed, name: "unit")
+  nil
+
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## What `{payload} name` means, in priority order: a group requirement on a
   ## bounded type param, then a name (distinct / construction / declared fn),
@@ -2904,30 +2936,11 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## error. The record combinators are NOT here — they are exkCombinator
   ## nodes the parser already decided on.
   let calleeName = tc.calleeNameOf(e)
-  # A name two imports both export gave up its bare form (addBare). It is
-  # still reachable qualified; written bare, it is reported HERE, where the
-  # author wrote it, rather than at the import that merely made it possible.
-  # A local declaration of the same name wins, as it does for any import.
-  if calleeName != "" and tc.ambiguousImports.hasKey(calleeName) and
-     tc.topLevelDeclOfFn(calleeName) == nil:
-    let owners = tc.ambiguousImports[calleeName]
-    fail("Type Error: '" & calleeName & "' is exported by " &
-         $owners.len & " imports (" & owners.join(", ") &
-         ") — call it as '" & owners[0] & "::" & calleeName &
-         "' to say which", e.span)
+  tc.checkAmbiguousImports(e, calleeName)
   let viaGroup = tc.asGroupRequirement(e, calleeName)
   if viaGroup != nil: return viaGroup
-  if calleeName in ParenBuiltinNames:
-    # Args are type names, not values — see ParenBuiltinNames. Result is
-    # always a plain size/offset.
-    return Type(span: e.span, kind: tkNamed, name: "int")
-  if calleeName == "echo":
-    # `x echo` — the host print, emitted natively by every backend (Nim's
-    # own echo, Odin's fmt.println, D's writeln). The parser already
-    # refuses the prefix form (TK-PA04), so anything named echo reaching
-    # here is the legal postfix shape. Yields unit, like any statement.
-    for a in e.args: discard tc.synthesize(a)
-    return Type(span: e.span, kind: tkNamed, name: "unit")
+  result = tc.asBuiltinOrEchoCall(e, calleeName)
+  if result != nil: return
   result = tc.asNamedCallee(e, calleeName)
   if result != nil: return
   if e.callee != nil and e.callee.kind != exkVar:
@@ -3124,6 +3137,28 @@ proc synthStruct(tc: var TypeChecker, e: Expr): Type =
                     span: f.value.span))
   Type(span: e.span, kind: tkRecord, fields: fs)
 
+proc determineListBase(tc: var TypeChecker, e: Expr, elemT: var Type):
+    tuple[baseName: string, sizeArg: Type] =
+  ## Determine if the list should be Seq or Array based on expected type.
+  var baseName = "Seq"
+  var sizeArg: Type = nil
+  if tc.expectedType != nil:
+    let want = tc.resolve(tc.expectedType)
+    if want != nil and want.kind == tkApp and want.base != nil and
+       want.base.kind == tkNamed and want.base.name in ["Seq", "Array"] and
+       want.args.len > 0:
+      if isFlexible(elemT): elemT = want.args[^1]
+      if want.base.name == "Array" and want.args.len == 2:
+        baseName = "Array"
+        sizeArg = want.args[0]
+        if sizeArg != nil and sizeArg.kind == tkNamed and
+           allCharsInSet(sizeArg.name, {'0'..'9'}) and
+           sizeArg.name != $e.items.len:
+          fail("Type Error: this list has " & $e.items.len &
+               " element(s) but Array[" & sizeArg.name &
+               ", _] needs exactly " & sizeArg.name, e.span)
+  (baseName, sizeArg)
+
 proc synthList(tc: var TypeChecker, e: Expr): Type =
   ## A list literal takes its element type from its first item — or, when it
   ## has no items, from the place it is GOING: the expected-type channel
@@ -3138,37 +3173,7 @@ proc synthList(tc: var TypeChecker, e: Expr): Type =
   for item in e.items:
     let t = tc.synthesize(item)
     if isFlexible(elemT): elemT = t
-  # The literal's OWN base name defaults to Seq — but when it's going into a
-  # declared Array[N, T] slot, it has to BECOME an Array[N, T] itself, not a
-  # Seq that merely resembles one. Getting this wrong is exactly the bug that
-  # shipped once: the checker accepted a Seq-typed literal against an
-  # Array-typed field (Seq and Array agreed on nothing here to catch it), and
-  # every backend then emitted a dynamic-array literal — `@[1, 2, 3, 4]` in
-  # Nim, `[dynamic]int{...}` in Odin — into a fixed-size slot, rejected by
-  # every host compiler. Returning the REAL Array[N, T] here means ordinary
-  # `compatible()` catches a wrong size or a wrong target honestly, and
-  # codegen can tell the two literal shapes apart by the type it already has.
-  var baseName = "Seq"
-  var sizeArg: Type = nil
-  if tc.expectedType != nil:
-    let want = tc.resolve(tc.expectedType)
-    if want != nil and want.kind == tkApp and want.base != nil and
-       want.base.kind == tkNamed and want.base.name in ["Seq", "Array"] and
-       want.args.len > 0:
-      if isFlexible(elemT): elemT = want.args[^1]
-      if want.base.name == "Array" and want.args.len == 2:
-        baseName = "Array"
-        sizeArg = want.args[0]
-        # `sizeArg.name` is only a real digit count when the target names a
-        # CONCRETE Array[4, T] — inside a fn generic over the size itself
-        # (`Array[N, T]`), it is the type-param name "N", not a number, and
-        # there is nothing to compare the literal's length against yet.
-        if sizeArg != nil and sizeArg.kind == tkNamed and
-           allCharsInSet(sizeArg.name, {'0'..'9'}) and
-           sizeArg.name != $e.items.len:
-          fail("Type Error: this list has " & $e.items.len &
-               " element(s) but Array[" & sizeArg.name &
-               ", _] needs exactly " & sizeArg.name, e.span)
+  let (baseName, sizeArg) = tc.determineListBase(e, elemT)
   if isFlexible(elemT) and e.items.len == 0:
     fail(dcTyUntypedEmptyList,
          "this empty list has no element type — nothing here says what it " &

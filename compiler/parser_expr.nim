@@ -18,28 +18,50 @@ proc parsePattern*(p: var Parser): Pattern
 proc parseBlock*(p: var Parser): Expr
 proc parseStatementExpr(p: var Parser): Expr
 
+## Parses a record pattern: `{field: pat, ...}`
+proc parseRecordPattern(p: var Parser, sp: Span): Pattern =
+  discard p.advance()
+  var fields: seq[(string, Pattern)]
+  while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+    let name = p.expectMemberName("Expected field name in pattern").value
+    var pat: Pattern
+    if p.current().kind == tkColon:
+      discard p.advance()
+      pat = p.parsePattern()
+    else:
+      pat = Pattern(span: sp, kind: pkVar, name: name)
+    fields.add((name, pat))
+    if p.current().kind == tkComma:
+      discard p.advance()
+  discard p.expect(tkRBrace)
+  return Pattern(span: sp, kind: pkRecord, fields: fields)
+
+## Parses an identifier pattern with optional dot-separated path
+proc parseIdentPattern(p: var Parser, sp: Span): Pattern =
+  var name = p.advance().value
+  while p.current().kind == tkDot:
+    name.add(".")
+    discard p.advance()
+    if p.current().kind in {tkIdent, tkIntLit, tkFloatLit, tkStrLit}:
+      name.add(p.current().value)
+      let wasLit = p.current().kind in {tkIntLit, tkFloatLit}
+      discard p.advance()
+      if wasLit and p.current().kind == tkIdent:
+        name.add(p.current().value)
+        discard p.advance()
+    else:
+      p.reportError("Expected identifier or literal in pattern path")
+  return Pattern(span: sp, kind: pkVar, name: name)
+
 proc parsePattern*(p: var Parser): Pattern =
   let sp = p.getSpan()
   let curr = p.current()
-  
+
   if curr.kind == tkIdent and curr.value == "_":
     discard p.advance()
     return Pattern(span: sp, kind: pkWild)
   elif curr.kind == tkIdent:
-    var name = p.advance().value
-    while p.current().kind == tkDot:
-      name.add(".")
-      discard p.advance()
-      if p.current().kind in {tkIdent, tkIntLit, tkFloatLit, tkStrLit}:
-        name.add(p.current().value)
-        let wasLit = p.current().kind in {tkIntLit, tkFloatLit}
-        discard p.advance()
-        if wasLit and p.current().kind == tkIdent:
-          name.add(p.current().value)
-          discard p.advance()
-      else:
-        p.reportError("Expected identifier or literal in pattern path")
-    return Pattern(span: sp, kind: pkVar, name: name)
+    return p.parseIdentPattern(sp)
   elif curr.kind == tkIntLit:
     let val = p.advance().value
     return Pattern(span: sp, kind: pkLit, litKind: lkInt, litValue: val)
@@ -53,21 +75,7 @@ proc parsePattern*(p: var Parser): Pattern =
     let val = p.advance().value
     return Pattern(span: sp, kind: pkLit, litKind: lkBool, litValue: val)
   elif curr.kind == tkLBrace:
-    discard p.advance()
-    var fields: seq[(string, Pattern)]
-    while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-      let name = p.expectMemberName("Expected field name in pattern").value
-      var pat: Pattern
-      if p.current().kind == tkColon:
-        discard p.advance()
-        pat = p.parsePattern()
-      else:
-        pat = Pattern(span: sp, kind: pkVar, name: name)
-      fields.add((name, pat))
-      if p.current().kind == tkComma:
-        discard p.advance()
-    discard p.expect(tkRBrace)
-    return Pattern(span: sp, kind: pkRecord, fields: fields)
+    return p.parseRecordPattern(sp)
   else:
     p.reportError("Unexpected pattern syntax: " & $curr.kind)
 
@@ -182,22 +190,18 @@ proc parseBraceBlock(p: var Parser, sp: Span): Expr =
   discard p.expect(tkRBrace)
   return Expr(span: sp, kind: exkBlock, stmts: stmts)
 
-proc parsePrimaryExpr(p: var Parser): Expr =
-  let sp = p.getSpan()
-  let curr = p.current()
-  # `err X` — raise an error value into the fn's result: `return err
-  # FsError.NotFound`, shorthand `err NotFound` (resolved against the sig's
-  # [error: E]), or re-raise a code: `err resp.err`
-  if curr.kind == tkIdent and curr.value == "err" and
+## Parses `err X` — raise an error value into the fn's result
+proc parseErrKeyword(p: var Parser, sp: Span): Expr =
+  if p.current().kind == tkIdent and p.current().value == "err" and
      p.peek().kind in {tkIdent, tkIntLit}:
     discard p.advance()
     let val = p.parseExpr()
     return Expr(span: sp, kind: exkRaise, raiseVal: val)
-  if curr.kind == tkDotDot and p.peek().kind == tkDot:
-    discard p.advance()
-    discard p.advance()
-    return Expr(span: sp, kind: exkVar, name: "...")
-  if curr.kind == tkColon and p.peek().kind == tkIdent:
+  nil
+
+## Parses `:name` or `:mod::fn` — module-qualified or bare reference
+proc parseQualifiedRef(p: var Parser, sp: Span): Expr =
+  if p.current().kind == tkColon and p.peek().kind == tkIdent:
     discard p.advance()
     let name = p.expect(tkIdent).value
     # `:mod::fn` — a reference to another module's fn. The module has to be
@@ -212,10 +216,28 @@ proc parsePrimaryExpr(p: var Parser): Expr =
       return Expr(span: sp, kind: exkQualified, modulePath: @[name],
                   qualName: member)
     return Expr(span: sp, kind: exkQualified, modulePath: @[], qualName: name)
+  nil
+
+proc parsePrimaryExpr(p: var Parser): Expr =
+  let sp = p.getSpan()
+  let curr = p.current()
+  # Try error keyword: `err X`
+  let errExpr = p.parseErrKeyword(sp)
+  if errExpr != nil: return errExpr
+  # Try ellipsis: `..`
+  if curr.kind == tkDotDot and p.peek().kind == tkDot:
+    discard p.advance()
+    discard p.advance()
+    return Expr(span: sp, kind: exkVar, name: "...")
+  # Try qualified reference: `:name` or `:mod::fn`
+  let qualExpr = p.parseQualifiedRef(sp)
+  if qualExpr != nil: return qualExpr
+  # Try unary minus
   if curr.kind == tkMinus:
     discard p.advance()
     let operand = p.parseChainExpr()
     return Expr(span: sp, kind: exkUnary, unaryOp: uoNeg, operand: operand)
+  # Try unary not
   if curr.kind == tkNot:
     discard p.advance()
     let operand = p.parseChainExpr()

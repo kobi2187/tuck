@@ -79,23 +79,35 @@ proc checkTransSet*(tc: var TypeChecker, typeName: string,
 # else is the full set (all variants possible).
 proc fnReturnVariants*(tc: TypeChecker, fnName, typeName: string): seq[string]
 
+## Extracts variants from a bare Type.Variant field access
+proc variantsFromField(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
+  # bare Type.Variant (incl. [unsafe])
+  if e.receiver != nil and e.receiver.kind == exkVar and
+     e.receiver.name == typeName:
+    return @[e.fieldName]
+  @[]
+
+## Extracts variants from a call expression
+proc variantsFromCall(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
+  # {payload} Type.Variant
+  if e.callee != nil and e.callee.kind == exkField and
+     e.callee.receiver != nil and e.callee.receiver.kind == exkVar and
+     e.callee.receiver.name == typeName:
+    return @[e.callee.fieldName]
+  # {args} someFn — trace the callee's return sites
+  if e.callee != nil and e.callee.kind == exkVar:
+    return tc.fnReturnVariants(e.callee.name, typeName)
+  @[]
+
 proc exprVariants*(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
   if e == nil: return tc.allVariants(typeName)
   case e.kind
   of exkField:
-    # bare Type.Variant (incl. [unsafe])
-    if e.receiver != nil and e.receiver.kind == exkVar and
-       e.receiver.name == typeName:
-      return @[e.fieldName]
+    let vs = tc.variantsFromField(typeName, e)
+    if vs.len > 0: return vs
   of exkCall:
-    # {payload} Type.Variant
-    if e.callee != nil and e.callee.kind == exkField and
-       e.callee.receiver != nil and e.callee.receiver.kind == exkVar and
-       e.callee.receiver.name == typeName:
-      return @[e.callee.fieldName]
-    # {args} someFn — trace the callee's return sites
-    if e.callee != nil and e.callee.kind == exkVar:
-      return tc.fnReturnVariants(e.callee.name, typeName)
+    let vs = tc.variantsFromCall(typeName, e)
+    if vs.len > 0: return vs
   of exkVar:
     if tc.varVariants.hasKey(e.name):
       return tc.varVariants[e.name]
@@ -248,6 +260,21 @@ proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
   for h in holes:
     if h in reads: result.add(h)
 
+## Checks implicit tail return of a function body and adds its variants if it's exact
+proc checkImplicitTailReturn(tc: TypeChecker, typeName: string, fnBody: Expr,
+                             acc: var seq[string], exact: var bool) =
+  # the implicit tail return is a plain trailing expression
+  if fnBody.kind == exkBlock and fnBody.stmts.len > 0:
+    let last = fnBody.stmts[^1]
+    if last.kind notin {exkReturn, exkIf, exkMatch, exkFor, exkWhile,
+                        exkBreak, exkContinue, exkBlock, exkAssign}:
+      let vs = tc.exprVariants(typeName, last)
+      if vs.len == 1:
+        for v in vs:
+          if v notin acc: acc.add(v)
+      else:
+        exact = false
+
 proc fnReturnVariants*(tc: TypeChecker, fnName, typeName: string): seq[string] =
   for d in tc.module.decls:
     if d != nil and d.kind == dkFn and d.name == fnName and
@@ -256,17 +283,7 @@ proc fnReturnVariants*(tc: TypeChecker, fnName, typeName: string): seq[string] =
       var acc: seq[string]
       var exact = true
       tc.scanReturns(typeName, d.fnBody, acc, exact)
-      # the implicit tail return is a plain trailing expression
-      if d.fnBody.kind == exkBlock and d.fnBody.stmts.len > 0:
-        let last = d.fnBody.stmts[^1]
-        if last.kind notin {exkReturn, exkIf, exkMatch, exkFor, exkWhile,
-                            exkBreak, exkContinue, exkBlock, exkAssign}:
-          let vs = tc.exprVariants(typeName, last)
-          if vs.len == 1:
-            for v in vs:
-              if v notin acc: acc.add(v)
-          else:
-            exact = false
+      tc.checkImplicitTailReturn(typeName, d.fnBody, acc, exact)
       if exact and acc.len > 0: return acc
       return tc.allVariants(typeName)
   tc.allVariants(typeName)

@@ -19,6 +19,22 @@
 import ast, sets
 import typecheck_util  # fail
 
+## Verifies all variants in a sealed type are reachable from the initial variant
+proc checkSealedReachability(d: Decl, t: Type) =
+  # Every variant must be reachable from the initial (first) variant
+  var reachable = [t.variants[0].name].toHashSet
+  var grew = true
+  while grew:
+    grew = false
+    for tr in t.transitions:
+      if tr.`from` in reachable and tr.to notin reachable:
+        reachable.incl(tr.to)
+        grew = true
+  for v in t.variants:
+    if v.name notin reachable:
+      fail("Transition Error: sealed type " & d.name & " variant '" & v.name &
+           "' is unreachable from initial variant '" & t.variants[0].name & "'", v.span)
+
 proc checkTransitions*(d: Decl) =
   let t = d.typeBody
   if t == nil or t.kind != tkSum or t.transitions.len == 0: return
@@ -33,16 +49,4 @@ proc checkTransitions*(d: Decl) =
   for a in t.attrs:
     if a.name == "sealed": isSealed = true
   if isSealed and t.variants.len > 0:
-    # Every variant must be reachable from the initial (first) variant
-    var reachable = [t.variants[0].name].toHashSet
-    var grew = true
-    while grew:
-      grew = false
-      for tr in t.transitions:
-        if tr.`from` in reachable and tr.to notin reachable:
-          reachable.incl(tr.to)
-          grew = true
-    for v in t.variants:
-      if v.name notin reachable:
-        fail("Transition Error: sealed type " & d.name & " variant '" & v.name &
-             "' is unreachable from initial variant '" & t.variants[0].name & "'", v.span)
+    checkSealedReachability(d, t)
