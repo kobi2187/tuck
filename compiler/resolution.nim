@@ -103,6 +103,37 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     # mangle in the import graph.)
     if d.name == pool or d.name == "tuck_" & pool: return true
   return false
+
+proc resourceHandleName*(kind: string): string =
+  ## The per-kind handle type's name (spec §7.4). Capitalized, because it IS a
+  ## type and Tuck's type names are: a kind spelled `udp` hands out a
+  ## `UdpHandle`. One place, for the reason poolHandleName is one place — the
+  ## checker names it, every backend maps it, and the two have to agree.
+  if kind.len == 0: "Handle"
+  else: kind[0].toUpperAscii & kind[1 .. ^1] & "Handle"
+
+proc resourceTableName*(kind: string): string =
+  ## The emitted name of a kind's registry table. Prefixed rather than bare:
+  ## kind names are lowercase and user-chosen (`file`, `net`), so an unadorned
+  ## `file` would collide with an ordinary fn of that name in every backend.
+  ## The prefix is not a mangling — the table is a symbol the checker
+  ## synthesised, and mangling walks the AST, which never held it.
+  "tuckRes_" & kind
+
+proc isResourceHandleType*(m: Module, name: string): bool =
+  ## Is this the handle type of some resource kind declared in this module?
+  ##
+  ## The §7.4 twin of isPoolHandleType, and true for the same reason: the
+  ## checker gives every KIND its own handle type so finishing into the wrong
+  ## registry is a type error, while the backends need only the runtime's
+  ## single `ResourceHandle`. Not mangled — the checker synthesised it, and
+  ## mangling walks the AST, which never held it.
+  if not name.endsWith("Handle"): return false
+  for d in m.decls:
+    if d == nil or d.kind != dkResources: continue
+    for k in d.resKinds:
+      if resourceHandleName(k.name) == name: return true
+  return false
   ## The per-pool handle type's name. One place, because the checker names it,
   ## every backend emits an alias for it, and mangling has to agree with both.
 

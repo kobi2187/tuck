@@ -476,7 +476,7 @@ void initResourceTable(ref ResourceTable t, string kind, int cap,
     t.sweepBatch = sweepBatch;
     // A capped kind is array-shaped from the start: the cap is a LINK-TIME
     // memory budget, not a limit discovered at runtime.
-    if (cap > 0 && t.entries.length == 0)
+    if (cap > 0 && t.entries.length < cap)
         t.entries.length = cap;
 }
 
@@ -535,6 +535,10 @@ private bool rtWatermarkReached(ref ResourceTable t)
 TuckResult!ResourceHandle acquireResource(ref ResourceTable t, long reference,
                                           string site)
 {
+    // Sizes a capped table on first use, so a table built as a plain literal
+    // behaves exactly as one built through initResourceTable — which is what
+    // lets the backend emit the declaration with no start-up code at all.
+    if (t.cap > 0 && t.entries.length < t.cap) t.entries.length = t.cap;
     foreach (i; 0 .. t.entries.length)
     {
         if (t.entries[i].live) continue;

@@ -350,7 +350,7 @@ initResourceTable :: proc(t: ^ResourceTable, kind: string, cap: int,
 	t.cap = cap
 	t.policy = policy
 	t.sweepBatch = sweepBatch
-	if cap > 0 && len(t.entries) == 0 {
+	if cap > 0 && len(t.entries) < cap {
 		// A capped kind is array-shaped from the start: the cap is a
 		// LINK-TIME memory budget, not a limit discovered at runtime.
 		resize(&t.entries, cap)
@@ -406,6 +406,11 @@ acquireResource :: proc(t: ^ResourceTable, reference: i64,
                         site: string) -> TuckResult(ResourceHandle) {
 	// Exhaustion is ABSENCE, not an error — the caller decides what running
 	// out means, exactly as 7.2's pool does.
+	//
+	// Sizes a capped table on first use, so a table built as a plain literal
+	// behaves exactly as one built through initResourceTable — which is what
+	// lets the backend emit the declaration with no start-up code at all.
+	if t.cap > 0 && len(t.entries) < t.cap { resize(&t.entries, t.cap) }
 	for i in 0 ..< len(t.entries) {
 		if t.entries[i].live { continue }
 		t.entries[i].gen += 1

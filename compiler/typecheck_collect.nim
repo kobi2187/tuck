@@ -95,6 +95,24 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
   # handle wants — "no widening, no resolving through to the base type".
   tc.distinctNames.incl(poolHandleName(d.name))
 
+proc collectResourceHandles*(tc: var TypeChecker, d: Decl) =
+  ## spec §7.4: each declared kind gets its own handle TYPE, registered
+  ## exactly as a pool's is — and for the identical reason. A handle is an
+  ## opaque record with no fields: nothing to read, nothing to do arithmetic
+  ## on, and `{} UdpHandle` yields a zeroed one whose tenancy is 0, which no
+  ## live entry ever has, so a forged handle is refused rather than silently
+  ## accepted.
+  ##
+  ## `distinctNames` makes the separation NOMINAL. Without it two kinds'
+  ## handles are both empty records, match structurally, and finishing a file
+  ## handle into the socket registry type-checks. The emitted type is shared
+  ## across kinds; only the checker separates them, the way a group bound is
+  ## resolved and discarded before codegen.
+  for k in d.resKinds:
+    let name = resourceHandleName(k.name)
+    tc.typeDecls[name] = Type(span: k.span, kind: tkRecord, fields: @[])
+    tc.distinctNames.incl(name)
+
 proc collectTypeDecl*(tc: var TypeChecker, d: Decl) =
   ## A type's body joins the type table; manager types carry functionality, so
   ## their member fns join the catalog too.
@@ -170,6 +188,7 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
     of dkMixin, dkExtern, dkPending: tc.collectSigs(d.mixinMembers, top = false)
     of dkActor: tc.collectSigs(d.handlers)
     of dkErrors: tc.collectErrPolicy(d)
+    of dkResources: tc.collectResourceHandles(d)
     else: discard
 
 proc resolveTypeRefs*(tc: TypeChecker, t: Type) =

@@ -19,6 +19,25 @@ import ./codegen_odin
 const DefaultMailboxSize = "8"
   ## Messages an actor's ring holds unless `[queue: N]` says otherwise.
 
+proc odinPolicyName(p: ResourcePolicy): string =
+  ## Odin spells the runtime enum's members bare after a `.`. Exhaustive, so a
+  ## new policy states its spelling here or this stops compiling.
+  case p
+  of rpStrict: ".Strict"
+  of rpLazy: ".Lazy"
+  of rpExit: ".Exit"
+
+proc genOdinResourceTables(d: Decl, ind: string): string =
+  ## spec §7.4, the Odin twin of codegen_decl.genResourceTables. A static
+  ## package-level initializer, for the same reason: the knobs ARE the
+  ## declaration, and the runtime sizes a capped table on first acquire.
+  for k in d.resKinds:
+    result.add(ind & resourceHandleName(k.name) & " :: rt.ResourceHandle\n")
+    result.add(ind & resourceTableName(k.name) & ": rt.ResourceTable = {kind = " &
+               escape(k.name) & ", cap = " & $k.cap & ", policy = " &
+               odinPolicyName(k.policy) & ", sweepBatch = " & $k.sweepBatch &
+               "}\n")
+
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string
   ## Forward-declared: genRecordType (manager-type member fns) recurses
   ## into it before its own definition.
@@ -1167,11 +1186,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     ctx.staticAsserts.add(ctx.genOdinExpr(d.assertExpr))
     return ""
   of dkErrors: ctx.genErrHandler(d, ind)
-  of dkResources:
-    # spec §7.4. The registry TABLES land with the runtime (Phase 3); this arm
-    # exists so the dispatch stays exhaustive and the declaration is a no-op in
-    # emitted code rather than a silent gap in a backend that forgot it.
-    return ""
+  of dkResources: return genOdinResourceTables(d, ind)
   of dkMixin, dkExtern, dkPending: ctx.genMixinBlock(d)
   of dkPool:
     # spec 7.2: one package-level instance; acquire/release are the runtime's

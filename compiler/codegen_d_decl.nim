@@ -987,6 +987,26 @@ proc genDTypeDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if body.kind == tkSum: return ctx.genDPayloadSum(d, body)
   dUnsupported("type " & d.name & " (unmapped type body)")
 
+proc dPolicyName(p: ResourcePolicy): string =
+  ## D spells the runtime enum's members qualified. Exhaustive, so a new
+  ## policy states its spelling here or this stops compiling.
+  case p
+  of rpStrict: "rt.RtResourcePolicy.Strict"
+  of rpLazy: "rt.RtResourcePolicy.Lazy"
+  of rpExit: "rt.RtResourcePolicy.Exit"
+
+proc genDResourceTables(d: Decl): string =
+  ## spec §7.4, the D twin of codegen_decl.genResourceTables. `__gshared`
+  ## rather than plain module scope, exactly as a pool is: D module-level
+  ## mutable state is thread-local by default, and a registry is the process's
+  ## handle table, not one thread's.
+  for k in d.resKinds:
+    result.add("alias " & resourceHandleName(k.name) & " = rt.ResourceHandle;\n")
+    result.add("__gshared rt.ResourceTable " & resourceTableName(k.name) &
+               " = {kind: " & escape(k.name) & ", cap: " & $k.cap &
+               ", policy: " & dPolicyName(k.policy) & ", sweepBatch: " &
+               $k.sweepBatch & "};\n")
+
 proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
@@ -1027,11 +1047,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
     # `static: assert`. D needs no such workaround.)
     "static assert(" & ctx.genDExpr(d.assertExpr) & ");\n"
   of dkErrors: ctx.genDErrHandler(d)
-  of dkResources:
-    # spec §7.4. The registry TABLES land with the runtime (Phase 3); this arm
-    # exists so the dispatch stays exhaustive and the declaration is a no-op in
-    # emitted code rather than a silent gap in a backend that forgot it.
-    ""
+  of dkResources: genDResourceTables(d)
   of dkImport, dkPublic: ""
   of dkSelect: dUnsupported("top-level on select (arrives with the Fiber runtime)")
   of dkFnSig: ctx.genDFnSig(d)

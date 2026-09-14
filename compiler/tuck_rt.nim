@@ -359,10 +359,10 @@ proc initResourceTable*(t: var ResourceTable, kind: string, cap: int,
   t.cap = cap
   t.policy = policy
   t.sweepBatch = sweepBatch
-  if cap > 0 and t.entries.len == 0:
+  if cap > 0 and t.entries.len < cap:
     # A capped kind is array-shaped from the start: the cap is a LINK-TIME
     # memory budget on a standalone target, not a limit discovered at runtime.
-    t.entries = newSeq[ResourceEntry](cap)
+    t.entries.setLen(cap)
 
 proc setResourceHooks*(t: var ResourceTable, onFinish, onClose: ResourceCloser) =
   ## The kind's two callbacks, bound by whichever library declared it.
@@ -406,6 +406,14 @@ proc acquire*(t: var ResourceTable, reference: int64,
               site: string): TuckResult[ResourceHandle] =
   ## Register a freshly opened OS handle. Exhaustion is ABSENCE, not an error —
   ## the caller decides what running out means, exactly as 7.2's pool does.
+  ##
+  ## Sizes a capped table on first use, so a table built as a plain literal
+  ## behaves exactly as one built through initResourceTable. That is what lets
+  ## each backend emit the declaration as a STATIC initializer with no
+  ## start-up code at all — the knobs are the declaration, and the shape
+  ## follows from them.
+  if t.cap > 0 and t.entries.len < t.cap:
+    t.entries.setLen(t.cap)
   for i in 0 ..< t.entries.len:
     if t.entries[i].live: continue
     t.entries[i].gen.inc

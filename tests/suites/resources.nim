@@ -361,3 +361,77 @@ fn main() -> int:
   return 0
 """
   t.okCheck "spawning a task does not propagate its kinds to the spawner"
+
+  # --- codegen: the tables ---------------------------------------------------
+  #
+  # A STATIC initializer in every backend, not a start-up call: the knobs ARE
+  # the declaration, and the runtime sizes a capped table on its first
+  # acquire. A program that never touches a kind pays nothing for declaring
+  # it, which is what a standalone target needs.
+
+  t.src """
+resources [policy: lazy]:
+  net  [cap: 10_000, on_full: error, sweep_batch: 100]
+  file [cap: 8, on_finish: flush, policy: strict]
+  udp
+
+fn work({n: int}) -> int:
+  var total = n
+  defer:
+    total = 0
+  return total + 1
+
+fn main() -> int:
+  return {n: 16} work
+"""
+  t.okCheck "a program declaring three kinds checks"
+  t.emits "Nim: the capped kind carries its cap and its own policy",
+          "tuckRes_file\\* = ResourceTable\\(kind: \"file\", cap: 8, policy: rtStrict"
+  t.emits "Nim: the uncapped kind is cap 0 and takes the block default",
+          "tuckRes_udp\\* = ResourceTable\\(kind: \"udp\", cap: 0, policy: rtLazy"
+  t.emits "Nim: the sweep batch reaches the table", "sweepBatch: 100"
+  t.emitsOdin "Odin: the same table, package-level",
+              "tuckRes_file: rt.ResourceTable = \\{kind = \"file\", cap = 8, policy = .Strict"
+  t.emitsD "D: __gshared, because a registry is the PROCESS's handle table",
+           "__gshared rt.ResourceTable tuckRes_file = \\{kind: \"file\", cap: 8"
+
+  # Each kind's handle type is its own, so finishing a file handle into the
+  # socket registry is a type error — the rule a pool's handle already
+  # follows. The alias is emitted rather than resolved away: it costs one
+  # line and makes the emitted signature say what it holds.
+  t.emits "Nim: each kind emits its handle alias", "type FileHandle\\* = ResourceHandle"
+  t.emitsOdin "Odin: likewise", "FileHandle :: rt.ResourceHandle"
+  t.emitsD "D: likewise", "alias FileHandle = rt.ResourceHandle;"
+  t.runs "...and the program still builds and runs on every backend", 17
+
+  # The handle type is real in the CHECKER too, which is what lets an extern
+  # binding name it as a return type.
+  t.src """
+resources:
+  udp
+
+extern:
+  fn openUdp({port: u16}) -> UdpHandle [io, resource: udp]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a kind's handle type is usable in a signature"
+
+  # Nominal, not structural: two empty records would otherwise match, and
+  # handing a file handle to something expecting a socket would check clean.
+  t.src """
+resources:
+  udp
+  file
+
+fn take({h: UdpHandle}) -> int:
+  return 0
+
+fn give({h: FileHandle}) -> int:
+  return {h: h} take
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "two kinds' handles are not interchangeable", "UdpHandle|FileHandle"
