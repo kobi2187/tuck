@@ -90,15 +90,22 @@ type
     onFull*: ResourceOnFull
     onFinish*: ResourceOnFinish
     sweepBatch*: int      ## 0 = evict every finished entry; >0 = that many
-    states*: seq[VariantDef]   ## the kind's PROTOCOL, optional. The library
-                               ## supplies the states and the edges; the
-                               ## compiler supplies the shape, so there is no
-                               ## envelope to write and none to get wrong.
-                               ## Empty = the kind has no protocol beyond the
-                               ## registry's own live/finished, which is the
-                               ## ordinary case (a file has two states and the
-                               ## table already tracks both).
-    transitions*: seq[Transition]  ## the edges between `states`
+    statesType*: string   ## `states: DbState` — the NAME of a sealed sum type
+                          ## whose transitions are this kind's protocol.
+                          ## Optional; "" = no protocol beyond the registry's
+                          ## own live/finished, the ordinary case (a file has
+                          ## two states and the table already tracks both).
+                          ##
+                          ## A NAME rather than the states themselves, because
+                          ## the two halves have different owners: a
+                          ## `resources:` block is the APP's — it decides which
+                          ## tables exist and how big they are — while the
+                          ## protocol of an OS service belongs to the library
+                          ## that wraps it. Decoupling them lets each be
+                          ## written by whoever knows it.
+    statesSpan*: Span     ## where `states:` was written, so the diagnostics
+                          ## about the named type point at the reference and
+                          ## not at the kind's first line
     span*: Span
 
   TypeAttr* = object

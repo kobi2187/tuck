@@ -1050,56 +1050,67 @@ kind names the table directly.
 > §7.4 says makes the local analysis sufficient), and the OPEN RESOURCES
 > report answers the same question at runtime meanwhile.
 
-**A kind may declare its PROTOCOL**, and the compiler writes the type:
+**A kind may NAME its protocol** — a sealed sum type, declared separately:
+
+```tuck
+# the library knows what a db connection can do
+type DbState:
+  | Open
+  | InTransaction
+  | Closed
+  transitions:
+    Open          -> InTransaction
+    InTransaction -> Open
+    Open          -> Closed
+    InTransaction -> Closed
+```
 
 ```tuck
 resources:
-  file [cap: 8]                    # no protocol — a kind needs none
-
-  db [cap: 32]:                    # a colon opens the state machine
-    | Open
-    | InTransaction
-    | Closed
-    transitions:
-      Open          -> InTransaction
-      InTransaction -> Open
-      Open          -> Closed
-      InTransaction -> Closed
+  file [cap: 8]                          # no protocol — a kind needs none
+  db   [cap: 4096, states: DbState]
 ```
 
 A file is open or finished and the registry already tracks that. A database
 connection is `Open`, `InTransaction` or `Closed`, and only the library knows.
-So the library supplies the **states and the edges** — and nothing else. The
-type they become is the compiler's, which is the point: **you cannot fail to
-conform to a type you did not write.** There is no envelope to get wrong, and
-no conformance check to fail, for the same reason `<Kind>Handle` has none.
+
+**The two halves are decoupled because they have different owners.** A
+`resources:` block is a deployment decision — which tables exist, how large,
+which policy — and a library cannot answer it: it knows `db` has three states,
+not that this box wants 4096 connections. The protocol is the reverse, and no
+app should restate it, because an app that *can* restate it can restate it
+differently.
+
+The library writes only the **states**, never the handle — an ordinary §4.4 sum
+type the compiler already validates, with no shape to get right and no second
+handle layout to keep in step. `<Kind>Handle` is still generated, so **you
+still cannot fail to conform to a type you did not write**.
 
 Two things are DERIVED rather than declared, so the two cannot disagree:
 **initial** is the first state (§4.4's convention), where `acquire` starts;
 **terminal** is the state with no outgoing edge, where `finish` leaves the
 handle. What is checked is that the machine is well formed, with the rules a
-*resource* protocol needs rather than generic graph hygiene: every edge names a
-real state (TK-RS06), there is exactly one closing state (TK-RS07), every state
-is reachable from the initial one (TK-RS08), and — the one that earns the
-feature — **the closing state is reachable from every state** (TK-RS09). A live
-cycle with no exit is a handle that cannot be closed from where it is, which is
-the leak the declaration promised to prevent.
+*resource* protocol needs rather than generic graph hygiene: `states:` names a
+sum type that actually carries edges (TK-RS10), every edge names a real state
+(TK-RS06), there is exactly one closing state (TK-RS07), every state is
+reachable from the initial one (TK-RS08), and — the one that earns the feature
+— **the closing state is reachable from every state** (TK-RS09). A live cycle
+with no exit is a handle that cannot be closed from where it is, which is the
+leak the declaration promised to prevent.
 
-It is a **static overlay**: the emitted handle is still a slot and a tenancy,
-the table is unchanged, and no backend learns anything. Protocols cost nothing
-at runtime, the same way `@Variant` narrowing and `group` bounds do.
+It costs the **registry** nothing: the emitted handle is still a slot and a
+tenancy, the table is unchanged, and no backend learns anything about states.
+The state type emits as the ordinary sum type it is — which is what the
+decoupling buys, a normal declaration instead of a special one.
 
-**A kind is declared once, by whoever owns it.** Kinds are program-wide and a
-second declaration is refused, so the library that owns `db` writes the states
-and the edges, and an app just imports it and calls `connect` — it declares
-nothing and cannot restate the protocol differently. That single-ownership rule
-is what makes the protocol worth writing down: the edges are the library's
-knowledge, not a shape each app re-derives.
-
-> **Still open:** `cap` and `policy` are the deployment's choice, and they sit
-> in the same declaration the library owns. Re-opening a kind for its tunable
-> knobs, with states declarable exactly once, is the likely shape — but it is
-> not built. See `docs/resources.md` §0.8.
+> **Still open: who declares the KIND.** The protocol is decoupled, but the
+> kind itself is still declared exactly once, so its site owns every knob. A
+> library declaring `db [cap: 32, states: DbState]` guesses at a deployment it
+> cannot see; an app declaring it instead typechecks but does not link, because
+> `<Kind>Handle` and the table are emitted into the declaring module and the
+> library's own `connect` then references symbols from a module that imports
+> it. The fix is an emission one — split the declaration, or emit tables into
+> one shared unit. See `docs/resources.md` §0.8.
 
 > **The protocol is validated, not yet TRACKED.** `acquire` starts at the
 > initial state and `finish` leaves at the terminal one, but a handle is not

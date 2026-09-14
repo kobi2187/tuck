@@ -1620,22 +1620,37 @@ the unbuilt together would be dishonest:
   exists between the extern's return and the acquire and nowhere else. The
   kind is named on both and checked on both, so finishing into the wrong
   registry is a compile error rather than a runtime one.
-- **A kind may declare a PROTOCOL** beyond live/finished (ruled 2026-09-14),
-  as states and `transitions:` written inline in the kind — a database
-  connection moving `Open -> InTransaction -> Closed`. The library supplies
-  the states and the edges; the compiler supplies the type they become, so
-  there is no envelope for a library to write and none to get wrong. Initial
-  is the first state and terminal is the one with no outgoing edge, both
-  derived rather than declared. The machine is checked for what a *resource*
-  needs: edges naming real states, exactly one closing state, every state
-  reachable from the initial one, and the closing state reachable from every
-  state — a live cycle with no exit is a handle that cannot be closed. It is a
-  static overlay, so the emitted handle and the table are unchanged.
+- **A kind may NAME a PROTOCOL** beyond live/finished (ruled 2026-09-14):
+  `db [cap: 4096, states: DbState]`, where `DbState` is a sealed sum type with
+  a `transitions:` block — a database connection moving
+  `Open -> InTransaction -> Closed`. The two are decoupled because they have
+  different OWNERS: a `resources:` block is a deployment decision (which
+  tables exist, how large, which policy) that a library cannot answer, while
+  the protocol of an OS service is the library's, and an app that could
+  restate it could restate it differently. The library writes only the
+  states — an ordinary §4.4 sum type — never the handle, which the compiler
+  still supplies. Initial is the first state and terminal is the one with no
+  outgoing edge, both derived rather than declared. The machine is checked for
+  what a *resource* needs: `states:` naming a sum type that carries edges,
+  edges naming real states, exactly one closing state, every state reachable
+  from the initial one, and the closing state reachable from every state — a
+  live cycle with no exit is a handle that cannot be closed. The registry is
+  untouched: the emitted handle and the table are unchanged.
   **Validated, not yet tracked:** narrowing a handle *through* the machine
   needs a way for a library operation to say which edge it walks, which is a
   further ruling. Notably it will not need the deferral below: under a copy
   both bindings narrow independently, so a stale `finish` is a *missed* error
   rather than a false rejection, and the generation check catches it.
+- **Not built: splitting who declares a KIND.** A kind is declared exactly
+  once, so its site owns every knob. A library declaring
+  `db [cap: 32, states: DbState]` guesses at a deployment it cannot see; an
+  app declaring it instead typechecks but does not link, because the handle
+  type and the table are emitted into the declaring module and the library's
+  own acquire site then references symbols from a module that imports it. The
+  constraint is an emission one — a kind's table must live somewhere every
+  user of it can see — and the two ways out are splitting the declaration
+  (library declares the protocol reference, app re-opens for the knobs) or
+  emitting tables into one shared unit. `docs/resources.md` §0.8.
 - **Not built:** the static acquire-must-finish check above. Both halves now
   have a shape to match on, so it is writable; the *escape* arm is already
   sound by construction — the registry closes at exit, which is exactly what

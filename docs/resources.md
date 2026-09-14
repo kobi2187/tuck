@@ -94,23 +94,37 @@ A file has two states and the registry tracks both. A database connection has
 may have a protocol beyond live/finished — and the question is who writes the
 type it becomes.
 
-**Settled: the library declares the STATES and the EDGES, inline in the kind;
-the compiler supplies the type.**
+**Settled (ruled 2026-09-14): the kind NAMES a sealed sum type; the library
+declares that type, and the compiler still supplies the handle.**
 
 ```tuck
+# the LIBRARY — it knows what a db connection can do
+type DbState:
+  | Open
+  | InTransaction
+  | Closed
+  transitions:
+    Open          -> InTransaction
+    InTransaction -> Open
+    Open          -> Closed
+    InTransaction -> Closed
+```
+
+```tuck
+# the resources block — it knows how many, and how they close
 resources:
   file [cap: 8, on_finish: flush]      # no protocol — unchanged, zero ceremony
-
-  db [cap: 32]:                        # a colon opens the state machine
-    | Open
-    | InTransaction
-    | Closed
-    transitions:
-      Open          -> InTransaction
-      InTransaction -> Open
-      Open          -> Closed
-      InTransaction -> Closed
+  db   [cap: 4096, states: DbState]
 ```
+
+**The two halves are decoupled because they have different owners.** A
+`resources:` block is a deployment decision — which tables exist, how large,
+which policy — and a library cannot answer it: it knows `db` has three states,
+not that this box wants 4096 connections. The protocol is the reverse: the
+library that wraps the OS service knows the edges, and no app should restate
+them, because an app that *can* restate them can restate them differently.
+Writing the states inside the kind welds the two together and forces one owner
+on both.
 
 Three shapes were on the table. The first two make the LIBRARY write the
 envelope and then check it:
@@ -120,16 +134,20 @@ envelope and then check it:
 | `db [states: DbState]` — the kind names a library-written type | the library can write a malformed envelope, so a conformance check is needed, and any concrete shape rule is wrong for some library (a TLS session has two handles; a db holds one in several variants) |
 | grow `group` to constrain shape | §5.5 ties `group` and `interface` to the *identical requirement-list grammar* — both are lists of required **functions**. Adding variant templates makes one keyword two unrelated things, which is the "clever reuse costs more later" invariant. And a general mechanism built for one caller is speculative |
 
-The third makes the envelope unwritable, which is strictly better: **you cannot
-fail to conform to a type you did not write.** That is the same argument that
-already makes `<Kind>Handle` unfailable (§0.3), applied one level up.
+The envelope objection is what `states:` dodges, and it is worth being precise
+about why, since naming a type looks like the first row: **the library writes
+only the STATES, never the handle.** A bare sum type with transitions is an
+ordinary §4.4 declaration that the compiler already validates — there is no
+shape to get right, no field to omit, no second handle layout to keep in step.
+The compiler still generates `<Kind>Handle`, so §0.3's "you cannot fail to
+conform to a type you did not write" holds exactly where it mattered.
 
-**It costs nothing at runtime.** The protocol is a STATIC overlay — the emitted
-handle stays `ResourceHandle`, the table is unchanged, and no backend learns
-anything. `tools/emit_examples.sh` produces a byte-identical `examples/` with
-protocols present, which is the proof. The precedent is `@Variant` itself
-(§4.4b: "compiler notation... never written in source") and group bounds
-("resolved and discarded before codegen").
+**It costs the REGISTRY nothing.** The emitted handle stays `ResourceHandle`,
+the table is unchanged, and no backend learns anything about states — adding
+`states:` to a kind moves no emitted line but the acquire-site numbers that
+shifted. The state type itself emits as an ordinary sum type, because that is
+exactly what it is; the decoupling buys the protocol a normal declaration
+instead of a special one.
 
 **Two things are DERIVED, so they cannot be declared wrong:**
 
@@ -141,7 +159,8 @@ ones a *resource* protocol needs rather than generic graph hygiene:
 
 | Rule | Code |
 |---|---|
-| every edge endpoint names a state of the kind | TK-RS06 |
+| `states:` names a sum type, and one carrying edges | TK-RS10 |
+| every edge endpoint names a state of that type | TK-RS06 |
 | exactly one terminal — too many and several look final; none and the protocol never ends | TK-RS07 |
 | every state reachable from the initial one (the rule `[sealed]` already follows) | TK-RS08 |
 | **the terminal reachable from every state — you can always close** | TK-RS09 |
@@ -150,73 +169,54 @@ That last one is the one that earns the feature: a live cycle with no exit is a
 handle that cannot be closed from where it is, which is a leak the declaration
 promised to prevent.
 
-### 0.8 If the protocol lives in the kind, does every app rewrite it?
+### 0.8 Who declares the kind, and what each side still cannot do
 
-No — and the answer was already in the design, though a bug hid it. A kind is
-declared **once, by the library that owns it**, and apps import that module:
+With `states:` decoupled, the protocol is written once by whoever owns the
+resource and named by whoever needs a table. What remains is the KIND itself —
+its name, its cap, its policy — and that is not yet split the same way.
+
+Today a kind is declared **exactly once** program-wide (TK-RS02), so its
+declaration site owns every knob on it. Both arrangements work, and they trade
+differently:
 
 ```tuck
-# dblib.tuck — the library owns the kind AND its protocol
+# dblib.tuck — the library declares the type AND the kind
+type DbState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Closed
+
 resources:
-  db [cap: 32]:
-    | Open
-    | InTransaction
-    | Closed
-    transitions:
-      Open          -> InTransaction
-      InTransaction -> Open
-      Open          -> Closed
-      InTransaction -> Closed
+  db [cap: 32, states: DbState]
 
 fn connect({fd: int}) -> ?DbHandle [resource: db]:
   return acquire fd, db
 ```
 
-```tuck
-# app.tuck — the app declares nothing
-import dblib
+The app then imports `dblib`, declares nothing, and `finish h.value, db`
+resolves — verified end to end in `tests/suites/resources.nim`. The cost is
+that `cap: 32` is the library's guess about a deployment it cannot see.
 
-fn main() -> int:
-  let h = {fd: 3} connect
-  if h.ok:
-    finish h.value, db
-    return 17
-  return 0
-```
+The other arrangement — the app writing `resources: db [cap: 4096, states:
+DbState]` while the library only uses the kind — **typechecks but does not
+link**, and the reason is worth writing down rather than discovering twice:
+`<Kind>Handle` and `tuckRes_<kind>` are emitted into the module that declares
+the kind. If that is the app, then `dblib`'s own `connect` — which returns
+`?DbHandle` and calls `acquire(tuckRes_db, ...)` — references symbols in a
+module that imports *it*. Nim reports `undeclared identifier: 'DbHandle'`, and
+Odin and D have the same cycle for the same reason.
 
-Kinds are an **open set with program-wide scope** (§7.4: "a UDP library declares
-its own kind the same way a module declares its error enums"), and a kind
-declared twice is *refused* (TK-RS02) — so single ownership is not a
-convention, it is the rule. The app cannot restate the edges differently
-because it cannot restate them at all.
+So the real constraint is an EMISSION one, not a language one: **a kind's table
+must live somewhere every user of it can see.** Two ways out, neither built:
 
-**The alternative — naming the transition set as a value, a `const` or a named
-type an app then attaches to its own kind — would give up exactly that.** Two
-apps could bind the same library to different protocols, and the library's
-`connect` would have to be generic over which. It also reintroduces the written
-envelope §0.6 exists to remove. Import already provides reuse; the sharing unit
-is the KIND, not the transition list.
+| | |
+|---|---|
+| **Split the declaration** — the library declares `db [states: DbState]`, the app re-opens it for `[cap: 4096]` | Keeps the table in the library module, so nothing moves. Needs a merge rule in place of TK-RS02's blanket refusal: the protocol declared exactly once, and *each knob* set at most once — no last-writer-wins, no import-order dependence, and the diagnostic can name both sites |
+| **Emit the tables into one shared unit** every module imports | Matches what §7.4 describes — a global per-kind table — and lets the app own the whole block. Costs a new generated output in all three backends, plus import and link ordering |
 
-**Two bugs had to be fixed before this worked**, both invisible until an import
-was involved, and both on `main`:
-
-- `main`'s blanket budget (§7.4 makes main implicitly hold every kind, since
-  `fn main() -> int` has no natural place to carry a marker) was built from the
-  kinds of **main's own module**, not the program's. A kind an import declared
-  fell outside it, so any `finish` in `main` was TK-RS03.
-- Worse, the workaround was a no-op: main's budget **replaced** its declared
-  kinds rather than unioning them, so writing `[resource: db]` on `main`
-  changed nothing. Both halves are now program-wide and unioned, and
-  `tests/suites/resources.nim` runs the library-owns-the-kind program to 17.
-
-**Still open: cap and policy are the APP's to choose, and they live in the
-library's declaration.** A library knows `db` has three states; it does not know
-this deployment wants 32 connections or 4096. Today the single-declaration rule
-that makes the protocol safe also freezes the knobs. The likely shape is
-re-opening a kind for its *tunable* knobs only (`db [cap: 4096]` in the app,
-with states declarable exactly once), which keeps TK-RS02's real purpose —
-§0.2's "two blocks cannot both own one table's cap" — while letting the half
-that is genuinely the app's move. Not built; it needs a ruling.
+The first is a checker change; the second is an architecture change that makes
+the app the sole owner. Recorded here as a ruling, not as work in progress.
 
 ### 0.7 Why the protocol is validated but not yet TRACKED
 

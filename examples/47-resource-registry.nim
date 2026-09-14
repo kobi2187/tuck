@@ -6,6 +6,17 @@ proc tuck_withScratch*(n: int): int
 proc tuck_serve*(port: uint16): int
 proc tuck_main*(): int
 
+type tuck_NetState* = enum Connecting, Ready, Closed
+proc canTransition*(frm, to: tuck_NetState): bool =
+  case frm
+  of Connecting: to in {Ready, Closed}
+  of Ready: to in {Closed}
+  of Closed: false
+proc transitionTo*(self: var tuck_NetState, target: tuck_NetState) =
+  if not canTransition(self, target):
+    raise newException(ValueError, "Invalid transition " & $self & " -> " & $target)
+  self = target
+
 type NetHandle* = ResourceHandle
 var tuckRes_net* = ResourceTable(kind: "net", cap: 10000, policy: rtLazy, onFull: rtoError, sweepBatch: 100)
 type FileHandle* = ResourceHandle
@@ -22,7 +33,7 @@ proc tuck_rawOpenUdp*[T](payload: T): int =
 
 
 proc tuck_openUdp*(port: uint16): TuckResult[UdpHandle] =
-  return acquire(tuckRes_udp, int64(tuck_rawOpenUdp(port)), "47-resource-registry:69")
+  return acquire(tuckRes_udp, int64(tuck_rawOpenUdp(port)), "47-resource-registry:73")
 
 proc tuck_withScratch*(n: int): int =
   var tuck_scratch = n

@@ -3,6 +3,8 @@ module _47_resource_registry;
 import rt = tuck_rt;
 import std.stdio : writeln, stderr;
 
+enum tuck_NetState { Connecting, Ready, Closed }
+
 alias NetHandle = rt.ResourceHandle;
 __gshared rt.ResourceTable tuckRes_net = {kind: "net", cap: 10000, policy: rt.RtResourcePolicy.Lazy, onFull: rt.RtOnFull.Error, sweepBatch: 100};
 alias FileHandle = rt.ResourceHandle;
@@ -22,7 +24,7 @@ long tuck_rawOpenUdp(T)(T payload) {
 
 
 rt.TuckResult!(UdpHandle) tuck_openUdp(ushort port) {
-    return rt.acquireResource(tuckRes_udp, cast(long)(tuck_rawOpenUdp(port)), "47-resource-registry:69");
+    return rt.acquireResource(tuckRes_udp, cast(long)(tuck_rawOpenUdp(port)), "47-resource-registry:73");
 }
 
 long tuck_withScratch(long n) {

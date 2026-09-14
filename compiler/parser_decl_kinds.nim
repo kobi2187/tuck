@@ -766,6 +766,12 @@ proc applyResourceAttrs(p: var Parser, k: var ResourceKindDef,
         p.reportError("resource kind '" & k.name & "': on_finish must be " &
                       "none, flush or shutdown, got '" & a.value & "'",
                       a.span.line, a.span.col)
+    of "states":
+      # The library's type, named not restated. Checked in
+      # typecheck_resources, which is where the program's types are visible —
+      # the parser has one module and a protocol may live in another.
+      k.statesType = a.value
+      k.statesSpan = a.span
     of "policy":
       if not resourcePolicyFromName(a.value, k.policy):
         p.reportError("resource kind '" & k.name & "': policy must be " &
@@ -774,7 +780,8 @@ proc applyResourceAttrs(p: var Parser, k: var ResourceKindDef,
     else:
       p.reportError("resource kind '" & k.name & "': unknown attribute '" &
                     a.name & "'. A kind takes cap, policy, on_full, " &
-                    "on_finish and sweep_batch.", a.span.line, a.span.col)
+                    "on_finish, sweep_batch and states.",
+                    a.span.line, a.span.col)
 proc checkResourceCoherence(p: var Parser, k: ResourceKindDef, sp: Span) =
   # THE COMBINATION IS THE DECLARATION, not the individual words: a kind's
   # knobs constrain each other, and a pair that can never mean anything
@@ -808,25 +815,6 @@ proc checkResourceCoherence(p: var Parser, k: ResourceKindDef, sp: Span) =
                   "`policy: lazy` — it sizes the watermark sweep, and lazy is " &
                   "the only policy that runs one",
                   sp.line, sp.col)
-proc parseResourceProtocol(p: var Parser, k: var ResourceKindDef) =
-  # An optional `:` opens the kind's PROTOCOL — the states it moves through and
-  # the edges between them. The library supplies those; the compiler supplies
-  # the type they become, so there is no envelope for a library to write and
-  # none for it to get wrong.
-  #
-  # Reuses parseVariant and parseTransitionsBlock verbatim: a protocol IS a
-  # sum type with a transitions table (§4.4), and spelling it a second way
-  # here would be two grammars for one idea.
-  if p.current().kind == tkColon:
-    discard p.advance()
-    discard p.expect(tkNewline)
-    while p.current().kind == tkNewline: discard p.advance()
-    p.indentedBlock:
-      if p.current().kind == tkIdent and p.current().value == "transitions":
-        p.parseTransitionsBlock(k.transitions)
-      else:
-        k.states.add(p.parseVariant(" in resource kind '" & k.name & "'"))
-
 proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
   ## One line of a `resources:` block: a kind name and its optional knobs.
   ## The knobs ride in the ordinary `[a: 1, b: c]` attribute bracket every
@@ -839,7 +827,6 @@ proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
   p.parseResourceAttrs(attrs)
   p.applyResourceAttrs(result, attrs)
   p.checkResourceCoherence(result, sp)
-  p.parseResourceProtocol(result)
   if p.current().kind == tkNewline: discard p.advance()
 
 proc parseResourcesDecl*(p: var Parser, sp: Span): Decl =

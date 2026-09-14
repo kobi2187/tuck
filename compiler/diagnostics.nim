@@ -157,6 +157,7 @@ type
     dcRsNoTerminal = "TK-RS07"          ## a kind's protocol has no single closing state
     dcRsUnreachable = "TK-RS08"         ## a state nothing can reach from the initial one
     dcRsCannotClose = "TK-RS09"         ## a state the closing one cannot be reached from
+    dcRsBadStatesType = "TK-RS10"       ## `states:` names no sum type, or one with no edges
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -697,6 +698,13 @@ proc ruleExplanation(d: DiagCode): string =
     "cannot close from where you are is a leak the type system promised to " &
     "prevent. Fix: add the missing edge, usually a direct one to the closing " &
     "state for the error path."
+  of dcRsBadStatesType:
+    "`states: T` points a resource kind at its protocol: T must be a sum " &
+    "type carrying a `transitions:` block. The kind NAMES it rather than " &
+    "restating it because the two have different owners — a `resources:` " &
+    "block is the app's, deciding which tables exist and how large, while " &
+    "the protocol of an OS service belongs to the library wrapping it. Fix: " &
+    "declare T as a sum type with transitions, or drop `states:`."
   of dcRsUndeclared:
     "A fn calling an acquire site must declare the kind itself, exactly as " &
     "it must declare an effect it reaches (spec §3.7 — explicit, not " &

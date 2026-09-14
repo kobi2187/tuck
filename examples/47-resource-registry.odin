@@ -5,6 +5,20 @@ import "core:fmt"
 import "core:os"
 import rt "./tuckrt"
 
+tuck_NetState :: enum { Connecting, Ready, Closed }
+canTransition_tuck_NetState :: proc(frm: tuck_NetState, to: tuck_NetState) -> bool {
+	switch frm {
+	case .Connecting: return to == .Ready || to == .Closed
+	case .Ready: return to == .Closed
+	case .Closed: return false
+	}
+	return false
+}
+transitionTo_tuck_NetState :: proc(self: ^tuck_NetState, target: tuck_NetState) {
+	assert(canTransition_tuck_NetState(self^, target), "Invalid transition")
+	self^ = target
+}
+
 NetHandle :: rt.ResourceHandle
 tuckRes_net: rt.ResourceTable = {kind = "net", cap = 10000, policy = .Lazy, onFull = .Error, sweepBatch = 100}
 FileHandle :: rt.ResourceHandle
@@ -24,7 +38,7 @@ tuck_rawOpenUdp :: proc(payload: $T) -> int {
 
 
 tuck_openUdp :: proc (port: u16) -> rt.TuckResult(UdpHandle) {
-  return rt.acquireResource(&tuckRes_udp, i64(tuck_rawOpenUdp(port)), "47-resource-registry:69")
+  return rt.acquireResource(&tuckRes_udp, i64(tuck_rawOpenUdp(port)), "47-resource-registry:73")
 }
 
 tuck_withScratch :: proc (n: int) -> int {

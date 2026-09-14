@@ -55,39 +55,72 @@ proc reachableFrom(start: string, edges: seq[Transition]): HashSet[string] =
         result.incl(tr.to)
         grew = true
 
-proc terminalOf(k: ResourceKindDef): seq[string] =
+proc terminalOf(states: seq[VariantDef], edges: seq[Transition]): seq[string] =
   ## The states with NO outgoing edge. Exactly one is the closing state.
   ##
   ## DERIVED, never declared — which is the point. A library supplies the
   ## states and the edges; anything it does not write it cannot write wrong,
   ## and "which state is final" follows from the edges with no room for the
   ## two to disagree.
-  for v in k.states:
+  for v in states:
     var hasOut = false
-    for tr in k.transitions:
+    for tr in edges:
       if tr.`from` == v.name: hasOut = true; break
     if not hasOut: result.add(v.name)
 
-proc checkKindProtocol(k: ResourceKindDef) =
-  ## A kind's optional protocol (spec §7.4 + §4.4): the states it moves
-  ## through and the edges between them.
+proc protocolTypes*(mods: seq[tuple[name, path: string, m: Module]]):
+                    Table[string, Decl] =
+  ## Every sum type in the program, by name. Program-wide because a kind and
+  ## the type it names live in DIFFERENT modules by design — that separation
+  ## is the whole point of `states:` — so a per-module view could never
+  ## resolve the reference.
+  for (_, _, m) in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkType or d.typeBody == nil: continue
+      if d.typeBody.kind == tkSum: result[d.name] = d
+
+proc checkKindProtocol(k: ResourceKindDef, sums: Table[string, Decl]) =
+  ## A kind's optional protocol: the sealed sum type named by `states:`, whose
+  ## `transitions:` are the edges this resource moves along.
   ##
-  ## The library supplies both; the compiler supplies the TYPE they become, so
-  ## there is no envelope to write and none to get wrong. What is left to
-  ## check is that the machine itself is well formed — and the rules are the
-  ## ones a resource protocol specifically needs, not generic graph hygiene:
-  ## you start somewhere, you can reach everything, and you can always close.
-  if k.states.len == 0: return
+  ## The kind names the type rather than restating it, because the two halves
+  ## have different OWNERS. A `resources:` block is the app's — it decides
+  ## which tables exist and how large they are, which is a deployment question
+  ## a library cannot answer. The protocol of an OS service is the library's —
+  ## it knows a connection goes Open -> InTransaction -> Closed, which no app
+  ## should have to restate and none should be able to restate differently.
+  ##
+  ## The type is an ORDINARY sum type (§4.4), not a shape a library has to get
+  ## right: the compiler still generates `<Kind>Handle`, so there is no
+  ## envelope here either — only the states, which are the one thing a library
+  ## genuinely knows.
+  if k.statesType == "": return
+  if not sums.hasKey(k.statesType):
+    fail(dcRsBadStatesType,
+         "resource kind '" & k.name & "': `states: " & k.statesType &
+         "` names no sum type in the program — a kind's protocol is a sealed " &
+         "sum type with a `transitions:` block, declared by the library that " &
+         "owns the resource", k.statesSpan)
+  let body = sums[k.statesType].typeBody
+  if body.transitions.len == 0:
+    fail(dcRsBadStatesType,
+         "resource kind '" & k.name & "': '" & k.statesType & "' has no " &
+         "`transitions:` block, so it says nothing about how this resource " &
+         "moves — a protocol without edges is the same as no protocol",
+         k.statesSpan)
+
+  let states = body.variants
+  let edges = body.transitions
   var names = initHashSet[string]()
-  for v in k.states: names.incl(v.name)
-  for tr in k.transitions:
+  for v in states: names.incl(v.name)
+  for tr in edges:
     for endpoint in [tr.`from`, tr.to]:
       if endpoint notin names:
         fail(dcRsBadEdge,
              "resource kind '" & k.name & "': '" & endpoint &
-             "' is not one of its states", tr.span)
+             "' is not one of '" & k.statesType & "'s states", tr.span)
 
-  let terminal = terminalOf(k)
+  let terminal = terminalOf(states, edges)
   if terminal.len != 1:
     let what = if terminal.len == 0:
                  "every state can still move, so the protocol never ends"
@@ -96,21 +129,21 @@ proc checkKindProtocol(k: ResourceKindDef) =
     fail(dcRsNoTerminal,
          "resource kind '" & k.name & "' needs exactly one closing state — " &
          "the one with no outgoing edge, where `finish` leaves the handle — " &
-         "but " & what, k.span)
+         "but in '" & k.statesType & "' " & what, k.statesSpan)
 
   # `acquire` starts at the FIRST state, the same convention §4.4 uses for a
   # sum type's initial variant.
-  let fromInitial = reachableFrom(k.states[0].name, k.transitions)
-  for v in k.states:
+  let fromInitial = reachableFrom(states[0].name, edges)
+  for v in states:
     if v.name notin fromInitial:
       fail(dcRsUnreachable,
            "resource kind '" & k.name & "': state '" & v.name &
-           "' cannot be reached from '" & k.states[0].name &
+           "' cannot be reached from '" & states[0].name &
            "', where `acquire` starts", v.span)
 
   # ...and the one that matters for a RESOURCE: you can always close.
-  for v in k.states:
-    if terminal[0] notin reachableFrom(v.name, k.transitions):
+  for v in states:
+    if terminal[0] notin reachableFrom(v.name, edges):
       fail(dcRsCannotClose,
            "resource kind '" & k.name & "': '" & terminal[0] &
            "' cannot be reached from state '" & v.name &
@@ -125,6 +158,7 @@ proc collectResourceKinds*(mods: seq[tuple[name, path: string, m: Module]]):
   ## names, and silently keeping the first block's knobs is the kind of
   ## last-writer-wins that only surfaces as a wrong cap in production.
   result = initTable[string, ResourceKindDef]()
+  let sums = protocolTypes(mods)
   for (_, _, m) in mods:
     for d in m.decls:
       if d == nil or d.kind != dkResources: continue
@@ -135,7 +169,7 @@ proc collectResourceKinds*(mods: seq[tuple[name, path: string, m: Module]]):
                "names one registry table, so its cap, policy and sweep " &
                "batch cannot come from two blocks",
                k.span)
-        checkKindProtocol(k)
+        checkKindProtocol(k, sums)
         result[k.name] = k
 
 proc checkMarkedKinds*(mods: seq[tuple[name, path: string, m: Module]],

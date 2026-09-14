@@ -74,7 +74,7 @@ fn main() -> int:
   return 0
 """
   t.badCheck "an unknown kind attribute lists the ones a kind takes",
-             "cap, policy, on_full, on_finish and sweep_batch"
+             "cap, policy, on_full, on_finish, sweep_batch and states"
 
   # The block bracket is the DEFAULT, not a per-kind knob — saying `cap` there
   # would silently apply to nothing, so it is refused with the reason.
@@ -778,47 +778,76 @@ fn main() -> int:
 
   # --- a kind's PROTOCOL ------------------------------------------------------
   #
-  # The library supplies the states and the edges; the COMPILER supplies the
-  # type they become. So there is no envelope for a library to write and none
-  # for it to get wrong — the same argument that already makes `<Kind>Handle`
-  # unfailable, one level up. What is left to check is that the machine itself
-  # is well formed, and the rules are the ones a RESOURCE protocol needs: you
-  # start somewhere, you can reach everything, and you can always close.
+  # A kind's protocol is a sealed sum type it NAMES, not one it restates:
+  #
+  #   type DbState: | Open | InTransaction | Closed  (+ transitions)
+  #   resources: db [cap: 4096, states: DbState]
+  #
+  # The two halves have different OWNERS, which is the whole reason they are
+  # decoupled. A `resources:` block is the APP's — it decides which tables
+  # exist and how large they are, a deployment question no library can answer.
+  # The protocol of an OS service is the LIBRARY's — it knows a connection
+  # goes Open -> InTransaction -> Closed, which no app should have to restate
+  # and none should be able to restate differently.
+  #
+  # The compiler still generates <Kind>Handle, so there is still no envelope:
+  # the library writes an ordinary sum type, which is the one thing it
+  # genuinely knows.
 
   t.src """
+type DbState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Closed
+
 resources:
   file [cap: 8, on_finish: flush]
-
-  db [cap: 32]:
-    | Open
-    | InTransaction
-    | Closed
-    transitions:
-      Open          -> InTransaction
-      InTransaction -> Open
-      Open          -> Closed
-      InTransaction -> Closed
+  db [cap: 32, states: DbState]
 
 fn main() -> int:
   return 0
 """
-  t.okCheck "a kind may declare a protocol, and a kind beside it may not"
+  t.okCheck "a kind may name a protocol, and a kind beside it may not"
   # The protocol is a STATIC overlay: the emitted handle is unchanged, so a
   # kind gains states at zero runtime cost and no backend learns anything.
-  t.emits "Nim: a stateful kind emits the same plain table",
-          "tuckRes_db\\* = ResourceTable\\(kind: \"db\", cap: 32"
-  t.emits "...and the same plain handle alias", "type DbHandle\\* = ResourceHandle"
+  t.emits "a kind with a protocol emits the same handle as one without",
+          "DbHandle\\* = ResourceHandle"
 
-  # It reuses `| Variant` and `transitions:` verbatim — a protocol IS a sum
-  # type with a transitions table (§4.4), and spelling it a second way would
-  # be two grammars for one idea.
   t.src """
 resources:
-  db [cap: 4]:
-    | Open
-    | Closed
-    transitions:
-      Open -> Clsoed
+  db [cap: 4, states: Nope]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "`states:` naming no sum type is refused", "TK-RS10"
+
+  # A sum type with no edges says nothing about how the resource moves, so
+  # naming one is a mistake rather than a protocol.
+  t.src """
+type DbState:
+  | Open
+  | Closed
+
+resources:
+  db [cap: 4, states: DbState]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "`states:` naming a sum type with no transitions is refused",
+             "TK-RS10"
+
+  t.src """
+type DbState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Clsoed
+
+resources:
+  db [cap: 4, states: DbState]
 
 fn main() -> int:
   return 0
@@ -826,53 +855,41 @@ fn main() -> int:
   t.badCheck "a mistyped edge endpoint is refused, naming it", "TK-RS06"
 
   # The closing state is DERIVED (no outgoing edge), never declared, so it
-  # cannot be declared wrong. What can be wrong is the edge set.
+  # cannot be declared wrong; what can be wrong is the edge set.
   t.src """
+type DbState:
+  | Open
+  | InTransaction
+  | Closed
+  transitions:
+    Open -> InTransaction
+    Open -> Closed
+
 resources:
-  db [cap: 4]:
-    | Open
-    | InTransaction
-    | Closed
-    transitions:
-      Open -> InTransaction
-      Open -> Closed
+  db [cap: 4, states: DbState]
 
 fn main() -> int:
   return 0
 """
   t.badCheck "two states with no way out means no single closing state",
-             "these look final: InTransaction, Closed"
+             "TK-RS07"
 
+  # The rule that earns the feature: a live cycle with no exit is a handle
+  # that cannot be closed from where it is.
   t.src """
-resources:
-  db [cap: 4]:
-    | Open
-    | Orphan
-    | Closed
-    transitions:
-      Open   -> Closed
-      Orphan -> Closed
+type DbState:
+  | Open
+  | A
+  | B
+  | Closed
+  transitions:
+    Open -> A
+    A    -> B
+    B    -> A
+    Open -> Closed
 
-fn main() -> int:
-  return 0
-"""
-  t.badCheck "a state unreachable from where acquire starts is refused",
-             "TK-RS08"
-
-  # The rule that matters most for a RESOURCE: a live cycle with no exit means
-  # a handle that cannot be closed from where it is.
-  t.src """
 resources:
-  db [cap: 4]:
-    | Open
-    | A
-    | B
-    | Closed
-    transitions:
-      Open -> A
-      A    -> B
-      B    -> A
-      Open -> Closed
+  db [cap: 4, states: DbState]
 
 fn main() -> int:
   return 0
@@ -880,15 +897,17 @@ fn main() -> int:
   t.badCheck "a state the closing one cannot be reached from is a leak",
              "cannot be closed from where it is"
 
-  # A stateful kind acquires and finishes exactly as a stateless one does —
-  # the protocol adds a well-formedness check, not a new calling convention.
+  # A kind with a protocol acquires and finishes exactly as one without — the
+  # protocol adds a well-formedness check, not a new calling convention.
   t.src """
+type DbState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Closed
+
 resources:
-  db [cap: 4]:
-    | Open
-    | Closed
-    transitions:
-      Open -> Closed
+  db [cap: 4, states: DbState]
 
 fn take({fd: int}) -> ?DbHandle [resource: db]:
   return acquire fd, db
@@ -905,18 +924,17 @@ fn main() -> int:
   # An indented block may OPEN with a comment. A comment-only line lexes as a
   # bare newline, and `indentedBlock` expected the indent immediately — so
   # every construct except a fn body (which grew its own skip) rejected one.
-  # Protocols are what surfaced it: a `transitions:` block is now something a
-  # library author writes, and the first thing written above an edge list is a
-  # sentence about what the edges mean.
   t.src """
+type DbState:
+  # what this connection can be
+  | Open
+  | Closed
+  transitions:
+    # ...and the only way out
+    Open -> Closed
+
 resources:
-  db [cap: 4]:
-    # what this connection can be
-    | Open
-    | Closed
-    transitions:
-      # ...and the only way out
-      Open -> Closed
+  db [cap: 4, states: DbState]
 
 fn main() -> int:
   return 0
@@ -955,16 +973,18 @@ fn main() -> int:
   return 0
 """
   t.addFile "dblib.tuck", """
+type DbState:
+  | Open
+  | InTransaction
+  | Closed
+  transitions:
+    Open          -> InTransaction
+    InTransaction -> Open
+    Open          -> Closed
+    InTransaction -> Closed
+
 resources:
-  db [cap: 32]:
-    | Open
-    | InTransaction
-    | Closed
-    transitions:
-      Open          -> InTransaction
-      InTransaction -> Open
-      Open          -> Closed
-      InTransaction -> Closed
+  db [cap: 32, states: DbState]
 
 fn connect({fd: int}) -> ?DbHandle [resource: db]:
   return acquire fd, db
