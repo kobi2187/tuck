@@ -668,3 +668,110 @@ fn main() -> int:
   return finish
 """
   t.runs "a variable named 'finish' is still a variable", 17
+
+  # --- `acquire <raw>, <kind>` -----------------------------------------------
+  #
+  # The mirror of `finish`, and one parser builds both: same keyword position,
+  # same operand order, same trailing kind name. Acquire takes a RAW number in
+  # and yields `?<Kind>Handle`; finish takes a typed handle and yields nothing.
+  # The pair is what keeps the raw fd out of Tuck entirely — it exists between
+  # the extern's return and the acquire, and nowhere else.
+
+  t.src """
+resources:
+  slot [cap: 2]
+
+fn take({fd: int}) -> ?SlotHandle [resource: slot]:
+  return acquire fd, slot
+
+fn main() -> int:
+  var n = 0
+  let a = {fd: 10} take
+  if a.ok:
+    n = n + 1
+    let b = {fd: 11} take
+    if b.ok:
+      n = n + 2
+      let c = {fd: 12} take
+      if c.ok:
+        n = n + 100
+      finish a.value, slot
+      let d = {fd: 13} take
+      if d.ok:
+        n = n + 14
+  return n
+"""
+  t.okCheck "acquire and finish check together"
+  # The acquire SITE is supplied by the compiler from the span — the author
+  # never writes it, and a site an author had to supply is one that goes stale
+  # the first time a line moves.
+  t.emits "Nim: the kind resolves to its table, with the site attached",
+          "acquire\\(tuckRes_slot, int64\\(fd\\), \"t:5\"\\)"
+  t.emitsOdin "Odin: likewise", "rt.acquireResource\\(&tuckRes_slot, i64\\(fd\\)"
+  t.emitsD "D: likewise", "rt.acquireResource\\(tuckRes_slot, cast\\(long\\)\\(fd\\)"
+  # 1 + 2 + 14: the third acquire is ABSENT because the cap is 2 (not 100),
+  # and the fourth succeeds only because the `finish` freed a slot. One exit
+  # code pins the whole loop.
+  t.runs "...and the cap, the absence and the re-acquire all hold", 17
+
+  # `?T` is not special-cased for handles: the existing optional discipline
+  # applies, so reading `.value` without a guard is the ordinary error.
+  t.src """
+resources:
+  slot [cap: 2]
+
+fn take({fd: int}) -> ?SlotHandle [resource: slot]:
+  return acquire fd, slot
+
+fn main() -> int:
+  let a = {fd: 1} take
+  finish a.value, slot
+  return 0
+"""
+  t.badCheck "an unguarded handle is the ordinary unhandled-optional error",
+             "unhandled \\?SlotHandle"
+
+  # acquire takes the RAW handle an extern produced. Handing it something
+  # already registered would put one handle in the table twice.
+  t.src """
+resources:
+  slot [cap: 2]
+
+fn bad({h: SlotHandle}) -> ?SlotHandle [resource: slot]:
+  return acquire h, slot
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "acquiring an already-registered handle is TK-RS05", "TK-RS05"
+
+  t.src """
+resources:
+  slot
+
+fn take({fd: int}) -> ?SlotHandle [resource: slot]:
+  return acquire fd, disk
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "acquiring into an undeclared kind is TK-RS01", "TK-RS01"
+
+  t.src """
+resources:
+  slot
+
+fn take({fd: int}) -> ?SlotHandle [resource: slot]:
+  return acquire fd
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "omitting the kind shows acquire's own form", "acquire <raw>, <kind>"
+
+  t.src """
+fn main() -> int:
+  let acquire = 17
+  return acquire
+"""
+  t.runs "a variable named 'acquire' is still a variable", 17

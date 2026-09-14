@@ -17,11 +17,15 @@ tuckResourcesShutdown :: proc() {
 	rt.shutdownResources(&tuckRes_net)
 }
 
-tuck_openUdp :: proc(payload: $T) -> UdpHandle {
-	fmt.println("TUCK PENDING: tuck_openUdp invoked (not implemented)")
+tuck_rawOpenUdp :: proc(payload: $T) -> int {
+	fmt.println("TUCK PENDING: tuck_rawOpenUdp invoked (not implemented)")
 	return {}
 }
 
+
+tuck_openUdp :: proc (port: u16) -> rt.TuckResult(UdpHandle) {
+  return rt.acquireResource(&tuckRes_udp, i64(tuck_rawOpenUdp(port)), "47-resource-registry:46")
+}
 
 tuck_withScratch :: proc (n: int) -> int {
   tuck_scratch := n
@@ -33,8 +37,11 @@ tuck_withScratch :: proc (n: int) -> int {
 
 tuck_serve :: proc (port: u16) -> int {
   tuck_sock := tuck_openUdp(port)
-  defer {
-    rt.finishResource(&tuckRes_udp, tuck_sock)
+  if (tuck_sock.status == .Ok) {
+      defer {
+        rt.finishResource(&tuckRes_udp, tuck_sock.value)
+      }
+      return 1
   }
   return 0
 }

@@ -218,6 +218,10 @@ proc walk(m: var Metrics, e: Expr) =
     walk(m, e.discardVal)
   of exkSend:
     walk(m, e.sendPayload)
+  of exkAcquire:
+    # Not a fork either: absence-on-full is a VALUE the caller matches on,
+    # and that match is where the branch gets counted.
+    walk(m, e.acquireRef)
   of exkFinish:
     # Not a fork: a release happens or the program has already left by another
     # path that this same block also covers. The handle expression still walks.

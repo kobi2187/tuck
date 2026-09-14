@@ -15,11 +15,15 @@ void tuckResourcesShutdown() {
     rt.shutdownResources(tuckRes_net);
 }
 
-UdpHandle tuck_openUdp(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_openUdp invoked (not implemented)");
+long tuck_rawOpenUdp(T)(T payload) {
+    stderr.writeln("TUCK PENDING: tuck_rawOpenUdp invoked (not implemented)");
     return typeof(return).init;
 }
 
+
+rt.TuckResult!(UdpHandle) tuck_openUdp(ushort port) {
+    return rt.acquireResource(tuckRes_udp, cast(long)(tuck_rawOpenUdp(port)), "47-resource-registry:46");
+}
 
 long tuck_withScratch(long n) {
     long tuck_scratch = n;
@@ -30,9 +34,12 @@ long tuck_withScratch(long n) {
 }
 
 long tuck_serve(ushort port) {
-    UdpHandle tuck_sock = tuck_openUdp(port);
-    scope(exit) {
-        rt.finishResource(tuckRes_udp, tuck_sock);
+    rt.TuckResult!(UdpHandle) tuck_sock = tuck_openUdp(port);
+    if ((tuck_sock.status == rt.TuckStatus.Ok)) {
+        scope(exit) {
+            rt.finishResource(tuckRes_udp, tuck_sock.value);
+        }
+        return 1L;
     }
     return 0L;
 }

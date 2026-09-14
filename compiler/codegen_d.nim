@@ -1392,6 +1392,9 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkFinish:
     "rt.finishResource(" & resourceTableName(e.finishKind) & ", " &
       ctx.genDExpr(e.finishHandle) & ")"
+  of exkAcquire:
+    "rt.acquireResource(" & resourceTableName(e.acquireKind) & ", cast(long)(" &
+      ctx.genDExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
 
 # --------------------------------------------------------- declarations --
 

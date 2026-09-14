@@ -1014,6 +1014,19 @@ Three things to know:
 At exit a debug build prints `OPEN RESOURCES (n)` — what was never finished,
 and where it was acquired — then closes every table.
 
+**`acquire` registers, `finish` releases — a symmetric pair, each naming its kind:**
+
+```tuck
+fn openUdp({port: u16}) -> ?UdpHandle [io, resource: udp]:
+  return acquire {port: port} rawOpenUdp, udp   # raw fd in, ?UdpHandle out
+```
+
+`acquire <raw>, <kind>` takes the raw OS handle an extern produced and
+registers it; the raw fd exists between the extern's return and this line and
+nowhere else. Exhaustion is absence, so the result is `?<Kind>Handle` and the
+ordinary optional discipline applies. The acquire *site* is filled in by the
+compiler, which is what lets the leak report say where a handle came from.
+
 **`finish` releases — and names the kind:**
 
 ```tuck
@@ -1031,12 +1044,11 @@ often than written, and the reader should not have to find the declaration of
 `sock` to learn which registry this touches. It costs nothing at runtime: the
 kind names the table directly.
 
-> **`acquire` has no spelling yet.** §7.4 says what it does and never how it
-> is written, so it is a ruling rather than an implementation
-> (`docs/resources.md` §2). A library reaches the registry through an extern
-> today. That also still blocks §7.4's static acquire-must-finish check —
-> though less than before, since the defer-mark half now has a mark to
-> recognise.
+> **§7.4's static acquire-must-finish check is not built.** Both halves now
+> have a shape to match on, so it is writable — but the *escape* arm is
+> already sound by construction (the registry closes at exit, which is what
+> §7.4 says makes the local analysis sufficient), and the OPEN RESOURCES
+> report answers the same question at runtime meanwhile.
 
 ### `defer` — a block that runs at scope exit
 

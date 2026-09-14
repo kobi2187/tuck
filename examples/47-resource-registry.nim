@@ -1,6 +1,7 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
+proc tuck_openUdp*(port: uint16): TuckResult[UdpHandle]
 proc tuck_withScratch*(n: int): int
 proc tuck_serve*(port: uint16): int
 proc tuck_main*(): int
@@ -16,9 +17,12 @@ proc tuckResourcesShutdown*() =
   shutdownResources(tuckRes_file)
   shutdownResources(tuckRes_net)
 
-proc tuck_openUdp*[T](payload: T): UdpHandle =
-  stderr.writeLine("TUCK PENDING: tuck_openUdp invoked (not implemented)")
+proc tuck_rawOpenUdp*[T](payload: T): int =
+  stderr.writeLine("TUCK PENDING: tuck_rawOpenUdp invoked (not implemented)")
 
+
+proc tuck_openUdp*(port: uint16): TuckResult[UdpHandle] =
+  return acquire(tuckRes_udp, int64(tuck_rawOpenUdp(port)), "47-resource-registry:46")
 
 proc tuck_withScratch*(n: int): int =
   var tuck_scratch = n
@@ -28,8 +32,11 @@ proc tuck_withScratch*(n: int): int =
 
 proc tuck_serve*(port: uint16): int =
   var tuck_sock = tuck_openUdp(port)
-  defer:
-    finish(tuckRes_udp, tuck_sock)
+  if tuck_sock.ok:
+    if true:
+      defer:
+        finish(tuckRes_udp, tuck_sock.value)
+      return 1
   return 0
 
 proc tuck_main*(): int =

@@ -295,6 +295,12 @@ type
     exkImport
     exkSend      # `ActorType send handler {payload}` — enqueue to an actor
     exkSelect    # task-body `on select:` — wait on read/timeout branches
+    exkAcquire   # `acquire <raw>, <kind>` — spec §7.4's registration. The
+                 # symmetric twin of exkFinish: same shape, same argument
+                 # order, same checked kind name. It takes the RAW OS handle
+                 # an extern produced and returns `?<Kind>Handle`, so the raw
+                 # fd never reaches Tuck code and the table is written in the
+                 # module that declares it.
     exkFinish    # `finish <handle>, <kind>` — spec §7.4's release INTENT.
                  # The kind is named rather than inferred from the handle's
                  # type: the type already decides the table, so naming it is
@@ -419,6 +425,9 @@ type
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
     of exkDefer:
       deferBody*: Expr  # the block to run at scope exit
+    of exkAcquire:
+      acquireRef*: Expr     # the raw OS handle to register
+      acquireKind*: string  # the kind whose table it goes into, as written
     of exkFinish:
       finishHandle*: Expr   # the handle being released
       finishKind*: string   # the kind it belongs to, as written

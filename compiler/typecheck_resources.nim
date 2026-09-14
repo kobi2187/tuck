@@ -74,33 +74,44 @@ proc checkMarkedKinds*(mods: seq[tuple[name, path: string, m: Module]],
              "`resources:` block declares the kind '" & k & "'",
              site.span)
 
-proc checkFinishKinds(e: Expr, kinds: ResourceKinds) =
-  ## Every `finish <handle>, <kind>` in a body names a declared kind — the
-  ## same rule the MARKER follows, and it has to be asked separately because
-  ## the marker walk reads signatures and this lives in statements.
-  ##
-  ## Here rather than in the per-module checker's synthFinish because the kind
-  ## SET is program-wide: a module may finish into a kind a module it imports
-  ## declared, so no single module's view can answer this. synthFinish asks
-  ## the other half — whether the named kind matches the handle's type — which
-  ## is local and needs a synthesized type this pass does not have.
-  if e == nil: return
-  if e.kind == exkFinish and not kinds.hasKey(e.finishKind):
-    fail(dcRsUnknownKind,
-         "`finish` names the kind '" & e.finishKind & "', but no `resources:` " &
-         "block declares it",
-         e.span)
-  for c in e.children: checkFinishKinds(c, kinds)
+proc opKind(e: Expr): tuple[word, kind: string] =
+  ## The keyword and kind name of a registry operation, or empty for anything
+  ## else. One lookup so the walk below asks about the PAIR rather than
+  ## special-casing each — they are one shape and share one rule.
+  case e.kind
+  of exkAcquire: ("acquire", e.acquireKind)
+  of exkFinish: ("finish", e.finishKind)
+  else: ("", "")
 
-proc checkFinishSites*(mods: seq[tuple[name, path: string, m: Module]],
-                       kinds: ResourceKinds) =
+proc checkOpKinds(e: Expr, kinds: ResourceKinds) =
+  ## Every `acquire`/`finish` in a body names a declared kind — the same rule
+  ## the MARKER follows, asked separately because the marker walk reads
+  ## signatures and these live in statements.
+  ##
+  ## Here rather than in the per-module checker because the kind SET is
+  ## program-wide: a module may acquire into a kind an import declared, so no
+  ## single module's view can answer it. The per-module checker asks the other
+  ## halves — that `finish`'s kind matches the handle's type (TK-RS04), and
+  ## that `acquire`'s operand is a raw number (TK-RS05) — both of which need a
+  ## synthesized type this pass does not have.
+  if e == nil: return
+  let op = opKind(e)
+  if op.word != "" and not kinds.hasKey(op.kind):
+    fail(dcRsUnknownKind,
+         "`" & op.word & "` names the kind '" & op.kind & "', but no " &
+         "`resources:` block declares it",
+         e.span)
+  for c in e.children: checkOpKinds(c, kinds)
+
+proc checkOpSites*(mods: seq[tuple[name, path: string, m: Module]],
+                   kinds: ResourceKinds) =
   for (_, _, m) in mods:
     for d in m.decls:
       if d == nil: continue
-      for ex in d.ownExprs(): checkFinishKinds(ex, kinds)
+      for ex in d.ownExprs(): checkOpKinds(ex, kinds)
       for mem in d.childDecls():
         if mem == nil: continue
-        for ex in mem.ownExprs(): checkFinishKinds(ex, kinds)
+        for ex in mem.ownExprs(): checkOpKinds(ex, kinds)
 
 proc checkResources*(mods: seq[tuple[name, path: string, m: Module]]):
                      ResourceKinds {.discardable.} =
@@ -108,4 +119,4 @@ proc checkResources*(mods: seq[tuple[name, path: string, m: Module]]):
   ## that emit from it do not collect it a second time.
   result = collectResourceKinds(mods)
   checkMarkedKinds(mods, result)
-  checkFinishSites(mods, result)
+  checkOpSites(mods, result)

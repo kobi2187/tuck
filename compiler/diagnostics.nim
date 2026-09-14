@@ -152,6 +152,7 @@ type
     dcRsDuplicateKind = "TK-RS02"       ## two `resources:` blocks declare one kind
     dcRsUndeclared = "TK-RS03"          ## a caller does not declare a kind it acquires
     dcRsWrongKind = "TK-RS04"           ## `finish h, k` where h is another kind's handle
+    dcRsNotRaw = "TK-RS05"              ## `acquire r, k` where r is not an OS handle
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -667,6 +668,12 @@ proc ruleExplanation(d: DiagCode): string =
     "handle's type already decides which registry is touched — so stating it " &
     "is a claim the compiler checks, not information it needs. Fix: name the " &
     "kind the handle actually came from, or finish a different handle."
+  of dcRsNotRaw:
+    "`acquire <raw>, <kind>` registers the OS handle an extern just produced " &
+    "— an fd, or a pointer widened to an integer — so its argument is a " &
+    "NUMBER (spec §7.4). What comes back is the kind's own handle type. Fix: " &
+    "pass the extern's result, not something already registered: acquiring a " &
+    "`<Kind>Handle` would put a handle into the table a second time."
   of dcRsUndeclared:
     "A fn calling an acquire site must declare the kind itself, exactly as " &
     "it must declare an effect it reaches (spec §3.7 — explicit, not " &

@@ -1613,19 +1613,22 @@ the unbuilt together would be dishonest:
   close-all and the stale-handle catch; the per-kind handle type; the
   `OPEN RESOURCES` report and close-all at exit. `defer` landed with it, as a
   general statement on all three backends.
-- **Release is spelled** `finish <handle>, <kind>` (ruled 2026-09-14). The
-  kind is redundant — the handle's type decides the table — and checked, so
-  finishing into the wrong registry is a compile error rather than a runtime
-  one.
-- **Acquire is not spelled.** This section says what it does and never how it
-  is written, and the readings consistent with it are not equivalent. Picking
-  one is a ruling. A library reaches the registry through an extern today.
-- **Blocked on that.** The static acquire-must-finish check above. Its
-  *escape* arm is already sound by construction — the registry closes at exit,
-  which is exactly what this section says makes the local analysis sufficient.
-  Its *defer mark* arm now has a mark to recognise, so the analysis is
-  writable as soon as acquire has a shape to match on. The OPEN RESOURCES
-  report answers the same question at runtime in the meantime.
+- **The registry surface is spelled** (ruled 2026-09-14) as a symmetric pair,
+  `acquire <raw>, <kind>` and `finish <handle>, <kind>` — one parser builds
+  both. Acquire takes the raw OS handle an extern produced and yields
+  `?<Kind>Handle`; finish takes a typed handle and yields nothing. The raw fd
+  exists between the extern's return and the acquire and nowhere else. The
+  kind is named on both and checked on both, so finishing into the wrong
+  registry is a compile error rather than a runtime one.
+- **Not built:** the static acquire-must-finish check above. Both halves now
+  have a shape to match on, so it is writable; the *escape* arm is already
+  sound by construction — the registry closes at exit, which is exactly what
+  this section says makes the local analysis sufficient — and the OPEN
+  RESOURCES report answers the same question at runtime meanwhile.
+- **Deliberately deferred:** single-owner (non-copyable) handles. They would
+  make per-variable state tracking sound and turn use-after-finish into a
+  compile-time error, but that is an affine-types feature for the language as
+  a whole, not a resource one. A future ruling.
 
 `docs/resources.md` is the implementation record, including the four questions
 this section left open and what the compiler settled them as.

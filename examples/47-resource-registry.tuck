@@ -22,14 +22,28 @@ resources [policy: lazy]:          # the default for every kind below
   # No cap: the table grows, and the OS ulimit is the real bound.
   udp
 
-# An acquire site says so in its effects bracket, and the marker propagates to
-# callers exactly as an effect does — a fn calling this one must declare
-# `[resource: udp]` itself. `UdpHandle` is the kind's own handle type: a plain
-# value carrying a slot and a tenancy, never the socket. A handle whose tenancy
-# has moved on is a caught error rather than a write to the wrong file, which
-# is how the fd-reuse bug class is closed by construction.
+# `acquire <raw>, <kind>` registers the OS handle an extern just produced, and
+# hands back the kind's own handle type. The RAW fd exists between the extern's
+# return and this line and nowhere else — Tuck code only ever holds a
+# `UdpHandle`, a plain value carrying a slot and a tenancy. A handle whose
+# tenancy has moved on is a caught error rather than a write to the wrong
+# socket, which is how the fd-reuse bug class is closed by construction.
+#
+# Exhaustion is ABSENCE, so this is `?UdpHandle`: the caller decides what a
+# full table means, exactly as a pool already does.
+#
+# The acquire SITE is recorded automatically, from the span — it is what lets
+# the OPEN RESOURCES report say WHERE a leaked handle came from, and a site the
+# author had to write is one that goes stale the first time a line moves.
+#
+# An acquire site says so in its effects bracket too, and the marker propagates
+# to callers exactly as an effect does — a fn calling this one must declare
+# `[resource: udp]` itself.
 pending:
-  fn openUdp({port: u16}) -> UdpHandle [io, resource: udp]
+  fn rawOpenUdp({port: u16}) -> int [io]
+
+fn openUdp({port: u16}) -> ?UdpHandle [io, resource: udp]:
+  return acquire {port: port} rawOpenUdp, udp
 
 # `defer` runs at scope exit, LIFO — the general statement the registry rides
 # on, not a registry construct. All three backends have one natively (Nim
@@ -55,8 +69,10 @@ fn withScratch({n: int}) -> int:
 # have to find the declaration of `sock` to learn which table this touches.
 fn serve({port: u16}) -> int [io, resource: udp]:
   let sock = {port: port} openUdp
-  defer:
-    finish sock, udp
+  if sock.ok:
+    defer:
+      finish sock.value, udp
+    return 1
   return 0
 
 fn main() -> int:

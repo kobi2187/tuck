@@ -133,6 +133,19 @@ proc declaresResources*(m: Module): bool =
     if d != nil and d.kind == dkResources and d.resKinds.len > 0: return true
   false
 
+proc acquireSite*(e: Expr, moduleName: string): string =
+  ## Where an acquire happened, as the OPEN RESOURCES report prints it —
+  ## `module:line`. Built by the compiler rather than written by the author: a
+  ## site the author had to supply is a site that goes stale the first time a
+  ## line moves.
+  ##
+  ## The MODULE comes from the codegen context, not from `span.file`: the
+  ## parser sets `file: ""` on every span it makes (parser_base.getSpan), so
+  ## the span alone can only answer "which line". All three backends carry a
+  ## moduleName for error-code hashing, so all three can answer the other
+  ## half the same way.
+  (if moduleName.len > 0: moduleName else: "?") & ":" & $e.span.line
+
 proc rtOnFinishProc*(f: ResourceOnFinish): string =
   ## The runtime proc a declared `on_finish` binds to, or "" for none.
   ##

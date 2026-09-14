@@ -154,16 +154,20 @@ let tuckGrammar = peg("module", st: Stats):
   # `<ident>:` opening a block in STATEMENT position is a defer and nothing
   # else.
   deferStmt <- word * "tkColon " * +nl * blk
-  # spec 7.4: `finish <handle>, <kind>`. Positional for the same reason —
-  # `finish` is not a keyword to the lexer — and stated BEFORE the general
-  # expression statements so the comma is read as this form's rather than as
-  # whatever an expression might do with one.
-  finishStmt<- word * expr * "tkComma " * name * eol
+  # spec 7.4: `acquire <raw>, <kind>` and `finish <handle>, <kind>`. ONE rule,
+  # because they are one shape — which is the point of the pair. Positional,
+  # since neither word is a keyword to the lexer, and stated BEFORE the
+  # general expression statements so the comma reads as this form's rather
+  # than as whatever an expression might do with one.
+  resourceOp<- word * expr * "tkComma " * name
+  finishStmt<- resourceOp * eol
   letStmt   <- ("tkLet " | "tkConst ") * name * ?("tkColon " * typeExpr) *
-               "tkAssign " * (matchTail | ifTail | (expr * eol))
+               "tkAssign " * (matchTail | ifTail | (resourceOp * eol) |
+                              (expr * eol))
   varStmt   <- "tkVar " * name * ?("tkColon " * typeExpr) *
-               (("tkAssign " * (matchTail | ifTail | (expr * eol))) | eol)
-  returnStmt<- "tkReturn " * ?expr * eol
+               (("tkAssign " * (matchTail | ifTail | (resourceOp * eol) |
+                                (expr * eol))) | eol)
+  returnStmt<- "tkReturn " * ((resourceOp * eol) | (?expr * eol))
   # Two shapes share one keyword: a block `if` whose `else` opens a new line,
   # and an inline `if c: a else: b` where the whole thing is one expression.
   ifTail    <- ("tkIf " | "tkElif ") * expr * "tkColon " *

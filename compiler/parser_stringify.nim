@@ -129,6 +129,8 @@ proc toString*(e: Expr): string =
     return "on select (" & $e.selArms.len & " arms)"
   of exkDefer:
     return "defer: " & optToString(e.deferBody)
+  of exkAcquire:
+    return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:
     return "finish " & optToString(e.finishHandle) & ", " & e.finishKind
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:

@@ -909,6 +909,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     # runtime cost to the redundancy the source spells out.
     "finish(" & resourceTableName(e.finishKind) & ", " &
       ctx.genExpr(e.finishHandle) & ")"
+  of exkAcquire:
+    # The acquire SITE is supplied here, from the span — the author never
+    # writes it, and it is what makes the OPEN RESOURCES report able to say
+    # WHERE a leaked handle came from.
+    "acquire(" & resourceTableName(e.acquireKind) & ", int64(" &
+      ctx.genExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
   of exkImport: ""  # imports are declarations, never expression position
 
 proc hasBracketBase(e: Expr): bool =

@@ -219,72 +219,107 @@ stage — the gate will not let the feature land undocumented.
 
 ---
 
-## 2. The release surface — `finish <handle>, <kind>`
+## 2. The registry surface — `acquire` and `finish`
 
-§7.4 describes what acquire and finish DO in complete detail and never says
-how they are spelled. The nearest thing it gives is `kind::sweep`, which uses
-`::` — the module-qualifier syntax, a resolution path neither `Pool.acquire`'s
-nor a member call's. Three spellings were consistent with it, and they are not
-equivalent.
+§7.4 describes what acquire and finish DO in complete detail and never says how
+they are spelled. The nearest thing it gives is `kind::sweep`, which uses `::`
+— the module-qualifier syntax, a resolution path neither `Pool.acquire`'s nor a
+member call's.
 
-**Ruled (2026-09-14): `finish sock, udp` — the kind is named, and checked.**
+**Ruled (2026-09-14): a symmetric pair of statements, each naming its kind.**
 
 ```tuck
+resources:
+  udp [cap: 64, on_finish: shutdown]
+
+pending:
+  fn rawOpenUdp({port: u16}) -> int [io]
+
+fn openUdp({port: u16}) -> ?UdpHandle [io, resource: udp]:
+  return acquire {port: port} rawOpenUdp, udp     # register; yields ?UdpHandle
+
 fn serve({port: u16}) -> int [io, resource: udp]:
-  let sock = {port: port} openUdp     # -> UdpHandle
-  defer:
-    finish sock, udp
-  ...
+  let sock = {port: port} openUdp
+  if sock.ok:
+    defer:
+      finish sock.value, udp                      # release intent
+    return 1
+  return 0
 ```
 
-The handle's TYPE already decides which table is touched — every kind gets its
-own nominal `<Kind>Handle` (§0.3) — so `udp` is redundant. That is the point,
-not an oversight:
+|  | operand | yields |
+|---|---|---|
+| `acquire <raw>, <kind>` | the RAW OS handle an extern produced — a number | `?<Kind>Handle` |
+| `finish <handle>, <kind>` | the kind's own handle type | nothing |
+
+**One parser builds both** (`parser_expr.parseResourceOp`). Same keyword
+position, same operand order, same trailing kind name — symmetric by
+construction rather than by discipline, and the two cannot drift apart because
+there is nowhere for them to drift.
+
+Both are contextual, recognised by spelling and gated on what follows, exactly
+as `parser.contextualDecl` handles the top-level openers the lexer does not
+tokenize. The expression-level twin is `parser_expr.contextualStmt`. The gate
+is a NAME or `{` following: Tuck calls are postfix (`{payload} fn`), so two
+bare identifiers in a row are not an expression in any other construct, and a
+variable named `acquire` or `finish` still reads as one.
+
+### Why the kind is named on both
+
+On `acquire` the kind is not redundant at all — a raw fd says nothing about
+which table it belongs in, so the statement could not work without it. On
+`finish` it IS redundant: the handle's type already determines the table. It is
+named anyway, and checked:
 
 - **A release is read far more often than it is written.** The reader should
   not have to find the declaration of `sock` to learn which registry this
-  statement touches.
+  touches.
 - **The redundancy is CHECKED, never trusted.** `finish sock, file` on a
-  `UdpHandle` is TK-RS04, by name, at compile time. A second source of truth
-  that is verified is a reader aid; one that is trusted is a bug waiting.
+  `UdpHandle` is TK-RS04, by name, at compile time.
 - **It costs nothing at runtime.** The kind names the table directly, so the
   emitted call is `finish(tuckRes_udp, sock)` — no dispatch, and no table id
   riding on the handle, which stays `{slot: int32, gen: uint32}`.
 
-Honestly: this is the more ROBUST form, not the more flexible one. The
-type-based `finish sock` expresses everything this does with less ceremony;
-the one thing it could not express is finishing a handle held in a generic
-type parameter, which nothing needs yet. The argument that decided it is
-legibility at the call site plus a compile-time cross-check, not expressive
-power.
+That asymmetry in the ARGUMENT is what makes the symmetry in the FORM worth
+having: the pair reads the same way, so the redundant half is free to be
+redundant.
 
-`finish` is contextual, like `defer` and `resources`: it is gated on a NAME
-following, because Tuck calls are postfix (`{payload} fn`) and two bare
-identifiers in a row are not an expression in any other construct — so an
-ordinary variable named `finish` still reads as one.
+### What the pair buys
 
-Two rules, deliberately in two places:
+**The raw fd never reaches Tuck code.** It exists between the extern's return
+and the `acquire`, and nowhere else. Everything downstream holds a
+`<Kind>Handle`, whose tenancy check makes a stale use a caught error rather
+than a write to the wrong socket.
 
-| Rule | Where | Why |
-|---|---|---|
-| the named kind is DECLARED (TK-RS01) | `typecheck_resources`, whole-program | kinds are an open set; a module may finish into a kind an import declared, so no single module's view can answer it |
-| the named kind MATCHES the handle (TK-RS04) | `synthFinish`, per module | needs a synthesized type, which the whole-program pass does not have |
+**The table is written where it is declared.** This was the blocker the pair
+dissolves: an extern's *implementation* lives in the runtime, which cannot see
+`tuckRes_udp` — that symbol is emitted into the user's module. With `acquire`
+as a statement, registration happens in Tuck, in the module that has the table
+in scope. No plumbing, no codegen magic.
+
+**The acquire SITE is free.** The compiler fills it from the span
+(`resolution.acquireSite`), so the OPEN RESOURCES report can say *where* a
+leaked handle came from without the author writing a site that would go stale
+the first time a line moved.
+
+### Rules, and where each lives
+
+| Rule | Code | Where | Why there |
+|---|---|---|---|
+| the named kind is declared | TK-RS01 | `typecheck_resources`, whole-program | kinds are an open set; a module may acquire into a kind an import declared |
+| `finish`'s kind matches the handle | TK-RS04 | `synthFinish`, per module | needs a synthesized type |
+| `acquire`'s operand is a raw number | TK-RS05 | `synthAcquire`, per module | same; acquiring a `<Kind>Handle` would register one handle twice |
 
 `synthFinish` reads the RAW synthesized type, never a `resolve`d one:
-resolving follows a named type to its body, and every kind's handle is the
-same empty record — so a resolved `UdpHandle` and a resolved `FileHandle` are
+resolving follows a named type to its body, and every kind's handle is the same
+empty record — so a resolved `UdpHandle` and a resolved `FileHandle` are
 indistinguishable, which is exactly the distinction being checked.
 
-### What is still missing: ACQUIRE
-
-`finish` is spelled; `acquire` is not. A library reaches the registry through
-an extern whose implementation registers the entry, which means the extern
-needs the table — and the table is emitted into the USER's module, not the
-runtime. Closing that is the next ruling, and it is the last one §7.4 needs.
-
-This also still blocks §7.4's static acquire-must-finish check, though less
-than before: the *defer mark* arm now has a mark to recognise, so the analysis
-is writable the moment acquire has a shape to match on.
+Exhaustion stays ABSENCE, so `acquire` yields `?<Kind>Handle` and the existing
+optional discipline applies unchanged: reading `.value` without a guard is the
+ordinary unhandled-optional error, not a resource-specific one. A kind
+declaring `on_full: error` aborts instead of returning, but the TYPE is the
+same — policy does not change shape.
 
 ## 3. Smaller boundaries
 

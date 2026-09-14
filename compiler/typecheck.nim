@@ -3748,6 +3748,32 @@ proc synthDiscard(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(e.discardVal)
   unitType(e.span)
 
+proc synthAcquire(tc: var TypeChecker, e: Expr): Type =
+  ## `acquire <raw>, <kind>` (spec §7.4) — register the OS handle an extern
+  ## just produced, and get the kind's own handle back.
+  ##
+  ## The exact mirror of `finish`: same shape, same argument order, same
+  ## checked kind name. Acquire takes a RAW number in and yields a typed
+  ## handle; finish takes a typed handle and yields nothing. The pair is what
+  ## keeps the raw fd out of Tuck code entirely — it exists between the
+  ## extern's return and this statement, and nowhere else.
+  ##
+  ## Exhaustion is ABSENCE, so the result is `?<Kind>Handle`: the caller
+  ## decides what a full table means, exactly as §7.2's pool already does.
+  ## (A kind declaring `on_full: error` aborts instead and never returns, but
+  ## the TYPE is the same — the policy does not change the shape.)
+  let rt = tc.synthesize(e.acquireRef)
+  if rt != nil and rt.kind == tkNamed and rt.name != "Unknown" and
+     not isNumeric(rt):
+    fail(dcRsNotRaw,
+         "`acquire` takes the RAW OS handle an extern produced — a number — " &
+         "but this is a " & rt.name,
+         e.span)
+  let handle = Type(span: e.span, kind: tkNamed,
+                    name: resourceHandleName(e.acquireKind))
+  Type(span: e.span, kind: tkApp, args: @[handle],
+       base: Type(span: e.span, kind: tkNamed, name: "?"))
+
 proc synthFinish(tc: var TypeChecker, e: Expr): Type =
   ## `finish <handle>, <kind>` (spec §7.4). The kind is REDUNDANT — the
   ## handle's type already decides which registry table is touched — so the
@@ -3999,6 +4025,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkSend: tc.synthSend(e)
   of exkSelect: tc.synthSelect(e)
   of exkDefer: tc.synthDefer(e)
+  of exkAcquire: tc.synthAcquire(e)
   of exkFinish: tc.synthFinish(e)
   of exkQualified, exkImport: tc.synthQualified(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
