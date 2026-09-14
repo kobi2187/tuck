@@ -90,6 +90,15 @@ type
     onFull*: ResourceOnFull
     onFinish*: ResourceOnFinish
     sweepBatch*: int      ## 0 = evict every finished entry; >0 = that many
+    states*: seq[VariantDef]   ## the kind's PROTOCOL, optional. The library
+                               ## supplies the states and the edges; the
+                               ## compiler supplies the shape, so there is no
+                               ## envelope to write and none to get wrong.
+                               ## Empty = the kind has no protocol beyond the
+                               ## registry's own live/finished, which is the
+                               ## ordinary case (a file has two states and the
+                               ## table already tracks both).
+    transitions*: seq[Transition]  ## the edges between `states`
     span*: Span
 
   TypeAttr* = object

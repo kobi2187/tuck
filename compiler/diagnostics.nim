@@ -153,6 +153,10 @@ type
     dcRsUndeclared = "TK-RS03"          ## a caller does not declare a kind it acquires
     dcRsWrongKind = "TK-RS04"           ## `finish h, k` where h is another kind's handle
     dcRsNotRaw = "TK-RS05"              ## `acquire r, k` where r is not an OS handle
+    dcRsBadEdge = "TK-RS06"             ## a transition endpoint names no state of the kind
+    dcRsNoTerminal = "TK-RS07"          ## a kind's protocol has no single closing state
+    dcRsUnreachable = "TK-RS08"         ## a state nothing can reach from the initial one
+    dcRsCannotClose = "TK-RS09"         ## a state the closing one cannot be reached from
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -674,6 +678,25 @@ proc ruleExplanation(d: DiagCode): string =
     "NUMBER (spec §7.4). What comes back is the kind's own handle type. Fix: " &
     "pass the extern's result, not something already registered: acquiring a " &
     "`<Kind>Handle` would put a handle into the table a second time."
+  of dcRsBadEdge:
+    "A `transitions:` edge inside a `resources:` kind must name states that " &
+    "kind declares (spec §7.4, §4.4). Fix: check the spelling, or add the " &
+    "missing state."
+  of dcRsNoTerminal:
+    "A kind's protocol needs exactly ONE closing state — the state with no " &
+    "outgoing edge, which is where `finish` leaves the handle. It is DERIVED " &
+    "rather than declared, so it cannot be declared wrong; what can be wrong " &
+    "is the edge set. Too many means several states look final; none means " &
+    "every state can still move, so the protocol never ends."
+  of dcRsUnreachable:
+    "Every state of a kind's protocol must be reachable from the first one, " &
+    "which is where `acquire` starts. A state nothing can reach is a state " &
+    "written by mistake — the same rule a [sealed] sum type already follows."
+  of dcRsCannotClose:
+    "The closing state must be reachable from EVERY state: a resource you " &
+    "cannot close from where you are is a leak the type system promised to " &
+    "prevent. Fix: add the missing edge, usually a direct one to the closing " &
+    "state for the error path."
   of dcRsUndeclared:
     "A fn calling an acquire site must declare the kind itself, exactly as " &
     "it must declare an effect it reaches (spec §3.7 — explicit, not " &

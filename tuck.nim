@@ -429,6 +429,17 @@ proc importedResources(loaded: seq[LoadedModule],
       result[si.name] = si.resources
       result[modName & "::" & si.name] = si.resources
 
+proc declaredResourceKinds(loaded: seq[LoadedModule]): seq[string] =
+  ## Every resource kind the PROGRAM declares. Whole-program because §7.4's
+  ## kinds are, and gathered here rather than inside the effect pass because
+  ## that pass runs once per module and this answer is the same for all of
+  ## them — the same shape as importedEffects above.
+  for lm in loaded:
+    for d in lm.m.decls:
+      if d == nil or d.kind != dkResources: continue
+      for k in d.resKinds:
+        if k.name notin result: result.add(k.name)
+
 proc typecheckOnly(path: string, loaded: seq[LoadedModule],
                    sigOnly: Table[string, IndexEntry]): seq[string] =
   ## Just the typecheck half of the check pipeline. checkOrDie calls this
@@ -472,12 +483,13 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
     assertNoMissingTypes(checkedMods)
   let imported = importedEffects(loaded, sigOnly)
   let importedRes = importedResources(loaded, sigOnly)
+  let programKinds = declaredResourceKinds(loaded)
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
   try:
     for lm in loaded:
       let ts = epochTime()
-      verifyModuleEffects(lm.m, imported, importedRes)
+      verifyModuleEffects(lm.m, imported, importedRes, programKinds)
       vSub(lm.name, ts)
     if verifyStages: verifyEffectsAssertions(loaded)
   except SemanticError as err:

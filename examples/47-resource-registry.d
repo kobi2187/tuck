@@ -22,7 +22,7 @@ long tuck_rawOpenUdp(T)(T payload) {
 
 
 rt.TuckResult!(UdpHandle) tuck_openUdp(ushort port) {
-    return rt.acquireResource(tuckRes_udp, cast(long)(tuck_rawOpenUdp(port)), "47-resource-registry:46");
+    return rt.acquireResource(tuckRes_udp, cast(long)(tuck_rawOpenUdp(port)), "47-resource-registry:69");
 }
 
 long tuck_withScratch(long n) {

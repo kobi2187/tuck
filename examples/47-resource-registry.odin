@@ -24,7 +24,7 @@ tuck_rawOpenUdp :: proc(payload: $T) -> int {
 
 
 tuck_openUdp :: proc (port: u16) -> rt.TuckResult(UdpHandle) {
-  return rt.acquireResource(&tuckRes_udp, i64(tuck_rawOpenUdp(port)), "47-resource-registry:46")
+  return rt.acquireResource(&tuckRes_udp, i64(tuck_rawOpenUdp(port)), "47-resource-registry:69")
 }
 
 tuck_withScratch :: proc (n: int) -> int {

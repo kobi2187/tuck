@@ -1050,6 +1050,66 @@ kind names the table directly.
 > §7.4 says makes the local analysis sufficient), and the OPEN RESOURCES
 > report answers the same question at runtime meanwhile.
 
+**A kind may declare its PROTOCOL**, and the compiler writes the type:
+
+```tuck
+resources:
+  file [cap: 8]                    # no protocol — a kind needs none
+
+  db [cap: 32]:                    # a colon opens the state machine
+    | Open
+    | InTransaction
+    | Closed
+    transitions:
+      Open          -> InTransaction
+      InTransaction -> Open
+      Open          -> Closed
+      InTransaction -> Closed
+```
+
+A file is open or finished and the registry already tracks that. A database
+connection is `Open`, `InTransaction` or `Closed`, and only the library knows.
+So the library supplies the **states and the edges** — and nothing else. The
+type they become is the compiler's, which is the point: **you cannot fail to
+conform to a type you did not write.** There is no envelope to get wrong, and
+no conformance check to fail, for the same reason `<Kind>Handle` has none.
+
+Two things are DERIVED rather than declared, so the two cannot disagree:
+**initial** is the first state (§4.4's convention), where `acquire` starts;
+**terminal** is the state with no outgoing edge, where `finish` leaves the
+handle. What is checked is that the machine is well formed, with the rules a
+*resource* protocol needs rather than generic graph hygiene: every edge names a
+real state (TK-RS06), there is exactly one closing state (TK-RS07), every state
+is reachable from the initial one (TK-RS08), and — the one that earns the
+feature — **the closing state is reachable from every state** (TK-RS09). A live
+cycle with no exit is a handle that cannot be closed from where it is, which is
+the leak the declaration promised to prevent.
+
+It is a **static overlay**: the emitted handle is still a slot and a tenancy,
+the table is unchanged, and no backend learns anything. Protocols cost nothing
+at runtime, the same way `@Variant` narrowing and `group` bounds do.
+
+**A kind is declared once, by whoever owns it.** Kinds are program-wide and a
+second declaration is refused, so the library that owns `db` writes the states
+and the edges, and an app just imports it and calls `connect` — it declares
+nothing and cannot restate the protocol differently. That single-ownership rule
+is what makes the protocol worth writing down: the edges are the library's
+knowledge, not a shape each app re-derives.
+
+> **Still open:** `cap` and `policy` are the deployment's choice, and they sit
+> in the same declaration the library owns. Re-opening a kind for its tunable
+> knobs, with states declarable exactly once, is the likely shape — but it is
+> not built. See `docs/resources.md` §0.8.
+
+> **The protocol is validated, not yet TRACKED.** `acquire` starts at the
+> initial state and `finish` leaves at the terminal one, but a handle is not
+> narrowed *through* the machine — because there is no way to walk an edge yet.
+> §4.4b changes a tracked variant by reassignment, and a handle has the state
+> erased, so there is nothing to assign; a state change is a library
+> *operation* (`begin`, `commit`), so the surface for walking belongs on those
+> fns. Until then the protocol is a well-formedness contract on the
+> declaration, which is what makes libraries look alike.
+
 ### `defer` — a block that runs at scope exit
 
 Not a registry construct, though §7.4 is what asked for it:

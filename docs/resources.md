@@ -87,6 +87,159 @@ It also happens to be nearly free: Nim has `defer:`, Odin has `defer`, D has
 `scope(exit)`. All three are scope-exit-ordered and LIFO. The backend arm is a
 keyword swap, not a lowering.
 
+### 0.6 Where does a resource's PROTOCOL live?
+
+A file has two states and the registry tracks both. A database connection has
+`Open → InTransaction → Closed`, and that is the library's to define. So a kind
+may have a protocol beyond live/finished — and the question is who writes the
+type it becomes.
+
+**Settled: the library declares the STATES and the EDGES, inline in the kind;
+the compiler supplies the type.**
+
+```tuck
+resources:
+  file [cap: 8, on_finish: flush]      # no protocol — unchanged, zero ceremony
+
+  db [cap: 32]:                        # a colon opens the state machine
+    | Open
+    | InTransaction
+    | Closed
+    transitions:
+      Open          -> InTransaction
+      InTransaction -> Open
+      Open          -> Closed
+      InTransaction -> Closed
+```
+
+Three shapes were on the table. The first two make the LIBRARY write the
+envelope and then check it:
+
+| | Problem |
+|---|---|
+| `db [states: DbState]` — the kind names a library-written type | the library can write a malformed envelope, so a conformance check is needed, and any concrete shape rule is wrong for some library (a TLS session has two handles; a db holds one in several variants) |
+| grow `group` to constrain shape | §5.5 ties `group` and `interface` to the *identical requirement-list grammar* — both are lists of required **functions**. Adding variant templates makes one keyword two unrelated things, which is the "clever reuse costs more later" invariant. And a general mechanism built for one caller is speculative |
+
+The third makes the envelope unwritable, which is strictly better: **you cannot
+fail to conform to a type you did not write.** That is the same argument that
+already makes `<Kind>Handle` unfailable (§0.3), applied one level up.
+
+**It costs nothing at runtime.** The protocol is a STATIC overlay — the emitted
+handle stays `ResourceHandle`, the table is unchanged, and no backend learns
+anything. `tools/emit_examples.sh` produces a byte-identical `examples/` with
+protocols present, which is the proof. The precedent is `@Variant` itself
+(§4.4b: "compiler notation... never written in source") and group bounds
+("resolved and discarded before codegen").
+
+**Two things are DERIVED, so they cannot be declared wrong:**
+
+- **initial** = the first state, §4.4's existing convention. `acquire` starts there.
+- **terminal** = the state with no outgoing edge. `finish` leaves the handle there.
+
+What is left to check is that the machine is well formed, and the rules are the
+ones a *resource* protocol needs rather than generic graph hygiene:
+
+| Rule | Code |
+|---|---|
+| every edge endpoint names a state of the kind | TK-RS06 |
+| exactly one terminal — too many and several look final; none and the protocol never ends | TK-RS07 |
+| every state reachable from the initial one (the rule `[sealed]` already follows) | TK-RS08 |
+| **the terminal reachable from every state — you can always close** | TK-RS09 |
+
+That last one is the one that earns the feature: a live cycle with no exit is a
+handle that cannot be closed from where it is, which is a leak the declaration
+promised to prevent.
+
+### 0.8 If the protocol lives in the kind, does every app rewrite it?
+
+No — and the answer was already in the design, though a bug hid it. A kind is
+declared **once, by the library that owns it**, and apps import that module:
+
+```tuck
+# dblib.tuck — the library owns the kind AND its protocol
+resources:
+  db [cap: 32]:
+    | Open
+    | InTransaction
+    | Closed
+    transitions:
+      Open          -> InTransaction
+      InTransaction -> Open
+      Open          -> Closed
+      InTransaction -> Closed
+
+fn connect({fd: int}) -> ?DbHandle [resource: db]:
+  return acquire fd, db
+```
+
+```tuck
+# app.tuck — the app declares nothing
+import dblib
+
+fn main() -> int:
+  let h = {fd: 3} connect
+  if h.ok:
+    finish h.value, db
+    return 17
+  return 0
+```
+
+Kinds are an **open set with program-wide scope** (§7.4: "a UDP library declares
+its own kind the same way a module declares its error enums"), and a kind
+declared twice is *refused* (TK-RS02) — so single ownership is not a
+convention, it is the rule. The app cannot restate the edges differently
+because it cannot restate them at all.
+
+**The alternative — naming the transition set as a value, a `const` or a named
+type an app then attaches to its own kind — would give up exactly that.** Two
+apps could bind the same library to different protocols, and the library's
+`connect` would have to be generic over which. It also reintroduces the written
+envelope §0.6 exists to remove. Import already provides reuse; the sharing unit
+is the KIND, not the transition list.
+
+**Two bugs had to be fixed before this worked**, both invisible until an import
+was involved, and both on `main`:
+
+- `main`'s blanket budget (§7.4 makes main implicitly hold every kind, since
+  `fn main() -> int` has no natural place to carry a marker) was built from the
+  kinds of **main's own module**, not the program's. A kind an import declared
+  fell outside it, so any `finish` in `main` was TK-RS03.
+- Worse, the workaround was a no-op: main's budget **replaced** its declared
+  kinds rather than unioning them, so writing `[resource: db]` on `main`
+  changed nothing. Both halves are now program-wide and unioned, and
+  `tests/suites/resources.nim` runs the library-owns-the-kind program to 17.
+
+**Still open: cap and policy are the APP's to choose, and they live in the
+library's declaration.** A library knows `db` has three states; it does not know
+this deployment wants 32 connections or 4096. Today the single-declaration rule
+that makes the protocol safe also freezes the knobs. The likely shape is
+re-opening a kind for its *tunable* knobs only (`db [cap: 4096]` in the app,
+with states declarable exactly once), which keeps TK-RS02's real purpose —
+§0.2's "two blocks cannot both own one table's cap" — while letting the half
+that is genuinely the app's move. Not built; it needs a ruling.
+
+### 0.7 Why the protocol is validated but not yet TRACKED
+
+`acquire` starts at the initial state and `finish` leaves at the terminal one,
+but the checker does not yet narrow a handle *through* the machine — because
+there is no way to walk an edge. §4.4b changes a tracked variant by
+reassignment, and a handle is `{slot, gen}` with the state erased, so there is
+nothing to assign. A state change is a library OPERATION (`begin`, `commit`),
+so the walking surface belongs on those fns, and that is a further ruling.
+
+Until it lands, the protocol is a well-formedness contract on the declaration:
+it makes libraries look alike and rejects a machine that could never work.
+
+**The soundness question, answered.** When tracking does land it will NOT need
+single-owner handles, though an earlier reading of this document said it would.
+Under a copy, both bindings narrow independently, so a stale `finish` is a
+MISSED error rather than a false rejection — the permissive direction — and the
+registry's generation check catches it at runtime. §7.4 architects for exactly
+that: "escape is always sound — the registry guarantees close-at-exit — so no
+whole-program alias analysis is needed; the global table is the safety net that
+makes the local analysis sufficient." Single-owner would make the check
+*complete*; §7.4 says completeness is not required.
+
 ### 0.5 Does every combination of a kind's attributes make sense?
 
 **No — and the incoherent ones are rejected, not left to do nothing quietly.**

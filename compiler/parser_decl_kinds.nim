@@ -747,39 +747,35 @@ proc resourceOnFinishFromName*(name: string, dest: var ResourceOnFinish): bool =
   of "shutdown": dest = rfShutdown; true
   else: false
 
-proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
-  ## One line of a `resources:` block: a kind name and its optional knobs.
-  ## The knobs ride in the ordinary `[a: 1, b: c]` attribute bracket every
-  ## other declaration already uses, so there is no second attribute grammar
-  ## to learn or to keep in step.
-  let sp = p.getSpan()
-  result = ResourceKindDef(name: p.expectMemberName("Expected a resource kind name").value,
-                           policy: dflt, span: sp)
-  var attrs: seq[TypeAttr]
-  p.parseResourceAttrs(attrs)
+proc applyResourceAttrs(p: var Parser, k: var ResourceKindDef,
+                        attrs: seq[TypeAttr]) =
+  ## Each knob, by name. Split from parseResourceKind so the three jobs that
+  ## proc used to do in one — read the bracket, check the combination, read the
+  ## protocol — are three readable procs rather than one long arm.
   for a in attrs:
     case a.name
-    of "cap":         result.cap = p.parseResourceCount(result.name, "cap", a.value)
-    of "sweep_batch": result.sweepBatch = p.parseResourceCount(result.name, "sweep_batch", a.value)
+    of "cap":         k.cap = p.parseResourceCount(k.name, "cap", a.value)
+    of "sweep_batch": k.sweepBatch = p.parseResourceCount(k.name, "sweep_batch", a.value)
     of "on_full":
-      if not resourceOnFullFromName(a.value, result.onFull):
-        p.reportError("resource kind '" & result.name & "': on_full must be " &
+      if not resourceOnFullFromName(a.value, k.onFull):
+        p.reportError("resource kind '" & k.name & "': on_full must be " &
                       "absent or error, got '" & a.value & "'",
                       a.span.line, a.span.col)
     of "on_finish":
-      if not resourceOnFinishFromName(a.value, result.onFinish):
-        p.reportError("resource kind '" & result.name & "': on_finish must be " &
+      if not resourceOnFinishFromName(a.value, k.onFinish):
+        p.reportError("resource kind '" & k.name & "': on_finish must be " &
                       "none, flush or shutdown, got '" & a.value & "'",
                       a.span.line, a.span.col)
     of "policy":
-      if not resourcePolicyFromName(a.value, result.policy):
-        p.reportError("resource kind '" & result.name & "': policy must be " &
+      if not resourcePolicyFromName(a.value, k.policy):
+        p.reportError("resource kind '" & k.name & "': policy must be " &
                       "strict, lazy or exit, got '" & a.value & "'",
                       a.span.line, a.span.col)
     else:
-      p.reportError("resource kind '" & result.name & "': unknown attribute '" &
+      p.reportError("resource kind '" & k.name & "': unknown attribute '" &
                     a.name & "'. A kind takes cap, policy, on_full, " &
                     "on_finish and sweep_batch.", a.span.line, a.span.col)
+proc checkResourceCoherence(p: var Parser, k: ResourceKindDef, sp: Span) =
   # THE COMBINATION IS THE DECLARATION, not the individual words: a kind's
   # knobs constrain each other, and a pair that can never mean anything
   # together is a mistake worth naming rather than a setting that quietly does
@@ -803,15 +799,47 @@ proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
   # pressure, or at cap"), and memory pressure needs no cap. That one is a
   # trigger not yet built, which is a different thing from a combination that
   # could never work.
-  if result.cap == 0 and result.onFull != rofAbsent:
-    p.reportError("resource kind '" & result.name & "': on_full needs a cap — " &
+  if k.cap == 0 and k.onFull != rofAbsent:
+    p.reportError("resource kind '" & k.name & "': on_full needs a cap — " &
                   "an unbounded table never fills, so this would never apply",
                   sp.line, sp.col)
-  if result.sweepBatch > 0 and result.policy != rpLazy:
-    p.reportError("resource kind '" & result.name & "': sweep_batch needs " &
+  if k.sweepBatch > 0 and k.policy != rpLazy:
+    p.reportError("resource kind '" & k.name & "': sweep_batch needs " &
                   "`policy: lazy` — it sizes the watermark sweep, and lazy is " &
                   "the only policy that runs one",
                   sp.line, sp.col)
+proc parseResourceProtocol(p: var Parser, k: var ResourceKindDef) =
+  # An optional `:` opens the kind's PROTOCOL — the states it moves through and
+  # the edges between them. The library supplies those; the compiler supplies
+  # the type they become, so there is no envelope for a library to write and
+  # none for it to get wrong.
+  #
+  # Reuses parseVariant and parseTransitionsBlock verbatim: a protocol IS a
+  # sum type with a transitions table (§4.4), and spelling it a second way
+  # here would be two grammars for one idea.
+  if p.current().kind == tkColon:
+    discard p.advance()
+    discard p.expect(tkNewline)
+    while p.current().kind == tkNewline: discard p.advance()
+    p.indentedBlock:
+      if p.current().kind == tkIdent and p.current().value == "transitions":
+        p.parseTransitionsBlock(k.transitions)
+      else:
+        k.states.add(p.parseVariant(" in resource kind '" & k.name & "'"))
+
+proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
+  ## One line of a `resources:` block: a kind name and its optional knobs.
+  ## The knobs ride in the ordinary `[a: 1, b: c]` attribute bracket every
+  ## other declaration already uses, so there is no second attribute grammar
+  ## to learn or to keep in step.
+  let sp = p.getSpan()
+  result = ResourceKindDef(name: p.expectMemberName("Expected a resource kind name").value,
+                           policy: dflt, span: sp)
+  var attrs: seq[TypeAttr]
+  p.parseResourceAttrs(attrs)
+  p.applyResourceAttrs(result, attrs)
+  p.checkResourceCoherence(result, sp)
+  p.parseResourceProtocol(result)
   if p.current().kind == tkNewline: discard p.advance()
 
 proc parseResourcesDecl*(p: var Parser, sp: Span): Decl =

@@ -775,3 +775,218 @@ fn main() -> int:
   return acquire
 """
   t.runs "a variable named 'acquire' is still a variable", 17
+
+  # --- a kind's PROTOCOL ------------------------------------------------------
+  #
+  # The library supplies the states and the edges; the COMPILER supplies the
+  # type they become. So there is no envelope for a library to write and none
+  # for it to get wrong — the same argument that already makes `<Kind>Handle`
+  # unfailable, one level up. What is left to check is that the machine itself
+  # is well formed, and the rules are the ones a RESOURCE protocol needs: you
+  # start somewhere, you can reach everything, and you can always close.
+
+  t.src """
+resources:
+  file [cap: 8, on_finish: flush]
+
+  db [cap: 32]:
+    | Open
+    | InTransaction
+    | Closed
+    transitions:
+      Open          -> InTransaction
+      InTransaction -> Open
+      Open          -> Closed
+      InTransaction -> Closed
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a kind may declare a protocol, and a kind beside it may not"
+  # The protocol is a STATIC overlay: the emitted handle is unchanged, so a
+  # kind gains states at zero runtime cost and no backend learns anything.
+  t.emits "Nim: a stateful kind emits the same plain table",
+          "tuckRes_db\\* = ResourceTable\\(kind: \"db\", cap: 32"
+  t.emits "...and the same plain handle alias", "type DbHandle\\* = ResourceHandle"
+
+  # It reuses `| Variant` and `transitions:` verbatim — a protocol IS a sum
+  # type with a transitions table (§4.4), and spelling it a second way would
+  # be two grammars for one idea.
+  t.src """
+resources:
+  db [cap: 4]:
+    | Open
+    | Closed
+    transitions:
+      Open -> Clsoed
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a mistyped edge endpoint is refused, naming it", "TK-RS06"
+
+  # The closing state is DERIVED (no outgoing edge), never declared, so it
+  # cannot be declared wrong. What can be wrong is the edge set.
+  t.src """
+resources:
+  db [cap: 4]:
+    | Open
+    | InTransaction
+    | Closed
+    transitions:
+      Open -> InTransaction
+      Open -> Closed
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "two states with no way out means no single closing state",
+             "these look final: InTransaction, Closed"
+
+  t.src """
+resources:
+  db [cap: 4]:
+    | Open
+    | Orphan
+    | Closed
+    transitions:
+      Open   -> Closed
+      Orphan -> Closed
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a state unreachable from where acquire starts is refused",
+             "TK-RS08"
+
+  # The rule that matters most for a RESOURCE: a live cycle with no exit means
+  # a handle that cannot be closed from where it is.
+  t.src """
+resources:
+  db [cap: 4]:
+    | Open
+    | A
+    | B
+    | Closed
+    transitions:
+      Open -> A
+      A    -> B
+      B    -> A
+      Open -> Closed
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a state the closing one cannot be reached from is a leak",
+             "cannot be closed from where it is"
+
+  # A stateful kind acquires and finishes exactly as a stateless one does —
+  # the protocol adds a well-formedness check, not a new calling convention.
+  t.src """
+resources:
+  db [cap: 4]:
+    | Open
+    | Closed
+    transitions:
+      Open -> Closed
+
+fn take({fd: int}) -> ?DbHandle [resource: db]:
+  return acquire fd, db
+
+fn main() -> int:
+  let h = {fd: 3} take
+  if h.ok:
+    finish h.value, db
+    return 17
+  return 0
+"""
+  t.runs "a kind with a protocol still acquires, finishes and runs", 17
+
+  # An indented block may OPEN with a comment. A comment-only line lexes as a
+  # bare newline, and `indentedBlock` expected the indent immediately — so
+  # every construct except a fn body (which grew its own skip) rejected one.
+  # Protocols are what surfaced it: a `transitions:` block is now something a
+  # library author writes, and the first thing written above an edge list is a
+  # sentence about what the edges mean.
+  t.src """
+resources:
+  db [cap: 4]:
+    # what this connection can be
+    | Open
+    | Closed
+    transitions:
+      # ...and the only way out
+      Open -> Closed
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a protocol's blocks may open with a comment"
+
+  t.src """
+type Light:
+  # the states a signal shows
+  | Red
+  | Green
+  transitions:
+    # green follows red, and nothing follows green
+    Red -> Green
+"""
+  t.okCheck "so may any other indented block — the skip is in the scaffolding"
+
+  # A kind is declared ONCE, by the library that owns it, and every app that
+  # imports it uses it. That is what makes a protocol worth writing: the edges
+  # are the LIBRARY's knowledge, so an app that re-stated them could state them
+  # differently — and a kind declared twice is refused anyway.
+  #
+  # The two halves this rests on were both broken, in a way only an import
+  # showed: `main`'s blanket budget was the kinds of its OWN module, so an
+  # imported kind was outside it, and main's explicit `[resource: k]` was
+  # discarded rather than unioned in, so the one available workaround was a
+  # no-op too.
+  t.srcNamed "t.tuck", """
+import dblib
+
+fn main() -> int:
+  let h = {fd: 3} connect
+  if h.ok:
+    finish h.value, db
+    return 17
+  return 0
+"""
+  t.addFile "dblib.tuck", """
+resources:
+  db [cap: 32]:
+    | Open
+    | InTransaction
+    | Closed
+    transitions:
+      Open          -> InTransaction
+      InTransaction -> Open
+      Open          -> Closed
+      InTransaction -> Closed
+
+fn connect({fd: int}) -> ?DbHandle [resource: db]:
+  return acquire fd, db
+"""
+  t.runs "a library owns the kind and its protocol; the app just imports it", 17
+
+  # ...and the marker an author writes on main is honoured rather than ignored.
+  t.srcNamed "t.tuck", """
+import dblib2
+
+fn main() -> int [resource: db2]:
+  let h = {fd: 3} connect2
+  if h.ok:
+    finish h.value, db2
+    return 17
+  return 0
+"""
+  t.addFile "dblib2.tuck", """
+resources:
+  db2 [cap: 4]
+
+fn connect2({fd: int}) -> ?Db2Handle [resource: db2]:
+  return acquire fd, db2
+"""
+  t.runs "main may state the imported kind it uses, and be believed", 17

@@ -9,7 +9,7 @@
 # same reason those do: it reads declared shapes only, never a synthesized
 # type, so it has no dependency on the expression checker and nothing it finds
 # depends on the order modules are checked in.
-import ast, tables
+import ast, tables, sets, strutils
 import ast_query
 import typecheck_util
 import diagnostics
@@ -41,6 +41,82 @@ iterator markerSites*(m: Module): tuple[owner: string, kinds: seq[string],
         if mem.kind == dkFn and mem.fnResourceKinds.len > 0:
           yield (mem.name, mem.fnResourceKinds, mem.span)
 
+proc reachableFrom(start: string, edges: seq[Transition]): HashSet[string] =
+  ## Transitive closure over the edge set. The same fixpoint
+  ## typecheck_transitions.checkSealedReachability runs, kept here rather than
+  ## shared because that one takes a Decl and reads a Type body — this has
+  ## neither, only the kind's own states and edges.
+  result = [start].toHashSet
+  var grew = true
+  while grew:
+    grew = false
+    for tr in edges:
+      if tr.`from` in result and tr.to notin result:
+        result.incl(tr.to)
+        grew = true
+
+proc terminalOf(k: ResourceKindDef): seq[string] =
+  ## The states with NO outgoing edge. Exactly one is the closing state.
+  ##
+  ## DERIVED, never declared — which is the point. A library supplies the
+  ## states and the edges; anything it does not write it cannot write wrong,
+  ## and "which state is final" follows from the edges with no room for the
+  ## two to disagree.
+  for v in k.states:
+    var hasOut = false
+    for tr in k.transitions:
+      if tr.`from` == v.name: hasOut = true; break
+    if not hasOut: result.add(v.name)
+
+proc checkKindProtocol(k: ResourceKindDef) =
+  ## A kind's optional protocol (spec §7.4 + §4.4): the states it moves
+  ## through and the edges between them.
+  ##
+  ## The library supplies both; the compiler supplies the TYPE they become, so
+  ## there is no envelope to write and none to get wrong. What is left to
+  ## check is that the machine itself is well formed — and the rules are the
+  ## ones a resource protocol specifically needs, not generic graph hygiene:
+  ## you start somewhere, you can reach everything, and you can always close.
+  if k.states.len == 0: return
+  var names = initHashSet[string]()
+  for v in k.states: names.incl(v.name)
+  for tr in k.transitions:
+    for endpoint in [tr.`from`, tr.to]:
+      if endpoint notin names:
+        fail(dcRsBadEdge,
+             "resource kind '" & k.name & "': '" & endpoint &
+             "' is not one of its states", tr.span)
+
+  let terminal = terminalOf(k)
+  if terminal.len != 1:
+    let what = if terminal.len == 0:
+                 "every state can still move, so the protocol never ends"
+               else:
+                 "these look final: " & terminal.join(", ")
+    fail(dcRsNoTerminal,
+         "resource kind '" & k.name & "' needs exactly one closing state — " &
+         "the one with no outgoing edge, where `finish` leaves the handle — " &
+         "but " & what, k.span)
+
+  # `acquire` starts at the FIRST state, the same convention §4.4 uses for a
+  # sum type's initial variant.
+  let fromInitial = reachableFrom(k.states[0].name, k.transitions)
+  for v in k.states:
+    if v.name notin fromInitial:
+      fail(dcRsUnreachable,
+           "resource kind '" & k.name & "': state '" & v.name &
+           "' cannot be reached from '" & k.states[0].name &
+           "', where `acquire` starts", v.span)
+
+  # ...and the one that matters for a RESOURCE: you can always close.
+  for v in k.states:
+    if terminal[0] notin reachableFrom(v.name, k.transitions):
+      fail(dcRsCannotClose,
+           "resource kind '" & k.name & "': '" & terminal[0] &
+           "' cannot be reached from state '" & v.name &
+           "' — a resource that cannot be closed from where it is, is a leak",
+           v.span)
+
 proc collectResourceKinds*(mods: seq[tuple[name, path: string, m: Module]]):
                            ResourceKinds =
   ## The program-wide kind table. A kind declared twice is refused rather than
@@ -59,6 +135,7 @@ proc collectResourceKinds*(mods: seq[tuple[name, path: string, m: Module]]):
                "names one registry table, so its cap, policy and sweep " &
                "batch cannot come from two blocks",
                k.span)
+        checkKindProtocol(k)
         result[k.name] = k
 
 proc checkMarkedKinds*(mods: seq[tuple[name, path: string, m: Module]],

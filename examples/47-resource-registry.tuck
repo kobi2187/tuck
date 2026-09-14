@@ -13,7 +13,30 @@ resources [policy: lazy]:          # the default for every kind below
   # alarm besides: a table that fills is a bug surfacing early, not an OOM
   # three days in. Reaching it is absence, not an error — the caller decides
   # what running out means.
-  net  [cap: 10_000, on_full: error, sweep_batch: 100]
+  net  [cap: 10_000, on_full: error, sweep_batch: 100]:
+    # A kind may declare its PROTOCOL: the states it moves through and the
+    # edges between them. A file is open or finished and the registry already
+    # tracks that, but a connection has a middle, and only the library knows
+    # what it is. So the library supplies the states and the edges — and
+    # nothing else. The TYPE they become is the compiler's, which is the
+    # point: you cannot fail to conform to a type you did not write.
+    #
+    # Nothing here reaches the runtime. The handle is still a slot and a
+    # tenancy and the table is unchanged — the protocol is a static overlay,
+    # the way `@Variant` narrowing and group bounds already are.
+    | Connecting
+    | Ready
+    | Closed
+    transitions:
+      # Two things are DERIVED rather than declared, so they cannot disagree
+      # with the edges: `acquire` starts at the FIRST state, and `finish`
+      # leaves the handle at the one with no way out. The compiler checks the
+      # machine is one a resource can live in — every state reachable from the
+      # start, and the closing state reachable from every state, because a
+      # live cycle with no exit is a handle that cannot be closed.
+      Connecting -> Ready
+      Connecting -> Closed
+      Ready      -> Closed
 
   # ...and a kind may override the block's policy. `strict` closes at the
   # mark: deterministic, and the embedded and debug default.

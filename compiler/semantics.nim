@@ -60,7 +60,7 @@ type
     module: Module
     declared: Table[string, Demands]
     taskNames: HashSet[string]  # dkTask decl names, built once — see isTask
-    everyKind: seq[string]      # kinds declared in THIS module — main's budget
+    everyKind: seq[string]      # every kind the PROGRAM declares — main's budget
     visiting: HashSet[string]
 
 proc getDeclared(c: Checker, name: string): Demands =
@@ -178,10 +178,16 @@ proc verifyDecl*(c: var Checker, d: Decl) =
     # natural place to carry the marker. c.everyKind is every kind the program
     # declares, so the pass on main is exactly as wide as its effect pass and
     # no wider — a kind nothing declares is still TK-RS01.
+    #
+    # Its OWN marker is unioned in rather than replaced. A blanket budget that
+    # discards what the author wrote means `[resource: db]` on main reads as a
+    # no-op, and it was one: before the kind set went program-wide, a kind an
+    # IMPORT declared was in neither half, so the one thing an author could do
+    # about it changed nothing.
     let budget = if d.name == "main":
                    Demands(effects: @[emIo, emNoAlloc, emIrqSafe, emUnsafe,
                                       emMayBlock, emStack, emPriority],
-                           resources: c.everyKind)
+                           resources: c.everyKind & d.fnResourceKinds)
                  else: Demands(effects: d.fnEffects,
                                resources: d.fnResourceKinds)
     c.checkExpr(d.fnBody, budget, d.name)
@@ -240,14 +246,16 @@ proc collectLocal(c: var Checker, m: Module) =
           c.declared[mem.name] = Demands(effects: mem.fnEffects,
                                          resources: mem.fnResourceKinds)
     of dkResources:
-      for k in d.resKinds: c.everyKind.add(k.name)
+      for k in d.resKinds:
+        if k.name notin c.everyKind: c.everyKind.add(k.name)
     else: discard
 
 proc verifyModuleEffects*(m: Module,
                           imported: Table[string, seq[EffectMarker]] =
                             initTable[string, seq[EffectMarker]](),
                           importedRes: Table[string, seq[string]] =
-                            initTable[string, seq[string]]()) =
+                            initTable[string, seq[string]](),
+                          programKinds: seq[string] = @[]) =
   ## Check every declaration in `m` performs only the effects it declares.
   ##
   ## `imported` carries the effects of fns this module IMPORTS, keyed the same
@@ -255,8 +263,14 @@ proc verifyModuleEffects*(m: Module,
   ## callers and the effect discipline stops at the file boundary; the driver
   ## fills it from the signature index (see checkOrDie in tuck.nim), so it
   ## works the same whether the callee came from source or from cache.
+  ##
+  ## `programKinds` is the §7.4 twin of that argument, and exists for the same
+  ## reason: a resource KIND is program-wide (§7.4 calls kinds an open set
+  ## declared the way error enums are), so a module that acquires into a kind
+  ## its import declared cannot answer "is this kind known" from its own decls
+  ## — and `main`, whose budget is every kind, would get an empty one.
   var c = Checker(module: m, declared: initTable[string, Demands](),
-                  visiting: initHashSet[string]())
+                  visiting: initHashSet[string](), everyKind: programKinds)
   c.collectImported(imported, importedRes)
   c.collectLocal(m)
   for d in m.decls:

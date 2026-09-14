@@ -22,7 +22,7 @@ proc tuck_rawOpenUdp*[T](payload: T): int =
 
 
 proc tuck_openUdp*(port: uint16): TuckResult[UdpHandle] =
-  return acquire(tuckRes_udp, int64(tuck_rawOpenUdp(port)), "47-resource-registry:46")
+  return acquire(tuckRes_udp, int64(tuck_rawOpenUdp(port)), "47-resource-registry:69")
 
 proc tuck_withScratch*(n: int): int =
   var tuck_scratch = n

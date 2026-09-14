@@ -1620,15 +1620,32 @@ the unbuilt together would be dishonest:
   exists between the extern's return and the acquire and nowhere else. The
   kind is named on both and checked on both, so finishing into the wrong
   registry is a compile error rather than a runtime one.
+- **A kind may declare a PROTOCOL** beyond live/finished (ruled 2026-09-14),
+  as states and `transitions:` written inline in the kind — a database
+  connection moving `Open -> InTransaction -> Closed`. The library supplies
+  the states and the edges; the compiler supplies the type they become, so
+  there is no envelope for a library to write and none to get wrong. Initial
+  is the first state and terminal is the one with no outgoing edge, both
+  derived rather than declared. The machine is checked for what a *resource*
+  needs: edges naming real states, exactly one closing state, every state
+  reachable from the initial one, and the closing state reachable from every
+  state — a live cycle with no exit is a handle that cannot be closed. It is a
+  static overlay, so the emitted handle and the table are unchanged.
+  **Validated, not yet tracked:** narrowing a handle *through* the machine
+  needs a way for a library operation to say which edge it walks, which is a
+  further ruling. Notably it will not need the deferral below: under a copy
+  both bindings narrow independently, so a stale `finish` is a *missed* error
+  rather than a false rejection, and the generation check catches it.
 - **Not built:** the static acquire-must-finish check above. Both halves now
   have a shape to match on, so it is writable; the *escape* arm is already
   sound by construction — the registry closes at exit, which is exactly what
   this section says makes the local analysis sufficient — and the OPEN
   RESOURCES report answers the same question at runtime meanwhile.
 - **Deliberately deferred:** single-owner (non-copyable) handles. They would
-  make per-variable state tracking sound and turn use-after-finish into a
-  compile-time error, but that is an affine-types feature for the language as
-  a whole, not a resource one. A future ruling.
+  make per-variable state tracking *complete* — turning use-after-finish into
+  a compile-time error rather than a caught runtime one — but this section
+  does not ask for completeness, and that is an affine-types feature for the
+  language as a whole rather than a resource one. A future ruling.
 
 `docs/resources.md` is the implementation record, including the four questions
 this section left open and what the compiler settled them as.

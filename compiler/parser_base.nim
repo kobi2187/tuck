@@ -148,6 +148,12 @@ template indentedBlock*(p: var Parser, body: untyped) =
   ## grammar (object bodies, sig blocks, decision tables, registry variants,
   ## register fields, mixins, arenas) opens with exactly this scaffolding, and
   ## each used to spell it out.
+  ##
+  ## A comment-only first line lexes as a bare newline (the comment itself is
+  ## dropped), so the leading skip is what lets any block open with a comment
+  ## — fn bodies grew their own copy of it, and every other construct went
+  ## without until a `transitions:` block that opened with one was rejected.
+  while p.current().kind == tkNewline: discard p.advance()
   discard p.expect(tkIndent)
   while p.current().kind notin {tkDedent, tkEOF}:
     if p.current().kind == tkNewline:
