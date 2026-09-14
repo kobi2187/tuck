@@ -1644,13 +1644,18 @@ the unbuilt together would be dishonest:
 - **A kind may be declared by more than one site, one knob each** (ruled
   2026-09-14). The library that wraps the service declares its protocol and
   what closing means; the app declares how many and under which policy, a
-  deployment question no library can answer. The rule is per KNOB — each set
-  at most once program-wide — so there is no last-writer-wins and no
-  dependence on import order, and setting one twice names the knob rather than
-  the block. Coherence (`on_full` needs a `cap`, `sweep_batch` needs
-  `policy: lazy`) is therefore checked on the MERGED kind: a library's
-  `[on_full: error]` is incoherent alone and becomes correct the moment an app
-  adds a cap. The table is emitted at the first site in dependency order,
+  deployment question no library can answer. The rule is per KNOB, and a later
+  site OVERRIDES an earlier one: a library ships a working default and the app
+  deploying it knows its own box. That is not file order — modules are
+  dep-first, so "later" means the importer overrides the imported, and adding
+  an unrelated import cannot move the answer. `states` is the exception and
+  refuses a second setting: a protocol is what the wrapped service DOES, not a
+  default an app could know better. Coherence (`on_full` needs a `cap`,
+  `sweep_batch` needs `policy: lazy`) is therefore checked on what the
+  overrides LEFT: a library's `[on_full: error]` is incoherent alone and
+  becomes correct the moment an app adds a cap, and a library's `sweep_batch`
+  stops meaning anything if an app overrides the `policy: lazy` that sized
+  it. The table is emitted at the first site in dependency order,
   which is a dependency of every later one — it has to be, since a library's
   own acquire site calls into that table.
 - **Not built:** the static acquire-must-finish check above. Both halves now

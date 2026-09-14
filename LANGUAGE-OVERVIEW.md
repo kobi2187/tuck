@@ -1120,12 +1120,21 @@ resources:
   db [cap: 4096, policy: lazy]
 ```
 
-The rule is **per knob — each set at most once program-wide**, so there is no
-last-writer-wins and no dependence on import order; setting one twice names the
-knob (TK-RS02). Nothing declares `cap` app-only or `on_finish` library-only:
-whoever knows the answer writes it. Because the combination is what is checked,
-`on_full` with no `cap` at either site is still refused (TK-RS11) — and a
-library's `[on_full: error]` becomes correct the moment an app adds a cap.
+The rule is **per knob, and a later site overrides an earlier one**: a library
+ships a working default, and whoever deploys it gets the last word. That is not
+file order — `mods` is dep-first, so "later" means the **importer** overrides
+the **imported**, and adding an unrelated import cannot move the answer.
+Nothing declares `cap` app-only or `on_finish` library-only: whoever knows the
+answer writes it, and whoever is closer to the deployment wins.
+
+**`states` is the exception** and refuses a second setting (TK-RS02) — a
+protocol is what the service *does*, not a default an app could know better.
+
+Because the *combination* is what is checked, coherence is judged on what the
+overrides left (TK-RS11): `on_full` with no `cap` at either site is refused,
+a library's `[on_full: error]` becomes correct once an app adds a cap, and a
+library's `sweep_batch` stops meaning anything if an app overrides the
+`policy: lazy` that sized it.
 
 > **The protocol is validated, not yet TRACKED.** `acquire` starts at the
 > initial state and `finish` leaves at the terminal one, but a handle is not

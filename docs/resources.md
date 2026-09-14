@@ -195,25 +195,34 @@ resources:
   db [cap: 4096, policy: lazy, sweep_batch: 64]
 ```
 
-**The rule is per KNOB, not per declaration: each is set at most once
-program-wide.** That is what avoids the trap a merge invites — there is no
-last-writer-wins, no dependence on which module the loader reached first, and
-the diagnostic (TK-RS02, reworded) names the knob rather than the block:
+**The rule is per KNOB, and a later site OVERRIDES an earlier one** (ruled
+2026-09-14). A library ships a working default; the app deploying it knows its
+own box, so `cap: 32` in a library is a starting point rather than a verdict.
 
-```
-resource kind 'db': `on_finish` is set twice — a kind names ONE registry
-table, so each of its knobs has one answer.
-```
+The obvious objection to last-wins is that it depends on file order. Here it
+does not: `mods` is dep-first (`modules.loadProgram`), so "later" means the
+**importer** overrides the **imported** — a real relationship, not a
+traversal artifact. Adding an unrelated import does not move the answer. Two
+modules that neither import the other are the one genuinely ambiguous case,
+and it resolves by load order.
 
-It also means no taxonomy has to be written down. Nothing declares `cap`
-app-only or `on_finish` library-only; whoever knows the answer writes it, and
-writing it twice is the error.
+No taxonomy has to be written down either. Nothing declares `cap` app-only or
+`on_finish` library-only; whoever knows the answer writes it, and whoever is
+closer to the deployment wins.
+
+**`states` is the exception, and refuses rather than overrides.** A protocol is
+not a default an app could know better — it is what the wrapped service *does*.
+Two sites naming different state types is two answers to one question, which is
+exactly what naming the type instead of inlining it was meant to prevent, so a
+second `states` is TK-RS02.
 
 **Coherence moved out of the parser** as a direct consequence. `on_full` needs
 a `cap` and `sweep_batch` needs `policy: lazy`, but with two sites no single
-one has the combination to judge: a library's `[on_full: error]` is incoherent
-alone and becomes *correct* the moment an app adds `[cap: 64]`. The checks now
-run on the merged kind, as TK-RS11.
+one has the combination to judge, and with overriding neither has the last
+word. A library's `[on_full: error]` is incoherent alone and becomes *correct*
+the moment an app adds `[cap: 64]`; a library's `sweep_batch` stops meaning
+anything the moment an app overrides the `policy: lazy` that sized it. The
+checks run on what the overrides LEFT, as TK-RS11.
 
 **Where the table is emitted is not a free choice.** `<Kind>Handle` and
 `tuckRes_<kind>` are emitted at the kind's declaration, and a library's own

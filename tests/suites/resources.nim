@@ -236,9 +236,10 @@ fn main() -> int:
 """
   t.badCheck "a marker naming no declared kind is refused", "TK-RS01"
 
-  # The knobs are properties of ONE table, so a second block claiming the kind
-  # has nowhere to put its own — silently keeping the first block's cap is the
-  # last-writer-wins that only surfaces as a wrong bound in production.
+  # A kind names ONE table, but its knobs may be set from more than one place:
+  # a library ships a working default and whoever deploys it gets the last
+  # word. Within a module that is plain reading order; across modules it is
+  # the importer (see the two-owner cases at the end of this suite).
   t.src """
 resources:
   udp [cap: 4]
@@ -249,7 +250,9 @@ resources:
 fn main() -> int:
   return 0
 """
-  t.badCheck "one kind declared twice is refused", "TK-RS02"
+  t.okCheck "a kind may be declared twice, the later setting winning"
+  t.emits "...and the table carries the later value", "cap: 99"
+  t.omits "...not the earlier one", "cap: 4,"
 
   # ...but two DIFFERENT kinds in two blocks is the open set §7.4 asks for.
   t.src """
@@ -1057,21 +1060,82 @@ fn connect({fd: int}) -> ?DbHandle [resource: db]:
   # about placement, which is the part a re-open could break.)
   t.omits "a re-opening site emits no table of its own", "ResourceTable\\("
 
+  # A later site OVERRIDES an earlier one: a library ships a working default
+  # and the app deploying it knows its own box. `mods` is dep-first, so
+  # "later" means the importer — a real relationship rather than file order,
+  # so the answer does not move when an unrelated import is added.
   t.srcNamed "t.tuck", """
 import dblib
 
 resources:
-  db [cap: 4096, on_finish: shutdown]
+  db [cap: 4096, policy: lazy]
+
+fn main() -> int:
+  let h = {fd: 3} connect
+  if h.ok:
+    finish h.value, db
+    return 17
+  return 0
+"""
+  t.addFile "dblib.tuck", """
+resources:
+  db [cap: 32, policy: strict]
+
+fn connect({fd: int}) -> ?DbHandle [resource: db]:
+  return acquire fd, db
+"""
+  t.runs "the app's cap overrides the library's default", 17
+
+  # `states` is the exception. A protocol is not a default an app could know
+  # better — it is what the wrapped service DOES, and two sites naming
+  # different state types is two answers to one question, which is exactly
+  # what naming the type instead of inlining it was meant to prevent.
+  t.srcNamed "t.tuck", """
+import dblib
+
+resources:
+  db [states: AppState]
 
 fn main() -> int:
   return 0
 """
   t.addFile "dblib.tuck", """
+type LibState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Closed
+
+type AppState:
+  | Up
+  | Down
+  transitions:
+    Up -> Down
+
 resources:
-  db [on_finish: flush]
+  db [states: LibState]
 """
-  t.badCheck "the same knob from two sites is refused, naming the knob",
-             "`on_finish` is set twice"
+  t.badCheck "a second `states` is refused — a protocol is not a default",
+             "`states` is set twice"
+
+  # Coherence is judged on what the override LEFT, not on what either site
+  # wrote: a library's lazy sweep stops meaning anything the moment an app
+  # overrides the policy it sized.
+  t.srcNamed "t.tuck", """
+import netlib
+
+resources:
+  q [policy: strict]
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile "netlib.tuck", """
+resources:
+  q [cap: 64, policy: lazy, sweep_batch: 8]
+"""
+  t.badCheck "an override that strands another site's knob is still caught",
+             "sweep_batch needs `policy: lazy`"
 
   # Coherence is checked on the MERGED kind, which is the reason it moved out
   # of the parser: no single site has the whole combination to judge, and an

@@ -160,19 +160,30 @@ proc knobName(k: ResourceKnob): string =
   of rkStates: "states"
 
 proc mergeKnobs(into: var ResourceKindDef, site: ResourceKindDef) =
-  ## Fold one site's knobs into the kind. Each knob is set at most once
-  ## program-wide, so this cannot depend on which site the loader reached
-  ## first — a kind declared by a library and re-opened by an app means the
-  ## same thing whichever module is compiled as the entry.
+  ## Fold one site's knobs into the kind. A later site OVERRIDES an earlier
+  ## one: a library ships a working default and the app deploying it knows its
+  ## own box, so `cap: 32` in a library is a starting point rather than a
+  ## verdict.
+  ##
+  ## `mods` is dep-first (modules.loadProgram), so "later" means "further from
+  ## the leaves" — the importer overrides the imported, which is the direction
+  ## that makes the app the last word. It is a real relationship rather than
+  ## file order, so the answer does not move when an unrelated import is added.
+  ## Two modules that neither import the other are the one ambiguous case, and
+  ## it resolves by load order.
+  ##
+  ## `states` is the exception, and refuses rather than overrides. A protocol
+  ## is not a default an app could know better: it is what the wrapped service
+  ## DOES, and letting a second site restate it differently is precisely what
+  ## naming the type instead of inlining it was meant to prevent.
   for knob in site.given:
-    if knob in into.given:
+    if knob == rkStates and rkStates in into.given:
       fail(dcRsDuplicateKind,
-           "resource kind '" & into.name & "': `" & knobName(knob) &
-           "` is set twice — a kind names ONE registry table, so each of its " &
-           "knobs has one answer. Set it where it is known: a library owns " &
-           "the protocol of the service it wraps, and the app owns how many " &
-           "and under which policy",
-           site.knobSpan[knob])
+           "resource kind '" & into.name & "': `states` is set twice. Every " &
+           "other knob is a default a later site may override, but a protocol " &
+           "is what the service DOES, not a deployment choice — two sites " &
+           "naming different state types would mean two answers to the same " &
+           "question", site.knobSpan[knob])
     into.given.incl(knob)
     case knob
     of rkCap:        into.cap = site.cap
