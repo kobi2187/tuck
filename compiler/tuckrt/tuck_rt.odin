@@ -312,9 +312,29 @@ RtResourcePolicy :: enum u8 {
 	Exit,   // close-all at program end
 }
 
+RtOnFull :: enum u8 {
+	Absent, // report absence; the caller decides (the default)
+	Error,  // abort, naming the kind and its cap
+}
+
 // How THIS kind's OS handle is released. A callback because the runtime
 // cannot know: an fd, an mmap and a TLS session are three different syscalls.
 ResourceCloser :: #type proc(reference: i64)
+
+// spec 7.4's `on_finish` vocabulary, as real syscalls on the reference. The
+// declaration PICKS one and the emitted table binds it, so there is one
+// mechanism — setResourceHooks overrides the same field, which is the escape
+// hatch for a kind whose reference is not an fd at all.
+//
+// A failed syscall is deliberately not reported: on_finish runs at the MARK,
+// where the program has already said it is done with the handle.
+tuckResFlush :: proc(reference: i64) {
+	linux.fsync(linux.Fd(reference))
+}
+
+tuckResShutdown :: proc(reference: i64) {
+	linux.shutdown(linux.Fd(reference), .RDWR)
+}
 
 ResourceEntry :: struct {
 	reference: i64,    // the OS handle: an fd, or a pointer cast to int
@@ -328,6 +348,7 @@ ResourceTable :: struct {
 	kind:          string,
 	cap:           int, // 0 = unbounded (dynamic); >0 = the bound
 	policy:        RtResourcePolicy,
+	onFull:        RtOnFull, // only consulted when `cap` > 0
 	sweepBatch:    int, // 0 = evict every finished entry; >0 = that many
 	onFinish:      ResourceCloser, // runs at the MARK, always (file: flush)
 	onClose:       ResourceCloser, // runs at reclamation
@@ -345,11 +366,13 @@ tuckResourceMisuse :: proc(table: string, what: string) {
 }
 
 initResourceTable :: proc(t: ^ResourceTable, kind: string, cap: int,
-                          policy: RtResourcePolicy, sweepBatch: int) {
+                          policy: RtResourcePolicy, sweepBatch: int,
+                          onFull: RtOnFull = .Absent) {
 	t.kind = kind
 	t.cap = cap
 	t.policy = policy
 	t.sweepBatch = sweepBatch
+	t.onFull = onFull
 	if cap > 0 && len(t.entries) < cap {
 		// A capped kind is array-shaped from the start: the cap is a
 		// LINK-TIME memory budget, not a limit discovered at runtime.
@@ -423,7 +446,11 @@ acquireResource :: proc(t: ^ResourceTable, reference: i64,
 	}
 	if t.cap > 0 {
 		// The cap is the leak alarm as much as the budget: a table that FILLS
-		// is a bug surfacing early rather than an OOM three days in.
+		// is a bug surfacing early rather than an OOM three days in. Which of
+		// those two readings applies is the kind's own `on_full`.
+		if t.onFull == .Error {
+			tuckResourceMisuse(t.kind, "table is full and the kind declares `on_full: error`")
+		}
 		return tnone(ResourceHandle)
 	}
 	append(&t.entries, ResourceEntry{reference = reference, gen = 1,

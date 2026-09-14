@@ -6,11 +6,11 @@ import "core:os"
 import rt "./tuckrt"
 
 NetHandle :: rt.ResourceHandle
-tuckRes_net: rt.ResourceTable = {kind = "net", cap = 10000, policy = .Lazy, sweepBatch = 100}
+tuckRes_net: rt.ResourceTable = {kind = "net", cap = 10000, policy = .Lazy, onFull = .Error, sweepBatch = 100}
 FileHandle :: rt.ResourceHandle
-tuckRes_file: rt.ResourceTable = {kind = "file", cap = 8, policy = .Strict, sweepBatch = 0}
+tuckRes_file: rt.ResourceTable = {kind = "file", cap = 8, policy = .Strict, onFull = .Absent, sweepBatch = 0, onFinish = rt.tuckResFlush}
 UdpHandle :: rt.ResourceHandle
-tuckRes_udp: rt.ResourceTable = {kind = "udp", cap = 0, policy = .Lazy, sweepBatch = 0}
+tuckRes_udp: rt.ResourceTable = {kind = "udp", cap = 0, policy = .Lazy, onFull = .Absent, sweepBatch = 0}
 tuckResourcesShutdown :: proc() {
 	rt.shutdownResources(&tuckRes_udp)
 	rt.shutdownResources(&tuckRes_file)

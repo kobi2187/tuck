@@ -648,6 +648,11 @@ proc rtPolicyName*(p: ResourcePolicy): string =
   of rpLazy: "rtLazy"
   of rpExit: "rtExit"
 
+proc rtOnFullName(f: ResourceOnFull): string =
+  case f
+  of rofAbsent: "rtoAbsent"
+  of rofError: "rtoError"
+
 proc genResourceTables(d: Decl): string =
   ## spec §7.4: one registry table per declared kind, plus the kind's handle
   ## type.
@@ -663,9 +668,12 @@ proc genResourceTables(d: Decl): string =
   ## names in its return type.
   for k in d.resKinds:
     result.add("type " & resourceHandleName(k.name) & "* = ResourceHandle\n")
+    let onFin = rtOnFinishProc(k.onFinish)
     result.add("var " & resourceTableName(k.name) & "* = ResourceTable(kind: " &
                escape(k.name) & ", cap: " & $k.cap & ", policy: " &
-               rtPolicyName(k.policy) & ", sweepBatch: " & $k.sweepBatch & ")\n")
+               rtPolicyName(k.policy) & ", onFull: " & rtOnFullName(k.onFull) &
+               ", sweepBatch: " & $k.sweepBatch &
+               (if onFin == "": "" else: ", onFinish: " & onFin) & ")\n")
   if d.resKinds.len == 0: return
   # §7.4's close-all, reached from the entry point. Across kinds it runs in
   # REVERSE DECLARATION order, which is the same LIFO reading the within-table

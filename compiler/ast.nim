@@ -61,6 +61,25 @@ type
     rpLazy     ## mark only; the inline watermark sweep reclaims
     rpExit     ## close-all at program end
 
+  ResourceOnFull* = enum
+    ## What a CAPPED table does when it fills. Only meaningful with a `cap` —
+    ## an unbounded kind never fills, so naming this on one is a mistake the
+    ## parser refuses rather than a setting that quietly does nothing.
+    rofAbsent  ## report absence and let the caller decide (the default, and
+               ## the same answer §7.2's pool gives when it runs out)
+    rofError   ## abort, naming the kind and its cap. §7.4's `on_full: error`:
+               ## a table that fills is a bug surfacing early, and a program
+               ## that would rather die than shed load says so here
+
+  ResourceOnFinish* = enum
+    ## What runs at the MARK, always, under every policy — the half of
+    ## finishing that is split from reclamation so durability never depends on
+    ## sweep timing. A closed vocabulary: the runtime can only perform actions
+    ## it knows, and a kind needing something else binds its own callback.
+    rfNone      ## nothing beyond the mark itself (the default)
+    rfFlush     ## fsync the handle — §7.4's `file: flush`
+    rfShutdown  ## shutdown(fd, RDWR) — §7.4's net case
+
   ResourceKindDef* = object
     ## One line of a `resources:` block — a kind of OS handle and the knobs
     ## its registry table runs under.
@@ -68,10 +87,8 @@ type
     cap*: int             ## 0 = unbounded (seq-backed); >0 = the static array
                           ## bound, which is also the leak alarm §7.4 wants
     policy*: ResourcePolicy
-    onFull*: string       ## what a capped table does when it fills
-    onFinish*: string     ## runs at MARK time, always — `file: flush`. Split
-                          ## from reclamation so durability never depends on
-                          ## sweep timing
+    onFull*: ResourceOnFull
+    onFinish*: ResourceOnFinish
     sweepBatch*: int      ## 0 = evict every finished entry; >0 = that many
     span*: Span
 

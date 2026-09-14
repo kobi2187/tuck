@@ -995,6 +995,11 @@ proc dPolicyName(p: ResourcePolicy): string =
   of rpLazy: "rt.RtResourcePolicy.Lazy"
   of rpExit: "rt.RtResourcePolicy.Exit"
 
+proc dOnFullName(f: ResourceOnFull): string =
+  case f
+  of rofAbsent: "rt.RtOnFull.Absent"
+  of rofError: "rt.RtOnFull.Error"
+
 proc genDResourceTables(d: Decl): string =
   ## spec §7.4, the D twin of codegen_decl.genResourceTables. `__gshared`
   ## rather than plain module scope, exactly as a pool is: D module-level
@@ -1002,10 +1007,12 @@ proc genDResourceTables(d: Decl): string =
   ## handle table, not one thread's.
   for k in d.resKinds:
     result.add("alias " & resourceHandleName(k.name) & " = rt.ResourceHandle;\n")
+    let onFin = rtOnFinishProc(k.onFinish)
     result.add("__gshared rt.ResourceTable " & resourceTableName(k.name) &
                " = {kind: " & escape(k.name) & ", cap: " & $k.cap &
-               ", policy: " & dPolicyName(k.policy) & ", sweepBatch: " &
-               $k.sweepBatch & "};\n")
+               ", policy: " & dPolicyName(k.policy) & ", onFull: " &
+               dOnFullName(k.onFull) & ", sweepBatch: " & $k.sweepBatch &
+               (if onFin == "": "" else: ", onFinish: &rt." & onFin) & "};\n")
   if d.resKinds.len == 0: return
   # §7.4's close-all, reached from the entry point. Reverse DECLARATION order
   # across kinds — the same LIFO reading the within-table order follows.

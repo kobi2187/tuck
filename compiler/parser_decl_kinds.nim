@@ -734,6 +734,19 @@ proc parseResourceCount(p: var Parser, kind, attr, raw: string): int =
                   " must be a whole number, got '" & raw & "'")
     0
 
+proc resourceOnFullFromName*(name: string, dest: var ResourceOnFull): bool =
+  case name
+  of "absent": dest = rofAbsent; true
+  of "error":  dest = rofError;  true
+  else: false
+
+proc resourceOnFinishFromName*(name: string, dest: var ResourceOnFinish): bool =
+  case name
+  of "none":     dest = rfNone;     true
+  of "flush":    dest = rfFlush;    true
+  of "shutdown": dest = rfShutdown; true
+  else: false
+
 proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
   ## One line of a `resources:` block: a kind name and its optional knobs.
   ## The knobs ride in the ordinary `[a: 1, b: c]` attribute bracket every
@@ -748,8 +761,16 @@ proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
     case a.name
     of "cap":         result.cap = p.parseResourceCount(result.name, "cap", a.value)
     of "sweep_batch": result.sweepBatch = p.parseResourceCount(result.name, "sweep_batch", a.value)
-    of "on_full":     result.onFull = a.value
-    of "on_finish":   result.onFinish = a.value
+    of "on_full":
+      if not resourceOnFullFromName(a.value, result.onFull):
+        p.reportError("resource kind '" & result.name & "': on_full must be " &
+                      "absent or error, got '" & a.value & "'",
+                      a.span.line, a.span.col)
+    of "on_finish":
+      if not resourceOnFinishFromName(a.value, result.onFinish):
+        p.reportError("resource kind '" & result.name & "': on_finish must be " &
+                      "none, flush or shutdown, got '" & a.value & "'",
+                      a.span.line, a.span.col)
     of "policy":
       if not resourcePolicyFromName(a.value, result.policy):
         p.reportError("resource kind '" & result.name & "': policy must be " &
@@ -759,6 +780,20 @@ proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
       p.reportError("resource kind '" & result.name & "': unknown attribute '" &
                     a.name & "'. A kind takes cap, policy, on_full, " &
                     "on_finish and sweep_batch.", a.span.line, a.span.col)
+  # Checked AFTER the whole bracket, because `cap` may be written after the
+  # attribute that depends on it: an unbounded table never fills, so `on_full`
+  # on one is a setting that could never apply.
+  #
+  # `sweep_batch` gets NO such rule, though it is equally inert outside
+  # `policy: lazy`. §7.4's own example writes `net [cap: 10_000, on_full:
+  # error, sweep_batch: 100]` in a block declaring no policy — so under the
+  # `strict` default the spec's own block would be rejected by that rule,
+  # which is how it was caught. The spec is the authority on its examples; a
+  # rule it contradicts is the rule that is wrong.
+  if result.cap == 0 and result.onFull != rofAbsent:
+    p.reportError("resource kind '" & result.name & "': on_full needs a cap — " &
+                  "an unbounded table never fills, so this would never apply",
+                  sp.line, sp.col)
   if p.current().kind == tkNewline: discard p.advance()
 
 proc parseResourcesDecl*(p: var Parser, sp: Span): Decl =

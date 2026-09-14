@@ -4,11 +4,11 @@ import rt = tuck_rt;
 import std.stdio : writeln, stderr;
 
 alias NetHandle = rt.ResourceHandle;
-__gshared rt.ResourceTable tuckRes_net = {kind: "net", cap: 10000, policy: rt.RtResourcePolicy.Lazy, sweepBatch: 100};
+__gshared rt.ResourceTable tuckRes_net = {kind: "net", cap: 10000, policy: rt.RtResourcePolicy.Lazy, onFull: rt.RtOnFull.Error, sweepBatch: 100};
 alias FileHandle = rt.ResourceHandle;
-__gshared rt.ResourceTable tuckRes_file = {kind: "file", cap: 8, policy: rt.RtResourcePolicy.Strict, sweepBatch: 0};
+__gshared rt.ResourceTable tuckRes_file = {kind: "file", cap: 8, policy: rt.RtResourcePolicy.Strict, onFull: rt.RtOnFull.Absent, sweepBatch: 0, onFinish: &rt.tuckResFlush};
 alias UdpHandle = rt.ResourceHandle;
-__gshared rt.ResourceTable tuckRes_udp = {kind: "udp", cap: 0, policy: rt.RtResourcePolicy.Lazy, sweepBatch: 0};
+__gshared rt.ResourceTable tuckRes_udp = {kind: "udp", cap: 0, policy: rt.RtResourcePolicy.Lazy, onFull: rt.RtOnFull.Absent, sweepBatch: 0};
 void tuckResourcesShutdown() {
     rt.shutdownResources(tuckRes_udp);
     rt.shutdownResources(tuckRes_file);

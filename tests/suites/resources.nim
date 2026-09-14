@@ -472,3 +472,79 @@ fn main() -> int:
   t.omits "Nim: no kinds, no shutdown", "tuckResourcesShutdown"
   t.omitsOdin "Odin: likewise", "tuckResourcesShutdown"
   t.omitsD "D: likewise", "tuckResourcesShutdown"
+
+  # --- on_full and on_finish ------------------------------------------------
+  #
+  # Both are CLOSED vocabularies, and both reach the emitted table. They used
+  # to parse into the AST and get dropped at codegen — five attributes
+  # declared, three acted on, and nothing saying so.
+
+  t.src """
+resources [policy: lazy]:
+  net  [cap: 4, on_full: error]
+  file [cap: 8, on_finish: flush, policy: strict]
+  sock [cap: 2, on_finish: shutdown]
+  udp
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "on_full and on_finish check"
+  t.emits "Nim: on_full reaches the table", "kind: \"net\".*onFull: rtoError"
+  t.emits "Nim: a kind that does not name one gets the default",
+          "kind: \"udp\".*onFull: rtoAbsent"
+  # ONE mechanism: the declaration PICKS the runtime callback rather than
+  # setting a flag the runtime switches on, so `setResourceHooks` overriding
+  # it writes the same field and the two cannot disagree.
+  t.emits "Nim: on_finish binds the runtime proc", "onFinish: tuckResFlush"
+  t.emits "Nim: ...and shutdown binds the other one", "onFinish: tuckResShutdown"
+  t.omits "Nim: a kind with no on_finish binds nothing at all",
+          "kind: \"udp\".*onFinish"
+  t.emitsOdin "Odin: the same two fields",
+              "kind = \"file\".*onFull = .Absent.*onFinish = rt.tuckResFlush"
+  t.emitsD "D: likewise",
+           "kind: \"file\".*onFull: rt.RtOnFull.Absent.*onFinish: &rt.tuckResFlush"
+  t.runs "...and a program declaring all of them still runs", 0
+
+  t.src """
+resources:
+  udp [cap: 4, on_full: retry]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an unknown on_full names the legal ones", "absent or error"
+
+  t.src """
+resources:
+  udp [on_finish: sync]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an unknown on_finish does too", "none, flush or shutdown"
+
+  # An unbounded table never fills, so `on_full` on one could never apply.
+  # Checked after the whole bracket, since `cap` may be written after it.
+  t.src """
+resources:
+  udp [on_full: error]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "on_full without a cap is refused, with the reason",
+             "on_full needs a cap"
+
+  # `sweep_batch` gets NO such rule even though it is equally inert outside
+  # `policy: lazy` — §7.4's own example writes it in a block declaring no
+  # policy, so a rule rejecting that would reject the spec. The spec is the
+  # authority on its own examples.
+  t.src """
+resources:
+  net [cap: 10_000, on_full: error, sweep_batch: 100]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "sweep_batch outside `lazy` is inert, not an error (spec §7.4's own block)"

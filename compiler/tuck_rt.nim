@@ -320,6 +320,11 @@ type
     rtLazy     ## mark only; the inline watermark sweep reclaims
     rtExit     ## close-all at program end
 
+  RtOnFull* = enum
+    ## What a CAPPED table does when it fills.
+    rtoAbsent  ## report absence; the caller decides (the default)
+    rtoError   ## abort, naming the kind and its cap
+
   ResourceCloser* = proc(reference: int64) {.nimcall.}
     ## How THIS kind's OS handle is released, and what `on_finish` does for it.
     ## A callback because the runtime cannot know: closing an fd, an mmap and
@@ -338,6 +343,7 @@ type
     kind*: string            ## the declared kind name, for messages
     cap*: int                ## 0 = unbounded (seq-backed); >0 = the bound
     policy*: RtResourcePolicy
+    onFull*: RtOnFull        ## only consulted when `cap` > 0
     sweepBatch*: int         ## 0 = evict every finished entry; >0 = that many
     onFinish*: ResourceCloser  ## runs at the MARK, always (file: flush)
     onClose*: ResourceCloser   ## runs at reclamation
@@ -354,11 +360,13 @@ proc tuckResourceMisuse*(table: string, what: string) =
   quit(1)
 
 proc initResourceTable*(t: var ResourceTable, kind: string, cap: int,
-                        policy: RtResourcePolicy, sweepBatch: int) =
+                        policy: RtResourcePolicy, sweepBatch: int,
+                        onFull = rtoAbsent) =
   t.kind = kind
   t.cap = cap
   t.policy = policy
   t.sweepBatch = sweepBatch
+  t.onFull = onFull
   if cap > 0 and t.entries.len < cap:
     # A capped kind is array-shaped from the start: the cap is a LINK-TIME
     # memory budget on a standalone target, not a limit discovered at runtime.
@@ -425,7 +433,11 @@ proc acquire*(t: var ResourceTable, reference: int64,
     return tok(ResourceHandle(slot: int32(i), gen: t.entries[i].gen))
   if t.cap > 0:
     # The cap is the leak alarm as much as the budget: a table that FILLS is a
-    # bug surfacing early rather than an OOM three days in.
+    # bug surfacing early rather than an OOM three days in. Which of those two
+    # readings applies is the kind's own `on_full`: shed load, or stop.
+    if t.onFull == rtoError:
+      tuckResourceMisuse(t.kind, "table is full (cap " & $t.cap &
+                         ") and the kind declares `on_full: error`")
     return tnone[ResourceHandle]()
   t.entries.add(ResourceEntry(reference: reference, gen: 1, live: true,
                               site: site))
@@ -584,6 +596,30 @@ proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
 import std/[os, times, syncio, sysrand]
 import ./tuck_async
 from std/posix import nil
+
+# spec 7.4's `on_finish` vocabulary, as real syscalls on the entry's reference.
+#
+# Defined HERE rather than beside the registry above because both need posix,
+# which this file only reaches at this point. The declaration picks one of
+# these by name and the emitted table binds it, so there is ONE mechanism —
+# `setResourceHooks` still overrides, which is the escape hatch for a kind
+# whose reference is not an fd at all.
+#
+# A failed syscall is deliberately not reported: `on_finish` runs at the MARK,
+# where the program has already said it is done with the handle, and there is
+# nothing left to do about an error nobody asked for. The close-all path and
+# the OPEN RESOURCES report are where an unfinished resource surfaces.
+proc tuckResFlush*(reference: int64) {.nimcall.} =
+  ## `file: flush` — the durability half of finishing, which is exactly why
+  ## §7.4 splits marking from reclamation: a write-heavy loop under `lazy` has
+  ## already hit the disk by the time anything is evicted.
+  discard posix.fsync(cint(reference))
+
+proc tuckResShutdown*(reference: int64) {.nimcall.} =
+  ## the net case — both directions, so a peer sees the close immediately
+  ## rather than when the fd is finally reclaimed.
+  discard posix.shutdown(posix.SocketHandle(reference), cint(posix.SHUT_RDWR))
+
 template posixRead(fd: cint, buf: pointer, n: int): int =
   ## stdin's raw read, spelled explicitly so it cannot be confused with
   ## syncio's buffered readLine (which must never run on the worker).

@@ -430,9 +430,35 @@ enum RtResourcePolicy : ubyte
     Exit,   /// close-all at program end
 }
 
+/// What a CAPPED table does when it fills.
+enum RtOnFull : ubyte
+{
+    Absent, /// report absence; the caller decides (the default)
+    Error,  /// abort, naming the kind and its cap
+}
+
 /// How THIS kind's OS handle is released. A callback because the runtime
 /// cannot know: an fd, an mmap and a TLS session are three different syscalls.
 alias ResourceCloser = void function(long reference);
+
+/// spec 7.4's `on_finish` vocabulary, as real syscalls on the reference. The
+/// declaration PICKS one and the emitted table binds it, so there is one
+/// mechanism — setResourceHooks overrides the same field, which is the escape
+/// hatch for a kind whose reference is not an fd at all.
+///
+/// A failed syscall is deliberately not reported: on_finish runs at the MARK,
+/// where the program has already said it is done with the handle.
+void tuckResFlush(long reference)
+{
+    import core.sys.posix.unistd : fsync;
+    cast(void) fsync(cast(int) reference);
+}
+
+void tuckResShutdown(long reference)
+{
+    import core.sys.posix.sys.socket : shutdown, SHUT_RDWR;
+    cast(void) shutdown(cast(int) reference, SHUT_RDWR);
+}
 
 struct ResourceEntry
 {
@@ -448,6 +474,7 @@ struct ResourceTable
     string kind;
     int cap;         /// 0 = unbounded (slice-backed); >0 = the bound
     RtResourcePolicy policy;
+    RtOnFull onFull; /// only consulted when `cap` > 0
     int sweepBatch;  /// 0 = evict every finished entry; >0 = that many
     ResourceCloser onFinish;  /// runs at the MARK, always (file: flush)
     ResourceCloser onClose;   /// runs at reclamation
@@ -468,12 +495,14 @@ void tuckResourceMisuse(string table, string what)
 }
 
 void initResourceTable(ref ResourceTable t, string kind, int cap,
-                       RtResourcePolicy policy, int sweepBatch)
+                       RtResourcePolicy policy, int sweepBatch,
+                       RtOnFull onFull = RtOnFull.Absent)
 {
     t.kind = kind;
     t.cap = cap;
     t.policy = policy;
     t.sweepBatch = sweepBatch;
+    t.onFull = onFull;
     // A capped kind is array-shaped from the start: the cap is a LINK-TIME
     // memory budget, not a limit discovered at runtime.
     if (cap > 0 && t.entries.length < cap)
@@ -551,8 +580,15 @@ TuckResult!ResourceHandle acquireResource(ref ResourceTable t, long reference,
         return tok(ResourceHandle(cast(int) i, t.entries[i].gen));
     }
     // The cap is the leak alarm as much as the budget: a table that FILLS is
-    // a bug surfacing early rather than an OOM three days in.
-    if (t.cap > 0) return tnone!ResourceHandle();
+    // a bug surfacing early rather than an OOM three days in. Which of those
+    // two readings applies is the kind's own `on_full`.
+    if (t.cap > 0)
+    {
+        if (t.onFull == RtOnFull.Error)
+            tuckResourceMisuse(t.kind,
+                "table is full and the kind declares `on_full: error`");
+        return tnone!ResourceHandle();
+    }
     ResourceEntry e;
     e.reference = reference;
     e.gen = 1;

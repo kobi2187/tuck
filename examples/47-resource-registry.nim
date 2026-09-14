@@ -5,11 +5,11 @@ proc tuck_withScratch*(n: int): int
 proc tuck_main*(): int
 
 type NetHandle* = ResourceHandle
-var tuckRes_net* = ResourceTable(kind: "net", cap: 10000, policy: rtLazy, sweepBatch: 100)
+var tuckRes_net* = ResourceTable(kind: "net", cap: 10000, policy: rtLazy, onFull: rtoError, sweepBatch: 100)
 type FileHandle* = ResourceHandle
-var tuckRes_file* = ResourceTable(kind: "file", cap: 8, policy: rtStrict, sweepBatch: 0)
+var tuckRes_file* = ResourceTable(kind: "file", cap: 8, policy: rtStrict, onFull: rtoAbsent, sweepBatch: 0, onFinish: tuckResFlush)
 type UdpHandle* = ResourceHandle
-var tuckRes_udp* = ResourceTable(kind: "udp", cap: 0, policy: rtLazy, sweepBatch: 0)
+var tuckRes_udp* = ResourceTable(kind: "udp", cap: 0, policy: rtLazy, onFull: rtoAbsent, sweepBatch: 0)
 proc tuckResourcesShutdown*() =
   shutdownResources(tuckRes_udp)
   shutdownResources(tuckRes_file)

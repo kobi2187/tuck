@@ -27,16 +27,23 @@ proc odinPolicyName(p: ResourcePolicy): string =
   of rpLazy: ".Lazy"
   of rpExit: ".Exit"
 
+proc odinOnFullName(f: ResourceOnFull): string =
+  case f
+  of rofAbsent: ".Absent"
+  of rofError: ".Error"
+
 proc genOdinResourceTables(d: Decl, ind: string): string =
   ## spec §7.4, the Odin twin of codegen_decl.genResourceTables. A static
   ## package-level initializer, for the same reason: the knobs ARE the
   ## declaration, and the runtime sizes a capped table on first acquire.
   for k in d.resKinds:
     result.add(ind & resourceHandleName(k.name) & " :: rt.ResourceHandle\n")
+    let onFin = rtOnFinishProc(k.onFinish)
     result.add(ind & resourceTableName(k.name) & ": rt.ResourceTable = {kind = " &
                escape(k.name) & ", cap = " & $k.cap & ", policy = " &
-               odinPolicyName(k.policy) & ", sweepBatch = " & $k.sweepBatch &
-               "}\n")
+               odinPolicyName(k.policy) & ", onFull = " &
+               odinOnFullName(k.onFull) & ", sweepBatch = " & $k.sweepBatch &
+               (if onFin == "": "" else: ", onFinish = rt." & onFin) & "}\n")
   if d.resKinds.len == 0: return
   # §7.4's close-all, reached from the entry point. Reverse DECLARATION order
   # across kinds — the same LIFO reading the within-table order follows.

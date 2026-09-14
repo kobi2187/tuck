@@ -133,6 +133,19 @@ proc declaresResources*(m: Module): bool =
     if d != nil and d.kind == dkResources and d.resKinds.len > 0: return true
   false
 
+proc rtOnFinishProc*(f: ResourceOnFinish): string =
+  ## The runtime proc a declared `on_finish` binds to, or "" for none.
+  ##
+  ## ONE mechanism: the declaration PICKS a callback rather than setting a flag
+  ## the runtime then switches on, so `setResourceHooks` overriding it writes
+  ## the same field and the two cannot disagree. Here rather than in a backend
+  ## because the answer is backend-neutral — all three runtimes name these
+  ## procs identically, which is what keeps them one vocabulary.
+  case f
+  of rfNone: ""
+  of rfFlush: "tuckResFlush"
+  of rfShutdown: "tuckResShutdown"
+
 proc isResourceHandleType*(m: Module, name: string): bool =
   ## Is this the handle type of some resource kind declared in this module?
   ##
