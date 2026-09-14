@@ -666,6 +666,15 @@ proc genResourceTables(d: Decl): string =
     result.add("var " & resourceTableName(k.name) & "* = ResourceTable(kind: " &
                escape(k.name) & ", cap: " & $k.cap & ", policy: " &
                rtPolicyName(k.policy) & ", sweepBatch: " & $k.sweepBatch & ")\n")
+  if d.resKinds.len == 0: return
+  # §7.4's close-all, reached from the entry point. Across kinds it runs in
+  # REVERSE DECLARATION order, which is the same LIFO reading the within-table
+  # order already follows — a kind declared later is likelier to sit on top of
+  # an earlier one (a TLS session over its socket), and there is no other
+  # ordering the declarations can be read to state.
+  result.add("proc " & ResourceShutdownProc & "*() =\n")
+  for i in countdown(d.resKinds.len - 1, 0):
+    result.add("  shutdownResources(" & resourceTableName(d.resKinds[i].name) & ")\n")
 
 proc genRegister*(d: Decl): string =
   ## A memory-mapped register (spec 8.1): named shift constants plus

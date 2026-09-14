@@ -241,7 +241,11 @@ proc need(t: var T, verb: Verb, dep = -1): int =
 
 proc item(t: T, idx: int): WorkItem = t.work[idx]
 
-proc wasSkipped(t: T, idx: int): bool = t.work[idx].skipped
+proc wasSkipped*(t: T, idx: int): bool = t.work[idx].skipped
+  ## Did the mode filter drop this item? Exported because a suite that
+  ## registers its OWN commands (needCmd) has to answer it for itself — the
+  ## built-in assertions do it internally, but `resultOf` on a skipped item
+  ## reports rc 0, which reads as a pass.
 
 proc failedTo(t: T, idx: int): bool =
   ## An item that never ran (because its dependency failed) counts as failed.

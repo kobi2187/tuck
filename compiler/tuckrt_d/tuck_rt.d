@@ -642,6 +642,35 @@ int openResourceCount(ref ResourceTable t)
     return n;
 }
 
+/// 7.4's OPEN RESOURCES report. Debug builds only — `version(assert)` is on
+/// unless the build passed -release, which is what "debug build" means here —
+/// and silent when there is nothing to say: a report that prints "0" every
+/// run is one people stop reading.
+void reportOpenResources(ref ResourceTable t)
+{
+    version (assert)
+    {
+        import std.stdio : stderr;
+        const n = openResourceCount(t);
+        if (n == 0) return;
+        stderr.writeln("OPEN RESOURCES [", t.kind, "] (", n, "):");
+        foreach (slot; t.order)
+        {
+            const i = cast(size_t) slot;
+            if (t.entries[i].live && !t.entries[i].finished)
+                stderr.writeln("  slot ", i, " acquired at ", t.entries[i].site);
+        }
+    }
+}
+
+/// SAY what leaked, then close everything — in that order, since close-all
+/// empties the table and a report after it is always silent.
+void shutdownResources(ref ResourceTable t)
+{
+    reportOpenResources(t);
+    closeAllResources(t);
+}
+
 void tuckPoolMisuse(string what)
 {
     // Aborts rather than returning: the alternative is the silent corruption

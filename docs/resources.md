@@ -116,9 +116,15 @@ of dkResources:
 ```
 
 `ResourceKindDef` carries `name`, `cap` (0 = unbounded), `policy`, `onFull`,
-`onFinish`, `sweepBatch`, and its `span`. The attribute bracket is read with
-the existing `parseDeclAttrs` — `[cap: 10_000, on_full: error]` is the same
-shape `pool` and `actor` already use, so there is no new attribute grammar.
+`onFinish`, `sweepBatch`, and its `span`. The bracket has the same shape `pool`
+and `actor` already use, but gets its own reader rather than `parseDeclAttrs`:
+that one takes each value with `parseExpr`, and several words in this closed
+vocabulary (`error`, `exit`) are reserved attribute names no expression may
+contain — so `[on_full: error]` died at "Expected an expression here". Nothing
+in the bracket is ever computed.
+
+The lexer learns digit separators here too, because §7.4 writes `cap: 10_000`
+and the spec's own block could not otherwise parse.
 
 `resource:` joins `error:` and `emit:` as the third **valued** attribute folded
 into the effect bracket. That is the established seam: `parseEffectList`
@@ -131,12 +137,14 @@ already special-cases the two attributes that carry a value, because
 ### Stage 2 — Checker
 
 - `collectResourceKinds` builds the program-wide kind table, rejecting a
-  duplicate (TK-RS02) and a malformed attribute (TK-RS03).
+  duplicate (TK-RS02).
 - An unknown kind in `[resource: k]` is TK-RS01 — §7.4: "same as an undeclared
   error enum".
-- `semantics.nim` propagates the marker to callers with the rest of the effect
-  set, so a fn calling an acquiring fn must declare the kind itself. §3.7:
-  explicit, not inferred.
+- `semantics.nim` propagates the marker to callers (TK-RS03) with the rest of
+  the effect set — §3.7, explicit not inferred. It rides the SAME walk rather
+  than a second one: the pass carries a `Demands` record holding effects and
+  kinds together, because a second parallel walk is a second chance to miss a
+  node kind, which is a bug that walk has already had once.
 
 A new `RS` diagnostic category, registered at the end of `diagnostics.nim` as
 the permanence rule requires.
@@ -158,13 +166,20 @@ memory budget.
 `exkDefer` emits the host's native defer. Then `tools/emit_examples.sh` and
 read `git diff examples/` — that diff is the review.
 
-### Stage 5 — Flow and report
+### Stage 5 — Shutdown and report
 
-The scope-local check §7.4 describes: every acquire ends in a defer mark or an
-escape (stored or returned). Escape is sound *because* the registry closes at
-exit, which is what makes the local analysis sufficient — no alias analysis.
+`OPEN RESOURCES (n)` at exit, in a debug build: what is still unfinished, and
+where it was acquired. Then close-all, in that order — close-all empties the
+table, so a report after it is always silent.
 
-`OPEN RESOURCES (n)` joins PENDING and SHORTCUTS in `checkOrDie`.
+Both live in the ENTRY POINT in all three backends rather than an at-exit hook.
+Odin cannot use one at all: its entry ends in `os.exit`, which is `_exit` and
+runs no finalizer, so an `@(fini)` proc never fires (checked, not assumed). The
+entry point already owns the other end of the lifecycle, where it boots the
+scheduler.
+
+The static acquire-must-finish check §7.4 also describes is blocked, for the
+reason §2 gives.
 
 ### Stage 6 — Docs
 
@@ -174,14 +189,56 @@ stage — the gate will not let the feature land undocumented.
 
 ---
 
-## 2. What is deliberately not in the first pass
+## 2. The one thing §7.4 does not settle: the acquire surface
 
-Written down so a later reader does not read an intended boundary as a gap:
+Everything above is built and verified. One piece is not, and it is not an
+oversight — the spec does not say enough to build it.
+
+**There is no Tuck-level way to acquire into a registry or to mark an entry
+finished.** §7.4 describes what those operations DO in complete detail, and
+never says how they are spelled. The nearest thing it gives is `kind::sweep`,
+which uses `::` — the module-qualifier syntax, a resolution path neither
+`Pool.acquire`'s nor a member call's.
+
+Three spellings are consistent with what §7.4 writes, and they are not
+equivalent:
+
+| Spelling | Precedent | Cost |
+|---|---|---|
+| `udp::acquire` / `udp::finish` | §7.4's own `kind::sweep` | `::` today means "another module"; a kind is not one |
+| `Udp.acquire`, mirroring `Pool.acquire` | the pool machinery §7.4 says this IS | needs kinds to be Capitalized, which §7.4's examples are not |
+| an extern the library declares, the registry reached through its handle | §7.4's own `fn open(...) -> UdpSocket!` example | leaves acquire/finish outside the language |
+
+Picking one is a language decision, not an implementation one. Guessing costs
+more than waiting: every downstream stage would learn the guess, which is what
+the tree's own "each construct gets its own node kind" rule is about.
+
+**What that blocks, precisely:** §7.4's static check — "every acquire ends in
+exactly one of: a defer mark, or an escape into the registry". The *escape*
+arm is already sound and already enforced by construction (the registry closes
+at exit, which is what makes the local analysis sufficient). The *defer mark*
+arm cannot be recognised, because there is no mark to recognise. A partial
+rule here would be worse than none: the obvious candidate — "an acquired
+handle dropped on the spot is a leak" — fires on something §7.4 explicitly
+calls sound, since a dropped handle is still in the registry and close-all
+still gets it.
+
+**What is NOT blocked, and is done:** the registry itself, its three policies,
+the inline watermark sweep, LIFO close-all, the stale-handle generation bump,
+the per-kind handle type, and the `OPEN RESOURCES (n)` report — which runs at
+exit in a debug build and names the kind, the slot and the acquire site. The
+report is the runtime half of the same question the static check asks, and it
+answers it for real programs today.
+
+## 3. Smaller boundaries
 
 - **The acquiring fn's return type is not verified** — §0.3.
-- **`kind::sweep` as a call** lands with Stage 3's runtime op, but the
-  scheduled-cleanup story (§7.4's "a dedicated sweeper actor is a possible
-  opt-in once actors land") stays opt-in and unwritten.
-- **`on_full: error`** needs the kind to name an error enum to raise. Until
-  then the honest policies are `error` (abort with a named message) and the
-  default, absence.
+- **`on_full: error`** needs the kind to name an error enum to raise. It
+  parses and reaches the declaration; the table currently treats a full capped
+  kind as absence, which is §7.4's stated behaviour for the default.
+- **`on_finish: flush`** likewise reaches the declaration. What `flush` MEANS
+  for a kind is the `onFinish` callback its library binds, since the runtime
+  cannot know: flushing a file, a socket and a TLS session are three different
+  syscalls.
+- **A sweeper actor** stays what §7.4 calls it — "a possible opt-in once
+  actors land", never a requirement. The inline sweep needs no thread.

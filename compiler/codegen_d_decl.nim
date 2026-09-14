@@ -1006,6 +1006,14 @@ proc genDResourceTables(d: Decl): string =
                " = {kind: " & escape(k.name) & ", cap: " & $k.cap &
                ", policy: " & dPolicyName(k.policy) & ", sweepBatch: " &
                $k.sweepBatch & "};\n")
+  if d.resKinds.len == 0: return
+  # §7.4's close-all, reached from the entry point. Reverse DECLARATION order
+  # across kinds — the same LIFO reading the within-table order follows.
+  result.add("void " & ResourceShutdownProc & "() {\n")
+  for i in countdown(d.resKinds.len - 1, 0):
+    result.add("    rt.shutdownResources(" &
+               resourceTableName(d.resKinds[i].name) & ");\n")
+  result.add("}\n")
 
 proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""

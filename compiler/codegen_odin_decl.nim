@@ -37,6 +37,14 @@ proc genOdinResourceTables(d: Decl, ind: string): string =
                escape(k.name) & ", cap = " & $k.cap & ", policy = " &
                odinPolicyName(k.policy) & ", sweepBatch = " & $k.sweepBatch &
                "}\n")
+  if d.resKinds.len == 0: return
+  # §7.4's close-all, reached from the entry point. Reverse DECLARATION order
+  # across kinds — the same LIFO reading the within-table order follows.
+  result.add(ind & ResourceShutdownProc & " :: proc() {\n")
+  for i in countdown(d.resKinds.len - 1, 0):
+    result.add(ind & "\trt.shutdownResources(&" &
+               resourceTableName(d.resKinds[i].name) & ")\n")
+  result.add(ind & "}\n")
 
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string
   ## Forward-declared: genRecordType (manager-type member fns) recurses

@@ -169,6 +169,12 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   # never finish, so running the scheduler for them would spin forever —
   # tuck.nim gates on hasTasks for exactly this reason.
   if hasTasks: result.add("\trt.tuckRun()\n")
+  # §7.4's close-all, AFTER the loop is driven so anything a task acquired is
+  # still registered when the tables close, and BEFORE os.exit — which is
+  # `_exit` and runs no finalizer, so an `@(fini)` hook would never fire. The
+  # entry point already owns the lifecycle (it boots the scheduler); this is
+  # the other end of it.
+  if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
   if mainReturns: result.add("\tos.exit(mainRc)\n")
   result.add("}\n")
 

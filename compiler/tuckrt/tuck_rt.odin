@@ -503,6 +503,30 @@ openResourceCount :: proc(t: ^ResourceTable) -> int {
 	return n
 }
 
+reportOpenResources :: proc(t: ^ResourceTable) {
+	// 7.4's OPEN RESOURCES report. Debug builds only, and silent when there
+	// is nothing to say — a report that prints "0" every run is one people
+	// stop reading.
+	when ODIN_DEBUG {
+		n := openResourceCount(t)
+		if n == 0 { return }
+		fmt.eprintfln("OPEN RESOURCES [%s] (%d):", t.kind, n)
+		for k in 0 ..< len(t.order) {
+			i := int(t.order[k])
+			if t.entries[i].live && !t.entries[i].finished {
+				fmt.eprintfln("  slot %d acquired at %s", i, t.entries[i].site)
+			}
+		}
+	}
+}
+
+shutdownResources :: proc(t: ^ResourceTable) {
+	// SAY what leaked, then close everything — in that order, since close-all
+	// empties the table and a report after it is always silent.
+	reportOpenResources(t)
+	closeAllResources(t)
+}
+
 PoolHandle :: struct {
 	slot: i32,
 	gen:  u32,

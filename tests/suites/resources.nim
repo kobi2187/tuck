@@ -435,3 +435,40 @@ fn main() -> int:
   return 0
 """
   t.badCheck "two kinds' handles are not interchangeable", "UdpHandle|FileHandle"
+
+  # --- codegen: the shutdown -------------------------------------------------
+  #
+  # §7.4's close-all, plus the OPEN RESOURCES report that runs just before it.
+  # In the ENTRY POINT in all three backends rather than an at-exit hook: Odin
+  # cannot use one at all (its entry ends in os.exit, which is `_exit` and runs
+  # no finalizer, so an @(fini) proc never fires — checked, not assumed), and
+  # the entry point already owns the lifecycle at the other end, where it boots
+  # the scheduler.
+
+  t.src """
+resources:
+  net
+  file
+
+fn main() -> int:
+  return 0
+"""
+  t.emits "Nim: one shutdown proc per program", "proc tuckResourcesShutdown\\*\\(\\)"
+  # Reverse DECLARATION order across kinds — the same LIFO reading the
+  # within-table order follows. A kind declared later is likelier to sit on
+  # top of an earlier one (a TLS session over its socket).
+  t.emits "Nim: ...closing the kinds in reverse declaration order",
+          "shutdownResources\\(tuckRes_file\\)\\n  shutdownResources\\(tuckRes_net\\)"
+  t.emitsOdin "Odin: the same proc", "tuckResourcesShutdown :: proc\\(\\)"
+  t.emitsD "D: the same proc", "void tuckResourcesShutdown\\(\\)"
+  t.runs "...and a program declaring kinds still runs and returns its code", 0
+
+  # A program with no `resources:` block emits no table, no shutdown proc and
+  # no call to one — declaring nothing costs nothing.
+  t.src """
+fn main() -> int:
+  return 0
+"""
+  t.omits "Nim: no kinds, no shutdown", "tuckResourcesShutdown"
+  t.omitsOdin "Odin: likewise", "tuckResourcesShutdown"
+  t.omitsD "D: likewise", "tuckResourcesShutdown"

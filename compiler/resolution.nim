@@ -120,6 +120,19 @@ proc resourceTableName*(kind: string): string =
   ## synthesised, and mangling walks the AST, which never held it.
   "tuckRes_" & kind
 
+const ResourceShutdownProc* = "tuckResourcesShutdown"
+  ## The per-program registry shutdown the entry point calls: report what
+  ## leaked, then close every table. One name across the three backends, in
+  ## one place, because three entry-point emitters have to agree on it.
+
+proc declaresResources*(m: Module): bool =
+  ## Does this module declare any resource kind? The entry points ask, to
+  ## decide whether there is a shutdown to call at all — a program with no
+  ## `resources:` block emits no table, no shutdown, and no call to one.
+  for d in m.decls:
+    if d != nil and d.kind == dkResources and d.resKinds.len > 0: return true
+  false
+
 proc isResourceHandleType*(m: Module, name: string): bool =
   ## Is this the handle type of some resource kind declared in this module?
   ##

@@ -136,7 +136,12 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   # Drive the loop only when TASKS exist. Actors are daemons whose drain
   # loops never finish, so running the scheduler for them after main would
   # spin forever — main owns the lifecycle and ends the program itself.
-  let drive = if hasTasks: "    rt.tuckRun();\n" else: ""
+  let drive = (if hasTasks: "    rt.tuckRun();\n" else: "") &
+    # §7.4's close-all, after the loop is driven so anything a task acquired
+    # is still registered when the tables close. In the entry point rather
+    # than a `static ~this()` module destructor, so the three backends put it
+    # in one place — Odin cannot use a finalizer at all (os.exit is _exit).
+    (if declaresResources(m): "    " & ResourceShutdownProc & "();\n" else: "")
   let head = "(string[] args) {\n" & seedArgs & boot & mains
   if mainFn != nil and mainFn.returnsValue:
     # The exit code is main's result, but tasks still get to finish first.

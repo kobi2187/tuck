@@ -1146,14 +1146,23 @@ when isMainModule:
         # mainRc. `fn main` is mangled like every other user fn, so the entry
         # calls the prefixed symbol.
         let tuckMain = mangleName("main") & "()"
+        # §7.4's close-all: report what leaked, then close every registry
+        # table. It has to run BEFORE the process exits, which is why a
+        # value-returning main binds its result first rather than exiting
+        # inline — `quit(tuck_main())` leaves nowhere to put this.
+        let resShutdown =
+          if declaresResources(m): "\n  " & ResourceShutdownProc & "()" else: ""
         let mainCall =
           if hasTasks and mainReturns: "let mainRc = " & tuckMain
+          elif mainReturns and resShutdown != "": "let mainRc = " & tuckMain
           elif mainReturns: "quit(" & tuckMain & ")"
           else: tuckMain
-        let asyncExit = if hasTasks and mainReturns: "\n  quit(mainRc)" else: ""
+        let asyncExit =
+          if mainReturns and (hasTasks or resShutdown != ""): "\n  quit(mainRc)"
+          else: ""
         writeFile(mainNim, readFile(mainNim) &
           "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
-          asyncDrive & asyncExit & "\n")
+          asyncDrive & resShutdown & asyncExit & "\n")
         # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
         var nimFlags = ""
         for o in opts:

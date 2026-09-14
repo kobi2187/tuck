@@ -505,6 +505,27 @@ iterator openEntries*(t: ResourceTable): tuple[slot: int, site: string] =
 proc openCount*(t: ResourceTable): int =
   for _ in t.openEntries(): result.inc
 
+proc reportOpenResources*(t: ResourceTable) =
+  ## 7.4's OPEN RESOURCES report, in the same spirit as PENDING and SHORTCUTS:
+  ## say what is unfinished and WHERE it was acquired, so the answer is a line
+  ## number rather than a hunt.
+  ##
+  ## Debug builds only, and silent when there is nothing to say — a report
+  ## that prints "0" every run is one people stop reading.
+  when not defined(release) and not defined(danger):
+    let n = t.openCount()
+    if n == 0: return
+    stderr.writeLine("OPEN RESOURCES [" & t.kind & "] (" & $n & "):")
+    for e in t.openEntries():
+      stderr.writeLine("  slot " & $e.slot & " acquired at " & e.site)
+
+proc shutdownResources*(t: var ResourceTable) =
+  ## What a program does with one registry at exit: SAY what leaked, then
+  ## close everything. In that order — close-all empties the table, so a
+  ## report after it would always be empty and always be silent.
+  t.reportOpenResources()
+  t.closeAll()
+
 import std/locks
 
 type
