@@ -1014,13 +1014,29 @@ Three things to know:
 At exit a debug build prints `OPEN RESOURCES (n)` — what was never finished,
 and where it was acquired — then closes every table.
 
-> **The acquire and finish OPERATIONS have no spelling yet.** §7.4 describes
-> what they do in full and never says how they are written, and the three
-> readings consistent with it are not equivalent — so it is a ruling, not an
-> implementation (`docs/resources.md` §2). A library reaches the registry
-> through an extern today. This is also what blocks §7.4's static
-> acquire-must-finish check: the escape half is sound by construction, and the
-> defer-mark half has no mark to recognise.
+**`finish` releases — and names the kind:**
+
+```tuck
+fn serve({port: u16}) -> int [io, resource: udp]:
+  let sock = {port: port} openUdp     # -> UdpHandle
+  defer:
+    finish sock, udp                  # mark: on_finish runs, the handle dies
+  ...
+```
+
+The handle's type already decides which table is touched, so `udp` is
+redundant — and **checked**: `finish sock, file` on a `UdpHandle` is TK-RS04
+at compile time. The redundancy is there because a release is read far more
+often than written, and the reader should not have to find the declaration of
+`sock` to learn which registry this touches. It costs nothing at runtime: the
+kind names the table directly.
+
+> **`acquire` has no spelling yet.** §7.4 says what it does and never how it
+> is written, so it is a ruling rather than an implementation
+> (`docs/resources.md` §2). A library reaches the registry through an extern
+> today. That also still blocks §7.4's static acquire-must-finish check —
+> though less than before, since the defer-mark half now has a mark to
+> recognise.
 
 ### `defer` — a block that runs at scope exit
 

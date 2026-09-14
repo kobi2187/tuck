@@ -31,6 +31,14 @@ tuck_withScratch :: proc (n: int) -> int {
   return (tuck_scratch + 1)
 }
 
+tuck_serve :: proc (port: u16) -> int {
+  tuck_sock := tuck_openUdp(port)
+  defer {
+    rt.finishResource(&tuckRes_udp, tuck_sock)
+  }
+  return 0
+}
+
 tuck_main :: proc () -> int {
   return tuck_withScratch(16)
 }

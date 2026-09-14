@@ -189,46 +189,72 @@ stage — the gate will not let the feature land undocumented.
 
 ---
 
-## 2. The one thing §7.4 does not settle: the acquire surface
+## 2. The release surface — `finish <handle>, <kind>`
 
-Everything above is built and verified. One piece is not, and it is not an
-oversight — the spec does not say enough to build it.
+§7.4 describes what acquire and finish DO in complete detail and never says
+how they are spelled. The nearest thing it gives is `kind::sweep`, which uses
+`::` — the module-qualifier syntax, a resolution path neither `Pool.acquire`'s
+nor a member call's. Three spellings were consistent with it, and they are not
+equivalent.
 
-**There is no Tuck-level way to acquire into a registry or to mark an entry
-finished.** §7.4 describes what those operations DO in complete detail, and
-never says how they are spelled. The nearest thing it gives is `kind::sweep`,
-which uses `::` — the module-qualifier syntax, a resolution path neither
-`Pool.acquire`'s nor a member call's.
+**Ruled (2026-09-14): `finish sock, udp` — the kind is named, and checked.**
 
-Three spellings are consistent with what §7.4 writes, and they are not
-equivalent:
+```tuck
+fn serve({port: u16}) -> int [io, resource: udp]:
+  let sock = {port: port} openUdp     # -> UdpHandle
+  defer:
+    finish sock, udp
+  ...
+```
 
-| Spelling | Precedent | Cost |
+The handle's TYPE already decides which table is touched — every kind gets its
+own nominal `<Kind>Handle` (§0.3) — so `udp` is redundant. That is the point,
+not an oversight:
+
+- **A release is read far more often than it is written.** The reader should
+  not have to find the declaration of `sock` to learn which registry this
+  statement touches.
+- **The redundancy is CHECKED, never trusted.** `finish sock, file` on a
+  `UdpHandle` is TK-RS04, by name, at compile time. A second source of truth
+  that is verified is a reader aid; one that is trusted is a bug waiting.
+- **It costs nothing at runtime.** The kind names the table directly, so the
+  emitted call is `finish(tuckRes_udp, sock)` — no dispatch, and no table id
+  riding on the handle, which stays `{slot: int32, gen: uint32}`.
+
+Honestly: this is the more ROBUST form, not the more flexible one. The
+type-based `finish sock` expresses everything this does with less ceremony;
+the one thing it could not express is finishing a handle held in a generic
+type parameter, which nothing needs yet. The argument that decided it is
+legibility at the call site plus a compile-time cross-check, not expressive
+power.
+
+`finish` is contextual, like `defer` and `resources`: it is gated on a NAME
+following, because Tuck calls are postfix (`{payload} fn`) and two bare
+identifiers in a row are not an expression in any other construct — so an
+ordinary variable named `finish` still reads as one.
+
+Two rules, deliberately in two places:
+
+| Rule | Where | Why |
 |---|---|---|
-| `udp::acquire` / `udp::finish` | §7.4's own `kind::sweep` | `::` today means "another module"; a kind is not one |
-| `Udp.acquire`, mirroring `Pool.acquire` | the pool machinery §7.4 says this IS | needs kinds to be Capitalized, which §7.4's examples are not |
-| an extern the library declares, the registry reached through its handle | §7.4's own `fn open(...) -> UdpSocket!` example | leaves acquire/finish outside the language |
+| the named kind is DECLARED (TK-RS01) | `typecheck_resources`, whole-program | kinds are an open set; a module may finish into a kind an import declared, so no single module's view can answer it |
+| the named kind MATCHES the handle (TK-RS04) | `synthFinish`, per module | needs a synthesized type, which the whole-program pass does not have |
 
-Picking one is a language decision, not an implementation one. Guessing costs
-more than waiting: every downstream stage would learn the guess, which is what
-the tree's own "each construct gets its own node kind" rule is about.
+`synthFinish` reads the RAW synthesized type, never a `resolve`d one:
+resolving follows a named type to its body, and every kind's handle is the
+same empty record — so a resolved `UdpHandle` and a resolved `FileHandle` are
+indistinguishable, which is exactly the distinction being checked.
 
-**What that blocks, precisely:** §7.4's static check — "every acquire ends in
-exactly one of: a defer mark, or an escape into the registry". The *escape*
-arm is already sound and already enforced by construction (the registry closes
-at exit, which is what makes the local analysis sufficient). The *defer mark*
-arm cannot be recognised, because there is no mark to recognise. A partial
-rule here would be worse than none: the obvious candidate — "an acquired
-handle dropped on the spot is a leak" — fires on something §7.4 explicitly
-calls sound, since a dropped handle is still in the registry and close-all
-still gets it.
+### What is still missing: ACQUIRE
 
-**What is NOT blocked, and is done:** the registry itself, its three policies,
-the inline watermark sweep, LIFO close-all, the stale-handle generation bump,
-the per-kind handle type, and the `OPEN RESOURCES (n)` report — which runs at
-exit in a debug build and names the kind, the slot and the acquire site. The
-report is the runtime half of the same question the static check asks, and it
-answers it for real programs today.
+`finish` is spelled; `acquire` is not. A library reaches the registry through
+an extern whose implementation registers the entry, which means the extern
+needs the table — and the table is emitted into the USER's module, not the
+runtime. Closing that is the next ruling, and it is the last one §7.4 needs.
+
+This also still blocks §7.4's static acquire-must-finish check, though less
+than before: the *defer mark* arm now has a mark to recognise, so the analysis
+is writable the moment acquire has a shape to match on.
 
 ## 3. Smaller boundaries
 

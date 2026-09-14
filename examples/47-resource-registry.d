@@ -29,6 +29,14 @@ long tuck_withScratch(long n) {
     return (tuck_scratch + 1L);
 }
 
+long tuck_serve(ushort port) {
+    UdpHandle tuck_sock = tuck_openUdp(port);
+    scope(exit) {
+        rt.finishResource(tuckRes_udp, tuck_sock);
+    }
+    return 0L;
+}
+
 long tuck_main() {
     return tuck_withScratch(16L);
 }

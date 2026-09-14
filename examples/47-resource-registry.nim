@@ -2,6 +2,7 @@
 import ../compiler/tuck_rt
 
 proc tuck_withScratch*(n: int): int
+proc tuck_serve*(port: uint16): int
 proc tuck_main*(): int
 
 type NetHandle* = ResourceHandle
@@ -24,6 +25,12 @@ proc tuck_withScratch*(n: int): int =
   defer:
     tuck_scratch = 0
   return (tuck_scratch + 1)
+
+proc tuck_serve*(port: uint16): int =
+  var tuck_sock = tuck_openUdp(port)
+  defer:
+    finish(tuckRes_udp, tuck_sock)
+  return 0
 
 proc tuck_main*(): int =
   return tuck_withScratch(16)

@@ -548,3 +548,99 @@ fn main() -> int:
   return 0
 """
   t.okCheck "sweep_batch outside `lazy` is inert, not an error (spec §7.4's own block)"
+
+  # --- `finish <handle>, <kind>` ---------------------------------------------
+  #
+  # §7.4's release INTENT. The kind is named even though the handle's TYPE
+  # already decides the table, and that redundancy is the feature: a release
+  # is read far more often than written, and the reader should not have to
+  # find the declaration of `sock` to learn which registry is touched. The
+  # checker verifies the two agree, so the second source of truth cannot
+  # drift from the first.
+
+  t.src """
+resources:
+  udp
+  file [cap: 8, on_finish: flush, policy: strict]
+
+pending:
+  fn openUdp({port: u16}) -> UdpHandle [io, resource: udp]
+
+fn serve({port: u16}) -> int [io, resource: udp]:
+  let sock = {port: port} openUdp
+  defer:
+    finish sock, udp
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a finish inside a defer checks"
+  # The kind names the table directly, so the redundancy the source spells out
+  # costs nothing at runtime — no dispatch, no table id on the handle.
+  t.emits "Nim: the kind resolves to its table at compile time",
+          "finish\\(tuckRes_udp, tuck_sock\\)"
+  t.emitsOdin "Odin: likewise, by pointer",
+              "rt.finishResource\\(&tuckRes_udp, tuck_sock\\)"
+  t.emitsD "D: likewise, by ref",
+           "rt.finishResource\\(tuckRes_udp, tuck_sock\\)"
+  # Built, not run: the handle comes from a `pending:` stub, so there is no
+  # real registry entry behind it and a run would (correctly) abort on the
+  # stale-handle check. What matters here is that the emitted call LINKS.
+  t.builds "...and the emitted call compiles and links"
+
+  # THE point of the explicit form: a handle finished into the wrong registry
+  # is caught, by name, at compile time.
+  t.src """
+resources:
+  udp
+  file [cap: 8]
+
+pending:
+  fn openUdp({port: u16}) -> UdpHandle [io, resource: udp]
+
+fn serve({port: u16}) -> int [io, resource: udp]:
+  let sock = {port: port} openUdp
+  finish sock, file
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "finishing into the wrong registry is TK-RS04", "TK-RS04"
+
+  # The kind must be DECLARED, the same rule the marker follows. Asked by the
+  # whole-program pass rather than the module checker, because a module may
+  # finish into a kind that a module it imports declared.
+  t.src """
+resources:
+  udp
+
+fn main() -> int:
+  let h = {} UdpHandle
+  finish h, tcp
+  return 0
+"""
+  t.badCheck "finishing into an undeclared kind is TK-RS01", "TK-RS01"
+
+  t.src """
+resources:
+  udp
+
+fn main() -> int:
+  let h = {} UdpHandle
+  finish h
+  return 0
+"""
+  t.badCheck "omitting the kind is refused, showing the form",
+             "finish <handle>, <kind>"
+
+  # `finish` is contextual, gated on a NAME following: Tuck calls are postfix,
+  # so two bare identifiers in a row are not an expression in any other
+  # construct — while an ordinary name spelled `finish` still reads as one.
+  t.src """
+fn main() -> int:
+  let finish = 17
+  return finish
+"""
+  t.runs "a variable named 'finish' is still a variable", 17

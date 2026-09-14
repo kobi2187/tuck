@@ -1377,6 +1377,9 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkSend: ctx.genSend(e)
   of exkSelect: ctx.genOdinSelect(e, ind)
   of exkDefer: ctx.genDefer(e, ind)
+  of exkFinish:
+    "rt.finishResource(&" & resourceTableName(e.finishKind) & ", " &
+      ctx.genOdinExpr(e.finishHandle) & ")"
   of exkImport: ""  # imports are declarations, never expression position
 
 # Declaration codegen (genOdinDecl and everything it dispatches to --

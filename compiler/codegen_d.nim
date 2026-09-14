@@ -1389,6 +1389,9 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkSend: ctx.genDSend(e)
   of exkSelect: ctx.genDSelect(e)
   of exkDefer: ctx.genDDefer(e)
+  of exkFinish:
+    "rt.finishResource(" & resourceTableName(e.finishKind) & ", " &
+      ctx.genDExpr(e.finishHandle) & ")"
 
 # --------------------------------------------------------- declarations --
 

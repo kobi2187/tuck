@@ -184,6 +184,7 @@ iterator children*(e: Expr): Expr =
         yield arm.arg
         yield arm.body
     of exkDefer: yield e.deferBody
+    of exkFinish: yield e.finishHandle
 
 iterator childDecls*(d: Decl): Decl =
   ## Every declaration nested one level inside `d`, whichever field holds it.

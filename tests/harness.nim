@@ -320,6 +320,19 @@ proc runs*(t: var T, name: string, code: int) =
   if it.rc == code: t.ok name
   else: t.no name, &"exit {it.rc}, want {code}: " & lastLine(it.output)
 
+proc builds*(t: var T, name: string) =
+  ## The snippet COMPILES AND LINKS, with no claim about running it.
+  ##
+  ## For code whose runtime behaviour is not the point, or not reachable yet:
+  ## `runs` would force an exit code the program has no meaningful one for,
+  ## and `emits` only proves text was produced — not that the host compiler
+  ## accepts it, which is where an emitted-code bug actually surfaces.
+  let b = t.need(vBuild)
+  if t.phase == pCollect: return
+  if t.wasSkipped(b): t.skip name; return
+  if t.failedTo(b): t.no name, "build failed: " & tailLines(t.item(b).output, 2)
+  else: t.ok name
+
 proc outputs*(t: var T, name, pattern: string) =
   ## Reads the run captured by the preceding `runs`. Registering the run here
   ## too would be wrong — `outputs` never builds on its own in lib.sh either.

@@ -3748,6 +3748,34 @@ proc synthDiscard(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(e.discardVal)
   unitType(e.span)
 
+proc synthFinish(tc: var TypeChecker, e: Expr): Type =
+  ## `finish <handle>, <kind>` (spec §7.4). The kind is REDUNDANT — the
+  ## handle's type already decides which registry table is touched — so the
+  ## whole job here is verifying that the redundancy holds. A second source of
+  ## truth that is checked is a reader aid; one that is trusted is a bug
+  ## waiting.
+  ##
+  ## The kind having been DECLARED at all is not asked here: that rule is
+  ## whole-program (kinds are an open set, §7.4) and runs in
+  ## typecheck_resources before any module body is checked, so by this point
+  ## an undeclared kind has already been TK-RS01.
+  # The RAW synthesized type, never `resolve`d: resolving follows a named type
+  # to its body, and every kind's handle is the same empty record — so a
+  # resolved `UdpHandle` and a resolved `FileHandle` are indistinguishable,
+  # which is precisely the distinction being checked. The names are the whole
+  # answer here (that is what `distinctNames` makes them mean).
+  let ht = tc.synthesize(e.finishHandle)
+  let want = resourceHandleName(e.finishKind)
+  # Unknown is gradual typing's "no claim made", not a mismatch — the same
+  # latitude every other check in this file gives it.
+  if ht != nil and ht.kind == tkNamed and ht.name notin [want, "Unknown"]:
+    fail(dcRsWrongKind,
+         "'" & writtenName(e.finishHandle) & "' is a " & ht.name &
+         ", but this finishes it into the '" & e.finishKind &
+         "' registry, whose handles are " & want,
+         e.span)
+  unitType(e.span)
+
 proc synthDefer(tc: var TypeChecker, e: Expr): Type =
   ## `defer:` (spec §7.4) — the body is checked exactly as if it sat where the
   ## block is written; only WHEN it runs moves, not what it means. The
@@ -3971,6 +3999,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkSend: tc.synthSend(e)
   of exkSelect: tc.synthSelect(e)
   of exkDefer: tc.synthDefer(e)
+  of exkFinish: tc.synthFinish(e)
   of exkQualified, exkImport: tc.synthQualified(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum

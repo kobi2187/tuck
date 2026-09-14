@@ -218,6 +218,10 @@ proc walk(m: var Metrics, e: Expr) =
     walk(m, e.discardVal)
   of exkSend:
     walk(m, e.sendPayload)
+  of exkFinish:
+    # Not a fork: a release happens or the program has already left by another
+    # path that this same block also covers. The handle expression still walks.
+    walk(m, e.finishHandle)
   of exkDefer:
     # Not a fork. A defer block runs at EVERY exit from its scope, so it adds
     # no path the exits themselves did not already contribute — counting it

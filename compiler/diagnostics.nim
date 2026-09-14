@@ -151,6 +151,7 @@ type
     dcRsUnknownKind = "TK-RS01"         ## [resource: k] names no declared kind
     dcRsDuplicateKind = "TK-RS02"       ## two `resources:` blocks declare one kind
     dcRsUndeclared = "TK-RS03"          ## a caller does not declare a kind it acquires
+    dcRsWrongKind = "TK-RS04"           ## `finish h, k` where h is another kind's handle
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -660,6 +661,12 @@ proc ruleExplanation(d: DiagCode): string =
     "the program, so the second block's knobs would silently lose to the " &
     "first's — cap, policy and sweep batch all belong to ONE table. Fix: " &
     "pick one owner for the kind, or give them distinct names."
+  of dcRsWrongKind:
+    "`finish <handle>, <kind>` names the kind as well as the handle, and the " &
+    "two must agree (spec §7.4). The kind is redundant on purpose — the " &
+    "handle's type already decides which registry is touched — so stating it " &
+    "is a claim the compiler checks, not information it needs. Fix: name the " &
+    "kind the handle actually came from, or finish a different handle."
   of dcRsUndeclared:
     "A fn calling an acquire site must declare the kind itself, exactly as " &
     "it must declare an effect it reaches (spec §3.7 — explicit, not " &

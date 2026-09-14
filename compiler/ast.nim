@@ -295,6 +295,13 @@ type
     exkImport
     exkSend      # `ActorType send handler {payload}` — enqueue to an actor
     exkSelect    # task-body `on select:` — wait on read/timeout branches
+    exkFinish    # `finish <handle>, <kind>` — spec §7.4's release INTENT.
+                 # The kind is named rather than inferred from the handle's
+                 # type: the type already decides the table, so naming it is
+                 # redundant — and CHECKED, which is the point. A release is
+                 # read far more often than written, and the one reading it
+                 # should not have to find the declaration of `sock` to learn
+                 # which registry is being touched.
     exkDefer     # `defer:` — a block that runs at scope exit, LIFO. A GENERAL
                  # statement: §7.4 needs it for release intent, but nothing
                  # about it is resource-specific, and all three backends have
@@ -412,6 +419,9 @@ type
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
     of exkDefer:
       deferBody*: Expr  # the block to run at scope exit
+    of exkFinish:
+      finishHandle*: Expr   # the handle being released
+      finishKind*: string   # the kind it belongs to, as written
     of exkCombinator:
       comb*: CombKind
       combRecv*: Expr   # the receiver; for ckMerge, the struct OF members

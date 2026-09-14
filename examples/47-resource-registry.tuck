@@ -42,5 +42,22 @@ fn withScratch({n: int}) -> int:
     scratch = 0
   return scratch + 1
 
+# `finish` is the release INTENT: it marks the entry, runs the kind's
+# `on_finish`, and bumps the generation — so the handle dies HERE under every
+# policy, and a use-after-finish is the same caught error in a debug build and
+# a shipped one. Whether the socket actually closes now, at a sweep, or at
+# exit is `udp`'s declared policy, not this statement's.
+#
+# The kind is named as well as the handle. The handle's TYPE already decides
+# which registry is touched, so `udp` is redundant — and checked: finishing a
+# UdpHandle into the `file` registry is a compile error, not a runtime one. A
+# release is read far more often than it is written, and the reader should not
+# have to find the declaration of `sock` to learn which table this touches.
+fn serve({port: u16}) -> int [io, resource: udp]:
+  let sock = {port: port} openUdp
+  defer:
+    finish sock, udp
+  return 0
+
 fn main() -> int:
   return {n: 16} withScratch

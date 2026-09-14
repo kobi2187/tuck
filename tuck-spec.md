@@ -1607,15 +1607,19 @@ the unbuilt together would be dishonest:
   close-all and the stale-handle catch; the per-kind handle type; the
   `OPEN RESOURCES` report and close-all at exit. `defer` landed with it, as a
   general statement on all three backends.
-- **Not spelled.** The acquire and finish OPERATIONS. This section says what
-  they do in complete detail and never says how they are written, and the
-  readings consistent with it (`udp::acquire`, `Udp.acquire`, or an extern the
-  library declares) are not equivalent. Picking one is a ruling.
+- **Release is spelled** `finish <handle>, <kind>` (ruled 2026-09-14). The
+  kind is redundant — the handle's type decides the table — and checked, so
+  finishing into the wrong registry is a compile error rather than a runtime
+  one.
+- **Acquire is not spelled.** This section says what it does and never how it
+  is written, and the readings consistent with it are not equivalent. Picking
+  one is a ruling. A library reaches the registry through an extern today.
 - **Blocked on that.** The static acquire-must-finish check above. Its
   *escape* arm is already sound by construction — the registry closes at exit,
   which is exactly what this section says makes the local analysis sufficient.
-  Its *defer mark* arm has no mark to recognise yet. The OPEN RESOURCES report
-  answers the same question at runtime in the meantime.
+  Its *defer mark* arm now has a mark to recognise, so the analysis is
+  writable as soon as acquire has a shape to match on. The OPEN RESOURCES
+  report answers the same question at runtime in the meantime.
 
 `docs/resources.md` is the implementation record, including the four questions
 this section left open and what the compiler settled them as.

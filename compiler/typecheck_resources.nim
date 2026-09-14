@@ -74,9 +74,38 @@ proc checkMarkedKinds*(mods: seq[tuple[name, path: string, m: Module]],
              "`resources:` block declares the kind '" & k & "'",
              site.span)
 
+proc checkFinishKinds(e: Expr, kinds: ResourceKinds) =
+  ## Every `finish <handle>, <kind>` in a body names a declared kind — the
+  ## same rule the MARKER follows, and it has to be asked separately because
+  ## the marker walk reads signatures and this lives in statements.
+  ##
+  ## Here rather than in the per-module checker's synthFinish because the kind
+  ## SET is program-wide: a module may finish into a kind a module it imports
+  ## declared, so no single module's view can answer this. synthFinish asks
+  ## the other half — whether the named kind matches the handle's type — which
+  ## is local and needs a synthesized type this pass does not have.
+  if e == nil: return
+  if e.kind == exkFinish and not kinds.hasKey(e.finishKind):
+    fail(dcRsUnknownKind,
+         "`finish` names the kind '" & e.finishKind & "', but no `resources:` " &
+         "block declares it",
+         e.span)
+  for c in e.children: checkFinishKinds(c, kinds)
+
+proc checkFinishSites*(mods: seq[tuple[name, path: string, m: Module]],
+                       kinds: ResourceKinds) =
+  for (_, _, m) in mods:
+    for d in m.decls:
+      if d == nil: continue
+      for ex in d.ownExprs(): checkFinishKinds(ex, kinds)
+      for mem in d.childDecls():
+        if mem == nil: continue
+        for ex in mem.ownExprs(): checkFinishKinds(ex, kinds)
+
 proc checkResources*(mods: seq[tuple[name, path: string, m: Module]]):
                      ResourceKinds {.discardable.} =
   ## spec §7.4, the declaration side. Returns the kind table so the stages
   ## that emit from it do not collect it a second time.
   result = collectResourceKinds(mods)
   checkMarkedKinds(mods, result)
+  checkFinishSites(mods, result)

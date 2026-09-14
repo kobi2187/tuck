@@ -904,6 +904,11 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkSend: ctx.genExprSend(e)
   of exkSelect: ctx.genExprSelect(e)
   of exkDefer: ctx.genDefer(e, ind)
+  of exkFinish:
+    # The kind names the table directly, so there is no dispatch and no
+    # runtime cost to the redundancy the source spells out.
+    "finish(" & resourceTableName(e.finishKind) & ", " &
+      ctx.genExpr(e.finishHandle) & ")"
   of exkImport: ""  # imports are declarations, never expression position
 
 proc hasBracketBase(e: Expr): bool =

@@ -780,6 +780,24 @@ proc parseLoopExpr(p: var Parser, sp: Span): Expr =
   discard p.expect(tkColon)
   Expr(span: sp, kind: exkWhile, whileCond: nil, whileBody: p.parseBlock())
 
+proc parseFinishExpr(p: var Parser, sp: Span): Expr =
+  ## `finish <handle>, <kind>` — spec §7.4's release INTENT: mark the entry
+  ## finished, run the kind's `on_finish`, and bump the generation so the
+  ## handle dies HERE under every policy. Whether the OS handle closes now, at
+  ## a sweep, or at exit is the kind's declared policy, not this statement's.
+  ##
+  ## The kind is named even though the handle's TYPE already determines the
+  ## table, and that redundancy is the feature: a release is read far more
+  ## often than it is written, and the reader should not have to find the
+  ## declaration of `sock` to learn which registry is being touched. The
+  ## checker verifies the two agree (TK-RS04), so the second source of truth
+  ## cannot drift from the first.
+  discard p.advance()            # eat `finish`
+  let handle = p.parseExpr()
+  discard p.expect(tkComma, "`finish` names the kind too: `finish <handle>, <kind>`")
+  let kind = p.expectMemberName("Expected a resource kind name after ','").value
+  Expr(span: sp, kind: exkFinish, finishHandle: handle, finishKind: kind)
+
 proc parseDeferExpr(p: var Parser, sp: Span): Expr =
   ## `defer:` then an indented block (spec §7.4) — statements held back until
   ## the enclosing scope exits, LIFO.
@@ -806,6 +824,13 @@ proc parseExpr*(p: var Parser): Expr =
   # still read as one.
   if curr.kind == tkIdent and curr.value == "defer" and p.peek().kind == tkColon:
     return p.parseDeferExpr(sp)
+  # `finish <handle>, <kind>` (spec §7.4). Contextual like `defer`, and gated
+  # on a NAME following: Tuck calls are postfix (`{payload} fn`), so two bare
+  # identifiers in a row are not an expression in any other construct — while
+  # `return finish` and `finish + 1` still read `finish` as an ordinary name.
+  if curr.kind == tkIdent and curr.value == "finish" and
+     p.peek().kind in {tkIdent, tkLBrace}:
+    return p.parseFinishExpr(sp)
 
   case curr.kind
   of tkLet, tkVar: return p.parseBinding(sp, mutable = curr.kind == tkVar)

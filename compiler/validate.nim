@@ -144,8 +144,8 @@ let tuckGrammar = peg("module", st: Stats):
     st.sites[capture[0].si] = "s:" & ($1).split(' ')[0]
 
   stmt      <- letStmt | varStmt | returnStmt | ifStmt | forStmt | loopStmt |
-               matchStmt | onStmt | deferStmt | ellipsisStmt | simpleStmt |
-               transRow | assignStmt | exprStmt
+               matchStmt | onStmt | deferStmt | finishStmt | ellipsisStmt |
+               simpleStmt | transRow | assignStmt | exprStmt
   # spec 7.4: `defer:` + block — statements held back until scope exit.
   # Positional, like `satisfiesMember` and the identifier-headed declarations
   # above: `defer` is not a keyword to the lexer, so it arrives as tkIdent and
@@ -154,6 +154,11 @@ let tuckGrammar = peg("module", st: Stats):
   # `<ident>:` opening a block in STATEMENT position is a defer and nothing
   # else.
   deferStmt <- word * "tkColon " * +nl * blk
+  # spec 7.4: `finish <handle>, <kind>`. Positional for the same reason —
+  # `finish` is not a keyword to the lexer — and stated BEFORE the general
+  # expression statements so the comma is read as this form's rather than as
+  # whatever an expression might do with one.
+  finishStmt<- word * expr * "tkComma " * name * eol
   letStmt   <- ("tkLet " | "tkConst ") * name * ?("tkColon " * typeExpr) *
                "tkAssign " * (matchTail | ifTail | (expr * eol))
   varStmt   <- "tkVar " * name * ?("tkColon " * typeExpr) *
