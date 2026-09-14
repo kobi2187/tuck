@@ -1010,3 +1010,108 @@ fn connect2({fd: int}) -> ?Db2Handle [resource: db2]:
   return acquire fd, db2
 """
   t.runs "main may state the imported kind it uses, and be believed", 17
+
+  # --- who declares the KIND ---------------------------------------------------
+  #
+  # A kind's knobs have two owners. The library that wraps an OS service knows
+  # its protocol and what closing it means; the app knows how many and under
+  # which policy, which is a deployment question no library can answer. So a
+  # kind may be declared by BOTH, and the rule is per KNOB — each set at most
+  # once program-wide — rather than one declaration per kind. No
+  # last-writer-wins and no dependence on import order.
+  t.srcNamed "t.tuck", """
+import dblib
+
+resources:
+  db [cap: 4096, policy: lazy, sweep_batch: 64]
+
+fn main() -> int:
+  let h = {fd: 3} connect
+  if h.ok:
+    finish h.value, db
+    return 17
+  return 0
+"""
+  t.addFile "dblib.tuck", """
+type DbState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Closed
+
+resources:
+  db [states: DbState, on_finish: flush]
+
+fn connect({fd: int}) -> ?DbHandle [resource: db]:
+  return acquire fd, db
+"""
+  t.runs "a library owns the protocol, the app owns the budget", 17
+
+  # ONE table, carrying both sites' answers — emitted at the library, the
+  # module every user of the kind can see. Where it lands is not a free choice:
+  # `connect` calls acquire on this table, so a table in the app would leave
+  # the library referencing a module that imports it. So the re-opening site
+  # emits nothing at all, which is what keeps a re-open from becoming a second
+  # table with half the knobs. (The merged VALUES are asserted by the run
+  # above and by the single-module `emits` cases further up; this assertion is
+  # about placement, which is the part a re-open could break.)
+  t.omits "a re-opening site emits no table of its own", "ResourceTable\\("
+
+  t.srcNamed "t.tuck", """
+import dblib
+
+resources:
+  db [cap: 4096, on_finish: shutdown]
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile "dblib.tuck", """
+resources:
+  db [on_finish: flush]
+"""
+  t.badCheck "the same knob from two sites is refused, naming the knob",
+             "`on_finish` is set twice"
+
+  # Coherence is checked on the MERGED kind, which is the reason it moved out
+  # of the parser: no single site has the whole combination to judge, and an
+  # app adding a cap is exactly what makes a library's on_full mean something.
+  t.srcNamed "t.tuck", """
+import netlib
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile "netlib.tuck", """
+resources:
+  q [on_full: error]
+"""
+  t.badCheck "on_full with no cap at EITHER site is still refused",
+             "on_full needs a cap"
+
+  t.srcNamed "t.tuck", """
+import netlib
+
+resources:
+  q [cap: 64]
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile "netlib.tuck", """
+resources:
+  q [on_full: error]
+"""
+  t.okCheck "...and the app supplying the cap is what makes on_full coherent"
+
+  # `none` is a documented on_finish value, and lexes as a keyword rather than
+  # an attribute name — so it was reserved even where only a name can appear.
+  # The same exemption `error` and `exit` already needed, one level down.
+  t.src """
+resources:
+  f [cap: 4, on_finish: none]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "`on_finish: none` parses — a closed vocabulary, not an expression"

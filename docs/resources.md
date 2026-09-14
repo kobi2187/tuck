@@ -169,18 +169,14 @@ That last one is the one that earns the feature: a live cycle with no exit is a
 handle that cannot be closed from where it is, which is a leak the declaration
 promised to prevent.
 
-### 0.8 Who declares the kind, and what each side still cannot do
+### 0.8 Who declares the kind
 
 With `states:` decoupled, the protocol is written once by whoever owns the
-resource and named by whoever needs a table. What remains is the KIND itself —
-its name, its cap, its policy — and that is not yet split the same way.
-
-Today a kind is declared **exactly once** program-wide (TK-RS02), so its
-declaration site owns every knob on it. Both arrangements work, and they trade
-differently:
+resource. The kind itself has the same split — and it is now declared the same
+way, by **both**:
 
 ```tuck
-# dblib.tuck — the library declares the type AND the kind
+# dblib.tuck — the protocol of the service it wraps, and what closing means
 type DbState:
   | Open
   | Closed
@@ -188,35 +184,49 @@ type DbState:
     Open -> Closed
 
 resources:
-  db [cap: 32, states: DbState]
-
-fn connect({fd: int}) -> ?DbHandle [resource: db]:
-  return acquire fd, db
+  db [states: DbState, on_finish: flush]
 ```
 
-The app then imports `dblib`, declares nothing, and `finish h.value, db`
-resolves — verified end to end in `tests/suites/resources.nim`. The cost is
-that `cap: 32` is the library's guess about a deployment it cannot see.
+```tuck
+# app.tuck — how many, and under which policy
+import dblib
 
-The other arrangement — the app writing `resources: db [cap: 4096, states:
-DbState]` while the library only uses the kind — **typechecks but does not
-link**, and the reason is worth writing down rather than discovering twice:
-`<Kind>Handle` and `tuckRes_<kind>` are emitted into the module that declares
-the kind. If that is the app, then `dblib`'s own `connect` — which returns
-`?DbHandle` and calls `acquire(tuckRes_db, ...)` — references symbols in a
-module that imports *it*. Nim reports `undeclared identifier: 'DbHandle'`, and
-Odin and D have the same cycle for the same reason.
+resources:
+  db [cap: 4096, policy: lazy, sweep_batch: 64]
+```
 
-So the real constraint is an EMISSION one, not a language one: **a kind's table
-must live somewhere every user of it can see.** Two ways out, neither built:
+**The rule is per KNOB, not per declaration: each is set at most once
+program-wide.** That is what avoids the trap a merge invites — there is no
+last-writer-wins, no dependence on which module the loader reached first, and
+the diagnostic (TK-RS02, reworded) names the knob rather than the block:
 
-| | |
-|---|---|
-| **Split the declaration** — the library declares `db [states: DbState]`, the app re-opens it for `[cap: 4096]` | Keeps the table in the library module, so nothing moves. Needs a merge rule in place of TK-RS02's blanket refusal: the protocol declared exactly once, and *each knob* set at most once — no last-writer-wins, no import-order dependence, and the diagnostic can name both sites |
-| **Emit the tables into one shared unit** every module imports | Matches what §7.4 describes — a global per-kind table — and lets the app own the whole block. Costs a new generated output in all three backends, plus import and link ordering |
+```
+resource kind 'db': `on_finish` is set twice — a kind names ONE registry
+table, so each of its knobs has one answer.
+```
 
-The first is a checker change; the second is an architecture change that makes
-the app the sole owner. Recorded here as a ruling, not as work in progress.
+It also means no taxonomy has to be written down. Nothing declares `cap`
+app-only or `on_finish` library-only; whoever knows the answer writes it, and
+writing it twice is the error.
+
+**Coherence moved out of the parser** as a direct consequence. `on_full` needs
+a `cap` and `sweep_batch` needs `policy: lazy`, but with two sites no single
+one has the combination to judge: a library's `[on_full: error]` is incoherent
+alone and becomes *correct* the moment an app adds `[cap: 64]`. The checks now
+run on the merged kind, as TK-RS11.
+
+**Where the table is emitted is not a free choice.** `<Kind>Handle` and
+`tuckRes_<kind>` are emitted at the kind's declaration, and a library's own
+`connect` calls `acquire(tuckRes_db, ...)` — so a table emitted in the app
+would leave the library referencing a module that imports it (Nim:
+`undeclared identifier: 'DbHandle'`; Odin and D have the same cycle). The
+owning site is therefore the FIRST one in dependency order, which
+`modules.loadProgram` already guarantees is a dependency of every later site.
+Re-opening sites emit nothing at all.
+
+The checker writes the merged definition back into that owning site and drops
+the re-opens, so codegen learns nothing about any of this: all three backends
+still emit exactly what they find, and what they find is now complete.
 
 ### 0.7 Why the protocol is validated but not yet TRACKED
 

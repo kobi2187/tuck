@@ -710,6 +710,12 @@ proc parseResourceAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
   ## `[on_full: error]` died at "Expected an expression here". Reading a name
   ## where only a name can appear is what `expectMemberName` is for, and it is
   ## also the more honest grammar: nothing here is ever computed.
+  ##
+  ## `none` needs the same exemption for the same reason, one level further
+  ## down: it lexes as tkNone, a keyword rather than an attribute name, so it
+  ## is reserved even in the member positions tkAttr is allowed in. In a
+  ## closed vocabulary it is just the word `none`, and `[on_finish: none]` is
+  ## a value the documentation lists.
   if p.current().kind != tkLBracket: return
   discard p.advance()
   while p.current().kind notin {tkRBracket, tkEOF}:
@@ -718,7 +724,7 @@ proc parseResourceAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
     var val = ""
     if p.current().kind == tkColon:
       discard p.advance()
-      val = if p.current().kind == tkIntLit: p.advance().value
+      val = if p.current().kind in {tkIntLit, tkNone}: p.advance().value
             else: p.expectMemberName("Expected a value after '" & name & ":'").value
     attrs.add(TypeAttr(name: name, value: val, span: sp))
     if p.current().kind == tkComma: discard p.advance()
@@ -754,25 +760,33 @@ proc applyResourceAttrs(p: var Parser, k: var ResourceKindDef,
   ## protocol — are three readable procs rather than one long arm.
   for a in attrs:
     case a.name
-    of "cap":         k.cap = p.parseResourceCount(k.name, "cap", a.value)
-    of "sweep_batch": k.sweepBatch = p.parseResourceCount(k.name, "sweep_batch", a.value)
+    of "cap":
+      k.given.incl(rkCap); k.knobSpan[rkCap] = a.span
+      k.cap = p.parseResourceCount(k.name, "cap", a.value)
+    of "sweep_batch":
+      k.given.incl(rkSweepBatch); k.knobSpan[rkSweepBatch] = a.span
+      k.sweepBatch = p.parseResourceCount(k.name, "sweep_batch", a.value)
     of "on_full":
+      k.given.incl(rkOnFull); k.knobSpan[rkOnFull] = a.span
       if not resourceOnFullFromName(a.value, k.onFull):
         p.reportError("resource kind '" & k.name & "': on_full must be " &
                       "absent or error, got '" & a.value & "'",
                       a.span.line, a.span.col)
     of "on_finish":
+      k.given.incl(rkOnFinish); k.knobSpan[rkOnFinish] = a.span
       if not resourceOnFinishFromName(a.value, k.onFinish):
         p.reportError("resource kind '" & k.name & "': on_finish must be " &
                       "none, flush or shutdown, got '" & a.value & "'",
                       a.span.line, a.span.col)
     of "states":
+      k.given.incl(rkStates); k.knobSpan[rkStates] = a.span
       # The library's type, named not restated. Checked in
       # typecheck_resources, which is where the program's types are visible —
       # the parser has one module and a protocol may live in another.
       k.statesType = a.value
       k.statesSpan = a.span
     of "policy":
+      k.given.incl(rkPolicy); k.knobSpan[rkPolicy] = a.span
       if not resourcePolicyFromName(a.value, k.policy):
         p.reportError("resource kind '" & k.name & "': policy must be " &
                       "strict, lazy or exit, got '" & a.value & "'",
@@ -782,39 +796,6 @@ proc applyResourceAttrs(p: var Parser, k: var ResourceKindDef,
                     a.name & "'. A kind takes cap, policy, on_full, " &
                     "on_finish, sweep_batch and states.",
                     a.span.line, a.span.col)
-proc checkResourceCoherence(p: var Parser, k: ResourceKindDef, sp: Span) =
-  # THE COMBINATION IS THE DECLARATION, not the individual words: a kind's
-  # knobs constrain each other, and a pair that can never mean anything
-  # together is a mistake worth naming rather than a setting that quietly does
-  # nothing. Checked AFTER the whole bracket, because the attribute a rule
-  # depends on may be written later in it.
-  #
-  # The line drawn here is between PERMANENTLY incoherent and merely inert
-  # today, and only the first gets a rule:
-  #
-  #   `on_full` without `cap`     — an unbounded table never fills. There is no
-  #                                 reading of §7.4 under which this applies.
-  #   `sweep_batch` without lazy  — it sizes the watermark sweep, and lazy is
-  #                                 the only policy that runs one. Under strict
-  #                                 the mark reclaims one entry immediately;
-  #                                 under exit nothing reclaims until close-all
-  #                                 closes everything. No batch, either way.
-  #
-  # `policy: lazy` without a `cap` is NOT rejected, though it is inert in this
-  # implementation — the watermark is a fraction of the cap, so it never
-  # trips. §7.4 names two other triggers for the same sweep ("on memory
-  # pressure, or at cap"), and memory pressure needs no cap. That one is a
-  # trigger not yet built, which is a different thing from a combination that
-  # could never work.
-  if k.cap == 0 and k.onFull != rofAbsent:
-    p.reportError("resource kind '" & k.name & "': on_full needs a cap — " &
-                  "an unbounded table never fills, so this would never apply",
-                  sp.line, sp.col)
-  if k.sweepBatch > 0 and k.policy != rpLazy:
-    p.reportError("resource kind '" & k.name & "': sweep_batch needs " &
-                  "`policy: lazy` — it sizes the watermark sweep, and lazy is " &
-                  "the only policy that runs one",
-                  sp.line, sp.col)
 proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
   ## One line of a `resources:` block: a kind name and its optional knobs.
   ## The knobs ride in the ordinary `[a: 1, b: c]` attribute bracket every
@@ -826,7 +807,6 @@ proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
   var attrs: seq[TypeAttr]
   p.parseResourceAttrs(attrs)
   p.applyResourceAttrs(result, attrs)
-  p.checkResourceCoherence(result, sp)
   if p.current().kind == tkNewline: discard p.advance()
 
 proc parseResourcesDecl*(p: var Parser, sp: Span): Decl =

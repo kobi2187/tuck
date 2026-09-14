@@ -80,6 +80,13 @@ type
     rfFlush     ## fsync the handle — §7.4's `file: flush`
     rfShutdown  ## shutdown(fd, RDWR) — §7.4's net case
 
+  ResourceKnob* = enum
+    ## One tunable on a kind, tracked so a kind can be declared in more than
+    ## one place without either site silently winning. `policy` counts as
+    ## given only when a kind NAMES it — the block-level default does not,
+    ## or a block default would collide with every app that tunes one kind.
+    rkCap, rkPolicy, rkOnFull, rkOnFinish, rkSweepBatch, rkStates
+
   ResourceKindDef* = object
     ## One line of a `resources:` block — a kind of OS handle and the knobs
     ## its registry table runs under.
@@ -106,6 +113,15 @@ type
     statesSpan*: Span     ## where `states:` was written, so the diagnostics
                           ## about the named type point at the reference and
                           ## not at the kind's first line
+    given*: set[ResourceKnob]  ## which knobs THIS site wrote. A kind may be
+                               ## declared by the library that owns it and
+                               ## re-opened by the app that deploys it, so the
+                               ## rule is per KNOB — each set at most once
+                               ## program-wide — rather than one declaration
+                               ## per kind. No last-writer-wins, no dependence
+                               ## on import order, and the diagnostic can name
+                               ## both sites.
+    knobSpan*: array[ResourceKnob, Span]  ## where each given knob was written
     span*: Span
 
   TypeAttr* = object

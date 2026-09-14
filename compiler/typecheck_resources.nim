@@ -150,27 +150,121 @@ proc checkKindProtocol(k: ResourceKindDef, sums: Table[string, Decl]) =
            "' — a resource that cannot be closed from where it is, is a leak",
            v.span)
 
-proc collectResourceKinds*(mods: seq[tuple[name, path: string, m: Module]]):
-                           ResourceKinds =
-  ## The program-wide kind table. A kind declared twice is refused rather than
-  ## merged: a second block's `cap`, `policy` and `sweep_batch` would have
-  ## nowhere to go, since all three are properties of the ONE table the kind
-  ## names, and silently keeping the first block's knobs is the kind of
-  ## last-writer-wins that only surfaces as a wrong cap in production.
-  result = initTable[string, ResourceKindDef]()
-  let sums = protocolTypes(mods)
+proc knobName(k: ResourceKnob): string =
+  case k
+  of rkCap: "cap"
+  of rkPolicy: "policy"
+  of rkOnFull: "on_full"
+  of rkOnFinish: "on_finish"
+  of rkSweepBatch: "sweep_batch"
+  of rkStates: "states"
+
+proc mergeKnobs(into: var ResourceKindDef, site: ResourceKindDef) =
+  ## Fold one site's knobs into the kind. Each knob is set at most once
+  ## program-wide, so this cannot depend on which site the loader reached
+  ## first — a kind declared by a library and re-opened by an app means the
+  ## same thing whichever module is compiled as the entry.
+  for knob in site.given:
+    if knob in into.given:
+      fail(dcRsDuplicateKind,
+           "resource kind '" & into.name & "': `" & knobName(knob) &
+           "` is set twice — a kind names ONE registry table, so each of its " &
+           "knobs has one answer. Set it where it is known: a library owns " &
+           "the protocol of the service it wraps, and the app owns how many " &
+           "and under which policy",
+           site.knobSpan[knob])
+    into.given.incl(knob)
+    case knob
+    of rkCap:        into.cap = site.cap
+    of rkPolicy:     into.policy = site.policy
+    of rkOnFull:     into.onFull = site.onFull
+    of rkOnFinish:   into.onFinish = site.onFinish
+    of rkSweepBatch: into.sweepBatch = site.sweepBatch
+    of rkStates:
+      into.statesType = site.statesType
+      into.statesSpan = site.statesSpan
+    into.knobSpan[knob] = site.knobSpan[knob]
+
+proc checkKindCoherence(k: ResourceKindDef) =
+  ## A kind's knobs CONSTRAIN EACH OTHER: the combination is the declaration,
+  ## not the individual words, so a pair that can never mean anything together
+  ## is named rather than left to quietly do nothing.
+  ##
+  ## Here rather than in the parser, which is where it used to live: once a
+  ## kind can be declared in two places, no single site has the whole
+  ## combination to judge. An app adding `[cap: 10_000]` is exactly what makes
+  ## a library's `on_full` start to mean something.
+  if k.cap == 0 and k.onFull != rofAbsent:
+    fail(dcRsIncoherent,
+         "resource kind '" & k.name & "': on_full needs a cap — " &
+         "an unbounded table never fills, so this would never apply",
+         k.knobSpan[rkOnFull])
+  if k.sweepBatch > 0 and k.policy != rpLazy:
+    fail(dcRsIncoherent,
+         "resource kind '" & k.name & "': sweep_batch needs " &
+         "`policy: lazy` — it sizes the watermark sweep, and lazy is " &
+         "the only policy that runs one",
+         k.knobSpan[rkSweepBatch])
+
+type KindOwner = Table[string, tuple[d: Decl, i: int]]
+  ## Which declaration site EMITS each kind's table. `mods` is dep-first
+  ## (modules.loadProgram), so the first site is a dependency of every later
+  ## one — exactly the reachability the emitted table needs, since a module
+  ## that acquires into a kind has to be able to see its table.
+
+proc mergeSites(mods: seq[tuple[name, path: string, m: Module]],
+                kinds: var ResourceKinds, owner: var KindOwner) =
+  ## Fold every site of every kind into one definition, remembering which site
+  ## owns each. Per KNOB rather than per kind: a library declares the protocol
+  ## of the service it wraps, an app declares how many and under which policy,
+  ## and neither has to know the other wrote a block.
   for (_, _, m) in mods:
     for d in m.decls:
       if d == nil or d.kind != dkResources: continue
-      for k in d.resKinds:
-        if result.hasKey(k.name):
-          fail(dcRsDuplicateKind,
-               "resource kind '" & k.name & "' is declared twice — a kind " &
-               "names one registry table, so its cap, policy and sweep " &
-               "batch cannot come from two blocks",
-               k.span)
-        checkKindProtocol(k, sums)
-        result[k.name] = k
+      for i in 0 ..< d.resKinds.len:
+        let k = d.resKinds[i]
+        if kinds.hasKey(k.name):
+          var merged = kinds[k.name]
+          mergeKnobs(merged, k)
+          kinds[k.name] = merged
+        else:
+          kinds[k.name] = k
+          owner[k.name] = (d, i)
+
+proc ownsSite(owner: KindOwner, name: string, d: Decl, i: int): bool =
+  owner.hasKey(name) and owner[name].d == d and owner[name].i == i
+
+proc writeBackMerged(mods: seq[tuple[name, path: string, m: Module]],
+                     kinds: ResourceKinds, owner: KindOwner) =
+  ## Give the owning site the merged definition and drop the re-opens, so
+  ## every later stage sees ONE declaration carrying the whole answer.
+  ##
+  ## Doing it here, rather than teaching codegen about re-opening, is what
+  ## keeps the feature out of the backends: they still emit exactly what they
+  ## find, and what they find is now complete.
+  for (_, _, m) in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkResources: continue
+      var kept: seq[ResourceKindDef]
+      for i in 0 ..< d.resKinds.len:
+        let name = d.resKinds[i].name
+        if owner.ownsSite(name, d, i): kept.add(kinds[name])
+      d.resKinds = kept
+
+proc collectResourceKinds*(mods: seq[tuple[name, path: string, m: Module]]):
+                           ResourceKinds =
+  ## The program-wide kind table, merged across every site that declares each
+  ## kind. A kind names ONE registry table, so each of its knobs has one
+  ## answer — but the two answers have different owners, which is why the rule
+  ## is per knob and not per declaration.
+  result = initTable[string, ResourceKindDef]()
+  var owner = initTable[string, tuple[d: Decl, i: int]]()
+  mergeSites(mods, result, owner)
+  writeBackMerged(mods, result, owner)
+  let sums = protocolTypes(mods)
+  for _, k in result:
+    checkKindProtocol(k, sums)
+    checkKindCoherence(k)
 
 proc checkMarkedKinds*(mods: seq[tuple[name, path: string, m: Module]],
                        kinds: ResourceKinds) =

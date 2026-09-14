@@ -1641,16 +1641,18 @@ the unbuilt together would be dishonest:
   further ruling. Notably it will not need the deferral below: under a copy
   both bindings narrow independently, so a stale `finish` is a *missed* error
   rather than a false rejection, and the generation check catches it.
-- **Not built: splitting who declares a KIND.** A kind is declared exactly
-  once, so its site owns every knob. A library declaring
-  `db [cap: 32, states: DbState]` guesses at a deployment it cannot see; an
-  app declaring it instead typechecks but does not link, because the handle
-  type and the table are emitted into the declaring module and the library's
-  own acquire site then references symbols from a module that imports it. The
-  constraint is an emission one — a kind's table must live somewhere every
-  user of it can see — and the two ways out are splitting the declaration
-  (library declares the protocol reference, app re-opens for the knobs) or
-  emitting tables into one shared unit. `docs/resources.md` §0.8.
+- **A kind may be declared by more than one site, one knob each** (ruled
+  2026-09-14). The library that wraps the service declares its protocol and
+  what closing means; the app declares how many and under which policy, a
+  deployment question no library can answer. The rule is per KNOB — each set
+  at most once program-wide — so there is no last-writer-wins and no
+  dependence on import order, and setting one twice names the knob rather than
+  the block. Coherence (`on_full` needs a `cap`, `sweep_batch` needs
+  `policy: lazy`) is therefore checked on the MERGED kind: a library's
+  `[on_full: error]` is incoherent alone and becomes correct the moment an app
+  adds a cap. The table is emitted at the first site in dependency order,
+  which is a dependency of every later one — it has to be, since a library's
+  own acquire site calls into that table.
 - **Not built:** the static acquire-must-finish check above. Both halves now
   have a shape to match on, so it is writable; the *escape* arm is already
   sound by construction — the registry closes at exit, which is exactly what

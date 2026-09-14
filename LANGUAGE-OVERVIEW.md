@@ -1103,14 +1103,29 @@ tenancy, the table is unchanged, and no backend learns anything about states.
 The state type emits as the ordinary sum type it is — which is what the
 decoupling buys, a normal declaration instead of a special one.
 
-> **Still open: who declares the KIND.** The protocol is decoupled, but the
-> kind itself is still declared exactly once, so its site owns every knob. A
-> library declaring `db [cap: 32, states: DbState]` guesses at a deployment it
-> cannot see; an app declaring it instead typechecks but does not link, because
-> `<Kind>Handle` and the table are emitted into the declaring module and the
-> library's own `connect` then references symbols from a module that imports
-> it. The fix is an emission one — split the declaration, or emit tables into
-> one shared unit. See `docs/resources.md` §0.8.
+**A kind may be declared by BOTH, one knob each.** The library that wraps the
+service knows its protocol and what closing means; the app knows how many and
+under which policy:
+
+```tuck
+# dblib.tuck
+resources:
+  db [states: DbState, on_finish: flush]
+```
+
+```tuck
+# app.tuck
+import dblib
+resources:
+  db [cap: 4096, policy: lazy]
+```
+
+The rule is **per knob — each set at most once program-wide**, so there is no
+last-writer-wins and no dependence on import order; setting one twice names the
+knob (TK-RS02). Nothing declares `cap` app-only or `on_finish` library-only:
+whoever knows the answer writes it. Because the combination is what is checked,
+`on_full` with no `cap` at either site is still refused (TK-RS11) — and a
+library's `[on_full: error]` becomes correct the moment an app adds a cap.
 
 > **The protocol is validated, not yet TRACKED.** `acquire` starts at the
 > initial state and `finish` leaves at the terminal one, but a handle is not

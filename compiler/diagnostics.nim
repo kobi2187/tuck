@@ -158,6 +158,7 @@ type
     dcRsUnreachable = "TK-RS08"         ## a state nothing can reach from the initial one
     dcRsCannotClose = "TK-RS09"         ## a state the closing one cannot be reached from
     dcRsBadStatesType = "TK-RS10"       ## `states:` names no sum type, or one with no edges
+    dcRsIncoherent = "TK-RS11"          ## two knobs on one kind that cannot both mean anything
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -698,6 +699,13 @@ proc ruleExplanation(d: DiagCode): string =
     "cannot close from where you are is a leak the type system promised to " &
     "prevent. Fix: add the missing edge, usually a direct one to the closing " &
     "state for the error path."
+  of dcRsIncoherent:
+    "A kind's knobs constrain each other: the COMBINATION is the declaration, " &
+    "not the individual words. `on_full` needs a `cap`, because an unbounded " &
+    "table never fills; `sweep_batch` needs `policy: lazy`, because no other " &
+    "policy runs a sweep for it to size. Checked across every site that " &
+    "declares the kind, since an app adding a cap is what makes a library's " &
+    "`on_full` start to mean something."
   of dcRsBadStatesType:
     "`states: T` points a resource kind at its protocol: T must be a sum " &
     "type carrying a `transitions:` block. The kind NAMES it rather than " &
