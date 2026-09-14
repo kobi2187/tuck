@@ -296,6 +296,208 @@ reset :: proc(arena: ^BumpArena($Size)) {
 // used to be the cell's contents, so the cell's identity was gone by the time
 // `release` needed it — it matched by equality, every slot held the same zero
 // value, and every release freed slot 0. Same shape in all three runtimes.
+// ---------------------------------------------------------------------------
+// spec 7.4: the resource registry. The Odin twin of tuck_rt.nim's — same
+// structure, same policies, same LIFO close-all. See the Nim copy for why
+// each piece is shaped the way it is; this file states the Odin spelling.
+
+ResourceHandle :: struct {
+	slot: i32,
+	gen:  u32,
+}
+
+RtResourcePolicy :: enum u8 {
+	Strict, // close at the mark. Deterministic; the embedded/debug default
+	Lazy,   // mark only; the inline watermark sweep reclaims
+	Exit,   // close-all at program end
+}
+
+// How THIS kind's OS handle is released. A callback because the runtime
+// cannot know: an fd, an mmap and a TLS session are three different syscalls.
+ResourceCloser :: #type proc(reference: i64)
+
+ResourceEntry :: struct {
+	reference: i64,    // the OS handle: an fd, or a pointer cast to int
+	gen:       u32,    // tenancy; bumped at the MARK, so the handle dies there
+	live:      bool,   // this slot is occupied at all
+	finished:  bool,   // marked; awaiting reclamation. Only these are evicted
+	site:      string, // where it was acquired — the report's whole value
+}
+
+ResourceTable :: struct {
+	kind:          string,
+	cap:           int, // 0 = unbounded (dynamic); >0 = the bound
+	policy:        RtResourcePolicy,
+	sweepBatch:    int, // 0 = evict every finished entry; >0 = that many
+	onFinish:      ResourceCloser, // runs at the MARK, always (file: flush)
+	onClose:       ResourceCloser, // runs at reclamation
+	entries:       [dynamic]ResourceEntry,
+	order:         [dynamic]i32, // registration order; close-all walks it back
+	finishedCount: int,
+}
+
+tuckResourceMisuse :: proc(table: string, what: string) {
+	// Aborts rather than returning, for the reason tuckPoolMisuse does: a
+	// stale handle that writes to a REUSED slot is the bug 7.4 exists to
+	// make impossible.
+	fmt.eprintln("TUCK RESOURCE [", table, "]: ", what, sep = "")
+	os.exit(1)
+}
+
+initResourceTable :: proc(t: ^ResourceTable, kind: string, cap: int,
+                          policy: RtResourcePolicy, sweepBatch: int) {
+	t.kind = kind
+	t.cap = cap
+	t.policy = policy
+	t.sweepBatch = sweepBatch
+	if cap > 0 && len(t.entries) == 0 {
+		// A capped kind is array-shaped from the start: the cap is a
+		// LINK-TIME memory budget, not a limit discovered at runtime.
+		resize(&t.entries, cap)
+	}
+}
+
+setResourceHooks :: proc(t: ^ResourceTable, onFinish, onClose: ResourceCloser) {
+	t.onFinish = onFinish
+	t.onClose = onClose
+}
+
+@(private)
+rtReclaim :: proc(t: ^ResourceTable, i: int) {
+	// Never called on a LIVE entry: 7.4 has no time-based eviction, and an
+	// entry nobody finished is still in use by definition.
+	if !t.entries[i].live || !t.entries[i].finished { return }
+	if t.onClose != nil { t.onClose(t.entries[i].reference) }
+	t.entries[i].live = false
+	t.entries[i].site = ""
+	t.finishedCount -= 1
+	for k in 0 ..< len(t.order) {
+		if t.order[k] == i32(i) {
+			ordered_remove(&t.order, k)
+			break
+		}
+	}
+}
+
+sweep :: proc(t: ^ResourceTable) -> int {
+	// Also the `kind::sweep` an explicit scheduled cleanup calls — the inline
+	// trigger and the explicit one are one proc, so a program that sweeps by
+	// hand and one that lets the marks do it cannot drift apart.
+	taken := 0
+	limit := t.sweepBatch if t.sweepBatch > 0 else len(t.entries)
+	for i in 0 ..< len(t.entries) {
+		if taken >= limit { break }
+		if t.entries[i].live && t.entries[i].finished {
+			rtReclaim(t, i)
+			taken += 1
+		}
+	}
+	return taken
+}
+
+@(private)
+rtWatermarkReached :: proc(t: ^ResourceTable) -> bool {
+	// ~75% of cap. An uncapped table has no watermark: its bound is the OS
+	// ulimit, and there is no budget to measure against.
+	return t.cap > 0 && (t.finishedCount * 4) >= (t.cap * 3)
+}
+
+acquireResource :: proc(t: ^ResourceTable, reference: i64,
+                        site: string) -> TuckResult(ResourceHandle) {
+	// Exhaustion is ABSENCE, not an error — the caller decides what running
+	// out means, exactly as 7.2's pool does.
+	for i in 0 ..< len(t.entries) {
+		if t.entries[i].live { continue }
+		t.entries[i].gen += 1
+		t.entries[i].reference = reference
+		t.entries[i].live = true
+		t.entries[i].finished = false
+		t.entries[i].site = site
+		append(&t.order, i32(i))
+		return tok(ResourceHandle{slot = i32(i), gen = t.entries[i].gen})
+	}
+	if t.cap > 0 {
+		// The cap is the leak alarm as much as the budget: a table that FILLS
+		// is a bug surfacing early rather than an OOM three days in.
+		return tnone(ResourceHandle)
+	}
+	append(&t.entries, ResourceEntry{reference = reference, gen = 1,
+	                                 live = true, site = site})
+	append(&t.order, i32(len(t.entries) - 1))
+	return tok(ResourceHandle{slot = i32(len(t.entries) - 1), gen = 1})
+}
+
+@(private)
+rtEntryFor :: proc(t: ^ResourceTable, h: ResourceHandle, what: string) -> int {
+	// Every way of being wrong is caught rather than absorbed: out of range,
+	// never handed out, and — the one that matters — a generation that has
+	// moved on, which is a handle held past its finish.
+	i := int(h.slot)
+	if i < 0 || i >= len(t.entries) {
+		tuckResourceMisuse(t.kind, "handle names no slot")
+	} else if !t.entries[i].live {
+		tuckResourceMisuse(t.kind, "slot nobody holds")
+	} else if t.entries[i].gen != h.gen {
+		tuckResourceMisuse(t.kind, "stale handle")
+	}
+	return i
+}
+
+derefResource :: proc(t: ^ResourceTable, h: ResourceHandle) -> i64 {
+	// The only way to reach the OS handle, which is what makes the generation
+	// check unavoidable rather than something a caller can forget.
+	return t.entries[rtEntryFor(t, h, "use")].reference
+}
+
+finishResource :: proc(t: ^ResourceTable, h: ResourceHandle) {
+	// 7.4's mark: release INTENT, not necessarily release. on_finish runs,
+	// the entry is marked, and the generation bumps — under every policy, so
+	// the handle dies AT THE MARK. Only reclamation is policy, which is what
+	// makes durability independent of sweep timing.
+	i := rtEntryFor(t, h, "finish")
+	if t.onFinish != nil { t.onFinish(t.entries[i].reference) }
+	t.entries[i].finished = true
+	t.entries[i].gen += 1
+	t.finishedCount += 1
+	switch t.policy {
+	case .Strict:
+		rtReclaim(t, i)
+	case .Lazy:
+		// Sweeping is INLINE — no thread, no background actor. The trigger
+		// lives in the mark itself, so a loop acquiring ten thousand times
+		// against a cap in the thousands never blocks.
+		if rtWatermarkReached(t) { sweep(t) }
+	case .Exit:
+	}
+}
+
+closeAllResources :: proc(t: ^ResourceTable) {
+	// LIFO in REGISTRATION order: files flush before the directories holding
+	// them close, a TLS session shuts down before the socket under it.
+	for k := len(t.order) - 1; k >= 0; k -= 1 {
+		i := int(t.order[k])
+		if !t.entries[i].live { continue }
+		if !t.entries[i].finished && t.onFinish != nil {
+			t.onFinish(t.entries[i].reference)
+		}
+		if t.onClose != nil { t.onClose(t.entries[i].reference) }
+		t.entries[i].live = false
+		t.entries[i].finished = false
+		t.entries[i].site = ""
+	}
+	clear(&t.order)
+	t.finishedCount = 0
+}
+
+openResourceCount :: proc(t: ^ResourceTable) -> int {
+	n := 0
+	for k in 0 ..< len(t.order) {
+		i := int(t.order[k])
+		if t.entries[i].live && !t.entries[i].finished { n += 1 }
+	}
+	return n
+}
+
 PoolHandle :: struct {
 	slot: i32,
 	gen:  u32,
