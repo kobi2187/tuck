@@ -976,6 +976,69 @@ one, fourth succeeds, exit 42 (`tests/suites/cli_smoke.nim`).
 > assertions.** Same for `registry` (`.raise`, `on Reg.Variant`) and MMIO
 > `register` read-only enforcement.
 
+### The resource registry — for OS handles, not memory
+
+A pool bounds MEMORY. The registry (§7.4) bounds OS HANDLES, and it exists
+because scope-based RAII is the wrong model for one: a hot loop that opens and
+closes a file per iteration thrashes on syscalls. The model the OS itself uses
+is a global table — the process fd table — so Tuck makes that table explicit,
+one per user-declared KIND.
+
+```tuck
+resources [policy: lazy]:            # the default for the kinds below
+  net  [cap: 10_000, on_full: error, sweep_batch: 100]
+  file [cap: 8, on_finish: flush, policy: strict]
+  udp                                # no cap: the OS ulimit is the bound
+
+fn open({port: u16}) -> UdpHandle [io, resource: udp]:
+  ...
+```
+
+Three things to know:
+
+- **`[resource: k]` is an effect.** It propagates like one: a fn calling an
+  acquirer must declare the kind itself (TK-RS03), across module boundaries
+  too. An unknown kind is TK-RS01, the same rule an undeclared error enum
+  follows. A kind declared twice is TK-RS02 — its cap and policy belong to one
+  table, so two blocks cannot both own it.
+- **A handle is a value, never the resource.** `UdpHandle` carries a slot and a
+  tenancy. A handle whose tenancy has moved on is a caught error rather than a
+  write to the wrong file, which closes the fd-reuse bug class by construction.
+  Two kinds' handles are different types.
+- **The three policies differ only in WHEN the fd closes.** Marking is
+  identical under all of them, so buggy code behaves the same way in every
+  mode. `strict` closes at the mark; `lazy` lets a ~75% watermark sweep
+  reclaim, INLINE, from inside the mark itself — no thread, no actor; `exit`
+  waits for close-all, which runs LIFO.
+
+At exit a debug build prints `OPEN RESOURCES (n)` — what was never finished,
+and where it was acquired — then closes every table.
+
+> **The acquire and finish OPERATIONS have no spelling yet.** §7.4 describes
+> what they do in full and never says how they are written, and the three
+> readings consistent with it are not equivalent — so it is a ruling, not an
+> implementation (`docs/resources.md` §2). A library reaches the registry
+> through an extern today. This is also what blocks §7.4's static
+> acquire-must-finish check: the escape half is sound by construction, and the
+> defer-mark half has no mark to recognise.
+
+### `defer` — a block that runs at scope exit
+
+Not a registry construct, though §7.4 is what asked for it:
+
+```tuck
+fn work({n: int}) -> int:
+  var total = n
+  defer:
+    total = 0        # runs AFTER the return value is taken
+  return total + 1   # ...so this is n+1, not 1
+```
+
+LIFO, and an indented block only — never `defer: stmt` on one line, because a
+construct whose whole job is to run somewhere other than where it is written is
+the last one that should be easy to miss on a skim. Each backend emits its own
+native form: Nim `defer:`, Odin `defer { }`, D `scope(exit)`.
+
 ---
 
 ## 16. Loops
@@ -1056,7 +1119,7 @@ Queries that ask the AST a question live in `codegen_common.nim` and are shared.
 Emitters, which interleave traversal with target syntax, stay twinned and
 diffable.
 
-Current coverage: **45 compile-gated** examples, 41 Odin compiles, 43 D compiles, 19 Odin runs and 18 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
+Current coverage: **46 compile-gated** examples, 42 Odin compiles, 44 D compiles, 20 Odin runs and 19 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
 
 Nim-only so far: `42-net-echo` and `14-task`. Task select/timeouts (29, 30)
 are no longer on that list — both are run-gated on Odin and D as well.

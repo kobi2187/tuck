@@ -1,0 +1,46 @@
+# The resource registry (spec §7.4) and `defer`.
+#
+# Scope-based RAII is the wrong model for an OS handle: a hot loop that opens
+# and closes a file per iteration thrashes on syscalls. The model the OS itself
+# uses is a global table of handles — the process fd table — so Tuck makes that
+# table explicit, one per KIND, and kinds are user-declared.
+#
+# Everything below is real: each kind emits a registry table with these exact
+# knobs, and the program reports anything left unfinished before it exits.
+
+resources [policy: lazy]:          # the default for every kind below
+  # A cap is a LINK-TIME memory budget on a standalone target, and the leak
+  # alarm besides: a table that fills is a bug surfacing early, not an OOM
+  # three days in. Reaching it is absence, not an error — the caller decides
+  # what running out means.
+  net  [cap: 10_000, on_full: error, sweep_batch: 100]
+
+  # ...and a kind may override the block's policy. `strict` closes at the
+  # mark: deterministic, and the embedded and debug default.
+  file [cap: 8, on_finish: flush, policy: strict]
+
+  # No cap: the table grows, and the OS ulimit is the real bound.
+  udp
+
+# An acquire site says so in its effects bracket, and the marker propagates to
+# callers exactly as an effect does — a fn calling this one must declare
+# `[resource: udp]` itself. `UdpHandle` is the kind's own handle type: a plain
+# value carrying a slot and a tenancy, never the socket. A handle whose tenancy
+# has moved on is a caught error rather than a write to the wrong file, which
+# is how the fd-reuse bug class is closed by construction.
+pending:
+  fn openUdp({port: u16}) -> UdpHandle [io, resource: udp]
+
+# `defer` runs at scope exit, LIFO — the general statement the registry rides
+# on, not a registry construct. All three backends have one natively (Nim
+# `defer:`, Odin `defer`, D `scope(exit)`).
+fn withScratch({n: int}) -> int:
+  var scratch = n
+  defer:
+    # Runs after the return value has been taken, so this does not change what
+    # comes back. That is the whole point of the construct.
+    scratch = 0
+  return scratch + 1
+
+fn main() -> int:
+  return {n: 16} withScratch

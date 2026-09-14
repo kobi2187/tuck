@@ -144,8 +144,16 @@ let tuckGrammar = peg("module", st: Stats):
     st.sites[capture[0].si] = "s:" & ($1).split(' ')[0]
 
   stmt      <- letStmt | varStmt | returnStmt | ifStmt | forStmt | loopStmt |
-               matchStmt | onStmt | ellipsisStmt | simpleStmt | transRow |
-               assignStmt | exprStmt
+               matchStmt | onStmt | deferStmt | ellipsisStmt | simpleStmt |
+               transRow | assignStmt | exprStmt
+  # spec 7.4: `defer:` + block — statements held back until scope exit.
+  # Positional, like `satisfiesMember` and the identifier-headed declarations
+  # above: `defer` is not a keyword to the lexer, so it arrives as tkIdent and
+  # this grammar can only say WHERE it sits, not what it is called. The shape
+  # is unambiguous today because Tuck has no labels (a user ruling), so
+  # `<ident>:` opening a block in STATEMENT position is a defer and nothing
+  # else.
+  deferStmt <- word * "tkColon " * +nl * blk
   letStmt   <- ("tkLet " | "tkConst ") * name * ?("tkColon " * typeExpr) *
                "tkAssign " * (matchTail | ifTail | (expr * eol))
   varStmt   <- "tkVar " * name * ?("tkColon " * typeExpr) *
@@ -283,7 +291,15 @@ let tuckGrammar = peg("module", st: Stats):
   arenaDecl <- word * name * *attrs * "tkColon " * +nl * rawBlk
   # spec 8.1: `register NAME at ADDR:` + block of bit fields
   regDecl   <- word * name * word * ("tkIntLit " | name) * "tkColon " * +nl * rawBlk
-  # `extern:` / `extern [c, ...]:` — a block of signatures (spec 11 / FFI)
+  # THREE forms share one shape: `<word> [attrs]:` opening an opaque block.
+  #   `extern:` / `extern [c, header: "x.h"]:`  — signatures (spec 11 / FFI)
+  #   `errors [policy: strict]:`                — the global policy (spec 4.9)
+  #   `resources [policy: lazy]:`               — the registry kinds (spec 7.4)
+  # One rule rather than three identical ones: npeg would never reach the
+  # second, and a rule the grammar cannot reach states nothing. Which of the
+  # three a given block IS comes from the head word, which this grammar
+  # deliberately does not read — it describes the language as it is LEXED, and
+  # all three arrive as tkIdent.
   externDecl<- word * *attrs * "tkColon " * +nl * rawBlk
   # spec 5.4: `pending:` — the walking skeleton block
   pendingDecl <- "tkPending " * "tkColon " * +nl * rawBlk

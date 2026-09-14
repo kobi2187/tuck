@@ -483,6 +483,7 @@ and those must stay green.
 | bake | 3.5 | v1 DONE 2026-07-13 (Factor-fry: :name refs, fn→auto generic lowering, slot.invoke; ex 03 green+runtime-verified). Beef bake = delegate-type ceiling. True Tuck-IR inlining later if ever needed |
 | alias restructuring | 2.5 | DONE 2026-07-13 (typed renamed record, both backends; ex 18 green). Non-exkVar payload args still not exploded (double-eval; bind-to-temp later) |
 | pool / arena | 7.2/7.3 | acquire/release bitmask, reset, scope analysis, size verification |
+| Resource registry | 7.4 | 2026-09-14: `resources:` declaration (per-kind cap/policy/on_full/on_finish/sweep_batch, block-level policy default), `[resource: k]` marker validated (TK-RS01/02) and propagated through the effect machinery (TK-RS03, cross-module), the registry table in all three runtimes (strict/lazy/exit, inline ~75% watermark sweep, LIFO close-all, stale-handle generation catch — 19 rules pinned per runtime by `tests/suites/resources_rt.nim`), per-kind `<Kind>Handle` type, and the `OPEN RESOURCES` report + close-all at exit. `defer` landed with it as a GENERAL statement on all three backends. MISSING: the acquire/finish SURFACE — §7.4 says what those operations do and never how they are spelled, and the three readings are not equivalent, so it is a ruling not an implementation (docs/resources.md §2). That also blocks §7.4's static acquire-must-finish check: its escape arm is sound by construction, its defer-mark arm has no mark to recognise |
 | Interfaces | 5.2/5.3 | DONE. `satisfies` is checked at compile time; an interface value is a TAGGED VARIANT THAT COPIES, not a fat pointer — dispatch is a switch on the tag calling the concrete member fn, so there is no table, no thunk, and no lifetime question (escape analysis was deleted with the pointer design). Both backends |
 | Type composition `+` | 4.5 | conflict detection unverified |
 | match | — | exhaustiveness DONE: every match over a closed domain (sum type, bool, error enum) must cover all cases or end in `_`. Open domains (int/str) unchecked, as in Nim |
@@ -494,10 +495,6 @@ and those must stay green.
 | Control flow loops | 2.6/3.6b | DONE 2026-07-19: unified for (cond/iter/indexed), loop, break/continue (innermost, depth-checked), spaced-`..` ranges (Nim convention), fn inline ({.inline.}/[Inline]). Runtime-verified exit-17 smoke both backends. No labels ever (ruling); value-returning main = process exit code |
 
 ## Missing
-- Resource registry §7.4 — parser (`resources` decl, `defer` block,
-  `[resource:]` attr), checker (kind validation, propagation,
-  acquire-must-finish tracking), rt slot table + inline sweep, codegen
-  (mark/close per policy), OPEN RESOURCES report
 - `on select` §9.3: the ACTOR form is done (ex 27, both backends). The TASK
   form lowers `read <fd>` / `timeout <ms>` only — dotted sources (`resp.ok`,
   `timeout.5s`) still parse as opaque strings, which is what blocks ex 16.

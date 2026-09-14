@@ -1597,6 +1597,29 @@ sites, in the same spirit as the PENDING and SHORTCUTS reports.
 Both models coexist: `defer` for genuinely scoped lifetimes, the registry as
 the safety net underneath everything.
 
+**Status, 2026-09-14**, stated here for the same reason §7.2's siblings state
+theirs — the design above is not all in force yet, and lumping the built and
+the unbuilt together would be dishonest:
+
+- **Built and verified.** The `resources:` declaration and every knob on it;
+  `[resource: k]` validated and propagated as an effect; the registry table in
+  all three runtimes with the three policies, the inline watermark sweep, LIFO
+  close-all and the stale-handle catch; the per-kind handle type; the
+  `OPEN RESOURCES` report and close-all at exit. `defer` landed with it, as a
+  general statement on all three backends.
+- **Not spelled.** The acquire and finish OPERATIONS. This section says what
+  they do in complete detail and never says how they are written, and the
+  readings consistent with it (`udp::acquire`, `Udp.acquire`, or an extern the
+  library declares) are not equivalent. Picking one is a ruling.
+- **Blocked on that.** The static acquire-must-finish check above. Its
+  *escape* arm is already sound by construction — the registry closes at exit,
+  which is exactly what this section says makes the local analysis sufficient.
+  Its *defer mark* arm has no mark to recognise yet. The OPEN RESOURCES report
+  answers the same question at runtime in the meantime.
+
+`docs/resources.md` is the implementation record, including the four questions
+this section left open and what the compiler settled them as.
+
 ---
 
 ## Part 8: Hardware

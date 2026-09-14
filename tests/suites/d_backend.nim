@@ -916,7 +916,7 @@ fn main() -> int [io]:
 32-duration-units 33-ffi-zlib 34-ffi-cstring 35-ffi-struct
 36-ffi-enum-callback 37-ffi-handle 28-async-task 38-division
 39-if-match-expr 40-saturating 41-tostr-concat 44-recursive-tree 45-intersection 29-task-timeout 30-async-read
-14-task 20-embedded-mp3-player 43-literal-payload
+14-task 20-embedded-mp3-player 43-literal-payload 47-resource-registry
 """
 
   # Examples with a known exit code — RUN, not merely compile. Mirrors
@@ -931,7 +931,7 @@ fn main() -> int [io]:
 33-ffi-zlib:0 34-ffi-cstring:0 35-ffi-struct:0 36-ffi-enum-callback:0
 37-ffi-handle:0 28-async-task:42 38-division:0 39-if-match-expr:0
 40-saturating:0 41-tostr-concat:0 44-recursive-tree:0 24-stdlib:0 29-task-timeout:2
-30-async-read:1 45-intersection:3"""
+30-async-read:1 45-intersection:3 47-resource-registry:17"""
 
   proc dProjFor(base: string): string = "tests/d_out" / base.replace("-", "_")
 
