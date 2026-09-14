@@ -148,6 +148,9 @@ type
     dcReWriteOnly = "TK-RE02"           ## reading a field declared [write]
     dcReBitRange = "TK-RE03"            ## a bit index outside the register's width
     dcReOverlap = "TK-RE04"             ## two fields claim the same bit
+    dcRsUnknownKind = "TK-RS01"         ## [resource: k] names no declared kind
+    dcRsDuplicateKind = "TK-RS02"       ## two `resources:` blocks declare one kind
+    dcRsUndeclared = "TK-RS03"          ## a caller does not declare a kind it acquires
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -179,6 +182,7 @@ proc categoryName*(d: DiagCode): string =
   of "PO": "Policy"
   of "SE": "Sealed"
   of "CX": "Complexity"
+  of "RS": "Resource"
   else: "Semantic"
 
 const WarningCodes* = {dcTyMemberShadowsFn}
@@ -646,6 +650,21 @@ proc ruleExplanation(d: DiagCode): string =
     "Two fields of one register claim the same bit, so writing one would " &
     "corrupt the other. Fix: check the bit ranges — this is almost always a " &
     "transcription slip from the datasheet."
+  of dcRsUnknownKind:
+    "`[resource: k]` must name a kind some `resources:` block declares " &
+    "(spec §7.4) — the same rule an `[error: E]` follows for an error enum. " &
+    "Kinds are an open set: any module may declare its own, so the fix is " &
+    "either a typo in the marker or a missing `resources:` line."
+  of dcRsDuplicateKind:
+    "Two `resources:` blocks declare the same kind. Kinds accumulate across " &
+    "the program, so the second block's knobs would silently lose to the " &
+    "first's — cap, policy and sweep batch all belong to ONE table. Fix: " &
+    "pick one owner for the kind, or give them distinct names."
+  of dcRsUndeclared:
+    "A fn calling an acquire site must declare the kind itself, exactly as " &
+    "it must declare an effect it reaches (spec §3.7 — explicit, not " &
+    "inferred). Fix: add `[resource: k]` to this fn's own bracket, or " &
+    "finish the handle here so it does not escape."
   else: ""
 
 proc explanationOf*(d: DiagCode): string =

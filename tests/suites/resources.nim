@@ -217,3 +217,147 @@ fn main() -> int:
   return x
 """
   t.badCheck "a trailing separator is too", "between digits"
+
+  # --- the checker: kind validation -----------------------------------------
+  #
+  # §7.4: "An unknown kind in `[resource: k]` is a compile error, same as an
+  # undeclared error enum." Kinds are program-wide, so every rule about them
+  # is checked whole-program, beside checkRegistry and checkErrCodeCollisions.
+
+  t.src """
+resources:
+  udp
+
+fn open({port: u16}) -> int [io, resource: tcp]:
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a marker naming no declared kind is refused", "TK-RS01"
+
+  # The knobs are properties of ONE table, so a second block claiming the kind
+  # has nowhere to put its own — silently keeping the first block's cap is the
+  # last-writer-wins that only surfaces as a wrong bound in production.
+  t.src """
+resources:
+  udp [cap: 4]
+
+resources:
+  udp [cap: 99]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "one kind declared twice is refused", "TK-RS02"
+
+  # ...but two DIFFERENT kinds in two blocks is the open set §7.4 asks for.
+  t.src """
+resources:
+  udp
+
+resources:
+  file
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "two blocks declaring different kinds is the open set"
+
+  # --- the checker: propagation ---------------------------------------------
+  #
+  # §3.7, explicit not inferred — the same rule effects follow, enforced by
+  # the same walk (semantics.Demands carries both).
+
+  t.src """
+resources:
+  udp
+
+extern:
+  fn openUdp({port: u16}) -> int [io, resource: udp]
+
+fn listen({port: u16}) -> int [io]:
+  return {port: port} openUdp
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a caller that does not declare the kind it acquires is refused",
+             "TK-RS03"
+
+  t.src """
+resources:
+  udp
+
+extern:
+  fn openUdp({port: u16}) -> int [io, resource: udp]
+
+fn listen({port: u16}) -> int [io, resource: udp]:
+  return {port: port} openUdp
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "...and is accepted once it declares it"
+
+  # `main` is the program's impure entry point for resource kinds exactly as
+  # it is for effects: `fn main() -> int` has nowhere natural to carry the
+  # marker, and opening a socket there is the ordinary case.
+  t.src """
+resources:
+  udp
+
+extern:
+  fn openUdp({port: u16}) -> int [io, resource: udp]
+
+fn main() -> int:
+  return {port: 0} openUdp
+"""
+  t.okCheck "main needs no marker, as it needs none for [io]"
+
+  # Across a module boundary. Left out, an imported acquirer looks
+  # non-acquiring to its callers and the discipline stops at the file — the
+  # bug effects themselves had before SigInfo carried them.
+  t.srcNamed "t.tuck", """
+import net
+
+fn relay() -> int [io]:
+  return {port: 0} listen
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile "net.tuck", """
+resources:
+  udp
+
+extern:
+  fn openUdp({port: u16}) -> int [io, resource: udp]
+
+fn listen({port: u16}) -> int [io, resource: udp]:
+  return {port: port} openUdp
+"""
+  t.badCheck "an imported acquirer still propagates to its caller", "TK-RS03"
+
+  # A spawned TASK's kinds do not propagate, and for a stronger reason than
+  # its effects: the handle never reaches this caller's scope, so there is
+  # nothing here to finish. The registry closes it (§7.4 — escape into the
+  # registry is always sound).
+  t.src """
+resources:
+  udp
+
+extern:
+  fn openUdp({port: u16}) -> int [io, resource: udp]
+
+task serve({port: u16}) -> int [io, resource: udp]:
+  return {port: port} openUdp
+
+fn start() -> int:
+  discard {port: 0} serve
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "spawning a task does not propagate its kinds to the spawner"

@@ -410,6 +410,25 @@ proc importedEffects(loaded: seq[LoadedModule],
   addLoadedEffects(result, loaded)
   addSigOnlyEffects(result, sigOnly)
 
+proc importedResources(loaded: seq[LoadedModule],
+                       sigOnly: Table[string, IndexEntry]):
+                         Table[string, seq[string]] =
+  ## The §7.4 twin of importedEffects, keyed identically and filled from the
+  ## same two places. Its own table rather than a widened value type because
+  ## `imported` is a public parameter of verifyModuleEffects that several
+  ## callers pass — and because the two answers genuinely are independent: a
+  ## module may export an [io] fn that acquires nothing, and vice versa.
+  for lm in loaded:
+    for d in lm.m.decls:
+      if d == nil or d.kind != dkFn or d.fnResourceKinds.len == 0: continue
+      result[d.name] = d.fnResourceKinds
+      result[lm.name & "::" & d.name] = d.fnResourceKinds
+  for modName, entry in sigOnly:
+    for si in entry.sigs:
+      if "::" in si.name or si.resources.len == 0: continue
+      result[si.name] = si.resources
+      result[modName & "::" & si.name] = si.resources
+
 proc typecheckOnly(path: string, loaded: seq[LoadedModule],
                    sigOnly: Table[string, IndexEntry]): seq[string] =
   ## Just the typecheck half of the check pipeline. checkOrDie calls this
@@ -452,12 +471,13 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
     for lm in loaded: checkedMods.add(lm.m)
     assertNoMissingTypes(checkedMods)
   let imported = importedEffects(loaded, sigOnly)
+  let importedRes = importedResources(loaded, sigOnly)
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
   try:
     for lm in loaded:
       let ts = epochTime()
-      verifyModuleEffects(lm.m, imported)
+      verifyModuleEffects(lm.m, imported, importedRes)
       vSub(lm.name, ts)
     if verifyStages: verifyEffectsAssertions(loaded)
   except SemanticError as err:

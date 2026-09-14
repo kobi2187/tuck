@@ -168,6 +168,7 @@ import typecheck_conformance  # spec 5.2 `satisfies` verification
 import ./typecheck_compat
 import ./typecheck_collect
 import ./typecheck_registry
+import ./typecheck_resources  # spec §7.4 resource kinds, program-wide
 import ./typecheck_module
 export typecheck_transitions
 
@@ -738,7 +739,8 @@ proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
   var params: seq[Param]
   for p in base.params:
     params.add(Param(name: p.name, typ: substituteType(p.typ, b), span: p.span))
-  (params, substituteType(base.ret, b), newSeq[string](), base.effects)
+  (params, substituteType(base.ret, b), newSeq[string](), base.effects,
+   base.resources)
 
 proc namesAFnSig*(tc: TypeChecker, slotT: Type): bool =
   ## Does this type represent a callable slot, either a named `fnsig` or a
@@ -2410,7 +2412,8 @@ proc checkFnValueCall(tc: var TypeChecker, fnT: Type, e: Expr): Type =
   for i, typ in fnT.params:
     let name = if i < fnT.paramNames.len: fnT.paramNames[i] else: "arg" & $i
     params.add(Param(name: name, typ: typ, span: e.span))
-  let sig: FnSig = (params: params, ret: fnT.result, generics: @[], effects: @[])
+  let sig: FnSig = (params: params, ret: fnT.result, generics: @[], effects: @[],
+                 resources: @[])
   var bindings = initTable[string, Type]()
   tc.checkCallArgs("<function>", sig, e, bindings)
   sig.ret
@@ -4652,6 +4655,7 @@ proc moduleSigs*(m: Module): seq[SigInfo] =
     for sig in sigs:
       result.add(SigInfo(name: name, params: sig.params, ret: sig.ret,
                          generics: sig.generics, effects: sig.effects,
+                         resources: sig.resources,
                          isPending: tc.pendingFns.hasKey(name),
                          line: tc.pendingFns.getOrDefault(name).line))
 
@@ -4814,7 +4818,7 @@ proc importPrebuilt(scope: var ImportScope, preSigs: Table[string, seq[SigInfo]]
   ## Bring in a module whose signatures came from an index rather than source.
   for si in preSigs.getOrDefault(imp):
     if "::" in si.name: continue
-    let sig: seq[FnSig] = @[(si.params, si.ret, si.generics, si.effects)]
+    let sig: seq[FnSig] = @[(si.params, si.ret, si.generics, si.effects, si.resources)]
     scope.extern[imp & "::" & si.name] = sig
     scope.addBare(si.name, imp, sig)
     if si.isPending:
@@ -4840,6 +4844,7 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
   resetResolution()  # one semantic layer per program
   checkErrCodeCollisions(mods)
   checkRegistry(mods)
+  checkResources(mods)   # spec §7.4: kinds are program-wide, so this is too
   let sigs = collectProgramSigs(mods)
   for (name, path, m) in mods:
     let scope = importScopeFor(sigs, preSigs, name)

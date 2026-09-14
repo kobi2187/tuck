@@ -36,7 +36,13 @@ type
   # from the cached index. Keep the two in step — a field here that SigInfo
   # lacks cannot survive to disk, and the check quietly weakens for imports.
   FnSig* = tuple[params: seq[Param], ret: Type, generics: seq[string],
-                 effects: seq[EffectMarker]]
+                 effects: seq[EffectMarker], resources: seq[string]]
+    ## `resources` rides beside `effects` for the reason SigInfo's own comment
+    ## gives: anything a CALLER must know to check a call correctly belongs in
+    ## the signature, and a resource kind is exactly that (§7.4 — a fn calling
+    ## an acquirer declares the kind itself). Left out, an imported acquirer
+    ## would look non-acquiring across a module boundary, which is the bug
+    ## effects themselves had before they were carried here.
   TypeChecker* = object
     module*: Module
     fnSigs*: Table[string, seq[FnSig]]
@@ -256,7 +262,8 @@ proc sigOfCallByName*(tc: TypeChecker, name: string): FnSig =
   ## so it cannot drift out of step with fnSigs' own ordering.
   let d = tc.topLevelDeclOfFn(name)
   if d != nil and d.kind == dkFn:
-    return (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects)
+    return (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects,
+            d.fnResourceKinds)
   tc.sigOf(name)
 
 proc sigsOf*(tc: TypeChecker, name: string): seq[FnSig] =

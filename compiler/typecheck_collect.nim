@@ -24,7 +24,8 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   # ADD, not set: two objects may each declare a member of the same name, and
   # evicting the first is what made `b.hash` on a Blob check against Commit's
   # signature.
-  tc.addFnSig(d.name, (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects))
+  tc.addFnSig(d.name, (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects,
+                       d.fnResourceKinds))
   for b in d.fnGenericBounds:
     if b.len > 0:
       tc.groupBoundsOf[d.name] = d.fnGenericBounds
@@ -54,7 +55,7 @@ proc collectFnSigType*(tc: var TypeChecker, d: Decl) =
   ## A signature TYPE declares no effects of its own — what gets baked into
   ## the slot carries them.
   tc.setFnSig(d.name, (d.sigParams, d.sigReturn,
-                       newSeq[string](), newSeq[EffectMarker]()))
+                       newSeq[string](), newSeq[EffectMarker](), newSeq[string]()))
   tc.fnSigNames.incl(d.name)
   if d.sigGenerics.len > 0: tc.fnSigGenerics[d.name] = d.sigGenerics
 
@@ -76,11 +77,12 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
   let optHandle = Type(span: d.span, kind: tkApp, args: @[handle],
                        base: Type(span: d.span, kind: tkNamed, name: "?"))
   tc.setFnSig(d.name & ".acquire", (newSeq[Param](), optHandle,
-                                    newSeq[string](), newSeq[EffectMarker]()))
+                                    newSeq[string](), newSeq[EffectMarker](),
+                                    newSeq[string]()))
   tc.setFnSig(d.name & ".release",
     (@[Param(name: "slot", typ: handle, span: d.span)],
      Type(span: d.span, kind: tkNamed, name: "void"),
-     newSeq[string](), newSeq[EffectMarker]()))
+     newSeq[string](), newSeq[EffectMarker](), newSeq[string]()))
   # Opaque: a record with no fields. Nothing to read, nothing to do
   # arithmetic on, and `{} <Pool>Handle` yields a zeroed handle whose tenancy
   # is 0 — which no live slot ever has, so a forged one is refused at release
@@ -150,7 +152,8 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
     of dkTask:
       tc.taskNames.incl(d.name)
       tc.setFnSig(d.name, (d.taskParams, d.taskReturnType,
-                           newSeq[string](), d.taskEffects))
+                           newSeq[string](), d.taskEffects,
+                           d.taskResourceKinds))
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
     of dkType: tc.collectTypeDecl(d)
