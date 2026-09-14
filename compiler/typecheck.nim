@@ -168,6 +168,7 @@ import typecheck_conformance  # spec 5.2 `satisfies` verification
 import ./typecheck_compat
 import ./typecheck_collect
 import ./typecheck_registry
+import ./typecheck_resources  # spec §7.4 resource kinds, program-wide
 import ./typecheck_module
 export typecheck_transitions
 
@@ -738,7 +739,8 @@ proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
   var params: seq[Param]
   for p in base.params:
     params.add(Param(name: p.name, typ: substituteType(p.typ, b), span: p.span))
-  (params, substituteType(base.ret, b), newSeq[string](), base.effects)
+  (params, substituteType(base.ret, b), newSeq[string](), base.effects,
+   base.resources)
 
 proc namesAFnSig*(tc: TypeChecker, slotT: Type): bool =
   ## Does this type represent a callable slot, either a named `fnsig` or a
@@ -2410,7 +2412,8 @@ proc checkFnValueCall(tc: var TypeChecker, fnT: Type, e: Expr): Type =
   for i, typ in fnT.params:
     let name = if i < fnT.paramNames.len: fnT.paramNames[i] else: "arg" & $i
     params.add(Param(name: name, typ: typ, span: e.span))
-  let sig: FnSig = (params: params, ret: fnT.result, generics: @[], effects: @[])
+  let sig: FnSig = (params: params, ret: fnT.result, generics: @[], effects: @[],
+                 resources: @[])
   var bindings = initTable[string, Type]()
   tc.checkCallArgs("<function>", sig, e, bindings)
   sig.ret
@@ -3745,6 +3748,69 @@ proc synthDiscard(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(e.discardVal)
   unitType(e.span)
 
+proc synthAcquire(tc: var TypeChecker, e: Expr): Type =
+  ## `acquire <raw>, <kind>` (spec §7.4) — register the OS handle an extern
+  ## just produced, and get the kind's own handle back.
+  ##
+  ## The exact mirror of `finish`: same shape, same argument order, same
+  ## checked kind name. Acquire takes a RAW number in and yields a typed
+  ## handle; finish takes a typed handle and yields nothing. The pair is what
+  ## keeps the raw fd out of Tuck code entirely — it exists between the
+  ## extern's return and this statement, and nowhere else.
+  ##
+  ## Exhaustion is ABSENCE, so the result is `?<Kind>Handle`: the caller
+  ## decides what a full table means, exactly as §7.2's pool already does.
+  ## (A kind declaring `on_full: error` aborts instead and never returns, but
+  ## the TYPE is the same — the policy does not change the shape.)
+  let rt = tc.synthesize(e.acquireRef)
+  if rt != nil and rt.kind == tkNamed and rt.name != "Unknown" and
+     not isNumeric(rt):
+    fail(dcRsNotRaw,
+         "`acquire` takes the RAW OS handle an extern produced — a number — " &
+         "but this is a " & rt.name,
+         e.span)
+  let handle = Type(span: e.span, kind: tkNamed,
+                    name: resourceHandleName(e.acquireKind))
+  Type(span: e.span, kind: tkApp, args: @[handle],
+       base: Type(span: e.span, kind: tkNamed, name: "?"))
+
+proc synthFinish(tc: var TypeChecker, e: Expr): Type =
+  ## `finish <handle>, <kind>` (spec §7.4). The kind is REDUNDANT — the
+  ## handle's type already decides which registry table is touched — so the
+  ## whole job here is verifying that the redundancy holds. A second source of
+  ## truth that is checked is a reader aid; one that is trusted is a bug
+  ## waiting.
+  ##
+  ## The kind having been DECLARED at all is not asked here: that rule is
+  ## whole-program (kinds are an open set, §7.4) and runs in
+  ## typecheck_resources before any module body is checked, so by this point
+  ## an undeclared kind has already been TK-RS01.
+  # The RAW synthesized type, never `resolve`d: resolving follows a named type
+  # to its body, and every kind's handle is the same empty record — so a
+  # resolved `UdpHandle` and a resolved `FileHandle` are indistinguishable,
+  # which is precisely the distinction being checked. The names are the whole
+  # answer here (that is what `distinctNames` makes them mean).
+  let ht = tc.synthesize(e.finishHandle)
+  let want = resourceHandleName(e.finishKind)
+  # Unknown is gradual typing's "no claim made", not a mismatch — the same
+  # latitude every other check in this file gives it.
+  if ht != nil and ht.kind == tkNamed and ht.name notin [want, "Unknown"]:
+    fail(dcRsWrongKind,
+         "'" & writtenName(e.finishHandle) & "' is a " & ht.name &
+         ", but this finishes it into the '" & e.finishKind &
+         "' registry, whose handles are " & want,
+         e.span)
+  unitType(e.span)
+
+proc synthDefer(tc: var TypeChecker, e: Expr): Type =
+  ## `defer:` (spec §7.4) — the body is checked exactly as if it sat where the
+  ## block is written; only WHEN it runs moves, not what it means. The
+  ## statement itself is unit: a defer block's value is never observable,
+  ## because nothing is left in scope to observe it by the time it runs.
+  if e.deferBody != nil:
+    discard tc.synthesize(e.deferBody)
+  unitType(e.span)
+
 proc errEnumsOwning(tc: TypeChecker, variant: string): seq[string] =
   ## Which of the current fn's declared error enums have this variant.
   for en in tc.currentErrTypes:
@@ -3958,6 +4024,9 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkChain: tc.synthChain(e)
   of exkSend: tc.synthSend(e)
   of exkSelect: tc.synthSelect(e)
+  of exkDefer: tc.synthDefer(e)
+  of exkAcquire: tc.synthAcquire(e)
+  of exkFinish: tc.synthFinish(e)
   of exkQualified, exkImport: tc.synthQualified(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
@@ -4642,6 +4711,7 @@ proc moduleSigs*(m: Module): seq[SigInfo] =
     for sig in sigs:
       result.add(SigInfo(name: name, params: sig.params, ret: sig.ret,
                          generics: sig.generics, effects: sig.effects,
+                         resources: sig.resources,
                          isPending: tc.pendingFns.hasKey(name),
                          line: tc.pendingFns.getOrDefault(name).line))
 
@@ -4804,7 +4874,7 @@ proc importPrebuilt(scope: var ImportScope, preSigs: Table[string, seq[SigInfo]]
   ## Bring in a module whose signatures came from an index rather than source.
   for si in preSigs.getOrDefault(imp):
     if "::" in si.name: continue
-    let sig: seq[FnSig] = @[(si.params, si.ret, si.generics, si.effects)]
+    let sig: seq[FnSig] = @[(si.params, si.ret, si.generics, si.effects, si.resources)]
     scope.extern[imp & "::" & si.name] = sig
     scope.addBare(si.name, imp, sig)
     if si.isPending:
@@ -4830,6 +4900,7 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
   resetResolution()  # one semantic layer per program
   checkErrCodeCollisions(mods)
   checkRegistry(mods)
+  checkResources(mods)   # spec §7.4: kinds are program-wide, so this is too
   let sigs = collectProgramSigs(mods)
   for (name, path, m) in mods:
     let scope = importScopeFor(sigs, preSigs, name)

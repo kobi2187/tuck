@@ -207,6 +207,12 @@ proc contextualDecl(p: var Parser, sp: Span, handled: var bool): Decl =
   # Global error policy (spec 4.9): errors [policy: strict|continue|exit]:
   of "errors":
     if p.peek().kind == tkLBracket: return p.parseErrorsDecl(sp)
+  # The OS-handle kinds this module registers (spec §7.4):
+  # `resources:` or `resources [policy: lazy]:`. Gated on what follows for the
+  # same reason every opener here is — a variable named `resources` must still
+  # parse as an expression.
+  of "resources":
+    if p.peek().kind in {tkColon, tkLBracket}: return p.parseResourcesDecl(sp)
   of "register": return p.parseRegisterDecl(sp)
   of "pool": return p.parsePoolDecl(sp)
   of "arena": return p.parseArenaDecl()

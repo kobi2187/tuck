@@ -407,6 +407,306 @@ struct PoolHandle
     uint gen;
 }
 
+// ---------------------------------------------------------------------------
+// spec 7.4: the resource registry. The D twin of tuck_rt.nim's — same
+// structure, same policies, same LIFO close-all. See the Nim copy for why
+// each piece is shaped the way it is; this file states the D spelling.
+
+/// What an acquire hands back: WHICH entry, and WHICH TENANCY of it. A plain
+/// value, never the resource itself — the ref stays in the table, which is
+/// what closes the fd-reuse bug class by construction.
+struct ResourceHandle
+{
+    int slot;
+    uint gen;
+}
+
+/// When the OS handle actually closes. MARKING is identical under all three,
+/// so buggy code behaves the same way in every mode.
+enum RtResourcePolicy : ubyte
+{
+    Strict, /// close at the mark. Deterministic; the embedded/debug default
+    Lazy,   /// mark only; the inline watermark sweep reclaims
+    Exit,   /// close-all at program end
+}
+
+/// What a CAPPED table does when it fills.
+enum RtOnFull : ubyte
+{
+    Absent, /// report absence; the caller decides (the default)
+    Error,  /// abort, naming the kind and its cap
+}
+
+/// How THIS kind's OS handle is released. A callback because the runtime
+/// cannot know: an fd, an mmap and a TLS session are three different syscalls.
+alias ResourceCloser = void function(long reference);
+
+/// spec 7.4's `on_finish` vocabulary, as real syscalls on the reference. The
+/// declaration PICKS one and the emitted table binds it, so there is one
+/// mechanism — setResourceHooks overrides the same field, which is the escape
+/// hatch for a kind whose reference is not an fd at all.
+///
+/// A failed syscall is deliberately not reported: on_finish runs at the MARK,
+/// where the program has already said it is done with the handle.
+void tuckResFlush(long reference)
+{
+    import core.sys.posix.unistd : fsync;
+    cast(void) fsync(cast(int) reference);
+}
+
+void tuckResShutdown(long reference)
+{
+    import core.sys.posix.sys.socket : shutdown, SHUT_RDWR;
+    cast(void) shutdown(cast(int) reference, SHUT_RDWR);
+}
+
+struct ResourceEntry
+{
+    long reference;  /// the OS handle: an fd, or a pointer cast to int
+    uint gen;        /// tenancy; bumped at the MARK, so the handle dies there
+    bool live;       /// this slot is occupied at all
+    bool finished;   /// marked; awaiting reclamation. Only these are evicted
+    string site;     /// where it was acquired — the report's whole value
+}
+
+struct ResourceTable
+{
+    string kind;
+    int cap;         /// 0 = unbounded (slice-backed); >0 = the bound
+    RtResourcePolicy policy;
+    RtOnFull onFull; /// only consulted when `cap` > 0
+    int sweepBatch;  /// 0 = evict every finished entry; >0 = that many
+    ResourceCloser onFinish;  /// runs at the MARK, always (file: flush)
+    ResourceCloser onClose;   /// runs at reclamation
+    ResourceEntry[] entries;
+    int[] order;     /// registration order — close-all walks it backwards
+    int finishedCount;
+}
+
+void tuckResourceMisuse(string table, string what)
+{
+    // Aborts rather than returning, for the reason tuckPoolMisuse does: a
+    // stale handle that writes to a REUSED slot is the bug 7.4 exists to
+    // make impossible.
+    import std.stdio : stderr;
+    import core.stdc.stdlib : abort;
+    stderr.writeln("TUCK RESOURCE [", table, "]: ", what);
+    abort();
+}
+
+void initResourceTable(ref ResourceTable t, string kind, int cap,
+                       RtResourcePolicy policy, int sweepBatch,
+                       RtOnFull onFull = RtOnFull.Absent)
+{
+    t.kind = kind;
+    t.cap = cap;
+    t.policy = policy;
+    t.sweepBatch = sweepBatch;
+    t.onFull = onFull;
+    // A capped kind is array-shaped from the start: the cap is a LINK-TIME
+    // memory budget, not a limit discovered at runtime.
+    if (cap > 0 && t.entries.length < cap)
+        t.entries.length = cap;
+}
+
+void setResourceHooks(ref ResourceTable t, ResourceCloser onFinish,
+                      ResourceCloser onClose)
+{
+    t.onFinish = onFinish;
+    t.onClose = onClose;
+}
+
+private void rtReclaim(ref ResourceTable t, size_t i)
+{
+    // Never called on a LIVE entry: 7.4 has no time-based eviction, and an
+    // entry nobody finished is still in use by definition.
+    if (!t.entries[i].live || !t.entries[i].finished) return;
+    if (t.onClose !is null) t.onClose(t.entries[i].reference);
+    t.entries[i].live = false;
+    t.entries[i].site = "";
+    t.finishedCount--;
+    foreach (k, slot; t.order)
+        if (slot == cast(int) i)
+        {
+            t.order = t.order[0 .. k] ~ t.order[k + 1 .. $];
+            break;
+        }
+}
+
+/// Also the `kind::sweep` an explicit scheduled cleanup calls — the inline
+/// trigger and the explicit one are one function, so a program that sweeps by
+/// hand and one that lets the marks do it cannot drift apart.
+int sweepResources(ref ResourceTable t)
+{
+    int taken = 0;
+    const limit = t.sweepBatch > 0 ? t.sweepBatch : cast(int) t.entries.length;
+    foreach (i; 0 .. t.entries.length)
+    {
+        if (taken >= limit) break;
+        if (t.entries[i].live && t.entries[i].finished)
+        {
+            rtReclaim(t, i);
+            taken++;
+        }
+    }
+    return taken;
+}
+
+private bool rtWatermarkReached(ref ResourceTable t)
+{
+    // ~75% of cap. An uncapped table has no watermark: its bound is the OS
+    // ulimit, and there is no budget to measure against.
+    return t.cap > 0 && (t.finishedCount * 4) >= (t.cap * 3);
+}
+
+/// Exhaustion is ABSENCE, not an error — the caller decides what running out
+/// means, exactly as 7.2's pool does.
+TuckResult!ResourceHandle acquireResource(ref ResourceTable t, long reference,
+                                          string site)
+{
+    // Sizes a capped table on first use, so a table built as a plain literal
+    // behaves exactly as one built through initResourceTable — which is what
+    // lets the backend emit the declaration with no start-up code at all.
+    if (t.cap > 0 && t.entries.length < t.cap) t.entries.length = t.cap;
+    foreach (i; 0 .. t.entries.length)
+    {
+        if (t.entries[i].live) continue;
+        t.entries[i].gen++;
+        t.entries[i].reference = reference;
+        t.entries[i].live = true;
+        t.entries[i].finished = false;
+        t.entries[i].site = site;
+        t.order ~= cast(int) i;
+        return tok(ResourceHandle(cast(int) i, t.entries[i].gen));
+    }
+    // The cap is the leak alarm as much as the budget: a table that FILLS is
+    // a bug surfacing early rather than an OOM three days in. Which of those
+    // two readings applies is the kind's own `on_full`.
+    if (t.cap > 0)
+    {
+        if (t.onFull == RtOnFull.Error)
+            tuckResourceMisuse(t.kind,
+                "table is full and the kind declares `on_full: error`");
+        return tnone!ResourceHandle();
+    }
+    ResourceEntry e;
+    e.reference = reference;
+    e.gen = 1;
+    e.live = true;
+    e.site = site;
+    t.entries ~= e;
+    t.order ~= cast(int)(t.entries.length - 1);
+    return tok(ResourceHandle(cast(int)(t.entries.length - 1), 1));
+}
+
+private size_t rtEntryFor(ref ResourceTable t, ResourceHandle h, string what)
+{
+    // Every way of being wrong is caught rather than absorbed: out of range,
+    // never handed out, and — the one that matters — a generation that has
+    // moved on, which is a handle held past its finish.
+    const i = h.slot;
+    if (i < 0 || i >= t.entries.length)
+        tuckResourceMisuse(t.kind, "handle names no slot");
+    else if (!t.entries[i].live)
+        tuckResourceMisuse(t.kind, "slot nobody holds");
+    else if (t.entries[i].gen != h.gen)
+        tuckResourceMisuse(t.kind, "stale handle");
+    return cast(size_t) i;
+}
+
+/// The only way to reach the OS handle, which is what makes the generation
+/// check unavoidable rather than something a caller can forget.
+long derefResource(ref ResourceTable t, ResourceHandle h)
+{
+    return t.entries[rtEntryFor(t, h, "use")].reference;
+}
+
+/// 7.4's mark: release INTENT, not necessarily release. on_finish runs, the
+/// entry is marked, and the generation bumps — under every policy, so the
+/// handle dies AT THE MARK. Only reclamation is policy, which is what makes
+/// durability independent of sweep timing.
+void finishResource(ref ResourceTable t, ResourceHandle h)
+{
+    const i = rtEntryFor(t, h, "finish");
+    if (t.onFinish !is null) t.onFinish(t.entries[i].reference);
+    t.entries[i].finished = true;
+    t.entries[i].gen++;
+    t.finishedCount++;
+    final switch (t.policy)
+    {
+        case RtResourcePolicy.Strict:
+            rtReclaim(t, i);
+            break;
+        case RtResourcePolicy.Lazy:
+            // Sweeping is INLINE — no thread, no background actor. The
+            // trigger lives in the mark itself, so a loop acquiring ten
+            // thousand times against a cap in the thousands never blocks.
+            if (rtWatermarkReached(t)) sweepResources(t);
+            break;
+        case RtResourcePolicy.Exit:
+            break;
+    }
+}
+
+/// LIFO in REGISTRATION order: files flush before the directories holding
+/// them close, a TLS session shuts down before the socket under it.
+void closeAllResources(ref ResourceTable t)
+{
+    foreach_reverse (slot; t.order)
+    {
+        const i = cast(size_t) slot;
+        if (!t.entries[i].live) continue;
+        if (!t.entries[i].finished && t.onFinish !is null)
+            t.onFinish(t.entries[i].reference);
+        if (t.onClose !is null) t.onClose(t.entries[i].reference);
+        t.entries[i].live = false;
+        t.entries[i].finished = false;
+        t.entries[i].site = "";
+    }
+    t.order.length = 0;
+    t.finishedCount = 0;
+}
+
+int openResourceCount(ref ResourceTable t)
+{
+    int n = 0;
+    foreach (slot; t.order)
+    {
+        const i = cast(size_t) slot;
+        if (t.entries[i].live && !t.entries[i].finished) n++;
+    }
+    return n;
+}
+
+/// 7.4's OPEN RESOURCES report. Debug builds only — `version(assert)` is on
+/// unless the build passed -release, which is what "debug build" means here —
+/// and silent when there is nothing to say: a report that prints "0" every
+/// run is one people stop reading.
+void reportOpenResources(ref ResourceTable t)
+{
+    version (assert)
+    {
+        import std.stdio : stderr;
+        const n = openResourceCount(t);
+        if (n == 0) return;
+        stderr.writeln("OPEN RESOURCES [", t.kind, "] (", n, "):");
+        foreach (slot; t.order)
+        {
+            const i = cast(size_t) slot;
+            if (t.entries[i].live && !t.entries[i].finished)
+                stderr.writeln("  slot ", i, " acquired at ", t.entries[i].site);
+        }
+    }
+}
+
+/// SAY what leaked, then close everything — in that order, since close-all
+/// empties the table and a report after it is always silent.
+void shutdownResources(ref ResourceTable t)
+{
+    reportOpenResources(t);
+    closeAllResources(t);
+}
+
 void tuckPoolMisuse(string what)
 {
     // Aborts rather than returning: the alternative is the silent corruption

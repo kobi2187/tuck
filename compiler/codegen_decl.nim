@@ -639,6 +639,51 @@ proc nimBitSetter*(bf: BitFieldInfo, regName: string): string =
     "  if value: " & regName & "[] = " & regName & "[] or mask\n" &
     "  else: " & regName & "[] = " & regName & "[] and not mask\n"
 
+proc rtPolicyName*(p: ResourcePolicy): string =
+  ## The runtime enum's spelling. Exhaustive rather than derived, for the same
+  ## reason ast_ops.effectName is: a new policy must state its target spelling
+  ## here or this stops compiling.
+  case p
+  of rpStrict: "rtStrict"
+  of rpLazy: "rtLazy"
+  of rpExit: "rtExit"
+
+proc rtOnFullName(f: ResourceOnFull): string =
+  case f
+  of rofAbsent: "rtoAbsent"
+  of rofError: "rtoError"
+
+proc genResourceTables(d: Decl): string =
+  ## spec §7.4: one registry table per declared kind, plus the kind's handle
+  ## type.
+  ##
+  ## A STATIC initializer, not a start-up call: the knobs ARE the declaration,
+  ## and the runtime sizes a capped table on its first acquire — so a program
+  ## that never touches a kind pays nothing for declaring it, which is what a
+  ## standalone target needs.
+  ##
+  ## The handle alias is EMITTED rather than resolved away (the route a pool
+  ## handle takes, via isPoolHandleType). It costs one line, it makes the
+  ## emitted signature say what it holds, and it is what an extern binding
+  ## names in its return type.
+  for k in d.resKinds:
+    result.add("type " & resourceHandleName(k.name) & "* = ResourceHandle\n")
+    let onFin = rtOnFinishProc(k.onFinish)
+    result.add("var " & resourceTableName(k.name) & "* = ResourceTable(kind: " &
+               escape(k.name) & ", cap: " & $k.cap & ", policy: " &
+               rtPolicyName(k.policy) & ", onFull: " & rtOnFullName(k.onFull) &
+               ", sweepBatch: " & $k.sweepBatch &
+               (if onFin == "": "" else: ", onFinish: " & onFin) & ")\n")
+  if d.resKinds.len == 0: return
+  # §7.4's close-all, reached from the entry point. Across kinds it runs in
+  # REVERSE DECLARATION order, which is the same LIFO reading the within-table
+  # order already follows — a kind declared later is likelier to sit on top of
+  # an earlier one (a TLS session over its socket), and there is no other
+  # ordering the declarations can be read to state.
+  result.add("proc " & ResourceShutdownProc & "*() =\n")
+  for i in countdown(d.resKinds.len - 1, 0):
+    result.add("  shutdownResources(" & resourceTableName(d.resKinds[i].name) & ")\n")
+
 proc genRegister*(d: Decl): string =
   ## A memory-mapped register (spec 8.1): named shift constants plus
   ## accessors reading and writing through a typed pointer at the MMIO
@@ -792,6 +837,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   of dkStaticAssert:
     return "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
   of dkErrors: return ctx.genErrHandler(d)
+  of dkResources: return genResourceTables(d)
   of dkMixin, dkExtern, dkPending: return ctx.genMixinBlock(d)
   of dkFnSig:
     # `fnsig NAME = {params} -> ret` → a Nim closure proc type. Named delegate

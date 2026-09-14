@@ -144,13 +144,30 @@ let tuckGrammar = peg("module", st: Stats):
     st.sites[capture[0].si] = "s:" & ($1).split(' ')[0]
 
   stmt      <- letStmt | varStmt | returnStmt | ifStmt | forStmt | loopStmt |
-               matchStmt | onStmt | ellipsisStmt | simpleStmt | transRow |
-               assignStmt | exprStmt
+               matchStmt | onStmt | deferStmt | finishStmt | ellipsisStmt |
+               simpleStmt | transRow | assignStmt | exprStmt
+  # spec 7.4: `defer:` + block — statements held back until scope exit.
+  # Positional, like `satisfiesMember` and the identifier-headed declarations
+  # above: `defer` is not a keyword to the lexer, so it arrives as tkIdent and
+  # this grammar can only say WHERE it sits, not what it is called. The shape
+  # is unambiguous today because Tuck has no labels (a user ruling), so
+  # `<ident>:` opening a block in STATEMENT position is a defer and nothing
+  # else.
+  deferStmt <- word * "tkColon " * +nl * blk
+  # spec 7.4: `acquire <raw>, <kind>` and `finish <handle>, <kind>`. ONE rule,
+  # because they are one shape — which is the point of the pair. Positional,
+  # since neither word is a keyword to the lexer, and stated BEFORE the
+  # general expression statements so the comma reads as this form's rather
+  # than as whatever an expression might do with one.
+  resourceOp<- word * expr * "tkComma " * name
+  finishStmt<- resourceOp * eol
   letStmt   <- ("tkLet " | "tkConst ") * name * ?("tkColon " * typeExpr) *
-               "tkAssign " * (matchTail | ifTail | (expr * eol))
+               "tkAssign " * (matchTail | ifTail | (resourceOp * eol) |
+                              (expr * eol))
   varStmt   <- "tkVar " * name * ?("tkColon " * typeExpr) *
-               (("tkAssign " * (matchTail | ifTail | (expr * eol))) | eol)
-  returnStmt<- "tkReturn " * ?expr * eol
+               (("tkAssign " * (matchTail | ifTail | (resourceOp * eol) |
+                                (expr * eol))) | eol)
+  returnStmt<- "tkReturn " * ((resourceOp * eol) | (?expr * eol))
   # Two shapes share one keyword: a block `if` whose `else` opens a new line,
   # and an inline `if c: a else: b` where the whole thing is one expression.
   ifTail    <- ("tkIf " | "tkElif ") * expr * "tkColon " *
@@ -283,7 +300,15 @@ let tuckGrammar = peg("module", st: Stats):
   arenaDecl <- word * name * *attrs * "tkColon " * +nl * rawBlk
   # spec 8.1: `register NAME at ADDR:` + block of bit fields
   regDecl   <- word * name * word * ("tkIntLit " | name) * "tkColon " * +nl * rawBlk
-  # `extern:` / `extern [c, ...]:` — a block of signatures (spec 11 / FFI)
+  # THREE forms share one shape: `<word> [attrs]:` opening an opaque block.
+  #   `extern:` / `extern [c, header: "x.h"]:`  — signatures (spec 11 / FFI)
+  #   `errors [policy: strict]:`                — the global policy (spec 4.9)
+  #   `resources [policy: lazy]:`               — the registry kinds (spec 7.4)
+  # One rule rather than three identical ones: npeg would never reach the
+  # second, and a rule the grammar cannot reach states nothing. Which of the
+  # three a given block IS comes from the head word, which this grammar
+  # deliberately does not read — it describes the language as it is LEXED, and
+  # all three arrive as tkIdent.
   externDecl<- word * *attrs * "tkColon " * +nl * rawBlk
   # spec 5.4: `pending:` — the walking skeleton block
   pendingDecl <- "tkPending " * "tkColon " * +nl * rawBlk

@@ -729,7 +729,7 @@ proc ownsItsLayout(res: Resolution, s: Expr): bool =
   ## kept only as a second guard. Left out, genStmt added its own prefix on
   ## top of the chain's and produced 8 spaces against the block's 4 — which
   ## Nim rejects as invalid indentation.
-  s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile} or
+  s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile, exkDefer} or
     isCallOnChain(res, s) or isChainBinding(s)
 
 proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
@@ -816,6 +816,19 @@ proc genBlock(ctx: var CodegenCtx, e: Expr, ind: string): string =
   if body.len == 0: return ind & "discard"
   ind & "if true:\n" & body
 
+proc genDefer(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## `defer:` (spec §7.4) — Nim spells it identically, scope-exit-ordered and
+  ## LIFO, so this is a keyword and a body rather than a lowering. All three
+  ## backends reach their own native defer for the same reason: nothing about
+  ## scope exit needs re-implementing in Tuck.
+  ##
+  ## The body is always a block — `defer:` opens one, and the parser has no
+  ## other form — so there is no inline arm to write.
+  if e.deferBody == nil or e.deferBody.kind != exkBlock: return ind & "discard"
+  let body = ctx.genStmts(e.deferBody, ind)
+  if body.len == 0: return ind & "discard"
+  ind & "defer:\n" & body
+
 proc genUnindented(ctx: var CodegenCtx, e: Expr): string =
   ## Emit an expression with no indentation — for a value position, where a
   ## leading run of spaces would land in the middle of an expression.
@@ -890,6 +903,18 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkChain: ctx.genExprChain(e)
   of exkSend: ctx.genExprSend(e)
   of exkSelect: ctx.genExprSelect(e)
+  of exkDefer: ctx.genDefer(e, ind)
+  of exkFinish:
+    # The kind names the table directly, so there is no dispatch and no
+    # runtime cost to the redundancy the source spells out.
+    "finish(" & resourceTableName(e.finishKind) & ", " &
+      ctx.genExpr(e.finishHandle) & ")"
+  of exkAcquire:
+    # The acquire SITE is supplied here, from the span — the author never
+    # writes it, and it is what makes the OPEN RESOURCES report able to say
+    # WHERE a leaked handle came from.
+    "acquire(" & resourceTableName(e.acquireKind) & ", int64(" &
+      ctx.genExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
   of exkImport: ""  # imports are declarations, never expression position
 
 proc hasBracketBase(e: Expr): bool =

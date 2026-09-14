@@ -352,28 +352,45 @@ proc lexString*(L: var Lexer) =
         i += 1
   L.pendingTokens.add(Token(kind: tkStrLit, value: val, line: startLine, column: startCol))
 
+proc lexDigits(L: var Lexer, val: var string, digits: set[char],
+               startLine, startCol: int) =
+  ## A run of digits, with `_` allowed BETWEEN them as a readability
+  ## separator: `10_000` is the number ten thousand, and the underscore is
+  ## gone by the time anything downstream sees the value.
+  ##
+  ## The separator must SEPARATE — a doubled or trailing one is rejected
+  ## rather than quietly ignored, because `1_` and `1__0` are typos every
+  ## time, and a lexer that accepts them makes the next reader wonder whether
+  ## they mean something.
+  while L.peek() in digits or L.peek() == '_':
+    if L.peek() == '_':
+      if val.len == 0 or L.peek(1) notin digits:
+        L.reportError("Broken numeric literal: `_` must sit between digits.",
+                      startLine, startCol)
+        L.advance()
+        continue
+      L.advance()
+    else:
+      val.add(L.peek())
+      L.advance()
+
 proc lexNumber*(L: var Lexer) =
   let startLine = L.line
   let startCol = L.column
   var val = ""
   if L.peek() == '0' and (L.peek(1) == 'x' or L.peek(1) == 'X'):
-    val.add("0x")
     L.advance()
     L.advance()
-    while L.peek() in '0'..'9' or L.peek() in 'a'..'f' or L.peek() in 'A'..'F':
-      val.add(L.peek())
-      L.advance()
-    L.pendingTokens.add(Token(kind: tkIntLit, value: val, line: startLine, column: startCol))
+    L.lexDigits(val, {'0'..'9', 'a'..'f', 'A'..'F'}, startLine, startCol)
+    L.pendingTokens.add(Token(kind: tkIntLit, value: "0x" & val, line: startLine, column: startCol))
     return
-  while L.peek() in '0'..'9':
-    val.add(L.peek())
-    L.advance()
+  L.lexDigits(val, {'0'..'9'}, startLine, startCol)
   if L.peek() == '.' and L.peek(1) in '0'..'9':
     val.add('.')
     L.advance()
-    while L.peek() in '0'..'9':
-      val.add(L.peek())
-      L.advance()
+    var frac = ""
+    L.lexDigits(frac, {'0'..'9'}, startLine, startCol)
+    val.add(frac)
     if L.peek() == '.':
       L.reportError("Broken numeric literal: multiple decimal points.", startLine, startCol)
     L.pendingTokens.add(Token(kind: tkFloatLit, value: val, line: startLine, column: startCol))

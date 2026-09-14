@@ -410,6 +410,36 @@ proc importedEffects(loaded: seq[LoadedModule],
   addLoadedEffects(result, loaded)
   addSigOnlyEffects(result, sigOnly)
 
+proc importedResources(loaded: seq[LoadedModule],
+                       sigOnly: Table[string, IndexEntry]):
+                         Table[string, seq[string]] =
+  ## The §7.4 twin of importedEffects, keyed identically and filled from the
+  ## same two places. Its own table rather than a widened value type because
+  ## `imported` is a public parameter of verifyModuleEffects that several
+  ## callers pass — and because the two answers genuinely are independent: a
+  ## module may export an [io] fn that acquires nothing, and vice versa.
+  for lm in loaded:
+    for d in lm.m.decls:
+      if d == nil or d.kind != dkFn or d.fnResourceKinds.len == 0: continue
+      result[d.name] = d.fnResourceKinds
+      result[lm.name & "::" & d.name] = d.fnResourceKinds
+  for modName, entry in sigOnly:
+    for si in entry.sigs:
+      if "::" in si.name or si.resources.len == 0: continue
+      result[si.name] = si.resources
+      result[modName & "::" & si.name] = si.resources
+
+proc declaredResourceKinds(loaded: seq[LoadedModule]): seq[string] =
+  ## Every resource kind the PROGRAM declares. Whole-program because §7.4's
+  ## kinds are, and gathered here rather than inside the effect pass because
+  ## that pass runs once per module and this answer is the same for all of
+  ## them — the same shape as importedEffects above.
+  for lm in loaded:
+    for d in lm.m.decls:
+      if d == nil or d.kind != dkResources: continue
+      for k in d.resKinds:
+        if k.name notin result: result.add(k.name)
+
 proc typecheckOnly(path: string, loaded: seq[LoadedModule],
                    sigOnly: Table[string, IndexEntry]): seq[string] =
   ## Just the typecheck half of the check pipeline. checkOrDie calls this
@@ -452,12 +482,14 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
     for lm in loaded: checkedMods.add(lm.m)
     assertNoMissingTypes(checkedMods)
   let imported = importedEffects(loaded, sigOnly)
+  let importedRes = importedResources(loaded, sigOnly)
+  let programKinds = declaredResourceKinds(loaded)
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
   try:
     for lm in loaded:
       let ts = epochTime()
-      verifyModuleEffects(lm.m, imported)
+      verifyModuleEffects(lm.m, imported, importedRes, programKinds)
       vSub(lm.name, ts)
     if verifyStages: verifyEffectsAssertions(loaded)
   except SemanticError as err:
@@ -1126,14 +1158,23 @@ when isMainModule:
         # mainRc. `fn main` is mangled like every other user fn, so the entry
         # calls the prefixed symbol.
         let tuckMain = mangleName("main") & "()"
+        # §7.4's close-all: report what leaked, then close every registry
+        # table. It has to run BEFORE the process exits, which is why a
+        # value-returning main binds its result first rather than exiting
+        # inline — `quit(tuck_main())` leaves nowhere to put this.
+        let resShutdown =
+          if declaresResources(m): "\n  " & ResourceShutdownProc & "()" else: ""
         let mainCall =
           if hasTasks and mainReturns: "let mainRc = " & tuckMain
+          elif mainReturns and resShutdown != "": "let mainRc = " & tuckMain
           elif mainReturns: "quit(" & tuckMain & ")"
           else: tuckMain
-        let asyncExit = if hasTasks and mainReturns: "\n  quit(mainRc)" else: ""
+        let asyncExit =
+          if mainReturns and (hasTasks or resShutdown != ""): "\n  quit(mainRc)"
+          else: ""
         writeFile(mainNim, readFile(mainNim) &
           "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
-          asyncDrive & asyncExit & "\n")
+          asyncDrive & resShutdown & asyncExit & "\n")
         # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
         var nimFlags = ""
         for o in opts:

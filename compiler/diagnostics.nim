@@ -148,6 +148,17 @@ type
     dcReWriteOnly = "TK-RE02"           ## reading a field declared [write]
     dcReBitRange = "TK-RE03"            ## a bit index outside the register's width
     dcReOverlap = "TK-RE04"             ## two fields claim the same bit
+    dcRsUnknownKind = "TK-RS01"         ## [resource: k] names no declared kind
+    dcRsDuplicateKind = "TK-RS02"       ## two `resources:` blocks declare one kind
+    dcRsUndeclared = "TK-RS03"          ## a caller does not declare a kind it acquires
+    dcRsWrongKind = "TK-RS04"           ## `finish h, k` where h is another kind's handle
+    dcRsNotRaw = "TK-RS05"              ## `acquire r, k` where r is not an OS handle
+    dcRsBadEdge = "TK-RS06"             ## a transition endpoint names no state of the kind
+    dcRsNoTerminal = "TK-RS07"          ## a kind's protocol has no single closing state
+    dcRsUnreachable = "TK-RS08"         ## a state nothing can reach from the initial one
+    dcRsCannotClose = "TK-RS09"         ## a state the closing one cannot be reached from
+    dcRsBadStatesType = "TK-RS10"       ## `states:` names no sum type, or one with no edges
+    dcRsIncoherent = "TK-RS11"          ## two knobs on one kind that cannot both mean anything
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -179,6 +190,7 @@ proc categoryName*(d: DiagCode): string =
   of "PO": "Policy"
   of "SE": "Sealed"
   of "CX": "Complexity"
+  of "RS": "Resource"
   else: "Semantic"
 
 const WarningCodes* = {dcTyMemberShadowsFn}
@@ -646,6 +658,66 @@ proc ruleExplanation(d: DiagCode): string =
     "Two fields of one register claim the same bit, so writing one would " &
     "corrupt the other. Fix: check the bit ranges — this is almost always a " &
     "transcription slip from the datasheet."
+  of dcRsUnknownKind:
+    "`[resource: k]` must name a kind some `resources:` block declares " &
+    "(spec §7.4) — the same rule an `[error: E]` follows for an error enum. " &
+    "Kinds are an open set: any module may declare its own, so the fix is " &
+    "either a typo in the marker or a missing `resources:` line."
+  of dcRsDuplicateKind:
+    "Two `resources:` blocks declare the same kind. Kinds accumulate across " &
+    "the program, so the second block's knobs would silently lose to the " &
+    "first's — cap, policy and sweep batch all belong to ONE table. Fix: " &
+    "pick one owner for the kind, or give them distinct names."
+  of dcRsWrongKind:
+    "`finish <handle>, <kind>` names the kind as well as the handle, and the " &
+    "two must agree (spec §7.4). The kind is redundant on purpose — the " &
+    "handle's type already decides which registry is touched — so stating it " &
+    "is a claim the compiler checks, not information it needs. Fix: name the " &
+    "kind the handle actually came from, or finish a different handle."
+  of dcRsNotRaw:
+    "`acquire <raw>, <kind>` registers the OS handle an extern just produced " &
+    "— an fd, or a pointer widened to an integer — so its argument is a " &
+    "NUMBER (spec §7.4). What comes back is the kind's own handle type. Fix: " &
+    "pass the extern's result, not something already registered: acquiring a " &
+    "`<Kind>Handle` would put a handle into the table a second time."
+  of dcRsBadEdge:
+    "A `transitions:` edge inside a `resources:` kind must name states that " &
+    "kind declares (spec §7.4, §4.4). Fix: check the spelling, or add the " &
+    "missing state."
+  of dcRsNoTerminal:
+    "A kind's protocol needs exactly ONE closing state — the state with no " &
+    "outgoing edge, which is where `finish` leaves the handle. It is DERIVED " &
+    "rather than declared, so it cannot be declared wrong; what can be wrong " &
+    "is the edge set. Too many means several states look final; none means " &
+    "every state can still move, so the protocol never ends."
+  of dcRsUnreachable:
+    "Every state of a kind's protocol must be reachable from the first one, " &
+    "which is where `acquire` starts. A state nothing can reach is a state " &
+    "written by mistake — the same rule a [sealed] sum type already follows."
+  of dcRsCannotClose:
+    "The closing state must be reachable from EVERY state: a resource you " &
+    "cannot close from where you are is a leak the type system promised to " &
+    "prevent. Fix: add the missing edge, usually a direct one to the closing " &
+    "state for the error path."
+  of dcRsIncoherent:
+    "A kind's knobs constrain each other: the COMBINATION is the declaration, " &
+    "not the individual words. `on_full` needs a `cap`, because an unbounded " &
+    "table never fills; `sweep_batch` needs `policy: lazy`, because no other " &
+    "policy runs a sweep for it to size. Checked across every site that " &
+    "declares the kind, since an app adding a cap is what makes a library's " &
+    "`on_full` start to mean something."
+  of dcRsBadStatesType:
+    "`states: T` points a resource kind at its protocol: T must be a sum " &
+    "type carrying a `transitions:` block. The kind NAMES it rather than " &
+    "restating it because the two have different owners — a `resources:` " &
+    "block is the app's, deciding which tables exist and how large, while " &
+    "the protocol of an OS service belongs to the library wrapping it. Fix: " &
+    "declare T as a sum type with transitions, or drop `states:`."
+  of dcRsUndeclared:
+    "A fn calling an acquire site must declare the kind itself, exactly as " &
+    "it must declare an effect it reaches (spec §3.7 — explicit, not " &
+    "inferred). Fix: add `[resource: k]` to this fn's own bracket, or " &
+    "finish the handle here so it does not escape."
   else: ""
 
 proc explanationOf*(d: DiagCode): string =

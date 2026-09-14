@@ -183,6 +183,9 @@ iterator children*(e: Expr): Expr =
       for arm in e.selArms:
         yield arm.arg
         yield arm.body
+    of exkDefer: yield e.deferBody
+    of exkAcquire: yield e.acquireRef
+    of exkFinish: yield e.finishHandle
 
 iterator childDecls*(d: Decl): Decl =
   ## Every declaration nested one level inside `d`, whichever field holds it.
@@ -226,7 +229,7 @@ iterator childDecls*(d: Decl): Decl =
       # nothing.
       yield d.errHandler
     of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
-       dkPool, dkRegister, dkImport, dkFnSig, dkSatisfies:
+       dkPool, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
       discard
 
 iterator ownTypes*(d: Decl): Type =
@@ -267,7 +270,7 @@ iterator ownTypes*(d: Decl): Type =
     # members — childDecls reaches those.
     of dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkMixin, dkExtern, dkPending, dkInterface,
-       dkGroup, dkWhen, dkPublic:
+       dkGroup, dkWhen, dkPublic, dkResources:
       discard
 
 iterator ownExprs*(d: Decl): Expr =
@@ -295,7 +298,7 @@ iterator ownExprs*(d: Decl): Expr =
         yield arm.body
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
        dkGroup, dkActor, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
-       dkFnSig, dkSatisfies, dkPublic:
+       dkFnSig, dkSatisfies, dkPublic, dkResources:
       discard
 
 proc assignIds*(e: Expr, next: var uint32) =

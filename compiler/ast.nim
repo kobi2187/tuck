@@ -52,6 +52,78 @@ type
     emPriority
 
 
+  ResourcePolicy* = enum
+    ## spec §7.4: when the OS handle actually closes. MARKING is unconditional
+    ## and identical under all three — the handle dies at mark time whichever
+    ## one is in force, so buggy code behaves the same way in every mode. Only
+    ## reclamation moves.
+    rpStrict   ## close at scope end. Deterministic; the embedded/debug default
+    rpLazy     ## mark only; the inline watermark sweep reclaims
+    rpExit     ## close-all at program end
+
+  ResourceOnFull* = enum
+    ## What a CAPPED table does when it fills. Only meaningful with a `cap` —
+    ## an unbounded kind never fills, so naming this on one is a mistake the
+    ## parser refuses rather than a setting that quietly does nothing.
+    rofAbsent  ## report absence and let the caller decide (the default, and
+               ## the same answer §7.2's pool gives when it runs out)
+    rofError   ## abort, naming the kind and its cap. §7.4's `on_full: error`:
+               ## a table that fills is a bug surfacing early, and a program
+               ## that would rather die than shed load says so here
+
+  ResourceOnFinish* = enum
+    ## What runs at the MARK, always, under every policy — the half of
+    ## finishing that is split from reclamation so durability never depends on
+    ## sweep timing. A closed vocabulary: the runtime can only perform actions
+    ## it knows, and a kind needing something else binds its own callback.
+    rfNone      ## nothing beyond the mark itself (the default)
+    rfFlush     ## fsync the handle — §7.4's `file: flush`
+    rfShutdown  ## shutdown(fd, RDWR) — §7.4's net case
+
+  ResourceKnob* = enum
+    ## One tunable on a kind, tracked so a kind can be declared in more than
+    ## one place without either site silently winning. `policy` counts as
+    ## given only when a kind NAMES it — the block-level default does not,
+    ## or a block default would collide with every app that tunes one kind.
+    rkCap, rkPolicy, rkOnFull, rkOnFinish, rkSweepBatch, rkStates
+
+  ResourceKindDef* = object
+    ## One line of a `resources:` block — a kind of OS handle and the knobs
+    ## its registry table runs under.
+    name*: string
+    cap*: int             ## 0 = unbounded (seq-backed); >0 = the static array
+                          ## bound, which is also the leak alarm §7.4 wants
+    policy*: ResourcePolicy
+    onFull*: ResourceOnFull
+    onFinish*: ResourceOnFinish
+    sweepBatch*: int      ## 0 = evict every finished entry; >0 = that many
+    statesType*: string   ## `states: DbState` — the NAME of a sealed sum type
+                          ## whose transitions are this kind's protocol.
+                          ## Optional; "" = no protocol beyond the registry's
+                          ## own live/finished, the ordinary case (a file has
+                          ## two states and the table already tracks both).
+                          ##
+                          ## A NAME rather than the states themselves, because
+                          ## the two halves have different owners: a
+                          ## `resources:` block is the APP's — it decides which
+                          ## tables exist and how big they are — while the
+                          ## protocol of an OS service belongs to the library
+                          ## that wraps it. Decoupling them lets each be
+                          ## written by whoever knows it.
+    statesSpan*: Span     ## where `states:` was written, so the diagnostics
+                          ## about the named type point at the reference and
+                          ## not at the kind's first line
+    given*: set[ResourceKnob]  ## which knobs THIS site wrote. A kind may be
+                               ## declared by the library that owns it and
+                               ## re-opened by the app that deploys it, so the
+                               ## rule is per KNOB — each set at most once
+                               ## program-wide — rather than one declaration
+                               ## per kind. No last-writer-wins, no dependence
+                               ## on import order, and the diagnostic can name
+                               ## both sites.
+    knobSpan*: array[ResourceKnob, Span]  ## where each given knob was written
+    span*: Span
+
   TypeAttr* = object
     name*: string
     value*: string
@@ -255,6 +327,23 @@ type
     exkImport
     exkSend      # `ActorType send handler {payload}` — enqueue to an actor
     exkSelect    # task-body `on select:` — wait on read/timeout branches
+    exkAcquire   # `acquire <raw>, <kind>` — spec §7.4's registration. The
+                 # symmetric twin of exkFinish: same shape, same argument
+                 # order, same checked kind name. It takes the RAW OS handle
+                 # an extern produced and returns `?<Kind>Handle`, so the raw
+                 # fd never reaches Tuck code and the table is written in the
+                 # module that declares it.
+    exkFinish    # `finish <handle>, <kind>` — spec §7.4's release INTENT.
+                 # The kind is named rather than inferred from the handle's
+                 # type: the type already decides the table, so naming it is
+                 # redundant — and CHECKED, which is the point. A release is
+                 # read far more often than written, and the one reading it
+                 # should not have to find the declaration of `sock` to learn
+                 # which registry is being touched.
+    exkDefer     # `defer:` — a block that runs at scope exit, LIFO. A GENERAL
+                 # statement: §7.4 needs it for release intent, but nothing
+                 # about it is resource-specific, and all three backends have
+                 # a native defer to lower it onto
     # The five below replace a bare exkVar that names a non-value
     # declaration outright — resolveDeclRefs (compiler/resolve_refs.nim)
     # rewrites the matching exkVar into one of these, between load and
@@ -366,6 +455,14 @@ type
       sendPayload*: Expr    # the `{...}` struct literal, or nil
     of exkSelect:
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
+    of exkDefer:
+      deferBody*: Expr  # the block to run at scope exit
+    of exkAcquire:
+      acquireRef*: Expr     # the raw OS handle to register
+      acquireKind*: string  # the kind whose table it goes into, as written
+    of exkFinish:
+      finishHandle*: Expr   # the handle being released
+      finishKind*: string   # the kind it belongs to, as written
     of exkCombinator:
       comb*: CombKind
       combRecv*: Expr   # the receiver; for ckMerge, the struct OF members
@@ -437,6 +534,12 @@ type
     ret*: Type
     generics*: seq[string]
     effects*: seq[EffectMarker]  # [io], [may_block], ... — propagates to callers
+    resources*: seq[string]      # [resource: udp] — the kinds this fn acquires,
+                                 # propagating to callers exactly as effects do.
+                                 # Here for the reason the note above gives: a
+                                 # cached signature that dropped them would make
+                                 # an imported acquirer look non-acquiring, which
+                                 # is the bug effects themselves once had
     isPending*: bool
     line*: int
 
@@ -462,6 +565,11 @@ type
     dkRegister
     dkStaticAssert
     dkErrors  # global error policy declaration (spec 4.9)
+    dkResources # `resources:` — the OS-handle kinds this program registers
+                # (spec §7.4). Its own kind, not a dkErrors carrying a list:
+                # an errors block declares ONE policy and an optional handler,
+                # a resources block declares N kinds each with their own knobs,
+                # and every consumer asks a different question of the two.
     dkImport  # import <module> — loads <module>.tuck next to the importer
     dkSelect  # `on select:` — wait on multiple event sources (spec §9.3)
     dkFnSig   # `fnsig NAME = {params} -> ret` — named function-signature type
@@ -560,6 +668,12 @@ type
       fnParams*: seq[Param]
       fnReturnType*: Type
       fnEffects*: seq[EffectMarker]
+      fnResourceKinds*: seq[string]  ## `[resource: udp]` — the registry kinds
+                                     ## this fn acquires. SEPARATE from
+                                     ## fnEffects because EffectMarker is a
+                                     ## valueless enum and a kind is a name;
+                                     ## the same reason fnErrorTypes sits
+                                     ## beside it rather than inside it
       fnBody*: Expr
       isPending*: bool  # declared in a `pending:` block; body is nil
       isDecision*: bool # parsed from a `decision` table; body is match rows
@@ -616,6 +730,7 @@ type
       taskReturnType*: Type
       taskEffects*: seq[EffectMarker]
       taskErrorTypes*: seq[string]  ## `[error: E | F]` — what it can raise
+      taskResourceKinds*: seq[string]  ## `[resource: k]` — what it acquires
       taskBody*: Expr
     of dkSatisfies:
       # `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL.
@@ -648,6 +763,8 @@ type
     of dkErrors:
       policyName*: string  # strict | continue | exit
       errHandler*: Decl    # the `on unhandled({code, site})` fn, nil if strict
+    of dkResources:
+      resKinds*: seq[ResourceKindDef]  # spec §7.4, one per line of the block
     of dkImport:
       discard  # module name lives in Decl.name
     of dkSelect:

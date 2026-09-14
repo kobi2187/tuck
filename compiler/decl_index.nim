@@ -55,7 +55,7 @@ proc buildDeclIndex*(m: Module): DeclIndex =
     of dkFn, dkMixin, dkExtern, dkPending, dkPool, dkFnSig, dkRegistry,
        dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkInterface, dkGroup, dkWhen,
-       dkPublic: discard
+       dkPublic, dkResources: discard
 
 proc isRecordTypeIdx*(idx: DeclIndex, name: string): bool =
   name in idx.recordNames

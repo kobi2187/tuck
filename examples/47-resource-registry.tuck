@@ -1,0 +1,106 @@
+# The resource registry (spec §7.4) and `defer`.
+#
+# Scope-based RAII is the wrong model for an OS handle: a hot loop that opens
+# and closes a file per iteration thrashes on syscalls. The model the OS itself
+# uses is a global table of handles — the process fd table — so Tuck makes that
+# table explicit, one per KIND, and kinds are user-declared.
+#
+# Everything below is real: each kind emits a registry table with these exact
+# knobs, and the program reports anything left unfinished before it exits.
+
+# A kind's PROTOCOL is a sealed sum type it NAMES. The two halves are
+# decoupled because they have different OWNERS: a `resources:` block is the
+# APP's — it decides which tables exist and how large they are, a deployment
+# question no library can answer — while the protocol of an OS service is the
+# LIBRARY's. It knows a connection goes Connecting -> Ready -> Closed, which no
+# app should have to restate and none should be able to restate differently.
+#
+# The protocol costs the REGISTRY nothing: the handle is still a slot and a
+# tenancy and the table is unchanged, so no backend learns anything about
+# states. NetState itself is an ordinary sum type and emits like one, because
+# that is exactly what it is — the decoupling buys the protocol a normal
+# declaration instead of a special one.
+type NetState:
+  | Connecting
+  | Ready
+  | Closed
+  transitions:
+    # Two things are DERIVED rather than declared, so they cannot disagree
+    # with the edges: `acquire` starts at the FIRST state, and `finish` leaves
+    # the handle at the one with no way out. The compiler checks the machine is
+    # one a resource can live in — every state reachable from the start, and
+    # the closing state reachable from every state, because a live cycle with
+    # no exit is a handle that cannot be closed.
+    Connecting -> Ready
+    Connecting -> Closed
+    Ready      -> Closed
+
+resources [policy: lazy]:          # the default for every kind below
+  # A cap is a LINK-TIME memory budget on a standalone target, and the leak
+  # alarm besides: a table that fills is a bug surfacing early, not an OOM
+  # three days in. Reaching it is absence, not an error — the caller decides
+  # what running out means.
+  net  [cap: 10_000, on_full: error, sweep_batch: 100, states: NetState]
+
+  # ...and a kind may override the block's policy. `strict` closes at the
+  # mark: deterministic, and the embedded and debug default.
+  file [cap: 8, on_finish: flush, policy: strict]
+
+  # No cap: the table grows, and the OS ulimit is the real bound.
+  udp
+
+# `acquire <raw>, <kind>` registers the OS handle an extern just produced, and
+# hands back the kind's own handle type. The RAW fd exists between the extern's
+# return and this line and nowhere else — Tuck code only ever holds a
+# `UdpHandle`, a plain value carrying a slot and a tenancy. A handle whose
+# tenancy has moved on is a caught error rather than a write to the wrong
+# socket, which is how the fd-reuse bug class is closed by construction.
+#
+# Exhaustion is ABSENCE, so this is `?UdpHandle`: the caller decides what a
+# full table means, exactly as a pool already does.
+#
+# The acquire SITE is recorded automatically, from the span — it is what lets
+# the OPEN RESOURCES report say WHERE a leaked handle came from, and a site the
+# author had to write is one that goes stale the first time a line moves.
+#
+# An acquire site says so in its effects bracket too, and the marker propagates
+# to callers exactly as an effect does — a fn calling this one must declare
+# `[resource: udp]` itself.
+pending:
+  fn rawOpenUdp({port: u16}) -> int [io]
+
+fn openUdp({port: u16}) -> ?UdpHandle [io, resource: udp]:
+  return acquire {port: port} rawOpenUdp, udp
+
+# `defer` runs at scope exit, LIFO — the general statement the registry rides
+# on, not a registry construct. All three backends have one natively (Nim
+# `defer:`, Odin `defer`, D `scope(exit)`).
+fn withScratch({n: int}) -> int:
+  var scratch = n
+  defer:
+    # Runs after the return value has been taken, so this does not change what
+    # comes back. That is the whole point of the construct.
+    scratch = 0
+  return scratch + 1
+
+# `finish` is the release INTENT: it marks the entry, runs the kind's
+# `on_finish`, and bumps the generation — so the handle dies HERE under every
+# policy, and a use-after-finish is the same caught error in a debug build and
+# a shipped one. Whether the socket actually closes now, at a sweep, or at
+# exit is `udp`'s declared policy, not this statement's.
+#
+# The kind is named as well as the handle. The handle's TYPE already decides
+# which registry is touched, so `udp` is redundant — and checked: finishing a
+# UdpHandle into the `file` registry is a compile error, not a runtime one. A
+# release is read far more often than it is written, and the reader should not
+# have to find the declaration of `sock` to learn which table this touches.
+fn serve({port: u16}) -> int [io, resource: udp]:
+  let sock = {port: port} openUdp
+  if sock.ok:
+    defer:
+      finish sock.value, udp
+    return 1
+  return 0
+
+fn main() -> int:
+  return {n: 16} withScratch

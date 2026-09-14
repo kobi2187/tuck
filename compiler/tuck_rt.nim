@@ -283,6 +283,261 @@ proc release*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandl
   else:
     pool.occupied = pool.occupied and not(1'u64 shl i)
 
+# ---------------------------------------------------------------------------
+# spec 7.4: the resource registry.
+#
+# Scope-based RAII is the wrong model for an OS handle: a hot loop that opens
+# and closes a file per iteration thrashes on syscalls. The true model is the
+# one the OS already uses — a global table of handles, the process fd table —
+# so Tuck makes that table explicit and per kind.
+#
+# This is 7.2's pool machinery with three additions, each of which 7.4 asks
+# for by name: an `isFinished` flag (marking and closing are SPLIT, so
+# durability never depends on sweep timing), a registration order (close-all
+# runs LIFO — a file flushes before the directory holding it closes), and an
+# acquire site per entry (the OPEN RESOURCES report has to say WHERE).
+
+type
+  ResourceHandle* = object
+    ## What an acquire hands back: WHICH entry, and WHICH TENANCY of it.
+    ## A plain value — copyable, comparable, Tier 1 (7.1) — and never the
+    ## resource itself. The ref stays in the table, which is what closes the
+    ## fd-reuse bug class by construction: a handle whose generation no longer
+    ## matches its slot is a caught error, not a write to the wrong file.
+    ##
+    ## Emitted per kind as `<Kind>Handle`, an alias of this, exactly as each
+    ## pool emits `<Pool>Handle` over PoolHandle — so the CHECKER keeps two
+    ## kinds' handles apart while the backends need only the one target type.
+    slot*: int32
+    gen*: uint32
+
+  RtResourcePolicy* = enum
+    ## When the OS handle actually closes. MARKING is identical under all
+    ## three — the handle dies at mark time whichever is in force — so buggy
+    ## code behaves the same way in every mode and a use-after-finish is the
+    ## same caught error in a debug build and a shipped one.
+    rtStrict   ## close at the mark. Deterministic; the embedded/debug default
+    rtLazy     ## mark only; the inline watermark sweep reclaims
+    rtExit     ## close-all at program end
+
+  RtOnFull* = enum
+    ## What a CAPPED table does when it fills.
+    rtoAbsent  ## report absence; the caller decides (the default)
+    rtoError   ## abort, naming the kind and its cap
+
+  ResourceCloser* = proc(reference: int64) {.nimcall.}
+    ## How THIS kind's OS handle is released, and what `on_finish` does for it.
+    ## A callback because the runtime cannot know: closing an fd, an mmap and
+    ## a TLS session are three different syscalls, and the library that
+    ## declared the kind is the only thing that knows which. nil = no-op,
+    ## which is what a kind with no OS side (a test, a counter) wants.
+
+  ResourceEntry* = object
+    reference*: int64   ## the OS handle: an fd, or a pointer cast to int
+    gen*: uint32        ## tenancy; bumped at the MARK, so the handle dies there
+    live*: bool         ## this slot is occupied at all
+    finished*: bool     ## marked; awaiting reclamation. Only these are evicted
+    site*: string       ## where it was acquired — the report's whole value
+
+  ResourceTable* = object
+    kind*: string            ## the declared kind name, for messages
+    cap*: int                ## 0 = unbounded (seq-backed); >0 = the bound
+    policy*: RtResourcePolicy
+    onFull*: RtOnFull        ## only consulted when `cap` > 0
+    sweepBatch*: int         ## 0 = evict every finished entry; >0 = that many
+    onFinish*: ResourceCloser  ## runs at the MARK, always (file: flush)
+    onClose*: ResourceCloser   ## runs at reclamation
+    entries*: seq[ResourceEntry]
+    order*: seq[int32]       ## registration order — close-all walks it backwards
+    finishedCount*: int
+
+proc tuckResourceMisuse*(table: string, what: string) =
+  ## A registry operation that cannot be honoured. Aborts rather than
+  ## returning, for the reason tuckPoolMisuse does: the alternative is silent
+  ## corruption, and a stale handle that writes to a REUSED slot is exactly
+  ## the bug 7.4 exists to make impossible.
+  stderr.writeLine("TUCK RESOURCE [" & table & "]: " & what)
+  quit(1)
+
+proc initResourceTable*(t: var ResourceTable, kind: string, cap: int,
+                        policy: RtResourcePolicy, sweepBatch: int,
+                        onFull = rtoAbsent) =
+  t.kind = kind
+  t.cap = cap
+  t.policy = policy
+  t.sweepBatch = sweepBatch
+  t.onFull = onFull
+  if cap > 0 and t.entries.len < cap:
+    # A capped kind is array-shaped from the start: the cap is a LINK-TIME
+    # memory budget on a standalone target, not a limit discovered at runtime.
+    t.entries.setLen(cap)
+
+proc setResourceHooks*(t: var ResourceTable, onFinish, onClose: ResourceCloser) =
+  ## The kind's two callbacks, bound by whichever library declared it.
+  t.onFinish = onFinish
+  t.onClose = onClose
+
+proc reclaim(t: var ResourceTable, i: int) =
+  ## Release one FINISHED entry's OS handle and free its slot. Never called on
+  ## a live one: 7.4 has no time-based eviction, and an entry nobody finished
+  ## is still in use by definition.
+  if not t.entries[i].live or not t.entries[i].finished: return
+  if t.onClose != nil: t.onClose(t.entries[i].reference)
+  t.entries[i].live = false
+  t.entries[i].site = ""
+  t.finishedCount.dec
+  for k in 0 ..< t.order.len:
+    if t.order[k] == int32(i):
+      t.order.delete(k)
+      break
+
+proc sweep*(t: var ResourceTable): int {.discardable.} =
+  ## Reclaim finished entries, up to `sweepBatch` of them (0 = all). Returns
+  ## how many were taken. Also the `kind::sweep` an explicit scheduled cleanup
+  ## calls — the inline trigger below and the explicit one are the same code,
+  ## so a program that sweeps by hand and one that lets the marks do it cannot
+  ## drift apart.
+  let limit = if t.sweepBatch > 0: t.sweepBatch else: t.entries.len
+  for i in 0 ..< t.entries.len:
+    if result >= limit: break
+    if t.entries[i].live and t.entries[i].finished:
+      t.reclaim(i)
+      result.inc
+
+proc watermarkReached(t: ResourceTable): bool =
+  ## ~75% of cap, 7.4's trigger. An uncapped table has no watermark: its bound
+  ## is the OS ulimit, and sweeping it early would be work with no budget to
+  ## measure against.
+  t.cap > 0 and (t.finishedCount * 4) >= (t.cap * 3)
+
+proc acquire*(t: var ResourceTable, reference: int64,
+              site: string): TuckResult[ResourceHandle] =
+  ## Register a freshly opened OS handle. Exhaustion is ABSENCE, not an error —
+  ## the caller decides what running out means, exactly as 7.2's pool does.
+  ##
+  ## Sizes a capped table on first use, so a table built as a plain literal
+  ## behaves exactly as one built through initResourceTable. That is what lets
+  ## each backend emit the declaration as a STATIC initializer with no
+  ## start-up code at all — the knobs are the declaration, and the shape
+  ## follows from them.
+  if t.cap > 0 and t.entries.len < t.cap:
+    t.entries.setLen(t.cap)
+  for i in 0 ..< t.entries.len:
+    if t.entries[i].live: continue
+    t.entries[i].gen.inc
+    t.entries[i].reference = reference
+    t.entries[i].live = true
+    t.entries[i].finished = false
+    t.entries[i].site = site
+    t.order.add(int32(i))
+    return tok(ResourceHandle(slot: int32(i), gen: t.entries[i].gen))
+  if t.cap > 0:
+    # The cap is the leak alarm as much as the budget: a table that FILLS is a
+    # bug surfacing early rather than an OOM three days in. Which of those two
+    # readings applies is the kind's own `on_full`: shed load, or stop.
+    if t.onFull == rtoError:
+      tuckResourceMisuse(t.kind, "table is full (cap " & $t.cap &
+                         ") and the kind declares `on_full: error`")
+    return tnone[ResourceHandle]()
+  t.entries.add(ResourceEntry(reference: reference, gen: 1, live: true,
+                              site: site))
+  t.order.add(int32(t.entries.len - 1))
+  tok(ResourceHandle(slot: int32(t.entries.len - 1), gen: 1))
+
+proc entryFor(t: var ResourceTable, h: ResourceHandle,
+              what: string): int =
+  ## The slot this handle names, or an abort. Every way of being wrong is
+  ## caught rather than absorbed: out of range, never handed out, and — the
+  ## one that matters — a generation that has moved on, which is a handle held
+  ## past its finish.
+  let i = int(h.slot)
+  if i < 0 or i >= t.entries.len:
+    tuckResourceMisuse(t.kind, what & " of a handle that names no slot (" & $i & ")")
+  elif not t.entries[i].live:
+    tuckResourceMisuse(t.kind, what & " of slot " & $i & ", which nobody holds")
+  elif t.entries[i].gen != h.gen:
+    tuckResourceMisuse(t.kind, what & " of a stale handle for slot " & $i &
+                       ": tenancy " & $h.gen & ", slot is on " & $t.entries[i].gen)
+  i
+
+proc deref*(t: var ResourceTable, h: ResourceHandle): int64 =
+  ## The OS handle behind a live tuck handle. This is the only way to reach
+  ## one, which is what makes the generation check unavoidable rather than
+  ## something a caller can forget.
+  t.entries[t.entryFor(h, "use")].reference
+
+proc finish*(t: var ResourceTable, h: ResourceHandle) =
+  ## 7.4's mark: release INTENT, not necessarily release.
+  ##
+  ## Three things happen here under every policy — `on_finish` runs, the entry
+  ## is marked, and the generation is bumped so the handle dies AT THE MARK.
+  ## Only the fourth, reclaiming the OS handle, is policy. That split is what
+  ## makes durability independent of sweep timing: a write-heavy loop under
+  ## lazy policy has already flushed by the time anything is evicted.
+  let i = t.entryFor(h, "finish")
+  if t.onFinish != nil: t.onFinish(t.entries[i].reference)
+  t.entries[i].finished = true
+  t.entries[i].gen.inc
+  t.finishedCount.inc
+  case t.policy
+  of rtStrict: t.reclaim(i)
+  of rtLazy:
+    # Sweeping is INLINE — no thread, no background actor. The trigger lives
+    # in the mark itself, so a loop acquiring ten thousand times against a cap
+    # in the thousands never blocks: each iteration's mark reclaims once the
+    # watermark trips. Amortized, and on the thread that made the garbage.
+    if t.watermarkReached(): t.sweep()
+  of rtExit: discard
+
+proc closeAll*(t: var ResourceTable) =
+  ## Program end, or an explicit shutdown. LIFO in REGISTRATION order: files
+  ## flush before the directories holding them close, a TLS session shuts down
+  ## before the socket under it.
+  for k in countdown(t.order.len - 1, 0):
+    let i = int(t.order[k])
+    if not t.entries[i].live: continue
+    if not t.entries[i].finished and t.onFinish != nil:
+      t.onFinish(t.entries[i].reference)
+    if t.onClose != nil: t.onClose(t.entries[i].reference)
+    t.entries[i].live = false
+    t.entries[i].finished = false
+    t.entries[i].site = ""
+  t.order.setLen(0)
+  t.finishedCount = 0
+
+iterator openEntries*(t: ResourceTable): tuple[slot: int, site: string] =
+  ## Everything acquired and never finished — the OPEN RESOURCES report, in
+  ## the same spirit as PENDING and SHORTCUTS. In registration order, so the
+  ## list reads as the program ran.
+  for k in 0 ..< t.order.len:
+    let i = int(t.order[k])
+    if t.entries[i].live and not t.entries[i].finished:
+      yield (i, t.entries[i].site)
+
+proc openCount*(t: ResourceTable): int =
+  for _ in t.openEntries(): result.inc
+
+proc reportOpenResources*(t: ResourceTable) =
+  ## 7.4's OPEN RESOURCES report, in the same spirit as PENDING and SHORTCUTS:
+  ## say what is unfinished and WHERE it was acquired, so the answer is a line
+  ## number rather than a hunt.
+  ##
+  ## Debug builds only, and silent when there is nothing to say — a report
+  ## that prints "0" every run is one people stop reading.
+  when not defined(release) and not defined(danger):
+    let n = t.openCount()
+    if n == 0: return
+    stderr.writeLine("OPEN RESOURCES [" & t.kind & "] (" & $n & "):")
+    for e in t.openEntries():
+      stderr.writeLine("  slot " & $e.slot & " acquired at " & e.site)
+
+proc shutdownResources*(t: var ResourceTable) =
+  ## What a program does with one registry at exit: SAY what leaked, then
+  ## close everything. In that order — close-all empties the table, so a
+  ## report after it would always be empty and always be silent.
+  t.reportOpenResources()
+  t.closeAll()
+
 import std/locks
 
 type
@@ -341,6 +596,30 @@ proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
 import std/[os, times, syncio, sysrand]
 import ./tuck_async
 from std/posix import nil
+
+# spec 7.4's `on_finish` vocabulary, as real syscalls on the entry's reference.
+#
+# Defined HERE rather than beside the registry above because both need posix,
+# which this file only reaches at this point. The declaration picks one of
+# these by name and the emitted table binds it, so there is ONE mechanism —
+# `setResourceHooks` still overrides, which is the escape hatch for a kind
+# whose reference is not an fd at all.
+#
+# A failed syscall is deliberately not reported: `on_finish` runs at the MARK,
+# where the program has already said it is done with the handle, and there is
+# nothing left to do about an error nobody asked for. The close-all path and
+# the OPEN RESOURCES report are where an unfinished resource surfaces.
+proc tuckResFlush*(reference: int64) {.nimcall.} =
+  ## `file: flush` — the durability half of finishing, which is exactly why
+  ## §7.4 splits marking from reclamation: a write-heavy loop under `lazy` has
+  ## already hit the disk by the time anything is evicted.
+  discard posix.fsync(cint(reference))
+
+proc tuckResShutdown*(reference: int64) {.nimcall.} =
+  ## the net case — both directions, so a peer sees the close immediately
+  ## rather than when the fd is finally reclaimed.
+  discard posix.shutdown(posix.SocketHandle(reference), cint(posix.SHUT_RDWR))
+
 template posixRead(fd: cint, buf: pointer, n: int): int =
   ## stdin's raw read, spelled explicitly so it cannot be confused with
   ## syncio's buffered readLine (which must never run on the worker).

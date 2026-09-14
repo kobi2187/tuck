@@ -18,11 +18,12 @@ import diagnostics
 
 type
   SignatureTail* = tuple[effects: seq[EffectMarker], errTypes: seq[string],
-                        emit: string]
+                        emit: string, resources: seq[string]]
     ## What follows a signature's return type: its effect markers, the error
-    ## enums it may raise, and the C/runtime proc name an extern binds to.
-    ## Effects and error enums can arrive from the return type itself (`!T`
-    ## harvests) or from the `[...]` bracket.
+    ## enums it may raise, the C/runtime proc name an extern binds to, and the
+    ## registry kinds it acquires (§7.4). Effects, error enums and resource
+    ## kinds can arrive from the return type itself (`!T` harvests) or from
+    ## the `[...]` bracket.
 
   ExternBinding* = object
     ## Where an extern block's signatures are actually implemented.
@@ -480,13 +481,14 @@ proc parseSatisfyTargets*(p: var Parser): seq[string] =
 
 const TopLevelKeywords = "fn, type, object, actor, task, interface, group, " &
   "mixin, fnsig, registry, decision, pending, distinct, const, import, " &
-  "extern, errors, register, pool, arena, satisfies, static_assert, when"
+  "extern, errors, resources, register, pool, arena, satisfies, " &
+  "static_assert, when"
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in parser.nim's
   ## contextualDecl.
 
-const ContextualOpeners = ["extern", "errors", "register", "pool", "arena",
-                           "satisfies"]
+const ContextualOpeners = ["extern", "errors", "resources", "register",
+                           "pool", "arena", "satisfies"]
   ## Declaration openers the lexer does not tokenize — recognised by NAME in
   ## parser.nim's contextualDecl. Kept beside opensDeclaration below (which
   ## contextualDecl calls first): a new one added to contextualDecl must be
@@ -549,10 +551,15 @@ proc parseDistinctDecl*(p: var Parser, sp: Span): Decl =
 
 proc parseEffectList*(p: var Parser, effects: var seq[EffectMarker],
                      errTypes: var seq[string], emit: var string,
-                     strict = true) =
-  ## `[io, may_block]` — the effect markers, with the two valued attributes
+                     resources: var seq[string], strict = true) =
+  ## `[io, may_block]` — the effect markers, with the THREE valued attributes
   ## that share the bracket folded in: `error:` names the enums a fn may
-  ## raise, `emit:` the exact runtime/C proc name to emit.
+  ## raise, `emit:` the exact runtime/C proc name to emit, and `resource:`
+  ## the registry kind an acquire site hands out (§7.4).
+  ##
+  ## The valued three are special-cased rather than being EffectMarkers
+  ## because EffectMarker is a plain enum with nowhere to put a name. That is
+  ## the seam, and `resource:` is simply the third thing to use it.
   ##
   ## `strict` reports an unknown marker. A SIGNATURE block passes false: its
   ## brackets also carry binding attributes the effect vocabulary does not
@@ -567,6 +574,10 @@ proc parseEffectList*(p: var Parser, effects: var seq[EffectMarker],
     elif effName == "emit":
       discard p.expect(tkColon)
       emit = p.expect(tkStrLit, "Expected proc name string after 'emit:'").value
+    elif effName == "resource":
+      discard p.expect(tkColon)
+      resources.add(p.expectMemberName(
+        "Expected a resource kind name after 'resource:'").value)
     else:
       var marker: EffectMarker
       if effectMarkerFromName(effName, marker): effects.add(marker)
@@ -678,6 +689,156 @@ proc parsePoolDecl*(p: var Parser, sp: Span): Decl =
   Decl(span: sp, kind: dkPool, name: name,
        poolElem: elem.withoutAttr("count"), poolCount: count)
 
+proc resourcePolicyFromName*(name: string, dest: var ResourcePolicy): bool =
+  ## The three §7.4 policies, by their source spelling. A bool-returning
+  ## lookup rather than a `parse` that raises, so the caller decides what an
+  ## unrecognised word means — the parser names the legal set, the checker
+  ## would only repeat it.
+  case name
+  of "strict": dest = rpStrict; true
+  of "lazy":   dest = rpLazy;   true
+  of "exit":   dest = rpExit;   true
+  else: false
+
+proc parseResourceAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
+  ## `[cap: 10_000, on_full: error, policy: strict]` — a resource kind's knobs.
+  ##
+  ## Its own reader rather than `parseDeclAttrs`, which takes each value with
+  ## `parseExpr`. These values are a CLOSED VOCABULARY — a count or one word
+  ## from a named set — and several of those words (`error`, `exit`) are
+  ## reserved attribute names that no expression may contain, so
+  ## `[on_full: error]` died at "Expected an expression here". Reading a name
+  ## where only a name can appear is what `expectMemberName` is for, and it is
+  ## also the more honest grammar: nothing here is ever computed.
+  ##
+  ## `none` needs the same exemption for the same reason, one level further
+  ## down: it lexes as tkNone, a keyword rather than an attribute name, so it
+  ## is reserved even in the member positions tkAttr is allowed in. In a
+  ## closed vocabulary it is just the word `none`, and `[on_finish: none]` is
+  ## a value the documentation lists.
+  if p.current().kind != tkLBracket: return
+  discard p.advance()
+  while p.current().kind notin {tkRBracket, tkEOF}:
+    let sp = p.getSpan()
+    let name = p.expectAttrName("Expected a resource attribute name").value
+    var val = ""
+    if p.current().kind == tkColon:
+      discard p.advance()
+      val = if p.current().kind in {tkIntLit, tkNone}: p.advance().value
+            else: p.expectMemberName("Expected a value after '" & name & ":'").value
+    attrs.add(TypeAttr(name: name, value: val, span: sp))
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBracket)
+
+proc parseResourceCount(p: var Parser, kind, attr, raw: string): int =
+  ## `cap: 10_000` / `sweep_batch: 100` — a whole number, or a named error.
+  ## Both knobs are counts and both are optional, so one proc reads both and
+  ## the attribute name is only there to make the message say which.
+  try: parseInt(raw.replace("_", ""))
+  except ValueError:
+    p.reportError("resource kind '" & kind & "': " & attr &
+                  " must be a whole number, got '" & raw & "'")
+    0
+
+proc resourceOnFullFromName*(name: string, dest: var ResourceOnFull): bool =
+  case name
+  of "absent": dest = rofAbsent; true
+  of "error":  dest = rofError;  true
+  else: false
+
+proc resourceOnFinishFromName*(name: string, dest: var ResourceOnFinish): bool =
+  case name
+  of "none":     dest = rfNone;     true
+  of "flush":    dest = rfFlush;    true
+  of "shutdown": dest = rfShutdown; true
+  else: false
+
+proc applyResourceAttrs(p: var Parser, k: var ResourceKindDef,
+                        attrs: seq[TypeAttr]) =
+  ## Each knob, by name. Split from parseResourceKind so the three jobs that
+  ## proc used to do in one — read the bracket, check the combination, read the
+  ## protocol — are three readable procs rather than one long arm.
+  for a in attrs:
+    case a.name
+    of "cap":
+      k.given.incl(rkCap); k.knobSpan[rkCap] = a.span
+      k.cap = p.parseResourceCount(k.name, "cap", a.value)
+    of "sweep_batch":
+      k.given.incl(rkSweepBatch); k.knobSpan[rkSweepBatch] = a.span
+      k.sweepBatch = p.parseResourceCount(k.name, "sweep_batch", a.value)
+    of "on_full":
+      k.given.incl(rkOnFull); k.knobSpan[rkOnFull] = a.span
+      if not resourceOnFullFromName(a.value, k.onFull):
+        p.reportError("resource kind '" & k.name & "': on_full must be " &
+                      "absent or error, got '" & a.value & "'",
+                      a.span.line, a.span.col)
+    of "on_finish":
+      k.given.incl(rkOnFinish); k.knobSpan[rkOnFinish] = a.span
+      if not resourceOnFinishFromName(a.value, k.onFinish):
+        p.reportError("resource kind '" & k.name & "': on_finish must be " &
+                      "none, flush or shutdown, got '" & a.value & "'",
+                      a.span.line, a.span.col)
+    of "states":
+      k.given.incl(rkStates); k.knobSpan[rkStates] = a.span
+      # The library's type, named not restated. Checked in
+      # typecheck_resources, which is where the program's types are visible —
+      # the parser has one module and a protocol may live in another.
+      k.statesType = a.value
+      k.statesSpan = a.span
+    of "policy":
+      k.given.incl(rkPolicy); k.knobSpan[rkPolicy] = a.span
+      if not resourcePolicyFromName(a.value, k.policy):
+        p.reportError("resource kind '" & k.name & "': policy must be " &
+                      "strict, lazy or exit, got '" & a.value & "'",
+                      a.span.line, a.span.col)
+    else:
+      p.reportError("resource kind '" & k.name & "': unknown attribute '" &
+                    a.name & "'. A kind takes cap, policy, on_full, " &
+                    "on_finish, sweep_batch and states.",
+                    a.span.line, a.span.col)
+proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
+  ## One line of a `resources:` block: a kind name and its optional knobs.
+  ## The knobs ride in the ordinary `[a: 1, b: c]` attribute bracket every
+  ## other declaration already uses, so there is no second attribute grammar
+  ## to learn or to keep in step.
+  let sp = p.getSpan()
+  result = ResourceKindDef(name: p.expectMemberName("Expected a resource kind name").value,
+                           policy: dflt, span: sp)
+  var attrs: seq[TypeAttr]
+  p.parseResourceAttrs(attrs)
+  p.applyResourceAttrs(result, attrs)
+  if p.current().kind == tkNewline: discard p.advance()
+
+proc parseResourcesDecl*(p: var Parser, sp: Span): Decl =
+  ## spec §7.4: `resources:` — the OS-handle kinds this module registers.
+  ##
+  ## `resources [policy: lazy]:` sets the block's default; a kind may override
+  ## it. Per-kind rather than one global policy (which is what §7.4's
+  ## errors-decl symmetry suggests on a quick read) because a program that
+  ## wants files closed deterministically and sockets swept lazily is the
+  ## ordinary case, not an exotic one — and the block default keeps the
+  ## uniform case a single word. See docs/resources.md §0.1.
+  discard p.advance()  # eat `resources`
+  var blockAttrs: seq[TypeAttr]
+  p.parseResourceAttrs(blockAttrs)
+  var dflt = rpStrict   # §7.4: the embedded/debug default
+  for a in blockAttrs:
+    if a.name == "policy":
+      if not resourcePolicyFromName(a.value, dflt):
+        p.reportError("resources: policy must be strict, lazy or exit, got '" &
+                      a.value & "'", a.span.line, a.span.col)
+    else:
+      p.reportError("resources: the block takes only `[policy: ...]`, the " &
+                    "default for the kinds below. '" & a.name & "' is a " &
+                    "per-kind attribute.", a.span.line, a.span.col)
+  discard p.expect(tkColon)
+  discard p.expect(tkNewline)
+  while p.current().kind == tkNewline: discard p.advance()
+  var kinds: seq[ResourceKindDef]
+  p.indentedBlock:
+    kinds.add(p.parseResourceKind(dflt))
+  Decl(span: sp, kind: dkResources, name: "resources", resKinds: kinds)
+
 proc parseSatisfiesDecl*(p: var Parser, sp: Span): Decl =
   ## `satisfies Obj: Iface` / `satisfies Obj: A, B, C` at TOP LEVEL (spec §5.2).
   ##
@@ -725,8 +886,10 @@ proc parseSignatureTail*(p: var Parser, retType: Type,
                         strict = true): SignatureTail =
   ## The effects and error enums, harvested from the return type and then
   ## from the attribute bracket.
-  harvestEffects(retType, result.effects, result.errTypes, result.emit)
-  p.parseEffectList(result.effects, result.errTypes, result.emit, strict)
+  harvestEffects(retType, result.effects, result.errTypes, result.emit,
+                 result.resources)
+  p.parseEffectList(result.effects, result.errTypes, result.emit,
+                    result.resources, strict)
 
 # registry Name: | Variant {fields} — global event registry (spec 10)
 proc parseRegistryDecl*(p: var Parser, sp: Span): Decl =
@@ -834,7 +997,8 @@ proc parseSigFn*(p: var Parser, what: string): Decl =
   if p.current().kind == tkNewline: discard p.advance()
   Decl(span: spDecl, kind: dkFn, name: name, fnParams: params,
        fnGenerics: generics, fnReturnType: retType, fnEffects: sig.effects,
-       fnBody: nil, fnErrorTypes: sig.errTypes, externEmit: sig.emit)
+       fnBody: nil, fnErrorTypes: sig.errTypes, externEmit: sig.emit,
+       fnResourceKinds: sig.resources)
 
 # task name({params}) -> ret [effects]: body (spec 9.2)
 proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
@@ -864,7 +1028,8 @@ proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
   let body = p.parseBlock()
   return Decl(span: sp, kind: dkTask, name: name, taskParams: params,
               taskReturnType: retType, taskEffects: sig.effects,
-              taskErrorTypes: sig.errTypes, taskBody: body)
+              taskErrorTypes: sig.errTypes, taskResourceKinds: sig.resources,
+              taskBody: body)
 
 # fn name[T]({params}) -> ret [effects]: body — also `on select` arms and event handlers
 proc parseFnDecl*(p: var Parser, sp: Span): Decl =
@@ -886,7 +1051,8 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
   Decl(span: sp, kind: dkFn, name: name, fnGenerics: generics,
        fnGenericBounds: genericBounds,
        fnParams: params, fnReturnType: retType, fnEffects: sig.effects,
-       fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline)
+       fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline,
+       fnResourceKinds: sig.resources)
 
 # decision name(inputs) -> ret: pattern-row table (spec 6.1)
 proc parseDecisionDecl*(p: var Parser, sp: Span): Decl =

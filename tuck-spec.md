@@ -1519,12 +1519,18 @@ GC; cleanup is policy, not accident.
 **Declaration.** Resource *kinds* are user-declared, an open set — a UDP
 library declares its own kind the same way a module declares its error enums:
 
-```tuck-rejected
+```tuck
 resources:
-  net  [cap: 10_000, on_full: error, sweep_batch: 100]
+  net  [cap: 10_000, policy: lazy, on_full: error, sweep_batch: 100]
   file [cap: 8, on_finish: flush]
   udp                     # no cap: unbounded, seq-backed
 ```
+
+The knobs constrain each other, so this is one COHERENT combination rather
+than a menu to pick from freely: `sweep_batch` sizes the watermark sweep, and
+`lazy` is the only policy that runs one — hence `net` naming it. `on_full`
+likewise needs a `cap`, because an unbounded table never fills. The compiler
+rejects the pairs that could never mean anything together.
 
 `cap` is optional. Without it the table grows (the OS ulimit is the real
 bound); with it the declared `on_full` policy applies and standalone targets
@@ -1547,7 +1553,7 @@ plain functions alike, and are declared exactly like effects (§3.7 —
 explicit, not inferred; a fn returning a resource it did not finish must
 declare the marker itself, same as any other effect):
 
-```tuck-rejected
+```tuck
 fn open({port: u16}) -> UdpSocket! [io, resource: udp]
 ```
 
@@ -1596,6 +1602,75 @@ sites, in the same spirit as the PENDING and SHORTCUTS reports.
 
 Both models coexist: `defer` for genuinely scoped lifetimes, the registry as
 the safety net underneath everything.
+
+**Status, 2026-09-14**, stated here for the same reason §7.2's siblings state
+theirs — the design above is not all in force yet, and lumping the built and
+the unbuilt together would be dishonest:
+
+- **Built and verified.** The `resources:` declaration and every knob on it;
+  `[resource: k]` validated and propagated as an effect; the registry table in
+  all three runtimes with the three policies, the inline watermark sweep, LIFO
+  close-all and the stale-handle catch; the per-kind handle type; the
+  `OPEN RESOURCES` report and close-all at exit. `defer` landed with it, as a
+  general statement on all three backends.
+- **The registry surface is spelled** (ruled 2026-09-14) as a symmetric pair,
+  `acquire <raw>, <kind>` and `finish <handle>, <kind>` — one parser builds
+  both. Acquire takes the raw OS handle an extern produced and yields
+  `?<Kind>Handle`; finish takes a typed handle and yields nothing. The raw fd
+  exists between the extern's return and the acquire and nowhere else. The
+  kind is named on both and checked on both, so finishing into the wrong
+  registry is a compile error rather than a runtime one.
+- **A kind may NAME a PROTOCOL** beyond live/finished (ruled 2026-09-14):
+  `db [cap: 4096, states: DbState]`, where `DbState` is a sealed sum type with
+  a `transitions:` block — a database connection moving
+  `Open -> InTransaction -> Closed`. The two are decoupled because they have
+  different OWNERS: a `resources:` block is a deployment decision (which
+  tables exist, how large, which policy) that a library cannot answer, while
+  the protocol of an OS service is the library's, and an app that could
+  restate it could restate it differently. The library writes only the
+  states — an ordinary §4.4 sum type — never the handle, which the compiler
+  still supplies. Initial is the first state and terminal is the one with no
+  outgoing edge, both derived rather than declared. The machine is checked for
+  what a *resource* needs: `states:` naming a sum type that carries edges,
+  edges naming real states, exactly one closing state, every state reachable
+  from the initial one, and the closing state reachable from every state — a
+  live cycle with no exit is a handle that cannot be closed. The registry is
+  untouched: the emitted handle and the table are unchanged.
+  **Validated, not yet tracked:** narrowing a handle *through* the machine
+  needs a way for a library operation to say which edge it walks, which is a
+  further ruling. Notably it will not need the deferral below: under a copy
+  both bindings narrow independently, so a stale `finish` is a *missed* error
+  rather than a false rejection, and the generation check catches it.
+- **A kind may be declared by more than one site, one knob each** (ruled
+  2026-09-14). The library that wraps the service declares its protocol and
+  what closing means; the app declares how many and under which policy, a
+  deployment question no library can answer. The rule is per KNOB, and a later
+  site OVERRIDES an earlier one: a library ships a working default and the app
+  deploying it knows its own box. That is not file order — modules are
+  dep-first, so "later" means the importer overrides the imported, and adding
+  an unrelated import cannot move the answer. `states` is the exception and
+  refuses a second setting: a protocol is what the wrapped service DOES, not a
+  default an app could know better. Coherence (`on_full` needs a `cap`,
+  `sweep_batch` needs `policy: lazy`) is therefore checked on what the
+  overrides LEFT: a library's `[on_full: error]` is incoherent alone and
+  becomes correct the moment an app adds a cap, and a library's `sweep_batch`
+  stops meaning anything if an app overrides the `policy: lazy` that sized
+  it. The table is emitted at the first site in dependency order,
+  which is a dependency of every later one — it has to be, since a library's
+  own acquire site calls into that table.
+- **Not built:** the static acquire-must-finish check above. Both halves now
+  have a shape to match on, so it is writable; the *escape* arm is already
+  sound by construction — the registry closes at exit, which is exactly what
+  this section says makes the local analysis sufficient — and the OPEN
+  RESOURCES report answers the same question at runtime meanwhile.
+- **Deliberately deferred:** single-owner (non-copyable) handles. They would
+  make per-variable state tracking *complete* — turning use-after-finish into
+  a compile-time error rather than a caught runtime one — but this section
+  does not ask for completeness, and that is an affine-types feature for the
+  language as a whole rather than a resource one. A future ruling.
+
+`docs/resources.md` is the implementation record, including the four questions
+this section left open and what the compiler settled them as.
 
 ---
 

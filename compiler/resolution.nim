@@ -103,6 +103,76 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     # mangle in the import graph.)
     if d.name == pool or d.name == "tuck_" & pool: return true
   return false
+
+proc resourceHandleName*(kind: string): string =
+  ## The per-kind handle type's name (spec §7.4). Capitalized, because it IS a
+  ## type and Tuck's type names are: a kind spelled `udp` hands out a
+  ## `UdpHandle`. One place, for the reason poolHandleName is one place — the
+  ## checker names it, every backend maps it, and the two have to agree.
+  if kind.len == 0: "Handle"
+  else: kind[0].toUpperAscii & kind[1 .. ^1] & "Handle"
+
+proc resourceTableName*(kind: string): string =
+  ## The emitted name of a kind's registry table. Prefixed rather than bare:
+  ## kind names are lowercase and user-chosen (`file`, `net`), so an unadorned
+  ## `file` would collide with an ordinary fn of that name in every backend.
+  ## The prefix is not a mangling — the table is a symbol the checker
+  ## synthesised, and mangling walks the AST, which never held it.
+  "tuckRes_" & kind
+
+const ResourceShutdownProc* = "tuckResourcesShutdown"
+  ## The per-program registry shutdown the entry point calls: report what
+  ## leaked, then close every table. One name across the three backends, in
+  ## one place, because three entry-point emitters have to agree on it.
+
+proc declaresResources*(m: Module): bool =
+  ## Does this module declare any resource kind? The entry points ask, to
+  ## decide whether there is a shutdown to call at all — a program with no
+  ## `resources:` block emits no table, no shutdown, and no call to one.
+  for d in m.decls:
+    if d != nil and d.kind == dkResources and d.resKinds.len > 0: return true
+  false
+
+proc acquireSite*(e: Expr, moduleName: string): string =
+  ## Where an acquire happened, as the OPEN RESOURCES report prints it —
+  ## `module:line`. Built by the compiler rather than written by the author: a
+  ## site the author had to supply is a site that goes stale the first time a
+  ## line moves.
+  ##
+  ## The MODULE comes from the codegen context, not from `span.file`: the
+  ## parser sets `file: ""` on every span it makes (parser_base.getSpan), so
+  ## the span alone can only answer "which line". All three backends carry a
+  ## moduleName for error-code hashing, so all three can answer the other
+  ## half the same way.
+  (if moduleName.len > 0: moduleName else: "?") & ":" & $e.span.line
+
+proc rtOnFinishProc*(f: ResourceOnFinish): string =
+  ## The runtime proc a declared `on_finish` binds to, or "" for none.
+  ##
+  ## ONE mechanism: the declaration PICKS a callback rather than setting a flag
+  ## the runtime then switches on, so `setResourceHooks` overriding it writes
+  ## the same field and the two cannot disagree. Here rather than in a backend
+  ## because the answer is backend-neutral — all three runtimes name these
+  ## procs identically, which is what keeps them one vocabulary.
+  case f
+  of rfNone: ""
+  of rfFlush: "tuckResFlush"
+  of rfShutdown: "tuckResShutdown"
+
+proc isResourceHandleType*(m: Module, name: string): bool =
+  ## Is this the handle type of some resource kind declared in this module?
+  ##
+  ## The §7.4 twin of isPoolHandleType, and true for the same reason: the
+  ## checker gives every KIND its own handle type so finishing into the wrong
+  ## registry is a type error, while the backends need only the runtime's
+  ## single `ResourceHandle`. Not mangled — the checker synthesised it, and
+  ## mangling walks the AST, which never held it.
+  if not name.endsWith("Handle"): return false
+  for d in m.decls:
+    if d == nil or d.kind != dkResources: continue
+    for k in d.resKinds:
+      if resourceHandleName(k.name) == name: return true
+  return false
   ## The per-pool handle type's name. One place, because the checker names it,
   ## every backend emits an alias for it, and mangling has to agree with both.
 

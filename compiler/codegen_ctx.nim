@@ -203,7 +203,7 @@ proc buildDeclIndex*(ctx: var CodegenCtx) =
     of dkFn, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkFnSig,
        dkRegistry, dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors,
        dkImport, dkSelect, dkSatisfies, dkInterface, dkGroup, dkWhen,
-       dkPublic: discard
+       dkPublic, dkResources: discard
   ctx.indexExterns()
   ctx.indexBuilt = true
 

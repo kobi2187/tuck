@@ -780,11 +780,90 @@ proc parseLoopExpr(p: var Parser, sp: Span): Expr =
   discard p.expect(tkColon)
   Expr(span: sp, kind: exkWhile, whileCond: nil, whileBody: p.parseBlock())
 
+proc parseResourceOp(p: var Parser, sp: Span, op: ExprKind): Expr =
+  ## The two registry operations, spec §7.4 — ONE parser, because they are one
+  ## shape:
+  ##
+  ##     acquire <raw>,    <kind>     # register; yields ?<Kind>Handle
+  ##     finish  <handle>, <kind>     # release intent; yields nothing
+  ##
+  ## Symmetric by construction rather than by discipline: same keyword
+  ## position, same operand order, same trailing kind name, and one proc that
+  ## cannot let the two drift apart.
+  ##
+  ## `finish` names the kind even though the handle's TYPE already determines
+  ## the table, and that redundancy is the feature: a release is read far more
+  ## often than it is written, and the reader should not have to find the
+  ## declaration of `sock` to learn which registry is touched. The checker
+  ## verifies the two agree (TK-RS04), so the second source of truth cannot
+  ## drift from the first. On `acquire` the kind is not redundant at all — a
+  ## raw fd says nothing about which table it belongs in — which is the
+  ## deeper reason the pair reads the same way.
+  let word = if op == exkAcquire: "acquire" else: "finish"
+  let operand = if op == exkAcquire: "<raw>" else: "<handle>"
+  discard p.advance()            # eat the keyword
+  let arg = p.parseExpr()
+  discard p.expect(tkComma,
+    "`" & word & "` names the kind too: `" & word & " " & operand & ", <kind>`")
+  let kind = p.expectMemberName("Expected a resource kind name after ','").value
+  if op == exkAcquire:
+    Expr(span: sp, kind: exkAcquire, acquireRef: arg, acquireKind: kind)
+  else:
+    Expr(span: sp, kind: exkFinish, finishHandle: arg, finishKind: kind)
+
+proc parseDeferExpr(p: var Parser, sp: Span): Expr =
+  ## `defer:` then an indented block (spec §7.4) — statements held back until
+  ## the enclosing scope exits, LIFO.
+  ##
+  ## A block only, never `defer: stmt` on one line. The one-liner is what
+  ## makes a defer easy to miss on a skim, and a construct whose whole job is
+  ## to run somewhere other than where it is written is the last one that
+  ## should be easy to miss.
+  discard p.advance()          # eat `defer`
+  discard p.expect(tkColon)
+  if p.current().kind notin {tkNewline, tkEOF}:
+    p.reportError("`defer` takes an indented block, not a single line. The " &
+                  "body runs at scope exit rather than here, which is worth " &
+                  "a line of its own.", line = sp.line, col = sp.col)
+  Expr(span: sp, kind: exkDefer, deferBody: p.parseBlock())
+
+proc contextualStmt(p: var Parser, sp: Span): Expr =
+  ## The statement forms whose opening word the LEXER does not tokenize —
+  ## `defer:`, `acquire`, `finish`. The expression-level twin of
+  ## parser.contextualDecl, and it exists for the same two reasons: each is
+  ## recognised by SPELLING rather than by token kind, and each is GATED on
+  ## what follows so an ordinary variable of that name still reads as one.
+  ##
+  ## nil means "none of these" — the `as*` convention typecheck.nim uses for
+  ## an ordered interpretation that may decline.
+  ##
+  ## The gates:
+  ##   `defer`   + `:`            — it opens a block and nothing else does
+  ##   `acquire` / `finish` + a NAME or `{` — Tuck calls are postfix
+  ##                               (`{payload} fn`), so two bare identifiers in
+  ##                               a row are not an expression in any other
+  ##                               construct. `return finish` and `finish + 1`
+  ##                               still read `finish` as an ordinary name.
+  if p.current().kind != tkIdent: return nil
+  case p.current().value
+  of "defer":
+    if p.peek().kind == tkColon: return p.parseDeferExpr(sp)
+  of "finish":
+    if p.peek().kind in {tkIdent, tkLBrace}:
+      return p.parseResourceOp(sp, exkFinish)
+  of "acquire":
+    if p.peek().kind in {tkIdent, tkLBrace}:
+      return p.parseResourceOp(sp, exkAcquire)
+  else: discard
+  nil
+
 proc parseExpr*(p: var Parser): Expr =
   let sp = p.getSpan()
   let curr = p.current()
   if curr.kind == tkOn and p.peek().kind == tkSelect:
     return p.parseSelectExpr()
+  let contextual = p.contextualStmt(sp)
+  if contextual != nil: return contextual
 
   case curr.kind
   of tkLet, tkVar: return p.parseBinding(sp, mutable = curr.kind == tkVar)

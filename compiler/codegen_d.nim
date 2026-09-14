@@ -975,7 +975,8 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
 
 proc ownsLayoutD(s: Expr): bool =
   ## Constructs that emit their own indentation, braces and newlines.
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkChain, exkSelect}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkChain, exkSelect,
+             exkDefer}
 
 proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
                        stmtCode: string): string =
@@ -1091,6 +1092,15 @@ proc genDIf(ctx: var DCodegenCtx, e: Expr): string =
       return
     result.add(ind & "} else {\n" & ctx.genDNested(e.elseBranch))
   result.add(ind & "}")
+
+proc genDDefer(ctx: var DCodegenCtx, e: Expr): string =
+  ## `defer:` (spec §7.4). D spells scope exit `scope(exit)` — the same
+  ## construct under a different name, and LIFO like the other two. D also has
+  ## `scope(success)` and `scope(failure)`; Tuck's defer is the unconditional
+  ## one, so `scope(exit)` is the exact match and not an approximation.
+  if e.deferBody == nil: return ""
+  let ind = ctx.indD
+  ind & "scope(exit) {\n" & ctx.genDNested(e.deferBody) & ind & "}"
 
 proc genDWhile(ctx: var DCodegenCtx, e: Expr): string =
   let cond = if e.whileCond == nil: "true" else: ctx.genDExpr(e.whileCond)
@@ -1378,6 +1388,13 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkSend: ctx.genDSend(e)
   of exkSelect: ctx.genDSelect(e)
+  of exkDefer: ctx.genDDefer(e)
+  of exkFinish:
+    "rt.finishResource(" & resourceTableName(e.finishKind) & ", " &
+      ctx.genDExpr(e.finishHandle) & ")"
+  of exkAcquire:
+    "rt.acquireResource(" & resourceTableName(e.acquireKind) & ", cast(long)(" &
+      ctx.genDExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
 
 # --------------------------------------------------------- declarations --
 

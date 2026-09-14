@@ -976,6 +976,192 @@ one, fourth succeeds, exit 42 (`tests/suites/cli_smoke.nim`).
 > assertions.** Same for `registry` (`.raise`, `on Reg.Variant`) and MMIO
 > `register` read-only enforcement.
 
+### The resource registry — for OS handles, not memory
+
+A pool bounds MEMORY. The registry (§7.4) bounds OS HANDLES, and it exists
+because scope-based RAII is the wrong model for one: a hot loop that opens and
+closes a file per iteration thrashes on syscalls. The model the OS itself uses
+is a global table — the process fd table — so Tuck makes that table explicit,
+one per user-declared KIND.
+
+```tuck
+resources [policy: lazy]:            # the default for the kinds below
+  net  [cap: 10_000, on_full: error, sweep_batch: 100]
+  file [cap: 8, on_finish: flush, policy: strict]
+  udp                                # no cap: the OS ulimit is the bound
+
+fn open({port: u16}) -> UdpHandle [io, resource: udp]:
+  ...
+```
+
+Three things to know:
+
+- **`[resource: k]` is an effect.** It propagates like one: a fn calling an
+  acquirer must declare the kind itself (TK-RS03), across module boundaries
+  too. An unknown kind is TK-RS01, the same rule an undeclared error enum
+  follows. A kind declared twice is TK-RS02 — its cap and policy belong to one
+  table, so two blocks cannot both own it.
+- **A handle is a value, never the resource.** `UdpHandle` carries a slot and a
+  tenancy. A handle whose tenancy has moved on is a caught error rather than a
+  write to the wrong file, which closes the fd-reuse bug class by construction.
+  Two kinds' handles are different types.
+- **The three policies differ only in WHEN the fd closes.** Marking is
+  identical under all of them, so buggy code behaves the same way in every
+  mode. `strict` closes at the mark; `lazy` lets a ~75% watermark sweep
+  reclaim, INLINE, from inside the mark itself — no thread, no actor; `exit`
+  waits for close-all, which runs LIFO.
+
+At exit a debug build prints `OPEN RESOURCES (n)` — what was never finished,
+and where it was acquired — then closes every table.
+
+**`acquire` registers, `finish` releases — a symmetric pair, each naming its kind:**
+
+```tuck
+fn openUdp({port: u16}) -> ?UdpHandle [io, resource: udp]:
+  return acquire {port: port} rawOpenUdp, udp   # raw fd in, ?UdpHandle out
+```
+
+`acquire <raw>, <kind>` takes the raw OS handle an extern produced and
+registers it; the raw fd exists between the extern's return and this line and
+nowhere else. Exhaustion is absence, so the result is `?<Kind>Handle` and the
+ordinary optional discipline applies. The acquire *site* is filled in by the
+compiler, which is what lets the leak report say where a handle came from.
+
+**`finish` releases — and names the kind:**
+
+```tuck
+fn serve({port: u16}) -> int [io, resource: udp]:
+  let sock = {port: port} openUdp     # -> UdpHandle
+  defer:
+    finish sock, udp                  # mark: on_finish runs, the handle dies
+  ...
+```
+
+The handle's type already decides which table is touched, so `udp` is
+redundant — and **checked**: `finish sock, file` on a `UdpHandle` is TK-RS04
+at compile time. The redundancy is there because a release is read far more
+often than written, and the reader should not have to find the declaration of
+`sock` to learn which registry this touches. It costs nothing at runtime: the
+kind names the table directly.
+
+> **§7.4's static acquire-must-finish check is not built.** Both halves now
+> have a shape to match on, so it is writable — but the *escape* arm is
+> already sound by construction (the registry closes at exit, which is what
+> §7.4 says makes the local analysis sufficient), and the OPEN RESOURCES
+> report answers the same question at runtime meanwhile.
+
+**A kind may NAME its protocol** — a sealed sum type, declared separately:
+
+```tuck
+# the library knows what a db connection can do
+type DbState:
+  | Open
+  | InTransaction
+  | Closed
+  transitions:
+    Open          -> InTransaction
+    InTransaction -> Open
+    Open          -> Closed
+    InTransaction -> Closed
+```
+
+```tuck
+resources:
+  file [cap: 8]                          # no protocol — a kind needs none
+  db   [cap: 4096, states: DbState]
+```
+
+A file is open or finished and the registry already tracks that. A database
+connection is `Open`, `InTransaction` or `Closed`, and only the library knows.
+
+**The two halves are decoupled because they have different owners.** A
+`resources:` block is a deployment decision — which tables exist, how large,
+which policy — and a library cannot answer it: it knows `db` has three states,
+not that this box wants 4096 connections. The protocol is the reverse, and no
+app should restate it, because an app that *can* restate it can restate it
+differently.
+
+The library writes only the **states**, never the handle — an ordinary §4.4 sum
+type the compiler already validates, with no shape to get right and no second
+handle layout to keep in step. `<Kind>Handle` is still generated, so **you
+still cannot fail to conform to a type you did not write**.
+
+Two things are DERIVED rather than declared, so the two cannot disagree:
+**initial** is the first state (§4.4's convention), where `acquire` starts;
+**terminal** is the state with no outgoing edge, where `finish` leaves the
+handle. What is checked is that the machine is well formed, with the rules a
+*resource* protocol needs rather than generic graph hygiene: `states:` names a
+sum type that actually carries edges (TK-RS10), every edge names a real state
+(TK-RS06), there is exactly one closing state (TK-RS07), every state is
+reachable from the initial one (TK-RS08), and — the one that earns the feature
+— **the closing state is reachable from every state** (TK-RS09). A live cycle
+with no exit is a handle that cannot be closed from where it is, which is the
+leak the declaration promised to prevent.
+
+It costs the **registry** nothing: the emitted handle is still a slot and a
+tenancy, the table is unchanged, and no backend learns anything about states.
+The state type emits as the ordinary sum type it is — which is what the
+decoupling buys, a normal declaration instead of a special one.
+
+**A kind may be declared by BOTH, one knob each.** The library that wraps the
+service knows its protocol and what closing means; the app knows how many and
+under which policy:
+
+```tuck
+# dblib.tuck
+resources:
+  db [states: DbState, on_finish: flush]
+```
+
+```tuck
+# app.tuck
+import dblib
+resources:
+  db [cap: 4096, policy: lazy]
+```
+
+The rule is **per knob, and a later site overrides an earlier one**: a library
+ships a working default, and whoever deploys it gets the last word. That is not
+file order — `mods` is dep-first, so "later" means the **importer** overrides
+the **imported**, and adding an unrelated import cannot move the answer.
+Nothing declares `cap` app-only or `on_finish` library-only: whoever knows the
+answer writes it, and whoever is closer to the deployment wins.
+
+**`states` is the exception** and refuses a second setting (TK-RS02) — a
+protocol is what the service *does*, not a default an app could know better.
+
+Because the *combination* is what is checked, coherence is judged on what the
+overrides left (TK-RS11): `on_full` with no `cap` at either site is refused,
+a library's `[on_full: error]` becomes correct once an app adds a cap, and a
+library's `sweep_batch` stops meaning anything if an app overrides the
+`policy: lazy` that sized it.
+
+> **The protocol is validated, not yet TRACKED.** `acquire` starts at the
+> initial state and `finish` leaves at the terminal one, but a handle is not
+> narrowed *through* the machine — because there is no way to walk an edge yet.
+> §4.4b changes a tracked variant by reassignment, and a handle has the state
+> erased, so there is nothing to assign; a state change is a library
+> *operation* (`begin`, `commit`), so the surface for walking belongs on those
+> fns. Until then the protocol is a well-formedness contract on the
+> declaration, which is what makes libraries look alike.
+
+### `defer` — a block that runs at scope exit
+
+Not a registry construct, though §7.4 is what asked for it:
+
+```tuck
+fn work({n: int}) -> int:
+  var total = n
+  defer:
+    total = 0        # runs AFTER the return value is taken
+  return total + 1   # ...so this is n+1, not 1
+```
+
+LIFO, and an indented block only — never `defer: stmt` on one line, because a
+construct whose whole job is to run somewhere other than where it is written is
+the last one that should be easy to miss on a skim. Each backend emits its own
+native form: Nim `defer:`, Odin `defer { }`, D `scope(exit)`.
+
 ---
 
 ## 16. Loops
@@ -1056,7 +1242,7 @@ Queries that ask the AST a question live in `codegen_common.nim` and are shared.
 Emitters, which interleave traversal with target syntax, stay twinned and
 diffable.
 
-Current coverage: **45 compile-gated** examples, 41 Odin compiles, 43 D compiles, 19 Odin runs and 18 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
+Current coverage: **46 compile-gated** examples, 42 Odin compiles, 44 D compiles, 20 Odin runs and 19 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
 
 Nim-only so far: `42-net-echo` and `14-task`. Task select/timeouts (29, 30)
 are no longer on that list — both are run-gated on Odin and D as well.
