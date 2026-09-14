@@ -1519,7 +1519,7 @@ GC; cleanup is policy, not accident.
 **Declaration.** Resource *kinds* are user-declared, an open set — a UDP
 library declares its own kind the same way a module declares its error enums:
 
-```tuck-rejected
+```tuck
 resources:
   net  [cap: 10_000, on_full: error, sweep_batch: 100]
   file [cap: 8, on_finish: flush]
@@ -1547,7 +1547,7 @@ plain functions alike, and are declared exactly like effects (§3.7 —
 explicit, not inferred; a fn returning a resource it did not finish must
 declare the marker itself, same as any other effect):
 
-```tuck-rejected
+```tuck
 fn open({port: u16}) -> UdpSocket! [io, resource: udp]
 ```
 

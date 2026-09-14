@@ -52,6 +52,29 @@ type
     emPriority
 
 
+  ResourcePolicy* = enum
+    ## spec §7.4: when the OS handle actually closes. MARKING is unconditional
+    ## and identical under all three — the handle dies at mark time whichever
+    ## one is in force, so buggy code behaves the same way in every mode. Only
+    ## reclamation moves.
+    rpStrict   ## close at scope end. Deterministic; the embedded/debug default
+    rpLazy     ## mark only; the inline watermark sweep reclaims
+    rpExit     ## close-all at program end
+
+  ResourceKindDef* = object
+    ## One line of a `resources:` block — a kind of OS handle and the knobs
+    ## its registry table runs under.
+    name*: string
+    cap*: int             ## 0 = unbounded (seq-backed); >0 = the static array
+                          ## bound, which is also the leak alarm §7.4 wants
+    policy*: ResourcePolicy
+    onFull*: string       ## what a capped table does when it fills
+    onFinish*: string     ## runs at MARK time, always — `file: flush`. Split
+                          ## from reclamation so durability never depends on
+                          ## sweep timing
+    sweepBatch*: int      ## 0 = evict every finished entry; >0 = that many
+    span*: Span
+
   TypeAttr* = object
     name*: string
     value*: string
@@ -255,6 +278,10 @@ type
     exkImport
     exkSend      # `ActorType send handler {payload}` — enqueue to an actor
     exkSelect    # task-body `on select:` — wait on read/timeout branches
+    exkDefer     # `defer:` — a block that runs at scope exit, LIFO. A GENERAL
+                 # statement: §7.4 needs it for release intent, but nothing
+                 # about it is resource-specific, and all three backends have
+                 # a native defer to lower it onto
     # The five below replace a bare exkVar that names a non-value
     # declaration outright — resolveDeclRefs (compiler/resolve_refs.nim)
     # rewrites the matching exkVar into one of these, between load and
@@ -366,6 +393,8 @@ type
       sendPayload*: Expr    # the `{...}` struct literal, or nil
     of exkSelect:
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
+    of exkDefer:
+      deferBody*: Expr  # the block to run at scope exit
     of exkCombinator:
       comb*: CombKind
       combRecv*: Expr   # the receiver; for ckMerge, the struct OF members
@@ -437,6 +466,12 @@ type
     ret*: Type
     generics*: seq[string]
     effects*: seq[EffectMarker]  # [io], [may_block], ... — propagates to callers
+    resources*: seq[string]      # [resource: udp] — the kinds this fn acquires,
+                                 # propagating to callers exactly as effects do.
+                                 # Here for the reason the note above gives: a
+                                 # cached signature that dropped them would make
+                                 # an imported acquirer look non-acquiring, which
+                                 # is the bug effects themselves once had
     isPending*: bool
     line*: int
 
@@ -462,6 +497,11 @@ type
     dkRegister
     dkStaticAssert
     dkErrors  # global error policy declaration (spec 4.9)
+    dkResources # `resources:` — the OS-handle kinds this program registers
+                # (spec §7.4). Its own kind, not a dkErrors carrying a list:
+                # an errors block declares ONE policy and an optional handler,
+                # a resources block declares N kinds each with their own knobs,
+                # and every consumer asks a different question of the two.
     dkImport  # import <module> — loads <module>.tuck next to the importer
     dkSelect  # `on select:` — wait on multiple event sources (spec §9.3)
     dkFnSig   # `fnsig NAME = {params} -> ret` — named function-signature type
@@ -560,6 +600,12 @@ type
       fnParams*: seq[Param]
       fnReturnType*: Type
       fnEffects*: seq[EffectMarker]
+      fnResourceKinds*: seq[string]  ## `[resource: udp]` — the registry kinds
+                                     ## this fn acquires. SEPARATE from
+                                     ## fnEffects because EffectMarker is a
+                                     ## valueless enum and a kind is a name;
+                                     ## the same reason fnErrorTypes sits
+                                     ## beside it rather than inside it
       fnBody*: Expr
       isPending*: bool  # declared in a `pending:` block; body is nil
       isDecision*: bool # parsed from a `decision` table; body is match rows
@@ -616,6 +662,7 @@ type
       taskReturnType*: Type
       taskEffects*: seq[EffectMarker]
       taskErrorTypes*: seq[string]  ## `[error: E | F]` — what it can raise
+      taskResourceKinds*: seq[string]  ## `[resource: k]` — what it acquires
       taskBody*: Expr
     of dkSatisfies:
       # `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL.
@@ -648,6 +695,8 @@ type
     of dkErrors:
       policyName*: string  # strict | continue | exit
       errHandler*: Decl    # the `on unhandled({code, site})` fn, nil if strict
+    of dkResources:
+      resKinds*: seq[ResourceKindDef]  # spec §7.4, one per line of the block
     of dkImport:
       discard  # module name lives in Decl.name
     of dkSelect:

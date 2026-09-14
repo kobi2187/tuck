@@ -218,6 +218,12 @@ proc walk(m: var Metrics, e: Expr) =
     walk(m, e.discardVal)
   of exkSend:
     walk(m, e.sendPayload)
+  of exkDefer:
+    # Not a fork. A defer block runs at EVERY exit from its scope, so it adds
+    # no path the exits themselves did not already contribute — counting it
+    # would charge the same branch twice. Its body still walks: the statements
+    # inside it fork like any others.
+    walk(m, e.deferBody)
   of exkLit, exkVar, exkQualified, exkBreak, exkContinue, exkImport,
      exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     discard

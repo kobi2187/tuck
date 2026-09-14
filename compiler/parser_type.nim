@@ -210,7 +210,8 @@ proc effectMarkerFromName*(name: string, marker: var EffectMarker): bool =
 # Effect markers written after a return type (`-> T [io]`) parse as attrs on T —
 # or on the payload inside a !/? wrapper. Harvest them off wherever they landed.
 proc harvestEffects*(t: Type, effects: var seq[EffectMarker],
-                     errorTypes: var seq[string], emit: var string) =
+                     errorTypes: var seq[string], emit: var string,
+                     resources: var seq[string]) =
   ## `emit` is harvested here for the same reason `error` is: a bracket
   ## written after the RETURN TYPE is parsed as attributes ON that type, so
   ## parseEffectList never sees it. `[error: E]` was already lifted out; the
@@ -226,12 +227,13 @@ proc harvestEffects*(t: Type, effects: var seq[EffectMarker],
     if effectMarkerFromName(a.name, marker): effects.add(marker)
     elif a.name == "error": errorTypes.add(a.value)  # [error: FsError | NetError]
     elif a.name == "emit": emit = a.value
+    elif a.name == "resource": resources.add(a.value)  # [resource: udp] §7.4
     else: kept.add(a)
   t.attrs = kept
   if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      t.base.name in ["!", "?", "!?"]:
     for arg in t.args:
-      harvestEffects(arg, effects, errorTypes, emit)
+      harvestEffects(arg, effects, errorTypes, emit, resources)
 
 proc parseType*(p: var Parser): Type =
   let sp = p.getSpan()

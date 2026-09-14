@@ -780,11 +780,32 @@ proc parseLoopExpr(p: var Parser, sp: Span): Expr =
   discard p.expect(tkColon)
   Expr(span: sp, kind: exkWhile, whileCond: nil, whileBody: p.parseBlock())
 
+proc parseDeferExpr(p: var Parser, sp: Span): Expr =
+  ## `defer:` then an indented block (spec §7.4) — statements held back until
+  ## the enclosing scope exits, LIFO.
+  ##
+  ## A block only, never `defer: stmt` on one line. The one-liner is what
+  ## makes a defer easy to miss on a skim, and a construct whose whole job is
+  ## to run somewhere other than where it is written is the last one that
+  ## should be easy to miss.
+  discard p.advance()          # eat `defer`
+  discard p.expect(tkColon)
+  if p.current().kind notin {tkNewline, tkEOF}:
+    p.reportError("`defer` takes an indented block, not a single line. The " &
+                  "body runs at scope exit rather than here, which is worth " &
+                  "a line of its own.", line = sp.line, col = sp.col)
+  Expr(span: sp, kind: exkDefer, deferBody: p.parseBlock())
+
 proc parseExpr*(p: var Parser): Expr =
   let sp = p.getSpan()
   let curr = p.current()
   if curr.kind == tkOn and p.peek().kind == tkSelect:
     return p.parseSelectExpr()
+  # `defer:` — contextual, like the top-level openers in parser.contextualDecl,
+  # and gated on the colon for the same reason: a variable named `defer` must
+  # still read as one.
+  if curr.kind == tkIdent and curr.value == "defer" and p.peek().kind == tkColon:
+    return p.parseDeferExpr(sp)
 
   case curr.kind
   of tkLet, tkVar: return p.parseBinding(sp, mutable = curr.kind == tkVar)

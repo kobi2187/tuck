@@ -127,5 +127,7 @@ proc toString*(e: Expr): string =
            optToString(e.sendPayload, " ")
   of exkSelect:
     return "on select (" & $e.selArms.len & " arms)"
+  of exkDefer:
+    return "defer: " & optToString(e.deferBody)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     return e.refName

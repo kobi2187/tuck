@@ -1074,7 +1074,7 @@ proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
      s.receiver.kind == exkChain and ctx.res.hasCall(s):
     return true
   if ctx.isTaskArgsBind(s): return true
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain, exkDefer}
 
 proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
@@ -1098,6 +1098,15 @@ proc genBlock(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     if code != "": lines.add(code)
   ctx.indent = saved
   lines.join("\n")
+
+proc genDefer(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## `defer:` (spec §7.4). Odin has `defer` natively, with the same scope-exit
+  ## LIFO order, and its block form takes braces — so the body is emitted as a
+  ## brace-delimited block rather than genBlock's braceless run of statements.
+  if e.deferBody == nil or e.deferBody.kind != exkBlock: return ""
+  let body = ctx.genBlock(e.deferBody, ind)
+  if body.len == 0: return ""
+  ind & "defer {\n" & body & "\n" & ind & "}"
 
 proc genTernary(ctx: var OdinCodegenCtx, e: Expr, condStr: string): string =
   ## R2: a value-position if becomes Odin's ternary. Odin has no
@@ -1367,6 +1376,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkChain: ctx.genChain(e, ind)
   of exkSend: ctx.genSend(e)
   of exkSelect: ctx.genOdinSelect(e, ind)
+  of exkDefer: ctx.genDefer(e, ind)
   of exkImport: ""  # imports are declarations, never expression position
 
 # Declaration codegen (genOdinDecl and everything it dispatches to --

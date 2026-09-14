@@ -792,6 +792,11 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   of dkStaticAssert:
     return "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
   of dkErrors: return ctx.genErrHandler(d)
+  of dkResources:
+    # spec §7.4. The registry TABLES land with the runtime (Phase 3); this arm
+    # exists so the dispatch stays exhaustive and the declaration is a no-op in
+    # emitted code rather than a silent gap in a backend that forgot it.
+    return ""
   of dkMixin, dkExtern, dkPending: return ctx.genMixinBlock(d)
   of dkFnSig:
     # `fnsig NAME = {params} -> ret` → a Nim closure proc type. Named delegate

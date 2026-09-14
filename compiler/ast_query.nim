@@ -160,7 +160,7 @@ iterator members*(d: Decl): Decl =
     # body as a result.
     of dkTask, dkFn, dkRegistry, dkPool, dkExpr, dkConst, dkRegister,
        dkStaticAssert, dkErrors, dkImport, dkSelect, dkFnSig, dkSatisfies,
-       dkWhen, dkPublic: discard
+       dkWhen, dkPublic, dkResources: discard
 
 proc declaredFields*(d: Decl): seq[FieldDef] =
   ## The fields a declaration introduces, whichever field holds them. A record

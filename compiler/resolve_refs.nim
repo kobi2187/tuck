@@ -159,6 +159,7 @@ proc resolveRefsIn(e: Expr) =
     for arm in e.selArms.mitems:
       arm.arg = resolveVarSlot(arm.arg)
       arm.body = resolveVarSlot(arm.body)
+  of exkDefer: e.deferBody = resolveVarSlot(e.deferBody)
 
 proc resolveDeclRefs*(prog: seq[LoadedModule]) =
   ## Entry point: build the five whole-program name tables, then rewrite

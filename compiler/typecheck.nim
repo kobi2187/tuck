@@ -3745,6 +3745,15 @@ proc synthDiscard(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(e.discardVal)
   unitType(e.span)
 
+proc synthDefer(tc: var TypeChecker, e: Expr): Type =
+  ## `defer:` (spec §7.4) — the body is checked exactly as if it sat where the
+  ## block is written; only WHEN it runs moves, not what it means. The
+  ## statement itself is unit: a defer block's value is never observable,
+  ## because nothing is left in scope to observe it by the time it runs.
+  if e.deferBody != nil:
+    discard tc.synthesize(e.deferBody)
+  unitType(e.span)
+
 proc errEnumsOwning(tc: TypeChecker, variant: string): seq[string] =
   ## Which of the current fn's declared error enums have this variant.
   for en in tc.currentErrTypes:
@@ -3958,6 +3967,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkChain: tc.synthChain(e)
   of exkSend: tc.synthSend(e)
   of exkSelect: tc.synthSelect(e)
+  of exkDefer: tc.synthDefer(e)
   of exkQualified, exkImport: tc.synthQualified(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum

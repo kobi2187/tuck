@@ -41,6 +41,7 @@ import pointer_containment
 import syntax_ceilings
 import typecheck
 import recursive_types
+import resources
 import generics
 import cross_module
 import with_update
@@ -88,6 +89,7 @@ let registry: seq[Entry] = @[
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("typecheck",           SuiteProc(typecheck.run),           true),
   ("recursive_types",     SuiteProc(recursive_types.run),     true),
+  ("resources",           SuiteProc(resources.run),           false),
   ("generics",            SuiteProc(generics.run),            true),
   ("cross_module",        SuiteProc(cross_module.run),        true),
   ("with_update",         SuiteProc(with_update.run),         true),

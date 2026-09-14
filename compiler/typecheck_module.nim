@@ -246,6 +246,13 @@ proc failIfDuplicateMembers*(m: Module) =
       failIfDuplicateMember("field", d.name, fieldNames(d.actorFields))
     of dkType:
       failIfDuplicateTypeMembers(m, d)
+    of dkResources:
+      # A resource kind IS a name that must be unique, but not a PER-MODULE
+      # one: §7.4's kinds are an open set every module may add to, so the
+      # duplicate that matters is two modules claiming the same kind — which
+      # this per-module walk cannot see. The check lives with the
+      # program-wide table instead (typecheck_collect.collectResourceKinds).
+      discard
     of dkRegistry, dkPool, dkMixin, dkExtern, dkPending, dkExpr, dkConst,
        dkRegister, dkStaticAssert, dkErrors, dkImport, dkInterface,
        dkGroup, dkSelect, dkFnSig, dkSatisfies:

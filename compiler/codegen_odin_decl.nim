@@ -1167,6 +1167,11 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     ctx.staticAsserts.add(ctx.genOdinExpr(d.assertExpr))
     return ""
   of dkErrors: ctx.genErrHandler(d, ind)
+  of dkResources:
+    # spec §7.4. The registry TABLES land with the runtime (Phase 3); this arm
+    # exists so the dispatch stays exhaustive and the declaration is a no-op in
+    # emitted code rather than a silent gap in a backend that forgot it.
+    return ""
   of dkMixin, dkExtern, dkPending: ctx.genMixinBlock(d)
   of dkPool:
     # spec 7.2: one package-level instance; acquire/release are the runtime's
