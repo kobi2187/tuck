@@ -17,7 +17,7 @@ proc run*(t: var T) =
   # other side: this parsing is what un-fenced it.
   t.src """
 resources:
-  net  [cap: 10_000, on_full: error, sweep_batch: 100]
+  net  [cap: 10_000, policy: lazy, on_full: error, sweep_batch: 100]
   file [cap: 8, on_finish: flush]
   udp
 
@@ -536,10 +536,9 @@ fn main() -> int:
   t.badCheck "on_full without a cap is refused, with the reason",
              "on_full needs a cap"
 
-  # `sweep_batch` gets NO such rule even though it is equally inert outside
-  # `policy: lazy` — §7.4's own example writes it in a block declaring no
-  # policy, so a rule rejecting that would reject the spec. The spec is the
-  # authority on its own examples.
+  # A kind's knobs CONSTRAIN EACH OTHER — the combination is the declaration,
+  # not the individual words — so a pair that can never mean anything together
+  # is named rather than left to quietly do nothing.
   t.src """
 resources:
   net [cap: 10_000, on_full: error, sweep_batch: 100]
@@ -547,7 +546,32 @@ resources:
 fn main() -> int:
   return 0
 """
-  t.okCheck "sweep_batch outside `lazy` is inert, not an error (spec §7.4's own block)"
+  t.badCheck "sweep_batch outside `lazy` is refused: no other policy sweeps",
+             "sweep_batch needs `policy: lazy`"
+
+  t.src """
+resources [policy: lazy]:
+  net [cap: 10_000, on_full: error, sweep_batch: 100]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "...and the block default satisfies it, not just a per-kind policy"
+
+  # The line is PERMANENTLY incoherent vs merely inert today, and only the
+  # first gets a rule. `policy: lazy` without a cap never trips the watermark
+  # in this implementation — but §7.4 names two other triggers for the same
+  # sweep ("on memory pressure, or at cap"), and memory pressure needs no cap.
+  # A trigger not yet built is a different thing from a combination that could
+  # never work.
+  t.src """
+resources:
+  udp [policy: lazy]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "lazy without a cap is inert today, not incoherent — so allowed"
 
   # --- `finish <handle>, <kind>` ---------------------------------------------
   #

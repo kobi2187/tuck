@@ -780,19 +780,37 @@ proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
       p.reportError("resource kind '" & result.name & "': unknown attribute '" &
                     a.name & "'. A kind takes cap, policy, on_full, " &
                     "on_finish and sweep_batch.", a.span.line, a.span.col)
-  # Checked AFTER the whole bracket, because `cap` may be written after the
-  # attribute that depends on it: an unbounded table never fills, so `on_full`
-  # on one is a setting that could never apply.
+  # THE COMBINATION IS THE DECLARATION, not the individual words: a kind's
+  # knobs constrain each other, and a pair that can never mean anything
+  # together is a mistake worth naming rather than a setting that quietly does
+  # nothing. Checked AFTER the whole bracket, because the attribute a rule
+  # depends on may be written later in it.
   #
-  # `sweep_batch` gets NO such rule, though it is equally inert outside
-  # `policy: lazy`. §7.4's own example writes `net [cap: 10_000, on_full:
-  # error, sweep_batch: 100]` in a block declaring no policy — so under the
-  # `strict` default the spec's own block would be rejected by that rule,
-  # which is how it was caught. The spec is the authority on its examples; a
-  # rule it contradicts is the rule that is wrong.
+  # The line drawn here is between PERMANENTLY incoherent and merely inert
+  # today, and only the first gets a rule:
+  #
+  #   `on_full` without `cap`     — an unbounded table never fills. There is no
+  #                                 reading of §7.4 under which this applies.
+  #   `sweep_batch` without lazy  — it sizes the watermark sweep, and lazy is
+  #                                 the only policy that runs one. Under strict
+  #                                 the mark reclaims one entry immediately;
+  #                                 under exit nothing reclaims until close-all
+  #                                 closes everything. No batch, either way.
+  #
+  # `policy: lazy` without a `cap` is NOT rejected, though it is inert in this
+  # implementation — the watermark is a fraction of the cap, so it never
+  # trips. §7.4 names two other triggers for the same sweep ("on memory
+  # pressure, or at cap"), and memory pressure needs no cap. That one is a
+  # trigger not yet built, which is a different thing from a combination that
+  # could never work.
   if result.cap == 0 and result.onFull != rofAbsent:
     p.reportError("resource kind '" & result.name & "': on_full needs a cap — " &
                   "an unbounded table never fills, so this would never apply",
+                  sp.line, sp.col)
+  if result.sweepBatch > 0 and result.policy != rpLazy:
+    p.reportError("resource kind '" & result.name & "': sweep_batch needs " &
+                  "`policy: lazy` — it sizes the watermark sweep, and lazy is " &
+                  "the only policy that runs one",
                   sp.line, sp.col)
   if p.current().kind == tkNewline: discard p.advance()
 

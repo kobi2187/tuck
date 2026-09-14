@@ -87,6 +87,36 @@ It also happens to be nearly free: Nim has `defer:`, Odin has `defer`, D has
 `scope(exit)`. All three are scope-exit-ordered and LIFO. The backend arm is a
 keyword swap, not a lowering.
 
+### 0.5 Does every combination of a kind's attributes make sense?
+
+**No — and the incoherent ones are rejected, not left to do nothing quietly.**
+
+The knobs constrain each other, so the COMBINATION is the declaration rather
+than a menu to pick from freely. §7.4's examples are illustrating *syntax*;
+they are not asserting that every pairing they happen to show is meaningful.
+
+The line drawn is between **permanently incoherent** and **merely inert
+today**, and only the first gets a rule:
+
+| Combination | Verdict | Why |
+|---|---|---|
+| `on_full` without `cap` | rejected | an unbounded table never fills. No reading of §7.4 makes this apply |
+| `sweep_batch` without `policy: lazy` | rejected | it sizes the watermark sweep, and lazy is the only policy that runs one. Under `strict` the mark reclaims one entry immediately; under `exit` nothing reclaims until close-all closes everything. No batch, either way |
+| `policy: lazy` without `cap` | **allowed** | inert in this implementation — the watermark is a fraction of the cap, so it never trips — but §7.4 names two other triggers for the same sweep, "on memory pressure, or at cap", and memory pressure needs no cap. A trigger not yet built is not a combination that could never work |
+
+**This reverses an earlier call, and the reason is worth recording.** The
+`sweep_batch` rule was written, found to reject §7.4's own example
+(`net [cap: 10_000, on_full: error, sweep_batch: 100]` in a block declaring no
+policy, so `strict` by default), and deleted on the grounds that "the spec is
+the authority on its own examples".
+
+That was wrong twice. The example is a *syntax* illustration, so it was never
+claiming that pairing was meaningful. And `README.md`'s trust order puts
+**the compiler above `tuck-spec.md`** — so an example that contradicts a
+sound rule is the example to amend, which is what happened: §7.4's block now
+reads `net [cap: 10_000, policy: lazy, ...]`, which is both illustrative and
+coherent, and says so in a line beneath it.
+
 ---
 
 ## 1. The stages

@@ -1521,10 +1521,16 @@ library declares its own kind the same way a module declares its error enums:
 
 ```tuck
 resources:
-  net  [cap: 10_000, on_full: error, sweep_batch: 100]
+  net  [cap: 10_000, policy: lazy, on_full: error, sweep_batch: 100]
   file [cap: 8, on_finish: flush]
   udp                     # no cap: unbounded, seq-backed
 ```
+
+The knobs constrain each other, so this is one COHERENT combination rather
+than a menu to pick from freely: `sweep_batch` sizes the watermark sweep, and
+`lazy` is the only policy that runs one — hence `net` naming it. `on_full`
+likewise needs a `cap`, because an unbounded table never fills. The compiler
+rejects the pairs that could never mean anything together.
 
 `cap` is optional. Without it the table grows (the OS ulimit is the real
 bound); with it the declared `on_full` policy applies and standalone targets
