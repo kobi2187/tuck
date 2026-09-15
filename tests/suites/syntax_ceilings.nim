@@ -60,6 +60,33 @@ fn f() -> Seq[int]:
 """
   t.okCheck "...and with a trailing comma before the break"
 
+  # The three spellings are the SAME list, which an okCheck cannot show —
+  # printing the values is what proves a newline separated rather than
+  # silently dropped an element.
+  t.src """
+import seq
+import str
+import console
+
+fn main() -> int [io]:
+  let commas = [1, 2, 3]
+  let breaks = [1
+                2
+                3]
+  let lead = [ 1
+             , 2
+             , 3
+             ]
+  let a = {items: commas} count
+  let b = {items: breaks} count
+  let c = {items: lead} count
+  {text: "n=" + a.toStr + b.toStr + c.toStr} printLine
+  {text: "last=" + ({items: breaks, index: 2} at).toStr} printLine
+  return 0
+"""
+  t.hostRuns "all three spellings build the same list", 0, "n=333"
+  t.hostRuns "...and its elements are in order", 0, "last=3"
+
   # Ceiling 2 — a value-`if` is a whole right-hand side, never an operand.
   t.src """
 fn f({hot: bool}) -> int:
