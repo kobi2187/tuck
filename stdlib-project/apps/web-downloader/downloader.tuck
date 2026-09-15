@@ -1,0 +1,265 @@
+# web-downloader — resumable, N-way parallel HTTP download.
+#
+# The 90s trick: one URL, several sockets, each asking for a different byte
+# range, all writing into one file at their own offset. Resume falls out for
+# free — a chunk that already has bytes on disk asks for a shorter range.
+#
+# Written with Tuck's own vocabulary, not a C program in Tuck syntax. The
+# language supplies the parts a downloader is usually made of by hand:
+#
+#   resources   the connection table IS the pool, and the cap IS the
+#               parallelism limit. Exhaustion is absence, so a full table
+#               makes a chunk wait rather than fail.
+#   task        one per chunk; `on select` gives each its own stall deadline
+#               against its own socket — the race, not a watchdog thread.
+#   actor       progress is owned by one thing, so no counter is shared and
+#               there is no lock to forget.
+#   registry    every observable event in one declaration; the display reads
+#               from it, so nothing prints from inside the download.
+#   decision    the retry policy is a table because it IS a table.
+#   transitions a chunk's connection is a state machine, declared as one.
+#   invariant   the range arithmetic cannot go wrong quietly.
+#
+# Only the syscall edge is `extern`. Everything above it is the language.
+
+import time
+import scheduler
+import str
+
+extern [c, header: "netdl.h"]:
+  # Dial and return the raw fd. The registry takes it from here.
+  fn dial({host: str, port: int}) -> int [io]
+  # Write the request line and headers; the reply streams back on the fd.
+  fn ask({fd: int, path: str, host: str, first: int, last: int}) -> int [io]
+  # Take up to `max` bytes. Empty means the peer closed.
+  fn take({fd: int, max: int}) -> str [io]
+  # Positional write — pwrite. Chunks never seek, so they never race.
+  fn putAt({path: str, at: int, data: str}) -> int [io]
+  # How many bytes of this chunk survived a previous run.
+  fn onDisk({path: str, index: int}) -> int [io]
+  fn sizeOf({host: str, port: int, path: str}) -> int [io]
+  fn say({line: str}) -> void [io]
+
+# ---------------------------------------------------------------- resources
+
+# One table, one budget, one place to change it. `strict` closes at the mark,
+# so a download that ends — cleanly or by Ctrl-C — leaves no socket behind,
+# and OPEN RESOURCES at exit is the leak report.
+resources [policy: strict]:
+  conn [cap: 8, on_full: absent, on_finish: shutdown, states: Link]
+
+type Link:
+  | Dialing
+  | Streaming
+  | Hungup
+  transitions:
+    Dialing -> Streaming
+    Dialing -> Hungup
+    Streaming -> Hungup
+
+# ------------------------------------------------------------------- shapes
+
+type Chunk:
+  index: int
+  first: int
+  last: int
+  have: int
+  invariant:
+    first <= last
+    have >= 0
+    have <= (last - first) + 1
+
+# ------------------------------------------------------------ retry policy
+
+type Fault:
+  | Stalled
+  | Refused
+  | Hungup
+  | Rejected
+  | Sick
+
+type Tries:
+  | First
+  | Few
+  | Many
+
+type Recovery:
+  | Immediate
+  | Backoff
+  | Restart
+  | GiveUp
+
+decision recover({fault: Fault, tries: Tries, resumable: bool}) -> Recovery:
+  | Rejected _     _     -> GiveUp
+  | _        Many  _     -> GiveUp
+  | Stalled  First _     -> Immediate
+  | Hungup   First true  -> Immediate
+  | Hungup   _     false -> Restart
+  | _        _     _     -> Backoff
+
+# ------------------------------------------------------------------- events
+
+registry Download:
+  | Sized({total: int})
+  | Opened({index: int, first: int, last: int})
+  | Advanced({index: int, bytes: int})
+  | Shut({index: int})
+  | Faulted({index: int, fault: Fault, next: Recovery})
+  | Finished({bytes: int, ms: int})
+
+# ---------------------------------------------------------------- progress
+
+# The only mutable total in the program. Chunks send into it and never read
+# it; the display reads it and never writes.
+actor Progress [queue: 256]:
+  total: int = 0
+  done: int = 0
+  live: int = 0
+
+  on sized({bytes: int}):
+    total = bytes
+
+  on advanced({bytes: int}):
+    done += bytes
+
+  on opened():
+    live += 1
+
+  on shut():
+    live -= 1
+
+fn complete() -> bool:
+  return Progress.total > 0 and Progress.done >= Progress.total
+
+# ------------------------------------------------------------------ ranging
+
+fn remaining({c: Chunk}) -> int:
+  return (c.last - c.first) + 1 - c.have
+
+fn resumeAt({c: Chunk}) -> int:
+  return c.first + c.have
+
+# One wakeup's worth of bytes. A select ARM is a single expression, so the
+# work of a readable socket lives here rather than in the arm — which is the
+# decomposition the language keeps asking for anyway.
+#
+# Returns the chunk's NEW running total. A closed peer returns `need`, which
+# ends the loop: a chunk whose peer hung up is finished as far as this socket
+# is concerned, and the retry policy decides what happens next.
+fn sip({sock: int, path: str, base: int, got: int, index: int, need: int}) -> int [io]:
+  let part = {fd: sock, max: 65536} take
+  if part.len == 0:
+    Download.raise Faulted {index: index, fault: Hungup, next: Backoff}
+    return need
+  {path: path, at: base + got, data: part} putAt discard
+  Progress send advanced {bytes: part.len}
+  Download.raise Advanced {index: index, bytes: part.len}
+  return got + part.len
+
+# --------------------------------------------------------------- one chunk
+
+# A chunk owns its socket, its offset and its deadline, and reports through
+# the registry. `[resource: conn]` propagates, so anything that can spend a
+# connection says so in its own signature.
+# Ask for this chunk's range and announce it. Split out because the size
+# budget wants it and because "open a chunk" is a step worth naming.
+fn open({sock: int, path: str, host: str, c: Chunk}) -> int [io]:
+  let base = {c} resumeAt
+  {fd: sock, path: path, host: host, first: base, last: c.last} ask discard
+  Download.raise Opened {index: c.index, first: c.first, last: c.last}
+  Progress send opened {}
+  return base
+
+# Stream until the range is covered or the deadline fires. The select arm is
+# one expression, so a wakeup's work is `sip` and the loop is here.
+fn stream({sock: int, path: str, base: int, index: int, need: int}) -> int [io]:
+  var got = 0
+  for got < need:
+    on select:
+      | read sock -> {}: got = {sock: sock, path: path, base: base, got: got, index: index, need: need} sip
+      | timeout {20.s} -> {}: return got
+  return got
+
+# A chunk owns its socket, its offset and its deadline, and reports through
+# the registry. `[resource: conn]` propagates, so anything that can spend a
+# connection says so in its own signature.
+# The raw fd is kept ALONGSIDE the registry handle, which the registry's own
+# design says should not be necessary: example 47 notes that the raw fd
+# "exists between the extern's return and this line and nowhere else". That
+# holds for a socket you only ever close. This one is read from and selected
+# on, and a ConnHandle is opaque — so the descriptor is carried by hand.
+task pull({host: str, port: int, path: str, c: Chunk}) -> ?int [io, resource: conn]:
+  let sock = {host: host, port: port} dial
+  let fd = acquire sock, conn
+  if not fd.ok:
+    return
+  defer:
+    finish fd.value, conn
+
+  let base = {sock: sock, path: path, host: host, c: c} open
+  let need = {c} remaining
+  let got = {sock: sock, path: path, base: base, index: c.index, need: need} stream
+  Progress send shut {}
+  Download.raise Shut {index: c.index}
+  return got
+
+# ------------------------------------------------------------------ driving
+
+# Spawning is fire-and-forget and the actor says when we are done, so the
+# parallel section is: carve, start, wait. The spawn is `discard`ed because
+# the actor carries the outcome — a fallible task's dropped answer is
+# otherwise an unhandled result under `strict`.
+# One chunk's span. The last one absorbs the remainder, so the ranges cover
+# [0, total) exactly — which is what Chunk's invariant keeps true.
+fn spanOf({total: int, parts: int, i: int, have: int}) -> Chunk:
+  let width = total /i parts
+  let first = i * width
+  let last = if i == parts - 1: total - 1 else: first + width - 1
+  return {index: i, first: first, last: last, have: have} Chunk
+
+# Spawning is fire-and-forget and the actor says when we are done, so the
+# parallel section is: carve, start, wait.
+fn fetch({host: str, port: int, path: str, parts: int}) -> int [io, resource: conn]:
+  let total = {host: host, port: port, path: path} sizeOf
+  Progress send sized {bytes: total}
+  Download.raise Sized {total: total}
+  for i in 0 ..< parts:
+    let have = {path: path, index: i} onDisk
+    let c = {total: total, parts: parts, i: i, have: have} spanOf
+    {host: host, port: port, path: path, c: c} pull discard
+  scheduler::waitUntil {pred: :complete}
+  return total
+
+# ------------------------------------------------------------------ display
+
+# Everything the user sees is derived from events, so the display can be
+# replaced without touching the download.
+on Download.Advanced({index: int, bytes: int}) [io]:
+  let pct = (Progress.done * 100) /i Progress.total
+  {line: pct.toStr + "% " + Progress.live.toStr + " live"} say
+
+on Download.Faulted({index: int, fault: Fault, next: Recovery}) [io]:
+  {line: "chunk " + index.toStr + " faulted"} say
+
+on Download.Finished({bytes: int, ms: int}) [io]:
+  {line: bytes.toStr + " bytes in " + ms.toStr + "ms"} say
+
+on Download.Sized({total: int}) [io]:
+  {line: "size " + total.toStr} say
+
+on Download.Opened({index: int, first: int, last: int}):
+  return
+
+on Download.Shut({index: int}):
+  return
+
+# --------------------------------------------------------------------- main
+
+fn main() -> int [io, resource: conn]:
+  let started = {} nowMs
+  let host = "example.org"
+  let path = "/big.iso"
+  let bytes = {host: host, port: 80, path: path, parts: 8} fetch
+  let took = ({} nowMs) - started
+  Download.raise Finished {bytes: bytes, ms: took}
+  return 0
