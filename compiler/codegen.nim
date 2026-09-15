@@ -1203,6 +1203,20 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
     of sskTimeout: timeoutArm = addr arm
     of sskTimeoutTyped, sskOther: discard   # refused by the checker
   let ind = repeat("  ", ctx.indent)
+  # A select with ONE arm is a plain await, not a race. Both single-arm forms
+  # are natural to write — "await this read", "wait this long" — and both used
+  # to fall to the marker below, which emitted `discard` and threw the arm's
+  # body away: the task then answered with a zero-valued record instead of
+  # what the arm returned (issue #56). Each runtime already had the primitive.
+  # SEQUENTIAL, not nested: the await and the arm body are two statements at
+  # the same level, so the body takes `ind` and not a deeper one. The two-arm
+  # form indents its bodies only because they sit inside `if:`/`else:`.
+  if readArm != nil and timeoutArm == nil:
+    return "tuckAwaitRead(" & ctx.genExpr(readArm.arg) & ")\n" &
+           ind & ctx.genExpr(readArm.body)
+  if timeoutArm != nil and readArm == nil:
+    return "tuckSleep(" & ctx.selectTimeoutMs(timeoutArm[]) & ")\n" &
+           ind & ctx.genExpr(timeoutArm.body)
   if readArm != nil and timeoutArm != nil:
     let fd = ctx.genExpr(readArm.arg)
     let ms = ctx.selectTimeoutMs(timeoutArm[])
@@ -1217,7 +1231,7 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
   else:
     # Unreachable for a checked program — failIfUnlowerableArm rejects these
     # before emission. Kept as a visible marker rather than silence.
-    ind & "discard  # select: only read+timeout arms supported (first cut)"
+    ind & "discard  # select: no lowerable arm (checker should have refused)"
 
 # Declaration codegen (genDecl and everything it dispatches to — fn/object/
 # actor/registry/register/mixin/decision-table/err-handler) now lives in

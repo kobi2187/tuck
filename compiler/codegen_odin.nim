@@ -1328,8 +1328,17 @@ proc genOdinSelect(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     of sskRead: readArm = addr arm
     of sskTimeout: timeoutArm = addr arm
     of sskTimeoutTyped, sskOther: discard
+  # One arm is a plain await, not a race — see codegen.nim's genSelect for
+  # why this is its own case rather than the marker below (issue #56).
+  # SEQUENTIAL, not nested — see codegen.nim's genSelect.
+  if readArm != nil and timeoutArm == nil:
+    return "rt.tuckAwaitRead(" & ctx.genOdinExpr(readArm.arg) & ")\n" &
+           ind & ctx.genOdinExpr(readArm.body)
+  if timeoutArm != nil and readArm == nil:
+    return "rt.tuckSleep(" & ctx.odinSelectTimeoutMs(timeoutArm[]) & ")\n" &
+           ind & ctx.genOdinExpr(timeoutArm.body)
   if readArm == nil or timeoutArm == nil:
-    return ind & "// select: only read+timeout arms supported (first cut)"
+    return ind & "// select: no lowerable arm (checker should have refused)"
   let fd = ctx.genOdinExpr(readArm.arg)
   let ms = ctx.odinSelectTimeoutMs(timeoutArm[])
   let readBody = ctx.genBranch(readArm.body, ind)

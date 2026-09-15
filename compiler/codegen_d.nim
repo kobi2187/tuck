@@ -1330,8 +1330,16 @@ proc genDSelect(ctx: var DCodegenCtx, e: Expr): string =
     of sskRead: readArm = addr arm
     of sskTimeout: timeoutArm = addr arm
     of sskTimeoutTyped, sskOther: discard
+  # One arm is a plain await, not a race — see codegen.nim's genSelect for
+  # why this is its own case rather than the marker below (issue #56).
+  if readArm != nil and timeoutArm == nil:
+    return ctx.indD & "rt.tuckAwaitRead(" & ctx.genDExpr(readArm.arg) &
+           ");\n" & ctx.genDNested(readArm.body)
+  if timeoutArm != nil and readArm == nil:
+    return ctx.indD & "rt.tuckSleep(" & ctx.dSelectTimeoutMs(timeoutArm[]) &
+           ");\n" & ctx.genDNested(timeoutArm.body)
   if readArm == nil or timeoutArm == nil:
-    return ctx.indD & "// select: only read+timeout arms supported (first cut)\n"
+    return ctx.indD & "// select: no lowerable arm (checker should have refused)\n"
   let fd = ctx.genDExpr(readArm.arg)
   let ms = ctx.dSelectTimeoutMs(timeoutArm[])
   let readBody = ctx.genDNested(readArm.body)

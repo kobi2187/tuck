@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (9)
+## A. Open bugs (8)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -83,12 +83,6 @@ the call site never asks it. SINGLE-provider groups work end to end on all
 three backends and are pinned, including cross-module. Issue #38. Test:
 `known_bugs`, "a group bound picks the provider of the RECEIVER's type".
 
-**A15 — a one-armed `on select` loses its arm's return value.** A task whose
-select has a single arm answers with a zero-valued record instead of the arm's
-own: `| read fd -> {}: return {code: 7}` yields `code=0`. Two arms are fine,
-which is why every example has two and nothing caught it. Test: `task_select`,
-"a one-armed select returns its arm's value".
-
 **A16 — a fired `timeout` does not bound latency.** The right arm wins and the
 right value comes back, but not until the LOSING source has completed: a 5ms
 deadline against a 500ms source returns after 0.50s, and against a 3s source
@@ -117,6 +111,10 @@ read/write pair through the handle, plus a sanctioned way to give a cell's
 ADDRESS to an extern — the one place a raw pointer is legitimate. Test:
 `known_bugs`, "a pool slot can be read and written through its handle".
 
+A15 (a one-armed `on select` losing its arm's return value — the emitter
+required BOTH a read and a timeout arm and fell to a `discard` marker
+otherwise, so both single-arm forms threw the arm's body away; each runtime
+already had `tuckAwaitRead` and `tuckSleep`, issue #56),
 A4 (a group bound picking the LAST-declared provider — the conformance site
 now selects by receiver type, the same way the two member-call paths have
 since 2026-09-05, issue #38),

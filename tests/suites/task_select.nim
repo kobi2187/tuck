@@ -54,9 +54,11 @@ fn main() -> int [io]:
 """
   t.hostRuns "the winning read arm's value is returned too", 7
 
-  # A select with ONE arm loses the arm's return value — the task answers with
-  # a zero-valued record instead of `{code: 7}`. Two arms are fine, which is
-  # why every example has two.
+  # A select with ONE arm is a plain await, not a race. Both single-arm forms
+  # used to emit `discard` and throw the arm's body away, so the task answered
+  # with a zero-valued record instead of what the arm returned (issue #56) —
+  # the emitter required BOTH a read and a timeout arm and fell to a marker
+  # otherwise. Each runtime already had tuckAwaitRead and tuckSleep.
   t.src """
 extern:
   fn openSource({ms: int}) -> {fd: int} [io]
@@ -70,8 +72,23 @@ fn main() -> int [io]:
   let r = {fd: fast.fd} readOne
   return r.code
 """
-  t.quietly: t.runs("a one-armed select returns its arm's value", 7)
-  t.bugOpen "a one-armed select returns its arm's value"
+  t.runs "a one-armed select returns its arm's value", 7
+  t.hostRuns "...on every backend", 7
+  t.bugFixed "a one-armed select returns its arm's value"
+
+  # ...and the other single-arm form: a bare deadline, which is a sleep.
+  t.src """
+import time
+
+task waitABit() -> {code: int} [io]:
+  on select:
+    | timeout {20.ms} -> {}: return {code: 5}
+
+fn main() -> int [io]:
+  let r = {} waitABit
+  return r.code
+"""
+  t.hostRuns "a timeout-only select is a sleep, and returns its value", 5
 
   # A TIMEOUT DOES NOT BOUND LATENCY. The right arm wins and the right value
   # comes back — but not until the losing source has completed, because

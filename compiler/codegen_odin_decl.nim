@@ -113,8 +113,21 @@ proc ensureTrailingReturn*(bodyStr: string, body: Expr, blockIndent: int): strin
   ## emitter no longer emits a closing brace, so this appends to the end
   ## of the body.
   if body == nil or body.kind != exkBlock: return bodyStr
-  if body.stmts.len > 0 and body.stmts[^1].kind in {exkReturn, exkRaise}:
-    return bodyStr
+  if body.stmts.len == 0: return bodyStr & "\n" &
+    "  ".repeat(blockIndent) & "  return {}"
+  let last = body.stmts[^1]
+  if last.kind in {exkReturn, exkRaise}: return bodyStr
+  # A ONE-ARMED select lowers to straight-line code — the await, then the
+  # arm's body — so if that body returns, the whole proc does and Odin
+  # rejects anything after it ("Statements after this 'return' are never
+  # executed"). The two-arm form lowers to if/else, which Odin cannot prove
+  # exhaustive, so it still wants the trailing return and keeps it.
+  if last.kind == exkSelect and last.selArms.len == 1:
+    let b = last.selArms[0].body
+    if b != nil and (b.kind in {exkReturn, exkRaise} or
+                     (b.kind == exkBlock and b.stmts.len > 0 and
+                      b.stmts[^1].kind in {exkReturn, exkRaise})):
+      return bodyStr
   return bodyStr & "\n" & "  ".repeat(blockIndent) & "  return {}"
 
 proc decisionHeader*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
