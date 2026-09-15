@@ -18,15 +18,47 @@
 import ../harness
 
 proc run*(t: var T) =
-  # Ceiling 1 — a list literal lives on one line.
+  # Ceiling 1 was LIFTED on 2026-09-15. A bracketed list wraps, and a line
+  # break inside brackets separates exactly as a comma does — so the last
+  # comma on a line is optional and the closing bracket may sit on its own.
+  #
+  # The ceiling's own rationale was "the workaround is one `let`". That holds
+  # for a three-element list and stops holding for a payload of four fields,
+  # which needs a `let` every time it is written; the web-downloader app had
+  # to split three payloads for no reason a reader would recognise.
+  #
+  # Kept here rather than moved: this suite exists so a ruled position cannot
+  # change in EITHER direction without the assertion and LANGUAGE-OVERVIEW
+  # row 13 moving together, and that is what this commit does.
   t.src """
+import seq
+
 fn f() -> Seq[int]:
   [ 1
   , 2
+  , 3
   ]
 """
-  t.badCheck "a list literal does not span lines",
-    "Expected an expression here, found the end of the line"
+  t.okCheck "a list literal wraps, with a leading comma"
+
+  t.src """
+import seq
+
+fn f() -> Seq[int]:
+  [1
+   2
+   3]
+"""
+  t.okCheck "...and with no comma at all — a newline separates"
+
+  t.src """
+import seq
+
+fn f() -> Seq[int]:
+  [1, 2,
+   3]
+"""
+  t.okCheck "...and with a trailing comma before the break"
 
   # Ceiling 2 — a value-`if` is a whole right-hand side, never an operand.
   t.src """

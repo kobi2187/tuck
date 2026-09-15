@@ -137,6 +137,19 @@ proc expectTypeName*(p: var Parser, what: string): Token =
 proc getSpan*(p: Parser): Span =
   Span(line: p.current().line, col: p.current().column, file: "")
 
+proc skipSeparators*(p: var Parser) =
+  ## Inside a bracketed list, a line break separates exactly as a comma does,
+  ## so the last comma on a line is optional and the closing bracket may sit
+  ## on a line of its own:
+  ##
+  ##     let r = {url: "...", verb: "GET"
+  ##              timeoutMs: 30
+  ##              retries: 4} describe
+  ##
+  ## The lexer leaves indentation alone inside brackets (Lexer.bracketDepth)
+  ## but still emits the newline, because THIS is what it is for.
+  while p.current().kind == tkNewline: discard p.advance()
+
 template indentedBlock*(p: var Parser, body: untyped) =
   ## Walk an indented block: enter it, run `body` once per non-blank line,
   ## and leave it. Blank lines inside a block are skipped here so no caller

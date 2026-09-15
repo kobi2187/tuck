@@ -98,6 +98,19 @@ type
     column*: int
     linesLen*: seq[int] # legacy fallback
     indentStack*: seq[int]
+    bracketDepth*: int
+      ## How many `(`/`{`/`[` are still open. Inside one, a line break is not
+      ## STRUCTURE: no indent step is emitted and the two-space rule does not
+      ## apply, so a wrapped payload may align under its opening brace.
+      ##
+      ## The newline token itself is still emitted, because inside brackets a
+      ## line break SEPARATES — it reads as a comma, which is what makes the
+      ## last comma on a line optional (ruled 2026-09-15). The bracket-content
+      ## parsers treat it that way; see parser_base.skipSeparators.
+      ##
+      ## This is the ONE place indentation is not structure in Tuck, and it is
+      ## bounded by the brackets themselves — a group must close before the
+      ## rule comes back.
     pendingTokens*: seq[Token]
 
   SyntaxError* = object of ValueError
@@ -511,12 +524,24 @@ proc scanOneChar(L: var Lexer, ch: char) =
   of '%': L.emitOneChar(tkPercent, "%")
   of '<': L.emitOneChar(tkLt, "<")
   of '>': L.emitOneChar(tkGt, ">")
-  of '(': L.emitOneChar(tkLParen, "(")
-  of ')': L.emitOneChar(tkRParen, ")")
-  of '{': L.emitOneChar(tkLBrace, "{")
-  of '}': L.emitOneChar(tkRBrace, "}")
-  of '[': L.emitOneChar(tkLBracket, "[")
-  of ']': L.emitOneChar(tkRBracket, "]")
+  of '(':
+    L.bracketDepth += 1
+    L.emitOneChar(tkLParen, "(")
+  of ')':
+    if L.bracketDepth > 0: L.bracketDepth -= 1
+    L.emitOneChar(tkRParen, ")")
+  of '{':
+    L.bracketDepth += 1
+    L.emitOneChar(tkLBrace, "{")
+  of '}':
+    if L.bracketDepth > 0: L.bracketDepth -= 1
+    L.emitOneChar(tkRBrace, "}")
+  of '[':
+    L.bracketDepth += 1
+    L.emitOneChar(tkLBracket, "[")
+  of ']':
+    if L.bracketDepth > 0: L.bracketDepth -= 1
+    L.emitOneChar(tkRBracket, "]")
   else:
     L.reportError("Unexpected character: " & ch, L.line, L.column)
 
@@ -529,9 +554,14 @@ proc scanNext*(L: var Lexer) =
   ##   `..`          spacing-sensitive, so it must precede the operator tables
   ##   operators     multi-char first (longest match), then single-char
   if L.column == 1:
-    L.handleIndent()
-    if L.pendingTokens.len > 0:
-      return
+    if L.bracketDepth > 0:
+      # A continuation line: consume its leading spaces as ordinary
+      # whitespace. No indent step, no width rule — see Lexer.bracketDepth.
+      discard L.measureIndent()
+    else:
+      L.handleIndent()
+      if L.pendingTokens.len > 0:
+        return
 
   let ch = L.peek()
   case ch

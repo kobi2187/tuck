@@ -164,7 +164,9 @@ proc failIfChainAfterPayloadCall(p: Parser, called: Expr) =
 proc parseStructLiteral(p: var Parser, sp: Span): Expr =
   discard p.advance()
   var fields: seq[FieldInit]
-  while p.current().kind != tkRBrace and p.current().kind != tkEOF:
+  while true:
+    p.skipSeparators()
+    if p.current().kind == tkRBrace or p.current().kind == tkEOF: break
     let name = p.expectMemberName("Expected field name in struct literal").value
     var valExpr: Expr
     if p.current().kind == tkColon:
@@ -174,6 +176,7 @@ proc parseStructLiteral(p: var Parser, sp: Span): Expr =
     else:
       valExpr = Expr(span: sp, kind: exkVar, name: name)
     fields.add((name, valExpr))
+    p.skipSeparators()
     if p.current().kind == tkComma:
       discard p.advance()
   discard p.expect(tkRBrace)
@@ -278,8 +281,11 @@ proc parsePrimaryExpr(p: var Parser): Expr =
   of tkLBracket:
     discard p.advance()
     var items: seq[Expr]
-    while p.current().kind != tkRBracket and p.current().kind != tkEOF:
+    while true:
+      p.skipSeparators()
+      if p.current().kind == tkRBracket or p.current().kind == tkEOF: break
       items.add(p.parseExpr())
+      p.skipSeparators()
       if p.current().kind == tkComma:
         discard p.advance()
     discard p.expect(tkRBracket)

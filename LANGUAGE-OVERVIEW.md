@@ -43,7 +43,7 @@ auditing this compiler, who read a payload binding as a checker bug and nearly
 | 10 | An unhandled event is fine | **Compile error.** Every registry event needs a handler (`TK-RG03`), and one registry per program. | §10, Part 10 |
 | 11 | `self ..field` is banned like any parameter | **Legal for object members and actor fields** — state the callee OWNS. A plain fn whose param is merely NAMED `self` gets no exemption. | §5.1, §7.1 |
 | 12 | Concurrency targets microcontrollers | **Hosted OS today** — stackful minicoro coroutines over `mmap`, epoll/kqueue reactor. Tier 3, not Tier 1. | §10 |
-| 13 | A list literal can wrap across lines | **It cannot.** `[a, b, c]` is one line; a line break inside the brackets is a parse error. A ruled ceiling, not a gap (`tests/suites/syntax_ceilings.nim`). | §0 |
+| 13 | A line break inside brackets is a parse error | **It wraps, and the newline SEPARATES.** Inside `(`/`{`/`[` indentation is not structure, so a wrapped payload may align under its opening brace — and a line break reads as a comma, which makes the last comma on a line optional. Ruled 2026-09-15, reversing the earlier ceiling: the workaround was one `let` per wrap, and a payload of more than about three fields needs one every time. | §0 |
 | 14 | `t + if hot: 1 else: 2` works, since `if` is an expression | **A value-`if` is a whole right-hand side, never an operand.** `let add = if hot: 1 else: 2` then use `add`. Also a ruled ceiling. | §0, and `examples/39` for the forms that DO work |
 
 **If something here looks like a bug:** read the cited section first, then

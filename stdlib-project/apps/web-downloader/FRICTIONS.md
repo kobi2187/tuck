@@ -100,7 +100,7 @@ structure.
 
 ### 5. A call inside a payload must be bound first (TK-PA13)
 
-```tuck
+```tuck-rejected
 | read sock -> {}: got = {..., need: {c} remaining} sip   # refused
 ```
 
