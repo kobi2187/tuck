@@ -2684,4 +2684,68 @@ fn main() -> int:
   t.badCheck "an unresolvable queue size says what is wanted",
              "a\\ literal,\\ or\\ a\\ `const`\\ naming\\ one"
 
+  # The remaining two size positions check in the PARSER, which has one
+  # declaration and no module — so they hand the spelling on and the checker
+  # settles it. All five now take one grammar.
+  t.src """
+const Base = 2
+const Slots = Base * 3
+
+type Cell:
+  n: int
+
+pool Cells = Cell [count: Slots]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a pool's count takes a derived const"
+  t.emits "...and the pool is emitted with the NUMBER", "ObjectPool\\[[a-zA-Z_]*,\\ 6\\]"
+
+  t.src """
+type Cell:
+  n: int
+
+pool Cells = Cell [count: Nope]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an unresolvable pool count says what is wanted",
+             "a\\ literal,\\ or\\ a\\ `const`\\ naming\\ one"
+
+  t.src """
+const Budget = 16
+
+resources [policy: lazy]:
+  k [cap: Budget]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a resource kind's cap takes a const"
+
+  t.src """
+resources [policy: lazy]:
+  k [cap: Nope]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an unresolvable cap says what is wanted",
+             "a\\ literal,\\ or\\ a\\ `const`\\ naming\\ one"
+
+  # A pool with no count is still refused, and a zero one too — deferring the
+  # value must not lose the check that the number is usable.
+  t.src """
+type Cell:
+  n: int
+
+pool Cells = Cell [count: 0]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a pool count of zero is still refused", "at\\ least\\ 1"
+
   t.finish()

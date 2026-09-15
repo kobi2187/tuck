@@ -9,7 +9,7 @@
 # same reason those do: it reads declared shapes only, never a synthesized
 # type, so it has no dependency on the expression checker and nothing it finds
 # depends on the order modules are checked in.
-import ast, tables, sets, strutils
+import ast, tables, sets, strutils, options
 import ast_query
 import typecheck_util
 import diagnostics
@@ -329,10 +329,36 @@ proc checkOpSites*(mods: seq[tuple[name, path: string, m: Module]],
         if mem == nil: continue
         for ex in mem.ownExprs(): checkOpKinds(ex, kinds)
 
+proc resolveKindCounts(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## `cap: N` / `sweep_batch: N` may NAME a const. The parser cannot evaluate
+  ## one — it has a declaration, not a module — so it hands the spelling on
+  ## and this settles it before anything reads the numbers.
+  for entry in mods:
+    for d in entry.m.decls(dkResources):
+      for i in 0 ..< d.resKinds.len:
+        let k = d.resKinds[i]
+        if k.capText != "":
+          let n = constIntOf(entry.m, k.capText)
+          if n.isNone:
+            fail("Resource Error: kind '" & k.name & "': cap must be a whole " &
+                 "number the compiler knows — a literal, or a `const` naming " &
+                 "one. Got '" & k.capText & "'", k.span)
+          d.resKinds[i].cap = n.get
+          d.resKinds[i].capText = ""
+        if k.sweepText != "":
+          let n = constIntOf(entry.m, k.sweepText)
+          if n.isNone:
+            fail("Resource Error: kind '" & k.name & "': sweep_batch must be " &
+                 "a whole number the compiler knows — a literal, or a " &
+                 "`const` naming one. Got '" & k.sweepText & "'", k.span)
+          d.resKinds[i].sweepBatch = n.get
+          d.resKinds[i].sweepText = ""
+
 proc checkResources*(mods: seq[tuple[name, path: string, m: Module]]):
                      ResourceKinds {.discardable.} =
   ## spec §7.4, the declaration side. Returns the kind table so the stages
   ## that emit from it do not collect it a second time.
+  resolveKindCounts(mods)
   result = collectResourceKinds(mods)
   checkMarkedKinds(mods, result)
   checkOpSites(mods, result)

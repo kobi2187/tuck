@@ -4475,6 +4475,19 @@ proc checkPoolDecl(tc: TypeChecker, d: Decl) =
   ## Primitives and the builtin containers are not in typeDecls (they are a
   ## closed set the backends know), so only a Capitalized name that resolves
   ## nowhere is an error — the same rule declarations use everywhere else.
+  # `[count: N]` may NAME a const, which the parser could not evaluate — it
+  # has one declaration, not a module — so it deferred the spelling here.
+  if d.poolCountText != "":
+    let n = constIntOf(tc.module, d.poolCountText)
+    if n.isNone:
+      fail("Type Error: pool '" & d.name & "': count must be a whole number " &
+           "the compiler knows — a literal, or a `const` naming one. Got '" &
+           d.poolCountText & "'", d.span)
+    d.poolCount = n.get
+    d.poolCountText = ""
+  if d.poolCount <= 0:
+    fail("Type Error: pool '" & d.name & "' needs a slot count of at least " &
+         "1, got " & $d.poolCount, d.span)
   if d.poolElem == nil or d.poolElem.kind != tkNamed: return
   let n = d.poolElem.name
   if n.len == 0 or not n[0].isUpperAscii: return    # primitive: u8, int, ...

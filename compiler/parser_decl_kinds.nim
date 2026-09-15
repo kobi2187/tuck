@@ -409,19 +409,25 @@ proc parseExprDecl*(p: var Parser, sp: Span): Decl =
   ## A top-level statement: `let`, `var`, or a bare expression.
   Decl(span: sp, kind: dkExpr, expr: p.parseExpr())
 
-proc parsePoolCount*(p: var Parser, name: string, elem: Type): int =
+proc parsePoolCount*(p: var Parser, name: string, elem: Type,
+                     text: var string): int =
   ## The `[count: N]` attribute a pool needs. It is the POOL's knob, not part
   ## of the element type, so it is read here and stripped below.
+  ##
+  ## A literal is settled here. A NAME is handed on as text: resolving a const
+  ## needs the whole module and the parser has one declaration. The checker
+  ## finishes the job (typecheck.checkPoolCount), which is also where the
+  ## "needs a slot count" message now lives — at parse time a deferred count
+  ## and a missing one look identical.
   for a in elem.attrs:
     if a.name != "count": continue
-    try: result = parseInt(a.value)
+    try: return parseInt(a.value.replace("_", ""))
     except ValueError:
-      p.reportError("pool '" & name & "': count must be a whole number, " &
-                    "got '" & a.value & "'")
-  if result <= 0:
-    p.reportError("pool '" & name & "' needs a slot count: `pool " & name &
-      " = <ElementType> [count: N]`. A pool without a count has no static " &
-      "footprint, which is the point of a pool.")
+      text = a.value
+      return 0
+  p.reportError("pool '" & name & "' needs a slot count: `pool " & name &
+    " = <ElementType> [count: N]`. A pool without a count has no static " &
+    "footprint, which is the point of a pool.")
 
 proc withoutAttr*(t: Type, name: string): Type =
   ## The same type with one attribute removed.
@@ -687,10 +693,12 @@ proc parsePoolDecl*(p: var Parser, sp: Span): Decl =
       "`pool " & name & " = <ElementType> [count: N]`")
   discard p.advance() # eat "="
   let elem = p.parseType()
-  let count = p.parsePoolCount(name, elem)
+  var countText = ""
+  let count = p.parsePoolCount(name, elem, countText)
   if p.current().kind == tkNewline: discard p.advance()
   Decl(span: sp, kind: dkPool, name: name,
-       poolElem: elem.withoutAttr("count"), poolCount: count)
+       poolElem: elem.withoutAttr("count"), poolCount: count,
+       poolCountText: countText)
 
 proc resourcePolicyFromName*(name: string, dest: var ResourcePolicy): bool =
   ## The three §7.4 policies, by their source spelling. A bool-returning
@@ -733,14 +741,15 @@ proc parseResourceAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBracket)
 
-proc parseResourceCount(p: var Parser, kind, attr, raw: string): int =
-  ## `cap: 10_000` / `sweep_batch: 100` — a whole number, or a named error.
-  ## Both knobs are counts and both are optional, so one proc reads both and
-  ## the attribute name is only there to make the message say which.
+proc parseResourceCount(p: var Parser, kind, attr, raw: string,
+                        text: var string): int =
+  ## `cap: 10_000` / `sweep_batch: 100` — a literal here, or a const NAME
+  ## handed on as text for the checker to resolve. Both knobs are counts and
+  ## both are optional, so one proc reads both and the attribute name is only
+  ## there to make the message say which.
   try: parseInt(raw.replace("_", ""))
   except ValueError:
-    p.reportError("resource kind '" & kind & "': " & attr &
-                  " must be a whole number, got '" & raw & "'")
+    text = raw
     0
 
 proc resourceOnFullFromName*(name: string, dest: var ResourceOnFull): bool =
@@ -765,10 +774,11 @@ proc applyResourceAttrs(p: var Parser, k: var ResourceKindDef,
     case a.name
     of "cap":
       k.given.incl(rkCap); k.knobSpan[rkCap] = a.span
-      k.cap = p.parseResourceCount(k.name, "cap", a.value)
+      k.cap = p.parseResourceCount(k.name, "cap", a.value, k.capText)
     of "sweep_batch":
       k.given.incl(rkSweepBatch); k.knobSpan[rkSweepBatch] = a.span
-      k.sweepBatch = p.parseResourceCount(k.name, "sweep_batch", a.value)
+      k.sweepBatch = p.parseResourceCount(k.name, "sweep_batch", a.value,
+                                          k.sweepText)
     of "on_full":
       k.given.incl(rkOnFull); k.knobSpan[rkOnFull] = a.span
       if not resourceOnFullFromName(a.value, k.onFull):

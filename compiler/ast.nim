@@ -93,6 +93,10 @@ type
     name*: string
     cap*: int             ## 0 = unbounded (seq-backed); >0 = the static array
                           ## bound, which is also the leak alarm §7.4 wants
+    capText*: string      ## the source spelling, when it is not a literal —
+                          ## a `const` NAME the CHECKER resolves. The parser
+                          ## has no module, so it cannot evaluate one.
+    sweepText*: string    ## same, for sweep_batch
     policy*: ResourcePolicy
     onFull*: ResourceOnFull
     onFinish*: ResourceOnFinish
@@ -645,6 +649,9 @@ type
       # a pool without one has no static footprint, which is the whole point.
       poolElem*: Type
       poolCount*: int
+      poolCountText*: string  ## the source spelling when `[count: N]` names a
+                              ## const; resolved by the checker, which unlike
+                              ## the parser can see the whole module.
     of dkFn:
       fnGenerics*: seq[string]
       fnGenericBounds*: seq[seq[Type]]   # parallel to fnGenerics; bounds[i] =
