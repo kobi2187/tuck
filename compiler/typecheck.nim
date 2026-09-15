@@ -3270,18 +3270,26 @@ proc asContainerWanted(tc: var TypeChecker): Type =
   if want.base.name notin ["Seq", "Array"]: return nil
   want
 
-proc failIfArrayLengthMismatched(size: Type, e: Expr) =
+proc failIfArrayLengthMismatched(m: Module, size: Type, e: Expr) =
   ## `Array[N, T]` is exactly N wide, so a literal of another length is an
   ## error rather than something to pad or truncate.
   ##
-  ## Only a LITERAL N is checked: a generic or const-named size is not known
-  ## here, and reporting it would be guessing.
+  ## N may be WRITTEN as a literal or as a const naming one; constIntOf
+  ## answers both. It used to test `allCharsInSet(digits)` and give up
+  ## otherwise, so naming the size turned this check off entirely — the guard
+  ## existed, was tested, and was bypassed by the ordinary way of writing the
+  ## same program (#59).
+  ##
+  ## Still silent for a size it cannot evaluate: inside a generic, N is a type
+  ## PARAMETER and there is no number to compare against. That case is
+  ## reported where the size is declared, not here.
   if size == nil or size.kind != tkNamed: return
-  if not allCharsInSet(size.name, {'0'..'9'}): return
-  if size.name == $e.items.len: return
+  let want = constIntOf(m, size.name)
+  if want.isNone: return
+  if want.get == e.items.len: return
   fail("Type Error: this list has " & $e.items.len &
        " element(s) but Array[" & size.name &
-       ", _] needs exactly " & size.name, e.span)
+       ", _] needs exactly " & $want.get, e.span)
 
 proc determineListBase(tc: var TypeChecker, e: Expr, elemT: var Type):
     tuple[baseName: string, sizeArg: Type] =
@@ -3291,7 +3299,7 @@ proc determineListBase(tc: var TypeChecker, e: Expr, elemT: var Type):
   if want == nil: return ("Seq", nil)
   if isFlexible(elemT): elemT = want.args[^1]
   if want.base.name != "Array" or want.args.len != 2: return ("Seq", nil)
-  failIfArrayLengthMismatched(want.args[0], e)
+  failIfArrayLengthMismatched(tc.module, want.args[0], e)
   ("Array", want.args[0])
 
 proc synthList(tc: var TypeChecker, e: Expr): Type =

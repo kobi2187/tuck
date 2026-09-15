@@ -3,10 +3,11 @@
 # The pre-pass that fills fnSigs / typeDecls / objDecls before any body is
 # checked, so a call can resolve a fn declared later in the file — plus the
 # per-declaration validators (pool, arena, actor queue, invariants, registry).
-import ast, tables, sets, strutils
+import ast, tables, sets, strutils, options
 import resolution
 import typecheck_state
 import typecheck_util
+import ast_query
 
 proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true)
   ## Forward-declared: collectTypeDecl/collectObjectDecl below recurse into
@@ -200,6 +201,39 @@ proc resolveTypeRefs*(tc: TypeChecker, t: Type) =
     resolveTypeTo(semLayer, t, tc.typeDeclsByName[t.name])
   for c in t.children: resolveTypeRefs(tc, c)
 
+proc genericNamesOf(d: Decl): seq[string] =
+  ## The type parameters this declaration itself introduces, which are the
+  ## only non-evaluable names legal as an `Array` size inside it.
+  if d == nil: return
+  case d.kind
+  of dkType: d.generics
+  of dkFn: d.fnGenerics
+  of dkFnSig: d.sigGenerics
+  of dkGroup: d.groupGenerics
+  of dkActor: d.actorGenerics
+  else: @[]
+
+proc failIfBadArraySize(tc: TypeChecker, t: Type, generics: seq[string]) =
+  ## `Array[N, T]` is N wide, and N must be a number the compiler knows.
+  ##
+  ## The size is carried as a tkNamed whose NAME is the source text, and
+  ## nothing resolved it: `Array[Nonexistent, int]` checked clean and died in
+  ## the backend as "undeclared identifier", which is a Tuck mistake reported
+  ## against generated code the author never wrote (#59).
+  ##
+  ## A type PARAMETER is legal and stays unevaluated — inside `fn f[N]` there
+  ## is no number yet, and the instantiation is where one appears.
+  if t == nil: return
+  if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+     t.base.name == "Array" and t.args.len == 2:
+    let size = t.args[0]
+    if size != nil and size.kind == tkNamed and size.name notin generics and
+       constIntOf(tc.module, size.name).isNone:
+      fail("Type Error: `Array[" & size.name & ", _]` — a size must be a " &
+           "whole number the compiler knows: a literal, a `const` naming " &
+           "one, or a type parameter of the enclosing declaration", size.span)
+  for c in t.children: tc.failIfBadArraySize(c, generics)
+
 proc resolveDeclTypeRefs*(tc: TypeChecker, d: Decl) =
   ## Every type a declaration mentions, including its members'.
   ##
@@ -209,7 +243,10 @@ proc resolveDeclTypeRefs*(tc: TypeChecker, d: Decl) =
   ## dkInterface and dkWhen had gone missing until an `else: discard` removal
   ## surfaced them.
   if d == nil: return
-  for t in d.ownTypes: resolveTypeRefs(tc, t)
+  let gs = genericNamesOf(d)
+  for t in d.ownTypes:
+    resolveTypeRefs(tc, t)
+    tc.failIfBadArraySize(t, gs)
   for m in d.childDecls: resolveDeclTypeRefs(tc, m)
 
 proc resolveTypeNames*(tc: TypeChecker, m: Module) =

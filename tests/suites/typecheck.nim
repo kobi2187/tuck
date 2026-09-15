@@ -2602,4 +2602,86 @@ fn main() -> int:
 """
   t.badCheck "a missing field is still a hole, not a type error", "TK-TY16"
 
+  # A size is a whole number the compiler KNOWS — a literal, a const naming
+  # one, or a type parameter of the enclosing declaration (#58, #59).
+  #
+  # `Array[N, T]` used to carry its size as TEXT and act on it only when the
+  # text was all digits, so a named size was unchecked in both directions: a
+  # typo reached the host, and the length check below silently stopped
+  # running.
+  t.src """
+type R:
+  xs: Array[Nonexistent, int]
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an unknown Array size is refused here, not by the backend",
+             "a\\ size\\ must\\ be\\ a\\ whole\\ number"
+
+  t.src """
+const N = 4
+
+type R:
+  xs: Array[N, int]
+
+fn main() -> int:
+  let r = {xs: [1, 2]} R
+  return 0
+"""
+  t.badCheck "...and a const size still checks the literal's length",
+             "has\\ 2\\ element\\(s\\)\\ but\\ Array\\[N,\\ _\\]\\ needs\\ exactly\\ 4"
+
+  t.src """
+const N = 2
+
+type R:
+  xs: Array[N, int]
+
+fn main() -> int:
+  let r = {xs: [1, 2]} R
+  return 0
+"""
+  t.okCheck "...and a matching length passes"
+
+  # A type PARAMETER has no number yet and must stay unevaluated.
+  t.src """
+type Buf[N]:
+  xs: Array[N, int]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a generic Array size is not a number and is left alone"
+
+  # The attribute positions take the same grammar, and derive through consts.
+  t.src """
+const Cap = 4
+const Fan = Cap * 2
+
+actor Sink [queue: Fan]:
+  n: int = 0
+
+  on go():
+    n = 1
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "an actor's queue takes a derived const"
+  t.emits "...and codegen emits the NUMBER, not the name", "Mailbox\\[[a-zA-Z_]*,\\ 8\\]"
+
+  t.src """
+actor Sink [queue: Nope]:
+  n: int = 0
+
+  on go():
+    n = 1
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an unresolvable queue size says what is wanted",
+             "a\\ literal,\\ or\\ a\\ `const`\\ naming\\ one"
+
   t.finish()
