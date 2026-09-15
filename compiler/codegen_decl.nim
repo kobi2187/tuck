@@ -463,7 +463,7 @@ proc genActorDrain*(msgTypeName, drainName, singleton: string, hasShutdown: bool
     "      result = true\n")
 
 proc genActor*(ctx: var CodegenCtx, d: Decl): string =
-  let queueSize = actorQueueSize(d)
+  let queueSize = actorQueueSize(ctx.module, d)
   let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
   let msgEnumName = d.name & "MsgKind"
   let msgTypeName = d.name & "Msg"

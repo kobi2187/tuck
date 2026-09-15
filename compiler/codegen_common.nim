@@ -170,11 +170,21 @@ proc collectHandlers*(d: Decl):
           result.handlers.add(ActorMsgHandler(name: arm.source,
                                               params: arm.binding, body: arm.body))
 
-proc actorQueueSize*(d: Decl): string =
+proc actorQueueSize*(m: Module, d: Decl): string =
   ## The `[queue: N]` attribute, or the default mailbox size.
+  ##
+  ## Emits the NUMBER, not the source text. `[queue: Fan]` used to emit the
+  ## bare name `Fan` while the const itself emitted as `tuck_Fan`, so every
+  ## backend failed with "undeclared identifier" — and a name here would raise
+  ## a mangling question that a resolved integer simply does not have. The
+  ## checker has already refused anything constIntOf cannot answer
+  ## (typecheck.checkActorQueue), so the fallback is unreachable for a checked
+  ## program.
   result = "8"
   for attr in d.attrs:
-    if attr.name == "queue": return attr.value
+    if attr.name != "queue": continue
+    let n = constIntOf(m, attr.value)
+    return if n.isSome: $n.get else: attr.value
 
 proc isDistinctAlias*(body: Type): bool =
   ## Does this alias declare a type the compiler must keep SEPARATE from its

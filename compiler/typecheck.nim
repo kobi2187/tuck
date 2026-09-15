@@ -150,7 +150,7 @@
 # isolation against a generated program, re-parsing between mutating phases so
 # the work is real.
 # ---------------------------------------------------------------------------
-import ast, semantics, lowering, tables, strutils, sets, sequtils
+import ast, semantics, lowering, tables, strutils, sets, sequtils, options
 import resolution
 import ast_query
 import rewrite   # isLiteralPayload — recognize the wrap the pass introduced
@@ -4476,7 +4476,7 @@ proc checkPoolDecl(tc: TypeChecker, d: Decl) =
        "pool '" & d.name & "': no type named '" & n &
        "' — a pool holds slots of a declared type", d.span)
 
-proc checkArenaAttrs(d: Decl) =
+proc checkArenaAttrs(m: Module, d: Decl) =
   ## spec 7.3: `arena A [size: N]` reserves N bytes up front, so N has to be
   ## a positive count for the same reason an actor's queue does — the number
   ## IS the allocation.
@@ -4486,20 +4486,20 @@ proc checkArenaAttrs(d: Decl) =
   if d.typeBody == nil: return
   for attr in d.typeBody.attrs:
     if attr.name != "size": continue
-    var n = 0
-    try:
-      n = parseInt(attr.value.strip())
-    except ValueError:
+    let got = constIntOf(m, attr.value)
+    if got.isNone:
       fail(dcMeSizeCount,
-           "arena '" & d.name & "': size must be a whole number of bytes, " &
-           "got '" & attr.value & "'", attr.span)
+           "arena '" & d.name & "': size must be a whole number of bytes " &
+           "the compiler knows — a literal, or a `const` naming one. Got '" &
+           attr.value & "'", attr.span)
+    var n = got.get
     if n <= 0:
       fail(dcMeSizeCount,
            "arena '" & d.name & "': size must be at least 1 byte, got " & $n &
            " — the size IS the reservation, so a zero or negative one " &
            "cannot hold anything", attr.span)
 
-proc checkActorQueue(d: Decl) =
+proc checkActorQueue(m: Module, d: Decl) =
   ## `[queue: N]` is the mailbox ring's exact capacity, so N must be a
   ## positive whole number.
   ##
@@ -4513,13 +4513,15 @@ proc checkActorQueue(d: Decl) =
   ## 8. This checks the value only when one was written.
   for attr in d.attrs:
     if attr.name != "queue": continue
-    var n = 0
-    try:
-      n = parseInt(attr.value.strip())
-    except ValueError:
+    # A literal, or the name of a const that evaluates to one. Anything
+    # derived gets a name of its own rather than an expression here.
+    let got = constIntOf(m, attr.value)
+    if got.isNone:
       fail(dcAcQueueSize,
-           "actor '" & d.name & "': queue size must be a whole number, got '" &
+           "actor '" & d.name & "': queue size must be a whole number the " &
+           "compiler knows — a literal, or a `const` naming one. Got '" &
            attr.value & "'", attr.span)
+    var n = got.get
     if n <= 0:
       fail(dcAcQueueSize,
            "actor '" & d.name & "': queue size must be at least 1, got " &
@@ -4532,7 +4534,7 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   ## checkObjectDecl. Nothing bound `self` here before; a handler spelling
   ## `self.field` synthesized `self` as a silently-unknown name and rode
   ## through on gradual typing, same shape as `result` in checkHandler below.
-  checkActorQueue(d)
+  checkActorQueue(tc.module, d)
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", Type(span: d.span, kind: tkNamed, name: d.name), true)
@@ -4557,7 +4559,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   of dkType:
     checkTransitions(d)
     tc.checkInvariants(d)
-    checkArenaAttrs(d)          # an arena parses into a dkType (spec 7.3)
+    checkArenaAttrs(tc.module, d)  # an arena parses into a dkType (spec 7.3)
   of dkRegister: checkRegisterDecl(d)
   of dkPool: tc.checkPoolDecl(d)
   of dkErrors:

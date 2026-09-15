@@ -34,7 +34,7 @@
 # sizes — 32,000 lines still checks in about a third of a second. The fix, when
 # a real program makes it hurt, is a name -> decl table built once per module
 # and shared by every pass, not micro-optimizing the scan.
-import ast, strutils, tables, sets
+import ast, strutils, tables, sets, options
 import resolution
 export strutils.repeat, strutils.capitalizeAscii
 
@@ -540,6 +540,98 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
       if mem.name == calleeName or "tuck_" & mem.name == calleeName:
         return owner & "_" & mem.name
   ""
+
+# --- compile-time whole numbers -----------------------------------------
+#
+# A mailbox depth, a pool's slot count, an arena's size, a resource cap, an
+# array's width: five positions that all mean "a whole number the COMPILER
+# must know". Each used to demand digits and say so — except `Array[N, T]`,
+# which accepted any text and handed it to the backend, so a typo'd size
+# reached the host and the array's own length check silently stopped running
+# (#59).
+#
+# The grammar is deliberately narrow, and the narrowness is the feature:
+#
+#     attribute value ::= integer literal | const NAME
+#
+# so a wild expression cannot appear at a size — a const name is one token and
+# there is nowhere for one to go. Anything derived gets a NAME, on its own
+# line, in one place:
+#
+#     const MaxConns = 8
+#     const FanQueue = MaxConns * 4
+#     actor Fan [queue: FanQueue]
+#
+# Tuck had no evaluator at all because constant evaluation was DELEGATED: a
+# `const` emits `const tuck_N = static:` and Nim works it out. That cannot
+# help a checker which needs the number to size something before any backend
+# runs, which is why this exists and why it only covers the subset a size
+# needs.
+
+proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int]
+
+proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
+  ## A size written as TEXT — an attribute's value, or an `Array[N, T]` size,
+  ## both of which the parser keeps as source text rather than as an
+  ## expression. Digits, or the name of a const that evaluates to a number.
+  let t = text.strip().replace("_", "")
+  if t.len == 0: return none(int)
+  if allCharsInSet(t, {'0'..'9'}):
+    try: return some(parseInt(t))
+    except ValueError: return none(int)
+  if t[0] == '-' and t.len > 1 and allCharsInSet(t[1 .. ^1], {'0'..'9'}):
+    try: return some(parseInt(t))
+    except ValueError: return none(int)
+  # A NAME: one const, evaluated. Depth-bounded rather than cycle-tracked —
+  # `const A = B` / `const B = A` is a declaration cycle the checker has its
+  # own opinion about, and this only needs to not hang.
+  if depth > 16: return none(int)
+  # Either spelling: an attribute's text is never mangled, and by codegen the
+  # const decl has been renamed, so `[queue: Fan]` must still find
+  # `const tuck_Fan`. Same comparison resolution.poolHandleName and
+  # ast_query.memberCalleeOf make, for the same reason.
+  let raw = text.strip()
+  var d = m.findDecl(dkConst, raw)
+  if d == nil: d = m.findDecl(dkConst, "tuck_" & raw)
+  if d == nil or d.constVal == nil: return none(int)
+  evalConstExpr(m, d.constVal, depth + 1)
+
+proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int] =
+  ## The constant subset: an integer literal, a const name, arithmetic over
+  ## those. NOT a call, a field read, or anything whose value needs the
+  ## program to run — a size that cannot be worked out here is refused with a
+  ## diagnostic rather than passed to the backend to discover.
+  if e == nil or depth > 16: return none(int)
+  case e.kind
+  of exkLit:
+    if e.litKind != lkInt: return none(int)
+    try: return some(parseInt(e.litValue.replace("_", "")))
+    except ValueError: return none(int)
+  of exkVar:
+    # A const's initialiser is walked AFTER mangling too, so its references
+    # carry the renamed spelling; constIntOf accepts both.
+    return constIntOf(m, e.name, depth + 1)
+  of exkUnary:
+    let v = evalConstExpr(m, e.operand, depth + 1)
+    if v.isNone: return none(int)
+    if e.unaryOp == uoNeg: return some(-v.get)
+    return none(int)
+  of exkBinary:
+    let l = evalConstExpr(m, e.left, depth + 1)
+    if l.isNone: return none(int)
+    let r = evalConstExpr(m, e.right, depth + 1)
+    if r.isNone: return none(int)
+    case e.binOp
+    of boAdd: some(l.get + r.get)
+    of boSub: some(l.get - r.get)
+    of boMul: some(l.get * r.get)
+    of boDivInt:
+      if r.get == 0: none(int) else: some(l.get div r.get)
+    of boMod:
+      if r.get == 0: none(int) else: some(l.get mod r.get)
+    else: none(int)
+  else:
+    none(int)
 
 proc sumHasPayload*(body: Type): bool =
   ## Does any variant of this sum carry fields? The branch key for four

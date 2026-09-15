@@ -620,9 +620,12 @@ proc msgVariantName*(handlerName: string): string =
   ## The message-enum tag a handler receives on.
   "msg" & handlerName.capitalize()
 
-proc mailboxSize*(d: Decl): string =
+proc mailboxSize*(m: Module, d: Decl): string =
+  ## The resolved NUMBER — see codegen_common.actorQueueSize.
   for attr in d.attrs:
-    if attr.name == "queue": return attr.value
+    if attr.name != "queue": continue
+    let n = constIntOf(m, attr.value)
+    return if n.isSome: $n.get else: attr.value
   DefaultMailboxSize
 
 proc actorFieldLines*(ctx: var OdinCodegenCtx, d: Decl): seq[string] =
@@ -664,7 +667,7 @@ proc genActorState*(ctx: var OdinCodegenCtx, d: Decl, hasShutdown: bool,
   ## be shut down — the flag the drain checks.
   var fields = ctx.actorFieldLines(d)
   fields.add(ind & "\tmailbox: rt.Mailbox(" & d.name & "Msg, " &
-             mailboxSize(d) & "),")
+             mailboxSize(ctx.module, d) & "),")
   if hasShutdown:
     fields.add(ind & "\tfinished: bool,")
   ind & d.name & " :: struct {\n" & fields.join("\n") & "\n" & ind & "}\n\n"

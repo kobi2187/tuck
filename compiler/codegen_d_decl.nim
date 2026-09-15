@@ -655,7 +655,7 @@ proc genDActorState*(ctx: var DCodegenCtx, d: Decl,
   # mailbox OF. Such an actor is a specimen (`actor X: ...`) and emits only
   # its state, matching what the Nim backend emits for the same source.
   if hasMessages:
-    fields.add("    rt.Mailbox!(" & d.name & "Msg, " & actorQueueSize(d) &
+    fields.add("    rt.Mailbox!(" & d.name & "Msg, " & actorQueueSize(ctx.module, d) &
                ") mailbox;")
   if hasShutdown: fields.add("    bool finished;")
   if fields.len == 0: fields.add("    // no state")
