@@ -655,7 +655,14 @@ proc parseSelectExpr(p: var Parser): Expr =
         if p.current().kind == tkComma: discard p.advance()
       discard p.expect(tkRBrace)
     discard p.expect(tkColon)
-    let body = p.parseExpr()
+    # An arm takes a BLOCK or a single expression, exactly as a match arm does
+    # (parseMatchArm, same two lines). A one-expression arm reads well for
+    # `-> {}: return {code: 2}`; anything that actually handles the wakeup
+    # wants statements, and forcing those into a helper was the language
+    # telling the author to decompose for the parser's convenience rather
+    # than for the reader's.
+    let body = if p.current().kind == tkNewline: p.parseBlock()
+               else: p.parseExpr()
     arms.add(SelectArm(source: source, arg: arg, binding: binding,
                        body: body, span: armSp))
     if p.current().kind == tkNewline:

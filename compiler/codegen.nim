@@ -1196,6 +1196,27 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
   # `discard`. The checker now REFUSES any arm this cannot lower
   # (failIfUnlowerableArm), so the fallback below is unreachable for a
   # checked program and stays only as a belt for direct codegen callers.
+  # An arm body is a BLOCK or a single expression, so it is emitted the way a
+  # match arm's is: a block indents itself, an expression gets the branch
+  # indent prefixed. Emitting a block with the expression rule produced
+  # "invalid indentation" the moment arms gained blocks.
+  ## `nest` says whether the body sits inside a branch. The two-arm form
+  ## lowers to `if:`/`else:` and its bodies are one level in; the one-arm form
+  ## lowers to straight-line code — the await, then the body — and its body
+  ## stays at the SAME level. Nesting a sequential body produced Nim's
+  ## "invalid indentation".
+  proc armBody(ctx: var CodegenCtx, body: Expr, ind: string,
+               nest = true): string =
+    if body != nil and body.kind == exkBlock:
+      let saved = ctx.indent
+      if nest: ctx.indent += 1
+      result = ctx.genExpr(body)
+      ctx.indent = saved
+    elif nest:
+      result = ind & "  " & ctx.genExpr(body)
+    else:
+      result = ind & ctx.genExpr(body)
+
   var readArm, timeoutArm: ptr SelectArm = nil
   for arm in e.selArms.mitems:
     case arm.sourceKind
@@ -1213,19 +1234,15 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
   # form indents its bodies only because they sit inside `if:`/`else:`.
   if readArm != nil and timeoutArm == nil:
     return "tuckAwaitRead(" & ctx.genExpr(readArm.arg) & ")\n" &
-           ind & ctx.genExpr(readArm.body)
+           ctx.armBody(readArm.body, ind, nest = false)
   if timeoutArm != nil and readArm == nil:
     return "tuckSleep(" & ctx.selectTimeoutMs(timeoutArm[]) & ")\n" &
-           ind & ctx.genExpr(timeoutArm.body)
+           ctx.armBody(timeoutArm.body, ind, nest = false)
   if readArm != nil and timeoutArm != nil:
     let fd = ctx.genExpr(readArm.arg)
     let ms = ctx.selectTimeoutMs(timeoutArm[])
-    ctx.indent += 1
-    let innerInd = repeat("  ", ctx.indent)
-    # arm bodies (a return/expr) don't self-indent — prepend the branch indent
-    let readBody = innerInd & ctx.genExpr(readArm.body)
-    let toBody = innerInd & ctx.genExpr(timeoutArm.body)
-    ctx.indent -= 1
+    let readBody = ctx.armBody(readArm.body, ind)
+    let toBody = ctx.armBody(timeoutArm.body, ind)
     "if tuckAwaitReadOrTimeout(" & fd & ", " & ms & "):\n" & readBody &
       "\n" & ind & "else:\n" & toBody
   else:

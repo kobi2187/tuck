@@ -122,4 +122,55 @@ fn main() -> int [io]:
   t.quietly: t.runs("a fired timeout returns without waiting for the loser", 90)
   t.bugOpen "a fired timeout returns without waiting for the loser"
 
+  # An arm takes a BLOCK, not only a single expression. Forcing a wakeup's
+  # work into a helper was the language asking the author to decompose for the
+  # parser's convenience rather than for the reader's — and the helper then
+  # could not branch the loop, which is the shape the web-downloader app hit.
+  #
+  # Same two lines a match arm has used all along (parser_expr.parseMatchArm).
+  t.src """
+import time
+import console
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task race({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd -> {}:
+      {text: "data"} printLine
+      let n = 40
+      let m = n + 2
+      return {code: m}
+    | timeout {900.ms} -> {}:
+      {text: "deadline"} printLine
+      return {code: 9}
+
+fn main() -> int [io]:
+  let src = {ms: 10} openSource
+  let r = {fd: src.fd} race
+  return r.code
+"""
+  t.hostRuns "a select arm takes a multi-statement block", 42
+
+  # ...and a ONE-ARMED select with a block, which lowers to straight-line
+  # code and so also has to keep Odin's trailing-return rule happy.
+  t.src """
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task readOne({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd -> {}:
+      let a = 3
+      let b = 4
+      return {code: a * b}
+
+fn main() -> int [io]:
+  let src = {ms: 10} openSource
+  let r = {fd: src.fd} readOne
+  return r.code
+"""
+  t.hostRuns "...and a one-armed select with a block too", 12
+
   t.finish()

@@ -641,7 +641,10 @@ proc parseSelectArm*(p: var Parser): SelectArm =
   discard p.expect(tkArrow)
   let binding = p.parseSelectBinding(armSp)
   discard p.expect(tkColon)
-  let body = p.parseExpr()
+  # A BLOCK or a single expression — same rule as a match arm, and the same
+  # rule the expression form of `on select` uses.
+  let body = if p.current().kind == tkNewline: p.parseBlock()
+             else: p.parseExpr()
   if p.current().kind == tkNewline: discard p.advance()
   SelectArm(source: source, binding: binding, body: body, span: armSp)
 
