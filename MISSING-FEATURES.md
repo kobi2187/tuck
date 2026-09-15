@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (7)
+## A. Open bugs (9)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -82,6 +82,23 @@ situation ("a program may import two implementations of the same contract");
 the call site never asks it. SINGLE-provider groups work end to end on all
 three backends and are pinned, including cross-module. Issue #38. Test:
 `known_bugs`, "a group bound picks the provider of the RECEIVER's type".
+
+**A15 — a one-armed `on select` loses its arm's return value.** A task whose
+select has a single arm answers with a zero-valued record instead of the arm's
+own: `| read fd -> {}: return {code: 7}` yields `code=0`. Two arms are fine,
+which is why every example has two and nothing caught it. Test: `task_select`,
+"a one-armed select returns its arm's value".
+
+**A16 — a fired `timeout` does not bound latency.** The right arm wins and the
+right value comes back, but not until the LOSING source has completed: a 5ms
+deadline against a 500ms source returns after 0.50s, and against a 3s source
+after 3.00s, identically on all three backends. The delay scales with the
+source, which is what says it is the await rather than a fixed cost — binding
+a task's result drives the scheduler until ALL work finishes rather than until
+THIS task does. `examples/29-task-timeout` says the timeout "fires WHILE the
+read is outstanding", which is true of the result and not of the clock, and
+that is the whole point of a timeout. Test: `task_select`, "a fired timeout
+returns without waiting for the loser".
 
 **A8 — a pool hands out a slot without validating it.** `Slots.acquire` on a
 `pool Slots = Live [count: 2]` yields a zeroed slot, so with `invariant: n > 0`
