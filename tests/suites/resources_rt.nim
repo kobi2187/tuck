@@ -76,12 +76,18 @@ proc run*(t: var T) =
   # --- D -------------------------------------------------------------------
   let dmdExe = findDmd()
   if dmdExe.len > 0:
-    # `-i` and the runtime's own directory on the include path, the same
-    # invocation d_backend already uses; `-run` must come last, with the
-    # source right after it.
+    # `-i` and the runtime's own directory on the include path; `-run` must
+    # come last, with the source right after it.
+    #
+    # minicoro.a rides along for the same reason harness.hostBuilds passes it:
+    # tuck_rt.d re-exports tuck_coro.d, so ANY program touching the D runtime
+    # pulls in the coroutine engine and needs the C object to link against.
+    # Without it the check died in the LINKER — "undefined reference to
+    # mco_create" — which reads like a resources defect and is not one.
     let dOut = t.dir / "d_rt_check"
     let dIdx = t.needCmd(@[dmdExe, "-i",
                            "-I" & (t.root / "compiler" / "tuckrt_d"),
+                           t.root / "compiler" / "tuckrt" / "minicoro.a",
                            "-of=" & dOut, "-run", t.root / DCheck],
                          verb = vBuild)
     t.reportArm("D", dIdx)
