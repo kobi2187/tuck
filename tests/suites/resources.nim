@@ -1179,3 +1179,32 @@ fn main() -> int:
   return 0
 """
   t.okCheck "`on_finish: none` parses — a closed vocabulary, not an expression"
+
+  # A stale handle reports the SAME thing and exits the SAME way on all three
+  # runtimes (issue #54). Before this, one program ended three different ways:
+  # Nim quit 1 with the slot and both tenancies, Odin exited 1 with a bare
+  # "stale handle", and D raised SIGABRT and dumped core.
+  #
+  # `hostRuns` rather than `hostBuilds`: that the three COMPILE the emitted
+  # code was already pinned, and is not what broke. Runtime characteristics
+  # not depending on the backend is a project rule, so it needs an assertion
+  # that actually runs them.
+  t.src """
+resources [policy: lazy]:
+  udp [cap: 2]
+
+pending:
+  fn rawOpen({port: u16}) -> int [io]
+
+fn openUdp({port: u16}) -> ?UdpHandle [io, resource: udp]:
+  return acquire {port: port} rawOpen, udp
+
+fn main() -> int [io, resource: udp]:
+  let a = {port: 1} openUdp
+  if a.ok:
+    finish a.value, udp
+    finish a.value, udp
+  return 0
+"""
+  t.hostRuns "a stale handle reports identically on every runtime", 1,
+             "finish of a stale handle for slot 0: tenancy 1, slot is on 2"

@@ -485,13 +485,18 @@ struct ResourceTable
 
 void tuckResourceMisuse(string table, string what)
 {
-    // Aborts rather than returning, for the reason tuckPoolMisuse does: a
+    // Stops rather than returning, for the reason tuckPoolMisuse does: a
     // stale handle that writes to a REUSED slot is the bug 7.4 exists to
     // make impossible.
+    //
+    // exit(1), NOT abort(). Nim quits 1 and Odin os.exit(1); abort() raised
+    // SIGABRT and dumped core, so the same program ended three different ways
+    // depending on the backend — and a shipped D binary wrote a core file
+    // where the others exited quietly (issue #54).
     import std.stdio : stderr;
-    import core.stdc.stdlib : abort;
+    import core.stdc.stdlib : exit;
     stderr.writeln("TUCK RESOURCE [", table, "]: ", what);
-    abort();
+    exit(1);
 }
 
 void initResourceTable(ref ResourceTable t, string kind, int cap,
@@ -604,13 +609,23 @@ private size_t rtEntryFor(ref ResourceTable t, ResourceHandle h, string what)
     // Every way of being wrong is caught rather than absorbed: out of range,
     // never handed out, and — the one that matters — a generation that has
     // moved on, which is a handle held past its finish.
+    //
+    // `what` names the OPERATION, and the message says which slot and which
+    // tenancies — that is the whole diagnosis. Worded exactly as the Nim
+    // runtime words it, so one program reports one thing whichever backend
+    // built it.
+    import std.conv : text;
     const i = h.slot;
     if (i < 0 || i >= t.entries.length)
-        tuckResourceMisuse(t.kind, "handle names no slot");
+        tuckResourceMisuse(t.kind,
+            text(what, " of a handle that names no slot (", i, ")"));
     else if (!t.entries[i].live)
-        tuckResourceMisuse(t.kind, "slot nobody holds");
+        tuckResourceMisuse(t.kind,
+            text(what, " of slot ", i, ", which nobody holds"));
     else if (t.entries[i].gen != h.gen)
-        tuckResourceMisuse(t.kind, "stale handle");
+        tuckResourceMisuse(t.kind,
+            text(what, " of a stale handle for slot ", i, ": tenancy ",
+                 h.gen, ", slot is on ", t.entries[i].gen));
     return cast(size_t) i;
 }
 

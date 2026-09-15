@@ -464,13 +464,22 @@ rtEntryFor :: proc(t: ^ResourceTable, h: ResourceHandle, what: string) -> int {
 	// Every way of being wrong is caught rather than absorbed: out of range,
 	// never handed out, and — the one that matters — a generation that has
 	// moved on, which is a handle held past its finish.
+	//
+	// `what` names the OPERATION, and the message says which slot and which
+	// tenancies — that is the whole diagnosis: which handle, and how far the
+	// slot has moved on since. Worded exactly as the Nim runtime words it, so
+	// one program reports one thing whichever backend built it.
 	i := int(h.slot)
 	if i < 0 || i >= len(t.entries) {
-		tuckResourceMisuse(t.kind, "handle names no slot")
+		tuckResourceMisuse(t.kind,
+			fmt.tprintf("%s of a handle that names no slot (%d)", what, i))
 	} else if !t.entries[i].live {
-		tuckResourceMisuse(t.kind, "slot nobody holds")
+		tuckResourceMisuse(t.kind,
+			fmt.tprintf("%s of slot %d, which nobody holds", what, i))
 	} else if t.entries[i].gen != h.gen {
-		tuckResourceMisuse(t.kind, "stale handle")
+		tuckResourceMisuse(t.kind,
+			fmt.tprintf("%s of a stale handle for slot %d: tenancy %d, slot is on %d",
+				what, i, h.gen, t.entries[i].gen))
 	}
 	return i
 }

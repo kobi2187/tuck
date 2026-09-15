@@ -760,6 +760,63 @@ proc stageOdinPkg*(dir, odinSrc: string) =
 # because dmd is absent would hide a real Odin failure. The pass message says
 # which backends actually ran, so a green line cannot be misread as three.
 
+proc hostRuns*(t: var T, name: string, code: int, pattern = "") =
+  ## Build AND RUN on every available backend, asserting the same exit code —
+  ## and, when `pattern` is given, that each one's output matches it.
+  ##
+  ## `hostBuilds` proves the three COMPILE the emitted code; nothing proved
+  ## they then BEHAVE the same. That gap is how the resource registry came to
+  ## abort with SIGABRT on D and exit 1 on the other two for one program, with
+  ## a message two of the three had thrown the detail out of (issue #54) —
+  ## caught by hand, not by the suite. The project rule is that runtime
+  ## characteristics do not depend on the backend, so it needs an assertion.
+  ##
+  ## Output is matched against the combined streams: a diagnostic of this kind
+  ## goes to stderr, and which stream it lands on is not the thing under test.
+  let nimB = t.need(vBuild)
+  let nimR = t.need(vRun, dep = nimB)
+  let odinExe = findOdin()
+  let dmdExe = findDmd()
+
+  var odinR = -1
+  if odinExe.len > 0:
+    let e = t.needOdin()
+    let proj = t.curDir / "odinpkg"
+    let src = t.curDir / "odin" / "t.odin"
+    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none",
+                             "-out:" & proj / "prog"], e,
+                           proc (dir: string) = stageOdinPkg(dir, src), proj)
+    odinR = t.needCmdAfter(@["timeout", "10", proj / "prog"], b,
+                           proc (dir: string) = discard, proj, verb = vRun)
+  var dR = -1
+  if dmdExe.len > 0:
+    let e = t.needD()
+    let dir = t.curDir / "dlang"
+    let b = t.needCmdAfter(@[dmdExe, "-i", "-I" & dir, dir / "t.d",
+                             dir / "minicoro.a", "-of=" & dir / "prog"],
+                           e, proc (dir: string) = discard, dir)
+    dR = t.needCmdAfter(@["timeout", "10", dir / "prog"], b,
+                        proc (dir: string) = discard, dir, verb = vRun)
+  if t.phase == pCollect: return
+  if t.wasSkipped(nimR): t.skip name; return
+
+  var ran: seq[string]
+  for (label, idx) in [("nim", nimR), ("odin", odinR), ("d", dR)]:
+    if idx < 0 or t.skippedCmd(idx): continue
+    let (rc, output) = t.resultOf(idx)
+    if rc != code:
+      t.no name, label & " exited " & $rc & ", wanted " & $code &
+                 (if output.strip == "": " (NO OUTPUT)"
+                  else: ": " & tailLines(output, 2))
+      return
+    if pattern != "" and find(output, re(pattern)) < 0:
+      t.no name, label & " did not match /" & pattern & "/: " &
+                 tailLines(output, 2)
+      return
+    ran.add label
+  if ran.len == 0: t.skip name
+  else: t.ok name & "  [" & ran.join(", ") & "]"
+
 proc hostBuilds*(t: var T, name: string) =
   let nimB = t.need(vBuild)
   let odinExe = findOdin()
