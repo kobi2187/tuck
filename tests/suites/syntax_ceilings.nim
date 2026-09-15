@@ -108,4 +108,53 @@ fn f({hot: bool}) -> int:
 """
   t.okCheck "binding the branch value first is the way around it"
 
+  # A line that ends OWING something continues — a trailing binary operator,
+  # comma or `=` cannot end an expression, so the break is neither a
+  # separator nor a terminator. Go's semicolon rule, ruled 2026-09-15 on the
+  # grounds that wrapping a long expression is convenience rather than a
+  # safety or maintainability question.
+  #
+  # Works OUTSIDE brackets too, which is the half bracketDepth cannot cover.
+  t.src """
+import seq
+import str
+import console
+
+fn main() -> int [io]:
+  let a = [1, 2, 3]
+  let n = ({items: a} count) * 100 +
+          ({items: a} count) * 10 +
+          7
+  let long = "alpha" +
+             "beta" +
+             "gamma"
+  {text: "n=" + n.toStr +
+         " " + long} printLine
+  return 0
+"""
+  t.hostRuns "a trailing operator continues the line", 0, "n=337 alphabetagamma"
+
+  # The set is deliberately small, and these are the measured reasons.
+  # A trailing `:` OPENS a block: swallowing that newline left a fn body's
+  # indent with nothing to attach to.
+  t.src """
+fn f() -> int:
+  return 1
+
+fn main() -> int:
+  return {} f
+"""
+  t.okCheck "a trailing `:` still opens a block, not a continuation"
+
+  # `...` ends in a dot, and six examples stopped parsing when tkDot was in
+  # the set — the newline after a placeholder body disappeared.
+  t.src """
+fn f({n: int}) -> void:
+  ...
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a `...` placeholder body still ends its line"
+
   t.finish()

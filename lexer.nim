@@ -98,6 +98,9 @@ type
     column*: int
     linesLen*: seq[int] # legacy fallback
     indentStack*: seq[int]
+    lastDrained*: TokenKind
+      ## The kind most recently handed to the parser, so the newline rule can
+      ## ask what came before it even after pendingTokens has been emptied.
     bracketDepth*: int
       ## How many `(`/`{`/`[` are still open. Inside one, a line break is not
       ## STRUCTURE: no indent step is emitted and the two-space rule does not
@@ -545,6 +548,33 @@ proc scanOneChar(L: var Lexer, ch: char) =
   else:
     L.reportError("Unexpected character: " & ch, L.line, L.column)
 
+# Tokens after which a line CANNOT have ended, so a break following one is a
+# continuation rather than a separator or a terminator.
+#
+# Binary operators and the punctuation that owes a right-hand side. NOT the
+# openers — those are covered by bracketDepth, which relaxes the indent rule
+# for the same reason and by the same route.
+const ContinuesLine* = {
+  tkPlus, tkMinus, tkStar, tkPercent, tkSlashInt, tkSlashFloat,
+  tkEq, tkNeq, tkLt, tkGt, tkLte, tkGte,
+  tkAnd, tkOr,
+  tkComma, tkAssign}
+# Deliberately NOT in the set, each for a measured reason:
+#   tkColon — a trailing `:` OPENS A BLOCK. `fn main() -> int [io]:` ends one
+#             and the body follows; swallowing that newline left the body's
+#             indent with nothing to attach to.
+#   tkDot   — `...`, the placeholder body, ends in a dot. Six examples stopped
+#             parsing because the newline after `...` disappeared.
+#   tkPipe, tkArrow, tkFatArrow, tkNot — a line ending in one of these is not
+#             a shape anyone writes, and each is punctuation with structural
+#             duties elsewhere (sum variants, select arms, decision rows).
+#             Kept out until something real wants them.
+
+proc lastSignificant*(L: Lexer): TokenKind =
+  ## What came immediately before, whether or not the parser has taken it yet.
+  if L.pendingTokens.len > 0: L.pendingTokens[^1].kind
+  else: L.lastDrained
+
 proc scanNext*(L: var Lexer) =
   ## One step of the lexer: emit whatever the next character starts.
   ##
@@ -554,9 +584,10 @@ proc scanNext*(L: var Lexer) =
   ##   `..`          spacing-sensitive, so it must precede the operator tables
   ##   operators     multi-char first (longest match), then single-char
   if L.column == 1:
-    if L.bracketDepth > 0:
-      # A continuation line: consume its leading spaces as ordinary
-      # whitespace. No indent step, no width rule — see Lexer.bracketDepth.
+    if L.bracketDepth > 0 or L.lastSignificant() in ContinuesLine:
+      # A continuation line — inside an open bracket, or after a token that
+      # owes a right-hand side. Its leading spaces are ordinary whitespace:
+      # no indent step, no width rule.
       discard L.measureIndent()
     else:
       L.handleIndent()
@@ -569,6 +600,14 @@ proc scanNext*(L: var Lexer) =
   of ' ': L.skipSpaces()
   of '#': L.skipComment()
   of '\n':
+    # A line that ends OWING something continues. `a +` cannot be a complete
+    # expression, so the break is not a separator and not a terminator — it is
+    # nothing at all, and the next line carries on. Go's semicolon rule, and
+    # the same reasoning: wrapping a long expression is convenience, not a
+    # safety or maintainability question, so the smooth path wins.
+    if L.lastSignificant() in ContinuesLine:
+      L.advance()
+      return
     if L.pendingTokens.len > 0 or L.position > 0:
       L.pendingTokens.add(Token(kind: tkNewline, value: "\n", line: L.line,
                                 column: L.column))
@@ -591,6 +630,7 @@ proc nextToken*(L: var Lexer): Token =
   if L.pendingTokens.len > 0:
     result = L.pendingTokens[0]
     L.pendingTokens.delete(0)
+    L.lastDrained = result.kind
   else:
     result = Token(kind: tkEOF, value: "", line: L.line, column: L.column)
 
