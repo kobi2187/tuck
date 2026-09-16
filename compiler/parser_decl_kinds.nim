@@ -8,6 +8,7 @@
 # alongside the dispatch, since a satellite parseDecl already imports can
 # never import parseDecl back.
 import ast, strutils
+import ast_query
 import ../lexer
 import parser_base
 import parser_expr
@@ -107,15 +108,16 @@ proc parseInvariantBlock*(p: var Parser, members: var seq[Decl]) =
     discard p.advance()
 
 proc parsePendingHole*(p: var Parser): Decl =
-  ## `...` — an unwritten body. Compiles, does nothing.
+  ## `...` on a body line of its own — an unwritten body, in a position that
+  ## is not a fn (an actor body, an errors handler). One token now, so no
+  ## tkDotDot + tkDot rebuild.
   let sp = p.getSpan()
   discard p.advance()
-  discard p.advance()
   if p.current().kind == tkNewline: discard p.advance()
-  Decl(span: sp, kind: dkExpr, expr: Expr(span: sp, kind: exkVar, name: "..."))
+  Decl(span: sp, kind: dkExpr, expr: Expr(span: sp, kind: exkTripleDot))
 
 proc isPendingHole*(p: Parser): bool =
-  p.current().kind == tkDotDot and p.peek(1).kind == tkDot
+  p.current().kind == tkTripleDot
 
 proc isSatisfiesLine*(p: Parser): bool =
   ## Gated on an Ident following, so a FIELD named `satisfies: bool` still
@@ -1061,11 +1063,15 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
   let retType = p.parseReturnType()
   let sig = p.parseSignatureTail(retType)
   let body = p.parseOptionalBody()
-  Decl(span: sp, kind: dkFn, name: name, fnGenerics: generics,
+  result = Decl(span: sp, kind: dkFn, name: name, fnGenerics: generics,
        fnGenericBounds: genericBounds,
        fnParams: params, fnReturnType: retType, fnEffects: sig.effects,
        fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline,
        fnResourceKinds: sig.resources)
+  # `fn f(...) -> T:` whose whole body is `...` IS a pending signature that
+  # happens to be written inline, so it becomes one rather than growing a
+  # second, quieter way to mean the same thing.
+  if body.isUnwrittenBody(): markUnimplemented(result)
 
 # decision name(inputs) -> ret: pattern-row table (spec 6.1)
 proc parseDecisionDecl*(p: var Parser, sp: Span): Decl =

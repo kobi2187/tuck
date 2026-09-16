@@ -57,9 +57,9 @@ sendReset_tuck_Counter :: proc(self: ^tuck_Counter) {
 	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{tuckTag = .msgReset})
 }
 
-tuck_readSensor :: proc (port: u8) -> rt.TuckResult(TRec_value(u16)) {
-
-  return {}
+tuck_readSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
+	fmt.println("TUCK PENDING: tuck_readSensor invoked (not implemented)")
+	return {}
 }
 
 tuck_PodcastApp :: struct {

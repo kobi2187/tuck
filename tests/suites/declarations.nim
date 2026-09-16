@@ -659,4 +659,58 @@ fn main() -> int:
 """
   t.okCheck "...and neither"
 
+  # --- `...`, the unwritten body ------------------------------------------
+  #
+  # `...` used to emit a bare `discard`, so a fn declared `-> int` RETURNED A
+  # SILENT ZERO — a plausible wrong answer indistinguishable from a computed
+  # one, with nothing said at build time or at run time. Meanwhile `pending:`
+  # already did the job properly. Two mechanisms meant "not implemented" and
+  # only one of them said so out loud; `...` is now the inline spelling of the
+  # other (ast_query.markUnimplemented).
+  t.src """
+fn half({n: int}) -> int:
+  ...
+
+fn main() -> int:
+  return {n: 10} half
+"""
+  t.emits "an unwritten `-> int` body announces itself instead of returning 0",
+          "TUCK PENDING"
+  t.omits "...and does not fall through to a bare `discard`", "= 0"
+  t.hostRuns "...on every backend", 0, "TUCK PENDING: tuck_half"
+
+  # An actor body is not a fn body: there is no return value to stub and no
+  # PENDING entry to make, so `...` there stays the no-op it always was.
+  # (examples/15 declares exactly this.)
+  t.src """
+actor UartDriver [queue: 8]:
+  ...
+
+fn main() -> int:
+  return 4
+"""
+  t.okCheck "`...` as an ACTOR body stays a plain no-op"
+  # ...and it emits nothing about PENDING, which is the half of #61 that is
+  # about `...`. The BUILD half is #61 itself and predates this: a
+  # handler-less actor emits `registerActor<Name>(...)` and never defines it.
+  t.omits "...with no PENDING entry, since an actor has no return value",
+          "TUCK PENDING"
+  t.quietly: t.runs("a handler-less actor builds", 4)
+  t.bugOpen "a handler-less actor builds"
+
+  # A `self` member keeps the old empty body: every backend's pending stub is
+  # a free generic `(payload: T)`, which would drop both the receiver and the
+  # owning type's name from the emitted symbol.
+  t.src """
+mixin Bulk:
+  fn setMany(self, {n: int}) -> void:
+    ...
+
+fn main() -> int:
+  return 5
+"""
+  t.omits "a `self` member is NOT turned into a free pending stub",
+          "TUCK PENDING"
+  t.hostRuns "...and still builds", 5
+
   t.finish()

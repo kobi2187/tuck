@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package main
 
+import "core:fmt"
 import rt "./tuckrt"
 
 TRec_value :: struct ($T_value: typeid) {
@@ -33,9 +34,9 @@ drain_tuck_UartDriver :: proc() {
 	for { rt.coroYield() }
 }
 
-tuck_readSensor :: proc (port: u8) -> rt.TuckResult(TRec_value(u16)) {
-
-  return {}
+tuck_readSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
+	fmt.println("TUCK PENDING: tuck_readSensor invoked (not implemented)")
+	return {}
 }
 
 main :: proc() {

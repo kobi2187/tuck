@@ -227,11 +227,6 @@ proc parsePrimaryExpr(p: var Parser): Expr =
   # Try error keyword: `err X`
   let errExpr = p.parseErrKeyword(sp)
   if errExpr != nil: return errExpr
-  # Try ellipsis: `..`
-  if curr.kind == tkDotDot and p.peek().kind == tkDot:
-    discard p.advance()
-    discard p.advance()
-    return Expr(span: sp, kind: exkVar, name: "...")
   # Try qualified reference: `:name` or `:mod::fn`
   let qualExpr = p.parseQualifiedRef(sp)
   if qualExpr != nil: return qualExpr
@@ -883,6 +878,9 @@ proc parseExpr*(p: var Parser): Expr =
   of tkIf, tkElif: return p.parseIfExpr(sp)
   of tkReturn: return p.parseReturnExpr(sp)
   of tkDiscard: return p.parseDiscardExpr(sp)
+  of tkTripleDot:
+    discard p.advance()
+    return Expr(span: sp, kind: exkTripleDot)
   of tkMatch: return p.parseMatchExpr(sp)
   of tkFor: return p.parseForExpr(sp)
   of tkLoop: return p.parseLoopExpr(sp)

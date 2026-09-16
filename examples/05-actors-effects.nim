@@ -1,8 +1,6 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_readSensor*(port: uint8): TuckResult[tuple[value: uint16]]
-
 type tuck_Feed* = object
   title*: string
   episodeCount*: int
@@ -42,8 +40,8 @@ proc draintuck_Counter(): bool {.gcsafe.} =
 proc registerActortuck_Counter*() =
   tuckStartActor(draintuck_Counter)
 
-proc tuck_readSensor*(port: uint8): TuckResult[tuple[value: uint16]] =
-  discard
+proc tuck_readSensor*[T](payload: T): TuckResult[tuple[value: uint16]] =
+  stderr.writeLine("TUCK PENDING: tuck_readSensor invoked (not implemented)")
 
 proc fetchFeed*[T](payload: T): TuckResult[tuple[feed: tuck_Feed]] =
   stderr.writeLine("TUCK PENDING: fetchFeed invoked (not implemented)")

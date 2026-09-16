@@ -1,6 +1,7 @@
 module _05_actors_effects;
 
 import rt = tuck_rt;
+import std.stdio : writeln, stderr;
 
 struct TRec_value(T_value) {
     T_value value;
@@ -58,7 +59,8 @@ void sendReset_tuck_Counter(ref tuck_Counter self) {
 }
 
 
-rt.TuckResult!(TRec_value!(ushort)) tuck_readSensor(ubyte port) {
+rt.TuckResult!(TRec_value!(ushort)) tuck_readSensor(T)(T payload) {
+    stderr.writeln("TUCK PENDING: tuck_readSensor invoked (not implemented)");
     return typeof(return).init;
 }
 

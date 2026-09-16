@@ -191,9 +191,9 @@ let tuckGrammar = peg("module", st: Stats):
   # `on select:` is a declaration at file level and a statement inside a body;
   # same form either way. Arms are a table, so `rawBlk`.
   onStmt    <- onForm
-  # `...` is the spec's "unwritten body" placeholder. The lexer has no
-  # ellipsis token, so it arrives as `..` followed by `.`.
-  ellipsisStmt <- "tkDotDot " * "tkDot " * eol
+  # `...` is the spec's "unwritten body" placeholder, and its own token since
+  # it stopped being rebuilt from `..` + `.`.
+  ellipsisStmt <- "tkTripleDot " * eol
   # `{payload} fn discard` — the trailing `discard` is POSTFIX, like every
   # other call in the language, and it is what says "this result is dropped
   # on purpose" (TK-TY25). Bare `discard` on its own line is `simpleStmt`.

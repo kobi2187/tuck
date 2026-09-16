@@ -275,7 +275,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: HashSet[string], locals: var Ha
   # `var tuck_x`, because the declaration was renamed and the reference
   # inside the combinator was not. Every kind is listed now, so the next one
   # stops the build here instead.
-  of exkLit, exkBreak, exkContinue, exkImport:
+  of exkLit, exkBreak, exkContinue, exkImport, exkTripleDot:
     discard
 
 proc mangleFnBody(res: Resolution, d: Decl, names: HashSet[string],

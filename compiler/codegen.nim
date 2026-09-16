@@ -520,7 +520,6 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, or a plain
   ## variable.
   if ctx.res.hasCall(e): ctx.genExpr(ctx.res.call(e))
-  elif e.name == "...": "discard"   # pending hole
   elif e.name == "input" and ctx.currentParams.len > 0: ctx.genInputPayload()
   elif e.name in ctx.fieldVars: "self." & e.name
   else: nimRtCallee(e.name)
@@ -900,6 +899,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     # Nim's own `discard` is the identical construct, spelling and all.
     if e.discardVal != nil: "discard " & ctx.genExpr(e.discardVal)
     else: "discard"
+  of exkTripleDot: "discard"   # `...` outside a fn body: a no-op statement
   of exkChain: ctx.genExprChain(e)
   of exkSend: ctx.genExprSend(e)
   of exkSelect: ctx.genExprSelect(e)

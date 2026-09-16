@@ -72,6 +72,7 @@ type
     tkFn, tkLet, tkVar, tkConst, tkIf, tkElif, tkElse,
     tkFor, tkIn, tkMatch, tkReturn, tkType,
     tkLoop, tkBreak, tkContinue, tkDiscard,
+    tkTripleDot,   # `...` — an unwritten body. NOT tkDiscard: see exkTripleDot
     tkObject, tkMixin, tkInterface, tkGroup, tkActor, tkTask, tkFnsig,
     tkPublic,
     tkPending, tkOn, tkSelect, tkRegistry,
@@ -461,6 +462,15 @@ proc scanDotDot(L: var Lexer): bool =
   if not (L.peek() == '.' and L.peek(1) == '.'): return false
   let sl = L.line
   let sc = L.column
+  # `...` — an unwritten body — is its OWN token. It used to arrive as
+  # tkDotDot + tkDot and get rebuilt into an exkVar named "...", a magic
+  # identifier that six places then compared against by string (typecheck's
+  # own comment called it that). One token, one node, no string compares.
+  if L.peek(2) == '.':
+    L.advance(); L.advance(); L.advance()
+    L.pendingTokens.add(Token(kind: tkTripleDot, value: "...", line: sl,
+                              column: sc))
+    return true
   if L.peek(2) == '<':
     L.advance(); L.advance(); L.advance()
     L.pendingTokens.add(Token(kind: tkRangeLt, value: "..<", line: sl,

@@ -1,8 +1,6 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_readSensor*(port: uint8): TuckResult[tuple[value: uint16]]
-
 type tuck_EthernetFrame* = object
   dst*: array[6, uint8]
   src*: array[6, uint8]
@@ -18,6 +16,6 @@ proc validate*(self: tuck_Temperature) =
 type tuck_UartDriver* = ref object
   discard
 
-proc tuck_readSensor*(port: uint8): TuckResult[tuple[value: uint16]] =
-  discard
+proc tuck_readSensor*[T](payload: T): TuckResult[tuple[value: uint16]] =
+  stderr.writeLine("TUCK PENDING: tuck_readSensor invoked (not implemented)")
 

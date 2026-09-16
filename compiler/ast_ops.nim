@@ -178,6 +178,7 @@ iterator children*(e: Expr): Expr =
     of exkReturn: yield e.returnVal
     of exkRaise: yield e.raiseVal
     of exkDiscard: yield e.discardVal
+    of exkTripleDot: discard
     of exkSend: yield e.sendPayload
     of exkSelect:
       for arm in e.selArms:

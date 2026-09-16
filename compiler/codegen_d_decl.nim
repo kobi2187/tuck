@@ -1039,7 +1039,8 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
     "__gshared rt.ObjectPool!(" & ctx.dType(d.poolElem) & ", " &
       $d.poolCount & ") " & d.name & ";\n"
   of dkFn:
-    if d.isPending or d.isExtern: ""   # pending: M3; bare extern fn: via block
+    if d.isExtern: ""                  # bare extern fn: emitted via the block
+    elif d.isPending: ctx.genDPendingStub(d)
     else: ctx.genDFnDecl(d)
   of dkMixin: ctx.genDMixinBlock(d)
   of dkExtern: ctx.genDExternBlock(d)

@@ -3180,14 +3180,6 @@ proc synthNullaryCall(tc: var TypeChecker, e: Expr): Type =
 proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
   ## qualified form of the same thing, handled by the field-access path.
-  if e.name == "...":
-    # The pending-hole marker (parser_expr.nim parses it as a literal
-    # exkVar named "...", same magic-identifier shape as "input"/"Error"
-    # elsewhere in this file — codegen's genVar already special-cases it
-    # to `discard`). Its real sentinel already exists (pendingType,
-    # "declared, not implemented" — spec §5.4); it was riding unknownType
-    # by accident, not by design, same as every other fix in this proc.
-    return pendingType(e.span)
   let owner = tc.sumTypeOwning(e.name)
   if owner != "": return Type(span: e.span, kind: tkNamed, name: owner)
   let regOwner = registryEventOwner(e.name)
@@ -4029,6 +4021,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkReturn: tc.synthReturn(e)
   of exkRaise: tc.synthRaise(e)
   of exkDiscard: tc.synthDiscard(e)
+  of exkTripleDot: pendingType(e.span)
   of exkChain: tc.synthChain(e)
   of exkSend: tc.synthSend(e)
   of exkSelect: tc.synthSelect(e)

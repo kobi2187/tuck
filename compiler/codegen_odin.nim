@@ -687,7 +687,6 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, an enum tag, or
   ## a plain variable.
   if ctx.res.hasCall(e): return ctx.genOdinExpr(ctx.res.call(e))
-  if e.name == "...": return ""  # pending hole: compiles, does nothing
   if e.name == "input" and ctx.currentParams.len > 0: return ctx.genInputPayload()
   if e.name == "self" and ctx.ptrSelf: return "self^"  # member fn: deref
   if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
@@ -1382,6 +1381,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     # emits nothing — genStmt already skips an empty statement cleanly.
     if e.discardVal != nil: "_ = " & ctx.genOdinExpr(e.discardVal)
     else: ""
+  of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkChain: ctx.genChain(e, ind)
   of exkSend: ctx.genSend(e)
   of exkSelect: ctx.genOdinSelect(e, ind)

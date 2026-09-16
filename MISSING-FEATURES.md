@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (8)
+## A. Open bugs (9)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -110,6 +110,18 @@ controller"; `b.value` is the handle and nothing takes it further. Wants a
 read/write pair through the handle, plus a sanctioned way to give a cell's
 ADDRESS to an extern — the one place a raw pointer is legitimate. Test:
 `known_bugs`, "a pool slot can be read and written through its handle".
+
+**A17 — a handler-less actor emits a registration call to a proc that was
+never generated.** `actor UartDriver [queue: 8]:` with a body of `...` (or
+nothing) passes `tuck ch`, then `nim c` answers "undeclared identifier:
+'registerActortuck_UartDriver'". The emitter writes the registration call
+unconditionally but only defines `registerActor<Name>` for an actor that has
+at least one `on` handler. `examples/15-type-attributes.tuck` declares exactly
+this actor and never showed it: the file has no `fn main`, so it is a syntax
+specimen and only `tuck ch` was ever run against it. Test: `declarations`,
+"a handler-less actor builds". Issue #61, found 2026-09-15 while making `...`
+lower to the pending stub — pre-existing, and reproduced identically on the
+compiler before that change.
 
 A15 (a one-armed `on select` losing its arm's return value — the emitter
 required BOTH a read and a timeout arm and fell to a `discard` marker

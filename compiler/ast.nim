@@ -328,6 +328,13 @@ type
     exkReturn
     exkRaise
     exkDiscard   # `discard` / `discard <expr>` — an explicit, silent value drop
+    exkTripleDot # `...` — a body that was never written. Deliberately NOT
+                 # exkDiscard: `discard` says "I drop this value on
+                 # purpose", `...` says "I have not written this yet",
+                 # and only the second belongs in the PENDING report. A
+                 # fn whose WHOLE body is `...` becomes a pending stub
+                 # (ast_query.markUnimplemented); elsewhere — an actor
+                 # body, an errors handler — it stays a no-op.
     exkImport
     exkSend      # `ActorType send handler {payload}` — enqueue to an actor
     exkSelect    # task-body `on select:` — wait on read/timeout branches
@@ -451,6 +458,8 @@ type
       raiseVal*: Expr
     of exkDiscard:
       discardVal*: Expr   # nil = bare `discard`, a pure no-op statement
+    of exkTripleDot:
+      discard             # `...` carries nothing; the node IS the statement
     of exkImport:
       path*: seq[string]
     of exkSend:

@@ -154,6 +154,7 @@ proc resolveRefsIn(e: Expr) =
   of exkReturn: e.returnVal = resolveVarSlot(e.returnVal)
   of exkRaise: e.raiseVal = resolveVarSlot(e.raiseVal)
   of exkDiscard: e.discardVal = resolveVarSlot(e.discardVal)
+  of exkTripleDot: discard
   of exkSend: e.sendPayload = resolveVarSlot(e.sendPayload)
   of exkSelect:
     for arm in e.selArms.mitems:

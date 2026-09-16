@@ -744,7 +744,6 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a pending hole, the whole incoming
   ## payload, an enum tag, or a variable.
   if ctx.res.hasCall(e): return ctx.genDExpr(ctx.res.call(e))
-  if e.name == "...": return ""   # pending hole: compiles, does nothing
   if e.name == "input" and ctx.currentParams.len > 0:
     return ctx.genDInputPayload()
   if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
@@ -1393,6 +1392,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     # keyword needed — the identical construct to Tuck's `discard <expr>`.
     # A bare `discard` has nothing to drop, so it emits nothing.
     if e.discardVal != nil: ctx.genDExpr(e.discardVal) else: ""
+  of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkSend: ctx.genDSend(e)
   of exkSelect: ctx.genDSelect(e)

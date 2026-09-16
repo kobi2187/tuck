@@ -131,36 +131,39 @@ proc exportedNames*(m: Module): (bool, HashSet[string]) =
       for n in d.publicNames: names.incl(n)
   (declared, names)
 
+proc memberSeq*(d: Decl): seq[Decl] =
+  ## WHICH field holds a decl's nested declarations. Pure dispatch — one field
+  ## read per arm and no test, which is the whole reason it is split from
+  ## `members` below: the nil filter repeated inside six arms made this a
+  ## 20-branch proc rather than the lookup table it actually is.
+  ##
+  ## Every remaining kind is named rather than caught by `else: discard`, so a
+  ## new DeclKind fails to compile here and gets decided instead of skipped.
+  ##
+  ## dkTask is the one worth pausing on: a task is NOT memberless, but what it
+  ## holds is an Expr (taskBody), not a nested Decl, and this yields
+  ## declarations. Callers that want bodies to walk must reach taskBody
+  ## themselves — rewriteModule and lowerModule both do. lowerModule did not
+  ## until 2026-08-15, and emitted an unlowered registry raise from every task
+  ## body as a result.
+  if d == nil: return @[]
+  case d.kind
+  of dkMixin, dkExtern, dkPending: d.mixinMembers
+  of dkType: d.typeMembers
+  of dkObject: d.objMembers
+  of dkActor: d.handlers
+  of dkInterface: d.ifaceMembers
+  of dkGroup: d.groupMembers
+  of dkTask, dkFn, dkRegistry, dkPool, dkExpr, dkConst, dkRegister,
+     dkStaticAssert, dkErrors, dkImport, dkSelect, dkFnSig, dkSatisfies,
+     dkWhen, dkPublic, dkResources: @[]
+
 iterator members*(d: Decl): Decl =
   ## The declarations nested inside another, whichever field holds them.
   ## Callers that just want "everything inside this decl" should not have to
   ## know that a mixin uses mixinMembers and an object uses objMembers.
-  if d != nil:
-    case d.kind
-    of dkMixin, dkExtern, dkPending:
-      for mem in d.mixinMembers: (if mem != nil: yield mem)
-    of dkType:
-      for mem in d.typeMembers: (if mem != nil: yield mem)
-    of dkObject:
-      for mem in d.objMembers: (if mem != nil: yield mem)
-    of dkActor:
-      for mem in d.handlers: (if mem != nil: yield mem)
-    of dkInterface:
-      for mem in d.ifaceMembers: (if mem != nil: yield mem)
-    of dkGroup:
-      for mem in d.groupMembers: (if mem != nil: yield mem)
-    # Every remaining kind, named rather than caught by `else: discard`, so a
-    # new DeclKind fails to compile here and gets decided instead of skipped.
-    #
-    # dkTask is the one worth pausing on: a task is NOT memberless, but what it
-    # holds is an Expr (taskBody), not a nested Decl, and this iterator yields
-    # declarations. Callers that want bodies to walk must reach taskBody
-    # themselves — rewriteModule and lowerModule both do. lowerModule did not
-    # until 2026-08-15, and emitted an unlowered registry raise from every task
-    # body as a result.
-    of dkTask, dkFn, dkRegistry, dkPool, dkExpr, dkConst, dkRegister,
-       dkStaticAssert, dkErrors, dkImport, dkSelect, dkFnSig, dkSatisfies,
-       dkWhen, dkPublic, dkResources: discard
+  for mem in d.memberSeq():
+    if mem != nil: yield mem
 
 proc declaredFields*(d: Decl): seq[FieldDef] =
   ## The fields a declaration introduces, whichever field holds them. A record
@@ -208,13 +211,20 @@ iterator allFns*(m: Module): Decl =
 
 proc findFn*(m: Module, name: string): Decl =
   ## The fn declaration named `name`, wherever it sits: top level, or a member
-  ## of a mixin/extern block or a manager type. Pending stubs do not count as
-  ## members — they have no body to call.
+  ## of a mixin/extern block or a manager type. Pending stubs do not count,
+  ## wherever they sit — they have no body to call, and their emitted stub
+  ## takes ONE generic payload rather than the params they declare, so a
+  ## caller that found them here would explode the record into three args
+  ## against a one-arg stub. (The top-level half of that test was missing
+  ## until `...` started producing top-level pending fns; only a `pending:`
+  ## block, whose members the loop below covers, could make one before.)
   ## One lookup behind every "what are this fn's params" question; callers that
   ## only need a bool or the param list read it off the returned Decl.
   for d in m.decls:
     if d == nil: continue
-    if d.kind in {dkFn, dkTask} and d.name == name: return d
+    if d.kind in {dkFn, dkTask} and d.name == name:
+      # `isPending` lives only on the dkFn branch of the variant.
+      if d.kind == dkTask or not d.isPending: return d
     if d.kind in {dkMixin, dkExtern, dkPending, dkType}:
       for mem in d.members():
         if mem.kind == dkFn and not mem.isPending and mem.name == name:
@@ -392,9 +402,10 @@ proc injectTailReturn*(body: Expr, retTypeStr: string) =
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
     elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
                            exkWhile, exkBreak, exkContinue,
-                           exkAssign, exkBlock, exkSelect, exkSend} and
-       not (lastS.kind == exkVar and lastS.name == "..."):
+                           exkAssign, exkBlock, exkSelect, exkSend,
+                           exkDiscard, exkTripleDot}:
       body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
+
 
 # --- sketch-mode type queries --------------------------------------------
 #
@@ -754,6 +765,32 @@ proc takesSelf*(m: Decl): bool =
   for p in m.fnParams:
     if p.name == "self": return true
   false
+
+# --- the unwritten body ---------------------------------------------------
+
+proc isUnwrittenBody*(body: Expr): bool =
+  ## Is this body nothing but `...`?
+  body != nil and body.kind == exkBlock and body.stmts.len == 1 and
+    body.stmts[0].kind == exkTripleDot
+
+proc markUnimplemented*(d: Decl) =
+  ## Make `d` the same thing a `pending:` signature produces: no body, a stub
+  ## that names itself at runtime (genPendingStub, one per backend), and a
+  ## line in the build's PENDING report.
+  ##
+  ## `...` USED to emit a bare `discard`, so a fn declared `-> int` returned a
+  ## silent zero — a plausible wrong answer indistinguishable from a computed
+  ## one. Two mechanisms said "not implemented" and only one of them said it
+  ## out loud. This is the other one, reused rather than reinvented; the
+  ## pending machinery already handles every return type.
+  ##
+  ## NOT for a `self` member: every backend's pending stub is a free generic
+  ## `(payload: T)`, which drops both the receiver and the owning type's name
+  ## from the emitted symbol. A member keeps the old empty body until the
+  ## stub learns to carry a receiver.
+  if d.kind != dkFn or d.takesSelf(): return
+  d.isPending = true
+  d.fnBody = nil
 
 proc threadReceiver*(call, base: Expr, into, baseStr: string): Expr =
   ## Each step's resolved call names the chain's BASE as its receiver. When
