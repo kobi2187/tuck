@@ -120,4 +120,59 @@ fn main() -> int:
                "nosuchvar")
   t.bugFixed "...and the same in a plain fn, which is where the fix landed"
 
+  # --- an idle actor must not keep the program alive (#28) -----------------
+  #
+  # An actor is a DAEMON: main owns the lifecycle, so a program whose main
+  # returns must exit even though the actor's drain loop never ends. Odin
+  # broke that — its emitted drain ended in `rt.coroYield()`, which re-queues
+  # the coroutine before suspending, so an idle actor stayed permanently
+  # runnable and `tuckRun` never reached "nothing ready and nothing waiting".
+  # The binary hung; Nim and D exited 0, because in those two the RUNTIME owns
+  # the actor loop and decides whether to park.
+  #
+  # A task is declared but never spawned, which is what puts `tuckRun()` in
+  # the entry point at all — without it the loop is never driven and the hang
+  # cannot show. That is examples/20's exact shape.
+  t.src """
+actor Idle [queue: 4]:
+  n: int = 0
+
+  on bump():
+    n += 1
+
+task never() -> !void [io]:
+  return
+
+fn main() -> int:
+  return 3
+"""
+  t.runs "an idle actor does not keep a finished main alive", 3
+  t.hostRuns "...on every backend", 3
+
+  # ...and parking must not cost delivery: tuckNotifySend readies a parked
+  # actor exactly as the reactor readies an I/O park. Asserted by VALUE — 6 is
+  # the sum, so a dropped send or an actor that never ran answers with
+  # something else rather than merely a different exit status.
+  t.src """
+import scheduler
+
+actor Tally [queue: 8]:
+  n: int = 0
+
+  on add({by: int}):
+    n += by
+
+fn done() -> bool:
+  return Tally.n >= 6
+
+fn main() -> int [io]:
+  Tally send add {by: 1}
+  Tally send add {by: 2}
+  Tally send add {by: 3}
+  scheduler::waitUntil {pred: :done}
+  return Tally.n
+"""
+  t.runs "a parked actor still wakes on send and drains every message", 6
+  t.hostRuns "...on every backend", 6
+
   t.finish()

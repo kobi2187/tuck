@@ -152,10 +152,12 @@ handleMsg_tuck_Signals :: proc(self: ^tuck_Signals, msg: tuck_SignalsMsg) {
 drain_tuck_Signals :: proc() {
 	for {
 		msg: tuck_SignalsMsg
+		didWork := false
 		for rt.dequeue(&tuck_SignalsSingleton.mailbox, &msg) {
 			handleMsg_tuck_Signals(&tuck_SignalsSingleton, msg)
+			didWork = true
 		}
-		rt.coroYield()
+		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
 	}
 }
 

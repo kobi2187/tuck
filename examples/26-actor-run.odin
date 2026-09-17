@@ -28,10 +28,12 @@ handleMsg_tuck_Counter :: proc(self: ^tuck_Counter, msg: tuck_CounterMsg) {
 drain_tuck_Counter :: proc() {
 	for {
 		msg: tuck_CounterMsg
+		didWork := false
 		for rt.dequeue(&tuck_CounterSingleton.mailbox, &msg) {
 			handleMsg_tuck_Counter(&tuck_CounterSingleton, msg)
+			didWork = true
 		}
-		rt.coroYield()
+		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
 	}
 }
 

@@ -642,7 +642,7 @@ proc genInertActor*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ind & d.name & " :: struct {\n" & body & ind & "}\n\n" &
     ind & actorSingletonName(d.name) & ": " & d.name & "\n\n" &
     ind & "drain_" & d.name & " :: proc() {\n" &
-    ind & "\tfor { rt.coroYield() }\n" & ind & "}\n"
+    ind & "\tfor { rt.tuckParkActor() }\n" & ind & "}\n"
 
 proc genMsgEnvelope*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandler],
                     variants: seq[string], ind: string): string =
@@ -721,6 +721,13 @@ proc genDispatch*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandle
 proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
   ## The actor's coroutine body. Parks when the mailbox empties;
   ## tuckNotifySend wakes it after a send.
+  ##
+  ## The idle branch is tuckParkActor, NOT coroYield: coroYield re-queues the
+  ## coroutine before suspending, so an idle drain stayed permanently runnable
+  ## and tuckRun never reached "nothing ready and nothing waiting". This proc's
+  ## comment said "parks" from the start; the code yielded (issue #28). Nim and
+  ## D do not have the bug because there the RUNTIME owns the actor loop and
+  ## makes this decision — the drain merely reports whether it did work.
   let singleton = actorSingletonName(d.name)
   let finishedGuard = if hasShutdown:
                         ind & "\t\tif " & singleton & ".finished { return }\n"
@@ -728,9 +735,12 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
   "\n" & ind & "drain_" & d.name & " :: proc() {\n" &
     ind & "\tfor {\n" & finishedGuard &
     ind & "\t\tmsg: " & d.name & "Msg\n" &
+    ind & "\t\tdidWork := false\n" &
     ind & "\t\tfor rt.dequeue(&" & singleton & ".mailbox, &msg) {\n" &
     ind & "\t\t\thandleMsg_" & d.name & "(&" & singleton & ", msg)\n" &
-    ind & "\t\t}\n" & ind & "\t\trt.coroYield()\n" &
+    ind & "\t\t\tdidWork = true\n" &
+    ind & "\t\t}\n" &
+    ind & "\t\tif didWork { rt.coroYield() } else { rt.tuckParkActor() }\n" &
     ind & "\t}\n" & ind & "}\n"
 
 proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,

@@ -690,13 +690,16 @@ fn main() -> int:
   return 4
 """
   t.okCheck "`...` as an ACTOR body stays a plain no-op"
-  # ...and it emits nothing about PENDING, which is the half of #61 that is
-  # about `...`. The BUILD half is #61 itself and predates this: a
-  # handler-less actor emits `registerActor<Name>(...)` and never defines it.
   t.omits "...with no PENDING entry, since an actor has no return value",
           "TUCK PENDING"
-  t.quietly: t.runs("a handler-less actor builds", 4)
-  t.bugOpen "a handler-less actor builds"
+  # #61: the entry point registered EVERY dkActor, while genActor defines
+  # registerActor<Name> only for an actor that has something to receive — so a
+  # handler-less one emitted a call to a symbol nobody declared. D already had
+  # the right query (actorHasMessages) and its own comment said both sites must
+  # ask it; the query now lives in codegen_common and all three backends do.
+  t.runs "a handler-less actor builds", 4
+  t.hostRuns "...on every backend", 4
+  t.bugFixed "a handler-less actor builds"
 
   # A `self` member keeps the old empty body: every backend's pending stub is
   # a free generic `(payload: T)`, which would drop both the receiver and the

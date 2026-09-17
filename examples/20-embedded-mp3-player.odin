@@ -193,10 +193,12 @@ handleMsg_tuck_Decoder :: proc(self: ^tuck_Decoder, msg: tuck_DecoderMsg) {
 drain_tuck_Decoder :: proc() {
 	for {
 		msg: tuck_DecoderMsg
+		didWork := false
 		for rt.dequeue(&tuck_DecoderSingleton.mailbox, &msg) {
 			handleMsg_tuck_Decoder(&tuck_DecoderSingleton, msg)
+			didWork = true
 		}
-		rt.coroYield()
+		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
 	}
 }
 

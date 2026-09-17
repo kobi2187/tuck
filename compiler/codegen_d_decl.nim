@@ -235,14 +235,6 @@ proc genDMsgEnvelope*(ctx: var DCodegenCtx, d: Decl,
     "    " & d.name & "MsgKind " & TagField & ";\n" &
     (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") & "}\n\n"
 
-proc actorHasMessages*(d: Decl): bool =
-  ## Whether this actor has anything to receive. A specimen actor
-  ## (`actor X: ...`) has no handlers and no shutdown, so it gets no
-  ## envelope type, no mailbox and no drain — and the entry point must not
-  ## try to start one. Both sites ask THIS, so they cannot disagree.
-  let (handlers, _, hasShutdown) = collectHandlers(d)
-  handlers.len > 0 or hasShutdown
-
 proc genDDrain*(d: Decl, hasShutdown: bool): string =
   ## The actor's coroutine body, as a DrainProc: drain what is waiting and
   ## report whether any work happened. The runtime parks the coroutine when

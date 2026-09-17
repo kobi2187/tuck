@@ -31,10 +31,12 @@ handleMsg_tuck_Result :: proc(self: ^tuck_Result, msg: tuck_ResultMsg) {
 drain_tuck_Result :: proc() {
 	for {
 		msg: tuck_ResultMsg
+		didWork := false
 		for rt.dequeue(&tuck_ResultSingleton.mailbox, &msg) {
 			handleMsg_tuck_Result(&tuck_ResultSingleton, msg)
+			didWork = true
 		}
-		rt.coroYield()
+		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
 	}
 }
 

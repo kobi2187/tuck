@@ -170,6 +170,21 @@ proc collectHandlers*(d: Decl):
           result.handlers.add(ActorMsgHandler(name: arm.source,
                                               params: arm.binding, body: arm.body))
 
+proc actorHasMessages*(d: Decl): bool =
+  ## Whether this actor has anything to receive. A specimen actor
+  ## (`actor X: ...`) has no handlers and no shutdown, so it gets no envelope
+  ## type, no mailbox and no drain — and the entry point must not try to start
+  ## one.
+  ##
+  ## Here rather than in one backend because ALL FOUR sites must ask the same
+  ## question: the three entry-point builders (tuck.nim's Nim prologue,
+  ## runtimeUsers for Odin, genDDaemons for D) and the three genActor bodies.
+  ## Only D asked it; Nim and Odin re-derived "every dkActor" and so emitted a
+  ## call to a registerActor/drain proc their own genActor had declined to
+  ## define (issue #61).
+  let (handlers, _, hasShutdown) = collectHandlers(d)
+  handlers.len > 0 or hasShutdown
+
 proc actorQueueSize*(m: Module, d: Decl): string =
   ## The `[queue: N]` attribute, or the default mailbox size.
   ##

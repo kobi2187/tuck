@@ -57,7 +57,9 @@ proc runtimeUsers*(m: Module, actorNames: var seq[string],
   ## Which declarations make the program need the scheduler.
   for d in m.decls:
     if d == nil: continue
-    if d.kind == dkActor: actorNames.add(d.name)
+    # actorHasMessages, not `is an actor`: one with no handlers has no drain
+    # to start, exactly as genOdinActor declines to emit one (#61).
+    if d.kind == dkActor and actorHasMessages(d): actorNames.add(d.name)
     elif d.kind == dkTask: hasTasks = true
 
 proc emitOdinModule*(name: string, m: Module, res: Resolution,

@@ -36,10 +36,12 @@ drain_tuck_Accumulator :: proc() {
 	for {
 		if tuck_AccumulatorSingleton.finished { return }
 		msg: tuck_AccumulatorMsg
+		didWork := false
 		for rt.dequeue(&tuck_AccumulatorSingleton.mailbox, &msg) {
 			handleMsg_tuck_Accumulator(&tuck_AccumulatorSingleton, msg)
+			didWork = true
 		}
-		rt.coroYield()
+		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
 	}
 }
 

@@ -33,7 +33,7 @@ const
 32-duration-units
 33-ffi-zlib 34-ffi-cstring 35-ffi-struct 36-ffi-enum-callback 37-ffi-handle
 28-async-task 38-division 39-if-match-expr 40-saturating 41-tostr-concat 44-recursive-tree 45-intersection 46-h264-driver
-29-task-timeout 30-async-read 47-resource-registry
+29-task-timeout 30-async-read 47-resource-registry 20-embedded-mp3-player
 """
 
   # Examples with a known exit code: these must RUN, not merely compile.
@@ -47,6 +47,14 @@ const
   #   35-ffi-struct     0  C struct by value both ways, asserted in-program
   #   36-ffi-enum-callback 0  C enum with explicit values + a callback C invokes
   #   37-ffi-handle     0  opaque handle: C mallocs, derefs and frees it
+  #   20-embedded-mp3-player 0  an actor daemon with a task declared but never
+  #                        spawned. Run-gated because of #28: the Odin drain
+  #                        ended in coroYield, which RE-QUEUES the coroutine,
+  #                        so an idle actor stayed permanently runnable and
+  #                        tuckRun never reached "nothing ready, nothing
+  #                        waiting" — the binary hung while Nim and D exited 0.
+  #                        It was compile-gated only, on no backend run-gated,
+  #                        so nothing noticed for as long as it was true.
   #   28-async-task    42  Odin coroutine runtime over minicoro really runs
   #   38-division       0  R1: /i truncates, /f does not — both backends agree
   #   39-if-match-expr  0  R2/R3: value-position if and match agree
@@ -73,7 +81,7 @@ const
 35-ffi-struct:0 36-ffi-enum-callback:0 37-ffi-handle:0 28-async-task:42
 38-division:0 39-if-match-expr:0 40-saturating:0 41-tostr-concat:0 44-recursive-tree:0 24-stdlib:0
 29-task-timeout:2 30-async-read:1 45-intersection:3 46-h264-driver:41
-47-resource-registry:17"""
+47-resource-registry:17 20-embedded-mp3-player:0"""
 
 proc projFor(base: string): string = outDir / base.replace("-", "_")
 

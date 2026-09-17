@@ -1113,7 +1113,11 @@ when isMainModule:
           hasMain = true
           mainReturns = d.fnReturnType != nil and
             not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name in ["void", "unit"])
-        if d != nil and d.kind == dkActor:
+        if d != nil and d.kind == dkActor and actorHasMessages(d):
+          # actorHasMessages, not `is an actor`: a handler-less actor gets no
+          # registerActor proc from genActor, so registering it emits a call
+          # to a symbol that was never defined (#61).
+          #
           # `m` is the ORIGINAL tree; each backend mangled its own deepCopy,
           # so the emitted symbol carries the prefix and this must match.
           actorNames.add(mangleName(d.name))

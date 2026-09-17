@@ -555,6 +555,18 @@ tuckYield :: proc() {
 @(private)
 gActors: [dynamic]^Coroutine
 
+// An IDLE actor parks WITHOUT re-queueing itself — tuckNotifySend readies it
+// again when a send arrives, exactly as the reactor readies an I/O park. The
+// distinction is the one coroYield's own comment draws above, and getting it
+// wrong is not a slow actor but a program that never exits: a drain ending in
+// coroYield is permanently runnable, so tuckRun's "nothing ready and nothing
+// waiting" test never fires. That was issue #28 — examples/20 hung under Odin
+// while Nim and D exited 0, because in those two the RUNTIME owns the actor
+// loop and decides to park, and here the emitted drain does.
+tuckParkActor :: proc() {
+	parkSuspend()
+}
+
 tuckStartActor :: proc(drain: proc()) {
 	c := newCoroutine(drain, TuckStackSize)
 	append(&gActors, c)

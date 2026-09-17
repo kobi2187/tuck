@@ -31,7 +31,7 @@ tuck_UartDriver :: struct {
 tuck_UartDriverSingleton: tuck_UartDriver
 
 drain_tuck_UartDriver :: proc() {
-	for { rt.coroYield() }
+	for { rt.tuckParkActor() }
 }
 
 tuck_readSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
@@ -40,6 +40,4 @@ tuck_readSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
 }
 
 main :: proc() {
-	rt.tuckAsyncInit()
-	rt.tuckStartActor(drain_tuck_UartDriver)
 }

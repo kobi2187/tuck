@@ -170,10 +170,12 @@ handleMsg_tuck_Pipeline :: proc(self: ^tuck_Pipeline, msg: tuck_PipelineMsg) {
 drain_tuck_Pipeline :: proc() {
 	for {
 		msg: tuck_PipelineMsg
+		didWork := false
 		for rt.dequeue(&tuck_PipelineSingleton.mailbox, &msg) {
 			handleMsg_tuck_Pipeline(&tuck_PipelineSingleton, msg)
+			didWork = true
 		}
-		rt.coroYield()
+		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
 	}
 }
 

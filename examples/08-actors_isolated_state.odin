@@ -26,10 +26,12 @@ handleMsg_tuck_TrafficLight :: proc(self: ^tuck_TrafficLight, msg: tuck_TrafficL
 drain_tuck_TrafficLight :: proc() {
 	for {
 		msg: tuck_TrafficLightMsg
+		didWork := false
 		for rt.dequeue(&tuck_TrafficLightSingleton.mailbox, &msg) {
 			handleMsg_tuck_TrafficLight(&tuck_TrafficLightSingleton, msg)
+			didWork = true
 		}
-		rt.coroYield()
+		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
 	}
 }
 
