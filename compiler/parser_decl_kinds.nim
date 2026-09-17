@@ -920,9 +920,27 @@ proc parseRegistryDecl*(p: var Parser, sp: Span): Decl =
 proc parseTypeBodyLine*(p: var Parser, variants: var seq[VariantDef],
                        transitions: var seq[Transition],
                        fields: var seq[FieldDef], members: var seq[Decl]) =
-  ## One line of a type body: a variant, the transitions block, an invariant,
-  ## or a field.
-  if p.current().kind == tkPipe:
+  ## One line of a type body: the unwritten-body marker, a variant, the
+  ## transitions block, an invariant, or a field.
+  ##
+  ## `...` is accepted here for the same reason `object`, `actor` and `mixin`
+  ## accept it — they share parseObjectBodyLine, and `type` is the one
+  ## body-taking declaration with a parser of its own, so it was the one that
+  ## answered "Expected field or variant in type" to a sketch. Three of four
+  ## taking it and one refusing is an accident of where the code lives, not a
+  ## rule about types.
+  ##
+  ## The result is a type with no fields, which is what an empty `object`
+  ## already emits and what all three backends already handle.
+  ##
+  ## CONSUMED, not kept as a member: a type's members are its invariant
+  ## predicates, so storing the marker there made `type Handle: ...` report
+  ## "invariant on 'Handle' must be a bool, got <pending>". For a type the
+  ## marker's entire meaning is "no fields", and that is expressed by the
+  ## absence of fields rather than by a node.
+  if p.isPendingHole():
+    discard p.parsePendingHole()
+  elif p.current().kind == tkPipe:
     variants.add(p.parseVariant(""))
   elif p.current().kind == tkIdent and p.current().value == "transitions":
     p.parseTransitionsBlock(transitions)

@@ -761,6 +761,45 @@ fn main() -> int:
   t.badCheck "an UNINSTANTIATED generic actor is refused, not dropped",
              "TK-TY28"
 
+  # `...` — the unwritten body — is accepted by every declaration that TAKES a
+  # body. `object`, `actor` and `mixin` share parseObjectBodyLine and had it
+  # all along; `type` is the one with a parser of its own, so it was the one
+  # answering "Expected field or variant in type" to a sketch. Three of four
+  # accepting it was an accident of where the code lives, not a rule.
+  #
+  # The marker is CONSUMED rather than kept: a type's members are its invariant
+  # predicates, so storing it there reported "invariant on 'Handle' must be a
+  # bool, got <pending>".
+  t.src """
+type Handle:
+  ...
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "`...` is a legal type body, as it already was for object/actor"
+  t.emits "...and the result is simply a type with no fields",
+          r"tuck_Handle\* = object"
+  t.hostRuns "...on every backend", 0
+
+  # The three that always took it, pinned so they cannot diverge from `type`
+  # again.
+  t.src """
+object Box:
+  ...
+
+mixin Helper:
+  ...
+
+actor Sink [queue: 2]:
+  ...
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "object, mixin and actor take it too"
+  t.hostRuns "...and every backend builds the set", 0
+
   # A `public:` entry may carry the TYPE PARAMETER — `public: Box[T]` — which
   # exports the actor as a TEMPLATE. Instantiation happens at the importing
   # module's call site, not here: an exporting module need not use its own
