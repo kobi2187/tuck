@@ -125,6 +125,45 @@ re-spells them for its own target, so one Tuck source means the same thing
 whether it is built through Nim, Odin or D. An escape passed through unchecked
 would be a character whose meaning the target language decided instead.
 
+### 2.1c Line Continuation
+
+Indentation is structure, so a continuation line cannot simply be indented
+further — that would open a block. Two rules say where a line keeps going, and
+both are decided by the LEXER, which suppresses the newline; nothing downstream
+sees a continuation at all.
+
+**A line ending in a binary operator, a comma or `=` continues.** The operand
+it needs is on the next line, so the line is manifestly unfinished:
+
+```tuck
+let total = subtotal +
+            shipping +
+            tax
+
+let req = {url: url, verb: Method.Get,
+           headers: hdrs}
+```
+
+The set is exactly the tokens that demand a right-hand side: `+ - * % /i /f`,
+`== != < > <= >=`, `and or`, `,` and `=`. Deliberately NOT `:` — a colon opens
+a block, and swallowing the newline after `fn main() -> int [io]:` would leave
+the body's indent with nothing to attach to. Deliberately NOT `.` either:
+`...` ends in one.
+
+**Inside an unclosed bracket, a newline separates like a comma.** A bracket
+group is not indentation-structured, so a line break inside one is free, and
+the last comma on a line is optional:
+
+```tuck
+let xs = [1, 2,
+          3
+          4]
+```
+
+Both forms may be mixed. These are conveniences, not safety rules: a line that
+is hard to read is the author's business, and the language should not force a
+rewrite to say something ordinary.
+
 ### 2.2 No Destructuring
 
 You do not unpack a struct into local variables. If you need a field, you access
@@ -278,6 +317,25 @@ With export lists, only the contract names ever meet.
 When two imports do export the same name, that name gives up its unqualified
 form and stays reachable as `mod::name`; the error is reported where the
 bare name is written, not at the import (§5.5).
+
+- **A generic actor is exported with its type parameter**, `Box[T]`, which
+  exports it as a TEMPLATE. An actor is one singleton per instantiation
+  (§9.1), so `Box` alone would name no runnable thing, and the importing
+  module instantiates at its own call site rather than choosing from a list
+  the exporter guessed at. The parameter is written so the entry says what it
+  is: an importer has to know the name must be instantiated before use.
+
+```tuck
+public:
+  Box[T]
+
+actor Box[T] [queue: 4]:
+  last: T
+```
+
+  Such a declaration survives as a template rather than being expanded away,
+  and is the one actor that reaches the backends still carrying a parameter —
+  where it is skipped, because a template is not code.
 
 ### 2.4b `input` and `merge`
 
@@ -1159,6 +1217,29 @@ object PodcastApp:
 Compiler flags control runtime behavior of `pending` functions: trap (default in
 debug), return zero value (release stub), or log and continue.
 
+**`...` is the same thing, written inline.** A function whose ENTIRE body is
+`...` becomes a pending stub: it is listed in the build's PENDING report and
+names itself on stderr if it is ever invoked.
+
+```tuck
+fn balance({id: int}) -> int:
+  ...                      # identical to declaring it in a `pending:` block
+```
+
+The two spellings differ only in where you say it — `pending:` lists a surface
+from outside, `...` marks one body from within — and there is deliberately no
+third. `...` used to emit a bare `discard`, so a fn declared `-> int` returned a
+SILENT ZERO: a plausible wrong answer indistinguishable from a computed one.
+
+`...` is accepted by every declaration that takes a body, not only `fn`. In a
+`type`, `object`, `actor` or `mixin` it means "no members yet" and the result is
+a declaration with no fields.
+
+It is NOT spelled `discard`, and `discard` is refused in body position. The two
+mean different things: `discard` says "I drop this value on purpose", `...` says
+"I have not written this yet", and only the second belongs in the PENDING
+report.
+
 ### 5.5 Groups — a compile-time bound for generics
 
 A `group` names a required shape for a generic type parameter — the thing
@@ -1788,21 +1869,46 @@ tension: the parameter is forwarded to the actor's own fields, so an actor
 whose machinery says nothing about what it carries can be reused for a second
 element type instead of being written twice.
 
-```tuck-rejected
+```tuck
+import seq
+
 actor Inbox[T] [queue: 16]:
-  pending: Seq[T]
+  items: Seq[T]
   seen: int = 0
 
-  on put({item: T}) -> void:
-    pending ..push {item}
+  on put({item: T}):
+    items = {items: items, value: item} push
     seen += 1
+
+fn main() -> int:
+  Inbox[int] send put {item: 7}
+  return Inbox[int].seen
 ```
 
-Fenced `tuck-rejected` because the HEADER is implemented and the forwarding is
-not: an actor field cannot yet hold a bracketed type at all — `pending:
-Seq[int]` is refused the same way, with or without a type parameter — so there
-is nowhere for `T` to be forwarded TO. The declaration form below is real
-today; the body above is what it is for.
+**Implemented, 2026-09-17.** An actor field holds a bracketed type fine
+(`items: Seq[T]` and `Array[4, int]` both parse and check); the earlier claim
+that it could not was a misreading — the example that produced it named its
+field `pending`, which is a keyword, so the rejection was about the NAME.
+
+What was genuinely missing was the binding rule, and it is this: **an actor is
+one singleton PER INSTANTIATION.** `Box[int]` and `Box[str]` are two actors,
+each with its own mailbox, drain coroutine, singleton and registration. The
+type parameter is substituted and the declaration cloned before typechecking
+(`compiler/generic_actors.nim`), so every stage below — the checker, mangling,
+all three backends — sees ordinary actors and none of them knows generic actors
+exist.
+
+The instantiation is written at the use site:
+
+```tuck
+Box[int] send put {v: 7}
+let n = Box[int].last
+```
+
+A generic actor that nobody instantiates is refused (TK-TY28): there is nothing
+to expand it against, so its fields name a type that does not exist. The one
+exception is a template this module EXPORTS — see §2.3c — which survives for an
+importer to instantiate at its own call site.
 
 The type parameter list comes **before** the attribute list, and both are
 optional: `actor Inbox[T] [queue: 16]`, `actor Inbox[T]`, `actor Inbox
@@ -1843,6 +1949,40 @@ task handleConn({conn: Connection}) -> !void:
     | timeout.5s  -> {}:     conn.keepalive
     | shutdown    -> {}:     return
 ```
+
+**An arm takes a BLOCK, not only a single expression.** The same two spellings
+a `match` arm has: the body on the line, or an indented block under it.
+
+```tuck
+task pull({fd: int}) -> !void [io]:
+  on select:
+    | read fd -> {}:
+      let part = {fd: fd, max: 65536} take
+      {path: path, at: at, data: part} putAt discard
+      Progress send advanced {bytes: part.len}
+    | timeout {20.s} -> {}:
+      return
+```
+
+Forcing a wakeup's work into a helper was the language asking the author to
+decompose for the parser's convenience rather than the reader's — and the
+helper then could not branch the loop, which is the shape a real download loop
+wants.
+
+**A select with ONE arm is a plain await, not a race.** Both single-arm forms
+are legal and lower to straight-line code: a lone `read` awaits that
+descriptor, a lone `timeout` is a sleep.
+
+```tuck
+task readOne({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd -> {}: return {code: 7}
+```
+
+**Known gap: a fired `timeout` does not bound latency.** The right arm wins and
+the right value comes back, but not until the losing source has completed,
+because awaiting a task drives the scheduler until ALL work finishes rather
+than until THIS task does. Issue #55.
 
 ### 9.4 The Scheduler
 

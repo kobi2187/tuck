@@ -220,17 +220,27 @@ let tuckGrammar = peg("module", st: Stats):
                # plain identifier, so this is a continuation, not a keyword.
                ("tkLParen " * fieldInit * *("tkComma " * fieldInit) *
                 "tkRParen ") |
-               ("tkLBracket " * expr * *("tkComma " * expr) * "tkRBracket ") |
+               ("tkLBracket " * ?sep * expr * *(sep * expr) * ?sep *
+                "tkRBracket ") |
                structLit |
                name
   primary   <- fnRef | structLit | listLit | parenExpr | literal | name
   fnRef     <- "tkColon " * name * ?("tkColonColon " * name)
-  structLit <- "tkLBrace " * ?(fieldInit * *("tkComma " * fieldInit)) * "tkRBrace "
+  # Inside a bracket group a NEWLINE separates exactly like a comma, and the
+  # last separator on a line is optional. The lexer emits a newline after an
+  # item that does not end in a continuing operator (after `1,` it does not,
+  # after a bare `2` it does), and parser_base.skipSeparators eats it — so a
+  # grammar demanding `tkComma` between every pair described a language the
+  # parser had stopped accepting, and the two spellings rode the escape hatch.
+  sep       <- +("tkComma " | "tkNewline ")
+  structLit <- "tkLBrace " * ?sep * ?(fieldInit * *(sep * fieldInit)) * ?sep *
+               "tkRBrace "
   # A payload field is `name: expr`, or a BARE expression — `{8080}` is the
   # shorthand for `{value: 8080}`, so the field name is optional in a way a
   # `name`-first rule cannot express.
   fieldInit <- (name * "tkColon " * expr) | expr
-  listLit   <- "tkLBracket " * ?(expr * *("tkComma " * expr)) * "tkRBracket "
+  listLit   <- "tkLBracket " * ?sep * ?(expr * *(sep * expr)) * ?sep *
+               "tkRBracket "
   parenExpr <- "tkLParen " * expr * "tkRParen "
   literal   <- "tkIntLit " | "tkFloatLit " | "tkStrLit " | "tkTrue " |
                "tkFalse " | "tkNone "
@@ -268,7 +278,15 @@ let tuckGrammar = peg("module", st: Stats):
 
   # --- declarations -------------------------------------------------------
   importDecl<- "tkImport " * name * nl
-  publicDecl<- "tkPublic " * "tkColon " * +nl * rawBlk
+  # spec 2.3c. STATED rather than `rawBlk`, which accepted whatever was
+  # indented and so described nothing: `public: Box[T]` "agreed" because the
+  # grammar never looked inside. Bare names, whitespace-separated, over as many
+  # lines as it takes — plus `Name[T]`, which exports a generic actor as a
+  # TEMPLATE for an importer to instantiate at its own call site (#18).
+  publicDecl<- "tkPublic " * "tkColon " * +nl * publicBlk
+  publicBlk <- "tkIndent " * +publicLine * "tkDedent "
+  publicLine<- *nl * +publicName * eol * *nl
+  publicName<- name * ?typeArgs
   fnDecl    <- "tkFn " * name * ?generics * params * sigTail * "tkColon " * +nl * ?blk
   # An interface requirement is a signature with no colon and no body.
   fnReqDecl <- "tkFn " * name * ?generics * params * sigTail * eol
