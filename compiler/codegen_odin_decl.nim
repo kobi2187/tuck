@@ -763,6 +763,7 @@ proc genShutdownSender*(d: Decl, ind: string): string =
     "Msg{" & TagField & " = .msgShutdown})\n" & ind & "}\n"
 
 proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
+  if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   ## An actor emits its message envelope, state struct, singleton, dispatch,
   ## drain loop and one send helper per handler.
   ##

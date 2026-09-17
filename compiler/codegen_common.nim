@@ -170,6 +170,18 @@ proc collectHandlers*(d: Decl):
           result.handlers.add(ActorMsgHandler(name: arm.source,
                                               params: arm.binding, body: arm.body))
 
+proc isActorTemplate*(d: Decl): bool =
+  ## An exported generic actor — `public: Box[T]`. It survives generic_actors
+  ## (an importer must be able to instantiate it) and the checker exempts it
+  ## from TK-TY28 for the same reason, so it is the ONE actor that reaches
+  ## codegen still carrying a type parameter.
+  ##
+  ## It must not be emitted. A template is not a declaration: its fields name a
+  ## parameter, so emitting one produces `last*: T` with T declared nowhere —
+  ## the exact bug #18 was about, arriving by the export path instead. The
+  ## importer's own expansion emits the concrete actors.
+  d != nil and d.kind == dkActor and d.actorGenerics.len > 0
+
 proc actorHasMessages*(d: Decl): bool =
   ## Whether this actor has anything to receive. A specimen actor
   ## (`actor X: ...`) has no handlers and no shutdown, so it gets no envelope
@@ -182,6 +194,7 @@ proc actorHasMessages*(d: Decl): bool =
   ## Only D asked it; Nim and Odin re-derived "every dkActor" and so emitted a
   ## call to a registerActor/drain proc their own genActor had declined to
   ## define (issue #61).
+  if isActorTemplate(d): return false   # nothing to start: it is not emitted
   let (handlers, _, hasShutdown) = collectHandlers(d)
   handlers.len > 0 or hasShutdown
 

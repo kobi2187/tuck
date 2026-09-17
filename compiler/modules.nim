@@ -56,6 +56,7 @@
 import os, strutils, hashes, sets, tables, times
 import msgpack4nim
 import ast, parser, rewrite
+import generic_actors   # generic actors expand BEFORE the checker sees them
 import ast_query   # exportedNames — one definition, shared with the checker
 import ../lexer
 
@@ -101,6 +102,10 @@ proc parseSource*(source: string): Module =
   var p = Parser(source: source, tokens: lexSource(source), cursor: 0)
   result = p.parseModule()
   rewriteModule(result)
+  # Before ANY later stage: a generic actor becomes one ordinary actor per
+  # instantiation, so typechecking, mangling and all three backends see nothing
+  # but plain actors and never learn that generic actors exist (#18).
+  expandGenericActors(result)
 
 proc parseTuckFile*(path: string): Module =
   ## Parse one file, naming it in any rejection. The lexer and parser see only

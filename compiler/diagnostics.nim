@@ -373,14 +373,16 @@ proc parseExplanation(d: DiagCode): string =
     "wrong one compiles."
   of dcTyGenericActor:
     "An actor is a compile-time SINGLETON, so a type parameter on it has to " &
-    "say which instantiation the singleton is of. The intended rule is one " &
-    "singleton per instantiation — `Box[int]` and `Box[str]` are two actors, " &
-    "each with its own mailbox, drain and registration — and the machinery " &
-    "for that is not built yet. Until it is, the parameter is refused here " &
-    "rather than dropped: it used to typecheck clean and emit a field of " &
-    "undeclared type `T`, so the author's own mistake arrived as a host " &
-    "compiler error in generated code they never wrote. Name a concrete type " &
-    "in the field for now."
+    "say which instantiation the singleton is of. It does: one singleton PER " &
+    "INSTANTIATION. `Box[int]` and `Box[str]` are two actors, each with its " &
+    "own mailbox, drain coroutine and registration, expanded from the one " &
+    "declaration before typechecking. Write `Box[int] send put {...}` or read " &
+    "`Box[int].field` and that instantiation is what gets built. This error " &
+    "means the opposite: the actor is generic and NOBODY instantiated it, so " &
+    "there is nothing to expand it against and its fields name a type that " &
+    "does not exist. It is refused rather than dropped — dropping is what it " &
+    "did before, emitting a field of undeclared type `T` so the author's own " &
+    "mistake arrived as a host compiler error in code they never wrote."
   of dcTyCtorFieldType:
     "A field given in a construction does not fit the type the declaration " &
     "gives it. This was unchecked: the value rode to codegen and only the " &

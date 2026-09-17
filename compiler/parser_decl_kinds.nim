@@ -1178,9 +1178,31 @@ proc parsePublicDecl*(p: var Parser, sp: Span): Decl =
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
   var names: seq[string]
+  var insts: seq[Expr]
   p.indentedBlock:
     while p.current().kind notin {tkNewline, tkEOF}:
-      names.add(p.expect(tkIdent,
-                          "Expected an exported name in the `public:` block").value)
+      let nSp = p.getSpan()
+      let base = p.expect(tkIdent,
+                          "Expected an exported name in the `public:` block").value
+      # `Box[T]` — a GENERIC actor, exported as a template. The parameter is
+      # written so the entry says what it is: `Box` alone would read as an
+      # ordinary name, and an importer has to know it must instantiate. The
+      # instantiation itself happens at the CALL SITE in the importing module,
+      # not here — an exporting module need not use its own actor at all.
+      #
+      # The exported NAME is the base: what crosses the module boundary is the
+      # template, and `Box_int` is a name the importer's own expansion makes.
+      if p.current().kind == tkLBracket:
+        discard p.advance()
+        var args: seq[Expr]
+        while p.current().kind notin {tkRBracket, tkEOF}:
+          args.add(p.parseExpr())
+          if p.current().kind == tkComma: discard p.advance()
+        discard p.expect(tkRBracket)
+        insts.add(Expr(span: nSp, kind: exkBracket,
+                       brReceiver: Expr(span: nSp, kind: exkVar, name: base),
+                       brArgs: args))
+      names.add(base)
     if p.current().kind == tkNewline: discard p.advance()
-  Decl(span: sp, kind: dkPublic, name: "", publicNames: names)
+  Decl(span: sp, kind: dkPublic, name: "", publicNames: names,
+       publicInsts: insts)

@@ -464,6 +464,12 @@ type
       path*: seq[string]
     of exkSend:
       sendActor*: string   # the actor TYPE name (singleton target)
+      sendActorArgs*: seq[Type]  # `Box[int] send put` — the instantiation, as
+                                 # TYPES rather than a decorated name string.
+                                 # An actor is a singleton per instantiation
+                                 # (#18), so this is what says WHICH singleton;
+                                 # generic_actors.nim consumes it and leaves a
+                                 # plain sendActor behind before typechecking
       sendHandler*: string # the `on <handler>` name
       sendPayload*: Expr    # the `{...}` struct literal, or nil
     of exkSelect:
@@ -716,6 +722,13 @@ type
       mixinMembers*: seq[Decl]
     of dkPublic:
       publicNames*: seq[string]
+      publicInsts*: seq[Expr]   # `public: Box[int]` — the bracket nodes, kept
+                                # so generic_actors can read the instantiation
+                                # off them. An export entry IS a use site: it
+                                # is what makes `Box[int]` exist for an
+                                # importer that never sends to it here (#18).
+                                # publicNames already holds the EXPANDED name,
+                                # so every export check works on identifiers
     of dkWhen:
       whenTargetValue*: string  # the string literal on the RHS of `TARGET ==`
       whenDecls*: seq[Decl]     # top-level declarations gated by this block

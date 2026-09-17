@@ -4543,33 +4543,40 @@ proc checkActorQueue(m: Module, d: Decl) =
            "zero or negative one cannot hold a message (it builds, then " &
            "fails on the first send)", attr.span)
 
-proc failIfGenericActor(d: Decl) =
-  ## An actor is a compile-time singleton, so `actor Box[T]` has to say WHICH
-  ## instantiation the singleton is of. The ruling is one singleton per
-  ## instantiation — `Box[int]` and `Box[str]` are two actors with two
-  ## mailboxes — and that machinery is not built (issue #18).
+proc failIfGenericActor(m: Module, d: Decl) =
+  ## A generic actor that reaches the checker is one NOBODY INSTANTIATED.
   ##
-  ## Refused rather than dropped, because dropping is what it did: the type
+  ## An actor is a compile-time singleton, so `actor Box[T]` has to say which
+  ## instantiation the singleton is of, and the answer (#18) is one singleton
+  ## per instantiation: generic_actors.nim expands `Box[int]` and `Box[str]`
+  ## into two actors before this stage runs. So by the time a declaration is
+  ## checked, a surviving type parameter means the template was never used —
+  ## there is no instantiation to expand it against, and its fields name a type
+  ## that does not exist.
+  ##
+  ## Refused rather than dropped, because dropping is what it used to do: the
   ## parameter was recorded by the parser, read by nothing but the Array-size
   ## check, and never reached codegen — so `last: T` typechecked clean and
   ## emitted a field of undeclared type `T`, and the author's mistake arrived
   ## as "undeclared identifier: 'T'" from the HOST compiler, in generated code
-  ## they never wrote. Rejecting is the house rule (reject, don't transform);
-  ## emitting something that cannot compile is neither.
+  ## they never wrote.
   if d.actorGenerics.len == 0: return
+  # `public: Box[T]` keeps the template alive for importers to instantiate, so
+  # a surviving type parameter is expected there rather than an error.
+  if exportedAsTemplate(m, d.name): return
   fail(dcTyGenericActor,
-       "an actor is a compile-time singleton, so its type parameter `" &
-       d.actorGenerics[0] & "` has nothing to bind it. One singleton per " &
-       "instantiation (`" & d.name & "[int]` and `" & d.name &
-       "[str]` as two actors) is the intended rule and is not built yet — " &
-       "name a concrete type in the field for now", d.span)
+       "`" & d.name & "` is generic and never instantiated, so its type " &
+       "parameter `" & d.actorGenerics[0] & "` has nothing to bind it. An " &
+       "actor is one singleton PER INSTANTIATION — write `" & d.name &
+       "[int] send <handler> {...}` (or read `" & d.name & "[int].<field>`) " &
+       "and that instantiation is what gets built", d.span)
 
 proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   ## Handlers see the actor's fields, bare AND through `self` — mirrors
   ## checkObjectDecl. Nothing bound `self` here before; a handler spelling
   ## `self.field` synthesized `self` as a silently-unknown name and rode
   ## through on gradual typing, same shape as `result` in checkHandler below.
-  failIfGenericActor(d)
+  failIfGenericActor(tc.module, d)
   checkActorQueue(tc.module, d)
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)

@@ -687,7 +687,136 @@ actor Box[T] [queue: 4]:
 fn main() -> int:
   return 0
 """
-  t.badCheck "a generic actor USING its parameter is refused too", "TK-TY28"
+  # An actor is one singleton PER INSTANTIATION (#18, ruled 2026-09-17), so a
+  # generic actor USED twice becomes two actors — two mailboxes, two drains,
+  # two registrations. generic_actors.nim expands them before typechecking, so
+  # every backend below sees plain actors and none of them knows that generic
+  # actors exist.
+  t.src """
+import scheduler
+import console
+
+actor Box[T] [queue: 4]:
+  last: T
+  hits: int = 0
+
+  on put({v: T}):
+    last = v
+    hits += 1
+
+fn both() -> bool:
+  return Box[int].hits > 0 and Box[str].hits > 0
+
+fn main() -> int [io]:
+  Box[int] send put {v: 7}
+  Box[str] send put {v: "hi"}
+  scheduler::waitUntil {pred: :both}
+  {text: Box[str].last} printLine
+  return Box[int].last
+"""
+  t.okCheck "one generic actor, two instantiations"
+  t.emits "...expands to a SEPARATE singleton per instantiation",
+          "tuck_Box_strSingleton"
+  t.emits "...and its own drain, so each is its own daemon",
+          "draintuck_Box_int"
+  t.outputs "...the str instantiation carries a str", "hi"
+  t.runs "...and the int one answers with its own value", 7
+  t.hostRuns "...on every backend", 7
+
+  # The parameter substitutes through a COMPOUND field, not only a bare name:
+  # `Seq[T]` has to become `Seq[int]`, which a tkNamed cannot do in place —
+  # substType returns a new type rather than mutating one.
+  t.src """
+import seq
+
+actor Box[T] [queue: 4]:
+  items: Seq[T]
+
+  on put({v: T}):
+    items = {items: items, value: v} push
+
+fn main() -> int:
+  Box[int] send put {v: 5}
+  return 0
+"""
+  t.okCheck "a type parameter substitutes through a compound field"
+  # Escaped: `emits` takes a REGEX, so a bare `items*: seq[int]` reads as
+  # "item" plus any number of "s" followed by a character class.
+  t.emits "...Seq[T] becomes a concrete seq[int]", r"items\*: seq\[int\]"
+
+  # A generic actor NOBODY instantiates has nothing to expand against, so its
+  # fields name a type that does not exist. Refused rather than dropped —
+  # dropping is what emitted `last*: T` with T declared nowhere, turning the
+  # author's mistake into a host compiler error in code they never wrote.
+  t.src """
+actor Box[T] [queue: 4]:
+  last: T
+
+  on put({v: T}):
+    last = v
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an UNINSTANTIATED generic actor is refused, not dropped",
+             "TK-TY28"
+
+  # A `public:` entry may carry the TYPE PARAMETER — `public: Box[T]` — which
+  # exports the actor as a TEMPLATE. Instantiation happens at the importing
+  # module's call site, not here: an exporting module need not use its own
+  # actor at all, so listing concrete instantiations would force it to predict
+  # which ones its importers want.
+  #
+  # The parameter is written rather than a bare `Box` so the entry says what it
+  # is: an importer has to know the name must be instantiated before use.
+  #
+  # Such a declaration therefore SURVIVES generic_actors — the pass expands and
+  # drops an unexported template, and keeps an exported one — and the checker
+  # exempts it from TK-TY28, since a surviving type parameter is the point
+  # rather than an error. Both ask `exportedAsTemplate` (ast_ops), one query,
+  # so the two cannot disagree about which templates live.
+  t.src """
+public:
+  Box[T]
+
+actor Box[T] [queue: 4]:
+  last: T
+
+  on put({v: T}):
+    last = v
+"""
+  t.okCheck "`public:` takes a generic actor as a template"
+
+  # ...and the same module may still instantiate it itself. Exporting the
+  # template and using it are independent.
+  #
+  # `waitUntil` is not decoration: a send without one never delivers (#8),
+  # because main never yields and the actor daemon never runs. Without it this
+  # asserts 0 and proves nothing about the expansion.
+  t.src """
+import scheduler
+
+public:
+  Box[T]
+
+actor Box[T] [queue: 4]:
+  last: T
+
+  on put({v: T}):
+    last = v
+
+fn arrived() -> bool:
+  return Box[int].last > 0
+
+fn main() -> int [io]:
+  Box[int] send put {v: 4}
+  scheduler::waitUntil {pred: :arrived}
+  return Box[int].last
+"""
+  t.okCheck "an exported template is still instantiable in its own module"
+  t.omits "...and the template itself is NOT emitted", "last\\*: T"
+  t.runs "...while its instantiation runs", 4
+  t.hostRuns "...on every backend", 4
 
   # --- `...`, the unwritten body ------------------------------------------
   #

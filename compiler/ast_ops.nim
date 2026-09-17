@@ -7,7 +7,7 @@
 # assignIds/clearIds, effectName, enumDomain, writtenName — operates ON
 # those types from outside, so it moves freely. Re-exported by ast.nim so
 # existing `import ast` call sites see no difference.
-import tables, options, hashes
+import tables, options, hashes, strutils
 import ast
 
 func effectName*(e: EffectMarker): string =
@@ -101,6 +101,74 @@ iterator children*(t: Type): Type =
       for mem in t.members: yield mem
     of tkEffect: yield t.inner
     of tkRename: yield t.underlying
+
+proc typeOfTypeExpr*(e: Expr): Type =
+  ## A type written in EXPRESSION position, as a type. `Box[int]` parses as an
+  ## exkBracket over names — ast.nim says the RECEIVER decides whether that is
+  ## an index or a type application — so the argument side arrives as Exprs and
+  ## an instantiation has to be read back out of them.
+  ##
+  ## Shared rather than private to the parser: the parser reads it off a send's
+  ## receiver, and generic_actors reads it off a field access, and the two must
+  ## produce the same type for the same source or one instantiation would
+  ## expand into two actors.
+  if e == nil: return nil
+  case e.kind
+  of exkVar: Type(span: e.span, kind: tkNamed, name: e.name)
+  of exkLit: Type(span: e.span, kind: tkNamed, name: e.litValue)
+  of exkBracket:
+    var args: seq[Type]
+    for a in e.brArgs: args.add(typeOfTypeExpr(a))
+    Type(span: e.span, kind: tkApp, base: typeOfTypeExpr(e.brReceiver),
+         args: args)
+  else: nil
+
+proc exportedAsTemplate*(m: Module, name: string): bool =
+  ## Does this module export `name` as a GENERIC template — `public: Box[T]`?
+  ##
+  ## Such a declaration outlives generic_actors on purpose: the exporting
+  ## module need not instantiate its own actor, and an importer instantiates at
+  ## its own call site. Both the pass (deciding what to keep) and the checker
+  ## (deciding whether a surviving type parameter is an error) ask this, so it
+  ## is one query rather than two that could disagree.
+  for d in m.decls:
+    if d == nil or d.kind != dkPublic: continue
+    for br in d.publicInsts:
+      if br != nil and br.kind == exkBracket and br.brReceiver != nil and
+         br.brReceiver.kind == exkVar and br.brReceiver.name == name:
+        return true
+  false
+
+proc typeSuffix*(t: Type): string =
+  ## The name part one instantiation argument contributes: `int` -> "int",
+  ## `Seq[int]` -> "Seq_int". Flat and deterministic, so the same instantiation
+  ## written in two places reaches the same expanded name.
+  if t == nil: return "unknown"
+  case t.kind
+  of tkNamed: t.name
+  of tkApp:
+    var parts = @[typeSuffix(t.base)]
+    for a in t.args: parts.add(typeSuffix(a))
+    parts.join("_")
+  else: "t"
+
+proc instName*(base: string, args: seq[Type]): string =
+  ## An instantiated actor's expanded name: `Box` + `[int]` is `Box_int`, a
+  ## plain identifier from here on — mangling, codegen and the three backends
+  ## never learn it came from a generic.
+  ##
+  ## Shared, and it has to be: the PARSER writes this name into a `public:`
+  ## export list while generic_actors writes it onto the expanded declaration,
+  ## and two copies that drifted would export a name nothing declares.
+  result = base
+  for a in args: result.add("_" & typeSuffix(a))
+
+proc instNameOf*(base: string, args: seq[Expr]): string =
+  ## `instName` for a call site holding the arguments as EXPRESSIONS, which is
+  ## how a bracket parses before anything has read types out of it.
+  var ts: seq[Type]
+  for a in args: ts.add(typeOfTypeExpr(a))
+  instName(base, ts)
 
 iterator children*(e: Expr): Expr =
   ## Every sub-expression, one level down. For the walks that only need to

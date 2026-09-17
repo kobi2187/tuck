@@ -778,6 +778,7 @@ proc genDDecisionTable*(ctx: var DCodegenCtx, d: Decl): string =
     body & "\n}\n"
 
 proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
+  if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared
   ## type, no construction, alive for the whole program. It emits its message
   ## envelope, state struct, the singleton itself, dispatch, a drain and one

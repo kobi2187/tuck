@@ -463,6 +463,7 @@ proc genActorDrain*(msgTypeName, drainName, singleton: string, hasShutdown: bool
     "      result = true\n")
 
 proc genActor*(ctx: var CodegenCtx, d: Decl): string =
+  if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   let queueSize = actorQueueSize(ctx.module, d)
   let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
   let msgEnumName = d.name & "MsgKind"

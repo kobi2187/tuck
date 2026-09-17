@@ -7,6 +7,7 @@
 # parseDecl, which is what lets it sit at the bottom of the parser DAG.
 import strutils, tables
 import ast
+import ast_ops
 import ../lexer
 import parser_base
 import diagnostics
@@ -474,16 +475,32 @@ proc chainSend(p: var Parser, expr: Expr, sp: Span): Expr =
   ## `ActorType send handler {payload}` — a direct send to an actor
   ## singleton. The brace is the handler's message payload, optional for a
   ## no-arg `on`.
+  ##
+  ## The receiver may be INSTANTIATED — `Box[int] send put {v: 1}` — because an
+  ## actor is one singleton per instantiation (#18). Without this the bracket
+  ## broke the send recognition outright and the line parsed as
+  ## `put(send(Box[int]), {v: 1})`, three nested calls that meant nothing.
   discard p.advance()                    # eat `send`
   let handler = p.expectMemberName("Expected handler name after 'send'").value
   var payload: Expr = nil
   if p.current().kind == tkLBrace: payload = p.parsePrimaryExpr()
-  Expr(span: sp, kind: exkSend, sendActor: expr.name, sendHandler: handler,
-       sendPayload: payload)
+  var actorName = ""
+  var actorArgs: seq[Type]
+  if expr.kind == exkBracket:
+    actorName = expr.brReceiver.name
+    for a in expr.brArgs: actorArgs.add(typeOfTypeExpr(a))
+  else:
+    actorName = expr.name
+  Expr(span: sp, kind: exkSend, sendActor: actorName,
+       sendActorArgs: actorArgs, sendHandler: handler, sendPayload: payload)
 
 proc isSendStep(p: Parser, expr: Expr): bool =
-  p.current().kind == tkIdent and p.current().value == "send" and
-    expr.kind == exkVar and p.peek().kind == tkIdent
+  if not (p.current().kind == tkIdent and p.current().value == "send" and
+          p.peek().kind == tkIdent):
+    return false
+  expr.kind == exkVar or
+    (expr.kind == exkBracket and expr.brReceiver != nil and
+     expr.brReceiver.kind == exkVar)
 
 proc isMergeStep(p: Parser, expr: Expr): bool =
   ## `{a, b} merge` — a struct literal receiver is the whole trigger. With
