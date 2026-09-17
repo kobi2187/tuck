@@ -107,6 +107,8 @@ type
                                         ## declared type
     dcTyMemberShadowsFn = "TK-TY27"     ## one name is both an object's member
                                         ## and a top-level fn
+    dcTyGenericActor = "TK-TY28"        ## an actor's type parameter has nothing
+                                        ## to bind it yet
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -369,6 +371,16 @@ proc parseExplanation(d: DiagCode): string =
     "(`{n: 41} noise`) reaches the top-level one. That is not an error — it " &
     "is worth saying out loud, because the two read alike and picking the " &
     "wrong one compiles."
+  of dcTyGenericActor:
+    "An actor is a compile-time SINGLETON, so a type parameter on it has to " &
+    "say which instantiation the singleton is of. The intended rule is one " &
+    "singleton per instantiation — `Box[int]` and `Box[str]` are two actors, " &
+    "each with its own mailbox, drain and registration — and the machinery " &
+    "for that is not built yet. Until it is, the parameter is refused here " &
+    "rather than dropped: it used to typecheck clean and emit a field of " &
+    "undeclared type `T`, so the author's own mistake arrived as a host " &
+    "compiler error in generated code they never wrote. Name a concrete type " &
+    "in the field for now."
   of dcTyCtorFieldType:
     "A field given in a construction does not fit the type the declaration " &
     "gives it. This was unchecked: the value rode to codegen and only the " &

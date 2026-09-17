@@ -4543,11 +4543,33 @@ proc checkActorQueue(m: Module, d: Decl) =
            "zero or negative one cannot hold a message (it builds, then " &
            "fails on the first send)", attr.span)
 
+proc failIfGenericActor(d: Decl) =
+  ## An actor is a compile-time singleton, so `actor Box[T]` has to say WHICH
+  ## instantiation the singleton is of. The ruling is one singleton per
+  ## instantiation — `Box[int]` and `Box[str]` are two actors with two
+  ## mailboxes — and that machinery is not built (issue #18).
+  ##
+  ## Refused rather than dropped, because dropping is what it did: the type
+  ## parameter was recorded by the parser, read by nothing but the Array-size
+  ## check, and never reached codegen — so `last: T` typechecked clean and
+  ## emitted a field of undeclared type `T`, and the author's mistake arrived
+  ## as "undeclared identifier: 'T'" from the HOST compiler, in generated code
+  ## they never wrote. Rejecting is the house rule (reject, don't transform);
+  ## emitting something that cannot compile is neither.
+  if d.actorGenerics.len == 0: return
+  fail(dcTyGenericActor,
+       "an actor is a compile-time singleton, so its type parameter `" &
+       d.actorGenerics[0] & "` has nothing to bind it. One singleton per " &
+       "instantiation (`" & d.name & "[int]` and `" & d.name &
+       "[str]` as two actors) is the intended rule and is not built yet — " &
+       "name a concrete type in the field for now", d.span)
+
 proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   ## Handlers see the actor's fields, bare AND through `self` — mirrors
   ## checkObjectDecl. Nothing bound `self` here before; a handler spelling
   ## `self.field` synthesized `self` as a silently-unknown name and rode
   ## through on gradual typing, same shape as `result` in checkHandler below.
+  failIfGenericActor(d)
   checkActorQueue(tc.module, d)
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)

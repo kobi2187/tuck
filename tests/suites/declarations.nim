@@ -604,13 +604,21 @@ fn main() -> int:
   # An actor may be generic (spec 9.1, ruled 2026-09-13): the type parameter is
   # forwarded to the actor's own fields, so an actor whose machinery says
   # nothing about what it carries is written once and reused per element type.
+  # Ruled again 2026-09-17 on the half that was missing — an actor is a
+  # compile-time singleton, so what BINDS the parameter is one singleton per
+  # instantiation: `Box[int]` and `Box[str]` are two actors with two mailboxes
+  # (#18). That machinery is not built, so the checker refuses the parameter
+  # for now rather than dropping it — dropping is what emitted `last*: T` with
+  # T declared nowhere.
   #
-  # Type params come BEFORE attributes, the same order and the same two procs
-  # `type Name[T] [attrs]` uses — both are bracket groups, told apart by case.
-  # parseDeclAttrs used to eat the FIRST group whatever it was, so
-  # `actor Box[T]:` parsed with T recorded as an ATTRIBUTE (it looked
-  # supported and meant nothing) and `actor Box[T] [queue: 4]` failed with
-  # "Expected `Colon` here, found `[`".
+  # These two assert the PARSE, which is what they were always for: type params
+  # come BEFORE attributes, the same order and the same two procs `type Name[T]
+  # [attrs]` uses — both are bracket groups, told apart by case. parseDeclAttrs
+  # used to eat the FIRST group whatever it was, so `actor Box[T]:` parsed with
+  # T recorded as an ATTRIBUTE (it looked supported and meant nothing) and
+  # `actor Box[T] [queue: 4]` failed with "Expected `Colon` here, found `[`".
+  # Reaching a TYPE error is itself proof the parse got that far — a parse
+  # failure would report as one.
   t.src """
 actor Box[T] [queue: 4]:
   n: int = 0
@@ -621,7 +629,7 @@ actor Box[T] [queue: 4]:
 fn main() -> int:
   return 0
 """
-  t.okCheck "an actor takes type params AND attributes"
+  t.badCheck "an actor takes type params AND attributes", "TK-TY28"
 
   t.src """
 actor Box[T]:
@@ -633,7 +641,7 @@ actor Box[T]:
 fn main() -> int:
   return 0
 """
-  t.okCheck "...type params alone"
+  t.badCheck "...type params alone", "TK-TY28"
 
   t.src """
 actor Box [queue: 4]:
@@ -658,6 +666,28 @@ fn main() -> int:
   return 0
 """
   t.okCheck "...and neither"
+
+  # A generic actor PARSES (that much is #18's own finding), and used to
+  # typecheck clean and then emit `last*: T` with T declared nowhere — so the
+  # author's mistake surfaced as the HOST compiler's "undeclared identifier:
+  # 'T'", in generated code they never wrote. The type parameter was recorded
+  # by the parser and read by nothing but the Array-size check.
+  #
+  # An actor is a compile-time singleton, so the parameter needs a binding
+  # rule. The ruling is one singleton per instantiation — `Box[int]` and
+  # `Box[str]` as two actors, two mailboxes, two drains — which is not built.
+  # Until it is, this is refused rather than dropped.
+  t.src """
+actor Box[T] [queue: 4]:
+  last: T
+
+  on put({v: T}):
+    last = v
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a generic actor USING its parameter is refused too", "TK-TY28"
 
   # --- `...`, the unwritten body ------------------------------------------
   #
