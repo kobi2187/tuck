@@ -640,3 +640,121 @@ Interacts with two things already open:
 Measure before committing: `benches/` exists, and the honest outcome may be
 "wins on the traversal benchmark, loses on the random-access one," in which
 case the answer is a separate type rather than a change to `Seq`.
+
+## Later (2026-09-16) — effect-system leverage
+
+Nice-to-have, none committed. Filed as issues #62–#71 so each carries its own
+detail; this section is the map.
+
+**The finding that produced the list.** `EffectMarker` (`compiler/ast.nim:45`)
+has seven members — `emIo`, `emNoAlloc`, `emIrqSafe`, `emUnsafe`, `emMayBlock`,
+`emStack`, `emPriority`. Grepping each one outside the parser, the AST, and the
+blanket `main` budget, **only `emIo` has a specific consumer**, and it has two:
+
+- `compiler/semantics.nim:117` — `if emIo in callee.effects:
+  semLayer.markAsync(e)`. The `[io]` marker DRIVES CODEGEN; it is the async
+  annotation.
+- `compiler/typecheck_collect.nim:268` — a fallible `!T` fn must be `[io]`,
+  "pure functions are total". It GATES THE TYPE SYSTEM.
+
+The other six ride the generic propagation engine and nothing reads them. So
+the effect system today is one propagation engine plus one effect wired to
+consequences. `[io]` → async is the proof the pattern works; everything below
+is that pattern applied again. The organising question is **what else can an
+effect CAUSE, not just forbid.**
+
+The second standing fact: the name-parameterized half already exists.
+`compiler/semantics.nim` carries `Demands(effects: seq[EffectMarker],
+resources: seq[string])` and `checkExpr` enforces both halves through identical
+code — its own comment says "§7.4 asks for the identical rule on
+`[resource: k]`, and gets it from the identical code." `[resource: conn]` is
+already a checked, propagating, name-parameterized authority. Several items
+below are that shape reused.
+
+### Cheapest first, measured by how much already exists
+
+- **#62 — an effect-free fn is const-evaluable.** The const evaluator
+  (`ast_query.evalConstExpr`) takes literals, consts and integer arithmetic.
+  "Declares no effects" is already computed and already means *total*
+  (`typecheck_collect.nim:268` says so in its own error text), so it is exactly
+  the gate for "safe to run during the build". One arm in the evaluator widens
+  every attribute position that takes a number. Highest ratio in the group.
+
+- **#63 — the effect manifest.** Write each fn's declared effects to a stable
+  file so `git diff` shows effect creep. A previously-pure function gaining
+  `[io]` is a real semantic change that is invisible in most languages. This is
+  also the mechanism that catches the supply-chain case IN PRACTICE, since
+  #71 says the type system cannot.
+
+- **#64 — wire the six inert markers.** `[no_alloc]` is statically checkable
+  with what is in the tree (reject a growing `Seq`, a string concat, a heap
+  constructor). `[irq_safe]` has a precedent already: `tests/suites/declarations`
+  asserts "an irq_safe fn may not call a may_block one". Making existing markers
+  mean what they say is strictly cheaper than adding an eighth, and makes the
+  language more truthful rather than bigger.
+
+### Generalizing the `[io]` → codegen precedent
+
+- **#65 — split `[io]` by kind.** `[io: net]`, `[io: fs]`. Worth recording even
+  before any scheduler consumes it: a later scheduler is SIMPLER because the
+  distinction is in the signature rather than discovered at runtime (file IO is
+  not epoll-able; net IO is). Same shape as `[resource: k]`, so this is a
+  generalization rather than a new mechanism. Open ruling: closed kind list or
+  open, and whether bare `[io]` is the union.
+
+- **#66 — the contention graph.** A task's `[resource: k]` set is its
+  contention footprint, known statically. NOT auto-parallelism — the
+  web-downloader disproves that, since all eight chunk tasks share the one
+  `conn` kind. What it actually buys: **deadlock freedom by declared ordering**
+  (A holds `X` acquires `Y`, B holds `Y` acquires `X` is a cycle in a static
+  graph, so a compile error rather than a 3am page), **capacity arithmetic**
+  (`cap: 8` plus per-task demand answers "can this exhaust and hang?" — with
+  `on_full: absent` it cannot, with `on_full: error` it can), and scheduling
+  hints. Every fact it reads is already declared and already checked.
+
+- **#67 — actor isolation as a checked property.** A handler declaring no
+  effects provably cannot touch anything outside its actor. Turns the
+  informal isolation promise into a machine-checked one.
+
+### Because "declares no effects" is itself a useful predicate
+
+- **#68 — generated property tests.** Property testing is normally too
+  expensive to adopt because you write both the generator and the oracle. Here
+  the user has often written both already, for other reasons: an effect-free fn
+  is safe to call with arbitrary input, and the return type's `invariant:` block
+  IS the oracle — already compiled into a validator in all three backends
+  (`proc validate*` in `examples/15-type-attributes.nim`). `spanOf -> Chunk` in
+  the web-downloader is the worked example: four ints in, three invariants
+  asserted, zero test code written. Distinct from `tests/suites/fuzz_corpus.nim`,
+  which fuzzes THE COMPILER.
+
+- **#69 — opt-in memoization.** Effect-free plus total means a repeated call
+  with equal arguments is redundant, so memoizing is LEGAL. It is not
+  automatically a WIN — a hashtable probe costs more than `a * b` — so the
+  compiler checks the precondition and the author asks for the transform.
+  Lives in `optimize.nim`, off unless `-O` names it.
+
+- **#70 — the mock surface is computable.** Effects originate only at `extern`
+  (verified: `semantics.nim` special-cases it nowhere), so a fn's true IO
+  surface is the reachable-extern set — a walk propagation already performs and
+  then discards. `downloader.tuck` type-checks but cannot RUN because
+  `netdl.h` does not exist; its mock surface is exactly `dial, ask, take,
+  putAt, onDisk, sizeOf, say`, and a generated stub module is what would make
+  it runnable. Every backend already emits a body-less signature with a
+  substitute body (`genPendingStub` × 3); a recording mock is that shape.
+
+### The trust root
+
+- **#71 — effects have no unforgeable base.** Filed as `design-gap`, not
+  `enhancement`. Effects originate only from declared signatures and `extern`
+  is special-cased nowhere, so a module mints its own primitives and describes
+  them as it likes. Spiked both directions: an unannotated `extern puts` lets a
+  fn declaring NO effects call libc and `tuck ch` answers OK; adding `[io]` to
+  that one line correctly rejects it. So the machinery is right and the
+  annotation is simply the declarer's to write. **Against mistakes the system
+  works; against an adversary it does not**, and the spec should say so rather
+  than let readers infer a stronger guarantee. The real fix is a MODULE-SYSTEM
+  change (an extern's effects supplied by the importer, or `extern` refused in
+  an untrusted module), not an effect-system one — the machinery underneath
+  needs nothing new. The cheap half is the spec paragraph, and it is worth
+  doing on its own.
