@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (8)
+## A. Open bugs (9)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -110,6 +110,18 @@ controller"; `b.value` is the handle and nothing takes it further. Wants a
 read/write pair through the handle, plus a sanctioned way to give a cell's
 ADDRESS to an extern — the one place a raw pointer is legitimate. Test:
 `known_bugs`, "a pool slot can be read and written through its handle".
+
+**A18 — on Odin and D, an actor declared in an IMPORTED module is never
+started.** Both entry builders collect actors from the entry module only
+(`runtimeUsers` for Odin, `dBootSequence` for D), so a program whose actors all
+live in libraries boots no scheduler and starts no drain. Odin hangs, D returns
+the wrong answer. The Nim half of this was worse and is fixed: it SEGFAULTED,
+because the first `send` reached `tuckNotifySend` against an uninitialised
+runtime, and tuck.nim now collects across the whole program. Odin and D need
+more than a wider scan — an imported actor's drain lives in another package, so
+the emitted call must be QUALIFIED. Test: `cross_module`, "an imported actor
+runs on every backend". Found 2026-09-17 writing the first import/cache tests;
+same scope error as #73.
 
 A17 (a handler-less actor emitting a registration call to a proc that was
 never generated — the three entry-point builders asked "is this a dkActor"

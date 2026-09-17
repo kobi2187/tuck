@@ -339,4 +339,93 @@ fn run({n: int}) -> int:
   t.hostBuilds "...and every backend builds it"
   t.runs "...and each reaches its own helper", 0
 
+  # --- an actor declared in an IMPORTED module -----------------------------
+  #
+  # This SEGFAULTED. The library emitted a perfectly good
+  # `registerActor<Name>`, and nobody called it: tuck.nim collected actor and
+  # task names from the ENTRY module's decls only, so a program whose actors
+  # all live in libraries looked like a program with no actors. The scheduler
+  # was never initialised, the drain coroutine never started, and the first
+  # `send` ran tuckNotifySend against an uninitialised runtime.
+  #
+  # Both halves were individually valid, which is why it compiled clean; the
+  # defect lived in the gap between them. Same shape as #61 (a fact about the
+  # program derived from one place while another place derived it differently)
+  # and the same scope error as #73 (`m.decls` is the entry module, imports
+  # invisible), but the symptom here is a crash rather than a diagnostic.
+  t.src """
+import lib
+
+fn main() -> int [io]:
+  return {n: 6} stash
+"""
+  t.addFile("lib.tuck", """import scheduler
+
+actor Tally [queue: 4]:
+  last: int = 0
+
+  on put({v: int}):
+    last = v
+
+fn ready() -> bool:
+  return Tally.last > 0
+
+fn stash({n: int}) -> int [io]:
+  Tally send put {v: n}
+  scheduler::waitUntil {pred: :ready}
+  return Tally.last
+""")
+  t.okCheck "an actor may be declared in an imported module"
+  # Asserted by RUNNING, not by reading the emitted module: the entry prologue
+  # that boots the runtime and calls registerActor is appended by `tuck b`,
+  # so `tuck c` output does not contain it and an `emits` here would be
+  # checking the wrong file.
+  t.runs "...and the message is delivered", 6
+
+  # Odin and D build the same program but do not run it correctly: their entry
+  # builders have the identical entry-module-only scope, and fixing them needs
+  # more than collecting names — an imported actor's drain is in another
+  # package, so the call has to be QUALIFIED. Odin hangs, D returns 0.
+  t.quietly: t.hostRuns("an imported actor runs on every backend", 6)
+  t.bugOpen "an imported actor runs on every backend"
+
+  # --- the msgpack AST cache (.tuck-cache) ---------------------------------
+  #
+  # Incremental compilation, and nothing covered it. The cache stores a module
+  # ALREADY REWRITTEN and, since 2026-09-17, already generic-actor-expanded, so
+  # a stale entry does not merely cost time — it would serve a tree built by a
+  # different compiler.
+  #
+  # Two keys guard that: `srcHash` (this file's text) and `buildStamp` (the
+  # compiler's own build time). These assert the first; the second cannot be
+  # exercised without rebuilding the compiler mid-suite.
+  t.src """
+import lib
+
+fn main() -> int:
+  return {} answer
+"""
+  t.addFile("lib.tuck", """fn answer() -> int:
+  return 1
+""")
+  t.runs "a cold build of an imported module", 1
+
+  # ...now EDIT the library and build again in the same directory. A cache
+  # keyed only on the compiler's stamp would serve the old tree and answer 1.
+  let coldRun = t.needCmd @[tuckExe, "b", t.cur / "t.tuck", "--root:" & t.root]
+  let edited = t.needCmdAfter(@[tuckExe, "b", t.cur / "t.tuck",
+                                "--root:" & t.root],
+                              coldRun,
+                              proc (dir: string) =
+                                writeFile(dir / "lib.tuck",
+                                          "fn answer() -> int:\n  return 2\n"),
+                              t.cur, vBuild)
+  if t.phase == pReport:
+    if t.skippedCmd(edited):
+      t.ok "editing a module invalidates its cache entry (skipped)"
+    else:
+      let (rc, outp) = t.resultOf(edited)
+      if rc == 0: t.ok "editing a module invalidates its cache entry"
+      else: t.no "editing a module invalidates its cache entry", outp
+
   t.finish()

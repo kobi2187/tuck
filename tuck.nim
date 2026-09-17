@@ -1107,22 +1107,27 @@ when isMainModule:
       var mainReturns = false
       var actorNames: seq[string]
       var hasTasks = false
+      # `fn main` is the ENTRY module's, but actors and tasks are collected
+      # across the WHOLE PROGRAM. Scanning only the entry meant an actor
+      # declared in an imported module was never registered and the scheduler
+      # was never initialised at all — the library emitted a perfectly good
+      # `registerActor<Name>` that nobody called, so a program that compiled
+      # clean SEGFAULTED the moment it sent a message (tuckNotifySend against
+      # an uninitialised runtime). Same root as #73's actor half — `m.decls` is
+      # the entry module and imports are invisible to it — but a worse symptom
+      # than a checker rejection.
+      for lm in prog:
+        for d in lm.m.decls:
+          if d == nil: continue
+          if d.kind == dkActor and actorHasMessages(d):
+            actorNames.add(mangleName(d.name))
+          if d.kind == dkTask: hasTasks = true
       for d in m.decls:
         # `m` was mangled above, so `fn main` is now tuck_main here.
         if d != nil and d.kind == dkFn and d.name == mangleName("main"):
           hasMain = true
           mainReturns = d.fnReturnType != nil and
             not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name in ["void", "unit"])
-        if d != nil and d.kind == dkActor and actorHasMessages(d):
-          # actorHasMessages, not `is an actor`: a handler-less actor gets no
-          # registerActor proc from genActor, so registering it emits a call
-          # to a symbol that was never defined (#61).
-          #
-          # `m` is the ORIGINAL tree; each backend mangled its own deepCopy,
-          # so the emitted symbol carries the prefix and this must match.
-          actorNames.add(mangleName(d.name))
-        if d != nil and d.kind == dkTask:
-          hasTasks = true
       if not hasMain:
         echo "library (no fn main): emitted code only, no binary"
         echo "OK (", elapsedMs(t0), ")"
