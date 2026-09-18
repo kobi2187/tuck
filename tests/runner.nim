@@ -17,8 +17,11 @@
 ## $(nproc) scripts at once, and each script fanned its own builds out over
 ## TEST_JOBS. Tuning that was a running battle — 21 scripts x 2 jobs on 6 cores
 ## measured a 3.2x contention tax, because neither level could see the other.
-## Here every subprocess in the whole suite goes into one pool bounded by the
-## core count, so the bound is actually the bound.
+## Here every subprocess in the whole suite goes into one pool, so the bound is
+## actually the bound. That bound is 1 today — see the `jobs` default below:
+## concurrent `odin build` processes ran the machine out of memory, and the
+## failure surfaced as an intermittent, wandering test failure rather than as
+## an OOM (issue #31).
 ##
 ## MODES. The clock is decided by one question: does an assertion invoke a
 ## BACKEND compiler? `tuck` is milliseconds; `nim c` / `odin build` on the
@@ -44,7 +47,7 @@
 ##   tests/run --bless          rewrite goldens (was TUCK_BLESS=1)
 ##   tests/run --quiet          suppress PASS/SKIP lines — only FAIL and
 ##                              the per-suite/final summaries print
-##   tests/run --jobs:N         override the pool bound
+##   tests/run --jobs:N         pool bound; SERIAL by default (issue #31)
 
 import std/[os, osproc, strutils, strformat, times, monotimes, streams, sequtils,
             tables]
@@ -258,7 +261,24 @@ proc tuckIsStale(): bool =
 when isMainModule:
   var
     want: seq[string]
-    jobs = countProcessors()
+    # SERIAL BY DEFAULT (2026-09-18). Concurrent `odin build` processes were
+    # exhausting memory: three consecutive full runs failed on three DIFFERENT
+    # recursive-type assertions, one of them naming the cause outright —
+    # "LLVM ERROR: out of memory / Allocation failed", rc=134. The rc=139 and
+    # empty-output failures are the same event with the message lost (134 is
+    # abort(), which is how LLVM ends after LLVM ERROR). Each passed when its
+    # suite was re-run alone. See issue #31.
+    #
+    # The pool bound is what moved, not any emitted code: which assertion lost
+    # the race depended on scheduling, which is why it looked like a flaky
+    # test for so long. Raise it back with `--jobs:N` once Odin's memory use
+    # over the recursive-type packages is understood.
+    #
+    # MEASURED COST: 5m55s serial against ~4m10s on this machine's core count,
+    # so about 1.4x — far less than the core count suggests, because the pool
+    # was already contending. A green suite at 1.4x beats a suite that fails
+    # somewhere different every third run.
+    jobs = 1
     bless = false
     modeName = "full"
   for a in commandLineParams():

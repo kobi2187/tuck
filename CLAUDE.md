@@ -29,7 +29,7 @@ nim c --hints:off -o:tuck tuck.nim   # build the compiler
 ./tests/run loop_var_type typecheck  # named suites (repeatable)
 ./tests/run --quick                  # + `tuck c`: emits/omits/goldens (~5s)
 ./tests/run --bless                  # rewrite goldens
-./tests/run --jobs:N                 # override the parallel pool bound
+./tests/run --jobs:N                 # pool bound; SERIAL by default (#31)
 TUCK_REQUIRE_ODIN=1 ./tests/run      # fail rather than SKIP if Odin is absent
 ```
 
