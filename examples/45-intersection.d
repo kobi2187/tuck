@@ -1,7 +1,6 @@
 module _45_intersection;
 
 import rt = tuck_rt;
-import scheduler = mod_scheduler;
 
 __gshared uint* tuck_SIGNAL_OUT = cast(uint*)(0x40011000);
 enum tuck_SIGNAL_OUT_NS_GREEN_SHIFT = 0;
@@ -164,11 +163,14 @@ void handleMsg_tuck_Signals(ref tuck_Signals self, tuck_SignalsMsg msg) {
     }
 }
 
+__gshared void* tuck_SignalsSlot;
+
 bool drain_tuck_Signals() {
     bool did = false;
     tuck_SignalsMsg msg;
     while (rt.dequeue(tuck_SignalsSingleton.mailbox, msg)) {
         handleMsg_tuck_Signals(tuck_SignalsSingleton, msg);
+        rt.tuckCheckWaiters();
         did = true;
     }
     return did;
@@ -265,14 +267,15 @@ long tuck_main() {
         return 9L;
     }
     tuck_drive();
-    scheduler.waitUntil(&tuck_settled);
+    rt.tuckWaitOn(tuck_SignalsSlot, &tuck_settled);
     return tuck_phaseIndex(tuck_SignalsSingleton.phase);
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    rt.tuckStartActor(&drain_tuck_Signals);
+    tuck_SignalsSlot = rt.tuckStartActor(&drain_tuck_Signals);
     auto mainRc = tuck_main();
+    rt.tuckDrainActors();
     return cast(int) mainRc;
 }

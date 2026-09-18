@@ -144,10 +144,12 @@ proc draintuck_Signals(): bool {.gcsafe.} =
     var m: tuck_SignalsMsg
     while dequeue(tuck_SignalsSingleton.mailbox, m):
       handleMsg(tuck_SignalsSingleton, m)
+      tuckCheckWaiters()
       result = true
 
+var tuck_SignalsSlot*: pointer
 proc registerActortuck_Signals*() =
-  tuckStartActor(draintuck_Signals)
+  tuck_SignalsSlot = tuckStartActor(draintuck_Signals)
 
 proc tuck_Intersection_PhaseChanged*(to: uint8): void =
   tuck_SIGNAL_OUT_WALK_set(false)
@@ -219,6 +221,6 @@ proc tuck_main*(): int =
     if true:
       return 9
   tuck_drive()
-  scheduler.waitUntil(tuck_settled)
+  tuckWaitOn(tuck_SignalsSlot, tuck_settled)
   return tuck_phaseIndex(tuck_SignalsSingleton.phase)
 

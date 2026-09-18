@@ -17,5 +17,5 @@ fn sumReady() -> bool:
 fn main() -> int:
   for i in 1 .. 10:
     Counter send add {n: i}
-  scheduler::waitUntil {pred: :sumReady}   # block until the actor has summed
+  Counter.waitUntil {pred: :sumReady}   # block until the actor has summed
   return Counter.total                  # 55 = exit code

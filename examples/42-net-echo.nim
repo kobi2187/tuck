@@ -32,10 +32,12 @@ proc draintuck_Result(): bool {.gcsafe.} =
     var m: tuck_ResultMsg
     while dequeue(tuck_ResultSingleton.mailbox, m):
       handleMsg(tuck_ResultSingleton, m)
+      tuckCheckWaiters()
       result = true
 
+var tuck_ResultSlot*: pointer
 proc registerActortuck_Result*() =
-  tuckStartActor(draintuck_Result)
+  tuck_ResultSlot = tuckStartActor(draintuck_Result)
 
 proc tuck_serve*(lfd: int): void =
   var tuck_c = net.accept(lfd)
@@ -76,7 +78,7 @@ proc tuck_main*(): int =
     if true:
       tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_serve(tuck_l.value.fd)))
       tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_client(34593)))
-      scheduler.waitUntil(tuck_done)
+      tuckWaitOn(tuck_ResultSlot, tuck_done)
       net.close(tuck_l.value.fd)
       scheduler.stop()
       return tuck_ResultSingleton.code

@@ -3,7 +3,6 @@ package main
 
 import "core:os"
 import rt "./tuckrt"
-import scheduler "./mod_scheduler"
 
 tuck_AccumulatorMsgKind :: enum { msgAdd, msgFinish, msgShutdown }
 tuck_AccumulatorMsg :: struct {
@@ -32,17 +31,18 @@ self.total = self.total
 	}
 }
 
-drain_tuck_Accumulator :: proc() {
-	for {
-		if tuck_AccumulatorSingleton.finished { return }
-		msg: tuck_AccumulatorMsg
-		didWork := false
-		for rt.dequeue(&tuck_AccumulatorSingleton.mailbox, &msg) {
-			handleMsg_tuck_Accumulator(&tuck_AccumulatorSingleton, msg)
-			didWork = true
-		}
-		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
+tuck_AccumulatorSlot: rawptr
+
+drain_tuck_Accumulator :: proc() -> bool {
+	if tuck_AccumulatorSingleton.finished { return false }
+	msg: tuck_AccumulatorMsg
+	didWork := false
+	for rt.dequeue(&tuck_AccumulatorSingleton.mailbox, &msg) {
+		handleMsg_tuck_Accumulator(&tuck_AccumulatorSingleton, msg)
+		rt.tuckCheckWaiters()
+		didWork = true
 	}
+	return didWork
 }
 
 sendAdd_tuck_Accumulator :: proc(self: ^tuck_Accumulator, n: int) {
@@ -66,13 +66,14 @@ tuck_main :: proc () -> int {
       sendAdd_tuck_Accumulator(&tuck_AccumulatorSingleton, tuck_i)
   }
   sendFinish_tuck_Accumulator(&tuck_AccumulatorSingleton)
-  scheduler.waitUntil(tuck_ready)
+  rt.tuckWaitOn(tuck_AccumulatorSlot, tuck_ready)
   return tuck_AccumulatorSingleton.total
 }
 
 main :: proc() {
 	rt.tuckAsyncInit()
-	rt.tuckStartActor(drain_tuck_Accumulator)
+	tuck_AccumulatorSlot = rt.tuckStartActor(drain_tuck_Accumulator)
 	mainRc := tuck_main()
+	rt.tuckDrainActors()
 	os.exit(mainRc)
 }

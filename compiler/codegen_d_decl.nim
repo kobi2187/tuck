@@ -247,11 +247,16 @@ proc genDDrain*(d: Decl, hasShutdown: bool): string =
   let finishedGuard = if hasShutdown:
                         "    if (" & singleton & ".finished) return false;\n"
                       else: ""
-  "bool drain_" & d.name & "() {\n" & finishedGuard &
+  "__gshared void* " & actorSlotName(d.name) & ";\n\n" &
+    "bool drain_" & d.name & "() {\n" & finishedGuard &
     "    bool did = false;\n" &
     "    " & d.name & "Msg msg;\n" &
     "    while (rt.dequeue(" & singleton & ".mailbox, msg)) {\n" &
     "        handleMsg_" & d.name & "(" & singleton & ", msg);\n" &
+    # After EACH message: a registered predicate is about the exact moment a
+    # condition becomes true, and one that went true and false again inside a
+    # batch would be missed by a once-per-pass check.
+    "        rt.tuckCheckWaiters();\n" &
     "        did = true;\n    }\n    return did;\n}\n\n"
 
 proc dExternTodo*(mem: Decl): string =

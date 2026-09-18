@@ -23,16 +23,17 @@ handleMsg_tuck_TrafficLight :: proc(self: ^tuck_TrafficLight, msg: tuck_TrafficL
 	}
 }
 
-drain_tuck_TrafficLight :: proc() {
-	for {
-		msg: tuck_TrafficLightMsg
-		didWork := false
-		for rt.dequeue(&tuck_TrafficLightSingleton.mailbox, &msg) {
-			handleMsg_tuck_TrafficLight(&tuck_TrafficLightSingleton, msg)
-			didWork = true
-		}
-		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
+tuck_TrafficLightSlot: rawptr
+
+drain_tuck_TrafficLight :: proc() -> bool {
+	msg: tuck_TrafficLightMsg
+	didWork := false
+	for rt.dequeue(&tuck_TrafficLightSingleton.mailbox, &msg) {
+		handleMsg_tuck_TrafficLight(&tuck_TrafficLightSingleton, msg)
+		rt.tuckCheckWaiters()
+		didWork = true
 	}
+	return didWork
 }
 
 sendNext_tuck_TrafficLight :: proc(self: ^tuck_TrafficLight) {
@@ -41,5 +42,6 @@ sendNext_tuck_TrafficLight :: proc(self: ^tuck_TrafficLight) {
 
 main :: proc() {
 	rt.tuckAsyncInit()
-	rt.tuckStartActor(drain_tuck_TrafficLight)
+	tuck_TrafficLightSlot = rt.tuckStartActor(drain_tuck_TrafficLight)
+	rt.tuckDrainActors()
 }

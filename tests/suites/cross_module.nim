@@ -372,7 +372,7 @@ fn ready() -> bool:
 
 fn stash({n: int}) -> int [io]:
   Tally send put {v: n}
-  scheduler::waitUntil {pred: :ready}
+  Tally.waitUntil {pred: :ready}
   return Tally.last
 """)
   t.okCheck "an actor may be declared in an imported module"

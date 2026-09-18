@@ -12,6 +12,30 @@ the absolute figure. A >2x slowdown on any line is worth investigating.
 | async runtime scale | coroutine spawn | 0.25 M coros/sec |
 | async runtime scale | context switch | 1.67 M switches/sec |
 | actor throughput | messages drained | ~21 M msgs/sec |
+
+**2026-09-18 — thread-per-actor changed this number and the bench.** An actor
+now runs on its own OS thread, so `send` crosses a thread boundary instead of
+pushing onto a same-thread ready queue. Measured on the rewritten bench (the old
+one flooded a bare `seq` from main while the actor drained it — safe under
+cooperative scheduling, a genuine race once the actor has a thread, and no
+longer the program codegen emits):
+
+| | msgs/sec |
+|---|---|
+| cooperative (previous model) | ~21–24.7 M |
+| thread-per-actor, first cut | 6.95 M |
+| thread-per-actor, after the idle fast path | 11–17.5 M (noisy) |
+
+The first cut was 3x down because `tuckNotifySend` took two locks and signalled
+a condvar on EVERY message. A busy actor needs no wake — it will come back
+round its drain loop and find the message — so the wake is now skipped unless
+an actor is genuinely parked (`gIdleActors`, one atomic read on the hot path).
+
+What remains is inherent: a shared mailbox lock and cross-thread handoff cost
+more than a same-thread queue push, and the wide variance is two threads
+contending on that lock. The trade is correctness — under the old model a
+`send` was never delivered at all unless main happened to yield (#8).
+
 | compiler front-end | lex+parse+check | ~23k lines/sec |
 
 ## 2026-09-13 — what the TRANSPILER costs: Tuck-emitted vs hand-written Nim

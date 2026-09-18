@@ -159,7 +159,7 @@ fn stream() -> void:
 fn main() -> int:
   let f = {width: 1920, height: 1080, bytes: 4096} Frame
   {} stream
-  scheduler::waitUntil {pred: :drained}
+  Pipeline.waitUntil {pred: :drained}
   # sps+pps configure, idr and two nonIdr decode, sei skips, the last idr
   # arrives mid-frame so it flushes and decodes: 4 decoded, 1 dropped.
   return (Pipeline.decoded * 10) + Pipeline.dropped

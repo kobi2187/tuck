@@ -227,7 +227,7 @@ fn fetch({host: str, port: int, path: str, parts: int}) -> int [io, resource: co
     let have = {path: path, index: i} onDisk
     let c = {total: total, parts: parts, i: i, have: have} spanOf
     {host: host, port: port, path: path, c: c} pull discard
-  scheduler::waitUntil {pred: :complete}
+  Progress.waitUntil {pred: :complete}
   return total
 
 # ------------------------------------------------------------------ display

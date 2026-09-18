@@ -1173,17 +1173,26 @@ when isMainModule:
         # inline — `quit(tuck_main())` leaves nowhere to put this.
         let resShutdown =
           if declaresResources(m): "\n  " & ResourceShutdownProc & "()" else: ""
+        # Wait for every actor to empty its mailbox before the process exits.
+        # An actor runs on its own DETACHED thread, so without this a `send`
+        # is a coin flip against `quit`: the message is in the ring and the
+        # thread may not have been scheduled once. A handler whose whole point
+        # is a side effect then does nothing at all.
+        let actorDrain =
+          if actorNames.len > 0: "\n  tuckDrainActors()" else: ""
+        # Anything that must run AFTER main forces main's result to be bound
+        # rather than passed straight to quit — `quit(tuck_main())` leaves
+        # nowhere for it to go.
+        let postMain = hasTasks or resShutdown != "" or actorDrain != ""
         let mainCall =
-          if hasTasks and mainReturns: "let mainRc = " & tuckMain
-          elif mainReturns and resShutdown != "": "let mainRc = " & tuckMain
+          if mainReturns and postMain: "let mainRc = " & tuckMain
           elif mainReturns: "quit(" & tuckMain & ")"
           else: tuckMain
         let asyncExit =
-          if mainReturns and (hasTasks or resShutdown != ""): "\n  quit(mainRc)"
-          else: ""
+          if mainReturns and postMain: "\n  quit(mainRc)" else: ""
         writeFile(mainNim, readFile(mainNim) &
           "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
-          asyncDrive & resShutdown & asyncExit & "\n")
+          asyncDrive & actorDrain & resShutdown & asyncExit & "\n")
         # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
         var nimFlags = ""
         for o in opts:

@@ -160,10 +160,12 @@ proc draintuck_Pipeline(): bool {.gcsafe.} =
     var m: tuck_PipelineMsg
     while dequeue(tuck_PipelineSingleton.mailbox, m):
       handleMsg(tuck_PipelineSingleton, m)
+      tuckCheckWaiters()
       result = true
 
+var tuck_PipelineSlot*: pointer
 proc registerActortuck_Pipeline*() =
-  tuckStartActor(draintuck_Pipeline)
+  tuck_PipelineSlot = tuckStartActor(draintuck_Pipeline)
 
 proc tuck_capture*(want: int): int =
   var tuck_slot = acquire(tuck_FrameBuffers)
@@ -209,6 +211,6 @@ proc tuck_stream*(): void =
 proc tuck_main*(): int =
   var tuck_f = (let tuckInv1 = tuck_Frame(width: 1920, height: 1080, bytes: 4096); validate(tuckInv1); tuckInv1)
   tuck_stream()
-  scheduler.waitUntil(tuck_drained)
+  tuckWaitOn(tuck_PipelineSlot, tuck_drained)
   return ((tuck_PipelineSingleton.decoded * 10) + tuck_PipelineSingleton.dropped)
 

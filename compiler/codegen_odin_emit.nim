@@ -157,8 +157,11 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   runtimeUsers(m, actorNames, hasTasks)
   if actorNames.len > 0 or hasTasks:
     result.add("\trt.tuckAsyncInit()\n")
+    # The slot is KEPT: `Actor.waitUntil` names the actor at the call site, so
+    # the emitted call needs a handle to hand the predicate to.
     for a in actorNames:
-      result.add("\trt.tuckStartActor(drain_" & a & ")\n")
+      result.add("\t" & actorSlotName(a) & " = rt.tuckStartActor(drain_" &
+                 a & ")\n")
   if mains != "": result.add(mains & "\n")
   # A value-returning `fn main` IS the process exit code (mirrors tuck.nim).
   let mainFn = mainDecl(m)
@@ -171,6 +174,9 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   # never finish, so running the scheduler for them would spin forever —
   # tuck.nim gates on hasTasks for exactly this reason.
   if hasTasks: result.add("\trt.tuckRun()\n")
+  # Wait for every actor to empty its mailbox before exiting: an actor thread
+  # is detached, so without this a `send` races the process teardown.
+  if actorNames.len > 0: result.add("\trt.tuckDrainActors()\n")
   # §7.4's close-all, AFTER the loop is driven so anything a task acquired is
   # still registered when the tables close, and BEFORE os.exit — which is
   # `_exit` and runs no finalizer, so an `@(fini)` hook would never fire. The

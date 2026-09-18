@@ -75,7 +75,10 @@ proc dBootSequence*(m: Module, hasTasks: bool): string =
   var daemons: seq[string]
   for d in m.decls:
     if d != nil and d.kind == dkActor and actorHasMessages(d):
-      daemons.add("    rt.tuckStartActor(&drain_" & d.name & ");\n")
+      # The slot is KEPT: `Actor.waitUntil` names the actor at the call site,
+      # so the emitted call needs a handle to hand the predicate to.
+      daemons.add("    " & actorSlotName(d.name) &
+                  " = rt.tuckStartActor(&drain_" & d.name & ");\n")
   if not hasTasks and daemons.len == 0: return ""
   "    rt.tuckAsyncInit();\n" & daemons.join("")
 
@@ -137,6 +140,10 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   # loops never finish, so running the scheduler for them after main would
   # spin forever — main owns the lifecycle and ends the program itself.
   let drive = (if hasTasks: "    rt.tuckRun();\n" else: "") &
+    # Wait for every actor to empty its mailbox before exiting: an actor thread
+    # is detached, so without this a `send` races the process teardown and a
+    # fire-and-forget message can be lost.
+    (if hasRunningActors(m): "    rt.tuckDrainActors();\n" else: "") &
     # §7.4's close-all, after the loop is driven so anything a task acquired
     # is still registered when the tables close. In the entry point rather
     # than a `static ~this()` module destructor, so the three backends put it

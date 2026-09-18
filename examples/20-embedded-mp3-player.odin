@@ -190,16 +190,17 @@ handleMsg_tuck_Decoder :: proc(self: ^tuck_Decoder, msg: tuck_DecoderMsg) {
 	}
 }
 
-drain_tuck_Decoder :: proc() {
-	for {
-		msg: tuck_DecoderMsg
-		didWork := false
-		for rt.dequeue(&tuck_DecoderSingleton.mailbox, &msg) {
-			handleMsg_tuck_Decoder(&tuck_DecoderSingleton, msg)
-			didWork = true
-		}
-		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
+tuck_DecoderSlot: rawptr
+
+drain_tuck_Decoder :: proc() -> bool {
+	msg: tuck_DecoderMsg
+	didWork := false
+	for rt.dequeue(&tuck_DecoderSingleton.mailbox, &msg) {
+		handleMsg_tuck_Decoder(&tuck_DecoderSingleton, msg)
+		rt.tuckCheckWaiters()
+		didWork = true
 	}
+	return didWork
 }
 
 sendPlay_tuck_Decoder :: proc(self: ^tuck_Decoder, rate: tuck_Hz) {
@@ -234,7 +235,8 @@ tuck_main :: proc () {
 main :: proc() {
 	assert((size_of(tuck_Volume) == 1))
 	rt.tuckAsyncInit()
-	rt.tuckStartActor(drain_tuck_Decoder)
+	tuck_DecoderSlot = rt.tuckStartActor(drain_tuck_Decoder)
 	tuck_main()
 	rt.tuckRun()
+	rt.tuckDrainActors()
 }

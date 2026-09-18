@@ -20,5 +20,5 @@ fn main() -> int:
   for i in 1 .. 10:
     Accumulator send add {n: i}
   Accumulator send finish {}
-  scheduler::waitUntil {pred: :ready}
+  Accumulator.waitUntil {pred: :ready}
   return Accumulator.total

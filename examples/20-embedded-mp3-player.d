@@ -175,11 +175,14 @@ void handleMsg_tuck_Decoder(ref tuck_Decoder self, tuck_DecoderMsg msg) {
     }
 }
 
+__gshared void* tuck_DecoderSlot;
+
 bool drain_tuck_Decoder() {
     bool did = false;
     tuck_DecoderMsg msg;
     while (rt.dequeue(tuck_DecoderSingleton.mailbox, msg)) {
         handleMsg_tuck_Decoder(tuck_DecoderSingleton, msg);
+        rt.tuckCheckWaiters();
         did = true;
     }
     return did;
@@ -222,7 +225,8 @@ void tuck_main() {
 void main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    rt.tuckStartActor(&drain_tuck_Decoder);
+    tuck_DecoderSlot = rt.tuckStartActor(&drain_tuck_Decoder);
     tuck_main();
     rt.tuckRun();
+    rt.tuckDrainActors();
 }

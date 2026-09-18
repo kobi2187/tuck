@@ -47,7 +47,7 @@ fn main() -> int [io]:
   if l.ok:
     {lfd: l.value.fd} serve      # fire-and-forget: not bound, so not awaited
     {port: 34593} client
-    scheduler::waitUntil {pred: :done}
+    Result.waitUntil {pred: :done}
     {fd: l.value.fd} net::close
     {} scheduler::stop
     return Result.code

@@ -38,11 +38,14 @@ void handleMsg_tuck_Counter(ref tuck_Counter self, tuck_CounterMsg msg) {
     }
 }
 
+__gshared void* tuck_CounterSlot;
+
 bool drain_tuck_Counter() {
     bool did = false;
     tuck_CounterMsg msg;
     while (rt.dequeue(tuck_CounterSingleton.mailbox, msg)) {
         handleMsg_tuck_Counter(tuck_CounterSingleton, msg);
+        rt.tuckCheckWaiters();
         did = true;
     }
     return did;

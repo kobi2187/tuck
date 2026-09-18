@@ -3,7 +3,6 @@ package main
 
 import "core:os"
 import rt "./tuckrt"
-import scheduler "./mod_scheduler"
 
 tuck_VI_CTRL := cast(^u32)(uintptr(0x50000000))
 tuck_VI_CTRL_ENABLE_SHIFT :: 0
@@ -167,16 +166,17 @@ handleMsg_tuck_Pipeline :: proc(self: ^tuck_Pipeline, msg: tuck_PipelineMsg) {
 	}
 }
 
-drain_tuck_Pipeline :: proc() {
-	for {
-		msg: tuck_PipelineMsg
-		didWork := false
-		for rt.dequeue(&tuck_PipelineSingleton.mailbox, &msg) {
-			handleMsg_tuck_Pipeline(&tuck_PipelineSingleton, msg)
-			didWork = true
-		}
-		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
+tuck_PipelineSlot: rawptr
+
+drain_tuck_Pipeline :: proc() -> bool {
+	msg: tuck_PipelineMsg
+	didWork := false
+	for rt.dequeue(&tuck_PipelineSingleton.mailbox, &msg) {
+		handleMsg_tuck_Pipeline(&tuck_PipelineSingleton, msg)
+		rt.tuckCheckWaiters()
+		didWork = true
 	}
+	return didWork
 }
 
 sendNal_tuck_Pipeline :: proc(self: ^tuck_Pipeline, nal: tuck_NalKind, midFrame: bool) {
@@ -238,13 +238,14 @@ tuck_stream :: proc () {
 tuck_main :: proc () -> int {
   tuck_f := __validated_tuck_Frame(tuck_Frame{width = 1920, height = 1080, bytes = 4096})
   tuck_stream()
-  scheduler.waitUntil(tuck_drained)
+  rt.tuckWaitOn(tuck_PipelineSlot, tuck_drained)
   return ((tuck_PipelineSingleton.decoded * 10) + tuck_PipelineSingleton.dropped)
 }
 
 main :: proc() {
 	rt.tuckAsyncInit()
-	rt.tuckStartActor(drain_tuck_Pipeline)
+	tuck_PipelineSlot = rt.tuckStartActor(drain_tuck_Pipeline)
 	mainRc := tuck_main()
+	rt.tuckDrainActors()
 	os.exit(mainRc)
 }

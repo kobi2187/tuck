@@ -28,10 +28,12 @@ proc draintuck_Sink(): bool {.gcsafe.} =
     var m: tuck_SinkMsg
     while dequeue(tuck_SinkSingleton.mailbox, m):
       handleMsg(tuck_SinkSingleton, m)
+      tuckCheckWaiters()
       result = true
 
+var tuck_SinkSlot*: pointer
 proc registerActortuck_Sink*() =
-  tuckStartActor(draintuck_Sink)
+  tuck_SinkSlot = tuckStartActor(draintuck_Sink)
 
 proc tuck_fire*(): void =
   discard enqueue(tuck_SinkSingleton.mailbox, tuck_SinkMsg(tuckTag: msgPing, n: 5))
@@ -43,7 +45,7 @@ proc tuck_done*(): bool =
 
 proc tuck_main*(): int =
   tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_fire()))
-  scheduler.waitUntil(tuck_done)
+  tuckWaitOn(tuck_SinkSlot, tuck_done)
   scheduler.stop()
   return tuck_SinkSingleton.hits
 

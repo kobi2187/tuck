@@ -20,7 +20,12 @@ module tuck_coro;
 
 import core.stdc.stdlib : abort;
 import std.stdio : stderr;
-import core.sys.posix.unistd : read, write, close, pipe2;
+import core.sys.posix.unistd : read, write, close, pipe2, pipe;
+import core.sys.posix.fcntl : fcntl, F_SETFL, O_NONBLOCK;
+import core.thread : Thread;
+import core.sync.mutex : Mutex;
+import core.sync.condition : Condition;
+import core.atomic : atomicOp, atomicLoad;
 import core.sys.linux.epoll;
 import core.sys.linux.sys.timerfd;
 import core.sys.posix.time : CLOCK_MONOTONIC, itimerspec;
@@ -84,7 +89,12 @@ struct Coroutine
     CoroutineState state;
 }
 
-private __gshared Coroutine* activeCoroutine;  /// null in the main context
+// PER THREAD, not per program. Each actor runs on its own OS thread with its
+// own scheduler and reactor (spec 9.1). D module-level variables are already
+// thread-local BY DEFAULT — `__gshared` is what opts out — so removing it is
+// what makes these per-thread. Sharing them would have each actor thread
+// resuming another's coroutine.
+private Coroutine* activeCoroutine;  /// null in the main context
 
 Coroutine* running() { return activeCoroutine; }
 
@@ -181,11 +191,11 @@ void destroyCoroutine(Coroutine* c)
 // stack path entirely. (Nim disables its stack-walker for the same reason —
 // tuck_async.nim's mandatory --stackTrace:off; Odin has no GC and needs
 // neither.)
-private __gshared Coroutine** readyQueue;
-private __gshared size_t readyHead;   /// next to run
-private __gshared size_t readyTail;   /// next free slot
-private __gshared size_t readyCap;
-private __gshared bool stopped;
+private Coroutine** readyQueue;
+private size_t readyHead;   /// next to run
+private size_t readyTail;   /// next free slot
+private size_t readyCap;
+private bool stopped;
 
 private void growQueue()
 {
@@ -276,7 +286,7 @@ private struct EventLoop
     bool inited;
 }
 
-private __gshared EventLoop gLoop;
+private EventLoop gLoop;
 
 private void initLoop()
 {
@@ -622,28 +632,194 @@ T awaitResult(T)(TuckAsyncResult!T slot)
 /// D distinguishes the two types, and the emitted `&drain_X` is the former.
 alias DrainProc = bool function();
 
-private __gshared Coroutine*[] actorCoros;
+// ONE OS THREAD PER ACTOR (ruled 2026-09-18) — the Nim twin carries the full
+// reasoning. An actor is a daemon, and a daemon that only runs when main
+// happens to yield is not one: a program with no wait never delivered a
+// message at all (#8).
 
-/// Register and start a declared actor as a looping coroutine (emitted once
-/// per actor). The loop drains, then yields when idle; a send reschedules it.
-void tuckStartActor(DrainProc drain)
+private struct Waiter
 {
-    auto co = newCoroutine({
-        while (true)
-        {
-            if (!drain()) suspend();   // idle — hand control back
-        }
-    });
-    actorCoros ~= co;
-    schedule(co);
+    bool function() pred;
+    int doneFd;          /// one byte written when the predicate holds
+    bool satisfied;
 }
 
-/// Emitted by each send after enqueue: reschedule idle actors so they drain
-/// on the next scheduler pass.
+private struct ActorSlot
+{
+    DrainProc drain;
+    Mutex lock;
+    Condition cond;
+    bool pending;
+    bool working;
+    Waiter*[] waiters;
+}
+
+private __gshared ActorSlot*[] gActorSlots;  /// SHARED: a send on any thread
+private __gshared Mutex gSlotsLock;          /// must reach every actor
+private shared int gIdleActors;              /// parked actors; atomic
+
+private ActorSlot* gMySlot;                  /// per thread: the slot it serves
+
+private void checkWaiters(ActorSlot* slot)
+{
+    // Evaluate every registered predicate and wake whoever is satisfied.
+    // ALWAYS on the actor's own thread, where the state is settled.
+    // The length check first is the "free when unused" property.
+    if (slot.waiters.length == 0) return;
+    Waiter*[] woken;
+    Waiter*[] kept;
+    slot.lock.lock();
+    foreach (w; slot.waiters)
+    {
+        if (w.satisfied) continue;
+        if (w.pred()) { w.satisfied = true; woken ~= w; }
+        else kept ~= w;
+    }
+    slot.waiters = kept;
+    slot.lock.unlock();
+    // Outside the lock: the waiter wakes at once and must not contend for a
+    // lock it is about to stop caring about.
+    foreach (w; woken)
+    {
+        ubyte b = 1;
+        write(w.doneFd, &b, 1);
+        close(w.doneFd);
+    }
+}
+
+/// Emitted in the drain loop after each handled message, so a predicate sees
+/// the EXACT moment it becomes true rather than once per batch.
+void tuckCheckWaiters()
+{
+    if (gMySlot !is null) checkWaiters(gMySlot);
+}
+
+private void actorMain(ActorSlot* slot)
+{
+    tuckAsyncInit();          // this thread's own scheduler and reactor
+    gMySlot = slot;
+    while (true)
+    {
+        if (slot.drain()) continue;
+        checkWaiters(slot);
+        slot.lock.lock();
+        slot.working = false;
+        if (!slot.pending)
+        {
+            atomicOp!"+="(gIdleActors, 1);
+            while (!slot.pending) slot.cond.wait();
+            atomicOp!"-="(gIdleActors, 1);
+        }
+        slot.pending = false;
+        slot.working = true;
+        slot.lock.unlock();
+    }
+}
+
+/// Register and start a declared actor on its own OS thread.
+///
+/// Detached by design: actors are daemons with no termination condition, so
+/// there is nothing to join. The process exits and they go with it.
+void* tuckStartActor(DrainProc drain)
+{
+    if (gSlotsLock is null) gSlotsLock = new Mutex();
+    auto slot = new ActorSlot();
+    slot.drain = drain;
+    slot.lock = new Mutex();
+    slot.cond = new Condition(slot.lock);
+    slot.pending = true;      // drain once before the first wait: a send may
+    slot.working = true;      // already be queued by the time we get here
+    gSlotsLock.lock();
+    gActorSlots ~= slot;
+    gSlotsLock.unlock();
+    auto t = new Thread({ actorMain(slot); });
+    t.isDaemon = true;
+    t.start();
+    return cast(void*) slot;
+}
+
+/// `Actor.waitUntil {pred: :p}` — register with THAT actor and block. The
+/// predicate is evaluated on the actor's thread, so the answer is neither
+/// racy nor stale.
+void tuckWaitOn(void* handle, bool function() pred)
+{
+    if (handle is null) return;
+    auto slot = cast(ActorSlot*) handle;
+    auto w = new Waiter();
+    w.pred = pred;
+    int[2] fds;
+    pipe(fds);
+    w.doneFd = fds[1];
+    slot.lock.lock();
+    slot.waiters ~= w;
+    slot.pending = true;      // evaluate ONCE IMMEDIATELY: it may already hold
+    slot.cond.notify();
+    slot.lock.unlock();
+    // From a TASK: park through the reactor — blocking the thread would freeze
+    // every other task on it.
+    //
+    // From MAIN: keep driving main's own tasks while waiting. A plain blocking
+    // read DEADLOCKS whenever the condition depends on a task, because main's
+    // thread is the only thing that runs tasks and blocking it stops the very
+    // work that would make the predicate true.
+    ubyte b = 0;
+    if (inCoroutine())
+    {
+        tuckAwaitRead(fds[0]);
+        read(fds[0], &b, 1);
+    }
+    else
+    {
+        fcntl(fds[0], F_SETFL, O_NONBLOCK);
+        while (read(fds[0], &b, 1) != 1)
+        {
+            if (readyCount > 0) stepOne();
+            else runOnce(1);
+        }
+    }
+    close(fds[0]);
+}
+
+/// Wait for every actor to empty its mailbox. Emitted at the END of main:
+/// without it `send` races teardown, since the actor thread is detached and
+/// may never have been scheduled.
+void tuckDrainActors()
+{
+    if (gSlotsLock is null) return;
+    while (true)
+    {
+        bool allIdle = true;
+        gSlotsLock.lock();
+        foreach (s; gActorSlots)
+        {
+            s.lock.lock();
+            if (s.pending || s.working) allIdle = false;
+            s.lock.unlock();
+        }
+        gSlotsLock.unlock();
+        if (allIdle) return;
+    }
+}
+
+/// Emitted by each send after enqueue: wake every actor so whichever owns that
+/// mailbox drains it.
+///
+/// THE FAST PATH IS THE POINT: a busy actor comes back round its drain loop
+/// and finds the message, so it needs no wake, and this runs once per SEND.
+/// Measured on the Nim twin at 3x the cost of the rest of a send when it
+/// unconditionally took two locks and signalled.
 void tuckNotifySend()
 {
-    foreach (co; actorCoros)
-        if (!isFinished(co)) schedule(co);
+    if (atomicLoad(gIdleActors) == 0) return;
+    gSlotsLock.lock();
+    foreach (s; gActorSlots)
+    {
+        s.lock.lock();
+        s.pending = true;
+        s.cond.notify();
+        s.lock.unlock();
+    }
+    gSlotsLock.unlock();
 }
 
 /// Main blocks until a predicate over public actor state holds, driving the
@@ -656,7 +832,7 @@ void tuckNotifySend()
 /// full-mailbox policy is unstated in the spec (FRICTIONS.md #9); fixing it
 /// is a language decision, so this matches the reference rather than
 /// inventing a third behaviour.
-void waitUntil(bool function() pred)
+void runTasksUntil(bool function() pred)
 {
     while (!pred())
     {

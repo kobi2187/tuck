@@ -36,10 +36,12 @@ proc draintuck_Accumulator(): bool {.gcsafe.} =
     var m: tuck_AccumulatorMsg
     while dequeue(tuck_AccumulatorSingleton.mailbox, m):
       handleMsg(tuck_AccumulatorSingleton, m)
+      tuckCheckWaiters()
       result = true
 
+var tuck_AccumulatorSlot*: pointer
 proc registerActortuck_Accumulator*() =
-  tuckStartActor(draintuck_Accumulator)
+  tuck_AccumulatorSlot = tuckStartActor(draintuck_Accumulator)
 
 proc tuck_ready*(): bool =
   return tuck_AccumulatorSingleton.done
@@ -51,6 +53,6 @@ proc tuck_main*(): int =
       tuckNotifySend()
   discard enqueue(tuck_AccumulatorSingleton.mailbox, tuck_AccumulatorMsg(tuckTag: msgFinish))
   tuckNotifySend()
-  scheduler.waitUntil(tuck_ready)
+  tuckWaitOn(tuck_AccumulatorSlot, tuck_ready)
   return tuck_AccumulatorSingleton.total
 

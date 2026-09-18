@@ -169,10 +169,84 @@ fn main() -> int [io]:
   Tally send add {by: 1}
   Tally send add {by: 2}
   Tally send add {by: 3}
-  scheduler::waitUntil {pred: :done}
+  Tally.waitUntil {pred: :done}
   return Tally.n
 """
   t.runs "a parked actor still wakes on send and drains every message", 6
   t.hostRuns "...on every backend", 6
+
+  # --- Actor.waitUntil: the predicate runs on the ACTOR's thread ------------
+  #
+  # Two tiers of observation (spec 9.1). A field read is a SNAPSHOT — cheap,
+  # safe, and not ordered against your own sends. `Actor.waitUntil` observes
+  # the TRANSITION: the predicate is registered with that actor and evaluated
+  # on its thread after each message, where the state is settled and unshared.
+  #
+  # Registered the way `Pool.acquire` is registered — a signature named
+  # `<Actor>.waitUntil` in the flat table (typecheck_collect) — so the call
+  # resolves through the ordinary path and the compiler special-cases no
+  # library name. The actor is named by the AUTHOR, not inferred.
+  #
+  # Asserted by VALUE and by TIME: three handlers that each sleep 40ms mean a
+  # correct wait returns 6 after ~120ms. A test that only checked the value
+  # would also pass on a lucky race.
+  t.src """
+import time
+
+actor Tally [queue: 8]:
+  n: int = 0
+
+  on add({by: int}):
+    {ms: 40} sleepMs
+    n += by
+
+fn done() -> bool:
+  return Tally.n >= 6
+
+fn main() -> int [io]:
+  Tally send add {by: 1}
+  Tally send add {by: 2}
+  Tally send add {by: 3}
+  Tally.waitUntil {pred: :done}
+  return Tally.n
+"""
+  t.okCheck "`Actor.waitUntil` resolves as a static member call"
+  t.emits "...and lowers to the runtime's registration, not a poll",
+          "tuckWaitOn"
+  t.runs "...and blocks until every message has been handled", 6
+  t.hostRuns "...on every backend", 6
+
+  # A predicate over TWO actors has no home: no single actor can evaluate it
+  # soundly, which is the racy case wearing a safe-looking spelling. The two
+  # waits compose instead, and each is evaluated where its state lives.
+  t.src """
+actor A [queue: 4]:
+  n: int = 0
+
+  on put({v: int}):
+    n = v
+
+actor B [queue: 4]:
+  n: int = 0
+
+  on put({v: int}):
+    n = v
+
+fn aReady() -> bool:
+  return A.n > 0
+
+fn bReady() -> bool:
+  return B.n > 0
+
+fn main() -> int [io]:
+  A send put {v: 2}
+  B send put {v: 5}
+  A.waitUntil {pred: :aReady}
+  B.waitUntil {pred: :bReady}
+  return A.n + B.n
+"""
+  t.okCheck "two actors are waited on separately, not by one predicate"
+  t.runs "...and both are observed", 7
+  t.hostRuns "...on every backend", 7
 
   t.finish()

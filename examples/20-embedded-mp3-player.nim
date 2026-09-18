@@ -175,10 +175,12 @@ proc draintuck_Decoder(): bool {.gcsafe.} =
     var m: tuck_DecoderMsg
     while dequeue(tuck_DecoderSingleton.mailbox, m):
       handleMsg(tuck_DecoderSingleton, m)
+      tuckCheckWaiters()
       result = true
 
+var tuck_DecoderSlot*: pointer
 proc registerActortuck_Decoder*() =
-  tuckStartActor(draintuck_Decoder)
+  tuck_DecoderSlot = tuckStartActor(draintuck_Decoder)
 
 static: assert((sizeof(tuck_Volume) == 1))
 proc tuck_SystemEvents_PlaybackStarted*(): void =

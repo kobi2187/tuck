@@ -29,11 +29,14 @@ void handleMsg_tuck_TrafficLight(ref tuck_TrafficLight self, tuck_TrafficLightMs
     }
 }
 
+__gshared void* tuck_TrafficLightSlot;
+
 bool drain_tuck_TrafficLight() {
     bool did = false;
     tuck_TrafficLightMsg msg;
     while (rt.dequeue(tuck_TrafficLightSingleton.mailbox, msg)) {
         handleMsg_tuck_TrafficLight(tuck_TrafficLightSingleton, msg);
+        rt.tuckCheckWaiters();
         did = true;
     }
     return did;

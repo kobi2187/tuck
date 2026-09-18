@@ -21,6 +21,8 @@ import "core:c"
 import "core:container/queue"
 import "core:sys/linux"
 import "core:thread"
+import "core:sync"
+import "base:intrinsics"
 import "base:runtime"
 
 // ===========================================================================
@@ -82,7 +84,13 @@ Coroutine :: struct {
 	ctx:        runtime.Context,
 }
 
+// PER THREAD, not per program. Each actor runs on its own OS thread with its
+// own scheduler and reactor (spec 9.1), so the "currently running coroutine"
+// is a property of the THREAD. Nim's twin has been a {.threadvar.} all along;
+// these were plain globals, and sharing them across actor threads would have
+// each one resuming another's coroutine.
 @(private)
+@(thread_local)
 activeCoroutine: ^Coroutine // running coroutine, or nil in main context
 
 running :: proc() -> ^Coroutine {
@@ -185,7 +193,8 @@ Scheduler :: struct {
 }
 
 @(private)
-globalScheduler: Scheduler
+@(thread_local)
+globalScheduler: Scheduler   // per thread — see activeCoroutine above
 
 @(private)
 initScheduler :: proc() {
@@ -277,7 +286,8 @@ EventLoop :: struct {
 }
 
 @(private)
-gLoop: EventLoop
+@(thread_local)
+gLoop: EventLoop             // per thread — see activeCoroutine above
 
 @(private)
 initLoop :: proc() {
@@ -550,41 +560,203 @@ tuckYield :: proc() {
 	coroYield()
 }
 
-// Actors are daemon coroutines: they park on their mailbox and are woken by
-// a send. gActors keeps them alive for the lifetime of the program.
+// ONE OS THREAD PER ACTOR (ruled 2026-09-18) — the Nim twin carries the full
+// reasoning. An actor is a daemon, and a daemon that only runs when main
+// happens to yield is not one: under the previous design a program with no
+// `waitUntil` never delivered a message at all (#8).
+//
+// The drain now returns a bool ("did I work") and the RUNTIME owns the loop,
+// matching Nim and D. Odin was the one backend where the emitted drain owned
+// its own `for` and decided when to park, which is what made #28 possible.
+DrainProc :: proc() -> bool
+
 @(private)
-gActors: [dynamic]^Coroutine
-
-// An IDLE actor parks WITHOUT re-queueing itself — tuckNotifySend readies it
-// again when a send arrives, exactly as the reactor readies an I/O park. The
-// distinction is the one coroYield's own comment draws above, and getting it
-// wrong is not a slow actor but a program that never exits: a drain ending in
-// coroYield is permanently runnable, so tuckRun's "nothing ready and nothing
-// waiting" test never fires. That was issue #28 — examples/20 hung under Odin
-// while Nim and D exited 0, because in those two the RUNTIME owns the actor
-// loop and decides to park, and here the emitted drain does.
-tuckParkActor :: proc() {
-	parkSuspend()
+Waiter :: struct {
+	pred:      proc() -> bool,
+	doneFd:    linux.Fd,     // one byte written when the predicate holds
+	satisfied: bool,
 }
 
-tuckStartActor :: proc(drain: proc()) {
-	c := newCoroutine(drain, TuckStackSize)
-	append(&gActors, c)
-	schedule(c)
+@(private)
+ActorSlot :: struct {
+	drain:   DrainProc,
+	lock:    sync.Mutex,
+	cond:    sync.Cond,
+	pending: bool,
+	working: bool,
+	waiters: [dynamic]^Waiter,
 }
 
-// A send makes every parked actor runnable again; the drain loop re-parks
-// any actor whose mailbox turned out to be empty.
-tuckNotifySend :: proc() {
-	for a in gActors {
-		if !isFinished(a) do ready(a)
+@(private)
+gActorSlots: [dynamic]^ActorSlot   // SHARED: a send on any thread must reach
+@(private)                         // every actor
+gSlotsLock: sync.Mutex
+@(private)
+gIdleActors: int                   // parked actors; atomic. See tuckNotifySend.
+
+@(private)
+@(thread_local)
+gMySlot: ^ActorSlot                // the slot THIS thread serves
+
+@(private)
+checkWaiters :: proc(slot: ^ActorSlot) {
+	// Evaluate every registered predicate and wake whoever is satisfied.
+	// ALWAYS on the actor's own thread, where the state is settled.
+	// The length check first is the "free when unused" property.
+	if len(slot.waiters) == 0 do return
+	woken: [dynamic]^Waiter
+	defer delete(woken)
+	sync.lock(&slot.lock)
+	kept: [dynamic]^Waiter
+	for w in slot.waiters {
+		if w.satisfied do continue
+		if w.pred() {
+			w.satisfied = true
+			append(&woken, w)
+		} else {
+			append(&kept, w)
+		}
+	}
+	delete(slot.waiters)
+	slot.waiters = kept
+	sync.unlock(&slot.lock)
+	// Outside the lock: the waiter wakes at once and must not contend for a
+	// lock it is about to stop caring about.
+	for w in woken {
+		b: byte = 1
+		linux.write(w.doneFd, ([^]byte)(&b)[:1])
+		linux.close(w.doneFd)
 	}
 }
 
-// Suspend until `pred` holds, letting other coroutines run in between.
-// Named to match std/scheduler.tuck's `waitUntil` extern, which the module
-// forwarder emits as `rt.waitUntil`.
-waitUntil :: proc(pred: proc() -> bool) {
+// Emitted in the drain loop after each handled message, so a predicate sees the
+// EXACT moment it becomes true rather than once per batch.
+tuckCheckWaiters :: proc() {
+	if gMySlot != nil do checkWaiters(gMySlot)
+}
+
+@(private)
+actorMain :: proc(t: ^thread.Thread) {
+	slot := (^ActorSlot)(t.data)
+	tuckAsyncInit()          // this thread's own scheduler and reactor
+	gMySlot = slot
+	for {
+		if slot.drain() do continue
+		checkWaiters(slot)
+		sync.lock(&slot.lock)
+		slot.working = false
+		if !slot.pending {
+			intrinsics.atomic_add(&gIdleActors, 1)
+			for !slot.pending {
+				sync.cond_wait(&slot.cond, &slot.lock)
+			}
+			intrinsics.atomic_sub(&gIdleActors, 1)
+		}
+		slot.pending = false
+		slot.working = true
+		sync.unlock(&slot.lock)
+	}
+}
+
+tuckStartActor :: proc(drain: DrainProc) -> rawptr {
+	// Detached by design: actors are daemons with no termination condition, so
+	// there is nothing to join. The process exits and they go with it.
+	slot := new(ActorSlot)
+	slot.drain = drain
+	slot.pending = true      // drain once before the first wait: a send may
+	slot.working = true      // already be queued by the time we get here
+	sync.lock(&gSlotsLock)
+	append(&gActorSlots, slot)
+	sync.unlock(&gSlotsLock)
+	t := thread.create(actorMain)
+	t.data = rawptr(slot)
+	thread.start(t)
+	return rawptr(slot)
+}
+
+tuckWaitOn :: proc(handle: rawptr, pred: proc() -> bool) {
+	// `Actor.waitUntil {pred: :p}` — register with THAT actor and block.
+	// The predicate is evaluated on the actor's thread, so the answer is
+	// neither racy nor stale.
+	if handle == nil do return
+	slot := (^ActorSlot)(handle)
+	w := new(Waiter)
+	w.pred = pred
+	fds: [2]linux.Fd
+	// NONBLOCK at creation rather than fcntl after: main polls this fd while
+	// still driving its own tasks (see below), so a blocking read would be the
+	// deadlock this branch exists to avoid.
+	linux.pipe2(&fds, {.NONBLOCK})
+	w.doneFd = fds[1]
+	sync.lock(&slot.lock)
+	append(&slot.waiters, w)
+	slot.pending = true      // evaluate ONCE IMMEDIATELY: the condition may
+	sync.cond_signal(&slot.cond)   // already hold
+	sync.unlock(&slot.lock)
+	// From a TASK: park through the reactor — blocking the thread would freeze
+	// every other task on it.
+	//
+	// From MAIN: keep driving main's own tasks while waiting. A plain blocking
+	// read DEADLOCKS whenever the condition depends on a task, because main's
+	// thread is the only thing that runs tasks and blocking it stops the very
+	// work that would make the predicate true.
+	b: byte = 0
+	if inCoroutine() {
+		tuckAwaitRead(int(fds[0]))
+		linux.read(fds[0], ([^]byte)(&b)[:1])
+	} else {
+		for {
+			n, _ := linux.read(fds[0], ([^]byte)(&b)[:1])
+			if n == 1 do break
+			if hasPending() { runNext() } else { runOnce(1) }
+		}
+	}
+	linux.close(fds[0])
+}
+
+tuckDrainActors :: proc() {
+	// Wait for every actor to empty its mailbox. Emitted at the END of main.
+	// Without it `send` races `quit`: the message is in the ring and the
+	// detached thread may never have been scheduled.
+	for {
+		allIdle := true
+		sync.lock(&gSlotsLock)
+		for s in gActorSlots {
+			sync.lock(&s.lock)
+			if s.pending || s.working do allIdle = false
+			sync.unlock(&s.lock)
+		}
+		sync.unlock(&gSlotsLock)
+		if allIdle do return
+	}
+}
+
+tuckNotifySend :: proc() {
+	// Wake every actor so whichever owns that mailbox drains it.
+	//
+	// THE FAST PATH IS THE POINT: a busy actor will come back round its drain
+	// loop and find the message, so it needs no wake, and this runs once per
+	// SEND. Measured on the Nim twin at 3x the cost of the rest of a send when
+	// it unconditionally took two locks and signalled. `gIdleActors` is
+	// non-zero only while an actor is genuinely parked.
+	if intrinsics.atomic_load(&gIdleActors) == 0 do return
+	sync.lock(&gSlotsLock)
+	for s in gActorSlots {
+		sync.lock(&s.lock)
+		s.pending = true
+		sync.cond_signal(&s.cond)
+		sync.unlock(&s.lock)
+	}
+	sync.unlock(&gSlotsLock)
+}
+
+// Run THIS thread's coroutines until `pred` holds. Named to match
+// std/scheduler.tuck's `runTasksUntil` extern, which the module forwarder
+// emits as `rt.runTasksUntil`.
+//
+// It DRIVES rather than waits — see the Nim twin for why the old `waitUntil`
+// name became misleading once actors got their own threads.
+runTasksUntil :: proc(pred: proc() -> bool) {
 	for !pred() {
 		if inCoroutine() {
 			coroYield()

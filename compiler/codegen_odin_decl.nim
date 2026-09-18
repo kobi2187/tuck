@@ -641,8 +641,7 @@ proc genInertActor*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   let body = if fields.len > 0: fields.join("\n") & "\n" else: ""
   ind & d.name & " :: struct {\n" & body & ind & "}\n\n" &
     ind & actorSingletonName(d.name) & ": " & d.name & "\n\n" &
-    ind & "drain_" & d.name & " :: proc() {\n" &
-    ind & "\tfor { rt.tuckParkActor() }\n" & ind & "}\n"
+    ind & "drain_" & d.name & " :: proc() -> bool { return false }\n"
 
 proc genMsgEnvelope*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandler],
                     variants: seq[string], ind: string): string =
@@ -730,18 +729,21 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
   ## makes this decision — the drain merely reports whether it did work.
   let singleton = actorSingletonName(d.name)
   let finishedGuard = if hasShutdown:
-                        ind & "\t\tif " & singleton & ".finished { return }\n"
+                        ind & "\tif " & singleton & ".finished { return false }\n"
                       else: ""
-  "\n" & ind & "drain_" & d.name & " :: proc() {\n" &
-    ind & "\tfor {\n" & finishedGuard &
-    ind & "\t\tmsg: " & d.name & "Msg\n" &
-    ind & "\t\tdidWork := false\n" &
-    ind & "\t\tfor rt.dequeue(&" & singleton & ".mailbox, &msg) {\n" &
-    ind & "\t\t\thandleMsg_" & d.name & "(&" & singleton & ", msg)\n" &
-    ind & "\t\t\tdidWork = true\n" &
-    ind & "\t\t}\n" &
-    ind & "\t\tif didWork { rt.coroYield() } else { rt.tuckParkActor() }\n" &
-    ind & "\t}\n" & ind & "}\n"
+  "\n" & ind & actorSlotName(d.name) & ": rawptr\n" &
+    "\n" & ind & "drain_" & d.name & " :: proc() -> bool {\n" & finishedGuard &
+    ind & "\tmsg: " & d.name & "Msg\n" &
+    ind & "\tdidWork := false\n" &
+    ind & "\tfor rt.dequeue(&" & singleton & ".mailbox, &msg) {\n" &
+    ind & "\t\thandleMsg_" & d.name & "(&" & singleton & ", msg)\n" &
+    # After EACH message: a registered predicate is about the exact moment a
+    # condition becomes true, and one that went true and false again inside a
+    # batch would be missed by a once-per-pass check.
+    ind & "\t\trt.tuckCheckWaiters()\n" &
+    ind & "\t\tdidWork = true\n" &
+    ind & "\t}\n" &
+    ind & "\treturn didWork\n" & ind & "}\n"
 
 proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
                    ind: string): string =

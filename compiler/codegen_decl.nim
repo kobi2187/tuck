@@ -460,6 +460,11 @@ proc genActorDrain*(msgTypeName, drainName, singleton: string, hasShutdown: bool
     "    var m: " & msgTypeName & "\n" &
     "    while dequeue(" & singleton & ".mailbox, m):\n" &
     "      handleMsg(" & singleton & ", m)\n" &
+    # After EACH message, not once per drain pass: a registered predicate is
+    # about the exact moment a condition becomes true, and a condition that
+    # went true and false again inside one batch would otherwise be missed.
+    # Costs one length check when nobody is waiting.
+    "      tuckCheckWaiters()\n" &
     "      result = true\n")
 
 proc genActor*(ctx: var CodegenCtx, d: Decl): string =
@@ -485,8 +490,13 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   let singletonStr = "let " & singleton & "* = " & d.name & "()\n"
   let drainStr = genActorDrain(msgTypeName, drainName, singleton, hasShutdown)
   # auto-registration hook: main's prologue calls registerActors()
-  let registerStr = "proc registerActor" & d.name & "*() =\n" &
-                    "  tuckStartActor(" & drainName & ")\n"
+  # The slot is KEPT, not discarded: `Actor.waitUntil {pred: :p}` names the
+  # actor at the call site, so the emitted call needs a handle to hand the
+  # predicate to. One global per actor, exactly like the singleton beside it.
+  let slotName = actorSlotName(d.name)
+  let registerStr = "var " & slotName & "*: pointer\n" &
+                    "proc registerActor" & d.name & "*() =\n" &
+                    "  " & slotName & " = tuckStartActor(" & drainName & ")\n"
 
   msgTypes & "\n" & stateStr & "\n" & singletonStr & "\n" & dispatchStr & "\n" &
     drainStr & "\n" & registerStr

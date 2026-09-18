@@ -18,6 +18,15 @@ minicoro everywhere rather than each backend's native coroutines. Other
 subsystems should follow the same principle; today some are per-backend
 reimplementations (tuck_rt.nim / tuck_rt.odin / tuck_rt.d) rather than one
 shared library, which is a known divergence risk, not a design choice.
+**AMENDED 2026-09-18 for ACTORS ONLY (user).** An actor now gets its own OS
+thread, with its own scheduler and reactor on that thread. The PRINCIPLE above
+is unchanged and is in fact what forces the port: the three backends must agree,
+so Odin and D get the same thread-per-actor model rather than Nim diverging.
+What changes is the means for one construct — an actor was a coroutine on
+main's thread, which meant it only ran when main happened to yield, so a
+program without `scheduler::waitUntil` never delivered a message at all (#8).
+Tasks are unaffected and stay minicoro coroutines on main's thread.
+
 Implication for M7: the D backend gets minicoro too, NOT core.thread.Fiber
 (supersedes the earlier plan note).
 

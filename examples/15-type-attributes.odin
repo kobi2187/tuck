@@ -30,9 +30,7 @@ tuck_UartDriver :: struct {
 
 tuck_UartDriverSingleton: tuck_UartDriver
 
-drain_tuck_UartDriver :: proc() {
-	for { rt.tuckParkActor() }
-}
+drain_tuck_UartDriver :: proc() -> bool { return false }
 
 tuck_readSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
 	fmt.println("TUCK PENDING: tuck_readSensor invoked (not implemented)")

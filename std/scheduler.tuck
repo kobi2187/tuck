@@ -1,12 +1,22 @@
-# std/scheduler — the actor scheduler's main-side API. Implemented by tuck_rt.
-# Actors run as daemons alongside main; main uses these to wait on app state.
+# std/scheduler — main's own scheduler, the one that runs TASKS.
+#
+# Actors are not here: each runs on its own OS thread and needs nothing from
+# main to make progress, and `<Actor>.waitUntil {pred: :p}` is how you wait on
+# one (spec 9.1). What is left on main's thread is tasks, so the verb says so —
+# driving main's scheduler cannot advance an actor, and the old `waitUntil`
+# name invited exactly that mistake: it would spin, burning CPU, while the
+# actor made progress on another thread regardless.
 # The predicate the scheduler polls. Spelling it out is what lets the checker
 # reject a mis-shaped callback and the backends emit a typed callable — a bare
 # `fn` matches anything and lowers to a GUESSED `proc() -> bool`.
 fnsig Predicate = {} -> bool
 
 extern:
-  fn waitUntil({pred: Predicate}) -> void [io]
+  # Run THIS thread's tasks until `pred` holds. For a condition about an
+  # actor, use `<Actor>.waitUntil` instead — it registers the predicate with
+  # that actor, which evaluates it on its own thread and wakes you, with no
+  # polling and no race.
+  fn runTasksUntil({pred: Predicate}) -> void [io]
   # Ask the scheduler to return after the current pass. Needed by anything
   # that parks on an fd which may never become readable — a server's accept
   # loop is the standard case: without this the program runs forever, because

@@ -183,5 +183,5 @@ fn main() -> int:
   if not ok:
     return 9
   {} drive
-  scheduler::waitUntil {pred: :settled}
+  Signals.waitUntil {pred: :settled}
   return {p: Signals.phase} phaseIndex

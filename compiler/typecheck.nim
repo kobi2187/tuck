@@ -703,7 +703,11 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   ## ordinary field-access syntax whose receiver happens to name a type. The
   ## proc was called asQualifiedMemberCall, which read as though the two were
   ## the same mechanism; they are not, and never were.
-  if e.receiver == nil or e.receiver.kind != exkPoolRef: return nil
+  # Pools and ACTORS both. An actor contributes `<Actor>.waitUntil` the same
+  # way a pool contributes `<Pool>.acquire` (typecheck_collect), so one path
+  # serves both and neither is special-cased by name.
+  if e.receiver == nil or e.receiver.kind notin {exkPoolRef, exkActorRef}:
+    return nil
   let qualified = e.receiver.refName & "." & e.fieldName
   if not tc.fnSigs.hasKey(qualified): return nil
   let extra = unwrapSingleField(e.dotArg)
@@ -714,9 +718,13 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   if extra != nil and sig.params.len == 1:
     let got = tc.synthesize(extra)
     if got != nil and not tc.compatible(got, sig.params[0].typ):
+      let why =
+        if e.receiver.kind == exkPoolRef:
+          " — a pool's handle belongs to that pool"
+        else: ""
       fail("Type Error: '" & qualified & "' expects " &
-           typeName(sig.params[0].typ) & " but got " & typeName(got) &
-           " — a pool's handle belongs to that pool", e.span)
+           typeName(sig.params[0].typ) & " but got " & typeName(got) & why,
+           e.span)
   let args = if extra != nil: @[e.receiver, extra] else: @[e.receiver]
   setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
                             callee: Expr(span: e.span, kind: exkVar,

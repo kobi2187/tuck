@@ -704,13 +704,17 @@ actor Box[T] [queue: 4]:
     last = v
     hits += 1
 
-fn both() -> bool:
-  return Box[int].hits > 0 and Box[str].hits > 0
+fn intDone() -> bool:
+  return Box[int].hits > 0
+
+fn strDone() -> bool:
+  return Box[str].hits > 0
 
 fn main() -> int [io]:
   Box[int] send put {v: 7}
   Box[str] send put {v: "hi"}
-  scheduler::waitUntil {pred: :both}
+  Box[int].waitUntil {pred: :intDone}
+  Box[str].waitUntil {pred: :strDone}
   {text: Box[str].last} printLine
   return Box[int].last
 """
@@ -849,7 +853,7 @@ fn arrived() -> bool:
 
 fn main() -> int [io]:
   Box[int] send put {v: 4}
-  scheduler::waitUntil {pred: :arrived}
+  Box[int].waitUntil {pred: :arrived}
   return Box[int].last
 """
   t.okCheck "an exported template is still instantiable in its own module"

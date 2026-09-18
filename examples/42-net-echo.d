@@ -29,11 +29,14 @@ void handleMsg_tuck_Result(ref tuck_Result self, tuck_ResultMsg msg) {
     }
 }
 
+__gshared void* tuck_ResultSlot;
+
 bool drain_tuck_Result() {
     bool did = false;
     tuck_ResultMsg msg;
     while (rt.dequeue(tuck_ResultSingleton.mailbox, msg)) {
         handleMsg_tuck_Result(tuck_ResultSingleton, msg);
+        rt.tuckCheckWaiters();
         did = true;
     }
     return did;
@@ -83,7 +86,7 @@ long tuck_main() {
     if ((tuck_l.status == rt.TuckStatus.Ok)) {
         rt.tuckSpawn({ cast(void) tuck_serve(tuck_l.value.fd); });
         rt.tuckSpawn({ cast(void) tuck_client(34593L); });
-        scheduler.waitUntil(&tuck_done);
+        rt.tuckWaitOn(tuck_ResultSlot, &tuck_done);
         net.close(tuck_l.value.fd);
         scheduler.stop();
         return tuck_ResultSingleton.code;
@@ -94,8 +97,9 @@ long tuck_main() {
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    rt.tuckStartActor(&drain_tuck_Result);
+    tuck_ResultSlot = rt.tuckStartActor(&drain_tuck_Result);
     auto mainRc = tuck_main();
     rt.tuckRun();
+    rt.tuckDrainActors();
     return cast(int) mainRc;
 }

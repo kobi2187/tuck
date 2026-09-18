@@ -35,10 +35,12 @@ proc draintuck_Counter(): bool {.gcsafe.} =
     var m: tuck_CounterMsg
     while dequeue(tuck_CounterSingleton.mailbox, m):
       handleMsg(tuck_CounterSingleton, m)
+      tuckCheckWaiters()
       result = true
 
+var tuck_CounterSlot*: pointer
 proc registerActortuck_Counter*() =
-  tuckStartActor(draintuck_Counter)
+  tuck_CounterSlot = tuckStartActor(draintuck_Counter)
 
 proc tuck_readSensor*[T](payload: T): TuckResult[tuple[value: uint16]] =
   stderr.writeLine("TUCK PENDING: tuck_readSensor invoked (not implemented)")

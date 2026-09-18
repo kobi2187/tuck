@@ -376,7 +376,7 @@ fn done() -> bool:
 
 fn main() -> int [io]:
   {} fire
-  scheduler::waitUntil {pred: :done}
+  Sink.waitUntil {pred: :done}
   {} scheduler::stop
   return Sink.hits
 """

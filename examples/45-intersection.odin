@@ -3,7 +3,6 @@ package main
 
 import "core:os"
 import rt "./tuckrt"
-import scheduler "./mod_scheduler"
 
 tuck_SIGNAL_OUT := cast(^u32)(uintptr(0x40011000))
 tuck_SIGNAL_OUT_NS_GREEN_SHIFT :: 0
@@ -149,16 +148,17 @@ handleMsg_tuck_Signals :: proc(self: ^tuck_Signals, msg: tuck_SignalsMsg) {
 	}
 }
 
-drain_tuck_Signals :: proc() {
-	for {
-		msg: tuck_SignalsMsg
-		didWork := false
-		for rt.dequeue(&tuck_SignalsSingleton.mailbox, &msg) {
-			handleMsg_tuck_Signals(&tuck_SignalsSingleton, msg)
-			didWork = true
-		}
-		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
+tuck_SignalsSlot: rawptr
+
+drain_tuck_Signals :: proc() -> bool {
+	msg: tuck_SignalsMsg
+	didWork := false
+	for rt.dequeue(&tuck_SignalsSingleton.mailbox, &msg) {
+		handleMsg_tuck_Signals(&tuck_SignalsSingleton, msg)
+		rt.tuckCheckWaiters()
+		didWork = true
 	}
+	return didWork
 }
 
 sendSense_tuck_Signals :: proc(self: ^tuck_Signals, demand: tuck_Demand, preempt: bool) {
@@ -244,13 +244,14 @@ tuck_main :: proc () -> int {
       return 9
   }
   tuck_drive()
-  scheduler.waitUntil(tuck_settled)
+  rt.tuckWaitOn(tuck_SignalsSlot, tuck_settled)
   return tuck_phaseIndex(tuck_SignalsSingleton.phase)
 }
 
 main :: proc() {
 	rt.tuckAsyncInit()
-	rt.tuckStartActor(drain_tuck_Signals)
+	tuck_SignalsSlot = rt.tuckStartActor(drain_tuck_Signals)
 	mainRc := tuck_main()
+	rt.tuckDrainActors()
 	os.exit(mainRc)
 }

@@ -31,8 +31,10 @@ proc draintuck_TrafficLight(): bool {.gcsafe.} =
     var m: tuck_TrafficLightMsg
     while dequeue(tuck_TrafficLightSingleton.mailbox, m):
       handleMsg(tuck_TrafficLightSingleton, m)
+      tuckCheckWaiters()
       result = true
 
+var tuck_TrafficLightSlot*: pointer
 proc registerActortuck_TrafficLight*() =
-  tuckStartActor(draintuck_TrafficLight)
+  tuck_TrafficLightSlot = tuckStartActor(draintuck_TrafficLight)
 

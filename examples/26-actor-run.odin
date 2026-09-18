@@ -3,7 +3,6 @@ package main
 
 import "core:os"
 import rt "./tuckrt"
-import scheduler "./mod_scheduler"
 
 tuck_CounterMsgKind :: enum { msgAdd }
 tuck_CounterMsg :: struct {
@@ -25,16 +24,17 @@ handleMsg_tuck_Counter :: proc(self: ^tuck_Counter, msg: tuck_CounterMsg) {
 	}
 }
 
-drain_tuck_Counter :: proc() {
-	for {
-		msg: tuck_CounterMsg
-		didWork := false
-		for rt.dequeue(&tuck_CounterSingleton.mailbox, &msg) {
-			handleMsg_tuck_Counter(&tuck_CounterSingleton, msg)
-			didWork = true
-		}
-		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
+tuck_CounterSlot: rawptr
+
+drain_tuck_Counter :: proc() -> bool {
+	msg: tuck_CounterMsg
+	didWork := false
+	for rt.dequeue(&tuck_CounterSingleton.mailbox, &msg) {
+		handleMsg_tuck_Counter(&tuck_CounterSingleton, msg)
+		rt.tuckCheckWaiters()
+		didWork = true
 	}
+	return didWork
 }
 
 sendAdd_tuck_Counter :: proc(self: ^tuck_Counter, n: int) {
@@ -49,13 +49,14 @@ tuck_main :: proc () -> int {
   for tuck_i in (1 ..= 10) {
       sendAdd_tuck_Counter(&tuck_CounterSingleton, tuck_i)
   }
-  scheduler.waitUntil(tuck_sumReady)
+  rt.tuckWaitOn(tuck_CounterSlot, tuck_sumReady)
   return tuck_CounterSingleton.total
 }
 
 main :: proc() {
 	rt.tuckAsyncInit()
-	rt.tuckStartActor(drain_tuck_Counter)
+	tuck_CounterSlot = rt.tuckStartActor(drain_tuck_Counter)
 	mainRc := tuck_main()
+	rt.tuckDrainActors()
 	os.exit(mainRc)
 }

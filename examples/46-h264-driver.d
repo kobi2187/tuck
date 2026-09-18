@@ -1,7 +1,6 @@
 module _46_h264_driver;
 
 import rt = tuck_rt;
-import scheduler = mod_scheduler;
 
 __gshared uint* tuck_VI_CTRL = cast(uint*)(0x50000000);
 enum tuck_VI_CTRL_ENABLE_SHIFT = 0;
@@ -184,11 +183,14 @@ void handleMsg_tuck_Pipeline(ref tuck_Pipeline self, tuck_PipelineMsg msg) {
     }
 }
 
+__gshared void* tuck_PipelineSlot;
+
 bool drain_tuck_Pipeline() {
     bool did = false;
     tuck_PipelineMsg msg;
     while (rt.dequeue(tuck_PipelineSingleton.mailbox, msg)) {
         handleMsg_tuck_Pipeline(tuck_PipelineSingleton, msg);
+        rt.tuckCheckWaiters();
         did = true;
     }
     return did;
@@ -256,14 +258,15 @@ void tuck_stream() {
 long tuck_main() {
     tuck_Frame tuck_f = __validated_tuck_Frame(tuck_Frame(width: 1920L, height: 1080L, bytes: 4096L));
     tuck_stream();
-    scheduler.waitUntil(&tuck_drained);
+    rt.tuckWaitOn(tuck_PipelineSlot, &tuck_drained);
     return ((tuck_PipelineSingleton.decoded * 10L) + tuck_PipelineSingleton.dropped);
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    rt.tuckStartActor(&drain_tuck_Pipeline);
+    tuck_PipelineSlot = rt.tuckStartActor(&drain_tuck_Pipeline);
     auto mainRc = tuck_main();
+    rt.tuckDrainActors();
     return cast(int) mainRc;
 }

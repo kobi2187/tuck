@@ -271,6 +271,22 @@ proc resolveWrapNames*(m: Module, iface, objName: string): tuple[iface, obj: str
     if d.kind == dkObject and src == objName: result.obj = d.name
 
 
+proc hasRunningActors*(m: Module): bool =
+  ## Does this module declare an actor that actually runs? The same question
+  ## the three entry builders ask before emitting the boot and the exit drain,
+  ## asked once — a hand-rolled loop in each is how #61 happened.
+  for d in m.decls:
+    if d != nil and d.kind == dkActor and actorHasMessages(d): return true
+  false
+
+proc actorSlotName*(actorType: string): string =
+  ## The runtime handle for an actor's thread, named <type>Slot. `Actor.waitUntil`
+  ## names the actor at the call site and the emitted call hands the predicate
+  ## to THIS, so the handle has to be reachable by name from anywhere the actor
+  ## is visible — same reason, and same shape, as the singleton below.
+  if actorType.len == 0: return "actorSlot"
+  actorType[0].toLowerAscii() & actorType[1..^1] & "Slot"
+
 proc actorSingletonName*(actorType: string): string =
   ## An actor is a global singleton (spec §9): one instance per declared
   ## type, named <type>Singleton. genActor emits it; sends target it.

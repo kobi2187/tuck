@@ -1,7 +1,6 @@
 module _27_actor_select;
 
 import rt = tuck_rt;
-import scheduler = mod_scheduler;
 
 enum tuck_AccumulatorMsgKind { msgAdd, msgFinish, msgShutdown }
 
@@ -35,12 +34,15 @@ void handleMsg_tuck_Accumulator(ref tuck_Accumulator self, tuck_AccumulatorMsg m
     }
 }
 
+__gshared void* tuck_AccumulatorSlot;
+
 bool drain_tuck_Accumulator() {
     if (tuck_AccumulatorSingleton.finished) return false;
     bool did = false;
     tuck_AccumulatorMsg msg;
     while (rt.dequeue(tuck_AccumulatorSingleton.mailbox, msg)) {
         handleMsg_tuck_Accumulator(tuck_AccumulatorSingleton, msg);
+        rt.tuckCheckWaiters();
         did = true;
     }
     return did;
@@ -66,14 +68,15 @@ long tuck_main() {
         sendAdd_tuck_Accumulator(tuck_AccumulatorSingleton, tuck_i);
     }
     sendFinish_tuck_Accumulator(tuck_AccumulatorSingleton);
-    scheduler.waitUntil(&tuck_ready);
+    rt.tuckWaitOn(tuck_AccumulatorSlot, &tuck_ready);
     return tuck_AccumulatorSingleton.total;
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    rt.tuckStartActor(&drain_tuck_Accumulator);
+    tuck_AccumulatorSlot = rt.tuckStartActor(&drain_tuck_Accumulator);
     auto mainRc = tuck_main();
+    rt.tuckDrainActors();
     return cast(int) mainRc;
 }

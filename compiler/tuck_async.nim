@@ -14,6 +14,7 @@
 ## No --path is needed anymore: the engine is vendored in ./tuck_coro.
 
 import std/nativesockets
+import std/locks
 import ./tuck_coro
 
 type
@@ -238,27 +239,268 @@ proc awaitResult*[T](slot: TuckAsyncResult[T]): T =
 
 type DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I work?
 
-var gActors {.threadvar.}: seq[Coroutine]   # every declared actor's coroutine
-var gPending {.threadvar.}: bool            # a send happened — an actor may work
+# ONE OS THREAD PER ACTOR (ruled 2026-09-18).
+#
+# An actor is a daemon, and a daemon that only runs when `main` happens to
+# yield is not one. Under the previous design every actor was a coroutine on
+# main's thread, and main is NOT a coroutine — the emitted entry is a plain
+# `quit(tuck_main())` — so nothing ever resumed them. `send` enqueued into a
+# mailbox nobody drained, and a program without `scheduler::waitUntil` did
+# nothing at all (#8). `waitUntil` was never a wait: it is
+# `while not pred(): pumpOnce()`, i.e. main lending its thread to the
+# scheduler, which is a workaround for the missing thread wearing the clothes
+# of a synchronisation primitive.
+#
+# The runtime was already built for this. Every runtime global here is a
+# {.threadvar.} — see THE CROSS-THREAD CONTRACT above — so a thread that calls
+# tuckAsyncInit() gets its OWN scheduler and reactor, and the Mailbox has
+# carried a Lock from the start with the comment "sends come from other
+# threads". Nothing was missing but the thread.
+#
+# Tasks are unchanged: they stay coroutines on main's thread, where `[io]`
+# means a cooperative yield. So the two constructs now differ in more than
+# lifetime, which is the point — an actor is a service, a task is a job.
+type
+  Waiter = object
+    ## One client waiting on one condition of one actor.
+    ##
+    ## The predicate is evaluated ON THE ACTOR'S THREAD, where the state is
+    ## settled and unshared — so there is no external read to synchronise and
+    ## no snapshot to be stale. Ada's protected-object entry barriers are the
+    ## same construct for the same reason.
+    pred: proc(): bool {.gcsafe.}
+    doneFd: cint        ## one byte written when the predicate holds
+    satisfied: bool     ## guarded by the owning slot's lock
 
-proc tuckStartActor*(drain: DrainProc) =
-  ## Register + start a declared actor as a looping coroutine (emitted once per
-  ## actor). The loop drains, then yields when idle; a send reschedules it.
-  let co = newCoroutine(proc() {.gcsafe.} = ({.cast(gcsafe).}:
-    while true:
-      let didWork = drain()
-      if not didWork:
-        coroYield()), TuckStackSize)   # idle — hand control back; resumed on send
-  gActors.add(co)
-  schedule(co)
+  ActorSlot = object
+    drain: DrainProc
+    lock: Lock
+    cond: Cond
+    pending: bool       ## a send arrived; guarded by `lock`
+    working: bool       ## draining right now, or woken and about to; `lock`
+    waiters: seq[ptr Waiter]   ## the registered predicates; guarded by `lock`
+    thr: Thread[ptr ActorSlot]
+
+var gMySlot {.threadvar.}: ptr ActorSlot
+  ## The slot this thread serves, so the emitted drain can reach its waiters
+  ## without carrying the slot through every generated proc. A threadvar, so
+  ## each actor thread sees only its own.
+
+var gActorSlots: seq[ptr ActorSlot]   ## SHARED, not a threadvar: a send on any
+                                      ## thread must reach every actor
+var gSlotsLock: Lock
+var gSlotsReady = false
+var gIdleActors: int                  ## how many actors are parked on their
+                                      ## condvar, i.e. how many a send could
+                                      ## possibly need to wake. Atomic.
+
+# A COROUTINE NEVER MIGRATES BETWEEN THREADS, and that is now load-bearing.
+#
+# minicoro is multithread-safe (`mco_current_co` is MCO_THREAD_LOCAL and we do
+# not define MCO_NO_MULTITHREAD), so two actor threads cannot stomp each
+# other's current-coroutine. But minicoro's own documentation warns that a
+# compiler may cache the ADDRESS of a thread-local, which goes stale if a
+# coroutine resumes on a different thread — and this runtime reads threadvars
+# (gLoop, globalScheduler, activeCoroutine) inside coroutine code constantly.
+#
+# Nothing migrates today: an actor's coroutines are created and resumed only on
+# that actor's thread, main's tasks only on main's. There is no work stealing
+# and no coroutine hand-off. If either is ever added, this is what breaks, and
+# it will break as corruption rather than as a compile error.
+proc checkWaiters(slot: ptr ActorSlot) =
+  ## Evaluate every registered predicate and wake whoever is satisfied.
+  ## ALWAYS called on the actor's own thread.
+  ##
+  ## The length check first is the "free when unused" property: an actor that
+  ## nobody waits on pays one comparison per message, not a predicate call.
+  if slot.waiters.len == 0: return
+  var woken: seq[ptr Waiter]
+  acquire(slot.lock)
+  var kept: seq[ptr Waiter]
+  for w in slot.waiters:
+    if w.satisfied: continue
+    if w.pred():
+      w.satisfied = true
+      woken.add(w)
+    else:
+      kept.add(w)
+  slot.waiters = kept
+  release(slot.lock)
+  # Written OUTSIDE the lock: the waiter wakes immediately and must not
+  # contend with the actor for a lock it is about to stop caring about.
+  for w in woken:
+    var b: byte = 1
+    discard write(w.doneFd, addr b, 1)
+    discard close(w.doneFd)
+
+proc tuckCheckWaiters*() =
+  ## Emitted in the drain loop after each handled message, so a predicate sees
+  ## the EXACT moment it becomes true. Checking only once per drain pass would
+  ## miss a condition that went true and false again inside one batch.
+  if gMySlot != nil: checkWaiters(gMySlot)
+
+proc actorMain(slot: ptr ActorSlot) {.thread.} =
+  ## One actor, forever. Its own scheduler and reactor, so an `[io]` call in a
+  ## handler suspends THIS actor and nothing else.
+  ##
+  ## Blocks on a condvar when the mailbox comes up empty rather than spinning:
+  ## an actor alone on its thread has no peer to yield to, so the cooperative
+  ## `coroYield` this replaced would have been a busy loop.
+  tuckAsyncInit()
+  gMySlot = slot
+  while true:
+    if slot.drain(): continue
+    checkWaiters(slot)        # also after a pass that did nothing: a predicate
+                              # registered while idle must be answered
+    acquire(slot.lock)
+    slot.working = false          # nothing left to do: visible to tuckDrainActors
+    if not slot.pending:
+      discard atomicAddFetch(addr gIdleActors, 1, ATOMIC_ACQ_REL)
+      while not slot.pending:
+        wait(slot.cond, slot.lock)
+      discard atomicSubFetch(addr gIdleActors, 1, ATOMIC_ACQ_REL)
+    slot.pending = false
+    slot.working = true
+    release(slot.lock)
+
+proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
+  ## Register + start a declared actor on its own OS thread (emitted once per
+  ## actor, from the entry point before main runs).
+  ##
+  ## The slot is allocShared'd and the Thread lives INSIDE it: a `seq` of
+  ## Thread objects would move its elements on reallocation, and a running
+  ## thread's handle may not move.
+  ##
+  ## Detached by design. Actors are daemons with no termination condition, so
+  ## there is nothing to join — `quit` ends them, which is the same lifetime
+  ## the coroutine version had.
+  if not gSlotsReady:
+    initLock(gSlotsLock)
+    gSlotsReady = true
+  let slot = cast[ptr ActorSlot](allocShared0(sizeof(ActorSlot)))
+  slot.drain = drain
+  initLock(slot.lock)
+  initCond(slot.cond)
+  slot.pending = true        # drain once before the first wait: a send may
+                             # already be queued by the time we get here
+  slot.working = true
+  acquire(gSlotsLock)
+  gActorSlots.add(slot)
+  release(gSlotsLock)
+  createThread(slot.thr, actorMain, slot)
+  # Returned as an OPAQUE pointer so the emitted registerActor<Name> can keep
+  # it without codegen needing the ActorSlot type: `Actor.waitUntil` names the
+  # actor at the call site, so codegen needs a handle to pass and nothing more.
+  cast[pointer](slot)
 
 proc tuckNotifySend*() =
-  ## Emitted by each send after enqueue: mark work pending and reschedule idle
-  ## actors so they drain on the next scheduler pass.
-  gPending = true
-  for co in gActors:
-    if not co.isFinished():
-      schedule(co)
+  ## Emitted by each send after enqueue: wake every actor so whichever owns
+  ## that mailbox drains it.
+  ##
+  ## Wakes ALL of them, exactly as the coroutine version rescheduled all of
+  ## them — the send site knows the mailbox it wrote to but not which slot
+  ## drains it, and an actor woken with nothing to do goes straight back to
+  ## waiting.
+  ##
+  ## THE FAST PATH IS THE POINT. A busy actor is already going to come back
+  ## round its drain loop and find the new message, so it needs no wake at all,
+  ## and this is called once per SEND — measured at 3x the cost of the whole
+  ## rest of a send when it unconditionally took two locks and signalled a
+  ## condvar. `gIdleActors` is only non-zero while an actor is genuinely parked,
+  ## so a flood of messages into a working actor pays one atomic read.
+  if not gSlotsReady: return
+  if atomicLoadN(addr gIdleActors, ATOMIC_ACQUIRE) == 0: return
+  acquire(gSlotsLock)
+  for s in gActorSlots:
+    acquire(s.lock)
+    s.pending = true
+    signal(s.cond)
+    release(s.lock)
+  release(gSlotsLock)
+
+proc pumpOnce(): bool   # forward: tuckWaitOn drives main's own tasks
+
+proc tuckWaitOn*(handle: pointer, pred: proc(): bool) =
+  ## `Actor.waitUntil {pred: :p}` — hand `pred` to that actor and block until it
+  ## holds.
+  ##
+  ## Registration is a REGISTRATION, not a poll: the predicate goes into the
+  ## actor's table and the actor evaluates it on its own thread after each
+  ## message. The caller then does nothing at all until woken, so this costs no
+  ## CPU, and the answer cannot be stale because it was computed where the
+  ## state lives.
+  ##
+  ## `pending` is set so the actor wakes and evaluates ONCE IMMEDIATELY: the
+  ## condition may already hold, and a waiter that registered against an
+  ## already-true predicate must not sleep until the next unrelated message.
+  if handle == nil: return
+  let slot = cast[ptr ActorSlot](handle)
+  var w = cast[ptr Waiter](allocShared0(sizeof(Waiter)))
+  var fds: array[2, cint]
+  discard pipe(fds)
+  # The emitted predicate is an ordinary top-level proc and carries no gcsafe
+  # annotation; it runs on the actor's thread, where the only thing it touches
+  # is that actor's own state. Cast rather than demanding the annotation from
+  # generated code that would have to acquire it for every user predicate.
+  w.pred = cast[proc(): bool {.gcsafe.}](pred)
+  w.doneFd = fds[1]
+  acquire(slot.lock)
+  slot.waiters.add(w)
+  slot.pending = true
+  signal(slot.cond)
+  release(slot.lock)
+  # Two waiting modes, the same fd.
+  #
+  # From a TASK: park through the reactor, exactly as tuckSubmitBlocking does.
+  # Blocking the thread would freeze every other task on it.
+  #
+  # From MAIN: keep driving main's own tasks while waiting. A plain blocking
+  # read here DEADLOCKS whenever the condition depends on a task — main's
+  # thread is the only thing that runs tasks, so blocking it stops the very
+  # work that would make the predicate true. std/net's echo round trip is
+  # exactly that shape: a task serves the socket and an actor records the
+  # result. The old spinning `waitUntil` never hit this because pumping was
+  # all it did.
+  var b: byte = 0
+  if inCoroutine():
+    tuckAwaitRead(fds[0].int)
+    discard read(fds[0], addr b, 1)
+  else:
+    discard fcntl(fds[0], F_SETFL, O_NONBLOCK)
+    while read(fds[0], addr b, 1) != 1:
+      discard pumpOnce()   # runs a task, or polls the reactor for 1ms
+  discard close(fds[0])
+  deallocShared(w)
+
+proc tuckDrainActors*() =
+  ## Wait until every actor has emptied its mailbox. Emitted at the END of
+  ## main, before the process exits.
+  ##
+  ## Without this, `send` is a coin flip: main enqueues and calls `quit`, and
+  ## the actor's thread — detached, and possibly not yet scheduled by the OS —
+  ## dies with the message still in the ring. A handler whose whole purpose is
+  ## a side effect (printing, writing a file) then does nothing at all, which
+  ## is the same observable bug thread-per-actor was meant to fix.
+  ##
+  ## This is NOT a join: actors are daemons and never finish. It waits for
+  ## QUIESCENCE — no pending sends, nobody mid-handler — which is the strongest
+  ## thing that is true of a system whose services outlive the program.
+  ##
+  ## It does NOT make `send` followed by a read of the actor's state ordered.
+  ## That read happens inside main, long before this runs; no exit-time wait
+  ## can reach back and change what it saw. `scheduler::waitUntil` remains the
+  ## way to order a send against a read.
+  if not gSlotsReady: return
+  while true:
+    var allIdle = true
+    acquire(gSlotsLock)
+    for s in gActorSlots:
+      acquire(s.lock)
+      if s.pending or s.working: allIdle = false
+      release(s.lock)
+    release(gSlotsLock)
+    if allIdle: return
+    cpuRelax()
 
 proc pumpOnce(): bool =
   ## Advance the runtime one step: run a ready coroutine, or poll I/O. Returns
@@ -268,9 +510,19 @@ proc pumpOnce(): bool =
   discard gLoop.runOnce(1)
   hasPending()
 
-proc waitUntil*(pred: proc(): bool) =
-  ## Main blocks until the predicate over public actor state holds, driving the
-  ## runtime cooperatively meanwhile. (Same drive as awaitResult from main.)
+proc runTasksUntil*(pred: proc(): bool) =
+  ## `scheduler::runTasksUntil` — run THIS thread's coroutines until `pred`
+  ## holds.
+  ##
+  ## It DRIVES; it does not wait. Every pumpOnce advances a task on this thread
+  ## or polls this thread's reactor, so it can only make a condition true if
+  ## something on this thread would make it true.
+  ##
+  ## It was called `waitUntil`, and once actors moved to their own threads that
+  ## name was actively misleading: pumping main cannot advance an actor, so an
+  ## actor predicate here degenerates into a busy-wait that merely LOOKS
+  ## cooperative. `<Actor>.waitUntil` (tuckWaitOn) is the one that registers
+  ## with the actor and blocks.
   while not pred():
     discard pumpOnce()
 

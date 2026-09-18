@@ -388,7 +388,20 @@ proc odinTypeArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
         break
     if not mentioned: result.add(ctx.odinType(targs[i]))
 
+proc genOdinActorWaitOn(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`. The
+  ## checker rewrote the member call into `waitUntil(<actorRef>, pred)`, so the
+  ## actor is still named in arg 0. Twin of the Nim genActorWaitOn.
+  if e == nil or e.kind != exkCall or e.callee == nil: return ""
+  if e.callee.kind != exkVar or e.callee.name != "waitUntil": return ""
+  if e.args.len != 2 or e.args[0] == nil: return ""
+  if e.args[0].kind != exkActorRef: return ""
+  "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
+    ctx.genOdinExpr(e.args[1]) & ")"
+
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
+  let waitOn = ctx.genOdinActorWaitOn(e)
+  if waitOn != "": return waitOn
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.genOdinExpr(e.callee)
@@ -833,6 +846,12 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## status test, a resolved call, a sum-variant construction, or a plain read.
   let ic = ctx.res.ifaceCallOf(e)
   if ic.member != "": return ctx.genIfaceDispatch(e, ic)
+  # A CHECKER-RESOLVED CALL FIRST, before the actor-field read below. Nim's
+  # genFieldAccess has always tested hasCall first; Odin tested the actor
+  # branch first, so `Actor.waitUntil {pred: :p}` — a static member call whose
+  # receiver is an actor — emitted `Singleton.waitUntil` as though it were a
+  # field read, and Odin answered "has no field 'waitUntil'".
+  if ctx.res.hasCall(e): return ctx.genOdinCall(ctx.res.call(e))
   # `Counter.total` reads the actor SINGLETON's field, not a type's.
   if e.receiver != nil and e.receiver.kind == exkActorRef:
     return actorSingletonName(e.receiver.refName) & "." & e.fieldName
@@ -841,10 +860,6 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     # otherwise bind the `!` to the receiver alone
     return "(" & ctx.genOdinExpr(e.receiver) & ".status == .Ok)"
   if ctx.isInputField(e): return e.fieldName
-  # fieldName resolved to a fn call, not a field (checker-resolved). A `..`
-  # chain feeding this call was already hoisted into a temp by
-  # lowering.hoistChainCalls — the receiver here can never be exkChain.
-  if ctx.res.hasCall(e): return ctx.genOdinCall(ctx.res.call(e))
   if ctx.isLenOnSized(e): return "len(" & ctx.genOdinExpr(e.receiver) & ")"
   let byRef = ctx.fieldByReceiverKind(e)
   if byRef != "": return byRef

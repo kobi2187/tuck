@@ -351,7 +351,7 @@ fn done() -> bool:
 fn main() -> int [io]:
   var mine = {v: 42} Sample
   Sink send take {s: mine}
-  scheduler::waitUntil {pred: :done}
+  Sink.waitUntil {pred: :done}
   {} scheduler::stop
   if mine.v == 42 and Sink.seen == 42:
     return 1

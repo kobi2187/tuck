@@ -187,7 +187,28 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       # own comment in typecheck_state.nim for why they aren't shared.
       tc.groupDecls[d.name] = d
     of dkMixin, dkExtern, dkPending: tc.collectSigs(d.mixinMembers, top = false)
-    of dkActor: tc.collectSigs(d.handlers)
+    of dkActor:
+      tc.collectSigs(d.handlers)
+      # `<Actor>.waitUntil {pred: :p}` — a static member call, registered the
+      # same way `Pool.acquire` is. A plain signature in the flat table, so the
+      # call resolves through the ordinary path: the compiler does NOT special-
+      # case a library name, and the actor is named by the author rather than
+      # inferred from which fields the predicate happens to read.
+      #
+      # Blocks until `p` holds. The actor evaluates it on its own thread after
+      # each message, so the answer is neither racy nor stale (spec §9.1).
+      tc.setFnSig(d.name & ".waitUntil",
+        # The shape STRUCTURALLY (`{} -> bool`), not the name `Predicate`:
+        # that name lives in std/scheduler, and `Actor.waitUntil` is a property
+        # of the actor, so it must not require an import to use.
+        (@[Param(name: "pred",
+                 typ: Type(span: d.span, kind: tkFunc, params: @[],
+                           result: Type(span: d.span, kind: tkNamed,
+                                        name: "bool"),
+                           paramNames: @[]),
+                 span: d.span)],
+         Type(span: d.span, kind: tkNamed, name: "void"),
+         newSeq[string](), @[emIo], newSeq[string]()))
     of dkErrors: tc.collectErrPolicy(d)
     of dkResources: tc.collectResourceHandles(d)
     else: discard

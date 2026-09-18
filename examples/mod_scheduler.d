@@ -4,8 +4,8 @@ import rt = tuck_rt;
 
 alias tuck_Predicate = bool function();
 
-void waitUntil(tuck_Predicate pred) {
-    rt.waitUntil(pred);
+void runTasksUntil(tuck_Predicate pred) {
+    rt.runTasksUntil(pred);
 }
 
 void stop() {

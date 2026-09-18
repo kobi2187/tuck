@@ -231,7 +231,7 @@ fn ready() -> bool:
 
 fn main() -> int:
   Worker send go {n: 1}
-  scheduler::waitUntil {pred: :ready}
+  Worker.waitUntil {pred: :ready}
   {} scheduler::stop
   return 7
 """
@@ -284,7 +284,7 @@ fn main() -> int [io]:
   if l.ok:
     {lfd: l.value.fd} serve
     {port: 34599} client
-    scheduler::waitUntil {pred: :done}
+    Result.waitUntil {pred: :done}
     {fd: l.value.fd} net::close
     {} scheduler::stop
     return Result.code

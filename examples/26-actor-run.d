@@ -1,7 +1,6 @@
 module _26_actor_run;
 
 import rt = tuck_rt;
-import scheduler = mod_scheduler;
 
 enum tuck_CounterMsgKind { msgAdd }
 
@@ -26,11 +25,14 @@ void handleMsg_tuck_Counter(ref tuck_Counter self, tuck_CounterMsg msg) {
     }
 }
 
+__gshared void* tuck_CounterSlot;
+
 bool drain_tuck_Counter() {
     bool did = false;
     tuck_CounterMsg msg;
     while (rt.dequeue(tuck_CounterSingleton.mailbox, msg)) {
         handleMsg_tuck_Counter(tuck_CounterSingleton, msg);
+        rt.tuckCheckWaiters();
         did = true;
     }
     return did;
@@ -50,14 +52,15 @@ long tuck_main() {
     foreach (tuck_i; 1L .. 10L + 1) {
         sendAdd_tuck_Counter(tuck_CounterSingleton, tuck_i);
     }
-    scheduler.waitUntil(&tuck_sumReady);
+    rt.tuckWaitOn(tuck_CounterSlot, &tuck_sumReady);
     return tuck_CounterSingleton.total;
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    rt.tuckStartActor(&drain_tuck_Counter);
+    tuck_CounterSlot = rt.tuckStartActor(&drain_tuck_Counter);
     auto mainRc = tuck_main();
+    rt.tuckDrainActors();
     return cast(int) mainRc;
 }

@@ -39,16 +39,17 @@ handleMsg_tuck_Counter :: proc(self: ^tuck_Counter, msg: tuck_CounterMsg) {
 	}
 }
 
-drain_tuck_Counter :: proc() {
-	for {
-		msg: tuck_CounterMsg
-		didWork := false
-		for rt.dequeue(&tuck_CounterSingleton.mailbox, &msg) {
-			handleMsg_tuck_Counter(&tuck_CounterSingleton, msg)
-			didWork = true
-		}
-		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
+tuck_CounterSlot: rawptr
+
+drain_tuck_Counter :: proc() -> bool {
+	msg: tuck_CounterMsg
+	didWork := false
+	for rt.dequeue(&tuck_CounterSingleton.mailbox, &msg) {
+		handleMsg_tuck_Counter(&tuck_CounterSingleton, msg)
+		rt.tuckCheckWaiters()
+		didWork = true
 	}
+	return didWork
 }
 
 sendIncrement_tuck_Counter :: proc(self: ^tuck_Counter, n: int) {
@@ -76,5 +77,6 @@ fetchFeed :: proc(payload: $T) -> rt.TuckResult(TRec_feed(tuck_Feed)) {
 
 main :: proc() {
 	rt.tuckAsyncInit()
-	rt.tuckStartActor(drain_tuck_Counter)
+	tuck_CounterSlot = rt.tuckStartActor(drain_tuck_Counter)
+	rt.tuckDrainActors()
 }

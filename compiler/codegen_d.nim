@@ -392,7 +392,41 @@ proc taskRetTypeD(ctx: var DCodegenCtx, name: string): string =
       return ctx.dType(d.taskReturnType)
   "void"
 
+proc asDPrimConversion(ctx: var DCodegenCtx, e: Expr,
+                       calleeStr: string): string =
+  ## `{value: n} u64` — a PRIMITIVE conversion. It names a Tuck type, and D's
+  ## name for it is a different word: `u64(n)` reached dmd as an undefined
+  ## identifier because D spells it `ulong`. The same table dType uses answers
+  ## it. Odin needed no equivalent: its own primitive names ARE Tuck's.
+  let prim = dPrimName(calleeStr)
+  if prim == "" or prim == calleeStr: return ""
+  let arg = ctx.genDCallArgs(e, calleeStr).join(", ")
+  # NARROWING needs a cast, not a type constructor: `ubyte(x)` where x is a
+  # ulong is "cannot implicitly convert expression of type ulong to ubyte" —
+  # D's `T(x)` only performs the conversions it would do implicitly. Tuck's
+  # conversion call is explicit BY CONSTRUCTION (the author wrote the type
+  # name), so `cast` is what it means. Numeric and bool only: `str` is in the
+  # same table but converting to it is `toStr`, never a reinterpretation.
+  if prim in DCastablePrims:
+    return "cast(" & prim & ")(" & arg & ")"
+  prim & "(" & arg & ")"
+
+proc genDActorWaitOn(ctx: var DCodegenCtx, e: Expr): string =
+  ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, &p)`. The
+  ## checker rewrote the member call into `waitUntil(<actorRef>, pred)`, so the
+  ## actor is still named in arg 0. Twin of the Nim and Odin versions.
+  if e == nil or e.kind != exkCall or e.callee == nil: return ""
+  if e.callee.kind != exkVar or e.callee.name != "waitUntil": return ""
+  if e.args.len != 2 or e.args[0] == nil: return ""
+  if e.args[0].kind != exkActorRef: return ""
+  # No `&` here: a `:fnRef` already emits D's address-of, and adding one gave
+  # `&&tuck_done`.
+  "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
+    ctx.genDExpr(e.args[1]) & ")"
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
+  let waitOn = ctx.genDActorWaitOn(e)
+  if waitOn != "": return waitOn
   let variant = ctx.asDSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.resolveDCallee(e)
@@ -400,18 +434,8 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   # name for it is a different word: `u64(n)` reached dmd as an undefined
   # identifier because D spells it `ulong`. The same table dType uses answers
   # it. Odin needed no equivalent: its own primitive names ARE Tuck's.
-  let prim = dPrimName(calleeStr)
-  if prim != "" and prim != calleeStr:
-    let arg = ctx.genDCallArgs(e, calleeStr).join(", ")
-    # NARROWING needs a cast, not a type constructor: `ubyte(x)` where x is a
-    # ulong is "cannot implicitly convert expression of type ulong to ubyte" —
-    # D's `T(x)` only performs the conversions it would do implicitly. Tuck's
-    # conversion call is explicit BY CONSTRUCTION (the author wrote the type
-    # name), so `cast` is what it means. Numeric and bool only: `str` is in the
-    # same table but converting to it is `toStr`, never a reinterpretation.
-    if prim in DCastablePrims:
-      return "cast(" & prim & ")(" & arg & ")"
-    return prim & "(" & arg & ")"
+  let conv = ctx.asDPrimConversion(e, calleeStr)
+  if conv != "": return conv
   # Calling a task in STATEMENT position schedules it and moves on —
   # fire-and-forget (spec §9.2). A result-BOUND call is handled in
   # genDAssign, which needs the target to build the slot.

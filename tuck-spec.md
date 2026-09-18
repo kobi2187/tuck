@@ -1843,8 +1843,17 @@ needs one, it is separate future work, not a mode of what is built today.
 
 Long-lived isolated state machines, one instance per declared type (a
 singleton — there is no separate construction step, no reference to hold).
-Each runs on its own coroutine (see the runtime note above) with a static
-ring-buffer mailbox:
+
+**Each actor runs on its own OS thread**, with its own scheduler and its own
+I/O reactor, and a static ring-buffer mailbox. An actor is a SERVICE: it is
+started before `main` runs and it outlives every call into it. `main` does not
+have to yield, poll or drive anything for an actor to make progress — the
+thread is already running, blocked on its mailbox, and a `send` wakes it.
+
+This is why an actor and a task differ in more than lifetime. A task is a JOB:
+a coroutine on `main`'"'"'s thread, where `[io]` is a cooperative yield and the
+scheduler hands control to the next task. An actor is a SERVICE: a thread,
+where `[io]` suspends that actor alone and nothing else notices.
 
 ```tuck
 actor UartDriver [queue: 8]:
@@ -1863,6 +1872,66 @@ Only value types (copied) cross actor boundaries. No reference sharing across
 boundaries. Queue (mailbox) size is a compile-time constant — the ring buffer
 is sized to it exactly, so a full mailbox is a fixed, known capacity, not an
 unbounded allocation.
+
+#### Observing an actor: a snapshot, or the exact moment
+
+An actor'"'"'s public fields are readable from outside (`Progress.done`). That is a
+deliberate departure from Erlang, Akka and Pony, where a process'"'"'s state cannot
+be named from outside at all and every observation is a request/reply round
+trip. Tuck allows the read because it is what a display or a progress bar
+actually wants, and a round trip for `done` would be heavier than the thing
+being measured.
+
+The price is that Tuck owns a question those languages never have to answer,
+so it answers it in two tiers:
+
+**A field read is a SNAPSHOT.** It is cheap, it is safe, and it is true as of
+some recent moment. It is NOT ordered against your own sends:
+
+```tuck
+Tally send add {by: 1}
+return Tally.n            # may be 0: the actor has its own thread and
+                          # may not have handled the message yet
+```
+
+No exit-time wait can fix that read — it already happened. This is the same
+property `tell` has in Akka and `!` has in Erlang; those languages simply make
+the mistake unwritable, and Tuck makes it writable and says what it means.
+
+**A predicate observes the TRANSITION.** When you need the moment a condition
+becomes true rather than a sample of a value, hand the actor a predicate. It
+evaluates it on its OWN thread, where the state is settled and unshared, and
+wakes you when it holds:
+
+```tuck
+fn complete() -> bool:
+  return Progress.done >= Progress.total
+
+scheduler::waitUntil {pred: :complete}
+```
+
+Registration is a message, and it is registered BEFORE the sends it watches, so
+the predicate is armed before the events it is waiting for and cannot miss a
+transition that happened while an earlier message was being handled.
+
+Three properties follow, and they are the ones a caller needs:
+
+- **No race.** The predicate reads the actor'"'"'s state on the actor'"'"'s thread. No
+  external read, so nothing to synchronise.
+- **Ordered against your own sends.** The registration rides the same mailbox,
+  and a mailbox is FIFO per sender.
+- **Free when unused.** An actor nobody registered a predicate with does no
+  extra work per message. Thousands of sends stay thousands of sends.
+
+The predicate must be effect-free, and that is checked rather than trusted: it
+runs inside the actor after each message, so a predicate that did I/O or sent
+messages would turn every message into unbounded work. (Ada'"'"'s protected-object
+entry barriers are the same construct and impose the same rule, but can only
+make violating it a bounded error; Tuck has the effect system to reject it.)
+
+It must also read exactly ONE actor'"'"'s fields — the actor it is registered with.
+A predicate over two actors is the racy case wearing a safe-looking spelling:
+no single actor can evaluate it soundly.
 
 **An actor may be generic.** A singleton and a type parameter are not in
 tension: the parameter is forwarded to the actor's own fields, so an actor
@@ -1986,14 +2055,43 @@ than until THIS task does. Issue #55.
 
 ### 9.4 The Scheduler
 
-The entire Tuck scheduler is cooperative. Tasks and actors are items in a ready
-queue. Each gets one `resume` call per tick — a coroutine switch onto that
-task's or actor's own stack (see the runtime note opening this Part) — runs
-until its next `[io]` yield point, then re-enqueues or parks waiting for a
-waker. An epoll/kqueue-based reactor drives readiness for parked I/O waits.
-No preemption, no kernel context switches. Each task and actor does have its
-own coroutine stack (the runtime note above covers why that is cheap in
-practice, not absent).
+There is not ONE scheduler. There is one per thread, and a thread per actor
+plus `main`'"'"'s.
+
+**Within a thread, scheduling is cooperative.** Coroutines on that thread are
+items in its ready queue, each gets one `resume` per tick — a switch onto that
+coroutine'"'"'s own stack (see the runtime note opening this Part) — and runs to
+its next `[io]` yield point, then re-enqueues or parks. Each thread has its own
+epoll/kqueue reactor driving readiness for its own parked waits. No preemption
+INSIDE a thread, so a handler or a task body runs to a yield point without
+interruption, and the state it owns needs no lock against itself.
+
+**Between threads, the OS schedules.** An actor'"'"'s thread runs whether or not
+`main` yields — that is the whole point of a service — so actors genuinely run
+in parallel with `main` and with each other, and there are kernel context
+switches between them.
+
+Where they meet:
+
+- `main`'"'"'s thread runs `main` and every task. A task is a coroutine, so `[io]`
+  in a task yields to the next task.
+- Each actor'"'"'s thread runs that actor alone. `[io]` in a handler suspends that
+  actor and nothing else — no other actor is delayed, and `main` never notices.
+- The only shared mutable thing is the **mailbox**, which carries a lock for
+  exactly that reason (it has since before actors were threads: "sends come
+  from other threads").
+- An actor with an empty mailbox BLOCKS on a condition variable rather than
+  spinning. It costs nothing while idle, and a `send` signals it.
+- At exit, `main` waits for every actor to reach quiescence — no pending sends,
+  nobody mid-handler — before the process ends. Without that, `send` would be a
+  race against `quit` and a fire-and-forget message could be lost, which is the
+  same observable bug as never delivering it.
+
+**This is a hosted-OS capability (Tier 3, §7.1),** as the runtime note above
+already said of `mmap` and the reactor. Threads do not exist on a bare-metal
+Cortex-M0 either, so requiring them concedes nothing that was not already
+conceded — but it does mean the concurrency model as specified here is not the
+bare-metal story, and a stackless Tier-1 path remains separate future work.
 
 ---
 

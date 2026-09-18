@@ -28,16 +28,17 @@ handleMsg_tuck_Result :: proc(self: ^tuck_Result, msg: tuck_ResultMsg) {
 	}
 }
 
-drain_tuck_Result :: proc() {
-	for {
-		msg: tuck_ResultMsg
-		didWork := false
-		for rt.dequeue(&tuck_ResultSingleton.mailbox, &msg) {
-			handleMsg_tuck_Result(&tuck_ResultSingleton, msg)
-			didWork = true
-		}
-		if didWork { rt.coroYield() } else { rt.tuckParkActor() }
+tuck_ResultSlot: rawptr
+
+drain_tuck_Result :: proc() -> bool {
+	msg: tuck_ResultMsg
+	didWork := false
+	for rt.dequeue(&tuck_ResultSingleton.mailbox, &msg) {
+		handleMsg_tuck_Result(&tuck_ResultSingleton, msg)
+		rt.tuckCheckWaiters()
+		didWork = true
 	}
+	return didWork
 }
 
 sendPut_tuck_Result :: proc(self: ^tuck_Result, c: int) {
@@ -82,7 +83,7 @@ tuck_main :: proc () -> int {
   if (tuck_l.status == .Ok) {
       tuck_serve(tuck_l.value.fd)
       tuck_client(34593)
-      scheduler.waitUntil(tuck_done)
+      rt.tuckWaitOn(tuck_ResultSlot, tuck_done)
       net.close(tuck_l.value.fd)
       scheduler.stop()
       return tuck_ResultSingleton.code
@@ -92,8 +93,9 @@ tuck_main :: proc () -> int {
 
 main :: proc() {
 	rt.tuckAsyncInit()
-	rt.tuckStartActor(drain_tuck_Result)
+	tuck_ResultSlot = rt.tuckStartActor(drain_tuck_Result)
 	mainRc := tuck_main()
 	rt.tuckRun()
+	rt.tuckDrainActors()
 	os.exit(mainRc)
 }
