@@ -581,6 +581,26 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
 
 proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int]
 
+proc constDeclFor*(m: Module, raw: string): Decl =
+  ## The const declaration named `raw`, wherever it is declared.
+  # THIS module first, then the program. A const declared in an IMPORTED module
+  # used to resolve to nothing, and the three callers disagreed about what that
+  # meant: the pool-count and actor-queue checks reported "must be a whole
+  # number the compiler knows" — a false error about a const that plainly is
+  # one — while failIfArrayLengthMismatched DECLINED TO CHECK, so
+  # `Array[Cap, int] = [1, 2, 3]` with an imported `Cap = 4` was accepted and
+  # the wrong length rode to the backend. Same code, one line moved across a
+  # module boundary (#73).
+  #
+  # Local first means a module's own const shadows another's; an AMBIGUOUS name
+  # (declared differently in two modules) stays unresolved rather than
+  # resolving to whichever loaded first.
+  result = m.findDecl(dkConst, raw)
+  if result == nil: result = m.findDecl(dkConst, "tuck_" & raw)
+  if result != nil or raw in semLayer.ambiguousConsts: return
+  result = semLayer.constNames.getOrDefault(raw, nil)
+  if result == nil: result = semLayer.constNames.getOrDefault("tuck_" & raw, nil)
+
 proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   ## A size written as TEXT — an attribute's value, or an `Array[N, T]` size,
   ## both of which the parser keeps as source text rather than as an
@@ -601,11 +621,11 @@ proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   # const decl has been renamed, so `[queue: Fan]` must still find
   # `const tuck_Fan`. Same comparison resolution.poolHandleName and
   # ast_query.memberCalleeOf make, for the same reason.
-  let raw = text.strip()
-  var d = m.findDecl(dkConst, raw)
-  if d == nil: d = m.findDecl(dkConst, "tuck_" & raw)
+  let d = constDeclFor(m, text.strip())
   if d == nil or d.constVal == nil: return none(int)
   evalConstExpr(m, d.constVal, depth + 1)
+
+
 
 proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int] =
   ## The constant subset: an integer literal, a const name, arithmetic over

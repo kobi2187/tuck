@@ -17,7 +17,7 @@
 # AST-cache-persisted per file — means an unchanged, cache-hit file's names
 # still get registered every run.
 
-import tables
+import tables, sets
 import ast
 import ast_query
 import resolution
@@ -44,6 +44,19 @@ proc collectNames(prog: seq[LoadedModule]) =
   collect(dkRegistry, registryNames, "a registry")
   collect(dkPool, poolNames, "a pool")
   collect(dkMixin, mixinNames, "a mixin")
+  # Consts, on DIFFERENT terms: `collect` treats a repeat as an error, which is
+  # right for the five singleton kinds above and wrong here — two modules each
+  # with a private `const Cap` is ordinary code. First wins, collisions are
+  # recorded, and an ambiguous name resolves to nothing rather than to whichever
+  # module happened to load first. A module's OWN const shadows all of this;
+  # ast_query.constIntOf scans the local module before consulting the table.
+  for lm in prog:
+    for d in lm.m.decls(dkConst):
+      if semLayer.constNames.hasKey(d.name) and
+         semLayer.constNames[d.name] != d:
+        semLayer.ambiguousConsts.incl(d.name)
+      else:
+        semLayer.constNames[d.name] = d
 
 proc declRefFor(name: string): Expr =
   ## The dedicated reference node for a name found in one of the five

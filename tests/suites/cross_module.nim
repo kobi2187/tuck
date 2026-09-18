@@ -428,4 +428,88 @@ fn main() -> int:
       if rc == 0: t.ok "editing a module invalidates its cache entry"
       else: t.no "editing a module invalidates its cache entry", outp
 
+  # --- a const declared in an IMPORTED module ------------------------------
+  #
+  # `constIntOf` resolved against the CURRENT module only, so an imported const
+  # named a size that could not be evaluated — and the three callers disagreed
+  # about what that meant. Two reported "must be a whole number the compiler
+  # knows", a false error about a const that plainly is one. The third,
+  # failIfArrayLengthMismatched, DECLINED TO CHECK.
+  #
+  # That third one is why this mattered: the same source, with one line moved
+  # across a module boundary, went from correctly rejected to silently
+  # accepted, and a wrong array length rode to the backend. It is the same
+  # failure #59 fixed for an UNDECLARED size, reappearing for a size that is
+  # declared, just not here (#73).
+  t.src """
+import lim
+
+fn main() -> int:
+  let a: Array[Cap, int] = [1, 2, 3]
+  return 0
+"""
+  t.addFile("lim.tuck", """const Cap = 4
+
+type Point:
+  x: int
+""")
+  t.badCheck "a wrong Array length is caught when the size is an IMPORTED const",
+             "needs exactly 4"
+
+  t.src """
+import lim
+
+pool Slots = Point [count: Cap]
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile("lim.tuck", """const Cap = 4
+
+type Point:
+  x: int
+""")
+  t.okCheck "...and a pool count takes one, rather than a false rejection"
+
+  t.src """
+import lim
+
+actor Sink [queue: Cap]:
+  n: int = 0
+
+  on go():
+    n = 1
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile("lim.tuck", """const Cap = 4
+
+type Point:
+  x: int
+""")
+  t.okCheck "...and so does an actor queue"
+
+  # The local module is consulted FIRST, so a module's own const shadows any
+  # other's. Asserted by VALUE — the list has 4 elements and the LOCAL Cap is
+  # 2, so an answer of "needs exactly 2" proves which one was read. A test
+  # that merely checked "no error" would pass on a lookup that resolved
+  # nothing at all.
+  t.src """
+import lim
+
+const Cap = 2
+
+fn main() -> int:
+  let a: Array[Cap, int] = [1, 2, 3, 4]
+  return 0
+"""
+  t.addFile("lim.tuck", """const Cap = 4
+
+type Point:
+  x: int
+""")
+  t.badCheck "a module's own const shadows an imported one of the same name",
+             "needs exactly 2"
+
   t.finish()

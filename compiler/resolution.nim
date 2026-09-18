@@ -47,6 +47,16 @@ type
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
     mixinNames*: Table[string, Decl]
+    # Consts are whole-program too, but NOT on the same terms as the five
+    # above. Those name singletons, so a repeat is a real error; two modules
+    # each declaring a private `const Cap` is ordinary. So this is first-wins
+    # with the collisions recorded, and a name in `ambiguousConsts` resolves to
+    # nothing rather than to an arbitrary winner.
+    #
+    # The local module is always consulted FIRST (ast_query.constIntOf), so a
+    # module's own const shadows any other module's.
+    constNames*: Table[string, Decl]
+    ambiguousConsts*: HashSet[string]
     # How a call's payload maps onto its callee's parameters, decided once by
     # checkCallArgs. `argFields[i]` names the payload FIELD that satisfies
     # param i — matched by name, or by type when the names differ — and
@@ -291,12 +301,16 @@ proc resetResolution*() =
   let registryNames = semLayer.registryNames
   let poolNames = semLayer.poolNames
   let mixinNames = semLayer.mixinNames
+  let constNames = semLayer.constNames
+  let ambiguousConsts = semLayer.ambiguousConsts
   semLayer = newResolution()
   semLayer.actorNames = actorNames
   semLayer.registerNames = registerNames
   semLayer.registryNames = registryNames
   semLayer.poolNames = poolNames
   semLayer.mixinNames = mixinNames
+  semLayer.constNames = constNames
+  semLayer.ambiguousConsts = ambiguousConsts
 
 proc setStepCall*(r: Resolution, s: ChainStep, call: Expr) =
   if s.id.isSet: r.calls[s.id] = call
