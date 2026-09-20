@@ -71,6 +71,7 @@ import compiler/lowering_seqcopy
 import compiler/ast_serializer
 import compiler/modules
 import compiler/optimize
+import compiler/actor_mode
 import compiler/pipeline
 import compiler/resolve_refs
 
@@ -113,6 +114,9 @@ run). Writes beside the source file, or into -o:DIR if given.
   -vv            also echo each stage's per-module sub-steps, individually timed
   -O:PASS[,...]  choose optimization passes; `-O:none` disables them all
   --max-complexity:N, --max-fn-lines:N  per-function size budget
+  --actors:MODE  how actors get their CPU: thread (default), single, batch
+  --batch-count:N, --batch-timeout:MS  when a staged batch flushes
+                 (--actors:batch only)
 
 See `tuck help build` for the flags shared with build, or run
 `tuck` with no arguments for the full option reference.""",
@@ -224,6 +228,20 @@ options:
   --max-fn-lines:N    size budget: max source lines a fn may span
                 (any command; default 8, `:0` disables). Match/select arm
                 bodies and `decision` tables do not count.
+  --actors:MODE (compile/build) how an actor gets its CPU. Actor SEMANTICS
+                are the same in every mode; only the cost of a `send`
+                changes, and which trade is right depends on the workload.
+                  thread  one OS thread per actor (default). Real
+                          parallelism; a send crosses a thread boundary.
+                  single  every actor a coroutine on main's thread. No
+                          atomics, no cross-core handoff, one core.
+                  batch   thread-per-actor with sends staged and handed
+                          over in groups. Faster under load; a message
+                          arrives when its batch flushes, not when sent.
+                See compiler/actor_mode.nim for the full trade.
+  --batch-count:N     (--actors:batch) flush after N staged sends
+  --batch-timeout:MS  (--actors:batch) ...or MS after the first, whichever
+                comes first. Both 0 is refused: nothing would ever flush.
 
   Functions over either budget are REPORTED worst-first, and only fail the
   build under --release."""
@@ -695,6 +713,45 @@ when isMainModule:
       optPasses = {}                             # drop the defaults first
       optExplicit = true
     optPasses = optPasses + ps
+  # `--actors:MODE` — how an actor gets its CPU (compiler/actor_mode.nim).
+  # Semantics are identical across modes; cost is not, and the trade depends
+  # on the workload, so the programmer picks. Validated in the order a typo
+  # deserves: the name first, then the knobs, then whether the runtime has
+  # that mode yet — so what you typed is judged before what is built.
+  for o in opts:
+    if not o.startsWith("--actors:"): continue
+    let name = o["--actors:".len .. ^1]
+    let (m, ok) = parseActorMode(name)
+    if not ok:
+      die("tuck: no such actor mode: '" & name & "'\n" &
+          "  available: " & actorModeNames())
+    actorPolicy.mode = m
+  var batchKnobGiven = false
+  for o in opts:
+    for (flag, isCount) in [("--batch-count:", true), ("--batch-timeout:", false)]:
+      if not o.startsWith(flag): continue
+      batchKnobGiven = true
+      let raw = o[flag.len .. ^1]
+      var n: int
+      try: n = parseInt(raw)
+      except ValueError:
+        die("tuck: " & flag & " needs a number, got: " & raw)
+      if n < 0: die("tuck: " & flag & " cannot be negative: " & raw)
+      if isCount: actorPolicy.batchCount = n else: actorPolicy.batchTimeoutMs = n
+  # A flag that silently does nothing is worse than one that is refused.
+  if batchKnobGiven and actorPolicy.mode != amBatch:
+    die("tuck: --batch-count/--batch-timeout only mean something under " &
+        "--actors:batch (this build is --actors:" & $actorPolicy.mode & ")")
+  # Both thresholds off means no batch ever flushes — messages would be
+  # staged and never delivered. That is a hang, so it is refused here.
+  if actorPolicy.mode == amBatch and actorPolicy.batchCount == 0 and
+     actorPolicy.batchTimeoutMs == 0:
+    die("tuck: --actors:batch needs a threshold to flush on — set " &
+        "--batch-count:N or --batch-timeout:MS above 0 (both 0 never flushes)")
+  if actorPolicy.mode notin ImplementedModes:
+    die("tuck: --actors:" & $actorPolicy.mode & " is not implemented yet — " &
+        "the flag and its contract are in place (compiler/actor_mode.nim), " &
+        "the runtime path is not. Implemented: " & $amThread)
   # `--max-complexity:N` / `--max-fn-lines:N` — the per-fn size budget
   # (compiler/complexity.nim). `:0` disables that half of the check. A
   # non-number is rejected rather than silently read as 0, which would turn a
