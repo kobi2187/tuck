@@ -179,8 +179,7 @@ __gshared void* tuck_DecoderSlot;
 
 bool drain_tuck_Decoder() {
     bool did = false;
-    tuck_DecoderMsg msg;
-    while (rt.dequeue(tuck_DecoderSingleton.mailbox, msg)) {
+    foreach (ref msg; tuck_DecoderSingleton.mailbox) {
         handleMsg_tuck_Decoder(tuck_DecoderSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
@@ -190,17 +189,17 @@ bool drain_tuck_Decoder() {
 
 void sendPlay_tuck_Decoder(ref tuck_Decoder self, tuck_Hz rate) {
     cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuckTag: tuck_DecoderMsgKind.msgPlay, rate: rate));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_DecoderSlot);
 }
 
 void sendPause_tuck_Decoder(ref tuck_Decoder self) {
     cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuckTag: tuck_DecoderMsgKind.msgPause));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_DecoderSlot);
 }
 
 void sendStop_tuck_Decoder(ref tuck_Decoder self) {
     cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuckTag: tuck_DecoderMsgKind.msgStop));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_DecoderSlot);
 }
 
 

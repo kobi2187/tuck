@@ -39,8 +39,7 @@ __gshared void* tuck_AccumulatorSlot;
 bool drain_tuck_Accumulator() {
     if (tuck_AccumulatorSingleton.finished) return false;
     bool did = false;
-    tuck_AccumulatorMsg msg;
-    while (rt.dequeue(tuck_AccumulatorSingleton.mailbox, msg)) {
+    foreach (ref msg; tuck_AccumulatorSingleton.mailbox) {
         handleMsg_tuck_Accumulator(tuck_AccumulatorSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
@@ -50,12 +49,12 @@ bool drain_tuck_Accumulator() {
 
 void sendAdd_tuck_Accumulator(ref tuck_Accumulator self, long n) {
     cast(void) rt.enqueue(self.mailbox, tuck_AccumulatorMsg(tuckTag: tuck_AccumulatorMsgKind.msgAdd, n: n));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_AccumulatorSlot);
 }
 
 void sendFinish_tuck_Accumulator(ref tuck_Accumulator self) {
     cast(void) rt.enqueue(self.mailbox, tuck_AccumulatorMsg(tuckTag: tuck_AccumulatorMsgKind.msgFinish));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_AccumulatorSlot);
 }
 
 

@@ -33,8 +33,7 @@ __gshared void* tuck_TrafficLightSlot;
 
 bool drain_tuck_TrafficLight() {
     bool did = false;
-    tuck_TrafficLightMsg msg;
-    while (rt.dequeue(tuck_TrafficLightSingleton.mailbox, msg)) {
+    foreach (ref msg; tuck_TrafficLightSingleton.mailbox) {
         handleMsg_tuck_TrafficLight(tuck_TrafficLightSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
@@ -44,7 +43,7 @@ bool drain_tuck_TrafficLight() {
 
 void sendNext_tuck_TrafficLight(ref tuck_TrafficLight self) {
     cast(void) rt.enqueue(self.mailbox, tuck_TrafficLightMsg(tuckTag: tuck_TrafficLightMsgKind.msgNext));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_TrafficLightSlot);
 }
 
 

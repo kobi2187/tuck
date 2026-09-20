@@ -25,9 +25,17 @@ import core.sys.posix.fcntl : fcntl, F_SETFL, O_NONBLOCK;
 import core.thread : Thread;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
-import core.atomic : atomicOp, atomicLoad;
+import core.atomic : atomicOp, atomicLoad, atomicStore;
 import core.sys.linux.epoll;
-import core.sys.linux.sys.timerfd;
+// druntime moved this module: older releases expose it as
+// core.sys.linux.timerfd, newer ones as core.sys.linux.sys.timerfd. Pinning
+// either spelling makes the D backend refuse to build on half the
+// toolchains, and the failure reads as "unable to read module `timerfd`"
+// with nothing to say which half you are on.
+static if (__traits(compiles, { import core.sys.linux.sys.timerfd; }))
+    import core.sys.linux.sys.timerfd;
+else
+    import core.sys.linux.timerfd;
 import core.sys.posix.time : CLOCK_MONOTONIC, itimerspec;
 
 // ===========================================================================
@@ -651,12 +659,23 @@ private struct ActorSlot
     Condition cond;
     bool pending;
     bool working;
+    shared bool parked;   /// asleep on `cond`. Read WITHOUT the lock: it is
+                          /// the whole fast path of a send, so it must be
+                          /// per-actor rather than a global anything.
     Waiter*[] waiters;
 }
 
-private __gshared ActorSlot*[] gActorSlots;  /// SHARED: a send on any thread
-private __gshared Mutex gSlotsLock;          /// must reach every actor
-private shared int gIdleActors;              /// parked actors; atomic
+private __gshared ActorSlot*[] gActorSlots;  /// SHARED: tuckDrainActors has
+private __gshared Mutex gSlotsLock;          /// to reach every actor at exit
+
+/// How far an idle actor re-checks its mailbox before parking. Adaptive,
+/// because a fixed budget is two bets on two workloads and cannot win both:
+/// spinning always pays for a saturated actor and never for an idle one.
+/// Measured on the Nim runtime, 8 light actors: a fixed 2000-iteration spin
+/// burned 1.38 cores against 0.37 for parking at once. Doubled on a hit,
+/// halved on a park, floored low enough to be noise.
+private enum ActorSpinMax = 4096;
+private enum ActorSpinMin = 16;
 
 private ActorSlot* gMySlot;                  /// per thread: the slot it serves
 
@@ -698,17 +717,39 @@ private void actorMain(ActorSlot* slot)
 {
     tuckAsyncInit();          // this thread's own scheduler and reactor
     gMySlot = slot;
+    int spinBudget = ActorSpinMin;   // each actor earns its own
     while (true)
     {
         if (slot.drain()) continue;
         checkWaiters(slot);
+        // Spin for as long as spinning has been paying. A producer that is
+        // still running hands over more work within nanoseconds, while a
+        // park costs a futex sleep here and a wake at the next sender.
+        // `working` stays true throughout: a spinning actor has not given
+        // up, and tuckDrainActors must not read it as quiescent.
+        bool gotWork = false;
+        foreach (_; 0 .. spinBudget)
+        {
+            if (slot.drain()) { gotWork = true; break; }
+        }
+        if (gotWork)
+        {
+            spinBudget = spinBudget * 2 > ActorSpinMax ? ActorSpinMax
+                                                       : spinBudget * 2;
+            continue;
+        }
+        spinBudget = spinBudget / 2 < ActorSpinMin ? ActorSpinMin
+                                                   : spinBudget / 2;
         slot.lock.lock();
         slot.working = false;
         if (!slot.pending)
         {
-            atomicOp!"+="(gIdleActors, 1);
+            // Published under the lock, read outside it by tuckNotifySend. A
+            // sender that sets `pending` between our check and our wait must
+            // have taken the lock to do it, so it cannot be lost.
+            atomicStore(slot.parked, true);
             while (!slot.pending) slot.cond.wait();
-            atomicOp!"-="(gIdleActors, 1);
+            atomicStore(slot.parked, false);
         }
         slot.pending = false;
         slot.working = true;
@@ -808,18 +849,27 @@ void tuckDrainActors()
 /// and finds the message, so it needs no wake, and this runs once per SEND.
 /// Measured on the Nim twin at 3x the cost of the rest of a send when it
 /// unconditionally took two locks and signalled.
-void tuckNotifySend()
+/// Emitted by each send after enqueue, NAMING the actor it wrote to.
+///
+/// THE FAST PATH IS THE POINT — this runs once per SEND. A busy actor comes
+/// back round its drain loop and finds the message itself, so the common
+/// case must cost one atomic read and nothing else. `parked` lives in that
+/// actor's own slot, so two senders to two different actors never touch the
+/// same line.
+///
+/// It used to take no argument and therefore woke EVERY actor in the
+/// program behind a global lock, consulting a global counter to decide
+/// whether to bother: O(actors) per send, with that counter in the path of
+/// every send. The send site has always known which actor it meant.
+void tuckNotifySend(void* handle)
 {
-    if (atomicLoad(gIdleActors) == 0) return;
-    gSlotsLock.lock();
-    foreach (s; gActorSlots)
-    {
-        s.lock.lock();
-        s.pending = true;
-        s.cond.notify();
-        s.lock.unlock();
-    }
-    gSlotsLock.unlock();
+    if (handle is null) return;      // not registered yet: nothing is parked
+    auto slot = cast(ActorSlot*) handle;
+    if (!atomicLoad(slot.parked)) return;
+    slot.lock.lock();
+    slot.pending = true;
+    slot.cond.notify();
+    slot.lock.unlock();
 }
 
 /// Main blocks until a predicate over public actor state holds, driving the

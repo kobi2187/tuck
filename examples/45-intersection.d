@@ -167,8 +167,7 @@ __gshared void* tuck_SignalsSlot;
 
 bool drain_tuck_Signals() {
     bool did = false;
-    tuck_SignalsMsg msg;
-    while (rt.dequeue(tuck_SignalsSingleton.mailbox, msg)) {
+    foreach (ref msg; tuck_SignalsSingleton.mailbox) {
         handleMsg_tuck_Signals(tuck_SignalsSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
@@ -178,7 +177,7 @@ bool drain_tuck_Signals() {
 
 void sendSense_tuck_Signals(ref tuck_Signals self, tuck_Demand demand, bool preempt) {
     cast(void) rt.enqueue(self.mailbox, tuck_SignalsMsg(tuckTag: tuck_SignalsMsgKind.msgSense, demand: demand, preempt: preempt));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_SignalsSlot);
 }
 
 

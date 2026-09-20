@@ -14,6 +14,7 @@ import std.stdio : stdout;
 import std.conv : text, to;
 import std.array : join;
 import core.sys.posix.unistd : pipe2, read, write, close;
+import core.atomic : cas, atomicLoad, atomicStore;
 
 // The coroutine engine is a separate file but the SAME facade: emitted code
 // reaches everything through `rt`, so tuck_rt re-exports it — mirroring
@@ -337,21 +338,77 @@ R readLine(R)()
     return tok(tuckRec!(P, "line")(line.idup));
 }
 
-/// An actor's mailbox: a fixed-capacity ring, sized at compile time (spec
-/// 9.1) so it is a known footprint rather than an unbounded allocation.
+/// A spinlock for the mailbox. NOT decoration: this runtime spawns one OS
+/// thread per actor (tuck_coro.d's tuckStartActor), so a send from main and
+/// a drain on the actor's thread genuinely race. The mailbox carried no
+/// synchronisation at all until 2026-09-20 — the comment here still said
+/// "cooperative on ONE thread", which stopped being true when actors got
+/// their own threads and nobody updated it (KNOWN-BUGS-EVENTS.md EV-5).
 ///
-/// No lock, deliberately: the scheduler is cooperative on ONE thread, so
-/// sends and drains never interleave. (The Nim runtime guards its mailbox
-/// because a blocking extern can send from the offload worker; if D gains
-/// that path, this needs the same guard.)
-struct Mailbox(T, size_t Cap)
+/// A spinlock rather than a Mutex for the reason the Nim runtime measured:
+/// the section is a bounds check, one array write and an index bump, and a
+/// busy actor should find it free without paying a futex round trip.
+struct MailboxLock
 {
-    T[Cap] data;
-    size_t head;
-    size_t tail;
+    private shared bool flag;
+
+    void lock()
+    {
+        while (cas(&flag, false, true) == false)
+            while (atomicLoad(flag)) { /* spin */ }
+    }
+
+    void unlock() { atomicStore(flag, false); }
 }
 
-/// Returns false when the ring is FULL — the message is dropped.
+/// An actor's mailbox: TWO buffers, not one ring. Senders fill `buf[cur]`;
+/// the actor flips `cur` and then owns the buffer it took outright, so the
+/// whole drain runs with no lock held and nothing copied out. A handover is
+/// one integer write whatever the batch size.
+///
+/// Mirrors compiler/tuck_rt.nim. `[queue: N]` means "N messages may be
+/// waiting to be picked up", and an actor may hold up to another N it has
+/// already taken.
+struct Mailbox(T, size_t Cap)
+{
+    T[2][Cap] bufStore;             // buf[which][index]
+    ubyte[64] pad;                  // keeps the control block off the last
+                                    // cache line of the buffers: the actor
+                                    // streams one while senders hammer the
+                                    // lock, and sharing a line makes them
+                                    // invalidate each other for nothing
+    size_t[2] fill;
+    size_t cur;
+    MailboxLock lock;
+
+    /// Take everything waiting and hand it over IN PLACE. The swap happens
+    /// once, up front, under the lock; every iteration after that touches a
+    /// buffer no sender can reach.
+    ///
+    /// `fill` is cleared before the first element rather than after the
+    /// last, so an early exit leaves the mailbox consistent instead of
+    /// re-delivering a batch.
+    int opApply(scope int delegate(ref T) dg)
+    {
+        lock.lock();
+        immutable c = cur;
+        immutable n = fill[c];
+        if (n > 0)
+        {
+            cur = 1 - c;            // THE SWAP: the actor now owns buf[c]
+            fill[c] = 0;
+        }
+        lock.unlock();
+        foreach (i; 0 .. n)
+        {
+            int r = dg(bufStore[i][c]);
+            if (r) return r;
+        }
+        return 0;
+    }
+}
+
+/// Returns false when the mailbox is FULL — the message is dropped.
 ///
 /// That is the existing de-facto behaviour of the Nim runtime, matched here
 /// deliberately rather than improved on: the spec states no full-mailbox
@@ -361,24 +418,25 @@ struct Mailbox(T, size_t Cap)
 /// the Nim backend too.
 bool enqueue(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg)
 {
-    size_t next = (mb.tail + 1) % Cap;
-    if (next == mb.head) return false;
-    mb.data[mb.tail] = msg;
-    mb.tail = next;
-    return true;
-}
-
-bool dequeue(T, size_t Cap)(ref Mailbox!(T, Cap) mb, ref T msg)
-{
-    if (mb.head == mb.tail) return false;
-    msg = mb.data[mb.head];
-    mb.head = (mb.head + 1) % Cap;
+    mb.lock.lock();
+    immutable c = mb.cur;
+    if (mb.fill[c] >= Cap)
+    {
+        mb.lock.unlock();
+        return false;
+    }
+    mb.bufStore[mb.fill[c]][c] = msg;
+    mb.fill[c]++;
+    mb.lock.unlock();
     return true;
 }
 
 bool hasRoom(T, size_t Cap)(ref Mailbox!(T, Cap) mb)
 {
-    return ((mb.tail + 1) % Cap) != mb.head;
+    mb.lock.lock();
+    immutable r = mb.fill[mb.cur] < Cap;
+    mb.lock.unlock();
+    return r;
 }
 
 void initMailbox(T, size_t Cap)(ref Mailbox!(T, Cap) mb) {}  // nothing to do

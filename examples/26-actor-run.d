@@ -29,8 +29,7 @@ __gshared void* tuck_CounterSlot;
 
 bool drain_tuck_Counter() {
     bool did = false;
-    tuck_CounterMsg msg;
-    while (rt.dequeue(tuck_CounterSingleton.mailbox, msg)) {
+    foreach (ref msg; tuck_CounterSingleton.mailbox) {
         handleMsg_tuck_Counter(tuck_CounterSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
@@ -40,7 +39,7 @@ bool drain_tuck_Counter() {
 
 void sendAdd_tuck_Counter(ref tuck_Counter self, long n) {
     cast(void) rt.enqueue(self.mailbox, tuck_CounterMsg(tuckTag: tuck_CounterMsgKind.msgAdd, n: n));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_CounterSlot);
 }
 
 

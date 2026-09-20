@@ -250,8 +250,10 @@ proc genDDrain*(d: Decl, hasShutdown: bool): string =
   "__gshared void* " & actorSlotName(d.name) & ";\n\n" &
     "bool drain_" & d.name & "() {\n" & finishedGuard &
     "    bool did = false;\n" &
-    "    " & d.name & "Msg msg;\n" &
-    "    while (rt.dequeue(" & singleton & ".mailbox, msg)) {\n" &
+    # The mailbox swaps its two buffers once and then hands each message over
+    # in place, so this loop holds no lock and copies nothing — the same
+    # shape genActorDrain emits for Nim.
+    "    foreach (ref msg; " & singleton & ".mailbox) {\n" &
     "        handleMsg_" & d.name & "(" & singleton & ", msg);\n" &
     # After EACH message: a registered predicate is about the exact moment a
     # condition becomes true, and one that went true and false again inside a
@@ -641,7 +643,8 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
   "void send" & h.name.capitalize() & "_" & d.name & "(ref " & d.name &
     " self" & sep & params.join(", ") & ") {\n" &
     "    cast(void) rt.enqueue(self.mailbox, " & d.name & "Msg(" &
-    ctorArgs & "));\n    rt.tuckNotifySend();\n}\n\n"
+    ctorArgs & "));\n    rt.tuckNotifySend(" & actorSlotName(d.name) &
+    ");\n}\n\n"
 
 proc genDActorState*(ctx: var DCodegenCtx, d: Decl,
                     hasShutdown: bool, hasMessages: bool): string =

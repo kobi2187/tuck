@@ -256,7 +256,7 @@ Each had a different silent gap before.
 
 ---
 
-## EV-3 — the Odin and D runtimes never got thread-per-actor
+## EV-5 — the Odin and D runtimes never got thread-per-actor
 
 **Severity: high, Odin worst.** Found 2026-09-20 while measuring the Nim
 mailbox. Thread-per-actor (`cdeec03`) changed all three backends' SCHEDULERS
@@ -301,13 +301,67 @@ work means porting this signature too, not just the queue.
 
 ### Why nobody noticed
 
-No Odin or D toolchain in the environment these were measured in, so every
-`odin build` / `dmd` assertion in the suite reports SKIP rather than running.
-The Nim backend is the only one whose actor programs actually execute here.
+No Odin or D toolchain was installed, so every `odin build` / `dmd`
+assertion in the suite reported SKIP rather than running.
+
+### Status 2026-09-20
+
+**D: repaired and verified.** dmd 2.112 installed, `compiler/tuckrt/minicoro.a`
+built by hand (gitignored, no in-repo build step — same recipe the
+2026-08-11 handoff records). The mailbox now has a spinlock, the two-buffer
+swap, padding, an adaptive spin before park and a targeted wake; the D
+backend's actor examples build and run here.
+
+**Odin: still unverified, and deliberately not touched.** The best reachable
+release is `dev-2025-03`; the repo targets something roughly a year newer.
+Compiling against it produces 13 errors from core-library drift alone,
+before any actor code is reached — `os.make_directory_all` and
+`linux.timerfd_create` do not exist in it. The 2026 nightly the 2026-08-11
+handoff used (`odinbinaries.thisdrunkdane.io`) is now behind a CAPTCHA, and
+the GitHub API is scoped to this repo. Writing three more unverified
+concurrency changes into Odin is exactly how the defects above got there, so
+the Odin half of the port is left for an environment that can run it.
 
 ---
 
-## EV-4 — a send can be lost against an actor that is just about to park
+## EV-6 — a multi-actor D program crashes at exit, about 1 run in 10
+
+**Severity: medium. Intermittent, and it is a CRASH, not a warning.** Found
+2026-09-20, the first time a D toolchain was available to run the suite.
+
+A D program with more than one actor sometimes aborts or segfaults during
+exit, after producing entirely correct output. It announces itself as
+
+> The futex facility returned an unexpected error code.
+
+and the process leaves with SIGABRT (exit 134) or SIGSEGV.
+
+### Measured
+
+`examples/45-intersection`, 30 consecutive runs, expected exit 3:
+
+| runtime | failures |
+|---|---|
+| before the 2026-09-20 mailbox port | 3 / 30 |
+| after it | 4 / 30 |
+
+PRE-EXISTING, and the port did not meaningfully move it. It is what made
+`d run 45-intersection` fail one full-suite run and pass the next.
+
+`tuckStartActor` already sets `t.isDaemon = true`, so this is not druntime
+waiting on the actor threads. The likely remainder is druntime tearing down
+while a daemon thread sits in `Condition.wait` on a mutex it is about to
+destroy — the actors are detached by design and nothing joins them. The Nim
+runtime has the same detached-daemon design and does not do this, so the
+fix is probably a D-side shutdown handshake rather than anything about the
+mailbox.
+
+Not chased here: it is orthogonal to the mailbox work, and a fix wants to
+be its own change with this failure rate as its test.
+
+---
+
+## EV-7 — a send can be lost against an actor that is just about to park
 
 **Severity: medium; narrow window, silent when it fires.** Found 2026-09-20
 by inspection while making the wake path per-actor. NOT introduced by that
