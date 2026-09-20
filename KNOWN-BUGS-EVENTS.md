@@ -490,14 +490,55 @@ touching this pass at all: with `st = f(st)` compiling on D and Odin,
 and it was worth 8 GB on the matching engine. What remains below is the
 structural half, which that did not touch.
 
-Neither makes Odin correct. Part 1 is structural and has to be paid:
+Neither makes Odin correct. Part 1 is structural and has to be paid.
 
-1. **Free on scope exit.** Emit `defer delete(x)` for each `Seq`/`str` a
-   scope allocates and does not return. Covers the loop above and most real
-   code, and reuses the liveness analysis `_moved` already needs.
-2. **Arena per message.** An actor handler is a natural scope: allocate from
-   an arena, reset it when the handler returns. Cheap and total, but only
-   covers values that do not outlive the handler.
+**Does the language already have the answer?** Tuck has three ownership
+constructs — `defer` (§7.4), pools with `acquire`/`release` (§7.2-7.3), and
+the `resources:` registry (§7.4). Asked and worked through, because reusing
+one of them would beat inventing anything:
+
+- **`defer`: the emission, not the decision.** All three backends already
+  emit it (`codegen.nim:846` Nim `defer:`, `codegen_odin.nim:1123` Odin
+  `defer {}`, `codegen_d.nim:1141` D `scope(exit)`), so no new backend
+  primitive is needed. But it answers *how to free*, and the hard half here
+  is *what*. A blanket `defer delete` on every `tuckSeqCopy` result is a
+  USE-AFTER-FREE, not a fix: `takeLevel` returns its copy and `applyBuy`
+  stores its ladders into the returned record. It needs the escape analysis
+  that `movedFnParam`/`movedCallInto` gesture at and do not complete.
+- **`resources:`: wrong shape, by its own design.** §7.4 opens by rejecting
+  scope-based RAII in favour of "a global table of handles (the process fd
+  table)". It wants named kinds, declared acquire sites (`[resource: udp]`),
+  and a generation counter per entry to close the fd-reuse bug class. A
+  ladder copy is anonymous, compiler-generated, has no identity worth a
+  generation, and offers no acquire site to annotate. A registry entry per
+  `Seq` binding is a lot of machinery aimed at the wrong scarcity.
+- **Pools: not writable by a user, but the best machinery.** `Seq[T]` is
+  variable-length where a pool is a static array of a fixed type, and the
+  copies are invisible so there is no call site for `acquire`/`release`. But
+  the runtime already HAS the pool (slot array, occupancy bitmask, O(1)
+  release, tenancy — `tuckrt/tuck_rt.odin:312`), and in the matching engine
+  every leaked copy is the same size and short-lived, which is a pool's
+  sweet spot.
+
+Note also that **no Tuck-level verb frees a `Seq`** — no `free`, `delete` or
+`dispose` in `std/` — so all of these are compiler-internal options; none is
+something a program could reach for. And "stop relying on backend GC" is not
+quite the frame: D relies on its GC and is fine at 22 MB. Only Odin has no
+story, so the obligation is backend-local and a language construct would
+have to avoid pessimizing the two targets that already work.
+
+So, ranked — and the ranking turns on SAFETY UNDER IMPRECISE ANALYSIS, not
+on cost:
+
+1. **Arena or pool per handler.** An actor handler is a natural scope:
+   allocate from an arena, reset it when the handler returns, over the pool
+   machinery the runtime already has. A wrong guess RETAINS a buffer; it
+   never frees one early. Only covers values that do not outlive the
+   handler, which is most of them.
+2. **`defer delete` for non-escaping temporaries.** Cheap to emit, and the
+   construct already exists on all three backends — but correctness rests
+   entirely on escape analysis, and the failure mode is a use-after-free
+   rather than a retained page. Second for that reason, not for cost.
 3. **Run a tracking allocator in debug builds**, so a leak is reported at
    exit rather than discovered by the OOM killer. Worth doing whichever of
    the above lands — it is what would have caught this before an
