@@ -1174,6 +1174,21 @@ proc genOdinAssignTarget(ctx: var OdinCodegenCtx, e: Expr): string =
     ctx.genOdinAssignTarget(e.receiver) & "." & e.fieldName
   else: ctx.genOdinExpr(e)
 
+proc movedAssignTarget(ctx: OdinCodegenCtx, t: Expr): string =
+  ## The emitted spelling of an assignment target, for the two FAST PATHS
+  ## below: the in-place append and the MOVED twin. Both bypass the field
+  ## handling in the normal assign path, so both must qualify the target
+  ## themselves.
+  ##
+  ## They did not, and the asymmetry is what made it hard to see: the
+  ## right-hand side is built by the ordinary expression emitter, which DOES
+  ## add the `self.`, so an actor handler emitted `st = f(self.st, ...)` —
+  ## qualified on the right, bare on the left. Rejected here and by D; Nim
+  ## was correct only because its backend never takes this path. EV-9.
+  if t != nil and t.kind == exkVar and t.name in ctx.fieldVars:
+    ctx.fieldPrefix & t.name
+  else: t.name
+
 proc copyIfSeq(ctx: var OdinCodegenCtx, valStr: string, e: Expr): string =
   ## A bare Seq being bound to a name. `[dynamic]T` assignment copies the
   ## HEADER, so both names then view one buffer — where a Tuck `Seq`
@@ -1229,13 +1244,14 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   # An append assigned back to its own argument is an in-place append.
   let appended = selfAppendValue(ctx.res, e)
   if appended != nil:
-    return "append(&" & e.target.name & ", " & ctx.genOdinExpr(appended) & ")"
+    return "append(&" & ctx.movedAssignTarget(e.target) & ", " &
+           ctx.genOdinExpr(appended) & ")"
   # Same fact one level up: a threaded-container call assigned back over its
   # own argument calls the MOVED twin, and needs no fix-up copies after it.
   let threaded = selfThreadedCall(ctx.res, ctx.module, e)
   if threaded != nil:
     let base = ctx.genOdinExpr(threaded.callee)
-    return e.target.name & " = " & movedName(base) & "(" &
+    return ctx.movedAssignTarget(e.target) & " = " & movedName(base) & "(" &
            ctx.genCallArgs(threaded, base).join(", ") & ")"
   let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and

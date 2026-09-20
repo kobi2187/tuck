@@ -991,9 +991,20 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
 
 proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## Self-append: `xs = {items: xs, ...} push` appends in place.
+  ##
+  ## The target is qualified here rather than taken as a bare `e.target.name`:
+  ## this path bypasses genAssign's field handling, and the appended VALUE is
+  ## built by the ordinary expression emitter, which does add the `self.`. An
+  ## actor handler therefore emitted `xs.add(self.xs[...])` — bare on the
+  ## left, qualified on the right — and Nim rejected it as an undeclared
+  ## identifier. The other two backends have the same two fast paths and had
+  ## the same hole. EV-9.
   let appended = selfAppendValue(ctx.res, e)
   if appended == nil: return ""
-  e.target.name & ".add(" & ctx.genExpr(appended) & ")"
+  let tgt = if e.target != nil and e.target.kind == exkVar and
+               e.target.name in ctx.fieldVars: "self." & e.target.name
+            else: e.target.name
+  tgt & ".add(" & ctx.genExpr(appended) & ")"
 
 proc prepareChainBinding(ctx: var CodegenCtx, valSrc: Expr): tuple[prelude: string, valSrc: Expr] =
   ## Prepare chain binding: run statements into temp, return (stmts, temp).

@@ -389,6 +389,14 @@ Odin's growth is linear and steep: **about 75 KB per order**. Nim and D are
 flat, because both have a collector behind the copy. Odin does not, and
 nothing in the emitted code frees anything.
 
+**After EV-9 was fixed**, the same 200 000 orders complete on Odin in
+5 580 MB instead of being killed at 13.6 GB — the workaround EV-9 forced was
+tripling the allocation, exactly as the section below predicts. Nim and D are
+unchanged (21 MB, 22 MB) and all three still print the same book. Odin still
+leaks 5.5 GB, which is this bug proper: `takeLevel` copies the ladder once
+per price level walked and that copy is never freed. The amplification is
+gone; the leak is not.
+
 ### Why this is the worst of today's finds
 
 The other four are compile errors: loud, immediate, and they cost an
@@ -447,20 +455,40 @@ three copies come back:
 Same program, same answer (exit 5). The difference is only whether the
 assignment matches the move pattern.
 
-**And EV-9 forces the losing spelling.** An actor field assigned from a call
-that takes it does not compile on D or Odin, so the workaround is precisely
+**And EV-9 forced the losing spelling.** An actor field assigned from a call
+that takes it did not compile on D or Odin, so the workaround was precisely
 `let t = f(st); st = t` — which defeats `movedCallInto` and reinstates every
-copy. The matching engine leaks 75 KB per order *because* of the workaround
-it needed to compile. Two bugs that are each merely bad compose into one
-that is fatal.
+copy. The matching engine leaked 75 KB per order *because* of the workaround
+it needed to compile: two bugs each merely bad composing into one that was
+fatal. Fixing EV-9 removed the amplification and turned the OOM into a
+completing run, which is the measurement above.
 
 ### Fix
 
-Part 2 first, since it is small and helps D as well: `markSeqCopies` should
-exempt a call whose callee has a moved twin, the same predicate
-`movedFnParam` already computes. That removes the redundant copy without
-touching the aliasing guarantee that the exemption for `exkList` rests on.
-Fixing EV-9 removes the trigger for the worst case.
+Part 2 looks like a one-liner and is not one. The obvious version — exempt
+a call whose callee has a moved twin, reusing `movedFnParam` — is **wrong**,
+because the twin only copies the FIRST parameter:
+
+```tuck
+fn pick({a: Seq[int], b: Seq[int]}) -> Seq[int]:
+  return b
+```
+
+`pick` is twinnable (`a` threads back to the return type), so the wrapper
+copies `a` and returns `b` untouched. Exempting the call site would let
+`x = {a: p, b: q} pick` alias `x` to `q` — reintroducing the exact bug this
+pass exists to prevent, in the one place it is hardest to notice. The
+exemption has to rest on "this call returns only its copied first parameter
+or a fresh value", which is an analysis, not a predicate that already
+exists. It would also mean `lowering_seqcopy` reaching into
+`codegen_common` for `movedFnParam`, inverting the layering the file's own
+header argues for.
+
+So the cheap win here was **fixing EV-9**, which removed the trigger without
+touching this pass at all: with `st = f(st)` compiling on D and Odin,
+`movedCallInto` matches and no copy is emitted at the call site. Done —
+and it was worth 8 GB on the matching engine. What remains below is the
+structural half, which that did not touch.
 
 Neither makes Odin correct. Part 1 is structural and has to be paid:
 
@@ -636,10 +664,23 @@ scope.
 
 ---
 
-## EV-9 — a `push` chain back into an ACTOR FIELD loses its `self.`
+## EV-9 — an ACTOR FIELD as assignment target loses its `self.`
 
-**Severity: high. Every backend, and `tuck ch` says OK.** Found 2026-09-20
-writing an application; the second bug the first non-toy program hit.
+**FIXED 2026-09-20, all three backends.** Found writing an application; the
+second bug the first non-toy program hit. `tuck ch` said OK throughout.
+
+The fix is one idea in three places: the two FAST PATHS in `genAssign` — the
+in-place append and the MOVED twin call — spelled the target as a bare
+`e.target.name`, bypassing the field handling the normal path does a few
+lines below. Each backend now routes the target through the same
+qualification its ordinary expression emitter uses
+(`codegen.nim:genSelfAppendAssignment`, `codegen_d.nim:movedAssignTarget`,
+`codegen_odin.nim:movedAssignTarget`).
+
+Guarded by `tests/suites/known_bugs.nim`, "an actor field survives an append
+and a moved call" — `hostRuns` on all three, because the two paths split the
+backends between them and a one-backend assertion would have reported green
+on whichever half it missed. Verified to fail without the fix.
 
 ### Reproduce
 

@@ -47,18 +47,40 @@ handlers before measuring anything.
 `--actors:` is currently **Nim-only** — `actor_mode.nim` emits `-d:` defines
 and nothing else, so `--odin` and `--dlang` always build thread mode.
 
+### The backends do not agree, and the gap is 55x
+
+Same program, same 200 000 orders, same printed book, thread mode:
+
+| backend | median | peak RSS |
+|---|---|---|
+| nim | 143 ms | 21 MB |
+| d | 7 991 ms | 22 MB |
+| odin | 6 747-17 503 ms | 5 580 MB |
+
+This is the largest number the applications have produced and it has nothing
+to do with actors. It is **value semantics meeting three different memory
+models**. `takeLevel` binds a ladder to a local, which Tuck says is a copy;
+Nim's backend gets that for free from `sink` plus ARC and emits a move, while
+D emits a real `.dup` and Odin a real `tuckSeqCopy` — roughly 700 000 copies
+of an 8 KB ladder over the run. D pays for it in GC churn, Odin in an
+element-by-element copy loop *and* in never freeing the result (EV-12).
+
+Worth stating plainly because the project rule is that runtime
+characteristics do not depend on the backend. Here they depend on almost
+nothing else.
+
 ## What it cost to write
 
 Five bugs, in one file, none of them exotic. Each is written up in
 `../../KNOWN-BUGS-EVENTS.md` with a minimal repro.
 
-| | what | who breaks |
-|---|---|---|
-| EV-8 | `actor Book` + `fn book` are one identifier after mangling | nim |
-| EV-9 | an actor field assigned from a call that takes it loses its `self.` | d, odin |
-| EV-10 | two handlers binding the same local name: the second is undeclared | all |
-| EV-11 | a feed that outruns its actor drops messages, then deadlocks | all |
-| EV-12 | Odin never frees a heap value: 75 KB leaked per order | odin |
+| | what | who breaks | |
+|---|---|---|---|
+| EV-8 | `actor Book` + `fn book` are one identifier after mangling | nim | open |
+| EV-9 | an actor field as assignment target loses its `self.` | nim, d, odin | **fixed** |
+| EV-10 | two handlers binding the same local name: the second is undeclared | all | open |
+| EV-11 | a feed that outruns its actor drops messages, then deadlocks | all | open |
+| EV-12 | Odin never frees a heap value | odin | open |
 
 Two are worth reading even if the others are not.
 
@@ -71,10 +93,15 @@ here is sized past the whole burst, which is not backpressure but hoping.
 
 **EV-12** is the one that would survive review. It compiles, runs, and
 prints the right answer at every size small enough to finish; at 200 000
-orders the OOM killer takes it at 13.6 GB while Nim and D run the same
-program in 17-21 MB. It is also where two merely-bad bugs compose into a
-fatal one: EV-9's mandatory workaround defeats the move optimisation that
-was keeping the allocation at zero.
+orders the OOM killer took it at 13.6 GB while Nim and D ran the same
+program in 17-21 MB. It is also where two merely-bad bugs composed into a
+fatal one: EV-9's mandatory workaround defeated the move optimisation that
+was keeping the allocation at zero. **Fixing EV-9 turned the OOM into a
+completing run** — 5.58 GB instead of 13.6 GB — which is worth recording as
+the shape these bugs take: neither was fatal alone.
+
+EV-9 is fixed, with a regression guard in `tests/suites/known_bugs.nim` that
+runs on all three backends. The other four are open.
 
 ## Not written yet
 

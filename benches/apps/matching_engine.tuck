@@ -72,10 +72,13 @@ type Booked:
   ladder: Seq[int]
   best:   int
 
-# Rest the unfilled remainder (named `rest`, not `book`, because `fn book`
-# beside `actor Book` is EV-8 — see the header of that entry). and move the touch if this order is the new
+# Rest the unfilled remainder and move the touch if this order is the new
 # best. `(px - best) * step > 0` is the same mirror trick: a higher price is
 # a better bid, a lower one a better offer.
+#
+# Named `rest` and not the obvious `book` because `fn book` beside
+# `actor Book` does not compile on Nim — the mangler's `tuck_` prefix spends
+# Nim's first-character exemption, so the two become one identifier (EV-8).
 fn rest({ladder: Seq[int], px: int, qty: int, best: int, step: int}) -> Booked:
   if qty <= 0:
     return {ladder: ladder, best: best} Booked
@@ -117,11 +120,12 @@ fn applySell({b: BookState, px: int, qty: int}) -> BookState:
   let r = {ladder: b.ask, px: px, qty: f.left, best: b.bestAsk, step: -1} rest
   return {bid: f.ladder, ask: r.ladder, bestBid: f.lvl, bestAsk: r.best, trades: b.trades + f.fills, volume: b.volume + f.vol, resting: b.resting + f.left} BookState
 
-# The ladders are built by a plain fn and assigned in, rather than pushed
-# onto the field directly: `bid = {items: bid, ...} push` inside a handler
-# emits an unqualified name and no backend compiles it (EV-9, found here).
-# The handler locals are named per handler for the same reason — two
-# handlers binding one name is EV-10.
+# The ladders are built by a plain fn and assigned in rather than pushed onto
+# the field directly. That was once forced — `bid = {items: bid, ...} push`
+# inside a handler emitted an unqualified name and no backend compiled it —
+# but EV-9 is fixed and it now works; building them in a fn is simply the
+# clearer shape. The handler locals ARE still named per handler: two
+# handlers binding one name is EV-10, which is open.
 # The queue is sized above the whole burst, and that is a WORKAROUND, not a
 # design. A full mailbox drops silently (spec §9.1) and `endOfDay` is just
 # another message, so at `[queue: 8192]` this program loses orders and then
@@ -136,18 +140,16 @@ actor Book [queue: 262144]:
   on open({levels: int}):
     st = {levels: levels} freshBook
 
-  # Written through a local rather than as `st = {b: st, ...} applyBuy`,
-  # which is the natural spelling and does not compile on D or Odin: an
-  # actor field that is both the assignment target and an argument takes
-  # the move path there and the LHS loses its `self.` (EV-9). The local
-  # breaks the pattern, and is the only reason these are two lines.
+  # `st = f(st, ...)` is the natural spelling AND the fast one: it is the
+  # shape `movedCallInto` recognises, so the ladders are moved into the
+  # handler rather than copied. Writing it through a local — which EV-9
+  # forced until the `self.` qualification was fixed — defeats that and
+  # costs three full ladder copies per order.
   on buy({px: int, qty: int}):
-    let bought = {b: st, px: px, qty: qty} applyBuy
-    st = bought
+    st = {b: st, px: px, qty: qty} applyBuy
 
   on sell({px: int, qty: int}):
-    let sold = {b: st, px: px, qty: qty} applySell
-    st = sold
+    st = {b: st, px: px, qty: qty} applySell
 
   # A real venue closes the book rather than stopping mid stream, and the
   # flag is what main waits on.
