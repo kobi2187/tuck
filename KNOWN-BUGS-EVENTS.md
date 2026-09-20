@@ -334,6 +334,99 @@ tested.
 
 ---
 
+## EV-13 — a `Seq` sent to an actor is not copied: the sender keeps writing it
+
+**Severity: highest. Silent, wrong answers on D and Odin, and in thread mode
+it is a cross-thread data race.** Found 2026-09-20 while checking whether
+free-insertion would be safe — the answer turned out to be that the existing
+code is already unsafe.
+
+### Reproduce
+
+```tuck
+import seq
+actor Sink [queue: 8]:
+  got: int = 0
+  on take({xs: Seq[int]}):
+    got = xs[0]
+
+fn main() -> int:
+  var payload = [42, 1]
+  Sink send take {xs: payload}
+  payload[0] = 99              # after the send. The actor must not see this.
+  Sink.waitUntil {pred: :ready}
+  return Sink.got
+```
+
+| | nim | odin | d |
+|---|---|---|---|
+| `--actors:single` | 42 | **99** | **99** |
+| `--actors:thread` | 42 | **99** (8/8 runs) | **99** (8/8 runs) |
+
+### What is emitted
+
+The message struct holds the container by value, and the send site does not
+copy it:
+
+```odin
+tuck_SinkMsg :: struct { tuckTag: tuck_SinkMsgKind, xs: [dynamic]int }
+
+sendTake_tuck_Sink :: proc(self: ^tuck_Sink, xs: [dynamic]int) {
+	_ = rt.enqueue(&self.mailbox, tuck_SinkMsg{tuckTag = .msgTake, xs = xs})
+}
+```
+
+`xs = xs` copies the header. The buffer is shared, so the sender's later
+write lands in the actor's mailbox.
+
+### Why it is worse than the other aliasing bugs
+
+It breaks **two** guarantees at once, and the second is the actor model's
+whole point:
+
+1. Value semantics — a `Seq` assignment copies. The send is a binding like
+   any other and does not.
+2. Actor isolation — "a singleton that owns state nobody else touches"
+   (`actor_mode.nim`). Here the sender touches it, from another OS thread,
+   with no synchronisation. In `--actors:thread` that is a data race in the
+   C11/C++11 sense, not merely a stale read; the 8/8 result above is this
+   machine's timing, not a guarantee.
+
+Nim is immune for the usual reason: its `seq` has real value semantics, so
+the struct literal copies. A one-backend test reports green.
+
+### Root cause: the same hole as the others
+
+`markSeqCopies` (`lowering_seqcopy.nim:90`) walks `exkAssign` and nothing
+else. A send payload is not an assignment, so the site is never marked. The
+pass is named for the fact it decides — "which copies must be real" — but it
+only ever asks the question at assignments.
+
+This is EV-9's hole (fast paths skip the field handling), the `wrap` hole
+(a returned record's fields may alias a parameter), and now this one, all of
+the same shape: **a place where a heap value is bound that the copy pass
+does not visit.**
+
+### Fix
+
+Two, and both are wanted:
+
+1. **Immediately**: mark the send payload. Every `Seq`/`str`-typed argument
+   of a send, and every such field of a record argument, needs the copy the
+   pass already knows how to emit. Narrow, and it closes the race.
+2. **Properly**: the send is an OWNERSHIP TRANSFER, not a copy — the natural
+   thing is to move the buffer into the message and leave the sender without
+   it, which is what the user asked for when `[queue: N]` was designed around
+   moving batches. That needs the liveness half of the ownership analysis
+   (`thoughts/who-frees-concrete-cases.md`), which also has to know that a
+   sent value ESCAPES and must not be freed by the sender.
+
+Guard with `hostRuns` on all three backends under both `--actors:single` and
+`--actors:thread`; single mode is the deterministic one and is enough to
+catch the regression.
+
+---
+
 ## EV-12 — the Odin backend never frees a heap value: every copy leaks
 
 **Severity: highest. Odin only, no diagnostic, and the program runs
