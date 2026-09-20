@@ -151,6 +151,29 @@ Same latency as the start, **6x less CPU**. The two changes only work
 together: adaptive alone trades latency for CPU, targeted alone does
 nothing much, and both together take the CPU without paying the latency.
 
+### `--actors:single` — what the mode is worth
+
+The first mode the flag actually selects. A real Tuck program (an actor
+summing 500,000 sends, `[queue: 1048576]` so nothing is dropped, then a
+`waitUntil`), `--release`, one sender:
+
+| | wall |
+|---|---|
+| `--actors:thread` | 77–121 ms |
+| `--actors:single` | **23–26 ms** |
+
+**3-5x**, and the reason is that every cost thread-per-actor pays is absent
+rather than cheap: `strace -c` counts ONE `clone3` in thread mode and **zero**
+in single mode, and the mailbox lock is compiled out entirely
+(`tuck_rt.MailboxNeedsLock`), so a send is an array write and an index bump
+with no atomic anywhere.
+
+Stated honestly, part of the gap is batching: main runs to completion before
+the scheduler gets the thread back, so the actor drains all 500k in one pass
+with no interleaving forced on it. That is not a measurement artefact — it is
+what cooperative scheduling buys, and the reason the mode suits I/O-bound and
+event-driven programs. What it cannot do is use a second core.
+
 ### Measured, not taken
 
 - **Signal only on the empty -> non-empty edge.** No measurable difference:

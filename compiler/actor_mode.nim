@@ -64,10 +64,20 @@ const
     ## The latency bound a straggler pays. A batch that fills faster than this
     ## never waits for it; one that does not is bounded by it.
 
-  ImplementedModes* = {amThread}
+  ImplementedModes* = {amThread, amSingle}
     ## Modes the runtime actually has. The CLI refuses the others rather than
     ## accepting a flag and quietly building something else. Grows by one
     ## token as each lands.
+
+proc nimDefinesFor*(p: ActorPolicy): string =
+  ## What `tuck build` adds to its `nim c` line for this policy. The mode has
+  ## to reach the RUNTIME, which is compiled as part of the program, and a
+  ## define is how: it makes the choice a compile-time fact, so the machinery
+  ## the mode does not use is not merely skipped but absent.
+  case p.mode
+  of amThread: ""                       # the default shape; nothing to say
+  of amSingle: " -d:tuckActorsSingle "
+  of amBatch: ""                        # refused by the CLI until it exists
 
 var actorPolicy* = ActorPolicy(mode: amThread,
                                batchCount: DefaultBatchCount,

@@ -59,6 +59,39 @@ proc run*(t: var T) =
   let single = t.checkWith(@["--actors:single"])
   let batch = t.checkWith(@["--actors:batch", "--batch-count:8"])
 
+  # --- single mode is not just accepted, it RUNS -----------------------------
+  #
+  # The program is 26-actor-run's shape: sends, then a waitUntil over the
+  # actor's public state, returning the sum as the exit code. Under single
+  # mode the actor is a coroutine on main's own thread, so `waitUntil` has to
+  # drive the scheduler rather than block on it — get that wrong and this
+  # hangs rather than failing, which is why it is an assertion and not a
+  # hand-check.
+  t.src """
+import scheduler
+
+actor Counter [queue: 128]:
+  total: int = 0
+
+  on add({n: int}):
+    total += n
+
+fn sumReady() -> bool:
+  return Counter.total == 55
+
+fn main() -> int:
+  for i in 1 .. 10:
+    Counter send add {n: i}
+  Counter.waitUntil {pred: :sumReady}
+  return Counter.total
+"""
+  let singleDir = t.curDir / "single_out"
+  let singleBuild = t.needCmd(@["./tuck", "b", t.curDir / "t.tuck",
+                                "--actors:single", "-o:" & singleDir,
+                                "--root:" & t.root], vBuild)
+  let singleRun = t.needCmdAfter(@[singleDir / "t"], singleBuild,
+                                 proc (dir: string) = discard, singleDir, vRun)
+
   # --- a name that is not a mode ---------------------------------------------
 
   let bogus = t.checkWith(@["--actors:bogus"])
@@ -81,10 +114,25 @@ proc run*(t: var T) =
   t.assertAccepts("no --actors: builds, thread being the default", bare)
   t.assertAccepts("--actors:thread is accepted", thread)
 
-  t.assertRejects("--actors:single is refused while the runtime lacks it",
-                  single, "not implemented yet")
+  t.assertAccepts("--actors:single is accepted", single)
   t.assertRejects("--actors:batch is refused while the runtime lacks it",
                   batch, "not implemented yet")
+
+  if t.phase != pCollect:
+    if t.skippedCmd(singleBuild) or t.skippedCmd(singleRun):
+      t.skip "an actor program runs under --actors:single"
+    else:
+      let (brc, bout) = t.resultOf(singleBuild)
+      if brc != 0:
+        t.no "an actor program runs under --actors:single",
+             "build failed: " & bout
+      else:
+        let (rc, outp) = t.resultOf(singleRun)
+        if rc == 55:
+          t.ok "an actor program runs under --actors:single"
+        else:
+          t.no "an actor program runs under --actors:single",
+               "exit " & $rc & " (want 55, the sum the actor accumulated): " & outp
   t.assertRejects("an unknown mode names the ones that exist",
                   bogus, "thread, single, batch")
 

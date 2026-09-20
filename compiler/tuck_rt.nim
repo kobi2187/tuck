@@ -544,6 +544,13 @@ const CacheLine* = 64
   ## x86-64 and arm64 alike. Only used to keep two hot fields apart, so an
   ## over-estimate costs padding and an under-estimate costs false sharing.
 
+const MailboxNeedsLock* = not defined(tuckActorsSingle)
+  ## `--actors:single` puts every actor on main's thread as a coroutine, so
+  ## a send and a drain cannot interleave mid-operation and there is nothing
+  ## for a lock to protect. It is compiled away rather than left uncontended:
+  ## an uncontended atomic is still an atomic, and "no atomics on the send
+  ## path" is the whole reason to choose the mode.
+
 type
   MailboxLock = object
     ## A spinlock, not a pthread Lock: the critical section it guards is a
@@ -554,7 +561,8 @@ type
     ## interleaved trial, 20-90% ahead, because a busy actor never pays a
     ## futex syscall to find the lock free. Wrong tool if the section held it
     ## across anything blocking — it never does here.
-    flag: Atomic[bool]
+    when MailboxNeedsLock:
+      flag: Atomic[bool]
 
   Mailbox*[T; Cap: static int] = object
     ## TWO buffers, not one ring. Senders fill `buf[cur]`; the actor flips
@@ -585,11 +593,13 @@ type
                            ## never across a handler
 
 proc acquire(l: var MailboxLock) {.inline.} =
-  while l.flag.exchange(true, moAcquire):
-    while l.flag.load(moRelaxed): cpuRelax()
+  when MailboxNeedsLock:
+    while l.flag.exchange(true, moAcquire):
+      while l.flag.load(moRelaxed): cpuRelax()
 
 proc release(l: var MailboxLock) {.inline.} =
-  l.flag.store(false, moRelease)
+  when MailboxNeedsLock:
+    l.flag.store(false, moRelease)
 
 proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
   acquire(mb.lock)

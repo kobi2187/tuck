@@ -4,9 +4,20 @@
 ## the swappable engine, never exposed. The Odin runtime mirrors this same API
 ## over its own minicoro binding (compiler/tuckrt/tuck_coro.odin).
 ##
-## Single-threaded + cooperative: actors and tasks are all coroutines on
-## arsenal's scheduler. No OS threads — so no locks are needed on actor
-## mailboxes (only one coroutine runs at a time; sends and drains never race).
+## TASKS are always coroutines on main's thread. ACTORS depend on the build's
+## `--actors:MODE` (compiler/actor_mode.nim), which arrives here as a define:
+##
+##   thread (default)  one OS thread per actor. Real parallelism; a send
+##                     crosses a thread boundary, so the mailbox is locked and
+##                     an idle actor parks on a condvar.
+##   single            every actor a coroutine on this thread, exactly like a
+##                     task. Nothing races, so the mailbox lock compiles away
+##                     and no thread is ever created — but main is not a
+##                     coroutine, so it must lend its thread to the scheduler
+##                     at `waitUntil` and at exit, or nothing ever runs (#8).
+##
+## Every exported entry point below carries both shapes under
+## `when TuckActorsSingle`. Read them in pairs.
 ##
 ## Build note: async Tuck programs MUST compile with
 ##   --stackTrace:off --lineTrace:off
@@ -239,6 +250,18 @@ proc awaitResult*[T](slot: TuckAsyncResult[T]): T =
 
 type DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I work?
 
+const TuckActorsSingle* = defined(tuckActorsSingle)
+  ## `--actors:single` (compiler/actor_mode.nim). Set by `tuck build` as
+  ## `-d:tuckActorsSingle`, so the mode is a COMPILE-TIME fact for the whole
+  ## program rather than a branch taken at run time. What that buys is the
+  ## point of the mode: no thread is created, no condvar is waited on, and
+  ## the mailbox's lock compiles to nothing (see tuck_rt.MailboxLock). A mode
+  ## whose costs you still pay is not the mode you asked for.
+  ##
+  ## Every exported entry point below has both shapes. Read them in pairs:
+  ## the `when TuckActorsSingle` arm is a coroutine on main's thread, the
+  ## other is an OS thread of its own.
+
 const
   ActorSpinMax* {.intdefine.} = 4096
     ## The most an actor will re-check its mailbox before parking.
@@ -312,6 +335,11 @@ type
                         ## share the line.
     waiters: seq[ptr Waiter]   ## the registered predicates; guarded by `lock`
     thr: Thread[ptr ActorSlot]
+    co: Coroutine       ## single mode only: this actor's coroutine. A raw
+                        ## ptr, so it is safe in allocShared'd memory.
+    queued: bool        ## single mode only: already in the ready queue, so a
+                        ## send does not enqueue it a second time. One thread,
+                        ## so no atomic.
 
 var gMySlot {.threadvar.}: ptr ActorSlot
   ## The slot this thread serves, so the emitted drain can reach its waiters
@@ -366,7 +394,12 @@ proc tuckCheckWaiters*() =
   ## Emitted in the drain loop after each handled message, so a predicate sees
   ## the EXACT moment it becomes true. Checking only once per drain pass would
   ## miss a condition that went true and false again inside one batch.
-  if gMySlot != nil: checkWaiters(gMySlot)
+  ##
+  ## Nothing to do in single mode: a waiter there is main, on this same
+  ## thread, re-testing its own predicate between scheduler passes — there is
+  ## no other thread to hand the answer to.
+  when not TuckActorsSingle:
+    if gMySlot != nil: checkWaiters(gMySlot)
 
 proc actorMain(slot: ptr ActorSlot) {.thread.} =
   ## One actor, forever. Its own scheduler and reactor, so an `[io]` call in a
@@ -421,33 +454,48 @@ proc actorMain(slot: ptr ActorSlot) {.thread.} =
     release(slot.lock)
 
 proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
-  ## Register + start a declared actor on its own OS thread (emitted once per
-  ## actor, from the entry point before main runs).
+  ## Register + start a declared actor (emitted once per actor, from the entry
+  ## point before main runs).
   ##
-  ## The slot is allocShared'd and the Thread lives INSIDE it: a `seq` of
-  ## Thread objects would move its elements on reallocation, and a running
-  ## thread's handle may not move.
-  ##
-  ## Detached by design. Actors are daemons with no termination condition, so
-  ## there is nothing to join — `quit` ends them, which is the same lifetime
-  ## the coroutine version had.
+  ## Returned as an OPAQUE pointer so the emitted registerActor<Name> can keep
+  ## it without codegen needing the ActorSlot type: `Actor.waitUntil` and each
+  ## `send` name the actor at the call site, so codegen needs a handle to pass
+  ## and nothing more. Both modes return the same kind of handle, which is why
+  ## neither the emitted code nor codegen knows which mode it is in.
   if not gSlotsReady:
     initLock(gSlotsLock)
     gSlotsReady = true
   let slot = cast[ptr ActorSlot](allocShared0(sizeof(ActorSlot)))
   slot.drain = drain
-  initLock(slot.lock)
-  initCond(slot.cond)
-  slot.pending = true        # drain once before the first wait: a send may
+  when TuckActorsSingle:
+    # A coroutine on main's thread. It drains, and when there is nothing left
+    # it marks itself un-queued and hands control back; a send puts it in the
+    # ready queue again. Nothing here is shared with another thread, so there
+    # is no lock, no condvar and no wake syscall anywhere in the mode.
+    slot.co = newCoroutine(proc() {.gcsafe.} = ({.cast(gcsafe).}:
+      while true:
+        if not slot.drain():
+          slot.queued = false
+          coroYield()), TuckStackSize)
+    slot.queued = true
+    gActorSlots.add(slot)
+    schedule(slot.co)
+  else:
+    # An OS thread of its own. The slot is allocShared'd and the Thread lives
+    # INSIDE it: a `seq` of Thread objects would move its elements on
+    # reallocation, and a running thread's handle may not move.
+    #
+    # Detached by design. Actors are daemons with no termination condition, so
+    # there is nothing to join — `quit` ends them.
+    initLock(slot.lock)
+    initCond(slot.cond)
+    slot.pending = true      # drain once before the first wait: a send may
                              # already be queued by the time we get here
-  slot.working = true
-  acquire(gSlotsLock)
-  gActorSlots.add(slot)
-  release(gSlotsLock)
-  createThread(slot.thr, actorMain, slot)
-  # Returned as an OPAQUE pointer so the emitted registerActor<Name> can keep
-  # it without codegen needing the ActorSlot type: `Actor.waitUntil` names the
-  # actor at the call site, so codegen needs a handle to pass and nothing more.
+    slot.working = true
+    acquire(gSlotsLock)
+    gActorSlots.add(slot)
+    release(gSlotsLock)
+    createThread(slot.thr, actorMain, slot)
   cast[pointer](slot)
 
 proc wakeSlot(s: ptr ActorSlot) {.inline.} =
@@ -472,8 +520,16 @@ proc tuckNotifySend*(handle: pointer) =
   ## known which actor it was writing to; it just was not saying.
   if handle == nil: return       # not registered yet: nothing is parked
   let slot = cast[ptr ActorSlot](handle)
-  if atomicLoadN(addr slot.parked, ATOMIC_ACQUIRE) == 0: return
-  wakeSlot(slot)
+  when TuckActorsSingle:
+    # Put the actor back in the ready queue, once. Without the guard a flood
+    # of sends would queue the same coroutine a million times and the queue,
+    # not the mailbox, would be what grew.
+    if slot.queued: return
+    slot.queued = true
+    schedule(slot.co)
+  else:
+    if atomicLoadN(addr slot.parked, ATOMIC_ACQUIRE) == 0: return
+    wakeSlot(slot)
 
 proc pumpOnce(): bool   # forward: tuckWaitOn drives main's own tasks
 
@@ -490,7 +546,18 @@ proc tuckWaitOn*(handle: pointer, pred: proc(): bool) =
   ## `pending` is set so the actor wakes and evaluates ONCE IMMEDIATELY: the
   ## condition may already hold, and a waiter that registered against an
   ## already-true predicate must not sleep until the next unrelated message.
+  ##
+  ## SINGLE MODE answers the same question without any of that. The actor is a
+  ## coroutine on this very thread, so there is no other thread to register
+  ## with and nothing to synchronise: main drives the scheduler and re-tests
+  ## the predicate between passes. It reads the actor's state directly because
+  ## it IS the actor's thread. Note this drives rather than waits — if nothing
+  ## on this thread can make the predicate true, nothing will.
   if handle == nil: return
+  when TuckActorsSingle:
+    while not pred():
+      discard pumpOnce()
+    return
   let slot = cast[ptr ActorSlot](handle)
   var w = cast[ptr Waiter](allocShared0(sizeof(Waiter)))
   var fds: array[2, cint]
@@ -547,17 +614,33 @@ proc tuckDrainActors*() =
   ## That read happens inside main, long before this runs; no exit-time wait
   ## can reach back and change what it saw. `scheduler::waitUntil` remains the
   ## way to order a send against a read.
+  ##
+  ## SINGLE MODE is where this call stops being a safety net and becomes the
+  ## thing that makes the mode work at all. Main is not a coroutine, so
+  ## nothing has resumed the actors while main ran; every send so far only
+  ## queued them. Draining here is main finally lending its thread to the
+  ## scheduler, which is why a `send` with no `waitUntil` after it is still
+  ## delivered (issue #8).
   if not gSlotsReady: return
-  while true:
-    var allIdle = true
-    acquire(gSlotsLock)
-    for s in gActorSlots:
-      acquire(s.lock)
-      if s.pending or s.working: allIdle = false
-      release(s.lock)
-    release(gSlotsLock)
-    if allIdle: return
-    cpuRelax()
+  when TuckActorsSingle:
+    # Run until nothing is ready: every mailbox is empty and no actor is
+    # mid-handler. WEAKER than the thread-mode wait below in one case — an
+    # actor suspended inside an `[io]` handler is not "ready", so if its fd
+    # stays quiet this returns and the process exits with that handler
+    # unfinished. `tuckRun()` (emitted whenever the program has tasks) is the
+    # call that drives I/O to completion.
+    while pumpOnce(): discard
+  else:
+    while true:
+      var allIdle = true
+      acquire(gSlotsLock)
+      for s in gActorSlots:
+        acquire(s.lock)
+        if s.pending or s.working: allIdle = false
+        release(s.lock)
+      release(gSlotsLock)
+      if allIdle: return
+      cpuRelax()
 
 proc pumpOnce(): bool =
   ## Advance the runtime one step: run a ready coroutine, or poll I/O. Returns

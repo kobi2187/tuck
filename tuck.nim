@@ -1297,7 +1297,11 @@ when isMainModule:
         let sharedCache = getEnv("TUCK_NIMCACHE")
         let nimCache = if sharedCache != "": sharedCache
                        else: outDir / ".nimcache" / binBase
+        # `--actors:MODE` reaches the runtime as a define: tuck_async and
+        # tuck_rt are compiled INTO the program, so this is how the mode
+        # becomes a compile-time fact there rather than a branch at run time.
         let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
+                     nimDefinesFor(actorPolicy) &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
                      " -o:" & quoteShell(binPath) & " " &
                      quoteShell(binNim)
