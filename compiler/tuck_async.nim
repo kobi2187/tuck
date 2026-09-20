@@ -239,10 +239,32 @@ proc awaitResult*[T](slot: TuckAsyncResult[T]): T =
 
 type DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I work?
 
-const ActorSpinBeforePark* {.intdefine.} = 2000
-  ## How many times an idle actor re-checks its mailbox before parking on the
-  ## condvar. Bounded, and only paid on the transition to idle — never while
-  ## an actor has work. `0` restores the straight-to-park behaviour.
+const
+  ActorSpinMax* {.intdefine.} = 4096
+    ## The most an actor will re-check its mailbox before parking.
+  ActorSpinMin* {.intdefine.} = 16
+    ## The least. Not zero: the budget has to stay big enough to notice that
+    ## spinning has started paying again, or an actor that once went quiet
+    ## could never earn its budget back.
+
+# THE SPIN IS ADAPTIVE, and it has to be. A fixed budget is two different
+# bets on two different workloads, and it cannot win both:
+#
+#   saturated actor   spinning always pays — the next message is already on
+#                     its way, and parking would buy a futex round trip.
+#   idle actor        spinning never pays, and the cost is not small.
+#                     Measured, 8 mostly-idle actors at a 200us send gap: a
+#                     fixed 2000-iteration spin burned 1.38 cores against
+#                     0.37 for parking immediately — 3.7x the CPU to save
+#                     12% of wall time. That is the exact "hundreds of light
+#                     actors cost more than they return" pathology.
+#
+# So the budget is earned: doubled whenever a spin finds work, halved
+# whenever it does not. A busy actor reaches ActorSpinMax and keeps its
+# throughput; a quiet one decays to ActorSpinMin within a few parks and costs
+# what parking costs (measured back down to 0.37 cores). The saturated case
+# pays 8-11% for this against a fixed budget, which is the right side of the
+# trade for a runtime that does not know the workload in advance.
 
 # ONE OS THREAD PER ACTOR (ruled 2026-09-18).
 #
@@ -348,35 +370,40 @@ proc actorMain(slot: ptr ActorSlot) {.thread.} =
   ## One actor, forever. Its own scheduler and reactor, so an `[io]` call in a
   ## handler suspends THIS actor and nothing else.
   ##
-  ## Spins briefly when the mailbox comes up empty, then blocks on a condvar:
-  ## an actor alone on its thread has no peer to yield to, so the cooperative
-  ## `coroYield` this replaced would have been an unbounded busy loop, while
-  ## going straight to the condvar pays a futex round trip for a lull that
-  ## usually ends in nanoseconds.
+  ## Spins when the mailbox comes up empty — for as long as spinning has been
+  ## paying — then blocks on a condvar. An actor alone on its thread has no
+  ## peer to yield to, so the cooperative `coroYield` this replaced would have
+  ## been an unbounded busy loop, while going straight to the condvar pays a
+  ## futex round trip for a lull that usually ends in nanoseconds. The budget
+  ## is what keeps both from being wrong for the other's workload.
   tuckAsyncInit()
   gMySlot = slot
+  var spinBudget = ActorSpinMin   ## local: each actor earns its own
   while true:
     if slot.drain(): continue
     checkWaiters(slot)        # also after a pass that did nothing: a predicate
                               # registered while idle must be answered
-    # Spin before committing to the park. A producer that is still running
-    # usually hands over more work within a few hundred nanoseconds, while a
-    # park costs a futex sleep here and a full wake path at the next sender
-    # (the global slots lock, the slot lock, a condvar signal) — microseconds
-    # against nanoseconds. Measured: an actor that drains faster than one
-    # sender refills runs dry ~168k times per million messages, and paying a
-    # futex round trip for each is what made a "faster" mailbox 3x slower.
+    # Spin before committing to the park, for as long as spinning has been
+    # paying (see ActorSpinMax above). A producer that is still running hands
+    # over more work within a few hundred nanoseconds, while a park costs a
+    # futex sleep here and a full wake path at the next sender — microseconds
+    # against nanoseconds. Measured: an actor draining faster than one sender
+    # refills runs dry ~168k times per million messages, and paying a futex
+    # round trip for each is what made a "faster" mailbox 3x slower.
     #
     # `working` stays true throughout: a spinning actor has not given up, and
     # tuckDrainActors must not read it as quiescent while a message may still
     # be in flight.
     var gotWork = false
-    for _ in 1 .. ActorSpinBeforePark:
+    for _ in 1 .. spinBudget:
       cpuRelax()
       if slot.drain():
         gotWork = true
         break
-    if gotWork: continue
+    if gotWork:
+      spinBudget = min(spinBudget * 2, ActorSpinMax)
+      continue
+    spinBudget = max(spinBudget div 2, ActorSpinMin)
     acquire(slot.lock)
     slot.working = false          # nothing left to do: visible to tuckDrainActors
     if not slot.pending:

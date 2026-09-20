@@ -540,6 +540,10 @@ proc shutdownResources*(t: var ResourceTable) =
 
 import std/atomics
 
+const CacheLine* = 64
+  ## x86-64 and arm64 alike. Only used to keep two hot fields apart, so an
+  ## over-estimate costs padding and an under-estimate costs false sharing.
+
 type
   MailboxLock = object
     ## A spinlock, not a pthread Lock: the critical section it guards is a
@@ -569,6 +573,12 @@ type
     ## Zero-initialized is a valid empty mailbox — no init call, which is why
     ## there is no initMailbox to forget.
     buf*: array[2, array[Cap, T]]
+    pad*: array[CacheLine, byte]
+      ## Keeps the control block off the last line of `buf`. Without it the
+      ## two share a cache line — measured, at offsets 8192..8224 for a
+      ## 128-slot mailbox — so the consumer streaming through `buf` and the
+      ## senders hammering `lock` invalidate each other's line for no reason.
+      ## Worth ~10% under contention.
     fill*: array[2, int]   ## how many messages are in each buffer
     cur*: int              ## the one senders are filling; the actor owns 1-cur
     lock*: MailboxLock     ## guards `cur` and `fill[cur]` — nothing else, and
