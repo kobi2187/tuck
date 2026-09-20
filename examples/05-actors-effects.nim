@@ -32,8 +32,7 @@ proc handleMsg*(self: tuck_Counter, msg: tuck_CounterMsg) =
 proc draintuck_Counter(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_CounterMsg
-    while dequeue(tuck_CounterSingleton.mailbox, m):
+    for m in messages(tuck_CounterSingleton.mailbox):
       handleMsg(tuck_CounterSingleton, m)
       tuckCheckWaiters()
       result = true

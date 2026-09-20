@@ -61,6 +61,44 @@ instead of one acquire per message ran at 2–3 M/sec against 6–7 for
 per-message. Holding the lock across a batch starves the sender for the length
 of the batch; short sections released often win here. Nothing landed for it.
 
+**2026-09-20 — the swap mailbox, and why the bench had to change twice.**
+The ring is now two buffers: senders fill one, the actor flips an index and
+owns the other outright, draining it with no lock held and nothing copied
+out. Paired with a bounded spin before an idle actor parks, because the two
+only pay TOGETHER — see below.
+
+Real messages are envelope structs, so this is measured on a 32-byte message,
+`tuck_rt.Mailbox` itself, four interleaved rounds:
+
+| 32B envelope | ring (per-message lock + copy) | swap + spin |
+|---|---|---|
+| 3 senders | 1.09–1.32 M/sec | **1.95–2.31 M/sec** (won 4 of 4) |
+| 1 sender | 4.34–6.47 M/sec | 3.41–7.06 M/sec (noise) |
+
+The win is CONTENTION-shaped: one sender is never the bottleneck, so the
+drain's costs do not rank the designs. Several senders all want the mailbox
+lock, and then what the drain does with it decides throughput.
+
+THE TRAP, measured twice before it was believed. Each half of this change,
+alone, is neutral or a regression:
+
+| 64B, 3 senders | straight to park | spin before park |
+|---|---|---|
+| ring | 0.94–1.30 M/sec | 0.88–0.97 M/sec |
+| swap | 0.37–0.39 M/sec | **2.01–2.24 M/sec** |
+
+The swap mailbox ALONE is 3x slower. Instrumented, the reason is exact: over
+a million messages the ring's actor found an empty mailbox 2–351 times, the
+swap's found one **~168,000** times. A drain that cheap exhausts its mailbox
+constantly, and each exhaustion paid a futex sleep plus a full wake path at
+the next sender. The mailbox protocol was never the bottleneck — the WAKE
+protocol was, and making the drain faster is what exposed it.
+
+Sizing matters as much as shape: on `int` messages the two designs rank
+EQUAL (8 bytes is no copy worth avoiding), and with Cap sized past N the
+bench measures DRAM rather than the mailbox. The bench now uses an envelope
+and a Cap of 131072 for that reason.
+
 | compiler front-end | lex+parse+check | ~23k lines/sec |
 
 ## 2026-09-13 — what the TRANSPILER costs: Tuck-emitted vs hand-written Nim

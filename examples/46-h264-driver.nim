@@ -157,8 +157,7 @@ proc handleMsg*(self: tuck_Pipeline, msg: tuck_PipelineMsg) =
 proc draintuck_Pipeline(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_PipelineMsg
-    while dequeue(tuck_PipelineSingleton.mailbox, m):
+    for m in messages(tuck_PipelineSingleton.mailbox):
       handleMsg(tuck_PipelineSingleton, m)
       tuckCheckWaiters()
       result = true

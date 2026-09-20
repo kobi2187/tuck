@@ -239,6 +239,11 @@ proc awaitResult*[T](slot: TuckAsyncResult[T]): T =
 
 type DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I work?
 
+const ActorSpinBeforePark* {.intdefine.} = 2000
+  ## How many times an idle actor re-checks its mailbox before parking on the
+  ## condvar. Bounded, and only paid on the transition to idle — never while
+  ## an actor has work. `0` restores the straight-to-park behaviour.
+
 # ONE OS THREAD PER ACTOR (ruled 2026-09-18).
 #
 # An actor is a daemon, and a daemon that only runs when `main` happens to
@@ -343,15 +348,35 @@ proc actorMain(slot: ptr ActorSlot) {.thread.} =
   ## One actor, forever. Its own scheduler and reactor, so an `[io]` call in a
   ## handler suspends THIS actor and nothing else.
   ##
-  ## Blocks on a condvar when the mailbox comes up empty rather than spinning:
+  ## Spins briefly when the mailbox comes up empty, then blocks on a condvar:
   ## an actor alone on its thread has no peer to yield to, so the cooperative
-  ## `coroYield` this replaced would have been a busy loop.
+  ## `coroYield` this replaced would have been an unbounded busy loop, while
+  ## going straight to the condvar pays a futex round trip for a lull that
+  ## usually ends in nanoseconds.
   tuckAsyncInit()
   gMySlot = slot
   while true:
     if slot.drain(): continue
     checkWaiters(slot)        # also after a pass that did nothing: a predicate
                               # registered while idle must be answered
+    # Spin before committing to the park. A producer that is still running
+    # usually hands over more work within a few hundred nanoseconds, while a
+    # park costs a futex sleep here and a full wake path at the next sender
+    # (the global slots lock, the slot lock, a condvar signal) — microseconds
+    # against nanoseconds. Measured: an actor that drains faster than one
+    # sender refills runs dry ~168k times per million messages, and paying a
+    # futex round trip for each is what made a "faster" mailbox 3x slower.
+    #
+    # `working` stays true throughout: a spinning actor has not given up, and
+    # tuckDrainActors must not read it as quiescent while a message may still
+    # be in flight.
+    var gotWork = false
+    for _ in 1 .. ActorSpinBeforePark:
+      cpuRelax()
+      if slot.drain():
+        gotWork = true
+        break
+    if gotWork: continue
     acquire(slot.lock)
     slot.working = false          # nothing left to do: visible to tuckDrainActors
     if not slot.pending:

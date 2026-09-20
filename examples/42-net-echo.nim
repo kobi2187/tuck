@@ -29,8 +29,7 @@ proc handleMsg*(self: tuck_Result, msg: tuck_ResultMsg) =
 proc draintuck_Result(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_ResultMsg
-    while dequeue(tuck_ResultSingleton.mailbox, m):
+    for m in messages(tuck_ResultSingleton.mailbox):
       handleMsg(tuck_ResultSingleton, m)
       tuckCheckWaiters()
       result = true

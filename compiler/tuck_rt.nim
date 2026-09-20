@@ -553,11 +553,26 @@ type
     flag: Atomic[bool]
 
   Mailbox*[T; Cap: static int] = object
-    data*: array[Cap, T]
-    head*: int
-    tail*: int
-    lock*: MailboxLock   # sends come from other threads; drain from the
-                         # scheduler thread — enqueue/dequeue must be guarded
+    ## TWO buffers, not one ring. Senders fill `buf[cur]`; the actor flips
+    ## `cur` and then owns the buffer it just took outright — so the whole
+    ## drain runs with no lock held and nothing copied out. A handover is one
+    ## integer write, whatever the batch size.
+    ##
+    ## The ring this replaced took the lock once PER MESSAGE and copied each
+    ## envelope out under it. Both costs are gone; what is left on the hot
+    ## path is the sender's own acquire, one array write, and a release.
+    ##
+    ## Costs `2 * Cap` elements rather than `Cap`. `[queue: N]` therefore
+    ## means "N messages may be waiting to be picked up", and an actor can
+    ## hold up to another N it has already taken.
+    ##
+    ## Zero-initialized is a valid empty mailbox — no init call, which is why
+    ## there is no initMailbox to forget.
+    buf*: array[2, array[Cap, T]]
+    fill*: array[2, int]   ## how many messages are in each buffer
+    cur*: int              ## the one senders are filling; the actor owns 1-cur
+    lock*: MailboxLock     ## guards `cur` and `fill[cur]` — nothing else, and
+                           ## never across a handler
 
 proc acquire(l: var MailboxLock) {.inline.} =
   while l.flag.exchange(true, moAcquire):
@@ -568,30 +583,40 @@ proc release(l: var MailboxLock) {.inline.} =
 
 proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
   acquire(mb.lock)
-  let next = (mb.tail + 1) mod Cap
-  if next == mb.head:
+  let c = mb.cur
+  if mb.fill[c] >= Cap:
     release(mb.lock)
-    return false
-  mb.data[mb.tail] = msg
-  mb.tail = next
+    return false              # full: sendX drops (spec §9.1)
+  mb.buf[c][mb.fill[c]] = msg
+  inc mb.fill[c]
   release(mb.lock)
   return true
 
-proc dequeue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: var T): bool =
+iterator messages*[T; Cap: static int](mb: var Mailbox[T, Cap]): var T =
+  ## Take everything waiting and yield it IN PLACE. The swap happens once, up
+  ## front, under the lock; every yield after that touches a buffer no sender
+  ## can reach, so a handler runs with no lock held and no message copied.
+  ##
+  ## `fill` is cleared before the first yield rather than after the last, so
+  ## an early exit from the loop body leaves the mailbox consistent instead of
+  ## re-delivering a batch.
   acquire(mb.lock)
-  if mb.head == mb.tail:
-    release(mb.lock)
-    return false
-  msg = mb.data[mb.head]
-  mb.head = (mb.head + 1) mod Cap
+  let c = mb.cur
+  let n = mb.fill[c]
+  if n > 0:
+    mb.cur = 1 - c            # THE SWAP: the actor now owns buf[c]
+    mb.fill[c] = 0
   release(mb.lock)
-  return true
+  for i in 0 ..< n:
+    yield mb.buf[c][i]
 
 proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
-  ## Sender's opt-in backpressure check. sendX drops silently on a full ring
-  ## (fast, non-blocking, spec §9.1) — the sender may check first if it cares.
+  ## Sender's opt-in backpressure check. sendX drops silently on a full
+  ## mailbox (fast, non-blocking, spec §9.1) — the sender may check first if
+  ## it cares. Answers for the buffer senders are filling now; the actor's
+  ## own half is not a sender's business.
   acquire(mb.lock)
-  result = ((mb.tail + 1) mod Cap) != mb.head
+  result = mb.fill[mb.cur] < Cap
   release(mb.lock)
 
 

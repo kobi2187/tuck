@@ -28,8 +28,7 @@ proc handleMsg*(self: tuck_TrafficLight, msg: tuck_TrafficLightMsg) =
 proc draintuck_TrafficLight(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_TrafficLightMsg
-    while dequeue(tuck_TrafficLightSingleton.mailbox, m):
+    for m in messages(tuck_TrafficLightSingleton.mailbox):
       handleMsg(tuck_TrafficLightSingleton, m)
       tuckCheckWaiters()
       result = true

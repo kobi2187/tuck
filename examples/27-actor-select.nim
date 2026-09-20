@@ -33,8 +33,7 @@ proc draintuck_Accumulator(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
     if tuck_AccumulatorSingleton.finished: return
-    var m: tuck_AccumulatorMsg
-    while dequeue(tuck_AccumulatorSingleton.mailbox, m):
+    for m in messages(tuck_AccumulatorSingleton.mailbox):
       handleMsg(tuck_AccumulatorSingleton, m)
       tuckCheckWaiters()
       result = true

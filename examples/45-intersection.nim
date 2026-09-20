@@ -141,8 +141,7 @@ proc handleMsg*(self: tuck_Signals, msg: tuck_SignalsMsg) =
 proc draintuck_Signals(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_SignalsMsg
-    while dequeue(tuck_SignalsSingleton.mailbox, m):
+    for m in messages(tuck_SignalsSingleton.mailbox):
       handleMsg(tuck_SignalsSingleton, m)
       tuckCheckWaiters()
       result = true
