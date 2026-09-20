@@ -334,6 +334,498 @@ tested.
 
 ---
 
+## EV-12 — the Odin backend never frees a heap value: every copy leaks
+
+**Severity: highest. Odin only, no diagnostic, and the program runs
+correctly right up until the OOM killer takes it.** Found 2026-09-20 when
+`benches/apps/matching_engine.tuck` was killed with exit 137 on Odin while
+Nim and D ran the same program in 20 MB.
+
+### Reproduce — no actors, no threads, no concurrency
+
+```tuck
+import seq
+
+fn bump({xs: Seq[int]}) -> Seq[int]:
+  var ys = xs          # the copy
+  ys[0] = ys[0] + 1
+  return ys
+
+fn main() -> int:
+  var xs = {levels: 1024} zeroed
+  var i = 0
+  for i < 100000:
+    let ns = {xs: xs} bump
+    xs = ns
+    i = i + 1
+  return xs[0] % 7
+```
+
+100 000 copies of a 1024-element `Seq[int]`:
+
+| backend | peak RSS | exit |
+|---|---|---|
+| nim | 1 MB | 5 |
+| d | 6 MB | 5 |
+| **odin** | **2 352 MB** | 5 |
+
+All three compute the same answer. Only the memory differs, and it differs
+by three orders of magnitude.
+
+### In the application it is fatal
+
+`matching_engine.tuck` copies a price ladder per level walked, which is what
+Tuck's value semantics ask for — a parameter is an immutable copy, so a
+helper that consumes liquidity returns a new ladder rather than mutating the
+caller's:
+
+| orders | nim | d | odin |
+|---|---|---|---|
+| 50 000 | 21 MB | 11 MB | 3 748 MB |
+| 100 000 | 21 MB | — | 7 500 MB |
+| 200 000 | 21 MB | 17 MB | **killed, 13.6 GB** |
+
+Odin's growth is linear and steep: **about 75 KB per order**. Nim and D are
+flat, because both have a collector behind the copy. Odin does not, and
+nothing in the emitted code frees anything.
+
+### Why this is the worst of today's finds
+
+The other four are compile errors: loud, immediate, and they cost an
+afternoon each. This one compiles, runs, produces correct output on every
+input small enough to finish, and passes every test in the suite — because
+no test allocates in a loop long enough to matter. It fails only at a size
+where the failure is a `Killed` with no message.
+
+It also undercuts a documented promise. `--odin` exists for the no-runtime,
+no-GC target; a backend that leaks every heap value is the one target where
+that matters most. And it interacts with value semantics specifically, which
+is the language's central design choice — the more idiomatic the Tuck, the
+faster it leaks. `takeLevel` above is written exactly as the language wants
+it written.
+
+### The culprit, in two parts
+
+**1. The Odin backend never frees anything.** `tuckSeqCopy` allocates
+(`reserve` + `append`, `compiler/tuckrt/tuck_rt.odin:131`) and
+`compiler/tuckrt/tuck_rt.odin` contains **no `delete` and no `free` at all**.
+The generated code is no better: `codegen_odin*.nim` emits exactly one
+`free`, at `codegen_odin.nim:1051`, and it is for a task's argument
+environment struct — nothing to do with `Seq`. So every copy and every
+`append`-grown `[dynamic]T` in an Odin program is live until the process
+exits. D emits the same copies and survives only because D has a GC.
+
+**2. A defensive copy is emitted for call results that cannot alias.**
+`markSeqCopies` in `compiler/lowering_seqcopy.nim:95` exempts exactly one
+node kind:
+
+```nim
+if e.assignVal != nil and e.assignVal.kind != exkList:
+  if isSeqValued(res, e.assignVal):
+    ensureId(e.assignVal); dupSites.incl(e.assignVal.id)
+```
+
+The file states the reasoning — "everything else does, including a call
+result, since a call may hand back its own argument" — and for an arbitrary
+fn that is true. But a `twinnableFn` already copies its first parameter in
+the `f` wrapper before delegating to `f_moved`
+(`codegen_odin_decl.nim:398`), so for exactly those fns the caller's copy is
+copying a value the callee already made fresh. Both layers fire, and each
+one alone would have been sufficient.
+
+### The two interact, and EV-9 is what triggers it
+
+`movedCallInto` recognises `x = f(x)` and calls the twin directly, emitting
+no copy at all. The same loop written through a local does not match, so all
+three copies come back:
+
+| Tuck | Odin emitted | peak RSS |
+|---|---|---|
+| `xs = {xs: xs} bump` | `tuck_xs = tuck_bump_moved(tuck_xs)` | **0 MB** |
+| `let ns = {xs: xs} bump` / `xs = ns` | 3x `rt.tuckSeqCopy` | **2 352 MB** |
+
+Same program, same answer (exit 5). The difference is only whether the
+assignment matches the move pattern.
+
+**And EV-9 forces the losing spelling.** An actor field assigned from a call
+that takes it does not compile on D or Odin, so the workaround is precisely
+`let t = f(st); st = t` — which defeats `movedCallInto` and reinstates every
+copy. The matching engine leaks 75 KB per order *because* of the workaround
+it needed to compile. Two bugs that are each merely bad compose into one
+that is fatal.
+
+### Fix
+
+Part 2 first, since it is small and helps D as well: `markSeqCopies` should
+exempt a call whose callee has a moved twin, the same predicate
+`movedFnParam` already computes. That removes the redundant copy without
+touching the aliasing guarantee that the exemption for `exkList` rests on.
+Fixing EV-9 removes the trigger for the worst case.
+
+Neither makes Odin correct. Part 1 is structural and has to be paid:
+
+1. **Free on scope exit.** Emit `defer delete(x)` for each `Seq`/`str` a
+   scope allocates and does not return. Covers the loop above and most real
+   code, and reuses the liveness analysis `_moved` already needs.
+2. **Arena per message.** An actor handler is a natural scope: allocate from
+   an arena, reset it when the handler returns. Cheap and total, but only
+   covers values that do not outlive the handler.
+3. **Run a tracking allocator in debug builds**, so a leak is reported at
+   exit rather than discovered by the OOM killer. Worth doing whichever of
+   the above lands — it is what would have caught this before an
+   application did.
+
+A regression test belongs in the suite either way: allocate in a loop, assert
+peak RSS stays bounded. Nothing currently measures memory at all.
+
+---
+
+## EV-11 — a feed that outruns its actor silently loses messages, then deadlocks
+
+**Severity: highest of the five found today. All three modes, all three
+backends, and the program does not crash — it hangs.** Found 2026-09-20 by
+running `benches/apps/matching_engine.tuck`, the first application written
+against the actor runtime rather than a benchmark.
+
+### Reproduce
+
+Any actor with a `[queue: N]` and a sender that produces faster than the
+actor consumes — which is the normal case, since the sender does no work
+per message and the actor does:
+
+```tuck
+actor Book [queue: 8192]:
+  ...
+  on endOfDay({n: int}):
+    atClose = true
+
+fn main() -> int:
+  {n: 200000} flow          # 200k sends in a plain loop
+  Book send endOfDay {n: 0}
+  Book.waitUntil {pred: :closed}
+  return 0
+```
+
+| orders | result |
+|---|---|
+| 4 000 | exits 0 |
+| 8 000 | exits 0 |
+| 20 000 | **hangs** |
+
+8 192 is the queue depth. Every mode hangs at 200k:
+`--actors:single`, `--actors:thread` and `--actors:batch` alike.
+
+### What actually happens
+
+`enqueue` returns `false` on a full mailbox and the send site discards the
+result — drop-on-full, which is deliberate (spec §9.1, and the ruling in
+`thoughts/ledgers/`: "mechanism stays simple; backpressure is the sender's
+job"). So the overflow orders are silently lost, which for a matching engine
+is already the worst possible failure mode.
+
+The hang is the second-order effect. `endOfDay` is **just another message**,
+so it is dropped along with the orders. `atClose` is never set, and
+`waitUntil` waits forever on a predicate that nothing can make true. The
+program burns no CPU while doing it — 2m25s wall on 4.6s of CPU in the run
+that first showed this — so it looks like a deadlock in the scheduler and is
+not one. The delivery guarantee is the bug; the hang is a symptom.
+
+Single mode reaches it fastest and for an extra reason: the actor is a
+coroutine on main's thread and `flow` has no yield point, so the actor does
+not run **at all** until main blocks in `waitUntil`. The mailbox is the only
+thing absorbing the feed, and past N it stops absorbing.
+
+### Why there is no way to write this correctly today
+
+The ruling puts backpressure on the sender, and the runtime provides exactly
+the primitive that would do it:
+
+```nim
+proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
+  ## Sender's opt-in backpressure check. sendX drops silently on a full
+  ## mailbox (fast, non-blocking, spec §9.1) — the sender may check first if
+  ## it cares.
+```
+
+**No Tuck program can call it.** `hasRoom` appears in the compiler only in
+the reserved-identifier lists of `codegen_d.nim` and `codegen_odin.nim`, so
+the backends know not to shadow the name — and nothing else. No surface
+syntax emits the call, no example uses it, `std/` does not wrap it. The
+sender is assigned a job the language gives it no verb for.
+
+Nor is there a way around it: `F14` (a reply address on a message) is
+unimplemented, so an actor cannot signal demand back, and with no actor
+references there is no supervisor to hold the feed. The only lever a Tuck
+program has today is to size `[queue: N]` above the largest burst it will
+ever see, which is not backpressure — it is hoping.
+
+### Fixes, cheapest first
+
+1. **Expose the check.** Surface `hasRoom` as a Tuck expression, e.g.
+   `Book.hasRoom`, matching `Book.waitUntil`'s spelling. This alone makes
+   the documented story true, and is a codegen addition with no semantic
+   change. Smallest thing that removes "impossible" from the list.
+2. **Make single mode lossless.** With one thread, a full mailbox means the
+   actor has not run and provably nobody else can make room, so dropping is
+   guaranteed loss where running the actor is guaranteed progress. Either
+   grow the buffer (`when TuckActorsSingle`, entirely inside `tuck_rt.nim`)
+   or have the send site pump the scheduler and retry. Note this makes
+   `[queue: N]` mode-dependent, which is a design call, not a bugfix.
+3. **Do not drop control messages silently.** Whatever the policy, a
+   dropped send that nothing can observe turns a data-loss bug into a hang
+   somewhere else entirely. At minimum a drop counter the program can read;
+   `F14` is the real answer.
+
+The first is worth doing regardless of the other two: today's answer to
+"how do I not lose messages" is that you cannot ask.
+
+---
+
+## EV-10 — two handlers binding the same local name: the second is undeclared
+
+**Severity: high. Every backend, and `tuck ch` says OK.** Found 2026-09-20,
+the third bug in one afternoon of writing an ordinary application.
+
+### Reproduce
+
+```tuck
+actor Book [queue: 8]:
+  a: int = 0
+  b: int = 0
+
+  on buy({n: int}):
+    let r = n + 1        # `r` here...
+    a = a + r
+
+  on sell({n: int}):
+    let r = n + 2        # ...and `r` again here
+    b = b + r
+```
+
+### What is emitted
+
+Both handlers are arms of ONE `case` in `handleMsg`, and each arm is its own
+scope. Codegen tracks which names it has already declared in a set that
+spans the whole actor, so the second arm emits an assignment to a name that
+was declared in a sibling branch:
+
+```nim
+of msgBuy:
+  var tuck_r = (n + 1)     # declared
+  ...
+of msgSell:
+  tuck_r = (n + 2)         # NOT declared -> undeclared identifier
+```
+
+All three backends reject it, each in its own words.
+
+### Why it matters
+
+Handlers are written independently and short, so they reuse the obvious
+names — `r`, `s`, `item`, `result`. Two handlers on one actor is the normal
+case, not a corner. The failure is also confusingly located: the error points
+at the SECOND handler, which is correct Tuck, while the cause is that the
+first one claimed the name.
+
+### Fix
+
+`definedVars` has to be scoped per handler arm, not per actor. The dispatch
+builds one `hctx` for the whole actor (`genActorDispatch`), which is where
+the set is shared; each arm wants its own copy seeded from the enclosing
+scope.
+
+---
+
+## EV-9 — a `push` chain back into an ACTOR FIELD loses its `self.`
+
+**Severity: high. Every backend, and `tuck ch` says OK.** Found 2026-09-20
+writing an application; the second bug the first non-toy program hit.
+
+### Reproduce
+
+```tuck
+import seq
+
+actor Box [queue: 8]:
+  xs: Seq[int]
+  n: int = 0
+
+  on fill({k: int}):
+    xs = {items: xs, value: k} push     # a push BACK INTO a field
+    n = n + 1
+
+fn ready() -> bool:
+  return Box.n == 1
+
+fn main() -> int:
+  Box send fill {k: 5}
+  Box.waitUntil {pred: :ready}
+  return 0
+```
+
+`tuck ch` says `OK`. All three backends then refuse the code they were given:
+
+```
+nim  : t.nim(26, 7)   Error: undeclared identifier: 'xs'
+d    : t.d(24)        Error: undefined identifier `xs`
+odin : t.odin(24:5)   Error: ...ambiguous call for 'append'   [append(&xs, k)]
+```
+
+### What is emitted
+
+```nim
+xs*: seq[int]        # the field is declared on the object
+...
+xs.add(k)            # but the write names a local that does not exist
+```
+
+The receiver-threading rewrite that turns `x = {items: x, value: v} push`
+into an in-place append drops the `self.` qualifier. The SAME handler emits
+`self.n = self.n + 1` correctly one line later, and a plain
+`self.askQty = <expr>` elsewhere in the same actor is also correct — it is
+only the chain rewrite that forgets which namespace it is in.
+
+### Not the optimizer
+
+`-O:none` produces the identical error, so this is codegen's own receiver
+threading and not `opChainInPlace`. Worth saying because `-O:none` is the
+documented first move when emitted code looks wrong, and here it clears the
+suspect without clearing the bug.
+
+### Wider than `push`, and the clean repro is a plain call
+
+Found later the same day, and it is the better statement of the bug. No
+chain, no collection, no `seq` — just an actor field passed to a fn and
+assigned back:
+
+```tuck
+type BookState:
+  trades: int
+
+fn applyBuy({b: BookState, px: int, qty: int}) -> BookState:
+  return {trades: b.trades + 1} BookState
+
+actor Book [queue: 8]:
+  st: BookState
+
+  on buy({px: int, qty: int}):
+    st = {b: st, px: px, qty: qty} applyBuy
+```
+
+Here **Nim is correct and the other two are wrong** — the mirror of the
+`push` case, where all three failed:
+
+```nim
+self.st = tuck_applyBuy(self.st, px, qty)          # nim: right
+```
+```d
+st = tuck_applyBuy_moved(self.st, px, qty);        // d:    LHS lost self.
+```
+```odin
+st = tuck_applyBuy_moved(self.st, px, qty)         // odin: LHS lost self.
+```
+
+The right-hand side keeps its `self.` in both. Only the assignment target
+loses it, and only when the target is also an argument — a plain
+`self.st = <unrelated expr>` is emitted correctly. So the trigger is the
+move/`_moved` path: recognising `f(self.st)` as move-eligible rewrites the
+statement and the LHS is rebuilt from the bare field name.
+
+That makes the real rule **"an actor field assigned from a call that takes
+it"**, of which `x = {items: x, ...} push` is one instance. Which backends
+break depends only on which of them take the `_moved` route.
+
+Routing the value through a local confirms it — `let t = {b: st, ...} f`
+then `st = t` compiles and runs on all three, because the target is no
+longer an argument. That is the workaround, and it is also the proof of
+where the rewrite goes wrong.
+
+### Why it was not caught
+
+The value-semantics suite has "an actor handler may still mutate its own
+fields", but with scalar fields — `total += n`, where there is no call to
+be move-eligible. Every existing chain and move test uses a local or a
+parameter, where there is no `self.` to lose. An actor field that is
+*both* the assignment target and an argument is the intersection nothing
+covered — and it is the single most natural way to write a handler that
+folds a message into state.
+
+---
+
+## EV-8 — a type and a fn differing only in first-letter case collide on Nim
+
+**Severity: high. It fires on the most ordinary naming in the language, and
+only on one backend.** Found 2026-09-20 while writing an application, not a
+test — the first non-toy program hit it immediately.
+
+### Reproduce
+
+```tuck
+type Sweep:
+  x: int
+
+fn sweep({n: int}) -> Sweep:
+  return {x: n} Sweep
+
+fn main() -> int:
+  let s = {n: 7} sweep
+  return s.x
+```
+
+`tuck ch` says `OK`. `tuck b --dlang` and `tuck b --odin` both build and exit
+7. `tuck b` (Nim) does not compile:
+
+```
+t.nim(4, 6) Error: redefinition of 'tuck_sweep';
+            previous declaration here: t.nim(7, 6)
+```
+
+### Why
+
+Mangling gives the type `tuck_Sweep` and the fn `tuck_sweep`. **Nim identifiers
+are style-insensitive**: after the first character, case and underscores are
+ignored, so those two ARE the same identifier to Nim. D and Odin are
+case-sensitive and take both.
+
+The two names are not a collision in Tuck and are not a collision in two of
+the three backends. They are a collision only because the Nim mangler keeps
+the user's case after a fixed lowercase prefix, which puts the
+distinguishing character in the one position Nim ignores.
+
+### Why this matters more than it looks
+
+`type Sweep` + `fn sweep` is not a contrived pair. Capitalised types and
+lowercase functions is the convention this repo's own examples follow, so
+`type Order`/`fn order`, `type Book`/`fn book`, `type Reading`/`fn reading`
+are all the same bug waiting. It is invisible to `tuck ch`, which is where
+most of the test suite stops.
+
+### Confirmed again the same afternoon, on an ACTOR
+
+The paragraph above listed `type Book`/`fn book` as "the same bug waiting".
+It was: `actor Book` beside `fn book` in the matching engine failed with
+`redefinition of 'tuck_Book'`. So the scope is wider than types and fns —
+it is **every pair of Tuck identifiers that differ only in case**, across
+all four namespaces (type, fn, actor, task).
+
+Worth stating the mechanism precisely, because the first writeup was too
+gentle about it. Nim exempts the FIRST character from style-insensitivity,
+which is what normally lets `Book` and `book` coexist in Nim itself. The
+`tuck_` prefix spends that exemption: both mangled names begin with `t`, so
+the character that distinguishes them lands at index 5, where Nim ignores
+it. The mangler does not merely fail to prevent the collision — it
+manufactures collisions between names Nim would have accepted unmangled.
+
+### Fix
+
+The mangler must put something Nim cannot ignore between the prefix and the
+name, for one of the namespaces — e.g. types as `tuckT_Sweep` against fns as
+`tuck_sweep`. Anything that relies on case alone will not survive Nim's
+identifier rules. Worth an assertion in the mangle suite over each pair of
+namespaces that differs only in case.
+
+---
+
 ## EV-6 — a multi-actor D program crashes at exit, about 1 run in 10
 
 **Severity: medium. Intermittent, and it is a CRASH, not a warning.** Found

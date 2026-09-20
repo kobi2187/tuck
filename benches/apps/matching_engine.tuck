@@ -1,0 +1,208 @@
+# A limit order book with a price ladder — the core of an exchange.
+#
+# WHY THIS IS THE RIGHT SHAPE FOR AN ACTOR, and not just a convenient one.
+# A venue's matching engine is single-threaded by design, not by accident:
+# orders must be applied in one determined sequence or the book is not a
+# book. Every real exchange does this — one engine per symbol, fed a
+# serialized stream. That is exactly what a Tuck actor is: a singleton that
+# owns state nobody else touches and applies one message at a time.
+#
+# The ladder (quantity indexed by price) is how low-latency books are
+# actually built. Matching walks levels from the far touch inward, which is
+# real work per message rather than a counter bump — the regime none of the
+# mailbox benchmarks covered, where the handler costs more than the handoff.
+#
+# The actor is the PROCESSING half only. Nothing here moves data: a real
+# deployment feeds it from `[io]` tasks over a socket, the way
+# examples/42-net-echo.tuck does, and the engine neither knows nor cares.
+
+import scheduler
+import seq
+import console
+import str
+
+# Prices are ladder indices, as they are on a real venue: an integer number
+# of ticks from a floor, never a float.
+fn zeroed({levels: int}) -> Seq[int]:
+  var out = [0]           # seeded: an empty list has no element type (TK-TY20)
+  var i = 1
+  for i < levels:
+    out = {items: out, value: 0} push
+    i = i + 1
+  return out
+
+# --- matching -------------------------------------------------------------
+
+# The state of a sweep in progress. Named `Filled` rather than `Sweep` ONLY
+# because `type Sweep` beside `fn sweep` does not compile on the Nim backend
+# (KNOWN-BUGS-EVENTS.md EV-8, found by writing this file).
+type Filled:
+  ladder: Seq[int]
+  left:   int
+  lvl:    int
+  fills:  int
+  vol:    int
+
+# Consume one price level. Tuck parameters are immutable copies, so this
+# cannot mutate the caller's ladder — it returns the new one. That is the
+# language pushing a functional shape onto what an exchange usually writes
+# as a mutable walk, and it costs nothing: the seq is moved back, not copied.
+fn takeLevel({s: Filled, step: int}) -> Filled:
+  var lad = s.ladder
+  let avail = lad[s.lvl]
+  let fill = if s.left < avail: s.left else: avail
+  lad[s.lvl] = avail - fill
+  let hit = if fill > 0: 1 else: 0
+  let lvl = if fill == avail: s.lvl + step else: s.lvl
+  return {ladder: lad, left: s.left - fill, lvl: lvl, fills: s.fills + hit, vol: s.vol + fill} Filled
+
+# Walk from `origin` toward `limit` in `step`s while quantity remains. The
+# buy side walks asks upward and the sell side walks bids downward; the
+# arithmetic is the same, so `(limit - lvl) * step >= 0` covers both bounds
+# and this is written once rather than mirrored.
+fn sweep({ladder: Seq[int], origin: int, limit: int, qty: int, step: int}) -> Filled:
+  var s = {ladder: ladder, left: qty, lvl: origin, fills: 0, vol: 0} Filled
+  for (limit - s.lvl) * step >= 0 and s.left > 0:
+    s = {s: s, step: step} takeLevel
+  return s
+
+# --- resting --------------------------------------------------------------
+
+type Booked:
+  ladder: Seq[int]
+  best:   int
+
+# Rest the unfilled remainder (named `rest`, not `book`, because `fn book`
+# beside `actor Book` is EV-8 — see the header of that entry). and move the touch if this order is the new
+# best. `(px - best) * step > 0` is the same mirror trick: a higher price is
+# a better bid, a lower one a better offer.
+fn rest({ladder: Seq[int], px: int, qty: int, best: int, step: int}) -> Booked:
+  if qty <= 0:
+    return {ladder: ladder, best: best} Booked
+  var lad = ladder
+  lad[px] = lad[px] + qty
+  let b = if (px - best) * step > 0: px else: best
+  return {ladder: lad, best: b} Booked
+
+# --- the book -------------------------------------------------------------
+
+# The whole book as one value. Holding it in a single actor field rather
+# than seven is what lets the handlers be one line each, and it is also how
+# a real engine is written: one match path with the side as a parameter.
+type BookState:
+  bid:     Seq[int]
+  ask:     Seq[int]
+  bestBid: int
+  bestAsk: int
+  trades:  int
+  volume:  int
+  resting: int
+
+fn freshBook({levels: int}) -> BookState:
+  let b = {levels: levels} zeroed
+  let a = {levels: levels} zeroed
+  return {bid: b, ask: a, bestBid: 0, bestAsk: levels - 1, trades: 0, volume: 0, resting: 0} BookState
+
+# A BUY limit at `px`: take every ask at or below px, best first, then rest
+# whatever is left. This is the whole of matching — the engine does nothing
+# else, which is why it can be one actor.
+fn applyBuy({b: BookState, px: int, qty: int}) -> BookState:
+  let f = {ladder: b.ask, origin: b.bestAsk, limit: px, qty: qty, step: 1} sweep
+  let r = {ladder: b.bid, px: px, qty: f.left, best: b.bestBid, step: 1} rest
+  return {bid: r.ladder, ask: f.ladder, bestBid: r.best, bestAsk: f.lvl, trades: b.trades + f.fills, volume: b.volume + f.vol, resting: b.resting + f.left} BookState
+
+# A SELL limit at `px`: the mirror image, walking bids downward.
+fn applySell({b: BookState, px: int, qty: int}) -> BookState:
+  let f = {ladder: b.bid, origin: b.bestBid, limit: px, qty: qty, step: -1} sweep
+  let r = {ladder: b.ask, px: px, qty: f.left, best: b.bestAsk, step: -1} rest
+  return {bid: f.ladder, ask: r.ladder, bestBid: f.lvl, bestAsk: r.best, trades: b.trades + f.fills, volume: b.volume + f.vol, resting: b.resting + f.left} BookState
+
+# The ladders are built by a plain fn and assigned in, rather than pushed
+# onto the field directly: `bid = {items: bid, ...} push` inside a handler
+# emits an unqualified name and no backend compiles it (EV-9, found here).
+# The handler locals are named per handler for the same reason — two
+# handlers binding one name is EV-10.
+# The queue is sized above the whole burst, and that is a WORKAROUND, not a
+# design. A full mailbox drops silently (spec §9.1) and `endOfDay` is just
+# another message, so at `[queue: 8192]` this program loses orders and then
+# hangs forever waiting for a close that was dropped — in every mode. The
+# runtime has `hasRoom` for exactly this and Tuck has no syntax to call it,
+# so sizing the queue past the burst is the only lever a program has today.
+# KNOWN-BUGS-EVENTS.md EV-11, which this file was written to find.
+actor Book [queue: 262144]:
+  st: BookState
+  atClose: bool = false
+
+  on open({levels: int}):
+    st = {levels: levels} freshBook
+
+  # Written through a local rather than as `st = {b: st, ...} applyBuy`,
+  # which is the natural spelling and does not compile on D or Odin: an
+  # actor field that is both the assignment target and an argument takes
+  # the move path there and the LHS loses its `self.` (EV-9). The local
+  # breaks the pattern, and is the only reason these are two lines.
+  on buy({px: int, qty: int}):
+    let bought = {b: st, px: px, qty: qty} applyBuy
+    st = bought
+
+  on sell({px: int, qty: int}):
+    let sold = {b: st, px: px, qty: qty} applySell
+    st = sold
+
+  # A real venue closes the book rather than stopping mid stream, and the
+  # flag is what main waits on.
+  on endOfDay({n: int}):
+    atClose = true
+
+fn closed() -> bool:
+  return Book.atClose
+
+# --- the feed -------------------------------------------------------------
+#
+# The order flow is ORDINARY CODE, not actors. This is the point the actor
+# story keeps having to make: actors are the processing half, and moving the
+# data to them is a plain loop here and an `[io]` task in a deployment.
+
+fn order({i: int, mid: int}):
+  let jitter = i % 7
+  if i % 2 == 0:
+    Book send buy {px: mid + jitter - 3, qty: 1 + i % 5}
+  else:
+    Book send sell {px: mid - jitter + 3, qty: 1 + i % 4}
+
+# A deterministic flow that actually crosses: buyers lift offers and sellers
+# hit bids around a drifting mid, so the engine matches rather than just
+# accumulating depth.
+fn flow({n: int}):
+  var i = 0
+  var mid = 512
+  for i < n:
+    {i: i, mid: mid} order
+    if i % 1000 == 0:
+      mid = 480 + i % 64
+    i = i + 1
+
+# The finished book is PRINTED, so the three modes and the three backends
+# can be compared for AGREEMENT and not just for speed. Batch mode reorders
+# across actors and this program has one actor, so order within it is
+# preserved and every mode must print the same three numbers. A matching
+# engine that answered differently per `--actors:` flag would be useless
+# whatever its throughput.
+#
+# Printed rather than returned as an exit code: exit status is 8 bits and
+# Unix has already spoken for much of it (127 is "command not found", 126
+# and 128+N are reserved), so a tally that happened to land on one would be
+# indistinguishable from a broken run.
+fn report() -> void [io]:
+  let b = Book.st
+  {text: "trades=" + b.trades.toStr} printLine
+  {text: "volume=" + b.volume.toStr} printLine
+  {text: "resting=" + b.resting.toStr} printLine
+
+fn main() -> int [io]:
+  Book send open {levels: 1024}
+  {n: 200000} flow
+  Book send endOfDay {n: 0}
+  Book.waitUntil {pred: :closed}
+  {} report
+  return 0
