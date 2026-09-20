@@ -20,22 +20,31 @@
 ##           `batch-timeout` has passed. One crossing per batch instead of
 ##           per message.
 ##
-## WHAT BATCH GIVES UP, stated plainly: a send is no longer visible to the
-## receiver when it is made, but when its batch flushes. Anything that reads
-## an actor's state shortly after sending to it — a `waitUntil` predicate, a
-## request/response ping-pong — sees up to `batch-timeout` of extra latency.
-## Per-actor order is still preserved (a batch keeps its messages in order);
-## what is lost is order BETWEEN actors and promptness.
+## WHAT BATCH GIVES UP, stated plainly: PROMPTNESS, and only that. A send is
+## visible to the receiver when its batch crosses, not when it is made, so
+## anything reading an actor's state shortly after sending to it sees up to
+## `batch-timeout` of extra latency. Order is NOT among the casualties —
+## per-actor order is what Tuck promises and a batch keeps it, while actors
+## are orthogonal, so there was never an order between them to lose.
 ##
-## Contract for the batch implementation, written here because these are the
-## edges that make it wrong rather than slow:
-##   1. Staged sends MUST flush before anything waits — `tuckWaitOn` and
-##      `tuckDrainActors` both block, and a message stuck in an unflushed
-##      batch is a deadlock, not a delay.
-##   2. Staging is per SENDING thread, so it needs no lock of its own; the
-##      lock is paid once per flush.
-##   3. A flush must be ordered against the wake, exactly as a single send is
-##      now: stage, flush, then notify.
+## What batch mode rests on (tuck_rt for the staging, tuck_async for the
+## flush points). These are the edges that make it WRONG rather than slow,
+## and each one was earned:
+##   1. Every point where a thread stops making progress flushes first —
+##      before parking, at `waitUntil`, at exit. A message left in an
+##      unflushed batch is a deadlock, not a delay.
+##   2. A flush at one of those points must WAKE the receiver. The
+##      `tuckNotifySend` codegen emits fired when the message was merely
+##      staged, so a later handover has no notify behind it. Skipping this
+##      made an actor forwarding to a second actor print nothing at all.
+##   3. Staging is per SENDING thread, so it needs no lock of its own — but
+##      the batches are BORROWED from one pool per actor. Not because the
+##      threads are many: they are main plus one per actor, all known at
+##      compile time. Because staging is a THREADVAR, so private batches
+##      come out of every thread's TLS and their depth has to be capped by a
+##      constant instead of by `[queue: N]`. Measured both ways: capped at
+##      64 batches, a program with `[queue: 1048576]` silently dropped after
+##      4096 messages and its `waitUntil` never came true.
 ##
 ## `--actors:thread` is the default because it is the only mode that is
 ## correct for every program: `single` cannot use a second core, and `batch`
@@ -64,7 +73,7 @@ const
     ## The latency bound a straggler pays. A batch that fills faster than this
     ## never waits for it; one that does not is bounded by it.
 
-  ImplementedModes* = {amThread, amSingle}
+  ImplementedModes* = {amThread, amSingle, amBatch}
     ## Modes the runtime actually has. The CLI refuses the others rather than
     ## accepting a flag and quietly building something else. Grows by one
     ## token as each lands.
@@ -77,7 +86,9 @@ proc nimDefinesFor*(p: ActorPolicy): string =
   case p.mode
   of amThread: ""                       # the default shape; nothing to say
   of amSingle: " -d:tuckActorsSingle "
-  of amBatch: ""                        # refused by the CLI until it exists
+  of amBatch:
+    " -d:tuckActorsBatch -d:TuckBatchCount:" & $p.batchCount &
+    " -d:TuckBatchTimeoutMs:" & $p.batchTimeoutMs & " "
 
 var actorPolicy* = ActorPolicy(mode: amThread,
                                batchCount: DefaultBatchCount,

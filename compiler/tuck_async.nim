@@ -15,6 +15,12 @@
 ##                     and no thread is ever created — but main is not a
 ##                     coroutine, so it must lend its thread to the scheduler
 ##                     at `waitUntil` and at exit, or nothing ever runs (#8).
+##   batch             thread-per-actor, but a send fills a batch owned by
+##                     the SENDING thread and the whole batch crosses at
+##                     once. The lock and the wake are paid once per batch,
+##                     so this keeps real parallelism at close to single
+##                     mode's cost — at the price of a rule: every point
+##                     where a thread stops making progress must flush first.
 ##
 ## Every exported entry point below carries both shapes under
 ## `when TuckActorsSingle`. Read them in pairs.
@@ -262,6 +268,40 @@ const TuckActorsSingle* = defined(tuckActorsSingle)
   ## the `when TuckActorsSingle` arm is a coroutine on main's thread, the
   ## other is an OS thread of its own.
 
+const TuckActorsBatch* = defined(tuckActorsBatch)
+  ## `--actors:batch`. Thread-per-actor as usual, but a `send` writes into a
+  ## batch owned by the SENDING thread and the whole batch is handed over at
+  ## once (tuck_rt). Everything below that concerns threads applies unchanged;
+  ## what this adds is a rule.
+  ##
+  ## THE RULE: a message sitting in an unflushed batch is a deadlock, not a
+  ## delay. So every point where this thread is about to stop making progress
+  ## must flush first — before parking, before waiting on a predicate, and at
+  ## exit. `tuckFlushStaged` below is that call, and the hook list under it is
+  ## how a layer that cannot see the mailbox types reaches them anyway.
+
+type
+  FlushHook* = object
+    ## One staging buffer's "hand over whatever you are holding". Registered
+    ## by tuck_rt on first use, because the staging is a threadvar inside a
+    ## generic and therefore has no name anything else can reach.
+    ##
+    ## Returns whether it actually handed anything over, which decides
+    ## whether the wake below is needed at all.
+    flush*: proc(p: pointer): bool {.nimcall, gcsafe.}
+    data*: pointer
+
+var gFlushHooks {.threadvar.}: seq[FlushHook]
+  ## Per THREAD: each thread flushes only what it staged, which is why
+  ## staging needs no lock of its own.
+
+proc tuckRegisterFlush*(flush: proc(p: pointer): bool {.nimcall, gcsafe.},
+                        data: pointer) =
+  ## Called once per (thread, actor) the first time that thread stages for
+  ## that actor.
+  gFlushHooks.add FlushHook(flush: flush, data: data)
+
+
 const
   ActorSpinMax* {.intdefine.} = 4096
     ## The most an actor will re-check its mailbox before parking.
@@ -351,6 +391,42 @@ var gActorSlots: seq[ptr ActorSlot]   ## SHARED, not a threadvar: tuckDrainActor
 var gSlotsLock: Lock
 var gSlotsReady = false
 
+proc wakeAllParked() {.gcsafe.} = ({.cast(gcsafe).}:
+  ## Wake every actor that is asleep. Used ONLY after a flush point handed
+  ## something over — see tuckFlushStaged.
+  ##
+  ## Walks the list in place rather than copying it: this runs on an actor's
+  ## own thread, where copying a shared seq is the GC-unsafe thing. Lock
+  ## order is gSlotsLock then the slot's own, matching tuckDrainActors.
+  acquire(gSlotsLock)
+  for s in gActorSlots:
+    if atomicLoadN(addr s.parked, ATOMIC_ACQUIRE) != 0:
+      acquire(s.lock)
+      s.pending = true
+      signal(s.cond)
+      release(s.lock)
+  release(gSlotsLock))
+
+proc tuckFlushStaged*() {.gcsafe.} = ({.cast(gcsafe).}:
+  ## Hand over every batch this thread is holding, then make sure someone is
+  ## awake to drain them.
+  ##
+  ## THE WAKE IS THE WHOLE REASON THIS IS NOT JUST A LOOP. An ordinary send
+  ## is followed by the `tuckNotifySend` codegen emits, so a handover
+  ## triggered by the batch filling up is already announced. A handover
+  ## triggered HERE has no send behind it — the sends happened earlier and
+  ## their notifies found the mailbox empty — so without this the batch lands
+  ## in a mailbox whose actor is asleep and stays there. Found the honest
+  ## way: an actor forwarding to a second actor printed nothing at all.
+  ##
+  ## Broadcast rather than targeted because a staging buffer does not know
+  ## its actor's slot, and this runs once per park, not once per send. It is
+  ## skipped entirely when nothing was staged, which is the common case.
+  var handedOver = false
+  for h in gFlushHooks:
+    if h.flush(h.data): handedOver = true
+  if handedOver: wakeAllParked())
+
 # A COROUTINE NEVER MIGRATES BETWEEN THREADS, and that is now load-bearing.
 #
 # minicoro is multithread-safe (`mco_current_co` is MCO_THREAD_LOCAL and we do
@@ -439,6 +515,13 @@ proc actorMain(slot: ptr ActorSlot) {.thread.} =
       spinBudget = min(spinBudget * 2, ActorSpinMax)
       continue
     spinBudget = max(spinBudget div 2, ActorSpinMin)
+    # About to stop making progress, so hand over anything this actor staged
+    # for OTHER actors first. Without this a handler that sends and then goes
+    # quiet holds its messages until the program next happens to run it, and
+    # at exit `tuckDrainActors` would see a parked thread it cannot reach
+    # into. Flushing before every park is what makes "a parked thread holds
+    # nothing" true, and that is what lets exit be a local check.
+    when TuckActorsBatch: tuckFlushStaged()
     acquire(slot.lock)
     slot.working = false          # nothing left to do: visible to tuckDrainActors
     if not slot.pending:
@@ -554,6 +637,10 @@ proc tuckWaitOn*(handle: pointer, pred: proc(): bool) =
   ## it IS the actor's thread. Note this drives rather than waits — if nothing
   ## on this thread can make the predicate true, nothing will.
   if handle == nil: return
+  # EVERYTHING this thread staged, not just what it staged for `handle`: the
+  # predicate may read another actor's state, and a message for that other
+  # actor sitting in a batch here would make the condition unreachable.
+  when TuckActorsBatch: tuckFlushStaged()
   when TuckActorsSingle:
     while not pred():
       discard pumpOnce()
@@ -621,6 +708,8 @@ proc tuckDrainActors*() =
   ## queued them. Draining here is main finally lending its thread to the
   ## scheduler, which is why a `send` with no `waitUntil` after it is still
   ## delivered (issue #8).
+  # Main's own staged sends, which nothing else will ever flush.
+  when TuckActorsBatch: tuckFlushStaged()
   if not gSlotsReady: return
   when TuckActorsSingle:
     # Run until nothing is ready: every mailbox is empty and no actor is

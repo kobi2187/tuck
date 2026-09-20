@@ -1,11 +1,11 @@
 ## `--actors:MODE` and its batch knobs — the CLI surface of
 ## compiler/actor_mode.nim.
 ##
-## Every assertion here is about what the COMPILER does with the flag, not
-## about how an actor then behaves: `thread` is the only mode the runtime has,
-## so there is no second behaviour to compare against yet. What is worth
-## gating now is that a mode nobody implemented cannot be built silently, and
-## that a knob which would do nothing is refused rather than ignored.
+## Two kinds of assertion. Most are about what the COMPILER does with the
+## flag — a mode nobody implemented cannot be built silently, a knob that
+## would do nothing is refused rather than ignored. The rest BUILD AND RUN the
+## same actor program under each mode and demand the same answer, because the
+## flag's whole claim is that the modes differ in cost and not in meaning.
 ##
 ## Needs needCmd/resultOf rather than okCheck: those hardcode their `./tuck`
 ## argv with no way to pass a flag through (same reason as when_target).
@@ -48,13 +48,29 @@ proc assertAccepts(t: var T, name: string, idx: int) =
   if rc == 0: t.ok name
   else: t.no name, "rejected (exit " & $rc & "): " & outp
 
+proc assertRunsAs(t: var T, name: string, buildIdx, runIdx, wantExit: int) =
+  ## Build-and-run assertions report SKIP in the cheap modes rather than
+  ## reading a result the pool never produced.
+  if t.phase == pCollect: return
+  if t.skippedCmd(buildIdx) or t.skippedCmd(runIdx):
+    t.skip name
+    return
+  let (brc, bout) = t.resultOf(buildIdx)
+  if brc != 0:
+    t.no name, "build failed: " & bout
+    return
+  let (rc, outp) = t.resultOf(runIdx)
+  if rc == wantExit: t.ok name
+  else: t.no name, "exit " & $rc & " (want " & $wantExit &
+                   ", the sum the actor accumulated): " & outp
+
 proc run*(t: var T) =
   # --- the default and the one implemented mode -----------------------------
 
   let bare = t.checkWith(@[])
   let thread = t.checkWith(@["--actors:thread"])
 
-  # --- a mode with no runtime behind it is refused, not quietly downgraded --
+  # --- both alternative modes are real now ----------------------------------
 
   let single = t.checkWith(@["--actors:single"])
   let batch = t.checkWith(@["--actors:batch", "--batch-count:8"])
@@ -91,6 +107,15 @@ fn main() -> int:
                                 "--root:" & t.root], vBuild)
   let singleRun = t.needCmdAfter(@[singleDir / "t"], singleBuild,
                                  proc (dir: string) = discard, singleDir, vRun)
+  # The same program under batch, with a count BELOW the ten messages it
+  # sends, so the run crosses at least one count-triggered handover and then
+  # relies on waitUntil's flush for the remainder.
+  let batchDir = t.curDir / "batch_out"
+  let batchBuild = t.needCmd(@["./tuck", "b", t.curDir / "t.tuck",
+                               "--actors:batch", "--batch-count:4",
+                               "-o:" & batchDir, "--root:" & t.root], vBuild)
+  let batchRun = t.needCmdAfter(@[batchDir / "t"], batchBuild,
+                                proc (dir: string) = discard, batchDir, vRun)
 
   # --- a name that is not a mode ---------------------------------------------
 
@@ -115,24 +140,12 @@ fn main() -> int:
   t.assertAccepts("--actors:thread is accepted", thread)
 
   t.assertAccepts("--actors:single is accepted", single)
-  t.assertRejects("--actors:batch is refused while the runtime lacks it",
-                  batch, "not implemented yet")
+  t.assertAccepts("--actors:batch is accepted, with its knobs", batch)
 
-  if t.phase != pCollect:
-    if t.skippedCmd(singleBuild) or t.skippedCmd(singleRun):
-      t.skip "an actor program runs under --actors:single"
-    else:
-      let (brc, bout) = t.resultOf(singleBuild)
-      if brc != 0:
-        t.no "an actor program runs under --actors:single",
-             "build failed: " & bout
-      else:
-        let (rc, outp) = t.resultOf(singleRun)
-        if rc == 55:
-          t.ok "an actor program runs under --actors:single"
-        else:
-          t.no "an actor program runs under --actors:single",
-               "exit " & $rc & " (want 55, the sum the actor accumulated): " & outp
+  t.assertRunsAs("an actor program runs under --actors:single",
+                 singleBuild, singleRun, 55)
+  t.assertRunsAs("...and under --actors:batch, to the same answer",
+                 batchBuild, batchRun, 55)
   t.assertRejects("an unknown mode names the ones that exist",
                   bogus, "thread, single, batch")
 

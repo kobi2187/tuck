@@ -174,6 +174,43 @@ with no interleaving forced on it. That is not a measurement artefact — it is
 what cooperative scheduling buys, and the reason the mode suits I/O-bound and
 event-driven programs. What it cannot do is use a second core.
 
+### `--actors:batch` — and what testing caught
+
+Same program as above (500,000 sends, then a `waitUntil`), `--release`:
+
+| | wall |
+|---|---|
+| `--actors:thread` | 95–178 ms |
+| `--actors:single` | 26–32 ms |
+| **`--actors:batch --batch-count:64`** | **22–30 ms** |
+
+Batch matches single mode's throughput while keeping every actor on its own
+OS thread, which is the combination neither of the other two offers. Per
+message it costs an array write and a counter bump; the lock, and the wake
+behind it, are paid once per batch.
+
+TWO CUTS HUNG BEFORE THIS ONE, both on capacity, and the reason is worth
+keeping because it is not the obvious one.
+
+Staging began as a PRIVATE ring per (thread, actor). Fixed at 4 batches,
+`[queue: 1048576]` bought a sender only `4 * 64 = 256` messages before it
+started dropping, so the benchmark's predicate could never come true.
+Scaling the ring from `Cap` and capping it at 64 batches moved the cliff to
+4096 messages — and it still hung, for the same reason.
+
+The binding constraint is not how many threads there are. That set is small
+and known at compile time: main, plus one per actor. It is WHERE private
+storage lives — staging is a threadvar, so its depth is paid out of every
+thread's TLS and therefore has to be bounded by a constant rather than by
+`[queue: N]`.
+
+So the batches live in ONE pool per actor instead, sized `Cap div
+batch-count`, and a sender BORROWS one. `[queue: N]` means what it says,
+nothing comes out of TLS, and the storage is smaller than thread mode's
+`2 * Cap`. Borrowing and returning cost one lock acquire per BATCH — which
+is why the mode still lands at parity with single mode, where there are no
+locks at all.
+
 ### Measured, not taken
 
 - **Signal only on the empty -> non-empty edge.** No measurable difference:

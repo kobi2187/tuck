@@ -538,7 +538,10 @@ proc shutdownResources*(t: var ResourceTable) =
   t.reportOpenResources()
   t.closeAll()
 
-import std/atomics
+import std/[atomics, monotimes, times]
+import ./tuck_async   # batch staging registers its flush hook there; the
+                      # stdlib externs below import it again for their own
+                      # reason, which Nim is happy to ignore
 
 const CacheLine* = 64
   ## x86-64 and arm64 alike. Only used to keep two hot fields apart, so an
@@ -550,6 +553,37 @@ const MailboxNeedsLock* = not defined(tuckActorsSingle)
   ## for a lock to protect. It is compiled away rather than left uncontended:
   ## an uncontended atomic is still an atomic, and "no atomics on the send
   ## path" is the whole reason to choose the mode.
+
+const
+  TuckActorsBatch* = defined(tuckActorsBatch)
+    ## `--actors:batch`. A send writes into a batch owned by the SENDING
+    ## thread; the whole batch crosses to the actor at once, as a pointer.
+    ##
+    ## The message is written ONCE — into the staging batch — and read once,
+    ## in place, by the handler. Nothing is copied into the mailbox and
+    ## nothing is unpacked out of it: the mailbox carries batch POINTERS, so
+    ## the crossing is the same O(1) handover the message queue already used,
+    ## one level up. Per message that leaves an array write and a counter
+    ## bump; the lock, and the wake behind it, are paid once per batch.
+    ##
+    ## ORDER is per actor, which is the only order Tuck promises. One
+    ## sender's messages to one actor keep their sequence (a batch is
+    ## ordered, and that sender's batches cross in order). Between actors
+    ## there is no order to lose.
+  TuckBatchCount* {.intdefine.} = 64
+    ## `--batch-count`: hand over once this many messages are staged.
+  TuckBatchTimeoutMs* {.intdefine.} = 1
+    ## `--batch-timeout`: ...or this long after the batch was opened. 0
+    ## disables the deadline, leaving only the count and the flush points.
+  TuckBatchCheckEvery* = 200
+    ## How often the deadline is actually consulted, in sends. The clock read
+    ## is a vDSO call rather than a syscall (~20ns), so once every 200 sends
+    ## is fractions of a nanosecond amortised — and the deadline does not
+    ## need to be precise, it needs to exist. A sender that stops sending
+    ## entirely is covered by the flush points, not by this.
+  TuckMinBatches* = 4
+    ## Floor on an actor's pool, so a small `[queue: N]` still lets a couple
+    ## of senders hold a batch each while the actor drains another.
 
 type
   MailboxLock = object
@@ -563,6 +597,17 @@ type
     ## across anything blocking — it never does here.
     when MailboxNeedsLock:
       flag: Atomic[bool]
+
+  Batch*[T; C: static int] = object
+    ## A run of messages written by one thread and read by one actor. It
+    ## crosses as a pointer, so neither side ever copies it.
+    ##
+    ## Ownership is positional, not a flag: a batch is either on its actor's
+    ## free list, or held by exactly one sender, or on that actor's handover
+    ## queue. Never two of those, so neither side needs a lock to read or
+    ## write the messages themselves.
+    msgs*: array[C, T]
+    n*: int
 
   Mailbox*[T; Cap: static int] = object
     ## TWO buffers, not one ring. Senders fill `buf[cur]`; the actor flips
@@ -580,17 +625,60 @@ type
     ##
     ## Zero-initialized is a valid empty mailbox — no init call, which is why
     ## there is no initMailbox to forget.
-    buf*: array[2, array[Cap, T]]
-    pad*: array[CacheLine, byte]
-      ## Keeps the control block off the last line of `buf`. Without it the
-      ## two share a cache line — measured, at offsets 8192..8224 for a
-      ## 128-slot mailbox — so the consumer streaming through `buf` and the
-      ## senders hammering `lock` invalidate each other's line for no reason.
-      ## Worth ~10% under contention.
-    fill*: array[2, int]   ## how many messages are in each buffer
-    cur*: int              ## the one senders are filling; the actor owns 1-cur
-    lock*: MailboxLock     ## guards `cur` and `fill[cur]` — nothing else, and
-                           ## never across a handler
+    when TuckActorsBatch:
+      ## Batch mode swaps the SAME two-buffer structure one level up: the
+      ## elements are batch pointers, so a handover moves a pointer and a
+      ## drain takes every pending batch in one flip.
+      ##
+      ## The batches themselves live HERE, in one pool per actor sized from
+      ## `[queue: N]` — so N still means "about N messages may be waiting",
+      ## shared across every sender, and nothing is paid out of TLS.
+      pool*: array[max(TuckMinBatches, Cap div TuckBatchCount),
+                   Batch[T, TuckBatchCount]]
+      freeList*: array[max(TuckMinBatches, Cap div TuckBatchCount),
+                       ptr Batch[T, TuckBatchCount]]
+      freeTop*: int          ## stack pointer into freeList
+      freeReady*: bool       ## freeList has been seeded with pool addresses
+      qbuf*: array[2, array[max(TuckMinBatches, Cap div TuckBatchCount),
+                            ptr Batch[T, TuckBatchCount]]]
+      qfill*: array[2, int]
+      qcur*: int
+    else:
+      buf*: array[2, array[Cap, T]]
+      pad*: array[CacheLine, byte]
+        ## Keeps the control block off the last line of `buf`. Without it the
+        ## two share a cache line — measured, at offsets 8192..8224 for a
+        ## 128-slot mailbox — so the consumer streaming through `buf` and the
+        ## senders hammering `lock` invalidate each other's line for no
+        ## reason. Worth ~10% under contention.
+      fill*: array[2, int] ## how many messages are in each buffer
+      cur*: int            ## the one senders fill; the actor owns 1-cur
+    lock*: MailboxLock     ## guards the queue's `cur` and `fill` — nothing
+                           ## else, and never across a handler
+
+  Staging*[T; Cap: static int] = object
+    ## One thread's outbound batch for ONE actor. A threadvar inside a
+    ## generic, so Nim gives each (T, Cap) its own — and every Tuck actor has
+    ## its own nominal `<Actor>Msg`, so that means one per actor per thread,
+    ## with no registry to keep. Nothing here is shared, hence no lock.
+    ##
+    ## It BORROWS its batch from the actor's pool rather than owning private
+    ## storage, and that is not about how many threads there are — the set is
+    ## small and known (main, plus one per actor). It is about WHERE private
+    ## storage would have to live. Staging is a threadvar, so a private ring
+    ## is paid out of every thread's TLS, which means its depth has to be
+    ## capped by a constant rather than by `[queue: N]`. Measured: capped at
+    ## 64 batches, a program with `[queue: 1048576]` silently began dropping
+    ## after 4096 messages and its `waitUntil` never came true.
+    ##
+    ## Borrowing costs one lock acquire per BATCH at each end — a fraction of
+    ## an atomic per message, and measured at parity with single mode, which
+    ## has no locks at all.
+    cur*: ptr Batch[T, TuckBatchCount]  ## the borrowed batch, or nil
+    sends*: int              ## counts down to the next deadline check
+    opened*: MonoTime        ## when the current batch took its first message
+    mb*: ptr Mailbox[T, Cap] ## where to hand over
+    registered*: bool        ## already on this thread's flush-hook list
 
 proc acquire(l: var MailboxLock) {.inline.} =
   when MailboxNeedsLock:
@@ -601,16 +689,96 @@ proc release(l: var MailboxLock) {.inline.} =
   when MailboxNeedsLock:
     l.flag.store(false, moRelease)
 
-proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
-  acquire(mb.lock)
-  let c = mb.cur
-  if mb.fill[c] >= Cap:
+when TuckActorsBatch:
+  proc seedFree[T; Cap: static int](mb: var Mailbox[T, Cap]) =
+    ## Fill the free list with the pool's own addresses. Lazy, because a
+    ## zero-initialized mailbox has to be a valid empty one — the same
+    ## property the message-mode mailbox has, kept for the same reason.
+    ## Called with the lock held.
+    if mb.freeReady: return
+    mb.freeReady = true
+    for i in 0 ..< mb.pool.len:
+      mb.freeList[i] = addr mb.pool[i]
+    mb.freeTop = mb.pool.len
+
+  proc takeFree[T; Cap: static int](mb: var Mailbox[T, Cap]): ptr Batch[T, TuckBatchCount] =
+    ## Borrow a batch, or nil when the actor is that far behind. Once per
+    ## BATCH, so a fraction of an atomic per message.
+    acquire(mb.lock)
+    seedFree(mb)
+    if mb.freeTop == 0:
+      release(mb.lock)
+      return nil
+    dec mb.freeTop
+    result = mb.freeList[mb.freeTop]
     release(mb.lock)
-    return false              # full: sendX drops (spec §9.1)
-  mb.buf[c][mb.fill[c]] = msg
-  inc mb.fill[c]
-  release(mb.lock)
-  return true
+    result.n = 0
+
+  proc handOver[T; Cap: static int](st: var Staging[T, Cap]): bool
+      {.discardable.} =
+    ## Give the borrowed batch to the actor. A no-op when this thread holds
+    ## nothing, so it is safe at every flush point whether or not anything
+    ## was sent. Returns whether anything actually crossed — tuckFlushStaged
+    ## needs that to decide whether a wake is owed.
+    if st.cur == nil or st.cur.n == 0: return false
+    let mb = st.mb
+    acquire(mb.lock)
+    let c = mb.qcur
+    # Cannot overflow: the queue is as deep as the pool, and every batch on
+    # it came out of that pool.
+    mb.qbuf[c][mb.qfill[c]] = st.cur
+    inc mb.qfill[c]
+    release(mb.lock)
+    st.cur = nil
+    true
+
+  proc flushHook[T; Cap: static int](p: pointer): bool {.nimcall, gcsafe.} =
+    handOver(cast[ptr Staging[T, Cap]](p)[])
+
+  proc stagingFor[T; Cap: static int](mb: var Mailbox[T, Cap]): ptr Staging[T, Cap] =
+    var st {.threadvar.}: Staging[T, Cap]
+    if not st.registered:
+      st.registered = true
+      st.mb = addr mb
+      # So the thread can flush everything it holds without naming any of it
+      # — see tuck_async.tuckFlushStaged.
+      tuckRegisterFlush(flushHook[T, Cap], addr st)
+    addr st
+
+  proc dueByTime[T; Cap: static int](st: var Staging[T, Cap]): bool =
+    when TuckBatchTimeoutMs <= 0:
+      false
+    else:
+      st.sends = 0
+      (getMonoTime() - st.opened).inMilliseconds >= TuckBatchTimeoutMs
+
+proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
+  when TuckActorsBatch:
+    let st = stagingFor(mb)
+    if st.cur == nil:
+      st.cur = takeFree(mb)
+      if st.cur == nil:
+        return false          # the pool is out: drop, as a full ring did
+      st.opened = getMonoTime()
+    let b = st.cur
+    b.msgs[b.n] = msg
+    inc b.n
+    inc st.sends
+    if b.n >= TuckBatchCount:
+      handOver(st[])
+    elif st.sends >= TuckBatchCheckEvery and dueByTime(st[]):
+      handOver(st[])
+    return true
+  else:
+    acquire(mb.lock)
+    let c = mb.cur
+    if mb.fill[c] >= Cap:
+      release(mb.lock)
+      return false            # full: sendX drops (spec §9.1)
+    mb.buf[c][mb.fill[c]] = msg
+    inc mb.fill[c]
+    release(mb.lock)
+    return true
 
 iterator messages*[T; Cap: static int](mb: var Mailbox[T, Cap]): var T =
   ## Take everything waiting and yield it IN PLACE. The swap happens once, up
@@ -620,24 +788,58 @@ iterator messages*[T; Cap: static int](mb: var Mailbox[T, Cap]): var T =
   ## `fill` is cleared before the first yield rather than after the last, so
   ## an early exit from the loop body leaves the mailbox consistent instead of
   ## re-delivering a batch.
-  acquire(mb.lock)
-  let c = mb.cur
-  let n = mb.fill[c]
-  if n > 0:
-    mb.cur = 1 - c            # THE SWAP: the actor now owns buf[c]
-    mb.fill[c] = 0
-  release(mb.lock)
-  for i in 0 ..< n:
-    yield mb.buf[c][i]
+  when TuckActorsBatch:
+    # The same swap, one level up: take every pending BATCH in one flip, then
+    # walk each batch's messages in place. A batch is returned to its sender
+    # only after its last message has been handled, which is what makes
+    # `inFlight` a complete ownership protocol rather than a hint.
+    acquire(mb.lock)
+    let c = mb.qcur
+    let n = mb.qfill[c]
+    if n > 0:
+      mb.qcur = 1 - c
+      mb.qfill[c] = 0
+    release(mb.lock)
+    for i in 0 ..< n:
+      let b = mb.qbuf[c][i]
+      for j in 0 ..< b.n:
+        yield b.msgs[j]
+      b.n = 0
+      # Returned only after its LAST message has been handled, so a sender
+      # cannot be writing into it while a handler reads.
+      acquire(mb.lock)
+      mb.freeList[mb.freeTop] = b
+      inc mb.freeTop
+      release(mb.lock)
+  else:
+    acquire(mb.lock)
+    let c = mb.cur
+    let n = mb.fill[c]
+    if n > 0:
+      mb.cur = 1 - c          # THE SWAP: the actor now owns buf[c]
+      mb.fill[c] = 0
+    release(mb.lock)
+    for i in 0 ..< n:
+      yield mb.buf[c][i]
 
 proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
   ## Sender's opt-in backpressure check. sendX drops silently on a full
   ## mailbox (fast, non-blocking, spec §9.1) — the sender may check first if
   ## it cares. Answers for the buffer senders are filling now; the actor's
   ## own half is not a sender's business.
-  acquire(mb.lock)
-  result = mb.fill[mb.cur] < Cap
-  release(mb.lock)
+  when TuckActorsBatch:
+    # Room means "this thread holds a batch, or the pool can lend it one" —
+    # the two ways the next send can succeed.
+    let st = stagingFor(mb)
+    if st.cur != nil: return true
+    acquire(mb.lock)
+    seedFree(mb)
+    result = mb.freeTop > 0
+    release(mb.lock)
+  else:
+    acquire(mb.lock)
+    result = mb.fill[mb.cur] < Cap
+    release(mb.lock)
 
 
 # ---------- stdlib externs (std/*.tuck) ----------
