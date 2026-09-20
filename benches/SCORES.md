@@ -99,6 +99,69 @@ EQUAL (8 bytes is no copy worth avoiding), and with Cap sized past N the
 bench measures DRAM rather than the mailbox. The bench now uses an envelope
 and a Cap of 131072 for that reason.
 
+## 2026-09-20 — bake-off against the published designs
+
+Tuck's mailbox is not a special problem, so the alternatives were built and
+measured rather than argued about: Vyukov's bounded MPSC, CAF's stack-swap
+mailbox, the arm-and-recheck wake protocol, adaptive spinning. Pinned
+threads (actor on cpu0, senders on cpu1+), 32-byte envelope, medians of 7.
+
+### Axis 1 — the mailbox, saturated, 2 senders
+
+| design | median M/s | note |
+|---|---|---|
+| two buffers + spinlock (shipped) | 2.70–3.10 | |
+| ...+ cache-line padding | 3.08–3.15 | **taken** — free 10% |
+| Vyukov bounded lock-free MPSC | 3.37–3.66 | **+25%**, tightest spread |
+
+The lock-free queue wins and wins CONSISTENTLY (no lock, so no convoy: its
+min, 3.18, beats the spinlock's median). Not taken yet only because it wants
+a power-of-two capacity, which would quietly reshape what `[queue: N]`
+means. It fits behind the existing `messages` iterator without touching
+codegen, so it stays a runtime-only decision.
+
+### Axis 2 — the spin, and why fixed budgets cannot win
+
+A fixed budget is two bets on two workloads. Real runtime, 8 light actors,
+200us send gap:
+
+| spin | CPU | wall |
+|---|---|---|
+| fixed 2000 | 2.19–2.30 cores | 67–70 ms |
+| adaptive | 0.79–0.84 cores | 99–106 ms |
+
+and saturated, adaptive costs 8–11% against fixed. Adaptive was taken: a
+runtime that cannot know the workload should not burn 2.3 cores on actors
+with nothing to do.
+
+### Axis 3 — the wake, which paid for the spin's latency
+
+Adaptive parks more often, so the wake path started to matter. It was
+O(actors) behind a global lock, because `tuckNotifySend()` took no argument
+and had to signal every actor to reach one. Naming the actor at the send
+site:
+
+| 8 light actors | CPU | wall |
+|---|---|---|
+| fixed spin + broadcast wake (before) | 2.19–2.30 cores | 67–70 ms |
+| adaptive + broadcast | 0.78–0.82 cores | 99–106 ms |
+| **adaptive + targeted** | **0.37–0.39 cores** | **67–68 ms** |
+
+Same latency as the start, **6x less CPU**. The two changes only work
+together: adaptive alone trades latency for CPU, targeted alone does
+nothing much, and both together take the CPU without paying the latency.
+
+### Measured, not taken
+
+- **Signal only on the empty -> non-empty edge.** No measurable difference:
+  once the spin absorbs the lulls, parks fall to 1–9 per million messages
+  either way, so there is nothing left for the protocol to save.
+- **CAF's stack-swap mailbox.** Producers push a LIFO with one exchange, the
+  consumer takes the whole stack in one exchange and reverses it privately.
+  Elegant, and the closest published design to the swap mailbox here, but it
+  is node-based: it wants either allocation or a node pool with its own
+  recycling, and the freestanding targets have no heap.
+
 | compiler front-end | lex+parse+check | ~23k lines/sec |
 
 ## 2026-09-13 — what the TRANSPILER costs: Tuck-emitted vs hand-written Nim

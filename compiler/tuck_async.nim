@@ -305,6 +305,11 @@ type
     cond: Cond
     pending: bool       ## a send arrived; guarded by `lock`
     working: bool       ## draining right now, or woken and about to; `lock`
+    parked: int         ## 1 while this actor is asleep on `cond`. ATOMIC, and
+                        ## read without the lock: it is the whole fast path of
+                        ## a send, so it must not be a global anything —
+                        ## per-actor, so senders to different actors never
+                        ## share the line.
     waiters: seq[ptr Waiter]   ## the registered predicates; guarded by `lock`
     thr: Thread[ptr ActorSlot]
 
@@ -313,13 +318,10 @@ var gMySlot {.threadvar.}: ptr ActorSlot
   ## without carrying the slot through every generated proc. A threadvar, so
   ## each actor thread sees only its own.
 
-var gActorSlots: seq[ptr ActorSlot]   ## SHARED, not a threadvar: a send on any
-                                      ## thread must reach every actor
+var gActorSlots: seq[ptr ActorSlot]   ## SHARED, not a threadvar: tuckDrainActors
+                                      ## has to reach every actor at exit
 var gSlotsLock: Lock
 var gSlotsReady = false
-var gIdleActors: int                  ## how many actors are parked on their
-                                      ## condvar, i.e. how many a send could
-                                      ## possibly need to wake. Atomic.
 
 # A COROUTINE NEVER MIGRATES BETWEEN THREADS, and that is now load-bearing.
 #
@@ -407,10 +409,13 @@ proc actorMain(slot: ptr ActorSlot) {.thread.} =
     acquire(slot.lock)
     slot.working = false          # nothing left to do: visible to tuckDrainActors
     if not slot.pending:
-      discard atomicAddFetch(addr gIdleActors, 1, ATOMIC_ACQ_REL)
+      # Published under the lock, read outside it by tuckNotifySend. A sender
+      # that sets `pending` between our check and our wait must have taken
+      # the lock to do it, so it cannot be lost.
+      atomicStoreN(addr slot.parked, 1, ATOMIC_RELEASE)
       while not slot.pending:
         wait(slot.cond, slot.lock)
-      discard atomicSubFetch(addr gIdleActors, 1, ATOMIC_ACQ_REL)
+      atomicStoreN(addr slot.parked, 0, ATOMIC_RELEASE)
     slot.pending = false
     slot.working = true
     release(slot.lock)
@@ -445,30 +450,30 @@ proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
   # actor at the call site, so codegen needs a handle to pass and nothing more.
   cast[pointer](slot)
 
-proc tuckNotifySend*() =
-  ## Emitted by each send after enqueue: wake every actor so whichever owns
-  ## that mailbox drains it.
+proc wakeSlot(s: ptr ActorSlot) {.inline.} =
+  acquire(s.lock)
+  s.pending = true
+  signal(s.cond)
+  release(s.lock)
+
+proc tuckNotifySend*(handle: pointer) =
+  ## Emitted by each send after enqueue, NAMING the actor it wrote to.
   ##
-  ## Wakes ALL of them, exactly as the coroutine version rescheduled all of
-  ## them — the send site knows the mailbox it wrote to but not which slot
-  ## drains it, and an actor woken with nothing to do goes straight back to
-  ## waiting.
+  ## THE FAST PATH IS THE POINT — this runs once per SEND. A busy actor comes
+  ## back round its drain loop and finds the message by itself, so the common
+  ## case must cost one relaxed read and nothing else. `parked` lives in that
+  ## actor's own slot, so two senders to two different actors never touch the
+  ## same line.
   ##
-  ## THE FAST PATH IS THE POINT. A busy actor is already going to come back
-  ## round its drain loop and find the new message, so it needs no wake at all,
-  ## and this is called once per SEND — measured at 3x the cost of the whole
-  ## rest of a send when it unconditionally took two locks and signalled a
-  ## condvar. `gIdleActors` is only non-zero while an actor is genuinely parked,
-  ## so a flood of messages into a working actor pays one atomic read.
-  if not gSlotsReady: return
-  if atomicLoadN(addr gIdleActors, ATOMIC_ACQUIRE) == 0: return
-  acquire(gSlotsLock)
-  for s in gActorSlots:
-    acquire(s.lock)
-    s.pending = true
-    signal(s.cond)
-    release(s.lock)
-  release(gSlotsLock)
+  ## It used to take no argument and therefore had to wake EVERY actor in the
+  ## program behind a global lock, consulting a global counter to decide
+  ## whether to bother: O(actors) per send, and the counter alone put a shared
+  ## line in the path of every send in the program. The send site has always
+  ## known which actor it was writing to; it just was not saying.
+  if handle == nil: return       # not registered yet: nothing is parked
+  let slot = cast[ptr ActorSlot](handle)
+  if atomicLoadN(addr slot.parked, ATOMIC_ACQUIRE) == 0: return
+  wakeSlot(slot)
 
 proc pumpOnce(): bool   # forward: tuckWaitOn drives main's own tasks
 

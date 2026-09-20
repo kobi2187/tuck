@@ -1190,9 +1190,14 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
     for f in e.sendPayload.fields:
       ctorArgs.add(", " & f.name & ": " & ctx.genExpr(f.value))
   let ind = repeat("  ", ctx.indent)
-  # statement form: enqueue + notify on two lines at the current indent
+  # statement form: enqueue + notify on two lines at the current indent.
+  #
+  # The notify NAMES the actor. It used to take no argument, so the runtime
+  # had to take a global lock and signal every actor in the program to reach
+  # the one that owned this mailbox — O(actors) per send, on a line shared by
+  # every sender. The slot global is right here at the send site.
   "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
-    "))\n" & ind & "tuckNotifySend()"
+    "))\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
 
 proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
   ## The `timeout` arm's deadline as a plain int of milliseconds.

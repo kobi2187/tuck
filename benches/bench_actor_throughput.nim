@@ -54,6 +54,7 @@ proc drain(): bool {.gcsafe.} = ({.cast(gcsafe).}:
 
 var senders: array[16, Thread[int]]
 var perSender: int
+var actorSlot: pointer   # what codegen keeps as `<Actor>Slot`
 
 proc senderMain(id: int) {.thread.} = ({.cast(gcsafe).}:
   let m = Msg(tag: 1)
@@ -62,7 +63,7 @@ proc senderMain(id: int) {.thread.} = ({.cast(gcsafe).}:
     # keeps every message accounted for, so the number below is throughput
     # rather than throughput-times-an-unknown-delivery-rate.
     while not enqueue(mailbox, m): cpuRelax()
-    tuckNotifySend())
+    tuckNotifySend(actorSlot))   # the send NAMES its actor, as codegen emits
 
 proc main() =
   let n = if paramCount() >= 1: parseInt(paramStr(1)) else: 1_000_000
@@ -73,6 +74,7 @@ proc main() =
 
   tuckAsyncInit()
   let slot = tuckStartActor(drain)
+  actorSlot = slot
 
   let t0 = epochTime()
   for s in 0 ..< nSenders:

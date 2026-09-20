@@ -42,7 +42,7 @@ proc tuck_main*(): int =
   for tuck_i in (1 .. 10):
     if true:
       discard enqueue(tuck_CounterSingleton.mailbox, tuck_CounterMsg(tuckTag: msgAdd, n: tuck_i))
-      tuckNotifySend()
+      tuckNotifySend(tuck_CounterSlot)
   tuckWaitOn(tuck_CounterSlot, tuck_sumReady)
   return tuck_CounterSingleton.total
 

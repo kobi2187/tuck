@@ -59,13 +59,13 @@ proc tuck_client*(port: int): void =
           if (tuck_r.value.data == "pong"):
             if true:
               discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(tuckTag: msgPut, c: 42))
-              tuckNotifySend()
+              tuckNotifySend(tuck_ResultSlot)
               return
       discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(tuckTag: msgPut, c: 3))
-      tuckNotifySend()
+      tuckNotifySend(tuck_ResultSlot)
       return
   discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(tuckTag: msgPut, c: 4))
-  tuckNotifySend()
+  tuckNotifySend(tuck_ResultSlot)
   return
 
 proc tuck_done*(): bool =

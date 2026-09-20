@@ -36,7 +36,7 @@ proc registerActortuck_Sink*() =
 
 proc tuck_fire*(): void =
   discard enqueue(tuck_SinkSingleton.mailbox, tuck_SinkMsg(tuckTag: msgPing, n: 5))
-  tuckNotifySend()
+  tuckNotifySend(tuck_SinkSlot)
   return
 
 proc tuck_done*(): bool =

@@ -187,7 +187,7 @@ proc tuck_Video_DecodeError*(code: uint8): void =
 
 proc tuck_feed*(nal: tuck_NalKind, midFrame: bool): void =
   discard enqueue(tuck_PipelineSingleton.mailbox, tuck_PipelineMsg(tuckTag: msgNal, nal: nal, midFrame: midFrame))
-  tuckNotifySend()
+  tuckNotifySend(tuck_PipelineSlot)
   return
 
 proc tuck_drained*(): bool =

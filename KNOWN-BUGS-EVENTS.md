@@ -256,6 +256,102 @@ Each had a different silent gap before.
 
 ---
 
+## EV-3 — the Odin and D runtimes never got thread-per-actor
+
+**Severity: high, Odin worst.** Found 2026-09-20 while measuring the Nim
+mailbox. Thread-per-actor (`cdeec03`) changed all three backends' SCHEDULERS
+— `tuckStartActor` in `tuckrt/tuck_coro.odin:661` and `tuckrt_d/tuck_coro.d:723`
+both spawn a real OS thread per actor — but only the Nim runtime's MAILBOX
+and send path were updated to match. Three separate defects follow.
+
+### 1. The Odin and D mailboxes have no synchronization at all
+
+`tuckrt/tuck_rt.odin:612` and `tuckrt_d/tuck_rt.d:347` are plain structs with
+non-atomic `head`, `tail` and `data`, written by senders and read by the
+actor's own thread with nothing between them. `tuck_rt.odin:610` still
+explains the absence:
+
+> Actor mailbox: a fixed ring. Single-threaded and cooperative, so unlike the
+> Nim runtime there is no lock — sends and drains never interleave mid-op.
+
+True before thread-per-actor. Not true since.
+
+### 2. The Odin backend's `send` never notifies
+
+`genSender` (`codegen_odin_decl.nim:757`) emits only the enqueue:
+
+```odin
+sendAdd_tuck_Counter :: proc(self: ^tuck_Counter, n: int) {
+	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{tuckTag = .msgAdd, n = n})
+}
+```
+
+There is no `rt.tuckNotifySend()`. `actorMain` parks on a condvar when its
+mailbox comes up empty (`tuck_coro.odin:646`), so a send to a parked Odin
+actor is a lost wakeup: the message sits in the ring and nothing ever
+arrives to drain it. The D backend emits the notify and is correct in shape.
+
+### 3. `tuckNotifySend` has diverged
+
+The Nim runtime's now takes the actor's slot (2026-09-20) so a send wakes one
+actor instead of broadcasting to all of them behind a global lock. Odin and D
+still have the no-argument form, and their own codegen matches their own
+runtime, so each backend is self-consistent — but porting the Nim mailbox
+work means porting this signature too, not just the queue.
+
+### Why nobody noticed
+
+No Odin or D toolchain in the environment these were measured in, so every
+`odin build` / `dmd` assertion in the suite reports SKIP rather than running.
+The Nim backend is the only one whose actor programs actually execute here.
+
+---
+
+## EV-4 — a send can be lost against an actor that is just about to park
+
+**Severity: medium; narrow window, silent when it fires.** Found 2026-09-20
+by inspection while making the wake path per-actor. NOT introduced by that
+change — the same window existed with the global `gIdleActors` counter it
+replaced, with the same shape.
+
+### The interleaving
+
+```
+  actor                                sender
+  drain() -> empty
+                                       enqueue(mailbox, msg)   # visible
+                                       load(parked) -> 0       # not yet!
+                                       return without signalling
+  acquire(slot.lock)
+  pending is false -> parked = 1
+  wait(cond, lock)                     # asleep, message undelivered
+```
+
+Nothing else will wake it: `pending` is only set by a wake, and the next
+send only signals if it finds `parked` already set. `tuckDrainActors` then
+reads the actor as quiescent (`working` false, `pending` false) and lets the
+process exit with the message still in the mailbox; a `waitUntil` whose
+predicate needed that message waits forever.
+
+The `parked` store and the sender's load form a store-then-load pair on both
+sides, which x86 is permitted to reorder, so this is not merely a
+"sufficiently unlucky scheduler" window.
+
+### The fix, not applied here
+
+Arm-and-recheck, the standard protocol: the actor publishes `parked = 1`,
+then drains ONCE MORE before sleeping. That closes the window from the
+actor's side alone, leaving the sender's fast path untouched — the re-drain
+takes the mailbox spinlock, whose `exchange` is a full barrier, so the
+arming store is globally visible before any send that could follow it.
+
+Left out of the change that found it deliberately: a lost-wakeup fix that
+cannot be demonstrated failing is a fix nobody can review. It wants its own
+commit with a test that pins the interleaving (a sender that delays between
+enqueue and notify would make it reproducible).
+
+---
+
 ## Not bugs, checked and cleared
 
 - **`raisedEventsIn` missing node kinds.** Was real; fixed 2026-08-14 in

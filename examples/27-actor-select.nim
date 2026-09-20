@@ -49,9 +49,9 @@ proc tuck_main*(): int =
   for tuck_i in (1 .. 10):
     if true:
       discard enqueue(tuck_AccumulatorSingleton.mailbox, tuck_AccumulatorMsg(tuckTag: msgAdd, n: tuck_i))
-      tuckNotifySend()
+      tuckNotifySend(tuck_AccumulatorSlot)
   discard enqueue(tuck_AccumulatorSingleton.mailbox, tuck_AccumulatorMsg(tuckTag: msgFinish))
-  tuckNotifySend()
+  tuckNotifySend(tuck_AccumulatorSlot)
   tuckWaitOn(tuck_AccumulatorSlot, tuck_ready)
   return tuck_AccumulatorSingleton.total
 
