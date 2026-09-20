@@ -36,6 +36,31 @@ more than a same-thread queue push, and the wide variance is two threads
 contending on that lock. The trade is correctness — under the old model a
 `send` was never delivered at all unless main happened to yield (#8).
 
+**2026-09-20 — the bench now measures the real mailbox, and the lock changed.**
+The bench had been flooding a hand-rolled `seq` + `Lock` that stood in for the
+mailbox; it never called `enqueue`/`dequeue`, so nothing it printed could move
+when the runtime's own mailbox did. It now instantiates
+`tuck_rt.Mailbox[int, Cap]` and drains it with the same `while dequeue(...)`
+loop `genActorDrain` emits, so this line tracks the code real programs run.
+(Cap is sized past N on purpose: this measures drain throughput, not the
+`[queue: N]` drop policy.)
+
+Ten interleaved A/B rounds, N=1M, same binary but for the lock type:
+
+| mailbox lock | msgs/sec (mean of 10) |
+|---|---|
+| `std/locks.Lock` (pthread mutex) | 7.65 M |
+| spinlock (`Atomic[bool]`) | 22.7 M |
+
+The spinlock led in 8 of the 10 individual rounds. The section it guards is a
+bounds check, one array write and an index bump, so a busy actor finding the
+lock free pays an atomic exchange rather than a futex round trip.
+
+Measured and REJECTED on the way: draining the whole ring under one lock hold
+instead of one acquire per message ran at 2–3 M/sec against 6–7 for
+per-message. Holding the lock across a batch starves the sender for the length
+of the batch; short sections released often win here. Nothing landed for it.
+
 | compiler front-end | lex+parse+check | ~23k lines/sec |
 
 ## 2026-09-13 — what the TRANSPILER costs: Tuck-emitted vs hand-written Nim
