@@ -304,7 +304,17 @@ work means porting this signature too, not just the queue.
 No Odin or D toolchain was installed, so every `odin build` / `dmd`
 assertion in the suite reported SKIP rather than running.
 
-### Status 2026-09-20
+### FIXED 2026-09-20, both backends, both defects
+
+Odin was built from source (`dev-2026-09`, LLVM 18) once no release binary
+new enough could be reached, so all three backends are now compiled and run
+here. Both mailboxes have the spinlock, the two-buffer swap, the padding,
+the adaptive spin and the targeted wake; the Odin `send` notifies.
+
+Kept below as written, because the shape is the lesson: a scheduler changed
+under two runtimes nobody in that session could execute.
+
+### Status 2026-09-20 (superseded by the entry above)
 
 **D: repaired and verified.** dmd 2.112 installed, `compiler/tuckrt/minicoro.a`
 built by hand (gitignored, no in-repo build step — same recipe the
@@ -312,15 +322,15 @@ built by hand (gitignored, no in-repo build step — same recipe the
 swap, padding, an adaptive spin before park and a targeted wake; the D
 backend's actor examples build and run here.
 
-**Odin: still unverified, and deliberately not touched.** The best reachable
-release is `dev-2025-03`; the repo targets something roughly a year newer.
-Compiling against it produces 13 errors from core-library drift alone,
-before any actor code is reached — `os.make_directory_all` and
-`linux.timerfd_create` do not exist in it. The 2026 nightly the 2026-08-11
-handoff used (`odinbinaries.thisdrunkdane.io`) is now behind a CAPTCHA, and
-the GitHub API is scoped to this repo. Writing three more unverified
-concurrency changes into Odin is exactly how the defects above got there, so
-the Odin half of the port is left for an environment that can run it.
+**Odin: no release binary is new enough.** `dev-2025-03` is the newest
+reachable one and the repo targets something about a year past it — 13
+errors from core-library drift before any actor code is reached
+(`os.make_directory_all`, `linux.timerfd_create`). The nightly host the
+2026-08-11 handoff used is behind a CAPTCHA and the GitHub API is scoped to
+this repo. BUILDING IT FROM SOURCE works and is what unblocked this:
+`git clone` + `./build_odin.sh release` against `llvm-18-dev`, about eight
+minutes. Worth doing before anyone concludes the Odin backend cannot be
+tested.
 
 ---
 
@@ -363,10 +373,16 @@ be its own change with this failure rate as its test.
 
 ## EV-7 — a send can be lost against an actor that is just about to park
 
-**Severity: medium; narrow window, silent when it fires.** Found 2026-09-20
-by inspection while making the wake path per-actor. NOT introduced by that
-change — the same window existed with the global `gIdleActors` counter it
-replaced, with the same shape.
+**FIXED 2026-09-20, all three backends.** Found by inspection while making
+the wake path per-actor; NOT introduced by that change — the same window
+existed with the global `gIdleActors` counter it replaced.
+
+Reproduced before fixing, which is what the entry originally asked for. The
+window is a few instructions wide in a real build, so `-d:TuckTestParkDelayMs`
+(inert at its default of 0) widens it inside `actorMain`, between "this actor
+last looked and saw nothing" and "this actor is marked parked". With it at
+5ms: **1 send lost in 120 rounds**. With the fix and the same hook still in:
+0 lost in 360.
 
 ### The interleaving
 
@@ -391,18 +407,14 @@ The `parked` store and the sender's load form a store-then-load pair on both
 sides, which x86 is permitted to reorder, so this is not merely a
 "sufficiently unlucky scheduler" window.
 
-### The fix, not applied here
+### The fix
 
-Arm-and-recheck, the standard protocol: the actor publishes `parked = 1`,
-then drains ONCE MORE before sleeping. That closes the window from the
-actor's side alone, leaving the sender's fast path untouched — the re-drain
-takes the mailbox spinlock, whose `exchange` is a full barrier, so the
-arming store is globally visible before any send that could follow it.
-
-Left out of the change that found it deliberately: a lost-wakeup fix that
-cannot be demonstrated failing is a fix nobody can review. It wants its own
-commit with a test that pins the interleaving (a sender that delays between
-enqueue and notify would make it reproducible).
+Arm-and-recheck, the standard protocol: the actor publishes `parked`, then
+drains ONCE MORE before sleeping. That closes the window from the actor's
+side alone, leaving the sender's fast path untouched — the re-drain takes
+the mailbox spinlock, whose exchange is a full barrier, so the arming store
+is globally visible before any send that could follow it. Either the recheck
+sees that sender's message, or that sender sees `parked` and signals.
 
 ---
 

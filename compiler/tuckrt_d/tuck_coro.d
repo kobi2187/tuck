@@ -740,17 +740,30 @@ private void actorMain(ActorSlot* slot)
         }
         spinBudget = spinBudget / 2 < ActorSpinMin ? ActorSpinMin
                                                    : spinBudget / 2;
+        // ARM, THEN LOOK AGAIN (EV-7). Publishing `parked` and then sleeping
+        // is not enough: a sender that enqueued just before that store reads
+        // `parked` as false, returns without signalling, and its message sits
+        // in a mailbox nobody will be woken for. Reproduced on the Nim twin
+        // with the window widened — 1 send lost in 120. The recheck closes it
+        // from THIS side alone, leaving the sender's fast path untouched: the
+        // drain takes the mailbox spinlock, whose exchange is a full barrier,
+        // so the arming store is visible before any send that could follow.
         slot.lock.lock();
         slot.working = false;
-        if (!slot.pending)
+        immutable mustPark = !slot.pending;
+        if (mustPark) atomicStore(slot.parked, true);
+        slot.lock.unlock();
+        if (mustPark && slot.drain())
         {
-            // Published under the lock, read outside it by tuckNotifySend. A
-            // sender that sets `pending` between our check and our wait must
-            // have taken the lock to do it, so it cannot be lost.
-            atomicStore(slot.parked, true);
-            while (!slot.pending) slot.cond.wait();
             atomicStore(slot.parked, false);
+            slot.lock.lock();
+            slot.working = true;
+            slot.lock.unlock();
+            continue;
         }
+        slot.lock.lock();
+        while (!slot.pending) slot.cond.wait();
+        atomicStore(slot.parked, false);
         slot.pending = false;
         slot.working = true;
         slot.lock.unlock();

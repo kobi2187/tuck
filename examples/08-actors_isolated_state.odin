@@ -26,10 +26,10 @@ handleMsg_tuck_TrafficLight :: proc(self: ^tuck_TrafficLight, msg: tuck_TrafficL
 tuck_TrafficLightSlot: rawptr
 
 drain_tuck_TrafficLight :: proc() -> bool {
-	msg: tuck_TrafficLightMsg
 	didWork := false
-	for rt.dequeue(&tuck_TrafficLightSingleton.mailbox, &msg) {
-		handleMsg_tuck_TrafficLight(&tuck_TrafficLightSingleton, msg)
+	batch, n := rt.takeBatch(&tuck_TrafficLightSingleton.mailbox)
+	for i in 0 ..< n {
+		handleMsg_tuck_TrafficLight(&tuck_TrafficLightSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
@@ -38,6 +38,7 @@ drain_tuck_TrafficLight :: proc() -> bool {
 
 sendNext_tuck_TrafficLight :: proc(self: ^tuck_TrafficLight) {
 	_ = rt.enqueue(&self.mailbox, tuck_TrafficLightMsg{tuckTag = .msgNext})
+	rt.tuckNotifySend(tuck_TrafficLightSlot)
 }
 
 main :: proc() {

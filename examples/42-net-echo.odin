@@ -31,10 +31,10 @@ handleMsg_tuck_Result :: proc(self: ^tuck_Result, msg: tuck_ResultMsg) {
 tuck_ResultSlot: rawptr
 
 drain_tuck_Result :: proc() -> bool {
-	msg: tuck_ResultMsg
 	didWork := false
-	for rt.dequeue(&tuck_ResultSingleton.mailbox, &msg) {
-		handleMsg_tuck_Result(&tuck_ResultSingleton, msg)
+	batch, n := rt.takeBatch(&tuck_ResultSingleton.mailbox)
+	for i in 0 ..< n {
+		handleMsg_tuck_Result(&tuck_ResultSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
@@ -43,6 +43,7 @@ drain_tuck_Result :: proc() -> bool {
 
 sendPut_tuck_Result :: proc(self: ^tuck_Result, c: int) {
 	_ = rt.enqueue(&self.mailbox, tuck_ResultMsg{tuckTag = .msgPut, c = c})
+	rt.tuckNotifySend(tuck_ResultSlot)
 }
 
 tuck_serve :: proc(lfd: int) {

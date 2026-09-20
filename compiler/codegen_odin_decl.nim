@@ -733,10 +733,14 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
                       else: ""
   "\n" & ind & actorSlotName(d.name) & ": rawptr\n" &
     "\n" & ind & "drain_" & d.name & " :: proc() -> bool {\n" & finishedGuard &
-    ind & "\tmsg: " & d.name & "Msg\n" &
     ind & "\tdidWork := false\n" &
-    ind & "\tfor rt.dequeue(&" & singleton & ".mailbox, &msg) {\n" &
-    ind & "\t\thandleMsg_" & d.name & "(&" & singleton & ", msg)\n" &
+    # takeBatch swaps the mailbox's two buffers once and returns what was
+    # waiting, so this loop holds no lock and copies nothing — the same shape
+    # genActorDrain emits for Nim, spelled as a slice because Odin has no
+    # iterator to hide it behind.
+    ind & "\tbatch, n := rt.takeBatch(&" & singleton & ".mailbox)\n" &
+    ind & "\tfor i in 0 ..< n {\n" &
+    ind & "\t\thandleMsg_" & d.name & "(&" & singleton & ", batch[i])\n" &
     # After EACH message: a registered predicate is about the exact moment a
     # condition becomes true, and one that went true and false again inside a
     # batch would be missed by a once-per-pass check.
@@ -757,12 +761,19 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
   "\n" & ind & "send" & h.name.capitalize() & "_" & d.name & " :: proc(self: ^" &
     d.name & sep & params.join(", ") & ") {\n" &
     ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name & "Msg{" & ctorArgs &
-    "})\n" & ind & "}\n"
+    "})\n" &
+    # The send NOTIFIES. It never did: the actor parks on a condvar when its
+    # mailbox comes up empty, so a send to a parked Odin actor was a lost
+    # wakeup — the message sat in the ring and nothing arrived to drain it
+    # (KNOWN-BUGS-EVENTS.md EV-5).
+    ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" &
+    ind & "}\n"
 
 proc genShutdownSender*(d: Decl, ind: string): string =
   "\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" & d.name &
     ") {\n" & ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name &
-    "Msg{" & TagField & " = .msgShutdown})\n" & ind & "}\n"
+    "Msg{" & TagField & " = .msgShutdown})\n" &
+    ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" & ind & "}\n"
 
 proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code

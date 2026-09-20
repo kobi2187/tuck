@@ -193,10 +193,10 @@ handleMsg_tuck_Decoder :: proc(self: ^tuck_Decoder, msg: tuck_DecoderMsg) {
 tuck_DecoderSlot: rawptr
 
 drain_tuck_Decoder :: proc() -> bool {
-	msg: tuck_DecoderMsg
 	didWork := false
-	for rt.dequeue(&tuck_DecoderSingleton.mailbox, &msg) {
-		handleMsg_tuck_Decoder(&tuck_DecoderSingleton, msg)
+	batch, n := rt.takeBatch(&tuck_DecoderSingleton.mailbox)
+	for i in 0 ..< n {
+		handleMsg_tuck_Decoder(&tuck_DecoderSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
@@ -205,14 +205,17 @@ drain_tuck_Decoder :: proc() -> bool {
 
 sendPlay_tuck_Decoder :: proc(self: ^tuck_Decoder, rate: tuck_Hz) {
 	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{tuckTag = .msgPlay, rate = rate})
+	rt.tuckNotifySend(tuck_DecoderSlot)
 }
 
 sendPause_tuck_Decoder :: proc(self: ^tuck_Decoder) {
 	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{tuckTag = .msgPause})
+	rt.tuckNotifySend(tuck_DecoderSlot)
 }
 
 sendStop_tuck_Decoder :: proc(self: ^tuck_Decoder) {
 	_ = rt.enqueue(&self.mailbox, tuck_DecoderMsg{tuckTag = .msgStop})
+	rt.tuckNotifySend(tuck_DecoderSlot)
 }
 
 tuck_SystemEvents_PlaybackStarted :: proc () {

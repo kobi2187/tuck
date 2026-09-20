@@ -268,6 +268,13 @@ const TuckActorsSingle* = defined(tuckActorsSingle)
   ## the `when TuckActorsSingle` arm is a coroutine on main's thread, the
   ## other is an OS thread of its own.
 
+const TuckTestParkDelayMs* {.intdefine.} = 0
+  ## See the test hook in actorMain. Never set in a real build.
+
+when TuckTestParkDelayMs > 0:
+  import std/os except sleep
+  from std/os import sleep
+
 const TuckActorsBatch* = defined(tuckActorsBatch)
   ## `--actors:batch`. Thread-per-actor as usual, but a `send` writes into a
   ## batch owned by the SENDING thread and the whole batch is handed over at
@@ -515,6 +522,13 @@ proc actorMain(slot: ptr ActorSlot) {.thread.} =
       spinBudget = min(spinBudget * 2, ActorSpinMax)
       continue
     spinBudget = max(spinBudget div 2, ActorSpinMin)
+    # TEST HOOK, zero and inert unless -d:TuckTestParkDelayMs is given. It
+    # widens the window between "this actor last looked and saw nothing" and
+    # "this actor is marked parked", which is the race EV-7 lives in and is
+    # a few instructions wide in a real build. A race you cannot make fail
+    # on demand is a fix nobody can review.
+    when TuckTestParkDelayMs > 0:
+      sleep(TuckTestParkDelayMs)
     # About to stop making progress, so hand over anything this actor staged
     # for OTHER actors first. Without this a handler that sends and then goes
     # quiet holds its messages until the program next happens to run it, and
@@ -522,16 +536,34 @@ proc actorMain(slot: ptr ActorSlot) {.thread.} =
     # into. Flushing before every park is what makes "a parked thread holds
     # nothing" true, and that is what lets exit be a local check.
     when TuckActorsBatch: tuckFlushStaged()
+    # ARM, THEN LOOK AGAIN (EV-7). Publishing `parked` and then sleeping is
+    # not enough: a sender that enqueued just before this store reads
+    # `parked` as 0, returns without signalling, and its message sits in a
+    # mailbox nobody will ever be woken for. Reproduced with
+    # -d:TuckTestParkDelayMs widening the window — 1 send lost in 120.
+    #
+    # The recheck closes it from THIS side alone, leaving the sender's fast
+    # path untouched. `drain` takes the mailbox spinlock, whose exchange is a
+    # full barrier, so the arming store is globally visible before any send
+    # that could follow it: either this drain sees that sender's message, or
+    # that sender sees `parked` and signals.
     acquire(slot.lock)
     slot.working = false          # nothing left to do: visible to tuckDrainActors
+    let mustPark = not slot.pending
+    if mustPark:
+      atomicStoreN(addr slot.parked, 1, ATOMIC_SEQ_CST)
+    release(slot.lock)
+    if mustPark and slot.drain():
+      atomicStoreN(addr slot.parked, 0, ATOMIC_RELEASE)
+      acquire(slot.lock)
+      slot.working = true
+      release(slot.lock)
+      continue
+    acquire(slot.lock)
     if not slot.pending:
-      # Published under the lock, read outside it by tuckNotifySend. A sender
-      # that sets `pending` between our check and our wait must have taken
-      # the lock to do it, so it cannot be lost.
-      atomicStoreN(addr slot.parked, 1, ATOMIC_RELEASE)
       while not slot.pending:
         wait(slot.cond, slot.lock)
-      atomicStoreN(addr slot.parked, 0, ATOMIC_RELEASE)
+    atomicStoreN(addr slot.parked, 0, ATOMIC_RELEASE)
     slot.pending = false
     slot.working = true
     release(slot.lock)
