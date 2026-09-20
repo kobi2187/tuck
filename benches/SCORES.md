@@ -211,6 +211,34 @@ nothing comes out of TLS, and the storage is smaller than thread mode's
 is why the mode still lands at parity with single mode, where there are no
 locks at all.
 
+### Savina ports — the modes measured on somebody else's benchmark
+
+`benches/savina/` ports two benchmarks from Imam & Sarkar's actor suite
+(AGERE! 2014), the one everybody compares Akka and friends against. Same
+program, `--release`:
+
+| | PP (40k round trips) | THR (ring of 6, 60k hops) |
+|---|---|---|
+| `--actors:single` | **11 ms** | **10 ms** |
+| `--actors:thread` | 49-87 ms | 796-823 ms |
+| `--actors:batch` | 1050 ms | 2450 ms |
+
+**80x** between single and thread on the ring. Both are chains of
+one-message-at-a-time handoffs, so every hop in thread mode is a cross-thread
+wake — a futex round trip, microseconds — against a coroutine switch in
+nanoseconds. Every benchmark in this file until now was fan-IN under load,
+where thread mode looks fine; these are the shape it is worst at, and they
+are the shape a lot of real actor code has.
+
+Batch is worst on both, exactly as its contract says: with one message in
+flight a batch never fills, so every message waits for a flush point. Kept as
+the honest lower bound on what batching costs when the workload is latency
+rather than throughput.
+
+Ported faithfully except for ring size — see benches/savina/README.md for
+what Tuck cannot express (dynamic actor creation rules out roughly a third of
+the suite).
+
 ### Measured, not taken
 
 - **Signal only on the empty -> non-empty edge.** No measurable difference:
