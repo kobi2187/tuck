@@ -506,6 +506,22 @@ Neither makes Odin correct. Part 1 is structural and has to be paid:
 A regression test belongs in the suite either way: allocate in a loop, assert
 peak RSS stays bounded. Nothing currently measures memory at all.
 
+### Fixing it also unlocks a 4x that is currently unreachable
+
+`tuckSeqCopy` used to copy with `reserve` plus an `append` per element; it
+now does one bulk `copy`. On 200 000 copies of a 1024-element ladder:
+
+| | append | bulk | ratio |
+|---|---|---|---|
+| copies freed, one block reused | 198 ms | 49 ms | **4.1x** |
+| copies never freed (today) | 245 ms | 195 ms | 1.26x |
+
+With nothing freed, every copy is a fresh page-faulting allocation and the
+ALLOCATOR dominates — so the better copy is worth about 10% on the matching
+engine rather than 4x. The two fixes are multiplicative, and this is the
+argument for doing the leak first: until memory is reused, no amount of
+making the copy faster shows up.
+
 ---
 
 ## EV-11 — a feed that outruns its actor silently loses messages, then deadlocks
