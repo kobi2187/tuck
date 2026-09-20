@@ -553,4 +553,49 @@ fn main() -> int:
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the chain still appends each step", 0
 
+  # The record dup at a binding site is LOAD-BEARING, on a value that came
+  # back from a CALL. `lowering_seqcopy` says a construction's Seq fields are
+  # "already fresh, so marking it costs one redundant dup rather than a wrong
+  # one" — which invites exactly the optimisation this forbids.
+  #
+  # It is not redundant. `wrap` builds its record from a PARAMETER and uses
+  # the same one twice, so without the dup both fields view the caller's
+  # buffer and each other's. Removing the mark for `exkCall` was tried:
+  # nim stayed 17, odin and D both returned 106. Silently, and only on the
+  # two backends whose container aliases.
+  #
+  # `hostRuns` and not `emitsD`, because the existing coverage here is a
+  # regex over generated text — it asserts the shape of a STRING, and the
+  # failure being guarded against is a program that computes the wrong
+  # number while emitting perfectly plausible code.
+  t.src """
+import seq
+
+type Pair:
+  a: Seq[int]
+  b: Seq[int]
+
+# Two fields, ONE parameter: the fields alias each other AND the argument.
+fn wrap({xs: Seq[int]}) -> Pair:
+  return {a: xs, b: xs} Pair
+
+# Returns its SECOND parameter. Twinnable on the first, so the wrapper
+# copies `p` and hands `q` straight back.
+fn pick({p: Seq[int], q: Seq[int], which: int}) -> Seq[int]:
+  if which == 0:
+    return p
+  return q
+
+fn main() -> int:
+  var src = [10, 20]
+  var r = {xs: src} wrap
+  r.a[0] = 99
+  var other = [7, 8]
+  var got = {p: src, q: other, which: 1} pick
+  got[0] = 55
+  return r.b[0] + other[0]
+"""
+  t.okCheck "a record returned from a call does not alias its argument"
+  t.hostRuns("a record returned from a call does not alias its argument", 17)
+
   t.finish()

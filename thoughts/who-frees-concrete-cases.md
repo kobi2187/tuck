@@ -103,21 +103,69 @@ This is the case `defer delete` is actually for.
 
 Two separate problems, and they want different fixes:
 
-- **#2 and #4 should not exist.** They are `recordDupSites` copying a
-  record's Seq field immediately after binding a record that was *just
-  returned* and cannot be aliased. Same redundancy as the call-result case
-  in EV-12, one level down. Removing them is a codegen fix and frees nothing.
+- **#2 and #4 are redundant HERE, and cannot be removed in general.**
+  They are `recordDupSites` copying a record's Seq field right after
+  binding a record returned from a call. In *this* program the returned
+  ladder is exclusively owned, so the copy is waste. In general it is not —
+  see the next section, which is a tested counterexample, not an argument.
 - **#1 and #3 are correct, and their predecessors are garbage.** The old
   `b.ask` and `b.bid` die the moment the new `BookState` is assigned into
   `self.st`. This is the genuine free, and it is exactly "the assignment
   frees" above.
 
+## Why #2 and #4 cannot simply be deleted — tested, not argued
+
+`lowering_seqcopy` marks a record binding when the record has Seq fields,
+and its comment invites the optimisation: "A construction call's own Seq
+fields are already fresh too, so marking it costs one redundant `.dup`
+rather than a wrong one." **The premise is false.** A returned record's Seq
+fields are whatever the callee put there, which may be a parameter:
+
+```tuck
+type Pair:
+  a: Seq[int]
+  b: Seq[int]
+
+fn wrap({xs: Seq[int]}) -> Pair:
+  return {a: xs, b: xs} Pair      # both fields ARE the argument
+
+fn main() -> int:
+  var src = [10, 20]
+  var r = {xs: src} wrap
+  r.a[0] = 99
+  ...
+  return r.b[0] + other[0]        # 17 when correct
+```
+
+Skipping the mark for `exkCall` was implemented and run:
+
+| | nim | odin | d |
+|---|---|---|---|
+| today | 17 | 17 | 17 |
+| with the "optimisation" | 17 | **106** | **106** |
+
+106 is `99 + 7`: `r.a` and `r.b` became one buffer. Silent, wrong, and only
+on the two backends whose container aliases — Nim is immune because its
+`seq` has real value semantics, so a one-backend check reports green.
+
+Guarded now by `tests/suites/value_semantics.nim`, "a record returned from a
+call does not alias its argument", using `hostRuns` on all three legs. Note
+`okCheck` still PASSES under the broken build: the checker cannot see this,
+which is why the existing `emitsD` regex coverage in that suite was not
+enough.
+
+**What would make it safe** is a per-function summary — *does this fn return
+a record whose Seq fields it exclusively owns?* `sweep` does; `wrap` does
+not. That is an ownership/escape summary over the callee's body, and it is
+the SAME fact the free-insertion needs. Worth noticing: the redundant-copy
+elimination and the leak fix are not two projects. They are one analysis with
+two consumers.
+
 ## What this implies for the session
 
-1. **Half the Odin leak is not a lifetime problem.** Cases #2/#4 are
-   redundant copies; no ownership model is needed to delete them. Do this
-   first — it is mechanical and it shrinks the problem the hard fix has to
-   solve.
+1. **Half the Odin leak is redundant copying, not lifetime** — but
+   deleting it needs the same analysis as the other half, so it is not the
+   cheap first move it looks like. Tested above.
 2. **The hard half is narrower than "memory management".** It is one rule —
    free the previous value on reassignment, except when the new value was
    moved out of it — over exactly two types.
