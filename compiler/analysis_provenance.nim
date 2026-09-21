@@ -44,6 +44,7 @@
 import ast, tables, sets, os, strutils
 import resolution
 import ast_query
+from lowering import getFieldsForType
 
 const MaxRounds = 8
   ## Fixpoint bound. Bodies are small and the lattice has three levels, so
@@ -232,7 +233,20 @@ proc provOf(c: var Ctx, e: Expr): Prov =
     if e.stmts.len == 0: unknownProv() else: provOf(c, e.stmts[^1])
   else: unknownProv()
 
-proc maybeMovedParam(d: Decl): string =
+proc sameNamedType(a, b: Type): bool =
+  ## codegen_common's `sameTypeName`, restated here because that file sits
+  ## downstream of this one and importing it would close a cycle. Kept
+  ## deliberately one notch wider (no arity check on a generic application):
+  ## this predicate fails safe when it is too generous, unsafe when too strict.
+  if a == nil or b == nil or a.kind != b.kind: return false
+  case a.kind
+  of tkNamed: a.name == b.name
+  of tkApp:
+    a.base != nil and b.base != nil and a.base.kind == tkNamed and
+      b.base.kind == tkNamed and a.base.name == b.base.name
+  else: false
+
+proc maybeMovedParam(res: Resolution, m: Module, d: Decl): string =
   ## The parameter a MOVED twin might take destructively, or "".
   ##
   ## DELIBERATELY WIDER than codegen_common's `movedFnParam`, and not only to
@@ -242,22 +256,32 @@ proc maybeMovedParam(d: Decl): string =
   ## MISSING one means claiming a value is fresh when it is the caller's
   ## buffer, which is the unsound direction. So this drops the
   ## `copyableContainer` half of the real predicate, which only ever narrows.
+  ## It must therefore track every shape `movedFnParam` accepts. It once
+  ## tracked only ONE of them — the return type being the parameter type
+  ## outright — and when codegen learned the WRAPPED shape (`Seq[int]` in, a
+  ## record with a `Seq[int]` field out) this pass did not. `twin` below
+  ## became a twin whose moved parameter this proc reported as "":
+  ##
+  ##     fn twin({xs: Seq[int]}) -> Pair2:
+  ##       var one = xs                      # NOT seen as the moved param
+  ##       one = {items: one, value: 1} push
+  ##       return {a: one, b: one} Pair2
+  ##
+  ## so `rootedAtMoved` never fired, `afterBinding` claimed `one` was a copy,
+  ## the returned fields read as fresh, and Stage 3 emitted `defer
+  ## delete(xs)` over the very buffer the fn was handing back.
   if d == nil or d.kind != dkFn or d.fnBody == nil: return ""
   if d.isExtern or d.isPending or d.isDecision: return ""
   if d.fnParams.len == 0 or d.fnReturnType == nil: return ""
   let p = d.fnParams[0]
   if p.name == "self": return ""
   let rt = d.fnReturnType
-  if p.typ == nil or rt == nil or p.typ.kind != rt.kind: return ""
-  case p.typ.kind
-  of tkNamed:
-    if p.typ.name != rt.name: return ""
-  of tkApp:
-    if p.typ.base == nil or rt.base == nil or
-       p.typ.base.kind != tkNamed or rt.base.kind != tkNamed or
-       p.typ.base.name != rt.base.name: return ""
-  else: return ""
-  p.name
+  if p.typ == nil or rt == nil: return ""
+  if sameNamedType(p.typ, rt): return p.name
+  if seqElem(p.typ) != nil:
+    for f in getFieldsForType(res, m, rt):
+      if sameNamedType(f.typ, p.typ): return p.name
+  ""
 
 proc rootedAtMoved(c: Ctx, e: Expr): bool =
   ## Is this value read THROUGH the moved parameter? `s.ladder` inside a twin
@@ -306,6 +330,24 @@ proc afterBinding(c: Ctx, e: Expr, v: Prov): Prov =
   ## `takeLevel` returns the very ladder it was handed.
   result = v
   if rootedAtMoved(c, e): return result
+  # A VALUE BUILT OUT OF THE TARGET IS MUTATED IN PLACE, not copied:
+  #
+  #   xs = {items: xs, value: v} push   ->  append(&xs, v)
+  #   s  = s + t                        ->  s.add(t) / s ~= t
+  #   x  = f(x, ...)                    ->  x = f_moved(x, ...)
+  #
+  # so for those the claim below — "it was not exclusive, therefore the
+  # binding copied it, therefore it is fresh now" — has nothing behind it.
+  # Refusing the claim for them was tried and MEASURED: it is unnecessary,
+  # and it cost the matching engine 1.6 GB against 10 MB.
+  #
+  # Unnecessary because `noteAssignments` is flow-INsensitive and joins every
+  # value a name is ever given. An in-place mutation of `x` keeps whatever
+  # `x` already was, and that earlier value is already in the join: fresh
+  # stays fresh, aliased stays aliased, without a rule here. The one shape
+  # that would escape the join is a PARAMETER mutated in place, which has no
+  # earlier binding to join with — and Tuck parameters are immutable, so it
+  # cannot be written.
   ensureId(e)
   if v.whole.origin != oFresh:
     result.whole = Cell(origin: oFresh, token: e.id)
@@ -340,7 +382,7 @@ proc summarize(res: Resolution, m: Module, d: Decl): Prov =
   ## fresh there is the one guess that could be wrong.
   if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision:
     return unknownProv()
-  var c = Ctx(res: res, m: m, moved: maybeMovedParam(d))
+  var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
   for p in d.fnParams: c.params.incl(p.name)
   # Locals first, so a `return` that names one has something to read. Repeated
   # because an assignment may name a local assigned further down.
