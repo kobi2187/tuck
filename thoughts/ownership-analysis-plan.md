@@ -157,8 +157,12 @@ to 2, on the reading that both binding-site copies were redundant. Only
 `sweep`'s is. `rest` has an early return —
 
 ```tuck
+fn rest({ladder: Seq[int], px: int, qty: int, best: int}) -> Booked:
   if qty <= 0:
     return {ladder: ladder, best: best} Booked
+  var lad = ladder
+  lad[px] = lad[px] + qty
+  return {ladder: lad, best: best} Booked
 ```
 
 — which really does hand its parameter back, so the analysis marks it
