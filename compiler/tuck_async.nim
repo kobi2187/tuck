@@ -296,6 +296,15 @@ type
     ## Returns whether it actually handed anything over, which decides
     ## whether the wake below is needed at all.
     flush*: proc(p: pointer): bool {.nimcall, gcsafe.}
+    flushDue*: proc(p: pointer): bool {.nimcall, gcsafe.}
+      ## ...and the same, but only if the batch's DEADLINE has passed.
+      ##
+      ## `--batch-timeout` promises a batch crosses within N ms of opening.
+      ## It was kept only for a mailbox that kept RECEIVING sends, because
+      ## the deadline was tested inside `enqueue` for the mailbox being sent
+      ## to — so a thread that staged for A and then only ever sent to B
+      ## never tested A's deadline again. Exactly the mailbox that needs the
+      ## timeout is the one that never got it. See tuckFlushDueStaged.
     data*: pointer
 
 var gFlushHooks {.threadvar.}: seq[FlushHook]
@@ -303,10 +312,11 @@ var gFlushHooks {.threadvar.}: seq[FlushHook]
   ## staging needs no lock of its own.
 
 proc tuckRegisterFlush*(flush: proc(p: pointer): bool {.nimcall, gcsafe.},
+                        flushDue: proc(p: pointer): bool {.nimcall, gcsafe.},
                         data: pointer) =
   ## Called once per (thread, actor) the first time that thread stages for
   ## that actor.
-  gFlushHooks.add FlushHook(flush: flush, data: data)
+  gFlushHooks.add FlushHook(flush: flush, flushDue: flushDue, data: data)
 
 
 const
@@ -432,6 +442,33 @@ proc tuckFlushStaged*() {.gcsafe.} = ({.cast(gcsafe).}:
   var handedOver = false
   for h in gFlushHooks:
     if h.flush(h.data): handedOver = true
+  if handedOver: wakeAllParked())
+
+proc tuckFlushDueStaged*() {.gcsafe.} = ({.cast(gcsafe).}:
+  ## Hand over every batch of THIS THREAD'S whose deadline has passed.
+  ##
+  ## The deadline has to be swept across the thread rather than tested on
+  ## the mailbox being sent to, because the batch that needs it is by
+  ## definition the one nobody is sending to any more:
+  ##
+  ##     Shard0 send start {n: 0}    # staged, 1 message, then abandoned
+  ##     ...
+  ##     Gateway send edit {...}     # x100000, and only Gateway's deadline
+  ##                                 # was ever tested
+  ##
+  ## Measured before this existed: 300 000 sends to a second actor, and a
+  ## 1 ms batch sitting unflushed for every one of them. Thread mode
+  ## delivered it during the loop; batch mode did not deliver it at all
+  ## until the sender parked. In `world_server` that is four `start`
+  ## messages arriving behind the edits they were meant to precede, and a
+  ## shard indexing a record whose seqs were still empty.
+  ##
+  ## Cheap enough for the send path: the list holds one entry per (thread,
+  ## actor), an entry with nothing staged returns without reading the clock,
+  ## and `enqueue` only calls this once every TuckBatchCheckEvery sends.
+  var handedOver = false
+  for h in gFlushHooks:
+    if h.flushDue(h.data): handedOver = true
   if handedOver: wakeAllParked())
 
 # A COROUTINE NEVER MIGRATES BETWEEN THREADS, and that is now load-bearing.

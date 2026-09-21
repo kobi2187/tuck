@@ -735,6 +735,20 @@ when TuckActorsBatch:
   proc flushHook[T; Cap: static int](p: pointer): bool {.nimcall, gcsafe.} =
     handOver(cast[ptr Staging[T, Cap]](p)[])
 
+  proc flushDueHook[T; Cap: static int](p: pointer): bool {.nimcall, gcsafe.} =
+    ## The same, but only once the batch has been open longer than
+    ## `--batch-timeout`. Returns early without reading the clock when this
+    ## thread is holding nothing for this actor, which is the common case on
+    ## the send path.
+    when TuckBatchTimeoutMs <= 0:
+      false
+    else:
+      let st = cast[ptr Staging[T, Cap]](p)
+      if st.cur == nil or st.cur.n == 0: return false
+      if (getMonoTime() - st.opened).inMilliseconds < TuckBatchTimeoutMs:
+        return false
+      handOver(st[])
+
   proc stagingFor[T; Cap: static int](mb: var Mailbox[T, Cap]): ptr Staging[T, Cap] =
     var st {.threadvar.}: Staging[T, Cap]
     if not st.registered:
@@ -742,15 +756,11 @@ when TuckActorsBatch:
       st.mb = addr mb
       # So the thread can flush everything it holds without naming any of it
       # — see tuck_async.tuckFlushStaged.
-      tuckRegisterFlush(flushHook[T, Cap], addr st)
+      tuckRegisterFlush(flushHook[T, Cap], flushDueHook[T, Cap],
+                        addr st)
     addr st
 
-  proc dueByTime[T; Cap: static int](st: var Staging[T, Cap]): bool =
-    when TuckBatchTimeoutMs <= 0:
-      false
-    else:
-      st.sends = 0
-      (getMonoTime() - st.opened).inMilliseconds >= TuckBatchTimeoutMs
+
 
 proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
   when TuckActorsBatch:
@@ -766,8 +776,13 @@ proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
     inc st.sends
     if b.n >= TuckBatchCount:
       handOver(st[])
-    elif st.sends >= TuckBatchCheckEvery and dueByTime(st[]):
-      handOver(st[])
+    elif st.sends >= TuckBatchCheckEvery:
+      # Sweep THIS THREAD'S batches, not just this one. The deadline used to
+      # be tested here against `st` alone, which kept `--batch-timeout`'s
+      # promise for every mailbox except the one that needed it — see
+      # tuck_async.tuckFlushDueStaged.
+      st.sends = 0
+      tuckFlushDueStaged()
     return true
   else:
     acquire(mb.lock)

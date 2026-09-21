@@ -157,40 +157,36 @@ real AND the topology is serial.
 
 Same program, same 100 000 edits, same printed world, thread mode:
 
-| backend | median | peak RSS |
+| backend | before EV-15 | after EV-15 |
 |---|---|---|
-| nim | 191 ms | 80 MB |
-| odin | 2 876 ms | **4 948 MB** |
-| d | **54 196 ms** | 16 MB |
+| nim | 191 ms / 80 MB | 201 ms / 80 MB |
+| odin | 2 876 ms / **4 948 MB** | **311 ms / 543 MB** |
+| d | **54 196 ms** / 16 MB | **14 714 ms** / 16 MB |
 
-D is 284x slower than Nim here against 56x on the matching engine, and Odin
-leaks 4.9 GB after the ownership work took the matching engine from 13.6 GB
-to 10 MB. Both come from one cause, and this program isolated it better than
-the matching engine could.
+The move information always EXISTED — every fn in the lighting path gets
+`sink` on the Nim side, so liveness had already proved the argument dead at
+the call, which is why the Nim column barely moves. Odin and D reached their
+MOVED twin only through `movedCallInto`, which wants `x = f(x, ...)`. The
+innermost loop has that shape and compiled to no copy at all. One level up,
+`let r = {f: a, ...} pass` did not, so `a` was copied although it was dead
+and then abandoned: twelve arrays allocated per lighting update, one
+returned, nothing freed.
 
-The move information EXISTS. Every fn in the lighting path gets `sink` on
-the Nim side, so liveness has already proved the argument dead at the call:
-
-```nim
-proc tuck_pass*(f: sink tuck_Flood, at: int, to: int, step: int, keep: bool): tuck_Flood
-```
-
-Odin and D do not act on it. Their MOVED twin is reached only through
-`movedCallInto`, which recognises `x = f(x, ...)` — the result written back
-into the same name. The innermost loop has that shape and compiles to no
-copy at all. One level up, `let r = {f: a, ...} pass` does not, so `a` is
-copied although it is dead, and then abandoned: twelve arrays allocated per
-lighting update, one returned, nothing freed. That is EV-15 (the copy) and
-EV-14 (the leak), one cause with two prices — D pays it in GC churn and Odin
-in RSS.
+EV-15 closed that — an argument that is a last use AND one the body owns now
+reaches the twin, at every syntactic position rather than the two the
+assignment emitters happened to cover. What remains is EV-14: three arrays
+per edit that nothing frees, 546 MB of the original 4.9 GB.
 
 ## What the world server cost to write
 
 | | what | who breaks | |
 |---|---|---|---|
 | EV-14 | dead intermediates of a threading chain are never freed | odin | [#82](https://github.com/kobi2187/tuck/issues/82) |
-| EV-15 | a dead container handed to a threading fn still copies | odin, d | [#83](https://github.com/kobi2187/tuck/issues/83) |
+| EV-15 | a dead container handed to a threading fn still copies | odin, d | **fixed** |
 | EV-16 | a `match` arm whose body is a `send` emits Nim that will not compile | nim | **fixed** |
+| EV-17 | `--batch-timeout` is not kept for a batch nobody sends to any more | all | **fixed** |
+| EV-18 | no ordering between two senders to one mailbox; thread mode hides it | all | open |
+| EV-19 | an actor field with no initialiser is silently a zero value | all | open |
 
 **EV-16 is the one that says something about the corpus.** A router over N
 shards has nothing to index — an actor is a compile-time singleton with no
@@ -200,23 +196,44 @@ every `match` arm anywhere in the tree was a block or a one-line `return`,
 and a bare `send` is neither. A whole construct pairing was simply absent
 from the corpus until a program needed it.
 
-**The ordering bug is the one worth reading, and it is not in the table**
-because the language is arguably within its rights. `main` used to send
-`start` to the four shards itself, then pump 100 000 edits at the gateway.
-In `thread` mode that works. In `batch` mode a send is staged on the SENDING
-THREAD, so main's four-message batch sat unflushed while the gateway's fat
-edit batches crossed first — and a shard indexed a `Slice` whose seqs were
-still empty. `index 0 out of bounds for seq of length 0`, at n=1000 and not
-at n=100.
+**The ordering bug is the one worth reading**, and chasing it to the bottom
+turned one symptom into three separate findings.
 
-Tuck promises per-MAILBOX order and batch mode keeps it. What it does not
-promise, and what thread mode hands you by accident, is any order between
-two DIFFERENT senders to one mailbox. The fix is architectural rather than a
-workaround — the gateway brings its own shards up, so `start` and `edit`
-leave the same thread in that order — but the trap is sharp, mode-dependent,
-size-dependent, and lands as an out-of-bounds read inside generated code. An
-actor field with no default initialiser is silently a zero value, which is
-what turns a late message into a crash rather than a wrong answer.
+`main` used to send `start` to the four shards itself, then pump 100 000
+edits at the gateway. In `thread` mode that works. In `batch` mode a send is
+staged on the SENDING THREAD, so main's four-message batch sat unflushed
+while the gateway's fat edit batches crossed first — and a shard indexed a
+`Slice` whose seqs were still empty. `index 0 out of bounds for seq of
+length 0`, at n=1000 and not at n=100.
+
+**EV-18, the actual cause.** Tuck promises per-MAILBOX order and batch mode
+keeps it. What it does not promise, and what thread mode hands you by
+accident, is any order between two DIFFERENT senders to one mailbox. The
+program's fix is architectural rather than a workaround — the gateway brings
+its own shards up, so `start` and `edit` leave the same thread in that order
+— and it is also how real deployments work. Whether the language should
+guarantee an initialisation barrier is a design decision, not a patch.
+
+**EV-17, found on the way and fixed.** `--batch-timeout` promises a staged
+batch crosses within N ms. The deadline was tested inside `enqueue` against
+the mailbox being sent to, so a thread that staged for one actor and then
+only ever sent to another never tested the first one's deadline again: the
+promise was kept for every mailbox except the one that needed it. Measured
+at 300 000 sends against a 1 ms deadline with the batch never crossing. The
+sweep is now thread-wide.
+
+It is worth being clear that **EV-17 does not fix EV-18** — checked, not
+assumed. With the sweep in place the old shape still dies, because 1 ms is
+thousands of messages: the window narrows from "until the sender parks" to
+"up to a millisecond", and the ordering violation lives comfortably inside
+it.
+
+**EV-19, the reason it lands as a crash.** An actor field with no
+initialiser is silently a zero value. Tuck already rejects reading a field a
+CONSTRUCTION did not supply — `<uninit>`, spec §4.8 — and even offers the
+fix in the message. Actor fields get none of that, so "never initialised" is
+indistinguishable from "initialised empty" and the failure surfaces far from
+its cause, inside generated code.
 
 ## Not written yet
 

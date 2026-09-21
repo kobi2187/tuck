@@ -334,6 +334,168 @@ tested.
 
 ---
 
+## EV-19 — an actor field with no initialiser is silently a zero value
+
+**Open. Severity: medium — a bad diagnostic, not a memory error.** Found by
+`benches/apps/world_server.tuck` while root-causing EV-18.
+
+Tuck already has the right rule, and does not apply it here. A field a
+CONSTRUCTION did not supply is a compile-time hole (`tests/suites/uninit.nim`,
+spec §4.8 amendment): reading it is `TK-TY` `dcTyUninitRead`, and the message
+even offers the fix — "make it `T?` if it is genuinely optional".
+
+An ACTOR field gets none of that:
+
+```tuck
+actor Shard0 [queue: 131072]:
+  sl: Slice                    # no initialiser, no hole, no diagnostic
+  on start({n: int}):
+    sl = {cols: SPAN} freshSlice
+  on edit({c: int, y: int, kind: int}):
+    sl = {sl: sl, c: c, y: y, kind: kind} applyEdit
+```
+
+If `edit` is handled before `start`, `sl` is a zero `Slice` whose seqs are
+empty, and the program dies inside generated code:
+
+```
+tuck_rt.nim(25) tuckSeqBounds
+Error: unhandled exception: at: index 0 out of bounds for seq of length 0
+```
+
+### Why it is not simply the same rule
+
+`<uninit>` works on a construction because the compiler can see which fields
+were supplied. An actor field is initialised by whichever handler runs first,
+and which handler runs first is not a static fact — so the hole cannot be
+tracked the same way.
+
+What CAN be said statically is narrower and still worth saying: **a field
+whose type cannot be meaningfully zero-valued, and which no initialiser
+supplies, is a hole the author has not accounted for.** `n: int = 0` is
+fine; `sl: Slice` is not, and today the two are spelled the same way.
+
+The diagnostic would name the actor and the field, and offer the same two
+routes `<uninit>` already offers — give it an initialiser, or declare it
+optional. Note the fix cannot always be an initialiser today: a field default
+must be a constant expression, and `{cols: SPAN} freshSlice` is a call.
+
+Both applications in `benches/apps/` are written this way, so whatever rule
+is chosen has to be checked against them.
+
+---
+
+## EV-18 — no ordering between two senders to one mailbox, and thread mode hides it
+
+**Open — arguably by design, which is the problem. Severity: high.** Found by
+`benches/apps/world_server.tuck`.
+
+Tuck promises per-MAILBOX order and every mode keeps it. It promises nothing
+about the order of two DIFFERENT senders into one mailbox — and `thread` mode
+hands you one anyway, because a send there is visible the instant it is made.
+So a program can depend on an ordering that only one mode provides, and find
+out under another.
+
+### Reproduce
+
+```tuck
+fn main() -> int [io]:
+  {} startWorld            # main sends `start` to Shard0..3
+  {n: 100000} session      # ...then 100000 edits at the Gateway,
+  Gateway send drain {n: 0}  #    which forwards to those same shards
+  Journal.waitUntil {pred: :worldDown}
+```
+
+`thread`: correct. `batch`: `index 0 out of bounds for seq of length 0`, at
+n=1000 and not at n=100 — the shard handled an `edit` before its `start`.
+
+### Cause
+
+Under `--actors:batch` a send is staged on the SENDING THREAD and crosses
+when its batch fills or its deadline passes. Main's four-message batch and
+the Gateway's fat edit batches are independent, and the Gateway's cross
+first. Per-sender FIFO is intact throughout; there simply is no relation
+between the two senders.
+
+**EV-17 below is NOT this bug**, and fixing it does not fix this one —
+checked rather than assumed. With the thread-wide deadline sweep in place the
+old shape still dies, because a 1 ms deadline is thousands of messages: the
+window narrows from "until the sender parks" to "up to a millisecond", and
+the ordering violation lives comfortably inside it.
+
+### What the program should do, and what the language might
+
+The program's fix is architectural and is what `world_server` now does: a
+stage is brought up by whoever feeds it, so `start` and `edit` leave the same
+thread in that order and no mode can separate them. That is also how real
+deployments work, so it is not a workaround.
+
+The language question is whether an actor should be guaranteed to have
+processed something before it can be sent anything else — an initialisation
+barrier, which is what every user will assume from thread mode. That is a
+design decision, not a patch. Until it is taken, EV-19's diagnostic is the
+cheap half: it turns this from a crash inside generated code into a compile
+error naming the field.
+
+---
+
+## EV-17 — `--batch-timeout` is not kept for a batch nobody is sending to any more
+
+**FIXED 2026-09-21, batch mode only. Found while root-causing EV-18** — and
+it turned out to be a separate bug that EV-18 merely pointed at.
+
+`--batch-timeout` promises a staged batch crosses within N ms of opening.
+The deadline was tested inside `enqueue`, against the staging for the mailbox
+BEING SENT TO. So a thread that staged for `A` and then only ever sent to `B`
+never tested `A`'s deadline again: the promise was kept for every mailbox
+except the one that needed it.
+
+### Reproduce
+
+```tuck
+actor Slow [queue: 64]:
+  got: bool = false
+  on prime({n: int}):
+    got = true
+
+actor Busy [queue: 524288]:
+  seen: int = 0
+  on tick({n: int}):
+    seen += 1
+
+fn main() -> int [io]:
+  Slow send prime {n: 1}
+  var i = 0
+  var hit = 0
+  for i < 300000:
+    Busy send tick {n: i}
+    if i == 299999:
+      hit = if Slow.got: 1 else: 0
+    i = i + 1
+  return hit
+```
+
+`--actors:thread` returns 1. `--actors:batch` returned **0**: three hundred
+thousand sends elapsed, against a 1 ms default deadline, and the one-message
+batch never crossed. It crossed only when main finally parked.
+
+(`--actors:single` also returns 0 and is correct to: one thread cannot run
+`Slow` while main is still looping. That is the mode working as designed, and
+checking it is what kept the assertion from being written against all three.)
+
+### Fix
+
+`tuck_async.tuckFlushDueStaged` sweeps THIS THREAD'S whole flush-hook list
+for expired deadlines, and `enqueue` calls it on its periodic tick instead of
+testing one staging. The list holds one entry per (thread, actor), an entry
+with nothing staged returns without reading the clock, and the tick is one in
+`TuckBatchCheckEvery` sends.
+
+Guarded by `actor_mode`'s "an abandoned batch still crosses on its
+--batch-timeout", verified to fail without the sweep.
+
+---
+
 ## EV-16 — a `match` arm whose body is a `send` emits Nim that does not compile
 
 **FIXED 2026-09-21, Nim only. PR #81. Found by
