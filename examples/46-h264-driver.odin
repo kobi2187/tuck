@@ -250,6 +250,6 @@ main :: proc() {
 	tuck_PipelineSlot = rt.tuckStartActor(drain_tuck_Pipeline)
 	mainRc := tuck_main()
 	rt.tuckDrainActors()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
+	rt.tuckTrackCheck()
 	os.exit(mainRc)
 }

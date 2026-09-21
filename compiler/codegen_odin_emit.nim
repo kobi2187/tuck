@@ -104,6 +104,17 @@ proc shouldImportOs(m: Module, body: string): bool =
   let mainFn = mainDecl(m)
   (mainFn != nil and mainFn.returnsValue) or "os." in body
 
+proc usesRuntime*(m: Module, mains: string): bool =
+  ## Does this program touch the runtime at all? Asked by the entry point
+  ## before it emits anything `rt.`-qualified, for the same reason
+  ## `shouldImportRt` asks it of the body: an import Odin does not see used
+  ## is a compile error, and a program with no actors, no tasks and no
+  ## runtime call needs no `tuckrt` at all.
+  var actorNames: seq[string]
+  var hasTasks = false
+  runtimeUsers(m, actorNames, hasTasks)
+  actorNames.len > 0 or hasTasks or "rt." in mains
+
 proc shouldImportRt(m: Module, body, mains: string): bool =
   ## Check if runtime import is needed.
   var actorNames: seq[string]
@@ -150,9 +161,16 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   ## reactor, start every actor's drain coroutine, run main, then drive the
   ## loop so spawned tasks and actors get to finish.
   result = "main :: proc() {\n"
-  # Allocation tracking, when the build asks for it. First thing in main, so
-  # every later allocation goes through it.
-  result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
+  # Allocation tracking, ONLY for a program that already uses the runtime.
+  #
+  # Odin rejects an unused import, so the header carries `rt` only when the
+  # body needed it — and emitting these two lines unconditionally forced that
+  # dependency on every program, breaking 107 assertions over programs that
+  # touch no runtime at all. It is also the right rule on its own terms: with
+  # no runtime there is no `tuckSeqCopy`, so there is nothing to track.
+  let tracks = usesRuntime(m, mains)
+  if tracks:
+    result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
   for a in ctx.staticAsserts:
     result.add("\tassert(" & a & ")\n")
   var actorNames: seq[string]
@@ -188,10 +206,10 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
   # The allocation report, EXPLICITLY and last. `os.exit` below is `_exit`:
   # it runs no defers and no finalizers, which is the same reason the
-  # resource registry closes its tables by hand right above. A fault turns
-  # into a distinct exit code so a test can assert on it rather than parse
-  # stderr; with tracking off this is a call that returns 0.
-  result.add("\tif rt.tuckTrackReport() > 0 { os.exit(90) }\n")
+  # resource registry closes its tables by hand right above. The exit lives
+  # INSIDE tuckTrackCheck so this line need not mention `os`, which the
+  # header may not have imported. With tracking off it is a no-op call.
+  if tracks: result.add("\trt.tuckTrackCheck()\n")
   if mainReturns: result.add("\tos.exit(mainRc)\n")
   result.add("}\n")
 

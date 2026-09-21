@@ -82,5 +82,5 @@ main :: proc() {
 	rt.tuckAsyncInit()
 	tuck_CounterSlot = rt.tuckStartActor(drain_tuck_Counter)
 	rt.tuckDrainActors()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
+	rt.tuckTrackCheck()
 }

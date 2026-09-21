@@ -31,5 +31,5 @@ main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	rt.tuckRun()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
+	rt.tuckTrackCheck()
 }

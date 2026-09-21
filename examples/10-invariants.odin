@@ -13,6 +13,4 @@ __validated_tuck_Temperature :: proc(v: tuck_Temperature) -> tuck_Temperature {
 }
 
 main :: proc() {
-	context.allocator = rt.tuckTrackAllocator()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

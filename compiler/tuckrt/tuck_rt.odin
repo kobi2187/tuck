@@ -198,6 +198,15 @@ tuckTrackAllocator :: proc() -> mem.Allocator {
 	}
 }
 
+tuckTrackCheck :: proc() {
+	// EXITS here rather than handing a count back for the entry point to act
+	// on. The emitted call must not mention `os`: Odin errors on an unused
+	// import, so the generated header carries `core:os` only when the program
+	// itself needed it — and a `fn main() -> void` does not. Emitting
+	// `os.exit(90)` made every such program fail to compile.
+	if tuckTrackReport() > 0 { os.exit(90) }
+}
+
 tuckTrackReport :: proc() -> int {
 	// Returns the number of faults, so a test can assert on an exit code
 	// rather than parse output.

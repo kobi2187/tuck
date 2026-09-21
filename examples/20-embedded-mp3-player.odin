@@ -243,5 +243,5 @@ main :: proc() {
 	tuck_main()
 	rt.tuckRun()
 	rt.tuckDrainActors()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
+	rt.tuckTrackCheck()
 }

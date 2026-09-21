@@ -27,7 +27,5 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
-	context.allocator = rt.tuckTrackAllocator()
 	tuck_main()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

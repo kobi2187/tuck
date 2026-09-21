@@ -59,6 +59,6 @@ main :: proc() {
 	rt.tuckAsyncInit()
 	mainRc := tuck_main()
 	rt.tuckRun()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
+	rt.tuckTrackCheck()
 	os.exit(mainRc)
 }

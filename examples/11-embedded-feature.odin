@@ -54,6 +54,4 @@ tuck_handleUart :: proc () {
 }
 
 main :: proc() {
-	context.allocator = rt.tuckTrackAllocator()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

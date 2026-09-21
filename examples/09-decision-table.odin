@@ -17,6 +17,4 @@ tuck_classifyPacket :: proc(priority: tuck_Priority, size: tuck_SizeClass, encry
 }
 
 main :: proc() {
-	context.allocator = rt.tuckTrackAllocator()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

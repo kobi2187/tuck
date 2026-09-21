@@ -36,7 +36,5 @@ tuck_AppEvents_LowMemory :: proc (remaining: u32) {
 }
 
 main :: proc() {
-	context.allocator = rt.tuckTrackAllocator()
 	assert((1 == 1))
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

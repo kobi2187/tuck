@@ -12,6 +12,4 @@ tuck_route :: proc(priority: tuck_Priority, encrypted: bool) -> int {
 }
 
 main :: proc() {
-	context.allocator = rt.tuckTrackAllocator()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

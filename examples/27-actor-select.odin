@@ -79,6 +79,6 @@ main :: proc() {
 	tuck_AccumulatorSlot = rt.tuckStartActor(drain_tuck_Accumulator)
 	mainRc := tuck_main()
 	rt.tuckDrainActors()
-	if rt.tuckTrackReport() > 0 { os.exit(90) }
+	rt.tuckTrackCheck()
 	os.exit(mainRc)
 }
