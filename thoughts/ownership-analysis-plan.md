@@ -170,6 +170,39 @@ fn rest({ladder: Seq[int], px: int, qty: int, best: int}) -> Booked:
 prediction being wrong. Removing that one needs liveness at the call site
 (the old book is dead), which is Stage 2, not Stage 1.
 
+**Stage 2c is NOT WORTH BUILDING — measured, not argued.** The gate was
+"`let t = f(x); x = t` emits what `x = f(x)` does", generalising
+`movedCallInto` from a syntactic shape to a liveness fact. Instrumented the
+predicate over every example, the matching engine, the Savina ports and the
+whole stdlib — **63 files, zero candidates**. The instrument fires on a
+constructed case, so the zero is the corpus and not a broken probe.
+
+It makes sense in hindsight: `x = f(x)` is the idiomatic spelling, the
+builder chain `x ..f {...}` that TUCK-TRANSLATION recommends routes through
+the same rule, and EV-9 no longer forces anyone to write the temp. The shape
+the gate describes was an artefact of a bug that is fixed.
+
+**Read-only ALIASING is also worth zero here, and that is the more
+surprising one.** The three-way rule (move / alias / copy) promises that a
+binding whose source and target are both never written needs no copy at all.
+Instrumented it the same way over the same 63 files: **zero**. The five
+copies the matching engine keeps all bind a value that is then mutated.
+
+That is value semantics working as designed rather than a gap: you copy
+precisely when you are about to modify, and a binding you only read from is
+a binding you would not have written. So the mutation half of the value
+model does not pay for itself as ALIAS-instead-of-copy.
+
+Where the remaining copies actually go is MOVE-instead-of-copy: `sweep` and
+`rest` copy a ladder they are about to mutate, and their sources (`b.ask`,
+`b.bid`) are dead afterwards. Aliasing would be wrong there; moving is
+right. That needs liveness at FIELD granularity — `b.ask` dead, not `b`
+dead — which is the one extension with measured value behind it.
+
+(Measurement note: the first version of this instrument counted `let r = X`
+as a write, which made every bound name look mutated and reported a
+misleading zero for a different reason. Fixed before the numbers above.)
+
 **Stage 2 — Component B, consumed by the move rule and by `str`.** Gate: the
 2M-iteration `Seq` loop stays at 2 MB; the 200k `str` loop goes from 460 ms
 to single-digit ms on Nim; `let t = f(x); x = t` emits what `x = f(x)` does.
