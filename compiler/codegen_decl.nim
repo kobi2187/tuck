@@ -120,7 +120,7 @@ proc nimFnParams*(res: Resolution, m: Module, d: Decl): seq[string] =
   ##
   ## `sink` is not write permission either: it says the CALLER is finished
   ## with the value, so the callee may move out of it rather than copy. Which
-  ## parameters qualify is our own analysis's answer (analysis_lastuse), not
+  ## parameters qualify is our own analysis's answer (analysis_liveness), not
   ## Nim's inference — Odin and D are handed the same fact.
   for p in d.fnParams:
     let move = if paramIsMovable(res, m, d.fnBody, p): "sink " else: ""

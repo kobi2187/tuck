@@ -21,7 +21,7 @@
 # answerable syntactically; it needs the callee's body.
 #
 # WHAT MAKES IT CHEAP HERE. The same thing that makes last-use analysis cheap
-# (see analysis_lastuse.nim): Tuck has no aliasing, so a value's provenance
+# (see analysis_liveness.nim): Tuck has no aliasing, so a value's provenance
 # is decided by where it came from and nothing else can have captured it on
 # the way. Fns are top-level, the only escape is `return`, and after
 # `genSendHelper` copies its payload a send cannot smuggle a buffer out
