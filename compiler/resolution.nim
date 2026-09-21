@@ -445,6 +445,11 @@ proc markMovedArg*(r: Resolution, e: Expr) =
   ensureId(e)
   r.movedArgs.incl(e.id)
 
+proc markMovedArgId*(r: Resolution, id: NodeId) =
+  ## The same, for a caller holding the node's id rather than the node —
+  ## `analysis_ssa` speaks in ids because a value's uses are ids.
+  r.movedArgs.incl(id)
+
 proc isMovedArg*(r: Resolution, e: Expr): bool =
   ## May this argument be taken by a MOVED twin? False for anything the
   ## analysis did not reach — which copies, exactly as it always did.

@@ -199,13 +199,49 @@ Stage B is where it gets teeth.
 why the differential is clean — but a callee is not a value and should stop
 being one when the mirror replaces that pass.
 
-**B. Move ownership onto it.**
-One `owns | borrows | consumed` per value, replacing `markMovableArgs`'s
-seed-and-grow, `slotsMovedAway`'s second scan, and the name half of
-`exclusivelyOwned`. Items 3, 5 and 6 go away here. Proof: the existing
-`value_semantics` and `memory` assertions, the tracked `examples/` diff, and
-the two applications' printed output and peak RSS — all of which are already
-sharp enough to have caught every bug above.
+**B. Move ownership onto it. — PARTLY DONE, 2026-09-21.**
+`markMovableArgs` now reads ownership off the mirror. What it replaced was
+three walks — a seed pass asking provenance about every NAME a call site
+read, a grow pass spreading the answer along assignments to a fixpoint, and
+`valueIsOwned` re-deriving the call shape inside it — which had to agree
+about what a name holds. That is item 6, and it is gone: on the mirror there
+are no names to spread anything along.
+
+Proved the same way as A. The two implementations were run side by side
+across the corpus, both applications, the Savina ports and the stdlib before
+anything switched: **24 stamps, zero difference either way**. After the
+switch the tracked `examples/` output is byte-identical and both
+applications print the same numbers at the same peak RSS.
+
+**Still to do in B**, and named so it is not mistaken for finished:
+`slotsMovedAway` still re-scans the tree (item 3), and `consumed` is not yet
+a state on the value — the free gate infers it. Those are what close item 3.
+
+**Two rules in the new code are NOT EXERCISED by the corpus**, established
+by sabotage rather than assumed:
+
+* *a twin hands back what it was given, so the result is ours when the
+  argument was.* Disabling it changes no stamp anywhere, because
+  `afterBinding` already calls such a binding fresh — which is item 4 doing
+  the work, and exactly what Stage C removes. The rule is kept because it is
+  what will carry the fact once that prediction is gone.
+* *the per-field slot test on a projection.* Also unexercised. Kept because
+  it refuses moves rather than granting them, which is the safe direction.
+
+The rule that IS exercised is the one that matters most: treating a
+parameter as owned wrongly stamps 12 sites across the corpus, every one of
+them a use-after-free on D and Odin.
+
+**What it cost.** One crash, and it says something about the Stage A proof.
+`R.W = true` is an assignment whose target has no nameable place — an
+`exkField` over a memory-mapped register — and the builder read `brReceiver`
+off a field node and took the compiler down. No example assigns a register
+field with `=` (examples/20 uses the chain form throughout), so the
+corpus sweep never produced the shape; it surfaced only once the mirror
+moved onto the hot path for every D and Odin build, and `known_bugs`'
+register assertion is what caught it. The `ssa` suite now carries all three
+unnameable targets directly, because a corpus can only exercise the shapes
+it happens to contain.
 
 **C. Make the lowerings explicit rewrites.**
 In-place append, self-concat, and the twin call become rewrites on the

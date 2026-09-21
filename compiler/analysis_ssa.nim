@@ -67,6 +67,12 @@ type
   Def* = object
     kind*: DefKind
     at*: NodeId            ## the expression that produced it; 0 for phi/entry
+    src*: Expr
+      ## ...and that expression itself, for the consumer that needs to ask a
+      ## question about it rather than merely identify it. Stage B asks
+      ## `analysis_provenance` whether a `dfCall`'s callee builds its result
+      ## or hands back an argument, which no NodeId can answer. Holding an
+      ## AST pointer is what a MIRROR is for; it does not own the tree.
     inputs*: seq[ValueId]  ## phi operands, or the base of a projection
 
   Use* = object
@@ -376,11 +382,23 @@ proc walkAssign(b: var Builder, e: Expr) =
   if p.len > 0:
     ensureId(e.assignVal)
     let at = if e.assignVal != nil: e.assignVal.id else: NodeId(0)
-    b.defineAt(p, Def(kind: defKindOf(e.assignVal), at: at))
+    b.defineAt(p, Def(kind: defKindOf(e.assignVal), at: at, src: e.assignVal))
     return
-  # `xs[i] = v` — the element cannot be named, so the CONTAINER changed and
-  # its version has to move with it.
-  let r = pathOf(if e.target != nil: e.target.brReceiver else: nil)
+  # THE TARGET HAS NO NAME. Two shapes reach here and they are not the same:
+  #
+  #   xs[i] = v    the ELEMENT cannot be named, but the container changed, so
+  #                its version has to move with it.
+  #   R.W = true   a register field. Nothing in this body owns it and there
+  #                is no place to version — `R` is a memory-mapped address,
+  #                not a value.
+  #
+  # Reading `brReceiver` off the second crashed the compiler outright:
+  # `field 'brReceiver' is not accessible for type 'Expr' using 'kind =
+  # exkField'`. No example assigns a register field with `=` — examples/20
+  # uses the chain form throughout — so the corpus sweep never reached it and
+  # `known_bugs`' register assertion did.
+  if e.target == nil or e.target.kind != exkBracket: return
+  let r = pathOf(e.target.brReceiver)
   if r.len > 0: b.defineAt(r, Def(kind: dfOpaque))
 
 proc enterArm(b: var Builder, pre, armId, k: string, body: Expr) =
