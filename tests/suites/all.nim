@@ -36,6 +36,7 @@ import known_bugs
 import loop_var_type
 import mangle
 import member_names
+import memory
 import object_composition
 import odin_backend
 import optimize
@@ -87,6 +88,7 @@ let registry: seq[Entry] = @[
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
   ("mangle",              SuiteProc(mangle.run),              true),
   ("member_names",        SuiteProc(member_names.run),        true),
+  ("memory",              SuiteProc(memory.run),              false),
   ("object_composition",  SuiteProc(object_composition.run),  false),
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),

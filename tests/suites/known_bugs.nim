@@ -1413,4 +1413,46 @@ fn main() -> int:
   t.quietly: t.hostRuns("an actor field survives an append and a moved call", 7)
   t.bugFixed "an actor field survives an append and a moved call"
 
+  # A loop that copies does not accumulate the copies. Odin only: that
+  # backend emits no `delete` anywhere, so every `tuckSeqCopy` is live until
+  # the process exits — 75 KB per message on a real program, OOM-killed at
+  # 13.6 GB where Nim and D use 17-21 MB. EV-12, issue #77.
+  #
+  # Stated as the CORRECT behaviour and expected to fail, which is the only
+  # honest shape for it: the program is right, the answer it prints is right,
+  # and every other assertion in the tree passes. Only the memory is wrong,
+  # and until `hostPeakRss` existed nothing here could say so.
+  #
+  # 20 000 copies of a 1024-element ladder is 160 MB of garbage. Nim finishes
+  # in ~1.6 MB and D in ~7 MB; Odin reached 482 MB.
+  t.src """
+import seq
+
+fn zeroed({levels: int}) -> Seq[int]:
+  var out = [0]
+  var i = 1
+  for i < levels:
+    out = {items: out, value: 0} push
+    i = i + 1
+  return out
+
+fn bump({xs: Seq[int]}) -> Seq[int]:
+  var ys = xs
+  ys[0] = ys[0] + 1
+  return ys
+
+fn main() -> int:
+  var xs = {levels: 1024} zeroed
+  var i = 0
+  for i < 20000:
+    let ns = {xs: xs} bump
+    xs = ns
+    i = i + 1
+  if xs[0] != 20000:
+    return 1
+  return 0
+"""
+  t.quietly: t.hostPeakRss("a copy-per-iteration loop does not accumulate copies", 65536)
+  t.bugOpen "a copy-per-iteration loop does not accumulate copies"
+
   t.finish()
