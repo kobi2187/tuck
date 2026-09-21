@@ -17,6 +17,34 @@ from lowering_seqcopy import seqFieldNames
 from analysis_provenance import slotIsFresh
 import ./codegen_odin
 
+proc slotsMovedAway*(res: Resolution, m: Module, body: Expr,
+                     movedP: string): HashSet[string] =
+  ## Which slots of the moved parameter were HANDED ON to another twin, and
+  ## are therefore no longer this fn's to free.
+  ##
+  ## `applyBuy` passes `b.ask` to `sweep_moved`, which takes it destructively
+  ## and frees it itself; freeing it here too is a double free, and it
+  ## segfaulted on the first run under `-define:TUCK_TRACK=true`. This is the
+  ## third entry in the escape list — returned, stored in an actor field, or
+  ## MOVED INTO A CALL — and the only one that was not yet enforced.
+  ##
+  ## "" in the result means the whole parameter went.
+  if body == nil or movedP.len == 0: return
+  var stack = @[body]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    if n.kind == exkCall and n.callee != nil and n.callee.kind == exkVar and
+       n.args.len >= 1 and n.args[0] != nil and
+       movedFnParam(res, m, m.findFn(n.callee.name)) != "":
+      let a = n.args[0]
+      if a.kind == exkField and a.receiver != nil and
+         a.receiver.kind == exkVar and a.receiver.name == movedP:
+        result.incl(a.fieldName)
+      elif a.kind == exkVar and a.name == movedP:
+        result.incl("")
+    for ch in n.children: stack.add(ch)
+
 const DefaultMailboxSize = "8"
   ## Messages an actor's ring holds unless `[queue: N]` says otherwise.
 
@@ -401,6 +429,13 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   #
   # `defer`, so every exit path frees once — a twin with two returns would
   # otherwise need the call duplicated at each.
+  # A slot HANDED ON to another twin is no longer ours to free. `applyBuy`
+  # passes `b.ask` to `sweep_moved`, which takes it destructively and frees
+  # it itself — freeing it here too is a double free, and it segfaulted
+  # immediately under `-define:TUCK_TRACK=true`. This is the third entry in
+  # the escape list: returned, stored in an actor field, or MOVED INTO A CALL.
+  var movedAway = slotsMovedAway(ctx.res, ctx.module, d.fnBody, movedP)
+
   var frees = ""
   let retFields = movedCopyFields(ctx.res, ctx.module, d.fnReturnType)
   var mayFree = true
@@ -412,10 +447,12 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   if mayFree:
     let ownFields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
     if ownFields.len == 0:
-      frees = ind & "\tdefer delete(" & movedP & ")\n"
+      if "" notin movedAway:
+        frees = ind & "\tdefer delete(" & movedP & ")\n"
     else:
       for f in ownFields:
-        frees.add(ind & "\tdefer delete(" & movedP & "." & f & ")\n")
+        if f notin movedAway and "" notin movedAway:
+          frees.add(ind & "\tdefer delete(" & movedP & "." & f & ")\n")
   let twinName = movedName(d.name.replace(".", "_"))
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)

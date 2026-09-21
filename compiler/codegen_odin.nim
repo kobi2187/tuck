@@ -1251,7 +1251,14 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   let threaded = selfThreadedCall(ctx.res, ctx.module, e)
   if threaded != nil:
     let base = ctx.genOdinExpr(threaded.callee)
-    return ctx.movedAssignTarget(e.target) & " = " & movedName(base) & "(" &
+    # A DECLARATION introduces the name, so Odin wants `:=`; a reassignment
+    # wants `=`. selfThreadedCall accepts both shapes now, and this is the
+    # only place the difference shows.
+    let isNew = e.isDecl and e.target.name notin ctx.definedVars and
+                e.target.name notin ctx.fieldVars
+    if isNew: ctx.definedVars.incl(e.target.name)
+    return ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
+           movedName(base) & "(" &
            ctx.genCallArgs(threaded, base).join(", ") & ")"
   let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and

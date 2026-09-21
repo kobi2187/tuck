@@ -605,9 +605,24 @@ proc sameTypeName(a, b: Type): bool =
       a.args.len == b.args.len
   else: false
 
-proc threadsBackSameType(d: Decl, p: Param): bool =
-  ## Does the fn hand back the very type its first parameter came in as?
-  sameTypeName(p.typ, d.fnReturnType)
+proc returnWrapsParam(res: Resolution, m: Module, d: Decl, p: Param): bool =
+  ## Does the fn hand the parameter back WRAPPED — `Seq[int]` in, a record
+  ## with a `Seq[int]` field out?
+  ##
+  ## `sweep({ladder: Seq[int], ...}) -> Filled` is the shape, and it is the
+  ## one the matching engine's remaining copies live in: the container really
+  ## is threaded through, just parcelled into a result record on the way out.
+  ## Requiring the return type to be the param type OUTRIGHT missed every
+  ## such fn, so each copied its container defensively on every call.
+  if seqElem(p.typ) == nil: return false
+  for f in getFieldsForType(res, m, d.fnReturnType):
+    if sameTypeName(f.typ, p.typ): return true
+  false
+
+proc threadsBackSameType(res: Resolution, m: Module, d: Decl, p: Param): bool =
+  ## Does the fn hand back the very type its first parameter came in as —
+  ## either directly, or as a field of what it returns?
+  sameTypeName(p.typ, d.fnReturnType) or returnWrapsParam(res, m, d, p)
 
 proc movedCopyFields*(res: Resolution, m: Module, t: Type): seq[string] =
   ## The Seq-typed FIELDS a MOVED wrapper must copy, resolving a generic
@@ -651,7 +666,7 @@ proc movedFnParam*(res: Resolution, m: Module, d: Decl): string =
   ## misses the speedup) getting this predicate wrong breaks compilation.
   if not twinnableFn(d): return ""
   let p = d.fnParams[0]
-  if not threadsBackSameType(d, p): return ""
+  if not threadsBackSameType(res, m, d, p): return ""
   if not copyableContainer(res, m, p.typ): return ""
   p.name
 
@@ -683,12 +698,32 @@ proc movedCallInto*(res: Resolution, m: Module, call: Expr,
   # A resolved user call is already exploded positionally by the time it
   # reaches here (a payload call like std/seq's `push` is not, and is handled
   # by selfAppendValue).
-  call.args.len >= 1 and call.args[0] != nil and
-    call.args[0].kind == exkVar and call.args[0].name == targetName
+  if call.args.len < 1 or call.args[0] == nil: return false
+  let a = call.args[0]
+  # THE SYNTACTIC CASE: `x = f(x, ...)` overwrites its own argument, so the
+  # old value is dead the instant the new one lands. No liveness involved.
+  if a.kind == exkVar and a.name == targetName: return true
+  # THE FIELD CASE, which needs liveness at PATH granularity. `sweep(b.ask,
+  # ...)` may take the ladder destructively when `b.ask` is never read again
+  # — and `b` being live is not the question, since `b.bestAsk` is read two
+  # lines later. A name-granular answer cannot tell those apart, which is
+  # why this stayed a copy.
+  if a.kind == exkField: return res.isLastUse(a)
+  false
 
 proc selfThreadedCall*(res: Resolution, m: Module, e: Expr): Expr =
-  ## `x = f(x, ...)` on a threaded-container fn. Returns the CALL, or nil.
-  if not plainVarAssign(e): return nil
+  ## `x = f(x, ...)` on a threaded-container fn, or `let y = f(b.ask, ...)`
+  ## where `b.ask` is never read again. Returns the CALL, or nil.
+  ##
+  ## DECLARATIONS ARE ACCEPTED, which they were not before. The syntactic
+  ## rule could not match one anyway — a decl's target is a fresh name, so it
+  ## is never its own argument — so excluding them cost nothing until the
+  ## field case arrived. It costs a great deal now: `let f = sweep(b.ask,
+  ## ...)` is exactly the shape the matching engine threads its ladders
+  ## through, and refusing it left `sweep` copying a container its caller was
+  ## finished with.
+  if e == nil or e.kind != exkAssign or e.target == nil or
+     e.target.kind != exkVar: return nil
   var call = e.assignVal
   if call != nil and res.hasCall(call): call = res.call(call)
   if call == nil or call.kind != exkCall: return nil

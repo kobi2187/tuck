@@ -42,7 +42,7 @@
 #   runs at scope exit, after the apparent last use of everything it touches,
 #   so its reads are live throughout. This is the one place structured
 #   control flow is less obliging than it looks.
-import ast, tables, sets
+import ast, tables, sets, strutils
 import resolution
 import ast_ops
 
@@ -56,6 +56,17 @@ const MaxLoopRounds = 8
 
 type
   Live = HashSet[string]
+    ## ACCESS PATHS, not bare names: `b`, `b.ask`, `b.inner.xs`.
+    ##
+    ## A record's fields are separate buffers, and the copies that remain in
+    ## the matching engine are there because the analysis could only say "b
+    ## is still live" when the question was "is b.ask still live". Reading
+    ## `b.n` does not keep `b.ask` alive, and a name-granular set cannot
+    ## express that.
+    ##
+    ## A bare `b` in the set stands for EVERY path under it — reading the
+    ## whole record reads all of it — so membership is prefix-aware
+    ## (`isLive`) rather than a plain lookup.
 
   Ctx = object
     res: Resolution
@@ -63,6 +74,38 @@ type
     afterLoop: Live           ## what `break` jumps to
     atLoopHead: Live          ## what `continue` jumps to
     inLoop: bool
+
+proc pathOf(e: Expr): string =
+  ## `b.ask` for a field chain rooted at a name, `b` for a bare name, "" for
+  ## anything else — an index, a call result, a literal. "" means the walk
+  ## could not name this location, and the caller falls back to treating the
+  ## whole root as used.
+  if e == nil: return ""
+  case e.kind
+  of exkVar: e.name
+  of exkField:
+    let base = pathOf(e.receiver)
+    if base.len == 0: "" else: base & "." & e.fieldName
+  else: ""
+
+proc rootOf(path: string): string =
+  let i = path.find('.')
+  if i < 0: path else: path[0 ..< i]
+
+proc isLive(live: Live, path: string): bool =
+  ## Is this location still wanted? A path is live if it is in the set, or if
+  ## any PREFIX of it is — `b` being live means every field of b is.
+  if path.len == 0: return true          # unnameable: assume the worst
+  if path in live: return true
+  var i = path.find('.')
+  while i >= 0:
+    if path[0 ..< i] in live: return true
+    i = path.find('.', i + 1)
+  # ...and a path is also live if something UNDER it is: `b` is wanted when
+  # `b.ask` is, because the record is how you reach the field.
+  for l in live:
+    if l.len > path.len and l.startsWith(path & "."): return true
+  false
 
 proc uses(c: Ctx, e: Expr, acc: var Live)
 
@@ -79,6 +122,13 @@ proc uses(c: Ctx, e: Expr, acc: var Live) =
   if e.kind == exkVar and e.name.len > 0:
     acc.incl(e.name)
     return
+  if e.kind == exkField:
+    let p = pathOf(e)
+    if p.len > 0:
+      acc.incl(p)
+      return
+    # Not a nameable path (an index or a call in the chain): fall through and
+    # let the receiver be used wholesale.
   if e.kind == exkAssign:
     usesOfAssign(c, e, acc)
     return
@@ -93,6 +143,25 @@ proc collectDeferReads(c: var Ctx, e: Expr) =
     for n in d: c.skip.incl(n)
   for ch in e.children: collectDeferReads(c, ch)
 
+proc deadOf(used, live, skip: Live): Live =
+  ## Which of these locations is nobody going to want again? Plain set
+  ## difference is wrong once the set holds paths: `b.ask` is still wanted
+  ## when `b` is live, and a `defer` naming `b` keeps every field of it.
+  for p in used:
+    if isLive(live, p): continue
+    if p in skip or rootOf(p) in skip: continue
+    result.incl(p)
+  # A ROOT whose every path is dead is itself dead, and it has to be said
+  # separately: `paramIsMovable` asks about the WHOLE parameter, not one of
+  # its fields, so stamping only `e.num.value` silently dropped the `sink`
+  # off every fn that reads a parameter through a field. `isLive` already
+  # answers this — a root is live if anything under it is.
+  for p in used:
+    let r = rootOf(p)
+    if r.len == 0 or r in result: continue
+    if isLive(live, r) or r in skip: continue
+    result.incl(r)
+
 proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live
 
 proc stampSites(c: Ctx, e: Expr, dead: Live) =
@@ -106,6 +175,14 @@ proc stampSites(c: Ctx, e: Expr, dead: Live) =
     if n.kind == exkVar and n.name in dead:
       lastFor[n.name] = n
       return
+    if n.kind == exkField:
+      let p = pathOf(n)
+      if p.len > 0:
+        if p in dead: lastFor[p] = n
+        # Keep descending: the ROOT may be dead as a whole, and its stamp is
+        # what `paramIsMovable` reads.
+        walk(n.receiver)
+        return
     if n.kind == exkAssign:
       walk(n.assignVal)
       if n.target != nil and n.target.kind != exkVar: walk(n.target)
@@ -158,7 +235,7 @@ proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
     if stamp:
       var dead: Live
       uses(c, e.cond, dead)
-      stampSites(c, e.cond, dead - r - c.skip)
+      stampSites(c, e.cond, deadOf(dead, r, c.skip))
     uses(c, e.cond, r)
     r
   of exkMatch:
@@ -174,7 +251,7 @@ proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
     if stamp:
       var dead: Live
       uses(c, e.subject, dead)
-      stampSites(c, e.subject, dead - r - c.skip)
+      stampSites(c, e.subject, deadOf(dead, r, c.skip))
     uses(c, e.subject, r)
     r
   of exkWhile: loopLive(c, e.whileCond, e.whileBody, liveOut, stamp)
@@ -188,7 +265,7 @@ proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
     # An exit: nothing after it is live, only what it reads itself.
     var r: Live
     uses(c, e, r)
-    if stamp: stampSites(c, e, r - c.skip)
+    if stamp: stampSites(c, e, deadOf(r, Live(), c.skip))
     r
   of exkDefer:
     # Its reads were hoisted into `skip` for the whole body, so it neither
@@ -200,7 +277,7 @@ proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
     if stamp:
       # A name this statement reads and nothing after it wants is dead here.
       # A plain `x = ...` also KILLS x, but only for statements before it.
-      stampSites(c, e, r - liveOut - c.skip)
+      stampSites(c, e, deadOf(r, liveOut, c.skip))
     var outp = liveOut
     if e.kind == exkAssign and e.target != nil and e.target.kind == exkVar:
       outp.excl(e.target.name)

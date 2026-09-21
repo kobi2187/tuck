@@ -878,6 +878,8 @@ proc movedAssignTarget(ctx: DCodegenCtx, t: Expr): string =
     ctx.fieldPrefix & t.name
   else: t.name
 
+proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string
+
 proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
   ## `x = f(x, ...)` on a threaded-container fn: call the MOVED twin, which
   ## may have the container destructively, and skip the defensive copy on the
@@ -885,8 +887,18 @@ proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
   let threaded = selfThreadedCall(ctx.res, ctx.module, e)
   if threaded == nil: return ""
   let name = movedName(ctx.resolveDCallee(threaded))
-  ctx.movedAssignTarget(e.target) & " = " & name & "(" &
-    ctx.genDCallArgs(threaded, threaded.callee.name).join(", ") & ")"
+  let call = name & "(" &
+             ctx.genDCallArgs(threaded, threaded.callee.name).join(", ") & ")"
+  # A DECLARATION needs its type in D. `selfThreadedCall` accepts decls now
+  # — that is what lets `let f = sweep(b.ask, ...)` reach the twin at all —
+  # and without this the emitted `tuck_f = ...` named something never
+  # declared, which dmd answers with "undefined identifier".
+  if e.isDecl and e.target.kind == exkVar and
+     e.target.name notin ctx.definedVars and
+     e.target.name notin ctx.fieldVars:
+    ctx.definedVars.incl(e.target.name)
+    return ctx.genDLocalDecl(e, call)
+  ctx.movedAssignTarget(e.target) & " = " & call
 
 proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   ## `let r = {args} someTask` — spawn the task into a result slot and wait
