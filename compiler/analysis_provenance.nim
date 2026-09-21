@@ -41,7 +41,7 @@
 # whole-program summary would need a pre-pass over every module first. That
 # is worth doing and is not done here — cross-module calls keep copying, the
 # same as before this file existed.
-import ast, tables, sets, os
+import ast, tables, sets, os, strutils
 import resolution
 import ast_query
 
@@ -72,10 +72,19 @@ type
     fields*: Table[string, Cell]
 
 var summaries: Table[string, Prov]
-  ## Per fn NAME, for the module currently being marked. Cleared by
-  ## `buildProvenance`, because the backends each lower their own deep copy
-  ## and a summary computed against one tree must not be read against
-  ## another.
+  ## Keyed by MODULE and fn name, not fn name alone.
+  ##
+  ## It used to be cleared per module, which was right while the only
+  ## consumer ran during marking — `markSeqCopiesIn` builds and reads it in
+  ## the same call. Stage 3 reads it at EMIT time, and the driver marks every
+  ## module before emitting any, so a bare-name table would by then hold only
+  ## the last module's answers and quietly hand them to every other module.
+  ## Keying by module removes the phase dependency rather than documenting
+  ## it.
+
+proc keyOf(m: Module, name: string): string =
+  ## A module is identified by its PATH — `Module` has no name field.
+  m.path.join(".") & "\0" & name
 
 proc noToken(): NodeId = NodeId(0)
 
@@ -155,9 +164,10 @@ proc provOfCall(c: var Ctx, e: Expr): Prov =
 
   if e.callee == nil or e.callee.kind != exkVar: return unknownProv()
   let name = e.callee.name
-  if name notin summaries: return unknownProv()   # imported, extern, or a
-                                                  # shape allFns never yielded
-  var p = summaries[name]
+  let key = keyOf(c.m, name)
+  if key notin summaries: return unknownProv()   # imported, extern, or a
+                                                 # shape allFns never yielded
+  var p = summaries[key]
   # A FRESH RESULT IS THIS CALL'S OWN ALLOCATION. The callee's token names a
   # node inside the callee and means nothing out here; every call site is a
   # distinct allocation, so the site's own id is the identity.
@@ -348,7 +358,6 @@ proc buildProvenance*(res: Resolution, m: Module) =
   ## monotone and settles. Starting pessimistic would never recover: a
   ## recursive fn would read its own unfinished summary as `oUnknown` and
   ## stay there.
-  summaries.clear()
   # A NAME MUST IDENTIFY ONE BODY. `allFns` yields object and actor members
   # as well as top-level fns, and a member keeps its bare name here while the
   # emitted symbol is qualified — so a member `push` and a top-level `push`
@@ -359,17 +368,17 @@ proc buildProvenance*(res: Resolution, m: Module) =
   for d in m.allFns():
     if d.name in seen: duplicated.incl(d.name) else: seen.incl(d.name)
   for d in m.allFns():
-    summaries[d.name] =
+    summaries[keyOf(m, d.name)] =
       if d.name in duplicated: unknownProv()
       else: Prov(whole: Cell(origin: oFresh, token: noToken()))
   for round in 0 ..< MaxRounds:
     var changed = false
     for d in m.allFns():
       if d.name in duplicated: continue
-      let before = summaries[d.name]
+      let before = summaries[keyOf(m, d.name)]
       let after = summarize(res, m, d)
       if after.whole != before.whole or after.fields != before.fields:
-        summaries[d.name] = after
+        summaries[keyOf(m, d.name)] = after
         changed = true
     if not changed:
       when not defined(release):
@@ -388,9 +397,24 @@ proc buildProvenance*(res: Resolution, m: Module) =
   # Did not settle. Something in the walk is oscillating rather than rising,
   # which is a bug in this file — answer `oUnknown` for everything rather
   # than ship whichever half-state the last round happened to leave.
-  for d in m.allFns(): summaries[d.name] = unknownProv()
+  for d in m.allFns(): summaries[keyOf(m, d.name)] = unknownProv()
 
 # --- what the copy pass asks -------------------------------------------------
+
+proc slotIsFresh*(res: Resolution, m: Module, fnName, field: string): bool =
+  ## Does this fn's RETURN carry a freshly allocated value in that slot — as
+  ## opposed to one of its own arguments?
+  ##
+  ## Stage 3 asks this before letting a MOVED twin free its parameter at
+  ## exit. `oAliased` there means the returned slot may BE the parameter's
+  ## buffer (`takeLevel` returns the very ladder it was handed), and freeing
+  ## it would free the value the caller is about to bind. Anything the walk
+  ## did not resolve answers false, which leaks — the safe direction.
+  let key = keyOf(m, fnName)
+  if key notin summaries: return false
+  let p = summaries[key]
+  if field.len == 0: return p.whole.origin == oFresh
+  field in p.fields and p.fields[field].origin == oFresh
 
 proc exclusivelyOwned*(res: Resolution, m: Module, e: Expr,
                        field = ""): bool =

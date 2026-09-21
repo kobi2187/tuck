@@ -23,6 +23,7 @@ const odinFeatures = "#+feature dynamic-literals\n"
 from mangle import mangleName
 import ./codegen_odin_decl
 import ./codegen_odin
+from analysis_provenance import buildProvenance
 
 proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] =
   var body = ""
@@ -223,6 +224,13 @@ proc emitOdin*(m: Module, res: Resolution,
   ## `res` is the semantic layer typechecking produced. Taking it as an
   ## argument is the point: this stage cannot run before the one that fills
   ## it, and now the signature says so instead of a comment on checkOrDie.
+  # The provenance summary is rebuilt against THIS module's tree before
+  # anything reads it. Marking runs for every module before emission starts,
+  # so a summary built during marking describes whichever module was marked
+  # last; and each backend lowers its own deep copy, so node ids differ too.
+  # Rebuilding here is idempotent and cheap, and removes the phase dependency
+  # rather than documenting it.
+  buildProvenance(res, m)
   var ctx = newOdinCtx(m, realModules, moduleName, res)
   let (body, mains) = ctx.emitBody(m)
   result = odinPackage

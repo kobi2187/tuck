@@ -14,6 +14,7 @@ import codegen_odin_ctx
 import codegen_odin_util
 from mangle import mangleName
 from lowering_seqcopy import seqFieldNames
+from analysis_provenance import slotIsFresh
 import ./codegen_odin
 
 const DefaultMailboxSize = "8"
@@ -391,6 +392,30 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ctx.definedVars = savedVars
   if movedP == "":
     return header & "\n" & bodyStr & "\n" & ind & "}\n"
+  # STAGE 3: the twin OWNS its moved parameter, so it may free it at exit —
+  # but only if the value it returns carries none of the parameter's buffers.
+  # `applyBuy` builds two new ladders and qualifies; `takeLevel` returns the
+  # very ladder it was handed and does not. Freeing there would free the
+  # value the caller is about to bind, which is the failure `-define:TUCK_TRACK`
+  # exists to catch.
+  #
+  # `defer`, so every exit path frees once — a twin with two returns would
+  # otherwise need the call duplicated at each.
+  var frees = ""
+  let retFields = movedCopyFields(ctx.res, ctx.module, d.fnReturnType)
+  var mayFree = true
+  if retFields.len == 0:
+    mayFree = slotIsFresh(ctx.res, ctx.module, d.name, "")
+  else:
+    for f in retFields:
+      if not slotIsFresh(ctx.res, ctx.module, d.name, f): mayFree = false
+  if mayFree:
+    let ownFields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
+    if ownFields.len == 0:
+      frees = ind & "\tdefer delete(" & movedP & ")\n"
+    else:
+      for f in ownFields:
+        frees.add(ind & "\tdefer delete(" & movedP & "." & f & ")\n")
   let twinName = movedName(d.name.replace(".", "_"))
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
@@ -407,7 +432,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   wrap.add(ind & "}\n\n")
   let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
                                   twinName & " :: proc")
-  wrap & twinHeader & "\n" & bodyStr & "\n" & ind & "}\n"
+  wrap & twinHeader & "\n" & frees & bodyStr & "\n" & ind & "}\n"
 
 proc genTransitionProcs*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
                         hasPayload: bool): string =
