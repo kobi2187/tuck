@@ -20,6 +20,7 @@ import ast
 import ast_query
 import resolution
 import strutils
+import analysis_ssa
 
 type
   PipelineStage* = enum
@@ -151,6 +152,53 @@ proc assertNoMissingTypes*(mods: seq[Module]) =
       "pipeline: " & $bad.len & " expression(s) still carry the checker's " &
       "missing type marker after typecheck (a checker gap, not a real error) " &
       "at " & lines.join(", "))
+
+proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
+  ## After psTypecheck, under `--verify-stages`: the value mirror
+  ## (compiler/analysis_ssa.nim) must be structurally sound for every body in
+  ## the program.
+  ##
+  ## Stage A of thoughts/ssa-mirror-design.md, and the reason it is a
+  ## pipeline assertion rather than a unit test: the invariants are about
+  ## SHAPES THE CORPUS CONTAINS, not about shapes I thought to write down. A
+  ## phi whose operands belong to a different place, a read whose value was
+  ## never defined, a use recorded twice — each is a builder bug that would
+  ## silently produce a wrong ownership answer two stages later, and each is
+  ## far cheaper to find here, over every example and both applications, than
+  ## from a leak in emitted Odin.
+  ##
+  ## Nothing CONSULTS the mirror yet. It earns that by reproducing
+  ## analysis_liveness exactly; until then this is the only thing that runs it.
+  var bad: seq[string]
+  for m in mods:
+    for fn in buildModuleSsa(res, m):
+      bad.add(structuralErrors(fn))
+      # STAGE A.2, and the criterion is a SUPERSET rather than equality.
+      #
+      # The design document asked for an identical answer. Writing it showed
+      # that was the wrong bar: SSA is strictly MORE precise in a loop,
+      # because a loop-head phi is a fresh version each iteration, so
+      #
+      #     for i < n:
+      #       out = {items: out, value: 0} push
+      #
+      # has a final read of `out` at the push — the old pass cannot say so,
+      # since it reasons about the NAME `out`, which is live at the head.
+      # That extra precision is the whole point of the mirror and refusing
+      # it would be refusing the feature.
+      #
+      # What must hold is the other direction: every site the existing pass
+      # proves final, the mirror must also prove. A site it misses is a
+      # capability lost; a site it invents is a use-after-move. So
+      # `onlyPass` is the assertion and `onlyMirror` is the measurement.
+      let d = livenessDiff(res, fn)
+      if d.onlyPass > 0:
+        bad.add(fn.name & ": the mirror misses " & $d.onlyPass &
+                " final use(s) analysis_liveness proves")
+  if bad.len > 0:
+    raise newException(ValueError,
+      "pipeline: the SSA mirror is malformed in " & $bad.len &
+      " place(s) — " & bad[0 .. min(4, bad.high)].join("; "))
 
 proc allMangled(name: string): bool =
   name.len == 0 or name.startsWith("tuck_")

@@ -126,12 +126,78 @@ Each stage has to be provable *before* anything depends on it. The discipline
 that has worked all week — build the instrument, then verify it against a
 known answer, then sabotage it — applies here and is the whole risk control.
 
-**A. Build the mirror. No behaviour change.**
-Construct values, defs, uses and phis from the AST. Prove it by
-differential: recompute `lastUses` from the mirror and assert it is
-*identical* to `analysis_liveness`'s answer across the whole corpus plus both
-applications. A mirror that cannot reproduce the existing answer is not ready
-to replace it, and this is the only stage where that check is free.
+**A. Build the mirror. No behaviour change. — DONE, 2026-09-21.**
+`compiler/analysis_ssa.nim`, checked by `assertSsaWellFormed` under
+`--verify-stages` and pointed at the corpus by `tests/suites/ssa.nim`.
+Nothing consults it.
+
+*The criterion above was wrong, and writing it is what showed that.* It asked
+for an answer **identical** to `analysis_liveness`. SSA is strictly MORE
+precise in a loop, because a loop-head phi is a fresh version each iteration:
+
+```tuck
+for i < n:
+  out = {items: out, value: 0} push
+```
+
+has a final read of `out` at the push. The old pass cannot say so — it
+reasons about the NAME `out`, which is live at the head — and that extra
+precision is the entire point of the mirror. Demanding equality would have
+been demanding the feature be absent.
+
+So the criterion is a **superset**: every site the existing pass proves
+final, the mirror must also prove. A site it misses is a capability lost; a
+site it invents is a use-after-move. `onlyPass` is the assertion,
+`onlyMirror` is the measurement. Over the corpus, both applications, the
+Savina ports and the stdlib:
+
+| | |
+|---|---|
+| agree | 515 |
+| onlyMirror (the precision gain) | 20 |
+| onlyPass (must be 0) | **0** |
+
+The 20 sit exactly where predicted — `zeroed`, `sweep`, `flow`, `session`,
+`pass`: the loop-carrying functions.
+
+**What building it cost, which is the part worth keeping.** The first
+differential ran 489 / 38 / 20, and every one of the 20 was a builder bug
+rather than a precision difference:
+
+1. *Last in program order* is wrong the moment control flow branches. A
+   value read in all four arms of a `match` has FOUR final reads, because on
+   whichever path runs, that read is the last. `world_server`'s `toShard` is
+   exactly that shape. Fixed by giving each arm a region and asking whether
+   two reads can both happen.
+2. An arm ending in `return` is not followed by the code after its branch —
+   and that code is not in a sibling arm, so the arm rule cannot see it.
+3. The loop-head phi was created before entering the loop's region, so every
+   loop-carried value looked as though it were read again forever.
+4. "Repeats" is a **subset** test on loop chains, not equality: a value read
+   AFTER a loop has fewer loops than its definition and does not repeat.
+   Equality refused `for ...: acc = ...` then `return acc`, the commonest
+   shape there is.
+5. An entry value materialised lazily got the region it was first READ in,
+   so a name first seen inside a loop looked loop-defined.
+6. An entry value materialised inside one arm sat in the branch-scoped map,
+   so the join invented a second version of it and a phi over the two.
+   `exit` in `examples/38-division` ended up with five versions.
+
+None of these would have been found by a snippet, which is why the invariants
+run over the corpus — and both the invariant checker and the differential
+were sabotage-verified rather than assumed green.
+
+**Known gap in this stage's proof.** The loop's exit value must be the head
+phi (a loop may run zero times), and reverting that leaves the suite green:
+the subset rule answers every last-use question either way, and nothing else
+consults the mirror. It matters for Stage B, where a zero-trip loop would
+otherwise attribute the body's allocation to a path that never allocated.
+Stage B is where it gets teeth.
+
+**Also noted, not fixed.** A callee name is read as an ordinary place, so
+`push` and `exit` become values. `analysis_liveness` does the same, which is
+why the differential is clean — but a callee is not a value and should stop
+being one when the mirror replaces that pass.
 
 **B. Move ownership onto it.**
 One `owns | borrows | consumed` per value, replacing `markMovableArgs`'s

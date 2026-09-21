@@ -499,6 +499,7 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
     var checkedMods: seq[Module]
     for lm in loaded: checkedMods.add(lm.m)
     assertNoMissingTypes(checkedMods)
+    assertSsaWellFormed(semLayer, checkedMods)
   let imported = importedEffects(loaded, sigOnly)
   let importedRes = importedResources(loaded, sigOnly)
   let programKinds = declaredResourceKinds(loaded)
