@@ -188,8 +188,8 @@ in RSS.
 
 | | what | who breaks | |
 |---|---|---|---|
-| EV-14 | dead intermediates of a threading chain are never freed | odin | open |
-| EV-15 | a dead container handed to a threading fn still copies | odin, d | open |
+| EV-14 | dead intermediates of a threading chain are never freed | odin | [#82](https://github.com/kobi2187/tuck/issues/82) |
+| EV-15 | a dead container handed to a threading fn still copies | odin, d | [#83](https://github.com/kobi2187/tuck/issues/83) |
 | EV-16 | a `match` arm whose body is a `send` emits Nim that will not compile | nim | **fixed** |
 
 **EV-16 is the one that says something about the corpus.** A router over N

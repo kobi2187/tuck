@@ -336,7 +336,8 @@ tested.
 
 ## EV-16 — a `match` arm whose body is a `send` emits Nim that does not compile
 
-**FIXED 2026-09-21, Nim only. Found by `benches/apps/world_server.tuck`,**
+**FIXED 2026-09-21, Nim only. PR #81. Found by
+`benches/apps/world_server.tuck`,**
 whose router is a `match` with one arm per shard — the only spelling
 available, because an actor is a compile-time singleton with no reference
 type, so there is nothing to index and the dispatch cannot be a loop.
@@ -392,7 +393,7 @@ indent, which is why the bump is what fixes them. Guarded by
 
 ## EV-15 — a dead container handed to a threading fn still calls the copying wrapper
 
-**Open. Severity: high on Odin and D, none on Nim.** Found by
+**Open. Severity: high on Odin and D, none on Nim. Issue #83.** Found by
 `benches/apps/world_server.tuck`: 191 ms on Nim against 2.9 s on Odin and
 **54 s on D**, for identical output.
 
@@ -431,7 +432,7 @@ argument position is as good as the self-threaded shape — the same fact
 
 ## EV-14 — the dead intermediates of a threading chain are never freed
 
-**Open. Severity: high on Odin.** `benches/apps/world_server.tuck` peaks at
+**Open. Severity: high on Odin. Issue #82.** `benches/apps/world_server.tuck` peaks at
 **4.9 GB** on Odin against 80 MB on Nim and 16 MB on D, for the same
 100 000 edits. This is the remainder of EV-12 after the ownership work: that
 made a MOVED twin free the parameter it consumes, and made a returned value
