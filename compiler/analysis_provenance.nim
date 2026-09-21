@@ -130,6 +130,7 @@ type Ctx = object
   res: Resolution
   m: Module
   params: HashSet[string]   ## names that arrived from the caller
+  moved: string             ## the param a MOVED twin takes destructively
   locals: Table[string, Prov]
 
 proc provOf(c: var Ctx, e: Expr): Prov
@@ -221,6 +222,42 @@ proc provOf(c: var Ctx, e: Expr): Prov =
     if e.stmts.len == 0: unknownProv() else: provOf(c, e.stmts[^1])
   else: unknownProv()
 
+proc maybeMovedParam(d: Decl): string =
+  ## The parameter a MOVED twin might take destructively, or "".
+  ##
+  ## DELIBERATELY WIDER than codegen_common's `movedFnParam`, and not only to
+  ## avoid importing it (which would close a cycle — codegen_common sits
+  ## downstream of this pass). The two errors are not symmetric. Thinking a
+  ## param is moved when it is not costs a copy this pass declines to elide;
+  ## MISSING one means claiming a value is fresh when it is the caller's
+  ## buffer, which is the unsound direction. So this drops the
+  ## `copyableContainer` half of the real predicate, which only ever narrows.
+  if d == nil or d.kind != dkFn or d.fnBody == nil: return ""
+  if d.isExtern or d.isPending or d.isDecision: return ""
+  if d.fnParams.len == 0 or d.fnReturnType == nil: return ""
+  let p = d.fnParams[0]
+  if p.name == "self": return ""
+  let rt = d.fnReturnType
+  if p.typ == nil or rt == nil or p.typ.kind != rt.kind: return ""
+  case p.typ.kind
+  of tkNamed:
+    if p.typ.name != rt.name: return ""
+  of tkApp:
+    if p.typ.base == nil or rt.base == nil or
+       p.typ.base.kind != tkNamed or rt.base.kind != tkNamed or
+       p.typ.base.name != rt.base.name: return ""
+  else: return ""
+  p.name
+
+proc rootedAtMoved(c: Ctx, e: Expr): bool =
+  ## Is this value read THROUGH the moved parameter? `s.ladder` inside a twin
+  ## whose moved param is `s` is the caller's buffer, not a copy of it.
+  if c.moved.len == 0 or e == nil: return false
+  var cur = e
+  while cur != nil and cur.kind in {exkField, exkBracket}:
+    cur = if cur.kind == exkField: cur.receiver else: cur.brReceiver
+  cur != nil and cur.kind == exkVar and cur.name == c.moved
+
 proc mixToken(id: NodeId, field: string): NodeId =
   ## A distinct identity per copied field. The copies really are distinct
   ## allocations — one `tuckSeqCopy` each — so they must not look shared.
@@ -231,7 +268,7 @@ proc mixToken(id: NodeId, field: string): NodeId =
   for ch in field: h = (h xor uint32(ord(ch))) * 16777619'u32
   NodeId(h)
 
-proc afterBinding(e: Expr, v: Prov): Prov =
+proc afterBinding(c: Ctx, e: Expr, v: Prov): Prov =
   ## What the NAME holds once THIS pass has done its work at this binding.
   ##
   ## The copy pass and the provenance are mutually dependent, and leaving the
@@ -249,7 +286,16 @@ proc afterBinding(e: Expr, v: Prov): Prov =
   ##
   ## There is no circularity: whether a slot is copied depends on the value
   ## arriving, and what the name then holds depends on the copy.
+  ##
+  ## EXCEPT INSIDE A MOVED TWIN, where the emitter suppresses the copy for
+  ## anything read through the moved parameter (`codegen_odin.nim:1199`, and
+  ## D's equivalent) — that param belongs to this call, so reading it needs
+  ## no defence. Claiming freshness there would be a claim with nothing
+  ## behind it, and Stage 3 acts on exactly this: freeing the moved param at
+  ## the twin's exit is only safe if the RETURN does not carry its buffers.
+  ## `takeLevel` returns the very ladder it was handed.
   result = v
+  if rootedAtMoved(c, e): return result
   ensureId(e)
   if v.whole.origin != oFresh:
     result.whole = Cell(origin: oFresh, token: e.id)
@@ -265,7 +311,7 @@ proc noteAssignments(c: var Ctx, e: Expr) =
   ## special handling at all.
   if e == nil: return
   if e.kind == exkAssign and e.target != nil and e.target.kind == exkVar:
-    let v = afterBinding(e.assignVal, provOf(c, e.assignVal))
+    let v = afterBinding(c, e.assignVal, provOf(c, e.assignVal))
     let n = e.target.name
     c.locals[n] = if n in c.locals: joinProv(c.locals[n], v) else: v
   for ch in e.children: noteAssignments(c, ch)
@@ -284,7 +330,7 @@ proc summarize(res: Resolution, m: Module, d: Decl): Prov =
   ## fresh there is the one guess that could be wrong.
   if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision:
     return unknownProv()
-  var c = Ctx(res: res, m: m)
+  var c = Ctx(res: res, m: m, moved: maybeMovedParam(d))
   for p in d.fnParams: c.params.incl(p.name)
   # Locals first, so a `return` that names one has something to read. Repeated
   # because an assignment may name a local assigned further down.
