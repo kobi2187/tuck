@@ -53,10 +53,12 @@ Abstract interpretation over the body; fixpoint for recursion, starting at
 
 ```tuck
 fn wrap({xs: Seq[int]}) -> Pair:
-  return {a: xs, b: xs} Pair     # {a: FromParam(0), b: FromParam(0)}
+  return {a: xs, b: xs} Pair       # {a: FromParam(0), b: FromParam(0)}
 
-fn sweep({ladder: Seq[int], ...}) -> Filled:
-  ...                            # {ladder: Fresh}
+fn build({n: int}) -> Pair:
+  let a = [0]
+  let b = [0]
+  return {a: a, b: b} Pair         # {a: Fresh, b: Fresh}
 ```
 
 This subsumes `movedFnParam` — "is the summary `FromParam(0)` and is param 0
