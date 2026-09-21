@@ -93,10 +93,12 @@ tuck_main :: proc () -> int {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	tuck_ResultSlot = rt.tuckStartActor(drain_tuck_Result)
 	mainRc := tuck_main()
 	rt.tuckRun()
 	rt.tuckDrainActors()
+	if rt.tuckTrackReport() > 0 { os.exit(90) }
 	os.exit(mainRc)
 }

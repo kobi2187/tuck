@@ -16,6 +16,7 @@ import "core:math"
 import "core:os"
 import "core:strconv"
 import "base:intrinsics"
+import "core:mem"
 import "core:strings"
 import "core:sys/linux"
 import "core:time"
@@ -146,6 +147,86 @@ shiftRight :: proc(a: u64, by: int) -> u64 {
 // the leak so memory is reused, and the copy method becomes the cost that
 // matters. The two are multiplicative, which is also the order to do them
 // in.
+// --- allocation tracking, for proving a free is right ------------------------
+//
+// This backend has no collector, so every heap value it copies is live until
+// the process exits (KNOWN-BUGS-EVENTS.md EV-12, issue #77). Inserting frees
+// is the fix, and the failure mode of getting one wrong is a use-after-free
+// or a double free — silent, and far worse than the leak it replaces.
+//
+// So the frees get a harness before they get written. `-define:TUCK_TRACK=true`
+// routes every allocation through Odin's tracking allocator and prints, at
+// exit, what leaked AND what was freed wrongly. Off by default: it costs a
+// map insert per allocation, which is exactly the thing being measured.
+//
+// The report is called EXPLICITLY from the entry point rather than deferred.
+// `os.exit` is `_exit` — it runs no defers and no finalizers, which is the
+// same reason the resource registry closes its tables by hand there.
+TUCK_TRACK :: #config(TUCK_TRACK, false)
+
+when TUCK_TRACK {
+	gTrack: mem.Tracking_Allocator
+	gTrackReady: bool
+}
+
+tuckTrackAllocator :: proc() -> mem.Allocator {
+	// RETURNS the allocator rather than installing it, because Odin's
+	// `context` is an implicit per-proc copy: assigning `context.allocator`
+	// in here would rebind this proc's context and nothing else. The entry
+	// point assigns what this hands back, which is the only place the
+	// assignment reaches the rest of the program.
+	//
+	// With tracking off it hands back the context's own allocator, so the
+	// emitted line is unconditional and no `when` leaks into generated code.
+	when TUCK_TRACK {
+		// ONCE. Every actor thread calls this too — it gets a fresh context
+		// and would otherwise re-init the tracker, wiping what main and the
+		// other threads had recorded. No lock is needed because the entry
+		// point calls this on its first line, before any actor exists.
+		if !gTrackReady {
+			mem.tracking_allocator_init(&gTrack, context.allocator)
+			// A bad free PANICS by default, which is the right loudness for
+			// the mistake this exists to catch — but the panic would pre-empt
+			// the report, so it is downgraded to recording and the exit code
+			// carries the verdict instead.
+			gTrack.bad_free_callback = nil
+			gTrackReady = true
+		}
+		return mem.tracking_allocator(&gTrack)
+	} else {
+		return context.allocator
+	}
+}
+
+tuckTrackReport :: proc() -> int {
+	// Returns the number of faults, so a test can assert on an exit code
+	// rather than parse output.
+	when TUCK_TRACK {
+		faults := 0
+		if len(gTrack.allocation_map) > 0 {
+			total := 0
+			for _, entry in gTrack.allocation_map { total += entry.size }
+			fmt.eprintf("TUCK-ALLOC leaked %v allocation(s), %v bytes (peak %v)\n",
+			            len(gTrack.allocation_map), total,
+			            gTrack.peak_memory_allocated)
+			faults += len(gTrack.allocation_map)
+		}
+		// A bad free is the failure mode that matters: it means an emitted
+		// `delete` reached memory that was not ours, or was already gone.
+		if len(gTrack.bad_free_array) > 0 {
+			fmt.eprintf("TUCK-ALLOC %v BAD FREE(S) - a delete was wrong\n",
+			            len(gTrack.bad_free_array))
+			for bf in gTrack.bad_free_array {
+				fmt.eprintf("  bad free of %v at %v\n", bf.memory, bf.location)
+			}
+			faults += len(gTrack.bad_free_array)
+		}
+		return faults
+	} else {
+		return 0
+	}
+}
+
 tuckSeqCopy :: proc(items: [dynamic]$T) -> [dynamic]T {
 	out: [dynamic]T
 	if len(items) == 0 { return out }

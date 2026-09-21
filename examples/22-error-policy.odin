@@ -25,4 +25,6 @@ tuck_poll :: proc (port: u8) -> int {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

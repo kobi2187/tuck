@@ -48,8 +48,10 @@ tuck_main :: proc () -> int {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	mainRc := tuck_main()
 	rt.tuckRun()
+	if rt.tuckTrackReport() > 0 { os.exit(90) }
 	os.exit(mainRc)
 }

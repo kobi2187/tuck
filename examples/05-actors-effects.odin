@@ -78,7 +78,9 @@ fetchFeed :: proc(payload: $T) -> rt.TuckResult(TRec_feed(tuck_Feed)) {
 
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	tuck_CounterSlot = rt.tuckStartActor(drain_tuck_Counter)
 	rt.tuckDrainActors()
+	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

@@ -17,4 +17,6 @@ tuck_get :: proc(payload: $T) -> rt.TuckResult(TRec_body(string)) {
 
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

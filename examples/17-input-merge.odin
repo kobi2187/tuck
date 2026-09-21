@@ -34,4 +34,6 @@ tuck_play :: proc (episode: tuck_Episode, prefs: tuck_PlayerPrefs) -> string {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

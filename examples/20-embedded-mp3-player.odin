@@ -236,10 +236,12 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	assert((size_of(tuck_Volume) == 1))
 	rt.tuckAsyncInit()
 	tuck_DecoderSlot = rt.tuckStartActor(drain_tuck_Decoder)
 	tuck_main()
 	rt.tuckRun()
 	rt.tuckDrainActors()
+	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

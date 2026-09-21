@@ -38,5 +38,7 @@ transitionTo_tuck_LightState :: proc(self: ^tuck_LightState, target: tuck_LightS
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuck_main()
+	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

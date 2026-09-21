@@ -150,6 +150,9 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   ## reactor, start every actor's drain coroutine, run main, then drive the
   ## loop so spawned tasks and actors get to finish.
   result = "main :: proc() {\n"
+  # Allocation tracking, when the build asks for it. First thing in main, so
+  # every later allocation goes through it.
+  result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
   for a in ctx.staticAsserts:
     result.add("\tassert(" & a & ")\n")
   var actorNames: seq[string]
@@ -183,6 +186,12 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   # entry point already owns the lifecycle (it boots the scheduler); this is
   # the other end of it.
   if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
+  # The allocation report, EXPLICITLY and last. `os.exit` below is `_exit`:
+  # it runs no defers and no finalizers, which is the same reason the
+  # resource registry closes its tables by hand right above. A fault turns
+  # into a distinct exit code so a test can assert on it rather than parse
+  # stderr; with tracking off this is a call that returns 0.
+  result.add("\tif rt.tuckTrackReport() > 0 { os.exit(90) }\n")
   if mainReturns: result.add("\tos.exit(mainRc)\n")
   result.add("}\n")
 

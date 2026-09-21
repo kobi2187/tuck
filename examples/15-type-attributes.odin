@@ -38,4 +38,6 @@ tuck_readSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	if rt.tuckTrackReport() > 0 { os.exit(90) }
 }

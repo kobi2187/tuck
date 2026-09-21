@@ -648,6 +648,11 @@ tuckCheckWaiters :: proc() {
 
 @(private)
 actorMain :: proc(t: ^thread.Thread) {
+	// This thread gets a FRESH context, so the entry point's allocator does
+	// not reach it. In an actor program the handlers are where almost every
+	// allocation happens, so without this line the tracking build reports a
+	// clean run over the code that allocates most.
+	context.allocator = tuckTrackAllocator()
 	slot := (^ActorSlot)(t.data)
 	tuckAsyncInit()          // this thread's own scheduler and reactor
 	gMySlot = slot
