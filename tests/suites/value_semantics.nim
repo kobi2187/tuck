@@ -704,4 +704,75 @@ fn main() -> int:
   # if `twin`'s two fields were separated. Sharing one buffer makes it 5.
   t.hostRuns("one buffer returned as two fields is still two buffers", 27)
 
+  # --- EV-15: a last use at ARGUMENT position reaches the MOVED twin -------
+  #
+  # `movedCallInto` recognised `x = f(x, ...)` and `f(b.ask, ...)`. It did
+  # not recognise a plain local that is dead after the call, which is the
+  # shape a CHAIN of threading calls takes — and chains are what container
+  # code is made of. `world_server` paid 2.9 s and 4.9 GB on Odin for it.
+  t.src """
+import seq
+
+type Acc:
+  xs: Seq[int]
+  n:  int
+
+fn step({a: Acc}) -> Acc:
+  var it = a.xs
+  it = {items: it, value: a.n} push
+  return {xs: it, n: a.n + 1} Acc
+
+fn twice({a: Acc}) -> Acc:
+  let b = {a: a} step
+  return {a: b} step
+
+fn main() -> int:
+  let seed = {xs: [7], n: 1} Acc
+  let out = {a: seed} twice
+  return out.xs[1] + out.xs[2] + out.n
+"""
+  t.okCheck "a chain of threading calls checks"
+  t.emitsOdin "a dead local reaches the twin", r"tuck_b := tuck_step_moved\(a\)"
+  # RETURN POSITION, which is the one no emitter used to ask about: the
+  # assignment emitters caught their own two shapes and nothing caught this.
+  t.emitsOdin "...and so does one in return position",
+              r"return tuck_step_moved\(tuck_b\)"
+  t.emitsD "the same on D", r"tuck_step_moved\(tuck_b\)"
+  # 7,1,2 and n=3.
+  t.hostRuns("...and the chain still computes what it did", 6)
+
+  # THE OTHER HALF, and the one that makes this an ownership question rather
+  # than a liveness one. `xs` is dead after the call — and `peek` is NOT a
+  # twin, so it never owned `xs`: on D and Odin a container parameter IS the
+  # caller's buffer. `reshape` returns a fresh buffer, so its twin is
+  # eligible to free what it was handed; reaching it here would free `src`
+  # out from under main.
+  t.src """
+import seq
+
+fn reshape({xs: Seq[int]}) -> Seq[int]:
+  var out = [0]
+  out = {items: out, value: xs[0]} push
+  return out
+
+fn peek({xs: Seq[int]}) -> int:
+  let o = {xs: xs} reshape
+  return o[1]
+
+fn main() -> int:
+  var src = [4, 5]
+  let p = {xs: src} peek
+  return p + src[0] + src[1]
+"""
+  t.okCheck "a borrowed parameter checks"
+  # Asserted as the CALL SITE and not as the twin's absence: `_moved` is
+  # named inside the wrapper's own one-line body, so `omits` matched that
+  # and failed on emitted code that was already correct.
+  t.emitsOdin "a fn that does not own its parameter may not hand it on",
+              r"tuck_o := tuck_reshape\(xs\)"
+  t.emitsD "...and the same on D", r"tuck_o = tuck_reshape\(xs\)"
+  # 4 + 4 + 5. Freeing src makes the last two terms read freed memory, which
+  # is why this is asserted by VALUE and on every backend.
+  t.hostRuns("...so the caller's buffer survives the call", 13)
+
   t.finish()

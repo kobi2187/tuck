@@ -441,7 +441,12 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     # direct call, which is wrong the moment it awaits; see
     # thoughts/bugs-found-while-building-net.md.
     return "rt.tuckSpawn(proc() { " & calleeStr & "() })"
-  return calleeStr & "(" & (ctx.odinTypeArgs(e) & args).join(", ") & ")"
+  # A call that may take its first argument destructively, in ANY position —
+  # the assignment emitters catch their own two shapes upstream of here, and
+  # `return f(x, ...)` is the one nothing else reaches.
+  let mv = movedCalleeName(ctx.res, ctx.module, e, calleeStr, member)
+  return (if mv != "": mv else: calleeStr) &
+         "(" & (ctx.odinTypeArgs(e) & args).join(", ") & ")"
 
 proc odinBangInfo*(ctx: var OdinCodegenCtx, t: Type):
     tuple[wrapped: bool, inner: string, innerT: Type] =

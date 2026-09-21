@@ -465,7 +465,11 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
     var parts: seq[string]
     for t in targs: parts.add(ctx.dType(t))
     return calleeStr & "!(" & parts.join(", ") & ")(" & args.join(", ") & ")"
-  calleeStr & "(" & args.join(", ") & ")"
+  # A call that may take its first argument destructively, in ANY position.
+  # See codegen_common.movedCalleeName — the position nothing else reaches is
+  # `return f(x, ...)`.
+  let mv = movedCalleeName(ctx.res, ctx.module, e, calleeStr, member)
+  (if mv != "": mv else: calleeStr) & "(" & args.join(", ") & ")"
 
 proc errCodeArg(ctx: DCodegenCtx, name: string): string =
   ## An error code, folded at COMPILE time by the emitter rather than at

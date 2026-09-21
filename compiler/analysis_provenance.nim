@@ -392,6 +392,170 @@ proc summarize(res: Resolution, m: Module, d: Decl): Prov =
   collectReturns(c, d.fnBody, acc, any)
   if any: acc else: unknownProv()
 
+# --- which arguments may be handed on destructively --------------------------
+#
+# EV-15. A fn that threads a container gets a MOVED twin, and the call site
+# reaches it when the old value is provably dead. Three shapes can prove it,
+# and only the first was ever syntactic:
+#
+#     x = f(x, ...)          the result overwrites its own argument
+#     let y = f(b.ask, ...)  a field nothing reads again
+#     let r = f(a, ...)      a LOCAL nothing reads again      <- this pass
+#
+# The third is the shape a chain of threading calls actually takes, and it
+# was the whole of `world_server`'s cost: 191 ms on Nim against 2.9 s on Odin
+# and 54 s on D, because `let r = {f: a, ...} pass` copied a container its
+# caller was finished with and then abandoned the copy.
+#
+# WHY LIVENESS IS NOT ENOUGH, which is the part that took a use-after-free to
+# learn on the other side of this file. Liveness says nobody in THIS body
+# reads the value again. On Nim that settles it: `sink` hands the rest to
+# ARC. On D and Odin a container parameter ALIASES the caller's buffer, so
+#
+#     fn g({xs: Seq[int]}) -> int:      # NOT a twin: g does not own xs
+#       let r = {f: xs, ...} pass       # last use of xs...
+#       return r.relit                  # ...but pass_moved would free it
+#
+# would free the CALLER's buffer. So the value must also be one this body
+# owns, and provenance is exactly the thing that knows: `oFresh` means this
+# body allocated it. A parameter is owned only inside the twin that took it
+# destructively — and there `slotsMovedAway` already stops the twin freeing
+# what it has handed on, which is the same fact read from the other end.
+
+proc seqFieldsOfType(c: Ctx, t: Type): seq[string] =
+  for f in getFieldsForType(c.res, c.m, t):
+    if seqElem(f.typ) != nil: result.add(f.name)
+
+proc ownedForMove(c: Ctx, p: Prov, t: Type): bool =
+  ## Is EVERY heap slot the twin would free one this body allocated?
+  ##
+  ## All of them, not just the one being read: the twin frees the whole
+  ## parameter, so a record with one borrowed field is not movable however
+  ## fresh the others are.
+  if t == nil: return false
+  if seqElem(t) != nil: return p.whole.origin == oFresh
+  let fs = seqFieldsOfType(c, t)
+  if fs.len == 0: return false     # not a container, or a shape not resolved
+  for f in fs:
+    if f notin p.fields: return false
+    if p.fields[f].origin != oFresh: return false
+  true
+
+proc provOfRoot(c: var Ctx, root: string): Prov =
+  if root in c.locals: c.locals[root] else: unknownProv()
+
+proc rootNameOf(e: Expr): string =
+  var cur = e
+  while cur != nil and cur.kind in {exkField, exkBracket}:
+    cur = if cur.kind == exkField: cur.receiver else: cur.brReceiver
+  if cur != nil and cur.kind == exkVar: cur.name else: ""
+
+proc threadsFirstArg(res: Resolution, m: Module, e: Expr): bool =
+  ## Is this a call that might take its first argument destructively?
+  e != nil and e.kind == exkCall and e.callee != nil and
+    e.callee.kind == exkVar and e.args.len >= 1 and e.args[0] != nil and
+    maybeMovedParam(res, m, m.findFn(e.callee.name)) != ""
+
+proc collectMoveFacts(res: Resolution, m: Module, body: Expr,
+                      assigns: var Table[string, seq[Expr]],
+                      sites: var seq[Expr]) =
+  ## Every value each local is ever given, and every threading call site.
+  var stack = @[body]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    for ch in n.children: stack.add(ch)
+    if n.kind == exkAssign and n.target != nil and n.target.kind == exkVar:
+      assigns.mgetOrPut(n.target.name, @[]).add(n.assignVal)
+    if threadsFirstArg(res, m, n) and n.args[0].kind in {exkVar, exkField}:
+      sites.add(n.args[0])
+
+proc valueIsOwned(res: Resolution, m: Module, e: Expr,
+                  owned: HashSet[string]): bool =
+  ## Is this VALUE one the body may give away? A twin hands back either a
+  ## buffer it allocated or the one it was given, so both are ours when the
+  ## one we gave it was.
+  if e == nil: return false
+  let r = rootNameOf(e)
+  if r.len > 0 and r in owned: return true
+  if threadsFirstArg(res, m, e): return valueIsOwned(res, m, e.args[0], owned)
+  false
+
+proc siteRoot(a: Expr): Expr =
+  result = a
+  while result != nil and result.kind == exkField: result = result.receiver
+
+proc seedOwned(c: var Ctx, sites: seq[Expr]): HashSet[string] =
+  ## The names provenance can vouch for outright: `oFresh` means this body
+  ## allocated it. Seeded only for names a site actually reads, because the
+  ## test needs the type and a site is where one is to hand.
+  if c.moved.len > 0: result.incl(c.moved)
+  for st in sites:
+    let name = rootNameOf(st)
+    if name.len == 0 or name in c.params or name in result: continue
+    let root = siteRoot(st)
+    if ownedForMove(c, provOfRoot(c, name), c.res.typeFor(root)):
+      result.incl(name)
+
+proc growOwned(res: Resolution, m: Module, assigns: Table[string, seq[Expr]],
+               params: HashSet[string], owned: var HashSet[string]) =
+  ## ...and the names that inherit it. A local assigned only from calls that
+  ## consume an owned value is owned too, to a fixpoint — the set only
+  ## grows, so it settles in as many rounds as the chain is long.
+  for _ in 0 ..< MaxRounds:
+    var grew = false
+    for name, vals in assigns:
+      if name in owned or name in params or vals.len == 0: continue
+      var all = true
+      for v in vals:
+        if not valueIsOwned(res, m, v, owned): all = false
+      if all:
+        owned.incl(name)
+        grew = true
+    if not grew: return
+
+proc slotIsOwned(c: var Ctx, a: Expr, name: string): bool =
+  ## A field read of a provenance-owned record asks a narrower question than
+  ## the root's: which SLOT is being handed over, not whether the record as a
+  ## whole is ours. Inside the twin the root IS the moved parameter and every
+  ## slot of it is ours by construction.
+  if a.kind != exkField: return true
+  if name in c.params or name == c.moved: return true
+  cellFor(provOfRoot(c, name), a.fieldName).origin == oFresh
+
+proc stampMoves(c: var Ctx, sites: seq[Expr], owned: HashSet[string]) =
+  for a in sites:
+    if not c.res.isLastUse(a): continue
+    let name = rootNameOf(a)
+    if name.len == 0 or name notin owned: continue
+    if not slotIsOwned(c, a, name): continue
+    markMovedArg(c.res, a)
+
+proc debugMoves(d: Decl, c: Ctx, owned: HashSet[string], sites: seq[Expr]) =
+  when not defined(release):
+    if getEnv("TUCK_DEBUG_MOVE").len == 0: return
+    var names = ""
+    for o in owned: names.add(" " & o)
+    echo "MOVE ", d.name, " moved=", c.moved, " owned=[", names,
+         " ] sites=", sites.len
+
+proc markMovableArgs(res: Resolution, m: Module, d: Decl) =
+  ## Stamp the first argument of every threading call this body may give away.
+  if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
+  var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  for p in d.fnParams: c.params.incl(p.name)
+  for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
+  var assigns: Table[string, seq[Expr]]
+  var sites: seq[Expr]
+  collectMoveFacts(res, m, d.fnBody, assigns, sites)
+  var owned = seedOwned(c, sites)
+  growOwned(res, m, assigns, c.params, owned)
+  debugMoves(d, c, owned, sites)
+  stampMoves(c, sites, owned)
+
+proc markAllMovableArgs(res: Resolution, m: Module) =
+  for d in m.allFns(): markMovableArgs(res, m, d)
+
 proc buildProvenance*(res: Resolution, m: Module) =
   ## Summarize every fn this module declares, to a fixpoint.
   ##
@@ -429,6 +593,7 @@ proc buildProvenance*(res: Resolution, m: Module) =
             var fs = ""
             for k, v in pr.fields: fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token))
             echo "PROV ", n, " whole=", pr.whole.origin, "/", uint32(pr.whole.token), fs
+      markAllMovableArgs(res, m)
       return
   when not defined(release):
     if getEnv("TUCK_DEBUG_PROV").len > 0:
