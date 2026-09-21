@@ -989,6 +989,18 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
     return "var " & e.target.name & " = " & spawn
   ctx.genExpr(e.target) & " = " & spawn
 
+proc genSelfConcatAssignment(ctx: var CodegenCtx, e: Expr): string =
+  ## `s = s + v` on a str appends in place. Nim's `string` is mutable and
+  ## carries spare capacity, so `add` is amortised where `tuckConcat` builds
+  ## a whole new string every time — the difference between an O(n) loop and
+  ## an O(n^2) one.
+  let appended = selfConcatValue(ctx.res, e)
+  if appended == nil: return ""
+  let tgt = if e.target != nil and e.target.kind == exkVar and
+               e.target.name in ctx.fieldVars: "self." & e.target.name
+            else: e.target.name
+  tgt & ".add(" & ctx.genExpr(appended) & ")"
+
 proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## Self-append: `xs = {items: xs, ...} push` appends in place.
   ##
@@ -1057,6 +1069,8 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
   if taskResult != "": return taskResult
   let appendResult = ctx.genSelfAppendAssignment(e)
   if appendResult != "": return appendResult
+  let concatResult = ctx.genSelfConcatAssignment(e)
+  if concatResult != "": return concatResult
   let (prelude, valSrc) = ctx.prepareChainBinding(e.assignVal)
   let targetStr = ctx.genAssignTarget(e.target)
   let valStr = ctx.genExpr(valSrc)

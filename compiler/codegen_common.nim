@@ -453,6 +453,39 @@ proc selfAppendValue*(res: Resolution, e: Expr): Expr =
   value
 
 
+proc mentionsName(e: Expr, name: string): bool =
+  if e == nil: return false
+  if e.kind == exkVar and e.name == name: return true
+  for c in e.children:
+    if mentionsName(c, name): return true
+  false
+
+proc selfConcatValue*(res: Resolution, e: Expr): Expr =
+  ## `s = s + <expr>` on a `str` — a concatenation assigned back over its own
+  ## LEFT operand. Returns `<expr>`, or nil when the statement is not that
+  ## shape.
+  ##
+  ## The twin of selfAppendValue above, and the same argument: the old `s` is
+  ## dead the instant the new one lands, so growing it in place is
+  ## unobservable. Syntactic, so there is no liveness to get wrong.
+  ##
+  ## IT IS WORTH MORE THAN IT LOOKS. `s = s + t` in a loop is O(n^2) on every
+  ## backend, because each concatenation copies the whole string — measured at
+  ## 100k/200k/400k iterations, Nim took 117/461/1859 ms, a clean 4x per
+  ## doubling. Emitting the host's amortised append instead took the 200k case
+  ## from 460 ms to 2 ms and turned the loop linear.
+  ##
+  ## LEFT OPERAND ONLY, and the right must not name the target:
+  ##   `s = t + s`  is a PREPEND, and appending would silently reverse it
+  ##   `s = s + s`  would grow a string while reading it
+  if not plainVarAssign(e): return nil
+  let v = e.assignVal
+  if v == nil or v.kind != exkBinary or not isStringConcat(v): return nil
+  if v.left == nil or v.left.kind != exkVar or v.left.name != e.target.name:
+    return nil
+  if mentionsName(v.right, e.target.name): return nil
+  v.right
+
 proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
   if e == nil: return false
   if e.kind == exkVar and e.name == name and res.isLastUse(e): return true

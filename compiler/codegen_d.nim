@@ -982,6 +982,12 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   let appended = selfAppendValue(ctx.res, e)
   if appended != nil:
     return ctx.movedAssignTarget(e.target) & " ~= " & ctx.genDExpr(appended)
+  # `s = s + v` on a str is the same fact one type over. D's `~=` on an array
+  # grows through the GC's capacity, so it is amortised where `a ~ b` builds a
+  # whole new string each time — an O(n) loop against an O(n^2) one.
+  let concatenated = selfConcatValue(ctx.res, e)
+  if concatenated != nil:
+    return ctx.movedAssignTarget(e.target) & " ~= " & ctx.genDExpr(concatenated)
   # Same fact one level up: a threaded-container call assigned back over its
   # own argument may take it destructively, so it calls the MOVED twin — and
   # the result needs no defensive dup either, since it IS the moved value.
