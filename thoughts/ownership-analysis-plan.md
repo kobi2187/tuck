@@ -206,3 +206,60 @@ pass cannot see into. The analysis must be *sound*, not complete — the
 failure direction is a retained buffer, which is exactly the property that
 put the arena option first in EV-12's ranking and the same one V's autofree
 chooses.
+
+
+## Where this is going: SSA, and one invariant
+
+Two rulings, recorded because they change what the analyses are FOR.
+
+### Actors send data, never pointers
+
+A send hands the receiver a value it owns. The sender must not be able to
+observe it afterwards — that is what makes an actor's state its own, and it
+is the guarantee EV-13 was violating (the mailbox held a header, so the
+sender's next write landed in the actor's message; nim 42, odin 99, d 99).
+
+Stage 0 made it true by COPYING. A MOVE satisfies the same rule and is
+strictly better: ownership transfers, the sender is left without it, and
+nothing is duplicated. That is what batch mode wants — a batch of messages
+handed over by pointer swap rather than copied element by element — and it
+needs only liveness at the send site: if the sender's value is dead after
+the send, move it.
+
+So the invariant is "the sender cannot observe the value after the send",
+not "the send copies". Worth stating that way, because the copy is the
+conservative implementation and the move is the intended one.
+
+The three escapes an ownership analysis must know about are exactly the
+places this bit: a send payload, an actor field (persists across messages,
+so intra-body reasoning says nothing about it), and the `_moved` twin, which
+deliberately takes its parameter destructively.
+
+### The analyses want to be SSA, not side-tables
+
+`analysis_liveness` and `analysis_provenance` are hand-rolled answers to
+questions SSA answers natively. `Cell.token` — "which allocation does this
+name denote" — is a value number by another name.
+
+**Tuck is unusually cheap to put in SSA, for the same reason its liveness is
+exact.** In C, SSA covers scalars and everything reached through a pointer
+needs MEMORY SSA on top of alias analysis; that is most of the cost. Tuck
+has no refs and no nil, so every value is SSA-able and there is no memory
+partition to model at all. And φ placement needs no dominance frontier: the
+control flow is structured, so the merges are exactly the ends of `if` and
+`match` arms and the loop heads.
+
+What that buys, beyond what is already here: value numbering (so
+`{a: xs, b: xs}` is one value under two names by construction rather than by
+a token comparison), and then GVN, CSE and constant propagation as ordinary
+consumers.
+
+The one place it is NOT free is the escape list above. An actor field is a
+location that outlives every body that touches it, so it is not SSA-able
+within one — that is the small corner where something like memory SSA is
+still needed, over a handful of named locations rather than the whole heap.
+
+Sequencing: SSA is an ANALYSIS ir, with facts mapped back to AST nodes by
+node id, exactly as the current passes do. The emitters print from the AST
+and should keep doing so. Making SSA the codegen input is a different and
+much larger project, and nothing here needs it.
