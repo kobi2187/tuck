@@ -6,13 +6,21 @@ can be expressed in Tuck at all. Throughput is the secondary result.
 
 The distinction earned its keep immediately: the Savina ports in
 `../savina/` produced timing tables and **zero** compiler bugs. The first
-application produced five, four of which no test in the suite covers.
+application produced five and the second three, and in both cases most were
+things no test in the suite covered.
 
 ## What is here
 
 | app | domain | why an actor is the right shape |
 |---|---|---|
 | `matching_engine.tuck` | trading | a venue's engine is single-threaded *by necessity* — orders must be applied in one determined sequence or the book is not a book |
+| `world_server.tuck` | a shared voxel world | the world is sliced into zones, each owned outright by one server — which is what makes concurrent edits safe at all, not an optimisation on top of something safe |
+
+`matching_engine` is ONE actor. `world_server` is six in a pipeline —
+gateway, four shards, journal — and that is the difference between them:
+routing, fan-out, fan-in, a drain barrier, and messages produced BY an actor
+rather than by the feed. Everything below that concerns ordering or
+initialisation was invisible to the single-actor program.
 
 The actor is the **processing** half only. Nothing in these programs moves
 data: the order flow is a plain loop, and a real deployment feeds it from
@@ -117,14 +125,110 @@ the shape these bugs take: neither was fatal alone.
 EV-9 is fixed, with a regression guard in `tests/suites/known_bugs.nim` that
 runs on all three backends. The other four are open.
 
+## What the world server measured
+
+100 000 edits into a 1024-column world, four shards, `--release`. The
+per-message work is a lighting update — a bounded relaxation over the
+31 columns an edit can reach, which is where the cost genuinely is in a
+voxel engine, breaking a torch being the expensive direction.
+
+All three modes and all three backends print the same five numbers
+(`routed=100000 logged=100000 relit=847086 denied=11120 world=355520`).
+That is the result that mattered most and it is a stronger claim than the
+matching engine's: the four shards interleave differently in every mode, so
+the checksum is a SUM rather than a rolling hash, and it agreeing means the
+same edits landed in the same places however they were scheduled.
+
+| mode | median |
+|---|---|
+| `--actors:batch` | 191 ms |
+| `--actors:thread` | 201 ms |
+| `--actors:single` | 364 ms |
+
+`single` is now 1.8x off the pace where the matching engine had all three
+modes within 5%. That is not a reversal of the matching engine's finding —
+it is the other half of it. Six actors in a pipeline can use six cores;
+`single` has one. The matching engine could not show this because one actor
+has no parallelism to lose. So the rule is a little sharper than "modes
+converge when the handler does real work": they converge when the work is
+real AND the topology is serial.
+
+### The backends still do not agree, and the shape of the gap has changed
+
+Same program, same 100 000 edits, same printed world, thread mode:
+
+| backend | median | peak RSS |
+|---|---|---|
+| nim | 191 ms | 80 MB |
+| odin | 2 876 ms | **4 948 MB** |
+| d | **54 196 ms** | 16 MB |
+
+D is 284x slower than Nim here against 56x on the matching engine, and Odin
+leaks 4.9 GB after the ownership work took the matching engine from 13.6 GB
+to 10 MB. Both come from one cause, and this program isolated it better than
+the matching engine could.
+
+The move information EXISTS. Every fn in the lighting path gets `sink` on
+the Nim side, so liveness has already proved the argument dead at the call:
+
+```nim
+proc tuck_pass*(f: sink tuck_Flood, at: int, to: int, step: int, keep: bool): tuck_Flood
+```
+
+Odin and D do not act on it. Their MOVED twin is reached only through
+`movedCallInto`, which recognises `x = f(x, ...)` — the result written back
+into the same name. The innermost loop has that shape and compiles to no
+copy at all. One level up, `let r = {f: a, ...} pass` does not, so `a` is
+copied although it is dead, and then abandoned: twelve arrays allocated per
+lighting update, one returned, nothing freed. That is EV-15 (the copy) and
+EV-14 (the leak), one cause with two prices — D pays it in GC churn and Odin
+in RSS.
+
+## What the world server cost to write
+
+| | what | who breaks | |
+|---|---|---|---|
+| EV-14 | dead intermediates of a threading chain are never freed | odin | open |
+| EV-15 | a dead container handed to a threading fn still copies | odin, d | open |
+| EV-16 | a `match` arm whose body is a `send` emits Nim that will not compile | nim | **fixed** |
+
+**EV-16 is the one that says something about the corpus.** A router over N
+shards has nothing to index — an actor is a compile-time singleton with no
+reference type — so `match` with one arm per actor is the only spelling
+available. It emitted Nim that would not compile, and had done all along:
+every `match` arm anywhere in the tree was a block or a one-line `return`,
+and a bare `send` is neither. A whole construct pairing was simply absent
+from the corpus until a program needed it.
+
+**The ordering bug is the one worth reading, and it is not in the table**
+because the language is arguably within its rights. `main` used to send
+`start` to the four shards itself, then pump 100 000 edits at the gateway.
+In `thread` mode that works. In `batch` mode a send is staged on the SENDING
+THREAD, so main's four-message batch sat unflushed while the gateway's fat
+edit batches crossed first — and a shard indexed a `Slice` whose seqs were
+still empty. `index 0 out of bounds for seq of length 0`, at n=1000 and not
+at n=100.
+
+Tuck promises per-MAILBOX order and batch mode keeps it. What it does not
+promise, and what thread mode hands you by accident, is any order between
+two DIFFERENT senders to one mailbox. The fix is architectural rather than a
+workaround — the gateway brings its own shards up, so `start` and `edit`
+leave the same thread in that order — but the trap is sharp, mode-dependent,
+size-dependent, and lands as an out-of-bounds read inside generated code. An
+actor field with no default initialiser is silently a zero value, which is
+what turns a late message into a crash rather than a wrong answer.
+
 ## Not written yet
 
 Ordered by what they would newly exercise:
 
-- **IRC / chat server** — fan-out to many recipients, which nothing here or
-  in `../savina/` measures at all, plus `[io]` tasks per connection. The
-  natural next one.
-- **Multiplayer game tick loop** — a fixed-rate actor with a deadline,
-  which would exercise timers rather than throughput.
+- **IRC / chat server** — fan-out to many recipients. `world_server.tuck`
+  fans out one message to ONE of four shards; a channel broadcast fans one
+  message out to all of N, which nothing here measures. Plus `[io]` tasks
+  per connection. Still the natural next one.
+- **Multiplayer game tick loop** — a fixed-rate actor with a deadline.
+  `world_server.tuck` covers the shared-world topology but not TIME: it runs
+  as fast as it can, and a game server's real constraint is finishing a tick
+  before the next one is due.
 - **Telephony call routing** — supervision and failure, the Erlang case
   Tuck is furthest from: no actor references means no supervisor.

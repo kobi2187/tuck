@@ -249,4 +249,52 @@ fn main() -> int [io]:
   t.runs "...and both are observed", 7
   t.hostRuns "...on every backend", 7
 
+  # A `match` whose arms are SENDS. This is not a contrived shape: an actor
+  # is a compile-time singleton with no reference type, so a router over N
+  # shards has nothing to index and cannot be a loop — `match` with one arm
+  # per actor is the only spelling, and `benches/apps/world_server.tuck` is
+  # written on it.
+  #
+  # A send is two lines on Nim (enqueue, then a notify that NAMES the actor),
+  # and the arm emitter only bumped the indent for a body that was a block.
+  # The notify fell out of the arm and nim answered "expression expected, but
+  # found 'keyword of'". Every tracked `match` arm was a block or a one-line
+  # `return`, so nothing had caught it. KNOWN-BUGS-EVENTS.md EV-16.
+  #
+  # Asserted by VALUE: 1 + 2 + 20 reaches all three arms, so an arm that does
+  # not compile, does not run, or runs twice answers with a different number
+  # rather than merely a different exit status. The three weights are chosen
+  # so no wrong combination sums to 23 — and so the total FITS IN 8 BITS,
+  # which 1 + 20 + 300 did not: it came back as 127.
+  t.src """
+actor Tally [queue: 16]:
+  n: int = 0
+  seen: int = 0
+
+  on add({v: int}):
+    n += v
+    seen += 1
+
+fn route({s: int}):
+  match s:
+    | 0 -> Tally send add {v: 1}
+    | 1 -> Tally send add {v: 2}
+    | _ -> Tally send add {v: 20}
+
+fn counted() -> bool:
+  return Tally.seen == 3
+
+fn main() -> int:
+  {s: 0} route
+  {s: 1} route
+  {s: 9} route
+  Tally.waitUntil {pred: :counted}
+  return Tally.n
+"""
+  t.okCheck "a match arm may be a bare send"
+  t.emits "...and its notify stays inside the arm",
+          r"of 0:\n {4}discard enqueue\([^\n]*\n {4}tuckNotifySend"
+  t.runs "...and every arm delivers", 23
+  t.hostRuns "...on every backend", 23
+
   t.finish()

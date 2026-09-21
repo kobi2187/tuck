@@ -334,6 +334,145 @@ tested.
 
 ---
 
+## EV-16 — a `match` arm whose body is a `send` emits Nim that does not compile
+
+**FIXED 2026-09-21, Nim only. Found by `benches/apps/world_server.tuck`,**
+whose router is a `match` with one arm per shard — the only spelling
+available, because an actor is a compile-time singleton with no reference
+type, so there is nothing to index and the dispatch cannot be a loop.
+
+### Reproduce
+
+```tuck
+actor A [queue: 8]:
+  n: int = 0
+  on tick({v: int}):
+    n += v
+
+fn route({s: int}):
+  match s:
+    | 0 -> A send tick {v: 1}
+    | _ -> A send tick {v: 2}
+```
+
+`tuck ch` says `OK`. `tuck b` fails:
+
+```
+world_server.nim(339, 3) Error: expression expected, but found 'keyword of'
+```
+
+### Cause
+
+A `send` emits TWO lines on Nim — `enqueue` and then `tuckNotifySend`, which
+names the actor so the runtime need not signal every actor in the program.
+The second line indents itself from `ctx.indent`.
+
+`processMatchArm` bumped `ctx.indent` for an arm body that is a BLOCK, and
+not for one that is a bare expression. A `send` is a bare expression that is
+nonetheless two lines, so the first line got the arm's indent from the
+explicit prefix and the second fell back out to the `of` level:
+
+```nim
+  of 0:
+    discard enqueue(tuck_Shard0Singleton.mailbox, ...)
+  tuckNotifySend(tuck_Shard0Slot)       # <- outside the arm
+```
+
+Nothing in the corpus had caught it because every tracked `match` arm is
+either a block or a single-line `return`.
+
+### Fix
+
+`compiler/codegen.nim:processMatchArm` bumps the indent for the bare-body
+path too. Only the first line is prefixed there; the rest carry their own
+indent, which is why the bump is what fixes them. Guarded by
+`actor_mode`'s "a send inside a match arm stays inside the arm".
+
+---
+
+## EV-15 — a dead container handed to a threading fn still calls the copying wrapper
+
+**Open. Severity: high on Odin and D, none on Nim.** Found by
+`benches/apps/world_server.tuck`: 191 ms on Nim against 2.9 s on Odin and
+**54 s on D**, for identical output.
+
+Tuck already computes what is needed here. Every fn in the lighting path
+gets `sink` on the Nim side —
+
+```nim
+proc tuck_pass*(f: sink tuck_Flood, at: int, to: int, step: int, keep: bool): tuck_Flood
+proc tuck_relight*(sl: sink tuck_Slice, c: int, cols: int): tuck_Slice
+```
+
+— so liveness has proved the argument dead at the call. Odin and D do not
+act on it. Their MOVED twin is reached only through `movedCallInto`, which
+recognises `x = f(x, ...)`: the result written back into the same name. The
+inner loop has that shape and is compiled well —
+
+```odin
+for (((to - tuck_w.i) * step) >= 0) {
+    tuck_w = tuck_relaxOne_moved(tuck_w, step, keep)   // no copy
+}
+```
+
+— but the shape one level up does not:
+
+```tuck
+let r = {f: a, at: lo, to: hi, step: 1, keep: false} pass
+let b = {f: r, at: hi, to: lo, step: -1, keep: true} pass
+```
+
+`a` is dead after the first call and `r` after the second, and each still
+goes through the copying wrapper. The missing rule is that a LAST USE at an
+argument position is as good as the self-threaded shape — the same fact
+`sink` is already emitted from.
+
+---
+
+## EV-14 — the dead intermediates of a threading chain are never freed
+
+**Open. Severity: high on Odin.** `benches/apps/world_server.tuck` peaks at
+**4.9 GB** on Odin against 80 MB on Nim and 16 MB on D, for the same
+100 000 edits. This is the remainder of EV-12 after the ownership work: that
+made a MOVED twin free the parameter it consumes, and made a returned value
+safe to keep. Neither covers a local that is simply abandoned.
+
+### Reproduce
+
+`tuck_relight_moved`, emitted from six ordinary lines of Tuck:
+
+```odin
+tuck_a := tuck_Flood{...}; tuck_a.height = rt.tuckSeqCopy(...); tuck_a.lum = ...; tuck_a.light = ...
+tuck_r := tuck_pass(tuck_a, lo, hi, 1, false); tuck_r.height = rt.tuckSeqCopy(...); ...
+tuck_b := tuck_pass(tuck_r, hi, lo, -1, true);  tuck_b.height = rt.tuckSeqCopy(...); ...
+return tuck_Slice{height = sl.height, lum = sl.lum, light = tuck_b.light, ...}
+```
+
+Twelve arrays are allocated; ONE is returned. `tuck_a` entirely, `tuck_r`
+entirely, and `tuck_b`'s `height` and `lum` are dead at the `return` and
+nothing frees them — about 24 KB per edit, which is the 4.9 GB.
+
+`relight` is correctly NOT eligible for the twin free: it returns
+`sl.height` and `sl.lum` unchanged, so `slotIsFresh` says no and freeing the
+parameter would free what the caller is about to bind. That decision is
+right and is not what is missing. What is missing is that the analysis has
+nothing to say about a local which is neither returned, nor stored, nor
+moved into a call — the third case in the escape list has no owner.
+
+D does not leak (its GC collects) and pays in time instead: the same
+abandoned copies are EV-15's 54 seconds. The two are one cause with two
+prices.
+
+### What it needs
+
+`thoughts/ownership-analysis-plan.md` already has the shape: a local whose
+provenance is `oFresh` and whose liveness ends before the scope does is
+freeable at its last use. Both halves exist —
+`analysis_provenance.slotIsFresh` and `analysis_liveness` — and have not
+been joined for this case.
+
+---
+
 ## EV-13 — a `Seq` sent to an actor is not copied: the sender keeps writing it
 
 **FIXED 2026-09-21, D and Odin (Nim was never affected). Issue #76.** Found

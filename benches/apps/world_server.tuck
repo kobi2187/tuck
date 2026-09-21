@@ -1,0 +1,429 @@
+# A shared-world server — the thing behind a Minecraft-like game.
+#
+# WHY THIS SHAPE, and why it is the actor story's real test rather than a
+# second matching engine.
+#
+# `matching_engine.tuck` is ONE actor: a serialized stream into a single
+# owner. That is a real deployment, but it exercises none of what people
+# actually mean by "microservice-like actors" — there is no routing, no
+# fan-out to shards, no fan-in barrier, and no message that is produced BY
+# an actor rather than by the feed. This has all four:
+#
+#     ingress (plain fns; `[io]` socket tasks in a deployment)
+#            |
+#        Gateway          validate, then route by world coordinate
+#        /  |  \  \
+#   Shard0 Shard1 Shard2 Shard3    each owns a strip of the world
+#        \  |  /  /
+#        Journal          the append-only change log, and the drain barrier
+#
+# That is how every shared-world server is actually deployed — a gateway
+# that owns no world state, N zone servers that each own a disjoint slice of
+# it, and a log that everyone writes to. The slicing is not an optimisation:
+# it is what makes the edits safe to apply in parallel at all, because two
+# shards can never touch the same column.
+#
+# THE WORK PER MESSAGE IS A LIGHTING UPDATE, which is the honest choice. In
+# a voxel world the expensive part of "place a block" has never been storing
+# the block; it is re-propagating sky light around it, because light is a
+# flood and a single edit changes a neighbourhood. Here that is a bounded
+# relaxation over a window of columns — real work that scales with the edit,
+# not a counter bump, so the handler costs more than the handoff.
+#
+# WHAT TUCK COULD NOT EXPRESS, written down because it shaped the file:
+#
+#   * The shards are four hand-written singletons. An actor is a
+#     compile-time singleton with no reference type, so `Shard[i]` is not a
+#     thing that can be indexed and the router cannot be a loop — it is a
+#     `match` with one arm per shard. Same wall `benches/savina/threadring`
+#     hit; here it is worse, because the natural deployment knob for a world
+#     server is "how many zone servers", and that knob is a source edit.
+#
+#   * Every queue is sized above the WHOLE burst. With no backpressure and a
+#     silent drop on a full mailbox (KNOWN-BUGS-EVENTS.md EV-11) a pipeline
+#     is only as safe as its most-loaded stage, and a dropped `flush` does
+#     not merely lose an edit — it hangs the drain forever. A one-actor
+#     program can paper over that with one big queue. A pipeline cannot: the
+#     Gateway takes the full burst AND the Journal takes one message per
+#     edit, so both need it, and a shard needs its share. This is the
+#     clearest case yet for EV-11 being a design gap rather than a nit.
+
+import scheduler
+import seq
+import console
+import str
+
+# The world is 1024 columns wide, four shards of 256. Heights are block
+# counts above sea level, as they are in a real chunk's heightmap — an
+# integer, never a float.
+const SPAN = 256
+const SHARDS = 4
+const MAXLIGHT = 15
+const TORCH = 14
+
+fn zeroed({n: int}) -> Seq[int]:
+  var out = [0]           # seeded: an empty list has no element type (TK-TY20)
+  var i = 1
+  for i < n:
+    out = {items: out, value: 0} push
+    i = i + 1
+  return out
+
+# --- lighting -------------------------------------------------------------
+#
+# The slice is UNDERGROUND — a corridor, not a surface. That is deliberate
+# and it is where the cost actually is: open sky reaches every column
+# equally, so a surface light model is local and a sweep over it changes
+# nothing. Underground the only light is what someone placed, so a torch
+# lights the tunnel for fifteen columns either way, a placed block casts a
+# shadow past itself, and BREAKING a torch darkens everything it was
+# lighting. Light removal being the expensive case is not an artifact of
+# this file; it is the thing voxel engines are known for.
+
+# One shard's slice of the world. Held as a single record for the same
+# reason the order book is: it keeps every handler one line, which is also
+# how a real zone server is written — one apply path, the coordinate as a
+# parameter.
+type Slice:
+  height: Seq[int]      # how much each column blocks
+  lum:    Seq[int]      # what each column emits — a torch, or nothing
+  light:  Seq[int]      # what actually reaches it
+  edits:  int
+  relit:  int
+  denied: int
+
+fn freshSlice({cols: int}) -> Slice:
+  let h = {n: cols} zeroed
+  let e = {n: cols} zeroed
+  let l = {n: cols} zeroed
+  return {height: h, lum: e, light: l, edits: 0, relit: 0, denied: 0} Slice
+
+# A relaxation in progress. `step` is +1 for the left-to-right pass and -1
+# for the right-to-left one, so the two passes are the same code.
+type Flood:
+  height: Seq[int]
+  lum:    Seq[int]
+  light:  Seq[int]
+  i:      int
+  relit:  int
+
+# Light at a column is the brightest of what it emits and what leaks in from
+# behind — one level dimmer for the distance, and dimmer again by whatever
+# the column itself blocks. A solid column stops the leak, which is what
+# makes a placed block cast a shadow rather than merely be dark.
+#
+# `keep` is what makes two passes exact. The first pass ASSIGNS, discarding
+# the old value, which is what lets a removed torch actually go dark; the
+# second pass keeps what the first found and maxes the other direction in.
+# Assign-then-max is the 1-D distance transform, and getting it backwards
+# gives light that can brighten but never dim.
+fn relaxOne({f: Flood, step: int, keep: bool}) -> Flood:
+  var l = f.light
+  let src = if keep and l[f.i] > f.lum[f.i]: l[f.i] else: f.lum[f.i]
+  let leak = l[f.i - step] - 1 - f.height[f.i]
+  let want = if leak > src: leak else: src
+  let hit = if want != l[f.i]: 1 else: 0
+  l[f.i] = want
+  return {height: f.height, lum: f.lum, light: l, i: f.i + step, relit: f.relit + hit} Flood
+
+# One directional pass from `at` to `to`.
+fn pass({f: Flood, at: int, to: int, step: int, keep: bool}) -> Flood:
+  var w = {height: f.height, lum: f.lum, light: f.light, i: at, relit: f.relit} Flood
+  for (to - w.i) * step >= 0:
+    w = {f: w, step: step, keep: keep} relaxOne
+  return w
+
+# The window an edit can possibly have changed: light falls off at least one
+# level per column, so nothing beyond MAXLIGHT columns can be affected.
+# Clamped to the shard, which is also where the authority ends — a shard may
+# not read its neighbour's columns, and the seam that leaves is the last
+# note at the bottom of this file.
+fn relight({sl: Slice, c: int, cols: int}) -> Slice:
+  let lo = if c - MAXLIGHT > 1: c - MAXLIGHT else: 1
+  let hi = if c + MAXLIGHT < cols - 2: c + MAXLIGHT else: cols - 2
+  let a = {height: sl.height, lum: sl.lum, light: sl.light, i: lo, relit: 0} Flood
+  let r = {f: a, at: lo, to: hi, step: 1, keep: false} pass
+  let b = {f: r, at: hi, to: lo, step: -1, keep: true} pass
+  return {height: sl.height, lum: sl.lum, light: b.light, edits: sl.edits + 1, relit: sl.relit + b.relit, denied: sl.denied} Slice
+
+# --- edits ----------------------------------------------------------------
+
+# Raise the column, and light it if what was placed is a torch.
+fn buildUp({sl: Slice, c: int, y: int, kind: int}) -> Slice:
+  var h = sl.height
+  h[c] = y
+  var lm = sl.lum
+  lm[c] = if kind == 2: TORCH else: lm[c]
+  return {height: h, lum: lm, light: sl.light, edits: sl.edits, relit: sl.relit, denied: sl.denied} Slice
+
+# Placing is only legal on top of the existing column — the rule a real
+# server enforces so a client cannot spawn geometry in mid-air. A refused
+# edit is counted and costs no lighting work, which is the whole reason
+# validation happens before the expensive part.
+fn placeAt({sl: Slice, c: int, y: int, kind: int, cols: int}) -> Slice:
+  if y != sl.height[c] + 1:
+    return {height: sl.height, lum: sl.lum, light: sl.light, edits: sl.edits, relit: sl.relit, denied: sl.denied + 1} Slice
+  let up = {sl: sl, c: c, y: y, kind: kind} buildUp
+  return {sl: up, c: c, cols: cols} relight
+
+# Taking the top block off takes any torch on that column with it — which is
+# the expensive direction, because the light it was casting has to be
+# unwound across the whole window rather than simply added to.
+fn carve({sl: Slice, c: int}) -> Slice:
+  var h = sl.height
+  h[c] = h[c] - 1
+  var lm = sl.lum
+  lm[c] = 0
+  return {height: h, lum: lm, light: sl.light, edits: sl.edits, relit: sl.relit, denied: sl.denied} Slice
+
+# Bedrock is not diggable.
+fn digAt({sl: Slice, c: int, cols: int}) -> Slice:
+  if sl.height[c] <= 0:
+    return {height: sl.height, lum: sl.lum, light: sl.light, edits: sl.edits, relit: sl.relit, denied: sl.denied + 1} Slice
+  let cut = {sl: sl, c: c} carve
+  return {sl: cut, c: c, cols: cols} relight
+
+# `kind == 0` is a dig, 1 is stone, 2 is a torch. One message shape per
+# shard rather than three: a zone server's wire protocol is one edit opcode,
+# and it keeps the router's arms to a single send each.
+fn applyEdit({sl: Slice, c: int, y: int, kind: int}) -> Slice:
+  if kind == 0:
+    return {sl: sl, c: c, cols: SPAN} digAt
+  return {sl: sl, c: c, y: y, kind: kind, cols: SPAN} placeAt
+
+# --- the log --------------------------------------------------------------
+#
+# Every shard reports to one Journal. This is the fan-IN half, and it is the
+# stage a single-actor program never has: the Journal's mailbox takes one
+# message per applied edit from four producers at once, so it is the first
+# place in this corpus where two actors contend for one queue.
+
+actor Journal [queue: 262144]:
+  entries: int = 0
+  chk:     int = 0
+  relit:   int = 0
+  denied:  int = 0
+  shut:    int = 0
+
+  # One entry per edit, carrying the column's resulting height — a change
+  # log records the state an edit LEFT, which is what makes it replayable.
+  #
+  # `chk += h` and not a rolling hash, deliberately. A hash folds in arrival
+  # ORDER, and the four shards interleave differently under every
+  # `--actors:` mode; a sum is commutative, so it checks that the same edits
+  # landed without also checking a sequence this program never promised.
+  on logged({h: int}):
+    entries += 1
+    chk += h
+
+  # A shard signs off exactly once, with its own totals. The barrier is the
+  # COUNT, not a flag, and that is what makes it a real drain: the world is
+  # closed when every shard has drained, and a shard cannot report until its
+  # own mailbox has emptied down to the `flush` behind its edits.
+  on closed({lit: int, bad: int}):
+    relit += lit
+    denied += bad
+    shut += 1
+
+fn worldDown() -> bool:
+  return Journal.shut == SHARDS
+
+# --- the shards -----------------------------------------------------------
+#
+# Four singletons, written out. `sl = f(sl, ...)` is the natural spelling
+# and also the fast one — it is the shape `movedCallInto` recognises, so the
+# heightmap and the lightmap are MOVED into the handler rather than copied.
+# Writing it through a local instead costs two full array copies per edit.
+
+actor Shard0 [queue: 131072]:
+  sl: Slice
+  on start({n: int}):
+    sl = {cols: SPAN} freshSlice
+  on edit({c: int, y: int, kind: int}):
+    sl = {sl: sl, c: c, y: y, kind: kind} applyEdit
+    Journal send logged {h: sl.height[c]}
+  on flush({n: int}):
+    Journal send closed {lit: sl.relit, bad: sl.denied}
+
+actor Shard1 [queue: 131072]:
+  sl: Slice
+  on start({n: int}):
+    sl = {cols: SPAN} freshSlice
+  on edit({c: int, y: int, kind: int}):
+    sl = {sl: sl, c: c, y: y, kind: kind} applyEdit
+    Journal send logged {h: sl.height[c]}
+  on flush({n: int}):
+    Journal send closed {lit: sl.relit, bad: sl.denied}
+
+actor Shard2 [queue: 131072]:
+  sl: Slice
+  on start({n: int}):
+    sl = {cols: SPAN} freshSlice
+  on edit({c: int, y: int, kind: int}):
+    sl = {sl: sl, c: c, y: y, kind: kind} applyEdit
+    Journal send logged {h: sl.height[c]}
+  on flush({n: int}):
+    Journal send closed {lit: sl.relit, bad: sl.denied}
+
+actor Shard3 [queue: 131072]:
+  sl: Slice
+  on start({n: int}):
+    sl = {cols: SPAN} freshSlice
+  on edit({c: int, y: int, kind: int}):
+    sl = {sl: sl, c: c, y: y, kind: kind} applyEdit
+    Journal send logged {h: sl.height[c]}
+  on flush({n: int}):
+    Journal send closed {lit: sl.relit, bad: sl.denied}
+
+# The router. A `match` with one arm per shard, and it is a `match` because
+# there is nothing to index: `Shard0` is a name, not a value, so no loop and
+# no table can reach it. Adding a fifth zone server is an edit here.
+fn toShard({s: int, c: int, y: int, kind: int}):
+  match s:
+    | 0 -> Shard0 send edit {c: c, y: y, kind: kind}
+    | 1 -> Shard1 send edit {c: c, y: y, kind: kind}
+    | 2 -> Shard2 send edit {c: c, y: y, kind: kind}
+    | _ -> Shard3 send edit {c: c, y: y, kind: kind}
+
+fn drainShards():
+  Shard0 send flush {n: 0}
+  Shard1 send flush {n: 0}
+  Shard2 send flush {n: 0}
+  Shard3 send flush {n: 0}
+
+# --- the gateway ----------------------------------------------------------
+#
+# Owns no world state, which is the point: it validates the coordinate and
+# picks the owner. A gateway that needed the world would be a bottleneck in
+# front of the shards and the sharding would buy nothing.
+
+actor Gateway [queue: 262144]:
+  routed:  int = 0
+  bounced: int = 0
+
+  # THE GATEWAY BRINGS ITS OWN SHARDS UP, and that is not tidiness — it is
+  # the only spelling that is correct in every `--actors:` mode.
+  #
+  # `main` used to send `start` to the four shards itself. In `thread` mode
+  # that works, because a send is visible the moment it is made and `start`
+  # is made first. In `batch` mode a send is STAGED ON THE SENDING THREAD
+  # and crosses when its batch fills, so main's four-message batch sat
+  # unflushed while main pumped a hundred thousand sends at the gateway —
+  # and the gateway's own edit batches, fat and flushing constantly,
+  # reached Shard1 long before it. The shard indexed a `Slice` whose seqs
+  # were still empty and died with `index 0 out of bounds for seq of length
+  # 0`, at n=1000 and not at n=100.
+  #
+  # Tuck promises per-MAILBOX order, and a batch keeps it. What it does not
+  # promise — and what thread mode hands you by accident — is any order
+  # between two DIFFERENT senders to one mailbox. So a stage must be brought
+  # up by whoever feeds it: `start` and `edit` now leave the same thread, in
+  # that order, and no mode can separate them. Real deployments do this too,
+  # for the same reason and not by analogy.
+  on boot({n: int}):
+    {} startWorld
+
+  on edit({x: int, y: int, kind: int}):
+    routed += 1
+    let s = x /i SPAN
+    let c = x % SPAN
+    {s: s, c: c, y: y, kind: kind} toShard
+
+  # `drain` arrives BEHIND every edit already routed, and FIFO per mailbox
+  # is what makes that mean something: by the time the gateway sees it, it
+  # has already forwarded everything ahead of it, so the flushes it sends
+  # land behind those edits in each shard's queue. The barrier is correct
+  # because of the ordering guarantee, not in spite of it.
+  on drain({n: int}):
+    {} drainShards
+
+# --- the client feed ------------------------------------------------------
+#
+# ORDINARY CODE, not actors — the same point the matching engine makes.
+# Actors are the processing half; getting bytes off a socket is an `[io]`
+# task in a deployment and a plain loop here.
+
+# A deterministic edit stream shaped like real play, which took two tries to
+# get right and is worth writing down: the first version picked `x` and `y`
+# independently at "random", and 88% of its edits were refused for landing
+# at the wrong height. That is not a server under load, it is a server
+# rejecting nonsense — and it measured the validation path instead of the
+# lighting one.
+#
+# Players do not edit uniformly at random. They work ONE column in a burst,
+# stacking blocks upward and then taking them back down, and they move on.
+# Sixteen edits per burst: eight up, eight down, which leaves the column as
+# it found it and makes the stream self-consistent however many times it
+# revisits a column.
+#
+# Every ninth burst is a STALE CLIENT — one whose cached heightmap is out of
+# date, so it aims three blocks too high and every edit in the burst is
+# refused. That is the real source of rejections on a live server, and it
+# keeps the validation path loaded at about 11% without drowning the work.
+# Dig on the way back down; on the way up, every fourth block is a torch —
+# players light a tunnel as they cut it.
+fn blockKind({s: int}) -> int:
+  if s >= 8:
+    return 0
+  return if s % 4 == 3: 2 else: 1
+
+fn clientEdit({i: int}):
+  let b = i /i 16
+  let s = i % 16
+  let x = (b * 37) % (SPAN * SHARDS)
+  let kind = {s: s} blockKind
+  let y = if b % 9 == 0: s + 3 else: s + 1
+  Gateway send edit {x: x, y: y, kind: kind}
+
+fn session({n: int}):
+  var i = 0
+  for i < n:
+    {i: i} clientEdit
+    i = i + 1
+
+fn startWorld():
+  Shard0 send start {n: 0}
+  Shard1 send start {n: 0}
+  Shard2 send start {n: 0}
+  Shard3 send start {n: 0}
+
+# PRINTED, not returned as an exit code — exit status is 8 bits and Unix has
+# already spoken for much of it. Printing also makes the three `--actors:`
+# modes and the three backends comparable for AGREEMENT: the shards are
+# disjoint, so no edit's result depends on any other shard, and every mode
+# must print the same numbers. A world server that answered differently per
+# scheduler flag would be useless whatever its throughput.
+fn report() -> void [io]:
+  {text: "routed=" + Gateway.routed.toStr} printLine
+  {text: "logged=" + Journal.entries.toStr} printLine
+  {text: "relit=" + Journal.relit.toStr} printLine
+  {text: "denied=" + Journal.denied.toStr} printLine
+  {text: "world=" + Journal.chk.toStr} printLine
+
+fn main() -> int [io]:
+  Gateway send boot {n: 0}
+  {n: 100000} session
+  Gateway send drain {n: 0}
+  Journal.waitUntil {pred: :worldDown}
+  {} report
+  return 0
+
+# --- the seam, and what this program could not say ------------------------
+#
+# A shard relights only its OWN columns and stops one short of each end, so
+# light does not cross a shard boundary: a torch at column 255 lights
+# nothing in Shard1. That is a real distributed-systems problem and not an
+# oversight — zone servers genuinely have this seam, and a real one handles
+# it with a border exchange between neighbours after each tick.
+#
+# It is not written here because Tuck cannot express the interesting half.
+# The exchange wants each shard to ask its NEIGHBOUR for a border strip, and
+# a shard has no way to name a neighbour: there is no actor reference, so
+# `Shard1` can only be written as the literal `Shard1`, and a shard that
+# names its neighbours by hand is not sharded — it is four copies of a
+# program that knows the whole topology at compile time. `toShard` above is
+# already that compromise in miniature.
+#
+# The honest summary is that Tuck's actors model a fixed set of named
+# services very well and a dynamic population of peers not at all, and the
+# boundary between those two runs right through the middle of this file.
