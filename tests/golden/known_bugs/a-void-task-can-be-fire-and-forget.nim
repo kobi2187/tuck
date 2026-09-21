@@ -25,8 +25,7 @@ proc handleMsg*(self: tuck_Sink, msg: tuck_SinkMsg) =
 proc draintuck_Sink(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_SinkMsg
-    while dequeue(tuck_SinkSingleton.mailbox, m):
+    for m in messages(tuck_SinkSingleton.mailbox):
       handleMsg(tuck_SinkSingleton, m)
       tuckCheckWaiters()
       result = true
@@ -37,7 +36,7 @@ proc registerActortuck_Sink*() =
 
 proc tuck_fire*(): void =
   discard enqueue(tuck_SinkSingleton.mailbox, tuck_SinkMsg(tuckTag: msgPing, n: 5))
-  tuckNotifySend()
+  tuckNotifySend(tuck_SinkSlot)
   return
 
 proc tuck_done*(): bool =

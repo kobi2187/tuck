@@ -157,8 +157,7 @@ proc handleMsg*(self: tuck_Pipeline, msg: tuck_PipelineMsg) =
 proc draintuck_Pipeline(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_PipelineMsg
-    while dequeue(tuck_PipelineSingleton.mailbox, m):
+    for m in messages(tuck_PipelineSingleton.mailbox):
       handleMsg(tuck_PipelineSingleton, m)
       tuckCheckWaiters()
       result = true
@@ -188,7 +187,7 @@ proc tuck_Video_DecodeError*(code: uint8): void =
 
 proc tuck_feed*(nal: tuck_NalKind, midFrame: bool): void =
   discard enqueue(tuck_PipelineSingleton.mailbox, tuck_PipelineMsg(tuckTag: msgNal, nal: nal, midFrame: midFrame))
-  tuckNotifySend()
+  tuckNotifySend(tuck_PipelineSlot)
   return
 
 proc tuck_drained*(): bool =

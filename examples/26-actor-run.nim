@@ -26,8 +26,7 @@ proc handleMsg*(self: tuck_Counter, msg: tuck_CounterMsg) =
 proc draintuck_Counter(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_CounterMsg
-    while dequeue(tuck_CounterSingleton.mailbox, m):
+    for m in messages(tuck_CounterSingleton.mailbox):
       handleMsg(tuck_CounterSingleton, m)
       tuckCheckWaiters()
       result = true
@@ -43,7 +42,7 @@ proc tuck_main*(): int =
   for tuck_i in (1 .. 10):
     if true:
       discard enqueue(tuck_CounterSingleton.mailbox, tuck_CounterMsg(tuckTag: msgAdd, n: tuck_i))
-      tuckNotifySend()
+      tuckNotifySend(tuck_CounterSlot)
   tuckWaitOn(tuck_CounterSlot, tuck_sumReady)
   return tuck_CounterSingleton.total
 

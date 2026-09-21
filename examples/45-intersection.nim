@@ -141,8 +141,7 @@ proc handleMsg*(self: tuck_Signals, msg: tuck_SignalsMsg) =
 proc draintuck_Signals(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_SignalsMsg
-    while dequeue(tuck_SignalsSingleton.mailbox, m):
+    for m in messages(tuck_SignalsSingleton.mailbox):
       handleMsg(tuck_SignalsSingleton, m)
       tuckCheckWaiters()
       result = true
@@ -202,7 +201,7 @@ proc tuck_settled*(): bool =
 proc tuck_report*(d: Detector): void =
   var tuck_demand = tuck_poll(d)
   discard enqueue(tuck_SignalsSingleton.mailbox, tuck_SignalsMsg(tuckTag: msgSense, demand: tuck_demand, preempt: false))
-  tuckNotifySend()
+  tuckNotifySend(tuck_SignalsSlot)
   return
 
 proc tuck_drive*(): void =
@@ -210,7 +209,7 @@ proc tuck_drive*(): void =
   var tuck_camera = tuck_CameraDetector(confidence: 91'u8)
   tuck_report(Detector(tag: Detector_is_tuck_CameraDetector, tuck_CameraDetectorVal: tuck_camera))
   discard enqueue(tuck_SignalsSingleton.mailbox, tuck_SignalsMsg(tuckTag: msgSense, demand: tuck_Demand.quiet, preempt: false))
-  tuckNotifySend()
+  tuckNotifySend(tuck_SignalsSlot)
   tuck_report(Detector(tag: Detector_is_tuck_LoopDetector, tuck_LoopDetectorVal: tuck_loops))
   return
 

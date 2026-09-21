@@ -58,3 +58,6 @@ benches/transpile/dispatch
 benches/transpile/payload.nim
 benches/transpile/record.nim
 benches/transpile/dispatch.nim
+
+# ad-hoc bench binaries (run.sh builds benches/.bas, .bat and removes them)
+benches/.*

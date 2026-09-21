@@ -989,11 +989,34 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
     return "var " & e.target.name & " = " & spawn
   ctx.genExpr(e.target) & " = " & spawn
 
+proc genSelfConcatAssignment(ctx: var CodegenCtx, e: Expr): string =
+  ## `s = s + v` on a str appends in place. Nim's `string` is mutable and
+  ## carries spare capacity, so `add` is amortised where `tuckConcat` builds
+  ## a whole new string every time — the difference between an O(n) loop and
+  ## an O(n^2) one.
+  let appended = selfConcatValue(ctx.res, e)
+  if appended == nil: return ""
+  let tgt = if e.target != nil and e.target.kind == exkVar and
+               e.target.name in ctx.fieldVars: "self." & e.target.name
+            else: e.target.name
+  tgt & ".add(" & ctx.genExpr(appended) & ")"
+
 proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## Self-append: `xs = {items: xs, ...} push` appends in place.
+  ##
+  ## The target is qualified here rather than taken as a bare `e.target.name`:
+  ## this path bypasses genAssign's field handling, and the appended VALUE is
+  ## built by the ordinary expression emitter, which does add the `self.`. An
+  ## actor handler therefore emitted `xs.add(self.xs[...])` — bare on the
+  ## left, qualified on the right — and Nim rejected it as an undeclared
+  ## identifier. The other two backends have the same two fast paths and had
+  ## the same hole. EV-9.
   let appended = selfAppendValue(ctx.res, e)
   if appended == nil: return ""
-  e.target.name & ".add(" & ctx.genExpr(appended) & ")"
+  let tgt = if e.target != nil and e.target.kind == exkVar and
+               e.target.name in ctx.fieldVars: "self." & e.target.name
+            else: e.target.name
+  tgt & ".add(" & ctx.genExpr(appended) & ")"
 
 proc prepareChainBinding(ctx: var CodegenCtx, valSrc: Expr): tuple[prelude: string, valSrc: Expr] =
   ## Prepare chain binding: run statements into temp, return (stmts, temp).
@@ -1046,6 +1069,8 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
   if taskResult != "": return taskResult
   let appendResult = ctx.genSelfAppendAssignment(e)
   if appendResult != "": return appendResult
+  let concatResult = ctx.genSelfConcatAssignment(e)
+  if concatResult != "": return concatResult
   let (prelude, valSrc) = ctx.prepareChainBinding(e.assignVal)
   let targetStr = ctx.genAssignTarget(e.target)
   let valStr = ctx.genExpr(valSrc)
@@ -1190,9 +1215,14 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
     for f in e.sendPayload.fields:
       ctorArgs.add(", " & f.name & ": " & ctx.genExpr(f.value))
   let ind = repeat("  ", ctx.indent)
-  # statement form: enqueue + notify on two lines at the current indent
+  # statement form: enqueue + notify on two lines at the current indent.
+  #
+  # The notify NAMES the actor. It used to take no argument, so the runtime
+  # had to take a global lock and signal every actor in the program to reach
+  # the one that owned this mailbox — O(actors) per send, on a line shared by
+  # every sender. The slot global is right here at the send site.
   "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
-    "))\n" & ind & "tuckNotifySend()"
+    "))\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
 
 proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
   ## The `timeout` arm's deadline as a plain int of milliseconds.

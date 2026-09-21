@@ -1,0 +1,43 @@
+# Savina PP (ping-pong) — Imam & Sarkar, AGERE! 2014.
+# Ported from savina/src/main/scala/.../pingpong/PingPongAkkaActorBenchmark.scala
+#
+# Two actors, one message in flight, N round trips. This is a LATENCY
+# benchmark, not a throughput one: nothing is ever batched, and every send is
+# a wake of an actor that has just gone idle. It is the shape `--actors:batch`
+# should be WORST at and `--actors:single` best at.
+#
+# WHAT THE PORT DROPS, and why that is the interesting part: Savina's messages
+# carry a `sender` ActorRef, because an Akka actor is created at runtime and
+# has no name. A Tuck actor is a declared singleton, so Ping and Pong name
+# each other directly and the reply address disappears from the protocol.
+import scheduler
+
+actor Pong [queue: 8]:
+  pongs: int = 0
+
+  on ping({n: int}):
+    pongs += 1
+    Ping send pong {n: n}
+
+actor Ping [queue: 8]:
+  left: int = 0
+  done: bool = false
+
+  on start({n: int}):
+    left = n
+    Pong send ping {n: n}
+
+  on pong({n: int}):
+    left -= 1
+    if left > 0:
+      Pong send ping {n: n}
+    else:
+      done = true
+
+fn finished() -> bool:
+  return Ping.done
+
+fn main() -> int:
+  Ping send start {n: 40000}
+  Ping.waitUntil {pred: :finished}
+  return 0

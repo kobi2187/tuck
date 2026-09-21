@@ -28,6 +28,8 @@ tuck_fetchFeed :: proc(url: string) -> rt.TuckResult(TRec_feed(tuck_Feed)) {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	rt.tuckRun()
+	rt.tuckTrackCheck()
 }

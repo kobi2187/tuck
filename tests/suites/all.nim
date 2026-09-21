@@ -6,14 +6,17 @@
 ## `run*` proc and re-run it. The registry is bookkeeping, not a decision.
 
 import ../harness
+import actor_mode
 import actor_result
 import auto_alias
 import bare_variant
 import cli_smoke
 import complexity
+import cross_module
 import d_backend
 import declarations
 import diagnostics
+import doc_snippets
 import duplicates
 import end_to_end
 import examples
@@ -21,49 +24,51 @@ import extern_impl
 import fn_size
 import frontend
 import fuzz_corpus
+import generics
+import groups
 import interface_call
 import interface_dispatch
 import interface_seq
 import interface_wrap
 import interfaces
-import groups
-import known_bugs
 import invariants
-import validate
-import doc_snippets
+import known_bugs
 import loop_var_type
 import mangle
 import member_names
+import memory
 import object_composition
 import odin_backend
 import optimize
 import pointer_containment
-import syntax_ceilings
-import typecheck
 import recursive_types
 import resources
 import resources_rt
+import syntax_ceilings
 import task_select
-import generics
-import cross_module
-import with_update
+import typecheck
 import uninit
+import validate
 import value_semantics
 import when_target
+import with_update
 
 type Entry = tuple[name: string, body: SuiteProc, quick: bool]
 
 # `quick` marks the check-only suites — no `tuck build`, no `odin build`. Those
 # are what tests/run --quick runs, the inner-loop gate that quick-test.sh was.
 let registry: seq[Entry] = @[
+  ("actor_mode",          SuiteProc(actor_mode.run),          true),
   ("actor_result",        SuiteProc(actor_result.run),        true),
   ("auto_alias",          SuiteProc(auto_alias.run),          false),
   ("bare_variant",        SuiteProc(bare_variant.run),        true),
   ("cli_smoke",           SuiteProc(cli_smoke.run),           false),
   ("complexity",          SuiteProc(complexity.run),          true),
+  ("cross_module",        SuiteProc(cross_module.run),        false),
   ("d_backend",           SuiteProc(d_backend.run),           false),
   ("declarations",        SuiteProc(declarations.run),        false),
   ("diagnostics",         SuiteProc(diagnostics.run),         false),
+  ("doc_snippets",        SuiteProc(doc_snippets.run),        false),
   ("duplicates",          SuiteProc(duplicates.run),          true),
   ("end_to_end",          SuiteProc(end_to_end.run),          false),
   ("examples",            SuiteProc(examples.run),            true),
@@ -71,35 +76,34 @@ let registry: seq[Entry] = @[
   ("fn_size",             SuiteProc(fn_size.run),             true),
   ("frontend",            SuiteProc(frontend.run),            true),
   ("fuzz_corpus",         SuiteProc(fuzz_corpus.run),         true),
+  ("generics",            SuiteProc(generics.run),            false),
+  ("groups",              SuiteProc(groups.run),              false),
   ("interface_call",      SuiteProc(interface_call.run),      true),
   ("interface_dispatch",  SuiteProc(interface_dispatch.run),  false),
   ("interface_seq",       SuiteProc(interface_seq.run),       false),
   ("interface_wrap",      SuiteProc(interface_wrap.run),      true),
   ("interfaces",          SuiteProc(interfaces.run),          true),
-  ("groups",              SuiteProc(groups.run),              true),
-  ("known_bugs",          SuiteProc(known_bugs.run),          false),
   ("invariants",          SuiteProc(invariants.run),          false),
-  ("validate",            SuiteProc(validate.run),            true),
-  ("doc_snippets",        SuiteProc(doc_snippets.run),        true),
+  ("known_bugs",          SuiteProc(known_bugs.run),          false),
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
   ("mangle",              SuiteProc(mangle.run),              true),
   ("member_names",        SuiteProc(member_names.run),        true),
+  ("memory",              SuiteProc(memory.run),              false),
   ("object_composition",  SuiteProc(object_composition.run),  false),
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
-  ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
-  ("typecheck",           SuiteProc(typecheck.run),           true),
-  ("recursive_types",     SuiteProc(recursive_types.run),     true),
+  ("recursive_types",     SuiteProc(recursive_types.run),     false),
   ("resources",           SuiteProc(resources.run),           false),
   ("resources_rt",        SuiteProc(resources_rt.run),        false),
+  ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("task_select",         SuiteProc(task_select.run),         false),
-  ("generics",            SuiteProc(generics.run),            true),
-  ("cross_module",        SuiteProc(cross_module.run),        true),
-  ("with_update",         SuiteProc(with_update.run),         true),
+  ("typecheck",           SuiteProc(typecheck.run),           true),
   ("uninit",              SuiteProc(uninit.run),              false),
+  ("validate",            SuiteProc(validate.run),            false),
   ("value_semantics",     SuiteProc(value_semantics.run),     false),
   ("when_target",         SuiteProc(when_target.run),         false),
+  ("with_update",         SuiteProc(with_update.run),         false),
 ]
 
 proc suiteBody*(name: string): SuiteProc =

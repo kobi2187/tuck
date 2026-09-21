@@ -187,8 +187,7 @@ __gshared void* tuck_PipelineSlot;
 
 bool drain_tuck_Pipeline() {
     bool did = false;
-    tuck_PipelineMsg msg;
-    while (rt.dequeue(tuck_PipelineSingleton.mailbox, msg)) {
+    foreach (ref msg; tuck_PipelineSingleton.mailbox) {
         handleMsg_tuck_Pipeline(tuck_PipelineSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
@@ -198,12 +197,12 @@ bool drain_tuck_Pipeline() {
 
 void sendNal_tuck_Pipeline(ref tuck_Pipeline self, tuck_NalKind nal, bool midFrame) {
     cast(void) rt.enqueue(self.mailbox, tuck_PipelineMsg(tuckTag: tuck_PipelineMsgKind.msgNal, nal: nal, midFrame: midFrame));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_PipelineSlot);
 }
 
 void sendOverrun_tuck_Pipeline(ref tuck_Pipeline self, long n) {
     cast(void) rt.enqueue(self.mailbox, tuck_PipelineMsg(tuckTag: tuck_PipelineMsgKind.msgOverrun, n: n));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_PipelineSlot);
 }
 
 

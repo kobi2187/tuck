@@ -385,6 +385,55 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.runs "...and a copy taken beforehand is untouched", 0
 
+  # --- the same fact one type over: `s = s + v` on a str ------------------
+  # A concatenation builds a whole new string, so a build loop was O(n^2)
+  # here too — 100k/200k/400k iterations took 117/461/1859 ms on Nim, a clean
+  # 4x per doubling. The old `s` is dead the instant the new one lands, so
+  # the host's amortised append is equivalent: 461 ms -> 5 ms at 200k, and
+  # the curve goes flat.
+  #
+  # TWO SHAPES MUST NOT BE REWRITTEN, and both are in the program below
+  # because both silently compute something else rather than failing:
+  #   `b = "ab" + b`  is a PREPEND — appending reverses it
+  #   `c = c + c`     would grow a string while reading it
+  #
+  # Odin is deliberately absent from the emit assertions. Its `string` is an
+  # immutable byte slice with no spare capacity, so there is nothing to
+  # append into; giving it one is a representation change, not a rewrite.
+  t.src """
+import str
+
+fn main() -> int:
+  var a = "ab"
+  a = a + "cd"
+  var b = "cd"
+  b = "ab" + b
+  var c = "xy"
+  c = c + c
+  if {t: a} byteCount != 4:
+    return 1
+  if {t: b} byteCount != 4:
+    return 2
+  if {t: c} byteCount != 4:
+    return 3
+  let bFirst = {s: b, index: 0} charAt
+  if {ch: bFirst} ord != 97:
+    return 4
+  let aFirst = {s: a, index: 0} charAt
+  if {ch: aFirst} ord != 97:
+    return 5
+  return 0
+"""
+  t.okCheck "a self-concat checks"
+  t.emits "Nim appends a str in place", r"tuck_a\.add\("
+  t.emitsD "D appends a str in place", r"tuck_a ~= "
+  t.omits "a PREPEND is left alone on Nim", r"tuck_b\.add\("
+  t.omitsD "...and on D", r"tuck_b ~="
+  t.omits "a self-concat is left alone on Nim", r"tuck_c\.add\("
+  t.omitsD "...and on D", r"tuck_c ~="
+  t.hostBuilds "...every backend still builds it"
+  t.hostRuns("...and none of the three reversed a prepend", 0)
+
   # A STATED type names a declaration like any other type reference, so it
   # has to rename with the rest — the mangle pass did not walk the new
   # declType field, and the annotation emitted the user's own `Bag` beside

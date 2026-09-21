@@ -120,7 +120,7 @@ proc nimFnParams*(res: Resolution, m: Module, d: Decl): seq[string] =
   ##
   ## `sink` is not write permission either: it says the CALLER is finished
   ## with the value, so the callee may move out of it rather than copy. Which
-  ## parameters qualify is our own analysis's answer (analysis_lastuse), not
+  ## parameters qualify is our own analysis's answer (analysis_liveness), not
   ## Nim's inference — Odin and D are handed the same fact.
   for p in d.fnParams:
     let move = if paramIsMovable(res, m, d.fnBody, p): "sink " else: ""
@@ -447,9 +447,13 @@ proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
   "proc handleMsg*(self: " & d.name & ", msg: " & msgTypeName & ") =\n  case msg." & TagField & "\n" &
     handlerCases.join("\n") & "\n"
 
-proc genActorDrain*(msgTypeName, drainName, singleton: string, hasShutdown: bool): string =
-  ## The drain closure: dequeue every pending msg, dispatch, report progress.
+proc genActorDrain*(drainName, singleton: string, hasShutdown: bool): string =
+  ## The drain closure: take everything waiting, dispatch it, report progress.
   ## The scheduler registers this; it never sees the concrete Msg type.
+  ##
+  ## `messages` swaps the mailbox's two buffers once and then yields each
+  ## message in place, so this loop holds no lock and copies nothing — which
+  ## is why it names no message type any more.
   result =
     "proc " & drainName & "(): bool {.gcsafe.} =\n" &
     "  {.cast(gcsafe).}:\n" &
@@ -457,8 +461,7 @@ proc genActorDrain*(msgTypeName, drainName, singleton: string, hasShutdown: bool
   if hasShutdown:
     result.add("    if " & singleton & ".finished: return\n")
   result.add(
-    "    var m: " & msgTypeName & "\n" &
-    "    while dequeue(" & singleton & ".mailbox, m):\n" &
+    "    for m in messages(" & singleton & ".mailbox):\n" &
     "      handleMsg(" & singleton & ", m)\n" &
     # After EACH message, not once per drain pass: a registered predicate is
     # about the exact moment a condition becomes true, and a condition that
@@ -488,7 +491,7 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   let stateStr = genActorState(ctx, d, msgTypeName, queueSize, hasShutdown)
   let dispatchStr = genActorDispatch(ctx, d, msgTypeName, handlers, shutdownBody, hasShutdown)
   let singletonStr = "let " & singleton & "* = " & d.name & "()\n"
-  let drainStr = genActorDrain(msgTypeName, drainName, singleton, hasShutdown)
+  let drainStr = genActorDrain(drainName, singleton, hasShutdown)
   # auto-registration hook: main's prologue calls registerActors()
   # The slot is KEPT, not discarded: `Actor.waitUntil {pred: :p}` names the
   # actor at the call site, so the emitted call needs a handle to hand the

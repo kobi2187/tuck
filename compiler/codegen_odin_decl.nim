@@ -14,7 +14,36 @@ import codegen_odin_ctx
 import codegen_odin_util
 from mangle import mangleName
 from lowering_seqcopy import seqFieldNames
+from analysis_provenance import slotIsFresh
 import ./codegen_odin
+
+proc slotsMovedAway*(res: Resolution, m: Module, body: Expr,
+                     movedP: string): HashSet[string] =
+  ## Which slots of the moved parameter were HANDED ON to another twin, and
+  ## are therefore no longer this fn's to free.
+  ##
+  ## `applyBuy` passes `b.ask` to `sweep_moved`, which takes it destructively
+  ## and frees it itself; freeing it here too is a double free, and it
+  ## segfaulted on the first run under `-define:TUCK_TRACK=true`. This is the
+  ## third entry in the escape list — returned, stored in an actor field, or
+  ## MOVED INTO A CALL — and the only one that was not yet enforced.
+  ##
+  ## "" in the result means the whole parameter went.
+  if body == nil or movedP.len == 0: return
+  var stack = @[body]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    if n.kind == exkCall and n.callee != nil and n.callee.kind == exkVar and
+       n.args.len >= 1 and n.args[0] != nil and
+       movedFnParam(res, m, m.findFn(n.callee.name)) != "":
+      let a = n.args[0]
+      if a.kind == exkField and a.receiver != nil and
+         a.receiver.kind == exkVar and a.receiver.name == movedP:
+        result.incl(a.fieldName)
+      elif a.kind == exkVar and a.name == movedP:
+        result.incl("")
+    for ch in n.children: stack.add(ch)
 
 const DefaultMailboxSize = "8"
   ## Messages an actor's ring holds unless `[queue: N]` says otherwise.
@@ -391,6 +420,39 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ctx.definedVars = savedVars
   if movedP == "":
     return header & "\n" & bodyStr & "\n" & ind & "}\n"
+  # STAGE 3: the twin OWNS its moved parameter, so it may free it at exit —
+  # but only if the value it returns carries none of the parameter's buffers.
+  # `applyBuy` builds two new ladders and qualifies; `takeLevel` returns the
+  # very ladder it was handed and does not. Freeing there would free the
+  # value the caller is about to bind, which is the failure `-define:TUCK_TRACK`
+  # exists to catch.
+  #
+  # `defer`, so every exit path frees once — a twin with two returns would
+  # otherwise need the call duplicated at each.
+  # A slot HANDED ON to another twin is no longer ours to free. `applyBuy`
+  # passes `b.ask` to `sweep_moved`, which takes it destructively and frees
+  # it itself — freeing it here too is a double free, and it segfaulted
+  # immediately under `-define:TUCK_TRACK=true`. This is the third entry in
+  # the escape list: returned, stored in an actor field, or MOVED INTO A CALL.
+  var movedAway = slotsMovedAway(ctx.res, ctx.module, d.fnBody, movedP)
+
+  var frees = ""
+  let retFields = movedCopyFields(ctx.res, ctx.module, d.fnReturnType)
+  var mayFree = true
+  if retFields.len == 0:
+    mayFree = slotIsFresh(ctx.res, ctx.module, d.name, "")
+  else:
+    for f in retFields:
+      if not slotIsFresh(ctx.res, ctx.module, d.name, f): mayFree = false
+  if mayFree:
+    let ownFields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
+    if ownFields.len == 0:
+      if "" notin movedAway:
+        frees = ind & "\tdefer delete(" & movedP & ")\n"
+    else:
+      for f in ownFields:
+        if f notin movedAway and "" notin movedAway:
+          frees.add(ind & "\tdefer delete(" & movedP & "." & f & ")\n")
   let twinName = movedName(d.name.replace(".", "_"))
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
@@ -407,7 +469,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   wrap.add(ind & "}\n\n")
   let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
                                   twinName & " :: proc")
-  wrap & twinHeader & "\n" & bodyStr & "\n" & ind & "}\n"
+  wrap & twinHeader & "\n" & frees & bodyStr & "\n" & ind & "}\n"
 
 proc genTransitionProcs*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
                         hasPayload: bool): string =
@@ -733,10 +795,14 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
                       else: ""
   "\n" & ind & actorSlotName(d.name) & ": rawptr\n" &
     "\n" & ind & "drain_" & d.name & " :: proc() -> bool {\n" & finishedGuard &
-    ind & "\tmsg: " & d.name & "Msg\n" &
     ind & "\tdidWork := false\n" &
-    ind & "\tfor rt.dequeue(&" & singleton & ".mailbox, &msg) {\n" &
-    ind & "\t\thandleMsg_" & d.name & "(&" & singleton & ", msg)\n" &
+    # takeBatch swaps the mailbox's two buffers once and returns what was
+    # waiting, so this loop holds no lock and copies nothing — the same shape
+    # genActorDrain emits for Nim, spelled as a slice because Odin has no
+    # iterator to hide it behind.
+    ind & "\tbatch, n := rt.takeBatch(&" & singleton & ".mailbox)\n" &
+    ind & "\tfor i in 0 ..< n {\n" &
+    ind & "\t\thandleMsg_" & d.name & "(&" & singleton & ", batch[i])\n" &
     # After EACH message: a registered predicate is about the exact moment a
     # condition becomes true, and one that went true and false again inside a
     # batch would be missed by a once-per-pass check.
@@ -748,21 +814,50 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
 proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
                    ind: string): string =
   ## Enqueue an envelope; a full ring drops (spec §9.1).
+  ##
+  ## A CONTAINER PAYLOAD IS COPIED IN. `[dynamic]T` assignment copies the
+  ## header, so `Msg{xs = xs}` handed the actor the sender's own buffer: the
+  ## sender's next write landed in the actor's mailbox, breaking value
+  ## semantics and actor isolation at once, and under `--actors:thread` that
+  ## is two OS threads on one buffer with no synchronisation. EV-13.
+  ##
+  ## Copied HERE rather than at each send site because this proc is the one
+  ## place every send goes through, and it is where a future move — the send
+  ## is really an ownership transfer — would replace the copy.
   var params: seq[string]
   var ctorArgs = TagField & " = ." & msgVariantName(h.name)
+  var copies = ""
   for p in h.params:
     params.add(p.name & ": " & ctx.odinType(p.typ))
     ctorArgs.add(", " & p.name & " = " & p.name)
+    if copyableContainer(ctx.res, ctx.module, p.typ):
+      # Odin parameters are immutable, so shadow before copying — the same
+      # two-step the MOVED wrapper uses a few procs up.
+      copies.add(ind & "\t" & p.name & " := " & p.name & "\n")
+      let fields = movedCopyFields(ctx.res, ctx.module, p.typ)
+      if fields.len == 0:
+        copies.add(ind & "\t" & p.name & " = rt.tuckSeqCopy(" & p.name & ")\n")
+      else:
+        for f in fields:
+          copies.add(ind & "\t" & p.name & "." & f & " = rt.tuckSeqCopy(" &
+                     p.name & "." & f & ")\n")
   let sep = if params.len > 0: ", " else: ""
   "\n" & ind & "send" & h.name.capitalize() & "_" & d.name & " :: proc(self: ^" &
-    d.name & sep & params.join(", ") & ") {\n" &
+    d.name & sep & params.join(", ") & ") {\n" & copies &
     ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name & "Msg{" & ctorArgs &
-    "})\n" & ind & "}\n"
+    "})\n" &
+    # The send NOTIFIES. It never did: the actor parks on a condvar when its
+    # mailbox comes up empty, so a send to a parked Odin actor was a lost
+    # wakeup — the message sat in the ring and nothing arrived to drain it
+    # (KNOWN-BUGS-EVENTS.md EV-5).
+    ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" &
+    ind & "}\n"
 
 proc genShutdownSender*(d: Decl, ind: string): string =
   "\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" & d.name &
     ") {\n" & ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name &
-    "Msg{" & TagField & " = .msgShutdown})\n" & ind & "}\n"
+    "Msg{" & TagField & " = .msgShutdown})\n" &
+    ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" & ind & "}\n"
 
 proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code

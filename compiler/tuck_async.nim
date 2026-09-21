@@ -4,9 +4,26 @@
 ## the swappable engine, never exposed. The Odin runtime mirrors this same API
 ## over its own minicoro binding (compiler/tuckrt/tuck_coro.odin).
 ##
-## Single-threaded + cooperative: actors and tasks are all coroutines on
-## arsenal's scheduler. No OS threads — so no locks are needed on actor
-## mailboxes (only one coroutine runs at a time; sends and drains never race).
+## TASKS are always coroutines on main's thread. ACTORS depend on the build's
+## `--actors:MODE` (compiler/actor_mode.nim), which arrives here as a define:
+##
+##   thread (default)  one OS thread per actor. Real parallelism; a send
+##                     crosses a thread boundary, so the mailbox is locked and
+##                     an idle actor parks on a condvar.
+##   single            every actor a coroutine on this thread, exactly like a
+##                     task. Nothing races, so the mailbox lock compiles away
+##                     and no thread is ever created — but main is not a
+##                     coroutine, so it must lend its thread to the scheduler
+##                     at `waitUntil` and at exit, or nothing ever runs (#8).
+##   batch             thread-per-actor, but a send fills a batch owned by
+##                     the SENDING thread and the whole batch crosses at
+##                     once. The lock and the wake are paid once per batch,
+##                     so this keeps real parallelism at close to single
+##                     mode's cost — at the price of a rule: every point
+##                     where a thread stops making progress must flush first.
+##
+## Every exported entry point below carries both shapes under
+## `when TuckActorsSingle`. Read them in pairs.
 ##
 ## Build note: async Tuck programs MUST compile with
 ##   --stackTrace:off --lineTrace:off
@@ -239,6 +256,86 @@ proc awaitResult*[T](slot: TuckAsyncResult[T]): T =
 
 type DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I work?
 
+const TuckActorsSingle* = defined(tuckActorsSingle)
+  ## `--actors:single` (compiler/actor_mode.nim). Set by `tuck build` as
+  ## `-d:tuckActorsSingle`, so the mode is a COMPILE-TIME fact for the whole
+  ## program rather than a branch taken at run time. What that buys is the
+  ## point of the mode: no thread is created, no condvar is waited on, and
+  ## the mailbox's lock compiles to nothing (see tuck_rt.MailboxLock). A mode
+  ## whose costs you still pay is not the mode you asked for.
+  ##
+  ## Every exported entry point below has both shapes. Read them in pairs:
+  ## the `when TuckActorsSingle` arm is a coroutine on main's thread, the
+  ## other is an OS thread of its own.
+
+const TuckTestParkDelayMs* {.intdefine.} = 0
+  ## See the test hook in actorMain. Never set in a real build.
+
+when TuckTestParkDelayMs > 0:
+  import std/os except sleep
+  from std/os import sleep
+
+const TuckActorsBatch* = defined(tuckActorsBatch)
+  ## `--actors:batch`. Thread-per-actor as usual, but a `send` writes into a
+  ## batch owned by the SENDING thread and the whole batch is handed over at
+  ## once (tuck_rt). Everything below that concerns threads applies unchanged;
+  ## what this adds is a rule.
+  ##
+  ## THE RULE: a message sitting in an unflushed batch is a deadlock, not a
+  ## delay. So every point where this thread is about to stop making progress
+  ## must flush first — before parking, before waiting on a predicate, and at
+  ## exit. `tuckFlushStaged` below is that call, and the hook list under it is
+  ## how a layer that cannot see the mailbox types reaches them anyway.
+
+type
+  FlushHook* = object
+    ## One staging buffer's "hand over whatever you are holding". Registered
+    ## by tuck_rt on first use, because the staging is a threadvar inside a
+    ## generic and therefore has no name anything else can reach.
+    ##
+    ## Returns whether it actually handed anything over, which decides
+    ## whether the wake below is needed at all.
+    flush*: proc(p: pointer): bool {.nimcall, gcsafe.}
+    data*: pointer
+
+var gFlushHooks {.threadvar.}: seq[FlushHook]
+  ## Per THREAD: each thread flushes only what it staged, which is why
+  ## staging needs no lock of its own.
+
+proc tuckRegisterFlush*(flush: proc(p: pointer): bool {.nimcall, gcsafe.},
+                        data: pointer) =
+  ## Called once per (thread, actor) the first time that thread stages for
+  ## that actor.
+  gFlushHooks.add FlushHook(flush: flush, data: data)
+
+
+const
+  ActorSpinMax* {.intdefine.} = 4096
+    ## The most an actor will re-check its mailbox before parking.
+  ActorSpinMin* {.intdefine.} = 16
+    ## The least. Not zero: the budget has to stay big enough to notice that
+    ## spinning has started paying again, or an actor that once went quiet
+    ## could never earn its budget back.
+
+# THE SPIN IS ADAPTIVE, and it has to be. A fixed budget is two different
+# bets on two different workloads, and it cannot win both:
+#
+#   saturated actor   spinning always pays — the next message is already on
+#                     its way, and parking would buy a futex round trip.
+#   idle actor        spinning never pays, and the cost is not small.
+#                     Measured, 8 mostly-idle actors at a 200us send gap: a
+#                     fixed 2000-iteration spin burned 1.38 cores against
+#                     0.37 for parking immediately — 3.7x the CPU to save
+#                     12% of wall time. That is the exact "hundreds of light
+#                     actors cost more than they return" pathology.
+#
+# So the budget is earned: doubled whenever a spin finds work, halved
+# whenever it does not. A busy actor reaches ActorSpinMax and keeps its
+# throughput; a quiet one decays to ActorSpinMin within a few parks and costs
+# what parking costs (measured back down to 0.37 cores). The saturated case
+# pays 8-11% for this against a fixed budget, which is the right side of the
+# trade for a runtime that does not know the workload in advance.
+
 # ONE OS THREAD PER ACTOR (ruled 2026-09-18).
 #
 # An actor is a daemon, and a daemon that only runs when `main` happens to
@@ -278,21 +375,64 @@ type
     cond: Cond
     pending: bool       ## a send arrived; guarded by `lock`
     working: bool       ## draining right now, or woken and about to; `lock`
+    parked: int         ## 1 while this actor is asleep on `cond`. ATOMIC, and
+                        ## read without the lock: it is the whole fast path of
+                        ## a send, so it must not be a global anything —
+                        ## per-actor, so senders to different actors never
+                        ## share the line.
     waiters: seq[ptr Waiter]   ## the registered predicates; guarded by `lock`
     thr: Thread[ptr ActorSlot]
+    co: Coroutine       ## single mode only: this actor's coroutine. A raw
+                        ## ptr, so it is safe in allocShared'd memory.
+    queued: bool        ## single mode only: already in the ready queue, so a
+                        ## send does not enqueue it a second time. One thread,
+                        ## so no atomic.
 
 var gMySlot {.threadvar.}: ptr ActorSlot
   ## The slot this thread serves, so the emitted drain can reach its waiters
   ## without carrying the slot through every generated proc. A threadvar, so
   ## each actor thread sees only its own.
 
-var gActorSlots: seq[ptr ActorSlot]   ## SHARED, not a threadvar: a send on any
-                                      ## thread must reach every actor
+var gActorSlots: seq[ptr ActorSlot]   ## SHARED, not a threadvar: tuckDrainActors
+                                      ## has to reach every actor at exit
 var gSlotsLock: Lock
 var gSlotsReady = false
-var gIdleActors: int                  ## how many actors are parked on their
-                                      ## condvar, i.e. how many a send could
-                                      ## possibly need to wake. Atomic.
+
+proc wakeAllParked() {.gcsafe.} = ({.cast(gcsafe).}:
+  ## Wake every actor that is asleep. Used ONLY after a flush point handed
+  ## something over — see tuckFlushStaged.
+  ##
+  ## Walks the list in place rather than copying it: this runs on an actor's
+  ## own thread, where copying a shared seq is the GC-unsafe thing. Lock
+  ## order is gSlotsLock then the slot's own, matching tuckDrainActors.
+  acquire(gSlotsLock)
+  for s in gActorSlots:
+    if atomicLoadN(addr s.parked, ATOMIC_ACQUIRE) != 0:
+      acquire(s.lock)
+      s.pending = true
+      signal(s.cond)
+      release(s.lock)
+  release(gSlotsLock))
+
+proc tuckFlushStaged*() {.gcsafe.} = ({.cast(gcsafe).}:
+  ## Hand over every batch this thread is holding, then make sure someone is
+  ## awake to drain them.
+  ##
+  ## THE WAKE IS THE WHOLE REASON THIS IS NOT JUST A LOOP. An ordinary send
+  ## is followed by the `tuckNotifySend` codegen emits, so a handover
+  ## triggered by the batch filling up is already announced. A handover
+  ## triggered HERE has no send behind it — the sends happened earlier and
+  ## their notifies found the mailbox empty — so without this the batch lands
+  ## in a mailbox whose actor is asleep and stays there. Found the honest
+  ## way: an actor forwarding to a second actor printed nothing at all.
+  ##
+  ## Broadcast rather than targeted because a staging buffer does not know
+  ## its actor's slot, and this runs once per park, not once per send. It is
+  ## skipped entirely when nothing was staged, which is the common case.
+  var handedOver = false
+  for h in gFlushHooks:
+    if h.flush(h.data): handedOver = true
+  if handedOver: wakeAllParked())
 
 # A COROUTINE NEVER MIGRATES BETWEEN THREADS, and that is now load-bearing.
 #
@@ -337,86 +477,174 @@ proc tuckCheckWaiters*() =
   ## Emitted in the drain loop after each handled message, so a predicate sees
   ## the EXACT moment it becomes true. Checking only once per drain pass would
   ## miss a condition that went true and false again inside one batch.
-  if gMySlot != nil: checkWaiters(gMySlot)
+  ##
+  ## Nothing to do in single mode: a waiter there is main, on this same
+  ## thread, re-testing its own predicate between scheduler passes — there is
+  ## no other thread to hand the answer to.
+  when not TuckActorsSingle:
+    if gMySlot != nil: checkWaiters(gMySlot)
 
 proc actorMain(slot: ptr ActorSlot) {.thread.} =
   ## One actor, forever. Its own scheduler and reactor, so an `[io]` call in a
   ## handler suspends THIS actor and nothing else.
   ##
-  ## Blocks on a condvar when the mailbox comes up empty rather than spinning:
-  ## an actor alone on its thread has no peer to yield to, so the cooperative
-  ## `coroYield` this replaced would have been a busy loop.
+  ## Spins when the mailbox comes up empty — for as long as spinning has been
+  ## paying — then blocks on a condvar. An actor alone on its thread has no
+  ## peer to yield to, so the cooperative `coroYield` this replaced would have
+  ## been an unbounded busy loop, while going straight to the condvar pays a
+  ## futex round trip for a lull that usually ends in nanoseconds. The budget
+  ## is what keeps both from being wrong for the other's workload.
   tuckAsyncInit()
   gMySlot = slot
+  var spinBudget = ActorSpinMin   ## local: each actor earns its own
   while true:
     if slot.drain(): continue
     checkWaiters(slot)        # also after a pass that did nothing: a predicate
                               # registered while idle must be answered
+    # Spin before committing to the park, for as long as spinning has been
+    # paying (see ActorSpinMax above). A producer that is still running hands
+    # over more work within a few hundred nanoseconds, while a park costs a
+    # futex sleep here and a full wake path at the next sender — microseconds
+    # against nanoseconds. Measured: an actor draining faster than one sender
+    # refills runs dry ~168k times per million messages, and paying a futex
+    # round trip for each is what made a "faster" mailbox 3x slower.
+    #
+    # `working` stays true throughout: a spinning actor has not given up, and
+    # tuckDrainActors must not read it as quiescent while a message may still
+    # be in flight.
+    var gotWork = false
+    for _ in 1 .. spinBudget:
+      cpuRelax()
+      if slot.drain():
+        gotWork = true
+        break
+    if gotWork:
+      spinBudget = min(spinBudget * 2, ActorSpinMax)
+      continue
+    spinBudget = max(spinBudget div 2, ActorSpinMin)
+    # TEST HOOK, zero and inert unless -d:TuckTestParkDelayMs is given. It
+    # widens the window between "this actor last looked and saw nothing" and
+    # "this actor is marked parked", which is the race EV-7 lives in and is
+    # a few instructions wide in a real build. A race you cannot make fail
+    # on demand is a fix nobody can review.
+    when TuckTestParkDelayMs > 0:
+      sleep(TuckTestParkDelayMs)
+    # About to stop making progress, so hand over anything this actor staged
+    # for OTHER actors first. Without this a handler that sends and then goes
+    # quiet holds its messages until the program next happens to run it, and
+    # at exit `tuckDrainActors` would see a parked thread it cannot reach
+    # into. Flushing before every park is what makes "a parked thread holds
+    # nothing" true, and that is what lets exit be a local check.
+    when TuckActorsBatch: tuckFlushStaged()
+    # ARM, THEN LOOK AGAIN (EV-7). Publishing `parked` and then sleeping is
+    # not enough: a sender that enqueued just before this store reads
+    # `parked` as 0, returns without signalling, and its message sits in a
+    # mailbox nobody will ever be woken for. Reproduced with
+    # -d:TuckTestParkDelayMs widening the window — 1 send lost in 120.
+    #
+    # The recheck closes it from THIS side alone, leaving the sender's fast
+    # path untouched. `drain` takes the mailbox spinlock, whose exchange is a
+    # full barrier, so the arming store is globally visible before any send
+    # that could follow it: either this drain sees that sender's message, or
+    # that sender sees `parked` and signals.
     acquire(slot.lock)
     slot.working = false          # nothing left to do: visible to tuckDrainActors
+    let mustPark = not slot.pending
+    if mustPark:
+      atomicStoreN(addr slot.parked, 1, ATOMIC_SEQ_CST)
+    release(slot.lock)
+    if mustPark and slot.drain():
+      atomicStoreN(addr slot.parked, 0, ATOMIC_RELEASE)
+      acquire(slot.lock)
+      slot.working = true
+      release(slot.lock)
+      continue
+    acquire(slot.lock)
     if not slot.pending:
-      discard atomicAddFetch(addr gIdleActors, 1, ATOMIC_ACQ_REL)
       while not slot.pending:
         wait(slot.cond, slot.lock)
-      discard atomicSubFetch(addr gIdleActors, 1, ATOMIC_ACQ_REL)
+    atomicStoreN(addr slot.parked, 0, ATOMIC_RELEASE)
     slot.pending = false
     slot.working = true
     release(slot.lock)
 
 proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
-  ## Register + start a declared actor on its own OS thread (emitted once per
-  ## actor, from the entry point before main runs).
+  ## Register + start a declared actor (emitted once per actor, from the entry
+  ## point before main runs).
   ##
-  ## The slot is allocShared'd and the Thread lives INSIDE it: a `seq` of
-  ## Thread objects would move its elements on reallocation, and a running
-  ## thread's handle may not move.
-  ##
-  ## Detached by design. Actors are daemons with no termination condition, so
-  ## there is nothing to join — `quit` ends them, which is the same lifetime
-  ## the coroutine version had.
+  ## Returned as an OPAQUE pointer so the emitted registerActor<Name> can keep
+  ## it without codegen needing the ActorSlot type: `Actor.waitUntil` and each
+  ## `send` name the actor at the call site, so codegen needs a handle to pass
+  ## and nothing more. Both modes return the same kind of handle, which is why
+  ## neither the emitted code nor codegen knows which mode it is in.
   if not gSlotsReady:
     initLock(gSlotsLock)
     gSlotsReady = true
   let slot = cast[ptr ActorSlot](allocShared0(sizeof(ActorSlot)))
   slot.drain = drain
-  initLock(slot.lock)
-  initCond(slot.cond)
-  slot.pending = true        # drain once before the first wait: a send may
+  when TuckActorsSingle:
+    # A coroutine on main's thread. It drains, and when there is nothing left
+    # it marks itself un-queued and hands control back; a send puts it in the
+    # ready queue again. Nothing here is shared with another thread, so there
+    # is no lock, no condvar and no wake syscall anywhere in the mode.
+    slot.co = newCoroutine(proc() {.gcsafe.} = ({.cast(gcsafe).}:
+      while true:
+        if not slot.drain():
+          slot.queued = false
+          coroYield()), TuckStackSize)
+    slot.queued = true
+    gActorSlots.add(slot)
+    schedule(slot.co)
+  else:
+    # An OS thread of its own. The slot is allocShared'd and the Thread lives
+    # INSIDE it: a `seq` of Thread objects would move its elements on
+    # reallocation, and a running thread's handle may not move.
+    #
+    # Detached by design. Actors are daemons with no termination condition, so
+    # there is nothing to join — `quit` ends them.
+    initLock(slot.lock)
+    initCond(slot.cond)
+    slot.pending = true      # drain once before the first wait: a send may
                              # already be queued by the time we get here
-  slot.working = true
-  acquire(gSlotsLock)
-  gActorSlots.add(slot)
-  release(gSlotsLock)
-  createThread(slot.thr, actorMain, slot)
-  # Returned as an OPAQUE pointer so the emitted registerActor<Name> can keep
-  # it without codegen needing the ActorSlot type: `Actor.waitUntil` names the
-  # actor at the call site, so codegen needs a handle to pass and nothing more.
+    slot.working = true
+    acquire(gSlotsLock)
+    gActorSlots.add(slot)
+    release(gSlotsLock)
+    createThread(slot.thr, actorMain, slot)
   cast[pointer](slot)
 
-proc tuckNotifySend*() =
-  ## Emitted by each send after enqueue: wake every actor so whichever owns
-  ## that mailbox drains it.
+proc wakeSlot(s: ptr ActorSlot) {.inline.} =
+  acquire(s.lock)
+  s.pending = true
+  signal(s.cond)
+  release(s.lock)
+
+proc tuckNotifySend*(handle: pointer) =
+  ## Emitted by each send after enqueue, NAMING the actor it wrote to.
   ##
-  ## Wakes ALL of them, exactly as the coroutine version rescheduled all of
-  ## them — the send site knows the mailbox it wrote to but not which slot
-  ## drains it, and an actor woken with nothing to do goes straight back to
-  ## waiting.
+  ## THE FAST PATH IS THE POINT — this runs once per SEND. A busy actor comes
+  ## back round its drain loop and finds the message by itself, so the common
+  ## case must cost one relaxed read and nothing else. `parked` lives in that
+  ## actor's own slot, so two senders to two different actors never touch the
+  ## same line.
   ##
-  ## THE FAST PATH IS THE POINT. A busy actor is already going to come back
-  ## round its drain loop and find the new message, so it needs no wake at all,
-  ## and this is called once per SEND — measured at 3x the cost of the whole
-  ## rest of a send when it unconditionally took two locks and signalled a
-  ## condvar. `gIdleActors` is only non-zero while an actor is genuinely parked,
-  ## so a flood of messages into a working actor pays one atomic read.
-  if not gSlotsReady: return
-  if atomicLoadN(addr gIdleActors, ATOMIC_ACQUIRE) == 0: return
-  acquire(gSlotsLock)
-  for s in gActorSlots:
-    acquire(s.lock)
-    s.pending = true
-    signal(s.cond)
-    release(s.lock)
-  release(gSlotsLock)
+  ## It used to take no argument and therefore had to wake EVERY actor in the
+  ## program behind a global lock, consulting a global counter to decide
+  ## whether to bother: O(actors) per send, and the counter alone put a shared
+  ## line in the path of every send in the program. The send site has always
+  ## known which actor it was writing to; it just was not saying.
+  if handle == nil: return       # not registered yet: nothing is parked
+  let slot = cast[ptr ActorSlot](handle)
+  when TuckActorsSingle:
+    # Put the actor back in the ready queue, once. Without the guard a flood
+    # of sends would queue the same coroutine a million times and the queue,
+    # not the mailbox, would be what grew.
+    if slot.queued: return
+    slot.queued = true
+    schedule(slot.co)
+  else:
+    if atomicLoadN(addr slot.parked, ATOMIC_ACQUIRE) == 0: return
+    wakeSlot(slot)
 
 proc pumpOnce(): bool   # forward: tuckWaitOn drives main's own tasks
 
@@ -433,7 +661,22 @@ proc tuckWaitOn*(handle: pointer, pred: proc(): bool) =
   ## `pending` is set so the actor wakes and evaluates ONCE IMMEDIATELY: the
   ## condition may already hold, and a waiter that registered against an
   ## already-true predicate must not sleep until the next unrelated message.
+  ##
+  ## SINGLE MODE answers the same question without any of that. The actor is a
+  ## coroutine on this very thread, so there is no other thread to register
+  ## with and nothing to synchronise: main drives the scheduler and re-tests
+  ## the predicate between passes. It reads the actor's state directly because
+  ## it IS the actor's thread. Note this drives rather than waits — if nothing
+  ## on this thread can make the predicate true, nothing will.
   if handle == nil: return
+  # EVERYTHING this thread staged, not just what it staged for `handle`: the
+  # predicate may read another actor's state, and a message for that other
+  # actor sitting in a batch here would make the condition unreachable.
+  when TuckActorsBatch: tuckFlushStaged()
+  when TuckActorsSingle:
+    while not pred():
+      discard pumpOnce()
+    return
   let slot = cast[ptr ActorSlot](handle)
   var w = cast[ptr Waiter](allocShared0(sizeof(Waiter)))
   var fds: array[2, cint]
@@ -490,17 +733,35 @@ proc tuckDrainActors*() =
   ## That read happens inside main, long before this runs; no exit-time wait
   ## can reach back and change what it saw. `scheduler::waitUntil` remains the
   ## way to order a send against a read.
+  ##
+  ## SINGLE MODE is where this call stops being a safety net and becomes the
+  ## thing that makes the mode work at all. Main is not a coroutine, so
+  ## nothing has resumed the actors while main ran; every send so far only
+  ## queued them. Draining here is main finally lending its thread to the
+  ## scheduler, which is why a `send` with no `waitUntil` after it is still
+  ## delivered (issue #8).
+  # Main's own staged sends, which nothing else will ever flush.
+  when TuckActorsBatch: tuckFlushStaged()
   if not gSlotsReady: return
-  while true:
-    var allIdle = true
-    acquire(gSlotsLock)
-    for s in gActorSlots:
-      acquire(s.lock)
-      if s.pending or s.working: allIdle = false
-      release(s.lock)
-    release(gSlotsLock)
-    if allIdle: return
-    cpuRelax()
+  when TuckActorsSingle:
+    # Run until nothing is ready: every mailbox is empty and no actor is
+    # mid-handler. WEAKER than the thread-mode wait below in one case — an
+    # actor suspended inside an `[io]` handler is not "ready", so if its fd
+    # stays quiet this returns and the process exits with that handler
+    # unfinished. `tuckRun()` (emitted whenever the program has tasks) is the
+    # call that drives I/O to completion.
+    while pumpOnce(): discard
+  else:
+    while true:
+      var allIdle = true
+      acquire(gSlotsLock)
+      for s in gActorSlots:
+        acquire(s.lock)
+        if s.pending or s.working: allIdle = false
+        release(s.lock)
+      release(gSlotsLock)
+      if allIdle: return
+      cpuRelax()
 
 proc pumpOnce(): bool =
   ## Advance the runtime one step: run a ready coroutine, or poll I/O. Returns

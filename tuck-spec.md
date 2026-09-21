@@ -1869,9 +1869,11 @@ actor UartDriver [queue: 8]:
 ```
 
 Only value types (copied) cross actor boundaries. No reference sharing across
-boundaries. Queue (mailbox) size is a compile-time constant — the ring buffer
-is sized to it exactly, so a full mailbox is a fixed, known capacity, not an
-unbounded allocation.
+boundaries. Queue (mailbox) size is a compile-time constant — storage is sized
+from it at compile time, so a full mailbox is a fixed, known capacity, not an
+unbounded allocation. `queue: N` means N messages may be waiting to be picked
+up; the runtime double-buffers, so an actor may hold up to another N it has
+already taken (the handover is an index flip, never a copy).
 
 #### Observing an actor: a snapshot, or the exact moment
 
@@ -2276,7 +2278,7 @@ transcription.
 A few constructs worth naming because they lower to more than a literal
 transcription:
 - a decision table → a target-language `case`/`switch` over a packed integer
-- an actor → a mailbox struct (a static ring buffer) plus handler procs
+- an actor → a mailbox struct (two statically sized buffers, swapped) plus handler procs
   dispatched by message tag; both backends run actors and tasks on their own
   coroutine, over the same vendored C library (minicoro) — see Part 9's
   runtime note for why, and why that currently makes concurrency a Tier 3

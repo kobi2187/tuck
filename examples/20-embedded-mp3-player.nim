@@ -172,8 +172,7 @@ proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
 proc draintuck_Decoder(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_DecoderMsg
-    while dequeue(tuck_DecoderSingleton.mailbox, m):
+    for m in messages(tuck_DecoderSingleton.mailbox):
       handleMsg(tuck_DecoderSingleton, m)
       tuckCheckWaiters()
       result = true

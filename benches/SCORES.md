@@ -36,6 +36,220 @@ more than a same-thread queue push, and the wide variance is two threads
 contending on that lock. The trade is correctness — under the old model a
 `send` was never delivered at all unless main happened to yield (#8).
 
+**2026-09-20 — the bench now measures the real mailbox, and the lock changed.**
+The bench had been flooding a hand-rolled `seq` + `Lock` that stood in for the
+mailbox; it never called `enqueue`/`dequeue`, so nothing it printed could move
+when the runtime's own mailbox did. It now instantiates
+`tuck_rt.Mailbox[int, Cap]` and drains it with the same `while dequeue(...)`
+loop `genActorDrain` emits, so this line tracks the code real programs run.
+(Cap is sized past N on purpose: this measures drain throughput, not the
+`[queue: N]` drop policy.)
+
+Ten interleaved A/B rounds, N=1M, same binary but for the lock type:
+
+| mailbox lock | msgs/sec (mean of 10) |
+|---|---|
+| `std/locks.Lock` (pthread mutex) | 7.65 M |
+| spinlock (`Atomic[bool]`) | 22.7 M |
+
+The spinlock led in 8 of the 10 individual rounds. The section it guards is a
+bounds check, one array write and an index bump, so a busy actor finding the
+lock free pays an atomic exchange rather than a futex round trip.
+
+Measured and REJECTED on the way: draining the whole ring under one lock hold
+instead of one acquire per message ran at 2–3 M/sec against 6–7 for
+per-message. Holding the lock across a batch starves the sender for the length
+of the batch; short sections released often win here. Nothing landed for it.
+
+**2026-09-20 — the swap mailbox, and why the bench had to change twice.**
+The ring is now two buffers: senders fill one, the actor flips an index and
+owns the other outright, draining it with no lock held and nothing copied
+out. Paired with a bounded spin before an idle actor parks, because the two
+only pay TOGETHER — see below.
+
+Real messages are envelope structs, so this is measured on a 32-byte message,
+`tuck_rt.Mailbox` itself, four interleaved rounds:
+
+| 32B envelope | ring (per-message lock + copy) | swap + spin |
+|---|---|---|
+| 3 senders | 1.09–1.32 M/sec | **1.95–2.31 M/sec** (won 4 of 4) |
+| 1 sender | 4.34–6.47 M/sec | 3.41–7.06 M/sec (noise) |
+
+The win is CONTENTION-shaped: one sender is never the bottleneck, so the
+drain's costs do not rank the designs. Several senders all want the mailbox
+lock, and then what the drain does with it decides throughput.
+
+THE TRAP, measured twice before it was believed. Each half of this change,
+alone, is neutral or a regression:
+
+| 64B, 3 senders | straight to park | spin before park |
+|---|---|---|
+| ring | 0.94–1.30 M/sec | 0.88–0.97 M/sec |
+| swap | 0.37–0.39 M/sec | **2.01–2.24 M/sec** |
+
+The swap mailbox ALONE is 3x slower. Instrumented, the reason is exact: over
+a million messages the ring's actor found an empty mailbox 2–351 times, the
+swap's found one **~168,000** times. A drain that cheap exhausts its mailbox
+constantly, and each exhaustion paid a futex sleep plus a full wake path at
+the next sender. The mailbox protocol was never the bottleneck — the WAKE
+protocol was, and making the drain faster is what exposed it.
+
+Sizing matters as much as shape: on `int` messages the two designs rank
+EQUAL (8 bytes is no copy worth avoiding), and with Cap sized past N the
+bench measures DRAM rather than the mailbox. The bench now uses an envelope
+and a Cap of 131072 for that reason.
+
+## 2026-09-20 — bake-off against the published designs
+
+Tuck's mailbox is not a special problem, so the alternatives were built and
+measured rather than argued about: Vyukov's bounded MPSC, CAF's stack-swap
+mailbox, the arm-and-recheck wake protocol, adaptive spinning. Pinned
+threads (actor on cpu0, senders on cpu1+), 32-byte envelope, medians of 7.
+
+### Axis 1 — the mailbox, saturated, 2 senders
+
+| design | median M/s | note |
+|---|---|---|
+| two buffers + spinlock (shipped) | 2.70–3.10 | |
+| ...+ cache-line padding | 3.08–3.15 | **taken** — free 10% |
+| Vyukov bounded lock-free MPSC | 3.37–3.66 | **+25%**, tightest spread |
+
+The lock-free queue wins and wins CONSISTENTLY (no lock, so no convoy: its
+min, 3.18, beats the spinlock's median). Not taken yet only because it wants
+a power-of-two capacity, which would quietly reshape what `[queue: N]`
+means. It fits behind the existing `messages` iterator without touching
+codegen, so it stays a runtime-only decision.
+
+### Axis 2 — the spin, and why fixed budgets cannot win
+
+A fixed budget is two bets on two workloads. Real runtime, 8 light actors,
+200us send gap:
+
+| spin | CPU | wall |
+|---|---|---|
+| fixed 2000 | 2.19–2.30 cores | 67–70 ms |
+| adaptive | 0.79–0.84 cores | 99–106 ms |
+
+and saturated, adaptive costs 8–11% against fixed. Adaptive was taken: a
+runtime that cannot know the workload should not burn 2.3 cores on actors
+with nothing to do.
+
+### Axis 3 — the wake, which paid for the spin's latency
+
+Adaptive parks more often, so the wake path started to matter. It was
+O(actors) behind a global lock, because `tuckNotifySend()` took no argument
+and had to signal every actor to reach one. Naming the actor at the send
+site:
+
+| 8 light actors | CPU | wall |
+|---|---|---|
+| fixed spin + broadcast wake (before) | 2.19–2.30 cores | 67–70 ms |
+| adaptive + broadcast | 0.78–0.82 cores | 99–106 ms |
+| **adaptive + targeted** | **0.37–0.39 cores** | **67–68 ms** |
+
+Same latency as the start, **6x less CPU**. The two changes only work
+together: adaptive alone trades latency for CPU, targeted alone does
+nothing much, and both together take the CPU without paying the latency.
+
+### `--actors:single` — what the mode is worth
+
+The first mode the flag actually selects. A real Tuck program (an actor
+summing 500,000 sends, `[queue: 1048576]` so nothing is dropped, then a
+`waitUntil`), `--release`, one sender:
+
+| | wall |
+|---|---|
+| `--actors:thread` | 77–121 ms |
+| `--actors:single` | **23–26 ms** |
+
+**3-5x**, and the reason is that every cost thread-per-actor pays is absent
+rather than cheap: `strace -c` counts ONE `clone3` in thread mode and **zero**
+in single mode, and the mailbox lock is compiled out entirely
+(`tuck_rt.MailboxNeedsLock`), so a send is an array write and an index bump
+with no atomic anywhere.
+
+Stated honestly, part of the gap is batching: main runs to completion before
+the scheduler gets the thread back, so the actor drains all 500k in one pass
+with no interleaving forced on it. That is not a measurement artefact — it is
+what cooperative scheduling buys, and the reason the mode suits I/O-bound and
+event-driven programs. What it cannot do is use a second core.
+
+### `--actors:batch` — and what testing caught
+
+Same program as above (500,000 sends, then a `waitUntil`), `--release`:
+
+| | wall |
+|---|---|
+| `--actors:thread` | 95–178 ms |
+| `--actors:single` | 26–32 ms |
+| **`--actors:batch --batch-count:64`** | **22–30 ms** |
+
+Batch matches single mode's throughput while keeping every actor on its own
+OS thread, which is the combination neither of the other two offers. Per
+message it costs an array write and a counter bump; the lock, and the wake
+behind it, are paid once per batch.
+
+TWO CUTS HUNG BEFORE THIS ONE, both on capacity, and the reason is worth
+keeping because it is not the obvious one.
+
+Staging began as a PRIVATE ring per (thread, actor). Fixed at 4 batches,
+`[queue: 1048576]` bought a sender only `4 * 64 = 256` messages before it
+started dropping, so the benchmark's predicate could never come true.
+Scaling the ring from `Cap` and capping it at 64 batches moved the cliff to
+4096 messages — and it still hung, for the same reason.
+
+The binding constraint is not how many threads there are. That set is small
+and known at compile time: main, plus one per actor. It is WHERE private
+storage lives — staging is a threadvar, so its depth is paid out of every
+thread's TLS and therefore has to be bounded by a constant rather than by
+`[queue: N]`.
+
+So the batches live in ONE pool per actor instead, sized `Cap div
+batch-count`, and a sender BORROWS one. `[queue: N]` means what it says,
+nothing comes out of TLS, and the storage is smaller than thread mode's
+`2 * Cap`. Borrowing and returning cost one lock acquire per BATCH — which
+is why the mode still lands at parity with single mode, where there are no
+locks at all.
+
+### Savina ports — the modes measured on somebody else's benchmark
+
+`benches/savina/` ports two benchmarks from Imam & Sarkar's actor suite
+(AGERE! 2014), the one everybody compares Akka and friends against. Same
+program, `--release`:
+
+| | PP (40k round trips) | THR (ring of 6, 60k hops) |
+|---|---|---|
+| `--actors:single` | **11 ms** | **10 ms** |
+| `--actors:thread` | 49-87 ms | 796-823 ms |
+| `--actors:batch` | 1050 ms | 2450 ms |
+
+**80x** between single and thread on the ring. Both are chains of
+one-message-at-a-time handoffs, so every hop in thread mode is a cross-thread
+wake — a futex round trip, microseconds — against a coroutine switch in
+nanoseconds. Every benchmark in this file until now was fan-IN under load,
+where thread mode looks fine; these are the shape it is worst at, and they
+are the shape a lot of real actor code has.
+
+Batch is worst on both, exactly as its contract says: with one message in
+flight a batch never fills, so every message waits for a flush point. Kept as
+the honest lower bound on what batching costs when the workload is latency
+rather than throughput.
+
+Ported faithfully except for ring size — see benches/savina/README.md for
+what Tuck cannot express (dynamic actor creation rules out roughly a third of
+the suite).
+
+### Measured, not taken
+
+- **Signal only on the empty -> non-empty edge.** No measurable difference:
+  once the spin absorbs the lulls, parks fall to 1–9 per million messages
+  either way, so there is nothing left for the protocol to save.
+- **CAF's stack-swap mailbox.** Producers push a LIFO with one exchange, the
+  consumer takes the whole stack in one exchange and reverses it privately.
+  Elegant, and the closest published design to the swap mailbox here, but it
+  is node-based: it wants either allocation or a node pool with its own
+  recycling, and the freestanding targets have no heap.
+
 | compiler front-end | lex+parse+check | ~23k lines/sec |
 
 ## 2026-09-13 — what the TRANSPILER costs: Tuck-emitted vs hand-written Nim

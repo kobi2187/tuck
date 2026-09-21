@@ -35,10 +35,10 @@ tuck_AccumulatorSlot: rawptr
 
 drain_tuck_Accumulator :: proc() -> bool {
 	if tuck_AccumulatorSingleton.finished { return false }
-	msg: tuck_AccumulatorMsg
 	didWork := false
-	for rt.dequeue(&tuck_AccumulatorSingleton.mailbox, &msg) {
-		handleMsg_tuck_Accumulator(&tuck_AccumulatorSingleton, msg)
+	batch, n := rt.takeBatch(&tuck_AccumulatorSingleton.mailbox)
+	for i in 0 ..< n {
+		handleMsg_tuck_Accumulator(&tuck_AccumulatorSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
@@ -47,14 +47,17 @@ drain_tuck_Accumulator :: proc() -> bool {
 
 sendAdd_tuck_Accumulator :: proc(self: ^tuck_Accumulator, n: int) {
 	_ = rt.enqueue(&self.mailbox, tuck_AccumulatorMsg{tuckTag = .msgAdd, n = n})
+	rt.tuckNotifySend(tuck_AccumulatorSlot)
 }
 
 sendFinish_tuck_Accumulator :: proc(self: ^tuck_Accumulator) {
 	_ = rt.enqueue(&self.mailbox, tuck_AccumulatorMsg{tuckTag = .msgFinish})
+	rt.tuckNotifySend(tuck_AccumulatorSlot)
 }
 
 sendShutdown_tuck_Accumulator :: proc(self: ^tuck_Accumulator) {
 	_ = rt.enqueue(&self.mailbox, tuck_AccumulatorMsg{tuckTag = .msgShutdown})
+	rt.tuckNotifySend(tuck_AccumulatorSlot)
 }
 
 tuck_ready :: proc () -> bool {
@@ -71,9 +74,11 @@ tuck_main :: proc () -> int {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	tuck_AccumulatorSlot = rt.tuckStartActor(drain_tuck_Accumulator)
 	mainRc := tuck_main()
 	rt.tuckDrainActors()
+	rt.tuckTrackCheck()
 	os.exit(mainRc)
 }

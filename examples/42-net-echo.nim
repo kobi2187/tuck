@@ -29,8 +29,7 @@ proc handleMsg*(self: tuck_Result, msg: tuck_ResultMsg) =
 proc draintuck_Result(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    var m: tuck_ResultMsg
-    while dequeue(tuck_ResultSingleton.mailbox, m):
+    for m in messages(tuck_ResultSingleton.mailbox):
       handleMsg(tuck_ResultSingleton, m)
       tuckCheckWaiters()
       result = true
@@ -60,13 +59,13 @@ proc tuck_client*(port: int): void =
           if (tuck_r.value.data == "pong"):
             if true:
               discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(tuckTag: msgPut, c: 42))
-              tuckNotifySend()
+              tuckNotifySend(tuck_ResultSlot)
               return
       discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(tuckTag: msgPut, c: 3))
-      tuckNotifySend()
+      tuckNotifySend(tuck_ResultSlot)
       return
   discard enqueue(tuck_ResultSingleton.mailbox, tuck_ResultMsg(tuckTag: msgPut, c: 4))
-  tuckNotifySend()
+  tuckNotifySend(tuck_ResultSlot)
   return
 
 proc tuck_done*(): bool =

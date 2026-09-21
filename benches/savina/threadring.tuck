@@ -1,0 +1,95 @@
+# Savina THR (thread ring) — Imam & Sarkar, AGERE! 2014.
+# Ported from savina/src/main/scala/.../threadring/ThreadRingAkkaActorBenchmark.scala
+#
+# A token passed around a ring of actors, R hops in total. It measures the
+# ACTOR-TO-ACTOR handoff: every hop is one send to a neighbour that has just
+# gone idle, so it is the deepest test of the wake path and of batch mode's
+# flush-before-park rule.
+#
+# THE PORT IS NOT FAITHFUL, AND CANNOT BE. Savina builds the ring with
+# `Array.tabulate(N)(...)` — N is a RUNTIME argument, default 100, and each
+# element is an actor created on the spot and handed its neighbour's address
+# in a DataMessage. Tuck has neither half of that: an actor is a declared
+# compile-time singleton with no reference type, so there is no array of
+# actors to build and no address to send. A generic actor does not help —
+# `Ring[T]` expands to one singleton PER INSTANTIATION, so a ring of 100
+# would need 100 distinct type arguments.
+#
+# So the ring size is fixed at 6 and written out by hand. What still holds is
+# what the benchmark is FOR: a hop is a real cross-actor send, and the token
+# goes round until it runs out. What is lost is scaling N, which is exactly
+# the axis Savina varies.
+
+actor Done [queue: 4]:
+  finished: bool = false
+
+  on fin({n: int}):
+    finished = true
+
+actor Ring0 [queue: 8]:
+  seen: int = 0
+
+  on tok({n: int}):
+    seen += 1
+    if n > 0:
+      Ring1 send tok {n: n - 1}
+    else:
+      Done send fin {n: 0}
+
+actor Ring1 [queue: 8]:
+  seen: int = 0
+
+  on tok({n: int}):
+    seen += 1
+    if n > 0:
+      Ring2 send tok {n: n - 1}
+    else:
+      Done send fin {n: 0}
+
+actor Ring2 [queue: 8]:
+  seen: int = 0
+
+  on tok({n: int}):
+    seen += 1
+    if n > 0:
+      Ring3 send tok {n: n - 1}
+    else:
+      Done send fin {n: 0}
+
+actor Ring3 [queue: 8]:
+  seen: int = 0
+
+  on tok({n: int}):
+    seen += 1
+    if n > 0:
+      Ring4 send tok {n: n - 1}
+    else:
+      Done send fin {n: 0}
+
+actor Ring4 [queue: 8]:
+  seen: int = 0
+
+  on tok({n: int}):
+    seen += 1
+    if n > 0:
+      Ring5 send tok {n: n - 1}
+    else:
+      Done send fin {n: 0}
+
+actor Ring5 [queue: 8]:
+  seen: int = 0
+
+  on tok({n: int}):
+    seen += 1
+    if n > 0:
+      Ring0 send tok {n: n - 1}
+    else:
+      Done send fin {n: 0}
+
+fn ringDone() -> bool:
+  return Done.finished
+
+fn main() -> int:
+  Ring0 send tok {n: 60000}
+  Done.waitUntil {pred: :ringDone}
+  return 0

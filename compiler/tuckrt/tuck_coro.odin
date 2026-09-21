@@ -584,15 +584,26 @@ ActorSlot :: struct {
 	cond:    sync.Cond,
 	pending: bool,
 	working: bool,
+	parked:  bool,   // asleep on `cond`. Read WITHOUT the lock: it is the
+	                 // whole fast path of a send, so it must be per-actor
+	                 // rather than a global anything.
 	waiters: [dynamic]^Waiter,
 }
 
+// How far an idle actor re-checks its mailbox before parking. Adaptive,
+// because a fixed budget is two bets on two workloads and cannot win both:
+// spinning always pays for a saturated actor and never for an idle one.
+// Measured on the Nim runtime, 8 light actors: a fixed 2000-iteration spin
+// burned 1.38 cores against 0.37 for parking at once.
 @(private)
-gActorSlots: [dynamic]^ActorSlot   // SHARED: a send on any thread must reach
-@(private)                         // every actor
+ActorSpinMax :: 4096
+@(private)
+ActorSpinMin :: 16
+
+@(private)
+gActorSlots: [dynamic]^ActorSlot   // SHARED: tuckDrainActors has to reach
+@(private)                         // every actor at exit
 gSlotsLock: sync.Mutex
-@(private)
-gIdleActors: int                   // parked actors; atomic. See tuckNotifySend.
 
 @(private)
 @(thread_local)
@@ -637,21 +648,59 @@ tuckCheckWaiters :: proc() {
 
 @(private)
 actorMain :: proc(t: ^thread.Thread) {
+	// This thread gets a FRESH context, so the entry point's allocator does
+	// not reach it. In an actor program the handlers are where almost every
+	// allocation happens, so without this line the tracking build reports a
+	// clean run over the code that allocates most.
+	context.allocator = tuckTrackAllocator()
 	slot := (^ActorSlot)(t.data)
 	tuckAsyncInit()          // this thread's own scheduler and reactor
 	gMySlot = slot
+	spinBudget := ActorSpinMin   // each actor earns its own
 	for {
 		if slot.drain() do continue
 		checkWaiters(slot)
+		// Spin for as long as spinning has been paying. A producer still
+		// running hands over more work within nanoseconds, while a park costs
+		// a futex sleep here and a wake at the next sender. `working` stays
+		// true throughout: a spinning actor has not given up, and
+		// tuckDrainActors must not read it as quiescent.
+		gotWork := false
+		for _ in 0 ..< spinBudget {
+			if slot.drain() {
+				gotWork = true
+				break
+			}
+		}
+		if gotWork {
+			spinBudget = min(spinBudget * 2, ActorSpinMax)
+			continue
+		}
+		spinBudget = max(spinBudget / 2, ActorSpinMin)
+		// ARM, THEN LOOK AGAIN (EV-7). Publishing `parked` and then sleeping
+		// is not enough: a sender that enqueued just before that store reads
+		// `parked` as false, returns without signalling, and its message sits
+		// in a mailbox nobody will be woken for. The recheck closes it from
+		// THIS side alone, leaving the sender's fast path untouched — the
+		// drain takes the mailbox spinlock, whose exchange is a full barrier,
+		// so the arming store is visible before any send that could follow.
 		sync.lock(&slot.lock)
 		slot.working = false
-		if !slot.pending {
-			intrinsics.atomic_add(&gIdleActors, 1)
-			for !slot.pending {
-				sync.cond_wait(&slot.cond, &slot.lock)
-			}
-			intrinsics.atomic_sub(&gIdleActors, 1)
+		mustPark := !slot.pending
+		if mustPark do intrinsics.atomic_store(&slot.parked, true)
+		sync.unlock(&slot.lock)
+		if mustPark && slot.drain() {
+			intrinsics.atomic_store(&slot.parked, false)
+			sync.lock(&slot.lock)
+			slot.working = true
+			sync.unlock(&slot.lock)
+			continue
 		}
+		sync.lock(&slot.lock)
+		for !slot.pending {
+			sync.cond_wait(&slot.cond, &slot.lock)
+		}
+		intrinsics.atomic_store(&slot.parked, false)
 		slot.pending = false
 		slot.working = true
 		sync.unlock(&slot.lock)
@@ -731,23 +780,24 @@ tuckDrainActors :: proc() {
 	}
 }
 
-tuckNotifySend :: proc() {
-	// Wake every actor so whichever owns that mailbox drains it.
-	//
-	// THE FAST PATH IS THE POINT: a busy actor will come back round its drain
-	// loop and find the message, so it needs no wake, and this runs once per
-	// SEND. Measured on the Nim twin at 3x the cost of the rest of a send when
-	// it unconditionally took two locks and signalled. `gIdleActors` is
-	// non-zero only while an actor is genuinely parked.
-	if intrinsics.atomic_load(&gIdleActors) == 0 do return
-	sync.lock(&gSlotsLock)
-	for s in gActorSlots {
-		sync.lock(&s.lock)
-		s.pending = true
-		sync.cond_signal(&s.cond)
-		sync.unlock(&s.lock)
-	}
-	sync.unlock(&gSlotsLock)
+// Emitted by each send after enqueue, NAMING the actor it wrote to.
+//
+// It was not emitted AT ALL until 2026-09-20: genSender enqueued and stopped,
+// so a send to an actor parked on its condvar was a lost wakeup and the
+// message sat in the ring forever (KNOWN-BUGS-EVENTS.md EV-5).
+//
+// THE FAST PATH IS THE POINT — this runs once per SEND. A busy actor comes
+// back round its drain loop and finds the message itself, so the common case
+// must cost one atomic read and nothing else. `parked` lives in that actor's
+// own slot, so two senders to two different actors never touch the same line.
+tuckNotifySend :: proc(handle: rawptr) {
+	if handle == nil do return   // not registered yet: nothing is parked
+	slot := (^ActorSlot)(handle)
+	if !intrinsics.atomic_load(&slot.parked) do return
+	sync.lock(&slot.lock)
+	slot.pending = true
+	sync.cond_signal(&slot.cond)
+	sync.unlock(&slot.lock)
 }
 
 // Run THIS thread's coroutines until `pred` holds. Named to match

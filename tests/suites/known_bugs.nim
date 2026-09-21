@@ -1359,4 +1359,100 @@ fn main() -> int:
   t.badCheck "...and the message offers both real routes", "satisfies"
   t.bugFixed "an object member satisfying a group is settled one way or the other"
 
+  # An ACTOR FIELD on the left of an in-place append or a MOVED twin call.
+  # Found 2026-09-20 by writing an application (benches/apps), recorded as
+  # EV-9 in KNOWN-BUGS-EVENTS.md.
+  #
+  # Both spellings take a FAST PATH in genAssign that bypasses the normal
+  # field handling and spelled the target as a bare `e.target.name`. The
+  # value on the right is built by the ordinary expression emitter, which
+  # DOES qualify, so a handler emitted `xs.add(px)` and
+  # `st = f(self.st, px)` — bare on the left, `self.` on the right. No host
+  # compiler takes either.
+  #
+  # It needs all three legs because the two paths split the backends between
+  # them: Nim was correct on the moved call and wrong on the append, D and
+  # Odin the other way round. A one-backend assertion would have reported
+  # green on whichever half it happened to miss.
+  #
+  # And it needs an ACTOR: every existing chain and move test binds a local
+  # or a parameter, where there is no `self.` to lose. That intersection —
+  # a Seq or Seq-carrying field, on an actor, as an assignment target — is
+  # what nothing covered, and `tuck ch` says OK for all of it.
+  t.src """
+import seq
+
+type BookState:
+  fills: Seq[int]
+  total: int
+
+fn applyBuy({b: BookState, px: int}) -> BookState:
+  var f = b.fills
+  f = {items: f, value: px} push
+  return {fills: f, total: b.total + px} BookState
+
+actor Book [queue: 8]:
+  st: BookState
+  xs: Seq[int]
+  n: int = 0
+
+  on buy({px: int}):
+    st = {b: st, px: px} applyBuy
+    xs = {items: xs, value: px} push
+    n = n + 1
+
+fn ready() -> bool:
+  return Book.n == 1
+
+fn main() -> int:
+  Book send buy {px: 7}
+  Book.waitUntil {pred: :ready}
+  return Book.st.total
+"""
+  t.quietly: t.okCheck "an actor field survives an append and a moved call"
+  t.quietly: t.hostRuns("an actor field survives an append and a moved call", 7)
+  t.bugFixed "an actor field survives an append and a moved call"
+
+  # A loop that copies does not accumulate the copies. Odin only: that
+  # backend emits no `delete` anywhere, so every `tuckSeqCopy` is live until
+  # the process exits — 75 KB per message on a real program, OOM-killed at
+  # 13.6 GB where Nim and D use 17-21 MB. EV-12, issue #77.
+  #
+  # Stated as the CORRECT behaviour and expected to fail, which is the only
+  # honest shape for it: the program is right, the answer it prints is right,
+  # and every other assertion in the tree passes. Only the memory is wrong,
+  # and until `hostPeakRss` existed nothing here could say so.
+  #
+  # 20 000 copies of a 1024-element ladder is 160 MB of garbage. Nim finishes
+  # in ~1.6 MB and D in ~7 MB; Odin reached 482 MB.
+  t.src """
+import seq
+
+fn zeroed({levels: int}) -> Seq[int]:
+  var out = [0]
+  var i = 1
+  for i < levels:
+    out = {items: out, value: 0} push
+    i = i + 1
+  return out
+
+fn bump({xs: Seq[int]}) -> Seq[int]:
+  var ys = xs
+  ys[0] = ys[0] + 1
+  return ys
+
+fn main() -> int:
+  var xs = {levels: 1024} zeroed
+  var i = 0
+  for i < 20000:
+    let ns = {xs: xs} bump
+    xs = ns
+    i = i + 1
+  if xs[0] != 20000:
+    return 1
+  return 0
+"""
+  t.quietly: t.hostPeakRss("a copy-per-iteration loop does not accumulate copies", 65536)
+  t.bugOpen "a copy-per-iteration loop does not accumulate copies"
+
   t.finish()

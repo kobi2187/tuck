@@ -250,8 +250,10 @@ proc genDDrain*(d: Decl, hasShutdown: bool): string =
   "__gshared void* " & actorSlotName(d.name) & ";\n\n" &
     "bool drain_" & d.name & "() {\n" & finishedGuard &
     "    bool did = false;\n" &
-    "    " & d.name & "Msg msg;\n" &
-    "    while (rt.dequeue(" & singleton & ".mailbox, msg)) {\n" &
+    # The mailbox swaps its two buffers once and then hands each message over
+    # in place, so this loop holds no lock and copies nothing — the same
+    # shape genActorDrain emits for Nim.
+    "    foreach (ref msg; " & singleton & ".mailbox) {\n" &
     "        handleMsg_" & d.name & "(" & singleton & ", msg);\n" &
     # After EACH message: a registered predicate is about the exact moment a
     # condition becomes true, and one that went true and false again inside a
@@ -632,16 +634,36 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
   # second handler's payload into the first handler's slot, and dmd answered
   # "cannot implicitly convert expression `n` of type `long` to `tuck_Level`".
   # Nim has always emitted this by name; now D does too.
+  #
+  # A CONTAINER PAYLOAD IS COPIED IN. `T[]` assignment copies the slice
+  # header, so `Msg(xs: xs)` handed the actor the sender's own buffer: the
+  # sender's next write landed in the actor's mailbox, breaking value
+  # semantics and actor isolation at once, and under `--actors:thread` that
+  # is two OS threads on one buffer with no synchronisation. EV-13.
+  #
+  # Copied here rather than at each send site because this function is the
+  # one place every send goes through — and where a future move, which is
+  # what a send really is, would replace the copy.
   var params: seq[string]
   var ctorArgs = TagField & ": " & d.name & "MsgKind." & msgVariantName(h.name)
+  var copies = ""
   for p in h.params:
     params.add(ctx.dType(p.typ) & " " & p.name)
     ctorArgs.add(", " & p.name & ": " & p.name)
+    if copyableContainer(ctx.res, ctx.module, p.typ):
+      let fields = movedCopyFields(ctx.res, ctx.module, p.typ)
+      if fields.len == 0:
+        copies.add("    " & p.name & " = " & p.name & ".dup;\n")
+      else:
+        for f in fields:
+          copies.add("    " & p.name & "." & f & " = " & p.name & "." & f &
+                     ".dup;\n")
   let sep = if params.len > 0: ", " else: ""
   "void send" & h.name.capitalize() & "_" & d.name & "(ref " & d.name &
-    " self" & sep & params.join(", ") & ") {\n" &
+    " self" & sep & params.join(", ") & ") {\n" & copies &
     "    cast(void) rt.enqueue(self.mailbox, " & d.name & "Msg(" &
-    ctorArgs & "));\n    rt.tuckNotifySend();\n}\n\n"
+    ctorArgs & "));\n    rt.tuckNotifySend(" & actorSlotName(d.name) &
+    ");\n}\n\n"
 
 proc genDActorState*(ctx: var DCodegenCtx, d: Decl,
                     hasShutdown: bool, hasMessages: bool): string =

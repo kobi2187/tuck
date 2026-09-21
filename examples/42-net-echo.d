@@ -33,8 +33,7 @@ __gshared void* tuck_ResultSlot;
 
 bool drain_tuck_Result() {
     bool did = false;
-    tuck_ResultMsg msg;
-    while (rt.dequeue(tuck_ResultSingleton.mailbox, msg)) {
+    foreach (ref msg; tuck_ResultSingleton.mailbox) {
         handleMsg_tuck_Result(tuck_ResultSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
@@ -44,7 +43,7 @@ bool drain_tuck_Result() {
 
 void sendPut_tuck_Result(ref tuck_Result self, long c) {
     cast(void) rt.enqueue(self.mailbox, tuck_ResultMsg(tuckTag: tuck_ResultMsgKind.msgPut, c: c));
-    rt.tuckNotifySend();
+    rt.tuckNotifySend(tuck_ResultSlot);
 }
 
 

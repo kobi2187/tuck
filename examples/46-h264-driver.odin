@@ -169,10 +169,10 @@ handleMsg_tuck_Pipeline :: proc(self: ^tuck_Pipeline, msg: tuck_PipelineMsg) {
 tuck_PipelineSlot: rawptr
 
 drain_tuck_Pipeline :: proc() -> bool {
-	msg: tuck_PipelineMsg
 	didWork := false
-	for rt.dequeue(&tuck_PipelineSingleton.mailbox, &msg) {
-		handleMsg_tuck_Pipeline(&tuck_PipelineSingleton, msg)
+	batch, n := rt.takeBatch(&tuck_PipelineSingleton.mailbox)
+	for i in 0 ..< n {
+		handleMsg_tuck_Pipeline(&tuck_PipelineSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
@@ -181,10 +181,12 @@ drain_tuck_Pipeline :: proc() -> bool {
 
 sendNal_tuck_Pipeline :: proc(self: ^tuck_Pipeline, nal: tuck_NalKind, midFrame: bool) {
 	_ = rt.enqueue(&self.mailbox, tuck_PipelineMsg{tuckTag = .msgNal, nal = nal, midFrame = midFrame})
+	rt.tuckNotifySend(tuck_PipelineSlot)
 }
 
 sendOverrun_tuck_Pipeline :: proc(self: ^tuck_Pipeline, n: int) {
 	_ = rt.enqueue(&self.mailbox, tuck_PipelineMsg{tuckTag = .msgOverrun, n = n})
+	rt.tuckNotifySend(tuck_PipelineSlot)
 }
 
 tuck_capture :: proc (want: int) -> int {
@@ -243,9 +245,11 @@ tuck_main :: proc () -> int {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	tuck_PipelineSlot = rt.tuckStartActor(drain_tuck_Pipeline)
 	mainRc := tuck_main()
 	rt.tuckDrainActors()
+	rt.tuckTrackCheck()
 	os.exit(mainRc)
 }

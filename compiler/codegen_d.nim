@@ -863,6 +863,23 @@ proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
       return ctx.recStructNameD(t.fields, owner)
   ctx.dDeclType(t)
 
+proc movedAssignTarget(ctx: DCodegenCtx, t: Expr): string =
+  ## The emitted spelling of an assignment target, for the two FAST PATHS
+  ## below: the in-place append and the MOVED twin. Both bypass the field
+  ## handling in the normal assign path, so both must qualify the target
+  ## themselves.
+  ##
+  ## They did not, and the asymmetry is what made it hard to see: the
+  ## right-hand side is built by the ordinary expression emitter, which DOES
+  ## add the `self.`, so an actor handler emitted `st = f(self.st, ...)` —
+  ## qualified on the right, bare on the left. Rejected here and by Odin;
+  ## Nim was correct only because its backend never takes this path. EV-9.
+  if t != nil and t.kind == exkVar and t.name in ctx.fieldVars:
+    ctx.fieldPrefix & t.name
+  else: t.name
+
+proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string
+
 proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
   ## `x = f(x, ...)` on a threaded-container fn: call the MOVED twin, which
   ## may have the container destructively, and skip the defensive copy on the
@@ -870,8 +887,18 @@ proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
   let threaded = selfThreadedCall(ctx.res, ctx.module, e)
   if threaded == nil: return ""
   let name = movedName(ctx.resolveDCallee(threaded))
-  e.target.name & " = " & name & "(" &
-    ctx.genDCallArgs(threaded, threaded.callee.name).join(", ") & ")"
+  let call = name & "(" &
+             ctx.genDCallArgs(threaded, threaded.callee.name).join(", ") & ")"
+  # A DECLARATION needs its type in D. `selfThreadedCall` accepts decls now
+  # — that is what lets `let f = sweep(b.ask, ...)` reach the twin at all —
+  # and without this the emitted `tuck_f = ...` named something never
+  # declared, which dmd answers with "undefined identifier".
+  if e.isDecl and e.target.kind == exkVar and
+     e.target.name notin ctx.definedVars and
+     e.target.name notin ctx.fieldVars:
+    ctx.definedVars.incl(e.target.name)
+    return ctx.genDLocalDecl(e, call)
+  ctx.movedAssignTarget(e.target) & " = " & call
 
 proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   ## `let r = {args} someTask` — spawn the task into a result slot and wait
@@ -966,7 +993,13 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   # An append assigned back to its own argument is an in-place append.
   let appended = selfAppendValue(ctx.res, e)
   if appended != nil:
-    return e.target.name & " ~= " & ctx.genDExpr(appended)
+    return ctx.movedAssignTarget(e.target) & " ~= " & ctx.genDExpr(appended)
+  # `s = s + v` on a str is the same fact one type over. D's `~=` on an array
+  # grows through the GC's capacity, so it is amortised where `a ~ b` builds a
+  # whole new string each time — an O(n) loop against an O(n^2) one.
+  let concatenated = selfConcatValue(ctx.res, e)
+  if concatenated != nil:
+    return ctx.movedAssignTarget(e.target) & " ~= " & ctx.genDExpr(concatenated)
   # Same fact one level up: a threaded-container call assigned back over its
   # own argument may take it destructively, so it calls the MOVED twin — and
   # the result needs no defensive dup either, since it IS the moved value.

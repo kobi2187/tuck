@@ -87,7 +87,7 @@ type
     ifacePairs*: HashSet[tuple[objName, iface: string]]
     ifaceCalls*: Table[NodeId, tuple[iface, member: string]]
     lastUses*: HashSet[NodeId]
-      ## Nodes analysis_lastuse proved are a local's FINAL read, so the copy
+      ## Nodes analysis_liveness proved are a local's FINAL read, so the copy
       ## made for them is unobservable and may be a move. A set rather than a
       ## table: the only question asked is yes/no.
 

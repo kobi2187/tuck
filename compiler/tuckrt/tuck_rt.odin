@@ -7,15 +7,16 @@
 // Generated Odin imports this as `rt`, so every entry point here is what
 // codegen_odin.nim emits as `rt.<name>`.
 //
-// Unlike the Nim runtime this needs no locks: Tuck is single-threaded and
-// cooperative (actors and tasks are coroutines on one scheduler), so a
-// mailbox is only ever touched between yield points.
+// Actors each get an OS thread (tuck_coro.odin), so the mailbox IS locked —
+// see MailboxLock there. Tasks remain coroutines on main's thread.
 package tuckrt
 
 import "core:fmt"
 import "core:math"
 import "core:os"
 import "core:strconv"
+import "base:intrinsics"
+import "core:mem"
 import "core:strings"
 import "core:sys/linux"
 import "core:time"
@@ -128,10 +129,118 @@ shiftRight :: proc(a: u64, by: int) -> u64 {
 // HEADER, so both names then view one buffer and `b[0] = 99` writes `a[0]`.
 // Verified divergent: the same program exits 1 on Nim and D and 99 here.
 // lowering_seqcopy marks the sites; this is what the emitter prints there.
+//
+// Bulk, not element-by-element. This copied with `reserve` + an `append` per
+// element — a call and a capacity check per item, where the whole point is
+// one contiguous move.
+//
+// The win it is worth TODAY is modest, and the reason is worth writing down.
+// Measured on 200_000 copies of a 1024-element ladder (the matching engine's
+// real shape):
+//
+//   copies freed, one block reused : append 198ms, bulk 49ms   -> 4.1x
+//   copies never freed (EV-12)     : append 245ms, bulk 195ms  -> 1.26x
+//
+// Nothing here frees, so every copy is a fresh page-faulting allocation and
+// the ALLOCATOR dominates, not the copy loop. On the matching engine that
+// shows up as roughly 10%, not 4x. The full win is gated behind EV-12: fix
+// the leak so memory is reused, and the copy method becomes the cost that
+// matters. The two are multiplicative, which is also the order to do them
+// in.
+// --- allocation tracking, for proving a free is right ------------------------
+//
+// This backend has no collector, so every heap value it copies is live until
+// the process exits (KNOWN-BUGS-EVENTS.md EV-12, issue #77). Inserting frees
+// is the fix, and the failure mode of getting one wrong is a use-after-free
+// or a double free — silent, and far worse than the leak it replaces.
+//
+// So the frees get a harness before they get written. `-define:TUCK_TRACK=true`
+// routes every allocation through Odin's tracking allocator and prints, at
+// exit, what leaked AND what was freed wrongly. Off by default: it costs a
+// map insert per allocation, which is exactly the thing being measured.
+//
+// The report is called EXPLICITLY from the entry point rather than deferred.
+// `os.exit` is `_exit` — it runs no defers and no finalizers, which is the
+// same reason the resource registry closes its tables by hand there.
+TUCK_TRACK :: #config(TUCK_TRACK, false)
+
+when TUCK_TRACK {
+	gTrack: mem.Tracking_Allocator
+	gTrackReady: bool
+}
+
+tuckTrackAllocator :: proc() -> mem.Allocator {
+	// RETURNS the allocator rather than installing it, because Odin's
+	// `context` is an implicit per-proc copy: assigning `context.allocator`
+	// in here would rebind this proc's context and nothing else. The entry
+	// point assigns what this hands back, which is the only place the
+	// assignment reaches the rest of the program.
+	//
+	// With tracking off it hands back the context's own allocator, so the
+	// emitted line is unconditional and no `when` leaks into generated code.
+	when TUCK_TRACK {
+		// ONCE. Every actor thread calls this too — it gets a fresh context
+		// and would otherwise re-init the tracker, wiping what main and the
+		// other threads had recorded. No lock is needed because the entry
+		// point calls this on its first line, before any actor exists.
+		if !gTrackReady {
+			mem.tracking_allocator_init(&gTrack, context.allocator)
+			// A bad free PANICS by default, which is the right loudness for
+			// the mistake this exists to catch — but the panic would pre-empt
+			// the report, so it is downgraded to recording and the exit code
+			// carries the verdict instead.
+			gTrack.bad_free_callback = nil
+			gTrackReady = true
+		}
+		return mem.tracking_allocator(&gTrack)
+	} else {
+		return context.allocator
+	}
+}
+
+tuckTrackCheck :: proc() {
+	// EXITS here rather than handing a count back for the entry point to act
+	// on. The emitted call must not mention `os`: Odin errors on an unused
+	// import, so the generated header carries `core:os` only when the program
+	// itself needed it — and a `fn main() -> void` does not. Emitting
+	// `os.exit(90)` made every such program fail to compile.
+	if tuckTrackReport() > 0 { os.exit(90) }
+}
+
+tuckTrackReport :: proc() -> int {
+	// Returns the number of faults, so a test can assert on an exit code
+	// rather than parse output.
+	when TUCK_TRACK {
+		faults := 0
+		if len(gTrack.allocation_map) > 0 {
+			total := 0
+			for _, entry in gTrack.allocation_map { total += entry.size }
+			fmt.eprintf("TUCK-ALLOC leaked %v allocation(s), %v bytes (peak %v)\n",
+			            len(gTrack.allocation_map), total,
+			            gTrack.peak_memory_allocated)
+			faults += len(gTrack.allocation_map)
+		}
+		// A bad free is the failure mode that matters: it means an emitted
+		// `delete` reached memory that was not ours, or was already gone.
+		if len(gTrack.bad_free_array) > 0 {
+			fmt.eprintf("TUCK-ALLOC %v BAD FREE(S) - a delete was wrong\n",
+			            len(gTrack.bad_free_array))
+			for bf in gTrack.bad_free_array {
+				fmt.eprintf("  bad free of %v at %v\n", bf.memory, bf.location)
+			}
+			faults += len(gTrack.bad_free_array)
+		}
+		return faults
+	} else {
+		return 0
+	}
+}
+
 tuckSeqCopy :: proc(items: [dynamic]$T) -> [dynamic]T {
 	out: [dynamic]T
-	reserve(&out, len(items))
-	for v in items { append(&out, v) }
+	if len(items) == 0 { return out }
+	resize(&out, len(items))
+	copy(out[:], items[:])
 	return out
 }
 
@@ -607,33 +716,90 @@ release :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) {
 	}
 }
 
-// Actor mailbox: a fixed ring. Single-threaded and cooperative, so unlike the
-// Nim runtime there is no lock — sends and drains never interleave mid-op.
+// A spinlock for the mailbox. NOT decoration: this runtime spawns one OS
+// thread per actor (tuck_coro.odin's tuckStartActor), so a send from main and
+// a drain on the actor's thread genuinely race. The mailbox carried NO
+// synchronisation at all until 2026-09-20, and the comment here still claimed
+// "single-threaded and cooperative" — true before thread-per-actor landed,
+// false ever since, and nobody updated it (KNOWN-BUGS-EVENTS.md EV-5).
+//
+// A spinlock rather than a Mutex for the reason the Nim runtime measured: the
+// section is a bounds check, one array write and an index bump, and a busy
+// actor should find it free without paying a futex round trip.
+MailboxLock :: struct {
+	flag: bool,
+}
+
+mbLock :: proc(l: ^MailboxLock) {
+	for intrinsics.atomic_exchange_explicit(&l.flag, true, .Acquire) {
+		for intrinsics.atomic_load_explicit(&l.flag, .Relaxed) {
+			intrinsics.cpu_relax()
+		}
+	}
+}
+
+mbUnlock :: proc(l: ^MailboxLock) {
+	intrinsics.atomic_store_explicit(&l.flag, false, .Release)
+}
+
+// Actor mailbox: TWO buffers, not one ring. Senders fill buf[cur]; the actor
+// flips `cur` and then owns the buffer it took outright, so the whole drain
+// runs with no lock held and nothing copied out. A handover is one integer
+// write whatever the batch size.
+//
+// Mirrors compiler/tuck_rt.nim. `[queue: N]` means "N messages may be waiting
+// to be picked up", and an actor may hold up to another N it has taken.
 Mailbox :: struct($T: typeid, $Cap: int) {
-	data: [Cap]T,
-	head: int,
-	tail: int,
+	buf:  [2][Cap]T,
+	_pad: [64]u8,   // keeps the control block off the last cache line of the
+	                // buffers: the actor streams one while senders hammer the
+	                // lock, and sharing a line makes them invalidate each
+	                // other for nothing
+	fill: [2]int,
+	cur:  int,
+	lock: MailboxLock,
 }
 
 enqueue :: proc(mb: ^Mailbox($T, $Cap), msg: T) -> bool {
-	next := (mb.tail + 1) % Cap
-	if next == mb.head do return false // full: sendX drops (spec §9.1)
-	mb.data[mb.tail] = msg
-	mb.tail = next
+	mbLock(&mb.lock)
+	c := mb.cur
+	if mb.fill[c] >= Cap {
+		mbUnlock(&mb.lock)
+		return false // full: sendX drops (spec §9.1)
+	}
+	mb.buf[c][mb.fill[c]] = msg
+	mb.fill[c] += 1
+	mbUnlock(&mb.lock)
 	return true
 }
 
-dequeue :: proc(mb: ^Mailbox($T, $Cap), msg: ^T) -> bool {
-	if mb.head == mb.tail do return false
-	msg^ = mb.data[mb.head]
-	mb.head = (mb.head + 1) % Cap
-	return true
+// Take everything waiting. The swap happens once, under the lock; the caller
+// then walks `batch[:n]` with no lock held and nothing copied out. Odin has no
+// iterator to hide this behind the way Nim and D do, so the emitted drain
+// loops over the returned slice — the one place the three backends differ in
+// shape rather than only in syntax.
+//
+// `fill` is cleared before returning rather than after the walk, so an early
+// exit leaves the mailbox consistent instead of re-delivering a batch.
+takeBatch :: proc(mb: ^Mailbox($T, $Cap)) -> (batch: []T, n: int) {
+	mbLock(&mb.lock)
+	c := mb.cur
+	n = mb.fill[c]
+	if n > 0 {
+		mb.cur = 1 - c // THE SWAP: the actor now owns buf[c]
+		mb.fill[c] = 0
+	}
+	mbUnlock(&mb.lock)
+	return mb.buf[c][:], n
 }
 
-// Sender's opt-in backpressure check. sendX drops silently on a full ring
+// Sender's opt-in backpressure check. sendX drops silently on a full mailbox
 // (fast, non-blocking, spec §9.1) — the sender may check first if it cares.
 hasRoom :: proc(mb: ^Mailbox($T, $Cap)) -> bool {
-	return ((mb.tail + 1) % Cap) != mb.head
+	mbLock(&mb.lock)
+	r := mb.fill[mb.cur] < Cap
+	mbUnlock(&mb.lock)
+	return r
 }
 
 // ---------- stdlib externs (std/*.tuck) ----------

@@ -23,6 +23,7 @@ const odinFeatures = "#+feature dynamic-literals\n"
 from mangle import mangleName
 import ./codegen_odin_decl
 import ./codegen_odin
+from analysis_provenance import buildProvenance
 
 proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] =
   var body = ""
@@ -104,6 +105,17 @@ proc shouldImportOs(m: Module, body: string): bool =
   let mainFn = mainDecl(m)
   (mainFn != nil and mainFn.returnsValue) or "os." in body
 
+proc usesRuntime*(m: Module, mains: string): bool =
+  ## Does this program touch the runtime at all? Asked by the entry point
+  ## before it emits anything `rt.`-qualified, for the same reason
+  ## `shouldImportRt` asks it of the body: an import Odin does not see used
+  ## is a compile error, and a program with no actors, no tasks and no
+  ## runtime call needs no `tuckrt` at all.
+  var actorNames: seq[string]
+  var hasTasks = false
+  runtimeUsers(m, actorNames, hasTasks)
+  actorNames.len > 0 or hasTasks or "rt." in mains
+
 proc shouldImportRt(m: Module, body, mains: string): bool =
   ## Check if runtime import is needed.
   var actorNames: seq[string]
@@ -150,6 +162,16 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   ## reactor, start every actor's drain coroutine, run main, then drive the
   ## loop so spawned tasks and actors get to finish.
   result = "main :: proc() {\n"
+  # Allocation tracking, ONLY for a program that already uses the runtime.
+  #
+  # Odin rejects an unused import, so the header carries `rt` only when the
+  # body needed it — and emitting these two lines unconditionally forced that
+  # dependency on every program, breaking 107 assertions over programs that
+  # touch no runtime at all. It is also the right rule on its own terms: with
+  # no runtime there is no `tuckSeqCopy`, so there is nothing to track.
+  let tracks = usesRuntime(m, mains)
+  if tracks:
+    result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
   for a in ctx.staticAsserts:
     result.add("\tassert(" & a & ")\n")
   var actorNames: seq[string]
@@ -183,6 +205,12 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   # entry point already owns the lifecycle (it boots the scheduler); this is
   # the other end of it.
   if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
+  # The allocation report, EXPLICITLY and last. `os.exit` below is `_exit`:
+  # it runs no defers and no finalizers, which is the same reason the
+  # resource registry closes its tables by hand right above. The exit lives
+  # INSIDE tuckTrackCheck so this line need not mention `os`, which the
+  # header may not have imported. With tracking off it is a no-op call.
+  if tracks: result.add("\trt.tuckTrackCheck()\n")
   if mainReturns: result.add("\tos.exit(mainRc)\n")
   result.add("}\n")
 
@@ -196,6 +224,13 @@ proc emitOdin*(m: Module, res: Resolution,
   ## `res` is the semantic layer typechecking produced. Taking it as an
   ## argument is the point: this stage cannot run before the one that fills
   ## it, and now the signature says so instead of a comment on checkOrDie.
+  # The provenance summary is rebuilt against THIS module's tree before
+  # anything reads it. Marking runs for every module before emission starts,
+  # so a summary built during marking describes whichever module was marked
+  # last; and each backend lowers its own deep copy, so node ids differ too.
+  # Rebuilding here is idempotent and cheap, and removes the phase dependency
+  # rather than documenting it.
+  buildProvenance(res, m)
   var ctx = newOdinCtx(m, realModules, moduleName, res)
   let (body, mains) = ctx.emitBody(m)
   result = odinPackage

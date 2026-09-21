@@ -817,6 +817,79 @@ proc hostRuns*(t: var T, name: string, code: int, pattern = "") =
   if ran.len == 0: t.skip name
   else: t.ok name & "  [" & ran.join(", ") & "]"
 
+proc hostPeakRss*(t: var T, name: string, budgetKB: int) =
+  ## Build and run on EVERY available backend, asserting each exits 0 and
+  ## stays under a memory budget.
+  ##
+  ## Nothing else in the suite measures memory, and that is how the Odin
+  ## backend came to leak every heap value it copied — 75 KB per message,
+  ## OOM-killed at 13.6 GB — while passing every assertion in the tree
+  ## (KNOWN-BUGS-EVENTS.md EV-12, issue #77). An allocation bug is invisible
+  ## to `okCheck`, invisible to a regex over emitted text, and invisible to
+  ## an exit code: the program is CORRECT, it simply cannot survive a large
+  ## input.
+  ##
+  ## THREE LEGS, NOT ONE, and not as a matter of thoroughness. The backend
+  ## that leaks is the one with no collector; Nim has ARC and D has a GC, so
+  ## a Nim-only budget passes at 1.6 MB while Odin sits at 482 MB on the same
+  ## program. A one-backend memory assertion cannot observe the only bug of
+  ## this class the tree has ever had.
+  ##
+  ## Budgets are meant to be LOOSE. This is not a performance assertion: each
+  ## should sit well above what a non-leaking backend needs and well below
+  ## what a leaking one reaches, so the gap does the work and ordinary
+  ## allocator variation does not. A budget that trips on a 2x wobble gets
+  ## switched off within a month.
+  ##
+  ## Measurement is `tests/peak_rss.sh` (polls VmHWM); its exit 90 means
+  ## over budget, and any other non-zero is the program's own.
+  let measure = t.root / "tests" / "peak_rss.sh"
+  let noPrep = proc (dir: string) = discard
+  let nimB = t.need(vBuild)
+  let nimR = t.needCmdAfter(@[measure, $budgetKB, t.curDir / "out" / "t"],
+                            nimB, noPrep, t.curDir, verb = vRun)
+  let odinExe = findOdin()
+  let dmdExe = findDmd()
+
+  var odinR = -1
+  if odinExe.len > 0:
+    let e = t.needOdin()
+    let proj = t.curDir / "odinpkg"
+    let src = t.curDir / "odin" / "t.odin"
+    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none",
+                             "-out:" & proj / "prog"], e,
+                           proc (dir: string) = stageOdinPkg(dir, src), proj)
+    odinR = t.needCmdAfter(@[measure, $budgetKB, proj / "prog"], b,
+                           noPrep, proj, verb = vRun)
+  var dR = -1
+  if dmdExe.len > 0:
+    let e = t.needD()
+    let dir = t.curDir / "dlang"
+    let b = t.needCmdAfter(@[dmdExe, "-i", "-I" & dir, dir / "t.d",
+                             dir / "minicoro.a", "-of=" & dir / "prog"],
+                           e, noPrep, dir)
+    dR = t.needCmdAfter(@[measure, $budgetKB, dir / "prog"], b,
+                        noPrep, dir, verb = vRun)
+  if t.phase == pCollect: return
+  if t.wasSkipped(nimR): t.skip name; return
+
+  var ran: seq[string]
+  for (label, idx) in [("nim", nimR), ("odin", odinR), ("d", dR)]:
+    if idx < 0 or t.skippedCmd(idx): continue
+    let (rc, output) = t.resultOf(idx)
+    let peak = strip(lastLine(output))
+    if rc == 90:
+      t.no name, label & " over budget: " & peak
+      return
+    if rc != 0:
+      t.no name, label & " exited " & $rc &
+                 (if output.strip == "": " (NO OUTPUT)"
+                  else: ": " & tailLines(output, 2))
+      return
+    ran.add label & " " & peak.replace("peakRSS=", "").split(" ")[0]
+  if ran.len == 0: t.skip name
+  else: t.ok name & "  [" & ran.join(", ") & "]"
+
 proc hostBuilds*(t: var T, name: string) =
   let nimB = t.need(vBuild)
   let odinExe = findOdin()

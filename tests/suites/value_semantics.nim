@@ -553,4 +553,155 @@ fn main() -> int:
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the chain still appends each step", 0
 
+  # The record dup at a binding site is LOAD-BEARING, on a value that came
+  # back from a CALL. `lowering_seqcopy` says a construction's Seq fields are
+  # "already fresh, so marking it costs one redundant dup rather than a wrong
+  # one" — which invites exactly the optimisation this forbids.
+  #
+  # It is not redundant. `wrap` builds its record from a PARAMETER and uses
+  # the same one twice, so without the dup both fields view the caller's
+  # buffer and each other's. Removing the mark for `exkCall` was tried:
+  # nim stayed 17, odin and D both returned 106. Silently, and only on the
+  # two backends whose container aliases.
+  #
+  # `hostRuns` and not `emitsD`, because the existing coverage here is a
+  # regex over generated text — it asserts the shape of a STRING, and the
+  # failure being guarded against is a program that computes the wrong
+  # number while emitting perfectly plausible code.
+  t.src """
+import seq
+
+type Pair:
+  a: Seq[int]
+  b: Seq[int]
+
+# Two fields, ONE parameter: the fields alias each other AND the argument.
+fn wrap({xs: Seq[int]}) -> Pair:
+  return {a: xs, b: xs} Pair
+
+# Returns its SECOND parameter. Twinnable on the first, so the wrapper
+# copies `p` and hands `q` straight back.
+fn pick({p: Seq[int], q: Seq[int], which: int}) -> Seq[int]:
+  if which == 0:
+    return p
+  return q
+
+fn main() -> int:
+  var src = [10, 20]
+  var r = {xs: src} wrap
+  r.a[0] = 99
+  var other = [7, 8]
+  var got = {p: src, q: other, which: 1} pick
+  got[0] = 55
+  return r.b[0] + other[0]
+"""
+  t.okCheck "a record returned from a call does not alias its argument"
+  t.hostRuns("a record returned from a call does not alias its argument", 17)
+
+  # A Seq SENT to an actor is the actor's, not still the sender's.
+  #
+  # The message envelope holds the container by value, and `Msg{xs = xs}`
+  # copies only the header on D and Odin — so the sender's next write landed
+  # in the actor's mailbox. It breaks two guarantees at once: value semantics
+  # (a Seq binding copies) and actor isolation ("state nobody else touches"),
+  # and under `--actors:thread` it is two OS threads on one buffer with no
+  # synchronisation. KNOWN-BUGS-EVENTS.md EV-13.
+  #
+  # `markSeqCopies` never saw it because that pass walks `exkAssign` and a
+  # send payload is not an assignment. The copy now happens in the generated
+  # send helper, which is the one place every send goes through.
+  #
+  # Single mode is the deterministic phrasing: the actor is a coroutine on
+  # main's thread and does not run until `waitUntil`, so main's mutation
+  # provably happens first. In thread mode the same program is a race, which
+  # is the bug, not a way to test for it.
+  t.src """
+import seq
+
+actor Sink [queue: 8]:
+  got: int = 0
+
+  on take({xs: Seq[int]}):
+    got = xs[0]
+
+fn ready() -> bool:
+  return Sink.got != 0
+
+fn main() -> int:
+  var payload = [42, 1]
+  Sink send take {xs: payload}
+  payload[0] = 99
+  Sink.waitUntil {pred: :ready}
+  return Sink.got
+"""
+  t.okCheck "a Seq sent to an actor is copied, not shared"
+  t.hostRuns("a Seq sent to an actor is copied, not shared", 42)
+
+  # --- which defensive copies are actually needed -------------------------
+  #
+  # The copy pass used to answer "all of them", because a call MIGHT hand
+  # back its own argument. `analysis_provenance` asks the callee instead.
+  # Four shapes, and the suite pins all four, because two of them are what a
+  # shortcut gets wrong:
+  #
+  #   fresh   allocates and returns it       -> no copy
+  #   keep    returns its argument           -> copy
+  #   seed    copies at its own binding      -> no copy (the subtle one)
+  #   twin    returns ONE buffer as TWO fields -> copy (the dangerous one)
+  #
+  # `seed` is subtle because the construction inside it names the parameter,
+  # so it reads as aliasing until you account for the copy the binding itself
+  # inserts — and getting that wrong costs every caller a second copy of a
+  # value the callee had already made private.
+  #
+  # `twin` is dangerous in the other direction: both fields are genuinely
+  # fresh, and `oFresh` alone cannot tell one allocation under two names from
+  # two allocations. Exempting it would make `d.a[0] = 5` write `d.b[0]`.
+  t.src """
+import seq
+
+type Box:
+  items: Seq[int]
+  n: int
+
+type Pair2:
+  a: Seq[int]
+  b: Seq[int]
+
+fn fresh({k: int}) -> Seq[int]:
+  var out = [0]
+  out = {items: out, value: k} push
+  return out
+
+fn keep({xs: Seq[int]}) -> Seq[int]:
+  return xs
+
+fn seed({xs: Seq[int]}) -> Box:
+  var b = {items: xs, n: 0} Box
+  return b
+
+fn twin({xs: Seq[int]}) -> Pair2:
+  var one = xs
+  one = {items: one, value: 1} push
+  return {a: one, b: one} Pair2
+
+fn main() -> int:
+  let a = {k: 9} fresh
+  let b = {xs: a} keep
+  let c = {xs: a} seed
+  var d = {xs: a} twin
+  d.a[0] = 5
+  return a[1] + b[1] + c.items[1] + d.b[0]
+"""
+  t.okCheck "the provenance cases check"
+  t.omitsOdin "a freshly allocated result is not copied again",
+              r"tuckSeqCopy\(tuck_fresh\("
+  t.emitsOdin "...but a result that is its own argument is",
+              r"tuckSeqCopy\(tuck_keep\("
+  t.omitsD "the same elision on D", r"\(tuck_fresh\([^)]*\)\)\.dup"
+  t.emitsD "...and the same copy on D", r"\(tuck_keep\([^)]*\)\)\.dup"
+  # 9 + 9 + 9 + 0. The last term is the one that matters: `d.b[0]` is 0 only
+  # if `twin`'s two fields were separated. Sharing one buffer makes it 5.
+  t.hostRuns("one buffer returned as two fields is still two buffers", 27)
+
   t.finish()

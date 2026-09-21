@@ -151,10 +151,10 @@ handleMsg_tuck_Signals :: proc(self: ^tuck_Signals, msg: tuck_SignalsMsg) {
 tuck_SignalsSlot: rawptr
 
 drain_tuck_Signals :: proc() -> bool {
-	msg: tuck_SignalsMsg
 	didWork := false
-	for rt.dequeue(&tuck_SignalsSingleton.mailbox, &msg) {
-		handleMsg_tuck_Signals(&tuck_SignalsSingleton, msg)
+	batch, n := rt.takeBatch(&tuck_SignalsSingleton.mailbox)
+	for i in 0 ..< n {
+		handleMsg_tuck_Signals(&tuck_SignalsSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
@@ -163,6 +163,7 @@ drain_tuck_Signals :: proc() -> bool {
 
 sendSense_tuck_Signals :: proc(self: ^tuck_Signals, demand: tuck_Demand, preempt: bool) {
 	_ = rt.enqueue(&self.mailbox, tuck_SignalsMsg{tuckTag = .msgSense, demand = demand, preempt = preempt})
+	rt.tuckNotifySend(tuck_SignalsSlot)
 }
 
 tuck_Intersection_PhaseChanged :: proc (to: u8) {
@@ -249,9 +250,11 @@ tuck_main :: proc () -> int {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	tuck_SignalsSlot = rt.tuckStartActor(drain_tuck_Signals)
 	mainRc := tuck_main()
 	rt.tuckDrainActors()
+	rt.tuckTrackCheck()
 	os.exit(mainRc)
 }

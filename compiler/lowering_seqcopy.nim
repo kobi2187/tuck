@@ -25,6 +25,7 @@ import ast, options, sets, tables
 import resolution
 import ast_query
 import lowering  # getFieldsForType
+import analysis_provenance
 
 proc isSeqValued(res: Resolution, e: Expr): bool =
   e != nil and seqElem(res.typeFor(e)) != nil
@@ -44,8 +45,17 @@ proc seqFieldNames*(res: Resolution, m: Module, t: Type): seq[string] =
 # both names view one buffer, so `b[0] = 50` writes `a[0]` too. Verified
 # divergent before this existed.
 #
-# A fresh list literal owns its storage and needs no copy; everything else
-# does, including a call result, since a call may hand back its own argument.
+# A fresh list literal owns its storage and needs no copy. A CALL RESULT is
+# asked about: `analysis_provenance` answers whether the callee built the
+# value or merely handed back one of its own arguments, and only the first
+# skips the copy. Everything else copies, as it always did.
+#
+# That question used to be answered "always copy" — the safe reading, and the
+# expensive one: the matching engine paid four ladder copies per order where
+# two were provably waste. It must NOT be answered syntactically. Exempting
+# call results, and exempting record bindings from calls, were each tried and
+# each returned 106 instead of 17 on this suite's own aliasing assertion, on
+# D and Odin only.
 var dupSites: HashSet[NodeId]
   ## Expressions the emitter must wrap in `.dup`, keyed by node id — the same
   ## side-table shape the checker's own Resolution uses.
@@ -90,20 +100,26 @@ proc markSeqCopies(res: Resolution, m: Module, e: Expr) =
   of exkAssign:
     if e.assignVal != nil and e.assignVal.kind != exkList:
       if isSeqValued(res, e.assignVal):
-        ensureId(e.assignVal)
-        dupSites.incl(e.assignVal.id)
+        if not exclusivelyOwned(res, m, e.assignVal):
+          ensureId(e.assignVal)
+          dupSites.incl(e.assignVal.id)
       else:
         # `{fields} TypeName` (a record construction) parses as an exkCall
         # over an exkStruct payload, same as any other postfix application —
         # there is no "this is a fresh literal" node kind to exempt the way
-        # exkList exempts a fresh Seq literal above. A construction call's
-        # own Seq fields are already fresh too, so marking it costs one
-        # redundant `.dup` rather than a wrong one — correctness over the
-        # extra allocation.
-        let fields = seqFieldNames(res, m, res.typeFor(e.assignVal))
-        if fields.len > 0:
+        # exkList exempts a fresh Seq literal above.
+        #
+        # PER FIELD, because the answer is per field: `sweep` returns a
+        # `Filled` whose ladder it allocated, while `wrap` returns a `Pair`
+        # whose two fields are both its argument. Asking about the record as
+        # a whole cannot tell those apart, and the field that still aliases
+        # is the one that must keep its copy.
+        var need: seq[string]
+        for f in seqFieldNames(res, m, res.typeFor(e.assignVal)):
+          if not exclusivelyOwned(res, m, e.assignVal, f): need.add(f)
+        if need.len > 0:
           ensureId(e.assignVal)
-          recordDupSites[e.assignVal.id] = fields
+          recordDupSites[e.assignVal.id] = need
     markSeqCopies(res, m, e.target)
     markSeqCopies(res, m, e.assignVal)
   of exkBlock:
@@ -130,6 +146,11 @@ proc markSeqCopiesIn*(res: Resolution, m: Module) =
   ## Mark this module's copy sites. Runs AFTER lowerModule, on the backend's
   ## private copy of the tree — the marks are keyed by node id, which survives
   ## the per-backend deepCopy.
+  ##
+  ## The provenance summary is rebuilt HERE, against this backend's tree,
+  ## because each backend lowers its own deep copy and a summary computed
+  ## over one tree names nodes in that tree only.
+  buildProvenance(res, m)
   for fn in m.allFns():
     markSeqCopies(res, m, fn.fnBody)
   for d in m.decls(dkTask):

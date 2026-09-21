@@ -27,10 +27,10 @@ handleMsg_tuck_Counter :: proc(self: ^tuck_Counter, msg: tuck_CounterMsg) {
 tuck_CounterSlot: rawptr
 
 drain_tuck_Counter :: proc() -> bool {
-	msg: tuck_CounterMsg
 	didWork := false
-	for rt.dequeue(&tuck_CounterSingleton.mailbox, &msg) {
-		handleMsg_tuck_Counter(&tuck_CounterSingleton, msg)
+	batch, n := rt.takeBatch(&tuck_CounterSingleton.mailbox)
+	for i in 0 ..< n {
+		handleMsg_tuck_Counter(&tuck_CounterSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
@@ -39,6 +39,7 @@ drain_tuck_Counter :: proc() -> bool {
 
 sendAdd_tuck_Counter :: proc(self: ^tuck_Counter, n: int) {
 	_ = rt.enqueue(&self.mailbox, tuck_CounterMsg{tuckTag = .msgAdd, n = n})
+	rt.tuckNotifySend(tuck_CounterSlot)
 }
 
 tuck_sumReady :: proc () -> bool {
@@ -54,9 +55,11 @@ tuck_main :: proc () -> int {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	tuck_CounterSlot = rt.tuckStartActor(drain_tuck_Counter)
 	mainRc := tuck_main()
 	rt.tuckDrainActors()
+	rt.tuckTrackCheck()
 	os.exit(mainRc)
 }
