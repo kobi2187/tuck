@@ -71,8 +71,16 @@ returns `FromParam(0)` for `wrap`, forcing the copy that keeps
 
 ## Component B — intraprocedural liveness
 
-Standard backward dataflow over heap-owning locals: at each point, may this
-name be read later? Gives:
+**Already exists**, and was missed when this plan was written:
+`compiler/analysis_lastuse.nim` stamps the final read of every binding, and
+`codegen_common.paramIsMovable` consumes it. It is deliberately strict —
+nothing inside a loop is stamped unless the binding is loop-local, which is
+not modelled — so there is widening to do, but the pass, its consumer and
+its reasoning are in the tree. Its header makes the same argument this plan
+does from the other end: last-use is cheap in Tuck precisely because there
+is no aliasing to invalidate it.
+
+What it gives, once widened:
 
 - `x = f(x)` where `x` is dead after → move. Generalises `movedCallInto`
   past its syntactic shape, so EV-9's forced workaround `let t = f(x); x = t`
@@ -129,11 +137,34 @@ correctness fix for a live data race, it is narrow, and every later stage
 would otherwise be built on top of a bug. Gate: the EV-13 repro returns 42
 on all three backends in both `single` and `thread` mode.
 
-**Stage 1 — Component A, consumed only by `markSeqCopies`.** No freeing, no
-liveness. Strictly *fewer* copies, only where provably `Fresh`. Gate:
-`value_semantics`' aliasing assertion stays 17 on three backends; the
-matching engine drops from 4 ladder copies per order to 2 (measurable as
-peak RSS, ~5.5 GB -> ~2.8 GB on Odin, and as time on D).
+**Stage 1 — Component A, consumed only by `markSeqCopies`. DONE.** No
+freeing, no liveness. Strictly *fewer* copies, only where provably `Fresh`.
+
+Measured A/B on Odin, same machine state, interleaved, 200k orders:
+
+| | emitted copies | time | peak RSS |
+|---|---|---|---|
+| before | 15 | 13 957-29 891 ms | 5 589 MB |
+| after | 10 | **3 102-3 686 ms** | **4 003 MB** |
+
+Memory is the trustworthy figure (5 587-5 589 against 3 999-4 006); the time
+spread before the change is allocator churn, which is also why the time win
+outruns the copy count.
+
+One prediction here was wrong and is worth correcting rather than quietly
+dropping. This plan said the engine would go from 4 ladder copies per order
+to 2, on the reading that both binding-site copies were redundant. Only
+`sweep`'s is. `rest` has an early return —
+
+```tuck
+  if qty <= 0:
+    return {ladder: ladder, best: best} Booked
+```
+
+— which really does hand its parameter back, so the analysis marks it
+`oAliased` and keeps the copy. That is the analysis being right and the
+prediction being wrong. Removing that one needs liveness at the call site
+(the old book is dead), which is Stage 2, not Stage 1.
 
 **Stage 2 — Component B, consumed by the move rule and by `str`.** Gate: the
 2M-iteration `Seq` loop stays at 2 MB; the 200k `str` loop goes from 460 ms

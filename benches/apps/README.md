@@ -69,6 +69,20 @@ Worth stating plainly because the project rule is that runtime
 characteristics do not depend on the backend. Here they depend on almost
 nothing else.
 
+**Stage 1 of the ownership work closed part of that gap.** `analysis_provenance`
+asks whether a callee built the value it returns or merely handed back one of
+its arguments, so a binding whose value is provably fresh keeps no defensive
+copy. Measured A/B on Odin, interleaved, same machine state:
+
+| | emitted copies | time | peak RSS |
+|---|---|---|---|
+| before | 15 | 13 957-29 891 ms | 5 589 MB |
+| after | 10 | 3 102-3 686 ms | 4 003 MB |
+
+The remaining 4 GB is #77 — Odin still frees nothing — and the remaining
+copies are ones the analysis is right to keep: `rest` has an early return
+that hands its parameter straight back.
+
 ## What it cost to write
 
 Five bugs, in one file, none of them exotic. Each is written up in

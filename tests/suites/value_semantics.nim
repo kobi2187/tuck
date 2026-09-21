@@ -637,4 +637,71 @@ fn main() -> int:
   t.okCheck "a Seq sent to an actor is copied, not shared"
   t.hostRuns("a Seq sent to an actor is copied, not shared", 42)
 
+  # --- which defensive copies are actually needed -------------------------
+  #
+  # The copy pass used to answer "all of them", because a call MIGHT hand
+  # back its own argument. `analysis_provenance` asks the callee instead.
+  # Four shapes, and the suite pins all four, because two of them are what a
+  # shortcut gets wrong:
+  #
+  #   fresh   allocates and returns it       -> no copy
+  #   keep    returns its argument           -> copy
+  #   seed    copies at its own binding      -> no copy (the subtle one)
+  #   twin    returns ONE buffer as TWO fields -> copy (the dangerous one)
+  #
+  # `seed` is subtle because the construction inside it names the parameter,
+  # so it reads as aliasing until you account for the copy the binding itself
+  # inserts — and getting that wrong costs every caller a second copy of a
+  # value the callee had already made private.
+  #
+  # `twin` is dangerous in the other direction: both fields are genuinely
+  # fresh, and `oFresh` alone cannot tell one allocation under two names from
+  # two allocations. Exempting it would make `d.a[0] = 5` write `d.b[0]`.
+  t.src """
+import seq
+
+type Box:
+  items: Seq[int]
+  n: int
+
+type Pair2:
+  a: Seq[int]
+  b: Seq[int]
+
+fn fresh({k: int}) -> Seq[int]:
+  var out = [0]
+  out = {items: out, value: k} push
+  return out
+
+fn keep({xs: Seq[int]}) -> Seq[int]:
+  return xs
+
+fn seed({xs: Seq[int]}) -> Box:
+  var b = {items: xs, n: 0} Box
+  return b
+
+fn twin({xs: Seq[int]}) -> Pair2:
+  var one = xs
+  one = {items: one, value: 1} push
+  return {a: one, b: one} Pair2
+
+fn main() -> int:
+  let a = {k: 9} fresh
+  let b = {xs: a} keep
+  let c = {xs: a} seed
+  var d = {xs: a} twin
+  d.a[0] = 5
+  return a[1] + b[1] + c.items[1] + d.b[0]
+"""
+  t.okCheck "the provenance cases check"
+  t.omitsOdin "a freshly allocated result is not copied again",
+              r"tuckSeqCopy\(tuck_fresh\("
+  t.emitsOdin "...but a result that is its own argument is",
+              r"tuckSeqCopy\(tuck_keep\("
+  t.omitsD "the same elision on D", r"\(tuck_fresh\([^)]*\)\)\.dup"
+  t.emitsD "...and the same copy on D", r"\(tuck_keep\([^)]*\)\)\.dup"
+  # 9 + 9 + 9 + 0. The last term is the one that matters: `d.b[0]` is 0 only
+  # if `twin`'s two fields were separated. Sharing one buffer makes it 5.
+  t.hostRuns("one buffer returned as two fields is still two buffers", 27)
+
   t.finish()
