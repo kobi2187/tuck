@@ -185,8 +185,8 @@ per edit that nothing frees, 546 MB of the original 4.9 GB.
 | EV-15 | a dead container handed to a threading fn still copies | odin, d | **fixed** |
 | EV-16 | a `match` arm whose body is a `send` emits Nim that will not compile | nim | **fixed** |
 | EV-17 | `--batch-timeout` is not kept for a batch nobody sends to any more | all | **fixed** |
-| EV-18 | no ordering between two senders to one mailbox; thread mode hides it | all | open |
-| EV-19 | an actor field with no initialiser is silently a zero value | all | open |
+| EV-18 | no ordering between two senders to one mailbox; thread mode hides it | all | [#84](https://github.com/kobi2187/tuck/issues/84) |
+| EV-19 | an actor field with no initialiser is silently a zero value | all | [#85](https://github.com/kobi2187/tuck/issues/85) |
 
 **EV-16 is the one that says something about the corpus.** A router over N
 shards has nothing to index — an actor is a compile-time singleton with no

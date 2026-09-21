@@ -336,7 +336,8 @@ tested.
 
 ## EV-19 — an actor field with no initialiser is silently a zero value
 
-**Open. Severity: medium — a bad diagnostic, not a memory error.** Found by
+**Open. Severity: medium — a bad diagnostic, not a memory error. Issue #85.**
+Found by
 `benches/apps/world_server.tuck` while root-causing EV-18.
 
 Tuck already has the right rule, and does not apply it here. A field a
@@ -387,8 +388,8 @@ is chosen has to be checked against them.
 
 ## EV-18 — no ordering between two senders to one mailbox, and thread mode hides it
 
-**Open — arguably by design, which is the problem. Severity: high.** Found by
-`benches/apps/world_server.tuck`.
+**Open — arguably by design, which is the problem. Severity: high. Issue
+#84.** Found by `benches/apps/world_server.tuck`.
 
 Tuck promises per-MAILBOX order and every mode keeps it. It promises nothing
 about the order of two DIFFERENT senders into one mailbox — and `thread` mode
@@ -441,7 +442,8 @@ error naming the field.
 
 ## EV-17 — `--batch-timeout` is not kept for a batch nobody is sending to any more
 
-**FIXED 2026-09-21, batch mode only. Found while root-causing EV-18** — and
+**FIXED 2026-09-21, batch mode only. PR #81. Found while root-causing
+EV-18** — and
 it turned out to be a separate bug that EV-18 merely pointed at.
 
 `--batch-timeout` promises a staged batch crosses within N ms of opening.
@@ -555,7 +557,8 @@ indent, which is why the bump is what fixes them. Guarded by
 
 ## EV-15 — a dead container handed to a threading fn still calls the copying wrapper
 
-**Open. Severity: high on Odin and D, none on Nim. Issue #83.** Found by
+**FIXED 2026-09-21, D and Odin (Nim was never affected). Issue #83, PR #81.**
+Found by
 `benches/apps/world_server.tuck`: 191 ms on Nim against 2.9 s on Odin and
 **54 s on D**, for identical output.
 
