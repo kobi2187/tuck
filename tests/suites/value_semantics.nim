@@ -598,4 +598,43 @@ fn main() -> int:
   t.okCheck "a record returned from a call does not alias its argument"
   t.hostRuns("a record returned from a call does not alias its argument", 17)
 
+  # A Seq SENT to an actor is the actor's, not still the sender's.
+  #
+  # The message envelope holds the container by value, and `Msg{xs = xs}`
+  # copies only the header on D and Odin — so the sender's next write landed
+  # in the actor's mailbox. It breaks two guarantees at once: value semantics
+  # (a Seq binding copies) and actor isolation ("state nobody else touches"),
+  # and under `--actors:thread` it is two OS threads on one buffer with no
+  # synchronisation. KNOWN-BUGS-EVENTS.md EV-13.
+  #
+  # `markSeqCopies` never saw it because that pass walks `exkAssign` and a
+  # send payload is not an assignment. The copy now happens in the generated
+  # send helper, which is the one place every send goes through.
+  #
+  # Single mode is the deterministic phrasing: the actor is a coroutine on
+  # main's thread and does not run until `waitUntil`, so main's mutation
+  # provably happens first. In thread mode the same program is a race, which
+  # is the bug, not a way to test for it.
+  t.src """
+import seq
+
+actor Sink [queue: 8]:
+  got: int = 0
+
+  on take({xs: Seq[int]}):
+    got = xs[0]
+
+fn ready() -> bool:
+  return Sink.got != 0
+
+fn main() -> int:
+  var payload = [42, 1]
+  Sink send take {xs: payload}
+  payload[0] = 99
+  Sink.waitUntil {pred: :ready}
+  return Sink.got
+"""
+  t.okCheck "a Seq sent to an actor is copied, not shared"
+  t.hostRuns("a Seq sent to an actor is copied, not shared", 42)
+
   t.finish()

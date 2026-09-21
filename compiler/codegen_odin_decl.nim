@@ -752,14 +752,36 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
 proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
                    ind: string): string =
   ## Enqueue an envelope; a full ring drops (spec §9.1).
+  ##
+  ## A CONTAINER PAYLOAD IS COPIED IN. `[dynamic]T` assignment copies the
+  ## header, so `Msg{xs = xs}` handed the actor the sender's own buffer: the
+  ## sender's next write landed in the actor's mailbox, breaking value
+  ## semantics and actor isolation at once, and under `--actors:thread` that
+  ## is two OS threads on one buffer with no synchronisation. EV-13.
+  ##
+  ## Copied HERE rather than at each send site because this proc is the one
+  ## place every send goes through, and it is where a future move — the send
+  ## is really an ownership transfer — would replace the copy.
   var params: seq[string]
   var ctorArgs = TagField & " = ." & msgVariantName(h.name)
+  var copies = ""
   for p in h.params:
     params.add(p.name & ": " & ctx.odinType(p.typ))
     ctorArgs.add(", " & p.name & " = " & p.name)
+    if copyableContainer(ctx.res, ctx.module, p.typ):
+      # Odin parameters are immutable, so shadow before copying — the same
+      # two-step the MOVED wrapper uses a few procs up.
+      copies.add(ind & "\t" & p.name & " := " & p.name & "\n")
+      let fields = movedCopyFields(ctx.res, ctx.module, p.typ)
+      if fields.len == 0:
+        copies.add(ind & "\t" & p.name & " = rt.tuckSeqCopy(" & p.name & ")\n")
+      else:
+        for f in fields:
+          copies.add(ind & "\t" & p.name & "." & f & " = rt.tuckSeqCopy(" &
+                     p.name & "." & f & ")\n")
   let sep = if params.len > 0: ", " else: ""
   "\n" & ind & "send" & h.name.capitalize() & "_" & d.name & " :: proc(self: ^" &
-    d.name & sep & params.join(", ") & ") {\n" &
+    d.name & sep & params.join(", ") & ") {\n" & copies &
     ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name & "Msg{" & ctorArgs &
     "})\n" &
     # The send NOTIFIES. It never did: the actor parks on a condvar when its

@@ -586,11 +586,18 @@ proc movedCopyFields*(res: Resolution, m: Module, t: Type): seq[string] =
   if result.len == 0:
     result = seqFieldNames(res, m, genericBaseBody(m, t))
 
-proc copyableContainer(res: Resolution, m: Module, t: Type): bool =
+proc copyableContainer*(res: Resolution, m: Module, t: Type): bool =
   ## Can the wrapper actually spell the copy it owes — a Seq, or a record
   ## with Seq fields? `str` owns heap and is NOT this: the copy helper is
   ## Seq-shaped, and emitting it for a string param gave "Cannot assign
   ## 'rt.tuckSeqCopy(title)' of type '[dynamic]T' to 'string'".
+  ##
+  ## Exported because the SEND helpers ask the same question — does this
+  ## payload alias the sender's storage on a backend whose container is a
+  ## header? One definition, because this is exactly the decision three
+  ## backends grew three copies of before. Excluding `str` is right for the
+  ## send too: it is immutable in both D and Odin, so sharing its buffer is
+  ## safe.
   seqElem(t) != nil or movedCopyFields(res, m, t).len > 0
 
 proc movedFnParam*(res: Resolution, m: Module, d: Decl): string =

@@ -336,10 +336,19 @@ tested.
 
 ## EV-13 — a `Seq` sent to an actor is not copied: the sender keeps writing it
 
-**Severity: highest. Silent, wrong answers on D and Odin, and in thread mode
-it is a cross-thread data race.** Found 2026-09-20 while checking whether
-free-insertion would be safe — the answer turned out to be that the existing
-code is already unsafe.
+**FIXED 2026-09-21, D and Odin (Nim was never affected). Issue #76.** Found
+while checking whether free-insertion would be safe — the answer turned out
+to be that the existing code was already unsafe.
+
+The copy now happens in the generated send helper
+(`codegen_odin_decl.nim:genSendHelper`, `codegen_d_decl.nim`), which is the
+one place every send passes through, and the place a future MOVE would
+replace it. The predicate is `copyableContainer`, exported from
+`codegen_common` so the send and the `_moved` wrapper cannot drift on what
+"owns heap" means — and it correctly excludes `str`, which is immutable in
+both backends. Guarded by `value_semantics`' "a Seq sent to an actor is
+copied, not shared" (`hostRuns`, three legs); verified to fail without the
+fix.
 
 ### Reproduce
 
@@ -428,6 +437,8 @@ catch the regression.
 ---
 
 ## EV-12 — the Odin backend never frees a heap value: every copy leaks
+
+**Issue #77.**
 
 **Severity: highest. Odin only, no diagnostic, and the program runs
 correctly right up until the OOM killer takes it.** Found 2026-09-20 when
@@ -660,6 +671,8 @@ making the copy faster shows up.
 
 ## EV-11 — a feed that outruns its actor silently loses messages, then deadlocks
 
+**Issue #7 (pre-existing; evidence added).**
+
 **Severity: highest of the five found today. All three modes, all three
 backends, and the program does not crash — it hangs.** Found 2026-09-20 by
 running `benches/apps/matching_engine.tuck`, the first application written
@@ -760,6 +773,8 @@ The first is worth doing regardless of the other two: today's answer to
 ---
 
 ## EV-10 — two handlers binding the same local name: the second is undeclared
+
+**Issue #79.**
 
 **Severity: high. Every backend, and `tuck ch` says OK.** Found 2026-09-20,
 the third bug in one afternoon of writing an ordinary application.
@@ -944,6 +959,8 @@ folds a message into state.
 ---
 
 ## EV-8 — a type and a fn differing only in first-letter case collide on Nim
+
+**Issue #78.**
 
 **Severity: high. It fires on the most ordinary naming in the language, and
 only on one backend.** Found 2026-09-20 while writing an application, not a
