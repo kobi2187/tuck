@@ -9,6 +9,7 @@ import ast_query
 import resolution
 import codegen_common
 import codegen_odin_util
+import analysis_ownership
 
 type
   OdinCodegenCtx* = object
@@ -31,10 +32,10 @@ type
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return
     tmpCounter*: int
-    freeOnReassign*: HashSet[string]
-      ## Locals whose OLD value is freed before each overwrite (#77).
-    ownedSeqLocals*: Table[string, seq[string]]
-      ## SPIKE, Stage D: local -> the slots this body owns and frees.
+    owned*: Ownership
+      ## What analysis_ownership decided for the fn being emitted: which
+      ## locals die at scope exit, which die at an overwrite, and what the
+      ## MOVED twin frees. The emitter prints it; it decides nothing.
     ownedStrLocals*: HashSet[string]
       ## Locals holding a `str` this body ALLOCATED and does not let escape,
       ## so the emitter can `defer delete` them. Computed once per fn from

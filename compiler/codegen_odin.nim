@@ -1261,8 +1261,8 @@ proc scopeFrees(ctx: OdinCodegenCtx, name: string): string =
   let ind = "  ".repeat(ctx.indent)
   if name in ctx.ownedStrLocals:
     result.add("\n" & ind & "defer delete(" & name & ")")
-  if name in ctx.ownedSeqLocals:
-    for slot in ctx.ownedSeqLocals[name]:
+  if name in ctx.owned.freeAtScopeExit:
+    for slot in ctx.owned.freeAtScopeExit[name]:
       let path = if slot.len == 0: name else: name & "." & slot
       result.add("\n" & ind & "defer delete(" & path & ")")
 
@@ -1338,9 +1338,9 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
     if prefix != "": return prefix & "_set(" & valStr & ")"
   let tgt = ctx.genOdinAssignTarget(e.target)
   # THE OLD VALUE DIES HERE. A `defer` cannot reach this: it fires once, and
-  # a loop abandons one buffer per iteration. See reassignedAndOwned (#77).
+  # a loop abandons one buffer per iteration. Step 5 of the ownership pass.
   var pre = ""
-  if e.target.kind == exkVar and e.target.name in ctx.freeOnReassign:
+  if e.target.kind == exkVar and e.target.name in ctx.owned.freeBeforeOverwrite:
     pre = "delete(" & tgt & ")\n" & "  ".repeat(ctx.indent)
   ctx.withAssignValidate(e, pre & tgt & " = " & valStr &
                             ctx.seqFieldFixups(tgt, e.assignVal))

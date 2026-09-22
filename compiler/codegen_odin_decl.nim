@@ -14,10 +14,8 @@ import codegen_odin_ctx
 import codegen_odin_util
 from mangle import mangleName
 from lowering_seqcopy import seqFieldNames
-from analysis_provenance import slotIsFresh, consumedSlotsSsa, exclusivelyOwned
-from lowering_seqcopy import needsDup, recordDupFields
-from analysis_ssa import rootOf
-from analysis_ssa import pathOf
+import analysis_ownership   ## decides the frees; this file only prints them
+from analysis_ssa import pathOf   # the `str` pass above still walks paths
 import os
 import ./codegen_odin
 
@@ -509,280 +507,6 @@ proc ownedStrLocalsOf(ctx: OdinCodegenCtx, d: Decl): HashSet[string] =
              " owned=", isOwnedStrLocal(ctx, d, name, val, assigned)
     if isOwnedStrLocal(ctx, d, name, val, assigned): result.incl(name)
 
-let SeqFree = getEnv("TUCK_NO_SEQ_FREE").len == 0
-  ## ON. `TUCK_NO_SEQ_FREE=1` turns free-insertion off, for bisecting a
-  ## suspected bad free against the leak it replaced.
-let DebugSeq = not defined(release) and getEnv("TUCK_DEBUG_SEQ").len > 0
-
-proc holdsASeqType(res: Resolution, m: Module, t: Type): bool =
-  if t == nil: return false
-  if seqElem(t) != nil: return true
-  seqFieldNames(res, m, t).len > 0
-
-proc copiedOutCalls(ctx: OdinCodegenCtx, body: Expr): HashSet[NodeId] =
-  ## Calls whose result is bound with EVERY heap slot copied.
-  ##
-  ## This is what lets an argument stop sealing. `let r = {f: a, ...} pass`
-  ## looks like `a` escaping into a callee that might keep it — and `pass`
-  ## does hand its input's buffers back, which is exactly why
-  ## `markSeqCopies` marked the binding. So `r` holds COPIES, and once the
-  ## copies exist the originals in `a` are dead. The dup marks are the
-  ## witness: nothing else has to be proved about the callee.
-  var stack = @[body]
-  while stack.len > 0:
-    let n = stack.pop()
-    if n == nil: continue
-    for ch in n.children: stack.add(ch)
-    if n.kind != exkAssign or n.assignVal == nil: continue
-    let v = n.assignVal
-    let t = ctx.res.typeFor(v)
-    if seqElem(t) != nil:
-      # ANY value, not just a call. `xs = ns` emits
-      # `xs = rt.tuckSeqCopy(ns)`, so `ns` is copied out and dead — the
-      # commonest shape there is, and restricting this to calls is what left
-      # #77's loop holding two abandoned buffers an iteration instead of one.
-      if needsDup(ctx.res, v): result.incl(v.id)
-    elif v.kind in {exkCall, exkChain}:
-      let want = seqFieldNames(ctx.res, ctx.module, t)
-      if want.len == 0: continue
-      let got = recordDupFields(ctx.res, v)
-      var all = true
-      for f in want:
-        if f notin got: all = false
-      if all: result.incl(v.id)
-
-proc seqSealsFor(ctx: OdinCodegenCtx, n: Expr, sealed: bool,
-                 copiedOut: HashSet[NodeId]): bool =
-  if sealed or n.kind == exkSend: return true
-  if n.kind in {exkReturn, exkRaise}:
-    return n.returnVal == nil or
-           holdsASeqType(ctx.res, ctx.module, ctx.res.typeFor(n.returnVal))
-  if n.kind == exkCall:
-    if n.id.isSet and n.id in copiedOut: return false
-    return holdsASeqType(ctx.res, ctx.module, ctx.res.typeFor(n))
-  false
-
-type Mention = enum
-  mOther     ## not a mention of this local
-  mHandled   ## a mention that is accounted for, and not to be descended into
-  mGone      ## this slot leaves the body here
-
-proc mentionOf(ctx: OdinCodegenCtx, n: Expr, name, want, slot: string,
-               sealed: bool): Mention =
-  ## What one node says about this local.
-  ##
-  ## A FIELD READ IS NOT A WHOLE-RECORD READ, and getting that wrong is what
-  ## made every slot of `relight`'s `b` look live: `b.light` has the bare `b`
-  ## as its receiver, so descending into it re-reads the name and the whole
-  ## record escapes. `mHandled` is what stops the descent.
-  if n.kind == exkField and rootOf(pathOf(n)) == name:
-    if sealed and (slot.len == 0 or pathOf(n) == want): return mGone
-    return mHandled
-  if n.kind == exkVar and n.name == name:
-    if sealed: return mGone
-    # A MOVED ARGUMENT IS GONE, unconditionally.
-    #
-    # This was once relaxed to "gone only if the callee's twin really frees
-    # it", reasoning that `pass` hands a field back and so frees nothing. It
-    # cost a SIGSEGV: the predicate answering that question was a second copy
-    # of the twin's own free rule, the rule went per slot, the copy did not,
-    # and `let b = {a: a} step / return {a: b} step` freed `b` here AND in
-    # `step_moved`. Item 5 of thoughts/ssa-mirror-design.md, in one sitting.
-    #
-    # It costs nothing measurable: what the relaxation would buy back is
-    # already freed by the callee, which is the whole reason it is gone.
-    if n.id.isSet and isMovedArg(ctx.res, n): return mGone
-  mOther
-
-proc seqSlotEscapes(ctx: OdinCodegenCtx, body: Expr, name, slot: string,
-                    copiedOut: HashSet[NodeId]): bool =
-  ## Does THIS SLOT of this local leave the body?
-  ##
-  ## PER SLOT, not per local, and that is the whole of Stage D's precision.
-  ## `relight` ends `return {height: sl.height, lum: sl.lum, light: b.light}`:
-  ## `b.light` escapes and `b.height` and `b.lum` do not, so a per-LOCAL test
-  ## calls all three live and frees nothing. Two of the three arrays per
-  ## lighting update are exactly the leak valgrind attributed to this fn.
-  ##
-  ## A bare mention of the name is still all-slots: handing the whole record
-  ## somewhere takes every field with it. So is a moved argument, because the
-  ## twin frees what it consumes and freeing it here too is a double free.
-  if body == nil: return false
-  let want = if slot.len == 0: name else: name & "." & slot
-  var stack = @[(body, false)]
-  while stack.len > 0:
-    let (n, sealed) = stack.pop()
-    if n == nil: continue
-    case mentionOf(ctx, n, name, want, slot, sealed)
-    of mGone: return true
-    of mHandled: continue
-    of mOther: discard
-    let seals = seqSealsFor(ctx, n, sealed, copiedOut)
-    if n.kind == exkAssign:
-      let toElsewhere = n.target != nil and pathOf(n.target) != name
-      # A binding to ANOTHER name normally seals its right-hand side: whatever
-      # is in there is now reachable through a name this walk is not tracking.
-      # Not when the binding COPIED every heap slot, which is the whole point
-      # of `copiedOutCalls` — the other name holds copies, and what it was
-      # built from is dead.
-      let copiesOut = n.assignVal != nil and n.assignVal.id.isSet and
-                      n.assignVal.id in copiedOut
-      stack.add((n.assignVal,
-                 if toElsewhere and not copiesOut:
-                   holdsASeqType(ctx.res, ctx.module, ctx.res.typeFor(n.target))
-                 else: seals))
-      stack.add((n.target, seals))
-      continue
-    for ch in n.children: stack.add((ch, seals))
-  false
-
-proc ownedSeqSlots(ctx: OdinCodegenCtx, d: Decl, name: string, val: Expr,
-                   assigned: CountTable[string],
-                   copied: HashSet[NodeId]): seq[string] =
-  ## Which slots of this local this body owns outright: @[""] for a bare Seq,
-  ## the field names for a record, or nothing.
-  if not SeqFree: return
-  if assigned[name] != 1: return
-  if val == nil: return
-  let t = ctx.res.typeFor(val)
-  if not holdsASeqType(ctx.res, ctx.module, t): return
-
-  # OWNERSHIP IS THE UNION OF TWO ROUTES, and the second is the one that
-  # matters here. `exclusivelyOwned` true means no defensive copy was needed
-  # because the callee handed us a fresh buffer outright. `exclusivelyOwned`
-  # FALSE is not "someone else owns it" — it is why `markSeqCopies` marked
-  # the site, so a `tuckSeqCopy` was emitted and THAT copy is ours. Reading
-  # only the first route is what made every field of `relight`'s three
-  # intermediates look unowned while the emitted Odin copies all nine.
-  let dups = recordDupFields(ctx.res, val)
-  if seqElem(t) != nil:
-    if (val.kind == exkList or needsDup(ctx.res, val) or
-        exclusivelyOwned(ctx.res, ctx.module, val, "")) and
-       not seqSlotEscapes(ctx, d.fnBody, name, "", copied):
-      return @[""]
-    return
-  for f in seqFieldNames(ctx.res, ctx.module, t):
-    if (f in dups or exclusivelyOwned(ctx.res, ctx.module, val, f)) and
-       not seqSlotEscapes(ctx, d.fnBody, name, f, copied): result.add(f)
-
-proc ownedSeqLocalsOf(ctx: OdinCodegenCtx, d: Decl): Table[string, seq[string]] =
-  if d.fnBody == nil or not SeqFree: return
-  var assigned: CountTable[string]
-  var decls: Table[string, Expr]
-  collectDecls(d.fnBody, assigned, decls)
-  let copied = ctx.copiedOutCalls(d.fnBody)
-  for name, val in decls:
-    let slots = ctx.ownedSeqSlots(d, name, val, assigned, copied)
-    when not defined(release):
-      if DebugSeq and slots.len > 0:
-        echo "SEQFREE ", d.name, ".", name, " slots=", slots
-    if slots.len > 0: result[name] = slots
-
-proc allAssignedValues(body: Expr, name: string): seq[Expr] =
-  var stack = @[body]
-  while stack.len > 0:
-    let n = stack.pop()
-    if n == nil: continue
-    for ch in n.children: stack.add(ch)
-    if n.kind == exkAssign and n.target != nil and
-       n.target.kind == exkVar and n.target.name == name:
-      result.add(n.assignVal)
-
-proc freshBinding(ctx: OdinCodegenCtx, v: Expr,
-                  copied: HashSet[NodeId]): bool =
-  ## Does this value hand the name a buffer nothing else holds?
-  if v == nil: return false
-  if v.kind == exkList: return true
-  if needsDup(ctx.res, v): return true                  # a copy was emitted
-  if v.id.isSet and v.id in copied: return true         # every slot copied
-  exclusivelyOwned(ctx.res, ctx.module, v, "")          # callee's, exclusively
-
-proc reassignedAndOwned(ctx: OdinCodegenCtx, d: Decl,
-                        assigned: CountTable[string],
-                             copied: HashSet[NodeId]): HashSet[string] =
-  ## Locals overwritten in a loop, where the OLD value dies at the overwrite.
-  ##
-  ## `defer` cannot reach this: it fires once, and the leak is one buffer per
-  ## iteration. `xs = ns` in
-  ##
-  ##     for i < n:
-  ##       let ns = {xs: xs} bump
-  ##       xs = ns
-  ##
-  ## abandons the previous `xs` every time round — issue #77, and the shape
-  ## `hostPeakRss` has pinned at 64 MB while Odin sat at 2.4 GB.
-  ##
-  ## THREE CONDITIONS, and each is a use-after-free if it is wrong:
-  ##   * every value ever assigned is a FRESH buffer, so the new value can
-  ##     never be the old one — `xs = xs` or `xs = alias` would free what it
-  ##     is about to read;
-  ##   * the name never escapes, so no one else is holding an earlier value;
-  ##   * it is a local, not a parameter: a parameter's first value is the
-  ##     caller's, and only the twin may free that.
-  if d.fnBody == nil: return
-  var params: HashSet[string]
-  for pa in d.fnParams: params.incl(pa.name)
-  for name, n in assigned:
-    if n < 2 or name in params: continue
-    let vals = allAssignedValues(d.fnBody, name)
-    if vals.len == 0: continue
-    let t = ctx.res.typeFor(vals[0])
-    if t == nil or seqElem(t) == nil: continue     # bare Seq only, for now
-    var allFresh = true
-    for v in vals:
-      if not ctx.freshBinding(v, copied): allFresh = false
-    if not allFresh: continue
-    if seqSlotEscapes(ctx, d.fnBody, name, "", copied): continue
-    result.incl(name)
-
-proc twinFrees(ctx: OdinCodegenCtx, d: Decl, movedP, ind: string): string =
-  ## The `defer delete`s the MOVED twin carries for the parameter it consumes.
-  ##
-  ## ASKED OF THE VALUE MIRROR: a slot handed on to another twin is that
-  ## twin's to free, and freeing it here too segfaults under TUCK_TRACK.
-  let movedAway = consumedSlotsSsa(ctx.res, ctx.module, d)
-  var frees = ""
-  let retFields = movedCopyFields(ctx.res, ctx.module, d.fnReturnType)
-  let ownFields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
-  # PER SLOT, when the parameter and the result are the same record.
-  #
-  # The gate used to be all-or-nothing: one return field that aliases the
-  # parameter and NOTHING is freed. `relaxOne` is the shape that costs —
-  # it returns `{height: f.height, lum: f.lum, light: <a new one>}`, so
-  # `height` and `lum` must survive and `light` is replaced. Under the old
-  # gate `height` kept `light` alive too, and `pass` calls `relaxOne` once
-  # per column of every relight: one abandoned array per iteration, which is
-  # the bulk of issue #82.
-  #
-  # The correspondence is BY NAME and only claimed when the two types are the
-  # same one, which is what a threading fn is. A return slot that is a fresh
-  # allocation cannot be the parameter's, so the parameter's is dead here and
-  # this body is the last place that can free it. A return slot that is NOT
-  # fresh may well BE the parameter's, so it is kept, exactly as before.
-  let threading = d.fnReturnType != nil and d.fnParams.len > 0 and
-                  sameTypeName(d.fnParams[0].typ, d.fnReturnType) and
-                  retFields.len > 0 and ownFields.len > 0
-  var mayFree = true
-  if retFields.len == 0:
-    mayFree = slotIsFresh(ctx.res, ctx.module, d.name, "")
-  elif not threading:
-    for f in retFields:
-      if not slotIsFresh(ctx.res, ctx.module, d.name, f): mayFree = false
-  if threading:
-    for f in ownFields:
-      if f notin movedAway and "" notin movedAway and
-         slotIsFresh(ctx.res, ctx.module, d.name, f):
-        frees.add(ind & "\tdefer delete(" & movedP & "." & f & ")\n")
-  elif mayFree:
-    if ownFields.len == 0:
-      if "" notin movedAway:
-        frees = ind & "\tdefer delete(" & movedP & ")\n"
-    else:
-      for f in ownFields:
-        if f notin movedAway and "" notin movedAway:
-          frees.add(ind & "\tdefer delete(" & movedP & "." & f & ")\n")
-  frees
-
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An ordinary fn. A pending fn is a stub and a decision table has its own
   ## lowering; both leave before any of this runs.
@@ -791,13 +515,9 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
   ctx.ownedStrLocals = ctx.ownedStrLocalsOf(d)
-  ctx.ownedSeqLocals = ctx.ownedSeqLocalsOf(d)
-  block:
-    var assigned: CountTable[string]
-    var decls: Table[string, Expr]
-    collectDecls(d.fnBody, assigned, decls)
-    ctx.freeOnReassign = ctx.reassignedAndOwned(
-      d, assigned, ctx.copiedOutCalls(d.fnBody))
+  # THE OWNERSHIP PASS DECIDES; this emitter prints. See
+  # compiler/analysis_ownership.nim for the six steps.
+  ctx.owned = ownershipOf(ctx.res, ctx.module, d)
   if d.isDecision or d.isDecisionTable(): return ctx.genDecisionTable(d)
   let ind = "  ".repeat(ctx.indent)
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
@@ -842,7 +562,11 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   # Switched after both were computed side by side across the corpus, both
   # applications, the Savina ports and the stdlib with no difference, and
   # after `TUCK_TRACK` confirmed no double free.
-  let frees = ctx.twinFrees(d, movedP, ind)
+  # Step 6 of the ownership pass, printed.
+  var frees = ""
+  for slot in ownershipOf(ctx.res, ctx.module, d).twinFreesParam:
+    let path = if slot.len == 0: movedP else: movedP & "." & slot
+    frees.add(ind & "\tdefer delete(" & path & ")\n")
   let twinName = movedName(d.name.replace(".", "_"))
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
