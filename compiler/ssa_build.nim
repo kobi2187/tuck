@@ -59,7 +59,7 @@
 #   * a read of `b.ask` with no definition in this body is not an entry value
 #     of `b.ask` but a PROJECTION of whatever `b` currently is, so that the
 #     two stay related when `b` is reassigned.
-import ast, tables, sets, strutils
+import ast, tables, sets, strutils, os
 import resolution
 import ssa_ir
 
@@ -102,14 +102,29 @@ proc writeVariable(b: var Builder, place: Place, blk: BlockId, v: ValueId) =
   if place notin b.cur: b.cur[place] = initTable[BlockId, ValueId]()
   b.cur[place][blk] = v
 
-proc killUnder(b: var Builder, root: Place, blk: BlockId) =
-  ## `b = ...` replaces the whole record, so the live versions of `b.ask` and
-  ## `b.bid` describe nothing. Dropping them is what stops a stale field
-  ## version being read after its record was overwritten.
+proc reproject(b: var Builder, root: Place, newRoot: ValueId, blk: BlockId) =
+  ## `w = ...` replaces the whole record, so every live version of `w.i` and
+  ## `w.lum` describes the OLD record. Each becomes a fresh PROJECTION of the
+  ## new one.
+  ##
+  ## Deleting them instead — which is what this did first — is subtly wrong.
+  ## A later read of `w.i` then finds nothing in this block and walks back
+  ## through the predecessors to the version from BEFORE the assignment, so
+  ## the new record's field reads as the old record's. In a loop that made
+  ## the condition's `w.i` read the pre-loop projection every turn, and the
+  ## read stopped looking final because it appeared to repeat. `pass` in
+  ## world_server is the case; `sweep` and `flow` in matching_engine are the
+  ## same shape.
+  # ANY path under the root that this body has ever named, not just one live
+  # in THIS block: the read that goes wrong is precisely the one whose last
+  # definition was in a predecessor, because that is the one that walks back
+  # and finds the pre-assignment record.
   var dead: seq[Place]
   for p in b.cur.keys:
     if p != root and p.isUnder(root): dead.add p
-  for p in dead: b.cur[p].del(blk)
+  for p in dead:
+    let v = b.newValue(p, Def(kind: dkProject, inputs: @[newRoot]), blk)
+    b.cur[p][blk] = v
 
 proc readVariable(b: var Builder, place: Place, blk: BlockId): ValueId
 
@@ -264,13 +279,23 @@ proc defineTo(b: var Builder, target, value: Expr) =
   if place.len == 0:
     b.reads(target)          # an index or a register: no place to version
     return
+  # A FIELD ASSIGNMENT IS ALSO A READ. `self.state = X` writes the field and
+  # reads the record to find it, so the site is a use of the outgoing value
+  # as well as the definition of the incoming one. A bare `x = ...` is not —
+  # nothing of the old `x` is consulted.
+  #
+  # This is where the old builder's stamps come from, and dropping it lost
+  # seven final uses in `46-h264-driver`'s `nal` handler alone: every
+  # `self.state = ...` in every arm.
+  if target.kind == exkField:
+    b.noteRead(target)
   var def = Def(kind: defKindOf(value), src: value)
   if value != nil:
     ensureId(value)
     def.at = value.id
   let v = b.newValue(place, def, b.here)
-  b.killUnder(place, b.here)
   b.writeVariable(place, b.here, v)
+  b.reproject(place, v, b.here)
   if def.at.isSet: b.fn.byNode[def.at] = v
 
 proc walkIf(b: var Builder, e: Expr) =
@@ -303,6 +328,30 @@ proc walkIf(b: var Builder, e: Expr) =
                                    e.elseBranch != nil
   b.here = join
 
+proc matchIsExhaustive(b: Builder, e: Expr): bool =
+  ## Can control reach the code after this `match` WITHOUT taking an arm?
+  ##
+  ## Two ways to be sure it cannot. A wildcard or binding arm catches
+  ## everything by construction. And over a CLOSED DOMAIN — a sum type, an
+  ## enum, a bool — the checker has already rejected any match that does not
+  ## cover every case, so a program that got this far is exhaustive by rule
+  ## rather than by inspection. Open domains (int, str) are unchecked, as in
+  ## Nim, and stay conservative.
+  ##
+  ## It matters because the alternative is an edge from the SUBJECT's block
+  ## straight to the join, which says values defined before the match survive
+  ## it unchanged. That is a phi that should not exist, and it cost seven
+  ## final uses in `46-h264-driver`'s `nal` handler alone — a `match` over a
+  ## four-variant `Action` with all four covered.
+  for arm in e.arms:
+    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkVar}: return true
+  let t = b.res.typeFor(e.subject)
+  if t == nil: return false
+  if t.kind == tkNamed and t.name == "bool": return true
+  let d = b.res.declForType(t)
+  d != nil and d.kind == dkType and d.typeBody != nil and
+    d.typeBody.kind == tkSum
+
 proc walkMatch(b: var Builder, e: Expr) =
   b.reads(e.subject)
   let entry = b.here
@@ -318,9 +367,8 @@ proc walkMatch(b: var Builder, e: Expr) =
     allLeave = false
     armExits.add b.here
   let join = b.newBlock("join")
-  # A match need not be exhaustive at this level, so the subject block is
-  # still a predecessor unless every arm leaves.
-  if not allLeave: b.addPred(join, entry)
+  # The subject block reaches the join only if control can MISS every arm.
+  if not allLeave and not b.matchIsExhaustive(e): b.addPred(join, entry)
   for x in armExits: b.addPred(join, x)
   b.sealBlock(join)
   b.fn.blocks[int32(join)].exits = allLeave
