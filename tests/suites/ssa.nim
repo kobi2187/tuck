@@ -238,4 +238,63 @@ fn main() -> int:
   t.runs "...and it still computes what it did", 6
   t.hostRuns("...on every backend", 6)
 
+  # --- an ACTOR FIELD is not this body's to give away ----------------------
+  #
+  # The one place item 4 of thoughts/ssa-mirror-design.md could still bite.
+  # `afterBinding` claims that a binding which was not already exclusive must
+  # have copied, and therefore holds a fresh allocation — a claim about what
+  # the EMITTER does, which is false wherever it has an in-place path. For a
+  # local the flow-insensitive join covers it, because the name's earlier
+  # value is joined in. An actor field assigned in a handler has no earlier
+  # value in that body to join with.
+  #
+  # It does not bite, and this is why: the field never reaches the ownership
+  # question as anything but `dfEntry`, and an entry value is owned only when
+  # it is the moved parameter of a twin — which a handler, returning void, is
+  # not. So `grow` is reached through its copying wrapper and the actor's
+  # buffer survives.
+  #
+  # Asserted rather than reasoned about, because "the other rule happens to
+  # cover it" is exactly the kind of claim that stops being true.
+  t.src """
+import scheduler
+import seq
+
+type Bag:
+  xs: Seq[int]
+  n:  int
+
+fn grow({b: Bag}) -> Bag:
+  var it = b.xs
+  it = {items: it, value: b.n} push
+  return {xs: it, n: b.n + 1} Bag
+
+actor Keeper [queue: 16]:
+  st: Bag
+  ready: bool = false
+
+  on init({n: int}):
+    st = {xs: [7], n: 0} Bag
+
+  on peek({n: int}):
+    let g = {b: st} grow
+    ready = true
+
+fn done() -> bool:
+  return Keeper.ready
+
+fn main() -> int:
+  Keeper send init {n: 0}
+  Keeper send peek {n: 0}
+  Keeper.waitUntil {pred: :done}
+  let b = Keeper.st
+  return b.xs[0] + b.n
+"""
+  t.okCheck "an actor field handed to a threading fn checks"
+  t.emitsOdin "...and reaches the copying wrapper, not the twin",
+              r"tuck_grow\(self\.st\)"
+  # 7 + 0. A twin that took the field destructively would free it, and the
+  # read after the wait would answer with whatever was left.
+  t.hostRuns("...so the actor's own buffer survives", 7)
+
   t.finish()

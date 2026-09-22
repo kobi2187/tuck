@@ -40,6 +40,18 @@ against 10 MB on the matching engine. Both were measured, neither was
 obvious, and the underlying problem is that an analysis is guessing at an
 emitter.
 
+*Still open — it is what Stage C is for — but LATENT rather than live, which
+was worth establishing rather than assuming.* The unbacked claim needs
+something to consult it, and two rules stand in the way. For a local, the
+flow-insensitive join carries the name's earlier value, so an in-place
+mutation cannot launder an aliased slot into a fresh one. For anything with
+no earlier value in this body — an actor field assigned in a handler, the
+one case the join cannot cover — the mirror sees `dfEntry`, and an entry
+value is owned only when it is the moved parameter of a twin, which a
+handler is not. Pinned by `ssa`'s "an actor field handed to a threading fn":
+remove the `dfEntry` rule and that program answers 93 instead of 7, because
+the actor's own buffer was freed under it.
+
 **5. Two predicates for one fact, kept in step by hand.** `maybeMovedParam`
 (analysis) must track `movedFnParam` (codegen). Codegen learned a second twin
 shape; the analysis did not; that drift was a use-after-free that returned 14
