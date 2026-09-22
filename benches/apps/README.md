@@ -187,15 +187,16 @@ per edit that nothing frees, 546 MB of the original 4.9 GB.
 | EV-17 | `--batch-timeout` is not kept for a batch nobody sends to any more | all | **fixed** |
 | EV-18 | no ordering between two senders to one mailbox; thread mode hides it | all | [#84](https://github.com/kobi2187/tuck/issues/84) |
 | EV-19 | an actor field with no initialiser is silently a zero value | all | [#85](https://github.com/kobi2187/tuck/issues/85) |
-| EV-20 | every heap `str` leaks | odin | [#86](https://github.com/kobi2187/tuck/issues/86) |
+| EV-20 | every heap `str` leaks | odin | **fixed** |
 
 ### What valgrind says about both applications
 
 `tools/leakcheck.sh` runs a program under valgrind and names the allocation
 sites; its header records what a clean run looks like per backend. Over
 every runnable example plus both applications it finds exactly three things
-on Odin — EV-20's strings, #82's `Seq` intermediates, and a benign constant
-31 bytes for an actor thread never joined at exit. Nothing else.
+on Odin — EV-20's strings (now **fixed**), #82's `Seq` intermediates, and a
+benign constant 31 bytes for an actor thread never joined at exit. Nothing
+else.
 
 `world_server` at 2 000 edits loses 11 MB in 5 338 blocks, in three loss
 records of ~1 775 each: `tuckSeqCopy` inside `pass_moved` called from

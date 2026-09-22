@@ -1494,7 +1494,7 @@ fn main() -> int:
     return 1
   return 0
 """
-  t.quietly: t.hostPeakRss("a million temporary strings do not accumulate", 12288)
-  t.bugOpen "a million temporary strings do not accumulate"
+  t.hostPeakRss("a million temporary strings do not accumulate", 12288)
+  t.bugFixed "a million temporary strings do not accumulate"
 
   t.finish()

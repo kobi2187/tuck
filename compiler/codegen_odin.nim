@@ -1250,12 +1250,28 @@ proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
     result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genOdinExpr(e.target.receiver) & ")")
 
-proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
-  ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
-  if ctx.isTaskArgsBind(e):
-    return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
-  # An append assigned back to its own argument is an in-place append.
-  let appended = selfAppendValue(ctx.res, e)
+proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
+  ## The first assignment to a name, which DECLARES it.
+  ctx.definedVars.incl(e.target.name)
+  # A STATED type wins over both `:=` inference and the union-naming case:
+  # the author wrote it precisely because the value cannot say what it is.
+  let stated = if e.declType != nil: ctx.odinType(e.declType) else: ""
+  let ut = if stated != "": stated else: ctx.unionDeclType(e.assignVal)
+  let decl = if ut == "": e.target.name & " := " & valStr
+             else: e.target.name & ": " & ut & " = " & valStr
+  let fixups = ctx.seqFieldFixups(e.target.name, e.assignVal)
+  # A `str` this body allocated and never lets escape is freed at scope exit.
+  # `defer` rather than a free at the last use, because a defer needs no
+  # POSITION: the decision is made once, here, and Odin runs it on every path
+  # out of the block. `ownedStrLocalsOf` has already established that the name
+  # is assigned exactly once, so this fires on exactly the allocation it
+  # names. See EV-20.
+  if e.target.name notin ctx.ownedStrLocals: return decl & fixups
+  decl & "\n" & "  ".repeat(ctx.indent) & "defer delete(" &
+    e.target.name & ")" & fixups
+
+proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
+  ## ITEM 4, MEASURED — see thoughts/ssa-mirror-design.md, Stage C.
   when not defined(release):
     # ITEM 4, MEASURED. `markSeqCopies` marks this binding as needing a copy
     # — it is a call, and a call is not `exclusivelyOwned` — and then the
@@ -1271,6 +1287,14 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
           recordDupFields(ctx.res, e.assignVal).len > 0):
         echo "INPLACE-BYPASS ", pathOf(e.target), " at ",
              e.span.line, ":", e.span.col
+
+proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
+  if ctx.isTaskArgsBind(e):
+    return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
+  # An append assigned back to its own argument is an in-place append.
+  let appended = selfAppendValue(ctx.res, e)
+  reportInPlaceBypass(ctx, e, appended)
   if appended != nil:
     return "append(&" & ctx.movedAssignTarget(e.target) & ", " &
            ctx.genOdinExpr(appended) & ")"
@@ -1291,14 +1315,7 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:
-    ctx.definedVars.incl(e.target.name)
-    # A STATED type wins over both `:=` inference and the union-naming case:
-    # the author wrote it precisely because the value cannot say what it is.
-    let stated = if e.declType != nil: ctx.odinType(e.declType) else: ""
-    let ut = if stated != "": stated else: ctx.unionDeclType(e.assignVal)
-    let decl = if ut == "": e.target.name & " := " & valStr
-               else: e.target.name & ": " & ut & " = " & valStr
-    return decl & ctx.seqFieldFixups(e.target.name, e.assignVal)
+    return ctx.genOdinVarDecl(e, valStr)
   if e.target.kind == exkField and e.target.receiver != nil and
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,

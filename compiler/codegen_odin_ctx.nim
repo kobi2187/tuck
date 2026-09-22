@@ -31,6 +31,11 @@ type
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return
     tmpCounter*: int
+    ownedStrLocals*: HashSet[string]
+      ## Locals holding a `str` this body ALLOCATED and does not let escape,
+      ## so the emitter can `defer delete` them. Computed once per fn from
+      ## the value mirror rather than per assignment — see
+      ## codegen_odin_decl.ownedStrLocalsOf.
     movedParam*: string    # while emitting a fn's MOVED twin: the param it
                            # takes destructively, so reading through it needs
                            # no defensive copy (see codegen_common)

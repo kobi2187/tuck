@@ -23,12 +23,14 @@
 #          actors) is druntime's own startup — `rt.minfo.sortCtors` under
 #          `rt_init`, `rt.tlsgc.init` on thread entry, and the GC's
 #          `initialize()`. Not ours, and not a function of the program.
-#   odin   TWO leaks and one benign constant:
-#            * issue #86 (EV-20) every heap `str`, linear in strings made.
-#              Sites: `strings::Builder` (toStr, concat) and
-#              `os::read_entire_file_from_path` (readFile).
+#   odin   ONE leak and two benign constants:
 #            * issue #82 (EV-14) `Seq` intermediates abandoned in a
 #              threading chain. Site: `tuckrt::tuckSeqCopy`.
+#            * issue #86 (EV-20) is FIXED for locals. What remains of it is
+#              benign: a program ending in `exit` skips its defers (the OS
+#              reclaims), and `readFile`'s buffer is a record FIELD, which
+#              is #82's shape. Sites: `strings::Builder`,
+#              `os::read_entire_file_from_path`.
 #            * 31 bytes, constant, per program: the `thread::Thread` from
 #              `tuckStartActor`, never joined at exit. BY DESIGN — see the
 #              "an idle actor does not keep a finished main alive" ruling —

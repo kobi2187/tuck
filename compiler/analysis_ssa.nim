@@ -60,6 +60,17 @@ type
     dfConstruct  ## a record construction
     dfCall       ## the result of a call
     dfProject    ## read out of another value: `b.ask` given `b`
+    dfAlias      ## another NAME for a value: `let a = s`
+                 ##
+                 ## Whether that is an alias or a copy is a question about
+                 ## the TYPE, not the syntax: on D and Odin `let a = s`
+                 ## copies a `Seq` and aliases a `str`, because the copy
+                 ## pass only ever copies containers. The mirror records the
+                 ## structure — this value came from that one — and leaves
+                 ## the reading to whoever knows the type. Recording it as
+                 ## `dfOpaque`, which is what happened before, threw the
+                 ## edge away and with it any hope of freeing a `str`
+                 ## without freeing it twice.
     dfPhi        ## a join of two or more versions
     dfOpaque     ## a shape the builder does not model — always the safe
                  ## answer, and never mistaken for one of the above
@@ -226,6 +237,7 @@ proc defKindOf(e: Expr): DefKind =
   of exkStruct: dfConstruct
   of exkCall, exkChain: dfCall
   of exkField, exkBracket: dfProject
+  of exkVar: dfAlias
   else: dfOpaque
 
 proc walk(b: var Builder, e: Expr)
@@ -406,7 +418,14 @@ proc walkAssign(b: var Builder, e: Expr) =
   if p.len > 0:
     ensureId(e.assignVal)
     let at = if e.assignVal != nil: e.assignVal.id else: NodeId(0)
-    b.defineAt(p, Def(kind: defKindOf(e.assignVal), at: at, src: e.assignVal))
+    var def = Def(kind: defKindOf(e.assignVal), at: at, src: e.assignVal)
+    # An alias or a projection names the value it came from, so the edge is
+    # walkable. Read BEFORE the target is redefined: `s = s` must point at
+    # the old version, not the one about to exist.
+    if def.kind in {dfAlias, dfProject}:
+      let src = pathOf(e.assignVal)
+      if src.len > 0: def.inputs = @[b.valueOf(src)]
+    b.defineAt(p, def)
     return
   # THE TARGET HAS NO NAME. Two shapes reach here and they are not the same:
   #

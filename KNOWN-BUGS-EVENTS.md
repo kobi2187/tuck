@@ -405,10 +405,66 @@ already answers "is this the final read" per value — what is missing is that
 `str` was never admitted to the machinery. Admitting it means telling a heap
 `str` from a literal, which is exactly `oFresh` versus `oAliased`.
 
+### The fix
+
+`codegen_odin_decl.RtOwnedStr` names the runtime procs that hand back a
+`str` the caller now owns — `toStr`, `tuckConcat`, `joinStr`, `charAt`, which
+are Odin's `strings.clone`, `concatenate`, `join` and `fmt.aprint`. A LIST,
+and it lives in the Odin backend rather than as an attribute in `std/`,
+because "this returns freshly allocated storage" is a fact about that
+runtime's implementation and not about Tuck: on Nim the same call is ARC's
+business and on D the GC's.
+
+Deliberately short, and each absence is written down. `splitLines` is NOT on
+it — Odin's `strings.split_lines` hands back lines that SLICE the input, so
+the `[dynamic]string` is fresh and the strings in it are not. Neither is
+`readFile`, whose buffer becomes a FIELD of the record it returns, which is
+EV-14's shape rather than this one. Leaving a proc off the list leaks, which
+is where the backend already was; putting one on wrongly is a
+use-after-free, and that asymmetry is the whole reason it is short.
+
+A local qualifies for `defer delete` when it is **assigned exactly once**
+(one version, no phi, no reassignment, so the name and the allocation are
+the same thing for the whole scope), holds a `str`, comes from one of those
+calls, and does not escape. `defer` rather than a free at the last use
+because a defer needs no POSITION — the decision is made once at the
+declaration and Odin runs it on every path out of the block, which is item 1
+of thoughts/ssa-mirror-design.md not being re-opened.
+
+Escape is conservative and listed: a `return`, a `send` payload, a
+construction that could be holding it, or an assignment to anything but this
+same local. An ordinary call ARGUMENT is not an escape — a callee cannot
+keep a `str` beyond the call except by returning it, and a call result is
+only freed when the callee is on the list, which allocates rather than
+passing one through.
+
+**What the test looks at is what the destination CAN HOLD**, not the node
+kind, and getting that wrong was the whole of the debugging. Every postfix
+call in Tuck carries a struct payload, so sealing on `exkStruct` sealed
+every argument of every call and nothing was ever freeable; and
+`acc = acc + s.len` is a `return`-free assignment of an INT that sealed its
+own operand. Both are fixed by asking the type of the destination.
+
+    1M toStr calls, peak RSS
+
+      before   nim 1.7 MB   d 3.9 MB   odin 33.4 MB
+      after    nim 1.7 MB   d 3.9 MB   odin  2.1 MB
+
+Odin is now the second lowest of the three. Valgrind reports zero errors on
+the probe, and zero invalid frees or reads across every runnable example.
+
 Guarded by `known_bugs`' "a million temporary strings do not accumulate" —
-`hostPeakRss` at 12 MB, which Nim and D clear and Odin does not. Verified to
-be measuring the leak and not a build failure: raise the budget past 33 MB
-and the assertion passes, and `bugOpen` says to flip the marker.
+`hostPeakRss` at 12 MB, now a `bugFixed` regression guard. Verified to be
+measuring the leak rather than a build failure both ways: before the fix,
+raising the budget past 33 MB made it pass; after, removing the `defer`
+emission makes it fail.
+
+### What this does NOT fix
+
+`examples/41-tostr-concat` still loses 46 bytes, and correctly: it ends in
+`0 exit`, and `os.exit` does not run defers. That is a process-exit leak the
+OS reclaims, not a live one. `examples/24-stdlib`'s 30 bytes also remain —
+that is `readFile`, whose buffer is a record field.
 
 ### The sweep that found it, and what else it says
 
