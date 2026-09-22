@@ -162,4 +162,57 @@ fn main() -> int:
   t.assertRejects("a negative --batch-timeout is refused",
                   negative, "cannot be negative")
 
+  # --- --batch-timeout is kept for a batch NOBODY IS SENDING TO ANY MORE ----
+  #
+  # The deadline used to be tested inside `enqueue`, against the staging for
+  # the mailbox being sent to. So a thread that staged one message for `Slow`
+  # and then only ever sent to `Busy` never tested `Slow`'s deadline again:
+  # the promise was kept for every mailbox except the one that needed it.
+  #
+  # `Slow` is primed once and then abandoned. `hit` reads whether it had
+  # actually run by the 300 000th send to `Busy` — with a 1 ms deadline it
+  # must have, long since; before the thread-wide sweep it had not, and the
+  # batch sat until main parked.
+  #
+  # ASSERTED UNDER BATCH ONLY. Thread mode has no staging and passes
+  # trivially; SINGLE mode correctly answers 0, because one thread cannot run
+  # `Slow` while main is still looping, and that is the mode working as
+  # designed rather than a flush bug. The margin is three orders of magnitude
+  # — a 1 ms deadline against a loop of 300 000 sends — which is what keeps a
+  # timing assertion honest on a loaded machine.
+  t.src """
+import scheduler
+import console
+import str
+
+actor Slow [queue: 64]:
+  got: bool = false
+  on prime({n: int}):
+    got = true
+
+actor Busy [queue: 524288]:
+  seen: int = 0
+  on tick({n: int}):
+    seen += 1
+
+fn main() -> int [io]:
+  Slow send prime {n: 1}
+  var i = 0
+  var hit = 0
+  for i < 300000:
+    Busy send tick {n: i}
+    if i == 299999:
+      hit = if Slow.got: 1 else: 0
+    i = i + 1
+  return hit
+"""
+  let staleDir = t.curDir / "stale_out"
+  let staleBuild = t.needCmd(@["./tuck", "b", t.curDir / "t.tuck",
+                               "--actors:batch", "-o:" & staleDir,
+                               "--root:" & t.root], vBuild)
+  let staleRun = t.needCmdAfter(@[staleDir / "t"], staleBuild,
+                                proc (dir: string) = discard, staleDir, vRun)
+  t.assertRunsAs("an abandoned batch still crosses on its --batch-timeout",
+                 staleBuild, staleRun, 1)
+
   t.finish()

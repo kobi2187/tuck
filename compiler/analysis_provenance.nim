@@ -45,6 +45,8 @@ import ast, tables, sets, os, strutils
 import resolution
 import ast_query
 from lowering import getFieldsForType
+import twin_shape
+import analysis_ssa
 
 const MaxRounds = 8
   ## Fixpoint bound. Bodies are small and the lattice has three levels, so
@@ -233,55 +235,21 @@ proc provOf(c: var Ctx, e: Expr): Prov =
     if e.stmts.len == 0: unknownProv() else: provOf(c, e.stmts[^1])
   else: unknownProv()
 
-proc sameNamedType(a, b: Type): bool =
-  ## codegen_common's `sameTypeName`, restated here because that file sits
-  ## downstream of this one and importing it would close a cycle. Kept
-  ## deliberately one notch wider (no arity check on a generic application):
-  ## this predicate fails safe when it is too generous, unsafe when too strict.
-  if a == nil or b == nil or a.kind != b.kind: return false
-  case a.kind
-  of tkNamed: a.name == b.name
-  of tkApp:
-    a.base != nil and b.base != nil and a.base.kind == tkNamed and
-      b.base.kind == tkNamed and a.base.name == b.base.name
-  else: false
-
 proc maybeMovedParam(res: Resolution, m: Module, d: Decl): string =
-  ## The parameter a MOVED twin might take destructively, or "".
+  ## The parameter a MOVED twin takes destructively, or "".
   ##
-  ## DELIBERATELY WIDER than codegen_common's `movedFnParam`, and not only to
-  ## avoid importing it (which would close a cycle — codegen_common sits
-  ## downstream of this pass). The two errors are not symmetric. Thinking a
-  ## param is moved when it is not costs a copy this pass declines to elide;
-  ## MISSING one means claiming a value is fresh when it is the caller's
-  ## buffer, which is the unsound direction. So this drops the
-  ## `copyableContainer` half of the real predicate, which only ever narrows.
-  ## It must therefore track every shape `movedFnParam` accepts. It once
-  ## tracked only ONE of them — the return type being the parameter type
-  ## outright — and when codegen learned the WRAPPED shape (`Seq[int]` in, a
-  ## record with a `Seq[int]` field out) this pass did not. `twin` below
-  ## became a twin whose moved parameter this proc reported as "":
+  ## ONE PREDICATE NOW, shared with codegen through `twin_shape`. This used
+  ## to be a second, wider copy of `movedFnParam` kept in step by hand — the
+  ## analysis could not call codegen's, because codegen sits downstream of
+  ## every analysis. It was not kept in step: codegen learned the WRAPPED
+  ## shape and this did not, and for every fn of that shape `rootedAtMoved`
+  ## could not fire and the twin emitted `defer delete` over the buffer it
+  ## was handing back. See twin_shape.nim's header for the whole account.
   ##
-  ##     fn twin({xs: Seq[int]}) -> Pair2:
-  ##       var one = xs                      # NOT seen as the moved param
-  ##       one = {items: one, value: 1} push
-  ##       return {a: one, b: one} Pair2
-  ##
-  ## so `rootedAtMoved` never fired, `afterBinding` claimed `one` was a copy,
-  ## the returned fields read as fresh, and Stage 3 emitted `defer
-  ## delete(xs)` over the very buffer the fn was handing back.
-  if d == nil or d.kind != dkFn or d.fnBody == nil: return ""
-  if d.isExtern or d.isPending or d.isDecision: return ""
-  if d.fnParams.len == 0 or d.fnReturnType == nil: return ""
-  let p = d.fnParams[0]
-  if p.name == "self": return ""
-  let rt = d.fnReturnType
-  if p.typ == nil or rt == nil: return ""
-  if sameNamedType(p.typ, rt): return p.name
-  if seqElem(p.typ) != nil:
-    for f in getFieldsForType(res, m, rt):
-      if sameNamedType(f.typ, p.typ): return p.name
-  ""
+  ## It is also no longer wider. Wider was a hedge against drift, and with
+  ## one definition there is nothing to drift: a fn codegen does not twin is
+  ## a fn whose parameter nothing takes destructively.
+  movedFnParam(res, m, d)
 
 proc rootedAtMoved(c: Ctx, e: Expr): bool =
   ## Is this value read THROUGH the moved parameter? `s.ladder` inside a twin
@@ -392,6 +360,283 @@ proc summarize(res: Resolution, m: Module, d: Decl): Prov =
   collectReturns(c, d.fnBody, acc, any)
   if any: acc else: unknownProv()
 
+# --- which arguments may be handed on destructively --------------------------
+#
+# EV-15. A fn that threads a container gets a MOVED twin, and the call site
+# reaches it when the old value is provably dead. Three shapes can prove it,
+# and only the first was ever syntactic:
+#
+#     x = f(x, ...)          the result overwrites its own argument
+#     let y = f(b.ask, ...)  a field nothing reads again
+#     let r = f(a, ...)      a LOCAL nothing reads again      <- this pass
+#
+# The third is the shape a chain of threading calls actually takes, and it
+# was the whole of `world_server`'s cost: 191 ms on Nim against 2.9 s on Odin
+# and 54 s on D, because `let r = {f: a, ...} pass` copied a container its
+# caller was finished with and then abandoned the copy.
+#
+# WHY LIVENESS IS NOT ENOUGH, which is the part that took a use-after-free to
+# learn on the other side of this file. Liveness says nobody in THIS body
+# reads the value again. On Nim that settles it: `sink` hands the rest to
+# ARC. On D and Odin a container parameter ALIASES the caller's buffer, so
+#
+#     fn g({xs: Seq[int]}) -> int:      # NOT a twin: g does not own xs
+#       let r = {f: xs, ...} pass       # last use of xs...
+#       return r.relit                  # ...but pass_moved would free it
+#
+# would free the CALLER's buffer. So the value must also be one this body
+# owns, and provenance is exactly the thing that knows: `oFresh` means this
+# body allocated it. A parameter is owned only inside the twin that took it
+# destructively — and there `slotsMovedAway` already stops the twin freeing
+# what it has handed on, which is the same fact read from the other end.
+
+proc seqFieldsOfType(c: Ctx, t: Type): seq[string] =
+  for f in getFieldsForType(c.res, c.m, t):
+    if seqElem(f.typ) != nil: result.add(f.name)
+
+proc ownedForMove(c: Ctx, p: Prov, t: Type): bool =
+  ## Is EVERY heap slot the twin would free one this body allocated?
+  ##
+  ## All of them, not just the one being read: the twin frees the whole
+  ## parameter, so a record with one borrowed field is not movable however
+  ## fresh the others are.
+  if t == nil: return false
+  if seqElem(t) != nil: return p.whole.origin == oFresh
+  let fs = seqFieldsOfType(c, t)
+  if fs.len == 0: return false     # not a container, or a shape not resolved
+  for f in fs:
+    if f notin p.fields: return false
+    if p.fields[f].origin != oFresh: return false
+  true
+
+proc provOfRoot(c: var Ctx, root: string): Prov =
+  if root in c.locals: c.locals[root] else: unknownProv()
+
+proc threadsFirstArg(res: Resolution, m: Module, e: Expr): bool =
+  ## Is this a call that might take its first argument destructively?
+  e != nil and e.kind == exkCall and e.callee != nil and
+    e.callee.kind == exkVar and e.args.len >= 1 and e.args[0] != nil and
+    maybeMovedParam(res, m, m.findFn(e.callee.name)) != ""
+
+# --- the same question, asked of the value mirror -----------------------------
+#
+# Stage B of thoughts/ssa-mirror-design.md. Everything above this line decides
+# ownership by walking the tree twice: a seed pass that asks provenance about
+# each NAME a call site reads, then a grow pass that spreads the answer along
+# assignments to a fixpoint, with `valueIsOwned` re-deriving the call shape at
+# every step. Three walks that have to agree about what a name holds.
+#
+# On the mirror there are no names to spread anything along. Each VERSION has
+# one definition, so ownership is a property read straight off it, and the
+# only iteration left is the one the phi structure genuinely needs — a loop
+# head's operand comes from the bottom of the loop.
+#
+# WHAT IS NOT MOVED HERE, deliberately. Whether a record BINDING copies its
+# Seq fields still comes from `afterBinding`, which models what the emitter
+# does. That is item 4 on the list and it is Stage C's to remove; pulling it
+# forward would mean changing the ownership ANSWER in the same step as
+# changing where the answer comes from, and then a difference between the two
+# could not be attributed. So this keeps provenance's field lattice exactly
+# and replaces only the structure around it.
+
+proc ssaOwnSeed(c: var Ctx, fn: SsaFn, v: Value): bool =
+  ## What this definition says on its own, before anything flows into it.
+  case v.def.kind
+  of dfEntry:
+    # A parameter is the caller's buffer on D and Odin. The ONE exception is
+    # the parameter a MOVED twin took destructively, which the caller has
+    # already given away.
+    v.place == c.moved
+  of dfLiteral:
+    true
+  of dfConstruct, dfCall:
+    ownedForMove(c, provOfRoot(c, v.place), c.res.typeFor(v.def.src))
+  else:
+    false
+
+proc ssaFieldIsOurs(c: var Ctx, place: string): bool =
+  ## For `b.ask`: is that SLOT one this body allocated? A narrower question
+  ## than whether `b` is ours, and the reason the old code needed
+  ## `slotIsOwned` on the side.
+  let root = rootOf(place)
+  if root == place: return true
+  if root == c.moved: return true
+  cellFor(provOfRoot(c, root), place[root.len + 1 .. ^1]).origin == oFresh
+
+proc ssaFlowsOwn(c: var Ctx, m: Module, fn: SsaFn, v: Value,
+                 own: seq[bool]): bool =
+  ## What flows INTO this version from the ones it was built out of.
+  case v.def.kind
+  of dfProject:
+    v.def.inputs.len > 0 and own[int32(v.def.inputs[0])] and
+      ssaFieldIsOurs(c, v.place)
+  of dfPhi:
+    # A join is ours only if it is ours on EVERY path.
+    if v.def.inputs.len == 0: return false
+    for inp in v.def.inputs:
+      if not own[int32(inp)]: return false
+    true
+  of dfCall:
+    # A twin hands back either a buffer it allocated or the one it was
+    # given, so the result is ours when the argument we gave it was.
+    #
+    # NOT EXERCISED BY THE CORPUS, and said rather than implied: disabling
+    # this rule changes no stamp on any example, either application, the
+    # Savina ports or the stdlib, because `afterBinding` already calls such
+    # a binding fresh. It is kept because that reason is item 4 on
+    # thoughts/ssa-mirror-design.md's list — a claim about what the emitter
+    # does — and when Stage C removes it this rule is what carries the fact.
+    let src = v.def.src
+    if not threadsFirstArg(c.res, m, src): return false
+    if src.args[0].id notin fn.readAt: return false
+    own[int32(fn.readAt[src.args[0].id])]
+  else: false
+
+proc ssaOwnership(c: var Ctx, m: Module, fn: SsaFn): seq[bool] =
+  ## One answer per version, to a fixpoint. Monotone: a value only ever
+  ## becomes owned, so it settles in as many rounds as the longest chain.
+  result = newSeq[bool](fn.values.len)
+  for i, v in fn.values: result[i] = ssaOwnSeed(c, fn, v)
+  for _ in 0 ..< MaxRounds:
+    var changed = false
+    for i, v in fn.values:
+      if result[i]: continue
+      if ssaFlowsOwn(c, m, fn, v, result):
+        result[i] = true
+        changed = true
+    if not changed: return
+
+proc threadSites(res: Resolution, m: Module, body: Expr): seq[Expr] =
+  ## Every first argument of a threading call in this body.
+  var stack = @[body]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    for ch in n.children: stack.add(ch)
+    if not threadsFirstArg(res, m, n): continue
+    if n.args[0].kind notin {exkVar, exkField}: continue
+    ensureId(n.args[0])
+    result.add(n.args[0])
+
+proc debugOwn(d: Decl, c: Ctx, fn: SsaFn, own: seq[bool]) =
+  when not defined(release):
+    if getEnv("TUCK_DEBUG_MOVE") in ["", "diff"]: return
+    var owned: seq[string]
+    for i, v in fn.values:
+      if own[i]: owned.add(v.place & "." & $v.version)
+    echo "MOVE ", d.name, " moved=", c.moved, " owned=[ ", owned.join(" "), " ]"
+
+proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
+    tuple[sites: HashSet[NodeId], consumed: HashSet[string]] =
+  ## Both halves of the same fact, from one look at the mirror: which
+  ## arguments this body may hand on, and which slots of its OWN moved
+  ## parameter it has therefore handed away.
+  ##
+  ## They were two independent tree walks — `markMovableArgs` deciding to
+  ## hand a slot on, and `slotsMovedAway` re-scanning to find out whether one
+  ## had been — with nothing making them agree. They did not, once, and the
+  ## result was a double free that segfaulted under `TUCK_TRACK`. That is
+  ## item 3 on thoughts/ssa-mirror-design.md's list, and one walk is the
+  ## whole of the answer to it: the site that consumes a value is recorded
+  ## ON the value.
+  ##
+  ## `consumed` is also NARROWER than the scan it replaces, and correctly so.
+  ## The old one recorded a slot whenever the callee merely HAD a twin,
+  ## whether or not the call site reached it. An unstamped site calls the
+  ## wrapper, which copies our slot and hands the COPY to the twin — so the
+  ## twin frees the copy and ours is still ours to free.
+  if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
+  var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  for p in d.fnParams: c.params.incl(p.name)
+  for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
+  let fn = buildFn(res, d)
+  if fn.values.len == 0: return
+  let own = ssaOwnership(c, m, fn)
+  let final = finalUses(fn)
+  debugOwn(d, c, fn, own)
+  for a in threadSites(res, m, d.fnBody):
+    if a.id notin final or a.id notin fn.readAt: continue
+    let v = fn.readAt[a.id]
+    if not own[int32(v)]: continue
+    result.sites.incl(a.id)
+    # ...and if what went was a slot of OUR moved parameter, it is no longer
+    # ours to free.
+    let place = fn.values[int32(v)].place
+    if c.moved.len == 0 or rootOf(place) != c.moved: continue
+    result.consumed.incl(if place == c.moved: "" else: place[c.moved.len + 1 .. ^1])
+
+proc consumedSlotsSsa*(res: Resolution, m: Module, d: Decl): HashSet[string] =
+  moveFactsSsa(res, m, d).consumed
+
+proc movableArgsSsa*(res: Resolution, m: Module, d: Decl): HashSet[NodeId] =
+  ## Which arguments this body may hand on destructively — the mirror's
+  ## answer to exactly what `markMovableArgs` decides above.
+  if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
+  var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  for p in d.fnParams: c.params.incl(p.name)
+  for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
+  let fn = buildFn(res, d)
+  if fn.values.len == 0: return
+  let own = ssaOwnership(c, m, fn)
+  let final = finalUses(fn)
+  debugOwn(d, c, fn, own)
+  for a in threadSites(res, m, d.fnBody):
+    if a.id notin final or a.id notin fn.readAt: continue
+    if own[int32(fn.readAt[a.id])]: result.incl(a.id)
+
+proc markMovableArgs(res: Resolution, m: Module, d: Decl) =
+  ## Stamp the first argument of every threading call this body may give away.
+  ##
+  ## THIS USED TO BE THREE WALKS. A seed pass asking provenance about every
+  ## NAME a call site read, a grow pass spreading the answer along
+  ## assignments to a fixpoint, and `valueIsOwned` re-deriving the call shape
+  ## inside it — three traversals that had to agree about what a name holds,
+  ## which is item 6 on thoughts/ssa-mirror-design.md's list. On the mirror
+  ## there are no names to spread anything along: each version has one
+  ## definition and ownership is read off it.
+  ##
+  ## Switched only after the two answers were compared across the corpus,
+  ## both applications, the Savina ports and the stdlib: 24 stamps, zero
+  ## difference either way, with the comparison itself sabotage-verified.
+  for site in movableArgsSsa(res, m, d):
+    markMovedArgId(res, site)
+
+proc oldStampsIn(res: Resolution, d: Decl): HashSet[NodeId] =
+  var stack = @[d.fnBody]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    for ch in n.children: stack.add(ch)
+    if n.kind in {exkVar, exkField} and n.id.isSet and isMovedArg(res, n):
+      result.incl(n.id)
+
+proc moveDiffReport(res: Resolution, m: Module) =
+  ## The Stage B differential, kept as a MEASUREMENT after the switch.
+  ##
+  ## It compared the mirror's answer against the three-walk implementation it
+  ## replaced — 24 stamps, zero difference — and it stays because the same
+  ## comparison is what Stage C will need when the emitter-prediction in
+  ## `afterBinding` comes out and the answer is allowed to change.
+  when not defined(release):
+    if getEnv("TUCK_DEBUG_MOVE") != "diff": return
+    var agree, onlyMirror, onlyOld = 0
+    for d in m.allFns():
+      let mine = movableArgsSsa(res, m, d)
+      let theirs = oldStampsIn(res, d)
+      agree += (mine * theirs).len
+      onlyMirror += (mine - theirs).len
+      onlyOld += (theirs - mine).len
+      if (mine - theirs).len > 0 or (theirs - mine).len > 0:
+        echo "MOVEDIFF ", d.name, " agree=", (mine * theirs).len,
+             " onlyMirror=", (mine - theirs).len,
+             " onlyOld=", (theirs - mine).len
+    echo "MOVETOTAL ", m.path.join("."), " agree=", agree,
+         " onlyMirror=", onlyMirror, " onlyOld=", onlyOld
+
+proc markAllMovableArgs(res: Resolution, m: Module) =
+  for d in m.allFns(): markMovableArgs(res, m, d)
+  moveDiffReport(res, m)
+
 proc buildProvenance*(res: Resolution, m: Module) =
   ## Summarize every fn this module declares, to a fixpoint.
   ##
@@ -429,6 +674,7 @@ proc buildProvenance*(res: Resolution, m: Module) =
             var fs = ""
             for k, v in pr.fields: fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token))
             echo "PROV ", n, " whole=", pr.whole.origin, "/", uint32(pr.whole.token), fs
+      markAllMovableArgs(res, m)
       return
   when not defined(release):
     if getEnv("TUCK_DEBUG_PROV").len > 0:

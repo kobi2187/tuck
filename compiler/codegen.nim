@@ -1118,7 +1118,23 @@ proc processMatchArm(ctx: var CodegenCtx, arm: MatchArm, patStr: var string,
     ctx.indent = oldIndent
     result = ind & armHead & ":\n" & bodyStr
   else:
+    # The indent is bumped for a BARE body too, and not only for a block.
+    # An arm body is one *expression* here, but several of them emit more
+    # than one LINE — a `send` is `enqueue` plus `tuckNotifySend`, and the
+    # second line indents itself from `ctx.indent`. Left unbumped it landed
+    # at the `of` level:
+    #
+    #     of 0:
+    #       discard enqueue(Shard0Singleton.mailbox, ...)
+    #     tuckNotifySend(Shard0Slot)      # <- falls out of the arm
+    #
+    # which nim answers with "expression expected, but found 'keyword of'".
+    # Only the FIRST line is prefixed here; the rest carry their own indent,
+    # which is why the bump is what fixes them.
+    let oldIndent = ctx.indent
+    ctx.indent += 1
     let bodyStr = ctx.genExpr(arm.body)
+    ctx.indent = oldIndent
     result = ind & armHead & ":\n" & ind & "  " & bodyStr
   if narrowedKey != "": ctx.matchNarrowed.del(narrowedKey)
   result

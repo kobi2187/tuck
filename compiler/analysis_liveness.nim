@@ -283,7 +283,24 @@ proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
       outp.excl(e.target.name)
     outp + r
 
-proc markLiveness*(res: Resolution, m: Module) =
+proc markLivenessInto(res: Resolution, m: Module)
+
+proc referenceFinalUses*(res: Resolution, m: Module): HashSet[NodeId] =
+  ## THE ORACLE, not the pass. `analysis_ssa.markLivenessSsa` is what stamps
+  ## `lastUses` now; this walk is kept, and run only under `--verify-stages`,
+  ## as the independent answer the mirror is checked against.
+  ##
+  ## Keeping it costs a file that nothing on the hot path calls, and buys the
+  ## only check on the mirror that is not the mirror's own opinion. When the
+  ## two disagree one of them is wrong, and having both is how you find out
+  ## which — that is how six builder bugs were found in an afternoon.
+  let saved = res.lastUses
+  res.lastUses = initHashSet[NodeId]()
+  markLivenessInto(res, m)
+  result = res.lastUses
+  res.lastUses = saved
+
+proc markLivenessInto(res: Resolution, m: Module) =
   ## Stamp every last use in every body this module declares.
   for d in m.decls:
     if d == nil: continue

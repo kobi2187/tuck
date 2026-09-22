@@ -137,6 +137,13 @@ all. Test: `known_bugs`, "a copy-per-iteration loop does not accumulate
 copies". Found 2026-09-20 running the first real application; issue #77, and
 the analysis that would fix it is issue #80.
 
+A20 (on Odin every heap `str` leaked — the whole category, because
+`copyableContainer` excluded `str` on an aliasing argument that was taken as
+settling ownership) was fixed 2026-09-22: `RtOwnedStr` names the runtime
+procs that allocate one, and a `str` local assigned exactly once that does
+not escape gets a `defer delete`. 1M `toStr` calls went from 33.4 MB to
+2.1 MB on Odin, below D's 3.9 MB. Issue #86.
+
 A17 (a handler-less actor emitting a registration call to a proc that was
 never generated — the three entry-point builders asked "is this a dkActor"
 while genActor asked "does it have anything to receive"; D already had the

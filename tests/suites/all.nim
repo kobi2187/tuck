@@ -20,6 +20,7 @@ import doc_snippets
 import duplicates
 import end_to_end
 import examples
+import ssa
 import extern_impl
 import fn_size
 import frontend
@@ -72,6 +73,7 @@ let registry: seq[Entry] = @[
   ("duplicates",          SuiteProc(duplicates.run),          true),
   ("end_to_end",          SuiteProc(end_to_end.run),          false),
   ("examples",            SuiteProc(examples.run),            true),
+  ("ssa",                 SuiteProc(ssa.run),                 true),
   ("extern_impl",         SuiteProc(extern_impl.run),         false),
   ("fn_size",             SuiteProc(fn_size.run),             true),
   ("frontend",            SuiteProc(frontend.run),            true),

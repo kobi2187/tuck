@@ -16,6 +16,14 @@ import resolution
 import ast_query
 import codegen_common
 from lowering_seqcopy import needsDup, recordDupFields
+from analysis_ssa import pathOf
+from os import getEnv
+
+let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0
+  ## Read ONCE at module init. `genAssign` runs per assignment in the
+  ## program, and an environment lookup there is a syscall-shaped cost on
+  ## the hot path of every build.
+
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_table  # decision-table combinatorics, shared with the Nim backend
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
@@ -441,7 +449,12 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     # direct call, which is wrong the moment it awaits; see
     # thoughts/bugs-found-while-building-net.md.
     return "rt.tuckSpawn(proc() { " & calleeStr & "() })"
-  return calleeStr & "(" & (ctx.odinTypeArgs(e) & args).join(", ") & ")"
+  # A call that may take its first argument destructively, in ANY position —
+  # the assignment emitters catch their own two shapes upstream of here, and
+  # `return f(x, ...)` is the one nothing else reaches.
+  let mv = movedCalleeName(ctx.res, ctx.module, e, calleeStr, member)
+  return (if mv != "": mv else: calleeStr) &
+         "(" & (ctx.odinTypeArgs(e) & args).join(", ") & ")"
 
 proc odinBangInfo*(ctx: var OdinCodegenCtx, t: Type):
     tuple[wrapped: bool, inner: string, innerT: Type] =
@@ -1237,12 +1250,51 @@ proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
     result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genOdinExpr(e.target.receiver) & ")")
 
+proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
+  ## The first assignment to a name, which DECLARES it.
+  ctx.definedVars.incl(e.target.name)
+  # A STATED type wins over both `:=` inference and the union-naming case:
+  # the author wrote it precisely because the value cannot say what it is.
+  let stated = if e.declType != nil: ctx.odinType(e.declType) else: ""
+  let ut = if stated != "": stated else: ctx.unionDeclType(e.assignVal)
+  let decl = if ut == "": e.target.name & " := " & valStr
+             else: e.target.name & ": " & ut & " = " & valStr
+  let fixups = ctx.seqFieldFixups(e.target.name, e.assignVal)
+  # A `str` this body allocated and never lets escape is freed at scope exit.
+  # `defer` rather than a free at the last use, because a defer needs no
+  # POSITION: the decision is made once, here, and Odin runs it on every path
+  # out of the block. `ownedStrLocalsOf` has already established that the name
+  # is assigned exactly once, so this fires on exactly the allocation it
+  # names. See EV-20.
+  if e.target.name notin ctx.ownedStrLocals: return decl & fixups
+  decl & "\n" & "  ".repeat(ctx.indent) & "defer delete(" &
+    e.target.name & ")" & fixups
+
+proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
+  ## ITEM 4, MEASURED — see thoughts/ssa-mirror-design.md, Stage C.
+  when not defined(release):
+    # ITEM 4, MEASURED. `markSeqCopies` marks this binding as needing a copy
+    # — it is a call, and a call is not `exclusivelyOwned` — and then the
+    # fast paths below bypass `copyIfSeq` entirely and never look at the
+    # mark. So `afterBinding`'s "it was not exclusive, therefore the binding
+    # copied it, therefore it is fresh" is unbacked at exactly these sites.
+    # Twelve of them across the corpus and both applications; see
+    # thoughts/ssa-mirror-design.md, Stage C.
+    if DebugInPlace:
+      let threadedDbg = selfThreadedCall(ctx.res, ctx.module, e)
+      if (appended != nil or threadedDbg != nil) and
+         (needsDup(ctx.res, e.assignVal) or
+          recordDupFields(ctx.res, e.assignVal).len > 0):
+        echo "INPLACE-BYPASS ", pathOf(e.target), " at ",
+             e.span.line, ":", e.span.col
+
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
   if ctx.isTaskArgsBind(e):
     return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
   # An append assigned back to its own argument is an in-place append.
   let appended = selfAppendValue(ctx.res, e)
+  reportInPlaceBypass(ctx, e, appended)
   if appended != nil:
     return "append(&" & ctx.movedAssignTarget(e.target) & ", " &
            ctx.genOdinExpr(appended) & ")"
@@ -1263,14 +1315,7 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:
-    ctx.definedVars.incl(e.target.name)
-    # A STATED type wins over both `:=` inference and the union-naming case:
-    # the author wrote it precisely because the value cannot say what it is.
-    let stated = if e.declType != nil: ctx.odinType(e.declType) else: ""
-    let ut = if stated != "": stated else: ctx.unionDeclType(e.assignVal)
-    let decl = if ut == "": e.target.name & " := " & valStr
-               else: e.target.name & ": " & ut & " = " & valStr
-    return decl & ctx.seqFieldFixups(e.target.name, e.assignVal)
+    return ctx.genOdinVarDecl(e, valStr)
   if e.target.kind == exkField and e.target.receiver != nil and
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,

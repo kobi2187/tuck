@@ -334,6 +334,470 @@ tested.
 
 ---
 
+## EV-20 — on Odin, every heap `str` leaks
+
+**Open. Severity: high on Odin, none on Nim or D. Issue #86.** Found by
+sweeping the
+examples under valgrind, smallest first — which is why it turned up at all:
+it is invisible to every assertion in the tree that looks at a number a
+program prints.
+
+### The category, not the site
+
+`copyableContainer` excludes `str` deliberately, and the reason it gives is
+sound:
+
+> Excluding `str` is right for the send too: it is immutable in both D and
+> Odin, so sharing its buffer is safe.
+
+That is an argument about ALIASING, and it was taken as settling OWNERSHIP
+too. So `str` sits outside the copy machinery, outside the MOVED twin, and
+outside the one `delete` the Odin backend emits. Nothing frees a `str`, ever.
+
+### Reproduce
+
+The smallest example in the tree. `examples/24-stdlib` is twelve lines:
+
+```tuck
+let r = {path: "/tmp/tuck-demo.txt"} fs::readFile
+if r.ok:
+  {text: r.value.content} console::printLine
+```
+
+```
+==7892== 30 bytes in 1 blocks are definitely lost in loss record 1 of 1
+==7892==    by runtime::make_slice
+==7892==    by os::read_entire_file_from_file
+==7892==    by os::read_entire_file_from_path
+==7892==    by tuckrt::[tuck_rt.odin]::fileWorker
+```
+
+`fileWorker` reads into a buffer, `readFile` transmutes it to a `str` and
+hands it to Tuck, and that is the end of anyone's claim on it.
+`41-tostr-concat` loses 46 bytes from `strings::Builder`, which is the
+`toStr` and concat path — the same category by a different route.
+
+It is LINEAR, which is what makes it a leak rather than a constant:
+
+| `toStr` calls | definitely lost |
+|---|---|
+| 10 | 272 B |
+| 100 | 2 343 B |
+| 1 000 | 23 044 B |
+
+A million of them peak at **33 MB on Odin**, against 1.7 MB on Nim (ARC
+frees) and 3.9 MB on D (its GC collects, and valgrind reports nothing
+definitely lost).
+
+### Not EV-14
+
+EV-14 is about `Seq` intermediates abandoned in a threading chain. This one
+reaches programs that touch no container at all — anything that formats a
+number, reads a file, or builds a message. A server that formats one line
+per request leaks for as long as it runs.
+
+### What it needs
+
+The same thing EV-14 needs, one category wider: a free at the last use of a
+value this body owns. The ownership analysis already distinguishes a fresh
+allocation from a borrowed one (`analysis_provenance`), and the mirror
+already answers "is this the final read" per value — what is missing is that
+`str` was never admitted to the machinery. Admitting it means telling a heap
+`str` from a literal, which is exactly `oFresh` versus `oAliased`.
+
+### The fix
+
+`codegen_odin_decl.RtOwnedStr` names the runtime procs that hand back a
+`str` the caller now owns — `toStr`, `tuckConcat`, `joinStr`, `charAt`, which
+are Odin's `strings.clone`, `concatenate`, `join` and `fmt.aprint`. A LIST,
+and it lives in the Odin backend rather than as an attribute in `std/`,
+because "this returns freshly allocated storage" is a fact about that
+runtime's implementation and not about Tuck: on Nim the same call is ARC's
+business and on D the GC's.
+
+Deliberately short, and each absence is written down. `splitLines` is NOT on
+it — Odin's `strings.split_lines` hands back lines that SLICE the input, so
+the `[dynamic]string` is fresh and the strings in it are not. Neither is
+`readFile`, whose buffer becomes a FIELD of the record it returns, which is
+EV-14's shape rather than this one. Leaving a proc off the list leaks, which
+is where the backend already was; putting one on wrongly is a
+use-after-free, and that asymmetry is the whole reason it is short.
+
+A local qualifies for `defer delete` when it is **assigned exactly once**
+(one version, no phi, no reassignment, so the name and the allocation are
+the same thing for the whole scope), holds a `str`, comes from one of those
+calls, and does not escape. `defer` rather than a free at the last use
+because a defer needs no POSITION — the decision is made once at the
+declaration and Odin runs it on every path out of the block, which is item 1
+of thoughts/ssa-mirror-design.md not being re-opened.
+
+Escape is conservative and listed: a `return`, a `send` payload, a
+construction that could be holding it, or an assignment to anything but this
+same local. An ordinary call ARGUMENT is not an escape — a callee cannot
+keep a `str` beyond the call except by returning it, and a call result is
+only freed when the callee is on the list, which allocates rather than
+passing one through.
+
+**What the test looks at is what the destination CAN HOLD**, not the node
+kind, and getting that wrong was the whole of the debugging. Every postfix
+call in Tuck carries a struct payload, so sealing on `exkStruct` sealed
+every argument of every call and nothing was ever freeable; and
+`acc = acc + s.len` is a `return`-free assignment of an INT that sealed its
+own operand. Both are fixed by asking the type of the destination.
+
+    1M toStr calls, peak RSS
+
+      before   nim 1.7 MB   d 3.9 MB   odin 33.4 MB
+      after    nim 1.7 MB   d 3.9 MB   odin  2.1 MB
+
+Odin is now the second lowest of the three. Valgrind reports zero errors on
+the probe, and zero invalid frees or reads across every runnable example.
+
+Guarded by `known_bugs`' "a million temporary strings do not accumulate" —
+`hostPeakRss` at 12 MB, now a `bugFixed` regression guard. Verified to be
+measuring the leak rather than a build failure both ways: before the fix,
+raising the budget past 33 MB made it pass; after, removing the `defer`
+emission makes it fail.
+
+### What this does NOT fix
+
+`examples/41-tostr-concat` still loses 46 bytes, and correctly: it ends in
+`0 exit`, and `os.exit` does not run defers. That is a process-exit leak the
+OS reclaims, not a live one. `examples/24-stdlib`'s 30 bytes also remain —
+that is `readFile`, whose buffer is a record field.
+
+### The sweep that found it, and what else it says
+
+`tools/leakcheck.sh` runs programs under valgrind and reports the
+allocation sites. Its header records what a clean run looks like per
+backend, so a NEW leak is one whose stack names none of the known ones.
+
+Over every runnable example plus both applications, valgrind finds exactly
+three things on Odin, and nothing else:
+
+| | |
+|---|---|
+| this bug | every heap `str` — `strings::Builder`, `os::read_entire_file_from_path` |
+| EV-14 / #82 | `Seq` intermediates — `tuckrt::tuckSeqCopy` |
+| benign | 31 bytes, constant: the `thread::Thread` from `tuckStartActor`, never joined at exit, by design |
+
+`world_server` at 2 000 edits loses 11 MB in 5 338 blocks, and it is three
+loss records of ~1 775 blocks each — `tuckSeqCopy` inside `pass_moved`
+called from `relight_moved`, which is exactly the three arrays per lighting
+update #82 describes. Nim is clean outright; D loses nothing of Tuck's, only
+a constant 32 bytes (80 with actors) of druntime startup — `sortCtors`
+under `rt_init`, `tlsgc.init`, and the GC's own `initialize()`.
+
+So the two open issues account for ALL of it. There is no third category
+hiding, which is worth knowing before anyone goes looking for one.
+
+---
+
+## EV-19 — an actor field with no initialiser is silently a zero value
+
+**Open. Severity: medium — a bad diagnostic, not a memory error. Issue #85.**
+Found by
+`benches/apps/world_server.tuck` while root-causing EV-18.
+
+Tuck already has the right rule, and does not apply it here. A field a
+CONSTRUCTION did not supply is a compile-time hole (`tests/suites/uninit.nim`,
+spec §4.8 amendment): reading it is `TK-TY` `dcTyUninitRead`, and the message
+even offers the fix — "make it `T?` if it is genuinely optional".
+
+An ACTOR field gets none of that:
+
+```tuck
+actor Shard0 [queue: 131072]:
+  sl: Slice                    # no initialiser, no hole, no diagnostic
+  on start({n: int}):
+    sl = {cols: SPAN} freshSlice
+  on edit({c: int, y: int, kind: int}):
+    sl = {sl: sl, c: c, y: y, kind: kind} applyEdit
+```
+
+If `edit` is handled before `start`, `sl` is a zero `Slice` whose seqs are
+empty, and the program dies inside generated code:
+
+```
+tuck_rt.nim(25) tuckSeqBounds
+Error: unhandled exception: at: index 0 out of bounds for seq of length 0
+```
+
+### Why it is not simply the same rule
+
+`<uninit>` works on a construction because the compiler can see which fields
+were supplied. An actor field is initialised by whichever handler runs first,
+and which handler runs first is not a static fact — so the hole cannot be
+tracked the same way.
+
+What CAN be said statically is narrower and still worth saying: **a field
+whose type cannot be meaningfully zero-valued, and which no initialiser
+supplies, is a hole the author has not accounted for.** `n: int = 0` is
+fine; `sl: Slice` is not, and today the two are spelled the same way.
+
+The diagnostic would name the actor and the field, and offer the same two
+routes `<uninit>` already offers — give it an initialiser, or declare it
+optional. Note the fix cannot always be an initialiser today: a field default
+must be a constant expression, and `{cols: SPAN} freshSlice` is a call.
+
+Both applications in `benches/apps/` are written this way, so whatever rule
+is chosen has to be checked against them.
+
+---
+
+## EV-18 — no ordering between two senders to one mailbox, and thread mode hides it
+
+**Open — arguably by design, which is the problem. Severity: high. Issue
+#84.** Found by `benches/apps/world_server.tuck`.
+
+Tuck promises per-MAILBOX order and every mode keeps it. It promises nothing
+about the order of two DIFFERENT senders into one mailbox — and `thread` mode
+hands you one anyway, because a send there is visible the instant it is made.
+So a program can depend on an ordering that only one mode provides, and find
+out under another.
+
+### Reproduce
+
+```tuck
+fn main() -> int [io]:
+  {} startWorld            # main sends `start` to Shard0..3
+  {n: 100000} session      # ...then 100000 edits at the Gateway,
+  Gateway send drain {n: 0}  #    which forwards to those same shards
+  Journal.waitUntil {pred: :worldDown}
+```
+
+`thread`: correct. `batch`: `index 0 out of bounds for seq of length 0`, at
+n=1000 and not at n=100 — the shard handled an `edit` before its `start`.
+
+### Cause
+
+Under `--actors:batch` a send is staged on the SENDING THREAD and crosses
+when its batch fills or its deadline passes. Main's four-message batch and
+the Gateway's fat edit batches are independent, and the Gateway's cross
+first. Per-sender FIFO is intact throughout; there simply is no relation
+between the two senders.
+
+**EV-17 below is NOT this bug**, and fixing it does not fix this one —
+checked rather than assumed. With the thread-wide deadline sweep in place the
+old shape still dies, because a 1 ms deadline is thousands of messages: the
+window narrows from "until the sender parks" to "up to a millisecond", and
+the ordering violation lives comfortably inside it.
+
+### What the program should do, and what the language might
+
+The program's fix is architectural and is what `world_server` now does: a
+stage is brought up by whoever feeds it, so `start` and `edit` leave the same
+thread in that order and no mode can separate them. That is also how real
+deployments work, so it is not a workaround.
+
+The language question is whether an actor should be guaranteed to have
+processed something before it can be sent anything else — an initialisation
+barrier, which is what every user will assume from thread mode. That is a
+design decision, not a patch. Until it is taken, EV-19's diagnostic is the
+cheap half: it turns this from a crash inside generated code into a compile
+error naming the field.
+
+---
+
+## EV-17 — `--batch-timeout` is not kept for a batch nobody is sending to any more
+
+**FIXED 2026-09-21, batch mode only. PR #81. Found while root-causing
+EV-18** — and
+it turned out to be a separate bug that EV-18 merely pointed at.
+
+`--batch-timeout` promises a staged batch crosses within N ms of opening.
+The deadline was tested inside `enqueue`, against the staging for the mailbox
+BEING SENT TO. So a thread that staged for `A` and then only ever sent to `B`
+never tested `A`'s deadline again: the promise was kept for every mailbox
+except the one that needed it.
+
+### Reproduce
+
+```tuck
+actor Slow [queue: 64]:
+  got: bool = false
+  on prime({n: int}):
+    got = true
+
+actor Busy [queue: 524288]:
+  seen: int = 0
+  on tick({n: int}):
+    seen += 1
+
+fn main() -> int [io]:
+  Slow send prime {n: 1}
+  var i = 0
+  var hit = 0
+  for i < 300000:
+    Busy send tick {n: i}
+    if i == 299999:
+      hit = if Slow.got: 1 else: 0
+    i = i + 1
+  return hit
+```
+
+`--actors:thread` returns 1. `--actors:batch` returned **0**: three hundred
+thousand sends elapsed, against a 1 ms default deadline, and the one-message
+batch never crossed. It crossed only when main finally parked.
+
+(`--actors:single` also returns 0 and is correct to: one thread cannot run
+`Slow` while main is still looping. That is the mode working as designed, and
+checking it is what kept the assertion from being written against all three.)
+
+### Fix
+
+`tuck_async.tuckFlushDueStaged` sweeps THIS THREAD'S whole flush-hook list
+for expired deadlines, and `enqueue` calls it on its periodic tick instead of
+testing one staging. The list holds one entry per (thread, actor), an entry
+with nothing staged returns without reading the clock, and the tick is one in
+`TuckBatchCheckEvery` sends.
+
+Guarded by `actor_mode`'s "an abandoned batch still crosses on its
+--batch-timeout", verified to fail without the sweep.
+
+---
+
+## EV-16 — a `match` arm whose body is a `send` emits Nim that does not compile
+
+**FIXED 2026-09-21, Nim only. PR #81. Found by
+`benches/apps/world_server.tuck`,**
+whose router is a `match` with one arm per shard — the only spelling
+available, because an actor is a compile-time singleton with no reference
+type, so there is nothing to index and the dispatch cannot be a loop.
+
+### Reproduce
+
+```tuck
+actor A [queue: 8]:
+  n: int = 0
+  on tick({v: int}):
+    n += v
+
+fn route({s: int}):
+  match s:
+    | 0 -> A send tick {v: 1}
+    | _ -> A send tick {v: 2}
+```
+
+`tuck ch` says `OK`. `tuck b` fails:
+
+```
+world_server.nim(339, 3) Error: expression expected, but found 'keyword of'
+```
+
+### Cause
+
+A `send` emits TWO lines on Nim — `enqueue` and then `tuckNotifySend`, which
+names the actor so the runtime need not signal every actor in the program.
+The second line indents itself from `ctx.indent`.
+
+`processMatchArm` bumped `ctx.indent` for an arm body that is a BLOCK, and
+not for one that is a bare expression. A `send` is a bare expression that is
+nonetheless two lines, so the first line got the arm's indent from the
+explicit prefix and the second fell back out to the `of` level:
+
+```nim
+  of 0:
+    discard enqueue(tuck_Shard0Singleton.mailbox, ...)
+  tuckNotifySend(tuck_Shard0Slot)       # <- outside the arm
+```
+
+Nothing in the corpus had caught it because every tracked `match` arm is
+either a block or a single-line `return`.
+
+### Fix
+
+`compiler/codegen.nim:processMatchArm` bumps the indent for the bare-body
+path too. Only the first line is prefixed there; the rest carry their own
+indent, which is why the bump is what fixes them. Guarded by
+`actor_mode`'s "a send inside a match arm stays inside the arm".
+
+---
+
+## EV-15 — a dead container handed to a threading fn still calls the copying wrapper
+
+**FIXED 2026-09-21, D and Odin (Nim was never affected). Issue #83, PR #81.**
+Found by
+`benches/apps/world_server.tuck`: 191 ms on Nim against 2.9 s on Odin and
+**54 s on D**, for identical output.
+
+Tuck already computes what is needed here. Every fn in the lighting path
+gets `sink` on the Nim side —
+
+```nim
+proc tuck_pass*(f: sink tuck_Flood, at: int, to: int, step: int, keep: bool): tuck_Flood
+proc tuck_relight*(sl: sink tuck_Slice, c: int, cols: int): tuck_Slice
+```
+
+— so liveness has proved the argument dead at the call. Odin and D do not
+act on it. Their MOVED twin is reached only through `movedCallInto`, which
+recognises `x = f(x, ...)`: the result written back into the same name. The
+inner loop has that shape and is compiled well —
+
+```odin
+for (((to - tuck_w.i) * step) >= 0) {
+    tuck_w = tuck_relaxOne_moved(tuck_w, step, keep)   // no copy
+}
+```
+
+— but the shape one level up does not:
+
+```tuck
+let r = {f: a, at: lo, to: hi, step: 1, keep: false} pass
+let b = {f: r, at: hi, to: lo, step: -1, keep: true} pass
+```
+
+`a` is dead after the first call and `r` after the second, and each still
+goes through the copying wrapper. The missing rule is that a LAST USE at an
+argument position is as good as the self-threaded shape — the same fact
+`sink` is already emitted from.
+
+---
+
+## EV-14 — the dead intermediates of a threading chain are never freed
+
+**Open. Severity: high on Odin. Issue #82.** `benches/apps/world_server.tuck` peaks at
+**4.9 GB** on Odin against 80 MB on Nim and 16 MB on D, for the same
+100 000 edits. This is the remainder of EV-12 after the ownership work: that
+made a MOVED twin free the parameter it consumes, and made a returned value
+safe to keep. Neither covers a local that is simply abandoned.
+
+### Reproduce
+
+`tuck_relight_moved`, emitted from six ordinary lines of Tuck:
+
+```odin
+tuck_a := tuck_Flood{...}; tuck_a.height = rt.tuckSeqCopy(...); tuck_a.lum = ...; tuck_a.light = ...
+tuck_r := tuck_pass(tuck_a, lo, hi, 1, false); tuck_r.height = rt.tuckSeqCopy(...); ...
+tuck_b := tuck_pass(tuck_r, hi, lo, -1, true);  tuck_b.height = rt.tuckSeqCopy(...); ...
+return tuck_Slice{height = sl.height, lum = sl.lum, light = tuck_b.light, ...}
+```
+
+Twelve arrays are allocated; ONE is returned. `tuck_a` entirely, `tuck_r`
+entirely, and `tuck_b`'s `height` and `lum` are dead at the `return` and
+nothing frees them — about 24 KB per edit, which is the 4.9 GB.
+
+`relight` is correctly NOT eligible for the twin free: it returns
+`sl.height` and `sl.lum` unchanged, so `slotIsFresh` says no and freeing the
+parameter would free what the caller is about to bind. That decision is
+right and is not what is missing. What is missing is that the analysis has
+nothing to say about a local which is neither returned, nor stored, nor
+moved into a call — the third case in the escape list has no owner.
+
+D does not leak (its GC collects) and pays in time instead: the same
+abandoned copies are EV-15's 54 seconds. The two are one cause with two
+prices.
+
+### What it needs
+
+`thoughts/ownership-analysis-plan.md` already has the shape: a local whose
+provenance is `oFresh` and whose liveness ends before the scope does is
+freeable at its last use. Both halves exist —
+`analysis_provenance.slotIsFresh` and `analysis_liveness` — and have not
+been joined for this case.
+
+---
+
 ## EV-13 — a `Seq` sent to an actor is not copied: the sender keeps writing it
 
 **FIXED 2026-09-21, D and Odin (Nim was never affected). Issue #76.** Found

@@ -25,18 +25,12 @@ import ast, options, sets, tables
 import resolution
 import ast_query
 import lowering  # getFieldsForType
+import twin_shape
+export seqFieldNames
 import analysis_provenance
 
 proc isSeqValued(res: Resolution, e: Expr): bool =
   e != nil and seqElem(res.typeFor(e)) != nil
-
-proc seqFieldNames*(res: Resolution, m: Module, t: Type): seq[string] =
-  ## Names of `t`'s fields whose own type is `Seq[T]` — a D struct copies by
-  ## value field-for-field, but a `T[]` field's copy is only the slice
-  ## HEADER, so any Seq field aliases across the copy exactly the way a bare
-  ## Seq assignment does. "" (never nil) when `t` is not a record at all.
-  for f in getFieldsForType(res, m, t):
-    if seqElem(f.typ) != nil: result.add(f.name)
 
 # `.dup` — the one place D's semantics genuinely differ from Tuck's.
 #

@@ -14,36 +14,10 @@ import codegen_odin_ctx
 import codegen_odin_util
 from mangle import mangleName
 from lowering_seqcopy import seqFieldNames
-from analysis_provenance import slotIsFresh
+from analysis_provenance import slotIsFresh, consumedSlotsSsa
+from analysis_ssa import pathOf
+import os
 import ./codegen_odin
-
-proc slotsMovedAway*(res: Resolution, m: Module, body: Expr,
-                     movedP: string): HashSet[string] =
-  ## Which slots of the moved parameter were HANDED ON to another twin, and
-  ## are therefore no longer this fn's to free.
-  ##
-  ## `applyBuy` passes `b.ask` to `sweep_moved`, which takes it destructively
-  ## and frees it itself; freeing it here too is a double free, and it
-  ## segfaulted on the first run under `-define:TUCK_TRACK=true`. This is the
-  ## third entry in the escape list — returned, stored in an actor field, or
-  ## MOVED INTO A CALL — and the only one that was not yet enforced.
-  ##
-  ## "" in the result means the whole parameter went.
-  if body == nil or movedP.len == 0: return
-  var stack = @[body]
-  while stack.len > 0:
-    let n = stack.pop()
-    if n == nil: continue
-    if n.kind == exkCall and n.callee != nil and n.callee.kind == exkVar and
-       n.args.len >= 1 and n.args[0] != nil and
-       movedFnParam(res, m, m.findFn(n.callee.name)) != "":
-      let a = n.args[0]
-      if a.kind == exkField and a.receiver != nil and
-         a.receiver.kind == exkVar and a.receiver.name == movedP:
-        result.incl(a.fieldName)
-      elif a.kind == exkVar and a.name == movedP:
-        result.incl("")
-    for ch in n.children: stack.add(ch)
 
 const DefaultMailboxSize = "8"
   ## Messages an actor's ring holds unless `[queue: N]` says otherwise.
@@ -392,6 +366,147 @@ proc genFnBody*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): stri
     result = ensureTrailingReturn(result, d.fnBody, savedIndent)
   ctx.indent = savedIndent
 
+let DebugStr = not defined(release) and getEnv("TUCK_DEBUG_STR").len > 0
+  ## Read once at module init; `ownedStrLocalsOf` runs per fn.
+
+const RtOwnedStr = ["toStr", "tuckConcat", "joinStr", "charAt"]
+  ## Runtime procs that hand back a `str` the CALLER now owns — Odin's
+  ## `strings.clone`, `strings.concatenate`, `strings.join`, `fmt.aprint`.
+  ##
+  ## A LIST, and it lives here rather than as an attribute in `std/`, because
+  ## "this returns freshly allocated storage" is a fact about the ODIN
+  ## RUNTIME'S IMPLEMENTATION and not about Tuck. On Nim the same call is
+  ## handled by ARC and on D by the GC; writing `[owned]` on `std/str.tuck`
+  ## would state a backend's private business as a language-level claim.
+  ##
+  ## DELIBERATELY SHORT. Two str-returning runtime procs are NOT here and
+  ## must not be added without reading them first:
+  ##
+  ##   splitLines  Odin's `strings.split_lines` hands back lines that SLICE
+  ##               the input. The `[dynamic]string` is fresh; the strings in
+  ##               it are not, and freeing one would cut into the caller's.
+  ##   readFile    its buffer becomes a FIELD of the `FsContent` record it
+  ##               returns, and a field is not a local — freeing it needs
+  ##               the record's own ownership, which is issue #82's shape.
+  ##
+  ## Leaving a proc off this list LEAKS, which is where the backend already
+  ## is. Putting one on it wrongly is a use-after-free. The asymmetry is why
+  ## the list is short and each absence is written down.
+
+proc ownedStrCall(res: Resolution, e: Expr): bool =
+  ## Is this expression a call to one of those?
+  ##
+  ## RESOLVED, not read off the syntax: `i.toStr` is an `exkField` in the
+  ## tree and only the resolution layer knows it is a call at all. Matching
+  ## on the node kind alone answered false for the commonest spelling there
+  ## is, which is how this was found.
+  if e == nil: return false
+  if e.kind == exkBinary and isStringConcat(e): return true   # `a + b`
+  var c = e
+  if res.hasCall(c): c = res.call(c)
+  if c == nil or c.kind != exkCall or c.callee == nil or
+     c.callee.kind != exkVar: return false
+  var n = c.callee.name
+  for sep in [".", ":"]:
+    let i = n.rfind(sep)
+    if i >= 0: n = n[i + sep.len .. ^1]
+  n in RtOwnedStr
+
+proc holdsAStrType(t: Type): bool =
+  ## Could a value of this type be CARRYING a `str` it was handed? A scalar
+  ## cannot, and neither can a `str` itself — the runtime procs that answer
+  ## one allocate rather than passing a string through.
+  if t == nil: return true                 # unknown: assume it could
+  case t.kind
+  of tkNamed: t.name notin ["str", "int", "bool", "float", "void",
+                            "u8", "u16", "u32", "u64",
+                            "i8", "i16", "i32", "i64", "f32", "f64"]
+  else: true
+
+proc holdsAStr(res: Resolution, e: Expr): bool = holdsAStrType(res.typeFor(e))
+
+proc sealsFor(res: Resolution, n: Expr, sealed: bool): bool =
+  ## Does this node put whatever is inside it beyond this scope's reach?
+  ##
+  ## WHAT THE DESTINATION CAN HOLD is the test at every seal, not the node
+  ## kind. A `return` of an int, or a call that answers one, cannot be
+  ## carrying our string away — and `acc = acc + s.len` is exactly that
+  ## shape, so sealing on the kind alone made every string in every fold look
+  ## as though it escaped.
+  if sealed or n.kind == exkSend: return true   # a message outlives us
+  if n.kind in {exkReturn, exkRaise}:
+    return n.returnVal == nil or holdsAStr(res, n.returnVal)
+  if n.kind == exkCall: return holdsAStr(res, n)
+  false
+
+proc strEscapes(res: Resolution, body: Expr, name: string): bool =
+  ## Does this local's value leave the body, by any route whose end the
+  ## emitter cannot see?
+  ##
+  ## CONSERVATIVE AND LISTED, because each of these is a use-after-free if it
+  ## is wrong and only a leak if it is too strict: a `return`, a `send`
+  ## payload, a construction that could be holding it, and an assignment to
+  ## anything but this same local.
+  ##
+  ## An ordinary call ARGUMENT is not an escape: the callee cannot keep a
+  ## `str` beyond the call except by returning it — and a call result is only
+  ## freed when the callee is on `RtOwnedStr`, which allocates rather than
+  ## passing one through.
+  if body == nil: return false
+  var stack = @[(body, false)]
+  while stack.len > 0:
+    let (n, sealed) = stack.pop()
+    if n == nil: continue
+    if n.kind == exkVar and n.name == name and sealed: return true
+    let seals = sealsFor(res, n, sealed)
+    if n.kind == exkAssign:
+      let toElsewhere = n.target != nil and pathOf(n.target) != name
+      stack.add((n.assignVal,
+                 if toElsewhere: holdsAStr(res, n.target) else: seals))
+      stack.add((n.target, seals))
+      continue
+    for ch in n.children: stack.add((ch, seals))
+  false
+
+proc collectDecls(body: Expr, assigned: var CountTable[string],
+                  decls: var Table[string, Expr]) =
+  ## Every name this body assigns, how many times, and the value each was
+  ## DECLARED with.
+  var stack = @[body]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    for ch in n.children: stack.add(ch)
+    if n.kind != exkAssign or n.target == nil or n.target.kind != exkVar:
+      continue
+    assigned.inc(n.target.name)
+    if n.isDecl: decls[n.target.name] = n.assignVal
+
+proc isOwnedStrLocal(ctx: OdinCodegenCtx, d: Decl, name: string, val: Expr,
+                     assigned: CountTable[string]): bool =
+  ## ASSIGNED EXACTLY ONCE is the restriction that makes the `defer` correct
+  ## with no further analysis: one version, no phi, no reassignment, so the
+  ## name and the allocation are the same thing for the whole scope and
+  ## `defer delete` at the declaration fires exactly once on exactly it.
+  if assigned[name] != 1: return false
+  let t = ctx.res.typeFor(val)
+  if t == nil or t.kind != tkNamed or t.name != "str": return false
+  if not ownedStrCall(ctx.res, val): return false
+  not strEscapes(ctx.res, d.fnBody, name)
+
+proc ownedStrLocalsOf(ctx: OdinCodegenCtx, d: Decl): HashSet[string] =
+  ## Which of this fn's locals hold a `str` it allocated and never lets go.
+  if d.fnBody == nil: return
+  var assigned: CountTable[string]
+  var decls: Table[string, Expr]
+  collectDecls(d.fnBody, assigned, decls)
+  for name, val in decls:
+    when not defined(release):
+      if DebugStr:
+        echo "STR? ", name, " assigned=", assigned[name],
+             " owned=", isOwnedStrLocal(ctx, d, name, val, assigned)
+    if isOwnedStrLocal(ctx, d, name, val, assigned): result.incl(name)
+
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An ordinary fn. A pending fn is a stub and a decision table has its own
   ## lowering; both leave before any of this runs.
@@ -399,6 +514,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ctx.currentParams = @[]
   for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
+  ctx.ownedStrLocals = ctx.ownedStrLocalsOf(d)
   if d.isDecision or d.isDecisionTable(): return ctx.genDecisionTable(d)
   let ind = "  ".repeat(ctx.indent)
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
@@ -434,7 +550,16 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   # it itself — freeing it here too is a double free, and it segfaulted
   # immediately under `-define:TUCK_TRACK=true`. This is the third entry in
   # the escape list: returned, stored in an actor field, or MOVED INTO A CALL.
-  var movedAway = slotsMovedAway(ctx.res, ctx.module, d.fnBody, movedP)
+  #
+  # ASKED OF THE VALUE MIRROR rather than re-scanned for. This used to be its
+  # own walk over the body, looking for calls whose first argument was rooted
+  # at the moved parameter — a second traversal that had to agree with the
+  # one that DECIDED to hand a slot on, with nothing making them agree. The
+  # consuming site is recorded on the value now, so there is one answer.
+  # Switched after both were computed side by side across the corpus, both
+  # applications, the Savina ports and the stdlib with no difference, and
+  # after `TUCK_TRACK` confirmed no double free.
+  var movedAway = consumedSlotsSsa(ctx.res, ctx.module, d)
 
   var frees = ""
   let retFields = movedCopyFields(ctx.res, ctx.module, d.fnReturnType)

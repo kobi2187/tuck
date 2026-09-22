@@ -90,6 +90,17 @@ type
       ## Nodes analysis_liveness proved are a local's FINAL read, so the copy
       ## made for them is unobservable and may be a move. A set rather than a
       ## table: the only question asked is yes/no.
+    movedArgs*: HashSet[NodeId]
+      ## Call ARGUMENTS the enclosing fn may hand on destructively —
+      ## `lastUses` AND owned. The two are not the same question and the gap
+      ## between them is a use-after-free.
+      ##
+      ## Being a last use says nobody in THIS body reads the value again. On
+      ## Nim that settles it, because `sink` hands the rest to ARC. On D and
+      ## Odin a container parameter ALIASES the caller's buffer, so a fn that
+      ## is not a twin does not own what it was passed and cannot give it
+      ## away to be freed. `analysis_provenance` knows which values a body
+      ## allocated; this set is where it writes that down.
 
 proc poolHandleName*(pool: string): string = pool & "Handle"
 
@@ -280,7 +291,8 @@ proc newResolution*(): Resolution =
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
              ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
-             lastUses: initHashSet[NodeId]())
+             lastUses: initHashSet[NodeId](),
+             movedArgs: initHashSet[NodeId]())
 
 var semLayer* = newResolution()
 
@@ -426,6 +438,26 @@ proc markLastUse*(r: Resolution, e: Expr) =
   if e == nil: return
   ensureId(e)
   r.lastUses.incl(e.id)
+
+proc markMovedArg*(r: Resolution, e: Expr) =
+  ## Record that the enclosing fn may hand `e` on destructively.
+  if e == nil: return
+  ensureId(e)
+  r.movedArgs.incl(e.id)
+
+proc markMovedArgId*(r: Resolution, id: NodeId) =
+  ## The same, for a caller holding the node's id rather than the node —
+  ## `analysis_ssa` speaks in ids because a value's uses are ids.
+  r.movedArgs.incl(id)
+
+proc isMovedArg*(r: Resolution, e: Expr): bool =
+  ## May this argument be taken by a MOVED twin? False for anything the
+  ## analysis did not reach — which copies, exactly as it always did.
+  e != nil and e.id in r.movedArgs
+
+proc markLastUseId*(r: Resolution, id: NodeId) =
+  ## The same, for a caller holding the node's id rather than the node.
+  r.lastUses.incl(id)
 
 proc isLastUse*(r: Resolution, e: Expr): bool =
   ## Was `e` proved to be a binding's final read? False for anything the

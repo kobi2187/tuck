@@ -1455,4 +1455,46 @@ fn main() -> int:
   t.quietly: t.hostPeakRss("a copy-per-iteration loop does not accumulate copies", 65536)
   t.bugOpen "a copy-per-iteration loop does not accumulate copies"
 
+  # 18. On ODIN ONLY, every heap `str` leaks — the whole category, not one
+  # site. `copyableContainer` excludes `str` deliberately and for a good
+  # reason: it is immutable in both D and Odin, so sharing its buffer cannot
+  # be observed. But that is an argument about ALIASING, and it was taken as
+  # settling OWNERSHIP too — so `str` is outside the copy machinery, outside
+  # the twin machinery, and outside the (single) `delete` the backend emits.
+  #
+  # Found with valgrind on the SMALLEST example in the tree.
+  # `examples/24-stdlib` loses 30 bytes in one block, and the stack names
+  # `os::read_entire_file_from_path` inside `tuckrt::fileWorker`: `readFile`
+  # transmutes the buffer to a `str`, hands it to Tuck, and nothing frees it.
+  # `41-tostr-concat` loses 46 from `strings::Builder`, which is the `toStr`
+  # and concat path. Both are the same category, and it is linear — 272,
+  # 2 343 and 23 044 bytes for 10, 100 and 1 000 `toStr` calls.
+  #
+  # Nim is clean (ARC) and D reports nothing definitely lost (its GC
+  # collects), so one budget separates them: the same program peaks at
+  # 1.7 MB on Nim and 3.9 MB on D against 33 MB on Odin.
+  #
+  # Distinct from A19 above, which is about `Seq` intermediates. This one
+  # reaches programs that touch no container at all — anything that formats.
+  t.src """
+import str
+
+fn churn({n: int}) -> int:
+  var acc = 0
+  var i = 0
+  for i < n:
+    let s = i.toStr
+    acc = acc + s.len
+    i = i + 1
+  return acc
+
+fn main() -> int:
+  let acc = {n: 1000000} churn
+  if acc < 1:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("a million temporary strings do not accumulate", 12288)
+  t.bugFixed "a million temporary strings do not accumulate"
+
   t.finish()

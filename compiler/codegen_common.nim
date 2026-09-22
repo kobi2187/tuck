@@ -24,7 +24,8 @@
 import resolution
 import ast, lowering, ast_query, ast_ops, strutils, sets, tables, algorithm, options
 import ./ast_query
-from lowering_seqcopy import seqFieldNames
+import twin_shape
+export twin_shape
 
 const TagField* = "tuckTag"
   ## The discriminator an actor's message envelope and a registry's event type
@@ -495,19 +496,6 @@ proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
 
 proc ownsHeap(m: Module, t: Type, depth = 0): bool
 
-proc genericBaseBody(m: Module, t: Type): Type =
-  ## A GENERIC application's declared body — `Set[T]` -> `Set`'s record.
-  ## getFieldsForType answers @[] for every tkApp on purpose (most are `Seq`
-  ## or a `!T` carrier, which have no declaration), so the lookup is done
-  ## here rather than by widening a function the whole compiler shares.
-  if t == nil or t.kind != tkApp or t.base == nil or t.base.kind != tkNamed:
-    return nil
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == t.base.name:
-      return d.typeBody
-  nil
-
-
 proc anyOwnsHeap(m: Module, ts: seq[Type], depth: int): bool =
   for t in ts:
     if ownsHeap(m, t, depth): return true
@@ -583,94 +571,6 @@ proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
 
 proc ownsHeapType*(m: Module, t: Type): bool = ownsHeap(m, t)
 
-proc twinnableFn(d: Decl): bool =
-  ## A plain fn with a body and at least one parameter — and not `self`,
-  ## which an object member already takes by pointer.
-  d != nil and d.kind == dkFn and d.fnBody != nil and
-    not d.isExtern and not d.isPending and not d.isDecision and
-    d.fnParams.len > 0 and d.fnReturnType != nil and
-    d.fnParams[0].name != "self"
-
-proc sameTypeName(a, b: Type): bool =
-  ## Do two types name the same thing? `Bag` and `Bag`, or `Set[T]` and
-  ## `Set[T]` — a GENERIC container is a tkApp, and the whole alloc tier is
-  ## generic, so restricting this to tkNamed meant not one stdlib module
-  ## qualified.
-  if a == nil or b == nil or a.kind != b.kind: return false
-  case a.kind
-  of tkNamed: a.name == b.name
-  of tkApp:
-    a.base != nil and b.base != nil and a.base.kind == tkNamed and
-      b.base.kind == tkNamed and a.base.name == b.base.name and
-      a.args.len == b.args.len
-  else: false
-
-proc returnWrapsParam(res: Resolution, m: Module, d: Decl, p: Param): bool =
-  ## Does the fn hand the parameter back WRAPPED — `Seq[int]` in, a record
-  ## with a `Seq[int]` field out?
-  ##
-  ## `sweep({ladder: Seq[int], ...}) -> Filled` is the shape, and it is the
-  ## one the matching engine's remaining copies live in: the container really
-  ## is threaded through, just parcelled into a result record on the way out.
-  ## Requiring the return type to be the param type OUTRIGHT missed every
-  ## such fn, so each copied its container defensively on every call.
-  if seqElem(p.typ) == nil: return false
-  for f in getFieldsForType(res, m, d.fnReturnType):
-    if sameTypeName(f.typ, p.typ): return true
-  false
-
-proc threadsBackSameType(res: Resolution, m: Module, d: Decl, p: Param): bool =
-  ## Does the fn hand back the very type its first parameter came in as —
-  ## either directly, or as a field of what it returns?
-  sameTypeName(p.typ, d.fnReturnType) or returnWrapsParam(res, m, d, p)
-
-proc movedCopyFields*(res: Resolution, m: Module, t: Type): seq[string] =
-  ## The Seq-typed FIELDS a MOVED wrapper must copy, resolving a generic
-  ## application to its declared body. ONE definition, used by the predicate
-  ## and by both backends' wrappers — they disagreed once, and the wrapper
-  ## then emitted `s = s.dup` for a `Set[T]`, which dmd answers with "none of
-  ## the overloads of template `object.dup` are callable".
-  result = seqFieldNames(res, m, t)
-  if result.len == 0:
-    result = seqFieldNames(res, m, genericBaseBody(m, t))
-
-proc copyableContainer*(res: Resolution, m: Module, t: Type): bool =
-  ## Can the wrapper actually spell the copy it owes — a Seq, or a record
-  ## with Seq fields? `str` owns heap and is NOT this: the copy helper is
-  ## Seq-shaped, and emitting it for a string param gave "Cannot assign
-  ## 'rt.tuckSeqCopy(title)' of type '[dynamic]T' to 'string'".
-  ##
-  ## Exported because the SEND helpers ask the same question — does this
-  ## payload alias the sender's storage on a backend whose container is a
-  ## header? One definition, because this is exactly the decision three
-  ## backends grew three copies of before. Excluding `str` is right for the
-  ## send too: it is immutable in both D and Odin, so sharing its buffer is
-  ## safe.
-  seqElem(t) != nil or movedCopyFields(res, m, t).len > 0
-
-proc movedFnParam*(res: Resolution, m: Module, d: Decl): string =
-  ## The parameter a MOVED twin would take destructively, or "".
-  ##
-  ## Narrow on purpose, and narrower than "owns heap": the FIRST parameter,
-  ## when the fn hands back that same type AND the wrapper can actually spell
-  ## the copy it owes — a Seq, or a record with Seq fields.
-  ##
-  ## `str` owns heap and is NOT eligible: the wrapper's copy helper is
-  ## Seq-shaped, and emitting it for a string param gave "Cannot assign
-  ## 'rt.tuckSeqCopy(title)' of type '[dynamic]T' to 'string'". `self` is not
-  ## eligible either — an object member already takes it by pointer, which is
-  ## the opposite convention.
-  ##
-  ## The corpus found both. The twin is emitted for every fn that qualifies,
-  ## so unlike the CALL-SITE rewrite (where an unrecognised shape merely
-  ## misses the speedup) getting this predicate wrong breaks compilation.
-  if not twinnableFn(d): return ""
-  let p = d.fnParams[0]
-  if not threadsBackSameType(res, m, d, p): return ""
-  if not copyableContainer(res, m, p.typ): return ""
-  p.name
-
-proc movedName*(fnName: string): string = fnName & "_moved"
 
 proc rootBindingName*(e: Expr): string =
   ## The name a field path is rooted at: `b` for `b`, `b.items`, `b.a.b`.
@@ -679,6 +579,18 @@ proc rootBindingName*(e: Expr): string =
   while cur != nil and cur.kind == exkField and cur.receiver != nil:
     cur = cur.receiver
   if cur != nil and cur.kind == exkVar: cur.name else: ""
+
+proc otherArgLives(res: Resolution, m: Module, call: Expr): bool =
+  ## Does any argument BESIDES the first still hold a container the caller
+  ## will read again? Then the callee's result may BE that container, and
+  ## the copy that separates them cannot be dropped.
+  for i in 1 ..< call.args.len:
+    let a = call.args[i]
+    if a == nil: continue
+    if not ownsHeap(m, res.typeFor(a)): continue
+    if res.isLastUse(a): continue   # dead too, so nothing observes the share
+    return true
+  false
 
 proc movedCallInto*(res: Resolution, m: Module, call: Expr,
                     targetName: string): bool =
@@ -703,13 +615,64 @@ proc movedCallInto*(res: Resolution, m: Module, call: Expr,
   # THE SYNTACTIC CASE: `x = f(x, ...)` overwrites its own argument, so the
   # old value is dead the instant the new one lands. No liveness involved.
   if a.kind == exkVar and a.name == targetName: return true
-  # THE FIELD CASE, which needs liveness at PATH granularity. `sweep(b.ask,
-  # ...)` may take the ladder destructively when `b.ask` is never read again
-  # — and `b` being live is not the question, since `b.bestAsk` is read two
-  # lines later. A name-granular answer cannot tell those apart, which is
-  # why this stayed a copy.
-  if a.kind == exkField: return res.isLastUse(a)
+  # THE ANALYSED CASE, for everything else: a value this body OWNS and will
+  # not read again. Both halves are needed and `analysis_provenance` joins
+  # them into one stamp — being a last use says nobody HERE reads it again,
+  # which on D and Odin says nothing about the caller whose buffer a
+  # container parameter aliases. See `markMovableArgs`.
+  #
+  # It covers two shapes. `sweep(b.ask, ...)` needs liveness at PATH
+  # granularity, because `b` being live is not the question when `b.bestAsk`
+  # is read two lines later. And `pass(a, ...)` — a plain local, dead after
+  # the call — is the shape a CHAIN of threading calls takes, which is the
+  # whole of EV-15.
+  #
+  # ...AND NO OTHER ARGUMENT MAY STILL BE LIVE, which is what this predicate
+  # answers over and above `movedCalleeName`. Reaching the twin is one
+  # decision; SKIPPING THE RESULT'S FIX-UP COPY, which the emitters do on
+  # this path, is a second one, and it rests on the result being unable to
+  # alias anything the caller still reads. That holds when the result can
+  # only be the moved argument or a fresh allocation. It does not hold here:
+  #
+  #     fn pick({p: Seq[int], q: Seq[int], which: int}) -> Seq[int]:
+  #       if which == 0: return p
+  #       return q
+  #
+  # `pick` is twinnable on `p` and returns `q`. Moving `src` in is fine and
+  # still worth doing; dropping the copy of the RESULT is not, because the
+  # result is `other`'s buffer and `other` is read on the next line. It came
+  # back 65 instead of 17 on D and Odin alike, caught by value_semantics'
+  # "a record returned from a call does not alias its argument".
+  if a.kind in {exkVar, exkField}:
+    return res.isMovedArg(a) and not otherArgLives(res, m, call)
   false
+
+proc movedCalleeName*(res: Resolution, m: Module, e: Expr,
+                      calleeStr, member: string): string =
+  ## `f_moved` when this call may take its first argument destructively at
+  ## ANY position, or "".
+  ##
+  ## `movedCallInto` answers the same question for the two positions that
+  ## have a write target — `x = f(x, ...)` and the builder chain — and it is
+  ## reached from the assignment emitters. Nothing reached the others, and
+  ## the one that matters is RETURN:
+  ##
+  ##     return {sl: up, c: c, cols: cols} relight
+  ##
+  ## `up` is dead there and owned, and `analysis_provenance` stamps it, but
+  ## no assignment emitter ever sees the call so nothing asked. That left
+  ## `relight`'s wrapper copying three arrays per edit and abandoning them.
+  ## `member` is the resolved member-fn name when this is a member call, and
+  ## excludes it: no twin is emitted for a member, and `findFn` would answer
+  ## with a top-level fn that merely shares the name. Taken as an argument
+  ## rather than tested at each call site, so neither emitter gains a branch.
+  if member.len > 0: return ""
+  if e == nil or e.kind != exkCall: return ""
+  if e.callee == nil or e.callee.kind != exkVar: return ""
+  if movedFnParam(res, m, m.findFn(e.callee.name)) == "": return ""
+  if e.args.len < 1 or e.args[0] == nil: return ""
+  if not res.isMovedArg(e.args[0]): return ""
+  movedName(calleeStr)
 
 proc selfThreadedCall*(res: Resolution, m: Module, e: Expr): Expr =
   ## `x = f(x, ...)` on a threaded-container fn, or `let y = f(b.ask, ...)`
