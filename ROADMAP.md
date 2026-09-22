@@ -29,106 +29,51 @@ end of this section).
 
 ## P0 — SSA ownership, and the Odin leaks it closes
 
-The value mirror (`compiler/analysis_ssa.nim`) exists and five of the six items
-in `thoughts/ssa-mirror-design.md` are closed. This is the highest-leverage
-work in the tree because the analysis is already built and already proven
-against an oracle — `livenessDiff` under `--verify-stages`.
+**Mostly done, 2026-09-22.** `world_server` on Odin went **551 552 KB ->
+10 288 KB**, which makes Odin the lowest-memory backend of the three (nim
+80 832, d 16 060) and still the fastest. Valgrind: 7 328 050 bytes lost ->
+274, zero invalid frees. Guarded by `known_bugs`' "a threading chain does not
+accumulate its intermediates" at 64 MB, sabotage-verified with
+`TUCK_NO_SEQ_FREE=1`.
 
-| # | item | closes | size |
+Two rules did it, both about GRANULARITY rather than analysis: a twin frees
+its parameter **per slot** (it was all-or-nothing, so one returned field that
+aliases the parameter kept every other field alive), and a local's escape is
+asked **per slot** too. See the commit for the three things that had to be
+right underneath, and the one that was wrong.
+
+| # | what is left | closes | size |
 |---|---|---|---|
-| 1 | **SSA Stage C** — design item 4, the in-place-path prediction | prerequisite for Stage D | M |
-| 2 | **SSA Stage D** — free at last use for an `oFresh` local that is neither returned, nor stored in an actor field, nor moved into a call | **#82** (Odin 551 MB) | L |
-| 3 | Stage D, loop case | **#77** (Odin 2 411 MB vs 10 MB on nim/d) | — |
-| 4 | **#80 / F27** — one ownership analysis replacing three partial ones | closes as a consequence of 1–3 | — |
+| 1 | **Stage C, the origin half** — move `oFresh` onto the mirror, then remove `afterBinding`'s prediction | the rest of **#77** | M |
+| 2 | **#80 / F27** — one ownership analysis | follows from 1 | — |
 
-**The guard already exists — do not write a new one.** `known_bugs.nim:1456`
-is A19 = #77: `hostPeakRss` at a 64 MB budget over 20 000 copies of a
-1024-element ladder, marked `bugOpen`. Nim finishes in ~1.6 MB and D in ~7 MB;
-Odin reached 482 MB, so the gap does the work.
+**What remains of #77 is a REDUNDANT COPY, not a missing free.**
+`ns := tuckSeqCopy(bump(xs))` copies a buffer that `bump`'s own wrapper
+already allocated fresh; 2 411 MB -> 805 MB came from freeing, the rest needs
+that copy not to be emitted. That is the copy decision, which is Stage C.
 
-**That pin is Stage D's acceptance test.** When Stage D lands, the suite will
-fail and TELL you to flip the marker — that is the designed signal, not a
-regression. Flip `bugOpen` to `bugFixed` and drop `t.quietly:`, then take the
-open-bug count in `MISSING-FEATURES.md` §A from 10 to 9 so `end_to_end` agrees.
-#82's own acceptance is `world_server` on Odin within 2× of Nim's 81 MB, which
-has no pin and should get one in the same commit.
-
-**Stage C strictly before Stage D, and this is measured rather than assumed.**
-A missed free position is a leak; a wrong one is a double free. The obvious
-decomposition was tried and ruled out with numbers (1 630 MB / 1 613 MB) —
-`thoughts/ssa-mirror-design.md`, "the Stage C negative result". Do not
-re-derive it.
-
-### Stage C is narrower than the design document says (measured 2026-09-22)
-
-The design names ONE blocker: `exclusivelyOwned`'s allocation tokens have to
-come across before the prediction can go, because a token is what tells
-`return {a: xs, b: xs}` — one buffer, two names — from two distinct buffers.
-
-**They came across, and it bought nothing.** `ssaExclusiveOwned` in
-`analysis_provenance.nim` answers the collision half off the mirror, where a
-`ValueId` is exact identity rather than a hash chosen to fail safe.
-`TUCK_DEBUG_COPY=diff` over every example, both applications and the Savina
-ports: **agree=27, onlyMirror=0, onlyOld=0** — a faithful drop-in.
-
-And the new logic is **never reached**, established by sabotage rather than
-inference: disabling the collision test outright changes none of the 27,
-because every field query on the corpus is a CALL RESULT and takes the
-fallback. A purpose-built `p = {a: u, b: u} Pair` does not reach it either —
-the origin check refuses it two lines earlier, since `u` is a name rather
-than a call and so is not `oFresh`.
-
-**So the remaining work is the ORIGIN half, and only that.** What collapsed in
-the design's own experiment is that `exclusivelyOwned` reads provenance's
-cells for `oFresh`; starve the cells and every defensive copy comes back.
-Move the origin question onto the mirror — `ssaOwnership` already answers the
-same lattice for the MOVE decision, so the shape exists — then remove
-`afterBinding`'s prediction and re-run `TUCK_DEBUG_COPY=diff`. The criterion
-is `onlyOld == 0`, not "identical": the mirror is expected to be strictly
-more precise, the same way it was for liveness in a loop.
-
-Acceptance for the whole of Stage C: `onlyOld == 0` on the corpus, and
-`world_server` on Odin no worse than the 551 MB it is at today.
-
-**Stage D is already written, and it is the harness for judging that.**
-`TUCK_SEQ_FREE=1` turns on free-insertion for `Seq` locals in the Odin
-backend (`TUCK_DEBUG_SEQ=1` prints what it claims to own). Measured today:
-sound — 31 of 31 runnable examples identical, zero divergences, zero invalid
-frees or reads under valgrind — and worth **1.5 MB** on `world_server`,
-because the two slots it correctly identifies are bound at
-`tuck_b := tuck_pass_moved(...)`, a site the moved-call rewrite routes around
-`genOdinVarDecl` entirely. It decided ownership from a dup mark the emitter
-did not honour; the defer landing there would have been a double free.
-
-That is item 4, measured on the one function the leak lives in, rather than
-argued. So: do the origin move, then flip `TUCK_SEQ_FREE` and see whether the
-number moves. Do not write a second Stage D.
-
-**Stage D's escape set is three cases, not two.** Returned, stored in an actor
-field, moved into a call. `relight` in `benches/apps/world_server.tuck` is the
-worked example: it is correctly NOT twin-eligible because it returns
-`sl.height` and `sl.lum` unchanged, and the twin free would free what the
-caller is about to bind. That decision is right and must stay right.
+Its acceptance test is already written and already failing in the designed
+way: `known_bugs.nim:1456` is A19 = #77 at a 64 MB budget, marked `bugOpen`.
+When it passes, the suite says to flip the marker; do that and take
+`MISSING-FEATURES.md` §A from 10 to 9, which `end_to_end` gates.
 
 ### How to verify P0 work, in order of cost
 
 ```sh
 ./quick-test.sh                          # ~2s, check-only
-./tests/run ssa known_bugs               # the mirror's own invariants + the pins
-./tests/run                              # everything, ~30s
+./tests/run ssa known_bugs value_semantics
+./tests/run                              # everything
 tools/leakcheck.sh --sites f.tuck        # valgrind, names the allocation site
-./tuck b benches/apps/world_server.tuck --odin -o:/tmp/ws && /tmp/ws/world_server_odin
+TUCK_NO_SEQ_FREE=1 ...                   # A/B a suspected bad free
+TUCK_DEBUG_SEQ=1 ./tuck c f.tuck --odin  # what the pass claims to own
 ```
 
-`tools/leakcheck.sh`'s header records what a clean run looks like per backend,
-so a NEW leak is one whose stack names none of the known sites.
-
-**Exit criteria for P0:** `world_server` on Odin within 2× of Nim's 81 MB;
-`leakcheck.sh` over the corpus reports only the by-design constants named in
-its header; `./tests/run` clean; no diff under `examples/` that has not been
-read and explained.
-
----
+**Two traps this work hit, both worth keeping in mind.** A predicate that
+answers "does the callee's twin free this" is a SECOND COPY of the twin's own
+free rule and will drift from it — that was a SIGSEGV within one sitting
+(item 5, again). And two paths declare a local: `genAssign`'s threaded-call
+branch returns early and never reaches `genOdinVarDecl`, so frees computed
+there are emitted nowhere.
 
 ## P1 — Features that exist and give silent wrong answers
 
