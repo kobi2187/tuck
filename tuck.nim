@@ -74,6 +74,8 @@ import compiler/modules
 import compiler/optimize
 import compiler/actor_mode
 import compiler/pipeline
+import compiler/verbose
+import compiler/backend_prepare
 import compiler/resolve_refs
 
 const CommandHelp = {
@@ -287,24 +289,6 @@ proc elapsedMs(t0: float): string =
 # timing each one. `-vv` additionally echoes each stage's per-module
 # sub-steps, each with its OWN timing. Off by default: this is diagnostic,
 # not something every check/compile/build should print.
-var verboseLevel = 0
-
-proc vBegin(stage: PipelineStage): float =
-  if verboseLevel >= 1: stderr.writeLine "-- " & $stage & " starting"
-  epochTime()
-
-proc vEnd(stage: PipelineStage, t0: float) =
-  if verboseLevel >= 1: stderr.writeLine "-- " & $stage & " done (" & elapsedMs(t0) & ")"
-
-proc vSub(name: string, t0: float) =
-  if verboseLevel >= 2:
-    stderr.writeLine "     " & name & " (" & elapsedMs(t0) & ")"
-
-proc vSubNote(msg: string) =
-  ## Like vSub, but for a sub-step with no individual timing worth showing
-  ## (the underlying call has no per-item hook to time separately).
-  if verboseLevel >= 2: stderr.writeLine "     " & msg
-
 # Pick the quickest C backend available that can build the runtime.
 proc pickFastCC(): string =
   # THE SCHEDULER is single-threaded and cooperative, and stays that way: tasks
@@ -335,37 +319,6 @@ proc reportBuild(binPath: string, buildMs: float): string =
   except OSError, IOError:
     discard
   "(" & formatFloat(buildMs, ffDecimal, 0) & " ms, " & sizeStr & ")"
-
-proc rebasedImplModule(module, srcDir, outDir: string): string =
-  ## Rewrite one `impl: <backend> "..."` module string from source-relative
-  ## (what the author wrote, and the only frame of reference they have) to
-  ## output-relative (what the emitted import needs), or return it unchanged
-  ## if it isn't a path at all.
-  ##
-  ## Only ./ and ../ forms are paths. "std/strutils" and "core:strings" are
-  ## module names in the backend's own namespace and pass through untouched —
-  ## the same distinction Nim and Odin themselves draw.
-  if not (module.startsWith("./") or module.startsWith("../")): return module
-  let abs = normalizedPath(srcDir / module)
-  result = relativePath(abs, outDir).replace('\\', '/')
-  # Keep an explicit relative marker. relativePath returns a BARE name for a
-  # sibling ("shim"), and Odin reads a bare import path as a COLLECTION name
-  # (like "core:"), not a directory — it fails with "Path does not exist".
-  # Nim accepts either, so ./ is right for both.
-  if not (result.startsWith("./") or result.startsWith("../")): result = "./" & result
-
-proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
-  ## `-o:` moves the output around, so rebasing `impl:` paths is the
-  ## compiler's job rather than something the author tracks.
-  let srcDir = parentDir(absolutePath(lm.path))
-  for d in lm.m.decls:
-    if d == nil or d.kind != dkExtern: continue
-    for mem in d.mixinMembers:
-      if mem.kind != dkFn or not mem.isExtern: continue
-      for i in 0 ..< mem.externImpl.len:
-        if mem.externImpl[i].backend != backend: continue
-        mem.externImpl[i].module =
-          rebasedImplModule(mem.externImpl[i].module, srcDir, outDir)
 
 proc lexOrDie(source: string): seq[Token] =
   ## `tuck lex` — the tokens, or the diagnostic and exit.
@@ -664,7 +617,6 @@ when isMainModule:
   # --dlang — mutually exclusive, never additive. Nim used to emit
   # unconditionally regardless of these flags; getting a second backend's
   # output alongside it now costs a second invocation, not a second flag.
-  type Backend = enum bkNim, bkOdin, bkDlang
   var backend = bkNim
   var backendFlagCount = 0
   for o in opts:
@@ -889,23 +841,11 @@ when isMainModule:
               else:
                 # lowering / emitting: exactly one backend, same choice as
                 # compile/build (default Nim, or --odin/--dlang).
-                var bProg: seq[LoadedModule]
-                for lm in loaded: bProg.add(LoadedModule(name: lm.name,
-                  path: lm.path, m: deepCopy(lm.m)))
-                var bReal = initTable[string, Module]()
-                for lm in bProg[0 ..< bProg.high]: bReal[lm.name] = lm.m
-                let backendName = case backend
-                  of bkNim: "nim"
-                  of bkOdin: "odin"
-                  of bkDlang: "d"
-                for lm in bProg: rebaseImplPaths(lm, backendName, ".")
-                for lm in bProg:
-                  lowerModule(semLayer, lm.m)
-                  if backend in {bkDlang, bkOdin}: markSeqCopiesIn(semLayer, lm.m)
+                let bt = prepare(loaded, backend, semLayer, ".")
+                let bProg = bt.mods
+                let bReal = bt.real
                 if stageStr == "lowering":
-                  var bMods: seq[Module]
-                  for lm in bProg: bMods.add(lm.m)
-                  dumpTree(bMods, fmt)
+                  dumpTree(bt.modules, fmt)
                 else:
                   let dumpBase = extractFilename(path).changeFileExt("")
                   case backend
@@ -967,26 +907,9 @@ when isMainModule:
     # built during checking stays reachable from either clone.
     case backend
     of bkNim:
-      var nimProg: seq[LoadedModule]
-      for lm in prog: nimProg.add(LoadedModule(name: lm.name, path: lm.path,
-                                               m: deepCopy(lm.m)))
-      var nimReal = initTable[string, Module]()
-      for lm in nimProg[0 ..< nimProg.high]: nimReal[lm.name] = lm.m
-      # `impl: nim "./shim/x"` — the author writes the path relative to their
-      # OWN .tuck file, which is the only place they can see it from. The
-      # emitted import has to be relative to the OUTPUT dir instead, and -o:
-      # moves that around, so rebase here rather than making the author think
-      # about it. A leading ./ or ../ marks a path; anything else
-      # ("std/strutils", "core:strings") is a target-language module name and
-      # rides through.
-      for lm in nimProg: rebaseImplPaths(lm, "nim", outDir)
-      block:
-        let t0 = vBegin(psLowering)
-        for lm in nimProg:
-          let ts = epochTime()
-          lowerModule(semLayer, lm.m)
-          vSub(lm.name, ts)
-        vEnd(psLowering, t0)
+      let nimTree = prepare(prog, bkNim, semLayer, outDir)
+      let nimProg = nimTree.mods
+      let nimReal = nimTree.real
       block:
         let t0 = vBegin(psEmitting)
         # imported modules first (each its own Nim file), entry module last
@@ -1023,28 +946,10 @@ when isMainModule:
         for lm in nimProg: nimMods.add(lm.m)
         assertNoChainFedCalls(nimMods)
     of bkOdin:
-      var odProg: seq[LoadedModule]
-      for lm in prog: odProg.add(LoadedModule(name: lm.name, path: lm.path,
-                                              m: deepCopy(lm.m)))
-      var odReal = initTable[string, Module]()
-      for lm in odProg[0 ..< odProg.high]: odReal[lm.name] = lm.m
-      for lm in odProg: rebaseImplPaths(lm, "odin", outDir)
-      block:
-        let t0 = vBegin(psLowering)
-        for lm in odProg:
-          let ts = epochTime()
-          lowerModule(semLayer, lm.m)
-          # ...then the Seq-copy marks. Odin's `[dynamic]T` aliases on
-          # assignment exactly as D's slice does — verified by spike, the same
-          # program exiting 1 on Nim and D and 99 here — so both backends run
-          # the same analysis and each emits its own repair.
-          markSeqCopiesIn(semLayer, lm.m)
-          vSub(lm.name, ts)
-        vEnd(psLowering, t0)
-      if verifyStages:
-        var odMods: seq[Module]
-        for lm in odProg: odMods.add(lm.m)
-        assertNoChainFedCalls(odMods)
+      let odTree = prepare(prog, bkOdin, semLayer, outDir)
+      let odProg = odTree.mods
+      let odReal = odTree.real
+      if verifyStages: assertNoChainFedCalls(odTree.modules)
       block:
         let t0 = vBegin(psEmitting)
         for lm in odProg[0 ..< odProg.high]:
@@ -1096,28 +1001,10 @@ when isMainModule:
       # Third backend, same discipline: its own deepCopy (lowering mutates),
       # one .d file per module (D modules are files, unlike Odin's package
       # directories), runtime rides along as a sibling tuck_rt.d.
-      var dProg: seq[LoadedModule]
-      for lm in prog: dProg.add(LoadedModule(name: lm.name, path: lm.path,
-                                             m: deepCopy(lm.m)))
-      var dReal = initTable[string, Module]()
-      for lm in dProg[0 ..< dProg.high]: dReal[lm.name] = lm.m
-      for lm in dProg: rebaseImplPaths(lm, "d", outDir)
-      block:
-        let t0 = vBegin(psLowering)
-        for lm in dProg:
-          let ts = epochTime()
-          lowerModule(semLayer, lm.m)
-          # ...then the Seq-copy marks, on this backend's private copy. Target
-          # semantics that differ from Tuck's (a D slice aliases where a Tuck
-          # Seq copies) are settled here as tree marks, so the emitter is left
-          # printing rather than deciding.
-          markSeqCopiesIn(semLayer, lm.m)
-          vSub(lm.name, ts)
-        vEnd(psLowering, t0)
-      if verifyStages:
-        var dMods: seq[Module]
-        for lm in dProg: dMods.add(lm.m)
-        assertNoChainFedCalls(dMods)
+      let dTree = prepare(prog, bkDlang, semLayer, outDir)
+      let dProg = dTree.mods
+      let dReal = dTree.real
+      if verifyStages: assertNoChainFedCalls(dTree.modules)
       block:
         let t0 = vBegin(psEmitting)
         for lm in dProg[0 ..< dProg.high]:
