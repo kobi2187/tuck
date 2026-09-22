@@ -304,17 +304,71 @@ it happens to contain.
 In-place append, self-concat, and the twin call become rewrites on the
 mirror, performed *before* emission. The emitters stop deciding and start
 transcribing. Item 4 goes away, and so does item 1, because there is no
-longer a per-position decision to forget. This is also the stage the user's
-own earlier ruling was aiming at: *"we can make tree transformations that
-will simplify the backends — the code they'll see passed to them is simple —
-and ensure they get the correct semantics and not accidentally their own
+longer a per-position decision to forget. This is also the stage the earlier
+ruling was aiming at: *"we can make tree transformations that will simplify
+the backends — the code they'll see passed to them is simple — and ensure
+they get the correct semantics and not accidentally their own
 interpretation."*
+
+### The obvious decomposition does not work, and here is the measurement
+
+The tempting half-measure is to leave the emitters alone and just stop
+`afterBinding` guessing: refuse the freshness claim wherever an emitter fast
+path will lower the binding in place, and let the mirror's flow rule (*a
+twin hands back either a buffer it allocated or the one it was given*) carry
+ownership through instead. Tried, with a precise predicate — the target is
+the PRIMARY operand of the value, which is the position every in-place
+lowering mutates:
+
+| | move stamps | world_server | matching_engine |
+|---|---|---|---|
+| today | 24 | 536 MB | 10 MB |
+| afterBinding stops guessing | 24 | **1 630 MB** | **1 613 MB** |
+
+The move decision is untouched — the mirror's flow rule does carry ownership
+exactly as intended. What collapses is the COPY decision, which is a
+different consumer: `lowering_seqcopy.markSeqCopies` asks
+`exclusivelyOwned`, and that reads provenance's cells **directly**, not the
+mirror. Starve those cells and the elision goes with them, so every binding
+gets its defensive copy back and abandons it.
+
+So Stage C is not "remove the prediction". It is **move the copy decision
+onto the mirror first, then remove the prediction** — and the copy decision
+needs more than ownership. `exclusivelyOwned`'s allocation tokens exist to
+catch `return {a: xs, b: xs}`: two fields, one buffer, both `oFresh`. The
+mirror does not model that yet; both fields are projections of one call and
+nothing says they collide. Tokens, or something like them, have to come
+across before the prediction can go.
+
+**How big item 4 actually is, measured rather than guessed.** Twelve
+assignment sites across the corpus and both applications are marked as
+needing a copy by `markSeqCopies` and then lowered in place by a fast path
+that never consults the mark — the exact set where `afterBinding`'s claim is
+unbacked (`TUCK_DEBUG_INPLACE=1`). None of them reaches a consumer that
+misuses the claim, for the two reasons under item 4 above. That is what
+"latent" means here: twelve known sites, none live, and a named reason for
+each.
 
 **D. Free insertion falls out.**
 EV-14 becomes: a value that `owns` and has no live use is freed after its
 last use. No position to miss. This is the stage that should not be attempted
 before C, because a missed position is a leak and a wrong one is a double
 free, and today there is no single place to put the decision.
+
+## A note on the suite flake, since it cost time to rule out
+
+`odin_backend` and `recursive_types` each fail intermittently, and it is
+neither the mirror nor the emitted code. The message is
+
+```
+odin rejected the emitted code (rc=1): Intrinsic called with incompatible
+signature   call void @llvm.memset.p0.i64(ptr %7, i8 0, i64 16, i1 false)
+```
+
+— Odin's own LLVM backend failing its verifier, on source that compiles on
+the next run and every run after. Both suites pass in isolation, repeatedly.
+Worth writing down because "a suite went red after my change" is the right
+reflex and this one answers to a re-run rather than to a bisect.
 
 ## What this does not buy
 

@@ -16,6 +16,14 @@ import resolution
 import ast_query
 import codegen_common
 from lowering_seqcopy import needsDup, recordDupFields
+from analysis_ssa import pathOf
+from os import getEnv
+
+let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0
+  ## Read ONCE at module init. `genAssign` runs per assignment in the
+  ## program, and an environment lookup there is a syscall-shaped cost on
+  ## the hot path of every build.
+
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_table  # decision-table combinatorics, shared with the Nim backend
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
@@ -1248,6 +1256,21 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
     return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
   # An append assigned back to its own argument is an in-place append.
   let appended = selfAppendValue(ctx.res, e)
+  when not defined(release):
+    # ITEM 4, MEASURED. `markSeqCopies` marks this binding as needing a copy
+    # — it is a call, and a call is not `exclusivelyOwned` — and then the
+    # fast paths below bypass `copyIfSeq` entirely and never look at the
+    # mark. So `afterBinding`'s "it was not exclusive, therefore the binding
+    # copied it, therefore it is fresh" is unbacked at exactly these sites.
+    # Twelve of them across the corpus and both applications; see
+    # thoughts/ssa-mirror-design.md, Stage C.
+    if DebugInPlace:
+      let threadedDbg = selfThreadedCall(ctx.res, ctx.module, e)
+      if (appended != nil or threadedDbg != nil) and
+         (needsDup(ctx.res, e.assignVal) or
+          recordDupFields(ctx.res, e.assignVal).len > 0):
+        echo "INPLACE-BYPASS ", pathOf(e.target), " at ",
+             e.span.line, ":", e.span.col
   if appended != nil:
     return "append(&" & ctx.movedAssignTarget(e.target) & ", " &
            ctx.genOdinExpr(appended) & ")"
