@@ -88,7 +88,21 @@ is `onlyOld == 0`, not "identical": the mirror is expected to be strictly
 more precise, the same way it was for liveness in a loop.
 
 Acceptance for the whole of Stage C: `onlyOld == 0` on the corpus, and
-`world_server` on Odin no worse than the 551 MB it is at today. Then Stage D.
+`world_server` on Odin no worse than the 551 MB it is at today.
+
+**Stage D is already written, and it is the harness for judging that.**
+`TUCK_SEQ_FREE=1` turns on free-insertion for `Seq` locals in the Odin
+backend (`TUCK_DEBUG_SEQ=1` prints what it claims to own). Measured today:
+sound — 31 of 31 runnable examples identical, zero divergences, zero invalid
+frees or reads under valgrind — and worth **1.5 MB** on `world_server`,
+because the two slots it correctly identifies are bound at
+`tuck_b := tuck_pass_moved(...)`, a site the moved-call rewrite routes around
+`genOdinVarDecl` entirely. It decided ownership from a dup mark the emitter
+did not honour; the defer landing there would have been a double free.
+
+That is item 4, measured on the one function the leak lives in, rather than
+argued. So: do the origin move, then flip `TUCK_SEQ_FREE` and see whether the
+number moves. Do not write a second Stage D.
 
 **Stage D's escape set is three cases, not two.** Returned, stored in an actor
 field, moved into a call. `relight` in `benches/apps/world_server.tuck` is the
