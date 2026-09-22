@@ -2,205 +2,222 @@
 
 ---
 
-# THE WORK QUEUE — ordered, 2026-09-22
+# THE WORK QUEUE — ordered by dependency, 2026-09-22 (revised)
 
-**Read this section first.** Everything below it is the standing rulings ledger
-and the per-feature status table; both remain authoritative for *what was
-decided*. This section is the only thing that says *what to do next, in what
-order*.
+**Read this section first.** Everything below it is the standing rulings
+ledger and the per-feature status table; both remain authoritative for what
+was DECIDED. This section is the only thing that says what to do NEXT.
 
-Ordering rule, set by the user 2026-09-22:
+Ordering rule, set by the user:
 
 > priority to finish features, and higher priority for the SSA fixing mem
 > leaks. Features completely missing leave for later.
 
-So: **memory first, then finish what half-exists, missing features deferred.**
-An item is "finish" when the feature parses, checks and emits *something* and
-the gap is that it is wrong or incomplete. An item is "missing" when there is
-no implementation at all — those are in P7 and are NOT scheduled.
+And the architectural rule the user set later the same day, which turned out
+to be the thing most of the queue depends on:
 
-Every item below was re-validated against the compiler on 2026-09-22 at
-`3aa94ea`. Do not trust a number in this file that is not in this section
-without re-measuring; §"Partial" and §"Missing" below predate it, and two
-entries elsewhere in the tree were found stale (see "Doc corrections" at the
-end of this section).
+> for unique features we should run a lowering pass, the rewrite pass,
+> instead of doing it in codegen.
 
 ---
 
-## P0 — SSA ownership, and the Odin leaks it closes
+## The shape of the remaining work
 
-**Mostly done, 2026-09-22.** `world_server` on Odin went **551 552 KB ->
-10 288 KB**, which makes Odin the lowest-memory backend of the three (nim
-80 832, d 16 060) and still the fastest. Valgrind: 7 328 050 bytes lost ->
-274, zero invalid frees. Guarded by `known_bugs`' "a threading chain does not
-accumulate its intermediates" at 64 MB, sabotage-verified with
-`TUCK_NO_SEQ_FREE=1`.
+The first version of this queue listed work by priority tier. Doing it showed
+the tiers are not independent — most of them hang off ONE spine:
 
-Two rules did it, both about GRANULARITY rather than analysis: a twin frees
-its parameter **per slot** (it was all-or-nothing, so one returned field that
-aliases the parameter kept every other field alive), and a local's escape is
-asked **per slot** too. See the commit for the three things that had to be
-right underneath, and the one that was wrong.
-
-| # | what is left | closes | size |
-|---|---|---|---|
-| 1 | **Stage C, the origin half** — move `oFresh` onto the mirror, then remove `afterBinding`'s prediction | the rest of **#77** | M |
-| 2 | **#80 / F27** — one ownership analysis | follows from 1 | — |
-
-**What remains of #77 is a REDUNDANT COPY, not a missing free.**
-`ns := tuckSeqCopy(bump(xs))` copies a buffer that `bump`'s own wrapper
-already allocated fresh; 2 411 MB -> 805 MB came from freeing, the rest needs
-that copy not to be emitted. That is the copy decision, which is Stage C.
-
-Its acceptance test is already written and already failing in the designed
-way: `known_bugs.nim:1456` is A19 = #77 at a 64 MB budget, marked `bugOpen`.
-When it passes, the suite says to flip the marker; do that and take
-`MISSING-FEATURES.md` §A from 10 to 9, which `end_to_end` gates.
-
-### How to verify P0 work, in order of cost
-
-```sh
-./quick-test.sh                          # ~2s, check-only
-./tests/run ssa known_bugs value_semantics
-./tests/run                              # everything
-tools/leakcheck.sh --sites f.tuck        # valgrind, names the allocation site
-TUCK_NO_SEQ_FREE=1 ...                   # A/B a suspected bad free
-TUCK_DEBUG_SEQ=1 ./tuck c f.tuck --odin  # what the pass claims to own
+```
+   M1  SSA: switch to the Braun builder, built once, stored
+        │
+   M2  Stage C: the copy decision read off the mirror, before lowering
+        │
+   M3  one ownership pass, before the clone, for every backend
+        │
+   M4  unique features LOWERED, not decided in codegen
+        │        (decision tables, actor dispatch, interface dispatch)
+        ▼
+   backends are printers
 ```
 
-**Two traps this work hit, both worth keeping in mind.** A predicate that
-answers "does the callee's twin free this" is a SECOND COPY of the twin's own
-free rule and will drift from it — that was a SIGSEGV within one sitting
-(item 5, again). And two paths declare a local: `genAssign`'s threaded-call
-branch returns early and never reaches `genOdinVarDecl`, so frees computed
-there are emitted nowhere.
+Every bug class found this session was the same bug: **one decision, several
+copies, kept in step by hand.** The twin predicate in two layers. The free
+rule in two files. The `str` analysis a second copy of the `Seq` one — which
+shipped a use-after-free. The backend-prep sequence written out four times,
+already drifted. Decision tables built three times in three backends. The
+spine is what makes that class impossible rather than fixed case by case.
 
-## P1 — Features that exist and give silent wrong answers
-
-Not missing, not slow. Wrong, quietly, on every backend. Each is small enough
-to interleave whenever P0 is blocked on thinking.
-
-| # | issue | one line | size |
-|---|---|---|---|
-| 6 | **#87** | an actor field's initialiser is silently discarded — `level: int = 80` answers 0, nine runs of nine | S–M |
-| 7 | **#73** | an imported `const` is invisible to the checker, so `Array[Cap, int] = [1,2,3]` with `Cap = 4` is **ACCEPTED** — a missed error, not a false one | M |
-| 8 | **#79** | two handlers on one actor cannot reuse a local name | S |
-| 9 | **#78** | the `tuck_` prefix collides `type Order` with `fn order` on Nim | S–M |
-
-Notes that save a session:
-
-- **#87 blocks #85.** #85 asks for a diagnostic telling the author to give the
-  field an initialiser. Initialisers currently do nothing, so that diagnostic
-  would send people to a fix that silently fails. Order matters.
-- **#79 is a port, not a design.** D already emits the correct thing — a
-  declaration in each arm. Read `codegen_d`'s arm handling and carry it to
-  `codegen.nim` and `codegen_odin*.nim`. `definedVars` is shared across the
-  whole actor in `genActorDispatch`'s single `hctx`; each arm wants its own
-  copy seeded from the enclosing scope.
-- **#73 has a worked fix in the tree.** `typecheck.nim:1071` documents the same
-  hazard being fixed for registries, using `resolve_refs.nim`'s whole-program
-  table. The other sites never got the same treatment.
+The side work — wrong answers, partial features, parity, effects — mostly
+does NOT depend on the spine and can be interleaved whenever the spine is
+blocked on thinking. Where an item gets cheaper once the spine lands, that is
+marked, so it is not done twice.
 
 ---
 
-## P2 — Finish partial features
+## Where it stands — done 2026-09-22
 
-| # | issue | what exists / what is missing | size |
-|---|---|---|---|
-| 10 | **#72** | `Array[N,T]` declares and assigns; indexing is rejected both ways. Cause is pinpointed: `seqElem` at `typecheck.nim:4063` matches `Seq` with ONE arg; `Array` is `tkApp` with TWO (size, element) and there is no second branch | **S** |
-| 11 | **#45** | `pool.acquire` hands out a COPY (`return tok(pool.storage[i])`), so a pool is a permission token rather than a buffer — it cannot be a DMA target | M |
-| 12 | **#42** | pool invariant validation — **untestable until #45 lands**; today the repro dies earlier, at `s.value.n` | S |
-| 13 | **#55** | a fired `timeout` returns the right answer at 100× the deadline, all three backends. Suspect `tuckRun` driving ALL work rather than THIS task | M |
-| 14 | **#15** | typed select sources, TASK form. The ACTOR form is done and run-gated at 55. Unblocks `examples/16` and clears MISSING-FEATURES §B | M |
-| 15 | **#85** | extend the existing `<uninit>` rule to actor fields. **After #87** | S |
-| 16 | **#20** | by-type payload matching works for top-level fns, not member calls (`payloadFields` reports `shapeKnown=false`) | M |
-| 17 | **#36** | `mod::Type` in a type position is a parse error in an otherwise working module system | S |
-
-**#72 is the best value in P2** — a core-language hole in an embedded language
-(fixed-size arrays are the whole point; `Seq` heap-allocates, which Tier 1
-forbids), with the cause already located to one proc.
-
----
-
-## P3 — Backend parity
-
-The "three backends" claim has holes. All finish-work.
-
-| # | issue | | size |
-|---|---|---|---|
-| 18 | **#40** | Odin: an interface method's dispatch closure is typed `-> int` whatever the method returns | S |
-| 19 | **#43** | Odin emits a bare `assert` for an invariant (no guard), and `tuck b` forwards flags to Nim only — no `--odin:` / `--dmd:` | S + M |
-| 20 | **#30** | D: registers are not `volatile`, `[saturating]` emits a bare alias, no `tuckConcat` | M |
-| 21 | — | the D runtime has NO networking; `examples/42-net-echo` emits valid D that cannot link | L |
-| 22 | **#31** | the flake is **Odin's own LLVM verifier** (`Intrinsic called with incompatible signature`, `llvm.memset`), not Tuck's output. Pin the Odin version and see whether it follows | S |
+- **Odin's threading-chain leak is closed.** `world_server` 551 MB -> 10 MB;
+  Odin is now the lowest-memory backend of the three on both applications.
+  Guarded in `known_bugs`. (#82)
+- **A shipped use-after-free fixed**: a returned `str` was freed by the body
+  that built it. Guarded with `hostRuns` on OUTPUT, not exit code.
+- **The ownership decision left the emitter**: `analysis_ownership.nim`, six
+  numbered steps, with `freed` recorded per decision and three invariants
+  asserted on every build.
+- **Braun SSA built and measured**: `ssa_ir` / `ssa_build` / `ssa_query`.
+  Against the old mirror across the corpus, both apps, Savina and stdlib:
+  `agree=646 onlyNew=0 onlyOld=2 structural=0`. NOTHING CONSULTS IT YET.
+- **`backend_prepare.nim`**: the four copies of clone/rebase/lower/mark are
+  one pass. `verbose.nim` extracted with it.
+- `docs/ownership-and-ssa.md`: the design, and seven numbered mistakes.
 
 ---
 
-## P4 — Make effects mean something
+## M1 — Finish the IR spine: switch to the Braun builder
 
-| # | issue | | size |
-|---|---|---|---|
-| 23 | **#64** | wire `[no_alloc]` and `[irq_safe]` | M |
+The rebuild agrees with the old mirror on 646 of 648 final uses and is never
+unsafe where it disagrees. Finishing it retires two passes and fixes the two
+design mistakes that are correctness bugs rather than performance ones.
 
-Seven markers are declared in `EffectMarker`; **only `emIo` has real checker
-logic** (5 references in `typecheck*.nim` + `semantics.nim`, against 1 apiece
-for the other six). Effects are Tuck's differentiator and they are 1/7
-implemented. Spec §3.7 already specifies the `[irq_safe]` calling `[io]` error,
-so the rule is written and unenforced. #62, #63, #65 and #67 all sit behind
-this one.
-
----
-
-## P5 — Internal debt: invisible, compounding
-
-| # | issue | | size |
-|---|---|---|---|
-| 24 | **#22** | `callParamsFor` unrecorded for pending fns, distinct ctors, combinators. ONE call site today: `typecheck.nim:2407` | M |
-| 25 | **#21** | `declForType` never recorded for inferred types | M |
-| 26 | **#23** | superlinear emit — **closes as a consequence** of 24+25 | — |
-
-Re-measured 2026-09-22: **Nim is already linear** (2.0× per doubling of n);
-D and Odin are at 3.3–3.6×. The issue title "quadratic in every backend" now
-overstates it, and that is recorded on the issue.
-
----
-
-## P6 — Rulings: your decision, the code is small
-
-| # | issue | the decision |
+| # | item | size |
 |---|---|---|
-| 27 | **#4** | narrow the attribute-name reservation to brackets, or narrow TK-PA08's promise to fields |
-| 28 | **#5** | reject a fn with no `->`, or make it mean `void` |
-| 29 | **#6** | none needed — tuck-spec §8.1 already says writing a `[read]` field is a compile error |
-| 30 | **#84** | is there an initialisation barrier between two senders to one mailbox? |
-| 31 | **#7** | full-mailbox policy — today it silently drops |
+| 1.1 | Account for the last 2 differences (`flow`, `withScratch`). Both are reads of a LOOP-CARRIED phi, where "final use" is per-iteration. Decide the rule, write it down in `ssa_query.followedFrom`, reach `onlyOld == 0` | S |
+| 1.2 | **Build once, store beside Resolution.** Today the old mirror is built 110 times for 45 fns in one compile of world_server, and at TWO pipeline stages over two different trees (docs §5 M2, M3). One build, recorded with the stage it describes | M |
+| 1.3 | Switch `markLivenessSsa` and the move facts (`moveFactsSsa`, `consumedSlotsSsa`) onto `ssa_build`. Verify: zero diff under `examples/`, apps unchanged | M |
+| 1.4 | Delete `analysis_ssa.nim`. Keep `analysis_liveness` as the oracle one release longer, then delete it too | S |
+| 1.5 | **Fix #21** — `declForType` for inferred types. It blocked the SSA exhaustiveness test directly; a by-name scan was written to route round it and deleted, because routing round a known bug leaves two | M |
+
+**Exit:** one SSA implementation in the tree, built once per compile.
+
+## M2 — Stage C: the copy decision on the mirror
+
+| # | item | size |
+|---|---|---|
+| 2.1 | Move `exclusivelyOwned`'s ORIGIN half onto the mirror. The collision half already moved and was measured irrelevant (`ssaExclusiveOwned`, 27/27, never reached) — do not redo it | M |
+| 2.2 | Remove `afterBinding`'s emitter prediction. `TUCK_DEBUG_COPY=diff` is the judge: `onlyOld == 0` | M |
+| 2.3 | Run `markSeqCopies` on the mirror, BEFORE lowering | M |
+
+**Exit:** #77's own pin (`known_bugs.nim` A19, 64 MB, `bugOpen`) goes green
+and the suite says to flip it. The remainder of #77 is a REDUNDANT COPY
+(`tuckSeqCopy(bump(xs))` copying a buffer `bump`'s wrapper already allocated
+fresh), which is exactly the copy decision this milestone moves.
+
+## M3 — One ownership pass, before the clone, for every backend
+
+Measured, not assumed: running `analysis_ownership` before the per-backend
+deepCopy TODAY is a double free, because two of its inputs — which call sites
+became twin calls, and which bindings copy — are established by lowering. M2
+removes that dependency.
+
+| # | item | size |
+|---|---|---|
+| 3.1 | Move the pass before `backend_prepare.prepare`'s clone step | S |
+| 3.2 | Record `freedAt` / `freedBy` on the SSA `Value` itself, and assert NO USE FOLLOWS A FREE by walking `uses`. That is the invariant that would have caught the shipped `str` use-after-free without anyone thinking of the case | M |
+| 3.3 | Fold the `str` analysis into the one pass (docs §5 M6). The backend-specific part — which runtime calls return caller-owned storage — becomes a parameter, not a second analysis | M |
+| 3.4 | Replace the per-slot full-body walk with a lookup over the mirror's `uses` (docs §5 M5) | S |
+
+**Exit:** closes #80 / F27. One ownership analysis.
+
+## M4 — Lower unique features; codegen only prints
+
+The user's rule, applied. Each item deletes code from THREE backends and makes
+the construct visible to every pass that runs before codegen — the SSA builder
+could not see a decision table's structure for exactly this reason.
+
+| # | item | deletes | size |
+|---|---|---|---|
+| 4.1 | **`exkOrdinal`** — "the ordinal of this enum or bool value". The one missing AST node that kept decision tables in the backends: the packed key is `ord(p0)*r + ord(p1)`, and `ord` is spelled differently per target. One node, three printers | — | S |
+| 4.2 | **Decision tables lowered** in a `lowering_decisions` pass: packed form -> `match` over the key, chained form -> `if` chain | `genDecisionTable` ×3 | M |
+| 4.3 | **Actor dispatch lowered** to an ordinary `match` over the message tag, each arm its own scope | closes **#79** on all backends at once, rather than porting D's fix twice | M |
+| 4.4 | **Interface dispatch lowered** to a `match` over the variant tag | closes **#40** (Odin's closure typed `-> int`) as a side effect | M |
+| 4.5 | `..` chains fully lowered (partly done by `hoistChainCalls`) | `genChainStep` | S |
+
+**Exit:** `genDecisionTable`, the actor dispatch builder and the interface
+closure no longer exist in any `codegen_*.nim`.
 
 ---
 
-## P7 — DEFERRED: completely missing, not scheduled
+## Side work — interleave; mostly independent of the spine
 
-Listed so nothing is lost. Per the 2026-09-22 ordering rule these wait until
-P0–P6 are done.
+### S1 — Silent wrong answers in features that exist (do early; each is small)
 
-`arena` (parses, body **discarded** at `parser.nim:87`, no `dkArena`, no
-backend support) · **#12** hashing primitives, which block `alloc.map` and
-`alloc.set` entirely · **#11** recursive-type expression · **#10** correlation
-tokens · **#16** numeric conversion sigils · **#17** variant sets in
-signatures · **#32** resource registry §7.4's static acquire-must-finish ·
-**#33** stack-depth budgets · **#57** which single-expression positions take a
-block · **#66/#68/#69/#70** contention graph, property tests, memoization,
-mock externs · **#71** effects trust root · **#74** heartbeat channel · DNS in
-`net::connect`.
+| # | issue | | size |
+|---|---|---|---|
+| S1.1 | **#87** | an actor field's initialiser is silently discarded; `level: int = 80` answers 0, nine runs of nine | S–M |
+| S1.2 | **#73** | an imported `const` is invisible to the checker, so a wrong `Array` size is ACCEPTED. `typecheck.nim:1071` has the worked precedent | M |
+| S1.3 | **#78** | Nim's `tuck_` prefix collides `type Order` with `fn order` | S–M |
+| — | **#79** | *moved to M4.3* — lowering actor dispatch fixes it on every backend at once | — |
 
-**Two exceptions worth pulling forward.**
+### S2 — Finish partial features
 
-1. **`arena` should get a diagnostic now** — fifteen minutes. It currently
-   checks clean while allocating nothing and resetting nothing, which is worse
-   than refusing. Defer the implementation; stop it passing silently.
-2. **#18 generic actors is closer to done than its issue says.** Now that #52
-   is closed, `actor Inbox[T] [queue: 16]: xs: Seq[T]` parses and gives a
-   proper `TK-TY28` instantiation diagnostic. Re-read before treating it as
-   missing.
+| # | issue | | size | depends on |
+|---|---|---|---|---|
+| S2.1 | **#72** | `Array[N,T]` indexing. Cause located: `seqElem` at `typecheck.nim:4063` matches one type arg; `Array` has two | **S** | — |
+| S2.2 | **#45** | `pool.acquire` hands out a copy, so a pool cannot be a DMA target | M | — |
+| S2.3 | **#42** | pool invariant validation | S | S2.2 |
+| S2.4 | **#85** | extend `<uninit>` to actor fields | S | S1.1 |
+| S2.5 | **#55** | a fired `timeout` answers right at 100× the deadline | M | — |
+| S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |
+| S2.7 | **#20** | by-type payload matching for member calls | M | — |
+| S2.8 | **#36** | `mod::Type` in a type position | S | — |
+
+### S3 — Backend parity (what survives M4)
+
+| # | issue | | size |
+|---|---|---|---|
+| S3.1 | **#43** | Odin invariant guard + `--odin:`/`--dmd:` passthrough | S + M |
+| S3.2 | **#30** | D: volatile registers, `[saturating]`, `tuckConcat` | M |
+| S3.3 | — | the D runtime has no networking; `42-net-echo` cannot link | L |
+| S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |
+| — | **#40** | *moved to M4.4* | — |
+
+### S4 — Effects
+
+| # | issue | | size |
+|---|---|---|---|
+| S4.1 | **#64** | wire `[no_alloc]` and `[irq_safe]`. Only `emIo` has checker logic today; #62/#63/#65/#67 all wait on this | M |
+
+### S5 — Stage-boundary debt
+
+| # | issue | | size |
+|---|---|---|---|
+| — | **#21** | *moved to M1.5* — it is on the spine | — |
+| S5.1 | **#22** | `callParamsFor` for pending fns, distinct ctors, combinators | M |
+| S5.2 | **#23** | superlinear emit; closes as a consequence of #21 + #22. Nim is already linear | — |
+
+### S6 — Rulings (your decision; the code is small)
+
+**#4** attribute names outside brackets · **#5** a fn with no `->` ·
+**#6** none needed, spec §8.1 already says · **#84** an initialisation barrier
+between two senders · **#7** full-mailbox policy.
+
+### Deferred — completely missing, not scheduled
+
+`arena` (parses and discards its body — give it a DIAGNOSTIC now, fifteen
+minutes, so it stops checking clean) · #12 hashing · #11 recursive types ·
+#10 correlation tokens · #16 numeric sigils · #17 · #32 · #33 · #57 ·
+#66/#68/#69/#70 · #71 · #74 · DNS. And **#18 generic actors is closer than its
+issue says** — `actor Inbox[T]: xs: Seq[T]` parses now that #52 is closed.
+
+---
+
+## How to work on this without wasting the day
+
+- **The full suite is slow (~6 min). Do not run it per change.**
+  `./quick-test.sh` (~13s) for the inner loop, `./tests/run <suite>` for what
+  a change touches (`ssa`, `known_bugs`, `value_semantics` for memory work),
+  and the full run before a PR goes up.
+- **Test first, the normal way.** Write the assertion, see it fail for the
+  right reason, fix, see it pass. Prefer careful code and `doAssert`
+  invariants over hunting bugs after the fact.
+- **Fix a bug where you meet it.** Routing round a known bug leaves two; #21
+  was nearly worked around and would still be open behind the workaround.
+- **Differentials, not guesses.** `TUCK_DIFF_SSA=dump TUCK_DIFF_FN=<name>`
+  says, for each disagreement, whether the new builder never saw the read or
+  saw it and judged it differently. All three bugs in the rebuild were found
+  that way in minutes, after an hour of guessing found none.
+- **The re-emit is the review.** `tools/emit_examples.sh` then
+  `git diff examples/`. It caught a dropped line in a moved proc that Nim
+  tolerated and Odin would not.
 
 ---
 
@@ -221,6 +238,14 @@ document is behind the tree — fix these when passing, and do not plan from the
   neither number should be quoted as "the" bug count without saying which.
 
 ## Traps that cost time on 2026-09-22, recorded so they cost nothing again
+
+- **A use-after-free guard must assert on OUTPUT, on every backend.** Two
+  versions of the `str` guard passed against the bug they were written for:
+  `runs`/`outputs` run on Nim, which has ARC and never emits the free; and
+  freed-but-intact memory still answers the right byte count. `hostRuns` with
+  an output pattern is the shape that works.
+- **`nimoutline` is not installed in every container**, despite CLAUDE.md. A
+  grep over `^proc |^type` is the fallback.
 
 - **One `-o:` directory per backend, always.** Building three backends into one
   output directory leaves the earlier binary in place, and
