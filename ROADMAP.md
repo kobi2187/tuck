@@ -36,15 +36,22 @@ against an oracle — `livenessDiff` under `--verify-stages`.
 
 | # | item | closes | size |
 |---|---|---|---|
-| 1 | **Guard first**: a `hostPeakRss` pin on #77's reproduction | nothing, but makes 2–4 provable | S |
-| 2 | **SSA Stage C** — design item 4, the in-place-path prediction | prerequisite for Stage D | M |
-| 3 | **SSA Stage D** — free at last use for an `oFresh` local that is neither returned, nor stored in an actor field, nor moved into a call | **#82** (Odin 551 MB) | L |
-| 4 | Stage D, loop case | **#77** (Odin 2 411 MB vs 10 MB on nim/d) | — |
-| 5 | **#80 / F27** — one ownership analysis replacing three partial ones | closes as a consequence of 2–4 | — |
+| 1 | **SSA Stage C** — design item 4, the in-place-path prediction | prerequisite for Stage D | M |
+| 2 | **SSA Stage D** — free at last use for an `oFresh` local that is neither returned, nor stored in an actor field, nor moved into a call | **#82** (Odin 551 MB) | L |
+| 3 | Stage D, loop case | **#77** (Odin 2 411 MB vs 10 MB on nim/d) | — |
+| 4 | **#80 / F27** — one ownership analysis replacing three partial ones | closes as a consequence of 1–3 | — |
 
-**Do item 1 before item 2.** #77 has no pin today; #86 was pinned and that pin
-is what made its fix checkable in milliseconds instead of by hand. Ten minutes
-of work that de-risks the rest.
+**The guard already exists — do not write a new one.** `known_bugs.nim:1456`
+is A19 = #77: `hostPeakRss` at a 64 MB budget over 20 000 copies of a
+1024-element ladder, marked `bugOpen`. Nim finishes in ~1.6 MB and D in ~7 MB;
+Odin reached 482 MB, so the gap does the work.
+
+**That pin is Stage D's acceptance test.** When Stage D lands, the suite will
+fail and TELL you to flip the marker — that is the designed signal, not a
+regression. Flip `bugOpen` to `bugFixed` and drop `t.quietly:`, then take the
+open-bug count in `MISSING-FEATURES.md` §A from 10 to 9 so `end_to_end` agrees.
+#82's own acceptance is `world_server` on Odin within 2× of Nim's 81 MB, which
+has no pin and should get one in the same commit.
 
 **Stage C strictly before Stage D, and this is measured rather than assumed.**
 A missed free position is a leak; a wrong one is a double free. The obvious
