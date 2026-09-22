@@ -1497,4 +1497,115 @@ fn main() -> int:
   t.hostPeakRss("a million temporary strings do not accumulate", 12288)
   t.bugFixed "a million temporary strings do not accumulate"
 
+  # 19. EV-14 / issue #82: the dead intermediates of a THREADING CHAIN.
+  #
+  # `relight` is the world_server shape reduced: a record with two Seq fields
+  # is threaded through two calls, and only ONE field of the last result is
+  # returned. Everything else each step allocated is abandoned. On Odin that
+  # was 4 948 MB for the real application and 322 MB here; Nim's ARC and D's
+  # GC both sit at 10 MB, so one budget separates them.
+  #
+  # TWO RULES CLOSED IT, and both are about GRANULARITY rather than analysis:
+  # a twin frees its parameter PER SLOT (it used to be all-or-nothing, so one
+  # returned field that aliases the parameter kept every other field alive),
+  # and a local's escape is asked PER SLOT too (`c.light` escapes, `c.height`
+  # does not).
+  #
+  # Verified to be measuring the leak rather than a build failure:
+  # `TUCK_NO_SEQ_FREE=1` puts it back at 322 MB and this assertion fails.
+  t.src """
+import seq
+
+type Flood:
+  height: Seq[int]
+  light:  Seq[int]
+  n:      int
+
+fn zeroed({levels: int}) -> Seq[int]:
+  var out = [0]
+  var i = 1
+  for i < levels:
+    out = {items: out, value: 0} push
+    i = i + 1
+  return out
+
+fn step({f: Flood}) -> Flood:
+  var l = f.light
+  l[0] = l[0] + 1
+  return {height: f.height, light: l, n: f.n + 1} Flood
+
+fn relight({h: Seq[int], l: Seq[int]}) -> Seq[int]:
+  let a = {height: h, light: l, n: 0} Flood
+  let b = {f: a} step
+  let c = {f: b} step
+  return c.light
+
+fn spin({h: Seq[int], l: Seq[int], rounds: int}) -> int:
+  var i = 0
+  var acc = 0
+  for i < rounds:
+    let out = {h: h, l: l} relight
+    acc = acc + out[0]
+    i = i + 1
+  return acc
+
+fn main() -> int:
+  let h = {levels: 1024} zeroed
+  let l = {levels: 1024} zeroed
+  let acc = {h: h, l: l, rounds: 20000} spin
+  if acc != 40000:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("a threading chain does not accumulate its intermediates", 65536)
+  t.bugFixed "a threading chain does not accumulate its intermediates"
+
+  # 20. A `str` a body RETURNS must not be freed by that body.
+  #
+  # EV-20's escape test answered "could this destination be carrying a str"
+  # with FALSE for `str` itself, reasoning that the runtime procs which
+  # answer one allocate rather than passing a string through. That is true of
+  # a CALL and false of a RETURN, and the difference is a use-after-free:
+  #
+  #     tuck_label :: proc (n: int) -> string {
+  #       tuck_s := str.toStr(n)
+  #       defer delete(tuck_s)
+  #       return tuck_s            // <- freed, then returned
+  #     }
+  #
+  # It printed garbage. Nothing caught it: every `str` in the corpus is
+  # consumed where it is built, so no example returns one it allocated. That
+  # gap is what this assertion closes, and it is the SHAPE that matters —
+  # allocate, bind to a name, return the name.
+  t.src """
+import str
+import console
+
+fn label({n: int}) -> str:
+  let s = n.toStr
+  return s
+
+fn main() -> int:
+  let a = {n: 42} label
+  {text: a} console::printLine
+  return {t: a} byteCount
+"""
+  t.okCheck "a fn may return a str it allocated"
+  # ASSERTED ON STDOUT, NOT THE EXIT CODE, and that distinction is the whole
+  # assertion. A use-after-free reads memory that is usually still intact, so
+  # `byteCount` answers 2 whether the buffer was freed or not — the first
+  # version of this guard passed against the bug it was written for. Printing
+  # the string is what forces the allocator to reuse the block: freed it
+  # prints nothing, live it prints 42.
+  # ON EVERY BACKEND, and matched on OUTPUT rather than the exit code. Both
+  # halves were wrong in the first two attempts at this guard, and each made
+  # it pass against the bug it was written for:
+  #   * `runs`/`outputs` run on NIM, which has ARC and never emits the free,
+  #     so the backend with the bug was never asked;
+  #   * a use-after-free reads memory that is usually still intact, so
+  #     `byteCount` answers 2 either way. Printing forces the allocator to
+  #     reuse the block: freed it prints nothing, live it prints 42.
+  t.hostRuns("...and every backend's caller can still read it", 2, "42")
+  t.bugFixed "a returned str is not freed by the body that built it"
+
   t.finish()

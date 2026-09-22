@@ -145,6 +145,11 @@ proc markSeqCopiesIn*(res: Resolution, m: Module) =
   ## because each backend lowers its own deep copy and a summary computed
   ## over one tree names nodes in that tree only.
   buildProvenance(res, m)
+  copyDiffReport(res, m)   # Stage C step 1, off unless TUCK_DEBUG_COPY=diff.
+                           # HERE rather than beside the other differentials
+                           # so it sees exactly the tree the real consumer
+                           # does: this runs after lowerModule, on the
+                           # backend's own deep copy.
   for fn in m.allFns():
     markSeqCopies(res, m, fn.fnBody)
   for d in m.decls(dkTask):

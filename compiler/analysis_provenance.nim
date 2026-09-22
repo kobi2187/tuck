@@ -746,3 +746,194 @@ proc exclusivelyOwned*(res: Resolution, m: Module, e: Expr,
        (v.token == cell.token or v.token == noToken()):
       return false
   true
+
+# ---------------------------------------------------------------------------
+# Stage C, step 1: allocation identity, read off the mirror.
+# ---------------------------------------------------------------------------
+#
+# WHAT THIS IS FOR. `thoughts/ssa-mirror-design.md` measured the obvious way
+# to close item 4 and it does not work: stop `afterBinding` guessing at the
+# emitter and the MOVE decision is fine (24 stamps either way) while the COPY
+# decision collapses — 1 630 MB against 536 MB — because
+# `lowering_seqcopy.markSeqCopies` asks `exclusivelyOwned`, which reads
+# provenance's cells directly rather than the mirror. Starve the cells and
+# every binding gets its defensive copy back.
+#
+# So the copy decision has to come across BEFORE the prediction can go, and
+# the named blocker is the allocation token: `exclusivelyOwned` must tell
+# `return {a: xs, b: xs}` — one buffer under two names — from two distinct
+# ones, and `oFresh` alone cannot.
+#
+# THE MIRROR ALREADY HAS A BETTER ANSWER THAN A TOKEN. A token is a hash
+# (`mixToken`) chosen so that a collision fails safe, which is an admission
+# that it approximates identity. A `ValueId` IS identity: two struct fields
+# are the same buffer exactly when they read the same VERSION of the same
+# PLACE, which is the question `readAt` answers outright. `{a: xs, b: xs}`
+# gives both fields one ValueId; `{a: xs, b: ys}` gives two; and `xs`
+# reassigned between two mentions gives two, which a node-keyed token cannot
+# see at all.
+#
+# SCOPE, deliberately narrow. This replaces the token comparison for a
+# CONSTRUCTION, where the mirror can see the fields. A call result keeps the
+# token path: the sharing happened inside the callee, the mirror does not
+# model another body, and the callee's summary already proved it. Anything
+# else answers false and copies, exactly as before.
+#
+# ---------------------------------------------------------------------------
+# THE MEASUREMENT, AND WHAT IT SAYS ABOUT THE PLAN (2026-09-22)
+# ---------------------------------------------------------------------------
+#
+# `TUCK_DEBUG_COPY=diff` over every example, both applications and the Savina
+# ports: agree=27, onlyMirror=0, onlyOld=0. A faithful drop-in, no regression.
+#
+# AND THE NEW LOGIC IS NEVER REACHED. Disabling the collision test outright —
+# `if false: return false` — changes none of the 27. Instrumenting the path
+# says why: every field query on the whole corpus is a CALL RESULT, so it
+# takes the `fs.len == 0` fallback and the construction branch is dead.
+#
+# That is not a gap in the corpus. A purpose-built adversarial snippet —
+# `p = {a: u, b: u} Pair`, one buffer under two names, the exact shape the
+# token exists to catch — does not reach it either: the field's cell is not
+# `oFresh`, because `u` is a NAME rather than a call, so the ORIGIN check
+# above rejects it two lines earlier and the copy happens for that reason.
+#
+# SO THE DESIGN DOCUMENT'S STAGE C BLOCKER IS NOT WHERE IT SAID. It reads:
+#
+#     `exclusivelyOwned`'s allocation tokens exist to catch
+#     `return {a: xs, b: xs}` ... Tokens, or something like them, have to
+#     come across before the prediction can go.
+#
+# On the evidence, they do not. The token is defensive machinery for a case
+# the origin check already refuses, and porting it — which this proc does —
+# buys nothing measurable. What actually collapsed in that experiment was the
+# ORIGIN half: `exclusivelyOwned` reads provenance's cells for `oFresh`, and
+# starving the cells is what put every defensive copy back (1 630 MB against
+# 536 MB). Moving THAT onto the mirror is Stage C's real content.
+#
+# This proc is kept rather than reverted because it is the measurement: it
+# establishes that the collision half is already safe to move and already
+# irrelevant, which is a fact the next attempt should not have to rediscover.
+# `copyDiffReport` stays for the same reason it did after Stage B — it is
+# what the origin move will be judged against.
+
+proc allocIdOf(fn: SsaFn, e: Expr): string =
+  ## WHICH allocation this expression's value is, as an identity string.
+  ##
+  ## `v<id>` is a mirror value — a name or path read, whose version is the
+  ## identity. `n<id>` is a site that allocates here, so every occurrence is
+  ## its own buffer. `""` is a shape the mirror does not model, and the
+  ## caller must read it as "could be anything", which is the safe direction:
+  ## it forces the copy.
+  if e == nil: return ""
+  if e.id.isSet and e.id in fn.readAt: return "v" & $int32(fn.readAt[e.id])
+  if e.kind in {exkCall, exkChain, exkList, exkStruct}:
+    ensureId(e)
+    return "n" & $uint32(e.id)
+  ""
+
+proc constructionFields(e: Expr): seq[tuple[name: string, val: Expr]] =
+  ## The fields of a record construction, or nothing if this is an ordinary
+  ## call. Told apart by its ARGUMENT — one `exkStruct` and nothing else —
+  ## because a construction parses as a postfix application like any other,
+  ## the same test `provOfCall` makes.
+  if e != nil and e.kind == exkCall and e.args.len == 1 and
+     e.args[0] != nil and e.args[0].kind == exkStruct:
+    for f in e.args[0].fields: result.add((f.name, f.value))
+
+proc noNeighbourShares(res: Resolution, fn: SsaFn,
+                       fs: seq[tuple[name: string, val: Expr]],
+                       field: string): bool =
+  ## Is this construction's `field` a buffer no OTHER field of the same
+  ## construction can be? The collision half of `exclusivelyOwned`, answered
+  ## by version identity instead of by a hashed token.
+  var mine = ""
+  for f in fs:
+    if f.name == field: mine = allocIdOf(fn, f.val)
+  if mine.len == 0: return false          # unmodelled: copy
+  for f in fs:
+    if f.name == field: continue
+    # HEAP FIELDS ONLY, for the reason `provOfCall` gives: an `int` field can
+    # neither be copied nor aliased, so letting one collide only ever costs a
+    # copy that nothing needed.
+    if not isSeqTyped(res.typeFor(f.val)): continue
+    let other = allocIdOf(fn, f.val)
+    if other.len == 0 or other == mine: return false
+  true
+
+proc ssaExclusiveOwned*(res: Resolution, m: Module, fn: SsaFn,
+                        e: Expr, field = ""): bool =
+  ## `exclusivelyOwned`, with the collision half answered by the mirror.
+  ##
+  ## The ORIGIN half is unchanged and still provenance's: is this slot a
+  ## fresh allocation at all. Only the question "and is it the same buffer as
+  ## a neighbour" moves, because that is the one the design document names as
+  ## blocking Stage C.
+  if e == nil or e.kind != exkCall: return false
+  var c = Ctx(res: res, m: m)
+  let p = provOfCall(c, e)
+  if field.len == 0:
+    return p.whole.origin == oFresh
+  if field notin p.fields: return false
+  if p.fields[field].origin != oFresh: return false
+
+  let fs = constructionFields(e)
+  if fs.len == 0:
+    # A CALL RESULT. Whatever sharing there is happened inside the callee,
+    # where this mirror cannot see; the summary's token is the only witness.
+    return exclusivelyOwned(res, m, e, field)
+  noNeighbourShares(res, fn, fs, field)
+
+proc copySitesOf(res: Resolution, m: Module, body: Expr):
+                 seq[tuple[val: Expr, fields: seq[string]]] =
+  ## Every binding `markSeqCopies` would ask about, with the slots to ask for:
+  ## the empty string for a bare `Seq`, otherwise each Seq-typed field name.
+  var stack = @[body]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    for ch in n.children: stack.add(ch)
+    if n.kind != exkAssign or n.assignVal == nil: continue
+    if n.assignVal.kind == exkList: continue
+    let v = n.assignVal
+    if isSeqTyped(res.typeFor(v)): result.add((v, @[""]))
+    else: result.add((v, seqFieldNames(res, m, res.typeFor(v))))
+
+proc copyDiffFn(res: Resolution, m: Module, d: Decl,
+                agree, onlyMirror, onlyOld: var int) =
+  ## One body's share of the differential.
+  if d.fnBody == nil: return
+  let fn = buildFn(res, d)
+  for site in copySitesOf(res, m, d.fnBody):
+    for f in site.fields:
+      let slot = (if f.len == 0: "<whole>" else: f)
+      let old = exclusivelyOwned(res, m, site.val, f)
+      let mine = ssaExclusiveOwned(res, m, fn, site.val, f)
+      if old == mine:
+        if old: inc agree
+      elif mine:
+        inc onlyMirror
+        echo "COPYDIFF ", d.name, " field=", slot, " mirror=owned old=copy"
+      else:
+        inc onlyOld
+        echo "COPYDIFF ", d.name, " field=", slot,
+             " mirror=copy old=owned   <-- REGRESSION"
+
+proc copyDiffReport*(res: Resolution, m: Module) =
+  ## The Stage C differential, run the way Stages A and B were proved.
+  ##
+  ## Nothing consults `ssaExclusiveOwned` yet. It is measured against the
+  ## implementation it is meant to replace first, over the corpus and both
+  ## applications, because that is what caught the six builder bugs in
+  ## Stage A and the region bug in Stage B. A disagreement here is not
+  ## automatically a defect — the mirror is expected to be STRICTLY MORE
+  ## PRECISE, the same way it was for liveness in a loop — so the criterion
+  ## is `onlyOld == 0`, not "identical".
+  ##
+  ##   TUCK_DEBUG_COPY=diff ./tuck ch file.tuck
+  when not defined(release):
+    if getEnv("TUCK_DEBUG_COPY") != "diff": return
+    var agree, onlyMirror, onlyOld = 0
+    for d in m.allFns():
+      copyDiffFn(res, m, d, agree, onlyMirror, onlyOld)
+    echo "COPYTOTAL ", m.path.join("."), " agree=", agree,
+         " onlyMirror=", onlyMirror, " onlyOld=", onlyOld

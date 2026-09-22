@@ -7,6 +7,13 @@ compiler itself is written in Nim. Three backends, one checked AST.
 
 ## Read first
 
+`ROADMAP.md` § "THE WORK QUEUE" (at the top of the file) — what to do next and
+in what order, re-validated against the compiler rather than inherited from the
+sections below it. It carries the user's standing ordering rule (memory first,
+then finish partial features, missing features deferred), the exit criteria per
+item, and a list of traps that have each cost a session at least once. If you
+are picking up work with no more specific instruction, start there.
+
 `LANGUAGE-OVERVIEW.md` §0 "What will surprise you" — several Tuck constructs
 behave differently from what a C/Go/Rust/Nim/Python reader expects. Skipping it
 produces the common failure: reading a working feature as a bug.

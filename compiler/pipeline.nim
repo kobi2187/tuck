@@ -23,6 +23,9 @@ import strutils
 import analysis_ssa
 import analysis_liveness
 import sets, os
+import ssa_build
+import ssa_query
+import ssa_ir
 
 type
   PipelineStage* = enum
@@ -239,3 +242,67 @@ proc assertMangleIdempotent*(mods: seq[Module]) =
       "pipeline: " & $bad.len &
       " declared name(s) missing the tuck_ prefix after mangling: " &
       bad.join(", "))
+
+
+proc dumpOneBody(res: Resolution, d: Decl, fresh: ssa_ir.SsaFn,
+                 old, nw: HashSet[NodeId]) =
+  ## `TUCK_DIFF_SSA=dump TUCK_DIFF_FN=<name>`: one body's blocks, values and
+  ## per-use verdicts side by side. Every bug the rebuild had was found here
+  ## rather than reasoned about.
+  echo ssa_build.dump(fresh)
+  var seenNodes: HashSet[NodeId]
+  for v in fresh.values:
+    for u in v.uses:
+      seenNodes.incl u.at
+      echo "   use node=", $uint32(u.at), " of ", $v.id, " ", v.place,
+           " blk=", $u.blk,
+           (if u.at in old: " OLD-FINAL" else: ""),
+           (if u.at in nw: " NEW-FINAL" else: "")
+  let oldFn = analysis_ssa.buildFn(res, d)
+  for ov in oldFn.values:
+    for ou in ov.uses:
+      if ou.at in (old - nw):
+        echo "   OLDSIDE node=", $uint32(ou.at), " place=", ov.place,
+             " defkind=", $ov.def.kind
+  for n in old - nw:
+    echo "   LOST node=", $uint32(n),
+         (if n in seenNodes: " (new builder HAS this use)"
+          else: " (new builder never recorded this read)")
+
+proc ssaRebuildDiff*(res: Resolution, mods: seq[Module]) =
+  ## THE BRAUN REBUILD, measured against what it is meant to replace.
+  ##
+  ## `compiler/ssa_build.nim` implements Braun et al. (2013) properly, where
+  ## `analysis_ssa.nim` is an ad-hoc two-thirds of the same paper. Nothing
+  ## consults the new one yet; it earns that the way Stage A earned it, by
+  ## reproducing the old answer across the corpus and both applications with
+  ## every difference accounted for.
+  ##
+  ## The criterion is NOT "identical". `onlyOld` — a read the old builder
+  ## called final and the new one does not — is the number that must reach
+  ## zero, because losing one only costs a copy. `onlyNew` is the dangerous
+  ## direction and must stay at zero: a final use claimed wrongly is a move
+  ## that should not have happened.
+  ##
+  ##   TUCK_DIFF_SSA=1 ./tuck ch file.tuck
+  when not defined(release):
+    if getEnv("TUCK_DIFF_SSA").len == 0: return
+    var agree, onlyNew, onlyOld, structural = 0
+    for m in mods:
+      for d in m.allFns():
+        if d.fnBody == nil: continue
+        let old = analysis_ssa.finalUses(analysis_ssa.buildFn(res, d))
+        let fresh = ssa_build.buildFn(res, d)
+        for e in ssa_query.structuralErrors(fresh):
+          inc structural
+          echo "SSADIFF-STRUCT ", d.name, ": ", e
+        let nw = ssa_query.finalUses(fresh)
+        agree += (old * nw).len
+        onlyNew += (nw - old).len
+        onlyOld += (old - nw).len
+        if (old - nw).len > 0:
+          echo "SSADIFF ", d.name, " onlyOld=", (old - nw).len
+          if getEnv("TUCK_DIFF_SSA") == "dump" and d.name == getEnv("TUCK_DIFF_FN"):
+            dumpOneBody(res, d, fresh, old, nw)
+    echo "SSATOTAL agree=", agree, " onlyNew=", onlyNew,
+         " onlyOld=", onlyOld, " structural=", structural
