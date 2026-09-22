@@ -27,7 +27,7 @@
 ## registered item from every suite in one pool bounded by the core count.
 ## The assertions look identical at the call site; `phase` is what differs.
 
-import std/[os, osproc, strutils, strformat, tables, re, streams]
+import std/[os, osproc, strutils, strformat, tables, re, streams, monotimes, times]
 
 type
   Verb* = enum
@@ -651,6 +651,7 @@ proc buildsAllowed*(): bool = maxVerb >= vBuild
 
 proc shOnce(argv: seq[string]): tuple[rc: int, output: string, ebadf: string]
            {.gcsafe.} =
+  let t0 = getMonoTime()
   let child = startProcess(argv[0], args = argv[1 .. ^1],
                            options = {poUsePath, poStdErrToStdOut})
   # Reading a child's pipe has been seen to fail with EBADF ("Bad file
@@ -670,6 +671,14 @@ proc shOnce(argv: seq[string]): tuple[rc: int, output: string, ebadf: string]
     readFailed = getCurrentExceptionMsg()
   let rc = child.waitForExit()
   child.close()
+  {.cast(gcsafe).}:
+    if getEnv("TUCK_TEST_PROFILE").len > 0:
+      # Beside the pool's lines, marked `sh`: these run outside the pool, so
+      # without this the profile would silently miss them.
+      let f = open(getEnv("TUCK_TEST_PROFILE") & ".sh", fmAppend)
+      f.writeLine $(getMonoTime() - t0).inMilliseconds & "\t" & $rc & "\t" &
+                  argv.join(" ")
+      f.close()
   (rc, output, readFailed)
 
 proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =

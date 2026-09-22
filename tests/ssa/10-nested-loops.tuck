@@ -3,8 +3,8 @@
 #
 #   - the inner head's phi for `a` merges the outer value and both inner
 #     back edges (the `continue` and the fall-through)
-#   - `j` belongs to the inner loop; the outer head needs no phi for it
-#     beyond the one its own redefinition forces
+#   - `a` at 17:11 is FINAL: `a = a + 1` replaces it; the `continue` path
+#     carries `a` round but never through that read. j at 15:10 is not.
 fn nested({n: int}) -> int:
   var a = 0
   var i = 0

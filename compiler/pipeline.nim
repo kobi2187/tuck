@@ -27,6 +27,7 @@ import ssa_build
 import ssa_query
 import ssa_ir
 import ssa_liveness
+from mangle import TuckNamePrefix, FoldSafePrefix
 
 type
   PipelineStage* = enum
@@ -232,7 +233,10 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
       " place(s) — " & bad[0 .. min(4, bad.high)].join("; "))
 
 proc allMangled(name: string): bool =
-  name.len == 0 or name.startsWith("tuck_")
+  ## Either prefix: a user fn named after a runtime intrinsic (`fn at`) takes
+  ## FoldSafePrefix, because `tuck_at` IS `tuckAt` to Nim (mangle.nim).
+  name.len == 0 or name.startsWith(TuckNamePrefix) or
+    name.startsWith(FoldSafePrefix)
 
 proc assertMangleIdempotent*(mods: seq[Module]) =
   ## After psMangle: every manglable name mangleProgram touches must
@@ -286,6 +290,35 @@ proc dumpOneBody(res: Resolution, d: Decl, fresh: ssa_ir.SsaFn,
          (if n in seenNodes: " (new builder HAS this use)"
           else: " (new builder never recorded this read)")
 
+proc reportNew(d: Decl, fresh: ssa_ir.SsaFn, only: HashSet[NodeId]) =
+  echo "SSADIFF-NEW ", d.name, " onlyNew=", only.len
+  for v in fresh.values:
+    for u in v.uses:
+      if u.at in only:
+        echo "   NEWFINAL node=", $uint32(u.at), " place=", v.place,
+             " of ", $v.def.kind, " in ", $v.blk, " read in ", $u.blk
+
+proc reportOld(res: Resolution, d: Decl, fresh: ssa_ir.SsaFn,
+               only: HashSet[NodeId]) =
+  echo "SSADIFF ", d.name, " onlyOld=", only.len
+  var recorded: HashSet[NodeId]
+  for v in fresh.values:
+    for u in v.uses: recorded.incl u.at
+  for ov in analysis_ssa.buildFn(res, d).values:
+    for ou in ov.uses:
+      if ou.at in only:
+        echo "   LOSTREAD ", d.name, " ", ov.place,
+             (if ou.at in recorded: " (recorded, not final)"
+              else: " (not a read in the new graph)")
+
+proc reportOneBody(res: Resolution, d: Decl, fresh: ssa_ir.SsaFn,
+                   old, nw: HashSet[NodeId]) =
+  ## One body's share of the differential, in the directions it differs.
+  if (nw - old).len > 0: reportNew(d, fresh, nw - old)
+  if (old - nw).len > 0: reportOld(res, d, fresh, old - nw)
+  if getEnv("TUCK_DIFF_SSA") == "dump" and d.name == getEnv("TUCK_DIFF_FN"):
+    dumpOneBody(res, d, fresh, old, nw)
+
 proc ssaRebuildDiff*(res: Resolution, mods: seq[Module]) =
   ## THE BRAUN REBUILD, measured against what it is meant to replace.
   ##
@@ -317,25 +350,6 @@ proc ssaRebuildDiff*(res: Resolution, mods: seq[Module]) =
         agree += (old * nw).len
         onlyNew += (nw - old).len
         onlyOld += (old - nw).len
-        if (nw - old).len > 0:
-          echo "SSADIFF-NEW ", d.name, " onlyNew=", (nw - old).len
-          for v in fresh.values:
-            for u in v.uses:
-              if u.at in (nw - old):
-                echo "   NEWFINAL node=", $uint32(u.at), " place=", v.place,
-                     " of ", $v.def.kind, " in ", $v.blk, " read in ", $u.blk
-        if (old - nw).len > 0:
-          echo "SSADIFF ", d.name, " onlyOld=", (old - nw).len
-          var recorded: HashSet[NodeId]
-          for v in fresh.values:
-            for u in v.uses: recorded.incl u.at
-          for ov in analysis_ssa.buildFn(res, d).values:
-            for ou in ov.uses:
-              if ou.at in (old - nw):
-                echo "   LOSTREAD ", d.name, " ", ov.place,
-                     (if ou.at in recorded: " (recorded, not final)"
-                      else: " (not a read in the new graph)")
-        if getEnv("TUCK_DIFF_SSA") == "dump" and d.name == getEnv("TUCK_DIFF_FN"):
-          dumpOneBody(res, d, fresh, old, nw)
+        reportOneBody(res, d, fresh, old, nw)
     echo "SSATOTAL agree=", agree, " onlyNew=", onlyNew,
          " onlyOld=", onlyOld, " structural=", structural

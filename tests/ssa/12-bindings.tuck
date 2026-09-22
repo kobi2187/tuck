@@ -1,0 +1,19 @@
+# PATTERN BINDINGS are definitions. A `for` element is bound afresh every
+# turn, and a `match` arm's names are taken out of the subject.
+#
+#   - `x` is defined in the loop body, per turn: its read at 14:13 is FINAL
+#   - `q` in the arm is a projection of `p`, not a value from outside
+#   - `xs` is read by the `for` once, before the loop: FINAL
+type Pair:
+  lo: int
+  hi: int
+
+fn sum({xs: Seq[int]}) -> int:
+  var t = 0
+  for x in xs:
+    t = t + x
+  return t
+
+fn low({p: Pair}) -> int:
+  match p:
+    | q -> return q.lo

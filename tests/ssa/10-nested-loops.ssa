@@ -14,7 +14,7 @@ fn nested
   %4   j.0            = literal            in b3
   %5   j.1            = phi(%4, %7, %7)    in b4  reads 13:9, 14:11 FINAL
   %7   j.2            = opaque             in b6  reads 15:10
-  %8   a.1            = phi(%10, %8, %9)   in b4  reads 17:11
+  %8   a.1            = phi(%10, %8, %9)   in b4  reads 17:11 FINAL
   %9   a.2            = opaque             in b8
   %10  a.3            = phi(%0, %8)        in b1  reads 19:10 FINAL
   %12  i.3            = opaque             in b5

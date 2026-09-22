@@ -483,6 +483,27 @@ proc checkInvariants*(o: Ownership, d: Decl) =
         "ownership: " & d.name & " lists " & name & "." & sl & " twice"
       once.incl(sl)
 
+proc gatherFreed(o: var Ownership, d: Decl) =
+  ## Every decision the six steps made, as one list, so it can be checked as
+  ## a whole rather than one table at a time.
+  for name, slots in o.freeAtScopeExit:
+    for sl in slots:
+      o.freed.add FreeSite(local: name, slot: sl, kind: fkScopeExit)
+  for name in o.freeBeforeOverwrite:
+    o.freed.add FreeSite(local: name, slot: "", kind: fkOverwrite)
+  let movedParam = if d.fnParams.len > 0: d.fnParams[0].name else: ""
+  for sl in o.twinFreesParam:
+    o.freed.add FreeSite(local: movedParam, slot: sl, kind: fkTwinParam)
+
+proc debugEcho(o: Ownership, d: Decl) =
+  ## `TUCK_DEBUG_OWN`: the decisions, one line each.
+  for name, slots in o.freeAtScopeExit:
+    echo "OWN ", d.name, ".", name, " dies-at-exit=", slots
+  for name in o.freeBeforeOverwrite:
+    echo "OWN ", d.name, ".", name, " dies-at-overwrite"
+  if o.twinFreesParam.len > 0:
+    echo "OWN ", d.name, " twin-frees-param=", o.twinFreesParam
+
 proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
   ## Run all six steps over one function body.
   if not Enabled or d.fnBody == nil: return
@@ -500,22 +521,7 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
   result.freeBeforeOverwrite = s.diesAtOverwrite(d, timesAssigned)  # step 5
   result.twinFreesParam = s.twinFreedSlots(d)                       # step 6
 
-  # Every decision above, gathered once so it can be checked as a whole.
-  for name, slots in result.freeAtScopeExit:
-    for sl in slots:
-      result.freed.add FreeSite(local: name, slot: sl, kind: fkScopeExit)
-  for name in result.freeBeforeOverwrite:
-    result.freed.add FreeSite(local: name, slot: "", kind: fkOverwrite)
-  let movedParam = if d.fnParams.len > 0: d.fnParams[0].name else: ""
-  for sl in result.twinFreesParam:
-    result.freed.add FreeSite(local: movedParam, slot: sl, kind: fkTwinParam)
+  result.gatherFreed(d)
   checkInvariants(result, d)
-
   when not defined(release):
-    if Debug:
-      for name, slots in result.freeAtScopeExit:
-        echo "OWN ", d.name, ".", name, " dies-at-exit=", slots
-      for name in result.freeBeforeOverwrite:
-        echo "OWN ", d.name, ".", name, " dies-at-overwrite"
-      if result.twinFreesParam.len > 0:
-        echo "OWN ", d.name, " twin-frees-param=", result.twinFreesParam
+    if Debug: result.debugEcho(d)

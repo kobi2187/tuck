@@ -155,10 +155,14 @@ proc replaceEverywhere(b: var Builder, phi, same: ValueId,
   ## behind strands it on a value nothing refers to — `levels` in `zeroed` had
   ## its one use on a removed phi while the entry value it collapsed to showed
   ## `uses=0`. Found by the differential against the old builder.
-  for u in users:
-    for i in 0 ..< b.fn.values[int32(u)].def.inputs.len:
-      if b.fn.values[int32(u)].def.inputs[i] == phi:
-        b.fn.values[int32(u)].def.inputs[i] = same
+  # EVERY value's inputs, not just the phis in `users`: a projection built
+  # on the phi (`f.test` of a parked `f`) pointed at a tombstone otherwise.
+  # `users` is still what removal recurses over — only a phi can become
+  # trivial because an operand changed.
+  for u in 0 ..< b.fn.values.len:
+    for i in 0 ..< b.fn.values[u].def.inputs.len:
+      if b.fn.values[u].def.inputs[i] == phi:
+        b.fn.values[u].def.inputs[i] = same
   for node, v in b.fn.byNode:
     if v == phi: b.fn.byNode[node] = same
   for p in b.cur.keys:
@@ -399,6 +403,35 @@ proc matchIsExhaustive(b: Builder, e: Expr): bool =
   d != nil and d.kind == dkType and d.typeBody != nil and
     d.typeBody.kind == tkSum
 
+proc bindPattern(b: var Builder, pat: Pattern, src: Place) =
+  ## Define every name a pattern binds, in the current block.
+  ##
+  ## Unbound, a pattern variable read as `entry` — a value from OUTSIDE the
+  ## body, which it is not; and a name the body never defines is a name no
+  ## phi can form for, so a loop variable looked like one value for the
+  ## whole loop. `src` is the place the pattern takes apart ("" when it is
+  ## not a nameable place, like a `for` element), so each binding is a
+  ## projection of what it was taken from.
+  if pat == nil: return
+  case pat.kind
+  of pkVar:
+    var def = Def(kind: dkProject)
+    if src.len > 0:
+      let whole = b.readVariable(src, b.here)
+      if whole.isSet: def.inputs = @[whole]
+    let v = b.newValue(pat.name, def, b.here)
+    b.writeVariable(pat.name, b.here, v)
+    b.reproject(pat.name, v, b.here)
+  of pkRecord:
+    for (field, sub) in pat.fields:
+      b.bindPattern(sub, if src.len > 0: src & "." & field else: "")
+  of pkTuple:
+    for sub in pat.elems: b.bindPattern(sub, "")
+  of pkOr:
+    # Both alternatives bind the same names; the left says which.
+    b.bindPattern(pat.left, "")
+  of pkWild, pkLit: discard
+
 proc walkMatch(b: var Builder, e: Expr) =
   b.reads(e.subject)
   let entry = b.here
@@ -409,6 +442,7 @@ proc walkMatch(b: var Builder, e: Expr) =
     b.addPred(ab, entry)
     b.sealBlock(ab)
     b.here = ab
+    b.bindPattern(arm.pattern, pathOf(e.subject))
     b.walk(arm.body)
     if b.exitsAlready(b.here): continue
     allLeave = false
@@ -421,7 +455,7 @@ proc walkMatch(b: var Builder, e: Expr) =
   b.fn.blocks[int32(join)].exits = allLeave
   b.here = join
 
-proc walkLoop(b: var Builder, cond, body: Expr) =
+proc walkLoop(b: var Builder, cond, body: Expr, binds: Pattern = nil) =
   let entry = b.here
   # THE HEAD IS UNSEALED. Its second predecessor is the latch at the bottom of
   # the body, which does not exist yet. Everything the body reads from the
@@ -440,6 +474,8 @@ proc walkLoop(b: var Builder, cond, body: Expr) =
   b.loopHeads.add head
   b.loopExits.add exit
   b.here = bodyB
+  # A `for` binds its element afresh at the top of every turn.
+  b.bindPattern(binds, "")
   b.walk(body)
   let latch = b.here
   discard b.loopHeads.pop()
@@ -463,7 +499,7 @@ proc walk(b: var Builder, e: Expr) =
   of exkWhile: b.walkLoop(e.whileCond, e.whileBody)
   of exkFor:
     b.reads(e.iterable)
-    b.walkLoop(nil, e.body)
+    b.walkLoop(nil, e.body, e.iter)
   of exkReturn, exkRaise:
     b.reads(e)
     b.fn.blocks[int32(b.here)].exits = true

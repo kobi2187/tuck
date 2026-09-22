@@ -1302,35 +1302,21 @@ proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
         echo "INPLACE-BYPASS ", pathOf(e.target), " at ",
              e.span.line, ":", e.span.col
 
-proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
-  ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
-  if ctx.isTaskArgsBind(e):
-    return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
-  # An append assigned back to its own argument is an in-place append.
-  let appended = selfAppendValue(ctx.res, e)
-  reportInPlaceBypass(ctx, e, appended)
-  if appended != nil:
-    return "append(&" & ctx.movedAssignTarget(e.target) & ", " &
-           ctx.genOdinExpr(appended) & ")"
-  # Same fact one level up: a threaded-container call assigned back over its
-  # own argument calls the MOVED twin, and needs no fix-up copies after it.
-  let threaded = selfThreadedCall(ctx.res, ctx.module, e)
-  if threaded != nil:
-    let base = ctx.genOdinExpr(threaded.callee)
-    # A DECLARATION introduces the name, so Odin wants `:=`; a reassignment
-    # wants `=`. selfThreadedCall accepts both shapes now, and this is the
-    # only place the difference shows.
-    let isNew = e.isDecl and e.target.name notin ctx.definedVars and
-                e.target.name notin ctx.fieldVars
-    if isNew: ctx.definedVars.incl(e.target.name)
-    return ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
-           movedName(base) & "(" &
-           ctx.genCallArgs(threaded, base).join(", ") & ")" &
-           (if isNew: ctx.scopeFrees(e.target.name) else: "")
-  let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
-  if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
-     e.target.name notin ctx.fieldVars:
-    return ctx.genOdinVarDecl(e, valStr)
+proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
+  ## `x = f(x)` calling the MOVED twin, with no fix-up copies after it.
+  let base = ctx.genOdinExpr(threaded.callee)
+  # A DECLARATION introduces the name, so Odin wants `:=`; a reassignment
+  # wants `=`. selfThreadedCall accepts both shapes now, and this is the
+  # only place the difference shows.
+  let isNew = e.isDecl and e.target.name notin ctx.definedVars and
+              e.target.name notin ctx.fieldVars
+  if isNew: ctx.definedVars.incl(e.target.name)
+  ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
+    movedName(base) & "(" & ctx.genCallArgs(threaded, base).join(", ") & ")" &
+    (if isNew: ctx.scopeFrees(e.target.name) else: "")
+
+proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
+  ## An assignment to something that already exists.
   if e.target.kind == exkField and e.target.receiver != nil and
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
@@ -1344,6 +1330,26 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
     pre = "delete(" & tgt & ")\n" & "  ".repeat(ctx.indent)
   ctx.withAssignValidate(e, pre & tgt & " = " & valStr &
                             ctx.seqFieldFixups(tgt, e.assignVal))
+
+proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
+  if ctx.isTaskArgsBind(e):
+    return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
+  # An append assigned back to its own argument is an in-place append.
+  let appended = selfAppendValue(ctx.res, e)
+  reportInPlaceBypass(ctx, e, appended)
+  if appended != nil:
+    return "append(&" & ctx.movedAssignTarget(e.target) & ", " &
+           ctx.genOdinExpr(appended) & ")"
+  # Same fact one level up: a threaded-container call assigned back over its
+  # own argument calls the MOVED twin, and needs no fix-up copies after it.
+  let threaded = selfThreadedCall(ctx.res, ctx.module, e)
+  if threaded != nil: return ctx.genThreadedAssign(e, threaded)
+  let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
+  if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
+     e.target.name notin ctx.fieldVars:
+    return ctx.genOdinVarDecl(e, valStr)
+  ctx.genReassign(e, valStr)
 
 proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `return err X` is the raise, not a wrapped return value.

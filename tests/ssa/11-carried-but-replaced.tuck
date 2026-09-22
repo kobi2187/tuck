@@ -1,0 +1,20 @@
+# CARRIED ROUND THE LOOP, READ ONLY WHERE IT IS REPLACED.
+#
+# `out` survives a turn when the `if` is skipped, so the head phi carries
+# itself. But the one read inside the loop is the push that REPLACES it: on
+# that path the buffer is never read again, so the read at 18:21 is FINAL.
+#
+#   - out.1 = phi(out.0, out.3) at the head; out.3 = phi(pushed, out.1)
+#   - 18:21 FINAL, and `return out` at 20:10 FINAL
+# `keep` in the generics suite: a rule that said "a carried value's reads in
+# the loop are never final" missed this, and the oracle caught it.
+import seq
+
+fn keep({n: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  var i = 0
+  for i < n:
+    if i > 1:
+      out = {items: out, value: i} push
+    i = i + 1
+  return out
