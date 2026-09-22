@@ -1,5 +1,251 @@
 # Tuck Roadmap (as of 2026-07-09)
 
+---
+
+# THE WORK QUEUE — ordered, 2026-09-22
+
+**Read this section first.** Everything below it is the standing rulings ledger
+and the per-feature status table; both remain authoritative for *what was
+decided*. This section is the only thing that says *what to do next, in what
+order*.
+
+Ordering rule, set by the user 2026-09-22:
+
+> priority to finish features, and higher priority for the SSA fixing mem
+> leaks. Features completely missing leave for later.
+
+So: **memory first, then finish what half-exists, missing features deferred.**
+An item is "finish" when the feature parses, checks and emits *something* and
+the gap is that it is wrong or incomplete. An item is "missing" when there is
+no implementation at all — those are in P7 and are NOT scheduled.
+
+Every item below was re-validated against the compiler on 2026-09-22 at
+`3aa94ea`. Do not trust a number in this file that is not in this section
+without re-measuring; §"Partial" and §"Missing" below predate it, and two
+entries elsewhere in the tree were found stale (see "Doc corrections" at the
+end of this section).
+
+---
+
+## P0 — SSA ownership, and the Odin leaks it closes
+
+The value mirror (`compiler/analysis_ssa.nim`) exists and five of the six items
+in `thoughts/ssa-mirror-design.md` are closed. This is the highest-leverage
+work in the tree because the analysis is already built and already proven
+against an oracle — `livenessDiff` under `--verify-stages`.
+
+| # | item | closes | size |
+|---|---|---|---|
+| 1 | **Guard first**: a `hostPeakRss` pin on #77's reproduction | nothing, but makes 2–4 provable | S |
+| 2 | **SSA Stage C** — design item 4, the in-place-path prediction | prerequisite for Stage D | M |
+| 3 | **SSA Stage D** — free at last use for an `oFresh` local that is neither returned, nor stored in an actor field, nor moved into a call | **#82** (Odin 551 MB) | L |
+| 4 | Stage D, loop case | **#77** (Odin 2 411 MB vs 10 MB on nim/d) | — |
+| 5 | **#80 / F27** — one ownership analysis replacing three partial ones | closes as a consequence of 2–4 | — |
+
+**Do item 1 before item 2.** #77 has no pin today; #86 was pinned and that pin
+is what made its fix checkable in milliseconds instead of by hand. Ten minutes
+of work that de-risks the rest.
+
+**Stage C strictly before Stage D, and this is measured rather than assumed.**
+A missed free position is a leak; a wrong one is a double free. The obvious
+decomposition was tried and ruled out with numbers (1 630 MB / 1 613 MB) —
+`thoughts/ssa-mirror-design.md`, "the Stage C negative result". Do not
+re-derive it.
+
+**Stage D's escape set is three cases, not two.** Returned, stored in an actor
+field, moved into a call. `relight` in `benches/apps/world_server.tuck` is the
+worked example: it is correctly NOT twin-eligible because it returns
+`sl.height` and `sl.lum` unchanged, and the twin free would free what the
+caller is about to bind. That decision is right and must stay right.
+
+### How to verify P0 work, in order of cost
+
+```sh
+./quick-test.sh                          # ~2s, check-only
+./tests/run ssa known_bugs               # the mirror's own invariants + the pins
+./tests/run                              # everything, ~30s
+tools/leakcheck.sh --sites f.tuck        # valgrind, names the allocation site
+./tuck b benches/apps/world_server.tuck --odin -o:/tmp/ws && /tmp/ws/world_server_odin
+```
+
+`tools/leakcheck.sh`'s header records what a clean run looks like per backend,
+so a NEW leak is one whose stack names none of the known sites.
+
+**Exit criteria for P0:** `world_server` on Odin within 2× of Nim's 81 MB;
+`leakcheck.sh` over the corpus reports only the by-design constants named in
+its header; `./tests/run` clean; no diff under `examples/` that has not been
+read and explained.
+
+---
+
+## P1 — Features that exist and give silent wrong answers
+
+Not missing, not slow. Wrong, quietly, on every backend. Each is small enough
+to interleave whenever P0 is blocked on thinking.
+
+| # | issue | one line | size |
+|---|---|---|---|
+| 6 | **#87** | an actor field's initialiser is silently discarded — `level: int = 80` answers 0, nine runs of nine | S–M |
+| 7 | **#73** | an imported `const` is invisible to the checker, so `Array[Cap, int] = [1,2,3]` with `Cap = 4` is **ACCEPTED** — a missed error, not a false one | M |
+| 8 | **#79** | two handlers on one actor cannot reuse a local name | S |
+| 9 | **#78** | the `tuck_` prefix collides `type Order` with `fn order` on Nim | S–M |
+
+Notes that save a session:
+
+- **#87 blocks #85.** #85 asks for a diagnostic telling the author to give the
+  field an initialiser. Initialisers currently do nothing, so that diagnostic
+  would send people to a fix that silently fails. Order matters.
+- **#79 is a port, not a design.** D already emits the correct thing — a
+  declaration in each arm. Read `codegen_d`'s arm handling and carry it to
+  `codegen.nim` and `codegen_odin*.nim`. `definedVars` is shared across the
+  whole actor in `genActorDispatch`'s single `hctx`; each arm wants its own
+  copy seeded from the enclosing scope.
+- **#73 has a worked fix in the tree.** `typecheck.nim:1071` documents the same
+  hazard being fixed for registries, using `resolve_refs.nim`'s whole-program
+  table. The other sites never got the same treatment.
+
+---
+
+## P2 — Finish partial features
+
+| # | issue | what exists / what is missing | size |
+|---|---|---|---|
+| 10 | **#72** | `Array[N,T]` declares and assigns; indexing is rejected both ways. Cause is pinpointed: `seqElem` at `typecheck.nim:4063` matches `Seq` with ONE arg; `Array` is `tkApp` with TWO (size, element) and there is no second branch | **S** |
+| 11 | **#45** | `pool.acquire` hands out a COPY (`return tok(pool.storage[i])`), so a pool is a permission token rather than a buffer — it cannot be a DMA target | M |
+| 12 | **#42** | pool invariant validation — **untestable until #45 lands**; today the repro dies earlier, at `s.value.n` | S |
+| 13 | **#55** | a fired `timeout` returns the right answer at 100× the deadline, all three backends. Suspect `tuckRun` driving ALL work rather than THIS task | M |
+| 14 | **#15** | typed select sources, TASK form. The ACTOR form is done and run-gated at 55. Unblocks `examples/16` and clears MISSING-FEATURES §B | M |
+| 15 | **#85** | extend the existing `<uninit>` rule to actor fields. **After #87** | S |
+| 16 | **#20** | by-type payload matching works for top-level fns, not member calls (`payloadFields` reports `shapeKnown=false`) | M |
+| 17 | **#36** | `mod::Type` in a type position is a parse error in an otherwise working module system | S |
+
+**#72 is the best value in P2** — a core-language hole in an embedded language
+(fixed-size arrays are the whole point; `Seq` heap-allocates, which Tier 1
+forbids), with the cause already located to one proc.
+
+---
+
+## P3 — Backend parity
+
+The "three backends" claim has holes. All finish-work.
+
+| # | issue | | size |
+|---|---|---|---|
+| 18 | **#40** | Odin: an interface method's dispatch closure is typed `-> int` whatever the method returns | S |
+| 19 | **#43** | Odin emits a bare `assert` for an invariant (no guard), and `tuck b` forwards flags to Nim only — no `--odin:` / `--dmd:` | S + M |
+| 20 | **#30** | D: registers are not `volatile`, `[saturating]` emits a bare alias, no `tuckConcat` | M |
+| 21 | — | the D runtime has NO networking; `examples/42-net-echo` emits valid D that cannot link | L |
+| 22 | **#31** | the flake is **Odin's own LLVM verifier** (`Intrinsic called with incompatible signature`, `llvm.memset`), not Tuck's output. Pin the Odin version and see whether it follows | S |
+
+---
+
+## P4 — Make effects mean something
+
+| # | issue | | size |
+|---|---|---|---|
+| 23 | **#64** | wire `[no_alloc]` and `[irq_safe]` | M |
+
+Seven markers are declared in `EffectMarker`; **only `emIo` has real checker
+logic** (5 references in `typecheck*.nim` + `semantics.nim`, against 1 apiece
+for the other six). Effects are Tuck's differentiator and they are 1/7
+implemented. Spec §3.7 already specifies the `[irq_safe]` calling `[io]` error,
+so the rule is written and unenforced. #62, #63, #65 and #67 all sit behind
+this one.
+
+---
+
+## P5 — Internal debt: invisible, compounding
+
+| # | issue | | size |
+|---|---|---|---|
+| 24 | **#22** | `callParamsFor` unrecorded for pending fns, distinct ctors, combinators. ONE call site today: `typecheck.nim:2407` | M |
+| 25 | **#21** | `declForType` never recorded for inferred types | M |
+| 26 | **#23** | superlinear emit — **closes as a consequence** of 24+25 | — |
+
+Re-measured 2026-09-22: **Nim is already linear** (2.0× per doubling of n);
+D and Odin are at 3.3–3.6×. The issue title "quadratic in every backend" now
+overstates it, and that is recorded on the issue.
+
+---
+
+## P6 — Rulings: your decision, the code is small
+
+| # | issue | the decision |
+|---|---|---|
+| 27 | **#4** | narrow the attribute-name reservation to brackets, or narrow TK-PA08's promise to fields |
+| 28 | **#5** | reject a fn with no `->`, or make it mean `void` |
+| 29 | **#6** | none needed — tuck-spec §8.1 already says writing a `[read]` field is a compile error |
+| 30 | **#84** | is there an initialisation barrier between two senders to one mailbox? |
+| 31 | **#7** | full-mailbox policy — today it silently drops |
+
+---
+
+## P7 — DEFERRED: completely missing, not scheduled
+
+Listed so nothing is lost. Per the 2026-09-22 ordering rule these wait until
+P0–P6 are done.
+
+`arena` (parses, body **discarded** at `parser.nim:87`, no `dkArena`, no
+backend support) · **#12** hashing primitives, which block `alloc.map` and
+`alloc.set` entirely · **#11** recursive-type expression · **#10** correlation
+tokens · **#16** numeric conversion sigils · **#17** variant sets in
+signatures · **#32** resource registry §7.4's static acquire-must-finish ·
+**#33** stack-depth budgets · **#57** which single-expression positions take a
+block · **#66/#68/#69/#70** contention graph, property tests, memoization,
+mock externs · **#71** effects trust root · **#74** heartbeat channel · DNS in
+`net::connect`.
+
+**Two exceptions worth pulling forward.**
+
+1. **`arena` should get a diagnostic now** — fifteen minutes. It currently
+   checks clean while allocating nothing and resetting nothing, which is worse
+   than refusing. Defer the implementation; stop it passing silently.
+2. **#18 generic actors is closer to done than its issue says.** Now that #52
+   is closed, `actor Inbox[T] [queue: 16]: xs: Seq[T]` parses and gives a
+   proper `TK-TY28` instantiation diagnostic. Re-read before treating it as
+   missing.
+
+---
+
+## Doc corrections found while validating, 2026-09-22
+
+The compiler beats the documents (README's trust order). Three places where a
+document is behind the tree — fix these when passing, and do not plan from them:
+
+- **`tuck-spec.md` Appendix A** says direct construction of a generic record
+  (`{value: 5} Box`) is a "checker error v1". It **works** — builds and exits 5
+  on all three backends.
+- **`MISSING-FEATURES.md` §D** says the event registry emits invalid Nim and
+  that `examples/20-embedded-mp3-player` "fails to build on ALL THREE backends
+  today". It **builds on all three**.
+- **`MISSING-FEATURES.md` §A** counts 10 open bugs against GitHub's 16
+  bug-labelled issues. Different ledgers on purpose — the in-tree count is
+  bugs pinned by a real assertion, and it is the one `end_to_end` gates — but
+  neither number should be quoted as "the" bug count without saying which.
+
+## Traps that cost time on 2026-09-22, recorded so they cost nothing again
+
+- **One `-o:` directory per backend, always.** Building three backends into one
+  output directory leaves the earlier binary in place, and
+  `find -executable | head -1` then re-runs the WRONG one. This produced a
+  false "fixed" reading on #76. Odin's binary is suffixed `_odin`; Nim's and
+  D's are the bare stem.
+- **`/usr/bin/time` does not exist here.** Measure peak RSS with
+  `resource.getrusage(RUSAGE_CHILDREN).ru_maxrss` from a small Python wrapper,
+  or use the harness's own `hostPeakRss`.
+- **The toolchains are not on PATH by default** in a fresh shell:
+  `export PATH=/opt/nim/bin:/opt/dmd112/dmd2/linux/bin64:/opt/odin-cur:$PATH`.
+- **A reserved word as a field name misreports.** `pending: Seq[int]` in an
+  `actor` or `object` body says "Expected the end of the line here, found
+  `Seq`" — blaming the TYPE. The `type` parser correctly names the reserved
+  word. This is why #52 read as a parser bug for its whole life. Recorded on #4.
+- **`benches/apps/world_server.tuck` no longer reproduces #84.** The app now
+  boots its shards through the Gateway, so `start` and `edit` share a sender.
+  Restore the two-sender shape to see the bug; the one-line `sed` is on #84.
+
+---
+
+
 Status legend: DONE = parse+check+codegen+tested. Gate = generated Nim passes
 `nim check` (13/24 examples).
 
