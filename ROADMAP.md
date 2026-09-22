@@ -59,6 +59,37 @@ decomposition was tried and ruled out with numbers (1 630 MB / 1 613 MB) —
 `thoughts/ssa-mirror-design.md`, "the Stage C negative result". Do not
 re-derive it.
 
+### Stage C is narrower than the design document says (measured 2026-09-22)
+
+The design names ONE blocker: `exclusivelyOwned`'s allocation tokens have to
+come across before the prediction can go, because a token is what tells
+`return {a: xs, b: xs}` — one buffer, two names — from two distinct buffers.
+
+**They came across, and it bought nothing.** `ssaExclusiveOwned` in
+`analysis_provenance.nim` answers the collision half off the mirror, where a
+`ValueId` is exact identity rather than a hash chosen to fail safe.
+`TUCK_DEBUG_COPY=diff` over every example, both applications and the Savina
+ports: **agree=27, onlyMirror=0, onlyOld=0** — a faithful drop-in.
+
+And the new logic is **never reached**, established by sabotage rather than
+inference: disabling the collision test outright changes none of the 27,
+because every field query on the corpus is a CALL RESULT and takes the
+fallback. A purpose-built `p = {a: u, b: u} Pair` does not reach it either —
+the origin check refuses it two lines earlier, since `u` is a name rather
+than a call and so is not `oFresh`.
+
+**So the remaining work is the ORIGIN half, and only that.** What collapsed in
+the design's own experiment is that `exclusivelyOwned` reads provenance's
+cells for `oFresh`; starve the cells and every defensive copy comes back.
+Move the origin question onto the mirror — `ssaOwnership` already answers the
+same lattice for the MOVE decision, so the shape exists — then remove
+`afterBinding`'s prediction and re-run `TUCK_DEBUG_COPY=diff`. The criterion
+is `onlyOld == 0`, not "identical": the mirror is expected to be strictly
+more precise, the same way it was for liveness in a loop.
+
+Acceptance for the whole of Stage C: `onlyOld == 0` on the corpus, and
+`world_server` on Odin no worse than the 551 MB it is at today. Then Stage D.
+
 **Stage D's escape set is three cases, not two.** Returned, stored in an actor
 field, moved into a call. `relight` in `benches/apps/world_server.tuck` is the
 worked example: it is correctly NOT twin-eligible because it returns
