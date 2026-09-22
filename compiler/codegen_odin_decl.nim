@@ -14,8 +14,8 @@ import codegen_odin_ctx
 import codegen_odin_util
 from mangle import mangleName
 from lowering_seqcopy import seqFieldNames
-from analysis_provenance import slotIsFresh, consumedSlotsSsa
-from analysis_ssa import pathOf
+import analysis_ownership   ## decides the frees; this file only prints them
+from analysis_ssa import pathOf   # the `str` pass above still walks paths
 import os
 import ./codegen_odin
 
@@ -413,12 +413,27 @@ proc ownedStrCall(res: Resolution, e: Expr): bool =
   n in RtOwnedStr
 
 proc holdsAStrType(t: Type): bool =
-  ## Could a value of this type be CARRYING a `str` it was handed? A scalar
-  ## cannot, and neither can a `str` itself — the runtime procs that answer
-  ## one allocate rather than passing a string through.
+  ## Could a value of this type be CARRYING a `str` it was handed?
+  ##
+  ## A scalar cannot. A `str` OBVIOUSLY CAN — it is one. This used to answer
+  ## false for `str`, reasoning that "the runtime procs that answer one
+  ## allocate rather than passing a string through", and that reasoning
+  ## confuses what a CALL RETURNS with what a VALUE CAN HOLD. The exemption
+  ## belongs to the call, and it is made in `sealsFor` where it is true;
+  ## making it here made `return s` not an escape, so a returned local was
+  ## freed before its caller read it:
+  ##
+  ##     tuck_label :: proc (n: int) -> string {
+  ##       tuck_s := str.toStr(n)
+  ##       defer delete(tuck_s)
+  ##       return tuck_s          // <- freed, then returned
+  ##     }
+  ##
+  ## A use-after-free that prints garbage, found by review rather than by any
+  ## assertion: every `str` in the corpus is consumed where it is built.
   if t == nil: return true                 # unknown: assume it could
   case t.kind
-  of tkNamed: t.name notin ["str", "int", "bool", "float", "void",
+  of tkNamed: t.name notin ["int", "bool", "float", "void",
                             "u8", "u16", "u32", "u64",
                             "i8", "i16", "i32", "i64", "f32", "f64"]
   else: true
@@ -436,7 +451,13 @@ proc sealsFor(res: Resolution, n: Expr, sealed: bool): bool =
   if sealed or n.kind == exkSend: return true   # a message outlives us
   if n.kind in {exkReturn, exkRaise}:
     return n.returnVal == nil or holdsAStr(res, n.returnVal)
-  if n.kind == exkCall: return holdsAStr(res, n)
+  if n.kind == exkCall:
+    # A call that ALLOCATES its result does not carry an argument out: what
+    # comes back is fresh storage, so passing our string in does not let it
+    # escape. That is the exemption `holdsAStrType` used to make for the type
+    # as a whole, which was too wide by exactly one case — `return s`.
+    if ownedStrCall(res, n): return false
+    return holdsAStr(res, n)
   false
 
 proc strEscapes(res: Resolution, body: Expr, name: string): bool =
@@ -515,6 +536,9 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
   ctx.ownedStrLocals = ctx.ownedStrLocalsOf(d)
+  # THE OWNERSHIP PASS DECIDES; this emitter prints. See
+  # compiler/analysis_ownership.nim for the six steps.
+  ctx.owned = ownershipOf(ctx.res, ctx.module, d)
   if d.isDecision or d.isDecisionTable(): return ctx.genDecisionTable(d)
   let ind = "  ".repeat(ctx.indent)
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
@@ -559,25 +583,11 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   # Switched after both were computed side by side across the corpus, both
   # applications, the Savina ports and the stdlib with no difference, and
   # after `TUCK_TRACK` confirmed no double free.
-  var movedAway = consumedSlotsSsa(ctx.res, ctx.module, d)
-
+  # Step 6 of the ownership pass, printed.
   var frees = ""
-  let retFields = movedCopyFields(ctx.res, ctx.module, d.fnReturnType)
-  var mayFree = true
-  if retFields.len == 0:
-    mayFree = slotIsFresh(ctx.res, ctx.module, d.name, "")
-  else:
-    for f in retFields:
-      if not slotIsFresh(ctx.res, ctx.module, d.name, f): mayFree = false
-  if mayFree:
-    let ownFields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
-    if ownFields.len == 0:
-      if "" notin movedAway:
-        frees = ind & "\tdefer delete(" & movedP & ")\n"
-    else:
-      for f in ownFields:
-        if f notin movedAway and "" notin movedAway:
-          frees.add(ind & "\tdefer delete(" & movedP & "." & f & ")\n")
+  for slot in ownershipOf(ctx.res, ctx.module, d).twinFreesParam:
+    let path = if slot.len == 0: movedP else: movedP & "." & slot
+    frees.add(ind & "\tdefer delete(" & path & ")\n")
   let twinName = movedName(d.name.replace(".", "_"))
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
