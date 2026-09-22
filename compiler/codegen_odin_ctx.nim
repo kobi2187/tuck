@@ -31,6 +31,8 @@ type
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return
     tmpCounter*: int
+    ownedSeqLocals*: Table[string, seq[string]]
+      ## SPIKE, Stage D: local -> the slots this body owns and frees.
     ownedStrLocals*: HashSet[string]
       ## Locals holding a `str` this body ALLOCATED and does not let escape,
       ## so the emitter can `defer delete` them. Computed once per fn from

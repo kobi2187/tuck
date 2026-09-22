@@ -1266,9 +1266,17 @@ proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # out of the block. `ownedStrLocalsOf` has already established that the name
   # is assigned exactly once, so this fires on exactly the allocation it
   # names. See EV-20.
-  if e.target.name notin ctx.ownedStrLocals: return decl & fixups
-  decl & "\n" & "  ".repeat(ctx.indent) & "defer delete(" &
-    e.target.name & ")" & fixups
+  var dfr = ""
+  let ind2 = "  ".repeat(ctx.indent)
+  if e.target.name in ctx.ownedStrLocals:
+    dfr.add("\n" & ind2 & "defer delete(" & e.target.name & ")")
+  # SPIKE, Stage D: the same for a Seq this body allocated and never lets go.
+  if e.target.name in ctx.ownedSeqLocals:
+    for slot in ctx.ownedSeqLocals[e.target.name]:
+      let path = if slot.len == 0: e.target.name
+                 else: e.target.name & "." & slot
+      dfr.add("\n" & ind2 & "defer delete(" & path & ")")
+  decl & dfr & fixups
 
 proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
   ## ITEM 4, MEASURED — see thoughts/ssa-mirror-design.md, Stage C.
