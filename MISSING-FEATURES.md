@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (10)
+## A. Open bugs (11)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -136,6 +136,24 @@ CORRECT — right answers, clean `tuck ch`, plausible emitted text — and until
 all. Test: `known_bugs`, "a copy-per-iteration loop does not accumulate
 copies". Found 2026-09-20 running the first real application; issue #77, and
 the analysis that would fix it is issue #80.
+
+**A20 — on Odin, every heap `str` leaks.** The whole category, not one site.
+`copyableContainer` excludes `str` deliberately and for a good reason: it is
+immutable in both D and Odin, so sharing its buffer cannot be observed. That
+is an argument about ALIASING, and it was taken as settling OWNERSHIP too —
+so `str` sits outside the copy machinery, outside the twin machinery, and
+outside the one `delete` the backend emits. Found with valgrind on the
+SMALLEST example in the tree: `examples/24-stdlib` loses 30 bytes in one
+block, and the stack names `os::read_entire_file_from_path` inside
+`tuckrt::fileWorker` — `readFile` transmutes the buffer to a `str`, hands it
+to Tuck, and nothing frees it. `41-tostr-concat` loses 46 from
+`strings::Builder`, the `toStr` and concat path. It is linear: 272, 2 343 and
+23 044 bytes for 10, 100 and 1 000 `toStr` calls, and a million of them peak
+at 33 MB on Odin against 1.7 MB on Nim and 3.9 MB on D. Distinct from A19,
+which is about `Seq` intermediates — this one reaches programs that touch no
+container at all, anything that formats. Test: `known_bugs`, "a million
+temporary strings do not accumulate". Found 2026-09-22 sweeping the examples
+under valgrind, smallest first; issue #86.
 
 A17 (a handler-less actor emitting a registration call to a proc that was
 never generated — the three entry-point builders asked "is this a dkActor"

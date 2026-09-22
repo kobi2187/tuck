@@ -334,6 +334,84 @@ tested.
 
 ---
 
+## EV-20 — on Odin, every heap `str` leaks
+
+**Open. Severity: high on Odin, none on Nim or D. Issue #86.** Found by
+sweeping the
+examples under valgrind, smallest first — which is why it turned up at all:
+it is invisible to every assertion in the tree that looks at a number a
+program prints.
+
+### The category, not the site
+
+`copyableContainer` excludes `str` deliberately, and the reason it gives is
+sound:
+
+> Excluding `str` is right for the send too: it is immutable in both D and
+> Odin, so sharing its buffer is safe.
+
+That is an argument about ALIASING, and it was taken as settling OWNERSHIP
+too. So `str` sits outside the copy machinery, outside the MOVED twin, and
+outside the one `delete` the Odin backend emits. Nothing frees a `str`, ever.
+
+### Reproduce
+
+The smallest example in the tree. `examples/24-stdlib` is twelve lines:
+
+```tuck
+let r = {path: "/tmp/tuck-demo.txt"} fs::readFile
+if r.ok:
+  {text: r.value.content} console::printLine
+```
+
+```
+==7892== 30 bytes in 1 blocks are definitely lost in loss record 1 of 1
+==7892==    by runtime::make_slice
+==7892==    by os::read_entire_file_from_file
+==7892==    by os::read_entire_file_from_path
+==7892==    by tuckrt::[tuck_rt.odin]::fileWorker
+```
+
+`fileWorker` reads into a buffer, `readFile` transmutes it to a `str` and
+hands it to Tuck, and that is the end of anyone's claim on it.
+`41-tostr-concat` loses 46 bytes from `strings::Builder`, which is the
+`toStr` and concat path — the same category by a different route.
+
+It is LINEAR, which is what makes it a leak rather than a constant:
+
+| `toStr` calls | definitely lost |
+|---|---|
+| 10 | 272 B |
+| 100 | 2 343 B |
+| 1 000 | 23 044 B |
+
+A million of them peak at **33 MB on Odin**, against 1.7 MB on Nim (ARC
+frees) and 3.9 MB on D (its GC collects, and valgrind reports nothing
+definitely lost).
+
+### Not EV-14
+
+EV-14 is about `Seq` intermediates abandoned in a threading chain. This one
+reaches programs that touch no container at all — anything that formats a
+number, reads a file, or builds a message. A server that formats one line
+per request leaks for as long as it runs.
+
+### What it needs
+
+The same thing EV-14 needs, one category wider: a free at the last use of a
+value this body owns. The ownership analysis already distinguishes a fresh
+allocation from a borrowed one (`analysis_provenance`), and the mirror
+already answers "is this the final read" per value — what is missing is that
+`str` was never admitted to the machinery. Admitting it means telling a heap
+`str` from a literal, which is exactly `oFresh` versus `oAliased`.
+
+Guarded by `known_bugs`' "a million temporary strings do not accumulate" —
+`hostPeakRss` at 12 MB, which Nim and D clear and Odin does not. Verified to
+be measuring the leak and not a build failure: raise the budget past 33 MB
+and the assertion passes, and `bugOpen` says to flip the marker.
+
+---
+
 ## EV-19 — an actor field with no initialiser is silently a zero value
 
 **Open. Severity: medium — a bad diagnostic, not a memory error. Issue #85.**
