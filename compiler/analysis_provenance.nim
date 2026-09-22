@@ -559,6 +559,48 @@ proc debugOwn(d: Decl, c: Ctx, fn: SsaFn, own: seq[bool]) =
       if own[i]: owned.add(v.place & "." & $v.version)
     echo "MOVE ", d.name, " moved=", c.moved, " owned=[ ", owned.join(" "), " ]"
 
+proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
+    tuple[sites: HashSet[NodeId], consumed: HashSet[string]] =
+  ## Both halves of the same fact, from one look at the mirror: which
+  ## arguments this body may hand on, and which slots of its OWN moved
+  ## parameter it has therefore handed away.
+  ##
+  ## They were two independent tree walks — `markMovableArgs` deciding to
+  ## hand a slot on, and `slotsMovedAway` re-scanning to find out whether one
+  ## had been — with nothing making them agree. They did not, once, and the
+  ## result was a double free that segfaulted under `TUCK_TRACK`. That is
+  ## item 3 on thoughts/ssa-mirror-design.md's list, and one walk is the
+  ## whole of the answer to it: the site that consumes a value is recorded
+  ## ON the value.
+  ##
+  ## `consumed` is also NARROWER than the scan it replaces, and correctly so.
+  ## The old one recorded a slot whenever the callee merely HAD a twin,
+  ## whether or not the call site reached it. An unstamped site calls the
+  ## wrapper, which copies our slot and hands the COPY to the twin — so the
+  ## twin frees the copy and ours is still ours to free.
+  if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
+  var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  for p in d.fnParams: c.params.incl(p.name)
+  for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
+  let fn = buildFn(res, d)
+  if fn.values.len == 0: return
+  let own = ssaOwnership(c, m, fn)
+  let final = finalUses(fn)
+  debugOwn(d, c, fn, own)
+  for a in threadSites(res, m, d.fnBody):
+    if a.id notin final or a.id notin fn.readAt: continue
+    let v = fn.readAt[a.id]
+    if not own[int32(v)]: continue
+    result.sites.incl(a.id)
+    # ...and if what went was a slot of OUR moved parameter, it is no longer
+    # ours to free.
+    let place = fn.values[int32(v)].place
+    if c.moved.len == 0 or rootOf(place) != c.moved: continue
+    result.consumed.incl(if place == c.moved: "" else: place[c.moved.len + 1 .. ^1])
+
+proc consumedSlotsSsa*(res: Resolution, m: Module, d: Decl): HashSet[string] =
+  moveFactsSsa(res, m, d).consumed
+
 proc movableArgsSsa*(res: Resolution, m: Module, d: Decl): HashSet[NodeId] =
   ## Which arguments this body may hand on destructively — the mirror's
   ## answer to exactly what `markMovableArgs` decides above.

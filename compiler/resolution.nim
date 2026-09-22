@@ -455,6 +455,10 @@ proc isMovedArg*(r: Resolution, e: Expr): bool =
   ## analysis did not reach — which copies, exactly as it always did.
   e != nil and e.id in r.movedArgs
 
+proc markLastUseId*(r: Resolution, id: NodeId) =
+  ## The same, for a caller holding the node's id rather than the node.
+  r.lastUses.incl(id)
+
 proc isLastUse*(r: Resolution, e: Expr): bool =
   ## Was `e` proved to be a binding's final read? False for anything the
   ## analysis did not reach, which is the safe answer: an unproved use is

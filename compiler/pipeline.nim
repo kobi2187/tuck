@@ -21,6 +21,8 @@ import ast_query
 import resolution
 import strutils
 import analysis_ssa
+import analysis_liveness
+import sets, os
 
 type
   PipelineStage* = enum
@@ -171,6 +173,10 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
   ## analysis_liveness exactly; until then this is the only thing that runs it.
   var bad: seq[string]
   for m in mods:
+    # THE ORACLE. `analysis_liveness` no longer stamps anything — the mirror
+    # does — so this recomputes its answer independently and checks the
+    # mirror against it. One documented divergence is allowed, below.
+    let reference = referenceFinalUses(res, m)
     for fn in buildModuleSsa(res, m):
       bad.add(structuralErrors(fn))
       # STAGE A.2, and the criterion is a SUPERSET rather than equality.
@@ -191,10 +197,15 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
       # proves final, the mirror must also prove. A site it misses is a
       # capability lost; a site it invents is a use-after-move. So
       # `onlyPass` is the assertion and `onlyMirror` is the measurement.
-      let d = livenessDiff(res, fn)
-      if d.onlyPass > 0:
+      let d = livenessDiff(reference, fn)
+      if d.onlyPass > 0 and not deferExempt(fn):
         bad.add(fn.name & ": the mirror misses " & $d.onlyPass &
                 " final use(s) analysis_liveness proves")
+      when not defined(release):
+        if getEnv("TUCK_DEBUG_SSA") == "diff" and
+           (d.onlyMirror > 0 or d.onlyPass > 0):
+          echo "SSADIFF ", fn.name, " agree=", d.agree,
+               " onlyMirror=", d.onlyMirror, " onlyPass=", d.onlyPass
   if bad.len > 0:
     raise newException(ValueError,
       "pipeline: the SSA mirror is malformed in " & $bad.len &

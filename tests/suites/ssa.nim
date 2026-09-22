@@ -209,4 +209,33 @@ fn main() -> int:
   t.runs "...and they still compute what they did", 15
   t.hostRuns("...on every backend", 15)
 
+  # --- what the mirror proves that the pass it replaced could not ----------
+  #
+  # `analysis_liveness` never stamped a read in a `for`'s ITERABLE at all —
+  # its `exkFor` arm walks the body and then folds the iterable into the live
+  # set without ever calling `stampSites` on it. So a parameter iterated once
+  # and never touched again was not a final use, and Nim got `seq[T]` where
+  # `sink seq[T]` is correct.
+  #
+  # Guarded here by INTENT rather than only by the eight goldens the switch
+  # rewrote, because a golden records what the compiler did and this records
+  # what it is supposed to do.
+  t.src """
+import seq
+
+fn total({xs: Seq[int]}) -> int:
+  var s = 0
+  for v in xs:
+    s = s + v
+  return s
+
+fn main() -> int:
+  return {xs: [1, 2, 3]} total
+"""
+  t.okCheck "a parameter iterated once checks"
+  t.emits "...and its only read is final, so Nim gets sink",
+          r"proc tuck_total\*\(xs: sink seq\[int\]\)"
+  t.runs "...and it still computes what it did", 6
+  t.hostRuns("...on every backend", 6)
+
   t.finish()

@@ -99,6 +99,13 @@ type
       ## Nothing outside such a region can follow a read inside it, which is
       ## the other half of "can these two reads both happen" and is invisible
       ## to the arm structure alone.
+    deferred*: HashSet[string]
+      ## Root names a `defer` body reads. A defer runs at SCOPE EXIT, after
+      ## the apparent last use of everything it touches, so its reads are
+      ## live throughout and nothing it names can have a final read inside
+      ## the body. The mirror records the read where it is WRITTEN, which is
+      ## early — so the place has to be named here instead, exactly as
+      ## `analysis_liveness` kept a `skip` set for the same reason.
     readAt*: Table[NodeId, ValueId]
       ## which version each read site read. The inverse of `uses`, kept
       ## because the emitters ask by node and the passes ask by value.
@@ -223,6 +230,23 @@ proc defKindOf(e: Expr): DefKind =
 
 proc walk(b: var Builder, e: Expr)
 proc walkLoop(b: var Builder, cond, body: Expr)
+
+proc deferRoots(e: Expr, acc: var HashSet[string]) =
+  ## The ROOT names a `defer` body reads — and only those. Deriving them from
+  ## what `readAt` gained while walking the defer was tried and is wrong: it
+  ## sweeps in every name the body had already read, and cost three final
+  ## uses the old pass proves.
+  if e == nil: return
+  if e.kind in {exkVar, exkField}:
+    let p = pathOf(e)
+    if p.len > 0:
+      acc.incl(rootOf(p))
+      return
+  if e.kind == exkAssign:
+    deferRoots(e.assignVal, acc)
+    if e.target != nil and e.target.kind != exkVar: deferRoots(e.target, acc)
+    return
+  for ch in e.children: deferRoots(ch, acc)
 
 proc alwaysExits(e: Expr): bool =
   ## Does every path through this leave the body? Syntactic and deliberately
@@ -463,10 +487,9 @@ proc walk(b: var Builder, e: Expr) =
   of exkContinue:
     if b.inLoop: b.conts.add(b.cur)
   of exkDefer:
-    # A defer runs at SCOPE EXIT, after the apparent last use of everything
-    # it touches. Its reads are recorded here so the values are seen to
-    # escape; ordering them correctly is Stage B's problem, and recording
-    # them at all is what stops a deferred read looking dead.
+    # Its reads are recorded so the values are seen to escape, and the ROOTS
+    # are named so nothing it touches can have a final read inside the body.
+    deferRoots(e.deferBody, b.fn.deferred)
     b.reads(e.deferBody)
   else:
     b.reads(e)
@@ -601,6 +624,7 @@ proc finalUses*(fn: SsaFn): HashSet[NodeId] =
   ## and a read in a sibling arm cannot.
   for v in fn.values:
     if v.uses.len == 0: continue
+    if rootOf(v.place) in fn.deferred: continue
     let defLoops = loopsOf(v.defRegion)
     for i, u in v.uses:
       # REPEATS iff the read sits inside a loop the definition does not. A
@@ -618,7 +642,23 @@ proc finalUses*(fn: SsaFn): HashSet[NodeId] =
           followed = true
       if not followed: result.incl(u.at)
 
-proc livenessDiff*(res: Resolution, fn: SsaFn):
+proc deferExempt*(fn: SsaFn): bool =
+  ## THE ONE PLACE THE MIRROR IS ALLOWED TO PROVE LESS, and it proves less by
+  ## being right.
+  ##
+  ## `analysis_liveness` keeps a skip set of the PATHS a `defer` reads, so
+  ## for `defer: finish sock.value` it holds `sock.value`. Its root rule then
+  ## asks whether `sock` itself is dead, finds `sock` is not in the skip set,
+  ## and stamps it — although the defer reads `sock` at scope exit, through
+  ## that very field. Moving `sock` there would hand the defer freed memory.
+  ##
+  ## Inert today: `serve` is the only body in the corpus with the shape,
+  ## `sock` is a local rather than a parameter, and nothing consumes a local's
+  ## stamp. Recorded rather than reproduced, because reproducing a hole to
+  ## make a differential green is how a hole becomes permanent.
+  fn.deferred.len > 0
+
+proc livenessDiff*(reference: HashSet[NodeId], fn: SsaFn):
     tuple[agree, onlyMirror, onlyPass: int] =
   ## The differential the design document asks for, as a MEASUREMENT rather
   ## than an assertion — because writing it turned up that "identical" was
@@ -627,7 +667,7 @@ proc livenessDiff*(res: Resolution, fn: SsaFn):
   var theirs: HashSet[NodeId]
   for v in fn.values:
     for u in v.uses:
-      if u.at in res.lastUses: theirs.incl(u.at)
+      if u.at in reference: theirs.incl(u.at)
   for n in mine:
     if n in theirs: inc result.agree else: inc result.onlyMirror
   for n in theirs:
@@ -644,6 +684,25 @@ proc dump*(fn: SsaFn): string =
       result.add("(" & ins.join(", ") & ")")
     result.add("  uses=" & $v.uses.len & "\n")
 
+proc markLivenessSsa*(res: Resolution, m: Module) =
+  ## Stamp every final read in every body this module declares — the job
+  ## `analysis_liveness` did with a backward walk and a loop fixpoint over
+  ## access paths, now read off the mirror.
+  ##
+  ## SAME SCOPE, deliberately: `m.decls` and not `m.allFns()`, so an actor
+  ## handler is still not visited. A handler's locals are actor FIELDS, which
+  ## outlive the body, and an intra-body answer about one is simply wrong.
+  ##
+  ## The mirror is strictly more precise inside a loop — a loop-head phi is a
+  ## fresh version each iteration, so `out = {items: out, ...} push` has a
+  ## final read of `out` at the push, which a pass reasoning about the NAME
+  ## `out` cannot say. `assertSsaWellFormed` checks the other direction:
+  ## nothing the old pass proves may be lost.
+  for d in m.decls:
+    if d == nil or d.kind notin {dkFn, dkTask}: continue
+    let fn = buildFn(res, d)
+    for n in finalUses(fn): markLastUseId(res, n)
+
 proc buildModuleSsa*(res: Resolution, m: Module): seq[SsaFn] =
   for d in m.decls:
     if d == nil or d.kind notin {dkFn, dkTask}: continue
@@ -651,17 +710,5 @@ proc buildModuleSsa*(res: Resolution, m: Module): seq[SsaFn] =
     if fn.values.len == 0: continue
     result.add(fn)
   when not defined(release):
-    let dbg = getEnv("TUCK_DEBUG_SSA")
-    if dbg == "diff":
-      var a, om, op = 0
-      for fn in result:
-        let d = livenessDiff(res, fn)
-        a += d.agree; om += d.onlyMirror; op += d.onlyPass
-        if d.onlyMirror > 0 or d.onlyPass > 0:
-          echo "SSADIFF ", m.path.join("."), " ", fn.name,
-               " agree=", d.agree, " onlyMirror=", d.onlyMirror,
-               " onlyPass=", d.onlyPass
-      echo "SSATOTAL ", m.path.join("."), " agree=", a,
-           " onlyMirror=", om, " onlyPass=", op
-    elif dbg.len > 0:
+    if getEnv("TUCK_DEBUG_SSA") notin ["", "diff"]:
       for fn in result: echo dump(fn)

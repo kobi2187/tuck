@@ -213,9 +213,45 @@ anything switched: **24 stamps, zero difference either way**. After the
 switch the tracked `examples/` output is byte-identical and both
 applications print the same numbers at the same peak RSS.
 
-**Still to do in B**, and named so it is not mistaken for finished:
-`slotsMovedAway` still re-scans the tree (item 3), and `consumed` is not yet
-a state on the value — the free gate infers it. Those are what close item 3.
+**Item 3 is closed too, 2026-09-22.** `slotsMovedAway` is gone. The site
+that consumes a value is recorded ON the value, so `moveFactsSsa` answers
+both halves of the question from one look: which arguments this body may
+hand on, and which slots of its own moved parameter it has therefore handed
+away. The two used to be independent walks with nothing making them agree —
+and they did not agree, once, and the result was a double free.
+
+The new answer is also NARROWER, correctly: the scan recorded a slot
+whenever the callee merely *had* a twin, whether or not the call site
+reached it. An unstamped site calls the wrapper, which copies our slot and
+hands the COPY to the twin, so ours is still ours to free. Switched after
+both were computed side by side over the corpus with no difference, and
+after `TUCK_TRACK` confirmed no double free and the same 266 683 / 16 leak
+counts.
+
+**`analysis_liveness` no longer stamps anything either.**
+`markLivenessSsa` is the pass; the old walk is kept and run only under
+`--verify-stages` as the ORACLE the mirror is checked against. Keeping it
+costs a file nothing on the hot path calls and buys the only check on the
+mirror that is not the mirror's own opinion — which is how six builder bugs
+were found in an afternoon.
+
+That switch was not behaviour-neutral, and the goldens are where it showed.
+`analysis_liveness` never stamped a read in a `for`'s ITERABLE at all: its
+`exkFor` arm walks the body and folds the iterable into the live set without
+ever calling `stampSites` on it. So a parameter iterated once and never
+touched again was not a final use, and Nim got `seq[T]` where `sink seq[T]`
+is right. Eight goldens changed, sixteen lines, every one of them
+`seq[X]` -> `sink seq[X]`; the programs were run on all three backends first
+and answer what they always did. `tests/suites/ssa.nim` now guards the
+capability by intent rather than leaving it recorded only as a golden.
+
+**One divergence is allowed and documented** (`deferExempt`). For
+`defer: finish sock.value`, the old pass's skip set holds the PATH
+`sock.value`; its root rule then asks whether `sock` is dead, does not find
+`sock` in the skip set, and stamps it — although the defer reads `sock` at
+scope exit through that very field. The mirror refuses. Inert today, since
+`sock` is a local and nothing consumes a local's stamp, but reproducing a
+hole to make a differential green is how a hole becomes permanent.
 
 **Two rules in the new code are NOT EXERCISED by the corpus**, established
 by sabotage rather than assumed:

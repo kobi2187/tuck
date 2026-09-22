@@ -48,6 +48,7 @@ import compiler/validate   # the spec-side grammar, for `tuck validate`
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
 import compiler/analysis_liveness
+import compiler/analysis_ssa
 import compiler/complexity
 import compiler/typecheck
 import compiler/lowering
@@ -494,7 +495,7 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   # resets the semantic layer (same constraint the effect pass below has);
   # before the per-backend deepCopies because the answer is about the
   # PROGRAM, not about which language it is being emitted into.
-  for lm in loaded: markLiveness(semLayer, lm.m)
+  for lm in loaded: markLivenessSsa(semLayer, lm.m)
   if verifyStages:
     var checkedMods: seq[Module]
     for lm in loaded: checkedMods.add(lm.m)

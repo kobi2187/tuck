@@ -14,36 +14,9 @@ import codegen_odin_ctx
 import codegen_odin_util
 from mangle import mangleName
 from lowering_seqcopy import seqFieldNames
-from analysis_provenance import slotIsFresh
+from analysis_provenance import slotIsFresh, consumedSlotsSsa
+import os
 import ./codegen_odin
-
-proc slotsMovedAway*(res: Resolution, m: Module, body: Expr,
-                     movedP: string): HashSet[string] =
-  ## Which slots of the moved parameter were HANDED ON to another twin, and
-  ## are therefore no longer this fn's to free.
-  ##
-  ## `applyBuy` passes `b.ask` to `sweep_moved`, which takes it destructively
-  ## and frees it itself; freeing it here too is a double free, and it
-  ## segfaulted on the first run under `-define:TUCK_TRACK=true`. This is the
-  ## third entry in the escape list — returned, stored in an actor field, or
-  ## MOVED INTO A CALL — and the only one that was not yet enforced.
-  ##
-  ## "" in the result means the whole parameter went.
-  if body == nil or movedP.len == 0: return
-  var stack = @[body]
-  while stack.len > 0:
-    let n = stack.pop()
-    if n == nil: continue
-    if n.kind == exkCall and n.callee != nil and n.callee.kind == exkVar and
-       n.args.len >= 1 and n.args[0] != nil and
-       movedFnParam(res, m, m.findFn(n.callee.name)) != "":
-      let a = n.args[0]
-      if a.kind == exkField and a.receiver != nil and
-         a.receiver.kind == exkVar and a.receiver.name == movedP:
-        result.incl(a.fieldName)
-      elif a.kind == exkVar and a.name == movedP:
-        result.incl("")
-    for ch in n.children: stack.add(ch)
 
 const DefaultMailboxSize = "8"
   ## Messages an actor's ring holds unless `[queue: N]` says otherwise.
@@ -434,7 +407,16 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   # it itself — freeing it here too is a double free, and it segfaulted
   # immediately under `-define:TUCK_TRACK=true`. This is the third entry in
   # the escape list: returned, stored in an actor field, or MOVED INTO A CALL.
-  var movedAway = slotsMovedAway(ctx.res, ctx.module, d.fnBody, movedP)
+  #
+  # ASKED OF THE VALUE MIRROR rather than re-scanned for. This used to be its
+  # own walk over the body, looking for calls whose first argument was rooted
+  # at the moved parameter — a second traversal that had to agree with the
+  # one that DECIDED to hand a slot on, with nothing making them agree. The
+  # consuming site is recorded on the value now, so there is one answer.
+  # Switched after both were computed side by side across the corpus, both
+  # applications, the Savina ports and the stdlib with no difference, and
+  # after `TUCK_TRACK` confirmed no double free.
+  var movedAway = consumedSlotsSsa(ctx.res, ctx.module, d)
 
   var frees = ""
   let retFields = movedCopyFields(ctx.res, ctx.module, d.fnReturnType)
