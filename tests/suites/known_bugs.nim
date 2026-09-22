@@ -1497,4 +1497,67 @@ fn main() -> int:
   t.hostPeakRss("a million temporary strings do not accumulate", 12288)
   t.bugFixed "a million temporary strings do not accumulate"
 
+  # 19. EV-14 / issue #82: the dead intermediates of a THREADING CHAIN.
+  #
+  # `relight` is the world_server shape reduced: a record with two Seq fields
+  # is threaded through two calls, and only ONE field of the last result is
+  # returned. Everything else each step allocated is abandoned. On Odin that
+  # was 4 948 MB for the real application and 322 MB here; Nim's ARC and D's
+  # GC both sit at 10 MB, so one budget separates them.
+  #
+  # TWO RULES CLOSED IT, and both are about GRANULARITY rather than analysis:
+  # a twin frees its parameter PER SLOT (it used to be all-or-nothing, so one
+  # returned field that aliases the parameter kept every other field alive),
+  # and a local's escape is asked PER SLOT too (`c.light` escapes, `c.height`
+  # does not).
+  #
+  # Verified to be measuring the leak rather than a build failure:
+  # `TUCK_NO_SEQ_FREE=1` puts it back at 322 MB and this assertion fails.
+  t.src """
+import seq
+
+type Flood:
+  height: Seq[int]
+  light:  Seq[int]
+  n:      int
+
+fn zeroed({levels: int}) -> Seq[int]:
+  var out = [0]
+  var i = 1
+  for i < levels:
+    out = {items: out, value: 0} push
+    i = i + 1
+  return out
+
+fn step({f: Flood}) -> Flood:
+  var l = f.light
+  l[0] = l[0] + 1
+  return {height: f.height, light: l, n: f.n + 1} Flood
+
+fn relight({h: Seq[int], l: Seq[int]}) -> Seq[int]:
+  let a = {height: h, light: l, n: 0} Flood
+  let b = {f: a} step
+  let c = {f: b} step
+  return c.light
+
+fn spin({h: Seq[int], l: Seq[int], rounds: int}) -> int:
+  var i = 0
+  var acc = 0
+  for i < rounds:
+    let out = {h: h, l: l} relight
+    acc = acc + out[0]
+    i = i + 1
+  return acc
+
+fn main() -> int:
+  let h = {levels: 1024} zeroed
+  let l = {levels: 1024} zeroed
+  let acc = {h: h, l: l, rounds: 20000} spin
+  if acc != 40000:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("a threading chain does not accumulate its intermediates", 65536)
+  t.bugFixed "a threading chain does not accumulate its intermediates"
+
   t.finish()

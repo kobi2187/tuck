@@ -1250,6 +1250,22 @@ proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
     result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genOdinExpr(e.target.receiver) & ")")
 
+proc scopeFrees(ctx: OdinCodegenCtx, name: string): string =
+  ## The `defer delete`s a declaration of `name` carries.
+  ##
+  ## SHARED, because there are two paths that declare a local and only one of
+  ## them used to run this. `genAssign`'s threaded-call branch returns early
+  ## with `x := f_moved(y)` and never reaches `genOdinVarDecl`, which is
+  ## exactly the shape `relight`'s intermediates have — so the frees were
+  ## computed, correct, and emitted nowhere.
+  let ind = "  ".repeat(ctx.indent)
+  if name in ctx.ownedStrLocals:
+    result.add("\n" & ind & "defer delete(" & name & ")")
+  if name in ctx.ownedSeqLocals:
+    for slot in ctx.ownedSeqLocals[name]:
+      let path = if slot.len == 0: name else: name & "." & slot
+      result.add("\n" & ind & "defer delete(" & path & ")")
+
 proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   ## The first assignment to a name, which DECLARES it.
   ctx.definedVars.incl(e.target.name)
@@ -1266,17 +1282,7 @@ proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # out of the block. `ownedStrLocalsOf` has already established that the name
   # is assigned exactly once, so this fires on exactly the allocation it
   # names. See EV-20.
-  var dfr = ""
-  let ind2 = "  ".repeat(ctx.indent)
-  if e.target.name in ctx.ownedStrLocals:
-    dfr.add("\n" & ind2 & "defer delete(" & e.target.name & ")")
-  # SPIKE, Stage D: the same for a Seq this body allocated and never lets go.
-  if e.target.name in ctx.ownedSeqLocals:
-    for slot in ctx.ownedSeqLocals[e.target.name]:
-      let path = if slot.len == 0: e.target.name
-                 else: e.target.name & "." & slot
-      dfr.add("\n" & ind2 & "defer delete(" & path & ")")
-  decl & dfr & fixups
+  decl & ctx.scopeFrees(e.target.name) & fixups
 
 proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
   ## ITEM 4, MEASURED — see thoughts/ssa-mirror-design.md, Stage C.
@@ -1319,7 +1325,8 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
     if isNew: ctx.definedVars.incl(e.target.name)
     return ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
            movedName(base) & "(" &
-           ctx.genCallArgs(threaded, base).join(", ") & ")"
+           ctx.genCallArgs(threaded, base).join(", ") & ")" &
+           (if isNew: ctx.scopeFrees(e.target.name) else: "")
   let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:
@@ -1330,7 +1337,12 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
                                         e.target.fieldName)
     if prefix != "": return prefix & "_set(" & valStr & ")"
   let tgt = ctx.genOdinAssignTarget(e.target)
-  ctx.withAssignValidate(e, tgt & " = " & valStr &
+  # THE OLD VALUE DIES HERE. A `defer` cannot reach this: it fires once, and
+  # a loop abandons one buffer per iteration. See reassignedAndOwned (#77).
+  var pre = ""
+  if e.target.kind == exkVar and e.target.name in ctx.freeOnReassign:
+    pre = "delete(" & tgt & ")\n" & "  ".repeat(ctx.indent)
+  ctx.withAssignValidate(e, pre & tgt & " = " & valStr &
                             ctx.seqFieldFixups(tgt, e.assignVal))
 
 proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =

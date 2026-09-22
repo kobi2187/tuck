@@ -31,6 +31,8 @@ type
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return
     tmpCounter*: int
+    freeOnReassign*: HashSet[string]
+      ## Locals whose OLD value is freed before each overwrite (#77).
     ownedSeqLocals*: Table[string, seq[string]]
       ## SPIKE, Stage D: local -> the slots this body owns and frees.
     ownedStrLocals*: HashSet[string]
