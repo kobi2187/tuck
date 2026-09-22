@@ -1,0 +1,11 @@
+fn inc
+  b0 entry  [exits]
+  %0   n.0            = entry              in b0  reads 8:10 FINAL
+
+fn straight
+  b0 entry  [exits]
+  %0   a.0            = entry              in b0  reads 11:11, 12:15 FINAL
+  %1   x.0            = alias              in b0  reads 12:11, 13:11 FINAL
+  %2   y.0            = opaque             in b0  reads 14:11 FINAL
+  %3   x.1            = call               in b0  reads 14:7 FINAL
+  %4   x.2            = opaque             in b0  reads 15:10 FINAL

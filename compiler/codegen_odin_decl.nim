@@ -15,7 +15,7 @@ import codegen_odin_util
 from mangle import mangleName
 from lowering_seqcopy import seqFieldNames
 import analysis_ownership   ## decides the frees; this file only prints them
-from analysis_ssa import pathOf   # the `str` pass above still walks paths
+from ssa_ir import pathOf   # the `str` pass above still walks paths
 import os
 import ./codegen_odin
 

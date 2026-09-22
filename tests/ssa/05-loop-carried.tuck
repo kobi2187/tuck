@@ -1,0 +1,24 @@
+# A LOOP THAT CARRIES ITS VALUE — reassigned on SOME paths only.
+#
+# When `c` is false the turn leaves `x` alone, so the same buffer comes back
+# round the back edge and the body reads it again next turn. The phi's
+# operand chain leads back to itself: it CARRIES ITSELF.
+#
+#   - `{n: x} use` in the body is NOT final — it repeats
+#   - `return x` after the loop is final
+# Both builders once called the body read final. Nothing acted on it in this
+# shape, but a final read is licence to move, and moving x there frees what
+# the next turn reads.
+fn use({n: int}) -> int:
+  return n
+
+fn carry({c: bool, n: int}) -> int:
+  var x = 1
+  var i = 0
+  var t = 0
+  for i < n:
+    t = t + ({n: x} use)
+    if c:
+      x = i
+    i = i + 1
+  return x + t

@@ -473,7 +473,7 @@ proc slugify(s: string): string =
     elif result.len == 0 or result[^1] != '-': result.add '-'
   result = result.strip(chars = {'-'})
 
-proc unifiedDiff(want, got: string, ctx: int): string =
+proc unifiedDiff*(want, got: string, ctx: int): string =
   ## Enough of a diff to name the first divergence. lib.sh shelled out to
   ## `diff -u` and printed lines 4..12; the point is the same — show where it
   ## changed, not the whole file.

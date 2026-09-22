@@ -1,0 +1,5 @@
+fn withScratch
+  b0 entry  [exits]
+  %0   n.0            = entry              in b0  reads 8:17 FINAL
+  %1   scratch.0      = alias              in b0  reads 10:5, 11:10
+  deferred: scratch

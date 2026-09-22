@@ -1,0 +1,23 @@
+fn use
+  b0 entry  [exits]
+  %0   n.0            = entry              in b0  reads 13:10 FINAL
+
+fn carry
+  b0 entry
+  b1 loop.head <- b0 b5
+  b2 loop.exit <- b1  [exits]
+  b3 loop.body <- b1
+  b4 then <- b3
+  b5 join <- b4 b3
+  %0   x.0            = literal            in b0
+  %1   i.0            = literal            in b0
+  %2   t.0            = literal            in b0
+  %3   i.1            = phi(%1, %11)       in b1  reads 19:7, 22:11, 23:9 FINAL
+  %5   t.1            = phi(%2, %7)        in b1  reads 20:9 FINAL, 24:14 FINAL
+  %6   x.1            = phi(%0, %12)       in b1  reads 20:18, 24:10 FINAL
+  %7   t.2            = opaque             in b3
+  %9   x.2            = alias              in b4
+  %11  i.3            = opaque             in b5
+  %12  x.3            = phi(%9, %6)        in b5
+  %14  c.1            = entry              in b0  reads 21:8
+  %16  n.1            = entry              in b0  reads 19:11

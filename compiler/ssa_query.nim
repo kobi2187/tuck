@@ -23,7 +23,7 @@
 #
 # The old encoding could answer the first two only for the shapes its author
 # thought of. This answers them for any graph the builder can produce.
-import tables, sets
+import tables, sets, strutils, algorithm
 import ast
 import ssa_ir
 
@@ -85,6 +85,45 @@ proc onCycle*(fn: SsaFn, succ: seq[seq[BlockId]], b: BlockId): bool =
 
 # --- last use ---------------------------------------------------------------
 
+proc phiUsers(fn: SsaFn): seq[seq[ValueId]] =
+  ## For each value, the phis that take it as an operand.
+  result = newSeq[seq[ValueId]](fn.values.len)
+  for p in fn.values:
+    if p.def.kind != dkPhi: continue
+    for op in p.def.inputs: result[int32(op)].add p.id
+
+proc arrivesFrom(fn: SsaFn, p: ValueId, x: ValueId, start: BlockId,
+                 after: HashSet[BlockId]): bool =
+  ## Can `x` reach phi `p` along a path starting at `start`? Only through the
+  ## predecessor edge that carries it: operand k arrives from predecessor k,
+  ## and that predecessor must be where we are or somewhere we can get to.
+  ##
+  ##     var r = k
+  ##     if c: r = r + 1       # reads r.0 here...
+  ##     return r              # ...but on THIS path the phi takes r.1
+  let phi = fn.values[int32(p)]
+  let preds = fn.blocks[int32(phi.blk)].preds
+  for k, op in phi.def.inputs:
+    if op == x and (preds[k] == start or preds[k] in after): return true
+  false
+
+proc readThroughPhi(fn: SsaFn, users: seq[seq[ValueId]], v: ValueId,
+                    start: BlockId, after: HashSet[BlockId]): bool =
+  ## Is the buffer read again later under a phi's name? Walks the phis `v`
+  ## flows into, following only the edges this read can actually take.
+  var seen: HashSet[int32]
+  var stack = @[v]
+  while stack.len > 0:
+    let x = stack.pop()
+    for p in users[int32(x)]:
+      if p == v or int32(p) in seen: continue
+      if not fn.arrivesFrom(p, x, start, after): continue
+      seen.incl int32(p)
+      for w in fn.values[int32(p)].uses:
+        if w.blk in after: return true
+      stack.add p
+  false
+
 proc followedFrom(v: Value, i: int, after: HashSet[BlockId]): bool =
   ## Is use `i` of this value followed by another read of the SAME value?
   ##
@@ -121,6 +160,7 @@ proc finalUses*(fn: SsaFn): HashSet[NodeId] =
   ##      arms of one branch do not reach each other, so rule 2 does not fire.
   ##      The old encoding needed an explicit test for it.
   let succ = fn.successors()
+  let users = fn.phiUsers()
 
   for v in fn.values:
     if v.uses.len == 0: continue
@@ -143,7 +183,12 @@ proc finalUses*(fn: SsaFn): HashSet[NodeId] =
       # RULE 2: a read followed by another read of the same value is not
       # final. Sibling arms need no rule of their own: they do not reach each
       # other, so this simply does not fire.
-      if not v.followedFrom(i, after): result.incl u.at
+      if v.followedFrom(i, after): continue
+      # RULE 2, through a join. `%1` read in one arm flows into the join's
+      # phi, and a later arm reads the PHI — the same buffer under a new
+      # name. Counting only `%1`'s own uses called the first read final.
+      if fn.readThroughPhi(users, v.id, u.blk, after): continue
+      result.incl u.at
 
 # --- structural invariants --------------------------------------------------
 
@@ -159,6 +204,11 @@ proc phiErrors(fn: SsaFn, v: Value): seq[string] =
   # A LIVE phi has at least two operands; one means `tryRemoveTrivialPhi` did
   # not run, which is how five versions of an unchanging `exit` happened.
   # Zero means it was removed and the slot is a tombstone.
+  if v.def.inputs.len > 1 and
+     v.def.inputs.len != fn.blocks[int32(v.blk)].preds.len:
+    result.add $v.id & " (" & v.place & ") has " & $v.def.inputs.len &
+               " operands for " & $fn.blocks[int32(v.blk)].preds.len &
+               " predecessors"
   if v.def.inputs.len == 1:
     result.add $v.id & " (" & v.place & ") is a trivial phi left in place"
   for op in v.def.inputs:
@@ -193,3 +243,45 @@ proc valueAt*(fn: SsaFn, n: NodeId): ValueId =
   ## ownership pass — is holding a node and wants to know which buffer it is
   ## looking at, without knowing anything about places or versions.
   if n.isSet and n in fn.byNode: fn.byNode[n] else: NoValue
+
+# --- rendering --------------------------------------------------------------
+
+proc defText(fn: SsaFn, v: Value): string =
+  result = ($v.def.kind)[2 .. ^1].toLowerAscii
+  if v.def.inputs.len > 0:
+    var ins: seq[string]
+    for i in v.def.inputs: ins.add $i
+    result.add "(" & ins.join(", ") & ")"
+
+proc render*(fn: SsaFn): string =
+  ## The graph as a reader wants it, and as the goldens pin it: every block
+  ## with its predecessors, every live value with where it came from, and
+  ## every read by source position with the FINAL verdict beside it.
+  ##
+  ## Stable on purpose. No NodeIds (they depend on how much of the program
+  ## was parsed first) and no removed phis (a tombstone is a construction
+  ## detail); value and block numbers stay, because a phi's operands are
+  ## meaningless without them.
+  let final = fn.finalUses()
+  result = "fn " & fn.name & "\n"
+  for b in fn.blocks:
+    var ps: seq[string]
+    for p in b.preds: ps.add $p
+    result.add "  " & $b.id & " " & b.label &
+               (if ps.len > 0: " <- " & ps.join(" ") else: "") &
+               (if b.exits: "  [exits]" else: "") & "\n"
+  for v in fn.values:
+    if v.def.kind == dkPhi and v.def.inputs.len == 0: continue  # removed
+    var reads: seq[string]
+    for u in v.uses:
+      reads.add $u.line & ":" & $u.col & (if u.at in final: " FINAL" else: "")
+    result.add "  " & alignLeft($v.id, 4) & " " &
+               alignLeft(v.place & "." & $v.version, 14) & " = " &
+               alignLeft(fn.defText(v), 18) & " in " & $v.blk
+    if reads.len > 0: result.add "  reads " & reads.join(", ")
+    result.add "\n"
+  if fn.deferredRoots.len > 0:
+    var roots: seq[string]
+    for r in fn.deferredRoots: roots.add r
+    roots.sort()
+    result.add "  deferred: " & roots.join(" ") & "\n"

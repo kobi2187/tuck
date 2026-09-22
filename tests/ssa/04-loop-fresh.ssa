@@ -1,0 +1,12 @@
+fn sum
+  b0 entry
+  b1 loop.head <- b0 b3
+  b2 loop.exit <- b1  [exits]
+  b3 loop.body <- b1
+  %0   acc.0          = literal            in b0
+  %1   i.0            = literal            in b0
+  %2   i.1            = phi(%1, %6)        in b1  reads 14:7, 15:17, 16:9 FINAL
+  %4   acc.1          = phi(%0, %5)        in b1  reads 15:11 FINAL, 17:10 FINAL
+  %5   acc.2          = opaque             in b3
+  %6   i.2            = opaque             in b3
+  %7   n.1            = entry              in b0  reads 14:11

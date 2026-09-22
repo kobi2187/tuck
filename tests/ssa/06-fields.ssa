@@ -1,0 +1,15 @@
+fn mk
+  b0 entry  [exits]
+  %0   n.0            = entry              in b0  reads 15:15, 15:22 FINAL
+
+fn fields
+  b0 entry  [exits]
+  %0   b.0            = entry              in b0
+  %1   b.lo.0         = project(%0)        in b0  reads 18:16 FINAL
+  %2   p.0            = call               in b0
+  %3   p.lo.0         = project(%2)        in b0  reads 19:12 FINAL
+  %4   b.hi.0         = project(%0)        in b0  reads 19:19 FINAL
+  %5   s.0            = opaque             in b0  reads 20:11 FINAL
+  %6   p.1            = call               in b0
+  %7   p.lo.1         = project(%6)        in b0  reads 21:11 FINAL
+  %8   p.hi.0         = project(%6)        in b0  reads 21:18 FINAL

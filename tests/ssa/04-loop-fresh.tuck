@@ -1,0 +1,17 @@
+# A LOOP THAT REDEFINES ITS VALUE EVERY TURN — `x = f(x)`.
+#
+# Every path round the back edge assigns `acc`, so the head phi does not
+# carry itself: each turn reads a fresh value. The body's read of the phi is
+# therefore FINAL for that turn's value, and that final read is what lets a
+# threading call take its argument by move instead of by copy.
+#
+#   - head: phi(acc.0, acc.1) for acc, phi(i.0, i.1) for i
+#   - `acc + i` in the body reads the phi: FINAL
+#   - `return acc` reads the head phi after the loop: FINAL
+fn sum({n: int}) -> int:
+  var acc = 0
+  var i = 0
+  for i < n:
+    acc = acc + i
+    i = i + 1
+  return acc

@@ -48,7 +48,8 @@ import compiler/validate   # the spec-side grammar, for `tuck validate`
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
 import compiler/analysis_liveness
-import compiler/analysis_ssa
+import compiler/ssa_liveness
+import compiler/ssa_build, compiler/ssa_query
 import compiler/complexity
 import compiler/typecheck
 import compiler/lowering
@@ -112,7 +113,7 @@ run). Writes beside the source file, or into -o:DIR if given.
   -o:DIR       output directory
   --root:DIR   import search base (for std/ and sibling modules)
   --target:NAME  select which `when TARGET == "NAME":` blocks compile in
-  --verify-stages  run extra pipeline-ordering assertions (off by default)
+  --no-verify-stages  skip the pipeline-invariant assertions (on by default)
   -v, --verbose  echo before/after every pipeline stage, with its own timing
   -vv            also echo each stage's per-module sub-steps, individually timed
   -O:PASS[,...]  choose optimization passes; `-O:none` disables them all
@@ -202,9 +203,11 @@ options:
                 lets imports resolve regardless of cwd or binary location
   --target:NAME selects which `when TARGET == "NAME":` blocks compile in
                 (spec §8.3; any command). Unset = every such block is dropped.
-  --verify-stages (compile/build) run diagnostic assertions checking a tree
-                carries what the next pipeline stage needs (off by default —
-                see compiler/pipeline.nim).
+  --no-verify-stages (check/compile/build) skip the assertions that a tree
+                carries what the next pipeline stage needs. ON by default:
+                they cost a few ms against a backend build's second, and an
+                invariant checked only on request is one nothing checks
+                (see compiler/pipeline.nim).
   -v, --verbose (check/compile/build) echo before/after every named
                 pipeline stage (compiler/pipeline.nim), timing each one.
                 -vv also echoes each stage's per-module sub-steps,
@@ -630,10 +633,13 @@ when isMainModule:
     else: discard
   if backendFlagCount > 1:
     die("tuck: --odin and --dlang are mutually exclusive — one target per build")
-  # Diagnostic assertions that a tree carries what the next pipeline stage
-  # needs (compiler/pipeline.nim). Off by default — they walk the whole
-  # tree, and existing builds/tests should see no behavior or perf change.
-  let verifyStages = "--verify-stages" in opts
+  # Assertions that a tree carries what the next pipeline stage needs
+  # (compiler/pipeline.nim). ON BY DEFAULT, for the reason the optimization
+  # passes below are: an invariant checked only when asked is an invariant
+  # nothing checks. They cost ~2-5 ms on the largest program in the tree,
+  # against ~1 s for the backend build. `--verify-stages` is still accepted,
+  # and is now a no-op.
+  let verifyStages = "--no-verify-stages" notin opts
   # Optimization passes (compiler/optimize.nim) are ON by default — a pass
   # that only runs when asked for is a pass nothing exercises, and every one
   # here is required to be semantics-preserving.
@@ -749,6 +755,14 @@ when isMainModule:
   of "check", "ch":
     discard checkProgram(path, verifyStages = verifyStages)
     echo "OK (", elapsedMs(t0), ")"
+  of "ssa":
+    # The SSA graph of every body in THIS file (not its imports), with each
+    # read's FINAL verdict — what `tests/ssa/*.ssa` pins.
+    for lm in checkProgram(path, verifyStages = verifyStages):
+      if lm.path != absolutePath(path): continue
+      for d in lm.m.decls:
+        if d == nil or d.kind notin {dkFn, dkTask}: continue
+        echo ssa_query.render(ssa_build.buildFn(semLayer, d))
   of "validate", "v":
     # The SPEC grammar's opinion of this file, cross-checked against the
     # parser's. Both run; a disagreement is the output, because a

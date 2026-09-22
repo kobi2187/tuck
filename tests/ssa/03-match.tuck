@@ -1,0 +1,21 @@
+# MATCH. A wildcard arm makes the match exhaustive, so the join's only
+# predecessors are the arms: control cannot fall past the match without
+# taking one, and the phi has exactly one operand per arm.
+#
+#   - `pick`: phi(acc.1, acc.2, acc.3), and NOT the pre-match acc.0
+#   - `partial` has no wildcard over an int, so the subject block is a
+#     predecessor too and acc.0 is an operand
+fn pick({n: int}) -> int:
+  var acc = 0
+  match n:
+    | 0 -> acc = 1
+    | 1 -> acc = 2
+    | _ -> acc = 3
+  return acc
+
+fn partial({n: int}) -> int:
+  var acc = 0
+  match n:
+    | 0 -> acc = 1
+    | 1 -> acc = 2
+  return acc

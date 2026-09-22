@@ -16,7 +16,7 @@ import resolution
 import ast_query
 import codegen_common
 from lowering_seqcopy import needsDup, recordDupFields
-from analysis_ssa import pathOf
+from ssa_ir import pathOf
 from os import getEnv
 
 let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0

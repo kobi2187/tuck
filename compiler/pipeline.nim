@@ -26,6 +26,7 @@ import sets, os
 import ssa_build
 import ssa_query
 import ssa_ir
+import ssa_liveness
 
 type
   PipelineStage* = enum
@@ -158,9 +159,22 @@ proc assertNoMissingTypes*(mods: seq[Module]) =
       "missing type marker after typecheck (a checker gap, not a real error) " &
       "at " & lines.join(", "))
 
+proc livenessDiff(reference: HashSet[NodeId], fn: ssa_ir.SsaFn):
+    tuple[agree, onlyMirror, onlyPass: int] =
+  ## The graph's final uses against the oracle's, restricted to the reads
+  ## this graph recorded.
+  let mine = ssa_query.finalUses(fn)
+  var theirs: HashSet[NodeId]
+  for v in fn.values:
+    for u in v.uses:
+      if u.at in reference: theirs.incl u.at
+  result.agree = (mine * theirs).len
+  result.onlyMirror = (mine - theirs).len
+  result.onlyPass = (theirs - mine).len
+
 proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
-  ## After psTypecheck, under `--verify-stages`: the value mirror
-  ## (compiler/analysis_ssa.nim) must be structurally sound for every body in
+  ## After psTypecheck, under `--verify-stages`: the SSA graph
+  ## (compiler/ssa_build.nim) must be structurally sound for every body in
   ## the program.
   ##
   ## Stage A of thoughts/ssa-mirror-design.md, and the reason it is a
@@ -180,8 +194,8 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
     # does — so this recomputes its answer independently and checks the
     # mirror against it. One documented divergence is allowed, below.
     let reference = referenceFinalUses(res, m)
-    for fn in buildModuleSsa(res, m):
-      bad.add(structuralErrors(fn))
+    for fn in ssa_liveness.buildModuleSsa(res, m):
+      bad.add(ssa_query.structuralErrors(fn))
       # STAGE A.2, and the criterion is a SUPERSET rather than equality.
       #
       # The design document asked for an identical answer. Writing it showed
@@ -201,7 +215,10 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
       # capability lost; a site it invents is a use-after-move. So
       # `onlyPass` is the assertion and `onlyMirror` is the measurement.
       let d = livenessDiff(reference, fn)
-      if d.onlyPass > 0 and not deferExempt(fn):
+      # A `defer` is the one documented divergence: the oracle keeps only the
+      # PATHS a defer reads, then stamps the root, handing the defer a moved
+      # value. The graph keeps the whole root live, which is right.
+      if d.onlyPass > 0 and fn.deferredRoots.len == 0:
         bad.add(fn.name & ": the mirror misses " & $d.onlyPass &
                 " final use(s) analysis_liveness proves")
       when not defined(release):
@@ -309,6 +326,15 @@ proc ssaRebuildDiff*(res: Resolution, mods: seq[Module]) =
                      " of ", $v.def.kind, " in ", $v.blk, " read in ", $u.blk
         if (old - nw).len > 0:
           echo "SSADIFF ", d.name, " onlyOld=", (old - nw).len
+          var recorded: HashSet[NodeId]
+          for v in fresh.values:
+            for u in v.uses: recorded.incl u.at
+          for ov in analysis_ssa.buildFn(res, d).values:
+            for ou in ov.uses:
+              if ou.at in (old - nw):
+                echo "   LOSTREAD ", d.name, " ", ov.place,
+                     (if ou.at in recorded: " (recorded, not final)"
+                      else: " (not a read in the new graph)")
         if getEnv("TUCK_DIFF_SSA") == "dump" and d.name == getEnv("TUCK_DIFF_FN"):
           dumpOneBody(res, d, fresh, old, nw)
     echo "SSATOTAL agree=", agree, " onlyNew=", onlyNew,

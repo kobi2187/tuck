@@ -46,7 +46,7 @@ import resolution
 import ast_query
 from lowering import getFieldsForType
 import twin_shape
-import analysis_ssa
+import ssa_ir, ssa_build, ssa_query
 
 const MaxRounds = 8
   ## Fixpoint bound. Bodies are small and the lattice has three levels, so
@@ -442,14 +442,14 @@ proc threadsFirstArg(res: Resolution, m: Module, e: Expr): bool =
 proc ssaOwnSeed(c: var Ctx, fn: SsaFn, v: Value): bool =
   ## What this definition says on its own, before anything flows into it.
   case v.def.kind
-  of dfEntry:
+  of dkEntry:
     # A parameter is the caller's buffer on D and Odin. The ONE exception is
     # the parameter a MOVED twin took destructively, which the caller has
     # already given away.
     v.place == c.moved
-  of dfLiteral:
+  of dkLiteral:
     true
-  of dfConstruct, dfCall:
+  of dkConstruct, dkCall:
     ownedForMove(c, provOfRoot(c, v.place), c.res.typeFor(v.def.src))
   else:
     false
@@ -467,16 +467,16 @@ proc ssaFlowsOwn(c: var Ctx, m: Module, fn: SsaFn, v: Value,
                  own: seq[bool]): bool =
   ## What flows INTO this version from the ones it was built out of.
   case v.def.kind
-  of dfProject:
+  of dkProject:
     v.def.inputs.len > 0 and own[int32(v.def.inputs[0])] and
       ssaFieldIsOurs(c, v.place)
-  of dfPhi:
+  of dkPhi:
     # A join is ours only if it is ours on EVERY path.
     if v.def.inputs.len == 0: return false
     for inp in v.def.inputs:
       if not own[int32(inp)]: return false
     true
-  of dfCall:
+  of dkCall:
     # A twin hands back either a buffer it allocated or the one it was
     # given, so the result is ours when the argument we gave it was.
     #
@@ -488,8 +488,8 @@ proc ssaFlowsOwn(c: var Ctx, m: Module, fn: SsaFn, v: Value,
     # does — and when Stage C removes it this rule is what carries the fact.
     let src = v.def.src
     if not threadsFirstArg(c.res, m, src): return false
-    if src.args[0].id notin fn.readAt: return false
-    own[int32(fn.readAt[src.args[0].id])]
+    if src.args[0].id notin fn.byNode: return false
+    own[int32(fn.byNode[src.args[0].id])]
   else: false
 
 proc ssaOwnership(c: var Ctx, m: Module, fn: SsaFn): seq[bool] =
@@ -555,8 +555,8 @@ proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
   let final = finalUses(fn)
   debugOwn(d, c, fn, own)
   for a in threadSites(res, m, d.fnBody):
-    if a.id notin final or a.id notin fn.readAt: continue
-    let v = fn.readAt[a.id]
+    if a.id notin final or a.id notin fn.byNode: continue
+    let v = fn.byNode[a.id]
     if not own[int32(v)]: continue
     result.sites.incl(a.id)
     # ...and if what went was a slot of OUR moved parameter, it is no longer
@@ -581,8 +581,8 @@ proc movableArgsSsa*(res: Resolution, m: Module, d: Decl): HashSet[NodeId] =
   let final = finalUses(fn)
   debugOwn(d, c, fn, own)
   for a in threadSites(res, m, d.fnBody):
-    if a.id notin final or a.id notin fn.readAt: continue
-    if own[int32(fn.readAt[a.id])]: result.incl(a.id)
+    if a.id notin final or a.id notin fn.byNode: continue
+    if own[int32(fn.byNode[a.id])]: result.incl(a.id)
 
 proc markMovableArgs(res: Resolution, m: Module, d: Decl) =
   ## Stamp the first argument of every threading call this body may give away.
@@ -825,7 +825,7 @@ proc allocIdOf(fn: SsaFn, e: Expr): string =
   ## caller must read it as "could be anything", which is the safe direction:
   ## it forces the copy.
   if e == nil: return ""
-  if e.id.isSet and e.id in fn.readAt: return "v" & $int32(fn.readAt[e.id])
+  if e.id.isSet and e.id in fn.byNode: return "v" & $int32(fn.byNode[e.id])
   if e.kind in {exkCall, exkChain, exkList, exkStruct}:
     ensureId(e)
     return "n" & $uint32(e.id)

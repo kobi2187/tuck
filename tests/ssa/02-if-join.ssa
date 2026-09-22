@@ -1,0 +1,21 @@
+fn both
+  b0 entry
+  b1 then <- b0
+  b2 else <- b0
+  b3 join <- b1 b2  [exits]
+  %0   r.0            = literal            in b0
+  %1   c.0            = entry              in b0  reads 9:6 FINAL
+  %2   k.0            = entry              in b0  reads 10:9 FINAL, 12:9 FINAL
+  %3   r.1            = opaque             in b1
+  %4   r.2            = opaque             in b2
+  %5   r.3            = phi(%3, %4)        in b3  reads 13:10 FINAL
+
+fn oneArm
+  b0 entry
+  b1 then <- b0
+  b2 join <- b1 b0  [exits]
+  %0   k.0            = entry              in b0  reads 16:11, 19:14 FINAL
+  %1   r.0            = alias              in b0  reads 18:9 FINAL
+  %2   c.0            = entry              in b0  reads 17:6 FINAL
+  %3   r.1            = opaque             in b1
+  %4   r.2            = phi(%3, %1)        in b2  reads 19:10 FINAL

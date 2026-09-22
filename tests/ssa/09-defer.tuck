@@ -1,0 +1,11 @@
+# DEFER. A defer body runs at SCOPE EXIT, after every read the graph can see,
+# so nothing it names has a final read inside the body.
+#
+#   - `deferred: scratch` is listed; neither read of scratch is FINAL.
+#   - 10:5 is the defer's `scratch = 0` TARGET: a defer body is walked for
+#     reads only, never definitions, and the deferred root keeps it all live.
+fn withScratch({n: int}) -> int:
+  var scratch = n
+  defer:
+    scratch = 0
+  return scratch + 1

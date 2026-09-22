@@ -112,6 +112,8 @@ type
     blk*: BlockId        ## WHERE the read happens. Replaces the region
                          ## string: "can these two both happen" is now a
                          ## reachability question between two blocks.
+    line*, col*: int     ## the read's source position, for `tuck ssa` and
+                         ## the goldens — a NodeId means nothing to a reader
 
   Value* = object
     id*: ValueId

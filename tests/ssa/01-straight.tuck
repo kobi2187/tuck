@@ -1,0 +1,15 @@
+# STRAIGHT LINE. One block, so every question is program order.
+#
+#   - each assignment to `x` is a new VERSION: x.0, x.1, x.2
+#   - a parameter arrives as `entry`
+#   - a value's last read is FINAL; an earlier read of it is not
+#   - x.1's only read is its last, so it is final although x lives on
+fn inc({n: int}) -> int:
+  return n + 1
+
+fn straight({a: int}) -> int:
+  var x = a
+  let y = x + a
+  x = {n: x} inc
+  x = x + y
+  return x

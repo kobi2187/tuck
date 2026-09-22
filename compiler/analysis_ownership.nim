@@ -117,7 +117,7 @@ import ast, tables, sets, os
 import resolution
 import ast_query
 import twin_shape
-from analysis_ssa import rootOf, pathOf
+from ssa_ir import rootOf, pathOf
 from analysis_provenance import exclusivelyOwned, slotIsFresh, consumedSlotsSsa
 from lowering_seqcopy import needsDup, recordDupFields
 
