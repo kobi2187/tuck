@@ -449,6 +449,10 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   # before the per-backend deepCopies because the answer is about the
   # PROGRAM, not about which language it is being emitted into.
   for lm in loaded: markLivenessSsa(semLayer, lm.m)
+  block:
+    var lmMods: seq[Module]
+    for lm in loaded: lmMods.add lm.m
+    ssaRebuildDiff(semLayer, lmMods)
   if verifyStages:
     var checkedMods: seq[Module]
     for lm in loaded: checkedMods.add(lm.m)

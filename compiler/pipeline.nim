@@ -23,6 +23,9 @@ import strutils
 import analysis_ssa
 import analysis_liveness
 import sets, os
+import ssa_build
+import ssa_query
+import ssa_ir
 
 type
   PipelineStage* = enum
@@ -239,3 +242,49 @@ proc assertMangleIdempotent*(mods: seq[Module]) =
       "pipeline: " & $bad.len &
       " declared name(s) missing the tuck_ prefix after mangling: " &
       bad.join(", "))
+
+
+proc ssaRebuildDiff*(res: Resolution, mods: seq[Module]) =
+  ## THE BRAUN REBUILD, measured against what it is meant to replace.
+  ##
+  ## `compiler/ssa_build.nim` implements Braun et al. (2013) properly, where
+  ## `analysis_ssa.nim` is an ad-hoc two-thirds of the same paper. Nothing
+  ## consults the new one yet; it earns that the way Stage A earned it, by
+  ## reproducing the old answer across the corpus and both applications and
+  ## having every difference accounted for.
+  ##
+  ## The criterion is NOT "identical". Sealing and trivial-phi removal make
+  ## the new construction strictly more precise in a loop, exactly as SSA was
+  ## strictly more precise than the walk it replaced. So `onlyOld` — a read
+  ## the old builder called final and the new one does not — is the number
+  ## that must be zero; `onlyNew` is a result to read, not a failure.
+  ##
+  ##   TUCK_DIFF_SSA=1 ./tuck ch file.tuck
+  when not defined(release):
+    if getEnv("TUCK_DIFF_SSA").len == 0: return
+    var agree, onlyNew, onlyOld, structural = 0
+    for m in mods:
+      for d in m.allFns():
+        if d.fnBody == nil: continue
+        let old = analysis_ssa.finalUses(analysis_ssa.buildFn(res, d))
+        let fresh = ssa_build.buildFn(res, d)
+        for e in ssa_query.structuralErrors(fresh):
+          inc structural
+          echo "SSADIFF-STRUCT ", d.name, ": ", e
+        let nw = ssa_query.finalUses(fresh)
+        agree += (old * nw).len
+        onlyNew += (nw - old).len
+        onlyOld += (old - nw).len
+        if (old - nw).len > 0:
+          echo "SSADIFF ", d.name, " onlyOld=", (old - nw).len,
+               "  <-- the new builder lost a final use"
+          if getEnv("TUCK_DIFF_SSA") == "dump" and d.name == getEnv("TUCK_DIFF_FN"):
+            echo ssa_build.dump(fresh)
+            for v in fresh.values:
+              for u in v.uses:
+                echo "   use node=", $uint32(u.at), " of ", $v.id, " ", v.place,
+                     " blk=", $u.blk,
+                     (if u.at in old: " OLD-FINAL" else: ""),
+                     (if u.at in nw: " NEW-FINAL" else: "")
+    echo "SSATOTAL agree=", agree, " onlyNew=", onlyNew,
+         " onlyOld=", onlyOld, " structural=", structural
