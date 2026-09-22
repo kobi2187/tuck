@@ -47,6 +47,15 @@ on one run and 48 on the next (PR #75). The analysis cannot simply call the
 codegen predicate, because codegen sits downstream — so the duplication is
 structural, not laziness.
 
+*Closed 2026-09-22, and it is the one of the six that has nothing to do with
+the mirror.* The duplication was structural, so the fix is: `twin_shape.nim`
+holds the predicate BELOW both, reaching for neither codegen nor an
+analysis. `maybeMovedParam` is `movedFnParam` now, and is no longer the
+wider of the two — wider was a hedge against drift, and with one definition
+there is nothing to drift. Emitted output identical everywhere, the same 24
+move stamps, and the complexity ratchet went 26 to 25 because a duplicated
+predicate was a duplicated routine.
+
 **6. `movedCallInto` needs a `targetName`.** A syntactic fact, threaded into
 an ownership question, because the decision is made where the syntax is
 rather than where the value is.

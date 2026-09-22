@@ -24,7 +24,8 @@
 import resolution
 import ast, lowering, ast_query, ast_ops, strutils, sets, tables, algorithm, options
 import ./ast_query
-from lowering_seqcopy import seqFieldNames
+import twin_shape
+export twin_shape
 
 const TagField* = "tuckTag"
   ## The discriminator an actor's message envelope and a registry's event type
@@ -495,19 +496,6 @@ proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
 
 proc ownsHeap(m: Module, t: Type, depth = 0): bool
 
-proc genericBaseBody(m: Module, t: Type): Type =
-  ## A GENERIC application's declared body — `Set[T]` -> `Set`'s record.
-  ## getFieldsForType answers @[] for every tkApp on purpose (most are `Seq`
-  ## or a `!T` carrier, which have no declaration), so the lookup is done
-  ## here rather than by widening a function the whole compiler shares.
-  if t == nil or t.kind != tkApp or t.base == nil or t.base.kind != tkNamed:
-    return nil
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == t.base.name:
-      return d.typeBody
-  nil
-
-
 proc anyOwnsHeap(m: Module, ts: seq[Type], depth: int): bool =
   for t in ts:
     if ownsHeap(m, t, depth): return true
@@ -583,94 +571,6 @@ proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
 
 proc ownsHeapType*(m: Module, t: Type): bool = ownsHeap(m, t)
 
-proc twinnableFn(d: Decl): bool =
-  ## A plain fn with a body and at least one parameter — and not `self`,
-  ## which an object member already takes by pointer.
-  d != nil and d.kind == dkFn and d.fnBody != nil and
-    not d.isExtern and not d.isPending and not d.isDecision and
-    d.fnParams.len > 0 and d.fnReturnType != nil and
-    d.fnParams[0].name != "self"
-
-proc sameTypeName(a, b: Type): bool =
-  ## Do two types name the same thing? `Bag` and `Bag`, or `Set[T]` and
-  ## `Set[T]` — a GENERIC container is a tkApp, and the whole alloc tier is
-  ## generic, so restricting this to tkNamed meant not one stdlib module
-  ## qualified.
-  if a == nil or b == nil or a.kind != b.kind: return false
-  case a.kind
-  of tkNamed: a.name == b.name
-  of tkApp:
-    a.base != nil and b.base != nil and a.base.kind == tkNamed and
-      b.base.kind == tkNamed and a.base.name == b.base.name and
-      a.args.len == b.args.len
-  else: false
-
-proc returnWrapsParam(res: Resolution, m: Module, d: Decl, p: Param): bool =
-  ## Does the fn hand the parameter back WRAPPED — `Seq[int]` in, a record
-  ## with a `Seq[int]` field out?
-  ##
-  ## `sweep({ladder: Seq[int], ...}) -> Filled` is the shape, and it is the
-  ## one the matching engine's remaining copies live in: the container really
-  ## is threaded through, just parcelled into a result record on the way out.
-  ## Requiring the return type to be the param type OUTRIGHT missed every
-  ## such fn, so each copied its container defensively on every call.
-  if seqElem(p.typ) == nil: return false
-  for f in getFieldsForType(res, m, d.fnReturnType):
-    if sameTypeName(f.typ, p.typ): return true
-  false
-
-proc threadsBackSameType(res: Resolution, m: Module, d: Decl, p: Param): bool =
-  ## Does the fn hand back the very type its first parameter came in as —
-  ## either directly, or as a field of what it returns?
-  sameTypeName(p.typ, d.fnReturnType) or returnWrapsParam(res, m, d, p)
-
-proc movedCopyFields*(res: Resolution, m: Module, t: Type): seq[string] =
-  ## The Seq-typed FIELDS a MOVED wrapper must copy, resolving a generic
-  ## application to its declared body. ONE definition, used by the predicate
-  ## and by both backends' wrappers — they disagreed once, and the wrapper
-  ## then emitted `s = s.dup` for a `Set[T]`, which dmd answers with "none of
-  ## the overloads of template `object.dup` are callable".
-  result = seqFieldNames(res, m, t)
-  if result.len == 0:
-    result = seqFieldNames(res, m, genericBaseBody(m, t))
-
-proc copyableContainer*(res: Resolution, m: Module, t: Type): bool =
-  ## Can the wrapper actually spell the copy it owes — a Seq, or a record
-  ## with Seq fields? `str` owns heap and is NOT this: the copy helper is
-  ## Seq-shaped, and emitting it for a string param gave "Cannot assign
-  ## 'rt.tuckSeqCopy(title)' of type '[dynamic]T' to 'string'".
-  ##
-  ## Exported because the SEND helpers ask the same question — does this
-  ## payload alias the sender's storage on a backend whose container is a
-  ## header? One definition, because this is exactly the decision three
-  ## backends grew three copies of before. Excluding `str` is right for the
-  ## send too: it is immutable in both D and Odin, so sharing its buffer is
-  ## safe.
-  seqElem(t) != nil or movedCopyFields(res, m, t).len > 0
-
-proc movedFnParam*(res: Resolution, m: Module, d: Decl): string =
-  ## The parameter a MOVED twin would take destructively, or "".
-  ##
-  ## Narrow on purpose, and narrower than "owns heap": the FIRST parameter,
-  ## when the fn hands back that same type AND the wrapper can actually spell
-  ## the copy it owes — a Seq, or a record with Seq fields.
-  ##
-  ## `str` owns heap and is NOT eligible: the wrapper's copy helper is
-  ## Seq-shaped, and emitting it for a string param gave "Cannot assign
-  ## 'rt.tuckSeqCopy(title)' of type '[dynamic]T' to 'string'". `self` is not
-  ## eligible either — an object member already takes it by pointer, which is
-  ## the opposite convention.
-  ##
-  ## The corpus found both. The twin is emitted for every fn that qualifies,
-  ## so unlike the CALL-SITE rewrite (where an unrecognised shape merely
-  ## misses the speedup) getting this predicate wrong breaks compilation.
-  if not twinnableFn(d): return ""
-  let p = d.fnParams[0]
-  if not threadsBackSameType(res, m, d, p): return ""
-  if not copyableContainer(res, m, p.typ): return ""
-  p.name
-
-proc movedName*(fnName: string): string = fnName & "_moved"
 
 proc rootBindingName*(e: Expr): string =
   ## The name a field path is rooted at: `b` for `b`, `b.items`, `b.a.b`.

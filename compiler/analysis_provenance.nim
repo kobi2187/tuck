@@ -45,6 +45,7 @@ import ast, tables, sets, os, strutils
 import resolution
 import ast_query
 from lowering import getFieldsForType
+import twin_shape
 import analysis_ssa
 
 const MaxRounds = 8
@@ -234,55 +235,21 @@ proc provOf(c: var Ctx, e: Expr): Prov =
     if e.stmts.len == 0: unknownProv() else: provOf(c, e.stmts[^1])
   else: unknownProv()
 
-proc sameNamedType(a, b: Type): bool =
-  ## codegen_common's `sameTypeName`, restated here because that file sits
-  ## downstream of this one and importing it would close a cycle. Kept
-  ## deliberately one notch wider (no arity check on a generic application):
-  ## this predicate fails safe when it is too generous, unsafe when too strict.
-  if a == nil or b == nil or a.kind != b.kind: return false
-  case a.kind
-  of tkNamed: a.name == b.name
-  of tkApp:
-    a.base != nil and b.base != nil and a.base.kind == tkNamed and
-      b.base.kind == tkNamed and a.base.name == b.base.name
-  else: false
-
 proc maybeMovedParam(res: Resolution, m: Module, d: Decl): string =
-  ## The parameter a MOVED twin might take destructively, or "".
+  ## The parameter a MOVED twin takes destructively, or "".
   ##
-  ## DELIBERATELY WIDER than codegen_common's `movedFnParam`, and not only to
-  ## avoid importing it (which would close a cycle — codegen_common sits
-  ## downstream of this pass). The two errors are not symmetric. Thinking a
-  ## param is moved when it is not costs a copy this pass declines to elide;
-  ## MISSING one means claiming a value is fresh when it is the caller's
-  ## buffer, which is the unsound direction. So this drops the
-  ## `copyableContainer` half of the real predicate, which only ever narrows.
-  ## It must therefore track every shape `movedFnParam` accepts. It once
-  ## tracked only ONE of them — the return type being the parameter type
-  ## outright — and when codegen learned the WRAPPED shape (`Seq[int]` in, a
-  ## record with a `Seq[int]` field out) this pass did not. `twin` below
-  ## became a twin whose moved parameter this proc reported as "":
+  ## ONE PREDICATE NOW, shared with codegen through `twin_shape`. This used
+  ## to be a second, wider copy of `movedFnParam` kept in step by hand — the
+  ## analysis could not call codegen's, because codegen sits downstream of
+  ## every analysis. It was not kept in step: codegen learned the WRAPPED
+  ## shape and this did not, and for every fn of that shape `rootedAtMoved`
+  ## could not fire and the twin emitted `defer delete` over the buffer it
+  ## was handing back. See twin_shape.nim's header for the whole account.
   ##
-  ##     fn twin({xs: Seq[int]}) -> Pair2:
-  ##       var one = xs                      # NOT seen as the moved param
-  ##       one = {items: one, value: 1} push
-  ##       return {a: one, b: one} Pair2
-  ##
-  ## so `rootedAtMoved` never fired, `afterBinding` claimed `one` was a copy,
-  ## the returned fields read as fresh, and Stage 3 emitted `defer
-  ## delete(xs)` over the very buffer the fn was handing back.
-  if d == nil or d.kind != dkFn or d.fnBody == nil: return ""
-  if d.isExtern or d.isPending or d.isDecision: return ""
-  if d.fnParams.len == 0 or d.fnReturnType == nil: return ""
-  let p = d.fnParams[0]
-  if p.name == "self": return ""
-  let rt = d.fnReturnType
-  if p.typ == nil or rt == nil: return ""
-  if sameNamedType(p.typ, rt): return p.name
-  if seqElem(p.typ) != nil:
-    for f in getFieldsForType(res, m, rt):
-      if sameNamedType(f.typ, p.typ): return p.name
-  ""
+  ## It is also no longer wider. Wider was a hedge against drift, and with
+  ## one definition there is nothing to drift: a fn codegen does not twin is
+  ## a fn whose parameter nothing takes destructively.
+  movedFnParam(res, m, d)
 
 proc rootedAtMoved(c: Ctx, e: Expr): bool =
   ## Is this value read THROUGH the moved parameter? `s.ladder` inside a twin
