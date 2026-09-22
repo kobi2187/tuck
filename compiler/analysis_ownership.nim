@@ -126,6 +126,19 @@ type
   Slot* = string
     ## "" is the value itself (a bare `Seq`); anything else is a field name.
 
+  FreeKind* = enum
+    ## WHERE a buffer is released. One value may carry at most one of these,
+    ## and that "at most one" is the double-free invariant made structural
+    ## rather than hoped for — see `checkInvariants`.
+    fkScopeExit    ## a `defer` at the declaration: every path out of the block
+    fkOverwrite    ## immediately before the assignment that replaces it
+    fkTwinParam    ## the MOVED twin consuming its first parameter
+
+  FreeSite* = object
+    local*: string
+    slot*: Slot
+    kind*: FreeKind
+
   Ownership* = object
     ## What one function body owns, and where each of those buffers dies.
     freeAtScopeExit*: Table[string, seq[Slot]]
@@ -134,6 +147,15 @@ type
       ## locals whose OLD value dies at each reassignment (step 5)
     twinFreesParam*: seq[Slot]
       ## the slots the MOVED twin frees of the parameter it consumes (step 6)
+    freed*: seq[FreeSite]
+      ## EVERY release this pass decided, in one list.
+      ##
+      ## The three fields above are what each emitter reads; this is what the
+      ## pass can be CHECKED against. Correctness of a free used to be
+      ## established by reading the emitter and running valgrind afterwards —
+      ## a shipped use-after-free got through that (docs/ownership-and-ssa.md,
+      ## M7). Recording the decision where it is made lets the invariants be
+      ## asserted at the moment of deciding, on every build.
 
   Scan = object
     ## Just enough context to answer a question about one body.
@@ -430,6 +452,37 @@ proc twinFreedSlots(s: Scan, d: Decl): seq[Slot] =
 
 # --- the pass ---------------------------------------------------------------
 
+proc checkInvariants*(o: Ownership, d: Decl) =
+  ## What must be true of any answer this pass gives. Cheap, and run on every
+  ## build rather than behind a flag: each of these was a real bug first.
+  var seen: HashSet[string]
+  for f in o.freed:
+    # ONE RELEASE PER SLOT. A slot freed twice is a double free, and that is
+    # not hypothetical: `b` freed at scope exit AND by the twin consuming it
+    # segfaulted `value_semantics`. Here it is a duplicate key.
+    let key = f.local & "\x00" & f.slot
+    doAssert key notin seen,
+      "ownership: " & d.name & " frees " & f.local &
+      (if f.slot.len > 0: "." & f.slot else: "") & " more than once"
+    seen.incl(key)
+
+  # THE TWO LOCAL RULES ARE MUTUALLY EXCLUSIVE. Step 4 needs the name assigned
+  # exactly once; step 5 needs it assigned more than once. A name in both
+  # means one of those counts is wrong, and the emitted code would free the
+  # same buffer at the overwrite and again at the end.
+  for name in o.freeBeforeOverwrite:
+    doAssert name notin o.freeAtScopeExit,
+      "ownership: " & d.name & " frees " & name &
+      " both at an overwrite and at scope exit"
+
+  # A SLOT IS NAMED ONCE PER LOCAL. `@["xs", "xs"]` would emit two deletes.
+  for name, slots in o.freeAtScopeExit:
+    var once: HashSet[Slot]
+    for sl in slots:
+      doAssert sl notin once,
+        "ownership: " & d.name & " lists " & name & "." & sl & " twice"
+      once.incl(sl)
+
 proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
   ## Run all six steps over one function body.
   if not Enabled or d.fnBody == nil: return
@@ -446,6 +499,17 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
 
   result.freeBeforeOverwrite = s.diesAtOverwrite(d, timesAssigned)  # step 5
   result.twinFreesParam = s.twinFreedSlots(d)                       # step 6
+
+  # Every decision above, gathered once so it can be checked as a whole.
+  for name, slots in result.freeAtScopeExit:
+    for sl in slots:
+      result.freed.add FreeSite(local: name, slot: sl, kind: fkScopeExit)
+  for name in result.freeBeforeOverwrite:
+    result.freed.add FreeSite(local: name, slot: "", kind: fkOverwrite)
+  let movedParam = if d.fnParams.len > 0: d.fnParams[0].name else: ""
+  for sl in result.twinFreesParam:
+    result.freed.add FreeSite(local: movedParam, slot: sl, kind: fkTwinParam)
+  checkInvariants(result, d)
 
   when not defined(release):
     if Debug:

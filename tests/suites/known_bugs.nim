@@ -1560,4 +1560,52 @@ fn main() -> int:
   t.hostPeakRss("a threading chain does not accumulate its intermediates", 65536)
   t.bugFixed "a threading chain does not accumulate its intermediates"
 
+  # 20. A `str` a body RETURNS must not be freed by that body.
+  #
+  # EV-20's escape test answered "could this destination be carrying a str"
+  # with FALSE for `str` itself, reasoning that the runtime procs which
+  # answer one allocate rather than passing a string through. That is true of
+  # a CALL and false of a RETURN, and the difference is a use-after-free:
+  #
+  #     tuck_label :: proc (n: int) -> string {
+  #       tuck_s := str.toStr(n)
+  #       defer delete(tuck_s)
+  #       return tuck_s            // <- freed, then returned
+  #     }
+  #
+  # It printed garbage. Nothing caught it: every `str` in the corpus is
+  # consumed where it is built, so no example returns one it allocated. That
+  # gap is what this assertion closes, and it is the SHAPE that matters —
+  # allocate, bind to a name, return the name.
+  t.src """
+import str
+import console
+
+fn label({n: int}) -> str:
+  let s = n.toStr
+  return s
+
+fn main() -> int:
+  let a = {n: 42} label
+  {text: a} console::printLine
+  return {t: a} byteCount
+"""
+  t.okCheck "a fn may return a str it allocated"
+  # ASSERTED ON STDOUT, NOT THE EXIT CODE, and that distinction is the whole
+  # assertion. A use-after-free reads memory that is usually still intact, so
+  # `byteCount` answers 2 whether the buffer was freed or not — the first
+  # version of this guard passed against the bug it was written for. Printing
+  # the string is what forces the allocator to reuse the block: freed it
+  # prints nothing, live it prints 42.
+  # ON EVERY BACKEND, and matched on OUTPUT rather than the exit code. Both
+  # halves were wrong in the first two attempts at this guard, and each made
+  # it pass against the bug it was written for:
+  #   * `runs`/`outputs` run on NIM, which has ARC and never emits the free,
+  #     so the backend with the bug was never asked;
+  #   * a use-after-free reads memory that is usually still intact, so
+  #     `byteCount` answers 2 either way. Printing forces the allocator to
+  #     reuse the block: freed it prints nothing, live it prints 42.
+  t.hostRuns("...and every backend's caller can still read it", 2, "42")
+  t.bugFixed "a returned str is not freed by the body that built it"
+
   t.finish()
