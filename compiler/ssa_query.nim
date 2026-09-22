@@ -38,15 +38,46 @@ proc successors*(fn: SsaFn): seq[seq[BlockId]] =
     for p in b.preds:
       result[int32(p)].add b.id
 
-proc reachable*(fn: SsaFn, succ: seq[seq[BlockId]], src: BlockId): HashSet[BlockId] =
+proc reachable*(fn: SsaFn, succ: seq[seq[BlockId]], src: BlockId,
+                stopAt = NoBlock): HashSet[BlockId] =
   ## Every block that can run after `src`, `src` itself excluded unless a
-  ## cycle comes back to it.
+  ## cycle comes back to it. `stopAt` is entered but not walked through.
   var stack = succ[int32(src)]
   while stack.len > 0:
     let b = stack.pop()
     if b in result: continue
     result.incl b
+    if b == stopAt: continue
     for s in succ[int32(b)]: stack.add s
+
+proc carriesItself*(fn: SsaFn, phi: ValueId): bool =
+  ## Can this phi's own value come back round to it?
+  ##
+  ## For a loop-head phi this is THE question about its reads. If every path
+  ## round the back edge defines a new value, the phi's operand from the latch
+  ## is some other value and each turn reads a different buffer under one SSA
+  ## name. If some path leaves the place alone, the operand chain leads back
+  ## to the phi itself — the SAME buffer survives into the next turn, and a
+  ## read in the body is read again.
+  ##
+  ##     for c:
+  ##       f(x)                  # read again next turn when cond is false
+  ##       if cond: x = g()
+  ##
+  ## Both the old builder and the first version of this one called `f(x)`
+  ## final there. It was latent — nothing acted on that stamp in that shape —
+  ## but a final use is licence to move, and moving `x` there frees what the
+  ## next turn reads.
+  var stack = fn.values[int32(phi)].def.inputs
+  var seen: HashSet[int32]
+  while stack.len > 0:
+    let v = stack.pop()
+    if v == phi: return true
+    if int32(v) in seen: continue
+    seen.incl int32(v)
+    if fn.values[int32(v)].def.kind == dkPhi:
+      for op in fn.values[int32(v)].def.inputs: stack.add op
+  false
 
 proc onCycle*(fn: SsaFn, succ: seq[seq[BlockId]], b: BlockId): bool =
   ## Can this block reach itself? That is exactly "inside a loop".
@@ -95,8 +126,16 @@ proc finalUses*(fn: SsaFn): HashSet[NodeId] =
     if v.uses.len == 0: continue
     if rootOf(v.place) in fn.deferredRoots: continue   # live to scope exit
     let defOnCycle = fn.onCycle(succ, v.blk)
+    # A LOOP-HEAD PHI is the case the two rules below were never written for.
+    # If it carries itself round the loop, a read inside the loop is read
+    # again next turn and is never final. If it does not, every turn is a new
+    # value, and only what follows WITHOUT going back through the head counts.
+    let loopPhi = v.def.kind == dkPhi and defOnCycle
+    let carried = loopPhi and fn.carriesItself(v.id)
+    let stop = if loopPhi and not carried: v.blk else: NoBlock
     for i, u in v.uses:
-      let after = fn.reachable(succ, u.blk)
+      let after = fn.reachable(succ, u.blk, stop)
+      if carried and u.blk != v.blk and fn.onCycle(succ, u.blk): continue
       # RULE 1: a read that repeats is never final — unless the definition is
       # inside the same loop, in which case each turn defines a fresh value
       # and this read does not outlive the one it read.

@@ -300,9 +300,16 @@ proc ssaRebuildDiff*(res: Resolution, mods: seq[Module]) =
         agree += (old * nw).len
         onlyNew += (nw - old).len
         onlyOld += (old - nw).len
+        if (nw - old).len > 0:
+          echo "SSADIFF-NEW ", d.name, " onlyNew=", (nw - old).len
+          for v in fresh.values:
+            for u in v.uses:
+              if u.at in (nw - old):
+                echo "   NEWFINAL node=", $uint32(u.at), " place=", v.place,
+                     " of ", $v.def.kind, " in ", $v.blk, " read in ", $u.blk
         if (old - nw).len > 0:
           echo "SSADIFF ", d.name, " onlyOld=", (old - nw).len
-          if getEnv("TUCK_DIFF_SSA") == "dump" and d.name == getEnv("TUCK_DIFF_FN"):
-            dumpOneBody(res, d, fresh, old, nw)
+        if getEnv("TUCK_DIFF_SSA") == "dump" and d.name == getEnv("TUCK_DIFF_FN"):
+          dumpOneBody(res, d, fresh, old, nw)
     echo "SSATOTAL agree=", agree, " onlyNew=", onlyNew,
          " onlyOld=", onlyOld, " structural=", structural
