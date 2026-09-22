@@ -410,6 +410,31 @@ Guarded by `known_bugs`' "a million temporary strings do not accumulate" —
 be measuring the leak and not a build failure: raise the budget past 33 MB
 and the assertion passes, and `bugOpen` says to flip the marker.
 
+### The sweep that found it, and what else it says
+
+`tools/leakcheck.sh` runs programs under valgrind and reports the
+allocation sites. Its header records what a clean run looks like per
+backend, so a NEW leak is one whose stack names none of the known ones.
+
+Over every runnable example plus both applications, valgrind finds exactly
+three things on Odin, and nothing else:
+
+| | |
+|---|---|
+| this bug | every heap `str` — `strings::Builder`, `os::read_entire_file_from_path` |
+| EV-14 / #82 | `Seq` intermediates — `tuckrt::tuckSeqCopy` |
+| benign | 31 bytes, constant: the `thread::Thread` from `tuckStartActor`, never joined at exit, by design |
+
+`world_server` at 2 000 edits loses 11 MB in 5 338 blocks, and it is three
+loss records of ~1 775 blocks each — `tuckSeqCopy` inside `pass_moved`
+called from `relight_moved`, which is exactly the three arrays per lighting
+update #82 describes. Nim is clean outright; D loses nothing of Tuck's, only
+a constant 32 bytes (80 with actors) of druntime startup — `sortCtors`
+under `rt_init`, `tlsgc.init`, and the GC's own `initialize()`.
+
+So the two open issues account for ALL of it. There is no third category
+hiding, which is worth knowing before anyone goes looking for one.
+
 ---
 
 ## EV-19 — an actor field with no initialiser is silently a zero value
