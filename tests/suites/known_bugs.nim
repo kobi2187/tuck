@@ -1608,4 +1608,36 @@ fn main() -> int:
   t.hostRuns("...and every backend's caller can still read it", 2, "42")
   t.bugFixed "a returned str is not freed by the body that built it"
 
+  # #21 — a type the checker SYNTHESIZED had no declaration edge. A record
+  # construction's type was built bare, so asking for its fields while the
+  # body was being checked fell back to scanning the decl list by name — the
+  # scan that made emit quadratic (#23). Every named type is now made by
+  # `typecheck_collect.namedType`, and lowering ASSERTS on a miss the decl
+  # list would have answered, so the regression is a crash in `tuck c`, not a
+  # silent slowdown. Constructed on every backend, since each lowers its own
+  # copy.
+  #
+  # The assertion found the second half at once: an IMPORTED type's injected
+  # declaration had no id, and `resolveTypeTo` returned silently on one — so
+  # `d: Milliseconds` from std/time was "found" and never linked. Guarded by
+  # examples/32 in odin_backend and by the cross_module suite, which is where
+  # it surfaced.
+  t.src """
+type Config:
+  port: int
+  name: str
+
+fn make({port: int}) -> Config:
+  return {port: port, name: "srv"} Config
+
+fn main() -> int:
+  let c = {port: 7} make
+  return c.port
+"""
+  t.quietly: t.emits("a construction's type carries its declaration edge", "")
+  t.bugFixed "a construction's type carries its declaration edge (#21)"
+  t.quietly: t.emitsOdin("...on Odin too", "")
+  t.bugFixed "a construction's type carries its declaration edge on Odin (#21)"
+  t.runs "...and the program computes it", 7
+
   t.finish()

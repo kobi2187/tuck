@@ -168,7 +168,7 @@ proc run*(t: var T) =
   for base in compileList:
     let proj = projFor(base)
     buildIdx.add (base, t.needCmdAfter(
-      @[odinExe, "build", proj, "-o:none", "-out:" & proj / "prog"],
+      @[odinExe, "build", proj, "-o:none", OdinThreads, "-out:" & proj / "prog"],
       -1,
       stagePrep(base),
       proj))

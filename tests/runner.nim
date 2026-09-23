@@ -62,9 +62,12 @@ if getEnv("TUCK_TEST_PROFILE").len > 0:
   profile = open(getEnv("TUCK_TEST_PROFILE"), fmWrite)
 
 proc isOdinBuild(argv: seq[string]): bool =
-  ## The one kind of command that must not run beside another of its kind.
-  ## Concurrent `odin build`s over the recursive-type packages ran LLVM out
-  ## of memory (issue #31); nothing else in the suite ever did.
+  ## The one kind of command whose concurrency is capped (`odinBudget`).
+  ## Issue #31 blamed concurrent `odin build`s for its crashes. Measured
+  ## 2026-09-22, the crashes are Odin's threaded checker corrupting its own
+  ## heap and they happen at --jobs:1 too (see harness.OdinThreads); the cap
+  ## stays, sized by memory, because an Odin build is still the heaviest
+  ## thing the suite runs (412 MB peak).
   argv.len > 0 and (argv[0].extractFilename == "odin" or
     (argv.len > 1 and argv[1] in ["build", "b"] and "--odin" in argv))
 
@@ -101,6 +104,7 @@ proc slotEnv(slot: int): StringTableRef =
   for k, v in envPairs(): result[k] = v
   result["TUCK_NIMCACHE"] = getTempDir() / &"tuck-nimcache-{getCurrentProcessId()}" /
                             $slot
+  result["TUCK_ODIN_EXTRA"] = OdinThreads   # `tuck build --odin` too
 
 proc outFile(slot: int): string =
   getTempDir() / &"tuck-pool-{getCurrentProcessId()}-{slot}.out"
@@ -369,6 +373,7 @@ when isMainModule:
   # under concurrent builds is the collision TUCK_NIMCACHE warns about —
   # clang crashed reading a half-written system.nim.c when it was tried.
   let cacheRoot = getTempDir() / &"tuck-nimcache-{getCurrentProcessId()}"
+  putEnv("TUCK_ODIN_EXTRA", OdinThreads)   # for the sh() sequences as well
 
   # Stage 1 — nim builds tuck. Once, and only when a source is newer than the
   # binary.

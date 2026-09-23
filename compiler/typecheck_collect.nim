@@ -9,6 +9,7 @@ import typecheck_state
 import typecheck_util
 import ast_query
 
+proc namedType*(tc: TypeChecker, name: string, span: Span): Type
 proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true)
   ## Forward-declared: collectTypeDecl/collectObjectDecl below recurse into
   ## it (nested type/object members) before its own definition.
@@ -74,7 +75,7 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
   ## rather than a runtime check. The emitted type is shared across pools;
   ## only the checker separates them, the way a group's bound is resolved and
   ## discarded before codegen.
-  let handle = Type(span: d.span, kind: tkNamed, name: poolHandleName(d.name))
+  let handle = tc.namedType(poolHandleName(d.name), d.span)
   let optHandle = Type(span: d.span, kind: tkApp, args: @[handle],
                        base: Type(span: d.span, kind: tkNamed, name: "?"))
   tc.setFnSig(d.name & ".acquire", (newSeq[Param](), optHandle,
@@ -221,6 +222,18 @@ proc resolveTypeRefs*(tc: TypeChecker, t: Type) =
   if t.kind == tkNamed and tc.typeDeclsByName.hasKey(t.name):
     resolveTypeTo(semLayer, t, tc.typeDeclsByName[t.name])
   for c in t.children: resolveTypeRefs(tc, c)
+
+proc namedType*(tc: TypeChecker, name: string, span: Span): Type =
+  ## A reference to the type called `name`, WITH its declaration edge.
+  ##
+  ## Every named type the checker synthesizes is made here (#21). Built
+  ## bare, `Type(kind: tkNamed, name: n)` has no edge until
+  ## resolveInferredTypes runs after the whole module is checked — and only
+  ## if it was recorded at all — so anything reading it DURING checking
+  ## (declaredFieldsOf asking for a construction's fields) fell back to
+  ## scanning the decl list by name. Resolved at birth, it cannot.
+  result = Type(span: span, kind: tkNamed, name: name)
+  resolveTypeRefs(tc, result)
 
 proc genericNamesOf(d: Decl): seq[string] =
   ## The type parameters this declaration itself introduces, which are the

@@ -710,6 +710,18 @@ proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
   (failRc, "could not read the output of `" & argv.join(" ") & "` TWICE: " &
            ebadf & " (see issue #31)")
 
+const OdinThreads* = "-thread-count:1"
+  ## EVERY `odin build` in the suite runs single-threaded.
+  ##
+  ## Odin's own checker corrupts its heap now and then when threaded:
+  ## `malloc(): unaligned tcache chunk detected` (rc 134) or a bare SIGSEGV
+  ## (rc 139, no output) from the COMPILER, not from our program. Measured
+  ## 2026-09-22 on dev-2026-09:b2354a0 over the recursive_types package that
+  ## #31 kept naming: 2 crashes in 190 threaded builds, 0 in 190 with this
+  ## flag — and it reproduced with the suite's pool at --jobs:1, so it was
+  ## never our concurrency, which is what #31 had concluded. Costs ~40% per
+  ## Odin build; a suite that fails one run in eight costs more.
+
 proc findOdin*(): string =
   ## The Odin compiler, or "" if it is not installed. Two suites need it —
   ## member_names for one package, odin_backend for thirty-odd — and both
@@ -792,7 +804,7 @@ proc hostRuns*(t: var T, name: string, code: int, pattern = "") =
     let e = t.needOdin()
     let proj = t.curDir / "odinpkg"
     let src = t.curDir / "odin" / "t.odin"
-    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none",
+    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,
                              "-out:" & proj / "prog"], e,
                            proc (dir: string) = stageOdinPkg(dir, src), proj)
     odinR = t.needCmdAfter(@["timeout", "10", proj / "prog"], b,
@@ -865,7 +877,7 @@ proc hostPeakRss*(t: var T, name: string, budgetKB: int) =
     let e = t.needOdin()
     let proj = t.curDir / "odinpkg"
     let src = t.curDir / "odin" / "t.odin"
-    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none",
+    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,
                              "-out:" & proj / "prog"], e,
                            proc (dir: string) = stageOdinPkg(dir, src), proj)
     odinR = t.needCmdAfter(@[measure, $budgetKB, proj / "prog"], b,
@@ -909,7 +921,7 @@ proc hostBuilds*(t: var T, name: string) =
     let e = t.needOdin()
     let proj = t.curDir / "odinpkg"
     let src = t.curDir / "odin" / "t.odin"
-    odinB = t.needCmdAfter(@[odinExe, "build", proj, "-o:none",
+    odinB = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,
                              "-out:" & proj / "prog"], e,
                            proc (dir: string) = stageOdinPkg(dir, src), proj)
   var dB = -1

@@ -358,14 +358,25 @@ proc typeFor*(r: Resolution, e: Expr): Type =
 
 # --- name resolution ---------------------------------------------------------
 
+proc ensureDeclId(d: Decl) =
+  ## A declaration minted after parsing — `injectImportedTypes`' copy of an
+  ## imported type is the case that mattered — has no id. The three calls
+  ## below used to RETURN SILENTLY on one, so every reference to an imported
+  ## type resolved by name and then recorded nothing (#21): the checker
+  ## "found" `Milliseconds`, and lowering had no edge to follow.
+  if d != nil and not d.id.isSet: d.id = newNodeId()
+
 proc indexDecl*(r: Resolution, d: Decl) =
   ## Register a declaration so references can point at it.
-  if d != nil and d.id.isSet: r.decls[d.id] = d
+  if d == nil: return
+  ensureDeclId(d)
+  r.decls[d.id] = d
 
 proc resolveTo*(r: Resolution, e: Expr, d: Decl) =
   ## Record that this expression refers to that declaration. Called where the
   ## checker already resolved the name, so the answer costs nothing to keep.
-  if e == nil or d == nil or not d.id.isSet: return
+  if e == nil or d == nil: return
+  ensureDeclId(d)
   ensureId(e)
   r.decls[d.id] = d
   r.declOf[e.id] = d.id
@@ -380,7 +391,8 @@ proc declFor*(r: Resolution, e: Expr): Decl =
 proc resolveTypeTo*(r: Resolution, t: Type, d: Decl) =
   ## Record that this type reference names that declaration. A tkNamed carries
   ## a name because that is what the user wrote; this is what it MEANS.
-  if t == nil or d == nil or not d.id.isSet: return
+  if t == nil or d == nil: return
+  ensureDeclId(d)
   if not t.id.isSet: t.id = newNodeId()
   r.decls[d.id] = d
   r.declOf[t.id] = d.id

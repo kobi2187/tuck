@@ -1226,8 +1226,12 @@ when isMainModule:
           let odinBin = outDir / (binBase & "_odin")
           # -o:none is Odin's fastest path; -o:speed is the release build.
           let odinOpt = if wantRelease: "-o:speed" else: "-o:none"
+          # TUCK_ODIN_EXTRA: flags appended verbatim. The test suite sets
+          # `-thread-count:1` — Odin's threaded checker crashes itself now
+          # and then (tests/harness.nim, OdinThreads).
           let odinCmd = quoteShell(odinExe) & " build " & quoteShell(outDir) &
-                        " " & odinOpt & " -out:" & quoteShell(odinBin)
+                        " " & odinOpt & " -out:" & quoteShell(odinBin) &
+                        " " & getEnv("TUCK_ODIN_EXTRA")
           let odT0 = epochTime()
           let odRc = execShellCmd(odinCmd)
           let odMs = (epochTime() - odT0) * 1000

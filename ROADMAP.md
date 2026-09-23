@@ -84,9 +84,11 @@ design mistakes that are correctness bugs rather than performance ones.
 | 1.2 | ~~Build once, store beside Resolution~~ **DONE 2026-09-23.** `ssa_cache.ssaOf(res, d, stage)`, stored in `Resolution.ssaGraphs` per (decl, `ssChecked`/`ssLowered`), with `finalUses` cached beside it. world_server for Odin: 129 builds -> 55 (19 bodies checked + 36 lowered, each once). A fingerprint of every node kind and every indexed node id is asserted on each fetch — it caught nothing real, and caught a deliberate rewrite | M |
 | 1.3 | ~~Switch consumers onto `ssa_build`~~ **DONE 2026-09-22.** Zero diff under `examples/`; both apps emit byte-identical Odin. SSA goldens in `tests/ssa/` (`tuck ssa`) | M |
 | 1.4 | ~~Delete `analysis_ssa.nim`~~ **DONE 2026-09-23**, with its differential tooling. `analysis_liveness` stays as the oracle (`--verify-stages`, on by default) one release longer, then goes too | S |
-| 1.5 | **Fix #21** — `declForType` for inferred types. It blocked the SSA exhaustiveness test directly; a by-name scan was written to route round it and deleted, because routing round a known bug leaves two | M |
+| 1.5 | ~~Fix #21~~ **DONE 2026-09-23.** Two causes: the checker built named types bare (now `typecheck_collect.namedType`, edge at birth), and `resolveTypeTo` silently returned on a declaration with no id — which every injected IMPORTED type was. Lowering's by-name fallback is now an assertion; it found the second cause on its first run | M |
 
-**Exit:** one SSA implementation in the tree, built once per compile.
+**Exit: REACHED 2026-09-23.** One SSA implementation (`ssa_ir` / `ssa_build` /
+`ssa_query`), built once per body per stage (`ssa_cache`), goldens in
+`tests/ssa/`. Next on the spine: M2.
 
 ## M2 — Stage C: the copy decision on the mirror
 
@@ -264,6 +266,20 @@ document is behind the tree — fix these when passing, and do not plan from the
   neither number should be quoted as "the" bug count without saying which.
 
 ## Traps that cost time on 2026-09-22, recorded so they cost nothing again
+
+- **Odin's compiler crashes itself, rarely.** `malloc(): unaligned tcache
+  chunk detected` (rc 134) or a silent SIGSEGV (rc 139) from `odin build` on
+  the recursive-type packages — about 1 in 100 builds, at `--jobs:1` too, so
+  NOT our concurrency (#31 guessed that). Gone with `-thread-count:1`, which
+  the suite now passes everywhere (`harness.OdinThreads`, and
+  `TUCK_ODIN_EXTRA` for `tuck build --odin`).
+- **A compiler outside the repo cannot find `std/`.** It resolves std next to
+  its own binary, so a scratch build in /tmp fails every stdlib import —
+  quietly, if you only grep its output. Measure with `./tuck`, or copy the
+  binary into the repo root first.
+- **Editing sources while `tests/run` is running breaks it**: the complexity
+  suite globs `compiler/*.nim` in both its passes, and a file added or
+  removed between them is a KeyError in the runner.
 
 - **A use-after-free guard must assert on OUTPUT, on every backend.** Two
   versions of the `str` guard passed against the bug they were written for:

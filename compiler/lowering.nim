@@ -41,9 +41,15 @@ proc namedTypeFields(res: Resolution, m: Module, t: Type): seq[FieldDef] =
   ## (resolveTypeNames) rather than matching t.name against the decl list — the
   ## name is what the user wrote, the edge is what it means, and after mangling
   ## the two differ.
-  var d = res.declForType(t)
-  if d == nil: d = m.findDecl(dkType, t.name)
-  if d == nil: return @[]
+  let d = res.declForType(t)
+  if d == nil:
+    # #21: every named type the checker makes carries its edge from birth
+    # (typecheck_collect.namedType). A miss here that the decl list WOULD
+    # answer is that bug back — say so, rather than quietly rescanning by
+    # name, which is how it stayed hidden and made emit quadratic (#23).
+    doAssert m.findDecl(dkType, t.name) == nil,
+      "lowering: type '" & t.name & "' has a declaration but no edge to it (#21)"
+    return @[]
   # An object keeps its fields in objFields, not typeBody, and `+ Record`
   # merges more in — composedFields answers both. Records fall through to
   # their body as before.
