@@ -80,10 +80,10 @@ design mistakes that are correctness bugs rather than performance ones.
 
 | # | item | size |
 |---|---|---|
-| 1.1 | Account for the last 2 differences (`flow`, `withScratch`). Both are reads of a LOOP-CARRIED phi, where "final use" is per-iteration. Decide the rule, write it down in `ssa_query.followedFrom`, reach `onlyOld == 0` | S |
-| 1.2 | **Build once, store beside Resolution.** Today the old mirror is built 110 times for 45 fns in one compile of world_server, and at TWO pipeline stages over two different trees (docs §5 M2, M3). One build, recorded with the stage it describes | M |
-| 1.3 | Switch `markLivenessSsa` and the move facts (`moveFactsSsa`, `consumedSlotsSsa`) onto `ssa_build`. Verify: zero diff under `examples/`, apps unchanged | M |
-| 1.4 | Delete `analysis_ssa.nim`. Keep `analysis_liveness` as the oracle one release longer, then delete it too | S |
+| 1.1 | ~~Account for the last differences~~ **DONE 2026-09-22.** `finalUses` follows the BUFFER from each read (ssa_query header); every remaining difference against the old mirror is listed in the commit messages and justified | S |
+| 1.2 | ~~Build once, store beside Resolution~~ **DONE 2026-09-23.** `ssa_cache.ssaOf(res, d, stage)`, stored in `Resolution.ssaGraphs` per (decl, `ssChecked`/`ssLowered`), with `finalUses` cached beside it. world_server for Odin: 129 builds -> 55 (19 bodies checked + 36 lowered, each once). A fingerprint of every node kind and every indexed node id is asserted on each fetch — it caught nothing real, and caught a deliberate rewrite | M |
+| 1.3 | ~~Switch consumers onto `ssa_build`~~ **DONE 2026-09-22.** Zero diff under `examples/`; both apps emit byte-identical Odin. SSA goldens in `tests/ssa/` (`tuck ssa`) | M |
+| 1.4 | ~~Delete `analysis_ssa.nim`~~ **DONE 2026-09-23**, with its differential tooling. `analysis_liveness` stays as the oracle (`--verify-stages`, on by default) one release longer, then goes too | S |
 | 1.5 | **Fix #21** — `declForType` for inferred types. It blocked the SSA exhaustiveness test directly; a by-name scan was written to route round it and deleted, because routing round a known bug leaves two | M |
 
 **Exit:** one SSA implementation in the tree, built once per compile.
@@ -184,6 +184,30 @@ closure no longer exist in any `codegen_*.nim`.
 | S5.1 | **#22** | `callParamsFor` for pending fns, distinct ctors, combinators | M |
 | S5.2 | **#23** | superlinear emit; closes as a consequence of #21 + #22. Nim is already linear | — |
 
+### S7 — Kind-scoped mangling (user proposal, 2026-09-22)
+
+Mangle by DECLARATION KIND: `tuck_fn_`, `tuck_type_`, `tuck_const_`, ...
+rather than one `tuck_` for everything.
+
+Why: Nim identifiers ignore case and underscores after the first character,
+so `fn at` mangled to `tuck_at` IS the runtime's `tuckAt` — the module
+rebinds every `xs[i]` to the user's fn. Today that is patched per name:
+`mangle.RtFoldableIntrinsics` lists the intrinsics a user name could fold
+into, and those names alone get `tuckfn_`. A kind prefix makes the collision
+structurally impossible — `tuck_fn_at` folds to `tuckfnat`, which no
+intrinsic is — and deletes the list, the special prefix, and the second
+spelling `assertMangleIdempotent` has to accept.
+
+Cost: every emitted identifier changes, so `examples/` re-emits in full and
+every golden re-blesses. Do it as its own change, with nothing else in the
+diff, so that diff is reviewable as "renames only".
+
+| # | item | size |
+|---|---|---|
+| S7.1 | Prefix per decl kind in `mangle.nim`; drop `RtFoldableIntrinsics` and `FoldSafePrefix` | S |
+| S7.2 | `assertMangleIdempotent` checks the kind's own prefix, not any prefix | S |
+| S7.3 | Re-emit `examples/`, re-bless goldens, read the diff as renames only | S |
+
 ### S6 — Rulings (your decision; the code is small)
 
 **#4** attribute names outside brackets · **#5** a fn with no `->` ·
@@ -211,10 +235,12 @@ issue says** — `actor Inbox[T]: xs: Seq[T]` parses now that #52 is closed.
   invariants over hunting bugs after the fact.
 - **Fix a bug where you meet it.** Routing round a known bug leaves two; #21
   was nearly worked around and would still be open behind the workaround.
-- **Differentials, not guesses.** `TUCK_DIFF_SSA=dump TUCK_DIFF_FN=<name>`
-  says, for each disagreement, whether the new builder never saw the read or
-  saw it and judged it differently. All three bugs in the rebuild were found
-  that way in minutes, after an hour of guessing found none.
+- **Differentials, not guesses.** Replacing an analysis, run old and new
+  side by side over the corpus and account for every disagreement, split by
+  "never saw the read" vs "saw it, judged differently". The Braun rebuild's
+  bugs were all found that way (the `TUCK_DIFF_SSA` tooling that did it went
+  with `analysis_ssa.nim` in M1.4 — see git history for the shape). For the
+  graph itself, `tuck ssa file.tuck` and the goldens in `tests/ssa/`.
 - **The re-emit is the review.** `tools/emit_examples.sh` then
   `git diff examples/`. It caught a dropped line in a moved proc that Nim
   tolerated and Odin would not.

@@ -11,9 +11,9 @@
 # access paths and a loop fixpoint. It stays, as the ORACLE that
 # `pipeline.assertSsaWellFormed` checks this against under --verify-stages.
 import sets, os
-import ast, ast_query
+import ast
 import resolution
-import ssa_ir, ssa_build, ssa_query
+import ssa_ir, ssa_cache
 
 proc echoFinals(fn: SsaFn, final: HashSet[NodeId]) =
   ## `TUCK_DEBUG_SSA=final`: one line per stamped read, in value order —
@@ -31,16 +31,15 @@ proc markLivenessSsa*(res: Resolution, m: Module) =
   ## intra-body answer about one is simply wrong.
   for d in m.decls:
     if d == nil or d.kind notin {dkFn, dkTask}: continue
-    let fn = buildFn(res, d)
-    let final = finalUses(fn)
-    for n in final: markLastUseId(res, n)
+    let g = ssaOf(res, d, ssChecked)
+    for n in g.final: markLastUseId(res, n)
     when not defined(release):
-      if getEnv("TUCK_DEBUG_SSA") == "final": echoFinals(fn, final)
+      if getEnv("TUCK_DEBUG_SSA") == "final": echoFinals(g.fn, g.final)
 
-proc buildModuleSsa*(res: Resolution, m: Module): seq[SsaFn] =
-  ## Every body `markLivenessSsa` stamps, as graphs — for the checks that
-  ## judge those stamps.
+proc moduleSsa*(res: Resolution, m: Module): seq[CachedSsa] =
+  ## Every body `markLivenessSsa` stamps, as the graphs it stamped from —
+  ## for the checks that judge those stamps.
   for d in m.decls:
     if d == nil or d.kind notin {dkFn, dkTask}: continue
-    let fn = buildFn(res, d)
-    if fn.values.len > 0: result.add fn
+    let g = ssaOf(res, d, ssChecked)
+    if g.fn.values.len > 0: result.add g

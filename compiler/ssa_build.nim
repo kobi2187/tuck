@@ -31,7 +31,8 @@
 # WHAT THE PREVIOUS BUILDER GOT WRONG BY NOT KNOWING THIS
 # ---------------------------------------------------------------------------
 #
-# `analysis_ssa.nim` is a partial reimplementation of this paper that nobody
+# `analysis_ssa.nim` (deleted 2026-09-23, M1.4) was a partial reimplementation
+# of this paper that nobody
 # noticed was one: its `cur` is `currentDef`, `valueOf` is `readVariable`,
 # `joinMaps` is phi insertion. What it lacks is SEALING and TRIVIAL-PHI
 # REMOVAL — and every one of the six builder bugs that Stage A cost was in
@@ -59,7 +60,7 @@
 #   * a read of `b.ask` with no definition in this body is not an entry value
 #     of `b.ask` but a PROJECTION of whatever `b` currently is, so that the
 #     two stay related when `b` is reassigned.
-import ast, tables, sets, strutils, os
+import ast, tables, sets, strutils
 import resolution
 import ssa_ir
 

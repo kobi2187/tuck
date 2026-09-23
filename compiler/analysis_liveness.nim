@@ -286,7 +286,7 @@ proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
 proc markLivenessInto(res: Resolution, m: Module)
 
 proc referenceFinalUses*(res: Resolution, m: Module): HashSet[NodeId] =
-  ## THE ORACLE, not the pass. `analysis_ssa.markLivenessSsa` is what stamps
+  ## THE ORACLE, not the pass. `ssa_liveness.markLivenessSsa` is what stamps
   ## `lastUses` now; this walk is kept, and run only under `--verify-stages`,
   ## as the independent answer the mirror is checked against.
   ##

@@ -49,7 +49,7 @@ import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
 import compiler/analysis_liveness
 import compiler/ssa_liveness
-import compiler/ssa_build, compiler/ssa_query
+import compiler/ssa_query, compiler/ssa_cache, compiler/ssa_ir
 import compiler/complexity
 import compiler/typecheck
 import compiler/lowering
@@ -452,10 +452,6 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   # before the per-backend deepCopies because the answer is about the
   # PROGRAM, not about which language it is being emitted into.
   for lm in loaded: markLivenessSsa(semLayer, lm.m)
-  block:
-    var lmMods: seq[Module]
-    for lm in loaded: lmMods.add lm.m
-    ssaRebuildDiff(semLayer, lmMods)
   if verifyStages:
     var checkedMods: seq[Module]
     for lm in loaded: checkedMods.add(lm.m)
@@ -762,7 +758,7 @@ when isMainModule:
       if lm.path != absolutePath(path): continue
       for d in lm.m.decls:
         if d == nil or d.kind notin {dkFn, dkTask}: continue
-        echo ssa_query.render(ssa_build.buildFn(semLayer, d))
+        echo ssa_query.render(ssaOf(semLayer, d, ssChecked).fn)
   of "validate", "v":
     # The SPEC grammar's opinion of this file, cross-checked against the
     # parser's. Both run; a disagreement is the output, because a

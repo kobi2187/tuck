@@ -8,6 +8,7 @@
 
 import tables, sets, strutils
 import ast
+import ssa_ir
 
 type
   Resolution* = ref object
@@ -87,6 +88,10 @@ type
     ifacePairs*: HashSet[tuple[objName, iface: string]]
     ifaceCalls*: Table[NodeId, tuple[iface, member: string]]
     lastUses*: HashSet[NodeId]
+    ssaGraphs*: Table[(NodeId, SsaStage), CachedSsa]
+      ## Every body's SSA graph, per stage — see ssa_cache.ssaOf. Here rather
+      ## than in a global so it is reset exactly when the rest of the
+      ## semantic layer is: a graph describes nodes this layer describes.
       ## Nodes analysis_liveness proved are a local's FINAL read, so the copy
       ## made for them is unobservable and may be a move. A set rather than a
       ## table: the only question asked is yes/no.
@@ -292,6 +297,7 @@ proc newResolution*(): Resolution =
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
              ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
              lastUses: initHashSet[NodeId](),
+             ssaGraphs: initTable[(NodeId, SsaStage), CachedSsa](),
              movedArgs: initHashSet[NodeId]())
 
 var semLayer* = newResolution()
@@ -447,7 +453,7 @@ proc markMovedArg*(r: Resolution, e: Expr) =
 
 proc markMovedArgId*(r: Resolution, id: NodeId) =
   ## The same, for a caller holding the node's id rather than the node —
-  ## `analysis_ssa` speaks in ids because a value's uses are ids.
+  ## the SSA graph speaks in ids because a value's uses are ids.
   r.movedArgs.incl(id)
 
 proc isMovedArg*(r: Resolution, e: Expr): bool =

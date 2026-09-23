@@ -46,7 +46,7 @@ import resolution
 import ast_query
 from lowering import getFieldsForType
 import twin_shape
-import ssa_ir, ssa_build, ssa_query
+import ssa_ir, ssa_cache
 
 const MaxRounds = 8
   ## Fixpoint bound. Bodies are small and the lattice has three levels, so
@@ -549,10 +549,11 @@ proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
   var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
   for p in d.fnParams: c.params.incl(p.name)
   for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
-  let fn = buildFn(res, d)
+  let g = ssaOf(res, d, ssLowered)
+  template fn: untyped = g.fn
   if fn.values.len == 0: return
   let own = ssaOwnership(c, m, fn)
-  let final = finalUses(fn)
+  template final: untyped = g.final
   debugOwn(d, c, fn, own)
   for a in threadSites(res, m, d.fnBody):
     if a.id notin final or a.id notin fn.byNode: continue
@@ -575,10 +576,11 @@ proc movableArgsSsa*(res: Resolution, m: Module, d: Decl): HashSet[NodeId] =
   var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
   for p in d.fnParams: c.params.incl(p.name)
   for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
-  let fn = buildFn(res, d)
+  let g = ssaOf(res, d, ssLowered)
+  template fn: untyped = g.fn
   if fn.values.len == 0: return
   let own = ssaOwnership(c, m, fn)
-  let final = finalUses(fn)
+  template final: untyped = g.final
   debugOwn(d, c, fn, own)
   for a in threadSites(res, m, d.fnBody):
     if a.id notin final or a.id notin fn.byNode: continue
@@ -902,7 +904,8 @@ proc copyDiffFn(res: Resolution, m: Module, d: Decl,
                 agree, onlyMirror, onlyOld: var int) =
   ## One body's share of the differential.
   if d.fnBody == nil: return
-  let fn = buildFn(res, d)
+  let g = ssaOf(res, d, ssLowered)
+  template fn: untyped = g.fn
   for site in copySitesOf(res, m, d.fnBody):
     for f in site.fields:
       let slot = (if f.len == 0: "<whole>" else: f)

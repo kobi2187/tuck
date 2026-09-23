@@ -16,7 +16,7 @@ copy of the tree; each answers a different question about it.
 | | keyed by | answers |
 |---|---|---|
 | **Resolution** (`resolution.nim`) | node id | *what is this?* — the type of an expression, which decl a name refers to, which params a call fills |
-| **The value mirror** (`analysis_ssa.nim`) | place + version | *which value is this?* — how many distinct values a name has held, where each came from, where each is read |
+| **The SSA graph** (`ssa_ir` / `ssa_build` / `ssa_query`, cached per stage by `ssa_cache`) | place + version, fronted by node id | *which value is this?* — how many distinct values a name has held, where each came from, where each is read, and which read is its last |
 | **Provenance** (`analysis_provenance.nim`) | fn name | *where did it come from?* — does this function's result alias its argument, or is it freshly allocated |
 
 They layer. Provenance asks Resolution for types. The mirror asks Resolution
@@ -159,7 +159,7 @@ materially simpler.
 
 ### And this is what my builder is, badly
 
-Read `analysis_ssa.nim` against the paper and the correspondence is exact:
+Read `analysis_ssa.nim` (the first builder, deleted in M1.4 once `ssa_build` replaced it) against the paper and the correspondence is exact:
 
 | Braun | mine |
 |---|---|

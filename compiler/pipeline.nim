@@ -20,10 +20,8 @@ import ast
 import ast_query
 import resolution
 import strutils
-import analysis_ssa
 import analysis_liveness
 import sets, os
-import ssa_build
 import ssa_query
 import ssa_ir
 import ssa_liveness
@@ -160,11 +158,10 @@ proc assertNoMissingTypes*(mods: seq[Module]) =
       "missing type marker after typecheck (a checker gap, not a real error) " &
       "at " & lines.join(", "))
 
-proc livenessDiff(reference: HashSet[NodeId], fn: ssa_ir.SsaFn):
-    tuple[agree, onlyMirror, onlyPass: int] =
+proc livenessDiff(reference: HashSet[NodeId], fn: ssa_ir.SsaFn,
+                  mine: HashSet[NodeId]): tuple[agree, onlyMirror, onlyPass: int] =
   ## The graph's final uses against the oracle's, restricted to the reads
   ## this graph recorded.
-  let mine = ssa_query.finalUses(fn)
   var theirs: HashSet[NodeId]
   for v in fn.values:
     for u in v.uses:
@@ -195,7 +192,8 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
     # does — so this recomputes its answer independently and checks the
     # mirror against it. One documented divergence is allowed, below.
     let reference = referenceFinalUses(res, m)
-    for fn in ssa_liveness.buildModuleSsa(res, m):
+    for g in ssa_liveness.moduleSsa(res, m):
+      template fn: untyped = g.fn
       bad.add(ssa_query.structuralErrors(fn))
       # STAGE A.2, and the criterion is a SUPERSET rather than equality.
       #
@@ -215,7 +213,7 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
       # proves final, the mirror must also prove. A site it misses is a
       # capability lost; a site it invents is a use-after-move. So
       # `onlyPass` is the assertion and `onlyMirror` is the measurement.
-      let d = livenessDiff(reference, fn)
+      let d = livenessDiff(reference, fn, g.final)
       # A `defer` is the one documented divergence: the oracle keeps only the
       # PATHS a defer reads, then stamps the root, handing the defer a moved
       # value. The graph keeps the whole root live, which is right.
@@ -263,93 +261,3 @@ proc assertMangleIdempotent*(mods: seq[Module]) =
       "pipeline: " & $bad.len &
       " declared name(s) missing the tuck_ prefix after mangling: " &
       bad.join(", "))
-
-
-proc dumpOneBody(res: Resolution, d: Decl, fresh: ssa_ir.SsaFn,
-                 old, nw: HashSet[NodeId]) =
-  ## `TUCK_DIFF_SSA=dump TUCK_DIFF_FN=<name>`: one body's blocks, values and
-  ## per-use verdicts side by side. Every bug the rebuild had was found here
-  ## rather than reasoned about.
-  echo ssa_build.dump(fresh)
-  var seenNodes: HashSet[NodeId]
-  for v in fresh.values:
-    for u in v.uses:
-      seenNodes.incl u.at
-      echo "   use node=", $uint32(u.at), " of ", $v.id, " ", v.place,
-           " blk=", $u.blk,
-           (if u.at in old: " OLD-FINAL" else: ""),
-           (if u.at in nw: " NEW-FINAL" else: "")
-  let oldFn = analysis_ssa.buildFn(res, d)
-  for ov in oldFn.values:
-    for ou in ov.uses:
-      if ou.at in (old - nw):
-        echo "   OLDSIDE node=", $uint32(ou.at), " place=", ov.place,
-             " defkind=", $ov.def.kind
-  for n in old - nw:
-    echo "   LOST node=", $uint32(n),
-         (if n in seenNodes: " (new builder HAS this use)"
-          else: " (new builder never recorded this read)")
-
-proc reportNew(d: Decl, fresh: ssa_ir.SsaFn, only: HashSet[NodeId]) =
-  echo "SSADIFF-NEW ", d.name, " onlyNew=", only.len
-  for v in fresh.values:
-    for u in v.uses:
-      if u.at in only:
-        echo "   NEWFINAL node=", $uint32(u.at), " place=", v.place,
-             " of ", $v.def.kind, " in ", $v.blk, " read in ", $u.blk
-
-proc reportOld(res: Resolution, d: Decl, fresh: ssa_ir.SsaFn,
-               only: HashSet[NodeId]) =
-  echo "SSADIFF ", d.name, " onlyOld=", only.len
-  var recorded: HashSet[NodeId]
-  for v in fresh.values:
-    for u in v.uses: recorded.incl u.at
-  for ov in analysis_ssa.buildFn(res, d).values:
-    for ou in ov.uses:
-      if ou.at in only:
-        echo "   LOSTREAD ", d.name, " ", ov.place,
-             (if ou.at in recorded: " (recorded, not final)"
-              else: " (not a read in the new graph)")
-
-proc reportOneBody(res: Resolution, d: Decl, fresh: ssa_ir.SsaFn,
-                   old, nw: HashSet[NodeId]) =
-  ## One body's share of the differential, in the directions it differs.
-  if (nw - old).len > 0: reportNew(d, fresh, nw - old)
-  if (old - nw).len > 0: reportOld(res, d, fresh, old - nw)
-  if getEnv("TUCK_DIFF_SSA") == "dump" and d.name == getEnv("TUCK_DIFF_FN"):
-    dumpOneBody(res, d, fresh, old, nw)
-
-proc ssaRebuildDiff*(res: Resolution, mods: seq[Module]) =
-  ## THE BRAUN REBUILD, measured against what it is meant to replace.
-  ##
-  ## `compiler/ssa_build.nim` implements Braun et al. (2013) properly, where
-  ## `analysis_ssa.nim` is an ad-hoc two-thirds of the same paper. Nothing
-  ## consults the new one yet; it earns that the way Stage A earned it, by
-  ## reproducing the old answer across the corpus and both applications with
-  ## every difference accounted for.
-  ##
-  ## The criterion is NOT "identical". `onlyOld` — a read the old builder
-  ## called final and the new one does not — is the number that must reach
-  ## zero, because losing one only costs a copy. `onlyNew` is the dangerous
-  ## direction and must stay at zero: a final use claimed wrongly is a move
-  ## that should not have happened.
-  ##
-  ##   TUCK_DIFF_SSA=1 ./tuck ch file.tuck
-  when not defined(release):
-    if getEnv("TUCK_DIFF_SSA").len == 0: return
-    var agree, onlyNew, onlyOld, structural = 0
-    for m in mods:
-      for d in m.allFns():
-        if d.fnBody == nil: continue
-        let old = analysis_ssa.finalUses(analysis_ssa.buildFn(res, d))
-        let fresh = ssa_build.buildFn(res, d)
-        for e in ssa_query.structuralErrors(fresh):
-          inc structural
-          echo "SSADIFF-STRUCT ", d.name, ": ", e
-        let nw = ssa_query.finalUses(fresh)
-        agree += (old * nw).len
-        onlyNew += (nw - old).len
-        onlyOld += (old - nw).len
-        reportOneBody(res, d, fresh, old, nw)
-    echo "SSATOTAL agree=", agree, " onlyNew=", onlyNew,
-         " onlyOld=", onlyOld, " structural=", structural
