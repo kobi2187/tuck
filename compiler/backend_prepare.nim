@@ -125,6 +125,11 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     lowerModule(semLayer, lm.m)                                      # 3. lower
     if backend.aliasesOnAssign:
       markSeqCopiesIn(semLayer, lm.m)                                # 4. marks
+    # 5. NUMBER WHAT LOWERING MINTED. Lowering builds nodes (tail returns,
+    # hoisted temporaries, desugared assignments) without ids; a node
+    # without one drops out of the semantic layer. Existing ids are kept —
+    # they are what makes the checker's facts reachable from this copy.
+    fillIds(lm.m)
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 

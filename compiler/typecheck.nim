@@ -3836,9 +3836,9 @@ proc resolveBareErr(tc: var TypeChecker, e, rv: Expr) =
   if owners.len > 1:
     fail("Type Error: '" & rv.name & "' is ambiguous (" & owners.join(", ") &
          ") — qualify it: " & owners[0] & "." & rv.name, e.span)
-  e.raiseVal = Expr(span: rv.span, kind: exkField,
+  e.raiseVal = grafted(Expr(span: rv.span, kind: exkField,
                     receiver: Expr(span: rv.span, kind: exkVar, name: owners[0]),
-                    fieldName: rv.name)
+                    fieldName: rv.name))
 
 proc isQualifiedErr(tc: TypeChecker, rv: Expr): bool =
   ## Is this `err Enum.Variant`?

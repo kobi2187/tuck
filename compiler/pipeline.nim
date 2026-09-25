@@ -25,6 +25,7 @@ import sets, os
 import ssa_query
 import ssa_ir
 import ssa_liveness
+import tree_invariants
 from mangle import TuckNamePrefix, FoldSafePrefix
 
 type
@@ -261,3 +262,12 @@ proc assertMangleIdempotent*(mods: seq[Module]) =
       "pipeline: " & $bad.len &
       " declared name(s) missing the tuck_ prefix after mangling: " &
       bad.join(", "))
+
+
+proc assertTreeIds*(stage: string, mods: seq[Module]) =
+  ## Every node has an id and no two nodes share one (tree_invariants).
+  report(stage & " ids", idErrors(mods))
+
+proc assertTypeEdges*(res: Resolution, mods: seq[Module]) =
+  ## After psTypecheck: every declared named type is linked (#21).
+  report("typecheck edges", typeEdgeErrors(res, mods))

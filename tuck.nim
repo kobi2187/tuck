@@ -455,6 +455,8 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   if verifyStages:
     var checkedMods: seq[Module]
     for lm in loaded: checkedMods.add(lm.m)
+    assertTreeIds("typecheck", checkedMods)
+    assertTypeEdges(semLayer, checkedMods)
     assertNoMissingTypes(checkedMods)
     assertSsaWellFormed(semLayer, checkedMods)
   let imported = importedEffects(loaded, sigOnly)
@@ -562,6 +564,10 @@ proc checkProgram(path: string, needBodies = false,
       dieSemanticError(path, err)
     vSubNote($result.len & " module(s)")
     vEnd(psResolveDeclRefs, t0)
+  if verifyStages:
+    var loadedMods: seq[Module]
+    for lm in result: loadedMods.add lm.m
+    assertTreeIds("load", loadedMods)
   let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
   # Non-fatal diagnostics, printed at the offending line exactly as an error
   # is — same file:line:col prefix — but the build carries on. Drained AFTER
@@ -922,6 +928,7 @@ when isMainModule:
     case backend
     of bkNim:
       let nimTree = prepare(prog, bkNim, semLayer, outDir)
+      if verifyStages: assertTreeIds("nim lowering", nimTree.modules)
       let nimProg = nimTree.mods
       let nimReal = nimTree.real
       block:
@@ -963,7 +970,9 @@ when isMainModule:
       let odTree = prepare(prog, bkOdin, semLayer, outDir)
       let odProg = odTree.mods
       let odReal = odTree.real
-      if verifyStages: assertNoChainFedCalls(odTree.modules)
+      if verifyStages:
+        assertNoChainFedCalls(odTree.modules)
+        assertTreeIds("odin lowering", odTree.modules)
       block:
         let t0 = vBegin(psEmitting)
         for lm in odProg[0 ..< odProg.high]:
@@ -1018,7 +1027,9 @@ when isMainModule:
       let dTree = prepare(prog, bkDlang, semLayer, outDir)
       let dProg = dTree.mods
       let dReal = dTree.real
-      if verifyStages: assertNoChainFedCalls(dTree.modules)
+      if verifyStages:
+        assertNoChainFedCalls(dTree.modules)
+        assertTreeIds("d lowering", dTree.modules)
       block:
         let t0 = vBegin(psEmitting)
         for lm in dProg[0 ..< dProg.high]:

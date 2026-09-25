@@ -106,6 +106,12 @@ proc parseSource*(source: string): Module =
   # instantiation, so typechecking, mangling and all three backends see nothing
   # but plain actors and never learn that generic actors exist (#18).
   expandGenericActors(result)
+  # THE FRONT END ENDS WITH EVERY NODE NUMBERED. The rewrite mints nodes (a
+  # dot-call's payload record, `5.ms` -> `{value: 5} ms`) after the parser
+  # numbered the tree; the checker used to give them ids lazily on first
+  # touch, which left them keyless for anything that looked earlier.
+  # pipeline.assertTreeIds("load") holds this.
+  fillIds(result)
 
 proc parseTuckFile*(path: string): Module =
   ## Parse one file, naming it in any rejection. The lexer and parser see only
@@ -355,6 +361,10 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
                           typeBody: td.typeBody, typeMembers: td.typeMembers,
                           span: Span(line: td.span.line, col: td.span.col,
                                      file: ImportedTypeMarker & ":" & imp))
+        # An id like every parsed declaration: a type reference resolves TO
+        # this decl, and an edge needs an id to point at. Without one,
+        # `resolveTypeTo` could record nothing for any imported type (#21).
+        marked.id = newNodeId()
         prog[i].m.decls.insert(marked, 0)
 
 proc loadProgram*(entryPath: string): seq[LoadedModule] =

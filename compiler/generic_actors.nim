@@ -119,6 +119,11 @@ proc expandOne(orig: Decl, args: seq[Type]): Decl =
   for i, p in orig.actorGenerics:
     subs[p] = if i < args.len: args[i] else: nil
   result = deepCopy(orig)
+  # deepCopy copies the IDS too, and ids key the semantic layer: every
+  # instantiation shared the template's, so checking `Box[str]` wrote its
+  # types over `Box[int]`'s. Cleared here; parseSource's fillIds numbers the
+  # copy afresh (pipeline.assertTreeIds("load") found this).
+  clearIds(result)
   result.name = instName(orig.name, args)
   result.actorGenerics = @[]
   for i in 0 ..< result.actorFields.len:

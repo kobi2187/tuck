@@ -195,10 +195,46 @@ proc phiErrors(fn: SsaFn, v: Value): seq[string] =
       result.add $v.id & " (" & v.place & ") merges operand from " &
                  fn.values[int32(op)].place
 
+proc isTombstone(v: Value): bool =
+  ## A phi `tryRemoveTrivialPhi` removed: no operands, no uses.
+  v.def.kind == dkPhi and v.def.inputs.len == 0
+
+proc useErrors(fn: SsaFn, v: Value): seq[string] =
+  # THE FRONT DOOR AGREES WITH THE USE LISTS. A consumer asks `byNode` which
+  # value a read saw; `finalUses` answers from the value's own `uses`. If
+  # they disagree, the move decision and the read it is about describe two
+  # different buffers. `let a = s` once overwrote the read of `s` with `a`.
+  for u in v.uses:
+    if not u.blk.isSet or int32(u.blk) >= fn.blocks.len:
+      result.add $v.id & " (" & v.place & ") is read in a bogus block"
+    if u.at notin fn.byNode:
+      result.add $v.id & " (" & v.place & ") has a read the front door " &
+                 "does not index"
+    elif fn.byNode[u.at] != v.id:
+      result.add $v.id & " (" & v.place & ") has a read the front door " &
+                 "attributes to " & $fn.byNode[u.at]
+
+proc inputErrors(fn: SsaFn, v: Value): seq[string] =
+  # NOTHING POINTS AT A REMOVED PHI. Removal reroutes every reference; a
+  # projection once kept its input on the tombstone (`f.test` of a parked
+  # `f`), so ownership read a value that no longer existed.
+  for op in v.def.inputs:
+    if not op.isSet or int32(op) >= fn.values.len: continue  # phiErrors says
+    if fn.values[int32(op)].isTombstone:
+      result.add $v.id & " (" & v.place & ") takes input from removed phi " &
+                 $op
+
 proc structuralErrors*(fn: SsaFn): seq[string] =
   ## What must be true of any graph this builder produces. Checked under
   ## `--verify-stages`, and each line here is a bug that happened.
   result = blockErrors(fn)
+  for v in fn.values:
+    if v.isTombstone:
+      if v.uses.len > 0:
+        result.add $v.id & " (" & v.place & ") is a removed phi still read"
+      continue
+    result.add useErrors(fn, v)
+    result.add inputErrors(fn, v)
   for v in fn.values:
     case v.def.kind
     of dkPhi: result.add phiErrors(fn, v)
