@@ -674,6 +674,49 @@ What it says:
   `delete`s the ownership pass decided, Odin is the fastest of the three on
   chain, overwrite, value_copy and transfer, and holds 1.7 MB on all six.
 
+### Under valgrind, collectors off — 2026-09-25
+
+`bash benches/memory/valgrind.sh [N]` runs the same six programs under
+memcheck (N=2000), each backend in the configuration memcheck can see through:
+Nim with `-d:useMalloc` (ORC, and `--mm:none`), Odin as it ships, D with
+collection disabled. INVALID counts reads/writes of memory the program does
+not own and bad frees — a wrong program; "all errs" adds uninitialised-value
+reports.
+
+| pattern | nim invalid · lost | nim-none lost (never freed) | odin invalid · lost | d-nogc invalid |
+|---|---|---|---|---|
+| copy_loop | 0 · 0 | 49.3 MB | 0 · 0 | 0 |
+| chain | 0 · 0 | 147.8 MB | 0 · 0 | 0 |
+| overwrite | 0 · 0 | 12.6 MB | 0 · 0 | 0 |
+| value_copy | 0 · 0 | 16.4 MB | 0 · 0 | 0 |
+| transfer | 0 · 0 | 4.4 MB | 0 · 0 | 0 |
+| str_temps | 0 · 0 | 1.5 MB | 0 · 0 | 0 |
+
+- **No invalid access and no bad free on any backend, any pattern.** Nim's
+  ORC build is spotless outright (0 errors of any kind).
+- **Odin frees every block it allocates** — mallocs equal frees on all six.
+  Its "all errs" column (1,023 on copy_loop, 510,255 on overwrite) is Odin's
+  own allocator: a plain Odin `append` loop with no Tuck in it reports the
+  same "conditional jump depends on uninitialised value" inside
+  `runtime::heap_allocator_proc` on every growth.
+- **D** reports ~90 uninitialised-value errors per program, constant across
+  N — runtime start-up. Its heap is the GC's own pools, so memcheck cannot
+  count D's leaks.
+- **nim-none's "lost" is the whole allocation volume** — what a memory
+  manager, or the ownership pass, has to give back: 148 MB for 2,000 turns of
+  the threading chain.
+
+**It found two leaks on its first run, both fixed the same day.** Odin lost
+exactly one block on copy_loop, overwrite and transfer — the value a local
+ENDS with:
+- an OVERWRITTEN local (step 5 frees each old value at the overwrite; the
+  last one belonged to no rule) — now also freed at scope exit;
+- a local THREADED through a moved twin (`a = {xs: a} drop`: the twin frees
+  each old value; the last was never freed, since a moved argument counted as
+  gone for good) — step 5b frees it at scope exit.
+One buffer a scope — a fn with either shape, called 200,000 times, peaked at
+107 MB on Odin before and 1.8 MB after (`known_bugs`).
+
 ## Container copying — 2026-09-11
 
 `bash benches/containers/run.sh [N]` builds each pattern at N and 2N on all

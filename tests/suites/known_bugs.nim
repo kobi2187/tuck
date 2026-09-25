@@ -1497,6 +1497,86 @@ fn main() -> int:
   t.hostPeakRss("a million temporary strings do not accumulate", 12288)
   t.bugFixed "a million temporary strings do not accumulate"
 
+  # An OVERWRITTEN local's last value dies at scope exit too. Step 5 of the
+  # ownership pass frees each OLD value at the overwrite, and step 4 frees a
+  # local at scope exit only when it is assigned exactly once — so the value
+  # an overwritten local ends with belonged to neither. One buffer a call:
+  # found by valgrind over benches/memory (8,207 bytes definitely lost on
+  # copy_loop, the ladder `xs` held when main returned), and an RSS that
+  # grows with the call count, as here.
+  t.src """
+import seq
+
+fn fresh({k: int, size: int}) -> Seq[int]:
+  var out = [k]
+  var i = 1
+  for i < size:
+    out = {items: out, value: k} push
+    i = i + 1
+  return out
+
+fn churn({k: int}) -> int:
+  var xs = {k: k, size: 64} fresh
+  var i = 0
+  for i < 3:
+    xs = {k: xs[0] + 1, size: 64} fresh
+    i = i + 1
+  return xs[0]
+
+fn main() -> int:
+  var acc = 0
+  var i = 0
+  for i < 200000:
+    acc = acc + {k: 1} churn
+    i = i + 1
+  if acc != 800000:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("an overwritten local's last value is freed", 12288)
+  t.bugFixed "an overwritten local's last value is freed"
+
+  # ...and so is the last value of a local THREADED through a moved twin.
+  # `a = {xs: a} drop` hands each old value to the twin, which frees it, and
+  # owns each result — but a moved argument counted as gone for good, so the
+  # value `a` ends with was never freed. valgrind over benches/memory's
+  # `transfer`: 527 bytes definitely lost, one ladder.
+  t.src """
+import seq
+
+fn fresh({k: int, size: int}) -> Seq[int]:
+  var out = [k]
+  var i = 1
+  for i < size:
+    out = {items: out, value: k} push
+    i = i + 1
+  return out
+
+fn drop({xs: Seq[int]}) -> Seq[int]:
+  let n = xs.len
+  return {k: n, size: 64} fresh
+
+fn churn({k: int}) -> int:
+  var a = {k: k, size: 64} fresh
+  var i = 0
+  for i < 3:
+    a = {xs: a} drop
+    i = i + 1
+  return a[0]
+
+fn main() -> int:
+  var acc = 0
+  var i = 0
+  for i < 200000:
+    acc = acc + {k: 1} churn
+    i = i + 1
+  if acc != 64 * 200000:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("a local threaded through a moved twin frees its last value", 12288)
+  t.bugFixed "a local threaded through a moved twin frees its last value"
+
   # The exit status of `fn main() -> int` is its LOW BYTE on every backend.
   # Nim's `quit` clamps to int8 instead, so 132 exited 127 on Nim and 132 on
   # Odin and D — found 2026-09-25 when a chain test answered 127 on Nim
