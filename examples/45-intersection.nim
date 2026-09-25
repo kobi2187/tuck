@@ -2,6 +2,7 @@
 import ../compiler/tuck_rt
 import scheduler
 
+proc tuck_nextPhase*(current: tuck_Phase, demand: tuck_Demand, preempt: bool): tuck_Phase
 proc tuck_Intersection_PhaseChanged*(to: uint8): void
 proc tuck_Intersection_Preempted*(source: uint8): void
 proc tuck_seconds*(self: tuck_Interval): int
@@ -92,11 +93,15 @@ proc raise_tuck_Intersection_Preempted*(source: uint8) =
 
 
 proc tuck_nextPhase*(current: tuck_Phase, demand: tuck_Demand, preempt: bool): tuck_Phase =
-  case ord(current) * 8 + ord(demand) * 2 + ord(preempt)   # packed decision key
-  of 0, 2, 24, 25, 26, 27, 28, 29, 30, 31: return tuck_Phase.NorthSouth
-  of 1, 3, 4, 5, 6, 7: return tuck_Phase.NsClearing
-  of 8, 9, 10, 11, 12, 13, 14, 15, 16, 20: return tuck_Phase.EastWest
-  else: return tuck_Phase.EwClearing
+  (case (((ord(current) * 8) + (ord(demand) * 2)) + ord(preempt))
+  of 0, 2, 24, 25, 26, 27, 28, 29, 30, 31:
+    return tuck_Phase.NorthSouth
+  of 1, 3, 4, 5, 6, 7:
+    return tuck_Phase.NsClearing
+  of 8, 9, 10, 11, 12, 13, 14, 15, 16, 20:
+    return tuck_Phase.EastWest
+  else:
+    return tuck_Phase.EwClearing)
 
 proc tuck_LoopDetector_tuck_healthy*(self: var tuck_LoopDetector): bool =
   return true

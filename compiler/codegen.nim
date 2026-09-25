@@ -35,20 +35,16 @@
 # need a mini templating layer, which is harder to read than two honest copies.
 # Share the logic; never share the syntax.
 #
-# WORTH READING: genFnDecl's decision-table path. When every input column has a
-# small enumerable set of values, an entire table of rules collapses into ONE
-# `case` over a packed integer key — every combination resolved at compile time
-# and grouped by outcome, so the running program does zero comparisons. When a
-# column is not enumerable it falls back to a plain if/elif chain. That is a
-# real optimization at a size you can actually read: do the work now so the
-# program does not do it later.
+# A DECISION TABLE is not here. It is lowered before any emitter runs
+# (lowering_decisions.nim) into a `match` over a packed integer key, or an
+# `if` chain, and printed as one. Only `exkOrdinal` — how this target spells
+# an enum or bool's ordinal — is backend syntax, and it is one arm below.
 import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_type   # genType: Tuck type -> Nim type text
-import codegen_table  # decision-table combinatorics (spec 6.1)
 import ./ast_query
 import ./codegen_ctx
 export genType        # re-exported: this file's public face is the backend
@@ -933,6 +929,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     "acquire(" & resourceTableName(e.acquireKind) & ", int64(" &
       ctx.genExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
   of exkImport: ""  # imports are declarations, never expression position
+  of exkOrdinal: "ord(" & ctx.genExpr(e.ordinalOf) & ")"   # enum and bool alike
 
 proc hasBracketBase(e: Expr): bool =
   ## Does this target chain bottom out in an index?
@@ -1314,7 +1311,7 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
     ind & "discard  # select: no lowerable arm (checker should have refused)"
 
 # Declaration codegen (genDecl and everything it dispatches to — fn/object/
-# actor/registry/register/mixin/decision-table/err-handler) now lives in
+# actor/registry/register/mixin/err-handler) now lives in
 # codegen_decl.nim, imported above.
 
 # Implicit return: the value flowing at the end of a fn body is its result.

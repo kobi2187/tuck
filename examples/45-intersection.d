@@ -64,38 +64,17 @@ enum tuck_Phase { NorthSouth, NsClearing, EastWest, EwClearing }
 enum tuck_Demand { quiet, northSouth, eastWest, both }
 
 tuck_Phase tuck_nextPhase(tuck_Phase current, tuck_Demand demand, bool preempt) {
-    switch (cast(long)(current) * 8 + cast(long)(demand) * 2 + cast(long)(preempt)) {   // packed decision key
-    case 0:
-    case 2:
-    case 24:
-    case 25:
-    case 26:
-    case 27:
-    case 28:
-    case 29:
-    case 30:
-    case 31:
+    switch ((((cast(long)(current) * 8L) + (cast(long)(demand) * 2L)) + cast(long)(preempt))) {
+    case 0, 2, 24, 25, 26, 27, 28, 29, 30, 31:
         return tuck_Phase.NorthSouth;
-    case 1:
-    case 3:
-    case 4:
-    case 5:
-    case 6:
-    case 7:
+    case 1, 3, 4, 5, 6, 7:
         return tuck_Phase.NsClearing;
-    case 8:
-    case 9:
-    case 10:
-    case 11:
-    case 12:
-    case 13:
-    case 14:
-    case 15:
-    case 16:
-    case 20:
+    case 8, 9, 10, 11, 12, 13, 14, 15, 16, 20:
         return tuck_Phase.EastWest;
-    default: return tuck_Phase.EwClearing;
+    default:
+        return tuck_Phase.EwClearing;
     }
+    return typeof(return).init;
 }
 
 enum DetectorTag { Detector_is_tuck_CameraDetector, Detector_is_tuck_LoopDetector }

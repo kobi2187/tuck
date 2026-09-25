@@ -234,6 +234,8 @@ proc walk(m: var Metrics, e: Expr) =
     # would charge the same branch twice. Its body still walks: the statements
     # inside it fork like any others.
     walk(m, e.deferBody)
+  of exkOrdinal:
+    walk(m, e.ordinalOf)
   of exkLit, exkVar, exkQualified, exkBreak, exkContinue, exkImport,
      exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     discard

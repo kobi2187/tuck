@@ -255,6 +255,7 @@ iterator children*(e: Expr): Expr =
     of exkDefer: yield e.deferBody
     of exkAcquire: yield e.acquireRef
     of exkFinish: yield e.finishHandle
+    of exkOrdinal: yield e.ordinalOf
 
 iterator childDecls*(d: Decl): Decl =
   ## Every declaration nested one level inside `d`, whichever field holds it.

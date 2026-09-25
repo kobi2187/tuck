@@ -4035,6 +4035,12 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkAcquire: tc.synthAcquire(e)
   of exkFinish: tc.synthFinish(e)
   of exkQualified, exkImport: tc.synthQualified(e)
+  of exkOrdinal:
+    # Built by lowering, after checking, so a checked tree never holds one.
+    # Typed anyway, so the dispatch stays exhaustive and a stray one is an
+    # int rather than a crash.
+    discard tc.synthesize(e.ordinalOf)
+    tc.namedType("int", e.span)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field

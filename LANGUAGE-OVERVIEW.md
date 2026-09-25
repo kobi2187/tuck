@@ -638,8 +638,14 @@ First-match-wins, run-verified: row `| 2 64 _ -> 3` is the first match for
 `(2, 64, false)`, exit 3 (`tests/suites/end_to_end.nim`).
 
 **Implementation:** a decision table is a `dkFn` carrying `isDecision`, not its
-own AST node kind (`tests/suites/end_to_end.nim`). The combinatorics live in
-`compiler/codegen_table.nim`, shared by every backend.
+own AST node kind (`tests/suites/end_to_end.nim`). It is **lowered before any
+backend sees it** (`compiler/lowering_decisions.nim`): a `match` over a packed
+integer key when every column is enumerable — the combinations resolved and
+grouped at compile time, so the program does no comparisons — or an `if` chain
+ending in the catch-all otherwise. The backends print an ordinary `match`; the
+one thing each spells its own way is an enum or bool's ordinal (`exkOrdinal`).
+The combinatorics live in `compiler/decision_table.nim`, shared with the
+checker (`tests/suites/decision_tables.nim`).
 
 ---
 

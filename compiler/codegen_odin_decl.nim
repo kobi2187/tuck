@@ -2,14 +2,13 @@
 #
 # Declaration codegen for the Odin backend: genOdinDecl's dispatch (one arm
 # per DeclKind) and everything it calls -- fn/object/actor/registry/
-# register/mixin/decision-table/err-handler. Calls INTO codegen_odin.nim's
+# register/mixin/err-handler. Calls INTO codegen_odin.nim's
 # genOdinExpr for fn bodies (one-way: genOdinExpr never calls back into
 # anything here).
 import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
-import codegen_table
 import codegen_odin_ctx
 import codegen_odin_util
 from mangle import mangleName
@@ -133,115 +132,6 @@ proc ensureTrailingReturn*(bodyStr: string, body: Expr, blockIndent: int): strin
                       b.stmts[^1].kind in {exkReturn, exkRaise})):
       return bodyStr
   return bodyStr & "\n" & "  ".repeat(blockIndent) & "  return {}"
-
-proc decisionHeader*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
-  ## The proc signature a decision table compiles to.
-  var params: seq[string]
-  for p in d.fnParams:
-    params.add(p.name & ": " & ctx.odinType(p.typ))
-  let retT = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
-  let retStr = if retT != "void": " -> " & retT else: ""
-  ind & d.name.replace(".", "_") & " :: proc(" & params.join(", ") & ")" &
-    retStr & " {"
-
-proc columnOrdinal*(domain: seq[string], paramName: string): string =
-  ## A column's ordinal. NOT packedKeyExpr — that emits Nim's `ord()`; Odin
-  ## needs int() and a bool ternary, which is the one part of this that is
-  ## genuinely syntax.
-  if domain == @["false", "true"]: "(" & paramName & " ? 1 : 0)"
-  else: "int(" & paramName & ")"
-
-proc packedKey*(d: Decl, domains: seq[seq[string]], comboCount: int): string =
-  ## Mixed radix over the ordinal of each column.
-  var parts: seq[string]
-  var stride = comboCount
-  for c in 0 ..< domains.len:
-    stride = stride div domains[c].len
-    let ordExpr = columnOrdinal(domains[c], d.fnParams[c].name)
-    parts.add(if stride > 1: ordExpr & " * " & $stride else: ordExpr)
-  parts.join(" + ")
-
-proc decisionRowPatterns*(s: Expr): seq[string] =
-  ## One row's column patterns, as their surface spelling.
-  let pat = s.arms[0].pattern
-  for el in (if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]):
-    result.add(genPatternStr(el))
-
-proc collectDecisionRows*(ctx: var OdinCodegenCtx, d: Decl,
-                         rowPats: var seq[seq[string]],
-                         rowBodies: var seq[string]) =
-  for s in d.fnBody.stmts:
-    if s.kind != exkMatch or s.arms.len == 0: continue
-    rowPats.add(decisionRowPatterns(s))
-    rowBodies.add(ctx.armValue(s.arms[0].body))
-
-proc genPackedDecision*(ctx: var OdinCodegenCtx, d: Decl,
-                       domains: seq[seq[string]], comboCount: int,
-                       ind: string): string =
-  ## Every column domain is enumerable, so the whole table collapses to one
-  ## switch over a packed integer key (spec 6.1).
-  var rowPats: seq[seq[string]]
-  var rowBodies: seq[string]
-  ctx.collectDecisionRows(d, rowPats, rowBodies)
-  # first-match outcome for every combination, grouped by outcome
-  let groups = groupByOutcome(domains, comboCount, rowPats, rowBodies)
-  var lines: seq[string]
-  lines.add(ind & "\tswitch " & packedKey(d, domains, comboCount) &
-            " {   // packed decision key")
-  for gi, g in groups:
-    if gi == groups.len - 1:
-      lines.add(ind & "\tcase: return " & g.outcome)
-    else:
-      var ks: seq[string]
-      for k in g.keys: ks.add($k)
-      lines.add(ind & "\tcase " & ks.join(", ") & ": return " & g.outcome)
-  lines.add(ind & "\t}")
-  lines.join("\n")
-
-proc decisionRowCondition*(ctx: var OdinCodegenCtx, d: Decl, arm: MatchArm): string =
-  ## The guard a row fires under — empty when every column is a wildcard,
-  ## which makes it the catch-all.
-  let pats = if arm.pattern != nil and arm.pattern.kind == pkTuple:
-               arm.pattern.elems
-             else: @[arm.pattern]
-  var conds: seq[string]
-  for i, pat in pats:
-    let patStr = genPatternStr(pat)
-    if patStr != "_" and i < d.fnParams.len:
-      conds.add(d.fnParams[i].name & " == " & ctx.patternValue(patStr))
-  conds.join(" && ")
-
-proc genChainedDecision*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr,
-                        ind: string): string =
-  ## An open column domain cannot be packed, so the rows become guards in
-  ## order, and a table with no catch-all needs a zero value to fall out on.
-  var lines: seq[string]
-  var hasCatchAll = false
-  for s in d.fnBody.stmts:
-    let arm = s.arms[0]
-    let cond = ctx.decisionRowCondition(d, arm)
-    let value = ctx.armValue(arm.body)
-    if cond == "":
-      lines.add(ind & "\treturn " & value)
-      hasCatchAll = true
-    else:
-      lines.add(ind & "\tif " & cond & " do return " & value)
-  if not hasCatchAll and retTypeStr != "void":
-    lines.add(ind & "\treturn {}")
-  lines.join("\n")
-
-proc genDecisionTable*(ctx: var OdinCodegenCtx, d: Decl): string =
-  ## Packed when every column is enumerable, chained guards otherwise.
-  let ind = "  ".repeat(ctx.indent)
-  let header = ctx.decisionHeader(d, ind)
-  let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
-                   else: "void"
-  let (domains, allEnum, comboCount) = columnDomains(ctx.module, d)
-  let body = if allEnum and comboCount > 0 and comboCount <= MaxPackedCombos:
-               ctx.genPackedDecision(d, domains, comboCount, ind)
-             else:
-               ctx.genChainedDecision(d, retTypeStr, ind)
-  header & "\n" & body & "\n" & ind & "}\n"
 
 proc cCallbackConvention*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## A fn handed to a C function pointer needs the C calling convention. Odin
@@ -368,8 +258,8 @@ proc genFnBody*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): stri
   ctx.indent = savedIndent
 
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
-  ## An ordinary fn. A pending fn is a stub and a decision table has its own
-  ## lowering; both leave before any of this runs.
+  ## An ordinary fn. A pending fn is a stub, and leaves before any of this
+  ## runs. (A decision table arrives here already lowered to a plain body.)
   if d.isPending: return ctx.genPendingStub(d)
   ctx.currentParams = @[]
   for p in d.fnParams:
@@ -377,7 +267,6 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   # THE OWNERSHIP PASS DECIDES; this emitter prints. See
   # compiler/analysis_ownership.nim for the six steps.
   ctx.owned = ownershipFor(d)
-  if d.isDecision or d.isDecisionTable(): return ctx.genDecisionTable(d)
   let ind = "  ".repeat(ctx.indent)
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
                    else: "void"

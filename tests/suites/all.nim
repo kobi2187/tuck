@@ -14,6 +14,7 @@ import cli_smoke
 import complexity
 import cross_module
 import d_backend
+import decision_tables
 import declarations
 import diagnostics
 import doc_snippets
@@ -68,6 +69,7 @@ let registry: seq[Entry] = @[
   ("complexity",          SuiteProc(complexity.run),          true),
   ("cross_module",        SuiteProc(cross_module.run),        false),
   ("d_backend",           SuiteProc(d_backend.run),           false),
+  ("decision_tables",     SuiteProc(decision_tables.run),     false),
   ("declarations",        SuiteProc(declarations.run),        false),
   ("diagnostics",         SuiteProc(diagnostics.run),         false),
   ("doc_snippets",        SuiteProc(doc_snippets.run),        false),

@@ -21,7 +21,6 @@ import ast_query
 import codegen_common
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import decl_index
-import codegen_table  # decision-table combinatorics, shared with both backends
 import lowering                # getFieldsForType
 # Shared, ctx-free helpers that happen to live in the Odin backend's util
 # module: the record-shape hash (so both backends name a shape alike) and the
@@ -1466,6 +1465,9 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     if e.discardVal != nil: ctx.genDExpr(e.discardVal) else: ""
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
+  of exkOrdinal:
+    # A cast, for an enum and a bool alike: D converts both to their ordinal.
+    "cast(long)(" & ctx.genDExpr(e.ordinalOf) & ")"
   of exkSend: ctx.genDSend(e)
   of exkSelect: ctx.genDSelect(e)
   of exkDefer: ctx.genDDefer(e)

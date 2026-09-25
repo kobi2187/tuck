@@ -2,13 +2,13 @@
 #
 # Declaration codegen for the Nim backend: genDecl's dispatch (one arm per
 # DeclKind) and everything it calls — fn/object/actor/registry/register/
-# mixin/decision-table/err-handler. Calls INTO codegen.nim's genExpr for fn
+# mixin/err-handler. Calls INTO codegen.nim's genExpr for fn
 # bodies (one-way: genExpr never calls back into anything here).
 import ast, strutils, sets, tables
 import mangle   # mangleName — a requirement's emitted spelling, for `mixin`
 import resolution
 import ast_query
-import codegen_common, codegen_type, codegen_table
+import codegen_common, codegen_type
 import codegen_ctx
 import ./codegen
 
@@ -25,70 +25,6 @@ proc genPendingStub*(d: Decl): string =
   let paramStr = if d.fnParams.len > 0: "[T](payload: T)" else: "()"
   return "proc " & fnNameSanitized & "*" & paramStr & ": " & retTypeStr &
          " =\n  stderr.writeLine(\"TUCK PENDING: " & d.name & " invoked (not implemented)\")\n"
-
-proc decisionRows*(ctx: var CodegenCtx, d: Decl): (seq[seq[string]], seq[string]) =
-  ## The table's rows as (pattern strings per column, emitted body).
-  var pats: seq[seq[string]]
-  var bodies: seq[string]
-  for s in d.fnBody.stmts:
-    if s.kind != exkMatch or s.arms.len == 0: continue
-    let pat = s.arms[0].pattern
-    var row: seq[string]
-    for el in (if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]):
-      row.add(genPatternStr(el))
-    pats.add(row)
-    bodies.add(ctx.genExpr(s.arms[0].body))
-  (pats, bodies)
-
-proc genPackedTable*(ctx: var CodegenCtx, d: Decl, header: string,
-                    domains: seq[seq[string]], comboCount: int): string =
-  ## Bitmask/packed path (spec 6.1): when every column is enumerable the whole
-  ## table becomes one `case` over an integer key — no comparison chains at
-  ## runtime. The last group is the `else`, so the case is total.
-  let (rowPats, bodies) = ctx.decisionRows(d)
-  let groups = groupByOutcome(domains, comboCount, rowPats, bodies)
-  var lines = @["  case " & packedKeyExpr(d, domains, comboCount) &
-                "   # packed decision key"]
-  for gi, g in groups:
-    if gi == groups.len - 1:
-      lines.add("  else: return " & g.outcome)
-    else:
-      var ks: seq[string]
-      for k in g.keys: ks.add($k)
-      lines.add("  of " & ks.join(", ") & ": return " & g.outcome)
-  header & "\n" & lines.join("\n") & "\n"
-
-proc genConditionChain*(ctx: var CodegenCtx, d: Decl, header: string): string =
-  ## Fallback when some column is not enumerable: an if/elif chain comparing
-  ## each param against its pattern. A row of all-`_` becomes the `else`.
-  var lines: seq[string]
-  for idx, s in d.fnBody.stmts:
-    let arm = s.arms[0]
-    var conds: seq[string]
-    for i, pat in arm.pattern.elems:
-      let patStr = genPatternStr(pat)
-      if patStr != "_": conds.add(d.fnParams[i].name & " == " & patStr)
-    let body = ctx.genExpr(arm.body)
-    if conds.len == 0:
-      lines.add("  else:\n    return " & body)
-    else:
-      let prefix = if idx == 0: "if " else: "elif "
-      lines.add("  " & prefix & conds.join(" and ") & ":\n    return " & body)
-  header & "\n" & lines.join("\n") & "\n"
-
-proc genDecisionFn*(ctx: var CodegenCtx, d: Decl, fnNameSanitized: string): string =
-  ## A decision table compiles to one of two shapes: a packed `case` when
-  ## every column is enumerable, an if/elif chain otherwise.
-  var params: seq[string]
-  for p in d.fnParams:
-    params.add(p.name & ": " & genType(p.typ))
-  let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
-  let header = "proc " & fnNameSanitized & "*(" & params.join(", ") & "): " &
-               retTypeStr & " ="
-  let (domains, allEnum, comboCount) = columnDomains(ctx.module, d)
-  if allEnum and comboCount > 0 and comboCount <= MaxPackedCombos:
-    return ctx.genPackedTable(d, header, domains, comboCount)
-  ctx.genConditionChain(d, header)
 
 proc fnHeaderNim*(name, genericStr: string, params: seq[string],
                   retTypeStr, inlineStr: string, exported = true): string =
@@ -169,9 +105,6 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     for p in d.fnParams:
       ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     let fnNameSanitized = d.name.replace(".", "_")
-    if d.isDecision or d.isDecisionTable():
-      return ctx.genDecisionFn(d, fnNameSanitized)
-
     let params = nimFnParams(ctx.res, ctx.module, d)
     let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
     # Generic fns pass their type params straight through — Nim monomorphizes
@@ -931,7 +864,7 @@ proc fnForwardDecls*(m: Module): string =
   ## The pragma stays for TYPES, which is what emitNim's comment there is
   ## about, and which it does handle.
   for d in m.decls(dkFn):
-    if d == nil or d.isPending or d.isDecision or d.isDecisionTable(): continue
+    if d == nil or d.isPending: continue
     if d.isExtern: continue
     let params = nimFnParams(semLayer, m, d)
     let ret = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"

@@ -33,6 +33,7 @@ import ast
 import resolution, strutils
 import ast_query
 import lowering_recursive   # recursive sum edges get a Seq handle
+import lowering_decisions   # a decision table becomes a match or an if chain
 
 proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef]
 
@@ -360,7 +361,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkDiscard, exkTripleDot, exkImport, exkSend, exkSelect, exkCombinator,
      exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkDefer,
-     exkFinish, exkAcquire:
+     exkFinish, exkAcquire, exkOrdinal:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
@@ -473,6 +474,10 @@ proc lowerModule*(res: Resolution, m: Module) =
   # before anything tries to emit one. First, because the phases below read
   # field types.
   boxRecursiveEdges(res, m)
+  # A decision table becomes an ordinary body — a `match` over a packed key,
+  # or an `if` chain — before anything below walks fn bodies, so the calls
+  # in its rows are lowered like any other.
+  lowerDecisionTables(res, m)
   # Phase 1: union / rename type bodies collapse to plain records
   for d in m.decls(dkType):
     if d.typeBody != nil and d.typeBody.kind in {tkUnion, tkRename}:

@@ -1,7 +1,7 @@
 # compiler/codegen_odin.nim
 # Odin backend. Mirrors codegen.nim (the Nim backend) construct for
 # construct: !T/?T result auto-wrap, record construction with invariant
-# validation, decision tables (packed and chained), payload sum types,
+# validation, payload sum types,
 # actors with message envelopes, registries, mixins/extern bindings,
 # pending stubs, and qualified module references. Generated code links
 # against compiler/tuck_rt.odin the way Nim output imports
@@ -25,7 +25,6 @@ let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0
   ## the hot path of every build.
 
 import record_shape  # what a combinator PRODUCES, decided once for all backends
-import codegen_table  # decision-table combinatorics, shared with the Nim backend
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
 export odinLibSpec, odinErrCode
 from mangle import mangleName
@@ -1460,6 +1459,14 @@ proc genOdinSelect(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   "if rt.tuckAwaitReadOrTimeout(" & fd & ", " & ms & ") {\n" & readBody &
     "\n" & ind & "} else {\n" & toBody & "\n" & ind & "}"
 
+proc genOrdinal(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## An enum converts to its ordinal with `int(x)`; a bool does not convert
+  ## at all in Odin, so it is a ternary.
+  let t = ctx.res.typeFor(e.ordinalOf)
+  let v = ctx.genOdinExpr(e.ordinalOf)
+  if t != nil and t.kind == tkNamed and t.name == "bool": "(" & v & " ? 1 : 0)"
+  else: "int(" & v & ")"
+
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
@@ -1508,9 +1515,10 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     "rt.acquireResource(&" & resourceTableName(e.acquireKind) & ", i64(" &
       ctx.genOdinExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
   of exkImport: ""  # imports are declarations, never expression position
+  of exkOrdinal: ctx.genOrdinal(e)
 
 # Declaration codegen (genOdinDecl and everything it dispatches to --
-# fn/object/actor/registry/register/mixin/decision-table/err-handler) now
+# fn/object/actor/registry/register/mixin/err-handler) now
 # lives in codegen_odin_decl.nim, imported above.
 # Shared emission core: hoisted decls + members inside one Beef type.
 

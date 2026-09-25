@@ -12,8 +12,8 @@
 #
 # Two groups:
 #   * emission utilities  — library specs, string padding, error-code hashing
-#   * pure AST predicates — is this fn a decision table, what does this
-#                           pattern print as, which enum owns a variant tag
+#   * pure AST predicates — what does this pattern print as, which enum owns
+#                           a variant tag
 import ast, strutils
 
 proc odinLibSpec*(lib: string): string =
@@ -41,8 +41,8 @@ proc odinErrCode*(name: string): uint16 =
 proc errCodeLit*(name: string): string =
   "0x" & toHex(odinErrCode(name)) & " /* " & name & " */"
 
-# isDecisionTable/genPatternStr are NOT here either — same story as
-# repeat/capitalize: ast_query already exports both, byte-identical.
+# genPatternStr is NOT here either — same story as repeat/capitalize:
+# ast_query already exports it.
 
 # The declared enum (or its Kind enum) that owns a variant tag, if any.
 proc enumTagOwner*(m: Module, tag: string): string =
