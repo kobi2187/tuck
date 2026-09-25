@@ -177,6 +177,20 @@ proc declaredFields*(d: Decl): seq[FieldDef] =
   of dkActor: d.actorFields
   else: @[]
 
+proc composedName(mem: Decl): string =
+  ## The record a `+ Record` member composes in, or "" for any other member.
+  if mem == nil or mem.kind != dkExpr or mem.expr == nil: return ""
+  if mem.expr.kind != exkUnary or mem.expr.unaryOp != uoComposition: return ""
+  let comp = mem.expr.operand
+  if comp == nil or comp.kind != exkVar: "" else: comp.name
+
+proc recordFieldsNamed(m: Module, name: string): seq[FieldDef] =
+  ## The fields of every record type this module declares under `name`.
+  for cd in m.decls:
+    if cd == nil or cd.kind != dkType or cd.name != name: continue
+    if cd.typeBody == nil or cd.typeBody.kind != tkRecord: continue
+    for f in cd.typeBody.fields: result.add(f)
+
 proc composedFields*(m: Module, d: Decl): seq[FieldDef] =
   ## An object's fields INCLUDING everything `+ Record` merges in — composition
   ## is set union (spec §4.5), so a composed field is the object's own as far
@@ -188,14 +202,8 @@ proc composedFields*(m: Module, d: Decl): seq[FieldDef] =
   result = declaredFields(d)
   if d.kind != dkObject: return
   for mem in d.objMembers:
-    if mem == nil or mem.kind != dkExpr or mem.expr == nil: continue
-    if mem.expr.kind != exkUnary or mem.expr.unaryOp != uoComposition: continue
-    let comp = mem.expr.operand
-    if comp == nil or comp.kind != exkVar: continue
-    for cd in m.decls:
-      if cd == nil or cd.kind != dkType or cd.name != comp.name: continue
-      if cd.typeBody == nil or cd.typeBody.kind != tkRecord: continue
-      for f in cd.typeBody.fields: result.add(f)
+    let name = composedName(mem)
+    if name.len > 0: result.add recordFieldsNamed(m, name)
 
 iterator allFns*(m: Module): Decl =
   ## Every fn in the module with a body to walk: top-level, plus the members

@@ -272,6 +272,34 @@ proc elementProv(c: var Ctx, e: Expr): Prov =
   cell.src = ""
   Prov(whole: cell)
 
+proc varProv(c: var Ctx, e: Expr): Prov =
+  ## A parameter aliases the caller's value; a local is whatever it was
+  ## bound to; anything else (a global, a const) is unknown.
+  if e.name in c.params: Prov(whole: Cell(origin: oAliased, src: e.name))
+  elif e.name in c.locals: c.locals[e.name]
+  else: unknownProv()
+
+proc structProv(c: var Ctx, e: Expr): Prov =
+  ## A record construction is fresh as a whole; each Seq field is whatever
+  ## its value was.
+  result = Prov(whole: Cell(origin: oFresh, token: noToken()))
+  for f in e.fields:
+    if isSeqTyped(c.res.typeFor(f.value)):
+      result.fields[f.name] = provOf(c, f.value).whole
+
+proc builtProv(c: var Ctx, e: Expr): Prov =
+  ## Concatenation and friends build a NEW value; none of the binary
+  ## operators hands back an operand.
+  if not isSeqTyped(c.res.typeFor(e)): return unknownProv()
+  ensureId(e)
+  Prov(whole: Cell(origin: oFresh, token: e.id))
+
+proc matchProv(c: var Ctx, e: Expr): Prov =
+  ## The join of every arm's value; no arms, nothing known.
+  if e.arms.len == 0: return unknownProv()
+  result = provOf(c, e.arms[0].body)
+  for arm in e.arms[1 .. ^1]: result = joinProv(result, provOf(c, arm.body))
+
 proc provOf(c: var Ctx, e: Expr): Prov =
   ## Where did this expression's value come from?
   if e == nil: return unknownProv()
@@ -281,35 +309,14 @@ proc provOf(c: var Ctx, e: Expr): Prov =
     # pass has always had, now with an identity attached.
     ensureId(e)
     Prov(whole: Cell(origin: oFresh, token: e.id))
-  of exkVar:
-    if e.name in c.params: Prov(whole: Cell(origin: oAliased, src: e.name))
-    elif e.name in c.locals: c.locals[e.name]
-    else: unknownProv()
-  of exkStruct:
-    var p = Prov(whole: Cell(origin: oFresh, token: noToken()))
-    for f in e.fields:
-      if isSeqTyped(c.res.typeFor(f.value)):
-        p.fields[f.name] = provOf(c, f.value).whole
-    p
+  of exkVar: varProv(c, e)
+  of exkStruct: structProv(c, e)
   of exkCall: provOfCall(c, e)
   of exkField: fieldProv(c, e)
   of exkBracket: elementProv(c, e)
-  of exkBinary:
-    # Concatenation and friends build a NEW value; none of the binary
-    # operators hands back an operand.
-    if isSeqTyped(c.res.typeFor(e)):
-      ensureId(e)
-      Prov(whole: Cell(origin: oFresh, token: e.id))
-    else: unknownProv()
+  of exkBinary: builtProv(c, e)
   of exkIf: joinProv(provOf(c, e.thenBranch), provOf(c, e.elseBranch))
-  of exkMatch:
-    var p = unknownProv()
-    var first = true
-    for arm in e.arms:
-      let a = provOf(c, arm.body)
-      p = if first: a else: joinProv(p, a)
-      first = false
-    if first: unknownProv() else: p
+  of exkMatch: matchProv(c, e)
   of exkBlock:
     # A block's value is its last statement's.
     if e.stmts.len == 0: unknownProv() else: provOf(c, e.stmts[^1])
@@ -638,6 +645,19 @@ proc debugOwn(d: Decl, c: Ctx, fn: SsaFn, own: seq[bool]) =
       if own[i]: owned.add(v.place & "." & $v.version)
     echo "MOVE ", d.name, " moved=", c.moved, " owned=[ ", owned.join(" "), " ]"
 
+proc moveCtx(res: Resolution, m: Module, d: Decl): Ctx =
+  ## The walk's context for one body: its parameters, its moved parameter,
+  ## and its locals' provenance (two passes, so a local read before a later
+  ## assignment in a loop sees it).
+  result = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  for p in d.fnParams: result.params.incl(p.name)
+  for _ in 0 ..< 2: noteAssignments(result, d.fnBody)
+
+proc slotOfMoved(c: Ctx, place: string): string =
+  ## The slot of the moved parameter a place names: "" for the parameter
+  ## itself, else the field path under it.
+  if place == c.moved: "" else: place[c.moved.len + 1 .. ^1]
+
 proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
     tuple[sites: HashSet[NodeId], consumed: HashSet[string]] =
   ## Both halves of the same fact, from one look at the mirror: which
@@ -658,25 +678,22 @@ proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
   ## wrapper, which copies our slot and hands the COPY to the twin — so the
   ## twin frees the copy and ours is still ours to free.
   if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
-  var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
-  for p in d.fnParams: c.params.incl(p.name)
-  for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
+  var c = moveCtx(res, m, d)
   let g = ssaOf(res, d, ssLowered)
   template fn: untyped = g.fn
   if fn.values.len == 0: return
   let own = ssaOwnership(c, m, fn)
-  template final: untyped = g.final
   debugOwn(d, c, fn, own)
   for a in threadSites(res, m, d.fnBody):
-    if a.id notin final or a.id notin fn.byNode: continue
+    if a.id notin g.final or a.id notin fn.byNode: continue
     let v = fn.byNode[a.id]
     if not own[int32(v)]: continue
     result.sites.incl(a.id)
     # ...and if what went was a slot of OUR moved parameter, it is no longer
     # ours to free.
     let place = fn.values[int32(v)].place
-    if c.moved.len == 0 or rootOf(place) != c.moved: continue
-    result.consumed.incl(if place == c.moved: "" else: place[c.moved.len + 1 .. ^1])
+    if c.moved.len > 0 and rootOf(place) == c.moved:
+      result.consumed.incl slotOfMoved(c, place)
 
 proc consumedSlotsSsa*(res: Resolution, m: Module, d: Decl): HashSet[string] =
   moveFactsSsa(res, m, d).consumed
@@ -751,6 +768,48 @@ proc markAllMovableArgs(res: Resolution, m: Module) =
   for d in m.allFns(): markMovableArgs(res, m, d)
   moveDiffReport(res, m)
 
+proc dumpSummaries() =
+  ## `TUCK_DEBUG_PROV`: every summary, one line each.
+  when not defined(release):
+    if getEnv("TUCK_DEBUG_PROV").len > 0:
+      for n, pr in summaries:
+        var fs = ""
+        for k, v in pr.fields:
+          fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token))
+        echo "PROV ", n, " whole=", pr.whole.origin, "/",
+             uint32(pr.whole.token), fs
+
+proc seedSummaries(m: Module): HashSet[string] =
+  ## Every fn at `oFresh`, the optimistic end of the lattice — except a name
+  ## shared by two bodies, answered `oUnknown` outright. Returns the shared
+  ## names, which no round may summarize.
+  ##
+  ## A NAME MUST IDENTIFY ONE BODY. `allFns` yields object and actor members
+  ## as well as top-level fns, and a member keeps its bare name here while the
+  ## emitted symbol is qualified — so a member `push` and a top-level `push`
+  ## would land in the same slot and a call to one would read the other's
+  ## summary. That is the one way this table could hand out an answer that is
+  ## too fresh.
+  var seen: HashSet[string]
+  for d in m.allFns():
+    if d.name in seen: result.incl(d.name) else: seen.incl(d.name)
+  for d in m.allFns():
+    summaries[keyOf(m, d.name)] =
+      if d.name in result: unknownProv()
+      else: Prov(whole: Cell(origin: oFresh, token: noToken()))
+
+proc summaryRound(res: Resolution, m: Module,
+                  duplicated: HashSet[string]): bool =
+  ## Re-summarize every fn once against the current table. True if any
+  ## summary moved.
+  for d in m.allFns():
+    if d.name in duplicated: continue
+    let before = summaries[keyOf(m, d.name)]
+    let after = summarize(res, m, d)
+    if after.whole != before.whole or after.fields != before.fields:
+      summaries[keyOf(m, d.name)] = after
+      result = true
+
 proc buildProvenance*(res: Resolution, m: Module) =
   ## Summarize every fn this module declares, to a fixpoint.
   ##
@@ -759,43 +818,13 @@ proc buildProvenance*(res: Resolution, m: Module) =
   ## monotone and settles. Starting pessimistic would never recover: a
   ## recursive fn would read its own unfinished summary as `oUnknown` and
   ## stay there.
-  # A NAME MUST IDENTIFY ONE BODY. `allFns` yields object and actor members
-  # as well as top-level fns, and a member keeps its bare name here while the
-  # emitted symbol is qualified — so a member `push` and a top-level `push`
-  # would land in the same slot and a call to one would read the other's
-  # summary. That is the one way this table could hand out an answer that is
-  # too fresh, so a shared name is answered `oUnknown` outright.
-  var seen, duplicated: HashSet[string]
-  for d in m.allFns():
-    if d.name in seen: duplicated.incl(d.name) else: seen.incl(d.name)
-  for d in m.allFns():
-    summaries[keyOf(m, d.name)] =
-      if d.name in duplicated: unknownProv()
-      else: Prov(whole: Cell(origin: oFresh, token: noToken()))
+  let duplicated = seedSummaries(m)
   for round in 0 ..< MaxRounds:
-    var changed = false
-    for d in m.allFns():
-      if d.name in duplicated: continue
-      let before = summaries[keyOf(m, d.name)]
-      let after = summarize(res, m, d)
-      if after.whole != before.whole or after.fields != before.fields:
-        summaries[keyOf(m, d.name)] = after
-        changed = true
-    if not changed:
-      when not defined(release):
-        if getEnv("TUCK_DEBUG_PROV").len > 0:
-          for n, pr in summaries:
-            var fs = ""
-            for k, v in pr.fields: fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token))
-            echo "PROV ", n, " whole=", pr.whole.origin, "/", uint32(pr.whole.token), fs
+    if not summaryRound(res, m, duplicated):
+      dumpSummaries()
       markAllMovableArgs(res, m)
       return
-  when not defined(release):
-    if getEnv("TUCK_DEBUG_PROV").len > 0:
-      for n, pr in summaries:
-        var fs = ""
-        for k, v in pr.fields: fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token))
-        echo "PROV ", n, " whole=", pr.whole.origin, "/", uint32(pr.whole.token), fs
+  dumpSummaries()
   # Did not settle. Something in the walk is oscillating rather than rising,
   # which is a bug in this file — answer `oUnknown` for everything rather
   # than ship whichever half-state the last round happened to leave.

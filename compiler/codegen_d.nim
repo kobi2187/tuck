@@ -976,25 +976,9 @@ proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string =
                         "' whose type the checker did not settle")
   declT & " " & e.target.name & " = " & valStr
 
-proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
-  ## First assignment to a name declares it, with the CHECKER'S type stated
-  ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
-  ## the Nim backend's inference) makes it 64-bit — a value past 2^31 then
-  ## wraps in one backend and not the other. Verified with dmd; hidden
-  ## Nim-ism #2.
-  ##
-  ## NEVER `auto`, and never `var`: Tuck HAS a typechecker, so every
-  ## declaration's type is a fact the compiler already established, and the
-  ## emitted code states it. Asking the target compiler to re-infer would
-  ## make the two inference algorithms agree by luck — which is exactly how
-  ## the 32-bit `auto x = 0` divergence got in. A type this backend cannot
-  ## state is a GAP, reported like any other, not a request for D to guess.
-  # `let r = {args} someTask` — schedule the task AND await its result. It
-  # reads as an ordinary call at the source level, which is the point
-  # (spec §9.2): the effect marker is the async annotation, there is no
-  # await keyword.
-  let bound = ctx.genDBoundTaskCall(e)
-  if bound != "": return bound
+proc genDInPlaceAssign(ctx: var DCodegenCtx, e: Expr): string =
+  ## An assignment that updates its target IN PLACE rather than rebinding
+  ## it, or "" when this is not one.
   # An append assigned back to its own argument is an in-place append.
   let appended = selfAppendValue(ctx.res, e)
   if appended != nil:
@@ -1008,8 +992,11 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   # Same fact one level up: a threaded-container call assigned back over its
   # own argument may take it destructively, so it calls the MOVED twin — and
   # the result needs no defensive dup either, since it IS the moved value.
-  let movedCall = ctx.genDMovedCall(e)
-  if movedCall != "": return movedCall
+  ctx.genDMovedCall(e)
+
+proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
+  ## The ordinary assignment: a field of the actor, a new local, a register
+  ## field's setter, or a plain store — re-validating a field's invariants.
   let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   # A FIELD is never a new local: inside an actor handler `total += n`
   # assigns the singleton's field, so it must not be declared here.
@@ -1031,6 +1018,29 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
   if owner != "" and hasInvariants(ctx.module, owner):
     result.add(";\n" & "    ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genDExpr(e.target.receiver) & ")")
+
+proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
+  ## First assignment to a name declares it, with the CHECKER'S type stated
+  ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
+  ## the Nim backend's inference) makes it 64-bit — a value past 2^31 then
+  ## wraps in one backend and not the other. Verified with dmd; hidden
+  ## Nim-ism #2.
+  ##
+  ## NEVER `auto`, and never `var`: Tuck HAS a typechecker, so every
+  ## declaration's type is a fact the compiler already established, and the
+  ## emitted code states it. Asking the target compiler to re-infer would
+  ## make the two inference algorithms agree by luck — which is exactly how
+  ## the 32-bit `auto x = 0` divergence got in. A type this backend cannot
+  ## state is a GAP, reported like any other, not a request for D to guess.
+  # `let r = {args} someTask` — schedule the task AND await its result. It
+  # reads as an ordinary call at the source level, which is the point
+  # (spec §9.2): the effect marker is the async annotation, there is no
+  # await keyword.
+  let bound = ctx.genDBoundTaskCall(e)
+  if bound != "": return bound
+  let inPlace = ctx.genDInPlaceAssign(e)
+  if inPlace != "": return inPlace
+  ctx.genDRebind(e)
 
 # --- statements & control flow -------------------------------------------
 
