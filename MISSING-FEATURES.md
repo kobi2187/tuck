@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (10)
+## A. Open bugs (9)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -123,19 +123,19 @@ the emitted call must be QUALIFIED. Test: `cross_module`, "an imported actor
 runs on every backend". Found 2026-09-17 writing the first import/cache tests;
 same scope error as #73.
 
-**A19 — on Odin, a loop that copies accumulates every copy.** The backend
-emits no `delete` or `free` anywhere: `compiler/tuckrt/tuck_rt.odin` has none
-at all, and `codegen_odin*.nim` emits exactly one, for a task's argument
-environment. So every `tuckSeqCopy` and every `append`-grown `[dynamic]T` is
-live until the process exits. 20 000 copies of a 1024-element `Seq` reaches
-482 MB where Nim uses 1.6 MB and D 7 MB; `benches/apps/matching_engine.tuck`
-leaks ~75 KB per order and is OOM-killed at 13.6 GB on 200k orders, while the
-other two run it in 17-21 MB. Nothing caught it because the programs are
-CORRECT — right answers, clean `tuck ch`, plausible emitted text — and until
-`hostPeakRss` there was no assertion in the tree that looked at memory at
-all. Test: `known_bugs`, "a copy-per-iteration loop does not accumulate
-copies". Found 2026-09-20 running the first real application; issue #77, and
-the analysis that would fix it is issue #80.
+A19 (on Odin, a loop that copies accumulated every copy — 482 MB for 20 000
+copies of a 1024-element `Seq`, issue #77) was fixed 2026-09-25, in two
+halves. The frees came first (`analysis_ownership`, 2026-09-22), which left
+one redundant copy per iteration: `tuckSeqCopy(bump(xs))` copied a buffer
+`bump`'s WRAPPER had already copied, and leaked the first. Provenance now
+knows a call reaches either the wrapper (which copies the moved parameter)
+or the twin (which hands back an argument the caller gave away), and asks
+about the argument inside its enclosing body; the copy pass records which
+bindings it left uncopied as exclusive, and the ownership pass reads that
+record instead of re-deriving it. 482 MB -> 1.8 MB, `TUCK_TRACK` and
+valgrind clean. Test: `known_bugs`, "a copy-per-iteration loop does not
+accumulate copies" (now `bugFixed`), and `value_semantics`, "a result the
+wrapper copied does not alias the argument", on every backend.
 
 A20 (on Odin every heap `str` leaked — the whole category, because
 `copyableContainer` excluded `str` on an aliasing argument that was taken as

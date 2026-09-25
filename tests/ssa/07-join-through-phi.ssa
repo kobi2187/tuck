@@ -1,0 +1,16 @@
+fn twice
+  b0 entry
+  b1 then <- b0
+  b2 join <- b1 b0
+  b3 then <- b2
+  b4 join <- b3 b2  [exits]
+  %0   t.0            = literal            in b0  reads 18:9 FINAL
+  %1   n.0            = entry              in b0  reads 17:6, 19:6 FINAL
+  %2   b.0            = entry              in b0
+  %3   b.lo.0         = project(%2)        in b1  reads 18:14
+  %4   t.1            = opaque             in b1
+  %6   t.2            = phi(%4, %0)        in b2  reads 20:9 FINAL
+  %7   b.lo.1         = phi(%3, %8)        in b2  reads 20:14 FINAL
+  %8   b.lo.2         = project(%2)        in b0
+  %9   t.3            = opaque             in b3
+  %10  t.4            = phi(%9, %6)        in b4  reads 21:10 FINAL

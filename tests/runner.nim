@@ -47,12 +47,82 @@
 ##   tests/run --bless          rewrite goldens (was TUCK_BLESS=1)
 ##   tests/run --quiet          suppress PASS/SKIP lines — only FAIL and
 ##                              the per-suite/final summaries print
-##   tests/run --jobs:N         pool bound; SERIAL by default (issue #31)
+##   tests/run --jobs:N         pool bound; nproc by default, Odin builds
+##                              further capped by memory (issue #31)
 
 import std/[os, osproc, strutils, strformat, times, monotimes, streams, sequtils,
-            tables]
+            tables, strtabs]
 import harness
 import suites/all
+
+var profile: File
+  ## `TUCK_TEST_PROFILE=path`: one line per command — milliseconds, exit code,
+  ## argv — so the suite's clock can be read rather than guessed at.
+if getEnv("TUCK_TEST_PROFILE").len > 0:
+  profile = open(getEnv("TUCK_TEST_PROFILE"), fmWrite)
+
+proc isOdinBuild(argv: seq[string]): bool =
+  ## The one kind of command whose concurrency is capped (`odinBudget`).
+  ## Issue #31 blamed concurrent `odin build`s for its crashes. Measured
+  ## 2026-09-22, the crashes are Odin's threaded checker corrupting its own
+  ## heap and they happen at --jobs:1 too (see harness.OdinThreads); the cap
+  ## stays, sized by memory, because an Odin build is still the heaviest
+  ## thing the suite runs (412 MB peak).
+  argv.len > 0 and (argv[0].extractFilename == "odin" or
+    (argv.len > 1 and argv[1] in ["build", "b"] and "--odin" in argv))
+
+proc odinBudget(): int =
+  ## How many `odin build`s may run at once: one per GiB of available memory.
+  ##
+  ## Measured 2026-09-22 over recursive_types, value_semantics, known_bugs,
+  ## memory and resources: the largest build peaked at 412 MB. A GiB each is
+  ## 2.5x that. Issue #31 was concurrent Odin builds running LLVM out of
+  ## memory, so this is sized from memory rather than from cores — on a small
+  ## box it degrades to one at a time, which is what fixed #31.
+  result = 1
+  try:
+    for line in lines("/proc/meminfo"):
+      if line.startsWith("MemAvailable:"):
+        let kb = parseInt(line.splitWhitespace()[1])
+        result = max(1, kb div (1024 * 1024))
+  except IOError, ValueError: discard
+
+proc slotEnv(slot: int): StringTableRef =
+  ## The environment for pool slot `slot`: the caller's, plus a Nim cache of
+  ## this slot's own.
+  ##
+  ## THE CACHE IS THE WHOLE COST OF A NIM BUILD. Every `tuck build` compiles
+  ## the same runtime (tuck_rt, tuck_async, tuck_coro, minicoro) and the same
+  ## Nim system modules; only `t.nim` differs. Uncached that is ~1.1s a build
+  ## and was 218s of a 330s suite. The bash suite shared one cache per script
+  ## via TUCK_NIMCACHE, and the port to Nim dropped it.
+  ##
+  ## ONE PER SLOT, never one per pool: a slot runs one command at a time, so
+  ## its cache is never written by two builds at once, which is the collision
+  ## tuck.nim's comment on TUCK_NIMCACHE describes.
+  result = newStringTable(modeCaseSensitive)
+  for k, v in envPairs(): result[k] = v
+  result["TUCK_NIMCACHE"] = getTempDir() / &"tuck-nimcache-{getCurrentProcessId()}" /
+                            $slot
+  result["TUCK_ODIN_EXTRA"] = OdinThreads   # `tuck build --odin` too
+
+proc outFile(slot: int): string =
+  getTempDir() / &"tuck-pool-{getCurrentProcessId()}-{slot}.out"
+
+proc launch(argv: seq[string], env: StringTableRef, outPath: string): Process =
+  ## Start `argv` with stdout+stderr going to a FILE, not a pipe.
+  ##
+  ## A pipe has a 64 KiB kernel buffer, and a child that fills it blocks in
+  ## `write()` until someone reads. So a pool on pipes must read each child
+  ## to EOF — which blocks on whichever child it picked, so one slow `odin
+  ## build` at the head held every finished job behind it and idled the other
+  ## slots. (Polling a pipe-backed child for its exit instead is the deadlock:
+  ## it never exits because nobody drained it; this hung the pool until
+  ## 2026-09-12.) A file never fills, so any child can finish and be reaped
+  ## in completion order.
+  startProcess("/bin/sh", args = @["-c", "out=$1; shift; exec \"$@\" >\"$out\" 2>&1",
+                                   "sh", outPath] & argv,
+               env = env, options = {poUsePath})
 
 proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
              jobs: int, prepOf: proc (i: int) = nil) =
@@ -61,10 +131,14 @@ proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
   ## Dependencies only ever go build -> run (nothing nests deeper), so a
   ## ready-set loop covers it: an item is ready when it has no dep, or its dep
   ## has finished successfully. A dep that FAILED marks the dependent done with
-  ## its failure inherited — `runs` reports that as "build failed", which is
-  ## what lib.sh did by checking _build's status before running.
-  var running: seq[tuple[p: Process, idx: int]]
+  ## its failure inherited — `runs` reports that as "build failed".
+  ##
+  ## `odin build`s are further capped by `odinBudget` (issue #31).
+  var running: seq[tuple[p: Process, idx, slot: int, t0: MonoTime]]
   var pending = items.len
+  var envs: seq[StringTableRef]
+  for slot in 0 ..< jobs: envs.add slotEnv(slot)
+  let odinMax = odinBudget()
 
   # Items the MODE excluded (harness.maxVerb) never run. Retire them before
   # the loop so nothing waits on them and nothing marks them failed: their
@@ -85,101 +159,74 @@ proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
     items[i].dep >= 0 and items[items[i].dep].done and
       items[items[i].dep].rc != 0
 
+  proc finish(items: var seq[WorkItem], idx, rc: int, output: string,
+              pending: var int) =
+    items[idx].rc = rc
+    items[idx].output = output
+    items[idx].done = true
+    pending.dec
+
+  var next = 0      # scan start: items are launched roughly in order
   while pending > 0:
     # Anything whose dependency failed can never run.
     for i in 0 ..< items.len:
       if not items[i].done and blocked(i):
-        items[i].done = true
-        items[i].rc = 127
-        items[i].output = "dependency failed"
-        pending.dec
+        finish(items, i, 127, "dependency failed", pending)
 
-    # Fill the pool.
-    var launched = true
-    while running.len < jobs and launched:
-      launched = false
-      for i in 0 ..< items.len:
-        if running.len >= jobs: break
-        if not ready(i): continue
-        if running.anyIt(it.idx == i): continue
+    # FILL every free slot.
+    while running.len < jobs:
+      let odinBusy = running.countIt(isOdinBuild(argvOf(it.idx))) >= odinMax
+      var pick = -1
+      for i in next ..< items.len:
+        if not ready(i) or running.anyIt(it.idx == i): continue
         let argv = argvOf(i)
         if argv.len == 0: continue
-        # Staging, for the items that need files put in place between their
-        # dependency finishing and this command starting.
-        if prepOf != nil: prepOf(i)
-        try:
-          let p = startProcess(argv[0], args = argv[1 .. ^1],
-                               options = {poUsePath, poStdErrToStdOut})
-          running.add (p, i)
-          launched = true
-        except OSError as e:
-          items[i].done = true
-          items[i].rc = 127
-          items[i].output = e.msg
-          pending.dec
-          launched = true
+        if odinBusy and isOdinBuild(argv): continue
+        pick = i
+        break
+      if pick < 0: break
+      var slot = 0
+      while running.anyIt(it.slot == slot): slot.inc
+      # Staging, for the items that need files put in place between their
+      # dependency finishing and this command starting.
+      if prepOf != nil: prepOf(pick)
+      try:
+        running.add (launch(argvOf(pick), envs[slot], outFile(slot)), pick,
+                     slot, getMonoTime())
+      except OSError as e:
+        finish(items, pick, 127, e.msg, pending)
+      # Everything before the first not-yet-done item is settled for good.
+      while next < items.len and items[next].done: next.inc
 
     if running.len == 0:
       # Nothing runnable and nothing running: whatever is left is unreachable.
       for i in 0 ..< items.len:
         if not items[i].done:
-          items[i].done = true
-          items[i].rc = 127
-          items[i].output = "never ran"
-          pending.dec
+          finish(items, i, 127, "never ran", pending)
       break
 
-    # Harvest one, by READING ITS PIPE TO EOF rather than by polling for its
-    # exit. The two are not interchangeable: children run with
-    # poStdErrToStdOut, so each has ONE pipe with a 64 KiB kernel buffer, and
-    # a child that writes past it blocks in `write()`. Blocked, it never
-    # exits; never exiting, an "is it done yet" scan never selects it; never
-    # selected, nobody ever drains it. The pool then spins on `sleep(2)`
-    # forever. (This is what the code did until 2026-09-12, under a comment
-    # asserting the opposite. A 200 KB child hung a spike for 8 s and 3748
-    # spins; reading first drains it in 0.00 s.)
-    #
-    # `readAll` blocks exactly as long as that child holds stdout open, which
-    # is the right amount of time to wait, and the reader is always running so
-    # the buffer can always move. Concurrency is unaffected — it comes from
-    # `startProcess`, not from the harvest order; all that is given up is
-    # reaping in completion order.
-    let (p, idx) = running[0]
-    let reaped = 0
-    # Same EBADF guard as harness.sh: an intermittent failure to read a
-    # child's pipe must fail THAT item with the reason, not abort the pool
-    # and with it every other suite's results.
-    var readErr = ""
-    try:
-      items[idx].output = p.outputStream.readAll()
-    except IOError, OSError:
-      readErr = getCurrentExceptionMsg()
-    items[idx].rc = p.waitForExit()
-    if readErr.len > 0:
-      # Retried once, for the reasons on `harness.sh`: everything structural
-      # was ruled out on 2026-09-12, so a transient read failure on a
-      # freshly spawned child is answered by spawning it again. Only a
-      # failed READ retries — a command that ran and failed is left alone.
-      let argv = argvOf(idx)
-      var again = false
-      if argv.len > 0:
-        try:
-          let p2 = startProcess(argv[0], args = argv[1 .. ^1],
-                                options = {poUsePath, poStdErrToStdOut})
-          items[idx].output = p2.outputStream.readAll()
-          items[idx].rc = p2.waitForExit()
-          p2.close()
-          again = true
-        except IOError, OSError:
-          again = false
-      if not again:
-        items[idx].output = "could not read child output TWICE: " & readErr &
-                            " (see issue #31)"
-        if items[idx].rc == 0: items[idx].rc = 126
-    items[idx].done = true
-    p.close()
-    running.delete(reaped)
-    pending.dec
+    # REAP whatever has finished, in completion order.
+    var reapedAny = false
+    var k = 0
+    while k < running.len:
+      let r = running[k]
+      let rc = r.p.peekExitCode()
+      if rc == -1:
+        k.inc
+        continue
+      let output = try: readFile(outFile(r.slot)) except IOError: ""
+      if profile != nil:
+        profile.writeLine $(getMonoTime() - r.t0).inMilliseconds & "\t" &
+                          $rc & "\t" & argvOf(r.idx).join(" ")
+        profile.flushFile()
+      r.p.close()
+      finish(items, r.idx, rc, output, pending)
+      running.delete(k)
+      reapedAny = true
+    if not reapedAny: sleep(2)
+
+  for slot in 0 ..< jobs:
+    try: removeFile(outFile(slot)) except OSError: discard
 
 var totalSkipped* = 0
   ## Assertions the mode excluded, summed across suites — reported at the end
@@ -192,12 +239,17 @@ proc runSuites(names: seq[string], jobs: int, bless: bool, root: string): int =
   createDir(scratch)
   defer: removeDir(scratch)
 
+  let tc = getMonoTime()
   for n in names:
     var t = T(name: n, phase: pCollect, dir: scratch / n, bless: bless,
               root: root)
     createDir(t.dir)
+    let t1 = getMonoTime()
     suiteBody(n)(t)
+    let ms = (getMonoTime() - t1).inMilliseconds
+    if profile != nil and ms > 500: echo &"  collect {n}: {ms} ms"
     ts.add t
+  if profile != nil: echo &"  collect: {(getMonoTime() - tc).inMilliseconds} ms"
 
   # One pool over every suite's work. Each suite numbered its items from 0, so
   # concatenating them means re-basing every `dep` onto the flat array.
@@ -221,7 +273,10 @@ proc runSuites(names: seq[string], jobs: int, bless: bool, root: string): int =
   let prepOf = proc (i: int) =
     let (si, ii) = owner[i]
     if ii in ts[si].preps: ts[si].preps[ii](ts[si].work[ii].dir)
+  let tp = getMonoTime()
   runPool(flat, argvOf, jobs, prepOf)
+  if profile != nil:
+    echo &"  pool: {(getMonoTime() - tp).inMilliseconds} ms, {flat.len} items"
 
   # Hand results back to their suites, then report.
   for i in 0 ..< flat.len:
@@ -236,7 +291,10 @@ proc runSuites(names: seq[string], jobs: int, bless: bool, root: string): int =
     ts[si].rewind()
     ts[si].phase = pReport
     echo &"-- {ts[si].name}"
+    let t1 = getMonoTime()
     suiteBody(ts[si].name)(ts[si])
+    let ms = (getMonoTime() - t1).inMilliseconds
+    if profile != nil and ms > 500: echo &"  report {ts[si].name}: {ms} ms"
     if ts[si].failed > 0: failures.inc
     totalSkipped += ts[si].skipped
   failures
@@ -261,7 +319,12 @@ proc tuckIsStale(): bool =
 when isMainModule:
   var
     want: seq[string]
-    # SERIAL BY DEFAULT (2026-09-18). Concurrent `odin build` processes were
+    # PARALLEL AGAIN (2026-09-22), with the cause of #31 fenced off rather
+    # than the whole pool serialised: `runPool` caps concurrent `odin build`s
+    # by available memory (`odinBudget`). The history below is why that one
+    # command class is special.
+    #
+    # WAS SERIAL (2026-09-18). Concurrent `odin build` processes were
     # exhausting memory: three consecutive full runs failed on three DIFFERENT
     # recursive-type assertions, one of them naming the cause outright —
     # "LLVM ERROR: out of memory / Allocation failed", rc=134. The rc=139 and
@@ -271,14 +334,14 @@ when isMainModule:
     #
     # The pool bound is what moved, not any emitted code: which assertion lost
     # the race depended on scheduling, which is why it looked like a flaky
-    # test for so long. Raise it back with `--jobs:N` once Odin's memory use
-    # over the recursive-type packages is understood.
+    # test for so long. Superseded by PARALLEL AGAIN above, which fences off
+    # exactly the command that lost the race.
     #
     # MEASURED COST: 5m55s serial against ~4m10s on this machine's core count,
     # so about 1.4x — far less than the core count suggests, because the pool
     # was already contending. A green suite at 1.4x beats a suite that fails
     # somewhere different every third run.
-    jobs = 1
+    jobs = countProcessors()
     bless = false
     modeName = "full"
   for a in commandLineParams():
@@ -305,6 +368,12 @@ when isMainModule:
 
   let root = getCurrentDir()
   let t0 = getMonoTime()
+  # The pool's per-slot Nim caches (slotEnv). NOT shared with the `sh()`
+  # sequences: smokelib runs those on several threads at once, and one cache
+  # under concurrent builds is the collision TUCK_NIMCACHE warns about —
+  # clang crashed reading a half-written system.nim.c when it was tried.
+  let cacheRoot = getTempDir() / &"tuck-nimcache-{getCurrentProcessId()}"
+  putEnv("TUCK_ODIN_EXTRA", OdinThreads)   # for the sh() sequences as well
 
   # Stage 1 — nim builds tuck. Once, and only when a source is newer than the
   # binary.
@@ -388,6 +457,7 @@ when isMainModule:
   echo &"  {\"tests\":<22} {testSecs:>6}s"
   echo &"  {\"total\":<22} {secs(t0):>6}s"
 
+  removeDir(cacheRoot)
   if failures > 0:
     echo &"{failures} failure(s)."
     quit 1

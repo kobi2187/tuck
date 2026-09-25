@@ -488,9 +488,9 @@ fn main() -> int:
   t.runsD "seam: writing b.items never writes a.items (still 10)", 10, dmdExe
 
   # --- decision tables (spec 6.1) ----------------------------------------
-  # The combinatorics come from codegen_table, shared with the other two
-  # backends; only the spelling is D's. Enumerable columns collapse to one
-  # switch over a packed key.
+  # Lowered before any backend sees it (lowering_decisions), so D prints an
+  # ordinary switch; only the ordinal's spelling (a cast) is D's. Enumerable
+  # columns collapse to one switch over a packed key.
   t.src """
 type Priority:
   | low
@@ -512,9 +512,9 @@ fn main() -> int:
   return 1
 """
   t.emitsD "decision: enumerable columns collapse to one packed-key switch",
-           r"switch \(cast\(long\)\(p\) \* 2 \+ cast\(long\)\(urgent\)\)"
+           r"switch \(\(\(cast\(long\)\(p\) \* 2L\) \+ cast\(long\)\(urgent\)\)\)"
   t.emitsD "decision: a packed key is an int, so the last group is default",
-           r"default: return "
+           r"default:\s+return "
   t.runsD "decision: the table picks the first matching row", 3, dmdExe
 
   # --- C FFI (spec: extern [c, header: ...]) -----------------------------

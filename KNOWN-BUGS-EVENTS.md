@@ -1238,7 +1238,10 @@ The first is worth doing regardless of the other two: today's answer to
 
 ## EV-10 — two handlers binding the same local name: the second is undeclared
 
-**Issue #79.**
+**Issue #79. FIXED 2026-09-25:** the Nim and Odin dispatch builders restore
+`definedVars` after each handler arm, as D's already did. Guarded on all three
+backends by `tests/suites/actor_result.nim` ("two handlers may each bind the
+same local name").
 
 **Severity: high. Every backend, and `tuck ch` says OK.** Found 2026-09-20,
 the third bug in one afternoon of writing an ordinary application.

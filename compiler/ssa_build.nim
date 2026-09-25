@@ -31,7 +31,8 @@
 # WHAT THE PREVIOUS BUILDER GOT WRONG BY NOT KNOWING THIS
 # ---------------------------------------------------------------------------
 #
-# `analysis_ssa.nim` is a partial reimplementation of this paper that nobody
+# `analysis_ssa.nim` (deleted 2026-09-23, M1.4) was a partial reimplementation
+# of this paper that nobody
 # noticed was one: its `cur` is `currentDef`, `valueOf` is `readVariable`,
 # `joinMaps` is phi insertion. What it lacks is SEALING and TRIVIAL-PHI
 # REMOVAL — and every one of the six builder bugs that Stage A cost was in
@@ -59,7 +60,7 @@
 #   * a read of `b.ask` with no definition in this body is not an entry value
 #     of `b.ask` but a PROJECTION of whatever `b` currently is, so that the
 #     two stay related when `b` is reassigned.
-import ast, tables, sets, strutils, os
+import ast, tables, sets, strutils
 import resolution
 import ssa_ir
 
@@ -95,6 +96,11 @@ proc newValue(b: var Builder, place: Place, def: Def, blk: BlockId): ValueId =
     if v.place == place: inc version
   b.fn.values.add Value(id: result, place: place, version: version,
                         def: def, blk: blk, freedBy: fkNotFreed)
+
+proc parentOf(p: Place): Place =
+  ## `b.ask` -> `b`, `b.ask.lo` -> `b.ask`, `b` -> "".
+  let i = p.rfind('.')
+  if i < 0: "" else: p[0 ..< i]
 
 proc writeVariable(b: var Builder, place: Place, blk: BlockId, v: ValueId) =
   ## Braun's `writeVariable`, plus Tuck's kill rule.
@@ -150,10 +156,14 @@ proc replaceEverywhere(b: var Builder, phi, same: ValueId,
   ## behind strands it on a value nothing refers to — `levels` in `zeroed` had
   ## its one use on a removed phi while the entry value it collapsed to showed
   ## `uses=0`. Found by the differential against the old builder.
-  for u in users:
-    for i in 0 ..< b.fn.values[int32(u)].def.inputs.len:
-      if b.fn.values[int32(u)].def.inputs[i] == phi:
-        b.fn.values[int32(u)].def.inputs[i] = same
+  # EVERY value's inputs, not just the phis in `users`: a projection built
+  # on the phi (`f.test` of a parked `f`) pointed at a tombstone otherwise.
+  # `users` is still what removal recurses over — only a phi can become
+  # trivial because an operand changed.
+  for u in 0 ..< b.fn.values.len:
+    for i in 0 ..< b.fn.values[u].def.inputs.len:
+      if b.fn.values[u].def.inputs[i] == phi:
+        b.fn.values[u].def.inputs[i] = same
   for node, v in b.fn.byNode:
     if v == phi: b.fn.byNode[node] = same
   for p in b.cur.keys:
@@ -193,7 +203,11 @@ proc addPhiOperands(b: var Builder, place: Place, phi: ValueId): ValueId =
   let blk = b.fn.values[int32(phi)].blk
   for pred in b.fn.blocks[int32(blk)].preds:
     let op = b.readVariable(place, pred)
-    if op.isSet: b.fn.values[int32(phi)].def.inputs.add op
+    # Operand k IS predecessor k: `finalUses` reads the edge a value arrives
+    # through by that index, so a skipped operand would misalign every one
+    # after it.
+    doAssert op.isSet, "ssa_build: no value for " & place & " at " & $pred
+    b.fn.values[int32(phi)].def.inputs.add op
   b.tryRemoveTrivialPhi(phi)
 
 proc readVariableRecursive(b: var Builder, place: Place,
@@ -213,7 +227,16 @@ proc readVariableRecursive(b: var Builder, place: Place,
   elif b.fn.blocks[int32(blk)].preds.len == 0:
     # The entry block. A place read before it is written arrived from outside
     # the body: a parameter, an actor field, a const, a callee's name.
-    result = b.newValue(place, Def(kind: dkEntry), blk)
+    #
+    # A FIELD of such a place is still a field: `b.ask` on entry is a
+    # projection of the entry `b`, not a second, unrelated arrival. Ownership
+    # reaches a moved parameter's slots only through that edge.
+    let parent = parentOf(place)
+    if parent.len > 0:
+      result = b.newValue(place, Def(kind: dkProject,
+                          inputs: @[b.readVariable(parent, blk)]), blk)
+    else:
+      result = b.newValue(place, Def(kind: dkEntry), blk)
   else:
     # Write the phi BEFORE filling it, to break cycles: an operand that reads
     # its way back here finds the phi rather than recursing forever.
@@ -226,6 +249,17 @@ proc readVariable(b: var Builder, place: Place, blk: BlockId): ValueId =
   if place.len == 0: return NoValue
   if place in b.cur and blk in b.cur[place]:
     return b.cur[place][blk]                  # local value numbering
+  let parent = parentOf(place)
+  if parent.len > 0 and place notin b.cur:
+    # THE FIRST TIME THIS BODY NAMES A FIELD. No version of it exists
+    # anywhere, so whatever it holds is exactly the field of its record as
+    # the record stands HERE. Walking back to the entry instead would read
+    # `f.left` of a local `f` as something that arrived from outside.
+    # From now on the path is tracked, and `reproject` keeps it current.
+    let v = b.newValue(place, Def(kind: dkProject,
+                       inputs: @[b.readVariable(parent, blk)]), blk)
+    b.writeVariable(place, blk, v)
+    return v
   b.readVariableRecursive(place, blk)
 
 proc sealBlock(b: var Builder, blk: BlockId) =
@@ -261,16 +295,43 @@ proc noteRead(b: var Builder, e: Expr) =
   let v = b.readVariable(place, b.here)
   if not v.isSet: return
   ensureId(e)
-  b.fn.values[int32(v)].uses.add Use(at: e.id, blk: b.here)
+  b.fn.values[int32(v)].uses.add Use(at: e.id, blk: b.here,
+                                      line: e.span.line, col: e.span.col)
   b.fn.byNode[e.id] = v
+
+proc constructs(b: Builder, e: Expr): bool =
+  ## `{lo: 1, hi: 2} Pair` — a record construction, whose callee is the TYPE
+  ## it builds. The checker types the call as that very name.
+  let t = b.res.typeFor(e)
+  t != nil and t.kind == tkNamed and t.name == e.callee.name
 
 proc reads(b: var Builder, e: Expr) =
   ## Every read inside an expression. A field chain is recorded at its
   ## deepest nameable path and not descended into — `b.ask` is a read of
   ## `b.ask`, not of `b`.
   if e == nil: return
+  # A CALL WRITTEN AS A FIELD — `a.total`, `n.toStr`, `r.len` — is not a
+  # field. The checker resolved it to a call whose argument is the receiver,
+  # and reading that call is what reads `a`. Recorded as the place `a.total`
+  # instead, the receiver's own read went uncounted: an earlier read of `a`
+  # looked final, `a` was handed to a MOVED callee, and the callee's writes
+  # reached the caller's `a` (D and Odin returned 203 where Nim returned 105).
+  if e.kind == exkField and b.res.hasCall(e):
+    b.reads(b.res.call(e))
+    return
   if e.kind in {exkVar, exkField} and pathOf(e).len > 0:
     b.noteRead(e)
+    # `b.fn {xs}` the checker could not resolve keeps its arguments in
+    # `dotArg`, which the path does not name. Skipping them lost every read
+    # inside — `xs` looked unread there.
+    if e.kind == exkField: b.reads(e.dotArg)
+    return
+  if e.kind == exkCall and e.callee != nil and e.callee.kind == exkVar and
+     (b.res.declFor(e) != nil or b.constructs(e)):
+    # A call the checker resolved to a declared fn NAMES it; the callee is
+    # not storage. Versioning it only put `sweep.0 = entry` in every graph.
+    # An UNRESOLVED callee stays a read: it may be a closure in a local.
+    for a in e.args: b.reads(a)
     return
   for ch in e.children: b.reads(ch)
 
@@ -296,7 +357,11 @@ proc defineTo(b: var Builder, target, value: Expr) =
   let v = b.newValue(place, def, b.here)
   b.writeVariable(place, b.here, v)
   b.reproject(place, v, b.here)
-  if def.at.isSet: b.fn.byNode[def.at] = v
+  # A READ KEEPS ITS NODE. In `let a = s` the value expression IS a read of
+  # `s`, already indexed to `s`'s value; overwriting it with `a`'s would make
+  # the front door answer "which buffer did this read see" with the wrong
+  # one. The alias stays findable through its own `def.at`.
+  if def.at.isSet and def.at notin b.fn.byNode: b.fn.byNode[def.at] = v
 
 proc walkIf(b: var Builder, e: Expr) =
   b.reads(e.cond)
@@ -352,16 +417,52 @@ proc matchIsExhaustive(b: Builder, e: Expr): bool =
   d != nil and d.kind == dkType and d.typeBody != nil and
     d.typeBody.kind == tkSum
 
+proc bindPattern(b: var Builder, pat: Pattern, src: Place) =
+  ## Define every name a pattern binds, in the current block.
+  ##
+  ## Unbound, a pattern variable read as `entry` — a value from OUTSIDE the
+  ## body, which it is not; and a name the body never defines is a name no
+  ## phi can form for, so a loop variable looked like one value for the
+  ## whole loop. `src` is the place the pattern takes apart ("" when it is
+  ## not a nameable place, like a `for` element), so each binding is a
+  ## projection of what it was taken from.
+  if pat == nil: return
+  case pat.kind
+  of pkVar:
+    var def = Def(kind: dkProject)
+    if src.len > 0:
+      let whole = b.readVariable(src, b.here)
+      if whole.isSet: def.inputs = @[whole]
+    let v = b.newValue(pat.name, def, b.here)
+    b.writeVariable(pat.name, b.here, v)
+    b.reproject(pat.name, v, b.here)
+  of pkRecord:
+    for (field, sub) in pat.fields:
+      b.bindPattern(sub, if src.len > 0: src & "." & field else: "")
+  of pkTuple:
+    for sub in pat.elems: b.bindPattern(sub, "")
+  of pkOr:
+    # Both alternatives bind the same names; the left says which.
+    b.bindPattern(pat.left, "")
+  of pkWild, pkLit: discard
+
 proc walkMatch(b: var Builder, e: Expr) =
   b.reads(e.subject)
   let entry = b.here
   var armExits: seq[BlockId]
   var allLeave = e.arms.len > 0
   for i, arm in e.arms:
+    # NO GUARDS. The parser never builds one, and an arm with a guard is not
+    # entered from the subject alone — a failed guard falls through to the
+    # next arm, an edge this CFG does not have. Model it before allowing it.
+    doAssert arm.guard == nil,
+      "ssa_build: a match arm guard reached the builder, which has no edge " &
+      "for a guard that fails"
     let ab = b.newBlock("arm" & $i)
     b.addPred(ab, entry)
     b.sealBlock(ab)
     b.here = ab
+    b.bindPattern(arm.pattern, pathOf(e.subject))
     b.walk(arm.body)
     if b.exitsAlready(b.here): continue
     allLeave = false
@@ -374,7 +475,7 @@ proc walkMatch(b: var Builder, e: Expr) =
   b.fn.blocks[int32(join)].exits = allLeave
   b.here = join
 
-proc walkLoop(b: var Builder, cond, body: Expr) =
+proc walkLoop(b: var Builder, cond, body: Expr, binds: Pattern = nil) =
   let entry = b.here
   # THE HEAD IS UNSEALED. Its second predecessor is the latch at the bottom of
   # the body, which does not exist yet. Everything the body reads from the
@@ -393,6 +494,8 @@ proc walkLoop(b: var Builder, cond, body: Expr) =
   b.loopHeads.add head
   b.loopExits.add exit
   b.here = bodyB
+  # A `for` binds its element afresh at the top of every turn.
+  b.bindPattern(binds, "")
   b.walk(body)
   let latch = b.here
   discard b.loopHeads.pop()
@@ -416,7 +519,7 @@ proc walk(b: var Builder, e: Expr) =
   of exkWhile: b.walkLoop(e.whileCond, e.whileBody)
   of exkFor:
     b.reads(e.iterable)
-    b.walkLoop(nil, e.body)
+    b.walkLoop(nil, e.body, e.iter)
   of exkReturn, exkRaise:
     b.reads(e)
     b.fn.blocks[int32(b.here)].exits = true
@@ -451,9 +554,12 @@ proc buildFn*(res: Resolution, d: Decl): SsaFn =
   b.fn.entry = b.newBlock("entry")
   b.here = b.fn.entry
   b.sealBlock(b.fn.entry)
-  if d.fnBody != nil:
-    b.walk(d.fnBody)
-    deferRoots(d.fnBody, b.fn.deferredRoots)
+  # A task's body lives in `taskBody`; reading only `fnBody` built every task
+  # an empty graph, which says "no reads" and so never stamps anything.
+  let body = if d.kind == dkTask: d.taskBody else: d.fnBody
+  if body != nil:
+    b.walk(body)
+    deferRoots(body, b.fn.deferredRoots)
   # Any block left unsealed is a construction bug, not a program property.
   for blk in b.fn.blocks:
     doAssert blk.sealed,

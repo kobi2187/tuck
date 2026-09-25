@@ -176,6 +176,7 @@ proc resolveRefsIn(e: Expr) =
   of exkDefer: e.deferBody = resolveVarSlot(e.deferBody)
   of exkAcquire: e.acquireRef = resolveVarSlot(e.acquireRef)
   of exkFinish: e.finishHandle = resolveVarSlot(e.finishHandle)
+  of exkOrdinal: e.ordinalOf = resolveVarSlot(e.ordinalOf)
 
 proc resolveDeclRefs*(prog: seq[LoadedModule]) =
   ## Entry point: build the five whole-program name tables, then rewrite

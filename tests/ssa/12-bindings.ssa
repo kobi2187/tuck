@@ -1,0 +1,18 @@
+fn sum
+  b0 entry
+  b1 loop.head <- b0 b3
+  b2 loop.exit <- b1  [exits]
+  b3 loop.body <- b1
+  %0   t.0            = literal            in b0
+  %1   xs.0           = entry              in b0  reads 13:12 FINAL
+  %2   x.0            = project            in b3  reads 14:13 FINAL
+  %3   t.1            = phi(%0, %4)        in b1  reads 14:9 FINAL, 15:10 FINAL
+  %4   t.2            = opaque             in b3
+
+fn low
+  b0 entry
+  b1 arm0 <- b0  [exits]
+  b2 join  [exits]
+  %0   p.0            = entry              in b0  reads 18:9 FINAL
+  %1   q.0            = project(%0)        in b1
+  %2   q.lo.0         = project(%1)        in b1  reads 19:20 FINAL

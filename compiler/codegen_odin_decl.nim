@@ -2,21 +2,18 @@
 #
 # Declaration codegen for the Odin backend: genOdinDecl's dispatch (one arm
 # per DeclKind) and everything it calls -- fn/object/actor/registry/
-# register/mixin/decision-table/err-handler. Calls INTO codegen_odin.nim's
+# register/mixin/err-handler. Calls INTO codegen_odin.nim's
 # genOdinExpr for fn bodies (one-way: genOdinExpr never calls back into
 # anything here).
 import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
-import codegen_table
 import codegen_odin_ctx
 import codegen_odin_util
 from mangle import mangleName
 from lowering_seqcopy import seqFieldNames
 import analysis_ownership   ## decides the frees; this file only prints them
-from analysis_ssa import pathOf   # the `str` pass above still walks paths
-import os
 import ./codegen_odin
 
 const DefaultMailboxSize = "8"
@@ -83,8 +80,11 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   for i in 0 ..< params.len:
     if params[i].name == "self":
       params[i].typ = Type(span: m.span, kind: tkNamed, name: "^" & objName)
+  # THE MEMBER'S OWN ID: this is the same fn — same body, same decisions —
+  # printed with Odin's `self` convention, and every side table (ownership,
+  # SSA, resolution) knows it by that id.
   let copy = Decl(span: m.span, kind: dkFn, name: memberProcName(objName, m.name),
-                  fnParams: params,
+                  id: m.id, fnParams: params,
                   fnReturnType: m.fnReturnType, fnBody: m.fnBody,
                   fnEffects: m.fnEffects, fnGenerics: m.fnGenerics)
   # `self` is a POINTER here, so every mention in the body needs a deref —
@@ -132,115 +132,6 @@ proc ensureTrailingReturn*(bodyStr: string, body: Expr, blockIndent: int): strin
                       b.stmts[^1].kind in {exkReturn, exkRaise})):
       return bodyStr
   return bodyStr & "\n" & "  ".repeat(blockIndent) & "  return {}"
-
-proc decisionHeader*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
-  ## The proc signature a decision table compiles to.
-  var params: seq[string]
-  for p in d.fnParams:
-    params.add(p.name & ": " & ctx.odinType(p.typ))
-  let retT = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
-  let retStr = if retT != "void": " -> " & retT else: ""
-  ind & d.name.replace(".", "_") & " :: proc(" & params.join(", ") & ")" &
-    retStr & " {"
-
-proc columnOrdinal*(domain: seq[string], paramName: string): string =
-  ## A column's ordinal. NOT packedKeyExpr — that emits Nim's `ord()`; Odin
-  ## needs int() and a bool ternary, which is the one part of this that is
-  ## genuinely syntax.
-  if domain == @["false", "true"]: "(" & paramName & " ? 1 : 0)"
-  else: "int(" & paramName & ")"
-
-proc packedKey*(d: Decl, domains: seq[seq[string]], comboCount: int): string =
-  ## Mixed radix over the ordinal of each column.
-  var parts: seq[string]
-  var stride = comboCount
-  for c in 0 ..< domains.len:
-    stride = stride div domains[c].len
-    let ordExpr = columnOrdinal(domains[c], d.fnParams[c].name)
-    parts.add(if stride > 1: ordExpr & " * " & $stride else: ordExpr)
-  parts.join(" + ")
-
-proc decisionRowPatterns*(s: Expr): seq[string] =
-  ## One row's column patterns, as their surface spelling.
-  let pat = s.arms[0].pattern
-  for el in (if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]):
-    result.add(genPatternStr(el))
-
-proc collectDecisionRows*(ctx: var OdinCodegenCtx, d: Decl,
-                         rowPats: var seq[seq[string]],
-                         rowBodies: var seq[string]) =
-  for s in d.fnBody.stmts:
-    if s.kind != exkMatch or s.arms.len == 0: continue
-    rowPats.add(decisionRowPatterns(s))
-    rowBodies.add(ctx.armValue(s.arms[0].body))
-
-proc genPackedDecision*(ctx: var OdinCodegenCtx, d: Decl,
-                       domains: seq[seq[string]], comboCount: int,
-                       ind: string): string =
-  ## Every column domain is enumerable, so the whole table collapses to one
-  ## switch over a packed integer key (spec 6.1).
-  var rowPats: seq[seq[string]]
-  var rowBodies: seq[string]
-  ctx.collectDecisionRows(d, rowPats, rowBodies)
-  # first-match outcome for every combination, grouped by outcome
-  let groups = groupByOutcome(domains, comboCount, rowPats, rowBodies)
-  var lines: seq[string]
-  lines.add(ind & "\tswitch " & packedKey(d, domains, comboCount) &
-            " {   // packed decision key")
-  for gi, g in groups:
-    if gi == groups.len - 1:
-      lines.add(ind & "\tcase: return " & g.outcome)
-    else:
-      var ks: seq[string]
-      for k in g.keys: ks.add($k)
-      lines.add(ind & "\tcase " & ks.join(", ") & ": return " & g.outcome)
-  lines.add(ind & "\t}")
-  lines.join("\n")
-
-proc decisionRowCondition*(ctx: var OdinCodegenCtx, d: Decl, arm: MatchArm): string =
-  ## The guard a row fires under — empty when every column is a wildcard,
-  ## which makes it the catch-all.
-  let pats = if arm.pattern != nil and arm.pattern.kind == pkTuple:
-               arm.pattern.elems
-             else: @[arm.pattern]
-  var conds: seq[string]
-  for i, pat in pats:
-    let patStr = genPatternStr(pat)
-    if patStr != "_" and i < d.fnParams.len:
-      conds.add(d.fnParams[i].name & " == " & ctx.patternValue(patStr))
-  conds.join(" && ")
-
-proc genChainedDecision*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr,
-                        ind: string): string =
-  ## An open column domain cannot be packed, so the rows become guards in
-  ## order, and a table with no catch-all needs a zero value to fall out on.
-  var lines: seq[string]
-  var hasCatchAll = false
-  for s in d.fnBody.stmts:
-    let arm = s.arms[0]
-    let cond = ctx.decisionRowCondition(d, arm)
-    let value = ctx.armValue(arm.body)
-    if cond == "":
-      lines.add(ind & "\treturn " & value)
-      hasCatchAll = true
-    else:
-      lines.add(ind & "\tif " & cond & " do return " & value)
-  if not hasCatchAll and retTypeStr != "void":
-    lines.add(ind & "\treturn {}")
-  lines.join("\n")
-
-proc genDecisionTable*(ctx: var OdinCodegenCtx, d: Decl): string =
-  ## Packed when every column is enumerable, chained guards otherwise.
-  let ind = "  ".repeat(ctx.indent)
-  let header = ctx.decisionHeader(d, ind)
-  let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
-                   else: "void"
-  let (domains, allEnum, comboCount) = columnDomains(ctx.module, d)
-  let body = if allEnum and comboCount > 0 and comboCount <= MaxPackedCombos:
-               ctx.genPackedDecision(d, domains, comboCount, ind)
-             else:
-               ctx.genChainedDecision(d, retTypeStr, ind)
-  header & "\n" & body & "\n" & ind & "}\n"
 
 proc cCallbackConvention*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## A fn handed to a C function pointer needs the C calling convention. Odin
@@ -366,180 +257,16 @@ proc genFnBody*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): stri
     result = ensureTrailingReturn(result, d.fnBody, savedIndent)
   ctx.indent = savedIndent
 
-let DebugStr = not defined(release) and getEnv("TUCK_DEBUG_STR").len > 0
-  ## Read once at module init; `ownedStrLocalsOf` runs per fn.
-
-const RtOwnedStr = ["toStr", "tuckConcat", "joinStr", "charAt"]
-  ## Runtime procs that hand back a `str` the CALLER now owns — Odin's
-  ## `strings.clone`, `strings.concatenate`, `strings.join`, `fmt.aprint`.
-  ##
-  ## A LIST, and it lives here rather than as an attribute in `std/`, because
-  ## "this returns freshly allocated storage" is a fact about the ODIN
-  ## RUNTIME'S IMPLEMENTATION and not about Tuck. On Nim the same call is
-  ## handled by ARC and on D by the GC; writing `[owned]` on `std/str.tuck`
-  ## would state a backend's private business as a language-level claim.
-  ##
-  ## DELIBERATELY SHORT. Two str-returning runtime procs are NOT here and
-  ## must not be added without reading them first:
-  ##
-  ##   splitLines  Odin's `strings.split_lines` hands back lines that SLICE
-  ##               the input. The `[dynamic]string` is fresh; the strings in
-  ##               it are not, and freeing one would cut into the caller's.
-  ##   readFile    its buffer becomes a FIELD of the `FsContent` record it
-  ##               returns, and a field is not a local — freeing it needs
-  ##               the record's own ownership, which is issue #82's shape.
-  ##
-  ## Leaving a proc off this list LEAKS, which is where the backend already
-  ## is. Putting one on it wrongly is a use-after-free. The asymmetry is why
-  ## the list is short and each absence is written down.
-
-proc ownedStrCall(res: Resolution, e: Expr): bool =
-  ## Is this expression a call to one of those?
-  ##
-  ## RESOLVED, not read off the syntax: `i.toStr` is an `exkField` in the
-  ## tree and only the resolution layer knows it is a call at all. Matching
-  ## on the node kind alone answered false for the commonest spelling there
-  ## is, which is how this was found.
-  if e == nil: return false
-  if e.kind == exkBinary and isStringConcat(e): return true   # `a + b`
-  var c = e
-  if res.hasCall(c): c = res.call(c)
-  if c == nil or c.kind != exkCall or c.callee == nil or
-     c.callee.kind != exkVar: return false
-  var n = c.callee.name
-  for sep in [".", ":"]:
-    let i = n.rfind(sep)
-    if i >= 0: n = n[i + sep.len .. ^1]
-  n in RtOwnedStr
-
-proc holdsAStrType(t: Type): bool =
-  ## Could a value of this type be CARRYING a `str` it was handed?
-  ##
-  ## A scalar cannot. A `str` OBVIOUSLY CAN — it is one. This used to answer
-  ## false for `str`, reasoning that "the runtime procs that answer one
-  ## allocate rather than passing a string through", and that reasoning
-  ## confuses what a CALL RETURNS with what a VALUE CAN HOLD. The exemption
-  ## belongs to the call, and it is made in `sealsFor` where it is true;
-  ## making it here made `return s` not an escape, so a returned local was
-  ## freed before its caller read it:
-  ##
-  ##     tuck_label :: proc (n: int) -> string {
-  ##       tuck_s := str.toStr(n)
-  ##       defer delete(tuck_s)
-  ##       return tuck_s          // <- freed, then returned
-  ##     }
-  ##
-  ## A use-after-free that prints garbage, found by review rather than by any
-  ## assertion: every `str` in the corpus is consumed where it is built.
-  if t == nil: return true                 # unknown: assume it could
-  case t.kind
-  of tkNamed: t.name notin ["int", "bool", "float", "void",
-                            "u8", "u16", "u32", "u64",
-                            "i8", "i16", "i32", "i64", "f32", "f64"]
-  else: true
-
-proc holdsAStr(res: Resolution, e: Expr): bool = holdsAStrType(res.typeFor(e))
-
-proc sealsFor(res: Resolution, n: Expr, sealed: bool): bool =
-  ## Does this node put whatever is inside it beyond this scope's reach?
-  ##
-  ## WHAT THE DESTINATION CAN HOLD is the test at every seal, not the node
-  ## kind. A `return` of an int, or a call that answers one, cannot be
-  ## carrying our string away — and `acc = acc + s.len` is exactly that
-  ## shape, so sealing on the kind alone made every string in every fold look
-  ## as though it escaped.
-  if sealed or n.kind == exkSend: return true   # a message outlives us
-  if n.kind in {exkReturn, exkRaise}:
-    return n.returnVal == nil or holdsAStr(res, n.returnVal)
-  if n.kind == exkCall:
-    # A call that ALLOCATES its result does not carry an argument out: what
-    # comes back is fresh storage, so passing our string in does not let it
-    # escape. That is the exemption `holdsAStrType` used to make for the type
-    # as a whole, which was too wide by exactly one case — `return s`.
-    if ownedStrCall(res, n): return false
-    return holdsAStr(res, n)
-  false
-
-proc strEscapes(res: Resolution, body: Expr, name: string): bool =
-  ## Does this local's value leave the body, by any route whose end the
-  ## emitter cannot see?
-  ##
-  ## CONSERVATIVE AND LISTED, because each of these is a use-after-free if it
-  ## is wrong and only a leak if it is too strict: a `return`, a `send`
-  ## payload, a construction that could be holding it, and an assignment to
-  ## anything but this same local.
-  ##
-  ## An ordinary call ARGUMENT is not an escape: the callee cannot keep a
-  ## `str` beyond the call except by returning it — and a call result is only
-  ## freed when the callee is on `RtOwnedStr`, which allocates rather than
-  ## passing one through.
-  if body == nil: return false
-  var stack = @[(body, false)]
-  while stack.len > 0:
-    let (n, sealed) = stack.pop()
-    if n == nil: continue
-    if n.kind == exkVar and n.name == name and sealed: return true
-    let seals = sealsFor(res, n, sealed)
-    if n.kind == exkAssign:
-      let toElsewhere = n.target != nil and pathOf(n.target) != name
-      stack.add((n.assignVal,
-                 if toElsewhere: holdsAStr(res, n.target) else: seals))
-      stack.add((n.target, seals))
-      continue
-    for ch in n.children: stack.add((ch, seals))
-  false
-
-proc collectDecls(body: Expr, assigned: var CountTable[string],
-                  decls: var Table[string, Expr]) =
-  ## Every name this body assigns, how many times, and the value each was
-  ## DECLARED with.
-  var stack = @[body]
-  while stack.len > 0:
-    let n = stack.pop()
-    if n == nil: continue
-    for ch in n.children: stack.add(ch)
-    if n.kind != exkAssign or n.target == nil or n.target.kind != exkVar:
-      continue
-    assigned.inc(n.target.name)
-    if n.isDecl: decls[n.target.name] = n.assignVal
-
-proc isOwnedStrLocal(ctx: OdinCodegenCtx, d: Decl, name: string, val: Expr,
-                     assigned: CountTable[string]): bool =
-  ## ASSIGNED EXACTLY ONCE is the restriction that makes the `defer` correct
-  ## with no further analysis: one version, no phi, no reassignment, so the
-  ## name and the allocation are the same thing for the whole scope and
-  ## `defer delete` at the declaration fires exactly once on exactly it.
-  if assigned[name] != 1: return false
-  let t = ctx.res.typeFor(val)
-  if t == nil or t.kind != tkNamed or t.name != "str": return false
-  if not ownedStrCall(ctx.res, val): return false
-  not strEscapes(ctx.res, d.fnBody, name)
-
-proc ownedStrLocalsOf(ctx: OdinCodegenCtx, d: Decl): HashSet[string] =
-  ## Which of this fn's locals hold a `str` it allocated and never lets go.
-  if d.fnBody == nil: return
-  var assigned: CountTable[string]
-  var decls: Table[string, Expr]
-  collectDecls(d.fnBody, assigned, decls)
-  for name, val in decls:
-    when not defined(release):
-      if DebugStr:
-        echo "STR? ", name, " assigned=", assigned[name],
-             " owned=", isOwnedStrLocal(ctx, d, name, val, assigned)
-    if isOwnedStrLocal(ctx, d, name, val, assigned): result.incl(name)
-
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
-  ## An ordinary fn. A pending fn is a stub and a decision table has its own
-  ## lowering; both leave before any of this runs.
+  ## An ordinary fn. A pending fn is a stub, and leaves before any of this
+  ## runs. (A decision table arrives here already lowered to a plain body.)
   if d.isPending: return ctx.genPendingStub(d)
   ctx.currentParams = @[]
   for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
-  ctx.ownedStrLocals = ctx.ownedStrLocalsOf(d)
   # THE OWNERSHIP PASS DECIDES; this emitter prints. See
   # compiler/analysis_ownership.nim for the six steps.
-  ctx.owned = ownershipOf(ctx.res, ctx.module, d)
-  if d.isDecision or d.isDecisionTable(): return ctx.genDecisionTable(d)
+  ctx.owned = ownershipFor(d)
   let ind = "  ".repeat(ctx.indent)
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
                    else: "void"
@@ -585,7 +312,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   # after `TUCK_TRACK` confirmed no double free.
   # Step 6 of the ownership pass, printed.
   var frees = ""
-  for slot in ownershipOf(ctx.res, ctx.module, d).twinFreesParam:
+  for slot in ownershipFor(d).twinFreesParam:
     let path = if slot.len == 0: movedP else: movedP & "." & slot
     frees.add(ind & "\tdefer delete(" & path & ")\n")
   let twinName = movedName(d.name.replace(".", "_"))
@@ -900,8 +627,13 @@ proc genDispatch*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandle
   ## The switch that routes an envelope to its handler.
   var hctx = ctx.newHandlerCtx(d)
   var cases: seq[string]
+  # EACH ARM IS ITS OWN SCOPE: a name one handler declares is not declared in
+  # the next, or its `let r` prints as an assignment to an undeclared name
+  # (#79). genHandlerCase also adds the arm's payload names to the set.
+  let outer = hctx.definedVars
   for h in handlers:
     cases.add(hctx.genHandlerCase(h, ind))
+    hctx.definedVars = outer
   if hasShutdown:
     # Stops the actor rather than adding a message: run the arm's body, then
     # set the flag the drain checks.

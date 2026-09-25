@@ -1453,7 +1453,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.hostPeakRss("a copy-per-iteration loop does not accumulate copies", 65536)
-  t.bugOpen "a copy-per-iteration loop does not accumulate copies"
+  t.bugFixed "a copy-per-iteration loop does not accumulate copies"
 
   # 18. On ODIN ONLY, every heap `str` leaks — the whole category, not one
   # site. `copyableContainer` excludes `str` deliberately and for a good
@@ -1496,6 +1496,37 @@ fn main() -> int:
 """
   t.hostPeakRss("a million temporary strings do not accumulate", 12288)
   t.bugFixed "a million temporary strings do not accumulate"
+
+  # ...nor do the strings a CONCATENATION reads, or builds on the way. Found
+  # by benches/memory, not by review: `let t = s + "-" + s` in a loop leaked
+  # two strings a turn on Odin (123 MB at two million turns, 244 MB at four)
+  # while Nim and D held under 4 MB.
+  #   * `s` looked escaped: the `str` rule let a binding's seal flow through
+  #     the allocating concatenation into its operands, though the result it
+  #     binds holds none of them (ownership_escape: an exempt call blocks it).
+  #   * `s + "-"` had no name, so no local owned it; it is named now
+  #     (lowering_strtemps) and freed like one.
+  t.src """
+import str
+
+fn churn({n: int}) -> int:
+  var acc = 0
+  var i = 0
+  for i < n:
+    let s = i.toStr
+    let t = s + "-" + s
+    acc = acc + t.len
+    i = i + 1
+  return acc
+
+fn main() -> int:
+  let acc = {n: 1000000} churn
+  if acc < 1000000:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("the strings a concatenation reads and builds do not accumulate", 12288)
+  t.bugFixed "the strings a concatenation reads and builds do not accumulate"
 
   # 19. EV-14 / issue #82: the dead intermediates of a THREADING CHAIN.
   #
@@ -1607,5 +1638,62 @@ fn main() -> int:
   #     reuse the block: freed it prints nothing, live it prints 42.
   t.hostRuns("...and every backend's caller can still read it", 2, "42")
   t.bugFixed "a returned str is not freed by the body that built it"
+
+  # A MOVED TWIN FREED ITS PARAMETER TWICE. Inside `peek_moved`, `let t = xs`
+  # reads through the moved parameter, and the EMITTER suppressed the copy
+  # there — but the copy pass had marked the site, so the ownership pass
+  # read "copied, therefore ours" and emitted `defer delete(t)` beside the
+  # twin's own `defer delete(xs)`: one buffer, two frees, SIGSEGV on Odin.
+  # The suppression was a copy decision made in the emitter, invisible to
+  # everything that reads the copy pass's record. Found 2026-09-25 reading
+  # `afterBinding`'s account of that same emitter rule.
+  t.src """
+import seq
+
+fn peek({xs: Seq[int]}) -> Seq[int]:
+  let t = xs
+  let n = t.len
+  return {items: xs, value: n} push
+
+fn main() -> int:
+  var a = [1, 2, 3]
+  a = {xs: a} peek
+  let b = {xs: a} peek
+  return a[3] + b[4] + b.len
+"""
+  t.quietly: t.hostRuns("a twin frees what it read through its param once", 12)
+  t.bugFixed "a twin frees what it read through its param once"
+
+  # #21 — a type the checker SYNTHESIZED had no declaration edge. A record
+  # construction's type was built bare, so asking for its fields while the
+  # body was being checked fell back to scanning the decl list by name — the
+  # scan that made emit quadratic (#23). Every named type is now made by
+  # `typecheck_collect.namedType`, and lowering ASSERTS on a miss the decl
+  # list would have answered, so the regression is a crash in `tuck c`, not a
+  # silent slowdown. Constructed on every backend, since each lowers its own
+  # copy.
+  #
+  # The assertion found the second half at once: an IMPORTED type's injected
+  # declaration had no id, and `resolveTypeTo` returned silently on one — so
+  # `d: Milliseconds` from std/time was "found" and never linked. Guarded by
+  # examples/32 in odin_backend and by the cross_module suite, which is where
+  # it surfaced.
+  t.src """
+type Config:
+  port: int
+  name: str
+
+fn make({port: int}) -> Config:
+  return {port: port, name: "srv"} Config
+
+fn main() -> int:
+  let c = {port: 7} make
+  return c.port
+"""
+  t.quietly: t.emits("a construction's type carries its declaration edge", "")
+  t.bugFixed "a construction's type carries its declaration edge (#21)"
+  t.quietly: t.emitsOdin("...on Odin too", "")
+  t.bugFixed "a construction's type carries its declaration edge on Odin (#21)"
+  t.runs "...and the program computes it", 7
 
   t.finish()

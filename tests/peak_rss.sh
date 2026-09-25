@@ -21,16 +21,34 @@ budget=$1
 shift
 [ -z "$budget" ] && { echo "peak_rss.sh: no budget given" >&2; exit 2; }
 
+# A DEADLINE, in here rather than as `timeout` around the program: the loop
+# below reads the CHILD's VmHWM by pid, and wrapping it in `timeout` would
+# measure `timeout`. Without one, a regression that turned a loop quadratic
+# held the whole suite for over nine minutes with nothing on screen. The
+# programs this measures finish in milliseconds; 60 s is a hang, not a slow
+# run. Exit 124, the same code `timeout` uses, so a hang reads as one.
+deadline=$(( $(date +%s) + ${PEAK_RSS_TIMEOUT:-60} ))
+
 "$@" &
 pid=$!
 peak=0
+hung=0
 while kill -0 "$pid" 2>/dev/null; do
   cur=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null)
   if [ -n "$cur" ] && [ "$cur" -gt "$peak" ]; then peak=$cur; fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    kill -9 "$pid" 2>/dev/null
+    hung=1
+    break
+  fi
   sleep 0.01
 done
 wait "$pid"
 rc=$?
+if [ "$hung" -eq 1 ]; then
+  echo "peakRSS=${peak}KB budget=${budget}KB — killed after ${PEAK_RSS_TIMEOUT:-60}s"
+  exit 124
+fi
 
 echo "peakRSS=${peak}KB budget=${budget}KB"
 # The command's own failure is reported as the command's failure. A test that

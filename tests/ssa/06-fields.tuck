@@ -1,0 +1,21 @@
+# FIELDS ARE PLACES. `b.lo` is versioned on its own, so a record can hand one
+# field on and keep the other.
+#
+#   - a field of a parameter is a PROJECTION of the parameter's entry value,
+#     not a second, unrelated arrival (ownership reaches a moved parameter's
+#     slots through that edge)
+#   - a field of a LOCAL is a projection of that local's value where it is
+#     first read, never an `entry`
+#   - `p = ...` replaces the whole record: p.lo is reprojected from the new p
+type Pair:
+  lo: int
+  hi: int
+
+fn mk({n: int}) -> Pair:
+  return {lo: n, hi: n + 1} Pair
+
+fn fields({b: Pair}) -> int:
+  var p = {n: b.lo} mk
+  let s = p.lo + b.hi
+  p = {n: s} mk
+  return p.lo + p.hi

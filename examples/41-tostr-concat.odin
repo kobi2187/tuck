@@ -13,15 +13,23 @@ tuck_Jar :: struct {
 
 tuck_main :: proc () {
   tuck_n := 99
-  tuck_s := rt.tuckConcat(str.toStr(tuck_n), " bottles")
+  tuckStrTmp1 := str.toStr(tuck_n)
+  defer delete(tuckStrTmp1)
+  tuck_s := rt.tuckConcat(tuckStrTmp1, " bottles")
   defer delete(tuck_s)
   console.printLine(tuck_s)
-  tuck_t := rt.tuckConcat(str.toStr(tuck_n), " more")
+  tuckStrTmp2 := str.toStr(tuck_n)
+  defer delete(tuckStrTmp2)
+  tuck_t := rt.tuckConcat(tuckStrTmp2, " more")
   defer delete(tuck_t)
   console.printLine(tuck_t)
   tuck_j := tuck_Jar{count = 7, label = "jam"}
   tuck_c := tuck_j.count
-  tuck_u := rt.tuckConcat(rt.tuckConcat(tuck_j.label, ": "), str.toStr(tuck_c))
+  tuckStrTmp3 := rt.tuckConcat(tuck_j.label, ": ")
+  defer delete(tuckStrTmp3)
+  tuckStrTmp4 := str.toStr(tuck_c)
+  defer delete(tuckStrTmp4)
+  tuck_u := rt.tuckConcat(tuckStrTmp3, tuckStrTmp4)
   defer delete(tuck_u)
   console.printLine(tuck_u)
   if (tuck_s == "99 bottles") {

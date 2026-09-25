@@ -8,6 +8,7 @@
 
 import tables, sets, strutils
 import ast
+import ssa_ir
 
 type
   Resolution* = ref object
@@ -87,6 +88,10 @@ type
     ifacePairs*: HashSet[tuple[objName, iface: string]]
     ifaceCalls*: Table[NodeId, tuple[iface, member: string]]
     lastUses*: HashSet[NodeId]
+    ssaGraphs*: Table[(NodeId, SsaStage), CachedSsa]
+      ## Every body's SSA graph, per stage — see ssa_cache.ssaOf. Here rather
+      ## than in a global so it is reset exactly when the rest of the
+      ## semantic layer is: a graph describes nodes this layer describes.
       ## Nodes analysis_liveness proved are a local's FINAL read, so the copy
       ## made for them is unobservable and may be a move. A set rather than a
       ## table: the only question asked is yes/no.
@@ -203,6 +208,67 @@ proc ensureId*(e: Expr) =
   ## the semantic layer.
   if e != nil and not e.id.isSet: e.id = newNodeId()
 
+proc grafted*(e: Expr): Expr =
+  ## `e`, with an id on every node under it. For a subtree a pass builds and
+  ## puts INTO the tree: `ensureId` numbers only the node it is given, so a
+  ## built `E.Empty` got an id on the field and none on its receiver
+  ## (pipeline.assertTreeIds("typecheck") found it).
+  var stack = @[e]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    ensureId(n)
+    for ch in n.children: stack.add ch
+  e
+
+proc copyMeaning(r: Resolution, src, dst: NodeId) =
+  ## Carry what a node MEANS to its copy: its type, what it resolved to, its
+  ## call's argument mapping. Not `lastUses` or `movedArgs` — whether a read
+  ## is the last one depends on the body it sits in, and a copy sits in a
+  ## different one; left unstamped it is merely not moved, which is safe.
+  if src in r.calls: r.calls[dst] = r.calls[src]
+  if src in r.types: r.types[dst] = r.types[src]
+  if src in r.shortcuts: r.shortcuts[dst] = r.shortcuts[src]
+  if src in r.asyncCalls: r.asyncCalls.incl dst
+  if src in r.declOf: r.declOf[dst] = r.declOf[src]
+  if src in r.argFields: r.argFields[dst] = r.argFields[src]
+  if src in r.callParams: r.callParams[dst] = r.callParams[src]
+  if src in r.callTypeArgs: r.callTypeArgs[dst] = r.callTypeArgs[src]
+  if src in r.wraps: r.wraps[dst] = r.wraps[src]
+  if src in r.ifaceCalls: r.ifaceCalls[dst] = r.ifaceCalls[src]
+
+proc renumber(r: Resolution, orig, copy: Expr) =
+  ## Walk an original and its deepCopy in step, giving each copied node a
+  ## fresh id and the original's meaning.
+  if orig == nil or copy == nil: return
+  copy.id = newNodeId()
+  if orig.id.isSet: r.copyMeaning(orig.id, copy.id)
+  if orig.kind == exkChain:
+    for i in 0 ..< orig.steps.len:
+      copy.steps[i].id = newNodeId()
+      if orig.steps[i].id.isSet:
+        r.copyMeaning(orig.steps[i].id, copy.steps[i].id)
+  var a, b: seq[Expr]
+  for ch in orig.children: a.add ch
+  for ch in copy.children: b.add ch
+  doAssert a.len == b.len, "resolution: a deepCopy changed shape"
+  for i in 0 ..< a.len: r.renumber(a[i], b[i])
+
+proc freshCopy*(r: Resolution, e: Expr): Expr =
+  ## A copy of `e` to put somewhere ELSE in the program: new ids, same
+  ## meaning. A bare deepCopy keeps the ids, and one id on two nodes in two
+  ## places lets a fact about one — a last use, a moved argument — land on
+  ## the other (pipeline.assertTreeIds found the optimizer doing this).
+  if e == nil: return nil
+  result = deepCopy(e)
+  r.renumber(e, result)
+
+proc freshStep*(r: Resolution, s: ChainStep): ChainStep =
+  ## The same, for a chain step, which carries an id of its own.
+  result = ChainStep(op: s.op, span: s.span, id: newNodeId(),
+                     target: r.freshCopy(s.target), arg: r.freshCopy(s.arg))
+  if s.id.isSet: r.copyMeaning(s.id, result.id)
+
 proc setCall*(r: Resolution, e: Expr, call: Expr) =
   if e == nil: return
   ensureId(e)
@@ -292,6 +358,7 @@ proc newResolution*(): Resolution =
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
              ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
              lastUses: initHashSet[NodeId](),
+             ssaGraphs: initTable[(NodeId, SsaStage), CachedSsa](),
              movedArgs: initHashSet[NodeId]())
 
 var semLayer* = newResolution()
@@ -352,14 +419,30 @@ proc typeFor*(r: Resolution, e: Expr): Type =
 
 # --- name resolution ---------------------------------------------------------
 
+proc ensureDeclId(d: Decl) =
+  ## Every declaration has an id by the time anything resolves to it:
+  ## `assignIds` numbers the parsed ones, and `injectImportedTypes` numbers
+  ## the copies it makes (pipeline.assertTreeIds checks both, after load).
+  ##
+  ## An ASSERTION, not a repair. The three calls below used to RETURN
+  ## SILENTLY on a declaration without an id, so every reference to an
+  ## imported type resolved by name and then recorded nothing (#21) — the
+  ## checker "found" `Milliseconds`, and lowering had no edge to follow.
+  doAssert d == nil or d.id.isSet,
+    "resolution: declaration '" & d.name & "' has no id — a pass minted it " &
+    "without one (#21)"
+
 proc indexDecl*(r: Resolution, d: Decl) =
   ## Register a declaration so references can point at it.
-  if d != nil and d.id.isSet: r.decls[d.id] = d
+  if d == nil: return
+  ensureDeclId(d)
+  r.decls[d.id] = d
 
 proc resolveTo*(r: Resolution, e: Expr, d: Decl) =
   ## Record that this expression refers to that declaration. Called where the
   ## checker already resolved the name, so the answer costs nothing to keep.
-  if e == nil or d == nil or not d.id.isSet: return
+  if e == nil or d == nil: return
+  ensureDeclId(d)
   ensureId(e)
   r.decls[d.id] = d
   r.declOf[e.id] = d.id
@@ -374,7 +457,8 @@ proc declFor*(r: Resolution, e: Expr): Decl =
 proc resolveTypeTo*(r: Resolution, t: Type, d: Decl) =
   ## Record that this type reference names that declaration. A tkNamed carries
   ## a name because that is what the user wrote; this is what it MEANS.
-  if t == nil or d == nil or not d.id.isSet: return
+  if t == nil or d == nil: return
+  ensureDeclId(d)
   if not t.id.isSet: t.id = newNodeId()
   r.decls[d.id] = d
   r.declOf[t.id] = d.id
@@ -447,7 +531,7 @@ proc markMovedArg*(r: Resolution, e: Expr) =
 
 proc markMovedArgId*(r: Resolution, id: NodeId) =
   ## The same, for a caller holding the node's id rather than the node —
-  ## `analysis_ssa` speaks in ids because a value's uses are ids.
+  ## the SSA graph speaks in ids because a value's uses are ids.
   r.movedArgs.incl(id)
 
 proc isMovedArg*(r: Resolution, e: Expr): bool =

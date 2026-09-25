@@ -175,6 +175,41 @@ fn main() -> int [io]:
   t.runs "a parked actor still wakes on send and drains every message", 6
   t.hostRuns "...on every backend", 6
 
+  # --- two handlers binding the same local name (#79) -----------------------
+  #
+  # Every handler is an arm of ONE dispatch switch, and each arm is its own
+  # scope. Nim and Odin tracked the names they had declared in one set for the
+  # whole actor, so the second handler's `let r` came out as an assignment to
+  # a name declared in a sibling arm — "undeclared identifier", on correct
+  # Tuck. D scoped per arm already. Handlers are short and reuse the obvious
+  # names, so two of them on one actor is the normal case.
+  t.src """
+import scheduler
+
+actor Book [queue: 8]:
+  a: int = 0
+  b: int = 0
+
+  on buy({n: int}):
+    let r = n + 1
+    a = a + r
+
+  on sell({n: int}):
+    let r = n + 2
+    b = b + r
+
+fn done() -> bool:
+  return Book.a + Book.b >= 10
+
+fn main() -> int [io]:
+  Book send buy {n: 3}
+  Book send sell {n: 4}
+  Book.waitUntil {pred: :done}
+  return Book.a * 10 + Book.b
+"""
+  t.hostRuns "two handlers may each bind the same local name", 46
+  t.bugFixed "...(#79: the second arm used to assign an undeclared name)"
+
   # --- Actor.waitUntil: the predicate runs on the ACTOR's thread ------------
   #
   # Two tiers of observation (spec 9.1). A field read is a SNAPSHOT — cheap,

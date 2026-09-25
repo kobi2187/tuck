@@ -229,7 +229,7 @@ proc spliceStep(s: ChainStep, fns: Table[string, Decl], m: Module,
   let callee = fns.getOrDefault(s.target.name, nil)
   let steps = builderSteps(callee, m)
   if steps.len > 0:
-    for bs in steps: kept.add(deepCopy(bs))
+    for bs in steps: kept.add(semLayer.freshStep(bs))
     hits.add(s.target.name & " (" & $steps.len & " field-set" &
              (if steps.len == 1: "" else: "s") & ") at line " & $s.span.line)
     return true

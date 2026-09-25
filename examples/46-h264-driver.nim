@@ -2,6 +2,7 @@
 import ../compiler/tuck_rt
 import scheduler
 
+proc tuck_route*(nal: tuck_NalKind, configured: bool, midFrame: bool): tuck_Action
 proc tuck_capture*(want: int): int
 proc tuck_Video_FrameReady*(bytes: int): void
 proc tuck_Video_Overrun*(dropped: int): void
@@ -82,11 +83,15 @@ proc tuck_DEC_CTRL_ERR_get*(): bool {.inline.} =
 
 var tuck_FrameBuffers* = ObjectPool[array[4096, uint8], 4]()
 proc tuck_route*(nal: tuck_NalKind, configured: bool, midFrame: bool): tuck_Action =
-  case ord(nal) * 4 + ord(configured) * 2 + ord(midFrame)   # packed decision key
-  of 0, 1, 16, 17, 18, 19: return tuck_Action.skip
-  of 2, 3, 4, 6: return tuck_Action.decode
-  of 5, 7: return tuck_Action.flushThenDecode
-  else: return tuck_Action.configure
+  (case (((ord(nal) * 4) + (ord(configured) * 2)) + ord(midFrame))
+  of 0, 1, 16, 17, 18, 19:
+    return tuck_Action.skip
+  of 2, 3, 4, 6:
+    return tuck_Action.decode
+  of 5, 7:
+    return tuck_Action.flushThenDecode
+  else:
+    return tuck_Action.configure)
 
 type tuck_VideoKind* = enum FrameReady, Overrun, DecodeError
 type tuck_Video* = ref object

@@ -1,0 +1,21 @@
+# A READ FOLLOWED THROUGH A JOIN.
+#
+# `b.lo` is first named inside the first `if`, so its value is born in that
+# arm. The join merges it with the value the skipped arm would have seen, and
+# the second `if` reads the JOIN — the same buffer under a new name.
+#
+#   - the read at 18:14 is NOT final: it flows into the phi read at 20:14
+#   - the read at 20:14 is final
+# Counting only a value's own uses called the first read final; that was a
+# move of something read two lines later.
+type Pair:
+  lo: int
+  hi: int
+
+fn twice({b: Pair, n: int}) -> int:
+  var t = 0
+  if n > 0:
+    t = t + b.lo
+  if n > 1:
+    t = t + b.lo
+  return t

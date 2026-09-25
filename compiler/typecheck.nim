@@ -481,7 +481,7 @@ proc asVariantConstruction(tc: var TypeChecker, e: Expr): Type =
          declared.variants[0].name & "'; reach '" & e.fieldName &
          "' via transitions, or mark [unsafe] for deserialization", e.span)
   tc.checkVariantPayload(declared, e.fieldName, e.dotArg, e.span)
-  Type(span: e.span, kind: tkNamed, name: e.receiver.name)
+  tc.namedType(e.receiver.name, e.span)
 
 proc unwrapSingleField(arg: Expr): Expr =
   ## `Pool.release {v}` hands a one-field payload to a one-param fn, where the
@@ -641,7 +641,7 @@ proc bindIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type, mem: Decl): Type =
   ## One contract member matched `e.fieldName`: substitute `Self`, record
   ## the call shape for lowering, and answer with the substituted return
   ## type.
-  let selfT = Type(span: e.span, kind: tkNamed, name: recvT.name)
+  let selfT = tc.namedType(recvT.name, e.span)
   var params: seq[Param]
   for p in mem.fnParams:
     params.add(Param(name: p.name, typ: substituteSelf(p.typ, selfT), span: p.span))
@@ -1675,7 +1675,7 @@ proc inferBindings(tc: TypeChecker, declared, actual: Type,
   var actual = actual
   let gname = typeParamName(actual)
   if gname != "":
-    actual = Type(span: actual.span, kind: tkNamed, name: gname)
+    actual = tc.namedType(gname, actual.span)
   elif isFlexible(actual): return
   case declared.kind
   of tkNamed:
@@ -1774,7 +1774,7 @@ proc checkIfaceElems(tc: var TypeChecker, iname: string, argExpr: Expr,
   setType(semLayer, argExpr,
           Type(span: argExpr.span, kind: tkApp,
                base: Type(span: argExpr.span, kind: tkNamed, name: "Seq"),
-               args: @[Type(span: argExpr.span, kind: tkNamed, name: iname)]))
+               args: @[tc.namedType(iname, argExpr.span)]))
 
 type
   ArgField = tuple[name: string, typ: Type, span: Span]
@@ -2271,7 +2271,7 @@ proc desugarGroupBoundParams(tc: var TypeChecker, m: Module) =
       inc nextIdx
       d.fnGenerics.add(freshName)
       d.fnGenericBounds.add(names)
-      p.typ = Type(span: p.typ.span, kind: tkNamed, name: freshName)
+      p.typ = tc.namedType(freshName, p.typ.span)
 
 proc checkNamedField(tc: var TypeChecker, fnName: string, p: Param,
                      af: ArgField, e: Expr) =
@@ -2659,7 +2659,7 @@ proc asGenericConstruction(tc: var TypeChecker, e: Expr,
            calleeName & "' from the construction payload", e.span)
     gargs.add(bindings[g])
   Type(span: e.span, kind: tkApp, args: gargs,
-       base: Type(span: e.span, kind: tkNamed, name: calleeName))
+       base: tc.namedType(calleeName, e.span))
 
 proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   ## A call to a fn with a known signature. NAMES the callee, so a top-level
@@ -2777,7 +2777,7 @@ proc asVariantPayloadCall(tc: var TypeChecker, e: Expr): Type =
   if e.args.len != 1 or e.args[0] == nil or e.args[0].kind != exkStruct:
     return nil
   tc.checkVariantPayload(declared, e.callee.fieldName, e.args[0], e.span)
-  Type(span: e.span, kind: tkNamed, name: recv.name)
+  tc.namedType(recv.name, e.span)
 
 proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
   ## A callee that is not a bare name. Calling THROUGH a fnsig-typed slot
@@ -2819,8 +2819,7 @@ proc declaredFieldsOf(tc: TypeChecker, e: Expr, calleeName: string): seq[FieldDe
   if tc.objDecls.hasKey(calleeName):
     composedFields(tc.module, tc.objDecls[calleeName])
   else:
-    getFieldsForType(semLayer, tc.module, Type(span: e.span, kind: tkNamed,
-                                     name: calleeName))
+    getFieldsForType(semLayer, tc.module, tc.namedType(calleeName, e.span))
 
 proc suppliedFieldTypes(tc: var TypeChecker, e: Expr): Table[string, Type] =
   ## The payload's fields by name, typed.
@@ -2896,7 +2895,7 @@ proc constructedType(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   ## record would hit synthFieldAccess's isWrapper gate and make even reading
   ## a SUPPLIED field an error.
   let declared = tc.declaredFieldsOf(e, calleeName)
-  let nominal = Type(span: e.span, kind: tkNamed, name: calleeName)
+  let nominal = tc.namedType(calleeName, e.span)
   if declared.len == 0: return nominal
   let supplied = tc.suppliedFieldTypes(e)
   tc.failIfCtorFieldMistyped(e, calleeName, declared, supplied)
@@ -2928,7 +2927,7 @@ proc synthArgsAs(tc: var TypeChecker, e: Expr, name: string): Type =
   ## core.str's ASCII case fold.
   tc.withExpected(nil):
     for a in e.args: discard tc.synthesize(a)
-  Type(span: e.span, kind: tkNamed, name: name)
+  tc.namedType(name, e.span)
 
 proc synthCombinator(tc: var TypeChecker, e: Expr): Type =
   ## The record combinators each require a struct payload.
@@ -3036,7 +3035,7 @@ proc asGroupRequirement(tc: var TypeChecker, e: Expr, calleeName: string): Type 
         if want == nil or want.kind != dkFn or want.name != calleeName:
           continue
         if not tc.payloadCarriesTypeParam(e, tp): continue
-        let selfT = Type(span: e.span, kind: tkNamed, name: tp)
+        let selfT = tc.namedType(tp, e.span)
         return substituteGroup(want.fnReturnType, selfT, groupBindings(g, bound))
   nil
 
@@ -3173,8 +3172,8 @@ proc synthLit(tc: var TypeChecker, e: Expr): Type =
   let want = unwrapEffect(tc.resolve(tc.expectedType))
   if want != nil and want.kind == tkNamed and want.name in NumericNames and
      base in NumericNames:
-    return Type(span: e.span, kind: tkNamed, name: want.name)
-  Type(span: e.span, kind: tkNamed, name: base)
+    return tc.namedType(want.name, e.span)
+  tc.namedType(base, e.span)
 
 proc synthNullaryCall(tc: var TypeChecker, e: Expr): Type =
   ## spec 2.3: a bare name IS a call — `f`, `.f` and `.f {}` are one form.
@@ -3189,9 +3188,9 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
   ## qualified form of the same thing, handled by the field-access path.
   let owner = tc.sumTypeOwning(e.name)
-  if owner != "": return Type(span: e.span, kind: tkNamed, name: owner)
+  if owner != "": return tc.namedType(owner, e.span)
   let regOwner = registryEventOwner(e.name)
-  if regOwner != "": return Type(span: e.span, kind: tkNamed, name: regOwner)
+  if regOwner != "": return tc.namedType(regOwner, e.span)
   if tc.expectedType != nil:
     # Inline sum type (no name to find in typeDecls): the enclosing match's
     # subject, or the assignment target's own type, IS the type, if this
@@ -3206,7 +3205,7 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
     # in value position" case asNamedCallee already trusts at the CALL
     # position (`{fields} TypeName` construction); this is its bare-name
     # sibling, not a new exemption invented for this one call site.
-    return Type(span: e.span, kind: tkNamed, name: e.name)
+    return tc.namedType(e.name, e.span)
   # Every legitimate shape a bare Capitalized-or-lowercase name can be —
   # local, nullary call, sum variant, registry event, pending marker,
   # declared type/object name, inline sum variant inside a match arm — is
@@ -3325,7 +3324,7 @@ proc synthList(tc: var TypeChecker, e: Expr): Type =
          e.span)
   let args = if baseName == "Array": @[sizeArg, elemT] else: @[elemT]
   Type(span: e.span, kind: tkApp,
-       base: Type(span: e.span, kind: tkNamed, name: baseName), args: args)
+       base: tc.namedType(baseName, e.span), args: args)
 
 proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   ## `not` yields bool; every other unary keeps its operand's type.
@@ -3777,8 +3776,7 @@ proc synthAcquire(tc: var TypeChecker, e: Expr): Type =
          "`acquire` takes the RAW OS handle an extern produced — a number — " &
          "but this is a " & rt.name,
          e.span)
-  let handle = Type(span: e.span, kind: tkNamed,
-                    name: resourceHandleName(e.acquireKind))
+  let handle = tc.namedType(resourceHandleName(e.acquireKind), e.span)
   Type(span: e.span, kind: tkApp, args: @[handle],
        base: Type(span: e.span, kind: tkNamed, name: "?"))
 
@@ -3838,9 +3836,9 @@ proc resolveBareErr(tc: var TypeChecker, e, rv: Expr) =
   if owners.len > 1:
     fail("Type Error: '" & rv.name & "' is ambiguous (" & owners.join(", ") &
          ") — qualify it: " & owners[0] & "." & rv.name, e.span)
-  e.raiseVal = Expr(span: rv.span, kind: exkField,
+  e.raiseVal = grafted(Expr(span: rv.span, kind: exkField,
                     receiver: Expr(span: rv.span, kind: exkVar, name: owners[0]),
-                    fieldName: rv.name)
+                    fieldName: rv.name))
 
 proc isQualifiedErr(tc: TypeChecker, rv: Expr): bool =
   ## Is this `err Enum.Variant`?
@@ -4037,6 +4035,12 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkAcquire: tc.synthAcquire(e)
   of exkFinish: tc.synthFinish(e)
   of exkQualified, exkImport: tc.synthQualified(e)
+  of exkOrdinal:
+    # Built by lowering, after checking, so a checked tree never holds one.
+    # Typed anyway, so the dispatch stays exhaustive and a stray one is an
+    # int rather than a crash.
+    discard tc.synthesize(e.ordinalOf)
+    tc.namedType("int", e.span)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field
@@ -4044,7 +4048,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # KIND directly and never reaches this generically; this arm exists so
     # the dispatch stays exhaustive and a stray direct synthesize (there
     # should be none) gets a real type instead of a crash or Unknown.
-    Type(span: e.span, kind: tkNamed, name: e.refName)
+    tc.namedType(e.refName, e.span)
 
 # A bracket's meaning comes from its RECEIVER, which only the checker knows:
 # a declared type name is a type application (`Array[128, u8]`), anything
@@ -4063,10 +4067,10 @@ proc typeAppFromBracket(tc: var TypeChecker, e: Expr, name: string): Type =
            " type argument(s), got " & $e.brArgs.len, e.span)
   var args: seq[Type]
   for a in e.brArgs:
-    args.add(if a.kind == exkVar: Type(span: a.span, kind: tkNamed, name: a.name)
+    args.add(if a.kind == exkVar: tc.namedType(a.name, a.span)
              else: tc.synthesize(a))
   Type(span: e.span, kind: tkApp,
-       base: Type(span: e.span, kind: tkNamed, name: name), args: args)
+       base: tc.namedType(name, e.span), args: args)
 
 proc seqElem(recvT: Type): Type =
   ## The element type of a `Seq[T]` receiver, or nil when it isn't one.
@@ -4378,7 +4382,7 @@ proc checkObjectDecl(tc: var TypeChecker, d: Decl) =
   ## `self`.
   tc.pushScope()
   for f in d.objFields: tc.bindName(f.name, f.typ, true)
-  tc.bindName("self", Type(span: d.span, kind: tkNamed, name: d.name), true)
+  tc.bindName("self", tc.namedType(d.name, d.span), true)
   for m in d.objMembers: tc.checkDecl(m)
   tc.popScope()
 
@@ -4588,7 +4592,7 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   checkActorQueue(tc.module, d)
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
-  tc.bindName("self", Type(span: d.span, kind: tkNamed, name: d.name), true)
+  tc.bindName("self", tc.namedType(d.name, d.span), true)
   for h in d.handlers: tc.checkHandler(h)
   tc.popScope()
 

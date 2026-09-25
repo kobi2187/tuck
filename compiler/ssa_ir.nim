@@ -112,6 +112,8 @@ type
     blk*: BlockId        ## WHERE the read happens. Replaces the region
                          ## string: "can these two both happen" is now a
                          ## reachability question between two blocks.
+    line*, col*: int     ## the read's source position, for `tuck ssa` and
+                         ## the goldens — a NodeId means nothing to a reader
 
   Value* = object
     id*: ValueId
@@ -153,6 +155,25 @@ type
       ## apparent last use of everything it names, so its reads are live
       ## throughout — recorded here because the graph records the read where
       ## it is WRITTEN, which is early.
+
+  SsaStage* = enum
+    ## WHICH TREE a graph describes. Lowering rewrites the tree in place, on
+    ## each backend's own deep copy, and node ids survive that copy — so a
+    ## graph of the checked tree and one of the lowered tree share every key
+    ## but not every node. The stage is what tells them apart.
+    ssChecked    ## after typecheck: what the user wrote
+    ssLowered    ## after this build's backend lowered its copy
+
+  CachedSsa* = ref object
+    ## One body's graph, built once per stage and kept beside Resolution.
+    fn*: SsaFn
+    final*: HashSet[NodeId]   ## `finalUses(fn)`, which three consumers asked
+                              ## for separately
+    stage*: SsaStage
+    shape*: int               ## the body's fingerprint when it was built;
+                              ## checked on every fetch, so a pass that
+                              ## rewrites a body after its graph was cached
+                              ## fails loudly instead of reading a stale one
 
 const
   NoValue* = ValueId(-1)

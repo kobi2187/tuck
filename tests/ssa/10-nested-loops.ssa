@@ -1,0 +1,21 @@
+fn nested
+  b0 entry
+  b1 loop.head <- b0 b5
+  b2 loop.exit <- b1  [exits]
+  b3 loop.body <- b1
+  b4 loop.head <- b3 b7 b8
+  b5 loop.exit <- b4
+  b6 loop.body <- b4
+  b7 then <- b6  [exits]
+  b8 join <- b6
+  %0   a.0            = literal            in b0
+  %1   i.0            = literal            in b0
+  %2   i.1            = phi(%1, %12)       in b1  reads 11:7, 18:9 FINAL
+  %4   j.0            = literal            in b3
+  %5   j.1            = phi(%4, %7, %7)    in b4  reads 13:9, 14:11 FINAL
+  %7   j.2            = opaque             in b6  reads 15:10
+  %8   a.1            = phi(%10, %8, %9)   in b4  reads 17:11 FINAL
+  %9   a.2            = opaque             in b8
+  %10  a.3            = phi(%0, %8)        in b1  reads 19:10 FINAL
+  %12  i.3            = opaque             in b5
+  %13  n.2            = entry              in b0  reads 11:11, 13:13

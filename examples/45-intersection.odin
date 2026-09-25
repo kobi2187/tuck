@@ -77,13 +77,15 @@ transitionTo_tuck_Phase :: proc(self: ^tuck_Phase, target: tuck_Phase) {
 
 tuck_Demand :: enum { quiet, northSouth, eastWest, both }
 
-tuck_nextPhase :: proc(current: tuck_Phase, demand: tuck_Demand, preempt: bool) -> tuck_Phase {
-	switch int(current) * 8 + int(demand) * 2 + (preempt ? 1 : 0) {   // packed decision key
-	case 0, 2, 24, 25, 26, 27, 28, 29, 30, 31: return tuck_Phase.NorthSouth
-	case 1, 3, 4, 5, 6, 7: return tuck_Phase.NsClearing
-	case 8, 9, 10, 11, 12, 13, 14, 15, 16, 20: return tuck_Phase.EastWest
-	case: return tuck_Phase.EwClearing
-	}
+tuck_nextPhase :: proc (current: tuck_Phase, demand: tuck_Demand, preempt: bool) -> tuck_Phase {
+  switch ((((int(current) * 8) + (int(demand) * 2)) + (preempt ? 1 : 0)))
+  {
+  case 0, 2, 24, 25, 26, 27, 28, 29, 30, 31: return tuck_Phase.NorthSouth;
+  case 1, 3, 4, 5, 6, 7: return tuck_Phase.NsClearing;
+  case 8, 9, 10, 11, 12, 13, 14, 15, 16, 20: return tuck_Phase.EastWest;
+  case: return tuck_Phase.EwClearing;
+  }
+  return {}
 }
 
 DetectorTag :: enum { Detector_is_tuck_CameraDetector, Detector_is_tuck_LoopDetector }

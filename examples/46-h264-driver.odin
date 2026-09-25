@@ -56,13 +56,15 @@ tuck_NalKind :: enum { nonIdr, idr, sps, pps, sei }
 
 tuck_Action :: enum { decode, configure, skip, flushThenDecode }
 
-tuck_route :: proc(nal: tuck_NalKind, configured: bool, midFrame: bool) -> tuck_Action {
-	switch int(nal) * 4 + (configured ? 1 : 0) * 2 + (midFrame ? 1 : 0) {   // packed decision key
-	case 0, 1, 16, 17, 18, 19: return tuck_Action.skip
-	case 2, 3, 4, 6: return tuck_Action.decode
-	case 5, 7: return tuck_Action.flushThenDecode
-	case: return tuck_Action.configure
-	}
+tuck_route :: proc (nal: tuck_NalKind, configured: bool, midFrame: bool) -> tuck_Action {
+  switch ((((int(nal) * 4) + ((configured ? 1 : 0) * 2)) + (midFrame ? 1 : 0)))
+  {
+  case 0, 1, 16, 17, 18, 19: return tuck_Action.skip;
+  case 2, 3, 4, 6: return tuck_Action.decode;
+  case 5, 7: return tuck_Action.flushThenDecode;
+  case: return tuck_Action.configure;
+  }
+  return {}
 }
 
 tuck_Frame :: struct {

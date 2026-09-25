@@ -16,7 +16,7 @@ copy of the tree; each answers a different question about it.
 | | keyed by | answers |
 |---|---|---|
 | **Resolution** (`resolution.nim`) | node id | *what is this?* — the type of an expression, which decl a name refers to, which params a call fills |
-| **The value mirror** (`analysis_ssa.nim`) | place + version | *which value is this?* — how many distinct values a name has held, where each came from, where each is read |
+| **The SSA graph** (`ssa_ir` / `ssa_build` / `ssa_query`, cached per stage by `ssa_cache`) | place + version, fronted by node id | *which value is this?* — how many distinct values a name has held, where each came from, where each is read, and which read is its last |
 | **Provenance** (`analysis_provenance.nim`) | fn name | *where did it come from?* — does this function's result alias its argument, or is it freshly allocated |
 
 They layer. Provenance asks Resolution for types. The mirror asks Resolution
@@ -159,7 +159,7 @@ materially simpler.
 
 ### And this is what my builder is, badly
 
-Read `analysis_ssa.nim` against the paper and the correspondence is exact:
+Read `analysis_ssa.nim` (the first builder, deleted in M1.4 once `ssa_build` replaced it) against the paper and the correspondence is exact:
 
 | Braun | mine |
 |---|---|
@@ -217,11 +217,19 @@ whole function. The mirror already holds every use of every value — this
 question should be a lookup, not a walk. **It is asking the tree a question
 the mirror was built to answer.**
 
+> **Fixed 2026-09-25** (ROADMAP M3.4): `ownership_escape.nim` answers it from
+> the graph's uses, with one parent index per body, and asserts that every read
+> in the tree is a use in the graph.
+
 **M6 — the `str` analysis is a second copy of the `Seq` one.** Same six steps,
 same shape, different file, living inside the Odin emitter
 (`ownedStrLocalsOf`, `strEscapes`, `isOwnedStrLocal`). Two implementations of
 one idea, kept in step by hand. This is item 5 of the SSA design document,
 which the mirror was supposed to have retired.
+
+> **Fixed 2026-09-25** (ROADMAP M3.3): a `str` local is step 4's one-slot
+> case and its escape is the same query as a `Seq`'s; only the allocating-call
+> list remains backend-specific, as a parameter.
 
 **M7 — and M6 is not theoretical. It shipped a use-after-free.** The `str`
 copy's escape test answered "could this destination be carrying a str" with

@@ -123,6 +123,13 @@ proc uses(c: Ctx, e: Expr, acc: var Live) =
     acc.incl(e.name)
     return
   if e.kind == exkField:
+    # A call written as a field (`a.total`, `n.toStr`) reads its RECEIVER;
+    # it is not the place `a.total`. The SSA graph had this wrong and the
+    # oracle agreed with it, so neither caught a move of `a` before `a.total`
+    # read it (value_semantics, "a method-style call reads its receiver").
+    if c.res.hasCall(e):
+      uses(c, c.res.call(e), acc)
+      return
     let p = pathOf(e)
     if p.len > 0:
       acc.incl(p)
@@ -175,6 +182,9 @@ proc stampSites(c: Ctx, e: Expr, dead: Live) =
     if n.kind == exkVar and n.name in dead:
       lastFor[n.name] = n
       return
+    if n.kind == exkField and c.res.hasCall(n):
+      walk(c.res.call(n))      # a call written as a field: see `uses`
+      return
     if n.kind == exkField:
       let p = pathOf(n)
       if p.len > 0:
@@ -221,39 +231,62 @@ proc loopLive(c: Ctx, cond, body: Expr, liveOut: Live, stamp: bool): Live =
     discard lastUseSites(c2, body, head, true)
   head
 
+proc readBefore(c: Ctx, cond: Expr, after: Live, stamp: bool): Live =
+  ## `cond` is read before whatever produced `after`: stamp its dead reads,
+  ## then add them.
+  result = after
+  if stamp:
+    var dead: Live
+    uses(c, cond, dead)
+    stampSites(c, cond, deadOf(dead, after, c.skip))
+  uses(c, cond, result)
+
+proc ifLive(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
+  ## Both arms see the same liveOut; the condition is read before either.
+  let a = lastUseSites(c, e.thenBranch, liveOut, stamp)
+  let b = lastUseSites(c, e.elseBranch, liveOut, stamp)
+  readBefore(c, e.cond, a + b, stamp)
+
+proc matchLive(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
+  ## Every arm sees the same liveOut (after its guard's reads); the subject
+  ## is read before any of them.
+  var r: Live
+  var any = false
+  for arm in e.arms:
+    var armOut = liveOut
+    if arm.guard != nil: uses(c, arm.guard, armOut)
+    let a = lastUseSites(c, arm.body, armOut, stamp)
+    r = if any: r + a else: a
+    any = true
+  if not any: r = liveOut
+  readBefore(c, e.subject, r, stamp)
+
+proc exitLive(c: Ctx, e: Expr, stamp: bool): Live =
+  ## An exit: nothing after it is live, only what it reads itself.
+  uses(c, e, result)
+  if stamp: stampSites(c, e, deadOf(result, Live(), c.skip))
+
+proc stmtLive(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
+  ## Any other statement: what it reads, plus what is live after it — minus
+  ## the name a plain `x = ...` overwrites.
+  var r: Live
+  uses(c, e, r)
+  if stamp:
+    # A name this statement reads and nothing after it wants is dead here.
+    # A plain `x = ...` also KILLS x, but only for statements before it.
+    stampSites(c, e, deadOf(r, liveOut, c.skip))
+  var outp = liveOut
+  if e.kind == exkAssign and e.target != nil and e.target.kind == exkVar:
+    outp.excl(e.target.name)
+  outp + r
+
 proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
   ## Liveness flowing backward through one statement, stamping as it goes.
   if e == nil: return liveOut
   case e.kind
-  of exkBlock:
-    seqLive(c, e.stmts, liveOut, stamp)
-  of exkIf:
-    # Both arms see the same liveOut; the condition is read before either.
-    let a = lastUseSites(c, e.thenBranch, liveOut, stamp)
-    let b = lastUseSites(c, e.elseBranch, liveOut, stamp)
-    var r = a + b
-    if stamp:
-      var dead: Live
-      uses(c, e.cond, dead)
-      stampSites(c, e.cond, deadOf(dead, r, c.skip))
-    uses(c, e.cond, r)
-    r
-  of exkMatch:
-    var r: Live
-    var any = false
-    for arm in e.arms:
-      var armOut = liveOut
-      if arm.guard != nil: uses(c, arm.guard, armOut)
-      let a = lastUseSites(c, arm.body, armOut, stamp)
-      r = if any: r + a else: a
-      any = true
-    if not any: r = liveOut
-    if stamp:
-      var dead: Live
-      uses(c, e.subject, dead)
-      stampSites(c, e.subject, deadOf(dead, r, c.skip))
-    uses(c, e.subject, r)
-    r
+  of exkBlock: seqLive(c, e.stmts, liveOut, stamp)
+  of exkIf: ifLive(c, e, liveOut, stamp)
+  of exkMatch: matchLive(c, e, liveOut, stamp)
   of exkWhile: loopLive(c, e.whileCond, e.whileBody, liveOut, stamp)
   of exkFor:
     var r = loopLive(c, nil, e.body, liveOut, stamp)
@@ -261,32 +294,17 @@ proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
     r
   of exkBreak: c.afterLoop
   of exkContinue: c.atLoopHead
-  of exkReturn, exkRaise:
-    # An exit: nothing after it is live, only what it reads itself.
-    var r: Live
-    uses(c, e, r)
-    if stamp: stampSites(c, e, deadOf(r, Live(), c.skip))
-    r
+  of exkReturn, exkRaise: exitLive(c, e, stamp)
   of exkDefer:
     # Its reads were hoisted into `skip` for the whole body, so it neither
     # stamps nor kills here.
     liveOut
-  else:
-    var r: Live
-    uses(c, e, r)
-    if stamp:
-      # A name this statement reads and nothing after it wants is dead here.
-      # A plain `x = ...` also KILLS x, but only for statements before it.
-      stampSites(c, e, deadOf(r, liveOut, c.skip))
-    var outp = liveOut
-    if e.kind == exkAssign and e.target != nil and e.target.kind == exkVar:
-      outp.excl(e.target.name)
-    outp + r
+  else: stmtLive(c, e, liveOut, stamp)
 
 proc markLivenessInto(res: Resolution, m: Module)
 
 proc referenceFinalUses*(res: Resolution, m: Module): HashSet[NodeId] =
-  ## THE ORACLE, not the pass. `analysis_ssa.markLivenessSsa` is what stamps
+  ## THE ORACLE, not the pass. `ssa_liveness.markLivenessSsa` is what stamps
   ## `lastUses` now; this walk is kept, and run only under `--verify-stages`,
   ## as the independent answer the mirror is checked against.
   ##

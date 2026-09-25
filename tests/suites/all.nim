@@ -14,13 +14,13 @@ import cli_smoke
 import complexity
 import cross_module
 import d_backend
+import decision_tables
 import declarations
 import diagnostics
 import doc_snippets
 import duplicates
 import end_to_end
 import examples
-import ssa
 import extern_impl
 import fn_size
 import frontend
@@ -45,6 +45,8 @@ import pointer_containment
 import recursive_types
 import resources
 import resources_rt
+import ssa
+import ssa_golden
 import syntax_ceilings
 import task_select
 import typecheck
@@ -67,13 +69,13 @@ let registry: seq[Entry] = @[
   ("complexity",          SuiteProc(complexity.run),          true),
   ("cross_module",        SuiteProc(cross_module.run),        false),
   ("d_backend",           SuiteProc(d_backend.run),           false),
+  ("decision_tables",     SuiteProc(decision_tables.run),     false),
   ("declarations",        SuiteProc(declarations.run),        false),
   ("diagnostics",         SuiteProc(diagnostics.run),         false),
   ("doc_snippets",        SuiteProc(doc_snippets.run),        false),
   ("duplicates",          SuiteProc(duplicates.run),          true),
   ("end_to_end",          SuiteProc(end_to_end.run),          false),
   ("examples",            SuiteProc(examples.run),            true),
-  ("ssa",                 SuiteProc(ssa.run),                 true),
   ("extern_impl",         SuiteProc(extern_impl.run),         false),
   ("fn_size",             SuiteProc(fn_size.run),             true),
   ("frontend",            SuiteProc(frontend.run),            true),
@@ -98,6 +100,8 @@ let registry: seq[Entry] = @[
   ("recursive_types",     SuiteProc(recursive_types.run),     false),
   ("resources",           SuiteProc(resources.run),           false),
   ("resources_rt",        SuiteProc(resources_rt.run),        false),
+  ("ssa",                 SuiteProc(ssa.run),                 false),
+  ("ssa_golden",          SuiteProc(ssa_golden.run),          false),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("task_select",         SuiteProc(task_select.run),         false),
   ("typecheck",           SuiteProc(typecheck.run),           true),

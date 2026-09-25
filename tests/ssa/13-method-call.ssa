@@ -1,0 +1,13 @@
+fn mark
+  b0 entry  [exits]
+  %0   xs.0           = entry              in b0  reads 10:10 FINAL
+
+fn total
+  b0 entry  [exits]
+
+fn main
+  b0 entry  [exits]
+  %0   a.0            = literal            in b0  reads 17:16, 18:11 FINAL
+  %1   r.0            = call               in b0  reads 19:14 FINAL
+  %2   total.0        = entry              in b0  reads 18:12 FINAL
+  %3   s.0            = project            in b0  reads 19:10 FINAL

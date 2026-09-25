@@ -2,47 +2,18 @@
 #
 # Declaration codegen for the D backend: genDDecl's dispatch (one arm per
 # DeclKind) and everything it calls -- fn/object/actor/registry/register/
-# mixin/decision-table/err-handler. Calls INTO codegen_d.nim's genDExpr for
+# mixin/err-handler. Calls INTO codegen_d.nim's genDExpr for
 # fn bodies (one-way: genDExpr never calls back into anything here).
 import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
-import codegen_table
 import codegen_d_ctx
 from codegen_odin_util import odinErrCode, enumTagOwner
 from lowering_seqcopy import seqFieldNames
 from mangle import mangleName
 from lowering_seqcopy import needsDup, recordDupFields
 import ./codegen_d
-
-proc dColumnOrdinal*(ctx: var DCodegenCtx, domain: seq[string],
-                    paramName: string): string =
-  ## A column's ordinal for the packed key. NOT packedKeyExpr — that emits
-  ## Nim's `ord()`; D spells it as a cast on the enum value, and a bool
-  ## column casts the same way.
-  if domain == @["false", "true"]: "cast(long)(" & paramName & ")"
-  else: "cast(long)(" & paramName & ")"
-
-proc dDecisionRowPatterns*(s: Expr): seq[string] =
-  let pat = s.arms[0].pattern
-  for el in (if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]):
-    result.add(genPatternStr(el))
-
-proc dRowCondition*(ctx: var DCodegenCtx, d: Decl, arm: MatchArm): string =
-  ## The guard a row fires under — empty when every column is a wildcard,
-  ## which makes it the catch-all.
-  let pats = if arm.pattern != nil and arm.pattern.kind == pkTuple:
-               arm.pattern.elems
-             else: @[arm.pattern]
-  var conds: seq[string]
-  for i, pat in pats:
-    let patStr = genPatternStr(pat)
-    if patStr != "_" and i < d.fnParams.len:
-      let tag = ctx.qualifyEnumTag(patStr)
-      conds.add(d.fnParams[i].name & " == " &
-                (if tag != "": tag else: patStr))
-  conds.join(" && ")
 
 proc dVisibility*(ctx: DCodegenCtx, d: Decl): string =
   ## The `public:` block reaching the emitted artifact (spec 2.3c). D defaults
@@ -490,42 +461,6 @@ proc genDFnSig*(ctx: var DCodegenCtx, d: Decl): string =
   "alias " & d.name & " = " & conv & retStr & " function(" &
     params.join(", ") & ");\n"
 
-proc dPackedKey*(ctx: var DCodegenCtx, d: Decl, domains: seq[seq[string]],
-                comboCount: int): string =
-  var parts: seq[string]
-  var stride = comboCount
-  for c in 0 ..< domains.len:
-    stride = stride div domains[c].len
-    let ordExpr = ctx.dColumnOrdinal(domains[c], d.fnParams[c].name)
-    parts.add(if stride == 1: ordExpr else: ordExpr & " * " & $stride)
-  parts.join(" + ")
-
-proc dCollectRows*(ctx: var DCodegenCtx, d: Decl, rowPats: var seq[seq[string]],
-                  rowBodies: var seq[string]) =
-  for s in d.fnBody.stmts:
-    if s.kind != exkMatch or s.arms.len == 0: continue
-    rowPats.add(dDecisionRowPatterns(s))
-    rowBodies.add(ctx.genDExpr(s.arms[0].body))
-
-proc genDChainedDecision*(ctx: var DCodegenCtx, d: Decl,
-                         retTypeStr: string): string =
-  ## An open column domain cannot be packed, so the rows become guards in
-  ## order, and a table with no catch-all needs a zero value to fall out on.
-  var lines: seq[string]
-  var hasCatchAll = false
-  for s in d.fnBody.stmts:
-    if s.kind != exkMatch or s.arms.len == 0: continue
-    let cond = ctx.dRowCondition(d, s.arms[0])
-    let body = ctx.genDExpr(s.arms[0].body)
-    if cond == "":
-      hasCatchAll = true
-      lines.add("    return " & body & ";")
-    else:
-      lines.add("    if (" & cond & ") return " & body & ";")
-  if not hasCatchAll and retTypeStr != "void":
-    lines.add("    return " & retTypeStr & ".init;")
-  lines.join("\n")
-
 proc genDTaskDecl*(ctx: var DCodegenCtx, d: Decl): string =
   ## `task name(...)` — an ordinary D function. What makes it a task is the
   ## CALL SITE: calling it schedules a coroutine, and binding its result
@@ -711,29 +646,6 @@ proc genDPendingBlock*(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDPendingStub(mem)
     if code != "": result.add(code & "\n")
 
-proc genDPackedDecision*(ctx: var DCodegenCtx, d: Decl,
-                        domains: seq[seq[string]], comboCount: int): string =
-  ## Every column domain is enumerable, so the whole table collapses to one
-  ## switch over a packed integer key (spec 6.1). A plain `switch`, not
-  ## `final switch`: the key is an int, whose domain D cannot enumerate, and
-  ## the last group is the default.
-  var rowPats: seq[seq[string]]
-  var rowBodies: seq[string]
-  ctx.dCollectRows(d, rowPats, rowBodies)
-  let groups = groupByOutcome(domains, comboCount, rowPats, rowBodies)
-  var lines: seq[string]
-  lines.add("    switch (" & ctx.dPackedKey(d, domains, comboCount) &
-            ") {   // packed decision key")
-  for gi, g in groups:
-    if gi == groups.len - 1:
-      lines.add("    default: return " & g.outcome & ";")
-    else:
-      for k in g.keys:
-        lines.add("    case " & $k & ":")
-      lines.add("        return " & g.outcome & ";")
-  lines.add("    }")
-  lines.join("\n")
-
 proc genDRegistry*(ctx: var DCodegenCtx, d: Decl): string =
   ## An event registry (spec Part 10): the event type, the latest-event
   ## global, and one raise proc per event.
@@ -790,20 +702,6 @@ proc genDExternBlock*(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDExternFwd(mem)
     if code != "": result.add(code & "\n")
 
-proc genDDecisionTable*(ctx: var DCodegenCtx, d: Decl): string =
-  ## `decision` (spec 6.1): a table of rows, emitted either as one switch
-  ## over a packed key (every column enumerable) or as guards in row order.
-  ## The combinatorics come from codegen_table, shared with both other
-  ## backends — only the spelling differs here.
-  let retTypeStr = ctx.dType(d.fnReturnType)
-  let (domains, allEnumerable, comboCount) = columnDomains(ctx.module, d)
-  let body = if allEnumerable and comboCount > 0:
-               ctx.genDPackedDecision(d, domains, comboCount)
-             else:
-               ctx.genDChainedDecision(d, retTypeStr)
-  retTypeStr & " " & d.name & "(" & ctx.genDParams(d.fnParams) & ") {\n" &
-    body & "\n}\n"
-
 proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared
@@ -853,7 +751,6 @@ proc dTemplateParamList(generics: seq[string], params: seq[Param]): string =
 
 proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
-  if d.isDecision: return ctx.genDDecisionTable(d)
   # A registry handler is declared as `Registry.Event`; the dot is not a D
   # identifier character, and the raise proc calls the sanitised name.
   let fnName = if nameOverride != "": nameOverride

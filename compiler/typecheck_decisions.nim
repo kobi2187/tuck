@@ -21,22 +21,18 @@
 #                   cannot be enumerated.
 import ast, ast_query, strutils
 import typecheck_util
+import decision_table
 
 type
   DecisionRow* = tuple[pats: seq[Pattern], span: Span]
     ## One row of a decision table: a pattern per input column.
 
-const MaxEnumeratedCombos = 4096
-  ## Above this, exact enumeration costs more than it is worth and the
-  ## pairwise fallback takes over.
-  ##
-  ## KNOWINGLY DUPLICATED: codegen_table.nim has MaxPackedCombos = 4096 and its
-  ## own columnDomains/comboValues with the same mixed-radix logic. Its comment
-  ## says the constant is "shared so the two cannot disagree" — it is not, and
-  ## they can. Left alone on purpose: the shared home would be ast_query (both
-  ## import it), but moving it makes a CHECKER file depend on a BACKEND one or
-  ## churns both backends to relocate ~15 lines that have never drifted. Fix it
-  ## the day either copy changes.
+# The packing threshold, the column domains and the combination decoding are
+# decision_table's, shared with `lowering_decisions`. They were a knowingly
+# duplicated copy here; lowering made the agreement load-bearing — a table
+# this checker ENUMERATES is exactly one the lowering PACKS, and the lowering
+# relies on the rest having a catch-all row, which `checkPairwise` demands —
+# so the two now read one constant.
 
 proc patCovers(a, b: Pattern): bool =
   ## Does pattern a match everything pattern b matches? (per column)
@@ -61,25 +57,6 @@ proc rowPatterns*(pat: Pattern): seq[Pattern] =
   ## A row's columns. A tuple pattern is already one per column; anything
   ## else is a single-column row.
   if pat != nil and pat.kind == pkTuple: pat.elems else: @[pat]
-
-proc columnDomains*(m: Module, d: Decl, allEnum: var bool,
-                    comboCount: var int): seq[seq[string]] =
-  ## The values each input column can take. allEnum stays true only when
-  ## every column is enumerable (bool / fieldless sum types).
-  allEnum = true
-  comboCount = 1
-  for p in d.fnParams:
-    let dom = enumDomain(m, p.typ)
-    if dom.len == 0: allEnum = false
-    result.add(dom)
-    comboCount *= max(dom.len, 1)
-
-proc comboValues(domains: seq[seq[string]], combo: int): seq[string] =
-  ## Decode a mixed-radix combination index into one value per column.
-  var rem = combo
-  for c in countdown(domains.high, 0):
-    result.insert(domains[c][rem mod domains[c].len], 0)
-    rem = rem div domains[c].len
 
 proc rowMatches(r: DecisionRow, vals: seq[string]): bool =
   ## Does this row fire for this input combination?
@@ -157,10 +134,8 @@ proc checkRowWidth*(d: Decl, pats: seq[Pattern], sp: Span) =
 proc checkDecisionRows*(m: Module, d: Decl, rows: seq[DecisionRow]) =
   ## spec 6.1: unreachable rows and completeness, by whichever strategy the
   ## input types allow.
-  var allEnum = true
-  var comboCount = 1
-  let domains = columnDomains(m, d, allEnum, comboCount)
-  if allEnum and comboCount <= MaxEnumeratedCombos:
+  let (domains, allEnum, comboCount) = columnDomains(m, d)
+  if allEnum and comboCount <= MaxPackedCombos:
     checkExactly(d, rows, domains, comboCount)
   else:
     checkPairwise(d, rows)

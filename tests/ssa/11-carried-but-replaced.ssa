@@ -1,0 +1,16 @@
+fn keep
+  b0 entry
+  b1 loop.head <- b0 b5
+  b2 loop.exit <- b1  [exits]
+  b3 loop.body <- b1
+  b4 then <- b3
+  b5 join <- b4 b3
+  %0   out.0          = literal            in b0
+  %1   i.0            = literal            in b0
+  %2   i.1            = phi(%1, %8)        in b1  reads 16:7, 17:8, 18:33, 19:9 FINAL
+  %5   out.1          = phi(%0, %9)        in b1  reads 18:21 FINAL, 20:10 FINAL
+  %6   out.2          = call               in b4
+  %8   i.3            = opaque             in b5
+  %9   out.3          = phi(%6, %5)        in b5
+  %10  n.1            = entry              in b0  reads 16:11
+  %12  push.1         = entry              in b0  reads 18:36

@@ -1,0 +1,19 @@
+# A CALL WRITTEN AS A FIELD READS ITS RECEIVER. `a.total` is `{xs: a}
+# total`: the read is of `a`, not of a place `a.total`.
+#
+#   - `a` is read at 17:16 (the call) and 18:11 (the receiver of `.total`);
+#     only 18:11 is FINAL
+#   - there is NO value for a place `a.total`
+# Recorded as a field, the receiver's read was invisible, 17:16 looked final,
+# `mark` took `a` by move and wrote into the caller's copy.
+fn mark({xs: Seq[int]}) -> Seq[int]:
+  return xs
+
+fn total({xs: Seq[int]}) -> int:
+  return 0
+
+fn main() -> int:
+  let a = [1, 2, 3]
+  let r = {xs: a} mark
+  let s = a.total
+  return s + r[0]

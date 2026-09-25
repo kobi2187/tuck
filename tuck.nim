@@ -48,7 +48,8 @@ import compiler/validate   # the spec-side grammar, for `tuck validate`
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
 import compiler/analysis_liveness
-import compiler/analysis_ssa
+import compiler/ssa_liveness
+import compiler/ssa_query, compiler/ssa_cache, compiler/ssa_ir
 import compiler/complexity
 import compiler/typecheck
 import compiler/lowering
@@ -112,7 +113,7 @@ run). Writes beside the source file, or into -o:DIR if given.
   -o:DIR       output directory
   --root:DIR   import search base (for std/ and sibling modules)
   --target:NAME  select which `when TARGET == "NAME":` blocks compile in
-  --verify-stages  run extra pipeline-ordering assertions (off by default)
+  --no-verify-stages  skip the pipeline-invariant assertions (on by default)
   -v, --verbose  echo before/after every pipeline stage, with its own timing
   -vv            also echo each stage's per-module sub-steps, individually timed
   -O:PASS[,...]  choose optimization passes; `-O:none` disables them all
@@ -202,9 +203,11 @@ options:
                 lets imports resolve regardless of cwd or binary location
   --target:NAME selects which `when TARGET == "NAME":` blocks compile in
                 (spec §8.3; any command). Unset = every such block is dropped.
-  --verify-stages (compile/build) run diagnostic assertions checking a tree
-                carries what the next pipeline stage needs (off by default —
-                see compiler/pipeline.nim).
+  --no-verify-stages (check/compile/build) skip the assertions that a tree
+                carries what the next pipeline stage needs. ON by default:
+                they cost a few ms against a backend build's second, and an
+                invariant checked only on request is one nothing checks
+                (see compiler/pipeline.nim).
   -v, --verbose (check/compile/build) echo before/after every named
                 pipeline stage (compiler/pipeline.nim), timing each one.
                 -vv also echoes each stage's per-module sub-steps,
@@ -449,13 +452,11 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   # before the per-backend deepCopies because the answer is about the
   # PROGRAM, not about which language it is being emitted into.
   for lm in loaded: markLivenessSsa(semLayer, lm.m)
-  block:
-    var lmMods: seq[Module]
-    for lm in loaded: lmMods.add lm.m
-    ssaRebuildDiff(semLayer, lmMods)
   if verifyStages:
     var checkedMods: seq[Module]
     for lm in loaded: checkedMods.add(lm.m)
+    assertTreeIds("typecheck", checkedMods)
+    assertTypeEdges(semLayer, checkedMods)
     assertNoMissingTypes(checkedMods)
     assertSsaWellFormed(semLayer, checkedMods)
   let imported = importedEffects(loaded, sigOnly)
@@ -563,6 +564,10 @@ proc checkProgram(path: string, needBodies = false,
       dieSemanticError(path, err)
     vSubNote($result.len & " module(s)")
     vEnd(psResolveDeclRefs, t0)
+  if verifyStages:
+    var loadedMods: seq[Module]
+    for lm in result: loadedMods.add lm.m
+    assertTreeIds("load", loadedMods)
   let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
   # Non-fatal diagnostics, printed at the offending line exactly as an error
   # is — same file:line:col prefix — but the build carries on. Drained AFTER
@@ -630,10 +635,13 @@ when isMainModule:
     else: discard
   if backendFlagCount > 1:
     die("tuck: --odin and --dlang are mutually exclusive — one target per build")
-  # Diagnostic assertions that a tree carries what the next pipeline stage
-  # needs (compiler/pipeline.nim). Off by default — they walk the whole
-  # tree, and existing builds/tests should see no behavior or perf change.
-  let verifyStages = "--verify-stages" in opts
+  # Assertions that a tree carries what the next pipeline stage needs
+  # (compiler/pipeline.nim). ON BY DEFAULT, for the reason the optimization
+  # passes below are: an invariant checked only when asked is an invariant
+  # nothing checks. They cost ~2-5 ms on the largest program in the tree,
+  # against ~1 s for the backend build. `--verify-stages` is still accepted,
+  # and is now a no-op.
+  let verifyStages = "--no-verify-stages" notin opts
   # Optimization passes (compiler/optimize.nim) are ON by default — a pass
   # that only runs when asked for is a pass nothing exercises, and every one
   # here is required to be semantics-preserving.
@@ -749,6 +757,14 @@ when isMainModule:
   of "check", "ch":
     discard checkProgram(path, verifyStages = verifyStages)
     echo "OK (", elapsedMs(t0), ")"
+  of "ssa":
+    # The SSA graph of every body in THIS file (not its imports), with each
+    # read's FINAL verdict — what `tests/ssa/*.ssa` pins.
+    for lm in checkProgram(path, verifyStages = verifyStages):
+      if lm.path != absolutePath(path): continue
+      for d in lm.m.decls:
+        if d == nil or d.kind notin {dkFn, dkTask}: continue
+        echo ssa_query.render(ssaOf(semLayer, d, ssChecked).fn)
   of "validate", "v":
     # The SPEC grammar's opinion of this file, cross-checked against the
     # parser's. Both run; a disagreement is the output, because a
@@ -912,6 +928,7 @@ when isMainModule:
     case backend
     of bkNim:
       let nimTree = prepare(prog, bkNim, semLayer, outDir)
+      if verifyStages: assertTreeIds("nim lowering", nimTree.modules)
       let nimProg = nimTree.mods
       let nimReal = nimTree.real
       block:
@@ -953,7 +970,9 @@ when isMainModule:
       let odTree = prepare(prog, bkOdin, semLayer, outDir)
       let odProg = odTree.mods
       let odReal = odTree.real
-      if verifyStages: assertNoChainFedCalls(odTree.modules)
+      if verifyStages:
+        assertNoChainFedCalls(odTree.modules)
+        assertTreeIds("odin lowering", odTree.modules)
       block:
         let t0 = vBegin(psEmitting)
         for lm in odProg[0 ..< odProg.high]:
@@ -1008,7 +1027,9 @@ when isMainModule:
       let dTree = prepare(prog, bkDlang, semLayer, outDir)
       let dProg = dTree.mods
       let dReal = dTree.real
-      if verifyStages: assertNoChainFedCalls(dTree.modules)
+      if verifyStages:
+        assertNoChainFedCalls(dTree.modules)
+        assertTreeIds("d lowering", dTree.modules)
       block:
         let t0 = vBegin(psEmitting)
         for lm in dProg[0 ..< dProg.high]:
@@ -1216,8 +1237,12 @@ when isMainModule:
           let odinBin = outDir / (binBase & "_odin")
           # -o:none is Odin's fastest path; -o:speed is the release build.
           let odinOpt = if wantRelease: "-o:speed" else: "-o:none"
+          # TUCK_ODIN_EXTRA: flags appended verbatim. The test suite sets
+          # `-thread-count:1` — Odin's threaded checker crashes itself now
+          # and then (tests/harness.nim, OdinThreads).
           let odinCmd = quoteShell(odinExe) & " build " & quoteShell(outDir) &
-                        " " & odinOpt & " -out:" & quoteShell(odinBin)
+                        " " & odinOpt & " -out:" & quoteShell(odinBin) &
+                        " " & getEnv("TUCK_ODIN_EXTRA")
           let odT0 = epochTime()
           let odRc = execShellCmd(odinCmd)
           let odMs = (epochTime() - odT0) * 1000

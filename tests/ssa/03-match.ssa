@@ -1,0 +1,23 @@
+fn pick
+  b0 entry
+  b1 arm0 <- b0
+  b2 arm1 <- b0
+  b3 arm2 <- b0
+  b4 join <- b1 b2 b3  [exits]
+  %0   acc.0          = literal            in b0
+  %1   n.0            = entry              in b0  reads 10:9 FINAL
+  %2   acc.1          = literal            in b1
+  %3   acc.2          = literal            in b2
+  %4   acc.3          = literal            in b3
+  %5   acc.4          = phi(%2, %3, %4)    in b4  reads 14:10 FINAL
+
+fn partial
+  b0 entry
+  b1 arm0 <- b0
+  b2 arm1 <- b0
+  b3 join <- b0 b1 b2  [exits]
+  %0   acc.0          = literal            in b0
+  %1   n.0            = entry              in b0  reads 18:9 FINAL
+  %2   acc.1          = literal            in b1
+  %3   acc.2          = literal            in b2
+  %4   acc.3          = phi(%0, %2, %3)    in b3  reads 21:10 FINAL

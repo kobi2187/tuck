@@ -80,21 +80,33 @@ design mistakes that are correctness bugs rather than performance ones.
 
 | # | item | size |
 |---|---|---|
-| 1.1 | Account for the last 2 differences (`flow`, `withScratch`). Both are reads of a LOOP-CARRIED phi, where "final use" is per-iteration. Decide the rule, write it down in `ssa_query.followedFrom`, reach `onlyOld == 0` | S |
-| 1.2 | **Build once, store beside Resolution.** Today the old mirror is built 110 times for 45 fns in one compile of world_server, and at TWO pipeline stages over two different trees (docs §5 M2, M3). One build, recorded with the stage it describes | M |
-| 1.3 | Switch `markLivenessSsa` and the move facts (`moveFactsSsa`, `consumedSlotsSsa`) onto `ssa_build`. Verify: zero diff under `examples/`, apps unchanged | M |
-| 1.4 | Delete `analysis_ssa.nim`. Keep `analysis_liveness` as the oracle one release longer, then delete it too | S |
-| 1.5 | **Fix #21** — `declForType` for inferred types. It blocked the SSA exhaustiveness test directly; a by-name scan was written to route round it and deleted, because routing round a known bug leaves two | M |
+| 1.1 | ~~Account for the last differences~~ **DONE 2026-09-22.** `finalUses` follows the BUFFER from each read (ssa_query header); every remaining difference against the old mirror is listed in the commit messages and justified | S |
+| 1.2 | ~~Build once, store beside Resolution~~ **DONE 2026-09-23.** `ssa_cache.ssaOf(res, d, stage)`, stored in `Resolution.ssaGraphs` per (decl, `ssChecked`/`ssLowered`), with `finalUses` cached beside it. world_server for Odin: 129 builds -> 55 (19 bodies checked + 36 lowered, each once). A fingerprint of every node kind and every indexed node id is asserted on each fetch — it caught nothing real, and caught a deliberate rewrite | M |
+| 1.3 | ~~Switch consumers onto `ssa_build`~~ **DONE 2026-09-22.** Zero diff under `examples/`; both apps emit byte-identical Odin. SSA goldens in `tests/ssa/` (`tuck ssa`) | M |
+| 1.4 | ~~Delete `analysis_ssa.nim`~~ **DONE 2026-09-23**, with its differential tooling. `analysis_liveness` stays as the oracle (`--verify-stages`, on by default) one release longer, then goes too | S |
+| 1.5 | ~~Fix #21~~ **DONE 2026-09-23.** Two causes: the checker built named types bare (now `typecheck_collect.namedType`, edge at birth), and `resolveTypeTo` silently returned on a declaration with no id — which every injected IMPORTED type was. Lowering's by-name fallback is now an assertion; it found the second cause on its first run | M |
 
-**Exit:** one SSA implementation in the tree, built once per compile.
+**Exit: REACHED 2026-09-23.** One SSA implementation (`ssa_ir` / `ssa_build` /
+`ssa_query`), built once per body per stage (`ssa_cache`), goldens in
+`tests/ssa/`. Next on the spine: M2.
 
 ## M2 — Stage C: the copy decision on the mirror
+
+**Exit REACHED 2026-09-25** by the route below, not by 2.1-2.3 as written:
+#77's pin is green (482 MB -> 1.8 MB). The missing fact was which proc a
+call REACHES — the wrapper copies the moved parameter, the twin hands back
+an argument the caller gave away — and what the argument is, asked inside
+its enclosing body (`analysis_provenance.throughWrapper`, `provCtxFor`).
+The copy pass now RECORDS its exclusive decisions (`decidedExclusive`) and
+the ownership pass reads them rather than re-deriving them. 2.2 and 2.3
+still stand, as the prerequisite M3 names: ownership cannot move before the
+clone while the copy decision is made after lowering.
 
 | # | item | size |
 |---|---|---|
 | 2.1 | Move `exclusivelyOwned`'s ORIGIN half onto the mirror. The collision half already moved and was measured irrelevant (`ssaExclusiveOwned`, 27/27, never reached) — do not redo it | M |
-| 2.2 | Remove `afterBinding`'s emitter prediction. `TUCK_DEBUG_COPY=diff` is the judge: `onlyOld == 0` | M |
-| 2.3 | Run `markSeqCopies` on the mirror, BEFORE lowering | M |
+| 2.2 | ~~Remove `afterBinding`'s emitter prediction~~ **DONE 2026-09-25.** The prediction was the emitters' "no copy for a read through the moved parameter" — which was itself a value-semantics bug (D returned 99, Odin read freed memory). The emitters now print the copy marks and nothing else; the one special case left is `movedTransfer`, a copy-pass predicate provenance shares | M |
+| 2.3 | ~~Run `markSeqCopies` before lowering~~ **MOOT.** It was M3.1's prerequisite; M3.1 turned out not to need it (below) | — |
 
 **Exit:** #77's own pin (`known_bugs.nim` A19, 64 MB, `bugOpen`) goes green
 and the suite says to flip it. The remainder of #77 is a REDUNDANT COPY
@@ -110,12 +122,15 @@ removes that dependency.
 
 | # | item | size |
 |---|---|---|
-| 3.1 | Move the pass before `backend_prepare.prepare`'s clone step | S |
-| 3.2 | Record `freedAt` / `freedBy` on the SSA `Value` itself, and assert NO USE FOLLOWS A FREE by walking `uses`. That is the invariant that would have caught the shipped `str` use-after-free without anyone thinking of the case | M |
-| 3.3 | Fold the `str` analysis into the one pass (docs §5 M6). The backend-specific part — which runtime calls return caller-owned storage — becomes a parameter, not a second analysis | M |
-| 3.4 | Replace the per-slot full-body walk with a lookup over the mirror's `uses` (docs §5 M5) | S |
+| 3.1 | ~~Move the pass before the clone~~ **DONE 2026-09-25, as step 6 of `prepare`.** `lowerModule` takes no backend and a build targets one, so "before the clone" was never needed — what was needed was a PASS: `decideOwnership` runs after lowering, the copy marks and `fillIds`, records a decision per fn id, and the Odin emitter asks `ownershipFor` (asserted present). It had run inside the emitter, twice per fn, with provenance rebuilt a second time at emit. The assertion found member fns emitted as id-less copies on its first run | S |
+| 3.2 | ~~Assert no use follows a free~~ **DONE 2026-09-25, as a BUFFER check** (`buffer_check.nim`, asserted inside `ownershipOf` on every Odin build): each value's heap slots are mapped to the buffers they may denote — parameter slots, copied vs uncopied bindings, fields, phis, moved calls — and no buffer may be released by two free sites, nor released at exit and returned. Per-VALUE `freedAt` was the plan; buffers are what several names share, which is where all three bugs found on 2026-09-25 lived. Verified to fire on two of them with their fixes reverted. The one it cannot see is statement ORDER (a free emitted before the right-hand side that reads it) — fixed at the emitter, and guarded by a runtime test | M |
+| 3.3 | ~~Fold the `str` analysis into the one pass~~ **DONE 2026-09-25.** A `str` local is a value with one slot: it dies at scope exit by step 4's rule and its escape is the same query as a `Seq`'s (3.4), asked with the `str` rule. What stayed backend-specific — which runtime calls hand back storage the caller owns — is a parameter (`backend_prepare.ownedStrProcs`), and `ownership_str.nim` holds only that. The second walk, with its own copy of the sealing rules (the copy that shipped M7's use-after-free), is gone | M |
+| 3.4 | ~~Replace the per-slot full-body walk with a lookup over the mirror's `uses`~~ **DONE 2026-09-25** (`ownership_escape.nim`). One walk per body indexes each node's parents; a slot escapes when a use of it sits under a node that carries it out. Its premise is asserted on every build: every read of a name in the tree is a use in the graph — that is what makes the lookup answer what the walk did. Run as a differential against both old walks over every corpus file and the whole suite before they were deleted: 0 disagreements. The assertion's first run found a read the lookup could not place: `lowering_recursive` resolves `e.left` to `tuckAt(<a fresh copy of e.left>, 0)`, and the copy is not in the tree — a resolved call's arguments are now indexed where the call is printed. On the way: the builder dropped the arguments of an unresolved `b.fn {xs}` (a missed read), and both old walks read `returnVal` off a `raise` | S |
+| 3.5 | **The twin-call decision is still made while printing.** `movedCallInto`, `movedCalleeName` and `selfThreadedCall` (`codegen_common.nim`) decide, inside the Odin and D emitters, which call sites call the MOVED twin and skip the result's copy. #80 names them as consumers the one analysis replaces. Record the decision on the call in a pass beside the copy marks, and have both emitters print it. **Do after M4.5**: a `..` chain step is the one position where an emitter decides about a call it has just SYNTHESIZED (`threadReceiver` rebuilds the step's call around a temp), so no pass can mark that node until chains are lowered to plain assignments. The Odin and D emitters also derive a member call's receiver type two ways (`memberRecvType` reads a `{self: c}` payload, Odin's does not) — harmless for this decision, since a struct literal is never stamped moved, but it is the drift a single pass removes | M |
 
-**Exit:** closes #80 / F27. One ownership analysis.
+**Exit:** closes #80 / F27. One ownership analysis. After 3.5, what #80 still
+lists is its Stage 4 — a growable `str` representation on Odin and D — which is
+a missing feature, not a partial one, and moves to its own issue.
 
 ## M4 — Lower unique features; codegen only prints
 
@@ -125,9 +140,9 @@ could not see a decision table's structure for exactly this reason.
 
 | # | item | deletes | size |
 |---|---|---|---|
-| 4.1 | **`exkOrdinal`** — "the ordinal of this enum or bool value". The one missing AST node that kept decision tables in the backends: the packed key is `ord(p0)*r + ord(p1)`, and `ord` is spelled differently per target. One node, three printers | — | S |
-| 4.2 | **Decision tables lowered** in a `lowering_decisions` pass: packed form -> `match` over the key, chained form -> `if` chain | `genDecisionTable` ×3 | M |
-| 4.3 | **Actor dispatch lowered** to an ordinary `match` over the message tag, each arm its own scope | closes **#79** on all backends at once, rather than porting D's fix twice | M |
+| 4.1 | ~~**`exkOrdinal`**~~ **DONE 2026-09-25.** "The ordinal of this enum or bool value": Nim `ord(x)`, Odin `int(x)` or `(x ? 1 : 0)` for a bool, D `cast(long)(x)`. Every exhaustive `case` over ExprKind took an arm; the checker types one as `int` though a checked tree never holds one | — | S |
+| 4.2 | ~~**Decision tables lowered**~~ **DONE 2026-09-25** (`lowering_decisions.nim`, run by `lowerModule` for every backend): packed -> a `match` over the key whose grouped keys are an or-pattern (`of 2, 3`), chained -> an `if` chain ending in the catch-all the checker demands; one outcome -> a bare `return`. The emitters had drifted — D packed a table of ANY size where Nim and Odin chained above 4096 combinations — and the checker kept its own copy of the combinatorics; both now read `decision_table.nim`, whose threshold the lowering depends on (a table the checker enumerates is one that packs; the rest have a catch-all). `genPatternStr` printed any pattern kind it did not know as `_` — an or-pattern would have become a catch-all in every backend; it is exhaustive now. Guarded by `tests/suites/decision_tables.nim` (both forms run on all three) | `genDecisionTable` ×3 — gone | M |
+| 4.3 | **Actor dispatch lowered** to an ordinary `match` over the message tag, each arm its own scope. **#79 is fixed separately (2026-09-25)**: two lines per backend (Nim and Odin now scope `definedVars` per arm, as D did), guarded by `actor_result` on all three. A full lowering needs the message ENVELOPE — each backend's own type — represented in Tuck first, which is design work; the bug was not worth leaving open for it | — | M |
 | 4.4 | **Interface dispatch lowered** to a `match` over the variant tag | closes **#40** (Odin's closure typed `-> int`) as a side effect | M |
 | 4.5 | `..` chains fully lowered (partly done by `hoistChainCalls`) | `genChainStep` | S |
 
@@ -145,7 +160,7 @@ closure no longer exist in any `codegen_*.nim`.
 | S1.1 | **#87** | an actor field's initialiser is silently discarded; `level: int = 80` answers 0, nine runs of nine | S–M |
 | S1.2 | **#73** | an imported `const` is invisible to the checker, so a wrong `Array` size is ACCEPTED. `typecheck.nim:1071` has the worked precedent | M |
 | S1.3 | **#78** | Nim's `tuck_` prefix collides `type Order` with `fn order` | S–M |
-| — | **#79** | *moved to M4.3* — lowering actor dispatch fixes it on every backend at once | — |
+| — | **#79** | **FIXED 2026-09-25** — per-arm scoping in the Nim and Odin dispatch; see M4.3 | — |
 
 ### S2 — Finish partial features
 
@@ -159,6 +174,7 @@ closure no longer exist in any `codegen_*.nim`.
 | S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |
 | S2.7 | **#20** | by-type payload matching for member calls | M | — |
 | S2.8 | **#36** | `mod::Type` in a type position | S | — |
+| S2.9 | — | a BINDING match arm (`other: other + 1`) checks clean and then fails to build on all three backends: Nim emits the name as a `case` label, Odin and D print an undeclared `other`. Found 2026-09-25 probing the SSA builder's pattern bindings, which model it correctly | S–M | — |
 
 ### S3 — Backend parity (what survives M4)
 
@@ -168,6 +184,7 @@ closure no longer exist in any `codegen_*.nim`.
 | S3.2 | **#30** | D: volatile registers, `[saturating]`, `tuckConcat` | M |
 | S3.3 | — | the D runtime has no networking; `42-net-echo` cannot link | L |
 | S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |
+| S3.5 | — | **runtime speed parity, found by `benches/memory` (2026-09-25).** Memory is flat on all three; TIME is not: copy_loop Nim 12 ms vs Odin 97 vs D 372; chain Nim 4.6x Odin; overwrite/transfer D 8–11x the others. Causes unconfirmed — see `benches/SCORES.md`. The GC-off variants (`nim-arc`, `nim-none`, `d-nogc`) are wired into the script and not yet run | M |
 | — | **#40** | *moved to M4.4* | — |
 
 ### S4 — Effects
@@ -183,6 +200,30 @@ closure no longer exist in any `codegen_*.nim`.
 | — | **#21** | *moved to M1.5* — it is on the spine | — |
 | S5.1 | **#22** | `callParamsFor` for pending fns, distinct ctors, combinators | M |
 | S5.2 | **#23** | superlinear emit; closes as a consequence of #21 + #22. Nim is already linear | — |
+
+### S7 — Kind-scoped mangling (user proposal, 2026-09-22)
+
+Mangle by DECLARATION KIND: `tuck_fn_`, `tuck_type_`, `tuck_const_`, ...
+rather than one `tuck_` for everything.
+
+Why: Nim identifiers ignore case and underscores after the first character,
+so `fn at` mangled to `tuck_at` IS the runtime's `tuckAt` — the module
+rebinds every `xs[i]` to the user's fn. Today that is patched per name:
+`mangle.RtFoldableIntrinsics` lists the intrinsics a user name could fold
+into, and those names alone get `tuckfn_`. A kind prefix makes the collision
+structurally impossible — `tuck_fn_at` folds to `tuckfnat`, which no
+intrinsic is — and deletes the list, the special prefix, and the second
+spelling `assertMangleIdempotent` has to accept.
+
+Cost: every emitted identifier changes, so `examples/` re-emits in full and
+every golden re-blesses. Do it as its own change, with nothing else in the
+diff, so that diff is reviewable as "renames only".
+
+| # | item | size |
+|---|---|---|
+| S7.1 | Prefix per decl kind in `mangle.nim`; drop `RtFoldableIntrinsics` and `FoldSafePrefix` | S |
+| S7.2 | `assertMangleIdempotent` checks the kind's own prefix, not any prefix | S |
+| S7.3 | Re-emit `examples/`, re-bless goldens, read the diff as renames only | S |
 
 ### S6 — Rulings (your decision; the code is small)
 
@@ -211,10 +252,12 @@ issue says** — `actor Inbox[T]: xs: Seq[T]` parses now that #52 is closed.
   invariants over hunting bugs after the fact.
 - **Fix a bug where you meet it.** Routing round a known bug leaves two; #21
   was nearly worked around and would still be open behind the workaround.
-- **Differentials, not guesses.** `TUCK_DIFF_SSA=dump TUCK_DIFF_FN=<name>`
-  says, for each disagreement, whether the new builder never saw the read or
-  saw it and judged it differently. All three bugs in the rebuild were found
-  that way in minutes, after an hour of guessing found none.
+- **Differentials, not guesses.** Replacing an analysis, run old and new
+  side by side over the corpus and account for every disagreement, split by
+  "never saw the read" vs "saw it, judged differently". The Braun rebuild's
+  bugs were all found that way (the `TUCK_DIFF_SSA` tooling that did it went
+  with `analysis_ssa.nim` in M1.4 — see git history for the shape). For the
+  graph itself, `tuck ssa file.tuck` and the goldens in `tests/ssa/`.
 - **The re-emit is the review.** `tools/emit_examples.sh` then
   `git diff examples/`. It caught a dropped line in a moved proc that Nim
   tolerated and Odin would not.
@@ -238,6 +281,26 @@ document is behind the tree — fix these when passing, and do not plan from the
   neither number should be quoted as "the" bug count without saying which.
 
 ## Traps that cost time on 2026-09-22, recorded so they cost nothing again
+
+- **Odin's compiler crashes itself, rarely.** `malloc(): unaligned tcache
+  chunk detected` (rc 134) or a silent SIGSEGV (rc 139) from `odin build` on
+  the recursive-type packages — about 1 in 100 builds, at `--jobs:1` too, so
+  NOT our concurrency (#31 guessed that). Gone with `-thread-count:1`, which
+  the suite now passes everywhere (`harness.OdinThreads`, and
+  `TUCK_ODIN_EXTRA` for `tuck build --odin`).
+- **Most earlier full runs never exercised D.** `dmd` was not on PATH, so
+  every D assertion SKIPPED and the suite still printed green. The cloud
+  container has two: `/opt/dmd` is v2.109 and cannot build the runtime (no
+  `pipe2`); `/opt/dmd112` works. The harness now looks there, and for
+  `/opt/odin-cur` — but `tuck build --odin` finds Odin on PATH only, so
+  `export PATH=/opt/dmd112/dmd2/linux/bin64:/opt/odin-cur:/opt/nim/bin:$PATH`.
+- **A compiler outside the repo cannot find `std/`.** It resolves std next to
+  its own binary, so a scratch build in /tmp fails every stdlib import —
+  quietly, if you only grep its output. Measure with `./tuck`, or copy the
+  binary into the repo root first.
+- **Editing sources while `tests/run` is running breaks it**: the complexity
+  suite globs `compiler/*.nim` in both its passes, and a file added or
+  removed between them is a KeyError in the runner.
 
 - **A use-after-free guard must assert on OUTPUT, on every backend.** Two
   versions of the `str` guard passed against the bug they were written for:

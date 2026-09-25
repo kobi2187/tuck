@@ -130,6 +130,10 @@ proc toString*(e: Expr): string =
     return "on select (" & $e.selArms.len & " arms)"
   of exkDefer:
     return "defer: " & optToString(e.deferBody)
+  of exkOrdinal:
+    # Not surface syntax — lowering builds it — so this is only ever read in
+    # a dump, where `ord(x)` says what it is.
+    return "ord(" & e.ordinalOf.toString() & ")"
   of exkAcquire:
     return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:

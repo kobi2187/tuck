@@ -1,0 +1,8 @@
+fn early
+  b0 entry
+  b1 then <- b0  [exits]
+  b2 join <- b0  [exits]
+  %0   r.0            = literal            in b0
+  %1   c.0            = entry              in b0  reads 8:6 FINAL
+  %2   k.0            = entry              in b0  reads 9:12 FINAL, 10:7 FINAL
+  %3   r.1            = opaque             in b2  reads 11:10 FINAL

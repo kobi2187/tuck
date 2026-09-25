@@ -41,12 +41,12 @@
 # whole-program summary would need a pre-pass over every module first. That
 # is worth doing and is not done here — cross-module calls keep copying, the
 # same as before this file existed.
-import ast, tables, sets, os, strutils
+import ast, tables, sets, os, strutils, sequtils
 import resolution
 import ast_query
 from lowering import getFieldsForType
 import twin_shape
-import analysis_ssa
+import ssa_ir, ssa_cache
 
 const MaxRounds = 8
   ## Fixpoint bound. Bodies are small and the lattice has three levels, so
@@ -67,6 +67,11 @@ type
                     ## (`return {a: a, b: a}`), which `oFresh` alone cannot
                     ## tell apart from two distinct ones. Only meaningful
                     ## when origin is oFresh.
+    src*: string    ## For oAliased: the PARAMETER this is, directly — the
+    srcField*: string ## param itself ("") or one of its fields. "" in `src`
+                    ## when it is anything less direct (an element, a
+                    ## nested field, a join of two). A call site needs this
+                    ## to know whether the callee's WRAPPER copied it.
 
   Prov* = object
     whole*: Cell                    ## the value itself — and the answer for
@@ -110,8 +115,20 @@ proc join(a, b: Cell): Cell =
     # the merged value is still fresh but WHICH allocation it is is no longer
     # knowable, and a token-less fresh cell is never reported exclusive.
     if a.token == b.token: a else: Cell(origin: oFresh, token: noToken())
+  elif a.origin == oAliased and b.origin == oAliased and
+       a.src == b.src and a.srcField == b.srcField:
+    a                        # the same parameter slot on both paths
   else:
     Cell(origin: max(a.origin, b.origin), token: noToken())
+
+proc fieldOf(whole: Cell, field: string): Cell =
+  ## A field read out of a value that has no cell for that field. A direct
+  ## parameter stays direct one level down (`p.ladder`); anything deeper is
+  ## no longer a slot a wrapper copies.
+  result = whole
+  if whole.origin == oAliased and whole.src.len > 0:
+    if whole.srcField.len == 0: result.srcField = field
+    else: result.src = ""
 
 proc joinProv(a, b: Prov): Prov =
   result.whole = join(a.whole, b.whole)
@@ -143,9 +160,61 @@ type Ctx = object
   m: Module
   params: HashSet[string]   ## names that arrived from the caller
   moved: string             ## the param a MOVED twin takes destructively
+  final: HashSet[NodeId]    ## this body's last reads (the lowered graph),
+                            ## for `movedTransfer`; only filled in a twin
   locals: Table[string, Prov]
 
 proc provOf(c: var Ctx, e: Expr): Prov
+
+proc maybeMovedParam(res: Resolution, m: Module, d: Decl): string
+proc mixToken(id: NodeId, field: string): NodeId
+
+proc throughWrapper(c: var Ctx, e: Expr, p: var Prov) =
+  ## A callee that threads its first parameter has a MOVED twin, and a call
+  ## reaches one of two procs:
+  ##
+  ##   the WRAPPER, which copies that parameter's Seq slots (`xs =
+  ##     tuckSeqCopy(xs)`, or each Seq field) and then calls the twin — so a
+  ##     result slot that IS the parameter is the wrapper's fresh copy;
+  ##   the TWIN, when the argument is a moved one — so the same slot is the
+  ##     caller's own argument, handed straight back.
+  ##
+  ## Which one is not known yet here (the moved-argument stamps are made FROM
+  ## this analysis), so the answer covers both: fresh, joined with what the
+  ## argument itself is. A fresh argument gives a fresh result — no second
+  ## copy of a buffer the wrapper already made private, which is #77. An
+  ## aliased one stays aliased: inside a twin, the argument may be that
+  ## twin's own moved parameter, and calling the result fresh there would let
+  ## it free what it returns.
+  ##
+  ## Every other slot's `src` names a parameter OF THE CALLEE, which means
+  ## nothing on this side of the call; it is cleared.
+  let callee = c.m.findFn(e.callee.name)
+  let moved = maybeMovedParam(c.res, c.m, callee)
+  var copied: seq[string]
+  var bare = false
+  if moved.len > 0 and e.args.len > 0:
+    for prm in callee.fnParams:
+      if prm.name == moved:
+        copied = movedCopyFields(c.res, c.m, prm.typ)
+        bare = copied.len == 0
+  proc rewrite(c: var Ctx, cell: Cell, key: string): Cell =
+    result = cell
+    if cell.origin == oAliased and cell.src.len > 0 and cell.src == moved and
+       ((cell.srcField.len == 0 and bare) or cell.srcField in copied):
+      let fresh = Cell(origin: oFresh,
+                       token: mixToken(e.id, "\0wrapper:" & cell.srcField))
+      let arg = provOf(c, e.args[0])
+      let given = if cell.srcField.len == 0: arg.whole
+                  elif cell.srcField in arg.fields: arg.fields[cell.srcField]
+                  else: fieldOf(arg.whole, cell.srcField)
+      result = join(fresh, given)
+    else:
+      result.src = ""
+      result.srcField = ""
+  p.whole = rewrite(c, p.whole, "")
+  for k in toSeq(p.fields.keys):
+    p.fields[k] = rewrite(c, p.fields[k], k)
 
 proc provOfCall(c: var Ctx, e: Expr): Prov =
   ## A call. Three shapes reach here and only the first is interesting.
@@ -175,6 +244,7 @@ proc provOfCall(c: var Ctx, e: Expr): Prov =
   # node inside the callee and means nothing out here; every call site is a
   # distinct allocation, so the site's own id is the identity.
   ensureId(e)
+  c.throughWrapper(e, p)
   if p.whole.origin == oFresh: p.whole.token = e.id
   for k, v in p.fields:
     if v.origin == oFresh:
@@ -186,6 +256,50 @@ proc provOfCall(c: var Ctx, e: Expr): Prov =
                          token: NodeId(uint32(e.id) xor uint32(v.token)))
   p
 
+proc fieldProv(c: var Ctx, e: Expr): Prov =
+  ## `b.items` reaches into whatever `b` is, so it is exactly as aliased.
+  if e.receiver == nil: return unknownProv()
+  let base = provOf(c, e.receiver)
+  if e.fieldName in base.fields: Prov(whole: base.fields[e.fieldName])
+  else: Prov(whole: fieldOf(base.whole, e.fieldName))
+
+proc elementProv(c: var Ctx, e: Expr): Prov =
+  ## An element of a container aliases the container it was read out of —
+  ## but it is NOT that container's slot: a wrapper's copy is shallow, so an
+  ## element of a copied Seq[Seq[T]] is still the caller's inner buffer.
+  if e.brReceiver == nil: return unknownProv()
+  var cell = provOf(c, e.brReceiver).whole
+  cell.src = ""
+  Prov(whole: cell)
+
+proc varProv(c: var Ctx, e: Expr): Prov =
+  ## A parameter aliases the caller's value; a local is whatever it was
+  ## bound to; anything else (a global, a const) is unknown.
+  if e.name in c.params: Prov(whole: Cell(origin: oAliased, src: e.name))
+  elif e.name in c.locals: c.locals[e.name]
+  else: unknownProv()
+
+proc structProv(c: var Ctx, e: Expr): Prov =
+  ## A record construction is fresh as a whole; each Seq field is whatever
+  ## its value was.
+  result = Prov(whole: Cell(origin: oFresh, token: noToken()))
+  for f in e.fields:
+    if isSeqTyped(c.res.typeFor(f.value)):
+      result.fields[f.name] = provOf(c, f.value).whole
+
+proc builtProv(c: var Ctx, e: Expr): Prov =
+  ## Concatenation and friends build a NEW value; none of the binary
+  ## operators hands back an operand.
+  if not isSeqTyped(c.res.typeFor(e)): return unknownProv()
+  ensureId(e)
+  Prov(whole: Cell(origin: oFresh, token: e.id))
+
+proc matchProv(c: var Ctx, e: Expr): Prov =
+  ## The join of every arm's value; no arms, nothing known.
+  if e.arms.len == 0: return unknownProv()
+  result = provOf(c, e.arms[0].body)
+  for arm in e.arms[1 .. ^1]: result = joinProv(result, provOf(c, arm.body))
+
 proc provOf(c: var Ctx, e: Expr): Prov =
   ## Where did this expression's value come from?
   if e == nil: return unknownProv()
@@ -195,41 +309,14 @@ proc provOf(c: var Ctx, e: Expr): Prov =
     # pass has always had, now with an identity attached.
     ensureId(e)
     Prov(whole: Cell(origin: oFresh, token: e.id))
-  of exkVar:
-    if e.name in c.params: Prov(whole: aliasedCell())
-    elif e.name in c.locals: c.locals[e.name]
-    else: unknownProv()
-  of exkStruct:
-    var p = Prov(whole: Cell(origin: oFresh, token: noToken()))
-    for f in e.fields:
-      if isSeqTyped(c.res.typeFor(f.value)):
-        p.fields[f.name] = provOf(c, f.value).whole
-    p
+  of exkVar: varProv(c, e)
+  of exkStruct: structProv(c, e)
   of exkCall: provOfCall(c, e)
-  of exkField:
-    # `b.items` reaches into whatever `b` is, so it is exactly as aliased.
-    if e.receiver == nil: unknownProv()
-    else: Prov(whole: cellFor(provOf(c, e.receiver), e.fieldName))
-  of exkBracket:
-    # An element of a container aliases the container it was read out of.
-    if e.brReceiver == nil: unknownProv()
-    else: Prov(whole: provOf(c, e.brReceiver).whole)
-  of exkBinary:
-    # Concatenation and friends build a NEW value; none of the binary
-    # operators hands back an operand.
-    if isSeqTyped(c.res.typeFor(e)):
-      ensureId(e)
-      Prov(whole: Cell(origin: oFresh, token: e.id))
-    else: unknownProv()
+  of exkField: fieldProv(c, e)
+  of exkBracket: elementProv(c, e)
+  of exkBinary: builtProv(c, e)
   of exkIf: joinProv(provOf(c, e.thenBranch), provOf(c, e.elseBranch))
-  of exkMatch:
-    var p = unknownProv()
-    var first = true
-    for arm in e.arms:
-      let a = provOf(c, arm.body)
-      p = if first: a else: joinProv(p, a)
-      first = false
-    if first: unknownProv() else: p
+  of exkMatch: matchProv(c, e)
   of exkBlock:
     # A block's value is its last statement's.
     if e.stmts.len == 0: unknownProv() else: provOf(c, e.stmts[^1])
@@ -270,6 +357,8 @@ proc mixToken(id: NodeId, field: string): NodeId =
   for ch in field: h = (h xor uint32(ord(ch))) * 16777619'u32
   NodeId(h)
 
+proc movedTransfer(c: Ctx, e: Expr): tuple[takes: bool, slot: string]
+
 proc afterBinding(c: Ctx, e: Expr, v: Prov): Prov =
   ## What the NAME holds once THIS pass has done its work at this binding.
   ##
@@ -289,15 +378,16 @@ proc afterBinding(c: Ctx, e: Expr, v: Prov): Prov =
   ## There is no circularity: whether a slot is copied depends on the value
   ## arriving, and what the name then holds depends on the copy.
   ##
-  ## EXCEPT INSIDE A MOVED TWIN, where the emitter suppresses the copy for
-  ## anything read through the moved parameter (`codegen_odin.nim:1199`, and
-  ## D's equivalent) — that param belongs to this call, so reading it needs
-  ## no defence. Claiming freshness there would be a claim with nothing
-  ## behind it, and Stage 3 acts on exactly this: freeing the moved param at
-  ## the twin's exit is only safe if the RETURN does not carry its buffers.
-  ## `takeLevel` returns the very ladder it was handed.
+  ## NO EXCEPTION INSIDE A MOVED TWIN any more. The emitters used to skip
+  ## the copy for a read through the moved parameter, and this mirrored it;
+  ## that skip broke value semantics (`var t = xs; t[0] = 99; return xs`
+  ## returned 99) and made Odin free one buffer twice. The binding copies
+  ## like any other, so it IS fresh.
   result = v
-  if rootedAtMoved(c, e): return result
+  # ...except a binding that TAKES the moved parameter's buffer at its last
+  # read: that is the parameter's buffer, uncopied, and saying so is what
+  # stops the twin freeing what it returns.
+  if c.movedTransfer(e).takes: return result
   # A VALUE BUILT OUT OF THE TARGET IS MUTATED IN PLACE, not copied:
   #
   #   xs = {items: xs, value: v} push   ->  append(&xs, v)
@@ -322,6 +412,34 @@ proc afterBinding(c: Ctx, e: Expr, v: Prov): Prov =
   for k, cell in v.fields:
     if cell.origin != oFresh:
       result.fields[k] = Cell(origin: oFresh, token: mixToken(e.id, k))
+
+proc movedTransfer(c: Ctx, e: Expr): tuple[takes: bool, slot: string] =
+  ## Does binding `e` TAKE the moved parameter's buffer rather than read it?
+  ##
+  ## Inside a twin the moved parameter belongs to the call. A binding that
+  ## reads it — the parameter itself, or one of its fields — at its LAST
+  ## read hands the buffer over: nothing reads the parameter afterwards, so
+  ## no copy is needed and none can be observed. `var out = xs` in `grow`
+  ## is the move path, and copying there made a 2M-append loop quadratic.
+  ##
+  ## A read that is NOT the last one must copy like any other binding. The
+  ## emitters used to skip the copy for every read through the moved
+  ## parameter, and `var t = xs; t[0] = 99; return xs` returned 99.
+  ##
+  ## Answered from the SAME predicate by provenance (what the binding then
+  ## holds), the copy pass (whether to copy), and — through the copy pass's
+  ## record — the ownership pass (the twin must not free a slot it gave to
+  ## a local). Three consumers, one answer.
+  if c.moved.len == 0 or e == nil or not e.id.isSet or e.id notin c.final:
+    return
+  case e.kind
+  of exkVar:
+    if e.name == c.moved: result = (true, "")
+  of exkField:
+    if e.receiver != nil and e.receiver.kind == exkVar and
+       e.receiver.name == c.moved:
+      result = (true, e.fieldName)
+  else: discard
 
 proc noteAssignments(c: var Ctx, e: Expr) =
   ## Record what each local may hold. FLOW-INSENSITIVE on purpose: every
@@ -351,6 +469,7 @@ proc summarize(res: Resolution, m: Module, d: Decl): Prov =
   if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision:
     return unknownProv()
   var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  if c.moved.len > 0: c.final = ssaOf(res, d, ssLowered).final
   for p in d.fnParams: c.params.incl(p.name)
   # Locals first, so a `return` that names one has something to read. Repeated
   # because an assignment may name a local assigned further down.
@@ -442,14 +561,14 @@ proc threadsFirstArg(res: Resolution, m: Module, e: Expr): bool =
 proc ssaOwnSeed(c: var Ctx, fn: SsaFn, v: Value): bool =
   ## What this definition says on its own, before anything flows into it.
   case v.def.kind
-  of dfEntry:
+  of dkEntry:
     # A parameter is the caller's buffer on D and Odin. The ONE exception is
     # the parameter a MOVED twin took destructively, which the caller has
     # already given away.
     v.place == c.moved
-  of dfLiteral:
+  of dkLiteral:
     true
-  of dfConstruct, dfCall:
+  of dkConstruct, dkCall:
     ownedForMove(c, provOfRoot(c, v.place), c.res.typeFor(v.def.src))
   else:
     false
@@ -467,16 +586,16 @@ proc ssaFlowsOwn(c: var Ctx, m: Module, fn: SsaFn, v: Value,
                  own: seq[bool]): bool =
   ## What flows INTO this version from the ones it was built out of.
   case v.def.kind
-  of dfProject:
+  of dkProject:
     v.def.inputs.len > 0 and own[int32(v.def.inputs[0])] and
       ssaFieldIsOurs(c, v.place)
-  of dfPhi:
+  of dkPhi:
     # A join is ours only if it is ours on EVERY path.
     if v.def.inputs.len == 0: return false
     for inp in v.def.inputs:
       if not own[int32(inp)]: return false
     true
-  of dfCall:
+  of dkCall:
     # A twin hands back either a buffer it allocated or the one it was
     # given, so the result is ours when the argument we gave it was.
     #
@@ -488,8 +607,8 @@ proc ssaFlowsOwn(c: var Ctx, m: Module, fn: SsaFn, v: Value,
     # does — and when Stage C removes it this rule is what carries the fact.
     let src = v.def.src
     if not threadsFirstArg(c.res, m, src): return false
-    if src.args[0].id notin fn.readAt: return false
-    own[int32(fn.readAt[src.args[0].id])]
+    if src.args[0].id notin fn.byNode: return false
+    own[int32(fn.byNode[src.args[0].id])]
   else: false
 
 proc ssaOwnership(c: var Ctx, m: Module, fn: SsaFn): seq[bool] =
@@ -526,6 +645,19 @@ proc debugOwn(d: Decl, c: Ctx, fn: SsaFn, own: seq[bool]) =
       if own[i]: owned.add(v.place & "." & $v.version)
     echo "MOVE ", d.name, " moved=", c.moved, " owned=[ ", owned.join(" "), " ]"
 
+proc moveCtx(res: Resolution, m: Module, d: Decl): Ctx =
+  ## The walk's context for one body: its parameters, its moved parameter,
+  ## and its locals' provenance (two passes, so a local read before a later
+  ## assignment in a loop sees it).
+  result = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  for p in d.fnParams: result.params.incl(p.name)
+  for _ in 0 ..< 2: noteAssignments(result, d.fnBody)
+
+proc slotOfMoved(c: Ctx, place: string): string =
+  ## The slot of the moved parameter a place names: "" for the parameter
+  ## itself, else the field path under it.
+  if place == c.moved: "" else: place[c.moved.len + 1 .. ^1]
+
 proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
     tuple[sites: HashSet[NodeId], consumed: HashSet[string]] =
   ## Both halves of the same fact, from one look at the mirror: which
@@ -546,24 +678,22 @@ proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
   ## wrapper, which copies our slot and hands the COPY to the twin — so the
   ## twin frees the copy and ours is still ours to free.
   if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
-  var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
-  for p in d.fnParams: c.params.incl(p.name)
-  for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
-  let fn = buildFn(res, d)
+  var c = moveCtx(res, m, d)
+  let g = ssaOf(res, d, ssLowered)
+  template fn: untyped = g.fn
   if fn.values.len == 0: return
   let own = ssaOwnership(c, m, fn)
-  let final = finalUses(fn)
   debugOwn(d, c, fn, own)
   for a in threadSites(res, m, d.fnBody):
-    if a.id notin final or a.id notin fn.readAt: continue
-    let v = fn.readAt[a.id]
+    if a.id notin g.final or a.id notin fn.byNode: continue
+    let v = fn.byNode[a.id]
     if not own[int32(v)]: continue
     result.sites.incl(a.id)
     # ...and if what went was a slot of OUR moved parameter, it is no longer
     # ours to free.
     let place = fn.values[int32(v)].place
-    if c.moved.len == 0 or rootOf(place) != c.moved: continue
-    result.consumed.incl(if place == c.moved: "" else: place[c.moved.len + 1 .. ^1])
+    if c.moved.len > 0 and rootOf(place) == c.moved:
+      result.consumed.incl slotOfMoved(c, place)
 
 proc consumedSlotsSsa*(res: Resolution, m: Module, d: Decl): HashSet[string] =
   moveFactsSsa(res, m, d).consumed
@@ -575,14 +705,15 @@ proc movableArgsSsa*(res: Resolution, m: Module, d: Decl): HashSet[NodeId] =
   var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
   for p in d.fnParams: c.params.incl(p.name)
   for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
-  let fn = buildFn(res, d)
+  let g = ssaOf(res, d, ssLowered)
+  template fn: untyped = g.fn
   if fn.values.len == 0: return
   let own = ssaOwnership(c, m, fn)
-  let final = finalUses(fn)
+  template final: untyped = g.final
   debugOwn(d, c, fn, own)
   for a in threadSites(res, m, d.fnBody):
-    if a.id notin final or a.id notin fn.readAt: continue
-    if own[int32(fn.readAt[a.id])]: result.incl(a.id)
+    if a.id notin final or a.id notin fn.byNode: continue
+    if own[int32(fn.byNode[a.id])]: result.incl(a.id)
 
 proc markMovableArgs(res: Resolution, m: Module, d: Decl) =
   ## Stamp the first argument of every threading call this body may give away.
@@ -637,6 +768,48 @@ proc markAllMovableArgs(res: Resolution, m: Module) =
   for d in m.allFns(): markMovableArgs(res, m, d)
   moveDiffReport(res, m)
 
+proc dumpSummaries() =
+  ## `TUCK_DEBUG_PROV`: every summary, one line each.
+  when not defined(release):
+    if getEnv("TUCK_DEBUG_PROV").len > 0:
+      for n, pr in summaries:
+        var fs = ""
+        for k, v in pr.fields:
+          fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token))
+        echo "PROV ", n, " whole=", pr.whole.origin, "/",
+             uint32(pr.whole.token), fs
+
+proc seedSummaries(m: Module): HashSet[string] =
+  ## Every fn at `oFresh`, the optimistic end of the lattice — except a name
+  ## shared by two bodies, answered `oUnknown` outright. Returns the shared
+  ## names, which no round may summarize.
+  ##
+  ## A NAME MUST IDENTIFY ONE BODY. `allFns` yields object and actor members
+  ## as well as top-level fns, and a member keeps its bare name here while the
+  ## emitted symbol is qualified — so a member `push` and a top-level `push`
+  ## would land in the same slot and a call to one would read the other's
+  ## summary. That is the one way this table could hand out an answer that is
+  ## too fresh.
+  var seen: HashSet[string]
+  for d in m.allFns():
+    if d.name in seen: result.incl(d.name) else: seen.incl(d.name)
+  for d in m.allFns():
+    summaries[keyOf(m, d.name)] =
+      if d.name in result: unknownProv()
+      else: Prov(whole: Cell(origin: oFresh, token: noToken()))
+
+proc summaryRound(res: Resolution, m: Module,
+                  duplicated: HashSet[string]): bool =
+  ## Re-summarize every fn once against the current table. True if any
+  ## summary moved.
+  for d in m.allFns():
+    if d.name in duplicated: continue
+    let before = summaries[keyOf(m, d.name)]
+    let after = summarize(res, m, d)
+    if after.whole != before.whole or after.fields != before.fields:
+      summaries[keyOf(m, d.name)] = after
+      result = true
+
 proc buildProvenance*(res: Resolution, m: Module) =
   ## Summarize every fn this module declares, to a fixpoint.
   ##
@@ -645,43 +818,13 @@ proc buildProvenance*(res: Resolution, m: Module) =
   ## monotone and settles. Starting pessimistic would never recover: a
   ## recursive fn would read its own unfinished summary as `oUnknown` and
   ## stay there.
-  # A NAME MUST IDENTIFY ONE BODY. `allFns` yields object and actor members
-  # as well as top-level fns, and a member keeps its bare name here while the
-  # emitted symbol is qualified — so a member `push` and a top-level `push`
-  # would land in the same slot and a call to one would read the other's
-  # summary. That is the one way this table could hand out an answer that is
-  # too fresh, so a shared name is answered `oUnknown` outright.
-  var seen, duplicated: HashSet[string]
-  for d in m.allFns():
-    if d.name in seen: duplicated.incl(d.name) else: seen.incl(d.name)
-  for d in m.allFns():
-    summaries[keyOf(m, d.name)] =
-      if d.name in duplicated: unknownProv()
-      else: Prov(whole: Cell(origin: oFresh, token: noToken()))
+  let duplicated = seedSummaries(m)
   for round in 0 ..< MaxRounds:
-    var changed = false
-    for d in m.allFns():
-      if d.name in duplicated: continue
-      let before = summaries[keyOf(m, d.name)]
-      let after = summarize(res, m, d)
-      if after.whole != before.whole or after.fields != before.fields:
-        summaries[keyOf(m, d.name)] = after
-        changed = true
-    if not changed:
-      when not defined(release):
-        if getEnv("TUCK_DEBUG_PROV").len > 0:
-          for n, pr in summaries:
-            var fs = ""
-            for k, v in pr.fields: fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token))
-            echo "PROV ", n, " whole=", pr.whole.origin, "/", uint32(pr.whole.token), fs
+    if not summaryRound(res, m, duplicated):
+      dumpSummaries()
       markAllMovableArgs(res, m)
       return
-  when not defined(release):
-    if getEnv("TUCK_DEBUG_PROV").len > 0:
-      for n, pr in summaries:
-        var fs = ""
-        for k, v in pr.fields: fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token))
-        echo "PROV ", n, " whole=", pr.whole.origin, "/", uint32(pr.whole.token), fs
+  dumpSummaries()
   # Did not settle. Something in the walk is oscillating rather than rising,
   # which is a bug in this file — answer `oUnknown` for everything rather
   # than ship whichever half-state the last round happened to leave.
@@ -704,8 +847,40 @@ proc slotIsFresh*(res: Resolution, m: Module, fnName, field: string): bool =
   if field.len == 0: return p.whole.origin == oFresh
   field in p.fields and p.fields[field].origin == oFresh
 
-proc exclusivelyOwned*(res: Resolution, m: Module, e: Expr,
-                       field = ""): bool =
+type ProvCtx* = object
+  ## One body's context for asking about a value inside it: its parameters,
+  ## its moved parameter if it is a twin, and what each local may hold.
+  ##
+  ## A call's result can depend on its ARGUMENT (see `throughWrapper`), and
+  ## what an argument is only has an answer inside the body that contains
+  ## the call. Asked without this, every argument read as unknown.
+  c: Ctx
+
+proc provCtxFor*(res: Resolution, m: Module, d: Decl): ProvCtx =
+  ## The context for the body of `d` — or an empty one for a top-level
+  ## statement, which has no parameters and no locals to know about.
+  result.c = Ctx(res: res, m: m)
+  if d == nil: return
+  let body = case d.kind
+             of dkFn: d.fnBody
+             of dkTask: d.taskBody
+             else: nil
+  if body == nil: return
+  if d.kind == dkFn:
+    result.c.moved = maybeMovedParam(res, m, d)
+    if result.c.moved.len > 0:
+      result.c.final = ssaOf(res, d, ssLowered).final
+    for p in d.fnParams: result.c.params.incl(p.name)
+  else:
+    for p in d.taskParams: result.c.params.incl(p.name)
+  for _ in 0 ..< 2: noteAssignments(result.c, body)
+
+proc takesMovedParam*(pc: ProvCtx, e: Expr): tuple[takes: bool, slot: string] =
+  ## `movedTransfer`, for the copy pass. `slot` is "" for the parameter
+  ## itself, else the field taken.
+  pc.c.movedTransfer(e)
+
+proc exclusivelyOwned*(pc: var ProvCtx, e: Expr, field = ""): bool =
   ## May this bound value (or its named field) skip its defensive copy?
   ##
   ## True only when the value is a CALL whose summary proves the slot is a
@@ -713,9 +888,12 @@ proc exclusivelyOwned*(res: Resolution, m: Module, e: Expr,
   ## callee, and not the same buffer as another field of the same result.
   ## Everything else — a name, a field read, an imported call, a shape the
   ## walk did not model — answers false and copies exactly as before.
+  ##
+  ## ASKED ONCE, by `lowering_seqcopy`, which records the answer beside its
+  ## copy marks; the ownership pass reads that record rather than asking
+  ## again, so the copy decision and the free decision cannot disagree.
   if e == nil or e.kind != exkCall: return false
-  var c = Ctx(res: res, m: m)
-  let p = provOfCall(c, e)
+  let p = provOfCall(pc.c, e)
   if field.len == 0:
     # A bare Seq. It cannot alias itself, so being fresh is the whole test.
     return p.whole.origin == oFresh
@@ -746,194 +924,3 @@ proc exclusivelyOwned*(res: Resolution, m: Module, e: Expr,
        (v.token == cell.token or v.token == noToken()):
       return false
   true
-
-# ---------------------------------------------------------------------------
-# Stage C, step 1: allocation identity, read off the mirror.
-# ---------------------------------------------------------------------------
-#
-# WHAT THIS IS FOR. `thoughts/ssa-mirror-design.md` measured the obvious way
-# to close item 4 and it does not work: stop `afterBinding` guessing at the
-# emitter and the MOVE decision is fine (24 stamps either way) while the COPY
-# decision collapses — 1 630 MB against 536 MB — because
-# `lowering_seqcopy.markSeqCopies` asks `exclusivelyOwned`, which reads
-# provenance's cells directly rather than the mirror. Starve the cells and
-# every binding gets its defensive copy back.
-#
-# So the copy decision has to come across BEFORE the prediction can go, and
-# the named blocker is the allocation token: `exclusivelyOwned` must tell
-# `return {a: xs, b: xs}` — one buffer under two names — from two distinct
-# ones, and `oFresh` alone cannot.
-#
-# THE MIRROR ALREADY HAS A BETTER ANSWER THAN A TOKEN. A token is a hash
-# (`mixToken`) chosen so that a collision fails safe, which is an admission
-# that it approximates identity. A `ValueId` IS identity: two struct fields
-# are the same buffer exactly when they read the same VERSION of the same
-# PLACE, which is the question `readAt` answers outright. `{a: xs, b: xs}`
-# gives both fields one ValueId; `{a: xs, b: ys}` gives two; and `xs`
-# reassigned between two mentions gives two, which a node-keyed token cannot
-# see at all.
-#
-# SCOPE, deliberately narrow. This replaces the token comparison for a
-# CONSTRUCTION, where the mirror can see the fields. A call result keeps the
-# token path: the sharing happened inside the callee, the mirror does not
-# model another body, and the callee's summary already proved it. Anything
-# else answers false and copies, exactly as before.
-#
-# ---------------------------------------------------------------------------
-# THE MEASUREMENT, AND WHAT IT SAYS ABOUT THE PLAN (2026-09-22)
-# ---------------------------------------------------------------------------
-#
-# `TUCK_DEBUG_COPY=diff` over every example, both applications and the Savina
-# ports: agree=27, onlyMirror=0, onlyOld=0. A faithful drop-in, no regression.
-#
-# AND THE NEW LOGIC IS NEVER REACHED. Disabling the collision test outright —
-# `if false: return false` — changes none of the 27. Instrumenting the path
-# says why: every field query on the whole corpus is a CALL RESULT, so it
-# takes the `fs.len == 0` fallback and the construction branch is dead.
-#
-# That is not a gap in the corpus. A purpose-built adversarial snippet —
-# `p = {a: u, b: u} Pair`, one buffer under two names, the exact shape the
-# token exists to catch — does not reach it either: the field's cell is not
-# `oFresh`, because `u` is a NAME rather than a call, so the ORIGIN check
-# above rejects it two lines earlier and the copy happens for that reason.
-#
-# SO THE DESIGN DOCUMENT'S STAGE C BLOCKER IS NOT WHERE IT SAID. It reads:
-#
-#     `exclusivelyOwned`'s allocation tokens exist to catch
-#     `return {a: xs, b: xs}` ... Tokens, or something like them, have to
-#     come across before the prediction can go.
-#
-# On the evidence, they do not. The token is defensive machinery for a case
-# the origin check already refuses, and porting it — which this proc does —
-# buys nothing measurable. What actually collapsed in that experiment was the
-# ORIGIN half: `exclusivelyOwned` reads provenance's cells for `oFresh`, and
-# starving the cells is what put every defensive copy back (1 630 MB against
-# 536 MB). Moving THAT onto the mirror is Stage C's real content.
-#
-# This proc is kept rather than reverted because it is the measurement: it
-# establishes that the collision half is already safe to move and already
-# irrelevant, which is a fact the next attempt should not have to rediscover.
-# `copyDiffReport` stays for the same reason it did after Stage B — it is
-# what the origin move will be judged against.
-
-proc allocIdOf(fn: SsaFn, e: Expr): string =
-  ## WHICH allocation this expression's value is, as an identity string.
-  ##
-  ## `v<id>` is a mirror value — a name or path read, whose version is the
-  ## identity. `n<id>` is a site that allocates here, so every occurrence is
-  ## its own buffer. `""` is a shape the mirror does not model, and the
-  ## caller must read it as "could be anything", which is the safe direction:
-  ## it forces the copy.
-  if e == nil: return ""
-  if e.id.isSet and e.id in fn.readAt: return "v" & $int32(fn.readAt[e.id])
-  if e.kind in {exkCall, exkChain, exkList, exkStruct}:
-    ensureId(e)
-    return "n" & $uint32(e.id)
-  ""
-
-proc constructionFields(e: Expr): seq[tuple[name: string, val: Expr]] =
-  ## The fields of a record construction, or nothing if this is an ordinary
-  ## call. Told apart by its ARGUMENT — one `exkStruct` and nothing else —
-  ## because a construction parses as a postfix application like any other,
-  ## the same test `provOfCall` makes.
-  if e != nil and e.kind == exkCall and e.args.len == 1 and
-     e.args[0] != nil and e.args[0].kind == exkStruct:
-    for f in e.args[0].fields: result.add((f.name, f.value))
-
-proc noNeighbourShares(res: Resolution, fn: SsaFn,
-                       fs: seq[tuple[name: string, val: Expr]],
-                       field: string): bool =
-  ## Is this construction's `field` a buffer no OTHER field of the same
-  ## construction can be? The collision half of `exclusivelyOwned`, answered
-  ## by version identity instead of by a hashed token.
-  var mine = ""
-  for f in fs:
-    if f.name == field: mine = allocIdOf(fn, f.val)
-  if mine.len == 0: return false          # unmodelled: copy
-  for f in fs:
-    if f.name == field: continue
-    # HEAP FIELDS ONLY, for the reason `provOfCall` gives: an `int` field can
-    # neither be copied nor aliased, so letting one collide only ever costs a
-    # copy that nothing needed.
-    if not isSeqTyped(res.typeFor(f.val)): continue
-    let other = allocIdOf(fn, f.val)
-    if other.len == 0 or other == mine: return false
-  true
-
-proc ssaExclusiveOwned*(res: Resolution, m: Module, fn: SsaFn,
-                        e: Expr, field = ""): bool =
-  ## `exclusivelyOwned`, with the collision half answered by the mirror.
-  ##
-  ## The ORIGIN half is unchanged and still provenance's: is this slot a
-  ## fresh allocation at all. Only the question "and is it the same buffer as
-  ## a neighbour" moves, because that is the one the design document names as
-  ## blocking Stage C.
-  if e == nil or e.kind != exkCall: return false
-  var c = Ctx(res: res, m: m)
-  let p = provOfCall(c, e)
-  if field.len == 0:
-    return p.whole.origin == oFresh
-  if field notin p.fields: return false
-  if p.fields[field].origin != oFresh: return false
-
-  let fs = constructionFields(e)
-  if fs.len == 0:
-    # A CALL RESULT. Whatever sharing there is happened inside the callee,
-    # where this mirror cannot see; the summary's token is the only witness.
-    return exclusivelyOwned(res, m, e, field)
-  noNeighbourShares(res, fn, fs, field)
-
-proc copySitesOf(res: Resolution, m: Module, body: Expr):
-                 seq[tuple[val: Expr, fields: seq[string]]] =
-  ## Every binding `markSeqCopies` would ask about, with the slots to ask for:
-  ## the empty string for a bare `Seq`, otherwise each Seq-typed field name.
-  var stack = @[body]
-  while stack.len > 0:
-    let n = stack.pop()
-    if n == nil: continue
-    for ch in n.children: stack.add(ch)
-    if n.kind != exkAssign or n.assignVal == nil: continue
-    if n.assignVal.kind == exkList: continue
-    let v = n.assignVal
-    if isSeqTyped(res.typeFor(v)): result.add((v, @[""]))
-    else: result.add((v, seqFieldNames(res, m, res.typeFor(v))))
-
-proc copyDiffFn(res: Resolution, m: Module, d: Decl,
-                agree, onlyMirror, onlyOld: var int) =
-  ## One body's share of the differential.
-  if d.fnBody == nil: return
-  let fn = buildFn(res, d)
-  for site in copySitesOf(res, m, d.fnBody):
-    for f in site.fields:
-      let slot = (if f.len == 0: "<whole>" else: f)
-      let old = exclusivelyOwned(res, m, site.val, f)
-      let mine = ssaExclusiveOwned(res, m, fn, site.val, f)
-      if old == mine:
-        if old: inc agree
-      elif mine:
-        inc onlyMirror
-        echo "COPYDIFF ", d.name, " field=", slot, " mirror=owned old=copy"
-      else:
-        inc onlyOld
-        echo "COPYDIFF ", d.name, " field=", slot,
-             " mirror=copy old=owned   <-- REGRESSION"
-
-proc copyDiffReport*(res: Resolution, m: Module) =
-  ## The Stage C differential, run the way Stages A and B were proved.
-  ##
-  ## Nothing consults `ssaExclusiveOwned` yet. It is measured against the
-  ## implementation it is meant to replace first, over the corpus and both
-  ## applications, because that is what caught the six builder bugs in
-  ## Stage A and the region bug in Stage B. A disagreement here is not
-  ## automatically a defect — the mirror is expected to be STRICTLY MORE
-  ## PRECISE, the same way it was for liveness in a loop — so the criterion
-  ## is `onlyOld == 0`, not "identical".
-  ##
-  ##   TUCK_DEBUG_COPY=diff ./tuck ch file.tuck
-  when not defined(release):
-    if getEnv("TUCK_DEBUG_COPY") != "diff": return
-    var agree, onlyMirror, onlyOld = 0
-    for d in m.allFns():
-      copyDiffFn(res, m, d, agree, onlyMirror, onlyOld)
-    echo "COPYTOTAL ", m.path.join("."), " agree=", agree,
-         " onlyMirror=", onlyMirror, " onlyOld=", onlyOld

@@ -1,0 +1,19 @@
+# NESTED LOOPS with `continue`. Each loop head is a block sealed only after
+# its body is built, because the back edge does not exist until then.
+#
+#   - the inner head's phi for `a` merges the outer value and both inner
+#     back edges (the `continue` and the fall-through)
+#   - `a` at 17:11 is FINAL: `a = a + 1` replaces it; the `continue` path
+#     carries `a` round but never through that read. j at 15:10 is not.
+fn nested({n: int}) -> int:
+  var a = 0
+  var i = 0
+  for i < n:
+    var j = 0
+    for j < n:
+      j = j + 1
+      if j > 2:
+        continue
+      a = a + 1
+    i = i + 1
+  return a

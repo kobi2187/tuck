@@ -367,6 +367,13 @@ type
     exkRegistryRef  # a bare registry name (`AppEvents` in `AppEvents.raise X`)
     exkPoolRef      # a bare pool name (`Bufs` in `Bufs.acquire`)
     exkMixinRef     # a bare mixin name (`Helpers` in `+ Helpers`)
+    exkOrdinal      # the ORDINAL of an enum or bool value — its position in
+                    # its type's value list. Never written by a user: built by
+                    # lowering (a decision table's packed key is
+                    # `ord(p0) * r + ord(p1)`), and it is its own node
+                    # because `ord` is spelled differently by every target —
+                    # Nim `ord(x)`, Odin `int(x)` or a bool ternary, D a
+                    # cast. One node, three printers.
 
   CombKind* = enum
     ## The record combinators. One family, one shape — a receiver and a struct
@@ -476,6 +483,8 @@ type
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
     of exkDefer:
       deferBody*: Expr  # the block to run at scope exit
+    of exkOrdinal:
+      ordinalOf*: Expr  # the enum or bool value whose ordinal this is
     of exkAcquire:
       acquireRef*: Expr     # the raw OS handle to register
       acquireKind*: string  # the kind whose table it goes into, as written

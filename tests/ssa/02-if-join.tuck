@@ -1,0 +1,19 @@
+# IF / ELSE. Two arms, one join, one phi per place written in either arm.
+#
+#   - `both`: each arm defines r, so the join has phi(r.then, r.else)
+#   - `oneArm`: the skipped arm keeps r.0, so the phi merges it with r.1
+#   - a place no arm writes (`k`) gets NO phi: the join reads k.0 directly
+#   - reads in sibling arms are both final: neither can follow the other
+fn both({c: bool, k: int}) -> int:
+  var r = 0
+  if c:
+    r = k + 1
+  else:
+    r = k + 2
+  return r
+
+fn oneArm({c: bool, k: int}) -> int:
+  var r = k
+  if c:
+    r = r + 1
+  return r + k

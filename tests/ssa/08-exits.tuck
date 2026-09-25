@@ -1,0 +1,11 @@
+# EARLY EXIT. An arm that returns reaches no join, so nothing after the `if`
+# can follow a read inside it, and the join has ONE predecessor.
+#
+#   - `k` read in the returning arm is FINAL although `k` is read again below
+#   - the join has no phi for r: only the fall-through path reaches it
+fn early({c: bool, k: int}) -> int:
+  var r = 0
+  if c:
+    return k
+  r = k + 1
+  return r

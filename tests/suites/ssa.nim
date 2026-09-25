@@ -298,3 +298,41 @@ fn main() -> int:
   t.hostRuns("...so the actor's own buffer survives", 7)
 
   t.finish()
+
+  # --- the verdicts: which reads are final ----------------------------------
+  #
+  # A READ FOLLOWED THROUGH A JOIN. `b.lo` is first named inside the `if`,
+  # so its value is born in that arm; the join merges it with the value the
+  # skipped arm would have seen, and the second `if` reads the JOIN. Same
+  # buffer, new name — and counting only the first value's own uses called
+  # the first read final. A final read is licence to move, so that is a
+  # move of something read again two lines later.
+  t.src """
+type Pair:
+  lo: int
+  hi: int
+
+fn twice({b: Pair, n: int}) -> int:
+  var t = 0
+  if n > 0:
+    t = t + b.lo
+  if n > 1:
+    t = t + b.lo
+  return t
+
+fn main() -> int:
+  let p = {lo: 3, hi: 4} Pair
+  return {b: p, n: 2} twice
+"""
+  let fin = t.needCmd(@["/usr/bin/env", "TUCK_DEBUG_SSA=final", "./tuck", "ch",
+                        t.curDir / "t.tuck"])
+  if t.phase == pReport:
+    let (rc, outp) = t.resultOf(fin)
+    let n = outp.count("FINAL twice b.lo")
+    if rc == 0 and n == 1:
+      t.ok "a read whose value flows into a join read later is not final"
+    else:
+      t.no "a read whose value flows into a join read later is not final",
+           "rc=" & $rc & ", " & $n & " final read(s) of b.lo, want 1: " &
+           outp.strip.splitLines()[^1]
+

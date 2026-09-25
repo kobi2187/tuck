@@ -27,7 +27,7 @@
 ## registered item from every suite in one pool bounded by the core count.
 ## The assertions look identical at the call site; `phase` is what differs.
 
-import std/[os, osproc, strutils, strformat, tables, re, streams]
+import std/[os, osproc, strutils, strformat, tables, re, streams, monotimes, times]
 
 type
   Verb* = enum
@@ -445,7 +445,10 @@ proc findDmd*(): string =
   ## The D compiler, or "" when absent. Same shape as findOdin below.
   result = findExe("dmd")
   if result.len > 0: return
-  for c in ["/home/kl/apps/dmd2/linux/bin64/dmd"]:
+  # /opt/dmd112 is the cloud container's; its /opt/dmd is v2.109, which
+  # lacks `pipe2` and cannot build the runtime.
+  for c in ["/home/kl/apps/dmd2/linux/bin64/dmd",
+            "/opt/dmd112/dmd2/linux/bin64/dmd"]:
     if fileExists(c): return c
   return ""
 
@@ -473,7 +476,7 @@ proc slugify(s: string): string =
     elif result.len == 0 or result[^1] != '-': result.add '-'
   result = result.strip(chars = {'-'})
 
-proc unifiedDiff(want, got: string, ctx: int): string =
+proc unifiedDiff*(want, got: string, ctx: int): string =
   ## Enough of a diff to name the first divergence. lib.sh shelled out to
   ## `diff -u` and printed lines 4..12; the point is the same — show where it
   ## changed, not the whole file.
@@ -651,6 +654,7 @@ proc buildsAllowed*(): bool = maxVerb >= vBuild
 
 proc shOnce(argv: seq[string]): tuple[rc: int, output: string, ebadf: string]
            {.gcsafe.} =
+  let t0 = getMonoTime()
   let child = startProcess(argv[0], args = argv[1 .. ^1],
                            options = {poUsePath, poStdErrToStdOut})
   # Reading a child's pipe has been seen to fail with EBADF ("Bad file
@@ -670,6 +674,14 @@ proc shOnce(argv: seq[string]): tuple[rc: int, output: string, ebadf: string]
     readFailed = getCurrentExceptionMsg()
   let rc = child.waitForExit()
   child.close()
+  {.cast(gcsafe).}:
+    if getEnv("TUCK_TEST_PROFILE").len > 0:
+      # Beside the pool's lines, marked `sh`: these run outside the pool, so
+      # without this the profile would silently miss them.
+      let f = open(getEnv("TUCK_TEST_PROFILE") & ".sh", fmAppend)
+      f.writeLine $(getMonoTime() - t0).inMilliseconds & "\t" & $rc & "\t" &
+                  argv.join(" ")
+      f.close()
   (rc, output, readFailed)
 
 proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
@@ -701,13 +713,25 @@ proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
   (failRc, "could not read the output of `" & argv.join(" ") & "` TWICE: " &
            ebadf & " (see issue #31)")
 
+const OdinThreads* = "-thread-count:1"
+  ## EVERY `odin build` in the suite runs single-threaded.
+  ##
+  ## Odin's own checker corrupts its heap now and then when threaded:
+  ## `malloc(): unaligned tcache chunk detected` (rc 134) or a bare SIGSEGV
+  ## (rc 139, no output) from the COMPILER, not from our program. Measured
+  ## 2026-09-22 on dev-2026-09:b2354a0 over the recursive_types package that
+  ## #31 kept naming: 2 crashes in 190 threaded builds, 0 in 190 with this
+  ## flag — and it reproduced with the suite's pool at --jobs:1, so it was
+  ## never our concurrency, which is what #31 had concluded. Costs ~40% per
+  ## Odin build; a suite that fails one run in eight costs more.
+
 proc findOdin*(): string =
   ## The Odin compiler, or "" if it is not installed. Two suites need it —
   ## member_names for one package, odin_backend for thirty-odd — and both
   ## looked in the same places, so the search lives here.
   result = findExe("odin")
   if result.len > 0: return
-  for c in ["/home/kl/apps/Odin/odin", "/opt/odin/odin"]:
+  for c in ["/home/kl/apps/Odin/odin", "/opt/odin-cur/odin", "/opt/odin/odin"]:
     if fileExists(c): return c
   return ""
 
@@ -783,7 +807,7 @@ proc hostRuns*(t: var T, name: string, code: int, pattern = "") =
     let e = t.needOdin()
     let proj = t.curDir / "odinpkg"
     let src = t.curDir / "odin" / "t.odin"
-    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none",
+    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,
                              "-out:" & proj / "prog"], e,
                            proc (dir: string) = stageOdinPkg(dir, src), proj)
     odinR = t.needCmdAfter(@["timeout", "10", proj / "prog"], b,
@@ -856,7 +880,7 @@ proc hostPeakRss*(t: var T, name: string, budgetKB: int) =
     let e = t.needOdin()
     let proj = t.curDir / "odinpkg"
     let src = t.curDir / "odin" / "t.odin"
-    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none",
+    let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,
                              "-out:" & proj / "prog"], e,
                            proc (dir: string) = stageOdinPkg(dir, src), proj)
     odinR = t.needCmdAfter(@[measure, $budgetKB, proj / "prog"], b,
@@ -900,7 +924,7 @@ proc hostBuilds*(t: var T, name: string) =
     let e = t.needOdin()
     let proj = t.curDir / "odinpkg"
     let src = t.curDir / "odin" / "t.odin"
-    odinB = t.needCmdAfter(@[odinExe, "build", proj, "-o:none",
+    odinB = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,
                              "-out:" & proj / "prog"], e,
                            proc (dir: string) = stageOdinPkg(dir, src), proj)
   var dB = -1

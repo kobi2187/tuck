@@ -696,13 +696,120 @@ fn main() -> int:
   t.okCheck "the provenance cases check"
   t.omitsOdin "a freshly allocated result is not copied again",
               r"tuckSeqCopy\(tuck_fresh\("
-  t.emitsOdin "...but a result that is its own argument is",
+  # `keep` hands back its argument — but `keep` has a MOVED twin, and a call
+  # whose argument is still needed reaches the WRAPPER, which copies `xs`
+  # before handing it over. So `b` is already a private buffer, and copying
+  # it again was the waste #77 measured (EV-12). The test that matters is
+  # the aliasing one below: mutate `b`, and `a` must not see it.
+  t.omitsOdin "...nor a result the callee's wrapper already copied",
               r"tuckSeqCopy\(tuck_keep\("
   t.omitsD "the same elision on D", r"\(tuck_fresh\([^)]*\)\)\.dup"
-  t.emitsD "...and the same copy on D", r"\(tuck_keep\([^)]*\)\)\.dup"
+  t.omitsD "...and the wrapper's copy is not repeated on D",
+           r"\(tuck_keep\([^)]*\)\)\.dup"
   # 9 + 9 + 9 + 0. The last term is the one that matters: `d.b[0]` is 0 only
   # if `twin`'s two fields were separated. Sharing one buffer makes it 5.
   t.hostRuns("one buffer returned as two fields is still two buffers", 27)
+
+  # THE ALIASING HALF of eliding a copy after a wrapper: `b` came back from a
+  # fn that returns its own argument, uncopied at the call site. If the
+  # wrapper had NOT copied, `b[0] = 77` would write `a[0]`. Asserted on every
+  # backend, because Nim has value semantics and passes either way.
+  t.src """
+import seq
+
+fn keep({xs: Seq[int]}) -> Seq[int]:
+  return xs
+
+fn main() -> int:
+  let a = [9, 9]
+  var b = {xs: a} keep
+  b[0] = 77
+  return a[0] + b[1]
+"""
+  t.hostRuns("a result the wrapper copied does not alias the argument", 18)
+
+  # A MOVED TWIN'S PARAMETER, READ INTO A LOCAL AND MUTATED. The emitters
+  # skipped the copy for any read through the moved parameter, on the theory
+  # that the parameter belongs to the call. It does — and it is also what
+  # the twin returns, so writing through the uncopied alias rewrote the
+  # result: D returned 99 and Odin read freed memory (111), while Nim, with
+  # real value semantics, returned 1.
+  t.src """
+fn poke({xs: Seq[int]}) -> Seq[int]:
+  var t = xs
+  t[0] = 99
+  return xs
+
+fn main() -> int:
+  var a = [1, 2, 3]
+  a = {xs: a} poke
+  return a[0]
+"""
+  t.hostRuns("a twin's local copy of its parameter is a copy", 1)
+
+  # ...and the other side: at the parameter's LAST read the local TAKES the
+  # buffer, uncopied (`var out = xs` is the move path). The twin returns
+  # something fresh, so it would free its parameter at exit — while the
+  # local, owning what it took, frees it too. The copy pass records the
+  # transfer and the twin leaves that slot alone; without that record the
+  # emitted Odin frees one buffer twice.
+  t.src """
+fn drop({xs: Seq[int]}) -> Seq[int]:
+  let t = xs
+  let n = t.len
+  return [n, n]
+
+fn main() -> int:
+  var a = [1, 2, 3]
+  a = {xs: a} drop
+  a = {xs: a} drop
+  return a[0] + a.len
+"""
+  t.hostRuns("a local that takes a twin's parameter is its only owner", 4)
+
+  # AN OVERWRITE FREE MUST WAIT FOR THE NEW VALUE. Step 5 frees a loop-
+  # overwritten local's old buffer, and Odin emitted the free BEFORE the
+  # assignment — so a right-hand side that reads the old value read freed
+  # memory: 57 here where Nim and D compute 8.
+  t.src """
+fn fresh({k: int}) -> Seq[int]:
+  return [k, k + 1]
+
+fn main() -> int:
+  var xs = [5, 6, 7]
+  var i = 0
+  for i < 3:
+    xs = {k: xs[0] + 1} fresh
+    i = i + 1
+  return xs[0]
+"""
+  t.hostRuns("an overwritten value is freed after its replacement is built", 8)
+
+  # A CALL WRITTEN AS A FIELD IS STILL A READ OF ITS RECEIVER. `a.total` is
+  # `{xs: a} total`, but the SSA graph recorded it as a read of a PLACE
+  # `a.total` — a field of `a` — so the read of `a` itself before it looked
+  # final, `mark` got `a` by move, and wrote 99 into the caller's `a`:
+  # D and Odin returned 203, Nim 105. (valgrind: an invalid read, when the
+  # moved callee grows the buffer instead.)
+  t.src """
+fn mark({xs: Seq[int]}) -> Seq[int]:
+  var out = xs
+  out[0] = 99
+  return out
+
+fn total({xs: Seq[int]}) -> int:
+  var t = 0
+  for x in xs:
+    t = t + x
+  return t
+
+fn main() -> int:
+  let a = [1, 2, 3]
+  let r = {xs: a} mark
+  let s = a.total
+  return s + r[0]
+"""
+  t.hostRuns("a method-style call reads its receiver", 105)
 
   # --- EV-15: a last use at ARGUMENT position reaches the MOVED twin -------
   #

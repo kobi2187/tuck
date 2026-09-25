@@ -255,6 +255,7 @@ iterator children*(e: Expr): Expr =
     of exkDefer: yield e.deferBody
     of exkAcquire: yield e.acquireRef
     of exkFinish: yield e.finishHandle
+    of exkOrdinal: yield e.ordinalOf
 
 iterator childDecls*(d: Decl): Decl =
   ## Every declaration nested one level inside `d`, whichever field holds it.
@@ -431,6 +432,23 @@ proc assignIds*(m: var Module) =
   ## must not collide across modules.
   for d in m.decls: assignIds(d, globalNodeCounter)
 
+proc fillIds*(m: Module) =
+  ## Give an id to every node that has none, and change NO existing one.
+  ##
+  ## For the end of a stage that mints nodes (lowering). `assignIds` is not
+  ## this: it renumbers every DECLARATION unconditionally, which would cut
+  ## every edge and cache key already keyed by a decl's id.
+  for d in m.decls:
+    var stack = @[d]
+    while stack.len > 0:
+      let x = stack.pop()
+      if x == nil: continue
+      if not x.id.isSet:
+        globalNodeCounter.inc
+        x.id = NodeId(globalNodeCounter)
+      for e in x.ownExprs: assignIds(e, globalNodeCounter)   # fills only
+      for c in x.childDecls: stack.add c
+
 proc clearIds*(e: Expr) =
   ## Drop ids so assignIds hands out fresh ones. Needed when a module comes
   ## back from the AST cache carrying ids from the run that wrote it.
@@ -444,7 +462,10 @@ proc clearIds*(e: Expr) =
   for c in e.children: clearIds(c)
 
 proc clearIds*(d: Decl) =
+  ## The declaration's own id as well as its expressions' — a copied actor's
+  ## handlers are declarations, and they collided too.
   if d == nil: return
+  d.id = NodeId(0)
   for e in d.ownExprs: clearIds(e)
   for m in d.childDecls: clearIds(m)
 

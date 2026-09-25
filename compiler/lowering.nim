@@ -33,6 +33,7 @@ import ast
 import resolution, strutils
 import ast_query
 import lowering_recursive   # recursive sum edges get a Seq handle
+import lowering_decisions   # a decision table becomes a match or an if chain
 
 proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef]
 
@@ -41,9 +42,15 @@ proc namedTypeFields(res: Resolution, m: Module, t: Type): seq[FieldDef] =
   ## (resolveTypeNames) rather than matching t.name against the decl list — the
   ## name is what the user wrote, the edge is what it means, and after mangling
   ## the two differ.
-  var d = res.declForType(t)
-  if d == nil: d = m.findDecl(dkType, t.name)
-  if d == nil: return @[]
+  let d = res.declForType(t)
+  if d == nil:
+    # #21: every named type the checker makes carries its edge from birth
+    # (typecheck_collect.namedType). A miss here that the decl list WOULD
+    # answer is that bug back — say so, rather than quietly rescanning by
+    # name, which is how it stayed hidden and made emit quadratic (#23).
+    doAssert m.findDecl(dkType, t.name) == nil,
+      "lowering: type '" & t.name & "' has a declaration but no edge to it (#21)"
+    return @[]
   # An object keeps its fields in objFields, not typeBody, and `+ Record`
   # merges more in — composedFields answers both. Records fall through to
   # their body as before.
@@ -354,7 +361,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkDiscard, exkTripleDot, exkImport, exkSend, exkSelect, exkCombinator,
      exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkDefer,
-     exkFinish, exkAcquire:
+     exkFinish, exkAcquire, exkOrdinal:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
@@ -467,6 +474,10 @@ proc lowerModule*(res: Resolution, m: Module) =
   # before anything tries to emit one. First, because the phases below read
   # field types.
   boxRecursiveEdges(res, m)
+  # A decision table becomes an ordinary body — a `match` over a packed key,
+  # or an `if` chain — before anything below walks fn bodies, so the calls
+  # in its rows are lowered like any other.
+  lowerDecisionTables(res, m)
   # Phase 1: union / rename type bodies collapse to plain records
   for d in m.decls(dkType):
     if d.typeBody != nil and d.typeBody.kind in {tkUnion, tkRename}:

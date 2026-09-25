@@ -177,6 +177,20 @@ proc declaredFields*(d: Decl): seq[FieldDef] =
   of dkActor: d.actorFields
   else: @[]
 
+proc composedName(mem: Decl): string =
+  ## The record a `+ Record` member composes in, or "" for any other member.
+  if mem == nil or mem.kind != dkExpr or mem.expr == nil: return ""
+  if mem.expr.kind != exkUnary or mem.expr.unaryOp != uoComposition: return ""
+  let comp = mem.expr.operand
+  if comp == nil or comp.kind != exkVar: "" else: comp.name
+
+proc recordFieldsNamed(m: Module, name: string): seq[FieldDef] =
+  ## The fields of every record type this module declares under `name`.
+  for cd in m.decls:
+    if cd == nil or cd.kind != dkType or cd.name != name: continue
+    if cd.typeBody == nil or cd.typeBody.kind != tkRecord: continue
+    for f in cd.typeBody.fields: result.add(f)
+
 proc composedFields*(m: Module, d: Decl): seq[FieldDef] =
   ## An object's fields INCLUDING everything `+ Record` merges in — composition
   ## is set union (spec §4.5), so a composed field is the object's own as far
@@ -188,14 +202,8 @@ proc composedFields*(m: Module, d: Decl): seq[FieldDef] =
   result = declaredFields(d)
   if d.kind != dkObject: return
   for mem in d.objMembers:
-    if mem == nil or mem.kind != dkExpr or mem.expr == nil: continue
-    if mem.expr.kind != exkUnary or mem.expr.unaryOp != uoComposition: continue
-    let comp = mem.expr.operand
-    if comp == nil or comp.kind != exkVar: continue
-    for cd in m.decls:
-      if cd == nil or cd.kind != dkType or cd.name != comp.name: continue
-      if cd.typeBody == nil or cd.typeBody.kind != tkRecord: continue
-      for f in cd.typeBody.fields: result.add(f)
+    let name = composedName(mem)
+    if name.len > 0: result.add recordFieldsNamed(m, name)
 
 iterator allFns*(m: Module): Decl =
   ## Every fn in the module with a body to walk: top-level, plus the members
@@ -351,22 +359,21 @@ proc isBareValuePayload*(e: Expr): bool =
   f.name == "value" or
     (f.value != nil and f.value.kind == exkVar and f.value.name == f.name)
 
-proc isDecisionTable*(d: Decl): bool =
-  ## A fn whose body is only subject-less `match` blocks — a decision table.
-  if d.kind != dkFn or d.fnBody == nil or d.fnBody.kind != exkBlock: return false
-  if d.fnBody.stmts.len == 0: return false
-  for s in d.fnBody.stmts:
-    if s.kind != exkMatch or s.subject != nil: return false
-  true
-
 proc genPatternStr*(p: Pattern): string =
-  ## A pattern's surface spelling, for decision-table row labels / comments.
+  ## A pattern's spelling as a case label. An or-pattern is its alternatives,
+  ## comma-separated — `of 0, 4, 5` in Nim, `case 0, 4, 5` in Odin and D; a
+  ## lowered decision table groups its keys this way.
+  ##
+  ## Exhaustive, with no `else`: this ended in `else: "_"`, so a pattern kind
+  ## it did not know printed as the CATCH-ALL — an or-pattern would have
+  ## become `case:` in every backend, silently matching everything.
   if p == nil: return "_"
   case p.kind
   of pkWild: "_"
   of pkVar: p.name
   of pkLit: p.litValue
-  else: "_"
+  of pkOr: genPatternStr(p.left) & ", " & genPatternStr(p.right)
+  of pkRecord, pkTuple: "_"   # destructuring binds; as a label it tests nothing
 
 proc matchArmsReturn*(m: Expr): bool =
   ## True when the arms produce control flow rather than values — a block arm

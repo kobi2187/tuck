@@ -55,24 +55,17 @@ enum tuck_NalKind { nonIdr, idr, sps, pps, sei }
 enum tuck_Action { decode, configure, skip, flushThenDecode }
 
 tuck_Action tuck_route(tuck_NalKind nal, bool configured, bool midFrame) {
-    switch (cast(long)(nal) * 4 + cast(long)(configured) * 2 + cast(long)(midFrame)) {   // packed decision key
-    case 0:
-    case 1:
-    case 16:
-    case 17:
-    case 18:
-    case 19:
+    switch ((((cast(long)(nal) * 4L) + (cast(long)(configured) * 2L)) + cast(long)(midFrame))) {
+    case 0, 1, 16, 17, 18, 19:
         return tuck_Action.skip;
-    case 2:
-    case 3:
-    case 4:
-    case 6:
+    case 2, 3, 4, 6:
         return tuck_Action.decode;
-    case 5:
-    case 7:
+    case 5, 7:
         return tuck_Action.flushThenDecode;
-    default: return tuck_Action.configure;
+    default:
+        return tuck_Action.configure;
     }
+    return typeof(return).init;
 }
 
 struct tuck_Frame {

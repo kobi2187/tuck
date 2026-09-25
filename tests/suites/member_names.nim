@@ -42,7 +42,7 @@ fn main() -> int:
     # needCmdAfter's prep hook is for.
     let emitIdx = t.needOdin()
     buildIdx = t.needCmdAfter(
-      @[odinExe, "build", pkg, "-o:none", "-out:" & pkg / "prog"],
+      @[odinExe, "build", pkg, "-o:none", OdinThreads, "-out:" & pkg / "prog"],
       emitIdx,
       proc (dir: string) = stageOdinPkg(pkg, snippet / "odin" / "t.odin"),
       snippet)
