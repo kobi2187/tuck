@@ -52,5 +52,6 @@ proc strRule*(res: Resolution, procs: seq[string], body: Expr): SealRule =
     let n = stack.pop()
     if n == nil: continue
     for ch in n.children: stack.add ch
-    if n.kind == exkCall and ownedStrCall(res, procs, n):
+    # A concatenation is an allocating call the tree spells as `a + b`.
+    if n.kind in {exkCall, exkBinary} and ownedStrCall(res, procs, n):
       result.exemptCalls.incl n.id

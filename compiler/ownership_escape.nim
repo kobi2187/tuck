@@ -72,7 +72,9 @@ type
   SealRule* = object
     carried*: Carried
     exemptCalls*: HashSet[NodeId]
-      ## calls whose result captures none of their arguments
+      ## calls (and `str` concatenations) whose result holds none of their
+      ## operands: they never carry an operand out, and nothing that carries
+      ## their result out does either
     exemptBindings*: HashSet[NodeId]
       ## right-hand sides whose binding captured nothing of them
 
@@ -263,6 +265,13 @@ proc underCarrier(ix: BodyIndex, rule: SealRule, n: Expr, name: string,
   memo[n.id] = false           # a cycle cannot happen in a tree; be safe
   var sealed = false
   for p in ix.parents.getOrDefault(n.id):
+    if p.id in rule.exemptCalls:
+      # AN EXEMPT CALL'S RESULT HOLDS NONE OF ITS ARGUMENTS, so whatever
+      # carries that result out does not carry `n` with it. Letting the seal
+      # through made `let t = s + "-"` an escape of `s`: the binding carries
+      # `t` out of reach, and `t` is fresh storage the concatenation built.
+      # Every `str` read into a concatenation or a `toStr` stayed unfreed.
+      continue
     if ix.bindsElsewhere(rule, p, n, name):
       # The binding decides, whatever is above it: the rhs is now reachable
       # through the other name exactly when that name could hold ours.

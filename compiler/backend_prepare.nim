@@ -15,7 +15,9 @@
 #      it from; the emitted import has to be relative to the OUTPUT directory
 #      instead, and `-o:` moves that around.
 #   3. LOWER. `lowerModule` simplifies the constructs every backend would
-#      otherwise each have to understand.
+#      otherwise each have to understand. Then, on a backend whose runtime
+#      hands the caller new `str` storage (Odin), NAME each nested one
+#      (`lowering_strtemps`) — an unnamed temporary has no owner to free it.
 #   4. MARK THE COPIES, for the backends whose native container ALIASES.
 #      Odin's `[dynamic]T` and D's `T[]` both copy a header that still points
 #      at the source buffer; Nim's `seq` has real value semantics and needs
@@ -51,6 +53,7 @@ import modules
 import resolution
 import lowering
 import lowering_seqcopy
+import lowering_strtemps
 import analysis_ownership
 import pipeline
 import verbose
@@ -167,6 +170,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
   for lm in result.mods:
     let ts = epochTime()
     lowerModule(semLayer, lm.m)                                      # 3. lower
+    hoistStrTemps(semLayer, lm.m, ownedStrProcs(backend))     #    str temps
     if backend.aliasesOnAssign:
       markSeqCopiesIn(semLayer, lm.m)                                # 4. marks
     # 5. NUMBER WHAT LOWERING MINTED. Lowering builds nodes (tail returns,

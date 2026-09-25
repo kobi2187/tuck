@@ -1497,6 +1497,37 @@ fn main() -> int:
   t.hostPeakRss("a million temporary strings do not accumulate", 12288)
   t.bugFixed "a million temporary strings do not accumulate"
 
+  # ...nor do the strings a CONCATENATION reads, or builds on the way. Found
+  # by benches/memory, not by review: `let t = s + "-" + s` in a loop leaked
+  # two strings a turn on Odin (123 MB at two million turns, 244 MB at four)
+  # while Nim and D held under 4 MB.
+  #   * `s` looked escaped: the `str` rule let a binding's seal flow through
+  #     the allocating concatenation into its operands, though the result it
+  #     binds holds none of them (ownership_escape: an exempt call blocks it).
+  #   * `s + "-"` had no name, so no local owned it; it is named now
+  #     (lowering_strtemps) and freed like one.
+  t.src """
+import str
+
+fn churn({n: int}) -> int:
+  var acc = 0
+  var i = 0
+  for i < n:
+    let s = i.toStr
+    let t = s + "-" + s
+    acc = acc + t.len
+    i = i + 1
+  return acc
+
+fn main() -> int:
+  let acc = {n: 1000000} churn
+  if acc < 1000000:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("the strings a concatenation reads and builds do not accumulate", 12288)
+  t.bugFixed "the strings a concatenation reads and builds do not accumulate"
+
   # 19. EV-14 / issue #82: the dead intermediates of a THREADING CHAIN.
   #
   # `relight` is the world_server shape reduced: a record with two Seq fields
