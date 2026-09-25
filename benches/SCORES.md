@@ -590,6 +590,59 @@ Caveat on target: measured on x86-64 with a large cache. On a Cortex-M with
 no cache and no allocator the case is *stronger*, not weaker — `ref` needs a
 heap that Tier 1 deliberately does not have.
 
+## Memory stress across backends — 2026-09-25
+
+`bash benches/memory/run.sh [N]` runs six programs, one per heap path the
+ownership pass decides, at N and 2N on every backend, release builds. Each
+program checks its own answer. **RSS(N) against RSS(2N) is the leak
+reading**: the same number twice means nothing accumulates. Time is compared
+ACROSS backends; the t(2N)/t(N) ratio should be ~2.
+
+| pattern | path it exercises |
+|---|---|
+| copy_loop | #77: a copy a binding must make; the old value freed at the overwrite |
+| chain | #82: a two-`Seq` record threaded through moved twins; per-slot frees |
+| overwrite | a value replaced by one built from it: freed after, not before |
+| value_copy | `var t = xs` in a callee must copy; the copy freed at scope exit |
+| transfer | a local takes a twin's parameter at its last read: one owner |
+| str_temps | `toStr` and a chained `+`: allocating runtime procs, freed |
+
+N=200000 (str_temps runs 10N turns), after this date's fixes:
+
+| pattern | Nim t(N) ms | Odin | D | peak RSS N / 2N (MB), Nim · Odin · D |
+|---|---|---|---|---|
+| copy_loop | 12 | 97 | 372 | 1.3/1.3 · 1.7/1.7 · 6.8/6.8 |
+| chain | 831 | 182 | 502 | 1.4/1.4 · 1.7/1.7 · 6.8/6.8 |
+| overwrite | 286 | 215 | 2422 | 1.3/1.3 · 1.7/1.7 · 4.8/4.8 |
+| value_copy | 111 | 51 | 169 | 1.3/1.3 · 1.7/1.7 · 6.8/7.0 |
+| transfer | 131 | 87 | 699 | 1.3/1.3 · 1.7/1.7 · 3.8/3.8 |
+| str_temps | 448 | 467 | 382 | 1.3/1.3 · 1.8/1.8 · 3.8/3.8 |
+
+**Memory: flat on all three, every pattern.** Every time ratio long enough to
+read is 1.8–2.4 (Nim's copy_loop finishes too fast to measure one).
+
+**It found a leak on its first run.** str_temps on Odin was 123 MB at N and
+244 MB at 2N — two strings a turn (the `s` a concatenation read, and the
+unnamed `s + "-"`), valgrind 4,000 blocks definitely lost at 2,000 turns.
+Fixed the same day (`lowering_strtemps`, and an allocating call no longer
+passes a binding's seal to its operands); now 1.8 MB at both sizes, and
+guarded in `known_bugs`.
+
+**Time is NOT similar yet, and the gaps are not investigated.** Recorded as
+measured, causes unconfirmed:
+- copy_loop: Nim 12 ms against Odin 97 and D 372 — Nim does far less work
+  per turn, most likely moving the buffer into `bump` where the other two
+  copy it.
+- chain: Nim is the slowest, 4.6x Odin.
+- overwrite and transfer: D is 8–11x the others; both push element by
+  element into a fresh `Seq` each turn.
+
+The script also carries variants with automatic memory management OFF —
+`nim-arc` (`--mm:arc`), `nim-none` (`--mm:none`, nothing freed) and `d-nogc`
+(`--DRT-gcopt=disable:1`) — to show what the collectors cost and buy. Each
+was checked to build and run correctly on copy_loop; the full table has not
+been run yet.
+
 ## Container copying — 2026-09-11
 
 `bash benches/containers/run.sh [N]` builds each pattern at N and 2N on all

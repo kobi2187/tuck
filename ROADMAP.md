@@ -184,6 +184,7 @@ closure no longer exist in any `codegen_*.nim`.
 | S3.2 | **#30** | D: volatile registers, `[saturating]`, `tuckConcat` | M |
 | S3.3 | — | the D runtime has no networking; `42-net-echo` cannot link | L |
 | S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |
+| S3.5 | — | **runtime speed parity, found by `benches/memory` (2026-09-25).** Memory is flat on all three; TIME is not: copy_loop Nim 12 ms vs Odin 97 vs D 372; chain Nim 4.6x Odin; overwrite/transfer D 8–11x the others. Causes unconfirmed — see `benches/SCORES.md`. The GC-off variants (`nim-arc`, `nim-none`, `d-nogc`) are wired into the script and not yet run | M |
 | — | **#40** | *moved to M4.4* | — |
 
 ### S4 — Effects
