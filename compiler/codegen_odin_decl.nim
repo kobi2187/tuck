@@ -627,8 +627,13 @@ proc genDispatch*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandle
   ## The switch that routes an envelope to its handler.
   var hctx = ctx.newHandlerCtx(d)
   var cases: seq[string]
+  # EACH ARM IS ITS OWN SCOPE: a name one handler declares is not declared in
+  # the next, or its `let r` prints as an assignment to an undeclared name
+  # (#79). genHandlerCase also adds the arm's payload names to the set.
+  let outer = hctx.definedVars
   for h in handlers:
     cases.add(hctx.genHandlerCase(h, ind))
+    hctx.definedVars = outer
   if hasShutdown:
     # Stops the actor rather than adding a message: run the arm's body, then
     # set the flag the drain checks.

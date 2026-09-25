@@ -368,11 +368,17 @@ proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
     let raw = hctx.genExpr(e)
     if e != nil and e.kind == exkBlock: raw else: "    " & raw
   var handlerCases: seq[string]
+  # EACH ARM IS ITS OWN SCOPE. `definedVars` decides declaration against
+  # assignment, and one set for the whole actor made a second handler's
+  # `let r` an assignment to the `r` a sibling arm declared — undeclared
+  # identifier, on correct Tuck (#79).
+  let outer = hctx.definedVars
   for h in handlers:
     var caseBody = ""
     for p in h.params:
       caseBody.add("    let " & p.name & " = msg." & p.name & "\n")
     handlerCases.add("  of msg" & h.name.capitalize() & ":\n" & caseBody & armBody(h.body))
+    hctx.definedVars = outer
   if hasShutdown:
     # run the shutdown body, then mark finished so the drain goes inert; a
     # `return` in the arm body is a no-op statement here.

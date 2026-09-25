@@ -142,7 +142,7 @@ could not see a decision table's structure for exactly this reason.
 |---|---|---|---|
 | 4.1 | ~~**`exkOrdinal`**~~ **DONE 2026-09-25.** "The ordinal of this enum or bool value": Nim `ord(x)`, Odin `int(x)` or `(x ? 1 : 0)` for a bool, D `cast(long)(x)`. Every exhaustive `case` over ExprKind took an arm; the checker types one as `int` though a checked tree never holds one | — | S |
 | 4.2 | ~~**Decision tables lowered**~~ **DONE 2026-09-25** (`lowering_decisions.nim`, run by `lowerModule` for every backend): packed -> a `match` over the key whose grouped keys are an or-pattern (`of 2, 3`), chained -> an `if` chain ending in the catch-all the checker demands; one outcome -> a bare `return`. The emitters had drifted — D packed a table of ANY size where Nim and Odin chained above 4096 combinations — and the checker kept its own copy of the combinatorics; both now read `decision_table.nim`, whose threshold the lowering depends on (a table the checker enumerates is one that packs; the rest have a catch-all). `genPatternStr` printed any pattern kind it did not know as `_` — an or-pattern would have become a catch-all in every backend; it is exhaustive now. Guarded by `tests/suites/decision_tables.nim` (both forms run on all three) | `genDecisionTable` ×3 — gone | M |
-| 4.3 | **Actor dispatch lowered** to an ordinary `match` over the message tag, each arm its own scope | closes **#79** on all backends at once, rather than porting D's fix twice | M |
+| 4.3 | **Actor dispatch lowered** to an ordinary `match` over the message tag, each arm its own scope. **#79 is fixed separately (2026-09-25)**: two lines per backend (Nim and Odin now scope `definedVars` per arm, as D did), guarded by `actor_result` on all three. A full lowering needs the message ENVELOPE — each backend's own type — represented in Tuck first, which is design work; the bug was not worth leaving open for it | — | M |
 | 4.4 | **Interface dispatch lowered** to a `match` over the variant tag | closes **#40** (Odin's closure typed `-> int`) as a side effect | M |
 | 4.5 | `..` chains fully lowered (partly done by `hoistChainCalls`) | `genChainStep` | S |
 
@@ -160,7 +160,7 @@ closure no longer exist in any `codegen_*.nim`.
 | S1.1 | **#87** | an actor field's initialiser is silently discarded; `level: int = 80` answers 0, nine runs of nine | S–M |
 | S1.2 | **#73** | an imported `const` is invisible to the checker, so a wrong `Array` size is ACCEPTED. `typecheck.nim:1071` has the worked precedent | M |
 | S1.3 | **#78** | Nim's `tuck_` prefix collides `type Order` with `fn order` | S–M |
-| — | **#79** | *moved to M4.3* — lowering actor dispatch fixes it on every backend at once | — |
+| — | **#79** | **FIXED 2026-09-25** — per-arm scoping in the Nim and Odin dispatch; see M4.3 | — |
 
 ### S2 — Finish partial features
 
