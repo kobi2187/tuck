@@ -637,11 +637,42 @@ measured, causes unconfirmed:
 - overwrite and transfer: D is 8–11x the others; both push element by
   element into a fresh `Seq` each turn.
 
-The script also carries variants with automatic memory management OFF —
-`nim-arc` (`--mm:arc`), `nim-none` (`--mm:none`, nothing freed) and `d-nogc`
-(`--DRT-gcopt=disable:1`) — to show what the collectors cost and buy. Each
-was checked to build and run correctly on copy_loop; the full table has not
-been run yet.
+### With automatic memory management OFF — 2026-09-25
+
+The same six programs with the collectors switched off, beside the backends
+as they ship. N=200000; every run capped at 3 GB of address space, and a run
+that exhausts it reads OOM.
+
+- `nim-arc` — `--mm:arc`: reference counting with no cycle collector.
+- `nim-none` — `--mm:none`: nothing is ever freed.
+- `d-nogc` — `--DRT-gcopt=disable:1`: D's collector does not run. (It still
+  collects when an allocation would fail, which is why it plateaus at the cap
+  instead of dying there.)
+
+| pattern | nim | nim-arc | nim-none | odin | d | d-nogc |
+|---|---|---|---|---|---|---|
+| copy_loop | 11 ms · 1.3 MB | 13 · 1.3 | OOM | 150 · 1.7 | 365 · 6.8 | 3465 · 3025 |
+| chain | 874 · 1.4 | 1004 · 1.4 | OOM | 175 · 1.7 | 532 · 7.0 | 4865 · 3025 |
+| overwrite | 283 · 1.3 | 317 · 1.3 | 1794 · 2059, OOM at 2N | 232 · 1.7 | 2433 · 4.8 | 3305 · 1574, OOM at 2N |
+| value_copy | 103 · 1.3 | 134 · 1.3 | 1848 · 2347, OOM at 2N | 82 · 1.7 | 185 · 6.8 | 1906 · 2350 |
+| transfer | 158 · 1.3 | 125 · 1.3 | 436 · 468 | 90 · 1.7 | 736 · 3.8 | 1016 · 388 |
+| str_temps | 377 · 1.3 | 432 · 1.3 | 424 · 271 | 500 · 1.8 | 351 · 3.8 | 402 · 65 |
+
+(time at N · peak RSS at N. At 2N every surviving no-free run doubled its
+RSS: transfer 468 → 933 MB on nim-none, 388 → 773 on d-nogc.)
+
+What it says:
+
+- **Not freeing is not faster; it is usually far slower.** Every heap-heavy
+  pattern slows down without frees: nim-none's overwrite is 6x Nim's, d-nogc's
+  copy_loop and chain are 9–10x D's. A fresh page has to be faulted in where a
+  freed block would have been reused, so the memory work these programs do is
+  cheaper done than skipped.
+- **ORC's cycle collector costs nothing here.** `nim` and `nim-arc` are within
+  noise of each other on all six; these programs build no cycles.
+- **Odin's static frees hold their own.** With nothing at run time but the
+  `delete`s the ownership pass decided, Odin is the fastest of the three on
+  chain, overwrite, value_copy and transfer, and holds 1.7 MB on all six.
 
 ## Container copying — 2026-09-11
 

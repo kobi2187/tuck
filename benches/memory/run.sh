@@ -24,7 +24,7 @@ set -u
 cd "$(dirname "$0")/../.."
 N=${1:-200000}
 N2=$((N * 2))
-TUCK=$PWD/tuck
+TUCK=${TUCK:-$PWD/tuck}   # a frozen copy keeps a long run immune to rebuilds
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -246,10 +246,16 @@ VARIANTS=(
 
 # --- measuring ---------------------------------------------------------------
 
-run() {  # binary args... -> "ms peakKB" or "FAIL"
+# Every run is capped in address space. The no-free variants allocate
+# without bound — `nim-none` reached 7 GB on copy_loop at N=200000 — and an
+# uncapped one takes the machine down with it. A capped run that runs out
+# reports OOM, which is itself the reading: that variant cannot hold the load.
+MEMCAP_KB=${MEMCAP_KB:-3145728}   # 3 GB
+
+run() {  # binary args... -> "ms peakKB" | "OOM" | "FAIL"
   local peak=0 cur t0 t1 rc
   t0=$(date +%s%N)
-  "$@" >/dev/null 2>&1 &
+  ( ulimit -v "$MEMCAP_KB"; exec "$@" ) >/dev/null 2>&1 &
   local pid=$!
   # VmHWM is the kernel's own high-water mark, so a sample can only miss a
   # peak by reading too early — never under-report one already reached.
@@ -260,7 +266,11 @@ run() {  # binary args... -> "ms peakKB" or "FAIL"
   done
   wait "$pid"; rc=$?
   t1=$(date +%s%N)
-  [ "$rc" -ne 0 ] && { echo "FAIL"; return; }
+  if [ "$rc" -ne 0 ]; then
+    # Near the cap: out of memory, not a wrong answer.
+    if [ "$peak" -gt $((MEMCAP_KB / 4)) ]; then echo "OOM"; else echo "FAIL"; fi
+    return
+  fi
   echo "$(( (t1 - t0) / 1000000 )) $peak"
 }
 
@@ -290,16 +300,18 @@ for p in ${PATTERNS:-copy_loop chain overwrite value_copy transfer str_temps}; d
     IFS='|' read -r label flags sfx runargs <<< "$spec"
     a=$(measure "$WORK/a/$p" "$flags" "$sfx" "$runargs")
     b=$(measure "$WORK/b/$p" "$flags" "$sfx" "$runargs")
-    if [ "$a" = "-" ] || [ "$b" = "-" ] || [ "$a" = "FAIL" ] || [ "$b" = "FAIL" ]; then
-      printf "%-11s %-8s %8s %8s\n" "$name" "$label" "$a" "$b"
-      name=""
-      continue
-    fi
+    # Each side is "ms peakKB", or a status ("-" no build, FAIL, OOM) that
+    # stands in both of its columns.
     read -r ta ka <<< "$a"
     read -r tb kb <<< "$b"
-    ratio=$(awk -v x="$tb" -v y="$ta" 'BEGIN { if (y < 20) print "~"; else printf "%.1f", x / y }')
+    ra=$( [ -n "${ka:-}" ] && mb "$ka" || echo "$ta" )
+    rb=$( [ -n "${kb:-}" ] && mb "$kb" || echo "$tb" )
+    ratio="-"
+    if [ -n "${ka:-}" ] && [ -n "${kb:-}" ]; then
+      ratio=$(awk -v x="$tb" -v y="$ta" 'BEGIN { if (y < 20) print "~"; else printf "%.1f", x / y }')
+    fi
     printf "%-11s %-8s %8s %8s %6s %9s %9s\n" "$name" "$label" "$ta" "$tb" \
-           "$ratio" "$(mb "$ka")" "$(mb "$kb")"
+           "$ratio" "$ra" "$rb"
     name=""
   done
 done
