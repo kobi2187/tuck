@@ -445,7 +445,10 @@ proc findDmd*(): string =
   ## The D compiler, or "" when absent. Same shape as findOdin below.
   result = findExe("dmd")
   if result.len > 0: return
-  for c in ["/home/kl/apps/dmd2/linux/bin64/dmd"]:
+  # /opt/dmd112 is the cloud container's; its /opt/dmd is v2.109, which
+  # lacks `pipe2` and cannot build the runtime.
+  for c in ["/home/kl/apps/dmd2/linux/bin64/dmd",
+            "/opt/dmd112/dmd2/linux/bin64/dmd"]:
     if fileExists(c): return c
   return ""
 
@@ -728,7 +731,7 @@ proc findOdin*(): string =
   ## looked in the same places, so the search lives here.
   result = findExe("odin")
   if result.len > 0: return
-  for c in ["/home/kl/apps/Odin/odin", "/opt/odin/odin"]:
+  for c in ["/home/kl/apps/Odin/odin", "/opt/odin-cur/odin", "/opt/odin/odin"]:
     if fileExists(c): return c
   return ""
 

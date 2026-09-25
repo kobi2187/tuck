@@ -92,6 +92,16 @@ design mistakes that are correctness bugs rather than performance ones.
 
 ## M2 — Stage C: the copy decision on the mirror
 
+**Exit REACHED 2026-09-25** by the route below, not by 2.1-2.3 as written:
+#77's pin is green (482 MB -> 1.8 MB). The missing fact was which proc a
+call REACHES — the wrapper copies the moved parameter, the twin hands back
+an argument the caller gave away — and what the argument is, asked inside
+its enclosing body (`analysis_provenance.throughWrapper`, `provCtxFor`).
+The copy pass now RECORDS its exclusive decisions (`decidedExclusive`) and
+the ownership pass reads them rather than re-deriving them. 2.2 and 2.3
+still stand, as the prerequisite M3 names: ownership cannot move before the
+clone while the copy decision is made after lowering.
+
 | # | item | size |
 |---|---|---|
 | 2.1 | Move `exclusivelyOwned`'s ORIGIN half onto the mirror. The collision half already moved and was measured irrelevant (`ssaExclusiveOwned`, 27/27, never reached) — do not redo it | M |
@@ -273,6 +283,12 @@ document is behind the tree — fix these when passing, and do not plan from the
   NOT our concurrency (#31 guessed that). Gone with `-thread-count:1`, which
   the suite now passes everywhere (`harness.OdinThreads`, and
   `TUCK_ODIN_EXTRA` for `tuck build --odin`).
+- **Most earlier full runs never exercised D.** `dmd` was not on PATH, so
+  every D assertion SKIPPED and the suite still printed green. The cloud
+  container has two: `/opt/dmd` is v2.109 and cannot build the runtime (no
+  `pipe2`); `/opt/dmd112` works. The harness now looks there, and for
+  `/opt/odin-cur` — but `tuck build --odin` finds Odin on PATH only, so
+  `export PATH=/opt/dmd112/dmd2/linux/bin64:/opt/odin-cur:/opt/nim/bin:$PATH`.
 - **A compiler outside the repo cannot find `std/`.** It resolves std next to
   its own binary, so a scratch build in /tmp fails every stdlib import —
   quietly, if you only grep its output. Measure with `./tuck`, or copy the

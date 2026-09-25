@@ -118,8 +118,8 @@ import resolution
 import ast_query
 import twin_shape
 from ssa_ir import rootOf, pathOf
-from analysis_provenance import exclusivelyOwned, slotIsFresh, consumedSlotsSsa
-from lowering_seqcopy import needsDup, recordDupFields
+from analysis_provenance import slotIsFresh, consumedSlotsSsa
+from lowering_seqcopy import needsDup, recordDupFields, decidedExclusive
 
 
 type
@@ -211,8 +211,17 @@ proc findCopiedOut(s: Scan): HashSet[NodeId] =
   ##                                  # `a`'s originals die here
   ##     xs = ns                      # emits xs = copy(ns); `ns` dies here
   ##
-  ## The copy marks are the whole witness. Nothing about the callee has to be
-  ## proved separately.
+  ## The copy marks are the whole witness — both halves of them: a slot the
+  ## binding COPIED, and a slot it left alone because the value was already
+  ## the binder's (`decidedExclusive`). Either way the name holds nothing the
+  ## right-hand side was built from. Tuck has no aliasing channel but a
+  ## call's result, so a result whose every heap slot is one or the other
+  ## captured nothing of its arguments. (A MOVED argument did go into it —
+  ## and `mentionOf` treats a moved argument as gone before this is asked.)
+  ##
+  ## Counting only the copied half made the #77 fix leak the other way: once
+  ## `bump`'s result stopped being copied, `xs` looked captured by it and
+  ## lost its free at the overwrite.
   var stack = @[s.body]
   while stack.len > 0:
     let n = stack.pop()
@@ -222,14 +231,14 @@ proc findCopiedOut(s: Scan): HashSet[NodeId] =
     let v = n.assignVal
     let t = s.res.typeFor(v)
     if seqElem(t) != nil:
-      if needsDup(s.res, v): result.incl(v.id)
+      if needsDup(s.res, v) or decidedExclusive(v, ""): result.incl(v.id)
     elif v.kind in {exkCall, exkChain}:
       let want = seqFieldNames(s.res, s.m, t)
       if want.len == 0: continue
       let copied = recordDupFields(s.res, v)
       var everySlot = want.len > 0
       for f in want:
-        if f notin copied: everySlot = false
+        if f notin copied and not decidedExclusive(v, f): everySlot = false
       if everySlot: result.incl(v.id)
 
 # --- STEP 2: ownership -----------------------------------------------------
@@ -247,10 +256,10 @@ proc ownsSlot(s: Scan, val: Expr, slot: Slot): bool =
   if slot.len == 0:
     val.kind == exkList or
     needsDup(s.res, val) or
-    exclusivelyOwned(s.res, s.m, val, "")
+    decidedExclusive(val, "")
   else:
     slot in recordDupFields(s.res, val) or
-    exclusivelyOwned(s.res, s.m, val, slot)
+    decidedExclusive(val, slot)
 
 # --- STEP 3: escape --------------------------------------------------------
 
@@ -367,7 +376,7 @@ proc isFreshBuffer(s: Scan, v: Expr): bool =
   v.kind == exkList or
   needsDup(s.res, v) or
   (v.id.isSet and v.id in s.copiedOut) or
-  exclusivelyOwned(s.res, s.m, v, "")
+  decidedExclusive(v, "")
 
 proc diesAtOverwrite(s: Scan, d: Decl,
                      timesAssigned: CountTable[string]): HashSet[string] =

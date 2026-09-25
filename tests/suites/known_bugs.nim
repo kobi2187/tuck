@@ -1453,7 +1453,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.hostPeakRss("a copy-per-iteration loop does not accumulate copies", 65536)
-  t.bugOpen "a copy-per-iteration loop does not accumulate copies"
+  t.bugFixed "a copy-per-iteration loop does not accumulate copies"
 
   # 18. On ODIN ONLY, every heap `str` leaks — the whole category, not one
   # site. `copyableContainer` excludes `str` deliberately and for a good

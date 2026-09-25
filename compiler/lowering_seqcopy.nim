@@ -75,6 +75,14 @@ var recordDupSites: Table[NodeId, seq[string]]
   ## replaced rather than appending a bare `.dup` (a D struct has no `.dup`
   ## at all; only a slice does).
 
+var exclusiveSites: Table[NodeId, seq[string]]
+  ## The OTHER half of the copy decision: bindings left UNCOPIED because the
+  ## value is already exclusively the binder's — "" for a bare `Seq`, else
+  ## the field names. Recorded here, where the decision is made, so the
+  ## ownership pass reads the decision instead of re-deriving it. Two
+  ## derivations of one fact are two answers, and between a copy and a free
+  ## the difference is a leak one way and a double free the other.
+
 proc needsDup*(res: Resolution, e: Expr): bool =
   ## Did this backend's lowering mark this expression as needing a bare
   ## `.dup` (a Seq-valued expression copied by name)?
@@ -86,55 +94,49 @@ proc recordDupFields*(res: Resolution, e: Expr): seq[string] =
   if e != nil and e.id.isSet and e.id in recordDupSites: recordDupSites[e.id]
   else: @[]
 
-proc markSeqCopies(res: Resolution, m: Module, e: Expr) =
+proc decidedExclusive*(e: Expr, slot: string): bool =
+  ## Did the copy decision leave this slot uncopied because the value is the
+  ## binder's alone? ("" is the value itself.)
+  e != nil and e.id.isSet and e.id in exclusiveSites and
+    slot in exclusiveSites[e.id]
+
+proc markBinding(res: Resolution, m: Module, pc: var ProvCtx, v: Expr) =
+  ## One binding's copy decision, both halves recorded.
+  if v == nil or v.kind == exkList: return
+  ensureId(v)
+  if isSeqValued(res, v):
+    if pc.exclusivelyOwned(v): exclusiveSites[v.id] = @[""]
+    else: dupSites.incl(v.id)
+    return
+  # `{fields} TypeName` (a record construction) parses as an exkCall over an
+  # exkStruct payload, same as any other postfix application — there is no
+  # "this is a fresh literal" node kind to exempt the way exkList exempts a
+  # fresh Seq literal above.
+  #
+  # PER FIELD, because the answer is per field: `sweep` returns a `Filled`
+  # whose ladder it allocated, while `wrap` returns a `Pair` whose two fields
+  # are both its argument. Asking about the record as a whole cannot tell
+  # those apart, and the field that still aliases is the one that must keep
+  # its copy.
+  var need, mine: seq[string]
+  for f in seqFieldNames(res, m, res.typeFor(v)):
+    if pc.exclusivelyOwned(v, f): mine.add(f) else: need.add(f)
+  if need.len > 0: recordDupSites[v.id] = need
+  if mine.len > 0: exclusiveSites[v.id] = mine
+
+proc markSeqCopies(res: Resolution, m: Module, pc: var ProvCtx, e: Expr) =
   ## Mark every Seq-valued OR Seq-field-holding expression whose VALUE is
   ## being bound to a name, so the emitter copies rather than aliases.
-  if e == nil: return
-  case e.kind
-  of exkAssign:
-    if e.assignVal != nil and e.assignVal.kind != exkList:
-      if isSeqValued(res, e.assignVal):
-        if not exclusivelyOwned(res, m, e.assignVal):
-          ensureId(e.assignVal)
-          dupSites.incl(e.assignVal.id)
-      else:
-        # `{fields} TypeName` (a record construction) parses as an exkCall
-        # over an exkStruct payload, same as any other postfix application —
-        # there is no "this is a fresh literal" node kind to exempt the way
-        # exkList exempts a fresh Seq literal above.
-        #
-        # PER FIELD, because the answer is per field: `sweep` returns a
-        # `Filled` whose ladder it allocated, while `wrap` returns a `Pair`
-        # whose two fields are both its argument. Asking about the record as
-        # a whole cannot tell those apart, and the field that still aliases
-        # is the one that must keep its copy.
-        var need: seq[string]
-        for f in seqFieldNames(res, m, res.typeFor(e.assignVal)):
-          if not exclusivelyOwned(res, m, e.assignVal, f): need.add(f)
-        if need.len > 0:
-          ensureId(e.assignVal)
-          recordDupSites[e.assignVal.id] = need
-    markSeqCopies(res, m, e.target)
-    markSeqCopies(res, m, e.assignVal)
-  of exkBlock:
-    for s in e.stmts: markSeqCopies(res, m, s)
-  of exkIf:
-    markSeqCopies(res, m, e.cond)
-    markSeqCopies(res, m, e.thenBranch)
-    markSeqCopies(res, m, e.elseBranch)
-  of exkFor:
-    markSeqCopies(res, m, e.iterable)
-    markSeqCopies(res, m, e.body)
-  of exkWhile:
-    markSeqCopies(res, m, e.whileCond)
-    markSeqCopies(res, m, e.whileBody)
-  of exkMatch:
-    markSeqCopies(res, m, e.subject)
-    for arm in e.arms: markSeqCopies(res, m, arm.body)
-  of exkCall:
-    for a in e.args: markSeqCopies(res, m, a)
-  of exkReturn: markSeqCopies(res, m, e.returnVal)
-  else: discard
+  ##
+  ## EVERY node kind is walked. This listed seven and ended in `else:
+  ## discard`, so an assignment inside any other construct was never asked
+  ## about at all.
+  var stack = @[e]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    if n.kind == exkAssign: markBinding(res, m, pc, n.assignVal)
+    for ch in n.children: stack.add ch
 
 proc markSeqCopiesIn*(res: Resolution, m: Module) =
   ## Mark this module's copy sites. Runs AFTER lowerModule, on the backend's
@@ -145,14 +147,12 @@ proc markSeqCopiesIn*(res: Resolution, m: Module) =
   ## because each backend lowers its own deep copy and a summary computed
   ## over one tree names nodes in that tree only.
   buildProvenance(res, m)
-  copyDiffReport(res, m)   # Stage C step 1, off unless TUCK_DEBUG_COPY=diff.
-                           # HERE rather than beside the other differentials
-                           # so it sees exactly the tree the real consumer
-                           # does: this runs after lowerModule, on the
-                           # backend's own deep copy.
   for fn in m.allFns():
-    markSeqCopies(res, m, fn.fnBody)
+    var pc = provCtxFor(res, m, fn)
+    markSeqCopies(res, m, pc, fn.fnBody)
   for d in m.decls(dkTask):
-    markSeqCopies(res, m, d.taskBody)
+    var pc = provCtxFor(res, m, d)
+    markSeqCopies(res, m, pc, d.taskBody)
   for d in m.decls(dkExpr):
-    markSeqCopies(res, m, d.expr)
+    var pc = provCtxFor(res, m, nil)
+    markSeqCopies(res, m, pc, d.expr)

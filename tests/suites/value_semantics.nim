@@ -696,13 +696,37 @@ fn main() -> int:
   t.okCheck "the provenance cases check"
   t.omitsOdin "a freshly allocated result is not copied again",
               r"tuckSeqCopy\(tuck_fresh\("
-  t.emitsOdin "...but a result that is its own argument is",
+  # `keep` hands back its argument — but `keep` has a MOVED twin, and a call
+  # whose argument is still needed reaches the WRAPPER, which copies `xs`
+  # before handing it over. So `b` is already a private buffer, and copying
+  # it again was the waste #77 measured (EV-12). The test that matters is
+  # the aliasing one below: mutate `b`, and `a` must not see it.
+  t.omitsOdin "...nor a result the callee's wrapper already copied",
               r"tuckSeqCopy\(tuck_keep\("
   t.omitsD "the same elision on D", r"\(tuck_fresh\([^)]*\)\)\.dup"
-  t.emitsD "...and the same copy on D", r"\(tuck_keep\([^)]*\)\)\.dup"
+  t.omitsD "...and the wrapper's copy is not repeated on D",
+           r"\(tuck_keep\([^)]*\)\)\.dup"
   # 9 + 9 + 9 + 0. The last term is the one that matters: `d.b[0]` is 0 only
   # if `twin`'s two fields were separated. Sharing one buffer makes it 5.
   t.hostRuns("one buffer returned as two fields is still two buffers", 27)
+
+  # THE ALIASING HALF of eliding a copy after a wrapper: `b` came back from a
+  # fn that returns its own argument, uncopied at the call site. If the
+  # wrapper had NOT copied, `b[0] = 77` would write `a[0]`. Asserted on every
+  # backend, because Nim has value semantics and passes either way.
+  t.src """
+import seq
+
+fn keep({xs: Seq[int]}) -> Seq[int]:
+  return xs
+
+fn main() -> int:
+  let a = [9, 9]
+  var b = {xs: a} keep
+  b[0] = 77
+  return a[0] + b[1]
+"""
+  t.hostRuns("a result the wrapper copied does not alias the argument", 18)
 
   # --- EV-15: a last use at ARGUMENT position reaches the MOVED twin -------
   #
