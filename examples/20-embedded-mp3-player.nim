@@ -133,7 +133,7 @@ type tuck_Decoder* = ref object
   vol*: tuck_Volume
   mailbox*: Mailbox[tuck_DecoderMsg, 8]
 
-let tuck_DecoderSingleton* = tuck_Decoder()
+let tuck_DecoderSingleton* = tuck_Decoder(state: tuck_PlayerState(kind: Idle), vol: (let tuckInv1 = tuck_Volume(level: 80'u8); validate(tuckInv1); tuckInv1))
 
 proc handleMsg*(self: tuck_Decoder, msg: tuck_DecoderMsg) =
   case msg.tuckTag

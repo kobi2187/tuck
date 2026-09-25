@@ -138,6 +138,10 @@ type
     typ*: Type
     attrs*: seq[TypeAttr]
     span*: Span
+    default*: Expr   ## `level: int = 80` — the initialiser, or nil. Only an
+                     ## ACTOR field may have one: the singleton starts with
+                     ## it. On a `type` or `object` field it is refused
+                     ## (TK-TY30) — it used to be parsed and thrown away.
 
   FieldInit* = tuple[name: string, value: Expr]
     ## One `name: value` pair of a record literal `{a: 1, b: 2}`.

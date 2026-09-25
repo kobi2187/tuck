@@ -188,6 +188,9 @@ proc resolveDeclRefs*(prog: seq[LoadedModule]) =
     for fn in lm.m.allFns(): resolveRefsIn(fn.fnBody)
     for d in lm.m.decls(dkTask): resolveRefsIn(d.taskBody)
     for d in lm.m.decls(dkExpr): resolveRefsIn(d.expr)
+    # An actor field's initialiser (#87) is an expression like any body.
+    for d in lm.m.decls(dkActor):
+      for f in d.actorFields.mitems: f.default = resolveVarSlot(f.default)
     # `+ Name` composition (spec 5.1) parses as a dkExpr MEMBER of the
     # composing object/type/mixin/interface — `ast_query.members` is the
     # exhaustive "everything nested inside this decl" iterator (allFns

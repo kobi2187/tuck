@@ -147,17 +147,21 @@ proc parseSatisfiesLine*(p: var Parser, hasFields: bool): Decl =
        expr: Expr(span: sSp, kind: exkVar, name: satisfiesMark))
 
 proc parseObjectField*(p: var Parser): FieldDef =
-  ## `name: Type` — one field. A `= default` is parsed and dropped.
+  ## `name: Type`, or `name: Type = value` — one field. The initialiser is
+  ## KEPT: it was parsed and thrown away, so an actor's `level: int = 80`
+  ## started at 0 on every backend while `tuck ch` said OK (#87). Whether a
+  ## field may have one is the checker's call (TK-TY30).
   let fSp = p.getSpan()
   let fName = p.expectMemberName("Expected field or member name in object").value
   p.failIfHostKeyword(fName, fSp, "field")
   discard p.expect(tkColon)
   let fType = p.parseType()
+  var init: Expr = nil
   if p.current().kind == tkAssign:
     discard p.advance()
-    discard p.parseExpr()
+    init = p.parseExpr()
   if p.current().kind == tkNewline: discard p.advance()
-  FieldDef(name: fName, typ: fType, attrs: @[], span: fSp)
+  FieldDef(name: fName, typ: fType, attrs: @[], span: fSp, default: init)
 
 proc parseDecisionBody*(p: var Parser): Expr =
   let sp = p.getSpan()
@@ -272,18 +276,20 @@ proc parseTransition*(p: var Parser): Transition =
   Transition(`from`: fromState, to: toState, span: tSp)
 
 proc parseTypeField*(p: var Parser): FieldDef =
-  ## `name: Type` — one field of a record body. A `= default` is parsed and
-  ## dropped: defaults are not carried on the type today.
+  ## `name: Type`, or `name: Type = value` — one field of a record or actor
+  ## body. The initialiser is KEPT (#87, as in parseObjectField); only an
+  ## actor field may have one, which the checker enforces (TK-TY30).
   let fSp = p.getSpan()
   let fName = p.expectMemberName("Expected field or variant in type").value
   p.failIfHostKeyword(fName, fSp, "field")
   discard p.expect(tkColon)
   let fType = p.parseType()
+  var init: Expr = nil
   if p.current().kind == tkAssign:
     discard p.advance()
-    discard p.parseExpr()
+    init = p.parseExpr()
   if p.current().kind == tkNewline: discard p.advance()
-  FieldDef(name: fName, typ: fType, attrs: @[], span: fSp)
+  FieldDef(name: fName, typ: fType, attrs: @[], span: fSp, default: init)
 
 proc parseSelectSource*(p: var Parser): string =
   ## A bare message name, or a dotted event source like `timer.1s` /

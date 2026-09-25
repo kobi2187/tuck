@@ -16,7 +16,7 @@ type tuck_Accumulator* = ref object
   mailbox*: Mailbox[tuck_AccumulatorMsg, 64]
   finished*: bool
 
-let tuck_AccumulatorSingleton* = tuck_Accumulator()
+let tuck_AccumulatorSingleton* = tuck_Accumulator(total: 0, done: false)
 
 proc handleMsg*(self: tuck_Accumulator, msg: tuck_AccumulatorMsg) =
   case msg.tuckTag

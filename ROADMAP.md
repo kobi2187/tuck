@@ -157,7 +157,7 @@ closure no longer exist in any `codegen_*.nim`.
 
 | # | issue | | size |
 |---|---|---|---|
-| S1.1 | **#87** | an actor field's initialiser is silently discarded; `level: int = 80` answers 0, nine runs of nine | S–M |
+| — | **#87** | **FIXED 2026-09-25** — actor field initialisers are kept and checked (TK-TY29); on `type`/`object` fields refused (TK-TY30) | — |
 | S1.2 | **#73** | an imported `const` is invisible to the checker, so a wrong `Array` size is ACCEPTED. `typecheck.nim:1071` has the worked precedent | M |
 | S1.3 | **#78** | Nim's `tuck_` prefix collides `type Order` with `fn order` | S–M |
 | — | **#79** | **FIXED 2026-09-25** — per-arm scoping in the Nim and Odin dispatch; see M4.3 | — |

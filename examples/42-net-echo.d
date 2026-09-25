@@ -19,6 +19,11 @@ struct tuck_Result {
 
 __gshared tuck_Result tuck_ResultSingleton;
 
+shared static this() {
+    tuck_ResultSingleton.code = 0L;
+    tuck_ResultSingleton.ready = false;
+}
+
 void handleMsg_tuck_Result(ref tuck_Result self, tuck_ResultMsg msg) {
     final switch (msg.tuckTag) {
         case tuck_ResultMsgKind.msgPut:

@@ -43,6 +43,7 @@ sendNext_tuck_TrafficLight :: proc(self: ^tuck_TrafficLight) {
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
+	tuck_TrafficLightSingleton.state = .Red
 	rt.tuckAsyncInit()
 	tuck_TrafficLightSlot = rt.tuckStartActor(drain_tuck_TrafficLight)
 	rt.tuckDrainActors()

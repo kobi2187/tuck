@@ -720,6 +720,12 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   # enum members the way Nim does)
   let owner = enumTagOwner(ctx.module, e.name)
   if owner != "": return ctx.qualifyEnumOwner(owner) & "." & e.name
+  # A variant of an INLINE sum (`state: {Red, Green} = Red`) has no owner to
+  # qualify with; Odin's implicit selector names it, the target being typed.
+  let t = ctx.res.typeFor(e)
+  if t != nil and t.kind == tkSum:
+    for v in t.variants:
+      if v.name == e.name: return "." & e.name
   let foreign = ctx.qualifiedForeignFn(e.name)
   if foreign != "": return foreign
   e.name

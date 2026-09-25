@@ -1787,4 +1787,51 @@ fn main() -> int:
   t.bugFixed "a construction's type carries its declaration edge on Odin (#21)"
   t.runs "...and the program computes it", 7
 
+  # #87: an actor field's initialiser was parsed and thrown away, so the
+  # singleton started from zero on every backend while `tuck ch` said OK.
+  # Nim builds it into the construction, D into a module constructor, Odin
+  # into the entry prologue (an `@(init)` proc would be contextless).
+  t.src """
+actor Volume:
+  level: int = 80
+  names: Seq[str] = ["a", "b"]
+  on bump({n: int}):
+    level += n
+
+fn main() -> int:
+  return Volume.level + Volume.names.len
+"""
+  t.quietly: t.hostRuns("an actor field starts at its initialiser", 82)
+  t.bugFixed "an actor field starts at its initialiser (#87)"
+  t.src """
+actor L:
+  state: {Red, Yellow, Green} = Yellow
+  on next({}):
+    state = Red
+
+fn main() -> int:
+  return match L.state:
+    Red: 2
+    Yellow: 3
+    Green: 4
+"""
+  t.hostRuns "...a bare variant of an inline enum, too", 3
+  t.src """
+actor A:
+  x: int = "s"
+  on go({n: int}):
+    x += n
+"""
+  t.badCheck "an actor field's initialiser must fit its type", "TK-TY29"
+  t.src """
+object P:
+  x: int = 3
+"""
+  t.badCheck "only an actor field may have an initialiser", "TK-TY30"
+  t.src """
+type R:
+  x: int = 3
+"""
+  t.badCheck "...not a record field either", "TK-TY30"
+
   t.finish()

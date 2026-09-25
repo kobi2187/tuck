@@ -56,6 +56,7 @@ tuck_main :: proc () -> int {
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
+	tuck_CounterSingleton.total = 0
 	rt.tuckAsyncInit()
 	tuck_CounterSlot = rt.tuckStartActor(drain_tuck_Counter)
 	mainRc := tuck_main()

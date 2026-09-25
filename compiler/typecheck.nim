@@ -4587,6 +4587,37 @@ proc failIfGenericActor(m: Module, d: Decl) =
        "[int] send <handler> {...}` (or read `" & d.name & "[int].<field>`) " &
        "and that instantiation is what gets built", d.span)
 
+proc checkFieldInits(tc: var TypeChecker, d: Decl) =
+  ## An actor field's initialiser is what its singleton starts with, so it
+  ## must be a value of the field's type (TK-TY29). Checked BEFORE the fields
+  ## are bound: the singleton is built before any field has a value, so an
+  ## initialiser cannot read one.
+  for f in d.actorFields:
+    if f.default == nil: continue
+    # The field's type is the expected one, so a bare variant of an inline
+    # enum (`state: {Red, Green} = Red`) resolves as it does in an assignment.
+    let saved = tc.expectedType
+    tc.expectedType = f.typ
+    let vt = tc.synthesize(f.default)
+    tc.expectedType = saved
+    if vt == nil or f.typ == nil or tc.compatible(vt, f.typ): continue
+    fail(dcTyFieldInitType,
+         "field '" & f.name & "' of actor '" & d.name & "' is " &
+         typeName(f.typ) & " but its initialiser is " & typeName(vt),
+         f.default.span)
+
+proc failIfFieldInit*(fields: seq[FieldDef], owner: string) =
+  ## TK-TY30: an initialiser on a field of a `type` or `object`. Nothing
+  ## would read it — a value of either is built by a construction that names
+  ## its fields — and it used to be thrown away without a word.
+  for f in fields:
+    if f.default != nil:
+      fail(dcTyFieldInitNotActor,
+           "field '" & f.name & "' of '" & owner & "' has an initialiser, " &
+           "which only an actor field may have: a value of '" & owner &
+           "' is built by a construction that names each field",
+           f.default.span)
+
 proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   ## Handlers see the actor's fields, bare AND through `self` — mirrors
   ## checkObjectDecl. Nothing bound `self` here before; a handler spelling
@@ -4594,6 +4625,7 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   ## through on gradual typing, same shape as `result` in checkHandler below.
   failIfGenericActor(tc.module, d)
   checkActorQueue(tc.module, d)
+  tc.checkFieldInits(d)
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
@@ -4610,12 +4642,16 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)
     tc.currentErrTypes = @[]
   of dkExpr: discard tc.synthesize(d.expr)
-  of dkObject: tc.checkObjectDecl(d)
+  of dkObject:
+    failIfFieldInit(d.objFields, d.name)
+    tc.checkObjectDecl(d)
   of dkMixin, dkExtern, dkPending:
     for m in d.mixinMembers: tc.checkDecl(m)
   of dkActor: tc.checkActorDecl(d)
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
   of dkType:
+    if d.typeBody != nil and d.typeBody.kind == tkRecord:
+      failIfFieldInit(d.typeBody.fields, d.name)
     checkTransitions(d)
     tc.checkInvariants(d)
     checkArenaAttrs(tc.module, d)  # an arena parses into a dkType (spec 7.3)

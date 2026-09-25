@@ -145,6 +145,13 @@ struct tuck_Pipeline {
 
 __gshared tuck_Pipeline tuck_PipelineSingleton;
 
+shared static this() {
+    tuck_PipelineSingleton.state = tuck_DecoderState.Idle;
+    tuck_PipelineSingleton.decoded = 0L;
+    tuck_PipelineSingleton.dropped = 0L;
+    tuck_PipelineSingleton.configured = false;
+}
+
 void handleMsg_tuck_Pipeline(ref tuck_Pipeline self, tuck_PipelineMsg msg) {
     final switch (msg.tuckTag) {
         case tuck_PipelineMsgKind.msgNal:

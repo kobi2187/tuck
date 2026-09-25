@@ -14,7 +14,7 @@ type tuck_Counter* = ref object
   total*: int
   mailbox*: Mailbox[tuck_CounterMsg, 128]
 
-let tuck_CounterSingleton* = tuck_Counter()
+let tuck_CounterSingleton* = tuck_Counter(total: 0)
 
 proc handleMsg*(self: tuck_Counter, msg: tuck_CounterMsg) =
   case msg.tuckTag

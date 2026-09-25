@@ -109,6 +109,10 @@ type
                                         ## and a top-level fn
     dcTyGenericActor = "TK-TY28"        ## an actor's type parameter has nothing
                                         ## to bind it yet
+    dcTyFieldInitType = "TK-TY29"       ## an actor field's initialiser does not
+                                        ## fit the field's type
+    dcTyFieldInitNotActor = "TK-TY30"   ## an initialiser on a `type` or
+                                        ## `object` field, which has no use
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -383,6 +387,18 @@ proc parseExplanation(d: DiagCode): string =
     "does not exist. It is refused rather than dropped — dropping is what it " &
     "did before, emitting a field of undeclared type `T` so the author's own " &
     "mistake arrived as a host compiler error in code they never wrote."
+  of dcTyFieldInitType:
+    "An actor field's initialiser — `level: int = 80` — is the value the " &
+    "actor's one instance starts with, so it has to be a value of the " &
+    "field's type. It was unchecked, and before that it was thrown away: " &
+    "every actor field started at its zero value whatever it said (#87)."
+  of dcTyFieldInitNotActor:
+    "Only an ACTOR field may have an initialiser, because only an actor has " &
+    "an instance the language creates for you — the singleton, which starts " &
+    "with it. A `type` or `object` value is always built by a construction " &
+    "that names its fields, so an initialiser there would never be read. It " &
+    "is refused rather than dropped: it used to be parsed and thrown away, " &
+    "silently, on every kind of field."
   of dcTyCtorFieldType:
     "A field given in a construction does not fit the type the declaration " &
     "gives it. This was unchecked: the value rode to codegen and only the " &

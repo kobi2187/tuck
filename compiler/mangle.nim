@@ -328,6 +328,13 @@ proc mangleMember(res: Resolution, mem: Decl, names: HashSet[string],
 
 proc mangleModuleWith(res: Resolution, m: Module, names: HashSet[string])
 
+proc mangleFieldInits(res: Resolution, d: Decl, names: HashSet[string]) =
+  ## An actor field's initialiser (#87) is an expression like any body's.
+  for f in d.actorFields:
+    if f.default != nil:
+      var l = initHashSet[string]()
+      mangleExpr(res, f.default, names, l)
+
 proc mangleDeclRefs(res: Resolution, d: Decl, names: HashSet[string]) =
   ## Rename every reference INSIDE a declaration, before the declaration
   ## itself is renamed.
@@ -367,6 +374,7 @@ proc mangleDeclRefs(res: Resolution, d: Decl, names: HashSet[string]) =
   var ownFields = initHashSet[string]()
   if d.kind == dkActor:
     for f in d.actorFields: ownFields.incl(f.name)
+    mangleFieldInits(res, d, names)
   elif d.kind == dkType and d.typeBody != nil and d.typeBody.kind == tkRecord:
     for f in d.typeBody.fields: ownFields.incl(f.name)
   for mem in d.childDecls: mangleMember(res, mem, names, ownFields)

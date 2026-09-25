@@ -43,6 +43,8 @@ type
     errPolicy*: string     # from the errors declaration; "" = strict
     realModules*: Table[string, Module]  # imported modules emitted as own Odin files
     staticAsserts*: seq[string]  # collected into one `static this()` block
+    actorInits*: seq[string]     # `singleton.field = v`, run by the entry
+                                 # point before any actor starts (#87)
     moduleName*: string    # error codes hash over "module/Enum.Variant"
     currentParams*: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     ptrSelf*: bool         # inside a member fn: `self` is ^T and needs a deref

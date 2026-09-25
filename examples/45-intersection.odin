@@ -253,6 +253,8 @@ tuck_main :: proc () -> int {
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
+	tuck_SignalsSingleton.phase = tuck_Phase.NorthSouth
+	tuck_SignalsSingleton.cycles = 0
 	rt.tuckAsyncInit()
 	tuck_SignalsSlot = rt.tuckStartActor(drain_tuck_Signals)
 	mainRc := tuck_main()

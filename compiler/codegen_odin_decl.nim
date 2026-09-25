@@ -557,6 +557,13 @@ proc actorFieldLines*(ctx: var OdinCodegenCtx, d: Decl): seq[string] =
   for f in d.actorFields:
     result.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
 
+proc collectActorInits(ctx: var OdinCodegenCtx, d: Decl) =
+  ## The singleton's starting field values (#87), for the entry point.
+  for f in d.actorFields:
+    if f.default != nil:
+      ctx.actorInits.add(actorSingletonName(d.name) & "." & f.name & " = " &
+                         ctx.genOdinExpr(f.default))
+
 proc genInertActor*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## No message handlers: an empty enum is invalid. Emit the state, its
   ## singleton, and a drain that just parks — the entry point starts every
@@ -742,6 +749,7 @@ proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   for h in handlers: variants.add(msgVariantName(h.name))
   if hasShutdown:
     variants.add("msgShutdown")   # sent as `Actor send shutdown {}`
+  ctx.collectActorInits(d)
   if variants.len == 0:
     return ctx.genInertActor(d, ind)
   result = ctx.genMsgEnvelope(d, handlers, variants, ind)

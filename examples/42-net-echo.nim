@@ -16,7 +16,7 @@ type tuck_Result* = ref object
   ready*: bool
   mailbox*: Mailbox[tuck_ResultMsg, 8]
 
-let tuck_ResultSingleton* = tuck_Result()
+let tuck_ResultSingleton* = tuck_Result(code: 0, ready: false)
 
 proc handleMsg*(self: tuck_Result, msg: tuck_ResultMsg) =
   case msg.tuckTag

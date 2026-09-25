@@ -131,7 +131,7 @@ type tuck_Signals* = ref object
   cycles*: int
   mailbox*: Mailbox[tuck_SignalsMsg, 8]
 
-let tuck_SignalsSingleton* = tuck_Signals()
+let tuck_SignalsSingleton* = tuck_Signals(phase: tuck_Phase.NorthSouth, cycles: 0)
 
 proc handleMsg*(self: tuck_Signals, msg: tuck_SignalsMsg) =
   case msg.tuckTag

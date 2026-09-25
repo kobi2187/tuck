@@ -152,6 +152,13 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   for alias, spec in ctx.implMods:
     result.add("import " & alias & " \"" & spec & "\"")
 
+proc actorInitLines(ctx: OdinCodegenCtx): string =
+  ## Actor field initialisers (#87). The entry point runs them AFTER the
+  ## allocator is installed — what they allocate is freed through it — and
+  ## before any drain can read them. Not an `@(init)` proc: Odin makes those
+  ## contextless.
+  for s in ctx.actorInits: result.add("\t" & s & "\n")
+
 proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
@@ -173,6 +180,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
     result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
   for a in ctx.staticAsserts:
     result.add("\tassert(" & a & ")\n")
+  result.add(actorInitLines(ctx))
   var actorNames: seq[string]
   var hasTasks = false
   runtimeUsers(m, actorNames, hasTasks)

@@ -18,6 +18,11 @@ struct tuck_Accumulator {
 
 __gshared tuck_Accumulator tuck_AccumulatorSingleton;
 
+shared static this() {
+    tuck_AccumulatorSingleton.total = 0L;
+    tuck_AccumulatorSingleton.done = false;
+}
+
 void handleMsg_tuck_Accumulator(ref tuck_Accumulator self, tuck_AccumulatorMsg msg) {
     final switch (msg.tuckTag) {
         case tuck_AccumulatorMsgKind.msgAdd:

@@ -130,6 +130,11 @@ struct tuck_Signals {
 
 __gshared tuck_Signals tuck_SignalsSingleton;
 
+shared static this() {
+    tuck_SignalsSingleton.phase = tuck_Phase.NorthSouth;
+    tuck_SignalsSingleton.cycles = 0L;
+}
+
 void handleMsg_tuck_Signals(ref tuck_Signals self, tuck_SignalsMsg msg) {
     final switch (msg.tuckTag) {
         case tuck_SignalsMsgKind.msgSense:

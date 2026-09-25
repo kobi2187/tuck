@@ -367,8 +367,12 @@ iterator ownExprs*(d: Decl): Expr =
       for arm in d.selectArms:
         yield arm.arg
         yield arm.body
+    of dkActor:
+      # A field's initialiser: what the singleton starts with (#87).
+      for f in d.actorFields:
+        if f.default != nil: yield f.default
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
-       dkGroup, dkActor, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
+       dkGroup, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
        dkFnSig, dkSatisfies, dkPublic, dkResources:
       discard
 

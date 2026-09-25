@@ -17,6 +17,10 @@ struct tuck_TrafficLight {
 
 __gshared tuck_TrafficLight tuck_TrafficLightSingleton;
 
+shared static this() {
+    tuck_TrafficLightSingleton.state = tuck_TrafficLightStateKind.Red;
+}
+
 void handleMsg_tuck_TrafficLight(ref tuck_TrafficLight self, tuck_TrafficLightMsg msg) {
     final switch (msg.tuckTag) {
         case tuck_TrafficLightMsgKind.msgNext:

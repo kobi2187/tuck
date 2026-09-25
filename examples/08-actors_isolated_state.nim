@@ -11,7 +11,7 @@ type tuck_TrafficLight* = ref object
   state*: tuck_TrafficLightStateKind
   mailbox*: Mailbox[tuck_TrafficLightMsg, 4]
 
-let tuck_TrafficLightSingleton* = tuck_TrafficLight()
+let tuck_TrafficLightSingleton* = tuck_TrafficLight(state: Red)
 
 proc handleMsg*(self: tuck_TrafficLight, msg: tuck_TrafficLightMsg) =
   case msg.tuckTag

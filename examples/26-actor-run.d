@@ -16,6 +16,10 @@ struct tuck_Counter {
 
 __gshared tuck_Counter tuck_CounterSingleton;
 
+shared static this() {
+    tuck_CounterSingleton.total = 0L;
+}
+
 void handleMsg_tuck_Counter(ref tuck_Counter self, tuck_CounterMsg msg) {
     final switch (msg.tuckTag) {
         case tuck_CounterMsgKind.msgAdd:

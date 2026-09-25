@@ -702,6 +702,17 @@ proc genDExternBlock*(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDExternFwd(mem)
     if code != "": result.add(code & "\n")
 
+proc genDActorInits(ctx: var DCodegenCtx, d: Decl): string =
+  ## The singleton's starting field values (#87): a module constructor, so
+  ## they are in place before main — and before any actor is started.
+  var sets: seq[string]
+  for f in d.actorFields:
+    if f.default != nil:
+      sets.add("    " & actorSingletonName(d.name) & "." & f.name & " = " &
+               ctx.genDExpr(f.default) & ";\n")
+  if sets.len == 0: return ""
+  "shared static this() {\n" & sets.join("") & "}\n\n"
+
 proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared
@@ -720,6 +731,7 @@ proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   # `Counter.total` means `counterSingleton.total`.
   result.add("__gshared " & d.name & " " & actorSingletonName(d.name) &
              ";\n\n")
+  result.add(ctx.genDActorInits(d))
   if not hasMessages: return
   result.add(ctx.genDDispatch(d, handlers, shutdownBody, hasShutdown))
   result.add(genDDrain(d, hasShutdown))

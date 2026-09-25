@@ -407,6 +407,9 @@ proc lowerModule*(res: Resolution, m: Module) =
     lowerExpr(res, d.taskBody, m)
   for d in m.decls(dkExpr):
     lowerExpr(res, d.expr, m)
+  for d in m.decls(dkActor):   # field initialisers (#87)
+    for f in d.actorFields:
+      if f.default != nil: lowerExpr(res, f.default, m)
   # Every `..` chain becomes the statements it means (lowering_chains).
   # After lowerExpr, as the chain-fed-call hoisting it absorbed always ran:
   # a step's call is the checker's, already in the shape the emitters print.

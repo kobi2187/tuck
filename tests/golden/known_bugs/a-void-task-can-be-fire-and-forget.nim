@@ -13,7 +13,7 @@ type tuck_Sink* = ref object
   hits*: int
   mailbox*: Mailbox[tuck_SinkMsg, 8]
 
-let tuck_SinkSingleton* = tuck_Sink()
+let tuck_SinkSingleton* = tuck_Sink(hits: 0)
 
 proc handleMsg*(self: tuck_Sink, msg: tuck_SinkMsg) =
   case msg.tuckTag

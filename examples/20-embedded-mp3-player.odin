@@ -238,6 +238,8 @@ tuck_main :: proc () {
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
 	assert((size_of(tuck_Volume) == 1))
+	tuck_DecoderSingleton.state = tuck_PlayerState_Idle{}
+	tuck_DecoderSingleton.vol = __validated_tuck_Volume(tuck_Volume{level = u8(80)})
 	rt.tuckAsyncInit()
 	tuck_DecoderSlot = rt.tuckStartActor(drain_tuck_Decoder)
 	tuck_main()

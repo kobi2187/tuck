@@ -129,7 +129,7 @@ type tuck_Pipeline* = ref object
   configured*: bool
   mailbox*: Mailbox[tuck_PipelineMsg, 8]
 
-let tuck_PipelineSingleton* = tuck_Pipeline()
+let tuck_PipelineSingleton* = tuck_Pipeline(state: tuck_DecoderState.Idle, decoded: 0, dropped: 0, configured: false)
 
 proc handleMsg*(self: tuck_Pipeline, msg: tuck_PipelineMsg) =
   case msg.tuckTag

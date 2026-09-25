@@ -248,6 +248,10 @@ tuck_main :: proc () -> int {
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
+	tuck_PipelineSingleton.state = tuck_DecoderState.Idle
+	tuck_PipelineSingleton.decoded = 0
+	tuck_PipelineSingleton.dropped = 0
+	tuck_PipelineSingleton.configured = false
 	rt.tuckAsyncInit()
 	tuck_PipelineSlot = rt.tuckStartActor(drain_tuck_Pipeline)
 	mainRc := tuck_main()

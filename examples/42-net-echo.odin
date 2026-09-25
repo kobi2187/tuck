@@ -94,6 +94,8 @@ tuck_main :: proc () -> int {
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
+	tuck_ResultSingleton.code = 0
+	tuck_ResultSingleton.ready = false
 	rt.tuckAsyncInit()
 	tuck_ResultSlot = rt.tuckStartActor(drain_tuck_Result)
 	mainRc := tuck_main()

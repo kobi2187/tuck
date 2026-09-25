@@ -429,7 +429,12 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   let msgTypes = genMsgTypes(handlers, hasShutdown, msgEnumName, msgTypeName)
   let stateStr = genActorState(ctx, d, msgTypeName, queueSize, hasShutdown)
   let dispatchStr = genActorDispatch(ctx, d, msgTypeName, handlers, shutdownBody, hasShutdown)
-  let singletonStr = "let " & singleton & "* = " & d.name & "()\n"
+  # Field initialisers (#87) go into the construction itself.
+  var inits: seq[string]
+  for f in d.actorFields:
+    if f.default != nil: inits.add(f.name & ": " & ctx.genExpr(f.default))
+  let singletonStr = "let " & singleton & "* = " & d.name & "(" &
+                     inits.join(", ") & ")\n"
   let drainStr = genActorDrain(drainName, singleton, hasShutdown)
   # auto-registration hook: main's prologue calls registerActors()
   # The slot is KEPT, not discarded: `Actor.waitUntil {pred: :p}` names the

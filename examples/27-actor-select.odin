@@ -75,6 +75,8 @@ tuck_main :: proc () -> int {
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
+	tuck_AccumulatorSingleton.total = 0
+	tuck_AccumulatorSingleton.done = false
 	rt.tuckAsyncInit()
 	tuck_AccumulatorSlot = rt.tuckStartActor(drain_tuck_Accumulator)
 	mainRc := tuck_main()

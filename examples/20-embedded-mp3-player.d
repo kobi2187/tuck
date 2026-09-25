@@ -136,6 +136,11 @@ struct tuck_Decoder {
 
 __gshared tuck_Decoder tuck_DecoderSingleton;
 
+shared static this() {
+    tuck_DecoderSingleton.state = tuck_PlayerState(tuck_PlayerStateKind.Idle);
+    tuck_DecoderSingleton.vol = __validated_tuck_Volume(tuck_Volume(level: 80L));
+}
+
 void handleMsg_tuck_Decoder(ref tuck_Decoder self, tuck_DecoderMsg msg) {
     final switch (msg.tuckTag) {
         case tuck_DecoderMsgKind.msgPlay:
