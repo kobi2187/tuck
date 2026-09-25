@@ -124,10 +124,13 @@ removes that dependency.
 |---|---|---|
 | 3.1 | ~~Move the pass before the clone~~ **DONE 2026-09-25, as step 6 of `prepare`.** `lowerModule` takes no backend and a build targets one, so "before the clone" was never needed — what was needed was a PASS: `decideOwnership` runs after lowering, the copy marks and `fillIds`, records a decision per fn id, and the Odin emitter asks `ownershipFor` (asserted present). It had run inside the emitter, twice per fn, with provenance rebuilt a second time at emit. The assertion found member fns emitted as id-less copies on its first run | S |
 | 3.2 | ~~Assert no use follows a free~~ **DONE 2026-09-25, as a BUFFER check** (`buffer_check.nim`, asserted inside `ownershipOf` on every Odin build): each value's heap slots are mapped to the buffers they may denote — parameter slots, copied vs uncopied bindings, fields, phis, moved calls — and no buffer may be released by two free sites, nor released at exit and returned. Per-VALUE `freedAt` was the plan; buffers are what several names share, which is where all three bugs found on 2026-09-25 lived. Verified to fire on two of them with their fixes reverted. The one it cannot see is statement ORDER (a free emitted before the right-hand side that reads it) — fixed at the emitter, and guarded by a runtime test | M |
-| 3.3 | Fold the `str` analysis into the one pass (docs §5 M6). The backend-specific part — which runtime calls return caller-owned storage — becomes a parameter, not a second analysis | M |
-| 3.4 | Replace the per-slot full-body walk with a lookup over the mirror's `uses` (docs §5 M5) | S |
+| 3.3 | ~~Fold the `str` analysis into the one pass~~ **DONE 2026-09-25.** A `str` local is a value with one slot: it dies at scope exit by step 4's rule and its escape is the same query as a `Seq`'s (3.4), asked with the `str` rule. What stayed backend-specific — which runtime calls hand back storage the caller owns — is a parameter (`backend_prepare.ownedStrProcs`), and `ownership_str.nim` holds only that. The second walk, with its own copy of the sealing rules (the copy that shipped M7's use-after-free), is gone | M |
+| 3.4 | ~~Replace the per-slot full-body walk with a lookup over the mirror's `uses`~~ **DONE 2026-09-25** (`ownership_escape.nim`). One walk per body indexes each node's parents; a slot escapes when a use of it sits under a node that carries it out. Its premise is asserted on every build: every read of a name in the tree is a use in the graph — that is what makes the lookup answer what the walk did. Run as a differential against both old walks over every corpus file and the whole suite before they were deleted: 0 disagreements. The assertion's first run found a read the lookup could not place: `lowering_recursive` resolves `e.left` to `tuckAt(<a fresh copy of e.left>, 0)`, and the copy is not in the tree — a resolved call's arguments are now indexed where the call is printed. On the way: the builder dropped the arguments of an unresolved `b.fn {xs}` (a missed read), and both old walks read `returnVal` off a `raise` | S |
+| 3.5 | **The twin-call decision is still made while printing.** `movedCallInto`, `movedCalleeName` and `selfThreadedCall` (`codegen_common.nim`) decide, inside the Odin and D emitters, which call sites call the MOVED twin and skip the result's copy. #80 names them as consumers the one analysis replaces. Record the decision on the call in the copy pass, beside the copy marks it already sits next to, and have both emitters print it | M |
 
-**Exit:** closes #80 / F27. One ownership analysis.
+**Exit:** closes #80 / F27. One ownership analysis. After 3.5, what #80 still
+lists is its Stage 4 — a growable `str` representation on Odin and D — which is
+a missing feature, not a partial one, and moves to its own issue.
 
 ## M4 — Lower unique features; codegen only prints
 
@@ -171,6 +174,7 @@ closure no longer exist in any `codegen_*.nim`.
 | S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |
 | S2.7 | **#20** | by-type payload matching for member calls | M | — |
 | S2.8 | **#36** | `mod::Type` in a type position | S | — |
+| S2.9 | — | a BINDING match arm (`other: other + 1`) checks clean and then fails to build on all three backends: Nim emits the name as a `case` label, Odin and D print an undeclared `other`. Found 2026-09-25 probing the SSA builder's pattern bindings, which model it correctly | S–M | — |
 
 ### S3 — Backend parity (what survives M4)
 

@@ -49,11 +49,14 @@
 #           name, or handed to a twin that will free it. PER SLOT is the
 #           whole precision of this pass: `b.light` is returned and
 #           `b.height` and `b.lum` are not, so asking about `b` as a whole
-#           calls all three live and frees nothing.
+#           calls all three live and frees nothing. Asked of the SSA graph's
+#           uses (`ownership_escape`), not by walking the body per slot.
 #
 #   STEP 4  Owned and not escaping => FREE AT SCOPE EXIT. `b.height` and
 #           `b.lum`. The backend emits this as a `defer`, which needs no
 #           position: decided once at the declaration, run on every path out.
+#           A `str` is a value with one slot, owned when one of the
+#           backend's allocating runtime procs made it (`ownership_str`).
 #
 #   STEP 5  A local OVERWRITTEN IN A LOOP needs a free the other side of the
 #           assignment, because a scope-exit free fires once and the leak is
@@ -94,14 +97,9 @@
 # consumed yet — step 3's `isMovedArg` has nothing to see.
 #
 # So two of this pass's inputs are established by lowering: WHICH CALL SITES
-# BECAME TWIN CALLS, and which bindings copy. Until those move earlier, this
-# cannot.
-#
-# AND THAT IS EXACTLY WHAT STAGE C IS. `thoughts/ssa-mirror-design.md` wants
-# the copy decision read off the SSA mirror, which is built before lowering;
-# once it is, this pass stops needing post-lowering marks and can run once,
-# before the clone, for every backend at the same time. The architectural
-# instinct and the memory work converge on the same change.
+# BECAME TWIN CALLS, and which bindings copy. It runs as step 6 of
+# `backend_prepare`, after both — once per build, before any emitter, which
+# is all "before the clone" was asking for (ROADMAP M3.1).
 #
 # ---------------------------------------------------------------------------
 # WHY EACH "NO" IS THE SAFE ANSWER
@@ -117,9 +115,9 @@ import ast, tables, sets, os, strutils
 import resolution
 import ast_query
 import twin_shape
-from ssa_ir import rootOf, pathOf
 import buffer_check
 import ownership_str
+import ownership_escape
 from analysis_provenance import slotIsFresh, consumedSlotsSsa
 from lowering_seqcopy import needsDup, recordDupFields, decidedExclusive,
                              transferredSlots
@@ -168,6 +166,13 @@ type
     copiedOut: HashSet[NodeId]
       ## bindings that copied every heap slot out of their right-hand side —
       ## see `findCopiedOut`
+    ix: BodyIndex
+      ## the body's uses and ancestors, for the escape question (step 3)
+    heapRule, strRule: SealRule
+      ## what exempts a node from carrying a heap slot / a `str` out
+    strProcs: seq[string]
+      ## the backend's runtime procs that return a `str` the caller owns;
+      ## empty where the runtime frees its own (Nim, D)
 
 let Enabled = getEnv("TUCK_NO_SEQ_FREE").len == 0
   ## ON. `TUCK_NO_SEQ_FREE=1` turns the whole pass off, for bisecting a
@@ -177,11 +182,9 @@ let Debug = not defined(release) and getEnv("TUCK_DEBUG_SEQ").len > 0
 
 # --- shared vocabulary -----------------------------------------------------
 
-proc holdsHeap(s: Scan, t: Type): bool =
-  ## Can a value of this type be carrying a heap buffer at all? A scalar
-  ## cannot, and asking about one only ever produces a false alarm.
-  if t == nil: return false
-  seqElem(t) != nil or seqFieldNames(s.res, s.m, t).len > 0
+proc holdsHeap(s: Scan, t: Type): bool = holdsHeapSlots(s.res, s.m, t)
+
+proc isStr(t: Type): bool = t != nil and t.kind == tkNamed and t.name == "str"
 
 proc slotsOf(s: Scan, t: Type): seq[Slot] =
   ## The slots a value of this type has: one unnamed slot for a bare `Seq`,
@@ -233,7 +236,8 @@ proc findCopiedOut(s: Scan): HashSet[NodeId] =
   ## right-hand side was built from. Tuck has no aliasing channel but a
   ## call's result, so a result whose every heap slot is one or the other
   ## captured nothing of its arguments. (A MOVED argument did go into it —
-  ## and `mentionOf` treats a moved argument as gone before this is asked.)
+  ## and the escape question treats a moved argument as gone before this is
+  ## asked.)
   ##
   ## Counting only the copied half made the #77 fix leak the other way: once
   ## `bump`'s result stopped being copied, `xs` looked captured by it and
@@ -267,82 +271,13 @@ proc ownsSlot(s: Scan, val: Expr, slot: Slot): bool =
     decidedExclusive(val, slot)
 
 # --- STEP 3: escape --------------------------------------------------------
-
-type Mention = enum
-  mNotOurs    ## this node is not a mention of the local
-  mAccounted  ## a mention already answered; do NOT descend into it
-  mEscapes    ## the slot leaves the body here
-
-proc mentionOf(s: Scan, n: Expr, name: string, slot: Slot,
-               sealed: bool): Mention =
-  ## What one node says about the local we are following.
-  ##
-  ## A FIELD READ IS NOT A WHOLE-RECORD READ. `b.light` carries the bare `b`
-  ## as its receiver, so descending into it re-reads the name and every slot
-  ## of `b` looks live. `mAccounted` is what stops that descent, and getting
-  ## it wrong is invisible: every local simply reads as escaping, with no
-  ## wrong answer anywhere to point at.
-  if n.kind == exkField and rootOf(pathOf(n)) == name:
-    let wanted = if slot.len == 0: name else: name & "." & slot
-    if sealed and (slot.len == 0 or pathOf(n) == wanted): return mEscapes
-    return mAccounted
-  if n.kind == exkVar and n.name == name:
-    # A bare mention takes every slot with it.
-    if sealed: return mEscapes
-    # A MOVED ARGUMENT IS GONE, unconditionally. This was once relaxed to
-    # "gone only if the callee's twin really frees it", and the predicate
-    # answering that was a second copy of the twin's own rule (step 6). The
-    # rule went per slot, the copy did not, and the result was a double free
-    # that segfaulted. Two predicates for one fact, again.
-    if n.id.isSet and isMovedArg(s.res, n): return mEscapes
-  mNotOurs
-
-proc sealsContents(s: Scan, n: Expr, alreadySealed: bool): bool =
-  ## Does this node put whatever is inside it beyond the body's reach?
-  ##
-  ## WHAT THE DESTINATION CAN HOLD is the test, never the node kind: a
-  ## `return` of an int cannot be carrying our buffer away, and
-  ## `acc = acc + s.len` is exactly that shape.
-  if alreadySealed or n.kind == exkSend: return true
-  if n.kind in {exkReturn, exkRaise}:
-    return n.returnVal == nil or s.holdsHeap(s.res.typeFor(n.returnVal))
-  if n.kind == exkCall:
-    # ...unless the binding around it copied every slot out, in which case
-    # what went in is dead rather than captured. See `findCopiedOut`.
-    if n.id.isSet and n.id in s.copiedOut: return false
-    return s.holdsHeap(s.res.typeFor(n))
-  false
+#
+# `ownership_escape.escapes`, over the body's SSA uses. It was a walk of the
+# whole body per local per slot, with a second walk and a second copy of the
+# rules for `str`; see that module's header for the rules themselves.
 
 proc slotEscapes(s: Scan, name: string, slot: Slot): bool =
-  ## Can this slot still be reached once the body has returned?
-  ##
-  ## One walk, carrying a `sealed` flag that says "everything below here is
-  ## on its way out of the body".
-  if s.body == nil: return false
-  var stack = @[(s.body, false)]
-  while stack.len > 0:
-    let (n, sealed) = stack.pop()
-    if n == nil: continue
-    case s.mentionOf(n, name, slot, sealed)
-    of mEscapes: return true
-    of mAccounted: continue
-    of mNotOurs: discard
-    let seals = s.sealsContents(n, sealed)
-    if n.kind == exkAssign:
-      # Binding to ANOTHER name normally seals the right-hand side — the
-      # value is now reachable through a name this walk is not following.
-      # Not when the binding copied every slot out of it.
-      let toAnotherName = n.target != nil and pathOf(n.target) != name
-      let copiesOut = n.assignVal != nil and n.assignVal.id.isSet and
-                      n.assignVal.id in s.copiedOut
-      stack.add((n.assignVal,
-                 if toAnotherName and not copiesOut:
-                   s.holdsHeap(s.res.typeFor(n.target))
-                 else: seals))
-      stack.add((n.target, seals))
-      continue
-    for ch in n.children: stack.add((ch, seals))
-  false
+  s.ix.escapes(s.heapRule, name, slot)
 
 # --- STEP 4: what dies at scope exit ---------------------------------------
 
@@ -356,6 +291,13 @@ proc diesAtScopeExit(s: Scan, name: string, val: Expr,
   ## 5's business.
   if timesAssigned[name] != 1 or val == nil: return
   let t = s.res.typeFor(val)
+  if isStr(t):
+    # ONE SLOT, owned when an allocating runtime proc made it. Nothing else
+    # about a `str` differs from a `Seq`.
+    if ownedStrCall(s.res, s.strProcs, val) and
+       not s.ix.escapes(s.strRule, name, ""):
+      result.add("")
+    return
   if not s.holdsHeap(t): return
   for slot in s.slotsOf(t):
     if s.ownsSlot(val, slot) and not s.slotEscapes(name, slot):
@@ -550,10 +492,14 @@ proc checkBuffers(s: Scan, d: Decl, o: Ownership) =
 proc ownershipOf*(res: Resolution, m: Module, d: Decl,
                   strProcs: seq[string] = @[]): Ownership =
   ## Run all six steps over one function body. `strProcs` is the backend's
-  ## list of runtime calls returning a caller-owned `str` (step 4b).
+  ## list of runtime calls returning a caller-owned `str` (step 4).
   if not Enabled or d.fnBody == nil: return
-  var s = Scan(res: res, m: m, body: d.fnBody)
+  var s = Scan(res: res, m: m, body: d.fnBody, strProcs: strProcs)
   s.copiedOut = s.findCopiedOut()
+  s.ix = indexBody(res, m, d)
+  s.heapRule = SealRule(carried: cHeapSlots, exemptCalls: s.copiedOut,
+                        exemptBindings: s.copiedOut)
+  s.strRule = strRule(res, strProcs, d.fnBody)
 
   var timesAssigned: CountTable[string]
   var declaredWith: Table[string, Expr]
@@ -562,10 +508,6 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl,
   for name, val in declaredWith:                            # steps 2-4
     let slots = s.diesAtScopeExit(name, val, timesAssigned)
     if slots.len > 0: result.freeAtScopeExit[name] = slots
-  for name in ownedStrLocals(res, strProcs, d):             # step 4b: `str`
-    doAssert name notin result.freeAtScopeExit,
-      "ownership: " & name & " is both a str local and a heap-slot local"
-    result.freeAtScopeExit[name] = @[""]
 
   result.freeBeforeOverwrite = s.diesAtOverwrite(d, timesAssigned)  # step 5
   result.twinFreesParam = s.twinFreedSlots(d)                       # step 6

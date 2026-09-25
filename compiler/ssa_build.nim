@@ -321,6 +321,10 @@ proc reads(b: var Builder, e: Expr) =
     return
   if e.kind in {exkVar, exkField} and pathOf(e).len > 0:
     b.noteRead(e)
+    # `b.fn {xs}` the checker could not resolve keeps its arguments in
+    # `dotArg`, which the path does not name. Skipping them lost every read
+    # inside — `xs` looked unread there.
+    if e.kind == exkField: b.reads(e.dotArg)
     return
   if e.kind == exkCall and e.callee != nil and e.callee.kind == exkVar and
      (b.res.declFor(e) != nil or b.constructs(e)):
@@ -448,6 +452,12 @@ proc walkMatch(b: var Builder, e: Expr) =
   var armExits: seq[BlockId]
   var allLeave = e.arms.len > 0
   for i, arm in e.arms:
+    # NO GUARDS. The parser never builds one, and an arm with a guard is not
+    # entered from the subject alone — a failed guard falls through to the
+    # next arm, an edge this CFG does not have. Model it before allowing it.
+    doAssert arm.guard == nil,
+      "ssa_build: a match arm guard reached the builder, which has no edge " &
+      "for a guard that fails"
     let ab = b.newBlock("arm" & $i)
     b.addPred(ab, entry)
     b.sealBlock(ab)
