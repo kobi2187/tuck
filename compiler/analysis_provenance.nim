@@ -160,6 +160,8 @@ type Ctx = object
   m: Module
   params: HashSet[string]   ## names that arrived from the caller
   moved: string             ## the param a MOVED twin takes destructively
+  final: HashSet[NodeId]    ## this body's last reads (the lowered graph),
+                            ## for `movedTransfer`; only filled in a twin
   locals: Table[string, Prov]
 
 proc provOf(c: var Ctx, e: Expr): Prov
@@ -346,6 +348,8 @@ proc mixToken(id: NodeId, field: string): NodeId =
   for ch in field: h = (h xor uint32(ord(ch))) * 16777619'u32
   NodeId(h)
 
+proc movedTransfer(c: Ctx, e: Expr): tuple[takes: bool, slot: string]
+
 proc afterBinding(c: Ctx, e: Expr, v: Prov): Prov =
   ## What the NAME holds once THIS pass has done its work at this binding.
   ##
@@ -365,15 +369,16 @@ proc afterBinding(c: Ctx, e: Expr, v: Prov): Prov =
   ## There is no circularity: whether a slot is copied depends on the value
   ## arriving, and what the name then holds depends on the copy.
   ##
-  ## EXCEPT INSIDE A MOVED TWIN, where the emitter suppresses the copy for
-  ## anything read through the moved parameter (`codegen_odin.nim:1199`, and
-  ## D's equivalent) — that param belongs to this call, so reading it needs
-  ## no defence. Claiming freshness there would be a claim with nothing
-  ## behind it, and Stage 3 acts on exactly this: freeing the moved param at
-  ## the twin's exit is only safe if the RETURN does not carry its buffers.
-  ## `takeLevel` returns the very ladder it was handed.
+  ## NO EXCEPTION INSIDE A MOVED TWIN any more. The emitters used to skip
+  ## the copy for a read through the moved parameter, and this mirrored it;
+  ## that skip broke value semantics (`var t = xs; t[0] = 99; return xs`
+  ## returned 99) and made Odin free one buffer twice. The binding copies
+  ## like any other, so it IS fresh.
   result = v
-  if rootedAtMoved(c, e): return result
+  # ...except a binding that TAKES the moved parameter's buffer at its last
+  # read: that is the parameter's buffer, uncopied, and saying so is what
+  # stops the twin freeing what it returns.
+  if c.movedTransfer(e).takes: return result
   # A VALUE BUILT OUT OF THE TARGET IS MUTATED IN PLACE, not copied:
   #
   #   xs = {items: xs, value: v} push   ->  append(&xs, v)
@@ -398,6 +403,34 @@ proc afterBinding(c: Ctx, e: Expr, v: Prov): Prov =
   for k, cell in v.fields:
     if cell.origin != oFresh:
       result.fields[k] = Cell(origin: oFresh, token: mixToken(e.id, k))
+
+proc movedTransfer(c: Ctx, e: Expr): tuple[takes: bool, slot: string] =
+  ## Does binding `e` TAKE the moved parameter's buffer rather than read it?
+  ##
+  ## Inside a twin the moved parameter belongs to the call. A binding that
+  ## reads it — the parameter itself, or one of its fields — at its LAST
+  ## read hands the buffer over: nothing reads the parameter afterwards, so
+  ## no copy is needed and none can be observed. `var out = xs` in `grow`
+  ## is the move path, and copying there made a 2M-append loop quadratic.
+  ##
+  ## A read that is NOT the last one must copy like any other binding. The
+  ## emitters used to skip the copy for every read through the moved
+  ## parameter, and `var t = xs; t[0] = 99; return xs` returned 99.
+  ##
+  ## Answered from the SAME predicate by provenance (what the binding then
+  ## holds), the copy pass (whether to copy), and — through the copy pass's
+  ## record — the ownership pass (the twin must not free a slot it gave to
+  ## a local). Three consumers, one answer.
+  if c.moved.len == 0 or e == nil or not e.id.isSet or e.id notin c.final:
+    return
+  case e.kind
+  of exkVar:
+    if e.name == c.moved: result = (true, "")
+  of exkField:
+    if e.receiver != nil and e.receiver.kind == exkVar and
+       e.receiver.name == c.moved:
+      result = (true, e.fieldName)
+  else: discard
 
 proc noteAssignments(c: var Ctx, e: Expr) =
   ## Record what each local may hold. FLOW-INSENSITIVE on purpose: every
@@ -427,6 +460,7 @@ proc summarize(res: Resolution, m: Module, d: Decl): Prov =
   if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision:
     return unknownProv()
   var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  if c.moved.len > 0: c.final = ssaOf(res, d, ssLowered).final
   for p in d.fnParams: c.params.incl(p.name)
   # Locals first, so a `return` that names one has something to read. Repeated
   # because an assignment may name a local assigned further down.
@@ -803,10 +837,17 @@ proc provCtxFor*(res: Resolution, m: Module, d: Decl): ProvCtx =
   if body == nil: return
   if d.kind == dkFn:
     result.c.moved = maybeMovedParam(res, m, d)
+    if result.c.moved.len > 0:
+      result.c.final = ssaOf(res, d, ssLowered).final
     for p in d.fnParams: result.c.params.incl(p.name)
   else:
     for p in d.taskParams: result.c.params.incl(p.name)
   for _ in 0 ..< 2: noteAssignments(result.c, body)
+
+proc takesMovedParam*(pc: ProvCtx, e: Expr): tuple[takes: bool, slot: string] =
+  ## `movedTransfer`, for the copy pass. `slot` is "" for the parameter
+  ## itself, else the field taken.
+  pc.c.movedTransfer(e)
 
 proc exclusivelyOwned*(pc: var ProvCtx, e: Expr, field = ""): bool =
   ## May this bound value (or its named field) skip its defensive copy?

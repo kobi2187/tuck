@@ -791,11 +791,12 @@ proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
   ## reads the mark and prints. That split is the point of the seam: the
   ## reasoning is inspectable and testable as a tree pass, and the emitter
   ## stays a printer.
-  # Inside a MOVED twin the first parameter belongs to this call — the caller
-  # proved its old value dead by assigning the result straight back over it —
-  # so reading through it needs no defensive copy.
-  if ctx.movedParam != "" and rootBindingName(e) == ctx.movedParam:
-    return valStr
+  # NO EXCEPTION for a read through a MOVED twin's parameter. There used to
+  # be one ("the param belongs to this call, so no defensive copy"), and it
+  # was a copy decision made here, invisible to the ownership pass reading
+  # the copy marks: `var t = xs; t[0] = 99; return xs` returned 99, and on
+  # Odin `t`'s free was a second free of `xs`. What is copied is decided in
+  # lowering_seqcopy, once, and printed here.
   if needsDup(ctx.res, e): return "(" & valStr & ").dup"
   let fields = recordDupFields(ctx.res, e)
   if fields.len == 0: return valStr

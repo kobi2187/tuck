@@ -1207,10 +1207,9 @@ proc copyIfSeq(ctx: var OdinCodegenCtx, valStr: string, e: Expr): string =
   ## HEADER, so both names then view one buffer — where a Tuck `Seq`
   ## assignment copies. lowering_seqcopy decides which sites need a real copy
   ## (the same analysis the D backend uses for its `.dup`); this prints Odin's.
-  # Inside a MOVED twin the container param belongs to this call, so reading
-  # through it needs no defensive copy.
-  if ctx.movedParam != "" and rootBindingName(e) == ctx.movedParam: valStr
-  elif needsDup(ctx.res, e): "rt.tuckSeqCopy(" & valStr & ")"
+  # No exception for a read through a MOVED twin's parameter — see the D
+  # emitter's copy of this note (codegen_d.nim, `dupIfSeq`).
+  if needsDup(ctx.res, e): "rt.tuckSeqCopy(" & valStr & ")"
   else: valStr
 
 proc seqFieldFixups(ctx: var OdinCodegenCtx, target: string, e: Expr): string =

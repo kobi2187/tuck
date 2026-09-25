@@ -1608,6 +1608,31 @@ fn main() -> int:
   t.hostRuns("...and every backend's caller can still read it", 2, "42")
   t.bugFixed "a returned str is not freed by the body that built it"
 
+  # A MOVED TWIN FREED ITS PARAMETER TWICE. Inside `peek_moved`, `let t = xs`
+  # reads through the moved parameter, and the EMITTER suppressed the copy
+  # there — but the copy pass had marked the site, so the ownership pass
+  # read "copied, therefore ours" and emitted `defer delete(t)` beside the
+  # twin's own `defer delete(xs)`: one buffer, two frees, SIGSEGV on Odin.
+  # The suppression was a copy decision made in the emitter, invisible to
+  # everything that reads the copy pass's record. Found 2026-09-25 reading
+  # `afterBinding`'s account of that same emitter rule.
+  t.src """
+import seq
+
+fn peek({xs: Seq[int]}) -> Seq[int]:
+  let t = xs
+  let n = t.len
+  return {items: xs, value: n} push
+
+fn main() -> int:
+  var a = [1, 2, 3]
+  a = {xs: a} peek
+  let b = {xs: a} peek
+  return a[3] + b[4] + b.len
+"""
+  t.quietly: t.hostRuns("a twin frees what it read through its param once", 12)
+  t.bugFixed "a twin frees what it read through its param once"
+
   # #21 — a type the checker SYNTHESIZED had no declaration edge. A record
   # construction's type was built bare, so asking for its fields while the
   # body was being checked fell back to scanning the decl list by name — the

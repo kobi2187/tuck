@@ -728,6 +728,45 @@ fn main() -> int:
 """
   t.hostRuns("a result the wrapper copied does not alias the argument", 18)
 
+  # A MOVED TWIN'S PARAMETER, READ INTO A LOCAL AND MUTATED. The emitters
+  # skipped the copy for any read through the moved parameter, on the theory
+  # that the parameter belongs to the call. It does — and it is also what
+  # the twin returns, so writing through the uncopied alias rewrote the
+  # result: D returned 99 and Odin read freed memory (111), while Nim, with
+  # real value semantics, returned 1.
+  t.src """
+fn poke({xs: Seq[int]}) -> Seq[int]:
+  var t = xs
+  t[0] = 99
+  return xs
+
+fn main() -> int:
+  var a = [1, 2, 3]
+  a = {xs: a} poke
+  return a[0]
+"""
+  t.hostRuns("a twin's local copy of its parameter is a copy", 1)
+
+  # ...and the other side: at the parameter's LAST read the local TAKES the
+  # buffer, uncopied (`var out = xs` is the move path). The twin returns
+  # something fresh, so it would free its parameter at exit — while the
+  # local, owning what it took, frees it too. The copy pass records the
+  # transfer and the twin leaves that slot alone; without that record the
+  # emitted Odin frees one buffer twice.
+  t.src """
+fn drop({xs: Seq[int]}) -> Seq[int]:
+  let t = xs
+  let n = t.len
+  return [n, n]
+
+fn main() -> int:
+  var a = [1, 2, 3]
+  a = {xs: a} drop
+  a = {xs: a} drop
+  return a[0] + a.len
+"""
+  t.hostRuns("a local that takes a twin's parameter is its only owner", 4)
+
   # --- EV-15: a last use at ARGUMENT position reaches the MOVED twin -------
   #
   # `movedCallInto` recognised `x = f(x, ...)` and `f(b.ask, ...)`. It did

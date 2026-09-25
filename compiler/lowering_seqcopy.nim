@@ -83,6 +83,16 @@ var exclusiveSites: Table[NodeId, seq[string]]
   ## derivations of one fact are two answers, and between a copy and a free
   ## the difference is a leak one way and a double free the other.
 
+var transferSites: Table[NodeId, seq[string]]
+  ## Bindings that TOOK a moved twin's parameter buffer at its last read
+  ## (`analysis_provenance.movedTransfer`), and which slots of that
+  ## parameter they took. The twin must not free those: the local owns them.
+
+proc transferredSlots*(e: Expr): seq[string] =
+  ## Slots of the moved parameter this binding took ("" = the whole value).
+  if e != nil and e.id.isSet and e.id in transferSites: transferSites[e.id]
+  else: @[]
+
 proc needsDup*(res: Resolution, e: Expr): bool =
   ## Did this backend's lowering mark this expression as needing a bare
   ## `.dup` (a Seq-valued expression copied by name)?
@@ -104,6 +114,18 @@ proc markBinding(res: Resolution, m: Module, pc: var ProvCtx, v: Expr) =
   ## One binding's copy decision, both halves recorded.
   if v == nil or v.kind == exkList: return
   ensureId(v)
+  # A MOVED TWIN'S PARAMETER, taken at its last read: no copy, and the
+  # binder owns what it took (the twin frees nothing of it).
+  let (takes, slot) = pc.takesMovedParam(v)
+  if takes:
+    if isSeqValued(res, v):
+      exclusiveSites[v.id] = @[""]
+      transferSites[v.id] = @[slot]
+    else:
+      let fs = seqFieldNames(res, m, res.typeFor(v))
+      exclusiveSites[v.id] = fs
+      transferSites[v.id] = fs     # the whole record: every heap slot
+    return
   if isSeqValued(res, v):
     if pc.exclusivelyOwned(v): exclusiveSites[v.id] = @[""]
     else: dupSites.incl(v.id)

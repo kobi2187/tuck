@@ -119,7 +119,8 @@ import ast_query
 import twin_shape
 from ssa_ir import rootOf, pathOf
 from analysis_provenance import slotIsFresh, consumedSlotsSsa
-from lowering_seqcopy import needsDup, recordDupFields, decidedExclusive
+from lowering_seqcopy import needsDup, recordDupFields, decidedExclusive,
+                             transferredSlots
 
 
 type
@@ -443,14 +444,27 @@ proc wholesaleTwinFrees(s: Scan, d: Decl, paramSlots, resultSlots: seq[Slot],
   for f in paramSlots:
     if f notin handedOn: result.add(f)
 
+proc assignedValues(s: Scan): seq[Expr] =
+  ## Every right-hand side in the body.
+  var stack = @[s.body]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    for ch in n.children: stack.add ch
+    if n.kind == exkAssign and n.assignVal != nil: result.add n.assignVal
+
 proc twinFreedSlots(s: Scan, d: Decl): seq[Slot] =
   ## Which slots of the consumed parameter this fn's MOVED twin frees.
   if d.fnParams.len == 0 or d.fnReturnType == nil: return
   let paramSlots = movedCopyFields(s.res, s.m, d.fnParams[0].typ)
   let resultSlots = movedCopyFields(s.res, s.m, d.fnReturnType)
   # A slot handed on to ANOTHER twin is that twin's to free; freeing it here
-  # too segfaults under TUCK_TRACK.
-  let handedOn = consumedSlotsSsa(s.res, s.m, d)
+  # too segfaults under TUCK_TRACK. So is a slot a LOCAL took at the
+  # parameter's last read (`lowering_seqcopy.transferredSlots`): the local
+  # owns it now, and the ownership rules above decide its free.
+  var handedOn = consumedSlotsSsa(s.res, s.m, d)
+  for v in s.assignedValues():
+    for slot in transferredSlots(v): handedOn.incl slot
   if "" in handedOn: return
 
   if paramSlots.len > 0 and resultSlots.len > 0 and
