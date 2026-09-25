@@ -1258,8 +1258,6 @@ proc scopeFrees(ctx: OdinCodegenCtx, name: string): string =
   ## exactly the shape `relight`'s intermediates have — so the frees were
   ## computed, correct, and emitted nowhere.
   let ind = "  ".repeat(ctx.indent)
-  if name in ctx.ownedStrLocals:
-    result.add("\n" & ind & "defer delete(" & name & ")")
   if name in ctx.owned.freeAtScopeExit:
     for slot in ctx.owned.freeAtScopeExit[name]:
       let path = if slot.len == 0: name else: name & "." & slot
@@ -1275,12 +1273,10 @@ proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   let decl = if ut == "": e.target.name & " := " & valStr
              else: e.target.name & ": " & ut & " = " & valStr
   let fixups = ctx.seqFieldFixups(e.target.name, e.assignVal)
-  # A `str` this body allocated and never lets escape is freed at scope exit.
-  # `defer` rather than a free at the last use, because a defer needs no
-  # POSITION: the decision is made once, here, and Odin runs it on every path
-  # out of the block. `ownedStrLocalsOf` has already established that the name
-  # is assigned exactly once, so this fires on exactly the allocation it
-  # names. See EV-20.
+  # A local the ownership pass frees at scope exit — a heap slot, or a `str`
+  # this body allocated (ownership_str) — gets its `defer` here. `defer`
+  # rather than a free at the last use, because a defer needs no POSITION:
+  # Odin runs it on every path out of the block. See EV-20.
   decl & ctx.scopeFrees(e.target.name) & fixups
 
 proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =

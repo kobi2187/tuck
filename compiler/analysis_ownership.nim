@@ -119,6 +119,7 @@ import ast_query
 import twin_shape
 from ssa_ir import rootOf, pathOf
 import buffer_check
+import ownership_str
 from analysis_provenance import slotIsFresh, consumedSlotsSsa
 from lowering_seqcopy import needsDup, recordDupFields, decidedExclusive,
                              transferredSlots
@@ -537,15 +538,19 @@ proc checkBuffers(s: Scan, d: Decl, o: Ownership) =
   for f in o.freed:
     sites.add (f.local, f.slot, f.kind in {fkScopeExit, fkTwinParam})
   var returnSlots: seq[string]
-  if d.fnReturnType != nil:
-    if seqElem(d.fnReturnType) != nil: returnSlots = @[""]
-    else: returnSlots = seqFieldNames(s.res, s.m, d.fnReturnType)
+  let rt = d.fnReturnType
+  if rt != nil:
+    if seqElem(rt) != nil or (rt.kind == tkNamed and rt.name == "str"):
+      returnSlots = @[""]
+    else: returnSlots = seqFieldNames(s.res, s.m, rt)
   let bad = bufferErrors(s.res, d, sites, returnSlots)
   doAssert bad.len == 0,
     "ownership: " & d.name & " — " & bad[0 .. min(2, bad.high)].join("; ")
 
-proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
-  ## Run all six steps over one function body.
+proc ownershipOf*(res: Resolution, m: Module, d: Decl,
+                  strProcs: seq[string] = @[]): Ownership =
+  ## Run all six steps over one function body. `strProcs` is the backend's
+  ## list of runtime calls returning a caller-owned `str` (step 4b).
   if not Enabled or d.fnBody == nil: return
   var s = Scan(res: res, m: m, body: d.fnBody)
   s.copiedOut = s.findCopiedOut()
@@ -557,6 +562,10 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
   for name, val in declaredWith:                            # steps 2-4
     let slots = s.diesAtScopeExit(name, val, timesAssigned)
     if slots.len > 0: result.freeAtScopeExit[name] = slots
+  for name in ownedStrLocals(res, strProcs, d):             # step 4b: `str`
+    doAssert name notin result.freeAtScopeExit,
+      "ownership: " & name & " is both a str local and a heap-slot local"
+    result.freeAtScopeExit[name] = @[""]
 
   result.freeBeforeOverwrite = s.diesAtOverwrite(d, timesAssigned)  # step 5
   result.twinFreesParam = s.twinFreedSlots(d)                       # step 6
@@ -581,12 +590,12 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
 
 var decided: Table[NodeId, Ownership]
 
-proc decideOwnership*(res: Resolution, m: Module) =
+proc decideOwnership*(res: Resolution, m: Module, strProcs: seq[string]) =
   ## Every fn body's ownership, recorded by the fn's declaration id.
   for d in m.allFns():
     if d == nil or d.fnBody == nil: continue
     doAssert d.id.isSet, "ownership: fn " & d.name & " has no id"
-    decided[d.id] = ownershipOf(res, m, d)
+    decided[d.id] = ownershipOf(res, m, d, strProcs)
 
 proc ownershipFor*(d: Decl): Ownership =
   ## The decision `decideOwnership` recorded for this fn. Asserted present:

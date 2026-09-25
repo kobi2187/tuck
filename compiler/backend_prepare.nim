@@ -122,6 +122,35 @@ proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
         mem.externImpl[i].module =
           rebasedImplModule(mem.externImpl[i].module, srcDir, outDir)
 
+proc ownedStrProcs*(b: Backend): seq[string] =
+  ## Runtime procs that hand back a `str` the CALLER now owns, on this
+  ## backend. Only Odin has any: Nim's ARC and D's GC free their own.
+  ## Runtime procs that hand back a `str` the CALLER now owns — Odin's
+  ## `strings.clone`, `strings.concatenate`, `strings.join`, `fmt.aprint`.
+  ##
+  ## A LIST, and it lives here rather than as an attribute in `std/`, because
+  ## "this returns freshly allocated storage" is a fact about the ODIN
+  ## RUNTIME'S IMPLEMENTATION and not about Tuck. On Nim the same call is
+  ## handled by ARC and on D by the GC; writing `[owned]` on `std/str.tuck`
+  ## would state a backend's private business as a language-level claim.
+  ##
+  ## DELIBERATELY SHORT. Two str-returning runtime procs are NOT here and
+  ## must not be added without reading them first:
+  ##
+  ##   splitLines  Odin's `strings.split_lines` hands back lines that SLICE
+  ##               the input. The `[dynamic]string` is fresh; the strings in
+  ##               it are not, and freeing one would cut into the caller's.
+  ##   readFile    its buffer becomes a FIELD of the `FsContent` record it
+  ##               returns, and a field is not a local — freeing it needs
+  ##               the record's own ownership, which is issue #82's shape.
+  ##
+  ## Leaving a proc off this list LEAKS, which is where the backend already
+  ## is. Putting one on it wrongly is a use-after-free. The asymmetry is why
+  ## the list is short and each absence is written down.
+  case b
+  of bkOdin: @["toStr", "tuckConcat", "joinStr", "charAt"]
+  of bkNim, bkDlang: @[]
+
 proc prepare*(prog: seq[LoadedModule], backend: Backend,
               semLayer: Resolution, outDir: string): BackendTree =
   ## Steps 1-6, for one backend. The checked program goes in; a private,
@@ -152,7 +181,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # Odin prints the frees, D's collector does not need them but the
     # decision's assertions (buffer_check) still run over its tree.
     if backend.aliasesOnAssign:
-      decideOwnership(semLayer, lm.m)
+      decideOwnership(semLayer, lm.m, ownedStrProcs(backend))
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 

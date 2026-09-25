@@ -310,6 +310,15 @@ proc reads(b: var Builder, e: Expr) =
   ## deepest nameable path and not descended into — `b.ask` is a read of
   ## `b.ask`, not of `b`.
   if e == nil: return
+  # A CALL WRITTEN AS A FIELD — `a.total`, `n.toStr`, `r.len` — is not a
+  # field. The checker resolved it to a call whose argument is the receiver,
+  # and reading that call is what reads `a`. Recorded as the place `a.total`
+  # instead, the receiver's own read went uncounted: an earlier read of `a`
+  # looked final, `a` was handed to a MOVED callee, and the callee's writes
+  # reached the caller's `a` (D and Odin returned 203 where Nim returned 105).
+  if e.kind == exkField and b.res.hasCall(e):
+    b.reads(b.res.call(e))
+    return
   if e.kind in {exkVar, exkField} and pathOf(e).len > 0:
     b.noteRead(e)
     return

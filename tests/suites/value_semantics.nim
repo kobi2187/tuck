@@ -785,6 +785,32 @@ fn main() -> int:
 """
   t.hostRuns("an overwritten value is freed after its replacement is built", 8)
 
+  # A CALL WRITTEN AS A FIELD IS STILL A READ OF ITS RECEIVER. `a.total` is
+  # `{xs: a} total`, but the SSA graph recorded it as a read of a PLACE
+  # `a.total` — a field of `a` — so the read of `a` itself before it looked
+  # final, `mark` got `a` by move, and wrote 99 into the caller's `a`:
+  # D and Odin returned 203, Nim 105. (valgrind: an invalid read, when the
+  # moved callee grows the buffer instead.)
+  t.src """
+fn mark({xs: Seq[int]}) -> Seq[int]:
+  var out = xs
+  out[0] = 99
+  return out
+
+fn total({xs: Seq[int]}) -> int:
+  var t = 0
+  for x in xs:
+    t = t + x
+  return t
+
+fn main() -> int:
+  let a = [1, 2, 3]
+  let r = {xs: a} mark
+  let s = a.total
+  return s + r[0]
+"""
+  t.hostRuns("a method-style call reads its receiver", 105)
+
   # --- EV-15: a last use at ARGUMENT position reaches the MOVED twin -------
   #
   # `movedCallInto` recognised `x = f(x, ...)` and `f(b.ask, ...)`. It did

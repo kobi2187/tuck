@@ -36,14 +36,10 @@ type
       ## What analysis_ownership decided for the fn being emitted: which
       ## locals die at scope exit, which die at an overwrite, and what the
       ## MOVED twin frees. The emitter prints it; it decides nothing.
-    ownedStrLocals*: HashSet[string]
-      ## Locals holding a `str` this body ALLOCATED and does not let escape,
-      ## so the emitter can `defer delete` them. Computed once per fn from
-      ## the value mirror rather than per assignment — see
-      ## codegen_odin_decl.ownedStrLocalsOf.
     movedParam*: string    # while emitting a fn's MOVED twin: the param it
-                           # takes destructively, so reading through it needs
-                           # no defensive copy (see codegen_common)
+                           # takes destructively. NOT a reason to skip a
+                           # copy — what is copied is the copy pass's call
+                           # (lowering_seqcopy, movedTransfer)
     errPolicy*: string     # from the errors declaration; "" = strict
     realModules*: Table[string, Module]  # imported modules emitted as own Odin files
     staticAsserts*: seq[string]  # collected into one `static this()` block

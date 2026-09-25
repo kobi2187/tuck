@@ -123,6 +123,13 @@ proc uses(c: Ctx, e: Expr, acc: var Live) =
     acc.incl(e.name)
     return
   if e.kind == exkField:
+    # A call written as a field (`a.total`, `n.toStr`) reads its RECEIVER;
+    # it is not the place `a.total`. The SSA graph had this wrong and the
+    # oracle agreed with it, so neither caught a move of `a` before `a.total`
+    # read it (value_semantics, "a method-style call reads its receiver").
+    if c.res.hasCall(e):
+      uses(c, c.res.call(e), acc)
+      return
     let p = pathOf(e)
     if p.len > 0:
       acc.incl(p)
@@ -174,6 +181,9 @@ proc stampSites(c: Ctx, e: Expr, dead: Live) =
     if n == nil: return
     if n.kind == exkVar and n.name in dead:
       lastFor[n.name] = n
+      return
+    if n.kind == exkField and c.res.hasCall(n):
+      walk(c.res.call(n))      # a call written as a field: see `uses`
       return
     if n.kind == exkField:
       let p = pathOf(n)
