@@ -3,16 +3,16 @@ import ../compiler/tuck_rt
 export tuck_rt
 import time
 
-proc tuck_main*(): int
+proc tuck_fn_main*(): int
 
-proc tuck_readOrGiveUp*(fd: int): tuple[code: int] =
-  if tuckAwaitReadOrTimeout(fd, int(tuck_ms(30'u32))):
+proc tuck_fn_readOrGiveUp*(fd: int): tuple[code: int] =
+  if tuckAwaitReadOrTimeout(fd, int(tuck_fn_ms(30'u32))):
     return (code: 1)
   else:
     return (code: 2)
 
-proc tuck_main*(): int =
+proc tuck_fn_main*(): int =
   var tuck_src = openSource(500)
-  var tuck_r = (let tuckSlot0 = newAsyncResult[tuple[code: int]](); spawnResult(tuckSlot0, proc(): tuple[code: int] {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_readOrGiveUp(tuck_src.fd))); awaitResult(tuckSlot0))
+  var tuck_r = (let tuckSlot0 = newAsyncResult[tuple[code: int]](); spawnResult(tuckSlot0, proc(): tuple[code: int] {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_fn_readOrGiveUp(tuck_src.fd))); awaitResult(tuckSlot0))
   return tuck_r.code
 

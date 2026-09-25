@@ -3,7 +3,7 @@ module _38_division;
 import rt = tuck_rt;
 import sys = mod_sys;
 
-void tuck_main() {
+void tuck_fn_main() {
     long tuck_q = (7L / 2L);
     double tuck_r = (7.0 / 2.0);
     long tuck_budget = 100L;
@@ -20,5 +20,5 @@ void tuck_main() {
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_main();
+    tuck_fn_main();
 }

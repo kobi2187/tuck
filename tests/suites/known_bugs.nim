@@ -334,7 +334,7 @@ fn main() -> int:
   # no message enum, no mailbox, no handleMsg, and a drain that is a bare
   # `for { coroYield() }` spin. Meanwhile the send sites still emit calls to
   # sendAdd_<Actor>, which nothing defines — `odin build` fails with
-  # "Undeclared name: sendAdd_tuck_Accumulator".
+  # "Undeclared name: sendAdd_tuck_type_Accumulator".
   #
   # The Nim backend handles this: collectHandlers walks BOTH `on <name>` blocks
   # and `on select` arms. 27-actor-select is absent from odin_backend.sh's
@@ -350,12 +350,12 @@ fn main() -> int:
   Accumulator send add {n: 1}
   return 0
 """
-  t.quietly: t.emitsOdin "", "sendAdd_tuck_Accumulator :: proc"
+  t.quietly: t.emitsOdin "", "sendAdd_tuck_type_Accumulator :: proc"
   t.bugFixed "an 'on select' actor emits its send procs on the Odin backend"
 
   # 13. A `-> void` task could not be fire-and-forget. The spawn wrapper always
   # emitted `discard <call>`, so a task returning nothing produced
-  # `discard tuck_fire()` over a void proc — "expression has no type (or is
+  # `discard tuck_fn_fire()` over a void proc — "expression has no type (or is
   # ambiguous)". The most natural fire-and-forget task was the one shape that
   # did not compile; found while writing the std/net example, which had to give
   # its tasks a `{n: int}` return they did not want.
@@ -486,11 +486,11 @@ fn main() -> int:
   # drops the call entirely and applies the NEXT chain step to the function
   # instead of the receiver:
   #
-  #     cfg ..bigmod::withDefaults ..f1 {60}   ->   tuck_withDefaults.f1 = 60
+  #     cfg ..bigmod::withDefaults ..f1 {60}   ->   tuck_fn_withDefaults.f1 = 60
   #
   # The unqualified form (`cfg ..withDefaults`, which works because imported
   # fns are visible unqualified) lowers correctly to
-  # `cfg = tuck_withDefaults(cfg)`, so this is specific to the `mod::fn`
+  # `cfg = tuck_fn_withDefaults(cfg)`, so this is specific to the `mod::fn`
   # spelling in chain-step position. It fails loudly one stage later — Nim
   # rejects a field assignment on a proc — but `tuck ch` reports nothing, so
   # the diagnostic the user sees is about emitted code they never wrote,
@@ -516,7 +516,7 @@ fn withDefaults({self: Big}) -> Big:
   s ..f0 {80}
   return s
 """)
-  t.quietly: t.omits "a qualified mutator in a chain does not emit a field-set on the function", "tuck_withDefaults\\.f"
+  t.quietly: t.omits "a qualified mutator in a chain does not emit a field-set on the function", "tuck_fn_withDefaults\\.f"
   t.bugFixed "a qualified mutator in a chain does not emit a field-set on the function"
   # FIXED 2026-09-12, exactly where the entry said it had to be — parse time.
   # `..mod::fn` was parsed as a `..` step whose target was the bare `mod`,
@@ -526,13 +526,13 @@ fn withDefaults({self: Big}) -> Big:
   # step's target, so chainMutation reads it there; chainQualified now
   # refuses a non-name left side instead of rebuilding from an empty module.
   t.emits "...it calls the qualified mutator and threads the receiver",
-          r"bigmod\.tuck_withDefaults\(tuck_cfg\)"
+          r"bigmod\.tuck_fn_withDefaults\(tuck_cfg\)"
 
   # 18. FIXED. Odin: an imported TYPE was emitted unqualified, so it did not
   # resolve. The emitter qualified an imported FN correctly
-  # (`bigmod.tuck_withDefaults(cfg)`) but wrote the type from the same module
-  # bare — `cfg := tuck_Big{...}` — and Odin answered `Undeclared name:
-  # tuck_Big`, so any program whose type came from another module failed to
+  # (`bigmod.tuck_fn_withDefaults(cfg)`) but wrote the type from the same module
+  # bare — `cfg := tuck_type_Big{...}` — and Odin answered `Undeclared name:
+  # tuck_type_Big`, so any program whose type came from another module failed to
   # build on that backend.
   #
   # Nim is unaffected: its own `import` brings the name into scope
@@ -549,7 +549,7 @@ fn withDefaults({self: Big}) -> Big:
   # `pkg & "."` over the generated body (codegen_odin.nim ~2394), so the
   # missing qualification suppressed the import as well — one fault, two
   # symptoms. Verified with a real `odin build`, not just this text
-  # assertion: before, `Undeclared name: tuck_Big`; after, it compiles, links
+  # assertion: before, `Undeclared name: tuck_type_Big`; after, it compiles, links
   # and runs.
   t.src """
 import bigmod
@@ -561,7 +561,7 @@ fn main() -> int:
   t.addFile("bigmod.tuck", """type Big:
   f0: int
 """)
-  t.quietly: t.emitsOdin "an imported type is qualified with its package on Odin", "bigmod\\.tuck_Big"
+  t.quietly: t.emitsOdin "an imported type is qualified with its package on Odin", "bigmod\\.tuck_type_Big"
   t.bugFixed "an imported type is qualified with its package on Odin"
 
   # 19. A fn could write through its own parameter to the CALLER's record.
@@ -757,7 +757,7 @@ fn main() -> int:
   # of `nil` in all three backends (`sumVariantCtor`/`dSumVariantCtor` all
   # had the same bug at this call site).
   t.quietly: t.omits("bare variant construction is not built fieldless",
-                     "tuck_V\\(kind: B\\)\\)")
+                     "tuck_type_V\\(kind: B\\)\\)")
   t.bugFixed "bare variant construction is not built fieldless"
 
   # O. `xs[i]` is GRAMMAR, so it must work with no `import seq` — it used to
@@ -802,8 +802,8 @@ fn main() -> void [io]:
 """
   t.quietly: t.outputs("a distinct over a float base builds", "ok\n")
   t.bugFixed "a distinct over a float base builds"
-  t.omits "...and borrows no integer div for it", r"`div`\*\(a, b: tuck_Miles\)"
-  t.emits "...while still borrowing the ops floats do have", r"`\+`\*\(a, b: tuck_Miles\)"
+  t.omits "...and borrows no integer div for it", r"`div`\*\(a, b: tuck_type_Miles\)"
+  t.emits "...while still borrowing the ops floats do have", r"`\+`\*\(a, b: tuck_type_Miles\)"
 
   # Q. An UNQUALIFIED call to a runtime-backed extern collided with Nim's
   # own auto-exported proc of the same name: `import fs` + `{path: ...}
@@ -952,7 +952,7 @@ fn main() -> int:
   t.bugOpen "an attribute name is free outside brackets"
 
   # 13. A fn that declares no return type still accepts `return x`, and the
-  # emitted Nim is `proc tuck_f*(x: int): void = return x`, which nim rejects
+  # emitted Nim is `proc tuck_fn_f*(x: int): void = return x`, which nim rejects
   # with "no return type declared". `tuck ch` says OK, so the gap reaches
   # codegen. Correct either way: whether omitting `->` should be rejected
   # outright or should mean void, returning a VALUE from such a fn is wrong.
@@ -1098,7 +1098,7 @@ fn main() -> int:
   # `-> int` regardless of what the method returns, so any interface method
   # returning an enum (or anything else non-int) fails to compile:
   #   Cannot assign value '(proc(v: Detector) -> int)(d)' of type 'int'
-  #   to 'tuck_Demand' in return statement
+  #   to 'tuck_type_Demand' in return statement
   # Nim and D build the same source. Odin has no switch expression, so its
   # dispatch is wrapped in a closure (docs/interfaces.md) — the closure's
   # return type is what is wrong.
@@ -1161,9 +1161,9 @@ fn main() -> int:
   # 19. On D ONLY, an actor's send helper constructs the message envelope
   # POSITIONALLY, so a second handler's payload lands in the first handler's
   # field. The envelope is {kind, lvl, n}; `bump {n: 2}` emits
-  #   tuck_SinkMsg(tuck_SinkMsgKind.msgBump, n)
+  #   tuck_type_SinkMsg(tuck_type_SinkMsgKind.msgBump, n)
   # and dmd answers "cannot implicitly convert expression `n` of type `long`
-  # to `tuck_Level`". Nim emits `tuck_SinkMsg(kind: msgBump, n: 2)` — named,
+  # to `tuck_type_Level`". Nim emits `tuck_type_SinkMsg(kind: msgBump, n: 2)` — named,
   # and correct — and Odin builds too.
   #
   # It needs TWO handlers with non-empty payloads of different types, which is
@@ -1259,7 +1259,7 @@ fn main() -> int:
 
   # 22. An `errors` handler body was never mangled, so calling any fn from it
   # failed to build on all three backends (issue #48). The DECLARATION was
-  # renamed to `tuck_record`; the call inside the handler still said `record`.
+  # renamed to `tuck_fn_record`; the call inside the handler still said `record`.
   #
   # Root cause: `dkErrors` sat in the `discard` arm of `ast_ops.childDecls`,
   # so `d.errHandler` was reached by NOTHING built on that iterator — mangle,
@@ -1689,7 +1689,7 @@ fn main() -> int:
   # answer one allocate rather than passing a string through. That is true of
   # a CALL and false of a RETURN, and the difference is a use-after-free:
   #
-  #     tuck_label :: proc (n: int) -> string {
+  #     tuck_fn_label :: proc (n: int) -> string {
   #       tuck_s := str.toStr(n)
   #       defer delete(tuck_s)
   #       return tuck_s            // <- freed, then returned
@@ -1816,6 +1816,41 @@ fn main() -> int:
     Green: 4
 """
   t.hostRuns "...a bare variant of an inline enum, too", 3
+  t.src """
+type Order:
+  qty: int
+
+fn order({n: int}) -> Order:
+  return {qty: n} Order
+
+fn main() -> int:
+  let o = {n: 7} order
+  return o.qty
+"""
+  # #78: Nim matches only an identifier's first character exactly, so under
+  # one `tuck_` prefix `tuck_Order` and `tuck_order` were one identifier. The
+  # prefix now names the kind: `tuck_type_Order`, `tuck_fn_order`
+  # (name_prefix.nim).
+  t.quietly: t.hostRuns("a type and a fn differing only in case coexist", 7)
+  t.bugFixed "a type and a fn differing only in case coexist (#78)"
+  # Found by the #78 re-emit: every backend found a registry's handlers by
+  # gluing the MANGLED registry name to the event, which matched the handler
+  # fn only while both took the same prefix. The raise then called nothing,
+  # silently. Matched on written names now (codegen_common.registryHandlers).
+  t.src """
+import console
+
+registry AppEvents:
+  | LowMemory({remaining: u32})
+
+on AppEvents.LowMemory({remaining: u32}) [io]:
+  {text: "handled"} console::printLine
+
+fn main() -> int [io]:
+  AppEvents.raise LowMemory {remaining: 7}
+  return 0
+"""
+  t.hostRuns "a registry raise calls its handler", 0, "handled"
   t.src """
 actor A:
   x: int = "s"

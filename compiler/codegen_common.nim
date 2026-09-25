@@ -711,3 +711,19 @@ proc isExportedDecl*(m: Module, d: Decl): bool =
   if d == nil: return true
   let (restricted, allowed) = exportedNames(m)
   (not restricted) or writtenName(d) in allowed
+
+proc registryHandlers*(m: Module, d: Decl, v: VariantDef): seq[Decl] =
+  ## Every `on Registry.Event` handler for this event, matched on the names
+  ## the user WROTE. Matching the mangled ones (`d.name & "." & v.name`) only
+  ## worked while a registry and a fn took the same prefix; since #78 the
+  ## handler is `tuck_fn_AppEvents.X` beside the registry's `tuck_AppEvents`,
+  ## and every raise silently stopped calling its handler.
+  let want = writtenName(d) & "." & v.name
+  for decl in m.decls:
+    if decl != nil and decl.kind == dkFn and writtenName(decl) == want:
+      result.add decl
+
+proc handlerProcName*(handler: Decl): string =
+  ## A handler is declared as `Registry.Event`, which is no backend's
+  ## identifier — the dot becomes an underscore, as its declaration does.
+  handler.name.replace(".", "_")

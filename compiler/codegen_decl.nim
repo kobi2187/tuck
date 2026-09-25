@@ -93,7 +93,7 @@ proc groupMixins(ctx: CodegenCtx, d: Decl): string =
       if g == nil: continue
       for want in g.groupMembers:
         if want == nil or want.kind != dkFn: continue
-        let n = mangleName(want.name)
+        let n = mangleName(want.name, nkFn)
         if n notin names: names.add(n)
   if names.len == 0: return ""
   "  mixin " & names.join(", ") & "\n"
@@ -488,14 +488,11 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
       let paramStr = params.join(", ")
       let assignStr = if assignParts.len > 0: ", " & assignParts.join(", ") else: ""
 
-      let handlerName = d.name & "." & v.name
-      let handlerNameSanitized = d.name & "_" & v.name
       var handlerCalls: seq[string]
-      for decl in ctx.module.decls:
-        if decl.kind == dkFn and decl.name == handlerName:
-          var argNames: seq[string]
-          for f in v.fields: argNames.add(f.name)
-          handlerCalls.add("  " & handlerNameSanitized & "(" & argNames.join(", ") & ")")
+      for decl in registryHandlers(ctx.module, d, v):
+        var argNames: seq[string]
+        for f in v.fields: argNames.add(f.name)
+        handlerCalls.add("  " & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
 
       let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
       raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(" & TagField & ": " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")

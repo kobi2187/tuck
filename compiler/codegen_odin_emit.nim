@@ -20,7 +20,7 @@ import codegen_odin_util
 # file, before `package`.
 const odinFeatures = "#+feature dynamic-literals\n"
 
-from mangle import mangleName
+from mangle import mangleName, nkFn
 import ./codegen_odin_decl
 import ./codegen_odin
 
@@ -46,7 +46,7 @@ proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] 
 
 proc mainDecl*(m: Module): Decl =
   ## The program's entry fn, if it has one.
-  let tuckMain = mangleName("main")
+  let tuckMain = mangleName("main", nkFn)
   for d in m.decls:
     if d != nil and d.kind == dkFn and d.name == tuckMain and not d.isPending:
       return d
@@ -196,7 +196,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   let mainFn = mainDecl(m)
   let mainReturns = mainFn != nil and mainFn.returnsValue
   if mainFn != nil:
-    let tuckMain = mangleName("main")
+    let tuckMain = mangleName("main", nkFn)
     result.add(if mainReturns: "\tmainRc := " & tuckMain & "()\n"
                else: "\t" & tuckMain & "()\n")
   # Drive the loop only when TASKS exist. Actors are daemons whose drain loops

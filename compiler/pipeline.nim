@@ -26,7 +26,7 @@ import ssa_query
 import ssa_ir
 import ssa_liveness
 import tree_invariants
-from mangle import TuckNamePrefix, FoldSafePrefix
+from name_prefix import isMangledName
 
 type
   PipelineStage* = enum
@@ -225,10 +225,8 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
       " place(s) — " & bad[0 .. min(4, bad.high)].join("; "))
 
 proc allMangled(name: string): bool =
-  ## Either prefix: a user fn named after a runtime intrinsic (`fn at`) takes
-  ## FoldSafePrefix, because `tuck_at` IS `tuckAt` to Nim (mangle.nim).
-  name.len == 0 or name.startsWith(TuckNamePrefix) or
-    name.startsWith(FoldSafePrefix)
+  ## Any prefix name_prefix gives — all start `tuck_` (#78).
+  name.len == 0 or isMangledName(name)
 
 proc assertMangleIdempotent*(mods: seq[Module]) =
   ## After psMangle: every manglable name mangleProgram touches must

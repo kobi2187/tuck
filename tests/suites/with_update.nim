@@ -17,7 +17,7 @@
 ## The type-preservation rule has a codegen half that `tuck ch` cannot see:
 ## a named record must rebuild through its own constructor. Emitting bake's
 ## anonymous tuple typechecked clean and then failed the Nim compile with
-## `got tuple[...] but expected tuck_Task = object` — hence the run assertions.
+## `got tuple[...] but expected tuck_type_Task = object` — hence the run assertions.
 
 import ../harness
 
@@ -78,9 +78,9 @@ fn main() -> int:
   # assertion that fails if the emission ever reverts to bake's bare tuple.
   t.hostBuilds "every backend's host compiler accepts a `with` on a record"
   t.emits "a named record rebuilds through its constructor, not a tuple",
-          "tuck_Task\\(title: .bumped., done: self\\.done"
+          "tuck_type_Task\\(title: .bumped., done: self\\.done"
   t.emitsOdin "...and Odin uses its own struct literal",
-              r"tuck_Task\{title = "
+              r"tuck_type_Task\{title = "
 
   # A field the record has not got. `bake` would ADD it and silently change
   # the type; `with` refuses, because a grown shape is no longer a Task.

@@ -536,7 +536,7 @@ fn main() -> void [io]:
   let r = {alpha: 42, beta: "x", gamma: true} pick
   r sys::exit
 """), d / "out")
-  mustContain(d / "out" / "t.nim", "tuck_pick(42, \"x\", true)")
+  mustContain(d / "out" / "t.nim", "tuck_fn_pick(42, \"x\", true)")
   mustExit(d / "out" / "t", 42)
   removeDir(d)
 

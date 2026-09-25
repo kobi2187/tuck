@@ -159,7 +159,7 @@ closure no longer exist in any `codegen_*.nim`.
 |---|---|---|---|
 | — | **#87** | **FIXED 2026-09-25** — actor field initialisers are kept and checked (TK-TY29); on `type`/`object` fields refused (TK-TY30) | — |
 | S1.2 | **#73** | an imported `const` is invisible to the checker, so a wrong `Array` size is ACCEPTED. `typecheck.nim:1071` has the worked precedent | M |
-| S1.3 | **#78** | Nim's `tuck_` prefix collides `type Order` with `fn order` | S–M |
+| — | **#78** | **FIXED 2026-09-25** — the prefix keeps the first letter's case (`Tuck_Order`, `tuck_order`); `compiler/name_prefix.nim` | — |
 | — | **#79** | **FIXED 2026-09-25** — per-arm scoping in the Nim and Odin dispatch; see M4.3 | — |
 
 ### S2 — Finish partial features

@@ -1,15 +1,15 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_classifyPacket*(priority: tuck_Priority, size: tuck_SizeClass, encrypted: bool): tuck_Action
+proc tuck_fn_classifyPacket*(priority: tuck_type_Priority, size: tuck_type_SizeClass, encrypted: bool): tuck_type_Action
 
-type tuck_Priority* = enum high, low
+type tuck_type_Priority* = enum high, low
 
-type tuck_SizeClass* = enum big, small
+type tuck_type_SizeClass* = enum big, small
 
-type tuck_Action* = enum QueueSecure, QueueFast, QueueImmediate, QueueDefer
+type tuck_type_Action* = enum QueueSecure, QueueFast, QueueImmediate, QueueDefer
 
-proc tuck_classifyPacket*(priority: tuck_Priority, size: tuck_SizeClass, encrypted: bool): tuck_Action =
+proc tuck_fn_classifyPacket*(priority: tuck_type_Priority, size: tuck_type_SizeClass, encrypted: bool): tuck_type_Action =
   (case (((ord(priority) * 4) + (ord(size) * 2)) + ord(encrypted))
   of 0:
     return QueueFast

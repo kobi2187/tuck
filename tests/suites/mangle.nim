@@ -20,18 +20,18 @@ fn helper({a: int}) -> int:
 fn main() -> int:
   return {a: 5} helper
 """
-  t.emits "fn decl mangled",        "proc tuck_helper"
-  t.emits "fn call site mangled",   "tuck_helper\\("
+  t.emits "fn decl mangled",        "proc tuck_fn_helper"
+  t.emits "fn call site mangled",   "tuck_fn_helper\\("
   t.omits "no bare fn decl",        "proc helper"
   # Idempotence: each backend lowers its own deepCopy, and a pass that
   # double-prefixed would produce tuck_tuck_helper on the second run.
-  t.omits "no double prefix",       "tuck_tuck_"
+  t.omits "no double prefix",       r"tuck_(fn_|type_|val_)?tuck_"
   # Mangling is a whole-program pass that runs BEFORE either backend, so the two
   # cannot diverge by construction — but nothing said so, and the interface work
   # showed how quietly a backend can fall behind when only one is asserted.
-  t.emitsOdin "Odin: fn decl mangled",      "tuck_helper :: proc"
-  t.emitsOdin "Odin: fn call site mangled", "tuck_helper\\("
-  t.omitsOdin "Odin: no double prefix",     "tuck_tuck_"
+  t.emitsOdin "Odin: fn decl mangled",      "tuck_fn_helper :: proc"
+  t.emitsOdin "Odin: fn call site mangled", "tuck_fn_helper\\("
+  t.omitsOdin "Odin: no double prefix",     r"tuck_(fn_|type_|val_)?tuck_"
 
   # The whole point: a user fn named like a runtime proc must not collide.
   t.src """
@@ -43,7 +43,7 @@ fn main() -> int:
     return 1
   return 0
 """
-  t.emits "fn named 'ready' is safe",  "proc tuck_ready"
+  t.emits "fn named 'ready' is safe",  "proc tuck_fn_ready"
   t.omits "runtime 'ready' untouched", "proc ready\\*"
 
   # Type declarations and every mention of the type.
@@ -58,7 +58,7 @@ fn main() -> void:
   let cfg = {url: "x"} Config
   return
 """
-  t.emits "type decl and uses mangled", "tuck_Config"
+  t.emits "type decl and uses mangled", "tuck_type_Config"
   t.omits "no bare type decl",          "type Config\\*"
 
   # FIELDS stay bare — they are namespaced by their record and mangling them
@@ -106,7 +106,7 @@ fn main() -> void:
   return
 """
   t.emits "extern call verbatim",    "readFile\\("
-  t.omits "externs are NOT mangled", "tuck_readFile"
-  t.omitsOdin "Odin: externs NOT mangled", "tuck_readFile"
+  t.omits "externs are NOT mangled", r"tuck_\w*readFile"
+  t.omitsOdin "Odin: externs NOT mangled", "tuck_fn_readFile"
 
   t.finish()

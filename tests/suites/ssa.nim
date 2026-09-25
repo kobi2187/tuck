@@ -234,7 +234,7 @@ fn main() -> int:
 """
   t.okCheck "a parameter iterated once checks"
   t.emits "...and its only read is final, so Nim gets sink",
-          r"proc tuck_total\*\(xs: sink seq\[int\]\)"
+          r"proc tuck_fn_total\*\(xs: sink seq\[int\]\)"
   t.runs "...and it still computes what it did", 6
   t.hostRuns("...on every backend", 6)
 
@@ -292,7 +292,7 @@ fn main() -> int:
 """
   t.okCheck "an actor field handed to a threading fn checks"
   t.emitsOdin "...and reaches the copying wrapper, not the twin",
-              r"tuck_grow\(self\.st\)"
+              r"tuck_fn_grow\(self\.st\)"
   # 7 + 0. A twin that took the field destructively would free it, and the
   # read after the wait would answer with whatever was left.
   t.hostRuns("...so the actor's own buffer survives", 7)

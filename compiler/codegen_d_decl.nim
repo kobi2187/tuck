@@ -169,13 +169,11 @@ proc dRegistryHandlerCalls*(ctx: DCodegenCtx, d: Decl,
   ## Every declared handler for this event, called with the event's fields.
   ## The checker requires at least one — an event nothing listens to is a
   ## signal that silently goes nowhere (spec Part 10).
-  let handlerName = d.name & "." & v.name
   var calls: seq[string]
-  for decl in ctx.module.decls:
-    if decl == nil or decl.kind != dkFn or decl.name != handlerName: continue
+  for decl in registryHandlers(ctx.module, d, v):
     var argNames: seq[string]
     for f in v.fields: argNames.add(f.name)
-    calls.add("    " & dHandlerFnName(handlerName) & "(" &
+    calls.add("    " & handlerProcName(decl) & "(" &
               argNames.join(", ") & ");")
   if calls.len > 0: calls.join("\n") & "\n" else: ""
 

@@ -53,36 +53,39 @@
 # mangled name is a guess, and it breaks as soon as anything else adds one.
 import ast, strutils, sets, tables, std/options
 import resolution
-
-const TuckNamePrefix* = "tuck_"
-const FoldSafePrefix* = "tuckfn_"
+import name_prefix
+export name_prefix
 
 const RtFoldableIntrinsics = [
   "at", "setAt", "concat", "sat", "satI",
   "seqBounds", "seqCopy", "spawn", "setArgs",
 ]
-  ## User fn names whose ORDINARY mangling collides with a runtime intrinsic
+  ## Value names whose ORDINARY mangling collides with a runtime intrinsic
   ## — on Nim, and only on Nim, because Nim identifiers ignore underscores
-  ## and case after the first character. `fn at` mangles to `tuck_at`, which
-  ## IS `tuckAt` to Nim, so the module both rebinds every `xs[i]` in the
-  ## program to itself and then reports the user's own call as ambiguous.
+  ## and case after the first character. A local `at` mangles to `tuck_at`,
+  ## which IS `tuckAt` to Nim, and would rebind every `xs[i]` in its scope.
+  ## A FN no longer can: it is `tuck_fn_at` (#78), which folds to nothing the
+  ## compiler introduces. `fn at` was how this was found.
   ##
   ## The list is the intrinsics the COMPILER introduces (see
   ## codegen_common.RtIntrinsicNames), spelled as the user name that would
   ## fold into each. alloc.vec found it: its API deliberately keeps std/seq's
   ## `at`/`setAt` spellings rather than inventing new ones.
 
-proc mangleName*(name: string): string =
+proc mangleName*(name: string, kind = nkValue): string =
   ## Idempotent: re-running the pass over an already-lowered tree is a no-op,
   ## which matters because each backend lowers its own deepCopy.
   ##
   ## Mangled in ONE place for all three backends, so a name is spelled the
-  ## same everywhere even though only Nim can fold it. Nothing in the corpus
-  ## carries a folding name, so this changes no existing output.
-  if name.len == 0 or name.startsWith(TuckNamePrefix) or
-     name.startsWith(FoldSafePrefix): return name
-  if name in RtFoldableIntrinsics: return FoldSafePrefix & name
-  TuckNamePrefix & name
+  ## same everywhere even though only Nim can fold it.
+  if name.len == 0 or isMangledName(name): return name
+  if kind == nkValue and name in RtFoldableIntrinsics:
+    return FoldSafePrefix & name
+  prefixed(name, kind)
+
+type MangleNames* = Table[string, NameKind]
+  ## Every top-level name the program declares and renames, under the name
+  ## the user wrote, with the kind that picks its prefix.
 
 proc rememberSource(slot: var Option[string], name: string) =
   ## Records the pre-mangle name, once. Guarded because each backend lowers
@@ -90,21 +93,28 @@ proc rememberSource(slot: var Option[string], name: string) =
   ## the original with the already-mangled name.
   if slot.isNone: slot = some(name)
 
+proc nameKind(d: Decl): NameKind =
+  ## Which prefix a declaration's name takes (#78).
+  case d.kind
+  of dkFn, dkTask: nkFn
+  of dkType, dkObject, dkActor, dkFnSig: nkType
+  else: nkValue
+
 proc renameDecl(d: Decl) =
   ## Renames a decl to its mangled form, keeping what the user wrote.
   rememberSource(d.sourceName, d.name)
-  d.name = mangleName(d.name)
+  d.name = mangleName(d.name, nameKind(d))
 
-proc renameType(t: Type) =
+proc renameType(t: Type, kind: NameKind) =
   ## Renames a named type reference, keeping what the user wrote.
   rememberSource(t.sourceName, t.name)
-  t.name = mangleName(t.name)
+  t.name = mangleName(t.name, kind)
 
-proc renameVar(e: Expr) =
-  ## Renames a variable reference that resolves to a top-level decl,
-  ## keeping what the user wrote.
+proc renameVar(e: Expr, kind: NameKind) =
+  ## Renames a variable reference — to a top-level decl, or a local (always
+  ## nkValue) — keeping what the user wrote.
   rememberSource(e.sourceName, e.name)
-  e.name = mangleName(e.name)
+  e.name = mangleName(e.name, kind)
 
 proc isManglable(d: Decl): bool =
   ## Externs bind a foreign symbol by name, so they keep theirs.
@@ -121,28 +131,25 @@ proc isManglable(d: Decl): bool =
 
 # The set of names a module declares and will rename. Built first so
 # reference sites can tell a global from a local without re-scanning.
-proc manglableNames*(m: Module): HashSet[string] =
-  result = initHashSet[string]()
+proc manglableNames*(m: Module): MangleNames =
   for d in m.decls:
-    if isManglable(d): result.incl(d.name)
+    if isManglable(d): result[d.name] = nameKind(d)
     # members of a mixin / extern / pending block become top-level fns in
     # every backend, so their names are manglable too
     if d != nil and d.kind in {dkMixin, dkExtern, dkPending}:
       for mem in d.mixinMembers:
-        if isManglable(mem): result.incl(mem.name)
+        if isManglable(mem): result[mem.name] = nameKind(mem)
 
 # The union across the whole import closure. A qualified reference
 # (`http::get`) names a decl in ANOTHER module, so deciding whether it is
 # manglable needs the closure: `http::get` is a user fn and becomes
 # tuck_get, while `fs::readFile` is an extern and must stay verbatim. One
 # module alone cannot tell these apart.
-proc programNames*(mods: seq[Module]): HashSet[string] =
-  result = initHashSet[string]()
+proc programNames*(mods: seq[Module]): MangleNames =
   for m in mods:
-    let ns = manglableNames(m)
-    for n in ns: result.incl(n)
+    for n, k in manglableNames(m): result[n] = k
 
-proc mangleType(t: Type, names: HashSet[string]) =
+proc mangleType(t: Type, names: MangleNames) =
   ## Rename every type NAME reachable from `t`. Field and variant names stay
   ## bare — only the types they hold resolve to declarations, and ast.children
   ## yields exactly those.
@@ -153,15 +160,15 @@ proc mangleType(t: Type, names: HashSet[string]) =
   ## fnEffects, and `!T` is its own wrapper), so the divergence was latent
   ## rather than live. Sharing the iterator means the two cannot drift again.
   if t == nil: return
-  if t.kind == tkNamed and t.name in names: renameType(t)
+  if t.kind == tkNamed and t.name in names: renameType(t, names[t.name])
   for c in t.children: mangleType(c, names)
 
-proc mangleRefName(e: Expr, names: HashSet[string]) =
+proc mangleRefName(e: Expr, names: MangleNames) =
   ## Same treatment as exkSend's sendActor: a bare name naming a top-level
   ## declaration, renamed to match that declaration's own mangled name.
-  if e.refName in names: e.refName = mangleName(e.refName)
+  if e.refName in names: e.refName = mangleName(e.refName, names[e.refName])
 
-proc mangleExpr(res: Resolution, e: Expr, names: HashSet[string], locals: var HashSet[string],
+proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSet[string],
                 fields: HashSet[string] = initHashSet[string]())
 
 proc bindLoopVars(pat: Pattern, locals: var HashSet[string]) =
@@ -173,12 +180,12 @@ proc bindLoopVars(pat: Pattern, locals: var HashSet[string]) =
   case pat.kind
   of pkVar:
     locals.incl(pat.name)
-    pat.name = mangleName(pat.name)
+    pat.name = mangleName(pat.name, nkValue)
   of pkTuple:
     for el in pat.elems: bindLoopVars(el, locals)
   else: discard
 
-proc mangleFor(res: Resolution, e: Expr, names: HashSet[string], locals: var HashSet[string],
+proc mangleFor(res: Resolution, e: Expr, names: MangleNames, locals: var HashSet[string],
                fields: HashSet[string]) =
   ## The loop variable is a local for the body's duration — bound here, so
   ## renamed here, with the written name added to the body's scope so its
@@ -189,7 +196,7 @@ proc mangleFor(res: Resolution, e: Expr, names: HashSet[string], locals: var Has
   bindLoopVars(e.iter, inner)
   mangleExpr(res, e.body, names, inner, fields)
 
-proc mangleAssign(res: Resolution, e: Expr, names: HashSet[string], locals: var HashSet[string],
+proc mangleAssign(res: Resolution, e: Expr, names: MangleNames, locals: var HashSet[string],
                   fields: HashSet[string]) =
   ## `let x = ...` introduces a local that shadows from here on. Value FIRST,
   ## then the name becomes local — so `let x = x` reads the outer one. A bare
@@ -205,11 +212,11 @@ proc mangleAssign(res: Resolution, e: Expr, names: HashSet[string], locals: var 
   if e.target != nil and e.target.kind == exkVar and
      e.target.name notin fields:
     locals.incl(e.target.name)
-    renameVar(e.target)
+    renameVar(e.target, nkValue)
   else:
     mangleExpr(res, e.target, names, locals, fields)
 
-proc mangleExpr(res: Resolution, e: Expr, names: HashSet[string], locals: var HashSet[string],
+proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSet[string],
                 fields: HashSet[string] = initHashSet[string]()) =
   ## `locals` holds the names bound INSIDE this body — params, `let`/`var`
   ## bindings, loop variables — under the name the USER wrote.
@@ -238,15 +245,17 @@ proc mangleExpr(res: Resolution, e: Expr, names: HashSet[string], locals: var Ha
     # neither a local nor a global — the backends emit it as `self.name`,
     # against a field this pass never renames. Checked first, or an actor
     # handler's `state = ...` would be mistaken for a new local.
-    if e.name notin fields and (e.name in locals or e.name in names):
-      renameVar(e)
+    # A local shadows the global of the same name, so it is asked first.
+    if e.name in fields: discard
+    elif e.name in locals: renameVar(e, nkValue)
+    elif e.name in names: renameVar(e, names[e.name])
   of exkQualified:
     # `:fnref` (no module path) and `http::get` (qualified) both resolve
     # against the program-wide set, so a cross-module reference lands on the
     # same name that module's own pass produced — and an extern like
     # `fs::readFile`, which is never manglable, stays verbatim.
     if e.qualName in names:
-      e.qualName = mangleName(e.qualName)
+      e.qualName = mangleName(e.qualName, names[e.qualName])
   # The uniform middle: kinds whose children are all walked with the SAME
   # locals set, in no particular order. Everything with a scoping rule of its
   # own — exkFor, exkAssign, exkMatch — is spelled out below instead, because
@@ -262,7 +271,8 @@ proc mangleExpr(res: Resolution, e: Expr, names: HashSet[string], locals: var Ha
   of exkFor: mangleFor(res, e, names, locals, fields)
   of exkAssign: mangleAssign(res, e, names, locals, fields)
   of exkSend:
-    if e.sendActor in names: e.sendActor = mangleName(e.sendActor)
+    if e.sendActor in names:
+      e.sendActor = mangleName(e.sendActor, names[e.sendActor])
     mangleExpr(res, e.sendPayload, names, locals, fields)
   of exkSelect:
     for arm in e.selArms:
@@ -279,7 +289,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: HashSet[string], locals: var Ha
   of exkLit, exkBreak, exkContinue, exkImport, exkTripleDot:
     discard
 
-proc mangleFnBody(res: Resolution, d: Decl, names: HashSet[string],
+proc mangleFnBody(res: Resolution, d: Decl, names: MangleNames,
                   fields: HashSet[string] = initHashSet[string]()) =
   # Params are NOT renamed, and so are passed as `fields` rather than as
   # locals: a param name is a CONTRACT, not a free identifier. It is the
@@ -295,10 +305,10 @@ proc mangleFnBody(res: Resolution, d: Decl, names: HashSet[string],
   for p in d.fnParams: mangleType(p.typ, names)
   mangleType(d.fnReturnType, names)
 
-proc mangleMember(res: Resolution, mem: Decl, names: HashSet[string],
+proc mangleMember(res: Resolution, mem: Decl, names: MangleNames,
                   fields: HashSet[string] = initHashSet[string]())
 
-proc mangleMember(res: Resolution, mem: Decl, names: HashSet[string],
+proc mangleMember(res: Resolution, mem: Decl, names: MangleNames,
                   fields: HashSet[string] = initHashSet[string]()) =
   ## Members nest: a `pending:` block inside an object parses as a mixin whose
   ## own members are fns, so walking one level would miss their types — that
@@ -326,16 +336,16 @@ proc mangleMember(res: Resolution, mem: Decl, names: HashSet[string],
     for inner in mem.objMembers: mangleMember(res, inner, names)
   else: discard
 
-proc mangleModuleWith(res: Resolution, m: Module, names: HashSet[string])
+proc mangleModuleWith(res: Resolution, m: Module, names: MangleNames)
 
-proc mangleFieldInits(res: Resolution, d: Decl, names: HashSet[string]) =
+proc mangleFieldInits(res: Resolution, d: Decl, names: MangleNames) =
   ## An actor field's initialiser (#87) is an expression like any body's.
   for f in d.actorFields:
     if f.default != nil:
       var l = initHashSet[string]()
       mangleExpr(res, f.default, names, l)
 
-proc mangleDeclRefs(res: Resolution, d: Decl, names: HashSet[string]) =
+proc mangleDeclRefs(res: Resolution, d: Decl, names: MangleNames) =
   ## Rename every reference INSIDE a declaration, before the declaration
   ## itself is renamed.
   ##
@@ -415,7 +425,7 @@ proc mangleProgram*(res: Resolution, mods: seq[Module]) =
   for e in res.calls.values:
     mangleExpr(res, e, names, locals)
 
-proc mangleModuleWith(res: Resolution, m: Module, names: HashSet[string]) =
+proc mangleModuleWith(res: Resolution, m: Module, names: MangleNames) =
   ## Rename every manglable declaration in this module and every reference to
   ## one, resolving against the PROGRAM-WIDE name set so cross-module
   ## references land on the same symbol the target module produced.

@@ -846,9 +846,9 @@ fn main() -> int:
   # genOdinMemberFn gives EVERY member fn's self a pointer, ^T,
   # unconditionally — this call shape was unreachable before the checker
   # fix above, and the emitted call passed the receiver by value, which
-  # Odin itself rejects ("Cannot assign value 'd' ... to '^tuck_Deck'").
+  # Odin itself rejects ("Cannot assign value 'd' ... to '^tuck_type_Deck'").
   t.emitsOdin "Odin passes the receiver by address to match self: ^T",
-              r"tuck_Deck_crank\(&tuck_d, 1\)"
+              r"tuck_type_Deck_crank\(&tuck_d, 1\)"
 
   t.src """
 type Server:
@@ -2057,9 +2057,9 @@ fnsig Mapper[T, U] = {value: T} -> U
 type Box = {mapFn: Mapper[int, str]}
 """
   t.emits "generic fnsig emits a real Nim generic proc-type alias",
-          r"tuck_Mapper\*\[T, U\] = proc\(value: T\): U \{\.closure\.\}"
+          r"tuck_type_Mapper\*\[T, U\] = proc\(value: T\): U \{\.closure\.\}"
   t.emits "generic fnsig field instantiates concrete type args",
-          r"tuck_Mapper\[int, string\]"
+          r"tuck_type_Mapper\[int, string\]"
 
   t.src """
 fnsig Mapper[T, U] = {value: T} -> U
@@ -2530,7 +2530,7 @@ fn main() -> int:
 
   # A construction's field values are checked against the DECLARED field
   # types (TK-TY26). Nothing checked this: `{n: "oops"} Holder` against
-  # `n: int` typed clean, emitted `tuck_Holder(n: "oops")`, and the BACKEND's
+  # `n: int` typed clean, emitted `tuck_type_Holder(n: "oops")`, and the BACKEND's
   # compiler reported it — against generated code the author never wrote.
   # Calls had the check all along (checkArgField); constructions did not.
   t.src """

@@ -482,7 +482,7 @@ fn main() -> int:
   # --- a type may not contain itself by value -------------------------------
   #
   # Was caught only by the BACKEND, in the backend's words: `tuck ch` passed,
-  # then Nim said `illegal recursion in type 'tuck_Expr'` — a mangled name in
+  # then Nim said `illegal recursion in type 'tuck_type_Expr'` — a mangled name in
   # a generated file. (FRICTIONS #4.)
   #
   # A recursive SUM is no longer among them, as of the recursive-types work:
@@ -591,7 +591,7 @@ fn main() -> int:
   # Mutually recursive types THROUGH `Seq` are finite and legal — a Seq is a
   # handle. Nim resolves mutual type references only within ONE `type` block
   # and each emit site writes its own, so this failed with
-  # `undeclared identifier: 'tuck_B'`. Odin and D always resolved module-wide.
+  # `undeclared identifier: 'tuck_type_B'`. Odin and D always resolved module-wide.
   t.src """
 type A = {b: Seq[B]}
 type B = {a: Seq[A]}
@@ -720,9 +720,9 @@ fn main() -> int [io]:
 """
   t.okCheck "one generic actor, two instantiations"
   t.emits "...expands to a SEPARATE singleton per instantiation",
-          "tuck_Box_strSingleton"
+          "tuck_type_Box_strSingleton"
   t.emits "...and its own drain, so each is its own daemon",
-          "draintuck_Box_int"
+          "draintuck_type_Box_int"
   t.outputs "...the str instantiation carries a str", "hi"
   t.runs "...and the int one answers with its own value", 7
   t.hostRuns "...on every backend", 7
@@ -783,7 +783,7 @@ fn main() -> int:
 """
   t.okCheck "`...` is a legal type body, as it already was for object/actor"
   t.emits "...and the result is simply a type with no fields",
-          r"tuck_Handle\* = object"
+          r"tuck_type_Handle\* = object"
   t.hostRuns "...on every backend", 0
 
   # The three that always took it, pinned so they cannot diverge from `type`
@@ -879,7 +879,7 @@ fn main() -> int:
   t.emits "an unwritten `-> int` body announces itself instead of returning 0",
           "TUCK PENDING"
   t.omits "...and does not fall through to a bare `discard`", "= 0"
-  t.hostRuns "...on every backend", 0, "TUCK PENDING: tuck_half"
+  t.hostRuns "...on every backend", 0, "TUCK PENDING: tuck_fn_half"
 
   # An actor body is not a fn body: there is no return value to stub and no
   # PENDING entry to make, so `...` there stays the no-op it always was.

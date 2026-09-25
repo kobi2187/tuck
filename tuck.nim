@@ -1091,11 +1091,11 @@ when isMainModule:
         for d in lm.m.decls:
           if d == nil: continue
           if d.kind == dkActor and actorHasMessages(d):
-            actorNames.add(mangleName(d.name))
+            actorNames.add(mangleName(d.name, nkType))
           if d.kind == dkTask: hasTasks = true
       for d in m.decls:
         # `m` was mangled above, so `fn main` is now tuck_main here.
-        if d != nil and d.kind == dkFn and d.name == mangleName("main"):
+        if d != nil and d.kind == dkFn and d.name == mangleName("main", nkFn):
           hasMain = true
           mainReturns = d.fnReturnType != nil and
             not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name in ["void", "unit"])
@@ -1137,7 +1137,7 @@ when isMainModule:
         # drives tasks after main, keep main's return as the exit code via
         # mainRc. `fn main` is mangled like every other user fn, so the entry
         # calls the prefixed symbol.
-        let tuckMain = mangleName("main") & "()"
+        let tuckMain = mangleName("main", nkFn) & "()"
         # §7.4's close-all: report what leaked, then close every registry
         # table. It has to run BEFORE the process exits, which is why a
         # value-returning main binds its result first rather than exiting

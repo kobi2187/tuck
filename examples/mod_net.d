@@ -14,7 +14,7 @@ struct TRec_net_sent(T_sent) {
     T_sent sent;
 }
 
-enum tuck_NetError { Refused, AddressInUse, Unreachable, Closed, IoFailed }
+enum tuck_type_NetError { Refused, AddressInUse, Unreachable, Closed, IoFailed }
 
 rt.TuckResult!(TRec_net_fd!(long)) listen(long port) {
     return rt.listen!(rt.TuckResult!(TRec_net_fd!(long)))(port);

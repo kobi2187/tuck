@@ -1,9 +1,9 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_triggerEvent*(): void
-proc tuck_AppEvents_SensorFailure*(port: uint8, reason: sink string): void
-proc tuck_AppEvents_LowMemory*(remaining: uint32): void
+proc tuck_fn_triggerEvent*(): void
+proc tuck_fn_AppEvents_SensorFailure*(port: uint8, reason: sink string): void
+proc tuck_fn_AppEvents_LowMemory*(remaining: uint32): void
 
 type tuck_AppEventsKind* = enum SensorFailure, LowMemory
 type tuck_AppEvents* = ref object
@@ -16,21 +16,21 @@ var latesttuck_AppEvents*: tuck_AppEvents
 
 proc raise_tuck_AppEvents_SensorFailure*(port: uint8, reason: string) =
   latesttuck_AppEvents = tuck_AppEvents(tuckTag: SensorFailure, port: port, reason: reason)
-  tuck_AppEvents_SensorFailure(port, reason)
+  tuck_fn_AppEvents_SensorFailure(port, reason)
 
 proc raise_tuck_AppEvents_LowMemory*(remaining: uint32) =
   latesttuck_AppEvents = tuck_AppEvents(tuckTag: LowMemory, remaining: remaining)
-  tuck_AppEvents_LowMemory(remaining)
+  tuck_fn_AppEvents_LowMemory(remaining)
 
 
-proc tuck_triggerEvent*(): void =
+proc tuck_fn_triggerEvent*(): void =
   raise_tuck_AppEvents_SensorFailure(1, "timeout")
 
-proc tuck_AppEvents_SensorFailure*(port: uint8, reason: sink string): void =
+proc tuck_fn_AppEvents_SensorFailure*(port: uint8, reason: sink string): void =
   var tuck_x = port
   var tuck_y = reason
 
-proc tuck_AppEvents_LowMemory*(remaining: uint32): void =
+proc tuck_fn_AppEvents_LowMemory*(remaining: uint32): void =
   var tuck_left = remaining
 
 static: assert((1 == 1))

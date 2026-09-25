@@ -36,6 +36,7 @@
 # and shared by every pass, not micro-optimizing the scan.
 import ast, strutils, tables, sets, options
 import resolution
+import name_prefix
 export strutils.repeat, strutils.capitalizeAscii
 
 # `repeat` and `capitalize` used to be hand-written here and were byte-for-byte
@@ -551,7 +552,7 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
       # `noise` becomes `tuck_noise` whenever a top-level fn shares the name.
       # Both spellings mean this member. Same comparison
       # resolution.poolHandleName makes, for the same reason.
-      if mem.name == calleeName or "tuck_" & mem.name == calleeName:
+      if mem.name == calleeName or prefixed(mem.name, nkFn) == calleeName:
         return owner & "_" & mem.name
   ""
 
@@ -599,10 +600,10 @@ proc constDeclFor*(m: Module, raw: string): Decl =
   # (declared differently in two modules) stays unresolved rather than
   # resolving to whichever loaded first.
   result = m.findDecl(dkConst, raw)
-  if result == nil: result = m.findDecl(dkConst, "tuck_" & raw)
+  if result == nil: result = m.findDecl(dkConst, prefixed(raw, nkValue))
   if result != nil or raw in semLayer.ambiguousConsts: return
   result = semLayer.constNames.getOrDefault(raw, nil)
-  if result == nil: result = semLayer.constNames.getOrDefault("tuck_" & raw, nil)
+  if result == nil: result = semLayer.constNames.getOrDefault(prefixed(raw, nkValue), nil)
 
 proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   ## A size written as TEXT — an attribute's value, or an `Array[N, T]` size,

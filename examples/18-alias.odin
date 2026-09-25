@@ -15,17 +15,17 @@ TRec_id_name_length :: struct ($T_id: typeid, $T_name: typeid, $T_length: typeid
 	length: T_length,
 }
 
-tuck_playTrack :: proc(payload: $T) {
-	fmt.println("TUCK PENDING: tuck_playTrack invoked (not implemented)")
+tuck_fn_playTrack :: proc(payload: $T) {
+	fmt.println("TUCK PENDING: tuck_fn_playTrack invoked (not implemented)")
 }
 
-tuck_main :: proc () {
+tuck_fn_main :: proc () {
   tuck_externalTrack := TRec_trackId_title_durationMs(int, string, int){trackId = 42, title = "Slow Jam", durationMs = 215000}
   tuck_playerInput := TRec_id_name_length(int, string, int){id = tuck_externalTrack.trackId, name = tuck_externalTrack.title, length = tuck_externalTrack.durationMs}
-  tuck_playTrack(tuck_playerInput)
+  tuck_fn_playTrack(tuck_playerInput)
   return
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }

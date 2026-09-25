@@ -6,7 +6,7 @@ struct TRec_fs_content(T_content) {
     T_content content;
 }
 
-enum tuck_FsError { NotFound, AccessDenied, IoFailed }
+enum tuck_type_FsError { NotFound, AccessDenied, IoFailed }
 
 rt.TuckResult!(TRec_fs_content!(string)) readFile(string path) {
     return rt.readFile!(rt.TuckResult!(TRec_fs_content!(string)))(path);

@@ -1,11 +1,11 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_route*(priority: tuck_Priority, encrypted: bool): int
+proc tuck_fn_route*(priority: tuck_type_Priority, encrypted: bool): int
 
-type tuck_Priority* = enum High, Low
+type tuck_type_Priority* = enum High, Low
 
-proc tuck_route*(priority: tuck_Priority, encrypted: bool): int =
+proc tuck_fn_route*(priority: tuck_type_Priority, encrypted: bool): int =
   (case ((ord(priority) * 2) + ord(encrypted))
   of 0:
     return 2

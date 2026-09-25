@@ -352,7 +352,7 @@ fn main() -> int:
   return {e: t} total - 14
 """
   t.okCheck "a sum whose variant holds its own type is accepted"
-  t.emits "the edge declaration becomes a handle", r"left: seq\[tuck_Expr\]"
+  t.emits "the edge declaration becomes a handle", r"left: seq\[tuck_type_Expr\]"
   t.emits "a construction wraps the value", r"left: @\[tuck_a\]"
   t.emits "a read unwraps it", r"tuckAt\(e\.tuck_add\.left, 0\)"
   t.hostBuilds "...and every backend's host compiler accepts the result"
@@ -451,7 +451,7 @@ fn main() -> int:
   return 1
 """
   t.okCheck "mutually recursive fns check"
-  t.emits "the Nim backend forward-declares them", r"proc tuck_isOdd\*\(n: int\): bool\n"
+  t.emits "the Nim backend forward-declares them", r"proc tuck_fn_isOdd\*\(n: int\): bool\n"
   t.hostBuilds "...and every backend builds them"
   t.runs "...and 4 is even", 0
 
@@ -486,9 +486,9 @@ fn main() -> int:
 """
   t.okCheck "a JSON-shaped recursive sum checks"
   t.emits "an already-handled Seq edge is not boxed twice",
-          r"items: seq\[tuck_Json\]"
+          r"items: seq\[tuck_type_Json\]"
   t.emits "a direct edge gains exactly one handle",
-          r"label: string, inner: seq\[tuck_Json\]"
+          r"label: string, inner: seq\[tuck_type_Json\]"
   t.hostBuilds "...and every backend emits it"
   t.runs "...and the walk counts 3 nodes", 0
 
@@ -514,7 +514,7 @@ fn main() -> int:
   return 2
 """
   t.okCheck "comparing a payload sum checks"
-  t.emits "Nim gets a generated ==", r"proc `==`\*\(a, b: tuck_Shape\)"
+  t.emits "Nim gets a generated ==", r"proc `==`\*\(a, b: tuck_type_Shape\)"
   t.hostBuilds "...and every backend builds it"
   t.runs "...same variant and payload is equal; a different variant is not", 0
 

@@ -2,9 +2,9 @@ module _20_embedded_mp3_player;
 
 import rt = tuck_rt;
 
-alias tuck_Hz = uint;
+alias tuck_type_Hz = uint;
 
-alias tuck_Milliseconds = uint;
+alias tuck_type_Milliseconds = uint;
 
 enum tuck_SystemEventsKind { PlaybackStarted, PlaybackStopped, HardwareError }
 
@@ -17,17 +17,17 @@ __gshared tuck_SystemEvents latesttuck_SystemEvents;
 
 void raise_tuck_SystemEvents_PlaybackStarted() {
     latesttuck_SystemEvents = tuck_SystemEvents(tuck_SystemEventsKind.PlaybackStarted);
-    tuck_SystemEvents_PlaybackStarted();
+    tuck_fn_SystemEvents_PlaybackStarted();
 }
 
 void raise_tuck_SystemEvents_PlaybackStopped() {
     latesttuck_SystemEvents = tuck_SystemEvents(tuck_SystemEventsKind.PlaybackStopped);
-    tuck_SystemEvents_PlaybackStopped();
+    tuck_fn_SystemEvents_PlaybackStopped();
 }
 
 void raise_tuck_SystemEvents_HardwareError(ubyte code) {
     latesttuck_SystemEvents = tuck_SystemEvents(tuck_SystemEventsKind.HardwareError, code: code);
-    tuck_SystemEvents_HardwareError(code);
+    tuck_fn_SystemEvents_HardwareError(code);
 }
 
 
@@ -67,49 +67,49 @@ void tuck_DMA1_CH3_TCIE_set(bool value) {
     else *tuck_DMA1_CH3 &= ~(1u << tuck_DMA1_CH3_TCIE_SHIFT);
 }
 
-enum tuck_PlayerStateKind { Idle, Decoding, Paused }
+enum tuck_type_PlayerStateKind { Idle, Decoding, Paused }
 
-struct tuck_PlayerState_Decoding {
-    tuck_Hz sampleRate;
+struct tuck_type_PlayerState_Decoding {
+    tuck_type_Hz sampleRate;
 }
 
-struct tuck_PlayerState {
-    tuck_PlayerStateKind kind;
+struct tuck_type_PlayerState {
+    tuck_type_PlayerStateKind kind;
     union {
-        tuck_PlayerState_Decoding tuck_decoding;
+        tuck_type_PlayerState_Decoding tuck_decoding;
     }
-    bool opEquals(const tuck_PlayerState o) const {
+    bool opEquals(const tuck_type_PlayerState o) const {
         if (kind != o.kind) return false;
         final switch (kind) {
-        case tuck_PlayerStateKind.Idle: return true;
-        case tuck_PlayerStateKind.Decoding: return tuck_decoding == o.tuck_decoding;
-        case tuck_PlayerStateKind.Paused: return true;
+        case tuck_type_PlayerStateKind.Idle: return true;
+        case tuck_type_PlayerStateKind.Decoding: return tuck_decoding == o.tuck_decoding;
+        case tuck_type_PlayerStateKind.Paused: return true;
         }
     }
 }
 
 __gshared rt.ObjectPool!(ubyte[512], 4) tuck_BufferPool;
 
-struct tuck_Volume {
+struct tuck_type_Volume {
     ubyte level;
 }
 
-void validate_tuck_Volume(tuck_Volume self)
+void validate_tuck_type_Volume(tuck_type_Volume self)
 {
     version (tuckNoInvariants) {} else
     {
         if (!((self.level <= 100L)))
-            rt.tuckInvariantFailed("(self.level <= 100L)", "tuck_Volume");
+            rt.tuckInvariantFailed("(self.level <= 100L)", "tuck_type_Volume");
     }
 }
 
-tuck_Volume __validated_tuck_Volume(tuck_Volume v)
+tuck_type_Volume __validated_tuck_type_Volume(tuck_type_Volume v)
 {
-    validate_tuck_Volume(v);
+    validate_tuck_type_Volume(v);
     return v;
 }
 
-rt.TuckResult!(rt.TuckUnit) tuck_streamReader(ubyte streamId, uint[] chunks) {
+rt.TuckResult!(rt.TuckUnit) tuck_fn_streamReader(ubyte streamId, uint[] chunks) {
     foreach (tuck_i; chunks) {
         rt.TuckResult!(rt.PoolHandle) tuck_buf = rt.acquire(tuck_BufferPool);
         if (!(tuck_buf.status == rt.TuckStatus.Ok)) {
@@ -121,116 +121,116 @@ rt.TuckResult!(rt.TuckUnit) tuck_streamReader(ubyte streamId, uint[] chunks) {
     return typeof(return).init;
 }
 
-enum tuck_DecoderMsgKind { msgPlay, msgPause, msgStop }
+enum tuck_type_DecoderMsgKind { msgPlay, msgPause, msgStop }
 
-struct tuck_DecoderMsg {
-    tuck_DecoderMsgKind tuckTag;
-    tuck_Hz rate;
+struct tuck_type_DecoderMsg {
+    tuck_type_DecoderMsgKind tuckTag;
+    tuck_type_Hz rate;
 }
 
-struct tuck_Decoder {
-    tuck_PlayerState state;
-    tuck_Volume vol;
-    rt.Mailbox!(tuck_DecoderMsg, 8) mailbox;
+struct tuck_type_Decoder {
+    tuck_type_PlayerState state;
+    tuck_type_Volume vol;
+    rt.Mailbox!(tuck_type_DecoderMsg, 8) mailbox;
 }
 
-__gshared tuck_Decoder tuck_DecoderSingleton;
+__gshared tuck_type_Decoder tuck_type_DecoderSingleton;
 
 shared static this() {
-    tuck_DecoderSingleton.state = tuck_PlayerState(tuck_PlayerStateKind.Idle);
-    tuck_DecoderSingleton.vol = __validated_tuck_Volume(tuck_Volume(level: 80L));
+    tuck_type_DecoderSingleton.state = tuck_type_PlayerState(tuck_type_PlayerStateKind.Idle);
+    tuck_type_DecoderSingleton.vol = __validated_tuck_type_Volume(tuck_type_Volume(level: 80L));
 }
 
-void handleMsg_tuck_Decoder(ref tuck_Decoder self, tuck_DecoderMsg msg) {
+void handleMsg_tuck_type_Decoder(ref tuck_type_Decoder self, tuck_type_DecoderMsg msg) {
     final switch (msg.tuckTag) {
-        case tuck_DecoderMsgKind.msgPlay:
+        case tuck_type_DecoderMsgKind.msgPlay:
             auto rate = msg.rate;
             final switch (self.state.kind) {
-            case tuck_PlayerStateKind.Idle:
-                self.state = tuck_PlayerState(kind: tuck_PlayerStateKind.Decoding, tuck_decoding: tuck_PlayerState_Decoding(sampleRate: rate));
+            case tuck_type_PlayerStateKind.Idle:
+                self.state = tuck_type_PlayerState(kind: tuck_type_PlayerStateKind.Decoding, tuck_decoding: tuck_type_PlayerState_Decoding(sampleRate: rate));
                 raise_tuck_SystemEvents_PlaybackStarted();
                 tuck_DAC_CR_EN_set(true);
                 break;
-            case tuck_PlayerStateKind.Paused:
-                self.state = tuck_PlayerState(kind: tuck_PlayerStateKind.Decoding, tuck_decoding: tuck_PlayerState_Decoding(sampleRate: rate));
+            case tuck_type_PlayerStateKind.Paused:
+                self.state = tuck_type_PlayerState(kind: tuck_type_PlayerStateKind.Decoding, tuck_decoding: tuck_type_PlayerState_Decoding(sampleRate: rate));
                 raise_tuck_SystemEvents_PlaybackStarted();
                 tuck_DAC_CR_EN_set(true);
                 break;
-            case tuck_PlayerStateKind.Decoding:
+            case tuck_type_PlayerStateKind.Decoding:
                 break;
             }
             break;
-        case tuck_DecoderMsgKind.msgPause:
+        case tuck_type_DecoderMsgKind.msgPause:
             final switch (self.state.kind) {
-            case tuck_PlayerStateKind.Decoding:
-                self.state = tuck_PlayerState(tuck_PlayerStateKind.Paused);
+            case tuck_type_PlayerStateKind.Decoding:
+                self.state = tuck_type_PlayerState(tuck_type_PlayerStateKind.Paused);
                 break;
-            case tuck_PlayerStateKind.Idle:
+            case tuck_type_PlayerStateKind.Idle:
                 break;
-            case tuck_PlayerStateKind.Paused:
+            case tuck_type_PlayerStateKind.Paused:
                 break;
             }
             tuck_DAC_CR_EN_set(false);
             break;
-        case tuck_DecoderMsgKind.msgStop:
-            self.state = tuck_PlayerState(tuck_PlayerStateKind.Idle);
+        case tuck_type_DecoderMsgKind.msgStop:
+            self.state = tuck_type_PlayerState(tuck_type_PlayerStateKind.Idle);
             raise_tuck_SystemEvents_PlaybackStopped();
             tuck_DAC_CR_EN_set(false);
             break;
     }
 }
 
-__gshared void* tuck_DecoderSlot;
+__gshared void* tuck_type_DecoderSlot;
 
-bool drain_tuck_Decoder() {
+bool drain_tuck_type_Decoder() {
     bool did = false;
-    foreach (ref msg; tuck_DecoderSingleton.mailbox) {
-        handleMsg_tuck_Decoder(tuck_DecoderSingleton, msg);
+    foreach (ref msg; tuck_type_DecoderSingleton.mailbox) {
+        handleMsg_tuck_type_Decoder(tuck_type_DecoderSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
     }
     return did;
 }
 
-void sendPlay_tuck_Decoder(ref tuck_Decoder self, tuck_Hz rate) {
-    cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuckTag: tuck_DecoderMsgKind.msgPlay, rate: rate));
-    rt.tuckNotifySend(tuck_DecoderSlot);
+void sendPlay_tuck_type_Decoder(ref tuck_type_Decoder self, tuck_type_Hz rate) {
+    cast(void) rt.enqueue(self.mailbox, tuck_type_DecoderMsg(tuckTag: tuck_type_DecoderMsgKind.msgPlay, rate: rate));
+    rt.tuckNotifySend(tuck_type_DecoderSlot);
 }
 
-void sendPause_tuck_Decoder(ref tuck_Decoder self) {
-    cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuckTag: tuck_DecoderMsgKind.msgPause));
-    rt.tuckNotifySend(tuck_DecoderSlot);
+void sendPause_tuck_type_Decoder(ref tuck_type_Decoder self) {
+    cast(void) rt.enqueue(self.mailbox, tuck_type_DecoderMsg(tuckTag: tuck_type_DecoderMsgKind.msgPause));
+    rt.tuckNotifySend(tuck_type_DecoderSlot);
 }
 
-void sendStop_tuck_Decoder(ref tuck_Decoder self) {
-    cast(void) rt.enqueue(self.mailbox, tuck_DecoderMsg(tuckTag: tuck_DecoderMsgKind.msgStop));
-    rt.tuckNotifySend(tuck_DecoderSlot);
+void sendStop_tuck_type_Decoder(ref tuck_type_Decoder self) {
+    cast(void) rt.enqueue(self.mailbox, tuck_type_DecoderMsg(tuckTag: tuck_type_DecoderMsgKind.msgStop));
+    rt.tuckNotifySend(tuck_type_DecoderSlot);
 }
 
 
-static assert((tuck_Volume.sizeof == 1L));
+static assert((tuck_type_Volume.sizeof == 1L));
 
-void tuck_SystemEvents_PlaybackStarted() {
+void tuck_fn_SystemEvents_PlaybackStarted() {
     tuck_DAC_CR_EN_set(true);
 }
 
-void tuck_SystemEvents_PlaybackStopped() {
+void tuck_fn_SystemEvents_PlaybackStopped() {
     tuck_DAC_CR_EN_set(false);
 }
 
-void tuck_SystemEvents_HardwareError(ubyte code) {
+void tuck_fn_SystemEvents_HardwareError(ubyte code) {
     ubyte tuck_failed = code;
     tuck_DAC_CR_EN_set(false);
 }
 
-void tuck_main() {
+void tuck_fn_main() {
 }
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    tuck_DecoderSlot = rt.tuckStartActor(&drain_tuck_Decoder);
-    tuck_main();
+    tuck_type_DecoderSlot = rt.tuckStartActor(&drain_tuck_type_Decoder);
+    tuck_fn_main();
     rt.tuckRun();
     rt.tuckDrainActors();
 }

@@ -51,17 +51,17 @@ latesttuck_Intersection: tuck_Intersection
 
 raise_tuck_Intersection_PhaseChanged :: proc(to: u8) {
 	latesttuck_Intersection = tuck_Intersection{tuckTag = .PhaseChanged, to = to}
-	tuck_Intersection_PhaseChanged(to)
+	tuck_fn_Intersection_PhaseChanged(to)
 }
 
 raise_tuck_Intersection_Preempted :: proc(source: u8) {
 	latesttuck_Intersection = tuck_Intersection{tuckTag = .Preempted, source = source}
-	tuck_Intersection_Preempted(source)
+	tuck_fn_Intersection_Preempted(source)
 }
 
 
-tuck_Phase :: enum { NorthSouth, NsClearing, EastWest, EwClearing }
-canTransition_tuck_Phase :: proc(frm: tuck_Phase, to: tuck_Phase) -> bool {
+tuck_type_Phase :: enum { NorthSouth, NsClearing, EastWest, EwClearing }
+canTransition_tuck_type_Phase :: proc(frm: tuck_type_Phase, to: tuck_type_Phase) -> bool {
 	switch frm {
 	case .NorthSouth: return to == .NsClearing
 	case .NsClearing: return to == .EastWest
@@ -70,54 +70,54 @@ canTransition_tuck_Phase :: proc(frm: tuck_Phase, to: tuck_Phase) -> bool {
 	}
 	return false
 }
-transitionTo_tuck_Phase :: proc(self: ^tuck_Phase, target: tuck_Phase) {
-	assert(canTransition_tuck_Phase(self^, target), "Invalid transition")
+transitionTo_tuck_type_Phase :: proc(self: ^tuck_type_Phase, target: tuck_type_Phase) {
+	assert(canTransition_tuck_type_Phase(self^, target), "Invalid transition")
 	self^ = target
 }
 
-tuck_Demand :: enum { quiet, northSouth, eastWest, both }
+tuck_type_Demand :: enum { quiet, northSouth, eastWest, both }
 
-tuck_nextPhase :: proc (current: tuck_Phase, demand: tuck_Demand, preempt: bool) -> tuck_Phase {
+tuck_fn_nextPhase :: proc (current: tuck_type_Phase, demand: tuck_type_Demand, preempt: bool) -> tuck_type_Phase {
   switch ((((int(current) * 8) + (int(demand) * 2)) + (preempt ? 1 : 0)))
   {
-  case 0, 2, 24, 25, 26, 27, 28, 29, 30, 31: return tuck_Phase.NorthSouth;
-  case 1, 3, 4, 5, 6, 7: return tuck_Phase.NsClearing;
-  case 8, 9, 10, 11, 12, 13, 14, 15, 16, 20: return tuck_Phase.EastWest;
-  case: return tuck_Phase.EwClearing;
+  case 0, 2, 24, 25, 26, 27, 28, 29, 30, 31: return tuck_type_Phase.NorthSouth;
+  case 1, 3, 4, 5, 6, 7: return tuck_type_Phase.NsClearing;
+  case 8, 9, 10, 11, 12, 13, 14, 15, 16, 20: return tuck_type_Phase.EastWest;
+  case: return tuck_type_Phase.EwClearing;
   }
   return {}
 }
 
-DetectorTag :: enum { Detector_is_tuck_CameraDetector, Detector_is_tuck_LoopDetector }
+DetectorTag :: enum { Detector_is_tuck_type_CameraDetector, Detector_is_tuck_type_LoopDetector }
 
 Detector :: struct {
 	tag: DetectorTag,
-	tuck_CameraDetectorVal: tuck_CameraDetector,
-	tuck_LoopDetectorVal: tuck_LoopDetector,
+	tuck_type_CameraDetectorVal: tuck_type_CameraDetector,
+	tuck_type_LoopDetectorVal: tuck_type_LoopDetector,
 }
 
-tuck_LoopDetector :: struct {
+tuck_type_LoopDetector :: struct {
 	lane: int,
 }
 
-tuck_LoopDetector_tuck_healthy :: proc (self: ^tuck_LoopDetector) -> bool {
+tuck_type_LoopDetector_tuck_fn_healthy :: proc (self: ^tuck_type_LoopDetector) -> bool {
   return true
 }
 
-tuck_LoopDetector_reads :: proc (self: ^tuck_LoopDetector) -> int {
+tuck_type_LoopDetector_reads :: proc (self: ^tuck_type_LoopDetector) -> int {
   return self^.lane
 }
 
 
-tuck_CameraDetector :: struct {
+tuck_type_CameraDetector :: struct {
 	confidence: u8,
 }
 
-tuck_CameraDetector_tuck_healthy :: proc (self: ^tuck_CameraDetector) -> bool {
+tuck_type_CameraDetector_tuck_fn_healthy :: proc (self: ^tuck_type_CameraDetector) -> bool {
   return true
 }
 
-tuck_CameraDetector_reads :: proc (self: ^tuck_CameraDetector) -> int {
+tuck_type_CameraDetector_reads :: proc (self: ^tuck_type_CameraDetector) -> int {
   if (self^.confidence > 80) {
       return 3
   }
@@ -125,139 +125,139 @@ tuck_CameraDetector_reads :: proc (self: ^tuck_CameraDetector) -> int {
 }
 
 
-tuck_SignalsMsgKind :: enum { msgSense }
-tuck_SignalsMsg :: struct {
-	tuckTag: tuck_SignalsMsgKind,
-	demand: tuck_Demand,
+tuck_type_SignalsMsgKind :: enum { msgSense }
+tuck_type_SignalsMsg :: struct {
+	tuckTag: tuck_type_SignalsMsgKind,
+	demand: tuck_type_Demand,
 	preempt: bool,
 }
-tuck_Signals :: struct {
-	phase: tuck_Phase,
+tuck_type_Signals :: struct {
+	phase: tuck_type_Phase,
 	cycles: int,
-	mailbox: rt.Mailbox(tuck_SignalsMsg, 8),
+	mailbox: rt.Mailbox(tuck_type_SignalsMsg, 8),
 }
 
-tuck_SignalsSingleton: tuck_Signals
+tuck_type_SignalsSingleton: tuck_type_Signals
 
-handleMsg_tuck_Signals :: proc(self: ^tuck_Signals, msg: tuck_SignalsMsg) {
+handleMsg_tuck_type_Signals :: proc(self: ^tuck_type_Signals, msg: tuck_type_SignalsMsg) {
 	switch msg.tuckTag {
 	case .msgSense:
 		demand := msg.demand
 		preempt := msg.preempt
-    tuck_want := tuck_nextPhase(self.phase, demand, preempt)
+    tuck_want := tuck_fn_nextPhase(self.phase, demand, preempt)
     self.phase = tuck_want
     self.cycles = (self.cycles + 1)
 	}
 }
 
-tuck_SignalsSlot: rawptr
+tuck_type_SignalsSlot: rawptr
 
-drain_tuck_Signals :: proc() -> bool {
+drain_tuck_type_Signals :: proc() -> bool {
 	didWork := false
-	batch, n := rt.takeBatch(&tuck_SignalsSingleton.mailbox)
+	batch, n := rt.takeBatch(&tuck_type_SignalsSingleton.mailbox)
 	for i in 0 ..< n {
-		handleMsg_tuck_Signals(&tuck_SignalsSingleton, batch[i])
+		handleMsg_tuck_type_Signals(&tuck_type_SignalsSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
 	return didWork
 }
 
-sendSense_tuck_Signals :: proc(self: ^tuck_Signals, demand: tuck_Demand, preempt: bool) {
-	_ = rt.enqueue(&self.mailbox, tuck_SignalsMsg{tuckTag = .msgSense, demand = demand, preempt = preempt})
-	rt.tuckNotifySend(tuck_SignalsSlot)
+sendSense_tuck_type_Signals :: proc(self: ^tuck_type_Signals, demand: tuck_type_Demand, preempt: bool) {
+	_ = rt.enqueue(&self.mailbox, tuck_type_SignalsMsg{tuckTag = .msgSense, demand = demand, preempt = preempt})
+	rt.tuckNotifySend(tuck_type_SignalsSlot)
 }
 
-tuck_Intersection_PhaseChanged :: proc (to: u8) {
+tuck_fn_Intersection_PhaseChanged :: proc (to: u8) {
   tuck_SIGNAL_OUT_WALK_set(false)
 }
 
-tuck_Intersection_Preempted :: proc (source: u8) {
+tuck_fn_Intersection_Preempted :: proc (source: u8) {
   tuck_SIGNAL_OUT_NS_GREEN_set(false)
 }
 
-tuck_Interval :: struct {
+tuck_type_Interval :: struct {
 	ticks: int,
 }
 
-tuck_seconds :: proc (self: tuck_Interval) -> int {
+tuck_fn_seconds :: proc (self: tuck_type_Interval) -> int {
   return (self.ticks / 10)
 }
 
-tuck_longEnough :: proc (span: $T, atLeast: int) -> bool {
-  return (tuck_seconds(span) >= atLeast)
+tuck_fn_longEnough :: proc (span: $T, atLeast: int) -> bool {
+  return (tuck_fn_seconds(span) >= atLeast)
 }
 
-tuck_phaseIndex :: proc (p: tuck_Phase) -> int {
+tuck_fn_phaseIndex :: proc (p: tuck_type_Phase) -> int {
   switch (p)
   {
-  case tuck_Phase.NorthSouth: return 0;
-  case tuck_Phase.NsClearing: return 1;
-  case tuck_Phase.EastWest: return 2;
-  case tuck_Phase.EwClearing: return 3;
+  case tuck_type_Phase.NorthSouth: return 0;
+  case tuck_type_Phase.NsClearing: return 1;
+  case tuck_type_Phase.EastWest: return 2;
+  case tuck_type_Phase.EwClearing: return 3;
   }
   return {}
 }
 
-tuck_poll :: proc (d: Detector) -> tuck_Demand {
+tuck_fn_poll :: proc (d: Detector) -> tuck_type_Demand {
   tuck_bits := (proc(v: Detector) -> int {
 	switch v.tag {
-		case .Detector_is_tuck_CameraDetector:
-			tmp := v.tuck_CameraDetectorVal
-			return tuck_CameraDetector_reads(&tmp)
-		case .Detector_is_tuck_LoopDetector:
-			tmp := v.tuck_LoopDetectorVal
-			return tuck_LoopDetector_reads(&tmp)
+		case .Detector_is_tuck_type_CameraDetector:
+			tmp := v.tuck_type_CameraDetectorVal
+			return tuck_type_CameraDetector_reads(&tmp)
+		case .Detector_is_tuck_type_LoopDetector:
+			tmp := v.tuck_type_LoopDetectorVal
+			return tuck_type_LoopDetector_reads(&tmp)
 	}
 	return 0
 })(d)
   switch (tuck_bits)
   {
-  case 1: return tuck_Demand.northSouth;
-  case 2: return tuck_Demand.eastWest;
-  case 3: return tuck_Demand.both;
-  case: return tuck_Demand.quiet;
+  case 1: return tuck_type_Demand.northSouth;
+  case 2: return tuck_type_Demand.eastWest;
+  case 3: return tuck_type_Demand.both;
+  case: return tuck_type_Demand.quiet;
   }
   return {}
 }
 
-tuck_settled :: proc () -> bool {
-  return (tuck_SignalsSingleton.cycles > 2)
+tuck_fn_settled :: proc () -> bool {
+  return (tuck_type_SignalsSingleton.cycles > 2)
 }
 
-tuck_report :: proc (d: Detector) {
-  tuck_demand := tuck_poll(d)
-  sendSense_tuck_Signals(&tuck_SignalsSingleton, tuck_demand, false)
+tuck_fn_report :: proc (d: Detector) {
+  tuck_demand := tuck_fn_poll(d)
+  sendSense_tuck_type_Signals(&tuck_type_SignalsSingleton, tuck_demand, false)
   return
 }
 
-tuck_drive :: proc () {
-  tuck_loops := tuck_LoopDetector{lane = 1}
-  tuck_camera := tuck_CameraDetector{confidence = u8(91)}
-  tuck_report(Detector{tag = .Detector_is_tuck_CameraDetector, tuck_CameraDetectorVal = tuck_camera})
-  sendSense_tuck_Signals(&tuck_SignalsSingleton, tuck_Demand.quiet, false)
-  tuck_report(Detector{tag = .Detector_is_tuck_LoopDetector, tuck_LoopDetectorVal = tuck_loops})
+tuck_fn_drive :: proc () {
+  tuck_loops := tuck_type_LoopDetector{lane = 1}
+  tuck_camera := tuck_type_CameraDetector{confidence = u8(91)}
+  tuck_fn_report(Detector{tag = .Detector_is_tuck_type_CameraDetector, tuck_type_CameraDetectorVal = tuck_camera})
+  sendSense_tuck_type_Signals(&tuck_type_SignalsSingleton, tuck_type_Demand.quiet, false)
+  tuck_fn_report(Detector{tag = .Detector_is_tuck_type_LoopDetector, tuck_type_LoopDetectorVal = tuck_loops})
   return
 }
 
-tuck_main :: proc () -> int {
-  tuck_clearing := tuck_Interval{ticks = 45}
-  tuck_ok := tuck_longEnough(tuck_clearing, 4)
+tuck_fn_main :: proc () -> int {
+  tuck_clearing := tuck_type_Interval{ticks = 45}
+  tuck_ok := tuck_fn_longEnough(tuck_clearing, 4)
   if !tuck_ok {
       return 9
   }
-  tuck_drive()
-  rt.tuckWaitOn(tuck_SignalsSlot, tuck_settled)
-  return tuck_phaseIndex(tuck_SignalsSingleton.phase)
+  tuck_fn_drive()
+  rt.tuckWaitOn(tuck_type_SignalsSlot, tuck_fn_settled)
+  return tuck_fn_phaseIndex(tuck_type_SignalsSingleton.phase)
 }
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
-	tuck_SignalsSingleton.phase = tuck_Phase.NorthSouth
-	tuck_SignalsSingleton.cycles = 0
+	tuck_type_SignalsSingleton.phase = tuck_type_Phase.NorthSouth
+	tuck_type_SignalsSingleton.cycles = 0
 	rt.tuckAsyncInit()
-	tuck_SignalsSlot = rt.tuckStartActor(drain_tuck_Signals)
-	mainRc := tuck_main()
+	tuck_type_SignalsSlot = rt.tuckStartActor(drain_tuck_type_Signals)
+	mainRc := tuck_fn_main()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()
 	os.exit(mainRc)

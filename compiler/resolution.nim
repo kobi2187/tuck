@@ -9,6 +9,7 @@
 import tables, sets, strutils
 import ast
 import ssa_ir
+import name_prefix
 
 type
   Resolution* = ref object
@@ -124,10 +125,8 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     # The pool's name is MANGLED by the time codegen asks (`tuck_Cells`); the
     # handle type is not, because the checker synthesised it and mangling
     # walks the AST, which never held it. Compare both spellings rather than
-    # teaching mangle about a type that does not exist in the tree. (The
-    # literal prefix rather than mangle.TuckNamePrefix: resolution sits below
-    # mangle in the import graph.)
-    if d.name == pool or d.name == "tuck_" & pool: return true
+    # teaching mangle about a type that does not exist in the tree.
+    if d.name == pool or d.name == prefixed(pool, nkValue): return true
   return false
 
 proc resourceHandleName*(kind: string): string =

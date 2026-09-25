@@ -4,7 +4,7 @@ package main
 import fs "./mod_fs"
 import console "./mod_console"
 
-tuck_main :: proc () {
+tuck_fn_main :: proc () {
   tuck_w := fs.writeFile("/tmp/tuck-demo.txt", "hello from tuck")
   if (tuck_w.status == .Ok) {
       tuck_r := fs.readFile("/tmp/tuck-demo.txt")
@@ -17,5 +17,5 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }

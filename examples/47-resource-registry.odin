@@ -5,8 +5,8 @@ import "core:fmt"
 import "core:os"
 import rt "./tuckrt"
 
-tuck_NetState :: enum { Connecting, Ready, Closed }
-canTransition_tuck_NetState :: proc(frm: tuck_NetState, to: tuck_NetState) -> bool {
+tuck_type_NetState :: enum { Connecting, Ready, Closed }
+canTransition_tuck_type_NetState :: proc(frm: tuck_type_NetState, to: tuck_type_NetState) -> bool {
 	switch frm {
 	case .Connecting: return to == .Ready || to == .Closed
 	case .Ready: return to == .Closed
@@ -14,8 +14,8 @@ canTransition_tuck_NetState :: proc(frm: tuck_NetState, to: tuck_NetState) -> bo
 	}
 	return false
 }
-transitionTo_tuck_NetState :: proc(self: ^tuck_NetState, target: tuck_NetState) {
-	assert(canTransition_tuck_NetState(self^, target), "Invalid transition")
+transitionTo_tuck_type_NetState :: proc(self: ^tuck_type_NetState, target: tuck_type_NetState) {
+	assert(canTransition_tuck_type_NetState(self^, target), "Invalid transition")
 	self^ = target
 }
 
@@ -31,17 +31,17 @@ tuckResourcesShutdown :: proc() {
 	rt.shutdownResources(&tuckRes_net)
 }
 
-tuck_rawOpenUdp :: proc(payload: $T) -> int {
-	fmt.println("TUCK PENDING: tuck_rawOpenUdp invoked (not implemented)")
+tuck_fn_rawOpenUdp :: proc(payload: $T) -> int {
+	fmt.println("TUCK PENDING: tuck_fn_rawOpenUdp invoked (not implemented)")
 	return {}
 }
 
 
-tuck_openUdp :: proc (port: u16) -> rt.TuckResult(UdpHandle) {
-  return rt.acquireResource(&tuckRes_udp, i64(tuck_rawOpenUdp(port)), "47-resource-registry:73")
+tuck_fn_openUdp :: proc (port: u16) -> rt.TuckResult(UdpHandle) {
+  return rt.acquireResource(&tuckRes_udp, i64(tuck_fn_rawOpenUdp(port)), "47-resource-registry:73")
 }
 
-tuck_withScratch :: proc (n: int) -> int {
+tuck_fn_withScratch :: proc (n: int) -> int {
   tuck_scratch := n
   defer {
     tuck_scratch = 0
@@ -49,8 +49,8 @@ tuck_withScratch :: proc (n: int) -> int {
   return (tuck_scratch + 1)
 }
 
-tuck_serve :: proc (port: u16) -> int {
-  tuck_sock := tuck_openUdp(port)
+tuck_fn_serve :: proc (port: u16) -> int {
+  tuck_sock := tuck_fn_openUdp(port)
   if (tuck_sock.status == .Ok) {
       defer {
         rt.finishResource(&tuckRes_udp, tuck_sock.value)
@@ -60,12 +60,12 @@ tuck_serve :: proc (port: u16) -> int {
   return 0
 }
 
-tuck_main :: proc () -> int {
-  return tuck_withScratch(16)
+tuck_fn_main :: proc () -> int {
+  return tuck_fn_withScratch(16)
 }
 
 main :: proc() {
-	mainRc := tuck_main()
+	mainRc := tuck_fn_main()
 	tuckResourcesShutdown()
 	os.exit(mainRc)
 }

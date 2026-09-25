@@ -95,7 +95,7 @@ fn main() -> int:
   t.emitsD "M1: the entry point hands the command line to the runtime",
            r"rt\.tuckSetArgs\(args\);"
   t.emitsD "M1: Tuck int maps to 64-bit long, never D's 32-bit int",
-           r"long tuck_main\(\)"
+           r"long tuck_fn_main\(\)"
   t.runsD "M1: hello world builds with dmd and exits 7", 7, dmdExe
   t.frozenD "M1: hello world's full emitted D is stable"
 
@@ -190,9 +190,9 @@ fn main() -> int:
   t.emitsD "M3: record shape hoists as a TRec template",
            r"struct TRec_hits_title\(T_hits, T_title\) \{"
   t.emitsD "M3: pending stub is a function template",
-           r"tuck_fetch\(T\)\(T payload\) \{"
+           r"tuck_fn_fetch\(T\)\(T payload\) \{"
   t.emitsD "M3: pending stub logs to stderr like the Nim backend",
-           r"stderr\.writeln\(""TUCK PENDING: tuck_fetch invoked"
+           r"stderr\.writeln\(""TUCK PENDING: tuck_fn_fetch invoked"
   t.emitsD "M3: pending stub returns the zero value",
            r"return typeof\(return\)\.init;"
   t.runsD "M3: pending walking skeleton runs and returns the stub zero",
@@ -216,11 +216,11 @@ fn main() -> int:
   return c.total + r2 - r1
 """
   t.emitsD "M3: object emits a plain struct",
-           r"struct tuck_Counter \{"
+           r"struct tuck_type_Counter \{"
   t.emitsD "M3: member fn is a qualified free proc with ref self",
-           r"long tuck_Counter_bump\(ref tuck_Counter self\)"
+           r"long tuck_type_Counter_bump\(ref tuck_type_Counter self\)"
   t.emitsD "M3: record construction is a named-argument struct literal",
-           r"tuck_Counter\(total: 0L, step: 3L\)"
+           r"tuck_type_Counter\(total: 0L, step: 3L\)"
   t.runsD "M3: self mutation persists across calls (6+6-3)", 9, dmdExe
 
   # T17: Tuck Seq assignment copies; a bare D slice assignment would alias.
@@ -263,11 +263,11 @@ fn main() -> int:
   return ({c: x} rank) * 10 + ({c: y} rank)
 """
   t.emitsD "M4: a payload-free sum is a plain D enum",
-           r"enum tuck_Color \{ Red, Green, Blue \}"
+           r"enum tuck_type_Color \{ Red, Green, Blue \}"
   t.emitsD "M4: match is a final switch — D re-checks the arms are exhaustive",
            r"final switch \(c\) \{"
   t.emitsD "M4: a bare tag qualifies to its enum, which D requires",
-           r"case tuck_Color\.Red:"
+           r"case tuck_type_Color\.Red:"
   t.runsD "M4: match dispatches to the right arm (2*10+3)", 23, dmdExe
 
   # A match in VALUE position: D has no switch-expression, so the arms go
@@ -312,7 +312,7 @@ fn main() -> int [io]:
   return 99
 """
   t.emitsD "T20: a fallible fn returns the carrier, not a bare value",
-           r"rt\.TuckResult!\(long\) tuck_half\(long n\)"
+           r"rt\.TuckResult!\(long\) tuck_fn_half\(long n\)"
   t.emitsD "T20: raise RETURNS an error value, carrying a compile-folded code",
            r"return rt\.terr!\(long\)\(0x[0-9A-F]{4} /\* odd \*/\)"
   t.emitsD "T20: a value return wraps in tok", r"return rt\.tok\(\(n / 2L\)\);"
@@ -347,9 +347,9 @@ fn main() -> int [io]:
   return acc
 """
   t.emitsD "T20: a record payload rides in the carrier",
-           r"rt\.TuckResult!\(TRec_value!\(long\)\) tuck_readPort"
+           r"rt\.TuckResult!\(TRec_value!\(long\)\) tuck_fn_readPort"
   t.emitsD "T20: !void carries the unit struct, which D has no builtin for",
-           r"rt\.TuckResult!\(rt\.TuckUnit\) tuck_touch"
+           r"rt\.TuckResult!\(rt\.TuckUnit\) tuck_fn_touch"
   t.emitsD "T20: a bare return in a fallible fn still wraps",
            r"return rt\.tokVoid\(\);"
   t.runsD "T20: err results never take the ok branch (42+3)", 45, dmdExe
@@ -374,7 +374,7 @@ fn main() -> int:
   t.emitsD "T22: a field in an invariant is reached through self",
            r"self\.celsius >= -273\.15"
   t.emitsD "T22: construction validates before the value flows on",
-           r"__validated_tuck_Temperature\(tuck_Temperature\(celsius: 20\.0\)\)"
+           r"__validated_tuck_type_Temperature\(tuck_type_Temperature\(celsius: 20\.0\)\)"
   t.omitsD "T22: not assert — dmd's -release strips those, undoing the ruling",
            r"assert\("
   t.runsD "T22: a satisfied invariant costs nothing observable", 0, dmdExe
@@ -441,9 +441,9 @@ fn main() -> int:
   return {a: 40, b: 2} c.add
 """
   t.emitsD "fnsig: a named signature is a D function pointer, not a delegate",
-           r"alias tuck_Adder = long function\(long a, long b\);"
+           r"alias tuck_type_Adder = long function\(long a, long b\);"
   t.emitsD "fnsig: a fn used as a VALUE takes & — a bare name would call it",
-           r"add: &tuck_plus"
+           r"add: &tuck_fn_plus"
   t.runsD "fnsig: calling through the slot runs the referenced fn", 42, dmdExe
 
   # --- the per-backend lowering seam -------------------------------------
@@ -586,7 +586,7 @@ fn main() -> int:
   return res.r
 """
   t.emitsD "task: a result-bound call spawns into a slot and awaits it",
-           r"rt\.spawnResult\(tuckSlot\d+, \{ return tuck_compute\(21L\); \}\)"
+           r"rt\.spawnResult\(tuckSlot\d+, \{ return tuck_fn_compute\(21L\); \}\)"
   t.emitsD "task: the await reads back through the slot",
            r"= rt\.awaitResult\(tuckSlot\d+\);"
   t.emitsD "task: a program with tasks boots the scheduler",
@@ -696,9 +696,9 @@ fn main() -> int:
   t.emitsD "iface: the variant carries a tag plus one field per satisfier",
            r"struct Animal \{\n    AnimalTag tag;"
   t.emitsD "iface: a wrap copies the concrete value in, tag and all",
-           r"Animal\(AnimalTag\.Animal_is_tuck_Dog, tuck_DogVal: tuck_dd\)"
+           r"Animal\(AnimalTag\.Animal_is_tuck_type_Dog, tuck_type_DogVal: tuck_dd\)"
   t.omitsD "iface: no thunk per (type, member) — the spec's own claim",
-           r"Animal_tuck_Dog_noise"
+           r"Animal_tuck_type_Dog_noise"
   t.runsD "iface: wrap copies (3), a later wrap sees 9, so 3+9=12",
           12, dmdExe
 
@@ -726,11 +726,11 @@ fn main() -> int:
   return l.advance
 """
   t.emitsD "inline sum: hoisted under <Owner><Field>Kind",
-           r"enum tuck_LightStateKind \{ Red, Yellow, Green \}"
+           r"enum tuck_type_LightStateKind \{ Red, Yellow, Green \}"
   t.emitsD "inline sum: a tag is qualified — D enum members do not leak",
-           r"case tuck_LightStateKind\.Green:"
+           r"case tuck_type_LightStateKind\.Green:"
   t.emitsD "member with no declared params still takes self",
-           r"tuck_Light_advance\(ref tuck_Light self\)"
+           r"tuck_type_Light_advance\(ref tuck_type_Light self\)"
   t.runsD "inline sum: state Green selects the second arm", 2, dmdExe
 
   # --- bake: a fn-typed slot is a FUNCTION POINTER, not a delegate -------
@@ -758,9 +758,9 @@ fn main() -> int:
   return smaller applyOperation
 """
   t.emitsD "fnsig: a function pointer, spelled with an alias",
-           r"alias tuck_BinOp = long function\(long a, long b\)"
+           r"alias tuck_type_BinOp = long function\(long a, long b\)"
   t.emitsD "fnsig: filling the slot takes the fn's address",
-           r"op: &tuck_plus"
+           r"op: &tuck_fn_plus"
   t.omitsD "fnsig: never a delegate — nothing here captures",
            r"delegate"
   t.runsD "bake: op=:plus then b=2, so 5+2", 7, dmdExe
@@ -798,13 +798,13 @@ object Deck:
     return self.volume
 """
   t.emitsD "compose: a composed type's field lands flat on the object",
-           r"struct tuck_Deck \{\n    long volume;"
+           r"struct tuck_type_Deck \{\n    long volume;"
   t.emitsD "compose: a mixin fn materialises as a member of the object",
-           r"tuck_Deck_tuck_bump\(ref tuck_Deck self"
+           r"tuck_type_Deck_tuck_fn_bump\(ref tuck_type_Deck self"
   t.omitsD "compose: never embedded as a nested field",
-           r"tuck_AudioPlayer audioPlayer"
+           r"tuck_type_AudioPlayer audioPlayer"
   t.emitsD "chain: a standalone step writes back through the base",
-           r"self = tuck_louder\(self, step\);"
+           r"self = tuck_fn_louder\(self, step\);"
   t.runsD "compose: the merged field is readable as the object's own", 7,
           dmdExe
 
@@ -831,11 +831,11 @@ fn main() -> int:
   return d.volume
 """
   t.emitsD "chain: a step feeding a call runs into a temp",
-           r"tuck_Deck tuckChain\d+ = self;"
+           r"tuck_type_Deck tuckChain\d+ = self;"
   t.emitsD "chain: the next step reads the temp, not the base",
-           r"tuckChain(\d+) = tuck_louder\(tuckChain\1, step\)"
+           r"tuckChain(\d+) = tuck_fn_louder\(tuckChain\1, step\)"
   t.omitsD "chain: the base itself is never written",
-           r"self = tuck_louder"
+           r"self = tuck_fn_louder"
   t.runsD "chain: the object is untouched, so volume is still 5", 5, dmdExe
 
   # --- reactor: epoll+timerfd (examples 29/30) ----------------------------

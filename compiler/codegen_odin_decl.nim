@@ -784,13 +784,11 @@ proc registryEventStruct*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string
 proc registryHandlerCalls*(ctx: OdinCodegenCtx, d: Decl, v: VariantDef,
                           ind: string): string =
   ## Every declared handler for this event, called with the event's fields.
-  let handlerName = d.name & "." & v.name
   var calls: seq[string]
-  for decl in ctx.module.decls:
-    if decl.kind != dkFn or decl.name != handlerName: continue
+  for decl in registryHandlers(ctx.module, d, v):
     var argNames: seq[string]
     for f in v.fields: argNames.add(f.name)
-    calls.add(ind & "\t" & d.name & "_" & v.name & "(" & argNames.join(", ") & ")")
+    calls.add(ind & "\t" & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
   if calls.len > 0: calls.join("\n") & "\n" else: ""
 
 proc registryRaiseProc*(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,

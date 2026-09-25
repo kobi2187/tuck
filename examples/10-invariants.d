@@ -2,22 +2,22 @@ module _10_invariants;
 
 import rt = tuck_rt;
 
-struct tuck_Temperature {
+struct tuck_type_Temperature {
     float celsius;
 }
 
-void validate_tuck_Temperature(tuck_Temperature self)
+void validate_tuck_type_Temperature(tuck_type_Temperature self)
 {
     version (tuckNoInvariants) {} else
     {
         if (!((self.celsius >= -273.15)))
-            rt.tuckInvariantFailed("(self.celsius >= -273.15)", "tuck_Temperature");
+            rt.tuckInvariantFailed("(self.celsius >= -273.15)", "tuck_type_Temperature");
     }
 }
 
-tuck_Temperature __validated_tuck_Temperature(tuck_Temperature v)
+tuck_type_Temperature __validated_tuck_type_Temperature(tuck_type_Temperature v)
 {
-    validate_tuck_Temperature(v);
+    validate_tuck_type_Temperature(v);
     return v;
 }
 

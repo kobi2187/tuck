@@ -10,7 +10,7 @@ import resolution
 import ast_query
 import codegen_common
 import codegen_d_ctx
-from mangle import mangleName
+from mangle import mangleName, nkFn
 import ./codegen_d_decl
 import ./codegen_d
 
@@ -60,7 +60,7 @@ proc usesSymbol*(code, sym: string): bool =
   (sym & "(") in code or (sym & ".") in code
 
 proc mainDeclD*(m: Module): Decl =
-  let tuckMain = mangleName("main")
+  let tuckMain = mangleName("main", nkFn)
   for d in m.decls:
     if d != nil and d.kind == dkFn and d.name == tuckMain and not d.isPending:
       return d
@@ -125,7 +125,7 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
     if d != nil and d.kind == dkTask: hasTasks = true
   let mainFn = mainDeclD(m)
   if mainFn == nil and mains == "": return ""
-  let tuckMain = mangleName("main")
+  let tuckMain = mangleName("main", nkFn)
   # The command line reaches std/sys through the runtime, which cannot read
   # it for itself in D (no global argv the way Nim's os module has one), so
   # the entry point hands it over. Emitted always: whether a program calls

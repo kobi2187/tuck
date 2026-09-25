@@ -7,8 +7,8 @@
 ##     import cmp
 ##     let f = {o: Order.Before} flipped
 ##
-## emitted `tuck_Order.Before` — a bare name — beside a correctly qualified
-## `cmp.tuck_flipped` on the same line. Odin reported "Undeclared name" and D
+## emitted `tuck_type_Order.Before` — a bare name — beside a correctly qualified
+## `cmp.tuck_fn_flipped` on the same line. Odin reported "Undeclared name" and D
 ## "undefined identifier". Nim never showed it: `import cmp` merges names, so
 ## the bare form resolves there.
 ##
@@ -55,16 +55,16 @@ fn smaller[T]({a: T, b: T}) -> T:
 """)
   t.okCheck "a type and a generic fn cross a module boundary"
   t.emitsOdin "Odin reaches the imported type through its package",
-              r"cmp\.tuck_Order\.Before"
-  t.emitsD "D reaches it through its import alias", r"cmp\.tuck_Order\.Before"
+              r"cmp\.tuck_type_Order\.Before"
+  t.emitsD "D reaches it through its import alias", r"cmp\.tuck_type_Order\.Before"
   t.hostBuilds "...and every backend's host compiler accepts the pair"
   t.runs "...and the imported flip and generic min both work", 0
 
   # The match-arm labels are a second value position, reached by a different
   # path (enumTagOwner, which answers a bare owner name), and were bare too.
   t.emitsOdin "an imported sum's match labels are qualified as well",
-              r"case cmp\.tuck_Order\."
-  t.emitsD "...on D as well", r"case cmp\.tuck_Order\."
+              r"case cmp\.tuck_type_Order\."
+  t.emitsD "...on D as well", r"case cmp\.tuck_type_Order\."
 
   # --- a fn reference filling an imported module's fnsig slot ---------------
   # Four separate gaps, each hiding the next. The parser dropped the module
@@ -73,7 +73,7 @@ fn smaller[T]({a: T, b: T}) -> T:
   # so the call checked clean; and Nim's and Odin's own scope merge then
   # emitted a bare name that linked anyway. Only D said anything, because it
   # decides "reference, not call" from the checker's type and so emitted
-  # `provider.tuck_firstWins` where `&provider.tuck_firstWins` was meant.
+  # `provider.tuck_fn_firstWins` where `&provider.tuck_fn_firstWins` was meant.
   # Under it all, an imported `fnsig` was not recognised as a signature type
   # at all: fnSigNames never crossed the import boundary.
   t.src """
@@ -97,7 +97,7 @@ fn pick[T]({a: T, b: T, better: Better[T]}) -> T:
 """)
   t.okCheck "a fn reference fills an imported module's generic fnsig slot"
   t.emitsD "D takes the address of the qualified fn, not a no-arg call",
-           r"&provider\.tuck_firstWins"
+           r"&provider\.tuck_fn_firstWins"
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the imported callback is the one invoked", 0
 
@@ -222,7 +222,7 @@ fn helper({n: int}) -> int:
 """)
   # Check-level only: CONSTRUCTING an imported record is broken on the D
   # backend independently of `public:` (without a public block the same
-  # program fails as "undefined identifier tuck_Box"), so building this one
+  # program fails as "undefined identifier tuck_type_Box"), so building this one
   # would assert someone else's bug.
   t.okCheck "an exported name and type are visible to the importer"
   t.src """
@@ -264,9 +264,9 @@ fn main() -> int:
   return a + b - 5
 """
   t.okCheck "a module may export some of its own names"
-  t.emits "Nim stars the exported name", r"proc tuck_shown\*"
-  t.omits "...and leaves the unexported one unstarred", r"proc tuck_hidden\*"
-  t.emitsD "D marks the unexported one private", r"private long tuck_hidden"
+  t.emits "Nim stars the exported name", r"proc tuck_fn_shown\*"
+  t.omits "...and leaves the unexported one unstarred", r"proc tuck_fn_hidden\*"
+  t.emitsD "D marks the unexported one private", r"private long tuck_fn_hidden"
   t.emitsOdin "Odin marks the unexported one private", r"@\(private\)"
   t.hostBuilds "...and every backend still builds it"
   t.runs "...and a private name is still callable from inside its module", 0

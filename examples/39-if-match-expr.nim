@@ -2,14 +2,14 @@
 import ../compiler/tuck_rt
 import sys
 
-proc tuck_main*(): void
+proc tuck_fn_main*(): void
 
-type tuck_Color* = enum Red, Green, Blue
+type tuck_type_Color* = enum Red, Green, Blue
 
-proc tuck_main*(): void =
+proc tuck_fn_main*(): void =
   var tuck_hot = true
   var tuck_limit = (if tuck_hot: 90 else: 20)
-  var tuck_c = tuck_Color.Green
+  var tuck_c = tuck_type_Color.Green
   var tuck_code = (case tuck_c
   of Red:
     1

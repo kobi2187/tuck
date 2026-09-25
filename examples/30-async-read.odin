@@ -13,14 +13,14 @@ TRec_code :: struct ($T_code: typeid) {
 	code: T_code,
 }
 
-Env_tuck_readOrGiveUp :: struct {
+Env_tuck_fn_readOrGiveUp :: struct {
 	fd: int,
 	slot: ^rt.TuckAsyncResult(TRec_code(int)),
 }
 
-wrap_tuck_readOrGiveUp :: proc() {
-	e := (^Env_tuck_readOrGiveUp)(context.user_ptr)
-	e.slot.value = tuck_readOrGiveUp(e.fd)
+wrap_tuck_fn_readOrGiveUp :: proc() {
+	e := (^Env_tuck_fn_readOrGiveUp)(context.user_ptr)
+	e.slot.value = tuck_fn_readOrGiveUp(e.fd)
 	e.slot.done = true
 	free(e)
 }
@@ -31,8 +31,8 @@ openSource :: proc(ms: int) -> TRec_fd(int) {
 }
 
 
-tuck_readOrGiveUp :: proc(fd: int) -> TRec_code(int) {
-  if rt.tuckAwaitReadOrTimeout(fd, int(time.tuck_ms(u32(100)))) {
+tuck_fn_readOrGiveUp :: proc(fd: int) -> TRec_code(int) {
+  if rt.tuckAwaitReadOrTimeout(fd, int(time.tuck_fn_ms(u32(100)))) {
     return TRec_code(int){code = 1}
   } else {
     return TRec_code(int){code = 2}
@@ -40,15 +40,15 @@ tuck_readOrGiveUp :: proc(fd: int) -> TRec_code(int) {
   return {}
 }
 
-tuck_main :: proc () -> int {
+tuck_fn_main :: proc () -> int {
   tuck_src := openSource(5)
-  env0 := new(Env_tuck_readOrGiveUp)
+  env0 := new(Env_tuck_fn_readOrGiveUp)
   env0.fd = tuck_src.fd
   slot0 := rt.newAsyncResult(TRec_code(int))
   env0.slot = slot0
   savedCtx0 := context.user_ptr
   context.user_ptr = env0
-  rt.tuckSpawn(wrap_tuck_readOrGiveUp)
+  rt.tuckSpawn(wrap_tuck_fn_readOrGiveUp)
   context.user_ptr = savedCtx0
   tuck_r := rt.awaitResult(slot0)
   return tuck_r.code
@@ -57,7 +57,7 @@ tuck_main :: proc () -> int {
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
-	mainRc := tuck_main()
+	mainRc := tuck_fn_main()
 	rt.tuckRun()
 	rt.tuckTrackCheck()
 	os.exit(mainRc)

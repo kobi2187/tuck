@@ -8,20 +8,20 @@ TRec_ok :: struct ($T_ok: typeid) {
 	ok: T_ok,
 }
 
-tuck_asInt :: proc (d: time.tuck_Milliseconds) -> int {
+tuck_fn_asInt :: proc (d: time.tuck_type_Milliseconds) -> int {
   return 42
 }
 
-tuck_budget :: proc (d: time.tuck_Milliseconds) -> TRec_ok(bool) {
+tuck_fn_budget :: proc (d: time.tuck_type_Milliseconds) -> TRec_ok(bool) {
   return TRec_ok(bool){ok = true}
 }
 
-tuck_main :: proc () {
-  tuck_r := tuck_budget(time.tuck_ms(u32(5)))
-  tuck_n := tuck_asInt(time.tuck_ms(u32(42)))
+tuck_fn_main :: proc () {
+  tuck_r := tuck_fn_budget(time.tuck_fn_ms(u32(5)))
+  tuck_n := tuck_fn_asInt(time.tuck_fn_ms(u32(42)))
   sys.exit(tuck_n)
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }
