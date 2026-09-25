@@ -83,8 +83,11 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   for i in 0 ..< params.len:
     if params[i].name == "self":
       params[i].typ = Type(span: m.span, kind: tkNamed, name: "^" & objName)
+  # THE MEMBER'S OWN ID: this is the same fn — same body, same decisions —
+  # printed with Odin's `self` convention, and every side table (ownership,
+  # SSA, resolution) knows it by that id.
   let copy = Decl(span: m.span, kind: dkFn, name: memberProcName(objName, m.name),
-                  fnParams: params,
+                  id: m.id, fnParams: params,
                   fnReturnType: m.fnReturnType, fnBody: m.fnBody,
                   fnEffects: m.fnEffects, fnGenerics: m.fnGenerics)
   # `self` is a POINTER here, so every mention in the body needs a deref —
@@ -538,7 +541,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ctx.ownedStrLocals = ctx.ownedStrLocalsOf(d)
   # THE OWNERSHIP PASS DECIDES; this emitter prints. See
   # compiler/analysis_ownership.nim for the six steps.
-  ctx.owned = ownershipOf(ctx.res, ctx.module, d)
+  ctx.owned = ownershipFor(d)
   if d.isDecision or d.isDecisionTable(): return ctx.genDecisionTable(d)
   let ind = "  ".repeat(ctx.indent)
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
@@ -585,7 +588,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   # after `TUCK_TRACK` confirmed no double free.
   # Step 6 of the ownership pass, printed.
   var frees = ""
-  for slot in ownershipOf(ctx.res, ctx.module, d).twinFreesParam:
+  for slot in ownershipFor(d).twinFreesParam:
     let path = if slot.len == 0: movedP else: movedP & "." & slot
     frees.add(ind & "\tdefer delete(" & path & ")\n")
   let twinName = movedName(d.name.replace(".", "_"))

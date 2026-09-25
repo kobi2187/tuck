@@ -566,3 +566,34 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
   s.checkBuffers(d, result)
   when not defined(release):
     if Debug: result.debugEcho(d)
+
+
+# --- the pass ----------------------------------------------------------------
+#
+# DECIDED ONCE, BEFORE EMISSION, AND READ. `ownershipOf` used to be called by
+# the Odin emitter as it printed each fn — twice per fn, once for the body's
+# frees and once for the twin's — which made the decision a side effect of
+# printing. `backend_prepare` now runs `decideOwnership` as a step of its
+# own, after lowering and the copy marks it depends on, and the emitter asks
+# `ownershipFor`. The decision is inspectable before any text exists, and
+# the assertions in `ownershipOf` (checkInvariants, buffer_check) run at a
+# named stage rather than whenever emission reaches a fn.
+
+var decided: Table[NodeId, Ownership]
+
+proc decideOwnership*(res: Resolution, m: Module) =
+  ## Every fn body's ownership, recorded by the fn's declaration id.
+  for d in m.allFns():
+    if d == nil or d.fnBody == nil: continue
+    doAssert d.id.isSet, "ownership: fn " & d.name & " has no id"
+    decided[d.id] = ownershipOf(res, m, d)
+
+proc ownershipFor*(d: Decl): Ownership =
+  ## The decision `decideOwnership` recorded for this fn. Asserted present:
+  ## a fn the pass never saw would otherwise be emitted with no frees at
+  ## all, which reads exactly like a fn that needs none.
+  if d.fnBody == nil or not Enabled: return
+  doAssert d.id in decided,
+    "ownership: no decision for " & d.name & " — backend_prepare runs " &
+    "decideOwnership before emission, and this fn was not in allFns()"
+  decided[d.id]

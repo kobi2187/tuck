@@ -105,8 +105,8 @@ clone while the copy decision is made after lowering.
 | # | item | size |
 |---|---|---|
 | 2.1 | Move `exclusivelyOwned`'s ORIGIN half onto the mirror. The collision half already moved and was measured irrelevant (`ssaExclusiveOwned`, 27/27, never reached) — do not redo it | M |
-| 2.2 | Remove `afterBinding`'s emitter prediction. `TUCK_DEBUG_COPY=diff` is the judge: `onlyOld == 0` | M |
-| 2.3 | Run `markSeqCopies` on the mirror, BEFORE lowering | M |
+| 2.2 | ~~Remove `afterBinding`'s emitter prediction~~ **DONE 2026-09-25.** The prediction was the emitters' "no copy for a read through the moved parameter" — which was itself a value-semantics bug (D returned 99, Odin read freed memory). The emitters now print the copy marks and nothing else; the one special case left is `movedTransfer`, a copy-pass predicate provenance shares | M |
+| 2.3 | ~~Run `markSeqCopies` before lowering~~ **MOOT.** It was M3.1's prerequisite; M3.1 turned out not to need it (below) | — |
 
 **Exit:** #77's own pin (`known_bugs.nim` A19, 64 MB, `bugOpen`) goes green
 and the suite says to flip it. The remainder of #77 is a REDUNDANT COPY
@@ -122,7 +122,7 @@ removes that dependency.
 
 | # | item | size |
 |---|---|---|
-| 3.1 | Move the pass before `backend_prepare.prepare`'s clone step | S |
+| 3.1 | ~~Move the pass before the clone~~ **DONE 2026-09-25, as step 6 of `prepare`.** `lowerModule` takes no backend and a build targets one, so "before the clone" was never needed — what was needed was a PASS: `decideOwnership` runs after lowering, the copy marks and `fillIds`, records a decision per fn id, and the Odin emitter asks `ownershipFor` (asserted present). It had run inside the emitter, twice per fn, with provenance rebuilt a second time at emit. The assertion found member fns emitted as id-less copies on its first run | S |
 | 3.2 | ~~Assert no use follows a free~~ **DONE 2026-09-25, as a BUFFER check** (`buffer_check.nim`, asserted inside `ownershipOf` on every Odin build): each value's heap slots are mapped to the buffers they may denote — parameter slots, copied vs uncopied bindings, fields, phis, moved calls — and no buffer may be released by two free sites, nor released at exit and returned. Per-VALUE `freedAt` was the plan; buffers are what several names share, which is where all three bugs found on 2026-09-25 lived. Verified to fire on two of them with their fixes reverted. The one it cannot see is statement ORDER (a free emitted before the right-hand side that reads it) — fixed at the emitter, and guarded by a runtime test | M |
 | 3.3 | Fold the `str` analysis into the one pass (docs §5 M6). The backend-specific part — which runtime calls return caller-owned storage — becomes a parameter, not a second analysis | M |
 | 3.4 | Replace the per-slot full-body walk with a lookup over the mirror's `uses` (docs §5 M5) | S |

@@ -3,7 +3,7 @@
 # GETTING A TREE READY FOR ONE BACKEND — the stage between checking and
 # emitting, in one place.
 #
-# Four steps, always the same four, always in this order:
+# Six steps, always the same six, always in this order:
 #
 #   1. CLONE. Each backend lowers its own deepCopy, because lowering and the
 #      emitters both mutate the tree in place. Sharing one would hand the
@@ -19,7 +19,21 @@
 #   4. MARK THE COPIES, for the backends whose native container ALIASES.
 #      Odin's `[dynamic]T` and D's `T[]` both copy a header that still points
 #      at the source buffer; Nim's `seq` has real value semantics and needs
-#      none of it.
+#      none of it. The copy pass records both halves of its decision —
+#      copied, or left alone because the value is already the binder's.
+#   5. NUMBER what lowering minted (`fillIds`), so nothing it built drops out
+#      of the semantic layer.
+#   6. DECIDE OWNERSHIP (the aliasing backends): who frees each buffer, and
+#      where. It reads steps 4 and 5, so it comes after them; the emitter
+#      prints it, so it comes before any emitter. It used to run INSIDE the
+#      Odin emitter, twice per fn — a decision made as a side effect of
+#      printing.
+#
+# WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
+# ownership's inputs are made by lowering, so it cannot precede lowering —
+# and it need not: `lowerModule` takes no backend, and a build targets one
+# backend, so "once per build, before emission" is the whole of what "once,
+# for every backend" was asking for.
 #
 # WHY THIS IS A MODULE. It was written out longhand FOUR TIMES in `tuck.nim`
 # — once per backend, plus once more for the stage-dump path — and the four
@@ -37,6 +51,7 @@ import modules
 import resolution
 import lowering
 import lowering_seqcopy
+import analysis_ownership
 import pipeline
 import verbose
 
@@ -109,7 +124,7 @@ proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
 
 proc prepare*(prog: seq[LoadedModule], backend: Backend,
               semLayer: Resolution, outDir: string): BackendTree =
-  ## Steps 1-4, for one backend. The checked program goes in; a private,
+  ## Steps 1-6, for one backend. The checked program goes in; a private,
   ## lowered, marked copy comes out.
   for lm in prog:                                                   # 1. clone
     result.mods.add LoadedModule(name: lm.name, path: lm.path,
@@ -130,6 +145,14 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # without one drops out of the semantic layer. Existing ids are kept —
     # they are what makes the checker's facts reachable from this copy.
     fillIds(lm.m)
+    # 6. OWNERSHIP, DECIDED. After the copy marks (it reads them) and after
+    # every node has an id (it keys by them); before any emitter runs, so
+    # the emitter prints a decision instead of making one. Only on the
+    # backends whose containers alias — the same ones that get copy marks;
+    # Odin prints the frees, D's collector does not need them but the
+    # decision's assertions (buffer_check) still run over its tree.
+    if backend.aliasesOnAssign:
+      decideOwnership(semLayer, lm.m)
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 
