@@ -454,6 +454,12 @@ proc fillIds*(m: Module) =
       for e in x.ownExprs: assignIds(e, globalNodeCounter)   # fills only
       for c in x.childDecls: stack.add c
 
+proc fillIdsIn*(e: Expr) =
+  ## `fillIds` for one expression tree outside any module — a call the
+  ## checker stamped into the semantic layer (`res.call`), which it built
+  ## without ids. Changes no existing id.
+  assignIds(e, globalNodeCounter)
+
 proc clearIds*(e: Expr) =
   ## Drop ids so assignIds hands out fresh ones. Needed when a module comes
   ## back from the AST cache carrying ids from the run that wrote it.

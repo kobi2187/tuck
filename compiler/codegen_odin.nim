@@ -15,6 +15,7 @@ import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+import twin_calls  # which calls take the moved twin — decided in prepare
 from lowering_seqcopy import needsDup, recordDupFields
 from ssa_ir import pathOf
 from os import getEnv
@@ -451,8 +452,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   # A call that may take its first argument destructively, in ANY position —
   # the assignment emitters catch their own two shapes upstream of here, and
   # `return f(x, ...)` is the one nothing else reaches.
-  let mv = movedCalleeName(ctx.res, ctx.module, e, calleeStr, member)
-  return (if mv != "": mv else: calleeStr) &
+  return (if callsTwin(e): movedName(calleeStr) else: calleeStr) &
          "(" & (ctx.odinTypeArgs(e) & args).join(", ") & ")"
 
 proc odinBangInfo*(ctx: var OdinCodegenCtx, t: Type):
@@ -1288,7 +1288,7 @@ proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
     # Twelve of them across the corpus and both applications; see
     # thoughts/ssa-mirror-design.md, Stage C.
     if DebugInPlace:
-      let threadedDbg = selfThreadedCall(ctx.res, ctx.module, e)
+      let threadedDbg = threadedCall(e)
       if (appended != nil or threadedDbg != nil) and
          (needsDup(ctx.res, e.assignVal) or
           recordDupFields(ctx.res, e.assignVal).len > 0):
@@ -1347,7 +1347,7 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
            ctx.genOdinExpr(appended) & ")"
   # Same fact one level up: a threaded-container call assigned back over its
   # own argument calls the MOVED twin, and needs no fix-up copies after it.
-  let threaded = selfThreadedCall(ctx.res, ctx.module, e)
+  let threaded = threadedCall(e)
   if threaded != nil: return ctx.genThreadedAssign(e, threaded)
   let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and

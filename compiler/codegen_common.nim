@@ -496,54 +496,6 @@ proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
     if hasLastUse(res, c, name): return true
   false
 
-proc ownsHeap(m: Module, t: Type, depth = 0): bool
-
-proc anyOwnsHeap(m: Module, ts: seq[Type], depth: int): bool =
-  for t in ts:
-    if ownsHeap(m, t, depth): return true
-  false
-
-proc fieldsOwnHeap(m: Module, fields: seq[FieldDef], depth: int): bool =
-  var ts: seq[Type]
-  for f in fields: ts.add(f.typ)
-  anyOwnsHeap(m, ts, depth)
-
-proc namedOwnsHeap(m: Module, name: string, depth: int): bool =
-  if name == "str": return true
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == name:
-      return ownsHeap(m, d.typeBody, depth)
-  false
-
-proc sumOwnsHeap(m: Module, t: Type, depth: int): bool =
-  for v in t.variants:
-    if fieldsOwnHeap(m, v.fields, depth): return true
-  false
-
-proc ownsHeap(m: Module, t: Type, depth = 0): bool =
-  ## Does a value of this type own storage that copying would duplicate?
-  ##
-  ## Only these are worth moving. A record of two ints copies in a register
-  ## pair, so marking it movable buys nothing and only adds noise to the
-  ## emitted output — every golden in the corpus moved for it before this
-  ## guard went in.
-  if t == nil or depth > 4: return false
-  case t.kind
-  of tkNamed: namedOwnsHeap(m, t.name, depth + 1)
-  of tkApp:
-    # Seq[T] owns a buffer outright; a `!T`/`?T` carrier, or an Array, owns
-    # whatever its arguments do. A GENERIC USER TYPE — `Box[T]`, `Set[T]`,
-    # `Table[K, V]` — owns whatever its DECLARED BODY does: without this the
-    # whole alloc tier read as owning nothing, and the container-threading
-    # benchmark was linear on Odin and D (which look through the twin's own
-    # predicate) and quadratic on Nim, which consults this one.
-    if t.base != nil and t.base.kind == tkNamed and t.base.name == "Seq": true
-    elif ownsHeap(m, genericBaseBody(m, t), depth + 1): true
-    else: anyOwnsHeap(m, t.args, depth + 1)
-  of tkRecord: fieldsOwnHeap(m, t.fields, depth + 1)
-  of tkSum: sumOwnsHeap(m, t, depth + 1)
-  else: false
-
 proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
   ## May this parameter be taken destructively? True when the analysis proved
   ## the body's final read of it — so the caller's copy is unobservable from
@@ -571,7 +523,6 @@ proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
 # dropping the caller's alone gave 1.26s -> 0.69s and dropping the callee's
 # alone 0.76s — both still quadratic. Dropping both gave 0.00s.
 
-proc ownsHeapType*(m: Module, t: Type): bool = ownsHeap(m, t)
 
 
 proc rootBindingName*(e: Expr): string =
@@ -581,122 +532,6 @@ proc rootBindingName*(e: Expr): string =
   while cur != nil and cur.kind == exkField and cur.receiver != nil:
     cur = cur.receiver
   if cur != nil and cur.kind == exkVar: cur.name else: ""
-
-proc otherArgLives(res: Resolution, m: Module, call: Expr): bool =
-  ## Does any argument BESIDES the first still hold a container the caller
-  ## will read again? Then the callee's result may BE that container, and
-  ## the copy that separates them cannot be dropped.
-  for i in 1 ..< call.args.len:
-    let a = call.args[i]
-    if a == nil: continue
-    if not ownsHeap(m, res.typeFor(a)): continue
-    if res.isLastUse(a): continue   # dead too, so nothing observes the share
-    return true
-  false
-
-proc movedCallInto*(res: Resolution, m: Module, call: Expr,
-                    targetName: string): bool =
-  ## Is `call` a threaded-container call whose FIRST argument is the very
-  ## variable its result is being written back into? Then the old value is
-  ## dead and the MOVED twin may have it.
-  ##
-  ## Shared by the two spellings that reach it: a plain `x = f(x, ...)`, and
-  ## the BUILDER chain `x ..f {...}`, which the chain emitter writes as an
-  ## assignment of its own rather than routing through genAssign. The chain
-  ## form is the one TUCK-TRANSLATION.md recommends, and it was the shape
-  ## still measuring quadratic on Odin (3.5x) and D (3.3x) when only the
-  ## plain form was recognised.
-  if call == nil or call.kind != exkCall: return false
-  if call.callee == nil or call.callee.kind != exkVar: return false
-  if movedFnParam(res, m, m.findFn(call.callee.name)) == "": return false
-  # A resolved user call is already exploded positionally by the time it
-  # reaches here (a payload call like std/seq's `push` is not, and is handled
-  # by selfAppendValue).
-  if call.args.len < 1 or call.args[0] == nil: return false
-  let a = call.args[0]
-  # THE SYNTACTIC CASE: `x = f(x, ...)` overwrites its own argument, so the
-  # old value is dead the instant the new one lands. No liveness involved.
-  if a.kind == exkVar and a.name == targetName: return true
-  # THE ANALYSED CASE, for everything else: a value this body OWNS and will
-  # not read again. Both halves are needed and `analysis_provenance` joins
-  # them into one stamp — being a last use says nobody HERE reads it again,
-  # which on D and Odin says nothing about the caller whose buffer a
-  # container parameter aliases. See `markMovableArgs`.
-  #
-  # It covers two shapes. `sweep(b.ask, ...)` needs liveness at PATH
-  # granularity, because `b` being live is not the question when `b.bestAsk`
-  # is read two lines later. And `pass(a, ...)` — a plain local, dead after
-  # the call — is the shape a CHAIN of threading calls takes, which is the
-  # whole of EV-15.
-  #
-  # ...AND NO OTHER ARGUMENT MAY STILL BE LIVE, which is what this predicate
-  # answers over and above `movedCalleeName`. Reaching the twin is one
-  # decision; SKIPPING THE RESULT'S FIX-UP COPY, which the emitters do on
-  # this path, is a second one, and it rests on the result being unable to
-  # alias anything the caller still reads. That holds when the result can
-  # only be the moved argument or a fresh allocation. It does not hold here:
-  #
-  #     fn pick({p: Seq[int], q: Seq[int], which: int}) -> Seq[int]:
-  #       if which == 0: return p
-  #       return q
-  #
-  # `pick` is twinnable on `p` and returns `q`. Moving `src` in is fine and
-  # still worth doing; dropping the copy of the RESULT is not, because the
-  # result is `other`'s buffer and `other` is read on the next line. It came
-  # back 65 instead of 17 on D and Odin alike, caught by value_semantics'
-  # "a record returned from a call does not alias its argument".
-  if a.kind in {exkVar, exkField}:
-    return res.isMovedArg(a) and not otherArgLives(res, m, call)
-  false
-
-proc movedCalleeName*(res: Resolution, m: Module, e: Expr,
-                      calleeStr, member: string): string =
-  ## `f_moved` when this call may take its first argument destructively at
-  ## ANY position, or "".
-  ##
-  ## `movedCallInto` answers the same question for the two positions that
-  ## have a write target — `x = f(x, ...)` and the builder chain — and it is
-  ## reached from the assignment emitters. Nothing reached the others, and
-  ## the one that matters is RETURN:
-  ##
-  ##     return {sl: up, c: c, cols: cols} relight
-  ##
-  ## `up` is dead there and owned, and `analysis_provenance` stamps it, but
-  ## no assignment emitter ever sees the call so nothing asked. That left
-  ## `relight`'s wrapper copying three arrays per edit and abandoning them.
-  ## `member` is the resolved member-fn name when this is a member call, and
-  ## excludes it: no twin is emitted for a member, and `findFn` would answer
-  ## with a top-level fn that merely shares the name. Taken as an argument
-  ## rather than tested at each call site, so neither emitter gains a branch.
-  if member.len > 0: return ""
-  if e == nil or e.kind != exkCall: return ""
-  if e.callee == nil or e.callee.kind != exkVar: return ""
-  if movedFnParam(res, m, m.findFn(e.callee.name)) == "": return ""
-  if e.args.len < 1 or e.args[0] == nil: return ""
-  if not res.isMovedArg(e.args[0]): return ""
-  movedName(calleeStr)
-
-proc selfThreadedCall*(res: Resolution, m: Module, e: Expr): Expr =
-  ## `x = f(x, ...)` on a threaded-container fn, or `let y = f(b.ask, ...)`
-  ## where `b.ask` is never read again. Returns the CALL, or nil.
-  ##
-  ## DECLARATIONS ARE ACCEPTED, which they were not before. The syntactic
-  ## rule could not match one anyway — a decl's target is a fresh name, so it
-  ## is never its own argument — so excluding them cost nothing until the
-  ## field case arrived. It costs a great deal now: `let f = sweep(b.ask,
-  ## ...)` is exactly the shape the matching engine threads its ladders
-  ## through, and refusing it left `sweep` copying a container its caller was
-  ## finished with.
-  if e == nil or e.kind != exkAssign or e.target == nil or
-     e.target.kind != exkVar: return nil
-  var call = e.assignVal
-  if call != nil and res.hasCall(call): call = res.call(call)
-  if call == nil or call.kind != exkCall: return nil
-  if call.callee == nil or call.callee.kind != exkVar: return nil
-  if movedCallInto(res, m, call, e.target.name): return call
-  nil
-
-
 
 proc isExportedDecl*(m: Module, d: Decl): bool =
   ## Does this declaration leave its module (spec 2.3c)?

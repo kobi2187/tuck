@@ -18,6 +18,7 @@
 import ast, strutils, sets, tables, options
 import resolution
 import ast_query
+import twin_calls  # which calls take the moved twin — decided in prepare
 import codegen_common
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import decl_index
@@ -305,14 +306,6 @@ proc resolveDCallee(ctx: var DCodegenCtx, e: Expr): string =
     return ctx.genDQualified(e.callee)
   ctx.genDExpr(e.callee)
 
-proc memberRecvType(res: Resolution, e: Expr): Type =
-  ## The receiver's type: args[0] itself (the checker's rewrite), or the
-  ## `self` field of a payload literal (`{self: c} bump`).
-  result = res.typeFor(e.args[0])
-  if e.args[0].kind == exkStruct:
-    for f in e.args[0].fields:
-      if f.name == "self": result = res.typeFor(f.value)
-
 proc ownerDeclares(ctx: DCodegenCtx, owner, fnName: string): bool =
   for d in ctx.module.decls:
     if d == nil or d.kind != dkObject or d.name != owner: continue
@@ -464,8 +457,8 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   # A call that may take its first argument destructively, in ANY position.
   # See codegen_common.movedCalleeName — the position nothing else reaches is
   # `return f(x, ...)`.
-  let mv = movedCalleeName(ctx.res, ctx.module, e, calleeStr, member)
-  (if mv != "": mv else: calleeStr) & "(" & args.join(", ") & ")"
+  (if callsTwin(e): movedName(calleeStr) else: calleeStr) & "(" &
+    args.join(", ") & ")"
 
 proc errCodeArg(ctx: DCodegenCtx, name: string): string =
   ## An error code, folded at COMPILE time by the emitter rather than at
@@ -885,12 +878,12 @@ proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
   ## `x = f(x, ...)` on a threaded-container fn: call the MOVED twin, which
   ## may have the container destructively, and skip the defensive copy on the
   ## result — it IS the moved value. "" when this is not that shape.
-  let threaded = selfThreadedCall(ctx.res, ctx.module, e)
+  let threaded = threadedCall(e)
   if threaded == nil: return ""
   let name = movedName(ctx.resolveDCallee(threaded))
   let call = name & "(" &
              ctx.genDCallArgs(threaded, threaded.callee.name).join(", ") & ")"
-  # A DECLARATION needs its type in D. `selfThreadedCall` accepts decls now
+  # A DECLARATION needs its type in D. `threadedCall` accepts decls now
   # — that is what lets `let f = sweep(b.ask, ...)` reach the twin at all —
   # and without this the emitted `tuck_f = ...` named something never
   # declared, which dmd answers with "undefined identifier".

@@ -3,7 +3,7 @@
 # GETTING A TREE READY FOR ONE BACKEND — the stage between checking and
 # emitting, in one place.
 #
-# Six steps, always the same six, always in this order:
+# Seven steps, always the same seven, always in this order:
 #
 #   1. CLONE. Each backend lowers its own deepCopy, because lowering and the
 #      emitters both mutate the tree in place. Sharing one would hand the
@@ -30,6 +30,11 @@
 #      prints it, so it comes before any emitter. It used to run INSIDE the
 #      Odin emitter, twice per fn — a decision made as a side effect of
 #      printing.
+#   7. MARK THE TWIN CALLS (the aliasing backends): which calls hand their
+#      first argument to a threaded fn's MOVED twin, and which assignments
+#      thread through one (`twin_calls`, ROADMAP M3.5). It reads the moved-
+#      argument stamps step 4 made and keys by the ids step 5 filled. The
+#      Odin and D emitters decided it while printing, each its own way.
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -55,6 +60,7 @@ import lowering
 import lowering_seqcopy
 import lowering_strtemps
 import analysis_ownership
+import twin_calls
 import pipeline
 import verbose
 
@@ -156,7 +162,7 @@ proc ownedStrProcs*(b: Backend): seq[string] =
 
 proc prepare*(prog: seq[LoadedModule], backend: Backend,
               semLayer: Resolution, outDir: string): BackendTree =
-  ## Steps 1-6, for one backend. The checked program goes in; a private,
+  ## Steps 1-7, for one backend. The checked program goes in; a private,
   ## lowered, marked copy comes out.
   for lm in prog:                                                   # 1. clone
     result.mods.add LoadedModule(name: lm.name, path: lm.path,
@@ -186,6 +192,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # decision's assertions (buffer_check) still run over its tree.
     if backend.aliasesOnAssign:
       decideOwnership(semLayer, lm.m, ownedStrProcs(backend))
+      markTwinCalls(semLayer, lm.m)                                # 7. twins
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 
