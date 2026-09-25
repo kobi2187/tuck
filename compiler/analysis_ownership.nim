@@ -113,11 +113,12 @@
 # which is silent and far worse. So anything unmodelled answers "someone else
 # owns it" and "it escapes", and the shapes that are understood are listed
 # rather than inferred.
-import ast, tables, sets, os
+import ast, tables, sets, os, strutils
 import resolution
 import ast_query
 import twin_shape
 from ssa_ir import rootOf, pathOf
+import buffer_check
 from analysis_provenance import slotIsFresh, consumedSlotsSsa
 from lowering_seqcopy import needsDup, recordDupFields, decidedExclusive,
                              transferredSlots
@@ -202,6 +203,19 @@ proc collectLocals(body: Expr, timesAssigned: var CountTable[string],
     timesAssigned.inc(n.target.name)
     if n.isDecl: declaredWith[n.target.name] = n.assignVal
 
+proc takesNothingOf(s: Scan, v: Expr): bool =
+  ## Is every heap slot this binding holds either copied or exclusive?
+  let t = s.res.typeFor(v)
+  if seqElem(t) != nil:
+    return needsDup(s.res, v) or decidedExclusive(v, "")
+  if v.kind notin {exkCall, exkChain}: return false
+  let want = seqFieldNames(s.res, s.m, t)
+  if want.len == 0: return false
+  let copied = recordDupFields(s.res, v)
+  for f in want:
+    if f notin copied and not decidedExclusive(v, f): return false
+  true
+
 proc findCopiedOut(s: Scan): HashSet[NodeId] =
   ## Right-hand sides whose every heap slot was COPIED into the name being
   ## bound. Recorded because such a binding does not let its source escape:
@@ -229,18 +243,7 @@ proc findCopiedOut(s: Scan): HashSet[NodeId] =
     if n == nil: continue
     for ch in n.children: stack.add(ch)
     if n.kind != exkAssign or n.assignVal == nil: continue
-    let v = n.assignVal
-    let t = s.res.typeFor(v)
-    if seqElem(t) != nil:
-      if needsDup(s.res, v) or decidedExclusive(v, ""): result.incl(v.id)
-    elif v.kind in {exkCall, exkChain}:
-      let want = seqFieldNames(s.res, s.m, t)
-      if want.len == 0: continue
-      let copied = recordDupFields(s.res, v)
-      var everySlot = want.len > 0
-      for f in want:
-        if f notin copied and not decidedExclusive(v, f): everySlot = false
-      if everySlot: result.incl(v.id)
+    if s.takesNothingOf(n.assignVal): result.incl(n.assignVal.id)
 
 # --- STEP 2: ownership -----------------------------------------------------
 
@@ -527,6 +530,20 @@ proc debugEcho(o: Ownership, d: Decl) =
   if o.twinFreesParam.len > 0:
     echo "OWN ", d.name, " twin-frees-param=", o.twinFreesParam
 
+proc checkBuffers(s: Scan, d: Decl, o: Ownership) =
+  ## buffer_check over this body's decisions: no buffer released twice, and
+  ## none released at exit that the body returns.
+  var sites: seq[tuple[local, slot: string, atExit: bool]]
+  for f in o.freed:
+    sites.add (f.local, f.slot, f.kind in {fkScopeExit, fkTwinParam})
+  var returnSlots: seq[string]
+  if d.fnReturnType != nil:
+    if seqElem(d.fnReturnType) != nil: returnSlots = @[""]
+    else: returnSlots = seqFieldNames(s.res, s.m, d.fnReturnType)
+  let bad = bufferErrors(s.res, d, sites, returnSlots)
+  doAssert bad.len == 0,
+    "ownership: " & d.name & " — " & bad[0 .. min(2, bad.high)].join("; ")
+
 proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
   ## Run all six steps over one function body.
   if not Enabled or d.fnBody == nil: return
@@ -546,5 +563,6 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl): Ownership =
 
   result.gatherFreed(d)
   checkInvariants(result, d)
+  s.checkBuffers(d, result)
   when not defined(release):
     if Debug: result.debugEcho(d)

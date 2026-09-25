@@ -256,6 +256,22 @@ proc provOfCall(c: var Ctx, e: Expr): Prov =
                          token: NodeId(uint32(e.id) xor uint32(v.token)))
   p
 
+proc fieldProv(c: var Ctx, e: Expr): Prov =
+  ## `b.items` reaches into whatever `b` is, so it is exactly as aliased.
+  if e.receiver == nil: return unknownProv()
+  let base = provOf(c, e.receiver)
+  if e.fieldName in base.fields: Prov(whole: base.fields[e.fieldName])
+  else: Prov(whole: fieldOf(base.whole, e.fieldName))
+
+proc elementProv(c: var Ctx, e: Expr): Prov =
+  ## An element of a container aliases the container it was read out of —
+  ## but it is NOT that container's slot: a wrapper's copy is shallow, so an
+  ## element of a copied Seq[Seq[T]] is still the caller's inner buffer.
+  if e.brReceiver == nil: return unknownProv()
+  var cell = provOf(c, e.brReceiver).whole
+  cell.src = ""
+  Prov(whole: cell)
+
 proc provOf(c: var Ctx, e: Expr): Prov =
   ## Where did this expression's value come from?
   if e == nil: return unknownProv()
@@ -276,22 +292,8 @@ proc provOf(c: var Ctx, e: Expr): Prov =
         p.fields[f.name] = provOf(c, f.value).whole
     p
   of exkCall: provOfCall(c, e)
-  of exkField:
-    # `b.items` reaches into whatever `b` is, so it is exactly as aliased.
-    if e.receiver == nil: unknownProv()
-    else:
-      let base = provOf(c, e.receiver)
-      if e.fieldName in base.fields: Prov(whole: base.fields[e.fieldName])
-      else: Prov(whole: fieldOf(base.whole, e.fieldName))
-  of exkBracket:
-    # An element of a container aliases the container it was read out of —
-    # but it is NOT that container's slot: a wrapper's copy is shallow, so an
-    # element of a copied Seq[Seq[T]] is still the caller's inner buffer.
-    if e.brReceiver == nil: unknownProv()
-    else:
-      var cell = provOf(c, e.brReceiver).whole
-      cell.src = ""
-      Prov(whole: cell)
+  of exkField: fieldProv(c, e)
+  of exkBracket: elementProv(c, e)
   of exkBinary:
     # Concatenation and friends build a NEW value; none of the binary
     # operators hands back an operand.

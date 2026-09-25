@@ -123,7 +123,7 @@ removes that dependency.
 | # | item | size |
 |---|---|---|
 | 3.1 | Move the pass before `backend_prepare.prepare`'s clone step | S |
-| 3.2 | Record `freedAt` / `freedBy` on the SSA `Value` itself, and assert NO USE FOLLOWS A FREE by walking `uses`. That is the invariant that would have caught the shipped `str` use-after-free without anyone thinking of the case | M |
+| 3.2 | ~~Assert no use follows a free~~ **DONE 2026-09-25, as a BUFFER check** (`buffer_check.nim`, asserted inside `ownershipOf` on every Odin build): each value's heap slots are mapped to the buffers they may denote — parameter slots, copied vs uncopied bindings, fields, phis, moved calls — and no buffer may be released by two free sites, nor released at exit and returned. Per-VALUE `freedAt` was the plan; buffers are what several names share, which is where all three bugs found on 2026-09-25 lived. Verified to fire on two of them with their fixes reverted. The one it cannot see is statement ORDER (a free emitted before the right-hand side that reads it) — fixed at the emitter, and guarded by a runtime test | M |
 | 3.3 | Fold the `str` analysis into the one pass (docs §5 M6). The backend-specific part — which runtime calls return caller-owned storage — becomes a parameter, not a second analysis | M |
 | 3.4 | Replace the per-slot full-body walk with a lookup over the mirror's `uses` (docs §5 M5) | S |
 
