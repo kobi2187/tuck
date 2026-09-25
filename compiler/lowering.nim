@@ -270,7 +270,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkDiscard, exkTripleDot, exkImport, exkSend, exkSelect, exkCombinator,
      exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkDefer,
-     exkFinish, exkAcquire, exkOrdinal, exkValidate:
+     exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a

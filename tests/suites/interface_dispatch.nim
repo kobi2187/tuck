@@ -147,4 +147,53 @@ fn main() -> int:
   t.emits    "payload is splatted positionally",     "encode\\(tmp, key, val\\)"
   t.outputs  "and dispatches correctly with the right args", "k=v"
 
+  # --- lowered once, printed three ways (ROADMAP M4.4) ----------------------
+  # #40: Odin's dispatch closure was typed `-> int` whatever the member
+  # returned, so a member returning `str` did not compile on Odin alone. The
+  # call is lowered to an exkIfaceCall carrying its own type.
+  t.src """
+interface Animal:
+  fn name({self: Self}) -> str
+
+object Dog:
+  satisfies Animal
+  tag: str
+
+  fn name({self: Dog}) -> str:
+    return self.tag
+
+fn hear({a: Animal}) -> int:
+  return a.name.len
+
+fn main() -> int:
+  var d = {tag: "rex"} Dog
+  return {a: d} hear
+"""
+  t.hostRuns "a member returning str dispatches on every backend (#40)", 3
+  # A void member, with a param, as a statement: the closure has no result
+  # and each arm passes the payload's field positionally.
+  t.src """
+import console
+
+interface Speaker:
+  fn speak({self: Self, times: int}) -> void [io]
+
+object Dog:
+  satisfies Speaker
+  name: str
+
+  fn speak({self: Dog, times: int}) -> void [io]:
+    for i in 0 ..< times:
+      {text: self.name} console::printLine
+
+fn talk({s: Speaker}) -> void [io]:
+  s.speak {times: 2}
+
+fn main() -> int [io]:
+  var d = {name: "rex"} Dog
+  {s: d} talk
+  return 0
+"""
+  t.hostRuns "a void member with a param dispatches as a statement", 0, "rex\nrex"
+
   t.finish()

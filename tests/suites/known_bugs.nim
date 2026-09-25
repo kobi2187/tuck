@@ -1094,9 +1094,10 @@ fn main() -> int:
   t.hostBuilds "a register field assignment emits the setter"
   t.bugFixed "a register field assignment emits the setter"
 
-  # 17. On ODIN ONLY, the dispatch closure for an interface method is typed
+  # 17. FIXED 2026-09-25 (#40, ROADMAP M4.4: interface calls lowered). On
+  # ODIN ONLY, the dispatch closure for an interface method was typed
   # `-> int` regardless of what the method returns, so any interface method
-  # returning an enum (or anything else non-int) fails to compile:
+  # returning an enum (or anything else non-int) failed to compile:
   #   Cannot assign value '(proc(v: Detector) -> int)(d)' of type 'int'
   #   to 'tuck_type_Demand' in return statement
   # Nim and D build the same source. Odin has no switch expression, so its
@@ -1127,7 +1128,7 @@ fn main() -> int:
     busy: return 1
 """
   t.quietly: t.hostBuilds "an interface method may return an enum"
-  t.bugOpen "an interface method may return an enum"
+  t.bugFixed "an interface method may return an enum"
 
   # 18. An actor's message envelope carries a generated `kind` discriminator,
   # and a handler payload field of the same name lands beside it — so the

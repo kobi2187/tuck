@@ -34,7 +34,7 @@
 # sizes — 32,000 lines still checks in about a third of a second. The fix, when
 # a real program makes it hurt, is a name -> decl table built once per module
 # and shared by every pass, not micro-optimizing the scan.
-import ast, strutils, tables, sets, options
+import ast, strutils, tables, sets, options, algorithm
 import resolution
 import name_prefix
 export strutils.repeat, strutils.capitalizeAscii
@@ -850,3 +850,38 @@ proc fnSigInstance*(m: Module, t: Type): Type =
     return Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
                 result: substParams(d.sigReturn, binds))
   nil
+
+# --- interfaces: who satisfies what (moved from codegen_common so the
+# lowering of an interface call, M4.4, can ask without importing codegen) ---
+
+proc findObjectMember*(obj: Decl, name: string): Decl =
+  ## The member fn named `name` declared inside object `obj`, or nil — the
+  ## satisfier-specific counterpart to `findFn`, which resolves by name alone
+  ## and cannot tell two same-named methods on different objects apart.
+  for mem in obj.members():
+    if mem != nil and mem.kind == dkFn and mem.name == name: return mem
+
+proc satisfiersOf*(module: Module, realModules: Table[string, Module],
+                   iface: string): seq[Decl] =
+  ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.
+  ##
+  ## An interface value is a variant over its satisfying types, so the set has
+  ## to be complete before the type can be emitted — an object in another
+  ## module adds a branch. Ordered by name so the emitted tag enum is stable
+  ## between runs rather than depending on table iteration order.
+  ##
+  ## Takes the two fields directly rather than a ctx: the question is "which
+  ## objects satisfy this contract", which has no target syntax in it.
+  var seen = initHashSet[string]()
+  for d in module.decls:
+    if d != nil and d.kind == dkObject and iface in d.satisfies and
+       d.name notin seen:
+      seen.incl(d.name)
+      result.add(d)
+  for _, m in realModules:
+    for d in m.decls:
+      if d != nil and d.kind == dkObject and iface in d.satisfies and
+         d.name notin seen:
+        seen.incl(d.name)
+        result.add(d)
+  result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))

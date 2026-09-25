@@ -4045,6 +4045,11 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # Built by lowering, like exkOrdinal. A statement: it produces nothing.
     discard tc.synthesize(e.validated)
     tc.namedType("void", e.span)
+  of exkIfaceCall:
+    # Built by lowering, like exkOrdinal, and it keeps the id — so the type
+    # of the interface call it replaced.
+    discard tc.synthesize(e.dispatchRecv)
+    semLayer.typeFor(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field

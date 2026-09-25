@@ -85,13 +85,6 @@ proc absentCapable*(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["?", "!?"] and t.args.len == 1
 
-proc findObjectMember*(obj: Decl, name: string): Decl =
-  ## The member fn named `name` declared inside object `obj`, or nil — the
-  ## satisfier-specific counterpart to `findFn`, which resolves by name alone
-  ## and cannot tell two same-named methods on different objects apart.
-  for mem in obj.members():
-    if mem != nil and mem.kind == dkFn and mem.name == name: return mem
-
 proc moduleDeclaringType*(module: Module, name: string): string =
   ## The imported module a TYPE came from, or "" when this module declares it.
   ##
@@ -118,31 +111,6 @@ proc moduleDeclaringType*(module: Module, name: string): string =
     if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
     return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
   ""
-
-proc satisfiersOf*(module: Module, realModules: Table[string, Module],
-                   iface: string): seq[Decl] =
-  ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.
-  ##
-  ## An interface value is a variant over its satisfying types, so the set has
-  ## to be complete before the type can be emitted — an object in another
-  ## module adds a branch. Ordered by name so the emitted tag enum is stable
-  ## between runs rather than depending on table iteration order.
-  ##
-  ## Takes the two fields directly rather than a ctx: the question is "which
-  ## objects satisfy this contract", which has no target syntax in it.
-  var seen = initHashSet[string]()
-  for d in module.decls:
-    if d != nil and d.kind == dkObject and iface in d.satisfies and
-       d.name notin seen:
-      seen.incl(d.name)
-      result.add(d)
-  for _, m in realModules:
-    for d in m.decls:
-      if d != nil and d.kind == dkObject and iface in d.satisfies and
-         d.name notin seen:
-        seen.incl(d.name)
-        result.add(d)
-  result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
 
 # An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
 # select` message arms (spec §9.3): a message kind + typed binding + body.

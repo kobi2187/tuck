@@ -178,6 +178,9 @@ proc resolveRefsIn(e: Expr) =
   of exkFinish: e.finishHandle = resolveVarSlot(e.finishHandle)
   of exkOrdinal: e.ordinalOf = resolveVarSlot(e.ordinalOf)
   of exkValidate: e.validated = resolveVarSlot(e.validated)
+  of exkIfaceCall:
+    e.dispatchRecv = resolveVarSlot(e.dispatchRecv)
+    for arm in e.dispatchArms.mitems: arm.call = resolveVarSlot(arm.call)
 
 proc resolveDeclRefs*(prog: seq[LoadedModule]) =
   ## Entry point: build the five whole-program name tables, then rewrite

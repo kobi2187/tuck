@@ -101,6 +101,9 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   of exkUnary:
     h.visit(n.operand, false)
     if n.unaryOp == uoPropagate: h.settled = true   # `x?` may return early
+  of exkIfaceCall:
+    h.visit(n.dispatchRecv, false)
+    h.settled = true             # exactly one arm runs; lift nothing out of one
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkBracket,
      exkCall, exkBreak, exkContinue, exkTripleDot, exkImport, exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkOrdinal:

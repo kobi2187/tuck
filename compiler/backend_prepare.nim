@@ -59,6 +59,7 @@ import resolution
 import lowering
 import lowering_seqcopy
 import lowering_strtemps
+import lowering_iface
 import analysis_ownership
 import twin_calls
 import pipeline
@@ -176,6 +177,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
   for lm in result.mods:
     let ts = epochTime()
     lowerModule(semLayer, lm.m)                                      # 3. lower
+    lowerIfaceCalls(semLayer, lm.m, result.real)          #    iface calls
     hoistStrTemps(semLayer, lm.m, ownedStrProcs(backend))     #    str temps
     if backend.aliasesOnAssign:
       markSeqCopiesIn(semLayer, lm.m)                                # 4. marks

@@ -153,13 +153,17 @@ which `satisfies` declares and codegen collects across the module closure.
 ### Every backend
 
 Nim, Odin and D emit the same structure from one source; only the spelling
-differs:
+differs. A call through an interface value is LOWERED first
+(`compiler/lowering_iface.nim`) to an `exkIfaceCall`: the receiver and one arm
+per satisfying object, each an ordinary member call on the payload. Which
+objects, which member and which arguments are decided there once; each
+backend prints only the switch:
 
 | | Nim | Odin | D |
 |---|---|---|---|
 | variant | `case tag*: AnimalTag` | `tag: AnimalTag` + payload fields | `AnimalTag tag;` + one field per branch |
-| construction | `Animal(tag: …, tuck_DogVal: d)` | `Animal{tag = …, tuck_DogVal = d}` | `Animal(AnimalTag.…, tuck_DogVal: d)` |
-| dispatch | `case a.tag` (an expression) | `switch v.tag` inside a closure, since Odin has no switch expression | `switch (v.tag)` inside a function |
+| construction | `Animal(tag: …, tuck_type_DogVal: d)` | `Animal{tag = …, tuck_type_DogVal = d}` | `Animal(AnimalTag.…, tuck_type_DogVal: d)` |
+| dispatch | `case a.tag` (an expression) | `switch v.tag` inside a closure typed with the call's own type, since Odin has no switch expression | `switch (v.tag)` inside a function |
 
 All three produce 42 for the example above.
 

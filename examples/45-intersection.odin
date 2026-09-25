@@ -209,7 +209,7 @@ tuck_fn_poll :: proc (d: Detector) -> tuck_type_Demand {
 			tmp := v.tuck_type_LoopDetectorVal
 			return tuck_type_LoopDetector_reads(&tmp)
 	}
-	return 0
+	panic("unreachable interface tag")
 })(d)
   switch (tuck_bits)
   {

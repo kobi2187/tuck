@@ -592,39 +592,22 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
   ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
     ", " & objName & "Val: " & e.name & ")"
 
-proc genDIfaceExtraArgs(ctx: var DCodegenCtx, memberDecl: Decl,
-                        dotArg: Expr): string =
-  ## The payload beyond `self`, splatted positionally to match the concrete
-  ## member's own declared params — never packed into one struct literal,
-  ## which is not what the receiver's exploded params expect.
-  if dotArg == nil: return ""
-  if memberDecl == nil: return ", " & ctx.genDExpr(dotArg)
-  var extra: seq[string]
-  for i, pname in memberDecl.paramNames():
-    if i == 0: continue  # self
-    extra.add(ctx.payloadFieldArgD(dotArg, pname))
-  if extra.len == 0: return ""
-  ", " & extra.join(", ")
-
-proc genDIfaceDispatch(ctx: var DCodegenCtx, e: Expr,
-                       ic: tuple[iface, member: string]): string =
-  ## A call through an interface value: switch on the tag it carries and call
-  ## the concrete member directly — no table, no thunk, no virtual call.
-  ##
-  ## An immediately-called lambda because D has no switch EXPRESSION and a
-  ## call site needs a value. A plain `switch` rather than `final switch`:
+proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## A call through an interface value, lowered (lowering_iface): switch on
+  ## the tag and print each arm's member call — no table, no virtual call.
+  ## An immediately-called lambda because D has no switch EXPRESSION; its
+  ## return type is inferred. A plain `switch` rather than `final switch`:
   ## the satisfier set can be empty and an unreachable default is cheap.
-  let recv = ctx.genDExpr(e.receiver)
+  let recv = ctx.genDExpr(e.dispatchRecv)
   var arms: seq[string]
-  for st in ctx.satisfiersOfD(ic.iface):
-    let extra = ctx.genDIfaceExtraArgs(findObjectMember(st, ic.member), e.dotArg)
-    arms.add("        case " & ic.iface & "Tag." & ic.iface & "_is_" &
-             st.name & ":\n" &
-             "            auto tmp = v." & st.name & "Val;\n" &
-             "            return " & memberProcName(st.name, ic.member) &
-             "(tmp" & extra & ");")
+  for arm in e.dispatchArms:
+    arms.add("        case " & e.dispatchIface & "Tag." & e.dispatchIface &
+             "_is_" & arm.satisfier & ":\n" &
+             "            auto " & arm.bindName & " = v." & arm.satisfier &
+             "Val;\n" &
+             "            return " & ctx.genDExpr(arm.call) & ";")
   if arms.len == 0: return ""
-  "((" & ic.iface & " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
+  "((" & e.dispatchIface & " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
     "\n        default: assert(0, \"unreachable interface tag\");\n" &
     "    }\n})(" & recv & ")"
 
@@ -679,10 +662,8 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   ## arrive with their milestones.)
   # A call through an interface value: which implementations are POSSIBLE
   # was fixed at the wrap site; which one runs is the tag, read here.
-  let ic = ctx.res.ifaceCallOf(e)
-  if ic.member != "":
-    let disp = ctx.genDIfaceDispatch(e, ic)
-    if disp != "": return disp
+  doAssert ctx.res.ifaceCallOf(e).member == "",
+    "codegen_d: an interface call reached the emitter unlowered (lowering_iface)"
   if e.receiver != nil and e.receiver.kind == exkVar and
      e.receiver.name == "input" and ctx.currentParams.len > 0:
     return e.fieldName   # `input.x` IS the param x
@@ -1417,6 +1398,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     if e.discardVal != nil: ctx.genDExpr(e.discardVal) else: ""
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
+  of exkIfaceCall: ctx.genDIfaceCall(e)
   of exkOrdinal:
     # A cast, for an enum and a bool alike: D converts both to their ordinal.
     "cast(long)(" & ctx.genDExpr(e.ordinalOf) & ")"

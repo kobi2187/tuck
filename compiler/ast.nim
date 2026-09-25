@@ -243,6 +243,13 @@ type
     of pkOr:
       left*, right*: Pattern
 
+  DispatchArm* = object
+    ## One satisfier's arm of an `exkIfaceCall`: the receiver's payload, taken
+    ## as that object and bound to `bindName`, is the receiver of `call`.
+    satisfier*: string   # the object's (mangled) declared name
+    bindName*: string    # what `call` names the payload
+    call*: Expr          # an ordinary member call; its args[0] reads bindName
+
   MatchArm* = object
     pattern*: Pattern
     guard*: Expr
@@ -384,6 +391,13 @@ type
                     # states of a builder need not satisfy the invariant, the
                     # value it builds must. Nim spells it `validate(x)`, Odin
                     # and D `validate_T(x)`.
+    exkIfaceCall    # a call through an INTERFACE value (`a.noise`), lowered
+                    # (`lowering_iface`, ROADMAP M4.4): the receiver, and one
+                    # arm per object that satisfies the interface, each an
+                    # ordinary member call on that object's payload. Its own
+                    # node rather than a `match`: it sits in VALUE position,
+                    # where Odin's match is a ternary chain that can bind no
+                    # payload and would evaluate the receiver once per arm.
 
   CombKind* = enum
     ## The record combinators. One family, one shape — a receiver and a struct
@@ -498,6 +512,10 @@ type
       deferBody*: Expr  # the block to run at scope exit
     of exkOrdinal:
       ordinalOf*: Expr  # the enum or bool value whose ordinal this is
+    of exkIfaceCall:
+      dispatchRecv*: Expr          # the interface value, evaluated once
+      dispatchIface*: string       # the interface's (mangled) type name
+      dispatchArms*: seq[DispatchArm]
     of exkValidate:
       validated*: Expr  # the value to re-check; its TYPE names the invariants
     of exkAcquire:

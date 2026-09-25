@@ -730,37 +730,28 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   if foreign != "": return foreign
   e.name
 
-proc genIfaceExtraArgs(ctx: var OdinCodegenCtx, memberDecl: Decl,
-                       dotArg: Expr): string =
-  ## The payload beyond `self`, splatted positionally to match the concrete
-  ## member's own declared params — never packed into one struct literal,
-  ## which is not what the receiver's exploded params expect.
-  if dotArg == nil: return ""
-  if memberDecl == nil: return ", " & ctx.genOdinExpr(dotArg)
-  var extra: seq[string]
-  for i, pname in memberDecl.paramNames():
-    if i == 0: continue  # self
-    extra.add(ctx.payloadFieldArg(dotArg, pname))
-  if extra.len == 0: return ""
-  ", " & extra.join(", ")
-
-proc genIfaceDispatch(ctx: var OdinCodegenCtx, e: Expr,
-                      ic: tuple[iface, member: string]): string =
-  ## A call through an interface value: switch on the tag the value carries and
-  ## call the concrete member fn — no table, no thunk. Emitted as an
-  ## immediately-called closure because Odin has no switch EXPRESSION, and a
-  ## call site needs a value.
-  let recv = ctx.genOdinExpr(e.receiver)
+proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A call through an interface value, lowered (lowering_iface): switch on
+  ## the tag and print each arm's member call. An immediately-called closure,
+  ## because Odin has no switch EXPRESSION and a call site needs a value —
+  ## typed with the CALL's type. It said `-> int` whatever the member
+  ## returned, so a member returning `str` did not compile (#40).
+  let recv = ctx.genOdinExpr(e.dispatchRecv)
+  let t = ctx.res.typeFor(e)
+  let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
   var arms: seq[string]
-  for st in ctx.satisfiersOf(ic.iface):
-    let extra = ctx.genIfaceExtraArgs(findObjectMember(st, ic.member), e.dotArg)
-    arms.add("\t\tcase ." & ic.iface & "_is_" & st.name & ":\n" &
-             "\t\t\ttmp := v." & st.name & "Val\n" &
-             "\t\t\treturn " & memberProcName(st.name, ic.member) &
-             "(&tmp" & extra & ")")
+  for arm in e.dispatchArms:
+    arms.add("\t\tcase ." & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
+             "\t\t\t" & arm.bindName & " := v." & arm.satisfier & "Val\n" &
+             "\t\t\t" & (if isVoid: "" else: "return ") &
+             ctx.genOdinExpr(arm.call))
   if arms.len == 0: return ""
-  "(proc(v: " & ic.iface & ") -> int {\n\tswitch v.tag {\n" &
-    arms.join("\n") & "\n\t}\n\treturn 0\n})(" & recv & ")"
+  let sig = if isVoid: "" else: " -> " & ctx.odinType(t)
+  # The tag is always one of the arms; the panic is what Odin's "missing
+  # return" asks for, and what a corrupt value deserves.
+  let tail = if isVoid: "" else: "\tpanic(\"unreachable interface tag\")\n"
+  "(proc(v: " & e.dispatchIface & ")" & sig & " {\n\tswitch v.tag {\n" &
+    arms.join("\n") & "\n\t}\n" & tail & "})(" & recv & ")"
 
 proc isInputField(ctx: OdinCodegenCtx, e: Expr): bool =
   ## `input.x` — the incoming payload's field is just the param.
@@ -862,8 +853,8 @@ proc assertedVariantField(ctx: var OdinCodegenCtx, e: Expr): string =
 proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: interface dispatch, an actor singleton's field, a
   ## status test, a resolved call, a sum-variant construction, or a plain read.
-  let ic = ctx.res.ifaceCallOf(e)
-  if ic.member != "": return ctx.genIfaceDispatch(e, ic)
+  doAssert ctx.res.ifaceCallOf(e).member == "",
+    "codegen_odin: an interface call reached the emitter unlowered (lowering_iface)"
   # A CHECKER-RESOLVED CALL FIRST, before the actor-field read below. Nim's
   # genFieldAccess has always tested hasCall first; Odin tested the actor
   # branch first, so `Actor.waitUntil {pred: :p}` — a static member call whose
@@ -1478,6 +1469,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       ctx.genOdinExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: ctx.genOrdinal(e)
+  of exkIfaceCall: ctx.genIfaceCall(e)
   of exkValidate:
     "validate_" & ctx.res.typeFor(e.validated).name & "(" &
       ctx.genOdinExpr(e.validated) & ")"

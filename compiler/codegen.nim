@@ -535,40 +535,19 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   elif e.name in ctx.fieldVars: "self." & e.name
   else: nimRtCallee(e.name)
 
-proc genIfaceExtraArgs(ctx: var CodegenCtx, memberDecl: Decl,
-                       dotArg: Expr): string =
-  ## The payload beyond `self`, splatted positionally to match the concrete
-  ## member's own declared params — never packed into one Nim tuple, which is
-  ## what the receiver's `encode(self, key, val)` signature actually expects.
-  if dotArg == nil: return ""
-  if memberDecl == nil: return ", " & ctx.genExpr(dotArg)
-  var extra: seq[string]
-  for i, pname in memberDecl.paramNames():
-    if i == 0: continue  # self
-    extra.add(ctx.payloadFieldArg(dotArg, pname))
-  if extra.len == 0: return ""
-  ", " & extra.join(", ")
-
-proc genIfaceDispatch(ctx: var CodegenCtx, e: Expr,
-                      ic: tuple[iface, member: string], ind: string): string =
-  ## Dispatch is a `case` on the tag calling the concrete member fn directly —
-  ## no function table, no thunk, and the optimizer can see through it.
-  ## Emitted as a Nim case EXPRESSION so it composes anywhere a value is
-  ## expected.
-  ##
-  ## A member fn takes `self: var T`, so each branch binds a mutable copy of
-  ## the payload rather than passing the field of an immutable value. Mutation
-  ## hits that copy, which is the semantics: an interface value OWNS its data.
-  let recv = ctx.genExpr(e.receiver)
+proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## A call through an interface value, lowered (lowering_iface): a `case` on
+  ## the tag, each arm binding a mutable copy of the payload — a member takes
+  ## `self: var T`, and an interface value OWNS its data — and printing the
+  ## member call the lowering built. A case EXPRESSION, so it composes
+  ## anywhere a value is expected.
+  let recv = ctx.genExpr(e.dispatchRecv)
   var arms: seq[string]
-  for s in ctx.satisfiersOf(ic.iface):
-    let extra = ctx.genIfaceExtraArgs(findObjectMember(s, ic.member), e.dotArg)
-    # QUALIFIED, matching the declaration — the same name Odin and D have
-    # always used here (memberProcName(s.name, ic.member)).
-    arms.add(ind & "  of " & ic.iface & "_is_" & s.name & ":\n" &
-             ind & "    var tmp = " & recv & "." & s.name & "Val\n" &
-             ind & "    " & memberProcName(s.name, ic.member) &
-             "(tmp" & extra & ")")
+  for arm in e.dispatchArms:
+    arms.add(ind & "  of " & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
+             ind & "    var " & arm.bindName & " = " & recv & "." &
+             arm.satisfier & "Val\n" &
+             ind & "    " & ctx.genExpr(arm.call))
   if arms.len == 0: return ""
   "(block:\n" & ind & "  case " & recv & ".tag\n" & arms.join("\n") & ")"
 
@@ -606,8 +585,8 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: a payload field, interface dispatch, a resolved call, a
   ## sum-variant construction, an actor singleton's field, or a plain read.
   if ctx.isInputField(e): return e.fieldName
-  let ic = ctx.res.ifaceCallOf(e)
-  if ic.member != "": return ctx.genIfaceDispatch(e, ic, ind)
+  doAssert ctx.res.ifaceCallOf(e).member == "",
+    "codegen: an interface call reached the emitter unlowered (lowering_iface)"
   if ctx.res.hasCall(e): return ctx.genConstruction(ctx.res.call(e))
   let ctor = ctx.genTypeVariantCtor(e)
   if ctor != "": return ctor
@@ -915,6 +894,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: "ord(" & ctx.genExpr(e.ordinalOf) & ")"   # enum and bool alike
   of exkValidate: "validate(" & ctx.genExpr(e.validated) & ")"
+  of exkIfaceCall: ctx.genIfaceCall(e, ind)
 
 proc hasBracketBase(e: Expr): bool =
   ## Does this target chain bottom out in an index?
