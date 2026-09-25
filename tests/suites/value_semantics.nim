@@ -767,6 +767,24 @@ fn main() -> int:
 """
   t.hostRuns("a local that takes a twin's parameter is its only owner", 4)
 
+  # AN OVERWRITE FREE MUST WAIT FOR THE NEW VALUE. Step 5 frees a loop-
+  # overwritten local's old buffer, and Odin emitted the free BEFORE the
+  # assignment — so a right-hand side that reads the old value read freed
+  # memory: 57 here where Nim and D compute 8.
+  t.src """
+fn fresh({k: int}) -> Seq[int]:
+  return [k, k + 1]
+
+fn main() -> int:
+  var xs = [5, 6, 7]
+  var i = 0
+  for i < 3:
+    xs = {k: xs[0] + 1} fresh
+    i = i + 1
+  return xs[0]
+"""
+  t.hostRuns("an overwritten value is freed after its replacement is built", 8)
+
   # --- EV-15: a last use at ARGUMENT position reaches the MOVED twin -------
   #
   # `movedCallInto` recognised `x = f(x, ...)` and `f(b.ask, ...)`. It did

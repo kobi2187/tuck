@@ -1324,10 +1324,21 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   let tgt = ctx.genOdinAssignTarget(e.target)
   # THE OLD VALUE DIES HERE. A `defer` cannot reach this: it fires once, and
   # a loop abandons one buffer per iteration. Step 5 of the ownership pass.
+  #
+  # AFTER THE NEW VALUE IS BUILT, not before: `xs = {k: xs[0]} f` reads the
+  # old value to make the new one, and freeing first handed it freed memory
+  # (57 where Nim and D compute 8). The new value is fresh — step 5 only
+  # fires when every value assigned is — so freeing the old one once it
+  # exists can never free the new one.
   var pre = ""
+  var value = valStr
   if e.target.kind == exkVar and e.target.name in ctx.owned.freeBeforeOverwrite:
-    pre = "delete(" & tgt & ")\n" & "  ".repeat(ctx.indent)
-  ctx.withAssignValidate(e, pre & tgt & " = " & valStr &
+    ctx.tmpCounter.inc
+    let next = "tuckNext" & $ctx.tmpCounter
+    let ind = "  ".repeat(ctx.indent)
+    pre = next & " := " & valStr & "\n" & ind & "delete(" & tgt & ")\n" & ind
+    value = next
+  ctx.withAssignValidate(e, pre & tgt & " = " & value &
                             ctx.seqFieldFixups(tgt, e.assignVal))
 
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
