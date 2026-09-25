@@ -34,6 +34,7 @@ import resolution, strutils
 import ast_query
 import lowering_recursive   # recursive sum edges get a Seq handle
 import lowering_decisions   # a decision table becomes a match or an if chain
+import lowering_chains      # a `..` chain becomes statements
 
 proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef]
 
@@ -247,98 +248,6 @@ proc explodePayload(res: Resolution, e: Expr) =
                        litValue: "none"))
   e.args = newArgs
 
-proc chainOnFieldCall(res: Resolution, e: Expr): bool =
-  ## True when `e` is a resolved `.fn` call whose RECEIVER is a `..` chain —
-  ## `self ..loadEpisode {n} .startAudio`. Purely syntactic: no checker
-  ## input needed beyond the call semLayer already resolved.
-  e != nil and e.kind == exkField and e.receiver != nil and
-    e.receiver.kind == exkChain and res.hasCall(e)
-
-proc rethreadCall(res: Resolution, call: Expr, oldId: NodeId, replacement: Expr): Expr =
-  ## A copy of `call` with every argument matching `oldId` swapped for
-  ## `replacement`. NEVER mutates `call` itself: `call` came from
-  ## `res.call`/`stepCall`, a table SHARED across all three backends
-  ## (NodeIds survive each backend's deepCopy, so a lookup by id returns the
-  ## same object to all of them). Writing through it here once corrupted the
-  ## OTHER backends' output — Nim's pass ran first and rewrote a step call's
-  ## argument to ITS OWN temp; Odin's pass ran second, tried to match the
-  ## original id, found Nim's temp sitting there instead, and silently gave
-  ## up — mixing one backend's temp into another's file. Same rule the old
-  ## emit-time genCallOnReceiver already followed for exactly this reason.
-  if call == nil: return nil
-  var args = call.args
-  for i in 0 ..< args.len:
-    if args[i] != nil and args[i].id == oldId: args[i] = replacement
-  Expr(span: call.span, kind: exkCall, callee: call.callee, args: args)
-
-proc hoistOneChainCall(res: Resolution, e: Expr): seq[Expr] =
-  ## Rewrite one `field-on-chain` node into the statements it actually means:
-  ## the chain's own steps, ending with the resolved call reading the LAST
-  ## step's result instead of the chain's base.
-  ##
-  ## A `..` chain is STATEMENTS — one assignment per step — and statements
-  ## sequence, they do not nest. Splicing one into an argument slot used to
-  ## reach codegen as `tuck_startAudio(    self = tuck_loadEpisode(...);\n)`,
-  ## valid in none of the three target languages, because each backend had
-  ## its own copy of "hoist the chain into a temp" AT EMIT TIME (Nim's
-  ## genCallOnReceiver, Odin's twin — which had quietly drifted into writing
-  ## the temp back through the base, a different program from Nim's and
-  ## D's). One rewrite, here, replaces all three.
-  ##
-  ## The base is never mutated — a chain only writes back through its own
-  ## var when it stands ALONE as a statement (genExprChain's job, untouched).
-  ## This chain does not stand alone: something consumes its result, so it
-  ## runs on a fresh copy.
-  let chain = e.receiver
-  let call = res.call(e)
-  let tmp = "tuckChain" & $uint32(newNodeId())
-  let tmpVar = Expr(span: chain.span, kind: exkVar, name: tmp)
-  var stmts: seq[Expr]
-  stmts.add(Expr(span: chain.span, kind: exkAssign, target: tmpVar,
-                 assignVal: chain.base, isDecl: true, isMutable: true))
-  # Each step's resolved call still names the chain's ORIGINAL base as its
-  # receiver argument; thread it to `tmp` instead — every step reads the
-  # SAME tmp, since the base is reassigned through it on each step, unlike
-  # the old per-backend emit-time version this replaces (which threaded the
-  # PREVIOUS step's own fresh temp — unneeded here, since there is only one
-  # temp for the whole chain, not one per step).
-  for step in chain.steps:
-    let stepAssign = Expr(span: step.span, kind: exkAssign, target: tmpVar,
-                          assignVal: nil, isDecl: false, isMutable: false)
-    let sc = res.stepCall(step)
-    if sc != nil:
-      stepAssign.assignVal = rethreadCall(res, sc, chain.base.id, tmpVar)
-    else:
-      # a plain field set — `..field {v}`, no call to thread
-      let valStr = if isSingleFieldPayload(step.arg): soleFieldValue(step.arg)
-                   else: nil
-      stepAssign.target = Expr(span: step.span, kind: exkField,
-                               receiver: tmpVar, fieldName: step.target.name)
-      stepAssign.assignVal = valStr
-    stmts.add(stepAssign)
-  stmts.add(rethreadCall(res, call, chain.id, tmpVar))
-  stmts
-
-proc hoistChainCalls(res: Resolution, e: Expr) =
-  ## Find every field-on-chain node reachable from `e` and replace it in its
-  ## enclosing STATEMENT LIST with the temp-and-steps form. Only a block's
-  ## own stmts are a statement list; everywhere else is an expression
-  ## position, where a chain-fed call cannot appear (the checker only
-  ## resolves `..x.y` chained onto a receiver used as a statement's value or
-  ## fed straight into a following `.call` — both surface at block level).
-  if e == nil: return
-  if e.kind == exkBlock:
-    var rewritten: seq[Expr]
-    for s in e.stmts:
-      if chainOnFieldCall(res, s):
-        rewritten.add(hoistOneChainCall(res, s))
-      else:
-        rewritten.add(s)
-    e.stmts = rewritten
-    for s in e.stmts: hoistChainCalls(res, s)
-    return
-  for c in e.children: hoistChainCalls(res, c)
-
 proc lowerExpr(res: Resolution, e: Expr, m: Module) =
   ## Rewrite one expression and everything under it.
   ##
@@ -361,7 +270,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkDiscard, exkTripleDot, exkImport, exkSend, exkSelect, exkCombinator,
      exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkDefer,
-     exkFinish, exkAcquire, exkOrdinal:
+     exkFinish, exkAcquire, exkOrdinal, exkValidate:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
@@ -460,14 +369,6 @@ proc normalizeSelf(d: Decl) =
       mem.fnParams = @[Param(name: "self", typ: objType, span: mem.span)] &
                      mem.fnParams
 
-proc hoistTopLevelChainCall(res: Resolution, body: Expr): Expr =
-  ## A one-statement fn body (`fn f(): x .y`) has no enclosing block for
-  ## hoistChainCalls to rewrite into — synthesize one when the body itself
-  ## is a field-on-chain call. Every other body is returned unchanged.
-  if chainOnFieldCall(res, body):
-    Expr(span: body.span, kind: exkBlock, stmts: hoistOneChainCall(res, body))
-  else: body
-
 proc lowerModule*(res: Resolution, m: Module) =
   ## Rewrite a module in place into the simpler form the backends expect.
   # A recursive sum has no finite size as written, so its edges get a handle
@@ -502,11 +403,11 @@ proc lowerModule*(res: Resolution, m: Module) =
   # before it was fixed here.
   for fn in m.allFns():
     lowerExpr(res, fn.fnBody, m)
-    fn.fnBody = hoistTopLevelChainCall(res, fn.fnBody)
-    hoistChainCalls(res, fn.fnBody)
   for d in m.decls(dkTask):
     lowerExpr(res, d.taskBody, m)
-    d.taskBody = hoistTopLevelChainCall(res, d.taskBody)
-    hoistChainCalls(res, d.taskBody)
   for d in m.decls(dkExpr):
     lowerExpr(res, d.expr, m)
+  # Every `..` chain becomes the statements it means (lowering_chains).
+  # After lowerExpr, as the chain-fed-call hoisting it absorbed always ran:
+  # a step's call is the checker's, already in the shape the emitters print.
+  lowerChains(res, m)

@@ -143,4 +143,23 @@ fn main() -> int:
   t.omits   "the bound chain leaves its base alone", "a = tuck_setN"
   t.emits   "each step reads the previous step's result", "tuckChain1 = tuck_setN\\(tuckChain1"
 
+  # ...and the same program on EVERY backend, a field step included. Before
+  # chains were lowered (lowering_chains) each backend printed its own, and
+  # all three got this wrong in different ways: Nim's temp lost the field
+  # step, Odin emitted a syntax error, D wrote through the base.
+  t.src """
+type P:
+  a: int
+  b: int
+
+fn setA({p: P, v: int}) -> P:
+  return {a: v, b: p.b} P
+
+fn main() -> int:
+  var base = {a: 1, b: 2} P
+  let t = base ..setA {v: 5} ..b {7}
+  return base.a * 100 + base.b * 10 + t.a + t.b
+"""
+  t.hostRuns "a bound chain leaves its base alone, on every backend", 132
+
   t.finish()

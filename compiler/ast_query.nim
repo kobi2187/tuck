@@ -393,13 +393,9 @@ proc injectTailReturn*(body: Expr, retTypeStr: string) =
   if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
      retTypeStr != "void":
     let lastS = body.stmts[^1]
-    if lastS.kind == exkChain:
-      # a chain's value is its base var: keep the mutation statements,
-      # return the base afterwards
-      if lastS.base != nil:
-        body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
-                            returnVal: lastS.base))
-    elif lastS.kind == exkMatch and lastS.subject != nil and
+    # (A tail `..` chain is the base as its steps leave it: lowering_chains
+    # writes that `return`, so no chain reaches here.)
+    if lastS.kind == exkMatch and lastS.subject != nil and
          not matchArmsReturn(lastS):
       # `match subject:` whose arms are VALUES is an expression, so the tail
       # match is the fn's result. Arms that return on their own already are
@@ -727,15 +723,6 @@ proc groupNameOf*(t: Type): string =
     return t.base.name
   ""
 
-proc chainStepMember*(step: ChainStep): string =
-  ## The member a `..` step names. A field set and a local mutator write a
-  ## bare name; `..mod::fn` writes a qualified one, whose target is an
-  ## exkQualified node — Expr is a variant object, so reading `.name` on that
-  ## is a runtime FieldDefect rather than a compile error.
-  if step.target == nil: ""
-  elif step.target.kind == exkQualified: step.target.qualName
-  else: step.target.name
-
 proc decodeBitField*(regName: string, f: FieldDef): BitFieldInfo =
   ## `bits 3..7` is a multi-bit FIELD: shift by the low bit and mask the
   ## width. A single `bit N` is the one-bit case of the same shape.
@@ -818,22 +805,6 @@ proc markUnimplemented*(d: Decl) =
   if d.kind != dkFn or d.takesSelf(): return
   d.isPending = true
   d.fnBody = nil
-
-proc threadReceiver*(call, base: Expr, into, baseStr: string): Expr =
-  ## Each step's resolved call names the chain's BASE as its receiver. When
-  ## the chain runs into a temp, every step must read the PREVIOUS step's
-  ## result instead — otherwise `a ..setN {5} ..setN {7}` emits two calls both
-  ## reading `a`, and the first result is silently discarded.
-  ##
-  ## Matched by NodeId: each backend walks a deepCopy of the checked tree, so
-  ## the node the checker stored is not the node being walked here.
-  if into == baseStr or base == nil: return call
-  result = Expr(span: call.span, kind: exkCall, callee: call.callee,
-                args: call.args)
-  let intoExpr = Expr(span: call.span, kind: exkVar, name: into)
-  for i in 0 ..< result.args.len:
-    if result.args[i] != nil and result.args[i].id == base.id:
-      result.args[i] = intoExpr
 
 # --- a GENERIC fnsig ---------------------------------------------------------
 #

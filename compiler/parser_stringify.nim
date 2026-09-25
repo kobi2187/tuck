@@ -134,6 +134,8 @@ proc toString*(e: Expr): string =
     # Not surface syntax — lowering builds it — so this is only ever read in
     # a dump, where `ord(x)` says what it is.
     return "ord(" & e.ordinalOf.toString() & ")"
+  of exkValidate:
+    return "validate(" & e.validated.toString() & ")"   # lowering-built too
   of exkAcquire:
     return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:

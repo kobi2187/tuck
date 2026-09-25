@@ -4041,6 +4041,10 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # int rather than a crash.
     discard tc.synthesize(e.ordinalOf)
     tc.namedType("int", e.span)
+  of exkValidate:
+    # Built by lowering, like exkOrdinal. A statement: it produces nothing.
+    discard tc.synthesize(e.validated)
+    tc.namedType("void", e.span)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field

@@ -37,6 +37,39 @@ fn main() -> int:
   t.outputs "...naming the type and the predicate", "Invariant violated"
   t.hostBuilds "...and every backend emits it"
 
+  # --- a `..` chain validates ONCE, when it ends -----------------------------
+  #
+  # A builder's intermediate states need not hold the invariant; the value it
+  # builds must. `r ..lo {5} ..hi {10}` passes through lo=5, hi=1 on its way
+  # to a valid range. Each backend printed the chain itself and each validated
+  # at the end; lowered to plain assignments (lowering_chains), a field step
+  # would re-validate on its own — so a step is marked `inChain`, and one
+  # `exkValidate` closes the chain.
+  const rng = """
+type Range:
+  lo: int
+  hi: int
+  invariant:
+    lo <= hi
+"""
+  t.src rng & """
+fn main() -> int:
+  var r = {lo: 0, hi: 1} Range
+  r ..lo {5} ..hi {10}
+  return r.lo + r.hi
+"""
+  t.hostRuns "a chain may pass through an invalid state on its way", 15
+
+  t.src rng & """
+fn main() -> int:
+  var r = {lo: 0, hi: 1} Range
+  r ..lo {5}
+  return r.lo + r.hi
+"""
+  t.runs "...but a chain that ENDS invalid fires", 1
+  t.outputs "...naming the predicate", "Invariant violated"
+  t.hostBuilds "...and every backend emits the check"
+
   # --- a decision table's cell is a return site ---------------------------
   t.src temp & """
 decision pick({hot: bool}) -> Temp:

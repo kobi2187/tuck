@@ -52,36 +52,29 @@ proc requireOrder*(have, want: PipelineStage) =
     raise newException(ValueError,
       "pipeline: stage " & $want & " requires " & $have & " to have run first")
 
-proc hasChainReceiver(e: Expr): bool =
-  ## True when `e` is a resolved `.fn` call whose receiver is a `..` chain —
-  ## the exact shape lowering.hoistChainCalls exists to rewrite away
-  ## (compiler/lowering.nim). Purely structural: no semLayer lookup needed,
-  ## `e.receiver.kind == exkChain` is enough on its own.
-  e != nil and e.kind == exkField and e.receiver != nil and
-    e.receiver.kind == exkChain
-
-proc walkNoChainReceiver(e: Expr, bad: var seq[Expr]) =
+proc walkChains(e: Expr, bad: var seq[Expr]) =
   if e == nil: return
-  if hasChainReceiver(e): bad.add(e)
-  for c in e.children: walkNoChainReceiver(c, bad)
+  if e.kind == exkChain: bad.add(e)
+  for c in e.children: walkChains(c, bad)
 
-proc assertNoChainFedCalls*(mods: seq[Module]) =
-  ## After psLowering: no `.fn` call may still have a `..` chain as its
-  ## receiver. Before hoistChainCalls existed, this exact shape reached
-  ## codegen as `startAudio(    self = loadEpisode(self, episode);\n)` —
-  ## a statement spliced into an argument slot, valid in none of the three
-  ## target languages. Once lowering has run, the shape cannot occur; this
-  ## assertion says so instead of leaving it as a comment on the fix.
+proc assertChainsLowered*(mods: seq[Module]) =
+  ## After psLowering: no `..` chain is left anywhere. lowering_chains
+  ## rewrites every one into statements, and no emitter prints one any more
+  ## — a chain that got past would reach an emitter's assertion, far from
+  ## its cause. The narrower check this replaces caught a chain fed into a
+  ## `.fn` call, which once reached codegen as
+  ## `startAudio(    self = loadEpisode(self, episode);\n)`.
   var bad: seq[Expr]
   for m in mods:
-    for fn in m.allFns(): walkNoChainReceiver(fn.fnBody, bad)
-    for d in m.decls(dkTask): walkNoChainReceiver(d.taskBody, bad)
-    for d in m.decls(dkExpr): walkNoChainReceiver(d.expr, bad)
+    for fn in m.allFns(): walkChains(fn.fnBody, bad)
+    for d in m.decls(dkTask): walkChains(d.taskBody, bad)
+    for d in m.decls(dkExpr): walkChains(d.expr, bad)
   if bad.len > 0:
     raise newException(ValueError,
-      "pipeline: " & $bad.len &
-      " call(s) still have a chain receiver after lowering — " &
-      "hoistChainCalls should have rewritten every one of these away")
+      "pipeline: " & $bad.len & " `..` chain(s) left after lowering, the " &
+      "first at line " & $bad[0].span.line & " — lowering_chains handles " &
+      "a chain as a statement, a binding's or return's value, a fn's tail, " &
+      "a branch or loop body, and a `.fn` call's receiver")
 
 proc walkAsyncConsistency(e: Expr, bad: var seq[Expr]) =
   if e == nil: return

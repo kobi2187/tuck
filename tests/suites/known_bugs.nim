@@ -1497,6 +1497,17 @@ fn main() -> int:
   t.hostPeakRss("a million temporary strings do not accumulate", 12288)
   t.bugFixed "a million temporary strings do not accumulate"
 
+  # The exit status of `fn main() -> int` is its LOW BYTE on every backend.
+  # Nim's `quit` clamps to int8 instead, so 132 exited 127 on Nim and 132 on
+  # Odin and D — found 2026-09-25 when a chain test answered 127 on Nim
+  # alone and looked like a wrong answer.
+  t.src """
+fn main() -> int:
+  return 200
+"""
+  t.quietly: t.hostRuns("main's exit status is its low byte everywhere", 200)
+  t.bugFixed "main's exit status is its low byte everywhere"
+
   # ...nor do the strings a CONCATENATION reads, or builds on the way. Found
   # by benches/memory, not by review: `let t = s + "-" + s` in a loop leaked
   # two strings a turn on Odin (123 MB at two million turns, 244 MB at four)

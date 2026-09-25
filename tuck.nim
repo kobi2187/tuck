@@ -965,13 +965,13 @@ when isMainModule:
       if verifyStages:
         var nimMods: seq[Module]
         for lm in nimProg: nimMods.add(lm.m)
-        assertNoChainFedCalls(nimMods)
+        assertChainsLowered(nimMods)
     of bkOdin:
       let odTree = prepare(prog, bkOdin, semLayer, outDir)
       let odProg = odTree.mods
       let odReal = odTree.real
       if verifyStages:
-        assertNoChainFedCalls(odTree.modules)
+        assertChainsLowered(odTree.modules)
         assertTreeIds("odin lowering", odTree.modules)
       block:
         let t0 = vBegin(psEmitting)
@@ -1028,7 +1028,7 @@ when isMainModule:
       let dProg = dTree.mods
       let dReal = dTree.real
       if verifyStages:
-        assertNoChainFedCalls(dTree.modules)
+        assertChainsLowered(dTree.modules)
         assertTreeIds("d lowering", dTree.modules)
       block:
         let t0 = vBegin(psEmitting)
@@ -1155,12 +1155,18 @@ when isMainModule:
         # rather than passed straight to quit — `quit(tuck_main())` leaves
         # nowhere for it to go.
         let postMain = hasTasks or resShutdown != "" or actorDrain != ""
+        # THE EXIT STATUS IS THE LOW BYTE, as on Odin and D. Nim's `quit`
+        # CLAMPS to int8 instead, so a main returning 132 exited 127 on Nim
+        # and 132 on the other two. Handing it the low byte as an int8 makes
+        # the status the same number everywhere.
+        proc exitWith(rc: string): string =
+          "quit(cast[int8](" & rc & " and 0xFF))"
         let mainCall =
           if mainReturns and postMain: "let mainRc = " & tuckMain
-          elif mainReturns: "quit(" & tuckMain & ")"
+          elif mainReturns: exitWith(tuckMain)
           else: tuckMain
         let asyncExit =
-          if mainReturns and postMain: "\n  quit(mainRc)" else: ""
+          if mainReturns and postMain: "\n  " & exitWith("mainRc") else: ""
         writeFile(mainNim, readFile(mainNim) &
           "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
           asyncDrive & actorDrain & resShutdown & asyncExit & "\n")

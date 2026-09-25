@@ -374,6 +374,12 @@ type
                     # because `ord` is spelled differently by every target —
                     # Nim `ord(x)`, Odin `int(x)` or a bool ternary, D a
                     # cast. One node, three printers.
+    exkValidate     # re-check a value against its type's `invariant:` block.
+                    # Built by lowering at the end of a `..` chain, which
+                    # validates ONCE, after all its steps — the intermediate
+                    # states of a builder need not satisfy the invariant, the
+                    # value it builds must. Nim spells it `validate(x)`, Odin
+                    # and D `validate_T(x)`.
 
   CombKind* = enum
     ## The record combinators. One family, one shape — a receiver and a struct
@@ -454,6 +460,9 @@ type
       target*, assignVal*: Expr
       isDecl*: bool     # true for `let x = ...` / `var x = ...`
       isMutable*: bool  # true only for `var`
+      inChain*: bool    # a step of a lowered `..` chain: NOT re-validated on
+                        # its own — the chain validates once, at its end
+                        # (exkValidate), as it always has
       declType*: Type   # `let x: T = ...` — the type the author STATED, or
                         # nil when they left it to inference. It is what an
                         # empty collection or a nullary generic call has to
@@ -485,6 +494,8 @@ type
       deferBody*: Expr  # the block to run at scope exit
     of exkOrdinal:
       ordinalOf*: Expr  # the enum or bool value whose ordinal this is
+    of exkValidate:
+      validated*: Expr  # the value to re-check; its TYPE names the invariants
     of exkAcquire:
       acquireRef*: Expr     # the raw OS handle to register
       acquireKind*: string  # the kind whose table it goes into, as written

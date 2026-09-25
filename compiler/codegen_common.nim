@@ -55,6 +55,8 @@ proc assignInvariantOwner*(res: Resolution, e: Expr): string =
   ## it is built.
   if e == nil or e.target == nil or e.target.kind != exkField: return ""
   if e.target.receiver == nil: return ""
+  # A `..` chain's step: the chain validates once, when it ends (exkValidate).
+  if e.inChain: return ""
   let t = res.typeFor(e.target.receiver)
   if t == nil or t.kind != tkNamed: return ""
   t.name

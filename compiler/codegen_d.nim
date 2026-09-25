@@ -39,9 +39,6 @@ import ./codegen_d_ctx
 proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string
 proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool
 proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string
-proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep, into: string,
-                   base: Expr = nil, baseStr = ""): string
-
 proc declaresFnD(m: Module, name: string): bool =
   ## Same predicate as the Odin backend's declaresFn (private there).
   m.findFn(name) != nil
@@ -706,8 +703,8 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
     # promote) — hidden Nim-ism #3, Nim's .len is already signed.
     return "cast(long) " & ctx.genDExpr(e.receiver) & ".length"
   if ctx.res.hasCall(e):
-    # A `..` chain feeding this call was already hoisted into a temp by
-    # lowering.hoistChainCalls — the receiver here can never be exkChain.
+    # A `..` chain feeding this call was already lowered into statements
+    # (lowering_chains) — the receiver here can never be exkChain.
     return ctx.genDExpr(ctx.res.call(e))
   # `Order.Before` where `Order` is declared in an IMPORTED module. The type
   # has to be named THROUGH that module, exactly as importDeclaring already
@@ -1045,8 +1042,7 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
 
 proc ownsLayoutD(s: Expr): bool =
   ## Constructs that emit their own indentation, braces and newlines.
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkChain, exkSelect,
-             exkDefer}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkSelect, exkDefer}
 
 proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
                        stmtCode: string): string =
@@ -1336,45 +1332,6 @@ proc genDSend(ctx: var DCodegenCtx, e: Expr): string =
   "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(" &
     actorSingletonName(e.sendActor) & sep & sendArgs.join(", ") & ")"
 
-proc genDChainStep(ctx: var DCodegenCtx, step: ChainStep, into: string,
-                   base: Expr = nil, baseStr = ""): string =
-  ## One `..` step, assigning through `into`. That is the base var when
-  ## nothing consumes the chain (the builder form updates it), or a temp
-  ## when something does and the base must be left alone.
-  ##
-  ## Each step's resolved call names the chain's BASE as its receiver, so
-  ## when `into` is a temp the receiver has to be threaded through — else
-  ## `a ..setN {5} ..setN {7}` emits two calls both reading `a` and the
-  ## first result is dropped. threadReceiver is shared with the Nim backend.
-  if ctx.res.stepCall(step) != nil:
-    let call = threadReceiver(ctx.res.stepCall(step), base, into, baseStr)
-    # The BUILDER form writes back through the base, so the old value is dead
-    # exactly as in `x = f(x, ...)` — take the MOVED twin.
-    if movedCallInto(ctx.res, ctx.module, call, into):
-      return ctx.indD & into & " = " & movedName(ctx.resolveDCallee(call)) &
-             "(" & ctx.genDCallArgs(call, call.callee.name).join(", ") & ");\n"
-    return ctx.indD & into & " = " & ctx.genDCall(call) & ";\n"
-  let valStr = if isSingleFieldPayload(step.arg):
-                 ctx.genDExpr(soleFieldValue(step.arg))
-               else: ""
-  # A register field is a raw pointer with no real field — writing it means
-  # calling the setter genDRegister already emitted for it.
-  let prefix = registerAccessorPrefix(ctx.module, into, step.target.name)
-  if prefix != "": return ctx.indD & prefix & "_set(" & valStr & ");\n"
-  ctx.indD & into & "." & step.target.name & " = " & valStr & ";\n"
-
-proc genDChain(ctx: var DCodegenCtx, e: Expr): string =
-  ## `x ..field {v} ..mutate {a}` — one plain statement per step, then a
-  ## re-validation: a MUTATION site is a production site too, since the
-  ## value that flows on afterwards is a different one.
-  let baseStr = ctx.genDExpr(e.base)
-  for step in e.steps:
-    result.add(ctx.genDChainStep(step, baseStr, e.base, baseStr))
-  if e.base != nil:
-    let bt = ctx.res.typeFor(e.base)
-    if bt != nil and bt.kind == tkNamed and ctx.idx.hasInvariantsIdx(bt.name):
-      result.add(ctx.indD & "validate_" & bt.name & "(" & baseStr & ");\n")
-
 proc dSelectTimeoutMs(ctx: var DCodegenCtx, arm: SelectArm): string =
   ## The `timeout` arm's deadline as a plain int-of-milliseconds expression.
   ## Mirrors the Nim/Odin backends' selectTimeoutMs exactly: `timeout {5.ms}`
@@ -1444,7 +1401,9 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     if ctx.res.hasCall(e): ctx.genDExpr(ctx.res.call(e)) else: ""
   of exkCall: ctx.genDCall(e)
   of exkCombinator: ctx.genDCombinator(e)
-  of exkChain: ctx.genDChain(e)
+  of exkChain:
+    raiseAssert "codegen_d: a `..` chain reached the emitter; " &
+      "lowering_chains rewrites every one into statements"
   of exkBinary: ctx.genDBinary(e)
   of exkUnary: ctx.genDUnary(e)
   of exkBlock: ctx.genDBlock(e)
@@ -1468,6 +1427,9 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkOrdinal:
     # A cast, for an enum and a bool alike: D converts both to their ordinal.
     "cast(long)(" & ctx.genDExpr(e.ordinalOf) & ")"
+  of exkValidate:
+    "validate_" & ctx.res.typeFor(e.validated).name & "(" &
+      ctx.genDExpr(e.validated) & ")"
   of exkSend: ctx.genDSend(e)
   of exkSelect: ctx.genDSelect(e)
   of exkDefer: ctx.genDDefer(e)

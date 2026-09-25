@@ -236,6 +236,8 @@ proc walk(m: var Metrics, e: Expr) =
     walk(m, e.deferBody)
   of exkOrdinal:
     walk(m, e.ordinalOf)
+  of exkValidate:
+    walk(m, e.validated)
   of exkLit, exkVar, exkQualified, exkBreak, exkContinue, exkImport,
      exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     discard

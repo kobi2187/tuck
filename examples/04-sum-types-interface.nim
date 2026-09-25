@@ -57,8 +57,8 @@ proc tuck_PodcastApp_tuck_setMany*(self: var tuck_PodcastApp, pairs: seq[tuck_Pa
   discard
 
 proc tuck_PodcastApp_play*(self: var tuck_PodcastApp, episode: tuck_Episode): void =
-  var tuckChain58 = self
-  tuckChain58 = tuck_loadEpisode(tuckChain58, episode)
-  tuck_startAudio(tuckChain58)
+  var tuckChain1 = self
+  tuckChain1 = tuck_loadEpisode(tuckChain1, episode)
+  tuck_startAudio(tuckChain1)
 
 

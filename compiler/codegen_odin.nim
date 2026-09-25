@@ -1092,15 +1092,8 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
 
 proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
   ## Constructs that emit their own indentation and terminator.
-  ##
-  ## A `.fn` call over a chain receiver belongs here too — the chain lowers to
-  ## statements, so the whole thing is multi-line and indents itself. Mirrors
-  ## the Nim backend.
-  if s.kind == exkField and s.receiver != nil and
-     s.receiver.kind == exkChain and ctx.res.hasCall(s):
-    return true
   if ctx.isTaskArgsBind(s): return true
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain, exkDefer}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkDefer}
 
 proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
@@ -1363,45 +1356,6 @@ proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   else:
     ctx.genOdinReturn(e)
 
-proc genChainStep(ctx: var OdinCodegenCtx, step: ChainStep, baseStr,
-                  ind: string): string =
-  ## One step: a mutator call reassigned into the base var, a register
-  ## field's setter, or a field set.
-  if ctx.res.stepCall(step) != nil:
-    let call = ctx.res.stepCall(step)
-    # The BUILDER form writes back through the base, so the old value is dead
-    # exactly as in `x = f(x, ...)` — take the MOVED twin.
-    if movedCallInto(ctx.res, ctx.module, call, baseStr):
-      let nm = movedName(ctx.genOdinExpr(call.callee))
-      return ind & baseStr & " = " & nm & "(" &
-             ctx.genCallArgs(call, ctx.genOdinExpr(call.callee)).join(", ") & ")"
-    return ind & baseStr & " = " & ctx.genOdinCall(call)
-  let valStr = if isSingleFieldPayload(step.arg):
-                 ctx.genOdinExpr(soleFieldValue(step.arg))
-               else: ""
-  let prefix = registerAccessorPrefix(ctx.module, baseStr, step.target.name)
-  if prefix != "": return ind & prefix & "_set(" & valStr & ")"
-  ind & baseStr & "." & step.target.name & " = " & valStr
-
-proc genChainRevalidate(ctx: OdinCodegenCtx, e: Expr, baseStr,
-                        ind: string): string =
-  ## A mutation site: an invariant-carrying var re-validates after the chain.
-  if e.base == nil: return ""
-  let bt = ctx.res.typeFor(e.base)
-  if bt == nil or bt.kind != tkNamed or not hasInvariants(ctx.module, bt.name):
-    return ""
-  ind & "validate_" & bt.name & "(" & baseStr & ")"
-
-proc genChain(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
-  ## `x ..field {v} ..mutate {a}` — one plain statement per step.
-  let baseStr = ctx.genOdinExpr(e.base)
-  var lines: seq[string]
-  for step in e.steps:
-    lines.add(ctx.genChainStep(step, baseStr, ind))
-  let revalidate = ctx.genChainRevalidate(e, baseStr, ind)
-  if revalidate != "": lines.add(revalidate)
-  lines.join("\n")
-
 proc genSend(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `Actor send handler {payload}` — enqueue an envelope on the singleton's
   ## mailbox, then wake the actor. A full ring drops (spec §9.1). The send
@@ -1504,7 +1458,9 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     if e.discardVal != nil: "_ = " & ctx.genOdinExpr(e.discardVal)
     else: ""
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
-  of exkChain: ctx.genChain(e, ind)
+  of exkChain:
+    raiseAssert "codegen_odin: a `..` chain reached the emitter; " &
+      "lowering_chains rewrites every one into statements"
   of exkSend: ctx.genSend(e)
   of exkSelect: ctx.genOdinSelect(e, ind)
   of exkDefer: ctx.genDefer(e, ind)
@@ -1516,6 +1472,9 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       ctx.genOdinExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: ctx.genOrdinal(e)
+  of exkValidate:
+    "validate_" & ctx.res.typeFor(e.validated).name & "(" &
+      ctx.genOdinExpr(e.validated) & ")"
 
 # Declaration codegen (genOdinDecl and everything it dispatches to --
 # fn/object/actor/registry/register/mixin/err-handler) now
