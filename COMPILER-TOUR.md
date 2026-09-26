@@ -363,6 +363,15 @@ the tree belongs in `ast_query`. A new check belongs in `typecheck`. A new
 emitted construct belongs in every backend — and if you find yourself writing
 the same non-syntax logic twice, that's `codegen_common` calling.
 
+The rule behind that, at its strictest: **a backend prints; it does not
+decide.** A decision every backend needs is made once, from the tree, and
+handed to the three as data — which argument feeds each parameter
+(`call_args`), who frees a buffer (`analysis_ownership`), which call takes a
+moved twin (`twin_calls`). When a backend has to fill a gap its own way, the
+gap is the bug: `call_args` asserts every call complete after lowering
+(`backend_prepare` step 8), because the backends used to spell a missing
+argument three different ways.
+
 ---
 
 ## Where to start reading

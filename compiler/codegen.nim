@@ -133,11 +133,11 @@ proc genCombinator(ctx: var CodegenCtx, e: Expr): string =
 proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
-  if fields.len == 0: return ""
+  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  if fields.isNone: return ""
   let recv = ctx.genExpr(e.args[0])
   var parts: seq[string]
-  for f in fields: parts.add(recv & "." & f)
+  for f in fields.get: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
 
@@ -213,16 +213,13 @@ proc asSumVariantCall(ctx: var CodegenCtx, e: Expr): string =
                 else: nil
   ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-proc genPayloadArgs(ctx: var CodegenCtx, e: Expr,
-                    calleeStr: string): seq[string] =
-  ## codegen_common.payloadArgs, printed. A missing one is `nil`.
-  for a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
-    result.add(if a != nil: ctx.genExpr(a) else: "nil")
-
-proc genCallArgs(ctx: var CodegenCtx, e: Expr, calleeStr: string): seq[string] =
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genPayloadArgs(e, calleeStr)
-  for a in e.args: result.add(ctx.genExpr(a))
+proc genCallArgs(ctx: var CodegenCtx, e: Expr): seq[string] =
+  ## A call's arguments: a payload's as call_args.payloadArgs orders them,
+  ## printed; anything else as written.
+  let args = if e.isPayloadCall:
+               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for a in args: result.add(ctx.genExpr(a))
 
 proc genSaturatingCtor(satBase, calleeStr, arg: string): string =
   ## spec 4.1: constructing a [saturating] type clamps instead of wrapping.
@@ -320,7 +317,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if member != "": calleeStr = member
   let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
-  let args = ctx.genCallArgs(e, calleeStr)
+  let args = ctx.genCallArgs(e)
   ctx.genCallWithArgs(ctx.withTypeArgs(calleeStr, e), args)
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
@@ -852,12 +849,7 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
     return ""
   let tname = e.assignVal.callee.name
   let ret = ctx.taskRetType(tname)
-  var argParts: seq[string]
-  if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
-    let expected = lookupFnParams(ctx.module, tname)
-    for pn in expected:
-      for f in e.assignVal.args[0].fields:
-        if f.name == pn: argParts.add(ctx.genExpr(f.value)); break
+  let argParts = ctx.genCallArgs(e.assignVal)
   let rawCall = tname & "(" & argParts.join(", ") & ")"
   let slot = "tuckSlot" & $ctx.tmpCounter
   ctx.tmpCounter.inc

@@ -128,32 +128,23 @@ proc genDStructLit(ctx: var DCodegenCtx, e: Expr): string =
     inferred.add(FieldDef(name: f.name, typ: ft, span: e.span))
   ctx.recCtorFromLiteralD(inferred, e.fields)
 
-proc genDPayloadArgs(ctx: var DCodegenCtx, e: Expr,
-                     calleeStr: string): seq[string] =
-  ## codegen_common.payloadArgs, printed. An argument the payload lacks
-  ## cannot be spelled positionally in D, so it is refused, not guessed.
-  for i, a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
-    if a == nil:
-      let names = calleeParamNames(ctx.res, ctx.module, ctx.realModules, e,
-                                   calleeStr)
-      discard dUnsupported("call omitting parameter '" & names[i] & "'")
-    result.add ctx.genDExpr(a)
-
-proc genDCallArgs(ctx: var DCodegenCtx, e: Expr,
-                  calleeStr: string): seq[string] =
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genDPayloadArgs(e, calleeStr)
-  for a in e.args: result.add(ctx.genDExpr(a))
+proc genDCallArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
+  ## A call's arguments: a payload's as call_args.payloadArgs orders them,
+  ## printed; anything else as written.
+  let args = if e.isPayloadCall:
+               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for a in args: result.add(ctx.genDExpr(a))
 
 proc explodeRecordArgD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
-  if fields.len == 0: return ""
+  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  if fields.isNone: return ""
   let recv = ctx.genDExpr(e.args[0])
   var parts: seq[string]
-  for f in fields: parts.add(recv & "." & f)
+  for f in fields.get: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
 proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
@@ -338,7 +329,7 @@ proc asDPrimConversion(ctx: var DCodegenCtx, e: Expr,
   ## it. Odin needed no equivalent: its own primitive names ARE Tuck's.
   let prim = dPrimName(calleeStr)
   if prim == "" or prim == calleeStr: return ""
-  let arg = ctx.genDCallArgs(e, calleeStr).join(", ")
+  let arg = ctx.genDCallArgs(e).join(", ")
   # NARROWING needs a cast, not a type constructor: `ubyte(x)` where x is a
   # ulong is "cannot implicitly convert expression of type ulong to ubyte" —
   # D's `T(x)` only performs the conversions it would do implicitly. Tuck's
@@ -375,14 +366,14 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   # fire-and-forget (spec §9.2). A result-BOUND call is handled in
   # genDAssign, which needs the target to build the slot.
   if ctx.index.isTaskName(calleeStr):
-    let args = ctx.genDCallArgs(e, calleeStr)
+    let args = ctx.genDCallArgs(e)
     return "rt.tuckSpawn({ cast(void) " & calleeStr &
            "(" & args.join(", ") & "); })"
   let member = memberCallee(ctx.res, ctx.module, e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCallD(e, calleeStr)
   if combinator != "": return combinator
-  let args = ctx.genDCallArgs(e, calleeStr)
+  let args = ctx.genDCallArgs(e)
   if calleeStr == "echo":
     # `echo` is the builtin debug print; writeln is D's identical construct.
     return "writeln(" & args.join(", ") & ")"
@@ -783,7 +774,7 @@ proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
   if threaded == nil: return ""
   let name = movedName(ctx.resolveDCallee(threaded))
   let call = name & "(" &
-             ctx.genDCallArgs(threaded, threaded.callee.name).join(", ") & ")"
+             ctx.genDCallArgs(threaded).join(", ") & ")"
   # A DECLARATION needs its type in D. `threadedCall` accepts decls now
   # — that is what lets `let f = sweep(b.ask, ...)` reach the twin at all —
   # and without this the emitted `tuck_f = ...` named something never
@@ -808,7 +799,7 @@ proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
      v.callee.kind != exkVar: return ""
   if not ctx.index.isTaskName(v.callee.name): return ""
   let ret = ctx.taskRetTypeD(v.callee.name)
-  let args = ctx.genDCallArgs(v, v.callee.name)
+  let args = ctx.genDCallArgs(v)
   let rawCall = v.callee.name & "(" & args.join(", ") & ")"
   let slot = ctx.freshName("tuckSlot")
   # Three statements, laid out here — the caller strips its own indent and

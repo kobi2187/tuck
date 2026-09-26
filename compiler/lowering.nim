@@ -37,6 +37,8 @@ import lowering_decisions   # a decision table becomes a match or an if chain
 import lowering_chains      # a `..` chain becomes statements
 import lowering_iface       # a call through an interface becomes a dispatch
 import lowering_match_binds # a binding match arm becomes a catch-all
+import call_args           # which payload field feeds which param
+import options
 import tables
 
 proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef]
@@ -207,49 +209,32 @@ proc flattenMemberCallPayload(res: Resolution, e: Expr, m: Module) =
 proc explodePayload(res: Resolution, e: Expr) =
   ## `{a: 1, b: 2} f` -> `f(1, 2)`. One arg per declared param, in order.
   ##
-  ## The checker recorded the callee's params when it resolved the call, and
-  ## only for top-level fns — so a non-empty value already means "safe to
-  ## explode". A member fn's payload explosion belongs to the backends, which
-  ## see the receiver, and a task is theirs to schedule.
+  ## The checker recorded the callee's params when it resolved the call —
+  ## for top-level fns and object members, never tasks (a task is the
+  ## backends' to schedule) — so a RECORDED list means "safe to explode".
   ##
   ## A QUALIFIED callee (`fs::readFile`) explodes here too — the checker's
   ## mapping decides either way, so the callee's spelling was never a reason
   ## to treat the two differently. It used to be excluded, which left every
   ## backend re-implementing this loop for the qualified case.
   ##
-  ## WHAT STILL REACHES THE BACKENDS, and why they keep a fallback: this
-  ## pass needs `callParamsFor`, and the checker leaves it EMPTY for pending
-  ## fns, distinct-type constructors (`5 Milliseconds`) and the combinators
-  ## (`alias`) — measured, not assumed. Those fall through to a decl-list
-  ## scan in the emitter. Filling them in at the checker is what would let
-  ## the backend copies go.
+  ## WHAT STILL REACHES THE BACKENDS as a payload: the checker records
+  ## nothing for pending fns, distinct-type constructors (`5 Milliseconds`)
+  ## and the combinators (`alias`) — measured, not assumed — and those are
+  ## ordered by `call_args.payloadArgs` when printed (#22).
+  ##
+  ## WHICH FIELD FEEDS WHICH PARAM is `call_args.argsFor`'s, the list every
+  ## backend prints: the checker's by-type mapping where it made one, else
+  ## the param's own name, and every param asserted present. This used to be
+  ## a copy of that loop that put a `none` literal where a field was missing.
+  ## A callee the checker recorded as taking NO params gets no arguments —
+  ## its recorded list was empty, which read as "not recorded" and left
+  ## `{a: 1, b: 2} g` for the backends to print as `g(1, 2)`.
   if e.callee == nil or e.callee.kind notin {exkVar, exkQualified}: return
-  let expectedParams = res.callParamsFor(e)
-  if expectedParams.len == 0: return
-  if e.args.len != 1 or e.args[0].kind != exkStruct: return
-
-  # The checker's mapping wins. It matches a payload field to a param by NAME
-  # first and then, for whatever is left, by TYPE when the match is
-  # unambiguous (typecheck.nim, checkCallArgs pass 2) — so a field may
-  # legitimately feed a param it shares no name with. Re-deriving the mapping
-  # by name here would miss exactly those, and the unmatched-param fallback
-  # below would then emit `none` in their place.
-  let originalStruct = e.args[0]
-  let resolved = res.argFieldsFor(e)
-  var newArgs: seq[Expr]
-  for i, paramName in expectedParams:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    var found = false
-    for field in originalStruct.fields:
-      if field[0] == fieldName:
-        newArgs.add(field[1])
-        found = true
-        break
-    if not found:
-      newArgs.add(Expr(span: e.span, kind: exkLit, litKind: lkUnit,
-                       litValue: "none"))
-  e.args = newArgs
+  if not e.isPayloadCall: return
+  let known = res.knownCallParams(e)
+  if known.isNone: return
+  e.args = argsFor(res, e, known.get)
 
 proc lowerExpr(res: Resolution, e: Expr, m: Module) =
   ## Rewrite one expression and everything under it.

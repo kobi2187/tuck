@@ -6,7 +6,7 @@
 # tree for its target without carrying (or losing) semantic residue: ids
 # survive the copy, so these lookups still resolve.
 
-import tables, sets, strutils
+import tables, sets, strutils, options
 import ast
 import ssa_ir
 import name_prefix
@@ -476,6 +476,14 @@ proc setCallParams*(r: Resolution, e: Expr, params: seq[string]) =
   if e == nil: return
   ensureId(e)
   r.callParams[e.id] = params
+
+proc knownCallParams*(r: Resolution, e: Expr): Option[seq[string]] =
+  ## The callee's params as the checker recorded them, or none when it
+  ## recorded nothing. NOT `callParamsFor`'s empty list, which cannot tell a
+  ## callee that takes no params from one the checker never resolved.
+  if e == nil or not e.id.isSet or e.id notin r.callParams:
+    return none(seq[string])
+  some(r.callParams[e.id])
 
 proc callParamsFor*(r: Resolution, e: Expr): seq[string] =
   ## Empty when the callee was never resolved, or is not one whose payload

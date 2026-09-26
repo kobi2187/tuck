@@ -55,11 +55,11 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
-  if fields.len == 0: return ""
+  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  if fields.isNone: return ""
   let recv = ctx.genOdinExpr(e.args[0])
   var parts: seq[string]
-  for f in fields: parts.add(recv & "." & f)
+  for f in fields.get: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
 # Positional construction of a hoisted record struct from a struct literal,
@@ -207,22 +207,19 @@ proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
     return "__validated_" & e.callee.name & "(" & ctor & ")"
   ctor
 
-proc genPayloadArgs(ctx: var OdinCodegenCtx, e: Expr,
-                    calleeStr: string): seq[string] =
-  ## codegen_common.payloadArgs, printed. A missing one is the zero value.
-  for a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
-    result.add(if a != nil: ctx.genOdinExpr(a) else: "{}")
-
-proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr,
-                 calleeStr: string): seq[string] =
+proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   ## ponytail: pass records BY VALUE. A mutating callee would need `^T` and
   ## `&x` at the call site, but Odin proc params aren't addressable, so
   ## `&param` is a hard error — and Tuck's mutators already return the updated
   ## value, which the chain emitter assigns back. Revisit if a real in-place
   ## mutator shows up that the return-and-assign shape can't express.
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genPayloadArgs(e, calleeStr)
-  for a in e.args: result.add(ctx.genOdinExpr(a))
+  ##
+  ## A payload's arguments are call_args.payloadArgs's, printed; anything
+  ## else as written.
+  let args = if e.isPayloadCall:
+               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for a in args: result.add(ctx.genOdinExpr(a))
 
 const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
                      "dequeue", "hasRoom", "initMailbox", "tuckArraySetAt"]
@@ -360,7 +357,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
-  var args = ctx.genCallArgs(e, calleeStr)
+  var args = ctx.genCallArgs(e)
   # genOdinMemberFn gives EVERY member fn's self a pointer, `^T`,
   # unconditionally — not just the ones that mutate it — so every call
   # site has to pass `&receiver` to match, regardless of whether this
@@ -961,11 +958,10 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
       "\te.slot.value = " & tname & "(" & argExprs.join(", ") & ")\n" &
       "\te.slot.done = true\n" &
       "\tfree(e)\n}")
-  var argParts: seq[string]
-  if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
-    for pn in params:
-      for f in e.assignVal.args[0].fields:
-        if f.name == pn: argParts.add(ctx.genOdinExpr(f.value)); break
+  let argParts = ctx.genCallArgs(e.assignVal)
+  doAssert argParts.len == params.len,
+    "odin: task " & tname & " takes " & $params.len & " param(s), and its " &
+    "call supplies " & $argParts.len
   let envVar = "env" & $ctx.tmpCounter
   let slotVar = "slot" & $ctx.tmpCounter
   let savedVar = "savedCtx" & $ctx.tmpCounter
@@ -1201,7 +1197,7 @@ proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
               e.target.name notin ctx.fieldVars
   if isNew: ctx.definedVars.incl(e.target.name)
   ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
-    movedName(base) & "(" & ctx.genCallArgs(threaded, base).join(", ") & ")" &
+    movedName(base) & "(" & ctx.genCallArgs(threaded).join(", ") & ")" &
     (if isNew: ctx.scopeFrees(e.target.name) else: "")
 
 proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =

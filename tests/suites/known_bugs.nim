@@ -2078,4 +2078,30 @@ fn main() -> int:
 """
   t.hostRuns "...a variant still wins over a const of the same name", 11
 
+  # A payload may carry fields its callee does not declare: the callee takes
+  # its params and nothing else. For a callee that declares NONE the extra
+  # fields were passed anyway — `{a: 1, b: 2} g` printed `g(1, 2)` on all
+  # three backends, and a record variable `p g` printed `g(p)` — because
+  # "takes no params" and "params not resolved" were one empty list
+  # (`call_args.knownParams` keeps them apart now). Found checking the
+  # opposite direction: a payload LACKING a param, which the checker
+  # rejects and `backend_prepare` step 8 asserts after lowering.
+  t.src """
+type P:
+  a: int
+  b: int
+
+fn f({a: int}) -> int:
+  return a
+
+fn g() -> int:
+  return 7
+
+fn main() -> int:
+  let p = {a: 1, b: 2} P
+  return ({a: 1, b: 2, c: 3} f) + ({a: 1, b: 2} g) + (p f) + (p g)
+"""
+  t.quietly: t.hostRuns("extra payload fields reach no param", 16)
+  t.bugFixed "extra payload fields reach no param"
+
   t.finish()
