@@ -112,6 +112,8 @@ Three passes, in order (`tests/suites/typecheck.nim`, run-verified in
    active: true}` binds cleanly into `{id: int, name: str, ok: bool}`.
 
 Position is irrelevant; scrambled field order still binds (`tests/suites/auto_alias.nim`).
+A member call's payload binds the same way — `b.grow {n: 7, text: "x"}` into
+`{count: int, label: str}`, as does a mutator's (`s.withPort {p: 80}`).
 Ambiguity is an error, not a guess: two unmatched fields of the same type →
 `missing required field` (`tests/suites/typecheck.nim`).
 

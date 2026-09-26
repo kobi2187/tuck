@@ -317,39 +317,26 @@ proc sigForReceiver(tc: TypeChecker, name: string, recvT: Type): FnSig =
     if tc.compatible(recvT, pt): return sig
   tc.sigOf(name)
 
+proc bindPayloadFields(tc: var TypeChecker, fnName: string,
+                       params: seq[Param], argStruct: Expr, sp: Span): seq[Expr]
+  ## Forward-declared: the claim passes it runs are defined further down.
+
 proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                      recvT: Type, argStruct: Expr, sp: Span): Expr =
   ## `d.crank {step: 1}` — the receiver fills a slot, the payload fills the
-  ## rest by name. See failIfReceiverSlotMismatched for which slot and why.
-  ## The receiver also PICKS the overload, so two objects may each declare a
-  ## member of this name.
+  ## rest by the three passes every call uses (bindPayloadFields). See
+  ## failIfReceiverSlotMismatched for which slot and why. The receiver also
+  ## PICKS the overload, so two objects may each declare a member of this
+  ## name.
   let sig = tc.sigForReceiver(fnName, recvT)
   let receiverFillsFirstParam =
     tc.failIfReceiverSlotMismatched(fnName, sig, recvT, sp)
-  var argFields: seq[FieldInit]
-  if argStruct != nil:
-    if argStruct.kind != exkStruct:
-      fail("Type Error: arguments to '" & fnName &
-           "' must be a struct literal: {name: value, ...}", argStruct.span)
-    argFields = argStruct.fields
-  var args: seq[Expr] = @[receiver]
+  if argStruct != nil and argStruct.kind != exkStruct:
+    fail("Type Error: arguments to '" & fnName &
+         "' must be a struct literal: {name: value, ...}", argStruct.span)
   let startAt = if receiverFillsFirstParam: 1 else: 0
-  for i in startAt ..< sig.params.len:
-    let p = sig.params[i]
-    var found = false
-    for f in argFields:
-      if f.name == p.name:
-        let ft = tc.synthesize(f.value)
-        if not tc.compatible(ft, p.typ):
-          fail("Type Error: field '" & p.name & "' of call to '" & fnName &
-               "' expects " & typeName(p.typ) & " but got " & typeName(ft),
-               f.value.span)
-        args.add(f.value)
-        found = true
-        break
-    if not found:
-      fail("Type Error: call to '" & fnName & "' is missing required field '" &
-           p.name & ": " & typeName(p.typ) & "'", sp)
+  let args = @[receiver] &
+             tc.bindPayloadFields(fnName, sig.params[startAt .. ^1], argStruct, sp)
   result = Expr(span: sp, kind: exkCall,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
   setType(semLayer, result, sig.ret)
@@ -2474,6 +2461,37 @@ proc claimByType(tc: var TypeChecker, fnName: string, params: seq[Param],
            e.span)
     claimed[candidate] = true
     resolved[pi] = argFields[candidate].name
+
+proc bindPayloadFields(tc: var TypeChecker, fnName: string,
+                       params: seq[Param], argStruct: Expr, sp: Span): seq[Expr] =
+  ## The method form's payload (`b.grow {...}`, `s ..withPort {...}`), bound
+  ## to `params` by the same passes as any call — subset, then by name, then
+  ## by type — and answered as one value per param, in param order.
+  ##
+  ## The method form kept its own by-name loop, so a field meant to claim a
+  ## param BY TYPE was reported missing there while the same payload bound
+  ## against a top-level fn (#20). It skipped what checkNamedField does per
+  ## field, too: the interface wrap and the uninitialised-field read.
+  var argFields: seq[ArgField]
+  if argStruct != nil:
+    var hints = initTable[string, Type]()
+    for p in params: hints[p.name] = p.typ
+    tc.withFieldHints(hints):
+      for f in argStruct.fields:
+        argFields.add((f.name, tc.synthFieldValue(f), f.value.span))
+  # The claim passes read the payload off a call's single argument.
+  let call = Expr(span: sp, kind: exkCall,
+                  args: (if argStruct != nil: @[argStruct] else: @[]))
+  var claimed = newSeq[bool](argFields.len)
+  var resolved = newSeq[string](params.len)
+  let pending = tc.claimByName(fnName, params, argFields, call, claimed, resolved)
+  tc.claimByType(fnName, params, argFields, call, pending, claimed, resolved)
+  for pi, p in params:
+    if resolved[pi] == "":
+      # A `Self` param past the receiver's slot: no pass claims one.
+      fail("Type Error: call to '" & fnName & "' is missing required field '" &
+           p.name & ": " & typeName(p.typ) & "'", sp)
+    result.add payloadFieldExpr(call, resolved[pi])
 
 proc checkPayloadCall(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                       bindings: var Table[string, Type]) =
