@@ -939,3 +939,14 @@ proc satisfiersOf*(module: Module, realModules: Table[string, Module],
         seen.incl(d.name)
         result.add(d)
   result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
+
+proc errIdCode*(name: string): uint16 =
+  ## The 16-bit code an error id (`t/ParseError.Empty`) is carried as at run
+  ## time — FNV-1a folded to 16 bits. The checker compares these for
+  ## collisions and every emitter precomputes them, so the runtime needs no
+  ## hashing; tuck_rt.nim's `errCode` is the same fold, compiled into
+  ## programs, and must stay in step with this one.
+  var h = 2166136261'u32
+  for c in name:
+    h = (h xor uint32(c)) * 16777619'u32
+  uint16((h xor (h shr 16)) and 0xFFFF'u32)

@@ -7,7 +7,6 @@
 import ast, tables, sets, strutils
 import ast_query
 import resolution
-import codegen_odin_util
 import analysis_ownership
 import decl_index
 export decl_index
@@ -239,7 +238,7 @@ proc odinSumTypeName(ctx: var OdinCodegenCtx, t: Type): string =
   if allNoFields and t.variants.len > 0:
     var tags: seq[string]
     for v in t.variants: tags.add(v.name)
-    let name = "TEnum_" & ctx.modPrefix & toHex(odinErrCode(tags.join(",")))
+    let name = "TEnum_" & ctx.modPrefix & toHex(errIdCode(tags.join(",")))
     let decl = name & " :: enum { " & tags.join(", ") & " }"
     if decl notin ctx.hoisted: ctx.hoisted.add(decl)
     return name

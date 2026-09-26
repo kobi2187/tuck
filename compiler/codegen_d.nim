@@ -27,7 +27,7 @@ import lowering                # getFieldsForType
 # module: the record-shape hash (so both backends name a shape alike) and the
 # enum a bare tag belongs to. Neither is Odin-specific; if a third consumer
 # appears they should move to a backend-neutral module.
-from codegen_odin_util import odinErrCode, enumTagOwner
+from codegen_odin_util import enumTagOwner
 from mangle import mangleName
 from lowering_seqcopy import needsDup, recordDupFields
 import ./codegen_d_ctx
@@ -413,7 +413,7 @@ proc errCodeArg(ctx: DCodegenCtx, name: string): string =
   ## An error code, folded at COMPILE time by the emitter rather than at
   ## runtime — the same FNV value every backend produces for the same name
   ## (verified: "Math.Odd" is 55587 in Nim, Odin and D alike).
-  "0x" & toHex(odinErrCode(name)) & " /* " & name & " */"
+  "0x" & toHex(errIdCode(name)) & " /* " & name & " */"
 
 proc genDRaise(ctx: var DCodegenCtx, e: Expr): string =
   ## `err X` / `return Error.x` — an early return carrying the code. A

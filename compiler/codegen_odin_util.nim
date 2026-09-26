@@ -14,7 +14,7 @@
 #   * emission utilities  — library specs, string padding, error-code hashing
 #   * pure AST predicates — what does this pattern print as, which enum owns
 #                           a variant tag
-import ast, strutils
+import ast, ast_query, strutils
 
 proc odinLibSpec*(lib: string): string =
   ## `lib: "..."` -> Odin's `foreign import` spec. A bare name is a system
@@ -30,16 +30,8 @@ proc odinLibSpec*(lib: string): string =
 # codegen_odin.nim that local shadowing kept invisible until the split
 # widened their scope and Nim reported the ambiguity.
 
-# Same FNV-1a fold as tuck_rt.nim's errCode: the emitter precomputes error
-# codes so the runtime needs no compile-time hashing.
-proc odinErrCode*(name: string): uint16 =
-  var h = 2166136261'u32
-  for c in name:
-    h = (h xor uint32(c)) * 16777619'u32
-  uint16((h xor (h shr 16)) and 0xFFFF'u32)
-
 proc errCodeLit*(name: string): string =
-  "0x" & toHex(odinErrCode(name)) & " /* " & name & " */"
+  "0x" & toHex(errIdCode(name)) & " /* " & name & " */"
 
 # genPatternStr is NOT here either — same story as repeat/capitalize:
 # ast_query already exports it.

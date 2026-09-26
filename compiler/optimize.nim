@@ -35,7 +35,7 @@
 # and it belongs in lowering where the backends can see it. Both passes below
 # hold to that: they only ever DELETE work or re-shape nodes into other nodes
 # the emitters have always known.
-import ast, ast_query, resolution
+import ast, ast_ops, ast_query, resolution
 import std/[strutils, tables]
 
 type
@@ -113,21 +113,6 @@ proc parseOptPasses*(spec: string): tuple[passes: set[OptPass], bad: string] =
 #     validation site (spec §4.7), and splicing would silently delete it
 #
 # Each refusal costs a missed optimization and nothing else.
-
-proc mentionsName(e: Expr, name: string): bool =
-  ## Does `e` read `name` anywhere? Used to refuse any builder whose body
-  ## depends on its own parameter — see the refusal list above.
-  ##
-  ## Walks EVERY child via ast.children. It used to name seven kinds and
-  ## `else: discard`, which is the unsafe direction for a guard: a mention it
-  ## failed to see let a splice through that reads a value the caller's chain
-  ## has not written yet. Looking in more places can only make the optimizer
-  ## refuse more, never splice something it should not.
-  if e == nil: return false
-  if e.kind == exkVar and e.name == name: return true
-  for c in e.children:
-    if mentionsName(c, name): return true
-  false
 
 proc builderWholeValue(callee: Decl): Expr =
   ## The value of a builder that IGNORES its receiver and returns a fresh one:

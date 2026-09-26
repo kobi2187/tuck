@@ -497,13 +497,6 @@ proc selfAppendValue*(res: Resolution, e: Expr): Expr =
   value
 
 
-proc mentionsName(e: Expr, name: string): bool =
-  if e == nil: return false
-  if e.kind == exkVar and e.name == name: return true
-  for c in e.children:
-    if mentionsName(c, name): return true
-  false
-
 proc selfConcatValue*(res: Resolution, e: Expr): Expr =
   ## `s = s + <expr>` on a `str` — a concatenation assigned back over its own
   ## LEFT operand. Returns `<expr>`, or nil when the statement is not that

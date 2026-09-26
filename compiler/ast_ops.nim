@@ -433,6 +433,24 @@ iterator nodes*(e: Expr): Expr =
     for c in n.children: kids.add c
     for i in countdown(kids.high, 0): stack.add kids[i]
 
+proc mentionsName*(e: Expr, name: string): bool =
+  ## Does `name` appear as a bare name anywhere under `e`?
+  for n in e.nodes:
+    if n.kind == exkVar and n.name == name: return true
+  false
+
+proc pathOf*(e: Expr): string =
+  ## `b.ask` for a field chain rooted at a name, `b` for a bare name, "" for
+  ## anything else — an index, a call result, a literal. "" means the place
+  ## cannot be named, and a caller treats the whole root as touched.
+  if e == nil: return ""
+  case e.kind
+  of exkVar: e.name
+  of exkField:
+    let base = pathOf(e.receiver)
+    if base.len == 0: "" else: base & "." & e.fieldName
+  else: ""
+
 proc assignIds*(e: Expr, next: var uint32) =
   ## Give every node in this tree an id. Idempotent: a node that already has
   ## one keeps it, so re-running over a partly-built tree is safe.

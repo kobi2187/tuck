@@ -17,7 +17,7 @@ import ast_query
 import codegen_common
 import twin_calls  # which calls take the moved twin — decided in prepare
 from lowering_seqcopy import needsDup, recordDupFields
-from ssa_ir import pathOf
+from ast_ops import pathOf
 from os import getEnv
 
 let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0
@@ -27,7 +27,7 @@ let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0
 
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
-export odinLibSpec, odinErrCode
+export odinLibSpec
 import ./codegen_odin_ctx
 
 # Type emission, the ctx type, and the decl-shape fast lookups now live in
