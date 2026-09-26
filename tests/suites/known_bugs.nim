@@ -1916,4 +1916,29 @@ actor Acc [queue: 8]:
 """
   t.badCheck "...so a type error in an arm is reported", "arithmetic between int and str"
 
+  # #72: `a[i]` on an `Array[N, T]` was "not indexable". The checker's
+  # element-type test matched only the one-argument `Seq[T]` shape, and
+  # `Array` carries its length first. All three runtimes already had
+  # `tuckArrayAt`/`tuckArraySetAt` (Odin's setter takes a pointer: `[N]T` is
+  # a value type, so a by-value write would land in a copy); nothing
+  # selected them.
+  t.src """
+fn main() -> int:
+  var a: Array[4, int] = [1, 2, 3, 4]
+  a[1] = 20
+  return a[1] + a[3]
+"""
+  t.quietly: t.hostRuns("an Array is indexable, read and write", 24)
+  t.bugFixed "an Array is indexable, read and write (#72)"
+  t.src """
+type Buf:
+  data: Array[3, int]
+
+fn main() -> int:
+  var b = {data: [1, 2, 3]} Buf
+  b.data[2] = 30
+  return b.data[2]
+"""
+  t.hostRuns "...a write through a record field reaches the record", 30
+
   t.finish()

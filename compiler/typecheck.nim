@@ -4082,14 +4082,17 @@ proc typeAppFromBracket(tc: var TypeChecker, e: Expr, name: string): Type =
        base: tc.namedType(name, e.span), args: args)
 
 proc seqElem(recvT: Type): Type =
-  ## The element type of a `Seq[T]` receiver, or nil when it isn't one.
-  ## Bracket indexing on a Seq is SUGAR, not a std call the user spelled
-  ## out, so its type comes straight off the receiver — never from a
-  ## declared signature that may or may not be in scope.
-  if recvT != nil and recvT.kind == tkApp and recvT.base != nil and
-     recvT.base.kind == tkNamed and recvT.base.name == "Seq" and
-     recvT.args.len == 1:
-    return recvT.args[0]
+  ## The element type of an INDEXABLE built-in container — `Seq[T]` or
+  ## `Array[N, T]` — or nil when the receiver is neither. Bracket indexing
+  ## on one is SUGAR, not a std call the user spelled out, so its type comes
+  ## straight off the receiver — never from a declared signature that may or
+  ## may not be in scope. `Array` carries its length first, so its element
+  ## is the SECOND argument; matching only the one-argument `Seq` shape is
+  ## what made `a[i]` on an Array "not indexable" (#72).
+  if recvT == nil or recvT.kind != tkApp or recvT.base == nil or
+     recvT.base.kind != tkNamed: return nil
+  if recvT.base.name == "Seq" and recvT.args.len == 1: return recvT.args[0]
+  if recvT.base.name == "Array" and recvT.args.len == 2: return recvT.args[1]
   nil
 
 proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
@@ -4105,6 +4108,13 @@ proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
   # and qualifying is what made the sugar depend on an import it never
   # declared — typechecking clean, then emitting a `seq_at` that exists
   # nowhere.
+  # A fixed `Array[N, T]` has intrinsics of its own: its length is part of
+  # its type, and a write must reach the caller's array, not a copy of it
+  # (Odin passes `[N]T` by value, so its setter takes a pointer). All three
+  # runtimes carried them; nothing selected them until #72.
+  if isFixedArray(recvT):
+    return Expr(span: sp, kind: exkVar,
+                name: if fnName == "at": "tuckArrayAt" else: "tuckArraySetAt")
   if seqElem(recvT) != nil:
     return Expr(span: sp, kind: exkVar,
                 name: if fnName == "at": "tuckAt" else: "tuckSetAt")

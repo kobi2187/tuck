@@ -420,7 +420,8 @@ proc nimModuleName*(name: string): string =
   if name in NimShadowingModuleNames: "tuck_mod_" & name else: name
 
 const RtIntrinsicNames* = [
-  "tuckAt", "tuckSetAt", "tuckConcat", "tuckSat", "tuckSatI",
+  "tuckAt", "tuckSetAt", "tuckArrayAt", "tuckArraySetAt", "tuckConcat",
+  "tuckSat", "tuckSatI",
   "tuckSeqBounds", "tuckSeqCopy", "tuckSpawn", "tuckSetArgs",
 ]
   ## Runtime helpers the compiler INTRODUCES — a `xs[i]` lowers to `tuckAt`,

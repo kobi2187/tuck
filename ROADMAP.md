@@ -158,7 +158,7 @@ closure no longer exist in any `codegen_*.nim`.
 | # | issue | | size |
 |---|---|---|---|
 | — | **#87** | **FIXED 2026-09-25** — actor field initialisers are kept and checked (TK-TY29); on `type`/`object` fields refused (TK-TY30) | — |
-| S1.2 | **#73** | an imported `const` is invisible to the checker, so a wrong `Array` size is ACCEPTED. `typecheck.nim:1071` has the worked precedent | M |
+| — | **#73** | **FIXED** in `8d5b6c6` — a const resolves across the program (`ast_query.constDeclFor`); guarded in `cross_module`. This row was not updated at the time | — |
 | — | **#78** | **FIXED 2026-09-25** — the prefix keeps the first letter's case (`Tuck_Order`, `tuck_order`); `compiler/name_prefix.nim` | — |
 | — | **#79** | **FIXED 2026-09-25** — per-arm scoping in the Nim and Odin dispatch; see M4.3 | — |
 
@@ -166,7 +166,7 @@ closure no longer exist in any `codegen_*.nim`.
 
 | # | issue | | size | depends on |
 |---|---|---|---|---|
-| S2.1 | **#72** | `Array[N,T]` indexing. Cause located: `seqElem` at `typecheck.nim:4063` matches one type arg; `Array` has two | **S** | — |
+| — | **#72** | **FIXED 2026-09-26** — the checker takes an `Array`'s element from its second argument and lowers `a[i]` to the runtimes' existing `tuckArrayAt`/`tuckArraySetAt` | — | — |
 | S2.2 | **#45** | `pool.acquire` hands out a copy, so a pool cannot be a DMA target | M | — |
 | S2.3 | **#42** | pool invariant validation | S | S2.2 |
 | S2.4 | **#85** | extend `<uninit>` to actor fields | S | S1.1 |
