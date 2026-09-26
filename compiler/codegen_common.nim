@@ -81,6 +81,12 @@ proc sumPayloadField*(variantName: string): string =
   ## union member directly.
   prefixed(variantName.toLowerAscii(), nkVariant)
 
+proc invariantCondLit*(cond: string): string =
+  ## A violated invariant's condition, as the string literal every backend's
+  ## `tuckInvariantFailed` reports it by: `"` shown as `'` (the message
+  ## quotes nothing), anything else escaped for the host.
+  "\"" & escapeStringLit(cond.replace("\"", "'")) & "\""
+
 proc poolOpProc*(op: PoolOpKind): string =
   ## The runtime proc a pool operation calls — one name in all three
   ## runtimes, taking the pool first and then the op's args in order. Each

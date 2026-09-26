@@ -392,8 +392,8 @@ proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =
       # asserts, which would silently undo the ruling this guard exists to
       # implement (verified — an assert-based version passed in release).
       checks.add("        if (!(" & cond & "))\n" &
-                 "            rt.tuckInvariantFailed(\"" &
-                 cond.replace("\"", "'") & "\", \"" & d.name & "\");")
+                 "            rt.tuckInvariantFailed(" &
+                 invariantCondLit(cond) & ", \"" & d.name & "\");")
   if checks.len == 0: return ""
   "\nvoid validate_" & d.name & "(" & d.name & " self)\n{\n" &
     "    version (tuckNoInvariants) {} else\n    {\n" &

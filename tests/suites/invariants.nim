@@ -11,13 +11,46 @@
 ## here is the sites nobody covered, each with `hostBuilds` so a site that
 ## works on Nim and not elsewhere is a failure rather than a silence.
 ##
-## THE OPT-OUT IS NOT SYMMETRIC, and that is recorded rather than asserted:
-## the 2026-08-25 ruling made invariants survive `--release` behind a
-## `tuckNoInvariants` opt-out. Nim honours it and `--nim:` can set it; D emits
-## the guard but `tuck build` has no `--dmd:` to reach it; Odin emits a bare
-## `assert` with no guard at all. See the bugOpen at the end.
+## A VIOLATION IS THE SAME ON EVERY BACKEND: `Invariant violated on <type>:
+## <cond>` and exit 1 (the project rule `hostRuns` enforces). Odin used to
+## emit a bare `assert` (SIGILL, exit 132) and D to `abort()` (134) — #43.
+##
+## THE OPT-OUT: the 2026-08-25 ruling made invariants survive `--release`
+## behind a `tuckNoInvariants` define, which every backend now emits a guard
+## for (Nim `when not defined`, D `version`, Odin `#config`) and which is
+## asserted at the end. How `tuck build` sets it is still open (#43): today
+## only Nim's `--nim:` passthrough reaches it.
 
+import std/[os, strutils]
 import ../harness
+
+proc runsOdinWith(t: var T, name: string, want: int, flags: seq[string],
+                  tag: string) =
+  ## Build the current snippet's Odin with extra `odin build` flags and run
+  ## it — a build MODE asserted, as d_backend's runsDWith does for dmd. The
+  ## binary is named per tag so two modes of one snippet do not collide.
+  let odinExe = findOdin()
+  if odinExe.len == 0:
+    if t.phase != pCollect: t.skip name
+    return
+  let e = t.needOdin()
+  let proj = t.curDir / "odinpkg"
+  let src = t.curDir / "odin" / "t.odin"
+  let bin = proj / ("prog_" & tag)
+  let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads] &
+                         flags & @["-out:" & bin], e,
+                         proc (dir: string) = stageOdinPkg(dir, src), proj)
+  let r = t.needCmdAfter(@["timeout", "10", bin], b,
+                         proc (dir: string) = discard, proj, verb = vRun)
+  if t.phase == pCollect: return
+  if t.skippedCmd(r): t.skip name; return
+  let (brc, bout) = t.resultOf(b)
+  if brc != 0:
+    t.no name, "odin build failed: " & bout.strip().splitLines()[^1]
+    return
+  let (rc, _) = t.resultOf(r)
+  if rc == want: t.ok name
+  else: t.no name, "exit " & $rc & ", want " & $want
 
 proc run*(t: var T) =
   const temp = """
@@ -196,7 +229,7 @@ fn main() -> int:
   Slots.write {h: s.value, value: bad}
   return 0
 """
-  t.runs "an invalid value never reaches a cell", 1   # Odin: #43
+  t.hostRuns "an invalid value never reaches a cell", 1, "Invariant violated"
 
   # An invariant is validated ONCE for one construction (issue #51). Two
   # independent rules each wrapped the expression and neither knew the other
@@ -243,7 +276,8 @@ fn main() -> int:
   let a = {v: 0} make
   return a.n
 """
-  t.runs "...and a violated invariant still aborts", 1
+  t.hostRuns "...and a violated invariant still aborts", 1,
+             "Invariant violated on tuckˑtypeˑLive"
 
   # A return that is NOT a construction keeps its wrap: nothing proves where
   # that value came from, so it is still checked on the way out.
@@ -263,5 +297,27 @@ fn main() -> int:
 """
   t.emits "a variable return is still validated", "validate\\(tuckInv1\\)"
   t.emitsOdin "...on Odin too", "__validated_tuckˑtypeˑLive\\(x\\)"
+
+  # --- the opt-out (#43) ----------------------------------------------------
+  # Every backend guards its checks behind `tuckNoInvariants`, so a build may
+  # strip them — and only a build that asks. Odin's used to be a bare
+  # `assert`: no guard, SIGILL instead of the message, and gone under
+  # `-disable-assert` whether or not anyone asked.
+  t.src temp & """
+
+fn main() -> int:
+  let t = {celsius: -300} Temp
+  return 7
+"""
+  t.hostRuns "a violation reads the same on every backend", 1,
+             "Invariant violated on tuckˑtypeˑTemp: \\(self\\.celsius >= -273"
+  t.emitsOdin "Odin guards its checks behind the opt-out",
+              r"when !#config\(tuckNoInvariants, false\)"
+  t.omitsOdin "...and not with `assert`, which -disable-assert strips",
+              r"\bassert\("
+  t.runsOdinWith "Odin keeps the check under -disable-assert", 1,
+                 @["-disable-assert"], "noassert"
+  t.runsOdinWith "Odin strips it only when the build opts out", 7,
+                 @["-define:tuckNoInvariants=true"], "off"
 
   t.finish()

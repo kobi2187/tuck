@@ -73,11 +73,23 @@ tuckˑtypeˑFrame :: struct {
 	bytes: int,
 }
 validate_tuckˑtypeˑFrame :: proc(self: tuckˑtypeˑFrame) {
-	assert((self.width > 0))
-	assert((self.height > 0))
-	assert((self.width <= 1920))
-	assert((self.height <= 1080))
-	assert((self.bytes <= 4096))
+	when !#config(tuckNoInvariants, false) {
+		if !((self.width > 0)) {
+			rt.tuckInvariantFailed("(self.width > 0)", "tuckˑtypeˑFrame")
+		}
+		if !((self.height > 0)) {
+			rt.tuckInvariantFailed("(self.height > 0)", "tuckˑtypeˑFrame")
+		}
+		if !((self.width <= 1920)) {
+			rt.tuckInvariantFailed("(self.width <= 1920)", "tuckˑtypeˑFrame")
+		}
+		if !((self.height <= 1080)) {
+			rt.tuckInvariantFailed("(self.height <= 1080)", "tuckˑtypeˑFrame")
+		}
+		if !((self.bytes <= 4096)) {
+			rt.tuckInvariantFailed("(self.bytes <= 4096)", "tuckˑtypeˑFrame")
+		}
+	}
 }
 __validated_tuckˑtypeˑFrame :: proc(v: tuckˑtypeˑFrame) -> tuckˑtypeˑFrame {
 	validate_tuckˑtypeˑFrame(v)

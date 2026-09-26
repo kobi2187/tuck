@@ -501,13 +501,21 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
                                 res: ctx.res)
   for member in d.typeMembers:
     if member.kind == dkExpr:
+      # A test and a runtime call, NOT `assert`: `-disable-assert` strips
+      # those, which would undo the ruling that invariants survive a release
+      # build (2026-08-25, ruling 5). `tuckNoInvariants` is the one opt-out,
+      # as on Nim and D; the runtime call reports and exits 1, as theirs do.
       let condStr = checkCtx.genOdinExpr(member.expr)
-      invariantChecks.add(ind & "\tassert(" & condStr & ")")
+      invariantChecks.add(ind & "\t\tif !(" & condStr & ") {\n" & ind &
+                          "\t\t\trt.tuckInvariantFailed(" &
+                          invariantCondLit(condStr) & ", \"" & d.name &
+                          "\")\n" & ind & "\t\t}")
   if invariantChecks.len > 0:
     # Odin has no overloading, so these are type-qualified rather than
     # relying on the parameter type to disambiguate the way Beef does.
     res.add(ind & "validate_" & d.name & " :: proc(self: " & d.name & ") {\n" &
-            invariantChecks.join("\n") & "\n" & ind & "}\n")
+            ind & "\twhen !#config(tuckNoInvariants, false) {\n" &
+            invariantChecks.join("\n") & "\n" & ind & "\t}\n" & ind & "}\n")
     # production sites wrap construction/returns in __validated_T(...)
     res.add(ind & "__validated_" & d.name & " :: proc(v: " & d.name & ") -> " &
             d.name & " {\n" & ind & "\tvalidate_" & d.name & "(v)\n" &

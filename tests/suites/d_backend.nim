@@ -415,11 +415,11 @@ fn main() -> int:
   let bad = {celsius: -300.0} Temperature
   return 0
 """
-  # 134 = SIGABRT. The point is not the number but that it is NOT 0 in
-  # either build: a violated invariant stops at the site.
-  t.runsD "T22: a violated invariant aborts in a normal build", 134, dmdExe
-  t.runsDWith "T22: and STILL aborts under -O -release (the ruling's teeth)",
-              134, dmdExe, @["-O", "-release"], "rel"
+  # Exit 1, as on Nim and Odin (#43; it was 134, SIGABRT). The point is that
+  # it is NOT 0 in either build: a violated invariant stops at the site.
+  t.runsD "T22: a violated invariant stops in a normal build", 1, dmdExe
+  t.runsDWith "T22: and STILL stops under -O -release (the ruling's teeth)",
+              1, dmdExe, @["-O", "-release"], "rel"
   t.runsDWith "T22: stripped only when the user explicitly opts out",
               0, dmdExe, @["-version=tuckNoInvariants"], "off"
 

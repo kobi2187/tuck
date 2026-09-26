@@ -612,7 +612,11 @@ type Temperature:
 3. inside a `!T`-wrapped return — the payload validates before `tok()` wraps it
 4. at an **extern call site** returning an invariant-carrying type
 
-`when not defined(release)` strips them in release builds.
+They **survive release builds** (ruling 2026-08-25). A violation prints
+`Invariant violated on <type>: <cond>` and exits 1 on all three backends, and
+the one opt-out is the `tuckNoInvariants` define, which each backend guards its
+checks with (`tests/suites/invariants.nim`). Only Nim's `--nim:` passthrough
+reaches that define from `tuck build` today (#43).
 
 ---
 

@@ -182,7 +182,7 @@ closure no longer exist in any `codegen_*.nim`.
 
 | # | issue | | size |
 |---|---|---|---|
-| S3.1 | **#43** | Odin invariant guard + `--odin:`/`--dmd:` passthrough | S + M |
+| S3.1 | **#43** | ~~Odin invariant guard~~ **DONE 2026-09-26**: guarded by `tuckNoInvariants` (`#config`), a runtime call not `assert` (which `-disable-assert` stripped), the same message and exit 1 on all three (D aborted, 134). **Open, needs a ruling:** how `tuck build` reaches the define on Odin and D — `--odin:`/`--dmd:` passthrough, or a Tuck-level `--no-invariants` | M |
 | S3.2 | **#30** | D: volatile registers, `[saturating]`, `tuckConcat` | M |
 | S3.3 | — | the D runtime has no networking; `42-net-echo` cannot link | L |
 | S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |

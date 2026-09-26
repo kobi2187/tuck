@@ -105,20 +105,23 @@ T tuckSatI(T)(long v) if (!__traits(isUnsigned, T))
     return cast(T) v;
 }
 
-/// An invariant violation (spec 4.7) — abort naming the condition.
+/// An invariant violation (spec 4.7) — stop, naming the condition.
 ///
 /// NOT `assert`: dmd's `-release` strips asserts outright, so a guard built
 /// on one silently evaporates in exactly the build where a violated
 /// invariant means corrupt data. ROADMAP's 2026-08-25 ruling 5 says
 /// invariants stay on in release by default, opt-out only, so the check has
-/// to be real code the optimiser keeps. (The Nim backend has the same bug
-/// from the other direction: it hardcodes `when not defined(release)`.)
+/// to be real code the optimiser keeps.
+///
+/// exit(1), NOT abort(): the same end as Nim's quit(1) and Odin's
+/// os.exit(1), as tuckPoolMisuse and tuckResourceMisuse do (issue #54).
+/// abort() raised SIGABRT (exit 134) where the other two exit 1 (#43).
 void tuckInvariantFailed(string cond, string typeName)
 {
     import std.stdio : stderr;
-    import core.stdc.stdlib : abort;
+    import core.stdc.stdlib : exit;
     stderr.writeln("Invariant violated on ", typeName, ": ", cond);
-    abort();
+    exit(1);
 }
 
 void tuckReportUnhandled(ushort code, string site)

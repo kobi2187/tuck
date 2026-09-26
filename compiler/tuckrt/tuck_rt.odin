@@ -699,6 +699,16 @@ ObjectPool :: struct($T: typeid, $Count: int) {
 	state:   [Count]CellState, // one per cell; was a u64, capping a pool at 64
 }
 
+tuckInvariantFailed :: proc(cond, typeName: string) {
+	// An invariant violation (spec 4.7): name the condition and stop — the
+	// same message and exit status as Nim's and D's. NOT `assert`, which
+	// `-disable-assert` strips: invariants survive a release build (the
+	// 2026-08-25 ruling), and `tuckNoInvariants`, guarded at the check, is
+	// the only opt-out.
+	fmt.eprintln("Invariant violated on ", typeName, ": ", cond, sep = "")
+	os.exit(1)
+}
+
 tuckPoolMisuse :: proc(what: string) {
 	// Aborts rather than returning: the alternative is the silent corruption
 	// this replaced.

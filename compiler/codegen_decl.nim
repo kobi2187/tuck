@@ -284,8 +284,8 @@ proc genRecordType*(ctx: var CodegenCtx, d: Decl): string =
           # ROADMAP's 2026-08-25 ruling 5 says invariants stay on in release,
           # opt-out only — `tuckNoInvariants` is that opt-out, independent of
           # `release`/`danger` (mirrors the D backend's `tuckNoInvariants`).
-          invariantChecks.add("  if not (" & condStr & "): tuckInvariantFailed(\"" &
-                              condStr.replace("\"", "'") & "\", \"" & d.name & "\")")
+          invariantChecks.add("  if not (" & condStr & "): tuckInvariantFailed(" &
+                              invariantCondLit(condStr) & ", \"" & d.name & "\")")
       if invariantChecks.len > 0:
         res.add("\nproc validate*(self: " & d.name & ") =\n  when not defined(tuckNoInvariants):\n" &
                 invariantChecks.join("\n").indent(2) & "\n")
