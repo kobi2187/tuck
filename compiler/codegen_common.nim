@@ -81,6 +81,18 @@ proc sumPayloadField*(variantName: string): string =
   ## union member directly.
   prefixed(variantName.toLowerAscii(), nkVariant)
 
+proc poolOpProc*(op: PoolOpKind): string =
+  ## The runtime proc a pool operation calls — one name in all three
+  ## runtimes, taking the pool first and then the op's args in order. Each
+  ## backend prints the call in its own syntax (Odin passes the pool by
+  ## pointer, D by `ref`); which proc is not theirs to decide.
+  case op
+  of poAcquire: "tuckPoolAcquire"
+  of poRelease: "tuckPoolRelease"
+  of poRead: "tuckPoolRead"
+  of poWrite: "tuckPoolWrite"
+  of poAddr: "tuckPoolAddr"
+
 const UnhandledHandlerName* = "tuck_unhandled"
   ## The generated proc every dropped fallible result reports through (spec
   ## 4.9), and the one each backend declares. A compiler-made name, so it

@@ -635,7 +635,7 @@ fn main() -> int:
   t.emitsD "pool: one module-level instance of a fixed-count pool",
            r"__gshared rt\.ObjectPool!\(ubyte\[8\], 2\) tuckˑpoolˑBuffers;"
   t.emitsD "pool: acquire reaches the runtime intrinsic",
-           r"rt\.acquire\(tuckˑpoolˑBuffers\)"
+           r"rt\.tuckPoolAcquire\(tuckˑpoolˑBuffers\)"
   t.runsD "pool: acquire yields a slot while any is free", 3, dmdExe
 
   t.src """

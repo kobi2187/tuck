@@ -16,6 +16,9 @@ const dPrims = {
   "u8": "ubyte", "u16": "ushort", "u32": "uint", "u64": "ulong",
   "f32": "float", "f64": "double", "float": "double",
   "bool": "bool", "str": "string", "void": "void", "unit": "void",
+  # The builtin FFI pointers (typecheck_pointers): C's `uint8_t*` and
+  # `char*`. D had no spelling for either and printed the bare Tuck name.
+  "Buf": "ubyte*", "cstring": "const(char)*",
 }.toTable
 
 const DCastablePrims* = ["long", "byte", "short", "int",

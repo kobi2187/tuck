@@ -86,10 +86,12 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   case n.kind
   of exkIf, exkMatch, exkBlock, exkWhile, exkFor, exkDefer, exkSelect,
      exkChain, exkCombinator, exkAssign, exkBracketAssign, exkSend,
-     exkReturn, exkRaise, exkAcquire, exkFinish, exkDiscard, exkValidate:
+     exkReturn, exkRaise, exkAcquire, exkFinish, exkDiscard, exkValidate,
+     exkPoolOp:
     # Control flow, a scope, or a statement inside an expression: what is in
     # it is conditional, or ordered by something this pass does not model.
-    # It may also do anything, so nothing after it may move before it.
+    # It may also do anything, so nothing after it may move before it. (A
+    # pool op changes the pool's state, which this pass does not model.)
     h.settled = true
     return
   of exkBinary:

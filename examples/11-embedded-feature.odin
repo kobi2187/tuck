@@ -45,11 +45,11 @@ tuckˑfnˑprocessISR :: proc (event: tuckˑtypeˑSensorEvent) {
 tuckˑpoolˑUartBuffer: rt.ObjectPool([64]u8, 8)
 
 tuckˑfnˑhandleUart :: proc () {
-  tuckˑvˑbuf := rt.acquire(&tuckˑpoolˑUartBuffer)
+  tuckˑvˑbuf := rt.tuckPoolAcquire(&tuckˑpoolˑUartBuffer)
   if !(tuckˑvˑbuf.status == .Ok) {
       return
   }
-  rt.release(&tuckˑpoolˑUartBuffer, tuckˑvˑbuf.value)
+  rt.tuckPoolRelease(&tuckˑpoolˑUartBuffer, tuckˑvˑbuf.value)
   return
 }
 

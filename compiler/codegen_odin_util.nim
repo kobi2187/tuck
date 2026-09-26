@@ -21,7 +21,12 @@ proc odinLibSpec*(lib: string): string =
   ## library; a path rides through as-is. `.c` names vendored SOURCE, which
   ## Odin cannot compile — the Nim backend takes it via {.compile.}, so here it
   ## becomes the object file the project's build is expected to have produced.
-  if lib.endsWith(".c"): lib[0 ..< lib.len - 2] & ".o"
+  ##
+  ## No `lib:` at all — `extern [c, header: "string.h"]` — is the C standard
+  ## library, which every C program links anyway; foreignLibAlias names it
+  ## `libc`. It used to print `"system:"`, which Odin refuses outright.
+  if lib == "": "system:c"
+  elif lib.endsWith(".c"): lib[0 ..< lib.len - 2] & ".o"
   elif '/' in lib or lib.endsWith(".a") or lib.endsWith(".so") or lib.endsWith(".o"): lib
   else: "system:" & lib
 

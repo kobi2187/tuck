@@ -136,12 +136,12 @@ __validated_tuckˑtypeˑVolume :: proc(v: tuckˑtypeˑVolume) -> tuckˑtypeˑVol
 
 tuckˑtaskˑstreamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(rt.TuckUnit) {
   for tuckˑvˑi in chunks {
-      tuckˑvˑbuf := rt.acquire(&tuckˑpoolˑBufferPool)
+      tuckˑvˑbuf := rt.tuckPoolAcquire(&tuckˑpoolˑBufferPool)
       if !(tuckˑvˑbuf.status == .Ok) {
           return rt.tokVoid()
       }
       tuckˑregisterˑDMA1_CH3_EN_set(true)
-      rt.release(&tuckˑpoolˑBufferPool, tuckˑvˑbuf.value)
+      rt.tuckPoolRelease(&tuckˑpoolˑBufferPool, tuckˑvˑbuf.value)
   }
   return {}
 }

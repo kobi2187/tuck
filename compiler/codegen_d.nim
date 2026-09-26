@@ -294,7 +294,7 @@ proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
                 else: nil
   ctx.dSumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
+const RtByPointer = ["alloc", "reset", "enqueue",
                      "dequeue", "hasRoom", "initMailbox", "tuckArraySetAt"]
   ## Runtime intrinsics that MUTATE their receiver, so it goes in by
   ## reference. D takes `ref`, so the call site passes the value as-is —
@@ -507,6 +507,12 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
   ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
     ", " & objName & "Val: " & e.name & ")"
+
+proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
+  ## A pool operation: `codegen_common.poolOpProc`, the pool by `ref`.
+  var args = @[e.poolRef.refName]
+  for a in e.poolOperands: args.add ctx.genDExpr(a)
+  "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
 proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
@@ -1300,6 +1306,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkIfaceCall: ctx.genDIfaceCall(e)
+  of exkPoolOp: ctx.genDPoolOp(e)
   of exkOrdinal:
     # A cast, for an enum and a bool alike: D converts both to their ordinal.
     "cast(long)(" & ctx.genDExpr(e.ordinalOf) & ")"

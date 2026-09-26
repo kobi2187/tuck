@@ -1017,7 +1017,7 @@ proc foreignLibAlias*(cLib: string): string =
   ## A path (vendored `.a`) cannot double as the Odin alias, so the alias is
   ## derived from the file stem and the path rides along as the import spec.
   ## ".../libpoint.a" -> "point".
-  if cLib == "": return "c"
+  if cLib == "": return "libc"   # Odin refuses `c` as a library name
   if '/' notin cLib and '.' notin cLib: return cLib
   var stem = cLib.rsplit('/', 1)[^1]
   if stem.startsWith("lib"): stem = stem[3 .. ^1]

@@ -192,13 +192,13 @@ sendOverrun_tuckˑactorˑPipeline :: proc(self: ^tuckˑactorˑPipeline, n: int) 
 }
 
 tuckˑfnˑcapture :: proc (want: int) -> int {
-  tuckˑvˑslot := rt.acquire(&tuckˑpoolˑFrameBuffers)
+  tuckˑvˑslot := rt.tuckPoolAcquire(&tuckˑpoolˑFrameBuffers)
   if !(tuckˑvˑslot.status == .Ok) {
       raise_tuckˑregistryˑVideo_Overrun(1)
       return 0
   }
   tuckˑregisterˑVI_DMA_ARMED_set(true)
-  rt.release(&tuckˑpoolˑFrameBuffers, tuckˑvˑslot.value)
+  rt.tuckPoolRelease(&tuckˑpoolˑFrameBuffers, tuckˑvˑslot.value)
   return want
 }
 

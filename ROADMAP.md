@@ -169,8 +169,8 @@ closure no longer exist in any `codegen_*.nim`.
 | # | issue | | size | depends on |
 |---|---|---|---|---|
 | — | **#72** | **FIXED 2026-09-26** — the checker takes an `Array`'s element from its second argument and lowers `a[i]` to the runtimes' existing `tuckArrayAt`/`tuckArraySetAt` | — | — |
-| S2.2 | **#45** | `pool.acquire` hands out a copy, so a pool cannot be a DMA target | M | — |
-| S2.3 | **#42** | pool invariant validation | S | S2.2 |
+| — | **#45** | **FIXED 2026-09-26** — `Pool.read {h}` / `Pool.write {h, value}` through the handle, and `Pool.addr {h}` (a `Buf`) for an extern only (TK-TY08). Pool ops are their own node, `exkPoolOp`; a pool is no longer capped at 64 cells. `tests/suites/pools.nim` | — | — |
+| — | **#42** | **FIXED 2026-09-26** (ruled: a cell starts ABSENT) — `read` is a `?T`, so zeroed storage is never read as a value; a written value is a validated construction; `addr` on an invariant-carrying element is TK-TY31 | — | — |
 | S2.4 | **#85** | extend `<uninit>` to actor fields | S | S1.1 |
 | S2.5 | **#55** | a fired `timeout` answers right at 100× the deadline | M | — |
 | S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |

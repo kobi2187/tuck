@@ -148,10 +148,16 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.bugFixed "an invariant fires after a field assignment"
 
-  # --- gap 2: a pool hands out an unvalidated slot -------------------------
-  # `acquire` yields a zeroed slot. With an invariant the zero value violates,
-  # the program can read a value of the type that breaks its own contract —
-  # which is the one thing an invariant exists to prevent.
+  # --- gap 2: a pool handed out an unvalidated slot -------------------------
+  # A cell is zeroed storage. With an invariant the zero value violates, the
+  # program could read a value of the type that breaks its own contract —
+  # the one thing an invariant exists to prevent (issue #42).
+  #
+  # Ruled 2026-09-26: a cell STARTS ABSENT, so `read` is a `?T` and the zero
+  # is never read as a value at all. What a cell does hold was written by
+  # `write`, whose value is a construction, validated where it is built; and
+  # `addr`, the one way in that skips a construction, is refused for an
+  # invariant-carrying element (TK-TY31, tests/suites/pools.nim).
   t.src """
 type Live:
   n: int
@@ -162,12 +168,35 @@ pool Slots = Live [count: 2]
 
 fn main() -> int:
   let s = Slots.acquire
-  if s.ok:
-    return s.value.n
+  if not s.ok:
+    return 9
+  let c = Slots.read {h: s.value}
+  if c.ok:
+    return c.value.n
   return 7
 """
-  t.quietly: t.runs "a pool slot is validated before it is handed out", 1
-  t.bugOpen "a pool slot is validated before it is handed out"
+  t.quietly: t.hostRuns("a pool slot is validated before it is handed out", 7)
+  t.bugFixed "a pool slot is validated before it is handed out"
+
+  # ...and a value written into a cell is a construction, so an invalid one
+  # stops at the construction, before it reaches the cell.
+  t.src """
+type Live:
+  n: int
+  invariant:
+    n > 0
+
+pool Slots = Live [count: 2]
+
+fn main() -> int:
+  let s = Slots.acquire
+  if not s.ok:
+    return 9
+  let bad = {n: 0} Live
+  Slots.write {h: s.value, value: bad}
+  return 0
+"""
+  t.runs "an invalid value never reaches a cell", 1   # Odin: #43
 
   # An invariant is validated ONCE for one construction (issue #51). Two
   # independent rules each wrapped the expression and neither knew the other

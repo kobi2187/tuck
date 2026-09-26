@@ -474,6 +474,12 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   elif e.name in ctx.fieldVars: "self." & e.name
   else: nimRtCallee(e.name)
 
+proc genPoolOp(ctx: var CodegenCtx, e: Expr): string =
+  ## A pool operation: `codegen_common.poolOpProc`, the pool, its args.
+  var args = @[e.poolRef.refName]
+  for a in e.poolOperands: args.add ctx.genExpr(a)
+  poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
+
 proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A call through an interface value, lowered (lowering_iface): a `case` on
   ## the tag, each arm binding a mutable copy of the payload — a member takes
@@ -513,7 +519,10 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   if isInputField(e, ctx.currentParams): return e.fieldName
   doAssert ctx.res.ifaceCallOf(e).member == "",
     "codegen: an interface call reached the emitter unlowered (lowering_iface)"
-  if ctx.res.hasCall(e): return ctx.genConstruction(ctx.res.call(e))
+  if ctx.res.hasCall(e):
+    let stamped = ctx.res.call(e)
+    if stamped.kind != exkCall: return ctx.genExpr(stamped)   # a pool op
+    return ctx.genConstruction(stamped)
   let ctor = ctx.genTypeVariantCtor(e)
   if ctor != "": return ctor
   if e.receiver != nil and e.receiver.kind == exkActorRef:
@@ -820,6 +829,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkOrdinal: "ord(" & ctx.genExpr(e.ordinalOf) & ")"   # enum and bool alike
   of exkValidate: "validate(" & ctx.genExpr(e.validated) & ")"
   of exkIfaceCall: ctx.genIfaceCall(e, ind)
+  of exkPoolOp: ctx.genPoolOp(e)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element

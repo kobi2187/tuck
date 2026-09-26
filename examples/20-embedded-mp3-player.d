@@ -111,12 +111,12 @@ tuckˑtypeˑVolume __validated_tuckˑtypeˑVolume(tuckˑtypeˑVolume v)
 
 rt.TuckResult!(rt.TuckUnit) tuckˑtaskˑstreamReader(ubyte streamId, uint[] chunks) {
     foreach (tuckˑvˑi; chunks) {
-        rt.TuckResult!(rt.PoolHandle) tuckˑvˑbuf = rt.acquire(tuckˑpoolˑBufferPool);
+        rt.TuckResult!(rt.PoolHandle) tuckˑvˑbuf = rt.tuckPoolAcquire(tuckˑpoolˑBufferPool);
         if (!(tuckˑvˑbuf.status == rt.TuckStatus.Ok)) {
             return rt.tokVoid();
         }
         tuckˑregisterˑDMA1_CH3_EN_set(true);
-        rt.release(tuckˑpoolˑBufferPool, tuckˑvˑbuf.value);
+        rt.tuckPoolRelease(tuckˑpoolˑBufferPool, tuckˑvˑbuf.value);
     }
     return typeof(return).init;
 }

@@ -172,13 +172,13 @@ proc registerActortuckˑactorˑPipeline*() =
   tuckˑactorˑPipelineSlot = tuckStartActor(draintuckˑactorˑPipeline)
 
 proc tuckˑfnˑcapture*(want: int): int =
-  var tuckˑvˑslot = acquire(tuckˑpoolˑFrameBuffers)
+  var tuckˑvˑslot = tuckPoolAcquire(tuckˑpoolˑFrameBuffers)
   if not tuckˑvˑslot.ok:
     if true:
       raise_tuckˑregistryˑVideo_Overrun(1)
       return 0
   tuckˑregisterˑVI_DMA_ARMED_set(true)
-  release(tuckˑpoolˑFrameBuffers, tuckˑvˑslot.value)
+  tuckPoolRelease(tuckˑpoolˑFrameBuffers, tuckˑvˑslot.value)
   return want
 
 proc tuckˑfnˑVideo_FrameReady*(bytes: int): void =

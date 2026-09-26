@@ -218,6 +218,12 @@ proc addFnDecl*(tc: var TypeChecker, name: string, d: Decl) =
   if tc.fnDecls.hasKey(name): tc.fnDecls[name].add(d)
   else: tc.fnDecls[name] = @[d]
 
+proc externFnNames*(tc: TypeChecker): HashSet[string] =
+  ## Every extern fn the program declares, by the name the source uses.
+  for name, ds in tc.fnDecls:
+    for d in ds:
+      if d != nil and d.kind == dkFn and d.isExtern: result.incl name
+
 proc declOfFn*(tc: TypeChecker, name: string): Decl =
   ## The declaration for `name` when the caller has no way to choose — the
   ## last registered, matching what the flat table held. nil when unknown.

@@ -965,12 +965,35 @@ no boxing, no runtime dispatch. `merge` rejects a field-name collision
 ## 15. Memory: pools, arenas
 
 ```tuck
-pool RxBuffers = Array[512, u8] [count: 4]
+type Reading:
+  value: u16
 
-let b = RxBuffers.acquire        # -> ?T
-if b.ok:
-  RxBuffers.release {b.value}
+pool Readings = Reading [count: 16]
+
+fn record({v: u16}) -> int:
+  let h = Readings.acquire         # ?ReadingsHandle — a handle, not a value
+  if not h.ok:
+    return 0                       # exhausted: the caller decides
+  let r = {value: v} Reading
+  Readings.write {h: h.value, value: r}
+  let back = Readings.read {h: h.value}   # ?Reading — absent until written
+  Readings.release {h: h.value}
+  if back.ok:
+    return 1
+  return 0
 ```
+
+A slot is reached only through its **handle**, and every operation goes
+through the pool: `acquire`, `release`, `read`, `write`, and `addr` for
+hardware (`tests/suites/pools.nim`, all three backends). A cell **starts
+absent** — `read` is a `?T` until something writes it — so zeroed memory is
+never read as a value, and a written value is a construction, validated where
+it is built (#42). `Pool.addr {h}` gives the cell's bytes as a `Buf` to an
+**extern only** (a DMA controller, an ISR; TK-TY08 anywhere else), and is
+refused for an element type carrying an invariant (TK-TY31). A stale or
+released handle stops the program (`TUCK POOL:`), identically on every
+backend. Pool operations are their own node (`exkPoolOp`), so a program's own
+`fn read` cannot be mistaken for one.
 
 From `examples/25:3`, worth quoting:
 

@@ -254,6 +254,17 @@ iterator childSlots*(e: Expr): var Expr =
     of exkIfaceCall:
       yield e.dispatchRecv
       for arm in e.dispatchArms.mitems: yield arm.call
+    of exkPoolOp:
+      yield e.poolRef
+      yield e.poolHandle
+      yield e.poolValue
+
+proc poolOperands*(e: Expr): seq[Expr] =
+  ## A pool op's operands in call order — the handle, then the value — for
+  ## whatever prints one. The pool itself comes first in every call and is
+  ## not among them.
+  for o in [e.poolHandle, e.poolValue]:
+    if o != nil: result.add o
 
 iterator children*(e: Expr): Expr =
   ## Every sub-expression, one level down — the read-only view of

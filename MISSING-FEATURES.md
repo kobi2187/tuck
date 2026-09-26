@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (8)
+## A. Open bugs (6)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -82,23 +82,6 @@ THIS task does. `examples/29-task-timeout` says the timeout "fires WHILE the
 read is outstanding", which is true of the result and not of the clock, and
 that is the whole point of a timeout. Test: `task_select`, "a fired timeout
 returns without waiting for the loser".
-
-**A8 — a pool hands out a slot without validating it.** `Slots.acquire` on a
-`pool Slots = Live [count: 2]` yields a zeroed slot, so with `invariant: n > 0`
-the program can read `s.value.n == 0` — a value of the type that violates its
-own invariant, which is the one thing an invariant exists to prevent. Whether
-the fix is "acquire validates" or "a pooled type must have a valid zero" is a
-ruling. Test: `invariants`, "a pool slot is validated before it is handed out".
-
-**A12 — a pool slot cannot be read or written.** `acquire` now answers with a
-handle that names the cell, which is what made `release` correct, but there is
-no spelling for "the cell this handle names". So a pool still cannot be a DMA
-target, a frame buffer, or anything hardware or another task fills in place —
-which is what pools are for. `examples/25` says "hand b.value to the DMA
-controller"; `b.value` is the handle and nothing takes it further. Wants a
-read/write pair through the handle, plus a sanctioned way to give a cell's
-ADDRESS to an extern — the one place a raw pointer is legitimate. Test:
-`known_bugs`, "a pool slot can be read and written through its handle".
 
 **A18 — on Odin and D, an actor declared in an IMPORTED module is never
 started.** Both entry builders collect actors from the entry module only
@@ -260,6 +243,15 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A8 / #42 and A12 / #45 — a pool cell can be read, written and filled, and
+  never read as zeroed memory.** Ruled 2026-09-26: `Cells.read {h}` /
+  `Cells.write {h, value}` through the handle, and `Cells.addr {h}` for an
+  extern only (TK-TY08 anywhere else). A cell starts ABSENT, so `read` is a
+  `?T`; a written value is a construction, validated where it is built; and
+  `addr` is refused for an invariant-carrying element (TK-TY31). Pool ops are
+  their own node (`exkPoolOp`), and a pool is no longer capped at 64 cells.
+  `tests/suites/pools.nim`, on all three backends; the two pins flipped.
 
 - **A6 / #40 — on Odin, an interface method may return more than `int`.**
   The dispatch closure was typed `-> int` whatever the method returned. Calls

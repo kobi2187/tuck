@@ -1500,12 +1500,34 @@ buffers are the embedded case; records are the §7.4 case (files, connections).
 pool UartBuffer  = Array[64, u8] [count: 8]   # 512 bytes, statically allocated
 pool Connections = Connection    [count: 16]  # records pool the same way
 
-let buf = UartBuffer.acquire     # ?Array[64, u8] — the pool may be exhausted
+let buf = UartBuffer.acquire     # ?UartBufferHandle — the pool may be exhausted
 if not buf.ok:
   return
-# ... use buf.value ...
-UartBuffer.release {buf.value}
+let dst = UartBuffer.addr {h: buf.value}      # the cell's bytes, for an extern
+{p: dst, n: 64} uartReceive                   # the hardware fills the cell
+let got = UartBuffer.read {h: buf.value}      # ?Array[64, u8]
+UartBuffer.release {h: buf.value}
 ```
+
+`acquire` yields a **handle**, not the cell: it names which cell and which
+tenancy, so `release` frees exactly that cell and a stale handle is a caught
+error rather than a write into someone else's slot. Each pool's handle type is
+its own (`UartBufferHandle`), so one pool's handle is a type error in
+another's operations. The cell is reached through the pool:
+
+- `Pool.read {h}` → `?T`. A cell **starts absent** and reads absent until
+  something writes it, so the zeroed storage beneath is never read as a value
+  of the element type — which could break that type's invariant (#42).
+- `Pool.write {h, value}` stores a value; the value is a construction,
+  validated where it is built, so every present cell satisfies the invariant.
+- `Pool.addr {h}` → `Buf`, the cell's bytes, for an **extern only** — the one
+  pointer Tuck code makes (DMA, an ISR). Anywhere else is TK-TY08; a pool
+  whose element carries an invariant has no `addr` (TK-TY31), since memory an
+  extern fills is never checked. The cell is present from then on.
+- `Pool.release {h}`.
+
+A handle whose tenancy has ended stops the program with `TUCK POOL:` and exit
+status 1, on every backend.
 
 The declaration reuses the `X = <type> [attrs]` shape: the element type is
 explicit, `count` fixes the number of slots. There is no `size` knob — the
@@ -1515,9 +1537,9 @@ footprint follows from the element type, and restating it would only drift.
 There is no `or return` unwrap — `and`/`or`/`xor` are strictly boolean (a `?T`
 in a boolean position reads as "is present", which is a test, not an unwrap).
 
-`release` goes through the **pool**, not the value: `Pool.release {v}`. The
-element may be a primitive (`Array[64, u8]` carries no methods), so a
-`v.release` method form cannot work in general.
+Every operation goes through the **pool**, not the value: the element may be
+a primitive (`Array[64, u8]` carries no methods), so a `v.release` method form
+cannot work in general.
 
 `count` is **required**. A pool without one has no static footprint, which is
 the entire point of §7.2 — unlike §7.4's registry, whose `cap` is optional
@@ -1530,9 +1552,9 @@ declaration.
 denotes the *container*, not a value of the element type, so it cannot be a
 type attribute (`Buf.acquire` yielding a `Buf` would be circular).
 
-Internally: a bitmask + a static array. `acquire` is a bitmask scan. `release`
-is a bit clear. Total footprint is verified against available memory at
-compile time.
+Internally: a static array of cells, a tenancy counter and a state (free /
+absent / present) per cell. `acquire` is a scan for a free cell; the other
+operations are O(1) through the handle.
 
 ### 7.3 Arena Allocator
 

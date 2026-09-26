@@ -69,6 +69,13 @@ proc chainToString(e: Expr): string =
     result.add(" .." & step.target.toString())
     result.add(optToString(step.arg, " "))
 
+proc poolOpToString(e: Expr): string =
+  ## Checker-stamped: `Pool.op {operands}`, as it was written.
+  var args: seq[string]
+  for a in e.poolOperands: args.add a.toString()
+  result = e.poolRef.toString() & "." & ($e.poolOp)[2 .. ^1].toLowerAscii()
+  if args.len > 0: result.add " {" & args.join(", ") & "}"
+
 proc toString*(e: Expr): string =
   if e == nil: return ""
   case e.kind
@@ -136,6 +143,8 @@ proc toString*(e: Expr): string =
     return "ord(" & e.ordinalOf.toString() & ")"
   of exkValidate:
     return "validate(" & e.validated.toString() & ")"   # lowering-built too
+  of exkPoolOp:
+    return poolOpToString(e)
   of exkIfaceCall:
     # Lowering-built: one arm per satisfying object, shown by name.
     var sats: seq[string]

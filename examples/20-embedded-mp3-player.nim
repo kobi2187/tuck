@@ -116,12 +116,12 @@ var tuckˑpoolˑBufferPool* = ObjectPool[array[512, uint8], 4]()
 proc tuckˑtaskˑstreamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[]] =
   for tuckˑvˑi in chunks:
     if true:
-      var tuckˑvˑbuf = acquire(tuckˑpoolˑBufferPool)
+      var tuckˑvˑbuf = tuckPoolAcquire(tuckˑpoolˑBufferPool)
       if not tuckˑvˑbuf.ok:
         if true:
           return tokVoid()
       tuckˑregisterˑDMA1_CH3_EN_set(true)
-      release(tuckˑpoolˑBufferPool, tuckˑvˑbuf.value)
+      tuckPoolRelease(tuckˑpoolˑBufferPool, tuckˑvˑbuf.value)
 
 type tuckˑactorˑDecoderMsgKind* = enum msgPlay, msgPause, msgStop
 type tuckˑactorˑDecoderMsg* = object

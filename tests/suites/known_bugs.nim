@@ -1231,16 +1231,15 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.bugFixed "releasing every slot makes every slot available again"
 
-  # 21. A pool slot cannot yet be READ or WRITTEN. `acquire` now answers with
-  # a handle that names the cell (which is what fixed release), but there is
-  # no spelling for "the cell this handle names" — so a pool still cannot be
-  # a DMA target, a frame buffer, or anything hardware or another task fills
-  # in place, which is what a pool is FOR. examples/25 says "hand b.value to
-  # the DMA controller"; b.value is the handle, and nothing takes it further.
+  # 21. A pool slot could not be READ or WRITTEN. `acquire` answers with a
+  # handle that names the cell (which is what fixed release), but there was
+  # no spelling for "the cell this handle names" — so a pool could not be a
+  # DMA target, a frame buffer, or anything hardware or another task fills
+  # in place, which is what a pool is FOR (issue #45).
   #
-  # The design question is open (issue #45): a read/write pair through the
-  # handle, and a sanctioned way to hand a cell's ADDRESS to an extern for
-  # the DMA case, which is the one place a raw pointer is legitimate.
+  # Ruled 2026-09-26: `read` / `write` through the handle, and `addr` for an
+  # extern to fill (tests/suites/pools.nim has the rest). A cell starts ABSENT
+  # (#42), so `read` is a `?T` and this guards it.
   t.src """
 type Cell:
   n: int
@@ -1251,12 +1250,15 @@ fn main() -> int:
   let a = Cells.acquire
   if not a.ok:
     return 90
-  Cells.write {h: a.value, value: {n: 42} Cell}
+  let cell = {n: 42} Cell
+  Cells.write {h: a.value, value: cell}
   let back = Cells.read {h: a.value}
-  return back.n
+  if not back.ok:
+    return 91
+  return back.value.n
 """
-  t.quietly: t.runs "a pool slot can be read and written through its handle", 42
-  t.bugOpen "a pool slot can be read and written through its handle"
+  t.quietly: t.hostRuns("a pool slot can be read and written through its handle", 42)
+  t.bugFixed "a pool slot can be read and written through its handle"
 
   # 22. An `errors` handler body was never mangled, so calling any fn from it
   # failed to build on all three backends (issue #48). The DECLARATION was

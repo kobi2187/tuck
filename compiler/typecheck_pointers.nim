@@ -17,8 +17,11 @@
 # expression type, so nothing calls back into the synth core — the same rule
 # typecheck_flow.nim follows. It takes the type-declaration table rather than
 # the whole TypeChecker, which is all it ever read.
-import ast, tables
+import ast, tables, sets
 import typecheck_util
+import diagnostics
+import resolution
+import ast_ops
 
 type
   TypeDecls* = Table[string, Decl]
@@ -48,7 +51,7 @@ proc failIfPointer(decls: TypeDecls, t: Type, where: string, sp: Span) =
   ## Recurses so a pointer buried in `Seq[Buf]` or a record field is caught too.
   if t == nil: return
   if decls.isPointerKind(t):
-    fail("Type Error: " & typeName(t) & " is a pointer — it may only appear " &
+    fail(dcTyPointerStored, "Type Error: " & typeName(t) & " is a pointer — it may only appear " &
          "in an extern signature, not " & where & " (cross into safe Tuck " &
          "with a converter such as toStr)", sp)
   case t.kind
@@ -101,7 +104,7 @@ proc failIfPointerReturn(decls: TypeDecls, t: Type, fnName: string, sp: Span) =
   ## exist for one. See examples/37-ffi-handle.
   if t == nil: return
   if isMemoryPointer(t):
-    fail(memoryPointerReturnMsg(fnName, typeName(t)), sp)
+    fail(dcTyPointerReturn, memoryPointerReturnMsg(fnName, typeName(t)), sp)
   case t.kind
   of tkApp:
     failIfPointerReturn(decls, t.base, fnName, sp)
@@ -198,3 +201,78 @@ proc checkPointerContainment(decls: TypeDecls, d: Decl, inExtern = false) =
 proc checkPointers*(decls: TypeDecls, m: Module) =
   ## Run after resolveTypeNames, when the table knows every extern type.
   for d in m.decls: checkPointerContainment(decls, d)
+
+
+# --- a pool cell's address: straight to an extern (#45) ----------------------
+#
+# `Pool.addr {h}` is the one place Tuck code itself PRODUCES a pointer: a
+# cell's bytes, for a DMA controller or an ISR to fill. The declaration rule
+# above keeps `Buf` out of every signature but an extern's; this is the other
+# half, about VALUES. The address is bound by `let` — TK-PA13 forbids nesting
+# the op inside a payload — and every use of that local must be an argument
+# of an extern call. Returned, stored in a record, sent, reassigned or handed
+# to any other fn, it would outlive the boundary it exists to cross
+# (TK-TY08). It reads the checker's stamps, so it runs after checkDecl.
+
+type AddrScan = object
+  res: Resolution
+  externs: HashSet[string]  ## every extern fn by the name the source uses
+  bound: HashSet[string]    ## locals holding a cell's address
+
+proc isCellAddr(res: Resolution, n: Expr): bool =
+  n != nil and n.kind == exkField and res.hasCall(n) and
+    res.call(n).kind == exkPoolOp and res.call(n).poolOp == poAddr
+
+proc isExternCall(s: AddrScan, c: Expr): bool =
+  c != nil and c.kind == exkCall and c.callee != nil and
+    c.callee.kind == exkVar and c.callee.name in s.externs
+
+proc isExternArg(s: AddrScan, parent, grand: Expr): bool =
+  ## Is a node directly under `parent` an argument of an extern call — a
+  ## positional one, or a field of the one payload?
+  if parent == nil: return false
+  if s.isExternCall(parent): return true
+  parent.kind == exkStruct and s.isExternCall(grand) and
+    grand.args.len == 1 and grand.args[0] == parent
+
+proc failIfLooseAddr(s: AddrScan, n, parent: Expr) =
+  ## A `Pool.addr` anywhere but the value of a `let`.
+  if not isCellAddr(s.res, n): return
+  if parent != nil and parent.kind == exkAssign and parent.assignVal == n and
+     parent.isDecl and parent.target != nil and parent.target.kind == exkVar:
+    return
+  fail(dcTyPointerStored, "Type Error: a cell's address (`Pool.addr`) is " &
+       "bound by `let` and handed to an extern; it cannot be used here", n.span)
+
+proc scanAssign(s: var AddrScan, n: Expr) =
+  ## A `let` of an address binds a local; any other assignment to one is
+  ## refused.
+  if n.target == nil or n.target.kind != exkVar: return
+  if n.isDecl and isCellAddr(s.res, n.assignVal):
+    s.bound.incl n.target.name
+  elif n.target.name in s.bound:
+    fail(dcTyPointerStored, "Type Error: `" & n.target.name & "` holds a " &
+         "cell's address and cannot be reassigned", n.span)
+
+proc scanUse(s: AddrScan, n, parent, grand: Expr) =
+  ## A read of a local holding an address: an extern call's argument, or
+  ## refused.
+  if n.name notin s.bound: return
+  if parent != nil and parent.kind == exkAssign and parent.target == n: return
+  if s.isExternArg(parent, grand): return
+  fail(dcTyPointerStored, "Type Error: `" & n.name & "` holds a cell's " &
+       "address, which only an extern may take — this use is not an " &
+       "argument of an extern call", n.span)
+
+proc scan(s: var AddrScan, n, parent, grand: Expr) =
+  if n == nil: return
+  s.failIfLooseAddr(n, parent)
+  if n.kind == exkAssign: s.scanAssign(n)
+  elif n.kind == exkVar: s.scanUse(n, parent, grand)
+  for c in n.children: s.scan(c, n, parent)
+
+proc checkCellAddresses*(res: Resolution, m: Module, externs: HashSet[string]) =
+  ## Every `Pool.addr` in the module goes only where an extern takes it.
+  for body in m.bodies:
+    var s = AddrScan(res: res, externs: externs)
+    s.scan(body, nil, nil)

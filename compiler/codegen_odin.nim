@@ -221,7 +221,7 @@ proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
              else: e.args
   for a in args: result.add(ctx.genOdinExpr(a))
 
-const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
+const RtByPointer = ["alloc", "reset", "enqueue",
                      "dequeue", "hasRoom", "initMailbox", "tuckArraySetAt"]
   ## Runtime intrinsics whose receiver they MUTATE, so it goes in by pointer.
   ## `tuckArraySetAt` joins this list, not RtByValue below, because Odin's
@@ -670,6 +670,12 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   if foreign != "": return foreign
   e.name
 
+proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A pool operation: `codegen_common.poolOpProc`, the pool by pointer.
+  var args = @["&" & e.poolRef.refName]
+  for a in e.poolOperands: args.add ctx.genOdinExpr(a)
+  "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
+
 proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
   ## the tag and print each arm's member call. An immediately-called closure,
@@ -761,7 +767,10 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   # branch first, so `Actor.waitUntil {pred: :p}` — a static member call whose
   # receiver is an actor — emitted `Singleton.waitUntil` as though it were a
   # field read, and Odin answered "has no field 'waitUntil'".
-  if ctx.res.hasCall(e): return ctx.genOdinCall(ctx.res.call(e))
+  if ctx.res.hasCall(e):
+    let stamped = ctx.res.call(e)
+    if stamped.kind != exkCall: return ctx.genOdinExpr(stamped)   # a pool op
+    return ctx.genOdinCall(stamped)
   # `Counter.total` reads the actor SINGLETON's field, not a type's.
   if e.receiver != nil and e.receiver.kind == exkActorRef:
     return actorSingletonName(e.receiver.refName) & "." & e.fieldName
@@ -1371,6 +1380,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: ctx.genOrdinal(e)
   of exkIfaceCall: ctx.genIfaceCall(e)
+  of exkPoolOp: ctx.genOdinPoolOp(e)
   of exkValidate:
     "validate_" & ctx.res.typeFor(e.validated).name & "(" &
       ctx.genOdinExpr(e.validated) & ")"

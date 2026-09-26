@@ -115,6 +115,8 @@ type
                                         ## fit the field's type
     dcTyFieldInitNotActor = "TK-TY30"   ## an initialiser on a `type` or
                                         ## `object` field, which has no use
+    dcTyPoolAddrInvariant = "TK-TY31"   ## `Pool.addr` on a pool whose element
+                                        ## type carries an invariant
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -401,6 +403,15 @@ proc parseExplanation(d: DiagCode): string =
     "that names its fields, so an initialiser there would never be read. It " &
     "is refused rather than dropped: it used to be parsed and thrown away, " &
     "silently, on every kind of field."
+  of dcTyPoolAddrInvariant:
+    "`Pool.addr {h}` hands a cell's bytes to an extern to fill — a DMA " &
+    "controller, an ISR. Memory filled that way was never built by a " &
+    "construction, so nothing checked it against the element type's " &
+    "invariant, and the next `read` would hand the program a value that may " &
+    "break it. A pool whose element carries an invariant therefore has no " &
+    "`addr`. Fix: fill a plain buffer pool (`Array[N, u8]`) through `addr`, " &
+    "and build the checked value from it with a construction, which " &
+    "validates."
   of dcTyCtorFieldType:
     "A field given in a construction does not fit the type the declaration " &
     "gives it. This was unchecked: the value rode to codegen and only the " &

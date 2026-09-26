@@ -207,13 +207,13 @@ void sendOverrun_tuckˑactorˑPipeline(ref tuckˑactorˑPipeline self, long n) {
 
 
 long tuckˑfnˑcapture(long want) {
-    rt.TuckResult!(rt.PoolHandle) tuckˑvˑslot = rt.acquire(tuckˑpoolˑFrameBuffers);
+    rt.TuckResult!(rt.PoolHandle) tuckˑvˑslot = rt.tuckPoolAcquire(tuckˑpoolˑFrameBuffers);
     if (!(tuckˑvˑslot.status == rt.TuckStatus.Ok)) {
         raise_tuckˑregistryˑVideo_Overrun(1L);
         return 0L;
     }
     tuckˑregisterˑVI_DMA_ARMED_set(true);
-    rt.release(tuckˑpoolˑFrameBuffers, tuckˑvˑslot.value);
+    rt.tuckPoolRelease(tuckˑpoolˑFrameBuffers, tuckˑvˑslot.value);
     return want;
 }
 
