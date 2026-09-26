@@ -1297,7 +1297,7 @@ proc qualifyErrArm(tc: TypeChecker, arm: var MatchArm, errEnums: seq[string]) =
   arm.pattern = Pattern(span: arm.pattern.span, kind: pkVar,
                         name: owners[0] & "." & aname)
 
-proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, subjT: Type,
+proc bindArmPattern(tc: var TypeChecker, arm: var MatchArm, subjT: Type,
                     trackedVar, trackedType: string) =
   ## A variant pattern narrows the subject and does NOT bind the name;
   ## an ordinary pattern binds the subject's actual type.
@@ -1311,18 +1311,30 @@ proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, subjT: Type,
   ## tc.typeDecls at all) — a real variant with nothing to track just skips
   ## the tracking half, same as a named-but-transitionless sum type already
   ## does today.
-  if arm.pattern == nil or arm.pattern.kind != pkVar: return
+  if arm.pattern == nil or arm.pattern.kind notin {pkVar, pkBind}: return
   # A NAMED sum type's subject synthesizes as `tkNamed "Door"`, not the
   # tkSum body directly (only an INLINE sum field type — no name to look
   # up at all — synthesizes AS its own tkSum body). tc.resolve unwraps the
   # name for the named case and is a no-op for the inline one (already not
   # tkNamed), so one call covers both.
   let subjBody = tc.resolve(subjT)
-  if subjBody != nil and subjBody.kind == tkSum and
-     hasVariant(subjBody, arm.pattern.name):
-    if trackedVar != "": tc.varVariants[trackedVar] = @[arm.pattern.name]
+  let name = arm.pattern.name
+  if arm.pattern.kind == pkVar and subjBody != nil and
+     subjBody.kind == tkSum and hasVariant(subjBody, name):
+    if trackedVar != "": tc.varVariants[trackedVar] = @[name]
+  elif arm.pattern.kind == pkVar and
+       ("." in name or constDeclFor(tc.module, name) != nil):
+    # A TAG that is not a variant: a qualified error name (qualifyErrArm
+    # wrote `ParseError.Empty`), or a declared const. Compared against, as
+    # every backend prints it, never bound.
+    discard
   else:
-    tc.bindName(arm.pattern.name, subjT, false)
+    # A BINDING, and marked as one: every later stage needs to know, and
+    # none of them can re-derive it (it takes the subject's type). Emitted as
+    # a tag it built nowhere — Nim printed a `case` label, Odin and D an
+    # undeclared name (ROADMAP S2.9).
+    arm.pattern = Pattern(span: arm.pattern.span, kind: pkBind, name: name)
+    tc.bindName(name, subjT, false)
 
 proc variantHint(tc: TypeChecker, subjT: Type): Type =
   ## What an arm BODY should be synthesized against. The channel exists here
@@ -1341,7 +1353,7 @@ proc variantHint(tc: TypeChecker, subjT: Type): Type =
      tc.typeDecls[r.name].kind == tkSum: return subjT
   nil
 
-proc synthArm(tc: var TypeChecker, arm: MatchArm, subjT: Type, trackedVar,
+proc synthArm(tc: var TypeChecker, arm: var MatchArm, subjT: Type, trackedVar,
               trackedType: string): Type =
   ## One arm, typed in its own scope with the subject narrowed.
   tc.pushScope()
@@ -1366,7 +1378,7 @@ proc synthArms(tc: var TypeChecker, e: Expr, subjT: Type, trackedVar,
   var mergedExit: Table[string, seq[string]]
   var firstArm = true
   result = nil
-  for arm in e.arms:
+  for arm in e.arms.mitems:
     tc.varVariants = entryVariants
     let t = tc.synthArm(arm, subjT, trackedVar, trackedType)
     mergedExit = if firstArm: tc.varVariants
@@ -1401,7 +1413,10 @@ proc checkExhaustive(tc: TypeChecker, e: Expr, domain: seq[string]) =
   var hasWild = false
   var covered: HashSet[string]
   for arm in e.arms:
-    if arm.pattern == nil or arm.pattern.kind == pkWild: hasWild = true
+    # A binding catches everything, as `_` does. It used to be counted as
+    # one more tag name, so a sum matched with a binding arm read as
+    # missing every variant it did not name.
+    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkBind}: hasWild = true
     elif arm.pattern.kind == pkVar: covered.incl(arm.pattern.name)
   if hasWild: return
   var missing: seq[string]

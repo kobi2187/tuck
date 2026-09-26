@@ -374,6 +374,8 @@ proc genPatternStr*(p: Pattern): string =
   case p.kind
   of pkWild: "_"
   of pkVar: p.name
+  of pkBind: raiseAssert "genPatternStr: a binding arm reached an emitter " &
+                        "unlowered (lowering_match_binds)"
   of pkLit: p.litValue
   of pkOr: genPatternStr(p.left) & ", " & genPatternStr(p.right)
   of pkRecord, pkTuple: "_"   # destructuring binds; as a label it tests nothing

@@ -409,7 +409,8 @@ proc matchIsExhaustive(b: Builder, e: Expr): bool =
   ## final uses in `46-h264-driver`'s `nal` handler alone — a `match` over a
   ## four-variant `Action` with all four covered.
   for arm in e.arms:
-    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkVar}: return true
+    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkVar, pkBind}:
+      return true
   let t = b.res.typeFor(e.subject)
   if t == nil: return false
   if t.kind == tkNamed and t.name == "bool": return true
@@ -428,7 +429,7 @@ proc bindPattern(b: var Builder, pat: Pattern, src: Place) =
   ## projection of what it was taken from.
   if pat == nil: return
   case pat.kind
-  of pkVar:
+  of pkVar, pkBind:
     var def = Def(kind: dkProject)
     if src.len > 0:
       let whole = b.readVariable(src, b.here)

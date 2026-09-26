@@ -167,7 +167,7 @@ proc columnValue(res: Resolution, d: Decl, i: int, p: Pattern): Expr =
   of pkLit:
     res.typed(Expr(span: p.span, kind: exkLit, litKind: p.litKind,
                    litValue: p.litValue), t)
-  of pkWild, pkRecord, pkTuple, pkOr:
+  of pkWild, pkBind, pkRecord, pkTuple, pkOr:
     raiseAssert "lowering_decisions: a " & $p.kind & " column in " & d.name &
       " — a row's columns are values or `_`"
 

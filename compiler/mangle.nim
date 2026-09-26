@@ -216,6 +216,40 @@ proc mangleAssign(res: Resolution, e: Expr, names: MangleNames, locals: var Hash
   else:
     mangleExpr(res, e.target, names, locals, fields)
 
+proc isVariantOf(res: Resolution, subject: Expr, name: string): bool =
+  ## Is `name` a variant of the subject's sum type? The checker reads a
+  ## pattern as a variant first, so the mangler must not rename one that
+  ## happens to share a declaration's name.
+  var t = res.typeFor(subject)
+  if t != nil and t.kind == tkNamed:
+    let d = res.declForType(t)
+    t = if d != nil and d.kind == dkType: d.typeBody else: nil
+  if t == nil or t.kind != tkSum: return false
+  for v in t.variants:
+    if v.name == name: return true
+  false
+
+proc mangleMatch(res: Resolution, e: Expr, names: MangleNames,
+                 locals: var HashSet[string], fields: HashSet[string]) =
+  ## The subject, then each arm. A binding arm's name is a local of that arm,
+  ## renamed with its reads — as a loop variable is (bindLoopVars). Left
+  ## bare, a read of it would have been renamed to a GLOBAL of that name.
+  ##
+  ## A TAG naming a top-level declaration (`LIMIT:` for `const LIMIT`) is
+  ## renamed with it, or the arm compares against a name nothing declares.
+  ## A variant or an error name is not a declaration, so is left alone.
+  mangleExpr(res, e.subject, names, locals, fields)
+  for arm in e.arms:
+    var inner = locals
+    let p = arm.pattern
+    if p != nil and p.kind == pkBind:
+      inner.incl(p.name)
+      p.name = mangleName(p.name, nkValue)
+    elif p != nil and p.kind == pkVar and names.getOrDefault(p.name) == nkValue and
+         p.name in names and not isVariantOf(res, e.subject, p.name):
+      p.name = mangleName(p.name, nkValue)
+    mangleExpr(res, arm.body, names, inner, fields)
+
 proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSet[string],
                 fields: HashSet[string] = initHashSet[string]()) =
   ## `locals` holds the names bound INSIDE this body — params, `let`/`var`
@@ -265,9 +299,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
      exkReturn, exkRaise, exkDiscard, exkDefer, exkFinish, exkAcquire,
      exkOrdinal, exkValidate, exkIfaceCall:
     for c in e.children: mangleExpr(res, c, names, locals, fields)
-  of exkMatch:
-    mangleExpr(res, e.subject, names, locals, fields)
-    for arm in e.arms: mangleExpr(res, arm.body, names, locals, fields)
+  of exkMatch: mangleMatch(res, e, names, locals, fields)
   of exkFor: mangleFor(res, e, names, locals, fields)
   of exkAssign: mangleAssign(res, e, names, locals, fields)
   of exkSend:

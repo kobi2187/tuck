@@ -220,7 +220,11 @@ type
 
   PatternKind* = enum
     pkWild
-    pkVar
+    pkVar       # a bare name: a variant, an enum tag or an error name to test
+    pkBind      # a bare name the checker found to BIND the subject in its arm
+                # (`other: other + 1`) — it rewrites the pkVar it parsed.
+                # A catch-all; lowering_match_binds turns it into `_` and
+                # gives the arm the value (ROADMAP S2.9)
     pkLit
     pkRecord
     pkTuple
@@ -231,7 +235,7 @@ type
     case kind*: PatternKind
     of pkWild:
       discard
-    of pkVar:
+    of pkVar, pkBind:
       name*: string
     of pkLit:
       litKind*: LitKind

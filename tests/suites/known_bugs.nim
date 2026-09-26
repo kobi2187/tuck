@@ -1941,4 +1941,112 @@ fn main() -> int:
 """
   t.hostRuns "...a write through a record field reaches the record", 30
 
+  # S2.9: a BINDING match arm (`other: other + 1`) checked clean, then failed
+  # to build on all three backends — Nim printed the name as a `case` label,
+  # Odin and D as an undeclared identifier. The checker now marks the pattern
+  # `pkBind`, and lowering_match_binds makes the arm a catch-all reading the
+  # subject (or a snapshot of it). Value position, on a param:
+  t.src """
+fn f({n: int}) -> int:
+  return match n:
+    0: 10
+    other: other + 1
+
+fn main() -> int:
+  return {n: 5} f
+"""
+  t.quietly: t.hostRuns("a binding match arm builds and binds", 6)
+  t.bugFixed "a binding match arm builds and binds (S2.9)"
+  # The arm re-binds the name: reads after that are the new binding's.
+  t.src """
+fn f({n: int}) -> int:
+  match n:
+    0: return 10
+    other:
+      let a = other * 2
+      let other = 3
+      return a + other
+
+fn main() -> int:
+  return {n: 5} f
+"""
+  t.hostRuns "...a re-binding in the arm shadows it from there on", 13
+  # The arm overwrites the subject first: the binding is a snapshot taken
+  # before the arm ran, not a second read of the variable.
+  t.src """
+fn f({k: int}) -> int:
+  var x = k
+  match x:
+    0: return 10
+    other:
+      x = 99
+      return other + x
+
+fn main() -> int:
+  return {k: 7} f
+"""
+  t.hostRuns "...the binding keeps the value the subject had", 106
+  # A computed subject is evaluated once, into a temp.
+  t.src """
+fn g({a: int}) -> int:
+  return a * 3
+
+fn main() -> int:
+  let r = match {a: 4} g:
+    0: 1
+    v: v + 2
+  return r
+"""
+  t.hostRuns "...a computed subject is read once", 14
+  # A binding arm catches every case. It used to be counted as one more tag
+  # name, so a sum matched this way read as missing its other variants.
+  t.src """
+type Light:
+  | Red
+  | Amber
+  | Green
+
+fn code({l: Light}) -> int:
+  return match l:
+    Red: 1
+    other: 7
+
+fn main() -> int:
+  return {l: Green} code
+"""
+  t.hostRuns "...and makes a match over a sum exhaustive", 7
+  # A pattern naming a declared const is a TAG — compared against, as every
+  # backend prints it — not a binding. It built nowhere: patterns were never
+  # mangled, so the arm compared against `LIMIT` beside a `tuck_LIMIT`.
+  t.src """
+const LIMIT = 3
+
+fn f({n: int}) -> int:
+  return match n:
+    LIMIT: 100
+    _: n
+
+fn main() -> int:
+  return {n: 3} f + {n: 2} f
+"""
+  t.hostRuns "a pattern naming a const compares against it", 102
+  # ...unless the subject's own type has a variant of that name: the checker
+  # reads a variant first, and so must the mangler.
+  t.src """
+const Red = 9
+
+type Light:
+  | Red
+  | Green
+
+fn code({l: Light}) -> int:
+  return match l:
+    Red: 1
+    Green: 2
+
+fn main() -> int:
+  return {l: Green} code + Red
+"""
+  t.hostRuns "...a variant still wins over a const of the same name", 11
+
   t.finish()

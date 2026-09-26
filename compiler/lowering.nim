@@ -36,6 +36,7 @@ import lowering_recursive   # recursive sum edges get a Seq handle
 import lowering_decisions   # a decision table becomes a match or an if chain
 import lowering_chains      # a `..` chain becomes statements
 import lowering_iface       # a call through an interface becomes a dispatch
+import lowering_match_binds # a binding match arm becomes a catch-all
 import tables
 
 proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef]
@@ -401,6 +402,9 @@ proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   # registry raise inside a task reached codegen unlowered as
   # `LowMemory(tuck_AppEvents.raise)(42)`, which is not valid Nim.
   for e in m.bodies: lowerExpr(res, e, m)
+  # A binding arm (`other: other + 1`) becomes a catch-all reading the
+  # subject, or a snapshot of it (lowering_match_binds).
+  lowerMatchBinds(res, m)
   # Every `..` chain becomes the statements it means (lowering_chains).
   # After lowerExpr, as the chain-fed-call hoisting it absorbed always ran:
   # a step's call is the checker's, already in the shape the emitters print.
