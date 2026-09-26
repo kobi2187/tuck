@@ -1155,100 +1155,103 @@ proc genRegister*(ctx: OdinCodegenCtx, d: Decl, ind: string): string =
   ind & d.name & " := cast(^u32)(uintptr(" & d.regAddress & "))\n" &
     consts.join("\n") & "\n" & accessors.join("")
 
+proc genOdinTypeDecl(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## A `type`: a sum, a record, or an alias of another type.
+  if d.typeBody == nil: return ""
+  if d.typeBody.kind == tkSum: ctx.genSumType(d)
+  elif d.typeBody.kind == tkRecord: ctx.genRecordType(d)
+  else: ctx.genAliasType(d)
+
+proc genOdinConst(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## A literal is a true compile-time constant (`::`); structured data
+  ## becomes a package-level var, still one-time and immutable in intent.
+  if d.constVal != nil and d.constVal.kind == exkLit:
+    ind & d.name & " :: " & ctx.genOdinExpr(d.constVal)
+  else:
+    ind & d.name & " := " & ctx.genOdinExpr(d.constVal)
+
+proc genOdinPool(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## spec 7.2: one package-level instance; acquire/release are the runtime's
+  ## generic procs, reached as `Pool.acquire` -> `rt.acquire(&Pool)`.
+  ind & d.name & ": rt.ObjectPool(" & ctx.odinType(d.poolElem) & ", " &
+    $d.poolCount & ")\n"
+
+proc collectStaticAssert(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## Odin's `#assert` does not reach a runtime value, so the entry point
+  ## asserts these; nothing is emitted in place.
+  ctx.staticAsserts.add(ctx.genOdinExpr(d.assertExpr))
+  ""
+
+proc genOdinFnSig(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## `fnsig NAME = {params} -> ret` → a named Odin proc type, used for
+  ## callback slots.
+  ##
+  ## A GENERIC fnsig emits NOTHING. Odin proc types are not parametric (its
+  ## generics are `$T` parapoly on PROCS, a different mechanism), so there
+  ## is no named type to declare — every USE spells the substituted
+  ## signature inline instead. Nothing is lost: a fn type is structural
+  ## here, so there was no nominal identity to keep.
+  if d.sigGenerics.len > 0: return ""
+  var params: seq[string]
+  for prm in d.sigParams:
+    params.add(prm.name & ": " & ctx.odinType(prm.typ))
+  let retStr =
+    if d.sigReturn != nil and not (d.sigReturn.kind == tkNamed and
+                                   d.sigReturn.name == "void"):
+      " -> " & ctx.odinType(d.sigReturn)
+    else: ""
+  # A C callback is a bare function pointer using the C calling convention:
+  # `proc "c" (...)`. Odin's default convention differs, so passing a plain
+  # proc to a C function pointer would be an ABI mismatch.
+  let conv = if d.sigIsCCallback: "\"c\" " else: ""
+  return ind & d.name & " :: proc " & conv & "(" & params.join(", ") & ")" &
+         retStr & "\n"
+
+proc genOdinInterface(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## A VARIANT over the satisfying types, copied in — mirrors the Nim backend
+  ## (spec §5.3). Odin's tagged union does what Nim's case-object does: the
+  ## payload is the object itself, so the value owns its data and there is no
+  ## lifetime question.
+  let sats = ctx.satisfiersOf(d.name)
+  if sats.len == 0:
+    return ind & "// interface " & d.name & ": no satisfying types\n"
+  var tags: seq[string]
+  var fields: seq[string]
+  for st in sats:
+    tags.add(d.name & "_is_" & st.name)
+    fields.add(ind & "\t" & st.name & "Val: " & st.name & ",")
+  result = ind & d.name & "Tag :: enum { " & tags.join(", ") & " }\n\n"
+  result.add(ind & d.name & " :: struct {\n" &
+             ind & "\ttag: " & d.name & "Tag,\n" &
+             fields.join("\n") & "\n" & ind & "}\n")
+
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## One top-level declaration. Every DeclKind is named, so a new one fails
+  ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
   if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind
-  of dkFn:
-    return ctx.genOdinFnDecl(d)
-  of dkType:
-    if d.typeBody != nil:
-      if d.typeBody.kind == tkSum:
-        return ctx.genSumType(d)
-      elif d.typeBody.kind == tkRecord:
-        return ctx.genRecordType(d)
-      else:
-        return ctx.genAliasType(d)
-    return ""
-  of dkObject:
-    return ctx.genObjectDecl(d, ind)
-  of dkActor:
-    return ctx.genActor(d)
-  of dkTask:
-    return ctx.genTaskDecl(d, ind)
-  of dkConst:
-    # A literal is a true compile-time constant (`::`); structured data
-    # becomes a package-level var, still one-time and immutable in intent.
-    if d.constVal != nil and d.constVal.kind == exkLit:
-      return ind & d.name & " :: " & ctx.genOdinExpr(d.constVal)
-    return ind & d.name & " := " & ctx.genOdinExpr(d.constVal)
-  of dkExpr:
-    return ctx.genOdinExpr(d.expr)
+  of dkFn: ctx.genOdinFnDecl(d)
+  of dkType: ctx.genOdinTypeDecl(d)
+  of dkObject: ctx.genObjectDecl(d, ind)
+  of dkActor: ctx.genActor(d)
+  of dkTask: ctx.genTaskDecl(d, ind)
+  of dkConst: ctx.genOdinConst(d, ind)
+  of dkExpr: ctx.genOdinExpr(d.expr)
   of dkRegister: ctx.genRegister(d, ind)
-  of dkRegistry:
-    return ctx.genRegistry(d)
-  of dkImport:
-    return ""  # emitOdin has no import lines; same project, same namespace
-  of dkStaticAssert:
-    ctx.staticAsserts.add(ctx.genOdinExpr(d.assertExpr))
-    return ""
+  of dkRegistry: ctx.genRegistry(d)
+  of dkStaticAssert: ctx.collectStaticAssert(d)
   of dkErrors: ctx.genErrHandler(d, ind)
-  of dkResources: return genOdinResourceTables(d, ind)
+  of dkResources: genOdinResourceTables(d, ind)
   of dkMixin, dkExtern, dkPending: ctx.genMixinBlock(d)
-  of dkPool:
-    # spec 7.2: one package-level instance; acquire/release are the runtime's
-    # generic procs, reached as `Pool.acquire` -> `rt.acquire(&Pool)`.
-    # The Beef backend has no arm for this — parity is with codegen.nim.
-    return ind & d.name & ": rt.ObjectPool(" & ctx.odinType(d.poolElem) &
-           ", " & $d.poolCount & ")\n"
-  of dkFnSig:
-    # `fnsig NAME = {params} -> ret` → a named Odin proc type, used for
-    # callback slots. The Beef backend has no arm for this at all.
-    #
-    # Generic (`fnsig NAME[T, ...]`): Odin's proc TYPES are not parametric
-    # the way Nim's `proc(...): U {.closure.}` type alias is — there is no
-    # direct equivalent to emit yet (Odin's own generics are `$T` parapoly
-    # procs, a different mechanism). Die loudly rather than emit the bare
-    # `T`/`U` names as if they were real, undeclared types.
-    # A GENERIC fnsig emits NOTHING. Odin proc types are not parametric (its
-    # generics are `$T` parapoly on PROCS, a different mechanism), so there
-    # is no named type to declare — every USE spells the substituted
-    # signature inline instead. Nothing is lost: a fn type is structural
-    # here, so there was no nominal identity to keep.
-    if d.sigGenerics.len > 0: return ""
-    var params: seq[string]
-    for prm in d.sigParams:
-      params.add(prm.name & ": " & ctx.odinType(prm.typ))
-    let retStr =
-      if d.sigReturn != nil and not (d.sigReturn.kind == tkNamed and
-                                     d.sigReturn.name == "void"):
-        " -> " & ctx.odinType(d.sigReturn)
-      else: ""
-    # A C callback is a bare function pointer using the C calling convention:
-    # `proc "c" (...)`. Odin's default convention differs, so passing a plain
-    # proc to a C function pointer would be an ABI mismatch.
-    let conv = if d.sigIsCCallback: "\"c\" " else: ""
-    return ind & d.name & " :: proc " & conv & "(" & params.join(", ") & ")" &
-           retStr & "\n"
-  of dkInterface:
-    # A VARIANT over the satisfying types, copied in — mirrors the Nim backend
-    # (spec §5.3). Odin's tagged union does what Nim's case-object does: the
-    # payload is the object itself, so the value owns its data and there is no
-    # lifetime question.
-    let sats = ctx.satisfiersOf(d.name)
-    if sats.len == 0:
-      return ind & "// interface " & d.name & ": no satisfying types\n"
-    var tags: seq[string]
-    var fields: seq[string]
-    for st in sats:
-      tags.add(d.name & "_is_" & st.name)
-      fields.add(ind & "\t" & st.name & "Val: " & st.name & ",")
-    result = ind & d.name & "Tag :: enum { " & tags.join(", ") & " }\n\n"
-    result.add(ind & d.name & " :: struct {\n" &
-               ind & "\ttag: " & d.name & "Tag,\n" &
-               fields.join("\n") & "\n" & ind & "}\n")
-    return result
-  else:
-    return ""
+  of dkPool: ctx.genOdinPool(d, ind)
+  of dkFnSig: ctx.genOdinFnSig(d, ind)
+  of dkInterface: ctx.genOdinInterface(d, ind)
+  of dkImport: ""     # same project, same namespace: no import line
+  of dkGroup: ""      # a compile-time bound (spec §5.5), resolved away
+  of dkSatisfies: ""  # folded into the object's own list before checking
+  of dkWhen: ""       # resolved away by modules.resolveWhenBlocks
+  of dkPublic: ""     # a list of names, not a declaration
+  of dkSelect: ""     # an actor's arms are emitted with the actor

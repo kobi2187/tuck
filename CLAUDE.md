@@ -117,10 +117,12 @@ number; it is never reused. Add new ones at the end of their category block, so
 so a new AST node kind produces a compile error in every backend that has not
 handled it; `else: discard` trades that guarantee for a silent gap. Length is not
 the enemy; nesting is — arms delegate to small named procs, the dispatch stays
-flat. Note this is the *rule*, not yet the tree: both codegen decl dispatches
-currently end in `else` (`codegen_decl.nim:835`, `codegen_odin_decl.nim:1224`), and
-`ast_serializer.nim` no longer hand-writes a `case` at all — it delegates to
-`jsony`.
+flat. The three backends' decl dispatches (`genDecl`, `genOdinDecl`,
+`genDDecl`), the checker's `checkDecl` and the mangler's `mangleMember` all
+name every kind. `checkDecl` and `mangleMember` used to end in
+`else: discard`, and `on select` arms were never checked or mangled because
+of it. `ast_serializer.nim` no longer hand-writes a `case` at all — it
+delegates to `jsony`.
 
 **Walk code with `ast_ops`, never by hand.** `allDecls` / `bodies` /
 `bodySlots` reach every expression any declaration owns (fn and task bodies,

@@ -161,8 +161,6 @@ proc tuck_fn_Intersection_PhaseChanged*(to: uint8): void =
 proc tuck_fn_Intersection_Preempted*(source: uint8): void =
   tuck_SIGNAL_OUT_NS_GREEN_set(false)
 
-# [codegen] ignored decl kind dkGroup
-
 proc tuck_fn_seconds*(self: tuck_type_Interval): int =
   return (self.ticks div 10)
 
