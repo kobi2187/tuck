@@ -88,14 +88,7 @@ proc rewriteExpr(e: Expr) =
   for c in e.children: rewriteExpr(c)
 
 proc rewriteModule*(m: Module) =
-  ## Normalize a module in place. Walks fn bodies via allFns rather than a
-  ## hand-rolled case over decl kinds — that is how dkActor came to be silently
-  ## skipped by an earlier pass.
-  ##
-  ## Tasks are walked SEPARATELY: allFns yields dkFn only, and a task keeps its
-  ## body in taskBody. Seven examples declare tasks, so a rule that skipped them
-  ## would be silently half-applied. (lowerModule had this same gap and emitted
-  ## an unlowered registry raise from a task body; it now walks dkTask too.)
-  for fn in m.allFns(): rewriteExpr(fn.fnBody)
-  for d in m.decls(dkTask): rewriteExpr(d.taskBody)
-  for d in m.decls(dkExpr): rewriteExpr(d.expr)
+  ## Normalize a module in place, over EVERY body (`ast_ops.bodies`) — a
+  ## hand-rolled walk over decl kinds is how dkActor, and later task bodies,
+  ## came to be silently skipped.
+  for e in m.bodies: rewriteExpr(e)

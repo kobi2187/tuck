@@ -188,19 +188,9 @@ proc resolveDeclRefs*(prog: seq[LoadedModule]) =
   ## bodies. Run once, after load + injectImportedTypes, before typecheck.
   collectNames(prog)
   for lm in prog:
-    for fn in lm.m.allFns(): resolveRefsIn(fn.fnBody)
-    for d in lm.m.decls(dkTask): resolveRefsIn(d.taskBody)
-    for d in lm.m.decls(dkExpr): resolveRefsIn(d.expr)
-    # An actor field's initialiser (#87) is an expression like any body.
-    for d in lm.m.decls(dkActor):
-      for f in d.actorFields.mitems: f.default = resolveVarSlot(f.default)
-    # `+ Name` composition (spec 5.1) parses as a dkExpr MEMBER of the
-    # composing object/type/mixin/interface — `ast_query.members` is the
-    # exhaustive "everything nested inside this decl" iterator (allFns
-    # above already covers member FNS the same way; this is its dkExpr
-    # sibling). Missed initially: `+ BulkOperations` (a mixin) stayed
-    # exkVar, unrewritten, all the way to typecheck.
-    for d in lm.m.decls:
-      if d == nil: continue
-      for mem in d.members():
-        if mem != nil and mem.kind == dkExpr: resolveRefsIn(mem.expr)
+    # Every body, as a SLOT: a body that is itself a bare name (an actor
+    # field's initialiser, #87; a `+ Name` composition member of an object,
+    # which parses as a nested dkExpr) is replaced, not just walked. The
+    # composition case was missed once: `+ BulkOperations` stayed exkVar all
+    # the way to typecheck.
+    for s in lm.m.bodySlots: s = resolveVarSlot(s)

@@ -153,6 +153,4 @@ proc boxRecursiveEdges*(res: Resolution, m: Module) =
   if names.len == 0: return
   let edges = boxEdgeDecls(m, names)
   if edges.len == 0: return
-  for fn in m.allFns(): rewriteExpr(res, fn.fnBody, edges)
-  for d in m.decls(dkTask): rewriteExpr(res, d.taskBody, edges)
-  for d in m.decls(dkExpr): rewriteExpr(res, d.expr, edges)
+  for e in m.bodies: rewriteExpr(res, e, edges)

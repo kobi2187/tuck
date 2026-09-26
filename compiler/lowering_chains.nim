@@ -197,9 +197,18 @@ proc lowerBody(res: Resolution, m: Module, body: Expr, retType: Type): Expr =
   else: lowerNested(res, m, result)
 
 proc lowerChains*(res: Resolution, m: Module) =
-  ## Every chain in the module's bodies.
-  for fn in m.allFns():
-    fn.fnBody = lowerBody(res, m, fn.fnBody, fn.fnReturnType)
-  for d in m.decls(dkTask):
-    d.taskBody = lowerBody(res, m, d.taskBody, d.taskReturnType)
-  for d in m.decls(dkExpr): lowerNested(res, m, d.expr)
+  ## Every chain in the module's bodies. A body that runs as STATEMENTS — a
+  ## fn's, a task's, an `on select` arm's — may itself be a bare chain and
+  ## gets a block to hold what it becomes; any other (a const's value, an
+  ## initialiser) is a value, lowered where it stands.
+  for d in m.allDecls:
+    if d.kind == dkFn:
+      d.fnBody = lowerBody(res, m, d.fnBody, d.fnReturnType)
+    elif d.kind == dkTask:
+      d.taskBody = lowerBody(res, m, d.taskBody, d.taskReturnType)
+    elif d.kind == dkSelect:
+      for arm in d.selectArms.mitems:
+        lowerNested(res, m, arm.arg)
+        arm.body = lowerBody(res, m, arm.body, nil)
+    else:
+      for e in d.ownExprs: lowerNested(res, m, e)

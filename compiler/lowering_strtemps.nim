@@ -169,5 +169,4 @@ proc hoistStrTemps*(res: Resolution, m: Module, procs: seq[string]) =
   ## there is nothing to own and nothing changes.
   if procs.len == 0: return
   var h = Hoist(res: res, procs: procs)
-  for fn in m.allFns(): h.hoistBlock(fn.fnBody)
-  for d in m.decls(dkTask): h.hoistBlock(d.taskBody)
+  for e in m.bodies: h.hoistBlock(e)   # only a block has room for a temp

@@ -392,24 +392,11 @@ proc lowerModule*(res: Resolution, m: Module) =
     composeObject(m, d)
     normalizeSelf(d)
 
-  # Phase 2: rewrite call arguments (subset matching) in every fn body
-  #
-  # Tasks are walked SEPARATELY, for the same reason rewriteModule does it:
-  # allFns yields dkFn (plus nested fn members), and a task keeps its body in
-  # taskBody, which is an Expr rather than a member Decl. Omitting this line
-  # meant a task body reached codegen UNLOWERED — a registry raise inside a
-  # task emitted `LowMemory(tuck_AppEvents.raise)(42)`, the awkward pre-lowering
-  # tree, which is not valid Nim. rewrite.nim's own comment recorded this gap
-  # before it was fixed here.
-  for fn in m.allFns():
-    lowerExpr(res, fn.fnBody, m)
-  for d in m.decls(dkTask):
-    lowerExpr(res, d.taskBody, m)
-  for d in m.decls(dkExpr):
-    lowerExpr(res, d.expr, m)
-  for d in m.decls(dkActor):   # field initialisers (#87)
-    for f in d.actorFields:
-      if f.default != nil: lowerExpr(res, f.default, m)
+  # Phase 2: rewrite call arguments (subset matching) in EVERY body
+  # (`ast_ops.bodies`). A per-kind walk here once skipped task bodies, and a
+  # registry raise inside a task reached codegen unlowered as
+  # `LowMemory(tuck_AppEvents.raise)(42)`, which is not valid Nim.
+  for e in m.bodies: lowerExpr(res, e, m)
   # Every `..` chain becomes the statements it means (lowering_chains).
   # After lowerExpr, as the chain-fed-call hoisting it absorbed always ran:
   # a step's call is the checker's, already in the shape the emitters print.

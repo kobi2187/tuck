@@ -105,10 +105,4 @@ proc lowerIfaceCalls*(res: Resolution, m: Module,
   ## Every interface call in every body of this backend's copy of the module.
   ## `real` is the rest of the program: an object in another module that
   ## satisfies the interface is an arm too.
-  for d in m.decls:
-    var stack = @[d]
-    while stack.len > 0:
-      let x = stack.pop()
-      if x == nil: continue
-      for e in x.ownExprs: lowerIn(res, m, real, e)
-      for c in x.childDecls: stack.add c
+  for e in m.bodies: lowerIn(res, m, real, e)

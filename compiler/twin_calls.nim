@@ -150,16 +150,10 @@ proc markIn(res: Resolution, m: Module, body: Expr) =
     decide(res, m, n)
 
 proc markTwinCalls*(res: Resolution, m: Module) =
-  ## Decide both, for EVERY body of this backend's copy of the module — the
-  ## same walk `fillIds` makes, so an actor handler, a member fn or a select
-  ## arm is reached as surely as a top-level fn.
-  for d in m.decls:
-    var stack = @[d]
-    while stack.len > 0:
-      let x = stack.pop()
-      if x == nil: continue
-      for e in x.ownExprs: markIn(res, m, e)
-      for c in x.childDecls: stack.add c
+  ## Decide both, for EVERY body of this backend's copy of the module, so an
+  ## actor handler, a member fn or a select arm is reached as surely as a
+  ## top-level fn.
+  for e in m.bodies: markIn(res, m, e)
 
 proc assertVisited(e: Expr, what: string) =
   let callee = if e.kind == exkCall and e.callee != nil and

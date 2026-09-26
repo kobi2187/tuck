@@ -52,11 +52,6 @@ proc requireOrder*(have, want: PipelineStage) =
     raise newException(ValueError,
       "pipeline: stage " & $want & " requires " & $have & " to have run first")
 
-proc walkChains(e: Expr, bad: var seq[Expr]) =
-  if e == nil: return
-  if e.kind == exkChain: bad.add(e)
-  for c in e.children: walkChains(c, bad)
-
 proc assertChainsLowered*(mods: seq[Module]) =
   ## After psLowering: no `..` chain is left anywhere. lowering_chains
   ## rewrites every one into statements, and no emitter prints one any more
@@ -66,9 +61,9 @@ proc assertChainsLowered*(mods: seq[Module]) =
   ## `startAudio(    self = loadEpisode(self, episode);\n)`.
   var bad: seq[Expr]
   for m in mods:
-    for fn in m.allFns(): walkChains(fn.fnBody, bad)
-    for d in m.decls(dkTask): walkChains(d.taskBody, bad)
-    for d in m.decls(dkExpr): walkChains(d.expr, bad)
+    for body in m.bodies:
+      for n in body.nodes:
+        if n.kind == exkChain: bad.add(n)
   if bad.len > 0:
     raise newException(ValueError,
       "pipeline: " & $bad.len & " `..` chain(s) left after lowering, the " &
@@ -76,18 +71,17 @@ proc assertChainsLowered*(mods: seq[Module]) =
       "a chain as a statement, a binding's or return's value, a fn's tail, " &
       "a branch or loop body, and a `.fn` call's receiver")
 
-proc walkAsyncConsistency(e: Expr, bad: var seq[Expr]) =
-  if e == nil: return
-  if semLayer.isAsync(e):
-    let call = semLayer.call(e)
-    let decl = if call != nil: semLayer.declFor(call) else: nil
-    # A missing decl edge is a DIFFERENT, already-known gap (declFor is not
-    # populated for every call shape — payload-application calls to an
-    # extern are one, per TODO.md's callParamsFor/declForType notes) and not
-    # what this assertion exists to catch. Only flag a REAL disagreement:
-    # a decl edge that exists but does not declare [io].
-    if decl != nil and emIo notin decl.fnEffects: bad.add(e)
-  for c in e.children: walkAsyncConsistency(c, bad)
+proc asyncMarkDisagrees(e: Expr): bool =
+  ## A call marked async whose own resolved declaration is not [io].
+  if not semLayer.isAsync(e): return false
+  let call = semLayer.call(e)
+  let decl = if call != nil: semLayer.declFor(call) else: nil
+  # A missing decl edge is a DIFFERENT, already-known gap (declFor is not
+  # populated for every call shape — payload-application calls to an
+  # extern are one, per TODO.md's callParamsFor/declForType notes) and not
+  # what this assertion exists to catch. Only flag a REAL disagreement:
+  # a decl edge that exists but does not declare [io].
+  decl != nil and emIo notin decl.fnEffects
 
 proc assertAsyncEffectsConsistent*(mods: seq[Module]) =
   ## After psVerifyEffects: every call site the effect pass marked async
@@ -101,17 +95,16 @@ proc assertAsyncEffectsConsistent*(mods: seq[Module]) =
   ## them") has recurred.
   var bad: seq[Expr]
   for m in mods:
-    for fn in m.allFns(): walkAsyncConsistency(fn.fnBody, bad)
-    for d in m.decls(dkTask): walkAsyncConsistency(d.taskBody, bad)
-    for d in m.decls(dkExpr): walkAsyncConsistency(d.expr, bad)
+    for body in m.bodies:
+      for n in body.nodes:
+        if asyncMarkDisagrees(n): bad.add(n)
   if bad.len > 0:
     raise newException(ValueError,
       "pipeline: " & $bad.len &
       " call(s) marked async do not resolve to an [io] declaration — " &
       "the async mark and the call's own resolved declaration disagree")
 
-proc walkNoMissingTypes(e: Expr, bad: var seq[Expr]) =
-  if e == nil: return
+proc carriesMissingType(e: Expr): bool =
   # Only a node the checker actually SYNTHESIZED a type for counts — most
   # nodes (declarations, patterns, statement-level constructs) never go
   # through `tc.synthesize` and have no recorded type at all (`typeFor`
@@ -124,8 +117,7 @@ proc walkNoMissingTypes(e: Expr, bad: var seq[Expr]) =
   # right for a backend about to emit one, wrong for "was this even typed
   # at all").
   let t = semLayer.typeFor(e)
-  if t != nil and hasMissingType(t): bad.add(e)
-  for c in e.children: walkNoMissingTypes(c, bad)
+  t != nil and hasMissingType(t)
 
 proc assertNoMissingTypes*(mods: seq[Module]) =
   ## After psTypecheck: no expression may still carry the checker's own
@@ -141,9 +133,9 @@ proc assertNoMissingTypes*(mods: seq[Module]) =
   ## silent pass-through to codegen.
   var bad: seq[Expr]
   for m in mods:
-    for fn in m.allFns(): walkNoMissingTypes(fn.fnBody, bad)
-    for d in m.decls(dkTask): walkNoMissingTypes(d.taskBody, bad)
-    for d in m.decls(dkExpr): walkNoMissingTypes(d.expr, bad)
+    for body in m.bodies:
+      for n in body.nodes:
+        if carriesMissingType(n): bad.add(n)
   if bad.len > 0:
     var lines: seq[string]
     for e in bad: lines.add($e.span.line & ":" & $e.span.col)

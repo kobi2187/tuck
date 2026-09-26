@@ -347,10 +347,12 @@ iterator ownTypes*(d: Decl): Type =
        dkGroup, dkWhen, dkPublic, dkResources:
       discard
 
-iterator ownExprs*(d: Decl): Expr =
+iterator ownExprSlots*(d: Decl): var Expr =
   ## Every expression this declaration owns directly — its body, initializer or
-  ## arm bodies. Paired with `childDecls`, these two reach everything under a
-  ## Decl, which is what an id walk needs.
+  ## arm bodies — as a SLOT, so a pass may replace what is there (a bare name
+  ## resolved to a reference, a body wrapped in a block). `ownExprs` is the
+  ## read-only view of the same list, so the two cannot disagree. Paired with
+  ## `childDecls`, these reach everything under a Decl.
   ##
   ## dkSelect is here rather than in childDecls because a select arm holds an
   ## Expr body, not a nested declaration.
@@ -367,17 +369,70 @@ iterator ownExprs*(d: Decl): Expr =
       # (parser_decl_kinds.parseSelectArm) never fills `arg`, so this is
       # latent rather than live; it costs one line to keep the two walks
       # saying the same thing.
-      for arm in d.selectArms:
+      for arm in d.selectArms.mitems:
         yield arm.arg
         yield arm.body
     of dkActor:
       # A field's initialiser: what the singleton starts with (#87).
-      for f in d.actorFields:
+      for f in d.actorFields.mitems:
         if f.default != nil: yield f.default
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
        dkGroup, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
        dkFnSig, dkSatisfies, dkPublic, dkResources:
       discard
+
+iterator ownExprs*(d: Decl): Expr =
+  ## The read-only view of `ownExprSlots`. May yield nil (an interface
+  ## member has no body).
+  for e in d.ownExprSlots: yield e
+
+# --- walking a whole module ------------------------------------------------
+#
+# ONE WALK. Passes used to spell "every body" as `allFns` + `decls(dkTask)` +
+# `decls(dkExpr)`, ten times over, and that set reaches neither a const's
+# value, a static assert, an `on select` arm, an actor field's initialiser,
+# nor a member nested two deep — each a place where a construct a pass lowers
+# could sit unlowered. #87 had to add its initialisers to three passes by
+# hand. These reach everything `childDecls` and `ownExprSlots` do, which is
+# what the id walk (`fillIds`) has always used.
+
+iterator allDecls*(m: Module): Decl =
+  ## Every declaration in the module, at any depth, in SOURCE order: a
+  ## declaration, then what it contains. Order matters — passes that number
+  ## what they mint (a chain's temp, a hoisted `str`) must number the same
+  ## way every run.
+  for top in m.decls:
+    var stack = @[top]
+    while stack.len > 0:
+      let d = stack.pop()
+      if d == nil: continue
+      yield d
+      var kids: seq[Decl]
+      for c in d.childDecls: kids.add c
+      for i in countdown(kids.high, 0): stack.add kids[i]
+
+iterator bodySlots*(m: Module): var Expr =
+  ## Every expression any declaration owns, as a replaceable slot.
+  for d in m.allDecls:
+    for e in d.ownExprSlots: yield e
+
+iterator bodies*(m: Module): Expr =
+  ## Every expression any declaration owns. Skips the nil ones.
+  for d in m.allDecls:
+    for e in d.ownExprs:
+      if e != nil: yield e
+
+iterator nodes*(e: Expr): Expr =
+  ## `e` and every expression under it, in source order: a node, then its
+  ## children left to right.
+  var stack = @[e]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    yield n
+    var kids: seq[Expr]
+    for c in n.children: kids.add c
+    for i in countdown(kids.high, 0): stack.add kids[i]
 
 proc assignIds*(e: Expr, next: var uint32) =
   ## Give every node in this tree an id. Idempotent: a node that already has
@@ -446,16 +501,11 @@ proc fillIds*(m: Module) =
   ## For the end of a stage that mints nodes (lowering). `assignIds` is not
   ## this: it renumbers every DECLARATION unconditionally, which would cut
   ## every edge and cache key already keyed by a decl's id.
-  for d in m.decls:
-    var stack = @[d]
-    while stack.len > 0:
-      let x = stack.pop()
-      if x == nil: continue
-      if not x.id.isSet:
-        globalNodeCounter.inc
-        x.id = NodeId(globalNodeCounter)
-      for e in x.ownExprs: assignIds(e, globalNodeCounter)   # fills only
-      for c in x.childDecls: stack.add c
+  for x in m.allDecls:
+    if not x.id.isSet:
+      globalNodeCounter.inc
+      x.id = NodeId(globalNodeCounter)
+    for e in x.ownExprs: assignIds(e, globalNodeCounter)   # fills only
 
 proc fillIdsIn*(e: Expr) =
   ## `fillIds` for one expression tree outside any module — a call the

@@ -169,12 +169,11 @@ proc markSeqCopiesIn*(res: Resolution, m: Module) =
   ## because each backend lowers its own deep copy and a summary computed
   ## over one tree names nodes in that tree only.
   buildProvenance(res, m)
-  for fn in m.allFns():
-    var pc = provCtxFor(res, m, fn)
-    markSeqCopies(res, m, pc, fn.fnBody)
-  for d in m.decls(dkTask):
-    var pc = provCtxFor(res, m, d)
-    markSeqCopies(res, m, pc, d.taskBody)
-  for d in m.decls(dkExpr):
-    var pc = provCtxFor(res, m, nil)
-    markSeqCopies(res, m, pc, d.expr)
+  for d in m.allDecls:
+    # A fn's or task's params are what provenance tracks; any other body
+    # (a select arm, an initialiser) has none.
+    let owner = if d.kind in {dkFn, dkTask}: d else: nil
+    for e in d.ownExprs:
+      if e == nil: continue
+      var pc = provCtxFor(res, m, owner)
+      markSeqCopies(res, m, pc, e)
