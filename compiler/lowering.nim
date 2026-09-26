@@ -30,7 +30,7 @@
 # be idempotent where practical, but the deep copy is what actually guarantees
 # it.
 import ast
-import resolution, strutils
+import resolution
 import ast_query
 import lowering_recursive   # recursive sum edges get a Seq handle
 import lowering_decisions   # a decision table becomes a match or an if chain

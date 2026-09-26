@@ -51,7 +51,7 @@
 # and anything needing the user-facing name reads it back with `writtenName`.
 # Keep the fact rather than reconstructing it — stripping a prefix off a
 # mangled name is a guess, and it breaks as soon as anything else adds one.
-import ast, strutils, sets, tables, std/options
+import ast, sets, tables, std/options
 import resolution
 import name_prefix
 export name_prefix

@@ -4,7 +4,6 @@
 # cursor) and the token-stream accessors every parsing bucket needs. The
 # expression, type, and declaration parsers each import this; it holds no
 # grammar of its own.
-import strutils
 import ../lexer
 import ast
 import diagnostics

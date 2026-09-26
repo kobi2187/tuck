@@ -14,7 +14,6 @@
 import std/json
 import jsony
 import ast
-import ast_query
 import resolution
 
 proc toJson*(m: Module): JsonNode =

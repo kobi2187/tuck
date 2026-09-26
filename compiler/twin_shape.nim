@@ -6,12 +6,12 @@
 # the six that is not about the value mirror at all — it is about layering.
 #
 # `movedFnParam` decides which fns codegen emits a destructive twin for. The
-# ANALYSES need the same answer: `rootedAtMoved` has to know that a value
-# read through a twin's parameter is the caller's buffer, and `threadsFirstArg`
-# has to know which calls can consume their argument. They could not call the
-# codegen predicate, because codegen sits downstream of every analysis — so
-# `analysis_provenance` grew `maybeMovedParam`, a second predicate kept in
-# step by hand.
+# ANALYSES need the same answer: provenance had to know that a value read
+# through a twin's parameter is the caller's buffer (then `rootedAtMoved`),
+# and which calls can consume their argument (`threadsFirstArg`). They could
+# not call the codegen predicate, because codegen sits downstream of every
+# analysis — so `analysis_provenance` grew `maybeMovedParam`, a second
+# predicate kept in step by hand. Both are gone; it calls this one.
 #
 # It was not kept in step. Codegen learned a second twin shape
 # (`returnWrapsParam`: `Seq[int]` in, a record with a `Seq[int]` field out);
@@ -24,7 +24,7 @@
 # The duplication was structural rather than lazy, so the fix is structural:
 # the predicate moves BELOW both. Nothing here reaches for codegen or for an
 # analysis; it needs the AST, the resolution layer, and the field lookup.
-import ast, resolution, strutils
+import ast, resolution
 import ast_query
 from lowering import getFieldsForType
 

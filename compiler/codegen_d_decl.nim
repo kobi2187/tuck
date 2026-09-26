@@ -4,15 +4,12 @@
 # DeclKind) and everything it calls -- fn/object/actor/registry/register/
 # mixin/err-handler. Calls INTO codegen_d.nim's genDExpr for
 # fn bodies (one-way: genDExpr never calls back into anything here).
-import ast, strutils, sets, tables, options
+import ast, strutils, sets, tables
 import resolution
 import ast_query
 import codegen_common
 import codegen_d_ctx
-from codegen_odin_util import odinErrCode, enumTagOwner
-from lowering_seqcopy import seqFieldNames
 from mangle import mangleName
-from lowering_seqcopy import needsDup, recordDupFields
 import ./codegen_d
 
 proc dVisibility*(ctx: DCodegenCtx, d: Decl): string =

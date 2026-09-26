@@ -21,10 +21,9 @@
 # inspected, tested, or reused — which is how three backends each grew their
 # own copy of the same reasoning. A pass marks the tree; `tuck p --ast` can
 # show it, a test can assert on it, and the emitters stay printers.
-import ast, options, sets, tables
+import ast, sets, tables
 import resolution
 import ast_query
-import lowering  # getFieldsForType
 import twin_shape
 export seqFieldNames
 import analysis_provenance

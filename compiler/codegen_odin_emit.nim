@@ -5,7 +5,7 @@
 # flags/entry point into one Odin source file. The public entry points
 # (`emitOdin`/`emitOdinModule`) sit above genOdinDecl/genOdinExpr in the
 # import order, same shape as codegen_emit.nim for the Nim backend.
-import ast, strutils, tables, options
+import ast, strutils, tables
 import resolution
 import ast_query
 import codegen_common

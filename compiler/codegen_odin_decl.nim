@@ -5,14 +5,11 @@
 # register/mixin/err-handler. Calls INTO codegen_odin.nim's
 # genOdinExpr for fn bodies (one-way: genOdinExpr never calls back into
 # anything here).
-import ast, lowering, strutils, sets, tables, options
+import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
 import codegen_odin_ctx
-import codegen_odin_util
-from mangle import mangleName
-from lowering_seqcopy import seqFieldNames
 import analysis_ownership   ## decides the frees; this file only prints them
 import ./codegen_odin
 

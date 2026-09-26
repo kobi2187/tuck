@@ -97,7 +97,6 @@ proc keyOf(m: Module, name: string): string =
 proc noToken(): NodeId = NodeId(0)
 
 proc unknownCell(): Cell = Cell(origin: oUnknown, token: noToken())
-proc aliasedCell(): Cell = Cell(origin: oAliased, token: noToken())
 
 proc unknownProv(): Prov = Prov(whole: unknownCell())
 
@@ -166,7 +165,6 @@ type Ctx = object
 
 proc provOf(c: var Ctx, e: Expr): Prov
 
-proc maybeMovedParam(res: Resolution, m: Module, d: Decl): string
 proc mixToken(id: NodeId, field: string): NodeId
 
 proc throughWrapper(c: var Ctx, e: Expr, p: var Prov) =
@@ -190,7 +188,7 @@ proc throughWrapper(c: var Ctx, e: Expr, p: var Prov) =
   ## Every other slot's `src` names a parameter OF THE CALLEE, which means
   ## nothing on this side of the call; it is cleared.
   let callee = c.m.findFn(e.callee.name)
-  let moved = maybeMovedParam(c.res, c.m, callee)
+  let moved = movedFnParam(c.res, c.m, callee)
   var copied: seq[string]
   var bare = false
   if moved.len > 0 and e.args.len > 0:
@@ -322,31 +320,6 @@ proc provOf(c: var Ctx, e: Expr): Prov =
     if e.stmts.len == 0: unknownProv() else: provOf(c, e.stmts[^1])
   else: unknownProv()
 
-proc maybeMovedParam(res: Resolution, m: Module, d: Decl): string =
-  ## The parameter a MOVED twin takes destructively, or "".
-  ##
-  ## ONE PREDICATE NOW, shared with codegen through `twin_shape`. This used
-  ## to be a second, wider copy of `movedFnParam` kept in step by hand — the
-  ## analysis could not call codegen's, because codegen sits downstream of
-  ## every analysis. It was not kept in step: codegen learned the WRAPPED
-  ## shape and this did not, and for every fn of that shape `rootedAtMoved`
-  ## could not fire and the twin emitted `defer delete` over the buffer it
-  ## was handing back. See twin_shape.nim's header for the whole account.
-  ##
-  ## It is also no longer wider. Wider was a hedge against drift, and with
-  ## one definition there is nothing to drift: a fn codegen does not twin is
-  ## a fn whose parameter nothing takes destructively.
-  movedFnParam(res, m, d)
-
-proc rootedAtMoved(c: Ctx, e: Expr): bool =
-  ## Is this value read THROUGH the moved parameter? `s.ladder` inside a twin
-  ## whose moved param is `s` is the caller's buffer, not a copy of it.
-  if c.moved.len == 0 or e == nil: return false
-  var cur = e
-  while cur != nil and cur.kind in {exkField, exkBracket}:
-    cur = if cur.kind == exkField: cur.receiver else: cur.brReceiver
-  cur != nil and cur.kind == exkVar and cur.name == c.moved
-
 proc mixToken(id: NodeId, field: string): NodeId =
   ## A distinct identity per copied field. The copies really are distinct
   ## allocations — one `tuckSeqCopy` each — so they must not look shared.
@@ -468,7 +441,7 @@ proc summarize(res: Resolution, m: Module, d: Decl): Prov =
   ## fresh there is the one guess that could be wrong.
   if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision:
     return unknownProv()
-  var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  var c = Ctx(res: res, m: m, moved: movedFnParam(res, m, d))
   if c.moved.len > 0: c.final = ssaOf(res, d, ssLowered).final
   for p in d.fnParams: c.params.incl(p.name)
   # Locals first, so a `return` that names one has something to read. Repeated
@@ -535,7 +508,7 @@ proc threadsFirstArg(res: Resolution, m: Module, e: Expr): bool =
   ## Is this a call that might take its first argument destructively?
   e != nil and e.kind == exkCall and e.callee != nil and
     e.callee.kind == exkVar and e.args.len >= 1 and e.args[0] != nil and
-    maybeMovedParam(res, m, m.findFn(e.callee.name)) != ""
+    movedFnParam(res, m, m.findFn(e.callee.name)) != ""
 
 # --- the same question, asked of the value mirror -----------------------------
 #
@@ -649,7 +622,7 @@ proc moveCtx(res: Resolution, m: Module, d: Decl): Ctx =
   ## The walk's context for one body: its parameters, its moved parameter,
   ## and its locals' provenance (two passes, so a local read before a later
   ## assignment in a loop sees it).
-  result = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  result = Ctx(res: res, m: m, moved: movedFnParam(res, m, d))
   for p in d.fnParams: result.params.incl(p.name)
   for _ in 0 ..< 2: noteAssignments(result, d.fnBody)
 
@@ -702,7 +675,7 @@ proc movableArgsSsa*(res: Resolution, m: Module, d: Decl): HashSet[NodeId] =
   ## Which arguments this body may hand on destructively — the mirror's
   ## answer to exactly what `markMovableArgs` decides above.
   if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
-  var c = Ctx(res: res, m: m, moved: maybeMovedParam(res, m, d))
+  var c = Ctx(res: res, m: m, moved: movedFnParam(res, m, d))
   for p in d.fnParams: c.params.incl(p.name)
   for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
   let g = ssaOf(res, d, ssLowered)
@@ -867,7 +840,7 @@ proc provCtxFor*(res: Resolution, m: Module, d: Decl): ProvCtx =
              else: nil
   if body == nil: return
   if d.kind == dkFn:
-    result.c.moved = maybeMovedParam(res, m, d)
+    result.c.moved = movedFnParam(res, m, d)
     if result.c.moved.len > 0:
       result.c.final = ssaOf(res, d, ssLowered).final
     for p in d.fnParams: result.c.params.incl(p.name)

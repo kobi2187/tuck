@@ -28,16 +28,10 @@ let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
 export odinLibSpec, odinErrCode
-from mangle import mangleName
 import ./codegen_odin_ctx
 
 # Type emission, the ctx type, and the decl-shape fast lookups now live in
 # codegen_odin_ctx.nim, imported above.
-
-
-
-
-
 
 
 # Field type emission. An inline sum type is hoisted to a named enum
@@ -53,9 +47,7 @@ import ./codegen_odin_ctx
 # the `ref` marker (mutable record param).
 
 
-
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
-
 
 
 # Type-directed explosion: a record-typed VAR as the whole payload
@@ -716,15 +708,6 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let tail = if isVoid: "" else: "\tpanic(\"unreachable interface tag\")\n"
   "(proc(v: " & e.dispatchIface & ")" & sig & " {\n\tswitch v.tag {\n" &
     arms.join("\n") & "\n\t}\n" & tail & "})(" & recv & ")"
-
-proc indentPrefix(code: string): string =
-  ## The leading whitespace of the LAST line of an emitted block, so a
-  ## statement appended after it lands at the same indent.
-  let lastLine = code.rsplit('\n', 1)[^1]
-  for ch in lastLine:
-    if ch notin {' ', '\t'}: break
-    result.add(ch)
-
 
 proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
   ## Inside `switch v in value`, a payload field belongs to the BOUND
@@ -1402,11 +1385,6 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
 # fn/object/actor/registry/register/mixin/err-handler) now
 # lives in codegen_odin_decl.nim, imported above.
 # Shared emission core: hoisted decls + members inside one Beef type.
-
-
-
-
-
 
 
 # A library module (import target). Odin has no static classes: a module is

@@ -13,7 +13,7 @@
 # from it. It was `codegen_table.nim` while three emitters each built the
 # table's text themselves; lowering the table moved the one consumer out of
 # codegen, and the name followed.
-import ast, ast_query
+import ast
 
 const MaxPackedCombos* = 4096
   ## Above this many combinations the packed table stops being worth it and

@@ -34,7 +34,6 @@
 # the boxing lives in a pass rather than in the emitters.
 import ast, tables, sets
 import resolution
-import ast_query
 
 proc seqOf(t: Type): Type =
   Type(span: t.span, kind: tkApp, args: @[t],

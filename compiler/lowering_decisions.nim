@@ -34,7 +34,7 @@
 #
 # The one thing that is genuinely per-target is the ORDINAL of an enum or bool
 # (`ord`, `int()` or a ternary, a cast), which is why `exkOrdinal` exists.
-import ast, ast_ops, ast_query
+import ast, ast_query
 import resolution
 import decision_table
 from parser_stringify import toString

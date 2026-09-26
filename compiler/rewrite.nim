@@ -47,7 +47,6 @@
 # that introduced a rule. If caching ever stops keying on the build, this pass
 # must move to the load path instead.
 import ast
-import ast_query
 
 proc rewriteExpr(e: Expr)
 

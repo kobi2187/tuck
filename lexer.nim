@@ -29,7 +29,7 @@
 # (bad meaning). A lexer only knows how to spell, never what things mean.
 #
 # Depends on nothing in compiler/ — it sits at the very bottom of the DAG.
-import os, strutils, tables
+import os, tables
 
 type
   TokenKind* = enum

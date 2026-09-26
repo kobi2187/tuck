@@ -4,7 +4,6 @@
 # forms, type-use attribute brackets, effect harvesting). Sits above the
 # expression layer in the parser DAG — it calls parseExpr for attribute values
 # (e.g. [align: 2]) but nothing calls back into it except the declaration layer.
-import strutils, tables
 import ast
 import ../lexer
 import parser_base

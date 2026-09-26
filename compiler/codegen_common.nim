@@ -22,7 +22,7 @@
 # Sits below both backends in the dependency DAG, alongside ast_query and
 # lowering — it imports those and nothing that imports either codegen module.
 import resolution
-import ast, lowering, ast_query, ast_ops, strutils, sets, tables, algorithm, options
+import ast, lowering, ast_query, ast_ops, strutils, sets, tables, options
 import ./ast_query
 import twin_shape
 export twin_shape

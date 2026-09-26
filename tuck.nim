@@ -47,14 +47,11 @@ import compiler/parser
 import compiler/validate   # the spec-side grammar, for `tuck validate`
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
-import compiler/analysis_liveness
 import compiler/ssa_liveness
 import compiler/ssa_query, compiler/ssa_cache, compiler/ssa_ir
 import compiler/complexity
 import compiler/typecheck
-import compiler/lowering
 import compiler/mangle
-import compiler/codegen
 import compiler/codegen_common  # nimModuleName: the ENTRY module's own name
                                  # needs the same shadowing check an import
                                  # already gets — see the outName fix below
@@ -62,14 +59,11 @@ import compiler/codegen_emit  # emitNim: genDecl/genExpr sit below this in
                               # the import order, so tuck.nim reaches the
                               # Nim backend's entry point from here, not
                               # compiler/codegen directly.
-import compiler/codegen_odin
 import compiler/codegen_odin_emit  # emitOdin/emitOdinModule: same reasoning
                                     # as codegen_emit above, for the Odin
                                     # backend.
-import compiler/codegen_d
 import compiler/codegen_d_emit  # emitD/emitDModule: same reasoning as
                                 # codegen_emit above, for the D backend.
-import compiler/lowering_seqcopy
 import compiler/ast_serializer
 import compiler/modules
 import compiler/optimize

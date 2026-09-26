@@ -36,7 +36,7 @@
 # ONLY WHERE IT IS NEEDED: `backend_prepare` runs this when the backend's list
 # of allocating procs is non-empty (Odin). Nim's ARC and D's GC free a
 # temporary themselves, and their output stays as it was.
-import ast, ast_ops, ast_query
+import ast, ast_ops
 import resolution
 from ownership_str import ownedStrCall
 

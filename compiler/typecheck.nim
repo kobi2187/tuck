@@ -150,7 +150,7 @@
 # isolation against a generated program, re-parsing between mutating phases so
 # the work is real.
 # ---------------------------------------------------------------------------
-import ast, semantics, lowering, tables, strutils, sets, sequtils, options
+import ast, semantics, lowering, tables, strutils, sets, options
 import resolution
 import ast_query
 import rewrite   # isLiteralPayload — recognize the wrap the pass introduced

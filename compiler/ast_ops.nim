@@ -7,7 +7,7 @@
 # assignIds/clearIds, effectName, enumDomain, writtenName — operates ON
 # those types from outside, so it moves freely. Re-exported by ast.nim so
 # existing `import ast` call sites see no difference.
-import tables, options, hashes, strutils
+import options, strutils
 import ast
 
 func effectName*(e: EffectMarker): string =

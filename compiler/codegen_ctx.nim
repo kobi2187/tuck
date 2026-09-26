@@ -9,7 +9,6 @@
 import ast, tables, sets, strutils
 import ast_query
 import resolution
-import codegen_common
 import codegen_type
 import decl_index
 export decl_index

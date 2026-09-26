@@ -14,7 +14,6 @@ import parser_base
 import parser_expr
 import parser_stringify
 import parser_type
-import host_keywords
 import diagnostics
 
 type

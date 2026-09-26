@@ -50,7 +50,6 @@ import ./codegen_ctx
 export genType        # re-exported: this file's public face is the backend
 
 
-
 # module::fn — a real imported module rides Nim's own namespacing; a
 # sketch-pending qualified name maps to its mangled stub (genPendingStub).
 
@@ -508,14 +507,6 @@ proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
              ind & "    " & ctx.genExpr(arm.call))
   if arms.len == 0: return ""
   "(block:\n" & ind & "  case " & recv & ".tag\n" & arms.join("\n") & ")"
-
-proc indentPrefix(code: string): string =
-  ## The leading whitespace of the LAST line of an emitted block, so a
-  ## statement appended after it lands at the same indent.
-  let lastLine = code.rsplit('\n', 1)[^1]
-  for ch in lastLine:
-    if ch notin {' ', '\t'}: break
-    result.add(ch)
 
 proc genTypeVariantCtor(ctx: var CodegenCtx, e: Expr): string =
   ## Bare Type.Variant of a payload sum when receiver is exkVar.
@@ -1155,9 +1146,6 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
 # Rewrite the tail statement into an explicit return so the existing return
 # emission (auto-wrap, typed literals) handles it. Control-flow tails keep
 # explicit returns for now (checker enforces branch agreement).
-
-
-
 
 
 # Object member fn (or a mixin fn materialized by `+ mixin`): the object

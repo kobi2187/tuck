@@ -7,7 +7,6 @@ import ast, tables, sets, strutils
 import ast_query
 import resolution
 import decl_index
-from codegen_odin_util import odinErrCode, enumTagOwner
 
 const dPrims = {
   # Tuck int is 64-bit (ROADMAP 2026-08-25 ruling 1); D's `int` is 32-bit,
