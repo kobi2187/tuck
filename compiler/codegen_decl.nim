@@ -549,17 +549,6 @@ proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
   ctx.definedVars = oldVars
   header & "\n" & bodyStr & "\n"
 
-proc bitAccessMode*(f: FieldDef): string =
-  ## An unmarked field is readable AND writable; marking one direction opts
-  ## out of the other.
-  var hasRead, hasWrite = false
-  for a in f.attrs:
-    if a.name == "read": hasRead = true
-    elif a.name == "write": hasWrite = true
-  if hasRead and not hasWrite: "ReadOnly"
-  elif hasWrite and not hasRead: "WriteOnly"
-  else: "ReadWrite"
-
 proc nimBitConsts*(bf: BitFieldInfo): string =
   ## The shift, and for a range the width and mask. `const` so they fold away.
   result = "const " & bf.prefix & "_SHIFT = " & bf.loBit & "\n"

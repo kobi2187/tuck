@@ -564,15 +564,6 @@ proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
 # alone 0.76s — both still quadratic. Dropping both gave 0.00s.
 
 
-
-proc rootBindingName*(e: Expr): string =
-  ## The name a field path is rooted at: `b` for `b`, `b.items`, `b.a.b`.
-  ## "" when the path is not rooted at a plain name.
-  var cur = e
-  while cur != nil and cur.kind == exkField and cur.receiver != nil:
-    cur = cur.receiver
-  if cur != nil and cur.kind == exkVar: cur.name else: ""
-
 proc isExportedDecl*(m: Module, d: Decl): bool =
   ## Does this declaration leave its module (spec 2.3c)?
   ##

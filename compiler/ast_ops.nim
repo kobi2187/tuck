@@ -163,13 +163,6 @@ proc instName*(base: string, args: seq[Type]): string =
   result = base
   for a in args: result.add("_" & typeSuffix(a))
 
-proc instNameOf*(base: string, args: seq[Expr]): string =
-  ## `instName` for a call site holding the arguments as EXPRESSIONS, which is
-  ## how a bracket parses before anything has read types out of it.
-  var ts: seq[Type]
-  for a in args: ts.add(typeOfTypeExpr(a))
-  instName(base, ts)
-
 iterator childSlots*(e: Expr): var Expr =
   ## Every sub-expression, one level down, as a SLOT a pass may replace
   ## (`resolve_refs` swaps a bare name for a reference). `children` is the

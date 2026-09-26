@@ -566,23 +566,6 @@ proc buildFn*(res: Resolution, d: Decl): SsaFn =
       "ssa_build: " & d.name & " left " & blk.label & " unsealed"
   b.fn
 
-proc buildScope*(res: Resolution, name: string, body: Expr): SsaFn =
-  ## SSA over an ARBITRARY region rather than a whole function.
-  ##
-  ## Possible because a block is a real thing with predecessors: the entry
-  ## block has none, so every place the region reads without writing is a
-  ## `dkEntry` value and the region stands alone. The previous mirror could
-  ## not express this at all — its "scope" was a string prefix on a function's
-  ## own walk.
-  var b = Builder(res: res)
-  b.fn.name = name
-  b.fn.entry = b.newBlock("entry")
-  b.here = b.fn.entry
-  b.sealBlock(b.fn.entry)
-  b.walk(body)
-  deferRoots(body, b.fn.deferredRoots)
-  b.fn
-
 proc dump*(fn: SsaFn): string =
   ## For eyes, never parsed.
   result = "fn " & fn.name & "\n"

@@ -184,23 +184,6 @@ proc rtOnFinishProc*(f: ResourceOnFinish): string =
   of rfFlush: "tuckResFlush"
   of rfShutdown: "tuckResShutdown"
 
-proc isResourceHandleType*(m: Module, name: string): bool =
-  ## Is this the handle type of some resource kind declared in this module?
-  ##
-  ## The §7.4 twin of isPoolHandleType, and true for the same reason: the
-  ## checker gives every KIND its own handle type so finishing into the wrong
-  ## registry is a type error, while the backends need only the runtime's
-  ## single `ResourceHandle`. Not mangled — the checker synthesised it, and
-  ## mangling walks the AST, which never held it.
-  if not name.endsWith("Handle"): return false
-  for d in m.decls:
-    if d == nil or d.kind != dkResources: continue
-    for k in d.resKinds:
-      if resourceHandleName(k.name) == name: return true
-  return false
-  ## The per-pool handle type's name. One place, because the checker names it,
-  ## every backend emits an alias for it, and mangling has to agree with both.
-
 proc ensureId*(e: Expr) =
   ## Nodes minted after the parse boundary (checker-synthesized calls) have
   ## no id yet. Give them one on first use so nothing silently drops out of
@@ -529,12 +512,6 @@ proc markLastUse*(r: Resolution, e: Expr) =
   if e == nil: return
   ensureId(e)
   r.lastUses.incl(e.id)
-
-proc markMovedArg*(r: Resolution, e: Expr) =
-  ## Record that the enclosing fn may hand `e` on destructively.
-  if e == nil: return
-  ensureId(e)
-  r.movedArgs.incl(e.id)
 
 proc markMovedArgId*(r: Resolution, id: NodeId) =
   ## The same, for a caller holding the node's id rather than the node —

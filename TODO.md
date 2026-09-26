@@ -212,10 +212,13 @@ These are not bugs. Nobody has ruled, so no implementation can be correct.
   bug into it — nothing enforces a new pass picks the right side. A wrong
   side silently corrupts the AST (no compile error), which is exactly what
   happened before the fix. Needs either a comment convention every future
-  pass must read, or (better) `PipelineStage`/`requireOrder` from the
-  saved CLI/pipeline plan turned into an actual per-pass ordering check.
-- [ ] **[read] No real "indexing" stage — two `buildDeclIndex`s, same
-  name, different shape.** `compiler/decl_index.nim`'s `DeclIndex` is
+  pass must read, or (better) a per-pass ordering check built on
+  `PipelineStage`. (A `requireOrder` for this was drafted and never called;
+  it was removed as dead code on 2026-09-26.)
+- [x] **[read] No real "indexing" stage — two `buildDeclIndex`s, same
+  name, different shape.** RESOLVED 2026-09-26: there is one index,
+  `decl_index.DeclIndex`, and all three backends read it through
+  `ctx.index`; Nim's differently-shaped copy is gone. `compiler/decl_index.nim`'s `DeclIndex` is
   built lazily per backend, on demand, at codegen time; `codegen.nim` has
   a SECOND, differently-shaped proc also named `buildDeclIndex` for its
   own use. Nothing checks the two agree. Neither is a whole-program gate

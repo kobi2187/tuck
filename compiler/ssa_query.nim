@@ -246,14 +246,6 @@ proc structuralErrors*(fn: SsaFn): seq[string] =
     if not vid.isSet or int32(vid) >= fn.values.len:
       result.add "byNode points at a value that does not exist"
 
-proc valueAt*(fn: SsaFn, n: NodeId): ValueId =
-  ## THE FRONT DOOR: what value does this node name?
-  ##
-  ## The whole point of keeping a node index. A consumer — an emitter, the
-  ## ownership pass — is holding a node and wants to know which buffer it is
-  ## looking at, without knowing anything about places or versions.
-  if n.isSet and n in fn.byNode: fn.byNode[n] else: NoValue
-
 # --- rendering --------------------------------------------------------------
 
 proc defText(fn: SsaFn, v: Value): string =

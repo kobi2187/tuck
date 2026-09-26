@@ -190,4 +190,3 @@ proc ownsHeap*(m: Module, t: Type, depth = 0): bool =
   of tkSum: sumOwnsHeap(m, t, depth + 1)
   else: false
 
-proc ownsHeapType*(m: Module, t: Type): bool = ownsHeap(m, t)

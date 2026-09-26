@@ -75,12 +75,6 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string
   ## Forward-declared: recStructName/odinTupleType/odinAppType/odinFuncType
   ## below recurse into it before its own definition.
 
-proc odinUnsupported*(construct: string): string =
-  ## The Odin backend refuses what it cannot yet emit — loudly, at emission
-  ## time, naming the construct. Silent wrong code is the one forbidden
-  ## outcome (mirrors the D backend's dUnsupported).
-  quit("tuck: Odin backend does not yet support " & construct, 1)
-
 proc index*(ctx: var OdinCodegenCtx): var DeclIndex =
   ## The module's declaration index (decl_index), built on first use — a
   ## throwaway ctx (an invariant's check proc) builds its own when it asks.
@@ -304,11 +298,6 @@ proc fieldType*(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
 # hasInvariants / externInvRet / isRecordType / isErrEnumRef used to be
 # copy-pasted here from codegen.nim (this backend began as a fork). They are
 # backend-neutral questions about the AST, so they live in ast_query.
-
-# fn param TYPES by position, for call sites deciding whether an arg needs
-# the `ref` marker (mutable record param).
-proc lookupFnParamTypes*(m: Module, name: string): seq[Type] =
-  m.findFn(name).paramTypes()
 
 proc declaresFn*(m: Module, name: string): bool =
   ## Does this module declare `name` as a callable? A bool, because a fn with

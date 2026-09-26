@@ -44,14 +44,6 @@ type
     psLowering      ## lowerModule (+lowerModuleD for D) — per backend copy
     psEmitting      ## emitNim/emitOdin/emitD — per backend
 
-proc requireOrder*(have, want: PipelineStage) =
-  ## `ord()` on the enum IS the ordering check — ordering is exactly what
-  ## the enum's declaration sequence already states, so there is no
-  ## separate state-machine type to keep in sync with it.
-  if ord(have) < ord(want):
-    raise newException(ValueError,
-      "pipeline: stage " & $want & " requires " & $have & " to have run first")
-
 proc assertChainsLowered*(mods: seq[Module]) =
   ## After psLowering: no `..` chain is left anywhere. lowering_chains
   ## rewrites every one into statements, and no emitter prints one any more

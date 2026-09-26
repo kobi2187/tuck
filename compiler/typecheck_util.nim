@@ -8,11 +8,6 @@ import diagnostics
 export diagnostics   # every fail() caller needs the codes
 
 
-proc typeParamType*(sp: Span): Type =
-  ## A generic's `T` inside its own body: not unknown, ANY type, fixed per call
-  ## site. `fn identity[T]({x: T}) -> T` checks its body once with T abstract.
-  Type(span: sp, kind: tkNamed, name: TypeParamName)
-
 proc typeParamNamed*(sp: Span, g: string): Type =
   ## The same abstraction, but carrying WHICH parameter it is —
   ## `<typeparam:K>`. Every `T` in a body used to collapse to one nameless
@@ -28,10 +23,6 @@ proc pendingType*(sp: Span): Type =
   ## point of the walking skeleton is that the program compiles and runs.
   Type(span: sp, kind: tkNamed, name: PendingName)
 
-proc emptyRecType*(sp: Span): Type =
-  ## `{}` — the empty record. A real type, not an absence of one.
-  Type(span: sp, kind: tkNamed, name: EmptyRecName)
-
 proc afterErrorType*(sp: Span): Type =
   ## Returned after fail() has already reported. Nothing should check it; it
   ## exists only because the code path needs a Type to return.
@@ -43,10 +34,6 @@ proc branchOutcomeType*(sp: Span): Type =
   ## value — there is no real type to report, and unlike `the old missing-type sentinel`
   ## this is not a gap the checker failed to work out.
   Type(span: sp, kind: tkNamed, name: BranchOutcomeName)
-
-proc isTypeParam*(t: Type): bool =
-  t != nil and t.kind == tkNamed and
-    (t.name == TypeParamName or t.name.startsWith(NamedTypeParamPrefix))
 
 proc typeParamName*(t: Type): string =
   ## Which type parameter a `<typeparam:K>` stands for, or "" for the

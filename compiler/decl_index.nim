@@ -24,7 +24,6 @@ import ast, ast_query
 type DeclIndex* = object
   recordNames: HashSet[string]   ## records AND objects — both construct with
                                  ## named fields, so both answer isRecordType
-  actorNames: HashSet[string]
   taskNames: HashSet[string]
   invariantTypes: HashSet[string]
   saturating: Table[string, Type]
@@ -59,9 +58,8 @@ proc buildDeclIndex*(m: Module): DeclIndex =
       if hasInvariants(m, d.name): result.invariantTypes.incl(d.name)
       let sat = saturatingType(m, d.name)
       if sat != nil: result.saturating[d.name] = sat
-    of dkActor: result.actorNames.incl(d.name)
     of dkTask: result.taskNames.incl(d.name)
-    of dkFn, dkMixin, dkExtern, dkPending, dkPool, dkFnSig, dkRegistry,
+    of dkFn, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkFnSig, dkRegistry,
        dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkInterface, dkGroup, dkWhen,
        dkPublic, dkResources: discard
@@ -73,9 +71,6 @@ proc buildDeclIndex*(m: Module): DeclIndex =
 
 proc isRecordType*(idx: DeclIndex, name: string): bool =
   name in idx.recordNames
-
-proc isActorType*(idx: DeclIndex, name: string): bool =
-  name in idx.actorNames
 
 proc isTaskName*(idx: DeclIndex, name: string): bool =
   name in idx.taskNames

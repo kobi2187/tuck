@@ -110,13 +110,6 @@ iterator externFns*(m: Module): Decl =
   for mem in m.externMembers():
     if mem.kind == dkFn and mem.isExtern: yield mem
 
-proc cExternFn*(m: Module, name: string): Decl =
-  ## An extern fn bound to a C header (as opposed to one the runtime provides),
-  ## or nil.
-  for mem in m.externFns():
-    if mem.name == name and mem.externHeader != "": return mem
-  nil
-
 proc exportedNames*(m: Module): (bool, HashSet[string]) =
   ## `public:` — the names this module lets an importer see, and whether it
   ## said anything at all.
@@ -651,7 +644,6 @@ proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   let d = constDeclFor(m, text.strip())
   if d == nil or d.constVal == nil: return none(int)
   evalConstExpr(m, d.constVal, depth + 1)
-
 
 
 proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int] =
