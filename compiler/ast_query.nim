@@ -34,8 +34,9 @@
 # sizes — 32,000 lines still checks in about a third of a second. The fix, when
 # a real program makes it hurt, is a name -> decl table built once per module
 # and shared by every pass, not micro-optimizing the scan.
-import ast, strutils, tables, sets, options
+import ast, strutils, tables, sets, options, algorithm
 import resolution
+import name_prefix
 export strutils.repeat, strutils.capitalizeAscii
 
 # `repeat` and `capitalize` used to be hand-written here and were byte-for-byte
@@ -52,6 +53,11 @@ template capitalize*(s: string): string = capitalizeAscii(s)
 # bury the intent; named here, the call site reads as the question it asks.
 # Add a helper rather than open-coding the loop again.
 
+
+proc isFixedArray*(t: Type): bool =
+  ## `Array[N, T]` — a fixed-size array, whose length is part of its type.
+  t != nil and t.kind == tkApp and t.base != nil and
+    t.base.kind == tkNamed and t.base.name == "Array"
 
 proc seqElem*(t: Type): Type =
   ## The element type of a `Seq[T]`, or nil for anything else. One predicate
@@ -103,13 +109,6 @@ iterator externFns*(m: Module): Decl =
   ## share the block.
   for mem in m.externMembers():
     if mem.kind == dkFn and mem.isExtern: yield mem
-
-proc cExternFn*(m: Module, name: string): Decl =
-  ## An extern fn bound to a C header (as opposed to one the runtime provides),
-  ## or nil.
-  for mem in m.externFns():
-    if mem.name == name and mem.externHeader != "": return mem
-  nil
 
 proc exportedNames*(m: Module): (bool, HashSet[string]) =
   ## `public:` — the names this module lets an importer see, and whether it
@@ -239,6 +238,10 @@ proc findFn*(m: Module, name: string): Decl =
           return mem
   nil
 
+
+proc declaresFn*(m: Module, name: string): bool {.inline.} =
+  ## Does this module declare a fn by this name (wherever it sits)?
+  m.findFn(name) != nil
 proc params*(d: Decl): seq[Param] =
   ## A callable's parameters, in order. Tasks keep theirs in a separate field
   ## from fns; callers asking "what does this take" should not have to care.
@@ -371,6 +374,8 @@ proc genPatternStr*(p: Pattern): string =
   case p.kind
   of pkWild: "_"
   of pkVar: p.name
+  of pkBind: raiseAssert "genPatternStr: a binding arm reached an emitter " &
+                        "unlowered (lowering_match_binds)"
   of pkLit: p.litValue
   of pkOr: genPatternStr(p.left) & ", " & genPatternStr(p.right)
   of pkRecord, pkTuple: "_"   # destructuring binds; as a label it tests nothing
@@ -393,13 +398,9 @@ proc injectTailReturn*(body: Expr, retTypeStr: string) =
   if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
      retTypeStr != "void":
     let lastS = body.stmts[^1]
-    if lastS.kind == exkChain:
-      # a chain's value is its base var: keep the mutation statements,
-      # return the base afterwards
-      if lastS.base != nil:
-        body.stmts.add(Expr(span: lastS.span, kind: exkReturn,
-                            returnVal: lastS.base))
-    elif lastS.kind == exkMatch and lastS.subject != nil and
+    # (A tail `..` chain is the base as its steps leave it: lowering_chains
+    # writes that `return`, so no chain reaches here.)
+    if lastS.kind == exkMatch and lastS.subject != nil and
          not matchArmsReturn(lastS):
       # `match subject:` whose arms are VALUES is an expression, so the tail
       # match is the fn's result. Arms that return on their own already are
@@ -555,9 +556,27 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
       # `noise` becomes `tuck_noise` whenever a top-level fn shares the name.
       # Both spellings mean this member. Same comparison
       # resolution.poolHandleName makes, for the same reason.
-      if mem.name == calleeName or "tuck_" & mem.name == calleeName:
+      if mem.name == calleeName or prefixed(mem.name, nkFn) == calleeName:
         return owner & "_" & mem.name
   ""
+
+proc memberRecvType*(res: Resolution, e: Expr): Type =
+  ## A member call's receiver type: args[0]'s (the checker's rewrite), or the
+  ## `self` field's of a payload literal (`{self: c} bump`).
+  result = res.typeFor(e.args[0])
+  if e.args[0].kind == exkStruct:
+    for f in e.args[0].fields:
+      if f.name == "self": result = res.typeFor(f.value)
+
+proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
+  ## The qualified name of the member fn a call reaches — `tuck_type_Dog_noise`
+  ## for `noise(d)` with `d: Dog` — or "" when it is not a member call. Every
+  ## emitter, and the pass that decides twin calls, asks this; each derived
+  ## it for itself once, and two of the four ignored the payload-literal form.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
+    return ""
+  memberCalleeOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
 
 # --- compile-time whole numbers -----------------------------------------
 #
@@ -603,10 +622,10 @@ proc constDeclFor*(m: Module, raw: string): Decl =
   # (declared differently in two modules) stays unresolved rather than
   # resolving to whichever loaded first.
   result = m.findDecl(dkConst, raw)
-  if result == nil: result = m.findDecl(dkConst, "tuck_" & raw)
+  if result == nil: result = m.findDecl(dkConst, prefixed(raw, nkValue))
   if result != nil or raw in semLayer.ambiguousConsts: return
   result = semLayer.constNames.getOrDefault(raw, nil)
-  if result == nil: result = semLayer.constNames.getOrDefault("tuck_" & raw, nil)
+  if result == nil: result = semLayer.constNames.getOrDefault(prefixed(raw, nkValue), nil)
 
 proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   ## A size written as TEXT — an attribute's value, or an `Array[N, T]` size,
@@ -631,7 +650,6 @@ proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   let d = constDeclFor(m, text.strip())
   if d == nil or d.constVal == nil: return none(int)
   evalConstExpr(m, d.constVal, depth + 1)
-
 
 
 proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int] =
@@ -727,15 +745,6 @@ proc groupNameOf*(t: Type): string =
     return t.base.name
   ""
 
-proc chainStepMember*(step: ChainStep): string =
-  ## The member a `..` step names. A field set and a local mutator write a
-  ## bare name; `..mod::fn` writes a qualified one, whose target is an
-  ## exkQualified node — Expr is a variant object, so reading `.name` on that
-  ## is a runtime FieldDefect rather than a compile error.
-  if step.target == nil: ""
-  elif step.target.kind == exkQualified: step.target.qualName
-  else: step.target.name
-
 proc decodeBitField*(regName: string, f: FieldDef): BitFieldInfo =
   ## `bits 3..7` is a multi-bit FIELD: shift by the low bit and mask the
   ## width. A single `bit N` is the one-bit case of the same shape.
@@ -819,22 +828,6 @@ proc markUnimplemented*(d: Decl) =
   d.isPending = true
   d.fnBody = nil
 
-proc threadReceiver*(call, base: Expr, into, baseStr: string): Expr =
-  ## Each step's resolved call names the chain's BASE as its receiver. When
-  ## the chain runs into a temp, every step must read the PREVIOUS step's
-  ## result instead — otherwise `a ..setN {5} ..setN {7}` emits two calls both
-  ## reading `a`, and the first result is silently discarded.
-  ##
-  ## Matched by NodeId: each backend walks a deepCopy of the checked tree, so
-  ## the node the checker stored is not the node being walked here.
-  if into == baseStr or base == nil: return call
-  result = Expr(span: call.span, kind: exkCall, callee: call.callee,
-                args: call.args)
-  let intoExpr = Expr(span: call.span, kind: exkVar, name: into)
-  for i in 0 ..< result.args.len:
-    if result.args[i] != nil and result.args[i].id == base.id:
-      result.args[i] = intoExpr
-
 # --- a GENERIC fnsig ---------------------------------------------------------
 #
 # `fnsig Pred[T] = {value: T} -> bool` has no named counterpart to emit. Odin's
@@ -878,3 +871,84 @@ proc fnSigInstance*(m: Module, t: Type): Type =
     return Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
                 result: substParams(d.sigReturn, binds))
   nil
+
+# --- interfaces: who satisfies what (moved from codegen_common so the
+# lowering of an interface call, M4.4, can ask without importing codegen) ---
+
+proc findObjectMember*(obj: Decl, name: string): Decl =
+  ## The member fn named `name` declared inside object `obj`, or nil — the
+  ## satisfier-specific counterpart to `findFn`, which resolves by name alone
+  ## and cannot tell two same-named methods on different objects apart.
+  for mem in obj.members():
+    if mem != nil and mem.kind == dkFn and mem.name == name: return mem
+
+proc moduleDeclaringType*(module: Module, name: string): string =
+  ## The imported module a TYPE came from, or "" when this module declares it.
+  ##
+  ## `injectImportedTypes` makes an imported type visible unqualified by
+  ## inserting a COPY into the importer's own decl list, stamped with
+  ## `ImportedTypeMarker & ":" & origin` in its span. So the importer holds
+  ## both kinds and the marker is the only thing telling them apart — asking
+  ## `findDecl` whether the type is local answers "yes" for both.
+  ##
+  ## The D backend already qualified foreign CALLABLES (importDeclaring —
+  ## "D has no cross-module scope merge, so every foreign call has to be
+  ## qualified") and Odin already qualified foreign TYPES in type position
+  ## (importedTypeQualifier). Neither qualified a type used as a VALUE
+  ## receiver, so `Order.Before` on a sum from another module emitted bare and
+  ## both backends reported an undeclared name — beside a correctly qualified
+  ## `cmp.tuck_flipped` on the same line.
+  ##
+  ## Nim never showed it: `import cmp` merges names, so the bare form
+  ## resolves. That is why a two-module program compiled on one backend of
+  ## three, and why the stdlib design's "modules rely on each other" had never
+  ## been exercised.
+  for d in module.decls:
+    if d == nil or d.kind != dkType or d.name != name: continue
+    if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
+    return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
+  ""
+
+# An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
+# select` message arms (spec §9.3): a message kind + typed binding + body.
+type ActorMsgHandler* = object
+  name*: string
+  params*: seq[Param]
+  body*: Expr
+
+
+proc satisfiersOf*(module: Module, realModules: Table[string, Module],
+                   iface: string): seq[Decl] =
+  ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.
+  ##
+  ## An interface value is a variant over its satisfying types, so the set has
+  ## to be complete before the type can be emitted — an object in another
+  ## module adds a branch. Ordered by name so the emitted tag enum is stable
+  ## between runs rather than depending on table iteration order.
+  ##
+  ## Takes the two fields directly rather than a ctx: the question is "which
+  ## objects satisfy this contract", which has no target syntax in it.
+  var seen = initHashSet[string]()
+  for d in module.decls:
+    if d != nil and d.kind == dkObject and iface in d.satisfies and
+       d.name notin seen:
+      seen.incl(d.name)
+      result.add(d)
+  for _, m in realModules:
+    for d in m.decls:
+      if d != nil and d.kind == dkObject and iface in d.satisfies and
+         d.name notin seen:
+        seen.incl(d.name)
+        result.add(d)
+  result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
+
+proc errIdCode*(name: string): uint16 =
+  ## The 16-bit code an error id (`t/ParseError.Empty`) is carried as at run
+  ## time — FNV-1a folded to 16 bits. The checker compares these for
+  ## collisions and every emitter precomputes them, so the runtime needs no
+  ## hashing; tuck_rt.nim's `errCode` is the same fold, compiled into
+  ## programs, and must stay in step with this one.
+  var h = 2166136261'u32
+  for c in name:
+    h = (h xor uint32(c)) * 16777619'u32
+  uint16((h xor (h shr 16)) and 0xFFFF'u32)

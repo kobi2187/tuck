@@ -93,7 +93,7 @@ proc groupMixins(ctx: CodegenCtx, d: Decl): string =
       if g == nil: continue
       for want in g.groupMembers:
         if want == nil or want.kind != dkFn: continue
-        let n = mangleName(want.name)
+        let n = mangleName(want.name, nkFn)
         if n notin names: names.add(n)
   if names.len == 0: return ""
   "  mixin " & names.join(", ") & "\n"
@@ -124,7 +124,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.retInnerT = binnerT
     ctx.retInvName =
       if not bw and d.fnReturnType != nil and d.fnReturnType.kind == tkNamed and
-         ctx.hasInvariantsFast(d.fnReturnType.name): d.fnReturnType.name
+         ctx.index.hasInvariants(d.fnReturnType.name): d.fnReturnType.name
       else: ""
     injectTailReturn(d.fnBody, retTypeStr)
     let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
@@ -323,7 +323,7 @@ proc genMsgTypes*(handlers: seq[ActorMsgHandler], hasShutdown: bool,
   ## in the envelope, deduped by name across handlers.
   var enumVariants: seq[string]
   for h in handlers:
-    enumVariants.add("msg" & h.name.capitalize())
+    enumVariants.add(msgVariantName(h.name))
   if hasShutdown:
     enumVariants.add("msgShutdown")   # sent as `Actor send shutdown {}`
   var msgFields: seq[string]
@@ -377,7 +377,7 @@ proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
     var caseBody = ""
     for p in h.params:
       caseBody.add("    let " & p.name & " = msg." & p.name & "\n")
-    handlerCases.add("  of msg" & h.name.capitalize() & ":\n" & caseBody & armBody(h.body))
+    handlerCases.add("  of " & msgVariantName(h.name) & ":\n" & caseBody & armBody(h.body))
     hctx.definedVars = outer
   if hasShutdown:
     # run the shutdown body, then mark finished so the drain goes inert; a
@@ -429,7 +429,12 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   let msgTypes = genMsgTypes(handlers, hasShutdown, msgEnumName, msgTypeName)
   let stateStr = genActorState(ctx, d, msgTypeName, queueSize, hasShutdown)
   let dispatchStr = genActorDispatch(ctx, d, msgTypeName, handlers, shutdownBody, hasShutdown)
-  let singletonStr = "let " & singleton & "* = " & d.name & "()\n"
+  # Field initialisers (#87) go into the construction itself.
+  var inits: seq[string]
+  for f in d.actorFields:
+    if f.default != nil: inits.add(f.name & ": " & ctx.genExpr(f.default))
+  let singletonStr = "let " & singleton & "* = " & d.name & "(" &
+                     inits.join(", ") & ")\n"
   let drainStr = genActorDrain(drainName, singleton, hasShutdown)
   # auto-registration hook: main's prologue calls registerActors()
   # The slot is KEPT, not discarded: `Actor.waitUntil {pred: :p}` names the
@@ -483,14 +488,11 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
       let paramStr = params.join(", ")
       let assignStr = if assignParts.len > 0: ", " & assignParts.join(", ") else: ""
 
-      let handlerName = d.name & "." & v.name
-      let handlerNameSanitized = d.name & "_" & v.name
       var handlerCalls: seq[string]
-      for decl in ctx.module.decls:
-        if decl.kind == dkFn and decl.name == handlerName:
-          var argNames: seq[string]
-          for f in v.fields: argNames.add(f.name)
-          handlerCalls.add("  " & handlerNameSanitized & "(" & argNames.join(", ") & ")")
+      for decl in registryHandlers(ctx.module, d, v):
+        var argNames: seq[string]
+        for f in v.fields: argNames.add(f.name)
+        handlerCalls.add("  " & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
 
       let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
       raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(" & TagField & ": " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
@@ -546,17 +548,6 @@ proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
   ctx.retAbsentCapable = false
   ctx.definedVars = oldVars
   header & "\n" & bodyStr & "\n"
-
-proc bitAccessMode*(f: FieldDef): string =
-  ## An unmarked field is readable AND writable; marking one direction opts
-  ## out of the other.
-  var hasRead, hasWrite = false
-  for a in f.attrs:
-    if a.name == "read": hasRead = true
-    elif a.name == "write": hasWrite = true
-  if hasRead and not hasWrite: "ReadOnly"
-  elif hasWrite and not hasRead: "WriteOnly"
-  else: "ReadWrite"
 
 proc nimBitConsts*(bf: BitFieldInfo): string =
   ## The shift, and for a range the width and mask. `const` so they fold away.
@@ -744,107 +735,106 @@ proc genMixinBlock*(ctx: var CodegenCtx, d: Decl): string =
   for m in d.mixinMembers:
     result.add(ctx.genMixinMember(m))
 
+proc genTypeDecl(ctx: var CodegenCtx, d: Decl): string =
+  ## A `type`: a sum, a record, or an alias of another type.
+  if d.typeBody == nil: return ""
+  if d.typeBody.kind == tkSum: ctx.genSumType(d)
+  elif d.typeBody.kind == tkRecord: ctx.genRecordType(d)
+  else: genAliasType(d)
+
+proc genPoolDecl(d: Decl): string =
+  ## spec 7.2: one static instance; acquire/release are the rt's generic
+  ## procs, reached as `Pool.acquire` -> `acquire(Pool)`.
+  ## No per-pool handle type is emitted: the CHECKER keeps two pools' handles
+  ## apart, so the target needs only the runtime's one `PoolHandle`, which
+  ## each backend's type mapper answers with. Same shape as a group bound —
+  ## resolved and discarded before codegen.
+  "var " & d.name & "* = ObjectPool[" & genType(d.poolElem) & ", " &
+    $d.poolCount & "]()"
+
+proc genFnSigType(d: Decl): string =
+  ## `fnsig NAME = {params} -> ret` → a Nim closure proc type. Named delegate
+  ## for slots/callbacks; call shape already checked by the type checker.
+  var params: seq[string]
+  for prm in d.sigParams:
+    params.add(prm.name & ": " & genType(prm.typ))
+  let retStr = if d.sigReturn != nil and not
+                  (d.sigReturn.kind == tkNamed and d.sigReturn.name == "void"):
+                 genType(d.sigReturn)
+               else: "void"
+  # A C callback must be a BARE function pointer with the C calling
+  # convention. Nim's default {.closure.} is a (proc, env) pair — the C
+  # compiler rejects it outright ("cannot convert struct <anonymous> to
+  # int (*)(int, int)"), and a captured environment has nowhere to live on
+  # the C side anyway, so C callbacks are necessarily non-capturing.
+  let conv = if d.sigIsCCallback: "{.cdecl.}" else: "{.closure.}"
+  let sGen = if d.sigGenerics.len > 0: "[" & d.sigGenerics.join(", ") & "]" else: ""
+  return "type " & d.name & "*" & sGen & " = proc(" & params.join(", ") &
+         "): " & retStr & " " & conv & "\n"
+
+proc genInterfaceType(ctx: var CodegenCtx, d: Decl): string =
+  ## An interface value is a VARIANT over the types that satisfy it: a tag
+  ## plus the object itself, copied in (spec §5.3). Copy, not a pointer to
+  ## the original — that is the same rule as every other value in Tuck, and
+  ## it is what makes returning one, storing one in a field, and collecting
+  ## them all just work with no lifetime questions.
+  ##
+  ## A variant rather than `array[max(sizeof), byte]` + copyMem: Tuck objects
+  ## hold `str` and `Seq`, which the backend manages, and a byte blit never
+  ## adjusts the refcount — the source's destructor would free the payload out
+  ## from under the copy. The variant lets Nim generate the right copy and
+  ## destroy per branch.
+  ##
+  ## The tag replaces the function table entirely: dispatch is a `case`
+  ## calling the concrete member fn directly, so there are no thunks and the
+  ## optimizer can see through it.
+  let sats = ctx.satisfiersOf(d.name)
+  if sats.len == 0:
+    # Declared but nothing satisfies it — still a legal declaration, and
+    # there is no value to represent.
+    return "# interface " & d.name & ": no satisfying types\n"
+  var tags: seq[string]
+  var branches: seq[string]
+  for s in sats:
+    let tag = d.name & "_is_" & s.name
+    tags.add(tag)
+    branches.add("  of " & tag & ": " & s.name & "Val*: " & s.name)
+  result = "type " & d.name & "Tag* = enum " & tags.join(", ") & "\n\n"
+  result.add("type " & d.name & "* = object\n" &
+             "  case tag*: " & d.name & "Tag\n" &
+             branches.join("\n") & "\n")
+
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
+  ## One top-level declaration. Every DeclKind is named, so a new one fails
+  ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
   if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; the Nim import brings it in
   case d.kind
-  of dkFn:
-    return ctx.genFnDecl(d)
-  of dkType:
-    if d.typeBody != nil:
-      if d.typeBody.kind == tkSum:
-        return ctx.genSumType(d)
-      elif d.typeBody.kind == tkRecord:
-        return ctx.genRecordType(d)
-      else:
-        return genAliasType(d)
-    return ""
-  of dkObject:
-    return ctx.genObjectDecl(d)
-  of dkActor:
-    return ctx.genActor(d)
-  of dkTask:
-    return ctx.genTaskDecl(d)
-
-  of dkExpr:
-    return ctx.genExpr(d.expr)
-  of dkConst:
-    # explicit static block: the backend evaluates the initializer at
-    # compile time (pure computation — the checker already enforced purity)
-    return "const " & d.name & " = static:\n  " & ctx.genExpr(d.constVal)
-  of dkRegister: return genRegister(d)
-  of dkRegistry:
-    return ctx.genRegistry(d)
-  of dkPool:
-    # spec 7.2: one static instance; acquire/release are the rt's generic
-    # procs, reached as `Pool.acquire` -> `acquire(Pool)`.
-    # No per-pool handle type is emitted: the CHECKER keeps two pools' handles
-    # apart, so the target needs only the runtime's one `PoolHandle`, which
-    # each backend's type mapper answers with. Same shape as a group bound —
-    # resolved and discarded before codegen.
-    return "var " & d.name & "* = ObjectPool[" & genType(d.poolElem) & ", " &
-           $d.poolCount & "]()"
-  of dkImport:
-    return ""  # emitNim adds the Nim import line
-  of dkStaticAssert:
-    return "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
-  of dkErrors: return ctx.genErrHandler(d)
-  of dkResources: return genResourceTables(d)
-  of dkMixin, dkExtern, dkPending: return ctx.genMixinBlock(d)
-  of dkFnSig:
-    # `fnsig NAME = {params} -> ret` → a Nim closure proc type. Named delegate
-    # for slots/callbacks; call shape already checked by the type checker.
-    var params: seq[string]
-    for prm in d.sigParams:
-      params.add(prm.name & ": " & genType(prm.typ))
-    let retStr = if d.sigReturn != nil and not
-                    (d.sigReturn.kind == tkNamed and d.sigReturn.name == "void"):
-                   genType(d.sigReturn)
-                 else: "void"
-    # A C callback must be a BARE function pointer with the C calling
-    # convention. Nim's default {.closure.} is a (proc, env) pair — the C
-    # compiler rejects it outright ("cannot convert struct <anonymous> to
-    # int (*)(int, int)"), and a captured environment has nowhere to live on
-    # the C side anyway, so C callbacks are necessarily non-capturing.
-    let conv = if d.sigIsCCallback: "{.cdecl.}" else: "{.closure.}"
-    let sGen = if d.sigGenerics.len > 0: "[" & d.sigGenerics.join(", ") & "]" else: ""
-    return "type " & d.name & "*" & sGen & " = proc(" & params.join(", ") &
-           "): " & retStr & " " & conv & "\n"
-  of dkInterface:
-    # An interface value is a VARIANT over the types that satisfy it: a tag
-    # plus the object itself, copied in (spec §5.3). Copy, not a pointer to
-    # the original — that is the same rule as every other value in Tuck, and
-    # it is what makes returning one, storing one in a field, and collecting
-    # them all just work with no lifetime questions.
-    #
-    # A variant rather than `array[max(sizeof), byte]` + copyMem: Tuck objects
-    # hold `str` and `Seq`, which the backend manages, and a byte blit never
-    # adjusts the refcount — the source's destructor would free the payload out
-    # from under the copy. The variant lets Nim generate the right copy and
-    # destroy per branch.
-    #
-    # The tag replaces the function table entirely: dispatch is a `case`
-    # calling the concrete member fn directly, so there are no thunks and the
-    # optimizer can see through it.
-    let sats = ctx.satisfiersOf(d.name)
-    if sats.len == 0:
-      # Declared but nothing satisfies it — still a legal declaration, and
-      # there is no value to represent.
-      return "# interface " & d.name & ": no satisfying types\n"
-    var tags: seq[string]
-    var branches: seq[string]
-    for s in sats:
-      let tag = d.name & "_is_" & s.name
-      tags.add(tag)
-      branches.add("  of " & tag & ": " & s.name & "Val*: " & s.name)
-    result = "type " & d.name & "Tag* = enum " & tags.join(", ") & "\n\n"
-    result.add("type " & d.name & "* = object\n" &
-               "  case tag*: " & d.name & "Tag\n" &
-               branches.join("\n") & "\n")
-    return result
-  else:
-    return "# [codegen] ignored decl kind " & $d.kind & "\n"
+  of dkFn: ctx.genFnDecl(d)
+  of dkType: ctx.genTypeDecl(d)
+  of dkObject: ctx.genObjectDecl(d)
+  of dkActor: ctx.genActor(d)
+  of dkTask: ctx.genTaskDecl(d)
+  of dkExpr: ctx.genExpr(d.expr)
+  # explicit static block: the backend evaluates the initializer at compile
+  # time (pure computation — the checker already enforced purity)
+  of dkConst: "const " & d.name & " = static:\n  " & ctx.genExpr(d.constVal)
+  of dkRegister: genRegister(d)
+  of dkRegistry: ctx.genRegistry(d)
+  of dkPool: genPoolDecl(d)
+  of dkStaticAssert: "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
+  of dkErrors: ctx.genErrHandler(d)
+  of dkResources: genResourceTables(d)
+  of dkMixin, dkExtern, dkPending: ctx.genMixinBlock(d)
+  of dkFnSig: genFnSigType(d)
+  of dkInterface: ctx.genInterfaceType(d)
+  of dkImport: ""     # emitNim adds the Nim import line
+  of dkGroup: ""      # a compile-time bound (spec §5.5), resolved away
+  of dkSatisfies: ""  # folded into the object's own list before checking
+  of dkWhen: ""       # resolved away by modules.resolveWhenBlocks
+  of dkPublic: ""     # a list of names, not a declaration
+  of dkSelect: ""     # an actor's arms are emitted with the actor
 
 proc sumEqForwardDecls*(m: Module): string =
   ## The generated `==` operators, forward-declared for the same reason the

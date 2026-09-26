@@ -214,7 +214,7 @@ fn main() -> int:
   # A call written backwards. Calls are POSTFIX, so a LITERAL can never
   # continue a chain — reaching one means the argument was written after the
   # callee. Was: the chain just ended, `double` became one statement and `5`
-  # another, and the argument was silently dropped (emitted `tuck_double`
+  # another, and the argument was silently dropped (emitted `tuck_fn_double`
   # and `5` as two dead statements, after typechecking clean).
   t.src """
 fn double({n: int}) -> int:

@@ -150,7 +150,7 @@
 # isolation against a generated program, re-parsing between mutating phases so
 # the work is real.
 # ---------------------------------------------------------------------------
-import ast, semantics, lowering, tables, strutils, sets, sequtils, options
+import ast, semantics, lowering, tables, strutils, sets, options
 import resolution
 import ast_query
 import rewrite   # isLiteralPayload — recognize the wrap the pass introduced
@@ -1297,7 +1297,7 @@ proc qualifyErrArm(tc: TypeChecker, arm: var MatchArm, errEnums: seq[string]) =
   arm.pattern = Pattern(span: arm.pattern.span, kind: pkVar,
                         name: owners[0] & "." & aname)
 
-proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, subjT: Type,
+proc bindArmPattern(tc: var TypeChecker, arm: var MatchArm, subjT: Type,
                     trackedVar, trackedType: string) =
   ## A variant pattern narrows the subject and does NOT bind the name;
   ## an ordinary pattern binds the subject's actual type.
@@ -1311,18 +1311,30 @@ proc bindArmPattern(tc: var TypeChecker, arm: MatchArm, subjT: Type,
   ## tc.typeDecls at all) — a real variant with nothing to track just skips
   ## the tracking half, same as a named-but-transitionless sum type already
   ## does today.
-  if arm.pattern == nil or arm.pattern.kind != pkVar: return
+  if arm.pattern == nil or arm.pattern.kind notin {pkVar, pkBind}: return
   # A NAMED sum type's subject synthesizes as `tkNamed "Door"`, not the
   # tkSum body directly (only an INLINE sum field type — no name to look
   # up at all — synthesizes AS its own tkSum body). tc.resolve unwraps the
   # name for the named case and is a no-op for the inline one (already not
   # tkNamed), so one call covers both.
   let subjBody = tc.resolve(subjT)
-  if subjBody != nil and subjBody.kind == tkSum and
-     hasVariant(subjBody, arm.pattern.name):
-    if trackedVar != "": tc.varVariants[trackedVar] = @[arm.pattern.name]
+  let name = arm.pattern.name
+  if arm.pattern.kind == pkVar and subjBody != nil and
+     subjBody.kind == tkSum and hasVariant(subjBody, name):
+    if trackedVar != "": tc.varVariants[trackedVar] = @[name]
+  elif arm.pattern.kind == pkVar and
+       ("." in name or constDeclFor(tc.module, name) != nil):
+    # A TAG that is not a variant: a qualified error name (qualifyErrArm
+    # wrote `ParseError.Empty`), or a declared const. Compared against, as
+    # every backend prints it, never bound.
+    discard
   else:
-    tc.bindName(arm.pattern.name, subjT, false)
+    # A BINDING, and marked as one: every later stage needs to know, and
+    # none of them can re-derive it (it takes the subject's type). Emitted as
+    # a tag it built nowhere — Nim printed a `case` label, Odin and D an
+    # undeclared name (ROADMAP S2.9).
+    arm.pattern = Pattern(span: arm.pattern.span, kind: pkBind, name: name)
+    tc.bindName(name, subjT, false)
 
 proc variantHint(tc: TypeChecker, subjT: Type): Type =
   ## What an arm BODY should be synthesized against. The channel exists here
@@ -1341,7 +1353,7 @@ proc variantHint(tc: TypeChecker, subjT: Type): Type =
      tc.typeDecls[r.name].kind == tkSum: return subjT
   nil
 
-proc synthArm(tc: var TypeChecker, arm: MatchArm, subjT: Type, trackedVar,
+proc synthArm(tc: var TypeChecker, arm: var MatchArm, subjT: Type, trackedVar,
               trackedType: string): Type =
   ## One arm, typed in its own scope with the subject narrowed.
   tc.pushScope()
@@ -1366,7 +1378,7 @@ proc synthArms(tc: var TypeChecker, e: Expr, subjT: Type, trackedVar,
   var mergedExit: Table[string, seq[string]]
   var firstArm = true
   result = nil
-  for arm in e.arms:
+  for arm in e.arms.mitems:
     tc.varVariants = entryVariants
     let t = tc.synthArm(arm, subjT, trackedVar, trackedType)
     mergedExit = if firstArm: tc.varVariants
@@ -1401,7 +1413,10 @@ proc checkExhaustive(tc: TypeChecker, e: Expr, domain: seq[string]) =
   var hasWild = false
   var covered: HashSet[string]
   for arm in e.arms:
-    if arm.pattern == nil or arm.pattern.kind == pkWild: hasWild = true
+    # A binding catches everything, as `_` does. It used to be counted as
+    # one more tag name, so a sum matched with a binding arm read as
+    # missing every variant it did not name.
+    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkBind}: hasWild = true
     elif arm.pattern.kind == pkVar: covered.incl(arm.pattern.name)
   if hasWild: return
   var missing: seq[string]
@@ -4041,6 +4056,15 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # int rather than a crash.
     discard tc.synthesize(e.ordinalOf)
     tc.namedType("int", e.span)
+  of exkValidate:
+    # Built by lowering, like exkOrdinal. A statement: it produces nothing.
+    discard tc.synthesize(e.validated)
+    tc.namedType("void", e.span)
+  of exkIfaceCall:
+    # Built by lowering, like exkOrdinal, and it keeps the id — so the type
+    # of the interface call it replaced.
+    discard tc.synthesize(e.dispatchRecv)
+    semLayer.typeFor(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field
@@ -4073,14 +4097,17 @@ proc typeAppFromBracket(tc: var TypeChecker, e: Expr, name: string): Type =
        base: tc.namedType(name, e.span), args: args)
 
 proc seqElem(recvT: Type): Type =
-  ## The element type of a `Seq[T]` receiver, or nil when it isn't one.
-  ## Bracket indexing on a Seq is SUGAR, not a std call the user spelled
-  ## out, so its type comes straight off the receiver — never from a
-  ## declared signature that may or may not be in scope.
-  if recvT != nil and recvT.kind == tkApp and recvT.base != nil and
-     recvT.base.kind == tkNamed and recvT.base.name == "Seq" and
-     recvT.args.len == 1:
-    return recvT.args[0]
+  ## The element type of an INDEXABLE built-in container — `Seq[T]` or
+  ## `Array[N, T]` — or nil when the receiver is neither. Bracket indexing
+  ## on one is SUGAR, not a std call the user spelled out, so its type comes
+  ## straight off the receiver — never from a declared signature that may or
+  ## may not be in scope. `Array` carries its length first, so its element
+  ## is the SECOND argument; matching only the one-argument `Seq` shape is
+  ## what made `a[i]` on an Array "not indexable" (#72).
+  if recvT == nil or recvT.kind != tkApp or recvT.base == nil or
+     recvT.base.kind != tkNamed: return nil
+  if recvT.base.name == "Seq" and recvT.args.len == 1: return recvT.args[0]
+  if recvT.base.name == "Array" and recvT.args.len == 2: return recvT.args[1]
   nil
 
 proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
@@ -4096,6 +4123,13 @@ proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
   # and qualifying is what made the sugar depend on an import it never
   # declared — typechecking clean, then emitting a `seq_at` that exists
   # nowhere.
+  # A fixed `Array[N, T]` has intrinsics of its own: its length is part of
+  # its type, and a write must reach the caller's array, not a copy of it
+  # (Odin passes `[N]T` by value, so its setter takes a pointer). All three
+  # runtimes carried them; nothing selected them until #72.
+  if isFixedArray(recvT):
+    return Expr(span: sp, kind: exkVar,
+                name: if fnName == "at": "tuckArrayAt" else: "tuckArraySetAt")
   if seqElem(recvT) != nil:
     return Expr(span: sp, kind: exkVar,
                 name: if fnName == "at": "tuckAt" else: "tuckSetAt")
@@ -4583,6 +4617,37 @@ proc failIfGenericActor(m: Module, d: Decl) =
        "[int] send <handler> {...}` (or read `" & d.name & "[int].<field>`) " &
        "and that instantiation is what gets built", d.span)
 
+proc checkFieldInits(tc: var TypeChecker, d: Decl) =
+  ## An actor field's initialiser is what its singleton starts with, so it
+  ## must be a value of the field's type (TK-TY29). Checked BEFORE the fields
+  ## are bound: the singleton is built before any field has a value, so an
+  ## initialiser cannot read one.
+  for f in d.actorFields:
+    if f.default == nil: continue
+    # The field's type is the expected one, so a bare variant of an inline
+    # enum (`state: {Red, Green} = Red`) resolves as it does in an assignment.
+    let saved = tc.expectedType
+    tc.expectedType = f.typ
+    let vt = tc.synthesize(f.default)
+    tc.expectedType = saved
+    if vt == nil or f.typ == nil or tc.compatible(vt, f.typ): continue
+    fail(dcTyFieldInitType,
+         "field '" & f.name & "' of actor '" & d.name & "' is " &
+         typeName(f.typ) & " but its initialiser is " & typeName(vt),
+         f.default.span)
+
+proc failIfFieldInit*(fields: seq[FieldDef], owner: string) =
+  ## TK-TY30: an initialiser on a field of a `type` or `object`. Nothing
+  ## would read it — a value of either is built by a construction that names
+  ## its fields — and it used to be thrown away without a word.
+  for f in fields:
+    if f.default != nil:
+      fail(dcTyFieldInitNotActor,
+           "field '" & f.name & "' of '" & owner & "' has an initialiser, " &
+           "which only an actor field may have: a value of '" & owner &
+           "' is built by a construction that names each field",
+           f.default.span)
+
 proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   ## Handlers see the actor's fields, bare AND through `self` — mirrors
   ## checkObjectDecl. Nothing bound `self` here before; a handler spelling
@@ -4590,6 +4655,7 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   ## through on gradual typing, same shape as `result` in checkHandler below.
   failIfGenericActor(tc.module, d)
   checkActorQueue(tc.module, d)
+  tc.checkFieldInits(d)
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
@@ -4606,12 +4672,16 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)
     tc.currentErrTypes = @[]
   of dkExpr: discard tc.synthesize(d.expr)
-  of dkObject: tc.checkObjectDecl(d)
+  of dkObject:
+    failIfFieldInit(d.objFields, d.name)
+    tc.checkObjectDecl(d)
   of dkMixin, dkExtern, dkPending:
     for m in d.mixinMembers: tc.checkDecl(m)
   of dkActor: tc.checkActorDecl(d)
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
   of dkType:
+    if d.typeBody != nil and d.typeBody.kind == tkRecord:
+      failIfFieldInit(d.typeBody.fields, d.name)
     checkTransitions(d)
     tc.checkInvariants(d)
     checkArenaAttrs(tc.module, d)  # an arena parses into a dkType (spec 7.3)
@@ -4619,7 +4689,20 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   of dkPool: tc.checkPoolDecl(d)
   of dkErrors:
     if d.errHandler != nil: tc.checkDecl(d.errHandler)
-  else: discard
+  of dkSelect:
+    # An actor's `on select` arm IS a handler (spec 9.3): its payload
+    # binding is its params and it replies nothing. It fell into the
+    # `else: discard` this dispatch used to end with, so no arm body was
+    # checked — a `..` step in one never resolved, a construction was never
+    # typed, and each backend printed its own garbled guess.
+    for arm in d.selectArms:
+      tc.checkFnBody(arm.source, arm.binding, nil, arm.body)
+  # Exhaustive, so a new DeclKind has to be decided here (CLAUDE.md).
+  of dkConst: discard       # bound and checked by bindConsts, before any body
+  of dkWhen: discard        # resolved away at load (modules.resolveWhenBlocks)
+  of dkRegistry, dkFnSig, dkInterface, dkGroup, dkSatisfies, dkImport,
+     dkPublic, dkResources:
+    discard                 # recorded by the collect phase; no body to check
 
 proc sigStr(d: Decl): string =
   var parts: seq[string]
@@ -4687,6 +4770,36 @@ proc bindConsts*(tc: var TypeChecker, m: Module) =
       constCheck(tc, m, d.name, d.constVal, d.span)
       tc.bindName(d.name, tc.synthesize(d.constVal), false)
 
+proc failIfBadQualifiedType(m: Module, t: Type) =
+  ## `mod::Name` must name a type that module declares and this one imports.
+  ## Imported types are visible by their bare name, so a qualifier adds
+  ## nothing past this check — but without it `nope::Point` would quietly
+  ## mean whichever `Point` is in scope.
+  if t == nil: return
+  for c in t.children: failIfBadQualifiedType(m, c)
+  if t.kind != tkNamed or t.qualifier.len == 0: return
+  let written = t.qualifier.join("::") & "::" & t.name
+  let origin = moduleDeclaringType(m, t.name)
+  let named = t.qualifier[^1]
+  if origin == named or origin == t.qualifier.join("/"): return
+  let why =
+    if origin != "": "'" & t.name & "' comes from '" & origin & "', not '" &
+                     named & "'"
+    elif m.findDecl(dkType, t.name) != nil or m.findDecl(dkObject, t.name) != nil:
+      "'" & t.name & "' is declared in this module, not in '" & named & "'"
+    else:
+      "no imported module '" & named & "' declares a public type '" &
+        t.name & "' (is it imported, and listed in its `public:` block?)"
+  fail(dcTyUndeclared, "'" & written & "' — " & why, t.span)
+
+proc failIfBadQualifiedTypes(m: Module) =
+  ## Every written type: the declarations' own, and a binding's stated one.
+  for d in m.allDecls:
+    for t in d.ownTypes: failIfBadQualifiedType(m, t)
+  for body in m.bodies:
+    for n in body.nodes:
+      if n.kind == exkAssign: failIfBadQualifiedType(m, n.declType)
+
 proc typecheckModule*(m: Module,
                       externSigs = initTable[string, seq[FnSig]](),
                       externPending = initTable[string, Span](),
@@ -4734,6 +4847,7 @@ proc typecheckModule*(m: Module,
   checkRecursiveTypes(tc.typeDeclsByName, m)
   checkConformance(m)      # `satisfies I` means every I member is implemented
   tc.bindConsts(m)
+  failIfBadQualifiedTypes(m)
   failIfDuplicateDecl(m)
   failIfDuplicateMembers(m)
   tc.failIfFieldShadowsDeclaredFn(m)

@@ -22,9 +22,10 @@
 # Sits below both backends in the dependency DAG, alongside ast_query and
 # lowering — it imports those and nothing that imports either codegen module.
 import resolution
-import ast, lowering, ast_query, ast_ops, strutils, sets, tables, algorithm, options
+import ast, lowering, ast_query, ast_ops, strutils, sets, tables, options
 import ./ast_query
 import twin_shape
+import name_prefix
 export twin_shape
 
 const TagField* = "tuckTag"
@@ -55,6 +56,8 @@ proc assignInvariantOwner*(res: Resolution, e: Expr): string =
   ## it is built.
   if e == nil or e.target == nil or e.target.kind != exkField: return ""
   if e.target.receiver == nil: return ""
+  # A `..` chain's step: the chain validates once, when it ends (exkValidate).
+  if e.inChain: return ""
   let t = res.typeFor(e.target.receiver)
   if t == nil or t.kind != tkNamed: return ""
   t.name
@@ -82,72 +85,6 @@ proc absentCapable*(t: Type): bool =
   ## success with a zero value, not "nothing to report".
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["?", "!?"] and t.args.len == 1
-
-proc findObjectMember*(obj: Decl, name: string): Decl =
-  ## The member fn named `name` declared inside object `obj`, or nil — the
-  ## satisfier-specific counterpart to `findFn`, which resolves by name alone
-  ## and cannot tell two same-named methods on different objects apart.
-  for mem in obj.members():
-    if mem != nil and mem.kind == dkFn and mem.name == name: return mem
-
-proc moduleDeclaringType*(module: Module, name: string): string =
-  ## The imported module a TYPE came from, or "" when this module declares it.
-  ##
-  ## `injectImportedTypes` makes an imported type visible unqualified by
-  ## inserting a COPY into the importer's own decl list, stamped with
-  ## `ImportedTypeMarker & ":" & origin` in its span. So the importer holds
-  ## both kinds and the marker is the only thing telling them apart — asking
-  ## `findDecl` whether the type is local answers "yes" for both.
-  ##
-  ## The D backend already qualified foreign CALLABLES (importDeclaring —
-  ## "D has no cross-module scope merge, so every foreign call has to be
-  ## qualified") and Odin already qualified foreign TYPES in type position
-  ## (importedTypeQualifier). Neither qualified a type used as a VALUE
-  ## receiver, so `Order.Before` on a sum from another module emitted bare and
-  ## both backends reported an undeclared name — beside a correctly qualified
-  ## `cmp.tuck_flipped` on the same line.
-  ##
-  ## Nim never showed it: `import cmp` merges names, so the bare form
-  ## resolves. That is why a two-module program compiled on one backend of
-  ## three, and why the stdlib design's "modules rely on each other" had never
-  ## been exercised.
-  for d in module.decls:
-    if d == nil or d.kind != dkType or d.name != name: continue
-    if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
-    return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-  ""
-
-proc satisfiersOf*(module: Module, realModules: Table[string, Module],
-                   iface: string): seq[Decl] =
-  ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.
-  ##
-  ## An interface value is a variant over its satisfying types, so the set has
-  ## to be complete before the type can be emitted — an object in another
-  ## module adds a branch. Ordered by name so the emitted tag enum is stable
-  ## between runs rather than depending on table iteration order.
-  ##
-  ## Takes the two fields directly rather than a ctx: the question is "which
-  ## objects satisfy this contract", which has no target syntax in it.
-  var seen = initHashSet[string]()
-  for d in module.decls:
-    if d != nil and d.kind == dkObject and iface in d.satisfies and
-       d.name notin seen:
-      seen.incl(d.name)
-      result.add(d)
-  for _, m in realModules:
-    for d in m.decls:
-      if d != nil and d.kind == dkObject and iface in d.satisfies and
-         d.name notin seen:
-        seen.incl(d.name)
-        result.add(d)
-  result.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
-
-# An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
-# select` message arms (spec §9.3): a message kind + typed binding + body.
-type ActorMsgHandler* = object
-  name*: string
-  params*: seq[Param]
-  body*: Expr
 
 proc collectHandlers*(d: Decl):
     tuple[handlers: seq[ActorMsgHandler], shutdownBody: Expr, hasShutdown: bool] =
@@ -334,6 +271,100 @@ proc lookupFnParams*(m: Module, name: string): seq[string] =
   ## generic payload.
   m.findFn(name).paramNames()
 
+proc isActorWaitOn*(e: Expr): bool =
+  ## `Actor.waitUntil {pred: :p}`, as the checker rewrote it:
+  ## `waitUntil(<actorRef>, pred)`. Every backend prints it as a wait on the
+  ## actor's slot.
+  e != nil and e.kind == exkCall and e.callee != nil and
+    e.callee.kind == exkVar and e.callee.name == "waitUntil" and
+    e.args.len == 2 and e.args[0] != nil and e.args[0].kind == exkActorRef
+
+proc msgVariantName*(handlerName: string): string =
+  ## The message-enum tag a handler receives on — `msgAdd` for `on add`. The
+  ## envelope and the send helpers must agree on it, on every backend.
+  "msg" & handlerName.capitalize()
+
+proc mainDecl*(m: Module): Decl =
+  ## The module's `fn main`, mangled (`tuck_fn_main`), or nil. A pending one
+  ## does not count: there is no body to run.
+  let tuckMain = prefixed("main", nkFn)
+  for d in m.decls:
+    if d != nil and d.kind == dkFn and d.name == tuckMain and not d.isPending:
+      return d
+  nil
+
+template freshName*(ctx: untyped, tag: string): string =
+  ## A fresh emitted name: `tag` and the ctx's next temp number. Every
+  ## backend's ctx has a `tmpCounter`; the bump-then-glue pair was written out
+  ## at each site that needed a temp.
+  (inc ctx.tmpCounter; tag & $ctx.tmpCounter)
+
+proc calleeParamNames*(res: Resolution, m: Module,
+                       real: Table[string, Module], e: Expr,
+                       calleeStr: string): seq[string] =
+  ## The params a call's callee declares, in order: a qualified callee's
+  ## from its own module, else the ones the checker recorded for this call,
+  ## else a lookup by name. Empty when none of the three knows.
+  if e.callee != nil and e.callee.kind == exkQualified and
+     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in real:
+    return lookupFnParams(real[e.callee.modulePath[0]], e.callee.qualName)
+  if res.callParamsFor(e).len > 0: return res.callParamsFor(e)
+  lookupFnParams(m, calleeStr)
+
+proc payloadArgs*(res: Resolution, m: Module, real: Table[string, Module],
+                  e: Expr, calleeStr: string): seq[Expr] =
+  ## A payload call's arguments in the callee's PARAMETER order: for each
+  ## param, the value of the payload field that feeds it — the one the
+  ## checker chose (`argFieldsFor`) when it recorded one, else the field of
+  ## the param's own name — or nil where the payload has no such field. With
+  ## the params unknown, the payload's field values as written.
+  ##
+  ## One decision, three printers: each backend was deciding this for itself
+  ## in three identical copies. How a MISSING argument is spelled is still
+  ## each backend's own (Nim `nil`, Odin `{}`, D a refusal).
+  let payload = e.args[0]
+  let expected = calleeParamNames(res, m, real, e, calleeStr)
+  if expected.len == 0:
+    for f in payload.fields: result.add f.value
+    return
+  let chosen = res.argFieldsFor(e)
+  for i, paramName in expected:
+    let fieldName = if i < chosen.len and chosen[i].len > 0: chosen[i]
+                    else: paramName
+    var value: Expr = nil
+    for f in payload.fields:
+      if f.name == fieldName:
+        value = f.value
+        break
+    result.add value
+
+proc isInputRef*(e: Expr, params: seq[FieldDef]): bool =
+  ## A bare `input` inside a body that has params: the whole incoming
+  ## payload, which each backend rebuilds from the params.
+  e != nil and e.kind == exkVar and e.name == "input" and params.len > 0
+
+proc isInputField*(e: Expr, params: seq[FieldDef]): bool =
+  ## `input.x` — which IS the param `x`.
+  e.kind == exkField and isInputRef(e.receiver, params)
+
+proc hasBracketBase*(e: Expr): bool =
+  ## Is this a place rooted at an index (`xs[i]`, `xs[i].f.g`)?
+  if e == nil: return false
+  case e.kind
+  of exkBracket: true
+  of exkField: hasBracketBase(e.receiver)
+  else: false
+
+proc isLenOnSized*(res: Resolution, e: Expr): bool =
+  ## `.len` on a value whose length is the target's own (a string, a Seq, a
+  ## fixed array) — every backend prints it as its length builtin, not a
+  ## field read.
+  if e.fieldName != "len" or e.receiver == nil: return false
+  let rt = res.typeFor(e.receiver)
+  if rt == nil: return false
+  if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
+  seqElem(rt) != nil or isFixedArray(rt)
+
 proc hasKnownFields(t: Type): bool =
   ## Is `t` a type whose fields we could possibly look up? False for nil
   ## and for the sketch-mode "unknown" placeholder type.
@@ -362,6 +393,26 @@ const NimShadowingModuleNames* = [
   ## unnecessary alias would break every `module::fn` call site, which is
   ## exactly what a blanket aliasing pass did.
 
+proc recordArgFields*(res: Resolution, m: Module, e: Expr,
+                      calleeStr: string): seq[string] =
+  ## A call whose one argument is a RECORD VARIABLE standing for its payload
+  ## (`p fn` with `p: {a, b}`): the field of it that feeds each param, in
+  ## param order — the checker's choice where it recorded one, else the
+  ## param's own name. Empty when the call is not that shape, or some param
+  ## has no such field; the call is then printed as it stands.
+  if e.args.len != 1 or e.args[0].kind != exkVar: return
+  let params = if res.callParamsFor(e).len > 0: res.callParamsFor(e)
+               else: lookupFnParams(m, calleeStr)
+  if params.len == 0: return
+  let fields = recordFieldNames(res, m, res.typeFor(e.args[0]))
+  if fields.len == 0: return
+  let chosen = res.argFieldsFor(e)
+  for i, paramName in params:
+    let fieldName = if i < chosen.len and chosen[i].len > 0: chosen[i]
+                    else: paramName
+    if fieldName notin fields: return @[]
+    result.add fieldName
+
 proc nimModuleName*(name: string): string =
   ## What an imported Tuck module is CALLED in the emitted Nim — its own name,
   ## unless that name would shadow a builtin type. The import and every
@@ -369,7 +420,8 @@ proc nimModuleName*(name: string): string =
   if name in NimShadowingModuleNames: "tuck_mod_" & name else: name
 
 const RtIntrinsicNames* = [
-  "tuckAt", "tuckSetAt", "tuckConcat", "tuckSat", "tuckSatI",
+  "tuckAt", "tuckSetAt", "tuckArrayAt", "tuckArraySetAt", "tuckConcat",
+  "tuckSat", "tuckSatI",
   "tuckSeqBounds", "tuckSeqCopy", "tuckSpawn", "tuckSetArgs",
 ]
   ## Runtime helpers the compiler INTRODUCES — a `xs[i]` lowers to `tuckAt`,
@@ -454,13 +506,6 @@ proc selfAppendValue*(res: Resolution, e: Expr): Expr =
   value
 
 
-proc mentionsName(e: Expr, name: string): bool =
-  if e == nil: return false
-  if e.kind == exkVar and e.name == name: return true
-  for c in e.children:
-    if mentionsName(c, name): return true
-  false
-
 proc selfConcatValue*(res: Resolution, e: Expr): Expr =
   ## `s = s + <expr>` on a `str` — a concatenation assigned back over its own
   ## LEFT operand. Returns `<expr>`, or nil when the statement is not that
@@ -494,54 +539,6 @@ proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
     if hasLastUse(res, c, name): return true
   false
 
-proc ownsHeap(m: Module, t: Type, depth = 0): bool
-
-proc anyOwnsHeap(m: Module, ts: seq[Type], depth: int): bool =
-  for t in ts:
-    if ownsHeap(m, t, depth): return true
-  false
-
-proc fieldsOwnHeap(m: Module, fields: seq[FieldDef], depth: int): bool =
-  var ts: seq[Type]
-  for f in fields: ts.add(f.typ)
-  anyOwnsHeap(m, ts, depth)
-
-proc namedOwnsHeap(m: Module, name: string, depth: int): bool =
-  if name == "str": return true
-  for d in m.decls:
-    if d != nil and d.kind == dkType and d.name == name:
-      return ownsHeap(m, d.typeBody, depth)
-  false
-
-proc sumOwnsHeap(m: Module, t: Type, depth: int): bool =
-  for v in t.variants:
-    if fieldsOwnHeap(m, v.fields, depth): return true
-  false
-
-proc ownsHeap(m: Module, t: Type, depth = 0): bool =
-  ## Does a value of this type own storage that copying would duplicate?
-  ##
-  ## Only these are worth moving. A record of two ints copies in a register
-  ## pair, so marking it movable buys nothing and only adds noise to the
-  ## emitted output — every golden in the corpus moved for it before this
-  ## guard went in.
-  if t == nil or depth > 4: return false
-  case t.kind
-  of tkNamed: namedOwnsHeap(m, t.name, depth + 1)
-  of tkApp:
-    # Seq[T] owns a buffer outright; a `!T`/`?T` carrier, or an Array, owns
-    # whatever its arguments do. A GENERIC USER TYPE — `Box[T]`, `Set[T]`,
-    # `Table[K, V]` — owns whatever its DECLARED BODY does: without this the
-    # whole alloc tier read as owning nothing, and the container-threading
-    # benchmark was linear on Odin and D (which look through the twin's own
-    # predicate) and quadratic on Nim, which consults this one.
-    if t.base != nil and t.base.kind == tkNamed and t.base.name == "Seq": true
-    elif ownsHeap(m, genericBaseBody(m, t), depth + 1): true
-    else: anyOwnsHeap(m, t.args, depth + 1)
-  of tkRecord: fieldsOwnHeap(m, t.fields, depth + 1)
-  of tkSum: sumOwnsHeap(m, t, depth + 1)
-  else: false
-
 proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
   ## May this parameter be taken destructively? True when the analysis proved
   ## the body's final read of it — so the caller's copy is unobservable from
@@ -569,132 +566,6 @@ proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
 # dropping the caller's alone gave 1.26s -> 0.69s and dropping the callee's
 # alone 0.76s — both still quadratic. Dropping both gave 0.00s.
 
-proc ownsHeapType*(m: Module, t: Type): bool = ownsHeap(m, t)
-
-
-proc rootBindingName*(e: Expr): string =
-  ## The name a field path is rooted at: `b` for `b`, `b.items`, `b.a.b`.
-  ## "" when the path is not rooted at a plain name.
-  var cur = e
-  while cur != nil and cur.kind == exkField and cur.receiver != nil:
-    cur = cur.receiver
-  if cur != nil and cur.kind == exkVar: cur.name else: ""
-
-proc otherArgLives(res: Resolution, m: Module, call: Expr): bool =
-  ## Does any argument BESIDES the first still hold a container the caller
-  ## will read again? Then the callee's result may BE that container, and
-  ## the copy that separates them cannot be dropped.
-  for i in 1 ..< call.args.len:
-    let a = call.args[i]
-    if a == nil: continue
-    if not ownsHeap(m, res.typeFor(a)): continue
-    if res.isLastUse(a): continue   # dead too, so nothing observes the share
-    return true
-  false
-
-proc movedCallInto*(res: Resolution, m: Module, call: Expr,
-                    targetName: string): bool =
-  ## Is `call` a threaded-container call whose FIRST argument is the very
-  ## variable its result is being written back into? Then the old value is
-  ## dead and the MOVED twin may have it.
-  ##
-  ## Shared by the two spellings that reach it: a plain `x = f(x, ...)`, and
-  ## the BUILDER chain `x ..f {...}`, which the chain emitter writes as an
-  ## assignment of its own rather than routing through genAssign. The chain
-  ## form is the one TUCK-TRANSLATION.md recommends, and it was the shape
-  ## still measuring quadratic on Odin (3.5x) and D (3.3x) when only the
-  ## plain form was recognised.
-  if call == nil or call.kind != exkCall: return false
-  if call.callee == nil or call.callee.kind != exkVar: return false
-  if movedFnParam(res, m, m.findFn(call.callee.name)) == "": return false
-  # A resolved user call is already exploded positionally by the time it
-  # reaches here (a payload call like std/seq's `push` is not, and is handled
-  # by selfAppendValue).
-  if call.args.len < 1 or call.args[0] == nil: return false
-  let a = call.args[0]
-  # THE SYNTACTIC CASE: `x = f(x, ...)` overwrites its own argument, so the
-  # old value is dead the instant the new one lands. No liveness involved.
-  if a.kind == exkVar and a.name == targetName: return true
-  # THE ANALYSED CASE, for everything else: a value this body OWNS and will
-  # not read again. Both halves are needed and `analysis_provenance` joins
-  # them into one stamp — being a last use says nobody HERE reads it again,
-  # which on D and Odin says nothing about the caller whose buffer a
-  # container parameter aliases. See `markMovableArgs`.
-  #
-  # It covers two shapes. `sweep(b.ask, ...)` needs liveness at PATH
-  # granularity, because `b` being live is not the question when `b.bestAsk`
-  # is read two lines later. And `pass(a, ...)` — a plain local, dead after
-  # the call — is the shape a CHAIN of threading calls takes, which is the
-  # whole of EV-15.
-  #
-  # ...AND NO OTHER ARGUMENT MAY STILL BE LIVE, which is what this predicate
-  # answers over and above `movedCalleeName`. Reaching the twin is one
-  # decision; SKIPPING THE RESULT'S FIX-UP COPY, which the emitters do on
-  # this path, is a second one, and it rests on the result being unable to
-  # alias anything the caller still reads. That holds when the result can
-  # only be the moved argument or a fresh allocation. It does not hold here:
-  #
-  #     fn pick({p: Seq[int], q: Seq[int], which: int}) -> Seq[int]:
-  #       if which == 0: return p
-  #       return q
-  #
-  # `pick` is twinnable on `p` and returns `q`. Moving `src` in is fine and
-  # still worth doing; dropping the copy of the RESULT is not, because the
-  # result is `other`'s buffer and `other` is read on the next line. It came
-  # back 65 instead of 17 on D and Odin alike, caught by value_semantics'
-  # "a record returned from a call does not alias its argument".
-  if a.kind in {exkVar, exkField}:
-    return res.isMovedArg(a) and not otherArgLives(res, m, call)
-  false
-
-proc movedCalleeName*(res: Resolution, m: Module, e: Expr,
-                      calleeStr, member: string): string =
-  ## `f_moved` when this call may take its first argument destructively at
-  ## ANY position, or "".
-  ##
-  ## `movedCallInto` answers the same question for the two positions that
-  ## have a write target — `x = f(x, ...)` and the builder chain — and it is
-  ## reached from the assignment emitters. Nothing reached the others, and
-  ## the one that matters is RETURN:
-  ##
-  ##     return {sl: up, c: c, cols: cols} relight
-  ##
-  ## `up` is dead there and owned, and `analysis_provenance` stamps it, but
-  ## no assignment emitter ever sees the call so nothing asked. That left
-  ## `relight`'s wrapper copying three arrays per edit and abandoning them.
-  ## `member` is the resolved member-fn name when this is a member call, and
-  ## excludes it: no twin is emitted for a member, and `findFn` would answer
-  ## with a top-level fn that merely shares the name. Taken as an argument
-  ## rather than tested at each call site, so neither emitter gains a branch.
-  if member.len > 0: return ""
-  if e == nil or e.kind != exkCall: return ""
-  if e.callee == nil or e.callee.kind != exkVar: return ""
-  if movedFnParam(res, m, m.findFn(e.callee.name)) == "": return ""
-  if e.args.len < 1 or e.args[0] == nil: return ""
-  if not res.isMovedArg(e.args[0]): return ""
-  movedName(calleeStr)
-
-proc selfThreadedCall*(res: Resolution, m: Module, e: Expr): Expr =
-  ## `x = f(x, ...)` on a threaded-container fn, or `let y = f(b.ask, ...)`
-  ## where `b.ask` is never read again. Returns the CALL, or nil.
-  ##
-  ## DECLARATIONS ARE ACCEPTED, which they were not before. The syntactic
-  ## rule could not match one anyway — a decl's target is a fresh name, so it
-  ## is never its own argument — so excluding them cost nothing until the
-  ## field case arrived. It costs a great deal now: `let f = sweep(b.ask,
-  ## ...)` is exactly the shape the matching engine threads its ladders
-  ## through, and refusing it left `sweep` copying a container its caller was
-  ## finished with.
-  if e == nil or e.kind != exkAssign or e.target == nil or
-     e.target.kind != exkVar: return nil
-  var call = e.assignVal
-  if call != nil and res.hasCall(call): call = res.call(call)
-  if call == nil or call.kind != exkCall: return nil
-  if call.callee == nil or call.callee.kind != exkVar: return nil
-  if movedCallInto(res, m, call, e.target.name): return call
-  nil
-
-
 
 proc isExportedDecl*(m: Module, d: Decl): bool =
   ## Does this declaration leave its module (spec 2.3c)?
@@ -709,3 +580,19 @@ proc isExportedDecl*(m: Module, d: Decl): bool =
   if d == nil: return true
   let (restricted, allowed) = exportedNames(m)
   (not restricted) or writtenName(d) in allowed
+
+proc registryHandlers*(m: Module, d: Decl, v: VariantDef): seq[Decl] =
+  ## Every `on Registry.Event` handler for this event, matched on the names
+  ## the user WROTE. Matching the mangled ones (`d.name & "." & v.name`) only
+  ## worked while a registry and a fn took the same prefix; since #78 the
+  ## handler is `tuck_fn_AppEvents.X` beside the registry's `tuck_AppEvents`,
+  ## and every raise silently stopped calling its handler.
+  let want = writtenName(d) & "." & v.name
+  for decl in m.decls:
+    if decl != nil and decl.kind == dkFn and writtenName(decl) == want:
+      result.add decl
+
+proc handlerProcName*(handler: Decl): string =
+  ## A handler is declared as `Registry.Event`, which is no backend's
+  ## identifier — the dot becomes an underscore, as its declaration does.
+  handler.name.replace(".", "_")

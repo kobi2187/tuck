@@ -7,9 +7,9 @@
 import ast, tables, sets, strutils
 import ast_query
 import resolution
-import codegen_common
-import codegen_odin_util
 import analysis_ownership
+import decl_index
+export decl_index
 
 type
   OdinCodegenCtx* = object
@@ -43,6 +43,8 @@ type
     errPolicy*: string     # from the errors declaration; "" = strict
     realModules*: Table[string, Module]  # imported modules emitted as own Odin files
     staticAsserts*: seq[string]  # collected into one `static this()` block
+    actorInits*: seq[string]     # `singleton.field = v`, run by the entry
+                                 # point before any actor starts (#87)
     moduleName*: string    # error codes hash over "module/Enum.Variant"
     currentParams*: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     ptrSelf*: bool         # inside a member fn: `self` is ^T and needs a deref
@@ -60,8 +62,8 @@ type
                         # matched variant. A payload field is read through
                         # IT, not off the subject — Odin's union has no
                         # discriminant field to reach past.
-    taskNames*: HashSet[string]   # dkTask decl names, same one-shot index
-    taskNamesBuilt*: bool
+    idx: DeclIndex       # decl_index, shared by all three backends; read
+    idxBuilt: bool       # through `index`, which builds it on first use
     taskArgsHoisted*: HashSet[string]   # task names whose Env_/wrap_ pair is
                                        # already hoisted — one signature per
                                        # task, unlike anonymous records,
@@ -71,22 +73,13 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string
   ## Forward-declared: recStructName/odinTupleType/odinAppType/odinFuncType
   ## below recurse into it before its own definition.
 
-proc odinUnsupported*(construct: string): string =
-  ## The Odin backend refuses what it cannot yet emit — loudly, at emission
-  ## time, naming the construct. Silent wrong code is the one forbidden
-  ## outcome (mirrors the D backend's dUnsupported).
-  quit("tuck: Odin backend does not yet support " & construct, 1)
-
-proc isTaskName*(ctx: var OdinCodegenCtx, name: string): bool =
-  ## Mirrors the Nim backend. Calling a task SCHEDULES it as a coroutine
-  ## (spec §9.2); emitting a direct call instead runs its body on the main
-  ## context, where the first tuckAwaitRead hits parkCurrent's
-  ## "cannot await outside a coroutine" panic.
-  if not ctx.taskNamesBuilt:
-    for d in ctx.module.decls:
-      if d != nil and d.kind == dkTask: ctx.taskNames.incl(d.name)
-    ctx.taskNamesBuilt = true
-  name in ctx.taskNames
+proc index*(ctx: var OdinCodegenCtx): var DeclIndex =
+  ## The module's declaration index (decl_index), built on first use — a
+  ## throwaway ctx (an invariant's check proc) builds its own when it asks.
+  if not ctx.idxBuilt:
+    ctx.idx = buildDeclIndex(ctx.module)
+    ctx.idxBuilt = true
+  ctx.idx
 
 proc recStructName*(ctx: var OdinCodegenCtx, fields: seq[FieldDef]): string =
   ## Record shapes become hoisted structs, giving every shape a stable
@@ -135,18 +128,11 @@ proc roundedIntType*(name: string): string =
   else: base & "64"
 
 proc importedTypeQualifier*(ctx: OdinCodegenCtx, name: string): string =
-  ## A type declared in an IMPORTED module lives in that module's Odin
-  ## package, so it must be referenced qualified (`time.Milliseconds`). Beef
-  ## needed no such qualification — its modules were static classes in one
-  ## namespace.
-  for d in ctx.module.decls:
-    if d == nil or d.kind != dkType or d.name != name: continue
-    if not d.span.file.startsWith(ImportedTypeMarker & ":"): break
-    let origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-    let pkg = origin.replace("-", "_")
-    if pkg != ctx.moduleName.replace("-", "_"): return pkg & "." & name
-    break
-  name
+  ## `pkg.Name` for a type another module declares, else `Name`.
+  let origin = moduleDeclaringType(ctx.module, name)
+  let pkg = origin.replace("-", "_")
+  if origin != "" and pkg != ctx.moduleName.replace("-", "_"): pkg & "." & name
+  else: name
 
 proc qualifyEnumOwner*(ctx: OdinCodegenCtx, owner: string): string =
   ## An enum owner reached through its module when the TYPE it belongs to was
@@ -252,7 +238,7 @@ proc odinSumTypeName(ctx: var OdinCodegenCtx, t: Type): string =
   if allNoFields and t.variants.len > 0:
     var tags: seq[string]
     for v in t.variants: tags.add(v.name)
-    let name = "TEnum_" & ctx.modPrefix & toHex(odinErrCode(tags.join(",")))
+    let name = "TEnum_" & ctx.modPrefix & toHex(errIdCode(tags.join(",")))
     let decl = name & " :: enum { " & tags.join(", ") & " }"
     if decl notin ctx.hoisted: ctx.hoisted.add(decl)
     return name
@@ -303,16 +289,6 @@ proc fieldType*(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
 # hasInvariants / externInvRet / isRecordType / isErrEnumRef used to be
 # copy-pasted here from codegen.nim (this backend began as a fork). They are
 # backend-neutral questions about the AST, so they live in ast_query.
-
-# fn param TYPES by position, for call sites deciding whether an arg needs
-# the `ref` marker (mutable record param).
-proc lookupFnParamTypes*(m: Module, name: string): seq[Type] =
-  m.findFn(name).paramTypes()
-
-proc declaresFn*(m: Module, name: string): bool =
-  ## Does this module declare `name` as a callable? A bool, because a fn with
-  ## no params is indistinguishable from "not found" in a param list.
-  m.findFn(name) != nil
 
 proc genQualified*(ctx: OdinCodegenCtx, e: Expr): string =
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""

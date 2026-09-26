@@ -6,12 +6,12 @@
 # the six that is not about the value mirror at all — it is about layering.
 #
 # `movedFnParam` decides which fns codegen emits a destructive twin for. The
-# ANALYSES need the same answer: `rootedAtMoved` has to know that a value
-# read through a twin's parameter is the caller's buffer, and `threadsFirstArg`
-# has to know which calls can consume their argument. They could not call the
-# codegen predicate, because codegen sits downstream of every analysis — so
-# `analysis_provenance` grew `maybeMovedParam`, a second predicate kept in
-# step by hand.
+# ANALYSES need the same answer: provenance had to know that a value read
+# through a twin's parameter is the caller's buffer (then `rootedAtMoved`),
+# and which calls can consume their argument (`threadsFirstArg`). They could
+# not call the codegen predicate, because codegen sits downstream of every
+# analysis — so `analysis_provenance` grew `maybeMovedParam`, a second
+# predicate kept in step by hand. Both are gone; it calls this one.
 #
 # It was not kept in step. Codegen learned a second twin shape
 # (`returnWrapsParam`: `Seq[int]` in, a record with a `Seq[int]` field out);
@@ -24,7 +24,7 @@
 # The duplication was structural rather than lazy, so the fix is structural:
 # the predicate moves BELOW both. Nothing here reaches for codegen or for an
 # analysis; it needs the AST, the resolution layer, and the field lookup.
-import ast, resolution, strutils
+import ast, resolution
 import ast_query
 from lowering import getFieldsForType
 
@@ -137,3 +137,56 @@ proc movedFnParam*(res: Resolution, m: Module, d: Decl): string =
   p.name
 
 proc movedName*(fnName: string): string = fnName & "_moved"
+
+# --- does a value own storage? ------------------------------------------
+# Moved here from codegen_common so a PASS can ask it (twin_calls, M3.5)
+# without importing an emitter's helpers.
+
+proc ownsHeap*(m: Module, t: Type, depth = 0): bool
+
+proc anyOwnsHeap(m: Module, ts: seq[Type], depth: int): bool =
+  for t in ts:
+    if ownsHeap(m, t, depth): return true
+  false
+
+proc fieldsOwnHeap(m: Module, fields: seq[FieldDef], depth: int): bool =
+  var ts: seq[Type]
+  for f in fields: ts.add(f.typ)
+  anyOwnsHeap(m, ts, depth)
+
+proc namedOwnsHeap(m: Module, name: string, depth: int): bool =
+  if name == "str": return true
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.name == name:
+      return ownsHeap(m, d.typeBody, depth)
+  false
+
+proc sumOwnsHeap(m: Module, t: Type, depth: int): bool =
+  for v in t.variants:
+    if fieldsOwnHeap(m, v.fields, depth): return true
+  false
+
+proc ownsHeap*(m: Module, t: Type, depth = 0): bool =
+  ## Does a value of this type own storage that copying would duplicate?
+  ##
+  ## Only these are worth moving. A record of two ints copies in a register
+  ## pair, so marking it movable buys nothing and only adds noise to the
+  ## emitted output — every golden in the corpus moved for it before this
+  ## guard went in.
+  if t == nil or depth > 4: return false
+  case t.kind
+  of tkNamed: namedOwnsHeap(m, t.name, depth + 1)
+  of tkApp:
+    # Seq[T] owns a buffer outright; a `!T`/`?T` carrier, or an Array, owns
+    # whatever its arguments do. A GENERIC USER TYPE — `Box[T]`, `Set[T]`,
+    # `Table[K, V]` — owns whatever its DECLARED BODY does: without this the
+    # whole alloc tier read as owning nothing, and the container-threading
+    # benchmark was linear on Odin and D (which look through the twin's own
+    # predicate) and quadratic on Nim, which consults this one.
+    if t.base != nil and t.base.kind == tkNamed and t.base.name == "Seq": true
+    elif ownsHeap(m, genericBaseBody(m, t), depth + 1): true
+    else: anyOwnsHeap(m, t.args, depth + 1)
+  of tkRecord: fieldsOwnHeap(m, t.fields, depth + 1)
+  of tkSum: sumOwnsHeap(m, t, depth + 1)
+  else: false
+

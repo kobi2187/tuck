@@ -13,7 +13,7 @@ foreign point {
 	counterFree :: proc(c: Counter) ---
 }
 
-tuck_main :: proc () {
+tuck_fn_main :: proc () {
   tuck_h := counterNew(i32(100))
   tuck_t := counterBump(tuck_h, i32(5))
   counterFree(tuck_h)
@@ -24,5 +24,5 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }

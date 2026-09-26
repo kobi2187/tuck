@@ -19,7 +19,7 @@
 #   checkPairwise — compare rows against each other and demand a catch-all.
 #                   Used when a column is an open domain (int, str) that
 #                   cannot be enumerated.
-import ast, ast_query, strutils
+import ast, strutils
 import typecheck_util
 import decision_table
 

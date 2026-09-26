@@ -1,7 +1,7 @@
 #+feature dynamic-literals
 package main
 
-tuck_ScratchSpace :: struct {
+tuck_type_ScratchSpace :: struct {
 }
 
 main :: proc() {

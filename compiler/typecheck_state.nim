@@ -370,19 +370,6 @@ proc isNarrowed*(tc: TypeChecker, name: string): bool =
       return tc.scopes[i][name].narrowed
   false
 
-proc retype*(tc: var TypeChecker, name: string, typ: Type) =
-  ## Replace the innermost binding's TYPE, keeping its permissions.
-  ##
-  ## This is how an unsupplied field stops being one: assignment rebuilds the
-  ## record type with that field's `<uninit>` marker removed. Storing the
-  ## state in the binding rather than a name-keyed table beside it means
-  ## shadowing and scope exit are already handled — an inner `let c` has its
-  ## own binding with its own type, and it dies with its scope.
-  for i in countdown(tc.scopes.high, 0):
-    if tc.scopes[i].hasKey(name):
-      tc.scopes[i][name].typ = typ
-      return
-
 proc filled*(t: Type, field: string): Type =
   ## `t` with the marker off `field`, or off every field when `field` is "".
   ## Exported for asWithCall, which fills holes the same way a write does.

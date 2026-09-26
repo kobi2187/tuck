@@ -34,7 +34,6 @@
 #
 # Counts at the time of measurement: D refuses 99, Nim 71, Odin 40; the union
 # is 154. Re-measure rather than edit by hand if a backend's version moves.
-import sets
 
 const HostKeywords* = [
   "__gshared", "__parameters", "__traits", "__vector", "abstract",

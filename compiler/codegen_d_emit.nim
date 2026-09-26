@@ -10,7 +10,6 @@ import resolution
 import ast_query
 import codegen_common
 import codegen_d_ctx
-from mangle import mangleName
 import ./codegen_d_decl
 import ./codegen_d
 
@@ -58,13 +57,6 @@ proc usesSymbol*(code, sym: string): bool =
   ## Does the emitted text call or qualify `sym`? Both spellings, because a
   ## symbol may be invoked (`writeln(x)`) or reached through (`stderr.x`).
   (sym & "(") in code or (sym & ".") in code
-
-proc mainDeclD*(m: Module): Decl =
-  let tuckMain = mangleName("main")
-  for d in m.decls:
-    if d != nil and d.kind == dkFn and d.name == tuckMain and not d.isPending:
-      return d
-  nil
 
 proc dBootSequence*(m: Module, hasTasks: bool): string =
   ## What runs BEFORE main: the scheduler, then every actor as a daemon.
@@ -123,9 +115,8 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   var hasTasks = false
   for d in m.decls:
     if d != nil and d.kind == dkTask: hasTasks = true
-  let mainFn = mainDeclD(m)
+  let mainFn = mainDecl(m)
   if mainFn == nil and mains == "": return ""
-  let tuckMain = mangleName("main")
   # The command line reaches std/sys through the runtime, which cannot read
   # it for itself in D (no global argv the way Nim's os module has one), so
   # the entry point hands it over. Emitted always: whether a program calls
@@ -153,10 +144,10 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   if mainFn != nil and mainFn.returnsValue:
     # The exit code is main's result, but tasks still get to finish first.
     result = "int main" & head &
-             "    auto mainRc = " & tuckMain & "();\n" & drive &
+             "    auto mainRc = " & mainFn.name & "();\n" & drive &
              "    return cast(int) mainRc;\n}\n"
   elif mainFn != nil:
-    result = "void main" & head & "    " & tuckMain & "();\n" & drive & "}\n"
+    result = "void main" & head & "    " & mainFn.name & "();\n" & drive & "}\n"
   else:
     result = "void main" & head & drive & "}\n"
 

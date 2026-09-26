@@ -9,8 +9,9 @@
 import ast, tables, sets, strutils
 import ast_query
 import resolution
-import codegen_common
 import codegen_type
+import decl_index
+export decl_index
 
 type
   CodegenCtx* = object
@@ -42,16 +43,11 @@ type
     realModules*: Table[string, Module]  # imported modules emitted as own Nim files
     currentParams*: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     moduleName*: string    # error codes hash over "module/Enum.Variant"
-    recordNames*: HashSet[string]     # names of record types in `module` (O(1) lookup)
-    invariantNames*: HashSet[string]  # names of invariant-carrying types in `module`
-    taskNames*: HashSet[string]       # names of dkTask decls in `module`
-    # Answers for the three questions genConstruction asks about EVERY call:
-    # is the callee a [saturating] type, an extern with an invariant-carrying
-    # return, an extern with an [emit: "..."] name. Each used to be a full
-    # decl scan per call expression — together 16% of a whole compile.
-    saturatingTypes*: Table[string, Type]  # name -> underlying type
-    externInvRets*: Table[string, string]  # extern fn -> invariant ret type
-    externEmits*: Table[string, string]    # extern fn -> [emit: "..."] name
+    idx: DeclIndex         # decl_index, shared by all three backends; read
+                           # through `index`, which builds it on first use.
+                           # genConstruction asks it about EVERY call — as
+                           # decl scans those questions were 16% of a compile
+    importedEmits*: Table[string, string]  # an IMPORTED extern's [emit:] name
     rtExterns*: HashSet[string]      # externs the RUNTIME implements (no
                                      # [c, header:] binding), across the whole
                                      # program — their calls emit qualified as
@@ -59,7 +55,7 @@ type
                                      # be ambiguous against one Nim's own
                                      # system/syncio auto-exports (readFile
                                      # and writeFile collide outright)
-    indexBuilt: bool                 # the sets above are populated?
+    indexBuilt: bool                 # `idx` and the two above are populated?
     matchNarrowed*: Table[string, string]  # var name -> the variant a match
                                             # arm currently narrows it to, so
                                             # `v.field` inside the arm reads
@@ -72,23 +68,6 @@ proc cCallbackSig*(m: Module): string =
   for mem in m.externMembers():
     if mem.kind == dkFnSig and mem.sigIsCCallback: return mem.name
   ""
-
-proc indexTypeDecl*(ctx: var CodegenCtx, d: Decl) =
-  ## The three things a `type` contributes to the index.
-  if d.typeBody == nil: return
-  if d.typeBody.kind == tkRecord:
-    ctx.recordNames.incl(d.name)
-  for member in d.typeMembers:
-    if member.kind == dkExpr:
-      ctx.invariantNames.incl(d.name)
-      break
-  # `[saturating]` is the ATTRIBUTE, not the `distinct` keyword — see
-  # ast_query.saturatingType, whose answer this caches.
-  if d.typeBody.kind == tkNamed:
-    for a in d.typeBody.attrs:
-      if a.name == "saturating":
-        ctx.saturatingTypes[d.name] = d.typeBody
-        break
 
 proc indexRuntimeExterns(ctx: var CodegenCtx) =
   ## Runtime-backed externs from the WHOLE program, not just this module: the
@@ -120,31 +99,7 @@ proc indexImportedEmits(ctx: var CodegenCtx) =
       if d == nil or d.kind != dkExtern: continue
       for mem in d.mixinMembers:
         if mem.kind == dkFn and mem.isExtern and mem.externEmit != "":
-          ctx.externEmits[mem.name] = mem.externEmit
-
-proc indexExterns*(ctx: var CodegenCtx) =
-  ## Externs are a SECOND pass: an extern's invariant-carrying return type is
-  ## looked up in invariantNames, which the first pass has to finish filling
-  ## (a type may be declared after the extern that returns it).
-  for d in ctx.module.decls:
-    if d == nil or d.kind != dkExtern: continue
-    for mem in d.mixinMembers:
-      if mem.kind != dkFn or not mem.isExtern: continue
-      if mem.externEmit != "":
-        ctx.externEmits[mem.name] = mem.externEmit
-      if mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
-         mem.fnReturnType.name in ctx.invariantNames:
-        ctx.externInvRets[mem.name] = mem.fnReturnType.name
-  # An IMPORTED module's externs too. This backend calls them UNQUALIFIED —
-  # Nim merges module scopes — so the emit name has to be known here or the
-  # call goes out under the Tuck name. std/seq's `len` is the case: it binds
-  # to `getLength`, and without this the emitted `len(xs)` resolved to Nim's
-  # own `system.len` instead. It worked, which is the problem: a host symbol
-  # answering by coincidence is what the emit name exists to prevent.
-  # (Odin and D route through their module forwarder, which already honoured
-  # it — so only the backend that merges scopes could miss it.)
-  ctx.indexImportedEmits()
-  ctx.indexRuntimeExterns()
+          ctx.importedEmits[mem.name] = mem.externEmit
 
 proc satisfiersOf*(ctx: CodegenCtx, iface: string): seq[Decl] =
   ## Whole-program satisfier set — see codegen_common.satisfiersOf.
@@ -182,77 +137,35 @@ proc newCodegenCtx*(m: Module, realModules: Table[string, Module],
       result.errPolicy = d.policyName
 
 proc buildDeclIndex*(ctx: var CodegenCtx) =
-  ## Populate the name sets for `module` once, so per-node type queries are O(1)
-  ## instead of a full decl scan each call (the emit hot path is O(n) fns each
-  ## checking their param/return type names — a linear scan there is O(n²)).
+  ## Build the module's index (decl_index) and this backend's two
+  ## whole-program extras once, so per-node questions are O(1) instead of a
+  ## decl scan each call — the emit hot path asks them for every call, and a
+  ## linear scan there is O(n²).
   if ctx.indexBuilt: return
-  for d in ctx.module.decls:
-    if d == nil: continue
-    case d.kind
-    # An object constructs exactly like a record — `{name: "rex"} Dog` is named
-    # fields, not positional — so it belongs in the same set. Without this,
-    # construction emitted `tuck_Dog("rex")` and Nim rejected it.
-    of dkObject: ctx.recordNames.incl(d.name)
-    of dkType: ctx.indexTypeDecl(d)
-    of dkTask: ctx.taskNames.incl(d.name)
-    # Everything else contributes no NAME to this index. Listed rather than
-    # left to `else`, so a new DeclKind that should be indexed is a compile
-    # error here instead of a lookup that quietly returns false. dkActor is
-    # here, not its own arm: exkActorRef (resolve_refs.nim) now resolves
-    # actor references before this index would ever be asked about one.
-    of dkFn, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkFnSig,
-       dkRegistry, dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors,
-       dkImport, dkSelect, dkSatisfies, dkInterface, dkGroup, dkWhen,
-       dkPublic, dkResources: discard
-  ctx.indexExterns()
+  ctx.idx = buildDeclIndex(ctx.module)
+  ctx.indexImportedEmits()
+  ctx.indexRuntimeExterns()
   ctx.indexBuilt = true
 
-proc isRecordTypeFast*(ctx: var CodegenCtx, name: string): bool =
+proc index*(ctx: var CodegenCtx): var DeclIndex =
+  ## The module's declaration index, built on first use.
   ctx.buildDeclIndex()
-  name in ctx.recordNames
-
-proc hasInvariantsFast*(ctx: var CodegenCtx, name: string): bool =
-  ## Does this declared type carry invariant predicates? (block members are
-  ## dkExpr decls; production sites append a validate() call — spec 4.7)
-  ctx.buildDeclIndex()
-  name in ctx.invariantNames
-
-proc saturatingTypeFast*(ctx: var CodegenCtx, name: string): Type =
-  ## ast_query.saturatingType's answer, from the index. genConstruction asks
-  ## this for EVERY call; the scanning version was 10% of a whole compile.
-  ctx.buildDeclIndex()
-  ctx.saturatingTypes.getOrDefault(name, nil)
-
-proc externInvRetFast*(ctx: var CodegenCtx, fnName: string): string =
-  ## ast_query.externInvRet's answer, from the index.
-  ctx.buildDeclIndex()
-  ctx.externInvRets.getOrDefault(fnName, "")
-
-proc externEmitNameFast*(ctx: var CodegenCtx, fnName: string): string =
-  ## externEmitName's answer, from the index.
-  ctx.buildDeclIndex()
-  ctx.externEmits.getOrDefault(fnName, "")
-
-proc isTaskName*(ctx: var CodegenCtx, name: string): bool =
-  ## Reads the index built once in buildDeclIndex, not a per-call scan of
-  ## ctx.module.decls — this is called from genConstruction, once per call
-  ## and a scan there is the same O(fns x calls) mistake fixed for lowering and
-  ## the effect checker's task-spawn check.
-  ctx.buildDeclIndex()
-  name in ctx.taskNames
+  ctx.idx
 
 proc saturatingBase*(ctx: var CodegenCtx, name: string): string =
   ## spec 4.1: `[saturating]` clamps instead of wrapping. The ATTRIBUTE
   ## decides, not the `distinct` keyword — `type X = u16 [saturating]` and
   ## `distinct X = u16 [saturating]` mean the same thing (user ruling).
   ## Returns the underlying Nim integer type, or "" when not saturating.
-  let t = ctx.saturatingTypeFast(name)
+  let t = ctx.index.saturatingType(name)
   if t == nil: "" else: genType(t)
 
 proc externEmitName*(ctx: var CodegenCtx, fnName: string): string =
   ## The Nim/C proc name to emit for an extern with `[emit: "..."]`, or "" if
-  ## it uses its Tuck name (the default).
-  ctx.externEmitNameFast(fnName)
+  ## it uses its Tuck name (the default). This module's own, else an
+  ## imported one's — Nim calls those unqualified too.
+  result = ctx.index.externEmitName(fnName)
+  if result == "": result = ctx.importedEmits.getOrDefault(fnName, "")
 
 proc isRuntimeExtern*(ctx: var CodegenCtx, fnName: string): bool =
   ## Is this call target an extern the RUNTIME implements? Those emit

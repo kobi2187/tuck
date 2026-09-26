@@ -27,7 +27,7 @@
 # This kind of hidden inter-pass dependency is common in compilers and almost
 # never obvious from the code. When you find one, write it down where the
 # ordering is decided.
-import ast, tables, sets, strutils
+import ast, tables, sets
 import resolution
 import diagnostics  # TK-RS03, the resource half of the propagation rule
 

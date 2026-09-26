@@ -3,7 +3,7 @@ module _47_resource_registry;
 import rt = tuck_rt;
 import std.stdio : writeln, stderr;
 
-enum tuck_NetState { Connecting, Ready, Closed }
+enum tuck_type_NetState { Connecting, Ready, Closed }
 
 alias NetHandle = rt.ResourceHandle;
 __gshared rt.ResourceTable tuckRes_net = {kind: "net", cap: 10000, policy: rt.RtResourcePolicy.Lazy, onFull: rt.RtOnFull.Error, sweepBatch: 100};
@@ -17,17 +17,17 @@ void tuckResourcesShutdown() {
     rt.shutdownResources(tuckRes_net);
 }
 
-long tuck_rawOpenUdp(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_rawOpenUdp invoked (not implemented)");
+long tuck_fn_rawOpenUdp(T)(T payload) {
+    stderr.writeln("TUCK PENDING: tuck_fn_rawOpenUdp invoked (not implemented)");
     return typeof(return).init;
 }
 
 
-rt.TuckResult!(UdpHandle) tuck_openUdp(ushort port) {
-    return rt.acquireResource(tuckRes_udp, cast(long)(tuck_rawOpenUdp(port)), "47-resource-registry:73");
+rt.TuckResult!(UdpHandle) tuck_fn_openUdp(ushort port) {
+    return rt.acquireResource(tuckRes_udp, cast(long)(tuck_fn_rawOpenUdp(port)), "47-resource-registry:73");
 }
 
-long tuck_withScratch(long n) {
+long tuck_fn_withScratch(long n) {
     long tuck_scratch = n;
     scope(exit) {
         tuck_scratch = 0L;
@@ -35,8 +35,8 @@ long tuck_withScratch(long n) {
     return (tuck_scratch + 1L);
 }
 
-long tuck_serve(ushort port) {
-    rt.TuckResult!(UdpHandle) tuck_sock = tuck_openUdp(port);
+long tuck_fn_serve(ushort port) {
+    rt.TuckResult!(UdpHandle) tuck_sock = tuck_fn_openUdp(port);
     if ((tuck_sock.status == rt.TuckStatus.Ok)) {
         scope(exit) {
             rt.finishResource(tuckRes_udp, tuck_sock.value);
@@ -46,13 +46,13 @@ long tuck_serve(ushort port) {
     return 0L;
 }
 
-long tuck_main() {
-    return tuck_withScratch(16L);
+long tuck_fn_main() {
+    return tuck_fn_withScratch(16L);
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
-    auto mainRc = tuck_main();
+    auto mainRc = tuck_fn_main();
     tuckResourcesShutdown();
     return cast(int) mainRc;
 }

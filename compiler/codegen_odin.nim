@@ -15,8 +15,9 @@ import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+import twin_calls  # which calls take the moved twin — decided in prepare
 from lowering_seqcopy import needsDup, recordDupFields
-from ssa_ir import pathOf
+from ast_ops import pathOf
 from os import getEnv
 
 let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0
@@ -26,17 +27,11 @@ let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0
 
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
-export odinLibSpec, odinErrCode
-from mangle import mangleName
+export odinLibSpec
 import ./codegen_odin_ctx
 
 # Type emission, the ctx type, and the decl-shape fast lookups now live in
 # codegen_odin_ctx.nim, imported above.
-
-
-
-
-
 
 
 # Field type emission. An inline sum type is hoisted to a named enum
@@ -52,32 +47,20 @@ import ./codegen_odin_ctx
 # the `ref` marker (mutable record param).
 
 
-
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
-
 
 
 # Type-directed explosion: a record-typed VAR as the whole payload
 # (`p advance`) explodes to the fn's params by field name, in param order.
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
-  if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  # Prefers the checker's own resolution (ctx.res.callParamsFor, set in
-  # checkCallArgs) over a decl-list scan — mirrors the Nim backend's fix.
-  let params = if ctx.res.callParamsFor(e).len > 0: ctx.res.callParamsFor(e)
-               else: lookupFnParams(ctx.module, calleeStr)
-  if params.len == 0: return ""
-  let fields = recordFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.args[0]))
+  ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
+  ## call is not a record variable standing for its payload.
+  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
   if fields.len == 0: return ""
-  # The checker already decided which field feeds each param (they may differ
-  # in name, having been matched by type); prefer its mapping over the name.
-  let resolved = ctx.res.argFieldsFor(e)
+  let recv = ctx.genOdinExpr(e.args[0])
   var parts: seq[string]
-  for i, paramName in params:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    if fieldName notin fields: return ""
-    parts.add(ctx.genOdinExpr(e.args[0]) & "." & fieldName)
-  return calleeStr & "(" & parts.join(", ") & ")"
+  for f in fields: parts.add(recv & "." & f)
+  calleeStr & "(" & parts.join(", ") & ")"
 
 # Positional construction of a hoisted record struct from a struct literal,
 # in declared-field order, casting numeric fields to the declared type.
@@ -195,14 +178,6 @@ proc asSumVariantCall(ctx: var OdinCodegenCtx, e: Expr): string =
                 else: nil
   ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-proc memberCalleeName(ctx: OdinCodegenCtx, e: Expr): string =
-  ## A member call arrives as a bare-name callee with the receiver as args[0]
-  ## (the checker's asFnByName rewrite). The DECLARATION emitted qualified, so
-  ## the call has to match — derive the same name from the receiver's type.
-  if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
-  memberCalleeOf(ctx.module, memberOwner(ctx.module, ctx.res.typeFor(e.args[0])),
-                 e.callee.name)
-
 proc genericCtorName(ctx: var OdinCodegenCtx, e: Expr, base: string): string =
   ## A generic type: the checker's ty stamp carries the inferred instantiation.
   ##
@@ -227,44 +202,16 @@ proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
   for f in e.args[0].fields:
     parts.add(f.name & " = " & ctx.genOdinExpr(f.value))
   let ctor = ctx.genericCtorName(e, e.callee.name) & "{" & parts.join(", ") & "}"
-  if hasInvariants(ctx.module, e.callee.name):
+  if ctx.index.hasInvariants(e.callee.name):
     # production site: construction — validate before the value flows on
     return "__validated_" & e.callee.name & "(" & ctor & ")"
   ctor
 
-proc expectedParamNames(ctx: var OdinCodegenCtx, e: Expr,
-                        calleeStr: string): seq[string] =
-  ## Param order lives with the fn, not the literal — match by name. A
-  ## qualified callee into a real module resolves in THAT module.
-  if e.callee != nil and e.callee.kind == exkQualified and
-     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
-    return lookupFnParams(ctx.realModules[e.callee.modulePath[0]],
-                          e.callee.qualName)
-  if ctx.res.callParamsFor(e).len > 0: return ctx.res.callParamsFor(e)
-  lookupFnParams(ctx.module, calleeStr)
-
-proc payloadFieldArg(ctx: var OdinCodegenCtx, payload: Expr,
-                     fieldName: string): string =
-  ## The value supplied for one param, or an empty literal when the payload
-  ## does not carry it.
-  for f in payload.fields:
-    if f.name == fieldName: return ctx.genOdinExpr(f.value)
-  "{}"
-
 proc genPayloadArgs(ctx: var OdinCodegenCtx, e: Expr,
                     calleeStr: string): seq[string] =
-  ## A payload's fields, ordered to match the callee's params.
-  let expected = ctx.expectedParamNames(e, calleeStr)
-  if expected.len == 0:
-    for f in e.args[0].fields: result.add(ctx.genOdinExpr(f.value))
-    return
-  # The checker's mapping wins: a field matched by TYPE carries its own name,
-  # not the param's (see checkCallArgs / ctx.res.argFieldsFor).
-  let resolved = ctx.res.argFieldsFor(e)
-  for i, paramName in expected:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    result.add(ctx.payloadFieldArg(e.args[0], fieldName))
+  ## codegen_common.payloadArgs, printed. A missing one is the zero value.
+  for a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
+    result.add(if a != nil: ctx.genOdinExpr(a) else: "{}")
 
 proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr,
                  calleeStr: string): seq[string] =
@@ -351,10 +298,10 @@ proc genRtCall(calleeStr: string, args: seq[string]): string =
 proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
                      args: seq[string]): string =
   ## The emission forms, once the arguments are built.
-  let satT = ctx.module.saturatingType(calleeStr)
+  let satT = ctx.index.saturatingType(calleeStr)
   if satT != nil and args.len == 1:
     return ctx.genSaturatingCtor(satT, calleeStr, args[0])
-  let invRet = externInvRet(ctx.module, calleeStr)
+  let invRet = ctx.index.externInvRet(calleeStr)
   if invRet != "":
     # extern boundary: the returned value validates on entry
     return "__validated_" & invRet & "(" & calleeStr & "(" &
@@ -399,10 +346,7 @@ proc genOdinActorWaitOn(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`. The
   ## checker rewrote the member call into `waitUntil(<actorRef>, pred)`, so the
   ## actor is still named in arg 0. Twin of the Nim genActorWaitOn.
-  if e == nil or e.kind != exkCall or e.callee == nil: return ""
-  if e.callee.kind != exkVar or e.callee.name != "waitUntil": return ""
-  if e.args.len != 2 or e.args[0] == nil: return ""
-  if e.args[0].kind != exkActorRef: return ""
+  if not isActorWaitOn(e): return ""
   "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genOdinExpr(e.args[1]) & ")"
 
@@ -412,7 +356,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.genOdinExpr(e.callee)
-  let member = ctx.memberCalleeName(e)
+  let member = memberCallee(ctx.res, ctx.module, e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
@@ -430,7 +374,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if member != "" and args.len > 0: args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted
-  if ctx.isTaskName(calleeStr) and args.len == 0:
+  if ctx.index.isTaskName(calleeStr) and args.len == 0:
     # Calling a task SCHEDULES it as a coroutine — it runs concurrently and
     # tuckRun drives it (spec §9.2). Mirrors the Nim backend, which has always
     # emitted tuckSpawn here.
@@ -451,8 +395,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   # A call that may take its first argument destructively, in ANY position —
   # the assignment emitters catch their own two shapes upstream of here, and
   # `return f(x, ...)` is the one nothing else reaches.
-  let mv = movedCalleeName(ctx.res, ctx.module, e, calleeStr, member)
-  return (if mv != "": mv else: calleeStr) &
+  return (if callsTwin(e): movedName(calleeStr) else: calleeStr) &
          "(" & (ctx.odinTypeArgs(e) & args).join(", ") & ")"
 
 proc odinBangInfo*(ctx: var OdinCodegenCtx, t: Type):
@@ -712,7 +655,7 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, an enum tag, or
   ## a plain variable.
   if ctx.res.hasCall(e): return ctx.genOdinExpr(ctx.res.call(e))
-  if e.name == "input" and ctx.currentParams.len > 0: return ctx.genInputPayload()
+  if isInputRef(e, ctx.currentParams): return ctx.genInputPayload()
   if e.name == "self" and ctx.ptrSelf: return "self^"  # member fn: deref
   if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
   if e.name in ctx.definedVars: return e.name
@@ -720,55 +663,38 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   # enum members the way Nim does)
   let owner = enumTagOwner(ctx.module, e.name)
   if owner != "": return ctx.qualifyEnumOwner(owner) & "." & e.name
+  # A variant of an INLINE sum (`state: {Red, Green} = Red`) has no owner to
+  # qualify with; Odin's implicit selector names it, the target being typed.
+  let t = ctx.res.typeFor(e)
+  if t != nil and t.kind == tkSum:
+    for v in t.variants:
+      if v.name == e.name: return "." & e.name
   let foreign = ctx.qualifiedForeignFn(e.name)
   if foreign != "": return foreign
   e.name
 
-proc genIfaceExtraArgs(ctx: var OdinCodegenCtx, memberDecl: Decl,
-                       dotArg: Expr): string =
-  ## The payload beyond `self`, splatted positionally to match the concrete
-  ## member's own declared params — never packed into one struct literal,
-  ## which is not what the receiver's exploded params expect.
-  if dotArg == nil: return ""
-  if memberDecl == nil: return ", " & ctx.genOdinExpr(dotArg)
-  var extra: seq[string]
-  for i, pname in memberDecl.paramNames():
-    if i == 0: continue  # self
-    extra.add(ctx.payloadFieldArg(dotArg, pname))
-  if extra.len == 0: return ""
-  ", " & extra.join(", ")
-
-proc genIfaceDispatch(ctx: var OdinCodegenCtx, e: Expr,
-                      ic: tuple[iface, member: string]): string =
-  ## A call through an interface value: switch on the tag the value carries and
-  ## call the concrete member fn — no table, no thunk. Emitted as an
-  ## immediately-called closure because Odin has no switch EXPRESSION, and a
-  ## call site needs a value.
-  let recv = ctx.genOdinExpr(e.receiver)
+proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A call through an interface value, lowered (lowering_iface): switch on
+  ## the tag and print each arm's member call. An immediately-called closure,
+  ## because Odin has no switch EXPRESSION and a call site needs a value —
+  ## typed with the CALL's type. It said `-> int` whatever the member
+  ## returned, so a member returning `str` did not compile (#40).
+  let recv = ctx.genOdinExpr(e.dispatchRecv)
+  let t = ctx.res.typeFor(e)
+  let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
   var arms: seq[string]
-  for st in ctx.satisfiersOf(ic.iface):
-    let extra = ctx.genIfaceExtraArgs(findObjectMember(st, ic.member), e.dotArg)
-    arms.add("\t\tcase ." & ic.iface & "_is_" & st.name & ":\n" &
-             "\t\t\ttmp := v." & st.name & "Val\n" &
-             "\t\t\treturn " & memberProcName(st.name, ic.member) &
-             "(&tmp" & extra & ")")
+  for arm in e.dispatchArms:
+    arms.add("\t\tcase ." & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
+             "\t\t\t" & arm.bindName & " := v." & arm.satisfier & "Val\n" &
+             "\t\t\t" & (if isVoid: "" else: "return ") &
+             ctx.genOdinExpr(arm.call))
   if arms.len == 0: return ""
-  "(proc(v: " & ic.iface & ") -> int {\n\tswitch v.tag {\n" &
-    arms.join("\n") & "\n\t}\n\treturn 0\n})(" & recv & ")"
-
-proc isInputField(ctx: OdinCodegenCtx, e: Expr): bool =
-  ## `input.x` — the incoming payload's field is just the param.
-  e.receiver != nil and e.receiver.kind == exkVar and
-    e.receiver.name == "input" and ctx.currentParams.len > 0
-
-proc indentPrefix(code: string): string =
-  ## The leading whitespace of the LAST line of an emitted block, so a
-  ## statement appended after it lands at the same indent.
-  let lastLine = code.rsplit('\n', 1)[^1]
-  for ch in lastLine:
-    if ch notin {' ', '\t'}: break
-    result.add(ch)
-
+  let sig = if isVoid: "" else: " -> " & ctx.odinType(t)
+  # The tag is always one of the arms; the panic is what Odin's "missing
+  # return" asks for, and what a corrupt value deserves.
+  let tail = if isVoid: "" else: "\tpanic(\"unreachable interface tag\")\n"
+  "(proc(v: " & e.dispatchIface & ")" & sig & " {\n\tswitch v.tag {\n" &
+    arms.join("\n") & "\n\t}\n" & tail & "})(" & recv & ")"
 
 proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
   ## Inside `switch v in value`, a payload field belongs to the BOUND
@@ -779,31 +705,6 @@ proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
   if payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver)) == "":
     return ""
   ctx.unionBind & "." & e.fieldName
-
-proc isFixedArray(t: Type): bool =
-  ## `Array[N, T]`, the OTHER sized container besides `Seq[T]`. Kept separate
-  ## from `seqElem` rather than folding it in there: `seqElem` also drives
-  ## deep-copy marking and D's `.dup` decisions (lowering_seqcopy,
-  ## codegen_d_ctx), and `Array[N, T]` is already a value with no separate
-  ## copy-marking story — widening `seqElem` would pull that machinery onto
-  ## a container it was never written for.
-  t != nil and t.kind == tkApp and t.base != nil and
-    t.base.kind == tkNamed and t.base.name == "Array"
-
-proc isLenOnSized(ctx: var OdinCodegenCtx, e: Expr): bool =
-  ## `.len` on a str, Seq or fixed Array. Odin spells it as a CALL,
-  ## `len(xs)`, not a field, so `xs.len` reported "'tuck_xs' of type
-  ## '[dynamic]int' has no field 'len'" — and, for a fixed `[N]T`, "has no
-  ## field 'len'" again, since Odin's fixed arrays have no `.len` member
-  ## either; `len()` is the only spelling that works on both.
-  ## The D backend has had this since its own audit ("hidden Nim-ism #3"); the
-  ## Nim backend emits `.len` untranslated only because Nim happens to share
-  ## Tuck's spelling.
-  if e.fieldName != "len" or e.receiver == nil: return false
-  let rt = ctx.res.typeFor(e.receiver)
-  if rt == nil: return false
-  if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
-  seqElem(rt) != nil or isFixedArray(rt)
 
 proc importedTypeMember(ctx: OdinCodegenCtx, e: Expr): string =
   ## `Order.Before` where `Order` came from an IMPORTED module: the type lives
@@ -856,8 +757,8 @@ proc assertedVariantField(ctx: var OdinCodegenCtx, e: Expr): string =
 proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: interface dispatch, an actor singleton's field, a
   ## status test, a resolved call, a sum-variant construction, or a plain read.
-  let ic = ctx.res.ifaceCallOf(e)
-  if ic.member != "": return ctx.genIfaceDispatch(e, ic)
+  doAssert ctx.res.ifaceCallOf(e).member == "",
+    "codegen_odin: an interface call reached the emitter unlowered (lowering_iface)"
   # A CHECKER-RESOLVED CALL FIRST, before the actor-field read below. Nim's
   # genFieldAccess has always tested hasCall first; Odin tested the actor
   # branch first, so `Actor.waitUntil {pred: :p}` — a static member call whose
@@ -871,8 +772,8 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     # parenthesised: a guard may negate it (`!r.ok`), and `!x == y` would
     # otherwise bind the `!` to the receiver alone
     return "(" & ctx.genOdinExpr(e.receiver) & ".status == .Ok)"
-  if ctx.isInputField(e): return e.fieldName
-  if ctx.isLenOnSized(e): return "len(" & ctx.genOdinExpr(e.receiver) & ")"
+  if isInputField(e, ctx.currentParams): return e.fieldName
+  if isLenOnSized(ctx.res, e): return "len(" & ctx.genOdinExpr(e.receiver) & ")"
   let byRef = ctx.fieldByReceiverKind(e)
   if byRef != "": return byRef
   let bound = ctx.boundVariantField(e)
@@ -980,8 +881,7 @@ proc genUnary(ctx: var OdinCodegenCtx, e: Expr): string =
 
 proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
-  ctx.tmpCounter.inc
-  let tn = "tuckDrop" & $ctx.tmpCounter
+  let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
                 "tuck_unhandled(" & tn & ".err, \"" & site &
@@ -1021,7 +921,7 @@ proc isTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr): bool =
   e.kind == exkAssign and e.assignVal != nil and
     e.assignVal.kind == exkCall and e.assignVal.callee != nil and
     e.assignVal.callee.kind == exkVar and
-    ctx.isTaskName(e.assignVal.callee.name) and e.assignVal.args.len > 0
+    ctx.index.isTaskName(e.assignVal.callee.name) and e.assignVal.args.len > 0
 
 proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## Spawn a task that takes real arguments, and await its result.
@@ -1092,15 +992,8 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
 
 proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
   ## Constructs that emit their own indentation and terminator.
-  ##
-  ## A `.fn` call over a chain receiver belongs here too — the chain lowers to
-  ## statements, so the whole thing is multi-line and indents itself. Mirrors
-  ## the Nim backend.
-  if s.kind == exkField and s.receiver != nil and
-     s.receiver.kind == exkChain and ctx.res.hasCall(s):
-    return true
   if ctx.isTaskArgsBind(s): return true
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkChain, exkDefer}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkDefer}
 
 proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
@@ -1157,14 +1050,6 @@ proc genIf(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   if e.elseBranch != nil:
     elseStr = "\n" & ind & "} else {\n" & ctx.genBranch(e.elseBranch, ind)
   ind & "if " & condStr & " {\n" & thenStr & elseStr & "\n" & ind & "}"
-
-proc hasBracketBase(e: Expr): bool =
-  ## Does this target chain bottom out in an index?
-  if e == nil: return false
-  case e.kind
-  of exkBracket: true
-  of exkField: hasBracketBase(e.receiver)
-  else: false
 
 proc genOdinAssignTarget(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element
@@ -1244,7 +1129,7 @@ proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
   ## drift on WHICH sites check — see codegen_common.assignInvariantOwner.
   result = stmt
   let owner = assignInvariantOwner(ctx.res, e)
-  if owner != "" and hasInvariants(ctx.module, owner):
+  if owner != "" and ctx.index.hasInvariants(owner):
     result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genOdinExpr(e.target.receiver) & ")")
 
@@ -1289,7 +1174,7 @@ proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
     # Twelve of them across the corpus and both applications; see
     # thoughts/ssa-mirror-design.md, Stage C.
     if DebugInPlace:
-      let threadedDbg = selfThreadedCall(ctx.res, ctx.module, e)
+      let threadedDbg = threadedCall(e)
       if (appended != nil or threadedDbg != nil) and
          (needsDup(ctx.res, e.assignVal) or
           recordDupFields(ctx.res, e.assignVal).len > 0):
@@ -1328,8 +1213,7 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   var pre = ""
   var value = valStr
   if e.target.kind == exkVar and e.target.name in ctx.owned.freeBeforeOverwrite:
-    ctx.tmpCounter.inc
-    let next = "tuckNext" & $ctx.tmpCounter
+    let next = ctx.freshName("tuckNext")
     let ind = "  ".repeat(ctx.indent)
     pre = next & " := " & valStr & "\n" & ind & "delete(" & tgt & ")\n" & ind
     value = next
@@ -1348,7 +1232,7 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
            ctx.genOdinExpr(appended) & ")"
   # Same fact one level up: a threaded-container call assigned back over its
   # own argument calls the MOVED twin, and needs no fix-up copies after it.
-  let threaded = selfThreadedCall(ctx.res, ctx.module, e)
+  let threaded = threadedCall(e)
   if threaded != nil: return ctx.genThreadedAssign(e, threaded)
   let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
@@ -1362,45 +1246,6 @@ proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =
     ctx.genOdinExpr(e.returnVal)
   else:
     ctx.genOdinReturn(e)
-
-proc genChainStep(ctx: var OdinCodegenCtx, step: ChainStep, baseStr,
-                  ind: string): string =
-  ## One step: a mutator call reassigned into the base var, a register
-  ## field's setter, or a field set.
-  if ctx.res.stepCall(step) != nil:
-    let call = ctx.res.stepCall(step)
-    # The BUILDER form writes back through the base, so the old value is dead
-    # exactly as in `x = f(x, ...)` — take the MOVED twin.
-    if movedCallInto(ctx.res, ctx.module, call, baseStr):
-      let nm = movedName(ctx.genOdinExpr(call.callee))
-      return ind & baseStr & " = " & nm & "(" &
-             ctx.genCallArgs(call, ctx.genOdinExpr(call.callee)).join(", ") & ")"
-    return ind & baseStr & " = " & ctx.genOdinCall(call)
-  let valStr = if isSingleFieldPayload(step.arg):
-                 ctx.genOdinExpr(soleFieldValue(step.arg))
-               else: ""
-  let prefix = registerAccessorPrefix(ctx.module, baseStr, step.target.name)
-  if prefix != "": return ind & prefix & "_set(" & valStr & ")"
-  ind & baseStr & "." & step.target.name & " = " & valStr
-
-proc genChainRevalidate(ctx: OdinCodegenCtx, e: Expr, baseStr,
-                        ind: string): string =
-  ## A mutation site: an invariant-carrying var re-validates after the chain.
-  if e.base == nil: return ""
-  let bt = ctx.res.typeFor(e.base)
-  if bt == nil or bt.kind != tkNamed or not hasInvariants(ctx.module, bt.name):
-    return ""
-  ind & "validate_" & bt.name & "(" & baseStr & ")"
-
-proc genChain(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
-  ## `x ..field {v} ..mutate {a}` — one plain statement per step.
-  let baseStr = ctx.genOdinExpr(e.base)
-  var lines: seq[string]
-  for step in e.steps:
-    lines.add(ctx.genChainStep(step, baseStr, ind))
-  let revalidate = ctx.genChainRevalidate(e, baseStr, ind)
-  if revalidate != "": lines.add(revalidate)
-  lines.join("\n")
 
 proc genSend(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `Actor send handler {payload}` — enqueue an envelope on the singleton's
@@ -1504,7 +1349,9 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     if e.discardVal != nil: "_ = " & ctx.genOdinExpr(e.discardVal)
     else: ""
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
-  of exkChain: ctx.genChain(e, ind)
+  of exkChain:
+    raiseAssert "codegen_odin: a `..` chain reached the emitter; " &
+      "lowering_chains rewrites every one into statements"
   of exkSend: ctx.genSend(e)
   of exkSelect: ctx.genOdinSelect(e, ind)
   of exkDefer: ctx.genDefer(e, ind)
@@ -1516,16 +1363,15 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       ctx.genOdinExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: ctx.genOrdinal(e)
+  of exkIfaceCall: ctx.genIfaceCall(e)
+  of exkValidate:
+    "validate_" & ctx.res.typeFor(e.validated).name & "(" &
+      ctx.genOdinExpr(e.validated) & ")"
 
 # Declaration codegen (genOdinDecl and everything it dispatches to --
 # fn/object/actor/registry/register/mixin/err-handler) now
 # lives in codegen_odin_decl.nim, imported above.
 # Shared emission core: hoisted decls + members inside one Beef type.
-
-
-
-
-
 
 
 # A library module (import target). Odin has no static classes: a module is

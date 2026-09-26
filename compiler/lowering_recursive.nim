@@ -34,7 +34,6 @@
 # the boxing lives in a pass rather than in the emitters.
 import ast, tables, sets
 import resolution
-import ast_query
 
 proc seqOf(t: Type): Type =
   Type(span: t.span, kind: tkApp, args: @[t],
@@ -153,6 +152,4 @@ proc boxRecursiveEdges*(res: Resolution, m: Module) =
   if names.len == 0: return
   let edges = boxEdgeDecls(m, names)
   if edges.len == 0: return
-  for fn in m.allFns(): rewriteExpr(res, fn.fnBody, edges)
-  for d in m.decls(dkTask): rewriteExpr(res, d.taskBody, edges)
-  for d in m.decls(dkExpr): rewriteExpr(res, d.expr, edges)
+  for e in m.bodies: rewriteExpr(res, e, edges)

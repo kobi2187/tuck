@@ -10,19 +10,19 @@ struct TRec_r(T_r) {
     T_r r;
 }
 
-TRec_v!(long) tuck_stepIo(long n) {
+TRec_v!(long) tuck_fn_stepIo(long n) {
     return TRec_v!(long)(v: n);
 }
 
-TRec_r!(long) tuck_compute(long base) {
-    TRec_v!(long) tuck_a = tuck_stepIo(base);
-    TRec_v!(long) tuck_b = tuck_stepIo(base);
+TRec_r!(long) tuck_fn_compute(long base) {
+    TRec_v!(long) tuck_a = tuck_fn_stepIo(base);
+    TRec_v!(long) tuck_b = tuck_fn_stepIo(base);
     return TRec_r!(long)(r: (tuck_a.v + tuck_b.v));
 }
 
-long tuck_main() {
+long tuck_fn_main() {
     auto tuckSlot1 = rt.newAsyncResult!(TRec_r!(long))();
-    rt.spawnResult(tuckSlot1, { return tuck_compute(21L); });
+    rt.spawnResult(tuckSlot1, { return tuck_fn_compute(21L); });
     TRec_r!(long) tuck_res = rt.awaitResult(tuckSlot1);
     return tuck_res.r;
 }
@@ -30,7 +30,7 @@ long tuck_main() {
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    auto mainRc = tuck_main();
+    auto mainRc = tuck_fn_main();
     rt.tuckRun();
     return cast(int) mainRc;
 }

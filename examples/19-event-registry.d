@@ -15,25 +15,25 @@ __gshared tuck_AppEvents latesttuck_AppEvents;
 
 void raise_tuck_AppEvents_SensorFailure(ubyte port, string reason) {
     latesttuck_AppEvents = tuck_AppEvents(tuck_AppEventsKind.SensorFailure, port: port, reason: reason);
-    tuck_AppEvents_SensorFailure(port, reason);
+    tuck_fn_AppEvents_SensorFailure(port, reason);
 }
 
 void raise_tuck_AppEvents_LowMemory(uint remaining) {
     latesttuck_AppEvents = tuck_AppEvents(tuck_AppEventsKind.LowMemory, remaining: remaining);
-    tuck_AppEvents_LowMemory(remaining);
+    tuck_fn_AppEvents_LowMemory(remaining);
 }
 
 
-void tuck_triggerEvent() {
+void tuck_fn_triggerEvent() {
     raise_tuck_AppEvents_SensorFailure(1L, "timeout");
 }
 
-void tuck_AppEvents_SensorFailure(ubyte port, string reason) {
+void tuck_fn_AppEvents_SensorFailure(ubyte port, string reason) {
     ubyte tuck_x = port;
     string tuck_y = reason;
 }
 
-void tuck_AppEvents_LowMemory(uint remaining) {
+void tuck_fn_AppEvents_LowMemory(uint remaining) {
     uint tuck_left = remaining;
 }
 

@@ -189,17 +189,6 @@ proc isSet*(b: BlockId): bool = int32(b) >= 0
 proc val*(fn: SsaFn, v: ValueId): Value = fn.values[int32(v)]
 proc blk*(fn: SsaFn, b: BlockId): Block = fn.blocks[int32(b)]
 
-proc pathOf*(e: Expr): Place =
-  ## `b.ask` for a field chain rooted at a name, `b` for a bare name, "" for
-  ## anything else.
-  if e == nil: return ""
-  case e.kind
-  of exkVar: e.name
-  of exkField:
-    let base = pathOf(e.receiver)
-    if base.len == 0: "" else: base & "." & e.fieldName
-  else: ""
-
 proc rootOf*(p: Place): string =
   let i = p.find('.')
   if i < 0: p else: p[0 ..< i]

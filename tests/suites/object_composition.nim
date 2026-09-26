@@ -1,7 +1,7 @@
 ## Object composition is set union (spec §4.5), the same as type composition.
 ##
 ## `type M = A + B` flattens A's and B's fields into M. `object O: + A` did NOT
-## — it emitted a NESTED field (`tuck_A: tuck_A`) while the checker went on
+## — it emitted a NESTED field (`tuck_type_A: tuck_type_A`) while the checker went on
 ## treating the composed fields as the object's own. So `self.x` on a composed
 ## field typechecked, emitted `self.x`, and Nim rejected it:
 ##
@@ -28,9 +28,9 @@ fn main() -> int:
 """
   t.okCheck "a composed field is reachable by its own name"
   t.emits     "and the object carries it directly", "x\\*: int"
-  t.omits     "not as a nested record", "tuck_A\\*: tuck_A"
+  t.omits     "not as a nested record", "tuck_type_A\\*: tuck_type_A"
   t.emitsOdin "Odin: merged too", "x: int"
-  t.omitsOdin "Odin: not nested either", "tuck_A: tuck_A"
+  t.omitsOdin "Odin: not nested either", "tuck_type_A: tuck_type_A"
   t.frozen    "so the emitted code compiles"
   # Two records merge, and both their fields land.
   t.src """
@@ -121,10 +121,10 @@ fn main() -> int:
 """
   t.okCheck "a builder chain followed by a terminal call"
   t.frozen  "and lowers to sequenced statements, not a nested call"
-  t.omits   "the terminal call does not write back to the base", "self = tuck_loadEp"
+  t.omits   "the terminal call does not write back to the base", "self = tuck_fn_loadEp"
 
   # A chain BOUND to a variable. `a` must be left alone — the chain threads a
-  # temp and the binding reads it. This emitted `var b =     a = tuck_setN(a, 5)`
+  # temp and the binding reads it. This emitted `var b =     a = tuck_fn_setN(a, 5)`
   # (an assignment inside an assignment, rejected by Nim) AND clobbered `a`.
   t.src """
 fn setN({self: App, n: int}) -> App:
@@ -140,7 +140,26 @@ fn main() -> int:
 """
   t.okCheck "a chain bound to a variable"
   t.frozen  "and compiles"
-  t.omits   "the bound chain leaves its base alone", "a = tuck_setN"
-  t.emits   "each step reads the previous step's result", "tuckChain1 = tuck_setN\\(tuckChain1"
+  t.omits   "the bound chain leaves its base alone", "a = tuck_fn_setN"
+  t.emits   "each step reads the previous step's result", "tuckChain1 = tuck_fn_setN\\(tuckChain1"
+
+  # ...and the same program on EVERY backend, a field step included. Before
+  # chains were lowered (lowering_chains) each backend printed its own, and
+  # all three got this wrong in different ways: Nim's temp lost the field
+  # step, Odin emitted a syntax error, D wrote through the base.
+  t.src """
+type P:
+  a: int
+  b: int
+
+fn setA({p: P, v: int}) -> P:
+  return {a: v, b: p.b} P
+
+fn main() -> int:
+  var base = {a: 1, b: 2} P
+  let t = base ..setA {v: 5} ..b {7}
+  return base.a * 100 + base.b * 10 + t.a + t.b
+"""
+  t.hostRuns "a bound chain leaves its base alone, on every backend", 132
 
   t.finish()

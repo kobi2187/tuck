@@ -5,7 +5,7 @@
 # flags/entry point into one Odin source file. The public entry points
 # (`emitOdin`/`emitOdinModule`) sit above genOdinDecl/genOdinExpr in the
 # import order, same shape as codegen_emit.nim for the Nim backend.
-import ast, strutils, tables, options
+import ast, strutils, tables
 import resolution
 import ast_query
 import codegen_common
@@ -20,7 +20,6 @@ import codegen_odin_util
 # file, before `package`.
 const odinFeatures = "#+feature dynamic-literals\n"
 
-from mangle import mangleName
 import ./codegen_odin_decl
 import ./codegen_odin
 
@@ -43,14 +42,6 @@ proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] 
       if code != "":
         body.add(code & "\n")
   (body, mainStmts.join("\n"))
-
-proc mainDecl*(m: Module): Decl =
-  ## The program's entry fn, if it has one.
-  let tuckMain = mangleName("main")
-  for d in m.decls:
-    if d != nil and d.kind == dkFn and d.name == tuckMain and not d.isPending:
-      return d
-  nil
 
 proc runtimeUsers*(m: Module, actorNames: var seq[string],
                   hasTasks: var bool) =
@@ -152,6 +143,13 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   for alias, spec in ctx.implMods:
     result.add("import " & alias & " \"" & spec & "\"")
 
+proc actorInitLines(ctx: OdinCodegenCtx): string =
+  ## Actor field initialisers (#87). The entry point runs them AFTER the
+  ## allocator is installed — what they allocate is freed through it — and
+  ## before any drain can read them. Not an `@(init)` proc: Odin makes those
+  ## contextless.
+  for s in ctx.actorInits: result.add("\t" & s & "\n")
+
 proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
@@ -173,6 +171,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
     result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
   for a in ctx.staticAsserts:
     result.add("\tassert(" & a & ")\n")
+  result.add(actorInitLines(ctx))
   var actorNames: seq[string]
   var hasTasks = false
   runtimeUsers(m, actorNames, hasTasks)
@@ -188,9 +187,8 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   let mainFn = mainDecl(m)
   let mainReturns = mainFn != nil and mainFn.returnsValue
   if mainFn != nil:
-    let tuckMain = mangleName("main")
-    result.add(if mainReturns: "\tmainRc := " & tuckMain & "()\n"
-               else: "\t" & tuckMain & "()\n")
+    result.add(if mainReturns: "\tmainRc := " & mainFn.name & "()\n"
+               else: "\t" & mainFn.name & "()\n")
   # Drive the loop only when TASKS exist. Actors are daemons whose drain loops
   # never finish, so running the scheduler for them would spin forever —
   # tuck.nim gates on hasTasks for exactly this reason.

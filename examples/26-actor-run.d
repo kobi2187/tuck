@@ -2,64 +2,68 @@ module _26_actor_run;
 
 import rt = tuck_rt;
 
-enum tuck_CounterMsgKind { msgAdd }
+enum tuck_type_CounterMsgKind { msgAdd }
 
-struct tuck_CounterMsg {
-    tuck_CounterMsgKind tuckTag;
+struct tuck_type_CounterMsg {
+    tuck_type_CounterMsgKind tuckTag;
     long n;
 }
 
-struct tuck_Counter {
+struct tuck_type_Counter {
     long total;
-    rt.Mailbox!(tuck_CounterMsg, 128) mailbox;
+    rt.Mailbox!(tuck_type_CounterMsg, 128) mailbox;
 }
 
-__gshared tuck_Counter tuck_CounterSingleton;
+__gshared tuck_type_Counter tuck_type_CounterSingleton;
 
-void handleMsg_tuck_Counter(ref tuck_Counter self, tuck_CounterMsg msg) {
+shared static this() {
+    tuck_type_CounterSingleton.total = 0L;
+}
+
+void handleMsg_tuck_type_Counter(ref tuck_type_Counter self, tuck_type_CounterMsg msg) {
     final switch (msg.tuckTag) {
-        case tuck_CounterMsgKind.msgAdd:
+        case tuck_type_CounterMsgKind.msgAdd:
             auto n = msg.n;
             self.total = (self.total + n);
             break;
     }
 }
 
-__gshared void* tuck_CounterSlot;
+__gshared void* tuck_type_CounterSlot;
 
-bool drain_tuck_Counter() {
+bool drain_tuck_type_Counter() {
     bool did = false;
-    foreach (ref msg; tuck_CounterSingleton.mailbox) {
-        handleMsg_tuck_Counter(tuck_CounterSingleton, msg);
+    foreach (ref msg; tuck_type_CounterSingleton.mailbox) {
+        handleMsg_tuck_type_Counter(tuck_type_CounterSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
     }
     return did;
 }
 
-void sendAdd_tuck_Counter(ref tuck_Counter self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuck_CounterMsg(tuckTag: tuck_CounterMsgKind.msgAdd, n: n));
-    rt.tuckNotifySend(tuck_CounterSlot);
+void sendAdd_tuck_type_Counter(ref tuck_type_Counter self, long n) {
+    cast(void) rt.enqueue(self.mailbox, tuck_type_CounterMsg(tuckTag: tuck_type_CounterMsgKind.msgAdd, n: n));
+    rt.tuckNotifySend(tuck_type_CounterSlot);
 }
 
 
-bool tuck_sumReady() {
-    return (tuck_CounterSingleton.total == 55L);
+bool tuck_fn_sumReady() {
+    return (tuck_type_CounterSingleton.total == 55L);
 }
 
-long tuck_main() {
+long tuck_fn_main() {
     foreach (tuck_i; 1L .. 10L + 1) {
-        sendAdd_tuck_Counter(tuck_CounterSingleton, tuck_i);
+        sendAdd_tuck_type_Counter(tuck_type_CounterSingleton, tuck_i);
     }
-    rt.tuckWaitOn(tuck_CounterSlot, &tuck_sumReady);
-    return tuck_CounterSingleton.total;
+    rt.tuckWaitOn(tuck_type_CounterSlot, &tuck_fn_sumReady);
+    return tuck_type_CounterSingleton.total;
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    tuck_CounterSlot = rt.tuckStartActor(&drain_tuck_Counter);
-    auto mainRc = tuck_main();
+    tuck_type_CounterSlot = rt.tuckStartActor(&drain_tuck_type_Counter);
+    auto mainRc = tuck_fn_main();
     rt.tuckDrainActors();
     return cast(int) mainRc;
 }

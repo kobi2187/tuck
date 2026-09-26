@@ -7,7 +7,7 @@
 # assignIds/clearIds, effectName, enumDomain, writtenName — operates ON
 # those types from outside, so it moves freely. Re-exported by ast.nim so
 # existing `import ast` call sites see no difference.
-import tables, options, hashes, strutils
+import options, strutils
 import ast
 
 func effectName*(e: EffectMarker): string =
@@ -163,17 +163,11 @@ proc instName*(base: string, args: seq[Type]): string =
   result = base
   for a in args: result.add("_" & typeSuffix(a))
 
-proc instNameOf*(base: string, args: seq[Expr]): string =
-  ## `instName` for a call site holding the arguments as EXPRESSIONS, which is
-  ## how a bracket parses before anything has read types out of it.
-  var ts: seq[Type]
-  for a in args: ts.add(typeOfTypeExpr(a))
-  instName(base, ts)
-
-iterator children*(e: Expr): Expr =
-  ## Every sub-expression, one level down. For the walks that only need to
-  ## VISIT nodes rather than rewrite them — the traversal is the boilerplate,
-  ## and assignIds/clearIds already hand-roll it twice because they mutate.
+iterator childSlots*(e: Expr): var Expr =
+  ## Every sub-expression, one level down, as a SLOT a pass may replace
+  ## (`resolve_refs` swaps a bare name for a reference). `children` is the
+  ## read-only view of this same list, so the two cannot drift: resolve_refs
+  ## once kept a hand-written copy of it, one arm per kind.
   ##
   ## The case is exhaustive on purpose: a new ExprKind must be listed here or
   ## the compiler refuses, which is what stops a walk from silently missing a
@@ -199,24 +193,24 @@ iterator children*(e: Expr): Expr =
       yield e.receiver
       yield e.dotArg
     of exkStruct:
-      for f in e.fields: yield f.value
+      for f in e.fields.mitems: yield f.value
     of exkList:
-      for it in e.items: yield it
+      for it in e.items.mitems: yield it
     of exkBracket:
       yield e.brReceiver
-      for a in e.brArgs: yield a
+      for a in e.brArgs.mitems: yield a
     of exkBracketAssign:
       yield e.brTarget
       yield e.brValue
     of exkCall:
       yield e.callee
-      for a in e.args: yield a
+      for a in e.args.mitems: yield a
     of exkCombinator:
       yield e.combRecv
       yield e.combArg
     of exkChain:
       yield e.base
-      for s in e.steps:
+      for s in e.steps.mitems:
         yield s.target
         yield s.arg
     of exkBinary:
@@ -224,14 +218,14 @@ iterator children*(e: Expr): Expr =
       yield e.right
     of exkUnary: yield e.operand
     of exkBlock:
-      for s in e.stmts: yield s
+      for s in e.stmts.mitems: yield s
     of exkIf:
       yield e.cond
       yield e.thenBranch
       yield e.elseBranch
     of exkMatch:
       yield e.subject
-      for arm in e.arms:
+      for arm in e.arms.mitems:
         yield arm.guard
         yield arm.body
     of exkFor:
@@ -249,13 +243,22 @@ iterator children*(e: Expr): Expr =
     of exkTripleDot: discard
     of exkSend: yield e.sendPayload
     of exkSelect:
-      for arm in e.selArms:
+      for arm in e.selArms.mitems:
         yield arm.arg
         yield arm.body
     of exkDefer: yield e.deferBody
     of exkAcquire: yield e.acquireRef
     of exkFinish: yield e.finishHandle
     of exkOrdinal: yield e.ordinalOf
+    of exkValidate: yield e.validated
+    of exkIfaceCall:
+      yield e.dispatchRecv
+      for arm in e.dispatchArms.mitems: yield arm.call
+
+iterator children*(e: Expr): Expr =
+  ## Every sub-expression, one level down — the read-only view of
+  ## `childSlots`, for the walks that only VISIT. May yield nil.
+  for c in e.childSlots: yield c
 
 iterator childDecls*(d: Decl): Decl =
   ## Every declaration nested one level inside `d`, whichever field holds it.
@@ -343,10 +346,12 @@ iterator ownTypes*(d: Decl): Type =
        dkGroup, dkWhen, dkPublic, dkResources:
       discard
 
-iterator ownExprs*(d: Decl): Expr =
+iterator ownExprSlots*(d: Decl): var Expr =
   ## Every expression this declaration owns directly — its body, initializer or
-  ## arm bodies. Paired with `childDecls`, these two reach everything under a
-  ## Decl, which is what an id walk needs.
+  ## arm bodies — as a SLOT, so a pass may replace what is there (a bare name
+  ## resolved to a reference, a body wrapped in a block). `ownExprs` is the
+  ## read-only view of the same list, so the two cannot disagree. Paired with
+  ## `childDecls`, these reach everything under a Decl.
   ##
   ## dkSelect is here rather than in childDecls because a select arm holds an
   ## Expr body, not a nested declaration.
@@ -363,13 +368,88 @@ iterator ownExprs*(d: Decl): Expr =
       # (parser_decl_kinds.parseSelectArm) never fills `arg`, so this is
       # latent rather than live; it costs one line to keep the two walks
       # saying the same thing.
-      for arm in d.selectArms:
+      for arm in d.selectArms.mitems:
         yield arm.arg
         yield arm.body
+    of dkActor:
+      # A field's initialiser: what the singleton starts with (#87).
+      for f in d.actorFields.mitems:
+        if f.default != nil: yield f.default
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
-       dkGroup, dkActor, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
+       dkGroup, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
        dkFnSig, dkSatisfies, dkPublic, dkResources:
       discard
+
+iterator ownExprs*(d: Decl): Expr =
+  ## The read-only view of `ownExprSlots`. May yield nil (an interface
+  ## member has no body).
+  for e in d.ownExprSlots: yield e
+
+# --- walking a whole module ------------------------------------------------
+#
+# ONE WALK. Passes used to spell "every body" as `allFns` + `decls(dkTask)` +
+# `decls(dkExpr)`, ten times over, and that set reaches neither a const's
+# value, a static assert, an `on select` arm, an actor field's initialiser,
+# nor a member nested two deep — each a place where a construct a pass lowers
+# could sit unlowered. #87 had to add its initialisers to three passes by
+# hand. These reach everything `childDecls` and `ownExprSlots` do, which is
+# what the id walk (`fillIds`) has always used.
+
+iterator allDecls*(m: Module): Decl =
+  ## Every declaration in the module, at any depth, in SOURCE order: a
+  ## declaration, then what it contains. Order matters — passes that number
+  ## what they mint (a chain's temp, a hoisted `str`) must number the same
+  ## way every run.
+  for top in m.decls:
+    var stack = @[top]
+    while stack.len > 0:
+      let d = stack.pop()
+      if d == nil: continue
+      yield d
+      var kids: seq[Decl]
+      for c in d.childDecls: kids.add c
+      for i in countdown(kids.high, 0): stack.add kids[i]
+
+iterator bodySlots*(m: Module): var Expr =
+  ## Every expression any declaration owns, as a replaceable slot.
+  for d in m.allDecls:
+    for e in d.ownExprSlots: yield e
+
+iterator bodies*(m: Module): Expr =
+  ## Every expression any declaration owns. Skips the nil ones.
+  for d in m.allDecls:
+    for e in d.ownExprs:
+      if e != nil: yield e
+
+iterator nodes*(e: Expr): Expr =
+  ## `e` and every expression under it, in source order: a node, then its
+  ## children left to right.
+  var stack = @[e]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    yield n
+    var kids: seq[Expr]
+    for c in n.children: kids.add c
+    for i in countdown(kids.high, 0): stack.add kids[i]
+
+proc mentionsName*(e: Expr, name: string): bool =
+  ## Does `name` appear as a bare name anywhere under `e`?
+  for n in e.nodes:
+    if n.kind == exkVar and n.name == name: return true
+  false
+
+proc pathOf*(e: Expr): string =
+  ## `b.ask` for a field chain rooted at a name, `b` for a bare name, "" for
+  ## anything else — an index, a call result, a literal. "" means the place
+  ## cannot be named, and a caller treats the whole root as touched.
+  if e == nil: return ""
+  case e.kind
+  of exkVar: e.name
+  of exkField:
+    let base = pathOf(e.receiver)
+    if base.len == 0: "" else: base & "." & e.fieldName
+  else: ""
 
 proc assignIds*(e: Expr, next: var uint32) =
   ## Give every node in this tree an id. Idempotent: a node that already has
@@ -438,16 +518,17 @@ proc fillIds*(m: Module) =
   ## For the end of a stage that mints nodes (lowering). `assignIds` is not
   ## this: it renumbers every DECLARATION unconditionally, which would cut
   ## every edge and cache key already keyed by a decl's id.
-  for d in m.decls:
-    var stack = @[d]
-    while stack.len > 0:
-      let x = stack.pop()
-      if x == nil: continue
-      if not x.id.isSet:
-        globalNodeCounter.inc
-        x.id = NodeId(globalNodeCounter)
-      for e in x.ownExprs: assignIds(e, globalNodeCounter)   # fills only
-      for c in x.childDecls: stack.add c
+  for x in m.allDecls:
+    if not x.id.isSet:
+      globalNodeCounter.inc
+      x.id = NodeId(globalNodeCounter)
+    for e in x.ownExprs: assignIds(e, globalNodeCounter)   # fills only
+
+proc fillIdsIn*(e: Expr) =
+  ## `fillIds` for one expression tree outside any module — a call the
+  ## checker stamped into the semantic layer (`res.call`), which it built
+  ## without ids. Changes no existing id.
+  assignIds(e, globalNodeCounter)
 
 proc clearIds*(e: Expr) =
   ## Drop ids so assignIds hands out fresh ones. Needed when a module comes

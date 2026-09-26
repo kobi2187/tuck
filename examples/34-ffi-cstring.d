@@ -14,7 +14,7 @@ string zlibVersion() {
 extern (C) ulong compressBound(ulong sourceLen);
 
 
-void tuck_main() {
+void tuck_fn_main() {
     string tuck_v = zlibVersion();
     console.printLine(tuck_v);
     ulong tuck_b = compressBound(1000L);
@@ -26,5 +26,5 @@ void tuck_main() {
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_main();
+    tuck_fn_main();
 }

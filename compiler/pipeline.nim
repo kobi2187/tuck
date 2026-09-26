@@ -26,7 +26,7 @@ import ssa_query
 import ssa_ir
 import ssa_liveness
 import tree_invariants
-from mangle import TuckNamePrefix, FoldSafePrefix
+from name_prefix import isMangledName
 
 type
   PipelineStage* = enum
@@ -44,57 +44,36 @@ type
     psLowering      ## lowerModule (+lowerModuleD for D) — per backend copy
     psEmitting      ## emitNim/emitOdin/emitD — per backend
 
-proc requireOrder*(have, want: PipelineStage) =
-  ## `ord()` on the enum IS the ordering check — ordering is exactly what
-  ## the enum's declaration sequence already states, so there is no
-  ## separate state-machine type to keep in sync with it.
-  if ord(have) < ord(want):
-    raise newException(ValueError,
-      "pipeline: stage " & $want & " requires " & $have & " to have run first")
-
-proc hasChainReceiver(e: Expr): bool =
-  ## True when `e` is a resolved `.fn` call whose receiver is a `..` chain —
-  ## the exact shape lowering.hoistChainCalls exists to rewrite away
-  ## (compiler/lowering.nim). Purely structural: no semLayer lookup needed,
-  ## `e.receiver.kind == exkChain` is enough on its own.
-  e != nil and e.kind == exkField and e.receiver != nil and
-    e.receiver.kind == exkChain
-
-proc walkNoChainReceiver(e: Expr, bad: var seq[Expr]) =
-  if e == nil: return
-  if hasChainReceiver(e): bad.add(e)
-  for c in e.children: walkNoChainReceiver(c, bad)
-
-proc assertNoChainFedCalls*(mods: seq[Module]) =
-  ## After psLowering: no `.fn` call may still have a `..` chain as its
-  ## receiver. Before hoistChainCalls existed, this exact shape reached
-  ## codegen as `startAudio(    self = loadEpisode(self, episode);\n)` —
-  ## a statement spliced into an argument slot, valid in none of the three
-  ## target languages. Once lowering has run, the shape cannot occur; this
-  ## assertion says so instead of leaving it as a comment on the fix.
+proc assertChainsLowered*(mods: seq[Module]) =
+  ## After psLowering: no `..` chain is left anywhere. lowering_chains
+  ## rewrites every one into statements, and no emitter prints one any more
+  ## — a chain that got past would reach an emitter's assertion, far from
+  ## its cause. The narrower check this replaces caught a chain fed into a
+  ## `.fn` call, which once reached codegen as
+  ## `startAudio(    self = loadEpisode(self, episode);\n)`.
   var bad: seq[Expr]
   for m in mods:
-    for fn in m.allFns(): walkNoChainReceiver(fn.fnBody, bad)
-    for d in m.decls(dkTask): walkNoChainReceiver(d.taskBody, bad)
-    for d in m.decls(dkExpr): walkNoChainReceiver(d.expr, bad)
+    for body in m.bodies:
+      for n in body.nodes:
+        if n.kind == exkChain: bad.add(n)
   if bad.len > 0:
     raise newException(ValueError,
-      "pipeline: " & $bad.len &
-      " call(s) still have a chain receiver after lowering — " &
-      "hoistChainCalls should have rewritten every one of these away")
+      "pipeline: " & $bad.len & " `..` chain(s) left after lowering, the " &
+      "first at line " & $bad[0].span.line & " — lowering_chains handles " &
+      "a chain as a statement, a binding's or return's value, a fn's tail, " &
+      "a branch or loop body, and a `.fn` call's receiver")
 
-proc walkAsyncConsistency(e: Expr, bad: var seq[Expr]) =
-  if e == nil: return
-  if semLayer.isAsync(e):
-    let call = semLayer.call(e)
-    let decl = if call != nil: semLayer.declFor(call) else: nil
-    # A missing decl edge is a DIFFERENT, already-known gap (declFor is not
-    # populated for every call shape — payload-application calls to an
-    # extern are one, per TODO.md's callParamsFor/declForType notes) and not
-    # what this assertion exists to catch. Only flag a REAL disagreement:
-    # a decl edge that exists but does not declare [io].
-    if decl != nil and emIo notin decl.fnEffects: bad.add(e)
-  for c in e.children: walkAsyncConsistency(c, bad)
+proc asyncMarkDisagrees(e: Expr): bool =
+  ## A call marked async whose own resolved declaration is not [io].
+  if not semLayer.isAsync(e): return false
+  let call = semLayer.call(e)
+  let decl = if call != nil: semLayer.declFor(call) else: nil
+  # A missing decl edge is a DIFFERENT, already-known gap (declFor is not
+  # populated for every call shape — payload-application calls to an
+  # extern are one, per TODO.md's callParamsFor/declForType notes) and not
+  # what this assertion exists to catch. Only flag a REAL disagreement:
+  # a decl edge that exists but does not declare [io].
+  decl != nil and emIo notin decl.fnEffects
 
 proc assertAsyncEffectsConsistent*(mods: seq[Module]) =
   ## After psVerifyEffects: every call site the effect pass marked async
@@ -108,17 +87,16 @@ proc assertAsyncEffectsConsistent*(mods: seq[Module]) =
   ## them") has recurred.
   var bad: seq[Expr]
   for m in mods:
-    for fn in m.allFns(): walkAsyncConsistency(fn.fnBody, bad)
-    for d in m.decls(dkTask): walkAsyncConsistency(d.taskBody, bad)
-    for d in m.decls(dkExpr): walkAsyncConsistency(d.expr, bad)
+    for body in m.bodies:
+      for n in body.nodes:
+        if asyncMarkDisagrees(n): bad.add(n)
   if bad.len > 0:
     raise newException(ValueError,
       "pipeline: " & $bad.len &
       " call(s) marked async do not resolve to an [io] declaration — " &
       "the async mark and the call's own resolved declaration disagree")
 
-proc walkNoMissingTypes(e: Expr, bad: var seq[Expr]) =
-  if e == nil: return
+proc carriesMissingType(e: Expr): bool =
   # Only a node the checker actually SYNTHESIZED a type for counts — most
   # nodes (declarations, patterns, statement-level constructs) never go
   # through `tc.synthesize` and have no recorded type at all (`typeFor`
@@ -131,8 +109,7 @@ proc walkNoMissingTypes(e: Expr, bad: var seq[Expr]) =
   # right for a backend about to emit one, wrong for "was this even typed
   # at all").
   let t = semLayer.typeFor(e)
-  if t != nil and hasMissingType(t): bad.add(e)
-  for c in e.children: walkNoMissingTypes(c, bad)
+  t != nil and hasMissingType(t)
 
 proc assertNoMissingTypes*(mods: seq[Module]) =
   ## After psTypecheck: no expression may still carry the checker's own
@@ -148,9 +125,9 @@ proc assertNoMissingTypes*(mods: seq[Module]) =
   ## silent pass-through to codegen.
   var bad: seq[Expr]
   for m in mods:
-    for fn in m.allFns(): walkNoMissingTypes(fn.fnBody, bad)
-    for d in m.decls(dkTask): walkNoMissingTypes(d.taskBody, bad)
-    for d in m.decls(dkExpr): walkNoMissingTypes(d.expr, bad)
+    for body in m.bodies:
+      for n in body.nodes:
+        if carriesMissingType(n): bad.add(n)
   if bad.len > 0:
     var lines: seq[string]
     for e in bad: lines.add($e.span.line & ":" & $e.span.col)
@@ -232,10 +209,8 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
       " place(s) — " & bad[0 .. min(4, bad.high)].join("; "))
 
 proc allMangled(name: string): bool =
-  ## Either prefix: a user fn named after a runtime intrinsic (`fn at`) takes
-  ## FoldSafePrefix, because `tuck_at` IS `tuckAt` to Nim (mangle.nim).
-  name.len == 0 or name.startsWith(TuckNamePrefix) or
-    name.startsWith(FoldSafePrefix)
+  ## Any prefix name_prefix gives — all start `tuck_` (#78).
+  name.len == 0 or isMangledName(name)
 
 proc assertMangleIdempotent*(mods: seq[Module]) =
   ## After psMangle: every manglable name mangleProgram touches must

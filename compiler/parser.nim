@@ -38,7 +38,6 @@
 # What this stage does NOT do: it does not care whether anything is CORRECT.
 # `"hello" + 5` parses fine — it is well-formed syntax. Rejecting it is the
 # typechecker's job. A parser only decides whether the shape is legal.
-import strutils, tables
 import ast
 import ../lexer
 import parser_base

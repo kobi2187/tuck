@@ -3,7 +3,7 @@ package main
 
 import sys "./mod_sys"
 
-tuck_main :: proc () {
+tuck_fn_main :: proc () {
   tuck_q := (7 / 2)
   tuck_r := (7.0 / 2.0)
   tuck_budget := 100
@@ -19,5 +19,5 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }

@@ -14,7 +14,6 @@
 import std/json
 import jsony
 import ast
-import ast_query
 import resolution
 
 proc toJson*(m: Module): JsonNode =
@@ -56,7 +55,5 @@ proc semLayerJson*(mods: seq[Module]): JsonNode =
   ## a deliberate follow-up, not v1.
   var entries: seq[JsonNode]
   for m in mods:
-    for fn in m.allFns(): walkSemEntries(fn.fnBody, entries)
-    for d in m.decls(dkTask): walkSemEntries(d.taskBody, entries)
-    for d in m.decls(dkExpr): walkSemEntries(d.expr, entries)
+    for e in m.bodies: walkSemEntries(e, entries)
   %entries

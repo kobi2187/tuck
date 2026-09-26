@@ -34,7 +34,7 @@
 #
 # The one thing that is genuinely per-target is the ORDINAL of an enum or bool
 # (`ord`, `int()` or a ternary, a cast), which is why `exkOrdinal` exists.
-import ast, ast_ops, ast_query
+import ast, ast_query
 import resolution
 import decision_table
 from parser_stringify import toString
@@ -66,10 +66,6 @@ proc rowsOf(d: Decl): seq[Row] =
 # table what a node is (an Odin ordinal of a bool is a ternary, an enum tag
 # qualifies by its type), and a node built after checking has nothing there
 # unless it is put there.
-
-proc typed(res: Resolution, e: Expr, t: Type): Expr =
-  res.setType(e, t)
-  e
 
 proc intType(sp: Span): Type = Type(span: sp, kind: tkNamed, name: "int")
 proc boolType(sp: Span): Type = Type(span: sp, kind: tkNamed, name: "bool")
@@ -171,7 +167,7 @@ proc columnValue(res: Resolution, d: Decl, i: int, p: Pattern): Expr =
   of pkLit:
     res.typed(Expr(span: p.span, kind: exkLit, litKind: p.litKind,
                    litValue: p.litValue), t)
-  of pkWild, pkRecord, pkTuple, pkOr:
+  of pkWild, pkBind, pkRecord, pkTuple, pkOr:
     raiseAssert "lowering_decisions: a " & $p.kind & " column in " & d.name &
       " — a row's columns are values or `_`"
 

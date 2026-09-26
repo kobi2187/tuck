@@ -15,7 +15,7 @@ foreign point {
 	makesPoint :: proc(x: i32, y: i32) -> Point ---
 }
 
-tuck_main :: proc () {
+tuck_fn_main :: proc () {
   tuck_p := makesPoint(i32(3), i32(7))
   tuck_r := takesPoint(tuck_p)
   if (tuck_r == 307) {
@@ -25,5 +25,5 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }

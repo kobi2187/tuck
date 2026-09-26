@@ -54,7 +54,7 @@ fn main() -> int:
   t.okCheck "generic fns check"
   t.emitsOdin "Odin infers the type param from a parameter",
               r"proc \(a: \$T, b: T\)"
-  t.emitsD "D emits a template", r"T tuck_smaller\(T\)\(T a, T b\)"
+  t.emitsD "D emits a template", r"T tuck_fn_smaller\(T\)\(T a, T b\)"
   t.hostBuilds "...and every backend builds them"
   t.runs "...including a Seq[T] param and a Seq[T] return", 0
 
@@ -227,9 +227,9 @@ fn main() -> int:
 """
   t.okCheck "a generic type checks, built from a generic fn's own params"
   t.emitsD "D declares it as a template struct",
-           r"struct tuck_Pair\(K, V\)"
+           r"struct tuck_type_Pair\(K, V\)"
   t.emitsD "...and the use site names the instantiation",
-           r"tuck_Pair!\(string, long\)"
+           r"tuck_type_Pair!\(string, long\)"
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the fields hold what was put in them", 0
 
@@ -285,7 +285,7 @@ fn main() -> int:
 
   # A Tuck module may be named after a HOST type. `import seq` bound the
   # module symbol to `seq` in the emitted Nim, shadowing Nim's own `seq`, and
-  # the next `seq[tuck_Entry[K, V]]` in that file was "cannot instantiate the
+  # the next `seq[tuck_type_Entry[K, V]]` in that file was "cannot instantiate the
   # 'seq' module". Imports are aliased now.
   t.src """
 import seq
@@ -301,10 +301,11 @@ fn main() -> int:
 
   # --- a user fn whose name folds into a runtime intrinsic ----------------
   # Nim identifiers ignore underscores and case after the first character, so
-  # `fn at` — mangled `tuck_at` — IS `tuckAt`, the intrinsic every `xs[i]`
-  # lowers to. The module rebound indexing to itself, then reported the
-  # user's own call as ambiguous. alloc.vec found it: its API deliberately
-  # keeps std/seq's `at`/`setAt` spellings.
+  # `fn at`, when it was mangled `tuck_at`, WAS `tuckAt`, the intrinsic every
+  # `xs[i]` lowers to. The module rebound indexing to itself, then reported
+  # the user's own call as ambiguous. alloc.vec found it: its API
+  # deliberately keeps std/seq's `at`/`setAt` spellings. A fn is `tuck_fn_at`
+  # now (#78), which folds to nothing the compiler introduces.
   t.src """
 fn at({items: Seq[int], index: int}) -> int?:
   if index < 0 or index >= items.len:
@@ -319,9 +320,20 @@ fn main() -> int:
   return r.value - xs[1]
 """
   t.okCheck "a fn named after a runtime intrinsic checks"
-  t.emits "it is mangled out of the intrinsic's way", r"tuckfn_at"
+  t.emits "it is mangled out of the intrinsic's way", r"tuck_fn_at\b"
   t.hostBuilds "...and every backend builds it"
   t.runs "...with indexing still reaching the intrinsic", 0
+
+  # A VALUE still can fold: a local `at` would be `tuck_at`, i.e. `tuckAt`,
+  # and rebind every `xs[i]` in its scope. It takes `tuck_val_` instead.
+  t.src """
+fn main() -> int:
+  let xs: Seq[int] = [10, 20, 30]
+  let at = 2
+  return xs[at] - 30
+"""
+  t.emits "a local named after a runtime intrinsic is mangled aside", r"tuck_val_at\b"
+  t.hostRuns "...and indexing beside it still reaches the intrinsic", 0
 
   # --- an already-wrapped return is a pass-through ------------------------
   # `return {..} at` inside a fn that itself returns `?T` wraps a value that
@@ -344,7 +356,7 @@ fn main() -> int:
   return r.value - 7
 """
   t.okCheck "returning an already-wrapped value checks"
-  t.omits "Nim does not wrap it twice", r"tok\(tuck_lookUp"
+  t.omits "Nim does not wrap it twice", r"tok\(tuck_fn_lookUp"
   t.hostBuilds "...and no backend does"
   t.runs "...and the payload survives one level", 0
 
@@ -437,7 +449,7 @@ fn main() -> int:
   # A STATED type names a declaration like any other type reference, so it
   # has to rename with the rest — the mangle pass did not walk the new
   # declType field, and the annotation emitted the user's own `Bag` beside
-  # the declaration's `tuck_Bag`.
+  # the declaration's `tuck_type_Bag`.
   t.src """
 type Bag:
   items: Seq[int]
@@ -447,7 +459,7 @@ fn main() -> int:
   return bag.items.len - 2
 """
   t.okCheck "a stated USER type on a local checks"
-  t.emits "the annotation is mangled with the declaration", r"tuck_bag: tuck_Bag"
+  t.emits "the annotation is mangled with the declaration", r"tuck_bag: tuck_type_Bag"
   t.hostBuilds "...on every backend"
   t.runs "...and the value is there", 0
 
@@ -548,7 +560,7 @@ fn main() -> int:
   # --- a GENERIC fnsig -----------------------------------------------------
   # The last thing blocking core.iter, and both backends refused it outright:
   # "Odin backend does not yet support a generic fnsig", "D backend does not
-  # yet support type application tuck_Pred[...]".
+  # yet support type application tuck_type_Pred[...]".
   #
   # The declaration now emits NOTHING and every USE spells the substituted
   # signature inline. Odin's proc TYPES are not parametric — its generics are
@@ -581,7 +593,7 @@ fn main() -> int:
   return got.len - 2
 """
   t.okCheck "a generic fnsig checks"
-  t.omitsD "D declares no alias for it", r"alias tuck_Pred"
+  t.omitsD "D declares no alias for it", r"alias tuck_type_Pred"
   t.hostBuilds "...and every backend emits the substituted signature"
   t.runs "...and the predicate filters", 0
 

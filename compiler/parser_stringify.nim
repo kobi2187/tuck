@@ -134,6 +134,14 @@ proc toString*(e: Expr): string =
     # Not surface syntax — lowering builds it — so this is only ever read in
     # a dump, where `ord(x)` says what it is.
     return "ord(" & e.ordinalOf.toString() & ")"
+  of exkValidate:
+    return "validate(" & e.validated.toString() & ")"   # lowering-built too
+  of exkIfaceCall:
+    # Lowering-built: one arm per satisfying object, shown by name.
+    var sats: seq[string]
+    for arm in e.dispatchArms: sats.add arm.satisfier
+    return e.dispatchRecv.toString() & " dispatch<" & e.dispatchIface & ": " &
+           sats.join(" | ") & ">"
   of exkAcquire:
     return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:

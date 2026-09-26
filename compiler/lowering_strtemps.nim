@@ -36,7 +36,7 @@
 # ONLY WHERE IT IS NEEDED: `backend_prepare` runs this when the backend's list
 # of allocating procs is non-empty (Odin). Nim's ARC and D's GC free a
 # temporary themselves, and their output stays as it was.
-import ast, ast_ops, ast_query
+import ast, ast_ops
 import resolution
 from ownership_str import ownedStrCall
 
@@ -86,7 +86,7 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   case n.kind
   of exkIf, exkMatch, exkBlock, exkWhile, exkFor, exkDefer, exkSelect,
      exkChain, exkCombinator, exkAssign, exkBracketAssign, exkSend,
-     exkReturn, exkRaise, exkAcquire, exkFinish, exkDiscard:
+     exkReturn, exkRaise, exkAcquire, exkFinish, exkDiscard, exkValidate:
     # Control flow, a scope, or a statement inside an expression: what is in
     # it is conditional, or ordered by something this pass does not model.
     # It may also do anything, so nothing after it may move before it.
@@ -101,6 +101,9 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   of exkUnary:
     h.visit(n.operand, false)
     if n.unaryOp == uoPropagate: h.settled = true   # `x?` may return early
+  of exkIfaceCall:
+    h.visit(n.dispatchRecv, false)
+    h.settled = true             # exactly one arm runs; lift nothing out of one
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkBracket,
      exkCall, exkBreak, exkContinue, exkTripleDot, exkImport, exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkOrdinal:
@@ -166,5 +169,4 @@ proc hoistStrTemps*(res: Resolution, m: Module, procs: seq[string]) =
   ## there is nothing to own and nothing changes.
   if procs.len == 0: return
   var h = Hoist(res: res, procs: procs)
-  for fn in m.allFns(): h.hoistBlock(fn.fnBody)
-  for d in m.decls(dkTask): h.hoistBlock(d.taskBody)
+  for e in m.bodies: h.hoistBlock(e)   # only a block has room for a temp

@@ -31,49 +31,49 @@ TRec_id_name_length :: struct ($T_id: typeid, $T_name: typeid, $T_length: typeid
 	length: T_length,
 }
 
-tuck_fetch :: proc(payload: $T) -> TRec_hasNew_episodes_metadata(bool, int, string) {
-	fmt.println("TUCK PENDING: tuck_fetch invoked (not implemented)")
+tuck_fn_fetch :: proc(payload: $T) -> TRec_hasNew_episodes_metadata(bool, int, string) {
+	fmt.println("TUCK PENDING: tuck_fn_fetch invoked (not implemented)")
 	return {}
 }
 
-tuck_parse :: proc(payload: $T) -> TRec_episodes(int) {
-	fmt.println("TUCK PENDING: tuck_parse invoked (not implemented)")
+tuck_fn_parse :: proc(payload: $T) -> TRec_episodes(int) {
+	fmt.println("TUCK PENDING: tuck_fn_parse invoked (not implemented)")
 	return {}
 }
 
-tuck_selectEpisodes :: proc(payload: $T) -> TRec_episodes(int) {
-	fmt.println("TUCK PENDING: tuck_selectEpisodes invoked (not implemented)")
+tuck_fn_selectEpisodes :: proc(payload: $T) -> TRec_episodes(int) {
+	fmt.println("TUCK PENDING: tuck_fn_selectEpisodes invoked (not implemented)")
 	return {}
 }
 
-tuck_process :: proc(payload: $T) {
-	fmt.println("TUCK PENDING: tuck_process invoked (not implemented)")
+tuck_fn_process :: proc(payload: $T) {
+	fmt.println("TUCK PENDING: tuck_fn_process invoked (not implemented)")
 }
 
-tuck_log :: proc(payload: $T) {
-	fmt.println("TUCK PENDING: tuck_log invoked (not implemented)")
+tuck_fn_log :: proc(payload: $T) {
+	fmt.println("TUCK PENDING: tuck_fn_log invoked (not implemented)")
 }
 
-tuck_playTrack :: proc(payload: $T) {
-	fmt.println("TUCK PENDING: tuck_playTrack invoked (not implemented)")
+tuck_fn_playTrack :: proc(payload: $T) {
+	fmt.println("TUCK PENDING: tuck_fn_playTrack invoked (not implemented)")
 }
 
 
-tuck_main :: proc () {
-  tuck_request := TRec_url_timeout(string, time.tuck_Milliseconds){url = "example.com", timeout = time.tuck_ms(u32(5))}
-  tuck_response := tuck_selectEpisodes(tuck_parse(tuck_fetch(tuck_request)))
-  tuck_feed := tuck_fetch("https://example.com/feed")
+tuck_fn_main :: proc () {
+  tuck_request := TRec_url_timeout(string, time.tuck_type_Milliseconds){url = "example.com", timeout = time.tuck_fn_ms(u32(5))}
+  tuck_response := tuck_fn_selectEpisodes(tuck_fn_parse(tuck_fn_fetch(tuck_request)))
+  tuck_feed := tuck_fn_fetch("https://example.com/feed")
   if tuck_feed.hasNew {
-      tuck_process(tuck_feed.episodes)
+      tuck_fn_process(tuck_feed.episodes)
   } else {
-      tuck_log(tuck_feed.metadata)
+      tuck_fn_log(tuck_feed.metadata)
   }
   tuck_externalTrack := TRec_trackId_title_durationMs(int, string, int){trackId = 101, title = "Deep Dive", durationMs = 212000}
   tuck_normalizedTrack := TRec_id_name_length(int, string, int){id = tuck_externalTrack.trackId, name = tuck_externalTrack.title, length = tuck_externalTrack.durationMs}
-  tuck_playTrack(tuck_normalizedTrack)
+  tuck_fn_playTrack(tuck_normalizedTrack)
   return
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }

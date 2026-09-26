@@ -4,7 +4,7 @@
 ## Found by fuzzing (fuzz/README.md). Every case here was ACCEPTED by the whole
 ## front end and typechecker, reached codegen, and emitted invalid target code:
 ##
-##   duplicate fn      -> two `proc tuck_f*(): int` in one Nim module
+##   duplicate fn      -> two `proc tuck_fn_f*(): int` in one Nim module
 ##   duplicate field   -> `x*: int` twice in one object
 ##   duplicate variant -> `enum Red, Red`
 ##

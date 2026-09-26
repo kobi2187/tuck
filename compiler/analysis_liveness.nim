@@ -75,19 +75,6 @@ type
     atLoopHead: Live          ## what `continue` jumps to
     inLoop: bool
 
-proc pathOf(e: Expr): string =
-  ## `b.ask` for a field chain rooted at a name, `b` for a bare name, "" for
-  ## anything else — an index, a call result, a literal. "" means the walk
-  ## could not name this location, and the caller falls back to treating the
-  ## whole root as used.
-  if e == nil: return ""
-  case e.kind
-  of exkVar: e.name
-  of exkField:
-    let base = pathOf(e.receiver)
-    if base.len == 0: "" else: base & "." & e.fieldName
-  else: ""
-
 proc rootOf(path: string): string =
   let i = path.find('.')
   if i < 0: path else: path[0 ..< i]

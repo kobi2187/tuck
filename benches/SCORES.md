@@ -637,11 +637,85 @@ measured, causes unconfirmed:
 - overwrite and transfer: D is 8–11x the others; both push element by
   element into a fresh `Seq` each turn.
 
-The script also carries variants with automatic memory management OFF —
-`nim-arc` (`--mm:arc`), `nim-none` (`--mm:none`, nothing freed) and `d-nogc`
-(`--DRT-gcopt=disable:1`) — to show what the collectors cost and buy. Each
-was checked to build and run correctly on copy_loop; the full table has not
-been run yet.
+### With automatic memory management OFF — 2026-09-25
+
+The same six programs with the collectors switched off, beside the backends
+as they ship. N=200000; every run capped at 3 GB of address space, and a run
+that exhausts it reads OOM.
+
+- `nim-arc` — `--mm:arc`: reference counting with no cycle collector.
+- `nim-none` — `--mm:none`: nothing is ever freed.
+- `d-nogc` — `--DRT-gcopt=disable:1`: D's collector does not run. (It still
+  collects when an allocation would fail, which is why it plateaus at the cap
+  instead of dying there.)
+
+| pattern | nim | nim-arc | nim-none | odin | d | d-nogc |
+|---|---|---|---|---|---|---|
+| copy_loop | 11 ms · 1.3 MB | 13 · 1.3 | OOM | 150 · 1.7 | 365 · 6.8 | 3465 · 3025 |
+| chain | 874 · 1.4 | 1004 · 1.4 | OOM | 175 · 1.7 | 532 · 7.0 | 4865 · 3025 |
+| overwrite | 283 · 1.3 | 317 · 1.3 | 1794 · 2059, OOM at 2N | 232 · 1.7 | 2433 · 4.8 | 3305 · 1574, OOM at 2N |
+| value_copy | 103 · 1.3 | 134 · 1.3 | 1848 · 2347, OOM at 2N | 82 · 1.7 | 185 · 6.8 | 1906 · 2350 |
+| transfer | 158 · 1.3 | 125 · 1.3 | 436 · 468 | 90 · 1.7 | 736 · 3.8 | 1016 · 388 |
+| str_temps | 377 · 1.3 | 432 · 1.3 | 424 · 271 | 500 · 1.8 | 351 · 3.8 | 402 · 65 |
+
+(time at N · peak RSS at N. At 2N every surviving no-free run doubled its
+RSS: transfer 468 → 933 MB on nim-none, 388 → 773 on d-nogc.)
+
+What it says:
+
+- **Not freeing is not faster; it is usually far slower.** Every heap-heavy
+  pattern slows down without frees: nim-none's overwrite is 6x Nim's, d-nogc's
+  copy_loop and chain are 9–10x D's. A fresh page has to be faulted in where a
+  freed block would have been reused, so the memory work these programs do is
+  cheaper done than skipped.
+- **ORC's cycle collector costs nothing here.** `nim` and `nim-arc` are within
+  noise of each other on all six; these programs build no cycles.
+- **Odin's static frees hold their own.** With nothing at run time but the
+  `delete`s the ownership pass decided, Odin is the fastest of the three on
+  chain, overwrite, value_copy and transfer, and holds 1.7 MB on all six.
+
+### Under valgrind, collectors off — 2026-09-25
+
+`bash benches/memory/valgrind.sh [N]` runs the same six programs under
+memcheck (N=2000), each backend in the configuration memcheck can see through:
+Nim with `-d:useMalloc` (ORC, and `--mm:none`), Odin as it ships, D with
+collection disabled. INVALID counts reads/writes of memory the program does
+not own and bad frees — a wrong program; "all errs" adds uninitialised-value
+reports.
+
+| pattern | nim invalid · lost | nim-none lost (never freed) | odin invalid · lost | d-nogc invalid |
+|---|---|---|---|---|
+| copy_loop | 0 · 0 | 49.3 MB | 0 · 0 | 0 |
+| chain | 0 · 0 | 147.8 MB | 0 · 0 | 0 |
+| overwrite | 0 · 0 | 12.6 MB | 0 · 0 | 0 |
+| value_copy | 0 · 0 | 16.4 MB | 0 · 0 | 0 |
+| transfer | 0 · 0 | 4.4 MB | 0 · 0 | 0 |
+| str_temps | 0 · 0 | 1.5 MB | 0 · 0 | 0 |
+
+- **No invalid access and no bad free on any backend, any pattern.** Nim's
+  ORC build is spotless outright (0 errors of any kind).
+- **Odin frees every block it allocates** — mallocs equal frees on all six.
+  Its "all errs" column (1,023 on copy_loop, 510,255 on overwrite) is Odin's
+  own allocator: a plain Odin `append` loop with no Tuck in it reports the
+  same "conditional jump depends on uninitialised value" inside
+  `runtime::heap_allocator_proc` on every growth.
+- **D** reports ~90 uninitialised-value errors per program, constant across
+  N — runtime start-up. Its heap is the GC's own pools, so memcheck cannot
+  count D's leaks.
+- **nim-none's "lost" is the whole allocation volume** — what a memory
+  manager, or the ownership pass, has to give back: 148 MB for 2,000 turns of
+  the threading chain.
+
+**It found two leaks on its first run, both fixed the same day.** Odin lost
+exactly one block on copy_loop, overwrite and transfer — the value a local
+ENDS with:
+- an OVERWRITTEN local (step 5 frees each old value at the overwrite; the
+  last one belonged to no rule) — now also freed at scope exit;
+- a local THREADED through a moved twin (`a = {xs: a} drop`: the twin frees
+  each old value; the last was never freed, since a moved argument counted as
+  gone for good) — step 5b frees it at scope exit.
+One buffer a scope — a fn with either shape, called 200,000 times, peaked at
+107 MB on Odin before and 1.8 MB after (`known_bugs`).
 
 ## Container copying — 2026-09-11
 

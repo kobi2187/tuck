@@ -54,8 +54,10 @@ import ../harness
 const
   # CEILING: no routine may exceed this. 64 -> 22 (2026-08-15) — it had been
   # set when scanNext sat at 38 and nothing has approached it since, so it was
-  # gating nothing. Now one over the current worst.
-  CEILING = 21
+  # gating nothing. Now one over the current worst. 21 -> 20 (2026-09-26):
+  # genOdinDecl (21) became a flat dispatch whose arms delegate; the worst is
+  # now the canonical child walk, childSlots, at 20.
+  CEILING = 20
 
   # HEAVY: how many routines may sit at cc>=15 — this tree's p90, and the point
   # where a `case` stops being dispatch and starts being a thing you trace.
@@ -137,7 +139,13 @@ const
   # destination says nothing") and failIfArrayLengthMismatched (a `fail*`).
   # That second one had NO test pinning it; one was added with the split,
   # since a green suite proved nothing about it either way.
-  HEAVY = 16
+  #
+  # 16 -> 13 (2026-09-26), a cleanup pass: genOdinDecl 21 and genDecl 18
+  # became flat dispatches naming every DeclKind, their long arms (fnsig,
+  # interface, type, const, pool) named procs; resolveRefsIn 20 became a loop
+  # over ast_ops.childSlots; mangleMember and genEntryPoint lost their inline
+  # loops to named helpers.
+  HEAVY = 13
   CC = "tools/cyc"
 
 proc run*(t: var T) =

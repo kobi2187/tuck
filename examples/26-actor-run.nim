@@ -2,47 +2,47 @@
 import ../compiler/tuck_rt
 import scheduler
 
-proc tuck_sumReady*(): bool
-proc tuck_main*(): int
+proc tuck_fn_sumReady*(): bool
+proc tuck_fn_main*(): int
 
-type tuck_CounterMsgKind* = enum msgAdd
-type tuck_CounterMsg* = object
-  tuckTag*: tuck_CounterMsgKind
+type tuck_type_CounterMsgKind* = enum msgAdd
+type tuck_type_CounterMsg* = object
+  tuckTag*: tuck_type_CounterMsgKind
   n*: int
 
-type tuck_Counter* = ref object
+type tuck_type_Counter* = ref object
   total*: int
-  mailbox*: Mailbox[tuck_CounterMsg, 128]
+  mailbox*: Mailbox[tuck_type_CounterMsg, 128]
 
-let tuck_CounterSingleton* = tuck_Counter()
+let tuck_type_CounterSingleton* = tuck_type_Counter(total: 0)
 
-proc handleMsg*(self: tuck_Counter, msg: tuck_CounterMsg) =
+proc handleMsg*(self: tuck_type_Counter, msg: tuck_type_CounterMsg) =
   case msg.tuckTag
   of msgAdd:
     let n = msg.n
     if true:
       self.total = (self.total + n)
 
-proc draintuck_Counter(): bool {.gcsafe.} =
+proc draintuck_type_Counter(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    for m in messages(tuck_CounterSingleton.mailbox):
-      handleMsg(tuck_CounterSingleton, m)
+    for m in messages(tuck_type_CounterSingleton.mailbox):
+      handleMsg(tuck_type_CounterSingleton, m)
       tuckCheckWaiters()
       result = true
 
-var tuck_CounterSlot*: pointer
-proc registerActortuck_Counter*() =
-  tuck_CounterSlot = tuckStartActor(draintuck_Counter)
+var tuck_type_CounterSlot*: pointer
+proc registerActortuck_type_Counter*() =
+  tuck_type_CounterSlot = tuckStartActor(draintuck_type_Counter)
 
-proc tuck_sumReady*(): bool =
-  return (tuck_CounterSingleton.total == 55)
+proc tuck_fn_sumReady*(): bool =
+  return (tuck_type_CounterSingleton.total == 55)
 
-proc tuck_main*(): int =
+proc tuck_fn_main*(): int =
   for tuck_i in (1 .. 10):
     if true:
-      discard enqueue(tuck_CounterSingleton.mailbox, tuck_CounterMsg(tuckTag: msgAdd, n: tuck_i))
-      tuckNotifySend(tuck_CounterSlot)
-  tuckWaitOn(tuck_CounterSlot, tuck_sumReady)
-  return tuck_CounterSingleton.total
+      discard enqueue(tuck_type_CounterSingleton.mailbox, tuck_type_CounterMsg(tuckTag: msgAdd, n: tuck_i))
+      tuckNotifySend(tuck_type_CounterSlot)
+  tuckWaitOn(tuck_type_CounterSlot, tuck_fn_sumReady)
+  return tuck_type_CounterSingleton.total
 

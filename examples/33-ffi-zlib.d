@@ -7,7 +7,7 @@ import sys = mod_sys;
 extern (C) ulong compressBound(ulong sourceLen);
 
 
-void tuck_main() {
+void tuck_fn_main() {
     ulong tuck_b = compressBound(1000L);
     if ((tuck_b == 1013L)) {
         sys.exit(0L);
@@ -17,5 +17,5 @@ void tuck_main() {
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_main();
+    tuck_fn_main();
 }

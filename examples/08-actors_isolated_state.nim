@@ -1,19 +1,19 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-type tuck_TrafficLightStateKind* = enum Red, Yellow, Green
+type tuck_type_TrafficLightStateKind* = enum Red, Yellow, Green
 
-type tuck_TrafficLightMsgKind* = enum msgNext
-type tuck_TrafficLightMsg* = object
-  tuckTag*: tuck_TrafficLightMsgKind
+type tuck_type_TrafficLightMsgKind* = enum msgNext
+type tuck_type_TrafficLightMsg* = object
+  tuckTag*: tuck_type_TrafficLightMsgKind
 
-type tuck_TrafficLight* = ref object
-  state*: tuck_TrafficLightStateKind
-  mailbox*: Mailbox[tuck_TrafficLightMsg, 4]
+type tuck_type_TrafficLight* = ref object
+  state*: tuck_type_TrafficLightStateKind
+  mailbox*: Mailbox[tuck_type_TrafficLightMsg, 4]
 
-let tuck_TrafficLightSingleton* = tuck_TrafficLight()
+let tuck_type_TrafficLightSingleton* = tuck_type_TrafficLight(state: Red)
 
-proc handleMsg*(self: tuck_TrafficLight, msg: tuck_TrafficLightMsg) =
+proc handleMsg*(self: tuck_type_TrafficLight, msg: tuck_type_TrafficLightMsg) =
   case msg.tuckTag
   of msgNext:
     if true:
@@ -25,15 +25,15 @@ proc handleMsg*(self: tuck_TrafficLight, msg: tuck_TrafficLightMsg) =
       of Yellow:
         Red)
 
-proc draintuck_TrafficLight(): bool {.gcsafe.} =
+proc draintuck_type_TrafficLight(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    for m in messages(tuck_TrafficLightSingleton.mailbox):
-      handleMsg(tuck_TrafficLightSingleton, m)
+    for m in messages(tuck_type_TrafficLightSingleton.mailbox):
+      handleMsg(tuck_type_TrafficLightSingleton, m)
       tuckCheckWaiters()
       result = true
 
-var tuck_TrafficLightSlot*: pointer
-proc registerActortuck_TrafficLight*() =
-  tuck_TrafficLightSlot = tuckStartActor(draintuck_TrafficLight)
+var tuck_type_TrafficLightSlot*: pointer
+proc registerActortuck_type_TrafficLight*() =
+  tuck_type_TrafficLightSlot = tuckStartActor(draintuck_type_TrafficLight)
 

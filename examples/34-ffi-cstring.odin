@@ -16,7 +16,7 @@ foreign z {
 	compressBound :: proc(sourceLen: u64) -> u64 ---
 }
 
-tuck_main :: proc () {
+tuck_fn_main :: proc () {
   tuck_v := zlibVersion()
   console.printLine(tuck_v)
   tuck_b := compressBound(u64(1000))
@@ -27,5 +27,5 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }

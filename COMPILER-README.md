@@ -293,7 +293,7 @@ What the checker knows about a variable, and where each piece lives:
 |---|---|---|
 | type, `isVar`, `isParam` | `Binding` in the scope stack | binding (scope-correct) |
 | `narrowed` — "this result was guarded, `.value` is readable" (§4.8) | `Binding.narrowed`; `setNarrowed`/`isNarrowed` walk exactly as `lookup` does | binding (scope-correct) |
-| `<uninit>` — a field the construction skipped | rides IN the binding's record TYPE; `retype`/`clearUninit` rebuild it | binding (scope-correct) |
+| `<uninit>` — a field the construction skipped | rides IN the binding's record TYPE; `clearUninit` rebuilds it | binding (scope-correct) |
 | `varVariants` — per-var possible-variant set for transition types (§4.4b) | `Table[string, seq[string]]` + `shadowedVariants` undo log, one frame per scope | **bare name** |
 | `varErrTypes` — result var → the `[error: …]` enums of the fn that produced it | `Table[string, seq[string]]` | **bare name** |
 | `currentErrTypes`, `loopDepth`, `errPolicy`, `transitionCtx`, … | flat fields on `TypeChecker` | per-fn / per-checker |

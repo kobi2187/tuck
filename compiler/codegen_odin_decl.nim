@@ -5,14 +5,11 @@
 # register/mixin/err-handler. Calls INTO codegen_odin.nim's
 # genOdinExpr for fn bodies (one-way: genOdinExpr never calls back into
 # anything here).
-import ast, lowering, strutils, sets, tables, options
+import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
 import codegen_odin_ctx
-import codegen_odin_util
-from mangle import mangleName
-from lowering_seqcopy import seqFieldNames
 import analysis_ownership   ## decides the frees; this file only prints them
 import ./codegen_odin
 
@@ -56,15 +53,6 @@ proc genOdinResourceTables(d: Decl, ind: string): string =
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string
   ## Forward-declared: genRecordType (manager-type member fns) recurses
   ## into it before its own definition.
-
-type
-  BitField* = object
-    ## One `bit N` / `bits LO..HI` field of a memory-mapped register, decoded
-    ## from its declared type and attributes.
-    prefix: string    # <register>_<field>, the name every emitted symbol shares
-    loBit, hiBit: string
-    isRange: bool     # a multi-bit field, not a single flag
-    canRead, canWrite: bool
 
 # Object member fn (or a mixin fn materialized by `+ mixin`): the object
 # rides as a `ref self` first parameter (reassignment must reach the
@@ -232,7 +220,7 @@ proc enterReturnContext*(ctx: var OdinCodegenCtx, d: Decl) =
   ctx.retInvName =
     if not wrapped and d.fnReturnType != nil and
        d.fnReturnType.kind == tkNamed and
-       hasInvariants(ctx.module, d.fnReturnType.name): d.fnReturnType.name
+       ctx.index.hasInvariants(d.fnReturnType.name): d.fnReturnType.name
     else: ""
 
 proc leaveReturnContext*(ctx: var OdinCodegenCtx) =
@@ -256,6 +244,57 @@ proc genFnBody*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): stri
   elif retTypeStr != "void":
     result = ensureTrailingReturn(result, d.fnBody, savedIndent)
   ctx.indent = savedIndent
+
+proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
+                  movedP, ind: string): string =
+  ## A threaded-container fn, emitted twice: a wrapper `f` that copies its
+  ## moved parameter and delegates, and the twin `f_moved` holding the body.
+  ##
+  ## STAGE 3: the twin OWNS its moved parameter, so it may free it at exit —
+  ## but only if the value it returns carries none of the parameter's buffers.
+  ## `applyBuy` builds two new ladders and qualifies; `takeLevel` returns the
+  ## very ladder it was handed and does not. Freeing there would free the
+  ## value the caller is about to bind, which is the failure `-define:TUCK_TRACK`
+  ## exists to catch.
+  ##
+  ## `defer`, so every exit path frees once — a twin with two returns would
+  ## otherwise need the call duplicated at each.
+  ## A slot HANDED ON to another twin is no longer ours to free. `applyBuy`
+  ## passes `b.ask` to `sweep_moved`, which takes it destructively and frees
+  ## it itself — freeing it here too is a double free, and it segfaulted
+  ## immediately under `-define:TUCK_TRACK=true`. This is the third entry in
+  ## the escape list: returned, stored in an actor field, or MOVED INTO A CALL.
+  ##
+  ## ASKED OF THE VALUE MIRROR rather than re-scanned for. This used to be its
+  ## own walk over the body, looking for calls whose first argument was rooted
+  ## at the moved parameter — a second traversal that had to agree with the
+  ## one that DECIDED to hand a slot on, with nothing making them agree. The
+  ## consuming site is recorded on the value now, so there is one answer.
+  ## Switched after both were computed side by side across the corpus, both
+  ## applications, the Savina ports and the stdlib with no difference, and
+  ## after `TUCK_TRACK` confirmed no double free.
+  ## Step 6 of the ownership pass, printed.
+  var frees = ""
+  for slot in ownershipFor(d).twinFreesParam:
+    let path = if slot.len == 0: movedP else: movedP & "." & slot
+    frees.add(ind & "\tdefer delete(" & path & ")\n")
+  let twinName = movedName(d.name.replace(".", "_"))
+  var argNames: seq[string]
+  for p in d.fnParams: argNames.add(p.name)
+  var wrap = header & "\n"
+  wrap.add(ind & "  " & movedP & " := " & movedP & "\n")
+  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
+  if fields.len == 0:
+    wrap.add(ind & "  " & movedP & " = rt.tuckSeqCopy(" & movedP & ")\n")
+  else:
+    for f in fields:
+      wrap.add(ind & "  " & movedP & "." & f & " = rt.tuckSeqCopy(" &
+               movedP & "." & f & ")\n")
+  wrap.add(ind & "  return " & twinName & "(" & argNames.join(", ") & ")\n")
+  wrap.add(ind & "}\n\n")
+  let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
+                                  twinName & " :: proc")
+  wrap & twinHeader & "\n" & frees & bodyStr & "\n" & ind & "}\n"
 
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An ordinary fn. A pending fn is a stub, and leaves before any of this
@@ -285,53 +324,8 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars
-  if movedP == "":
-    return header & "\n" & bodyStr & "\n" & ind & "}\n"
-  # STAGE 3: the twin OWNS its moved parameter, so it may free it at exit —
-  # but only if the value it returns carries none of the parameter's buffers.
-  # `applyBuy` builds two new ladders and qualifies; `takeLevel` returns the
-  # very ladder it was handed and does not. Freeing there would free the
-  # value the caller is about to bind, which is the failure `-define:TUCK_TRACK`
-  # exists to catch.
-  #
-  # `defer`, so every exit path frees once — a twin with two returns would
-  # otherwise need the call duplicated at each.
-  # A slot HANDED ON to another twin is no longer ours to free. `applyBuy`
-  # passes `b.ask` to `sweep_moved`, which takes it destructively and frees
-  # it itself — freeing it here too is a double free, and it segfaulted
-  # immediately under `-define:TUCK_TRACK=true`. This is the third entry in
-  # the escape list: returned, stored in an actor field, or MOVED INTO A CALL.
-  #
-  # ASKED OF THE VALUE MIRROR rather than re-scanned for. This used to be its
-  # own walk over the body, looking for calls whose first argument was rooted
-  # at the moved parameter — a second traversal that had to agree with the
-  # one that DECIDED to hand a slot on, with nothing making them agree. The
-  # consuming site is recorded on the value now, so there is one answer.
-  # Switched after both were computed side by side across the corpus, both
-  # applications, the Savina ports and the stdlib with no difference, and
-  # after `TUCK_TRACK` confirmed no double free.
-  # Step 6 of the ownership pass, printed.
-  var frees = ""
-  for slot in ownershipFor(d).twinFreesParam:
-    let path = if slot.len == 0: movedP else: movedP & "." & slot
-    frees.add(ind & "\tdefer delete(" & path & ")\n")
-  let twinName = movedName(d.name.replace(".", "_"))
-  var argNames: seq[string]
-  for p in d.fnParams: argNames.add(p.name)
-  var wrap = header & "\n"
-  wrap.add(ind & "  " & movedP & " := " & movedP & "\n")
-  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
-  if fields.len == 0:
-    wrap.add(ind & "  " & movedP & " = rt.tuckSeqCopy(" & movedP & ")\n")
-  else:
-    for f in fields:
-      wrap.add(ind & "  " & movedP & "." & f & " = rt.tuckSeqCopy(" &
-               movedP & "." & f & ")\n")
-  wrap.add(ind & "  return " & twinName & "(" & argNames.join(", ") & ")\n")
-  wrap.add(ind & "}\n\n")
-  let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
-                                  twinName & " :: proc")
-  wrap & twinHeader & "\n" & frees & bodyStr & "\n" & ind & "}\n"
+  if movedP == "": header & "\n" & bodyStr & "\n" & ind & "}\n"
+  else: ctx.genMovedTwin(d, header, bodyStr, movedP, ind)
 
 proc genTransitionProcs*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
                         hasPayload: bool): string =
@@ -540,10 +534,6 @@ proc genAliasType*(ctx: var OdinCodegenCtx, d: Decl): string =
   return ind & d.name & " :: " & (if aGen != "": "struct" & aGen & " { " &
          "using _: " & typeBodyStr & " }" else: typeBodyStr) & "\n"
 
-proc msgVariantName*(handlerName: string): string =
-  ## The message-enum tag a handler receives on.
-  "msg" & handlerName.capitalize()
-
 proc mailboxSize*(m: Module, d: Decl): string =
   ## The resolved NUMBER — see codegen_common.actorQueueSize.
   for attr in d.attrs:
@@ -556,6 +546,13 @@ proc actorFieldLines*(ctx: var OdinCodegenCtx, d: Decl): seq[string] =
   let ind = "  ".repeat(ctx.indent)
   for f in d.actorFields:
     result.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
+
+proc collectActorInits(ctx: var OdinCodegenCtx, d: Decl) =
+  ## The singleton's starting field values (#87), for the entry point.
+  for f in d.actorFields:
+    if f.default != nil:
+      ctx.actorInits.add(actorSingletonName(d.name) & "." & f.name & " = " &
+                         ctx.genOdinExpr(f.default))
 
 proc genInertActor*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## No message handlers: an empty enum is invalid. Emit the state, its
@@ -742,6 +739,7 @@ proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   for h in handlers: variants.add(msgVariantName(h.name))
   if hasShutdown:
     variants.add("msgShutdown")   # sent as `Actor send shutdown {}`
+  ctx.collectActorInits(d)
   if variants.len == 0:
     return ctx.genInertActor(d, ind)
   result = ctx.genMsgEnvelope(d, handlers, variants, ind)
@@ -776,13 +774,11 @@ proc registryEventStruct*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string
 proc registryHandlerCalls*(ctx: OdinCodegenCtx, d: Decl, v: VariantDef,
                           ind: string): string =
   ## Every declared handler for this event, called with the event's fields.
-  let handlerName = d.name & "." & v.name
   var calls: seq[string]
-  for decl in ctx.module.decls:
-    if decl.kind != dkFn or decl.name != handlerName: continue
+  for decl in registryHandlers(ctx.module, d, v):
     var argNames: seq[string]
     for f in v.fields: argNames.add(f.name)
-    calls.add(ind & "\t" & d.name & "_" & v.name & "(" & argNames.join(", ") & ")")
+    calls.add(ind & "\t" & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
   if calls.len > 0: calls.join("\n") & "\n" else: ""
 
 proc registryRaiseProc*(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,
@@ -1084,25 +1080,7 @@ proc genMixinBlock*(ctx: var OdinCodegenCtx, d: Decl): string =
   if cBindings.len > 0:
     result.add(ctx.genForeignBlock(cBindings, cLib))
 
-proc decodeBitField*(regName: string, f: FieldDef): BitField =
-  ## `bits 3..7` is a multi-bit FIELD: shift by the low bit and mask the width.
-  ## A single `bit N` is the one-bit case of the same shape.
-  let bitVal = f.typ.name.replace("bit ", "").replace("bits ", "")
-  let dotPos = bitVal.find("..")
-  result.loBit = if dotPos >= 0: bitVal[0 ..< dotPos].strip() else: bitVal
-  result.hiBit = if dotPos >= 0: bitVal[dotPos + 2 .. ^1].strip() else: bitVal
-  result.isRange = dotPos >= 0 and result.loBit != result.hiBit
-  result.prefix = regName & "_" & f.name
-  var hasRead, hasWrite = false
-  for a in f.attrs:
-    if a.name == "read": hasRead = true
-    elif a.name == "write": hasWrite = true
-  # An unmarked field is readable AND writable; marking one direction opts out
-  # of the other.
-  result.canRead = hasRead or not hasWrite
-  result.canWrite = hasWrite or not hasRead
-
-proc bitConsts*(bf: BitField, ind: string): seq[string] =
+proc bitConsts*(bf: BitFieldInfo, ind: string): seq[string] =
   ## The shift, and for a range the width and mask.
   result.add(ind & bf.prefix & "_SHIFT :: " & bf.loBit)
   if bf.isRange:
@@ -1111,7 +1089,7 @@ proc bitConsts*(bf: BitField, ind: string): seq[string] =
     result.add(ind & bf.prefix & "_MASK :: u32(1 << u32(" & bf.prefix &
                "_WIDTH)) - 1")
 
-proc bitGetter*(bf: BitField, regName, ind: string): string =
+proc bitGetter*(bf: BitFieldInfo, regName, ind: string): string =
   ## A range reads as a masked u32; a single bit reads as a bool.
   let body = if bf.isRange:
                "return (" & regName & "^ >> u32(" & bf.prefix & "_SHIFT)) & " &
@@ -1123,7 +1101,7 @@ proc bitGetter*(bf: BitField, regName, ind: string): string =
   ind & bf.prefix & "_get :: proc() -> " & retT & " {\n" &
     ind & "\t" & body & "\n" & ind & "}\n"
 
-proc bitSetter*(bf: BitField, regName, ind: string): string =
+proc bitSetter*(bf: BitFieldInfo, regName, ind: string): string =
   ## A range clears its mask before OR-ing the shifted value in; a single bit
   ## sets or clears one mask.
   if bf.isRange:
@@ -1152,100 +1130,103 @@ proc genRegister*(ctx: OdinCodegenCtx, d: Decl, ind: string): string =
   ind & d.name & " := cast(^u32)(uintptr(" & d.regAddress & "))\n" &
     consts.join("\n") & "\n" & accessors.join("")
 
+proc genOdinTypeDecl(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## A `type`: a sum, a record, or an alias of another type.
+  if d.typeBody == nil: return ""
+  if d.typeBody.kind == tkSum: ctx.genSumType(d)
+  elif d.typeBody.kind == tkRecord: ctx.genRecordType(d)
+  else: ctx.genAliasType(d)
+
+proc genOdinConst(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## A literal is a true compile-time constant (`::`); structured data
+  ## becomes a package-level var, still one-time and immutable in intent.
+  if d.constVal != nil and d.constVal.kind == exkLit:
+    ind & d.name & " :: " & ctx.genOdinExpr(d.constVal)
+  else:
+    ind & d.name & " := " & ctx.genOdinExpr(d.constVal)
+
+proc genOdinPool(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## spec 7.2: one package-level instance; acquire/release are the runtime's
+  ## generic procs, reached as `Pool.acquire` -> `rt.acquire(&Pool)`.
+  ind & d.name & ": rt.ObjectPool(" & ctx.odinType(d.poolElem) & ", " &
+    $d.poolCount & ")\n"
+
+proc collectStaticAssert(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## Odin's `#assert` does not reach a runtime value, so the entry point
+  ## asserts these; nothing is emitted in place.
+  ctx.staticAsserts.add(ctx.genOdinExpr(d.assertExpr))
+  ""
+
+proc genOdinFnSig(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## `fnsig NAME = {params} -> ret` → a named Odin proc type, used for
+  ## callback slots.
+  ##
+  ## A GENERIC fnsig emits NOTHING. Odin proc types are not parametric (its
+  ## generics are `$T` parapoly on PROCS, a different mechanism), so there
+  ## is no named type to declare — every USE spells the substituted
+  ## signature inline instead. Nothing is lost: a fn type is structural
+  ## here, so there was no nominal identity to keep.
+  if d.sigGenerics.len > 0: return ""
+  var params: seq[string]
+  for prm in d.sigParams:
+    params.add(prm.name & ": " & ctx.odinType(prm.typ))
+  let retStr =
+    if d.sigReturn != nil and not (d.sigReturn.kind == tkNamed and
+                                   d.sigReturn.name == "void"):
+      " -> " & ctx.odinType(d.sigReturn)
+    else: ""
+  # A C callback is a bare function pointer using the C calling convention:
+  # `proc "c" (...)`. Odin's default convention differs, so passing a plain
+  # proc to a C function pointer would be an ABI mismatch.
+  let conv = if d.sigIsCCallback: "\"c\" " else: ""
+  return ind & d.name & " :: proc " & conv & "(" & params.join(", ") & ")" &
+         retStr & "\n"
+
+proc genOdinInterface(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## A VARIANT over the satisfying types, copied in — mirrors the Nim backend
+  ## (spec §5.3). Odin's tagged union does what Nim's case-object does: the
+  ## payload is the object itself, so the value owns its data and there is no
+  ## lifetime question.
+  let sats = ctx.satisfiersOf(d.name)
+  if sats.len == 0:
+    return ind & "// interface " & d.name & ": no satisfying types\n"
+  var tags: seq[string]
+  var fields: seq[string]
+  for st in sats:
+    tags.add(d.name & "_is_" & st.name)
+    fields.add(ind & "\t" & st.name & "Val: " & st.name & ",")
+  result = ind & d.name & "Tag :: enum { " & tags.join(", ") & " }\n\n"
+  result.add(ind & d.name & " :: struct {\n" &
+             ind & "\ttag: " & d.name & "Tag,\n" &
+             fields.join("\n") & "\n" & ind & "}\n")
+
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## One top-level declaration. Every DeclKind is named, so a new one fails
+  ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
   if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind
-  of dkFn:
-    return ctx.genOdinFnDecl(d)
-  of dkType:
-    if d.typeBody != nil:
-      if d.typeBody.kind == tkSum:
-        return ctx.genSumType(d)
-      elif d.typeBody.kind == tkRecord:
-        return ctx.genRecordType(d)
-      else:
-        return ctx.genAliasType(d)
-    return ""
-  of dkObject:
-    return ctx.genObjectDecl(d, ind)
-  of dkActor:
-    return ctx.genActor(d)
-  of dkTask:
-    return ctx.genTaskDecl(d, ind)
-  of dkConst:
-    # A literal is a true compile-time constant (`::`); structured data
-    # becomes a package-level var, still one-time and immutable in intent.
-    if d.constVal != nil and d.constVal.kind == exkLit:
-      return ind & d.name & " :: " & ctx.genOdinExpr(d.constVal)
-    return ind & d.name & " := " & ctx.genOdinExpr(d.constVal)
-  of dkExpr:
-    return ctx.genOdinExpr(d.expr)
+  of dkFn: ctx.genOdinFnDecl(d)
+  of dkType: ctx.genOdinTypeDecl(d)
+  of dkObject: ctx.genObjectDecl(d, ind)
+  of dkActor: ctx.genActor(d)
+  of dkTask: ctx.genTaskDecl(d, ind)
+  of dkConst: ctx.genOdinConst(d, ind)
+  of dkExpr: ctx.genOdinExpr(d.expr)
   of dkRegister: ctx.genRegister(d, ind)
-  of dkRegistry:
-    return ctx.genRegistry(d)
-  of dkImport:
-    return ""  # emitOdin has no import lines; same project, same namespace
-  of dkStaticAssert:
-    ctx.staticAsserts.add(ctx.genOdinExpr(d.assertExpr))
-    return ""
+  of dkRegistry: ctx.genRegistry(d)
+  of dkStaticAssert: ctx.collectStaticAssert(d)
   of dkErrors: ctx.genErrHandler(d, ind)
-  of dkResources: return genOdinResourceTables(d, ind)
+  of dkResources: genOdinResourceTables(d, ind)
   of dkMixin, dkExtern, dkPending: ctx.genMixinBlock(d)
-  of dkPool:
-    # spec 7.2: one package-level instance; acquire/release are the runtime's
-    # generic procs, reached as `Pool.acquire` -> `rt.acquire(&Pool)`.
-    # The Beef backend has no arm for this — parity is with codegen.nim.
-    return ind & d.name & ": rt.ObjectPool(" & ctx.odinType(d.poolElem) &
-           ", " & $d.poolCount & ")\n"
-  of dkFnSig:
-    # `fnsig NAME = {params} -> ret` → a named Odin proc type, used for
-    # callback slots. The Beef backend has no arm for this at all.
-    #
-    # Generic (`fnsig NAME[T, ...]`): Odin's proc TYPES are not parametric
-    # the way Nim's `proc(...): U {.closure.}` type alias is — there is no
-    # direct equivalent to emit yet (Odin's own generics are `$T` parapoly
-    # procs, a different mechanism). Die loudly rather than emit the bare
-    # `T`/`U` names as if they were real, undeclared types.
-    # A GENERIC fnsig emits NOTHING. Odin proc types are not parametric (its
-    # generics are `$T` parapoly on PROCS, a different mechanism), so there
-    # is no named type to declare — every USE spells the substituted
-    # signature inline instead. Nothing is lost: a fn type is structural
-    # here, so there was no nominal identity to keep.
-    if d.sigGenerics.len > 0: return ""
-    var params: seq[string]
-    for prm in d.sigParams:
-      params.add(prm.name & ": " & ctx.odinType(prm.typ))
-    let retStr =
-      if d.sigReturn != nil and not (d.sigReturn.kind == tkNamed and
-                                     d.sigReturn.name == "void"):
-        " -> " & ctx.odinType(d.sigReturn)
-      else: ""
-    # A C callback is a bare function pointer using the C calling convention:
-    # `proc "c" (...)`. Odin's default convention differs, so passing a plain
-    # proc to a C function pointer would be an ABI mismatch.
-    let conv = if d.sigIsCCallback: "\"c\" " else: ""
-    return ind & d.name & " :: proc " & conv & "(" & params.join(", ") & ")" &
-           retStr & "\n"
-  of dkInterface:
-    # A VARIANT over the satisfying types, copied in — mirrors the Nim backend
-    # (spec §5.3). Odin's tagged union does what Nim's case-object does: the
-    # payload is the object itself, so the value owns its data and there is no
-    # lifetime question.
-    let sats = ctx.satisfiersOf(d.name)
-    if sats.len == 0:
-      return ind & "// interface " & d.name & ": no satisfying types\n"
-    var tags: seq[string]
-    var fields: seq[string]
-    for st in sats:
-      tags.add(d.name & "_is_" & st.name)
-      fields.add(ind & "\t" & st.name & "Val: " & st.name & ",")
-    result = ind & d.name & "Tag :: enum { " & tags.join(", ") & " }\n\n"
-    result.add(ind & d.name & " :: struct {\n" &
-               ind & "\ttag: " & d.name & "Tag,\n" &
-               fields.join("\n") & "\n" & ind & "}\n")
-    return result
-  else:
-    return ""
+  of dkPool: ctx.genOdinPool(d, ind)
+  of dkFnSig: ctx.genOdinFnSig(d, ind)
+  of dkInterface: ctx.genOdinInterface(d, ind)
+  of dkImport: ""     # same project, same namespace: no import line
+  of dkGroup: ""      # a compile-time bound (spec §5.5), resolved away
+  of dkSatisfies: ""  # folded into the object's own list before checking
+  of dkWhen: ""       # resolved away by modules.resolveWhenBlocks
+  of dkPublic: ""     # a list of names, not a declaration
+  of dkSelect: ""     # an actor's arms are emitted with the actor

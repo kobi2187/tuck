@@ -7,7 +7,6 @@ import ast, tables, sets, strutils
 import ast_query
 import resolution
 import decl_index
-from codegen_odin_util import odinErrCode, enumTagOwner
 
 const dPrims = {
   # Tuck int is 64-bit (ROADMAP 2026-08-25 ruling 1); D's `int` is 32-bit,
@@ -66,8 +65,9 @@ type
     matchNarrowed*: Table[string, string]  # subject text -> the variant a
                                             # match arm currently narrows it
                                             # to (see codegen.nim's twin)
-    idx*: DeclIndex   # O(1) name lookups; a scan here is quadratic over the
-                     # emit hot path (measured — see decl_index.nim)
+    idx: DeclIndex   # O(1) name lookups; a scan here is quadratic over the
+                     # emit hot path (measured — see decl_index.nim). Built
+                     # with the ctx: D makes no throwaway ones.
     cLibs*: HashSet[string]  # `lib:` specs from C-FFI extern blocks; each
                             # becomes a pragma(lib) at module top level
     implMods*: Table[string, string]  # `impl: d "..."` alias -> module path,
@@ -84,6 +84,11 @@ type TypeMode* = enum
   ## How a type walk answers a type it cannot map.
   tmRequired   ## a position that MUST have a type: die naming the construct
   tmOptional   ## a declaration, which can fall back to `auto`: answer ""
+
+proc index*(ctx: DCodegenCtx): lent DeclIndex =
+  ## The module's declaration index (decl_index) — the same accessor the Nim
+  ## and Odin contexts have, so a question reads alike in all three.
+  ctx.idx
 
 proc dUnsupported*(construct: string): string =
   ## The D backend refuses what it cannot yet emit — loudly, at emission
@@ -121,17 +126,11 @@ proc bangInner*(t: Type): Type =
   else: nil
 
 proc importedTypeQualifierD*(ctx: DCodegenCtx, name: string): string =
-  ## A type declared in an IMPORTED module lives in that module's D file, so
-  ## it must be referenced through the import alias (`time.tuck_Milliseconds`)
-  ## — D, like Odin, never merges module scopes. Port of the Odin helper.
-  for d in ctx.module.decls:
-    if d == nil or d.kind != dkType or d.name != name: continue
-    if not d.span.file.startsWith(ImportedTypeMarker & ":"): break
-    let origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-    let pkg = dAlias(origin)
-    if pkg != dAlias(ctx.moduleName): return pkg & "." & name
-    break
-  name
+  ## `pkg.Name` for a type another module declares, else `Name`.
+  let origin = moduleDeclaringType(ctx.module, name)
+  if origin != "" and dAlias(origin) != dAlias(ctx.moduleName):
+    dAlias(origin) & "." & name
+  else: name
 
 proc declaredGenericD*(ctx: DCodegenCtx, name: string): bool =
   ## Is `name` a type this module declares (or imports) WITH type parameters?

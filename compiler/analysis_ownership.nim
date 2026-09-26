@@ -69,7 +69,8 @@
 #           Allowed only when every value ever assigned to the name is a
 #           fresh buffer (so the new value can never BE the old one), the
 #           name never escapes, and it is a local rather than a parameter
-#           whose first value belongs to the caller.
+#           whose first value belongs to the caller. The value it ENDS with
+#           is replaced by nothing, so it is freed at scope exit as well.
 #
 #   STEP 6  A fn with a MOVED twin hands its first parameter over to be
 #           consumed. The twin frees each parameter slot the result does not
@@ -325,6 +326,40 @@ proc isFreshBuffer(s: Scan, v: Expr): bool =
   (v.id.isSet and v.id in s.copiedOut) or
   decidedExclusive(v, "")
 
+proc threadsMovedValue(v: Expr, name: string, res: Resolution): bool =
+  ## `name = f(name, ...)` where the twin takes `name`'s buffer.
+  v != nil and v.kind == exkCall and v.args.len > 0 and v.args[0] != nil and
+    v.args[0].kind == exkVar and v.args[0].name == name and
+    isMovedArg(res, v.args[0])
+
+proc threadedLocalsDieAtExit(s: Scan, d: Decl,
+                             timesAssigned: CountTable[string],
+                             already: HashSet[string]): seq[string] =
+  ## STEP 5b. A local THREADED through moved twins — `a = {xs: a} drop` —
+  ## hands each old value to the twin, which frees it, and owns each result.
+  ## So no overwrite frees anything; but the value it ENDS with is handed to
+  ## nothing, and only scope exit can free it. Step 3 counts a moved argument
+  ## as gone for good, so this was a buffer a scope — found by valgrind over
+  ## benches/memory's `transfer`.
+  ##
+  ## Every value the name is given must be its own (owned, as step 2 asks),
+  ## at least one must thread, and apart from threading back the name must
+  ## not escape. A local, bare `Seq`, as in step 5.
+  var params: HashSet[string]
+  for p in d.fnParams: params.incl(p.name)
+  for name, count in timesAssigned:
+    if count < 2 or name in params or name in already: continue
+    let values = valuesAssignedTo(s.body, name)
+    if values.len == 0 or seqElem(s.res.typeFor(values[0])) == nil: continue
+    var threads = false
+    var owned = true
+    for v in values:
+      if threadsMovedValue(v, name, s.res): threads = true
+      if not s.ownsSlot(v, ""): owned = false
+    if threads and owned and
+       not s.ix.escapes(s.heapRule, name, "", threading = true):
+      result.add name
+
 proc diesAtOverwrite(s: Scan, d: Decl,
                      timesAssigned: CountTable[string]): HashSet[string] =
   ## Locals overwritten in a loop, whose OLD value dies at the overwrite.
@@ -426,23 +461,30 @@ proc checkInvariants*(o: Ownership, d: Decl) =
   ## build rather than behind a flag: each of these was a real bug first.
   var seen: HashSet[string]
   for f in o.freed:
-    # ONE RELEASE PER SLOT. A slot freed twice is a double free, and that is
-    # not hypothetical: `b` freed at scope exit AND by the twin consuming it
-    # segfaulted `value_semantics`. Here it is a duplicate key.
-    let key = f.local & "\x00" & f.slot
+    # ONE RELEASE PER SLOT PER KIND. A slot freed twice the same way is a
+    # double free, and that is not hypothetical: `b` freed at scope exit AND
+    # by the twin consuming it segfaulted `value_semantics`. An overwritten
+    # local is the one name with two kinds, and they release different
+    # values: the overwrite each OLD one, scope exit the one it ends with.
+    let key = f.local & "\x00" & f.slot & "\x00" & $f.kind
     doAssert key notin seen,
       "ownership: " & d.name & " frees " & f.local &
       (if f.slot.len > 0: "." & f.slot else: "") & " more than once"
     seen.incl(key)
+    doAssert f.kind != fkTwinParam or f.local notin o.freeAtScopeExit,
+      "ownership: " & d.name & " frees " & f.local &
+      " both as the twin's parameter and at scope exit"
 
-  # THE TWO LOCAL RULES ARE MUTUALLY EXCLUSIVE. Step 4 needs the name assigned
-  # exactly once; step 5 needs it assigned more than once. A name in both
-  # means one of those counts is wrong, and the emitted code would free the
-  # same buffer at the overwrite and again at the end.
+  # AN OVERWRITTEN LOCAL IS FREED AT SCOPE EXIT TOO. Step 5 frees each old
+  # value as it is replaced; the value the local ends with is replaced by
+  # nothing, so only scope exit can free it. It used to be freed by neither —
+  # one buffer a call, found by valgrind (benches/memory/valgrind.sh). Step 5
+  # admits only locals every one of whose values is FRESH, so the last value
+  # is never one the overwrite already freed.
   for name in o.freeBeforeOverwrite:
-    doAssert name notin o.freeAtScopeExit,
-      "ownership: " & d.name & " frees " & name &
-      " both at an overwrite and at scope exit"
+    doAssert name in o.freeAtScopeExit,
+      "ownership: " & d.name & " frees " & name & " at each overwrite but " &
+      "not at scope exit, so its last value leaks"
 
   # A SLOT IS NAMED ONCE PER LOCAL. `@["xs", "xs"]` would emit two deletes.
   for name, slots in o.freeAtScopeExit:
@@ -510,6 +552,15 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl,
     if slots.len > 0: result.freeAtScopeExit[name] = slots
 
   result.freeBeforeOverwrite = s.diesAtOverwrite(d, timesAssigned)  # step 5
+  for name in result.freeBeforeOverwrite:                     # ...its last value
+    doAssert name notin result.freeAtScopeExit,
+      "ownership: " & name & " is assigned once (step 4) and overwritten (step 5)"
+    result.freeAtScopeExit[name] = @[""]
+  for name in s.threadedLocalsDieAtExit(d, timesAssigned,             # step 5b
+                                        result.freeBeforeOverwrite):
+    doAssert name notin result.freeAtScopeExit,
+      "ownership: " & name & " is assigned once (step 4) and threaded (5b)"
+    result.freeAtScopeExit[name] = @[""]
   result.twinFreesParam = s.twinFreedSlots(d)                       # step 6
 
   result.gatherFreed(d)

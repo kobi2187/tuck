@@ -5,7 +5,7 @@
 # This recursion is real cohesion, so it lives in one module. Depends only on
 # parser_base (Parser state + token accessors) — it calls neither parseType nor
 # parseDecl, which is what lets it sit at the bottom of the parser DAG.
-import strutils, tables
+import tables
 import ast
 import ast_ops
 import ../lexer

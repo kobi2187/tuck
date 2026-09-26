@@ -3,13 +3,13 @@ package main
 
 import rt "./tuckrt"
 
-tuck_SafeRPM :: distinct u16
+tuck_type_SafeRPM :: distinct u16
 
-tuck_PacketSeq :: distinct u8
+tuck_type_PacketSeq :: distinct u8
 
-tuck_ErrorCount :: distinct u32
+tuck_type_ErrorCount :: distinct u32
 
-tuck_SensorEvent :: struct {
+tuck_type_SensorEvent :: struct {
 	channel: u8,
 	reading: u16,
 }
@@ -38,13 +38,13 @@ tuck_RCC_CR_HSITRIM_set :: proc(value: u32) {
 	tuck_RCC_CR^ = (tuck_RCC_CR^ &~ (tuck_RCC_CR_HSITRIM_MASK << u32(tuck_RCC_CR_HSITRIM_SHIFT))) | shifted
 }
 
-tuck_processISR :: proc (event: tuck_SensorEvent) {
+tuck_fn_processISR :: proc (event: tuck_type_SensorEvent) {
 
 }
 
 tuck_UartBuffer: rt.ObjectPool([64]u8, 8)
 
-tuck_handleUart :: proc () {
+tuck_fn_handleUart :: proc () {
   tuck_buf := rt.acquire(&tuck_UartBuffer)
   if !(tuck_buf.status == .Ok) {
       return

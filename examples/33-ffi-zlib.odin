@@ -9,7 +9,7 @@ foreign z {
 	compressBound :: proc(sourceLen: u64) -> u64 ---
 }
 
-tuck_main :: proc () {
+tuck_fn_main :: proc () {
   tuck_b := compressBound(u64(1000))
   if (tuck_b == 1013) {
       sys.exit(0)
@@ -18,5 +18,5 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }

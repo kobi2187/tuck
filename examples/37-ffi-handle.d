@@ -13,7 +13,7 @@ extern (C) int counterBump(Counter c, int by);
 extern (C) void counterFree(Counter c);
 
 
-void tuck_main() {
+void tuck_fn_main() {
     Counter tuck_h = counterNew(100L);
     int tuck_t = counterBump(tuck_h, 5L);
     counterFree(tuck_h);
@@ -25,5 +25,5 @@ void tuck_main() {
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_main();
+    tuck_fn_main();
 }

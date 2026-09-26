@@ -126,7 +126,7 @@ removes that dependency.
 | 3.2 | ~~Assert no use follows a free~~ **DONE 2026-09-25, as a BUFFER check** (`buffer_check.nim`, asserted inside `ownershipOf` on every Odin build): each value's heap slots are mapped to the buffers they may denote — parameter slots, copied vs uncopied bindings, fields, phis, moved calls — and no buffer may be released by two free sites, nor released at exit and returned. Per-VALUE `freedAt` was the plan; buffers are what several names share, which is where all three bugs found on 2026-09-25 lived. Verified to fire on two of them with their fixes reverted. The one it cannot see is statement ORDER (a free emitted before the right-hand side that reads it) — fixed at the emitter, and guarded by a runtime test | M |
 | 3.3 | ~~Fold the `str` analysis into the one pass~~ **DONE 2026-09-25.** A `str` local is a value with one slot: it dies at scope exit by step 4's rule and its escape is the same query as a `Seq`'s (3.4), asked with the `str` rule. What stayed backend-specific — which runtime calls hand back storage the caller owns — is a parameter (`backend_prepare.ownedStrProcs`), and `ownership_str.nim` holds only that. The second walk, with its own copy of the sealing rules (the copy that shipped M7's use-after-free), is gone | M |
 | 3.4 | ~~Replace the per-slot full-body walk with a lookup over the mirror's `uses`~~ **DONE 2026-09-25** (`ownership_escape.nim`). One walk per body indexes each node's parents; a slot escapes when a use of it sits under a node that carries it out. Its premise is asserted on every build: every read of a name in the tree is a use in the graph — that is what makes the lookup answer what the walk did. Run as a differential against both old walks over every corpus file and the whole suite before they were deleted: 0 disagreements. The assertion's first run found a read the lookup could not place: `lowering_recursive` resolves `e.left` to `tuckAt(<a fresh copy of e.left>, 0)`, and the copy is not in the tree — a resolved call's arguments are now indexed where the call is printed. On the way: the builder dropped the arguments of an unresolved `b.fn {xs}` (a missed read), and both old walks read `returnVal` off a `raise` | S |
-| 3.5 | **The twin-call decision is still made while printing.** `movedCallInto`, `movedCalleeName` and `selfThreadedCall` (`codegen_common.nim`) decide, inside the Odin and D emitters, which call sites call the MOVED twin and skip the result's copy. #80 names them as consumers the one analysis replaces. Record the decision on the call in a pass beside the copy marks, and have both emitters print it. **Do after M4.5**: a `..` chain step is the one position where an emitter decides about a call it has just SYNTHESIZED (`threadReceiver` rebuilds the step's call around a temp), so no pass can mark that node until chains are lowered to plain assignments. The Odin and D emitters also derive a member call's receiver type two ways (`memberRecvType` reads a `{self: c}` payload, Odin's does not) — harmless for this decision, since a struct literal is never stamped moved, but it is the drift a single pass removes | M |
+| 3.5 | ~~The twin-call decision is still made while printing~~ **DONE 2026-09-25** (`twin_calls.nim`, step 7 of `prepare`). The pass records which calls take the moved twin and which assignments thread through one; the Odin and D emitters ask `callsTwin` / `threadedCall`, and `movedCallInto`, `movedCalleeName` and `selfThreadedCall` are gone from `codegen_common` (`ownsHeap` moved down into `twin_shape` so a pass can ask it). A member call's receiver is derived one way, D's. Every node an emitter asks about is asserted VISITED: its first run found checker-stamped calls with no id (`server.start` as `start(server)`, now numbered by `fillIdsIn`) and actor handlers the `allFns` walk never entered — each a silent "no twin" before. Zero diff under `examples/`; both apps emit byte-identical Odin and D | M |
 
 **Exit:** closes #80 / F27. One ownership analysis. After 3.5, what #80 still
 lists is its Stage 4 — a growable `str` representation on Odin and D — which is
@@ -143,8 +143,8 @@ could not see a decision table's structure for exactly this reason.
 | 4.1 | ~~**`exkOrdinal`**~~ **DONE 2026-09-25.** "The ordinal of this enum or bool value": Nim `ord(x)`, Odin `int(x)` or `(x ? 1 : 0)` for a bool, D `cast(long)(x)`. Every exhaustive `case` over ExprKind took an arm; the checker types one as `int` though a checked tree never holds one | — | S |
 | 4.2 | ~~**Decision tables lowered**~~ **DONE 2026-09-25** (`lowering_decisions.nim`, run by `lowerModule` for every backend): packed -> a `match` over the key whose grouped keys are an or-pattern (`of 2, 3`), chained -> an `if` chain ending in the catch-all the checker demands; one outcome -> a bare `return`. The emitters had drifted — D packed a table of ANY size where Nim and Odin chained above 4096 combinations — and the checker kept its own copy of the combinatorics; both now read `decision_table.nim`, whose threshold the lowering depends on (a table the checker enumerates is one that packs; the rest have a catch-all). `genPatternStr` printed any pattern kind it did not know as `_` — an or-pattern would have become a catch-all in every backend; it is exhaustive now. Guarded by `tests/suites/decision_tables.nim` (both forms run on all three) | `genDecisionTable` ×3 — gone | M |
 | 4.3 | **Actor dispatch lowered** to an ordinary `match` over the message tag, each arm its own scope. **#79 is fixed separately (2026-09-25)**: two lines per backend (Nim and Odin now scope `definedVars` per arm, as D did), guarded by `actor_result` on all three. A full lowering needs the message ENVELOPE — each backend's own type — represented in Tuck first, which is design work; the bug was not worth leaving open for it | — | M |
-| 4.4 | **Interface dispatch lowered** to a `match` over the variant tag | closes **#40** (Odin's closure typed `-> int`) as a side effect | M |
-| 4.5 | `..` chains fully lowered (partly done by `hoistChainCalls`) | `genChainStep` | S |
+| 4.4 | ~~Interface dispatch lowered~~ **DONE 2026-09-25** (`lowering_iface.nim`, in `prepare` after `lowerModule`) — to its own node, `exkIfaceCall`, NOT a `match`: the call sits in value position, where Odin's match is a ternary chain that binds no payload and evaluates the receiver once per arm, so a `match` would first need every value-position dispatch hoisted to statements. The node carries the receiver and one arm per satisfier, each an ordinary typed member call on the payload; the satisfier set, the member and its positional args are decided once, and each backend prints only its switch (a Nim `case` block, an Odin closure typed with the CALL's type, a D lambda). An unlowered interface call reaching an emitter is an assertion. `satisfiersOf` / `findObjectMember` moved to `ast_query` | **#40** closed (Odin's closure typed `-> int`), and with it `known_bugs` #17 / MISSING-FEATURES A6 (an enum return) | M |
+| 4.5 | ~~`..` chains fully lowered~~ **DONE 2026-09-25** (`lowering_chains.nim`, absorbing `hoistChainCalls`). A builder becomes one assignment per step and a closing `exkValidate` (steps are `inChain`, so an invariant is checked once, at the end, as before); a chain whose value is used runs on a temp; a fn's tail chain returns its base. The step's call is copied with fresh ids, since `res.stepCall` is shared by all three backends. `pipeline.assertChainsLowered` checks no chain survives. A BOUND chain was wrong on all three, three different ways — Nim's temp lost a field step, Odin emitted a syntax error, D wrote through the base — and is now one program (`object_composition`). Found on the way: Nim's `quit` clamps an exit status to int8 (main returning 132 exited 127 on Nim alone), now the low byte everywhere | `genChain*`, `genDChain*`, `chainSteps`, `threadReceiver` — gone | S |
 
 **Exit:** `genDecisionTable`, the actor dispatch builder and the interface
 closure no longer exist in any `codegen_*.nim`.
@@ -157,24 +157,24 @@ closure no longer exist in any `codegen_*.nim`.
 
 | # | issue | | size |
 |---|---|---|---|
-| S1.1 | **#87** | an actor field's initialiser is silently discarded; `level: int = 80` answers 0, nine runs of nine | S–M |
-| S1.2 | **#73** | an imported `const` is invisible to the checker, so a wrong `Array` size is ACCEPTED. `typecheck.nim:1071` has the worked precedent | M |
-| S1.3 | **#78** | Nim's `tuck_` prefix collides `type Order` with `fn order` | S–M |
+| — | **#87** | **FIXED 2026-09-25** — actor field initialisers are kept and checked (TK-TY29); on `type`/`object` fields refused (TK-TY30) | — |
+| — | **#73** | **FIXED** in `8d5b6c6` — a const resolves across the program (`ast_query.constDeclFor`); guarded in `cross_module`. This row was not updated at the time | — |
+| — | **#78** | **FIXED 2026-09-25** — the prefix keeps the first letter's case (`Tuck_Order`, `tuck_order`); `compiler/name_prefix.nim` | — |
 | — | **#79** | **FIXED 2026-09-25** — per-arm scoping in the Nim and Odin dispatch; see M4.3 | — |
 
 ### S2 — Finish partial features
 
 | # | issue | | size | depends on |
 |---|---|---|---|---|
-| S2.1 | **#72** | `Array[N,T]` indexing. Cause located: `seqElem` at `typecheck.nim:4063` matches one type arg; `Array` has two | **S** | — |
+| — | **#72** | **FIXED 2026-09-26** — the checker takes an `Array`'s element from its second argument and lowers `a[i]` to the runtimes' existing `tuckArrayAt`/`tuckArraySetAt` | — | — |
 | S2.2 | **#45** | `pool.acquire` hands out a copy, so a pool cannot be a DMA target | M | — |
 | S2.3 | **#42** | pool invariant validation | S | S2.2 |
 | S2.4 | **#85** | extend `<uninit>` to actor fields | S | S1.1 |
 | S2.5 | **#55** | a fired `timeout` answers right at 100× the deadline | M | — |
 | S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |
 | S2.7 | **#20** | by-type payload matching for member calls | M | — |
-| S2.8 | **#36** | `mod::Type` in a type position | S | — |
-| S2.9 | — | a BINDING match arm (`other: other + 1`) checks clean and then fails to build on all three backends: Nim emits the name as a `case` label, Odin and D print an undeclared `other`. Found 2026-09-25 probing the SSA builder's pattern bindings, which model it correctly | S–M | — |
+| — | **#36** | **FIXED 2026-09-26** — `mod::Type` in a type position: the parser keeps the qualifier, the checker confirms the module declares (and exports) the type | — | — |
+| — | — | **FIXED 2026-09-26** (S2.9) — a binding match arm is marked `pkBind` by the checker and lowered by `lowering_match_binds` to a catch-all reading the subject, or a snapshot of it. The same change made a binding arm count as a catch-all for exhaustiveness (it was counted as one more tag name) | — | — |
 
 ### S3 — Backend parity (what survives M4)
 
@@ -184,8 +184,8 @@ closure no longer exist in any `codegen_*.nim`.
 | S3.2 | **#30** | D: volatile registers, `[saturating]`, `tuckConcat` | M |
 | S3.3 | — | the D runtime has no networking; `42-net-echo` cannot link | L |
 | S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |
-| S3.5 | — | **runtime speed parity, found by `benches/memory` (2026-09-25).** Memory is flat on all three; TIME is not: copy_loop Nim 12 ms vs Odin 97 vs D 372; chain Nim 4.6x Odin; overwrite/transfer D 8–11x the others. Causes unconfirmed — see `benches/SCORES.md`. The GC-off variants (`nim-arc`, `nim-none`, `d-nogc`) are wired into the script and not yet run | M |
-| — | **#40** | *moved to M4.4* | — |
+| S3.5 | — | **runtime speed parity, found by `benches/memory` (2026-09-25).** Memory is flat on all three; TIME is not: copy_loop Nim 12 ms vs Odin 97 vs D 372; chain Nim 4.6x Odin; overwrite/transfer D 8–11x the others. Causes unconfirmed — see `benches/SCORES.md`, which also has the same programs with the collectors OFF | M |
+| — | **#40** | **FIXED 2026-09-25** by M4.4 | — |
 
 ### S4 — Effects
 

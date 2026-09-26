@@ -138,6 +138,10 @@ type
     typ*: Type
     attrs*: seq[TypeAttr]
     span*: Span
+    default*: Expr   ## `level: int = 80` — the initialiser, or nil. Only an
+                     ## ACTOR field may have one: the singleton starts with
+                     ## it. On a `type` or `object` field it is refused
+                     ## (TK-TY30) — it used to be parsed and thrown away.
 
   FieldInit* = tuple[name: string, value: Expr]
     ## One `name: value` pair of a record literal `{a: 1, b: 2}`.
@@ -175,6 +179,9 @@ type
     case kind*: TypeKind
     of tkNamed:
       name*: string
+      qualifier*: seq[string]  # `geo::Point` → @["geo"]; the checker confirms
+                               # that module declares it, and every later
+                               # stage reads the bare name (#36)
     of tkTuple:
       elems*: seq[Type]
     of tkApp:
@@ -216,7 +223,11 @@ type
 
   PatternKind* = enum
     pkWild
-    pkVar
+    pkVar       # a bare name: a variant, an enum tag or an error name to test
+    pkBind      # a bare name the checker found to BIND the subject in its arm
+                # (`other: other + 1`) — it rewrites the pkVar it parsed.
+                # A catch-all; lowering_match_binds turns it into `_` and
+                # gives the arm the value (ROADMAP S2.9)
     pkLit
     pkRecord
     pkTuple
@@ -227,7 +238,7 @@ type
     case kind*: PatternKind
     of pkWild:
       discard
-    of pkVar:
+    of pkVar, pkBind:
       name*: string
     of pkLit:
       litKind*: LitKind
@@ -238,6 +249,13 @@ type
       elems*: seq[Pattern]
     of pkOr:
       left*, right*: Pattern
+
+  DispatchArm* = object
+    ## One satisfier's arm of an `exkIfaceCall`: the receiver's payload, taken
+    ## as that object and bound to `bindName`, is the receiver of `call`.
+    satisfier*: string   # the object's (mangled) declared name
+    bindName*: string    # what `call` names the payload
+    call*: Expr          # an ordinary member call; its args[0] reads bindName
 
   MatchArm* = object
     pattern*: Pattern
@@ -374,6 +392,19 @@ type
                     # because `ord` is spelled differently by every target —
                     # Nim `ord(x)`, Odin `int(x)` or a bool ternary, D a
                     # cast. One node, three printers.
+    exkValidate     # re-check a value against its type's `invariant:` block.
+                    # Built by lowering at the end of a `..` chain, which
+                    # validates ONCE, after all its steps — the intermediate
+                    # states of a builder need not satisfy the invariant, the
+                    # value it builds must. Nim spells it `validate(x)`, Odin
+                    # and D `validate_T(x)`.
+    exkIfaceCall    # a call through an INTERFACE value (`a.noise`), lowered
+                    # (`lowering_iface`, ROADMAP M4.4): the receiver, and one
+                    # arm per object that satisfies the interface, each an
+                    # ordinary member call on that object's payload. Its own
+                    # node rather than a `match`: it sits in VALUE position,
+                    # where Odin's match is a ternary chain that can bind no
+                    # payload and would evaluate the receiver once per arm.
 
   CombKind* = enum
     ## The record combinators. One family, one shape — a receiver and a struct
@@ -454,6 +485,9 @@ type
       target*, assignVal*: Expr
       isDecl*: bool     # true for `let x = ...` / `var x = ...`
       isMutable*: bool  # true only for `var`
+      inChain*: bool    # a step of a lowered `..` chain: NOT re-validated on
+                        # its own — the chain validates once, at its end
+                        # (exkValidate), as it always has
       declType*: Type   # `let x: T = ...` — the type the author STATED, or
                         # nil when they left it to inference. It is what an
                         # empty collection or a nullary generic call has to
@@ -485,6 +519,12 @@ type
       deferBody*: Expr  # the block to run at scope exit
     of exkOrdinal:
       ordinalOf*: Expr  # the enum or bool value whose ordinal this is
+    of exkIfaceCall:
+      dispatchRecv*: Expr          # the interface value, evaluated once
+      dispatchIface*: string       # the interface's (mangled) type name
+      dispatchArms*: seq[DispatchArm]
+    of exkValidate:
+      validated*: Expr  # the value to re-check; its TYPE names the invariants
     of exkAcquire:
       acquireRef*: Expr     # the raw OS handle to register
       acquireKind*: string  # the kind whose table it goes into, as written

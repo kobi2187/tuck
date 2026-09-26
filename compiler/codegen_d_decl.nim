@@ -4,15 +4,12 @@
 # DeclKind) and everything it calls -- fn/object/actor/registry/register/
 # mixin/err-handler. Calls INTO codegen_d.nim's genDExpr for
 # fn bodies (one-way: genDExpr never calls back into anything here).
-import ast, strutils, sets, tables, options
+import ast, strutils, sets, tables
 import resolution
 import ast_query
 import codegen_common
 import codegen_d_ctx
-from codegen_odin_util import odinErrCode, enumTagOwner
-from lowering_seqcopy import seqFieldNames
 from mangle import mangleName
-from lowering_seqcopy import needsDup, recordDupFields
 import ./codegen_d
 
 proc dVisibility*(ctx: DCodegenCtx, d: Decl): string =
@@ -169,21 +166,13 @@ proc dRegistryHandlerCalls*(ctx: DCodegenCtx, d: Decl,
   ## Every declared handler for this event, called with the event's fields.
   ## The checker requires at least one — an event nothing listens to is a
   ## signal that silently goes nowhere (spec Part 10).
-  let handlerName = d.name & "." & v.name
   var calls: seq[string]
-  for decl in ctx.module.decls:
-    if decl == nil or decl.kind != dkFn or decl.name != handlerName: continue
+  for decl in registryHandlers(ctx.module, d, v):
     var argNames: seq[string]
     for f in v.fields: argNames.add(f.name)
-    calls.add("    " & dHandlerFnName(handlerName) & "(" &
+    calls.add("    " & handlerProcName(decl) & "(" &
               argNames.join(", ") & ");")
   if calls.len > 0: calls.join("\n") & "\n" else: ""
-
-proc msgVariantName*(handlerName: string): string =
-  ## The message-enum tag a handler receives on. Same rule as the Odin
-  ## backend's (private there) — a one-line naming convention that both
-  ## envelopes must agree on; worth sharing if a third consumer appears.
-  "msg" & handlerName.capitalize()
 
 proc dActorFieldLines*(ctx: var DCodegenCtx, d: Decl): seq[string] =
   for f in d.actorFields:
@@ -702,6 +691,17 @@ proc genDExternBlock*(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDExternFwd(mem)
     if code != "": result.add(code & "\n")
 
+proc genDActorInits(ctx: var DCodegenCtx, d: Decl): string =
+  ## The singleton's starting field values (#87): a module constructor, so
+  ## they are in place before main — and before any actor is started.
+  var sets: seq[string]
+  for f in d.actorFields:
+    if f.default != nil:
+      sets.add("    " & actorSingletonName(d.name) & "." & f.name & " = " &
+               ctx.genDExpr(f.default) & ";\n")
+  if sets.len == 0: return ""
+  "shared static this() {\n" & sets.join("") & "}\n\n"
+
 proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared
@@ -720,6 +720,7 @@ proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   # `Counter.total` means `counterSingleton.total`.
   result.add("__gshared " & d.name & " " & actorSingletonName(d.name) &
              ";\n\n")
+  result.add(ctx.genDActorInits(d))
   if not hasMessages: return
   result.add(ctx.genDDispatch(d, handlers, shutdownBody, hasShutdown))
   result.add(genDDrain(d, hasShutdown))
@@ -749,6 +750,43 @@ proc dTemplateParamList(generics: seq[string], params: seq[Param]): string =
     parts.add(if g in sizeNames: "size_t " & g else: g)
   parts.join(", ")
 
+proc enterReturnContext(ctx: var DCodegenCtx, retType: Type) =
+  ## A fallible fn wraps every return in the carrier; the arms of its body
+  ## need the payload type to name terr!(T). Cleared by leaveReturnContext.
+  let payload = bangInner(retType)
+  ctx.retWrapped = payload != nil
+  ctx.retAbsentCapable = absentCapable(retType)
+  ctx.retInnerT = payload
+  ctx.retInnerD =
+    if payload == nil: ""
+    else:
+      let inner = ctx.dType(payload)
+      if inner == "void": "rt.TuckUnit" else: inner
+
+proc leaveReturnContext(ctx: var DCodegenCtx) =
+  ctx.retWrapped = false
+  ctx.retAbsentCapable = false
+  ctx.retInnerD = ""
+  ctx.retInnerT = nil
+
+proc genDTwinWrapper(ctx: var DCodegenCtx, d: Decl, fnName, tmplStr, retStr,
+                     movedP: string, refSelf: bool): string =
+  ## The one-line `f` of a threaded-container fn: `.dup` its moved parameter
+  ## (or each of its Seq fields) and delegate to the twin `f_moved`, which
+  ## holds the body.
+  result = ctx.dVisibility(d) & ctx.dCallConv(d) & retStr & " " & fnName &
+           tmplStr & "(" & ctx.genDParams(d.fnParams, refSelf) & ") {\n"
+  var argNames: seq[string]
+  for p in d.fnParams: argNames.add(p.name)
+  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
+  if fields.len == 0:
+    result.add("    " & movedP & " = " & movedP & ".dup;\n")
+  else:
+    for f in fields:
+      result.add("    " & movedP & "." & f & " = " & movedP & "." & f & ".dup;\n")
+  result.add("    return " & movedName(fnName) & "(" & argNames.join(", ") &
+             ");\n}\n\n")
+
 proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
   # A registry handler is declared as `Registry.Event`; the dot is not a D
@@ -759,15 +797,7 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # A fallible fn wraps every return in the carrier; the arms below need to
   # know the payload type to name terr!(T). Restored after the body, since
   # a nested emission may set its own.
-  let payload = bangInner(d.fnReturnType)
-  ctx.retWrapped = payload != nil
-  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
-  ctx.retInnerT = payload
-  ctx.retInnerD =
-    if payload == nil: ""
-    else:
-      let inner = ctx.dType(payload)
-      if inner == "void": "rt.TuckUnit" else: inner
+  ctx.enterReturnContext(d.fnReturnType)
   # Implicit return: the value flowing at the end of a body is the result.
   # ast_query's shared version, not a private port — the Odin backend kept
   # its own copy and it has since drifted (no matchArmsReturn guard, so a
@@ -799,17 +829,7 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   let movedP = if refSelf or nameOverride != "": "" else: movedFnParam(ctx.res, ctx.module, d)
   let emitName = if movedP != "": movedName(fnName) else: fnName
   if movedP != "":
-    result = ctx.dVisibility(d) & ctx.dCallConv(d) & retStr & " " & fnName & tmplStr & "(" &
-             ctx.genDParams(d.fnParams, refSelf) & ") {\n"
-    var argNames: seq[string]
-    for p in d.fnParams: argNames.add(p.name)
-    let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
-    if fields.len == 0:
-      result.add("    " & movedP & " = " & movedP & ".dup;\n")
-    else:
-      for f in fields:
-        result.add("    " & movedP & "." & f & " = " & movedP & "." & f & ".dup;\n")
-    result.add("    return " & movedName(fnName) & "(" & argNames.join(", ") & ");\n}\n\n")
+    result = ctx.genDTwinWrapper(d, fnName, tmplStr, retStr, movedP, refSelf)
   result.add(ctx.dVisibility(d) & ctx.dCallConv(d) & retStr & " " & emitName & tmplStr & "(" &
              ctx.genDParams(d.fnParams, refSelf) & ") {\n")
   let savedMoved = ctx.movedParam
@@ -824,10 +844,7 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   result.add(dTrailingReturn(d.fnBody, retStr, 1))
   ctx.indent = 0
   ctx.currentParams = @[]
-  ctx.retWrapped = false
-  ctx.retAbsentCapable = false
-  ctx.retInnerD = ""
-  ctx.retInnerT = nil
+  ctx.leaveReturnContext()
   ctx.movedParam = savedMoved
   result.add("}\n")
 
@@ -984,7 +1001,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   of dkImport, dkPublic: ""
   of dkSelect: dUnsupported("top-level on select (arrives with the Fiber runtime)")
   of dkFnSig: ctx.genDFnSig(d)
-  of dkSatisfies: dUnsupported("top-level satisfies (M4)")
+  of dkSatisfies: ""  # folded into the object's own list before checking
   of dkInterface: ctx.genDInterface(d)
   of dkGroup: ""  # a compile-time bound only (spec §5.5) — fully resolved
                   # and discarded before codegen ever runs, nothing to emit

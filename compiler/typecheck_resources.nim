@@ -150,15 +150,6 @@ proc checkKindProtocol(k: ResourceKindDef, sums: Table[string, Decl]) =
            "' — a resource that cannot be closed from where it is, is a leak",
            v.span)
 
-proc knobName(k: ResourceKnob): string =
-  case k
-  of rkCap: "cap"
-  of rkPolicy: "policy"
-  of rkOnFull: "on_full"
-  of rkOnFinish: "on_finish"
-  of rkSweepBatch: "sweep_batch"
-  of rkStates: "states"
-
 proc mergeKnobs(into: var ResourceKindDef, site: ResourceKindDef) =
   ## Fold one site's knobs into the kind. A later site OVERRIDES an earlier
   ## one: a library ships a working default and the app deploying it knows its

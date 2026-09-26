@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (9)
+## A. Open bugs (8)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -54,17 +54,6 @@ a [read] register field is rejected". Found 2026-09-12 auditing the spec's
 error claims. (The emission this originally blamed turned out to be A5, a
 separate and larger bug — the getter is emitted for EVERY register
 assignment, `[write]` fields included.)
-
-**A6 — on Odin only, an interface method may only return `int`.** The dispatch
-closure is emitted as `proc(v: Iface) -> int` whatever the method returns, so
-it is right by luck for `int` and wrong for everything else: an enum, `bool`,
-`u8` and a record were all measured and all fail ("Cannot assign value
-'(proc(v: Detector) -> int)(d)' of type 'int' to 'tuck_Demand'"). Odin has no
-switch expression so its dispatch is wrapped in a closure
-(`docs/interfaces.md`); the closure's return type is what is wrong. Nim and D
-build all five. An interface whose methods return `bool` — a `Validator`, a
-`Predicate` — is Nim/D-only today and nothing says so until the Odin build
-runs. Test: `known_bugs`, "an interface method may return an enum".
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -271,6 +260,13 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A6 / #40 — on Odin, an interface method may return more than `int`.**
+  The dispatch closure was typed `-> int` whatever the method returned. Calls
+  through an interface are now LOWERED (`lowering_iface`, ROADMAP M4.4) to an
+  `exkIfaceCall` carrying the call's own type, which the Odin closure prints
+  (2026-09-25). `known_bugs` "an interface method may return an enum";
+  `interface_dispatch` for `str` and `void` members on all three.
 
 - **Field access on a primitive is rejected.** Resolved receivers now have a closed field surface; an undeclared field reports `TK-TY02` instead of manufacturing a missing type.
 

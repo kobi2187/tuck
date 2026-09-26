@@ -27,8 +27,8 @@ fn main() -> int:
   return 0
 """
   t.okCheck   "two objects may share a member fn name"
-  t.emits     "Nim keeps them apart",  "tuck_Dog_noise|noise\\*\\(self: var tuck_Dog\\)"
-  t.emitsOdin "Odin keeps them apart", "tuck_Dog_noise"
+  t.emits     "Nim keeps them apart",  "tuck_type_Dog_noise|noise\\*\\(self: var tuck_type_Dog\\)"
+  t.emitsOdin "Odin keeps them apart", "tuck_type_Dog_noise"
 
   # The real gate: the emitted Odin must COMPILE. Emission alone proved nothing
   # here — the old output looked plausible and only `odin build` rejected it.
@@ -219,7 +219,7 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
 
   # The receiver's field names need not differ from the free fn's params —
-  # this shape used to emit `tuck_noise(tuck_b)`, passing a B where an int
+  # this shape used to emit `tuck_fn_noise(tuck_b)`, passing a B where an int
   # was declared, and only Nim caught it.
   t.src """
 object B:

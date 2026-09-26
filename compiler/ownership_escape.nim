@@ -288,8 +288,26 @@ proc mentions(v: Value, name, slot: string): bool =
   ## `slot == ""` (the whole value) is read by every field read.
   v.place == name or slot.len == 0 or v.place == name & "." & slot
 
-proc escapes*(ix: BodyIndex, rule: SealRule, name, slot: string): bool =
+proc threadsBack(ix: BodyIndex, n: Expr, name: string): bool =
+  ## Is `n` the moved first argument of `name = f(name, ...)` — handed to a
+  ## twin that consumes it, with the result bound straight back to the name?
+  for call in ix.parents.getOrDefault(n.id):
+    if call.kind != exkCall or call.args.len == 0 or call.args[0] != n:
+      continue
+    for asg in ix.parents.getOrDefault(call.id):
+      if asg.kind == exkAssign and asg.assignVal == call and
+         asg.target != nil and asg.target.kind == exkVar and
+         asg.target.name == name:
+        return true
+  false
+
+proc escapes*(ix: BodyIndex, rule: SealRule, name, slot: string,
+              threading = false): bool =
   ## Can this slot of this local still be reached once the body returns?
+  ##
+  ## `threading` asks about the value the local ENDS with: a moved argument
+  ## threaded straight back (`x = f(x)`) is not an escape of that, since the
+  ## name owns the result — every other moved argument still is.
   if ix.root == nil: return false
   var memo: Table[NodeId, bool]
   for vid in ix.valuesOf.getOrDefault(name):
@@ -304,7 +322,8 @@ proc escapes*(ix: BodyIndex, rule: SealRule, name, slot: string): bool =
       # it. Relaxing this to "gone only if the twin really frees it" once
       # needed a second copy of the twin's own rule, which drifted into a
       # double free.
-      if v.place == name and n.kind == exkVar and isMovedArg(ix.res, n):
+      if v.place == name and n.kind == exkVar and isMovedArg(ix.res, n) and
+         not (threading and ix.threadsBack(n, name)):
         return true
       if ix.underCarrier(rule, n, name, memo): return true
   false

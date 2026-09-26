@@ -50,7 +50,6 @@ import ./codegen_ctx
 export genType        # re-exported: this file's public face is the backend
 
 
-
 # module::fn — a real imported module rides Nim's own namespacing; a
 # sketch-pending qualified name maps to its mangled stub (genPendingStub).
 
@@ -73,8 +72,6 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string
 # as a routing table; each takes the ctx + node and recomputes its own indent.
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string
-proc genExprChain(ctx: var CodegenCtx, e: Expr): string
-proc genChainIntoTemp(ctx: var CodegenCtx, e: Expr): (string, string)
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
 
@@ -101,8 +98,7 @@ proc renderShape(ctx: var CodegenCtx, s: RecordShape, tag: string): string =
   for r in s.receivers:
     var text = ctx.genExpr(r)
     if r.kind != exkVar:
-      ctx.tmpCounter.inc
-      let tmp = tag & $ctx.tmpCounter
+      let tmp = ctx.freshName(tag)
       prefix.add("let " & tmp & " = " & text & "; ")
       text = tmp
     bound.add (r, text)
@@ -120,8 +116,7 @@ proc renderShape(ctx: var CodegenCtx, s: RecordShape, tag: string): string =
   var lit = ctorName & "(" & parts.join(", ") & ")"
   # a rebuilt record is a production site too: its invariants must hold
   if s.invariantsOwed:
-    ctx.tmpCounter.inc
-    let tmp = "tuckInv" & $ctx.tmpCounter
+    let tmp = ctx.freshName("tuckInv")
     lit = "(let " & tmp & " = " & lit & "; validate(" & tmp & "); " & tmp & ")"
   if prefix == "": lit else: "(" & prefix & lit & ")"
 
@@ -136,26 +131,14 @@ proc genCombinator(ctx: var CodegenCtx, e: Expr): string =
   ctx.renderShape(shapeOf(ctx.module, ctx.res, e), tag)
 
 proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
-  # ponytail: exkVar args only — repeating any other expr risks double
-  # evaluation; bind-to-temp lowering when a real case shows up
-  if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  # Same O(1)-vs-scan tradeoff as genConstruction's struct-literal branch: prefer
-  # checker's own resolution when it recorded one.
-  let params = if ctx.res.callParamsFor(e).len > 0: ctx.res.callParamsFor(e)
-               else: lookupFnParams(ctx.module, calleeStr)
-  if params.len == 0: return ""
-  let fields = recordFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.args[0]))
+  ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
+  ## call is not a record variable standing for its payload.
+  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
   if fields.len == 0: return ""
-  # The checker already decided which field feeds each param (they may differ
-  # in name, having been matched by type); prefer its mapping over re-deriving.
-  let resolved = ctx.res.argFieldsFor(e)
+  let recv = ctx.genExpr(e.args[0])
   var parts: seq[string]
-  for i, paramName in params:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    if fieldName notin fields: return ""  # not a payload match — leave as-is
-    parts.add(ctx.genExpr(e.args[0]) & "." & fieldName)
-  return calleeStr & "(" & parts.join(", ") & ")"
+  for f in fields: parts.add(recv & "." & f)
+  calleeStr & "(" & parts.join(", ") & ")"
 
 
 # {payload} Type.Variant — construction of a payload-carrying sum type
@@ -209,7 +192,7 @@ proc genericCtorName(ctx: var CodegenCtx, e: Expr, base: string): string =
 proc isRecordConstruction(ctx: var CodegenCtx, e: Expr): bool =
   e.args.len == 1 and e.args[0].kind == exkStruct and
     e.callee != nil and e.callee.kind == exkVar and
-    ctx.isRecordTypeFast(e.callee.name)
+    ctx.index.isRecordType(e.callee.name)
 
 proc genRecordCtor(ctx: var CodegenCtx, e: Expr): string =
   ## Record construction takes NAMED fields, not positional.
@@ -217,10 +200,9 @@ proc genRecordCtor(ctx: var CodegenCtx, e: Expr): string =
   for f in e.args[0].fields:
     parts.add(f.name & ": " & ctx.genExpr(f.value))
   let ctor = ctx.genericCtorName(e, e.callee.name) & "(" & parts.join(", ") & ")"
-  if not ctx.hasInvariantsFast(e.callee.name): return ctor
+  if not ctx.index.hasInvariants(e.callee.name): return ctor
   # production site: construction — validate before the value flows on
-  ctx.tmpCounter.inc
-  let tmp = "tuckInv" & $ctx.tmpCounter
+  let tmp = ctx.freshName("tuckInv")
   "(let " & tmp & " = " & ctor & "; validate(" & tmp & "); " & tmp & ")"
 
 proc asSumVariantCall(ctx: var CodegenCtx, e: Expr): string =
@@ -231,44 +213,11 @@ proc asSumVariantCall(ctx: var CodegenCtx, e: Expr): string =
                 else: nil
   ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-proc expectedParamNames(ctx: var CodegenCtx, e: Expr,
-                        calleeStr: string): seq[string] =
-  ## Param order lives with the fn, not with the literal, so the payload's
-  ## fields are matched to params rather than taken positionally.
-  ##
-  ## Three sources, in order: a QUALIFIED callee's params live in the other
-  ## module and must be looked up there; otherwise the checker's own
-  ## resolution (ctx.res.callParamsFor, set in checkCallArgs) answers in
-  ## O(1); the decl-list scan is the last resort for calls the checker left
-  ## unresolved, and is a scan per call expression, so it must stay last.
-  if e.callee != nil and e.callee.kind == exkQualified and
-     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
-    return lookupFnParams(ctx.realModules[e.callee.modulePath[0]],
-                          e.callee.qualName)
-  if ctx.res.callParamsFor(e).len > 0: return ctx.res.callParamsFor(e)
-  lookupFnParams(ctx.module, calleeStr)
-
-proc payloadFieldArg(ctx: var CodegenCtx, payload: Expr,
-                     fieldName: string): string =
-  ## The value supplied for one param, or nil when the payload lacks it.
-  for f in payload.fields:
-    if f.name == fieldName: return ctx.genExpr(f.value)
-  "nil"
-
 proc genPayloadArgs(ctx: var CodegenCtx, e: Expr,
                     calleeStr: string): seq[string] =
-  ## A payload's fields, ordered to match the callee's params.
-  let expected = ctx.expectedParamNames(e, calleeStr)
-  if expected.len == 0:
-    for f in e.args[0].fields: result.add(ctx.genExpr(f.value))
-    return
-  # The checker's mapping wins: it matches by name first and then by type, so
-  # a field may feed a param it shares no name with.
-  let resolved = ctx.res.argFieldsFor(e)
-  for i, paramName in expected:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    result.add(ctx.payloadFieldArg(e.args[0], fieldName))
+  ## codegen_common.payloadArgs, printed. A missing one is `nil`.
+  for a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
+    result.add(if a != nil: ctx.genExpr(a) else: "nil")
 
 proc genCallArgs(ctx: var CodegenCtx, e: Expr, calleeStr: string): seq[string] =
   if e.args.len == 1 and e.args[0].kind == exkStruct:
@@ -300,8 +249,7 @@ proc genSpawnCall(ctx: var CodegenCtx, calleeStr, call: string): string =
 
 proc genValidatedCall(ctx: var CodegenCtx, call: string): string =
   ## Extern boundary: the returned value validates on entry.
-  ctx.tmpCounter.inc
-  let tmp = "tuckInv" & $ctx.tmpCounter
+  let tmp = ctx.freshName("tuckInv")
   "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
 
 proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
@@ -323,8 +271,8 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
                  elif prim != calleeStr: prim
                  else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
-  if ctx.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, call)
-  if ctx.externInvRetFast(calleeStr) != "": return ctx.genValidatedCall(call)
+  if ctx.index.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, call)
+  if ctx.index.externInvRet(calleeStr) != "": return ctx.genValidatedCall(call)
   call
 
 proc genCallWithArgs(ctx: var CodegenCtx, calleeStr: string,
@@ -354,10 +302,7 @@ proc genActorWaitOn(ctx: var CodegenCtx, e: Expr): string =
   ## routes it to THAT actor's slot. Same shape as `Pool.acquire` reaching the
   ## runtime's acquire: the member name belongs to the ACTOR surface, not to a
   ## library the compiler had to learn by name.
-  if e == nil or e.kind != exkCall or e.callee == nil: return ""
-  if e.callee.kind != exkVar or e.callee.name != "waitUntil": return ""
-  if e.args.len != 2 or e.args[0] == nil: return ""
-  if e.args[0].kind != exkActorRef: return ""
+  if not isActorWaitOn(e): return ""
   "tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genExpr(e.args[1]) & ")"
 
@@ -371,12 +316,8 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   # A member call emits QUALIFIED, matching the declaration. Derived from the
   # RECEIVER's type rather than the callee's name, because the name alone
   # cannot say which fn is meant once a top-level fn shares it (#50).
-  if e.callee != nil and e.callee.kind == exkVar and e.args.len >= 1:
-    let qualified = memberCalleeOf(ctx.module,
-                                   memberOwner(ctx.module,
-                                               ctx.res.typeFor(e.args[0])),
-                                   e.callee.name)
-    if qualified != "": calleeStr = qualified
+  let member = memberCallee(ctx.res, ctx.module, e)
+  if member != "": calleeStr = member
   let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
   let args = ctx.genCallArgs(e, calleeStr)
@@ -447,8 +388,7 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
     # production site: return value of an invariant-carrying type.
     # `validatesItself` keeps a construction from being wrapped twice — it
     # already validated at the construction site, on this same value.
-    ctx.tmpCounter.inc
-    let tmp = "tuckInv" & $ctx.tmpCounter
+    let tmp = ctx.freshName("tuckInv")
     return "return (let " & tmp & " = " & ctx.genExpr(e.returnVal) & "; validate(" &
       tmp & "); " & tmp & ")"
   else: return "return " & ctx.genExpr(e.returnVal)
@@ -533,59 +473,25 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, or a plain
   ## variable.
   if ctx.res.hasCall(e): ctx.genExpr(ctx.res.call(e))
-  elif e.name == "input" and ctx.currentParams.len > 0: ctx.genInputPayload()
+  elif isInputRef(e, ctx.currentParams): ctx.genInputPayload()
   elif e.name in ctx.fieldVars: "self." & e.name
   else: nimRtCallee(e.name)
 
-proc genIfaceExtraArgs(ctx: var CodegenCtx, memberDecl: Decl,
-                       dotArg: Expr): string =
-  ## The payload beyond `self`, splatted positionally to match the concrete
-  ## member's own declared params — never packed into one Nim tuple, which is
-  ## what the receiver's `encode(self, key, val)` signature actually expects.
-  if dotArg == nil: return ""
-  if memberDecl == nil: return ", " & ctx.genExpr(dotArg)
-  var extra: seq[string]
-  for i, pname in memberDecl.paramNames():
-    if i == 0: continue  # self
-    extra.add(ctx.payloadFieldArg(dotArg, pname))
-  if extra.len == 0: return ""
-  ", " & extra.join(", ")
-
-proc genIfaceDispatch(ctx: var CodegenCtx, e: Expr,
-                      ic: tuple[iface, member: string], ind: string): string =
-  ## Dispatch is a `case` on the tag calling the concrete member fn directly —
-  ## no function table, no thunk, and the optimizer can see through it.
-  ## Emitted as a Nim case EXPRESSION so it composes anywhere a value is
-  ## expected.
-  ##
-  ## A member fn takes `self: var T`, so each branch binds a mutable copy of
-  ## the payload rather than passing the field of an immutable value. Mutation
-  ## hits that copy, which is the semantics: an interface value OWNS its data.
-  let recv = ctx.genExpr(e.receiver)
+proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## A call through an interface value, lowered (lowering_iface): a `case` on
+  ## the tag, each arm binding a mutable copy of the payload — a member takes
+  ## `self: var T`, and an interface value OWNS its data — and printing the
+  ## member call the lowering built. A case EXPRESSION, so it composes
+  ## anywhere a value is expected.
+  let recv = ctx.genExpr(e.dispatchRecv)
   var arms: seq[string]
-  for s in ctx.satisfiersOf(ic.iface):
-    let extra = ctx.genIfaceExtraArgs(findObjectMember(s, ic.member), e.dotArg)
-    # QUALIFIED, matching the declaration — the same name Odin and D have
-    # always used here (memberProcName(s.name, ic.member)).
-    arms.add(ind & "  of " & ic.iface & "_is_" & s.name & ":\n" &
-             ind & "    var tmp = " & recv & "." & s.name & "Val\n" &
-             ind & "    " & memberProcName(s.name, ic.member) &
-             "(tmp" & extra & ")")
+  for arm in e.dispatchArms:
+    arms.add(ind & "  of " & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
+             ind & "    var " & arm.bindName & " = " & recv & "." &
+             arm.satisfier & "Val\n" &
+             ind & "    " & ctx.genExpr(arm.call))
   if arms.len == 0: return ""
   "(block:\n" & ind & "  case " & recv & ".tag\n" & arms.join("\n") & ")"
-
-proc isInputField(ctx: CodegenCtx, e: Expr): bool =
-  ## `input.x` — the incoming payload's field is just the param.
-  e.receiver != nil and e.receiver.kind == exkVar and
-    e.receiver.name == "input" and ctx.currentParams.len > 0
-
-proc indentPrefix(code: string): string =
-  ## The leading whitespace of the LAST line of an emitted block, so a
-  ## statement appended after it lands at the same indent.
-  let lastLine = code.rsplit('\n', 1)[^1]
-  for ch in lastLine:
-    if ch notin {' ', '\t'}: break
-    result.add(ch)
 
 proc genTypeVariantCtor(ctx: var CodegenCtx, e: Expr): string =
   ## Bare Type.Variant of a payload sum when receiver is exkVar.
@@ -607,9 +513,9 @@ proc genPayloadSumField(ctx: var CodegenCtx, e: Expr): string =
 proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: a payload field, interface dispatch, a resolved call, a
   ## sum-variant construction, an actor singleton's field, or a plain read.
-  if ctx.isInputField(e): return e.fieldName
-  let ic = ctx.res.ifaceCallOf(e)
-  if ic.member != "": return ctx.genIfaceDispatch(e, ic, ind)
+  if isInputField(e, ctx.currentParams): return e.fieldName
+  doAssert ctx.res.ifaceCallOf(e).member == "",
+    "codegen: an interface call reached the emitter unlowered (lowering_iface)"
   if ctx.res.hasCall(e): return ctx.genConstruction(ctx.res.call(e))
   let ctor = ctx.genTypeVariantCtor(e)
   if ctor != "": return ctor
@@ -713,8 +619,7 @@ proc genUnary(ctx: var CodegenCtx, e: Expr): string =
 
 proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
-  ctx.tmpCounter.inc
-  let tn = "tuckDrop" & $ctx.tmpCounter
+  let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
                 "(tuck_unhandled(" & tn & ".err, \"" & site & "\"); quit(1))"
@@ -722,27 +627,11 @@ proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
                 "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
   "(let " & tn & " = " & stmtCode & "; (if not " & tn & ".ok: " & onErr & "))"
 
-proc isCallOnChain(res: Resolution, s: Expr): bool =
-  ## `self ..loadEp {n} .startAudio` — a resolved call whose receiver is a
-  ## chain. The chain lowers to statements, so the whole thing is multi-line.
-  s.kind == exkField and s.receiver != nil and
-    s.receiver.kind == exkChain and res.hasCall(s)
-
-proc isChainBinding(s: Expr): bool =
-  ## `var b = a ..setN {5}` — the chain runs into a temp above the binding.
-  s.kind == exkAssign and s.assignVal != nil and s.assignVal.kind == exkChain
-
 proc ownsItsLayout(res: Resolution, s: Expr): bool =
-  ## Nodes that carry their own indentation.
-  ##
-  ## A `.fn` call whose RECEIVER is a chain belongs here too — though
-  ## lowering.hoistChainCalls now rewrites that shape away before codegen
-  ## ever sees it, so isCallOnChain is permanently false in practice and
-  ## kept only as a second guard. Left out, genStmt added its own prefix on
-  ## top of the chain's and produced 8 spaces against the block's 4 — which
-  ## Nim rejects as invalid indentation.
-  s.kind in {exkIf, exkBlock, exkChain, exkFor, exkWhile, exkDefer} or
-    isCallOnChain(res, s) or isChainBinding(s)
+  ## Nodes that carry their own indentation. (A `..` chain was one, and a
+  ## call or binding fed by one; lowering_chains rewrites every chain into
+  ## plain statements before any emitter runs.)
+  s.kind in {exkIf, exkBlock, exkFor, exkWhile, exkDefer}
 
 proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   ## A call in STATEMENT position whose value nothing consumes. Nim rejects
@@ -759,7 +648,7 @@ proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   # ambiguous)" error this proc exists to avoid, just one level out. The
   # task's own return type says nothing about the emitted statement.
   if s.callee != nil and s.callee.kind == exkVar and
-     ctx.isTaskName(s.callee.name): return false
+     ctx.index.isTaskName(s.callee.name): return false
   let t = ctx.res.typeFor(s)
   if t == nil: return false
   # `discard` over a void call is itself an error in Nim, so the question is
@@ -913,7 +802,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     if e.discardVal != nil: "discard " & ctx.genExpr(e.discardVal)
     else: "discard"
   of exkTripleDot: "discard"   # `...` outside a fn body: a no-op statement
-  of exkChain: ctx.genExprChain(e)
+  of exkChain:
+    raiseAssert "codegen: a `..` chain reached the emitter; lowering_chains " &
+      "rewrites every one into statements"
   of exkSend: ctx.genExprSend(e)
   of exkSelect: ctx.genExprSelect(e)
   of exkDefer: ctx.genDefer(e, ind)
@@ -930,14 +821,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       ctx.genExpr(e.acquireRef) & "), " & escape(acquireSite(e, ctx.moduleName)) & ")"
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: "ord(" & ctx.genExpr(e.ordinalOf) & ")"   # enum and bool alike
-
-proc hasBracketBase(e: Expr): bool =
-  ## Does this target chain bottom out in an index?
-  if e == nil: return false
-  case e.kind
-  of exkBracket: true
-  of exkField: hasBracketBase(e.receiver)
-  else: false
+  of exkValidate: "validate(" & ctx.genExpr(e.validated) & ")"
+  of exkIfaceCall: ctx.genIfaceCall(e, ind)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element
@@ -963,7 +848,7 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## Result-bound task call assignment with result slot and await.
   if e.assignVal == nil or e.assignVal.kind != exkCall or
      e.assignVal.callee == nil or e.assignVal.callee.kind != exkVar or
-     not ctx.isTaskName(e.assignVal.callee.name):
+     not ctx.index.isTaskName(e.assignVal.callee.name):
     return ""
   let tname = e.assignVal.callee.name
   let ret = ctx.taskRetType(tname)
@@ -1015,25 +900,17 @@ proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
             else: e.target.name
   tgt & ".add(" & ctx.genExpr(appended) & ")"
 
-proc prepareChainBinding(ctx: var CodegenCtx, valSrc: Expr): tuple[prelude: string, valSrc: Expr] =
-  ## Prepare chain binding: run statements into temp, return (stmts, temp).
-  if valSrc == nil or valSrc.kind != exkChain:
-    return ("", valSrc)
-  let (stmts, tmp) = ctx.genChainIntoTemp(valSrc)
-  let prelude = stmts & "\n" & stmts.indentPrefix
-  (prelude, Expr(span: valSrc.span, kind: exkVar, name: tmp))
-
-proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr, prelude: string): string =
+proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr: string): string =
   ## Variable declaration with optional stated type.
   let name = e.target.name
   if name notin ctx.definedVars and name notin ctx.fieldVars:
     ctx.definedVars.incl(name)
     let declared = if e.declType != nil: ": " & genType(e.declType) else: ""
-    return prelude & "var " & name & declared & " = " & valStr
+    return "var " & name & declared & " = " & valStr
   ""
 
 proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
-                   prelude, targetStr, valStr: string): string =
+                   targetStr, valStr: string): string =
   ## A field assignment is a MUTATION SITE, exactly as a `..` chain step is,
   ## and owes the same two things the chain has always paid:
   ##
@@ -1054,10 +931,10 @@ proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
     let regPrefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                            e.target.fieldName)
     if regPrefix != "":
-      return prelude & regPrefix & "_set(" & valStr & ")"
-  result = prelude & targetStr & " = " & valStr
+      return regPrefix & "_set(" & valStr & ")"
+  result = targetStr & " = " & valStr
   let owner = assignInvariantOwner(ctx.res, e)
-  if owner != "" and ctx.hasInvariantsFast(owner):
+  if owner != "" and ctx.index.hasInvariants(owner):
     result.add("\n" & "  ".repeat(ctx.indent) & "validate(" &
                ctx.genExpr(e.target.receiver) & ")")
 
@@ -1068,13 +945,12 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
   if appendResult != "": return appendResult
   let concatResult = ctx.genSelfConcatAssignment(e)
   if concatResult != "": return concatResult
-  let (prelude, valSrc) = ctx.prepareChainBinding(e.assignVal)
   let targetStr = ctx.genAssignTarget(e.target)
-  let valStr = ctx.genExpr(valSrc)
+  let valStr = ctx.genExpr(e.assignVal)
   if e.target.kind == exkVar:
-    let declResult = ctx.genVarDeclaration(e, targetStr, valStr, prelude)
+    let declResult = ctx.genVarDeclaration(e, targetStr, valStr)
     if declResult != "": return declResult
-  ctx.genFieldWrite(e, prelude, targetStr, valStr)
+  ctx.genFieldWrite(e, targetStr, valStr)
 
 proc matchArmHead(pat: Pattern, patStr: string): string =
   ## The branch label for one match arm. A WILDCARD is the catch-all, which
@@ -1152,69 +1028,6 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
     cases.add(ind & "else: discard")
   "(case " & subjectStr & "\n" & cases.join("\n") & ")"
 
-
-proc chainSteps(ctx: var CodegenCtx, e: Expr, into: string): string =
-  ## The chain's steps, each assigning through `into`.
-  ##
-  ## `into` is the base var when NOTHING CONSUMES the chain's result (the
-  ## builder form, which updates the base), or a fresh temp when something
-  ## does and the base must be left alone.
-  let ind = "  ".repeat(ctx.indent)
-  let baseStr = ctx.genExpr(e.base)
-  var lines: seq[string]
-  for step in e.steps:
-    if ctx.res.stepCall(step) != nil:
-      let call = threadReceiver(ctx.res.stepCall(step), e.base, into, baseStr)
-      lines.add(ind & into & " = " & ctx.genConstruction(call))
-    else:
-      var valStr = ""
-      if isSingleFieldPayload(step.arg):
-        valStr = ctx.genExpr(soleFieldValue(step.arg))
-      # A register field is a raw pointer with no real field — writing it
-      # means calling the setter genRegister emitted for it, exactly as the
-      # Odin and D backends do through the same shared helper.
-      let regPrefix = registerAccessorPrefix(ctx.module, into,
-                                             chainStepMember(step))
-      if regPrefix != "":
-        lines.add(ind & regPrefix & "_set(" & valStr & ")")
-      else:
-        lines.add(ind & into & "." & step.target.name & " = " & valStr)
-  # mutation site: an invariant-carrying var re-validates after the chain
-  if e.base != nil and ctx.res.typeFor(e.base) != nil and
-     ctx.res.typeFor(e.base).kind == tkNamed and
-     ctx.hasInvariantsFast(ctx.res.typeFor(e.base).name):
-    lines.add(ind & "validate(" & into & ")")
-  lines.join("\n")
-
-proc genChainIntoTemp(ctx: var CodegenCtx, e: Expr): (string, string) =
-  ## A chain in VALUE position: copy the base into a temp, run the steps on
-  ## the temp, and hand back (statements, tempName) so the caller can use the
-  ## result without the base being touched.
-  ##
-  ## A caller that wants the pre-chain value simply keeps its own var — the
-  ## base is never written here.
-  let ind = "  ".repeat(ctx.indent)
-  ctx.tmpCounter.inc
-  let tmp = "tuckChain" & $ctx.tmpCounter
-  let seed = ind & "var " & tmp & " = " & ctx.genExpr(e.base)
-  (seed & "\n" & ctx.chainSteps(e, tmp), tmp)
-
-proc genExprChain(ctx: var CodegenCtx, e: Expr): string =
-  ## A chain whose result NOTHING CONSUMES: the steps assign through the base
-  ## var, so the builder updates it.
-  ##
-  ##   server ..withDefaults ..port {8080}   ->  server = withDefaults(server)
-  ##                                             server.port = 8080
-  ##
-  ## What decides this is whether the chain feeds something — a `.call`, a
-  ## binding, an argument — not how the source is laid out. A chain split over
-  ## several lines but ending in a `.call` still feeds that call, and goes
-  ## through genChainIntoTemp instead.
-  ##
-  ## Emitting this form in value position produced
-  ## `var b =     a = tuck_setN(a, 5)` — an assignment inside an assignment,
-  ## which Nim rejects, and which clobbered the base as well.
-  ctx.chainSteps(e, ctx.genExpr(e.base))
 
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   # `ActorType send handler {payload}` — enqueue a Msg to the actor's
@@ -1318,9 +1131,6 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
 # Rewrite the tail statement into an explicit return so the existing return
 # emission (auto-wrap, typed literals) handles it. Control-flow tails keep
 # explicit returns for now (checker enforces branch agreement).
-
-
-
 
 
 # Object member fn (or a mixin fn materialized by `+ mixin`): the object

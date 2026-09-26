@@ -4,19 +4,19 @@ import str
 import console
 import sys
 
-proc tuck_main*(): void
+proc tuck_fn_main*(): void
 
-type tuck_Jar* = object
+type tuck_type_Jar* = object
   count*: int
   label*: string
 
-proc tuck_main*(): void =
+proc tuck_fn_main*(): void =
   var tuck_n = 99
   var tuck_s = tuckConcat(tuck_rt.toStr(tuck_n), " bottles")
   tuck_rt.printLine(tuck_s)
   var tuck_t = tuckConcat(tuck_rt.toStr(tuck_n), " more")
   tuck_rt.printLine(tuck_t)
-  var tuck_j = tuck_Jar(count: 7, label: "jam")
+  var tuck_j = tuck_type_Jar(count: 7, label: "jam")
   var tuck_c = tuck_j.count
   var tuck_u = tuckConcat(tuckConcat(tuck_j.label, ": "), tuck_rt.toStr(tuck_c))
   tuck_rt.printLine(tuck_u)

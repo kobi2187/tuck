@@ -409,7 +409,8 @@ proc matchIsExhaustive(b: Builder, e: Expr): bool =
   ## final uses in `46-h264-driver`'s `nal` handler alone — a `match` over a
   ## four-variant `Action` with all four covered.
   for arm in e.arms:
-    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkVar}: return true
+    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkVar, pkBind}:
+      return true
   let t = b.res.typeFor(e.subject)
   if t == nil: return false
   if t.kind == tkNamed and t.name == "bool": return true
@@ -428,7 +429,7 @@ proc bindPattern(b: var Builder, pat: Pattern, src: Place) =
   ## projection of what it was taken from.
   if pat == nil: return
   case pat.kind
-  of pkVar:
+  of pkVar, pkBind:
     var def = Def(kind: dkProject)
     if src.len > 0:
       let whole = b.readVariable(src, b.here)
@@ -564,23 +565,6 @@ proc buildFn*(res: Resolution, d: Decl): SsaFn =
   for blk in b.fn.blocks:
     doAssert blk.sealed,
       "ssa_build: " & d.name & " left " & blk.label & " unsealed"
-  b.fn
-
-proc buildScope*(res: Resolution, name: string, body: Expr): SsaFn =
-  ## SSA over an ARBITRARY region rather than a whole function.
-  ##
-  ## Possible because a block is a real thing with predecessors: the entry
-  ## block has none, so every place the region reads without writing is a
-  ## `dkEntry` value and the region stands alone. The previous mirror could
-  ## not express this at all — its "scope" was a string prefix on a function's
-  ## own walk.
-  var b = Builder(res: res)
-  b.fn.name = name
-  b.fn.entry = b.newBlock("entry")
-  b.here = b.fn.entry
-  b.sealBlock(b.fn.entry)
-  b.walk(body)
-  deferRoots(body, b.fn.deferredRoots)
   b.fn
 
 proc dump*(fn: SsaFn): string =

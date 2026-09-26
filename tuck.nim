@@ -47,14 +47,11 @@ import compiler/parser
 import compiler/validate   # the spec-side grammar, for `tuck validate`
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
-import compiler/analysis_liveness
 import compiler/ssa_liveness
 import compiler/ssa_query, compiler/ssa_cache, compiler/ssa_ir
 import compiler/complexity
 import compiler/typecheck
-import compiler/lowering
 import compiler/mangle
-import compiler/codegen
 import compiler/codegen_common  # nimModuleName: the ENTRY module's own name
                                  # needs the same shadowing check an import
                                  # already gets — see the outName fix below
@@ -62,14 +59,11 @@ import compiler/codegen_emit  # emitNim: genDecl/genExpr sit below this in
                               # the import order, so tuck.nim reaches the
                               # Nim backend's entry point from here, not
                               # compiler/codegen directly.
-import compiler/codegen_odin
 import compiler/codegen_odin_emit  # emitOdin/emitOdinModule: same reasoning
                                     # as codegen_emit above, for the Odin
                                     # backend.
-import compiler/codegen_d
 import compiler/codegen_d_emit  # emitD/emitDModule: same reasoning as
                                 # codegen_emit above, for the D backend.
-import compiler/lowering_seqcopy
 import compiler/ast_serializer
 import compiler/modules
 import compiler/optimize
@@ -446,6 +440,12 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   ## Typecheck, then verify effects. Order matters: typecheckProgram resets
   ## the semantic layer, so the effect pass must run AFTER it or its async
   ## call-site marks are wiped before codegen reads them.
+  ##
+  ## Downstream of this, ONE BACKEND PER PROCESS. The passes `prepare` runs
+  ## (copy marks, ownership, twin calls) keep their decisions in tables keyed
+  ## by node id, and node ids survive the per-backend deepCopy — a second
+  ## backend prepared in the same process would read the first one's
+  ## decisions. `backend_prepare.prepare` asserts it runs once.
   result = typecheckOnly(path, loaded, sigOnly)
   # Last-use facts, whole-program and ONCE. After typecheck because that
   # resets the semantic layer (same constraint the effect pass below has);
@@ -965,13 +965,13 @@ when isMainModule:
       if verifyStages:
         var nimMods: seq[Module]
         for lm in nimProg: nimMods.add(lm.m)
-        assertNoChainFedCalls(nimMods)
+        assertChainsLowered(nimMods)
     of bkOdin:
       let odTree = prepare(prog, bkOdin, semLayer, outDir)
       let odProg = odTree.mods
       let odReal = odTree.real
       if verifyStages:
-        assertNoChainFedCalls(odTree.modules)
+        assertChainsLowered(odTree.modules)
         assertTreeIds("odin lowering", odTree.modules)
       block:
         let t0 = vBegin(psEmitting)
@@ -1028,7 +1028,7 @@ when isMainModule:
       let dProg = dTree.mods
       let dReal = dTree.real
       if verifyStages:
-        assertNoChainFedCalls(dTree.modules)
+        assertChainsLowered(dTree.modules)
         assertTreeIds("d lowering", dTree.modules)
       block:
         let t0 = vBegin(psEmitting)
@@ -1091,11 +1091,11 @@ when isMainModule:
         for d in lm.m.decls:
           if d == nil: continue
           if d.kind == dkActor and actorHasMessages(d):
-            actorNames.add(mangleName(d.name))
+            actorNames.add(mangleName(d.name, nkType))
           if d.kind == dkTask: hasTasks = true
       for d in m.decls:
         # `m` was mangled above, so `fn main` is now tuck_main here.
-        if d != nil and d.kind == dkFn and d.name == mangleName("main"):
+        if d != nil and d.kind == dkFn and d.name == mangleName("main", nkFn):
           hasMain = true
           mainReturns = d.fnReturnType != nil and
             not (d.fnReturnType.kind == tkNamed and d.fnReturnType.name in ["void", "unit"])
@@ -1137,7 +1137,7 @@ when isMainModule:
         # drives tasks after main, keep main's return as the exit code via
         # mainRc. `fn main` is mangled like every other user fn, so the entry
         # calls the prefixed symbol.
-        let tuckMain = mangleName("main") & "()"
+        let tuckMain = mangleName("main", nkFn) & "()"
         # §7.4's close-all: report what leaked, then close every registry
         # table. It has to run BEFORE the process exits, which is why a
         # value-returning main binds its result first rather than exiting
@@ -1155,12 +1155,18 @@ when isMainModule:
         # rather than passed straight to quit — `quit(tuck_main())` leaves
         # nowhere for it to go.
         let postMain = hasTasks or resShutdown != "" or actorDrain != ""
+        # THE EXIT STATUS IS THE LOW BYTE, as on Odin and D. Nim's `quit`
+        # CLAMPS to int8 instead, so a main returning 132 exited 127 on Nim
+        # and 132 on the other two. Handing it the low byte as an int8 makes
+        # the status the same number everywhere.
+        proc exitWith(rc: string): string =
+          "quit(cast[int8](" & rc & " and 0xFF))"
         let mainCall =
           if mainReturns and postMain: "let mainRc = " & tuckMain
-          elif mainReturns: "quit(" & tuckMain & ")"
+          elif mainReturns: exitWith(tuckMain)
           else: tuckMain
         let asyncExit =
-          if mainReturns and postMain: "\n  quit(mainRc)" else: ""
+          if mainReturns and postMain: "\n  " & exitWith("mainRc") else: ""
         writeFile(mainNim, readFile(mainNim) &
           "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
           asyncDrive & actorDrain & resShutdown & asyncExit & "\n")

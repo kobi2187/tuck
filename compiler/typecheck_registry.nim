@@ -11,12 +11,6 @@ import typecheck_util
 type RegistryEvents* = tuple[regs: Table[string, Decl],
                             variants: Table[string, VariantDef]]
 
-proc fnv16*(name: string): uint16 =
-  var h = 2166136261'u32
-  for c in name:
-    h = (h xor uint32(c)) * 16777619'u32
-  uint16((h xor (h shr 16)) and 0xFFFF'u32)
-
 proc raisedEventsIn*(e: Expr, into: var seq[tuple[reg, ev: string, sp: Span,
                                                   payload: Expr]]) =
   ## Every `Registry.raise Event {payload}` reachable from `e`.
@@ -128,7 +122,7 @@ proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
       for v in d.typeBody.variants:
         if v.fields.len > 0: continue  # error enums are fieldless
         let full = name & "/" & d.name & "." & v.name
-        let code = fnv16(full)
+        let code = errIdCode(full)
         if seen.hasKey(code) and seen[code] != full:
           fail("Error Id Collision: '" & full & "' and '" & seen[code] &
                "' hash to the same 16-bit code (0x" & $code &

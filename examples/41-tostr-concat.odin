@@ -6,12 +6,12 @@ import sys "./mod_sys"
 import str "./mod_str"
 import console "./mod_console"
 
-tuck_Jar :: struct {
+tuck_type_Jar :: struct {
 	count: int,
 	label: string,
 }
 
-tuck_main :: proc () {
+tuck_fn_main :: proc () {
   tuck_n := 99
   tuckStrTmp1 := str.toStr(tuck_n)
   defer delete(tuckStrTmp1)
@@ -23,7 +23,7 @@ tuck_main :: proc () {
   tuck_t := rt.tuckConcat(tuckStrTmp2, " more")
   defer delete(tuck_t)
   console.printLine(tuck_t)
-  tuck_j := tuck_Jar{count = 7, label = "jam"}
+  tuck_j := tuck_type_Jar{count = 7, label = "jam"}
   tuck_c := tuck_j.count
   tuckStrTmp3 := rt.tuckConcat(tuck_j.label, ": ")
   defer delete(tuckStrTmp3)
@@ -41,5 +41,5 @@ tuck_main :: proc () {
 }
 
 main :: proc() {
-	tuck_main()
+	tuck_fn_main()
 }

@@ -35,10 +35,10 @@ fn main() -> int:
   t.okCheck "the program checks"
   t.emits "a tag enum for the interface",       "AnimalTag"
   t.emits "the value is a variant over its types", "case tag"
-  t.emits "the payload is the object itself",   "tuck_DogVal"
+  t.emits "the payload is the object itself",   "tuck_type_DogVal"
   t.emits "dispatch is a case on the tag",      "case .*\\.tag"
   t.omits "no function table",                  "AnimalVT"
-  t.omits "no thunks",                          "Animal_tuck_Dog_noise"
+  t.omits "no thunks",                          "Animal_tuck_type_Dog_noise"
   t.runs  "and the program runs",               1
 
   # Both backends, or it is not a feature. The parity commitment is explicit in
@@ -78,8 +78,8 @@ fn main() -> int:
 """
   t.okCheck "two objects, one interface parameter"
   t.runs     "each dispatches to its own implementation",  42
-  t.emits    "a branch for Dog",  "Animal_is_tuck_Dog"
-  t.emits    "a branch for Cat",  "Animal_is_tuck_Cat"
+  t.emits    "a branch for Dog",  "Animal_is_tuck_type_Dog"
+  t.emits    "a branch for Cat",  "Animal_is_tuck_type_Cat"
 
   # Every satisfying type is a branch of the variant, whether or not a program
   # wraps one — the type has to hold any of them. That replaces the old
@@ -109,7 +109,7 @@ fn main() -> int:
   return {a: d} hear
 """
   t.okCheck "an object may satisfy without ever being wrapped"
-  t.emits    "it is still a branch of the variant",  "tuck_GhostVal"
+  t.emits    "it is still a branch of the variant",  "tuck_type_GhostVal"
   t.runs     "and the program runs",                 1
 
   # A method with payload beyond `self` must splat that payload positionally
@@ -146,5 +146,79 @@ fn main() -> int:
   t.omits    "payload is not packed into one tuple", "encode\\(tmp, \\(key:"
   t.emits    "payload is splatted positionally",     "encode\\(tmp, key, val\\)"
   t.outputs  "and dispatches correctly with the right args", "k=v"
+
+  # --- lowered once, printed three ways (ROADMAP M4.4) ----------------------
+  # #40: Odin's dispatch closure was typed `-> int` whatever the member
+  # returned, so a member returning `str` did not compile on Odin alone. The
+  # call is lowered to an exkIfaceCall carrying its own type.
+  t.src """
+interface Animal:
+  fn name({self: Self}) -> str
+
+object Dog:
+  satisfies Animal
+  tag: str
+
+  fn name({self: Dog}) -> str:
+    return self.tag
+
+fn hear({a: Animal}) -> int:
+  return a.name.len
+
+fn main() -> int:
+  var d = {tag: "rex"} Dog
+  return {a: d} hear
+"""
+  t.hostRuns "a member returning str dispatches on every backend (#40)", 3
+  # A void member, with a param, as a statement: the closure has no result
+  # and each arm passes the payload's field positionally.
+  t.src """
+import console
+
+interface Speaker:
+  fn speak({self: Self, times: int}) -> void [io]
+
+object Dog:
+  satisfies Speaker
+  name: str
+
+  fn speak({self: Dog, times: int}) -> void [io]:
+    for i in 0 ..< times:
+      {text: self.name} console::printLine
+
+fn talk({s: Speaker}) -> void [io]:
+  s.speak {times: 2}
+
+fn main() -> int [io]:
+  var d = {name: "rex"} Dog
+  {s: d} talk
+  return 0
+"""
+  t.hostRuns "a void member with a param dispatches as a statement", 0, "rex\nrex"
+
+  # A TOP-LEVEL `satisfies Obj: Iface` is folded into the object's own list
+  # before conformance (typecheck_conformance.applySatisfiesDecls), so each
+  # backend's satisfier set already includes it and there is nothing left
+  # to emit. D refused the declaration outright ("top-level satisfies (M4)")
+  # while Nim and Odin built and ran the same program.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 4
+
+satisfies Dog: Animal
+
+fn hear({a: Animal}) -> int:
+  return a.noise
+
+fn main() -> int:
+  var d = {name: "rex"} Dog
+  return {a: d} hear
+"""
+  t.hostRuns "a top-level satisfies dispatches on every backend", 4
 
   t.finish()

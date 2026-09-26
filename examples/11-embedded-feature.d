@@ -2,13 +2,13 @@ module _11_embedded_feature;
 
 import rt = tuck_rt;
 
-alias tuck_SafeRPM = ushort;
+alias tuck_type_SafeRPM = ushort;
 
-alias tuck_PacketSeq = ubyte;
+alias tuck_type_PacketSeq = ubyte;
 
-alias tuck_ErrorCount = uint;
+alias tuck_type_ErrorCount = uint;
 
-struct tuck_SensorEvent {
+struct tuck_type_SensorEvent {
     ubyte channel;
     ushort reading;
 }
@@ -37,12 +37,12 @@ void tuck_RCC_CR_HSITRIM_set(uint value) {
     *tuck_RCC_CR = (*tuck_RCC_CR & ~(tuck_RCC_CR_HSITRIM_MASK << tuck_RCC_CR_HSITRIM_SHIFT)) | shifted;
 }
 
-void tuck_processISR(tuck_SensorEvent event) {
+void tuck_fn_processISR(tuck_type_SensorEvent event) {
 }
 
 __gshared rt.ObjectPool!(ubyte[64], 8) tuck_UartBuffer;
 
-void tuck_handleUart() {
+void tuck_fn_handleUart() {
     rt.TuckResult!(rt.PoolHandle) tuck_buf = rt.acquire(tuck_UartBuffer);
     if (!(tuck_buf.status == rt.TuckStatus.Ok)) {
         return;
