@@ -106,81 +106,19 @@ proc resolveVarSlot(e: Expr): Expr =
   e
 
 proc resolveRefsIn(e: Expr) =
-  ## Rewrite every matching bare name reachable from `e`, one level at a
-  ## time — mirrors ast.children's own case list, but reassigns the mutable
-  ## Expr slots that can hold a bare name in receiver/base/callee position
-  ## instead of only visiting them. Everything else recurses read-only via
-  ## resolveVarSlot, which recurses further in turn — deliberately listed
-  ## rather than `else: discard`, so a new ExprKind forces a decision here
-  ## too, the same reason ast.children is exhaustive.
+  ## Rewrite every matching bare name reachable from `e`: each child slot
+  ## (`ast_ops.childSlots`, the list `children` reads) is replaced when it
+  ## holds one, and walked when it does not — resolveVarSlot recurses.
+  ##
+  ## A chain step is the one exception. Its target names a MEMBER
+  ## (`..withDefaults`), never one of the declarations resolved here, so
+  ## only the base and each step's argument are candidates.
   if e == nil: return
-  case e.kind
-  of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue,
-     exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
-    discard
-  of exkField:
-    e.receiver = resolveVarSlot(e.receiver)
-    e.dotArg = resolveVarSlot(e.dotArg)
-  of exkStruct:
-    for f in e.fields.mitems: f.value = resolveVarSlot(f.value)
-  of exkList:
-    for i in 0 ..< e.items.len: e.items[i] = resolveVarSlot(e.items[i])
-  of exkBracket:
-    e.brReceiver = resolveVarSlot(e.brReceiver)
-    for i in 0 ..< e.brArgs.len: e.brArgs[i] = resolveVarSlot(e.brArgs[i])
-  of exkBracketAssign:
-    e.brTarget = resolveVarSlot(e.brTarget)
-    e.brValue = resolveVarSlot(e.brValue)
-  of exkCall:
-    e.callee = resolveVarSlot(e.callee)
-    for i in 0 ..< e.args.len: e.args[i] = resolveVarSlot(e.args[i])
-  of exkCombinator:
-    e.combRecv = resolveVarSlot(e.combRecv)
-    e.combArg = resolveVarSlot(e.combArg)
-  of exkChain:
+  if e.kind == exkChain:
     e.base = resolveVarSlot(e.base)
     for s in e.steps.mitems: resolveRefsIn(s.arg)
-  of exkBinary:
-    e.left = resolveVarSlot(e.left)
-    e.right = resolveVarSlot(e.right)
-  of exkUnary: e.operand = resolveVarSlot(e.operand)
-  of exkBlock:
-    for i in 0 ..< e.stmts.len: e.stmts[i] = resolveVarSlot(e.stmts[i])
-  of exkIf:
-    e.cond = resolveVarSlot(e.cond)
-    e.thenBranch = resolveVarSlot(e.thenBranch)
-    e.elseBranch = resolveVarSlot(e.elseBranch)
-  of exkMatch:
-    e.subject = resolveVarSlot(e.subject)
-    for arm in e.arms.mitems:
-      arm.guard = resolveVarSlot(arm.guard)
-      arm.body = resolveVarSlot(arm.body)
-  of exkFor:
-    e.iterable = resolveVarSlot(e.iterable)
-    e.body = resolveVarSlot(e.body)
-  of exkWhile:
-    e.whileCond = resolveVarSlot(e.whileCond)
-    e.whileBody = resolveVarSlot(e.whileBody)
-  of exkAssign:
-    e.target = resolveVarSlot(e.target)
-    e.assignVal = resolveVarSlot(e.assignVal)
-  of exkReturn: e.returnVal = resolveVarSlot(e.returnVal)
-  of exkRaise: e.raiseVal = resolveVarSlot(e.raiseVal)
-  of exkDiscard: e.discardVal = resolveVarSlot(e.discardVal)
-  of exkTripleDot: discard
-  of exkSend: e.sendPayload = resolveVarSlot(e.sendPayload)
-  of exkSelect:
-    for arm in e.selArms.mitems:
-      arm.arg = resolveVarSlot(arm.arg)
-      arm.body = resolveVarSlot(arm.body)
-  of exkDefer: e.deferBody = resolveVarSlot(e.deferBody)
-  of exkAcquire: e.acquireRef = resolveVarSlot(e.acquireRef)
-  of exkFinish: e.finishHandle = resolveVarSlot(e.finishHandle)
-  of exkOrdinal: e.ordinalOf = resolveVarSlot(e.ordinalOf)
-  of exkValidate: e.validated = resolveVarSlot(e.validated)
-  of exkIfaceCall:
-    e.dispatchRecv = resolveVarSlot(e.dispatchRecv)
-    for arm in e.dispatchArms.mitems: arm.call = resolveVarSlot(arm.call)
+    return
+  for s in e.childSlots: s = resolveVarSlot(s)
 
 proc resolveDeclRefs*(prog: seq[LoadedModule]) =
   ## Entry point: build the five whole-program name tables, then rewrite

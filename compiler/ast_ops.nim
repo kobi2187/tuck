@@ -170,10 +170,11 @@ proc instNameOf*(base: string, args: seq[Expr]): string =
   for a in args: ts.add(typeOfTypeExpr(a))
   instName(base, ts)
 
-iterator children*(e: Expr): Expr =
-  ## Every sub-expression, one level down. For the walks that only need to
-  ## VISIT nodes rather than rewrite them — the traversal is the boilerplate,
-  ## and assignIds/clearIds already hand-roll it twice because they mutate.
+iterator childSlots*(e: Expr): var Expr =
+  ## Every sub-expression, one level down, as a SLOT a pass may replace
+  ## (`resolve_refs` swaps a bare name for a reference). `children` is the
+  ## read-only view of this same list, so the two cannot drift: resolve_refs
+  ## once kept a hand-written copy of it, one arm per kind.
   ##
   ## The case is exhaustive on purpose: a new ExprKind must be listed here or
   ## the compiler refuses, which is what stops a walk from silently missing a
@@ -199,24 +200,24 @@ iterator children*(e: Expr): Expr =
       yield e.receiver
       yield e.dotArg
     of exkStruct:
-      for f in e.fields: yield f.value
+      for f in e.fields.mitems: yield f.value
     of exkList:
-      for it in e.items: yield it
+      for it in e.items.mitems: yield it
     of exkBracket:
       yield e.brReceiver
-      for a in e.brArgs: yield a
+      for a in e.brArgs.mitems: yield a
     of exkBracketAssign:
       yield e.brTarget
       yield e.brValue
     of exkCall:
       yield e.callee
-      for a in e.args: yield a
+      for a in e.args.mitems: yield a
     of exkCombinator:
       yield e.combRecv
       yield e.combArg
     of exkChain:
       yield e.base
-      for s in e.steps:
+      for s in e.steps.mitems:
         yield s.target
         yield s.arg
     of exkBinary:
@@ -224,14 +225,14 @@ iterator children*(e: Expr): Expr =
       yield e.right
     of exkUnary: yield e.operand
     of exkBlock:
-      for s in e.stmts: yield s
+      for s in e.stmts.mitems: yield s
     of exkIf:
       yield e.cond
       yield e.thenBranch
       yield e.elseBranch
     of exkMatch:
       yield e.subject
-      for arm in e.arms:
+      for arm in e.arms.mitems:
         yield arm.guard
         yield arm.body
     of exkFor:
@@ -249,7 +250,7 @@ iterator children*(e: Expr): Expr =
     of exkTripleDot: discard
     of exkSend: yield e.sendPayload
     of exkSelect:
-      for arm in e.selArms:
+      for arm in e.selArms.mitems:
         yield arm.arg
         yield arm.body
     of exkDefer: yield e.deferBody
@@ -259,7 +260,12 @@ iterator children*(e: Expr): Expr =
     of exkValidate: yield e.validated
     of exkIfaceCall:
       yield e.dispatchRecv
-      for arm in e.dispatchArms: yield arm.call
+      for arm in e.dispatchArms.mitems: yield arm.call
+
+iterator children*(e: Expr): Expr =
+  ## Every sub-expression, one level down — the read-only view of
+  ## `childSlots`, for the walks that only VISIT. May yield nil.
+  for c in e.childSlots: yield c
 
 iterator childDecls*(d: Decl): Decl =
   ## Every declaration nested one level inside `d`, whichever field holds it.
