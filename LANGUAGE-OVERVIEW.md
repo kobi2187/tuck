@@ -232,7 +232,11 @@ object Dog:
 data. A field above it is a parse error (`TK-PA06`).
 
 Objects carry fields, `+ Composed` entries, `satisfies` lines, member fns, and
-`self`. Two objects may share a member fn name — Nim overloads on `self`, Odin
+`self`. A member reads and writes its object's fields bare (`return name`,
+`n = n + 1`) as well as through `self`, the way an actor's handlers read its
+fields. A param or `let` of the same name shadows the field, and inside that
+scope `self.name` is the only way to reach the field
+(`tests/suites/owner_fields.nim`). Two objects may share a member fn name — Nim overloads on `self`, Odin
 cannot, so the emitter mangles to `tuckˑobjectˑDog_noise` (`tests/suites/member_names.nim`,
 gated by a real `odin build`).
 

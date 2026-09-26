@@ -662,7 +662,7 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   ## payload, an enum tag, or a variable.
   if ctx.res.hasCall(e): return ctx.genDExpr(ctx.res.call(e))
   if isInputRef(e, ctx.currentParams): return ctx.genDInputPayload()
-  if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
+  if ctx.res.isOwnerField(e): return "self." & e.name
   if e.name notin ctx.definedVars:
     let tag = ctx.qualifyEnumTag(e.name)
     if tag != "": return tag
@@ -766,8 +766,7 @@ proc movedAssignTarget(ctx: DCodegenCtx, t: Expr): string =
   ## add the `self.`, so an actor handler emitted `st = f(self.st, ...)` —
   ## qualified on the right, bare on the left. Rejected here and by Odin;
   ## Nim was correct only because its backend never takes this path. EV-9.
-  if t != nil and t.kind == exkVar and t.name in ctx.fieldVars:
-    ctx.fieldPrefix & t.name
+  if ctx.res.isOwnerField(t): "self." & t.name
   else: t.name
 
 proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string
@@ -787,7 +786,7 @@ proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
   # declared, which dmd answers with "undefined identifier".
   if e.isDecl and e.target.kind == exkVar and
      e.target.name notin ctx.definedVars and
-     e.target.name notin ctx.fieldVars:
+     not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(e.target.name)
     return ctx.genDLocalDecl(e, call)
   ctx.movedAssignTarget(e.target) & " = " & call
@@ -878,8 +877,8 @@ proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
   let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   # A FIELD is never a new local: inside an actor handler `total += n`
   # assigns the singleton's field, so it must not be declared here.
-  if e.target.kind == exkVar and e.target.name in ctx.fieldVars:
-    return ctx.fieldPrefix & e.target.name & " = " & valStr
+  if ctx.res.isOwnerField(e.target):
+    return "self." & e.target.name & " = " & valStr
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
     return ctx.genDLocalDecl(e, valStr)

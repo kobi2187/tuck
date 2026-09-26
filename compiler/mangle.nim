@@ -185,7 +185,7 @@ proc mangleAssign(res: Resolution, e: Expr, names: MangleNames, locals: var Hash
   # the user's own `Bag` beside the declaration's `tuck_Bag`.
   if e.declType != nil: mangleType(e.declType, names)
   if e.target != nil and e.target.kind == exkVar and
-     e.target.name notin fields:
+     e.target.name notin fields and not res.isOwnerField(e.target):
     locals.incl(e.target.name)
     renameVar(e.target, nkLocal)
   else:
@@ -250,12 +250,13 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
 
   case e.kind
   of exkVar:
-    # A bare name that is one of the enclosing actor's/object's FIELDS is
+    # A bare name the checker resolved to the enclosing owner's FIELD is
     # neither a local nor a global — the backends emit it as `self.name`,
     # against a field this pass never renames. Checked first, or an actor
-    # handler's `state = ...` would be mistaken for a new local.
+    # handler's `state = ...` would be mistaken for a new local. (`fields`
+    # also holds the params, which stay bare as a contract — mangleFnBody.)
     # A local shadows the global of the same name, so it is asked first.
-    if e.name in fields: discard
+    if res.isOwnerField(e) or e.name in fields: discard
     elif e.name in locals: renameVar(e, nkLocal)
     elif e.name in names: renameVar(e, names[e.name])
   of exkQualified:

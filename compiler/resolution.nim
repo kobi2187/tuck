@@ -107,6 +107,13 @@ type
       ## is not a twin does not own what it was passed and cannot give it
       ## away to be freed. `analysis_provenance` knows which values a body
       ## allocated; this set is where it writes that down.
+    ownerFields*: HashSet[NodeId]
+      ## Bare names that are the OWNER's field — an object member's, an actor
+      ## handler's, an invariant's — and not a param or local shadowing one.
+      ## Only the checker's scopes can tell those apart, so it records the
+      ## answer and every backend prints `self.<name>` for exactly these.
+      ## Deciding it in each backend by "is the name one of the fields" read
+      ## a handler's param `total` as the field `total`.
 
 proc poolHandleName*(pool: string): string = pool & "Handle"
 
@@ -341,7 +348,8 @@ proc newResolution*(): Resolution =
              ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
              lastUses: initHashSet[NodeId](),
              ssaGraphs: initTable[(NodeId, SsaStage), CachedSsa](),
-             movedArgs: initHashSet[NodeId]())
+             movedArgs: initHashSet[NodeId](),
+             ownerFields: initHashSet[NodeId]())
 
 var semLayer* = newResolution()
 
@@ -530,6 +538,14 @@ proc isMovedArg*(r: Resolution, e: Expr): bool =
   ## May this argument be taken by a MOVED twin? False for anything the
   ## analysis did not reach — which copies, exactly as it always did.
   e != nil and e.id in r.movedArgs
+
+proc markOwnerField*(r: Resolution, e: Expr) =
+  ensureId(e)
+  r.ownerFields.incl(e.id)
+
+proc isOwnerField*(r: Resolution, e: Expr): bool =
+  ## Is this bare name the enclosing owner's field (see `ownerFields`)?
+  e != nil and e.kind == exkVar and e.id in r.ownerFields
 
 proc markLastUseId*(r: Resolution, id: NodeId) =
   ## The same, for a caller holding the node's id rather than the node.

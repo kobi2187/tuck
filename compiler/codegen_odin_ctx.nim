@@ -19,8 +19,6 @@ type
       ## typecheck fills it, everything after reads it — visible instead of a
       ## comment on checkOrDie.
     definedVars*: HashSet[string]
-    fieldVars*: HashSet[string]
-    fieldPrefix*: string   # "this." in methods, "self." in static validate procs
     indent*: int
     module*: Module
     hoisted*: seq[string]  # named decls hoisted out of field positions
@@ -318,9 +316,7 @@ proc newOdinCtx*(m: Module, realModules: Table[string, Module],
                 modPrefix = ""): OdinCodegenCtx =
   ## indent 0: Odin declarations are top-level in a package, with no enclosing
   ## class the way Beef/C# needed one.
-  result = OdinCodegenCtx(definedVars: initHashSet[string](),
-                          fieldVars: initHashSet[string](),
-                          fieldPrefix: "self.", indent: 0, module: m,
+  result = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
                           realModules: realModules, moduleName: moduleName,
                           modPrefix: modPrefix, res: res)
   for d in m.decls:

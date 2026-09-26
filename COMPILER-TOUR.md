@@ -373,10 +373,13 @@ The rule behind that, at its strictest: **a backend prints; it does not
 decide.** A decision every backend needs is made once, from the tree, and
 handed to the three as data — which argument feeds each parameter
 (`call_args`), who frees a buffer (`analysis_ownership`), which call takes a
-moved twin (`twin_calls`). When a backend has to fill a gap its own way, the
-gap is the bug: `call_args` asserts every call complete after lowering
-(`backend_prepare` step 8), because the backends used to spell a missing
-argument three different ways.
+moved twin (`twin_calls`), which bare name is the owner's field
+(`Resolution.ownerFields`, recorded by the checker's scopes). When a backend
+has to fill a gap its own way, the gap is the bug: `call_args` asserts every
+call complete after lowering (`backend_prepare` step 8), because the backends
+used to spell a missing argument three different ways. And each backend used
+to decide "is this name a field?" by looking it up in a set of field names,
+which cannot see a param that shadows one.
 
 ---
 

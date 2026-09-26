@@ -63,8 +63,6 @@ type
     inlineSumOwner*: string  # "<Owner><Field>" while typing a field position,
                             # so an INLINE sum can hoist under a stable name
                             # instead of dying. Empty everywhere else.
-    fieldVars*: HashSet[string]  # inside an invariant: names that are fields
-    fieldPrefix*: string         # what those names are reached through
     matchNarrowed*: Table[string, string]  # subject text -> the variant a
                                             # match arm currently narrows it
                                             # to (see codegen.nim's twin)

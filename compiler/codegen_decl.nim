@@ -272,11 +272,10 @@ proc genRecordType*(ctx: var CodegenCtx, d: Decl): string =
       # Tier 1 records are value types (spec §7.1) — plain object, not ref
       var res = "type " & d.name & "*" & tGen & " = object\n" & fieldsBody & "\n"
       var invariantChecks: seq[string]
-      var checkCtx = CodegenCtx(definedVars: initHashSet[string](),
-                                fieldVars: initHashSet[string](), indent: 0,
+      # The predicate's bare names are the type's fields; the checker
+      # recorded them (Resolution.ownerFields), so they print as `self.<name>`.
+      var checkCtx = CodegenCtx(definedVars: initHashSet[string](), indent: 0,
                                 res: ctx.res)
-      for f in d.typeBody.fields:
-        checkCtx.fieldVars.incl(f.name)
       for member in d.typeMembers:
         if member.kind == dkExpr:
           let condStr = checkCtx.genExpr(member.expr)
@@ -355,15 +354,13 @@ proc genActorState*(ctx: var CodegenCtx, d: Decl, msgTypeName, queueSize: string
 proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
                       handlers: seq[ActorMsgHandler], shutdownBody: Expr,
                       hasShutdown: bool): string =
-  ## The `handleMsg` proc: a case over the message kind. Runs in its own ctx so
-  ## handler bodies see the actor's fields as field vars; realModules/module are
-  ## inherited so qualified calls (e.g. sys::exit) resolve as `module.fn`.
-  var hctx = CodegenCtx(definedVars: initHashSet[string](),
-                        fieldVars: initHashSet[string](), indent: 2,
+  ## The `handleMsg` proc: a case over the message kind. Runs in its own ctx
+  ## (its own locals); realModules/module are inherited so qualified calls
+  ## (e.g. sys::exit) resolve as `module.fn`. A bare name the checker resolved
+  ## to one of the actor's fields prints as `self.<name>`.
+  var hctx = CodegenCtx(definedVars: initHashSet[string](), indent: 2,
                         realModules: ctx.realModules, module: ctx.module,
                         moduleName: ctx.moduleName, res: ctx.res)
-  for f in d.actorFields:
-    hctx.fieldVars.incl(f.name)
   # a block body self-indents; a single-expression arm body needs the arm indent
   proc armBody(e: Expr): string =
     let raw = hctx.genExpr(e)

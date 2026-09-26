@@ -21,7 +21,6 @@ type
       ## typecheck fills it, everything after reads it — visible instead of a
       ## comment on checkOrDie.
     definedVars*: HashSet[string]
-    fieldVars*: HashSet[string]
     indent*: int
     module*: Module
     hoisted*: seq[string]  # named decls hoisted out of field positions (inline enums)

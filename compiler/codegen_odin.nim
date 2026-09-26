@@ -416,7 +416,7 @@ proc patternValue*(ctx: OdinCodegenCtx, patStr: string): string =
 # assignment/return target supplies the type for `.Tag` inference.
 proc armValue*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e != nil and e.kind == exkVar and e.name notin ctx.definedVars and
-     e.name notin ctx.fieldVars and e.name.len > 0 and e.name[0] in {'A'..'Z'}:
+     not ctx.res.isOwnerField(e) and e.name.len > 0 and e.name[0] in {'A'..'Z'}:
     return ctx.patternValue(e.name)
   return ctx.genOdinExpr(e)
 
@@ -654,7 +654,7 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   if ctx.res.hasCall(e): return ctx.genOdinExpr(ctx.res.call(e))
   if isInputRef(e, ctx.currentParams): return ctx.genInputPayload()
   if e.name == "self" and ctx.ptrSelf: return "self^"  # member fn: deref
-  if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
+  if ctx.res.isOwnerField(e): return "self." & e.name
   if e.name in ctx.definedVars: return e.name
   # bare enum tag: qualify with its declared owner (Odin has no module-global
   # enum members the way Nim does)
@@ -987,7 +987,7 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
   lines.add(ind & "context.user_ptr = " & savedVar)
   let targetName = e.target.name
   let assignOp = if e.target.kind == exkVar and targetName notin ctx.definedVars and
-                    targetName notin ctx.fieldVars:
+                    not ctx.res.isOwnerField(e.target):
                    ctx.definedVars.incl(targetName)
                    " := "
                  else: " = "
@@ -1087,8 +1087,7 @@ proc movedAssignTarget(ctx: OdinCodegenCtx, t: Expr): string =
   ## add the `self.`, so an actor handler emitted `st = f(self.st, ...)` —
   ## qualified on the right, bare on the left. Rejected here and by D; Nim
   ## was correct only because its backend never takes this path. EV-9.
-  if t != nil and t.kind == exkVar and t.name in ctx.fieldVars:
-    ctx.fieldPrefix & t.name
+  if ctx.res.isOwnerField(t): "self." & t.name
   else: t.name
 
 proc copyIfSeq(ctx: var OdinCodegenCtx, valStr: string, e: Expr): string =
@@ -1203,7 +1202,7 @@ proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
   # wants `=`. selfThreadedCall accepts both shapes now, and this is the
   # only place the difference shows.
   let isNew = e.isDecl and e.target.name notin ctx.definedVars and
-              e.target.name notin ctx.fieldVars
+              not ctx.res.isOwnerField(e.target)
   if isNew: ctx.definedVars.incl(e.target.name)
   ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
     movedName(base) & "(" & ctx.genCallArgs(threaded).join(", ") & ")" &
@@ -1252,7 +1251,7 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   let valStr = ctx.ownedCopy(ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal),
                                           e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
-     e.target.name notin ctx.fieldVars:
+     not ctx.res.isOwnerField(e.target):
     return ctx.genOdinVarDecl(e, valStr)
   ctx.genReassign(e, valStr)
 

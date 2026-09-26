@@ -471,7 +471,7 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   ## variable.
   if ctx.res.hasCall(e): ctx.genExpr(ctx.res.call(e))
   elif isInputRef(e, ctx.currentParams): ctx.genInputPayload()
-  elif e.name in ctx.fieldVars: "self." & e.name
+  elif ctx.res.isOwnerField(e): "self." & e.name
   else: nimRtCallee(e.name)
 
 proc genPoolOp(ctx: var CodegenCtx, e: Expr): string =
@@ -868,7 +868,7 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
               " {.closure, gcsafe.} = ({.cast(gcsafe).}: " & rawCall &
               ")); awaitResult(" & slot & "))"
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
-     e.target.name notin ctx.fieldVars:
+     not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(e.target.name)
     return "var " & e.target.name & " = " & spawn
   ctx.genExpr(e.target) & " = " & spawn
@@ -880,8 +880,7 @@ proc genSelfConcatAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## an O(n^2) one.
   let appended = selfConcatValue(ctx.res, e)
   if appended == nil: return ""
-  let tgt = if e.target != nil and e.target.kind == exkVar and
-               e.target.name in ctx.fieldVars: "self." & e.target.name
+  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
             else: e.target.name
   tgt & ".add(" & ctx.genExpr(appended) & ")"
 
@@ -897,15 +896,14 @@ proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## the same hole. EV-9.
   let appended = selfAppendValue(ctx.res, e)
   if appended == nil: return ""
-  let tgt = if e.target != nil and e.target.kind == exkVar and
-               e.target.name in ctx.fieldVars: "self." & e.target.name
+  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
             else: e.target.name
   tgt & ".add(" & ctx.genExpr(appended) & ")"
 
 proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr: string): string =
   ## Variable declaration with optional stated type.
   let name = e.target.name
-  if name notin ctx.definedVars and name notin ctx.fieldVars:
+  if name notin ctx.definedVars and not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(name)
     let declared = if e.declType != nil: ": " & genType(e.declType) else: ""
     return "var " & name & declared & " = " & valStr

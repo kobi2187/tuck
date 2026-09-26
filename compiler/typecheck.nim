@@ -3332,6 +3332,7 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
   let (found, b) = tc.lookup(e.name)
   if found:
     tc.markUsed(e.name)
+    if tc.resolvesToOwnerField(e.name): semLayer.markOwnerField(e)
     # A BARE read hands the whole value somewhere — returned, passed on,
     # discarded — so both questions travel with it. Reading it as the
     # receiver of `.ok`/`.value` is not that, and asResultIntrospection says
@@ -4509,7 +4510,8 @@ proc checkObjectDecl(tc: var TypeChecker, d: Decl) =
   tc.pushScope()
   for f in d.objFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
-  for m in d.objMembers: tc.checkDecl(m)
+  tc.withOwnerFields:
+    for m in d.objMembers: tc.checkDecl(m)
   tc.popScope()
 
 proc checkHandler(tc: var TypeChecker, h: Decl) =
@@ -4587,7 +4589,8 @@ proc checkInvariants(tc: var TypeChecker, d: Decl) =
   for member in d.typeMembers:
     if member == nil or member.kind != dkExpr or member.expr == nil: continue
     tc.failIfUndeclaredName(member.expr, d.name)
-    let t = tc.synthesize(member.expr)
+    var t: Type
+    tc.withOwnerFields: t = tc.synthesize(member.expr)
     if not (t.kind == tkNamed and t.name == "bool"):
       fail(dcIvNotBool,
            "invariant on '" & d.name & "' must be a bool, got " &
@@ -4751,7 +4754,8 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
-  for h in d.handlers: tc.checkHandler(h)
+  tc.withOwnerFields:
+    for h in d.handlers: tc.checkHandler(h)
   tc.popScope()
 
 proc checkDecl(tc: var TypeChecker, d: Decl) =

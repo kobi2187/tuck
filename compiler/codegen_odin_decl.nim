@@ -494,13 +494,11 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
   var res = ind & d.name & " :: struct" & tGen & " {\n" &
             (if fieldsBody != "": fieldsBody & "\n" else: "") & ind & "}\n"
   var invariantChecks: seq[string]
-  var checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](),
-                                fieldVars: initHashSet[string](),
-                                fieldPrefix: "self.", indent: 0,
+  # The predicate's bare names are the type's fields; the checker recorded
+  # them (Resolution.ownerFields), so they print as `self.<name>`.
+  var checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0,
                                 module: ctx.module, realModules: ctx.realModules,
                                 res: ctx.res)
-  for f in d.typeBody.fields:
-    checkCtx.fieldVars.incl(f.name)
   for member in d.typeMembers:
     if member.kind == dkExpr:
       let condStr = checkCtx.genOdinExpr(member.expr)
@@ -594,14 +592,12 @@ proc genActorState*(ctx: var OdinCodegenCtx, d: Decl, hasShutdown: bool,
 
 proc newHandlerCtx*(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
   ## Odin has no methods, so the actor rides as a `self` pointer and field
-  ## access inside a handler goes through it.
+  ## access inside a handler goes through it: a bare name the checker
+  ## resolved to one of the actor's fields prints as `self.<name>`.
   result = OdinCodegenCtx(definedVars: initHashSet[string](),
-                          fieldVars: initHashSet[string](),
-                          fieldPrefix: "self.", indent: ctx.indent + 1,
+                          indent: ctx.indent + 1,
                           module: ctx.module, realModules: ctx.realModules,
                           errPolicy: ctx.errPolicy, res: ctx.res)
-  for f in d.actorFields:
-    result.fieldVars.incl(f.name)
 
 proc adoptHandlerCtx*(ctx: var OdinCodegenCtx, hctx: OdinCodegenCtx) =
   ## Anything the handler bodies hoisted belongs to the enclosing file.
