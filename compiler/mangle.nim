@@ -308,6 +308,31 @@ proc mangleFnBody(res: Resolution, d: Decl, names: MangleNames,
 proc mangleMember(res: Resolution, mem: Decl, names: MangleNames,
                   fields: HashSet[string] = initHashSet[string]())
 
+proc mangleManagerType(res: Resolution, d: Decl, names: MangleNames,
+                       fields: HashSet[string]) =
+  ## A manager type's members read its fields as bare names (codegen seeds
+  ## fieldVars from typeBody.fields), so they are off limits in there.
+  mangleType(d.typeBody, names)
+  var inner = fields
+  if d.typeBody != nil and d.typeBody.kind == tkRecord:
+    for f in d.typeBody.fields: inner.incl(f.name)
+  for m2 in d.typeMembers: mangleMember(res, m2, names, inner)
+
+proc mangleSelectArms(res: Resolution, d: Decl, names: MangleNames,
+                      fields: HashSet[string]) =
+  ## An actor's `on select` arm is a handler whose params are its payload
+  ## binding. They stay bare, as a handler's params do (mangleFnBody: a param
+  ## is a contract), so they join the actor's fields as names left alone.
+  ## Arms were once not walked at all, and a type named in one kept its
+  ## unmangled spelling.
+  for arm in d.selectArms:
+    var inner = fields
+    for p in arm.binding:
+      inner.incl(p.name)
+      mangleType(p.typ, names)
+    var l = initHashSet[string]()
+    mangleExpr(res, arm.body, names, l, inner)
+
 proc mangleMember(res: Resolution, mem: Decl, names: MangleNames,
                   fields: HashSet[string] = initHashSet[string]()) =
   ## Members nest: a `pending:` block inside an object parses as a mixin whose
@@ -323,18 +348,18 @@ proc mangleMember(res: Resolution, mem: Decl, names: MangleNames,
     mangleExpr(res, mem.expr, names, l, fields)
   of dkMixin, dkExtern, dkPending:
     for inner in mem.mixinMembers: mangleMember(res, inner, names, fields)
-  of dkType:
-    mangleType(mem.typeBody, names)
-    # A manager type's members read its fields as bare names (codegen seeds
-    # fieldVars from typeBody.fields), so they are off limits in there.
-    var inner = fields
-    if mem.typeBody != nil and mem.typeBody.kind == tkRecord:
-      for f in mem.typeBody.fields: inner.incl(f.name)
-    for m2 in mem.typeMembers: mangleMember(res, m2, names, inner)
+  of dkType: mangleManagerType(res, mem, names, fields)
   of dkObject:
     for f in mem.objFields: mangleType(f.typ, names)
     for inner in mem.objMembers: mangleMember(res, inner, names)
-  else: discard
+  of dkSelect: mangleSelectArms(res, mem, names, fields)
+  # Exhaustive, so a new DeclKind has to be decided here (CLAUDE.md). None
+  # of these holds code a member walk reaches: a top-level one is walked by
+  # mangleDeclRefs, and `ownExprs` reaches its expressions.
+  of dkActor, dkTask, dkConst, dkStaticAssert, dkRegistry, dkPool,
+     dkRegister, dkErrors, dkResources, dkImport, dkFnSig, dkSatisfies,
+     dkInterface, dkGroup, dkPublic, dkWhen:
+    discard
 
 proc mangleModuleWith(res: Resolution, m: Module, names: MangleNames)
 

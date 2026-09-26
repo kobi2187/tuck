@@ -1870,4 +1870,50 @@ type R:
 """
   t.badCheck "...not a record field either", "TK-TY30"
 
+  # An `on select` arm's body was never type-checked nor mangled: `checkDecl`
+  # and `mangleMember` ended in `else: discard`, and dkSelect fell into it.
+  # One-line arms (`total += n`) got through on gradual typing; anything
+  # more did not — a `..` chain here was never lowered (the emitter's
+  # assertion fired), and once the walks reached it, its step was unresolved
+  # and `Box` unmangled, which each backend printed its own broken way.
+  t.src """
+import scheduler
+
+type Box:
+  n: int
+
+fn bump({self: Box}) -> Box:
+  return {n: self.n + 1} Box
+
+actor Acc [queue: 8]:
+  total: int = 0
+  done: bool = false
+
+  on select:
+    | add -> {n: int}:
+      var b = {n: n} Box
+      b ..bump ..bump
+      total += b.n
+    | finish -> {}:     done = true
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc send finish {}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total
+"""
+  t.quietly: t.hostRuns("an `on select` arm is checked like a handler", 7)
+  t.bugFixed "an `on select` arm is checked like a handler"
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  on select:
+    | add -> {n: int}:  total += "x"
+"""
+  t.badCheck "...so a type error in an arm is reported", "arithmetic between int and str"
+
   t.finish()

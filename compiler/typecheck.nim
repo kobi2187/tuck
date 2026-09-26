@@ -4664,7 +4664,20 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   of dkPool: tc.checkPoolDecl(d)
   of dkErrors:
     if d.errHandler != nil: tc.checkDecl(d.errHandler)
-  else: discard
+  of dkSelect:
+    # An actor's `on select` arm IS a handler (spec 9.3): its payload
+    # binding is its params and it replies nothing. It fell into the
+    # `else: discard` this dispatch used to end with, so no arm body was
+    # checked — a `..` step in one never resolved, a construction was never
+    # typed, and each backend printed its own garbled guess.
+    for arm in d.selectArms:
+      tc.checkFnBody(arm.source, arm.binding, nil, arm.body)
+  # Exhaustive, so a new DeclKind has to be decided here (CLAUDE.md).
+  of dkConst: discard       # bound and checked by bindConsts, before any body
+  of dkWhen: discard        # resolved away at load (modules.resolveWhenBlocks)
+  of dkRegistry, dkFnSig, dkInterface, dkGroup, dkSatisfies, dkImport,
+     dkPublic, dkResources:
+    discard                 # recorded by the collect phase; no body to check
 
 proc sigStr(d: Decl): string =
   var parts: seq[string]
