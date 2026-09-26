@@ -70,6 +70,8 @@ type
                                           ## `{payload} fn` call (parse-time;
                                           ## the `.field` sibling case needs
                                           ## name resolution — see TK-TY23)
+    dcPaOnOutsideActor = "TK-PA15"      ## `on msg(...)` / `on select:` at a
+                                          ## module's top level, outside an actor
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -411,6 +413,16 @@ proc parseExplanation(d: DiagCode): string =
     "and emits wrong code, which is why this is rejected outright. Fix: " &
     "`a % b` for modulo, `a /i b` for truncating integer division, `a /f b` " &
     "for float division."
+  of dcPaOnOutsideActor:
+    "`on` opens a HANDLER, and a handler belongs to whatever delivers to it. " &
+    "`on name({payload}):` handles a message sent to an actor, and " &
+    "`on select:` waits on an actor's or a task's sources, so both belong " &
+    "inside that `actor` (or, for `on select:`, a `task`) body. At a " &
+    "module's top level nothing delivers to them: `on put({v: int}):` used " &
+    "to be accepted as an ordinary fn named `put`, which nothing ever " &
+    "called. The one handler that does live at the top level is a " &
+    "registry event's, and it names the registry: " &
+    "`on Registry.Event({payload}):`."
   of dcPaNoWhile:
     "Tuck has no `while` keyword — `while` is an ordinary, unreserved " &
     "identifier, so `while cond:` parses `while` as a bare name and then " &

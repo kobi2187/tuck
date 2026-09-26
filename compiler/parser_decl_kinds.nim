@@ -495,7 +495,7 @@ proc parseSatisfyTargets*(p: var Parser): seq[string] =
 const TopLevelKeywords = "fn, type, object, actor, task, interface, group, " &
   "mixin, fnsig, registry, decision, pending, distinct, const, import, " &
   "extern, errors, resources, register, pool, arena, satisfies, " &
-  "static_assert, when"
+  "static_assert, when, and `on Registry.Event` for a registry handler"
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in parser.nim's
   ## contextualDecl.
@@ -881,6 +881,23 @@ proc parseSatisfiesDecl*(p: var Parser, sp: Span): Decl =
   if p.current().kind == tkNewline: discard p.advance()
   Decl(span: sp, kind: dkSatisfies, name: objName, satisfyTargets: targets)
 
+proc failIfOnOutsideActor(p: var Parser) =
+  ## `on` at a module's top level. Only a REGISTRY handler lives here, and it
+  ## names its registry: `on Registry.Event({payload}):`. A message handler
+  ## or an `on select:` belongs to the actor (or task) that delivers to it —
+  ## out here `on put(...)` parsed as an ordinary fn named `put` that nothing
+  ## ever called, and was accepted silently.
+  let next = p.peek(1)
+  if next.kind == tkIdent and p.peek(2).kind == tkDot: return
+  let what = if next.kind == tkSelect: "`on select:`"
+             else: "`on " & next.value & "(...)`"
+  p.reportError(what & " is outside an actor. A message handler and an " &
+                "`on select:` belong inside the `actor` (or, for `on " &
+                "select:`, the `task`) that delivers to them; at the top " &
+                "level `on` only handles a registry event, as " &
+                "`on Registry.Event({payload}):`.",
+                dc = dcPaOnOutsideActor)
+
 proc failIfNotTopLevelStart*(p: var Parser) =
   ## Can this token open a top-level declaration at all? Two ways it cannot,
   ## both reported HERE rather than deeper, where the parser would only be able
@@ -892,6 +909,7 @@ proc failIfNotTopLevelStart*(p: var Parser) =
                   dc = dcPaStrayIndent)
   if p.current().kind == tkIdent and not p.opensDeclaration():
     p.failNotADeclaration()
+  if p.current().kind == tkOn: p.failIfOnOutsideActor()
 
 proc parseParamListBody*(p: var Parser): seq[Param] =
   ## Parses the comma-separated params between `(` and `)`, not including

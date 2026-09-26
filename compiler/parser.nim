@@ -184,7 +184,12 @@ proc parseWhenDecl(p: var Parser, sp: Span): Decl =
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
   var members: seq[Decl]
+  # The body is the module's top level, only conditional: the same first
+  # words open a declaration there, so it gets the same check parseModule
+  # makes. Without it a typo or a stray `on put(...)` inside a `when` block
+  # parsed as whatever parseDecl made of it.
   p.indentedBlock:
+    p.failIfNotTopLevelStart()
     members.add(p.parseDecl())
   Decl(span: sp, kind: dkWhen, name: "when", whenTargetValue: valTok.value,
        whenDecls: members)

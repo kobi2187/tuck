@@ -250,6 +250,55 @@ fn main() -> int:
 """
   t.okCheck "a fully handled registry with matching payloads is accepted"
 
+  # --- `on` at the top level: only a registry handler (TK-PA15) ----------
+  #
+  # A registry handler names its registry, `on R.Low(...)`, and lives at the
+  # top level. A MESSAGE handler and `on select:` belong to the actor (or
+  # task) that delivers to them. Out here `on put({v: int}):` was accepted
+  # silently, parsed as an ordinary fn named `put` that nothing ever called.
+  t.src """
+on put({v: int}):
+  let x = v
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a message handler outside an actor is rejected", "TK-PA15"
+
+  t.src """
+import time
+
+on select:
+  | timeout {5.ms} -> {}:
+    return
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "`on select:` outside an actor or task is rejected", "TK-PA15"
+
+  # A `when TARGET` block's body is the top level too, only conditional.
+  # It used to skip the top-level check altogether.
+  t.src """
+when TARGET == "host":
+  on put({v: int}):
+    let x = v
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and inside a `when` block at the top level", "TK-PA15"
+
+  t.src """
+when TARGET == "host":
+  typ Light:
+    on: bool
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a misspelled keyword inside a `when` block is TK-PA03", "TK-PA03"
+
   # --- registers, §8.1 (TK-RE01..04) ---------------------------------------
   #
   # The spec states outright that writing a read-only field is a compile

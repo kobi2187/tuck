@@ -685,13 +685,19 @@ return type, with nothing checking it was ever assigned and nothing collecting
 it — the emitted `handleMsg` returns nothing, so it became a discarded local.
 A fn returns with `return`.
 
-`on select` gives message arms plus a reserved `shutdown`:
+`on select` gives message arms plus a reserved `shutdown`. Like any handler it
+lives inside its actor (or task); at the top level only a registry handler,
+`on Registry.Event({...}):`, may start with `on` (`TK-PA15`):
 
 ```tuck
-on select:
-  | add -> {n: int}:  total += n
-  | finish -> {}:     done = true
-  | shutdown -> {}:   total = total
+actor Tally [queue: 16]:
+  total: int = 0
+  done: bool = false
+
+  on select:
+    | add -> {n: int}:  total += n
+    | finish -> {}:     done = true
+    | shutdown -> {}:   total = total
 ```
 
 Run-verified 55 on every backend.
@@ -710,21 +716,13 @@ gone entirely (`tests/suites/actor_result.nim`).
 > (`map`/`fold`/`keep` over `Seq[T]`), since `bake` needs a `fnsig`-typed
 > field to fill. Same family as the generic-actor gap below.
 
-> ⚠️ **OPEN — a generic actor declaration does not parse.**
-> `actor Box[T] [queue: 4]:` fails with `Expected 'Colon' here, found '['` —
-> the actor grammar has no type-parameter slot the way `type`/`fn` do
-> (`fn identity[T]`, `type Box[T] = {value: T}` both parse fine; `actor` does
-> not). Found while designing a stdlib service actor generic over its
-> payload type. Unclear which side of the line this falls on: it could be a
-> straightforward grammar gap (the `actor` rule simply never grew the `[T]`
-> slot), or it could be pointing at something semantically unresolved —
-> an actor is a compile-time singleton with no construction step (§10
-> above), so it isn't obvious what "one instance, but generic over `T`"
-> would even mean, since nothing ever supplies `T` at a call site the way
-> an ordinary generic fn does. Flagged rather than triaged; the closest
-> precedent (`Box[error]` as a parameter, §3) turned out to be a *ruling*
-> ("attribute names are reserved in brackets") rather than a bug, so this
-> one shouldn't be assumed to be a bug either without someone deciding.
+> **A generic actor is one actor per instantiation** (ruled 2026-09-17, #18).
+> `actor Box[T] [queue: 4]:` declares it; `Box[int] send put {v: 1}` and
+> `Box[int].last` use it. An expansion pass before typecheck clones the actor
+> once per instantiation with `T` substituted, so every later stage sees
+> plain actors: `Box[int]` and `Box[str]` are two singletons with two
+> mailboxes. A generic actor nobody instantiates is refused (`TK-TY28`), not
+> dropped (`tests/suites/declarations.nim`).
 
 ### Tasks — async that looks synchronous
 
