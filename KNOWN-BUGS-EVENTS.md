@@ -1503,6 +1503,23 @@ namespaces that differs only in case.
 
 ## EV-6 — a multi-actor D program crashes at exit, about 1 run in 10
 
+**FIXED 2026-09-26, D only (Nim and Odin were never affected).** The guess
+below was right. `tuckDrainActors` now retires every actor thread after
+quiescence — a `retiring` flag the park loop checks, then a join — so no
+thread is left in `Condition.wait` when rt_term runs. `gc_term` collects
+(suspending every registered thread by signal) and then UNMAPS the GC heap,
+which is where a parked actor's slot, Mutex, Condition and Thread object
+live. Two failure shapes, both from one core dump: the parked thread's
+futex word vanished under it ("unexpected error code"), and a thread
+resuming from the collection's suspend touched its freed Thread object
+(segfault in `thread_postSuspend`).
+
+Worse than measured below: a two-actor program with `waitUntil` failed
+24/60, a one-actor one 13/60. After: 0/100 each, and 45-intersection 0/60.
+Test: `d_backend` "actors: two parked actors survive exit", which runs one
+binary 40 times and wants exit 7 every time — red before the fix, with
+exactly the two messages above.
+
 **Severity: medium. Intermittent, and it is a CRASH, not a warning.** Found
 2026-09-20, the first time a D toolchain was available to run the suite.
 

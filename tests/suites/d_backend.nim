@@ -67,6 +67,32 @@ proc runsDWith(t: var T, name: string, want: int, dmdExe: string,
   if rc == want: t.ok name
   else: t.no name, "exit " & $rc & ", want " & $want
 
+proc runsDRepeatedly(t: var T, name: string, want: int, dmdExe: string,
+                     times: int) =
+  ## Like runsD, but runs the one binary `times` times and wants the exit
+  ## code EVERY time. For a race: a single run of a program that failed
+  ## about half the time is a coin flip, and a green coin flip proves
+  ## nothing. Stops at the first wrong exit and names the run.
+  let e = t.needD()
+  let dir = t.curDir / "dlang"
+  let b = t.needCmdAfter(@[dmdExe, "-i", "-I" & dir, dir / "t.d",
+                           dir / "minicoro.a", "-of=" & dir / "prog"],
+                         e, proc (dir: string) = discard, dir)
+  let loop = "for i in $(seq " & $times & "); do timeout 10 \"$0\"; " &
+             "rc=$?; [ $rc -eq " & $want & " ] || " &
+             "{ echo \"run $i exited $rc\"; exit 1; }; done"
+  let r = t.needCmdAfter(@["sh", "-c", loop, dir / "prog"], b,
+                         proc (dir: string) = discard, dir)
+  if t.phase == pCollect: return
+  if t.skippedCmd(r): t.skip name; return
+  let (brc, bout) = t.resultOf(b)
+  if brc != 0:
+    t.no name, "dmd build failed: " & bout.strip().splitLines()[^1]
+    return
+  let (rc, output) = t.resultOf(r)
+  if rc == 0: t.ok name
+  else: t.no name, output.strip()
+
 proc run*(t: var T) =
   let dmdExe = findDmd()
   if dmdExe.len == 0:
@@ -876,6 +902,42 @@ fn main() -> int:
   return r.code
 """
   t.runsD "reactor: a 5ms source beats a 100ms timeout (code 1)", 1, dmdExe
+
+  # --- actors at exit: no thread outlives the runtime ----------------------
+  # Returning from D's main runs rt_term, which collects and then UNMAPS the
+  # GC heap — where every parked actor's slot, Mutex, Condition and Thread
+  # live. Before tuckDrainActors retired the actor threads, about half of all
+  # two-actor runs died there: "The futex facility returned an unexpected
+  # error code", or a segfault in thread_postSuspend. Nim and Odin never
+  # showed it; every D `hostRuns` over actors was a coin flip.
+  t.src """
+import scheduler
+
+actor A [queue: 4]:
+  hits: int = 0
+  on put({v: int}):
+    hits += v
+
+actor B [queue: 4]:
+  hits: int = 0
+  on put({v: int}):
+    hits += v
+
+fn aDone() -> bool:
+  return A.hits > 0
+
+fn bDone() -> bool:
+  return B.hits > 0
+
+fn main() -> int [io]:
+  A send put {v: 3}
+  B send put {v: 4}
+  A.waitUntil {pred: :aDone}
+  B.waitUntil {pred: :bDone}
+  return A.hits + B.hits
+"""
+  t.runsDRepeatedly "actors: two parked actors survive exit, 40 runs of 40",
+                    7, dmdExe, 40
 
   # --- fs: offloaded through the worker thread (tuckSubmitBlocking) ------
   # write, append, read-back, remove, then confirm removal — round-tripping
