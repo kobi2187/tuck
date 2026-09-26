@@ -43,10 +43,7 @@ proc memberArgs(res: Resolution, mem: Decl, dotArg: Expr,
   ## The payload taken as the satisfier, then each further param of the
   ## CONCRETE member, positionally, from the call's payload literal. A fresh
   ## copy per arm: one node may sit in one place only.
-  let recv = Expr(span: span, kind: exkVar, name: PayloadBind)
-  fillIdsIn(recv)
-  res.setType(recv, bindT)
-  result.add recv
+  result.add res.typed(Expr(span: span, kind: exkVar, name: PayloadBind), bindT)
   for i, pname in mem.paramNames():
     if i == 0: continue   # self
     var value: Expr = nil
@@ -67,12 +64,10 @@ proc dispatchArm(res: Resolution, e: Expr, s: Decl,
     "no member '" & member & "' taking self — the conformance check missed it"
   # The satisfier's type as the checker built it, edge and all: the member's
   # own `self` param.
-  let call = Expr(span: e.span, kind: exkCall,
-                  callee: Expr(span: e.span, kind: exkVar, name: member),
-                  args: memberArgs(res, mem, e.dotArg, mem.fnParams[0].typ,
-                                   e.span))
-  fillIdsIn(call)
-  res.setType(call, res.typeFor(e))
+  let callee = Expr(span: e.span, kind: exkVar, name: member)
+  let args = memberArgs(res, mem, e.dotArg, mem.fnParams[0].typ, e.span)
+  let call = res.typed(Expr(span: e.span, kind: exkCall, callee: callee,
+                            args: args), res.typeFor(e))
   DispatchArm(satisfier: s.name, bindName: PayloadBind, call: call)
 
 proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
@@ -83,10 +78,9 @@ proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
   for s in satisfiersOf(m, real, ic.iface):
     arms.add dispatchArm(res, e, s, ic.member)
   let t = res.typeFor(e)
-  let node = Expr(span: e.span, kind: exkIfaceCall, dispatchRecv: e.receiver,
-                  dispatchIface: ic.iface, dispatchArms: arms)
-  fillIdsIn(node)          # fills the new node only: its children have ids
-  res.setType(node, t)
+  let node = res.typed(Expr(span: e.span, kind: exkIfaceCall,
+                           dispatchRecv: e.receiver, dispatchIface: ic.iface,
+                           dispatchArms: arms), t)
   # The one other fact about the call itself: its result entering an
   # interface slot (a member returning an object, wrapped where it lands).
   let w = res.wrapOf(e)

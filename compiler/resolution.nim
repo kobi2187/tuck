@@ -404,6 +404,14 @@ proc setType*(r: Resolution, e: Expr, t: Type) =
   ensureId(e)
   r.types[e.id] = t
 
+proc typed*(r: Resolution, e: Expr, t: Type): Expr =
+  ## `e`, with an id and its type recorded — how a pass that builds nodes
+  ## after checking makes them readable to everything after it (an emitter
+  ## asks the table what a node is, and a node built late has nothing there
+  ## unless it is put there).
+  r.setType(e, t)
+  e
+
 iterator allTypes*(r: Resolution): Type =
   ## Every type the checker recorded for an expression. For passes that need
   ## to finish a job over inferred types — resolving their declaration edge,

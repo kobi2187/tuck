@@ -67,10 +67,6 @@ proc rowsOf(d: Decl): seq[Row] =
 # qualifies by its type), and a node built after checking has nothing there
 # unless it is put there.
 
-proc typed(res: Resolution, e: Expr, t: Type): Expr =
-  res.setType(e, t)
-  e
-
 proc intType(sp: Span): Type = Type(span: sp, kind: tkNamed, name: "int")
 proc boolType(sp: Span): Type = Type(span: sp, kind: tkNamed, name: "bool")
 
