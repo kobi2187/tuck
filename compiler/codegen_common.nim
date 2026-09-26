@@ -271,6 +271,14 @@ proc lookupFnParams*(m: Module, name: string): seq[string] =
   ## generic payload.
   m.findFn(name).paramNames()
 
+proc isActorWaitOn*(e: Expr): bool =
+  ## `Actor.waitUntil {pred: :p}`, as the checker rewrote it:
+  ## `waitUntil(<actorRef>, pred)`. Every backend prints it as a wait on the
+  ## actor's slot.
+  e != nil and e.kind == exkCall and e.callee != nil and
+    e.callee.kind == exkVar and e.callee.name == "waitUntil" and
+    e.args.len == 2 and e.args[0] != nil and e.args[0].kind == exkActorRef
+
 proc msgVariantName*(handlerName: string): string =
   ## The message-enum tag a handler receives on — `msgAdd` for `on add`. The
   ## envelope and the send helpers must agree on it, on every backend.

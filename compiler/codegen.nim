@@ -302,10 +302,7 @@ proc genActorWaitOn(ctx: var CodegenCtx, e: Expr): string =
   ## routes it to THAT actor's slot. Same shape as `Pool.acquire` reaching the
   ## runtime's acquire: the member name belongs to the ACTOR surface, not to a
   ## library the compiler had to learn by name.
-  if e == nil or e.kind != exkCall or e.callee == nil: return ""
-  if e.callee.kind != exkVar or e.callee.name != "waitUntil": return ""
-  if e.args.len != 2 or e.args[0] == nil: return ""
-  if e.args[0].kind != exkActorRef: return ""
+  if not isActorWaitOn(e): return ""
   "tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genExpr(e.args[1]) & ")"
 

@@ -346,10 +346,7 @@ proc genOdinActorWaitOn(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`. The
   ## checker rewrote the member call into `waitUntil(<actorRef>, pred)`, so the
   ## actor is still named in arg 0. Twin of the Nim genActorWaitOn.
-  if e == nil or e.kind != exkCall or e.callee == nil: return ""
-  if e.callee.kind != exkVar or e.callee.name != "waitUntil": return ""
-  if e.args.len != 2 or e.args[0] == nil: return ""
-  if e.args[0].kind != exkActorRef: return ""
+  if not isActorWaitOn(e): return ""
   "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genOdinExpr(e.args[1]) & ")"
 

@@ -54,15 +54,6 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string
   ## Forward-declared: genRecordType (manager-type member fns) recurses
   ## into it before its own definition.
 
-type
-  BitField* = object
-    ## One `bit N` / `bits LO..HI` field of a memory-mapped register, decoded
-    ## from its declared type and attributes.
-    prefix: string    # <register>_<field>, the name every emitted symbol shares
-    loBit, hiBit: string
-    isRange: bool     # a multi-bit field, not a single flag
-    canRead, canWrite: bool
-
 # Object member fn (or a mixin fn materialized by `+ mixin`): the object
 # rides as a `ref self` first parameter (reassignment must reach the
 # caller); `Self` resolves to the object. Shallow copy — the shared AST
@@ -1083,25 +1074,7 @@ proc genMixinBlock*(ctx: var OdinCodegenCtx, d: Decl): string =
   if cBindings.len > 0:
     result.add(ctx.genForeignBlock(cBindings, cLib))
 
-proc decodeBitField*(regName: string, f: FieldDef): BitField =
-  ## `bits 3..7` is a multi-bit FIELD: shift by the low bit and mask the width.
-  ## A single `bit N` is the one-bit case of the same shape.
-  let bitVal = f.typ.name.replace("bit ", "").replace("bits ", "")
-  let dotPos = bitVal.find("..")
-  result.loBit = if dotPos >= 0: bitVal[0 ..< dotPos].strip() else: bitVal
-  result.hiBit = if dotPos >= 0: bitVal[dotPos + 2 .. ^1].strip() else: bitVal
-  result.isRange = dotPos >= 0 and result.loBit != result.hiBit
-  result.prefix = regName & "_" & f.name
-  var hasRead, hasWrite = false
-  for a in f.attrs:
-    if a.name == "read": hasRead = true
-    elif a.name == "write": hasWrite = true
-  # An unmarked field is readable AND writable; marking one direction opts out
-  # of the other.
-  result.canRead = hasRead or not hasWrite
-  result.canWrite = hasWrite or not hasRead
-
-proc bitConsts*(bf: BitField, ind: string): seq[string] =
+proc bitConsts*(bf: BitFieldInfo, ind: string): seq[string] =
   ## The shift, and for a range the width and mask.
   result.add(ind & bf.prefix & "_SHIFT :: " & bf.loBit)
   if bf.isRange:
@@ -1110,7 +1083,7 @@ proc bitConsts*(bf: BitField, ind: string): seq[string] =
     result.add(ind & bf.prefix & "_MASK :: u32(1 << u32(" & bf.prefix &
                "_WIDTH)) - 1")
 
-proc bitGetter*(bf: BitField, regName, ind: string): string =
+proc bitGetter*(bf: BitFieldInfo, regName, ind: string): string =
   ## A range reads as a masked u32; a single bit reads as a bool.
   let body = if bf.isRange:
                "return (" & regName & "^ >> u32(" & bf.prefix & "_SHIFT)) & " &
@@ -1122,7 +1095,7 @@ proc bitGetter*(bf: BitField, regName, ind: string): string =
   ind & bf.prefix & "_get :: proc() -> " & retT & " {\n" &
     ind & "\t" & body & "\n" & ind & "}\n"
 
-proc bitSetter*(bf: BitField, regName, ind: string): string =
+proc bitSetter*(bf: BitFieldInfo, regName, ind: string): string =
   ## A range clears its mask before OR-ing the shifted value in; a single bit
   ## sets or clears one mask.
   if bf.isRange:
