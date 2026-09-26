@@ -7,10 +7,10 @@ struct TRec_http_body(T_body) {
     T_body body;
 }
 
-enum tuck_type_HttpError { Unreachable, BadStatus }
+enum tuckˑtypeˑHttpError { Unreachable, BadStatus }
 
-rt.TuckResult!(TRec_http_body!(string)) tuck_fn_get(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_get invoked (not implemented)");
+rt.TuckResult!(TRec_http_body!(string)) tuckˑfnˑget(T)(T payload) {
+    stderr.writeln("TUCK PENDING: get invoked (not implemented)");
     return typeof(return).init;
 }
 

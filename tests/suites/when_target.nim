@@ -59,7 +59,7 @@ proc run*(t: var T) =
 
   let none = t.emittedFor("")
   if t.phase != pCollect:
-    if "tuck_fn_initClock" notin none:
+    if "tuckˑfnˑinitClock" notin none:
       t.ok "no --target: both blocks are dropped, neither body is emitted"
     else:
       t.no "no --target: both blocks are dropped, neither body is emitted",
@@ -71,7 +71,7 @@ proc run*(t: var T) =
   # undeclared symbols" note), so only the EMITTED code proves anything.
   let bogus = t.emittedFor("bogus-target")
   if t.phase != pCollect:
-    if "tuck_fn_initClock" notin bogus:
+    if "tuckˑfnˑinitClock" notin bogus:
       t.ok "an unrecognised --target value drops every when block too"
     else:
       t.no "an unrecognised --target value drops every when block too",

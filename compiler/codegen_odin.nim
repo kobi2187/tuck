@@ -881,10 +881,10 @@ proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): 
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
-                "tuck_unhandled(" & tn & ".err, \"" & site &
+                UnhandledHandlerName & "(" & tn & ".err, \"" & site &
                   "\"); panic(\"unhandled error\")"
               else:
-                "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\")"
   ind & "\t" & tn & " := " & stmtCode & "\n" &
     ind & "\tif " & tn & ".status != .Ok { " & onErr & " }"
 
@@ -904,10 +904,10 @@ proc genRoutedStmt(ctx: var OdinCodegenCtx, s: Expr, stmtCode,
   let site = ctx.res.shortcut(s)
   let name = s.target.name
   let onErr = if ctx.errPolicy == "exit":
-                "tuck_unhandled(" & name & ".err, \"" & site &
+                UnhandledHandlerName & "(" & name & ".err, \"" & site &
                   "\"); panic(\"unhandled error\")"
               else:
-                "tuck_unhandled(" & name & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
   ind & "\t" & stmtCode & "\n" &
     ind & "\tif " & name & ".status == .Err { " & onErr & " }"
 

@@ -2,9 +2,9 @@ module mod_scheduler;
 
 import rt = tuck_rt;
 
-alias tuck_type_Predicate = bool function();
+alias tuckˑfnsigˑPredicate = bool function();
 
-void runTasksUntil(tuck_type_Predicate pred) {
+void runTasksUntil(tuckˑfnsigˑPredicate pred) {
     rt.runTasksUntil(pred);
 }
 

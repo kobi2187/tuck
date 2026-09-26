@@ -6,22 +6,22 @@ struct TRec_done(T_done) {
     T_done done;
 }
 
-alias tuck_type_Milliseconds = uint;
+alias tuckˑtypeˑMilliseconds = uint;
 
-tuck_type_Milliseconds tuck_fn_ms(uint value) {
-    return tuck_type_Milliseconds(value);
+tuckˑtypeˑMilliseconds tuckˑfnˑms(uint value) {
+    return tuckˑtypeˑMilliseconds(value);
 }
 
-TRec_done!(bool) tuck_fn_delay(tuck_type_Milliseconds ms) {
+TRec_done!(bool) tuckˑfnˑdelay(tuckˑtypeˑMilliseconds ms) {
     return TRec_done!(bool)(done: true);
 }
 
-void tuck_fn_main() {
-    TRec_done!(bool) tuck_r = tuck_fn_delay(tuck_fn_ms(5L));
+void tuckˑfnˑmain() {
+    TRec_done!(bool) tuckˑvˑr = tuckˑfnˑdelay(tuckˑfnˑms(5L));
     return;
 }
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_fn_main();
+    tuckˑfnˑmain();
 }

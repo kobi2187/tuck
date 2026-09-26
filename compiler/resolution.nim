@@ -126,7 +126,7 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     # handle type is not, because the checker synthesised it and mangling
     # walks the AST, which never held it. Compare both spellings rather than
     # teaching mangle about a type that does not exist in the tree.
-    if d.name == pool or d.name == prefixed(pool, nkValue): return true
+    if d.name == pool or d.name == prefixed(pool, nkPool): return true
   return false
 
 proc resourceHandleName*(kind: string): string =

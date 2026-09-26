@@ -622,10 +622,10 @@ proc constDeclFor*(m: Module, raw: string): Decl =
   # (declared differently in two modules) stays unresolved rather than
   # resolving to whichever loaded first.
   result = m.findDecl(dkConst, raw)
-  if result == nil: result = m.findDecl(dkConst, prefixed(raw, nkValue))
+  if result == nil: result = m.findDecl(dkConst, prefixed(raw, nkConst))
   if result != nil or raw in semLayer.ambiguousConsts: return
   result = semLayer.constNames.getOrDefault(raw, nil)
-  if result == nil: result = semLayer.constNames.getOrDefault(prefixed(raw, nkValue), nil)
+  if result == nil: result = semLayer.constNames.getOrDefault(prefixed(raw, nkConst), nil)
 
 proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   ## A size written as TEXT — an attribute's value, or an `Array[N, T]` size,

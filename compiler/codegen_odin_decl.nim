@@ -90,7 +90,7 @@ proc genPendingStub*(ctx: var OdinCodegenCtx, d: Decl): string =
   let paramStr = if d.fnParams.len > 0: "(payload: $T)" else: "()"
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   var res = ind & fnNameSanitized & " :: proc" & paramStr & retStr & " {\n" &
-            ind & "\tfmt.println(\"TUCK PENDING: " & d.name &
+            ind & "\tfmt.println(\"TUCK PENDING: " & d.writtenName &
             " invoked (not implemented)\")\n"
   if retTypeStr != "void":
     res.add(ind & "\treturn {}\n")
@@ -978,7 +978,7 @@ proc genErrHandlerBody*(ctx: var OdinCodegenCtx, handler: Decl): string =
 proc genErrHandler*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## Global handler: rt logger first (errors are always visible), then the
   ## user's handler body.
-  result = ind & "tuck_unhandled :: proc(code: u16, site: string) {\n" &
+  result = ind & UnhandledHandlerName & " :: proc(code: u16, site: string) {\n" &
            ind & "\trt.tuckReportUnhandled(code, site)\n"
   if d.errHandler != nil and d.errHandler.fnBody != nil:
     let body = ctx.genErrHandlerBody(d.errHandler)

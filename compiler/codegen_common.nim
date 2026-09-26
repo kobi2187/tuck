@@ -74,12 +74,19 @@ proc sumPayloadField*(variantName: string): string =
   ## realistic AST or IR type has a variant called Block, If, Case, Var or
   ## Return, so this was waiting for the first tree anyone wrote.
   ##
-  ## `tuck_` is the same prefix mangle.nim puts on every other generated name,
-  ## for the same reason: a generated identifier must not be able to collide
-  ## with anything in the target language. Shared by the declaration site and
-  ## every read site in both backends that carry one — Odin has no such field,
-  ## it binds the union member directly.
-  "tuck_" & variantName.toLowerAscii()
+  ## Spelled as a `variant` name (name_prefix.nim), for the reason every other
+  ## generated name is: it must not be able to collide with anything in the
+  ## target language. Shared by the declaration site and every read site in
+  ## both backends that carry one — Odin has no such field, it binds the
+  ## union member directly.
+  prefixed(variantName.toLowerAscii(), nkVariant)
+
+const UnhandledHandlerName* = "tuck_unhandled"
+  ## The generated proc every dropped fallible result reports through (spec
+  ## 4.9), and the one each backend declares. A compiler-made name, so it
+  ## lives outside the `tuckˑ` space user names are mangled into and cannot
+  ## meet one. Nim and Odin spelled it as a literal while D mangled
+  ## "unhandled" to reach the same text; one constant now.
 
 proc absentCapable*(t: Type): bool =
   ## Does this fn's declared return type admit `tsAbsent` — `?T` or `!?T`? A

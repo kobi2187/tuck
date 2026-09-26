@@ -931,7 +931,7 @@ proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
   ## runs first: it is the hook for diagnostics, and the program stops after.
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
-  let handler = mangleName("unhandled")
+  let handler = UnhandledHandlerName
   var onErr = handler & "(" & tn & ".err, \"" & site & "\");"
   if ctx.errPolicy == "exit":
     onErr.add(" rt.exit(1);")
@@ -955,7 +955,7 @@ proc genDRoutedStmt(ctx: var DCodegenCtx, s: Expr, stmtCode: string): string =
     return ctx.genDDroppedResult(s, stmtCode)
   let site = ctx.res.shortcut(s)
   let name = s.target.name
-  let handler = mangleName("unhandled")
+  let handler = UnhandledHandlerName
   var onErr = handler & "(" & name & ".err, \"" & site & "\");"
   if ctx.errPolicy == "exit":
     onErr.add(" rt.exit(1);")

@@ -4,88 +4,88 @@ package main
 import "core:os"
 import rt "./tuckrt"
 
-tuck_VI_CTRL := cast(^u32)(uintptr(0x50000000))
-tuck_VI_CTRL_ENABLE_SHIFT :: 0
-tuck_VI_CTRL_FRAME_DONE_SHIFT :: 1
-tuck_VI_CTRL_OVERRUN_SHIFT :: 2
-tuck_VI_CTRL_ENABLE_get :: proc() -> bool {
-	return (tuck_VI_CTRL^ & (u32(1) << u32(tuck_VI_CTRL_ENABLE_SHIFT))) != 0
+tuckˑregisterˑVI_CTRL := cast(^u32)(uintptr(0x50000000))
+tuckˑregisterˑVI_CTRL_ENABLE_SHIFT :: 0
+tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT :: 1
+tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT :: 2
+tuckˑregisterˑVI_CTRL_ENABLE_get :: proc() -> bool {
+	return (tuckˑregisterˑVI_CTRL^ & (u32(1) << u32(tuckˑregisterˑVI_CTRL_ENABLE_SHIFT))) != 0
 }
-tuck_VI_CTRL_ENABLE_set :: proc(on: bool) {
-	mask := u32(1) << u32(tuck_VI_CTRL_ENABLE_SHIFT)
-	if on { tuck_VI_CTRL^ |= mask } else { tuck_VI_CTRL^ &~= mask }
+tuckˑregisterˑVI_CTRL_ENABLE_set :: proc(on: bool) {
+	mask := u32(1) << u32(tuckˑregisterˑVI_CTRL_ENABLE_SHIFT)
+	if on { tuckˑregisterˑVI_CTRL^ |= mask } else { tuckˑregisterˑVI_CTRL^ &~= mask }
 }
-tuck_VI_CTRL_FRAME_DONE_get :: proc() -> bool {
-	return (tuck_VI_CTRL^ & (u32(1) << u32(tuck_VI_CTRL_FRAME_DONE_SHIFT))) != 0
+tuckˑregisterˑVI_CTRL_FRAME_DONE_get :: proc() -> bool {
+	return (tuckˑregisterˑVI_CTRL^ & (u32(1) << u32(tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT))) != 0
 }
-tuck_VI_CTRL_OVERRUN_get :: proc() -> bool {
-	return (tuck_VI_CTRL^ & (u32(1) << u32(tuck_VI_CTRL_OVERRUN_SHIFT))) != 0
-}
-
-tuck_VI_DMA := cast(^u32)(uintptr(0x50000010))
-tuck_VI_DMA_ARMED_SHIFT :: 0
-tuck_VI_DMA_ARMED_get :: proc() -> bool {
-	return (tuck_VI_DMA^ & (u32(1) << u32(tuck_VI_DMA_ARMED_SHIFT))) != 0
-}
-tuck_VI_DMA_ARMED_set :: proc(on: bool) {
-	mask := u32(1) << u32(tuck_VI_DMA_ARMED_SHIFT)
-	if on { tuck_VI_DMA^ |= mask } else { tuck_VI_DMA^ &~= mask }
+tuckˑregisterˑVI_CTRL_OVERRUN_get :: proc() -> bool {
+	return (tuckˑregisterˑVI_CTRL^ & (u32(1) << u32(tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT))) != 0
 }
 
-tuck_DEC_CTRL := cast(^u32)(uintptr(0x50001000))
-tuck_DEC_CTRL_START_SHIFT :: 0
-tuck_DEC_CTRL_BUSY_SHIFT :: 1
-tuck_DEC_CTRL_ERR_SHIFT :: 2
-tuck_DEC_CTRL_START_get :: proc() -> bool {
-	return (tuck_DEC_CTRL^ & (u32(1) << u32(tuck_DEC_CTRL_START_SHIFT))) != 0
+tuckˑregisterˑVI_DMA := cast(^u32)(uintptr(0x50000010))
+tuckˑregisterˑVI_DMA_ARMED_SHIFT :: 0
+tuckˑregisterˑVI_DMA_ARMED_get :: proc() -> bool {
+	return (tuckˑregisterˑVI_DMA^ & (u32(1) << u32(tuckˑregisterˑVI_DMA_ARMED_SHIFT))) != 0
 }
-tuck_DEC_CTRL_START_set :: proc(on: bool) {
-	mask := u32(1) << u32(tuck_DEC_CTRL_START_SHIFT)
-	if on { tuck_DEC_CTRL^ |= mask } else { tuck_DEC_CTRL^ &~= mask }
-}
-tuck_DEC_CTRL_BUSY_get :: proc() -> bool {
-	return (tuck_DEC_CTRL^ & (u32(1) << u32(tuck_DEC_CTRL_BUSY_SHIFT))) != 0
-}
-tuck_DEC_CTRL_ERR_get :: proc() -> bool {
-	return (tuck_DEC_CTRL^ & (u32(1) << u32(tuck_DEC_CTRL_ERR_SHIFT))) != 0
+tuckˑregisterˑVI_DMA_ARMED_set :: proc(on: bool) {
+	mask := u32(1) << u32(tuckˑregisterˑVI_DMA_ARMED_SHIFT)
+	if on { tuckˑregisterˑVI_DMA^ |= mask } else { tuckˑregisterˑVI_DMA^ &~= mask }
 }
 
-tuck_FrameBuffers: rt.ObjectPool([4096]u8, 4)
+tuckˑregisterˑDEC_CTRL := cast(^u32)(uintptr(0x50001000))
+tuckˑregisterˑDEC_CTRL_START_SHIFT :: 0
+tuckˑregisterˑDEC_CTRL_BUSY_SHIFT :: 1
+tuckˑregisterˑDEC_CTRL_ERR_SHIFT :: 2
+tuckˑregisterˑDEC_CTRL_START_get :: proc() -> bool {
+	return (tuckˑregisterˑDEC_CTRL^ & (u32(1) << u32(tuckˑregisterˑDEC_CTRL_START_SHIFT))) != 0
+}
+tuckˑregisterˑDEC_CTRL_START_set :: proc(on: bool) {
+	mask := u32(1) << u32(tuckˑregisterˑDEC_CTRL_START_SHIFT)
+	if on { tuckˑregisterˑDEC_CTRL^ |= mask } else { tuckˑregisterˑDEC_CTRL^ &~= mask }
+}
+tuckˑregisterˑDEC_CTRL_BUSY_get :: proc() -> bool {
+	return (tuckˑregisterˑDEC_CTRL^ & (u32(1) << u32(tuckˑregisterˑDEC_CTRL_BUSY_SHIFT))) != 0
+}
+tuckˑregisterˑDEC_CTRL_ERR_get :: proc() -> bool {
+	return (tuckˑregisterˑDEC_CTRL^ & (u32(1) << u32(tuckˑregisterˑDEC_CTRL_ERR_SHIFT))) != 0
+}
 
-tuck_type_NalKind :: enum { nonIdr, idr, sps, pps, sei }
+tuckˑpoolˑFrameBuffers: rt.ObjectPool([4096]u8, 4)
 
-tuck_type_Action :: enum { decode, configure, skip, flushThenDecode }
+tuckˑtypeˑNalKind :: enum { nonIdr, idr, sps, pps, sei }
 
-tuck_fn_route :: proc (nal: tuck_type_NalKind, configured: bool, midFrame: bool) -> tuck_type_Action {
+tuckˑtypeˑAction :: enum { decode, configure, skip, flushThenDecode }
+
+tuckˑdecisionˑroute :: proc (nal: tuckˑtypeˑNalKind, configured: bool, midFrame: bool) -> tuckˑtypeˑAction {
   switch ((((int(nal) * 4) + ((configured ? 1 : 0) * 2)) + (midFrame ? 1 : 0)))
   {
-  case 0, 1, 16, 17, 18, 19: return tuck_type_Action.skip;
-  case 2, 3, 4, 6: return tuck_type_Action.decode;
-  case 5, 7: return tuck_type_Action.flushThenDecode;
-  case: return tuck_type_Action.configure;
+  case 0, 1, 16, 17, 18, 19: return tuckˑtypeˑAction.skip;
+  case 2, 3, 4, 6: return tuckˑtypeˑAction.decode;
+  case 5, 7: return tuckˑtypeˑAction.flushThenDecode;
+  case: return tuckˑtypeˑAction.configure;
   }
   return {}
 }
 
-tuck_type_Frame :: struct {
+tuckˑtypeˑFrame :: struct {
 	width: int,
 	height: int,
 	bytes: int,
 }
-validate_tuck_type_Frame :: proc(self: tuck_type_Frame) {
+validate_tuckˑtypeˑFrame :: proc(self: tuckˑtypeˑFrame) {
 	assert((self.width > 0))
 	assert((self.height > 0))
 	assert((self.width <= 1920))
 	assert((self.height <= 1080))
 	assert((self.bytes <= 4096))
 }
-__validated_tuck_type_Frame :: proc(v: tuck_type_Frame) -> tuck_type_Frame {
-	validate_tuck_type_Frame(v)
+__validated_tuckˑtypeˑFrame :: proc(v: tuckˑtypeˑFrame) -> tuckˑtypeˑFrame {
+	validate_tuckˑtypeˑFrame(v)
 	return v
 }
 
-tuck_type_DecoderState :: enum { Idle, Configured, Decoding, Draining }
-canTransition_tuck_type_DecoderState :: proc(frm: tuck_type_DecoderState, to: tuck_type_DecoderState) -> bool {
+tuckˑtypeˑDecoderState :: enum { Idle, Configured, Decoding, Draining }
+canTransition_tuckˑtypeˑDecoderState :: proc(frm: tuckˑtypeˑDecoderState, to: tuckˑtypeˑDecoderState) -> bool {
 	switch frm {
 	case .Idle: return to == .Configured
 	case .Configured: return to == .Decoding
@@ -94,72 +94,72 @@ canTransition_tuck_type_DecoderState :: proc(frm: tuck_type_DecoderState, to: tu
 	}
 	return false
 }
-transitionTo_tuck_type_DecoderState :: proc(self: ^tuck_type_DecoderState, target: tuck_type_DecoderState) {
-	assert(canTransition_tuck_type_DecoderState(self^, target), "Invalid transition")
+transitionTo_tuckˑtypeˑDecoderState :: proc(self: ^tuckˑtypeˑDecoderState, target: tuckˑtypeˑDecoderState) {
+	assert(canTransition_tuckˑtypeˑDecoderState(self^, target), "Invalid transition")
 	self^ = target
 }
 
-tuck_VideoKind :: enum { FrameReady, Overrun, DecodeError }
-tuck_Video :: struct {
-	tuckTag: tuck_VideoKind,
+tuckˑregistryˑVideoKind :: enum { FrameReady, Overrun, DecodeError }
+tuckˑregistryˑVideo :: struct {
+	tuckTag: tuckˑregistryˑVideoKind,
 	bytes: int,
 	dropped: int,
 	code: u8,
 }
 
-latesttuck_Video: tuck_Video
+latesttuckˑregistryˑVideo: tuckˑregistryˑVideo
 
-raise_tuck_Video_FrameReady :: proc(bytes: int) {
-	latesttuck_Video = tuck_Video{tuckTag = .FrameReady, bytes = bytes}
-	tuck_fn_Video_FrameReady(bytes)
+raise_tuckˑregistryˑVideo_FrameReady :: proc(bytes: int) {
+	latesttuckˑregistryˑVideo = tuckˑregistryˑVideo{tuckTag = .FrameReady, bytes = bytes}
+	tuckˑfnˑVideo_FrameReady(bytes)
 }
 
-raise_tuck_Video_Overrun :: proc(dropped: int) {
-	latesttuck_Video = tuck_Video{tuckTag = .Overrun, dropped = dropped}
-	tuck_fn_Video_Overrun(dropped)
+raise_tuckˑregistryˑVideo_Overrun :: proc(dropped: int) {
+	latesttuckˑregistryˑVideo = tuckˑregistryˑVideo{tuckTag = .Overrun, dropped = dropped}
+	tuckˑfnˑVideo_Overrun(dropped)
 }
 
-raise_tuck_Video_DecodeError :: proc(code: u8) {
-	latesttuck_Video = tuck_Video{tuckTag = .DecodeError, code = code}
-	tuck_fn_Video_DecodeError(code)
+raise_tuckˑregistryˑVideo_DecodeError :: proc(code: u8) {
+	latesttuckˑregistryˑVideo = tuckˑregistryˑVideo{tuckTag = .DecodeError, code = code}
+	tuckˑfnˑVideo_DecodeError(code)
 }
 
 
-tuck_type_PipelineMsgKind :: enum { msgNal, msgOverrun }
-tuck_type_PipelineMsg :: struct {
-	tuckTag: tuck_type_PipelineMsgKind,
-	nal: tuck_type_NalKind,
+tuckˑactorˑPipelineMsgKind :: enum { msgNal, msgOverrun }
+tuckˑactorˑPipelineMsg :: struct {
+	tuckTag: tuckˑactorˑPipelineMsgKind,
+	nal: tuckˑtypeˑNalKind,
 	midFrame: bool,
 	n: int,
 }
-tuck_type_Pipeline :: struct {
-	state: tuck_type_DecoderState,
+tuckˑactorˑPipeline :: struct {
+	state: tuckˑtypeˑDecoderState,
 	decoded: int,
 	dropped: int,
 	configured: bool,
-	mailbox: rt.Mailbox(tuck_type_PipelineMsg, 8),
+	mailbox: rt.Mailbox(tuckˑactorˑPipelineMsg, 8),
 }
 
-tuck_type_PipelineSingleton: tuck_type_Pipeline
+tuckˑactorˑPipelineSingleton: tuckˑactorˑPipeline
 
-handleMsg_tuck_type_Pipeline :: proc(self: ^tuck_type_Pipeline, msg: tuck_type_PipelineMsg) {
+handleMsg_tuckˑactorˑPipeline :: proc(self: ^tuckˑactorˑPipeline, msg: tuckˑactorˑPipelineMsg) {
 	switch msg.tuckTag {
 	case .msgNal:
 		nal := msg.nal
 		midFrame := msg.midFrame
-    tuck_what := tuck_fn_route(nal, self.configured, midFrame)
-    switch (tuck_what)
+    tuckˑvˑwhat := tuckˑdecisionˑroute(nal, self.configured, midFrame)
+    switch (tuckˑvˑwhat)
     {
-    case tuck_type_Action.configure:
+    case tuckˑtypeˑAction.configure:
         self.configured = true
-        self.state = tuck_type_DecoderState.Configured
-    case tuck_type_Action.decode:
-        self.state = tuck_type_DecoderState.Decoding
+        self.state = tuckˑtypeˑDecoderState.Configured
+    case tuckˑtypeˑAction.decode:
+        self.state = tuckˑtypeˑDecoderState.Decoding
         self.decoded = (self.decoded + 1)
-    case tuck_type_Action.flushThenDecode:
-        self.state = tuck_type_DecoderState.Draining
+    case tuckˑtypeˑAction.flushThenDecode:
+        self.state = tuckˑtypeˑDecoderState.Draining
         self.decoded = (self.decoded + 1)
-    case tuck_type_Action.skip:
+    case tuckˑtypeˑAction.skip:
         self.dropped = (self.dropped + 1)
     }
 	case .msgOverrun:
@@ -168,93 +168,93 @@ handleMsg_tuck_type_Pipeline :: proc(self: ^tuck_type_Pipeline, msg: tuck_type_P
 	}
 }
 
-tuck_type_PipelineSlot: rawptr
+tuckˑactorˑPipelineSlot: rawptr
 
-drain_tuck_type_Pipeline :: proc() -> bool {
+drain_tuckˑactorˑPipeline :: proc() -> bool {
 	didWork := false
-	batch, n := rt.takeBatch(&tuck_type_PipelineSingleton.mailbox)
+	batch, n := rt.takeBatch(&tuckˑactorˑPipelineSingleton.mailbox)
 	for i in 0 ..< n {
-		handleMsg_tuck_type_Pipeline(&tuck_type_PipelineSingleton, batch[i])
+		handleMsg_tuckˑactorˑPipeline(&tuckˑactorˑPipelineSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
 	return didWork
 }
 
-sendNal_tuck_type_Pipeline :: proc(self: ^tuck_type_Pipeline, nal: tuck_type_NalKind, midFrame: bool) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_PipelineMsg{tuckTag = .msgNal, nal = nal, midFrame = midFrame})
-	rt.tuckNotifySend(tuck_type_PipelineSlot)
+sendNal_tuckˑactorˑPipeline :: proc(self: ^tuckˑactorˑPipeline, nal: tuckˑtypeˑNalKind, midFrame: bool) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑPipelineMsg{tuckTag = .msgNal, nal = nal, midFrame = midFrame})
+	rt.tuckNotifySend(tuckˑactorˑPipelineSlot)
 }
 
-sendOverrun_tuck_type_Pipeline :: proc(self: ^tuck_type_Pipeline, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_PipelineMsg{tuckTag = .msgOverrun, n = n})
-	rt.tuckNotifySend(tuck_type_PipelineSlot)
+sendOverrun_tuckˑactorˑPipeline :: proc(self: ^tuckˑactorˑPipeline, n: int) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑPipelineMsg{tuckTag = .msgOverrun, n = n})
+	rt.tuckNotifySend(tuckˑactorˑPipelineSlot)
 }
 
-tuck_fn_capture :: proc (want: int) -> int {
-  tuck_slot := rt.acquire(&tuck_FrameBuffers)
-  if !(tuck_slot.status == .Ok) {
-      raise_tuck_Video_Overrun(1)
+tuckˑfnˑcapture :: proc (want: int) -> int {
+  tuckˑvˑslot := rt.acquire(&tuckˑpoolˑFrameBuffers)
+  if !(tuckˑvˑslot.status == .Ok) {
+      raise_tuckˑregistryˑVideo_Overrun(1)
       return 0
   }
-  tuck_VI_DMA_ARMED_set(true)
-  rt.release(&tuck_FrameBuffers, tuck_slot.value)
+  tuckˑregisterˑVI_DMA_ARMED_set(true)
+  rt.release(&tuckˑpoolˑFrameBuffers, tuckˑvˑslot.value)
   return want
 }
 
-tuck_fn_Video_FrameReady :: proc (bytes: int) {
-  tuck_DEC_CTRL_START_set(true)
+tuckˑfnˑVideo_FrameReady :: proc (bytes: int) {
+  tuckˑregisterˑDEC_CTRL_START_set(true)
 }
 
-tuck_fn_Video_Overrun :: proc (dropped: int) {
-  tuck_VI_CTRL_ENABLE_set(false)
+tuckˑfnˑVideo_Overrun :: proc (dropped: int) {
+  tuckˑregisterˑVI_CTRL_ENABLE_set(false)
 }
 
-tuck_fn_Video_DecodeError :: proc (code: u8) {
-  tuck_VI_CTRL_ENABLE_set(false)
+tuckˑfnˑVideo_DecodeError :: proc (code: u8) {
+  tuckˑregisterˑVI_CTRL_ENABLE_set(false)
 }
 
-tuck_fn_feed :: proc (nal: tuck_type_NalKind, midFrame: bool) {
-  sendNal_tuck_type_Pipeline(&tuck_type_PipelineSingleton, nal, midFrame)
+tuckˑfnˑfeed :: proc (nal: tuckˑtypeˑNalKind, midFrame: bool) {
+  sendNal_tuckˑactorˑPipeline(&tuckˑactorˑPipelineSingleton, nal, midFrame)
   return
 }
 
-tuck_fn_drained :: proc () -> bool {
-  return ((tuck_type_PipelineSingleton.decoded + tuck_type_PipelineSingleton.dropped) >= 5)
+tuckˑfnˑdrained :: proc () -> bool {
+  return ((tuckˑactorˑPipelineSingleton.decoded + tuckˑactorˑPipelineSingleton.dropped) >= 5)
 }
 
-tuck_fn_config :: proc () {
-  tuck_fn_feed(tuck_type_NalKind.sps, false)
-  tuck_fn_feed(tuck_type_NalKind.pps, false)
+tuckˑfnˑconfig :: proc () {
+  tuckˑfnˑfeed(tuckˑtypeˑNalKind.sps, false)
+  tuckˑfnˑfeed(tuckˑtypeˑNalKind.pps, false)
   return
 }
 
-tuck_fn_stream :: proc () {
-  tuck_fn_config()
-  tuck_fn_feed(tuck_type_NalKind.idr, false)
-  tuck_fn_feed(tuck_type_NalKind.nonIdr, false)
-  tuck_fn_feed(tuck_type_NalKind.nonIdr, false)
-  tuck_fn_feed(tuck_type_NalKind.sei, false)
-  tuck_fn_feed(tuck_type_NalKind.idr, true)
+tuckˑfnˑstream :: proc () {
+  tuckˑfnˑconfig()
+  tuckˑfnˑfeed(tuckˑtypeˑNalKind.idr, false)
+  tuckˑfnˑfeed(tuckˑtypeˑNalKind.nonIdr, false)
+  tuckˑfnˑfeed(tuckˑtypeˑNalKind.nonIdr, false)
+  tuckˑfnˑfeed(tuckˑtypeˑNalKind.sei, false)
+  tuckˑfnˑfeed(tuckˑtypeˑNalKind.idr, true)
   return
 }
 
-tuck_fn_main :: proc () -> int {
-  tuck_f := __validated_tuck_type_Frame(tuck_type_Frame{width = 1920, height = 1080, bytes = 4096})
-  tuck_fn_stream()
-  rt.tuckWaitOn(tuck_type_PipelineSlot, tuck_fn_drained)
-  return ((tuck_type_PipelineSingleton.decoded * 10) + tuck_type_PipelineSingleton.dropped)
+tuckˑfnˑmain :: proc () -> int {
+  tuckˑvˑf := __validated_tuckˑtypeˑFrame(tuckˑtypeˑFrame{width = 1920, height = 1080, bytes = 4096})
+  tuckˑfnˑstream()
+  rt.tuckWaitOn(tuckˑactorˑPipelineSlot, tuckˑfnˑdrained)
+  return ((tuckˑactorˑPipelineSingleton.decoded * 10) + tuckˑactorˑPipelineSingleton.dropped)
 }
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
-	tuck_type_PipelineSingleton.state = tuck_type_DecoderState.Idle
-	tuck_type_PipelineSingleton.decoded = 0
-	tuck_type_PipelineSingleton.dropped = 0
-	tuck_type_PipelineSingleton.configured = false
+	tuckˑactorˑPipelineSingleton.state = tuckˑtypeˑDecoderState.Idle
+	tuckˑactorˑPipelineSingleton.decoded = 0
+	tuckˑactorˑPipelineSingleton.dropped = 0
+	tuckˑactorˑPipelineSingleton.configured = false
 	rt.tuckAsyncInit()
-	tuck_type_PipelineSlot = rt.tuckStartActor(drain_tuck_type_Pipeline)
-	mainRc := tuck_fn_main()
+	tuckˑactorˑPipelineSlot = rt.tuckStartActor(drain_tuckˑactorˑPipeline)
+	mainRc := tuckˑfnˑmain()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()
 	os.exit(mainRc)

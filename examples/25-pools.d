@@ -2,50 +2,50 @@ module _25_pools;
 
 import rt = tuck_rt;
 
-__gshared rt.ObjectPool!(ubyte[512], 4) tuck_RxBuffers;
+__gshared rt.ObjectPool!(ubyte[512], 4) tuckˑpoolˑRxBuffers;
 
-struct tuck_type_Session {
+struct tuckˑtypeˑSession {
     uint clientId;
     uint bytesIn;
 }
 
-__gshared rt.ObjectPool!(tuck_type_Session, 64) tuck_Sessions;
+__gshared rt.ObjectPool!(tuckˑtypeˑSession, 64) tuckˑpoolˑSessions;
 
-struct tuck_type_SensorReading {
+struct tuckˑtypeˑSensorReading {
     ubyte channel;
     ushort value;
 }
 
-__gshared rt.ObjectPool!(tuck_type_SensorReading, 16) tuck_Readings;
+__gshared rt.ObjectPool!(tuckˑtypeˑSensorReading, 16) tuckˑpoolˑReadings;
 
-long tuck_fn_admit(uint id) {
-    rt.TuckResult!(rt.PoolHandle) tuck_s = rt.acquire(tuck_Sessions);
-    if ((tuck_s.status == rt.TuckStatus.Ok)) {
+long tuckˑfnˑadmit(uint id) {
+    rt.TuckResult!(rt.PoolHandle) tuckˑvˑs = rt.acquire(tuckˑpoolˑSessions);
+    if ((tuckˑvˑs.status == rt.TuckStatus.Ok)) {
         return 1L;
     }
     return 0L;
 }
 
-long tuck_fn_drainOnce() {
-    rt.TuckResult!(rt.PoolHandle) tuck_b = rt.acquire(tuck_RxBuffers);
-    if ((tuck_b.status == rt.TuckStatus.Ok)) {
-        rt.release(tuck_RxBuffers, tuck_b.value);
+long tuckˑfnˑdrainOnce() {
+    rt.TuckResult!(rt.PoolHandle) tuckˑvˑb = rt.acquire(tuckˑpoolˑRxBuffers);
+    if ((tuckˑvˑb.status == rt.TuckStatus.Ok)) {
+        rt.release(tuckˑpoolˑRxBuffers, tuckˑvˑb.value);
         return 1L;
     }
     return 0L;
 }
 
-long tuck_fn_main() {
-    long tuck_admitted = 0L;
-    tuck_admitted = (tuck_admitted + tuck_fn_admit(1L));
-    tuck_admitted = (tuck_admitted + tuck_fn_admit(2L));
-    tuck_admitted = (tuck_admitted + tuck_fn_admit(3L));
-    long tuck_drained = tuck_fn_drainOnce();
-    return (tuck_admitted + tuck_drained);
+long tuckˑfnˑmain() {
+    long tuckˑvˑadmitted = 0L;
+    tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(1L));
+    tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(2L));
+    tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(3L));
+    long tuckˑvˑdrained = tuckˑfnˑdrainOnce();
+    return (tuckˑvˑadmitted + tuckˑvˑdrained);
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
-    auto mainRc = tuck_fn_main();
+    auto mainRc = tuckˑfnˑmain();
     return cast(int) mainRc;
 }

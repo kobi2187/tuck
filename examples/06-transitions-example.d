@@ -2,43 +2,43 @@ module _06_transitions_example;
 
 import rt = tuck_rt;
 
-struct tuck_type_Config {
+struct tuckˑtypeˑConfig {
     string url;
 }
 
-struct tuck_type_Feed {
+struct tuckˑtypeˑFeed {
     string title;
 }
 
-enum tuck_type_PodcastPlayerLifecycleKind { Unloaded, Loading, Ready }
+enum tuckˑtypeˑPodcastPlayerLifecycleKind { Unloaded, Loading, Ready }
 
-struct tuck_type_PodcastPlayerLifecycle_Unloaded {
-    tuck_type_Config config;
+struct tuckˑtypeˑPodcastPlayerLifecycle_Unloaded {
+    tuckˑtypeˑConfig config;
 }
 
-struct tuck_type_PodcastPlayerLifecycle_Loading {
-    tuck_type_Config config;
+struct tuckˑtypeˑPodcastPlayerLifecycle_Loading {
+    tuckˑtypeˑConfig config;
     long progress;
 }
 
-struct tuck_type_PodcastPlayerLifecycle_Ready {
-    tuck_type_Config config;
-    tuck_type_Feed feed;
+struct tuckˑtypeˑPodcastPlayerLifecycle_Ready {
+    tuckˑtypeˑConfig config;
+    tuckˑtypeˑFeed feed;
 }
 
-struct tuck_type_PodcastPlayerLifecycle {
-    tuck_type_PodcastPlayerLifecycleKind kind;
+struct tuckˑtypeˑPodcastPlayerLifecycle {
+    tuckˑtypeˑPodcastPlayerLifecycleKind kind;
     union {
-        tuck_type_PodcastPlayerLifecycle_Unloaded tuck_unloaded;
-        tuck_type_PodcastPlayerLifecycle_Loading tuck_loading;
-        tuck_type_PodcastPlayerLifecycle_Ready tuck_ready;
+        tuckˑtypeˑPodcastPlayerLifecycle_Unloaded tuckˑvariantˑunloaded;
+        tuckˑtypeˑPodcastPlayerLifecycle_Loading tuckˑvariantˑloading;
+        tuckˑtypeˑPodcastPlayerLifecycle_Ready tuckˑvariantˑready;
     }
-    bool opEquals(const tuck_type_PodcastPlayerLifecycle o) const {
+    bool opEquals(const tuckˑtypeˑPodcastPlayerLifecycle o) const {
         if (kind != o.kind) return false;
         final switch (kind) {
-        case tuck_type_PodcastPlayerLifecycleKind.Unloaded: return tuck_unloaded == o.tuck_unloaded;
-        case tuck_type_PodcastPlayerLifecycleKind.Loading: return tuck_loading == o.tuck_loading;
-        case tuck_type_PodcastPlayerLifecycleKind.Ready: return tuck_ready == o.tuck_ready;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Unloaded: return tuckˑvariantˑunloaded == o.tuckˑvariantˑunloaded;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Loading: return tuckˑvariantˑloading == o.tuckˑvariantˑloading;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Ready: return tuckˑvariantˑready == o.tuckˑvariantˑready;
         }
     }
 }

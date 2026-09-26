@@ -1,23 +1,23 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_both*(ps: sink seq[tuck_type_P], qs: seq[tuck_type_Q]): int
-proc tuck_fn_main*(): int
+proc tuckˑfnˑboth*(ps: sink seq[tuckˑtypeˑP], qs: seq[tuckˑtypeˑQ]): int
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_P* = object
+type tuckˑtypeˑP* = object
   n*: int
 
-type tuck_type_Q* = object
+type tuckˑtypeˑQ* = object
   m*: int
 
-proc tuck_fn_both*(ps: sink seq[tuck_type_P], qs: seq[tuck_type_Q]): int =
-  var tuck_s = 0
-  for tuck_p in ps:
+proc tuckˑfnˑboth*(ps: sink seq[tuckˑtypeˑP], qs: seq[tuckˑtypeˑQ]): int =
+  var tuckˑvˑs = 0
+  for tuckˑvˑp in ps:
     if true:
-      for tuck_q in qs:
+      for tuckˑvˑq in qs:
         if true:
-          tuck_s = ((tuck_s + tuck_p.n) + tuck_q.m)
-  return tuck_s
+          tuckˑvˑs = ((tuckˑvˑs + tuckˑvˑp.n) + tuckˑvˑq.m)
+  return tuckˑvˑs
 
-proc tuck_fn_main*(): int =
-  return tuck_fn_both(@[tuck_type_P(n: 1)], @[tuck_type_Q(m: 41)])
+proc tuckˑfnˑmain*(): int =
+  return tuckˑfnˑboth(@[tuckˑtypeˑP(n: 1)], @[tuckˑtypeˑQ(m: 41)])
 

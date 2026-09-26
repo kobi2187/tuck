@@ -4,19 +4,19 @@ package main
 import "core:os"
 import rt "./tuckrt"
 
-tuck_type_CounterMsgKind :: enum { msgAdd }
-tuck_type_CounterMsg :: struct {
-	tuckTag: tuck_type_CounterMsgKind,
+tuckˑactorˑCounterMsgKind :: enum { msgAdd }
+tuckˑactorˑCounterMsg :: struct {
+	tuckTag: tuckˑactorˑCounterMsgKind,
 	n: int,
 }
-tuck_type_Counter :: struct {
+tuckˑactorˑCounter :: struct {
 	total: int,
-	mailbox: rt.Mailbox(tuck_type_CounterMsg, 128),
+	mailbox: rt.Mailbox(tuckˑactorˑCounterMsg, 128),
 }
 
-tuck_type_CounterSingleton: tuck_type_Counter
+tuckˑactorˑCounterSingleton: tuckˑactorˑCounter
 
-handleMsg_tuck_type_Counter :: proc(self: ^tuck_type_Counter, msg: tuck_type_CounterMsg) {
+handleMsg_tuckˑactorˑCounter :: proc(self: ^tuckˑactorˑCounter, msg: tuckˑactorˑCounterMsg) {
 	switch msg.tuckTag {
 	case .msgAdd:
 		n := msg.n
@@ -24,42 +24,42 @@ handleMsg_tuck_type_Counter :: proc(self: ^tuck_type_Counter, msg: tuck_type_Cou
 	}
 }
 
-tuck_type_CounterSlot: rawptr
+tuckˑactorˑCounterSlot: rawptr
 
-drain_tuck_type_Counter :: proc() -> bool {
+drain_tuckˑactorˑCounter :: proc() -> bool {
 	didWork := false
-	batch, n := rt.takeBatch(&tuck_type_CounterSingleton.mailbox)
+	batch, n := rt.takeBatch(&tuckˑactorˑCounterSingleton.mailbox)
 	for i in 0 ..< n {
-		handleMsg_tuck_type_Counter(&tuck_type_CounterSingleton, batch[i])
+		handleMsg_tuckˑactorˑCounter(&tuckˑactorˑCounterSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
 	return didWork
 }
 
-sendAdd_tuck_type_Counter :: proc(self: ^tuck_type_Counter, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_CounterMsg{tuckTag = .msgAdd, n = n})
-	rt.tuckNotifySend(tuck_type_CounterSlot)
+sendAdd_tuckˑactorˑCounter :: proc(self: ^tuckˑactorˑCounter, n: int) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑCounterMsg{tuckTag = .msgAdd, n = n})
+	rt.tuckNotifySend(tuckˑactorˑCounterSlot)
 }
 
-tuck_fn_sumReady :: proc () -> bool {
-  return (tuck_type_CounterSingleton.total == 55)
+tuckˑfnˑsumReady :: proc () -> bool {
+  return (tuckˑactorˑCounterSingleton.total == 55)
 }
 
-tuck_fn_main :: proc () -> int {
-  for tuck_i in (1 ..= 10) {
-      sendAdd_tuck_type_Counter(&tuck_type_CounterSingleton, tuck_i)
+tuckˑfnˑmain :: proc () -> int {
+  for tuckˑvˑi in (1 ..= 10) {
+      sendAdd_tuckˑactorˑCounter(&tuckˑactorˑCounterSingleton, tuckˑvˑi)
   }
-  rt.tuckWaitOn(tuck_type_CounterSlot, tuck_fn_sumReady)
-  return tuck_type_CounterSingleton.total
+  rt.tuckWaitOn(tuckˑactorˑCounterSlot, tuckˑfnˑsumReady)
+  return tuckˑactorˑCounterSingleton.total
 }
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
-	tuck_type_CounterSingleton.total = 0
+	tuckˑactorˑCounterSingleton.total = 0
 	rt.tuckAsyncInit()
-	tuck_type_CounterSlot = rt.tuckStartActor(drain_tuck_type_Counter)
-	mainRc := tuck_fn_main()
+	tuckˑactorˑCounterSlot = rt.tuckStartActor(drain_tuckˑactorˑCounter)
+	mainRc := tuckˑfnˑmain()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()
 	os.exit(mainRc)

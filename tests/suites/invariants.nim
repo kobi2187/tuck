@@ -198,7 +198,7 @@ fn main() -> int:
   # The SECOND temp only exists when the value was wrapped twice.
   t.omits "...validated once, not twice (Nim)", "tuckInv2"
   t.omitsOdin "...validated once, not twice (Odin)",
-              "__validated_tuck_type_Live\\(__validated_"
+              "__validated_tuckˑtypeˑLive\\(__validated_"
 
   # ...and the invariant still FIRES. Dropping a wrap must not drop the check.
   t.src """
@@ -233,6 +233,6 @@ fn main() -> int:
   return b.n
 """
   t.emits "a variable return is still validated", "validate\\(tuckInv1\\)"
-  t.emitsOdin "...on Odin too", "__validated_tuck_type_Live\\(x\\)"
+  t.emitsOdin "...on Odin too", "__validated_tuckˑtypeˑLive\\(x\\)"
 
   t.finish()

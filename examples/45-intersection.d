@@ -2,111 +2,111 @@ module _45_intersection;
 
 import rt = tuck_rt;
 
-__gshared uint* tuck_SIGNAL_OUT = cast(uint*)(0x40011000);
-enum tuck_SIGNAL_OUT_NS_GREEN_SHIFT = 0;
-enum tuck_SIGNAL_OUT_EW_GREEN_SHIFT = 1;
-enum tuck_SIGNAL_OUT_WALK_SHIFT = 2;
-bool tuck_SIGNAL_OUT_NS_GREEN_get() {
-    return (*tuck_SIGNAL_OUT & (1u << tuck_SIGNAL_OUT_NS_GREEN_SHIFT)) != 0;
+__gshared uint* tuckˑregisterˑSIGNAL_OUT = cast(uint*)(0x40011000);
+enum tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT = 0;
+enum tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT = 1;
+enum tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT = 2;
+bool tuckˑregisterˑSIGNAL_OUT_NS_GREEN_get() {
+    return (*tuckˑregisterˑSIGNAL_OUT & (1u << tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT)) != 0;
 }
-void tuck_SIGNAL_OUT_NS_GREEN_set(bool value) {
-    if (value) *tuck_SIGNAL_OUT |= (1u << tuck_SIGNAL_OUT_NS_GREEN_SHIFT);
-    else *tuck_SIGNAL_OUT &= ~(1u << tuck_SIGNAL_OUT_NS_GREEN_SHIFT);
+void tuckˑregisterˑSIGNAL_OUT_NS_GREEN_set(bool value) {
+    if (value) *tuckˑregisterˑSIGNAL_OUT |= (1u << tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT);
+    else *tuckˑregisterˑSIGNAL_OUT &= ~(1u << tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT);
 }
-bool tuck_SIGNAL_OUT_EW_GREEN_get() {
-    return (*tuck_SIGNAL_OUT & (1u << tuck_SIGNAL_OUT_EW_GREEN_SHIFT)) != 0;
+bool tuckˑregisterˑSIGNAL_OUT_EW_GREEN_get() {
+    return (*tuckˑregisterˑSIGNAL_OUT & (1u << tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT)) != 0;
 }
-void tuck_SIGNAL_OUT_EW_GREEN_set(bool value) {
-    if (value) *tuck_SIGNAL_OUT |= (1u << tuck_SIGNAL_OUT_EW_GREEN_SHIFT);
-    else *tuck_SIGNAL_OUT &= ~(1u << tuck_SIGNAL_OUT_EW_GREEN_SHIFT);
+void tuckˑregisterˑSIGNAL_OUT_EW_GREEN_set(bool value) {
+    if (value) *tuckˑregisterˑSIGNAL_OUT |= (1u << tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT);
+    else *tuckˑregisterˑSIGNAL_OUT &= ~(1u << tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT);
 }
-bool tuck_SIGNAL_OUT_WALK_get() {
-    return (*tuck_SIGNAL_OUT & (1u << tuck_SIGNAL_OUT_WALK_SHIFT)) != 0;
+bool tuckˑregisterˑSIGNAL_OUT_WALK_get() {
+    return (*tuckˑregisterˑSIGNAL_OUT & (1u << tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT)) != 0;
 }
-void tuck_SIGNAL_OUT_WALK_set(bool value) {
-    if (value) *tuck_SIGNAL_OUT |= (1u << tuck_SIGNAL_OUT_WALK_SHIFT);
-    else *tuck_SIGNAL_OUT &= ~(1u << tuck_SIGNAL_OUT_WALK_SHIFT);
-}
-
-__gshared uint* tuck_DETECT_IN = cast(uint*)(0x40011004);
-enum tuck_DETECT_IN_NS_LOOP_SHIFT = 0;
-enum tuck_DETECT_IN_EW_LOOP_SHIFT = 1;
-bool tuck_DETECT_IN_NS_LOOP_get() {
-    return (*tuck_DETECT_IN & (1u << tuck_DETECT_IN_NS_LOOP_SHIFT)) != 0;
-}
-bool tuck_DETECT_IN_EW_LOOP_get() {
-    return (*tuck_DETECT_IN & (1u << tuck_DETECT_IN_EW_LOOP_SHIFT)) != 0;
+void tuckˑregisterˑSIGNAL_OUT_WALK_set(bool value) {
+    if (value) *tuckˑregisterˑSIGNAL_OUT |= (1u << tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT);
+    else *tuckˑregisterˑSIGNAL_OUT &= ~(1u << tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT);
 }
 
-enum tuck_IntersectionKind { PhaseChanged, Preempted }
+__gshared uint* tuckˑregisterˑDETECT_IN = cast(uint*)(0x40011004);
+enum tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT = 0;
+enum tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT = 1;
+bool tuckˑregisterˑDETECT_IN_NS_LOOP_get() {
+    return (*tuckˑregisterˑDETECT_IN & (1u << tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT)) != 0;
+}
+bool tuckˑregisterˑDETECT_IN_EW_LOOP_get() {
+    return (*tuckˑregisterˑDETECT_IN & (1u << tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT)) != 0;
+}
 
-struct tuck_Intersection {
-    tuck_IntersectionKind tuckTag;
+enum tuckˑregistryˑIntersectionKind { PhaseChanged, Preempted }
+
+struct tuckˑregistryˑIntersection {
+    tuckˑregistryˑIntersectionKind tuckTag;
     ubyte to;
     ubyte source;
 }
 
-__gshared tuck_Intersection latesttuck_Intersection;
+__gshared tuckˑregistryˑIntersection latesttuckˑregistryˑIntersection;
 
-void raise_tuck_Intersection_PhaseChanged(ubyte to) {
-    latesttuck_Intersection = tuck_Intersection(tuck_IntersectionKind.PhaseChanged, to: to);
-    tuck_fn_Intersection_PhaseChanged(to);
+void raise_tuckˑregistryˑIntersection_PhaseChanged(ubyte to) {
+    latesttuckˑregistryˑIntersection = tuckˑregistryˑIntersection(tuckˑregistryˑIntersectionKind.PhaseChanged, to: to);
+    tuckˑfnˑIntersection_PhaseChanged(to);
 }
 
-void raise_tuck_Intersection_Preempted(ubyte source) {
-    latesttuck_Intersection = tuck_Intersection(tuck_IntersectionKind.Preempted, source: source);
-    tuck_fn_Intersection_Preempted(source);
+void raise_tuckˑregistryˑIntersection_Preempted(ubyte source) {
+    latesttuckˑregistryˑIntersection = tuckˑregistryˑIntersection(tuckˑregistryˑIntersectionKind.Preempted, source: source);
+    tuckˑfnˑIntersection_Preempted(source);
 }
 
 
-enum tuck_type_Phase { NorthSouth, NsClearing, EastWest, EwClearing }
+enum tuckˑtypeˑPhase { NorthSouth, NsClearing, EastWest, EwClearing }
 
-enum tuck_type_Demand { quiet, northSouth, eastWest, both }
+enum tuckˑtypeˑDemand { quiet, northSouth, eastWest, both }
 
-tuck_type_Phase tuck_fn_nextPhase(tuck_type_Phase current, tuck_type_Demand demand, bool preempt) {
+tuckˑtypeˑPhase tuckˑdecisionˑnextPhase(tuckˑtypeˑPhase current, tuckˑtypeˑDemand demand, bool preempt) {
     switch ((((cast(long)(current) * 8L) + (cast(long)(demand) * 2L)) + cast(long)(preempt))) {
     case 0, 2, 24, 25, 26, 27, 28, 29, 30, 31:
-        return tuck_type_Phase.NorthSouth;
+        return tuckˑtypeˑPhase.NorthSouth;
     case 1, 3, 4, 5, 6, 7:
-        return tuck_type_Phase.NsClearing;
+        return tuckˑtypeˑPhase.NsClearing;
     case 8, 9, 10, 11, 12, 13, 14, 15, 16, 20:
-        return tuck_type_Phase.EastWest;
+        return tuckˑtypeˑPhase.EastWest;
     default:
-        return tuck_type_Phase.EwClearing;
+        return tuckˑtypeˑPhase.EwClearing;
     }
     return typeof(return).init;
 }
 
-enum DetectorTag { Detector_is_tuck_type_CameraDetector, Detector_is_tuck_type_LoopDetector }
+enum DetectorTag { Detector_is_tuckˑobjectˑCameraDetector, Detector_is_tuckˑobjectˑLoopDetector }
 
 struct Detector {
     DetectorTag tag;
-    tuck_type_CameraDetector tuck_type_CameraDetectorVal;
-    tuck_type_LoopDetector tuck_type_LoopDetectorVal;
+    tuckˑobjectˑCameraDetector tuckˑobjectˑCameraDetectorVal;
+    tuckˑobjectˑLoopDetector tuckˑobjectˑLoopDetectorVal;
 }
 
-struct tuck_type_LoopDetector {
+struct tuckˑobjectˑLoopDetector {
     long lane;
 }
 
-bool tuck_type_LoopDetector_tuck_fn_healthy(ref tuck_type_LoopDetector self) {
+bool tuckˑobjectˑLoopDetector_tuckˑfnˑhealthy(ref tuckˑobjectˑLoopDetector self) {
     return true;
 }
 
-long tuck_type_LoopDetector_reads(ref tuck_type_LoopDetector self) {
+long tuckˑobjectˑLoopDetector_reads(ref tuckˑobjectˑLoopDetector self) {
     return self.lane;
 }
 
 
-struct tuck_type_CameraDetector {
+struct tuckˑobjectˑCameraDetector {
     ubyte confidence;
 }
 
-bool tuck_type_CameraDetector_tuck_fn_healthy(ref tuck_type_LoopDetector self) {
+bool tuckˑobjectˑCameraDetector_tuckˑfnˑhealthy(ref tuckˑobjectˑLoopDetector self) {
     return true;
 }
 
-long tuck_type_CameraDetector_reads(ref tuck_type_CameraDetector self) {
+long tuckˑobjectˑCameraDetector_reads(ref tuckˑobjectˑCameraDetector self) {
     if ((self.confidence > 80L)) {
         return 3L;
     }
@@ -114,151 +114,151 @@ long tuck_type_CameraDetector_reads(ref tuck_type_CameraDetector self) {
 }
 
 
-enum tuck_type_SignalsMsgKind { msgSense }
+enum tuckˑactorˑSignalsMsgKind { msgSense }
 
-struct tuck_type_SignalsMsg {
-    tuck_type_SignalsMsgKind tuckTag;
-    tuck_type_Demand demand;
+struct tuckˑactorˑSignalsMsg {
+    tuckˑactorˑSignalsMsgKind tuckTag;
+    tuckˑtypeˑDemand demand;
     bool preempt;
 }
 
-struct tuck_type_Signals {
-    tuck_type_Phase phase;
+struct tuckˑactorˑSignals {
+    tuckˑtypeˑPhase phase;
     long cycles;
-    rt.Mailbox!(tuck_type_SignalsMsg, 8) mailbox;
+    rt.Mailbox!(tuckˑactorˑSignalsMsg, 8) mailbox;
 }
 
-__gshared tuck_type_Signals tuck_type_SignalsSingleton;
+__gshared tuckˑactorˑSignals tuckˑactorˑSignalsSingleton;
 
 shared static this() {
-    tuck_type_SignalsSingleton.phase = tuck_type_Phase.NorthSouth;
-    tuck_type_SignalsSingleton.cycles = 0L;
+    tuckˑactorˑSignalsSingleton.phase = tuckˑtypeˑPhase.NorthSouth;
+    tuckˑactorˑSignalsSingleton.cycles = 0L;
 }
 
-void handleMsg_tuck_type_Signals(ref tuck_type_Signals self, tuck_type_SignalsMsg msg) {
+void handleMsg_tuckˑactorˑSignals(ref tuckˑactorˑSignals self, tuckˑactorˑSignalsMsg msg) {
     final switch (msg.tuckTag) {
-        case tuck_type_SignalsMsgKind.msgSense:
+        case tuckˑactorˑSignalsMsgKind.msgSense:
             auto demand = msg.demand;
             auto preempt = msg.preempt;
-            tuck_type_Phase tuck_want = tuck_fn_nextPhase(self.phase, demand, preempt);
-            self.phase = tuck_want;
+            tuckˑtypeˑPhase tuckˑvˑwant = tuckˑdecisionˑnextPhase(self.phase, demand, preempt);
+            self.phase = tuckˑvˑwant;
             self.cycles = (self.cycles + 1L);
             break;
     }
 }
 
-__gshared void* tuck_type_SignalsSlot;
+__gshared void* tuckˑactorˑSignalsSlot;
 
-bool drain_tuck_type_Signals() {
+bool drain_tuckˑactorˑSignals() {
     bool did = false;
-    foreach (ref msg; tuck_type_SignalsSingleton.mailbox) {
-        handleMsg_tuck_type_Signals(tuck_type_SignalsSingleton, msg);
+    foreach (ref msg; tuckˑactorˑSignalsSingleton.mailbox) {
+        handleMsg_tuckˑactorˑSignals(tuckˑactorˑSignalsSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
     }
     return did;
 }
 
-void sendSense_tuck_type_Signals(ref tuck_type_Signals self, tuck_type_Demand demand, bool preempt) {
-    cast(void) rt.enqueue(self.mailbox, tuck_type_SignalsMsg(tuckTag: tuck_type_SignalsMsgKind.msgSense, demand: demand, preempt: preempt));
-    rt.tuckNotifySend(tuck_type_SignalsSlot);
+void sendSense_tuckˑactorˑSignals(ref tuckˑactorˑSignals self, tuckˑtypeˑDemand demand, bool preempt) {
+    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑSignalsMsg(tuckTag: tuckˑactorˑSignalsMsgKind.msgSense, demand: demand, preempt: preempt));
+    rt.tuckNotifySend(tuckˑactorˑSignalsSlot);
 }
 
 
-void tuck_fn_Intersection_PhaseChanged(ubyte to) {
-    tuck_SIGNAL_OUT_WALK_set(false);
+void tuckˑfnˑIntersection_PhaseChanged(ubyte to) {
+    tuckˑregisterˑSIGNAL_OUT_WALK_set(false);
 }
 
-void tuck_fn_Intersection_Preempted(ubyte source) {
-    tuck_SIGNAL_OUT_NS_GREEN_set(false);
+void tuckˑfnˑIntersection_Preempted(ubyte source) {
+    tuckˑregisterˑSIGNAL_OUT_NS_GREEN_set(false);
 }
 
-struct tuck_type_Interval {
+struct tuckˑtypeˑInterval {
     long ticks;
 }
 
-long tuck_fn_seconds(tuck_type_Interval self) {
+long tuckˑfnˑseconds(tuckˑtypeˑInterval self) {
     return (self.ticks / 10L);
 }
 
-bool tuck_fn_longEnough(T)(T span, long atLeast) {
-    return (tuck_fn_seconds(span) >= atLeast);
+bool tuckˑfnˑlongEnough(T)(T span, long atLeast) {
+    return (tuckˑfnˑseconds(span) >= atLeast);
 }
 
-long tuck_fn_phaseIndex(tuck_type_Phase p) {
+long tuckˑfnˑphaseIndex(tuckˑtypeˑPhase p) {
     final switch (p) {
-    case tuck_type_Phase.NorthSouth:
+    case tuckˑtypeˑPhase.NorthSouth:
         return 0L;
-    case tuck_type_Phase.NsClearing:
+    case tuckˑtypeˑPhase.NsClearing:
         return 1L;
-    case tuck_type_Phase.EastWest:
+    case tuckˑtypeˑPhase.EastWest:
         return 2L;
-    case tuck_type_Phase.EwClearing:
+    case tuckˑtypeˑPhase.EwClearing:
         return 3L;
     }
     return typeof(return).init;
 }
 
-tuck_type_Demand tuck_fn_poll(Detector d) {
-    long tuck_bits = ((Detector v) {
+tuckˑtypeˑDemand tuckˑfnˑpoll(Detector d) {
+    long tuckˑvˑbits = ((Detector v) {
     switch (v.tag) {
-        case DetectorTag.Detector_is_tuck_type_CameraDetector:
-            auto tmp = v.tuck_type_CameraDetectorVal;
-            return tuck_type_CameraDetector_reads(tmp);
-        case DetectorTag.Detector_is_tuck_type_LoopDetector:
-            auto tmp = v.tuck_type_LoopDetectorVal;
-            return tuck_type_LoopDetector_reads(tmp);
+        case DetectorTag.Detector_is_tuckˑobjectˑCameraDetector:
+            auto tmp = v.tuckˑobjectˑCameraDetectorVal;
+            return tuckˑobjectˑCameraDetector_reads(tmp);
+        case DetectorTag.Detector_is_tuckˑobjectˑLoopDetector:
+            auto tmp = v.tuckˑobjectˑLoopDetectorVal;
+            return tuckˑobjectˑLoopDetector_reads(tmp);
         default: assert(0, "unreachable interface tag");
     }
 })(d);
-    switch (tuck_bits) {
+    switch (tuckˑvˑbits) {
     case 1:
-        return tuck_type_Demand.northSouth;
+        return tuckˑtypeˑDemand.northSouth;
     case 2:
-        return tuck_type_Demand.eastWest;
+        return tuckˑtypeˑDemand.eastWest;
     case 3:
-        return tuck_type_Demand.both;
+        return tuckˑtypeˑDemand.both;
     default:
-        return tuck_type_Demand.quiet;
+        return tuckˑtypeˑDemand.quiet;
     }
     return typeof(return).init;
 }
 
-bool tuck_fn_settled() {
-    return (tuck_type_SignalsSingleton.cycles > 2L);
+bool tuckˑfnˑsettled() {
+    return (tuckˑactorˑSignalsSingleton.cycles > 2L);
 }
 
-void tuck_fn_report(Detector d) {
-    tuck_type_Demand tuck_demand = tuck_fn_poll(d);
-    sendSense_tuck_type_Signals(tuck_type_SignalsSingleton, tuck_demand, false);
+void tuckˑfnˑreport(Detector d) {
+    tuckˑtypeˑDemand tuckˑvˑdemand = tuckˑfnˑpoll(d);
+    sendSense_tuckˑactorˑSignals(tuckˑactorˑSignalsSingleton, tuckˑvˑdemand, false);
     return;
 }
 
-void tuck_fn_drive() {
-    tuck_type_LoopDetector tuck_loops = tuck_type_LoopDetector(lane: 1L);
-    tuck_type_CameraDetector tuck_camera = tuck_type_CameraDetector(confidence: 91L);
-    tuck_fn_report(Detector(DetectorTag.Detector_is_tuck_type_CameraDetector, tuck_type_CameraDetectorVal: tuck_camera));
-    sendSense_tuck_type_Signals(tuck_type_SignalsSingleton, tuck_type_Demand.quiet, false);
-    tuck_fn_report(Detector(DetectorTag.Detector_is_tuck_type_LoopDetector, tuck_type_LoopDetectorVal: tuck_loops));
+void tuckˑfnˑdrive() {
+    tuckˑobjectˑLoopDetector tuckˑvˑloops = tuckˑobjectˑLoopDetector(lane: 1L);
+    tuckˑobjectˑCameraDetector tuckˑvˑcamera = tuckˑobjectˑCameraDetector(confidence: 91L);
+    tuckˑfnˑreport(Detector(DetectorTag.Detector_is_tuckˑobjectˑCameraDetector, tuckˑobjectˑCameraDetectorVal: tuckˑvˑcamera));
+    sendSense_tuckˑactorˑSignals(tuckˑactorˑSignalsSingleton, tuckˑtypeˑDemand.quiet, false);
+    tuckˑfnˑreport(Detector(DetectorTag.Detector_is_tuckˑobjectˑLoopDetector, tuckˑobjectˑLoopDetectorVal: tuckˑvˑloops));
     return;
 }
 
-long tuck_fn_main() {
-    tuck_type_Interval tuck_clearing = tuck_type_Interval(ticks: 45L);
-    bool tuck_ok = tuck_fn_longEnough(tuck_clearing, 4L);
-    if (!tuck_ok) {
+long tuckˑfnˑmain() {
+    tuckˑtypeˑInterval tuckˑvˑclearing = tuckˑtypeˑInterval(ticks: 45L);
+    bool tuckˑvˑok = tuckˑfnˑlongEnough(tuckˑvˑclearing, 4L);
+    if (!tuckˑvˑok) {
         return 9L;
     }
-    tuck_fn_drive();
-    rt.tuckWaitOn(tuck_type_SignalsSlot, &tuck_fn_settled);
-    return tuck_fn_phaseIndex(tuck_type_SignalsSingleton.phase);
+    tuckˑfnˑdrive();
+    rt.tuckWaitOn(tuckˑactorˑSignalsSlot, &tuckˑfnˑsettled);
+    return tuckˑfnˑphaseIndex(tuckˑactorˑSignalsSingleton.phase);
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    tuck_type_SignalsSlot = rt.tuckStartActor(&drain_tuck_type_Signals);
-    auto mainRc = tuck_fn_main();
+    tuckˑactorˑSignalsSlot = rt.tuckStartActor(&drain_tuckˑactorˑSignals);
+    auto mainRc = tuckˑfnˑmain();
     rt.tuckDrainActors();
     return cast(int) mainRc;
 }

@@ -78,9 +78,9 @@ fn main() -> int:
   # assertion that fails if the emission ever reverts to bake's bare tuple.
   t.hostBuilds "every backend's host compiler accepts a `with` on a record"
   t.emits "a named record rebuilds through its constructor, not a tuple",
-          "tuck_type_Task\\(title: .bumped., done: self\\.done"
+          "tuckˑtypeˑTask\\(title: .bumped., done: self\\.done"
   t.emitsOdin "...and Odin uses its own struct literal",
-              r"tuck_type_Task\{title = "
+              r"tuckˑtypeˑTask\{title = "
 
   # A field the record has not got. `bake` would ADD it and silently change
   # the type; `with` refuses, because a grown shape is no longer a Task.

@@ -2,52 +2,52 @@ module _11_embedded_feature;
 
 import rt = tuck_rt;
 
-alias tuck_type_SafeRPM = ushort;
+alias tuckˑtypeˑSafeRPM = ushort;
 
-alias tuck_type_PacketSeq = ubyte;
+alias tuckˑtypeˑPacketSeq = ubyte;
 
-alias tuck_type_ErrorCount = uint;
+alias tuckˑtypeˑErrorCount = uint;
 
-struct tuck_type_SensorEvent {
+struct tuckˑtypeˑSensorEvent {
     ubyte channel;
     ushort reading;
 }
 
-__gshared uint* tuck_RCC_CR = cast(uint*)(0x40021000);
-enum tuck_RCC_CR_HSION_SHIFT = 0;
-enum tuck_RCC_CR_HSIRDY_SHIFT = 1;
-enum tuck_RCC_CR_HSITRIM_SHIFT = 3;
-enum tuck_RCC_CR_HSITRIM_WIDTH = 7 - 3 + 1;
-enum uint tuck_RCC_CR_HSITRIM_MASK = (1u << tuck_RCC_CR_HSITRIM_WIDTH) - 1;
-bool tuck_RCC_CR_HSION_get() {
-    return (*tuck_RCC_CR & (1u << tuck_RCC_CR_HSION_SHIFT)) != 0;
+__gshared uint* tuckˑregisterˑRCC_CR = cast(uint*)(0x40021000);
+enum tuckˑregisterˑRCC_CR_HSION_SHIFT = 0;
+enum tuckˑregisterˑRCC_CR_HSIRDY_SHIFT = 1;
+enum tuckˑregisterˑRCC_CR_HSITRIM_SHIFT = 3;
+enum tuckˑregisterˑRCC_CR_HSITRIM_WIDTH = 7 - 3 + 1;
+enum uint tuckˑregisterˑRCC_CR_HSITRIM_MASK = (1u << tuckˑregisterˑRCC_CR_HSITRIM_WIDTH) - 1;
+bool tuckˑregisterˑRCC_CR_HSION_get() {
+    return (*tuckˑregisterˑRCC_CR & (1u << tuckˑregisterˑRCC_CR_HSION_SHIFT)) != 0;
 }
-void tuck_RCC_CR_HSION_set(bool value) {
-    if (value) *tuck_RCC_CR |= (1u << tuck_RCC_CR_HSION_SHIFT);
-    else *tuck_RCC_CR &= ~(1u << tuck_RCC_CR_HSION_SHIFT);
+void tuckˑregisterˑRCC_CR_HSION_set(bool value) {
+    if (value) *tuckˑregisterˑRCC_CR |= (1u << tuckˑregisterˑRCC_CR_HSION_SHIFT);
+    else *tuckˑregisterˑRCC_CR &= ~(1u << tuckˑregisterˑRCC_CR_HSION_SHIFT);
 }
-bool tuck_RCC_CR_HSIRDY_get() {
-    return (*tuck_RCC_CR & (1u << tuck_RCC_CR_HSIRDY_SHIFT)) != 0;
+bool tuckˑregisterˑRCC_CR_HSIRDY_get() {
+    return (*tuckˑregisterˑRCC_CR & (1u << tuckˑregisterˑRCC_CR_HSIRDY_SHIFT)) != 0;
 }
-uint tuck_RCC_CR_HSITRIM_get() {
-    return (*tuck_RCC_CR >> tuck_RCC_CR_HSITRIM_SHIFT) & tuck_RCC_CR_HSITRIM_MASK;
+uint tuckˑregisterˑRCC_CR_HSITRIM_get() {
+    return (*tuckˑregisterˑRCC_CR >> tuckˑregisterˑRCC_CR_HSITRIM_SHIFT) & tuckˑregisterˑRCC_CR_HSITRIM_MASK;
 }
-void tuck_RCC_CR_HSITRIM_set(uint value) {
-    uint shifted = (value & tuck_RCC_CR_HSITRIM_MASK) << tuck_RCC_CR_HSITRIM_SHIFT;
-    *tuck_RCC_CR = (*tuck_RCC_CR & ~(tuck_RCC_CR_HSITRIM_MASK << tuck_RCC_CR_HSITRIM_SHIFT)) | shifted;
-}
-
-void tuck_fn_processISR(tuck_type_SensorEvent event) {
+void tuckˑregisterˑRCC_CR_HSITRIM_set(uint value) {
+    uint shifted = (value & tuckˑregisterˑRCC_CR_HSITRIM_MASK) << tuckˑregisterˑRCC_CR_HSITRIM_SHIFT;
+    *tuckˑregisterˑRCC_CR = (*tuckˑregisterˑRCC_CR & ~(tuckˑregisterˑRCC_CR_HSITRIM_MASK << tuckˑregisterˑRCC_CR_HSITRIM_SHIFT)) | shifted;
 }
 
-__gshared rt.ObjectPool!(ubyte[64], 8) tuck_UartBuffer;
+void tuckˑfnˑprocessISR(tuckˑtypeˑSensorEvent event) {
+}
 
-void tuck_fn_handleUart() {
-    rt.TuckResult!(rt.PoolHandle) tuck_buf = rt.acquire(tuck_UartBuffer);
-    if (!(tuck_buf.status == rt.TuckStatus.Ok)) {
+__gshared rt.ObjectPool!(ubyte[64], 8) tuckˑpoolˑUartBuffer;
+
+void tuckˑfnˑhandleUart() {
+    rt.TuckResult!(rt.PoolHandle) tuckˑvˑbuf = rt.acquire(tuckˑpoolˑUartBuffer);
+    if (!(tuckˑvˑbuf.status == rt.TuckStatus.Ok)) {
         return;
     }
-    rt.release(tuck_UartBuffer, tuck_buf.value);
+    rt.release(tuckˑpoolˑUartBuffer, tuckˑvˑbuf.value);
     return;
 }
 

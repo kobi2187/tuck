@@ -1,141 +1,141 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc `==`*(a, b: tuck_type_PlayerState): bool {.noSideEffect.}
+proc `==`*(a, b: tuckˑtypeˑPlayerState): bool {.noSideEffect.}
 
-proc tuck_fn_SystemEvents_PlaybackStarted*(): void
-proc tuck_fn_SystemEvents_PlaybackStopped*(): void
-proc tuck_fn_SystemEvents_HardwareError*(code: uint8): void
-proc tuck_fn_main*(): void
+proc tuckˑfnˑSystemEvents_PlaybackStarted*(): void
+proc tuckˑfnˑSystemEvents_PlaybackStopped*(): void
+proc tuckˑfnˑSystemEvents_HardwareError*(code: uint8): void
+proc tuckˑfnˑmain*(): void
 
-type tuck_type_Hz* = distinct uint32
-proc `+`*(a, b: tuck_type_Hz): tuck_type_Hz {.borrow.}
-proc `-`*(a, b: tuck_type_Hz): tuck_type_Hz {.borrow.}
-proc `*`*(a, b: tuck_type_Hz): tuck_type_Hz {.borrow.}
-proc `div`*(a, b: tuck_type_Hz): tuck_type_Hz {.borrow.}
-proc `mod`*(a, b: tuck_type_Hz): tuck_type_Hz {.borrow.}
-proc `==`*(a, b: tuck_type_Hz): bool {.borrow.}
-proc `<`*(a, b: tuck_type_Hz): bool {.borrow.}
-proc `<=`*(a, b: tuck_type_Hz): bool {.borrow.}
-proc `$`*(a: tuck_type_Hz): string {.borrow.}
+type tuckˑtypeˑHz* = distinct uint32
+proc `+`*(a, b: tuckˑtypeˑHz): tuckˑtypeˑHz {.borrow.}
+proc `-`*(a, b: tuckˑtypeˑHz): tuckˑtypeˑHz {.borrow.}
+proc `*`*(a, b: tuckˑtypeˑHz): tuckˑtypeˑHz {.borrow.}
+proc `div`*(a, b: tuckˑtypeˑHz): tuckˑtypeˑHz {.borrow.}
+proc `mod`*(a, b: tuckˑtypeˑHz): tuckˑtypeˑHz {.borrow.}
+proc `==`*(a, b: tuckˑtypeˑHz): bool {.borrow.}
+proc `<`*(a, b: tuckˑtypeˑHz): bool {.borrow.}
+proc `<=`*(a, b: tuckˑtypeˑHz): bool {.borrow.}
+proc `$`*(a: tuckˑtypeˑHz): string {.borrow.}
 
-type tuck_type_Milliseconds* = distinct uint32
-proc `+`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `-`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `*`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `div`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `mod`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `==`*(a, b: tuck_type_Milliseconds): bool {.borrow.}
-proc `<`*(a, b: tuck_type_Milliseconds): bool {.borrow.}
-proc `<=`*(a, b: tuck_type_Milliseconds): bool {.borrow.}
-proc `$`*(a: tuck_type_Milliseconds): string {.borrow.}
+type tuckˑtypeˑMilliseconds* = distinct uint32
+proc `+`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `-`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `*`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `div`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `mod`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `==`*(a, b: tuckˑtypeˑMilliseconds): bool {.borrow.}
+proc `<`*(a, b: tuckˑtypeˑMilliseconds): bool {.borrow.}
+proc `<=`*(a, b: tuckˑtypeˑMilliseconds): bool {.borrow.}
+proc `$`*(a: tuckˑtypeˑMilliseconds): string {.borrow.}
 
-type tuck_type_PlayerStateKind* = enum Idle, Decoding, Paused
-type tuck_type_PlayerState* = object
-  case kind*: tuck_type_PlayerStateKind
+type tuckˑtypeˑPlayerStateKind* = enum Idle, Decoding, Paused
+type tuckˑtypeˑPlayerState* = object
+  case kind*: tuckˑtypeˑPlayerStateKind
   of Idle: discard
-  of Decoding: tuck_decoding*: tuple[sampleRate: tuck_type_Hz]
+  of Decoding: tuckˑvariantˑdecoding*: tuple[sampleRate: tuckˑtypeˑHz]
   of Paused: discard
 
-proc `==`*(a, b: tuck_type_PlayerState): bool {.noSideEffect.} =
+proc `==`*(a, b: tuckˑtypeˑPlayerState): bool {.noSideEffect.} =
   if a.kind != b.kind: return false
   case a.kind
   of Idle: true
-  of Decoding: a.tuck_decoding == b.tuck_decoding
+  of Decoding: a.tuckˑvariantˑdecoding == b.tuckˑvariantˑdecoding
   of Paused: true
-proc canTransition*(frm, to: tuck_type_PlayerStateKind): bool =
+proc canTransition*(frm, to: tuckˑtypeˑPlayerStateKind): bool =
   case frm
   of Idle: to in {Decoding}
   of Decoding: to in {Paused, Idle}
   of Paused: to in {Decoding, Idle}
-proc transitionTo*(self: var tuck_type_PlayerState, target: tuck_type_PlayerState) =
+proc transitionTo*(self: var tuckˑtypeˑPlayerState, target: tuckˑtypeˑPlayerState) =
   if not canTransition(self.kind, target.kind):
     raise newException(ValueError, "Invalid transition " & $self.kind & " -> " & $target.kind)
   self = target
 
-type tuck_type_Volume* = object
+type tuckˑtypeˑVolume* = object
   level*: uint8
 
-proc validate*(self: tuck_type_Volume) =
+proc validate*(self: tuckˑtypeˑVolume) =
   when not defined(tuckNoInvariants):
-    if not ((self.level <= 100)): tuckInvariantFailed("(self.level <= 100)", "tuck_type_Volume")
+    if not ((self.level <= 100)): tuckInvariantFailed("(self.level <= 100)", "tuckˑtypeˑVolume")
 
-type tuck_SystemEventsKind* = enum PlaybackStarted, PlaybackStopped, HardwareError
-type tuck_SystemEvents* = ref object
-  tuckTag*: tuck_SystemEventsKind
+type tuckˑregistryˑSystemEventsKind* = enum PlaybackStarted, PlaybackStopped, HardwareError
+type tuckˑregistryˑSystemEvents* = ref object
+  tuckTag*: tuckˑregistryˑSystemEventsKind
   code*: uint8
 
-var latesttuck_SystemEvents*: tuck_SystemEvents
+var latesttuckˑregistryˑSystemEvents*: tuckˑregistryˑSystemEvents
 
-proc raise_tuck_SystemEvents_PlaybackStarted*() =
-  latesttuck_SystemEvents = tuck_SystemEvents(tuckTag: PlaybackStarted)
-  tuck_fn_SystemEvents_PlaybackStarted()
+proc raise_tuckˑregistryˑSystemEvents_PlaybackStarted*() =
+  latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents(tuckTag: PlaybackStarted)
+  tuckˑfnˑSystemEvents_PlaybackStarted()
 
-proc raise_tuck_SystemEvents_PlaybackStopped*() =
-  latesttuck_SystemEvents = tuck_SystemEvents(tuckTag: PlaybackStopped)
-  tuck_fn_SystemEvents_PlaybackStopped()
+proc raise_tuckˑregistryˑSystemEvents_PlaybackStopped*() =
+  latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents(tuckTag: PlaybackStopped)
+  tuckˑfnˑSystemEvents_PlaybackStopped()
 
-proc raise_tuck_SystemEvents_HardwareError*(code: uint8) =
-  latesttuck_SystemEvents = tuck_SystemEvents(tuckTag: HardwareError, code: code)
-  tuck_fn_SystemEvents_HardwareError(code)
+proc raise_tuckˑregistryˑSystemEvents_HardwareError*(code: uint8) =
+  latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents(tuckTag: HardwareError, code: code)
+  tuckˑfnˑSystemEvents_HardwareError(code)
 
 
-var tuck_DAC_CR = cast[ptr uint32](0x40007400)
-const tuck_DAC_CR_EN_SHIFT = 0
-const tuck_DAC_CR_BOFF_SHIFT = 1
-proc tuck_DAC_CR_EN_get*(): bool {.inline.} =
-  (tuck_DAC_CR[] and (1'u32 shl tuck_DAC_CR_EN_SHIFT)) != 0
-proc tuck_DAC_CR_EN_set*(value: bool) {.inline.} =
-  let mask = 1'u32 shl tuck_DAC_CR_EN_SHIFT
-  if value: tuck_DAC_CR[] = tuck_DAC_CR[] or mask
-  else: tuck_DAC_CR[] = tuck_DAC_CR[] and not mask
-proc tuck_DAC_CR_BOFF_get*(): bool {.inline.} =
-  (tuck_DAC_CR[] and (1'u32 shl tuck_DAC_CR_BOFF_SHIFT)) != 0
-proc tuck_DAC_CR_BOFF_set*(value: bool) {.inline.} =
-  let mask = 1'u32 shl tuck_DAC_CR_BOFF_SHIFT
-  if value: tuck_DAC_CR[] = tuck_DAC_CR[] or mask
-  else: tuck_DAC_CR[] = tuck_DAC_CR[] and not mask
+var tuckˑregisterˑDAC_CR = cast[ptr uint32](0x40007400)
+const tuckˑregisterˑDAC_CR_EN_SHIFT = 0
+const tuckˑregisterˑDAC_CR_BOFF_SHIFT = 1
+proc tuckˑregisterˑDAC_CR_EN_get*(): bool {.inline.} =
+  (tuckˑregisterˑDAC_CR[] and (1'u32 shl tuckˑregisterˑDAC_CR_EN_SHIFT)) != 0
+proc tuckˑregisterˑDAC_CR_EN_set*(value: bool) {.inline.} =
+  let mask = 1'u32 shl tuckˑregisterˑDAC_CR_EN_SHIFT
+  if value: tuckˑregisterˑDAC_CR[] = tuckˑregisterˑDAC_CR[] or mask
+  else: tuckˑregisterˑDAC_CR[] = tuckˑregisterˑDAC_CR[] and not mask
+proc tuckˑregisterˑDAC_CR_BOFF_get*(): bool {.inline.} =
+  (tuckˑregisterˑDAC_CR[] and (1'u32 shl tuckˑregisterˑDAC_CR_BOFF_SHIFT)) != 0
+proc tuckˑregisterˑDAC_CR_BOFF_set*(value: bool) {.inline.} =
+  let mask = 1'u32 shl tuckˑregisterˑDAC_CR_BOFF_SHIFT
+  if value: tuckˑregisterˑDAC_CR[] = tuckˑregisterˑDAC_CR[] or mask
+  else: tuckˑregisterˑDAC_CR[] = tuckˑregisterˑDAC_CR[] and not mask
 
-var tuck_DMA1_CH3 = cast[ptr uint32](0x40020030)
-const tuck_DMA1_CH3_EN_SHIFT = 0
-const tuck_DMA1_CH3_TCIE_SHIFT = 1
-proc tuck_DMA1_CH3_EN_get*(): bool {.inline.} =
-  (tuck_DMA1_CH3[] and (1'u32 shl tuck_DMA1_CH3_EN_SHIFT)) != 0
-proc tuck_DMA1_CH3_EN_set*(value: bool) {.inline.} =
-  let mask = 1'u32 shl tuck_DMA1_CH3_EN_SHIFT
-  if value: tuck_DMA1_CH3[] = tuck_DMA1_CH3[] or mask
-  else: tuck_DMA1_CH3[] = tuck_DMA1_CH3[] and not mask
-proc tuck_DMA1_CH3_TCIE_get*(): bool {.inline.} =
-  (tuck_DMA1_CH3[] and (1'u32 shl tuck_DMA1_CH3_TCIE_SHIFT)) != 0
-proc tuck_DMA1_CH3_TCIE_set*(value: bool) {.inline.} =
-  let mask = 1'u32 shl tuck_DMA1_CH3_TCIE_SHIFT
-  if value: tuck_DMA1_CH3[] = tuck_DMA1_CH3[] or mask
-  else: tuck_DMA1_CH3[] = tuck_DMA1_CH3[] and not mask
+var tuckˑregisterˑDMA1_CH3 = cast[ptr uint32](0x40020030)
+const tuckˑregisterˑDMA1_CH3_EN_SHIFT = 0
+const tuckˑregisterˑDMA1_CH3_TCIE_SHIFT = 1
+proc tuckˑregisterˑDMA1_CH3_EN_get*(): bool {.inline.} =
+  (tuckˑregisterˑDMA1_CH3[] and (1'u32 shl tuckˑregisterˑDMA1_CH3_EN_SHIFT)) != 0
+proc tuckˑregisterˑDMA1_CH3_EN_set*(value: bool) {.inline.} =
+  let mask = 1'u32 shl tuckˑregisterˑDMA1_CH3_EN_SHIFT
+  if value: tuckˑregisterˑDMA1_CH3[] = tuckˑregisterˑDMA1_CH3[] or mask
+  else: tuckˑregisterˑDMA1_CH3[] = tuckˑregisterˑDMA1_CH3[] and not mask
+proc tuckˑregisterˑDMA1_CH3_TCIE_get*(): bool {.inline.} =
+  (tuckˑregisterˑDMA1_CH3[] and (1'u32 shl tuckˑregisterˑDMA1_CH3_TCIE_SHIFT)) != 0
+proc tuckˑregisterˑDMA1_CH3_TCIE_set*(value: bool) {.inline.} =
+  let mask = 1'u32 shl tuckˑregisterˑDMA1_CH3_TCIE_SHIFT
+  if value: tuckˑregisterˑDMA1_CH3[] = tuckˑregisterˑDMA1_CH3[] or mask
+  else: tuckˑregisterˑDMA1_CH3[] = tuckˑregisterˑDMA1_CH3[] and not mask
 
-var tuck_BufferPool* = ObjectPool[array[512, uint8], 4]()
-proc tuck_fn_streamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[]] =
-  for tuck_i in chunks:
+var tuckˑpoolˑBufferPool* = ObjectPool[array[512, uint8], 4]()
+proc tuckˑtaskˑstreamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[]] =
+  for tuckˑvˑi in chunks:
     if true:
-      var tuck_buf = acquire(tuck_BufferPool)
-      if not tuck_buf.ok:
+      var tuckˑvˑbuf = acquire(tuckˑpoolˑBufferPool)
+      if not tuckˑvˑbuf.ok:
         if true:
           return tokVoid()
-      tuck_DMA1_CH3_EN_set(true)
-      release(tuck_BufferPool, tuck_buf.value)
+      tuckˑregisterˑDMA1_CH3_EN_set(true)
+      release(tuckˑpoolˑBufferPool, tuckˑvˑbuf.value)
 
-type tuck_type_DecoderMsgKind* = enum msgPlay, msgPause, msgStop
-type tuck_type_DecoderMsg* = object
-  tuckTag*: tuck_type_DecoderMsgKind
-  rate*: tuck_type_Hz
+type tuckˑactorˑDecoderMsgKind* = enum msgPlay, msgPause, msgStop
+type tuckˑactorˑDecoderMsg* = object
+  tuckTag*: tuckˑactorˑDecoderMsgKind
+  rate*: tuckˑtypeˑHz
 
-type tuck_type_Decoder* = ref object
-  state*: tuck_type_PlayerState
-  vol*: tuck_type_Volume
-  mailbox*: Mailbox[tuck_type_DecoderMsg, 8]
+type tuckˑactorˑDecoder* = ref object
+  state*: tuckˑtypeˑPlayerState
+  vol*: tuckˑtypeˑVolume
+  mailbox*: Mailbox[tuckˑactorˑDecoderMsg, 8]
 
-let tuck_type_DecoderSingleton* = tuck_type_Decoder(state: tuck_type_PlayerState(kind: Idle), vol: (let tuckInv1 = tuck_type_Volume(level: 80'u8); validate(tuckInv1); tuckInv1))
+let tuckˑactorˑDecoderSingleton* = tuckˑactorˑDecoder(state: tuckˑtypeˑPlayerState(kind: Idle), vol: (let tuckInv1 = tuckˑtypeˑVolume(level: 80'u8); validate(tuckInv1); tuckInv1))
 
-proc handleMsg*(self: tuck_type_Decoder, msg: tuck_type_DecoderMsg) =
+proc handleMsg*(self: tuckˑactorˑDecoder, msg: tuckˑactorˑDecoderMsg) =
   case msg.tuckTag
   of msgPlay:
     let rate = msg.rate
@@ -143,55 +143,55 @@ proc handleMsg*(self: tuck_type_Decoder, msg: tuck_type_DecoderMsg) =
       (case self.state.kind
       of Idle:
         if true:
-          self.state = tuck_type_PlayerState(kind: Decoding, tuck_decoding: (sampleRate: rate))
-          raise_tuck_SystemEvents_PlaybackStarted()
-          tuck_DAC_CR_EN_set(true)
+          self.state = tuckˑtypeˑPlayerState(kind: Decoding, tuckˑvariantˑdecoding: (sampleRate: rate))
+          raise_tuckˑregistryˑSystemEvents_PlaybackStarted()
+          tuckˑregisterˑDAC_CR_EN_set(true)
       of Paused:
         if true:
-          self.state = tuck_type_PlayerState(kind: Decoding, tuck_decoding: (sampleRate: rate))
-          raise_tuck_SystemEvents_PlaybackStarted()
-          tuck_DAC_CR_EN_set(true)
+          self.state = tuckˑtypeˑPlayerState(kind: Decoding, tuckˑvariantˑdecoding: (sampleRate: rate))
+          raise_tuckˑregistryˑSystemEvents_PlaybackStarted()
+          tuckˑregisterˑDAC_CR_EN_set(true)
       of Decoding:
         discard)
   of msgPause:
     if true:
       (case self.state.kind
       of Decoding:
-        self.state = tuck_type_PlayerState(kind: Paused)
+        self.state = tuckˑtypeˑPlayerState(kind: Paused)
       of Idle:
         discard
       of Paused:
         discard)
-      tuck_DAC_CR_EN_set(false)
+      tuckˑregisterˑDAC_CR_EN_set(false)
   of msgStop:
     if true:
-      self.state = tuck_type_PlayerState(kind: Idle)
-      raise_tuck_SystemEvents_PlaybackStopped()
-      tuck_DAC_CR_EN_set(false)
+      self.state = tuckˑtypeˑPlayerState(kind: Idle)
+      raise_tuckˑregistryˑSystemEvents_PlaybackStopped()
+      tuckˑregisterˑDAC_CR_EN_set(false)
 
-proc draintuck_type_Decoder(): bool {.gcsafe.} =
+proc draintuckˑactorˑDecoder(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    for m in messages(tuck_type_DecoderSingleton.mailbox):
-      handleMsg(tuck_type_DecoderSingleton, m)
+    for m in messages(tuckˑactorˑDecoderSingleton.mailbox):
+      handleMsg(tuckˑactorˑDecoderSingleton, m)
       tuckCheckWaiters()
       result = true
 
-var tuck_type_DecoderSlot*: pointer
-proc registerActortuck_type_Decoder*() =
-  tuck_type_DecoderSlot = tuckStartActor(draintuck_type_Decoder)
+var tuckˑactorˑDecoderSlot*: pointer
+proc registerActortuckˑactorˑDecoder*() =
+  tuckˑactorˑDecoderSlot = tuckStartActor(draintuckˑactorˑDecoder)
 
-static: assert((sizeof(tuck_type_Volume) == 1))
-proc tuck_fn_SystemEvents_PlaybackStarted*(): void =
-  tuck_DAC_CR_EN_set(true)
+static: assert((sizeof(tuckˑtypeˑVolume) == 1))
+proc tuckˑfnˑSystemEvents_PlaybackStarted*(): void =
+  tuckˑregisterˑDAC_CR_EN_set(true)
 
-proc tuck_fn_SystemEvents_PlaybackStopped*(): void =
-  tuck_DAC_CR_EN_set(false)
+proc tuckˑfnˑSystemEvents_PlaybackStopped*(): void =
+  tuckˑregisterˑDAC_CR_EN_set(false)
 
-proc tuck_fn_SystemEvents_HardwareError*(code: uint8): void =
-  var tuck_failed = code
-  tuck_DAC_CR_EN_set(false)
+proc tuckˑfnˑSystemEvents_HardwareError*(code: uint8): void =
+  var tuckˑvˑfailed = code
+  tuckˑregisterˑDAC_CR_EN_set(false)
 
-proc tuck_fn_main*(): void =
+proc tuckˑfnˑmain*(): void =
   discard
 

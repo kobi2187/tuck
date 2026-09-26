@@ -12,21 +12,21 @@ struct TRec_url_timeout(T_url, T_timeout) {
     T_timeout timeout;
 }
 
-TRec_status!(long) tuck_fn_fetch(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_fetch invoked (not implemented)");
+TRec_status!(long) tuckˑfnˑfetch(T)(T payload) {
+    stderr.writeln("TUCK PENDING: fetch invoked (not implemented)");
     return typeof(return).init;
 }
 
 
-void tuck_fn_main() {
-    TRec_url_timeout!(string, long) tuck_config = TRec_url_timeout!(string, long)(url: "https://api.example.com", timeout: 100L);
-    TRec_status!(long) tuck_result = tuck_fn_fetch(tuck_config);
+void tuckˑfnˑmain() {
+    TRec_url_timeout!(string, long) tuckˑvˑconfig = TRec_url_timeout!(string, long)(url: "https://api.example.com", timeout: 100L);
+    TRec_status!(long) tuckˑvˑresult = tuckˑfnˑfetch(tuckˑvˑconfig);
     return;
 }
 
-enum tuck_type_LightState { Off, On }
+enum tuckˑtypeˑLightState { Off, On }
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_fn_main();
+    tuckˑfnˑmain();
 }

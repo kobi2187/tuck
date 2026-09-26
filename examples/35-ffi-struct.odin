@@ -15,15 +15,15 @@ foreign point {
 	makesPoint :: proc(x: i32, y: i32) -> Point ---
 }
 
-tuck_fn_main :: proc () {
-  tuck_p := makesPoint(i32(3), i32(7))
-  tuck_r := takesPoint(tuck_p)
-  if (tuck_r == 307) {
+tuckˑfnˑmain :: proc () {
+  tuckˑvˑp := makesPoint(i32(3), i32(7))
+  tuckˑvˑr := takesPoint(tuckˑvˑp)
+  if (tuckˑvˑr == 307) {
       sys.exit(0)
   }
   sys.exit(1)
 }
 
 main :: proc() {
-	tuck_fn_main()
+	tuckˑfnˑmain()
 }

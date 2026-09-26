@@ -1,18 +1,18 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_total*(xs: sink seq[tuck_type_P]): int
-proc tuck_fn_main*(): int
+proc tuckˑfnˑtotal*(xs: sink seq[tuckˑtypeˑP]): int
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_P* = object
+type tuckˑtypeˑP* = object
   n*: int
 
-proc tuck_fn_total*(xs: sink seq[tuck_type_P]): int =
-  var tuck_s = 0
-  for tuck_x in xs:
+proc tuckˑfnˑtotal*(xs: sink seq[tuckˑtypeˑP]): int =
+  var tuckˑvˑs = 0
+  for tuckˑvˑx in xs:
     if true:
-      tuck_s = (tuck_s + tuck_x.n)
-  return tuck_s
+      tuckˑvˑs = (tuckˑvˑs + tuckˑvˑx.n)
+  return tuckˑvˑs
 
-proc tuck_fn_main*(): int =
-  return tuck_fn_total(@[tuck_type_P(n: 3), tuck_type_P(n: 39)])
+proc tuckˑfnˑmain*(): int =
+  return tuckˑfnˑtotal(@[tuckˑtypeˑP(n: 3), tuckˑtypeˑP(n: 39)])
 

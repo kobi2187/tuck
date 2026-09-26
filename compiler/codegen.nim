@@ -619,9 +619,9 @@ proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
-                "(tuck_unhandled(" & tn & ".err, \"" & site & "\"); quit(1))"
+                "(" & UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\"); quit(1))"
               else:
-                "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\")"
   "(let " & tn & " = " & stmtCode & "; (if not " & tn & ".ok: " & onErr & "))"
 
 proc ownsItsLayout(res: Resolution, s: Expr): bool =
@@ -666,10 +666,10 @@ proc genBoundErrorRouted(ctx: var CodegenCtx, s: Expr, stmtCode,
              else: ""
   if name == "": return stmtCode
   let onErr = if ctx.errPolicy == "exit":
-                "(tuck_unhandled(" & name & ".err, \"" & site &
+                "(" & UnhandledHandlerName & "(" & name & ".err, \"" & site &
                   "\"); quit(1))"
               else:
-                "tuck_unhandled(" & name & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
   stmtCode & "\n" & ind & "  if " & name & ".status == tsErr: " & onErr
 
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =

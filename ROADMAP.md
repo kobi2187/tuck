@@ -159,7 +159,7 @@ closure no longer exist in any `codegen_*.nim`.
 |---|---|---|---|
 | — | **#87** | **FIXED 2026-09-25** — actor field initialisers are kept and checked (TK-TY29); on `type`/`object` fields refused (TK-TY30) | — |
 | — | **#73** | **FIXED** in `8d5b6c6` — a const resolves across the program (`ast_query.constDeclFor`); guarded in `cross_module`. This row was not updated at the time | — |
-| — | **#78** | **FIXED 2026-09-25** (3fd86f5) — the prefix names the declaration kind (`tuck_fn_order`, `tuck_type_Order`, `tuck_` for values); `compiler/name_prefix.nim`. This is S7 below | — |
+| — | **#78** | **FIXED 2026-09-25** (3fd86f5) — the prefix names the declaration kind; `compiler/name_prefix.nim`. This is S7 below, refined 2026-09-26 to `tuckˑ<kind>ˑ<name>` | — |
 | — | EV-6 | **FIXED 2026-09-26** — a D program with actors crashed at exit about half the time (futex error or segfault): rt_term unmapped the GC heap under parked actor threads. `tuckDrainActors` now retires and joins them; `d_backend` runs one binary 40 times | — |
 | — | — | **FIXED 2026-09-26** — on Odin a `str` grown by `s = s + x` leaked every old value (14 GB, OOM at 200 000 turns). Step 5 of the ownership pass now covers `str`; a literal among its values is copied (`copyToOwn`) so the local owns every value it holds. `known_bugs` pins it at 12 MB on all three | — |
 | — | **#79** | **FIXED 2026-09-25** — per-arm scoping in the Nim and Odin dispatch; see M4.3 | — |
@@ -204,6 +204,15 @@ closure no longer exist in any `codegen_*.nim`.
 | S5.2 | **#23** | superlinear emit; closes as a consequence of #21 + #22. Nim is already linear | — |
 
 ### S7 — Kind-scoped mangling (user proposal, 2026-09-22) — DONE 2026-09-25 (3fd86f5, #78)
+
+**Refined 2026-09-26 (user ruling):** the umbrella words were still too coarse
+(`tuck_type_` covered objects, actors and fnsigs; `tuck_fn_` tasks), and `_`
+between the parts let Nim fold `fn sigHandler` into `fnsig Handler` and a
+local `typeName` into `type Name`. Every name is now `tuckˑ<kind>ˑ<name>` with
+one word per kind (`name_prefix.NameKind`), locals included (`v`), and the
+separator `ˑ` (U+02D1) — a letter to all three hosts, outside Tuck's ASCII
+names. That retired `RtFoldableIntrinsics` and `tuck_val_` outright, and needs
+no reserved spelling. The text below is the 2026-09-22 proposal as written.
 
 Mangle by DECLARATION KIND: `tuck_fn_`, `tuck_type_`, `tuck_const_`, ...
 rather than one `tuck_` for everything.

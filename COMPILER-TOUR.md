@@ -221,11 +221,17 @@ Tuck compiles *to Nim and Odin*. So what happens if you write a Tuck type
 called `Feed`, and Nim also has something called `Feed`? The emitted code binds
 the wrong one, and the failure is baffling.
 
-The fix is blunt and effective: rename everything. `Feed` becomes
-`tuck_type_Feed`, `fn feed` becomes `tuck_fn_feed`. Nothing user-written can
-collide with a target-language symbol, ever. The prefix names the KIND
-because Nim matches only an identifier's first character exactly: under one
-`tuck_` prefix, `type Order` and `fn order` were the same Nim name (#78).
+The fix is blunt and effective: rename everything, spelling each name as
+exactly what it is. `type Feed` becomes `tuckˑtypeˑFeed`, `fn feed`
+`tuckˑfnˑfeed`, `actor Feed` `tuckˑactorˑFeed`, a local `n` `tuckˑvˑn`.
+Nothing user-written can collide with a target-language symbol, ever. The
+KIND is in the name because Nim ignores case and `_` after an identifier's
+first character: under one `tuck_` prefix `type Order` and `fn order` were
+one Nim name (#78), and with `_` between the parts so were `fn sigHandler`
+and `fnsig Handler`. The separator `ˑ` (U+02D1) is a letter to all three
+hosts and outside the ASCII a Tuck name is written in, so no two names of
+different kinds can meet, no source name can look already renamed, and no
+user name can meet a runtime one — by construction (`compiler/name_prefix.nim`).
 
 **But here's the subtlety, and it caused two real bugs in this codebase:**
 mangling is about **emitted identifiers only**. It exists to keep generated

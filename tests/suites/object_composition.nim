@@ -28,9 +28,9 @@ fn main() -> int:
 """
   t.okCheck "a composed field is reachable by its own name"
   t.emits     "and the object carries it directly", "x\\*: int"
-  t.omits     "not as a nested record", "tuck_type_A\\*: tuck_type_A"
+  t.omits     "not as a nested record", "tuckˑtypeˑA\\*: tuckˑtypeˑA"
   t.emitsOdin "Odin: merged too", "x: int"
-  t.omitsOdin "Odin: not nested either", "tuck_type_A: tuck_type_A"
+  t.omitsOdin "Odin: not nested either", "tuckˑtypeˑA: tuckˑtypeˑA"
   t.frozen    "so the emitted code compiles"
   # Two records merge, and both their fields land.
   t.src """
@@ -121,7 +121,7 @@ fn main() -> int:
 """
   t.okCheck "a builder chain followed by a terminal call"
   t.frozen  "and lowers to sequenced statements, not a nested call"
-  t.omits   "the terminal call does not write back to the base", "self = tuck_fn_loadEp"
+  t.omits   "the terminal call does not write back to the base", "self = tuckˑfnˑloadEp"
 
   # A chain BOUND to a variable. `a` must be left alone — the chain threads a
   # temp and the binding reads it. This emitted `var b =     a = tuck_fn_setN(a, 5)`
@@ -140,8 +140,8 @@ fn main() -> int:
 """
   t.okCheck "a chain bound to a variable"
   t.frozen  "and compiles"
-  t.omits   "the bound chain leaves its base alone", "a = tuck_fn_setN"
-  t.emits   "each step reads the previous step's result", "tuckChain1 = tuck_fn_setN\\(tuckChain1"
+  t.omits   "the bound chain leaves its base alone", "a = tuckˑfnˑsetN"
+  t.emits   "each step reads the previous step's result", "tuckChain1 = tuckˑfnˑsetN\\(tuckChain1"
 
   # ...and the same program on EVERY backend, a field step included. Before
   # chains were lowered (lowering_chains) each backend printed its own, and

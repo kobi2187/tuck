@@ -24,7 +24,8 @@ proc genPendingStub*(d: Decl): string =
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
   let paramStr = if d.fnParams.len > 0: "[T](payload: T)" else: "()"
   return "proc " & fnNameSanitized & "*" & paramStr & ": " & retTypeStr &
-         " =\n  stderr.writeLine(\"TUCK PENDING: " & d.name & " invoked (not implemented)\")\n"
+         " =\n  stderr.writeLine(\"TUCK PENDING: " & d.writtenName &
+         " invoked (not implemented)\")\n"
 
 proc fnHeaderNim*(name, genericStr: string, params: seq[string],
                   retTypeStr, inlineStr: string, exported = true): string =
@@ -692,7 +693,7 @@ proc genErrHandler*(ctx: var CodegenCtx, d: Decl): string =
   ## user's handler body.
   let errNames = ctx.declaredErrNames()
   if errNames.len > 0: result.add(genErrNameTable(errNames))
-  result.add("proc tuck_unhandled*(code: uint16, site: string) =\n" &
+  result.add("proc " & UnhandledHandlerName & "*(code: uint16, site: string) =\n" &
              "  tuckReportUnhandled(code, site)\n")
   if errNames.len > 0:
     result.add("  stderr.writeLine(\"TUCK ERROR NAME: \" & tuckErrName(code))\n")

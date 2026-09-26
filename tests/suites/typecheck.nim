@@ -848,7 +848,7 @@ fn main() -> int:
   # fix above, and the emitted call passed the receiver by value, which
   # Odin itself rejects ("Cannot assign value 'd' ... to '^tuck_type_Deck'").
   t.emitsOdin "Odin passes the receiver by address to match self: ^T",
-              r"tuck_type_Deck_crank\(&tuck_d, 1\)"
+              r"tuckˑobjectˑDeck_crank\(&tuckˑvˑd, 1\)"
 
   t.src """
 type Server:
@@ -2057,9 +2057,9 @@ fnsig Mapper[T, U] = {value: T} -> U
 type Box = {mapFn: Mapper[int, str]}
 """
   t.emits "generic fnsig emits a real Nim generic proc-type alias",
-          r"tuck_type_Mapper\*\[T, U\] = proc\(value: T\): U \{\.closure\.\}"
+          r"tuckˑfnsigˑMapper\*\[T, U\] = proc\(value: T\): U \{\.closure\.\}"
   t.emits "generic fnsig field instantiates concrete type args",
-          r"tuck_type_Mapper\[int, string\]"
+          r"tuckˑfnsigˑMapper\[int, string\]"
 
   t.src """
 fnsig Mapper[T, U] = {value: T} -> U
@@ -2669,7 +2669,7 @@ fn main() -> int:
   return 0
 """
   t.okCheck "an actor's queue takes a derived const"
-  t.emits "...and codegen emits the NUMBER, not the name", "Mailbox\\[[a-zA-Z_]*,\\ 8\\]"
+  t.emits "...and codegen emits the NUMBER, not the name", "Mailbox\\[[^,]*,\\ 8\\]"
 
   t.src """
 actor Sink [queue: Nope]:
@@ -2700,7 +2700,7 @@ fn main() -> int:
   return 0
 """
   t.okCheck "a pool's count takes a derived const"
-  t.emits "...and the pool is emitted with the NUMBER", "ObjectPool\\[[a-zA-Z_]*,\\ 6\\]"
+  t.emits "...and the pool is emitted with the NUMBER", "ObjectPool\\[[^,]*,\\ 6\\]"
 
   t.src """
 type Cell:

@@ -97,7 +97,7 @@ fn main() -> void:
   let n = p advance
   return
 """), d / "out")
-  mustContain(d / "out" / "p.nim", "advance(tuck_p.position, tuck_p.step)")
+  mustContain(d / "out" / "p.nim", "advance(tuckˑvˑp.position, tuckˑvˑp.step)")
   mustExit(d / "out" / "p", 0)
   removeDir(d)
 
@@ -536,7 +536,7 @@ fn main() -> void [io]:
   let r = {alpha: 42, beta: "x", gamma: true} pick
   r sys::exit
 """), d / "out")
-  mustContain(d / "out" / "t.nim", "tuck_fn_pick(42, \"x\", true)")
+  mustContain(d / "out" / "t.nim", "tuckˑfnˑpick(42, \"x\", true)")
   mustExit(d / "out" / "t", 42)
   removeDir(d)
 

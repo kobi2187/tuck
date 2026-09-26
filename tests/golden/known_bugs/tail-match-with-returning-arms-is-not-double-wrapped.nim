@@ -1,21 +1,21 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_describe*(l: tuck_type_Light): int
-proc tuck_fn_main*(): int
+proc tuckˑfnˑdescribe*(l: tuckˑtypeˑLight): int
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_Light* = enum Red, Green
+type tuckˑtypeˑLight* = enum Red, Green
 
-proc tuck_fn_describe*(l: tuck_type_Light): int =
+proc tuckˑfnˑdescribe*(l: tuckˑtypeˑLight): int =
   (case l
   of Red:
     if true:
-      var tuck_a = 1
-      return tuck_a
+      var tuckˑvˑa = 1
+      return tuckˑvˑa
   of Green:
     if true:
-      var tuck_b = 2
-      return tuck_b)
+      var tuckˑvˑb = 2
+      return tuckˑvˑb)
 
-proc tuck_fn_main*(): int =
-  return tuck_fn_describe(tuck_type_Light.Green)
+proc tuckˑfnˑmain*(): int =
+  return tuckˑfnˑdescribe(tuckˑtypeˑLight.Green)
 

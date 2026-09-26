@@ -1,38 +1,38 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_count*(xs: sink seq[tuck_type_Dog]): int
-proc tuck_fn_main*(): int
+proc tuckˑfnˑcount*(xs: sink seq[tuckˑobjectˑDog]): int
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_Dog* = object
+type tuckˑobjectˑDog* = object
   name*: string
 
-type tuck_type_Cat* = object
+type tuckˑobjectˑCat* = object
   lives*: int
 
-type AnimalTag* = enum Animal_is_tuck_type_Cat, Animal_is_tuck_type_Dog
+type AnimalTag* = enum Animal_is_tuckˑobjectˑCat, Animal_is_tuckˑobjectˑDog
 
 type Animal* = object
   case tag*: AnimalTag
-  of Animal_is_tuck_type_Cat: tuck_type_CatVal*: tuck_type_Cat
-  of Animal_is_tuck_type_Dog: tuck_type_DogVal*: tuck_type_Dog
+  of Animal_is_tuckˑobjectˑCat: tuckˑobjectˑCatVal*: tuckˑobjectˑCat
+  of Animal_is_tuckˑobjectˑDog: tuckˑobjectˑDogVal*: tuckˑobjectˑDog
 
-proc tuck_type_Dog_noise*(self: var tuck_type_Dog): int =
+proc tuckˑobjectˑDog_noise*(self: var tuckˑobjectˑDog): int =
   return 1
 
 
-proc tuck_type_Cat_noise*(self: var tuck_type_Cat): int =
+proc tuckˑobjectˑCat_noise*(self: var tuckˑobjectˑCat): int =
   return 41
 
 
-proc tuck_fn_count*(xs: sink seq[tuck_type_Dog]): int =
-  var tuck_s = 0
-  for tuck_d in xs:
+proc tuckˑfnˑcount*(xs: sink seq[tuckˑobjectˑDog]): int =
+  var tuckˑvˑs = 0
+  for tuckˑvˑd in xs:
     if true:
-      tuck_s = (tuck_s + 1)
-  return tuck_s
+      tuckˑvˑs = (tuckˑvˑs + 1)
+  return tuckˑvˑs
 
-proc tuck_fn_main*(): int =
-  var tuck_a = tuck_type_Dog(name: "rex")
-  var tuck_b = tuck_type_Dog(name: "fido")
-  return tuck_fn_count(@[tuck_a, tuck_b])
+proc tuckˑfnˑmain*(): int =
+  var tuckˑvˑa = tuckˑobjectˑDog(name: "rex")
+  var tuckˑvˑb = tuckˑobjectˑDog(name: "fido")
+  return tuckˑfnˑcount(@[tuckˑvˑa, tuckˑvˑb])
 

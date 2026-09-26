@@ -137,11 +137,9 @@ proc genDErrHandler*(ctx: var DCodegenCtx, d: Decl): string =
     body = "rt.tuckReportUnhandled(code, site);"
   else:
     body = "rt.tuckReportUnhandled(code, site);\n    " & body
-  # Mangled deliberately: the handler is emitted here but CALLED from every
-  # drop site (genDDroppedResult), and the two must agree. The decl arrives
-  # unmangled because it hangs off the errors block rather than the module's
-  # top-level fn list.
-  "void " & mangleName(handler.name) & "(ushort code, string site) {\n    " &
+  # One shared name: the handler is emitted here but CALLED from every drop
+  # site (genDDroppedResult), and the two must agree.
+  "void " & UnhandledHandlerName & "(ushort code, string site) {\n    " &
     body & "\n}\n"
 
 proc dRegistryEventStruct*(ctx: var DCodegenCtx, d: Decl): string =
@@ -416,7 +414,7 @@ proc genDPendingStub*(ctx: var DCodegenCtx, mem: Decl): string =
   let retStr = ctx.dType(mem.fnReturnType)
   let params = if mem.fnParams.len > 0: "(T)(T payload)" else: "()"
   result = retStr & " " & mem.name & params & " {\n" &
-           "    stderr.writeln(\"TUCK PENDING: " & mem.name &
+           "    stderr.writeln(\"TUCK PENDING: " & mem.writtenName &
            " invoked (not implemented)\");\n"
   if retStr != "void":
     result.add("    return typeof(return).init;\n")

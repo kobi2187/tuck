@@ -1,14 +1,14 @@
 #+feature dynamic-literals
 package main
 
-tuck_type_Temperature :: struct {
+tuckˑtypeˑTemperature :: struct {
 	celsius: f32,
 }
-validate_tuck_type_Temperature :: proc(self: tuck_type_Temperature) {
+validate_tuckˑtypeˑTemperature :: proc(self: tuckˑtypeˑTemperature) {
 	assert((self.celsius >= -273.15))
 }
-__validated_tuck_type_Temperature :: proc(v: tuck_type_Temperature) -> tuck_type_Temperature {
-	validate_tuck_type_Temperature(v)
+__validated_tuckˑtypeˑTemperature :: proc(v: tuckˑtypeˑTemperature) -> tuckˑtypeˑTemperature {
+	validate_tuckˑtypeˑTemperature(v)
 	return v
 }
 

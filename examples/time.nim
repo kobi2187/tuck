@@ -2,49 +2,49 @@
 import ../compiler/tuck_rt
 export tuck_rt
 
-proc tuck_fn_ms*(value: uint32): tuck_type_Milliseconds
-proc tuck_fn_us*(value: uint32): tuck_type_Microseconds
-proc tuck_fn_s*(value: uint32): tuck_type_Seconds
+proc tuckˑfnˑms*(value: uint32): tuckˑtypeˑMilliseconds
+proc tuckˑfnˑus*(value: uint32): tuckˑtypeˑMicroseconds
+proc tuckˑfnˑs*(value: uint32): tuckˑtypeˑSeconds
 
-type tuck_type_Milliseconds* = distinct uint32
-proc `+`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `-`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `*`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `div`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `mod`*(a, b: tuck_type_Milliseconds): tuck_type_Milliseconds {.borrow.}
-proc `==`*(a, b: tuck_type_Milliseconds): bool {.borrow.}
-proc `<`*(a, b: tuck_type_Milliseconds): bool {.borrow.}
-proc `<=`*(a, b: tuck_type_Milliseconds): bool {.borrow.}
-proc `$`*(a: tuck_type_Milliseconds): string {.borrow.}
+type tuckˑtypeˑMilliseconds* = distinct uint32
+proc `+`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `-`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `*`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `div`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `mod`*(a, b: tuckˑtypeˑMilliseconds): tuckˑtypeˑMilliseconds {.borrow.}
+proc `==`*(a, b: tuckˑtypeˑMilliseconds): bool {.borrow.}
+proc `<`*(a, b: tuckˑtypeˑMilliseconds): bool {.borrow.}
+proc `<=`*(a, b: tuckˑtypeˑMilliseconds): bool {.borrow.}
+proc `$`*(a: tuckˑtypeˑMilliseconds): string {.borrow.}
 
-type tuck_type_Microseconds* = distinct uint32
-proc `+`*(a, b: tuck_type_Microseconds): tuck_type_Microseconds {.borrow.}
-proc `-`*(a, b: tuck_type_Microseconds): tuck_type_Microseconds {.borrow.}
-proc `*`*(a, b: tuck_type_Microseconds): tuck_type_Microseconds {.borrow.}
-proc `div`*(a, b: tuck_type_Microseconds): tuck_type_Microseconds {.borrow.}
-proc `mod`*(a, b: tuck_type_Microseconds): tuck_type_Microseconds {.borrow.}
-proc `==`*(a, b: tuck_type_Microseconds): bool {.borrow.}
-proc `<`*(a, b: tuck_type_Microseconds): bool {.borrow.}
-proc `<=`*(a, b: tuck_type_Microseconds): bool {.borrow.}
-proc `$`*(a: tuck_type_Microseconds): string {.borrow.}
+type tuckˑtypeˑMicroseconds* = distinct uint32
+proc `+`*(a, b: tuckˑtypeˑMicroseconds): tuckˑtypeˑMicroseconds {.borrow.}
+proc `-`*(a, b: tuckˑtypeˑMicroseconds): tuckˑtypeˑMicroseconds {.borrow.}
+proc `*`*(a, b: tuckˑtypeˑMicroseconds): tuckˑtypeˑMicroseconds {.borrow.}
+proc `div`*(a, b: tuckˑtypeˑMicroseconds): tuckˑtypeˑMicroseconds {.borrow.}
+proc `mod`*(a, b: tuckˑtypeˑMicroseconds): tuckˑtypeˑMicroseconds {.borrow.}
+proc `==`*(a, b: tuckˑtypeˑMicroseconds): bool {.borrow.}
+proc `<`*(a, b: tuckˑtypeˑMicroseconds): bool {.borrow.}
+proc `<=`*(a, b: tuckˑtypeˑMicroseconds): bool {.borrow.}
+proc `$`*(a: tuckˑtypeˑMicroseconds): string {.borrow.}
 
-type tuck_type_Seconds* = distinct uint32
-proc `+`*(a, b: tuck_type_Seconds): tuck_type_Seconds {.borrow.}
-proc `-`*(a, b: tuck_type_Seconds): tuck_type_Seconds {.borrow.}
-proc `*`*(a, b: tuck_type_Seconds): tuck_type_Seconds {.borrow.}
-proc `div`*(a, b: tuck_type_Seconds): tuck_type_Seconds {.borrow.}
-proc `mod`*(a, b: tuck_type_Seconds): tuck_type_Seconds {.borrow.}
-proc `==`*(a, b: tuck_type_Seconds): bool {.borrow.}
-proc `<`*(a, b: tuck_type_Seconds): bool {.borrow.}
-proc `<=`*(a, b: tuck_type_Seconds): bool {.borrow.}
-proc `$`*(a: tuck_type_Seconds): string {.borrow.}
+type tuckˑtypeˑSeconds* = distinct uint32
+proc `+`*(a, b: tuckˑtypeˑSeconds): tuckˑtypeˑSeconds {.borrow.}
+proc `-`*(a, b: tuckˑtypeˑSeconds): tuckˑtypeˑSeconds {.borrow.}
+proc `*`*(a, b: tuckˑtypeˑSeconds): tuckˑtypeˑSeconds {.borrow.}
+proc `div`*(a, b: tuckˑtypeˑSeconds): tuckˑtypeˑSeconds {.borrow.}
+proc `mod`*(a, b: tuckˑtypeˑSeconds): tuckˑtypeˑSeconds {.borrow.}
+proc `==`*(a, b: tuckˑtypeˑSeconds): bool {.borrow.}
+proc `<`*(a, b: tuckˑtypeˑSeconds): bool {.borrow.}
+proc `<=`*(a, b: tuckˑtypeˑSeconds): bool {.borrow.}
+proc `$`*(a: tuckˑtypeˑSeconds): string {.borrow.}
 
-proc tuck_fn_ms*(value: uint32): tuck_type_Milliseconds =
-  return tuck_type_Milliseconds(value)
+proc tuckˑfnˑms*(value: uint32): tuckˑtypeˑMilliseconds =
+  return tuckˑtypeˑMilliseconds(value)
 
-proc tuck_fn_us*(value: uint32): tuck_type_Microseconds =
-  return tuck_type_Microseconds(value)
+proc tuckˑfnˑus*(value: uint32): tuckˑtypeˑMicroseconds =
+  return tuckˑtypeˑMicroseconds(value)
 
-proc tuck_fn_s*(value: uint32): tuck_type_Seconds =
-  return tuck_type_Seconds(value)
+proc tuckˑfnˑs*(value: uint32): tuckˑtypeˑSeconds =
+  return tuckˑtypeˑSeconds(value)
 

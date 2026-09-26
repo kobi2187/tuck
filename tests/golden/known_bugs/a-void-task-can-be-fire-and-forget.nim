@@ -1,50 +1,50 @@
 {.experimental: "codeReordering".}
 import scheduler
 
-proc tuck_fn_done*(): bool
-proc tuck_fn_main*(): int
+proc tuckˑfnˑdone*(): bool
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_SinkMsgKind* = enum msgPing
-type tuck_type_SinkMsg* = object
-  tuckTag*: tuck_type_SinkMsgKind
+type tuckˑactorˑSinkMsgKind* = enum msgPing
+type tuckˑactorˑSinkMsg* = object
+  tuckTag*: tuckˑactorˑSinkMsgKind
   n*: int
 
-type tuck_type_Sink* = ref object
+type tuckˑactorˑSink* = ref object
   hits*: int
-  mailbox*: Mailbox[tuck_type_SinkMsg, 8]
+  mailbox*: Mailbox[tuckˑactorˑSinkMsg, 8]
 
-let tuck_type_SinkSingleton* = tuck_type_Sink(hits: 0)
+let tuckˑactorˑSinkSingleton* = tuckˑactorˑSink(hits: 0)
 
-proc handleMsg*(self: tuck_type_Sink, msg: tuck_type_SinkMsg) =
+proc handleMsg*(self: tuckˑactorˑSink, msg: tuckˑactorˑSinkMsg) =
   case msg.tuckTag
   of msgPing:
     let n = msg.n
     if true:
       self.hits = (self.hits + n)
 
-proc draintuck_type_Sink(): bool {.gcsafe.} =
+proc draintuckˑactorˑSink(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    for m in messages(tuck_type_SinkSingleton.mailbox):
-      handleMsg(tuck_type_SinkSingleton, m)
+    for m in messages(tuckˑactorˑSinkSingleton.mailbox):
+      handleMsg(tuckˑactorˑSinkSingleton, m)
       tuckCheckWaiters()
       result = true
 
-var tuck_type_SinkSlot*: pointer
-proc registerActortuck_type_Sink*() =
-  tuck_type_SinkSlot = tuckStartActor(draintuck_type_Sink)
+var tuckˑactorˑSinkSlot*: pointer
+proc registerActortuckˑactorˑSink*() =
+  tuckˑactorˑSinkSlot = tuckStartActor(draintuckˑactorˑSink)
 
-proc tuck_fn_fire*(): void =
-  discard enqueue(tuck_type_SinkSingleton.mailbox, tuck_type_SinkMsg(tuckTag: msgPing, n: 5))
-  tuckNotifySend(tuck_type_SinkSlot)
+proc tuckˑtaskˑfire*(): void =
+  discard enqueue(tuckˑactorˑSinkSingleton.mailbox, tuckˑactorˑSinkMsg(tuckTag: msgPing, n: 5))
+  tuckNotifySend(tuckˑactorˑSinkSlot)
   return
 
-proc tuck_fn_done*(): bool =
-  return (tuck_type_SinkSingleton.hits == 5)
+proc tuckˑfnˑdone*(): bool =
+  return (tuckˑactorˑSinkSingleton.hits == 5)
 
-proc tuck_fn_main*(): int =
-  tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_fn_fire()))
-  tuckWaitOn(tuck_type_SinkSlot, tuck_fn_done)
+proc tuckˑfnˑmain*(): int =
+  tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuckˑtaskˑfire()))
+  tuckWaitOn(tuckˑactorˑSinkSlot, tuckˑfnˑdone)
   scheduler.stop()
-  return tuck_type_SinkSingleton.hits
+  return tuckˑactorˑSinkSingleton.hits
 

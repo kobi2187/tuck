@@ -35,10 +35,10 @@ fn main() -> int:
   t.okCheck "the program checks"
   t.emits "a tag enum for the interface",       "AnimalTag"
   t.emits "the value is a variant over its types", "case tag"
-  t.emits "the payload is the object itself",   "tuck_type_DogVal"
+  t.emits "the payload is the object itself",   "tuckˑobjectˑDogVal"
   t.emits "dispatch is a case on the tag",      "case .*\\.tag"
   t.omits "no function table",                  "AnimalVT"
-  t.omits "no thunks",                          "Animal_tuck_type_Dog_noise"
+  t.omits "no thunks",                          "Animal_tuckˑobjectˑDog_noise"
   t.runs  "and the program runs",               1
 
   # Both backends, or it is not a feature. The parity commitment is explicit in
@@ -78,8 +78,8 @@ fn main() -> int:
 """
   t.okCheck "two objects, one interface parameter"
   t.runs     "each dispatches to its own implementation",  42
-  t.emits    "a branch for Dog",  "Animal_is_tuck_type_Dog"
-  t.emits    "a branch for Cat",  "Animal_is_tuck_type_Cat"
+  t.emits    "a branch for Dog",  "Animal_is_tuckˑobjectˑDog"
+  t.emits    "a branch for Cat",  "Animal_is_tuckˑobjectˑCat"
 
   # Every satisfying type is a branch of the variant, whether or not a program
   # wraps one — the type has to hold any of them. That replaces the old
@@ -109,7 +109,7 @@ fn main() -> int:
   return {a: d} hear
 """
   t.okCheck "an object may satisfy without ever being wrapped"
-  t.emits    "it is still a branch of the variant",  "tuck_type_GhostVal"
+  t.emits    "it is still a branch of the variant",  "tuckˑobjectˑGhostVal"
   t.runs     "and the program runs",                 1
 
   # A method with payload beyond `self` must splat that payload positionally

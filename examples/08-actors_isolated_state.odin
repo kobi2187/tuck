@@ -3,49 +3,49 @@ package main
 
 import rt "./tuckrt"
 
-tuck_type_TrafficLightStateKind :: enum { Red, Yellow, Green }
+tuckˑactorˑTrafficLightStateKind :: enum { Red, Yellow, Green }
 
-tuck_type_TrafficLightMsgKind :: enum { msgNext }
-tuck_type_TrafficLightMsg :: struct {
-	tuckTag: tuck_type_TrafficLightMsgKind,
+tuckˑactorˑTrafficLightMsgKind :: enum { msgNext }
+tuckˑactorˑTrafficLightMsg :: struct {
+	tuckTag: tuckˑactorˑTrafficLightMsgKind,
 }
-tuck_type_TrafficLight :: struct {
-	state: tuck_type_TrafficLightStateKind,
-	mailbox: rt.Mailbox(tuck_type_TrafficLightMsg, 4),
+tuckˑactorˑTrafficLight :: struct {
+	state: tuckˑactorˑTrafficLightStateKind,
+	mailbox: rt.Mailbox(tuckˑactorˑTrafficLightMsg, 4),
 }
 
-tuck_type_TrafficLightSingleton: tuck_type_TrafficLight
+tuckˑactorˑTrafficLightSingleton: tuckˑactorˑTrafficLight
 
-handleMsg_tuck_type_TrafficLight :: proc(self: ^tuck_type_TrafficLight, msg: tuck_type_TrafficLightMsg) {
+handleMsg_tuckˑactorˑTrafficLight :: proc(self: ^tuckˑactorˑTrafficLight, msg: tuckˑactorˑTrafficLightMsg) {
 	switch msg.tuckTag {
 	case .msgNext:
     self.state = ((self.state == .Red) ? .Green : ((self.state == .Green) ? .Yellow : .Red))
 	}
 }
 
-tuck_type_TrafficLightSlot: rawptr
+tuckˑactorˑTrafficLightSlot: rawptr
 
-drain_tuck_type_TrafficLight :: proc() -> bool {
+drain_tuckˑactorˑTrafficLight :: proc() -> bool {
 	didWork := false
-	batch, n := rt.takeBatch(&tuck_type_TrafficLightSingleton.mailbox)
+	batch, n := rt.takeBatch(&tuckˑactorˑTrafficLightSingleton.mailbox)
 	for i in 0 ..< n {
-		handleMsg_tuck_type_TrafficLight(&tuck_type_TrafficLightSingleton, batch[i])
+		handleMsg_tuckˑactorˑTrafficLight(&tuckˑactorˑTrafficLightSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
 	return didWork
 }
 
-sendNext_tuck_type_TrafficLight :: proc(self: ^tuck_type_TrafficLight) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_TrafficLightMsg{tuckTag = .msgNext})
-	rt.tuckNotifySend(tuck_type_TrafficLightSlot)
+sendNext_tuckˑactorˑTrafficLight :: proc(self: ^tuckˑactorˑTrafficLight) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑTrafficLightMsg{tuckTag = .msgNext})
+	rt.tuckNotifySend(tuckˑactorˑTrafficLightSlot)
 }
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
-	tuck_type_TrafficLightSingleton.state = .Red
+	tuckˑactorˑTrafficLightSingleton.state = .Red
 	rt.tuckAsyncInit()
-	tuck_type_TrafficLightSlot = rt.tuckStartActor(drain_tuck_type_TrafficLight)
+	tuckˑactorˑTrafficLightSlot = rt.tuckStartActor(drain_tuckˑactorˑTrafficLight)
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()
 }

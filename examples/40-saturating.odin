@@ -4,13 +4,13 @@ package main
 import "core:os"
 import rt "./tuckrt"
 
-tuck_type_SafeRPM :: distinct u16
+tuckˑtypeˑSafeRPM :: distinct u16
 
-tuck_fn_main :: proc () -> int {
-  tuck_over := tuck_type_SafeRPM(rt.tuckSat(u16, u64(70000)))
-  tuck_ok := tuck_type_SafeRPM(rt.tuckSat(u16, u64(1200)))
-  if (tuck_over == tuck_type_SafeRPM(rt.tuckSat(u16, u64(65535)))) {
-      if (tuck_ok == tuck_type_SafeRPM(rt.tuckSat(u16, u64(1200)))) {
+tuckˑfnˑmain :: proc () -> int {
+  tuckˑvˑover := tuckˑtypeˑSafeRPM(rt.tuckSat(u16, u64(70000)))
+  tuckˑvˑok := tuckˑtypeˑSafeRPM(rt.tuckSat(u16, u64(1200)))
+  if (tuckˑvˑover == tuckˑtypeˑSafeRPM(rt.tuckSat(u16, u64(65535)))) {
+      if (tuckˑvˑok == tuckˑtypeˑSafeRPM(rt.tuckSat(u16, u64(1200)))) {
           return 0
       }
       return 2
@@ -19,6 +19,6 @@ tuck_fn_main :: proc () -> int {
 }
 
 main :: proc() {
-	mainRc := tuck_fn_main()
+	mainRc := tuckˑfnˑmain()
 	os.exit(mainRc)
 }

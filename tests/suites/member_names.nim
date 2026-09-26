@@ -27,8 +27,8 @@ fn main() -> int:
   return 0
 """
   t.okCheck   "two objects may share a member fn name"
-  t.emits     "Nim keeps them apart",  "tuck_type_Dog_noise|noise\\*\\(self: var tuck_type_Dog\\)"
-  t.emitsOdin "Odin keeps them apart", "tuck_type_Dog_noise"
+  t.emits     "Nim keeps them apart",  "tuckˑobjectˑDog_noise|noise\\*\\(self: var tuckˑobjectˑDog\\)"
+  t.emitsOdin "Odin keeps them apart", "tuckˑobjectˑDog_noise"
 
   # The real gate: the emitted Odin must COMPILE. Emission alone proved nothing
   # here — the old output looked plausible and only `odin build` rejected it.
@@ -196,7 +196,7 @@ fn main() -> int:
 """
   t.runs "a receiver call reaches the object's own member", 10
   t.hostBuilds "...on every backend"
-  t.emits "...and Nim calls the member, not the mangled free fn", "noise\\(tuck_b\\)"
+  t.emits "...and Nim calls the member, not the mangled free fn", "noise\\(tuckˑvˑb\\)"
 
   # BOTH forms in one program: the named payload call reaches the top-level
   # fn (#19) and the receiver call reaches the member (#50). Each direction

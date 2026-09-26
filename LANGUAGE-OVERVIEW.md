@@ -233,7 +233,7 @@ data. A field above it is a parse error (`TK-PA06`).
 
 Objects carry fields, `+ Composed` entries, `satisfies` lines, member fns, and
 `self`. Two objects may share a member fn name — Nim overloads on `self`, Odin
-cannot, so the emitter mangles to `tuck_type_Dog_noise` (`tests/suites/member_names.nim`,
+cannot, so the emitter mangles to `tuckˑobjectˑDog_noise` (`tests/suites/member_names.nim`,
 gated by a real `odin build`).
 
 ### Mixins — `mixin`, fns only, never fields
@@ -469,9 +469,9 @@ members but no `satisfies` line is *rejected* (`tests/suites/interface_wrap.nim`
 ```
 emits  'AnimalTag'                    # a tag enum
 emits  'case tag'                     # the value is a variant over its types
-emits  'tuck_type_DogVal'                  # the payload is the object itself
+emits  'tuckˑobjectˑDogVal'                  # the payload is the object itself
 omits  'AnimalVT'                     # NO function table
-omits  'Animal_tuck_type_Dog_noise'        # NO thunks
+omits  'Animal_tuckˑobjectˑDog_noise'        # NO thunks
 ```
 
 Every satisfying type is a branch, whether or not anything wraps it (`:88`).
@@ -564,7 +564,7 @@ wider intermediate (`tests/suites/known_bugs.nim`).
 
 An overflow attribute **implies `distinct`** — `distinct uint16` in Nim,
 `distinct u16` in Odin (`tests/suites/known_bugs.nim`). D emits
-`alias tuck_type_SafeRPM = ushort`, which is not a distinct type there; the
+`alias tuckˑtypeˑSafeRPM = ushort`, which is not a distinct type there; the
 separation is enforced by Tuck's checker either way, so no program means
 something different, but the emitted D does not carry it.
 
@@ -833,12 +833,15 @@ Module resolution needs `--root:`.
 
 ### Name mangling
 
-A whole-program pass before either backend (`tests/suites/mangle.nim`): the
-prefix names what the name is — `tuck_fn_` for fns and tasks, `tuck_type_` for
-types, objects, actors and fn signatures, plain `tuck_` for consts, pools,
-registers, registries and locals (`compiler/name_prefix.nim`). One prefix for
-all of them let Nim, which ignores case after an identifier's first
-character, fold `type Order` and `fn order` into one name (#78). **Fields and
+A whole-program pass before either backend (`tests/suites/mangle.nim`): every
+emitted name is `tuckˑ<kind>ˑ<name>`, the kind exactly what it is — `fn`,
+`task`, `decision`, `type`, `object`, `actor`, `fnsig`, `const`, `pool`,
+`register`, `registry`, `v` for a local, `variant` for a sum's tag field
+(`compiler/name_prefix.nim`). Nim ignores case and `_` after an identifier's
+first character, which folded `type Order` into `fn order` under one `tuck_`
+prefix (#78) and `fnsig Handler` into `fn sigHandler` with `_` between the
+parts; the separator `ˑ` (U+02D1) is a letter to every host and never part of
+a Tuck name, so no two kinds can meet. **Fields and
 params stay bare** (namespaced by their record, and a param is a contract); **externs are never mangled** — they bind foreign symbols by
 name. Idempotent, since each backend lowers its own deep copy.
 

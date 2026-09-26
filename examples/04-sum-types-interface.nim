@@ -1,64 +1,64 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc `==`*(a, b: tuck_type_PodcastPlayerLifecycle): bool {.noSideEffect.}
+proc `==`*(a, b: tuckˑtypeˑPodcastPlayerLifecycle): bool {.noSideEffect.}
 
-proc tuck_fn_loadEpisode*(self: tuck_type_PodcastApp, episode: tuck_type_Episode): tuck_type_PodcastApp
-proc tuck_fn_startAudio*(self: tuck_type_PodcastApp): void
+proc tuckˑfnˑloadEpisode*(self: tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode): tuckˑobjectˑPodcastApp
+proc tuckˑfnˑstartAudio*(self: tuckˑobjectˑPodcastApp): void
 
-type tuck_type_Config* = object
+type tuckˑtypeˑConfig* = object
   url*: string
 
-type tuck_type_Feed* = object
+type tuckˑtypeˑFeed* = object
   title*: string
 
-type tuck_type_AudioPlayer* = object
+type tuckˑtypeˑAudioPlayer* = object
   volume*: int
 
-type tuck_type_NetworkClient* = object
+type tuckˑtypeˑNetworkClient* = object
   timeout*: uint32
 
-type tuck_type_Episode* = object
+type tuckˑtypeˑEpisode* = object
   name*: string
 
-type tuck_type_Pair* = object
+type tuckˑtypeˑPair* = object
   key*: string
   val*: string
 
-type tuck_type_PodcastPlayerLifecycleKind* = enum Unloaded, Loading, Ready, Error
-type tuck_type_PodcastPlayerLifecycle* = object
-  case kind*: tuck_type_PodcastPlayerLifecycleKind
-  of Unloaded: tuck_unloaded*: tuple[config: tuck_type_Config]
-  of Loading: tuck_loading*: tuple[config: tuck_type_Config, progress: int]
-  of Ready: tuck_ready*: tuple[config: tuck_type_Config, feed: tuck_type_Feed, audio: tuck_type_AudioPlayer]
-  of Error: tuck_error*: tuple[config: tuck_type_Config, reason: string]
+type tuckˑtypeˑPodcastPlayerLifecycleKind* = enum Unloaded, Loading, Ready, Error
+type tuckˑtypeˑPodcastPlayerLifecycle* = object
+  case kind*: tuckˑtypeˑPodcastPlayerLifecycleKind
+  of Unloaded: tuckˑvariantˑunloaded*: tuple[config: tuckˑtypeˑConfig]
+  of Loading: tuckˑvariantˑloading*: tuple[config: tuckˑtypeˑConfig, progress: int]
+  of Ready: tuckˑvariantˑready*: tuple[config: tuckˑtypeˑConfig, feed: tuckˑtypeˑFeed, audio: tuckˑtypeˑAudioPlayer]
+  of Error: tuckˑvariantˑerror*: tuple[config: tuckˑtypeˑConfig, reason: string]
 
-proc `==`*(a, b: tuck_type_PodcastPlayerLifecycle): bool {.noSideEffect.} =
+proc `==`*(a, b: tuckˑtypeˑPodcastPlayerLifecycle): bool {.noSideEffect.} =
   if a.kind != b.kind: return false
   case a.kind
-  of Unloaded: a.tuck_unloaded == b.tuck_unloaded
-  of Loading: a.tuck_loading == b.tuck_loading
-  of Ready: a.tuck_ready == b.tuck_ready
-  of Error: a.tuck_error == b.tuck_error
+  of Unloaded: a.tuckˑvariantˑunloaded == b.tuckˑvariantˑunloaded
+  of Loading: a.tuckˑvariantˑloading == b.tuckˑvariantˑloading
+  of Ready: a.tuckˑvariantˑready == b.tuckˑvariantˑready
+  of Error: a.tuckˑvariantˑerror == b.tuckˑvariantˑerror
 
-type tuck_type_PodcastApp* = object
+type tuckˑobjectˑPodcastApp* = object
   volume*: int
   timeout*: uint32
 
 # interface Storable: no satisfying types
 
-proc tuck_fn_loadEpisode*(self: tuck_type_PodcastApp, episode: tuck_type_Episode): tuck_type_PodcastApp =
+proc tuckˑfnˑloadEpisode*(self: tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode): tuckˑobjectˑPodcastApp =
   return self
 
-proc tuck_fn_startAudio*(self: tuck_type_PodcastApp): void =
+proc tuckˑfnˑstartAudio*(self: tuckˑobjectˑPodcastApp): void =
   return
 
-proc tuck_type_PodcastApp_tuck_fn_setMany*(self: var tuck_type_PodcastApp, pairs: seq[tuck_type_Pair]): TuckResult[tuple[]] =
+proc tuckˑobjectˑPodcastApp_tuckˑfnˑsetMany*(self: var tuckˑobjectˑPodcastApp, pairs: seq[tuckˑtypeˑPair]): TuckResult[tuple[]] =
   discard
 
-proc tuck_type_PodcastApp_play*(self: var tuck_type_PodcastApp, episode: tuck_type_Episode): void =
+proc tuckˑobjectˑPodcastApp_play*(self: var tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode): void =
   var tuckChain1 = self
-  tuckChain1 = tuck_fn_loadEpisode(tuckChain1, episode)
-  tuck_fn_startAudio(tuckChain1)
+  tuckChain1 = tuckˑfnˑloadEpisode(tuckChain1, episode)
+  tuckˑfnˑstartAudio(tuckChain1)
 
 

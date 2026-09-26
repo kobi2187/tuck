@@ -2,270 +2,270 @@ module _46_h264_driver;
 
 import rt = tuck_rt;
 
-__gshared uint* tuck_VI_CTRL = cast(uint*)(0x50000000);
-enum tuck_VI_CTRL_ENABLE_SHIFT = 0;
-enum tuck_VI_CTRL_FRAME_DONE_SHIFT = 1;
-enum tuck_VI_CTRL_OVERRUN_SHIFT = 2;
-bool tuck_VI_CTRL_ENABLE_get() {
-    return (*tuck_VI_CTRL & (1u << tuck_VI_CTRL_ENABLE_SHIFT)) != 0;
+__gshared uint* tuckˑregisterˑVI_CTRL = cast(uint*)(0x50000000);
+enum tuckˑregisterˑVI_CTRL_ENABLE_SHIFT = 0;
+enum tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT = 1;
+enum tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT = 2;
+bool tuckˑregisterˑVI_CTRL_ENABLE_get() {
+    return (*tuckˑregisterˑVI_CTRL & (1u << tuckˑregisterˑVI_CTRL_ENABLE_SHIFT)) != 0;
 }
-void tuck_VI_CTRL_ENABLE_set(bool value) {
-    if (value) *tuck_VI_CTRL |= (1u << tuck_VI_CTRL_ENABLE_SHIFT);
-    else *tuck_VI_CTRL &= ~(1u << tuck_VI_CTRL_ENABLE_SHIFT);
+void tuckˑregisterˑVI_CTRL_ENABLE_set(bool value) {
+    if (value) *tuckˑregisterˑVI_CTRL |= (1u << tuckˑregisterˑVI_CTRL_ENABLE_SHIFT);
+    else *tuckˑregisterˑVI_CTRL &= ~(1u << tuckˑregisterˑVI_CTRL_ENABLE_SHIFT);
 }
-bool tuck_VI_CTRL_FRAME_DONE_get() {
-    return (*tuck_VI_CTRL & (1u << tuck_VI_CTRL_FRAME_DONE_SHIFT)) != 0;
+bool tuckˑregisterˑVI_CTRL_FRAME_DONE_get() {
+    return (*tuckˑregisterˑVI_CTRL & (1u << tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT)) != 0;
 }
-bool tuck_VI_CTRL_OVERRUN_get() {
-    return (*tuck_VI_CTRL & (1u << tuck_VI_CTRL_OVERRUN_SHIFT)) != 0;
-}
-
-__gshared uint* tuck_VI_DMA = cast(uint*)(0x50000010);
-enum tuck_VI_DMA_ARMED_SHIFT = 0;
-bool tuck_VI_DMA_ARMED_get() {
-    return (*tuck_VI_DMA & (1u << tuck_VI_DMA_ARMED_SHIFT)) != 0;
-}
-void tuck_VI_DMA_ARMED_set(bool value) {
-    if (value) *tuck_VI_DMA |= (1u << tuck_VI_DMA_ARMED_SHIFT);
-    else *tuck_VI_DMA &= ~(1u << tuck_VI_DMA_ARMED_SHIFT);
+bool tuckˑregisterˑVI_CTRL_OVERRUN_get() {
+    return (*tuckˑregisterˑVI_CTRL & (1u << tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT)) != 0;
 }
 
-__gshared uint* tuck_DEC_CTRL = cast(uint*)(0x50001000);
-enum tuck_DEC_CTRL_START_SHIFT = 0;
-enum tuck_DEC_CTRL_BUSY_SHIFT = 1;
-enum tuck_DEC_CTRL_ERR_SHIFT = 2;
-bool tuck_DEC_CTRL_START_get() {
-    return (*tuck_DEC_CTRL & (1u << tuck_DEC_CTRL_START_SHIFT)) != 0;
+__gshared uint* tuckˑregisterˑVI_DMA = cast(uint*)(0x50000010);
+enum tuckˑregisterˑVI_DMA_ARMED_SHIFT = 0;
+bool tuckˑregisterˑVI_DMA_ARMED_get() {
+    return (*tuckˑregisterˑVI_DMA & (1u << tuckˑregisterˑVI_DMA_ARMED_SHIFT)) != 0;
 }
-void tuck_DEC_CTRL_START_set(bool value) {
-    if (value) *tuck_DEC_CTRL |= (1u << tuck_DEC_CTRL_START_SHIFT);
-    else *tuck_DEC_CTRL &= ~(1u << tuck_DEC_CTRL_START_SHIFT);
-}
-bool tuck_DEC_CTRL_BUSY_get() {
-    return (*tuck_DEC_CTRL & (1u << tuck_DEC_CTRL_BUSY_SHIFT)) != 0;
-}
-bool tuck_DEC_CTRL_ERR_get() {
-    return (*tuck_DEC_CTRL & (1u << tuck_DEC_CTRL_ERR_SHIFT)) != 0;
+void tuckˑregisterˑVI_DMA_ARMED_set(bool value) {
+    if (value) *tuckˑregisterˑVI_DMA |= (1u << tuckˑregisterˑVI_DMA_ARMED_SHIFT);
+    else *tuckˑregisterˑVI_DMA &= ~(1u << tuckˑregisterˑVI_DMA_ARMED_SHIFT);
 }
 
-__gshared rt.ObjectPool!(ubyte[4096], 4) tuck_FrameBuffers;
+__gshared uint* tuckˑregisterˑDEC_CTRL = cast(uint*)(0x50001000);
+enum tuckˑregisterˑDEC_CTRL_START_SHIFT = 0;
+enum tuckˑregisterˑDEC_CTRL_BUSY_SHIFT = 1;
+enum tuckˑregisterˑDEC_CTRL_ERR_SHIFT = 2;
+bool tuckˑregisterˑDEC_CTRL_START_get() {
+    return (*tuckˑregisterˑDEC_CTRL & (1u << tuckˑregisterˑDEC_CTRL_START_SHIFT)) != 0;
+}
+void tuckˑregisterˑDEC_CTRL_START_set(bool value) {
+    if (value) *tuckˑregisterˑDEC_CTRL |= (1u << tuckˑregisterˑDEC_CTRL_START_SHIFT);
+    else *tuckˑregisterˑDEC_CTRL &= ~(1u << tuckˑregisterˑDEC_CTRL_START_SHIFT);
+}
+bool tuckˑregisterˑDEC_CTRL_BUSY_get() {
+    return (*tuckˑregisterˑDEC_CTRL & (1u << tuckˑregisterˑDEC_CTRL_BUSY_SHIFT)) != 0;
+}
+bool tuckˑregisterˑDEC_CTRL_ERR_get() {
+    return (*tuckˑregisterˑDEC_CTRL & (1u << tuckˑregisterˑDEC_CTRL_ERR_SHIFT)) != 0;
+}
 
-enum tuck_type_NalKind { nonIdr, idr, sps, pps, sei }
+__gshared rt.ObjectPool!(ubyte[4096], 4) tuckˑpoolˑFrameBuffers;
 
-enum tuck_type_Action { decode, configure, skip, flushThenDecode }
+enum tuckˑtypeˑNalKind { nonIdr, idr, sps, pps, sei }
 
-tuck_type_Action tuck_fn_route(tuck_type_NalKind nal, bool configured, bool midFrame) {
+enum tuckˑtypeˑAction { decode, configure, skip, flushThenDecode }
+
+tuckˑtypeˑAction tuckˑdecisionˑroute(tuckˑtypeˑNalKind nal, bool configured, bool midFrame) {
     switch ((((cast(long)(nal) * 4L) + (cast(long)(configured) * 2L)) + cast(long)(midFrame))) {
     case 0, 1, 16, 17, 18, 19:
-        return tuck_type_Action.skip;
+        return tuckˑtypeˑAction.skip;
     case 2, 3, 4, 6:
-        return tuck_type_Action.decode;
+        return tuckˑtypeˑAction.decode;
     case 5, 7:
-        return tuck_type_Action.flushThenDecode;
+        return tuckˑtypeˑAction.flushThenDecode;
     default:
-        return tuck_type_Action.configure;
+        return tuckˑtypeˑAction.configure;
     }
     return typeof(return).init;
 }
 
-struct tuck_type_Frame {
+struct tuckˑtypeˑFrame {
     long width;
     long height;
     long bytes;
 }
 
-void validate_tuck_type_Frame(tuck_type_Frame self)
+void validate_tuckˑtypeˑFrame(tuckˑtypeˑFrame self)
 {
     version (tuckNoInvariants) {} else
     {
         if (!((self.width > 0L)))
-            rt.tuckInvariantFailed("(self.width > 0L)", "tuck_type_Frame");
+            rt.tuckInvariantFailed("(self.width > 0L)", "tuckˑtypeˑFrame");
         if (!((self.height > 0L)))
-            rt.tuckInvariantFailed("(self.height > 0L)", "tuck_type_Frame");
+            rt.tuckInvariantFailed("(self.height > 0L)", "tuckˑtypeˑFrame");
         if (!((self.width <= 1920L)))
-            rt.tuckInvariantFailed("(self.width <= 1920L)", "tuck_type_Frame");
+            rt.tuckInvariantFailed("(self.width <= 1920L)", "tuckˑtypeˑFrame");
         if (!((self.height <= 1080L)))
-            rt.tuckInvariantFailed("(self.height <= 1080L)", "tuck_type_Frame");
+            rt.tuckInvariantFailed("(self.height <= 1080L)", "tuckˑtypeˑFrame");
         if (!((self.bytes <= 4096L)))
-            rt.tuckInvariantFailed("(self.bytes <= 4096L)", "tuck_type_Frame");
+            rt.tuckInvariantFailed("(self.bytes <= 4096L)", "tuckˑtypeˑFrame");
     }
 }
 
-tuck_type_Frame __validated_tuck_type_Frame(tuck_type_Frame v)
+tuckˑtypeˑFrame __validated_tuckˑtypeˑFrame(tuckˑtypeˑFrame v)
 {
-    validate_tuck_type_Frame(v);
+    validate_tuckˑtypeˑFrame(v);
     return v;
 }
 
-enum tuck_type_DecoderState { Idle, Configured, Decoding, Draining }
+enum tuckˑtypeˑDecoderState { Idle, Configured, Decoding, Draining }
 
-enum tuck_VideoKind { FrameReady, Overrun, DecodeError }
+enum tuckˑregistryˑVideoKind { FrameReady, Overrun, DecodeError }
 
-struct tuck_Video {
-    tuck_VideoKind tuckTag;
+struct tuckˑregistryˑVideo {
+    tuckˑregistryˑVideoKind tuckTag;
     long bytes;
     long dropped;
     ubyte code;
 }
 
-__gshared tuck_Video latesttuck_Video;
+__gshared tuckˑregistryˑVideo latesttuckˑregistryˑVideo;
 
-void raise_tuck_Video_FrameReady(long bytes) {
-    latesttuck_Video = tuck_Video(tuck_VideoKind.FrameReady, bytes: bytes);
-    tuck_fn_Video_FrameReady(bytes);
+void raise_tuckˑregistryˑVideo_FrameReady(long bytes) {
+    latesttuckˑregistryˑVideo = tuckˑregistryˑVideo(tuckˑregistryˑVideoKind.FrameReady, bytes: bytes);
+    tuckˑfnˑVideo_FrameReady(bytes);
 }
 
-void raise_tuck_Video_Overrun(long dropped) {
-    latesttuck_Video = tuck_Video(tuck_VideoKind.Overrun, dropped: dropped);
-    tuck_fn_Video_Overrun(dropped);
+void raise_tuckˑregistryˑVideo_Overrun(long dropped) {
+    latesttuckˑregistryˑVideo = tuckˑregistryˑVideo(tuckˑregistryˑVideoKind.Overrun, dropped: dropped);
+    tuckˑfnˑVideo_Overrun(dropped);
 }
 
-void raise_tuck_Video_DecodeError(ubyte code) {
-    latesttuck_Video = tuck_Video(tuck_VideoKind.DecodeError, code: code);
-    tuck_fn_Video_DecodeError(code);
+void raise_tuckˑregistryˑVideo_DecodeError(ubyte code) {
+    latesttuckˑregistryˑVideo = tuckˑregistryˑVideo(tuckˑregistryˑVideoKind.DecodeError, code: code);
+    tuckˑfnˑVideo_DecodeError(code);
 }
 
 
-enum tuck_type_PipelineMsgKind { msgNal, msgOverrun }
+enum tuckˑactorˑPipelineMsgKind { msgNal, msgOverrun }
 
-struct tuck_type_PipelineMsg {
-    tuck_type_PipelineMsgKind tuckTag;
-    tuck_type_NalKind nal;
+struct tuckˑactorˑPipelineMsg {
+    tuckˑactorˑPipelineMsgKind tuckTag;
+    tuckˑtypeˑNalKind nal;
     bool midFrame;
     long n;
 }
 
-struct tuck_type_Pipeline {
-    tuck_type_DecoderState state;
+struct tuckˑactorˑPipeline {
+    tuckˑtypeˑDecoderState state;
     long decoded;
     long dropped;
     bool configured;
-    rt.Mailbox!(tuck_type_PipelineMsg, 8) mailbox;
+    rt.Mailbox!(tuckˑactorˑPipelineMsg, 8) mailbox;
 }
 
-__gshared tuck_type_Pipeline tuck_type_PipelineSingleton;
+__gshared tuckˑactorˑPipeline tuckˑactorˑPipelineSingleton;
 
 shared static this() {
-    tuck_type_PipelineSingleton.state = tuck_type_DecoderState.Idle;
-    tuck_type_PipelineSingleton.decoded = 0L;
-    tuck_type_PipelineSingleton.dropped = 0L;
-    tuck_type_PipelineSingleton.configured = false;
+    tuckˑactorˑPipelineSingleton.state = tuckˑtypeˑDecoderState.Idle;
+    tuckˑactorˑPipelineSingleton.decoded = 0L;
+    tuckˑactorˑPipelineSingleton.dropped = 0L;
+    tuckˑactorˑPipelineSingleton.configured = false;
 }
 
-void handleMsg_tuck_type_Pipeline(ref tuck_type_Pipeline self, tuck_type_PipelineMsg msg) {
+void handleMsg_tuckˑactorˑPipeline(ref tuckˑactorˑPipeline self, tuckˑactorˑPipelineMsg msg) {
     final switch (msg.tuckTag) {
-        case tuck_type_PipelineMsgKind.msgNal:
+        case tuckˑactorˑPipelineMsgKind.msgNal:
             auto nal = msg.nal;
             auto midFrame = msg.midFrame;
-            tuck_type_Action tuck_what = tuck_fn_route(nal, self.configured, midFrame);
-            final switch (tuck_what) {
-            case tuck_type_Action.configure:
+            tuckˑtypeˑAction tuckˑvˑwhat = tuckˑdecisionˑroute(nal, self.configured, midFrame);
+            final switch (tuckˑvˑwhat) {
+            case tuckˑtypeˑAction.configure:
                 self.configured = true;
-                self.state = tuck_type_DecoderState.Configured;
+                self.state = tuckˑtypeˑDecoderState.Configured;
                 break;
-            case tuck_type_Action.decode:
-                self.state = tuck_type_DecoderState.Decoding;
+            case tuckˑtypeˑAction.decode:
+                self.state = tuckˑtypeˑDecoderState.Decoding;
                 self.decoded = (self.decoded + 1L);
                 break;
-            case tuck_type_Action.flushThenDecode:
-                self.state = tuck_type_DecoderState.Draining;
+            case tuckˑtypeˑAction.flushThenDecode:
+                self.state = tuckˑtypeˑDecoderState.Draining;
                 self.decoded = (self.decoded + 1L);
                 break;
-            case tuck_type_Action.skip:
+            case tuckˑtypeˑAction.skip:
                 self.dropped = (self.dropped + 1L);
                 break;
             }
             break;
-        case tuck_type_PipelineMsgKind.msgOverrun:
+        case tuckˑactorˑPipelineMsgKind.msgOverrun:
             auto n = msg.n;
             self.dropped = (self.dropped + n);
             break;
     }
 }
 
-__gshared void* tuck_type_PipelineSlot;
+__gshared void* tuckˑactorˑPipelineSlot;
 
-bool drain_tuck_type_Pipeline() {
+bool drain_tuckˑactorˑPipeline() {
     bool did = false;
-    foreach (ref msg; tuck_type_PipelineSingleton.mailbox) {
-        handleMsg_tuck_type_Pipeline(tuck_type_PipelineSingleton, msg);
+    foreach (ref msg; tuckˑactorˑPipelineSingleton.mailbox) {
+        handleMsg_tuckˑactorˑPipeline(tuckˑactorˑPipelineSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
     }
     return did;
 }
 
-void sendNal_tuck_type_Pipeline(ref tuck_type_Pipeline self, tuck_type_NalKind nal, bool midFrame) {
-    cast(void) rt.enqueue(self.mailbox, tuck_type_PipelineMsg(tuckTag: tuck_type_PipelineMsgKind.msgNal, nal: nal, midFrame: midFrame));
-    rt.tuckNotifySend(tuck_type_PipelineSlot);
+void sendNal_tuckˑactorˑPipeline(ref tuckˑactorˑPipeline self, tuckˑtypeˑNalKind nal, bool midFrame) {
+    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑPipelineMsg(tuckTag: tuckˑactorˑPipelineMsgKind.msgNal, nal: nal, midFrame: midFrame));
+    rt.tuckNotifySend(tuckˑactorˑPipelineSlot);
 }
 
-void sendOverrun_tuck_type_Pipeline(ref tuck_type_Pipeline self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuck_type_PipelineMsg(tuckTag: tuck_type_PipelineMsgKind.msgOverrun, n: n));
-    rt.tuckNotifySend(tuck_type_PipelineSlot);
+void sendOverrun_tuckˑactorˑPipeline(ref tuckˑactorˑPipeline self, long n) {
+    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑPipelineMsg(tuckTag: tuckˑactorˑPipelineMsgKind.msgOverrun, n: n));
+    rt.tuckNotifySend(tuckˑactorˑPipelineSlot);
 }
 
 
-long tuck_fn_capture(long want) {
-    rt.TuckResult!(rt.PoolHandle) tuck_slot = rt.acquire(tuck_FrameBuffers);
-    if (!(tuck_slot.status == rt.TuckStatus.Ok)) {
-        raise_tuck_Video_Overrun(1L);
+long tuckˑfnˑcapture(long want) {
+    rt.TuckResult!(rt.PoolHandle) tuckˑvˑslot = rt.acquire(tuckˑpoolˑFrameBuffers);
+    if (!(tuckˑvˑslot.status == rt.TuckStatus.Ok)) {
+        raise_tuckˑregistryˑVideo_Overrun(1L);
         return 0L;
     }
-    tuck_VI_DMA_ARMED_set(true);
-    rt.release(tuck_FrameBuffers, tuck_slot.value);
+    tuckˑregisterˑVI_DMA_ARMED_set(true);
+    rt.release(tuckˑpoolˑFrameBuffers, tuckˑvˑslot.value);
     return want;
 }
 
-void tuck_fn_Video_FrameReady(long bytes) {
-    tuck_DEC_CTRL_START_set(true);
+void tuckˑfnˑVideo_FrameReady(long bytes) {
+    tuckˑregisterˑDEC_CTRL_START_set(true);
 }
 
-void tuck_fn_Video_Overrun(long dropped) {
-    tuck_VI_CTRL_ENABLE_set(false);
+void tuckˑfnˑVideo_Overrun(long dropped) {
+    tuckˑregisterˑVI_CTRL_ENABLE_set(false);
 }
 
-void tuck_fn_Video_DecodeError(ubyte code) {
-    tuck_VI_CTRL_ENABLE_set(false);
+void tuckˑfnˑVideo_DecodeError(ubyte code) {
+    tuckˑregisterˑVI_CTRL_ENABLE_set(false);
 }
 
-void tuck_fn_feed(tuck_type_NalKind nal, bool midFrame) {
-    sendNal_tuck_type_Pipeline(tuck_type_PipelineSingleton, nal, midFrame);
+void tuckˑfnˑfeed(tuckˑtypeˑNalKind nal, bool midFrame) {
+    sendNal_tuckˑactorˑPipeline(tuckˑactorˑPipelineSingleton, nal, midFrame);
     return;
 }
 
-bool tuck_fn_drained() {
-    return ((tuck_type_PipelineSingleton.decoded + tuck_type_PipelineSingleton.dropped) >= 5L);
+bool tuckˑfnˑdrained() {
+    return ((tuckˑactorˑPipelineSingleton.decoded + tuckˑactorˑPipelineSingleton.dropped) >= 5L);
 }
 
-void tuck_fn_config() {
-    tuck_fn_feed(tuck_type_NalKind.sps, false);
-    tuck_fn_feed(tuck_type_NalKind.pps, false);
+void tuckˑfnˑconfig() {
+    tuckˑfnˑfeed(tuckˑtypeˑNalKind.sps, false);
+    tuckˑfnˑfeed(tuckˑtypeˑNalKind.pps, false);
     return;
 }
 
-void tuck_fn_stream() {
-    tuck_fn_config();
-    tuck_fn_feed(tuck_type_NalKind.idr, false);
-    tuck_fn_feed(tuck_type_NalKind.nonIdr, false);
-    tuck_fn_feed(tuck_type_NalKind.nonIdr, false);
-    tuck_fn_feed(tuck_type_NalKind.sei, false);
-    tuck_fn_feed(tuck_type_NalKind.idr, true);
+void tuckˑfnˑstream() {
+    tuckˑfnˑconfig();
+    tuckˑfnˑfeed(tuckˑtypeˑNalKind.idr, false);
+    tuckˑfnˑfeed(tuckˑtypeˑNalKind.nonIdr, false);
+    tuckˑfnˑfeed(tuckˑtypeˑNalKind.nonIdr, false);
+    tuckˑfnˑfeed(tuckˑtypeˑNalKind.sei, false);
+    tuckˑfnˑfeed(tuckˑtypeˑNalKind.idr, true);
     return;
 }
 
-long tuck_fn_main() {
-    tuck_type_Frame tuck_f = __validated_tuck_type_Frame(tuck_type_Frame(width: 1920L, height: 1080L, bytes: 4096L));
-    tuck_fn_stream();
-    rt.tuckWaitOn(tuck_type_PipelineSlot, &tuck_fn_drained);
-    return ((tuck_type_PipelineSingleton.decoded * 10L) + tuck_type_PipelineSingleton.dropped);
+long tuckˑfnˑmain() {
+    tuckˑtypeˑFrame tuckˑvˑf = __validated_tuckˑtypeˑFrame(tuckˑtypeˑFrame(width: 1920L, height: 1080L, bytes: 4096L));
+    tuckˑfnˑstream();
+    rt.tuckWaitOn(tuckˑactorˑPipelineSlot, &tuckˑfnˑdrained);
+    return ((tuckˑactorˑPipelineSingleton.decoded * 10L) + tuckˑactorˑPipelineSingleton.dropped);
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    tuck_type_PipelineSlot = rt.tuckStartActor(&drain_tuck_type_Pipeline);
-    auto mainRc = tuck_fn_main();
+    tuckˑactorˑPipelineSlot = rt.tuckStartActor(&drain_tuckˑactorˑPipeline);
+    auto mainRc = tuckˑfnˑmain();
     rt.tuckDrainActors();
     return cast(int) mainRc;
 }

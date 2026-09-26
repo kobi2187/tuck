@@ -1,25 +1,25 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_fn_main*(): int
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_SafeRPM* = distinct uint16
-proc `+`*(a, b: tuck_type_SafeRPM): tuck_type_SafeRPM {.borrow.}
-proc `-`*(a, b: tuck_type_SafeRPM): tuck_type_SafeRPM {.borrow.}
-proc `*`*(a, b: tuck_type_SafeRPM): tuck_type_SafeRPM {.borrow.}
-proc `div`*(a, b: tuck_type_SafeRPM): tuck_type_SafeRPM {.borrow.}
-proc `mod`*(a, b: tuck_type_SafeRPM): tuck_type_SafeRPM {.borrow.}
-proc `==`*(a, b: tuck_type_SafeRPM): bool {.borrow.}
-proc `<`*(a, b: tuck_type_SafeRPM): bool {.borrow.}
-proc `<=`*(a, b: tuck_type_SafeRPM): bool {.borrow.}
-proc `$`*(a: tuck_type_SafeRPM): string {.borrow.}
+type tuckˑtypeˑSafeRPM* = distinct uint16
+proc `+`*(a, b: tuckˑtypeˑSafeRPM): tuckˑtypeˑSafeRPM {.borrow.}
+proc `-`*(a, b: tuckˑtypeˑSafeRPM): tuckˑtypeˑSafeRPM {.borrow.}
+proc `*`*(a, b: tuckˑtypeˑSafeRPM): tuckˑtypeˑSafeRPM {.borrow.}
+proc `div`*(a, b: tuckˑtypeˑSafeRPM): tuckˑtypeˑSafeRPM {.borrow.}
+proc `mod`*(a, b: tuckˑtypeˑSafeRPM): tuckˑtypeˑSafeRPM {.borrow.}
+proc `==`*(a, b: tuckˑtypeˑSafeRPM): bool {.borrow.}
+proc `<`*(a, b: tuckˑtypeˑSafeRPM): bool {.borrow.}
+proc `<=`*(a, b: tuckˑtypeˑSafeRPM): bool {.borrow.}
+proc `$`*(a: tuckˑtypeˑSafeRPM): string {.borrow.}
 
-proc tuck_fn_main*(): int =
-  var tuck_over = tuck_type_SafeRPM(tuckSat[uint16](uint64(70000)))
-  var tuck_ok = tuck_type_SafeRPM(tuckSat[uint16](uint64(1200)))
-  if (tuck_over == tuck_type_SafeRPM(tuckSat[uint16](uint64(65535)))):
+proc tuckˑfnˑmain*(): int =
+  var tuckˑvˑover = tuckˑtypeˑSafeRPM(tuckSat[uint16](uint64(70000)))
+  var tuckˑvˑok = tuckˑtypeˑSafeRPM(tuckSat[uint16](uint64(1200)))
+  if (tuckˑvˑover == tuckˑtypeˑSafeRPM(tuckSat[uint16](uint64(65535)))):
     if true:
-      if (tuck_ok == tuck_type_SafeRPM(tuckSat[uint16](uint64(1200)))):
+      if (tuckˑvˑok == tuckˑtypeˑSafeRPM(tuckSat[uint16](uint64(1200)))):
         if true:
           return 0
       return 2

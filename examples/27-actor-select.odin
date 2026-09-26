@@ -4,21 +4,21 @@ package main
 import "core:os"
 import rt "./tuckrt"
 
-tuck_type_AccumulatorMsgKind :: enum { msgAdd, msgFinish, msgShutdown }
-tuck_type_AccumulatorMsg :: struct {
-	tuckTag: tuck_type_AccumulatorMsgKind,
+tuckˑactorˑAccumulatorMsgKind :: enum { msgAdd, msgFinish, msgShutdown }
+tuckˑactorˑAccumulatorMsg :: struct {
+	tuckTag: tuckˑactorˑAccumulatorMsgKind,
 	n: int,
 }
-tuck_type_Accumulator :: struct {
+tuckˑactorˑAccumulator :: struct {
 	total: int,
 	done: bool,
-	mailbox: rt.Mailbox(tuck_type_AccumulatorMsg, 64),
+	mailbox: rt.Mailbox(tuckˑactorˑAccumulatorMsg, 64),
 	finished: bool,
 }
 
-tuck_type_AccumulatorSingleton: tuck_type_Accumulator
+tuckˑactorˑAccumulatorSingleton: tuckˑactorˑAccumulator
 
-handleMsg_tuck_type_Accumulator :: proc(self: ^tuck_type_Accumulator, msg: tuck_type_AccumulatorMsg) {
+handleMsg_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator, msg: tuckˑactorˑAccumulatorMsg) {
 	switch msg.tuckTag {
 	case .msgAdd:
 		n := msg.n
@@ -31,55 +31,55 @@ self.total = self.total
 	}
 }
 
-tuck_type_AccumulatorSlot: rawptr
+tuckˑactorˑAccumulatorSlot: rawptr
 
-drain_tuck_type_Accumulator :: proc() -> bool {
-	if tuck_type_AccumulatorSingleton.finished { return false }
+drain_tuckˑactorˑAccumulator :: proc() -> bool {
+	if tuckˑactorˑAccumulatorSingleton.finished { return false }
 	didWork := false
-	batch, n := rt.takeBatch(&tuck_type_AccumulatorSingleton.mailbox)
+	batch, n := rt.takeBatch(&tuckˑactorˑAccumulatorSingleton.mailbox)
 	for i in 0 ..< n {
-		handleMsg_tuck_type_Accumulator(&tuck_type_AccumulatorSingleton, batch[i])
+		handleMsg_tuckˑactorˑAccumulator(&tuckˑactorˑAccumulatorSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
 	return didWork
 }
 
-sendAdd_tuck_type_Accumulator :: proc(self: ^tuck_type_Accumulator, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_AccumulatorMsg{tuckTag = .msgAdd, n = n})
-	rt.tuckNotifySend(tuck_type_AccumulatorSlot)
+sendAdd_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator, n: int) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgAdd, n = n})
+	rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot)
 }
 
-sendFinish_tuck_type_Accumulator :: proc(self: ^tuck_type_Accumulator) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_AccumulatorMsg{tuckTag = .msgFinish})
-	rt.tuckNotifySend(tuck_type_AccumulatorSlot)
+sendFinish_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgFinish})
+	rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot)
 }
 
-sendShutdown_tuck_type_Accumulator :: proc(self: ^tuck_type_Accumulator) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_AccumulatorMsg{tuckTag = .msgShutdown})
-	rt.tuckNotifySend(tuck_type_AccumulatorSlot)
+sendShutdown_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgShutdown})
+	rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot)
 }
 
-tuck_fn_ready :: proc () -> bool {
-  return tuck_type_AccumulatorSingleton.done
+tuckˑfnˑready :: proc () -> bool {
+  return tuckˑactorˑAccumulatorSingleton.done
 }
 
-tuck_fn_main :: proc () -> int {
-  for tuck_i in (1 ..= 10) {
-      sendAdd_tuck_type_Accumulator(&tuck_type_AccumulatorSingleton, tuck_i)
+tuckˑfnˑmain :: proc () -> int {
+  for tuckˑvˑi in (1 ..= 10) {
+      sendAdd_tuckˑactorˑAccumulator(&tuckˑactorˑAccumulatorSingleton, tuckˑvˑi)
   }
-  sendFinish_tuck_type_Accumulator(&tuck_type_AccumulatorSingleton)
-  rt.tuckWaitOn(tuck_type_AccumulatorSlot, tuck_fn_ready)
-  return tuck_type_AccumulatorSingleton.total
+  sendFinish_tuckˑactorˑAccumulator(&tuckˑactorˑAccumulatorSingleton)
+  rt.tuckWaitOn(tuckˑactorˑAccumulatorSlot, tuckˑfnˑready)
+  return tuckˑactorˑAccumulatorSingleton.total
 }
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
-	tuck_type_AccumulatorSingleton.total = 0
-	tuck_type_AccumulatorSingleton.done = false
+	tuckˑactorˑAccumulatorSingleton.total = 0
+	tuckˑactorˑAccumulatorSingleton.done = false
 	rt.tuckAsyncInit()
-	tuck_type_AccumulatorSlot = rt.tuckStartActor(drain_tuck_type_Accumulator)
-	mainRc := tuck_fn_main()
+	tuckˑactorˑAccumulatorSlot = rt.tuckStartActor(drain_tuckˑactorˑAccumulator)
+	mainRc := tuckˑfnˑmain()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()
 	os.exit(mainRc)

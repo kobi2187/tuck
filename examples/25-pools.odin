@@ -4,49 +4,49 @@ package main
 import "core:os"
 import rt "./tuckrt"
 
-tuck_RxBuffers: rt.ObjectPool([512]u8, 4)
+tuckˑpoolˑRxBuffers: rt.ObjectPool([512]u8, 4)
 
-tuck_type_Session :: struct {
+tuckˑtypeˑSession :: struct {
 	clientId: u32,
 	bytesIn: u32,
 }
 
-tuck_Sessions: rt.ObjectPool(tuck_type_Session, 64)
+tuckˑpoolˑSessions: rt.ObjectPool(tuckˑtypeˑSession, 64)
 
-tuck_type_SensorReading :: struct {
+tuckˑtypeˑSensorReading :: struct {
 	channel: u8,
 	value: u16,
 }
 
-tuck_Readings: rt.ObjectPool(tuck_type_SensorReading, 16)
+tuckˑpoolˑReadings: rt.ObjectPool(tuckˑtypeˑSensorReading, 16)
 
-tuck_fn_admit :: proc (id: u32) -> int {
-  tuck_s := rt.acquire(&tuck_Sessions)
-  if (tuck_s.status == .Ok) {
+tuckˑfnˑadmit :: proc (id: u32) -> int {
+  tuckˑvˑs := rt.acquire(&tuckˑpoolˑSessions)
+  if (tuckˑvˑs.status == .Ok) {
       return 1
   }
   return 0
 }
 
-tuck_fn_drainOnce :: proc () -> int {
-  tuck_b := rt.acquire(&tuck_RxBuffers)
-  if (tuck_b.status == .Ok) {
-      rt.release(&tuck_RxBuffers, tuck_b.value)
+tuckˑfnˑdrainOnce :: proc () -> int {
+  tuckˑvˑb := rt.acquire(&tuckˑpoolˑRxBuffers)
+  if (tuckˑvˑb.status == .Ok) {
+      rt.release(&tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
       return 1
   }
   return 0
 }
 
-tuck_fn_main :: proc () -> int {
-  tuck_admitted := 0
-  tuck_admitted = (tuck_admitted + tuck_fn_admit(u32(1)))
-  tuck_admitted = (tuck_admitted + tuck_fn_admit(u32(2)))
-  tuck_admitted = (tuck_admitted + tuck_fn_admit(u32(3)))
-  tuck_drained := tuck_fn_drainOnce()
-  return (tuck_admitted + tuck_drained)
+tuckˑfnˑmain :: proc () -> int {
+  tuckˑvˑadmitted := 0
+  tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(u32(1)))
+  tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(u32(2)))
+  tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(u32(3)))
+  tuckˑvˑdrained := tuckˑfnˑdrainOnce()
+  return (tuckˑvˑadmitted + tuckˑvˑdrained)
 }
 
 main :: proc() {
-	mainRc := tuck_fn_main()
+	mainRc := tuckˑfnˑmain()
 	os.exit(mainRc)
 }
