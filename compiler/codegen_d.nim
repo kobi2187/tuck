@@ -40,18 +40,14 @@ import ./codegen_d_ctx
 proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string
 proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool
 proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string
-proc declaresFnD(m: Module, name: string): bool =
-  ## Same predicate as the Odin backend's declaresFn (private there).
-  m.findFn(name) != nil
-
 proc importDeclaring(ctx: DCodegenCtx, name: string): string =
   ## The imported module that declares `name` as a callable, or "" when this
   ## module declares it (local wins) or nobody does. D has no cross-module
   ## scope merge, so every foreign call has to be qualified — three separate
   ## copies of this search had grown before it was named once.
-  if name == "" or ctx.module.declaresFnD(name): return ""
+  if name == "" or ctx.module.declaresFn(name): return ""
   for modName, im in ctx.realModules:
-    if im.declaresFnD(name): return modName
+    if im.declaresFn(name): return modName
   ""
 
 proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
@@ -576,7 +572,6 @@ proc dPayloadSumField(ctx: var DCodegenCtx, e: Expr): string =
     # construction supplied.
     return ctx.dSumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
   ""
-
 
 
 proc genDFieldRead(ctx: var DCodegenCtx, e: Expr): string =

@@ -174,12 +174,6 @@ proc dRegistryHandlerCalls*(ctx: DCodegenCtx, d: Decl,
               argNames.join(", ") & ");")
   if calls.len > 0: calls.join("\n") & "\n" else: ""
 
-proc msgVariantName*(handlerName: string): string =
-  ## The message-enum tag a handler receives on. Same rule as the Odin
-  ## backend's (private there) — a one-line naming convention that both
-  ## envelopes must agree on; worth sharing if a third consumer appears.
-  "msg" & handlerName.capitalize()
-
 proc dActorFieldLines*(ctx: var DCodegenCtx, d: Decl): seq[string] =
   for f in d.actorFields:
     result.add("    " & ctx.dFieldType(d.name, f) & " " & f.name & ";")

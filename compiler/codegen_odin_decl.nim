@@ -537,10 +537,6 @@ proc genAliasType*(ctx: var OdinCodegenCtx, d: Decl): string =
   return ind & d.name & " :: " & (if aGen != "": "struct" & aGen & " { " &
          "using _: " & typeBodyStr & " }" else: typeBodyStr) & "\n"
 
-proc msgVariantName*(handlerName: string): string =
-  ## The message-enum tag a handler receives on.
-  "msg" & handlerName.capitalize()
-
 proc mailboxSize*(m: Module, d: Decl): string =
   ## The resolved NUMBER — see codegen_common.actorQueueSize.
   for attr in d.attrs:

@@ -25,6 +25,7 @@ import resolution
 import ast, lowering, ast_query, ast_ops, strutils, sets, tables, options
 import ./ast_query
 import twin_shape
+import name_prefix
 export twin_shape
 
 const TagField* = "tuckTag"
@@ -303,6 +304,20 @@ proc lookupFnParams*(m: Module, name: string): seq[string] =
   ## exploded params. Pending fns stay excluded: their stub takes one
   ## generic payload.
   m.findFn(name).paramNames()
+
+proc msgVariantName*(handlerName: string): string =
+  ## The message-enum tag a handler receives on — `msgAdd` for `on add`. The
+  ## envelope and the send helpers must agree on it, on every backend.
+  "msg" & handlerName.capitalize()
+
+proc mainDecl*(m: Module): Decl =
+  ## The module's `fn main`, mangled (`tuck_fn_main`), or nil. A pending one
+  ## does not count: there is no body to run.
+  let tuckMain = prefixed("main", nkFn)
+  for d in m.decls:
+    if d != nil and d.kind == dkFn and d.name == tuckMain and not d.isPending:
+      return d
+  nil
 
 template freshName*(ctx: untyped, tag: string): string =
   ## A fresh emitted name: `tag` and the ctx's next temp number. Every

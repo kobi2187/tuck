@@ -323,7 +323,7 @@ proc genMsgTypes*(handlers: seq[ActorMsgHandler], hasShutdown: bool,
   ## in the envelope, deduped by name across handlers.
   var enumVariants: seq[string]
   for h in handlers:
-    enumVariants.add("msg" & h.name.capitalize())
+    enumVariants.add(msgVariantName(h.name))
   if hasShutdown:
     enumVariants.add("msgShutdown")   # sent as `Actor send shutdown {}`
   var msgFields: seq[string]
@@ -377,7 +377,7 @@ proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
     var caseBody = ""
     for p in h.params:
       caseBody.add("    let " & p.name & " = msg." & p.name & "\n")
-    handlerCases.add("  of msg" & h.name.capitalize() & ":\n" & caseBody & armBody(h.body))
+    handlerCases.add("  of " & msgVariantName(h.name) & ":\n" & caseBody & armBody(h.body))
     hctx.definedVars = outer
   if hasShutdown:
     # run the shutdown body, then mark finished so the drain goes inert; a

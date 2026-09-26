@@ -238,6 +238,10 @@ proc findFn*(m: Module, name: string): Decl =
           return mem
   nil
 
+
+proc declaresFn*(m: Module, name: string): bool {.inline.} =
+  ## Does this module declare a fn by this name (wherever it sits)?
+  m.findFn(name) != nil
 proc params*(d: Decl): seq[Param] =
   ## A callable's parameters, in order. Tasks keep theirs in a separate field
   ## from fns; callers asking "what does this take" should not have to care.

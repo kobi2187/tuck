@@ -299,11 +299,6 @@ proc fieldType*(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
 # copy-pasted here from codegen.nim (this backend began as a fork). They are
 # backend-neutral questions about the AST, so they live in ast_query.
 
-proc declaresFn*(m: Module, name: string): bool =
-  ## Does this module declare `name` as a callable? A bool, because a fn with
-  ## no params is indistinguishable from "not found" in a param list.
-  m.findFn(name) != nil
-
 proc genQualified*(ctx: OdinCodegenCtx, e: Expr): string =
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
   if modName == "":
