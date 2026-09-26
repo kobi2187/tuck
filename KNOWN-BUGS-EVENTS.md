@@ -1427,7 +1427,15 @@ folds a message into state.
 
 ## EV-8 — a type and a fn differing only in first-letter case collide on Nim
 
-**Issue #78.**
+**Issue #78. FIXED.** The mangled name carries the declaration's kind as a
+word (`tuckˑtypeˑSweep` against `tuckˑfnˑsweep`), so two names of different
+kinds differ in the word, where Nim does not ignore anything. Re-verified
+2026-09-26: the program below exits 7 on all three backends. Pinned as
+`bugFixed` in `known_bugs` ("a type and a fn differing only in case coexist
+(#78)"). Still open, and a different question: two names of the SAME kind
+that differ only in case or `_` after the first letter (`fn getX` and
+`fn get_x`) are one name to Nim — the checker accepts both, and the Nim
+build fails.
 
 **Severity: high. It fires on the most ordinary naming in the language, and
 only on one backend.** Found 2026-09-20 while writing an application, not a
