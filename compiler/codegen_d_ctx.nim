@@ -66,8 +66,9 @@ type
     matchNarrowed*: Table[string, string]  # subject text -> the variant a
                                             # match arm currently narrows it
                                             # to (see codegen.nim's twin)
-    idx*: DeclIndex   # O(1) name lookups; a scan here is quadratic over the
-                     # emit hot path (measured — see decl_index.nim)
+    idx: DeclIndex   # O(1) name lookups; a scan here is quadratic over the
+                     # emit hot path (measured — see decl_index.nim). Built
+                     # with the ctx: D makes no throwaway ones.
     cLibs*: HashSet[string]  # `lib:` specs from C-FFI extern blocks; each
                             # becomes a pragma(lib) at module top level
     implMods*: Table[string, string]  # `impl: d "..."` alias -> module path,
@@ -84,6 +85,11 @@ type TypeMode* = enum
   ## How a type walk answers a type it cannot map.
   tmRequired   ## a position that MUST have a type: die naming the construct
   tmOptional   ## a declaration, which can fall back to `auto`: answer ""
+
+proc index*(ctx: DCodegenCtx): lent DeclIndex =
+  ## The module's declaration index (decl_index) — the same accessor the Nim
+  ## and Odin contexts have, so a question reads alike in all three.
+  ctx.idx
 
 proc dUnsupported*(construct: string): string =
   ## The D backend refuses what it cannot yet emit — loudly, at emission

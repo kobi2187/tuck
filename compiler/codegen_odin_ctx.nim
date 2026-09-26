@@ -10,6 +10,8 @@ import resolution
 import codegen_common
 import codegen_odin_util
 import analysis_ownership
+import decl_index
+export decl_index
 
 type
   OdinCodegenCtx* = object
@@ -62,8 +64,8 @@ type
                         # matched variant. A payload field is read through
                         # IT, not off the subject — Odin's union has no
                         # discriminant field to reach past.
-    taskNames*: HashSet[string]   # dkTask decl names, same one-shot index
-    taskNamesBuilt*: bool
+    idx: DeclIndex       # decl_index, shared by all three backends; read
+    idxBuilt: bool       # through `index`, which builds it on first use
     taskArgsHoisted*: HashSet[string]   # task names whose Env_/wrap_ pair is
                                        # already hoisted — one signature per
                                        # task, unlike anonymous records,
@@ -79,16 +81,13 @@ proc odinUnsupported*(construct: string): string =
   ## outcome (mirrors the D backend's dUnsupported).
   quit("tuck: Odin backend does not yet support " & construct, 1)
 
-proc isTaskName*(ctx: var OdinCodegenCtx, name: string): bool =
-  ## Mirrors the Nim backend. Calling a task SCHEDULES it as a coroutine
-  ## (spec §9.2); emitting a direct call instead runs its body on the main
-  ## context, where the first tuckAwaitRead hits parkCurrent's
-  ## "cannot await outside a coroutine" panic.
-  if not ctx.taskNamesBuilt:
-    for d in ctx.module.decls:
-      if d != nil and d.kind == dkTask: ctx.taskNames.incl(d.name)
-    ctx.taskNamesBuilt = true
-  name in ctx.taskNames
+proc index*(ctx: var OdinCodegenCtx): var DeclIndex =
+  ## The module's declaration index (decl_index), built on first use — a
+  ## throwaway ctx (an invariant's check proc) builds its own when it asks.
+  if not ctx.idxBuilt:
+    ctx.idx = buildDeclIndex(ctx.module)
+    ctx.idxBuilt = true
+  ctx.idx
 
 proc recStructName*(ctx: var OdinCodegenCtx, fields: seq[FieldDef]): string =
   ## Record shapes become hoisted structs, giving every shape a stable

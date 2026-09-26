@@ -54,6 +54,11 @@ template capitalize*(s: string): string = capitalizeAscii(s)
 # Add a helper rather than open-coding the loop again.
 
 
+proc isFixedArray*(t: Type): bool =
+  ## `Array[N, T]` — a fixed-size array, whose length is part of its type.
+  t != nil and t.kind == tkApp and t.base != nil and
+    t.base.kind == tkNamed and t.base.name == "Array"
+
 proc seqElem*(t: Type): Type =
   ## The element type of a `Seq[T]`, or nil for anything else. One predicate
   ## for the several places that used to re-test `tkApp and base.name ==
@@ -555,6 +560,24 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
       if mem.name == calleeName or prefixed(mem.name, nkFn) == calleeName:
         return owner & "_" & mem.name
   ""
+
+proc memberRecvType*(res: Resolution, e: Expr): Type =
+  ## A member call's receiver type: args[0]'s (the checker's rewrite), or the
+  ## `self` field's of a payload literal (`{self: c} bump`).
+  result = res.typeFor(e.args[0])
+  if e.args[0].kind == exkStruct:
+    for f in e.args[0].fields:
+      if f.name == "self": result = res.typeFor(f.value)
+
+proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
+  ## The qualified name of the member fn a call reaches — `tuck_type_Dog_noise`
+  ## for `noise(d)` with `d: Dog` — or "" when it is not a member call. Every
+  ## emitter, and the pass that decides twin calls, asks this; each derived
+  ## it for itself once, and two of the four ignored the payload-literal form.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
+    return ""
+  memberCalleeOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
 
 # --- compile-time whole numbers -----------------------------------------
 #

@@ -232,7 +232,7 @@ proc enterReturnContext*(ctx: var OdinCodegenCtx, d: Decl) =
   ctx.retInvName =
     if not wrapped and d.fnReturnType != nil and
        d.fnReturnType.kind == tkNamed and
-       hasInvariants(ctx.module, d.fnReturnType.name): d.fnReturnType.name
+       ctx.index.hasInvariants(d.fnReturnType.name): d.fnReturnType.name
     else: ""
 
 proc leaveReturnContext*(ctx: var OdinCodegenCtx) =

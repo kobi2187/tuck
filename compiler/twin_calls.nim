@@ -91,21 +91,6 @@ proc movedCallInto(res: Resolution, m: Module, call: Expr,
     return res.isMovedArg(a) and not otherArgLives(res, m, call)
   false
 
-proc memberRecvType*(res: Resolution, e: Expr): Type =
-  ## A member call's receiver: args[0] (the checker's rewrite), or the `self`
-  ## field of a payload literal (`{self: c} bump`).
-  result = res.typeFor(e.args[0])
-  if e.args[0].kind == exkStruct:
-    for f in e.args[0].fields:
-      if f.name == "self": result = res.typeFor(f.value)
-
-proc isMemberCall(res: Resolution, m: Module, e: Expr): bool =
-  ## A member fn gets no twin, and `findFn` would answer with a top-level fn
-  ## that merely shares the name.
-  e.args.len > 0 and
-    memberCalleeOf(m, memberOwner(m, memberRecvType(res, e)),
-                   e.callee.name) != ""
-
 proc decideTakesTwin(res: Resolution, m: Module, e: Expr): bool =
   ## May this call take its first argument destructively, at ANY position?
   ## The one that matters beyond an assignment is RETURN:
@@ -114,7 +99,7 @@ proc decideTakesTwin(res: Resolution, m: Module, e: Expr): bool =
   e.kind == exkCall and e.callee != nil and e.callee.kind == exkVar and
     e.args.len > 0 and e.args[0] != nil and
     movedFnParam(res, m, m.findFn(e.callee.name)) != "" and
-    res.isMovedArg(e.args[0]) and not isMemberCall(res, m, e)
+    res.isMovedArg(e.args[0]) and memberCallee(res, m, e) == ""
 
 proc decideThreaded(res: Resolution, m: Module, e: Expr): Expr =
   ## `x = f(x, ...)`, or `let y = f(b.ask, ...)` with `b.ask` never read

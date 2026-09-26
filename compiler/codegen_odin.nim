@@ -196,14 +196,6 @@ proc asSumVariantCall(ctx: var OdinCodegenCtx, e: Expr): string =
                 else: nil
   ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-proc memberCalleeName(ctx: OdinCodegenCtx, e: Expr): string =
-  ## A member call arrives as a bare-name callee with the receiver as args[0]
-  ## (the checker's asFnByName rewrite). The DECLARATION emitted qualified, so
-  ## the call has to match — derive the same name from the receiver's type.
-  if e.callee == nil or e.callee.kind != exkVar or e.args.len < 1: return ""
-  memberCalleeOf(ctx.module, memberOwner(ctx.module, ctx.res.typeFor(e.args[0])),
-                 e.callee.name)
-
 proc genericCtorName(ctx: var OdinCodegenCtx, e: Expr, base: string): string =
   ## A generic type: the checker's ty stamp carries the inferred instantiation.
   ##
@@ -228,44 +220,16 @@ proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
   for f in e.args[0].fields:
     parts.add(f.name & " = " & ctx.genOdinExpr(f.value))
   let ctor = ctx.genericCtorName(e, e.callee.name) & "{" & parts.join(", ") & "}"
-  if hasInvariants(ctx.module, e.callee.name):
+  if ctx.index.hasInvariants(e.callee.name):
     # production site: construction — validate before the value flows on
     return "__validated_" & e.callee.name & "(" & ctor & ")"
   ctor
 
-proc expectedParamNames(ctx: var OdinCodegenCtx, e: Expr,
-                        calleeStr: string): seq[string] =
-  ## Param order lives with the fn, not the literal — match by name. A
-  ## qualified callee into a real module resolves in THAT module.
-  if e.callee != nil and e.callee.kind == exkQualified and
-     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
-    return lookupFnParams(ctx.realModules[e.callee.modulePath[0]],
-                          e.callee.qualName)
-  if ctx.res.callParamsFor(e).len > 0: return ctx.res.callParamsFor(e)
-  lookupFnParams(ctx.module, calleeStr)
-
-proc payloadFieldArg(ctx: var OdinCodegenCtx, payload: Expr,
-                     fieldName: string): string =
-  ## The value supplied for one param, or an empty literal when the payload
-  ## does not carry it.
-  for f in payload.fields:
-    if f.name == fieldName: return ctx.genOdinExpr(f.value)
-  "{}"
-
 proc genPayloadArgs(ctx: var OdinCodegenCtx, e: Expr,
                     calleeStr: string): seq[string] =
-  ## A payload's fields, ordered to match the callee's params.
-  let expected = ctx.expectedParamNames(e, calleeStr)
-  if expected.len == 0:
-    for f in e.args[0].fields: result.add(ctx.genOdinExpr(f.value))
-    return
-  # The checker's mapping wins: a field matched by TYPE carries its own name,
-  # not the param's (see checkCallArgs / ctx.res.argFieldsFor).
-  let resolved = ctx.res.argFieldsFor(e)
-  for i, paramName in expected:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    result.add(ctx.payloadFieldArg(e.args[0], fieldName))
+  ## codegen_common.payloadArgs, printed. A missing one is the zero value.
+  for a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
+    result.add(if a != nil: ctx.genOdinExpr(a) else: "{}")
 
 proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr,
                  calleeStr: string): seq[string] =
@@ -352,10 +316,10 @@ proc genRtCall(calleeStr: string, args: seq[string]): string =
 proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
                      args: seq[string]): string =
   ## The emission forms, once the arguments are built.
-  let satT = ctx.module.saturatingType(calleeStr)
+  let satT = ctx.index.saturatingType(calleeStr)
   if satT != nil and args.len == 1:
     return ctx.genSaturatingCtor(satT, calleeStr, args[0])
-  let invRet = externInvRet(ctx.module, calleeStr)
+  let invRet = ctx.index.externInvRet(calleeStr)
   if invRet != "":
     # extern boundary: the returned value validates on entry
     return "__validated_" & invRet & "(" & calleeStr & "(" &
@@ -413,7 +377,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.genOdinExpr(e.callee)
-  let member = ctx.memberCalleeName(e)
+  let member = memberCallee(ctx.res, ctx.module, e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
@@ -431,7 +395,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if member != "" and args.len > 0: args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted
-  if ctx.isTaskName(calleeStr) and args.len == 0:
+  if ctx.index.isTaskName(calleeStr) and args.len == 0:
     # Calling a task SCHEDULES it as a coroutine — it runs concurrently and
     # tuckRun drives it (spec §9.2). Mirrors the Nim backend, which has always
     # emitted tuckSpawn here.
@@ -712,7 +676,7 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, an enum tag, or
   ## a plain variable.
   if ctx.res.hasCall(e): return ctx.genOdinExpr(ctx.res.call(e))
-  if e.name == "input" and ctx.currentParams.len > 0: return ctx.genInputPayload()
+  if isInputRef(e, ctx.currentParams): return ctx.genInputPayload()
   if e.name == "self" and ctx.ptrSelf: return "self^"  # member fn: deref
   if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
   if e.name in ctx.definedVars: return e.name
@@ -753,11 +717,6 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   "(proc(v: " & e.dispatchIface & ")" & sig & " {\n\tswitch v.tag {\n" &
     arms.join("\n") & "\n\t}\n" & tail & "})(" & recv & ")"
 
-proc isInputField(ctx: OdinCodegenCtx, e: Expr): bool =
-  ## `input.x` — the incoming payload's field is just the param.
-  e.receiver != nil and e.receiver.kind == exkVar and
-    e.receiver.name == "input" and ctx.currentParams.len > 0
-
 proc indentPrefix(code: string): string =
   ## The leading whitespace of the LAST line of an emitted block, so a
   ## statement appended after it lands at the same indent.
@@ -776,31 +735,6 @@ proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
   if payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver)) == "":
     return ""
   ctx.unionBind & "." & e.fieldName
-
-proc isFixedArray(t: Type): bool =
-  ## `Array[N, T]`, the OTHER sized container besides `Seq[T]`. Kept separate
-  ## from `seqElem` rather than folding it in there: `seqElem` also drives
-  ## deep-copy marking and D's `.dup` decisions (lowering_seqcopy,
-  ## codegen_d_ctx), and `Array[N, T]` is already a value with no separate
-  ## copy-marking story — widening `seqElem` would pull that machinery onto
-  ## a container it was never written for.
-  t != nil and t.kind == tkApp and t.base != nil and
-    t.base.kind == tkNamed and t.base.name == "Array"
-
-proc isLenOnSized(ctx: var OdinCodegenCtx, e: Expr): bool =
-  ## `.len` on a str, Seq or fixed Array. Odin spells it as a CALL,
-  ## `len(xs)`, not a field, so `xs.len` reported "'tuck_xs' of type
-  ## '[dynamic]int' has no field 'len'" — and, for a fixed `[N]T`, "has no
-  ## field 'len'" again, since Odin's fixed arrays have no `.len` member
-  ## either; `len()` is the only spelling that works on both.
-  ## The D backend has had this since its own audit ("hidden Nim-ism #3"); the
-  ## Nim backend emits `.len` untranslated only because Nim happens to share
-  ## Tuck's spelling.
-  if e.fieldName != "len" or e.receiver == nil: return false
-  let rt = ctx.res.typeFor(e.receiver)
-  if rt == nil: return false
-  if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
-  seqElem(rt) != nil or isFixedArray(rt)
 
 proc importedTypeMember(ctx: OdinCodegenCtx, e: Expr): string =
   ## `Order.Before` where `Order` came from an IMPORTED module: the type lives
@@ -868,8 +802,8 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     # parenthesised: a guard may negate it (`!r.ok`), and `!x == y` would
     # otherwise bind the `!` to the receiver alone
     return "(" & ctx.genOdinExpr(e.receiver) & ".status == .Ok)"
-  if ctx.isInputField(e): return e.fieldName
-  if ctx.isLenOnSized(e): return "len(" & ctx.genOdinExpr(e.receiver) & ")"
+  if isInputField(e, ctx.currentParams): return e.fieldName
+  if isLenOnSized(ctx.res, e): return "len(" & ctx.genOdinExpr(e.receiver) & ")"
   let byRef = ctx.fieldByReceiverKind(e)
   if byRef != "": return byRef
   let bound = ctx.boundVariantField(e)
@@ -1018,7 +952,7 @@ proc isTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr): bool =
   e.kind == exkAssign and e.assignVal != nil and
     e.assignVal.kind == exkCall and e.assignVal.callee != nil and
     e.assignVal.callee.kind == exkVar and
-    ctx.isTaskName(e.assignVal.callee.name) and e.assignVal.args.len > 0
+    ctx.index.isTaskName(e.assignVal.callee.name) and e.assignVal.args.len > 0
 
 proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## Spawn a task that takes real arguments, and await its result.
@@ -1148,14 +1082,6 @@ proc genIf(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     elseStr = "\n" & ind & "} else {\n" & ctx.genBranch(e.elseBranch, ind)
   ind & "if " & condStr & " {\n" & thenStr & elseStr & "\n" & ind & "}"
 
-proc hasBracketBase(e: Expr): bool =
-  ## Does this target chain bottom out in an index?
-  if e == nil: return false
-  case e.kind
-  of exkBracket: true
-  of exkField: hasBracketBase(e.receiver)
-  else: false
-
 proc genOdinAssignTarget(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element
   ## IN PLACE: the read path resolves `xs[i]` to a tuckAt() call, which
@@ -1234,7 +1160,7 @@ proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
   ## drift on WHICH sites check — see codegen_common.assignInvariantOwner.
   result = stmt
   let owner = assignInvariantOwner(ctx.res, e)
-  if owner != "" and hasInvariants(ctx.module, owner):
+  if owner != "" and ctx.index.hasInvariants(owner):
     result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genOdinExpr(e.target.receiver) & ")")
 

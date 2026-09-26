@@ -304,6 +304,72 @@ proc lookupFnParams*(m: Module, name: string): seq[string] =
   ## generic payload.
   m.findFn(name).paramNames()
 
+proc calleeParamNames*(res: Resolution, m: Module,
+                       real: Table[string, Module], e: Expr,
+                       calleeStr: string): seq[string] =
+  ## The params a call's callee declares, in order: a qualified callee's
+  ## from its own module, else the ones the checker recorded for this call,
+  ## else a lookup by name. Empty when none of the three knows.
+  if e.callee != nil and e.callee.kind == exkQualified and
+     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in real:
+    return lookupFnParams(real[e.callee.modulePath[0]], e.callee.qualName)
+  if res.callParamsFor(e).len > 0: return res.callParamsFor(e)
+  lookupFnParams(m, calleeStr)
+
+proc payloadArgs*(res: Resolution, m: Module, real: Table[string, Module],
+                  e: Expr, calleeStr: string): seq[Expr] =
+  ## A payload call's arguments in the callee's PARAMETER order: for each
+  ## param, the value of the payload field that feeds it — the one the
+  ## checker chose (`argFieldsFor`) when it recorded one, else the field of
+  ## the param's own name — or nil where the payload has no such field. With
+  ## the params unknown, the payload's field values as written.
+  ##
+  ## One decision, three printers: each backend was deciding this for itself
+  ## in three identical copies. How a MISSING argument is spelled is still
+  ## each backend's own (Nim `nil`, Odin `{}`, D a refusal).
+  let payload = e.args[0]
+  let expected = calleeParamNames(res, m, real, e, calleeStr)
+  if expected.len == 0:
+    for f in payload.fields: result.add f.value
+    return
+  let chosen = res.argFieldsFor(e)
+  for i, paramName in expected:
+    let fieldName = if i < chosen.len and chosen[i].len > 0: chosen[i]
+                    else: paramName
+    var value: Expr = nil
+    for f in payload.fields:
+      if f.name == fieldName:
+        value = f.value
+        break
+    result.add value
+
+proc isInputRef*(e: Expr, params: seq[FieldDef]): bool =
+  ## A bare `input` inside a body that has params: the whole incoming
+  ## payload, which each backend rebuilds from the params.
+  e != nil and e.kind == exkVar and e.name == "input" and params.len > 0
+
+proc isInputField*(e: Expr, params: seq[FieldDef]): bool =
+  ## `input.x` — which IS the param `x`.
+  e.kind == exkField and isInputRef(e.receiver, params)
+
+proc hasBracketBase*(e: Expr): bool =
+  ## Is this a place rooted at an index (`xs[i]`, `xs[i].f.g`)?
+  if e == nil: return false
+  case e.kind
+  of exkBracket: true
+  of exkField: hasBracketBase(e.receiver)
+  else: false
+
+proc isLenOnSized*(res: Resolution, e: Expr): bool =
+  ## `.len` on a value whose length is the target's own (a string, a Seq, a
+  ## fixed array) — every backend prints it as its length builtin, not a
+  ## field read.
+  if e.fieldName != "len" or e.receiver == nil: return false
+  let rt = res.typeFor(e.receiver)
+  if rt == nil: return false
+  if rt.kind == tkNamed and rt.name in ["str", "string"]: return true
+  seqElem(rt) != nil or isFixedArray(rt)
+
 proc hasKnownFields(t: Type): bool =
   ## Is `t` a type whose fields we could possibly look up? False for nil
   ## and for the sketch-mode "unknown" placeholder type.

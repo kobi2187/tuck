@@ -207,7 +207,7 @@ proc genericCtorName(ctx: var CodegenCtx, e: Expr, base: string): string =
 proc isRecordConstruction(ctx: var CodegenCtx, e: Expr): bool =
   e.args.len == 1 and e.args[0].kind == exkStruct and
     e.callee != nil and e.callee.kind == exkVar and
-    ctx.isRecordTypeFast(e.callee.name)
+    ctx.index.isRecordType(e.callee.name)
 
 proc genRecordCtor(ctx: var CodegenCtx, e: Expr): string =
   ## Record construction takes NAMED fields, not positional.
@@ -215,7 +215,7 @@ proc genRecordCtor(ctx: var CodegenCtx, e: Expr): string =
   for f in e.args[0].fields:
     parts.add(f.name & ": " & ctx.genExpr(f.value))
   let ctor = ctx.genericCtorName(e, e.callee.name) & "(" & parts.join(", ") & ")"
-  if not ctx.hasInvariantsFast(e.callee.name): return ctor
+  if not ctx.index.hasInvariants(e.callee.name): return ctor
   # production site: construction — validate before the value flows on
   ctx.tmpCounter.inc
   let tmp = "tuckInv" & $ctx.tmpCounter
@@ -229,44 +229,11 @@ proc asSumVariantCall(ctx: var CodegenCtx, e: Expr): string =
                 else: nil
   ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-proc expectedParamNames(ctx: var CodegenCtx, e: Expr,
-                        calleeStr: string): seq[string] =
-  ## Param order lives with the fn, not with the literal, so the payload's
-  ## fields are matched to params rather than taken positionally.
-  ##
-  ## Three sources, in order: a QUALIFIED callee's params live in the other
-  ## module and must be looked up there; otherwise the checker's own
-  ## resolution (ctx.res.callParamsFor, set in checkCallArgs) answers in
-  ## O(1); the decl-list scan is the last resort for calls the checker left
-  ## unresolved, and is a scan per call expression, so it must stay last.
-  if e.callee != nil and e.callee.kind == exkQualified and
-     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in ctx.realModules:
-    return lookupFnParams(ctx.realModules[e.callee.modulePath[0]],
-                          e.callee.qualName)
-  if ctx.res.callParamsFor(e).len > 0: return ctx.res.callParamsFor(e)
-  lookupFnParams(ctx.module, calleeStr)
-
-proc payloadFieldArg(ctx: var CodegenCtx, payload: Expr,
-                     fieldName: string): string =
-  ## The value supplied for one param, or nil when the payload lacks it.
-  for f in payload.fields:
-    if f.name == fieldName: return ctx.genExpr(f.value)
-  "nil"
-
 proc genPayloadArgs(ctx: var CodegenCtx, e: Expr,
                     calleeStr: string): seq[string] =
-  ## A payload's fields, ordered to match the callee's params.
-  let expected = ctx.expectedParamNames(e, calleeStr)
-  if expected.len == 0:
-    for f in e.args[0].fields: result.add(ctx.genExpr(f.value))
-    return
-  # The checker's mapping wins: it matches by name first and then by type, so
-  # a field may feed a param it shares no name with.
-  let resolved = ctx.res.argFieldsFor(e)
-  for i, paramName in expected:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    result.add(ctx.payloadFieldArg(e.args[0], fieldName))
+  ## codegen_common.payloadArgs, printed. A missing one is `nil`.
+  for a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
+    result.add(if a != nil: ctx.genExpr(a) else: "nil")
 
 proc genCallArgs(ctx: var CodegenCtx, e: Expr, calleeStr: string): seq[string] =
   if e.args.len == 1 and e.args[0].kind == exkStruct:
@@ -321,8 +288,8 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
                  elif prim != calleeStr: prim
                  else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
-  if ctx.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, call)
-  if ctx.externInvRetFast(calleeStr) != "": return ctx.genValidatedCall(call)
+  if ctx.index.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, call)
+  if ctx.index.externInvRet(calleeStr) != "": return ctx.genValidatedCall(call)
   call
 
 proc genCallWithArgs(ctx: var CodegenCtx, calleeStr: string,
@@ -369,12 +336,8 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   # A member call emits QUALIFIED, matching the declaration. Derived from the
   # RECEIVER's type rather than the callee's name, because the name alone
   # cannot say which fn is meant once a top-level fn shares it (#50).
-  if e.callee != nil and e.callee.kind == exkVar and e.args.len >= 1:
-    let qualified = memberCalleeOf(ctx.module,
-                                   memberOwner(ctx.module,
-                                               ctx.res.typeFor(e.args[0])),
-                                   e.callee.name)
-    if qualified != "": calleeStr = qualified
+  let member = memberCallee(ctx.res, ctx.module, e)
+  if member != "": calleeStr = member
   let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
   let args = ctx.genCallArgs(e, calleeStr)
@@ -531,7 +494,7 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, or a plain
   ## variable.
   if ctx.res.hasCall(e): ctx.genExpr(ctx.res.call(e))
-  elif e.name == "input" and ctx.currentParams.len > 0: ctx.genInputPayload()
+  elif isInputRef(e, ctx.currentParams): ctx.genInputPayload()
   elif e.name in ctx.fieldVars: "self." & e.name
   else: nimRtCallee(e.name)
 
@@ -550,11 +513,6 @@ proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
              ind & "    " & ctx.genExpr(arm.call))
   if arms.len == 0: return ""
   "(block:\n" & ind & "  case " & recv & ".tag\n" & arms.join("\n") & ")"
-
-proc isInputField(ctx: CodegenCtx, e: Expr): bool =
-  ## `input.x` — the incoming payload's field is just the param.
-  e.receiver != nil and e.receiver.kind == exkVar and
-    e.receiver.name == "input" and ctx.currentParams.len > 0
 
 proc indentPrefix(code: string): string =
   ## The leading whitespace of the LAST line of an emitted block, so a
@@ -584,7 +542,7 @@ proc genPayloadSumField(ctx: var CodegenCtx, e: Expr): string =
 proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: a payload field, interface dispatch, a resolved call, a
   ## sum-variant construction, an actor singleton's field, or a plain read.
-  if ctx.isInputField(e): return e.fieldName
+  if isInputField(e, ctx.currentParams): return e.fieldName
   doAssert ctx.res.ifaceCallOf(e).member == "",
     "codegen: an interface call reached the emitter unlowered (lowering_iface)"
   if ctx.res.hasCall(e): return ctx.genConstruction(ctx.res.call(e))
@@ -720,7 +678,7 @@ proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   # ambiguous)" error this proc exists to avoid, just one level out. The
   # task's own return type says nothing about the emitted statement.
   if s.callee != nil and s.callee.kind == exkVar and
-     ctx.isTaskName(s.callee.name): return false
+     ctx.index.isTaskName(s.callee.name): return false
   let t = ctx.res.typeFor(s)
   if t == nil: return false
   # `discard` over a void call is itself an error in Nim, so the question is
@@ -896,14 +854,6 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkValidate: "validate(" & ctx.genExpr(e.validated) & ")"
   of exkIfaceCall: ctx.genIfaceCall(e, ind)
 
-proc hasBracketBase(e: Expr): bool =
-  ## Does this target chain bottom out in an index?
-  if e == nil: return false
-  case e.kind
-  of exkBracket: true
-  of exkField: hasBracketBase(e.receiver)
-  else: false
-
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element
   ## IN PLACE: the read path resolves `xs[i]` to a tuckAt() call, which
@@ -928,7 +878,7 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## Result-bound task call assignment with result slot and await.
   if e.assignVal == nil or e.assignVal.kind != exkCall or
      e.assignVal.callee == nil or e.assignVal.callee.kind != exkVar or
-     not ctx.isTaskName(e.assignVal.callee.name):
+     not ctx.index.isTaskName(e.assignVal.callee.name):
     return ""
   let tname = e.assignVal.callee.name
   let ret = ctx.taskRetType(tname)
@@ -1014,7 +964,7 @@ proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
       return regPrefix & "_set(" & valStr & ")"
   result = targetStr & " = " & valStr
   let owner = assignInvariantOwner(ctx.res, e)
-  if owner != "" and ctx.hasInvariantsFast(owner):
+  if owner != "" and ctx.index.hasInvariants(owner):
     result.add("\n" & "  ".repeat(ctx.indent) & "validate(" &
                ctx.genExpr(e.target.receiver) & ")")
 

@@ -124,7 +124,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.retInnerT = binnerT
     ctx.retInvName =
       if not bw and d.fnReturnType != nil and d.fnReturnType.kind == tkNamed and
-         ctx.hasInvariantsFast(d.fnReturnType.name): d.fnReturnType.name
+         ctx.index.hasInvariants(d.fnReturnType.name): d.fnReturnType.name
       else: ""
     injectTailReturn(d.fnBody, retTypeStr)
     let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
