@@ -72,6 +72,14 @@ proc isMangledName*(name: string): bool =
   ## each backend lowers its own deep copy and re-runs it.
   name.startsWith(MangledPrefix)
 
+proc joinedName*(owner, part: string): string =
+  ## A name the compiler derives from two others — an object's member fn is
+  ## `joinedName(<the object>, <the member>)`. Joined by the separator, which
+  ## no Tuck name contains, so the boundary cannot move: with `_`, `Order` +
+  ## `book` gave `Order_book`, which Nim (ignoring `_` and case after the
+  ## first character) reads as the object `OrderBook`.
+  owner & KindSeparator & part
+
 proc prefixed*(name: string, kind: NameKind): string =
   ## `name` spelled as a `kind`.
   MangledPrefix & $kind & KindSeparator & name

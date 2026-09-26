@@ -557,7 +557,7 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
       # Both spellings mean this member. Same comparison
       # resolution.poolHandleName makes, for the same reason.
       if mem.name == calleeName or prefixed(mem.name, nkFn) == calleeName:
-        return owner & "_" & mem.name
+        return memberProcName(owner, mem.name)
   ""
 
 proc memberRecvType*(res: Resolution, e: Expr): Type =
@@ -569,7 +569,7 @@ proc memberRecvType*(res: Resolution, e: Expr): Type =
       if f.name == "self": result = res.typeFor(f.value)
 
 proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
-  ## The qualified name of the member fn a call reaches — `tuck_type_Dog_noise`
+  ## The qualified name of the member fn a call reaches — `tuckˑobjectˑDogˑnoise`
   ## for `noise(d)` with `d: Dog` — or "" when it is not a member call. Every
   ## emitter, and the pass that decides twin calls, asks this; each derived
   ## it for itself once, and two of the four ignored the payload-literal form.

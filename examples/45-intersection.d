@@ -89,11 +89,11 @@ struct tuckˑobjectˑLoopDetector {
     long lane;
 }
 
-bool tuckˑobjectˑLoopDetector_tuckˑfnˑhealthy(ref tuckˑobjectˑLoopDetector self) {
+bool tuckˑobjectˑLoopDetectorˑtuckˑfnˑhealthy(ref tuckˑobjectˑLoopDetector self) {
     return true;
 }
 
-long tuckˑobjectˑLoopDetector_reads(ref tuckˑobjectˑLoopDetector self) {
+long tuckˑobjectˑLoopDetectorˑreads(ref tuckˑobjectˑLoopDetector self) {
     return self.lane;
 }
 
@@ -102,11 +102,11 @@ struct tuckˑobjectˑCameraDetector {
     ubyte confidence;
 }
 
-bool tuckˑobjectˑCameraDetector_tuckˑfnˑhealthy(ref tuckˑobjectˑLoopDetector self) {
+bool tuckˑobjectˑCameraDetectorˑtuckˑfnˑhealthy(ref tuckˑobjectˑLoopDetector self) {
     return true;
 }
 
-long tuckˑobjectˑCameraDetector_reads(ref tuckˑobjectˑCameraDetector self) {
+long tuckˑobjectˑCameraDetectorˑreads(ref tuckˑobjectˑCameraDetector self) {
     if ((self.confidence > 80L)) {
         return 3L;
     }
@@ -204,10 +204,10 @@ tuckˑtypeˑDemand tuckˑfnˑpoll(Detector d) {
     switch (v.tag) {
         case DetectorTag.Detector_is_tuckˑobjectˑCameraDetector:
             auto tmp = v.tuckˑobjectˑCameraDetectorVal;
-            return tuckˑobjectˑCameraDetector_reads(tmp);
+            return tuckˑobjectˑCameraDetectorˑreads(tmp);
         case DetectorTag.Detector_is_tuckˑobjectˑLoopDetector:
             auto tmp = v.tuckˑobjectˑLoopDetectorVal;
-            return tuckˑobjectˑLoopDetector_reads(tmp);
+            return tuckˑobjectˑLoopDetectorˑreads(tmp);
         default: assert(0, "unreachable interface tag");
     }
 })(d);

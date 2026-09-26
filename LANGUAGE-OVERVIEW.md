@@ -237,7 +237,7 @@ Objects carry fields, `+ Composed` entries, `satisfies` lines, member fns, and
 fields. A param or `let` of the same name shadows the field, and inside that
 scope `self.name` is the only way to reach the field
 (`tests/suites/owner_fields.nim`). Two objects may share a member fn name — Nim overloads on `self`, Odin
-cannot, so the emitter mangles to `tuckˑobjectˑDog_noise` (`tests/suites/member_names.nim`,
+cannot, so the emitter mangles to `tuckˑobjectˑDogˑnoise` (`tests/suites/member_names.nim`,
 gated by a real `odin build`).
 
 ### Mixins — `mixin`, fns only, never fields
@@ -475,7 +475,7 @@ emits  'AnimalTag'                    # a tag enum
 emits  'case tag'                     # the value is a variant over its types
 emits  'tuckˑobjectˑDogVal'                  # the payload is the object itself
 omits  'AnimalVT'                     # NO function table
-omits  'Animal_tuckˑobjectˑDog_noise'        # NO thunks
+omits  'Animal_tuckˑobjectˑDogˑnoise'        # NO thunks
 ```
 
 Every satisfying type is a branch, whether or not anything wraps it (`:88`).
@@ -845,7 +845,9 @@ emitted name is `tuckˑ<kind>ˑ<name>`, the kind exactly what it is — `fn`,
 first character, which folded `type Order` into `fn order` under one `tuck_`
 prefix (#78) and `fnsig Handler` into `fn sigHandler` with `_` between the
 parts; the separator `ˑ` (U+02D1) is a letter to every host and never part of
-a Tuck name, so no two kinds can meet. **Fields and
+a Tuck name, so no two kinds can meet. A member fn joins its object's name
+by the same separator (`tuckˑobjectˑOrderˑbook`), so it cannot meet an object
+`OrderBook` either. **Fields and
 params stay bare** (namespaced by their record, and a param is a contract); **externs are never mangled** — they bind foreign symbols by
 name. Idempotent, since each backend lowers its own deep copy.
 

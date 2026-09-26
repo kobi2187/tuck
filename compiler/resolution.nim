@@ -558,8 +558,10 @@ proc isLastUse*(r: Resolution, e: Expr): bool =
   e != nil and e.id in r.lastUses
 
 proc memberProcName*(objName, memberName: string): string =
-  ## An object member emits QUALIFIED: `B.noise` -> `tuck_B_noise`, where
-  ## objName is already mangled.
+  ## An object member emits QUALIFIED: `B.noise` -> `tuckˑobjectˑBˑnoise`,
+  ## where objName is already mangled; name_prefix.joinedName says why the
+  ## join is not `_`. The declaration and every call to it take this name
+  ## from here (ast_query.memberCalleeOf), so the two cannot drift.
   ##
   ## One rule for all three backends, which is what keeps the member and the
   ## free fn of the same name from ever competing. Odin and D needed it
@@ -568,7 +570,7 @@ proc memberProcName*(objName, memberName: string): string =
   ## bare name then collided with a top-level `noise` at MANGLING time and
   ## silently called the wrong one (issue #50). Nim now qualifies too: the
   ## collision cannot arise rather than being resolved by a precedence rule.
-  objName & "_" & memberName
+  joinedName(objName, memberName)
 
 proc escapeStringLit*(v: string): string =
   ## A Tuck string literal, spelled for a target language.

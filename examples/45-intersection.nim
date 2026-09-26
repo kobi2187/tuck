@@ -103,17 +103,17 @@ proc tuckˑdecisionˑnextPhase*(current: tuckˑtypeˑPhase, demand: tuckˑtypeˑ
   else:
     return tuckˑtypeˑPhase.EwClearing)
 
-proc tuckˑobjectˑLoopDetector_tuckˑfnˑhealthy*(self: var tuckˑobjectˑLoopDetector): bool =
+proc tuckˑobjectˑLoopDetectorˑtuckˑfnˑhealthy*(self: var tuckˑobjectˑLoopDetector): bool =
   return true
 
-proc tuckˑobjectˑLoopDetector_reads*(self: var tuckˑobjectˑLoopDetector): int =
+proc tuckˑobjectˑLoopDetectorˑreads*(self: var tuckˑobjectˑLoopDetector): int =
   return self.lane
 
 
-proc tuckˑobjectˑCameraDetector_tuckˑfnˑhealthy*(self: var tuckˑobjectˑCameraDetector): bool =
+proc tuckˑobjectˑCameraDetectorˑtuckˑfnˑhealthy*(self: var tuckˑobjectˑCameraDetector): bool =
   return true
 
-proc tuckˑobjectˑCameraDetector_reads*(self: var tuckˑobjectˑCameraDetector): int =
+proc tuckˑobjectˑCameraDetectorˑreads*(self: var tuckˑobjectˑCameraDetector): int =
   if (self.confidence > 80):
     if true:
       return 3
@@ -184,10 +184,10 @@ proc tuckˑfnˑpoll*(d: Detector): tuckˑtypeˑDemand =
     case d.tag
     of Detector_is_tuckˑobjectˑCameraDetector:
       var tmp = d.tuckˑobjectˑCameraDetectorVal
-      tuckˑobjectˑCameraDetector_reads(tmp)
+      tuckˑobjectˑCameraDetectorˑreads(tmp)
     of Detector_is_tuckˑobjectˑLoopDetector:
       var tmp = d.tuckˑobjectˑLoopDetectorVal
-      tuckˑobjectˑLoopDetector_reads(tmp))
+      tuckˑobjectˑLoopDetectorˑreads(tmp))
   (case tuckˑvˑbits
   of 1:
     return tuckˑtypeˑDemand.northSouth

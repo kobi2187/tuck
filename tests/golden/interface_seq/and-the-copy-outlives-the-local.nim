@@ -18,11 +18,11 @@ type Animal* = object
   of Animal_is_tuckˑobjectˑCat: tuckˑobjectˑCatVal*: tuckˑobjectˑCat
   of Animal_is_tuckˑobjectˑDog: tuckˑobjectˑDogVal*: tuckˑobjectˑDog
 
-proc tuckˑobjectˑDog_noise*(self: var tuckˑobjectˑDog): int =
+proc tuckˑobjectˑDogˑnoise*(self: var tuckˑobjectˑDog): int =
   return 1
 
 
-proc tuckˑobjectˑCat_noise*(self: var tuckˑobjectˑCat): int =
+proc tuckˑobjectˑCatˑnoise*(self: var tuckˑobjectˑCat): int =
   return 41
 
 
@@ -38,10 +38,10 @@ proc tuckˑfnˑhear*(a: Animal): int =
     case a.tag
     of Animal_is_tuckˑobjectˑCat:
       var tmp = a.tuckˑobjectˑCatVal
-      tuckˑobjectˑCat_noise(tmp)
+      tuckˑobjectˑCatˑnoise(tmp)
     of Animal_is_tuckˑobjectˑDog:
       var tmp = a.tuckˑobjectˑDogVal
-      tuckˑobjectˑDog_noise(tmp))
+      tuckˑobjectˑDogˑnoise(tmp))
 
 proc tuckˑfnˑmain*(): int =
   var tuckˑvˑa = tuckˑfnˑmakeOne()

@@ -100,11 +100,11 @@ tuckˑobjectˑLoopDetector :: struct {
 	lane: int,
 }
 
-tuckˑobjectˑLoopDetector_tuckˑfnˑhealthy :: proc (self: ^tuckˑobjectˑLoopDetector) -> bool {
+tuckˑobjectˑLoopDetectorˑtuckˑfnˑhealthy :: proc (self: ^tuckˑobjectˑLoopDetector) -> bool {
   return true
 }
 
-tuckˑobjectˑLoopDetector_reads :: proc (self: ^tuckˑobjectˑLoopDetector) -> int {
+tuckˑobjectˑLoopDetectorˑreads :: proc (self: ^tuckˑobjectˑLoopDetector) -> int {
   return self^.lane
 }
 
@@ -113,11 +113,11 @@ tuckˑobjectˑCameraDetector :: struct {
 	confidence: u8,
 }
 
-tuckˑobjectˑCameraDetector_tuckˑfnˑhealthy :: proc (self: ^tuckˑobjectˑCameraDetector) -> bool {
+tuckˑobjectˑCameraDetectorˑtuckˑfnˑhealthy :: proc (self: ^tuckˑobjectˑCameraDetector) -> bool {
   return true
 }
 
-tuckˑobjectˑCameraDetector_reads :: proc (self: ^tuckˑobjectˑCameraDetector) -> int {
+tuckˑobjectˑCameraDetectorˑreads :: proc (self: ^tuckˑobjectˑCameraDetector) -> int {
   if (self^.confidence > 80) {
       return 3
   }
@@ -204,10 +204,10 @@ tuckˑfnˑpoll :: proc (d: Detector) -> tuckˑtypeˑDemand {
 	switch v.tag {
 		case .Detector_is_tuckˑobjectˑCameraDetector:
 			tmp := v.tuckˑobjectˑCameraDetectorVal
-			return tuckˑobjectˑCameraDetector_reads(&tmp)
+			return tuckˑobjectˑCameraDetectorˑreads(&tmp)
 		case .Detector_is_tuckˑobjectˑLoopDetector:
 			tmp := v.tuckˑobjectˑLoopDetectorVal
-			return tuckˑobjectˑLoopDetector_reads(&tmp)
+			return tuckˑobjectˑLoopDetectorˑreads(&tmp)
 	}
 	panic("unreachable interface tag")
 })(d)

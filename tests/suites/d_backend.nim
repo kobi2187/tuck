@@ -244,7 +244,7 @@ fn main() -> int:
   t.emitsD "M3: object emits a plain struct",
            r"struct tuckˑobjectˑCounter \{"
   t.emitsD "M3: member fn is a qualified free proc with ref self",
-           r"long tuckˑobjectˑCounter_bump\(ref tuckˑobjectˑCounter self\)"
+           r"long tuckˑobjectˑCounterˑbump\(ref tuckˑobjectˑCounter self\)"
   t.emitsD "M3: record construction is a named-argument struct literal",
            r"tuckˑobjectˑCounter\(total: 0L, step: 3L\)"
   t.runsD "M3: self mutation persists across calls (6+6-3)", 9, dmdExe
@@ -724,7 +724,7 @@ fn main() -> int:
   t.emitsD "iface: a wrap copies the concrete value in, tag and all",
            r"Animal\(AnimalTag\.Animal_is_tuckˑobjectˑDog, tuckˑobjectˑDogVal: tuckˑvˑdd\)"
   t.omitsD "iface: no thunk per (type, member) — the spec's own claim",
-           r"Animal_tuckˑobjectˑDog_noise"
+           r"Animal_tuckˑobjectˑDogˑnoise"
   t.runsD "iface: wrap copies (3), a later wrap sees 9, so 3+9=12",
           12, dmdExe
 
@@ -756,7 +756,7 @@ fn main() -> int:
   t.emitsD "inline sum: a tag is qualified — D enum members do not leak",
            r"case tuckˑobjectˑLightStateKind\.Green:"
   t.emitsD "member with no declared params still takes self",
-           r"tuckˑobjectˑLight_advance\(ref tuckˑobjectˑLight self\)"
+           r"tuckˑobjectˑLightˑadvance\(ref tuckˑobjectˑLight self\)"
   t.runsD "inline sum: state Green selects the second arm", 2, dmdExe
 
   # --- bake: a fn-typed slot is a FUNCTION POINTER, not a delegate -------
@@ -826,7 +826,7 @@ object Deck:
   t.emitsD "compose: a composed type's field lands flat on the object",
            r"struct tuckˑobjectˑDeck \{\n    long volume;"
   t.emitsD "compose: a mixin fn materialises as a member of the object",
-           r"tuckˑobjectˑDeck_tuckˑfnˑbump\(ref tuckˑobjectˑDeck self"
+           r"tuckˑobjectˑDeckˑtuckˑfnˑbump\(ref tuckˑobjectˑDeck self"
   t.omitsD "compose: never embedded as a nested field",
            r"tuckˑtypeˑAudioPlayer audioPlayer"
   t.emitsD "chain: a standalone step writes back through the base",

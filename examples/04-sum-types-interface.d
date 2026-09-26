@@ -83,11 +83,11 @@ struct tuckˑobjectˑPodcastApp {
     uint timeout;
 }
 
-rt.TuckResult!(rt.TuckUnit) tuckˑobjectˑPodcastApp_tuckˑfnˑsetMany(ref tuckˑobjectˑPodcastApp self, tuckˑtypeˑPair[] pairs) {
+rt.TuckResult!(rt.TuckUnit) tuckˑobjectˑPodcastAppˑtuckˑfnˑsetMany(ref tuckˑobjectˑPodcastApp self, tuckˑtypeˑPair[] pairs) {
     return typeof(return).init;
 }
 
-void tuckˑobjectˑPodcastApp_play(ref tuckˑobjectˑPodcastApp self, tuckˑtypeˑEpisode episode) {
+void tuckˑobjectˑPodcastAppˑplay(ref tuckˑobjectˑPodcastApp self, tuckˑtypeˑEpisode episode) {
     tuckˑobjectˑPodcastApp tuckChain1 = self;
     tuckChain1 = tuckˑfnˑloadEpisode(tuckChain1, episode);
     tuckˑfnˑstartAudio(tuckChain1);

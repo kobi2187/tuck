@@ -17,11 +17,11 @@ type Animal* = object
   of Animal_is_tuckˑobjectˑCat: tuckˑobjectˑCatVal*: tuckˑobjectˑCat
   of Animal_is_tuckˑobjectˑDog: tuckˑobjectˑDogVal*: tuckˑobjectˑDog
 
-proc tuckˑobjectˑDog_noise*(self: var tuckˑobjectˑDog): int =
+proc tuckˑobjectˑDogˑnoise*(self: var tuckˑobjectˑDog): int =
   return 1
 
 
-proc tuckˑobjectˑCat_noise*(self: var tuckˑobjectˑCat): int =
+proc tuckˑobjectˑCatˑnoise*(self: var tuckˑobjectˑCat): int =
   return 41
 
 
@@ -38,10 +38,10 @@ proc tuckˑfnˑtotal*(xs: sink seq[Animal]): int =
         case tuckˑvˑa.tag
         of Animal_is_tuckˑobjectˑCat:
           var tmp = tuckˑvˑa.tuckˑobjectˑCatVal
-          tuckˑobjectˑCat_noise(tmp)
+          tuckˑobjectˑCatˑnoise(tmp)
         of Animal_is_tuckˑobjectˑDog:
           var tmp = tuckˑvˑa.tuckˑobjectˑDogVal
-          tuckˑobjectˑDog_noise(tmp)))
+          tuckˑobjectˑDogˑnoise(tmp)))
   return tuckˑvˑs
 
 proc tuckˑfnˑmain*(): int =

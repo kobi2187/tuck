@@ -9,7 +9,7 @@ type tuckˑobjectˑObj* = object
   own*: int
   x*: int
 
-proc tuckˑobjectˑObj_total*(self: var tuckˑobjectˑObj): int =
+proc tuckˑobjectˑObjˑtotal*(self: var tuckˑobjectˑObj): int =
   return (self.own + self.x)
 
 

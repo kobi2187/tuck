@@ -38,7 +38,7 @@ fn main() -> int:
   t.emits "the payload is the object itself",   "tuckˑobjectˑDogVal"
   t.emits "dispatch is a case on the tag",      "case .*\\.tag"
   t.omits "no function table",                  "AnimalVT"
-  t.omits "no thunks",                          "Animal_tuckˑobjectˑDog_noise"
+  t.omits "no thunks",                          "Animal_tuckˑobjectˑDogˑnoise"
   t.runs  "and the program runs",               1
 
   # Both backends, or it is not a feature. The parity commitment is explicit in

@@ -101,12 +101,12 @@ tuckˑobjectˑPodcastApp :: struct {
 	timeout: u32,
 }
 
-tuckˑobjectˑPodcastApp_tuckˑfnˑsetMany :: proc (self: ^tuckˑobjectˑPodcastApp, pairs: [dynamic]tuckˑtypeˑPair) -> rt.TuckResult(rt.TuckUnit) {
+tuckˑobjectˑPodcastAppˑtuckˑfnˑsetMany :: proc (self: ^tuckˑobjectˑPodcastApp, pairs: [dynamic]tuckˑtypeˑPair) -> rt.TuckResult(rt.TuckUnit) {
 
   return {}
 }
 
-tuckˑobjectˑPodcastApp_play :: proc (self: ^tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode) {
+tuckˑobjectˑPodcastAppˑplay :: proc (self: ^tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode) {
   tuckChain1 := self^
   tuckChain1 = tuckˑfnˑloadEpisode(tuckChain1, episode)
   tuckˑfnˑstartAudio(tuckChain1)

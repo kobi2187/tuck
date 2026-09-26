@@ -232,6 +232,9 @@ and `fnsig Handler`. The separator `ˑ` (U+02D1) is a letter to all three
 hosts and outside the ASCII a Tuck name is written in, so no two names of
 different kinds can meet, no source name can look already renamed, and no
 user name can meet a runtime one — by construction (`compiler/name_prefix.nim`).
+A name the compiler DERIVES from two joins them by the same separator
+(`joinedName`): an object member is `tuckˑobjectˑOrderˑbook`, which the
+object `OrderBook` cannot meet, as it did when the join was `_`.
 
 **But here's the subtlety, and it caused two real bugs in this codebase:**
 mangling is about **emitted identifiers only**. It exists to keep generated

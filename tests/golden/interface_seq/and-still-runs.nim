@@ -16,11 +16,11 @@ type Animal* = object
   of Animal_is_tuckˑobjectˑCat: tuckˑobjectˑCatVal*: tuckˑobjectˑCat
   of Animal_is_tuckˑobjectˑDog: tuckˑobjectˑDogVal*: tuckˑobjectˑDog
 
-proc tuckˑobjectˑDog_noise*(self: var tuckˑobjectˑDog): int =
+proc tuckˑobjectˑDogˑnoise*(self: var tuckˑobjectˑDog): int =
   return 1
 
 
-proc tuckˑobjectˑCat_noise*(self: var tuckˑobjectˑCat): int =
+proc tuckˑobjectˑCatˑnoise*(self: var tuckˑobjectˑCat): int =
   return 41
 
 

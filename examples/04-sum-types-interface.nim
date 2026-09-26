@@ -53,10 +53,10 @@ proc tuckˑfnˑloadEpisode*(self: tuckˑobjectˑPodcastApp, episode: tuckˑtype�
 proc tuckˑfnˑstartAudio*(self: tuckˑobjectˑPodcastApp): void =
   return
 
-proc tuckˑobjectˑPodcastApp_tuckˑfnˑsetMany*(self: var tuckˑobjectˑPodcastApp, pairs: seq[tuckˑtypeˑPair]): TuckResult[tuple[]] =
+proc tuckˑobjectˑPodcastAppˑtuckˑfnˑsetMany*(self: var tuckˑobjectˑPodcastApp, pairs: seq[tuckˑtypeˑPair]): TuckResult[tuple[]] =
   discard
 
-proc tuckˑobjectˑPodcastApp_play*(self: var tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode): void =
+proc tuckˑobjectˑPodcastAppˑplay*(self: var tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode): void =
   var tuckChain1 = self
   tuckChain1 = tuckˑfnˑloadEpisode(tuckChain1, episode)
   tuckˑfnˑstartAudio(tuckChain1)

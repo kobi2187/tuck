@@ -27,8 +27,8 @@ fn main() -> int:
   return 0
 """
   t.okCheck   "two objects may share a member fn name"
-  t.emits     "Nim keeps them apart",  "tuckˑobjectˑDog_noise|noise\\*\\(self: var tuckˑobjectˑDog\\)"
-  t.emitsOdin "Odin keeps them apart", "tuckˑobjectˑDog_noise"
+  t.emits     "Nim keeps them apart",  "tuckˑobjectˑDogˑnoise|noise\\*\\(self: var tuckˑobjectˑDog\\)"
+  t.emitsOdin "Odin keeps them apart", "tuckˑobjectˑDogˑnoise"
 
   # The real gate: the emitted Odin must COMPILE. Emission alone proved nothing
   # here — the old output looked plausible and only `odin build` rejected it.
@@ -279,5 +279,26 @@ fn main() -> int:
   return b.noise
 """
   t.runs "an unshadowed member call is silent", 10
+
+  # A member's name is joined to its object's by the kind separator. Joined
+  # by `_`, `Order` + `book` gave `Order_book`, which Nim — ignoring `_` and
+  # case after the first character — read as the object `OrderBook`, and
+  # refused as a redefinition.
+  t.src """
+object Order:
+  qty: int
+
+  fn book() -> int:
+    return self.qty
+
+object OrderBook:
+  depth: int
+
+fn main() -> int:
+  let o = {qty: 5} Order
+  let b = {depth: 2} OrderBook
+  return o.book + b.depth
+"""
+  t.hostRuns "a member never meets an object named like owner + member", 7
 
   t.finish()
