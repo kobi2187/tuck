@@ -991,7 +991,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   of dkImport, dkPublic: ""
   of dkSelect: dUnsupported("top-level on select (arrives with the Fiber runtime)")
   of dkFnSig: ctx.genDFnSig(d)
-  of dkSatisfies: dUnsupported("top-level satisfies (M4)")
+  of dkSatisfies: ""  # folded into the object's own list before checking
   of dkInterface: ctx.genDInterface(d)
   of dkGroup: ""  # a compile-time bound only (spec §5.5) — fully resolved
                   # and discarded before codegen ever runs, nothing to emit

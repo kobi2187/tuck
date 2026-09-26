@@ -196,4 +196,29 @@ fn main() -> int [io]:
 """
   t.hostRuns "a void member with a param dispatches as a statement", 0, "rex\nrex"
 
+  # A TOP-LEVEL `satisfies Obj: Iface` is folded into the object's own list
+  # before conformance (typecheck_conformance.applySatisfiesDecls), so each
+  # backend's satisfier set already includes it and there is nothing left
+  # to emit. D refused the declaration outright ("top-level satisfies (M4)")
+  # while Nim and Odin built and ran the same program.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 4
+
+satisfies Dog: Animal
+
+fn hear({a: Animal}) -> int:
+  return a.noise
+
+fn main() -> int:
+  var d = {name: "rex"} Dog
+  return {a: d} hear
+"""
+  t.hostRuns "a top-level satisfies dispatches on every backend", 4
+
   t.finish()
