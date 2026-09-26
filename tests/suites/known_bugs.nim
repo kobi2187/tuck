@@ -1620,6 +1620,35 @@ fn main() -> int:
   t.hostPeakRss("the strings a concatenation reads and builds do not accumulate", 12288)
   t.bugFixed "the strings a concatenation reads and builds do not accumulate"
 
+  # ...nor does a `str` GROWN IN PLACE by reassignment: `s = s + "y"` in a
+  # loop. On Odin every old value leaked — 14 GB and OOM-killed at 200 000
+  # turns, while Nim and D append in place. Step 5 of the ownership pass
+  # (free the old value at each overwrite) was `Seq`-only, and a `str`
+  # assigned twice was never freed at all. The literal it starts from — and
+  # the one it is reset to — is static storage no `delete` may touch, so the
+  # pass has the emitter copy it: every value the local ever holds is then
+  # its own. Found auditing issue #9.
+  t.src """
+fn grow({n: int}) -> int:
+  var s = "x"
+  var total = 0
+  var i = 0
+  for i < n:
+    s = s + "y"
+    if s.len > 5000:
+      total = total + s.len
+      s = "x"
+    i = i + 1
+  return total + s.len
+
+fn main() -> int:
+  if {n: 40000} grow != 40009:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("a str grown by reassignment does not accumulate", 12288)
+  t.bugFixed "a str grown by reassignment does not accumulate"
+
   # 19. EV-14 / issue #82: the dead intermediates of a THREADING CHAIN.
   #
   # `relight` is the world_server shape reduced: a record with two Seq fields

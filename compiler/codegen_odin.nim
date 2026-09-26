@@ -1133,6 +1133,16 @@ proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
     result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genOdinExpr(e.target.receiver) & ")")
 
+proc ownedCopy(ctx: OdinCodegenCtx, valStr: string, val: Expr): string =
+  ## A `str` literal the ownership pass decided this body must OWN, printed
+  ## as a heap copy: the local it is assigned to frees each old value at
+  ## its overwrite, and a literal is static storage (`copyToOwn`, step 5).
+  if val == nil or not val.id.isSet or val.id notin ctx.owned.copyToOwn:
+    return valStr
+  doAssert val.kind == exkLit and val.litKind == lkStr,
+    "ownership marked a non-literal to copy: " & $val.kind
+  "rt.tuckStrOwned(" & valStr & ")"
+
 proc scopeFrees(ctx: OdinCodegenCtx, name: string): string =
   ## The `defer delete`s a declaration of `name` carries.
   ##
@@ -1234,7 +1244,8 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   # own argument calls the MOVED twin, and needs no fix-up copies after it.
   let threaded = threadedCall(e)
   if threaded != nil: return ctx.genThreadedAssign(e, threaded)
-  let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
+  let valStr = ctx.ownedCopy(ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal),
+                                          e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      e.target.name notin ctx.fieldVars:
     return ctx.genOdinVarDecl(e, valStr)

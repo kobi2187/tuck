@@ -159,7 +159,9 @@ closure no longer exist in any `codegen_*.nim`.
 |---|---|---|---|
 | — | **#87** | **FIXED 2026-09-25** — actor field initialisers are kept and checked (TK-TY29); on `type`/`object` fields refused (TK-TY30) | — |
 | — | **#73** | **FIXED** in `8d5b6c6` — a const resolves across the program (`ast_query.constDeclFor`); guarded in `cross_module`. This row was not updated at the time | — |
-| — | **#78** | **FIXED 2026-09-25** — the prefix keeps the first letter's case (`Tuck_Order`, `tuck_order`); `compiler/name_prefix.nim` | — |
+| — | **#78** | **FIXED 2026-09-25** (3fd86f5) — the prefix names the declaration kind (`tuck_fn_order`, `tuck_type_Order`, `tuck_` for values); `compiler/name_prefix.nim`. This is S7 below | — |
+| — | EV-6 | **FIXED 2026-09-26** — a D program with actors crashed at exit about half the time (futex error or segfault): rt_term unmapped the GC heap under parked actor threads. `tuckDrainActors` now retires and joins them; `d_backend` runs one binary 40 times | — |
+| — | — | **FIXED 2026-09-26** — on Odin a `str` grown by `s = s + x` leaked every old value (14 GB, OOM at 200 000 turns). Step 5 of the ownership pass now covers `str`; a literal among its values is copied (`copyToOwn`) so the local owns every value it holds. `known_bugs` pins it at 12 MB on all three | — |
 | — | **#79** | **FIXED 2026-09-25** — per-arm scoping in the Nim and Odin dispatch; see M4.3 | — |
 
 ### S2 — Finish partial features
@@ -201,7 +203,7 @@ closure no longer exist in any `codegen_*.nim`.
 | S5.1 | **#22** | `callParamsFor` for pending fns, distinct ctors, combinators | M |
 | S5.2 | **#23** | superlinear emit; closes as a consequence of #21 + #22. Nim is already linear | — |
 
-### S7 — Kind-scoped mangling (user proposal, 2026-09-22)
+### S7 — Kind-scoped mangling (user proposal, 2026-09-22) — DONE 2026-09-25 (3fd86f5, #78)
 
 Mangle by DECLARATION KIND: `tuck_fn_`, `tuck_type_`, `tuck_const_`, ...
 rather than one `tuck_` for everything.
@@ -236,8 +238,8 @@ between two senders · **#7** full-mailbox policy.
 `arena` (parses and discards its body — give it a DIAGNOSTIC now, fifteen
 minutes, so it stops checking clean) · #12 hashing · #11 recursive types ·
 #10 correlation tokens · #16 numeric sigils · #17 · #32 · #33 · #57 ·
-#66/#68/#69/#70 · #71 · #74 · DNS. And **#18 generic actors is closer than its
-issue says** — `actor Inbox[T]: xs: Seq[T]` parses now that #52 is closed.
+#66/#68/#69/#70 · #71 · #74 · DNS. (**#18 generic actors** is done and
+closed: one singleton per instantiation, expanded before typecheck.)
 
 ---
 

@@ -77,6 +77,13 @@ errCode :: proc(name: string) -> u16 {
 	return u16((h ~ (h >> 16)) & 0xFFFF)
 }
 
+// A heap copy of a str the caller will own. Emitted where the ownership
+// pass needs a LITERAL to be freeable: a local that frees its old value at
+// each overwrite cannot start from static storage (analysis_ownership, step 5).
+tuckStrOwned :: proc(s: string) -> string {
+	return strings.clone(s)
+}
+
 toStr :: proc(value: $T) -> string {
 	// cstring is a bare char* from C: aprint would format the POINTER, not
 	// the text. Odin's string(cstr) walks to the NUL and copies, which is
