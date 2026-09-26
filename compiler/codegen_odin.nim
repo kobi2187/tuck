@@ -911,8 +911,7 @@ proc genUnary(ctx: var OdinCodegenCtx, e: Expr): string =
 
 proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
-  ctx.tmpCounter.inc
-  let tn = "tuckDrop" & $ctx.tmpCounter
+  let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
                 "tuck_unhandled(" & tn & ".err, \"" & site &
@@ -1244,8 +1243,7 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   var pre = ""
   var value = valStr
   if e.target.kind == exkVar and e.target.name in ctx.owned.freeBeforeOverwrite:
-    ctx.tmpCounter.inc
-    let next = "tuckNext" & $ctx.tmpCounter
+    let next = ctx.freshName("tuckNext")
     let ind = "  ".repeat(ctx.indent)
     pre = next & " := " & valStr & "\n" & ind & "delete(" & tgt & ")\n" & ind
     value = next

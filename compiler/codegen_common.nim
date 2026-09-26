@@ -304,6 +304,12 @@ proc lookupFnParams*(m: Module, name: string): seq[string] =
   ## generic payload.
   m.findFn(name).paramNames()
 
+template freshName*(ctx: untyped, tag: string): string =
+  ## A fresh emitted name: `tag` and the ctx's next temp number. Every
+  ## backend's ctx has a `tmpCounter`; the bump-then-glue pair was written out
+  ## at each site that needed a temp.
+  (inc ctx.tmpCounter; tag & $ctx.tmpCounter)
+
 proc calleeParamNames*(res: Resolution, m: Module,
                        real: Table[string, Module], e: Expr,
                        calleeStr: string): seq[string] =

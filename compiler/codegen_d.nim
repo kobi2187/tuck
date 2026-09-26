@@ -711,8 +711,7 @@ proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
   # A D struct has no `.dup` of its own (only a slice does), so the record
   # is rebuilt: take the value once into a temp (never re-evaluate `valStr`
   # — it may be a call), then `.dup` just the fields that need it.
-  ctx.tmpCounter.inc
-  let tmp = "tuckRecDup" & $ctx.tmpCounter
+  let tmp = ctx.freshName("tuckRecDup")
   var fixups = ""
   for f in fields: fixups.add(tmp & "." & f & " = " & tmp & "." & f & ".dup; ")
   "(() { auto " & tmp & " = " & valStr & "; " & fixups & "return " & tmp &
@@ -828,8 +827,7 @@ proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   let ret = ctx.taskRetTypeD(v.callee.name)
   let args = ctx.genDCallArgs(v, v.callee.name)
   let rawCall = v.callee.name & "(" & args.join(", ") & ")"
-  ctx.tmpCounter.inc
-  let slot = "tuckSlot" & $ctx.tmpCounter
+  let slot = ctx.freshName("tuckSlot")
   # Three statements, laid out here — the caller strips its own indent and
   # terminator for this shape (see genDStmt's boundTaskCall test).
   var res = "auto " & slot & " = rt.newAsyncResult!(" & ret & ")();\n"
@@ -957,8 +955,7 @@ proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
   ## No value is fabricated — the result is discarded, not replaced with a
   ## zero, which is what `continue` promises. Under `exit` the handler still
   ## runs first: it is the hook for diagnostics, and the program stops after.
-  ctx.tmpCounter.inc
-  let tn = "tuckDrop" & $ctx.tmpCounter
+  let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let handler = mangleName("unhandled")
   var onErr = handler & "(" & tn & ".err, \"" & site & "\");"

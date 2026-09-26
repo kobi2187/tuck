@@ -99,8 +99,7 @@ proc renderShape(ctx: var CodegenCtx, s: RecordShape, tag: string): string =
   for r in s.receivers:
     var text = ctx.genExpr(r)
     if r.kind != exkVar:
-      ctx.tmpCounter.inc
-      let tmp = tag & $ctx.tmpCounter
+      let tmp = ctx.freshName(tag)
       prefix.add("let " & tmp & " = " & text & "; ")
       text = tmp
     bound.add (r, text)
@@ -118,8 +117,7 @@ proc renderShape(ctx: var CodegenCtx, s: RecordShape, tag: string): string =
   var lit = ctorName & "(" & parts.join(", ") & ")"
   # a rebuilt record is a production site too: its invariants must hold
   if s.invariantsOwed:
-    ctx.tmpCounter.inc
-    let tmp = "tuckInv" & $ctx.tmpCounter
+    let tmp = ctx.freshName("tuckInv")
     lit = "(let " & tmp & " = " & lit & "; validate(" & tmp & "); " & tmp & ")"
   if prefix == "": lit else: "(" & prefix & lit & ")"
 
@@ -217,8 +215,7 @@ proc genRecordCtor(ctx: var CodegenCtx, e: Expr): string =
   let ctor = ctx.genericCtorName(e, e.callee.name) & "(" & parts.join(", ") & ")"
   if not ctx.index.hasInvariants(e.callee.name): return ctor
   # production site: construction — validate before the value flows on
-  ctx.tmpCounter.inc
-  let tmp = "tuckInv" & $ctx.tmpCounter
+  let tmp = ctx.freshName("tuckInv")
   "(let " & tmp & " = " & ctor & "; validate(" & tmp & "); " & tmp & ")"
 
 proc asSumVariantCall(ctx: var CodegenCtx, e: Expr): string =
@@ -265,8 +262,7 @@ proc genSpawnCall(ctx: var CodegenCtx, calleeStr, call: string): string =
 
 proc genValidatedCall(ctx: var CodegenCtx, call: string): string =
   ## Extern boundary: the returned value validates on entry.
-  ctx.tmpCounter.inc
-  let tmp = "tuckInv" & $ctx.tmpCounter
+  let tmp = ctx.freshName("tuckInv")
   "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
 
 proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
@@ -408,8 +404,7 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
     # production site: return value of an invariant-carrying type.
     # `validatesItself` keeps a construction from being wrapped twice — it
     # already validated at the construction site, on this same value.
-    ctx.tmpCounter.inc
-    let tmp = "tuckInv" & $ctx.tmpCounter
+    let tmp = ctx.freshName("tuckInv")
     return "return (let " & tmp & " = " & ctx.genExpr(e.returnVal) & "; validate(" &
       tmp & "); " & tmp & ")"
   else: return "return " & ctx.genExpr(e.returnVal)
@@ -648,8 +643,7 @@ proc genUnary(ctx: var CodegenCtx, e: Expr): string =
 
 proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
-  ctx.tmpCounter.inc
-  let tn = "tuckDrop" & $ctx.tmpCounter
+  let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
                 "(tuck_unhandled(" & tn & ".err, \"" & site & "\"); quit(1))"
