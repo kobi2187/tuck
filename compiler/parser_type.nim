@@ -138,8 +138,16 @@ proc parseTypeArgs(p: var Parser, sp: Span, base: Type): Type =
     result.attrs = p.parseTypeUseAttrs()
 
 proc parseNamedType(p: var Parser, sp: Span): Type =
-  let nameTok = p.advance()
-  var base = Type(span: sp, kind: tkNamed, name: nameTok.value)
+  ## `Name`, `mod::Name` (#36 — the type-position twin of `mod::fn`), then
+  ## optional type arguments or attributes.
+  var nameTok = p.advance()
+  var qualifier: seq[string]
+  while p.current().kind == tkColonColon and p.peek().kind == tkIdent:
+    qualifier.add nameTok.value
+    discard p.advance()          # `::`
+    nameTok = p.advance()
+  var base = Type(span: sp, kind: tkNamed, name: nameTok.value,
+                  qualifier: qualifier)
   if p.current().kind != tkLBracket: return base
   let attrs = p.bracketHoldsAttrs()
   let first = p.peek(1)

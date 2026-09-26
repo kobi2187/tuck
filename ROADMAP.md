@@ -173,7 +173,7 @@ closure no longer exist in any `codegen_*.nim`.
 | S2.5 | **#55** | a fired `timeout` answers right at 100× the deadline | M | — |
 | S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |
 | S2.7 | **#20** | by-type payload matching for member calls | M | — |
-| S2.8 | **#36** | `mod::Type` in a type position | S | — |
+| — | **#36** | **FIXED 2026-09-26** — `mod::Type` in a type position: the parser keeps the qualifier, the checker confirms the module declares (and exports) the type | — | — |
 | — | — | **FIXED 2026-09-26** (S2.9) — a binding match arm is marked `pkBind` by the checker and lowered by `lowering_match_binds` to a catch-all reading the subject, or a snapshot of it. The same change made a binding arm count as a catch-all for exhaustiveness (it was counted as one more tag name) | — | — |
 
 ### S3 — Backend parity (what survives M4)

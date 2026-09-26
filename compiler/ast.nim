@@ -179,6 +179,9 @@ type
     case kind*: TypeKind
     of tkNamed:
       name*: string
+      qualifier*: seq[string]  # `geo::Point` → @["geo"]; the checker confirms
+                               # that module declares it, and every later
+                               # stage reads the bare name (#36)
     of tkTuple:
       elems*: seq[Type]
     of tkApp:

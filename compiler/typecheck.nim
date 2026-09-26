@@ -4770,6 +4770,36 @@ proc bindConsts*(tc: var TypeChecker, m: Module) =
       constCheck(tc, m, d.name, d.constVal, d.span)
       tc.bindName(d.name, tc.synthesize(d.constVal), false)
 
+proc failIfBadQualifiedType(m: Module, t: Type) =
+  ## `mod::Name` must name a type that module declares and this one imports.
+  ## Imported types are visible by their bare name, so a qualifier adds
+  ## nothing past this check — but without it `nope::Point` would quietly
+  ## mean whichever `Point` is in scope.
+  if t == nil: return
+  for c in t.children: failIfBadQualifiedType(m, c)
+  if t.kind != tkNamed or t.qualifier.len == 0: return
+  let written = t.qualifier.join("::") & "::" & t.name
+  let origin = moduleDeclaringType(m, t.name)
+  let named = t.qualifier[^1]
+  if origin == named or origin == t.qualifier.join("/"): return
+  let why =
+    if origin != "": "'" & t.name & "' comes from '" & origin & "', not '" &
+                     named & "'"
+    elif m.findDecl(dkType, t.name) != nil or m.findDecl(dkObject, t.name) != nil:
+      "'" & t.name & "' is declared in this module, not in '" & named & "'"
+    else:
+      "no imported module '" & named & "' declares a public type '" &
+        t.name & "' (is it imported, and listed in its `public:` block?)"
+  fail(dcTyUndeclared, "'" & written & "' — " & why, t.span)
+
+proc failIfBadQualifiedTypes(m: Module) =
+  ## Every written type: the declarations' own, and a binding's stated one.
+  for d in m.allDecls:
+    for t in d.ownTypes: failIfBadQualifiedType(m, t)
+  for body in m.bodies:
+    for n in body.nodes:
+      if n.kind == exkAssign: failIfBadQualifiedType(m, n.declType)
+
 proc typecheckModule*(m: Module,
                       externSigs = initTable[string, seq[FnSig]](),
                       externPending = initTable[string, Span](),
@@ -4817,6 +4847,7 @@ proc typecheckModule*(m: Module,
   checkRecursiveTypes(tc.typeDeclsByName, m)
   checkConformance(m)      # `satisfies I` means every I member is implemented
   tc.bindConsts(m)
+  failIfBadQualifiedTypes(m)
   failIfDuplicateDecl(m)
   failIfDuplicateMembers(m)
   tc.failIfFieldShadowsDeclaredFn(m)

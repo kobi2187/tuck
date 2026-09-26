@@ -512,4 +512,74 @@ type Point:
   t.badCheck "a module's own const shadows an imported one of the same name",
              "needs exactly 2"
 
+  # --- `mod::Type` in a type position (#36) ---------------------------------
+  # `geo::mk` worked in an expression; `geo::Point` in a type was a parse
+  # error. The parser now keeps the qualifier and the checker confirms the
+  # module declares the type; every later stage reads the bare name, which
+  # already resolves to the imported type.
+  t.src """
+import geo
+
+fn main() -> int:
+  let p: geo::Point = {x: 5} geo::mk
+  return p.x
+"""
+  t.addFile("geo.tuck", """type Point:
+  x: int
+
+fn mk({x: int}) -> Point:
+  return {x: x} Point
+""")
+  t.hostRuns "a module-qualified type in a binding builds and runs", 5
+  t.src """
+import geo
+
+type Wrap:
+  inner: geo::Point
+
+fn bump({p: geo::Point}) -> geo::Point:
+  return {x: p.x + 1} geo::mk
+
+fn main() -> int:
+  let first = {x: 5} geo::mk
+  let w = {inner: first} Wrap
+  let b = {p: w.inner} bump
+  return b.x
+"""
+  t.addFile("geo.tuck", """type Point:
+  x: int
+
+fn mk({x: int}) -> Point:
+  return {x: x} Point
+""")
+  t.hostRuns "...as a field, a parameter and a return type", 6
+  t.src """
+import geo
+
+fn main() -> int:
+  let p: nope::Point = {x: 5} geo::mk
+  return p.x
+"""
+  t.addFile("geo.tuck", """type Point:
+  x: int
+
+fn mk({x: int}) -> Point:
+  return {x: x} Point
+""")
+  t.badCheck "a qualifier naming the wrong module is refused", "comes from 'geo', not 'nope'"
+  t.src """
+import geo
+
+fn main() -> int:
+  let p: geo::Nope = {x: 5} geo::mk
+  return p.x
+"""
+  t.addFile("geo.tuck", """type Point:
+  x: int
+
+fn mk({x: int}) -> Point:
+  return {x: x} Point
+""")
+  t.badCheck "...and one naming a type the module lacks", "declares a public type 'Nope'"
+
   t.finish()
