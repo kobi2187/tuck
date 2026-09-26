@@ -245,6 +245,57 @@ proc genFnBody*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): stri
     result = ensureTrailingReturn(result, d.fnBody, savedIndent)
   ctx.indent = savedIndent
 
+proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
+                  movedP, ind: string): string =
+  ## A threaded-container fn, emitted twice: a wrapper `f` that copies its
+  ## moved parameter and delegates, and the twin `f_moved` holding the body.
+  ##
+  ## STAGE 3: the twin OWNS its moved parameter, so it may free it at exit —
+  ## but only if the value it returns carries none of the parameter's buffers.
+  ## `applyBuy` builds two new ladders and qualifies; `takeLevel` returns the
+  ## very ladder it was handed and does not. Freeing there would free the
+  ## value the caller is about to bind, which is the failure `-define:TUCK_TRACK`
+  ## exists to catch.
+  ##
+  ## `defer`, so every exit path frees once — a twin with two returns would
+  ## otherwise need the call duplicated at each.
+  ## A slot HANDED ON to another twin is no longer ours to free. `applyBuy`
+  ## passes `b.ask` to `sweep_moved`, which takes it destructively and frees
+  ## it itself — freeing it here too is a double free, and it segfaulted
+  ## immediately under `-define:TUCK_TRACK=true`. This is the third entry in
+  ## the escape list: returned, stored in an actor field, or MOVED INTO A CALL.
+  ##
+  ## ASKED OF THE VALUE MIRROR rather than re-scanned for. This used to be its
+  ## own walk over the body, looking for calls whose first argument was rooted
+  ## at the moved parameter — a second traversal that had to agree with the
+  ## one that DECIDED to hand a slot on, with nothing making them agree. The
+  ## consuming site is recorded on the value now, so there is one answer.
+  ## Switched after both were computed side by side across the corpus, both
+  ## applications, the Savina ports and the stdlib with no difference, and
+  ## after `TUCK_TRACK` confirmed no double free.
+  ## Step 6 of the ownership pass, printed.
+  var frees = ""
+  for slot in ownershipFor(d).twinFreesParam:
+    let path = if slot.len == 0: movedP else: movedP & "." & slot
+    frees.add(ind & "\tdefer delete(" & path & ")\n")
+  let twinName = movedName(d.name.replace(".", "_"))
+  var argNames: seq[string]
+  for p in d.fnParams: argNames.add(p.name)
+  var wrap = header & "\n"
+  wrap.add(ind & "  " & movedP & " := " & movedP & "\n")
+  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
+  if fields.len == 0:
+    wrap.add(ind & "  " & movedP & " = rt.tuckSeqCopy(" & movedP & ")\n")
+  else:
+    for f in fields:
+      wrap.add(ind & "  " & movedP & "." & f & " = rt.tuckSeqCopy(" &
+               movedP & "." & f & ")\n")
+  wrap.add(ind & "  return " & twinName & "(" & argNames.join(", ") & ")\n")
+  wrap.add(ind & "}\n\n")
+  let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
+                                  twinName & " :: proc")
+  wrap & twinHeader & "\n" & frees & bodyStr & "\n" & ind & "}\n"
+
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An ordinary fn. A pending fn is a stub, and leaves before any of this
   ## runs. (A decision table arrives here already lowered to a plain body.)
@@ -273,53 +324,8 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars
-  if movedP == "":
-    return header & "\n" & bodyStr & "\n" & ind & "}\n"
-  # STAGE 3: the twin OWNS its moved parameter, so it may free it at exit —
-  # but only if the value it returns carries none of the parameter's buffers.
-  # `applyBuy` builds two new ladders and qualifies; `takeLevel` returns the
-  # very ladder it was handed and does not. Freeing there would free the
-  # value the caller is about to bind, which is the failure `-define:TUCK_TRACK`
-  # exists to catch.
-  #
-  # `defer`, so every exit path frees once — a twin with two returns would
-  # otherwise need the call duplicated at each.
-  # A slot HANDED ON to another twin is no longer ours to free. `applyBuy`
-  # passes `b.ask` to `sweep_moved`, which takes it destructively and frees
-  # it itself — freeing it here too is a double free, and it segfaulted
-  # immediately under `-define:TUCK_TRACK=true`. This is the third entry in
-  # the escape list: returned, stored in an actor field, or MOVED INTO A CALL.
-  #
-  # ASKED OF THE VALUE MIRROR rather than re-scanned for. This used to be its
-  # own walk over the body, looking for calls whose first argument was rooted
-  # at the moved parameter — a second traversal that had to agree with the
-  # one that DECIDED to hand a slot on, with nothing making them agree. The
-  # consuming site is recorded on the value now, so there is one answer.
-  # Switched after both were computed side by side across the corpus, both
-  # applications, the Savina ports and the stdlib with no difference, and
-  # after `TUCK_TRACK` confirmed no double free.
-  # Step 6 of the ownership pass, printed.
-  var frees = ""
-  for slot in ownershipFor(d).twinFreesParam:
-    let path = if slot.len == 0: movedP else: movedP & "." & slot
-    frees.add(ind & "\tdefer delete(" & path & ")\n")
-  let twinName = movedName(d.name.replace(".", "_"))
-  var argNames: seq[string]
-  for p in d.fnParams: argNames.add(p.name)
-  var wrap = header & "\n"
-  wrap.add(ind & "  " & movedP & " := " & movedP & "\n")
-  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
-  if fields.len == 0:
-    wrap.add(ind & "  " & movedP & " = rt.tuckSeqCopy(" & movedP & ")\n")
-  else:
-    for f in fields:
-      wrap.add(ind & "  " & movedP & "." & f & " = rt.tuckSeqCopy(" &
-               movedP & "." & f & ")\n")
-  wrap.add(ind & "  return " & twinName & "(" & argNames.join(", ") & ")\n")
-  wrap.add(ind & "}\n\n")
-  let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
-                                  twinName & " :: proc")
-  wrap & twinHeader & "\n" & frees & bodyStr & "\n" & ind & "}\n"
+  if movedP == "": header & "\n" & bodyStr & "\n" & ind & "}\n"
+  else: ctx.genMovedTwin(d, header, bodyStr, movedP, ind)
 
 proc genTransitionProcs*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
                         hasPayload: bool): string =
