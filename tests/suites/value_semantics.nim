@@ -429,9 +429,9 @@ fn main() -> int:
   let x = {a: 1, b: 2} Big
   return {v: x} total
 """
-  t.omits     "the Nim backend passes a record param without 'var'", "v: var tuck_type_Big"
-  t.emits     "...as a plain value parameter", "v: tuck_type_Big"
-  t.omitsOdin "the Odin backend agrees (it always did)", "v: \\^tuck_type_Big"
+  t.omits     "the Nim backend passes a record param without 'var'", "v: var tuckˑtypeˑBig"
+  t.emits     "...as a plain value parameter", "v: tuckˑtypeˑBig"
+  t.omitsOdin "the Odin backend agrees (it always did)", "v: \\^tuckˑtypeˑBig"
 
   # --- actor isolation, pinned deliberately ---------------------------------
   #
@@ -515,9 +515,9 @@ fn main() -> int:
   return 0
 """
   t.okCheck "a threaded-container fn checks"
-  t.emitsD "D emits the moved twin", r"tuck_fn_addTo_moved\(tuck_type_Bag b"
+  t.emitsD "D emits the moved twin", r"tuckˑfnˑaddTo_moved\(tuckˑtypeˑBag b"
   t.emitsD "...and the wrapper copies before delegating", r"b\.items = b\.items\.dup"
-  t.emitsOdin "Odin emits it too", r"tuck_fn_addTo_moved :: proc"
+  t.emitsOdin "Odin emits it too", r"tuckˑfnˑaddTo_moved :: proc"
   t.omits "Nim needs no twin — it has sink", r"_moved"
   t.hostBuilds "...and every backend builds them"
   t.runs "a live source still copies; only the self-assign moves", 0
@@ -548,8 +548,8 @@ fn main() -> int:
   return 0
 """
   t.okCheck "the builder form checks"
-  t.emitsD "D routes the builder step to the twin", r"tuck_fn_addTo_moved\("
-  t.emitsOdin "so does Odin", r"tuck_fn_addTo_moved\("
+  t.emitsD "D routes the builder step to the twin", r"tuckˑfnˑaddTo_moved\("
+  t.emitsOdin "so does Odin", r"tuckˑfnˑaddTo_moved\("
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the chain still appends each step", 0
 
@@ -695,17 +695,17 @@ fn main() -> int:
 """
   t.okCheck "the provenance cases check"
   t.omitsOdin "a freshly allocated result is not copied again",
-              r"tuckSeqCopy\(tuck_fn_fresh\("
+              r"tuckSeqCopy\(tuckˑfnˑfresh\("
   # `keep` hands back its argument — but `keep` has a MOVED twin, and a call
   # whose argument is still needed reaches the WRAPPER, which copies `xs`
   # before handing it over. So `b` is already a private buffer, and copying
   # it again was the waste #77 measured (EV-12). The test that matters is
   # the aliasing one below: mutate `b`, and `a` must not see it.
   t.omitsOdin "...nor a result the callee's wrapper already copied",
-              r"tuckSeqCopy\(tuck_fn_keep\("
-  t.omitsD "the same elision on D", r"\(tuck_fn_fresh\([^)]*\)\)\.dup"
+              r"tuckSeqCopy\(tuckˑfnˑkeep\("
+  t.omitsD "the same elision on D", r"\(tuckˑfnˑfresh\([^)]*\)\)\.dup"
   t.omitsD "...and the wrapper's copy is not repeated on D",
-           r"\(tuck_fn_keep\([^)]*\)\)\.dup"
+           r"\(tuckˑfnˑkeep\([^)]*\)\)\.dup"
   # 9 + 9 + 9 + 0. The last term is the one that matters: `d.b[0]` is 0 only
   # if `twin`'s two fields were separated. Sharing one buffer makes it 5.
   t.hostRuns("one buffer returned as two fields is still two buffers", 27)
@@ -839,12 +839,12 @@ fn main() -> int:
   return out.xs[1] + out.xs[2] + out.n
 """
   t.okCheck "a chain of threading calls checks"
-  t.emitsOdin "a dead local reaches the twin", r"tuck_b := tuck_fn_step_moved\(a\)"
+  t.emitsOdin "a dead local reaches the twin", r"tuckˑvˑb := tuckˑfnˑstep_moved\(a\)"
   # RETURN POSITION, which is the one no emitter used to ask about: the
   # assignment emitters caught their own two shapes and nothing caught this.
   t.emitsOdin "...and so does one in return position",
-              r"return tuck_fn_step_moved\(tuck_b\)"
-  t.emitsD "the same on D", r"tuck_fn_step_moved\(tuck_b\)"
+              r"return tuckˑfnˑstep_moved\(tuckˑvˑb\)"
+  t.emitsD "the same on D", r"tuckˑfnˑstep_moved\(tuckˑvˑb\)"
   # 7,1,2 and n=3.
   t.hostRuns("...and the chain still computes what it did", 6)
 
@@ -876,8 +876,8 @@ fn main() -> int:
   # named inside the wrapper's own one-line body, so `omits` matched that
   # and failed on emitted code that was already correct.
   t.emitsOdin "a fn that does not own its parameter may not hand it on",
-              r"tuck_o := tuck_fn_reshape\(xs\)"
-  t.emitsD "...and the same on D", r"tuck_o = tuck_fn_reshape\(xs\)"
+              r"tuckˑvˑo := tuckˑfnˑreshape\(xs\)"
+  t.emitsD "...and the same on D", r"tuckˑvˑo = tuckˑfnˑreshape\(xs\)"
   # 4 + 4 + 5. Freeing src makes the last two terms read freed memory, which
   # is why this is asserted by VALUE and on every backend.
   t.hostRuns("...so the caller's buffer survives the call", 13)

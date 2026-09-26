@@ -1,49 +1,49 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_makeMany*(): seq[Animal]
-proc tuck_fn_total*(xs: sink seq[Animal]): int
-proc tuck_fn_main*(): int
+proc tuckˑfnˑmakeMany*(): seq[Animal]
+proc tuckˑfnˑtotal*(xs: sink seq[Animal]): int
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_Dog* = object
+type tuckˑobjectˑDog* = object
   name*: string
 
-type tuck_type_Cat* = object
+type tuckˑobjectˑCat* = object
   lives*: int
 
-type AnimalTag* = enum Animal_is_tuck_type_Cat, Animal_is_tuck_type_Dog
+type AnimalTag* = enum Animal_is_tuckˑobjectˑCat, Animal_is_tuckˑobjectˑDog
 
 type Animal* = object
   case tag*: AnimalTag
-  of Animal_is_tuck_type_Cat: tuck_type_CatVal*: tuck_type_Cat
-  of Animal_is_tuck_type_Dog: tuck_type_DogVal*: tuck_type_Dog
+  of Animal_is_tuckˑobjectˑCat: tuckˑobjectˑCatVal*: tuckˑobjectˑCat
+  of Animal_is_tuckˑobjectˑDog: tuckˑobjectˑDogVal*: tuckˑobjectˑDog
 
-proc tuck_type_Dog_noise*(self: var tuck_type_Dog): int =
+proc tuckˑobjectˑDogˑnoise*(self: var tuckˑobjectˑDog): int =
   return 1
 
 
-proc tuck_type_Cat_noise*(self: var tuck_type_Cat): int =
+proc tuckˑobjectˑCatˑnoise*(self: var tuckˑobjectˑCat): int =
   return 41
 
 
-proc tuck_fn_makeMany*(): seq[Animal] =
-  var tuck_d = tuck_type_Dog(name: "rex")
-  var tuck_c = tuck_type_Cat(lives: 9)
-  return @[Animal(tag: Animal_is_tuck_type_Dog, tuck_type_DogVal: tuck_d), Animal(tag: Animal_is_tuck_type_Cat, tuck_type_CatVal: tuck_c)]
+proc tuckˑfnˑmakeMany*(): seq[Animal] =
+  var tuckˑvˑd = tuckˑobjectˑDog(name: "rex")
+  var tuckˑvˑc = tuckˑobjectˑCat(lives: 9)
+  return @[Animal(tag: Animal_is_tuckˑobjectˑDog, tuckˑobjectˑDogVal: tuckˑvˑd), Animal(tag: Animal_is_tuckˑobjectˑCat, tuckˑobjectˑCatVal: tuckˑvˑc)]
 
-proc tuck_fn_total*(xs: sink seq[Animal]): int =
-  var tuck_s = 0
-  for tuck_a in xs:
+proc tuckˑfnˑtotal*(xs: sink seq[Animal]): int =
+  var tuckˑvˑs = 0
+  for tuckˑvˑa in xs:
     if true:
-      tuck_s = (tuck_s + (block:
-        case tuck_a.tag
-        of Animal_is_tuck_type_Cat:
-          var tmp = tuck_a.tuck_type_CatVal
-          tuck_type_Cat_noise(tmp)
-        of Animal_is_tuck_type_Dog:
-          var tmp = tuck_a.tuck_type_DogVal
-          tuck_type_Dog_noise(tmp)))
-  return tuck_s
+      tuckˑvˑs = (tuckˑvˑs + (block:
+        case tuckˑvˑa.tag
+        of Animal_is_tuckˑobjectˑCat:
+          var tmp = tuckˑvˑa.tuckˑobjectˑCatVal
+          tuckˑobjectˑCatˑnoise(tmp)
+        of Animal_is_tuckˑobjectˑDog:
+          var tmp = tuckˑvˑa.tuckˑobjectˑDogVal
+          tuckˑobjectˑDogˑnoise(tmp)))
+  return tuckˑvˑs
 
-proc tuck_fn_main*(): int =
-  return tuck_fn_total(tuck_fn_makeMany())
+proc tuckˑfnˑmain*(): int =
+  return tuckˑfnˑtotal(tuckˑfnˑmakeMany())
 

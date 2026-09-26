@@ -4,92 +4,92 @@ package main
 import "core:os"
 import rt "./tuckrt"
 
-tuck_type_Expr_Num :: struct {
+tuckˑtypeˑExpr_Num :: struct {
 	value: int,
 }
-tuck_type_Expr_Neg :: struct {
-	operand: [dynamic]tuck_type_Expr,
+tuckˑtypeˑExpr_Neg :: struct {
+	operand: [dynamic]tuckˑtypeˑExpr,
 }
-tuck_type_Expr_Add :: struct {
-	left: [dynamic]tuck_type_Expr,
-	right: [dynamic]tuck_type_Expr,
+tuckˑtypeˑExpr_Add :: struct {
+	left: [dynamic]tuckˑtypeˑExpr,
+	right: [dynamic]tuckˑtypeˑExpr,
 }
-tuck_type_Expr :: union {tuck_type_Expr_Num, tuck_type_Expr_Neg, tuck_type_Expr_Add}
+tuckˑtypeˑExpr :: union {tuckˑtypeˑExpr_Num, tuckˑtypeˑExpr_Neg, tuckˑtypeˑExpr_Add}
 
-tuck_type_Expr_eq :: proc(a, b: tuck_type_Expr) -> bool {
-  if av, aok := a.(tuck_type_Expr_Num); aok {
+tuckˑtypeˑExpr_eq :: proc(a, b: tuckˑtypeˑExpr) -> bool {
+  if av, aok := a.(tuckˑtypeˑExpr_Num); aok {
     _ = av
-    bv, bok := b.(tuck_type_Expr_Num)
+    bv, bok := b.(tuckˑtypeˑExpr_Num)
     _ = bv
     if !bok { return false }
     if av.value != bv.value { return false }
     return true
   }
-  if av, aok := a.(tuck_type_Expr_Neg); aok {
+  if av, aok := a.(tuckˑtypeˑExpr_Neg); aok {
     _ = av
-    bv, bok := b.(tuck_type_Expr_Neg)
+    bv, bok := b.(tuckˑtypeˑExpr_Neg)
     _ = bv
     if !bok { return false }
     if len(av.operand) != len(bv.operand) { return false }
     for i := 0; i < len(av.operand); i += 1 {
-      if !tuck_type_Expr_eq(av.operand[i], bv.operand[i]) { return false }
+      if !tuckˑtypeˑExpr_eq(av.operand[i], bv.operand[i]) { return false }
     }
     return true
   }
-  if av, aok := a.(tuck_type_Expr_Add); aok {
+  if av, aok := a.(tuckˑtypeˑExpr_Add); aok {
     _ = av
-    bv, bok := b.(tuck_type_Expr_Add)
+    bv, bok := b.(tuckˑtypeˑExpr_Add)
     _ = bv
     if !bok { return false }
     if len(av.left) != len(bv.left) { return false }
     for i := 0; i < len(av.left); i += 1 {
-      if !tuck_type_Expr_eq(av.left[i], bv.left[i]) { return false }
+      if !tuckˑtypeˑExpr_eq(av.left[i], bv.left[i]) { return false }
     }
     if len(av.right) != len(bv.right) { return false }
     for i := 0; i < len(av.right); i += 1 {
-      if !tuck_type_Expr_eq(av.right[i], bv.right[i]) { return false }
+      if !tuckˑtypeˑExpr_eq(av.right[i], bv.right[i]) { return false }
     }
     return true
   }
   return false
 }
 
-tuck_fn_eval :: proc (e: tuck_type_Expr) -> int {
+tuckˑfnˑeval :: proc (e: tuckˑtypeˑExpr) -> int {
   switch v in e
   {
-  case tuck_type_Expr_Num: return v.value;
-  case tuck_type_Expr_Neg: return (0 - tuck_fn_eval(rt.tuckAt(v.operand, 0)));
-  case tuck_type_Expr_Add: return (tuck_fn_eval(rt.tuckAt(v.left, 0)) + tuck_fn_eval(rt.tuckAt(v.right, 0)));
+  case tuckˑtypeˑExpr_Num: return v.value;
+  case tuckˑtypeˑExpr_Neg: return (0 - tuckˑfnˑeval(rt.tuckAt(v.operand, 0)));
+  case tuckˑtypeˑExpr_Add: return (tuckˑfnˑeval(rt.tuckAt(v.left, 0)) + tuckˑfnˑeval(rt.tuckAt(v.right, 0)));
   }
   return {}
 }
 
-tuck_fn_depth :: proc (e: tuck_type_Expr) -> int {
+tuckˑfnˑdepth :: proc (e: tuckˑtypeˑExpr) -> int {
   switch v in e
   {
-  case tuck_type_Expr_Num: return 1;
-  case tuck_type_Expr_Neg: return (1 + tuck_fn_depth(rt.tuckAt(v.operand, 0)));
-  case tuck_type_Expr_Add:
-      tuck_l := tuck_fn_depth(rt.tuckAt(v.left, 0))
-      tuck_r := tuck_fn_depth(rt.tuckAt(v.right, 0))
-      if (tuck_l > tuck_r) {
-          return (1 + tuck_l)
+  case tuckˑtypeˑExpr_Num: return 1;
+  case tuckˑtypeˑExpr_Neg: return (1 + tuckˑfnˑdepth(rt.tuckAt(v.operand, 0)));
+  case tuckˑtypeˑExpr_Add:
+      tuckˑvˑl := tuckˑfnˑdepth(rt.tuckAt(v.left, 0))
+      tuckˑvˑr := tuckˑfnˑdepth(rt.tuckAt(v.right, 0))
+      if (tuckˑvˑl > tuckˑvˑr) {
+          return (1 + tuckˑvˑl)
       }
-      return (1 + tuck_r)
+      return (1 + tuckˑvˑr)
   }
   return {}
 }
 
-tuck_fn_main :: proc () -> int {
-  tuck_three: tuck_type_Expr = tuck_type_Expr_Num{value = 3}
-  tuck_four: tuck_type_Expr = tuck_type_Expr_Num{value = 4}
-  tuck_sum: tuck_type_Expr = tuck_type_Expr_Add{left = [dynamic]tuck_type_Expr{tuck_three}, right = [dynamic]tuck_type_Expr{tuck_four}}
-  tuck_neg: tuck_type_Expr = tuck_type_Expr_Neg{operand = [dynamic]tuck_type_Expr{tuck_sum}}
-  tuck_whole: tuck_type_Expr = tuck_type_Expr_Add{left = [dynamic]tuck_type_Expr{tuck_sum}, right = [dynamic]tuck_type_Expr{tuck_neg}}
-  return ((tuck_fn_eval(tuck_whole) + tuck_fn_depth(tuck_whole)) - 4)
+tuckˑfnˑmain :: proc () -> int {
+  tuckˑvˑthree: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 3}
+  tuckˑvˑfour: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 4}
+  tuckˑvˑsum: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑthree}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑfour}}
+  tuckˑvˑneg: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Neg{operand = [dynamic]tuckˑtypeˑExpr{tuckˑvˑsum}}
+  tuckˑvˑwhole: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑsum}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑneg}}
+  return ((tuckˑfnˑeval(tuckˑvˑwhole) + tuckˑfnˑdepth(tuckˑvˑwhole)) - 4)
 }
 
 main :: proc() {
-	mainRc := tuck_fn_main()
+	mainRc := tuckˑfnˑmain()
 	os.exit(mainRc)
 }

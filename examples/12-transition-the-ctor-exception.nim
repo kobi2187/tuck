@@ -1,75 +1,75 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc `==`*(a, b: tuck_type_PlayerState): bool {.noSideEffect.}
-proc `==`*(a, b: tuck_type_MqttSession): bool {.noSideEffect.}
+proc `==`*(a, b: tuckˑtypeˑPlayerState): bool {.noSideEffect.}
+proc `==`*(a, b: tuckˑtypeˑMqttSession): bool {.noSideEffect.}
 
-proc tuck_fn_main*(): void
+proc tuckˑfnˑmain*(): void
 
-type tuck_type_Config* = object
+type tuckˑtypeˑConfig* = object
   url*: string
 
-type tuck_type_Feed* = object
+type tuckˑtypeˑFeed* = object
   title*: string
 
-type tuck_type_Socket* = object
+type tuckˑtypeˑSocket* = object
   fd*: int
 
-type tuck_type_PlayerStateKind* = enum Unloaded, Loading, Ready
-type tuck_type_PlayerState* = object
-  case kind*: tuck_type_PlayerStateKind
-  of Unloaded: tuck_unloaded*: tuple[config: tuck_type_Config]
-  of Loading: tuck_loading*: tuple[config: tuck_type_Config, progress: int]
-  of Ready: tuck_ready*: tuple[config: tuck_type_Config, feed: tuck_type_Feed]
+type tuckˑtypeˑPlayerStateKind* = enum Unloaded, Loading, Ready
+type tuckˑtypeˑPlayerState* = object
+  case kind*: tuckˑtypeˑPlayerStateKind
+  of Unloaded: tuckˑvariantˑunloaded*: tuple[config: tuckˑtypeˑConfig]
+  of Loading: tuckˑvariantˑloading*: tuple[config: tuckˑtypeˑConfig, progress: int]
+  of Ready: tuckˑvariantˑready*: tuple[config: tuckˑtypeˑConfig, feed: tuckˑtypeˑFeed]
 
-proc `==`*(a, b: tuck_type_PlayerState): bool {.noSideEffect.} =
+proc `==`*(a, b: tuckˑtypeˑPlayerState): bool {.noSideEffect.} =
   if a.kind != b.kind: return false
   case a.kind
-  of Unloaded: a.tuck_unloaded == b.tuck_unloaded
-  of Loading: a.tuck_loading == b.tuck_loading
-  of Ready: a.tuck_ready == b.tuck_ready
-proc canTransition*(frm, to: tuck_type_PlayerStateKind): bool =
+  of Unloaded: a.tuckˑvariantˑunloaded == b.tuckˑvariantˑunloaded
+  of Loading: a.tuckˑvariantˑloading == b.tuckˑvariantˑloading
+  of Ready: a.tuckˑvariantˑready == b.tuckˑvariantˑready
+proc canTransition*(frm, to: tuckˑtypeˑPlayerStateKind): bool =
   case frm
   of Unloaded: to in {Loading}
   of Loading: to in {Ready, Unloaded}
   of Ready: false
-proc transitionTo*(self: var tuck_type_PlayerState, target: tuck_type_PlayerState) =
+proc transitionTo*(self: var tuckˑtypeˑPlayerState, target: tuckˑtypeˑPlayerState) =
   if not canTransition(self.kind, target.kind):
     raise newException(ValueError, "Invalid transition " & $self.kind & " -> " & $target.kind)
   self = target
 
-type tuck_type_MqttSessionKind* = enum Disconnected, Connecting, Connected, Subscribing
-type tuck_type_MqttSession* = object
-  case kind*: tuck_type_MqttSessionKind
+type tuckˑtypeˑMqttSessionKind* = enum Disconnected, Connecting, Connected, Subscribing
+type tuckˑtypeˑMqttSession* = object
+  case kind*: tuckˑtypeˑMqttSessionKind
   of Disconnected: discard
-  of Connecting: tuck_connecting*: tuple[host: string, port: uint16]
-  of Connected: tuck_connected*: tuple[socket: tuck_type_Socket, keepalive: uint16]
-  of Subscribing: tuck_subscribing*: tuple[socket: tuck_type_Socket, topic: string]
+  of Connecting: tuckˑvariantˑconnecting*: tuple[host: string, port: uint16]
+  of Connected: tuckˑvariantˑconnected*: tuple[socket: tuckˑtypeˑSocket, keepalive: uint16]
+  of Subscribing: tuckˑvariantˑsubscribing*: tuple[socket: tuckˑtypeˑSocket, topic: string]
 
-proc `==`*(a, b: tuck_type_MqttSession): bool {.noSideEffect.} =
+proc `==`*(a, b: tuckˑtypeˑMqttSession): bool {.noSideEffect.} =
   if a.kind != b.kind: return false
   case a.kind
   of Disconnected: true
-  of Connecting: a.tuck_connecting == b.tuck_connecting
-  of Connected: a.tuck_connected == b.tuck_connected
-  of Subscribing: a.tuck_subscribing == b.tuck_subscribing
-proc canTransition*(frm, to: tuck_type_MqttSessionKind): bool =
+  of Connecting: a.tuckˑvariantˑconnecting == b.tuckˑvariantˑconnecting
+  of Connected: a.tuckˑvariantˑconnected == b.tuckˑvariantˑconnected
+  of Subscribing: a.tuckˑvariantˑsubscribing == b.tuckˑvariantˑsubscribing
+proc canTransition*(frm, to: tuckˑtypeˑMqttSessionKind): bool =
   case frm
   of Disconnected: to in {Connecting}
   of Connecting: to in {Connected, Disconnected}
   of Connected: to in {Subscribing}
   of Subscribing: to in {Connected}
-proc transitionTo*(self: var tuck_type_MqttSession, target: tuck_type_MqttSession) =
+proc transitionTo*(self: var tuckˑtypeˑMqttSession, target: tuckˑtypeˑMqttSession) =
   if not canTransition(self.kind, target.kind):
     raise newException(ValueError, "Invalid transition " & $self.kind & " -> " & $target.kind)
   self = target
 
-proc tuck_fn_main*(): void =
-  var tuck_config = tuck_type_Config(url: "https://example.com")
-  var tuck_feed = tuck_type_Feed(title: "Deep Dive")
-  var tuck_p = tuck_type_PlayerState(kind: Ready, tuck_ready: (config: tuck_config, feed: tuck_feed))
-  var tuck_fresh = tuck_type_MqttSession(kind: Disconnected)
-  var tuck_socket = tuck_type_Socket(fd: 3)
-  var tuck_session = tuck_type_MqttSession(kind: Connected, tuck_connected: (socket: tuck_socket, keepalive: 60'u16))
+proc tuckˑfnˑmain*(): void =
+  var tuckˑvˑconfig = tuckˑtypeˑConfig(url: "https://example.com")
+  var tuckˑvˑfeed = tuckˑtypeˑFeed(title: "Deep Dive")
+  var tuckˑvˑp = tuckˑtypeˑPlayerState(kind: Ready, tuckˑvariantˑready: (config: tuckˑvˑconfig, feed: tuckˑvˑfeed))
+  var tuckˑvˑfresh = tuckˑtypeˑMqttSession(kind: Disconnected)
+  var tuckˑvˑsocket = tuckˑtypeˑSocket(fd: 3)
+  var tuckˑvˑsession = tuckˑtypeˑMqttSession(kind: Connected, tuckˑvariantˑconnected: (socket: tuckˑvˑsocket, keepalive: 60'u16))
   return
 

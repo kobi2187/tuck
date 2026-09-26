@@ -6,22 +6,22 @@ struct TRec_time_ms(T_ms) {
     T_ms ms;
 }
 
-alias tuck_type_Milliseconds = uint;
+alias tuckˑtypeˑMilliseconds = uint;
 
-alias tuck_type_Microseconds = uint;
+alias tuckˑtypeˑMicroseconds = uint;
 
-alias tuck_type_Seconds = uint;
+alias tuckˑtypeˑSeconds = uint;
 
-tuck_type_Milliseconds tuck_fn_ms(uint value) {
-    return tuck_type_Milliseconds(value);
+tuckˑtypeˑMilliseconds tuckˑfnˑms(uint value) {
+    return tuckˑtypeˑMilliseconds(value);
 }
 
-tuck_type_Microseconds tuck_fn_us(uint value) {
-    return tuck_type_Microseconds(value);
+tuckˑtypeˑMicroseconds tuckˑfnˑus(uint value) {
+    return tuckˑtypeˑMicroseconds(value);
 }
 
-tuck_type_Seconds tuck_fn_s(uint value) {
-    return tuck_type_Seconds(value);
+tuckˑtypeˑSeconds tuckˑfnˑs(uint value) {
+    return tuckˑtypeˑSeconds(value);
 }
 
 TRec_time_ms!(ulong) nowMs() {

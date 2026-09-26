@@ -159,7 +159,9 @@ closure no longer exist in any `codegen_*.nim`.
 |---|---|---|---|
 | — | **#87** | **FIXED 2026-09-25** — actor field initialisers are kept and checked (TK-TY29); on `type`/`object` fields refused (TK-TY30) | — |
 | — | **#73** | **FIXED** in `8d5b6c6` — a const resolves across the program (`ast_query.constDeclFor`); guarded in `cross_module`. This row was not updated at the time | — |
-| — | **#78** | **FIXED 2026-09-25** — the prefix keeps the first letter's case (`Tuck_Order`, `tuck_order`); `compiler/name_prefix.nim` | — |
+| — | **#78** | **FIXED 2026-09-25** (3fd86f5) — the prefix names the declaration kind; `compiler/name_prefix.nim`. This is S7 below, refined 2026-09-26 to `tuckˑ<kind>ˑ<name>` | — |
+| — | EV-6 | **FIXED 2026-09-26** — a D program with actors crashed at exit about half the time (futex error or segfault): rt_term unmapped the GC heap under parked actor threads. `tuckDrainActors` now retires and joins them; `d_backend` runs one binary 40 times | — |
+| — | — | **FIXED 2026-09-26** — on Odin a `str` grown by `s = s + x` leaked every old value (14 GB, OOM at 200 000 turns). Step 5 of the ownership pass now covers `str`; a literal among its values is copied (`copyToOwn`) so the local owns every value it holds. `known_bugs` pins it at 12 MB on all three | — |
 | — | **#79** | **FIXED 2026-09-25** — per-arm scoping in the Nim and Odin dispatch; see M4.3 | — |
 
 ### S2 — Finish partial features
@@ -167,12 +169,12 @@ closure no longer exist in any `codegen_*.nim`.
 | # | issue | | size | depends on |
 |---|---|---|---|---|
 | — | **#72** | **FIXED 2026-09-26** — the checker takes an `Array`'s element from its second argument and lowers `a[i]` to the runtimes' existing `tuckArrayAt`/`tuckArraySetAt` | — | — |
-| S2.2 | **#45** | `pool.acquire` hands out a copy, so a pool cannot be a DMA target | M | — |
-| S2.3 | **#42** | pool invariant validation | S | S2.2 |
+| — | **#45** | **FIXED 2026-09-26** — `Pool.read {h}` / `Pool.write {h, value}` through the handle, and `Pool.addr {h}` (a `Buf`) for an extern only (TK-TY08). Pool ops are their own node, `exkPoolOp`; a pool is no longer capped at 64 cells. `tests/suites/pools.nim` | — | — |
+| — | **#42** | **FIXED 2026-09-26** (ruled: a cell starts ABSENT) — `read` is a `?T`, so zeroed storage is never read as a value; a written value is a validated construction; `addr` on an invariant-carrying element is TK-TY31 | — | — |
 | S2.4 | **#85** | extend `<uninit>` to actor fields | S | S1.1 |
 | S2.5 | **#55** | a fired `timeout` answers right at 100× the deadline | M | — |
 | S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |
-| S2.7 | **#20** | by-type payload matching for member calls | M | — |
+| — | **#20** | **FIXED 2026-09-26** — a member call's payload (`b.grow {...}`, and a mutator's `s.withPort {...}`) binds by the same subset / name / type passes as any call; the method form had its own by-name loop (`typecheck.bindPayloadFields`, `tests/suites/auto_alias.nim`) | — | — |
 | — | **#36** | **FIXED 2026-09-26** — `mod::Type` in a type position: the parser keeps the qualifier, the checker confirms the module declares (and exports) the type | — | — |
 | — | — | **FIXED 2026-09-26** (S2.9) — a binding match arm is marked `pkBind` by the checker and lowered by `lowering_match_binds` to a catch-all reading the subject, or a snapshot of it. The same change made a binding arm count as a catch-all for exhaustiveness (it was counted as one more tag name) | — | — |
 
@@ -180,7 +182,7 @@ closure no longer exist in any `codegen_*.nim`.
 
 | # | issue | | size |
 |---|---|---|---|
-| S3.1 | **#43** | Odin invariant guard + `--odin:`/`--dmd:` passthrough | S + M |
+| S3.1 | **#43** | ~~Odin invariant guard~~ **DONE 2026-09-26**: guarded by `tuckNoInvariants` (`#config`), a runtime call not `assert` (which `-disable-assert` stripped), the same message and exit 1 on all three (D aborted, 134). **Open, needs a ruling:** how `tuck build` reaches the define on Odin and D — `--odin:`/`--dmd:` passthrough, or a Tuck-level `--no-invariants` | M |
 | S3.2 | **#30** | D: volatile registers, `[saturating]`, `tuckConcat` | M |
 | S3.3 | — | the D runtime has no networking; `42-net-echo` cannot link | L |
 | S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |
@@ -201,7 +203,16 @@ closure no longer exist in any `codegen_*.nim`.
 | S5.1 | **#22** | `callParamsFor` for pending fns, distinct ctors, combinators | M |
 | S5.2 | **#23** | superlinear emit; closes as a consequence of #21 + #22. Nim is already linear | — |
 
-### S7 — Kind-scoped mangling (user proposal, 2026-09-22)
+### S7 — Kind-scoped mangling (user proposal, 2026-09-22) — DONE 2026-09-25 (3fd86f5, #78)
+
+**Refined 2026-09-26 (user ruling):** the umbrella words were still too coarse
+(`tuck_type_` covered objects, actors and fnsigs; `tuck_fn_` tasks), and `_`
+between the parts let Nim fold `fn sigHandler` into `fnsig Handler` and a
+local `typeName` into `type Name`. Every name is now `tuckˑ<kind>ˑ<name>` with
+one word per kind (`name_prefix.NameKind`), locals included (`v`), and the
+separator `ˑ` (U+02D1) — a letter to all three hosts, outside Tuck's ASCII
+names. That retired `RtFoldableIntrinsics` and `tuck_val_` outright, and needs
+no reserved spelling. The text below is the 2026-09-22 proposal as written.
 
 Mangle by DECLARATION KIND: `tuck_fn_`, `tuck_type_`, `tuck_const_`, ...
 rather than one `tuck_` for everything.
@@ -236,8 +247,8 @@ between two senders · **#7** full-mailbox policy.
 `arena` (parses and discards its body — give it a DIAGNOSTIC now, fifteen
 minutes, so it stops checking clean) · #12 hashing · #11 recursive types ·
 #10 correlation tokens · #16 numeric sigils · #17 · #32 · #33 · #57 ·
-#66/#68/#69/#70 · #71 · #74 · DNS. And **#18 generic actors is closer than its
-issue says** — `actor Inbox[T]: xs: Seq[T]` parses now that #52 is closed.
+#66/#68/#69/#70 · #71 · #74 · DNS. (**#18 generic actors** is done and
+closed: one singleton per instantiation, expanded before typecheck.)
 
 ---
 

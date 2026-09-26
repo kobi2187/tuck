@@ -10,27 +10,27 @@ struct TRec_r(T_r) {
     T_r r;
 }
 
-TRec_v!(long) tuck_fn_stepIo(long n) {
+TRec_v!(long) tuckˑfnˑstepIo(long n) {
     return TRec_v!(long)(v: n);
 }
 
-TRec_r!(long) tuck_fn_compute(long base) {
-    TRec_v!(long) tuck_a = tuck_fn_stepIo(base);
-    TRec_v!(long) tuck_b = tuck_fn_stepIo(base);
-    return TRec_r!(long)(r: (tuck_a.v + tuck_b.v));
+TRec_r!(long) tuckˑtaskˑcompute(long base) {
+    TRec_v!(long) tuckˑvˑa = tuckˑfnˑstepIo(base);
+    TRec_v!(long) tuckˑvˑb = tuckˑfnˑstepIo(base);
+    return TRec_r!(long)(r: (tuckˑvˑa.v + tuckˑvˑb.v));
 }
 
-long tuck_fn_main() {
+long tuckˑfnˑmain() {
     auto tuckSlot1 = rt.newAsyncResult!(TRec_r!(long))();
-    rt.spawnResult(tuckSlot1, { return tuck_fn_compute(21L); });
-    TRec_r!(long) tuck_res = rt.awaitResult(tuckSlot1);
-    return tuck_res.r;
+    rt.spawnResult(tuckSlot1, { return tuckˑtaskˑcompute(21L); });
+    TRec_r!(long) tuckˑvˑres = rt.awaitResult(tuckSlot1);
+    return tuckˑvˑres.r;
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    auto mainRc = tuck_fn_main();
+    auto mainRc = tuckˑfnˑmain();
     rt.tuckRun();
     return cast(int) mainRc;
 }

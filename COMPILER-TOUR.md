@@ -221,11 +221,20 @@ Tuck compiles *to Nim and Odin*. So what happens if you write a Tuck type
 called `Feed`, and Nim also has something called `Feed`? The emitted code binds
 the wrong one, and the failure is baffling.
 
-The fix is blunt and effective: rename everything. `Feed` becomes
-`tuck_type_Feed`, `fn feed` becomes `tuck_fn_feed`. Nothing user-written can
-collide with a target-language symbol, ever. The prefix names the KIND
-because Nim matches only an identifier's first character exactly: under one
-`tuck_` prefix, `type Order` and `fn order` were the same Nim name (#78).
+The fix is blunt and effective: rename everything, spelling each name as
+exactly what it is. `type Feed` becomes `tuckˑtypeˑFeed`, `fn feed`
+`tuckˑfnˑfeed`, `actor Feed` `tuckˑactorˑFeed`, a local `n` `tuckˑvˑn`.
+Nothing user-written can collide with a target-language symbol, ever. The
+KIND is in the name because Nim ignores case and `_` after an identifier's
+first character: under one `tuck_` prefix `type Order` and `fn order` were
+one Nim name (#78), and with `_` between the parts so were `fn sigHandler`
+and `fnsig Handler`. The separator `ˑ` (U+02D1) is a letter to all three
+hosts and outside the ASCII a Tuck name is written in, so no two names of
+different kinds can meet, no source name can look already renamed, and no
+user name can meet a runtime one — by construction (`compiler/name_prefix.nim`).
+A name the compiler DERIVES from two joins them by the same separator
+(`joinedName`): an object member is `tuckˑobjectˑOrderˑbook`, which the
+object `OrderBook` cannot meet, as it did when the join was `_`.
 
 **But here's the subtlety, and it caused two real bugs in this codebase:**
 mangling is about **emitted identifiers only**. It exists to keep generated
@@ -362,6 +371,18 @@ If you're adding something, this tells you where it goes. A new question about
 the tree belongs in `ast_query`. A new check belongs in `typecheck`. A new
 emitted construct belongs in every backend — and if you find yourself writing
 the same non-syntax logic twice, that's `codegen_common` calling.
+
+The rule behind that, at its strictest: **a backend prints; it does not
+decide.** A decision every backend needs is made once, from the tree, and
+handed to the three as data — which argument feeds each parameter
+(`call_args`), who frees a buffer (`analysis_ownership`), which call takes a
+moved twin (`twin_calls`), which bare name is the owner's field
+(`Resolution.ownerFields`, recorded by the checker's scopes). When a backend
+has to fill a gap its own way, the gap is the bug: `call_args` asserts every
+call complete after lowering (`backend_prepare` step 8), because the backends
+used to spell a missing argument three different ways. And each backend used
+to decide "is this name a field?" by looking it up in a set of field names,
+which cannot see a param that shadows one.
 
 ---
 

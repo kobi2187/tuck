@@ -3,7 +3,7 @@ module _47_resource_registry;
 import rt = tuck_rt;
 import std.stdio : writeln, stderr;
 
-enum tuck_type_NetState { Connecting, Ready, Closed }
+enum tuckˑtypeˑNetState { Connecting, Ready, Closed }
 
 alias NetHandle = rt.ResourceHandle;
 __gshared rt.ResourceTable tuckRes_net = {kind: "net", cap: 10000, policy: rt.RtResourcePolicy.Lazy, onFull: rt.RtOnFull.Error, sweepBatch: 100};
@@ -17,42 +17,42 @@ void tuckResourcesShutdown() {
     rt.shutdownResources(tuckRes_net);
 }
 
-long tuck_fn_rawOpenUdp(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_rawOpenUdp invoked (not implemented)");
+long tuckˑfnˑrawOpenUdp(T)(T payload) {
+    stderr.writeln("TUCK PENDING: rawOpenUdp invoked (not implemented)");
     return typeof(return).init;
 }
 
 
-rt.TuckResult!(UdpHandle) tuck_fn_openUdp(ushort port) {
-    return rt.acquireResource(tuckRes_udp, cast(long)(tuck_fn_rawOpenUdp(port)), "47-resource-registry:73");
+rt.TuckResult!(UdpHandle) tuckˑfnˑopenUdp(ushort port) {
+    return rt.acquireResource(tuckRes_udp, cast(long)(tuckˑfnˑrawOpenUdp(port)), "47-resource-registry:73");
 }
 
-long tuck_fn_withScratch(long n) {
-    long tuck_scratch = n;
+long tuckˑfnˑwithScratch(long n) {
+    long tuckˑvˑscratch = n;
     scope(exit) {
-        tuck_scratch = 0L;
+        tuckˑvˑscratch = 0L;
     }
-    return (tuck_scratch + 1L);
+    return (tuckˑvˑscratch + 1L);
 }
 
-long tuck_fn_serve(ushort port) {
-    rt.TuckResult!(UdpHandle) tuck_sock = tuck_fn_openUdp(port);
-    if ((tuck_sock.status == rt.TuckStatus.Ok)) {
+long tuckˑfnˑserve(ushort port) {
+    rt.TuckResult!(UdpHandle) tuckˑvˑsock = tuckˑfnˑopenUdp(port);
+    if ((tuckˑvˑsock.status == rt.TuckStatus.Ok)) {
         scope(exit) {
-            rt.finishResource(tuckRes_udp, tuck_sock.value);
+            rt.finishResource(tuckRes_udp, tuckˑvˑsock.value);
         }
         return 1L;
     }
     return 0L;
 }
 
-long tuck_fn_main() {
-    return tuck_fn_withScratch(16L);
+long tuckˑfnˑmain() {
+    return tuckˑfnˑwithScratch(16L);
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
-    auto mainRc = tuck_fn_main();
+    auto mainRc = tuckˑfnˑmain();
     tuckResourcesShutdown();
     return cast(int) mainRc;
 }

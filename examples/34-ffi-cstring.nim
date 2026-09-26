@@ -7,15 +7,15 @@ export zlib_shim
 import sys
 import console
 
-proc tuck_fn_main*(): void
+proc tuckˑfnˑmain*(): void
 
 proc compressBound*(sourceLen: uint64): uint64 {.importc: "compressBound", header: "zlib.h".}
 
-proc tuck_fn_main*(): void =
-  var tuck_v = zlibVersion()
-  tuck_rt.printLine(tuck_v)
-  var tuck_b = compressBound(1000'u64)
-  if (tuck_b == 1013):
+proc tuckˑfnˑmain*(): void =
+  var tuckˑvˑv = zlibVersion()
+  tuck_rt.printLine(tuckˑvˑv)
+  var tuckˑvˑb = compressBound(1000'u64)
+  if (tuckˑvˑb == 1013):
     if true:
       tuck_rt.exit(0)
   tuck_rt.exit(1)

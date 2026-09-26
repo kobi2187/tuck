@@ -1091,7 +1091,7 @@ when isMainModule:
         for d in lm.m.decls:
           if d == nil: continue
           if d.kind == dkActor and actorHasMessages(d):
-            actorNames.add(mangleName(d.name, nkType))
+            actorNames.add(mangleName(d.name, nkActor))
           if d.kind == dkTask: hasTasks = true
       for d in m.decls:
         # `m` was mangled above, so `fn main` is now tuck_main here.

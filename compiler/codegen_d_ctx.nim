@@ -16,6 +16,9 @@ const dPrims = {
   "u8": "ubyte", "u16": "ushort", "u32": "uint", "u64": "ulong",
   "f32": "float", "f64": "double", "float": "double",
   "bool": "bool", "str": "string", "void": "void", "unit": "void",
+  # The builtin FFI pointers (typecheck_pointers): C's `uint8_t*` and
+  # `char*`. D had no spelling for either and printed the bare Tuck name.
+  "Buf": "ubyte*", "cstring": "const(char)*",
 }.toTable
 
 const DCastablePrims* = ["long", "byte", "short", "int",
@@ -60,8 +63,6 @@ type
     inlineSumOwner*: string  # "<Owner><Field>" while typing a field position,
                             # so an INLINE sum can hoist under a stable name
                             # instead of dying. Empty everywhere else.
-    fieldVars*: HashSet[string]  # inside an invariant: names that are fields
-    fieldPrefix*: string         # what those names are reached through
     matchNarrowed*: Table[string, string]  # subject text -> the variant a
                                             # match arm currently narrows it
                                             # to (see codegen.nim's twin)

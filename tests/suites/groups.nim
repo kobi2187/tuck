@@ -263,10 +263,10 @@ fn main() -> int:
   t.okCheck "a generic group's parameter is solved from the conformance"
   # E is mentioned by no parameter, so no host language can infer it. Each
   # backend is handed the solved arguments in its own spelling.
-  t.emits "Nim gets explicit type arguments", r"tuck_fn_firstOf\[tuck_type_Row, int\]"
-  t.emitsOdin "Odin passes the typeid it declared", r"tuck_fn_firstOf\(int, tuck_r\)"
+  t.emits "Nim gets explicit type arguments", r"tuckˑfnˑfirstOf\[tuckˑtypeˑRow, int\]"
+  t.emitsOdin "Odin passes the typeid it declared", r"tuckˑfnˑfirstOf\(int, tuckˑvˑr\)"
   t.emitsD "D gets explicit template arguments",
-           r"tuck_fn_firstOf!\(tuck_type_Row, long\)"
+           r"tuckˑfnˑfirstOf!\(tuckˑtypeˑRow, long\)"
   t.hostBuilds "...and every backend builds it"
   t.runs "...and runs", 0
 

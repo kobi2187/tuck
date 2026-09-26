@@ -112,6 +112,8 @@ Three passes, in order (`tests/suites/typecheck.nim`, run-verified in
    active: true}` binds cleanly into `{id: int, name: str, ok: bool}`.
 
 Position is irrelevant; scrambled field order still binds (`tests/suites/auto_alias.nim`).
+A member call's payload binds the same way — `b.grow {n: 7, text: "x"}` into
+`{count: int, label: str}`, as does a mutator's (`s.withPort {p: 80}`).
 Ambiguity is an error, not a guess: two unmatched fields of the same type →
 `missing required field` (`tests/suites/typecheck.nim`).
 
@@ -232,8 +234,12 @@ object Dog:
 data. A field above it is a parse error (`TK-PA06`).
 
 Objects carry fields, `+ Composed` entries, `satisfies` lines, member fns, and
-`self`. Two objects may share a member fn name — Nim overloads on `self`, Odin
-cannot, so the emitter mangles to `tuck_type_Dog_noise` (`tests/suites/member_names.nim`,
+`self`. A member reads and writes its object's fields bare (`return name`,
+`n = n + 1`) as well as through `self`, the way an actor's handlers read its
+fields. A param or `let` of the same name shadows the field, and inside that
+scope `self.name` is the only way to reach the field
+(`tests/suites/owner_fields.nim`). Two objects may share a member fn name — Nim overloads on `self`, Odin
+cannot, so the emitter mangles to `tuckˑobjectˑDogˑnoise` (`tests/suites/member_names.nim`,
 gated by a real `odin build`).
 
 ### Mixins — `mixin`, fns only, never fields
@@ -469,9 +475,9 @@ members but no `satisfies` line is *rejected* (`tests/suites/interface_wrap.nim`
 ```
 emits  'AnimalTag'                    # a tag enum
 emits  'case tag'                     # the value is a variant over its types
-emits  'tuck_type_DogVal'                  # the payload is the object itself
+emits  'tuckˑobjectˑDogVal'                  # the payload is the object itself
 omits  'AnimalVT'                     # NO function table
-omits  'Animal_tuck_type_Dog_noise'        # NO thunks
+omits  'Animal_tuckˑobjectˑDogˑnoise'        # NO thunks
 ```
 
 Every satisfying type is a branch, whether or not anything wraps it (`:88`).
@@ -564,7 +570,7 @@ wider intermediate (`tests/suites/known_bugs.nim`).
 
 An overflow attribute **implies `distinct`** — `distinct uint16` in Nim,
 `distinct u16` in Odin (`tests/suites/known_bugs.nim`). D emits
-`alias tuck_type_SafeRPM = ushort`, which is not a distinct type there; the
+`alias tuckˑtypeˑSafeRPM = ushort`, which is not a distinct type there; the
 separation is enforced by Tuck's checker either way, so no program means
 something different, but the emitted D does not carry it.
 
@@ -608,7 +614,11 @@ type Temperature:
 3. inside a `!T`-wrapped return — the payload validates before `tok()` wraps it
 4. at an **extern call site** returning an invariant-carrying type
 
-`when not defined(release)` strips them in release builds.
+They **survive release builds** (ruling 2026-08-25). A violation prints
+`Invariant violated on <type>: <cond>` and exits 1 on all three backends, and
+the one opt-out is the `tuckNoInvariants` define, which each backend guards its
+checks with (`tests/suites/invariants.nim`). Only Nim's `--nim:` passthrough
+reaches that define from `tuck build` today (#43).
 
 ---
 
@@ -685,13 +695,19 @@ return type, with nothing checking it was ever assigned and nothing collecting
 it — the emitted `handleMsg` returns nothing, so it became a discarded local.
 A fn returns with `return`.
 
-`on select` gives message arms plus a reserved `shutdown`:
+`on select` gives message arms plus a reserved `shutdown`. Like any handler it
+lives inside its actor (or task); at the top level only a registry handler,
+`on Registry.Event({...}):`, may start with `on` (`TK-PA15`):
 
 ```tuck
-on select:
-  | add -> {n: int}:  total += n
-  | finish -> {}:     done = true
-  | shutdown -> {}:   total = total
+actor Tally [queue: 16]:
+  total: int = 0
+  done: bool = false
+
+  on select:
+    | add -> {n: int}:  total += n
+    | finish -> {}:     done = true
+    | shutdown -> {}:   total = total
 ```
 
 Run-verified 55 on every backend.
@@ -710,21 +726,13 @@ gone entirely (`tests/suites/actor_result.nim`).
 > (`map`/`fold`/`keep` over `Seq[T]`), since `bake` needs a `fnsig`-typed
 > field to fill. Same family as the generic-actor gap below.
 
-> ⚠️ **OPEN — a generic actor declaration does not parse.**
-> `actor Box[T] [queue: 4]:` fails with `Expected 'Colon' here, found '['` —
-> the actor grammar has no type-parameter slot the way `type`/`fn` do
-> (`fn identity[T]`, `type Box[T] = {value: T}` both parse fine; `actor` does
-> not). Found while designing a stdlib service actor generic over its
-> payload type. Unclear which side of the line this falls on: it could be a
-> straightforward grammar gap (the `actor` rule simply never grew the `[T]`
-> slot), or it could be pointing at something semantically unresolved —
-> an actor is a compile-time singleton with no construction step (§10
-> above), so it isn't obvious what "one instance, but generic over `T`"
-> would even mean, since nothing ever supplies `T` at a call site the way
-> an ordinary generic fn does. Flagged rather than triaged; the closest
-> precedent (`Box[error]` as a parameter, §3) turned out to be a *ruling*
-> ("attribute names are reserved in brackets") rather than a bug, so this
-> one shouldn't be assumed to be a bug either without someone deciding.
+> **A generic actor is one actor per instantiation** (ruled 2026-09-17, #18).
+> `actor Box[T] [queue: 4]:` declares it; `Box[int] send put {v: 1}` and
+> `Box[int].last` use it. An expansion pass before typecheck clones the actor
+> once per instantiation with `T` substituted, so every later stage sees
+> plain actors: `Box[int]` and `Box[str]` are two singletons with two
+> mailboxes. A generic actor nobody instantiates is refused (`TK-TY28`), not
+> dropped (`tests/suites/declarations.nim`).
 
 ### Tasks — async that looks synchronous
 
@@ -835,12 +843,17 @@ Module resolution needs `--root:`.
 
 ### Name mangling
 
-A whole-program pass before either backend (`tests/suites/mangle.nim`): the
-prefix names what the name is — `tuck_fn_` for fns and tasks, `tuck_type_` for
-types, objects, actors and fn signatures, plain `tuck_` for consts, pools,
-registers, registries and locals (`compiler/name_prefix.nim`). One prefix for
-all of them let Nim, which ignores case after an identifier's first
-character, fold `type Order` and `fn order` into one name (#78). **Fields and
+A whole-program pass before either backend (`tests/suites/mangle.nim`): every
+emitted name is `tuckˑ<kind>ˑ<name>`, the kind exactly what it is — `fn`,
+`task`, `decision`, `type`, `object`, `actor`, `fnsig`, `const`, `pool`,
+`register`, `registry`, `v` for a local, `variant` for a sum's tag field
+(`compiler/name_prefix.nim`). Nim ignores case and `_` after an identifier's
+first character, which folded `type Order` into `fn order` under one `tuck_`
+prefix (#78) and `fnsig Handler` into `fn sigHandler` with `_` between the
+parts; the separator `ˑ` (U+02D1) is a letter to every host and never part of
+a Tuck name, so no two kinds can meet. A member fn joins its object's name
+by the same separator (`tuckˑobjectˑOrderˑbook`), so it cannot meet an object
+`OrderBook` either. **Fields and
 params stay bare** (namespaced by their record, and a param is a contract); **externs are never mangled** — they bind foreign symbols by
 name. Idempotent, since each backend lowers its own deep copy.
 
@@ -964,12 +977,35 @@ no boxing, no runtime dispatch. `merge` rejects a field-name collision
 ## 15. Memory: pools, arenas
 
 ```tuck
-pool RxBuffers = Array[512, u8] [count: 4]
+type Reading:
+  value: u16
 
-let b = RxBuffers.acquire        # -> ?T
-if b.ok:
-  RxBuffers.release {b.value}
+pool Readings = Reading [count: 16]
+
+fn record({v: u16}) -> int:
+  let h = Readings.acquire         # ?ReadingsHandle — a handle, not a value
+  if not h.ok:
+    return 0                       # exhausted: the caller decides
+  let r = {value: v} Reading
+  Readings.write {h: h.value, value: r}
+  let back = Readings.read {h: h.value}   # ?Reading — absent until written
+  Readings.release {h: h.value}
+  if back.ok:
+    return 1
+  return 0
 ```
+
+A slot is reached only through its **handle**, and every operation goes
+through the pool: `acquire`, `release`, `read`, `write`, and `addr` for
+hardware (`tests/suites/pools.nim`, all three backends). A cell **starts
+absent** — `read` is a `?T` until something writes it — so zeroed memory is
+never read as a value, and a written value is a construction, validated where
+it is built (#42). `Pool.addr {h}` gives the cell's bytes as a `Buf` to an
+**extern only** (a DMA controller, an ISR; TK-TY08 anywhere else), and is
+refused for an element type carrying an invariant (TK-TY31). A stale or
+released handle stops the program (`TUCK POOL:`), identically on every
+backend. Pool operations are their own node (`exkPoolOp`), so a program's own
+`fn read` cannot be mistaken for one.
 
 From `examples/25:3`, worth quoting:
 

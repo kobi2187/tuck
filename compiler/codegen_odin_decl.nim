@@ -90,7 +90,7 @@ proc genPendingStub*(ctx: var OdinCodegenCtx, d: Decl): string =
   let paramStr = if d.fnParams.len > 0: "(payload: $T)" else: "()"
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   var res = ind & fnNameSanitized & " :: proc" & paramStr & retStr & " {\n" &
-            ind & "\tfmt.println(\"TUCK PENDING: " & d.name &
+            ind & "\tfmt.println(\"TUCK PENDING: " & d.writtenName &
             " invoked (not implemented)\")\n"
   if retTypeStr != "void":
     res.add(ind & "\treturn {}\n")
@@ -494,22 +494,28 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
   var res = ind & d.name & " :: struct" & tGen & " {\n" &
             (if fieldsBody != "": fieldsBody & "\n" else: "") & ind & "}\n"
   var invariantChecks: seq[string]
-  var checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](),
-                                fieldVars: initHashSet[string](),
-                                fieldPrefix: "self.", indent: 0,
+  # The predicate's bare names are the type's fields; the checker recorded
+  # them (Resolution.ownerFields), so they print as `self.<name>`.
+  var checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0,
                                 module: ctx.module, realModules: ctx.realModules,
                                 res: ctx.res)
-  for f in d.typeBody.fields:
-    checkCtx.fieldVars.incl(f.name)
   for member in d.typeMembers:
     if member.kind == dkExpr:
+      # A test and a runtime call, NOT `assert`: `-disable-assert` strips
+      # those, which would undo the ruling that invariants survive a release
+      # build (2026-08-25, ruling 5). `tuckNoInvariants` is the one opt-out,
+      # as on Nim and D; the runtime call reports and exits 1, as theirs do.
       let condStr = checkCtx.genOdinExpr(member.expr)
-      invariantChecks.add(ind & "\tassert(" & condStr & ")")
+      invariantChecks.add(ind & "\t\tif !(" & condStr & ") {\n" & ind &
+                          "\t\t\trt.tuckInvariantFailed(" &
+                          invariantCondLit(condStr) & ", \"" & d.name &
+                          "\")\n" & ind & "\t\t}")
   if invariantChecks.len > 0:
     # Odin has no overloading, so these are type-qualified rather than
     # relying on the parameter type to disambiguate the way Beef does.
     res.add(ind & "validate_" & d.name & " :: proc(self: " & d.name & ") {\n" &
-            invariantChecks.join("\n") & "\n" & ind & "}\n")
+            ind & "\twhen !#config(tuckNoInvariants, false) {\n" &
+            invariantChecks.join("\n") & "\n" & ind & "\t}\n" & ind & "}\n")
     # production sites wrap construction/returns in __validated_T(...)
     res.add(ind & "__validated_" & d.name & " :: proc(v: " & d.name & ") -> " &
             d.name & " {\n" & ind & "\tvalidate_" & d.name & "(v)\n" &
@@ -594,14 +600,12 @@ proc genActorState*(ctx: var OdinCodegenCtx, d: Decl, hasShutdown: bool,
 
 proc newHandlerCtx*(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
   ## Odin has no methods, so the actor rides as a `self` pointer and field
-  ## access inside a handler goes through it.
+  ## access inside a handler goes through it: a bare name the checker
+  ## resolved to one of the actor's fields prints as `self.<name>`.
   result = OdinCodegenCtx(definedVars: initHashSet[string](),
-                          fieldVars: initHashSet[string](),
-                          fieldPrefix: "self.", indent: ctx.indent + 1,
+                          indent: ctx.indent + 1,
                           module: ctx.module, realModules: ctx.realModules,
                           errPolicy: ctx.errPolicy, res: ctx.res)
-  for f in d.actorFields:
-    result.fieldVars.incl(f.name)
 
 proc adoptHandlerCtx*(ctx: var OdinCodegenCtx, hctx: OdinCodegenCtx) =
   ## Anything the handler bodies hoisted belongs to the enclosing file.
@@ -978,7 +982,7 @@ proc genErrHandlerBody*(ctx: var OdinCodegenCtx, handler: Decl): string =
 proc genErrHandler*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## Global handler: rt logger first (errors are always visible), then the
   ## user's handler body.
-  result = ind & "tuck_unhandled :: proc(code: u16, site: string) {\n" &
+  result = ind & UnhandledHandlerName & " :: proc(code: u16, site: string) {\n" &
            ind & "\trt.tuckReportUnhandled(code, site)\n"
   if d.errHandler != nil and d.errHandler.fnBody != nil:
     let body = ctx.genErrHandlerBody(d.errHandler)
@@ -1017,7 +1021,7 @@ proc foreignLibAlias*(cLib: string): string =
   ## A path (vendored `.a`) cannot double as the Odin alias, so the alias is
   ## derived from the file stem and the path rides along as the import spec.
   ## ".../libpoint.a" -> "point".
-  if cLib == "": return "c"
+  if cLib == "": return "libc"   # Odin refuses `c` as a library name
   if '/' notin cLib and '.' notin cLib: return cLib
   var stem = cLib.rsplit('/', 1)[^1]
   if stem.startsWith("lib"): stem = stem[3 .. ^1]

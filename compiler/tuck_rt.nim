@@ -256,32 +256,65 @@ type
     slot*: int32
     gen*: uint32
 
+  CellState* = enum
+    ## Where one cell of a pool stands. A cell STARTS ABSENT (#42): acquiring
+    ## it hands out a handle, not a value, and it reads absent until something
+    ## writes it — so zeroed storage is never read as a value of the element
+    ## type, which may break its invariant.
+    csFree      ## nobody holds it
+    csAbsent    ## held, and nothing written since it was acquired
+    csPresent   ## held, and written — by `write`, or handed out by `addr`
+
   ObjectPool*[T; Count: static int] = object
     storage*: array[Count, T]
     gen*: array[Count, uint32]  ## tenancy counter per cell; 0 = never handed out
-    occupied*: uint64        # ponytail: 64 slots max; widen to an array if needed
+    state*: array[Count, CellState]
+      ## one per cell; it was a single `u64` of held bits, which capped a pool
+      ## at 64 cells the checker never enforced
 
-proc acquire*[T; Count: static int](pool: var ObjectPool[T, Count]): TuckResult[PoolHandle] =
+proc tuckPoolAcquire*[T; Count: static int](pool: var ObjectPool[T, Count]): TuckResult[PoolHandle] =
   for i in 0 ..< Count:
-    if (pool.occupied and (1'u64 shl i)) == 0:
-      pool.occupied = pool.occupied or (1'u64 shl i)
+    if pool.state[i] == csFree:
+      pool.state[i] = csAbsent
       pool.gen[i] = pool.gen[i] + 1'u32
       return tok(PoolHandle(slot: int32(i), gen: pool.gen[i]))
   tnone[PoolHandle]()
 
-proc release*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle) =
-  ## The handle names the cell, so there is nothing to search for and nothing
-  ## to guess. Every way of being wrong is caught rather than absorbed.
+proc heldCell[T; Count: static int](pool: ObjectPool[T, Count], h: PoolHandle,
+                                   what: string): int =
+  ## The cell a handle names, if its holder still holds it. The handle names
+  ## the cell, so there is nothing to search for and nothing to guess; every
+  ## way of being wrong is caught rather than absorbed.
   let i = int(h.slot)
   if i < 0 or i >= Count:
-    tuckPoolMisuse("release of a handle that names no slot (" & $i & ")")
-  elif (pool.occupied and (1'u64 shl i)) == 0:
-    tuckPoolMisuse("double release of slot " & $i)
+    tuckPoolMisuse(what & " of a handle that names no slot (" & $i & ")")
+  elif pool.state[i] == csFree:
+    tuckPoolMisuse(what & " of slot " & $i & ", which nobody holds")
   elif pool.gen[i] != h.gen:
-    tuckPoolMisuse("release of a stale handle for slot " & $i & ": tenancy " &
+    tuckPoolMisuse(what & " of a stale handle for slot " & $i & ": tenancy " &
                    $h.gen & ", slot is on " & $pool.gen[i])
-  else:
-    pool.occupied = pool.occupied and not(1'u64 shl i)
+  i
+
+proc tuckPoolRelease*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle) =
+  pool.state[pool.heldCell(h, "release")] = csFree
+
+proc tuckPoolRead*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle): TuckResult[T] =
+  let i = pool.heldCell(h, "read")
+  if pool.state[i] == csPresent: tok(pool.storage[i]) else: tnone[T]()
+
+proc tuckPoolWrite*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle, v: T) =
+  let i = pool.heldCell(h, "write")
+  pool.storage[i] = v
+  pool.state[i] = csPresent
+
+proc tuckPoolAddr*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle): ptr UncheckedArray[uint8] =
+  ## The cell's bytes, for an extern to fill (DMA). It is PRESENT from here
+  ## on: it was handed out to be filled, and the checker allows `addr` only
+  ## on a pool whose element carries no invariant (TK-TY31), so whatever the
+  ## extern leaves there is a value of the type.
+  let i = pool.heldCell(h, "addr")
+  pool.state[i] = csPresent
+  cast[ptr UncheckedArray[uint8]](addr pool.storage[i])
 
 # ---------------------------------------------------------------------------
 # spec 7.4: the resource registry.

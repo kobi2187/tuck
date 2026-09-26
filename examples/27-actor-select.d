@@ -2,85 +2,85 @@ module _27_actor_select;
 
 import rt = tuck_rt;
 
-enum tuck_type_AccumulatorMsgKind { msgAdd, msgFinish, msgShutdown }
+enum tuckˑactorˑAccumulatorMsgKind { msgAdd, msgFinish, msgShutdown }
 
-struct tuck_type_AccumulatorMsg {
-    tuck_type_AccumulatorMsgKind tuckTag;
+struct tuckˑactorˑAccumulatorMsg {
+    tuckˑactorˑAccumulatorMsgKind tuckTag;
     long n;
 }
 
-struct tuck_type_Accumulator {
+struct tuckˑactorˑAccumulator {
     long total;
     bool done;
-    rt.Mailbox!(tuck_type_AccumulatorMsg, 64) mailbox;
+    rt.Mailbox!(tuckˑactorˑAccumulatorMsg, 64) mailbox;
     bool finished;
 }
 
-__gshared tuck_type_Accumulator tuck_type_AccumulatorSingleton;
+__gshared tuckˑactorˑAccumulator tuckˑactorˑAccumulatorSingleton;
 
 shared static this() {
-    tuck_type_AccumulatorSingleton.total = 0L;
-    tuck_type_AccumulatorSingleton.done = false;
+    tuckˑactorˑAccumulatorSingleton.total = 0L;
+    tuckˑactorˑAccumulatorSingleton.done = false;
 }
 
-void handleMsg_tuck_type_Accumulator(ref tuck_type_Accumulator self, tuck_type_AccumulatorMsg msg) {
+void handleMsg_tuckˑactorˑAccumulator(ref tuckˑactorˑAccumulator self, tuckˑactorˑAccumulatorMsg msg) {
     final switch (msg.tuckTag) {
-        case tuck_type_AccumulatorMsgKind.msgAdd:
+        case tuckˑactorˑAccumulatorMsgKind.msgAdd:
             auto n = msg.n;
             self.total = (self.total + n);
             break;
-        case tuck_type_AccumulatorMsgKind.msgFinish:
+        case tuckˑactorˑAccumulatorMsgKind.msgFinish:
             self.done = true;
             break;
-        case tuck_type_AccumulatorMsgKind.msgShutdown:
+        case tuckˑactorˑAccumulatorMsgKind.msgShutdown:
             self.total = self.total;
             self.finished = true;
             break;
     }
 }
 
-__gshared void* tuck_type_AccumulatorSlot;
+__gshared void* tuckˑactorˑAccumulatorSlot;
 
-bool drain_tuck_type_Accumulator() {
-    if (tuck_type_AccumulatorSingleton.finished) return false;
+bool drain_tuckˑactorˑAccumulator() {
+    if (tuckˑactorˑAccumulatorSingleton.finished) return false;
     bool did = false;
-    foreach (ref msg; tuck_type_AccumulatorSingleton.mailbox) {
-        handleMsg_tuck_type_Accumulator(tuck_type_AccumulatorSingleton, msg);
+    foreach (ref msg; tuckˑactorˑAccumulatorSingleton.mailbox) {
+        handleMsg_tuckˑactorˑAccumulator(tuckˑactorˑAccumulatorSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
     }
     return did;
 }
 
-void sendAdd_tuck_type_Accumulator(ref tuck_type_Accumulator self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuck_type_AccumulatorMsg(tuckTag: tuck_type_AccumulatorMsgKind.msgAdd, n: n));
-    rt.tuckNotifySend(tuck_type_AccumulatorSlot);
+void sendAdd_tuckˑactorˑAccumulator(ref tuckˑactorˑAccumulator self, long n) {
+    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: tuckˑactorˑAccumulatorMsgKind.msgAdd, n: n));
+    rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot);
 }
 
-void sendFinish_tuck_type_Accumulator(ref tuck_type_Accumulator self) {
-    cast(void) rt.enqueue(self.mailbox, tuck_type_AccumulatorMsg(tuckTag: tuck_type_AccumulatorMsgKind.msgFinish));
-    rt.tuckNotifySend(tuck_type_AccumulatorSlot);
+void sendFinish_tuckˑactorˑAccumulator(ref tuckˑactorˑAccumulator self) {
+    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: tuckˑactorˑAccumulatorMsgKind.msgFinish));
+    rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot);
 }
 
 
-bool tuck_fn_ready() {
-    return tuck_type_AccumulatorSingleton.done;
+bool tuckˑfnˑready() {
+    return tuckˑactorˑAccumulatorSingleton.done;
 }
 
-long tuck_fn_main() {
-    foreach (tuck_i; 1L .. 10L + 1) {
-        sendAdd_tuck_type_Accumulator(tuck_type_AccumulatorSingleton, tuck_i);
+long tuckˑfnˑmain() {
+    foreach (tuckˑvˑi; 1L .. 10L + 1) {
+        sendAdd_tuckˑactorˑAccumulator(tuckˑactorˑAccumulatorSingleton, tuckˑvˑi);
     }
-    sendFinish_tuck_type_Accumulator(tuck_type_AccumulatorSingleton);
-    rt.tuckWaitOn(tuck_type_AccumulatorSlot, &tuck_fn_ready);
-    return tuck_type_AccumulatorSingleton.total;
+    sendFinish_tuckˑactorˑAccumulator(tuckˑactorˑAccumulatorSingleton);
+    rt.tuckWaitOn(tuckˑactorˑAccumulatorSlot, &tuckˑfnˑready);
+    return tuckˑactorˑAccumulatorSingleton.total;
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    tuck_type_AccumulatorSlot = rt.tuckStartActor(&drain_tuck_type_Accumulator);
-    auto mainRc = tuck_fn_main();
+    tuckˑactorˑAccumulatorSlot = rt.tuckStartActor(&drain_tuckˑactorˑAccumulator);
+    auto mainRc = tuckˑfnˑmain();
     rt.tuckDrainActors();
     return cast(int) mainRc;
 }

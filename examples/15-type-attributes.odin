@@ -8,32 +8,36 @@ TRec_value :: struct ($T_value: typeid) {
 	value: T_value,
 }
 
-tuck_type_EthernetFrame :: struct {
+tuckˑtypeˑEthernetFrame :: struct {
 	dst: [6]u8,
 	src: [6]u8,
 	ethertype: u16,
 }
 
-tuck_type_Temperature :: struct {
+tuckˑtypeˑTemperature :: struct {
 	celsius: f32,
 }
-validate_tuck_type_Temperature :: proc(self: tuck_type_Temperature) {
-	assert((self.celsius >= -273.15))
+validate_tuckˑtypeˑTemperature :: proc(self: tuckˑtypeˑTemperature) {
+	when !#config(tuckNoInvariants, false) {
+		if !((self.celsius >= -273.15)) {
+			rt.tuckInvariantFailed("(self.celsius >= -273.15)", "tuckˑtypeˑTemperature")
+		}
+	}
 }
-__validated_tuck_type_Temperature :: proc(v: tuck_type_Temperature) -> tuck_type_Temperature {
-	validate_tuck_type_Temperature(v)
+__validated_tuckˑtypeˑTemperature :: proc(v: tuckˑtypeˑTemperature) -> tuckˑtypeˑTemperature {
+	validate_tuckˑtypeˑTemperature(v)
 	return v
 }
 
-tuck_type_UartDriver :: struct {
+tuckˑactorˑUartDriver :: struct {
 }
 
-tuck_type_UartDriverSingleton: tuck_type_UartDriver
+tuckˑactorˑUartDriverSingleton: tuckˑactorˑUartDriver
 
-drain_tuck_type_UartDriver :: proc() -> bool { return false }
+drain_tuckˑactorˑUartDriver :: proc() -> bool { return false }
 
-tuck_fn_readSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
-	fmt.println("TUCK PENDING: tuck_fn_readSensor invoked (not implemented)")
+tuckˑfnˑreadSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
+	fmt.println("TUCK PENDING: readSensor invoked (not implemented)")
 	return {}
 }
 

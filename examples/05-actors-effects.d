@@ -7,70 +7,70 @@ struct TRec_value(T_value) {
     T_value value;
 }
 
-struct tuck_type_Feed {
+struct tuckˑtypeˑFeed {
     string title;
     long episodeCount;
 }
 
-enum tuck_type_CounterMsgKind { msgIncrement, msgReset }
+enum tuckˑactorˑCounterMsgKind { msgIncrement, msgReset }
 
-struct tuck_type_CounterMsg {
-    tuck_type_CounterMsgKind tuckTag;
+struct tuckˑactorˑCounterMsg {
+    tuckˑactorˑCounterMsgKind tuckTag;
     long n;
 }
 
-struct tuck_type_Counter {
+struct tuckˑactorˑCounter {
     long count;
-    rt.Mailbox!(tuck_type_CounterMsg, 8) mailbox;
+    rt.Mailbox!(tuckˑactorˑCounterMsg, 8) mailbox;
 }
 
-__gshared tuck_type_Counter tuck_type_CounterSingleton;
+__gshared tuckˑactorˑCounter tuckˑactorˑCounterSingleton;
 
 shared static this() {
-    tuck_type_CounterSingleton.count = 0L;
+    tuckˑactorˑCounterSingleton.count = 0L;
 }
 
-void handleMsg_tuck_type_Counter(ref tuck_type_Counter self, tuck_type_CounterMsg msg) {
+void handleMsg_tuckˑactorˑCounter(ref tuckˑactorˑCounter self, tuckˑactorˑCounterMsg msg) {
     final switch (msg.tuckTag) {
-        case tuck_type_CounterMsgKind.msgIncrement:
+        case tuckˑactorˑCounterMsgKind.msgIncrement:
             auto n = msg.n;
             self.count = (self.count + n);
             break;
-        case tuck_type_CounterMsgKind.msgReset:
+        case tuckˑactorˑCounterMsgKind.msgReset:
             self.count = 0L;
             break;
     }
 }
 
-__gshared void* tuck_type_CounterSlot;
+__gshared void* tuckˑactorˑCounterSlot;
 
-bool drain_tuck_type_Counter() {
+bool drain_tuckˑactorˑCounter() {
     bool did = false;
-    foreach (ref msg; tuck_type_CounterSingleton.mailbox) {
-        handleMsg_tuck_type_Counter(tuck_type_CounterSingleton, msg);
+    foreach (ref msg; tuckˑactorˑCounterSingleton.mailbox) {
+        handleMsg_tuckˑactorˑCounter(tuckˑactorˑCounterSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
     }
     return did;
 }
 
-void sendIncrement_tuck_type_Counter(ref tuck_type_Counter self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuck_type_CounterMsg(tuckTag: tuck_type_CounterMsgKind.msgIncrement, n: n));
-    rt.tuckNotifySend(tuck_type_CounterSlot);
+void sendIncrement_tuckˑactorˑCounter(ref tuckˑactorˑCounter self, long n) {
+    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑCounterMsg(tuckTag: tuckˑactorˑCounterMsgKind.msgIncrement, n: n));
+    rt.tuckNotifySend(tuckˑactorˑCounterSlot);
 }
 
-void sendReset_tuck_type_Counter(ref tuck_type_Counter self) {
-    cast(void) rt.enqueue(self.mailbox, tuck_type_CounterMsg(tuckTag: tuck_type_CounterMsgKind.msgReset));
-    rt.tuckNotifySend(tuck_type_CounterSlot);
+void sendReset_tuckˑactorˑCounter(ref tuckˑactorˑCounter self) {
+    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑCounterMsg(tuckTag: tuckˑactorˑCounterMsgKind.msgReset));
+    rt.tuckNotifySend(tuckˑactorˑCounterSlot);
 }
 
 
-rt.TuckResult!(TRec_value!(ushort)) tuck_fn_readSensor(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_readSensor invoked (not implemented)");
+rt.TuckResult!(TRec_value!(ushort)) tuckˑfnˑreadSensor(T)(T payload) {
+    stderr.writeln("TUCK PENDING: readSensor invoked (not implemented)");
     return typeof(return).init;
 }
 
-struct tuck_type_PodcastApp {
+struct tuckˑobjectˑPodcastApp {
 }
 
 

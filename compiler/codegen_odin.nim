@@ -55,11 +55,11 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
-  if fields.len == 0: return ""
+  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  if fields.isNone: return ""
   let recv = ctx.genOdinExpr(e.args[0])
   var parts: seq[string]
-  for f in fields: parts.add(recv & "." & f)
+  for f in fields.get: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
 # Positional construction of a hoisted record struct from a struct literal,
@@ -207,24 +207,21 @@ proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
     return "__validated_" & e.callee.name & "(" & ctor & ")"
   ctor
 
-proc genPayloadArgs(ctx: var OdinCodegenCtx, e: Expr,
-                    calleeStr: string): seq[string] =
-  ## codegen_common.payloadArgs, printed. A missing one is the zero value.
-  for a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
-    result.add(if a != nil: ctx.genOdinExpr(a) else: "{}")
-
-proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr,
-                 calleeStr: string): seq[string] =
+proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   ## ponytail: pass records BY VALUE. A mutating callee would need `^T` and
   ## `&x` at the call site, but Odin proc params aren't addressable, so
   ## `&param` is a hard error — and Tuck's mutators already return the updated
   ## value, which the chain emitter assigns back. Revisit if a real in-place
   ## mutator shows up that the return-and-assign shape can't express.
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genPayloadArgs(e, calleeStr)
-  for a in e.args: result.add(ctx.genOdinExpr(a))
+  ##
+  ## A payload's arguments are call_args.payloadArgs's, printed; anything
+  ## else as written.
+  let args = if e.isPayloadCall:
+               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for a in args: result.add(ctx.genOdinExpr(a))
 
-const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
+const RtByPointer = ["alloc", "reset", "enqueue",
                      "dequeue", "hasRoom", "initMailbox", "tuckArraySetAt"]
   ## Runtime intrinsics whose receiver they MUTATE, so it goes in by pointer.
   ## `tuckArraySetAt` joins this list, not RtByValue below, because Odin's
@@ -360,7 +357,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
-  var args = ctx.genCallArgs(e, calleeStr)
+  var args = ctx.genCallArgs(e)
   # genOdinMemberFn gives EVERY member fn's self a pointer, `^T`,
   # unconditionally — not just the ones that mutate it — so every call
   # site has to pass `&receiver` to match, regardless of whether this
@@ -419,7 +416,7 @@ proc patternValue*(ctx: OdinCodegenCtx, patStr: string): string =
 # assignment/return target supplies the type for `.Tag` inference.
 proc armValue*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e != nil and e.kind == exkVar and e.name notin ctx.definedVars and
-     e.name notin ctx.fieldVars and e.name.len > 0 and e.name[0] in {'A'..'Z'}:
+     not ctx.res.isOwnerField(e) and e.name.len > 0 and e.name[0] in {'A'..'Z'}:
     return ctx.patternValue(e.name)
   return ctx.genOdinExpr(e)
 
@@ -657,7 +654,7 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   if ctx.res.hasCall(e): return ctx.genOdinExpr(ctx.res.call(e))
   if isInputRef(e, ctx.currentParams): return ctx.genInputPayload()
   if e.name == "self" and ctx.ptrSelf: return "self^"  # member fn: deref
-  if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
+  if ctx.res.isOwnerField(e): return "self." & e.name
   if e.name in ctx.definedVars: return e.name
   # bare enum tag: qualify with its declared owner (Odin has no module-global
   # enum members the way Nim does)
@@ -672,6 +669,12 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   let foreign = ctx.qualifiedForeignFn(e.name)
   if foreign != "": return foreign
   e.name
+
+proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A pool operation: `codegen_common.poolOpProc`, the pool by pointer.
+  var args = @["&" & e.poolRef.refName]
+  for a in e.poolOperands: args.add ctx.genOdinExpr(a)
+  "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
 proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
@@ -764,7 +767,10 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   # branch first, so `Actor.waitUntil {pred: :p}` — a static member call whose
   # receiver is an actor — emitted `Singleton.waitUntil` as though it were a
   # field read, and Odin answered "has no field 'waitUntil'".
-  if ctx.res.hasCall(e): return ctx.genOdinCall(ctx.res.call(e))
+  if ctx.res.hasCall(e):
+    let stamped = ctx.res.call(e)
+    if stamped.kind != exkCall: return ctx.genOdinExpr(stamped)   # a pool op
+    return ctx.genOdinCall(stamped)
   # `Counter.total` reads the actor SINGLETON's field, not a type's.
   if e.receiver != nil and e.receiver.kind == exkActorRef:
     return actorSingletonName(e.receiver.refName) & "." & e.fieldName
@@ -884,10 +890,10 @@ proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): 
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
-                "tuck_unhandled(" & tn & ".err, \"" & site &
+                UnhandledHandlerName & "(" & tn & ".err, \"" & site &
                   "\"); panic(\"unhandled error\")"
               else:
-                "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\")"
   ind & "\t" & tn & " := " & stmtCode & "\n" &
     ind & "\tif " & tn & ".status != .Ok { " & onErr & " }"
 
@@ -907,10 +913,10 @@ proc genRoutedStmt(ctx: var OdinCodegenCtx, s: Expr, stmtCode,
   let site = ctx.res.shortcut(s)
   let name = s.target.name
   let onErr = if ctx.errPolicy == "exit":
-                "tuck_unhandled(" & name & ".err, \"" & site &
+                UnhandledHandlerName & "(" & name & ".err, \"" & site &
                   "\"); panic(\"unhandled error\")"
               else:
-                "tuck_unhandled(" & name & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
   ind & "\t" & stmtCode & "\n" &
     ind & "\tif " & name & ".status == .Err { " & onErr & " }"
 
@@ -961,11 +967,10 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
       "\te.slot.value = " & tname & "(" & argExprs.join(", ") & ")\n" &
       "\te.slot.done = true\n" &
       "\tfree(e)\n}")
-  var argParts: seq[string]
-  if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
-    for pn in params:
-      for f in e.assignVal.args[0].fields:
-        if f.name == pn: argParts.add(ctx.genOdinExpr(f.value)); break
+  let argParts = ctx.genCallArgs(e.assignVal)
+  doAssert argParts.len == params.len,
+    "odin: task " & tname & " takes " & $params.len & " param(s), and its " &
+    "call supplies " & $argParts.len
   let envVar = "env" & $ctx.tmpCounter
   let slotVar = "slot" & $ctx.tmpCounter
   let savedVar = "savedCtx" & $ctx.tmpCounter
@@ -982,7 +987,7 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
   lines.add(ind & "context.user_ptr = " & savedVar)
   let targetName = e.target.name
   let assignOp = if e.target.kind == exkVar and targetName notin ctx.definedVars and
-                    targetName notin ctx.fieldVars:
+                    not ctx.res.isOwnerField(e.target):
                    ctx.definedVars.incl(targetName)
                    " := "
                  else: " = "
@@ -1082,8 +1087,7 @@ proc movedAssignTarget(ctx: OdinCodegenCtx, t: Expr): string =
   ## add the `self.`, so an actor handler emitted `st = f(self.st, ...)` —
   ## qualified on the right, bare on the left. Rejected here and by D; Nim
   ## was correct only because its backend never takes this path. EV-9.
-  if t != nil and t.kind == exkVar and t.name in ctx.fieldVars:
-    ctx.fieldPrefix & t.name
+  if ctx.res.isOwnerField(t): "self." & t.name
   else: t.name
 
 proc copyIfSeq(ctx: var OdinCodegenCtx, valStr: string, e: Expr): string =
@@ -1132,6 +1136,16 @@ proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
   if owner != "" and ctx.index.hasInvariants(owner):
     result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genOdinExpr(e.target.receiver) & ")")
+
+proc ownedCopy(ctx: OdinCodegenCtx, valStr: string, val: Expr): string =
+  ## A `str` literal the ownership pass decided this body must OWN, printed
+  ## as a heap copy: the local it is assigned to frees each old value at
+  ## its overwrite, and a literal is static storage (`copyToOwn`, step 5).
+  if val == nil or not val.id.isSet or val.id notin ctx.owned.copyToOwn:
+    return valStr
+  doAssert val.kind == exkLit and val.litKind == lkStr,
+    "ownership marked a non-literal to copy: " & $val.kind
+  "rt.tuckStrOwned(" & valStr & ")"
 
 proc scopeFrees(ctx: OdinCodegenCtx, name: string): string =
   ## The `defer delete`s a declaration of `name` carries.
@@ -1188,10 +1202,10 @@ proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
   # wants `=`. selfThreadedCall accepts both shapes now, and this is the
   # only place the difference shows.
   let isNew = e.isDecl and e.target.name notin ctx.definedVars and
-              e.target.name notin ctx.fieldVars
+              not ctx.res.isOwnerField(e.target)
   if isNew: ctx.definedVars.incl(e.target.name)
   ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
-    movedName(base) & "(" & ctx.genCallArgs(threaded, base).join(", ") & ")" &
+    movedName(base) & "(" & ctx.genCallArgs(threaded).join(", ") & ")" &
     (if isNew: ctx.scopeFrees(e.target.name) else: "")
 
 proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
@@ -1234,9 +1248,10 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   # own argument calls the MOVED twin, and needs no fix-up copies after it.
   let threaded = threadedCall(e)
   if threaded != nil: return ctx.genThreadedAssign(e, threaded)
-  let valStr = ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal), e.assignVal)
+  let valStr = ctx.ownedCopy(ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal),
+                                          e.assignVal), e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
-     e.target.name notin ctx.fieldVars:
+     not ctx.res.isOwnerField(e.target):
     return ctx.genOdinVarDecl(e, valStr)
   ctx.genReassign(e, valStr)
 
@@ -1364,6 +1379,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: ctx.genOrdinal(e)
   of exkIfaceCall: ctx.genIfaceCall(e)
+  of exkPoolOp: ctx.genOdinPoolOp(e)
   of exkValidate:
     "validate_" & ctx.res.typeFor(e.validated).name & "(" &
       ctx.genOdinExpr(e.validated) & ")"

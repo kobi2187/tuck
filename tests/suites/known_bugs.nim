@@ -350,7 +350,7 @@ fn main() -> int:
   Accumulator send add {n: 1}
   return 0
 """
-  t.quietly: t.emitsOdin "", "sendAdd_tuck_type_Accumulator :: proc"
+  t.quietly: t.emitsOdin "", "sendAdd_tuckˑactorˑAccumulator :: proc"
   t.bugFixed "an 'on select' actor emits its send procs on the Odin backend"
 
   # 13. A `-> void` task could not be fire-and-forget. The spawn wrapper always
@@ -516,7 +516,7 @@ fn withDefaults({self: Big}) -> Big:
   s ..f0 {80}
   return s
 """)
-  t.quietly: t.omits "a qualified mutator in a chain does not emit a field-set on the function", "tuck_fn_withDefaults\\.f"
+  t.quietly: t.omits "a qualified mutator in a chain does not emit a field-set on the function", "tuckˑfnˑwithDefaults\\.f"
   t.bugFixed "a qualified mutator in a chain does not emit a field-set on the function"
   # FIXED 2026-09-12, exactly where the entry said it had to be — parse time.
   # `..mod::fn` was parsed as a `..` step whose target was the bare `mod`,
@@ -526,7 +526,7 @@ fn withDefaults({self: Big}) -> Big:
   # step's target, so chainMutation reads it there; chainQualified now
   # refuses a non-name left side instead of rebuilding from an empty module.
   t.emits "...it calls the qualified mutator and threads the receiver",
-          r"bigmod\.tuck_fn_withDefaults\(tuck_cfg\)"
+          r"bigmod\.tuckˑfnˑwithDefaults\(tuckˑvˑcfg\)"
 
   # 18. FIXED. Odin: an imported TYPE was emitted unqualified, so it did not
   # resolve. The emitter qualified an imported FN correctly
@@ -561,7 +561,7 @@ fn main() -> int:
   t.addFile("bigmod.tuck", """type Big:
   f0: int
 """)
-  t.quietly: t.emitsOdin "an imported type is qualified with its package on Odin", "bigmod\\.tuck_type_Big"
+  t.quietly: t.emitsOdin "an imported type is qualified with its package on Odin", "bigmod\\.tuckˑtypeˑBig"
   t.bugFixed "an imported type is qualified with its package on Odin"
 
   # 19. A fn could write through its own parameter to the CALLER's record.
@@ -627,7 +627,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.emits("a registry raise in a task body is lowered",
-                     r"raise_tuck_AppEvents_LowMemory\(42\)")
+                     r"raise_tuckˑregistryˑAppEvents_LowMemory\(42\)")
   t.bugFixed "a registry raise in a task body is lowered"
 
   # A PAYLOAD-FREE registry raise emitted swapped, nonsensical code.
@@ -653,7 +653,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.emits("a payload-free registry raise is lowered",
-                     r"raise_tuck_Sys_Started\(\)")
+                     r"raise_tuckˑregistryˑSys_Started\(\)")
   t.bugFixed "a payload-free registry raise is lowered"
 
   # FIELD ACCESS ON A PRIMITIVE IS CHECKED.
@@ -757,7 +757,7 @@ fn main() -> int:
   # of `nil` in all three backends (`sumVariantCtor`/`dSumVariantCtor` all
   # had the same bug at this call site).
   t.quietly: t.omits("bare variant construction is not built fieldless",
-                     "tuck_type_V\\(kind: B\\)\\)")
+                     "tuckˑtypeˑV\\(kind: B\\)\\)")
   t.bugFixed "bare variant construction is not built fieldless"
 
   # O. `xs[i]` is GRAMMAR, so it must work with no `import seq` — it used to
@@ -779,7 +779,7 @@ fn main() -> void [io]:
   t.quietly: t.outputs("bracket indexing needs no 'import seq'", "99\n")
   t.bugFixed "bracket indexing needs no 'import seq'"
   t.emits "...and lowers to the reserved intrinsic, not a qualified seq call",
-          r"tuckSetAt\(tuck_xs, 0, 99\)"
+          r"tuckSetAt\(tuckˑvˑxs, 0, 99\)"
   t.omits "...so no seq_at identifier is ever emitted", "seq_at"
 
   # P. `distinct X = f32/f64` could not build on the Nim backend at all:
@@ -802,8 +802,8 @@ fn main() -> void [io]:
 """
   t.quietly: t.outputs("a distinct over a float base builds", "ok\n")
   t.bugFixed "a distinct over a float base builds"
-  t.omits "...and borrows no integer div for it", r"`div`\*\(a, b: tuck_type_Miles\)"
-  t.emits "...while still borrowing the ops floats do have", r"`\+`\*\(a, b: tuck_type_Miles\)"
+  t.omits "...and borrows no integer div for it", r"`div`\*\(a, b: tuckˑtypeˑMiles\)"
+  t.emits "...while still borrowing the ops floats do have", r"`\+`\*\(a, b: tuckˑtypeˑMiles\)"
 
   # Q. An UNQUALIFIED call to a runtime-backed extern collided with Nim's
   # own auto-exported proc of the same name: `import fs` + `{path: ...}
@@ -907,7 +907,7 @@ fn main() -> void [io]:
 """
   t.quietly: t.outputs("an indexed element's field can be assigned", "true\n")
   t.bugFixed "an indexed element's field can be assigned"
-  t.emits "...addressing the element, not a tuckAt copy", r"tuck_tasks\[0\]\.done = true"
+  t.emits "...addressing the element, not a tuckAt copy", r"tuckˑvˑtasks\[0\]\.done = true"
 
   # U. A wildcard match arm emitted `of _:` on the Nim backend. `_` is Nim's
   # ignore-identifier and illegal as a branch label, so the catch-all failed
@@ -1231,16 +1231,15 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.bugFixed "releasing every slot makes every slot available again"
 
-  # 21. A pool slot cannot yet be READ or WRITTEN. `acquire` now answers with
-  # a handle that names the cell (which is what fixed release), but there is
-  # no spelling for "the cell this handle names" — so a pool still cannot be
-  # a DMA target, a frame buffer, or anything hardware or another task fills
-  # in place, which is what a pool is FOR. examples/25 says "hand b.value to
-  # the DMA controller"; b.value is the handle, and nothing takes it further.
+  # 21. A pool slot could not be READ or WRITTEN. `acquire` answers with a
+  # handle that names the cell (which is what fixed release), but there was
+  # no spelling for "the cell this handle names" — so a pool could not be a
+  # DMA target, a frame buffer, or anything hardware or another task fills
+  # in place, which is what a pool is FOR (issue #45).
   #
-  # The design question is open (issue #45): a read/write pair through the
-  # handle, and a sanctioned way to hand a cell's ADDRESS to an extern for
-  # the DMA case, which is the one place a raw pointer is legitimate.
+  # Ruled 2026-09-26: `read` / `write` through the handle, and `addr` for an
+  # extern to fill (tests/suites/pools.nim has the rest). A cell starts ABSENT
+  # (#42), so `read` is a `?T` and this guards it.
   t.src """
 type Cell:
   n: int
@@ -1251,12 +1250,15 @@ fn main() -> int:
   let a = Cells.acquire
   if not a.ok:
     return 90
-  Cells.write {h: a.value, value: {n: 42} Cell}
+  let cell = {n: 42} Cell
+  Cells.write {h: a.value, value: cell}
   let back = Cells.read {h: a.value}
-  return back.n
+  if not back.ok:
+    return 91
+  return back.value.n
 """
-  t.quietly: t.runs "a pool slot can be read and written through its handle", 42
-  t.bugOpen "a pool slot can be read and written through its handle"
+  t.quietly: t.hostRuns("a pool slot can be read and written through its handle", 42)
+  t.bugFixed "a pool slot can be read and written through its handle"
 
   # 22. An `errors` handler body was never mangled, so calling any fn from it
   # failed to build on all three backends (issue #48). The DECLARATION was
@@ -1619,6 +1621,35 @@ fn main() -> int:
 """
   t.hostPeakRss("the strings a concatenation reads and builds do not accumulate", 12288)
   t.bugFixed "the strings a concatenation reads and builds do not accumulate"
+
+  # ...nor does a `str` GROWN IN PLACE by reassignment: `s = s + "y"` in a
+  # loop. On Odin every old value leaked — 14 GB and OOM-killed at 200 000
+  # turns, while Nim and D append in place. Step 5 of the ownership pass
+  # (free the old value at each overwrite) was `Seq`-only, and a `str`
+  # assigned twice was never freed at all. The literal it starts from — and
+  # the one it is reset to — is static storage no `delete` may touch, so the
+  # pass has the emitter copy it: every value the local ever holds is then
+  # its own. Found auditing issue #9.
+  t.src """
+fn grow({n: int}) -> int:
+  var s = "x"
+  var total = 0
+  var i = 0
+  for i < n:
+    s = s + "y"
+    if s.len > 5000:
+      total = total + s.len
+      s = "x"
+    i = i + 1
+  return total + s.len
+
+fn main() -> int:
+  if {n: 40000} grow != 40009:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("a str grown by reassignment does not accumulate", 12288)
+  t.bugFixed "a str grown by reassignment does not accumulate"
 
   # 19. EV-14 / issue #82: the dead intermediates of a THREADING CHAIN.
   #
@@ -2048,5 +2079,31 @@ fn main() -> int:
   return {l: Green} code + Red
 """
   t.hostRuns "...a variant still wins over a const of the same name", 11
+
+  # A payload may carry fields its callee does not declare: the callee takes
+  # its params and nothing else. For a callee that declares NONE the extra
+  # fields were passed anyway — `{a: 1, b: 2} g` printed `g(1, 2)` on all
+  # three backends, and a record variable `p g` printed `g(p)` — because
+  # "takes no params" and "params not resolved" were one empty list
+  # (`call_args.knownParams` keeps them apart now). Found checking the
+  # opposite direction: a payload LACKING a param, which the checker
+  # rejects and `backend_prepare` step 8 asserts after lowering.
+  t.src """
+type P:
+  a: int
+  b: int
+
+fn f({a: int}) -> int:
+  return a
+
+fn g() -> int:
+  return 7
+
+fn main() -> int:
+  let p = {a: 1, b: 2} P
+  return ({a: 1, b: 2, c: 3} f) + ({a: 1, b: 2} g) + (p f) + (p g)
+"""
+  t.quietly: t.hostRuns("extra payload fields reach no param", 16)
+  t.bugFixed "extra payload fields reach no param"
 
   t.finish()

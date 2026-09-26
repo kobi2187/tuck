@@ -1,38 +1,38 @@
 #+feature dynamic-literals
 package main
 
-tuck_AppEventsKind :: enum { SensorFailure, LowMemory }
-tuck_AppEvents :: struct {
-	tuckTag: tuck_AppEventsKind,
+tuckˑregistryˑAppEventsKind :: enum { SensorFailure, LowMemory }
+tuckˑregistryˑAppEvents :: struct {
+	tuckTag: tuckˑregistryˑAppEventsKind,
 	port: u8,
 	reason: string,
 	remaining: u32,
 }
 
-latesttuck_AppEvents: tuck_AppEvents
+latesttuckˑregistryˑAppEvents: tuckˑregistryˑAppEvents
 
-raise_tuck_AppEvents_SensorFailure :: proc(port: u8, reason: string) {
-	latesttuck_AppEvents = tuck_AppEvents{tuckTag = .SensorFailure, port = port, reason = reason}
-	tuck_fn_AppEvents_SensorFailure(port, reason)
+raise_tuckˑregistryˑAppEvents_SensorFailure :: proc(port: u8, reason: string) {
+	latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents{tuckTag = .SensorFailure, port = port, reason = reason}
+	tuckˑfnˑAppEvents_SensorFailure(port, reason)
 }
 
-raise_tuck_AppEvents_LowMemory :: proc(remaining: u32) {
-	latesttuck_AppEvents = tuck_AppEvents{tuckTag = .LowMemory, remaining = remaining}
-	tuck_fn_AppEvents_LowMemory(remaining)
+raise_tuckˑregistryˑAppEvents_LowMemory :: proc(remaining: u32) {
+	latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents{tuckTag = .LowMemory, remaining = remaining}
+	tuckˑfnˑAppEvents_LowMemory(remaining)
 }
 
 
-tuck_fn_triggerEvent :: proc () {
-  raise_tuck_AppEvents_SensorFailure(1, "timeout")
+tuckˑfnˑtriggerEvent :: proc () {
+  raise_tuckˑregistryˑAppEvents_SensorFailure(1, "timeout")
 }
 
-tuck_fn_AppEvents_SensorFailure :: proc (port: u8, reason: string) {
-  tuck_x := port
-  tuck_y := reason
+tuckˑfnˑAppEvents_SensorFailure :: proc (port: u8, reason: string) {
+  tuckˑvˑx := port
+  tuckˑvˑy := reason
 }
 
-tuck_fn_AppEvents_LowMemory :: proc (remaining: u32) {
-  tuck_left := remaining
+tuckˑfnˑAppEvents_LowMemory :: proc (remaining: u32) {
+  tuckˑvˑleft := remaining
 }
 
 main :: proc() {

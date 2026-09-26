@@ -186,7 +186,12 @@ proc indexResolvedCall(ix: var BodyIndex, field: Expr) =
   ## The CALL itself is not indexed: the walk this replaced never treated a
   ## resolved field as a call, and a pure refactor keeps that answer.
   var stack: seq[(Expr, Expr)]
-  for a in ix.res.call(field).args: stack.add (a, field)
+  let stamped = ix.res.call(field)
+  # A call's ARGUMENTS; a pool op's handle and value (its own node kind).
+  if stamped.kind == exkCall:
+    for a in stamped.args: stack.add (a, field)
+  else:
+    for a in stamped.children: stack.add (a, field)
   while stack.len > 0:
     let (n, parent) = stack.pop()
     if n == nil: continue

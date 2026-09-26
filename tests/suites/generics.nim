@@ -54,7 +54,7 @@ fn main() -> int:
   t.okCheck "generic fns check"
   t.emitsOdin "Odin infers the type param from a parameter",
               r"proc \(a: \$T, b: T\)"
-  t.emitsD "D emits a template", r"T tuck_fn_smaller\(T\)\(T a, T b\)"
+  t.emitsD "D emits a template", r"T tuckˑfnˑsmaller\(T\)\(T a, T b\)"
   t.hostBuilds "...and every backend builds them"
   t.runs "...including a Seq[T] param and a Seq[T] return", 0
 
@@ -227,9 +227,9 @@ fn main() -> int:
 """
   t.okCheck "a generic type checks, built from a generic fn's own params"
   t.emitsD "D declares it as a template struct",
-           r"struct tuck_type_Pair\(K, V\)"
+           r"struct tuckˑtypeˑPair\(K, V\)"
   t.emitsD "...and the use site names the instantiation",
-           r"tuck_type_Pair!\(string, long\)"
+           r"tuckˑtypeˑPair!\(string, long\)"
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the fields hold what was put in them", 0
 
@@ -251,7 +251,7 @@ fn main() -> int:
   return acc.len - n + {value: total} int - 1
 """
   t.okCheck "a stated type on a local checks"
-  t.emits "Nim states it too rather than re-inferring", r"var tuck_acc: seq\[int\]"
+  t.emits "Nim states it too rather than re-inferring", r"var tuckˑvˑacc: seq\[int\]"
   t.hostBuilds "...and every backend accepts the declaration"
   t.runs "...and the empty seq fills up", 0
 
@@ -320,19 +320,21 @@ fn main() -> int:
   return r.value - xs[1]
 """
   t.okCheck "a fn named after a runtime intrinsic checks"
-  t.emits "it is mangled out of the intrinsic's way", r"tuck_fn_at\b"
+  t.emits "it is mangled out of the intrinsic's way", r"tuckˑfnˑat\b"
   t.hostBuilds "...and every backend builds it"
   t.runs "...with indexing still reaching the intrinsic", 0
 
-  # A VALUE still can fold: a local `at` would be `tuck_at`, i.e. `tuckAt`,
-  # and rebind every `xs[i]` in its scope. It takes `tuck_val_` instead.
+  # A local could fold too, while locals were plain `tuck_`: `tuck_at` IS
+  # `tuckAt` to Nim, and rebound every `xs[i]` in its scope; a special
+  # `tuck_val_` spelling dodged a listed few. A local is `tuckˑvˑat` now, and
+  # no runtime name can contain the `ˑ`, so there is no list to keep.
   t.src """
 fn main() -> int:
   let xs: Seq[int] = [10, 20, 30]
   let at = 2
   return xs[at] - 30
 """
-  t.emits "a local named after a runtime intrinsic is mangled aside", r"tuck_val_at\b"
+  t.emits "a local named after a runtime intrinsic is mangled aside", r"tuckˑvˑat\b"
   t.hostRuns "...and indexing beside it still reaches the intrinsic", 0
 
   # --- an already-wrapped return is a pass-through ------------------------
@@ -356,7 +358,7 @@ fn main() -> int:
   return r.value - 7
 """
   t.okCheck "returning an already-wrapped value checks"
-  t.omits "Nim does not wrap it twice", r"tok\(tuck_fn_lookUp"
+  t.omits "Nim does not wrap it twice", r"tok\(tuckˑfnˑlookUp"
   t.hostBuilds "...and no backend does"
   t.runs "...and the payload survives one level", 0
 
@@ -391,9 +393,9 @@ fn main() -> int:
   return 0
 """
   t.okCheck "a self-append checks"
-  t.emits "Nim appends in place", r"tuck_a\.add\(3\)"
-  t.emitsOdin "Odin appends in place", r"append\(&tuck_a, 3\)"
-  t.emitsD "D appends in place", r"tuck_a ~= 3L"
+  t.emits "Nim appends in place", r"tuckˑvˑa\.add\(3\)"
+  t.emitsOdin "Odin appends in place", r"append\(&tuckˑvˑa, 3\)"
+  t.emitsD "D appends in place", r"tuckˑvˑa ~= 3L"
   t.hostBuilds "...on every backend"
   t.runs "...and a copy taken beforehand is untouched", 0
 
@@ -437,12 +439,12 @@ fn main() -> int:
   return 0
 """
   t.okCheck "a self-concat checks"
-  t.emits "Nim appends a str in place", r"tuck_a\.add\("
-  t.emitsD "D appends a str in place", r"tuck_a ~= "
-  t.omits "a PREPEND is left alone on Nim", r"tuck_b\.add\("
-  t.omitsD "...and on D", r"tuck_b ~="
-  t.omits "a self-concat is left alone on Nim", r"tuck_c\.add\("
-  t.omitsD "...and on D", r"tuck_c ~="
+  t.emits "Nim appends a str in place", r"tuckˑvˑa\.add\("
+  t.emitsD "D appends a str in place", r"tuckˑvˑa ~= "
+  t.omits "a PREPEND is left alone on Nim", r"tuckˑvˑb\.add\("
+  t.omitsD "...and on D", r"tuckˑvˑb ~="
+  t.omits "a self-concat is left alone on Nim", r"tuckˑvˑc\.add\("
+  t.omitsD "...and on D", r"tuckˑvˑc ~="
   t.hostBuilds "...every backend still builds it"
   t.hostRuns("...and none of the three reversed a prepend", 0)
 
@@ -459,7 +461,7 @@ fn main() -> int:
   return bag.items.len - 2
 """
   t.okCheck "a stated USER type on a local checks"
-  t.emits "the annotation is mangled with the declaration", r"tuck_bag: tuck_type_Bag"
+  t.emits "the annotation is mangled with the declaration", r"tuckˑvˑbag: tuckˑtypeˑBag"
   t.hostBuilds "...on every backend"
   t.runs "...and the value is there", 0
 
@@ -593,7 +595,7 @@ fn main() -> int:
   return got.len - 2
 """
   t.okCheck "a generic fnsig checks"
-  t.omitsD "D declares no alias for it", r"alias tuck_type_Pred"
+  t.omitsD "D declares no alias for it", r"alias tuckˑfnsigˑPred"
   t.hostBuilds "...and every backend emits the substituted signature"
   t.runs "...and the predicate filters", 0
 

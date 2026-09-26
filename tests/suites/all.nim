@@ -41,7 +41,9 @@ import memory
 import object_composition
 import odin_backend
 import optimize
+import owner_fields
 import pointer_containment
+import pools
 import recursive_types
 import resources
 import resources_rt
@@ -96,7 +98,9 @@ let registry: seq[Entry] = @[
   ("object_composition",  SuiteProc(object_composition.run),  false),
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),
+  ("owner_fields",        SuiteProc(owner_fields.run),        false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
+  ("pools",               SuiteProc(pools.run),               false),
   ("recursive_types",     SuiteProc(recursive_types.run),     false),
   ("resources",           SuiteProc(resources.run),           false),
   ("resources_rt",        SuiteProc(resources_rt.run),        false),

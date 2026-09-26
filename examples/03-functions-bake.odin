@@ -7,30 +7,30 @@ TRec_a_b_op :: struct ($T_a: typeid, $T_b: typeid, $T_op: typeid) {
 	op: T_op,
 }
 
-tuck_type_BinOp :: proc (a: int, b: int) -> int
+tuckˑfnsigˑBinOp :: proc (a: int, b: int) -> int
 
-tuck_type_Ctx :: struct {
+tuckˑtypeˑCtx :: struct {
 	a: int,
 	b: int,
-	op: tuck_type_BinOp,
+	op: tuckˑfnsigˑBinOp,
 }
 
-tuck_fn_plus :: proc (a: int, b: int) -> int {
+tuckˑfnˑplus :: proc (a: int, b: int) -> int {
   return (a + b)
 }
 
-tuck_fn_applyOperation :: proc (a: int, b: int, op: tuck_type_BinOp) -> int {
+tuckˑfnˑapplyOperation :: proc (a: int, b: int, op: tuckˑfnsigˑBinOp) -> int {
   return op(a, b)
 }
 
-tuck_fn_main :: proc () {
-  tuck_x := tuck_type_Ctx{a = 5, b = 10}
-  tuck_withOp := TRec_a_b_op(int, int, tuck_type_BinOp){a = tuck_x.a, b = tuck_x.b, op = tuck_fn_plus}
-  tuck_smaller := TRec_a_b_op(int, int, tuck_type_BinOp){a = tuck_withOp.a, b = 2, op = tuck_withOp.op}
-  tuck_r := tuck_fn_applyOperation(tuck_smaller.a, tuck_smaller.b, tuck_smaller.op)
+tuckˑfnˑmain :: proc () {
+  tuckˑvˑx := tuckˑtypeˑCtx{a = 5, b = 10}
+  tuckˑvˑwithOp := TRec_a_b_op(int, int, tuckˑfnsigˑBinOp){a = tuckˑvˑx.a, b = tuckˑvˑx.b, op = tuckˑfnˑplus}
+  tuckˑvˑsmaller := TRec_a_b_op(int, int, tuckˑfnsigˑBinOp){a = tuckˑvˑwithOp.a, b = 2, op = tuckˑvˑwithOp.op}
+  tuckˑvˑr := tuckˑfnˑapplyOperation(tuckˑvˑsmaller.a, tuckˑvˑsmaller.b, tuckˑvˑsmaller.op)
   return
 }
 
 main :: proc() {
-	tuck_fn_main()
+	tuckˑfnˑmain()
 }

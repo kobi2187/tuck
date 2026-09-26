@@ -31,50 +31,50 @@ struct TRec_id_name_length(T_id, T_name, T_length) {
     T_length length;
 }
 
-TRec_hasNew_episodes_metadata!(bool, long, string) tuck_fn_fetch(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_fetch invoked (not implemented)");
+TRec_hasNew_episodes_metadata!(bool, long, string) tuckˑfnˑfetch(T)(T payload) {
+    stderr.writeln("TUCK PENDING: fetch invoked (not implemented)");
     return typeof(return).init;
 }
 
-TRec_episodes!(long) tuck_fn_parse(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_parse invoked (not implemented)");
+TRec_episodes!(long) tuckˑfnˑparse(T)(T payload) {
+    stderr.writeln("TUCK PENDING: parse invoked (not implemented)");
     return typeof(return).init;
 }
 
-TRec_episodes!(long) tuck_fn_selectEpisodes(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_selectEpisodes invoked (not implemented)");
+TRec_episodes!(long) tuckˑfnˑselectEpisodes(T)(T payload) {
+    stderr.writeln("TUCK PENDING: selectEpisodes invoked (not implemented)");
     return typeof(return).init;
 }
 
-void tuck_fn_process(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_process invoked (not implemented)");
+void tuckˑfnˑprocess(T)(T payload) {
+    stderr.writeln("TUCK PENDING: process invoked (not implemented)");
 }
 
-void tuck_fn_log(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_log invoked (not implemented)");
+void tuckˑfnˑlog(T)(T payload) {
+    stderr.writeln("TUCK PENDING: log invoked (not implemented)");
 }
 
-void tuck_fn_playTrack(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_playTrack invoked (not implemented)");
+void tuckˑfnˑplayTrack(T)(T payload) {
+    stderr.writeln("TUCK PENDING: playTrack invoked (not implemented)");
 }
 
 
-void tuck_fn_main() {
-    TRec_url_timeout!(string, time.tuck_type_Milliseconds) tuck_request = TRec_url_timeout!(string, time.tuck_type_Milliseconds)(url: "example.com", timeout: time.tuck_fn_ms(5L));
-    TRec_episodes!(long) tuck_response = tuck_fn_selectEpisodes(tuck_fn_parse(tuck_fn_fetch(tuck_request)));
-    TRec_hasNew_episodes_metadata!(bool, long, string) tuck_feed = tuck_fn_fetch("https://example.com/feed");
-    if (tuck_feed.hasNew) {
-        tuck_fn_process(tuck_feed.episodes);
+void tuckˑfnˑmain() {
+    TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds)(url: "example.com", timeout: time.tuckˑfnˑms(5L));
+    TRec_episodes!(long) tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckˑfnˑfetch(tuckˑvˑrequest)));
+    TRec_hasNew_episodes_metadata!(bool, long, string) tuckˑvˑfeed = tuckˑfnˑfetch("https://example.com/feed");
+    if (tuckˑvˑfeed.hasNew) {
+        tuckˑfnˑprocess(tuckˑvˑfeed.episodes);
     } else {
-        tuck_fn_log(tuck_feed.metadata);
+        tuckˑfnˑlog(tuckˑvˑfeed.metadata);
     }
-    TRec_trackId_title_durationMs!(long, string, long) tuck_externalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 101L, title: "Deep Dive", durationMs: 212000L);
-    TRec_id_name_length!(long, string, long) tuck_normalizedTrack = TRec_id_name_length!(long, string, long)(id: tuck_externalTrack.trackId, name: tuck_externalTrack.title, length: tuck_externalTrack.durationMs);
-    tuck_fn_playTrack(tuck_normalizedTrack);
+    TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 101L, title: "Deep Dive", durationMs: 212000L);
+    TRec_id_name_length!(long, string, long) tuckˑvˑnormalizedTrack = TRec_id_name_length!(long, string, long)(id: tuckˑvˑexternalTrack.trackId, name: tuckˑvˑexternalTrack.title, length: tuckˑvˑexternalTrack.durationMs);
+    tuckˑfnˑplayTrack(tuckˑvˑnormalizedTrack);
     return;
 }
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_fn_main();
+    tuckˑfnˑmain();
 }

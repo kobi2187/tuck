@@ -6,7 +6,7 @@
 # tree for its target without carrying (or losing) semantic residue: ids
 # survive the copy, so these lookups still resolve.
 
-import tables, sets, strutils
+import tables, sets, strutils, options
 import ast
 import ssa_ir
 import name_prefix
@@ -107,6 +107,13 @@ type
       ## is not a twin does not own what it was passed and cannot give it
       ## away to be freed. `analysis_provenance` knows which values a body
       ## allocated; this set is where it writes that down.
+    ownerFields*: HashSet[NodeId]
+      ## Bare names that are the OWNER's field — an object member's, an actor
+      ## handler's, an invariant's — and not a param or local shadowing one.
+      ## Only the checker's scopes can tell those apart, so it records the
+      ## answer and every backend prints `self.<name>` for exactly these.
+      ## Deciding it in each backend by "is the name one of the fields" read
+      ## a handler's param `total` as the field `total`.
 
 proc poolHandleName*(pool: string): string = pool & "Handle"
 
@@ -126,7 +133,7 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     # handle type is not, because the checker synthesised it and mangling
     # walks the AST, which never held it. Compare both spellings rather than
     # teaching mangle about a type that does not exist in the tree.
-    if d.name == pool or d.name == prefixed(pool, nkValue): return true
+    if d.name == pool or d.name == prefixed(pool, nkPool): return true
   return false
 
 proc resourceHandleName*(kind: string): string =
@@ -341,7 +348,8 @@ proc newResolution*(): Resolution =
              ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
              lastUses: initHashSet[NodeId](),
              ssaGraphs: initTable[(NodeId, SsaStage), CachedSsa](),
-             movedArgs: initHashSet[NodeId]())
+             movedArgs: initHashSet[NodeId](),
+             ownerFields: initHashSet[NodeId]())
 
 var semLayer* = newResolution()
 
@@ -477,6 +485,14 @@ proc setCallParams*(r: Resolution, e: Expr, params: seq[string]) =
   ensureId(e)
   r.callParams[e.id] = params
 
+proc knownCallParams*(r: Resolution, e: Expr): Option[seq[string]] =
+  ## The callee's params as the checker recorded them, or none when it
+  ## recorded nothing. NOT `callParamsFor`'s empty list, which cannot tell a
+  ## callee that takes no params from one the checker never resolved.
+  if e == nil or not e.id.isSet or e.id notin r.callParams:
+    return none(seq[string])
+  some(r.callParams[e.id])
+
 proc callParamsFor*(r: Resolution, e: Expr): seq[string] =
   ## Empty when the callee was never resolved, or is not one whose payload
   ## may be exploded (a member fn, a task) — callers leave the call alone.
@@ -523,6 +539,14 @@ proc isMovedArg*(r: Resolution, e: Expr): bool =
   ## analysis did not reach — which copies, exactly as it always did.
   e != nil and e.id in r.movedArgs
 
+proc markOwnerField*(r: Resolution, e: Expr) =
+  ensureId(e)
+  r.ownerFields.incl(e.id)
+
+proc isOwnerField*(r: Resolution, e: Expr): bool =
+  ## Is this bare name the enclosing owner's field (see `ownerFields`)?
+  e != nil and e.kind == exkVar and e.id in r.ownerFields
+
 proc markLastUseId*(r: Resolution, id: NodeId) =
   ## The same, for a caller holding the node's id rather than the node.
   r.lastUses.incl(id)
@@ -534,8 +558,10 @@ proc isLastUse*(r: Resolution, e: Expr): bool =
   e != nil and e.id in r.lastUses
 
 proc memberProcName*(objName, memberName: string): string =
-  ## An object member emits QUALIFIED: `B.noise` -> `tuck_B_noise`, where
-  ## objName is already mangled.
+  ## An object member emits QUALIFIED: `B.noise` -> `tuckˑobjectˑBˑnoise`,
+  ## where objName is already mangled; name_prefix.joinedName says why the
+  ## join is not `_`. The declaration and every call to it take this name
+  ## from here (ast_query.memberCalleeOf), so the two cannot drift.
   ##
   ## One rule for all three backends, which is what keeps the member and the
   ## free fn of the same name from ever competing. Odin and D needed it
@@ -544,7 +570,7 @@ proc memberProcName*(objName, memberName: string): string =
   ## bare name then collided with a top-level `noise` at MANGLING time and
   ## silently called the wrong one (issue #50). Nim now qualifies too: the
   ## collision cannot arise rather than being resolved by a precedence rule.
-  objName & "_" & memberName
+  joinedName(objName, memberName)
 
 proc escapeStringLit*(v: string): string =
   ## A Tuck string literal, spelled for a target language.

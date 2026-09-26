@@ -1,21 +1,21 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-type tuck_type_EthernetFrame* = object
+type tuckˑtypeˑEthernetFrame* = object
   dst*: array[6, uint8]
   src*: array[6, uint8]
   ethertype*: uint16
 
-type tuck_type_Temperature* = object
+type tuckˑtypeˑTemperature* = object
   celsius*: float32
 
-proc validate*(self: tuck_type_Temperature) =
+proc validate*(self: tuckˑtypeˑTemperature) =
   when not defined(tuckNoInvariants):
-    if not ((self.celsius >= -273.15)): tuckInvariantFailed("(self.celsius >= -273.15)", "tuck_type_Temperature")
+    if not ((self.celsius >= -273.15)): tuckInvariantFailed("(self.celsius >= -273.15)", "tuckˑtypeˑTemperature")
 
-type tuck_type_UartDriver* = ref object
+type tuckˑactorˑUartDriver* = ref object
   discard
 
-proc tuck_fn_readSensor*[T](payload: T): TuckResult[tuple[value: uint16]] =
-  stderr.writeLine("TUCK PENDING: tuck_fn_readSensor invoked (not implemented)")
+proc tuckˑfnˑreadSensor*[T](payload: T): TuckResult[tuple[value: uint16]] =
+  stderr.writeLine("TUCK PENDING: readSensor invoked (not implemented)")
 

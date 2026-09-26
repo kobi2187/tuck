@@ -12,8 +12,9 @@
 #      `matrix`, `in` are Odin's; `addr`, `ptr`, `method`, `end` are Nim's.
 #
 # Both lists are invisible to the Tuck author and grow whenever a runtime or
-# a target language does. So the collision is inverted here: user names get a
-# `tuck_` prefix that cannot clash in any backend, now or later.
+# a target language does. So the collision is inverted here: every user name
+# is spelled `tuckˑ<kind>ˑ<name>` (name_prefix.nim, which says why that
+# spelling cannot clash in any backend, with each other or with the runtime).
 #
 # WHY A PASS, NOT PER-BACKEND EMISSION:
 #   - Written once; every backend (Nim, Odin, and any future one) gets
@@ -32,7 +33,6 @@
 #     runtime's readFile", so the name must survive verbatim. This is the
 #     existing FFI escape hatch; an explicit `[extern: "c_name"]` attribute
 #     would extend the same predicate here rather than in three backends.
-#   - LOCALS AND PARAMS. Not global, cannot collide.
 #   - ENUM VARIANTS / MATCH PATTERNS. Reached through their owning type.
 #
 # THE BOUNDARY: EMITTED IDENTIFIERS ONLY.
@@ -56,31 +56,13 @@ import resolution
 import name_prefix
 export name_prefix
 
-const RtFoldableIntrinsics = [
-  "at", "setAt", "concat", "sat", "satI",
-  "seqBounds", "seqCopy", "spawn", "setArgs",
-]
-  ## Value names whose ORDINARY mangling collides with a runtime intrinsic
-  ## — on Nim, and only on Nim, because Nim identifiers ignore underscores
-  ## and case after the first character. A local `at` mangles to `tuck_at`,
-  ## which IS `tuckAt` to Nim, and would rebind every `xs[i]` in its scope.
-  ## A FN no longer can: it is `tuck_fn_at` (#78), which folds to nothing the
-  ## compiler introduces. `fn at` was how this was found.
-  ##
-  ## The list is the intrinsics the COMPILER introduces (see
-  ## codegen_common.RtIntrinsicNames), spelled as the user name that would
-  ## fold into each. alloc.vec found it: its API deliberately keeps std/seq's
-  ## `at`/`setAt` spellings rather than inventing new ones.
-
-proc mangleName*(name: string, kind = nkValue): string =
+proc mangleName*(name: string, kind: NameKind): string =
   ## Idempotent: re-running the pass over an already-lowered tree is a no-op,
   ## which matters because each backend lowers its own deepCopy.
   ##
   ## Mangled in ONE place for all three backends, so a name is spelled the
   ## same everywhere even though only Nim can fold it.
   if name.len == 0 or isMangledName(name): return name
-  if kind == nkValue and name in RtFoldableIntrinsics:
-    return FoldSafePrefix & name
   prefixed(name, kind)
 
 type MangleNames* = Table[string, NameKind]
@@ -93,17 +75,10 @@ proc rememberSource(slot: var Option[string], name: string) =
   ## the original with the already-mangled name.
   if slot.isNone: slot = some(name)
 
-proc nameKind(d: Decl): NameKind =
-  ## Which prefix a declaration's name takes (#78).
-  case d.kind
-  of dkFn, dkTask: nkFn
-  of dkType, dkObject, dkActor, dkFnSig: nkType
-  else: nkValue
-
 proc renameDecl(d: Decl) =
   ## Renames a decl to its mangled form, keeping what the user wrote.
   rememberSource(d.sourceName, d.name)
-  d.name = mangleName(d.name, nameKind(d))
+  d.name = mangleName(d.name, declKind(d))
 
 proc renameType(t: Type, kind: NameKind) =
   ## Renames a named type reference, keeping what the user wrote.
@@ -112,7 +87,7 @@ proc renameType(t: Type, kind: NameKind) =
 
 proc renameVar(e: Expr, kind: NameKind) =
   ## Renames a variable reference — to a top-level decl, or a local (always
-  ## nkValue) — keeping what the user wrote.
+  ## nkLocal) — keeping what the user wrote.
   rememberSource(e.sourceName, e.name)
   e.name = mangleName(e.name, kind)
 
@@ -133,12 +108,12 @@ proc isManglable(d: Decl): bool =
 # reference sites can tell a global from a local without re-scanning.
 proc manglableNames*(m: Module): MangleNames =
   for d in m.decls:
-    if isManglable(d): result[d.name] = nameKind(d)
+    if isManglable(d): result[d.name] = declKind(d)
     # members of a mixin / extern / pending block become top-level fns in
     # every backend, so their names are manglable too
     if d != nil and d.kind in {dkMixin, dkExtern, dkPending}:
       for mem in d.mixinMembers:
-        if isManglable(mem): result[mem.name] = nameKind(mem)
+        if isManglable(mem): result[mem.name] = declKind(mem)
 
 # The union across the whole import closure. A qualified reference
 # (`http::get`) names a decl in ANOTHER module, so deciding whether it is
@@ -180,7 +155,7 @@ proc bindLoopVars(pat: Pattern, locals: var HashSet[string]) =
   case pat.kind
   of pkVar:
     locals.incl(pat.name)
-    pat.name = mangleName(pat.name, nkValue)
+    pat.name = mangleName(pat.name, nkLocal)
   of pkTuple:
     for el in pat.elems: bindLoopVars(el, locals)
   else: discard
@@ -210,9 +185,9 @@ proc mangleAssign(res: Resolution, e: Expr, names: MangleNames, locals: var Hash
   # the user's own `Bag` beside the declaration's `tuck_Bag`.
   if e.declType != nil: mangleType(e.declType, names)
   if e.target != nil and e.target.kind == exkVar and
-     e.target.name notin fields:
+     e.target.name notin fields and not res.isOwnerField(e.target):
     locals.incl(e.target.name)
-    renameVar(e.target, nkValue)
+    renameVar(e.target, nkLocal)
   else:
     mangleExpr(res, e.target, names, locals, fields)
 
@@ -244,10 +219,10 @@ proc mangleMatch(res: Resolution, e: Expr, names: MangleNames,
     let p = arm.pattern
     if p != nil and p.kind == pkBind:
       inner.incl(p.name)
-      p.name = mangleName(p.name, nkValue)
-    elif p != nil and p.kind == pkVar and names.getOrDefault(p.name) == nkValue and
-         p.name in names and not isVariantOf(res, e.subject, p.name):
-      p.name = mangleName(p.name, nkValue)
+      p.name = mangleName(p.name, nkLocal)
+    elif p != nil and p.kind == pkVar and p.name in names and
+         names[p.name] == nkConst and not isVariantOf(res, e.subject, p.name):
+      p.name = mangleName(p.name, nkConst)
     mangleExpr(res, arm.body, names, inner, fields)
 
 proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSet[string],
@@ -262,9 +237,9 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
   ## about code the author never wrote. Scope makes a local safe from OTHER
   ## TUCK names, never from the backend's own.
   ##
-  ## A local shadowing a global still shadows after both are mangled — they
-  ## land on the same `tuck_` name and the target language's own scoping does
-  ## exactly what the source meant.
+  ## A local shadowing a global still shadows after both are mangled: each
+  ## reference is resolved HERE, by this walk's scopes, and spelled as what it
+  ## names — `tuckˑvˑready` inside the local's scope, `tuckˑfnˑready` outside.
   if e == nil: return
   # A bare name in call position (`if ready:`) is stamped by the checker as a
   # nullary call living in the SEMANTIC LAYER, not in this tree. Backends emit
@@ -275,13 +250,14 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
 
   case e.kind
   of exkVar:
-    # A bare name that is one of the enclosing actor's/object's FIELDS is
+    # A bare name the checker resolved to the enclosing owner's FIELD is
     # neither a local nor a global — the backends emit it as `self.name`,
     # against a field this pass never renames. Checked first, or an actor
-    # handler's `state = ...` would be mistaken for a new local.
+    # handler's `state = ...` would be mistaken for a new local. (`fields`
+    # also holds the params, which stay bare as a contract — mangleFnBody.)
     # A local shadows the global of the same name, so it is asked first.
-    if e.name in fields: discard
-    elif e.name in locals: renameVar(e, nkValue)
+    if res.isOwnerField(e) or e.name in fields: discard
+    elif e.name in locals: renameVar(e, nkLocal)
     elif e.name in names: renameVar(e, names[e.name])
   of exkQualified:
     # `:fnref` (no module path) and `http::get` (qualified) both resolve
@@ -297,7 +273,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
   of exkField, exkStruct, exkList, exkBracket, exkBracketAssign, exkCall,
      exkCombinator, exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile,
      exkReturn, exkRaise, exkDiscard, exkDefer, exkFinish, exkAcquire,
-     exkOrdinal, exkValidate, exkIfaceCall:
+     exkOrdinal, exkValidate, exkIfaceCall, exkPoolOp:
     for c in e.children: mangleExpr(res, c, names, locals, fields)
   of exkMatch: mangleMatch(res, e, names, locals, fields)
   of exkFor: mangleFor(res, e, names, locals, fields)

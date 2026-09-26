@@ -55,16 +55,16 @@ fn smaller[T]({a: T, b: T}) -> T:
 """)
   t.okCheck "a type and a generic fn cross a module boundary"
   t.emitsOdin "Odin reaches the imported type through its package",
-              r"cmp\.tuck_type_Order\.Before"
-  t.emitsD "D reaches it through its import alias", r"cmp\.tuck_type_Order\.Before"
+              r"cmp\.tuckˑtypeˑOrder\.Before"
+  t.emitsD "D reaches it through its import alias", r"cmp\.tuckˑtypeˑOrder\.Before"
   t.hostBuilds "...and every backend's host compiler accepts the pair"
   t.runs "...and the imported flip and generic min both work", 0
 
   # The match-arm labels are a second value position, reached by a different
   # path (enumTagOwner, which answers a bare owner name), and were bare too.
   t.emitsOdin "an imported sum's match labels are qualified as well",
-              r"case cmp\.tuck_type_Order\."
-  t.emitsD "...on D as well", r"case cmp\.tuck_type_Order\."
+              r"case cmp\.tuckˑtypeˑOrder\."
+  t.emitsD "...on D as well", r"case cmp\.tuckˑtypeˑOrder\."
 
   # --- a fn reference filling an imported module's fnsig slot ---------------
   # Four separate gaps, each hiding the next. The parser dropped the module
@@ -97,7 +97,7 @@ fn pick[T]({a: T, b: T, better: Better[T]}) -> T:
 """)
   t.okCheck "a fn reference fills an imported module's generic fnsig slot"
   t.emitsD "D takes the address of the qualified fn, not a no-arg call",
-           r"&provider\.tuck_fn_firstWins"
+           r"&provider\.tuckˑfnˑfirstWins"
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the imported callback is the one invoked", 0
 
@@ -264,9 +264,9 @@ fn main() -> int:
   return a + b - 5
 """
   t.okCheck "a module may export some of its own names"
-  t.emits "Nim stars the exported name", r"proc tuck_fn_shown\*"
-  t.omits "...and leaves the unexported one unstarred", r"proc tuck_fn_hidden\*"
-  t.emitsD "D marks the unexported one private", r"private long tuck_fn_hidden"
+  t.emits "Nim stars the exported name", r"proc tuckˑfnˑshown\*"
+  t.omits "...and leaves the unexported one unstarred", r"proc tuckˑfnˑhidden\*"
+  t.emitsD "D marks the unexported one private", r"private long tuckˑfnˑhidden"
   t.emitsOdin "Odin marks the unexported one private", r"@\(private\)"
   t.hostBuilds "...and every backend still builds it"
   t.runs "...and a private name is still callable from inside its module", 0

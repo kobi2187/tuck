@@ -45,9 +45,9 @@ fn main() -> int:
 """
   t.okCheck "a mixed list reaches a Seq[Animal] parameter"
   t.frozen     "each element dispatches to its own implementation"
-  t.emits      "a branch for Dog", "tuck_type_DogVal"
-  t.emits      "a branch for Cat", "tuck_type_CatVal"
-  t.emitsOdin "Odin: both branches", "tuck_type_(Dog|Cat)Val"
+  t.emits      "a branch for Dog", "tuckˑobjectˑDogVal"
+  t.emits      "a branch for Cat", "tuckˑobjectˑCatVal"
+  t.emitsOdin "Odin: both branches", "tuckˑobjectˑ(Dog|Cat)Val"
   # PRE-EXISTING: Odin rejects a list literal passed to a Seq parameter —
   # "Compound literals of dynamic types are disabled by default" — because
   # [dynamic]T has no literal form, only `append`. A plain Seq[Record] fails
@@ -89,7 +89,7 @@ fn main() -> int:
   # and removing the sentinel turned it into the hard error it always was —
   # which is why this assertion could not pass even once the emitter was
   # right.
-  t.quietly: t.omitsOdin "", "tuck_fn_total\\(\\{"
+  t.quietly: t.omitsOdin "", "tuckˑfnˑtotal\\(\\{"
   t.bugFixed "Odin: a list literal can reach a Seq parameter"
   t.emitsOdin "...the element type is the INTERFACE, not the first element's type",
               r"\[dynamic\]Animal\{"
@@ -237,6 +237,6 @@ fn main() -> int:
 """
   t.runs "an inline list literal wraps each element for a Seq[Interface]", 3
   t.emits "...each with its own tag, not passed through raw",
-          r"Rule\(tag: Rule_is_tuck_type_B, tuck_type_BVal: tuck_type_B\(n: 2\)\)"
+          r"Rule\(tag: Rule_is_tuckˑobjectˑB, tuckˑobjectˑBVal: tuckˑobjectˑB\(n: 2\)\)"
 
   t.finish()

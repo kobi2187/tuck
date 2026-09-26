@@ -78,6 +78,11 @@ type
     implementedFns*: HashSet[string]
     errPolicy*: string            # strict (default) | continue | exit
     wrapperFieldRead*: bool
+    ownerFieldScope*: int
+      ## 1 + the index in `scopes` where the enclosing owner bound its fields
+      ## bare (an object's members, an actor's handlers, a type's invariants);
+      ## 0 outside one. A name found THERE, and not in a scope inside it, is
+      ## the owner's field (`resolvesToOwnerField`).
       ## Set while synthesizing the RECEIVER of `.ok`/`.value`, so a bare read
       ## of a binding can be told from one — see markErrSeen.
     unhandledSites*: seq[string]  # strict: error list; continue/exit: SHORTCUTS
@@ -217,6 +222,12 @@ proc addFnDecl*(tc: var TypeChecker, name: string, d: Decl) =
   ## Record one declaration under `name`, keeping any already there.
   if tc.fnDecls.hasKey(name): tc.fnDecls[name].add(d)
   else: tc.fnDecls[name] = @[d]
+
+proc externFnNames*(tc: TypeChecker): HashSet[string] =
+  ## Every extern fn the program declares, by the name the source uses.
+  for name, ds in tc.fnDecls:
+    for d in ds:
+      if d != nil and d.kind == dkFn and d.isExtern: result.incl name
 
 proc declOfFn*(tc: TypeChecker, name: string): Decl =
   ## The declaration for `name` when the caller has no way to choose — the
@@ -393,6 +404,23 @@ proc clearUninit*(tc: var TypeChecker, name: string, field = "") =
     if tc.scopes[i].hasKey(name):
       tc.scopes[i][name].typ = filled(tc.scopes[i][name].typ, field)
       return
+
+proc resolvesToOwnerField*(tc: TypeChecker, name: string): bool =
+  ## Does a bare `name` read the enclosing owner's field? Only if the
+  ## innermost scope holding it is the one the owner's fields were bound in:
+  ## a param or a `let` of the same name, bound inside that, wins.
+  if tc.ownerFieldScope == 0 or name == "self": return false
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name): return i == tc.ownerFieldScope - 1
+  false
+
+template withOwnerFields*(tc: var TypeChecker, body: untyped) =
+  ## Run `body` with the innermost scope as the one holding the owner's
+  ## fields, restoring the enclosing owner's (if any) afterwards.
+  let savedOwner = tc.ownerFieldScope
+  tc.ownerFieldScope = tc.scopes.len
+  body
+  tc.ownerFieldScope = savedOwner
 
 proc lookup*(tc: TypeChecker, name: string): tuple[found: bool, b: Binding] =
   for i in countdown(tc.scopes.high, 0):

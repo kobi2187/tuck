@@ -241,6 +241,9 @@ proc walk(m: var Metrics, e: Expr) =
   of exkIfaceCall:
     walk(m, e.dispatchRecv)
     for arm in e.dispatchArms: walk(m, arm.call)
+  of exkPoolOp:
+    walk(m, e.poolHandle)
+    walk(m, e.poolValue)
   of exkLit, exkVar, exkQualified, exkBreak, exkContinue, exkImport,
      exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     discard

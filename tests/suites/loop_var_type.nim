@@ -124,7 +124,7 @@ fn main() -> int:
 """
   t.okCheck "a conditional for checks"
   t.omitsOdin "Odin has no `while` keyword", r"while \("
-  t.emitsOdin "...it is a bare `for` with a condition", r"for \(tuck_idx < "
+  t.emitsOdin "...it is a bare `for` with a condition", r"for \(tuckˑvˑidx < "
   t.hostBuilds "...and every backend builds it"
   t.runs "...and it counts the whole seq", 0
 

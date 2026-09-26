@@ -405,6 +405,21 @@ type
                     # node rather than a `match`: it sits in VALUE position,
                     # where Odin's match is a ternary chain that can bind no
                     # payload and would evaluate the receiver once per arm.
+    exkPoolOp       # `Cells.acquire`, `Cells.read {h}`, ... — an operation on a
+                    # pool (spec §7.2). Its own node, stamped by the checker:
+                    # it used to be a call whose callee was the bare member
+                    # name, so a program's own `fn read` was mangled into it,
+                    # and backends found pool calls by name lists.
+
+  PoolOpKind* = enum
+    ## What a pool operation does. Its operands are fixed per kind: none for
+    ## acquire; the handle for release, read and addr; handle and value for
+    ## write — two fields rather than a list, nil where the kind takes none.
+    poAcquire  ## `?Handle` — a free cell, now held and ABSENT
+    poRelease  ## give the cell back
+    poRead     ## `?T` — the cell's value, absent until something wrote it
+    poWrite    ## store a value; the cell is present
+    poAddr     ## the cell's bytes as a `Buf`, for an extern to fill
 
   CombKind* = enum
     ## The record combinators. One family, one shape — a receiver and a struct
@@ -519,6 +534,11 @@ type
       deferBody*: Expr  # the block to run at scope exit
     of exkOrdinal:
       ordinalOf*: Expr  # the enum or bool value whose ordinal this is
+    of exkPoolOp:
+      poolOp*: PoolOpKind
+      poolRef*: Expr               # the `exkPoolRef`
+      poolHandle*: Expr            # the handle; nil for acquire
+      poolValue*: Expr             # the value; write only, else nil
     of exkIfaceCall:
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name

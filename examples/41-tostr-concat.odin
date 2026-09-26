@@ -6,34 +6,34 @@ import sys "./mod_sys"
 import str "./mod_str"
 import console "./mod_console"
 
-tuck_type_Jar :: struct {
+tuckˑtypeˑJar :: struct {
 	count: int,
 	label: string,
 }
 
-tuck_fn_main :: proc () {
-  tuck_n := 99
-  tuckStrTmp1 := str.toStr(tuck_n)
+tuckˑfnˑmain :: proc () {
+  tuckˑvˑn := 99
+  tuckStrTmp1 := str.toStr(tuckˑvˑn)
   defer delete(tuckStrTmp1)
-  tuck_s := rt.tuckConcat(tuckStrTmp1, " bottles")
-  defer delete(tuck_s)
-  console.printLine(tuck_s)
-  tuckStrTmp2 := str.toStr(tuck_n)
+  tuckˑvˑs := rt.tuckConcat(tuckStrTmp1, " bottles")
+  defer delete(tuckˑvˑs)
+  console.printLine(tuckˑvˑs)
+  tuckStrTmp2 := str.toStr(tuckˑvˑn)
   defer delete(tuckStrTmp2)
-  tuck_t := rt.tuckConcat(tuckStrTmp2, " more")
-  defer delete(tuck_t)
-  console.printLine(tuck_t)
-  tuck_j := tuck_type_Jar{count = 7, label = "jam"}
-  tuck_c := tuck_j.count
-  tuckStrTmp3 := rt.tuckConcat(tuck_j.label, ": ")
+  tuckˑvˑt := rt.tuckConcat(tuckStrTmp2, " more")
+  defer delete(tuckˑvˑt)
+  console.printLine(tuckˑvˑt)
+  tuckˑvˑj := tuckˑtypeˑJar{count = 7, label = "jam"}
+  tuckˑvˑc := tuckˑvˑj.count
+  tuckStrTmp3 := rt.tuckConcat(tuckˑvˑj.label, ": ")
   defer delete(tuckStrTmp3)
-  tuckStrTmp4 := str.toStr(tuck_c)
+  tuckStrTmp4 := str.toStr(tuckˑvˑc)
   defer delete(tuckStrTmp4)
-  tuck_u := rt.tuckConcat(tuckStrTmp3, tuckStrTmp4)
-  defer delete(tuck_u)
-  console.printLine(tuck_u)
-  if (tuck_s == "99 bottles") {
-      if (tuck_u == "jam: 7") {
+  tuckˑvˑu := rt.tuckConcat(tuckStrTmp3, tuckStrTmp4)
+  defer delete(tuckˑvˑu)
+  console.printLine(tuckˑvˑu)
+  if (tuckˑvˑs == "99 bottles") {
+      if (tuckˑvˑu == "jam: 7") {
           sys.exit(0)
       }
   }
@@ -41,5 +41,5 @@ tuck_fn_main :: proc () {
 }
 
 main :: proc() {
-	tuck_fn_main()
+	tuckˑfnˑmain()
 }

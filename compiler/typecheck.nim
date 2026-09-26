@@ -317,39 +317,26 @@ proc sigForReceiver(tc: TypeChecker, name: string, recvT: Type): FnSig =
     if tc.compatible(recvT, pt): return sig
   tc.sigOf(name)
 
+proc bindPayloadFields(tc: var TypeChecker, fnName: string,
+                       params: seq[Param], argStruct: Expr, sp: Span): seq[Expr]
+  ## Forward-declared: the claim passes it runs are defined further down.
+
 proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                      recvT: Type, argStruct: Expr, sp: Span): Expr =
   ## `d.crank {step: 1}` — the receiver fills a slot, the payload fills the
-  ## rest by name. See failIfReceiverSlotMismatched for which slot and why.
-  ## The receiver also PICKS the overload, so two objects may each declare a
-  ## member of this name.
+  ## rest by the three passes every call uses (bindPayloadFields). See
+  ## failIfReceiverSlotMismatched for which slot and why. The receiver also
+  ## PICKS the overload, so two objects may each declare a member of this
+  ## name.
   let sig = tc.sigForReceiver(fnName, recvT)
   let receiverFillsFirstParam =
     tc.failIfReceiverSlotMismatched(fnName, sig, recvT, sp)
-  var argFields: seq[FieldInit]
-  if argStruct != nil:
-    if argStruct.kind != exkStruct:
-      fail("Type Error: arguments to '" & fnName &
-           "' must be a struct literal: {name: value, ...}", argStruct.span)
-    argFields = argStruct.fields
-  var args: seq[Expr] = @[receiver]
+  if argStruct != nil and argStruct.kind != exkStruct:
+    fail("Type Error: arguments to '" & fnName &
+         "' must be a struct literal: {name: value, ...}", argStruct.span)
   let startAt = if receiverFillsFirstParam: 1 else: 0
-  for i in startAt ..< sig.params.len:
-    let p = sig.params[i]
-    var found = false
-    for f in argFields:
-      if f.name == p.name:
-        let ft = tc.synthesize(f.value)
-        if not tc.compatible(ft, p.typ):
-          fail("Type Error: field '" & p.name & "' of call to '" & fnName &
-               "' expects " & typeName(p.typ) & " but got " & typeName(ft),
-               f.value.span)
-        args.add(f.value)
-        found = true
-        break
-    if not found:
-      fail("Type Error: call to '" & fnName & "' is missing required field '" &
-           p.name & ": " & typeName(p.typ) & "'", sp)
+  let args = @[receiver] &
+             tc.bindPayloadFields(fnName, sig.params[startAt .. ^1], argStruct, sp)
   result = Expr(span: sp, kind: exkCall,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
   setType(semLayer, result, sig.ret)
@@ -692,6 +679,91 @@ proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   setCall(semLayer, e, bc)
   tc.synthesize(bc)
 
+proc poolOpNamed(member: string): Option[PoolOpKind] =
+  case member
+  of "acquire": some(poAcquire)
+  of "release": some(poRelease)
+  of "read": some(poRead)
+  of "write": some(poWrite)
+  of "addr": some(poAddr)
+  else: none(PoolOpKind)
+
+proc poolOpArg(tc: var TypeChecker, e: Expr, qualified: string,
+               p: Param): Expr =
+  ## The payload value that feeds param `p`, checked against its type. By
+  ## NAME — `{h: …, value: …}` — and a lone unnamed `{b.value}` still feeds
+  ## a one-param op, as it always has for `release`.
+  let pay = e.dotArg
+  var v: Expr = nil
+  if pay != nil and pay.kind == exkStruct:
+    for f in pay.fields:
+      if f.name == p.name: v = f.value
+    if v == nil and pay.fields.len == 1 and
+       tc.sigOf(qualified).params.len == 1:
+      v = pay.fields[0].value
+  if v == nil:
+    fail("Type Error: '" & qualified & "' needs `" & p.name & "`: `" &
+         qualified & " {" & p.name & ": …}`", e.span)
+  let got = tc.synthesize(v)
+  if got != nil and not tc.compatible(got, p.typ):
+    let why = if p.name == "h": " — a pool's handle belongs to that pool"
+              else: ""
+    fail("Type Error: '" & qualified & "' expects " & p.name & ": " &
+         typeName(p.typ) & " but got " & typeName(got) & why, v.span)
+  v
+
+proc failIfAddrOfCheckedCell(tc: TypeChecker, e: Expr, elem: Type) =
+  ## An extern fills the bytes `addr` hands out, and nothing checks them
+  ## against an invariant (TK-TY31).
+  if elem == nil or elem.kind != tkNamed or
+     elem.name notin tc.typeDeclsByName: return
+  for member in tc.typeDeclsByName[elem.name].typeMembers:
+    if member.kind == dkExpr:
+      fail(dcTyPoolAddrInvariant, "'" & elem.name & "' carries an " &
+           "invariant, so a pool of it has no `addr`: memory an extern fills " &
+           "is never checked against it", e.span)
+
+proc takesParam(sig: FnSig, name: string): bool =
+  for p in sig.params:
+    if p.name == name: return true
+
+proc failIfPoolPayloadStray(e: Expr, qualified: string, sig: FnSig) =
+  ## A payload field no param of the op takes: anything handed to `acquire`,
+  ## or a name `write` / `read` / … does not have.
+  let pay = e.dotArg
+  if sig.params.len == 0 and pay != nil and
+     (pay.kind != exkStruct or pay.fields.len > 0):
+    fail("Type Error: '" & qualified & "' takes nothing", e.span)
+  if pay == nil or pay.kind != exkStruct or sig.params.len < 2: return
+  for f in pay.fields:
+    if not sig.takesParam(f.name):
+      fail("Type Error: '" & qualified & "' has no `" & f.name & "`",
+           f.value.span)
+
+proc operand(args: seq[Expr], i: int): Expr =
+  if i < args.len: args[i] else: nil
+
+proc asPoolOp(tc: var TypeChecker, e: Expr, op: PoolOpKind,
+              qualified: string): Type =
+  ## `Pool.op {...}` becomes an `exkPoolOp` in the semantic layer — its own
+  ## node, so no pass mistakes it for a call to a fn of the member's name and
+  ## no backend looks it up in a list. Its operands are the payload's own
+  ## nodes, so every walk of the tree still reaches them.
+  let sig = tc.sigOf(qualified)
+  failIfPoolPayloadStray(e, qualified, sig)
+  var args: seq[Expr]
+  for p in sig.params: args.add tc.poolOpArg(e, qualified, p)
+  if op == poAddr:
+    # the element type is the one `write` takes
+    let elem = tc.sigOf(e.receiver.refName & ".write").params[1].typ
+    tc.failIfAddrOfCheckedCell(e, elem)
+  let node = Expr(span: e.span, kind: exkPoolOp, poolOp: op,
+                  poolRef: e.receiver, poolHandle: args.operand(0),
+                  poolValue: args.operand(1))
+  setCall(semLayer, e, node)
+  semLayer.setType(node, sig.ret)
+  sig.ret
+
 proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   ## `Pool.acquire` / `Pool.release {v}` (spec 7.2) — a STATIC member call on a
   ## singleton type, the way `StaticClass.method` reads elsewhere. The receiver
@@ -710,6 +782,9 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
     return nil
   let qualified = e.receiver.refName & "." & e.fieldName
   if not tc.fnSigs.hasKey(qualified): return nil
+  if e.receiver.kind == exkPoolRef:
+    let op = poolOpNamed(e.fieldName)
+    if op.isSome: return tc.asPoolOp(e, op.get, qualified)
   let extra = unwrapSingleField(e.dotArg)
   # The argument was never checked against the declared param: `Cells.release
   # {42}` passed, and so did releasing one pool's handle into another. The
@@ -2387,6 +2462,37 @@ proc claimByType(tc: var TypeChecker, fnName: string, params: seq[Param],
     claimed[candidate] = true
     resolved[pi] = argFields[candidate].name
 
+proc bindPayloadFields(tc: var TypeChecker, fnName: string,
+                       params: seq[Param], argStruct: Expr, sp: Span): seq[Expr] =
+  ## The method form's payload (`b.grow {...}`, `s ..withPort {...}`), bound
+  ## to `params` by the same passes as any call — subset, then by name, then
+  ## by type — and answered as one value per param, in param order.
+  ##
+  ## The method form kept its own by-name loop, so a field meant to claim a
+  ## param BY TYPE was reported missing there while the same payload bound
+  ## against a top-level fn (#20). It skipped what checkNamedField does per
+  ## field, too: the interface wrap and the uninitialised-field read.
+  var argFields: seq[ArgField]
+  if argStruct != nil:
+    var hints = initTable[string, Type]()
+    for p in params: hints[p.name] = p.typ
+    tc.withFieldHints(hints):
+      for f in argStruct.fields:
+        argFields.add((f.name, tc.synthFieldValue(f), f.value.span))
+  # The claim passes read the payload off a call's single argument.
+  let call = Expr(span: sp, kind: exkCall,
+                  args: (if argStruct != nil: @[argStruct] else: @[]))
+  var claimed = newSeq[bool](argFields.len)
+  var resolved = newSeq[string](params.len)
+  let pending = tc.claimByName(fnName, params, argFields, call, claimed, resolved)
+  tc.claimByType(fnName, params, argFields, call, pending, claimed, resolved)
+  for pi, p in params:
+    if resolved[pi] == "":
+      # A `Self` param past the receiver's slot: no pass claims one.
+      fail("Type Error: call to '" & fnName & "' is missing required field '" &
+           p.name & ": " & typeName(p.typ) & "'", sp)
+    result.add payloadFieldExpr(call, resolved[pi])
+
 proc checkPayloadCall(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                       bindings: var Table[string, Type]) =
   ## A call whose single argument is a payload: its fields satisfy the params.
@@ -3244,6 +3350,7 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
   let (found, b) = tc.lookup(e.name)
   if found:
     tc.markUsed(e.name)
+    if tc.resolvesToOwnerField(e.name): semLayer.markOwnerField(e)
     # A BARE read hands the whole value somewhere — returned, passed on,
     # discarded — so both questions travel with it. Reading it as the
     # receiver of `.ok`/`.value` is not that, and asResultIntrospection says
@@ -4065,6 +4172,10 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # of the interface call it replaced.
     discard tc.synthesize(e.dispatchRecv)
     semLayer.typeFor(e)
+  of exkPoolOp:
+    # Stamped by the checker (asPoolOp) in place of `Pool.op {...}`; its
+    # type was recorded when it was built.
+    semLayer.typeFor(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field
@@ -4417,7 +4528,8 @@ proc checkObjectDecl(tc: var TypeChecker, d: Decl) =
   tc.pushScope()
   for f in d.objFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
-  for m in d.objMembers: tc.checkDecl(m)
+  tc.withOwnerFields:
+    for m in d.objMembers: tc.checkDecl(m)
   tc.popScope()
 
 proc checkHandler(tc: var TypeChecker, h: Decl) =
@@ -4495,7 +4607,8 @@ proc checkInvariants(tc: var TypeChecker, d: Decl) =
   for member in d.typeMembers:
     if member == nil or member.kind != dkExpr or member.expr == nil: continue
     tc.failIfUndeclaredName(member.expr, d.name)
-    let t = tc.synthesize(member.expr)
+    var t: Type
+    tc.withOwnerFields: t = tc.synthesize(member.expr)
     if not (t.kind == tkNamed and t.name == "bool"):
       fail(dcIvNotBool,
            "invariant on '" & d.name & "' must be a bool, got " &
@@ -4659,7 +4772,8 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
-  for h in d.handlers: tc.checkHandler(h)
+  tc.withOwnerFields:
+    for h in d.handlers: tc.checkHandler(h)
   tc.popScope()
 
 proc checkDecl(tc: var TypeChecker, d: Decl) =
@@ -4854,6 +4968,8 @@ proc typecheckModule*(m: Module,
   for d in m.decls:
     failIfTopLevelStatement(d)
     tc.checkDecl(d)
+  # After checkDecl: it reads the pool ops the checker has now stamped.
+  checkCellAddresses(semLayer, m, tc.externFnNames())
   # INFERRED types get their declaration edge too, now that every expression
   # has been typed. resolveTypeNames above only walks types MENTIONED IN
   # DECLARATIONS; the types the checker synthesizes for expressions never

@@ -24,7 +24,8 @@ proc genPendingStub*(d: Decl): string =
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
   let paramStr = if d.fnParams.len > 0: "[T](payload: T)" else: "()"
   return "proc " & fnNameSanitized & "*" & paramStr & ": " & retTypeStr &
-         " =\n  stderr.writeLine(\"TUCK PENDING: " & d.name & " invoked (not implemented)\")\n"
+         " =\n  stderr.writeLine(\"TUCK PENDING: " & d.writtenName &
+         " invoked (not implemented)\")\n"
 
 proc fnHeaderNim*(name, genericStr: string, params: seq[string],
                   retTypeStr, inlineStr: string, exported = true): string =
@@ -271,11 +272,10 @@ proc genRecordType*(ctx: var CodegenCtx, d: Decl): string =
       # Tier 1 records are value types (spec §7.1) — plain object, not ref
       var res = "type " & d.name & "*" & tGen & " = object\n" & fieldsBody & "\n"
       var invariantChecks: seq[string]
-      var checkCtx = CodegenCtx(definedVars: initHashSet[string](),
-                                fieldVars: initHashSet[string](), indent: 0,
+      # The predicate's bare names are the type's fields; the checker
+      # recorded them (Resolution.ownerFields), so they print as `self.<name>`.
+      var checkCtx = CodegenCtx(definedVars: initHashSet[string](), indent: 0,
                                 res: ctx.res)
-      for f in d.typeBody.fields:
-        checkCtx.fieldVars.incl(f.name)
       for member in d.typeMembers:
         if member.kind == dkExpr:
           let condStr = checkCtx.genExpr(member.expr)
@@ -284,8 +284,8 @@ proc genRecordType*(ctx: var CodegenCtx, d: Decl): string =
           # ROADMAP's 2026-08-25 ruling 5 says invariants stay on in release,
           # opt-out only — `tuckNoInvariants` is that opt-out, independent of
           # `release`/`danger` (mirrors the D backend's `tuckNoInvariants`).
-          invariantChecks.add("  if not (" & condStr & "): tuckInvariantFailed(\"" &
-                              condStr.replace("\"", "'") & "\", \"" & d.name & "\")")
+          invariantChecks.add("  if not (" & condStr & "): tuckInvariantFailed(" &
+                              invariantCondLit(condStr) & ", \"" & d.name & "\")")
       if invariantChecks.len > 0:
         res.add("\nproc validate*(self: " & d.name & ") =\n  when not defined(tuckNoInvariants):\n" &
                 invariantChecks.join("\n").indent(2) & "\n")
@@ -354,15 +354,13 @@ proc genActorState*(ctx: var CodegenCtx, d: Decl, msgTypeName, queueSize: string
 proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
                       handlers: seq[ActorMsgHandler], shutdownBody: Expr,
                       hasShutdown: bool): string =
-  ## The `handleMsg` proc: a case over the message kind. Runs in its own ctx so
-  ## handler bodies see the actor's fields as field vars; realModules/module are
-  ## inherited so qualified calls (e.g. sys::exit) resolve as `module.fn`.
-  var hctx = CodegenCtx(definedVars: initHashSet[string](),
-                        fieldVars: initHashSet[string](), indent: 2,
+  ## The `handleMsg` proc: a case over the message kind. Runs in its own ctx
+  ## (its own locals); realModules/module are inherited so qualified calls
+  ## (e.g. sys::exit) resolve as `module.fn`. A bare name the checker resolved
+  ## to one of the actor's fields prints as `self.<name>`.
+  var hctx = CodegenCtx(definedVars: initHashSet[string](), indent: 2,
                         realModules: ctx.realModules, module: ctx.module,
                         moduleName: ctx.moduleName, res: ctx.res)
-  for f in d.actorFields:
-    hctx.fieldVars.incl(f.name)
   # a block body self-indents; a single-expression arm body needs the arm indent
   proc armBody(e: Expr): string =
     let raw = hctx.genExpr(e)
@@ -692,7 +690,7 @@ proc genErrHandler*(ctx: var CodegenCtx, d: Decl): string =
   ## user's handler body.
   let errNames = ctx.declaredErrNames()
   if errNames.len > 0: result.add(genErrNameTable(errNames))
-  result.add("proc tuck_unhandled*(code: uint16, site: string) =\n" &
+  result.add("proc " & UnhandledHandlerName & "*(code: uint16, site: string) =\n" &
              "  tuckReportUnhandled(code, site)\n")
   if errNames.len > 0:
     result.add("  stderr.writeLine(\"TUCK ERROR NAME: \" & tuckErrName(code))\n")

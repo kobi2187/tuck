@@ -1,21 +1,21 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_main*(): int
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_A* = object
+type tuckˑtypeˑA* = object
   x*: int
 
-type tuck_type_B* = object
+type tuckˑtypeˑB* = object
   y*: int
 
-type tuck_type_Obj* = object
+type tuckˑobjectˑObj* = object
   x*: int
   y*: int
 
-proc tuck_type_Obj_total*(self: var tuck_type_Obj): int =
+proc tuckˑobjectˑObjˑtotal*(self: var tuckˑobjectˑObj): int =
   return (self.x + self.y)
 
 
-proc tuck_fn_main*(): int =
+proc tuckˑfnˑmain*(): int =
   return 0
 

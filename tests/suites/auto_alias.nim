@@ -113,4 +113,66 @@ fn main() -> void [io]:
   t.runs    "explicit-alias-still-correct", 0
   t.outputs "explicit-alias-still-correct", "SlowJam/42/215000"
 
+  # --- a MEMBER call binds its payload by the same three passes (#20) -------
+  # `b.grow {...}` matched its payload by name alone — its own copy of the
+  # match — so a field meant to claim a param by type was reported missing,
+  # while the same payload against a top-level fn bound fine.
+  t.src """
+object Bx:
+  n: int
+  label: str
+
+  fn grow({count: int, label: str}) -> int:
+    return count + label.len
+
+fn main() -> int:
+  var b = {n: 1, label: "a"} Bx
+  return b.grow {n: 7, text: "xyz"}
+"""
+  t.hostRuns "a member call binds a field by type", 10
+
+  # By name first, whatever the order, and a field no param wants is ignored.
+  t.src """
+object Pt:
+  z: int
+
+  fn pack({a: int, b: int}) -> int:
+    return a * 10 + b
+
+fn main() -> int:
+  let p = {z: 0} Pt
+  return p.pack {b: 2, junk: true, a: 1}
+"""
+  t.hostRuns "a member call binds by name before type, ignoring extras", 12
+
+  # A top-level fn used as a mutator goes through the same method form.
+  t.src """
+type Server:
+  port: int
+
+fn withPort({s: Server, value: int}) -> Server:
+  return {port: value} Server
+
+fn main() -> int:
+  let s = {port: 1} Server
+  let t = s.withPort {p: 80}
+  return t.port - 70
+"""
+  t.hostRuns "a mutator's payload binds by type too", 10
+
+  # Ambiguity is still an error, not a guess.
+  t.src """
+object Bx:
+  n: int
+
+  fn grow({count: int}) -> int:
+    return count
+
+fn main() -> int:
+  let b = {n: 1} Bx
+  return b.grow {x: 7, y: 8}
+"""
+  t.badCheck "a member call's ambiguous payload is refused",
+             "missing required field 'count: int'"
+
   t.finish()

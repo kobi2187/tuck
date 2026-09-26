@@ -62,10 +62,13 @@ proc collectFnSigType*(tc: var TypeChecker, d: Decl) =
   if d.sigGenerics.len > 0: tc.fnSigGenerics[d.name] = d.sigGenerics
 
 proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
-  ## spec 7.2: a pool exposes two ordinary fns. Registering them as normal
-  ## signatures means `Pool.acquire` resolves through the same path as any
-  ## other call — no special-case lookup, and the ?T falls out of the declared
-  ## return type.
+  ## spec 7.2: a pool exposes five operations — acquire, release, and the
+  ## cell's read, write and addr (#45). Registered as signatures so each
+  ## `Pool.op {...}` is checked against a declared shape like any other call;
+  ## the checker then stamps an `exkPoolOp` (asPoolOp), not a call by name.
+  ##
+  ## A cell STARTS ABSENT (#42): `read` is a `?T`, so zeroed storage is never
+  ## read as a value that breaks the element's invariant.
   ## `acquire` yields a HANDLE, not the cell's contents. A value cannot name
   ## the cell it came from, which is why `release` used to search by equality
   ## and free the wrong slot; the handle carries the index and the tenancy.
@@ -81,10 +84,19 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
   tc.setFnSig(d.name & ".acquire", (newSeq[Param](), optHandle,
                                     newSeq[string](), newSeq[EffectMarker](),
                                     newSeq[string]()))
-  tc.setFnSig(d.name & ".release",
-    (@[Param(name: "slot", typ: handle, span: d.span)],
-     Type(span: d.span, kind: tkNamed, name: "void"),
-     newSeq[string](), newSeq[EffectMarker](), newSeq[string]()))
+  let void = Type(span: d.span, kind: tkNamed, name: "void")
+  let h = Param(name: "h", typ: handle, span: d.span)
+  let optElem = Type(span: d.span, kind: tkApp, args: @[d.poolElem],
+                     base: Type(span: d.span, kind: tkNamed, name: "?"))
+  for (op, params, ret) in [
+      ("release", @[h], void),
+      ("read", @[h], optElem),
+      ("write", @[h, Param(name: "value", typ: d.poolElem, span: d.span)], void),
+      # The cell's bytes, for an extern to fill (DMA): a `Buf`, which only an
+      # extern may take (typecheck_pointers).
+      ("addr", @[h], Type(span: d.span, kind: tkNamed, name: "Buf"))]:
+    tc.setFnSig(d.name & "." & op, (params, ret, newSeq[string](),
+                                    newSeq[EffectMarker](), newSeq[string]()))
   # Opaque: a record with no fields. Nothing to read, nothing to do
   # arithmetic on, and `{} <Pool>Handle` yields a zeroed handle whose tenancy
   # is 0 — which no live slot ever has, so a forged one is refused at release

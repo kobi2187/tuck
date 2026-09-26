@@ -1,10 +1,10 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-type tuck_type_Temperature* = object
+type tuckˑtypeˑTemperature* = object
   celsius*: float32
 
-proc validate*(self: tuck_type_Temperature) =
+proc validate*(self: tuckˑtypeˑTemperature) =
   when not defined(tuckNoInvariants):
-    if not ((self.celsius >= -273.15)): tuckInvariantFailed("(self.celsius >= -273.15)", "tuck_type_Temperature")
+    if not ((self.celsius >= -273.15)): tuckInvariantFailed("(self.celsius >= -273.15)", "tuckˑtypeˑTemperature")
 

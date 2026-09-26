@@ -77,6 +77,13 @@ errCode :: proc(name: string) -> u16 {
 	return u16((h ~ (h >> 16)) & 0xFFFF)
 }
 
+// A heap copy of a str the caller will own. Emitted where the ownership
+// pass needs a LITERAL to be freeable: a local that frees its old value at
+// each overwrite cannot start from static storage (analysis_ownership, step 5).
+tuckStrOwned :: proc(s: string) -> string {
+	return strings.clone(s)
+}
+
 toStr :: proc(value: $T) -> string {
 	// cstring is a bare char* from C: aprint would format the POINTER, not
 	// the text. Odin's string(cstr) walks to the NUL and copies, which is
@@ -677,10 +684,29 @@ PoolHandle :: struct {
 	gen:  u32,
 }
 
+// Where one cell stands. A cell STARTS ABSENT (#42): it reads absent until
+// something writes it, so zeroed storage is never read as a value of the
+// element type. Twin of tuck_rt.nim's CellState.
+CellState :: enum u8 {
+	Free,    // nobody holds it
+	Absent,  // held, nothing written since it was acquired
+	Present, // held and written — by write, or handed out by addr
+}
+
 ObjectPool :: struct($T: typeid, $Count: int) {
-	storage:  [Count]T,
-	gen:      [Count]u32, // tenancy counter per cell; 0 = never handed out
-	occupied: u64, // ponytail: 64 slots max; widen to an array if needed
+	storage: [Count]T,
+	gen:     [Count]u32,       // tenancy counter per cell; 0 = never handed out
+	state:   [Count]CellState, // one per cell; was a u64, capping a pool at 64
+}
+
+tuckInvariantFailed :: proc(cond, typeName: string) {
+	// An invariant violation (spec 4.7): name the condition and stop — the
+	// same message and exit status as Nim's and D's. NOT `assert`, which
+	// `-disable-assert` strips: invariants survive a release build (the
+	// 2026-08-25 ruling), and `tuckNoInvariants`, guarded at the check, is
+	// the only opt-out.
+	fmt.eprintln("Invariant violated on ", typeName, ": ", cond, sep = "")
+	os.exit(1)
 }
 
 tuckPoolMisuse :: proc(what: string) {
@@ -690,10 +716,10 @@ tuckPoolMisuse :: proc(what: string) {
 	os.exit(1)
 }
 
-acquire :: proc(pool: ^ObjectPool($T, $Count)) -> TuckResult(PoolHandle) {
+tuckPoolAcquire :: proc(pool: ^ObjectPool($T, $Count)) -> TuckResult(PoolHandle) {
 	for i in 0 ..< Count {
-		if (pool.occupied & (u64(1) << u64(i))) == 0 {
-			pool.occupied |= u64(1) << u64(i)
+		if pool.state[i] == .Free {
+			pool.state[i] = .Absent
 			pool.gen[i] += 1
 			return tok(PoolHandle{slot = i32(i), gen = pool.gen[i]})
 		}
@@ -701,19 +727,47 @@ acquire :: proc(pool: ^ObjectPool($T, $Count)) -> TuckResult(PoolHandle) {
 	return tnone(PoolHandle)
 }
 
-release :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) {
-	// The handle names the cell, so there is nothing to search for. Every way
-	// of being wrong is caught rather than absorbed.
+// The cell a handle names, if its holder still holds it. Every way of being
+// wrong is caught rather than absorbed; the messages match the Nim and D
+// runtimes word for word.
+heldCell :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle, what: string) -> int {
 	i := int(h.slot)
 	if i < 0 || i >= Count {
-		tuckPoolMisuse("release of a handle that names no slot")
-	} else if (pool.occupied & (u64(1) << u64(i))) == 0 {
-		tuckPoolMisuse("double release")
+		tuckPoolMisuse(fmt.tprintf("%s of a handle that names no slot (%d)", what, i))
+	} else if pool.state[i] == .Free {
+		tuckPoolMisuse(fmt.tprintf("%s of slot %d, which nobody holds", what, i))
 	} else if pool.gen[i] != h.gen {
-		tuckPoolMisuse("release of a stale handle")
-	} else {
-		pool.occupied &~= u64(1) << u64(i)
+		tuckPoolMisuse(fmt.tprintf("%s of a stale handle for slot %d: tenancy %d, slot is on %d",
+		                           what, i, h.gen, pool.gen[i]))
 	}
+	return i
+}
+
+tuckPoolRelease :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) {
+	pool.state[heldCell(pool, h, "release")] = .Free
+}
+
+tuckPoolRead :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) -> TuckResult(T) {
+	i := heldCell(pool, h, "read")
+	if pool.state[i] == .Present {
+		return tok(pool.storage[i])
+	}
+	return tnone(T)
+}
+
+tuckPoolWrite :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle, v: T) {
+	i := heldCell(pool, h, "write")
+	pool.storage[i] = v
+	pool.state[i] = .Present
+}
+
+// The cell's bytes, for an extern to fill (DMA). Present from here on: it
+// was handed out to be filled, and the checker allows addr only on a pool
+// whose element carries no invariant (TK-TY31).
+tuckPoolAddr :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) -> [^]u8 {
+	i := heldCell(pool, h, "addr")
+	pool.state[i] = .Present
+	return cast([^]u8)&pool.storage[i]
 }
 
 // A spinlock for the mailbox. NOT decoration: this runtime spawns one OS

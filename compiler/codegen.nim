@@ -133,11 +133,11 @@ proc genCombinator(ctx: var CodegenCtx, e: Expr): string =
 proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
-  if fields.len == 0: return ""
+  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  if fields.isNone: return ""
   let recv = ctx.genExpr(e.args[0])
   var parts: seq[string]
-  for f in fields: parts.add(recv & "." & f)
+  for f in fields.get: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
 
@@ -213,16 +213,13 @@ proc asSumVariantCall(ctx: var CodegenCtx, e: Expr): string =
                 else: nil
   ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-proc genPayloadArgs(ctx: var CodegenCtx, e: Expr,
-                    calleeStr: string): seq[string] =
-  ## codegen_common.payloadArgs, printed. A missing one is `nil`.
-  for a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
-    result.add(if a != nil: ctx.genExpr(a) else: "nil")
-
-proc genCallArgs(ctx: var CodegenCtx, e: Expr, calleeStr: string): seq[string] =
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genPayloadArgs(e, calleeStr)
-  for a in e.args: result.add(ctx.genExpr(a))
+proc genCallArgs(ctx: var CodegenCtx, e: Expr): seq[string] =
+  ## A call's arguments: a payload's as call_args.payloadArgs orders them,
+  ## printed; anything else as written.
+  let args = if e.isPayloadCall:
+               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for a in args: result.add(ctx.genExpr(a))
 
 proc genSaturatingCtor(satBase, calleeStr, arg: string): string =
   ## spec 4.1: constructing a [saturating] type clamps instead of wrapping.
@@ -320,7 +317,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if member != "": calleeStr = member
   let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
-  let args = ctx.genCallArgs(e, calleeStr)
+  let args = ctx.genCallArgs(e)
   ctx.genCallWithArgs(ctx.withTypeArgs(calleeStr, e), args)
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
@@ -474,8 +471,14 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   ## variable.
   if ctx.res.hasCall(e): ctx.genExpr(ctx.res.call(e))
   elif isInputRef(e, ctx.currentParams): ctx.genInputPayload()
-  elif e.name in ctx.fieldVars: "self." & e.name
+  elif ctx.res.isOwnerField(e): "self." & e.name
   else: nimRtCallee(e.name)
+
+proc genPoolOp(ctx: var CodegenCtx, e: Expr): string =
+  ## A pool operation: `codegen_common.poolOpProc`, the pool, its args.
+  var args = @[e.poolRef.refName]
+  for a in e.poolOperands: args.add ctx.genExpr(a)
+  poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
 proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A call through an interface value, lowered (lowering_iface): a `case` on
@@ -516,7 +519,10 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   if isInputField(e, ctx.currentParams): return e.fieldName
   doAssert ctx.res.ifaceCallOf(e).member == "",
     "codegen: an interface call reached the emitter unlowered (lowering_iface)"
-  if ctx.res.hasCall(e): return ctx.genConstruction(ctx.res.call(e))
+  if ctx.res.hasCall(e):
+    let stamped = ctx.res.call(e)
+    if stamped.kind != exkCall: return ctx.genExpr(stamped)   # a pool op
+    return ctx.genConstruction(stamped)
   let ctor = ctx.genTypeVariantCtor(e)
   if ctor != "": return ctor
   if e.receiver != nil and e.receiver.kind == exkActorRef:
@@ -622,9 +628,9 @@ proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
-                "(tuck_unhandled(" & tn & ".err, \"" & site & "\"); quit(1))"
+                "(" & UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\"); quit(1))"
               else:
-                "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\")"
   "(let " & tn & " = " & stmtCode & "; (if not " & tn & ".ok: " & onErr & "))"
 
 proc ownsItsLayout(res: Resolution, s: Expr): bool =
@@ -669,10 +675,10 @@ proc genBoundErrorRouted(ctx: var CodegenCtx, s: Expr, stmtCode,
              else: ""
   if name == "": return stmtCode
   let onErr = if ctx.errPolicy == "exit":
-                "(tuck_unhandled(" & name & ".err, \"" & site &
+                "(" & UnhandledHandlerName & "(" & name & ".err, \"" & site &
                   "\"); quit(1))"
               else:
-                "tuck_unhandled(" & name & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
   stmtCode & "\n" & ind & "  if " & name & ".status == tsErr: " & onErr
 
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
@@ -823,6 +829,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkOrdinal: "ord(" & ctx.genExpr(e.ordinalOf) & ")"   # enum and bool alike
   of exkValidate: "validate(" & ctx.genExpr(e.validated) & ")"
   of exkIfaceCall: ctx.genIfaceCall(e, ind)
+  of exkPoolOp: ctx.genPoolOp(e)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element
@@ -852,12 +859,7 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
     return ""
   let tname = e.assignVal.callee.name
   let ret = ctx.taskRetType(tname)
-  var argParts: seq[string]
-  if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
-    let expected = lookupFnParams(ctx.module, tname)
-    for pn in expected:
-      for f in e.assignVal.args[0].fields:
-        if f.name == pn: argParts.add(ctx.genExpr(f.value)); break
+  let argParts = ctx.genCallArgs(e.assignVal)
   let rawCall = tname & "(" & argParts.join(", ") & ")"
   let slot = "tuckSlot" & $ctx.tmpCounter
   ctx.tmpCounter.inc
@@ -866,7 +868,7 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
               " {.closure, gcsafe.} = ({.cast(gcsafe).}: " & rawCall &
               ")); awaitResult(" & slot & "))"
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
-     e.target.name notin ctx.fieldVars:
+     not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(e.target.name)
     return "var " & e.target.name & " = " & spawn
   ctx.genExpr(e.target) & " = " & spawn
@@ -878,8 +880,7 @@ proc genSelfConcatAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## an O(n^2) one.
   let appended = selfConcatValue(ctx.res, e)
   if appended == nil: return ""
-  let tgt = if e.target != nil and e.target.kind == exkVar and
-               e.target.name in ctx.fieldVars: "self." & e.target.name
+  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
             else: e.target.name
   tgt & ".add(" & ctx.genExpr(appended) & ")"
 
@@ -895,15 +896,14 @@ proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## the same hole. EV-9.
   let appended = selfAppendValue(ctx.res, e)
   if appended == nil: return ""
-  let tgt = if e.target != nil and e.target.kind == exkVar and
-               e.target.name in ctx.fieldVars: "self." & e.target.name
+  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
             else: e.target.name
   tgt & ".add(" & ctx.genExpr(appended) & ")"
 
 proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr: string): string =
   ## Variable declaration with optional stated type.
   let name = e.target.name
-  if name notin ctx.definedVars and name notin ctx.fieldVars:
+  if name notin ctx.definedVars and not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(name)
     let declared = if e.declType != nil: ": " & genType(e.declType) else: ""
     return "var " & name & declared & " = " & valStr

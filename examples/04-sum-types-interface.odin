@@ -3,70 +3,70 @@ package main
 
 import rt "./tuckrt"
 
-tuck_type_Config :: struct {
+tuckˑtypeˑConfig :: struct {
 	url: string,
 }
 
-tuck_type_Feed :: struct {
+tuckˑtypeˑFeed :: struct {
 	title: string,
 }
 
-tuck_type_AudioPlayer :: struct {
+tuckˑtypeˑAudioPlayer :: struct {
 	volume: int,
 }
 
-tuck_type_NetworkClient :: struct {
+tuckˑtypeˑNetworkClient :: struct {
 	timeout: u32,
 }
 
-tuck_type_Episode :: struct {
+tuckˑtypeˑEpisode :: struct {
 	name: string,
 }
 
-tuck_type_Pair :: struct {
+tuckˑtypeˑPair :: struct {
 	key: string,
 	val: string,
 }
 
-tuck_type_PodcastPlayerLifecycle_Unloaded :: struct {
-	config: tuck_type_Config,
+tuckˑtypeˑPodcastPlayerLifecycle_Unloaded :: struct {
+	config: tuckˑtypeˑConfig,
 }
-tuck_type_PodcastPlayerLifecycle_Loading :: struct {
-	config: tuck_type_Config,
+tuckˑtypeˑPodcastPlayerLifecycle_Loading :: struct {
+	config: tuckˑtypeˑConfig,
 	progress: int,
 }
-tuck_type_PodcastPlayerLifecycle_Ready :: struct {
-	config: tuck_type_Config,
-	feed: tuck_type_Feed,
-	audio: tuck_type_AudioPlayer,
+tuckˑtypeˑPodcastPlayerLifecycle_Ready :: struct {
+	config: tuckˑtypeˑConfig,
+	feed: tuckˑtypeˑFeed,
+	audio: tuckˑtypeˑAudioPlayer,
 }
-tuck_type_PodcastPlayerLifecycle_Error :: struct {
-	config: tuck_type_Config,
+tuckˑtypeˑPodcastPlayerLifecycle_Error :: struct {
+	config: tuckˑtypeˑConfig,
 	reason: string,
 }
-tuck_type_PodcastPlayerLifecycle :: union {tuck_type_PodcastPlayerLifecycle_Unloaded, tuck_type_PodcastPlayerLifecycle_Loading, tuck_type_PodcastPlayerLifecycle_Ready, tuck_type_PodcastPlayerLifecycle_Error}
+tuckˑtypeˑPodcastPlayerLifecycle :: union {tuckˑtypeˑPodcastPlayerLifecycle_Unloaded, tuckˑtypeˑPodcastPlayerLifecycle_Loading, tuckˑtypeˑPodcastPlayerLifecycle_Ready, tuckˑtypeˑPodcastPlayerLifecycle_Error}
 
-tuck_type_PodcastPlayerLifecycle_eq :: proc(a, b: tuck_type_PodcastPlayerLifecycle) -> bool {
-  if av, aok := a.(tuck_type_PodcastPlayerLifecycle_Unloaded); aok {
+tuckˑtypeˑPodcastPlayerLifecycle_eq :: proc(a, b: tuckˑtypeˑPodcastPlayerLifecycle) -> bool {
+  if av, aok := a.(tuckˑtypeˑPodcastPlayerLifecycle_Unloaded); aok {
     _ = av
-    bv, bok := b.(tuck_type_PodcastPlayerLifecycle_Unloaded)
+    bv, bok := b.(tuckˑtypeˑPodcastPlayerLifecycle_Unloaded)
     _ = bv
     if !bok { return false }
     if av.config != bv.config { return false }
     return true
   }
-  if av, aok := a.(tuck_type_PodcastPlayerLifecycle_Loading); aok {
+  if av, aok := a.(tuckˑtypeˑPodcastPlayerLifecycle_Loading); aok {
     _ = av
-    bv, bok := b.(tuck_type_PodcastPlayerLifecycle_Loading)
+    bv, bok := b.(tuckˑtypeˑPodcastPlayerLifecycle_Loading)
     _ = bv
     if !bok { return false }
     if av.config != bv.config { return false }
     if av.progress != bv.progress { return false }
     return true
   }
-  if av, aok := a.(tuck_type_PodcastPlayerLifecycle_Ready); aok {
+  if av, aok := a.(tuckˑtypeˑPodcastPlayerLifecycle_Ready); aok {
     _ = av
-    bv, bok := b.(tuck_type_PodcastPlayerLifecycle_Ready)
+    bv, bok := b.(tuckˑtypeˑPodcastPlayerLifecycle_Ready)
     _ = bv
     if !bok { return false }
     if av.config != bv.config { return false }
@@ -74,9 +74,9 @@ tuck_type_PodcastPlayerLifecycle_eq :: proc(a, b: tuck_type_PodcastPlayerLifecyc
     if av.audio != bv.audio { return false }
     return true
   }
-  if av, aok := a.(tuck_type_PodcastPlayerLifecycle_Error); aok {
+  if av, aok := a.(tuckˑtypeˑPodcastPlayerLifecycle_Error); aok {
     _ = av
-    bv, bok := b.(tuck_type_PodcastPlayerLifecycle_Error)
+    bv, bok := b.(tuckˑtypeˑPodcastPlayerLifecycle_Error)
     _ = bv
     if !bok { return false }
     if av.config != bv.config { return false }
@@ -88,28 +88,28 @@ tuck_type_PodcastPlayerLifecycle_eq :: proc(a, b: tuck_type_PodcastPlayerLifecyc
 
 // interface Storable: no satisfying types
 
-tuck_fn_loadEpisode :: proc (self: tuck_type_PodcastApp, episode: tuck_type_Episode) -> tuck_type_PodcastApp {
+tuckˑfnˑloadEpisode :: proc (self: tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode) -> tuckˑobjectˑPodcastApp {
   return self
 }
 
-tuck_fn_startAudio :: proc (self: tuck_type_PodcastApp) {
+tuckˑfnˑstartAudio :: proc (self: tuckˑobjectˑPodcastApp) {
   return
 }
 
-tuck_type_PodcastApp :: struct {
+tuckˑobjectˑPodcastApp :: struct {
 	volume: int,
 	timeout: u32,
 }
 
-tuck_type_PodcastApp_tuck_fn_setMany :: proc (self: ^tuck_type_PodcastApp, pairs: [dynamic]tuck_type_Pair) -> rt.TuckResult(rt.TuckUnit) {
+tuckˑobjectˑPodcastAppˑtuckˑfnˑsetMany :: proc (self: ^tuckˑobjectˑPodcastApp, pairs: [dynamic]tuckˑtypeˑPair) -> rt.TuckResult(rt.TuckUnit) {
 
   return {}
 }
 
-tuck_type_PodcastApp_play :: proc (self: ^tuck_type_PodcastApp, episode: tuck_type_Episode) {
+tuckˑobjectˑPodcastAppˑplay :: proc (self: ^tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode) {
   tuckChain1 := self^
-  tuckChain1 = tuck_fn_loadEpisode(tuckChain1, episode)
-  tuck_fn_startAudio(tuckChain1)
+  tuckChain1 = tuckˑfnˑloadEpisode(tuckChain1, episode)
+  tuckˑfnˑstartAudio(tuckChain1)
 }
 
 

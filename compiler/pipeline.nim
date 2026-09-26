@@ -26,7 +26,7 @@ import ssa_query
 import ssa_ir
 import ssa_liveness
 import tree_invariants
-from name_prefix import isMangledName
+from name_prefix import prefixed, declKind
 
 type
   PipelineStage* = enum
@@ -208,9 +208,10 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
       "pipeline: the SSA mirror is malformed in " & $bad.len &
       " place(s) — " & bad[0 .. min(4, bad.high)].join("; "))
 
-proc allMangled(name: string): bool =
-  ## Any prefix name_prefix gives — all start `tuck_` (#78).
-  name.len == 0 or isMangledName(name)
+proc carriesOwnKind(d: Decl): bool =
+  ## Spelled as what it IS (`name_prefix.declKind`), not merely mangled: an
+  ## actor under `tuckˑtypeˑ` would be a mangled name and still wrong.
+  d.name.len == 0 or d.name.startsWith(prefixed("", declKind(d)))
 
 proc assertMangleIdempotent*(mods: seq[Module]) =
   ## After psMangle: every manglable name mangleProgram touches must
@@ -227,15 +228,18 @@ proc assertMangleIdempotent*(mods: seq[Module]) =
       if d == nil: continue
       case d.kind
       of dkFn:
-        if not d.isExtern and not allMangled(d.name): bad.add(d.name)
-      of dkType, dkObject, dkActor, dkTask, dkConst, dkPool, dkRegistry,
+        if not d.isExtern and not carriesOwnKind(d): bad.add(d.name)
+      of dkType:
+        # a type inside an `extern [c, header:]` block IS the C struct
+        if d.typeExternHeader == "" and not carriesOwnKind(d): bad.add(d.name)
+      of dkObject, dkActor, dkTask, dkConst, dkPool, dkRegistry,
          dkRegister, dkFnSig:
-        if not allMangled(d.name): bad.add(d.name)
+        if not carriesOwnKind(d): bad.add(d.name)
       else: discard
   if bad.len > 0:
     raise newException(ValueError,
       "pipeline: " & $bad.len &
-      " declared name(s) missing the tuck_ prefix after mangling: " &
+      " declared name(s) not spelled as their own kind after mangling: " &
       bad.join(", "))
 
 

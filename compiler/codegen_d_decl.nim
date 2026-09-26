@@ -137,11 +137,9 @@ proc genDErrHandler*(ctx: var DCodegenCtx, d: Decl): string =
     body = "rt.tuckReportUnhandled(code, site);"
   else:
     body = "rt.tuckReportUnhandled(code, site);\n    " & body
-  # Mangled deliberately: the handler is emitted here but CALLED from every
-  # drop site (genDDroppedResult), and the two must agree. The decl arrives
-  # unmangled because it hangs off the errors block rather than the module's
-  # top-level fn list.
-  "void " & mangleName(handler.name) & "(ushort code, string site) {\n    " &
+  # One shared name: the handler is emitted here but CALLED from every drop
+  # site (genDDroppedResult), and the two must agree.
+  "void " & UnhandledHandlerName & "(ushort code, string site) {\n    " &
     body & "\n}\n"
 
 proc dRegistryEventStruct*(ctx: var DCodegenCtx, d: Decl): string =
@@ -383,12 +381,10 @@ proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =
   ## checks impossible to keep in the build where a violated invariant means
   ## corrupt data. ROADMAP's 2026-08-25 ruling 5 reverses that; this backend
   ## is written to the ruling rather than inheriting the bug.
+  ##
+  ## The predicate's bare names are the type's fields; the checker recorded
+  ## them (Resolution.ownerFields), so they print as `self.<name>`.
   var checks: seq[string]
-  let savedFields = ctx.fieldVars
-  let savedPrefix = ctx.fieldPrefix
-  ctx.fieldVars.clear()
-  for f in d.typeBody.fields: ctx.fieldVars.incl(f.name)
-  ctx.fieldPrefix = "self."
   for member in d.typeMembers:
     if member != nil and member.kind == dkExpr:
       let cond = ctx.genDExpr(member.expr)
@@ -396,10 +392,8 @@ proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =
       # asserts, which would silently undo the ruling this guard exists to
       # implement (verified — an assert-based version passed in release).
       checks.add("        if (!(" & cond & "))\n" &
-                 "            rt.tuckInvariantFailed(\"" &
-                 cond.replace("\"", "'") & "\", \"" & d.name & "\");")
-  ctx.fieldVars = savedFields
-  ctx.fieldPrefix = savedPrefix
+                 "            rt.tuckInvariantFailed(" &
+                 invariantCondLit(cond) & ", \"" & d.name & "\");")
   if checks.len == 0: return ""
   "\nvoid validate_" & d.name & "(" & d.name & " self)\n{\n" &
     "    version (tuckNoInvariants) {} else\n    {\n" &
@@ -416,7 +410,7 @@ proc genDPendingStub*(ctx: var DCodegenCtx, mem: Decl): string =
   let retStr = ctx.dType(mem.fnReturnType)
   let params = if mem.fnParams.len > 0: "(T)(T payload)" else: "()"
   result = retStr & " " & mem.name & params & " {\n" &
-           "    stderr.writeln(\"TUCK PENDING: " & mem.name &
+           "    stderr.writeln(\"TUCK PENDING: " & mem.writtenName &
            " invoked (not implemented)\");\n"
   if retStr != "void":
     result.add("    return typeof(return).init;\n")
@@ -529,19 +523,13 @@ proc dRegistryRaiseProc*(ctx: var DCodegenCtx, d: Decl,
 proc genDHandlerCase*(ctx: var DCodegenCtx, d: Decl,
                      h: ActorMsgHandler): string =
   ## One dispatch arm: the envelope's fields are already named as the
-  ## handler's params, so the body reads them directly.
-  let saved = ctx.fieldVars
-  let savedPrefix = ctx.fieldPrefix
-  ctx.fieldVars.clear()
-  for f in d.actorFields: ctx.fieldVars.incl(f.name)
-  ctx.fieldPrefix = "self."
+  ## handler's params, so the body reads them directly. A bare name the
+  ## checker resolved to one of the actor's fields prints as `self.<name>`.
   ctx.definedVars.clear()
   for p in h.params: ctx.definedVars.incl(p.name)
   ctx.indent = 3
   var body = ctx.genDStmtOrBlock(h.body)
   ctx.indent = 0
-  ctx.fieldVars = saved
-  ctx.fieldPrefix = savedPrefix
   var unpack = ""
   for p in h.params:
     unpack.add("            auto " & p.name & " = msg." & p.name & ";\n")
@@ -658,19 +646,10 @@ proc genDDispatch*(ctx: var DCodegenCtx, d: Decl,
     var sdBody = ""
     if shutdownBody != nil:
       # The shutdown arm reads and writes the actor's own fields just like
-      # any other arm, so it needs the same field context — without it
-      # `total = total` looked like a new local whose type nothing had
-      # settled, and the no-auto rule refused it.
-      let saved = ctx.fieldVars
-      let savedPrefix = ctx.fieldPrefix
-      ctx.fieldVars.clear()
-      for f in d.actorFields: ctx.fieldVars.incl(f.name)
-      ctx.fieldPrefix = "self."
+      # any other arm; the checker recorded which bare names are fields.
       ctx.indent = 3
       sdBody = ctx.genDStmtOrBlock(shutdownBody)
       ctx.indent = 0
-      ctx.fieldVars = saved
-      ctx.fieldPrefix = savedPrefix
     cases.add("        case " & d.name & "MsgKind.msgShutdown:\n" & sdBody &
               "            self.finished = true;\n            break;\n")
   "void handleMsg_" & d.name & "(ref " & d.name & " self, " & d.name &

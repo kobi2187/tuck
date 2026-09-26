@@ -1,18 +1,18 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_fn_stepIo*(n: int): tuple[v: int]
-proc tuck_fn_main*(): int
+proc tuckˑfnˑstepIo*(n: int): tuple[v: int]
+proc tuckˑfnˑmain*(): int
 
-proc tuck_fn_stepIo*(n: int): tuple[v: int] =
+proc tuckˑfnˑstepIo*(n: int): tuple[v: int] =
   return (v: n)
 
-proc tuck_fn_compute*(base: int): tuple[r: int] =
-  var tuck_a = (tuckYield(); tuck_fn_stepIo(base))
-  var tuck_b = (tuckYield(); tuck_fn_stepIo(base))
-  return (r: (tuck_a.v + tuck_b.v))
+proc tuckˑtaskˑcompute*(base: int): tuple[r: int] =
+  var tuckˑvˑa = (tuckYield(); tuckˑfnˑstepIo(base))
+  var tuckˑvˑb = (tuckYield(); tuckˑfnˑstepIo(base))
+  return (r: (tuckˑvˑa.v + tuckˑvˑb.v))
 
-proc tuck_fn_main*(): int =
-  var tuck_res = (let tuckSlot0 = newAsyncResult[tuple[r: int]](); spawnResult(tuckSlot0, proc(): tuple[r: int] {.closure, gcsafe.} = ({.cast(gcsafe).}: tuck_fn_compute(21))); awaitResult(tuckSlot0))
-  return tuck_res.r
+proc tuckˑfnˑmain*(): int =
+  var tuckˑvˑres = (let tuckSlot0 = newAsyncResult[tuple[r: int]](); spawnResult(tuckSlot0, proc(): tuple[r: int] {.closure, gcsafe.} = ({.cast(gcsafe).}: tuckˑtaskˑcompute(21))); awaitResult(tuckSlot0))
+  return tuckˑvˑres.r
 

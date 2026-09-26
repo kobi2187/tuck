@@ -71,6 +71,9 @@
 #           name never escapes, and it is a local rather than a parameter
 #           whose first value belongs to the caller. The value it ENDS with
 #           is replaced by nothing, so it is freed at scope exit as well.
+#           A `str` qualifies the same way; a LITERAL among its values is
+#           static storage, so the emitter copies it (`copyToOwn`) and the
+#           local owns that value too — `var s = "x"` grown by `s = s + "y"`.
 #
 #   STEP 6  A fn with a MOVED twin hands its first parameter over to be
 #           consumed. The twin frees each parameter slot the result does not
@@ -112,7 +115,7 @@
 # which is silent and far worse. So anything unmodelled answers "someone else
 # owns it" and "it escapes", and the shapes that are understood are listed
 # rather than inferred.
-import ast, tables, sets, os, strutils
+import ast, tables, sets, os, strutils, options
 import resolution
 import ast_query
 import twin_shape
@@ -149,6 +152,10 @@ type
       ## locals whose OLD value dies at each reassignment (step 5)
     twinFreesParam*: seq[Slot]
       ## the slots the MOVED twin frees of the parameter it consumes (step 6)
+    copyToOwn*: HashSet[NodeId]
+      ## `str` literals the emitter must COPY where they are assigned (step
+      ## 5): static storage that a free at the next overwrite would
+      ## otherwise hand to `delete`
     freed*: seq[FreeSite]
       ## EVERY release this pass decided, in one list.
       ##
@@ -360,8 +367,37 @@ proc threadedLocalsDieAtExit(s: Scan, d: Decl,
        not s.ix.escapes(s.heapRule, name, "", threading = true):
       result.add name
 
-proc diesAtOverwrite(s: Scan, d: Decl,
-                     timesAssigned: CountTable[string]): HashSet[string] =
+proc isStrLiteral(v: Expr): bool =
+  v != nil and v.kind == exkLit and v.litKind == lkStr
+
+proc strOverwriteCopies(s: Scan, name: string,
+                        values: seq[Expr]): Option[seq[NodeId]] =
+  ## STEP 5 FOR A `str`: the literals to copy if `name` may free each old
+  ## value at its overwrite, or none if it may not.
+  ##
+  ## Every value must be the local's own: a call to one of the backend's
+  ## allocating procs, or a LITERAL, which is static storage and becomes its
+  ## own only by being copied — `var s = "x"` then `s = s + "y"` would
+  ## otherwise hand the literal to `delete` at the first turn. Anything else
+  ## (another name, a field, a parameter) may share its buffer, so no.
+  ##
+  ## At least one value must allocate. A local only ever given literals
+  ## leaks nothing, and copying them would allocate where nothing did.
+  var copies: seq[NodeId]
+  var allocates = false
+  for v in values:
+    if ownedStrCall(s.res, s.strProcs, v): allocates = true
+    elif isStrLiteral(v):
+      doAssert v.id.isSet, "ownership: a str literal assigned to " & name &
+                           " has no id to record its copy under"
+      copies.add v.id
+    else: return none(seq[NodeId])
+  if not allocates or s.ix.escapes(s.strRule, name, ""):
+    return none(seq[NodeId])
+  some(copies)
+
+proc diesAtOverwrite(s: Scan, d: Decl, timesAssigned: CountTable[string],
+                     copies: var HashSet[NodeId]): HashSet[string] =
   ## Locals overwritten in a loop, whose OLD value dies at the overwrite.
   ##
   ## A scope-exit free cannot reach this: it fires once, and the leak is one
@@ -378,6 +414,12 @@ proc diesAtOverwrite(s: Scan, d: Decl,
     if count < 2 or name in params: continue
     let values = valuesAssignedTo(s.body, name)
     if values.len == 0: continue
+    if isStr(s.res.typeFor(values[0])):
+      let lits = s.strOverwriteCopies(name, values)
+      if lits.isSome:
+        result.incl(name)
+        for id in lits.get: copies.incl(id)
+      continue
     # Bare `Seq` only for now: a record overwritten in a loop needs the old
     # value's slots compared field by field, which nothing asks for yet.
     if seqElem(s.res.typeFor(values[0])) == nil: continue
@@ -514,6 +556,8 @@ proc debugEcho(o: Ownership, d: Decl) =
     echo "OWN ", d.name, ".", name, " dies-at-overwrite"
   if o.twinFreesParam.len > 0:
     echo "OWN ", d.name, " twin-frees-param=", o.twinFreesParam
+  if o.copyToOwn.len > 0:
+    echo "OWN ", d.name, " copies ", o.copyToOwn.len, " str literal(s) to own"
 
 proc checkBuffers(s: Scan, d: Decl, o: Ownership) =
   ## buffer_check over this body's decisions: no buffer released twice, and
@@ -551,7 +595,8 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl,
     let slots = s.diesAtScopeExit(name, val, timesAssigned)
     if slots.len > 0: result.freeAtScopeExit[name] = slots
 
-  result.freeBeforeOverwrite = s.diesAtOverwrite(d, timesAssigned)  # step 5
+  result.freeBeforeOverwrite =                                      # step 5
+    s.diesAtOverwrite(d, timesAssigned, result.copyToOwn)
   for name in result.freeBeforeOverwrite:                     # ...its last value
     doAssert name notin result.freeAtScopeExit,
       "ownership: " & name & " is assigned once (step 4) and overwritten (step 5)"

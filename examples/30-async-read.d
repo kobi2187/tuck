@@ -16,8 +16,8 @@ TRec_fd!(long) openSource(long ms) {
 }
 
 
-TRec_code!(long) tuck_fn_readOrGiveUp(long fd) {
-    if (rt.tuckAwaitReadOrTimeout(fd, time.tuck_fn_ms(100L))) {
+TRec_code!(long) tuckˑtaskˑreadOrGiveUp(long fd) {
+    if (rt.tuckAwaitReadOrTimeout(fd, time.tuckˑfnˑms(100L))) {
         return TRec_code!(long)(code: 1L);
     } else {
         return TRec_code!(long)(code: 2L);
@@ -25,18 +25,18 @@ TRec_code!(long) tuck_fn_readOrGiveUp(long fd) {
     return typeof(return).init;
 }
 
-long tuck_fn_main() {
-    TRec_fd!(long) tuck_src = openSource(5L);
+long tuckˑfnˑmain() {
+    TRec_fd!(long) tuckˑvˑsrc = openSource(5L);
     auto tuckSlot1 = rt.newAsyncResult!(TRec_code!(long))();
-    rt.spawnResult(tuckSlot1, { return tuck_fn_readOrGiveUp(tuck_src.fd); });
-    TRec_code!(long) tuck_r = rt.awaitResult(tuckSlot1);
-    return tuck_r.code;
+    rt.spawnResult(tuckSlot1, { return tuckˑtaskˑreadOrGiveUp(tuckˑvˑsrc.fd); });
+    TRec_code!(long) tuckˑvˑr = rt.awaitResult(tuckSlot1);
+    return tuckˑvˑr.code;
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    auto mainRc = tuck_fn_main();
+    auto mainRc = tuckˑfnˑmain();
     rt.tuckRun();
     return cast(int) mainRc;
 }

@@ -25,6 +25,8 @@ import resolution
 import ast, lowering, ast_query, ast_ops, strutils, sets, tables, options
 import ./ast_query
 import twin_shape
+import call_args
+export call_args
 import name_prefix
 export twin_shape
 
@@ -72,12 +74,37 @@ proc sumPayloadField*(variantName: string): string =
   ## realistic AST or IR type has a variant called Block, If, Case, Var or
   ## Return, so this was waiting for the first tree anyone wrote.
   ##
-  ## `tuck_` is the same prefix mangle.nim puts on every other generated name,
-  ## for the same reason: a generated identifier must not be able to collide
-  ## with anything in the target language. Shared by the declaration site and
-  ## every read site in both backends that carry one — Odin has no such field,
-  ## it binds the union member directly.
-  "tuck_" & variantName.toLowerAscii()
+  ## Spelled as a `variant` name (name_prefix.nim), for the reason every other
+  ## generated name is: it must not be able to collide with anything in the
+  ## target language. Shared by the declaration site and every read site in
+  ## both backends that carry one — Odin has no such field, it binds the
+  ## union member directly.
+  prefixed(variantName.toLowerAscii(), nkVariant)
+
+proc invariantCondLit*(cond: string): string =
+  ## A violated invariant's condition, as the string literal every backend's
+  ## `tuckInvariantFailed` reports it by: `"` shown as `'` (the message
+  ## quotes nothing), anything else escaped for the host.
+  "\"" & escapeStringLit(cond.replace("\"", "'")) & "\""
+
+proc poolOpProc*(op: PoolOpKind): string =
+  ## The runtime proc a pool operation calls — one name in all three
+  ## runtimes, taking the pool first and then the op's args in order. Each
+  ## backend prints the call in its own syntax (Odin passes the pool by
+  ## pointer, D by `ref`); which proc is not theirs to decide.
+  case op
+  of poAcquire: "tuckPoolAcquire"
+  of poRelease: "tuckPoolRelease"
+  of poRead: "tuckPoolRead"
+  of poWrite: "tuckPoolWrite"
+  of poAddr: "tuckPoolAddr"
+
+const UnhandledHandlerName* = "tuck_unhandled"
+  ## The generated proc every dropped fallible result reports through (spec
+  ## 4.9), and the one each backend declares. A compiler-made name, so it
+  ## lives outside the `tuckˑ` space user names are mangled into and cannot
+  ## meet one. Nim and Odin spelled it as a literal while D mangled
+  ## "unhandled" to reach the same text; one constant now.
 
 proc absentCapable*(t: Type): bool =
   ## Does this fn's declared return type admit `tsAbsent` — `?T` or `!?T`? A
@@ -299,45 +326,6 @@ template freshName*(ctx: untyped, tag: string): string =
   ## at each site that needed a temp.
   (inc ctx.tmpCounter; tag & $ctx.tmpCounter)
 
-proc calleeParamNames*(res: Resolution, m: Module,
-                       real: Table[string, Module], e: Expr,
-                       calleeStr: string): seq[string] =
-  ## The params a call's callee declares, in order: a qualified callee's
-  ## from its own module, else the ones the checker recorded for this call,
-  ## else a lookup by name. Empty when none of the three knows.
-  if e.callee != nil and e.callee.kind == exkQualified and
-     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in real:
-    return lookupFnParams(real[e.callee.modulePath[0]], e.callee.qualName)
-  if res.callParamsFor(e).len > 0: return res.callParamsFor(e)
-  lookupFnParams(m, calleeStr)
-
-proc payloadArgs*(res: Resolution, m: Module, real: Table[string, Module],
-                  e: Expr, calleeStr: string): seq[Expr] =
-  ## A payload call's arguments in the callee's PARAMETER order: for each
-  ## param, the value of the payload field that feeds it — the one the
-  ## checker chose (`argFieldsFor`) when it recorded one, else the field of
-  ## the param's own name — or nil where the payload has no such field. With
-  ## the params unknown, the payload's field values as written.
-  ##
-  ## One decision, three printers: each backend was deciding this for itself
-  ## in three identical copies. How a MISSING argument is spelled is still
-  ## each backend's own (Nim `nil`, Odin `{}`, D a refusal).
-  let payload = e.args[0]
-  let expected = calleeParamNames(res, m, real, e, calleeStr)
-  if expected.len == 0:
-    for f in payload.fields: result.add f.value
-    return
-  let chosen = res.argFieldsFor(e)
-  for i, paramName in expected:
-    let fieldName = if i < chosen.len and chosen[i].len > 0: chosen[i]
-                    else: paramName
-    var value: Expr = nil
-    for f in payload.fields:
-      if f.name == fieldName:
-        value = f.value
-        break
-    result.add value
-
 proc isInputRef*(e: Expr, params: seq[FieldDef]): bool =
   ## A bare `input` inside a body that has params: the whole incoming
   ## payload, which each backend rebuilds from the params.
@@ -393,25 +381,34 @@ const NimShadowingModuleNames* = [
   ## unnecessary alias would break every `module::fn` call site, which is
   ## exactly what a blanket aliasing pass did.
 
-proc recordArgFields*(res: Resolution, m: Module, e: Expr,
-                      calleeStr: string): seq[string] =
-  ## A call whose one argument is a RECORD VARIABLE standing for its payload
-  ## (`p fn` with `p: {a, b}`): the field of it that feeds each param, in
-  ## param order — the checker's choice where it recorded one, else the
-  ## param's own name. Empty when the call is not that shape, or some param
-  ## has no such field; the call is then printed as it stands.
-  if e.args.len != 1 or e.args[0].kind != exkVar: return
-  let params = if res.callParamsFor(e).len > 0: res.callParamsFor(e)
-               else: lookupFnParams(m, calleeStr)
-  if params.len == 0: return
+proc recordArgFields*(res: Resolution, m: Module,
+                      real: Table[string, Module], e: Expr): Option[seq[string]] =
+  ## A call whose one argument is a VARIABLE standing for its payload (`p fn`
+  ## with `p: {a, b}`): the field of it that feeds each param, in param order
+  ## (`call_args.fieldFor`). Printed `f(p.a, p.b)`.
+  ##
+  ## NONE when the call is not that shape, and it is then printed as it
+  ## stands: a member call (its one argument is the RECEIVER), a callee
+  ## nothing resolved, or a param the record has no field for — the variable
+  ## IS that argument.
+  ##
+  ## `some(@[])` is a callee that takes nothing: `g()`, whatever the variable
+  ## holds. All three backends printed `g(p)` while "takes none" and "not
+  ## resolved" were one empty list.
+  if e.args.len != 1 or e.args[0].kind != exkVar or
+     memberCallee(res, m, e) != "":
+    return none(seq[string])
+  let known = knownParams(res, m, real, e)
+  if known.isNone: return none(seq[string])
+  if known.get.len == 0: return some(newSeq[string]())
   let fields = recordFieldNames(res, m, res.typeFor(e.args[0]))
-  if fields.len == 0: return
-  let chosen = res.argFieldsFor(e)
-  for i, paramName in params:
-    let fieldName = if i < chosen.len and chosen[i].len > 0: chosen[i]
-                    else: paramName
-    if fieldName notin fields: return @[]
-    result.add fieldName
+  if fields.len == 0: return none(seq[string])
+  var picked: seq[string]
+  for i, param in known.get:
+    let f = fieldFor(res, e, i, param)
+    if f notin fields: return none(seq[string])
+    picked.add f
+  some(picked)
 
 proc nimModuleName*(name: string): string =
   ## What an imported Tuck module is CALLED in the emitted Nim — its own name,

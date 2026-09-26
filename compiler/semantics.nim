@@ -92,6 +92,8 @@ proc union(a, b: Demands): Demands =
 proc callEffects(c: var Checker, e: Expr, res: var Demands) =
   ## What a CALL adds beyond its subexpressions: the callee's own declared
   ## effects and resource kinds, and the async mark that goes with [io].
+  ## A pool operation (the other thing the checker stamps) declares none.
+  if e.kind != exkCall: return
   let calleeName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name
                    else: ""
   if calleeName != "":

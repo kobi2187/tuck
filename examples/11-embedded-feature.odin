@@ -3,53 +3,53 @@ package main
 
 import rt "./tuckrt"
 
-tuck_type_SafeRPM :: distinct u16
+tuckˑtypeˑSafeRPM :: distinct u16
 
-tuck_type_PacketSeq :: distinct u8
+tuckˑtypeˑPacketSeq :: distinct u8
 
-tuck_type_ErrorCount :: distinct u32
+tuckˑtypeˑErrorCount :: distinct u32
 
-tuck_type_SensorEvent :: struct {
+tuckˑtypeˑSensorEvent :: struct {
 	channel: u8,
 	reading: u16,
 }
 
-tuck_RCC_CR := cast(^u32)(uintptr(0x40021000))
-tuck_RCC_CR_HSION_SHIFT :: 0
-tuck_RCC_CR_HSIRDY_SHIFT :: 1
-tuck_RCC_CR_HSITRIM_SHIFT :: 3
-tuck_RCC_CR_HSITRIM_WIDTH :: 7 - 3 + 1
-tuck_RCC_CR_HSITRIM_MASK :: u32(1 << u32(tuck_RCC_CR_HSITRIM_WIDTH)) - 1
-tuck_RCC_CR_HSION_get :: proc() -> bool {
-	return (tuck_RCC_CR^ & (u32(1) << u32(tuck_RCC_CR_HSION_SHIFT))) != 0
+tuckˑregisterˑRCC_CR := cast(^u32)(uintptr(0x40021000))
+tuckˑregisterˑRCC_CR_HSION_SHIFT :: 0
+tuckˑregisterˑRCC_CR_HSIRDY_SHIFT :: 1
+tuckˑregisterˑRCC_CR_HSITRIM_SHIFT :: 3
+tuckˑregisterˑRCC_CR_HSITRIM_WIDTH :: 7 - 3 + 1
+tuckˑregisterˑRCC_CR_HSITRIM_MASK :: u32(1 << u32(tuckˑregisterˑRCC_CR_HSITRIM_WIDTH)) - 1
+tuckˑregisterˑRCC_CR_HSION_get :: proc() -> bool {
+	return (tuckˑregisterˑRCC_CR^ & (u32(1) << u32(tuckˑregisterˑRCC_CR_HSION_SHIFT))) != 0
 }
-tuck_RCC_CR_HSION_set :: proc(on: bool) {
-	mask := u32(1) << u32(tuck_RCC_CR_HSION_SHIFT)
-	if on { tuck_RCC_CR^ |= mask } else { tuck_RCC_CR^ &~= mask }
+tuckˑregisterˑRCC_CR_HSION_set :: proc(on: bool) {
+	mask := u32(1) << u32(tuckˑregisterˑRCC_CR_HSION_SHIFT)
+	if on { tuckˑregisterˑRCC_CR^ |= mask } else { tuckˑregisterˑRCC_CR^ &~= mask }
 }
-tuck_RCC_CR_HSIRDY_get :: proc() -> bool {
-	return (tuck_RCC_CR^ & (u32(1) << u32(tuck_RCC_CR_HSIRDY_SHIFT))) != 0
+tuckˑregisterˑRCC_CR_HSIRDY_get :: proc() -> bool {
+	return (tuckˑregisterˑRCC_CR^ & (u32(1) << u32(tuckˑregisterˑRCC_CR_HSIRDY_SHIFT))) != 0
 }
-tuck_RCC_CR_HSITRIM_get :: proc() -> u32 {
-	return (tuck_RCC_CR^ >> u32(tuck_RCC_CR_HSITRIM_SHIFT)) & tuck_RCC_CR_HSITRIM_MASK
+tuckˑregisterˑRCC_CR_HSITRIM_get :: proc() -> u32 {
+	return (tuckˑregisterˑRCC_CR^ >> u32(tuckˑregisterˑRCC_CR_HSITRIM_SHIFT)) & tuckˑregisterˑRCC_CR_HSITRIM_MASK
 }
-tuck_RCC_CR_HSITRIM_set :: proc(value: u32) {
-	shifted := (value & tuck_RCC_CR_HSITRIM_MASK) << u32(tuck_RCC_CR_HSITRIM_SHIFT)
-	tuck_RCC_CR^ = (tuck_RCC_CR^ &~ (tuck_RCC_CR_HSITRIM_MASK << u32(tuck_RCC_CR_HSITRIM_SHIFT))) | shifted
-}
-
-tuck_fn_processISR :: proc (event: tuck_type_SensorEvent) {
-
+tuckˑregisterˑRCC_CR_HSITRIM_set :: proc(value: u32) {
+	shifted := (value & tuckˑregisterˑRCC_CR_HSITRIM_MASK) << u32(tuckˑregisterˑRCC_CR_HSITRIM_SHIFT)
+	tuckˑregisterˑRCC_CR^ = (tuckˑregisterˑRCC_CR^ &~ (tuckˑregisterˑRCC_CR_HSITRIM_MASK << u32(tuckˑregisterˑRCC_CR_HSITRIM_SHIFT))) | shifted
 }
 
-tuck_UartBuffer: rt.ObjectPool([64]u8, 8)
+tuckˑfnˑprocessISR :: proc (event: tuckˑtypeˑSensorEvent) {
 
-tuck_fn_handleUart :: proc () {
-  tuck_buf := rt.acquire(&tuck_UartBuffer)
-  if !(tuck_buf.status == .Ok) {
+}
+
+tuckˑpoolˑUartBuffer: rt.ObjectPool([64]u8, 8)
+
+tuckˑfnˑhandleUart :: proc () {
+  tuckˑvˑbuf := rt.tuckPoolAcquire(&tuckˑpoolˑUartBuffer)
+  if !(tuckˑvˑbuf.status == .Ok) {
       return
   }
-  rt.release(&tuck_UartBuffer, tuck_buf.value)
+  rt.tuckPoolRelease(&tuckˑpoolˑUartBuffer, tuckˑvˑbuf.value)
   return
 }
 

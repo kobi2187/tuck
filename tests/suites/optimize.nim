@@ -89,7 +89,7 @@ proc run*(t: var T) =
       t.ok "a pass changes the emitted code when asked for"
 
     # -O:none is genuinely inert: the call survives untouched.
-    if "tuck_fn_withDefaults(" in plainOff:
+    if "tuckˑfnˑwithDefaults(" in plainOff:
       t.ok "-O:none leaves the mutator call unchanged"
     else:
       t.no "-O:none leaves the mutator call unchanged",
@@ -98,7 +98,7 @@ proc run*(t: var T) =
   # --- 2. the whole-value builder loses its call ---------------------------
 
   if t.phase != pCollect:
-    if "tuck_fn_withDefaults(" notin plainOn and "tuck_type_Cfg(port: 80" in plainOn:
+    if "tuckˑfnˑwithDefaults(" notin plainOn and "tuckˑtypeˑCfg(port: 80" in plainOn:
       t.ok "a receiver-independent builder is replaced by its own value"
     else:
       t.no "a receiver-independent builder is replaced by its own value",
@@ -116,7 +116,7 @@ proc run*(t: var T) =
   let tmOff = t.emittedWith("off", @["-O:none"])
   let tmOn = t.emittedWith("on", @[])
   if t.phase != pCollect:
-    if "tuck_fn_withDefaults(" in tmOff and "tuck_fn_withDefaults(" notin tmOn and
+    if "tuckˑfnˑwithDefaults(" in tmOff and "tuckˑfnˑwithDefaults(" notin tmOn and
        "cfg.timeout = 30" in tmOn:
       t.ok "a temp-and-mutate builder is spliced into the caller's chain"
     else:
@@ -149,7 +149,7 @@ fn main() -> int:
 """
   let refuseOn = t.emittedWith("on", @["-O:chain-inplace"])
   if t.phase != pCollect:
-    if "tuck_fn_bump(" in refuseOn:
+    if "tuckˑfnˑbump(" in refuseOn:
       t.ok "a builder that reads its receiver is left alone"
     else:
       t.no "a builder that reads its receiver is left alone",
@@ -176,7 +176,7 @@ fn main() -> int:
 """
   let invOn = t.emittedWith("on", @["-O:chain-inplace"])
   if t.phase != pCollect:
-    if "tuck_fn_withDefaults(" in invOn:
+    if "tuckˑfnˑwithDefaults(" in invOn:
       t.ok "a type carrying invariants is left alone"
     else:
       t.no "a type carrying invariants is left alone",

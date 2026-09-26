@@ -2,95 +2,95 @@ module _04_sum_types_interface;
 
 import rt = tuck_rt;
 
-struct tuck_type_Config {
+struct tuckˑtypeˑConfig {
     string url;
 }
 
-struct tuck_type_Feed {
+struct tuckˑtypeˑFeed {
     string title;
 }
 
-struct tuck_type_AudioPlayer {
+struct tuckˑtypeˑAudioPlayer {
     long volume;
 }
 
-struct tuck_type_NetworkClient {
+struct tuckˑtypeˑNetworkClient {
     uint timeout;
 }
 
-struct tuck_type_Episode {
+struct tuckˑtypeˑEpisode {
     string name;
 }
 
-struct tuck_type_Pair {
+struct tuckˑtypeˑPair {
     string key;
     string val;
 }
 
-enum tuck_type_PodcastPlayerLifecycleKind { Unloaded, Loading, Ready, Error }
+enum tuckˑtypeˑPodcastPlayerLifecycleKind { Unloaded, Loading, Ready, Error }
 
-struct tuck_type_PodcastPlayerLifecycle_Unloaded {
-    tuck_type_Config config;
+struct tuckˑtypeˑPodcastPlayerLifecycle_Unloaded {
+    tuckˑtypeˑConfig config;
 }
 
-struct tuck_type_PodcastPlayerLifecycle_Loading {
-    tuck_type_Config config;
+struct tuckˑtypeˑPodcastPlayerLifecycle_Loading {
+    tuckˑtypeˑConfig config;
     long progress;
 }
 
-struct tuck_type_PodcastPlayerLifecycle_Ready {
-    tuck_type_Config config;
-    tuck_type_Feed feed;
-    tuck_type_AudioPlayer audio;
+struct tuckˑtypeˑPodcastPlayerLifecycle_Ready {
+    tuckˑtypeˑConfig config;
+    tuckˑtypeˑFeed feed;
+    tuckˑtypeˑAudioPlayer audio;
 }
 
-struct tuck_type_PodcastPlayerLifecycle_Error {
-    tuck_type_Config config;
+struct tuckˑtypeˑPodcastPlayerLifecycle_Error {
+    tuckˑtypeˑConfig config;
     string reason;
 }
 
-struct tuck_type_PodcastPlayerLifecycle {
-    tuck_type_PodcastPlayerLifecycleKind kind;
+struct tuckˑtypeˑPodcastPlayerLifecycle {
+    tuckˑtypeˑPodcastPlayerLifecycleKind kind;
     union {
-        tuck_type_PodcastPlayerLifecycle_Unloaded tuck_unloaded;
-        tuck_type_PodcastPlayerLifecycle_Loading tuck_loading;
-        tuck_type_PodcastPlayerLifecycle_Ready tuck_ready;
-        tuck_type_PodcastPlayerLifecycle_Error tuck_error;
+        tuckˑtypeˑPodcastPlayerLifecycle_Unloaded tuckˑvariantˑunloaded;
+        tuckˑtypeˑPodcastPlayerLifecycle_Loading tuckˑvariantˑloading;
+        tuckˑtypeˑPodcastPlayerLifecycle_Ready tuckˑvariantˑready;
+        tuckˑtypeˑPodcastPlayerLifecycle_Error tuckˑvariantˑerror;
     }
-    bool opEquals(const tuck_type_PodcastPlayerLifecycle o) const {
+    bool opEquals(const tuckˑtypeˑPodcastPlayerLifecycle o) const {
         if (kind != o.kind) return false;
         final switch (kind) {
-        case tuck_type_PodcastPlayerLifecycleKind.Unloaded: return tuck_unloaded == o.tuck_unloaded;
-        case tuck_type_PodcastPlayerLifecycleKind.Loading: return tuck_loading == o.tuck_loading;
-        case tuck_type_PodcastPlayerLifecycleKind.Ready: return tuck_ready == o.tuck_ready;
-        case tuck_type_PodcastPlayerLifecycleKind.Error: return tuck_error == o.tuck_error;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Unloaded: return tuckˑvariantˑunloaded == o.tuckˑvariantˑunloaded;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Loading: return tuckˑvariantˑloading == o.tuckˑvariantˑloading;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Ready: return tuckˑvariantˑready == o.tuckˑvariantˑready;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Error: return tuckˑvariantˑerror == o.tuckˑvariantˑerror;
         }
     }
 }
 
 // interface Storable: no satisfying types
 
-tuck_type_PodcastApp tuck_fn_loadEpisode(tuck_type_PodcastApp self, tuck_type_Episode episode) {
+tuckˑobjectˑPodcastApp tuckˑfnˑloadEpisode(tuckˑobjectˑPodcastApp self, tuckˑtypeˑEpisode episode) {
     return self;
 }
 
-void tuck_fn_startAudio(tuck_type_PodcastApp self) {
+void tuckˑfnˑstartAudio(tuckˑobjectˑPodcastApp self) {
     return;
 }
 
-struct tuck_type_PodcastApp {
+struct tuckˑobjectˑPodcastApp {
     long volume;
     uint timeout;
 }
 
-rt.TuckResult!(rt.TuckUnit) tuck_type_PodcastApp_tuck_fn_setMany(ref tuck_type_PodcastApp self, tuck_type_Pair[] pairs) {
+rt.TuckResult!(rt.TuckUnit) tuckˑobjectˑPodcastAppˑtuckˑfnˑsetMany(ref tuckˑobjectˑPodcastApp self, tuckˑtypeˑPair[] pairs) {
     return typeof(return).init;
 }
 
-void tuck_type_PodcastApp_play(ref tuck_type_PodcastApp self, tuck_type_Episode episode) {
-    tuck_type_PodcastApp tuckChain1 = self;
-    tuckChain1 = tuck_fn_loadEpisode(tuckChain1, episode);
-    tuck_fn_startAudio(tuckChain1);
+void tuckˑobjectˑPodcastAppˑplay(ref tuckˑobjectˑPodcastApp self, tuckˑtypeˑEpisode episode) {
+    tuckˑobjectˑPodcastApp tuckChain1 = self;
+    tuckChain1 = tuckˑfnˑloadEpisode(tuckChain1, episode);
+    tuckˑfnˑstartAudio(tuckChain1);
 }
 
 

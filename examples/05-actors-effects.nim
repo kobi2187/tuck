@@ -1,25 +1,25 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-type tuck_type_Feed* = object
+type tuckˑtypeˑFeed* = object
   title*: string
   episodeCount*: int
 
-type tuck_type_PodcastApp* = object
+type tuckˑobjectˑPodcastApp* = object
   discard
 
-type tuck_type_CounterMsgKind* = enum msgIncrement, msgReset
-type tuck_type_CounterMsg* = object
-  tuckTag*: tuck_type_CounterMsgKind
+type tuckˑactorˑCounterMsgKind* = enum msgIncrement, msgReset
+type tuckˑactorˑCounterMsg* = object
+  tuckTag*: tuckˑactorˑCounterMsgKind
   n*: int
 
-type tuck_type_Counter* = ref object
+type tuckˑactorˑCounter* = ref object
   count*: int
-  mailbox*: Mailbox[tuck_type_CounterMsg, 8]
+  mailbox*: Mailbox[tuckˑactorˑCounterMsg, 8]
 
-let tuck_type_CounterSingleton* = tuck_type_Counter(count: 0)
+let tuckˑactorˑCounterSingleton* = tuckˑactorˑCounter(count: 0)
 
-proc handleMsg*(self: tuck_type_Counter, msg: tuck_type_CounterMsg) =
+proc handleMsg*(self: tuckˑactorˑCounter, msg: tuckˑactorˑCounterMsg) =
   case msg.tuckTag
   of msgIncrement:
     let n = msg.n
@@ -29,22 +29,22 @@ proc handleMsg*(self: tuck_type_Counter, msg: tuck_type_CounterMsg) =
     if true:
       self.count = 0
 
-proc draintuck_type_Counter(): bool {.gcsafe.} =
+proc draintuckˑactorˑCounter(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    for m in messages(tuck_type_CounterSingleton.mailbox):
-      handleMsg(tuck_type_CounterSingleton, m)
+    for m in messages(tuckˑactorˑCounterSingleton.mailbox):
+      handleMsg(tuckˑactorˑCounterSingleton, m)
       tuckCheckWaiters()
       result = true
 
-var tuck_type_CounterSlot*: pointer
-proc registerActortuck_type_Counter*() =
-  tuck_type_CounterSlot = tuckStartActor(draintuck_type_Counter)
+var tuckˑactorˑCounterSlot*: pointer
+proc registerActortuckˑactorˑCounter*() =
+  tuckˑactorˑCounterSlot = tuckStartActor(draintuckˑactorˑCounter)
 
-proc tuck_fn_readSensor*[T](payload: T): TuckResult[tuple[value: uint16]] =
-  stderr.writeLine("TUCK PENDING: tuck_fn_readSensor invoked (not implemented)")
+proc tuckˑfnˑreadSensor*[T](payload: T): TuckResult[tuple[value: uint16]] =
+  stderr.writeLine("TUCK PENDING: readSensor invoked (not implemented)")
 
-proc fetchFeed*[T](payload: T): TuckResult[tuple[feed: tuck_type_Feed]] =
+proc fetchFeed*[T](payload: T): TuckResult[tuple[feed: tuckˑtypeˑFeed]] =
   stderr.writeLine("TUCK PENDING: fetchFeed invoked (not implemented)")
 
 

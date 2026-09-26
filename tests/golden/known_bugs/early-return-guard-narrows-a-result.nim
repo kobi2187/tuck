@@ -1,15 +1,15 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_readIt*(n: int): TuckResult[tuple[v: int]]
-proc tuck_fn_main*(): int
+proc tuckˑfnˑreadIt*(n: int): TuckResult[tuple[v: int]]
+proc tuckˑfnˑmain*(): int
 
-proc tuck_fn_readIt*(n: int): TuckResult[tuple[v: int]] =
+proc tuckˑfnˑreadIt*(n: int): TuckResult[tuple[v: int]] =
   return tok((v: n))
 
-proc tuck_fn_main*(): int =
-  var tuck_r = tuck_fn_readIt(5)
-  if not tuck_r.ok:
+proc tuckˑfnˑmain*(): int =
+  var tuckˑvˑr = tuckˑfnˑreadIt(5)
+  if not tuckˑvˑr.ok:
     if true:
       return 0
-  return tuck_r.value.v
+  return tuckˑvˑr.value.v
 

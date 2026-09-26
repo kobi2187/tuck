@@ -3,112 +3,112 @@ package main
 
 import rt "./tuckrt"
 
-tuck_type_Hz :: distinct u32
+tuckˑtypeˑHz :: distinct u32
 
-tuck_type_Milliseconds :: distinct u32
+tuckˑtypeˑMilliseconds :: distinct u32
 
-tuck_SystemEventsKind :: enum { PlaybackStarted, PlaybackStopped, HardwareError }
-tuck_SystemEvents :: struct {
-	tuckTag: tuck_SystemEventsKind,
+tuckˑregistryˑSystemEventsKind :: enum { PlaybackStarted, PlaybackStopped, HardwareError }
+tuckˑregistryˑSystemEvents :: struct {
+	tuckTag: tuckˑregistryˑSystemEventsKind,
 	code: u8,
 }
 
-latesttuck_SystemEvents: tuck_SystemEvents
+latesttuckˑregistryˑSystemEvents: tuckˑregistryˑSystemEvents
 
-raise_tuck_SystemEvents_PlaybackStarted :: proc() {
-	latesttuck_SystemEvents = tuck_SystemEvents{tuckTag = .PlaybackStarted}
-	tuck_fn_SystemEvents_PlaybackStarted()
-}
-
-raise_tuck_SystemEvents_PlaybackStopped :: proc() {
-	latesttuck_SystemEvents = tuck_SystemEvents{tuckTag = .PlaybackStopped}
-	tuck_fn_SystemEvents_PlaybackStopped()
+raise_tuckˑregistryˑSystemEvents_PlaybackStarted :: proc() {
+	latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents{tuckTag = .PlaybackStarted}
+	tuckˑfnˑSystemEvents_PlaybackStarted()
 }
 
-raise_tuck_SystemEvents_HardwareError :: proc(code: u8) {
-	latesttuck_SystemEvents = tuck_SystemEvents{tuckTag = .HardwareError, code = code}
-	tuck_fn_SystemEvents_HardwareError(code)
+raise_tuckˑregistryˑSystemEvents_PlaybackStopped :: proc() {
+	latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents{tuckTag = .PlaybackStopped}
+	tuckˑfnˑSystemEvents_PlaybackStopped()
+}
+
+raise_tuckˑregistryˑSystemEvents_HardwareError :: proc(code: u8) {
+	latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents{tuckTag = .HardwareError, code = code}
+	tuckˑfnˑSystemEvents_HardwareError(code)
 }
 
 
-tuck_DAC_CR := cast(^u32)(uintptr(0x40007400))
-tuck_DAC_CR_EN_SHIFT :: 0
-tuck_DAC_CR_BOFF_SHIFT :: 1
-tuck_DAC_CR_EN_get :: proc() -> bool {
-	return (tuck_DAC_CR^ & (u32(1) << u32(tuck_DAC_CR_EN_SHIFT))) != 0
+tuckˑregisterˑDAC_CR := cast(^u32)(uintptr(0x40007400))
+tuckˑregisterˑDAC_CR_EN_SHIFT :: 0
+tuckˑregisterˑDAC_CR_BOFF_SHIFT :: 1
+tuckˑregisterˑDAC_CR_EN_get :: proc() -> bool {
+	return (tuckˑregisterˑDAC_CR^ & (u32(1) << u32(tuckˑregisterˑDAC_CR_EN_SHIFT))) != 0
 }
-tuck_DAC_CR_EN_set :: proc(on: bool) {
-	mask := u32(1) << u32(tuck_DAC_CR_EN_SHIFT)
-	if on { tuck_DAC_CR^ |= mask } else { tuck_DAC_CR^ &~= mask }
+tuckˑregisterˑDAC_CR_EN_set :: proc(on: bool) {
+	mask := u32(1) << u32(tuckˑregisterˑDAC_CR_EN_SHIFT)
+	if on { tuckˑregisterˑDAC_CR^ |= mask } else { tuckˑregisterˑDAC_CR^ &~= mask }
 }
-tuck_DAC_CR_BOFF_get :: proc() -> bool {
-	return (tuck_DAC_CR^ & (u32(1) << u32(tuck_DAC_CR_BOFF_SHIFT))) != 0
+tuckˑregisterˑDAC_CR_BOFF_get :: proc() -> bool {
+	return (tuckˑregisterˑDAC_CR^ & (u32(1) << u32(tuckˑregisterˑDAC_CR_BOFF_SHIFT))) != 0
 }
-tuck_DAC_CR_BOFF_set :: proc(on: bool) {
-	mask := u32(1) << u32(tuck_DAC_CR_BOFF_SHIFT)
-	if on { tuck_DAC_CR^ |= mask } else { tuck_DAC_CR^ &~= mask }
-}
-
-tuck_DMA1_CH3 := cast(^u32)(uintptr(0x40020030))
-tuck_DMA1_CH3_EN_SHIFT :: 0
-tuck_DMA1_CH3_TCIE_SHIFT :: 1
-tuck_DMA1_CH3_EN_get :: proc() -> bool {
-	return (tuck_DMA1_CH3^ & (u32(1) << u32(tuck_DMA1_CH3_EN_SHIFT))) != 0
-}
-tuck_DMA1_CH3_EN_set :: proc(on: bool) {
-	mask := u32(1) << u32(tuck_DMA1_CH3_EN_SHIFT)
-	if on { tuck_DMA1_CH3^ |= mask } else { tuck_DMA1_CH3^ &~= mask }
-}
-tuck_DMA1_CH3_TCIE_get :: proc() -> bool {
-	return (tuck_DMA1_CH3^ & (u32(1) << u32(tuck_DMA1_CH3_TCIE_SHIFT))) != 0
-}
-tuck_DMA1_CH3_TCIE_set :: proc(on: bool) {
-	mask := u32(1) << u32(tuck_DMA1_CH3_TCIE_SHIFT)
-	if on { tuck_DMA1_CH3^ |= mask } else { tuck_DMA1_CH3^ &~= mask }
+tuckˑregisterˑDAC_CR_BOFF_set :: proc(on: bool) {
+	mask := u32(1) << u32(tuckˑregisterˑDAC_CR_BOFF_SHIFT)
+	if on { tuckˑregisterˑDAC_CR^ |= mask } else { tuckˑregisterˑDAC_CR^ &~= mask }
 }
 
-tuck_type_PlayerState_Idle :: struct {}
-tuck_type_PlayerState_Decoding :: struct {
-	sampleRate: tuck_type_Hz,
+tuckˑregisterˑDMA1_CH3 := cast(^u32)(uintptr(0x40020030))
+tuckˑregisterˑDMA1_CH3_EN_SHIFT :: 0
+tuckˑregisterˑDMA1_CH3_TCIE_SHIFT :: 1
+tuckˑregisterˑDMA1_CH3_EN_get :: proc() -> bool {
+	return (tuckˑregisterˑDMA1_CH3^ & (u32(1) << u32(tuckˑregisterˑDMA1_CH3_EN_SHIFT))) != 0
 }
-tuck_type_PlayerState_Paused :: struct {}
-tuck_type_PlayerState :: union {tuck_type_PlayerState_Idle, tuck_type_PlayerState_Decoding, tuck_type_PlayerState_Paused}
-tuck_type_PlayerStateKind :: enum { Idle, Decoding, Paused }
-tag_tuck_type_PlayerState :: proc(v: tuck_type_PlayerState) -> tuck_type_PlayerStateKind {
+tuckˑregisterˑDMA1_CH3_EN_set :: proc(on: bool) {
+	mask := u32(1) << u32(tuckˑregisterˑDMA1_CH3_EN_SHIFT)
+	if on { tuckˑregisterˑDMA1_CH3^ |= mask } else { tuckˑregisterˑDMA1_CH3^ &~= mask }
+}
+tuckˑregisterˑDMA1_CH3_TCIE_get :: proc() -> bool {
+	return (tuckˑregisterˑDMA1_CH3^ & (u32(1) << u32(tuckˑregisterˑDMA1_CH3_TCIE_SHIFT))) != 0
+}
+tuckˑregisterˑDMA1_CH3_TCIE_set :: proc(on: bool) {
+	mask := u32(1) << u32(tuckˑregisterˑDMA1_CH3_TCIE_SHIFT)
+	if on { tuckˑregisterˑDMA1_CH3^ |= mask } else { tuckˑregisterˑDMA1_CH3^ &~= mask }
+}
+
+tuckˑtypeˑPlayerState_Idle :: struct {}
+tuckˑtypeˑPlayerState_Decoding :: struct {
+	sampleRate: tuckˑtypeˑHz,
+}
+tuckˑtypeˑPlayerState_Paused :: struct {}
+tuckˑtypeˑPlayerState :: union {tuckˑtypeˑPlayerState_Idle, tuckˑtypeˑPlayerState_Decoding, tuckˑtypeˑPlayerState_Paused}
+tuckˑtypeˑPlayerStateKind :: enum { Idle, Decoding, Paused }
+tag_tuckˑtypeˑPlayerState :: proc(v: tuckˑtypeˑPlayerState) -> tuckˑtypeˑPlayerStateKind {
 	switch _ in v {
-	case tuck_type_PlayerState_Idle: return .Idle
-	case tuck_type_PlayerState_Decoding: return .Decoding
-	case tuck_type_PlayerState_Paused: return .Paused
+	case tuckˑtypeˑPlayerState_Idle: return .Idle
+	case tuckˑtypeˑPlayerState_Decoding: return .Decoding
+	case tuckˑtypeˑPlayerState_Paused: return .Paused
 	}
 	return .Idle
 }
 
-tuck_type_PlayerState_eq :: proc(a, b: tuck_type_PlayerState) -> bool {
-  if av, aok := a.(tuck_type_PlayerState_Idle); aok {
+tuckˑtypeˑPlayerState_eq :: proc(a, b: tuckˑtypeˑPlayerState) -> bool {
+  if av, aok := a.(tuckˑtypeˑPlayerState_Idle); aok {
     _ = av
-    bv, bok := b.(tuck_type_PlayerState_Idle)
+    bv, bok := b.(tuckˑtypeˑPlayerState_Idle)
     _ = bv
     if !bok { return false }
     return true
   }
-  if av, aok := a.(tuck_type_PlayerState_Decoding); aok {
+  if av, aok := a.(tuckˑtypeˑPlayerState_Decoding); aok {
     _ = av
-    bv, bok := b.(tuck_type_PlayerState_Decoding)
+    bv, bok := b.(tuckˑtypeˑPlayerState_Decoding)
     _ = bv
     if !bok { return false }
     if av.sampleRate != bv.sampleRate { return false }
     return true
   }
-  if av, aok := a.(tuck_type_PlayerState_Paused); aok {
+  if av, aok := a.(tuckˑtypeˑPlayerState_Paused); aok {
     _ = av
-    bv, bok := b.(tuck_type_PlayerState_Paused)
+    bv, bok := b.(tuckˑtypeˑPlayerState_Paused)
     _ = bv
     if !bok { return false }
     return true
   }
   return false
 }
-canTransition_tuck_type_PlayerState :: proc(frm: tuck_type_PlayerStateKind, to: tuck_type_PlayerStateKind) -> bool {
+canTransition_tuckˑtypeˑPlayerState :: proc(frm: tuckˑtypeˑPlayerStateKind, to: tuckˑtypeˑPlayerStateKind) -> bool {
 	switch frm {
 	case .Idle: return to == .Decoding
 	case .Decoding: return to == .Paused || to == .Idle
@@ -116,133 +116,137 @@ canTransition_tuck_type_PlayerState :: proc(frm: tuck_type_PlayerStateKind, to: 
 	}
 	return false
 }
-transitionTo_tuck_type_PlayerState :: proc(self: ^tuck_type_PlayerState, target: tuck_type_PlayerState) {
-	assert(canTransition_tuck_type_PlayerState(tag_tuck_type_PlayerState(self^), tag_tuck_type_PlayerState(target)), "Invalid transition")
+transitionTo_tuckˑtypeˑPlayerState :: proc(self: ^tuckˑtypeˑPlayerState, target: tuckˑtypeˑPlayerState) {
+	assert(canTransition_tuckˑtypeˑPlayerState(tag_tuckˑtypeˑPlayerState(self^), tag_tuckˑtypeˑPlayerState(target)), "Invalid transition")
 	self^ = target
 }
 
-tuck_BufferPool: rt.ObjectPool([512]u8, 4)
+tuckˑpoolˑBufferPool: rt.ObjectPool([512]u8, 4)
 
-tuck_type_Volume :: struct {
+tuckˑtypeˑVolume :: struct {
 	level: u8,
 }
-validate_tuck_type_Volume :: proc(self: tuck_type_Volume) {
-	assert((self.level <= 100))
+validate_tuckˑtypeˑVolume :: proc(self: tuckˑtypeˑVolume) {
+	when !#config(tuckNoInvariants, false) {
+		if !((self.level <= 100)) {
+			rt.tuckInvariantFailed("(self.level <= 100)", "tuckˑtypeˑVolume")
+		}
+	}
 }
-__validated_tuck_type_Volume :: proc(v: tuck_type_Volume) -> tuck_type_Volume {
-	validate_tuck_type_Volume(v)
+__validated_tuckˑtypeˑVolume :: proc(v: tuckˑtypeˑVolume) -> tuckˑtypeˑVolume {
+	validate_tuckˑtypeˑVolume(v)
 	return v
 }
 
-tuck_fn_streamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(rt.TuckUnit) {
-  for tuck_i in chunks {
-      tuck_buf := rt.acquire(&tuck_BufferPool)
-      if !(tuck_buf.status == .Ok) {
+tuckˑtaskˑstreamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(rt.TuckUnit) {
+  for tuckˑvˑi in chunks {
+      tuckˑvˑbuf := rt.tuckPoolAcquire(&tuckˑpoolˑBufferPool)
+      if !(tuckˑvˑbuf.status == .Ok) {
           return rt.tokVoid()
       }
-      tuck_DMA1_CH3_EN_set(true)
-      rt.release(&tuck_BufferPool, tuck_buf.value)
+      tuckˑregisterˑDMA1_CH3_EN_set(true)
+      rt.tuckPoolRelease(&tuckˑpoolˑBufferPool, tuckˑvˑbuf.value)
   }
   return {}
 }
 
-tuck_type_DecoderMsgKind :: enum { msgPlay, msgPause, msgStop }
-tuck_type_DecoderMsg :: struct {
-	tuckTag: tuck_type_DecoderMsgKind,
-	rate: tuck_type_Hz,
+tuckˑactorˑDecoderMsgKind :: enum { msgPlay, msgPause, msgStop }
+tuckˑactorˑDecoderMsg :: struct {
+	tuckTag: tuckˑactorˑDecoderMsgKind,
+	rate: tuckˑtypeˑHz,
 }
-tuck_type_Decoder :: struct {
-	state: tuck_type_PlayerState,
-	vol: tuck_type_Volume,
-	mailbox: rt.Mailbox(tuck_type_DecoderMsg, 8),
+tuckˑactorˑDecoder :: struct {
+	state: tuckˑtypeˑPlayerState,
+	vol: tuckˑtypeˑVolume,
+	mailbox: rt.Mailbox(tuckˑactorˑDecoderMsg, 8),
 }
 
-tuck_type_DecoderSingleton: tuck_type_Decoder
+tuckˑactorˑDecoderSingleton: tuckˑactorˑDecoder
 
-handleMsg_tuck_type_Decoder :: proc(self: ^tuck_type_Decoder, msg: tuck_type_DecoderMsg) {
+handleMsg_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder, msg: tuckˑactorˑDecoderMsg) {
 	switch msg.tuckTag {
 	case .msgPlay:
 		rate := msg.rate
     switch v in self.state
     {
-    case tuck_type_PlayerState_Idle:
-        self.state = tuck_type_PlayerState_Decoding{sampleRate = rate}
-        raise_tuck_SystemEvents_PlaybackStarted()
-        tuck_DAC_CR_EN_set(true)
-    case tuck_type_PlayerState_Paused:
-        self.state = tuck_type_PlayerState_Decoding{sampleRate = rate}
-        raise_tuck_SystemEvents_PlaybackStarted()
-        tuck_DAC_CR_EN_set(true)
-    case tuck_type_PlayerState_Decoding: ;
+    case tuckˑtypeˑPlayerState_Idle:
+        self.state = tuckˑtypeˑPlayerState_Decoding{sampleRate = rate}
+        raise_tuckˑregistryˑSystemEvents_PlaybackStarted()
+        tuckˑregisterˑDAC_CR_EN_set(true)
+    case tuckˑtypeˑPlayerState_Paused:
+        self.state = tuckˑtypeˑPlayerState_Decoding{sampleRate = rate}
+        raise_tuckˑregistryˑSystemEvents_PlaybackStarted()
+        tuckˑregisterˑDAC_CR_EN_set(true)
+    case tuckˑtypeˑPlayerState_Decoding: ;
     }
 	case .msgPause:
     switch v in self.state
     {
-    case tuck_type_PlayerState_Decoding: self.state = tuck_type_PlayerState_Paused{};
-    case tuck_type_PlayerState_Idle: ;
-    case tuck_type_PlayerState_Paused: ;
+    case tuckˑtypeˑPlayerState_Decoding: self.state = tuckˑtypeˑPlayerState_Paused{};
+    case tuckˑtypeˑPlayerState_Idle: ;
+    case tuckˑtypeˑPlayerState_Paused: ;
     }
-    tuck_DAC_CR_EN_set(false)
+    tuckˑregisterˑDAC_CR_EN_set(false)
 	case .msgStop:
-    self.state = tuck_type_PlayerState_Idle{}
-    raise_tuck_SystemEvents_PlaybackStopped()
-    tuck_DAC_CR_EN_set(false)
+    self.state = tuckˑtypeˑPlayerState_Idle{}
+    raise_tuckˑregistryˑSystemEvents_PlaybackStopped()
+    tuckˑregisterˑDAC_CR_EN_set(false)
 	}
 }
 
-tuck_type_DecoderSlot: rawptr
+tuckˑactorˑDecoderSlot: rawptr
 
-drain_tuck_type_Decoder :: proc() -> bool {
+drain_tuckˑactorˑDecoder :: proc() -> bool {
 	didWork := false
-	batch, n := rt.takeBatch(&tuck_type_DecoderSingleton.mailbox)
+	batch, n := rt.takeBatch(&tuckˑactorˑDecoderSingleton.mailbox)
 	for i in 0 ..< n {
-		handleMsg_tuck_type_Decoder(&tuck_type_DecoderSingleton, batch[i])
+		handleMsg_tuckˑactorˑDecoder(&tuckˑactorˑDecoderSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
 	return didWork
 }
 
-sendPlay_tuck_type_Decoder :: proc(self: ^tuck_type_Decoder, rate: tuck_type_Hz) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_DecoderMsg{tuckTag = .msgPlay, rate = rate})
-	rt.tuckNotifySend(tuck_type_DecoderSlot)
+sendPlay_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder, rate: tuckˑtypeˑHz) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑDecoderMsg{tuckTag = .msgPlay, rate = rate})
+	rt.tuckNotifySend(tuckˑactorˑDecoderSlot)
 }
 
-sendPause_tuck_type_Decoder :: proc(self: ^tuck_type_Decoder) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_DecoderMsg{tuckTag = .msgPause})
-	rt.tuckNotifySend(tuck_type_DecoderSlot)
+sendPause_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑDecoderMsg{tuckTag = .msgPause})
+	rt.tuckNotifySend(tuckˑactorˑDecoderSlot)
 }
 
-sendStop_tuck_type_Decoder :: proc(self: ^tuck_type_Decoder) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_DecoderMsg{tuckTag = .msgStop})
-	rt.tuckNotifySend(tuck_type_DecoderSlot)
+sendStop_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑDecoderMsg{tuckTag = .msgStop})
+	rt.tuckNotifySend(tuckˑactorˑDecoderSlot)
 }
 
-tuck_fn_SystemEvents_PlaybackStarted :: proc () {
-  tuck_DAC_CR_EN_set(true)
+tuckˑfnˑSystemEvents_PlaybackStarted :: proc () {
+  tuckˑregisterˑDAC_CR_EN_set(true)
 }
 
-tuck_fn_SystemEvents_PlaybackStopped :: proc () {
-  tuck_DAC_CR_EN_set(false)
+tuckˑfnˑSystemEvents_PlaybackStopped :: proc () {
+  tuckˑregisterˑDAC_CR_EN_set(false)
 }
 
-tuck_fn_SystemEvents_HardwareError :: proc (code: u8) {
-  tuck_failed := code
-  tuck_DAC_CR_EN_set(false)
+tuckˑfnˑSystemEvents_HardwareError :: proc (code: u8) {
+  tuckˑvˑfailed := code
+  tuckˑregisterˑDAC_CR_EN_set(false)
 }
 
-tuck_fn_main :: proc () {
+tuckˑfnˑmain :: proc () {
 
 }
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
-	assert((size_of(tuck_type_Volume) == 1))
-	tuck_type_DecoderSingleton.state = tuck_type_PlayerState_Idle{}
-	tuck_type_DecoderSingleton.vol = __validated_tuck_type_Volume(tuck_type_Volume{level = u8(80)})
+	assert((size_of(tuckˑtypeˑVolume) == 1))
+	tuckˑactorˑDecoderSingleton.state = tuckˑtypeˑPlayerState_Idle{}
+	tuckˑactorˑDecoderSingleton.vol = __validated_tuckˑtypeˑVolume(tuckˑtypeˑVolume{level = u8(80)})
 	rt.tuckAsyncInit()
-	tuck_type_DecoderSlot = rt.tuckStartActor(drain_tuck_type_Decoder)
-	tuck_fn_main()
+	tuckˑactorˑDecoderSlot = rt.tuckStartActor(drain_tuckˑactorˑDecoder)
+	tuckˑfnˑmain()
 	rt.tuckRun()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()
