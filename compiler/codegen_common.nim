@@ -86,40 +86,6 @@ proc absentCapable*(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["?", "!?"] and t.args.len == 1
 
-proc moduleDeclaringType*(module: Module, name: string): string =
-  ## The imported module a TYPE came from, or "" when this module declares it.
-  ##
-  ## `injectImportedTypes` makes an imported type visible unqualified by
-  ## inserting a COPY into the importer's own decl list, stamped with
-  ## `ImportedTypeMarker & ":" & origin` in its span. So the importer holds
-  ## both kinds and the marker is the only thing telling them apart — asking
-  ## `findDecl` whether the type is local answers "yes" for both.
-  ##
-  ## The D backend already qualified foreign CALLABLES (importDeclaring —
-  ## "D has no cross-module scope merge, so every foreign call has to be
-  ## qualified") and Odin already qualified foreign TYPES in type position
-  ## (importedTypeQualifier). Neither qualified a type used as a VALUE
-  ## receiver, so `Order.Before` on a sum from another module emitted bare and
-  ## both backends reported an undeclared name — beside a correctly qualified
-  ## `cmp.tuck_flipped` on the same line.
-  ##
-  ## Nim never showed it: `import cmp` merges names, so the bare form
-  ## resolves. That is why a two-module program compiled on one backend of
-  ## three, and why the stdlib design's "modules rely on each other" had never
-  ## been exercised.
-  for d in module.decls:
-    if d == nil or d.kind != dkType or d.name != name: continue
-    if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
-    return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-  ""
-
-# An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
-# select` message arms (spec §9.3): a message kind + typed binding + body.
-type ActorMsgHandler* = object
-  name*: string
-  params*: seq[Param]
-  body*: Expr
-
 proc collectHandlers*(d: Decl):
     tuple[handlers: seq[ActorMsgHandler], shutdownBody: Expr, hasShutdown: bool] =
   ## Split an actor's declarations into message handlers plus the reserved
@@ -418,6 +384,26 @@ const NimShadowingModuleNames* = [
   ## module". Only these are aliased: Nim merges module scopes, so an
   ## unnecessary alias would break every `module::fn` call site, which is
   ## exactly what a blanket aliasing pass did.
+
+proc recordArgFields*(res: Resolution, m: Module, e: Expr,
+                      calleeStr: string): seq[string] =
+  ## A call whose one argument is a RECORD VARIABLE standing for its payload
+  ## (`p fn` with `p: {a, b}`): the field of it that feeds each param, in
+  ## param order — the checker's choice where it recorded one, else the
+  ## param's own name. Empty when the call is not that shape, or some param
+  ## has no such field; the call is then printed as it stands.
+  if e.args.len != 1 or e.args[0].kind != exkVar: return
+  let params = if res.callParamsFor(e).len > 0: res.callParamsFor(e)
+               else: lookupFnParams(m, calleeStr)
+  if params.len == 0: return
+  let fields = recordFieldNames(res, m, res.typeFor(e.args[0]))
+  if fields.len == 0: return
+  let chosen = res.argFieldsFor(e)
+  for i, paramName in params:
+    let fieldName = if i < chosen.len and chosen[i].len > 0: chosen[i]
+                    else: paramName
+    if fieldName notin fields: return @[]
+    result.add fieldName
 
 proc nimModuleName*(name: string): string =
   ## What an imported Tuck module is CALLED in the emitted Nim — its own name,

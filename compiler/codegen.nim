@@ -131,26 +131,14 @@ proc genCombinator(ctx: var CodegenCtx, e: Expr): string =
   ctx.renderShape(shapeOf(ctx.module, ctx.res, e), tag)
 
 proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
-  # ponytail: exkVar args only — repeating any other expr risks double
-  # evaluation; bind-to-temp lowering when a real case shows up
-  if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  # Same O(1)-vs-scan tradeoff as genConstruction's struct-literal branch: prefer
-  # checker's own resolution when it recorded one.
-  let params = if ctx.res.callParamsFor(e).len > 0: ctx.res.callParamsFor(e)
-               else: lookupFnParams(ctx.module, calleeStr)
-  if params.len == 0: return ""
-  let fields = recordFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.args[0]))
+  ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
+  ## call is not a record variable standing for its payload.
+  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
   if fields.len == 0: return ""
-  # The checker already decided which field feeds each param (they may differ
-  # in name, having been matched by type); prefer its mapping over re-deriving.
-  let resolved = ctx.res.argFieldsFor(e)
+  let recv = ctx.genExpr(e.args[0])
   var parts: seq[string]
-  for i, paramName in params:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    if fieldName notin fields: return ""  # not a payload match — leave as-is
-    parts.add(ctx.genExpr(e.args[0]) & "." & fieldName)
-  return calleeStr & "(" & parts.join(", ") & ")"
+  for f in fields: parts.add(recv & "." & f)
+  calleeStr & "(" & parts.join(", ") & ")"
 
 
 # {payload} Type.Variant — construction of a payload-carrying sum type

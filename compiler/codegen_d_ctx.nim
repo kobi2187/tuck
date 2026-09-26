@@ -126,17 +126,11 @@ proc bangInner*(t: Type): Type =
   else: nil
 
 proc importedTypeQualifierD*(ctx: DCodegenCtx, name: string): string =
-  ## A type declared in an IMPORTED module lives in that module's D file, so
-  ## it must be referenced through the import alias (`time.tuck_Milliseconds`)
-  ## — D, like Odin, never merges module scopes. Port of the Odin helper.
-  for d in ctx.module.decls:
-    if d == nil or d.kind != dkType or d.name != name: continue
-    if not d.span.file.startsWith(ImportedTypeMarker & ":"): break
-    let origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-    let pkg = dAlias(origin)
-    if pkg != dAlias(ctx.moduleName): return pkg & "." & name
-    break
-  name
+  ## `pkg.Name` for a type another module declares, else `Name`.
+  let origin = moduleDeclaringType(ctx.module, name)
+  if origin != "" and dAlias(origin) != dAlias(ctx.moduleName):
+    dAlias(origin) & "." & name
+  else: name
 
 proc declaredGenericD*(ctx: DCodegenCtx, name: string): bool =
   ## Is `name` a type this module declares (or imports) WITH type parameters?

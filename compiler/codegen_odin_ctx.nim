@@ -7,7 +7,6 @@
 import ast, tables, sets, strutils
 import ast_query
 import resolution
-import codegen_common
 import codegen_odin_util
 import analysis_ownership
 import decl_index
@@ -130,18 +129,11 @@ proc roundedIntType*(name: string): string =
   else: base & "64"
 
 proc importedTypeQualifier*(ctx: OdinCodegenCtx, name: string): string =
-  ## A type declared in an IMPORTED module lives in that module's Odin
-  ## package, so it must be referenced qualified (`time.Milliseconds`). Beef
-  ## needed no such qualification — its modules were static classes in one
-  ## namespace.
-  for d in ctx.module.decls:
-    if d == nil or d.kind != dkType or d.name != name: continue
-    if not d.span.file.startsWith(ImportedTypeMarker & ":"): break
-    let origin = d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-    let pkg = origin.replace("-", "_")
-    if pkg != ctx.moduleName.replace("-", "_"): return pkg & "." & name
-    break
-  name
+  ## `pkg.Name` for a type another module declares, else `Name`.
+  let origin = moduleDeclaringType(ctx.module, name)
+  let pkg = origin.replace("-", "_")
+  if origin != "" and pkg != ctx.moduleName.replace("-", "_"): pkg & "." & name
+  else: name
 
 proc qualifyEnumOwner*(ctx: OdinCodegenCtx, owner: string): string =
   ## An enum owner reached through its module when the TYPE it belongs to was

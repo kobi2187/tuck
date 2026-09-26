@@ -147,22 +147,13 @@ proc genDCallArgs(ctx: var DCodegenCtx, e: Expr,
 
 proc explodeRecordArgD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
-  ## A record-typed VAR as the whole payload (`p advance`) explodes to the
-  ## fn's params by field, replaying the checker's mapping. Mirror of the
-  ## Odin backend's explodeRecordArg.
-  if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  let params = if ctx.res.callParamsFor(e).len > 0: ctx.res.callParamsFor(e)
-               else: lookupFnParams(ctx.module, calleeStr)
-  if params.len == 0: return ""
-  let fields = recordFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.args[0]))
+  ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
+  ## call is not a record variable standing for its payload.
+  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
   if fields.len == 0: return ""
-  let resolved = ctx.res.argFieldsFor(e)
+  let recv = ctx.genDExpr(e.args[0])
   var parts: seq[string]
-  for i, paramName in params:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    if fieldName notin fields: return ""
-    parts.add(ctx.genDExpr(e.args[0]) & "." & fieldName)
+  for f in fields: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
 proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =

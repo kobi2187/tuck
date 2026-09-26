@@ -53,24 +53,14 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 # Type-directed explosion: a record-typed VAR as the whole payload
 # (`p advance`) explodes to the fn's params by field name, in param order.
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
-  if e.args.len != 1 or e.args[0].kind != exkVar: return ""
-  # Prefers the checker's own resolution (ctx.res.callParamsFor, set in
-  # checkCallArgs) over a decl-list scan — mirrors the Nim backend's fix.
-  let params = if ctx.res.callParamsFor(e).len > 0: ctx.res.callParamsFor(e)
-               else: lookupFnParams(ctx.module, calleeStr)
-  if params.len == 0: return ""
-  let fields = recordFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.args[0]))
+  ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
+  ## call is not a record variable standing for its payload.
+  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
   if fields.len == 0: return ""
-  # The checker already decided which field feeds each param (they may differ
-  # in name, having been matched by type); prefer its mapping over the name.
-  let resolved = ctx.res.argFieldsFor(e)
+  let recv = ctx.genOdinExpr(e.args[0])
   var parts: seq[string]
-  for i, paramName in params:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    if fieldName notin fields: return ""
-    parts.add(ctx.genOdinExpr(e.args[0]) & "." & fieldName)
-  return calleeStr & "(" & parts.join(", ") & ")"
+  for f in fields: parts.add(recv & "." & f)
+  calleeStr & "(" & parts.join(", ") & ")"
 
 # Positional construction of a hoisted record struct from a struct literal,
 # in declared-field order, casting numeric fields to the declared type.
