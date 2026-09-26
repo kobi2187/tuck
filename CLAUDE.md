@@ -122,6 +122,13 @@ currently end in `else` (`codegen_decl.nim:835`, `codegen_odin_decl.nim:1224`), 
 `ast_serializer.nim` no longer hand-writes a `case` at all — it delegates to
 `jsony`.
 
+**Walk code with `ast_ops`, never by hand.** `allDecls` / `bodies` /
+`bodySlots` reach every expression any declaration owns (fn and task bodies,
+`on select` arms, consts, actor field initialisers, members at any depth);
+`nodes` / `children` / `childSlots` walk under one expression. The hand-rolled
+`allFns` + tasks + `dkExpr` walk, once copied into ten passes, never reached a
+select arm or an initialiser.
+
 **Each construct gets its own AST node kind.** `on select` got real `exkSelect` /
 `dkSelect` nodes rather than being smuggled in as a `match` with a fake subject.
 The clever reuse always costs more later, because every downstream stage has to
