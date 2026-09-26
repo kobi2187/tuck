@@ -35,6 +35,8 @@ import ast_query
 import lowering_recursive   # recursive sum edges get a Seq handle
 import lowering_decisions   # a decision table becomes a match or an if chain
 import lowering_chains      # a `..` chain becomes statements
+import lowering_iface       # a call through an interface becomes a dispatch
+import tables
 
 proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef]
 
@@ -369,8 +371,10 @@ proc normalizeSelf(d: Decl) =
       mem.fnParams = @[Param(name: "self", typ: objType, span: mem.span)] &
                      mem.fnParams
 
-proc lowerModule*(res: Resolution, m: Module) =
+proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   ## Rewrite a module in place into the simpler form the backends expect.
+  ## `real` is the rest of the program — an object in another module that
+  ## satisfies an interface is an arm of every dispatch through it.
   # A recursive sum has no finite size as written, so its edges get a handle
   # before anything tries to emit one. First, because the phases below read
   # field types.
@@ -401,3 +405,7 @@ proc lowerModule*(res: Resolution, m: Module) =
   # After lowerExpr, as the chain-fed-call hoisting it absorbed always ran:
   # a step's call is the checker's, already in the shape the emitters print.
   lowerChains(res, m)
+  # Every call through an interface value becomes a dispatch over the
+  # objects that satisfy it (lowering_iface). Last: an interface call may sit
+  # in a chain step's payload, and a chain's steps are copied above.
+  lowerIfaceCalls(res, m, real)

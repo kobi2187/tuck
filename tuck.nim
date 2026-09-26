@@ -446,6 +446,12 @@ proc checkOrDie(path: string, loaded: seq[LoadedModule],
   ## Typecheck, then verify effects. Order matters: typecheckProgram resets
   ## the semantic layer, so the effect pass must run AFTER it or its async
   ## call-site marks are wiped before codegen reads them.
+  ##
+  ## Downstream of this, ONE BACKEND PER PROCESS. The passes `prepare` runs
+  ## (copy marks, ownership, twin calls) keep their decisions in tables keyed
+  ## by node id, and node ids survive the per-backend deepCopy — a second
+  ## backend prepared in the same process would read the first one's
+  ## decisions. `backend_prepare.prepare` asserts it runs once.
   result = typecheckOnly(path, loaded, sigOnly)
   # Last-use facts, whole-program and ONCE. After typecheck because that
   # resets the semantic layer (same constraint the effect pass below has);

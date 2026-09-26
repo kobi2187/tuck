@@ -59,7 +59,6 @@ import resolution
 import lowering
 import lowering_seqcopy
 import lowering_strtemps
-import lowering_iface
 import analysis_ownership
 import twin_calls
 import pipeline
@@ -161,10 +160,20 @@ proc ownedStrProcs*(b: Backend): seq[string] =
   of bkOdin: @["toStr", "tuckConcat", "joinStr", "charAt"]
   of bkNim, bkDlang: @[]
 
+var preparedOnce = false
+  ## ONE BACKEND PER PROCESS. Steps 4, 6 and 7 record their decisions in
+  ## tables keyed by node id, and node ids survive the clone — so a second
+  ## backend prepared in the same process would read the first one's
+  ## decisions as its own. Every path in tuck.nim prepares exactly one.
+
 proc prepare*(prog: seq[LoadedModule], backend: Backend,
               semLayer: Resolution, outDir: string): BackendTree =
   ## Steps 1-7, for one backend. The checked program goes in; a private,
   ## lowered, marked copy comes out.
+  doAssert not preparedOnce,
+    "backend_prepare: a second backend prepared in one process would read " &
+    "the first one's copy, ownership and twin decisions (keyed by node id)"
+  preparedOnce = true
   for lm in prog:                                                   # 1. clone
     result.mods.add LoadedModule(name: lm.name, path: lm.path,
                                  m: deepCopy(lm.m))
@@ -176,8 +185,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
   let t0 = vBegin(psLowering)
   for lm in result.mods:
     let ts = epochTime()
-    lowerModule(semLayer, lm.m)                                      # 3. lower
-    lowerIfaceCalls(semLayer, lm.m, result.real)          #    iface calls
+    lowerModule(semLayer, lm.m, result.real)                         # 3. lower
     hoistStrTemps(semLayer, lm.m, ownedStrProcs(backend))     #    str temps
     if backend.aliasesOnAssign:
       markSeqCopiesIn(semLayer, lm.m)                                # 4. marks
