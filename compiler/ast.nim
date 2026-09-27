@@ -609,6 +609,11 @@ type
   # lowering, marked with this span.file so codegen skips re-emitting them.
 const ImportedTypeMarker* = "<imported>"
 
+const ArenaMarker* = "<arena>"
+  ## The attribute `parseArenaDecl` puts on the record an `arena` parses into,
+  ## so the checker can tell an arena from a type. Not spellable in source —
+  ## an attribute name is a word, and `<` begins none.
+
 # Legal type sentinels represent explicit abstraction or compiler bookkeeping.
 # A missing type is reported before it can be stamped onto the typed AST.
 const

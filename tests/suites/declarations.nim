@@ -529,6 +529,11 @@ fn main() -> int:
   return 0
 """
   t.okCheck "an arena with a real size is accepted"
+  # ...but not as though it did anything: arenas are not implemented, and the
+  # body is discarded. It checked clean until 2026-09-27; a warning keeps the
+  # specimen (examples/13-arena-mem.tuck) compiling and stops the silence.
+  t.checkSays "...and warns that it is not implemented (TK-ME02)",
+              "Memory Warning \\[TK-ME02\\]: arena 'A' is not implemented"
 
   # --- a type may not contain itself by value -------------------------------
   #

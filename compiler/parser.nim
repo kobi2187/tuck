@@ -86,12 +86,14 @@ proc parseObjectBody(p: var Parser, fields: var seq[FieldDef],
 
 proc parseArenaDecl(p: var Parser): Decl =
   ## arena Name [size: N]: members — bump allocator (spec 7.3)
-  ## Parsed as a record type with the declared attributes; the members are
-  ## parsed (so the block is consumed) but not kept on the result.
+  ## Parsed as a record type with the declared attributes plus
+  ## `ArenaMarker`; the members are parsed (so the block is consumed) but not
+  ## kept on the result. Arenas are not implemented, and the checker says so
+  ## with a TK-ME02 warning rather than letting the block check clean.
   let spArena = p.getSpan()
   discard p.advance() # eat "arena"
   let name = p.expectTypeName("arena").value
-  var attrs: seq[TypeAttr]
+  var attrs = @[TypeAttr(name: ArenaMarker, span: spArena)]
   p.parseDeclAttrs(attrs)
   discard p.expect(tkColon)
   var members: seq[Decl]

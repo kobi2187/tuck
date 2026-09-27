@@ -147,6 +147,7 @@ type
     dcAcQueueSize = "TK-AC01"           ## an actor's [queue: N] is not a positive count
     dcAcHandlerReturn = "TK-AC02"       ## a handler declares a return type; actors cannot reply yet
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
+    dcMeArenaInert = "TK-ME02"          ## an `arena` parses, and does nothing yet
     dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
     dcIvNotBool = "TK-IV02"             ## an invariant predicate is not a bool
     dcRgUnknownEvent = "TK-RG01"        ## raise/handle names no declared event
@@ -201,9 +202,14 @@ proc categoryName*(d: DiagCode): string =
   of "SE": "Sealed"
   of "CX": "Complexity"
   of "RS": "Resource"
-  else: "Semantic"
+  of "AC": "Actor"
+  of "ME": "Memory"
+  of "IV": "Invariant"
+  of "RG": "Registry"
+  of "RE": "Register"
+  else: "Semantic"   # SM, and a category added without a word here
 
-const WarningCodes* = {dcTyMemberShadowsFn}
+const WarningCodes* = {dcTyMemberShadowsFn, dcMeArenaInert}
   ## Codes that REPORT without stopping the build. Kept beside the registry
   ## rather than inferred from the category letters, because severity is a
   ## property of the individual diagnostic and not of its category — TY holds
@@ -655,6 +661,12 @@ proc ruleExplanation(d: DiagCode): string =
     "(spec 7.2, 7.3). So the number must be positive: zero or negative is " &
     "not a smaller reservation, it is one that cannot hold anything. Fix: " &
     "give a real count or size."
+  of dcMeArenaInert:
+    "`arena` is not implemented yet (spec 7.3, ROADMAP \"Deferred\"). The " &
+    "declaration parses and its size is checked, but its body is discarded: " &
+    "nothing inside it is checked, and no backend emits the arena. A warning " &
+    "rather than an error so specimen code keeps compiling — but a program " &
+    "that relies on the arena does not get one."
   of dcAcHandlerReturn:
     "A handler declared a return type, but an actor message is " &
     "fire-and-forget (spec 9.1) and there is no reply channel: correlation " &

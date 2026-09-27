@@ -214,8 +214,10 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   implemented" there). There is no `dkArena` kind and no backend support:
   `parseArenaDecl` reads the body and discards it, returning a `type` of the
   arena's name with an empty record body. A file using an arena therefore
-  CHECKS CLEAN while allocating nothing and resetting nothing, and its block
-  is absent from the tree. `examples/13-arena-mem.tuck` is a syntax specimen
+  checked clean while allocating nothing and resetting nothing, and its block
+  is absent from the tree. Since 2026-09-27 it no longer checks clean: every
+  arena gets a TK-ME02 WARNING saying its body is discarded (a warning, so the
+  specimen below still compiles). `examples/13-arena-mem.tuck` is a syntax specimen
   (no `fn main`), so the corpus is not claiming otherwise — but nothing
   before this said so out loud. Found by `tuck validate`, which is what that
   tool is for.

@@ -4699,6 +4699,10 @@ proc checkArenaAttrs(m: Module, d: Decl) =
   ## from the dkType arm rather than an arm of its own.
   if d.typeBody == nil: return
   for attr in d.typeBody.attrs:
+    if attr.name == ArenaMarker:
+      warn(dcMeArenaInert, "arena '" & d.name & "' is not implemented yet: " &
+           "its body is discarded, and nothing in it is checked or emitted",
+           attr.span.line, attr.span.col)
     if attr.name != "size": continue
     let got = constIntOf(m, attr.value)
     if got.isNone:

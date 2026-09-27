@@ -244,8 +244,8 @@ between two senders · **#7** full-mailbox policy.
 
 ### Deferred — completely missing, not scheduled
 
-`arena` (parses and discards its body — give it a DIAGNOSTIC now, fifteen
-minutes, so it stops checking clean) · #12 hashing · #11 recursive types ·
+`arena` (parses and discards its body; since 2026-09-27 it no longer checks
+clean — TK-ME02, a warning so `examples/13-arena-mem.tuck` still compiles) · #12 hashing · #11 recursive types ·
 #10 correlation tokens · #16 numeric sigils · #17 · #32 · #33 · #57 ·
 #66/#68/#69/#70 · #71 · #74 · DNS. (**#18 generic actors** is done and
 closed: one singleton per instantiation, expanded before typecheck.)
