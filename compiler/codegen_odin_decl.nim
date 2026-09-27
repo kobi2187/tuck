@@ -59,14 +59,12 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string
 proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string =
   ## Object member fn (or a mixin fn materialized by `+ mixin`): the object
   ## rides as a `self: ^T` first parameter (reassignment must reach the
-  ## caller); `Self` resolves to the object. Shallow copy — the shared AST
-  ## stays untouched for the other backend.
-  ##
-  ## ponytail: call sites don't take the address yet — nothing in the
-  ## examples calls a member fn; wire it when one does.
-  # lowering.normalizeSelf has already given the member its `self` parameter
-  # and resolved `Self` to the object. What is left is the ODIN spelling:
-  # self is a pointer, `^T`, so a mutation reaches the caller's value.
+  ## caller, and call sites pass `&v`); `Self` resolves to the object.
+  ## Shallow copy — the shared AST stays untouched for the other backend.
+  # lowering.normalizeSelf has already given the member its `self` parameter,
+  # and rewrite.bindSelf resolved `Self` to the object. What is left is the
+  # ODIN spelling: self is a pointer, `^T`, so a mutation reaches the
+  # caller's value.
   var params = m.fnParams
   for i in 0 ..< params.len:
     if params[i].name == "self":

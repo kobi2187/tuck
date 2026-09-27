@@ -102,6 +102,30 @@ proc groupMixins(ctx: CodegenCtx, d: Decl): string =
   if names.len == 0: return ""
   "  mixin " & names.join(", ") & "\n"
 
+proc enterReturnContext(ctx: var CodegenCtx, retType: Type) =
+  ## What a `return` inside this fn's body must know: whether results are
+  ## wrapped (`!T`/`?T`), whether a bare return means absence, the payload
+  ## type, and the invariant-carrying type to validate, if any.
+  let (bw, binner, binnerT) = bangInfo(retType)
+  ctx.retWrapped = bw
+  ctx.retAbsentCapable = absentCapable(retType)
+  ctx.retInnerNim = binner
+  ctx.retInnerT = binnerT
+  ctx.retInvName =
+    if not bw and retType != nil and retType.kind == tkNamed and
+       ctx.index.hasInvariants(retType.name): retType.name
+    else: ""
+
+proc leaveReturnContext(ctx: var CodegenCtx) =
+  ## Undoes `enterReturnContext` after a fn body — all five fields, as Odin's
+  ## and D's twins do. (This reset two of them; harmless only because every
+  ## fn sets all five on entry.)
+  ctx.retWrapped = false
+  ctx.retAbsentCapable = false
+  ctx.retInnerNim = ""
+  ctx.retInnerT = nil
+  ctx.retInvName = ""
+
 proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## A fn as a Nim proc: header (generics, `{.inline.}`, export marker), mixin
   ## grouping, and the body with its tail return made explicit. Sets the ctx's
@@ -125,28 +149,19 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
   for p in d.fnParams:
     ctx.definedVars.incl(p.name)
   let oldIndent = ctx.indent
-  let (bw, binner, binnerT) = bangInfo(d.fnReturnType)
-  ctx.retWrapped = bw
-  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
-  ctx.retInnerNim = binner
-  ctx.retInnerT = binnerT
-  ctx.retInvName =
-    if not bw and d.fnReturnType != nil and d.fnReturnType.kind == tkNamed and
-       ctx.index.hasInvariants(d.fnReturnType.name): d.fnReturnType.name
-    else: ""
+  ctx.enterReturnContext(d.fnReturnType)
   injectTailReturn(d.fnBody, retTypeStr)
   let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
   ctx.indent = oldIndent
-  ctx.retWrapped = false
-  ctx.retAbsentCapable = false
+  ctx.leaveReturnContext()
   ctx.definedVars = oldVars
   return header & "\n" & groupMixins(ctx, d) & bodyStr & "\n"
 
 proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
   ## lowering.normalizeSelf has already given the member its `self`
-  ## parameter and resolved `Self` to the object. What is left here is the
-  ## one thing that is a NIM question: self is mutable, spelled `var T`, so
-  ## a mutation reaches the caller's value.
+  ## parameter, and rewrite.bindSelf resolved `Self` to the object. What is
+  ## left here is the one thing that is a NIM question: self is mutable,
+  ## spelled `var T`, so a mutation reaches the caller's value.
   var params = m.fnParams
   for i in 0 ..< params.len:
     if params[i].name == "self":
