@@ -25,6 +25,7 @@
 import std/[os, strutils, tables]
 import benchy
 import ../lexer
+from ../compiler/modules import lexSource
 import ../compiler/parser
 import ../compiler/semantics
 import ../compiler/typecheck
@@ -48,13 +49,6 @@ proc gen(n: int): string =
   s.add("  return 0\n")
   s
 
-proc lexAll(src: string): seq[Token] =
-  ## Lexes `src` to the end, EOF included.
-  var lx = Lexer(source: src, position: 0, line: 1, column: 1, indentStack: @[0])
-  while true:
-    let t = lx.nextToken()
-    result.add(t)
-    if t.kind == tkEOF: break
 
 proc parseFresh(src: string, toks: seq[Token]): Module =
   ## Parses a fresh tree from already-lexed tokens, so a phase that mutates
@@ -80,7 +74,7 @@ proc main() =
   echo "phase profile: N=", n, " fns, ", lines, " lines"
   echo "(read the MIN column; setup is outside every timer)"
 
-  let toks = lexAll(src)
+  let toks = lexSource(src)
 
   # benchy's `keep` is a no-op, so a result only handed to it is dead code and
   # -d:release deletes the call — these phases reported 0.001 ms until the
@@ -88,7 +82,7 @@ proc main() =
   var sink = 0
 
   timeIt "lex", POOL:
-    sink += lexAll(src).len
+    sink += lexSource(src).len
 
   timeIt "parse", POOL:
     sink += parseFresh(src, toks).decls.len

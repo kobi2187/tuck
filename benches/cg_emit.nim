@@ -5,11 +5,13 @@
 ##   callgrind_annotate /tmp/cg.out | head -40
 import std/[os, strutils, tables]
 import ../lexer
+from ../compiler/modules import lexSource
 import ../compiler/parser
 import ../compiler/semantics
 import ../compiler/typecheck
 import ../compiler/lowering
-import ../compiler/codegen
+import ../compiler/codegen_emit
+import ../compiler/resolution
 import ../compiler/ast
 
 proc gen(n: int): string =
@@ -25,23 +27,17 @@ proc gen(n: int): string =
     result.add("  let v" & $i & " = {a: 1, b: 2} f" & $i & "\n")
   result.add("  return 0\n")
 
-proc lexAll(src: string): seq[Token] =
-  ## Lexes `src` to the end, EOF included.
-  var lx = Lexer(source: src, position: 0, line: 1, column: 1, indentStack: @[0])
-  while true:
-    let t = lx.nextToken()
-    result.add(t)
-    if t.kind == tkEOF: break
 
 when isMainModule:
   let n = if paramCount() >= 1: parseInt(paramStr(1)) else: 400
   let src = gen(n)
-  var p = Parser(source: src, tokens: lexAll(src), cursor: 0)
+  var p = Parser(source: src, tokens: lexSource(src), cursor: 0)
   var m = p.parseModule()
-  verifyModuleEffects(m)
   var mods = @[("m", "m.tuck", m)]
-  discard typecheckProgram(mods)
-  lowerModule(m)
+  # typecheck first: it resets the semantic layer the effect pass writes to
+  typecheckProgram(mods)
+  verifyModuleEffects(m)
+  lowerModule(semLayer, m, initTable[string, Module]())
   # the ONLY thing under the profiler that matters
-  let emitted = emitNim(m, realModules = initTable[string, Module]())
+  let emitted = emitNim(m, semLayer)
   echo "emitted ", emitted.len, " bytes for N=", n

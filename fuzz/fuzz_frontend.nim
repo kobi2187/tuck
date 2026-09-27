@@ -21,16 +21,9 @@
 # findings. lexSource/parseSource are duplicated here for that reason; they
 # are three lines each.
 import ../lexer
+from ../compiler/modules import lexSource
 import ../compiler/[ast, parser, parser_base]
 
-proc lexAll(source: string): seq[Token] =
-  ## Lexes `source` to the end, EOF included.
-  var lex = Lexer(source: source, position: 0, line: 1, column: 1,
-                  indentStack: @[0])
-  while true:
-    let t = lex.nextToken()
-    result.add(t)
-    if t.kind == tkEOF: break
 
 proc fuzzFrontend(source: string) {.raises: [].} =
   ## Lex and parse, discarding a clean rejection.
@@ -47,7 +40,7 @@ proc fuzzFrontend(source: string) {.raises: [].} =
   ## has an untracked effect. Worth narrowing later; with panics on it costs
   ## the target nothing.
   try:
-    var p = Parser(source: source, tokens: lexAll(source), cursor: 0)
+    var p = Parser(source: source, tokens: lexSource(source), cursor: 0)
     discard p.parseModule()
   except Exception:
     discard          # a rejection: the expected outcome for malformed input

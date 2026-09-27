@@ -5,6 +5,7 @@
 ##   callgrind_annotate --tree=calling /tmp/cgf.out | head -60
 import std/[os, strutils]
 import ../lexer
+from ../compiler/modules import lexSource
 import ../compiler/parser
 import ../compiler/semantics
 import ../compiler/typecheck
@@ -23,18 +24,11 @@ proc gen(n: int): string =
     result.add("  let v" & $i & " = {a: 1, b: 2} f" & $i & "\n")
   result.add("  return 0\n")
 
-proc lexAll(src: string): seq[Token] =
-  ## Lexes `src` to the end, EOF included.
-  var lx = Lexer(source: src, position: 0, line: 1, column: 1, indentStack: @[0])
-  while true:
-    let t = lx.nextToken()
-    result.add(t)
-    if t.kind == tkEOF: break
 
 when isMainModule:
   let n = if paramCount() >= 1: parseInt(paramStr(1)) else: 400
   let src = gen(n)
-  let toks = lexAll(src)
+  let toks = lexSource(src)
   var p = Parser(source: src, tokens: toks, cursor: 0)
   var m = p.parseModule()
   verifyModuleEffects(m)
