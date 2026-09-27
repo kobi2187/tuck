@@ -22,21 +22,11 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (3)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
-
-**A1 — an attribute name is reserved everywhere, not just inside brackets.**
-`priority` names a field fine, but `fn priority(...)` is "Expected function or
-event name" and `{priority: int}` as a parameter is rejected too. The TK-PA08
-diagnostic states the intended rule in its own text — attribute names "are
-reserved only inside brackets, so they stay usable as fields, parameters and
-function names" — so the compiler contradicts its own explanation on two of
-those three. Test: `known_bugs`, "an attribute name is free outside brackets".
-Found 2026-09-12 writing `bake {key: :priority}` in `core/cmp`'s API doc; the
-doc now says `:rank` to work around it.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -77,6 +67,15 @@ more than a wider scan — an imported actor's drain lives in another package, s
 the emitted call must be QUALIFIED. Test: `cross_module`, "an imported actor
 runs on every backend". Found 2026-09-17 writing the first import/cache tests;
 same scope error as #73.
+
+A1 (an attribute name — `priority`, `error`, `stack` — reserved everywhere,
+though TK-PA08's own text promised "only inside brackets") was RULED on
+2026-09-27 rather than fixed: the compiler was right. A name that is read
+bare can land in brackets, where an attribute word reads as an attribute
+(`xs[stack]` dropped its index when the words were let through). Attribute
+words are reserved words; a FIELD may still use one, since it is only read
+through `.`. TK-PA08's text now says so. Test: `known_bugs`, "an attribute
+word is refused as a fn name" and "...and as a parameter name".
 
 A2 (a fn with no declared return type accepted `return x`, and `tuck c`
 wrote `proc tuck_f*(x: int): void = return x`, which nim refuses) was fixed

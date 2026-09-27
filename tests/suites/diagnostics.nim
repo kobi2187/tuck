@@ -278,14 +278,15 @@ fn main() -> int:
   t.src "type Z = {when: str}\n"
   let rwWhenIdx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck"])
 
-  # An ATTRIBUTE word is NOT a keyword: it is reserved only inside brackets, so
-  # a name-only position takes it. `fn error(...)` is the log level's verb.
-  # (FRICTIONS #5b — this used to be a parse error in a `pending:` block.)
+  # An ATTRIBUTE word is a reserved word (ruled 2026-09-27, R4): refused as a
+  # fn name, in a `pending:` block too. FRICTIONS #5b had made this legal for
+  # a log verb, but no call to such a fn could be written — `{msg: m} error`
+  # cannot parse the word as a callee. A FIELD may still use one.
   t.src """
 pending:
   fn error({msg: str}) -> void
 """
-  t.okCheck "an attribute word is a legal fn name in a pending block"
+  t.badCheck "an attribute word is refused as a fn name in a pending block", "TK-PA08"
 
   # --- explain answers for every code --------------------------------------
   #

@@ -106,7 +106,7 @@ type Session [sealed]:
   t.okCheck "valid sealed transition graph"
 
   t.src """
-decision route({priority: int, encrypted: bool}) -> int:
+decision route({urgency: int, encrypted: bool}) -> int:
   | high  _     -> 1
   | high  true  -> 2
   | _     _     -> 3
@@ -114,14 +114,14 @@ decision route({priority: int, encrypted: bool}) -> int:
   t.badCheck "decision row unreachable", "unreachable"
 
   t.src """
-decision route({priority: int, encrypted: bool}) -> int:
+decision route({urgency: int, encrypted: bool}) -> int:
   | high  true  -> 1
   | low   false -> 2
 """
   t.badCheck "decision missing catch-all", "catch\\-all"
 
   t.src """
-decision route({priority: int, encrypted: bool}) -> int:
+decision route({urgency: int, encrypted: bool}) -> int:
   | high  true  -> 1
   | high  false -> 2
   | _     _     -> 3
@@ -133,7 +133,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | High  true  -> 1
   | High  false -> 2
   | Low   _     -> 3
@@ -145,7 +145,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | High  true  -> 1
   | Low   _     -> 3
 """
@@ -156,7 +156,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | Hgih  true  -> 1
   | _     _     -> 2
 """
@@ -167,7 +167,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | High  _     -> 1
   | Low   _     -> 2
   | High  true  -> 3

@@ -93,7 +93,7 @@ type PlayerLifecycle:
 **Decision tables.** Missing combinations and dead rows are reported with their concrete values:
 
 ```tuck
-decision classifyPacket({priority: Priority, size: SizeClass, encrypted: bool}) -> Action:
+decision classifyPacket({urgency: Priority, size: SizeClass, encrypted: bool}) -> Action:
   | high    big   true  -> QueueSecure
   | high    big   false -> QueueFast
   | high    small _     -> QueueImmediate

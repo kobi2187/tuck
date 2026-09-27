@@ -22,7 +22,7 @@ would otherwise provide.
 ```tuck
 pending:
   fn taskPriority({id: int}) -> u8
-  fn setTaskPriority({id: int, priority: u8}) -> void
+  fn setTaskPriority({id: int, level: u8}) -> void
   fn stackHighWater({id: int}) -> int
   fn kernelTicks() -> u64
 ```

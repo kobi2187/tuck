@@ -365,12 +365,15 @@ Inference flows through calls and construction: `{value: 5} Box` infers the
 instantiation (`tests/suites/typecheck.nim`); `{} Box` → `cannot infer` (`:1372`). A
 binding conflict — `{a: 1, b: "s"} pair` — errors naming `'T'` (`:1327`).
 
-> ⚠️ **OPEN BUG — a type argument named like an attribute fails to parse.**
-> `Box[error]` in a parameter position is misread, because the
-> attribute-vs-generic decision is a hardcoded 19-name word list. Reserved in
-> brackets: `error`, `stack`, `queue`, `align`, `priority`, `volatile`, and ~13
-> more. The *diagnostic* is good (`is an attribute name`), but the fix is to
-> decide by declared set, not a literal list (`tests/suites/known_bugs.nim`).
+> **Attribute words are reserved words** (`error`, `stack`, `align`,
+> `priority`, `volatile`, `io`, and the rest of the lexer's attribute list).
+> Ruled 2026-09-27: one may name a FIELD, which is only ever read through `.`
+> or written as a record key, and nothing else — not a parameter (a decision
+> column included), a local, a fn, a member, a handler, or a type argument
+> (`Box[error]` is refused; type arguments are Capitalized). A name that is
+> read bare can land inside brackets, where the word reads as an attribute:
+> `xs[stack]` would lose its index. The refusal is `TK-PA08`
+> (`tests/suites/known_bugs.nim`, `tests/suites/diagnostics.nim`).
 
 ---
 
@@ -631,7 +634,7 @@ reaches that define from `tuck build` today (#43).
 ## 9. Decision tables
 
 ```tuck
-decision classifyPacket({priority: Priority, size: SizeClass, encrypted: bool}) -> Action:
+decision classifyPacket({urgency: Priority, size: SizeClass, encrypted: bool}) -> Action:
   | high    big   true  -> QueueSecure
   | high    big   false -> QueueFast
   | high    small _     -> QueueImmediate

@@ -7,8 +7,8 @@ tuckˑtypeˑSizeClass :: enum { big, small }
 
 tuckˑtypeˑAction :: enum { QueueSecure, QueueFast, QueueImmediate, QueueDefer }
 
-tuckˑdecisionˑclassifyPacket :: proc (priority: tuckˑtypeˑPriority, size: tuckˑtypeˑSizeClass, encrypted: bool) -> tuckˑtypeˑAction {
-  switch ((((int(priority) * 4) + (int(size) * 2)) + (encrypted ? 1 : 0)))
+tuckˑdecisionˑclassifyPacket :: proc (urgency: tuckˑtypeˑPriority, size: tuckˑtypeˑSizeClass, encrypted: bool) -> tuckˑtypeˑAction {
+  switch ((((int(urgency) * 4) + (int(size) * 2)) + (encrypted ? 1 : 0)))
   {
   case 0: return tuckˑtypeˑAction.QueueFast;
   case 1: return tuckˑtypeˑAction.QueueSecure;

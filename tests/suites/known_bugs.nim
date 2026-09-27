@@ -146,19 +146,19 @@ fn main() -> int:
 """
   t.okCheck "a Capitalized, unreserved type argument is accepted"
 
-  # A reserved word is still a legal FIELD name — a field position can never
-  # hold an attribute, so the parser accepts it there and reads its value.
+  # A reserved word is still a legal FIELD name (ruled 2026-09-27, R4): a
+  # field is only ever read through `.` or written as a record key, never
+  # bare, so no bracket can mistake it for an attribute. Every name that IS
+  # read bare — parameter, local, fn, handler — refuses the word (TK-PA08).
+  # (This snippet used a decision COLUMN named `priority`; a column is a
+  # parameter, which the ruling refuses.)
   t.src """
-type Priority:
-  | high
-  | low
-
-decision route({priority: Priority, encrypted: bool}) -> int:
-  | high  true  -> 1
-  | _     _     -> 2
+type Job:
+  priority: int
 
 fn main() -> int:
-  return {priority: Priority.low, encrypted: false} route
+  let j = Job{priority: 3}
+  return j.priority
 """
   t.frozen "a reserved word is still a legal field name"
 
@@ -181,7 +181,7 @@ fn main() -> int:
   let sealed = 1
   return sealed
 """
-  t.badCheck "a reserved marker cannot be a variable name", "."
+  t.badCheck "a reserved marker cannot be a variable name", "TK-PA08"
 
   # 5b. The capitalization half of the same ruling. Enforced at DECLARATION, so
   # the error lands where the name is chosen. The corpus already followed this
@@ -933,25 +933,31 @@ fn main() -> int:
   t.emits "...emitted as else, not `of _`", r"else:"
   t.omits "...so no `of _` branch label is emitted", r"of _:"
 
-  # 12. An attribute name is reserved only INSIDE brackets — that is what the
-  # TK-PA08 diagnostic itself says: "Attribute names like `error` and
-  # `priority` are NOT restricted here: they are reserved only inside
-  # brackets, so they stay usable as fields, parameters and function names."
-  # A field really is allowed. A function name and a parameter name are not,
-  # so two thirds of that sentence is false. Found 2026-09-12 writing
-  # `bake {key: :priority}` in core/cmp's API doc.
+  # 12. An attribute name as a fn or parameter name. TK-PA08's text used to
+  # promise these words were "reserved only inside brackets, so usable as
+  # fields, parameters and function names", and this entry stood open
+  # because the compiler disagreed. Trying it (2026-09-27) showed why the
+  # compiler was right: a name read bare can land in brackets, and
+  # `xs[stack]` then parsed as an attribute and dropped the index. RULED
+  # (R4, 2026-09-27): attribute words are reserved words — refused as a
+  # parameter, local, fn, member or handler name with TK-PA08; a FIELD may
+  # still use one. The text of TK-PA08 now says so.
   t.src """
-type T:
-  priority: int
-
 fn priority({x: int}) -> int:
   return x
 
 fn main() -> int:
-  return {x: 1} priority
+  return 0
 """
-  t.quietly: t.okCheck "an attribute name is free outside brackets"
-  t.bugOpen "an attribute name is free outside brackets"
+  t.badCheck "an attribute word is refused as a fn name", "TK-PA08"
+  t.src """
+fn f({stack: int}) -> int:
+  return stack
+
+fn main() -> int:
+  return {stack: 1} f
+"""
+  t.badCheck "...and as a parameter name", "TK-PA08"
 
   # 13. A fn that declares no return type still accepts `return x`, and the
   # emitted Nim is `proc tuck_fn_f*(x: int): void = return x`, which nim rejects

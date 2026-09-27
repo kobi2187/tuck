@@ -163,7 +163,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | High  true  -> 1
   | High  false -> 2
   | Low   _     -> 3
@@ -171,7 +171,7 @@ decision route({priority: Priority, encrypted: bool}) -> int:
 
 When every column is enumerable (bools, enums) the analysis is **exact**: a
 gap is reported with the literal missing combination —
-`no row matches (priority: High, encrypted: false)` — unreachable rows are
+`no row matches (urgency: High, encrypted: false)` — unreachable rows are
 proven, and no catch-all is required. The generated code is one `case` over a
 packed integer key: zero comparison chains at runtime.
 

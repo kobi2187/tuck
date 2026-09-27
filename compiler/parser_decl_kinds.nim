@@ -42,7 +42,7 @@ proc parseBraceParams*(p: var Parser, pSp: Span, params: var seq[Param]) =
   discard p.advance()
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
     let nameSp = p.getSpan()
-    let paramName = p.expectMemberName("Expected parameter name").value
+    let paramName = p.expectBindingName("Expected parameter name").value
     p.failIfHostKeyword(paramName, nameSp)
     discard p.expect(tkColon)
     let paramType = p.parseType()
@@ -55,7 +55,7 @@ proc parseBareParam*(p: var Parser, pSp: Span): Param =
   ## Parses one `name: Type` param. A bare `self` (no `: Type` follows) is
   ## the implicit-Self special case: it types itself as `Self`.
   let nameSp = p.getSpan()
-  let paramName = p.expectMemberName("Expected parameter name").value
+  let paramName = p.expectBindingName("Expected parameter name").value
   p.failIfHostKeyword(paramName, nameSp)
   if paramName == "self" and p.current().kind != tkColon:
     return Param(name: paramName, typ: Type(span: pSp, kind: tkNamed, name: "Self"), span: pSp)
@@ -213,10 +213,12 @@ proc parseSigName*(p: var Parser, what: string): string =
   ## The declared name, possibly a module-qualified sketch stub
   ## (`fn http::get(...)`).
   ##
-  ## `expectMemberName`, not `expect(tkIdent)`: a declared name is a name-only
-  ## position, so an attribute word is just a name here — `fn error(...)` in a
-  ## `pending:` block is the log level's verb, not the `[error: E]` attribute.
-  result = p.expectMemberName(
+  ## `expectBindingName`: a fn name is read bare at every call site, so an
+  ## attribute word is refused here with TK-PA08 (ruled 2026-09-27, R4). It
+  ## used to be accepted — `fn error(...)` in a `pending:` block, for the log
+  ## level's verb (FRICTIONS #5b) — but no call to such a fn could be
+  ## written: `{msg: m} error` cannot parse the attribute word as a callee.
+  result = p.expectBindingName(
                     "Expected function name in " & what & " declaration").value
   if p.current().kind != tkColonColon: return
   discard p.advance()
@@ -322,11 +324,11 @@ proc parseSelectBinding*(p: var Parser, armSp: Span): seq[Param] =
 
 proc parseQualifiedName*(p: var Parser): string =
   ## `name` or `Type.member` — a fn may be declared as a member.
-  result = p.expect(tkIdent, "Expected function or event name").value
+  result = p.expectBindingName("Expected function or event name").value
   while p.current().kind == tkDot:
     discard p.advance()
-    result.add("." & p.expect(tkIdent,
-                              "Expected qualified name component").value)
+    result.add("." & p.expectBindingName(
+                       "Expected qualified name component").value)
 
 proc parseBracketedNames*(p: var Parser, what: string): (seq[string], seq[seq[Type]]) =
   ## `[A, B, C]` — a comma-separated name list in brackets, each optionally

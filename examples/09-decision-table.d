@@ -8,8 +8,8 @@ enum tuckˑtypeˑSizeClass { big, small }
 
 enum tuckˑtypeˑAction { QueueSecure, QueueFast, QueueImmediate, QueueDefer }
 
-tuckˑtypeˑAction tuckˑdecisionˑclassifyPacket(tuckˑtypeˑPriority priority, tuckˑtypeˑSizeClass size, bool encrypted) {
-    switch ((((cast(long)(priority) * 4L) + (cast(long)(size) * 2L)) + cast(long)(encrypted))) {
+tuckˑtypeˑAction tuckˑdecisionˑclassifyPacket(tuckˑtypeˑPriority urgency, tuckˑtypeˑSizeClass size, bool encrypted) {
+    switch ((((cast(long)(urgency) * 4L) + (cast(long)(size) * 2L)) + cast(long)(encrypted))) {
     case 0:
         return tuckˑtypeˑAction.QueueFast;
     case 1:

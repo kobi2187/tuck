@@ -1378,7 +1378,7 @@ Multi-condition dispatch that the compiler verifies for completeness and
 non-ambiguity, then compiles to a bitmask lookup:
 
 ```tuck
-decision classifyPacket({priority: u2, size: u12, encrypted: bool}) -> Action:
+decision classifyPacket({urgency: u2, size: u12, encrypted: bool}) -> Action:
   | high  _     true  -> QueueSecure
   | high  _     false -> QueueFast
   | low   small _     -> QueueDefer
@@ -1398,7 +1398,7 @@ the compiler inlines and builds one combined bitmask table underneath:
 decision classifySize({bytes: u32}) -> SizeClass:
   | _ -> Small
 
-decision routePacket({priority: u2, encrypted: bool, bytes: u32}) -> Action:
+decision routePacket({urgency: u2, encrypted: bool, bytes: u32}) -> Action:
   | high  true  Small  -> FastSecure
   | _     _     _      -> routePacket.fallback
 ```

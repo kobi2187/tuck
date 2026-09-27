@@ -4,8 +4,8 @@ import rt = tuck_rt;
 
 enum tuckˑtypeˑPriority { High, Low }
 
-long tuckˑdecisionˑroute(tuckˑtypeˑPriority priority, bool encrypted) {
-    switch (((cast(long)(priority) * 2L) + cast(long)(encrypted))) {
+long tuckˑdecisionˑroute(tuckˑtypeˑPriority urgency, bool encrypted) {
+    switch (((cast(long)(urgency) * 2L) + cast(long)(encrypted))) {
     case 0:
         return 2L;
     case 1:

@@ -6,7 +6,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | High  true  -> 1
   | High  false -> 2
   | Low   _     -> 3

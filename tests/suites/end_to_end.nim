@@ -48,7 +48,7 @@ type TrafficLight:
     Green -> Yellow
     Yellow -> Red
 
-decision classifyPacket({priority: int, size: int, encrypted: bool}) -> int:
+decision classifyPacket({urgency: int, size: int, encrypted: bool}) -> int:
   | 2    128   true  -> 1
   | 2    128   false -> 2
   | 2    64    _     -> 3
@@ -57,7 +57,7 @@ decision classifyPacket({priority: int, size: int, encrypted: bool}) -> int:
 
 fn main() -> int:
   let val1 = 9 addOne
-  let val2 = {priority: 2, size: 64, encrypted: false} classifyPacket
+  let val2 = {urgency: 2, size: 64, encrypted: false} classifyPacket
   return val2
 """
   t.okCheck "the kitchen-sink module typechecks"

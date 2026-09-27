@@ -503,7 +503,7 @@ proc chainSend(p: var Parser, expr: Expr, sp: Span): Expr =
   ## broke the send recognition outright and the line parsed as
   ## `put(send(Box[int]), {v: 1})`, three nested calls that meant nothing.
   discard p.advance()                    # eat `send`
-  let handler = p.expectMemberName("Expected handler name after 'send'").value
+  let handler = p.expectBindingName("Expected handler name after 'send'").value
   var payload: Expr = nil
   if p.current().kind == tkLBrace: payload = p.parsePrimaryExpr()
   var actorName = ""
@@ -750,7 +750,7 @@ proc parseBinding(p: var Parser, sp: Span, mutable: bool): Expr =
   # collided when a reserved one is used as a variable (`var pending = ...`
   # reported "Expected variable name" while pointing straight at a perfectly
   # good-looking name, which reads as a parser fault rather than a naming one).
-  let name = p.expectMemberName("Expected variable name").value
+  let name = p.expectBindingName("Expected variable name").value
   # `let name: T = value` — the type is OPTIONAL and inference is still the
   # normal case. It exists for the values that carry no type of their own: an
   # empty list (TK-TY20) and a nullary generic call have nothing to infer

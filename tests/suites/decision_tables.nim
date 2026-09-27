@@ -35,7 +35,7 @@ type Action:
   | Fast
   | Now
 
-decision classify({priority: Priority, big: bool, encrypted: bool}) -> Action:
+decision classify({urgency: Priority, big: bool, encrypted: bool}) -> Action:
   | High  _     true  -> Secure
   | High  _     false -> Fast
   | Low   true  _     -> Now
@@ -48,7 +48,7 @@ fn code({a: Action}) -> int:
     Now: return 3
 
 fn one({p: Priority, b: bool, e: bool}) -> int:
-  let a = {priority: p, big: b, encrypted: e} classify
+  let a = {urgency: p, big: b, encrypted: e} classify
   return {a: a} code
 
 fn main() -> int [io]:
@@ -67,10 +67,10 @@ fn main() -> int [io]:
   # 2,1,2,1 then 2,2,3,3 in base 4: 0b10_01_10_01_10_10_11_11 = 39343.
   t.hostRuns "packed: every combination answers its first matching row", 0,
              "39343"
-  t.emits "packed: Nim spells the ordinal ord()", r"ord\(priority\)"
-  t.emitsOdin "packed: Odin spells an enum's ordinal int()", r"int\(priority\)"
+  t.emits "packed: Nim spells the ordinal ord()", r"ord\(urgency\)"
+  t.emitsOdin "packed: Odin spells an enum's ordinal int()", r"int\(urgency\)"
   t.emitsOdin "packed: ...and a bool's as a ternary", r"\(encrypted \? 1 : 0\)"
-  t.emitsD "packed: D spells the ordinal as a cast", r"cast\(long\)\(priority\)"
+  t.emitsD "packed: D spells the ordinal as a cast", r"cast\(long\)\(urgency\)"
   t.emits "packed: combinations with one outcome share an arm",
           r"of \d+, \d+"
   t.omits "packed: no comparison chain", r"elif"

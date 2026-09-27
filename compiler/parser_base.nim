@@ -108,6 +108,22 @@ proc expectMemberName*(p: var Parser, msg: string): Token =
                   "be used as a name here", dc = dcPaReservedWord)
   p.reportError(msg)
 
+proc expectBindingName*(p: var Parser, msg: string): Token =
+  ## A name the code will READ BARE — a parameter, a `let`/`var` local, a
+  ## fn, member or handler name. An attribute word (`priority`, `stack`,
+  ## `error`, …) is refused here with TK-PA08. Ruled 2026-09-27: a name
+  ## that is read bare can land inside brackets, where an attribute word
+  ## reads as an attribute — `xs[stack]` parsed as an annotation and the
+  ## index was dropped — so such a word can never safely be a bare name.
+  ##
+  ## A FIELD is the one name an attribute word may still be: it is read
+  ## only through `.` (`job.priority`) or written as a record-literal key
+  ## (`{priority: 1}`), never bare. Fields go through expectMemberName.
+  if p.current().kind == tkAttr:
+    p.reportError(msg & " — `" & p.current().value & "` is a reserved " &
+                  "word and cannot be used as a name here", dc = dcPaReservedWord)
+  p.expectMemberName(msg)
+
 proc expectTypeName*(p: var Parser, what: string): Token =
   ## A user-declared type name — type, object, interface, actor, distinct,
   ## fnsig, registry, pool, arena — must be Capitalized.
