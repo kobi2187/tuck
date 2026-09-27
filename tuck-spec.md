@@ -496,7 +496,7 @@ fn add({a: int, b: int}) -> {result: int}:
 {a: 5, b: 10}.add     # postfix at call site
 ```
 
-Precedence (high to low): `* / %` → `+ -` → `>= <= != > < ==` → `and or`
+Precedence (high to low): `* / %` → `+ -` → `>= <= != > < ==` → `and or xor`
 
 ### 3.4 Higher-Order Functions via Struct Fields
 

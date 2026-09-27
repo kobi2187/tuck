@@ -881,7 +881,7 @@ proc odinBinOp(op: BinOp): string =
   of boGe: ">="
   of boAnd: "&&"
   of boOr: "||"
-  of boXor: "^"
+  of boXor: "!="          # Odin's `~` is integer-only; on two bools, xor IS !=
   of boRangeIncl: "..="   # Odin spells inclusive ranges ..=
   of boRangeExcl: "..<"
 

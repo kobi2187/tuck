@@ -81,7 +81,7 @@ type
     tkPending, tkOn, tkSelect, tkRegistry,
     tkDecision, tkPool, tkArena, tkRegister,
     tkWhen, tkDistinct, tkBake, tkImport,
-    tkAnd, tkOr, tkNot, tkTrue, tkFalse, tkNone,
+    tkAnd, tkOr, tkXor, tkNot, tkTrue, tkFalse, tkNone,
     tkStaticAssert,
     tkAttr,   # an ATTRIBUTE name — sealed, io, error, stack, … (see keywords)
 
@@ -153,7 +153,7 @@ const keywords = {
   "registry": tkRegistry, "decision": tkDecision,
   "pending": tkPending, "when": tkWhen,
   "distinct": tkDistinct, "bake": tkBake, "import": tkImport,
-  "and": tkAnd, "or": tkOr, "not": tkNot,
+  "and": tkAnd, "or": tkOr, "xor": tkXor, "not": tkNot,
   "true": tkTrue, "false": tkFalse, "none": tkNone,
   "static_assert": tkStaticAssert,
 
@@ -596,7 +596,7 @@ proc scanOneChar(L: var Lexer, ch: char) =
 const ContinuesLine* = {
   tkPlus, tkMinus, tkStar, tkPercent, tkSlashInt, tkSlashFloat,
   tkEq, tkNeq, tkLt, tkGt, tkLte, tkGte,
-  tkAnd, tkOr,
+  tkAnd, tkOr, tkXor,
   tkComma, tkAssign}
 # Deliberately NOT in the set, each for a measured reason:
 #   tkColon — a trailing `:` OPENS A BLOCK. `fn main() -> int [io]:` ends one

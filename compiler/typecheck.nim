@@ -1195,12 +1195,6 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
 # ranges, boolean ops. Mostly small: both operands must agree, and an
 # unhandled !T/?T may not reach an operator at all.
 
-proc isOptional(t: Type): bool =
-  ## Is `t` exactly `?T` — the one wrapper a boolean context may read as "is
-  ## present" without unwrapping?
-  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
-    t.base.name == "?" and t.args.len == 1
-
 const IntegerTypeNames = ["int", "i8", "i16", "i32", "i64",
                           "u8", "u16", "u32", "u64"]
 const FloatTypeNames = ["float", "f32", "f64"]

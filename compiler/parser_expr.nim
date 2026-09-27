@@ -624,7 +624,7 @@ proc parseChainExpr(p: var Parser): Expr =
 
 proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
   ## Precedence climbing over the binary operators: arithmetic binds tightest,
-  ## then comparisons, then `and`/`or`, then ranges. Operands are chain
+  ## then comparisons, then `and`/`or`/`xor`, then ranges. Operands are chain
   ## expressions.
   var left = p.parseChainExpr()
   
@@ -634,7 +634,7 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
     tkSlashInt: (2, boDivInt), tkSlashFloat: (2, boDivFloat),
     tkEq: (0, boEq), tkNeq: (0, boNeq),
     tkLt: (0, boLt), tkGt: (0, boGt), tkLte: (0, boLe), tkGte: (0, boGe),
-    tkAnd: (-1, boAnd), tkOr: (-1, boOr),
+    tkAnd: (-1, boAnd), tkOr: (-1, boOr), tkXor: (-1, boXor),
     tkRange: (-2, boRangeIncl), tkRangeLt: (-2, boRangeExcl),
   }.toTable()
   
@@ -655,7 +655,7 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
       let (prec, op) = opPrecedences[currKind]
       if prec >= minPrecedence:
         discard p.advance()
-        let right = if currKind in {tkAnd, tkOr}: p.parseExpr() else: p.parseBinaryExpr(prec + 1)
+        let right = if currKind in {tkAnd, tkOr, tkXor}: p.parseExpr() else: p.parseBinaryExpr(prec + 1)
         left = Expr(span: left.span, kind: exkBinary, binOp: op, left: left, right: right)
       else:
         break

@@ -1923,6 +1923,37 @@ fn main() -> int:
 """
   t.okCheck "'or' on bools is fine"
 
+  # `xor` was ruled a boolean operator beside `and`/`or` (spec 3.3, §7.2) and
+  # every backend emitted boXor, but the lexer had no keyword for it: `a xor
+  # b` parsed `xor` as a bare name. Found 2026-09-27.
+  t.src """
+fn main() -> int:
+  let a = 5 xor 3
+  return 0
+"""
+  t.badCheck "'xor' rejects non-bool operands", "expects\\ bool"
+
+  t.src """
+fn flip({a: bool, b: bool}) -> bool:
+  return a xor b
+
+fn main() -> int:
+  var n = 0
+  if {a: true, b: false} flip:
+    n = n + 1
+  if {a: false, b: true} flip:
+    n = n + 2
+  if {a: true, b: true} flip:
+    n = n + 4
+  if {a: false, b: false} flip:
+    n = n + 8
+  if 1 < 2 xor 3 < 2:
+    n = n + 16
+  return n
+"""
+  t.okCheck "'xor' on bools is fine, below the comparisons"
+  t.hostRuns "...and is exclusive-or on every backend", 19
+
   t.src """
 fn find({n: int}) -> ?{value: int} [io]:
   return {value: n}

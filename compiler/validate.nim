@@ -247,7 +247,7 @@ let tuckGrammar = peg("module", st: Stats):
   binOp     <- "tkPlus " | "tkMinus " | "tkStar " | "tkPercent " |
                "tkSlashInt " | "tkSlashFloat " | "tkEq " | "tkNeq " |
                "tkLt " | "tkGt " | "tkLte " | "tkGte " | "tkAnd " | "tkOr " |
-               "tkRange " | "tkRangeLt "
+               "tkXor " | "tkRange " | "tkRangeLt "
 
   # --- types --------------------------------------------------------------
   # `?T` / `!T` / `!?T` prefixes, `T?` / `T!` suffixes, `A[B, C]`

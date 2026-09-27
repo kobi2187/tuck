@@ -2243,4 +2243,47 @@ fn main() -> int:
   t.badCheck "...and its body is checked against each composer's fields",
              "no field 'x'"
 
+  # A body that is one statement on the header's line — `if c: n = n + 1`,
+  # `for c: step` — checked clean and emitted correctly for Odin and D, but
+  # Nim's genIndented sent it through genExpr bare, so it landed at column 0
+  # and nim refused the file ("invalid indentation"). Found 2026-09-27
+  # testing `xor`.
+  t.src """
+fn main() -> int:
+  var n = 0
+  for n < 10: n = n + 3
+  for i in 0..<3: n = n + i
+  if n > 0:
+    if n > 1: n = n + 100
+  return n
+"""
+  t.quietly: t.hostRuns("a one-line body runs", 115)
+  t.bugFixed "a single-statement body on the header's line builds, on all three"
+
+  # A `?T` operand of `and`/`or` reads as "is present" (spec §7.2), and the
+  # checker has always admitted it — typecheck.nim's "?T reads as presence in
+  # a boolean guard" — but nothing lowered the read, so the wrapper went out
+  # bare and all three backends refused it (`TuckResult and TuckResult`).
+  # Lowering now makes each such operand its `.ok` test. Found 2026-09-27
+  # testing `xor`.
+  t.src """
+fn find({n: int}) -> ?int:
+  if n > 0:
+    return n
+  return
+
+fn main() -> int:
+  let a = {n: 1} find
+  let b = {n: 0} find
+  let c = {n: 2} find
+  var r = 0
+  if a and c:
+    r = r + 2
+  if a xor b:
+    r = r + 1
+  return r
+"""
+  t.quietly: t.hostRuns("a ?T operand of and/xor is a presence test", 3)
+  t.bugFixed "a ?T operand of a boolean operator builds as its presence test, on all three"
+
   t.finish()

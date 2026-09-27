@@ -71,6 +71,7 @@ proc genQualified(ctx: CodegenCtx, e: Expr): string =
   else: modName & "_" & e.qualName
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string
+proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string
 
 # The bigger genExpr arms live as their own procs so the dispatch `case` reads
 # as a routing table; each takes the ctx + node and recomputes its own indent.
@@ -422,10 +423,17 @@ proc genIndented(ctx: var CodegenCtx, e: Expr): string =
   ## identifier: tuck_lead". Restoring the set afterwards makes the emitted
   ## scoping match Tuck's. (The same shape as the checker's name-keyed
   ## shadow bug; this is its codegen twin.)
+  ##
+  ## A body that is not a block — `if c: n = n + 1`, `for c: step` — is ONE
+  ## statement, and is laid out exactly as a block holding it would be. It
+  ## used to go through genExpr bare and land at column 0, which Nim
+  ## rejects; Odin's and D's emitters already indented it.
   let saved = ctx.indent
   let savedVars = ctx.definedVars
   ctx.indent += 1
-  result = ctx.genExpr(e)
+  result = if e != nil and e.kind != exkBlock:
+             ctx.genStmt(e, "  ".repeat(saved))
+           else: ctx.genExpr(e)
   ctx.indent = saved
   ctx.definedVars = savedVars
 

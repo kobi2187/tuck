@@ -315,8 +315,8 @@ type
     sskOther             ## anything else: an actor handler name, or unbuilt
 
   BinOp* = enum
-    ## The binary operators. Division comes in two explicit forms; `boXor` has
-    ## no source spelling yet.
+    ## The binary operators. Division comes in two explicit forms; `and`,
+    ## `or` and `xor` are strictly boolean.
     boAdd, boSub, boMul, boMod
     # Division names its arithmetic (R1): `/i` truncating integer divide,
     # `/f` float divide. There is no operand-inferred `/` — the two lower to
