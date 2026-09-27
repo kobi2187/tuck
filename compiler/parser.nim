@@ -274,7 +274,6 @@ proc parseDecl*(p: var Parser): Decl =
   of tkPlus: return p.parseCompositionDecl(sp)
   of tkConst: return p.parseConstDecl(sp)
   of tkWhen: return p.parseWhenDecl(sp)
-  of tkIdent: return p.parseExprDecl(sp)
   else: return p.parseExprDecl(sp)
 
 proc parseModule*(p: var Parser): Module =

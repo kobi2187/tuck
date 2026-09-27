@@ -159,7 +159,7 @@ proc actorInitLines(ctx: OdinCodegenCtx): string =
 proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
-  ## these are runtime-checked in the Beef path too).
+  ## these are runtime-checked, as on the other backends).
   ##
   ## Runtime boot mirrors the Nim entry (tuck.nim): init the scheduler and
   ## reactor, start every actor's drain coroutine, run main, then drive the

@@ -120,7 +120,7 @@ proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
 # exkCall: record construction (with invariant validation and generic
 # instantiation), payload explosion, named-param reordering, or a plain call.
 # {payload} Type.Variant — construction of a payload-carrying sum type
-# (kind + per-variant TRec struct field). Fieldless-only sums are plain Beef
+# (kind + per-variant TRec struct field). Fieldless-only sums are plain Odin
 # enums, where Type.Variant is already valid — returns "" to fall through.
 proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
                     payload: Expr): string =
@@ -242,9 +242,8 @@ const RtByValue = ["at", "setAt", "tuckAt", "tuckSetAt", "tuckArrayAt",
                    "fromBytes", "bitAnd", "bitOr", "bitXor", "bitNot",
                    "shiftLeft", "shiftRight",
                    "tuckSat", "tuckSatI", "tuckReportUnhandled"]
-  ## Runtime intrinsics taking their arguments as-is. Beef reached these
-  ## through `using static Rt`; Odin has no such import, so both lists
-  ## qualify explicitly.
+  ## Runtime intrinsics taking their arguments as-is. Odin has no
+  ## unqualified import of a package, so both lists qualify explicitly.
 
 proc asParenBuiltinOdin(ctx: var OdinCodegenCtx, e: Expr,
                         calleeStr: string): string =
@@ -1419,10 +1418,5 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
 
 # Declaration codegen (genOdinDecl and everything it dispatches to --
 # fn/object/actor/registry/register/mixin/err-handler) now
-# lives in codegen_odin_decl.nim, imported above.
-# Shared emission core: hoisted decls + members inside one Beef type.
-
-
-# A library module (import target). Odin has no static classes: a module is
-# a package, and a qualified ref (`fs::readFile`) becomes `fs.readFile` via
-# the import alias, so the declarations sit at top level here too.
+# lives in codegen_odin_decl.nim, imported above; a module's whole emission
+# lives in codegen_odin_emit.nim.

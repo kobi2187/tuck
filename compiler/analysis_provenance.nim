@@ -44,7 +44,6 @@
 import ast, tables, sets, os, strutils, sequtils
 import resolution
 import ast_query
-from lowering import getFieldsForType
 import twin_shape
 import ssa_ir, ssa_cache
 
@@ -505,12 +504,6 @@ proc summarize(res: Resolution, m: Module, d: Decl): Prov =
 # destructively — and there `slotsMovedAway` already stops the twin freeing
 # what it has handed on, which is the same fact read from the other end.
 
-proc seqFieldsOfType(c: Ctx, t: Type): seq[string] =
-  ## The names of `t`'s `Seq`-typed fields — the heap slots a twin frees.
-  ## Same answer as `twin_shape.seqFieldNames`.
-  for f in getFieldsForType(c.res, c.m, t):
-    if seqElem(f.typ) != nil: result.add(f.name)
-
 proc ownedForMove(c: Ctx, p: Prov, t: Type): bool =
   ## Is EVERY heap slot the twin would free one this body allocated?
   ##
@@ -519,7 +512,7 @@ proc ownedForMove(c: Ctx, p: Prov, t: Type): bool =
   ## fresh the others are.
   if t == nil: return false
   if seqElem(t) != nil: return p.whole.origin == oFresh
-  let fs = seqFieldsOfType(c, t)
+  let fs = seqFieldNames(c.res, c.m, t)   # the heap slots a twin frees
   if fs.len == 0: return false     # not a container, or a shape not resolved
   for f in fs:
     if f notin p.fields: return false
@@ -641,7 +634,7 @@ proc debugOwn(d: Decl, c: Ctx, fn: SsaFn, own: seq[bool]) =
   ## `TUCK_DEBUG_MOVE`: prints which SSA values of `d` the mirror considers
   ## owned. Compiled out of release builds.
   when not defined(release):
-    if getEnv("TUCK_DEBUG_MOVE") in ["", "diff"]: return
+    if getEnv("TUCK_DEBUG_MOVE") == "": return
     var owned: seq[string]
     for i, v in fn.values:
       if own[i]: owned.add(v.place & "." & $v.version)
@@ -705,25 +698,9 @@ proc consumedSlotsSsa*(res: Resolution, m: Module, d: Decl): HashSet[string] =
   moveFactsSsa(res, m, d).consumed
 
 proc movableArgsSsa*(res: Resolution, m: Module, d: Decl): HashSet[NodeId] =
-  ## Which arguments this body may hand on destructively — the mirror's
-  ## answer to exactly what `markMovableArgs` decides above.
-  if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
-  var c = Ctx(res: res, m: m, moved: movedFnParam(res, m, d))
-  for p in d.fnParams: c.params.incl(p.name)
-  for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
-  let g = ssaOf(res, d, ssLowered)
-  template fn: untyped =
-    ## Short name for the graph's fn.
-    g.fn
-  if fn.values.len == 0: return
-  let own = ssaOwnership(c, m, fn)
-  template final: untyped =
-    ## Short name for the graph's final reads.
-    g.final
-  debugOwn(d, c, fn, own)
-  for a in threadSites(res, m, d.fnBody):
-    if a.id notin final or a.id notin fn.byNode: continue
-    if own[int32(fn.byNode[a.id])]: result.incl(a.id)
+  ## Which arguments this body may hand on destructively — the `sites` half
+  ## of moveFactsSsa, which `markMovableArgs` stamps.
+  moveFactsSsa(res, m, d).sites
 
 proc markMovableArgs(res: Resolution, m: Module, d: Decl) =
   ## Stamp the first argument of every threading call this body may give away.
@@ -742,45 +719,16 @@ proc markMovableArgs(res: Resolution, m: Module, d: Decl) =
   for site in movableArgsSsa(res, m, d):
     markMovedArgId(res, site)
 
-proc oldStampsIn(res: Resolution, d: Decl): HashSet[NodeId] =
-  ## The argument nodes of `d` already stamped as moved in the semantic layer —
-  ## the "other side" of `moveDiffReport`'s comparison.
-  var stack = @[d.fnBody]
-  while stack.len > 0:
-    let n = stack.pop()
-    if n == nil: continue
-    for ch in n.children: stack.add(ch)
-    if n.kind in {exkVar, exkField} and n.id.isSet and isMovedArg(res, n):
-      result.incl(n.id)
-
-proc moveDiffReport(res: Resolution, m: Module) =
-  ## The Stage B differential, kept as a MEASUREMENT after the switch.
-  ##
-  ## It compared the mirror's answer against the three-walk implementation it
-  ## replaced — 24 stamps, zero difference — and it stays because the same
-  ## comparison is what Stage C will need when the emitter-prediction in
-  ## `afterBinding` comes out and the answer is allowed to change.
-  when not defined(release):
-    if getEnv("TUCK_DEBUG_MOVE") != "diff": return
-    var agree, onlyMirror, onlyOld = 0
-    for d in m.allFns():
-      let mine = movableArgsSsa(res, m, d)
-      let theirs = oldStampsIn(res, d)
-      agree += (mine * theirs).len
-      onlyMirror += (mine - theirs).len
-      onlyOld += (theirs - mine).len
-      if (mine - theirs).len > 0 or (theirs - mine).len > 0:
-        echo "MOVEDIFF ", d.name, " agree=", (mine * theirs).len,
-             " onlyMirror=", (mine - theirs).len,
-             " onlyOld=", (theirs - mine).len
-    echo "MOVETOTAL ", m.path.join("."), " agree=", agree,
-         " onlyMirror=", onlyMirror, " onlyOld=", onlyOld
-
 proc markAllMovableArgs(res: Resolution, m: Module) =
-  ## Stamps the movable arguments of every fn in `m`, then (under
-  ## `TUCK_DEBUG_MOVE=diff`) reports the differential.
+  ## Stamps the movable arguments of every fn in `m`.
+  ##
+  ## There was a `TUCK_DEBUG_MOVE=diff` differential here, from the Stage B
+  ## switch. Once the three-walk implementation it compared against was
+  ## deleted, its "other side" read back the stamps this very pass had just
+  ## written, so it compared the mirror with itself and could never
+  ## disagree. Stage C, when it lets the answer change, needs a real oracle
+  ## — build that then, not this.
   for d in m.allFns(): markMovableArgs(res, m, d)
-  moveDiffReport(res, m)
 
 proc dumpSummaries() =
   ## `TUCK_DEBUG_PROV`: every summary, one line each.

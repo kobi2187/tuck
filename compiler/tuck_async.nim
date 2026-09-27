@@ -256,8 +256,10 @@ proc awaitResult*[T](slot: TuckAsyncResult[T]): T =
 # --- actor runtime (spec §9) ----------------------------------------------
 # An actor is a SINGLETON coroutine that loops: drain its mailbox, and when
 # there is nothing to do, yield so other actors/tasks run. A send wakes the
-# actor by rescheduling its coroutine. All cooperative on one thread — no
-# locks, no OS thread. `waitUntil` (main side) drives the scheduler until a
+# actor by rescheduling its coroutine. That is `--actors:single`: all
+# cooperative on one thread, no locks, no OS thread. The default `thread` mode
+# (and `batch`) give each actor an OS thread instead — see the mode table at
+# the top of this file. `waitUntil` (main side) drives the scheduler until a
 # predicate over public actor state holds.
 
 type DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I work?

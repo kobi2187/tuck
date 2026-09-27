@@ -39,6 +39,7 @@
 import ast, ast_ops
 import resolution
 from ownership_str import ownedStrCall
+from ast_query import isStr
 
 var counter = 0
   ## Names are program-wide unique, like every other lowering-minted name.
@@ -51,11 +52,6 @@ type Hoist = object
   procs: seq[string]
   lifted: seq[Expr]    ## `let`s to insert ahead of the current statement
   settled: bool        ## an effect has been evaluated: nothing later moves
-
-proc isStr(t: Type): bool =
-  ## Is `t` the builtin `str` type — the only type whose temporaries this pass
-  ## names and frees.
-  t != nil and t.kind == tkNamed and t.name == "str"
 
 proc hasEffect(h: Hoist, n: Expr): bool =
   ## A call that is not one of the allocating `str` procs may do anything,

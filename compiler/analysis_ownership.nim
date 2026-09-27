@@ -198,11 +198,6 @@ proc holdsHeap(s: Scan, t: Type): bool =
   ## `holdsHeapSlots`, so the steps below need not thread `res` and `m`.
   holdsHeapSlots(s.res, s.m, t)
 
-proc isStr(t: Type): bool =
-  ## Is `t` the builtin `str` type? Strings get their own overwrite rule
-  ## (step 5), since a literal is static storage rather than an owned buffer.
-  t != nil and t.kind == tkNamed and t.name == "str"
-
 proc slotsOf(s: Scan, t: Type): seq[Slot] =
   ## The slots a value of this type has: one unnamed slot for a bare `Seq`,
   ## otherwise its Seq-typed field names.

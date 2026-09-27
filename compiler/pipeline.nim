@@ -99,37 +99,30 @@ proc assertAsyncEffectsConsistent*(mods: seq[Module]) =
       "the async mark and the call's own resolved declaration disagree")
 
 proc carriesMissingType(e: Expr): bool =
-  ## Does `e`'s recorded type contain a hole (a nil inside it)? The named
-  ## `missing type` sentinel the rest of this comment describes no longer
-  ## exists — ast.nim reports a missing type before stamping — so today only
-  ## a nil nested in a recorded type can make this true.
+  ## Does `e`'s recorded type have a hole — a nil nested inside it?
   ##
-  ## Only a node the checker actually SYNTHESIZED a type for counts — most
+  ## Only a node the checker actually SYNTHESIZED a type for counts. Most
   ## nodes (declarations, patterns, statement-level constructs) never go
   ## through `tc.synthesize` and have no recorded type at all (`typeFor`
-  ## returns nil), which is not evidence of anything. Only a type the
-  ## checker recorded AS `missing type` — its "I could not work this out"
-  ## sentinel — is the real signal: every OTHER gradual-typing marker
-  ## (`<typeparam>`, `<pending>`, `<emptyrec>`) means something legitimate,
-  ## not a gap, so this checks the exact name rather than reusing
-  ## ast_query's `hasMissingType` (which also treats a nil type as unknown —
-  ## right for a backend about to emit one, wrong for "was this even typed
-  ## at all").
+  ## returns nil), which is not evidence of anything — hence the `t != nil`
+  ## before asking ast_query's `hasMissingType`, which treats a nil type as
+  ## missing (right for a backend about to emit one, wrong for "was this even
+  ## typed at all"). Gradual typing's deliberate markers (`<typeparam>`,
+  ## `<pending>`, `<emptyrec>`) are named types, not holes, and pass.
   let t = semLayer.typeFor(e)
   t != nil and hasMissingType(t)
 
 proc assertNoMissingTypes*(mods: seq[Module]) =
-  ## After psTypecheck: no expression may still carry the checker's own
-  ## "I could not work this out" marker. Gradual typing has real, deliberate
-  ## holes (a `pending:` stub, a generic's type param inside its own body) —
-  ## none of those are `missing type`, they are their own distinct sentinels.
-  ## A node that reaches here still tagged `missing type` means some checker
-  ## path returned it instead of reporting — `synthBareVariant`'s old
-  ## silent fallback was exactly this, caught only by hand after three
-  ## unrelated bugs rode through it (discard, register-field reads, a
-  ## sizeof argument) before each got its own dedicated fix. This turns
-  ## that class of bug into an immediate, located failure instead of a
-  ## silent pass-through to codegen.
+  ## After psTypecheck: no expression's recorded type may have a hole in it.
+  ##
+  ## This once caught a named `missing type` sentinel — the checker's "I
+  ## could not work this out" — that some path returned instead of
+  ## reporting. `synthBareVariant`'s old silent fallback was exactly that,
+  ## found only by hand after three unrelated bugs rode through it (discard,
+  ## register-field reads, a sizeof argument). The checker now reports
+  ## before it would stamp such a type, so what is left to catch is a type
+  ## BUILT with a nil inside it — rare, and exactly as silent on the way to
+  ## codegen, which is why the check stays.
   var bad: seq[Expr]
   for m in mods:
     for body in m.bodies:
@@ -139,8 +132,8 @@ proc assertNoMissingTypes*(mods: seq[Module]) =
     var lines: seq[string]
     for e in bad: lines.add($e.span.line & ":" & $e.span.col)
     raise newException(ValueError,
-      "pipeline: " & $bad.len & " expression(s) still carry the checker's " &
-      "missing type marker after typecheck (a checker gap, not a real error) " &
+      "pipeline: " & $bad.len & " expression(s) carry a type with a nil " &
+      "hole after typecheck (a checker gap, not a real error) " &
       "at " & lines.join(", "))
 
 proc livenessDiff(reference: HashSet[NodeId], fn: ssa_ir.SsaFn,
@@ -169,8 +162,9 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
   ## far cheaper to find here, over every example and both applications, than
   ## from a leak in emitted Odin.
   ##
-  ## Nothing CONSULTS the mirror yet. It earns that by reproducing
-  ## analysis_liveness exactly; until then this is the only thing that runs it.
+  ## The mirror is consulted — the move decision, the escape test and the
+  ## buffer check all read it — so a builder bug here is a wrong ownership
+  ## answer, not a curiosity. Hence the oracle below.
   var bad: seq[string]
   for m in mods:
     # THE ORACLE. `analysis_liveness` no longer stamps anything — the mirror

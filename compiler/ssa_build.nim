@@ -74,6 +74,7 @@ type
     cur: Table[Place, Table[BlockId, ValueId]]
       ## Braun's `currentDef`: place -> block -> the value live there
     here: BlockId               ## the block being filled
+    versions: Table[Place, int] ## how many values each place has so far
     loopHeads: seq[BlockId]     ## for `continue`
     loopExits: seq[BlockId]     ## for `break`
 
@@ -100,13 +101,14 @@ proc exitsAlready(b: Builder, blk: BlockId): bool =
 
 proc newValue(b: var Builder, place: Place, def: Def, blk: BlockId): ValueId =
   ## Appends a new value for `place`, defined by `def` in `blk`, numbered as
-  ## the next version of that place.
+  ## the next version of that place. Values are only ever appended, so a
+  ## per-place counter gives the same number the old scan of every value
+  ## did — without making a body's build quadratic in its value count.
   result = ValueId(b.fn.values.len.int32)
-  var version = 0
-  for v in b.fn.values:
-    if v.place == place: inc version
+  let version = b.versions.getOrDefault(place)
+  b.versions[place] = version + 1
   b.fn.values.add Value(id: result, place: place, version: version,
-                        def: def, blk: blk, freedBy: fkNotFreed)
+                        def: def, blk: blk)
 
 proc parentOf(p: Place): Place =
   ## `b.ask` -> `b`, `b.ask.lo` -> `b.ask`, `b` -> "".

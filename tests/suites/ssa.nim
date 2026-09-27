@@ -1,9 +1,11 @@
 ## The SSA value mirror — Stage A of thoughts/ssa-mirror-design.md.
 ##
-## THE MIRROR IS PROOF-ONLY TODAY. Nothing consults it: no emitter reads a
-## stamp from it and no analysis asks it a question. It exists so that the
-## ownership work can move off syntax-directed emitters, and it earns each
-## step of that by being checked before anything depends on it.
+## The mirror started proof-only and has since become load-bearing: the move
+## decision (analysis_provenance.moveFactsSsa), the escape test
+## (ownership_escape) and the buffer check (buffer_check) all read it. It
+## exists so that the ownership work can move off syntax-directed emitters,
+## and it earned each of those steps by being checked before anything
+## depended on it — which is why the checks here still matter.
 ##
 ## WHAT IS ASSERTED HERE, and why it is shaped like this.
 ##

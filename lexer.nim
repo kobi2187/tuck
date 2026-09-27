@@ -105,7 +105,6 @@ type
     position*: int
     line*: int
     column*: int
-    linesLen*: seq[int] # legacy fallback
     indentStack*: seq[int]
     lastDrained*: TokenKind
       ## The kind most recently handed to the parser, so the newline rule can
@@ -184,9 +183,10 @@ const keywords = {
   "error": tkAttr, "stack": tkAttr, "align": tkAttr, "priority": tkAttr
 }.toTable()
 
-proc getLineContext(source: string, targetLine: int): string =
-  ## The text of source line `targetLine` (1-based), for the caret display
-  ## under an error. "" past the end.
+proc getLineContext*(source: string, targetLine: int): string =
+  ## The text of source line `targetLine` (1-based), without its newline — the
+  ## line an error message quotes under its caret. "" past the end. Shared
+  ## with the parser's reportError.
   var lineNum = 1
   var currentLine = ""
   for ch in source:

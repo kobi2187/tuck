@@ -358,7 +358,7 @@ proc genTransitionProcs*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
   canLines.add(ind & "}")
   var res = canLines.join("\n") & "\n"
   # A union-typed value carries its own tag, so the payload case assigns the
-  # whole value rather than copying slot by slot the way the Beef class does.
+  # whole value rather than copying slot by slot.
   let subject = if hasPayload: "tag_" & d.name & "(self^)" else: "self^"
   let target = if hasPayload: "tag_" & d.name & "(target)" else: "target"
   res.add(ind & "transitionTo_" & d.name & " :: proc(self: ^" & d.name &
@@ -526,7 +526,7 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
                           "\")\n" & ind & "\t\t}")
   if invariantChecks.len > 0:
     # Odin has no overloading, so these are type-qualified rather than
-    # relying on the parameter type to disambiguate the way Beef does.
+    # relying on the parameter type to disambiguate.
     res.add(ind & "validate_" & d.name & " :: proc(self: " & d.name & ") {\n" &
             ind & "\twhen !#config(tuckNoInvariants, false) {\n" &
             invariantChecks.join("\n") & "\n" & ind & "\t}\n" & ind & "}\n")
@@ -548,7 +548,7 @@ proc genAliasType*(ctx: var OdinCodegenCtx, d: Decl): string =
   if isDistinctAlias(d.typeBody):
     # Odin has `distinct` natively: same bits, incompatible type, and
     # arithmetic/comparison already work on the distinct type. No wrapper
-    # struct or operator overloads needed (the Beef backend hand-rolls both).
+    # struct or operator overloads needed.
     return ind & d.name & " :: distinct " & typeBodyStr & "\n"
   var aGenParts: seq[string]
   for g in d.generics: aGenParts.add("$" & g & ": typeid")

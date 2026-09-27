@@ -5,12 +5,6 @@ import std/strutils
 import std/math as stdmath
 
 type
-  AccessMode* = enum
-    ## Read / write / read-write access. Nothing in the runtime or the
-    ## backends references it today.
-    ReadOnly, WriteOnly, ReadWrite
-
-type
   TuckStatus* = enum
     ## How a fallible or optional result came out: a value, an error code, or
     ## absence.
@@ -1465,12 +1459,39 @@ proc newDiceFromOs*(): tuple[state: uint64, inc: uint64] =
 
 proc rollRange*(state, inc: uint64, low, high: int64):
     tuple[state: uint64, inc: uint64, value: int64] =
-  ## The next value in `low .. high` (inclusive) and the advanced state. One
-  ## 32-bit draw reduced modulo the span, so a span that does not divide 2^32
-  ## is slightly biased.
-  let (newState, value) = pcgStep(state, inc)
-  let span = uint64(high - low + 1)
-  (state: newState, inc: inc, value: low + int64(uint64(value) mod span))
+  ## The next value in `low .. high` (inclusive, `low <= high`) and the
+  ## advanced state. Every value in the span is equally likely: a draw in
+  ## the partial bucket at the top of the draw's range is rejected and drawn
+  ## again (PCG's bounded_rand), where reducing it modulo the span would
+  ## favour the low values. A span wider than 2^32 draws 64 bits from two
+  ## steps. The span is computed in wrapping uint64, so the full i64 range —
+  ## span 2^64, which wraps to 0 — is a plain 64-bit draw rather than the
+  ## overflow `high - low + 1` was.
+  var s = state
+  template next32(): uint64 =
+    ## One PCG32 output, advancing `s`.
+    let (ns, v) = pcgStep(s, inc)
+    s = ns
+    uint64(v)
+  template next64(): uint64 =
+    ## Two PCG32 outputs as one 64-bit draw.
+    let hi = next32()
+    (hi shl 32) or next32()
+  let span = cast[uint64](high) - cast[uint64](low) + 1'u64
+  var r: uint64
+  if span == 0:
+    r = next64()
+  elif span <= (1'u64 shl 32):
+    let threshold = ((1'u64 shl 32) - span) mod span
+    r = next32()
+    while r < threshold: r = next32()
+    r = r mod span
+  else:
+    let threshold = (0'u64 - span) mod span
+    r = next64()
+    while r < threshold: r = next64()
+    r = r mod span
+  (state: s, inc: inc, value: cast[int64](cast[uint64](low) + r))
 
 # std/math — elementary float functions, direct passthroughs to Nim's own.
 proc sqrt*(value: float64): float64 =

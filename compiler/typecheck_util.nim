@@ -31,8 +31,8 @@ proc afterErrorType*(sp: Span): Type =
 proc branchOutcomeType*(sp: Span): Type =
   ## `on select:` as a task's own tail expression: every arm returns
   ## explicitly, so nothing ever reads the construct's own synthesized
-  ## value — there is no real type to report, and unlike `the old missing-type sentinel`
-  ## this is not a gap the checker failed to work out.
+  ## value — there is no real type to report. It is a deliberate answer, not
+  ## a gap the checker failed to work out.
   Type(span: sp, kind: tkNamed, name: BranchOutcomeName)
 
 proc typeParamName*(t: Type): string =

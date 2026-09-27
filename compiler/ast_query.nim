@@ -462,9 +462,10 @@ proc typeMentionsName*(t: Type, name: string): bool =
   else: false
 
 proc hasMissingType*(t: Type): bool =
-  ## Does this type contain the checker's "I could not work it out" marker
-  ## anywhere inside it? A backend that must spell a type needs to know
-  ## before it tries.
+  ## Does this type have a hole — a nil where a type belongs — anywhere
+  ## inside it, or is it nil outright? A backend that must spell a type needs
+  ## to know before it tries. (There was once a named `missing type`
+  ## sentinel as well; the checker now reports instead of stamping one.)
   if t == nil: return true
   case t.kind
   of tkNamed: false
@@ -506,6 +507,12 @@ proc inferLitType*(e: Expr): Type =
 #
 # The test for belonging here: the answer depends only on the AST and the
 # checker, never on the target language.
+
+proc isStr*(t: Type): bool =
+  ## Is `t` the builtin `str` type? Strings get their own overwrite rule in
+  ## ownership (a literal is static storage, not an owned buffer), and they
+  ## are the only type whose temporaries lowering_strtemps names and frees.
+  t != nil and t.kind == tkNamed and t.name == "str"
 
 proc isStringConcat*(e: Expr): bool =
   ## `+` over strings. Every backend spells the RESULT differently (Nim `&`,

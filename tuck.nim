@@ -285,11 +285,6 @@ proc dieSemanticError(path: string, err: ref SemanticError) {.noreturn.} =
   if ".tuck:" in err.msg: die(err.msg)
   else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
 
-proc elapsedMs(t0: float): string =
-  ## Milliseconds since `t0`, to one decimal, with its unit — the time the
-  ## `OK (...)` lines report. Same as `verbose.elapsedMs`.
-  formatFloat((epochTime() - t0) * 1000, ffDecimal, 1) & " ms"
-
 proc pickFastCC(): string =
   ## Pick the quickest C backend available that can build the runtime.
   ## Returns the extra `nim c` flags: clang when installed, and always

@@ -65,7 +65,9 @@ marked, so it is not done twice.
   asserted on every build.
 - **Braun SSA built and measured**: `ssa_ir` / `ssa_build` / `ssa_query`.
   Against the old mirror across the corpus, both apps, Savina and stdlib:
-  `agree=646 onlyNew=0 onlyOld=2 structural=0`. NOTHING CONSULTS IT YET.
+  `agree=646 onlyNew=0 onlyOld=2 structural=0`. Nothing consulted it when it
+  landed; M1.3 has since switched the consumers (move decision, escape test,
+  buffer check) onto it.
 - **`backend_prepare.nim`**: the four copies of clone/rebase/lower/mark are
   one pass. `verbose.nim` extracted with it.
 - `docs/ownership-and-ssa.md`: the design, and seven numbered mistakes.

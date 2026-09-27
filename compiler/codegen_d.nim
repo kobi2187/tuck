@@ -75,9 +75,17 @@ proc genDLit(e: Expr): string =
     # so this was invisible; the first place D INFERS from a literal is a
     # generic call, where `twice(5)` instantiated `T = int` and then would not
     # assign to the `long[]` the declared return type says it is.
-    if '.' in e.litValue or 'e' in e.litValue: e.litValue
-    # `UL` past the signed range: `L` alone makes it a signed long and dmd
-    # reports "signed integer overflow" on FNV-1a's offset basis.
+    #
+    # A `0x` literal takes `L` whatever its size — D widens a hex literal
+    # that does not fit `long` to `ulong` by itself. (This used to test for
+    # an `e`, as though for a float exponent; an integer literal has none,
+    # so the test only ever caught hex digits, and `0xfe` went out bare —
+    # a 32-bit `int` wherever D infers.)
+    if e.litValue.startsWith("0x") or e.litValue.startsWith("0X"):
+      e.litValue & "L"
+    # A DECIMAL literal past the signed range needs `UL`: `L` alone makes it
+    # a signed long and dmd reports "signed integer overflow" on FNV-1a's
+    # offset basis. Equal-length digit strings compare as numbers.
     elif e.litValue.len > 19 or
          (e.litValue.len == 19 and e.litValue > "9223372036854775807"):
       e.litValue & "UL"
@@ -1033,16 +1041,10 @@ proc genDNested(ctx: var DCodegenCtx, body: Expr): string =
   ctx.indent -= 1
   ctx.definedVars = savedVars
 
-proc isValueIfD(e: Expr): bool =
-  ## A value-position `if` (both branches are plain expressions and the
-  ## checker stamped a type) emits as D's ternary. Mirrors ast_query's
-  ## isValueIf used by the Odin backend.
-  isValueIf(e)
-
 proc genDIf(ctx: var DCodegenCtx, e: Expr): string =
   ## An `if`: a ternary in value position, otherwise a statement with its
   ## `elif` chain folded into `} else if (...)`.
-  if isValueIfD(e):
+  if isValueIf(e):
     return "(" & ctx.genDExpr(e.cond) & " ? " & ctx.genDExpr(e.thenBranch) &
            " : " & ctx.genDExpr(e.elseBranch) & ")"
   let ind = ctx.indD
@@ -1126,6 +1128,16 @@ proc dMatchSubject(ctx: var DCodegenCtx, e: Expr): string =
     base & ".kind"
   else: base
 
+proc endsInExit(body: Expr): bool =
+  ## Does an arm body's last statement leave the fn — a `return`, or an error
+  ## raise (which D emits as a `return`)? A `break;` after one would be
+  ## unreachable. Read off the AST: this used to be decided by scanning the
+  ## emitted TEXT for a trailing `return`.
+  var last = body
+  while last != nil and last.kind == exkBlock and last.stmts.len > 0:
+    last = last.stmts[^1]
+  last != nil and last.kind in {exkReturn, exkRaise}
+
 proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
   ## `case LABEL:` plus its body, indented one level in. Every arm breaks:
   ## D switch cases fall through by default where Tuck's arms never do, so
@@ -1147,10 +1159,7 @@ proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
     narrowed = true
   let body = ctx.genDNested(arm.body)
   if narrowed: ctx.matchNarrowed.del(narrowKey)
-  let ends = body.strip()
-  let needsBreak = not (ends.endsWith("return;") or
-                        ends.contains("return ") and ends.endsWith(";") and
-                        ends.splitLines()[^1].strip().startsWith("return"))
+  let needsBreak = not endsInExit(arm.body)
   ctx.indent += 1
   let brk = if needsBreak: ctx.indD & "break;\n" else: ""
   ctx.indent -= 1

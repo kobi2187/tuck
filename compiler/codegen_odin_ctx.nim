@@ -250,7 +250,8 @@ proc odinSumTypeName(ctx: var OdinCodegenCtx, t: Type): string =
 proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
   ## The Odin spelling of a Tuck type: builtins map directly, records and sums
   ## become hoisted named structs/unions, and a generic fnsig application is
-  ## its substituted signature. Unmapped kinds fall back to `rawptr`.
+  ## its substituted signature. The kinds lowering should have removed
+  ## fall back to `rawptr`.
   if t == nil: return "void"
   case t.kind
   of tkNamed:
@@ -274,7 +275,12 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     recStructName(ctx, t.fields)
   of tkSum:
     odinSumTypeName(ctx, t)
-  else:
+  # A union or rename should have been flattened by lowering before reaching a
+  # backend, and tkEffect is a checker-side annotation with no runtime shape;
+  # `rawptr` is the it-got-here-anyway answer for all three, as `pointer` is
+  # in the Nim backend. Listed rather than left to `else` so a new TypeKind
+  # must decide explicitly.
+  of tkUnion, tkRename, tkEffect:
     "rawptr"
 
 proc fieldType*(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
@@ -329,7 +335,7 @@ proc newOdinCtx*(m: Module, realModules: Table[string, Module],
                 moduleName: string, res: Resolution,
                 modPrefix = ""): OdinCodegenCtx =
   ## indent 0: Odin declarations are top-level in a package, with no enclosing
-  ## class the way Beef/C# needed one.
+  ## class around them.
   result = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
                           realModules: realModules, moduleName: moduleName,
                           modPrefix: modPrefix, res: res)

@@ -622,22 +622,25 @@ proc parseChainExpr(p: var Parser): Expr =
   while not done:
     result = p.chainStep(result, p.getSpan(), done)
 
+const OpPrecedences = {
+  tkPlus: (1, boAdd), tkMinus: (1, boSub),
+  tkStar: (2, boMul), tkPercent: (2, boMod),
+  tkSlashInt: (2, boDivInt), tkSlashFloat: (2, boDivFloat),
+  tkEq: (0, boEq), tkNeq: (0, boNeq),
+  tkLt: (0, boLt), tkGt: (0, boGt), tkLte: (0, boLe), tkGte: (0, boGe),
+  tkAnd: (-1, boAnd), tkOr: (-1, boOr), tkXor: (-1, boXor),
+  tkRange: (-2, boRangeIncl), tkRangeLt: (-2, boRangeExcl),
+}.toTable()
+  ## Each binary operator token's precedence (higher binds tighter) and the
+  ## BinOp it builds. A const: it used to be rebuilt as a fresh Table on every
+  ## binary expression parsed.
+
 proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
   ## Precedence climbing over the binary operators: arithmetic binds tightest,
   ## then comparisons, then `and`/`or`/`xor`, then ranges. Operands are chain
   ## expressions.
   var left = p.parseChainExpr()
-  
-  let opPrecedences = {
-    tkPlus: (1, boAdd), tkMinus: (1, boSub),
-    tkStar: (2, boMul), tkPercent: (2, boMod),
-    tkSlashInt: (2, boDivInt), tkSlashFloat: (2, boDivFloat),
-    tkEq: (0, boEq), tkNeq: (0, boNeq),
-    tkLt: (0, boLt), tkGt: (0, boGt), tkLte: (0, boLe), tkGte: (0, boGe),
-    tkAnd: (-1, boAnd), tkOr: (-1, boOr), tkXor: (-1, boXor),
-    tkRange: (-2, boRangeIncl), tkRangeLt: (-2, boRangeExcl),
-  }.toTable()
-  
+
   while true:
     let currKind = p.current().kind
     # A bare `/` is not an operator (R1). Caught here rather than left to
@@ -651,8 +654,8 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
         "inferred." &
         (if currKind == tkSlashAssign: " Same for `/=`: use `/i=` or `/f=`."
          else: ""))
-    if currKind in opPrecedences:
-      let (prec, op) = opPrecedences[currKind]
+    if currKind in OpPrecedences:
+      let (prec, op) = OpPrecedences[currKind]
       if prec >= minPrecedence:
         discard p.advance()
         let right = if currKind in {tkAnd, tkOr, tkXor}: p.parseExpr() else: p.parseBinaryExpr(prec + 1)

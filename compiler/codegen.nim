@@ -1180,16 +1180,3 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
 # Declaration codegen (genDecl and everything it dispatches to — fn/object/
 # actor/registry/register/mixin/err-handler) now lives in
 # codegen_decl.nim, imported above.
-
-# Implicit return: the value flowing at the end of a fn body is its result.
-# Rewrite the tail statement into an explicit return so the existing return
-# emission (auto-wrap, typed literals) handles it. Control-flow tails keep
-# explicit returns for now (checker enforces branch agreement).
-
-
-# Object member fn (or a mixin fn materialized by `+ mixin`): the object
-# rides as a mutable `self` first parameter; the contract placeholder type
-# `Self` resolves to the object. Emits via a shallow copy — the shared AST
-# stays untouched for the other backend.
-
-# --- dkType sum-type branch helpers ---

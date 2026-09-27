@@ -43,23 +43,6 @@ proc advance*(p: var Parser): Token =
   if p.cursor < p.tokens.len:
     p.cursor += 1
 
-proc getLineContext(source: string, targetLine: int): string =
-  ## The text of source line `targetLine` (1-based), without its newline — the
-  ## line an error message quotes under its caret. "" past the end.
-  var lineNum = 1
-  var currentLine = ""
-  for ch in source:
-    if ch == '\n':
-      if lineNum == targetLine:
-        return currentLine
-      currentLine = ""
-      lineNum += 1
-    else:
-      currentLine.add(ch)
-  if lineNum == targetLine:
-    return currentLine
-  return ""
-
 proc reportError*(p: Parser, msg: string, line = -1, col = -1,
                   dc = dcNone) =
   ## Reject the source. Raises rather than printing and quitting, so a caller
