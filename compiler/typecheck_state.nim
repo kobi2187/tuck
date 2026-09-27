@@ -475,6 +475,6 @@ proc fieldsOf*(tc: TypeChecker, t: Type): seq[FieldDef] =
     for i in 0 ..< gs.len: b[gs[i]] = t.args[i]
     let body = tc.typeDecls[t.base.name]
     for f in getFieldsForType(semLayer, tc.module, body):
-      result.add(FieldDef(name: f.name, typ: substituteType(f.typ, b), span: f.span))
+      result.add(FieldDef(name: f.name, typ: substType(f.typ, b), span: f.span))
     return
   getFieldsForType(semLayer, tc.module, t)

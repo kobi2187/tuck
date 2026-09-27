@@ -33,67 +33,6 @@ import std/[tables, algorithm, strutils, sets]
 import ast
 import ast_ops
 
-proc substType*(t: Type, subs: Table[string, Type]): Type
-
-proc substAll(ts: seq[Type], subs: Table[string, Type]): seq[Type] =
-  ## `substType` over every type in `ts`.
-  for t in ts: result.add(substType(t, subs))
-
-proc substFields(fs: seq[FieldDef], subs: Table[string, Type]): seq[FieldDef] =
-  ## Copies each field with `subs` applied to its type; the name, attributes
-  ## and span are kept.
-  for f in fs:
-    result.add(FieldDef(name: f.name, typ: substType(f.typ, subs),
-                        attrs: f.attrs, span: f.span))
-
-proc substVariants(vs: seq[VariantDef],
-                   subs: Table[string, Type]): seq[VariantDef] =
-  ## A sum's payloads are FieldDefs hanging off each variant.
-  for v in vs:
-    var nv = v
-    nv.fields = substFields(v.fields, subs)
-    result.add(nv)
-
-proc substType*(t: Type, subs: Table[string, Type]): Type =
-  ## `t` with every type parameter in `subs` replaced. Returns a NEW type
-  ## rather than mutating: a parameter may stand for a compound
-  ## (`Box[Seq[int]]`), and a `tkNamed` node cannot become a `tkApp` in place —
-  ## Nim object variants do not change kind.
-  ##
-  ## The three seq-mapping helpers above exist so each arm below is a single
-  ## constructor call: an arm that also loops is not a lookup-table entry, and
-  ## nine of them turned this into the tree's worst proc for its size.
-  if t == nil: return nil
-  case t.kind
-  of tkNamed:
-    if t.name in subs: subs[t.name] else: t
-  of tkTuple:
-    Type(span: t.span, kind: tkTuple, attrs: t.attrs,
-         elems: substAll(t.elems, subs))
-  of tkApp:
-    Type(span: t.span, kind: tkApp, attrs: t.attrs,
-         base: substType(t.base, subs), args: substAll(t.args, subs))
-  of tkFunc:
-    Type(span: t.span, kind: tkFunc, attrs: t.attrs,
-         params: substAll(t.params, subs), result: substType(t.result, subs),
-         paramNames: t.paramNames)
-  of tkRecord:
-    Type(span: t.span, kind: tkRecord, attrs: t.attrs,
-         fields: substFields(t.fields, subs))
-  of tkSum:
-    Type(span: t.span, kind: tkSum, attrs: t.attrs,
-         variants: substVariants(t.variants, subs),
-         transitions: t.transitions, recursive: t.recursive)
-  of tkUnion:
-    Type(span: t.span, kind: tkUnion, attrs: t.attrs,
-         members: substAll(t.members, subs))
-  of tkEffect:
-    Type(span: t.span, kind: tkEffect, attrs: t.attrs,
-         inner: substType(t.inner, subs), effects: t.effects)
-  of tkRename:
-    Type(span: t.span, kind: tkRename, attrs: t.attrs,
-         underlying: substType(t.underlying, subs), renames: t.renames)
-
 proc substExprTypes(e: Expr, subs: Table[string, Type]) =
   ## Type annotations written INSIDE a handler body — `var acc: T = ...` and
   ## the like. Mutates the fields that hold a Type, since those are assignable

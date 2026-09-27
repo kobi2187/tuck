@@ -129,10 +129,10 @@ proc importedFnSigInstance(tc: TypeChecker, t: Type): Type =
   var ps: seq[Type]
   var names: seq[string]
   for prm in sig.params:
-    ps.add(substParams(prm.typ, binds))
+    ps.add(substType(prm.typ, binds))
     names.add(prm.name)
   Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
-       result: substParams(sig.ret, binds))
+       result: substType(sig.ret, binds))
 
 proc fnSigSlotInstance(tc: TypeChecker, t: Type): Type =
   ## The tkFunc a generic fnsig slot stands for, wherever the fnsig was

@@ -825,8 +825,8 @@ proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
   let base = tc.sigOf(name)
   var params: seq[Param]
   for p in base.params:
-    params.add(Param(name: p.name, typ: substituteType(p.typ, b), span: p.span))
-  (params, substituteType(base.ret, b), newSeq[string](), base.effects,
+    params.add(Param(name: p.name, typ: substType(p.typ, b), span: p.span))
+  (params, substType(base.ret, b), newSeq[string](), base.effects,
    base.resources)
 
 proc namesAFnSig*(tc: TypeChecker, slotT: Type): bool =
@@ -1941,7 +1941,7 @@ proc substituteGroup(t: Type, selfT: Type, binds: Table[string, Type]): Type =
   ## Both in one place, because every reader of a requirement needs both and
   ## a half-substituted type is a silently wrong one.
   result = substituteSelf(t, selfT)
-  if binds.len > 0 and result != nil: result = substituteType(result, binds)
+  if binds.len > 0 and result != nil: result = substType(result, binds)
 
 proc groupMemberSigText(want: Decl, selfT: Type,
                         binds: Table[string, Type]): string =
@@ -2041,7 +2041,7 @@ proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
   for i in 0 ..< wantParams.len:
     let w = wantParams[i]
     let gp = got.params[i]
-    let gpTyp = substituteType(gp.typ, prov)
+    let gpTyp = substType(gp.typ, prov)
     if w.name != gp.name:
       fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
            want.name & "' names parameter " & $(i + 1) & " '" & gp.name &
@@ -2053,7 +2053,7 @@ proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
            typeName(gpTyp) & ", group '" & groupName & "' requires " &
            typeName(substituteGroup(w.typ, concreteT, binds)), sp)
   let wantRet = substituteGroup(want.fnReturnType, concreteT, binds)
-  let gotRet = substituteType(got.ret, prov)
+  let gotRet = substType(got.ret, prov)
   if wantRet != nil and not tc.compatible(gotRet, wantRet):
     fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
          "' returns " & typeName(gotRet) & ", group '" & groupName &
@@ -2096,10 +2096,10 @@ proc unifyRequirements(tc: TypeChecker, g: Decl, concreteT: Type,
     for i, w in want.fnParams:
       if i < got.params.len:
         tc.inferBindings(substituteSelf(w.typ, concreteT),
-                         substituteType(got.params[i].typ, prov),
+                         substType(got.params[i].typ, prov),
                          g.groupGenerics, solved, fnName, sp)
     tc.inferBindings(substituteSelf(want.fnReturnType, concreteT),
-                     substituteType(got.ret, prov),
+                     substType(got.ret, prov),
                      g.groupGenerics, solved, fnName, sp)
 
 proc solveGroupArgs(tc: TypeChecker, g: Decl, concreteT: Type,
@@ -2195,7 +2195,7 @@ proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string, sig: FnSig,
       # OTHER type params — `[C: Indexable[E], E]`. Bind them the same way the
       # bounded param itself was bound, so the requirement is checked against
       # the element type the call actually supplied rather than the letter E.
-      tc.checkOneGroupBound(substituteType(bound, bindings), concreteT,
+      tc.checkOneGroupBound(substType(bound, bindings), concreteT,
                             reportedName, fnName, bindings, sig.generics, sp)
 
 proc recordCallTypeArgs(tc: TypeChecker, sig: FnSig,
@@ -2259,7 +2259,7 @@ proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
   if sig.generics.len > 0:
     tc.inferBindings(param.typ, t, sig.generics, bindings, fnName, arg.span)
     tc.checkGroupBoundsSatisfied(fnName, sig, bindings, arg.span)
-  let expected = substituteType(param.typ, bindings)
+  let expected = substType(param.typ, bindings)
   if tc.compatible(t, expected): return true
   if tc.fieldsOf(t).len == 0:
     fail("Type Error: argument to '" & fnName & "' expects " &
@@ -2301,7 +2301,7 @@ proc substituteParams(tc: var TypeChecker, fnName: string, sig: FnSig,
   if argFields.len > 0:
     tc.checkGroupBoundsSatisfied(fnName, sig, bindings, argFields[0].span)
   for p in sig.params:
-    result.add(Param(name: p.name, typ: substituteType(p.typ, bindings),
+    result.add(Param(name: p.name, typ: substType(p.typ, bindings),
                      span: p.span))
 
 proc payloadFieldExpr(e: Expr, name: string): Expr =
@@ -2760,7 +2760,7 @@ proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
     var want: Type = nil
     for df in declFields:
       if df.name == f.name:
-        want = substituteType(df.typ, bindings)
+        want = substType(df.typ, bindings)
         break
     var ft: Type
     tc.withExpected(want):
@@ -2844,7 +2844,7 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
     if not bindings.hasKey(g):
       fail("Type Error: cannot infer generic parameter '" & g & "' of call to '" &
            calleeName & "'", e.span)
-  substituteType(ret, bindings)
+  substType(ret, bindings)
 
 proc viaTransitionChain(e: Expr): bool =
   ## Is this construction fed by a transitionTo chain? That is a transition,
@@ -4464,9 +4464,9 @@ proc bindParam(tc: var TypeChecker, p: Param, gsub: Table[string, Type]) =
   let (shadowsMutable, outer) = tc.lookup(p.name)
   let inheritsMutable = shadowsMutable and outer.isVar and not outer.isParam
   if inheritsMutable:
-    tc.bindName(p.name, substituteType(p.typ, gsub), true)
+    tc.bindName(p.name, substType(p.typ, gsub), true)
   else:
-    tc.bindName(p.name, substituteType(p.typ, gsub), false, isParam = true)
+    tc.bindName(p.name, substType(p.typ, gsub), false, isParam = true)
   # spec 4.4b: a param of a tracked type enters at the FULL variant set —
   # transitions on it need `match` narrowing first.
   let tn = tc.transType(p.typ)
@@ -4478,7 +4478,7 @@ proc bindInput(tc: var TypeChecker, params: seq[Param],
   if params.len == 0: return
   var inputFields: seq[FieldDef]
   for p in params:
-    inputFields.add(FieldDef(name: p.name, typ: substituteType(p.typ, gsub),
+    inputFields.add(FieldDef(name: p.name, typ: substType(p.typ, gsub),
                              span: p.span))
   tc.bindName("input", Type(span: params[0].span, kind: tkRecord,
                             fields: inputFields), false)

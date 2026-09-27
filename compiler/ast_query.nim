@@ -875,18 +875,6 @@ proc markUnimplemented*(d: Decl) =
 # Nothing is lost by erasing it: a fn type is structural in all three targets,
 # so there was no nominal identity to keep.
 
-proc substParams*(t: Type, binds: Table[string, Type]): Type =
-  ## `t` with every type-param NAME replaced by what it was bound to.
-  if t == nil: return nil
-  case t.kind
-  of tkNamed:
-    if binds.hasKey(t.name): binds[t.name] else: t
-  of tkApp:
-    var args: seq[Type]
-    for a in t.args: args.add(substParams(a, binds))
-    Type(span: t.span, kind: tkApp, base: substParams(t.base, binds), args: args)
-  else: t
-
 proc fnSigInstance*(m: Module, t: Type): Type =
   ## `Pred[int]` -> the tkFunc it stands for, with T substituted. nil when `t`
   ## is not a generic fnsig application, so a caller can fall through to its
@@ -901,10 +889,10 @@ proc fnSigInstance*(m: Module, t: Type): Type =
     var ps: seq[Type]
     var names: seq[string]
     for prm in d.sigParams:
-      ps.add(substParams(prm.typ, binds))
+      ps.add(substType(prm.typ, binds))
       names.add(prm.name)
     return Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
-                result: substParams(d.sigReturn, binds))
+                result: substType(d.sigReturn, binds))
   nil
 
 # --- interfaces: who satisfies what (moved from codegen_common so the

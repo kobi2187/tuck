@@ -147,9 +147,13 @@ proc markUninit*(t: Type, sp: Span): Type =
   else: Type(span: sp, kind: tkApp, args: @[t],
              base: Type(span: sp, kind: tkNamed, name: UninitName))
 
+proc typeNames(ts: seq[Type]): string
+
 proc typeName*(t: Type): string =
-  ## A type as a diagnostic spells it. Named types, records and applications
-  ## print in full; sums, unions and anything else print only as their kind.
+  ## A type as a diagnostic spells it — in source syntax where there is one:
+  ## `(A, B)` for a tuple, `(A) -> R` for a fn type. A sum or union prints
+  ## only as its kind (its variants would bury the message), an effect-typed
+  ## value as `T [io]`, a rename as its underlying type.
   if t == nil: return "void"
   case t.kind
   of tkNamed: t.name
@@ -169,30 +173,17 @@ proc typeName*(t: Type): string =
       typeName(t.base) & "[" & parts.join(", ") & "]"
   of tkSum: "sum type"
   of tkUnion: "union type"
-  else: "<type>"
+  of tkTuple: "(" & typeNames(t.elems) & ")"
+  of tkFunc: "(" & typeNames(t.params) & ") -> " & typeName(t.result)
+  of tkEffect:
+    var effs: seq[string]
+    for e in t.effects: effs.add(effectName(e))
+    typeName(t.inner) & " [" & effs.join(", ") & "]"
+  of tkRename: typeName(t.underlying)
 
-proc substituteType*(t: Type, b: Table[string, Type]): Type =
-  ## `t` with each type parameter in `b` replaced, rebuilt as new nodes. Only
-  ## names, applications, fn types and records are walked; other kinds are
-  ## returned unchanged.
-  if t == nil or b.len == 0: return t
-  case t.kind
-  of tkNamed:
-    if b.hasKey(t.name): return b[t.name]
-    t
-  of tkApp:
-    var args: seq[Type]
-    for a in t.args: args.add(substituteType(a, b))
-    Type(span: t.span, kind: tkApp, attrs: t.attrs,
-         base: substituteType(t.base, b), args: args)
-  of tkFunc:
-    var ps: seq[Type]
-    for p in t.params: ps.add(substituteType(p, b))
-    Type(span: t.span, kind: tkFunc, params: ps, paramNames: t.paramNames,
-         result: substituteType(t.result, b))
-  of tkRecord:
-    var fields: seq[FieldDef]
-    for f in t.fields:
-      fields.add(FieldDef(name: f.name, typ: substituteType(f.typ, b), span: f.span))
-    Type(span: t.span, kind: tkRecord, attrs: t.attrs, fields: fields)
-  else: t
+proc typeNames(ts: seq[Type]): string =
+  ## Several types, comma-separated, as typeName spells each.
+  var parts: seq[string]
+  for t in ts: parts.add(typeName(t))
+  parts.join(", ")
+
