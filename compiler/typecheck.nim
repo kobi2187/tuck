@@ -4974,7 +4974,8 @@ proc typecheckModule*(m: Module,
                       externBareOwner = initTable[string, string]()): seq[string] {.discardable.} =
   ## Checks one module against what its imports export (the `extern*`
   ## tables): collect signatures, bind consts, check every declaration, then
-  ## the module-level passes. Returns the module's unhandled-result shortcuts.
+  ## the module-level passes. Returns the dropped-result sites the `errors`
+  ## policy routes to its handler (always empty under `strict`, which fails).
   var tc = newModuleChecker(m, externSigs, externPending)
   # An imported `fnsig` is a signature TYPE, not just another callable. Seed
   # that before collectSigs so a slot typed `Mapper[int, str]` from another

@@ -1161,8 +1161,8 @@ proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
   head & body & brk
 
 proc hasWildArm(e: Expr): bool =
-  ## Does the match have a `_` arm? Without one, D's `final switch` needs
-  ## every member listed, or a `default` supplied.
+  ## Does the match have a `_` arm? That arm becomes `default:`, which D's
+  ## `final switch` rejects, so such a match emits a plain `switch`.
   for arm in e.arms:
     if arm.pattern != nil and arm.pattern.kind == pkWild: return true
   false

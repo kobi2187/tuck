@@ -9,6 +9,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the `group` assertions: compile-time bounds on generics, checked at
+  ## instantiation, with no runtime dispatch.
   # --- the declaration and a passing bound ----------------------------------
   t.src """
 group Sortable:

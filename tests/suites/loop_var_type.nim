@@ -13,6 +13,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the assertions that a `for` loop variable carries its element
+  ## type.
   # --- the bug: a bad field on a loop variable must be caught ---------------
 
   t.src """

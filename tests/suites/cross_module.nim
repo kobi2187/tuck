@@ -25,6 +25,8 @@ import os
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the multi-module assertions: imports, qualified calls, imported
+  ## types and consts, `public:` visibility, and the signature cache.
   # A sum declared in one module, constructed and matched in another.
   t.src """
 import cmp

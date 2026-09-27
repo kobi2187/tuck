@@ -11,6 +11,7 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the bidirectional type checker's positive and negative cases.
 
   t.src """
 fn f({a: int}) -> int:

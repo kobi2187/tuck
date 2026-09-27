@@ -16,6 +16,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the duplicate-declaration assertions: each kind of name declared
+  ## twice is refused, naming the duplicate.
   # --- top-level declarations -------------------------------------------------
 
   t.src """

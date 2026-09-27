@@ -17,6 +17,8 @@ import std/os
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the pointer-containment assertions: pointer-kind types
+  ## are legal only at the extern boundary.
   # --- legal: the extern boundary itself -----------------------------------
 
   t.src """

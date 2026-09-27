@@ -41,32 +41,53 @@ import std/[monotimes, times, strformat, strutils]
 # crossover between them is the whole story — see SCORES.md.
 type
   SmallVal = object
+    ## The 16-byte record as a value: fits in registers.
     f0*, f1*: int
   SmallRef = ref object
+    ## The 16-byte record as a `ref`: the same fields, heap-allocated.
     f0*, f1*: int
   BigVal = object
+    ## The 256-byte record as a value: too big for registers, passed by hidden
+    ## reference.
     f: array[32, int]          # 256 bytes
   BigRef = ref object
+    ## The 256-byte record as a `ref`.
     f: array[32, int]
 
-proc mkSmallVal(v: int): SmallVal {.noinline.} = SmallVal(f0: v, f1: v)
-proc mkSmallRef(v: int): SmallRef {.noinline.} = SmallRef(f0: v, f1: v)
+proc mkSmallVal(v: int): SmallVal {.noinline.} =
+  ## Builds a small value record. Not inlined, so construction is measured.
+  SmallVal(f0: v, f1: v)
+proc mkSmallRef(v: int): SmallRef {.noinline.} =
+  ## Builds a small ref record (one heap allocation).
+  SmallRef(f0: v, f1: v)
 proc mkBigVal(v: int): BigVal {.noinline.} =
+  ## Builds a big value record, every slot set to `v`.
   for i in 0 ..< 32: result.f[i] = v
 proc mkBigRef(v: int): BigRef {.noinline.} =
+  ## Builds a big ref record (one heap allocation), every slot set to `v`.
   new(result)
   for i in 0 ..< 32: result.f[i] = v
 
-# `.noinline` on the readers matters: inlined, the compiler scalarizes the
-# whole record away and both variants measure nothing.
-proc readSmallVal(b: SmallVal): int {.noinline.} = b.f0 + b.f1
-proc readSmallRef(b: SmallRef): int {.noinline.} = b.f0 + b.f1
-proc readBigVal(b: BigVal): int {.noinline.} = b.f[0] + b.f[15] + b.f[31]
-proc readBigRef(b: BigRef): int {.noinline.} = b.f[0] + b.f[15] + b.f[31]
+proc readSmallVal(b: SmallVal): int {.noinline.} =
+  ## Reads both fields of a small value record.
+  ##
+  ## `.noinline` on the readers matters: inlined, the compiler scalarizes the
+  ## whole record away and both variants measure nothing.
+  b.f0 + b.f1
+proc readSmallRef(b: SmallRef): int {.noinline.} =
+  ## Reads both fields of a small ref record.
+  b.f0 + b.f1
+proc readBigVal(b: BigVal): int {.noinline.} =
+  ## Reads three spread-out slots of a big value record.
+  b.f[0] + b.f[15] + b.f[31]
+proc readBigRef(b: BigRef): int {.noinline.} =
+  ## Reads three spread-out slots of a big ref record.
+  b.f[0] + b.f[15] + b.f[31]
 
 var sink = 0
 
 template timed(body: untyped): int64 =
+  ## Microseconds `body` took to run.
   let t0 = getMonoTime()
   body
   (getMonoTime() - t0).inMicroseconds
@@ -78,11 +99,15 @@ const
   Reps = 50
 
 proc row(name: string, valUs, refUs: int64) =
+  ## Prints one result row: both timings, their ratio, and which variant won
+  ## (within 3% is a tie).
   let ratio = refUs.float / valUs.float
   let winner = if ratio > 1.03: "value" elif ratio < 0.97: "ref  " else: "tie  "
   echo &"{name:<22}{valUs:>10}{refUs:>10}{ratio:>9.2f}x  {winner}"
 
 proc main() =
+  ## Runs every shape at both record sizes, value against ref, and prints the
+  ## table.
   echo &"{\"shape\":<22}{\"VALUE us\":>10}{\"REF us\":>10}{\"ratio\":>10}  winner"
   echo "-- 16-byte record " & '-'.repeat(42)
 

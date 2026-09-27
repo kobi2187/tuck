@@ -24,6 +24,7 @@ import ../lexer
 import ../compiler/[ast, parser, parser_base]
 
 proc lexAll(source: string): seq[Token] =
+  ## Lexes `source` to the end, EOF included.
   var lex = Lexer(source: source, position: 0, line: 1, column: 1,
                   indentStack: @[0])
   while true:
@@ -52,10 +53,14 @@ proc fuzzFrontend(source: string) {.raises: [].} =
     discard          # a rejection: the expected outcome for malformed input
 
 proc initialize(): cint {.exportc: "LLVMFuzzerInitialize".} =
+  ## libFuzzer's init hook: runs NimMain once so the runtime is set up before
+  ## the first input.
   {.emit: "N_CDECL(void, NimMain)(void); NimMain();".}
 
 proc testOneInput(data: ptr UncheckedArray[byte], len: int): cint {.
     exportc: "LLVMFuzzerTestOneInput", raises: [].} =
+  ## libFuzzer's per-input entry: copies the bytes into a string and runs the
+  ## front end on it. Must never raise.
   result = 0
   if len == 0:
     fuzzFrontend("")   # the empty file is a real case; do not skip it

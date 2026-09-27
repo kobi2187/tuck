@@ -14,6 +14,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the decision-table assertions: packed and chained lowering,
+  ## the emitted `match`, and the tables' results when run.
   # --- packed: every column enumerable ---------------------------------------
   #
   # Eight combinations, three outcomes, first match wins: `High _ true` is

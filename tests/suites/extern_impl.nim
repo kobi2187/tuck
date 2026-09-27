@@ -15,6 +15,8 @@ import std/[os, strutils, re]
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the `extern [impl: ...]` assertions: the named backend module is
+  ## imported and forwarded to, and paths are rebased to the output dir.
   # --- a real Nim stdlib proc, with no tuck_rt.nim edit --------------------
 
   t.src """

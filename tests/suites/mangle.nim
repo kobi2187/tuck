@@ -12,6 +12,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the name-mangling assertions: every declaration and every reference
+  ## to it renamed together, and params left alone.
   # A fn declaration and its call site must move together.
   t.src """
 fn helper({a: int}) -> int:

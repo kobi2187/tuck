@@ -16,6 +16,8 @@ import std/[os, osproc, strutils, locks]
 import ../harness
 
 type SmokeFail* = object of CatchableError
+  ## Raised by a failing smoke check; the runner catches it per case, so one
+  ## failing case does not stop the rest.
 
 type Work* = object
   ## One case to run. `body` is a plain `{.nimcall.}` proc, NOT a closure:
@@ -29,6 +31,7 @@ type Work* = object
   want*: int
 
 proc fail*(msg: string) {.noreturn.} =
+  ## Fails the current smoke case with `msg`.
   raise newException(SmokeFail, msg)
 
 proc caseDir*(name: string): string =
@@ -44,23 +47,30 @@ proc write*(dir, fname, code: string): string =
   writeFile(result, code)
 
 proc build*(src, outDir: string): tuple[rc: int, output: string] =
+  ## `tuck build src -o:outDir`, rooted at the checkout so imports resolve.
   sh(@["./tuck", "build", src, "-o:" & outDir, "--root:" & getCurrentDir()])
 
 proc buildOk*(src, outDir: string) =
+  ## `build`, failing the case if it does not succeed.
   let (rc, outp) = build(src, outDir)
   if rc != 0: fail "build failed for " & src & ": " & outp.strip()
 
 proc compileTo*(src, outDir: string): tuple[rc: int, output: string] =
+  ## `tuck c src -o:outDir` — emit without building.
   sh(@["./tuck", "c", src, "-o:" & outDir, "--root:" & getCurrentDir()])
 
 proc check*(src: string): tuple[rc: int, output: string] =
+  ## `tuck ch src` — typecheck only.
   sh(@["./tuck", "ch", src, "--root:" & getCurrentDir()])
 
 proc exec*(binary: string): tuple[rc: int, output: string] =
+  ## Runs a built binary, failing the case if it was never produced.
   if not fileExists(binary): fail "no binary at " & binary
   sh(@[binary])
 
 proc mustExit*(binary: string, want: int) =
+  ## The binary must exit with `want`; the case fails with its output
+  ## otherwise.
   let (rc, outp) = exec(binary)
   if rc != want:
     fail binary.lastPathPart & " exited " & $rc & ", want " & $want &
@@ -82,11 +92,13 @@ proc mustAbort*(binary, needle: string) =
     fail binary.lastPathPart & " aborted without /" & needle & "/: " & outp.strip()
 
 proc mustContain*(path, needle: string) =
+  ## The file at `path` must exist and contain `needle` (a plain substring).
   if not fileExists(path): fail "no file at " & path
   if not readFile(path).contains(needle):
     fail path.lastPathPart & " lacks /" & needle & "/"
 
 proc mustNotContain*(path, needle: string) =
+  ## The file at `path` must exist and NOT contain `needle`.
   if not fileExists(path): fail "no file at " & path
   if readFile(path).contains(needle):
     fail path.lastPathPart & " contains /" & needle & "/ but should not"
@@ -100,6 +112,8 @@ proc mustNotContain*(path, needle: string) =
 # structure already allowed. Measured 3x on this box.
 
 type Shared = object
+  ## The case queue the worker threads share: the cases, the next one to
+  ## take, how many failed, and the lock guarding both counters.
   work: seq[Work]
   at, failed: int
   lock: Lock

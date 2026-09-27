@@ -11,6 +11,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the interface-parameter assertions: only satisfying objects
+  ## are accepted, and the call site records the concrete type.
   # --- accepted: the object satisfies the interface -------------------------
 
   t.src """

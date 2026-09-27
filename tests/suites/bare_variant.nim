@@ -8,6 +8,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the assertions that a bare sum variant (`Red`) is typed as its
+  ## sum, in the positions that used to leave it Unknown.
   # --- a bare variant is its sum type ---------------------------------------
 
   t.src """

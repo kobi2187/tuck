@@ -18,6 +18,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the pool checker assertions: operations by handle, a pool's
+  ## handle belonging to that pool, and `addr` handed only to an extern.
   # --- read and write through the handle -----------------------------------
   t.src """
 type Cell:

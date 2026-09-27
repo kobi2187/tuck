@@ -12,6 +12,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the end-to-end interface dispatch assertions: programs that
+  ## call through interface values and must return the right implementation's answer.
   # --- the shape of the emission --------------------------------------------
 
   t.src """

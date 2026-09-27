@@ -13,6 +13,8 @@ import ../compiler/codegen
 import ../compiler/ast
 
 proc gen(n: int): string =
+  ## A synthetic program of `n` record types, `n` fns and a main calling each
+  ## — sized to make the emitter's per-decl cost visible.
   for i in 0 ..< n:
     result.add("type T" & $i & " = {a: int, b: int}\n")
     result.add("fn f" & $i & "({a: int, b: int}) -> int:\n")
@@ -24,6 +26,7 @@ proc gen(n: int): string =
   result.add("  return 0\n")
 
 proc lexAll(src: string): seq[Token] =
+  ## Lexes `src` to the end, EOF included.
   var lx = Lexer(source: src, position: 0, line: 1, column: 1, indentStack: @[0])
   while true:
     let t = lx.nextToken()

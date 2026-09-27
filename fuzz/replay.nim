@@ -17,6 +17,7 @@ import ../lexer
 import ../compiler/[ast, parser, parser_base]
 
 proc lexAll(source: string): seq[Token] =
+  ## Lexes `source` to the end, EOF included.
   var lex = Lexer(source: source, position: 0, line: 1, column: 1,
                   indentStack: @[0])
   while true:
@@ -25,6 +26,8 @@ proc lexAll(source: string): seq[Token] =
     if t.kind == tkEOF: break
 
 proc replay(path: string) =
+  ## Runs the front end on one saved input and prints whether it was accepted,
+  ## rejected with a diagnostic, or raised something unexpected.
   let source = readFile(path)
   stdout.write path, " (", source.len, " bytes): "
   try:

@@ -23,6 +23,8 @@ import std/strutils
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the value-semantics assertions: a callee can never write
+  ## through to its caller's value, on any backend.
   # --- the guarantee, end to end -------------------------------------------
   #
   # `afterFee` is the shape that motivated the rule: a name that reads as a

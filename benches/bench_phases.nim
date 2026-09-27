@@ -49,6 +49,7 @@ proc gen(n: int): string =
   s
 
 proc lexAll(src: string): seq[Token] =
+  ## Lexes `src` to the end, EOF included.
   var lx = Lexer(source: src, position: 0, line: 1, column: 1, indentStack: @[0])
   while true:
     let t = lx.nextToken()
@@ -56,6 +57,8 @@ proc lexAll(src: string): seq[Token] =
     if t.kind == tkEOF: break
 
 proc parseFresh(src: string, toks: seq[Token]): Module =
+  ## Parses a fresh tree from already-lexed tokens, so a phase that mutates
+  ## the tree gets one of its own.
   var p = Parser(source: src, tokens: toks, cursor: 0)
   p.parseModule()
 
@@ -69,6 +72,8 @@ proc parseFresh(src: string, toks: seq[Token]): Module =
 const POOL = 12
 
 proc main() =
+  ## `bench_phases [N]`: generates an N-fn program and times each compiler
+  ## phase on it separately; read the MIN column.
   let n = if paramCount() >= 1: parseInt(paramStr(1)) else: 4000
   let src = gen(n)
   let lines = src.count('\n')

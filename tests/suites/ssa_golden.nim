@@ -31,6 +31,8 @@ proc graphOnly(output: string): string =
   lines.join("\n").strip(leading = false) & "\n"
 
 proc run*(t: var T) =
+  ## Registers the SSA golden assertions: the dumped graph of each small
+  ## program in tests/ssa pinned to its golden.
   var files: seq[string]
   for f in walkFiles("tests/ssa/*.tuck"): files.add f
   files.sort()

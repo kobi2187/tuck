@@ -25,6 +25,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the memory assertions: loops whose memory must stay inside a
+  ## loose budget on all three backends (a leak blows through it).
 
   # The move path, which should allocate NOTHING per iteration: `x = f(x)`
   # hands the buffer to the twin, `append` reallocs it in place, and the same

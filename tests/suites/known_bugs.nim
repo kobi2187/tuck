@@ -21,6 +21,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers every known bug as an assertion of the CORRECT behaviour, marked
+  ## `bugOpen` (expected to fail) or `bugFixed` (a regression guard).
   # 1. Integer division is `/i`, and it really is integer division.
   # Found 2026-07-22: `a /= 4` on an int lowered to Nim's `/`, which returns
   # float, so the emitted code did not compile. FIXED 2026-07-28 by ruling R1

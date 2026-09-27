@@ -31,6 +31,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the by-type payload matching assertions: programs that bind
+  ## fields to params by name and by type, run to check the VALUES landed right.
   # The core correctness case: every field has a DISTINCT type and a
   # distinguishable value. A misaligned mapping still compiles, so only the
   # values can prove each param received the field intended for it.

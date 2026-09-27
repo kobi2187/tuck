@@ -32,6 +32,8 @@ import std/[os, strutils]
 import ../harness
 
 proc corpusFiles(): seq[string] =
+  ## Every Tuck source the mirror is exercised on: the examples, the bench
+  ## apps, the Savina ports and the stdlib.
   for pat in ["examples/*.tuck", "benches/apps/*.tuck",
               "benches/savina/*.tuck", "std/*.tuck"]:
     for f in walkFiles(pat): result.add f
@@ -43,6 +45,8 @@ proc corpusFiles(): seq[string] =
 const notChecked = ["16-actor-tasks-unified-syntax.tuck"]
 
 proc run*(t: var T) =
+  ## Registers the SSA mirror assertions: graphs for the shapes the builder must
+  ## get right, and structural errors caught.
   var idx: seq[tuple[name: string, i: int]]
   for f in corpusFiles():
     let name = f.extractFilename

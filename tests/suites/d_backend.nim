@@ -94,6 +94,8 @@ proc runsDRepeatedly(t: var T, name: string, want: int, dmdExe: string,
   else: t.no name, output.strip()
 
 proc run*(t: var T) =
+  ## Registers the D backend's assertions, milestone by milestone: emitted text
+  ## for each construct and the programs that must build and run under dmd.
   let dmdExe = findDmd()
   if dmdExe.len == 0:
     if t.phase != pReport: return

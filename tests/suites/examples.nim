@@ -71,6 +71,8 @@ http
 # silent. Add a name here the moment it goes green.
 
 proc run*(t: var T) =
+  ## Registers the example-corpus assertions: every gated example compiles,
+  ## and the programs with a known answer run and produce it.
   let gatedSet = gated.split()
 
   var files: seq[string]
@@ -104,6 +106,9 @@ proc run*(t: var T) =
     let repo = t.root
     let doc = readFile(repo / "LANGUAGE-OVERVIEW.md")
     proc listLen(repo, path, marker: string): int =
+      ## How many entries the list literal after `marker` in `path` holds, or -1
+      ## when the marker is missing — so the overview's stated count can be
+      ## checked against the real list.
       let src = readFile(repo / path)
       let at = src.find(marker)
       if at < 0: return -1

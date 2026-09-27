@@ -149,6 +149,8 @@ const
   CC = "tools/cyc"
 
 proc run*(t: var T) =
+  ## Registers the complexity ratchet over the compiler's own sources: no proc
+  ## above CEILING, and DEBT/HEAVY no higher than their recorded values.
   if not fileExists(CC):
     if t.phase != pReport: return
     echo "complexity.sh: tools/cyc not built. Once:"

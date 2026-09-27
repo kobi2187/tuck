@@ -27,6 +27,8 @@ object Cat:
 """
 
 proc run*(t: var T) =
+  ## Registers the assertions for a `Seq` of interface values holding mixed
+  ## concrete types.
   # --- the feature ----------------------------------------------------------
 
   # 1 + 41 = 42, a number neither implementation reaches alone: only per-element

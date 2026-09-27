@@ -53,6 +53,8 @@ proc runsOdinWith(t: var T, name: string, want: int, flags: seq[string],
   else: t.no name, "exit " & $rc & ", want " & $want
 
 proc run*(t: var T) =
+  ## Registers the `invariant:` assertions: validation inserted at every
+  ## production site, and a violation aborting at runtime on each backend.
   const temp = """
 type Temp:
   celsius: int

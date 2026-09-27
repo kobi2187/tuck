@@ -39,6 +39,8 @@ proc reportArm(t: var T, backend: string, idx: int) =
     t.no backend & ": the registry behaves as §7.4 specifies", outp.strip()
 
 proc run*(t: var T) =
+  ## Registers the resource runtime's semantics, asserted against each of the
+  ## three runtimes in its own language.
   # --- Nim -----------------------------------------------------------------
   # Always available: it is what builds the compiler.
   let nimIdx = t.needCmd(@["nim", "c", "--hints:off", "-r",

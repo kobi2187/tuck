@@ -69,6 +69,8 @@ proc emittedWith(t: var T, tag: string, flags: seq[string]): string =
   if fileExists(p): readFile(p) else: ""
 
 proc run*(t: var T) =
+  ## Registers the optional-optimization assertions: each pass off by default,
+  ## and the programs it rewrites computing the same answer with it on.
   # --- 1. ON by default, and -O:none is the escape hatch -------------------
   #
   # Passes run unless told otherwise (2026-08-14). `-O:none` must still turn

@@ -472,7 +472,7 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
 proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
     ## An event registry as Nim: a kind enum, a ref-object event holding every
     ## variant's fields, the `latest<Name>` global, and one raise proc per event
-    ## that fills it and calls the handler.
+    ## that fills it and calls every handler registered for that event.
     let msgEnumName = d.name & "Kind"
     var enumVariants: seq[string]
     var fieldsStr: seq[string]

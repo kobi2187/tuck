@@ -38,6 +38,8 @@ proc emittedFor(t: var T, target: string): string =
   if fileExists(p): readFile(p) else: ""
 
 proc assertHasNotHas(t: var T, name, text, has, hasNot: string) =
+  ## Asserts `text` (an emitted file, or an "EMIT FAILED" marker) contains
+  ## `has` and does not contain `hasNot`.
   if t.phase == pCollect: return
   if text.startsWith("EMIT FAILED"):
     t.no name, text
@@ -47,6 +49,8 @@ proc assertHasNotHas(t: var T, name, text, has, hasNot: string) =
     t.no name, "got: " & text
 
 proc run*(t: var T) =
+  ## Registers the `when TARGET ==` assertions: the matching block's decls
+  ## splice in, the others vanish, and bad shapes are refused.
   # --- selection picks the right block, drops the other entirely -----------
 
   let stm = t.emittedFor("stm32f4")

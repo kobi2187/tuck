@@ -36,6 +36,9 @@
 import os, osproc, strutils, re
 
 proc main() =
+  ## Scans every markdown file under the current directory (skipping .git
+  ## and .claude), checks each ```tuck block and path citation, and exits
+  ## non-zero on any offender.
   let root = getCurrentDir()
   let tuckExe = root / "tuck"
   var files: seq[string]

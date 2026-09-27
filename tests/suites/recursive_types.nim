@@ -28,6 +28,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the recursive sum type assertions: boxing through a handle,
+  ## construction and reads, and trees that run on every backend.
   # --- 1. a payload variant that is not the first ------------------------
   t.src """
 type Shape:

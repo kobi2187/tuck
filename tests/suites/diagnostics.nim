@@ -9,6 +9,8 @@ import std/[os, strutils, re, algorithm]
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the diagnostic-registry assertions: every code resolves, `tuck
+  ## explain` answers for it, and it reaches the message the user sees.
   # --- the code reaches the user -------------------------------------------
 
   t.src """

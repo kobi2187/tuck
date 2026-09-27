@@ -12,6 +12,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the object-composition assertions: `object O: + A` flattens
+  ## A's fields as type composition does, and a collision is refused.
   # --- the case that was broken --------------------------------------------
 
   t.src """

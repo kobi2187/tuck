@@ -13,6 +13,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the assertions for calling a member through an interface
+  ## value: resolution against the contract, and the dispatch each backend emits.
   # --- calling through the contract -----------------------------------------
 
   t.src """

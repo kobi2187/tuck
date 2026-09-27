@@ -110,6 +110,7 @@ proc bodyLines(n: PNode): int =
   var lo = n.info.line.int
   var hi = lo
   proc walk(x: PNode) =
+    ## Widens `lo`/`hi` to cover every line under `x`.
     if x == nil: return
     let l = x.info.line.int
     if l > hi: hi = l
@@ -119,6 +120,8 @@ proc bodyLines(n: PNode): int =
   hi - lo + 1
 
 type Measured = tuple[cc, lines, line: int, name, file: string]
+  ## One routine's score: complexity, line span, where it starts, its name
+  ## and file.
 
 proc collect(n: PNode, file: string, acc: var seq[Measured]) =
   ## Every routine in the tree, including nested ones — each scored on its own
@@ -132,6 +135,9 @@ proc collect(n: PNode, file: string, acc: var seq[Measured]) =
   for c in n: collect(c, file, acc)
 
 proc measure(path: string, acc: var seq[Measured]) =
+  ## Parses one Nim file with the compiler's own parser and appends a score
+  ## for every routine in it. A file that does not parse is reported and
+  ## skipped.
   let cache = newIdentCache()
   let conf = newConfigRef()
   conf.errorMax = high(int)
@@ -141,6 +147,9 @@ proc measure(path: string, acc: var seq[Measured]) =
     stderr.writeLine "cyc: could not parse ", path, ": ", e.msg
 
 proc main() =
+  ## `cyc [--gate N] [--budget N] [--debt N] [--heavy N] FILE...`: prints
+  ## every routine worst-first and, with a flag, exits non-zero when that
+  ## ratchet is exceeded.
   var gate, budget, debt, heavy = -1
   var files: seq[string]
   var i = 1

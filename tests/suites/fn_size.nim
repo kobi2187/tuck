@@ -32,6 +32,8 @@ import ../harness
 import std/[strutils, os]
 
 proc run*(t: var T) =
+  ## Registers the per-function size budget assertions: complexity and line
+  ## limits, the tabular exemptions, and `--release` turning reports into errors.
   # --- under budget: nothing is said ----------------------------------------
 
   t.src """

@@ -29,6 +29,8 @@ type Task:
 """
 
 proc run*(t: var T) =
+  ## Registers the `with` record-update assertions: copy, replace, same type —
+  ## the shortcut that value semantics makes necessary.
   t.src Task & """
 fn complete({self: Task}) -> Task:
   return self with {done: true}

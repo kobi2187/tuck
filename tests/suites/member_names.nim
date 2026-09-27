@@ -12,6 +12,8 @@ import std/[os, strutils]
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the assertions that two objects may each declare a member fn of
+  ## the same name, and each call reaches its own.
   t.src """
 object Dog:
   name: str

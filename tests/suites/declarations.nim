@@ -20,6 +20,8 @@ import std/strutils
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the declaration-side checker assertions: every kind of
+  ## declaration refused or accepted for its own shape, before any call.
   # --- actors: [queue: N] (TK-AC01) ----------------------------------------
   #
   # The value rode to codegen as a STRING and was never parsed, so `queue: 0`

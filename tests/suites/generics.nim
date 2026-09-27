@@ -30,6 +30,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the generic-fn assertions, and the check that `int` has the same
+  ## width on every backend.
   # --- generic fns ---------------------------------------------------------
   t.src """
 fn smaller[T]({a: T, b: T}) -> T:

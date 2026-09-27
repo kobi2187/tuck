@@ -10,6 +10,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the resource-registry checker assertions: `resources:` blocks,
+  ## kinds, knobs, and `acquire`/`finish` checked against them.
   # --- the `resources:` declaration -----------------------------------------
 
   # The spec's own §7.4 block, verbatim. It is fenced ```tuck there rather than

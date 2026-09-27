@@ -36,6 +36,8 @@ import ../harness
 import strutils
 
 proc run*(t: var T) =
+  ## Registers the documentation assertions: every ```tuck block in the repo's
+  ## markdown parses, or is marked as a fragment.
   # Lowered by hand as documents are reconciled against the compiler. Never
   # raise it: a new rejected block means a doc just gained syntax the language
   # does not have.

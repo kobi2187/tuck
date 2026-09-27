@@ -15,6 +15,8 @@ import std/[os, strutils, re]
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the end-to-end program through both backends, the effect
+  ## checker's negative case, and the open-bug count cross-check.
   t.src """
 fn addOne(x: int) -> int:
   return x + 1

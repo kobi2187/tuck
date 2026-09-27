@@ -16,6 +16,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the `interface` contract assertions: declarations, `satisfies`
+  ## checks and the conformance error when a member is missing or mismatched.
   # --- conformance passes ---------------------------------------------------
 
   t.src """

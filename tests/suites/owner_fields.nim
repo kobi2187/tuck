@@ -16,6 +16,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the owner-field assertions: a bare name is the owner's field only
+  ## where no param or local shadows it, on every backend.
   t.src """
 object Counter:
   n: int
