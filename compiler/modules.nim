@@ -62,13 +62,19 @@ import ../lexer
 
 type
   ModuleError* = object of ValueError
+    ## A module could not be found or the imports form a cycle. Reported by the
+    ## driver as a plain message naming the path.
 
   LoadedModule* = object
+    ## One module of the program: its name (the file's base name, which is what
+    ## `import` and `mod::` use), its absolute path, and its parsed tree.
     name*: string   # module name = file base name
     path*: string   # absolute source path
     m*: Module
 
   CacheEntry = object
+    ## What `.tuck-cache/<name>.bin` holds: the compiler build and source hash
+    ## it was made from, and the rewritten tree. Either mismatch means reparse.
     stamp: string
     srcHash: string
     m: Module
@@ -123,9 +129,14 @@ proc parseTuckFile*(path: string): Module =
     raise
 
 proc cachePathFor(path: string): string =
+  ## Where the AST cache for source `path` lives: `.tuck-cache/<name>.bin`
+  ## beside it.
   path.parentDir / ".tuck-cache" / extractFilename(path).changeFileExt("bin")
 
 proc loadModuleCached(path: string): Module =
+  ## Parses `path`, or restores it from the AST cache when the cache was
+  ## written by this compiler build from identical source. Restored ids are
+  ## renumbered into this run's id space; a damaged cache is just reparsed.
   let source = readFile(path)
   let srcHash = $hash(source)
   let cp = cachePathFor(path)
@@ -153,6 +164,7 @@ proc loadModuleCached(path: string): Module =
     discard  # cache write is best-effort
 
 proc importsOf*(m: Module): seq[string] =
+  ## The module names `m` imports, in declaration order.
   for d in m.decls:
     if d != nil and d.kind == dkImport:
       result.add(d.name)
@@ -166,6 +178,8 @@ proc importsOf*(m: Module): seq[string] =
 
 type
   IndexEntry* = object
+    ## One module's entry in the signature index: its source hash, the deps it
+    ## was checked against (with their hashes then), and its fn signatures.
     srcHash*: string
     cachedAt*: int64                      # unix seconds, informational
     deps*: seq[tuple[name, hash: string]] # dep set at index time
@@ -190,13 +204,18 @@ type
       ## export only callables, which is what it was measured on.
 
   SigIndex = object
+    ## The whole `.tuck-cache/index.bin` of one directory: the compiler build
+    ## that wrote it, and one entry per module.
     stamp: string   # compiler build stamp; mismatch = whole index stale
     entries: Table[string, IndexEntry]
 
 proc indexPathFor(dir: string): string =
+  ## Where directory `dir`'s signature index lives.
   dir / ".tuck-cache" / "index.bin"
 
 proc loadIndex*(dir: string): Table[string, IndexEntry] =
+  ## The signature index of `dir`, or an empty table when there is none, it
+  ## is damaged, or a different compiler build wrote it.
   let ip = indexPathFor(dir)
   if fileExists(ip):
     try:
@@ -209,24 +228,25 @@ proc loadIndex*(dir: string): Table[string, IndexEntry] =
   initTable[string, IndexEntry]()
 
 proc srcHashOf(path: string): string =
+  ## The hash the caches key a source file by.
   $hash(readFile(path))
 
 proc resolveImport*(importerPath, module: string): string  # defined below
 
-# The source path an import resolves to FROM `dir` — its own directory, the
-# --root project, or the stdlib (same search resolveImport uses at load time).
-# A module imported as `import sys` lives under std/, NOT dir/sys.tuck, so the
-# cache must hash it where it actually is or std imports never validate.
-# Returns "" when the module can't be found.
 proc resolvedImportPath(dir, name: string): string =
+  ## The source path an import resolves to FROM `dir` — its own directory, the
+  ## --root project, or the stdlib (same search resolveImport uses at load time).
+  ## A module imported as `import sys` lives under std/, NOT dir/sys.tuck, so the
+  ## cache must hash it where it actually is or std imports never validate.
+  ## Returns "" when the module can't be found.
   try: resolveImport(dir / "_.tuck", name)
   except ModuleError: ""
 
-# Entry is trustworthy iff its module's source is unchanged AND every dep it
-# was checked against is itself still valid (a changed dep changes the sigs
-# this module was checked against).
 proc entryValid(idx: Table[string, IndexEntry], dir, name: string,
                 seen: var HashSet[string]): bool =
+  ## Entry is trustworthy iff its module's source is unchanged AND every dep it
+  ## was checked against is itself still valid (a changed dep changes the sigs
+  ## this module was checked against).
   if name in seen: return true  # cycle guard; load path errors on real cycles
   seen.incl(name)
   if not idx.hasKey(name): return false
@@ -241,14 +261,16 @@ proc entryValid(idx: Table[string, IndexEntry], dir, name: string,
   true
 
 proc entryValid*(idx: Table[string, IndexEntry], dir, name: string): bool =
+  ## Is the index entry for module `name` still trustworthy — its source and
+  ## every dependency's unchanged since it was written?
   var seen: HashSet[string]
   entryValid(idx, dir, name, seen)
 
-# Refresh index entries for the given fully-loaded modules. `sigsOf` is
-# injected by the driver (typecheck.moduleSigs) to keep this file free of
-# checker dependencies. Call only after the program checked clean.
 proc updateIndex*(dir: string, mods: seq[LoadedModule],
                   sigsOf: proc(m: Module): seq[SigInfo]) =
+  ## Refresh index entries for the given fully-loaded modules. `sigsOf` is
+  ## injected by the driver (typecheck.moduleSigs) to keep this file free of
+  ## checker dependencies. Call only after the program checked clean.
   var idx = SigIndex(stamp: buildStamp, entries: loadIndex(dir))
   for lm in mods:
     var deps: seq[tuple[name, hash: string]]
@@ -311,9 +333,11 @@ proc resolveWhenBlocks*(m: var Module, target: string) =
   for d in m.decls: resolved.add(whenDeclsFor(d, target))
   m.decls = resolved
 
-# Import resolution: the importer's directory first, then the stdlib
-# (--root flag, TUCK_STDLIB env var, or std/ next to the compiler binary).
 proc resolveImport*(importerPath, module: string): string =
+  ## Import resolution: the importer's directory first, then the stdlib
+  ## (--root flag, TUCK_STDLIB env var, or std/ next to the compiler binary).
+  ## The first candidate that exists wins; none existing is a ModuleError
+  ## listing every path tried.
   var candidates = @[importerPath.parentDir / (module & ".tuck")]
   if projectRoot != "":
     candidates.add(projectRoot / (module & ".tuck"))
@@ -374,6 +398,9 @@ proc loadProgram*(entryPath: string): seq[LoadedModule] =
   var order: seq[LoadedModule]
 
   proc visit(path: string, isEntry: bool) =
+    ## Loads `path` after its imports (depth-first), so the order is
+    ## dependency-first; a module reached again while still being visited is an
+    ## import cycle.
     let ap = absolutePath(path)
     if ap in done: return
     if ap in visiting:
@@ -403,6 +430,8 @@ proc loadProgramIndexed*(entryPath: string):
   var sigOnly = initTable[string, IndexEntry]()
 
   proc visit(path: string, isEntry: bool) =
+    ## As `loadProgram`'s walk, except an import with a valid index entry is
+    ## served from the index (signatures only) instead of being loaded.
     let ap = absolutePath(path)
     if ap in done: return
     if ap in visiting:

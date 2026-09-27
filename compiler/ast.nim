@@ -26,23 +26,28 @@ import hashes, std/options
 
 type
   Span* = object
+    ## A source position: 1-based line and column, and the file. A node built
+    ## by a later pass has line 0; an imported type decl's file carries
+    ## `ImportedTypeMarker`.
     line*: int
     col*: int
     file*: string
 
-  # What every AST node has: where it came from, and who it is.
-  #
-  # `id` is the handle the semantic layer uses. Before this existed only Expr
-  # carried one, so a Decl or a Type could be a lookup KEY but never a lookup
-  # TARGET — which is why passes ask "which declaration is named X" and scan
-  # the decl list to answer. Giving Decl and Type identity is what lets those
-  # scans become table reads, and what lets a reference point AT a declaration
-  # instead of describing it by name.
   Node* = ref object of RootObj
+    ## What every AST node has: where it came from, and who it is.
+    ##
+    ## `id` is the handle the semantic layer uses. Before this existed only Expr
+    ## carried one, so a Decl or a Type could be a lookup KEY but never a lookup
+    ## TARGET — which is why passes ask "which declaration is named X" and scan
+    ## the decl list to answer. Giving Decl and Type identity is what lets those
+    ## scans become table reads, and what lets a reference point AT a declaration
+    ## instead of describing it by name.
     id*: NodeId
     span*: Span
 
   EffectMarker* = enum
+    ## The effects a fn may declare in its bracket (`[io]`, `[no_alloc]`, ...).
+    ## `ast_ops.effectName` is each one's source spelling.
     emIo
     emNoAlloc
     emIrqSafe
@@ -129,11 +134,15 @@ type
     span*: Span
 
   TypeAttr* = object
+    ## One `name` or `name: value` entry of an attribute bracket, with the value
+    ## kept as source text.
     name*: string
     value*: string
     span*: Span
 
   FieldDef* = object
+    ## One field of a record, variant payload, object or actor: its name, type,
+    ## attributes and optional initialiser.
     name*: string
     typ*: Type
     attrs*: seq[TypeAttr]
@@ -151,6 +160,8 @@ type
     ## positional construction `(name, expr)` still compiles.
 
   VariantDef* = object
+    ## One variant of a sum type: its name and payload fields, plus an explicit
+    ## ordinal when it mirrors a C enum.
     name*: string
     fields*: seq[FieldDef]
     value*: string  # `A = 10` — explicit ordinal, needed to match a C enum;
@@ -158,11 +169,15 @@ type
     span*: Span
 
   Transition* = object
+    ## One `From -> To` edge of a sum type's `transitions:` table.
     `from`*: string
     to*: string
     span*: Span
 
   TypeKind* = enum
+    ## The shapes a type can take: a name, a tuple, an application
+    ## (`Seq[int]`, `!T`), a fn type, a record, a sum, a `+` union, an effect
+    ## annotation, or a field rename.
     tkNamed
     tkTuple
     tkApp
@@ -174,6 +189,9 @@ type
     tkRename
 
   Type* = ref object of Node
+    ## A type as written (or as the checker built it): one case branch per
+    ## TypeKind, plus the attributes on it and, once mangled, the name the
+    ## user wrote.
     attrs*: seq[TypeAttr]
     sourceName*: Option[string]  ## see SourceName note below
     case kind*: TypeKind
@@ -217,11 +235,14 @@ type
       renames*: seq[(string, string)]
 
   Param* = object
+    ## One fn parameter: a name and a type. Tuck fns take one payload record,
+    ## so parameters are that record's fields.
     name*: string
     typ*: Type
     span*: Span
 
   PatternKind* = enum
+    ## The shapes a match pattern can take.
     pkWild
     pkVar       # a bare name: a variant, an enum tag or an error name to test
     pkBind      # a bare name the checker found to BIND the subject in its arm
@@ -234,6 +255,8 @@ type
     pkOr
 
   Pattern* = ref object
+    ## One match pattern, one case branch per PatternKind. Or-patterns nest as
+    ## a binary tree.
     span*: Span
     case kind*: PatternKind
     of pkWild:
@@ -258,38 +281,42 @@ type
     call*: Expr          # an ordinary member call; its args[0] reads bindName
 
   MatchArm* = object
+    ## One arm of a `match`: pattern, optional guard (never produced by the
+    ## parser today) and body.
     pattern*: Pattern
     guard*: Expr
     body*: Expr
     span*: Span
 
-  # `on select` arm (spec §9.3). Phase B: message sources only — `source` is a
-  # message handler name; timer/timeout/shutdown sources come later.
   SelectArm* = object
+    ## `on select` arm (spec §9.3). Phase B: message sources only — `source` is a
+    ## message handler name; timer/timeout/shutdown sources come later.
     source*: string      # actor: message handler name. task: "read"/"timeout".
     arg*: Expr           # task select: the fd (read) or ms (timeout); else nil
     binding*: seq[Param] # `-> {x, y}` payload binding (may be empty)
     body*: Expr
     span*: Span
 
-  # What a task select arm's `source` string MEANS. The parser stores the
-  # source verbatim — including dotted forms like `timeout.5s`, which it
-  # concatenates into one opaque string — so the raw field cannot be compared
-  # against "read"/"timeout" safely: `timeout.5s` is not `timeout`.
-  #
-  # An enum rather than those bare string compares, because the compare is
-  # what made a whole handler body vanish: an arm the emitter did not
-  # recognise fell through to `discard` and dropped its body with no
-  # diagnostic. Classifying once and matching exhaustively means a shape the
-  # backend cannot lower is a branch someone must WRITE, not a string that
-  # quietly matches nothing.
   SelectSourceKind* = enum
+    ## What a task select arm's `source` string MEANS. The parser stores the
+    ## source verbatim — including dotted forms like `timeout.5s`, which it
+    ## concatenates into one opaque string — so the raw field cannot be compared
+    ## against "read"/"timeout" safely: `timeout.5s` is not `timeout`.
+    ##
+    ## An enum rather than those bare string compares, because the compare is
+    ## what made a whole handler body vanish: an arm the emitter did not
+    ## recognise fell through to `discard` and dropped its body with no
+    ## diagnostic. Classifying once and matching exhaustively means a shape the
+    ## backend cannot lower is a branch someone must WRITE, not a string that
+    ## quietly matches nothing.
     sskRead              ## `read <fd>` — wait for the fd to become readable
     sskTimeout           ## `timeout <ms>` — plain deadline, arg carries the ms
     sskTimeoutTyped      ## `timeout.5s` — dotted duration; parsed, NOT lowered
     sskOther             ## anything else: an actor handler name, or unbuilt
 
   BinOp* = enum
+    ## The binary operators. Division comes in two explicit forms; `boXor` has
+    ## no source spelling yet.
     boAdd, boSub, boMul, boMod
     # Division names its arithmetic (R1): `/i` truncating integer divide,
     # `/f` float divide. There is no operand-inferred `/` — the two lower to
@@ -300,22 +327,28 @@ type
     boRangeIncl, boRangeExcl
 
   UnaryOp* = enum
+    ## The unary operators: negation, `not`, a `+ Type` composition entry, and
+    ## postfix `?` propagation.
     uoNeg
     uoNot
     uoComposition
     uoPropagate  # expr? — pass the error upward; enclosing fn must return !T
 
   ChainOp* = enum
+    ## How a chain step attaches. Only `..` (coDotDot) is produced; a plain `.`
+    ## is a field access, not a chain step.
     coDot
     coDotDot
 
-  # Identity for the semantic layer. Assigned once, right after parsing, and
-  # carried through every later pass — including a per-target clone — so the
-  # Resolution built during checking stays reachable from a rewritten tree.
-  # 0 means "not yet assigned" (a node built by a later pass).
   NodeId* = distinct uint32
+    ## Identity for the semantic layer. Assigned once, right after parsing, and
+    ## carried through every later pass — including a per-target clone — so the
+    ## Resolution built during checking stays reachable from a rewritten tree.
+    ## 0 means "not yet assigned" (a node built by a later pass).
 
   ChainStep* = object
+    ## One `..step {arg}` of a builder chain: the step's name or call target, its
+    ## payload, and its own id (a step resolves to a call).
     op*: ChainOp
     target*: Expr
     arg*: Expr
@@ -323,6 +356,9 @@ type
     id*: NodeId      # identity for the Resolution (a step can resolve to a call)
 
   ExprKind* = enum
+    ## Every expression and statement node kind. Each backend's and the
+    ## checker's dispatch names all of them, so a new kind stops the build until
+    ## every stage handles it.
     exkLit
     exkVar
     exkField
@@ -436,6 +472,8 @@ type
     ckMerge    ## `{a, b} merge` — flatten the union of the members' fields
 
   Expr* = ref object of Node
+    ## An expression or statement: one case branch per ExprKind. Statements are
+    ## expressions here (`if`, `match` and blocks can produce values).
     sourceName*: Option[string]  ## see SourceName note below
     case kind*: ExprKind
     of exkLit:
@@ -562,6 +600,8 @@ type
                         # this node stays small and deepCopy/JSON-safe
 
   LitKind* = enum
+    ## The literal kinds. `lkUnit` is the `none` keyword: the one value of
+    ## the unit type.
     lkInt, lkFloat, lkStr, lkBool, lkUnit
 
   # Imported type decls are injected into the importer for checking and
@@ -605,18 +645,18 @@ const
 const satisfiesMark* = "<satisfies>"
 
 type
-  # A function signature as stored in the .tuck-cache signature index:
-  # enough to typecheck an importer without deserializing the module's AST.
-  # What a module EXPORTS, in the form that survives to disk. This is the
-  # cross-module contract: msgpack'd into .tuck-cache so a later run can check
-  # against an import without re-reading its source, which is what keeps the
-  # stdlib out of every compile.
-  #
-  # Anything a caller must know to check a call correctly belongs here. If a
-  # field is missing, the check silently weakens the moment the callee comes
-  # from cache instead of source — effects were exactly that: without them an
-  # imported [io] fn looked pure to its callers.
   SigInfo* = object
+    ## A function signature as stored in the .tuck-cache signature index:
+    ## enough to typecheck an importer without deserializing the module's AST.
+    ## What a module EXPORTS, in the form that survives to disk. This is the
+    ## cross-module contract: msgpack'd into .tuck-cache so a later run can check
+    ## against an import without re-reading its source, which is what keeps the
+    ## stdlib out of every compile.
+    ##
+    ## Anything a caller must know to check a call correctly belongs here. If a
+    ## field is missing, the check silently weakens the moment the callee comes
+    ## from cache instead of source — effects were exactly that: without them an
+    ## imported [io] fn looked pure to its callers.
     name*: string
     params*: seq[Param]
     ret*: Type
@@ -632,6 +672,8 @@ type
     line*: int
 
   DeclKind* = enum
+    ## Every declaration kind. `checkDecl`, `mangleMember` and the three
+    ## backends' decl dispatches name all of them.
     dkType
     dkObject
     dkRegistry
@@ -705,6 +747,8 @@ type
                 # be active on the run that wrote the cache.
 
   Decl* = ref object of Node
+    ## A declaration: one case branch per DeclKind, with the name it declares
+    ## (and, once mangled, the name the user wrote).
     name*: string
     sourceName*: Option[string]  ## see SourceName note below
     case kind*: DeclKind
@@ -869,6 +913,8 @@ type
       selectArms*: seq[SelectArm]
 
   Module* = object
+    ## One parsed file: its path segments and its top-level declarations, in
+    ## source order.
     path*: seq[string]
     decls*: seq[Decl]
     span*: Span
@@ -883,7 +929,9 @@ type
 
 proc `==`*(a, b: NodeId): bool {.borrow.}
 proc hash*(a: NodeId): Hash {.borrow.}
-proc `$`*(a: NodeId): string = "n" & $uint32(a)
+proc `$`*(a: NodeId): string =
+  ## A node id as dumps print it: `n42`.
+  "n" & $uint32(a)
 
 # Operations over these types (children/assignIds/clearIds/newNodeId/
 # effectName/enumDomain/writtenName) now live in ast_ops.nim, imported and

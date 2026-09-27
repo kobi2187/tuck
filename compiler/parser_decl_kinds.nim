@@ -62,9 +62,10 @@ proc parseBareParam*(p: var Parser, pSp: Span): Param =
   discard p.expect(tkColon)
   Param(name: paramName, typ: p.parseType(), span: pSp)
 
-# [packed, align: 2, ...] — attribute bracket on a declaration (appends,
-# since some callers pre-seed attrs)
 proc parseDeclAttrs*(p: var Parser, attrs: var seq[TypeAttr]) =
+  ## [packed, align: 2, ...] — attribute bracket on a declaration (appends,
+  ## since some callers pre-seed attrs)
+  ## `invariant` is refused here: it is a block inside the type body.
   if p.current().kind != tkLBracket: return
   discard p.advance()
   while p.current().kind != tkRBracket and p.current().kind != tkEOF:
@@ -81,9 +82,9 @@ proc parseDeclAttrs*(p: var Parser, attrs: var seq[TypeAttr]) =
       discard p.advance()
   discard p.expect(tkRBracket)
 
-# invariant: block — one predicate per line, stored as dkExpr members
-# (spec 4.7; the only form — inline/attr invariants are parse errors)
 proc parseInvariantBlock*(p: var Parser, members: var seq[Decl]) =
+  ## invariant: block — one predicate per line, stored as dkExpr members
+  ## (spec 4.7; the only form — inline/attr invariants are parse errors)
   let fSp = p.getSpan()
   discard p.advance() # eat "invariant"
   discard p.expect(tkColon)
@@ -116,6 +117,8 @@ proc parsePendingHole*(p: var Parser): Decl =
   Decl(span: sp, kind: dkExpr, expr: Expr(span: sp, kind: exkTripleDot))
 
 proc isPendingHole*(p: Parser): bool =
+  ## Does the current line begin with `...` — an unwritten body standing in a
+  ## member position?
   p.current().kind == tkTripleDot
 
 proc isSatisfiesLine*(p: Parser): bool =
@@ -163,6 +166,9 @@ proc parseObjectField*(p: var Parser): FieldDef =
   FieldDef(name: fName, typ: fType, attrs: @[], span: fSp, default: init)
 
 proc parseDecisionBody*(p: var Parser): Expr =
+  ## A decision table's rows. Each `| pat pat ... -> body` becomes a
+  ## subject-less one-arm `match` whose pattern is a tuple of the columns —
+  ## the shape lowering_decisions reads back.
   let sp = p.getSpan()
   discard p.expect(tkNewline)
   discard p.expect(tkIndent)
@@ -445,6 +451,7 @@ proc withoutAttr*(t: Type, name: string): Type =
   result.attrs = kept
 
 proc parseImportDecl*(p: var Parser, sp: Span): Decl =
+  ## `import name` — one module per line, resolved later by the loader.
   discard p.advance()
   let modName = p.expectMemberName("Expected module name after 'import'").value
   Decl(span: sp, kind: dkImport, name: modName)
@@ -460,6 +467,8 @@ proc siftSatisfies*(members: seq[Decl], sats: var seq[string]): seq[Decl] =
       result.add(m)
 
 proc parseStaticAssertDecl*(p: var Parser, sp: Span): Decl =
+  ## `static_assert <expr>` — checked by the typechecker, asserted at compile
+  ## time where the backend can.
   discard p.advance()
   Decl(span: sp, kind: dkStaticAssert, assertExpr: p.parseExpr())
 
@@ -551,6 +560,9 @@ proc parseOneParam*(p: var Parser, params: var seq[Param]) =
     params.add(parseBareParam(p, pSp))
 
 proc parseDistinctDecl*(p: var Parser, sp: Span): Decl =
+  ## `distinct Name = T [attrs]` — a type declaration whose body carries a
+  ## `distinct` attribute, so the checker treats it as a new type rather than
+  ## an alias.
   discard p.advance()
   let name = p.expectTypeName("distinct type").value
   discard p.expect(tkAssign)
@@ -614,11 +626,11 @@ proc parseVariant*(p: var Parser, what: string): VariantDef =
   if p.current().kind == tkNewline: discard p.advance()
   VariantDef(name: vName, fields: vFields, span: vSp)
 
-# fnsig NAME[T, ...] = {params} -> ret — a named function-signature type
-# (spec D#10c). params read exactly like a fn's ({a: int, b: int}); ret
-# accepts anything a fn returns (a {struct}, a bare type, void, or !T/?T).
-# NAME then usable as a type, `Mapper[int, str]` once instantiated.
 proc parseFnSigDecl*(p: var Parser, sp: Span): Decl =
+  ## fnsig NAME[T, ...] = {params} -> ret — a named function-signature type
+  ## (spec D#10c). params read exactly like a fn's ({a: int, b: int}); ret
+  ## accepts anything a fn returns (a {struct}, a bare type, void, or !T/?T).
+  ## NAME then usable as a type, `Mapper[int, str]` once instantiated.
   discard p.advance()  # eat `fnsig`
   let name = p.expectTypeName("fnsig").value
   let generics = p.parseGenericParams()
@@ -640,6 +652,7 @@ proc parseFnSigDecl*(p: var Parser, sp: Span): Decl =
               sigParams: params, sigReturn: ret)
 
 proc parseTransitionsBlock*(p: var Parser, transitions: var seq[Transition]) =
+  ## A sum type's `transitions:` block: one `From -> To` edge per line.
   discard p.advance()          # `transitions`
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
@@ -760,12 +773,16 @@ proc parseResourceCount(p: var Parser, kind, attr, raw: string,
     0
 
 proc resourceOnFullFromName*(name: string, dest: var ResourceOnFull): bool =
+  ## The on-full behaviour a `resources:` knob value names (`absent`,
+  ## `error`); false for any other word.
   case name
   of "absent": dest = rofAbsent; true
   of "error":  dest = rofError;  true
   else: false
 
 proc resourceOnFinishFromName*(name: string, dest: var ResourceOnFinish): bool =
+  ## The on-finish behaviour a `resources:` knob value names (`none`, `flush`,
+  ## `shutdown`); false for any other word.
   case name
   of "none":     dest = rfNone;     true
   of "flush":    dest = rfFlush;    true
@@ -929,8 +946,9 @@ proc parseSignatureTail*(p: var Parser, retType: Type,
   p.parseEffectList(result.effects, result.errTypes, result.emit,
                     result.resources, strict)
 
-# registry Name: | Variant {fields} — global event registry (spec 10)
 proc parseRegistryDecl*(p: var Parser, sp: Span): Decl =
+  ## registry Name: | Variant {fields} — global event registry (spec 10)
+  ## Each variant is one event; its fields are the event's payload.
   discard p.advance()
   let name = p.expectTypeName("registry").value
   discard p.expect(tkColon)
@@ -985,8 +1003,9 @@ proc parseSelectDecl*(p: var Parser, sp: Span): Decl =
     arms.add(p.parseSelectArm())
   Decl(span: sp, kind: dkSelect, selectArms: arms)
 
-# register Name at 0xADDR: bit fields — type-safe MMIO (spec 8.1)
 proc parseRegisterDecl*(p: var Parser, sp: Span): Decl =
+  ## register Name at 0xADDR: bit fields — type-safe MMIO (spec 8.1)
+  ## Each indented line is one named bit field of the register.
   discard p.advance() # eat "register"
   let name = p.expect(tkIdent, "Expected register name").value
   discard p.expect(tkIdent) # eat "at"
@@ -1000,6 +1019,8 @@ proc parseRegisterDecl*(p: var Parser, sp: Span): Decl =
        regFields: fields)
 
 proc parseExternBinding*(p: var Parser): ExternBinding =
+  ## The optional `[c, header: "x.h", lib: "z", ...]` bracket after `extern`:
+  ## how the block's fns bind. No bracket means runtime-implemented.
   if p.current().kind != tkLBracket: return
   discard p.advance()
   while p.current().kind notin {tkRBracket, tkEOF}:
@@ -1056,8 +1077,10 @@ proc parseSigFn*(p: var Parser, what: string): Decl =
        fnBody: nil, fnErrorTypes: sig.errTypes, externEmit: sig.emit,
        fnResourceKinds: sig.resources)
 
-# task name({params}) -> ret [effects]: body (spec 9.2)
 proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
+  ## task name({params}) -> ret [effects]: body (spec 9.2)
+  ## A task runs to completion as its own coroutine; the signature tail is the
+  ## same `parseSignatureTail` a fn uses, and an `emit:` there is refused.
   discard p.advance()
   let name = p.expect(tkIdent, "Expected task name").value
   let params = parseParamList(p)
@@ -1087,8 +1110,10 @@ proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
               taskErrorTypes: sig.errTypes, taskResourceKinds: sig.resources,
               taskBody: body)
 
-# fn name[T]({params}) -> ret [effects]: body — also `on select` arms and event handlers
 proc parseFnDecl*(p: var Parser, sp: Span): Decl =
+  ## fn name[T]({params}) -> ret [effects]: body — also `on select` arms and event handlers
+  ## `on name(...)` handlers parse here too; `on select:` is handed to
+  ## parseSelectDecl. A body-less fn is a signature (extern, pending).
   if p.current().kind == tkOn and p.peek(1).kind == tkSelect:
     return p.parseSelectDecl(sp)
   discard p.advance()
@@ -1114,8 +1139,9 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
   # second, quieter way to mean the same thing.
   if body.isUnwrittenBody(): markUnimplemented(result)
 
-# decision name(inputs) -> ret: pattern-row table (spec 6.1)
 proc parseDecisionDecl*(p: var Parser, sp: Span): Decl =
+  ## decision name(inputs) -> ret: pattern-row table (spec 6.1)
+  ## Parsed as a fn flagged `isDecision`, whose body is the rows.
   discard p.advance()
   let name = p.expect(tkIdent, "Expected decision name").value
   let params = parseParamList(p)
@@ -1142,9 +1168,9 @@ proc parseSigMember*(p: var Parser, what: string): Decl =
     return p.parseSigFn(what)
   if p.current().kind == tkNewline: discard p.advance()
 
-# Body-less signature block: `: NEWLINE INDENT (fn name(params) -> ret [fx])* DEDENT`
-# Shared by pending: (typed holes) and extern: (runtime / C implemented).
 proc parseSigBlock*(p: var Parser, what: string): seq[Decl] =
+  ## Body-less signature block: `: NEWLINE INDENT (fn name(params) -> ret [fx])* DEDENT`
+  ## Shared by pending: (typed holes) and extern: (runtime / C implemented).
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
   while p.current().kind == tkNewline:
@@ -1154,8 +1180,9 @@ proc parseSigBlock*(p: var Parser, what: string): seq[Decl] =
     decls.add(p.parseSigMember(what))
   decls
 
-# extern: / extern [c, header: "x.h"]: — sigs implemented by tuck_rt or C
 proc parseExternDecl*(p: var Parser, sp: Span): Decl =
+  ## extern: / extern [c, header: "x.h"]: — sigs implemented by tuck_rt or C
+  ## The binding bracket applies to every member of the block.
   discard p.advance() # extern
   let binding = p.parseExternBinding()
   let decls = p.parseSigBlock("extern")
@@ -1163,6 +1190,8 @@ proc parseExternDecl*(p: var Parser, sp: Span): Decl =
   Decl(span: sp, kind: dkExtern, name: "extern", mixinMembers: decls)
 
 proc parsePendingDecl*(p: var Parser, sp: Span): Decl =
+  ## `pending:` — a block of typed holes: signatures with no bodies yet, each
+  ## marked pending so it stubs out and shows in the pending report.
   discard p.advance()
   let decls = p.parseSigBlock("pending")
   for d in decls: d.isPending = true

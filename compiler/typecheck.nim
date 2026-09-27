@@ -680,6 +680,8 @@ proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   tc.synthesize(bc)
 
 proc poolOpNamed(member: string): Option[PoolOpKind] =
+  ## The pool operation a member name spells (`acquire`, `release`, `read`,
+  ## `write`, `addr`), or none for any other member.
   case member
   of "acquire": some(poAcquire)
   of "release": some(poRelease)
@@ -724,6 +726,7 @@ proc failIfAddrOfCheckedCell(tc: TypeChecker, e: Expr, elem: Type) =
            "is never checked against it", e.span)
 
 proc takesParam(sig: FnSig, name: string): bool =
+  ## Does the signature declare a parameter called `name`?
   for p in sig.params:
     if p.name == name: return true
 
@@ -741,6 +744,7 @@ proc failIfPoolPayloadStray(e: Expr, qualified: string, sig: FnSig) =
            f.value.span)
 
 proc operand(args: seq[Expr], i: int): Expr =
+  ## The `i`th argument, or nil when the call has fewer.
   if i < args.len: args[i] else: nil
 
 proc asPoolOp(tc: var TypeChecker, e: Expr, op: PoolOpKind,
@@ -1186,6 +1190,8 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
 # unhandled !T/?T may not reach an operator at all.
 
 proc isOptional(t: Type): bool =
+  ## Is `t` exactly `?T` — the one wrapper a boolean context may read as "is
+  ## present" without unwrapping?
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name == "?" and t.args.len == 1
 
@@ -1200,6 +1206,8 @@ type
     ## expression.
 
 proc operands(lt, rt: Type, e: Expr): array[2, Operand] =
+  ## Both sides of binary `e` with their types, so a check can loop over them
+  ## and report against the offending side.
   [(lt, e.left), (rt, e.right)]
 
 proc failIfUnhandled(lt, rt: Type, e: Expr) =
@@ -1223,6 +1231,7 @@ proc widerOperand(lt, rt: Type): Type =
   if isFlexible(lt): rt else: lt
 
 proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
+  ## `+ - * %`: both operands must agree; the result has their type.
   tc.failIfMismatched(lt, rt, "arithmetic", e.span)
   widerOperand(lt, rt)
 
@@ -1242,11 +1251,14 @@ proc failIfWrongDivKind(lt, rt: Type, e: Expr) =
            side.span)
 
 proc synthDivision(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
+  ## `/i` and `/f`: the operator must match the operand kind (integer or
+  ## float), the operands must agree, and the result has their type.
   failIfWrongDivKind(lt, rt, e)
   tc.failIfMismatched(lt, rt, "division", e.span)
   widerOperand(lt, rt)
 
 proc synthComparison(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
+  ## `== != < > <= >=`: both operands must agree; the result is `bool`.
   tc.failIfMismatched(lt, rt, "comparison", e.span)
   Type(span: e.span, kind: tkNamed, name: "bool")
 
@@ -1259,6 +1271,7 @@ proc synthRange(lt, rt: Type, e: Expr): Type =
   Type(span: e.span, kind: tkNamed, name: "range")
 
 proc boolOpName(op: BinOp): string =
+  ## How a boolean operator is spelled in a diagnostic.
   case op
   of boAnd: "and"
   of boOr: "or"
@@ -1275,6 +1288,8 @@ proc synthBoolOp(lt, rt: Type, e: Expr): Type =
   Type(span: e.span, kind: tkNamed, name: "bool")
 
 proc synthBinary(tc: var TypeChecker, e: Expr): Type =
+  ## Types a binary expression: both operands first, an unhandled `!T`/`?T`
+  ## refused, then the operator family decides the result type.
   let lt = tc.synthesize(e.left)
   let rt = tc.synthesize(e.right)
   failIfUnhandled(lt, rt, e)
@@ -1703,6 +1718,9 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
     tc.checkChainStep(step, e, result, recvT, fields)
 
 proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
+  ## Checking mode: synthesize `e` with `expected` pushed as context, then
+  ## require the result to be compatible with it. `what` names the position
+  ## in the error message.
   if e == nil or expected == nil: return
   var actual: Type
   tc.withExpected(expected):
@@ -1755,6 +1773,9 @@ proc bindNamedParam(tc: TypeChecker, paramName: string, actual: Type,
 proc inferBindings(tc: TypeChecker, declared, actual: Type,
                    generics: seq[string], bindings: var Table[string, Type],
                    fnName: string, sp: Span) =
+  ## Unifies a declared parameter type against the argument's actual type,
+  ## recording what each of `generics` must be in `bindings`. A param bound
+  ## twice to incompatible types is an error.
   if declared == nil or actual == nil: return
   # A value whose type is the ENCLOSING fn's type param binds the parameter
   # to that param by NAME: `fn mk[K, V]({k: K, v: V}) -> Pair[K, V]` builds
@@ -2535,6 +2556,9 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
 
 # === CALL SYNTHESIS ========================================================
 proc checkFnValueCall(tc: var TypeChecker, fnT: Type, e: Expr): Type =
+  ## A call through a fn-typed VALUE: its parameter list is rebuilt from the
+  ## tkFunc (names where it has them, `argN` otherwise) and checked like any
+  ## call. The result is the fn type's return.
   if fnT == nil or fnT.kind != tkFunc:
     fail("Type Error: expression is not callable", e.span)
   var params: seq[Param]
@@ -2875,6 +2899,8 @@ proc failIfChainAfterPayloadCall(tc: TypeChecker, e: Expr) =
        "first, not more dots on the same line.", e.span)
 
 proc isRegistryRaiseCall(e: Expr): bool =
+  ## Is `e` `{payload} Registry.raise Event` — a call whose callee is the
+  ## raise of a declared registry event?
   e != nil and e.callee != nil and e.callee.kind == exkCall and
     e.callee.callee != nil and e.callee.callee.kind == exkVar and
     registryEventOwner(e.callee.callee.name) != ""
@@ -3122,6 +3148,7 @@ proc payloadCarriesTypeParam(tc: var TypeChecker, e: Expr, tp: string): bool =
   ## `[C: Indexable[E]]` is the group's `at` only because `c` is the C, and
   ## an unrelated call to a same-named concrete fn must not be hijacked.
   proc isParam(t: Type, tp: string): bool =
+    ## Is `t` the type param `tp`, spelled either way?
     # A type param reaches here spelled `<typeparam:C>`, not `C` — the same
     # sentinel inferBindings reads through typeParamName.
     t != nil and (typeParamName(t) == tp or
@@ -4126,6 +4153,9 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret)
 
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
+  ## The checker's expression dispatch: one `synth*` per ExprKind, no `else`,
+  ## so a new kind fails to compile here until it is typed. Kinds only
+  ## lowering builds are typed defensively rather than crashing.
   case e.kind
   of exkLit: tc.synthLit(e)
   of exkVar: tc.synthVar(e)
@@ -4190,6 +4220,8 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
 # else is indexing (`xs[i]`). The parser deliberately does not guess.
 
 proc typeAppFromBracket(tc: var TypeChecker, e: Expr, name: string): Type =
+  ## `Name[a, b]` for a declared type: a type application, with its arity
+  ## checked against the declaration's generic params.
   # `Name[a, b]` where Name is declared — the type-application form. Argument
   # arity is checked against the decl's generic params when it has any;
   # value arguments (`Array[128, u8]`) carry sizes and are not resolved here.
@@ -4223,6 +4255,8 @@ proc seqElem(recvT: Type): Type =
 
 proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
                  sp: Span): Expr =
+  ## The runtime intrinsic an index or index-assignment calls: `tuckAt`/
+  ## `tuckSetAt` for a Seq, the fixed-array versions for an `Array[N, T]`.
   # A Seq index lowers to a RESERVED RUNTIME INTRINSIC, not to a call into
   # std/seq. `tuckAt`/`tuckSetAt` are always linked (tuck_rt is imported by
   # every emitted file, unconditionally), so the sugar works whether or not
@@ -4250,11 +4284,11 @@ proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
          fnName & "' for it", sp)
   Expr(span: sp, kind: exkVar, name: fnName)
 
-# Indexing a VALUE: `at` when value is nil, `setAt` when it is not. The
-# resolved call is stamped as a side node (the house idiom — see exkField's
-# callNode) so the source node survives; codegen emits the stamped call.
 proc resolveIndex(tc: var TypeChecker, br: Expr, value: Expr,
                   recvT: Type, sp: Span): Expr =
+  ## Indexing a VALUE: `at` when value is nil, `setAt` when it is not. The
+  ## resolved call is stamped as a side node (the house idiom — see exkField's
+  ## callNode) so the source node survives; codegen emits the stamped call.
   if br.brArgs.len != 1:
     fail("Type Error: indexing takes exactly one index, got " &
          $br.brArgs.len, sp)
@@ -4270,6 +4304,9 @@ proc resolveIndex(tc: var TypeChecker, br: Expr, value: Expr,
        args: @[Expr(span: sp, kind: exkStruct, fields: fields)])
 
 proc synthBracket(tc: var TypeChecker, e: Expr): Type =
+  ## `x[...]`: a type application when `x` names a declared type, else an
+  ## index — stamped with its resolved intrinsic call and typed off the
+  ## receiver's element type.
   if e.brReceiver != nil and e.brReceiver.kind == exkVar and
      tc.typeDecls.hasKey(e.brReceiver.name):
     return tc.typeAppFromBracket(e, e.brReceiver.name)
@@ -4316,6 +4353,8 @@ proc failIfMutatingIndexTarget(tc: var TypeChecker, e: Expr) =
          " — it was declared with 'let'; use 'var'", e.span)
 
 proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
+  ## `x[i] = v`: refuses a type application or an immutable target, stamps the
+  ## resolved setter call, checks `v` against the element type, and is `void`.
   let br = e.brTarget
   if br.brReceiver != nil and br.brReceiver.kind == exkVar and
      tc.typeDecls.hasKey(br.brReceiver.name):
@@ -4334,6 +4373,8 @@ proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
   tc.synthesize(ac)
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type =
+  ## Synthesis mode: the type of `e`, recorded in the semantic layer (with any
+  ## `<uninit>` marker stripped from the stored copy) and returned.
   if e == nil: return afterErrorType(Span())
   result = tc.synthesizeKind(e)
   # Two different consumers, two different answers. The RETURNED type keeps
@@ -4777,6 +4818,9 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   tc.popScope()
 
 proc checkDecl(tc: var TypeChecker, d: Decl) =
+  ## The checker's declaration dispatch. Every DeclKind is named, so a new one
+  ## fails to compile here until it is decided; kinds whose content the
+  ## collect phase already checked are no-ops.
   if d == nil: return
   case d.kind
   of dkFn: tc.checkFnDecl(d)
@@ -4819,6 +4863,8 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     discard                 # recorded by the collect phase; no body to check
 
 proc sigStr(d: Decl): string =
+  ## One fn's signature as the pending report prints it:
+  ## `name({a: T, ...}) -> R`.
   var parts: seq[string]
   for p in d.fnParams:
     parts.add(p.name & ": " & typeName(p.typ))
@@ -4827,6 +4873,8 @@ proc sigStr(d: Decl): string =
     result.add(" -> " & typeName(d.fnReturnType))
 
 proc collectPending(decls: seq[Decl], acc: var seq[string]) =
+  ## Appends every `pending` fn in `decls`, members of objects, blocks and
+  ## actors included, as a signature line with its source line.
   for d in decls:
     if d == nil: continue
     case d.kind
@@ -4838,12 +4886,14 @@ proc collectPending(decls: seq[Decl], acc: var seq[string]) =
     of dkActor: collectPending(d.handlers, acc)
     else: discard
 
-# The compile-time TODO list: every debug build prints what is still unimplemented.
 proc pendingReport*(m: Module): seq[string] =
+  ## The compile-time TODO list: every debug build prints what is still unimplemented.
+  ## One line per `pending` fn in `m`, members of objects, blocks and actors included.
   collectPending(m.decls, result)
 
-# Same line format as pendingReport, from an index SigInfo (no AST needed).
 proc sigLine*(si: SigInfo): string =
+  ## Same line format as pendingReport, from an index SigInfo (no AST needed),
+  ## so a cached import's pending fns are listed without re-parsing it.
   var parts: seq[string]
   for p in si.params:
     parts.add(p.name & ": " & typeName(p.typ))
@@ -4922,6 +4972,9 @@ proc typecheckModule*(m: Module,
                       externBounds = initTable[string, seq[seq[Type]]](),
                       externAmbiguous = initTable[string, seq[string]](),
                       externBareOwner = initTable[string, string]()): seq[string] {.discardable.} =
+  ## Checks one module against what its imports export (the `extern*`
+  ## tables): collect signatures, bind consts, check every declaration, then
+  ## the module-level passes. Returns the module's unhandled-result shortcuts.
   var tc = newModuleChecker(m, externSigs, externPending)
   # An imported `fnsig` is a signature TYPE, not just another callable. Seed
   # that before collectSigs so a slot typed `Mapper[int, str]` from another
@@ -4981,9 +5034,9 @@ proc typecheckModule*(m: Module,
   tc.resolveInferredTypes()
   tc.reportUnhandled(m)
 
-# Signature export for the .tuck-cache index: same collection walk the
-# checker uses (nested fns in objects/mixins/actors included).
 proc moduleSigs*(m: Module): seq[SigInfo] =
+  ## Signature export for the .tuck-cache index: same collection walk the
+  ## checker uses (nested fns in objects/mixins/actors included).
   var tc = TypeChecker(module: m,
                        fnSigs: initTable[string, seq[FnSig]](),
                        typeDecls: initTable[string, Type](),
@@ -5094,6 +5147,8 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
     # directly and still sees everything it declared.
     let (restricted, allowed) = exportedNames(m)
     proc visible(n: string): bool =
+      ## Does `n` leave this module: everything when there is no `public:` list,
+      ## else only the listed names (and anything already qualified).
       not restricted or n in allowed or "::" in n
     var sigs: Table[string, seq[FnSig]]
     for n, sg in tc.fnSigs:

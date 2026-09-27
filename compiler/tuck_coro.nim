@@ -157,12 +157,17 @@ proc mco_get_bytes_stored*(co: ptr McoCoro): csize_t {.cdecl, importc, header: "
 # =============================================================================
 
 proc isDead*(co: ptr McoCoro): bool {.inline.} =
+  ## Has this minicoro coroutine returned from its entry function? A dead
+  ## coroutine can never be resumed.
   mco_status(co) == MCO_DEAD
 
 proc isSuspended*(co: ptr McoCoro): bool {.inline.} =
+  ## Is this minicoro coroutine parked at a yield (or not yet started), and so
+  ## resumable?
   mco_status(co) == MCO_SUSPENDED
 
 proc isRunning*(co: ptr McoCoro): bool {.inline.} =
+  ## Is this minicoro coroutine the one currently executing on this thread?
   mco_status(co) == MCO_RUNNING
 
 proc checkResult*(res: McoResult) {.inline.} =
@@ -188,6 +193,8 @@ template mcoYield*() =
 
 type
   CoroutineBackendKind* = enum
+    ## The context-switch engines this dispatcher was written for. Only
+    ## minicoro is vendored and selected (`SelectedBackend`).
     cbLibaco
     cbMinicoro
 
@@ -276,6 +283,8 @@ proc createBackend*(fn: pointer, stackSize: int, userData: pointer): UnifiedBack
       raise newException(ValueError, "Failed to create minicoro coroutine: " & $res)
 
 proc resume*(backend: UnifiedBackend) {.raises: [].} =
+  ## Switches into the coroutine until it yields or finishes. A failed switch
+  ## means a corrupt coroutine or stack and quits the process.
   when SelectedBackend == cbLibaco:
     aco_resume(backend.handle)
   else:
@@ -287,6 +296,7 @@ proc resume*(backend: UnifiedBackend) {.raises: [].} =
       quit("tuck: failed to resume coroutine (minicoro error " & $res & ")")
 
 proc yieldBackend*() =
+  ## Switches from the running coroutine back to whoever resumed it.
   when SelectedBackend == cbLibaco:
     aco_yield()
   else:
@@ -301,6 +311,8 @@ proc exitBackend*() =
     discard
 
 proc destroy*(backend: var UnifiedBackend) =
+  ## Frees the backend coroutine (not the shared stack, on libaco) and clears
+  ## the handle, so a second destroy is a no-op.
   when SelectedBackend == cbLibaco:
     if backend.handle != nil and backend.handle != mainCo.handle:
       aco_destroy(backend.handle)
@@ -313,12 +325,15 @@ proc destroy*(backend: var UnifiedBackend) =
       backend.handle = nil
 
 proc isFinished*(backend: UnifiedBackend): bool {.inline.} =
+  ## Has the backend coroutine run to the end of its entry function?
   when SelectedBackend == cbLibaco:
     isEnded(backend.handle)
   else:
     isDead(backend.handle)
 
 proc getUserData*(backend: UnifiedBackend): pointer {.inline.} =
+  ## The pointer given to the backend coroutine at creation — the `Coroutine`
+  ## object it belongs to.
   when SelectedBackend == cbLibaco:
     getArg(backend.handle)
   else:
@@ -419,6 +434,8 @@ proc destroyCoroutine*(c: Coroutine) =
 # =============================================================================
 
 proc raiseCoroutineError(msg: string) {.noinline, noreturn, stackTrace: off.} =
+  ## Raises a `CoroutineError` with `msg`. Kept out of line (and without a
+  ## stack-trace frame) so the hot switch paths stay small.
   var e: ref CoroutineError
   new(e)
   e.msg = msg
@@ -547,9 +564,15 @@ proc resume*(c: Coroutine) {.raises: [].} =
   else:
     c.state = csSuspended
 
-proc isFinished*(c: Coroutine): bool {.inline.} = c.state == csFinished
-proc isRunning*(c: Coroutine): bool {.inline.} = c.state == csRunning
-proc isSuspended*(c: Coroutine): bool {.inline.} = c.state == csSuspended
+proc isFinished*(c: Coroutine): bool {.inline.} =
+  ## Has this coroutine's body returned?
+  c.state == csFinished
+proc isRunning*(c: Coroutine): bool {.inline.} =
+  ## Is this coroutine the one executing now?
+  c.state == csRunning
+proc isSuspended*(c: Coroutine): bool {.inline.} =
+  ## Is this coroutine parked at a yield, waiting to be resumed?
+  c.state == csSuspended
 
 # =============================================================================
 # Yield
@@ -619,9 +642,14 @@ type
 var globalScheduler {.threadvar.}: Scheduler
   ## Thread-local scheduler instance
 
-proc readyCount(s: Scheduler): int {.inline.} = s.readyTail - s.readyHead
+proc readyCount(s: Scheduler): int {.inline.} =
+  ## How many coroutines are queued to run: the live span of the ring
+  ## buffer, head to tail.
+  s.readyTail - s.readyHead
 
 proc growReadyQueue(s: var Scheduler) =
+  ## Doubles the ready queue's capacity (64 to start). Raw `realloc`: the
+  ## queue holds plain pointers, never ARC-owned values.
   let newCap = if s.readyCap == 0: 64 else: s.readyCap * 2
   let p = cast[ptr UncheckedArray[Coroutine]](
     realloc(s.readyQueue, newCap * sizeof(Coroutine)))
@@ -656,6 +684,7 @@ proc spawn*(fn: proc() {.closure, gcsafe.}): Coroutine =
   ready(result)
 
 proc takeReady(): Coroutine =
+  ## Pops the next coroutine to run in FIFO order, or nil when none is ready.
   if globalScheduler.readyCount == 0: return nil
   result = globalScheduler.readyQueue[globalScheduler.readyHead]
   inc globalScheduler.readyHead
