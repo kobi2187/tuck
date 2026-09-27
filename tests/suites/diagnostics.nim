@@ -102,6 +102,24 @@ fn main() -> int:
 """
   t.hostRuns "`(a and b) or c` is true for false/true/true on every backend", 1
 
+  # TK-PA17 — one rename spelling, `old -> new` (ruled 2026-09-27). The colon
+  # form `alias(old: new)` read like a record literal and is refused with
+  # the fix.
+  t.src """
+fn main() -> int:
+  let ext = {trackId: 42, title: "x"}
+  let n = ext alias(trackId: id)
+  return n.id
+"""
+  t.badCheck "`alias(old: new)` is refused with TK-PA17", "TK-PA17"
+  t.src """
+fn main() -> int:
+  let ext = {trackId: 42, title: "x"}
+  let n = ext alias(trackId -> id)
+  return n.id
+"""
+  t.hostRuns "`alias(old -> new)` renames the field on every backend", 42
+
   # TK-PA12 — a parameter named after a BACKEND's keyword. Every other user
   # name gets a `tuck_` prefix; a parameter keeps what the author wrote, so
   # the word reaches that host verbatim. alloc.string found it: `with` gave

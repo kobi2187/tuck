@@ -163,7 +163,7 @@ fn main() -> int:
   let p = {x: 1, y: 2} Point
   let l = {tag: "here"} Label
   let moved = p with {y: 9}
-  let named = p alias(x: across, y: down)
+  let named = p alias(x -> across, y -> down)
   let both = {a: p, b: l} merge
   let fixed = p bake {x: 5}
   return moved.y + named.across + both.x + fixed.x - 16

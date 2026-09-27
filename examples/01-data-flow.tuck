@@ -24,6 +24,6 @@ fn main() -> void:
 
   # Alias example: map an external field layout to the local call shape.
   let externalTrack = {trackId: 101, title: "Deep Dive", durationMs: 212000}
-  let normalizedTrack = externalTrack alias(trackId: id, title: name, durationMs: length)
+  let normalizedTrack = externalTrack alias(trackId -> id, title -> name, durationMs -> length)
   normalizedTrack playTrack
   return

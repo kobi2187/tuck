@@ -971,7 +971,7 @@ Run-gated 42 on every backend.
 ```tuck
 let withOp = x bake {op: :plus}    # compile-time partial application
 let ctx = {episode, prefs} merge   # flatten member structs into one
-let t = ext alias(trackId: id, title: name)   # explicit rename; PARENS, source: target
+let t = ext alias(trackId -> id, title -> name)   # explicit rename; PARENS, old -> new
 ```
 
 `bake` slots emit as generic params, so calls through a baked slot are direct —

@@ -109,7 +109,7 @@ fn describe({id: int, name: str, length: int}) -> str:
 
 fn main() -> void [io]:
   let ext = {trackId: 42, title: "SlowJam", durationMs: 215000}
-  let norm = ext alias(trackId: id, title: name, durationMs: length)
+  let norm = ext alias(trackId -> id, title -> name, durationMs -> length)
   {text: norm describe} console::printLine
 """
   t.runs    "explicit-alias-still-correct", 0

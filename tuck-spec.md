@@ -367,7 +367,7 @@ naming convention, say). Contrast with `merge` (changes the field SET) and
 
 ```tuck
 let ext = {trackId: 42, title: "SlowJam", durationMs: 215000}
-let norm = ext alias(trackId: id, title: name, durationMs: length)
+let norm = ext alias(trackId -> id, title -> name, durationMs -> length)
 # norm: {id: 42, name: "SlowJam", length: 215000}
 norm describe   # subset/name matching now applies against the RENAMED fields
 ```
@@ -375,8 +375,12 @@ norm describe   # subset/name matching now applies against the RENAMED fields
 The call takes **parentheses**, not the `{}` struct-literal braces every
 other postfix call in this spec uses — a deliberate, sole exception, so a
 rename step is visually distinct from an ordinary call at a glance. Each
-`oldName: newName` pair says which of the receiver's fields to rename and
+`oldName -> newName` pair says which of the receiver's fields to rename and
 what to call it in the result; fields not mentioned pass through unchanged.
+The arrow is Tuck's one rename spelling — the same `old -> new` renames a
+composed type's fields (`A + B {x -> bx}`), an interface's members at
+`satisfies`, and a mixin's fns at `+` (ruled 2026-09-27). The colon form
+`alias(old: new)` is refused (TK-PA17).
 Renaming a field that does not exist on the receiver is a compile error. The
 result is a fresh, fully-typed struct (not a view over the original) — the
 usual subset-matching and missing-field checks (§2.5, §4.8) apply to it
@@ -384,11 +388,8 @@ exactly as they would to any other struct.
 
 Two fields ending up with the same name in the RESULT — whether one rename
 target collides with an untouched field, or two renames target the same new
-name — is intended to be a compile error, the same "no silent shadowing"
-rule `merge` enforces above. That check is not implemented yet: today
-`alias` does not validate the result for collisions, which can silently drop
-a field or (worse) produce emitted code that fails to compile downstream.
-Treat multi-field `alias` calls carefully until this is closed.
+name — is a compile error, the same "no silent shadowing" rule `merge`
+enforces above (`tests/suites/known_bugs.nim`, #16).
 
 ### 2.5 Subset Matching
 

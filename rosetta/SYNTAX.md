@@ -141,7 +141,7 @@ readable-under-`if r.ok` narrowing described in TOUR.md is the only route.
 ```tuck
 let all = input                          # the whole incoming payload
 let ctx = {episode, prefs} merge         # flatten into one struct
-let n = track alias(trackId: id, title: name)   # rename fields
+let n = track alias(trackId -> id, title -> name)   # rename fields
 let f = x bake {op: :plus}               # partial application; :name is a fn ref
 ```
 

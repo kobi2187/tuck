@@ -325,17 +325,26 @@ proc tryUnsafeMarker(p: var Parser): bool =
   false
 
 proc parseAliasStep(p: var Parser, expr: Expr): Expr =
-  ## expr alias(field: expr, ...) — record restructuring step (spec 2.5)
-  ## Parsed straight into an `alias` combinator node over a struct payload.
+  ## `expr alias(old -> new, ...)` — rename a flowing record's fields (spec
+  ## 2.4c). The arrow is Tuck's one rename spelling (TK-PA17); the colon form
+  ## `alias(old: new)` it replaced is refused with the fix. Parsed into the
+  ## same `alias` combinator node as before, over a struct whose field NAME
+  ## is the old name and whose value is the new name — so nothing after the
+  ## parser changed.
   let spAlias = p.getSpan()
   discard p.advance()
   discard p.expect(tkLParen)
   var fields: seq[FieldInit]
   while p.current().kind != tkRParen and p.current().kind != tkEOF:
     let name = p.expectMemberName("Expected field name in alias").value
-    discard p.expect(tkColon)
-    let valExpr = p.parseExpr()
-    fields.add((name, valExpr))
+    if p.current().kind == tkColon:
+      p.reportError("`alias` renames with `->`: write `" & name & " -> " &
+                    (if p.peek().kind in {tkIdent, tkAttr}: p.peek().value
+                     else: "newName") & "`", dc = dcPaRenameArrow)
+    discard p.expect(tkArrow, "Expected `->` after '" & name & "' in alias")
+    let targetSp = p.getSpan()
+    let target = p.expectMemberName("Expected the new field name in alias").value
+    fields.add((name, Expr(span: targetSp, kind: exkVar, name: target)))
     if p.current().kind == tkComma:
       discard p.advance()
   discard p.expect(tkRParen)

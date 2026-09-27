@@ -978,7 +978,7 @@ fn playTrack({id: int, name: str}) -> void:
 
 fn main() -> void:
   let ext = {trackId: 42, title: "x"}
-  let normalized = ext alias(trackId: id, title: name)
+  let normalized = ext alias(trackId -> id, title -> name)
   normalized playTrack
   return
 """
@@ -990,7 +990,7 @@ fn playTrack({id: int, name: str}) -> void:
 
 fn main() -> void:
   let ext = {trackId: 42, title: "x"}
-  let normalized = ext alias(trackId: id)
+  let normalized = ext alias(trackId -> id)
   normalized playTrack
   return
 """
@@ -999,7 +999,7 @@ fn main() -> void:
   t.src """
 fn main() -> void:
   let ext = {trackId: 42}
-  let normalized = ext alias(wrong: id)
+  let normalized = ext alias(wrong -> id)
   return
 """
   t.badCheck "alias source field must exist on the receiver", "does\\ not\\ exist"
@@ -2250,7 +2250,7 @@ fn playTrack({id: int, name: str, length: int}) -> void:
 
 fn main() -> void:
   let ext = {trackId: 42, title: "Slow Jam", durationMs: 215000}
-  let norm = ext alias(trackId: id, title: name, durationMs: length)
+  let norm = ext alias(trackId -> id, title -> name, durationMs -> length)
   norm playTrack
   return
 """

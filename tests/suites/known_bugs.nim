@@ -456,7 +456,7 @@ fn main() -> int:
   t.bugFixed "an unrecognised 'on select' arm does not silently discard its body"
 
   # 16. FIXED. `alias(...)` never checked its RESULT for field-name
-  # collisions: `ext alias(trackId: title, category: title)` (two sources
+  # collisions: `ext alias(trackId -> title, category -> title)` (two sources
   # renamed to the SAME target) type-checked clean AND emitted a Nim tuple
   # with 'title' written twice, which `nim check` rejects outright ("field
   # initialized twice") — a diagnostic about generated code the user never
@@ -478,7 +478,7 @@ fn main() -> int:
   t.src """
 fn main() -> int:
   let ext = {trackId: 42, category: 7}
-  let normalized = ext alias(trackId: title, category: title)
+  let normalized = ext alias(trackId -> title, category -> title)
   return 0
 """
   t.quietly: t.badCheck "alias() rejects two renamed fields colliding on the same target name", "twice|collis|already|duplicate"

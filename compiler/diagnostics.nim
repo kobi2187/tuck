@@ -74,6 +74,8 @@ type
                                           ## module's top level, outside an actor
     dcPaMixedBoolOps = "TK-PA16"        ## `and`/`or`/`xor` mixed without
                                           ## parentheses
+    dcPaRenameArrow = "TK-PA17"         ## a rename written `old: new`
+                                          ## instead of `old -> new`
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -469,6 +471,15 @@ proc parseExplanation(d: DiagCode): string =
     "for a = false, b = true, c = true, where C, Python and Nim give true.) " &
     "One operator repeated needs no parentheses: `a and b and c`, " &
     "`a or b or c`."
+  of dcPaRenameArrow:
+    "Tuck has one way to write a rename: `old -> new`. It is the same in " &
+    "every place a name can be renamed — a value's fields " &
+    "(`ext alias(trackId -> id)`), a composed type's fields " &
+    "(`A + B {x -> bx}`), an interface's members at `satisfies` and a " &
+    "mixin's fns at `+`. A colon inside braces or parentheses means " &
+    "\"field: value\" everywhere else (`{id: 42}`), so `alias(trackId: id)` " &
+    "read like a record and meant something else; it was retired " &
+    "2026-09-27. Fix: write `->` between the old name and the new one."
   of dcPaNoWhile:
     "Tuck has no `while` keyword — `while` is an ordinary, unreserved " &
     "identifier, so `while cond:` parses `while` as a bare name and then " &

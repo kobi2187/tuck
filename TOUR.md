@@ -230,7 +230,7 @@ fn play({episode: Episode, prefs: PlayerPrefs}) -> str:
   ctx describe                       # subset matching picks what it needs
 
 fn adapt({track: External}) -> void:
-  let normalized = track alias(trackId: id, title: name)
+  let normalized = track alias(trackId -> id, title -> name)
   normalized playTrack
   return
 ```
