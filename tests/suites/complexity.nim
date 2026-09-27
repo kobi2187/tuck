@@ -145,7 +145,11 @@ const
   # interface, type, const, pool) named procs; resolveRefsIn 20 became a loop
   # over ast_ops.childSlots; mangleMember and genEntryPoint lost their inline
   # loops to named helpers.
-  HEAVY = 13
+  #
+  # 13 -> 12 (2026-09-27): complexity.walk (Tuck's own TK-CX walker) became a
+  # fork counter over ast.children instead of hand-recursing into every
+  # ExprKind's operands.
+  HEAVY = 12
   CC = "tools/cyc"
 
 proc run*(t: var T) =
