@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (6)
+## A. Open bugs (5)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -46,14 +46,6 @@ rejected outright or should mean `void` is a ruling; returning a value from
 such a fn is wrong under either. Test: `known_bugs`, "a value returned from a
 fn with no return type is rejected". Found 2026-09-12 checking TUTORIAL.md's
 claim that a return type is mandatory — it is not.
-
-**A3 — a `[read]` register field can be written.** tuck-spec 8.1 states both
-directions: reading a `[write]` field is an error, writing a `[read]` field is
-an error. Only the first is enforced (`TK-RE02`). Test: `known_bugs`, "writing
-a [read] register field is rejected". Found 2026-09-12 auditing the spec's
-error claims. (The emission this originally blamed turned out to be A5, a
-separate and larger bug — the getter is emitted for EVERY register
-assignment, `[write]` fields included.)
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -94,6 +86,16 @@ more than a wider scan — an imported actor's drain lives in another package, s
 the emitted call must be QUALIFIED. Test: `cross_module`, "an imported actor
 runs on every backend". Found 2026-09-17 writing the first import/cache tests;
 same scope error as #73.
+
+A3 (a `[read]` register field could be written — with `=`, while the `..`
+form was already refused) was fixed 2026-09-27. The assignment target went
+through the ordinary field-access path, which checks a READ, so the rule was
+backwards for `=` in both directions: `CTRL.RDY = true` on a `[read]` field
+checked clean, and `CTRL.GO = true` on a `[write]` field was refused as reading
+it (TK-RE02). An assignment target is now held to the write rule (TK-RE01).
+Test: `known_bugs`, "writing a [read] register field is rejected" (now
+`bugFixed`) and "a [write] register field is assignable with `=`, on all
+three". Issue #6.
 
 A19 (on Odin, a loop that copies accumulated every copy — 482 MB for 20 000
 copies of a 1024-element `Seq`, issue #77) was fixed 2026-09-25, in two

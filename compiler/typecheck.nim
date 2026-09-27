@@ -1099,19 +1099,25 @@ proc registerFieldType(m: Module, regName, fieldName: string, span: Span): Type 
                   name: (if lo == hi: "bool" else: "u32"))
   nil
 
+proc failIfReadOnlyRegister(tc: TypeChecker, regName, fieldName: string,
+                            sp: Span) =
+  ## A WRITE to `regName.fieldName` — by a `..` step or by `=` — refused when
+  ## the field is declared `[read]` (TK-RE01).
+  let acc = registerFieldAccess(tc.module, regName, fieldName)
+  if acc.found and not acc.canWrite:
+    fail(dcReReadOnly,
+         "register field '" & regName & "." & fieldName &
+         "' is declared [read] — writing it is a compile error (spec " &
+         "§8.1). On hardware the write is ignored or has an undocumented " &
+         "side effect", sp)
+
 proc checkRegisterChainWrite(tc: var TypeChecker, e: Expr) =
   ## Check if a chain step tries to write a read-only register field.
   if e == nil or e.kind != exkChain or e.base == nil or e.base.kind != exkRegisterRef:
     return
   for step in e.steps:
     if step.op != coDotDot or step.target == nil: continue
-    let acc = registerFieldAccess(tc.module, e.base.refName, step.target.name)
-    if acc.found and not acc.canWrite:
-      fail(dcReReadOnly,
-           "register field '" & e.base.refName & "." & step.target.name &
-           "' is declared [read] — writing it is a compile error (spec " &
-           "§8.1). On hardware the write is ignored or has an undocumented " &
-           "side effect", step.span)
+    tc.failIfReadOnlyRegister(e.base.refName, step.target.name, step.span)
 
 proc checkRegisterFieldRead(tc: var TypeChecker, e: Expr) =
   ## Check if a field access tries to read a write-only register field.
@@ -3795,6 +3801,24 @@ proc checkTransition(tc: var TypeChecker, e: Expr, targetT: Type) =
   tc.checkTransSet(tn, cur, next, e.span)
   tc.varVariants[e.target.name] = next
 
+proc isRegisterField(e: Expr): bool =
+  ## `REG.FIELD` — a field of a `register` declaration.
+  e != nil and e.kind == exkField and e.receiver != nil and
+    e.receiver.kind == exkRegisterRef
+
+proc synthAssignTarget(tc: var TypeChecker, target: Expr): Type =
+  ## The type an assignment writes into. A register field is WRITTEN here,
+  ## so it is held to `[read]` (TK-RE01) — not synthesized as a field access,
+  ## which checks it as a READ and refused `CTRL.GO = true` on a `[write]`
+  ## field while letting `[read]` ones be assigned.
+  if not isRegisterField(target): return tc.synthesize(target)
+  tc.failIfReadOnlyRegister(target.receiver.refName, target.fieldName,
+                            target.span)
+  result = registerFieldType(tc.module, target.receiver.refName,
+                             target.fieldName, target.span)
+  if result == nil: return tc.synthesize(target)   # no such field: its error
+  setType(semLayer, target, result)
+
 proc synthReassign(tc: var TypeChecker, e: Expr) =
   ## Assignment to an existing binding.
   tc.failIfTargetUnbound(e)
@@ -3807,7 +3831,7 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
   if e.target != nil and e.target.kind == exkField and
      e.target.receiver != nil and e.target.receiver.kind == exkVar:
     tc.clearUninit(e.target.receiver.name, e.target.fieldName)
-  let targetT = tc.synthesize(e.target)
+  let targetT = tc.synthAssignTarget(e.target)
   let valT = tc.synthAssignVal(e, targetT)
   if not tc.compatible(valT, targetT):
     fail("Type Error: cannot assign " & typeName(valT) & " to " &

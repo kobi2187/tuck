@@ -970,6 +970,7 @@ fn main() -> int:
   t.bugOpen "a value returned from a fn with no return type is rejected"
 
   # 14. Register access permissions are enforced in one direction only.
+  # FIXED 2026-09-27 (#6): an assignment target is held to the write rule.
   # Reading a `[write]` field is TK-RE02, as tuck-spec 8.1 says; WRITING a
   # `[read]` field is accepted, and the emitted Nim is
   # `tuck_RCC_HSIRDY_get() = true` — nim answers "cannot be assigned to",
@@ -985,7 +986,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.badCheck "writing a [read] register field is rejected", "read"
-  t.bugOpen "writing a [read] register field is rejected"
+  t.bugFixed "writing a [read] register field is rejected"
 
   # 15. Group conformance resolved the required provider BY NAME and took the
   # last registered, ignoring the receiver — so with two providers in play,
@@ -2128,5 +2129,21 @@ fn main() -> int:
 """
   t.quietly: t.hostRuns("rows with different match bodies keep their own answers", 40)
   t.bugFixed "a decision table keeps rows whose bodies print alike apart"
+
+  # #6, the other direction of "writing a [read] register field is rejected"
+  # above: a register field written with `=` was checked as a READ, so
+  # `CTRL.GO = true` on a [write] field was refused as reading it (TK-RE02)
+  # while a [read] field was writable. The target of an assignment is now
+  # held to the WRITE rule.
+  t.src """
+register CTRL at 0x40007400:
+  GO: bit 2 [write]
+
+fn main() -> int:
+  CTRL.GO = true
+  return 0
+"""
+  t.quietly: t.hostBuilds("a [write] register field is assignable")
+  t.bugFixed "a [write] register field is assignable with `=`, on all three"
 
   t.finish()
