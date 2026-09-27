@@ -2429,4 +2429,43 @@ fn main() -> int:
   t.quietly: t.hostRuns("a `-> Self` member through an interface returns the interface", 9)
   t.bugOpen "a `-> Self` contract member called through an interface builds, on all three"
 
+  # A22. On Odin, an interface call whose payload holds a VARIABLE builds on
+  # nothing but Nim and D. Odin emits the dispatch as an inline
+  # `proc(v: Iface) {...}(recv)` literal, and an Odin proc literal cannot
+  # capture: an argument that is a local (`next`, `key`) is "Undeclared
+  # name" inside it. A literal argument works, which is all
+  # interface_dispatch's other tests pass. Found 2026-09-27 writing the
+  # audio-player example for R13.
+  t.src """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+  fn crossfade({self: Self, next: AudioSource, ms: int}) -> int
+
+object Mp3:
+  satisfies AudioSource
+  bitrate: int
+  fn sampleRate({self: Mp3}) -> int:
+    return 44100
+  fn crossfade({self: Mp3, next: AudioSource, ms: int}) -> int:
+    return (ms * 44) + (ms * (next.sampleRate /i 1000))
+
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+  fn crossfade({self: Flac, next: AudioSource, ms: int}) -> int:
+    return (ms * 96) + (ms * (next.sampleRate /i 1000))
+
+fn transition({cur: AudioSource, next: AudioSource}) -> int:
+  return cur.crossfade {next: next, ms: 1}
+
+fn main() -> int:
+  let m = Mp3{bitrate: 320}
+  let f = Flac{bits: 24}
+  return {cur: m, next: f} transition
+"""
+  t.quietly: t.hostRuns("an interface call passing a variable runs on every backend", 140)
+  t.bugOpen "an interface call whose payload holds a variable builds on Odin"
+
   t.finish()

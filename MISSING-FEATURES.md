@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (5)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -41,6 +41,15 @@ through an interface builds, on all three". The parameter case waits on the
 ruling of what `Self` means in an interface
 (`thoughts/shared/audits/2026-09-27-rulings-needed.md`, R13). Found
 2026-09-27.
+
+**A22 — on Odin, an interface call whose payload holds a variable does not
+build.** Odin's dispatch is an inline `proc(v: Iface) {...}(recv)` literal,
+and an Odin proc literal cannot capture, so an argument that is a local
+(`c.encode {key: key}`, `cur.crossfade {next: next}`) is "Undeclared name"
+inside it. A literal argument works, which is why `interface_dispatch`
+(Nim-only for that case) never saw it. Nim and D are correct. Test:
+`known_bugs`, "an interface call whose payload holds a variable builds on
+Odin". Found 2026-09-27.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
