@@ -87,6 +87,8 @@ type
       ## callee up in. Excludes the entry module, which is nobody's import.
 
 proc name*(b: Backend): string =
+  ## The backend's name as `impl:` blocks spell it (`nim`, `odin`, `d`), which
+  ## is what `rebaseImplPaths` matches an extern's impl entries against.
   case b
   of bkNim: "nim"
   of bkOdin: "odin"
@@ -126,6 +128,9 @@ proc rebasedImplModule(module, srcDir, outDir: string): string =
     result = "./" & result
 
 proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
+  ## Rewrites every extern fn's `impl: <backend>` module path in `lm` from
+  ## source-relative to relative to `outDir`, so the emitted import still finds
+  ## the shim wherever the output lands. Only the current backend's entries move.
   let srcDir = parentDir(absolutePath(lm.path))
   for d in lm.m.decls:
     if d == nil or d.kind != dkExtern: continue

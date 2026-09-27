@@ -53,11 +53,13 @@ proc listToString(items: seq[Expr], open, close: string): string =
   open & parts.join(", ") & close
 
 proc structToString(e: Expr): string =
+  ## A payload literal as `{name: value, ...}`.
   var parts: seq[string]
   for f in e.fields: parts.add(f.name & ": " & f.value.toString())
   "{" & parts.join(", ") & "}"
 
 proc qualifiedToString(e: Expr): string =
+  ## A qualified name as written: `mod::sub::name`.
   for p in e.modulePath: result.add(p & "::")
   result.add(e.qualName)
 
@@ -77,6 +79,9 @@ proc poolOpToString(e: Expr): string =
   if args.len > 0: result.add " {" & args.join(", ") & "}"
 
 proc toString*(e: Expr): string =
+  ## A one-line, source-like rendering of `e` for messages and dumps. Lossy on
+  ## purpose: control flow prints only its keyword (`if`, `match`, `block`), so
+  ## two different bodies can render the same — never compare code by it.
   if e == nil: return ""
   case e.kind
   of exkLit: return e.litValue

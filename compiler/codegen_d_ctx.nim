@@ -38,6 +38,9 @@ proc dPrimName*(name: string): string =
 
 type
   DCodegenCtx* = object
+    ## Everything the D emitter carries while printing one module: the semantic
+    ## layer, the current fn's return shape, hoisted record/sum names, and the
+    ## FFI libraries and impl modules the file header must declare.
     res*: Resolution
       ## The semantic layer this emission reads. Handed over by the pipeline
       ## rather than reached for: which is what makes the stage ordering —
@@ -284,6 +287,8 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## dDeclType (returns "") — which is a shape that drifts: a mapping added
   ## to one silently missed the other.
   template giveUp(what: string): string =
+    ## The one place the two modes differ: a required type aborts the emit
+    ## with a diagnostic, an optional one answers "" so the caller can fall back.
     if mode == tmRequired: dUnsupported(what) else: ""
   if t == nil: return (if mode == tmRequired: "void" else: "")
   case t.kind
@@ -380,6 +385,9 @@ proc recStructNameD*(ctx: var DCodegenCtx, fields: seq[FieldDef],
 proc newDCtx*(m: Module, realModules: Table[string, Module],
              moduleName: string, res: Resolution,
              modPrefix = ""): DCodegenCtx =
+  ## A fresh D emission context for module `m`, with its decl index built up
+  ## front and the `errors` policy read off the module. `modPrefix` is set for
+  ## library modules, whose hoisted names must not collide with the entry's.
   result = DCodegenCtx(definedVars: initHashSet[string](), indent: 0,
                        module: m, realModules: realModules,
                        moduleName: moduleName, modPrefix: modPrefix,

@@ -530,6 +530,8 @@ proc selfConcatValue*(res: Resolution, e: Expr): Expr =
   v.right
 
 proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
+  ## Does the liveness pass mark some read of `name` inside `e` as its final
+  ## use? That stamp is what licenses moving from a parameter.
   if e == nil: return false
   if e.kind == exkVar and e.name == name and res.isLastUse(e): return true
   for c in e.children:

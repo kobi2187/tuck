@@ -65,7 +65,10 @@ proc writtenName*(d: Decl): string =
 # --- NodeId: identity for the semantic layer -------------------------------
 # `==`/hash/`$` stay in ast.nim, next to NodeId's own declaration.
 
-proc isSet*(a: NodeId): bool = uint32(a) != 0'u32
+proc isSet*(a: NodeId): bool =
+  ## Has this node been given an id? Zero is the "never assigned" sentinel,
+  ## so a freshly built or `clearIds`-ed node reads false.
+  uint32(a) != 0'u32
 
 iterator children*(t: Type): Type =
   ## Every type one level down. The Type half of `children(Expr)`, and it
@@ -562,6 +565,8 @@ proc clearIds*(d: Decl) =
   for m in d.childDecls: clearIds(m)
 
 proc clearIds*(m: var Module) =
+  ## Clears the ids of every declaration in the module, so a later
+  ## `assignIds` numbers the whole tree afresh.
   for d in m.decls: clearIds(d)
 
 proc newNodeId*(): NodeId =

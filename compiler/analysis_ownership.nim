@@ -140,6 +140,9 @@ type
     fkTwinParam    ## the MOVED twin consuming its first parameter
 
   FreeSite* = object
+    ## One release decided by this pass: which local, which slot of it, and at
+    ## which kind of site. `Ownership.freed` lists them all so `checkInvariants`
+    ## can prove no slot is freed twice.
     local*: string
     slot*: Slot
     kind*: FreeKind
@@ -190,9 +193,15 @@ let Debug = not defined(release) and getEnv("TUCK_DEBUG_SEQ").len > 0
 
 # --- shared vocabulary -----------------------------------------------------
 
-proc holdsHeap(s: Scan, t: Type): bool = holdsHeapSlots(s.res, s.m, t)
+proc holdsHeap(s: Scan, t: Type): bool =
+  ## Does a value of type `t` own any heap slot? The scan-local spelling of
+  ## `holdsHeapSlots`, so the steps below need not thread `res` and `m`.
+  holdsHeapSlots(s.res, s.m, t)
 
-proc isStr(t: Type): bool = t != nil and t.kind == tkNamed and t.name == "str"
+proc isStr(t: Type): bool =
+  ## Is `t` the builtin `str` type? Strings get their own overwrite rule
+  ## (step 5), since a literal is static storage rather than an owned buffer.
+  t != nil and t.kind == tkNamed and t.name == "str"
 
 proc slotsOf(s: Scan, t: Type): seq[Slot] =
   ## The slots a value of this type has: one unnamed slot for a bare `Seq`,
@@ -285,6 +294,8 @@ proc ownsSlot(s: Scan, val: Expr, slot: Slot): bool =
 # rules for `str`; see that module's header for the rules themselves.
 
 proc slotEscapes(s: Scan, name: string, slot: Slot): bool =
+  ## STEP 3: does `name`'s `slot` outlive the body (returned, stored, sent)?
+  ## An escaping buffer belongs to someone else and must not be freed here.
   s.ix.escapes(s.heapRule, name, slot)
 
 # --- STEP 4: what dies at scope exit ---------------------------------------
@@ -314,6 +325,9 @@ proc diesAtScopeExit(s: Scan, name: string, val: Expr,
 # --- STEP 5: what dies at an overwrite -------------------------------------
 
 proc valuesAssignedTo(body: Expr, name: string): seq[Expr] =
+  ## Every right-hand side assigned to the local `name` anywhere in `body`,
+  ## in no particular order — including its `let`/`var` initialiser, which is
+  ## an `exkAssign` with `isDecl` set.
   var stack = @[body]
   while stack.len > 0:
     let n = stack.pop()
@@ -368,6 +382,8 @@ proc threadedLocalsDieAtExit(s: Scan, d: Decl,
       result.add name
 
 proc isStrLiteral(v: Expr): bool =
+  ## Is this a string literal? A literal lives in static storage, so a `str`
+  ## local holding one may only be freed after the emitter copies it.
   v != nil and v.kind == exkLit and v.litKind == lkStr
 
 proc strOverwriteCopies(s: Scan, name: string,

@@ -71,6 +71,8 @@ proc sigText(d: Decl): string =
   if effs.len > 0: result.add(" [" & effs.join(", ") & "]")
 
 proc failConformance(objName, iname: string, want, got: Decl, why: string) =
+  ## Reports that object `objName` does not satisfy interface `iname`: both
+  ## signatures side by side, then `why` they differ.
   fail("Conformance Error: object '" & objName & "' does not satisfy '" &
        iname & "'\n  contract   " & sigText(want) &
        "\n  implements " & sigText(got) & "\n  " & why, got.span)

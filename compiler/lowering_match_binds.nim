@@ -111,6 +111,7 @@ proc writesRoot(e: Expr, root: string): bool =
   false
 
 proc hasBindArm(m: Expr): bool =
+  ## Does any arm of match `m` bind the subject to a name (`pkBind`)?
   for arm in m.arms:
     if arm.pattern != nil and arm.pattern.kind == pkBind: return true
   false
@@ -162,6 +163,9 @@ proc refuse(m: Expr) =
        "`let v = ...`, then `match v:`", 1)
 
 proc lowerIn(res: Resolution, e: Expr) =
+  ## Lowers every binding match under `e`: a block snapshots the subject of
+  ## each statement-heading match that cannot read it directly, then each
+  ## binding match is rebound to its subject (or refused).
   if e == nil: return
   if e.kind == exkBlock:
     var stmts: seq[Expr]

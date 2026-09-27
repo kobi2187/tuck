@@ -141,6 +141,8 @@ proc fnSigSlotInstance(tc: TypeChecker, t: Type): Type =
   if result == nil: result = tc.importedFnSigInstance(t)
 
 type FnRefVerdict = enum
+  ## The answer `fnRefVerdict` gives: undecided (not a fn-ref question — keep
+  ## checking), or a definite yes/no.
   vUndecided,   ## not a fn-ref question at all — fall through to the rest
   vYes, vNo
 

@@ -43,7 +43,10 @@ export strutils.repeat, strutils.capitalizeAscii
 # strutils. Re-exported instead so the backends that relied on getting them
 # from this module still do, and so the codebase has one implementation rather
 # than a stdlib one nobody reached for.
-template capitalize*(s: string): string = capitalizeAscii(s)
+template capitalize*(s: string): string =
+  ## Upper-cases the first character (ASCII only). An alias for
+  ## `capitalizeAscii`, kept so existing backend call sites read unchanged.
+  capitalizeAscii(s)
 
 # --- Declaration lookup ----------------------------------------------------
 #
@@ -424,11 +427,15 @@ proc injectTailReturn*(body: Expr, retTypeStr: string) =
 proc typeMentionsName*(t: Type, name: string): bool
 
 proc anyMentionName(ts: seq[Type], name: string): bool =
+  ## Does any type in `ts` mention the type name `name`? The seq case of
+  ## `typeMentionsName`.
   for t in ts:
     if typeMentionsName(t, name): return true
   false
 
 proc fieldsMentionName(fs: seq[FieldDef], name: string): bool =
+  ## Does any field's type mention the type name `name`? The field-list case
+  ## of `typeMentionsName`, for records and sum variants.
   for f in fs:
     if typeMentionsName(f.typ, name): return true
   false
@@ -909,9 +916,11 @@ proc moduleDeclaringType*(module: Module, name: string): string =
     return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
   ""
 
-# An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
-# select` message arms (spec §9.3): a message kind + typed binding + body.
 type ActorMsgHandler* = object
+  ## An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
+  ## select` message arms (spec §9.3): a message kind + typed binding + body.
+  ## Built by `actorMsgHandlers`, so each backend emits one dispatch arm per
+  ## handler without caring which syntax declared it.
   name*: string
   params*: seq[Param]
   body*: Expr

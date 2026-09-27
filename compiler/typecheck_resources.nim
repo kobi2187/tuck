@@ -234,6 +234,8 @@ proc mergeSites(mods: seq[tuple[name, path: string, m: Module]],
           owner[k.name] = (d, i)
 
 proc ownsSite(owner: KindOwner, name: string, d: Decl, i: int): bool =
+  ## Is `(d, i)` the site that first declared kind `name` — the one whose
+  ## knobs every later declaration of the same kind is merged into?
   owner.hasKey(name) and owner[name].d == d and owner[name].i == i
 
 proc writeBackMerged(mods: seq[tuple[name, path: string, m: Module]],
@@ -312,6 +314,9 @@ proc checkOpKinds(e: Expr, kinds: ResourceKinds) =
 
 proc checkOpSites*(mods: seq[tuple[name, path: string, m: Module]],
                    kinds: ResourceKinds) =
+  ## Checks that every `acquire`/`finish` in every body of the program names a
+  ## declared kind. Program-wide, because a module may use a kind its import
+  ## declares.
   for (_, _, m) in mods:
     for d in m.decls:
       if d == nil: continue

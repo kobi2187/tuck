@@ -36,13 +36,17 @@ proc odinLibSpec*(lib: string): string =
 # widened their scope and Nim reported the ambiguity.
 
 proc errCodeLit*(name: string): string =
+  ## An error variant's code as an Odin literal: its stable hash in hex, with
+  ## the variant's name in a trailing comment for whoever reads the output.
   "0x" & toHex(errIdCode(name)) & " /* " & name & " */"
 
 # genPatternStr is NOT here either — same story as repeat/capitalize:
 # ast_query already exports it.
 
-# The declared enum (or its Kind enum) that owns a variant tag, if any.
 proc enumTagOwner*(m: Module, tag: string): string =
+  ## The declared enum (or its Kind enum) that owns a variant tag, if any.
+  ## A payload sum's tags live on its `<Name>Kind` enum, so that is the owner.
+  ## Empty when no declared sum has the tag (an inline sum, say).
   for d in m.decls:
     if d != nil and d.kind == dkType and d.typeBody != nil and
        d.typeBody.kind == tkSum:

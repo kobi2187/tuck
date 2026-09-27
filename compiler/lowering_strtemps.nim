@@ -44,12 +44,18 @@ var counter = 0
   ## Names are program-wide unique, like every other lowering-minted name.
 
 type Hoist = object
+  ## Walk state for one statement: the backend's allocating procs, the temps
+  ## lifted so far, and whether an effect has already run (after which nothing
+  ## may move ahead of it).
   res: Resolution
   procs: seq[string]
   lifted: seq[Expr]    ## `let`s to insert ahead of the current statement
   settled: bool        ## an effect has been evaluated: nothing later moves
 
-proc isStr(t: Type): bool = t != nil and t.kind == tkNamed and t.name == "str"
+proc isStr(t: Type): bool =
+  ## Is `t` the builtin `str` type — the only type whose temporaries this pass
+  ## names and frees.
+  t != nil and t.kind == tkNamed and t.name == "str"
 
 proc hasEffect(h: Hoist, n: Expr): bool =
   ## A call that is not one of the allocating `str` procs may do anything,

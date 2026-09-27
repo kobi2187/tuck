@@ -13,6 +13,9 @@ export decl_index
 
 type
   OdinCodegenCtx* = object
+    ## Everything the Odin emitter carries while printing one package: the
+    ## semantic layer and ownership decisions it prints, the current fn's return
+    ## shape, hoisted struct/enum names, and the imports the package header needs.
     res*: Resolution
       ## The semantic layer this emission reads. Handed over by the pipeline
       ## rather than reached for: which is what makes the stage ordering —
@@ -156,6 +159,8 @@ proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   else: ctx.importedTypeQualifier(t.name)
 
 proc odinTupleType*(ctx: var OdinCodegenCtx, t: Type): string =
+  ## A tuple as Odin: a one-element tuple is just its element, anything wider
+  ## a parenthesised multi-value list.
   if t.elems.len == 1: return ctx.odinType(t.elems[0])
   var parts: seq[string]
   for e in t.elems: parts.add(ctx.odinType(e))
@@ -243,6 +248,9 @@ proc odinSumTypeName(ctx: var OdinCodegenCtx, t: Type): string =
   return "any"
 
 proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
+  ## The Odin spelling of a Tuck type: builtins map directly, records and sums
+  ## become hoisted named structs/unions, and a generic fnsig application is
+  ## its substituted signature. Unmapped kinds fall back to `rawptr`.
   if t == nil: return "void"
   case t.kind
   of tkNamed:
@@ -270,6 +278,9 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     "rawptr"
 
 proc fieldType*(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
+  ## The Odin type of a field of `parent`. A payload-free inline sum is
+  ## hoisted as its own `<Parent><Field>Kind` enum, since Odin has no anonymous
+  ## enum in field position.
   if f.typ != nil and f.typ.kind == tkSum:
     var allNoFields = true
     for v in f.typ.variants:
@@ -289,6 +300,9 @@ proc fieldType*(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
 # backend-neutral questions about the AST, so they live in ast_query.
 
 proc genQualified*(ctx: OdinCodegenCtx, e: Expr): string =
+  ## A qualified name (`mod::name`, or a bare name the module does not declare)
+  ## as an Odin package reference. Odin never merges package scopes, so the
+  ## owning package is resolved here: local first, then the imports.
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
   if modName == "":
     # Unqualified name. Nim gets this free — the emitted file `import`s the

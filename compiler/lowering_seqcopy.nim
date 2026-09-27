@@ -29,6 +29,8 @@ export seqFieldNames
 import analysis_provenance
 
 proc isSeqValued(res: Resolution, e: Expr): bool =
+  ## Is this expression's checked type a `Seq`? Only those alias on D and
+  ## Odin, so only those are ever considered for a copy.
   e != nil and seqElem(res.typeFor(e)) != nil
 
 # `.dup` — the one place D's semantics genuinely differ from Tuck's.

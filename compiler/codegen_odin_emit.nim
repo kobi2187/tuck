@@ -24,6 +24,9 @@ import ./codegen_odin_decl
 import ./codegen_odin
 
 proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] =
+  ## Splits a module into its declarations and its top-level statements (the
+  ## entry point's body), emitting each. The first element is every decl, not
+  ## only types, despite its name.
   var body = ""
   var mainStmts: seq[string]
   for d in m.decls:
@@ -55,6 +58,9 @@ proc runtimeUsers*(m: Module, actorNames: var seq[string],
 
 proc emitOdinModule*(name: string, m: Module, res: Resolution,
                      realModules = initTable[string, Module]()): string =
+  ## An imported Tuck module as its own Odin package (`package tuck_<name>`,
+  ## in `mod_<name>/`): only the imports its body actually references, then the
+  ## hoisted types, then its declarations. No entry point.
   let pkg = name.replace("-", "_")
   var ctx = newOdinCtx(m, realModules, name, res, modPrefix = pkg & "_")
   let (body, _) = ctx.emitBody(m)

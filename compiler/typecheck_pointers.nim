@@ -80,6 +80,8 @@ proc isMemoryPointer(t: Type): bool =
   t.kind == tkNamed and t.name in BuiltinPointerNames
 
 proc memoryPointerReturnMsg(fnName, tName: string): string =
+  ## The TK-TY08 message for an extern that returns a pointer into memory,
+  ## with the fix: return `str` or `Seq[u8]` and copy in the implementation.
   "Type Error: extern '" & fnName & "' returns " & tName &
   " — a pointer INTO MEMORY may be passed into C but never returned out of " &
   "it, because its lifetime is C's and unknowable here (wrap it: have the " &
@@ -166,6 +168,8 @@ proc checkFnSigPointers(decls: TypeDecls, d: Decl, inExtern: bool) =
   checkParamPointers(decls, d.sigParams, d.sigReturn, "fnsig", d.span)
 
 proc checkRegistryPointers(decls: TypeDecls, d: Decl) =
+  ## No registry event field may hold a pointer: events outlive the call that
+  ## raised them, so a pointer there would escape the FFI boundary.
   for v in d.variants:
     for f in v.fields:
       failIfPointer(decls, f.typ, "a registry field", f.span)
@@ -215,15 +219,20 @@ proc checkPointers*(decls: TypeDecls, m: Module) =
 # (TK-TY08). It reads the checker's stamps, so it runs after checkDecl.
 
 type AddrScan = object
+  ## State for the cell-address scan of one body: the checker's stamps, the
+  ## extern fns an address may be passed to, and the locals bound to one.
   res: Resolution
   externs: HashSet[string]  ## every extern fn by the name the source uses
   bound: HashSet[string]    ## locals holding a cell's address
 
 proc isCellAddr(res: Resolution, n: Expr): bool =
+  ## Is `n` a `Pool.addr {h}` — a field node the checker resolved to the
+  ## pool's address operation?
   n != nil and n.kind == exkField and res.hasCall(n) and
     res.call(n).kind == exkPoolOp and res.call(n).poolOp == poAddr
 
 proc isExternCall(s: AddrScan, c: Expr): bool =
+  ## Is `c` a call to one of the module's extern fns, by source name?
   c != nil and c.kind == exkCall and c.callee != nil and
     c.callee.kind == exkVar and c.callee.name in s.externs
 
@@ -265,6 +274,9 @@ proc scanUse(s: AddrScan, n, parent, grand: Expr) =
        "argument of an extern call", n.span)
 
 proc scan(s: var AddrScan, n, parent, grand: Expr) =
+  ## Walks `n` with its parent and grandparent in hand (an extern argument is
+  ## recognised from above), refusing every address that is not bound by `let`
+  ## or not handed straight to an extern.
   if n == nil: return
   s.failIfLooseAddr(n, parent)
   if n.kind == exkAssign: s.scanAssign(n)

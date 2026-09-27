@@ -115,7 +115,10 @@ type
       ## Deciding it in each backend by "is the name one of the fields" read
       ## a handler's param `total` as the field `total`.
 
-proc poolHandleName*(pool: string): string = pool & "Handle"
+proc poolHandleName*(pool: string): string =
+  ## The handle type a `pool` declaration introduces: `<Pool>Handle`. Named in
+  ## one place so the checker and every backend spell it alike.
+  pool & "Handle"
 
 proc isPoolHandleType*(m: Module, name: string): bool =
   ## Is this the handle type of some pool declared in this module?
@@ -259,6 +262,8 @@ proc freshStep*(r: Resolution, s: ChainStep): ChainStep =
   if s.id.isSet: r.copyMeaning(s.id, result.id)
 
 proc setCall*(r: Resolution, e: Expr, call: Expr) =
+  ## Records `call` as what node `e` resolved to (a field read that is really
+  ## a member call, a payload call's resolved form). Gives `e` an id if needed.
   if e == nil: return
   ensureId(e)
   r.calls[e.id] = call
@@ -269,6 +274,7 @@ proc call*(r: Resolution, e: Expr): Expr =
   if r.calls.hasKey(e.id): r.calls[e.id] else: nil
 
 proc hasCall*(r: Resolution, e: Expr): bool =
+  ## Did the checker resolve `e` to a call? Cheaper than `call(e) != nil`.
   e != nil and e.id.isSet and r.calls.hasKey(e.id)
 
 proc markAsync*(r: Resolution, e: Expr) =
@@ -279,6 +285,8 @@ proc markAsync*(r: Resolution, e: Expr) =
   r.asyncCalls.incl(e.id)
 
 proc isAsync*(r: Resolution, e: Expr): bool =
+  ## Is `e` a call site of an `[io]` callee — one the task transform must
+  ## suspend at?
   e != nil and e.id.isSet and e.id in r.asyncCalls
 
 proc markWrap*(r: Resolution, e: Expr, objName, iface: string) =
@@ -292,6 +300,8 @@ proc markWrap*(r: Resolution, e: Expr, objName, iface: string) =
   r.ifacePairs.incl((objName: objName, iface: iface))
 
 proc wrapOf*(r: Resolution, e: Expr): tuple[objName, iface: string] =
+  ## The interface wrap recorded on `e` — which object enters which interface
+  ## slot here — or two empty strings when `e` is not wrapped.
   if e == nil or not e.id.isSet: return (objName: "", iface: "")
   r.wraps.getOrDefault(e.id, (objName: "", iface: ""))
 
@@ -304,8 +314,31 @@ proc markIfaceCall*(r: Resolution, e: Expr, iface, member: string) =
   r.ifaceCalls[e.id] = (iface: iface, member: member)
 
 proc ifaceCallOf*(r: Resolution, e: Expr): tuple[iface, member: string] =
+  ## The interface call recorded on `e` — the interface and the member called
+  ## through it — or two empty strings when `e` is an ordinary access.
   if e == nil or not e.id.isSet: return (iface: "", member: "")
   r.ifaceCalls.getOrDefault(e.id, (iface: "", member: ""))
+
+proc newResolution*(): Resolution =
+  ## An empty semantic layer with every table initialised. Use
+  ## `resetResolution` to clear the program-wide `semLayer`; this is for
+  ## a layer of one's own.
+  Resolution(calls: initTable[NodeId, Expr](),
+             types: initTable[NodeId, Type](),
+             shortcuts: initTable[NodeId, string](),
+             asyncCalls: initHashSet[NodeId](),
+             decls: initTable[NodeId, Decl](),
+             declOf: initTable[NodeId, NodeId](),
+             argFields: initTable[NodeId, seq[string]](),
+             callParams: initTable[NodeId, seq[string]](),
+             callTypeArgs: initTable[NodeId, seq[Type]](),
+             wraps: initTable[NodeId, tuple[objName, iface: string]](),
+             ifacePairs: initHashSet[tuple[objName, iface: string]](),
+             ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
+             lastUses: initHashSet[NodeId](),
+             ssaGraphs: initTable[(NodeId, SsaStage), CachedSsa](),
+             movedArgs: initHashSet[NodeId](),
+             ownerFields: initHashSet[NodeId]())
 
 # The program-wide semantic layer. The compiler processes one program per
 # run, so a single instance is the honest model; passing it through every
@@ -333,24 +366,6 @@ proc ifaceCallOf*(r: Resolution, e: Expr): tuple[iface, member: string] =
 #
 # Cleared at the start of each check so repeated in-process runs (the test
 # suites) never see a previous program's entries.
-proc newResolution*(): Resolution =
-  Resolution(calls: initTable[NodeId, Expr](),
-             types: initTable[NodeId, Type](),
-             shortcuts: initTable[NodeId, string](),
-             asyncCalls: initHashSet[NodeId](),
-             decls: initTable[NodeId, Decl](),
-             declOf: initTable[NodeId, NodeId](),
-             argFields: initTable[NodeId, seq[string]](),
-             callParams: initTable[NodeId, seq[string]](),
-             callTypeArgs: initTable[NodeId, seq[Type]](),
-             wraps: initTable[NodeId, tuple[objName, iface: string]](),
-             ifacePairs: initHashSet[tuple[objName, iface: string]](),
-             ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
-             lastUses: initHashSet[NodeId](),
-             ssaGraphs: initTable[(NodeId, SsaStage), CachedSsa](),
-             movedArgs: initHashSet[NodeId](),
-             ownerFields: initHashSet[NodeId]())
-
 var semLayer* = newResolution()
 
 proc resetResolution*() =
@@ -382,15 +397,20 @@ proc resetResolution*() =
   semLayer.ambiguousConsts = ambiguousConsts
 
 proc setStepCall*(r: Resolution, s: ChainStep, call: Expr) =
+  ## Records the call a chain step resolved to, keyed by the step's own id.
+  ## A step without an id cannot carry one and is skipped.
   if s.id.isSet: r.calls[s.id] = call
 
 proc stepCall*(r: Resolution, s: ChainStep): Expr =
+  ## The call a chain step resolved to, or nil. Shared by every backend, so a
+  ## pass must copy it (`freshCopy`) before putting it into a tree.
   if not s.id.isSet: return nil
   if r.calls.hasKey(s.id): r.calls[s.id] else: nil
 
 # --- types and shortcut sites ----------------------------------------------
 
 proc setType*(r: Resolution, e: Expr, t: Type) =
+  ## Records `t` as the checked type of `e`, giving `e` an id if it has none.
   if e == nil: return
   ensureId(e)
   r.types[e.id] = t
@@ -513,6 +533,8 @@ proc callTypeArgsFor*(r: Resolution, e: Expr): seq[Type] =
   r.callTypeArgs.getOrDefault(e.id, @[])
 
 proc setShortcut*(r: Resolution, e: Expr, site: string) =
+  ## Marks statement `e` as one whose dropped `!T` the errors policy routes to
+  ## the global handler, naming the call `site` for the report.
   if e == nil: return
   ensureId(e)
   r.shortcuts[e.id] = site
@@ -540,6 +562,8 @@ proc isMovedArg*(r: Resolution, e: Expr): bool =
   e != nil and e.id in r.movedArgs
 
 proc markOwnerField*(r: Resolution, e: Expr) =
+  ## Records that the bare name `e` is the owner's field (read as
+  ## `self.<name>`), not a param or local shadowing it.
   ensureId(e)
   r.ownerFields.incl(e.id)
 

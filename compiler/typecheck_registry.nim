@@ -10,6 +10,8 @@ import typecheck_util
 
 type RegistryEvents* = tuple[regs: Table[string, Decl],
                             variants: Table[string, VariantDef]]
+  ## Every registry in the program by name, and every event (variant) by
+  ## `Registry.Event` name — what the raiser/handler pairing checks against.
 
 proc raisedEventsIn*(e: Expr, into: var seq[tuple[reg, ev: string, sp: Span,
                                                   payload: Expr]]) =

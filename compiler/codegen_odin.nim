@@ -62,10 +62,11 @@ proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): stri
   for f in fields.get: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
-# Positional construction of a hoisted record struct from a struct literal,
-# in declared-field order, casting numeric fields to the declared type.
 proc recCtorFromLiteral(ctx: var OdinCodegenCtx, declFields: seq[FieldDef],
                         litFields: seq[FieldInit]): string =
+  ## A hoisted record struct built from a struct literal: fields named in
+  ## declared order, numeric values cast to the declared width. Fields the
+  ## literal omits are left out, and Odin zero-initialises them.
   let structName = recStructName(ctx, declFields)
   # Odin struct literals are named — `T{a = 1, b = 2}` — so a field the
   # literal omits simply stays zero-valued and needs no placeholder.
@@ -85,10 +86,10 @@ proc recCtorFromLiteral(ctx: var OdinCodegenCtx, declFields: seq[FieldDef],
         break
   return structName & "{" & parts.join(", ") & "}"
 
-# Struct literal outside call/return contexts: use the checker's ty stamp to
-# pick the record shape. Odin has no anonymous record type, so an unresolved
-# shape hoists a named struct from the literal's own inferred field types.
 proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Struct literal outside call/return contexts: use the checker's ty stamp to
+  ## pick the record shape. Odin has no anonymous record type, so an unresolved
+  ## shape hoists a named struct from the literal's own inferred field types.
   var declFields: seq[FieldDef]
   if ctx.res.typeFor(e) != nil:
     declFields = getFieldsForType(ctx.res, ctx.module, ctx.res.typeFor(e))
@@ -123,6 +124,9 @@ proc genStructLit(ctx: var OdinCodegenCtx, e: Expr): string =
 # enums, where Type.Variant is already valid — returns "" to fall through.
 proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
                     payload: Expr): string =
+  ## `{payload} Type.Variant` for a payload-carrying sum: the variant's own
+  ## struct, which the Odin union tags by itself. "" when the sum has no
+  ## payloads (a plain enum, where `Type.Variant` is already valid).
   let found = payloadSumVariant(ctx.module, typeName, variantName)
   if found.isNone: return ""
   let v = found.get
@@ -152,6 +156,9 @@ proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
 # this backend has no expression-position `let`, so it declines and the call
 # proceeds as a plain one — exactly what the four hand-written procs did.
 proc renderShape(ctx: var OdinCodegenCtx, s: RecordShape): string =
+  ## A record combinator's shape as an Odin struct literal (`name = value`), a
+  ## structural shape landing on a hoisted struct. Declines ("") for a non-var
+  ## receiver, which would need a temp this backend cannot declare here.
   if s.ctor == ckPassThrough: return ""
   for r in s.receivers:
     if r.kind != exkVar or ctx.res.typeFor(r) == nil: return ""
@@ -261,6 +268,7 @@ proc asParenBuiltinOdin(ctx: var OdinCodegenCtx, e: Expr,
   ""
 
 proc genOdinCombinator(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A record combinator, rendered from the shape `record_shape` decides.
   ctx.renderShape(shapeOf(ctx.module, ctx.res, e))
 
 proc asCombinatorCall(ctx: var OdinCodegenCtx, e: Expr,
@@ -348,6 +356,9 @@ proc genOdinActorWaitOn(ctx: var OdinCodegenCtx, e: Expr): string =
     ctx.genOdinExpr(e.args[1]) & ")"
 
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A call in Odin, trying the special shapes first: `waitOn`, a sum
+  ## variant, a member or combinator call. A member call passes `&receiver`,
+  ## since every member fn takes `self: ^T`.
   let waitOn = ctx.genOdinActorWaitOn(e)
   if waitOn != "": return waitOn
   let variant = ctx.asSumVariantCall(e)
@@ -397,24 +408,27 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
 
 proc odinBangInfo*(ctx: var OdinCodegenCtx, t: Type):
     tuple[wrapped: bool, inner: string, innerT: Type] =
+  ## For a `!T`/`?T`/`!?T` return type: that it wraps, the payload's Odin
+  ## type (`rt.TuckUnit` for void) and the payload's Tuck type. Not wrapped
+  ## otherwise.
   if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      t.base.name in ["!", "?", "!?"] and t.args.len == 1:
     let inner = ctx.odinType(t.args[0])
     return (true, (if inner == "void": "rt.TuckUnit" else: inner), t.args[0])
   return (false, "", nil)
 
-# Comparison operand for a pattern value: enum tags need qualification (or
-# Beef's `.Tag` inference prefix for hoisted inline enums); literals pass.
 proc patternValue*(ctx: OdinCodegenCtx, patStr: string): string =
+  ## Comparison operand for a pattern value: enum tags need qualification (or
+  ## Odin's implicit-selector `.Tag` for hoisted inline enums); literals pass.
   if patStr.len == 0: return patStr
   let owner = enumTagOwner(ctx.module, patStr)
   if owner != "": return ctx.qualifyEnumOwner(owner) & "." & patStr
   if patStr[0] in {'A'..'Z'}: return "." & patStr
   patStr
 
-# A match-arm result that is a bare enum tag needs the same treatment; the
-# assignment/return target supplies the type for `.Tag` inference.
 proc armValue*(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A match-arm result that is a bare enum tag needs the same treatment; the
+  ## assignment/return target supplies the type for `.Tag` inference.
   if e != nil and e.kind == exkVar and e.name notin ctx.definedVars and
      not ctx.res.isOwnerField(e) and e.name.len > 0 and e.name[0] in {'A'..'Z'}:
     return ctx.patternValue(e.name)
@@ -422,6 +436,9 @@ proc armValue*(ctx: var OdinCodegenCtx, e: Expr): string =
 
 # exkRaise: err X — early-return an error result
 proc genRaise(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `err X`: an early error return from a fallible fn. A declared error enum
+  ## value becomes its stable hashed code; anything else is converted to the
+  ## 16-bit code as it stands.
   let rv = e.raiseVal
   let inner = if ctx.retInnerOdin != "": ctx.retInnerOdin else: "rt.TuckUnit"
   if isErrEnumRef(ctx.module, rv):
@@ -440,6 +457,9 @@ proc genOdinBareReturn(ctx: OdinCodegenCtx): string =
   else: "return"
 
 proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A `return`: auto-wrapped `tok()`/`terr()` in a fallible fn (a carrier or
+  ## an `err X` passes through), a typed struct literal, a validated value of
+  ## an invariant-carrying type, or a plain return.
   if e.returnVal == nil:
     return ctx.genOdinBareReturn()
   elif ctx.retWrapped:
@@ -521,6 +541,9 @@ proc odinSwitchPrefix(errMatch, hasWild, overEnum: bool): string =
   if hasWild and overEnum: "#partial switch (" else: "switch ("
 
 proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A statement-position `match` as an Odin `switch`. A payload sum switches
+  ## on the union's type instead; error-variant patterns compare against
+  ## their hashed codes; `_` is Odin's bare `case:`.
   let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.subject))
   if sumName != "": return ctx.genPayloadUnionMatch(e, sumName)
   let ind = "  ".repeat(ctx.indent)
@@ -556,8 +579,9 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   return ind & sw & subjectStr & ")\n" & ind & "{\n" &
          cases.join("\n") & "\n" & ind & "}"
 
-# exkMatch in value position: a ternary chain (Beef has no switch expression).
 proc genMatchExpr(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## exkMatch in value position: a ternary chain, since Odin has no switch
+  ## expression. The subject's text is repeated in every comparison.
   let subjectStr = ctx.genOdinExpr(e.subject)
   var res = ""
   var closing = 0
@@ -617,6 +641,9 @@ const OdinWidthNames = ["u8", "u16", "u32", "u64",
                         "i8", "i16", "i32", "i64", "f32"]
 
 proc genLit(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A literal in Odin syntax. A number in an inferred position spells the
+  ## width the checker settled on (`i64(0)`), since Odin will not convert an
+  ## untyped `int` literal's result type implicitly.
   case e.litKind
   of lkStr: "\"" & escapeStringLit(e.litValue) & "\""
   of lkInt, lkFloat:
@@ -879,6 +906,8 @@ proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
     ctx.genOdinExpr(e.right) & ")"
 
 proc genUnary(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A unary expression: `-` and `!`. Composition and a leftover `?` print only
+  ## the operand.
   let opStr = case e.unaryOp
               of uoNeg: "-"
               of uoNot: "!"
@@ -1328,6 +1357,9 @@ proc genOrdinal(ctx: var OdinCodegenCtx, e: Expr): string =
   else: "int(" & v & ")"
 
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## The Odin backend's expression dispatch. An interface wrap is handled
+  ## before the kind; every ExprKind has an arm, so a new kind fails to compile
+  ## here until Odin handles it.
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
   let w = ctx.res.wrapOf(e)

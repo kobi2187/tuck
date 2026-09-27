@@ -17,6 +17,9 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string
   ## into it before its own definition.
 
 proc genPendingStub*(d: Decl): string =
+  ## A `pending` fn as a Nim stub that prints "TUCK PENDING" to stderr when
+  ## called. Generic over its one payload argument, so any call shape the
+  ## checker accepted still compiles.
   # Tuck call sites pass one whole payload struct; the Tuck checker already
   # verified its shape against the pending signature. The Nim stub is generic
   # so any payload representation is absorbed.
@@ -100,6 +103,10 @@ proc groupMixins(ctx: CodegenCtx, d: Decl): string =
   "  mixin " & names.join(", ") & "\n"
 
 proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
+    ## A fn as a Nim proc: header (generics, `{.inline.}`, export marker), mixin
+    ## grouping, and the body with its tail return made explicit. Sets the ctx's
+    ## return-carrier fields for the body's return sites and restores the
+    ## scope's defined vars afterwards.
     if d.isPending:
       return genPendingStub(d)
     ctx.currentParams = @[]
@@ -157,6 +164,9 @@ proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
   ctx.genFnDecl(copy)
 
 proc genTransitionProcs*(d: Decl, kindName: string, hasPayload: bool): string =
+      ## The two procs a sum with a `transitions` block gets: `canTransition`, a
+      ## pure case over the allowed edges, and `transitionTo`, which raises on a
+      ## disallowed edge before assigning.
       var canLines: seq[string]
       canLines.add("proc canTransition*(frm, to: " & kindName & "): bool =")
       canLines.add("  case frm")
@@ -205,6 +215,9 @@ proc genSumEquality(d: Decl): string =
       result.add("  of " & v.name & ": a." & f & " == b." & f & "\n")
 
 proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
+      ## A sum type as Nim: a plain `enum` when no variant has a payload, else a
+      ## `<Name>Kind` enum plus a case object whose branches each hold one tuple.
+      ## Payload sums also get structural `==`; transitions add their procs.
       let hasPayload = sumHasPayload(d.typeBody)
       let hasTransitions = d.typeBody.transitions.len > 0
       if not hasPayload and not hasTransitions:
@@ -247,6 +260,9 @@ proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
       return res
 
 proc genRecordType*(ctx: var CodegenCtx, d: Decl): string =
+      ## A record as a Nim value `object`, followed by its invariant validator and
+      ## its member fns. A record declared in a C `extern` block imports the C
+      ## struct instead (a pointer alias when it has no fields — an opaque handle).
       var fieldsStr: seq[string]
       for f in d.typeBody.fields:
         fieldsStr.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
@@ -296,6 +312,8 @@ proc genRecordType*(ctx: var CodegenCtx, d: Decl): string =
       return res
 
 proc genAliasType*(d: Decl): string =
+      ## A type alias: a `distinct` with borrowed arithmetic, comparison and `$`
+      ## when the declaration makes it a new type, else a plain Nim alias.
       let typeBodyStr = genType(d.typeBody)
       if isDistinctAlias(d.typeBody):
         # Nim distinct + borrowed ops: same bits, incompatible type
@@ -363,6 +381,7 @@ proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
                         moduleName: ctx.moduleName, res: ctx.res)
   # a block body self-indents; a single-expression arm body needs the arm indent
   proc armBody(e: Expr): string =
+    ## One handler arm's body, indented to sit under its `of` branch.
     let raw = hctx.genExpr(e)
     if e != nil and e.kind == exkBlock: raw else: "    " & raw
   var handlerCases: seq[string]
@@ -408,6 +427,10 @@ proc genActorDrain*(drainName, singleton: string, hasShutdown: bool): string =
     "      result = true\n")
 
 proc genActor*(ctx: var CodegenCtx, d: Decl): string =
+  ## An actor as Nim: message kinds and envelope, the ref-object state, its
+  ## one global singleton, the dispatch and drain procs, and the
+  ## `registerActor<Name>` hook main's prologue calls. An actor with no
+  ## handlers is just its state object.
   if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   let queueSize = actorQueueSize(ctx.module, d)
   let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
@@ -447,6 +470,9 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
     drainStr & "\n" & registerStr
 
 proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
+    ## An event registry as Nim: a kind enum, a ref-object event holding every
+    ## variant's fields, the `latest<Name>` global, and one raise proc per event
+    ## that fills it and calls the handler.
     let msgEnumName = d.name & "Kind"
     var enumVariants: seq[string]
     var fieldsStr: seq[string]
@@ -591,6 +617,8 @@ proc rtPolicyName*(p: ResourcePolicy): string =
   of rpExit: "rtExit"
 
 proc rtOnFullName(f: ResourceOnFull): string =
+  ## The Nim runtime's spelling of a resource's on-full behaviour. Exhaustive,
+  ## like `rtPolicyName`, so a new behaviour must state its spelling here.
   case f
   of rofAbsent: "rtoAbsent"
   of rofError: "rtoError"

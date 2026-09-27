@@ -43,6 +43,8 @@ proc typeParamName*(t: Type): string =
   t.name[NamedTypeParamPrefix.len .. ^2]
 
 proc isPending*(t: Type): bool =
+  ## Is `t` the `<pending>` sentinel — the type of a `pending` hole, which
+  ## accepts anything until it is filled in?
   t != nil and t.kind == tkNamed and t.name == PendingName
 
 proc isFlexible*(t: Type): bool =
@@ -59,9 +61,14 @@ const NumericNames* = ["int", "i8", "i16", "i32", "i64",
                        "f32", "f64", "float"].toHashSet
 
 proc isNumeric*(t: Type): bool =
+  ## Is `t` one of the builtin numeric types (any width, signed, unsigned or
+  ## float)?
   t != nil and t.kind == tkNamed and t.name in NumericNames
 
 proc fail*(msg: string, span: Span) =
+  ## Raises a `SemanticError` at `span`, with the position also appended to
+  ## the message. The uncoded form; `fail(dc, ...)` tags the message with its
+  ## diagnostic code.
   let err = newException(SemanticError, msg & " at line " & $span.line & ":" & $span.col)
   err.line = span.line
   err.col = span.col
@@ -73,8 +80,9 @@ proc fail*(dc: DiagCode, msg: string, span: Span) =
   ## by site rather than in one sweep — see diagnostics.nim.
   fail(withCode(dc, msg), span)
 
-# `!T` / `?T` / `!?T` parse as tkApp with a tkNamed base of "!", "?" or "!?".
 proc isWrapper*(t: Type): bool =
+  ## Is `t` a result wrapper — `!T`, `?T` or `!?T`? They parse as tkApp with
+  ## a tkNamed base of "!", "?" or "!?" and exactly one argument.
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["!", "?", "!?"] and t.args.len == 1
 
@@ -88,16 +96,17 @@ proc isBangQuestion*(t: Type): bool =
     t.base.name == "!?" and t.args.len == 1
 
 proc unwrapEffect*(t: Type): Type =
+  ## `t` with every `!`/`?`/`!?` wrapper peeled off — the payload type.
   if isWrapper(t):
     return unwrapEffect(t.args[0])
   t
 
-# `<uninit>[T]` — a declared field the construction did not supply. Shares
-# tkApp's shape with the wrappers above but is deliberately NOT one of them:
-# `!`/`?` are written by the author in a signature, this is inferred by the
-# checker and never spelled in source. Adding it to isWrapper would make every
-# wrapper site tell the user to guard something they never declared.
 proc isUninit*(t: Type): bool =
+  ## `<uninit>[T]` — a declared field the construction did not supply. Shares
+  ## tkApp's shape with the wrappers above but is deliberately NOT one of them:
+  ## `!`/`?` are written by the author in a signature, this is inferred by the
+  ## checker and never spelled in source. Adding it to isWrapper would make every
+  ## wrapper site tell the user to guard something they never declared.
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name == UninitName and t.args.len == 1
 
@@ -134,6 +143,8 @@ proc markUninit*(t: Type, sp: Span): Type =
              base: Type(span: sp, kind: tkNamed, name: UninitName))
 
 proc typeName*(t: Type): string =
+  ## A type as a diagnostic spells it. Named types, records and applications
+  ## print in full; sums, unions and anything else print only as their kind.
   if t == nil: return "void"
   case t.kind
   of tkNamed: t.name
@@ -156,6 +167,9 @@ proc typeName*(t: Type): string =
   else: "<type>"
 
 proc substituteType*(t: Type, b: Table[string, Type]): Type =
+  ## `t` with each type parameter in `b` replaced, rebuilt as new nodes. Only
+  ## names, applications, fn types and records are walked; other kinds are
+  ## returned unchanged.
   if t == nil or b.len == 0: return t
   case t.kind
   of tkNamed:

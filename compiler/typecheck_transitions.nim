@@ -19,8 +19,10 @@
 import ast, sets
 import typecheck_util  # fail
 
-## Verifies all variants in a sealed type are reachable from the initial variant
 proc checkSealedReachability(d: Decl, t: Type) =
+  ## Verifies all variants in a sealed type are reachable from the initial variant.
+  ## A variant nothing transitions into is dead code in the state machine,
+  ## and a sealed type declares its table complete.
   # Every variant must be reachable from the initial (first) variant
   var reachable = [t.variants[0].name].toHashSet
   var grew = true
@@ -36,6 +38,8 @@ proc checkSealedReachability(d: Decl, t: Type) =
            "' is unreachable from initial variant '" & t.variants[0].name & "'", v.span)
 
 proc checkTransitions*(d: Decl) =
+  ## A sum's `transitions` table may only name its own variants, and a
+  ## `[sealed]` sum must reach every variant from its first.
   let t = d.typeBody
   if t == nil or t.kind != tkSum or t.transitions.len == 0: return
   var variantNames = initHashSet[string]()

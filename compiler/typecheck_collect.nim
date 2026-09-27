@@ -312,6 +312,8 @@ proc resolveInferredTypes*(tc: TypeChecker) =
     resolveTypeRefs(tc, t)
 
 proc checkFallibleNeedsIo*(name: string, ret: Type, effects: seq[EffectMarker], span: Span) =
+  ## A fn returning `!T` or `!?T` must be marked `[io]`: failure is an effect,
+  ## and pure functions are total. Reported against the fn `name` at `span`.
   if ret != nil and isWrapper(ret) and ret.base.name in ["!", "!?"] and
      emIo notin effects:
     fail("Effect Error: '" & name & "' returns " & typeName(ret) &

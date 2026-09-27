@@ -25,6 +25,8 @@ proc odinPolicyName(p: ResourcePolicy): string =
   of rpExit: ".Exit"
 
 proc odinOnFullName(f: ResourceOnFull): string =
+  ## How Odin spells a resource's on-full behaviour: an implicit-selector enum
+  ## member. Exhaustive, so a new behaviour must state its spelling here.
   case f
   of rofAbsent: ".Absent"
   of rofError: ".Error"
@@ -54,13 +56,14 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string
   ## Forward-declared: genRecordType (manager-type member fns) recurses
   ## into it before its own definition.
 
-# Object member fn (or a mixin fn materialized by `+ mixin`): the object
-# rides as a `ref self` first parameter (reassignment must reach the
-# caller); `Self` resolves to the object. Shallow copy — the shared AST
-# stays untouched for the other backend.
-# ponytail: call sites don't take the address yet — nothing in the
-# examples calls a member fn; wire it when one does.
 proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string =
+  ## Object member fn (or a mixin fn materialized by `+ mixin`): the object
+  ## rides as a `self: ^T` first parameter (reassignment must reach the
+  ## caller); `Self` resolves to the object. Shallow copy — the shared AST
+  ## stays untouched for the other backend.
+  ##
+  ## ponytail: call sites don't take the address yet — nothing in the
+  ## examples calls a member fn; wire it when one does.
   # lowering.normalizeSelf has already given the member its `self` parameter
   # and resolved `Self` to the object. What is left is the ODIN spelling:
   # self is a pointer, `^T`, so a mutation reaches the caller's value.
@@ -224,6 +227,8 @@ proc enterReturnContext*(ctx: var OdinCodegenCtx, d: Decl) =
     else: ""
 
 proc leaveReturnContext*(ctx: var OdinCodegenCtx) =
+  ## Undoes `enterReturnContext` after a fn body, so the next emission starts
+  ## with no return carrier or invariant check assumed.
   ctx.retWrapped = false
   ctx.retAbsentCapable = false
   ctx.retInnerOdin = ""
@@ -329,6 +334,9 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
 
 proc genTransitionProcs*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
                         hasPayload: bool): string =
+  ## A sum's `transitions` as two type-qualified Odin procs:
+  ## `canTransition_<T>`, a switch over the allowed edges, and
+  ## `transitionTo_<T>`, which asserts the edge before assigning through `self`.
   let ind = "  ".repeat(ctx.indent)
   # Names are type-qualified: Odin has no overloading or class scoping, so
   # two sum types in one package would otherwise collide.
@@ -404,6 +412,9 @@ proc genPayloadUnion*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
     result.add(genTagProjection(d, kindName, ind))
 
 proc sumNamesIn(m: Module): HashSet[string] =
+  ## The names of every payload-carrying sum declared in `m`. A field of one
+  ## of these types needs its own equality proc, not `==`, when a containing
+  ## sum's equality is generated.
   for d in m.decls(dkType):
     if d != nil and d.typeBody != nil and d.typeBody.kind == tkSum and
        sumHasPayload(d.typeBody):
@@ -477,6 +488,9 @@ proc genSumType*(ctx: var OdinCodegenCtx, d: Decl): string =
     result.add(ctx.genTransitionProcs(d, kindName, hasPayload))
 
 proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## A record as an Odin `struct` (parametric when generic), then its
+  ## `validate_<T>` proc when it declares invariants. A fieldless extern type
+  ## is an opaque C handle and becomes `rawptr`.
   let ind = "  ".repeat(ctx.indent)
   var fieldsStr: seq[string]
   for f in d.typeBody.fields:
@@ -527,6 +541,8 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
   return res
 
 proc genAliasType*(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## A type alias: Odin's native `distinct` when the declaration makes a new
+  ## type, a `using` wrapper struct when generic, else a plain alias.
   let ind = "  ".repeat(ctx.indent)
   let typeBodyStr = ctx.odinType(d.typeBody)
   if isDistinctAlias(d.typeBody):
@@ -549,6 +565,8 @@ proc mailboxSize*(m: Module, d: Decl): string =
   DefaultMailboxSize
 
 proc actorFieldLines*(ctx: var OdinCodegenCtx, d: Decl): seq[string] =
+  ## The actor state struct's field lines, one per declared field, each typed
+  ## through `fieldType` so inline sums hoist under the actor's name.
   let ind = "  ".repeat(ctx.indent)
   for f in d.actorFields:
     result.add(ind & "\t" & f.name & ": " & ctx.fieldType(d.name, f) & ",")
@@ -722,13 +740,14 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
     ind & "}\n"
 
 proc genShutdownSender*(d: Decl, ind: string): string =
+  ## `sendShutdown_<Actor>`: enqueues the shutdown message and wakes the
+  ## actor's scheduler slot, like any other send helper.
   "\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" & d.name &
     ") {\n" & ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name &
     "Msg{" & TagField & " = .msgShutdown})\n" &
     ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" & ind & "}\n"
 
 proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
-  if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   ## An actor emits its message envelope, state struct, singleton, dispatch,
   ## drain loop and one send helper per handler.
   ##
@@ -737,6 +756,7 @@ proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## actor take the no-handler path, which emits no enum, no mailbox and no
   ## send procs — while the send SITES still called them, so the package did
   ## not compile.
+  if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   let ind = "  ".repeat(ctx.indent)
   let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
   var variants: seq[string]

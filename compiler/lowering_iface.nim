@@ -58,6 +58,9 @@ proc memberArgs(res: Resolution, mem: Decl, dotArg: Expr,
 
 proc dispatchArm(res: Resolution, e: Expr, s: Decl,
                  member: string): DispatchArm =
+  ## The arm for one satisfier `s`: a typed call to its own `member`, with the
+  ## payload (bound as `PayloadBind`) as `self` and the rest from the call's
+  ## payload literal.
   let mem = findObjectMember(s, member)
   doAssert mem != nil and mem.fnParams.len > 0,
     "lowering_iface: '" & s.name & "' satisfies the interface but declares " &
@@ -89,6 +92,8 @@ proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
 
 proc lowerIn(res: Resolution, m: Module, real: Table[string, Module],
              e: Expr) =
+  ## Lowers every interface call under `e`, children first, so an argument
+  ## that is itself an interface call is replaced before its parent copies it.
   if e == nil: return
   for ch in e.children: lowerIn(res, m, real, ch)
   if e.kind == exkField and res.ifaceCallOf(e).member != "":

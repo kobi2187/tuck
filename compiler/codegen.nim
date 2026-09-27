@@ -54,6 +54,10 @@ export genType        # re-exported: this file's public face is the backend
 # sketch-pending qualified name maps to its mangled stub (genPendingStub).
 
 proc genQualified(ctx: CodegenCtx, e: Expr): string =
+  ## `module::fn`: a real imported module rides Nim's own namespacing, and a
+  ## sketch-pending qualified name maps to its mangled stub (`mod_fn`).
+  ## A bare `:name` fn reference is cast to the module's C callback signature
+  ## when it has one, so it can be handed to C.
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
   if modName == "":
     # `:name` — a bare fn reference. Feeding one to a C function pointer needs
@@ -75,19 +79,18 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
 
-# Type-directed explosion: a record-typed VAR as the whole payload
-# (`p advance`) explodes to the fn's params by field name, in param order —
-# same subset matching the checker verified. Fields come from the checker's
-# ty stamp on the arg node.
-# The four record combinators — bake / with / alias / merge — share one
-# emitter. What each PRODUCES is decided in record_shape.nim, in terms no
-# target knows about; all that is left here is how Nim spells a constructor
-# call and a field access. This was four procs, and their Odin and D twins
-# were eight more.
-#
-# Nim's structural shape is an anonymous tuple, so ckStructural ignores the
-# declared field list the other two backends use to name a struct.
 proc renderShape(ctx: var CodegenCtx, s: RecordShape, tag: string): string =
+  ## The four record combinators — bake / with / alias / merge — share one
+  ## emitter. What each PRODUCES is decided in record_shape.nim, in terms no
+  ## target knows about; all that is left here is how Nim spells a constructor
+  ## call and a field access. This was four procs, and their Odin and D twins
+  ## were eight more.
+  ##
+  ## Nim's structural shape is an anonymous tuple, so ckStructural ignores the
+  ## declared field list the other two backends use to name a struct.
+  ##
+  ## A non-var receiver is bound to a temp first (`tag` names it), so it is
+  ## evaluated once however many fields read it.
   if s.ctor == ckPassThrough: return ctx.genExpr(s.passThrough)
   # A receiver read once per field must not be EVALUATED once per field, so a
   # non-var receiver binds to a temp first. The temps come before the parts,
@@ -103,6 +106,7 @@ proc renderShape(ctx: var CodegenCtx, s: RecordShape, tag: string): string =
       text = tmp
     bound.add (r, text)
   proc textOf(rs: seq[(Expr, string)], want: Expr): string =
+    ## The emitted text bound for receiver `want`, or "".
     for (r, text) in rs:
       if r == want: return text
     ""
@@ -133,6 +137,10 @@ proc genCombinator(ctx: var CodegenCtx, e: Expr): string =
 proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
+  ##
+  ## Type-directed explosion: a record-typed VAR as the whole payload
+  ## (`p advance`) explodes to the fn's params by field name, in param order —
+  ## same subset matching the checker verified.
   let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
   if fields.isNone: return ""
   let recv = ctx.genExpr(e.args[0])
@@ -147,6 +155,9 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
 # and the caller falls through to plain emission.
 proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
                     payload: Expr): string =
+  ## `{payload} Type.Variant` for a payload-carrying sum: the case object with
+  ## its `kind` set and the variant's payload tuple in DECLARED field order. ""
+  ## for a payload-free sum, whose `Type.Variant` is already valid Nim.
   let found = payloadSumVariant(ctx.module, typeName, variantName)
   if found.isNone: return ""
   let v = found.get
@@ -163,6 +174,8 @@ proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
     sumPayloadField(variantName) & ": (" & parts.join(", ") & "))"
 
 proc bangInfo*(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
+  ## For a `!T`/`?T`/`!?T` type: that it wraps, the payload's Nim type
+  ## (`tuple[]` for void) and the payload's Tuck type. Not wrapped otherwise.
   if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      t.base.name in ["!", "?", "!?"] and t.args.len == 1:
     let inner = genType(t.args[0])
@@ -190,6 +203,8 @@ proc genericCtorName(ctx: var CodegenCtx, e: Expr, base: string): string =
   base & "[" & gparts.join(", ") & "]"
 
 proc isRecordConstruction(ctx: var CodegenCtx, e: Expr): bool =
+  ## Is `e` `{fields} Name` for a record or object `Name` — a construction, not
+  ## a call?
   e.args.len == 1 and e.args[0].kind == exkStruct and
     e.callee != nil and e.callee.kind == exkVar and
     ctx.index.isRecordType(e.callee.name)
@@ -304,6 +319,9 @@ proc genActorWaitOn(ctx: var CodegenCtx, e: Expr): string =
     ctx.genExpr(e.args[1]) & ")"
 
 proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
+  ## Every exkCall, whatever produced it: `waitOn`, record construction, a sum
+  ## variant, a member or combinator call, else a plain call with its
+  ## arguments in parameter order and any explicit type arguments.
   let waitOn = ctx.genActorWaitOn(e)
   if waitOn != "": return waitOn
   if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
@@ -360,6 +378,9 @@ proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
   "return tok(" & ctx.genExpr(v) & ")"
 
 proc genReturn(ctx: var CodegenCtx, e: Expr): string =
+  ## A `return`: auto-wrapped into the result carrier in a fallible fn (a bare
+  ## return is `tnone`/`tokVoid`), validated for an invariant-carrying type,
+  ## or plain.
   if e.returnVal == nil:
     if ctx.retWrapped and ctx.retAbsentCapable:
       # `tnone[T]()` for a plain T (a bare generic param or an ordinary named
@@ -433,6 +454,8 @@ const NimLitSuffix = {
   ## churn every golden for nothing.
 
 proc genLit(ctx: CodegenCtx, e: Expr): string =
+  ## A literal in Nim syntax. A number carries the width the checker settled
+  ## on (`'u8`...), and a decimal integer past `int64` is a `'u64` literal.
   case e.litKind
   of lkStr: "\"" & escapeStringLit(e.litValue) & "\""
   of lkInt:
@@ -544,6 +567,7 @@ proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =
   else: base
 
 proc genStruct(ctx: var CodegenCtx, e: Expr): string =
+  ## A payload/record literal as a Nim named tuple: `(a: 1, b: x)`.
   var parts: seq[string]
   for f in e.fields: parts.add(f.name & ": " & ctx.genExpr(f.value))
   "(" & parts.join(", ") & ")"
@@ -580,11 +604,13 @@ proc loopVarNames(iter: Pattern): string =
   names.join(", ")
 
 proc genFor(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## A `for` loop; the loop pattern's names become Nim's loop variables.
   let iterStr = loopVarNames(e.iter)
   let iterable = ctx.genExpr(e.iterable)
   ind & "for " & iterStr & " in " & iterable & ":\n" & ctx.genIndented(e.body)
 
 proc genWhile(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## A `while` loop; a condition-less `loop` is `while true`.
   let condStr = if e.whileCond == nil: "true" else: ctx.genExpr(e.whileCond)
   ind & "while " & condStr & ":\n" & ctx.genIndented(e.whileBody)
 
@@ -611,12 +637,15 @@ proc nimBinOp(op: BinOp): string =
   of boRangeExcl: "..<"
 
 proc genBinary(ctx: var CodegenCtx, e: Expr): string =
+  ## A binary expression, parenthesised; `str + str` goes through `tuckConcat`.
   if isStringConcat(e):
     return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
   "(" & ctx.genExpr(e.left) & " " & nimBinOp(e.binOp) & " " &
     ctx.genExpr(e.right) & ")"
 
 proc genUnary(ctx: var CodegenCtx, e: Expr): string =
+  ## A unary expression: `-` and `not`. Composition and a leftover `?` print
+  ## only the operand.
   let opStr = case e.unaryOp
               of uoNeg: "-"
               of uoNot: "not "
@@ -752,6 +781,8 @@ proc genValueIf(ctx: var CodegenCtx, e: Expr, condStr: string): string =
     ctx.genUnindented(e.elseBranch) & ")"
 
 proc genIf(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## An `if`: an if-expression in value position, otherwise a statement with
+  ## indented branches.
   let condStr = ctx.genExpr(e.cond)
   if isValueIf(e): return ctx.genValueIf(e, condStr)
   let thenStr = ctx.genIndented(e.thenBranch)
@@ -770,6 +801,9 @@ proc genRaise(ctx: var CodegenCtx, e: Expr): string =
   "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
+  ## The Nim backend's expression dispatch. An interface wrap is emitted
+  ## around the node first (`wrapping` stops it re-wrapping itself); every
+  ## ExprKind has an arm, so a new kind fails to compile here.
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
   let w = ctx.res.wrapOf(e)
@@ -939,6 +973,9 @@ proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
                ctx.genExpr(e.target.receiver) & ")")
 
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
+  ## An assignment or binding, trying the special forms first: a task result
+  ## slot, `xs = xs + [v]` as an append, `s = s + t` as an in-place concat, a
+  ## declaration; else a plain field or variable write.
   let taskResult = ctx.genTaskAssignment(e)
   if taskResult != "": return taskResult
   let appendResult = ctx.genSelfAppendAssignment(e)
@@ -1013,6 +1050,9 @@ proc processMatchArm(ctx: var CodegenCtx, arm: MatchArm, patStr: var string,
   result
 
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
+  ## A `match` as a Nim case expression; a payload sum switches on `.kind`.
+  ## An error match with no `_` gets an `else: discard`, since error codes
+  ## are an open set.
   if e.subject == nil: return "discard"
   let ind = "  ".repeat(ctx.indent)
   var subjectStr = ctx.genExpr(e.subject)
@@ -1030,6 +1070,8 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
 
 
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
+  ## `Actor send handler {payload}`: enqueue the message on the actor's
+  ## mailbox, then notify that actor's scheduler slot.
   # `ActorType send handler {payload}` — enqueue a Msg to the actor's
   # singleton mailbox, then wake the scheduler. The message envelope mirrors
   # genActor: kind = msg<Handler>, fields from the payload struct.
@@ -1061,6 +1103,8 @@ proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
   else: "int(" & ms & ")"
 
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
+  ## A task's `on select`: a read and/or timeout arm lowered onto the
+  ## runtime's await primitives. The checker refuses every other arm shape.
   # task `on select` (spec §9.3), first cut: exactly a `read <fd>` arm and a
   # `timeout <ms>` arm race via tuckAwaitReadOrTimeout — true = fd readable
   # (run the read body), false = deadline (run the timeout body).
@@ -1069,17 +1113,18 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
   # `discard`. The checker now REFUSES any arm this cannot lower
   # (failIfUnlowerableArm), so the fallback below is unreachable for a
   # checked program and stays only as a belt for direct codegen callers.
-  # An arm body is a BLOCK or a single expression, so it is emitted the way a
-  # match arm's is: a block indents itself, an expression gets the branch
-  # indent prefixed. Emitting a block with the expression rule produced
-  # "invalid indentation" the moment arms gained blocks.
-  ## `nest` says whether the body sits inside a branch. The two-arm form
-  ## lowers to `if:`/`else:` and its bodies are one level in; the one-arm form
-  ## lowers to straight-line code — the await, then the body — and its body
-  ## stays at the SAME level. Nesting a sequential body produced Nim's
-  ## "invalid indentation".
   proc armBody(ctx: var CodegenCtx, body: Expr, ind: string,
                nest = true): string =
+    ## An arm body is a BLOCK or a single expression, so it is emitted the way a
+    ## match arm's is: a block indents itself, an expression gets the branch
+    ## indent prefixed. Emitting a block with the expression rule produced
+    ## "invalid indentation" the moment arms gained blocks.
+    ##
+    ## `nest` says whether the body sits inside a branch. The two-arm form
+    ## lowers to `if:`/`else:` and its bodies are one level in; the one-arm form
+    ## lowers to straight-line code — the await, then the body — and its body
+    ## stays at the SAME level. Nesting a sequential body produced Nim's
+    ## "invalid indentation".
     if body != nil and body.kind == exkBlock:
       let saved = ctx.indent
       if nest: ctx.indent += 1

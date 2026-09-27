@@ -40,6 +40,7 @@ import decision_table
 from parser_stringify import toString
 
 type Row = object
+  ## One table row: a pattern per column and the body it answers with.
   cols: seq[Pattern]      ## one pattern per parameter
   body: Expr              ## what the row answers
 
@@ -67,21 +68,29 @@ proc rowsOf(d: Decl): seq[Row] =
 # qualifies by its type), and a node built after checking has nothing there
 # unless it is put there.
 
-proc intType(sp: Span): Type = Type(span: sp, kind: tkNamed, name: "int")
-proc boolType(sp: Span): Type = Type(span: sp, kind: tkNamed, name: "bool")
+proc intType(sp: Span): Type =
+  ## A fresh `int` type node at `sp`, for the typed nodes this pass builds.
+  Type(span: sp, kind: tkNamed, name: "int")
+proc boolType(sp: Span): Type =
+  ## A fresh `bool` type node at `sp`.
+  Type(span: sp, kind: tkNamed, name: "bool")
 
 proc paramRef(res: Resolution, d: Decl, i: int): Expr =
+  ## A typed read of the fn's `i`th parameter — the value column `i` tests.
   let p = d.fnParams[i]
   res.typed(Expr(span: d.span, kind: exkVar, name: p.name), p.typ)
 
 proc intLit(res: Resolution, sp: Span, n: int): Expr =
+  ## A typed `int` literal.
   res.typed(Expr(span: sp, kind: exkLit, litKind: lkInt, litValue: $n),
             intType(sp))
 
 proc binary(res: Resolution, op: BinOp, l, r: Expr, t: Type): Expr =
+  ## A typed binary node `l op r` of type `t`, spanned at its left operand.
   res.typed(Expr(span: l.span, kind: exkBinary, binOp: op, left: l, right: r), t)
 
 proc returnOf(body: Expr): Expr =
+  ## `return body` — each row's answer is the fn's result.
   Expr(span: body.span, kind: exkReturn, returnVal: body)
 
 # --- packed ------------------------------------------------------------------
@@ -109,9 +118,12 @@ proc keyPattern(sp: Span, keys: seq[int]): Pattern =
              else: Pattern(span: sp, kind: pkOr, left: result, right: lit)
 
 proc rowStrings(r: Row): seq[string] =
+  ## A row's patterns as text, the form `rowMatches` compares against a
+  ## combination's values.
   for p in r.cols: result.add genPatternStr(p)
 
 type Group = object
+  ## The combinations that share one outcome — they become one match arm.
   text: string            ## the outcome, as written — what groups combos
   row: int                ## the first row answering it; its body is used
   keys: seq[int]
@@ -143,6 +155,9 @@ proc groupByOutcome(rows: seq[Row], domains: seq[seq[string]],
 
 proc lowerPacked(res: Resolution, d: Decl, rows: seq[Row],
                  domains: seq[seq[string]], comboCount: int): seq[Expr] =
+  ## The PACKED form: one `match` over the mixed-radix key, one arm per
+  ## outcome group, the last a catch-all so the match is total. A table with a
+  ## single outcome is just that `return`.
   let groups = groupByOutcome(rows, domains, comboCount)
   # ONE OUTCOME for every combination: nothing to dispatch on.
   if groups.len == 1: return @[returnOf(rows[groups[0].row].body)]
@@ -182,6 +197,8 @@ proc rowCondition(res: Resolution, d: Decl, r: Row): Expr =
              else: res.binary(boAnd, result, test, boolType(d.span))
 
 proc lowerChained(res: Resolution, d: Decl, rows: seq[Row]): seq[Expr] =
+  ## The CHAINED form: each row an `if cond: return body`, in order, ending at
+  ## the catch-all row, which becomes the unconditional final `return`.
   for r in rows:
     let cond = res.rowCondition(d, r)
     if cond == nil:
@@ -200,6 +217,9 @@ proc lowerChained(res: Resolution, d: Decl, rows: seq[Row]): seq[Expr] =
 # --- the pass ----------------------------------------------------------------
 
 proc lowerTable(res: Resolution, m: Module, d: Decl) =
+  ## Replaces a decision table's rows with its ordinary body: packed when
+  ## every column is enumerable and the combinations fit `MaxPackedCombos`,
+  ## chained otherwise.
   let rows = rowsOf(d)
   doAssert rows.len > 0, "lowering_decisions: " & d.name & " has no rows"
   let (domains, allEnum, comboCount) = columnDomains(m, d)

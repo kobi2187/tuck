@@ -13,17 +13,23 @@ export diagnostics   # every reportError caller needs the codes
 
 type
   Parser* = object
+    ## The parser's whole state: the source (for error context lines), the
+    ## token stream the lexer produced, and the cursor into it.
     source*: string
     tokens*: seq[Token]
     cursor*: int
 
 proc current*(p: Parser): Token =
+  ## The token under the cursor, or a synthetic EOF positioned at the last
+  ## real token once the stream is exhausted — so lookahead never indexes out.
   if p.cursor < p.tokens.len:
     p.tokens[p.cursor]
   else:
     Token(kind: tkEOF, value: "", line: if p.tokens.len > 0: p.tokens[^1].line else: 1, column: if p.tokens.len > 0: p.tokens[^1].column else: 1)
 
 proc peek*(p: Parser, offset = 1): Token =
+  ## The token `offset` ahead of the cursor, with the same EOF fallback as
+  ## `current`.
   let idx = p.cursor + offset
   if idx < p.tokens.len:
     p.tokens[idx]
@@ -31,11 +37,15 @@ proc peek*(p: Parser, offset = 1): Token =
     Token(kind: tkEOF, value: "", line: if p.tokens.len > 0: p.tokens[^1].line else: 1, column: if p.tokens.len > 0: p.tokens[^1].column else: 1)
 
 proc advance*(p: var Parser): Token =
+  ## Consumes and returns the current token. At EOF the cursor stays put and
+  ## the synthetic EOF is returned again.
   result = p.current()
   if p.cursor < p.tokens.len:
     p.cursor += 1
 
 proc getLineContext(source: string, targetLine: int): string =
+  ## The text of source line `targetLine` (1-based), without its newline — the
+  ## line an error message quotes under its caret. "" past the end.
   var lineNum = 1
   var currentLine = ""
   for ch in source:
@@ -67,6 +77,8 @@ proc reportError*(p: Parser, msg: string, line = -1, col = -1,
   raise err
 
 proc expect*(p: var Parser, kind: TokenKind, msg = ""): Token =
+  ## Consumes a token of `kind` and returns it, or reports a parse error that
+  ## says what was expected and what was found (or `msg`, when given).
   if p.current().kind != kind:
     let errMsg = if msg.len > 0: msg
                  else: "Expected " & describe(kind) & " here, found " &
@@ -134,6 +146,8 @@ proc expectTypeName*(p: var Parser, what: string): Token =
   tok
 
 proc getSpan*(p: Parser): Span =
+  ## The source position of the current token. The file is filled in later by
+  ## the module loader, which knows the path.
   Span(line: p.current().line, col: p.current().column, file: "")
 
 proc skipSeparators*(p: var Parser) =

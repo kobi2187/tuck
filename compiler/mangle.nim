@@ -104,9 +104,9 @@ proc isManglable(d: Decl): bool =
      dkRegister, dkFnSig: true
   else: false
 
-# The set of names a module declares and will rename. Built first so
-# reference sites can tell a global from a local without re-scanning.
 proc manglableNames*(m: Module): MangleNames =
+  ## The set of names a module declares and will rename. Built first so
+  ## reference sites can tell a global from a local without re-scanning.
   for d in m.decls:
     if isManglable(d): result[d.name] = declKind(d)
     # members of a mixin / extern / pending block become top-level fns in
@@ -115,12 +115,12 @@ proc manglableNames*(m: Module): MangleNames =
       for mem in d.mixinMembers:
         if isManglable(mem): result[mem.name] = declKind(mem)
 
-# The union across the whole import closure. A qualified reference
-# (`http::get`) names a decl in ANOTHER module, so deciding whether it is
-# manglable needs the closure: `http::get` is a user fn and becomes
-# tuck_get, while `fs::readFile` is an extern and must stay verbatim. One
-# module alone cannot tell these apart.
 proc programNames*(mods: seq[Module]): MangleNames =
+  ## The union across the whole import closure. A qualified reference
+  ## (`http::get`) names a decl in ANOTHER module, so deciding whether it is
+  ## manglable needs the closure: `http::get` is a user fn and becomes
+  ## tuck_get, while `fs::readFile` is an extern and must stay verbatim. One
+  ## module alone cannot tell these apart.
   for m in mods:
     for n, k in manglableNames(m): result[n] = k
 
@@ -299,6 +299,9 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
 
 proc mangleFnBody(res: Resolution, d: Decl, names: MangleNames,
                   fields: HashSet[string] = initHashSet[string]()) =
+  ## Renames the global references in a fn body, and the types in its
+  ## signature. Params are passed as `fields`, never renamed: a param name is
+  ## the payload field the caller binds by, so it is a contract, not a local.
   # Params are NOT renamed, and so are passed as `fields` rather than as
   # locals: a param name is a CONTRACT, not a free identifier. It is the
   # payload field the caller binds by name, it becomes an envelope struct's

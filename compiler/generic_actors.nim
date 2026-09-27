@@ -36,9 +36,12 @@ import ast_ops
 proc substType*(t: Type, subs: Table[string, Type]): Type
 
 proc substAll(ts: seq[Type], subs: Table[string, Type]): seq[Type] =
+  ## `substType` over every type in `ts`.
   for t in ts: result.add(substType(t, subs))
 
 proc substFields(fs: seq[FieldDef], subs: Table[string, Type]): seq[FieldDef] =
+  ## Copies each field with `subs` applied to its type; the name, attributes
+  ## and span are kept.
   for f in fs:
     result.add(FieldDef(name: f.name, typ: substType(f.typ, subs),
                         attrs: f.attrs, span: f.span))
@@ -143,6 +146,8 @@ proc bracketArgs(e: Expr): seq[Type] =
   for a in e.brArgs: result.add(typeOfTypeExpr(a))
 
 proc note(found: var Table[string, seq[Type]], n: string, args: seq[Type]) =
+  ## Records an instantiation under its expanded name. The first sighting
+  ## wins; a later use of the same name carries the same type arguments.
   if n notin found: found[n] = args
 
 proc collectAndRewrite(e: Expr, generic: Table[string, Decl],

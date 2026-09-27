@@ -39,6 +39,8 @@ import resolution
 var tmpCounter = 0
 
 proc freshTemp(sp: Span): string =
+  ## A new `tuckChainN` name for a chain whose value is used, so it runs on a
+  ## copy. The span is unused: the counter alone keeps names unique.
   inc tmpCounter
   "tuckChain" & $tmpCounter
 
@@ -118,6 +120,8 @@ proc chainOnFieldCall(res: Resolution, e: Expr): bool =
     e.receiver.kind == exkChain and res.hasCall(e)
 
 proc returnsValue(retType: Type): bool =
+  ## Does a fn with this return type produce a value? Nil and `void` do not,
+  ## so a chain in tail position of such a fn is a statement, not a result.
   retType != nil and not (retType.kind == tkNamed and retType.name == "void")
 
 proc lowerStmt(res: Resolution, m: Module, s: Expr,
@@ -180,6 +184,9 @@ proc lowerNested(res: Resolution, m: Module, e: Expr) =
   for ch in e.children: lowerNested(res, m, ch)
 
 proc lowerBlock(res: Resolution, m: Module, b: Expr, retType: Type) =
+  ## Replaces each statement of block `b` with its chain-free lowering, then
+  ## lowers the blocks nested inside those. Only the last statement is the
+  ## block's value, so only it gets `retType`.
   var stmts: seq[Expr]
   for i, s in b.stmts:
     let tail = if i == b.stmts.high: retType else: nil

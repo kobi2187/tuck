@@ -377,6 +377,7 @@ let tuckGrammar = peg("module", st: Stats):
   module    <- *nl * *(decl * *("tkDedent " | nl)) * !1
 
 type Verdict* = enum
+  ## What the spec-side grammar says about one file.
   vOk          ## the grammar accepts this file
   vRejected    ## the grammar rejects it — parser and spec disagree
 

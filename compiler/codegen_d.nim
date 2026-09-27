@@ -64,6 +64,9 @@ proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
   modName & "_" & e.qualName
 
 proc genDLit(e: Expr): string =
+  ## A literal in D syntax. Integers get `L` (Tuck's `int` is D's `long`) or
+  ## `UL` past the signed range; strings are re-escaped for D; unit prints
+  ## nothing.
   case e.litKind
   of lkStr: "\"" & escapeStringLit(e.litValue) & "\""
   of lkInt:
@@ -169,14 +172,14 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
     return "__validated_" & e.callee.name & "(" & ctor & ")"
   ctor
 
-# The four record combinators share one emitter; what each PRODUCES is
-# decided in record_shape.nim. D's part is only its own syntax: a struct
-# literal takes `name: value`, and a structural shape lands on a hoisted
-# struct rather than an anonymous tuple.
-#
-# ponytail: exkVar receivers only, matching the Odin backend — a non-var
-# receiver declines and the call proceeds as a plain one.
 proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
+  ## The four record combinators share one emitter; what each PRODUCES is
+  ## decided in record_shape.nim. D's part is only its own syntax: a struct
+  ## literal takes `name: value`, and a structural shape lands on a hoisted
+  ## struct rather than an anonymous tuple.
+  ##
+  ## ponytail: exkVar receivers only, matching the Odin backend — a non-var
+  ## receiver declines and the call proceeds as a plain one.
   if s.ctor == ckPassThrough: return ""
   for r in s.receivers:
     if r.kind != exkVar or ctx.res.typeFor(r) == nil: return ""
@@ -233,6 +236,8 @@ proc asParenBuiltinD(ctx: var DCodegenCtx, e: Expr, calleeStr: string): string =
   ""
 
 proc genDCombinator(ctx: var DCodegenCtx, e: Expr): string =
+  ## A record combinator (`bake`/`with`/`alias`/`merge`), rendered from the
+  ## shape `record_shape` decides for it.
   ctx.renderShape(shapeOf(ctx.module, ctx.res, e))
 
 proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
@@ -288,6 +293,8 @@ proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
     typeName & "_" & variantName & "(" & parts.join(", ") & "))"
 
 proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## `{payload} Sum.Variant` as a D tagged-struct construction, or "" when the
+  ## call is not a variant construction.
   if e.callee == nil or e.callee.kind != exkField or
      e.callee.receiver == nil or e.callee.receiver.kind != exkVar: return ""
   let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
@@ -351,6 +358,9 @@ proc genDActorWaitOn(ctx: var DCodegenCtx, e: Expr): string =
     ctx.genDExpr(e.args[1]) & ")"
 
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## A call in D, trying the special shapes first: `waitOn`, a sum variant, a
+  ## primitive conversion, a task spawn, a member or combinator call. What is
+  ## left is a plain call with its arguments in parameter order.
   let waitOn = ctx.genDActorWaitOn(e)
   if waitOn != "": return waitOn
   let variant = ctx.asDSumVariantCall(e)
@@ -436,6 +446,9 @@ proc genDWrappedReturn(ctx: var DCodegenCtx, v: Expr): string =
   "return rt.tok(" & ctx.genDExpr(v) & ")"
 
 proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
+  ## A `return`. In a fallible fn the value is wrapped in the result carrier
+  ## (a bare return is `tnone`/`tokVoid`); a value of an invariant-carrying
+  ## type is validated on the way out unless it validated itself.
   if e.returnVal == nil:
     if ctx.retWrapped and ctx.retAbsentCapable:
       return "return rt.tnone!(" & ctx.retInnerD & ")()"
@@ -453,7 +466,9 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
     return "return __validated_" & rt.name & "(" & v & ")"
   "return " & v
 
-proc indD(ctx: DCodegenCtx): string = repeat(' ', ctx.indent * 4)
+proc indD(ctx: DCodegenCtx): string =
+  ## The current statement indent: four spaces per level.
+  repeat(' ', ctx.indent * 4)
 
 proc dBinOp(op: BinOp): string =
   ## D's `/` follows the operand type (integer operands truncate) — same
@@ -477,6 +492,8 @@ proc dBinOp(op: BinOp): string =
   of boRangeIncl, boRangeExcl: ""   # only meaningful inside foreach — genDFor
 
 proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
+  ## A binary expression, parenthesised. `str + str` is D's `~`; a range
+  ## outside a `for` header has no D value and is refused.
   if isStringConcat(e):
     return "(" & ctx.genDExpr(e.left) & " ~ " & ctx.genDExpr(e.right) & ")"
   if e.binOp in {boRangeIncl, boRangeExcl}:
@@ -485,6 +502,8 @@ proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
     ctx.genDExpr(e.right) & ")"
 
 proc genDUnary(ctx: var DCodegenCtx, e: Expr): string =
+  ## A unary expression. Composition and a leftover `expr?` (the rewrite pass
+  ## desugars every one it can) are refused rather than dropped.
   case e.unaryOp
   of uoNeg: "-" & ctx.genDExpr(e.operand)
   of uoNot: "!" & ctx.genDExpr(e.operand)
@@ -998,6 +1017,7 @@ proc genDStmt*(ctx: var DCodegenCtx, s: Expr): string =
   ctx.indD & code & ";\n"
 
 proc genDBlock(ctx: var DCodegenCtx, e: Expr): string =
+  ## A block's statements, each on its own line at the current indent.
   for s in e.stmts:
     result.add(ctx.genDStmt(s))
 
@@ -1024,6 +1044,8 @@ proc isValueIfD(e: Expr): bool =
   isValueIf(e)
 
 proc genDIf(ctx: var DCodegenCtx, e: Expr): string =
+  ## An `if`: a ternary in value position, otherwise a statement with its
+  ## `elif` chain folded into `} else if (...)`.
   if isValueIfD(e):
     return "(" & ctx.genDExpr(e.cond) & " ? " & ctx.genDExpr(e.thenBranch) &
            " : " & ctx.genDExpr(e.elseBranch) & ")"
@@ -1049,6 +1071,7 @@ proc genDDefer(ctx: var DCodegenCtx, e: Expr): string =
   ind & "scope(exit) {\n" & ctx.genDNested(e.deferBody) & ind & "}"
 
 proc genDWhile(ctx: var DCodegenCtx, e: Expr): string =
+  ## A `while` loop; a condition-less `loop` is `while (true)`.
   let cond = if e.whileCond == nil: "true" else: ctx.genDExpr(e.whileCond)
   ctx.indD & "while (" & cond & ") {\n" & ctx.genDNested(e.whileBody) &
     ctx.indD & "}"
@@ -1076,6 +1099,7 @@ proc genDFor(ctx: var DCodegenCtx, e: Expr): string =
     ctx.genDNested(e.body) & ctx.indD & "}"
 
 proc genDList(ctx: var DCodegenCtx, e: Expr): string =
+  ## A list literal as a D array literal.
   var parts: seq[string]
   for item in e.items: parts.add(ctx.genDExpr(item))
   "[" & parts.join(", ") & "]"
@@ -1137,6 +1161,8 @@ proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
   head & body & brk
 
 proc hasWildArm(e: Expr): bool =
+  ## Does the match have a `_` arm? Without one, D's `final switch` needs
+  ## every member listed, or a `default` supplied.
   for arm in e.arms:
     if arm.pattern != nil and arm.pattern.kind == pkWild: return true
   false
@@ -1255,6 +1281,9 @@ proc genDSelect(ctx: var DCodegenCtx, e: Expr): string =
     readBody & ctx.indD & "} else {\n" & toBody & ctx.indD & "}\n"
 
 proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
+  ## The D backend's expression dispatch. Interface wraps and fn-refs (which
+  ## need `&`) are handled before the kind; every ExprKind has an arm, so a new
+  ## kind fails to compile here until D handles it.
   if e == nil: return ""
   # A concrete value entering an interface slot is copied into the variant
   # at THIS site — the checker marked it (spec 5.3).
@@ -1339,6 +1368,8 @@ proc genDParams*(ctx: var DCodegenCtx, params: seq[Param],
   parts.join(", ")
 
 proc genDStmtOrBlock*(ctx: var DCodegenCtx, body: Expr): string =
+  ## A body that may be a block or one statement, emitted at the current
+  ## indent.
   if body == nil: return ""
   if body.kind == exkBlock: ctx.genDBlock(body)
   else: ctx.genDStmt(body)

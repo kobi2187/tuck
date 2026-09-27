@@ -61,4 +61,6 @@ const HostKeywords* = [
 ]
 
 proc isHostKeyword*(name: string): bool =
+  ## Is `name` reserved by any backend's target language? A parameter or field
+  ## so named is rejected, not renamed.
   name in HostKeywords

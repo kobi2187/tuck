@@ -25,6 +25,8 @@ var verboseLevel* = 0
   ## parsing and nothing in the compiler branches on it except to print.
 
 proc elapsedMs*(t0: float): string =
+  ## Milliseconds since `t0` (an `epochTime` reading), to one decimal, with
+  ## its unit.
   formatFloat((epochTime() - t0) * 1000.0, ffDecimal, 1) & " ms"
 
 proc vBegin*(stage: PipelineStage): float =
@@ -33,6 +35,7 @@ proc vBegin*(stage: PipelineStage): float =
   epochTime()
 
 proc vEnd*(stage: PipelineStage, t0: float) =
+  ## Closes a stage `vBegin` opened, printing its total time at `-v`.
   if verboseLevel >= 1:
     stderr.writeLine "-- " & $stage & " done (" & elapsedMs(t0) & ")"
 

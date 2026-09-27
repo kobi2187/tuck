@@ -210,6 +210,8 @@ const WarningCodes* = {dcTyMemberShadowsFn}
   ## both. `tuck explain` reads this so it cannot label a warning "Error".
 
 proc severityOf*(d: DiagCode): string =
+  ## "Warning" for a code in `WarningCodes`, else "Error" — the word
+  ## `tuck explain` and `withSeverity` print.
   if d in WarningCodes: "Warning" else: "Error"
 
 proc withSeverity*(d: DiagCode, severity, msg: string): string =
@@ -222,9 +224,13 @@ proc withSeverity*(d: DiagCode, severity, msg: string): string =
   else: categoryName(d) & " " & severity & " [" & $d & "]: " & msg
 
 proc withCode*(d: DiagCode, msg: string): string =
+  ## An error message tagged with its code: `withSeverity` at "Error". The
+  ## common case; warnings call `withSeverity` directly.
   withSeverity(d, "Error", msg)
 
 type PendingWarning* = tuple[msg: string, line, col: int]
+  ## A warning waiting to be printed: its text and source position. Collected
+  ## in `warnings` rather than raised, so checking continues past it.
 
 var warnings*: seq[PendingWarning]
   ## Diagnostics that do NOT stop the build.

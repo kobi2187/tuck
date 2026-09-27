@@ -61,6 +61,8 @@ proc fieldFor*(res: Resolution, e: Expr, i: int, param: string): string =
   if i < chosen.len and chosen[i].len > 0: chosen[i] else: param
 
 proc fieldValue(payload: Expr, name: string): Expr =
+  ## The value a payload literal gives the field `name`, or nil if it has no
+  ## such field.
   for f in payload.fields:
     if f.name == name: return f.value
   nil
@@ -83,6 +85,9 @@ proc missingParam(res: Resolution, m: Module, real: Table[string, Module],
   ""
 
 proc incompleteMessage(e: Expr, param: string): string =
+  ## The internal-error text for a call that reached argument building with a
+  ## parameter unfilled. It names the pass order, since only a pass after the
+  ## checker can build such a call.
   "call_args: the call to " & calleeText(e) & " at line " & $e.span.line &
     " has no value for its parameter '" & param & "'. The checker rejects " &
     "such a call, so a pass after it built this one"

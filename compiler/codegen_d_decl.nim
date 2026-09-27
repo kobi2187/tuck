@@ -173,6 +173,9 @@ proc dRegistryHandlerCalls*(ctx: DCodegenCtx, d: Decl,
   if calls.len > 0: calls.join("\n") & "\n" else: ""
 
 proc dActorFieldLines*(ctx: var DCodegenCtx, d: Decl): seq[string] =
+  ## The actor state struct's field declarations, one D line each, in source
+  ## order. Field types go through `dFieldType` so inline records and sums hoist
+  ## under a name derived from the actor.
   for f in d.actorFields:
     result.add("    " & ctx.dFieldType(d.name, f) & " " & f.name & ";")
 
@@ -619,6 +622,8 @@ proc genDExternFwd*(ctx: var DCodegenCtx, mem: Decl): string =
     ctx.genDParams(mem.fnParams) & ") {\n" & "    " & body & ";\n" & "}\n"
 
 proc genDPendingBlock*(ctx: var DCodegenCtx, d: Decl): string =
+  ## A `pending` block: one stub per member, each of which fails loudly at
+  ## runtime if called, so a sketch still compiles and links.
   for mem in d.mixinMembers:
     let code = ctx.genDPendingStub(mem)
     if code != "": result.add(code & "\n")
@@ -657,6 +662,9 @@ proc genDDispatch*(ctx: var DCodegenCtx, d: Decl,
     "    }\n}\n\n"
 
 proc genDExternBlock*(ctx: var DCodegenCtx, d: Decl): string =
+  ## An `extern` block: C structs and callback signatures become D types, and
+  ## each fn becomes a forwarder to the runtime, an `impl: d` module, or a
+  ## C-header binding (`genDExternFwd` decides).
   for mem in d.mixinMembers:
     if mem == nil: continue
     # A C struct or callback signature declared in the block, not a fn.
@@ -682,11 +690,11 @@ proc genDActorInits(ctx: var DCodegenCtx, d: Decl): string =
   "shared static this() {\n" & sets.join("") & "}\n\n"
 
 proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
-  if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared
   ## type, no construction, alive for the whole program. It emits its message
   ## envelope, state struct, the singleton itself, dispatch, a drain and one
   ## send helper per handler.
+  if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
   var variants: seq[string]
   for h in handlers: variants.add(msgVariantName(h.name))
@@ -743,6 +751,8 @@ proc enterReturnContext(ctx: var DCodegenCtx, retType: Type) =
       if inner == "void": "rt.TuckUnit" else: inner
 
 proc leaveReturnContext(ctx: var DCodegenCtx) =
+  ## Undoes `enterReturnContext` after a fn body, so the next emission — a
+  ## sibling fn or a nested member — starts with no return carrier assumed.
   ctx.retWrapped = false
   ctx.retAbsentCapable = false
   ctx.retInnerD = ""
@@ -768,6 +778,9 @@ proc genDTwinWrapper(ctx: var DCodegenCtx, d: Decl, fnName, tmplStr, retStr,
 
 proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
+  ## A fn as D source: a template when generic, the MOVED twin plus its
+  ## dup-and-delegate wrapper when it threads a container, and the body with
+  ## its implicit tail return made explicit. `nameOverride` renames it.
   # A registry handler is declared as `Registry.Event`; the dot is not a D
   # identifier character, and the raise proc calls the sanitised name.
   let fnName = if nameOverride != "": nameOverride
@@ -871,6 +884,9 @@ proc genDGenericRecord(ctx: var DCodegenCtx, d: Decl, body: Type): string =
   res
 
 proc genDTypeDecl*(ctx: var DCodegenCtx, d: Decl): string =
+  ## A `type` declaration as D: a payload-free sum becomes an `enum`, a record
+  ## a `struct` (plus its validator and members), a rename an `alias`, and a
+  ## payload sum a tagged struct. Anything else is refused with a diagnostic.
   let body = d.typeBody
   if d.generics.len > 0: return ctx.genDGenericRecord(d, body)
   if body == nil: return ""
@@ -909,6 +925,8 @@ proc dPolicyName(p: ResourcePolicy): string =
   of rpExit: "rt.RtResourcePolicy.Exit"
 
 proc dOnFullName(f: ResourceOnFull): string =
+  ## How D spells a resource's on-full behaviour: the runtime enum member,
+  ## qualified. Exhaustive, so a new behaviour must state its spelling here.
   case f
   of rofAbsent: "rt.RtOnFull.Absent"
   of rofError: "rt.RtOnFull.Error"
@@ -936,6 +954,9 @@ proc genDResourceTables(d: Decl): string =
   result.add("}\n")
 
 proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
+  ## The D backend's declaration dispatch: one arm per DeclKind, no `else`, so
+  ## a new kind fails to compile here until this backend handles it. Imported
+  ## type decls print nothing — their own module emits them.
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
   # emits them (mirrors codegen.nim:1756 / codegen_odin.nim:2234).

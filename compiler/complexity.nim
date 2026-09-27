@@ -111,6 +111,8 @@ var sizeIsError* = false
 
 type
   Metrics = object
+    ## Running totals while one fn body is walked: the branch count, and the
+    ## first and last source lines seen, which give the body's length.
     complexity: int   # branch points; the +1 base is added by the caller
     minLine: int      # 0 = nothing seen yet
     maxLine: int
@@ -144,11 +146,16 @@ proc walkMatch(m: var Metrics, e: Expr) =
     walkTabular(m, arm.body)
 
 proc walkSelect(m: var Metrics, e: Expr) =
+  ## An `on select` counts like a match: the arms are a table, so only what
+  ## their arguments and bodies contain adds complexity.
   for arm in e.selArms:
     walkTabular(m, arm.arg)
     walkTabular(m, arm.body)
 
 proc walk(m: var Metrics, e: Expr) =
+  ## Adds `e`'s branch points to `m` and widens its line extent. Forks are
+  ## `if`, loops, match guards, short-circuit `and`/`or` and `?`; everything
+  ## else only recurses into its operands.
   if e == nil: return
   m.note(e.span)
   case e.kind
@@ -257,6 +264,9 @@ proc measure(body: Expr): tuple[complexity, lines: int] =
 
 proc checkFn(acc: var seq[Offender], name: string, body: Expr, span: Span,
              b: Budget) =
+  ## Measures one body against the budget and records it as an offender when
+  ## either its complexity or its line count is over. A zero limit disables
+  ## that half of the check.
   if body == nil: return  # `pending:` and extern sigs have no body to measure
   let (complexity, lines) = measure(body)
   let overC = b.maxComplexity > 0 and complexity > b.maxComplexity
@@ -266,6 +276,8 @@ proc checkFn(acc: var seq[Offender], name: string, body: Expr, span: Span,
                      overComplexity: overC, overLines: overL, span: span))
 
 proc verifyDecl(acc: var seq[Offender], d: Decl, b: Budget) =
+  ## Checks every fn and task body `d` owns — handlers, block members and
+  ## `when` branches included — against the budget. Every other kind is exempt.
   if d == nil: return
   case d.kind
   of dkFn:

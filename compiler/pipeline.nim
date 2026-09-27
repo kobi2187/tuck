@@ -30,6 +30,8 @@ from name_prefix import prefixed, declKind
 
 type
   PipelineStage* = enum
+    ## The driver's real stages, in order. `--verify-stages` names the stage an
+    ## assertion guards, so a failure says which boundary the tree crossed badly.
     psLoad          ## loadOrDie/loadProgram: lex+parse+import-closure
     psInjectTypes   ## injectImportedTypes
     psResolveDeclRefs ## resolve_refs.resolveDeclRefs — bare actor/register/
@@ -97,17 +99,22 @@ proc assertAsyncEffectsConsistent*(mods: seq[Module]) =
       "the async mark and the call's own resolved declaration disagree")
 
 proc carriesMissingType(e: Expr): bool =
-  # Only a node the checker actually SYNTHESIZED a type for counts — most
-  # nodes (declarations, patterns, statement-level constructs) never go
-  # through `tc.synthesize` and have no recorded type at all (`typeFor`
-  # returns nil), which is not evidence of anything. Only a type the
-  # checker recorded AS `missing type` — its "I could not work this out"
-  # sentinel — is the real signal: every OTHER gradual-typing marker
-  # (`<typeparam>`, `<pending>`, `<emptyrec>`) means something legitimate,
-  # not a gap, so this checks the exact name rather than reusing
-  # ast_query's `hasMissingType` (which also treats a nil type as unknown —
-  # right for a backend about to emit one, wrong for "was this even typed
-  # at all").
+  ## Does `e`'s recorded type contain a hole (a nil inside it)? The named
+  ## `missing type` sentinel the rest of this comment describes no longer
+  ## exists — ast.nim reports a missing type before stamping — so today only
+  ## a nil nested in a recorded type can make this true.
+  ##
+  ## Only a node the checker actually SYNTHESIZED a type for counts — most
+  ## nodes (declarations, patterns, statement-level constructs) never go
+  ## through `tc.synthesize` and have no recorded type at all (`typeFor`
+  ## returns nil), which is not evidence of anything. Only a type the
+  ## checker recorded AS `missing type` — its "I could not work this out"
+  ## sentinel — is the real signal: every OTHER gradual-typing marker
+  ## (`<typeparam>`, `<pending>`, `<emptyrec>`) means something legitimate,
+  ## not a gap, so this checks the exact name rather than reusing
+  ## ast_query's `hasMissingType` (which also treats a nil type as unknown —
+  ## right for a backend about to emit one, wrong for "was this even typed
+  ## at all").
   let t = semLayer.typeFor(e)
   t != nil and hasMissingType(t)
 
@@ -171,7 +178,9 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
     # mirror against it. One documented divergence is allowed, below.
     let reference = referenceFinalUses(res, m)
     for g in ssa_liveness.moduleSsa(res, m):
-      template fn: untyped = g.fn
+      template fn: untyped =
+        ## Short name for the graph's fn inside this loop.
+        g.fn
       bad.add(ssa_query.structuralErrors(fn))
       # STAGE A.2, and the criterion is a SUPERSET rather than equality.
       #

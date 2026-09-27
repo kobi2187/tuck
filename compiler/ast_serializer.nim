@@ -42,6 +42,8 @@ proc semEntry(e: Expr): JsonNode =
   obj
 
 proc walkSemEntries(e: Expr, into: var seq[JsonNode]) =
+  ## Collects `semEntry` for `e` and every node under it, in pre-order, so the
+  ## dump lists the side-table facts alongside the tree they annotate.
   if e == nil: return
   let entry = semEntry(e)
   if entry != nil: into.add(entry)

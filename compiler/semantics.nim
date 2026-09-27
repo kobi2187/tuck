@@ -33,9 +33,12 @@ import diagnostics  # TK-RS03, the resource half of the propagation rule
 
 type
   SemanticError* = object of ValueError
+    ## An effect or resource-propagation violation, with its source position.
+    ## Raised, not collected: the first violation stops the pass.
     line*, col*: int
 
 proc reportError(msg: string, span: Span) =
+  ## Raises a `SemanticError` at `span`.
   let err = newException(SemanticError, msg)
   err.line = span.line
   err.col = span.col
@@ -57,6 +60,9 @@ type
     resources*: seq[string]
 
   Checker = object
+    ## The effect pass's state for one module: what each callable name demands,
+    ## the task names, every resource kind the program declares (main's budget),
+    ## and the fns being visited (recursion guard).
     module: Module
     declared: Table[string, Demands]
     taskNames: HashSet[string]  # dkTask decl names, built once — see isTask
@@ -64,6 +70,8 @@ type
     visiting: HashSet[string]
 
 proc getDeclared(c: Checker, name: string): Demands =
+  ## What calling `name` demands of its caller; nothing for a name this module
+  ## neither declares nor imports (locals, builtins).
   if c.declared.hasKey(name):
     return c.declared[name]
   return Demands()
@@ -73,12 +81,15 @@ proc synthesizeExpr(c: var Checker, e: Expr): Demands
 proc checkExpr(c: var Checker, e: Expr, expected: Demands, currentFn: string)
 
 proc unionEffects(a, b: seq[EffectMarker]): seq[EffectMarker] =
+  ## `a` followed by the markers of `b` not already in it — order-preserving,
+  ## so messages list effects in a stable order.
   var res = a
   for x in b:
     if x notin res: res.add(x)
   return res
 
 proc union(a, b: Demands): Demands =
+  ## Both ledgers of two demands, each merged without duplicates.
   result.effects = unionEffects(a.effects, b.effects)
   result.resources = a.resources
   for k in b.resources:
@@ -166,6 +177,9 @@ proc checkExpr(c: var Checker, e: Expr, expected: Demands, currentFn: string) =
         "]` to its bracket"), e.span)
 
 proc verifyDecl*(c: var Checker, d: Decl) =
+  ## Checks one declaration's body against its declared budget. `main` gets
+  ## every effect and every program-declared resource kind; fns, tasks, actor
+  ## handlers and static asserts are checked. Other kinds are skipped.
   if d == nil: return
   case d.kind
   of dkFn:

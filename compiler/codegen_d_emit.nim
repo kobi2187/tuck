@@ -14,6 +14,9 @@ import ./codegen_d_decl
 import ./codegen_d
 
 proc emitDBody*(ctx: var DCodegenCtx, m: Module): tuple[body, mains: string] =
+  ## Splits a module into its declarations (`body`) and its top-level
+  ## statements (`mains`, which become the entry point's body), emitting each
+  ## through the D backend.
   var body = ""
   var mainStmts: seq[string]
   for d in m.decls:
