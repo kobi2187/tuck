@@ -634,7 +634,7 @@ proc debugOwn(d: Decl, c: Ctx, fn: SsaFn, own: seq[bool]) =
   ## `TUCK_DEBUG_MOVE`: prints which SSA values of `d` the mirror considers
   ## owned. Compiled out of release builds.
   when not defined(release):
-    if getEnv("TUCK_DEBUG_MOVE") == "": return
+    if getEnv("TUCK_DEBUG_MOVE") in ["", "diff"]: return
     var owned: seq[string]
     for i, v in fn.values:
       if own[i]: owned.add(v.place & "." & $v.version)
@@ -719,16 +719,45 @@ proc markMovableArgs(res: Resolution, m: Module, d: Decl) =
   for site in movableArgsSsa(res, m, d):
     markMovedArgId(res, site)
 
-proc markAllMovableArgs(res: Resolution, m: Module) =
-  ## Stamps the movable arguments of every fn in `m`.
+proc oldStampsIn(res: Resolution, d: Decl): HashSet[NodeId] =
+  ## The argument nodes of `d` already stamped as moved in the semantic layer —
+  ## the "other side" of `moveDiffReport`'s comparison.
+  var stack = @[d.fnBody]
+  while stack.len > 0:
+    let n = stack.pop()
+    if n == nil: continue
+    for ch in n.children: stack.add(ch)
+    if n.kind in {exkVar, exkField} and n.id.isSet and isMovedArg(res, n):
+      result.incl(n.id)
+
+proc moveDiffReport(res: Resolution, m: Module) =
+  ## The Stage B differential, kept as a MEASUREMENT after the switch.
   ##
-  ## There was a `TUCK_DEBUG_MOVE=diff` differential here, from the Stage B
-  ## switch. Once the three-walk implementation it compared against was
-  ## deleted, its "other side" read back the stamps this very pass had just
-  ## written, so it compared the mirror with itself and could never
-  ## disagree. Stage C, when it lets the answer change, needs a real oracle
-  ## — build that then, not this.
+  ## It compared the mirror's answer against the three-walk implementation it
+  ## replaced — 24 stamps, zero difference — and it stays because the same
+  ## comparison is what Stage C will need when the emitter-prediction in
+  ## `afterBinding` comes out and the answer is allowed to change.
+  when not defined(release):
+    if getEnv("TUCK_DEBUG_MOVE") != "diff": return
+    var agree, onlyMirror, onlyOld = 0
+    for d in m.allFns():
+      let mine = movableArgsSsa(res, m, d)
+      let theirs = oldStampsIn(res, d)
+      agree += (mine * theirs).len
+      onlyMirror += (mine - theirs).len
+      onlyOld += (theirs - mine).len
+      if (mine - theirs).len > 0 or (theirs - mine).len > 0:
+        echo "MOVEDIFF ", d.name, " agree=", (mine * theirs).len,
+             " onlyMirror=", (mine - theirs).len,
+             " onlyOld=", (theirs - mine).len
+    echo "MOVETOTAL ", m.path.join("."), " agree=", agree,
+         " onlyMirror=", onlyMirror, " onlyOld=", onlyOld
+
+proc markAllMovableArgs(res: Resolution, m: Module) =
+  ## Stamps the movable arguments of every fn in `m`, then (under
+  ## `TUCK_DEBUG_MOVE=diff`) reports the differential.
   for d in m.allFns(): markMovableArgs(res, m, d)
+  moveDiffReport(res, m)
 
 proc dumpSummaries() =
   ## `TUCK_DEBUG_PROV`: every summary, one line each.

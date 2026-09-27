@@ -5,6 +5,12 @@ import std/strutils
 import std/math as stdmath
 
 type
+  AccessMode* = enum
+    ## Read / write / read-write access. Nothing in the runtime or the
+    ## backends references it today.
+    ReadOnly, WriteOnly, ReadWrite
+
+type
   TuckStatus* = enum
     ## How a fallible or optional result came out: a value, an error code, or
     ## absence.

@@ -94,6 +94,15 @@ type
     dkOpaque     ## a shape the builder does not model. Always the safe
                  ## answer, never mistaken for one of the above.
 
+  FreeKind* = enum
+    ## Where a value's storage is released, once the ownership pass has
+    ## decided. Recorded ON THE VALUE so that "freed twice" and "used after
+    ## free" are checkable rather than reviewable.
+    fkNotFreed
+    fkScopeExit
+    fkOverwrite
+    fkTwinParam
+
   Def* = object
     ## How a value was defined: the kind of definition, the expression that
     ## produced it, and the values it was built from.
@@ -115,15 +124,16 @@ type
 
   Value* = object
     ## One version of one place: its definition, the block it is defined in,
-    ## and every read of it. (Per-value `freedAt`/`freedBy` fields were
-    ## reserved here for the ownership decision; M3.2 chose buffers instead,
-    ## and analysis_ownership records what it frees itself.)
+    ## and every read of it. `freedAt`/`freedBy` are reserved for the ownership
+    ## pass's decision and are not written today.
     id*: ValueId
     place*: Place
     version*: int
     def*: Def
     blk*: BlockId        ## the block the DEFINITION sits in
     uses*: seq[Use]
+    freedAt*: NodeId     ## where its storage is released, if it is
+    freedBy*: FreeKind
 
   Block* = object
     ## A basic block: its predecessors, whether all of them are known yet

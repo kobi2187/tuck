@@ -29,7 +29,15 @@ commit says so.
 
 **Cleanups** (`e3a3a60`, `5b7dc3f`, `8ba9c7a`, `3a3dc5d`, `ca28999`, `ce2c6dd`,
 `3473939`, `29a0353`, `7bab626`)
-- Removed dead code: `uoPropagate`, a move "differential" that compared the mirror with itself, `ssa_ir` free fields, `AccessMode`, `linesLen`.
+- Removed `uoPropagate`, the AST member for the dropped `expr?` operator.
+- `8ba9c7a` also deleted four unused declarations. **They were restored the
+  same day on the owner's instruction** (unused code here is kept for later
+  use, in particular the SSA mechanism's):
+  - `tuck_rt.AccessMode`;
+  - `ssa_ir.FreeKind` and `Value.freedAt` / `Value.freedBy`;
+  - the `TUCK_DEBUG_MOVE=diff` move differential (`oldStampsIn`,
+    `moveDiffReport`);
+  - `Lexer.linesLen`.
 - Removed seven duplicated helpers, and replaced three type-substitution walkers with one exhaustive walker.
 - Diagnostics:
   - they name their position once;
@@ -173,13 +181,12 @@ body across modules needs its free names qualified.
 **Recommend (a) now.**
 
 ### R12 — smaller calls
-- **Dead AST members.** `ChainOp.coDot` is never produced: remove it?
-  `MatchArm.guard` is never parsed, but four stages handle it: keep it only if
-  match guards are planned.
+- **Unused code stays.** `ChainOp.coDot`, `MatchArm.guard` and `tuck_coro`'s
+  libaco branches are kept: code that is not used yet is library code meant
+  for later use, and is not a removal candidate. (Owner's instruction,
+  2026-09-27.)
 - **Arena.** TK-ME02 is a warning so that example 13 still compiles. Keep it a
   warning until arenas exist? (Recommend yes.)
-- **`tuck_coro`'s libaco branches** (10 `when` blocks for a library that isn't
-  vendored). Remove them? (Recommend yes.)
 - **`benches/bench_phases`** needs `benchy`. Its pooled lower/emit timings
   read one semantic layer that every pooled typecheck resets, so its numbers
   are meaningless as written. Rework or delete?

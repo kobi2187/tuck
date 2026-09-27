@@ -108,7 +108,7 @@ proc newValue(b: var Builder, place: Place, def: Def, blk: BlockId): ValueId =
   let version = b.versions.getOrDefault(place)
   b.versions[place] = version + 1
   b.fn.values.add Value(id: result, place: place, version: version,
-                        def: def, blk: blk)
+                        def: def, blk: blk, freedBy: fkNotFreed)
 
 proc parentOf(p: Place): Place =
   ## `b.ask` -> `b`, `b.ask.lo` -> `b.ask`, `b` -> "".
