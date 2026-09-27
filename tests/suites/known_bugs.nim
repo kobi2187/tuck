@@ -959,6 +959,7 @@ fn main() -> int:
   # codegen. Correct either way: whether omitting `->` should be rejected
   # outright or should mean void, returning a VALUE from such a fn is wrong.
   # Found 2026-09-12 checking TUTORIAL.md's "must declare a return type".
+  # FIXED 2026-09-27 (TK-TY32); what omitting `->` means is still #5's ruling.
   t.src """
 fn f({x: int}):
   return x
@@ -967,7 +968,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.badCheck "a value returned from a fn with no return type is rejected", "return"
-  t.bugOpen "a value returned from a fn with no return type is rejected"
+  t.bugFixed "a value returned from a fn with no return type is rejected"
 
   # 14. Register access permissions are enforced in one direction only.
   # FIXED 2026-09-27 (#6): an assignment target is held to the write rule.

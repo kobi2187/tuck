@@ -3907,12 +3907,23 @@ proc failIfReturnNeedsValue(tc: TypeChecker, e: Expr) =
        "zero-inits. Fix: return a value, or declare `-> ?" & rt &
        "` if \"nothing to return\" is a real state for this fn", e.span)
 
+proc failValueWithoutReturnType(tc: TypeChecker, e: Expr) =
+  ## `return x` in a body with no `-> T`. Wrong whatever omitting `->` comes
+  ## to mean (void, or a required annotation — a ruling still open on #5):
+  ## either way no caller receives the value.
+  let who = if tc.currentFn.len > 0: "'" & tc.currentFn & "'" else: "this body"
+  fail(dcTyReturnWithoutType,
+       who & " declares no return type, so `return` cannot carry a value. " &
+       "Fix: declare it (`-> T`), or return nothing", e.span)
+
 proc synthReturn(tc: var TypeChecker, e: Expr): Type =
-  ## A return checks its value against the fn's declared return type.
+  ## A return checks its value against the fn's declared return type; a body
+  ## that declares none takes no value at all.
   if e.returnVal != nil and tc.currentRet != nil:
     tc.checkReturnValue(e)
   elif e.returnVal != nil:
     discard tc.synthesize(e.returnVal)
+    tc.failValueWithoutReturnType(e)
   else:
     tc.failIfReturnNeedsValue(e)
   unitType(e.span)

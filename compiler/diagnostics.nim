@@ -117,6 +117,8 @@ type
                                         ## `object` field, which has no use
     dcTyPoolAddrInvariant = "TK-TY31"   ## `Pool.addr` on a pool whose element
                                         ## type carries an invariant
+    dcTyReturnWithoutType = "TK-TY32"   ## `return <value>` in a body that
+                                        ## declares no return type
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -415,6 +417,13 @@ proc parseExplanation(d: DiagCode): string =
     "that names its fields, so an initialiser there would never be read. It " &
     "is refused rather than dropped: it used to be parsed and thrown away, " &
     "silently, on every kind of field."
+  of dcTyReturnWithoutType:
+    "`return` carries a value, but the fn (or task, or actor handler) declares " &
+    "no return type, so nothing receives it — Nim, Odin and D each reject the " &
+    "emitted code in their own words, or drop the value. Fix: declare the " &
+    "type with `-> T`, or return nothing. An actor handler never replies " &
+    "(spec 9.1), so there the value has to go somewhere else — a field, or a " &
+    "`send`."
   of dcTyPoolAddrInvariant:
     "`Pool.addr {h}` hands a cell's bytes to an extern to fill — a DMA " &
     "controller, an ISR. Memory filled that way was never built by a " &

@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (5)
+## A. Open bugs (4)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -37,15 +37,6 @@ function names" — so the compiler contradicts its own explanation on two of
 those three. Test: `known_bugs`, "an attribute name is free outside brackets".
 Found 2026-09-12 writing `bake {key: :priority}` in `core/cmp`'s API doc; the
 doc now says `:rank` to work around it.
-
-**A2 — a fn with no declared return type accepts `return x`, and emits Nim
-that does not compile.** `fn f({x: int}):` followed by `return x` passes
-`tuck ch`, then `tuck c` writes `proc tuck_f*(x: int): void = return x` and
-`nim c` answers "no return type declared". Whether omitting `->` should be
-rejected outright or should mean `void` is a ruling; returning a value from
-such a fn is wrong under either. Test: `known_bugs`, "a value returned from a
-fn with no return type is rejected". Found 2026-09-12 checking TUTORIAL.md's
-claim that a return type is mandatory — it is not.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -86,6 +77,14 @@ more than a wider scan — an imported actor's drain lives in another package, s
 the emitted call must be QUALIFIED. Test: `cross_module`, "an imported actor
 runs on every backend". Found 2026-09-17 writing the first import/cache tests;
 same scope error as #73.
+
+A2 (a fn with no declared return type accepted `return x`, and `tuck c`
+wrote `proc tuck_f*(x: int): void = return x`, which nim refuses) was fixed
+2026-09-27 without the ruling it was waiting on: returning a value from such a
+body is wrong whether omitting `->` comes to mean `void` or becomes an error,
+so it is TK-TY32 now. What omitting `->` MEANS is still open (issue #5, ROADMAP
+S6). Test: `known_bugs`, "a value returned from a fn with no return type is
+rejected" (now `bugFixed`).
 
 A3 (a `[read]` register field could be written — with `=`, while the `..`
 form was already refused) was fixed 2026-09-27. The assignment target went
