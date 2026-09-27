@@ -215,15 +215,17 @@ let tuckGrammar = peg("module", st: Stats):
                ("tkDotDot " * name * ?structLit) |
                ("tkColonColon " * name) |
                ("tkBake " * structLit) |
-               # `alias(old: new, ...)` — the one parenthesised argument list
-               # in a language with no paren calls. `alias` itself lexes as a
-               # plain identifier, so this is a continuation, not a keyword.
-               ("tkLParen " * fieldInit * *("tkComma " * fieldInit) *
+               # `alias(old -> new, ...)` — the one parenthesised argument
+               # list in a language with no paren calls. `alias` itself lexes
+               # as a plain identifier, so this is a continuation, not a
+               # keyword. `old -> new` is Tuck's one rename spelling (TK-PA17).
+               ("tkLParen " * rename * *("tkComma " * rename) *
                 "tkRParen ") |
                ("tkLBracket " * ?sep * expr * *(sep * expr) * ?sep *
                 "tkRBracket ") |
                structLit |
                name
+  rename    <- name * "tkArrow " * name
   primary   <- fnRef | structLit | listLit | parenExpr | literal | name
   fnRef     <- "tkColon " * name * ?("tkColonColon " * name)
   # Inside a bracket group a NEWLINE separates exactly like a comma, and the
