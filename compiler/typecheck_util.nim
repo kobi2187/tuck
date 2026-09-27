@@ -66,10 +66,15 @@ proc isNumeric*(t: Type): bool =
   t != nil and t.kind == tkNamed and t.name in NumericNames
 
 proc fail*(msg: string, span: Span) =
-  ## Raises a `SemanticError` at `span`, with the position also appended to
-  ## the message. The uncoded form; `fail(dc, ...)` tags the message with its
-  ## diagnostic code.
-  let err = newException(SemanticError, msg & " at line " & $span.line & ":" & $span.col)
+  ## Raises a `SemanticError` at `span`. The uncoded form; `fail(dc, ...)`
+  ## tags the message with its diagnostic code.
+  ##
+  ## The position travels on the error, not in the message: the driver
+  ## prefixes `file:line:col:` to every diagnostic. This used to append
+  ## " at line L:C" as well, so every checker error named its position twice
+  ## (`m.tuck:8:11: ... at line 8:11`) while the effect checker's named it
+  ## once.
+  let err = newException(SemanticError, msg)
   err.line = span.line
   err.col = span.col
   raise err

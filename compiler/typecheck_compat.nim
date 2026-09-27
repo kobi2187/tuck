@@ -34,7 +34,8 @@ proc compatible*(tc: TypeChecker, actual, expected: Type): bool
 proc unwrapForCompare*(actual, expected: Type, a, e: var Type): bool =
   ## Wrapper discipline: a bare T may flow where !T is expected (auto-wrap on
   ## return), and !T matches !T — but a !T/?T value where bare T is expected is
-  ## an UNHANDLED error and never compatible. `or` / `?` unwrap explicitly.
+  ## an UNHANDLED error and never compatible. `.ok` / `.value` unwrap
+  ## explicitly.
   ## Returns false when the pair is already known incompatible.
   a = actual
   e = expected

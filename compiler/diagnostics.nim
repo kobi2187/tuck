@@ -606,8 +606,8 @@ proc valueFitExplanation(d: DiagCode): string =
   of dcTyUnhandledResult:
     "A function that can fail returned `!T`, and the result was thrown away " &
     "— so a failure would pass unnoticed. Fix: bind it with `let` and check " &
-    "`.ok`, hand it to something that handles it, or add `?` to pass the " &
-    "failure up to your own caller."
+    "`.ok`, hand it to something that handles it, or return it as it is to " &
+    "pass the failure up to your own caller."
   of dcTyArgMismatch:
     "An argument does not fit the parameter it fills. Fix: the message names " &
     "both types — convert the value, or change the parameter."
@@ -652,7 +652,7 @@ proc ruleExplanation(d: DiagCode): string =
     "A sealed type is constructed only through its declared transitions."
   of dcCxComplexity:
     "A fn has more independent paths through it than the size budget allows " &
-    "(one per if, loop, `and`/`or`, match guard and `?`, plus one). Reported " &
+    "(one per if, loop and `and`/`or`, plus one). Reported " &
     "worst-first on a normal build; fails a `--release` build. Split it, or " &
     "raise the limit with `--max-complexity:N` (`:0` disables). A `match` or " &
     "`on select` costs nothing for the construct itself — dispatching over " &

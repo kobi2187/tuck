@@ -154,8 +154,8 @@ proc walkSelect(m: var Metrics, e: Expr) =
 
 proc walk(m: var Metrics, e: Expr) =
   ## Adds `e`'s branch points to `m` and widens its line extent. Forks are
-  ## `if`, loops, match guards, short-circuit `and`/`or` and `?`; everything
-  ## else only recurses into its operands.
+  ## `if`, loops, match guards (none parse yet) and short-circuit `and`/`or`;
+  ## everything else only recurses into its operands.
   if e == nil: return
   m.note(e.span)
   case e.kind

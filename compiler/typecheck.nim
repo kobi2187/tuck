@@ -1182,7 +1182,8 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   let rawT = tc.synthesize(e.receiver)
   if isWrapper(rawT):
     fail("Type Error: unhandled " & typeName(rawT) &
-         " — pass it to a handling function or propagate with '?' before accessing fields", e.span)
+         " — check `.ok` and read `.value`, or pass it to a handling function, " &
+         "before accessing fields", e.span)
   let recvT = tc.resolve(rawT)
   let fields = tc.fieldsOf(recvT)
   result = tc.typedFieldForm(e, recvT, fields)
@@ -1218,7 +1219,7 @@ proc failIfUnhandled(lt, rt: Type, e: Expr) =
   for (t, side) in operands(lt, rt, e):
     if isWrapper(t) and not (boolCtx and isOptional(t)):
       fail("Type Error: unhandled " & typeName(t) &
-           " — pass it to a handling function or propagate with '?'", side.span)
+           " — check `.ok` first, or pass it to a handling function", side.span)
 
 proc failIfMismatched(tc: TypeChecker, lt, rt: Type, what: string, sp: Span) =
   ## Both sides of an arithmetic or comparison operator must agree.
@@ -1308,8 +1309,8 @@ proc checkCondition(tc: var TypeChecker, cond: Expr, sp: Span) =
   ## common mistake and gets its own message.
   let condT = tc.synthesize(cond)
   if isWrapper(condT):
-    fail("Type Error: unhandled " & typeName(condT) & " in condition — pass " &
-         "it to a handling function or propagate with '?'", cond.span)
+    fail("Type Error: unhandled " & typeName(condT) & " in condition — test " &
+         "`.ok`, or pass it to a handling function", cond.span)
   if not isFlexible(condT) and
      not tc.compatible(condT, Type(span: sp, kind: tkNamed, name: "bool")):
     fail("Type Error: if condition must be bool, got " & typeName(condT),
@@ -1568,8 +1569,8 @@ proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
   if not found: return
   let whole = base.id == e.base.id     # `c ..n` vs `c.inner ..n`
   if b.isParam:
-    # One line: `fail` appends "at line L:C", so a multi-line fix sketch would
-    # read with the location dangling off the end of it.
+    # One line, like every other diagnostic: a multi-line fix sketch reads
+    # badly under the driver's `file:line:col:` prefix.
     fail(dcTyParamMutation,
          "cannot mutate " &
          (if whole: "parameter '" & base.name & "'"

@@ -277,7 +277,7 @@ proc reportUnhandled*(tc: TypeChecker, m: Module): seq[string] =
   ## hand the sites to codegen, which routes them to the handler.
   if tc.errPolicy == "strict" and tc.unhandledSites.len > 0:
     fail("Type Error: " & $tc.unhandledSites.len & " unhandled error result(s)" &
-         " — bind, pass on, or propagate with '?' (policy: strict):\n  " &
+         " — bind and check `.ok`, pass it on, or return it (policy: strict):\n  " &
          tc.unhandledSites.join("\n  "), m.span)
   if tc.errPolicy in ["continue", "exit"]: tc.unhandledSites else: @[]
 
