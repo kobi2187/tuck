@@ -2260,12 +2260,28 @@ fn main() -> int:
   t.quietly: t.hostRuns("a one-line body runs", 115)
   t.bugFixed "a single-statement body on the header's line builds, on all three"
 
-  # A `?T` operand of `and`/`or` reads as "is present" (spec §7.2), and the
-  # checker has always admitted it — typecheck.nim's "?T reads as presence in
-  # a boolean guard" — but nothing lowered the read, so the wrapper went out
-  # bare and all three backends refused it (`TuckResult and TuckResult`).
-  # Lowering now makes each such operand its `.ok` test. Found 2026-09-27
-  # testing `xor`.
+  # A `T?` operand of `and`/`or` was admitted by the checker as "is present"
+  # (spec §7.2 said so), but nothing lowered the read, so the wrapper went
+  # out bare and all three backends refused it (`TuckResult and
+  # TuckResult`). Found 2026-09-27 testing `xor`. RULED the same day: a `T?`
+  # is not a boolean — the checker refuses the operand, and presence is
+  # written `.ok`. Both halves are pinned: the bare form is refused, and the
+  # `.ok` form runs on all three.
+  t.src """
+fn find({n: int}) -> ?int:
+  if n > 0:
+    return n
+  return
+
+fn main() -> int:
+  let a = {n: 1} find
+  let c = {n: 2} find
+  if a and c:
+    return 1
+  return 0
+"""
+  t.quietly: t.badCheck("a T? operand of a boolean operator is refused", "unhandled")
+  t.bugFixed "a T? operand of a boolean operator is refused, not emitted bare"
   t.src """
 fn find({n: int}) -> ?int:
   if n > 0:
@@ -2277,14 +2293,13 @@ fn main() -> int:
   let b = {n: 0} find
   let c = {n: 2} find
   var r = 0
-  if a and c:
+  if a.ok and c.ok:
     r = r + 2
-  if a xor b:
+  if a.ok xor b.ok:
     r = r + 1
   return r
 """
-  t.quietly: t.hostRuns("a ?T operand of and/xor is a presence test", 3)
-  t.bugFixed "a ?T operand of a boolean operator builds as its presence test, on all three"
+  t.hostRuns "...and `.ok` presence tests combine with and/xor on every backend", 3
 
   # The checker traces which variants a fn can return, so a transition out
   # of its result is checked against the right set. Lowering and the tracer

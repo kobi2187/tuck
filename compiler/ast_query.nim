@@ -550,13 +550,6 @@ proc isRecordConstruction*(m: Module, e: Expr): bool =
     e.callee != nil and e.callee.kind == exkVar and
     isRecordType(m, e.callee.name)
 
-proc isOptional*(t: Type): bool =
-  ## Is `t` exactly `?T` — the one wrapper a boolean context may read as "is
-  ## present" without unwrapping? The checker lets it into `and`/`or`/`xor`;
-  ## lowering turns that read into the `.ok` test below.
-  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
-    t.base.name == "?" and t.args.len == 1
-
 proc isResultStatusTest*(e: Expr): bool =
   ## `r.ok` on a !T/?T value is a STATUS test, not a field read.
   if e == nil or e.kind != exkField: return false

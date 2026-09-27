@@ -1965,7 +1965,22 @@ fn main() -> int [io]:
     return 1
   return 0
 """
-  t.okCheck "?T reads as presence in a boolean guard"
+  # Ruled 2026-09-27: a `T?` is not a boolean. This read as "is present"
+  # until then; presence is now tested with `.ok`.
+  t.badCheck "a T? operand of `and` is refused", "unhandled"
+
+  t.src """
+fn find({n: int}) -> ?{value: int} [io]:
+  return {value: n}
+
+fn main() -> int [io]:
+  let a = {n: 1} find
+  let b = {n: 2} find
+  if a.ok and b.ok:
+    return 1
+  return 0
+"""
+  t.okCheck "...presence is tested with `.ok`: `if a.ok and b.ok:`"
 
   t.src """
 type Door:

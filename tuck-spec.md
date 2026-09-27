@@ -1538,9 +1538,10 @@ The declaration reuses the `X = <type> [attrs]` shape: the element type is
 explicit, `count` fixes the number of slots. There is no `size` knob — the
 footprint follows from the element type, and restating it would only drift.
 
-`acquire` yields `?T`: exhaustion is absence, handled like any other optional.
-There is no `or return` unwrap — `and`/`or`/`xor` are strictly boolean (a `?T`
-in a boolean position reads as "is present", which is a test, not an unwrap).
+`acquire` yields `T?`: exhaustion is absence, handled like any other optional.
+There is no `or return` unwrap — `and`/`or`/`xor` are strictly boolean, and a
+`T?` is not a boolean: presence is tested with `.ok` (`if a.ok and b.ok:`).
+Ruled 2026-09-27; a `T?` operand used to read as "is present".
 
 Every operation goes through the **pool**, not the value: the element may be
 a primitive (`Array[64, u8]` carries no methods), so a `v.release` method form

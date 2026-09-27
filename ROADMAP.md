@@ -417,9 +417,10 @@ this instead of describing unbuilt syntax.
 - `or return` DROPPED (2026-07-22), same reasoning as `expr?`: it was a
   second, weaker unwrap that discarded WHICH error occurred. `and`/`or`/`xor`
   are now strictly boolean, enforced by the checker (there had been no
-  operand rule at all — `5 or "x"` typechecked). A `?T` operand in a boolean
-  position reads as "is present": a test, not an unwrap. Pool `acquire`
-  (§7.2) returns `?T` and is handled with an ordinary `if`.
+  operand rule at all — `5 or "x"` typechecked). A `T?` is not a boolean:
+  presence is tested with `.ok` (`if a.ok and b.ok:`; ruled 2026-09-27 —
+  until then a `T?` operand read as "is present"). Pool `acquire` (§7.2)
+  returns `T?` and is handled with `if slot.ok:`.
 - Tri-state result STAYS: `int?!` = fallible + optional in one value.
 - Type wrapper position: both accepted — `int?` == `?int`, canonical
   postfix; combos `T?!`/`T!?` equivalent.

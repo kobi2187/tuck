@@ -1212,12 +1212,12 @@ proc operands(lt, rt: Type, e: Expr): array[2, Operand] =
   [(lt, e.left), (rt, e.right)]
 
 proc failIfUnhandled(lt, rt: Type, e: Expr) =
-  ## `and`/`or`/`xor` are strictly boolean — they never unwrap a result. A ?T
-  ## operand is the one exception: in a boolean position it reads as "is
-  ## present", which is a test, not an unwrap. A !T still has to be handled.
-  let boolCtx = e.binOp in {boAnd, boOr, boXor}
+  ## An operator never unwraps a result, and `and`/`or`/`xor` are strictly
+  ## boolean: a `T?` operand is refused like a `T!` one. Presence is tested
+  ## with `.ok` — `if a.ok and b.ok:` (ruled 2026-09-27; a `T?` operand used
+  ## to read as "is present").
   for (t, side) in operands(lt, rt, e):
-    if isWrapper(t) and not (boolCtx and isOptional(t)):
+    if isWrapper(t):
       fail("Type Error: unhandled " & typeName(t) &
            " — check `.ok` first, or pass it to a handling function", side.span)
 
@@ -1282,7 +1282,7 @@ proc synthBoolOp(lt, rt: Type, e: Expr): Type =
   ## Strictly boolean. `or` is NOT an unwrap operator: a failed result is
   ## handled with .ok / match r.err, never by falling through to a default.
   for (t, side) in operands(lt, rt, e):
-    if isFlexible(t) or isOptional(t): continue  # ?T = "is present"
+    if isFlexible(t): continue
     if not (t != nil and t.kind == tkNamed and t.name == "bool"):
       fail("Type Error: '" & boolOpName(e.binOp) & "' expects bool, got " &
            typeName(t), side.span)

@@ -236,17 +236,6 @@ proc explodePayload(res: Resolution, e: Expr) =
   if known.isNone: return
   e.args = argsFor(res, e, known.get)
 
-proc presenceTest(res: Resolution, operand: Expr): Expr =
-  ## A `?T` operand of `and`/`or`/`xor` reads as "is present" (spec §7.2) —
-  ## a test, not an unwrap. The checker admits it; this makes it the `.ok`
-  ## status test every backend already emits. Left alone, the wrapper went
-  ## out bare and all three refused it (`TuckResult and TuckResult`).
-  ## Anything that is not a `?T` comes back untouched.
-  if not isOptional(res.typeFor(operand)): return operand
-  res.typed(Expr(span: operand.span, kind: exkField, receiver: operand,
-                 fieldName: "ok"),
-            Type(span: operand.span, kind: tkNamed, name: "bool"))
-
 proc lowerExpr(res: Resolution, e: Expr, m: Module) =
   ## Rewrite one expression and everything under it.
   ##
@@ -290,9 +279,6 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
   if e.kind == exkCall:
     flattenMemberCallPayload(res, e, m)
     explodePayload(res, e)
-  elif e.kind == exkBinary and e.binOp in {boAnd, boOr, boXor}:
-    e.left = presenceTest(res, e.left)
-    e.right = presenceTest(res, e.right)
 
 # Entry point for the pass. Two phases, in this order: type bodies are
 # flattened first so the call-rewriting phase can look up a type's fields and
