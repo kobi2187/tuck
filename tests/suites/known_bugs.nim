@@ -2188,4 +2188,59 @@ fn caller({b: Box}) -> int [io]:
 """
   t.okCheck "...and a member that declares [io], called from [io], is fine"
 
+  # `Self` in an object member was never bound for the checker. Lowering
+  # read it as the object, but only after the checker had refused the call —
+  # `b.poke` on `fn poke({self: Self})` was "expects Self but got Box". The
+  # same held for every mixin member (LANGUAGE-OVERVIEW's own `double`
+  # example could be composed but never called): lowering merged mixin fns
+  # into objects AFTER checking. rewrite.nim now binds `Self` and composes
+  # mixins before the checker runs. Found 2026-09-27.
+  t.src """
+object Box:
+  v: int
+  fn poke({self: Self}) -> int:
+    return self.v
+
+fn main() -> int:
+  let b = Box{v: 7}
+  return b.poke
+"""
+  t.quietly: t.hostRuns("a `{self: Self}` member is callable", 7)
+  t.bugFixed "a `{self: Self}` object member is callable, on all three"
+  t.src """
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+
+object P:
+  + Helpers
+  x: int
+
+object Q:
+  + Helpers
+  x: int
+  y: int
+
+fn main() -> int:
+  let p = P{x: 4}
+  let q = Q{x: 1, y: 9}
+  return p.double + q.double
+"""
+  t.quietly: t.hostRuns("a composed mixin member is callable", 10)
+  t.bugFixed "a mixin member is callable on each object composing it"
+  t.src """
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+
+object P:
+  + Helpers
+  y: int
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and its body is checked against each composer's fields",
+             "no field 'x'"
+
   t.finish()

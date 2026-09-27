@@ -100,7 +100,7 @@ tuckˑobjectˑLoopDetector :: struct {
 	lane: int,
 }
 
-tuckˑobjectˑLoopDetectorˑtuckˑfnˑhealthy :: proc (self: ^tuckˑobjectˑLoopDetector) -> bool {
+tuckˑobjectˑLoopDetectorˑhealthy :: proc (self: ^tuckˑobjectˑLoopDetector) -> bool {
   return true
 }
 
@@ -113,7 +113,7 @@ tuckˑobjectˑCameraDetector :: struct {
 	confidence: u8,
 }
 
-tuckˑobjectˑCameraDetectorˑtuckˑfnˑhealthy :: proc (self: ^tuckˑobjectˑCameraDetector) -> bool {
+tuckˑobjectˑCameraDetectorˑhealthy :: proc (self: ^tuckˑobjectˑCameraDetector) -> bool {
   return true
 }
 

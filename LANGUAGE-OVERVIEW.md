@@ -251,7 +251,12 @@ mixin Helpers:
 ```
 
 Asserted to contribute **no field named after the mixin**
-(`tests/suites/object_composition.nim`).
+(`tests/suites/object_composition.nim`). `+ Helpers` gives each composing
+object its own copy of the mixin's fns, with `Self` read as that object, before
+the checker runs. `p.double` is an ordinary member call, and the body is
+checked against each composer's fields: an object without an `x` is refused
+(`tests/suites/known_bugs.nim`). Only a mixin declared in the same module
+composes this way. `Self` in an object's own member means that object too.
 
 ### Composition `+` is set union
 

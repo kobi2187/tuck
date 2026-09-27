@@ -46,7 +46,10 @@
 # invalidates every cache entry — a pre-rewrite tree cannot outlive the change
 # that introduced a rule. If caching ever stops keying on the build, this pass
 # must move to the load path instead.
+import tables
 import ast
+from ast_query import isCompositionEntry, compositionTargetName
+from ast_ops import clearIds
 
 proc rewriteExpr(e: Expr)
 
@@ -86,8 +89,71 @@ proc rewriteExpr(e: Expr) =
   if e.kind == exkField: rewriteFieldReceiver(e)
   for c in e.children: rewriteExpr(c)
 
+proc boundSelf(t: Type, owner: Type): Type =
+  ## `t` with every `Self` in it read as `owner`. Rebuilds only the spine it
+  ## changes, so a type without `Self` comes back as the same node.
+  if t == nil: return nil
+  case t.kind
+  of tkNamed:
+    if t.name == "Self": owner else: t
+  of tkApp:
+    var args: seq[Type]
+    for a in t.args: args.add(boundSelf(a, owner))
+    Type(span: t.span, kind: tkApp, base: boundSelf(t.base, owner), args: args)
+  else: t
+
+proc bindSelf(mem: Decl, owner: Type) =
+  ## In an object's member, the placeholder `Self` means that object — the
+  ## language decides it from where the member is written, not from any
+  ## type. Bound here so the checker sees `{self: Box}` whichever way it was
+  ## spelled: left as `Self`, a call `b.poke` was refused ("expects Self but
+  ## got Box") and the body's `self.v` went unchecked as an open receiver.
+  if mem == nil or mem.kind != dkFn: return
+  for i in 0 ..< mem.fnParams.len:
+    mem.fnParams[i].typ = boundSelf(mem.fnParams[i].typ, owner)
+  mem.fnReturnType = boundSelf(mem.fnReturnType, owner)
+
+proc composedMixinMembers(mx: Decl): seq[Decl] =
+  ## What `+ Mixin` brings into an object: a private copy of each of its fns
+  ## with a body. A COPY, because binding `Self` rewrites the member — two
+  ## objects composing one mixin must not share, and bind, the same node.
+  ## The copy's ids are cleared: ids key the semantic layer, and a copy
+  ## still carrying the original's would read and write its types.
+  ## parseSource's fillIds numbers it afresh.
+  for mm in mx.mixinMembers:
+    if mm != nil and mm.kind == dkFn and mm.fnBody != nil:
+      let copy = deepCopy(mm)
+      clearIds(copy)
+      result.add(copy)
+
+proc composeMixins(m: Module) =
+  ## `+ Mixin` in an object means the mixin's fns ARE the object's members
+  ## (spec §4.5: composition is set union). Materialised here, before the
+  ## checker, so a call on the object finds the member with `Self` bound to
+  ## this object and the copied body is checked against this object's
+  ## fields. Only a mixin this module declares — the same reach lowering's
+  ## merge had; an entry naming anything else stays for later stages (a
+  ## record's fields merge in lowering; an unknown name is a sketch).
+  var mixins: Table[string, Decl]
+  for d in m.decls:
+    if d != nil and d.kind == dkMixin: mixins[d.name] = d
+  for d in m.decls:
+    if d == nil or d.kind != dkObject: continue
+    var members: seq[Decl]
+    for mem in d.objMembers:
+      if mem != nil and isCompositionEntry(mem) and
+         compositionTargetName(mem) in mixins:
+        members.add(composedMixinMembers(mixins[compositionTargetName(mem)]))
+      else:
+        members.add(mem)
+    d.objMembers = members
+    let owner = Type(span: d.span, kind: tkNamed, name: d.name)
+    for mem in d.objMembers: bindSelf(mem, owner)
+
 proc rewriteModule*(m: Module) =
   ## Normalize a module in place, over EVERY body (`ast_ops.bodies`) — a
   ## hand-rolled walk over decl kinds is how dkActor, and later task bodies,
-  ## came to be silently skipped.
+  ## came to be silently skipped. Mixins compose first, so the bodies they
+  ## copy into objects are walked like any other.
+  composeMixins(m)
   for e in m.bodies: rewriteExpr(e)

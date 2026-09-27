@@ -283,16 +283,13 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
 # Entry point for the pass. Two phases, in this order: type bodies are
 # flattened first so the call-rewriting phase can look up a type's fields and
 # get a plain record back, whatever the source declared.
-proc mergeComposed(m: Module, d: Decl, compName: string,
-                   kept: var seq[Decl]): bool =
-  ## Merge one `+ compName` into object `d`. False when nothing by that name
-  ## is declared, which leaves the entry in place as a sketch.
+proc mergeComposed(m: Module, d: Decl, compName: string): bool =
+  ## Merge one `+ compName` record into object `d`. False when no record by
+  ## that name is declared, which leaves the entry in place as a sketch.
+  ## A `+ Mixin` never arrives here: rewrite.composeMixins materialised its
+  ## fns before the checker ran.
   for cd in m.decls:
     if cd == nil or cd.name != compName: continue
-    if cd.kind == dkMixin:
-      for mm in cd.mixinMembers:
-        if mm != nil and mm.kind == dkFn and mm.fnBody != nil: kept.add(mm)
-      return true
     if cd.kind == dkType and cd.typeBody != nil and
        cd.typeBody.kind == tkRecord:
       for f in cd.typeBody.fields: d.objFields.add(f)
@@ -304,8 +301,9 @@ proc composeObject(m: Module, d: Decl) =
   ##
   ## `+` is SET UNION (spec §4.5), and it means two different things
   ## depending on what it names:
-  ##   `+ AudioPlayer` — a record type: its FIELDS merge in flat.
-  ##   `+ BulkOperations` — a mixin: its FNS become members of this object.
+  ##   `+ AudioPlayer` — a record type: its FIELDS merge in flat, here.
+  ##   `+ BulkOperations` — a mixin: its FNS become members of this object,
+  ##   already done by rewrite.composeMixins so the checker sees them.
   ## Merge, not embed. Embedding a composed type as a nested field made the
   ## two forms mean different things, and the checker already treats a
   ## composed field as the object's own — `self.volume` typechecks, so the
@@ -323,7 +321,7 @@ proc composeObject(m: Module, d: Decl) =
     if not isCompositionEntry(member):
       kept.add(member)
       continue
-    if not mergeComposed(m, d, compositionTargetName(member), kept):
+    if not mergeComposed(m, d, compositionTargetName(member)):
       kept.add(member)   # named nothing declared — sketch, the backend says so
   d.objMembers = kept
 
@@ -336,24 +334,19 @@ proc normalizeSelf(d: Decl) =
   ## which is how a zero-parameter member came to emit a fn taking nothing
   ## and a body still mentioning `self`.
   ##
-  ## Only the two facts that are the same everywhere move here: `self`
-  ## EXISTS, and the placeholder type `Self` means this object. HOW self is
-  ## passed stays a backend question — Nim spells it `var T`, Odin `^T`,
-  ## D `ref T` — decided from the parameter's name at emit time.
+  ## Only the fact that is the same everywhere moves here: `self` EXISTS.
+  ## (That `Self` means this object is bound earlier, by rewrite.bindSelf,
+  ## so the checker sees it too.) HOW self is passed stays a backend
+  ## question — Nim spells it `var T`, Odin `^T`, D `ref T` — decided from
+  ## the parameter's name at emit time.
   ##
   ## Idempotent: a member that already declares `self` is left alone.
   let objType = Type(span: d.span, kind: tkNamed, name: d.name)
   for mem in d.objMembers:
     if mem == nil or mem.kind != dkFn: continue
     var hasSelf = false
-    for i in 0 ..< mem.fnParams.len:
-      if mem.fnParams[i].name == "self": hasSelf = true
-      let pt = mem.fnParams[i].typ
-      if pt != nil and pt.kind == tkNamed and pt.name == "Self":
-        mem.fnParams[i].typ = objType
-    if mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
-       mem.fnReturnType.name == "Self":
-      mem.fnReturnType = objType
+    for p in mem.fnParams:
+      if p.name == "self": hasSelf = true
     if not hasSelf:
       mem.fnParams = @[Param(name: "self", typ: objType, span: mem.span)] &
                      mem.fnParams

@@ -828,7 +828,7 @@ object Deck:
   t.emitsD "compose: a composed type's field lands flat on the object",
            r"struct tuckˑobjectˑDeck \{\n    long volume;"
   t.emitsD "compose: a mixin fn materialises as a member of the object",
-           r"tuckˑobjectˑDeckˑtuckˑfnˑbump\(ref tuckˑobjectˑDeck self"
+           r"tuckˑobjectˑDeckˑbump\(ref tuckˑobjectˑDeck self"
   t.omitsD "compose: never embedded as a nested field",
            r"tuckˑtypeˑAudioPlayer audioPlayer"
   t.emitsD "chain: a standalone step writes back through the base",
