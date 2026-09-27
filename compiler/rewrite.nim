@@ -48,8 +48,10 @@
 # must move to the load path instead.
 import tables
 import ast
+import ../lexer
+from diagnostics import DiagCode, dcCoUnknownRename, code
 from ast_query import isCompositionEntry, compositionTargetName
-from ast_ops import clearIds
+from ast_ops import clearIds, nodes
 
 proc rewriteExpr(e: Expr)
 
@@ -113,18 +115,85 @@ proc bindSelf(mem: Decl, owner: Type) =
     mem.fnParams[i].typ = boundSelf(mem.fnParams[i].typ, owner)
   mem.fnReturnType = boundSelf(mem.fnReturnType, owner)
 
-proc composedMixinMembers(mx: Decl): seq[Decl] =
-  ## What `+ Mixin` brings into an object: a private copy of each of its fns
-  ## with a body. A COPY, because binding `Self` rewrites the member — two
-  ## objects composing one mixin must not share, and bind, the same node.
-  ## The copy's ids are cleared: ids key the semantic layer, and a copy
-  ## still carrying the original's would read and write its types.
-  ## parseSource's fillIds numbers it afresh.
+proc failComposition(dc: DiagCode, msg: string, sp: Span) =
+  ## A `+ Name {…}` entry the language cannot honour. A SyntaxError because
+  ## this stage runs inside parseSource, whose one error type that is;
+  ## parseSource fills in the source line for the caret.
+  var err = newException(SyntaxError, msg)
+  err.line = sp.line
+  err.col = sp.col
+  err.stage = "Composition Error"
+  err.code = code(dc)
+  raise err
+
+proc checkRenamesExist(entry: Decl, target: string, names: seq[string]) =
+  ## Every `{old -> new}` on a `+ target` entry must rename one of `names`:
+  ## a rename of nothing would silently do nothing.
+  for (old, renamed) in entry.renames:
+    if old notin names:
+      failComposition(dcCoUnknownRename,
+        "`+ " & target & " {" & old & " -> " & renamed & "}` renames '" &
+        old & "', but '" & target & "' has no fn or field '" & old & "'",
+        entry.span)
+
+proc renameSelfMember(fn: Decl, old, renamed: string) =
+  ## Inside a copied mixin fn, `self.old` means the member the object now
+  ## holds as `renamed` — the mixin's own code follows its rename.
+  if fn.fnParams.len == 0 or fn.fnBody == nil: return
+  let selfName = fn.fnParams[0].name
+  for n in nodes(fn.fnBody):
+    if n.kind == exkField and n.fieldName == old and n.receiver != nil and
+       n.receiver.kind == exkVar and n.receiver.name == selfName:
+      n.fieldName = renamed
+
+proc composedMixinMembers(mx: Decl, entry: Decl): seq[Decl] =
+  ## What `+ Mixin {old -> new}` brings into an object: a private copy of
+  ## each of its fns with a body, a renamed one under its new name. A COPY,
+  ## because binding `Self` rewrites the member — two objects composing one
+  ## mixin must not share, and bind, the same node. The copy's ids are
+  ## cleared: ids key the semantic layer, and a copy still carrying the
+  ## original's would read and write its types. parseSource's fillIds
+  ## numbers it afresh.
+  ##
+  ## A rename may name a body-less member too: that is a fn the mixin
+  ## REQUIRES of the object, and the rename says the object provides it
+  ## under the new name. Either way the copied bodies' `self.old` follow.
+  var names: seq[string]
+  for mm in mx.mixinMembers:
+    if mm != nil and mm.kind == dkFn: names.add(mm.name)
+  checkRenamesExist(entry, mx.name, names)
   for mm in mx.mixinMembers:
     if mm != nil and mm.kind == dkFn and mm.fnBody != nil:
       let copy = deepCopy(mm)
       clearIds(copy)
+      for (old, renamed) in entry.renames:
+        if copy.name == old: copy.name = renamed
+        renameSelfMember(copy, old, renamed)
       result.add(copy)
+
+proc checkRecordRenames(records: Table[string, Decl], entry: Decl) =
+  ## `+ Record {old -> new}` on a record this module declares: every `old`
+  ## must be one of its fields. The merge itself happens in lowering
+  ## (mergeComposed) and in the checker's field view (composedFields).
+  let target = compositionTargetName(entry)
+  if entry.renames.len == 0 or target notin records: return
+  var names: seq[string]
+  for f in records[target].typeBody.fields: names.add(f.name)
+  checkRenamesExist(entry, target, names)
+
+proc isRecordDecl(d: Decl): bool =
+  ## A `type` declaring a record — what `+ Name` merges fields from.
+  d.kind == dkType and d.typeBody != nil and d.typeBody.kind == tkRecord
+
+proc composedEntry(mem: Decl, mixins, records: Table[string, Decl]): seq[Decl] =
+  ## What one object-body member becomes: a `+ Mixin` entry, the mixin's
+  ## copied fns; anything else, itself (a `+ Record` entry's renames checked
+  ## here, its fields merged later).
+  if mem == nil or not isCompositionEntry(mem): return @[mem]
+  let target = compositionTargetName(mem)
+  if target in mixins: return composedMixinMembers(mixins[target], mem)
+  checkRecordRenames(records, mem)
+  @[mem]
 
 proc composeMixins(m: Module) =
   ## `+ Mixin` in an object means the mixin's fns ARE the object's members
@@ -134,18 +203,16 @@ proc composeMixins(m: Module) =
   ## fields. Only a mixin this module declares — the same reach lowering's
   ## merge had; an entry naming anything else stays for later stages (a
   ## record's fields merge in lowering; an unknown name is a sketch).
-  var mixins: Table[string, Decl]
+  var mixins, records: Table[string, Decl]
   for d in m.decls:
-    if d != nil and d.kind == dkMixin: mixins[d.name] = d
+    if d == nil: continue
+    if d.kind == dkMixin: mixins[d.name] = d
+    if isRecordDecl(d): records[d.name] = d
   for d in m.decls:
     if d == nil or d.kind != dkObject: continue
     var members: seq[Decl]
     for mem in d.objMembers:
-      if mem != nil and isCompositionEntry(mem) and
-         compositionTargetName(mem) in mixins:
-        members.add(composedMixinMembers(mixins[compositionTargetName(mem)]))
-      else:
-        members.add(mem)
+      members.add(composedEntry(mem, mixins, records))
     d.objMembers = members
     let owner = Type(span: d.span, kind: tkNamed, name: d.name)
     for mem in d.objMembers: bindSelf(mem, owner)

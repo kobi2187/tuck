@@ -107,7 +107,12 @@ proc parseSource*(source: string): Module =
   ## because buildStamp keys on the compiler's own build time — see rewrite.nim.
   var p = Parser(source: source, tokens: lexSource(source), cursor: 0)
   result = p.parseModule()
-  rewriteModule(result)
+  try:
+    rewriteModule(result)
+  except SyntaxError as err:
+    # rewrite has the position but not the text; the caret needs the line.
+    if err.context.len == 0: err.context = getLineContext(source, err.line)
+    raise
   # Before ANY later stage: a generic actor becomes one ordinary actor per
   # instantiation, so typechecking, mangling and all three backends see nothing
   # but plain actors and never learn that generic actors exist (#18).

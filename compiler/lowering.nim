@@ -283,16 +283,19 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
 # Entry point for the pass. Two phases, in this order: type bodies are
 # flattened first so the call-rewriting phase can look up a type's fields and
 # get a plain record back, whatever the source declared.
-proc mergeComposed(m: Module, d: Decl, compName: string): bool =
-  ## Merge one `+ compName` record into object `d`. False when no record by
-  ## that name is declared, which leaves the entry in place as a sketch.
+proc mergeComposed(m: Module, d: Decl, compName: string,
+                   renames: seq[(string, string)]): bool =
+  ## Merge one `+ compName {old -> new}` record into object `d`, each renamed
+  ## field under its new name (rewrite.composeMixins has already refused a
+  ## rename of a field the record lacks). False when no record by that name
+  ## is declared, which leaves the entry in place as a sketch.
   ## A `+ Mixin` never arrives here: rewrite.composeMixins materialised its
   ## fns before the checker ran.
   for cd in m.decls:
     if cd == nil or cd.name != compName: continue
     if cd.kind == dkType and cd.typeBody != nil and
        cd.typeBody.kind == tkRecord:
-      for f in cd.typeBody.fields: d.objFields.add(f)
+      for f in renamedFields(cd.typeBody.fields, renames): d.objFields.add(f)
       return true
   false
 
@@ -321,7 +324,7 @@ proc composeObject(m: Module, d: Decl) =
     if not isCompositionEntry(member):
       kept.add(member)
       continue
-    if not mergeComposed(m, d, compositionTargetName(member)):
+    if not mergeComposed(m, d, compositionTargetName(member), member.renames):
       kept.add(member)   # named nothing declared — sketch, the backend says so
   d.objMembers = kept
 

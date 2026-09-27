@@ -153,6 +153,19 @@ proc whyNotAnObject(m: Module, name: string): string =
   return "'" & name & "' is not declared in this module. Fix: check the " &
          "spelling, or import the module that declares it."
 
+proc mergeRenames(obj: Decl, d: Decl) =
+  ## A top-level `satisfies Obj: I {old -> new}` line's renames join the
+  ## object's own. Re-stating one is a no-op; renaming the same member to a
+  ## DIFFERENT name than the object already does is refused.
+  for r in d.satisfyRenames:
+    let (iname, old, renamed) = r
+    let prior = implementingName(obj, iname, old)
+    if prior != old and prior != renamed:
+      fail("Conformance Error: object '" & obj.name & "' already " &
+           "implements '" & iname & "." & old & "' as '" & prior &
+           "'; this line renames it to '" & renamed & "'", d.span)
+    if r notin obj.satisfiesRenames: obj.satisfiesRenames.add(r)
+
 proc applySatisfiesDecls(m: Module) =
   ## Fold every top-level `Obj satisfies Iface` into that object's own
   ## `satisfies` list, BEFORE conformance runs.
@@ -182,23 +195,47 @@ proc applySatisfiesDecls(m: Module) =
     for iname in d.satisfyTargets:
       if iname notin obj.satisfies:
         obj.satisfies.add(iname)
+    mergeRenames(obj, d)
 
-proc implementationOf(obj: Decl, want: Decl): Decl =
-  ## The member that implements a required fn. A body-less member is a
-  ## signature, not an implementation — there would be no code to run.
+proc implementationOf(obj: Decl, name: string): Decl =
+  ## The member named `name` that implements a required fn. A body-less
+  ## member is a signature, not an implementation — there would be no code
+  ## to run.
   for have in obj.members():
-    if have.kind == dkFn and have.name == want.name and have.fnBody != nil:
+    if have.kind == dkFn and have.name == name and have.fnBody != nil:
       return have
   nil
 
+proc checkRenamesExist(obj: Decl, iface: Decl, iname: string) =
+  ## Every `satisfies iname {old -> new}` rename must name a member of the
+  ## interface: a rename of nothing would silently do nothing.
+  for (i, old, renamed) in obj.satisfiesRenames:
+    if i != iname: continue
+    var found = false
+    for want in iface.ifaceMembers:
+      if want != nil and want.kind == dkFn and want.name == old: found = true
+    if not found:
+      fail(dcCoUnknownRename,
+           "`satisfies " & iname & " {" & old & " -> " & renamed & "}` on '" &
+           obj.name & "' renames '" & old & "', but interface '" & iname &
+           "' has no member '" & old & "'", obj.span)
+
 proc checkSatisfiesIface(obj: Decl, iface: Decl, iname: string) =
-  ## Every fn the interface requires must be implemented, and match.
+  ## Every fn the interface requires must be implemented — under its own
+  ## name, or the name a `{old -> new}` rename gives it — and match.
+  checkRenamesExist(obj, iface, iname)
   for want in iface.ifaceMembers:
     if want == nil or want.kind != dkFn: continue
-    let got = implementationOf(obj, want)
+    let name = implementingName(obj, iname, want.name)
+    let got = implementationOf(obj, name)
     if got == nil:
+      let renamedNote =
+        if name == want.name: ""
+        else: "\n  under the name '" & name & "' (renamed by `satisfies " &
+              iname & " {" & want.name & " -> " & name & "}`)"
       fail("Conformance Error: object '" & obj.name & "' satisfies '" &
            iname & "' but does not implement\n    " & sigText(want) &
+           renamedNote &
            "\n  (add it as a member fn, or drop the `satisfies " & iname &
            "` line)", obj.span)
     checkSigMatch(want, got, obj.name, iname)

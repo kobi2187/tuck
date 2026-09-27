@@ -130,7 +130,7 @@ let tuckGrammar = peg("module", st: Stats):
   # lexer; it arrives as tkIdent, so this is two identifiers on a line and
   # can only be stated positionally, inside a member block. `fieldDecl` is
   # tried first, so `lane: int` is never mistaken for it.
-  satisfiesMember <- word * name * eol
+  satisfiesMember <- word * name * ?renames * eol
   # `invariant:` and friends: a named block inside a type or actor body.
   # `invariant` lexes as tkAttr, which `name` already covers.
   blockMember <- name * "tkColon " * +nl * blk
@@ -226,6 +226,9 @@ let tuckGrammar = peg("module", st: Stats):
                structLit |
                name
   rename    <- name * "tkArrow " * name
+  # `{old -> new, ...}` after a composed type (`A + B {x -> bx}`), a
+  # `+ Name` entry or a `satisfies I` line — the same list at every site.
+  renames   <- "tkLBrace " * rename * *("tkComma " * rename) * "tkRBrace "
   primary   <- fnRef | structLit | listLit | parenExpr | literal | name
   fnRef     <- "tkColon " * name * ?("tkColonColon " * name)
   # Inside a bracket group a NEWLINE separates exactly like a comma, and the
@@ -254,7 +257,7 @@ let tuckGrammar = peg("module", st: Stats):
   # --- types --------------------------------------------------------------
   # `?T` / `!T` / `!?T` prefixes, `T?` / `T!` suffixes, `A[B, C]`
   # application, `A + B` composition, and the record form.
-  typeExpr  <- typePrefix * typeAtom * *typeSuffix * *typeCompose
+  typeExpr  <- typePrefix * typeAtom * *typeSuffix * *typeCompose * ?renames
   typePrefix<- *("tkQuestion " | "tkBang " | "tkBangQuestion ")
   typeAtom  <- typeRecord | typeInlineSum | (name * ?typeArgs)
   typeArgs  <- "tkLBracket " * typeExpr * *("tkComma " * typeExpr) * "tkRBracket "

@@ -144,8 +144,14 @@ proc parseSatisfiesLine*(p: var Parser, hasFields: bool): Decl =
   discard p.advance()
   let iname = p.expect(tkIdent,
                        "Expected interface name after 'satisfies'").value
+  # `satisfies Machine {noise -> machineNoise}` — this object implements the
+  # contract's `noise` as its own `machineNoise`, so two contracts that both
+  # require a `noise` can be satisfied by one object.
+  let renames = if p.current().kind == tkLBrace:
+                  p.parseRenameList("`satisfies " & iname & "`")
+                else: @[]
   if p.current().kind == tkNewline: discard p.advance()
-  Decl(span: sSp, kind: dkExpr, name: iname,
+  Decl(span: sSp, kind: dkExpr, name: iname, renames: renames,
        expr: Expr(span: sSp, kind: exkVar, name: satisfiesMark))
 
 proc parseObjectField*(p: var Parser): FieldDef =
@@ -458,13 +464,17 @@ proc parseImportDecl*(p: var Parser, sp: Span): Decl =
   let modName = p.expectMemberName("Expected module name after 'import'").value
   Decl(span: sp, kind: dkImport, name: modName)
 
-proc siftSatisfies*(members: seq[Decl], sats: var seq[string]): seq[Decl] =
-  ## Sift the `satisfies I` lines out of the member list into their own field,
-  ## so no later pass has to know they were ever members.
+proc siftSatisfies*(members: seq[Decl], sats: var seq[string],
+                    renames: var seq[(string, string, string)]): seq[Decl] =
+  ## Sift the `satisfies I` lines out of the member list into their own
+  ## fields — the interfaces, and each line's `{old -> new}` renames as
+  ## (interface, contract member, implementing member) — so no later pass
+  ## has to know they were ever members.
   for m in members:
     if m != nil and m.kind == dkExpr and m.expr != nil and
        m.expr.kind == exkVar and m.expr.name == satisfiesMark:
       sats.add(m.name)
+      for (old, renamed) in m.renames: renames.add((m.name, old, renamed))
     else:
       result.add(m)
 
@@ -476,10 +486,16 @@ proc parseStaticAssertDecl*(p: var Parser, sp: Span): Decl =
 
 proc parseCompositionDecl*(p: var Parser, sp: Span): Decl =
   ## `+ Name` — compose a mixin or record into the enclosing declaration.
+  ## `+ Name {old -> new}` renames what it brings in: a mixin's fns or a
+  ## record's fields (applied by rewrite.composeMixins and
+  ## lowering.mergeComposed / ast_query.composedFields).
   discard p.advance()
   let name = p.expect(tkIdent, "Expected composition name after '+'").value
   let target = Expr(span: sp, kind: exkVar, name: name)
-  Decl(span: sp, kind: dkExpr,
+  let renames = if p.current().kind == tkLBrace:
+                  p.parseRenameList("`+ " & name & "`")
+                else: @[]
+  Decl(span: sp, kind: dkExpr, renames: renames,
        expr: Expr(span: sp, kind: exkUnary, unaryOp: uoComposition,
                   operand: target))
 
@@ -490,18 +506,26 @@ proc parseConstDecl*(p: var Parser, sp: Span): Decl =
   discard p.expect(tkAssign)
   Decl(span: sp, kind: dkConst, name: name, constVal: p.parseExpr())
 
-proc parseSatisfyTargets*(p: var Parser): seq[string] =
-  ## The contracts after the `:` — one name, or several separated by commas.
+proc parseSatisfyTargets*(p: var Parser,
+                          renames: var seq[(string, string, string)]): seq[string] =
+  ## The contracts after the `:` — one name, or several separated by commas,
+  ## each optionally followed by its `{old -> new}` renames.
   ##
   ## No brackets: `satisfies Dog: Speaker, Mover`. The `:` already separates
   ## subject from contracts, so a bracket would only add noise — and `[...]`
   ## after a type name means ATTRIBUTES everywhere else in the grammar
   ## (parser_type's bracketHoldsAttrs), which this is not.
-  result.add(p.expect(tkIdent, "Expected an interface name").value)
+  template target(msg: string) =
+    ## One contract name and its renames, if any.
+    let iname = p.expect(tkIdent, msg).value
+    result.add(iname)
+    if p.current().kind == tkLBrace:
+      for (old, renamed) in p.parseRenameList("`satisfies ... " & iname & "`"):
+        renames.add((iname, old, renamed))
+  target("Expected an interface name")
   while p.current().kind == tkComma:
     discard p.advance()
-    result.add(p.expect(tkIdent,
-                        "Expected an interface name after ','").value)
+    target("Expected an interface name after ','")
 
 const TopLevelKeywords = "fn, type, object, actor, task, interface, group, " &
   "mixin, fnsig, registry, decision, pending, distinct, const, import, " &
@@ -896,9 +920,11 @@ proc parseSatisfiesDecl*(p: var Parser, sp: Span): Decl =
   discard p.expect(tkColon,
                    "Expected ':' after the object name — write " &
                    "`satisfies " & objName & ": Iface`")
-  let targets = p.parseSatisfyTargets()
+  var renames: seq[(string, string, string)]
+  let targets = p.parseSatisfyTargets(renames)
   if p.current().kind == tkNewline: discard p.advance()
-  Decl(span: sp, kind: dkSatisfies, name: objName, satisfyTargets: targets)
+  Decl(span: sp, kind: dkSatisfies, name: objName, satisfyTargets: targets,
+       satisfyRenames: renames)
 
 proc failIfOnOutsideActor(p: var Parser) =
   ## `on` at a module's top level. Only a REGISTRY handler lives here, and it

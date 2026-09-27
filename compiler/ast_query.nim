@@ -193,6 +193,16 @@ proc recordFieldsNamed(m: Module, name: string): seq[FieldDef] =
     if cd.typeBody == nil or cd.typeBody.kind != tkRecord: continue
     for f in cd.typeBody.fields: result.add(f)
 
+proc renamedFields*(fields: seq[FieldDef],
+                    renames: seq[(string, string)]): seq[FieldDef] =
+  ## `fields` as `+ Name {old -> new}` brings them in: a renamed field under
+  ## its new name, the rest unchanged.
+  for f in fields:
+    var g = f
+    for (old, renamed) in renames:
+      if f.name == old: g.name = renamed
+    result.add g
+
 proc composedFields*(m: Module, d: Decl): seq[FieldDef] =
   ## An object's fields INCLUDING everything `+ Record` merges in — composition
   ## is set union (spec §4.5), so a composed field is the object's own as far
@@ -205,7 +215,8 @@ proc composedFields*(m: Module, d: Decl): seq[FieldDef] =
   if d.kind != dkObject: return
   for mem in d.objMembers:
     let name = composedName(mem)
-    if name.len > 0: result.add recordFieldsNamed(m, name)
+    if name.len > 0:
+      result.add renamedFields(recordFieldsNamed(m, name), mem.renames)
 
 iterator allFns*(m: Module): Decl =
   ## Every fn in the module with a body to walk: top-level, plus the members
@@ -918,6 +929,16 @@ proc findObjectMember*(obj: Decl, name: string): Decl =
   ## and cannot tell two same-named methods on different objects apart.
   for mem in obj.members():
     if mem != nil and mem.kind == dkFn and mem.name == name: return mem
+
+proc implementingName*(obj: Decl, iface, member: string): string =
+  ## The name under which object `obj` implements contract member
+  ## `iface.member`: the new name from a `satisfies iface {member -> new}`
+  ## rename, or `member` itself. The rename is what lets one object satisfy
+  ## two interfaces that each require a member of the same name with
+  ## different signatures.
+  for (i, old, renamed) in obj.satisfiesRenames:
+    if i == iface and old == member: return renamed
+  member
 
 proc moduleDeclaringType*(module: Module, name: string): string =
   ## The imported module a TYPE came from, or "" when this module declares it.

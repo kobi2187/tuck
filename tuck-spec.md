@@ -817,6 +817,32 @@ type PodcastPlayer = PodcastPlayerLifecycle + PlaybackControls + CacheManager
 Field name conflicts are compile errors. Resolve at the composition site with
 rename syntax (see 2.5).
 
+The same `{old -> new}` list follows a `+ Name` line in an object body. For a
+record it brings the field `old` in as `new`; for a mixin it brings the fn
+`old` in as `new`, and inside the mixin's own copied fns `self.old` follows
+the rename — the mixin keeps calling its own member:
+
+```tuck
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+  fn quad({self: Self}) -> int:
+    return self.double * 2        # reaches `twice` in P
+
+type Pos:
+  x: int
+  y: int
+
+object P:
+  + Helpers {double -> twice}     # P keeps its own `double`
+  + Pos {y -> height}
+  fn double({self: P}) -> int:
+    return 1000
+```
+
+Renaming a name the mixin or record does not have is TK-CO04 — a rename of
+nothing would otherwise do nothing, silently.
+
 ### 4.6 Type Attributes
 
 All compiler directives on types use `[]` brackets after the type name, consistent
@@ -1150,6 +1176,33 @@ editing the library. The rules above are unchanged — the object must still
 implement every member, or it is a compile error. Re-stating a contract the
 object already declares in its body is a no-op, not an error: a calling module
 cannot know what the library already promised.
+
+**Implementing a member under another name.** Two interfaces may each require
+a member of the same name with different signatures; one object cannot hold
+two members of one name. `satisfies I {old -> new}` says the object
+implements `I`'s `old` as its own `new` — the same `old -> new` rename
+spelling as `alias(...)` (§2.4c) and composition (§4.5), ruled 2026-09-27:
+
+```tuck
+interface Animal:
+  fn noise({self: Self}) -> int
+interface Machine:
+  fn noise({self: Self}) -> str
+
+object Robodog:
+  satisfies Animal
+  satisfies Machine {noise -> hum}
+  bark: int
+  fn noise({self: Robodog}) -> int:
+    return self.bark
+  fn hum({self: Robodog}) -> str:
+    return "bzz"
+```
+
+A call through a `Machine` value reaches `hum`; through an `Animal`, `noise`.
+The top-level form takes the list after each interface it names
+(`satisfies Robodog: Machine {noise -> hum}`). Renaming a member the interface
+does not declare is TK-CO04.
 
 ### 5.3 Interface Dispatch
 

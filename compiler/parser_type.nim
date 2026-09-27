@@ -268,17 +268,9 @@ proc parseType*(p: var Parser): Type =
       let starBase = Type(span: sp, kind: tkNamed, name: "*")
       let countType = Type(span: countSp, kind: tkNamed, name: countVal)
       res = Type(span: sp, kind: tkApp, base: starBase, args: @[res, countType])
-    elif curr.kind == tkLBrace and p.peek(1).kind == tkIdent and p.peek(2).kind == tkArrow:
-      discard p.advance()
-      var renames: seq[(string, string)]
-      while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-        let orig = p.expect(tkIdent, "Expected original field name").value
-        discard p.expect(tkArrow)
-        let target = p.expect(tkIdent, "Expected target field name").value
-        renames.add((orig, target))
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRBrace)
+    elif curr.kind == tkLBrace and p.peek(1).kind in {tkIdent, tkAttr} and
+         p.peek(2).kind == tkArrow:
+      let renames = p.parseRenameList("a type's field renames")
       res = Type(span: sp, kind: tkRename, underlying: res, renames: renames)
     elif curr.kind == tkPlus:
       discard p.advance()

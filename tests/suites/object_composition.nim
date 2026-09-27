@@ -164,4 +164,60 @@ fn main() -> int:
 """
   t.hostRuns "a bound chain leaves its base alone, on every backend", 132
 
+  # `+ Name {old -> new}` brings a mixin's fn or a record's field in under a
+  # new name — the same `old -> new` spelling as `alias(...)` and
+  # `satisfies I {...}`. Here the object keeps its own `double`, takes the
+  # mixin's as `twice`, and the mixin's `quad` — which calls `self.double` —
+  # follows the rename to `twice`. `y` arrives as `height`.
+  t.src """
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+  fn quad({self: Self}) -> int:
+    return self.double * 2
+
+type Pos:
+  x: int
+  y: int
+
+object P:
+  + Helpers {double -> twice}
+  + Pos {y -> height}
+  fn double({self: P}) -> int:
+    return 1000
+
+fn main() -> int:
+  let p = P{x: 4, height: 5}
+  return p.twice + p.quad + p.height + p.double - 1000
+"""
+  t.okCheck "`+ Mixin {double -> twice}` and `+ Record {y -> height}`"
+  t.hostRuns "the renamed fn and field, and the mixin's own call, on every backend", 29
+
+  t.src """
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+
+object P:
+  + Helpers {tripel -> twice}
+  x: int
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "renaming a fn the mixin lacks is TK-CO04", "TK-CO04"
+
+  t.src """
+type Pos:
+  x: int
+  y: int
+
+object P:
+  + Pos {z -> height}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "renaming a field the record lacks is TK-CO04", "TK-CO04"
+
   t.finish()

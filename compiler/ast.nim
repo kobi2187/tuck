@@ -775,6 +775,11 @@ type
                                # satisfy several. (Was `mixins`, which was
                                # written once as @[] and never read —
                                # composition arrives as uoComposition members.)
+      satisfiesRenames*: seq[(string, string, string)]
+        ## `satisfies I {noise -> machineNoise}`: (interface, contract
+        ## member, the object's member that implements it). A contract member
+        ## not listed is implemented under its own name. Read through
+        ## ast_query.implementingName, never directly.
       objMembers*: seq[Decl]
     of dkRegistry:
       variants*: seq[VariantDef]
@@ -886,6 +891,9 @@ type
       # A seq because the list form attaches several at once, and because a
       # module may state several separate lines for the same object.
       satisfyTargets*: seq[string]
+      satisfyRenames*: seq[(string, string, string)]
+        ## Renames written after a target, same triples as
+        ## dkObject.satisfiesRenames, into which checkConformance merges them.
     of dkFnSig:
       # `fnsig NAME[T, ...] = {params} -> ret` — a named function-signature
       # type (a named delegate). NAME becomes usable as a type for
@@ -901,6 +909,10 @@ type
       sigIsCCallback*: bool
     of dkExpr:
       expr*: Expr
+      renames*: seq[(string, string)]
+        ## `{old -> new, ...}` written after a `+ Name` composition entry or a
+        ## `satisfies I` line inside an object body — Tuck's one rename
+        ## spelling. Empty on every other expression declaration.
     of dkConst:
       constVal*: Expr
     of dkRegister:

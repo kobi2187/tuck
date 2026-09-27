@@ -57,10 +57,12 @@ proc memberArgs(res: Resolution, mem: Decl, dotArg: Expr,
     result.add res.freshCopy(value)
 
 proc dispatchArm(res: Resolution, e: Expr, s: Decl,
-                 member: string): DispatchArm =
-  ## The arm for one satisfier `s`: a typed call to its own `member`, with the
-  ## payload (bound as `PayloadBind`) as `self` and the rest from the call's
-  ## payload literal.
+                 iface, contractMember: string): DispatchArm =
+  ## The arm for one satisfier `s`: a typed call to the member implementing
+  ## `iface.contractMember` — its own name unless `satisfies iface {… -> …}`
+  ## renamed it — with the payload (bound as `PayloadBind`) as `self` and the
+  ## rest from the call's payload literal.
+  let member = implementingName(s, iface, contractMember)
   let mem = findObjectMember(s, member)
   doAssert mem != nil and mem.fnParams.len > 0,
     "lowering_iface: '" & s.name & "' satisfies the interface but declares " &
@@ -79,7 +81,7 @@ proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
   let ic = res.ifaceCallOf(e)
   var arms: seq[DispatchArm]
   for s in satisfiersOf(m, real, ic.iface):
-    arms.add dispatchArm(res, e, s, ic.member)
+    arms.add dispatchArm(res, e, s, ic.iface, ic.member)
   let t = res.typeFor(e)
   let node = res.typed(Expr(span: e.span, kind: exkIfaceCall,
                            dispatchRecv: e.receiver, dispatchIface: ic.iface,

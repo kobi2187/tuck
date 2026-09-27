@@ -138,9 +138,10 @@ proc parseObjectDecl(p: var Parser, sp: Span): Decl =
   var members: seq[Decl]
   p.parseObjectBody(fields, members)
   var sats: seq[string]
-  let realMembers = siftSatisfies(members, sats)
+  var renames: seq[(string, string, string)]
+  let realMembers = siftSatisfies(members, sats, renames)
   Decl(span: sp, kind: dkObject, name: name, objFields: fields,
-       satisfies: sats, objMembers: realMembers)
+       satisfies: sats, satisfiesRenames: renames, objMembers: realMembers)
 
 proc parseActorDecl(p: var Parser, sp: Span): Decl =
   ## `actor Name[T] [attrs]:` — an actor's type params, attributes (queue

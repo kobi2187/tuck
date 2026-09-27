@@ -354,6 +354,102 @@ fn main() -> int:
   t.badCheck "satisfies on an interface says a contract is not a subject",
              "is an interface"
 
+  # --- renaming a contract member: `satisfies I {old -> new}` ---------------
+
+  # Two interfaces that each require a `noise`, with different return types:
+  # one object cannot hold two members named `noise`, so it implements
+  # `Machine.noise` as `hum`. A call through a `Machine` reaches `hum`; a call
+  # through an `Animal` reaches `noise`. `old -> new` is the rename spelling
+  # everywhere (TK-PA17). Ruled 2026-09-27.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int
+
+interface Machine:
+  fn noise({self: Self}) -> str
+
+object Robodog:
+  satisfies Animal
+  satisfies Machine {noise -> hum}
+  bark: int
+  fn noise({self: Robodog}) -> int:
+    return self.bark
+  fn hum({self: Robodog}) -> str:
+    return "bzz"
+
+object Toaster:
+  satisfies Machine
+  heat: int
+  fn noise({self: Toaster}) -> str:
+    return "ding"
+
+fn animalNoise({a: Animal}) -> int:
+  return a.noise
+
+fn machineNoise({m: Machine}) -> str:
+  return m.noise
+
+fn main() -> int:
+  let r = Robodog{bark: 7}
+  let t = Toaster{heat: 1}
+  let s = ({m: r} machineNoise) + ({m: t} machineNoise)
+  return ({a: r} animalNoise) + s.len
+"""
+  t.okCheck "`satisfies Machine {noise -> hum}` implements noise as hum"
+  t.hostRuns "each interface reaches its own member, on every backend", 14
+
+  t.src """
+interface Machine:
+  fn noise({self: Self}) -> str
+
+object Robodog:
+  satisfies Machine {nois -> hum}
+  fn hum({self: Robodog}) -> str:
+    return "bzz"
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "renaming a member the interface lacks is TK-CO04",
+             "TK-CO04"
+
+  t.src """
+interface Machine:
+  fn noise({self: Self}) -> str
+
+object Robodog:
+  satisfies Machine {noise -> hum}
+  fn noise({self: Robodog}) -> str:
+    return "bzz"
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "the renamed member must exist under its new name",
+             "under the name 'hum'"
+
+  # The top-level form takes the same list, after each interface it names.
+  t.src """
+interface Machine:
+  fn noise({self: Self}) -> str
+
+object Robodog:
+  bark: int
+  fn hum({self: Robodog}) -> str:
+    return "bzz"
+
+satisfies Robodog: Machine {noise -> hum}
+
+fn machineNoise({m: Machine}) -> str:
+  return m.noise
+
+fn main() -> int:
+  let r = Robodog{bark: 7}
+  return ({m: r} machineNoise).len
+"""
+  t.okCheck "`satisfies Obj: I {old -> new}` renames at the top level too"
+  t.hostRuns "...and dispatch reaches the renamed member", 3
+
   # --- the existing example must stay honest --------------------------------
 
   # examples/04-sum-types-interface.tuck declares `interface Storable` with a

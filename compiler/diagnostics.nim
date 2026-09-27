@@ -128,6 +128,8 @@ type
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
     dcCoUnknownIface = "TK-CO02"        ## `satisfies` names no interface
     dcCoNotAnObject = "TK-CO03"         ## `satisfies` subject is not an object
+    dcCoUnknownRename = "TK-CO04"       ## a `{old -> new}` rename names no
+                                        ## member of what it renames
     dcDeGap = "TK-DE01"                 ## a decision table has an uncovered case
     dcDeOverlap = "TK-DE02"             ## two rows match the same input
     dcDeBadValue = "TK-DE03"            ## a cell is not a value of its column
@@ -660,6 +662,12 @@ proc ruleExplanation(d: DiagCode): string =
     "contract with no members to check is not a contract. To give a " &
     "primitive interface-like behaviour, wrap it in an object with the " &
     "primitive as a field, or pass a `fnsig` slot instead of a contract."
+  of dcCoUnknownRename:
+    "`satisfies I {old -> new}` implements I's member `old` under the name " &
+    "`new`; `+ Name {old -> new}` brings in Name's fn or field `old` as " &
+    "`new`. The name on the left of `->` must be a member of I (or of Name). " &
+    "A rename of a name that does not exist would silently do nothing, so " &
+    "it is refused."
   of dcDeGap: "A decision table leaves a combination of inputs unmatched."
   of dcDeOverlap: "Two rows of a decision table match the same input."
   of dcDeBadValue: "A cell holds something that is not a value of its column."

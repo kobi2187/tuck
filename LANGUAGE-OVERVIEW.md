@@ -259,6 +259,11 @@ checked against each composer's fields: an object without an `x` is refused
 (`tests/suites/known_bugs.nim`). Only a mixin declared in the same module
 composes this way. `Self` in an object's own member means that object too.
 
+`+ Helpers {double -> twice}` brings the mixin's `double` in as `twice`, and
+the mixin's own `self.double` calls follow it; `+ Pos {y -> height}` does the
+same for a record's field. Renaming a name that is not there is `TK-CO04`
+(`tests/suites/object_composition.nim`).
+
 ### Composition `+` is set union
 
 For both records and objects: `object O: + A` emits `x*: int` directly, and
@@ -469,7 +474,11 @@ fn hear({a: Animal}) -> int:
 - **Effects may be a subset** — an impl may declare fewer effects than the
   contract (`:62`), never more (`:172`).
 - `Self` means the implementing type.
-- An object may satisfy several interfaces (`:38`).
+- An object may satisfy several interfaces (`:38`). When two of them require
+  a member of the same name, `satisfies Machine {noise -> hum}` implements
+  `Machine`'s `noise` as the object's `hum`; a call through a `Machine`
+  reaches `hum`. The same `old -> new` spelling as `alias(...)` and `+`;
+  renaming a member the interface lacks is `TK-CO04`.
 - An unsatisfied interface is legal (`:96`); a body-less member does not
   implement (`:202`).
 

@@ -124,6 +124,26 @@ proc expectBindingName*(p: var Parser, msg: string): Token =
                   "word and cannot be used as a name here", dc = dcPaReservedWord)
   p.expectMemberName(msg)
 
+proc parseRenameList*(p: var Parser, what: string): seq[(string, string)] =
+  ## `{old -> new, ...}` — Tuck's one rename spelling (ruled 2026-09-27),
+  ## shared by every site that renames: a composed type's fields
+  ## (`A + B {x -> bx}`), `satisfies I {noise -> machineNoise}` and
+  ## `+ Name {old -> new}` in an object body. `alias(old -> new)` is the same
+  ## pair in parentheses. A colon in place of the arrow is refused with the
+  ## fix (TK-PA17). Assumes the opening `{`.
+  discard p.expect(tkLBrace)
+  while p.current().kind notin {tkRBrace, tkEOF}:
+    let old = p.expectMemberName("Expected the name to rename in " & what).value
+    if p.current().kind == tkColon:
+      p.reportError("a rename is written `old -> new`: write `" & old &
+                    " -> " & (if p.peek().kind in {tkIdent, tkAttr}: p.peek().value
+                              else: "newName") & "`", dc = dcPaRenameArrow)
+    discard p.expect(tkArrow, "Expected `->` after '" & old & "' in " & what)
+    let renamed = p.expectMemberName("Expected the new name in " & what).value
+    result.add((old, renamed))
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBrace)
+
 proc expectTypeName*(p: var Parser, what: string): Token =
   ## A user-declared type name — type, object, interface, actor, distinct,
   ## fnsig, registry, pool, arena — must be Capitalized.
