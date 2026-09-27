@@ -105,7 +105,6 @@ type
     position*: int
     line*: int
     column*: int
-    linesLen*: seq[int] # legacy fallback
     indentStack*: seq[int]
     lastDrained*: TokenKind
       ## The kind most recently handed to the parser, so the newline rule can
