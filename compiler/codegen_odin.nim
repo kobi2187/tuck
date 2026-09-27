@@ -906,12 +906,13 @@ proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
     ctx.genOdinExpr(e.right) & ")"
 
 proc genUnary(ctx: var OdinCodegenCtx, e: Expr): string =
-  ## A unary expression: `-` and `!`. Composition and a leftover `?` print only
-  ## the operand.
+  ## A unary expression: `-` and `!`. A composition entry is a declaration
+  ## member, sifted out before emission, so reaching here is a compiler bug.
   let opStr = case e.unaryOp
               of uoNeg: "-"
               of uoNot: "!"
-              else: ""
+              of uoComposition: raiseAssert "codegen_odin: a `+ Type` " &
+                "composition member reached the expression emitter"
   opStr & ctx.genOdinExpr(e.operand)
 
 proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): string =

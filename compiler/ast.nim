@@ -327,12 +327,13 @@ type
     boRangeIncl, boRangeExcl
 
   UnaryOp* = enum
-    ## The unary operators: negation, `not`, a `+ Type` composition entry, and
-    ## postfix `?` propagation.
+    ## The unary operators: negation, `not`, and a `+ Type` composition entry.
+    ## There is no `?` propagation operator (LANGUAGE-OVERVIEW: propagation is
+    ## `err r.err`); `uoPropagate` was declared for one and never produced.
     uoNeg
     uoNot
-    uoComposition
-    uoPropagate  # expr? — pass the error upward; enclosing fn must return !T
+    uoComposition  # `+ Type` in an object/type body — a MEMBER, sifted out
+                   # before any expression is emitted (ast_query.composedName)
 
   ChainOp* = enum
     ## How a chain step attaches. Only `..` (coDotDot) is produced; a plain `.`

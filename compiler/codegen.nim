@@ -644,12 +644,13 @@ proc genBinary(ctx: var CodegenCtx, e: Expr): string =
     ctx.genExpr(e.right) & ")"
 
 proc genUnary(ctx: var CodegenCtx, e: Expr): string =
-  ## A unary expression: `-` and `not`. Composition and a leftover `?` print
-  ## only the operand.
+  ## A unary expression: `-` and `not`. A composition entry is a declaration
+  ## member, sifted out before emission, so reaching here is a compiler bug.
   let opStr = case e.unaryOp
               of uoNeg: "-"
               of uoNot: "not "
-              else: ""
+              of uoComposition: raiseAssert "codegen: a `+ Type` composition " &
+                "member reached the expression emitter"
   opStr & ctx.genExpr(e.operand)
 
 proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =

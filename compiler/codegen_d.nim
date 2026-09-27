@@ -502,17 +502,13 @@ proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
     ctx.genDExpr(e.right) & ")"
 
 proc genDUnary(ctx: var DCodegenCtx, e: Expr): string =
-  ## A unary expression. Composition and a leftover `expr?` (the rewrite pass
-  ## desugars every one it can) are refused rather than dropped.
+  ## A unary expression: `-` and `!`. A composition entry is a declaration
+  ## member, sifted out before emission, so reaching here is a compiler bug.
   case e.unaryOp
   of uoNeg: "-" & ctx.genDExpr(e.operand)
   of uoNot: "!" & ctx.genDExpr(e.operand)
-  of uoComposition: dUnsupported("composition (+Type member)")
-  of uoPropagate:
-    # `expr?` — forward failure or absence unchanged. Reaches codegen only
-    # if the rewrite pass did not desugar it; refuse rather than drop the
-    # propagation silently.
-    dUnsupported("expr? in this position")
+  of uoComposition: raiseAssert "codegen_d: a `+ Type` composition " &
+    "member reached the expression emitter"
 
 proc satisfiersOfD*(ctx: DCodegenCtx, iface: string): seq[Decl] =
   ## Whole-program satisfier set — see codegen_common.satisfiersOf.

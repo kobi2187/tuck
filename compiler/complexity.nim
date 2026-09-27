@@ -182,9 +182,6 @@ proc walk(m: var Metrics, e: Expr) =
     walk(m, e.left)
     walk(m, e.right)
   of exkUnary:
-    # `expr?` propagates an error upward — an implicit early return, so it is
-    # a fork in the flow exactly like an `if err: return err` would be.
-    if e.unaryOp == uoPropagate: m.complexity += 1
     walk(m, e.operand)
   of exkBlock:
     for s in e.stmts: walk(m, s)

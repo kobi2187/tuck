@@ -108,7 +108,6 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
     h.visit(n.right, false)
   of exkUnary:
     h.visit(n.operand, false)
-    if n.unaryOp == uoPropagate: h.settled = true   # `x?` may return early
   of exkIfaceCall:
     h.visit(n.dispatchRecv, false)
     h.settled = true             # exactly one arm runs; lift nothing out of one

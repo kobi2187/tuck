@@ -29,13 +29,11 @@ proc opStr*(op: BinOp): string =
   of boRangeExcl: "..<"
 
 proc opStr*(op: UnaryOp): string =
-  ## The prefix spelling. uoPropagate is postfix (`x?`) and has no prefix, so
-  ## it maps to the empty string and the printer special-cases it.
+  ## The prefix spelling of each unary operator.
   case op
   of uoNeg: "-"
   of uoNot: "not "
   of uoComposition: "+ "
-  of uoPropagate: ""
 
 proc toString*(e: Expr): string
 
@@ -110,8 +108,6 @@ proc toString*(e: Expr): string =
   of exkBinary:
     return e.left.toString() & " " & opStr(e.binOp) & " " & e.right.toString()
   of exkUnary:
-    if e.unaryOp == uoPropagate:
-      return e.operand.toString() & "?"   # postfix, unlike the other three
     return opStr(e.unaryOp) & e.operand.toString()
   of exkBlock:
     return "block"
