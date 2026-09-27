@@ -2147,4 +2147,45 @@ fn main() -> int:
   t.quietly: t.hostBuilds("a [write] register field is assignable")
   t.bugFixed "a [write] register field is assignable with `=`, on all three"
 
+  # The effect checker skipped object members both ways. verifyDecl ended in
+  # `else: discard`, so a member's own body was never held to its bracket;
+  # and a member call was looked up by bare name, which finds no member, so
+  # an [io] member looked pure to its caller — and its call was never marked
+  # a suspend point. Found 2026-09-27 writing semantics.nim's docs.
+  t.src """
+fn touch({n: int}) -> int [io]:
+  return n
+
+object Box:
+  v: int
+  fn poke({self: Box}) -> int:
+    return {n: 1} touch
+"""
+  t.quietly: t.badCheck("a member is held to its own bracket", "TK-EF01")
+  t.bugFixed "an object member is held to its own effect bracket"
+  t.src """
+object Box:
+  v: int
+  fn poke({self: Box}) -> int [io]:
+    return 1
+
+fn pure({b: Box}) -> int:
+  return b.poke
+"""
+  t.quietly: t.badCheck("an [io] member's effect reaches its caller", "TK-EF01")
+  t.bugFixed "an [io] member's effect reaches the fn that calls it"
+  t.src """
+fn touch({n: int}) -> int [io]:
+  return n
+
+object Box:
+  v: int
+  fn poke({self: Box}) -> int [io]:
+    return {n: 1} touch
+
+fn caller({b: Box}) -> int [io]:
+  return b.poke
+"""
+  t.okCheck "...and a member that declares [io], called from [io], is fine"
+
   t.finish()

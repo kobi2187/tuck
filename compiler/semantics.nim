@@ -29,6 +29,7 @@
 # ordering is decided.
 import ast, tables, sets
 import resolution
+import ast_query   # memberCallDecl: which member a call reaches
 import diagnostics  # TK-RS03, the resource half of the propagation rule
 
 type
@@ -123,7 +124,15 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
       # sound), which is exactly the safety net that makes the caller's local
       # analysis sufficient.
       if calleeName notin c.taskNames:
-        let callee = c.getDeclared(calleeName)
+        # A MEMBER call reaches the member its receiver's type names, which a
+        # bare-name lookup cannot find (members are not top-level names) —
+        # so an [io] member looked pure to its callers, and a call to it was
+        # never marked as a suspend point.
+        let member = memberCallDecl(semLayer, c.module, e)
+        let callee = if member != nil:
+                       Demands(effects: member.fnEffects,
+                               resources: member.fnResourceKinds)
+                     else: c.getDeclared(calleeName)
         res = union(res, callee)
         # The [io] marker IS the async annotation: a call to an [io] fn is a
         # suspend point. Flag the call site so codegen emits the async transform.
@@ -168,7 +177,9 @@ proc checkExpr(c: var Checker, e: Expr, expected: Demands, currentFn: string) =
   # 2. Check them top-down against the declared budget
   for eff in actual.effects:
     if eff notin expected.effects:
-      reportError("Semantic Error: Expression requires effect [" & effectName(eff) & "], which is not allowed in context of '" & currentFn & "'", e.span)
+      reportError(withCode(dcEfBudget,
+        "Expression requires effect [" & effectName(eff) & "], which is " &
+        "not allowed in context of '" & currentFn & "'"), e.span)
   for kind in actual.resources:
     if kind notin expected.resources:
       reportError(withCode(dcRsUndeclared,
@@ -176,38 +187,51 @@ proc checkExpr(c: var Checker, e: Expr, expected: Demands, currentFn: string) =
         currentFn & "' does not declare — add `[resource: " & kind &
         "]` to its bracket"), e.span)
 
+proc verifyFn(c: var Checker, d: Decl) =
+  ## One fn body against its own bracket — `main`'s budget aside, below.
+  if d == nil or d.fnBody == nil or d.name in c.visiting: return
+  c.visiting.incl(d.name)
+  # main is ASSUMED to touch I/O — the [io] marker distinguishes pure fns
+  # from impure ones (and drives async); it is not a gate on main. So main
+  # may call [io] externs without declaring [io]. Every other effect too:
+  # main is the program's impure entry point.
+  # main is ASSUMED impure, resource kinds included: a program that opens a
+  # socket in `main` is the ordinary case, and `fn main() -> int` has no
+  # natural place to carry the marker. c.everyKind is every kind the program
+  # declares, so the pass on main is exactly as wide as its effect pass and
+  # no wider — a kind nothing declares is still TK-RS01.
+  #
+  # Its OWN marker is unioned in rather than replaced. A blanket budget that
+  # discards what the author wrote means `[resource: db]` on main reads as a
+  # no-op, and it was one: before the kind set went program-wide, a kind an
+  # IMPORT declared was in neither half, so the one thing an author could do
+  # about it changed nothing.
+  let budget = if d.name == "main":
+                 Demands(effects: @[emIo, emNoAlloc, emIrqSafe, emUnsafe,
+                                    emMayBlock, emStack, emPriority],
+                         resources: c.everyKind & d.fnResourceKinds)
+               else: Demands(effects: d.fnEffects,
+                             resources: d.fnResourceKinds)
+  c.checkExpr(d.fnBody, budget, d.name)
+  c.visiting.excl(d.name)
+
+proc verifyMembers(c: var Checker, members: seq[Decl]) =
+  ## Every member fn with a body, each against its own bracket. An object's
+  ## members, a type's, a mixin's: `fn poke({self: Box}) -> int` declares its
+  ## effects exactly as a top-level fn does, and was never held to them.
+  for m in members:
+    if m != nil and m.kind == dkFn: c.verifyFn(m)
+
 proc verifyDecl*(c: var Checker, d: Decl) =
   ## Checks one declaration's body against its declared budget. `main` gets
-  ## every effect and every program-declared resource kind; fns, tasks, actor
-  ## handlers and static asserts are checked. Other kinds are skipped.
+  ## every effect and every program-declared resource kind.
+  ##
+  ## Names every DeclKind, as `checkDecl` does: this used to end in
+  ## `else: discard`, and object, type and mixin members fell into it — an
+  ## `[io]` call inside a member with no `[io]` checked clean.
   if d == nil: return
   case d.kind
-  of dkFn:
-    if d.name in c.visiting: return
-    c.visiting.incl(d.name)
-    # main is ASSUMED to touch I/O — the [io] marker distinguishes pure fns
-    # from impure ones (and drives async); it is not a gate on main. So main
-    # may call [io] externs without declaring [io]. Every other effect too:
-    # main is the program's impure entry point.
-    # main is ASSUMED impure, resource kinds included: a program that opens a
-    # socket in `main` is the ordinary case, and `fn main() -> int` has no
-    # natural place to carry the marker. c.everyKind is every kind the program
-    # declares, so the pass on main is exactly as wide as its effect pass and
-    # no wider — a kind nothing declares is still TK-RS01.
-    #
-    # Its OWN marker is unioned in rather than replaced. A blanket budget that
-    # discards what the author wrote means `[resource: db]` on main reads as a
-    # no-op, and it was one: before the kind set went program-wide, a kind an
-    # IMPORT declared was in neither half, so the one thing an author could do
-    # about it changed nothing.
-    let budget = if d.name == "main":
-                   Demands(effects: @[emIo, emNoAlloc, emIrqSafe, emUnsafe,
-                                      emMayBlock, emStack, emPriority],
-                           resources: c.everyKind & d.fnResourceKinds)
-                 else: Demands(effects: d.fnEffects,
-                               resources: d.fnResourceKinds)
-    c.checkExpr(d.fnBody, budget, d.name)
-    c.visiting.excl(d.name)
+  of dkFn: c.verifyFn(d)
   of dkTask:
     if d.name in c.visiting: return
     c.visiting.incl(d.name)
@@ -217,10 +241,29 @@ proc verifyDecl*(c: var Checker, d: Decl) =
   of dkActor:
     for h in d.handlers:
       verifyDecl(c, h)
+  of dkObject: c.verifyMembers(d.objMembers)
+  of dkType: c.verifyMembers(d.typeMembers)
+  of dkMixin: c.verifyMembers(d.mixinMembers)
   of dkStaticAssert:
     c.checkExpr(d.assertExpr, Demands(), "static_assert")
-  else:
+  of dkSelect:
+    # NOT CHECKED, knowingly: an `on select` arm has no bracket, so it has no
+    # budget to be checked against. Checking it against an empty one would
+    # make every [io] call in an arm an error with no way to declare it; how
+    # an arm states its effects is a ruling (thoughts/shared/audits,
+    # 2026-09-27 F2). Until then an arm is as unchecked as it always was.
     discard
+  of dkExtern, dkPending, dkFnSig, dkInterface, dkGroup:
+    discard   # signatures only: no body to check
+  of dkErrors:
+    discard   # the `on unhandled` handler runs from the runtime, not a caller
+  of dkExpr:
+    discard   # a top-level statement runs as part of main, which may do anything
+  of dkConst, dkRegistry, dkPool, dkRegister, dkResources, dkImport,
+     dkSatisfies, dkPublic:
+    discard   # no body
+  of dkWhen:
+    discard   # resolved away at load (modules.resolveWhenBlocks)
 
 proc collectImported(c: var Checker, imported: Table[string, seq[EffectMarker]],
                      importedRes: Table[string, seq[string]]) =

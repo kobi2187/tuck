@@ -544,16 +544,10 @@ proc memberOwner*(m: Module, recvT: Type): string =
     if d != nil and d.kind == dkObject and d.name == recvT.name: return d.name
   ""
 
-proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
-  ## The qualified name a member call must emit, or "" when `calleeName` is
-  ## not a member of `owner`.
-  ##
-  ## A member call arrives as a bare-name callee with the receiver as args[0]
-  ## (the checker's rewrite), so the name alone cannot say which fn is meant
-  ## once a top-level fn shares it. The receiver's TYPE can, and the
-  ## declaration emitted under exactly this name — deriving it here is what
-  ## keeps the two in step.
-  if owner == "": return ""
+proc memberDeclOf*(m: Module, owner, calleeName: string): Decl =
+  ## The member fn of object `owner` a call named `calleeName` reaches, or nil
+  ## when `owner` declares no such member.
+  if owner == "": return nil
   for d in m.decls:
     if d == nil or d.kind != dkObject or d.name != owner: continue
     for mem in d.objMembers:
@@ -564,8 +558,20 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
       # Both spellings mean this member. Same comparison
       # resolution.poolHandleName makes, for the same reason.
       if mem.name == calleeName or prefixed(mem.name, nkFn) == calleeName:
-        return memberProcName(owner, mem.name)
-  ""
+        return mem
+  nil
+
+proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
+  ## The qualified name a member call must emit, or "" when `calleeName` is
+  ## not a member of `owner`.
+  ##
+  ## A member call arrives as a bare-name callee with the receiver as args[0]
+  ## (the checker's rewrite), so the name alone cannot say which fn is meant
+  ## once a top-level fn shares it. The receiver's TYPE can, and the
+  ## declaration emitted under exactly this name — deriving it here is what
+  ## keeps the two in step.
+  let mem = memberDeclOf(m, owner, calleeName)
+  if mem == nil: "" else: memberProcName(owner, mem.name)
 
 proc memberRecvType*(res: Resolution, e: Expr): Type =
   ## A member call's receiver type: args[0]'s (the checker's rewrite), or the
@@ -574,6 +580,14 @@ proc memberRecvType*(res: Resolution, e: Expr): Type =
   if e.args[0].kind == exkStruct:
     for f in e.args[0].fields:
       if f.name == "self": result = res.typeFor(f.value)
+
+proc memberCallDecl*(res: Resolution, m: Module, e: Expr): Decl =
+  ## The member fn a call reaches, by its receiver's type — the declaration
+  ## `memberCallee` names — or nil when it is not a member call.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
+    return nil
+  memberDeclOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
 
 proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
   ## The qualified name of the member fn a call reaches — `tuckˑobjectˑDogˑnoise`
