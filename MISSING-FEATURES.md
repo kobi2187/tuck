@@ -22,11 +22,25 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (3)
+## A. Open bugs (4)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+**A21 — `Self` other than the receiver, through an interface, builds on no
+backend.** The conformance check reads `Self` in a contract as the
+IMPLEMENTING type (`Ci.same` takes `other: Ci`); a call through an interface
+value reads it as the INTERFACE (`b: Shape`). A member returning `Self`, or
+taking a second `Self`, therefore checks clean and fails on Nim, Odin and D:
+the dispatch hands a `Shape` to a parameter typed `Ci`, or returns an `Sq`
+where the call's type is `Shape`. Only the receiver `{self: Self}` works,
+which is every use in the corpus. The return case is wrong under either
+reading and is pinned: `known_bugs`, "a `-> Self` contract member called
+through an interface builds, on all three". The parameter case waits on the
+ruling of what `Self` means in an interface
+(`thoughts/shared/audits/2026-09-27-rulings-needed.md`, R13). Found
+2026-09-27.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism

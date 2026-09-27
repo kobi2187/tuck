@@ -2390,4 +2390,43 @@ fn main() -> void:
 """
   t.okCheck "...and a tail match yielding only Closed still narrows to it"
 
+  # A21. A contract member returning `Self`, called through an interface
+  # value, checks clean and builds on no backend: the dispatch returns each
+  # arm's concrete object (`Sq`, `Ci`) where the call's type is the
+  # interface, and nothing wraps it back into the tag. Whether `Self` in a
+  # contract means the interface or the implementing type is still being
+  # ruled — but both readings agree here: through a `Shape` the result can
+  # only be a `Shape`. Found 2026-09-27 working through that question.
+  t.src """
+interface Shape:
+  fn size({self: Self}) -> int
+  fn grown({self: Self}) -> Self
+
+object Sq:
+  satisfies Shape
+  s: int
+  fn size({self: Sq}) -> int:
+    return self.s * self.s
+  fn grown({self: Sq}) -> Sq:
+    return Sq{s: self.s + 1}
+
+object Ci:
+  satisfies Shape
+  r: int
+  fn size({self: Ci}) -> int:
+    return self.r * 3
+  fn grown({self: Ci}) -> Ci:
+    return Ci{r: self.r + 1}
+
+fn bigger({a: Shape}) -> int:
+  let g = a.grown
+  return g.size
+
+fn main() -> int:
+  let a = Sq{s: 2}
+  return {a: a} bigger
+"""
+  t.quietly: t.hostRuns("a `-> Self` member through an interface returns the interface", 9)
+  t.bugOpen "a `-> Self` contract member called through an interface builds, on all three"
+
   t.finish()

@@ -212,6 +212,34 @@ body across modules needs its free names qualified.
   per category? Per rule makes `tuck explain` useful. Per category is a day's
   work.
 
+### R13 — in an interface, does `Self` stay the interface or narrow to the concrete type?
+An interface value is a tagged variant over the program's satisfiers; its
+concrete type is known only at run time. Today the compiler answers both
+ways: conformance reads `Self` as the implementing type, a call through the
+interface reads it as the interface, and anything but the receiver checks
+clean and builds on no backend (MISSING-FEATURES A21).
+
+The two readings differ only for a NON-RECEIVER parameter typed `Self`
+(`fn same({self: Self, other: Self})`). They agree on the rest:
+- receiver: the implementation receives its own concrete object;
+- `-> Self`: each implementation returns its own type, and the call
+  through the interface answers the interface (re-wrapped). Pinned as A21.
+
+For `other: Self`:
+- (A) Narrow: `other` is the implementing type. Through an interface, `a` and
+  `b` may carry different tags (`Sq` vs `Ci`), so the call either has to be
+  refused statically (callable only on concrete types) or checked at run time.
+- (B) Stay: `other` is the interface; the implementation declares
+  `other: Shape` and handles any variant itself. Sound, no run-time failure.
+  "Same concrete type" operations belong to `group`, where `T` is fixed at
+  instantiation.
+- (C) Refuse a non-receiver `Self` parameter in an interface, pointing to
+  `group`.
+
+**Recommend (B).** It follows the textual rule (`Self` is the declaration
+containing it), cannot fail at run time, and leaves same-type binary
+operations to groups, which already give that guarantee.
+
 ---
 
 ## Observations (no ruling needed)
