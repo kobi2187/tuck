@@ -165,6 +165,7 @@ import typecheck_decisions    # spec 6.1 decision-table analysis
 import typecheck_pointers     # pointers stay at the extern boundary
 import typecheck_recursion    # a type may not contain itself by value
 import typecheck_conformance  # spec 5.2 `satisfies` verification
+import iface_generics         # `fn f[T: Interface]`, one clone per object type
 import ./typecheck_compat
 import ./typecheck_collect
 import ./typecheck_registry
@@ -618,6 +619,18 @@ proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
       return f.typ
   nil
 
+proc ifaceBoundOf(tc: TypeChecker, typeParam: string): string =
+  ## The interface bounding type param `typeParam` of the fn being checked
+  ## (`fn join[T: AudioSource]`), or "". Takes the bare name `T` or the
+  ## `<typeparam:T>` a value of it is typed as inside the body.
+  let t = Type(kind: tkNamed, name: typeParam)
+  let name = if typeParamName(t) != "": typeParamName(t) else: typeParam
+  if not tc.currentBounds.hasKey(name): return ""
+  for b in tc.currentBounds[name]:
+    let n = groupNameOf(b)
+    if tc.ifaceDecls.hasKey(n): return n
+  ""
+
 proc substituteSelf(pt: Type, selfT: Type, letters: seq[string] = @[]): Type =
   ## `Self` in a contract member's signature means the interface (R13, ruled
   ## 2026-09-27) — at any depth, so `Seq[Self]` is a `Seq` of the interface.
@@ -675,6 +688,69 @@ proc bindIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type, mem: Decl): Type =
                                          name: e.fieldName)))
   semLayer.markIfaceCall(e, recvT.name, mem.name)
   substituteSelf(mem.fnReturnType, selfT, selfBoundParams(mem))
+
+proc contractMember(tc: TypeChecker, iname, name: string): Decl =
+  ## Interface `iname`'s required fn `name`, or nil.
+  for m in tc.ifaceDecls[iname].ifaceMembers:
+    if m != nil and m.kind == dkFn and m.name == name: return m
+
+proc boundSubst(mem: Decl, recvT, ifaceT: Type): Table[string, Type] =
+  ## A contract member's placeholders as a body bounded by the interface
+  ## reads them: the receiver's letter is the receiver's own T; `Self` and
+  ## every other `Self`-bound letter are the interface.
+  result["Self"] = ifaceT
+  let recvLetter = receiverTypeParam(mem)
+  for g in selfBoundParams(mem):
+    result[g] = if g == recvLetter: recvT else: ifaceT
+
+proc payloadParams(mem: Decl, subs: Table[string, Type]): seq[Param] =
+  ## The contract member's params past the receiver, substituted.
+  for p in mem.fnParams:
+    if p.name != "self":
+      result.add(Param(name: p.name, typ: substType(p.typ, subs), span: p.span))
+
+proc failIfNotReceiverType(params: seq[Param], bound: seq[Expr], recvT: Type,
+                           shown, member: string) =
+  ## A type param is lenient in `compatible` (it stands for any type), so a
+  ## param with the receiver's letter is held to exactly the receiver's T.
+  for i, p in params:
+    if p.typ == nil or p.typ.kind != tkNamed or p.typ.name != recvT.name:
+      continue
+    let at = semLayer.typeFor(bound[i])
+    if at != nil and not isFlexible(at) and
+       not (at.kind == tkNamed and at.name == recvT.name):
+      fail("Type Error: '" & p.name & "' of '" & member & "' must be the " &
+           "receiver's own type " & shown & ", but got " & typeName(at),
+           bound[i].span)
+
+proc asBoundIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
+  ## `a.splice {...}` where `a: T` and `fn join[T: AudioSource]`: the
+  ## contract's member, with the receiver's letter (and the receiver's
+  ## `Self`) read as T — one object type, fixed per call of `join` — and
+  ## every other `Self` as the interface. Only the body is checked here; the
+  ## generic fn itself is never emitted. Each instantiation is cloned with T
+  ## replaced and checked again as ordinary code (iface_generics).
+  if recvT == nil or recvT.kind != tkNamed: return nil
+  let iname = tc.ifaceBoundOf(recvT.name)
+  if iname == "": return nil
+  let shown = if typeParamName(recvT) != "": typeParamName(recvT)
+              else: recvT.name
+  let mem = tc.contractMember(iname, e.fieldName)
+  if mem == nil:
+    fail("Type Error: '" & shown & "' is bounded by interface " & iname &
+         ", which declares no '" & e.fieldName & "'", e.span)
+  let subs = boundSubst(mem, recvT, tc.namedType(iname, e.span))
+  let params = payloadParams(mem, subs)
+  if e.dotArg != nil and e.dotArg.kind != exkStruct:
+    fail("Type Error: arguments to '" & e.fieldName &
+         "' must be a struct literal: {name: value, ...}", e.dotArg.span)
+  let bound = tc.bindPayloadFields(mem.name, params, e.dotArg, e.span)
+  failIfNotReceiverType(params, bound, recvT, shown, mem.name)
+  setCall(semLayer, e, Expr(span: e.span, kind: exkCall,
+                            args: @[e.receiver] & bound,
+                            callee: Expr(span: e.span, kind: exkVar,
+                                         name: e.fieldName)))
+  substType(mem.fnReturnType, subs)
 
 proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `a.noise` where `a` is an interface value — resolved against the CONTRACT,
@@ -1027,6 +1103,7 @@ proc typedFieldForm(tc: var TypeChecker, e: Expr, recvT: Type,
   if result == nil: result = tc.asVariantPayloadField(e, recvT)
   if result == nil: result = tc.asStaticMemberCall(e)
   if result == nil: result = tc.asInterfaceCall(e, recvT)
+  if result == nil: result = tc.asBoundIfaceCall(e, recvT)
   if result == nil: result = tc.asFnByName(e, recvT)
 
 const RegisterWidth = 32
@@ -1884,6 +1961,9 @@ proc checkIfaceArg(tc: var TypeChecker, iname: string, argT: Type,
   # `fn outer({a: Animal}) = {a: a} inner` was rejected with "Animal is not an
   # object, so it cannot satisfy Animal", which is both wrong and confusing.
   if objName == iname: return
+  # A value of `T` in `fn join[T: iname]`: some satisfier, fixed per call.
+  # Each instantiation is checked again as a clone, and wraps there.
+  if objName != "" and tc.ifaceBoundOf(objName) == iname: return
   if objName != "" and tc.objDecls.hasKey(objName) and
      iname in tc.objDecls[objName].satisfies:
     semLayer.markWrap(argExpr, objName, iname)
@@ -2162,6 +2242,28 @@ proc solveGroupArgs(tc: TypeChecker, g: Decl, concreteT: Type,
       binds[gp] = solved[gp]
       outer[outerName] = solved[gp]
 
+proc checkIfaceBound(tc: TypeChecker, iname: string, concreteT: Type,
+                     paramName, fnName: string, sp: Span) =
+  ## `[T: AudioSource]` at a call: T must be one OBJECT that satisfies the
+  ## interface — fixed at compile time, which is what makes a same-type
+  ## member (`splice[A: Self]`) callable in the body. Inside another fn
+  ## bounded by the same interface, T may be that fn's own type param.
+  let n = if concreteT != nil and concreteT.kind == tkNamed: concreteT.name
+          else: ""
+  if tc.objDecls.hasKey(n) and iname in tc.objDecls[n].satisfies: return
+  if tc.ifaceBoundOf(n) == iname: return
+  let why =
+    if n == iname:
+      "an interface value's object type is known only at run time; pass a " &
+      "concrete object, or take the parameter as `" & iname & "` instead of `" &
+      paramName & "`"
+    elif tc.objDecls.hasKey(n):
+      "object '" & n & "' does not declare `satisfies " & iname & "`"
+    else:
+      typeName(concreteT) & " is not an object"
+  fail("Type Error: '" & fnName & "' needs its type parameter '" & paramName &
+       "' to be an object satisfying " & iname & ", but " & why, sp)
+
 proc checkOneGroupBound(tc: TypeChecker, bound: Type, concreteT: Type,
                         paramName, fnName: string,
                         bindings: var Table[string, Type],
@@ -2176,10 +2278,8 @@ proc checkOneGroupBound(tc: TypeChecker, bound: Type, concreteT: Type,
   let groupName = groupNameOf(bound)
   if not tc.groupDecls.hasKey(groupName):
     if tc.ifaceDecls.hasKey(groupName):
-      fail("Type Error: '" & groupName & "' is an interface, not a group " &
-           "(spec §5.5) — a generic bound needs a `group`, declared for " &
-           "exactly this; interfaces stay attached to objects with " &
-           "`satisfies`", sp)
+      tc.checkIfaceBound(groupName, concreteT, paramName, fnName, sp)
+      return
     fail("Type Error: '" & groupName & "' used as a bound on '" & paramName &
          "' is not a declared group", sp)
     return
@@ -2270,6 +2370,27 @@ proc recordCallTypeArgs(tc: TypeChecker, sig: FnSig,
     if t == nil or isFlexible(t): return
     args.add(t)
   setCallTypeArgs(semLayer, e, args)
+
+proc recordIfaceInstance(tc: TypeChecker, fnName: string, sig: FnSig,
+                         bindings: Table[string, Type], e: Expr) =
+  ## A call to `fn join[T: AudioSource]` records what T is here, so
+  ## iface_generics can clone `join` once per object type. Every type param,
+  ## in declaration order; nil where one is unbound.
+  if not tc.groupBoundsOf.hasKey(fnName): return
+  var bounded = false
+  for bs in tc.groupBoundsOf[fnName]:
+    for b in bs:
+      if tc.ifaceDecls.hasKey(groupNameOf(b)): bounded = true
+  if not bounded: return
+  if tc.module.findDecl(dkFn, fnName) == nil:
+    fail("Type Error: '" & fnName & "' has a type parameter bounded by an " &
+         "interface and is declared in another module; such a fn is " &
+         "expanded per object type in the module that declares it, so it " &
+         "can only be called from there for now", e.span)
+  var args: seq[Type]
+  for g in sig.generics: args.add(bindings.getOrDefault(g))
+  ensureId(e)
+  semLayer.ifaceInstances[e.id] = args
 
 proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
                     t: Type, bindings: var Table[string, Type]): bool =
@@ -2875,6 +2996,7 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
             else: sig.ret
   if sig.generics.len == 0: return ret
   tc.recordCallTypeArgs(sig, bindings, e)
+  tc.recordIfaceInstance(calleeName, sig, bindings, e)
   for g in sig.generics:
     if not bindings.hasKey(g):
       fail("Type Error: cannot infer generic parameter '" & g & "' of call to '" &
@@ -4606,11 +4728,10 @@ proc checkBoundNames(tc: TypeChecker, d: Decl) =
     for bound in d.fnGenericBounds[i]:
       let n = groupNameOf(bound)
       if tc.groupDecls.hasKey(n): continue
-      if tc.ifaceDecls.hasKey(n):
-        fail("Type Error: '" & n & "' is an interface, not a group " &
-             "(spec §5.5) — a generic bound needs a `group`, declared for " &
-             "exactly this; interfaces stay attached to objects with " &
-             "`satisfies`", d.span)
+      if tc.ifaceDecls.hasKey(n) and d.fnGenericBounds[i].len > 1:
+        fail("Type Error: '" & g & "' is bounded by interface '" & n &
+             "' and by something else; an interface bound stands alone " &
+             "(`[" & g & ": " & n & "]`)", d.span)
 
 proc checkFnDecl(tc: var TypeChecker, d: Decl) =
   ## A decision table is checked as a table; anything else as a fn body.
@@ -5305,8 +5426,8 @@ proc importScopeFor(sigs: ProgramSigs, preSigs: Table[string, seq[SigInfo]],
     if sigs.byMod.hasKey(imp): result.importChecked(sigs, imp)
     else: result.importPrebuilt(preSigs, imp)
 
-proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
-                       preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
+proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
+                      preSigs: Table[string, seq[SigInfo]]): seq[string] =
   ## Signatures are gathered across the whole program first, then each module
   ## is checked against what its imports export.
   resetResolution()  # one semantic layer per program
@@ -5322,3 +5443,44 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
                                scope.ambiguous, scope.bareOwner)
     except SemanticError as err:
       raise withModulePrefix(err, path)
+
+const MaxExpansionRounds = 16
+  ## Rounds of interface-bounded generic expansion (iface_generics) before
+  ## the checker gives up: each round expands the calls one more level of
+  ## generic-calls-generic deep, so only a type that grows without end — a
+  ## fn calling itself on a bigger type — needs more.
+
+proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
+                         preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
+  ## Check the whole program. When it calls a fn bounded by an interface
+  ## (`fn join[T: AudioSource]`), each call is pointed at a clone of the fn
+  ## for its object type and the program is checked AGAIN, until a round
+  ## expands nothing; then the generic originals are dropped
+  ## (iface_generics). A program with no such fn is checked exactly once.
+  ##
+  ## `var`: expansion adds and drops declarations, and `Module` is a value —
+  ## the caller must see the module lists this leaves.
+  result = checkProgramOnce(mods, preSigs)
+  var rounds = 0
+  while true:
+    var expanded = false
+    for i in 0 ..< mods.len:
+      if expandIfaceGenerics(semLayer, mods[i].m): expanded = true
+    if not expanded: break
+    inc rounds
+    if rounds > MaxExpansionRounds:
+      fail("Type Error: expanding interface-bounded generic fns did not " &
+           "settle after " & $MaxExpansionRounds & " rounds — a fn calls " &
+           "itself (or another) on a type that keeps growing",
+           Span(line: 1, col: 1))
+    for (name, path, m) in mods: fillIds(m)
+    result = checkProgramOnce(mods, preSigs)
+  for i in 0 ..< mods.len: dropIfaceGenerics(mods[i].m)
+
+proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
+                       preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
+  ## `typecheckExpanding` on a copy of the module list, for a caller that
+  ## emits nothing afterwards (the benches). The driver uses
+  ## `typecheckExpanding`, since it must emit the expanded declarations.
+  var copy = mods
+  typecheckExpanding(copy, preSigs)

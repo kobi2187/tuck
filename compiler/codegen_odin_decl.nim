@@ -323,7 +323,18 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   let movedP = movedFnParam(ctx.res, ctx.module, d)
   let savedMoved = ctx.movedParam
   ctx.movedParam = movedP
-  let bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  var bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  # A param a member call takes as `self: ^T` is shadowed first — an Odin
+  # parameter cannot be addressed (codegen_common.paramsCalledAsReceiver).
+  let brace = bodyStr.find('\n')
+  let rest = if bodyStr.startsWith("{") and brace >= 0: bodyStr[brace + 1 .. ^1]
+             else: bodyStr
+  var shadows = ""
+  for p in paramsCalledAsReceiver(ctx.res, ctx.module, d):
+    shadows.add(leadingIndent(rest) & p & " := " & p & "\n")
+  if shadows != "":
+    bodyStr = if rest.len < bodyStr.len: bodyStr[0 .. brace] & shadows & rest
+              else: shadows & bodyStr
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars

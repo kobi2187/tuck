@@ -241,8 +241,10 @@ For `other: Self`:
 > with type parameters on the member (`fn splice[A: Self, B: Self]`),
 > compile-time only; an interface may bound a free generic fn
 > (`fn join[T: AudioSource]`). Two interfaces requiring one member name are
-> satisfied with `satisfies I {old -> new}` (`73a8a7b`). Conformance and the
-> dispatch wrap: this commit, which also fixes A21.
+> satisfied with `satisfies I {old -> new}` (`73a8a7b`). Built: `Self` as
+> the interface and A21 (`aa4581d`), A22 (`9ef2e3b`), `[A: Self, B: Self]`
+> with TK-TY33 (`9b8fa4e`), and the interface bound on a generic fn, one
+> clone per object type (`iface_generics`).
 
 **Recommend (B).** It follows the textual rule (`Self` is the declaration
 containing it), cannot fail at run time, and leaves same-type binary

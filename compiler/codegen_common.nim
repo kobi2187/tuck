@@ -595,3 +595,39 @@ proc handlerProcName*(handler: Decl): string =
   ## A handler is declared as `Registry.Event`, which is no backend's
   ## identifier — the dot becomes an underscore, as its declaration does.
   handler.name.replace(".", "_")
+
+proc memberReceiverVar(res: Resolution, m: Module, n: Expr): string =
+  ## The variable node `n` calls a member on — `a` in `a.sampleRate`, as the
+  ## call itself or as the checker resolved it — or "".
+  let c = if n.kind == exkCall: n else: res.call(n)
+  if c == nil or c.kind != exkCall or c.args.len == 0: return ""
+  let r = c.args[0]
+  if r == nil or r.kind != exkVar or memberCallee(res, m, c) == "": return ""
+  r.name
+
+proc paramsCalledAsReceiver*(res: Resolution, m: Module, fn: Decl): seq[string] =
+  ## The params of `fn` (never `self`) that a member call in its body takes
+  ## as the receiver. Every backend passes a member's `self` mutably — Nim
+  ## `var T`, Odin `^T`, D `ref T` — and a Nim or Odin parameter is neither
+  ## mutable nor addressable, so a member call on one did not compile
+  ## (found 2026-09-27). Such a param is shadowed by a mutable copy at the top
+  ## of the body: the value a D parameter already is, so a member writing
+  ## `self` writes the copy on every backend alike.
+  if fn == nil or fn.fnBody == nil: return
+  var names: seq[string]
+  for p in fn.fnParams:
+    if p.name != "self": names.add(p.name)
+  if names.len == 0: return
+  for n in nodes(fn.fnBody):
+    let r = memberReceiverVar(res, m, n)
+    if r in names and r notin result: result.add(r)
+
+proc leadingIndent*(body: string): string =
+  ## The indentation of `body`'s first non-blank line — where a line put in
+  ## front of an emitted body has to start.
+  for line in body.splitLines:
+    if line.strip.len == 0: continue
+    for ch in line:
+      if ch in {' ', '\t'}: result.add(ch)
+      else: return
+  ""

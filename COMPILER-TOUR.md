@@ -189,6 +189,21 @@ calls.
 That's a general lesson about compilers: a surprising amount of "language
 design" turns out to be *the order in which you try interpretations*.
 
+### Expanding interface-bounded generics
+
+`fn join[T: AudioSource]` cannot be handed to the backends as a generic:
+an object's members are emitted under per-object names, so `a.splice` on a
+bare `T` has nothing to call. The checker checks the generic body once,
+against the contract, and records what `T` is at each call.
+`compiler/iface_generics.nim` then clones the fn per object type
+(`join_Flac`), points each call at its clone, and `typecheckExpanding`
+checks the whole program again. It repeats until a round changes nothing,
+because a bounded fn calling another is only concrete in the outer fn's
+clone. Then it drops the originals. A program with no such fn is checked
+once. It is the one place the checker runs twice; generic actors, the other
+cloning pass, run before the checker because their instantiations are
+written out in the source.
+
 ### Effects
 
 `typecheck.nim` also tracks **effects** — markers like `[io]` on a function

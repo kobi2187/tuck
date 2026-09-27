@@ -2467,4 +2467,27 @@ fn main() -> int:
   t.quietly: t.hostRuns("an interface call passing a variable runs on every backend", 140)
   t.bugFixed "an interface call whose payload holds a variable builds on Odin"
 
+  # An object member called on a fn PARAMETER built only on D. Every backend
+  # passes a member's `self` mutably — Nim `var T`, Odin `^T`, D `ref T` —
+  # and a Nim parameter is immutable, an Odin one unaddressable: "type
+  # mismatch" and "Cannot take the pointer address of 'a'". Such a param is
+  # now shadowed by a mutable copy at the top of the body, the value a D
+  # parameter already is. Found and fixed 2026-09-27: every clone of an
+  # interface-bounded generic fn calls members on its parameters.
+  t.src """
+object Flac:
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+
+fn rate({a: Flac}) -> int:
+  return a.sampleRate
+
+fn main() -> int:
+  let x = Flac{bits: 24}
+  return ({a: x} rate) /i 1000
+"""
+  t.quietly: t.hostRuns("a member call on a parameter runs", 96)
+  t.bugFixed "a member called on a fn parameter builds, on all three"
+
   t.finish()

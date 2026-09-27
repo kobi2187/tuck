@@ -151,7 +151,12 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
   let oldIndent = ctx.indent
   ctx.enterReturnContext(d.fnReturnType)
   injectTailReturn(d.fnBody, retTypeStr)
-  let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
+  var bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
+  # A param a member call takes as `self: var T` is shadowed mutable first
+  # (codegen_common.paramsCalledAsReceiver).
+  let pad = leadingIndent(bodyStr)
+  for p in paramsCalledAsReceiver(ctx.res, ctx.module, d):
+    bodyStr = pad & "var " & p & " = " & p & "\n" & bodyStr
   ctx.indent = oldIndent
   ctx.leaveReturnContext()
   ctx.definedVars = oldVars

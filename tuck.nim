@@ -416,7 +416,7 @@ proc declaredResourceKinds(loaded: seq[LoadedModule]): seq[string] =
       for k in d.resKinds:
         if k.name notin result: result.add(k.name)
 
-proc typecheckOnly(path: string, loaded: seq[LoadedModule],
+proc typecheckOnly(path: string, loaded: var seq[LoadedModule],
                    sigOnly: Table[string, IndexEntry]): seq[string] =
   ## Just the typecheck half of the check pipeline. checkOrDie calls this
   ## once and continues with effects; `tuck dump --stage=typecheck` calls it
@@ -431,7 +431,10 @@ proc typecheckOnly(path: string, loaded: seq[LoadedModule],
   try:
     # Whole-program in one call (a call can name a decl in another module) —
     # no per-module hook to time individually.
-    result = typecheckProgram(mods, preSigs)
+    result = typecheckExpanding(mods, preSigs)
+    # Expansion of interface-bounded generics adds and drops declarations
+    # (iface_generics); `Module` is a value, so hand the lists back.
+    for i in 0 ..< loaded.len: loaded[i].m.decls = mods[i].m.decls
     vSubNote($mods.len & " module(s)")
   except SemanticError as err:
     dieSemanticError(path, err)
@@ -443,12 +446,18 @@ proc verifyEffectsAssertions(loaded: seq[LoadedModule]) =
   for lm in loaded: loadedMods.add(lm.m)
   assertAsyncEffectsConsistent(loadedMods)
 
-proc checkOrDie(path: string, loaded: seq[LoadedModule],
+proc checkOrDie(path: string, loaded: var seq[LoadedModule],
                 sigOnly: Table[string, IndexEntry],
                 verifyStages = false): seq[string] =
   ## Typecheck, then verify effects. Order matters: typecheckProgram resets
   ## the semantic layer, so the effect pass must run AFTER it or its async
   ## call-site marks are wiped before codegen reads them.
+  ##
+  ## Typecheck may run more than once, and may change `loaded`: a call to
+  ## an interface-bounded generic fn is pointed at a clone per object type
+  ## and the program checked again (iface_generics). So nothing may read
+  ## the semantic layer, or cache a module's decl list, between
+  ## typecheckOnly's entry and its return.
   ##
   ## Downstream of this, ONE BACKEND PER PROCESS. The passes `prepare` runs
   ## (copy marks, ownership, twin calls) keep their decisions in tables keyed

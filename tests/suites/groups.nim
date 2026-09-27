@@ -201,15 +201,17 @@ object Dog:
     return self.name
 
 fn announce[T: Speaker]({who: T}) -> str:
-  return {volume: 1} who.speak
+  return who.speak {volume: 1}
 
 fn main() -> int:
   let d = Dog {name: "Rex"}
   let s = {who: d} announce
   return s.len - 3
 """
-  t.badCheck "naming an interface as a generic bound fails, distinctly from a missing group",
-    "is an interface, not a group"
+  # Ruled 2026-09-27: an interface MAY bound a generic fn — T is one object
+  # satisfying it, fixed per call (`interfaces` has the full set). It was
+  # refused here with "is an interface, not a group".
+  t.hostRuns "an interface as a generic bound, on every backend", 0
 
   t.src """
 group Sortable:

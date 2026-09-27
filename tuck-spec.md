@@ -1363,6 +1363,26 @@ representation. An accepted generic instantiation monomorphizes exactly as
 an unconstrained one does; the bound only changes what the checker demands
 before emitting it, never what gets emitted.
 
+**An interface may bound a generic fn too** (ruled 2026-09-27). For
+objects, the compile-time "same type" guarantee a group gives plain types is
+written with the interface itself:
+
+```tuck
+fn join[T: AudioSource]({a: T, b: T}) -> int:
+  return a.splice {other: b, next: b}
+```
+
+`T` is ONE object type that satisfies `AudioSource`, fixed at each call:
+`{a: flac1, b: flac2} join` is legal, `{a: flac, b: mp3} join` is refused
+(T bound to both), and so is passing interface values, whose object type is
+known only at run time. The body is checked once against the contract; the
+receiver's letter of a `[A: Self]` member (§5.2) is T, so a same-type member
+refused through interface values is callable here. Each object type T is
+called with gets its own copy of the fn with T replaced, checked again as
+ordinary code — nothing is dispatched at run time. An interface bound
+stands alone on its parameter (not `[T: AudioSource + Hashable]`), and for
+now such a fn is callable only from the module that declares it.
+
 **Why not just extend `interface`/`satisfies` to `type`.** `satisfies`
 needs a bounded, enumerable member set to check against — an `object`'s own
 body gives it one; a plain `type` does not (its associated functions are

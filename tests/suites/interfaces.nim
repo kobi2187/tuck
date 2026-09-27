@@ -582,6 +582,110 @@ fn main() -> int:
 """
   t.hostRuns "`[B: Self]` off the receiver is callable through the interface", 68
 
+  # --- an interface as the bound of a generic fn (ruled 2026-09-27) ---------
+
+  # `fn join[T: AudioSource]({a: T, b: T})`: T is ONE object type satisfying
+  # the interface, fixed per call — so `a.splice {other: b}`, refused
+  # through interface values (TK-TY33), is fine here. Each object type gets
+  # its own clone of `join` (iface_generics).
+  const joinFn = """
+fn join[T: AudioSource]({a: T, b: T}) -> int:
+  return a.splice {other: b, next: b} + (a.sampleRate /i 1000)
+
+"""
+  const flacSrc = """
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+  fn splice({self: Flac, other: Flac, next: AudioSource}) -> int:
+    return self.bits + other.bits + (next.sampleRate /i 1000)
+
+"""
+  t.src spliceIface & flacSrc & joinFn & """
+fn main() -> int:
+  let x = Flac{bits: 24}
+  let y = Flac{bits: 16}
+  let m = Mp3{bitrate: 3}
+  let n = Mp3{bitrate: 5}
+  return ({a: x, b: y} join) + ({a: m, b: n} join)
+"""
+  t.okCheck "`fn join[T: AudioSource]` checks its body against the contract"
+  t.hostRuns "...and runs once per object type, on every backend", 72
+
+  t.src spliceIface & flacSrc & joinFn & """
+fn main() -> int:
+  let x = Flac{bits: 24}
+  let m = Mp3{bitrate: 3}
+  return {a: x, b: m} join
+"""
+  t.badCheck "two different object types for one T are refused",
+             "bound to both Flac and Mp3"
+
+  t.src spliceIface & joinFn & """
+fn both({s: AudioSource}) -> int:
+  return {a: s, b: s} join
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an interface value for T is refused: its object type is a run-time fact",
+             "an interface value's object type is known only at run time"
+
+  t.src spliceIface & joinFn & """
+object Wav:
+  rate: int
+
+fn main() -> int:
+  let w = Wav{rate: 1}
+  return {a: w, b: w} join
+"""
+  t.badCheck "an object not satisfying the interface is refused",
+             "object 'Wav' does not declare `satisfies AudioSource`"
+
+  t.src spliceIface & """
+fn loud[T: AudioSource]({a: T}) -> int:
+  return a.volume
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "the body reaches only what the contract declares",
+             "'T' is bounded by interface AudioSource, which declares no 'volume'"
+
+  t.src spliceIface & """
+fn join[T: AudioSource]({a: T, b: T}) -> int:
+  return a.splice {other: 5, next: b}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "the receiver's letter holds its argument to the same T",
+             "'other' of 'splice' must be the receiver's own type T, but got int"
+
+  # One bounded fn calling another: the inner call binds T to the outer
+  # fn's own T, and is expanded from the outer fn's clone.
+  t.src spliceIface & flacSrc & """
+fn rateOf[T: AudioSource]({a: T}) -> int:
+  return a.sampleRate /i 1000
+
+fn join[T: AudioSource]({a: T, b: T}) -> int:
+  return a.splice {other: b, next: b} + ({a: a} rateOf)
+
+fn main() -> int:
+  let x = Flac{bits: 24}
+  let y = Flac{bits: 16}
+  return {a: x, b: y} join
+"""
+  t.hostRuns "a bounded fn calling another, on every backend", 232
+
+  t.src spliceIface & joinFn & """
+fn main() -> int:
+  return 7
+"""
+  t.hostRuns "a bounded fn nothing calls is not emitted, and the program builds", 7
+
   # --- renaming a contract member: `satisfies I {old -> new}` ---------------
 
   # Two interfaces that each require a `noise`, with different return types:

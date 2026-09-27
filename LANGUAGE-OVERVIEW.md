@@ -370,6 +370,12 @@ Inference flows through calls and construction: `{value: 5} Box` infers the
 instantiation (`tests/suites/typecheck.nim`); `{} Box` → `cannot infer` (`:1372`). A
 binding conflict — `{a: 1, b: "s"} pair` — errors naming `'T'` (`:1327`).
 
+A bound is a `group` (§5.5 of the spec) or, since 2026-09-27, an
+**interface**: `fn join[T: AudioSource]({a: T, b: T})` takes two values of
+ONE object type satisfying `AudioSource`. Each object type it is called with
+gets its own copy of `join`, checked again as plain code; a Flac and an Mp3
+together, or an interface value, are refused (`tests/suites/interfaces.nim`).
+
 > **Attribute words are reserved words** (`error`, `stack`, `align`,
 > `priority`, `volatile`, `io`, and the rest of the lexer's attribute list).
 > Ruled 2026-09-27: one may name a FIELD, which is only ever read through `.`

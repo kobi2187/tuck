@@ -258,9 +258,9 @@ RULED 2026-09-27, and implemented:
   object running; `-> Self` may return the object's own type. Fixed A21.
   A22 (Odin dispatch could not capture) fixed with it.
   Member type params `fn splice[A: Self, B: Self]` built (compile-time
-  only; TK-TY33 through an interface value). Still to build from the same
-  ruling: an interface as a free generic fn's bound
-  `fn join[T: AudioSource]`.
+  only; TK-TY33 through an interface value), and an interface as a generic
+  fn's bound, `fn join[T: AudioSource]` (one clone per object type,
+  `iface_generics`). Not yet: calling such a fn from another module.
 
 ### Deferred — completely missing, not scheduled
 

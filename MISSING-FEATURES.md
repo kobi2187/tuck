@@ -247,6 +247,14 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **An object member called on a fn parameter builds on Nim and Odin.**
+  Every backend passes a member's `self` mutably (Nim `var T`, Odin `^T`,
+  D `ref T`); a Nim parameter is immutable and an Odin one unaddressable, so
+  `fn rate({a: Flac}) = a.sampleRate` built only on D. Such a parameter is
+  now shadowed by a mutable copy at the top of the body — the value a D
+  parameter already is (2026-09-27). `known_bugs` "a member called on a fn
+  parameter builds, on all three".
+
 - **A22 — on Odin, an interface call whose payload holds a variable
   builds.** Odin's dispatch is an immediately-called proc literal, which
   cannot capture; every argument past the receiver is now a parameter of

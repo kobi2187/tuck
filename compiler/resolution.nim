@@ -66,6 +66,12 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    ifaceInstances*: Table[NodeId, seq[Type]]
+                    ## A call to a fn with a type param bounded by an
+                    ## INTERFACE (`fn join[T: AudioSource]`): what each of the
+                    ## callee's type params is at this call, in declaration
+                    ## order, nil where unbound. iface_generics clones the
+                    ## callee once per object type from it.
     callTypeArgs*: Table[NodeId, seq[Type]]
                     ## The concrete types a generic call resolved its callee's
                     ## type params to, in the callee's declaration order. Only
