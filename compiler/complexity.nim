@@ -155,102 +155,42 @@ proc walkSelect(m: var Metrics, e: Expr) =
 proc walk(m: var Metrics, e: Expr) =
   ## Adds `e`'s branch points to `m` and widens its line extent. Forks are
   ## `if`, loops, match guards (none parse yet) and short-circuit `and`/`or`;
-  ## everything else only recurses into its operands.
+  ## everything else only recurses into its operands, via `ast.children`.
   if e == nil: return
   m.note(e.span)
   case e.kind
-  of exkIf:
+  of exkIf, exkWhile, exkFor:
     # `if` forks; a bare `else` does not (it is the path already counted).
     m.complexity += 1
-    walk(m, e.cond)
-    walk(m, e.thenBranch)
-    walk(m, e.elseBranch)
-  of exkWhile:
-    m.complexity += 1
-    walk(m, e.whileCond)
-    walk(m, e.whileBody)
-  of exkFor:
-    m.complexity += 1
-    walk(m, e.iterable)
-    walk(m, e.body)
-  of exkMatch: walkMatch(m, e)
-  of exkSelect: walkSelect(m, e)
   of exkBinary:
     # Short-circuit operators fork: `a and b` may or may not evaluate b.
-    # Arithmetic and comparison do not.
+    # Arithmetic, comparison and `xor` (which evaluates both) do not.
     if e.binOp in {boAnd, boOr}: m.complexity += 1
-    walk(m, e.left)
-    walk(m, e.right)
-  of exkUnary:
-    walk(m, e.operand)
-  of exkBlock:
-    for s in e.stmts: walk(m, s)
-  of exkCall:
-    walk(m, e.callee)
-    for a in e.args: walk(m, a)
-  of exkCombinator:
-    # A rewrite, not a branch: no fork to count, just the operands.
-    walk(m, e.combRecv)
-    walk(m, e.combArg)
+  of exkMatch:
+    walkMatch(m, e)
+    return
+  of exkSelect:
+    walkSelect(m, e)
+    return
   of exkChain:
-    walk(m, e.base)
-    for step in e.steps:
-      m.note(step.span)
-      walk(m, step.target)
-      walk(m, step.arg)
-  of exkStruct:
-    for f in e.fields: walk(m, f.value)
-  of exkList:
-    for item in e.items: walk(m, item)
-  of exkBracket:
-    walk(m, e.brReceiver)
-    for a in e.brArgs: walk(m, a)
-  of exkBracketAssign:
-    walk(m, e.brTarget)
-    walk(m, e.brValue)
-  of exkAssign:
-    walk(m, e.target)
-    walk(m, e.assignVal)
-  of exkField:
-    walk(m, e.receiver)
-    walk(m, e.dotArg)
-  of exkReturn:
-    walk(m, e.returnVal)
-  of exkRaise:
-    walk(m, e.raiseVal)
-  of exkDiscard:
-    walk(m, e.discardVal)
-  of exkTripleDot:
+    # A step's own line counts toward the extent; its operands walk below.
+    for step in e.steps: m.note(step.span)
+  # Not forks. Named rather than left to `else` so a new kind must decide.
+  # Among them: a combinator is a rewrite, not a branch; `acquire`'s
+  # absence-on-full is a VALUE the caller matches on, and that match is
+  # where the branch counts; a `finish` happens or the program has already
+  # left by a path this block also covers; a `defer` body runs at EVERY exit
+  # from its scope, so counting it would charge the same branch twice. Their
+  # operands and bodies still walk — the statements inside fork like any
+  # others.
+  of exkUnary, exkBlock, exkCall, exkCombinator, exkStruct, exkList,
+     exkBracket, exkBracketAssign, exkAssign, exkField, exkReturn, exkRaise,
+     exkDiscard, exkTripleDot, exkSend, exkAcquire, exkFinish, exkDefer,
+     exkOrdinal, exkValidate, exkIfaceCall, exkPoolOp, exkLit, exkVar,
+     exkQualified, exkBreak, exkContinue, exkImport, exkActorRef,
+     exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     discard
-  of exkSend:
-    walk(m, e.sendPayload)
-  of exkAcquire:
-    # Not a fork either: absence-on-full is a VALUE the caller matches on,
-    # and that match is where the branch gets counted.
-    walk(m, e.acquireRef)
-  of exkFinish:
-    # Not a fork: a release happens or the program has already left by another
-    # path that this same block also covers. The handle expression still walks.
-    walk(m, e.finishHandle)
-  of exkDefer:
-    # Not a fork. A defer block runs at EVERY exit from its scope, so it adds
-    # no path the exits themselves did not already contribute — counting it
-    # would charge the same branch twice. Its body still walks: the statements
-    # inside it fork like any others.
-    walk(m, e.deferBody)
-  of exkOrdinal:
-    walk(m, e.ordinalOf)
-  of exkValidate:
-    walk(m, e.validated)
-  of exkIfaceCall:
-    walk(m, e.dispatchRecv)
-    for arm in e.dispatchArms: walk(m, arm.call)
-  of exkPoolOp:
-    walk(m, e.poolHandle)
-    walk(m, e.poolValue)
-  of exkLit, exkVar, exkQualified, exkBreak, exkContinue, exkImport,
-     exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
-    discard
+  for c in e.children: walk(m, c)
 
 proc measure(body: Expr): tuple[complexity, lines: int] =
   ## McCabe starts at 1: a body with no forks still has one path through it.
