@@ -78,6 +78,30 @@ fn main() -> int:
 """
   t.badCheck "an infix 'mod' carries TK-PA11 and names '%'", "TK-PA11"
 
+  # TK-PA16 — `and`, `or` and `xor` do not rank against each other (ruled
+  # 2026-09-27), so mixing two of them needs parentheses. Before the ruling
+  # they shared one level and grouped to the right: `a and b or c` meant
+  # `a and (b or c)`, the opposite of C, Python and Nim for a = false.
+  for mixed in ["a and b or c", "a or b and c", "a xor b and c",
+                "a and b xor c", "a == b and c or a"]:
+    t.src "fn f({a: bool, b: bool, c: bool}) -> bool:\n  return " & mixed & "\n"
+    t.badCheck "`" & mixed & "` is refused with TK-PA16", "TK-PA16"
+  for grouped in ["(a and b) or c", "a and (b or c)", "(a or b) and (b or c)",
+                  "a and b and c", "a or b or c", "a xor b xor c",
+                  "a == b and c"]:
+    t.src "fn f({a: bool, b: bool, c: bool}) -> bool:\n  return " & grouped & "\n"
+    t.okCheck "`" & grouped & "` is accepted"
+  t.src """
+fn f({a: bool, b: bool, c: bool}) -> bool:
+  return (a and b) or c
+
+fn main() -> int:
+  if {a: false, b: true, c: true} f:
+    return 1
+  return 0
+"""
+  t.hostRuns "`(a and b) or c` is true for false/true/true on every backend", 1
+
   # TK-PA12 — a parameter named after a BACKEND's keyword. Every other user
   # name gets a `tuck_` prefix; a parameter keeps what the author wrote, so
   # the word reaches that host verbatim. alloc.string found it: `with` gave

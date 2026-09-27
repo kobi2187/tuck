@@ -72,6 +72,8 @@ type
                                           ## name resolution — see TK-TY23)
     dcPaOnOutsideActor = "TK-PA15"      ## `on msg(...)` / `on select:` at a
                                           ## module's top level, outside an actor
+    dcPaMixedBoolOps = "TK-PA16"        ## `and`/`or`/`xor` mixed without
+                                          ## parentheses
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -455,6 +457,15 @@ proc parseExplanation(d: DiagCode): string =
     "called. The one handler that does live at the top level is a " &
     "registry event's, and it names the registry: " &
     "`on Registry.Event({payload}):`."
+  of dcPaMixedBoolOps:
+    "`and`, `or` and `xor` have no precedence over one another in Tuck, so " &
+    "an expression that mixes two of them must say how it groups. " &
+    "`a and b or c` is refused; write `(a and b) or c` or `a and (b or c)`. " &
+    "(Ruled 2026-09-27. Before the ruling the three shared one level and " &
+    "grouped to the right, so `a and b or c` meant `a and (b or c)` — false " &
+    "for a = false, b = true, c = true, where C, Python and Nim give true.) " &
+    "One operator repeated needs no parentheses: `a and b and c`, " &
+    "`a or b or c`."
   of dcPaNoWhile:
     "Tuck has no `while` keyword — `while` is an ordinary, unreserved " &
     "identifier, so `while cond:` parses `while` as a bare name and then " &

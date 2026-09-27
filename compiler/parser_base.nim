@@ -4,6 +4,7 @@
 # cursor) and the token-stream accessors every parsing bucket needs. The
 # expression, type, and declaration parsers each import this; it holds no
 # grammar of its own.
+import std/sets
 import ../lexer
 import ast
 import diagnostics
@@ -18,6 +19,10 @@ type
     source*: string
     tokens*: seq[Token]
     cursor*: int
+    grouped*: HashSet[pointer]
+      ## Expressions written inside parentheses. `(e)` parses to `e` itself,
+      ## so this is the only record that the parentheses were there; the
+      ## `and`/`or`/`xor` mixing rule (TK-PA16) reads it.
 
 proc current*(p: Parser): Token =
   ## The token under the cursor, or a synthetic EOF positioned at the last

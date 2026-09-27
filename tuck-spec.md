@@ -498,6 +498,10 @@ fn add({a: int, b: int}) -> {result: int}:
 
 Precedence (high to low): `* / %` → `+ -` → `>= <= != > < ==` → `and or xor`
 
+`and`, `or` and `xor` share the lowest level and do not rank against each
+other: an expression that mixes two of them must parenthesise, as in
+`(a and b) or c` (`TK-PA16`). The same operator repeated needs no parentheses.
+
 ### 3.4 Higher-Order Functions via Struct Fields
 
 Passing a function is just passing a struct with a function reference field:

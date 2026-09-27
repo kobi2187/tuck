@@ -5,12 +5,13 @@
 # This recursion is real cohesion, so it lives in one module. Depends only on
 # parser_base (Parser state + token accessors) — it calls neither parseType nor
 # parseDecl, which is what lets it sit at the bottom of the parser DAG.
-import tables
+import tables, sets
 import ast
 import ast_ops
 import ../lexer
 import parser_base
 import diagnostics
+from parser_stringify import opStr
 
 # internal mutual recursion within the expression grammar
 proc parseExpr*(p: var Parser): Expr
@@ -305,6 +306,7 @@ proc parsePrimaryExpr(p: var Parser): Expr =
     discard p.advance()
     let inner = p.parseExpr()
     discard p.expect(tkRParen)
+    p.grouped.incl(cast[pointer](inner))
     return inner
   else:
     p.reportError("Expected an expression here, found " & describe(curr))
@@ -635,6 +637,22 @@ const OpPrecedences = {
   ## BinOp it builds. A const: it used to be rebuilt as a fresh Table on every
   ## binary expression parsed.
 
+const BoolOps = {boAnd, boOr, boXor}
+  ## The boolean operators, which share one precedence level (TK-PA16).
+
+proc failIfMixedBoolOps(p: var Parser, op: BinOp, operand: Expr) =
+  ## `and`, `or` and `xor` do not rank against each other, so an operand of
+  ## one that is ANOTHER of them, written without parentheses, is refused.
+  ## The same operator repeated (`a and b and c`) groups either way and is
+  ## fine.
+  if operand == nil or operand.kind != exkBinary: return
+  if operand.binOp notin BoolOps or operand.binOp == op: return
+  if cast[pointer](operand) in p.grouped: return
+  p.reportError("`" & opStr(op) & "` and `" & opStr(operand.binOp) &
+                "` are mixed without parentheses — write which pairs first, " &
+                "e.g. `(a and b) or c` or `a and (b or c)`",
+                operand.span.line, operand.span.col, dc = dcPaMixedBoolOps)
+
 proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
   ## Precedence climbing over the binary operators: arithmetic binds tightest,
   ## then comparisons, then `and`/`or`/`xor`, then ranges. Operands are chain
@@ -659,6 +677,9 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
       if prec >= minPrecedence:
         discard p.advance()
         let right = if currKind in {tkAnd, tkOr, tkXor}: p.parseExpr() else: p.parseBinaryExpr(prec + 1)
+        if op in BoolOps:
+          p.failIfMixedBoolOps(op, left)
+          p.failIfMixedBoolOps(op, right)
         left = Expr(span: left.span, kind: exkBinary, binOp: op, left: left, right: right)
       else:
         break

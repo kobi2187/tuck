@@ -45,6 +45,7 @@ auditing this compiler, who read a payload binding as a checker bug and nearly
 | 12 | Concurrency targets microcontrollers | **Hosted OS today** — stackful minicoro coroutines over `mmap`, epoll/kqueue reactor. Tier 3, not Tier 1. | §10 |
 | 13 | A line break inside brackets is a parse error | **Lines wrap, two ways.** Inside `(`/`{`/`[` indentation is not structure, so a wrapped payload may align under its opening brace, and a line break there reads as a comma — the last comma on a line is optional. Separately, a line ending in a **binary operator, comma or `=`** continues, inside brackets or not, because it cannot have ended. A trailing `:` still opens a block and `...` still ends its line. Ruled 2026-09-15, reversing the earlier ceiling. | §0 |
 | 14 | `t + if hot: 1 else: 2` works, since `if` is an expression | **A value-`if` is a whole right-hand side, never an operand.** `let add = if hot: 1 else: 2` then use `add`. Also a ruled ceiling. | §0, and `examples/39` for the forms that DO work |
+| 15 | `a and b or c` means `(a and b) or c` | **Refused (`TK-PA16`).** `and`, `or` and `xor` do not rank against each other, so mixing two of them needs parentheses: `(a and b) or c`. One operator repeated (`a and b and c`) needs none. Ruled 2026-09-27. | `tests/suites/diagnostics.nim` |
 
 **If something here looks like a bug:** read the cited section first, then
 `grep` for a suite named after it (`tests/suites/auto_alias.nim` exists
