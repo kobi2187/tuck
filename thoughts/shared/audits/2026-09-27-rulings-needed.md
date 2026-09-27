@@ -66,6 +66,9 @@ file in the corpus mixes these operators without parentheses today.
 **Recommend (b).** It can't silently change what anyone's code means, and it
 costs one diagnostic.
 
+> **RULED 2026-09-27: (b), parentheses required.** Implemented as TK-PA16
+> (`beca83a`).
+
 ### R2 — is a `?T` in a boolean position a presence test?
 Spec §7.2 and ROADMAP say yes: "a `?T` in a boolean position reads as *is
 present*", and pool `acquire` is "handled with an ordinary `if`". The compiler
@@ -78,6 +81,10 @@ disagrees with itself. `if a and b:` is accepted (and since today builds, as
 
 **Recommend (a).** The spec already states it. The extra work is that `if a:`
 must narrow `a.value` the way `if a.ok:` does.
+
+> **RULED 2026-09-27: (b).** A `T?` is not a boolean; presence is written
+> `if a.ok and b.ok:`. The bare operand is refused, and the lowering that
+> turned it into `.ok` is gone (`68fd627`).
 
 ### R3 — a one-line `if c: s1 else: s2` with statement branches
 R2 makes any `if` with two non-block branches a value-if, by syntax alone. When
@@ -113,6 +120,13 @@ note: the A1 test program declares a field `priority` and a fn `priority`
 side by side. The fields-and-fns namespace rule rejects that pair, so the test
 could never pass as written.
 
+> **RULED 2026-09-27: (a), reject reserved words.** An attribute word is
+> refused with TK-PA08 as a parameter (a decision column included), local,
+> fn, member, handler or `pending:`/`extern:` signature name; a field may
+> still use one (`d168477`). This reverses FRICTIONS #5b (`fn error` in a
+> `pending:` block), and renamed the `priority` decision column to
+> `urgency` in examples 09/21 and in the docs that show the same example.
+
 ### R5 — #5: what omitting `->` means
 Returning a value from such a fn is now refused (TK-TY32), so the only
 question left is the meaning of the omission.
@@ -121,6 +135,10 @@ question left is the meaning of the omission.
 
 **Recommend (a).** Effect-only procedures (`fn log({s: str}) [io]:`) read
 naturally, and all three backends allow it.
+
+> **RULED 2026-09-27: (a), it means `void`.** It already built as void on all
+> three backends; a call to such a fn now answers `void` (was `unit`), the
+> same type `-> void` gives. Pinned in `known_bugs`.
 
 ### R6 — #7: full-mailbox policy (today: silently drops)
 - (a) Block the sender (backpressure). In single mode the sender yields.

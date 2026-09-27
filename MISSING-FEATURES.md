@@ -81,8 +81,9 @@ A2 (a fn with no declared return type accepted `return x`, and `tuck c`
 wrote `proc tuck_f*(x: int): void = return x`, which nim refuses) was fixed
 2026-09-27 without the ruling it was waiting on: returning a value from such a
 body is wrong whether omitting `->` comes to mean `void` or becomes an error,
-so it is TK-TY32 now. What omitting `->` MEANS is still open (issue #5, ROADMAP
-S6). Test: `known_bugs`, "a value returned from a fn with no return type is
+so it is TK-TY32 now. What omitting `->` means was RULED the same day
+(issue #5): exactly `-> void`; a call to such a fn now answers `void` rather
+than `unit`. Test: `known_bugs`, "a value returned from a fn with no return type is
 rejected" (now `bugFixed`).
 
 A3 (a `[read]` register field could be written — with `=`, while the `..`

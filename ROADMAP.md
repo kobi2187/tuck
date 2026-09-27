@@ -240,9 +240,18 @@ diff, so that diff is reviewable as "renames only".
 
 ### S6 — Rulings (your decision; the code is small)
 
-**#4** attribute names outside brackets · **#5** a fn with no `->` ·
-**#6** none needed, spec §8.1 already says · **#84** an initialisation barrier
-between two senders · **#7** full-mailbox policy.
+Open: **#84** an initialisation barrier between two senders · **#7**
+full-mailbox policy · the rest of
+`thoughts/shared/audits/2026-09-27-rulings-needed.md` (R3, R6–R12).
+
+RULED 2026-09-27, and implemented:
+- **#4** attribute words are reserved words — refused as any name read bare
+  (parameter, decision column, local, fn, member, handler) with TK-PA08; a
+  field may still use one.
+- **#5** omitting `->` means exactly `-> void`.
+- **R1** `and`/`or`/`xor` mixed without parentheses is TK-PA16.
+- **R2** a `T?` is not a boolean: presence is `.ok` (`if a.ok and b.ok:`).
+- **#6** none needed, spec §8.1 already says (and A3 is fixed).
 
 ### Deferred — completely missing, not scheduled
 

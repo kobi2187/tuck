@@ -976,6 +976,29 @@ fn main() -> int:
   t.quietly: t.badCheck "a value returned from a fn with no return type is rejected", "return"
   t.bugFixed "a value returned from a fn with no return type is rejected"
 
+  # #5 RULED 2026-09-27: omitting `->` means `-> void`. The body is
+  # statements, a call to it is a statement, and its result — type `void`,
+  # the same type `-> void` gives (it answered `unit` before the ruling) —
+  # is not a value anything can use.
+  t.src """
+fn bump({n: int}):
+  let m = n + 1
+
+fn main() -> int:
+  {n: 1} bump
+  return 3
+"""
+  t.hostRuns "a fn with no `->` is a void fn, on every backend", 3
+  t.src """
+fn bump({n: int}):
+  let m = n + 1
+
+fn main() -> int:
+  let x = {n: 1} bump
+  return x
+"""
+  t.badCheck "...and its call answers `void`, exactly as `-> void` does", "got void"
+
   # 14. Register access permissions are enforced in one direction only.
   # FIXED 2026-09-27 (#6): an assignment target is held to the write rule.
   # Reading a `[write]` field is TK-RE02, as tuck-spec 8.1 says; WRITING a

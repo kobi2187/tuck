@@ -33,10 +33,10 @@ let response = request fetch parse episodes
 
 ## 3. Function signatures
 
-Declare the return type. It is the idiom everywhere in this repo, and it is
-what makes a `!T` or `?T` result visible at the call site. (The compiler does
-not currently insist — a fn with no `->` is accepted, which is
-MISSING-FEATURES A2, not a style you should copy.)
+Declare the return type when there is one. It is what makes a `T!` or `T?`
+result visible at the call site. A fn with no `->` returns nothing: omitting
+it means exactly `-> void` (ruled 2026-09-27), and `return value` in such a
+body is refused (TK-TY32).
 
 ```tuck
 fn classify({celsius: f32}) -> {state: ThermalState}:

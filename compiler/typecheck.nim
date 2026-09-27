@@ -2832,11 +2832,11 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
          e.span.line, e.span.col)
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(calleeName, sig, e, bindings)
-  # A fn with no `->` declares no return type; its body is statements, so a
-  # call to it yields unit. Without this the resolved call answers nil and
-  # falls into synthCall's undeclared-callee error — the callee IS declared,
-  # only its result type is absent.
-  let ret = if sig.ret == nil: Type(span: e.span, kind: tkNamed, name: "unit")
+  # A fn with no `->` returns `void` — exactly as if it said `-> void` (ruled
+  # 2026-09-27, #5). Without this the resolved call answers nil and falls
+  # into synthCall's undeclared-callee error — the callee IS declared, only
+  # its result type is omitted.
+  let ret = if sig.ret == nil: Type(span: e.span, kind: tkNamed, name: "void")
             else: sig.ret
   if sig.generics.len == 0: return ret
   tc.recordCallTypeArgs(sig, bindings, e)
