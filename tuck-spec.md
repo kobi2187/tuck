@@ -1130,8 +1130,8 @@ nesting.
 
 ```tuck
 interface Storable:
-  fn save({dest: Path}) -> !void [io]
-  fn load({src: Path}) -> !Self [io]
+  fn save({self: Self, dest: Path}) -> !void [io]
+  fn load({self: Self, src: Path}) -> !void [io]
 ```
 
 An object declares conformance with a `satisfies` line at the top of its body,
@@ -1144,9 +1144,9 @@ object Document:
   path: Path
   + Timestamped
 
-  fn save({dest: Path}) -> !void [io]:
+  fn save({self: Document, dest: Path}) -> !void [io]:
     ...
-  fn load({src: Path}) -> !Self [io]:
+  fn load({self: Document, src: Path}) -> !void [io]:
     ...
 ```
 
@@ -1158,8 +1158,14 @@ Conformance is checked at compile time. The rules:
 - **Effects may be a subset.** An implementation may do *less* than the contract
   permits — a pure `save` satisfies an `[io] save` — never more. This is the
   same direction as the caller/callee effect budget (Part 4).
-- **`Self` means the implementing type.** In a required signature `-> !Self`
-  reads as `-> !Document` for `Document`.
+- **`Self` means the interface, except in the receiver.** In `{self: Self}`
+  it is the object running; anywhere else it is the interface — any
+  satisfier — because a caller holding only an interface value may pass any
+  (ruled 2026-09-27). So `fn crossfade({self: Self, next: Self})` is
+  implemented as `{self: Mp3, next: AudioSource}`, and an MP3 crossfades
+  into a FLAC. A return of exactly `Self` may be implemented as the
+  interface or as the object's own type; called through an interface value,
+  the result is the interface either way.
 
 A missing or mismatched member is a compile error naming both signatures.
 

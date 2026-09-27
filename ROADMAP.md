@@ -252,6 +252,13 @@ RULED 2026-09-27, and implemented:
 - **R1** `and`/`or`/`xor` mixed without parentheses is TK-PA16.
 - **R2** a `T?` is not a boolean: presence is `.ok` (`if a.ok and b.ok:`).
 - **#6** none needed, spec §8.1 already says (and A3 is fixed).
+- **One rename spelling** `old -> new`: `alias(...)`, `satisfies I {...}`,
+  `+ Name {...}`; a colon is TK-PA17, a rename of nothing TK-CO04.
+- **R13** `Self` in an interface is the interface; the receiver is the
+  object running; `-> Self` may return the object's own type. Fixed A21.
+  Still to build from the same ruling: A22 (Odin dispatch cannot capture),
+  member type params `fn splice[A: Self, B: Self]` (compile-time only), an
+  interface as a free generic fn's bound `fn join[T: AudioSource]`.
 
 ### Deferred — completely missing, not scheduled
 

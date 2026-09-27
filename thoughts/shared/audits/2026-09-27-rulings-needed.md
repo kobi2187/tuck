@@ -236,6 +236,14 @@ For `other: Self`:
 - (C) Refuse a non-receiver `Self` parameter in an interface, pointing to
   `group`.
 
+> **RULED 2026-09-27: (B).** `Self` in an interface is the interface; the
+> receiver is the object running. Same-concrete-type contracts are written
+> with type parameters on the member (`fn splice[A: Self, B: Self]`),
+> compile-time only; an interface may bound a free generic fn
+> (`fn join[T: AudioSource]`). Two interfaces requiring one member name are
+> satisfied with `satisfies I {old -> new}` (`73a8a7b`). Conformance and the
+> dispatch wrap: this commit, which also fixes A21.
+
 **Recommend (B).** It follows the textual rule (`Self` is the declaration
 containing it), cannot fail at run time, and leaves same-type binary
 operations to groups, which already give that guarantee.

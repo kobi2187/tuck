@@ -639,9 +639,12 @@ proc genInterfaceWrap(ctx: var OdinCodegenCtx, e: Expr,
   ## A concrete object entering an interface slot is COPIED into the variant
   ## (spec §5.3). Mirrors the Nim backend: the value owns its data, so it can
   ## be returned or stored with no lifetime question — nothing borrows.
+  ## A variable, or a call — an interface dispatch arm whose member returns
+  ## its own object type where the call's type is the interface.
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
+  let inner = if e.kind == exkCall: ctx.genOdinCall(e) else: e.name
   ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
-    objName & "Val = " & e.name & "}"
+    objName & "Val = " & inner & "}"
 
 proc genLit(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A literal in Odin syntax. A number in an inferred position spells the
@@ -1367,7 +1370,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
   let w = ctx.res.wrapOf(e)
-  if w.objName != "" and e.kind == exkVar:
+  if w.objName != "" and e.kind in {exkVar, exkCall}:
     return ctx.genInterfaceWrap(e, w)
   case e.kind
   of exkLit: ctx.genLit(e)

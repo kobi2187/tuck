@@ -528,9 +528,12 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
   ## A concrete object entering an interface slot is COPIED into the variant
   ## (spec 5.3) — verified: mutating the original afterwards leaves the
   ## wrapped value alone.
+  ## A variable, or a call — an interface dispatch arm whose member returns
+  ## its own object type where the call's type is the interface.
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
+  let inner = if e.kind == exkCall: ctx.genDCall(e) else: e.name
   ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
-    ", " & objName & "Val: " & e.name & ")"
+    ", " & objName & "Val: " & inner & ")"
 
 proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by `ref`.
@@ -1294,7 +1297,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   # A concrete value entering an interface slot is copied into the variant
   # at THIS site — the checker marked it (spec 5.3).
   let w = ctx.res.wrapOf(e)
-  if w.objName != "" and e.kind == exkVar:
+  if w.objName != "" and e.kind in {exkVar, exkCall}:
     return ctx.genDInterfaceWrap(e, w)
   # A fn used as a VALUE needs `&` in D, whichever way it was written —
   # checked here, where exkVar and exkQualified both pass through.

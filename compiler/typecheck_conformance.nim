@@ -49,7 +49,7 @@ proc sameType(a, b: Type): bool =
   else: typeName(a) == typeName(b)
 
 proc substSelf(t: Type, objName: string): Type =
-  ## `Self` in a required signature means the implementing type.
+  ## `t` with every `Self` in it read as `objName`.
   if t == nil: return nil
   if t.kind == tkNamed and t.name == "Self":
     return Type(span: t.span, kind: tkNamed, name: objName)
@@ -77,6 +77,17 @@ proc failConformance(objName, iname: string, want, got: Decl, why: string) =
        iname & "'\n  contract   " & sigText(want) &
        "\n  implements " & sigText(got) & "\n  " & why, got.span)
 
+proc contractParamType(w: Param, objName, iname: string): Type =
+  ## What a contract param's type asks of an implementation (R13, ruled
+  ## 2026-09-27): in the receiver `self`, `Self` is the object running;
+  ## everywhere else `Self` is the INTERFACE — any satisfier, since a caller
+  ## holding only an interface value can pass any.
+  substSelf(w.typ, if w.name == "self": objName else: iname)
+
+proc isBareSelf(t: Type): bool =
+  ## Is `t` exactly `Self` — not `Seq[Self]`, not `!Self`?
+  t != nil and t.kind == tkNamed and t.name == "Self"
+
 proc checkParamMatch(want, got: Decl, objName, iname: string) =
   ## Parameters match by count, by NAME, and by type. The name is part of the
   ## contract because payload fields bind by name.
@@ -92,10 +103,15 @@ proc checkParamMatch(want, got: Decl, objName, iname: string) =
         "parameter " & $(i + 1) & " is named '" & g.name &
         "', the contract calls it '" & w.name &
         "' (payload fields bind by name, so the name is part of the contract)")
-    if not sameType(substSelf(w.typ, objName), g.typ):
+    let wt = contractParamType(w, objName, iname)
+    if not sameType(wt, g.typ):
       failConformance(objName, iname, want, got,
         "parameter '" & w.name & "' is " & typeName(g.typ) &
-        ", the contract declares " & typeName(substSelf(w.typ, objName)))
+        ", the contract declares " & typeName(wt) &
+        (if isBareSelf(w.typ) and w.name != "self":
+           " (`Self` outside the receiver means the interface: any " &
+           "satisfier may be passed)"
+         else: ""))
 
 proc checkEffectSubset(want, got: Decl, objName, iname: string) =
   ## Effects may be a SUBSET: an implementation may do less than the contract
@@ -109,11 +125,17 @@ proc checkEffectSubset(want, got: Decl, objName, iname: string) =
 
 proc checkSigMatch(want, got: Decl, objName, iname: string) =
   ## One required signature against the member that implements it.
+  ## A return of exactly `Self` is the interface, and the object's own type
+  ## is accepted too (covariant): dispatch wraps it back into the interface.
   checkParamMatch(want, got, objName, iname)
-  if not sameType(substSelf(want.fnReturnType, objName), got.fnReturnType):
+  let asIface = substSelf(want.fnReturnType, iname)
+  let covariant = isBareSelf(want.fnReturnType) and
+                  sameType(substSelf(want.fnReturnType, objName), got.fnReturnType)
+  if not covariant and not sameType(asIface, got.fnReturnType):
     failConformance(objName, iname, want, got,
       "returns " & typeName(got.fnReturnType) & ", the contract declares " &
-      typeName(substSelf(want.fnReturnType, objName)))
+      typeName(asIface) &
+      (if isBareSelf(want.fnReturnType): " or " & objName else: ""))
   checkEffectSubset(want, got, objName, iname)
 
 proc whyNotAnObject(m: Module, name: string): string =

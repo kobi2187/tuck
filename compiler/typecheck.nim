@@ -619,27 +619,41 @@ proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   nil
 
 proc substituteSelf(pt: Type, selfT: Type): Type =
-  ## `Self` in a contract member's signature means the interface value
-  ## itself here — the callee only ever sees the contract, not the
-  ## concrete type behind it.
-  if pt != nil and pt.kind == tkNamed and pt.name == "Self": selfT else: pt
+  ## `Self` in a contract member's signature means the interface (R13, ruled
+  ## 2026-09-27) — at any depth, so `Seq[Self]` is a `Seq` of the interface.
+  if pt == nil: return nil
+  case pt.kind
+  of tkNamed:
+    if pt.name == "Self": selfT else: pt
+  of tkApp:
+    var args: seq[Type]
+    for a in pt.args: args.add(substituteSelf(a, selfT))
+    Type(span: pt.span, kind: tkApp, base: substituteSelf(pt.base, selfT),
+         args: args)
+  else: pt
 
 proc bindIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type, mem: Decl): Type =
-  ## One contract member matched `e.fieldName`: substitute `Self`, record
-  ## the call shape for lowering, and answer with the substituted return
-  ## type.
+  ## One contract member matched `e.fieldName`: read `Self` as the interface,
+  ## bind the payload to the params past the receiver by the passes every
+  ## call uses — so a wrong type or a missing field is refused, and a
+  ## concrete object reaching a `Self` slot is wrapped — then record the
+  ## call for lowering (receiver, then one arg per such param, in order)
+  ## and answer with the substituted return type.
   let selfT = tc.namedType(recvT.name, e.span)
   var params: seq[Param]
   for p in mem.fnParams:
+    if p.name == "self": continue
     params.add(Param(name: p.name, typ: substituteSelf(p.typ, selfT), span: p.span))
-  let ret = substituteSelf(mem.fnReturnType, selfT)
-  let extra = unwrapSingleField(e.dotArg)
-  let args = if extra != nil: @[e.receiver, extra] else: @[e.receiver]
-  setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
+  if e.dotArg != nil and e.dotArg.kind != exkStruct:
+    fail("Type Error: arguments to '" & e.fieldName &
+         "' must be a struct literal: {name: value, ...}", e.dotArg.span)
+  let bound = tc.bindPayloadFields(mem.name, params, e.dotArg, e.span)
+  setCall(semLayer, e, Expr(span: e.span, kind: exkCall,
+                            args: @[e.receiver] & bound,
                             callee: Expr(span: e.span, kind: exkVar,
                                          name: e.fieldName)))
   semLayer.markIfaceCall(e, recvT.name, mem.name)
-  ret
+  substituteSelf(mem.fnReturnType, selfT)
 
 proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `a.noise` where `a` is an interface value — resolved against the CONTRACT,

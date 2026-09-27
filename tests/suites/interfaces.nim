@@ -11,7 +11,9 @@
 ##     name, so a name is part of the contract)
 ##   - effects may be a SUBSET: an impl may do less than the contract permits,
 ##     never more
-##   - `Self` in a required sig means the implementing type
+##   - `Self` in a required sig means the INTERFACE (R13, ruled 2026-09-27),
+##     except in the receiver `self`, which is the object running; `-> Self`
+##     may be implemented as the object's own type (covariant)
 
 import ../harness
 
@@ -353,6 +355,115 @@ fn main() -> int:
 """
   t.badCheck "satisfies on an interface says a contract is not a subject",
              "is an interface"
+
+  # --- what `Self` means in a contract (R13 = B, ruled 2026-09-27) ----------
+
+  # Outside the receiver, `Self` is the interface: an implementation takes
+  # `next: AudioSource`, because a caller holding only an interface value
+  # may pass any satisfier — an MP3 crossfades into a FLAC.
+  const audioSrc = """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+  fn crossfade({self: Self, next: Self, ms: int}) -> int
+
+object Mp3:
+  satisfies AudioSource
+  bitrate: int
+  fn sampleRate({self: Mp3}) -> int:
+    return 44100
+  fn crossfade({self: Mp3, next: AudioSource, ms: int}) -> int:
+    return (ms * 44) + (ms * (next.sampleRate /i 1000))
+
+"""
+  t.src audioSrc & """
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+  fn crossfade({self: Flac, next: AudioSource, ms: int}) -> int:
+    return (ms * 96) + (ms * (next.sampleRate /i 1000))
+
+fn transition({cur: AudioSource, next: AudioSource}) -> int:
+  return cur.crossfade {next: next, ms: 1}
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a non-receiver `Self` is implemented as the interface"
+
+  t.src audioSrc & """
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+  fn crossfade({self: Flac, next: Flac, ms: int}) -> int:
+    return ms
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and narrowing it to the object's own type is refused",
+             "`Self` outside the receiver means the interface"
+
+  # `-> Self` accepts either the interface or the object's own type; any
+  # other object is refused.
+  t.src """
+interface Shape:
+  fn grown({self: Self}) -> Self
+
+object Sq:
+  satisfies Shape
+  s: int
+  fn grown({self: Sq}) -> Shape:
+    return self
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "`-> Self` may be implemented as `-> Shape`"
+
+  t.src """
+interface Shape:
+  fn grown({self: Self}) -> Self
+
+object Ci:
+  r: int
+
+object Sq:
+  satisfies Shape
+  s: int
+  fn grown({self: Sq}) -> Ci:
+    return Ci{r: self.s}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...but not as another object", "the contract declares Shape or Sq"
+
+  # A call through an interface value is checked against the contract like
+  # any call. Neither of these was: both checked clean, and the second
+  # tripped an assertion in lowering. Found 2026-09-27.
+  t.src audioSrc & """
+fn transition({cur: AudioSource, next: AudioSource}) -> int:
+  return cur.crossfade {next: next, ms: "x"}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an interface call's argument of the wrong type is refused",
+             "field 'ms' of call to 'crossfade' expects int but got str"
+
+  t.src audioSrc & """
+fn transition({cur: AudioSource}) -> int:
+  return cur.crossfade {ms: 1}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an interface call missing a field is refused",
+             "missing required field 'next: AudioSource'"
 
   # --- renaming a contract member: `satisfies I {old -> new}` ---------------
 

@@ -2391,12 +2391,12 @@ fn main() -> void:
   t.okCheck "...and a tail match yielding only Closed still narrows to it"
 
   # A21. A contract member returning `Self`, called through an interface
-  # value, checks clean and builds on no backend: the dispatch returns each
+  # value, checked clean and built on no backend: the dispatch returned each
   # arm's concrete object (`Sq`, `Ci`) where the call's type is the
-  # interface, and nothing wraps it back into the tag. Whether `Self` in a
-  # contract means the interface or the implementing type is still being
-  # ruled — but both readings agree here: through a `Shape` the result can
-  # only be a `Shape`. Found 2026-09-27 working through that question.
+  # interface, and nothing wrapped it back into the tag. Ruled R13 = B
+  # (2026-09-27): `Self` in an interface is the interface; an implementation
+  # may return its own type (covariant) and each dispatch arm now wraps it.
+  # Found 2026-09-27 working through that question.
   t.src """
 interface Shape:
   fn size({self: Self}) -> int
@@ -2427,7 +2427,7 @@ fn main() -> int:
   return {a: a} bigger
 """
   t.quietly: t.hostRuns("a `-> Self` member through an interface returns the interface", 9)
-  t.bugOpen "a `-> Self` contract member called through an interface builds, on all three"
+  t.bugFixed "a `-> Self` contract member called through an interface builds, on all three"
 
   # A22. On Odin, an interface call whose payload holds a VARIABLE builds on
   # nothing but Nim and D. Odin emits the dispatch as an inline

@@ -473,7 +473,13 @@ fn hear({a: Animal}) -> int:
   name, so a renamed param is an error (`:122`).
 - **Effects may be a subset** — an impl may declare fewer effects than the
   contract (`:62`), never more (`:172`).
-- `Self` means the implementing type.
+- `Self` in the receiver `{self: Self}` is the object running; anywhere
+  else it is the **interface** (ruled 2026-09-27): `next: Self` is
+  implemented as `next: AudioSource`, so any satisfier may be passed. A
+  `-> Self` may be implemented as the object's own type; through an
+  interface value the result is the interface.
+- A call through an interface value checks its payload against the
+  contract like any call.
 - An object may satisfy several interfaces (`:38`). When two of them require
   a member of the same name, `satisfies Machine {noise -> hum}` implements
   `Machine`'s `noise` as the object's `hum`; a call through a `Machine`

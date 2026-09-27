@@ -22,25 +22,11 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (5)
+## A. Open bugs (4)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
-
-**A21 — `Self` other than the receiver, through an interface, builds on no
-backend.** The conformance check reads `Self` in a contract as the
-IMPLEMENTING type (`Ci.same` takes `other: Ci`); a call through an interface
-value reads it as the INTERFACE (`b: Shape`). A member returning `Self`, or
-taking a second `Self`, therefore checks clean and fails on Nim, Odin and D:
-the dispatch hands a `Shape` to a parameter typed `Ci`, or returns an `Sq`
-where the call's type is `Shape`. Only the receiver `{self: Self}` works,
-which is every use in the corpus. The return case is wrong under either
-reading and is pinned: `known_bugs`, "a `-> Self` contract member called
-through an interface builds, on all three". The parameter case waits on the
-ruling of what `Self` means in an interface
-(`thoughts/shared/audits/2026-09-27-rulings-needed.md`, R13). Found
-2026-09-27.
 
 **A22 — on Odin, an interface call whose payload holds a variable does not
 build.** Odin's dispatch is an inline `proc(v: Iface) {...}(recv)` literal,
@@ -269,6 +255,17 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A21 — a `-> Self` contract member called through an interface builds.**
+  Ruled R13 = B, 2026-09-27: in an interface, `Self` is the interface; in
+  the receiver `self` it is the object running. Conformance reads a
+  non-receiver `Self` as the interface (`next: AudioSource`), and accepts a
+  `-> Self` implemented as the object's own type, which each dispatch arm
+  wraps back into the interface (Odin and D can now wrap a call, not only a
+  variable). A call through an interface value now checks its payload
+  against the contract; a wrong type or a missing field had checked clean.
+  `known_bugs` "a `-> Self` contract member called through an interface
+  builds, on all three"; `interfaces`.
 
 - **A8 / #42 and A12 / #45 — a pool cell can be read, written and filled, and
   never read as zeroed memory.** Ruled 2026-09-26: `Cells.read {h}` /
