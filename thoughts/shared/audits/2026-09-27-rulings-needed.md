@@ -240,6 +240,23 @@ For `other: Self`:
 containing it), cannot fail at run time, and leaves same-type binary
 operations to groups, which already give that guarantee.
 
+Worked through with an audio player (`AudioSource` satisfied by `Mp3`,
+`Opus`, `Flac`), 2026-09-27:
+- receiver-only members (`decode`, `sampleRate`) run on all three backends
+  today; A and B agree.
+- `crossfade({self: Self, next: Self})`: under B `next` is any
+  `AudioSource`, so an MP3 track crossfades into a FLAC one — what a player
+  needs. Spelled `next: AudioSource` it runs on Nim and D today (140); Odin
+  fails on A22, an unrelated capture bug. Under A an MP3 could only
+  crossfade into another MP3 through the interface.
+- The one thing B needs that Tuck lacks: a TYPE TEST on an interface value,
+  for a format-specific fast path (FLAC into FLAC, splice gaplessly). Today
+  `match next: | Flac -> ...` checks clean but reads `Flac` as a catch-all
+  BINDING named `Flac` — Nim emits two `else` arms, D refuses to switch on the
+  interface, Odin takes the first arm for every format. Proposed: `| Flac f
+  -> ...` binds `f` as the `Flac` when the tag says so; `| _ -> ...` is the
+  generic path.
+
 ---
 
 ## Observations (no ruling needed)
