@@ -62,6 +62,11 @@ proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): stri
   for f in fields.get: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
+const OdinWidthNames = ["u8", "u16", "u32", "u64",
+                        "i8", "i16", "i32", "i64", "f32"]
+  ## The Tuck numeric types whose Odin spelling is a fixed width, into which
+  ## an untyped `int`/`f64` value does not convert implicitly.
+
 proc recCtorFromLiteral(ctx: var OdinCodegenCtx, declFields: seq[FieldDef],
                         litFields: seq[FieldInit]): string =
   ## A hoisted record struct built from a struct literal: fields named in
@@ -76,10 +81,12 @@ proc recCtorFromLiteral(ctx: var OdinCodegenCtx, declFields: seq[FieldDef],
       if f.name == fd.name:
         let fieldOdin = ctx.odinType(fd.typ)
         let ex = ctx.genOdinExpr(f.value)
-        # narrow numeric literals to the declared field width
-        if fieldOdin notin ["int", "f64", "f32", "string", "bool"] and
-           (fieldOdin.startsWith("u") or fieldOdin.startsWith("i") or
-            fieldOdin.startsWith("f")):
+        # Narrow a value to the declared field width. Decided on the TUCK
+        # type: this read the first letter of the emitted Odin name, so any
+        # type whose spelling happened to start with u/i/f would be cast.
+        let t = fd.typ
+        if t != nil and t.kind == tkNamed and
+           (t.name in OdinWidthNames or t.name == "usize"):
           parts.add(fd.name & " = " & fieldOdin & "(" & ex & ")")
         else:
           parts.add(fd.name & " = " & ex)
@@ -635,9 +642,6 @@ proc genInterfaceWrap(ctx: var OdinCodegenCtx, e: Expr,
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
   ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
     objName & "Val = " & e.name & "}"
-
-const OdinWidthNames = ["u8", "u16", "u32", "u64",
-                        "i8", "i16", "i32", "i64", "f32"]
 
 proc genLit(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A literal in Odin syntax. A number in an inferred position spells the

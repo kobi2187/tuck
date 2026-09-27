@@ -93,9 +93,9 @@ proc genDLit(e: Expr): string =
   of lkFloat, lkBool: e.litValue
   of lkUnit: ""
 
-const dWideTypes = ["long", "double", "string", "bool", "void"]
-  ## Types a narrowing cast must NOT be applied to. No "auto": the emitter
-  ## never produces one (see genDAssign).
+const dNarrowNames = ["i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"]
+  ## The Tuck numeric types narrower than (or unsigned against) D's `long`
+  ## and `double`, into which a record literal's value is cast explicitly.
 
 proc recCtorFromLiteralD(ctx: var DCodegenCtx, declFields: seq[FieldDef],
                          litFields: seq[FieldInit]): string =
@@ -110,9 +110,10 @@ proc recCtorFromLiteralD(ctx: var DCodegenCtx, declFields: seq[FieldDef],
       if f.name == fd.name:
         let fieldD = ctx.dType(fd.typ)
         let ex = ctx.genDExpr(f.value)
-        if fieldD notin dWideTypes and
-           (fieldD.startsWith("u") or fieldD.startsWith("i") or
-            fieldD in ["byte", "short", "float"]):
+        # Decided on the TUCK type, not by the first letter of the D spelling
+        # (which also caught `ubyte*`, the FFI `Buf`).
+        let t = fd.typ
+        if t != nil and t.kind == tkNamed and t.name in dNarrowNames:
           parts.add(fd.name & ": cast(" & fieldD & ")(" & ex & ")")
         else:
           parts.add(fd.name & ": " & ex)
