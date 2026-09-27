@@ -22,20 +22,11 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (3)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
-
-**A22 — on Odin, an interface call whose payload holds a variable does not
-build.** Odin's dispatch is an inline `proc(v: Iface) {...}(recv)` literal,
-and an Odin proc literal cannot capture, so an argument that is a local
-(`c.encode {key: key}`, `cur.crossfade {next: next}`) is "Undeclared name"
-inside it. A literal argument works, which is why `interface_dispatch`
-(Nim-only for that case) never saw it. Nim and D are correct. Test:
-`known_bugs`, "an interface call whose payload holds a variable builds on
-Odin". Found 2026-09-27.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -255,6 +246,13 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A22 — on Odin, an interface call whose payload holds a variable
+  builds.** Odin's dispatch is an immediately-called proc literal, which
+  cannot capture; every argument past the receiver is now a parameter of
+  that literal, evaluated at the call (2026-09-27). `known_bugs` "an
+  interface call whose payload holds a variable builds on Odin";
+  `interfaces` "an MP3 crossfades into a FLAC through the interface".
 
 - **A21 — a `-> Self` contract member called through an interface builds.**
   Ruled R13 = B, 2026-09-27: in an interface, `Self` is the interface; in

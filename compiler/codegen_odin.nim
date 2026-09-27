@@ -709,28 +709,61 @@ proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
   for a in e.poolOperands: args.add ctx.genOdinExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
+const DispatchArg = "tuckArg"
+  ## The dispatch closure's parameter for each argument past the receiver.
+
+proc dispatchArgType(ctx: var OdinCodegenCtx, a: Expr): string =
+  ## The Odin type of one argument as the closure receives it: the
+  ## interface, when the argument is a concrete object wrapped into one.
+  let w = ctx.res.wrapOf(a)
+  if w.objName != "": resolveWrapNames(ctx.module, w.iface, w.objName)[0]
+  else: ctx.odinType(ctx.res.typeFor(a))
+
+proc armCallOnParams(ctx: var OdinCodegenCtx, call: Expr): Expr =
+  ## `call` with each argument past the receiver replaced by the closure's
+  ## parameter for it. A shallow copy: it keeps the call's id, so everything
+  ## the emitter looks up about the call still answers.
+  result = Expr()
+  result[] = call[]
+  for i in 1 ..< result.args.len:
+    result.args[i] = ctx.res.typed(
+      Expr(span: call.span, kind: exkVar, name: DispatchArg & $(i - 1)),
+      ctx.res.typeFor(call.args[i]))
+
 proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
   ## the tag and print each arm's member call. An immediately-called closure,
   ## because Odin has no switch EXPRESSION and a call site needs a value —
   ## typed with the CALL's type. It said `-> int` whatever the member
   ## returned, so a member returning `str` did not compile (#40).
+  ##
+  ## An Odin proc literal cannot capture, so every argument past the
+  ## receiver is a PARAMETER of the closure, evaluated at the call — an
+  ## argument naming a local was "Undeclared name" inside it (A22). Every
+  ## arm passes the same values (the contract's), so the first arm's name
+  ## them.
+  if e.dispatchArms.len == 0: return ""
   let recv = ctx.genOdinExpr(e.dispatchRecv)
   let t = ctx.res.typeFor(e)
   let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
+  var params = @["v: " & e.dispatchIface]
+  var values = @[recv]
+  let first = e.dispatchArms[0].call
+  for i in 1 ..< first.args.len:
+    params.add(DispatchArg & $(i - 1) & ": " & ctx.dispatchArgType(first.args[i]))
+    values.add(ctx.genOdinExpr(first.args[i]))
   var arms: seq[string]
   for arm in e.dispatchArms:
     arms.add("\t\tcase ." & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
              "\t\t\t" & arm.bindName & " := v." & arm.satisfier & "Val\n" &
              "\t\t\t" & (if isVoid: "" else: "return ") &
-             ctx.genOdinExpr(arm.call))
-  if arms.len == 0: return ""
+             ctx.genOdinExpr(ctx.armCallOnParams(arm.call)))
   let sig = if isVoid: "" else: " -> " & ctx.odinType(t)
   # The tag is always one of the arms; the panic is what Odin's "missing
   # return" asks for, and what a corrupt value deserves.
   let tail = if isVoid: "" else: "\tpanic(\"unreachable interface tag\")\n"
-  "(proc(v: " & e.dispatchIface & ")" & sig & " {\n\tswitch v.tag {\n" &
-    arms.join("\n") & "\n\t}\n" & tail & "})(" & recv & ")"
+  "(proc(" & params.join(", ") & ")" & sig & " {\n\tswitch v.tag {\n" &
+    arms.join("\n") & "\n\t}\n" & tail & "})(" & values.join(", ") & ")"
 
 proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
   ## Inside `switch v in value`, a payload field belongs to the BOUND

@@ -392,6 +392,29 @@ fn main() -> int:
 """
   t.okCheck "a non-receiver `Self` is implemented as the interface"
 
+  # ...and through an interface value a concrete `Flac` held in a local is
+  # wrapped into that `Self` slot. The local `ms` is the A22 shape: Odin's
+  # dispatch closure takes the arguments as parameters.
+  t.src audioSrc & """
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+  fn crossfade({self: Flac, next: AudioSource, ms: int}) -> int:
+    return (ms * 96) + (ms * (next.sampleRate /i 1000))
+
+fn transition({cur: AudioSource, f: Flac}) -> int:
+  let ms = 1
+  return cur.crossfade {next: f, ms: ms}
+
+fn main() -> int:
+  let m = Mp3{bitrate: 320}
+  let f = Flac{bits: 24}
+  return {cur: m, f: f} transition
+"""
+  t.hostRuns "an MP3 crossfades into a FLAC through the interface, on every backend", 140
+
   t.src audioSrc & """
 object Flac:
   satisfies AudioSource

@@ -2429,13 +2429,12 @@ fn main() -> int:
   t.quietly: t.hostRuns("a `-> Self` member through an interface returns the interface", 9)
   t.bugFixed "a `-> Self` contract member called through an interface builds, on all three"
 
-  # A22. On Odin, an interface call whose payload holds a VARIABLE builds on
-  # nothing but Nim and D. Odin emits the dispatch as an inline
-  # `proc(v: Iface) {...}(recv)` literal, and an Odin proc literal cannot
-  # capture: an argument that is a local (`next`, `key`) is "Undeclared
-  # name" inside it. A literal argument works, which is all
-  # interface_dispatch's other tests pass. Found 2026-09-27 writing the
-  # audio-player example for R13.
+  # A22. On Odin, an interface call whose payload held a VARIABLE did not
+  # build. Odin emits the dispatch as an inline `proc(v: Iface) {...}(recv)`
+  # literal, and an Odin proc literal cannot capture: an argument that is a
+  # local (`next`, `key`) was "Undeclared name" inside it. Every argument
+  # past the receiver is now a parameter of the closure, evaluated at the
+  # call. Found 2026-09-27 writing the audio-player example for R13.
   t.src """
 interface AudioSource:
   fn sampleRate({self: Self}) -> int
@@ -2466,6 +2465,6 @@ fn main() -> int:
   return {cur: m, next: f} transition
 """
   t.quietly: t.hostRuns("an interface call passing a variable runs on every backend", 140)
-  t.bugOpen "an interface call whose payload holds a variable builds on Odin"
+  t.bugFixed "an interface call whose payload holds a variable builds on Odin"
 
   t.finish()
