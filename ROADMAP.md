@@ -257,8 +257,10 @@ RULED 2026-09-27, and implemented:
 - **R13** `Self` in an interface is the interface; the receiver is the
   object running; `-> Self` may return the object's own type. Fixed A21.
   A22 (Odin dispatch could not capture) fixed with it.
-  Still to build from the same ruling: member type params `fn splice[A: Self, B: Self]` (compile-time only), an
-  interface as a free generic fn's bound `fn join[T: AudioSource]`.
+  Member type params `fn splice[A: Self, B: Self]` built (compile-time
+  only; TK-TY33 through an interface value). Still to build from the same
+  ruling: an interface as a free generic fn's bound
+  `fn join[T: AudioSource]`.
 
 ### Deferred — completely missing, not scheduled
 

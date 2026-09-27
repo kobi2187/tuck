@@ -480,6 +480,10 @@ fn hear({a: Animal}) -> int:
   interface value the result is the interface.
 - A call through an interface value checks its payload against the
   contract like any call.
+- "The same object type as `self`" is a type parameter bounded by `Self`:
+  `fn splice[A: Self, B: Self]({self: A, other: A, next: B})` is implemented
+  as `{self: Flac, other: Flac, next: AudioSource}`. Compile-time only:
+  through an interface value such a member is `TK-TY33`.
 - An object may satisfy several interfaces (`:38`). When two of them require
   a member of the same name, `satisfies Machine {noise -> hum}` implements
   `Machine`'s `noise` as the object's `hum`; a call through a `Machine`

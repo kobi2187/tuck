@@ -1166,6 +1166,16 @@ Conformance is checked at compile time. The rules:
   into a FLAC. A return of exactly `Self` may be implemented as the
   interface or as the object's own type; called through an interface value,
   the result is the interface either way.
+- **The same object type is written with type parameters bounded by
+  `Self`.** In `fn splice[A: Self, B: Self]({self: A, other: A, next: B})`,
+  `other` shares the receiver's letter, so it is the object's own type; `next`
+  is any satisfier. `Flac` implements it as
+  `{self: Flac, other: Flac, next: AudioSource}`. This is checked at compile
+  time only: called on a concrete object it is an ordinary call, but through
+  an interface value the receiver's type is known only at run time, so a
+  member with a parameter sharing the receiver's letter is refused there
+  (TK-TY33). A letter the receiver does not use is the interface, and such a
+  member is callable through an interface value.
 
 A missing or mismatched member is a compile error naming both signatures.
 

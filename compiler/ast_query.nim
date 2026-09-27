@@ -930,6 +930,25 @@ proc findObjectMember*(obj: Decl, name: string): Decl =
   for mem in obj.members():
     if mem != nil and mem.kind == dkFn and mem.name == name: return mem
 
+proc selfBoundParams*(fn: Decl): seq[string] =
+  ## A contract member's type params bounded by exactly `Self` — `A` and `B`
+  ## in `fn splice[A: Self, B: Self]`. Each names one object type that
+  ## satisfies the interface; two params sharing a letter share the type.
+  for i, g in fn.fnGenerics:
+    if i < fn.fnGenericBounds.len and fn.fnGenericBounds[i].len == 1:
+      let b = fn.fnGenericBounds[i][0]
+      if b != nil and b.kind == tkNamed and b.name == "Self": result.add(g)
+
+proc receiverTypeParam*(fn: Decl): string =
+  ## The `Self`-bound type param the receiver is typed with — `A` in
+  ## `{self: A}` — or "" when the receiver is plain `Self` or absent.
+  let letters = selfBoundParams(fn)
+  for p in fn.fnParams:
+    if p.name == "self" and p.typ != nil and p.typ.kind == tkNamed and
+       p.typ.name in letters:
+      return p.typ.name
+  ""
+
 proc implementingName*(obj: Decl, iface, member: string): string =
   ## The name under which object `obj` implements contract member
   ## `iface.member`: the new name from a `satisfies iface {member -> new}`

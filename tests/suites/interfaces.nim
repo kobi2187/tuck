@@ -488,6 +488,100 @@ fn main() -> int:
   t.badCheck "an interface call missing a field is refused",
              "missing required field 'next: AudioSource'"
 
+  # --- same object type: type params bounded by `Self` ----------------------
+
+  # `fn splice[A: Self, B: Self]({self: A, other: A, next: B})`: `other` is
+  # the receiver's own object type, `next` any satisfier. An implementation
+  # writes the concrete types. Ruled 2026-09-27; compile-time only.
+  const spliceIface = """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+  fn splice[A: Self, B: Self]({self: A, other: A, next: B}) -> int
+
+object Mp3:
+  satisfies AudioSource
+  bitrate: int
+  fn sampleRate({self: Mp3}) -> int:
+    return 44100
+  fn splice({self: Mp3, other: Mp3, next: AudioSource}) -> int:
+    return self.bitrate + other.bitrate + (next.sampleRate /i 1000)
+
+"""
+  t.src spliceIface & """
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+  fn splice({self: Flac, other: Flac, next: AudioSource}) -> int:
+    return self.bits + other.bits + (next.sampleRate /i 1000)
+
+fn main() -> int:
+  let a = Flac{bits: 24}
+  let b = Flac{bits: 16}
+  let m = Mp3{bitrate: 3}
+  return a.splice {other: b, next: m}
+"""
+  t.okCheck "`[A: Self, B: Self]`: `other: A` is the object, `next: B` the interface"
+  t.hostRuns "...and a call on a concrete object runs, on every backend", 84
+
+  t.src spliceIface & """
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+  fn splice({self: Flac, other: AudioSource, next: AudioSource}) -> int:
+    return self.bits
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "the receiver's letter is the object's own type, not the interface",
+             "parameter 'other' is AudioSource, the contract declares Flac"
+
+  t.src spliceIface & """
+fn joinAny({a: AudioSource, b: AudioSource}) -> int:
+  return a.splice {other: b, next: b}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "through an interface value a same-type member is TK-TY33", "TK-TY33"
+
+  # A letter the receiver does not use is any satisfier, so such a member is
+  # callable through an interface value.
+  t.src """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+  fn mix[B: Self]({self: Self, next: B}) -> int
+
+object Mp3:
+  satisfies AudioSource
+  bitrate: int
+  fn sampleRate({self: Mp3}) -> int:
+    return 44100
+  fn mix({self: Mp3, next: AudioSource}) -> int:
+    return self.bitrate + (next.sampleRate /i 1000)
+
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+  fn mix({self: Flac, next: AudioSource}) -> int:
+    return self.bits + (next.sampleRate /i 1000)
+
+fn both({a: AudioSource, b: AudioSource}) -> int:
+  return a.mix {next: b}
+
+fn main() -> int:
+  let m = Mp3{bitrate: 3}
+  let f = Flac{bits: 24}
+  return {a: f, b: m} both
+"""
+  t.hostRuns "`[B: Self]` off the receiver is callable through the interface", 68
+
   # --- renaming a contract member: `satisfies I {old -> new}` ---------------
 
   # Two interfaces that each require a `noise`, with different return types:

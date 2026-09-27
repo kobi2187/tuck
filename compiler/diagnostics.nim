@@ -123,6 +123,9 @@ type
                                         ## type carries an invariant
     dcTyReturnWithoutType = "TK-TY32"   ## `return <value>` in a body that
                                         ## declares no return type
+    dcTySameTypeThroughIface = "TK-TY33" ## a member needing an argument of
+                                        ## the receiver's own object type,
+                                        ## called through an interface value
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -433,6 +436,15 @@ proc parseExplanation(d: DiagCode): string =
     "type with `-> T`, or return nothing. An actor handler never replies " &
     "(spec 9.1), so there the value has to go somewhere else — a field, or a " &
     "`send`."
+  of dcTySameTypeThroughIface:
+    "`fn splice[A: Self, B: Self]({self: A, other: A, next: B})` says `other` " &
+    "is the SAME object type as the receiver, whichever that is; `next` may " &
+    "be any satisfier. Through an interface value the receiver's type is " &
+    "known only at run time, so nothing can check that `other` matches it — " &
+    "and Tuck does not check it at run time (ruled 2026-09-27). Call it on a " &
+    "concrete object (`flac.splice {other: flac2, ...}`), or inside a " &
+    "generic fn bounded by the interface (`fn join[T: AudioSource]`), where " &
+    "the type is fixed at compile time."
   of dcTyPoolAddrInvariant:
     "`Pool.addr {h}` hands a cell's bytes to an extern to fill — a DMA " &
     "controller, an ISR. Memory filled that way was never built by a " &

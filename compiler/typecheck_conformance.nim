@@ -12,7 +12,7 @@
 # follows. It took a `tc` parameter in typecheck.nim to match its sibling
 # checkers' shape and never read it; the parameter is dropped here rather than
 # carried along dead, exactly as typecheck_transitions.nim did.
-import ast, ast_query, tables, strutils
+import ast, ast_query, ast_ops, tables, strutils
 import typecheck_util
 
 proc sameType(a, b: Type): bool
@@ -77,12 +77,27 @@ proc failConformance(objName, iname: string, want, got: Decl, why: string) =
        iname & "'\n  contract   " & sigText(want) &
        "\n  implements " & sigText(got) & "\n  " & why, got.span)
 
-proc contractParamType(w: Param, objName, iname: string): Type =
-  ## What a contract param's type asks of an implementation (R13, ruled
-  ## 2026-09-27): in the receiver `self`, `Self` is the object running;
-  ## everywhere else `Self` is the INTERFACE — any satisfier, since a caller
-  ## holding only an interface value can pass any.
-  substSelf(w.typ, if w.name == "self": objName else: iname)
+proc named(name: string): Type =
+  ## A bare named type, for a substitution table.
+  Type(kind: tkNamed, name: name)
+
+proc contractSubst(want: Decl, objName, iname: string,
+                   isReceiver: bool): Table[string, Type] =
+  ## How a contract member's placeholders read for one implementation (R13,
+  ## ruled 2026-09-27). `Self` in the receiver is the object running; any
+  ## other `Self` is the INTERFACE — any satisfier, since a caller holding
+  ## only an interface value can pass any. A type param bounded by `Self`
+  ## (`fn splice[A: Self, B: Self]`) is the object when it is the receiver's
+  ## letter — `other: A` is the same object type as `self: A` — and the
+  ## interface otherwise.
+  result["Self"] = named(if isReceiver: objName else: iname)
+  let recv = receiverTypeParam(want)
+  for g in selfBoundParams(want):
+    result[g] = named(if g == recv: objName else: iname)
+
+proc contractParamType(want: Decl, w: Param, objName, iname: string): Type =
+  ## What one contract param's type asks of an implementation.
+  substType(w.typ, contractSubst(want, objName, iname, w.name == "self"))
 
 proc isBareSelf(t: Type): bool =
   ## Is `t` exactly `Self` — not `Seq[Self]`, not `!Self`?
@@ -103,7 +118,7 @@ proc checkParamMatch(want, got: Decl, objName, iname: string) =
         "parameter " & $(i + 1) & " is named '" & g.name &
         "', the contract calls it '" & w.name &
         "' (payload fields bind by name, so the name is part of the contract)")
-    let wt = contractParamType(w, objName, iname)
+    let wt = contractParamType(want, w, objName, iname)
     if not sameType(wt, g.typ):
       failConformance(objName, iname, want, got,
         "parameter '" & w.name & "' is " & typeName(g.typ) &
@@ -128,7 +143,8 @@ proc checkSigMatch(want, got: Decl, objName, iname: string) =
   ## A return of exactly `Self` is the interface, and the object's own type
   ## is accepted too (covariant): dispatch wraps it back into the interface.
   checkParamMatch(want, got, objName, iname)
-  let asIface = substSelf(want.fnReturnType, iname)
+  let asIface = substType(want.fnReturnType,
+                          contractSubst(want, objName, iname, false))
   let covariant = isBareSelf(want.fnReturnType) and
                   sameType(substSelf(want.fnReturnType, objName), got.fnReturnType)
   if not covariant and not sameType(asIface, got.fnReturnType):

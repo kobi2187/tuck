@@ -618,19 +618,37 @@ proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
       return f.typ
   nil
 
-proc substituteSelf(pt: Type, selfT: Type): Type =
+proc substituteSelf(pt: Type, selfT: Type, letters: seq[string] = @[]): Type =
   ## `Self` in a contract member's signature means the interface (R13, ruled
   ## 2026-09-27) — at any depth, so `Seq[Self]` is a `Seq` of the interface.
+  ## So does each of `letters`, the member's type params bounded by `Self`:
+  ## through an interface value, each is some satisfier.
   if pt == nil: return nil
   case pt.kind
   of tkNamed:
-    if pt.name == "Self": selfT else: pt
+    if pt.name == "Self" or pt.name in letters: selfT else: pt
   of tkApp:
     var args: seq[Type]
-    for a in pt.args: args.add(substituteSelf(a, selfT))
-    Type(span: pt.span, kind: tkApp, base: substituteSelf(pt.base, selfT),
+    for a in pt.args: args.add(substituteSelf(a, selfT, letters))
+    Type(span: pt.span, kind: tkApp, base: substituteSelf(pt.base, selfT, letters),
          args: args)
   else: pt
+
+proc failIfSameTypeThroughIface(mem: Decl, iname: string, sp: Span) =
+  ## `fn splice[A: Self, B: Self]({self: A, other: A, ...})` needs `other` to
+  ## be the receiver's own object type. Through an interface value that type
+  ## is known only at run time, and there is no run-time check (ruled
+  ## 2026-09-27): the call is compile-time only.
+  let recv = receiverTypeParam(mem)
+  if recv == "": return
+  for p in mem.fnParams:
+    if p.name != "self" and typeMentionsName(p.typ, recv):
+      fail(dcTySameTypeThroughIface,
+           "'" & mem.name & "' needs '" & p.name & "' to be the " &
+           "same object type as `self` (both `" & recv & "`); through an " &
+           "interface value that type is known only at run time. Call it on " &
+           "a concrete object, or inside a generic fn bounded by " & iname &
+           " (`fn f[T: " & iname & "]`)", sp)
 
 proc bindIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type, mem: Decl): Type =
   ## One contract member matched `e.fieldName`: read `Self` as the interface,
@@ -640,10 +658,13 @@ proc bindIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type, mem: Decl): Type =
   ## call for lowering (receiver, then one arg per such param, in order)
   ## and answer with the substituted return type.
   let selfT = tc.namedType(recvT.name, e.span)
+  failIfSameTypeThroughIface(mem, recvT.name, e.span)
   var params: seq[Param]
   for p in mem.fnParams:
     if p.name == "self": continue
-    params.add(Param(name: p.name, typ: substituteSelf(p.typ, selfT), span: p.span))
+    params.add(Param(name: p.name,
+                     typ: substituteSelf(p.typ, selfT, selfBoundParams(mem)),
+                     span: p.span))
   if e.dotArg != nil and e.dotArg.kind != exkStruct:
     fail("Type Error: arguments to '" & e.fieldName &
          "' must be a struct literal: {name: value, ...}", e.dotArg.span)
@@ -653,7 +674,7 @@ proc bindIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type, mem: Decl): Type =
                             callee: Expr(span: e.span, kind: exkVar,
                                          name: e.fieldName)))
   semLayer.markIfaceCall(e, recvT.name, mem.name)
-  substituteSelf(mem.fnReturnType, selfT)
+  substituteSelf(mem.fnReturnType, selfT, selfBoundParams(mem))
 
 proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `a.noise` where `a` is an interface value — resolved against the CONTRACT,

@@ -205,16 +205,6 @@ proc parseErrorTypes*(p: var Parser, errTypes: var seq[string]) =
     discard p.advance()
     errTypes.add(p.expectMemberName("Expected error enum name after '|'").value)
 
-proc parseSigGenerics*(p: var Parser): seq[string] =
-  ## `fn toStr[T](...)` — Uppercase-first idents, like fn declarations.
-  if not (p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
-          p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A' .. 'Z'}): return
-  discard p.advance()
-  while p.current().kind notin {tkRBracket, tkEOF}:
-    result.add(p.expect(tkIdent, "Expected type parameter").value)
-    if p.current().kind == tkComma: discard p.advance()
-  discard p.expect(tkRBracket)
-
 proc parseSigName*(p: var Parser, what: string): string =
   ## The declared name, possibly a module-qualified sketch stub
   ## (`fn http::get(...)`).
@@ -364,6 +354,13 @@ proc parseBracketedNames*(p: var Parser, what: string): (seq[string], seq[seq[Ty
     result[1].add(bounds)
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBracket)
+
+proc parseSigGenerics*(p: var Parser): (seq[string], seq[seq[Type]]) =
+  ## `fn toStr[T](...)` — Uppercase-first idents, like fn declarations, each
+  ## optionally bounded: `fn splice[A: Self, B: Self](...)` in an interface.
+  if not (p.current().kind == tkLBracket and p.peek(1).kind == tkIdent and
+          p.peek(1).value.len > 0 and p.peek(1).value[0] in {'A' .. 'Z'}): return
+  p.parseBracketedNames("type parameter")
 
 proc parseBitSpec*(p: var Parser): string =
   ## `bit 0` or `bits 3..7` — the layout a register field occupies, kept as
@@ -1095,13 +1092,14 @@ proc parseSigFn*(p: var Parser, what: string): Decl =
   let spDecl = p.getSpan()
   discard p.expect(tkFn)
   let name = p.parseSigName(what)
-  let generics = p.parseSigGenerics()
+  let (generics, bounds) = p.parseSigGenerics()
   let params = parseParamList(p)
   let retType = p.parseReturnType()
   let sig = p.parseSignatureTail(retType, strict = false)
   if p.current().kind == tkNewline: discard p.advance()
   Decl(span: spDecl, kind: dkFn, name: name, fnParams: params,
-       fnGenerics: generics, fnReturnType: retType, fnEffects: sig.effects,
+       fnGenerics: generics, fnGenericBounds: bounds,
+       fnReturnType: retType, fnEffects: sig.effects,
        fnBody: nil, fnErrorTypes: sig.errTypes, externEmit: sig.emit,
        fnResourceKinds: sig.resources)
 
