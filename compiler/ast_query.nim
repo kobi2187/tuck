@@ -395,27 +395,48 @@ proc matchArmsReturn*(m: Expr): bool =
       return true
   false
 
+proc implicitTailValue*(body: Expr): Expr =
+  ## The expression a fn body's value falls off the end as — its last
+  ## statement, when that is a value rather than control flow — or nil.
+  ##
+  ## One definition for the two readers that must agree: lowering, which
+  ## makes it an explicit `return` (injectTailReturn), and the checker's
+  ## variant tracing (typecheck_flow), which must count what it yields.
+  ## They used to keep two exclusion lists; the checker's lacked a tail
+  ## `match`, so a fn returning `Closed` early and `Open` from a tail match
+  ## was traced as returning only `Closed`, and an illegal transition out of
+  ## `Open` checked clean.
+  if body == nil or body.kind != exkBlock or body.stmts.len == 0: return nil
+  let lastS = body.stmts[^1]
+  if lastS == nil: return nil
+  # (A tail `..` chain is the base as its steps leave it: lowering_chains
+  # writes that `return`, so no chain reaches here.)
+  case lastS.kind
+  of exkMatch:
+    # `match subject:` whose arms are VALUES is an expression, so the tail
+    # match is the fn's result. Arms that return on their own already are
+    # the result — wrapping those in `return (case ...)` asks Nim to type a
+    # case expression whose branches never produce a value. (A decision
+    # table — subject == nil — keeps its per-row returns.)
+    if lastS.subject != nil and not matchArmsReturn(lastS): lastS else: nil
+  of exkReturn, exkRaise, exkIf, exkFor, exkWhile, exkBreak, exkContinue,
+     exkAssign, exkBlock, exkSelect, exkSend, exkDiscard, exkTripleDot:
+    nil
+  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkCall,
+     exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
+     exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef,
+     exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
+     exkIfaceCall, exkPoolOp:
+    lastS
+
 proc injectTailReturn*(body: Expr, retTypeStr: string) =
-  ## Turn a fn body's trailing expression statement into an explicit `return`
-  ## (Nim needs it), leaving control-flow tails and decision tables alone.
-  if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
-     retTypeStr != "void":
-    let lastS = body.stmts[^1]
-    # (A tail `..` chain is the base as its steps leave it: lowering_chains
-    # writes that `return`, so no chain reaches here.)
-    if lastS.kind == exkMatch and lastS.subject != nil and
-         not matchArmsReturn(lastS):
-      # `match subject:` whose arms are VALUES is an expression, so the tail
-      # match is the fn's result. Arms that return on their own already are
-      # the result — wrapping those in `return (case ...)` asks Nim to type a
-      # case expression whose branches never produce a value. (A decision
-      # table — subject == nil — keeps its per-row returns.)
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
-    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
-                           exkWhile, exkBreak, exkContinue,
-                           exkAssign, exkBlock, exkSelect, exkSend,
-                           exkDiscard, exkTripleDot}:
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
+  ## Turn a fn body's trailing value (implicitTailValue) into an explicit
+  ## `return` (Nim needs it), leaving control-flow tails and decision tables
+  ## alone.
+  if retTypeStr == "void": return
+  let v = implicitTailValue(body)
+  if v != nil:
+    body.stmts[^1] = Expr(span: v.span, kind: exkReturn, returnVal: v)
 
 
 # --- sketch-mode type queries --------------------------------------------

@@ -25,6 +25,7 @@
 import ast, tables, sets, strutils
 import typecheck_util
 import typecheck_state
+from ast_query import implicitTailValue
 
 
 
@@ -277,22 +278,35 @@ proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
   for h in holes:
     if h in reads: result.add(h)
 
+proc addTailValue(tc: TypeChecker, typeName: string, v: Expr,
+                  acc: var seq[string], exact: var bool) =
+  ## One value the body can fall off the end with. Exactly one variant is
+  ## counted; anything else makes the fn's answer inexact.
+  let vs = tc.exprVariants(typeName, v)
+  if vs.len == 1:
+    for x in vs:
+      if x notin acc: acc.add(x)
+  else:
+    exact = false
+
 proc checkImplicitTailReturn(tc: TypeChecker, typeName: string, fnBody: Expr,
                              acc: var seq[string], exact: var bool) =
-  ## Checks implicit tail return of a function body and adds its variants if it's exact.
-  ## A tail value that is not exactly one variant makes the fn's answer
-  ## inexact, so callers fall back to every variant.
-  # the implicit tail return is a plain trailing expression
-  if fnBody.kind == exkBlock and fnBody.stmts.len > 0:
-    let last = fnBody.stmts[^1]
-    if last.kind notin {exkReturn, exkIf, exkMatch, exkFor, exkWhile,
-                        exkBreak, exkContinue, exkBlock, exkAssign}:
-      let vs = tc.exprVariants(typeName, last)
-      if vs.len == 1:
-        for v in vs:
-          if v notin acc: acc.add(v)
-      else:
-        exact = false
+  ## The variants a body's implicit tail value adds — the same tail lowering
+  ## turns into a `return` (ast_query.implicitTailValue). A tail `match`
+  ## yields each arm's value; an arm whose body is a block is not traced and
+  ## makes the answer inexact. Ignoring the tail match altogether, as this
+  ## once did, made the traced set too NARROW — the unsafe direction for a
+  ## transition check.
+  let tail = implicitTailValue(fnBody)
+  if tail == nil: return
+  if tail.kind != exkMatch:
+    tc.addTailValue(typeName, tail, acc, exact)
+    return
+  for arm in tail.arms:
+    if arm.body == nil or arm.body.kind == exkBlock:
+      exact = false
+      return
+    tc.addTailValue(typeName, arm.body, acc, exact)
 
 proc fnReturnVariants*(tc: TypeChecker, fnName, typeName: string): seq[string] =
   ## The variants fn `fnName` can return as sum `typeName`: the union of its

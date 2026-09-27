@@ -2286,4 +2286,64 @@ fn main() -> int:
   t.quietly: t.hostRuns("a ?T operand of and/xor is a presence test", 3)
   t.bugFixed "a ?T operand of a boolean operator builds as its presence test, on all three"
 
+  # The checker traces which variants a fn can return, so a transition out
+  # of its result is checked against the right set. Lowering and the tracer
+  # each kept their own list of what counts as a body's implicit tail value,
+  # and the tracer's ignored a tail `match` without marking the answer
+  # inexact — so `fresh` below read as returning only Closed, and
+  # `d = Door.Locked` (illegal from Open) checked clean. Both now read
+  # ast_query.implicitTailValue. Found 2026-09-27 from the doc-pass audit's
+  # "two value-tail predicates disagree".
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+  transitions:
+    Closed -> Open
+    Open   -> Closed
+    Closed -> Locked
+    Locked -> Closed
+
+fn fresh({n: int}) -> Door:
+  if n > 5:
+    return Door.Closed
+  match n:
+    | 1 -> Door.Open
+    | _ -> Door.Open
+
+fn main() -> void:
+  var d = {n: 1} fresh
+  d = Door.Locked
+  return
+"""
+  t.quietly: t.badCheck("a tail match's variants are traced", "Open\\ \\->\\ Locked")
+  t.bugFixed "a variant returned by a tail match is counted by the transition check"
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+  transitions:
+    Closed -> Open
+    Open   -> Closed
+    Closed -> Locked
+    Locked -> Closed
+
+fn fresh({n: int}) -> Door:
+  if n > 5:
+    return Door.Closed
+  match n:
+    | 1 -> Door.Closed
+    | _ -> Door.Closed
+
+fn main() -> void:
+  var d = {n: 1} fresh
+  d = Door.Locked
+  return
+"""
+  t.okCheck "...and a tail match yielding only Closed still narrows to it"
+
   t.finish()
