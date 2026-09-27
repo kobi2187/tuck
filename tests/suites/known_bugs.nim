@@ -2108,4 +2108,25 @@ fn main() -> int:
   t.quietly: t.hostRuns("extra payload fields reach no param", 16)
   t.bugFixed "extra payload fields reach no param"
 
+  # A decision table grouped its combinations by what each row's body PRINTS
+  # as (`parser_stringify.toString`), which is lossy on purpose: every `match`
+  # prints as "match". Two rows with different match-valued bodies collapsed
+  # into one outcome, and the whole table answered with one row's value —
+  # `pick(true, _)` returned the false row's 30. Found 2026-09-27 writing
+  # lowering_decisions' docs.
+  t.src """
+decision pick({a: bool, b: bool}) -> int:
+  | true  _ -> match 1:
+    1: 10
+    _: 20
+  | false _ -> match 2:
+    2: 30
+    _: 40
+
+fn main() -> int:
+  return ({a: true, b: true} pick) + ({a: false, b: false} pick)
+"""
+  t.quietly: t.hostRuns("rows with different match bodies keep their own answers", 40)
+  t.bugFixed "a decision table keeps rows whose bodies print alike apart"
+
   t.finish()

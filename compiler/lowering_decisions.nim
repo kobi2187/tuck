@@ -37,7 +37,7 @@
 import ast, ast_query
 import resolution
 import decision_table
-from parser_stringify import toString
+from strutils import join
 
 type Row = object
   ## One table row: a pattern per column and the body it answers with.
@@ -124,9 +124,34 @@ proc rowStrings(r: Row): seq[string] =
 
 type Group = object
   ## The combinations that share one outcome — they become one match arm.
-  text: string            ## the outcome, as written — what groups combos
+  text: string            ## the outcome's key — what groups combos
   row: int                ## the first row answering it; its body is used
   keys: seq[int]
+
+proc plainOutcome(e: Expr): string =
+  ## The text two rows' answers are compared by, or "" when the answer is not
+  ## a PLAIN value: a literal, a name, `Type.Variant`, `mod::name`.
+  ##
+  ## Only those can be compared as text. The table used to compare
+  ## `toString`, which is a printer for messages and prints every `match` as
+  ## "match" — so two rows answering with DIFFERENT matches merged into one
+  ## arm, and the table returned one row's value for both (known_bugs). An
+  ## answer that is not plain keys on its own row instead: combinations
+  ## reaching the same row still share an arm, only the merging of distinct
+  ## rows with equal text is given up, and that was an optimisation.
+  if e == nil: return ""
+  case e.kind
+  of exkLit: "lit:" & $e.litKind & ":" & e.litValue
+  of exkVar: "var:" & e.name
+  of exkQualified: "mod:" & e.modulePath.join("::") & "::" & e.qualName
+  of exkField:
+    if e.dotArg != nil: return ""      # `.fn {args}`: a call, not a value
+    let recv = plainOutcome(e.receiver)
+    if recv.len == 0: "" else: recv & "." & e.fieldName
+  else:
+    # NOT a gap: a classifier, not a walk. Every other kind is "not plain",
+    # which is the safe answer — it costs an arm, never a wrong value.
+    ""
 
 proc groupByOutcome(rows: seq[Row], domains: seq[seq[string]],
                     comboCount: int): seq[Group] =
@@ -144,7 +169,8 @@ proc groupByOutcome(rows: seq[Row], domains: seq[seq[string]],
         break
     doAssert hit >= 0, "lowering_decisions: no row answers combination " &
       $combo & " — the checker proves an enumerable table complete"
-    let text = rows[hit].body.toString()
+    var text = plainOutcome(rows[hit].body)
+    if text.len == 0: text = "\0row:" & $hit
     var found = false
     for g in result.mitems:
       if g.text == text:
