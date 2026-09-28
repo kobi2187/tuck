@@ -1040,7 +1040,7 @@ proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
   for p in base.params:
     params.add(Param(name: p.name, typ: substType(p.typ, b), span: p.span))
   (params, substType(base.ret, b), newSeq[string](), base.effects,
-   base.resources)
+   base.resources, base.errTypes)
 
 proc namesAFnSig*(tc: TypeChecker, slotT: Type): bool =
   ## Does this type represent a callable slot, either a named `fnsig` or a
@@ -2892,7 +2892,7 @@ proc checkFnValueCall(tc: var TypeChecker, fnT: Type, e: Expr): Type =
     let name = if i < fnT.paramNames.len: fnT.paramNames[i] else: "arg" & $i
     params.add(Param(name: name, typ: typ, span: e.span))
   let sig: FnSig = (params: params, ret: fnT.result, generics: @[], effects: @[],
-                 resources: @[])
+                 resources: @[], errTypes: @[])
   var bindings = initTable[string, Type]()
   tc.checkCallArgs("<function>", sig, e, bindings)
   sig.ret
@@ -4093,6 +4093,13 @@ proc rememberErrTypes(tc: var TypeChecker, name: string, val: Expr) =
     if fd != nil and fd.kind == dkFn and fd.name == val.callee.name and
        fd.fnErrorTypes.len > 0:
       tc.varErrTypes[name] = fd.fnErrorTypes
+      return
+  # An imported fn is not among this module's decls; its signature, seeded
+  # from the import scope, carries the same list (R11, A30).
+  for sig in tc.fnSigs.getOrDefault(val.callee.name):
+    if sig.errTypes.len > 0:
+      tc.varErrTypes[name] = sig.errTypes
+      return
 
 proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
   ## A fresh binding. spec 4.4b: a tracked type starts at the RHS's set.
@@ -5523,7 +5530,7 @@ proc moduleSigs*(m: Module): seq[SigInfo] =
     for sig in sigs:
       result.add(SigInfo(name: name, params: sig.params, ret: sig.ret,
                          generics: sig.generics, effects: sig.effects,
-                         resources: sig.resources,
+                         resources: sig.resources, errTypes: sig.errTypes,
                          isPending: tc.pendingFns.hasKey(name),
                          line: tc.pendingFns.getOrDefault(name).line))
 
@@ -5688,7 +5695,8 @@ proc importPrebuilt(scope: var ImportScope, preSigs: Table[string, seq[SigInfo]]
   ## Bring in a module whose signatures came from an index rather than source.
   for si in preSigs.getOrDefault(imp):
     if "::" in si.name: continue
-    let sig: seq[FnSig] = @[(si.params, si.ret, si.generics, si.effects, si.resources)]
+    let sig: seq[FnSig] = @[(si.params, si.ret, si.generics, si.effects,
+                             si.resources, si.errTypes)]
     scope.extern[imp & "::" & si.name] = sig
     scope.addBare(si.name, imp, sig)
     if si.isPending:

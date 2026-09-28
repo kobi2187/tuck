@@ -721,7 +721,9 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
 
 proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by pointer.
-  var args = @["&" & e.poolRef.refName]
+  let origin = declOrigin(ctx.module, ctx.realModules, e.poolRef.refName, {dkPool})
+  let pre = if origin == "": "" else: origin.replace("-", "_") & "."   # R11, A36
+  var args = @["&" & pre & e.poolRef.refName]
   for a in e.poolOperands: args.add ctx.genOdinExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 

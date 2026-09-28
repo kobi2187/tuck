@@ -1090,15 +1090,22 @@ proc isWrappedType*(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["!", "?", "!?"]
 
-proc constOrigin*(m: Module, real: Table[string, Module], name: string): string =
-  ## The OTHER module declaring the const `name` (as emitted), or "" when `m`
-  ## declares it or no module does. A const is not injected into an importer
-  ## — its own const may shadow an imported one — so Odin and D qualify each
-  ## reference to an imported const, and Nim exports it (R11, A33).
+proc declOrigin*(m: Module, real: Table[string, Module], name: string,
+                 kinds: set[DeclKind]): string =
+  ## The OTHER module declaring `name` (as emitted) as one of `kinds`, or ""
+  ## when `m` declares it or no module does. For a declaration that is not
+  ## injected into an importer, which Odin and D must then qualify with its
+  ## module at every reference (R11).
   for d in m.decls:
-    if d != nil and d.kind == dkConst and d.name == name: return ""
+    if d != nil and d.kind in kinds and d.name == name: return ""
   for modName, other in real:
     if other == m: continue
     for d in other.decls:
-      if d != nil and d.kind == dkConst and d.name == name: return modName
+      if d != nil and d.kind in kinds and d.name == name: return modName
   ""
+
+proc constOrigin*(m: Module, real: Table[string, Module], name: string): string =
+  ## The module declaring an imported const. Not injected — the importer's
+  ## own const may shadow it — so Nim exports it and Odin and D qualify each
+  ## reference (A33).
+  declOrigin(m, real, name, {dkConst})

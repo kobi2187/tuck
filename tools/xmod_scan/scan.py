@@ -19,7 +19,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 from cases import CASES
-TUCK = os.path.join(ROOT, "tuck")
+# TUCK_BIN: a scratch build, kept in the repo root (the compiler finds its
+# runtime beside its own binary).
+TUCK = os.environ.get("TUCK_BIN") or os.path.join(ROOT, "tuck")
 BASE = tempfile.mkdtemp(prefix="xmod_scan_")
 BACKENDS = [("nim", "", ""), ("odin", "--odin", "_odin"), ("d", "--dlang", "_d")]
 

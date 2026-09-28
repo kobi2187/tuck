@@ -317,7 +317,8 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
       # `Seq[Entry[K, V]]` inside a generic fn had no statable type.
       t.name[NamedTypeParamPrefix.len .. ^2]
     elif t.name.startsWith("<"): giveUp("type sentinel " & t.name)
-    elif isPoolHandleType(ctx.module, t.name): "rt.PoolHandle"
+    elif isPoolHandleType(ctx.module, t.name) or
+         isImportedPoolHandle(ctx.module, ctx.realModules, t.name): "rt.PoolHandle"
     elif constOrigin(ctx.module, ctx.realModules, t.name) != "":
       # An Array size naming an imported const (R11, A33).
       dAlias(constOrigin(ctx.module, ctx.realModules, t.name)) & "." & t.name

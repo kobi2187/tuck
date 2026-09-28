@@ -561,7 +561,9 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
 
 proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by `ref`.
-  var args = @[e.poolRef.refName]
+  let origin = declOrigin(ctx.module, ctx.realModules, e.poolRef.refName, {dkPool})
+  let pre = if origin == "": "" else: dAlias(origin) & "."   # R11, A36
+  var args = @[pre & e.poolRef.refName]
   for a in e.poolOperands: args.add ctx.genDExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 

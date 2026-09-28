@@ -702,6 +702,8 @@ type
                                  # cached signature that dropped them would make
                                  # an imported acquirer look non-acquiring, which
                                  # is the bug effects themselves once had
+    errTypes*: seq[string]       # [error: FsError] — `match r.err` on a call
+                                 # names its arms from these (R11, A30)
     isPending*: bool
     line*: int
 

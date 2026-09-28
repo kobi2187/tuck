@@ -751,7 +751,7 @@ fn open({p: int}) -> !int [io, error: FsError]:
   return p
 """)
   t.quietly: t.hostRuns("R11: match on the error of an imported fallible fn", 4)
-  t.bugOpen "R11: match on the error of an imported fallible fn"
+  t.bugFixed "R11: match on the error of an imported fallible fn"
 
   t.src """
 import lib
@@ -852,7 +852,7 @@ fn main() -> int:
   t.addFile("lib.tuck", """pool Cells = int [count: 2]
 """)
   t.quietly: t.hostRuns("R11: an imported pool works on every backend", 5)
-  t.bugOpen "R11: an imported pool works on every backend"
+  t.bugFixed "R11: an imported pool works on every backend"
 
   t.src """
 import console

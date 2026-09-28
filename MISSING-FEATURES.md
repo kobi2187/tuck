@@ -22,28 +22,25 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (10)
+## A. Open bugs (8)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
-2026-09-28).** A25, A26, A28, A31, A33 and A35 are fixed; their pins are
+2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are
 `bugFixed` in `cross_module`. Ruled: importing anything should work as well as the same
 module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
 failed. Tests: `cross_module`, each named "R11: …".
 - **A27** an object in the importer cannot `satisfies` an imported interface.
 - **A29** `+ Mixin` from another module: `Self` is not bound (R11's origin).
-- **A30** `match r.err` on an imported fallible fn: the arms print as
-  defaults ("multiple default clauses" / `else`), the error enum unfound.
 - **A32** an imported actor's fields and handlers are invisible to the
   importer ("no field 'total' on type Acc", #73). Distinct from A18, which is
   an imported actor never STARTED on Odin/D.
 - **A34** (Odin, D) a group bound whose provider is in another module — the
   bounded fn's module cannot name it. A14's sibling.
-- **A36** (Odin, D) an imported pool.
 - **A37** (Odin, D) an imported registry's `raise` is unqualified.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
@@ -265,6 +262,22 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A36 — an imported pool, on Odin and D.** A pool is not injected into an
+  importer, and Odin and D named it bare — `&tuckˑpoolˑCells`, which only
+  `lib` declares — so the importer did not even import `lib`. Each pool
+  operation now qualifies a pool another module declares
+  (`ast_query.declOrigin`), and D maps an imported pool's handle type to
+  `rt.PoolHandle` as it does its own (`resolution.isImportedPoolHandle`).
+  Fixed 2026-09-28. `cross_module`, "R11: …".
+
+- **A30 — `match r.err` on an imported fallible fn.** A binding remembered
+  its producer's `[error: E]` enums only when the producer was declared in
+  the same module, so an imported fn's arms were never qualified and printed
+  as defaults ("multiple default clauses" on Nim, `else` on Odin and D). The
+  error enums now ride in the signature (`FnSig.errTypes`, and
+  `SigInfo.errTypes` for one served from the index), and `rememberErrTypes`
+  falls back to it. Fixed 2026-09-28. `cross_module`, "R11: …".
 
 - **A33, A35 — an imported const and an imported saturating type.** A
   const is not injected (an importer's own const may shadow it), so Nim now

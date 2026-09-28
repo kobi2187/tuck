@@ -157,6 +157,12 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     if d.name == pool or d.name == prefixed(pool, nkPool): return true
   return false
 
+proc isImportedPoolHandle*(m: Module, real: Table[string, Module],
+                           name: string): bool =
+  ## The handle type of a pool some OTHER module declares (R11, A36).
+  for other in real.values:
+    if other != m and isPoolHandleType(other, name): return true
+
 proc resourceHandleName*(kind: string): string =
   ## The per-kind handle type's name (spec §7.4). Capitalized, because it IS a
   ## type and Tuck's type names are: a kind spelled `udp` hands out a
