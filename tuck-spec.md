@@ -330,7 +330,7 @@ public:
   Box[T]
 
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 ```
 
   Such a declaration survives as a template rather than being expanded away,
@@ -2022,6 +2022,12 @@ needs one, it is separate future work, not a mode of what is built today.
 Long-lived isolated state machines, one instance per declared type (a
 singleton — there is no separate construction step, no reference to hold).
 
+Because nothing constructs it, **every field has an initialiser** — the value
+the singleton starts with — **or is `T?`**, which starts absent (TK-TY35,
+ruled 2026-09-28, #85). A field with neither started at whatever the host
+zero-fills, and a handler that read it before anything wrote it read that
+zero as data. A plain `T` assigned into a `T?` field is stored as present.
+
 **Each actor runs on its own OS thread**, with its own scheduler and its own
 I/O reactor, and a static ring-buffer mailbox. An actor is a SERVICE: it is
 started before `main` runs and it outlives every call into it. `main` does not
@@ -2122,7 +2128,7 @@ element type instead of being written twice.
 import seq
 
 actor Inbox[T] [queue: 16]:
-  items: Seq[T]
+  items: Seq[T] = []
   seen: int = 0
 
   on put({item: T}):

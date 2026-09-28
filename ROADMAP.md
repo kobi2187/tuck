@@ -173,7 +173,7 @@ closure no longer exist in any `codegen_*.nim`.
 | — | **#72** | **FIXED 2026-09-26** — the checker takes an `Array`'s element from its second argument and lowers `a[i]` to the runtimes' existing `tuckArrayAt`/`tuckArraySetAt` | — | — |
 | — | **#45** | **FIXED 2026-09-26** — `Pool.read {h}` / `Pool.write {h, value}` through the handle, and `Pool.addr {h}` (a `Buf`) for an extern only (TK-TY08). Pool ops are their own node, `exkPoolOp`; a pool is no longer capped at 64 cells. `tests/suites/pools.nim` | — | — |
 | — | **#42** | **FIXED 2026-09-26** (ruled: a cell starts ABSENT) — `read` is a `?T`, so zeroed storage is never read as a value; a written value is a validated construction; `addr` on an invariant-carrying element is TK-TY31 | — | — |
-| S2.4 | **#85** | extend `<uninit>` to actor fields | S | S1.1 |
+| S2.4 | **#85** | ~~extend `<uninit>` to actor fields~~ **DONE 2026-09-28** (R8 = a): every actor field has an initialiser or is `T?` (TK-TY35); a `T?` field starts absent and takes a plain `T` (`lowering_optional`) | S | S1.1 |
 | S2.5 | **#55** | a fired `timeout` answers right at 100× the deadline | M | — |
 | S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |
 | — | **#20** | **FIXED 2026-09-26** — a member call's payload (`b.grow {...}`, and a mutator's `s.withPort {...}`) binds by the same subset / name / type passes as any call; the method form had its own by-name loop (`typecheck.bindPayloadFields`, `tests/suites/auto_alias.nim`) | — | — |

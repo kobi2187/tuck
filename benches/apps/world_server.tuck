@@ -236,7 +236,7 @@ fn worldDown() -> bool:
 # Writing it through a local instead costs two full array copies per edit.
 
 actor Shard0 [queue: 131072]:
-  sl: Slice
+  sl: Slice = {height: [], lum: [], light: [], edits: 0, relit: 0, denied: 0} Slice
   on start({n: int}):
     sl = {cols: SPAN} freshSlice
   on edit({c: int, y: int, kind: int}):
@@ -246,7 +246,7 @@ actor Shard0 [queue: 131072]:
     Journal send closed {lit: sl.relit, bad: sl.denied}
 
 actor Shard1 [queue: 131072]:
-  sl: Slice
+  sl: Slice = {height: [], lum: [], light: [], edits: 0, relit: 0, denied: 0} Slice
   on start({n: int}):
     sl = {cols: SPAN} freshSlice
   on edit({c: int, y: int, kind: int}):
@@ -256,7 +256,7 @@ actor Shard1 [queue: 131072]:
     Journal send closed {lit: sl.relit, bad: sl.denied}
 
 actor Shard2 [queue: 131072]:
-  sl: Slice
+  sl: Slice = {height: [], lum: [], light: [], edits: 0, relit: 0, denied: 0} Slice
   on start({n: int}):
     sl = {cols: SPAN} freshSlice
   on edit({c: int, y: int, kind: int}):
@@ -266,7 +266,7 @@ actor Shard2 [queue: 131072]:
     Journal send closed {lit: sl.relit, bad: sl.denied}
 
 actor Shard3 [queue: 131072]:
-  sl: Slice
+  sl: Slice = {height: [], lum: [], light: [], edits: 0, relit: 0, denied: 0} Slice
   on start({n: int}):
     sl = {cols: SPAN} freshSlice
   on edit({c: int, y: int, kind: int}):

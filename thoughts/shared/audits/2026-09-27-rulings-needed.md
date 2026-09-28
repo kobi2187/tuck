@@ -179,6 +179,15 @@ Now unblocked: #87 (initialisers discarded) was fixed on 2026-09-25.
 Cost: both `benches/apps` programs (`st: BookState`, `sl: Slice`) become
 `T?`. Initialisers must be constants, so a call can't initialise them.
 
+> **RULED 2026-09-28: (a).** TK-TY35. The bench records took a constant
+> construction (`{bid: [], …} BookState`) rather than `T?` — a construction
+> is a constant, and it builds on all three backends. Making `T?` usable
+> found two bugs: an unwritten `T?` field read as PRESENT (the carrier's
+> zero status is Ok), and a plain `T` assigned into a `T?` place built on
+> no backend. Both fixed by `lowering_optional` (exkAbsent, exkWrapOk).
+> Open: an `Array[N, T]` field has no short initialiser — a literal lists
+> all N elements — so spec §9.1's `txBuf: Array[256, u8]` is left as it was.
+
 ### R9 — S3.1 / #43: how `tuck build` reaches the no-invariants switch on Odin and D
 - (a) Pass through `--odin:` / `--dmd:` flags.
 - (b) A Tuck-level `--no-invariants` that each backend translates.

@@ -276,7 +276,7 @@ fn grow({b: Bag}) -> Bag:
   return {xs: it, n: b.n + 1} Bag
 
 actor Keeper [queue: 16]:
-  st: Bag
+  st: Bag = {xs: [], n: 0} Bag
   ready: bool = false
 
   on init({n: int}):

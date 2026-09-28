@@ -439,7 +439,8 @@ proc implicitTailValue*(body: Expr): Expr =
      exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
      exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef,
      exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
-     exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp:
+     exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkWrapOk,
+     exkAbsent:
     lastS
 
 proc injectTailReturn*(body: Expr, retTypeStr: string) =
@@ -1048,3 +1049,15 @@ proc errIdCode*(name: string): uint16 =
   for c in name:
     h = (h xor uint32(c)) * 16777619'u32
   uint16((h xor (h shr 16)) and 0xFFFF'u32)
+
+proc absenceIsDeclared*(t: Type): bool =
+  ## `T?` / `!?T`: a type whose values include "not there". An actor field of
+  ## it may start that way (TK-TY35), and a plain `T` stored into it is
+  ## wrapped (lowering_optional).
+  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+    t.base.name in ["?", "!?"]
+
+proc isWrappedType*(t: Type): bool =
+  ## `!T`, `?T` or `!?T` — a value already in the result carrier.
+  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+    t.base.name in ["!", "?", "!?"]

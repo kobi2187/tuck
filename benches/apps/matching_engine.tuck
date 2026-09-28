@@ -134,7 +134,7 @@ fn applySell({b: BookState, px: int, qty: int}) -> BookState:
 # so sizing the queue past the burst is the only lever a program has today.
 # KNOWN-BUGS-EVENTS.md EV-11, which this file was written to find.
 actor Book [queue: 262144]:
-  st: BookState
+  st: BookState = {bid: [], ask: [], bestBid: 0, bestAsk: 0, trades: 0, volume: 0, resting: 0} BookState
   atClose: bool = false
 
   on open({levels: int}):

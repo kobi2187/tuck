@@ -1479,6 +1479,12 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       e.tagObject & ")"
   of exkIfacePayload:
     ctx.genOdinExpr(e.tagSubject) & "." & e.tagObject & "Val"
+  of exkWrapOk:
+    # A plain value into a `?T` place (lowering_optional). Typed, so an
+    # untyped literal takes T rather than `int`.
+    "rt.TuckResult(" & ctx.odinType(e.optInner) & "){status = .Ok, value = " &
+      ctx.genOdinExpr(e.optValue) & "}"
+  of exkAbsent: "rt.tnone(" & ctx.odinType(e.optInner) & ")"
   of exkPoolOp: ctx.genOdinPoolOp(e)
   of exkValidate:
     "validate_" & ctx.res.typeFor(e.validated).name & "(" &

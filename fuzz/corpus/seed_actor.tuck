@@ -1,4 +1,4 @@
 actor Counter:
-  total: int
+  total: int = 0
   on bump({n: int}):
     total = total + n

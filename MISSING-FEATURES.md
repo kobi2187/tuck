@@ -248,6 +248,14 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **A `T?` actor field read as present before anything wrote it, and a
+  plain `T` could not be stored into one.** The result carrier's zero status
+  is Ok, so `last: int?` started present holding 0, on all three backends;
+  `last = v` stored a bare `int` where the carrier was expected and failed
+  to build on all three. Found 2026-09-28 making R8's `T?` escape usable;
+  `lowering_optional` emits an absent start and a wrapped store.
+  `known_bugs`, "a `T?` actor field starts absent…".
+
 - **A23 — one object as a changing member's `self` and as its argument
   keeps value semantics.** `k.absorb {other: k}` (or `k ..absorb {other:
   k}`): `self` is passed by reference, and Nim and Odin passed the large

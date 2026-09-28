@@ -268,7 +268,7 @@ fn main() -> int:
   # undeclared callee is a clean checker error, not a silent field read.
   t.src """
 actor Driver [queue: 8]:
-  buf: Seq[u8]
+  buf: Seq[u8] = []
 
   on send({data: Seq[u8]}) -> void:
     buf.copyFrom {data}
@@ -1189,7 +1189,7 @@ type NalKind:
   | sps
 
 actor Pipe:
-  seen: int
+  seen: int = 0
   on nal({kind: NalKind}):
     self.seen = self.seen + 1
 
@@ -1216,7 +1216,7 @@ type Level:
   | high
 
 actor Sink:
-  seen: int
+  seen: int = 0
 
   on setLevel({lvl: Level}):
     self.seen = self.seen + 1
@@ -1435,8 +1435,8 @@ fn applyBuy({b: BookState, px: int}) -> BookState:
   return {fills: f, total: b.total + px} BookState
 
 actor Book [queue: 8]:
-  st: BookState
-  xs: Seq[int]
+  st: BookState = {fills: [], total: 0} BookState
+  xs: Seq[int] = []
   n: int = 0
 
   on buy({px: int}):
@@ -1940,6 +1940,40 @@ type R:
   x: int = 3
 """
   t.badCheck "...not a record field either", "TK-TY30"
+
+  # #85 (R8, ruled 2026-09-28): every actor field has an initialiser or is
+  # `T?`. A field with neither started at the host's zero value, and a
+  # handler reading it before anything wrote it read that zero as data.
+  t.src """
+actor A:
+  x: int
+  on go({n: int}):
+    x += n
+"""
+  t.badCheck "an actor field with no initialiser is refused (#85)", "TK-TY35"
+  # The `T?` half, which no backend could build or started correctly: the
+  # result carrier's zero value is status OK, so an unwritten `last: int?`
+  # read as PRESENT (1 on all three before lowering_optional), and `seed:
+  # int? = 5` stored a bare int where the carrier was expected.
+  t.src """
+actor Box [queue: 4]:
+  last: int?
+  seed: int? = 5
+
+  on put({v: int}):
+    last = v
+
+fn main() -> int:
+  let a = Box.last
+  let b = Box.seed
+  var r = 0
+  if not a.ok:
+    r = r + 1
+  if b.ok:
+    r = r + b.value * 10
+  return r
+"""
+  t.hostRuns "a `T?` actor field starts absent, an initialised one present, on every backend", 51
 
   # An `on select` arm's body was never type-checked nor mangled: `checkDecl`
   # and `mangleMember` ended in `else: discard`, and dkSelect fell into it.

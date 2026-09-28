@@ -727,6 +727,13 @@ actor Counter [queue: 128]:
 No construction, no reference. The scheduler auto-registers every declared
 actor and runs it as a daemon alongside `main`; `main` owns the lifecycle.
 
+**Every field has an initialiser or is `T?`** (`TK-TY35`, ruled 2026-09-28,
+#85). A field is what the singleton starts with, before any message arrives;
+without one it was the host's zero, read as data. A `T?` field starts absent
+(`last: int?`), and a plain value assigned into it is stored as present. A
+record field starts from a construction (`st: Book = {bids: [], depth: 0}
+Book`).
+
 ```tuck
 Counter send add {n: i}          # send
 Counter.total                    # read public state

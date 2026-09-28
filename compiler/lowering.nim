@@ -37,6 +37,7 @@ import lowering_decisions   # a decision table becomes a match or an if chain
 import lowering_chains      # a `..` chain becomes statements
 import lowering_iface       # a call through an interface becomes a dispatch
 import lowering_alias       # an argument aliasing a by-reference receiver is copied
+import lowering_optional    # a plain T into a ?T place is wrapped; T? fields start absent
 import lowering_match_binds # a binding match arm becomes a catch-all
 import call_args           # which payload field feeds which param
 import options
@@ -260,7 +261,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkDefer,
      exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall,
-     exkIfaceIs, exkIfacePayload, exkPoolOp:
+     exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent, exkPoolOp:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
@@ -401,6 +402,10 @@ proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   # the line above, which turned `..` steps into calls; before interface
   # calls, whose dispatch copies the payload itself.
   lowerAliasedArgs(res, m)
+  # A plain `T` stored into a `?T` place is wrapped, and a `T?` actor field
+  # with no initialiser starts absent (lowering_optional, R8). After the
+  # chains above, whose steps become assignments.
+  lowerOptionals(res, m)
   # Every call through an interface value becomes a dispatch over the
   # objects that satisfy it (lowering_iface). Last: an interface call may sit
   # in a chain step's payload, and a chain's steps are copied above.

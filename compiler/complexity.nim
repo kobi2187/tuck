@@ -183,7 +183,7 @@ proc walk(m: var Metrics, e: Expr) =
      exkBracket, exkBracketAssign, exkAssign, exkField, exkReturn, exkRaise,
      exkDiscard, exkTripleDot, exkSend, exkAcquire, exkFinish, exkDefer,
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
-     exkPoolOp, exkLit, exkVar,
+     exkWrapOk, exkAbsent, exkPoolOp, exkLit, exkVar,
      exkQualified, exkBreak, exkContinue, exkImport, exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     discard

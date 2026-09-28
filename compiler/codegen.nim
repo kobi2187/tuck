@@ -889,6 +889,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     "(" & ctx.genExpr(e.tagSubject) & ".tag == " & e.tagIface & "_is_" &
       e.tagObject & ")"
   of exkIfacePayload: ctx.genExpr(e.tagSubject) & "." & e.tagObject & "Val"
+  of exkWrapOk:
+    # A plain value into a `?T` place (lowering_optional). The object
+    # constructor, not `tok[T](v)`, for the bracket ambiguity genReturn notes.
+    "TuckResult[" & genType(e.optInner) & "](status: tsOk, value: " &
+      ctx.genExpr(e.optValue) & ")"
+  of exkAbsent: "TuckResult[" & genType(e.optInner) & "](status: tsAbsent)"
   of exkPoolOp: ctx.genPoolOp(e)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =

@@ -4545,6 +4545,10 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # Built by lowering from a `| Flac f ->` arm, typed as it is built.
     discard tc.synthesize(e.tagSubject)
     semLayer.typeFor(e)
+  of exkWrapOk, exkAbsent:
+    # Built by lowering_optional, typed `?T` as it is built.
+    if e.optValue != nil: discard tc.synthesize(e.optValue)
+    semLayer.typeFor(e)
   of exkPoolOp:
     # Stamped by the checker (asPoolOp) in place of `Pool.op {...}`; its
     # type was recorded when it was built.
@@ -5122,8 +5126,20 @@ proc checkFieldInits(tc: var TypeChecker, d: Decl) =
   ## must be a value of the field's type (TK-TY29). Checked BEFORE the fields
   ## are bound: the singleton is built before any field has a value, so an
   ## initialiser cannot read one.
+  ##
+  ## And it must HAVE one, or be `T?` (TK-TY35, R8 ruled 2026-09-28): a
+  ## field with neither started at the host's zero value — a record holding
+  ## a Seq, a handle, an enum's first variant — and a handler reading it
+  ## before anything wrote it read that zero as data (#85).
   for f in d.actorFields:
-    if f.default == nil: continue
+    if f.default == nil:
+      if not absenceIsDeclared(f.typ):
+        fail(dcTyActorFieldNoInit,
+             "field '" & f.name & "' of actor '" & d.name & "' has no " &
+             "initialiser. Fix: give it one (`" & f.name & ": " &
+             typeName(f.typ) & " = ...`), or declare it `" &
+             typeName(f.typ) & "?` if it starts absent", f.span)
+      continue
     # The field's type is the expected one, so a bare variant of an inline
     # enum (`state: {Red, Green} = Red`) resolves as it does in an assignment.
     let saved = tc.expectedType

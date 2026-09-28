@@ -129,6 +129,8 @@ type
     dcTyIfaceArm = "TK-TY34"            ## an arm of a `match` on an interface
                                         ## value that is not `| Obj name ->`,
                                         ## `_` or a catch-all binding
+    dcTyActorFieldNoInit = "TK-TY35"    ## an actor field with no initialiser
+                                        ## that is not `T?`
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -439,6 +441,15 @@ proc parseExplanation(d: DiagCode): string =
     "type with `-> T`, or return nothing. An actor handler never replies " &
     "(spec 9.1), so there the value has to go somewhere else — a field, or a " &
     "`send`."
+  of dcTyActorFieldNoInit:
+    "An actor is one instance the language creates for you, before any " &
+    "message arrives, so each field starts with its initialiser — " &
+    "`level: int = 80`. A field with none used to start at whatever the host " &
+    "zero-fills (0, an empty record, an enum's first variant), and a handler " &
+    "that read it before anything wrote it read that zero as data (#85). " &
+    "Ruled 2026-09-28: every actor field has an initialiser, or is `T?`, " &
+    "which declares that it starts absent and makes every read say what " &
+    "happens then. Fix: add `= value`, or write the type as `T?`."
   of dcTyIfaceArm:
     "A `match` on an interface value asks which object it holds. Each arm is " &
     "`| Flac f ->` — an object that satisfies the interface, and the name " &

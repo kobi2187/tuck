@@ -451,6 +451,13 @@ type
     exkIfacePayload # lowered only: the `tagObject` inside interface value
                     # `tagSubject` — what `f` of `| Flac f ->` reads. Every
                     # backend prints the variant's `<object>Val` field.
+    exkWrapOk       # lowered only (lowering_optional): `optValue`, a plain
+                    # `T`, held in a `?T` — an assignment into a `?T` place.
+                    # Every backend prints its result carrier's typed
+                    # constructor with status Ok.
+    exkAbsent       # lowered only: an absent `?T` — what a `T?` actor field
+                    # with no initialiser starts as. The carrier's zero value
+                    # is status OK (the enum's first member), not absent.
     exkPoolOp       # `Cells.acquire`, `Cells.read {h}`, ... — an operation on a
                     # pool (spec §7.2). Its own node, stamped by the checker:
                     # it used to be a call whose callee was the bare member
@@ -591,6 +598,9 @@ type
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name
       dispatchArms*: seq[DispatchArm]
+    of exkWrapOk, exkAbsent:
+      optValue*: Expr              # the value held (exkWrapOk); nil if absent
+      optInner*: Type              # T, the type inside the `?T`
     of exkIfaceIs, exkIfacePayload:
       tagSubject*: Expr            # the interface value (a place: read twice)
       tagIface*: string            # the interface's (mangled) type name
