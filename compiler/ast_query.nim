@@ -345,15 +345,29 @@ proc saturatingType*(m: Module, name: string): Type =
     if a.name == "saturating": return d.typeBody
   nil
 
+proc isValueIf*(e: Expr): bool
+
+proc isStatementBranch(b: Expr): bool =
+  ## A one-line branch that is a STATEMENT, not a value: an assignment, a
+  ## `return`, `raise`, `break`, `continue`, `discard` or `send` — or an `if`
+  ## that is itself the statement form (an `elif` chain lands here).
+  b != nil and (b.kind in {exkAssign, exkBracketAssign, exkReturn, exkRaise,
+                           exkBreak, exkContinue, exkDiscard, exkSend} or
+                (b.kind == exkIf and not isValueIf(b)))
+
 proc isValueIf*(e: Expr): bool =
   ## An `if` used as a VALUE rather than a statement (ruling R2):
-  ## `let x = if c: a else: b`. Both branches must be present and neither may
-  ## be a block — a block body is the statement form, written across lines.
-  ## The distinction is syntactic on purpose: it is visible at the call site,
-  ## so no type inference decides how the same source emits.
+  ## `let x = if c: a else: b`. Both branches must be present, neither may
+  ## be a block — a block body is the statement form, written across lines —
+  ## and neither may be a statement (R3, ruled 2026-09-28): `if n > 9: n = 0
+  ## else: n = n + 1` is the statement `if` on one line. It checked and then
+  ## built on no backend (a bare expression on Nim, a ternary of assignments
+  ## on Odin and D). The distinction is syntactic on purpose: it is visible
+  ## at the call site, so no type inference decides how the same source emits.
   e != nil and e.kind == exkIf and
   e.thenBranch != nil and e.thenBranch.kind != exkBlock and
-  e.elseBranch != nil and e.elseBranch.kind != exkBlock
+  e.elseBranch != nil and e.elseBranch.kind != exkBlock and
+  not isStatementBranch(e.thenBranch) and not isStatementBranch(e.elseBranch)
 
 proc isSingleFieldPayload*(e: Expr): bool =
   ## A payload carrying exactly one field: `{n}`, `{value: 5}`, `{host: h}`.

@@ -58,8 +58,9 @@ finished** (no longer deferred).
    TK-AC03/04/05 refuse a handler called, a member called from outside, a
    send naming a member.
 4. R10 — an `on select` arm is one call to a fn that carries the bracket.
-5. R3 — a one-line `if c: s1 else: s2` with statement branches is the
-   statement `if` (today it checks and builds on no backend).
+5. ~~R3~~ **DONE 2026-09-28**: statement branches make a one-line `if` the
+   statement form (`ast_query.isValueIf`), and so does a void one
+   (`lowering.blockVoidIf`); both built on no backend before.
 6. R8 — the Array fill form `[v; N]`; spec §9.1's `txBuf` and example 16
    take it.
 7. R6 (#7) — measure what blocking a full mailbox's sender costs; block if

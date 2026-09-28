@@ -238,6 +238,22 @@ proc explodePayload(res: Resolution, e: Expr) =
   if known.isNone: return
   e.args = argsFor(res, e, known.get)
 
+proc blockVoidIf(res: Resolution, e: Expr) =
+  ## A one-line `if` that yields NOTHING — `if n > 2: {} hi else: {} lo`,
+  ## void calls on both sides — is a statement (R3, ruled 2026-09-28): each
+  ## branch becomes a one-statement block, so every backend prints the
+  ## statement form. `isValueIf` is syntax, and a void call is syntactically
+  ## an expression; only the type says there is no value. Printed as a
+  ## value, Odin's ternary and D's `?:` refused the void operands and Nim put
+  ## it at column 0. (Statement BRANCHES are `isValueIf`'s own rule.)
+  if not isValueIf(e): return
+  let t = res.typeFor(e)
+  if t == nil or t.kind != tkNamed or t.name notin ["void", "unit"]: return
+  e.thenBranch = Expr(span: e.thenBranch.span, kind: exkBlock,
+                      stmts: @[e.thenBranch])
+  e.elseBranch = Expr(span: e.elseBranch.span, kind: exkBlock,
+                      stmts: @[e.elseBranch])
+
 proc lowerExpr(res: Resolution, e: Expr, m: Module) =
   ## Rewrite one expression and everything under it.
   ##
@@ -281,6 +297,8 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
   if e.kind == exkCall:
     flattenMemberCallPayload(res, e, m)
     explodePayload(res, e)
+  elif e.kind == exkIf:
+    blockVoidIf(res, e)
 
 # Entry point for the pass. Two phases, in this order: type bodies are
 # flattened first so the call-rewriting phase can look up a type's fields and
