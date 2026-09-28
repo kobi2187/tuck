@@ -73,9 +73,10 @@ though TK-PA08's own text promised "only inside brackets") was RULED on
 2026-09-27 rather than fixed: the compiler was right. A name that is read
 bare can land in brackets, where an attribute word reads as an attribute
 (`xs[stack]` dropped its index when the words were let through). Attribute
-words are reserved words; a FIELD may still use one, since it is only read
-through `.`. TK-PA08's text now says so. Test: `known_bugs`, "an attribute
-word is refused as a fn name" and "...and as a parameter name".
+words are reserved words, fields included since 2026-09-28 (a field was the
+one exception for a day). TK-PA08's text now says so. Test: `known_bugs`,
+"an attribute word is refused as a fn name", "...and as a parameter name"
+and "...as a field name too".
 
 A2 (a fn with no declared return type accepted `return x`, and `tuck c`
 wrote `proc tuck_f*(x: int): void = return x`, which nim refuses) was fixed

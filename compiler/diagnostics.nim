@@ -329,12 +329,12 @@ proc parseExplanation(d: DiagCode): string =
     "Reservation is total — a keyword is reserved everywhere, which is what " &
     "keeps `pending:` and `when TARGET == \"...\"` decidable no matter what " &
     "the surrounding code declares. Attribute names (`error`, `priority`, " &
-    "`stack`, `io`, …) are reserved words too: they cannot name a parameter, " &
-    "a local, a fn, a member or a handler, because a name like that is read " &
-    "bare, and inside brackets an attribute word reads as an attribute — " &
-    "`xs[stack]` would lose its index. The one exception is a FIELD, which " &
-    "is only ever read through `.` (`job.priority`) or written as a record " &
-    "key (`{priority: 1}`). Ruled 2026-09-27. Fix: choose another name."
+    "`stack`, `io`, …) are reserved words too, and name nothing — no " &
+    "parameter, local, fn, member, handler, field, variant or module — " &
+    "because inside brackets an attribute word reads as an attribute: " &
+    "`xs[stack]` would lose its index. Ruled 2026-09-27; fields, once the " &
+    "one exception, were brought under the same rule 2026-09-28. Fix: " &
+    "choose another name."
   of dcPaEmptyBlock:
     "A `:` opened a block with nothing inside it — no statement, and no " &
     "`discard`. An empty body reads as an accident (a stray blank line, a " &

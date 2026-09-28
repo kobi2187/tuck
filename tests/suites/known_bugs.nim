@@ -146,21 +146,28 @@ fn main() -> int:
 """
   t.okCheck "a Capitalized, unreserved type argument is accepted"
 
-  # A reserved word is still a legal FIELD name (ruled 2026-09-27, R4): a
-  # field is only ever read through `.` or written as a record key, never
-  # bare, so no bracket can mistake it for an attribute. Every name that IS
-  # read bare — parameter, local, fn, handler — refuses the word (TK-PA08).
-  # (This snippet used a decision COLUMN named `priority`; a column is a
-  # parameter, which the ruling refuses.)
+  # A reserved word is not a FIELD name either (R4, made total 2026-09-28).
+  # A field was the one exception on 2026-09-27 — it is read through `.`,
+  # never bare — but one rule with no exception is simpler to state and to
+  # check, so the parser refuses the word for every name (TK-PA08).
   t.src """
 type Job:
   priority: int
 
 fn main() -> int:
-  let j = Job{priority: 3}
-  return j.priority
+  return 0
 """
-  t.frozen "a reserved word is still a legal field name"
+  t.badCheck "an attribute word is refused as a field name too", "TK-PA08"
+
+  # #4's second part: a KEYWORD as a field of an object or actor. `pending:`
+  # opened a `pending:` block and the error blamed the type (`Seq`); the
+  # parser now sees a keyword, a `:` and more on the line as a field and
+  # names the word.
+  for kind in ["object", "actor"]:
+    t.src "import seq\n\n" & kind & " Box:\n  pending: Seq[int]\n\n" &
+          "fn main() -> int:\n  return 0\n"
+    t.badCheck "a keyword field in an " & kind & " names the word (" & kind & ")",
+               "`pending` is a reserved word"
 
   # And the attribute reading still wins where it must, in the same file shape
   # the corpus uses everywhere.
@@ -940,8 +947,8 @@ fn main() -> int:
   # compiler was right: a name read bare can land in brackets, and
   # `xs[stack]` then parsed as an attribute and dropped the index. RULED
   # (R4, 2026-09-27): attribute words are reserved words — refused as a
-  # parameter, local, fn, member or handler name with TK-PA08; a FIELD may
-  # still use one. The text of TK-PA08 now says so.
+  # parameter, local, fn, member or handler name with TK-PA08, and since
+  # 2026-09-28 as a field too. The text of TK-PA08 now says so.
   t.src """
 fn priority({x: int}) -> int:
   return x

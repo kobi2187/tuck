@@ -386,13 +386,15 @@ together, or an interface value, are refused (`tests/suites/interfaces.nim`).
 
 > **Attribute words are reserved words** (`error`, `stack`, `align`,
 > `priority`, `volatile`, `io`, and the rest of the lexer's attribute list).
-> Ruled 2026-09-27: one may name a FIELD, which is only ever read through `.`
-> or written as a record key, and nothing else — not a parameter (a decision
-> column included), a local, a fn, a member, a handler, or a type argument
-> (`Box[error]` is refused; type arguments are Capitalized). A name that is
-> read bare can land inside brackets, where the word reads as an attribute:
-> `xs[stack]` would lose its index. The refusal is `TK-PA08`
-> (`tests/suites/known_bugs.nim`, `tests/suites/diagnostics.nim`).
+> They name nothing: not a field, a parameter (a decision column included),
+> a local, a fn, a member, a handler, a variant, a module, or a type
+> argument (`Box[error]` is refused; type arguments are Capitalized). A name
+> can land inside brackets, where the word reads as an attribute:
+> `xs[stack]` would lose its index. Ruled 2026-09-27; a field was the one
+> exception until 2026-09-28. The refusal is `TK-PA08`, made by the parser
+> (`tests/suites/known_bugs.nim`, `tests/suites/diagnostics.nim`). The one
+> place such a word is read outside a bracket is a closed vocabulary's value,
+> `[on_full: error]`, which names nothing.
 
 ---
 
@@ -875,7 +877,7 @@ cold and warm, and both must reject identically.
 
 ```tuck
 import fs
-import io
+import console
 
 let w = {path: "/tmp/x", content: "hi"} fs::writeFile   # qualified
 {text: "hi"} printLine                                  # unqualified — idiomatic

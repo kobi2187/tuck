@@ -26,7 +26,7 @@ proc parseRecordPattern(p: var Parser, sp: Span): Pattern =
   discard p.advance()
   var fields: seq[(string, Pattern)]
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-    let name = p.expectMemberName("Expected field name in pattern").value
+    let name = p.expectName("Expected field name in pattern").value
     var pat: Pattern
     if p.current().kind == tkColon:
       discard p.advance()
@@ -177,7 +177,7 @@ proc parseStructLiteral(p: var Parser, sp: Span): Expr =
   while true:
     p.skipSeparators()
     if p.current().kind == tkRBrace or p.current().kind == tkEOF: break
-    let name = p.expectMemberName("Expected field name in struct literal").value
+    let name = p.expectName("Expected field name in struct literal").value
     var valExpr: Expr
     if p.current().kind == tkColon:
       discard p.advance()
@@ -336,14 +336,14 @@ proc parseAliasStep(p: var Parser, expr: Expr): Expr =
   discard p.expect(tkLParen)
   var fields: seq[FieldInit]
   while p.current().kind != tkRParen and p.current().kind != tkEOF:
-    let name = p.expectMemberName("Expected field name in alias").value
+    let name = p.expectName("Expected field name in alias").value
     if p.current().kind == tkColon:
       p.reportError("`alias` renames with `->`: write `" & name & " -> " &
                     (if p.peek().kind in {tkIdent, tkAttr}: p.peek().value
                      else: "newName") & "`", dc = dcPaRenameArrow)
     discard p.expect(tkArrow, "Expected `->` after '" & name & "' in alias")
     let targetSp = p.getSpan()
-    let target = p.expectMemberName("Expected the new field name in alias").value
+    let target = p.expectName("Expected the new field name in alias").value
     fields.add((name, Expr(span: targetSp, kind: exkVar, name: target)))
     if p.current().kind == tkComma:
       discard p.advance()
@@ -378,7 +378,7 @@ proc parsePostfixCall(p: var Parser, expr: Expr, sp: Span): Expr =
   # does the actual rejection, once name resolution can tell the cases apart.
   while p.current().kind == tkDot:
     discard p.advance()
-    let fname = p.expectMemberName("Expected name after '.'").value
+    let fname = p.expectName("Expected name after '.'").value
     calleeExpr = Expr(span: sp, kind: exkField, receiver: calleeExpr, fieldName: fname)
     if p.tryUnsafeMarker():
       calleeExpr.ctorUnsafe = true
@@ -405,7 +405,7 @@ proc chainField(p: var Parser, expr: Expr, sp: Span): Expr =
   ## `.name`, and `.fn {args}` — the method form, where the receiver is the
   ## fn's first parameter and the braced struct fills the rest.
   discard p.advance()
-  let fieldName = p.expectMemberName("Expected field name after '.'").value
+  let fieldName = p.expectName("Expected field name after '.'").value
   result = Expr(span: sp, kind: exkField, receiver: expr, fieldName: fieldName)
   if p.tryUnsafeMarker(): result.ctorUnsafe = true
   if p.current().kind == tkLBrace: result.dotArg = p.parsePrimaryExpr()
@@ -512,7 +512,7 @@ proc chainSend(p: var Parser, expr: Expr, sp: Span): Expr =
   ## broke the send recognition outright and the line parsed as
   ## `put(send(Box[int]), {v: 1})`, three nested calls that meant nothing.
   discard p.advance()                    # eat `send`
-  let handler = p.expectBindingName("Expected handler name after 'send'").value
+  let handler = p.expectName("Expected handler name after 'send'").value
   var payload: Expr = nil
   if p.current().kind == tkLBrace: payload = p.parsePrimaryExpr()
   var actorName = ""
@@ -755,11 +755,11 @@ proc parseSelectExpr(p: var Parser): Expr =
 proc parseBinding(p: var Parser, sp: Span, mutable: bool): Expr =
   ## `let name = value` / `var name = value`.
   discard p.advance()
-  # expectMemberName, not a bare expect(tkIdent): it names the WORD that
+  # expectName, not a bare expect(tkIdent): it names the WORD that
   # collided when a reserved one is used as a variable (`var pending = ...`
   # reported "Expected variable name" while pointing straight at a perfectly
   # good-looking name, which reads as a parser fault rather than a naming one).
-  let name = p.expectBindingName("Expected variable name").value
+  let name = p.expectName("Expected variable name").value
   # `let name: T = value` — the type is OPTIONAL and inference is still the
   # normal case. It exists for the values that carry no type of their own: an
   # empty list (TK-TY20) and a nullary generic call have nothing to infer
@@ -825,7 +825,7 @@ proc parseTypeTest(p: var Parser): Pattern =
   ## `Flac f`: the object the value must hold, and the name it is bound to.
   let sp = p.getSpan()
   let testType = p.advance().value
-  let bindAs = p.expectBindingName("Expected the name to bind the " &
+  let bindAs = p.expectName("Expected the name to bind the " &
                                    testType & " to").value
   Pattern(span: sp, kind: pkTypeTest, testType: testType, bindAs: bindAs)
 
@@ -917,7 +917,7 @@ proc parseResourceOp(p: var Parser, sp: Span, op: ExprKind): Expr =
   let arg = p.parseExpr()
   discard p.expect(tkComma,
     "`" & word & "` names the kind too: `" & word & " " & operand & ", <kind>`")
-  let kind = p.expectMemberName("Expected a resource kind name after ','").value
+  let kind = p.expectName("Expected a resource kind name after ','").value
   if op == exkAcquire:
     Expr(span: sp, kind: exkAcquire, acquireRef: arg, acquireKind: kind)
   else:

@@ -166,11 +166,10 @@ const keywords = {
   # belongs to the language, so it is never a user identifier — which is what
   # makes `Box[error]` an error rather than a guess.
   #
-  # The parser then decides by POSITION: where only a NAME can appear — a
-  # field, parameter, variant, module — it accepts tkAttr and reads its value
-  # (expectMemberName), so `{priority: Priority}` is still an ordinary field.
-  # Type names are Capitalized, so a lowercase field never collides with a
-  # type either.
+  # No NAME may be one (parser_base.expectName, TK-PA08) — fields included,
+  # ruled 2026-09-28. The one place the parser reads the word outside a
+  # bracket is a closed vocabulary's value (`[on_full: error]`,
+  # expectVocabWord).
   #
   # NOT here: attribute PARAMETER names (count, size, queue, policy, read,
   # write, emit, impl, header, lib, c, nim, odin, at, bit, bits). Those are

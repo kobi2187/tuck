@@ -246,8 +246,9 @@ full-mailbox policy · the rest of
 
 RULED 2026-09-27, and implemented:
 - **#4** attribute words are reserved words — refused as any name read bare
-  (parameter, decision column, local, fn, member, handler) with TK-PA08; a
-  field may still use one.
+  (parameter, decision column, local, fn, member, handler) with TK-PA08; since
+  2026-09-28 a field too, and a keyword field (`pending: Seq[int]`) names the
+  word instead of blaming the type.
 - **#5** omitting `->` means exactly `-> void`.
 - **R1** `and`/`or`/`xor` mixed without parentheses is TK-PA16.
 - **R2** a `T?` is not a boolean: presence is `.ok` (`if a.ok and b.ok:`).

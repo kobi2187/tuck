@@ -10,7 +10,7 @@ pools, arenas, registry, extern, transitions. Those are separately covered.
 ## Program shape
 
 ```tuck
-import io
+import console
 
 fn main() -> void [io]:
   {text: "hello"} printLine
@@ -39,7 +39,7 @@ x.scale {factor: 2}             # `.name {args}` — receiver is param 1
 ```
 
 Module calls do **not** need the `mod::` prefix when imported and unambiguous.
-Write `printLine`, not `io::printLine`. Use `io::printLine` only to
+Write `printLine`, not `console::printLine`. Use `console::printLine` only to
 disambiguate a collision. The `import` line is still required.
 
 ## Declarations

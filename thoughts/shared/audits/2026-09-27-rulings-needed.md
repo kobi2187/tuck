@@ -126,6 +126,15 @@ could never pass as written.
 > still use one (`d168477`). This reverses FRICTIONS #5b (`fn error` in a
 > `pending:` block), and renamed the `priority` decision column to
 > `urgency` in examples 09/21 and in the docs that show the same example.
+>
+> **AMENDED 2026-09-28: no exception.** "Let's just simplify and reject
+> reserved words." A field may no longer use an attribute word either; the
+> parser refuses it for every name (`parser_base.expectName`). The one read
+> outside a bracket is a closed vocabulary's value (`[on_full: error]`,
+> `expectVocabWord`), which names nothing. A keyword field (`pending:
+> Seq[int]` in an object or actor) now names the word too — #4's second
+> part, which blamed `Seq`. Docs and programs that imported `io` now import
+> `console`, the module's name since the rename.
 
 ### R5 — #5: what omitting `->` means
 Returning a value from such a fn is now refused (TK-TY32), so the only

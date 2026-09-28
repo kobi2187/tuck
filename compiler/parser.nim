@@ -63,11 +63,20 @@ proc parseDecl*(p: var Parser): Decl
 const MemberStarters = {tkFn, tkLet, tkVar, tkPending, tkOn, tkPlus}
   ## Tokens that begin a MEMBER of an object body rather than a field.
 
+proc isKeywordField(p: Parser): bool =
+  ## `pending: Seq[int]` — a keyword, a `:`, and more on the same line: a
+  ## field with a reserved name, not the block the keyword opens (whose `:`
+  ## ends its line). Caught here so TK-PA08 names the word; parsed as a
+  ## `pending:` block it blamed `Seq` instead (#4).
+  p.current().kind notin {tkIdent, tkAttr} and p.peek(1).kind == tkColon and
+    p.peek(2).kind notin {tkNewline, tkIndent, tkEOF}
+
 proc parseObjectBodyLine(p: var Parser, fields: var seq[FieldDef],
                          members: var seq[Decl]) =
   ## One line of an object or actor body: a pending hole, a member, an
   ## invariant block, a `satisfies` contract, or a field.
   if p.isPendingHole(): members.add(p.parsePendingHole())
+  elif p.isKeywordField(): discard p.expectName("Expected a field name")
   elif p.current().kind in MemberStarters: members.add(p.parseDecl())
   elif p.current().kind == tkAttr and p.current().value == "invariant":
     p.parseInvariantBlock(members)
