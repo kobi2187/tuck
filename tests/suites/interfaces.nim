@@ -686,6 +686,203 @@ fn main() -> int:
 """
   t.hostRuns "a bounded fn nothing calls is not emitted, and the program builds", 7
 
+  # --- asking which object an interface value holds (ruled 2026-09-28) ------
+
+  # `| Flac f ->` runs when the value holds a Flac, with `f` bound to it as
+  # a Flac. Complete when every satisfier has an arm, or with `| _ ->`. In
+  # statement position (`describe`), in value position (`quick`, which
+  # lists all three and so needs no `_`), and on every backend: it lowers
+  # to an `if` chain over the value's tag (lowering_iface).
+  const ttSrc = """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+
+object Mp3:
+  satisfies AudioSource
+  bitrate: int
+  fn sampleRate({self: Mp3}) -> int:
+    return 44100
+
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+
+object Opus:
+  satisfies AudioSource
+  frame: int
+  fn sampleRate({self: Opus}) -> int:
+    return 48000
+
+fn describe({src: AudioSource}) -> int:
+  match src:
+    | Flac f -> return f.bits * 2
+    | Mp3 m -> return m.bitrate + (m.sampleRate /i 1000)
+    | _ -> return src.sampleRate /i 1000
+
+fn quick({src: AudioSource}) -> int:
+  let v = match src:
+    | Flac f -> f.bits
+    | Mp3 m -> m.bitrate
+    | Opus o -> o.frame
+  return v
+
+fn main() -> int:
+  let f = Flac{bits: 24}
+  let m = Mp3{bitrate: 3}
+  let o = Opus{frame: 20}
+  let a = ({src: f} describe) + ({src: m} describe) + ({src: o} describe)
+  let b = ({src: f} quick) + ({src: m} quick) + ({src: o} quick)
+  return a + b
+"""
+  t.src ttSrc
+  t.okCheck "`| Flac f ->` binds the object an interface value holds"
+  t.hostRuns "...in statement and value position, on every backend", 190
+
+  # `f` passed back where an AudioSource is wanted is wrapped again, and a
+  # subject that is a CALL is read once (a snapshot, lowering_match_binds).
+  t.src """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+
+object Mp3:
+  satisfies AudioSource
+  bitrate: int
+  fn sampleRate({self: Mp3}) -> int:
+    return 44100
+
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+
+object Opus:
+  satisfies AudioSource
+  frame: int
+  fn sampleRate({self: Opus}) -> int:
+    return 48000
+fn rateOf({s: AudioSource}) -> int:
+  return s.sampleRate /i 1000
+
+fn pick() -> AudioSource:
+  let f = Flac{bits: 24}
+  return f
+
+fn describe({src: AudioSource}) -> int:
+  match src:
+    | Flac f -> return ({s: f} rateOf) + f.bits
+    | _ -> return 0
+
+fn main() -> int:
+  let a = ({src: pick} describe)
+  var total = a
+  match pick:
+    | Mp3 m -> total = total + m.bitrate
+    | Flac f -> total = total + f.bits
+    | Opus o -> total = total + o.frame
+  return total
+"""
+  t.hostRuns "a bound object re-wrapped, and a call as the subject, on every backend", 144
+
+  const ttBase = """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+
+object Mp3:
+  satisfies AudioSource
+  bitrate: int
+  fn sampleRate({self: Mp3}) -> int:
+    return 44100
+
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+
+object Opus:
+  satisfies AudioSource
+  frame: int
+  fn sampleRate({self: Opus}) -> int:
+    return 48000
+"""
+  t.src ttBase & """
+fn d({src: AudioSource}) -> int:
+  match src:
+    | Flac -> return 1
+    | _ -> return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "`| Flac ->` with no name is refused, not read as a catch-all",
+             "TK-TY34"
+
+  t.src ttBase & """
+object Wav:
+  rate: int
+
+fn d({src: AudioSource}) -> int:
+  match src:
+    | Wav w -> return 1
+    | _ -> return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an object that does not satisfy the interface is refused",
+             "does not declare `satisfies AudioSource`"
+
+  t.src ttBase & """
+fn d({x: int}) -> int:
+  match x:
+    | Flac f -> return 1
+    | _ -> return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a type test on a value that is not an interface is refused",
+             "asks which object an INTERFACE value holds"
+
+  t.src ttBase & """
+fn d({src: AudioSource}) -> int:
+  match src:
+    | Flac f -> return 1
+    | Mp3 m -> return 2
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a match missing a satisfier and `_` names the missing one",
+             "missing Opus"
+
+  t.src ttBase & """
+fn d({src: AudioSource}) -> int:
+  match src:
+    | Flac f -> return 1
+    | Flac g -> return 2
+    | _ -> return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a second arm for the same object is refused",
+             "'Flac' is already matched by an earlier arm"
+
+  t.src ttBase & """
+fn d({src: AudioSource}) -> int:
+  match src:
+    | _ -> return 0
+    | Flac f -> return 1
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an arm after `_` is unreachable", "this arm is unreachable"
+
   # --- renaming a contract member: `satisfies I {old -> new}` ---------------
 
   # Two interfaces that each require a `noise`, with different return types:

@@ -261,6 +261,8 @@ RULED 2026-09-27, and implemented:
   only; TK-TY33 through an interface value), and an interface as a generic
   fn's bound, `fn join[T: AudioSource]` (one clone per object type,
   `iface_generics`). Not yet: calling such a fn from another module.
+- **Type test on an interface value** (2026-09-28): `match v: | Flac f ->`,
+  complete with an arm per satisfier or `| _ ->`; TK-TY34.
 
 ### Deferred — completely missing, not scheduled
 

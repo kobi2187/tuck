@@ -126,6 +126,9 @@ type
     dcTySameTypeThroughIface = "TK-TY33" ## a member needing an argument of
                                         ## the receiver's own object type,
                                         ## called through an interface value
+    dcTyIfaceArm = "TK-TY34"            ## an arm of a `match` on an interface
+                                        ## value that is not `| Obj name ->`,
+                                        ## `_` or a catch-all binding
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -436,6 +439,14 @@ proc parseExplanation(d: DiagCode): string =
     "type with `-> T`, or return nothing. An actor handler never replies " &
     "(spec 9.1), so there the value has to go somewhere else — a field, or a " &
     "`send`."
+  of dcTyIfaceArm:
+    "A `match` on an interface value asks which object it holds. Each arm is " &
+    "`| Flac f ->` — an object that satisfies the interface, and the name " &
+    "the arm reads it by, typed as that object — or `| _ ->`, or a catch-all " &
+    "name bound to the interface value. `| Flac ->` without a name is " &
+    "refused rather than read as a catch-all named `Flac`, which is what it " &
+    "silently was before 2026-09-28. The match must cover every object that " &
+    "satisfies the interface, or end in `| _ ->`."
   of dcTySameTypeThroughIface:
     "`fn splice[A: Self, B: Self]({self: A, other: A, next: B})` says `other` " &
     "is the SAME object type as the receiver, whichever that is; `next` may " &

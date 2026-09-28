@@ -268,6 +268,11 @@ Worked through with an audio player (`AudioSource` satisfied by `Mp3`,
   -> ...` binds `f` as the `Flac` when the tag says so; `| _ -> ...` is the
   generic path.
 
+> **RULED 2026-09-28, and built:** `| Flac f ->` binds a name (not the
+> sum-type narrowing); a match is complete with an arm per satisfier or a
+> `| _ ->`; `| Flac ->` without a name is TK-TY34. Lowered to an `if` chain
+> over the value's tag (`lowering_iface`), on all three backends.
+
 ---
 
 ## Observations (no ruling needed)

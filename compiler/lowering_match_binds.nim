@@ -53,16 +53,22 @@ proc bindsName(p: Pattern, name: string): bool =
       if bindsName(sub, name): return true
     false
   of pkOr: bindsName(p.left, name)
+  of pkTypeTest: p.bindAs == name
   of pkWild, pkLit: false
 
 proc replaceFree(res: Resolution, e: Expr, name: string, by: Expr)
 
-proc replaceFreeIn(res: Resolution, slot: var Expr, name: string, by: Expr) =
+proc replaceFreeIn*(res: Resolution, slot: var Expr, name: string, by: Expr) =
   ## `slot`, with every free read of `name` under it replaced by a fresh copy
   ## of `by`.
   if slot == nil: return
   if slot.kind == exkVar and slot.name == name:
+    # The read being replaced may have been wrapped into an interface where
+    # it is used (a bound Flac passed as an AudioSource); the value that
+    # replaces it enters the same slot.
+    let w = res.wrapOf(slot)
     slot = res.freshCopy(by)
+    if w.objName != "": res.markWrap(slot, w.objName, w.iface)
   else:
     replaceFree(res, slot, name, by)
 
@@ -85,6 +91,19 @@ proc replaceInArms(res: Resolution, m: Expr, name: string, by: Expr) =
 
 proc replaceFree(res: Resolution, e: Expr, name: string, by: Expr) =
   ## The children of `e`, with the scopes that re-bind `name` left alone.
+  # `m.sampleRate`, resolved by the checker to a call: that call is what
+  # every emitter prints, and its receiver is its own node, not the field's.
+  # Replaced here too, or the printed call still names the binding.
+  # The call's receiver is the field's own receiver — the same node, or
+  # after a backend's deepCopy a copy with the same id. Kept one node, so the
+  # tree and the call read the same place (the SSA builder reads the call,
+  # ownership_escape checks the tree's reads against it).
+  if e.kind == exkField and res.hasCall(e):
+    let c = res.call(e)
+    let shared = c.args.len > 0 and c.args[0] != nil and e.receiver != nil and
+                 c.args[0].id.isSet and c.args[0].id == e.receiver.id
+    for i in 0 ..< c.args.len: replaceFreeIn(res, c.args[i], name, by)
+    if shared: e.receiver = c.args[0]
   case e.kind
   of exkBlock: replaceInBlock(res, e, name, by)
   of exkMatch: replaceInArms(res, e, name, by)
@@ -110,9 +129,13 @@ proc writesRoot(e: Expr, root: string): bool =
   false
 
 proc hasBindArm(m: Expr): bool =
-  ## Does any arm of match `m` bind the subject to a name (`pkBind`)?
+  ## Does any arm of match `m` bind the subject to a name — `pkBind`, or a
+  ## type test `| Flac f ->`, whose `f` reads the subject too? Either way the
+  ## subject must be readable twice, so it is read in place or snapshot here;
+  ## lowering_iface turns the type tests into an `if` chain afterwards.
   for arm in m.arms:
-    if arm.pattern != nil and arm.pattern.kind == pkBind: return true
+    if arm.pattern != nil and arm.pattern.kind in {pkBind, pkTypeTest}:
+      return true
   false
 
 proc readsSubjectDirectly(m: Expr): bool =

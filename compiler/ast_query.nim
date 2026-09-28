@@ -390,6 +390,8 @@ proc genPatternStr*(p: Pattern): string =
   of pkVar: p.name
   of pkBind: raiseAssert "genPatternStr: a binding arm reached an emitter " &
                         "unlowered (lowering_match_binds)"
+  of pkTypeTest: raiseAssert "genPatternStr: a type-test arm reached an " &
+                            "emitter unlowered (lowering_iface)"
   of pkLit: p.litValue
   of pkOr: genPatternStr(p.left) & ", " & genPatternStr(p.right)
   of pkRecord, pkTuple: "_"   # destructuring binds; as a label it tests nothing
@@ -437,7 +439,7 @@ proc implicitTailValue*(body: Expr): Expr =
      exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
      exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef,
      exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
-     exkIfaceCall, exkPoolOp:
+     exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp:
     lastS
 
 proc injectTailReturn*(body: Expr, retTypeStr: string) =

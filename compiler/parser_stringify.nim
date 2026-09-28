@@ -152,6 +152,11 @@ proc toString*(e: Expr): string =
     for arm in e.dispatchArms: sats.add arm.satisfier
     return e.dispatchRecv.toString() & " dispatch<" & e.dispatchIface & ": " &
            sats.join(" | ") & ">"
+  of exkIfaceIs:
+    # Lowering-built, from a `| Flac f ->` arm.
+    return e.tagSubject.toString() & " is " & e.tagObject
+  of exkIfacePayload:
+    return e.tagSubject.toString() & " as " & e.tagObject
   of exkAcquire:
     return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:

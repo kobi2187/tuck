@@ -486,6 +486,10 @@ fn hear({a: Animal}) -> int:
   interface value the result is the interface.
 - A call through an interface value checks its payload against the
   contract like any call.
+- **Which object does it hold?** `match next: | Flac f -> f.bits | _ -> 0`
+  binds `f` as the `Flac` a value of the interface holds. The match needs an
+  arm per satisfier or a `| _ ->`; `| Flac ->` without a name is `TK-TY34`
+  (`tests/suites/interfaces.nim`).
 - "The same object type as `self`" is a type parameter bounded by `Self`:
   `fn splice[A: Self, B: Self]({self: A, other: A, next: B})` is implemented
   as `{self: Flac, other: Flac, next: AudioSource}`. Compile-time only:

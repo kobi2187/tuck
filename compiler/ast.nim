@@ -253,6 +253,9 @@ type
     pkRecord
     pkTuple
     pkOr
+    pkTypeTest  # `| Flac f ->` on an INTERFACE value: the arm runs when the
+                # value holds a Flac, with `f` bound to it (ruled 2026-09-28).
+                # Lowered to an `if` chain (lowering_iface.lowerIfaceMatches)
 
   Pattern* = ref object
     ## One match pattern, one case branch per PatternKind. Or-patterns nest as
@@ -272,6 +275,9 @@ type
       elems*: seq[Pattern]
     of pkOr:
       left*, right*: Pattern
+    of pkTypeTest:
+      testType*: string  # the object the value must hold (`Flac`)
+      bindAs*: string    # the name it is bound to in the arm (`f`)
 
   DispatchArm* = object
     ## One satisfier's arm of an `exkIfaceCall`: the receiver's payload, taken
@@ -436,6 +442,12 @@ type
                     # node rather than a `match`: it sits in VALUE position,
                     # where Odin's match is a ternary chain that can bind no
                     # payload and would evaluate the receiver once per arm.
+    exkIfaceIs      # lowered only (lowering_iface): does interface value
+                    # `tagSubject` hold a `tagObject`? A `| Flac f ->` arm's
+                    # test. Every backend prints a comparison of the tag.
+    exkIfacePayload # lowered only: the `tagObject` inside interface value
+                    # `tagSubject` — what `f` of `| Flac f ->` reads. Every
+                    # backend prints the variant's `<object>Val` field.
     exkPoolOp       # `Cells.acquire`, `Cells.read {h}`, ... — an operation on a
                     # pool (spec §7.2). Its own node, stamped by the checker:
                     # it used to be a call whose callee was the bare member
@@ -576,6 +588,10 @@ type
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name
       dispatchArms*: seq[DispatchArm]
+    of exkIfaceIs, exkIfacePayload:
+      tagSubject*: Expr            # the interface value (a place: read twice)
+      tagIface*: string            # the interface's (mangled) type name
+      tagObject*: string           # the object's (mangled) declared name
     of exkValidate:
       validated*: Expr  # the value to re-check; its TYPE names the invariants
     of exkAcquire:

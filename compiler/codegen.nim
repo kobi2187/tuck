@@ -872,6 +872,11 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkOrdinal: "ord(" & ctx.genExpr(e.ordinalOf) & ")"   # enum and bool alike
   of exkValidate: "validate(" & ctx.genExpr(e.validated) & ")"
   of exkIfaceCall: ctx.genIfaceCall(e, ind)
+  of exkIfaceIs:
+    # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
+    "(" & ctx.genExpr(e.tagSubject) & ".tag == " & e.tagIface & "_is_" &
+      e.tagObject & ")"
+  of exkIfacePayload: ctx.genExpr(e.tagSubject) & "." & e.tagObject & "Val"
   of exkPoolOp: ctx.genPoolOp(e)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =

@@ -601,7 +601,10 @@ proc memberReceiverVar(res: Resolution, m: Module, n: Expr): string =
   ## call itself or as the checker resolved it — or "".
   let c = if n.kind == exkCall: n else: res.call(n)
   if c == nil or c.kind != exkCall or c.args.len == 0: return ""
-  let r = c.args[0]
+  var r = c.args[0]
+  # `f.bits()` where `f` is `| Flac f ->`'s binding: the call's self is the
+  # interface value's payload, so the value itself must be mutable.
+  while r != nil and r.kind == exkIfacePayload: r = r.tagSubject
   if r == nil or r.kind != exkVar or memberCallee(res, m, c) == "": return ""
   r.name
 

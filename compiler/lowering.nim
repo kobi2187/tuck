@@ -259,7 +259,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkDefer,
      exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall,
-     exkPoolOp:
+     exkIfaceIs, exkIfacePayload, exkPoolOp:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
@@ -387,6 +387,10 @@ proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   # A binding arm (`other: other + 1`) becomes a catch-all reading the
   # subject, or a snapshot of it (lowering_match_binds).
   lowerMatchBinds(res, m)
+  # `match v: | Flac f ->` on an interface value becomes an `if` chain over
+  # v's tag, `f` read as v's Flac payload (lowering_iface). After the line
+  # above, which made each such subject a place that can be read twice.
+  lowerIfaceMatches(res, m)
   # Every `..` chain becomes the statements it means (lowering_chains).
   # After lowerExpr, as the chain-fed-call hoisting it absorbed always ran:
   # a step's call is the checker's, already in the shape the emitters print.

@@ -531,7 +531,11 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
   ## A variable, or a call — an interface dispatch arm whose member returns
   ## its own object type where the call's type is the interface.
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
-  let inner = if e.kind == exkCall: ctx.genDCall(e) else: e.name
+  let inner = case e.kind
+              of exkCall: ctx.genDCall(e)
+              of exkIfacePayload:
+                ctx.genDExpr(e.tagSubject) & "." & e.tagObject & "Val"
+              else: e.name
   ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
     ", " & objName & "Val: " & inner & ")"
 
@@ -1292,7 +1296,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   # A concrete value entering an interface slot is copied into the variant
   # at THIS site — the checker marked it (spec 5.3).
   let w = ctx.res.wrapOf(e)
-  if w.objName != "" and e.kind in {exkVar, exkCall}:
+  if w.objName != "" and e.kind in {exkVar, exkCall, exkIfacePayload}:
     return ctx.genDInterfaceWrap(e, w)
   # A fn used as a VALUE needs `&` in D, whichever way it was written —
   # checked here, where exkVar and exkQualified both pass through.
@@ -1338,6 +1342,12 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkIfaceCall: ctx.genDIfaceCall(e)
+  of exkIfaceIs:
+    # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
+    "(" & ctx.genDExpr(e.tagSubject) & ".tag == " & e.tagIface & "Tag." &
+      e.tagIface & "_is_" & e.tagObject & ")"
+  of exkIfacePayload:
+    ctx.genDExpr(e.tagSubject) & "." & e.tagObject & "Val"
   of exkPoolOp: ctx.genDPoolOp(e)
   of exkOrdinal:
     # A cast, for an enum and a bool alike: D converts both to their ordinal.

@@ -1514,6 +1514,12 @@ proc bindArmPattern(tc: var TypeChecker, arm: var MatchArm, subjT: Type,
   ## tc.typeDecls at all) — a real variant with nothing to track just skips
   ## the tracking half, same as a named-but-transitionless sum type already
   ## does today.
+  if arm.pattern != nil and arm.pattern.kind == pkTypeTest:
+    # `| Flac f ->`: `f` is the Flac the interface value holds (checked by
+    # checkIfaceArms). A `let`, like any pattern binding.
+    tc.bindName(arm.pattern.bindAs,
+                tc.namedType(arm.pattern.testType, arm.pattern.span), false)
+    return
   if arm.pattern == nil or arm.pattern.kind notin {pkVar, pkBind}: return
   # A NAMED sum type's subject synthesizes as `tkNamed "Door"`, not the
   # tkSum body directly (only an INLINE sum field type — no name to look
@@ -1629,9 +1635,83 @@ proc checkExhaustive(tc: TypeChecker, e: Expr, domain: seq[string]) =
     fail("Type Error: match is not exhaustive — missing " & missing.join(", ") &
          " (cover all cases or add a catch-all `_`)", e.span)
 
+type
+  IfaceMatch* = object
+    ## A `match` on an interface value, kept for the whole-program check that
+    ## it covers every satisfier (checkIfaceMatchesComplete): which satisfier
+    ## is in which module is known only once every module is checked.
+    iface*: string
+    covered*: seq[string]
+    catchAll*: bool
+    span*: Span
+    modulePath*: string
+
+var ifaceMatches*: seq[IfaceMatch]
+  ## This check round's interface matches; reset by checkProgramOnce.
+var ifaceMatchModule*: string
+  ## The path of the module being checked, for an interface match's report.
+
+proc ifaceArmType(tc: TypeChecker, arm: MatchArm, iname: string): string =
+  ## The object a `| Flac f ->` arm tests for, checked against the interface.
+  ## "" for a catch-all (`_`, or a name binding the whole value).
+  let p = arm.pattern
+  if p == nil or p.kind == pkWild: return ""
+  case p.kind
+  of pkTypeTest:
+    let n = p.testType
+    if not tc.objDecls.hasKey(n):
+      fail(dcTyIfaceArm, "'" & n & "' in `| " & n & " " & p.bindAs &
+           " ->` is not an object; an arm of a match on " & iname &
+           " names an object that satisfies it", p.span)
+    if iname notin tc.objDecls[n].satisfies:
+      fail(dcTyIfaceArm, "object '" & n & "' does not declare `satisfies " &
+           iname & "`, so a value of " & iname & " never holds one", p.span)
+    n
+  of pkVar:
+    if tc.objDecls.hasKey(p.name):
+      fail(dcTyIfaceArm, "`| " & p.name & " ->` needs a name for the " &
+           p.name & ": write `| " & p.name & " " &
+           p.name[0].toLowerAscii & " ->` and read it by that name", p.span)
+    ""   # a catch-all name, bound to the interface value (bindArmPattern)
+  of pkWild, pkBind: ""
+  of pkLit, pkRecord, pkTuple, pkOr:
+    fail(dcTyIfaceArm, "a match on " & iname & " tests which object it " &
+         "holds: write `| Obj name ->` or `| _ ->`", p.span)
+    ""
+
+proc checkIfaceArms(tc: TypeChecker, e: Expr, iname: string) =
+  ## Every arm of a match on an interface value (ruled 2026-09-28), recorded
+  ## for the whole-program completeness check.
+  var rec = IfaceMatch(iface: iname, span: e.span,
+                       modulePath: ifaceMatchModule)
+  for arm in e.arms:
+    let n = tc.ifaceArmType(arm, iname)
+    let at = if arm.pattern != nil: arm.pattern.span else: arm.span
+    if rec.catchAll:
+      fail(dcTyIfaceArm, "this arm is unreachable: an earlier arm already " &
+           "matches every " & iname, at)
+    if n == "":
+      rec.catchAll = true
+    elif n in rec.covered:
+      fail(dcTyIfaceArm, "'" & n & "' is already matched by an earlier arm",
+           at)
+    else:
+      rec.covered.add(n)
+  ifaceMatches.add(rec)
+
 proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   ## A match types every arm to one type, then checks it covers its subject.
   let subjT = tc.synthesize(e.subject)
+  if subjT != nil and subjT.kind == tkNamed and
+     tc.ifaceDecls.hasKey(subjT.name):
+    tc.checkIfaceArms(e, subjT.name)
+  elif not isFlexible(subjT):
+    for arm in e.arms:
+      if arm.pattern != nil and arm.pattern.kind == pkTypeTest:
+        fail(dcTyIfaceArm, "`| " & arm.pattern.testType & " " &
+             arm.pattern.bindAs & " ->` asks which object an INTERFACE " &
+             "value holds, but the subject is " & typeName(subjT),
+             arm.pattern.span)
   # spec 4.4b: matching a tracked var narrows it to the arm's variant
   var trackedType = ""
   var trackedVar = ""
@@ -4386,6 +4466,10 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # of the interface call it replaced.
     discard tc.synthesize(e.dispatchRecv)
     semLayer.typeFor(e)
+  of exkIfaceIs, exkIfacePayload:
+    # Built by lowering from a `| Flac f ->` arm, typed as it is built.
+    discard tc.synthesize(e.tagSubject)
+    semLayer.typeFor(e)
   of exkPoolOp:
     # Stamped by the checker (asPoolOp) in place of `Pool.op {...}`; its
     # type was recorded when it was built.
@@ -5431,15 +5515,40 @@ proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
   checkErrCodeCollisions(mods)
   checkRegistry(mods)
   checkResources(mods)   # spec §7.4: kinds are program-wide, so this is too
+  ifaceMatches = @[]
   let sigs = collectProgramSigs(mods)
   for (name, path, m) in mods:
     let scope = importScopeFor(sigs, preSigs, name)
+    ifaceMatchModule = path
     try:
       result = typecheckModule(m, scope.extern, scope.pending,
                                scope.fnSigTypes, scope.groups, scope.bounds,
                                scope.ambiguous, scope.bareOwner)
     except SemanticError as err:
       raise withModulePrefix(err, path)
+
+proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## A match on an interface value covers every object that satisfies it,
+  ## or ends in `| _ ->` (ruled 2026-09-28). Whole-program, after every
+  ## module is checked: an object in any module may satisfy the interface
+  ## (`satisfies` may be attached from outside), and each one is a value the
+  ## match can be handed.
+  if ifaceMatches.len == 0: return
+  var real = initTable[string, Module]()
+  for (name, path, m) in mods: real[name] = m
+  for rec in ifaceMatches:
+    if rec.catchAll: continue
+    var missing: seq[string]
+    for d in satisfiersOf(mods[^1].m, real, rec.iface):
+      if d.name notin rec.covered: missing.add(d.name)
+    if missing.len > 0:
+      var err = newException(SemanticError,
+        "Type Error: match on " & rec.iface & " is not exhaustive — missing " &
+        missing.join(", ") & " (an arm for each object that satisfies " &
+        rec.iface & ", or a catch-all `| _ ->`)")
+      err.line = rec.span.line
+      err.col = rec.span.col
+      raise withModulePrefix(err, rec.modulePath)
 
 const MaxExpansionRounds = 16
   ## Rounds of interface-bounded generic expansion (iface_generics) before
@@ -5473,6 +5582,7 @@ proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
     for (name, path, m) in mods: fillIds(m)
     result = checkProgramOnce(mods, preSigs)
   for i in 0 ..< mods.len: dropIfaceGenerics(mods[i].m)
+  checkIfaceMatchesComplete(mods)
 
 proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
                        preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =

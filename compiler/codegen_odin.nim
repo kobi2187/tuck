@@ -642,7 +642,11 @@ proc genInterfaceWrap(ctx: var OdinCodegenCtx, e: Expr,
   ## A variable, or a call — an interface dispatch arm whose member returns
   ## its own object type where the call's type is the interface.
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
-  let inner = if e.kind == exkCall: ctx.genOdinCall(e) else: e.name
+  let inner = case e.kind
+              of exkCall: ctx.genOdinCall(e)
+              of exkIfacePayload:
+                ctx.genOdinExpr(e.tagSubject) & "." & e.tagObject & "Val"
+              else: e.name
   ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
     objName & "Val = " & inner & "}"
 
@@ -1403,7 +1407,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
   let w = ctx.res.wrapOf(e)
-  if w.objName != "" and e.kind in {exkVar, exkCall}:
+  if w.objName != "" and e.kind in {exkVar, exkCall, exkIfacePayload}:
     return ctx.genInterfaceWrap(e, w)
   case e.kind
   of exkLit: ctx.genLit(e)
@@ -1451,6 +1455,12 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: ctx.genOrdinal(e)
   of exkIfaceCall: ctx.genIfaceCall(e)
+  of exkIfaceIs:
+    # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
+    "(" & ctx.genOdinExpr(e.tagSubject) & ".tag == ." & e.tagIface & "_is_" &
+      e.tagObject & ")"
+  of exkIfacePayload:
+    ctx.genOdinExpr(e.tagSubject) & "." & e.tagObject & "Val"
   of exkPoolOp: ctx.genOdinPoolOp(e)
   of exkValidate:
     "validate_" & ctx.res.typeFor(e.validated).name & "(" &

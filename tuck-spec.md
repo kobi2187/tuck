@@ -1275,6 +1275,33 @@ through a stored `+`-composed member still works exactly as it does anywhere
 else in Tuck — it mutates the copy the interface value holds, same as passing
 any other Tuck value ever does; there is no separate rule for interfaces.
 
+**Asking which object a value holds** (ruled 2026-09-28). A `match` on an
+interface value can test for one satisfying object and bind it by name:
+
+```tuck
+fn transition({cur: AudioSource, next: AudioSource}) -> int:
+  match next:
+    | Flac f -> return f.bits * 2        # f is the Flac next holds
+    | Mp3 m -> return m.bitrate
+    | _ -> return next.sampleRate /i 1000
+```
+
+- `| Flac f ->` runs when the value holds a `Flac`; inside the arm `f` is
+  that `Flac`, a `let`. `Flac` must be an object that satisfies the
+  interface.
+- `| _ ->` takes every other object; a bare name (`| other ->`) does the same
+  and binds the whole value, as in any `match`.
+- The match must have an arm for every object in the program that satisfies
+  the interface, or a `| _ ->`. An arm after `| _ ->`, or a second arm for
+  the same object, is refused.
+- `| Flac ->` with no name is refused (TK-TY34), not read as a catch-all
+  named `Flac`.
+
+Sum types narrow the subject in an arm instead (`| Ready -> s.feed`); an
+interface arm names the object because it is a different type from the
+subject. The match is compiled to a test of the value's tag, one per arm —
+the same tag interface dispatch switches on.
+
 ### 5.4 The `pending` Block — Walking Skeleton
 
 Allows an app to compile with typed holes so top-down design can proceed before

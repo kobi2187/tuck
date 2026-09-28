@@ -220,6 +220,13 @@ proc mangleMatch(res: Resolution, e: Expr, names: MangleNames,
     if p != nil and p.kind == pkBind:
       inner.incl(p.name)
       p.name = mangleName(p.name, nkLocal)
+    elif p != nil and p.kind == pkTypeTest:
+      # `| Flac f ->`: `f` is a local of the arm, and `Flac` names the
+      # object's declaration, renamed with it.
+      inner.incl(p.bindAs)
+      p.bindAs = mangleName(p.bindAs, nkLocal)
+      if p.testType in names and names[p.testType] == nkObject:
+        p.testType = mangleName(p.testType, nkObject)
     elif p != nil and p.kind == pkVar and p.name in names and
          names[p.name] == nkConst and not isVariantOf(res, e.subject, p.name):
       p.name = mangleName(p.name, nkConst)
@@ -273,7 +280,8 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
   of exkField, exkStruct, exkList, exkBracket, exkBracketAssign, exkCall,
      exkCombinator, exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile,
      exkReturn, exkRaise, exkDiscard, exkDefer, exkFinish, exkAcquire,
-     exkOrdinal, exkValidate, exkIfaceCall, exkPoolOp:
+     exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
+     exkPoolOp:
     for c in e.children: mangleExpr(res, c, names, locals, fields)
   of exkMatch: mangleMatch(res, e, names, locals, fields)
   of exkFor: mangleFor(res, e, names, locals, fields)

@@ -811,13 +811,31 @@ proc parseDiscardExpr(p: var Parser, sp: Span): Expr =
   discard p.advance()
   Expr(span: sp, kind: exkDiscard, discardVal: nil)
 
+proc isTypeTestArm(p: Parser): bool =
+  ## `Flac f ->` (or `Flac f:`): a Capitalized name, a binding name, then the
+  ## arm's separator — a type test on an interface value. Recognised in a
+  ## `match` arm only: a two-column decision row (`| Ready idle ->`) has the
+  ## same tokens and means two values.
+  let head = p.current()
+  head.kind == tkIdent and head.value.len > 0 and
+    head.value[0] in {'A'..'Z'} and p.peek(1).kind in {tkIdent, tkAttr} and
+    p.peek(2).kind in {tkArrow, tkColon}
+
+proc parseTypeTest(p: var Parser): Pattern =
+  ## `Flac f`: the object the value must hold, and the name it is bound to.
+  let sp = p.getSpan()
+  let testType = p.advance().value
+  let bindAs = p.expectBindingName("Expected the name to bind the " &
+                                   testType & " to").value
+  Pattern(span: sp, kind: pkTypeTest, testType: testType, bindAs: bindAs)
+
 proc parseMatchArm(p: var Parser): MatchArm =
   ## `| Pat -> body` and `Pat: body` are the same arm. The arrow form matches
   ## decision tables and select arms, so one shape reads across every
   ## construct that dispatches on a pattern.
   let arrowForm = p.current().kind == tkPipe
   if arrowForm: discard p.advance()
-  let pat = p.parsePattern()
+  let pat = if p.isTypeTestArm(): p.parseTypeTest() else: p.parsePattern()
   if arrowForm: discard p.expect(tkArrow) else: discard p.expect(tkColon)
   # arm body: a single expression on the same line, or an indented block
   let body = if p.current().kind == tkNewline: p.parseBlock()
