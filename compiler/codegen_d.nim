@@ -178,7 +178,7 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
       if inst != "": name = inst
   let ctor = name & "(" & parts.join(", ") & ")"
   if ctx.index.hasInvariants(e.callee.name):
-    return "__validated_" & e.callee.name & "(" & ctor & ")"
+    return ctx.validatorNameD(e.callee.name) & "(" & ctor & ")"
   ctor
 
 proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
@@ -203,7 +203,7 @@ proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
     return ctx.recStructNameD(s.declFields) & "(" & parts.join(", ") & ")"
   let ctor = s.typeName & "(" & parts.join(", ") & ")"
   # a rebuilt record is a production site too: its invariants must hold
-  if s.invariantsOwed: return "__validated_" & s.typeName & "(" & ctor & ")"
+  if s.invariantsOwed: return ctx.validatorNameD(s.typeName) & "(" & ctor & ")"
   ctor
 
 
@@ -490,7 +490,7 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
   # already validated at the construction site, on this same value.
   if rt != nil and rt.kind == tkNamed and ctx.index.hasInvariants(rt.name) and
      not validatesItself(ctx.module, e.returnVal):
-    return "return __validated_" & rt.name & "(" & v & ")"
+    return "return " & ctx.validatorNameD(rt.name) & "(" & v & ")"
   "return " & v
 
 proc indD(ctx: DCodegenCtx): string =
@@ -554,8 +554,9 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
               of exkIfacePayload:
                 ctx.genDExpr(e.tagSubject) & "." & e.tagObject & "Val"
               else: e.name
-  ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
-    ", " & objName & "Val: " & inner & ")"
+  let pre = ctx.importPrefixD(ifaceName)
+  pre & ifaceName & "(" & pre & ifaceName & "Tag." & ifaceName & "_is_" &
+    objName & ", " & objName & "Val: " & inner & ")"
 
 proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by `ref`.
@@ -570,6 +571,7 @@ proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
   ## return type is inferred. A plain `switch` rather than `final switch`:
   ## the satisfier set can be empty and an unreachable default is cheap.
   let recv = ctx.genDExpr(e.dispatchRecv)
+  let pre = ctx.importPrefixD(e.dispatchIface)   # an imported interface (R11)
   let t = ctx.res.typeFor(e)
   let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
   # An arm that changes the object stores it back into the value, so the
@@ -589,10 +591,10 @@ proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
     else:
       body.add("            auto tuckResult = " & call & ";\n            " &
                payload & " = " & arm.bindName & ";\n            return tuckResult;")
-    arms.add("        case " & e.dispatchIface & "Tag." & e.dispatchIface &
+    arms.add("        case " & pre & e.dispatchIface & "Tag." & e.dispatchIface &
              "_is_" & arm.satisfier & ":\n" & body)
   if arms.len == 0: return ""
-  "((" & (if writesBack: "ref " else: "") & e.dispatchIface &
+  "((" & (if writesBack: "ref " else: "") & pre & e.dispatchIface &
     " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
     "\n        default: assert(0, \"unreachable interface tag\");\n" &
     "    }\n})(" & recv & ")"
@@ -1385,7 +1387,8 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkIfaceCall: ctx.genDIfaceCall(e)
   of exkIfaceIs:
     # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
-    "(" & ctx.genDExpr(e.tagSubject) & ".tag == " & e.tagIface & "Tag." &
+    "(" & ctx.genDExpr(e.tagSubject) & ".tag == " & ctx.importPrefixD(e.tagIface) &
+      e.tagIface & "Tag." &
       e.tagIface & "_is_" & e.tagObject & ")"
   of exkIfacePayload:
     ctx.genDExpr(e.tagSubject) & "." & e.tagObject & "Val"

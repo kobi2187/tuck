@@ -180,7 +180,7 @@ proc renderShape(ctx: var OdinCodegenCtx, s: RecordShape): string =
     return ctx.recStructName(s.declFields) & "{" & parts.join(", ") & "}"
   let ctor = s.typeName & "{" & parts.join(", ") & "}"
   # a rebuilt record is a production site too: its invariants must hold
-  if s.invariantsOwed: return "__validated_" & s.typeName & "(" & ctor & ")"
+  if s.invariantsOwed: return ctx.validatorName(s.typeName) & "(" & ctor & ")"
   ctor
 
 
@@ -218,7 +218,7 @@ proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
   let ctor = ctx.genericCtorName(e, e.callee.name) & "{" & parts.join(", ") & "}"
   if ctx.index.hasInvariants(e.callee.name):
     # production site: construction — validate before the value flows on
-    return "__validated_" & e.callee.name & "(" & ctor & ")"
+    return ctx.validatorName(e.callee.name) & "(" & ctor & ")"
   ctor
 
 proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
@@ -315,7 +315,7 @@ proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
   let invRet = ctx.index.externInvRet(calleeStr)
   if invRet != "":
     # extern boundary: the returned value validates on entry
-    return "__validated_" & invRet & "(" & calleeStr & "(" &
+    return ctx.validatorName(invRet) & "(" & calleeStr & "(" &
            args.join(", ") & "))"
   if calleeStr == "echo": return "fmt.println(" & args.join(", ") & ")"
   let rt = genRtCall(calleeStr, args)
@@ -498,7 +498,7 @@ proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
     # production site: return value of an invariant-carrying type.
     # `validatesItself` keeps a construction from being wrapped twice — it
     # already validated at the construction site, on this same value.
-    return "return __validated_" & ctx.retInvName & "(" &
+    return "return " & ctx.validatorName(ctx.retInvName) & "(" &
            ctx.genOdinExpr(e.returnVal) & ")"
   else: return "return " & ctx.genOdinExpr(e.returnVal)
 
@@ -656,8 +656,8 @@ proc genInterfaceWrap(ctx: var OdinCodegenCtx, e: Expr,
               of exkIfacePayload:
                 ctx.genOdinExpr(e.tagSubject) & "." & e.tagObject & "Val"
               else: e.name
-  ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
-    objName & "Val = " & inner & "}"
+  ctx.importPrefix(ifaceName) & ifaceName & "{tag = ." & ifaceName & "_is_" &
+    objName & ", " & objName & "Val = " & inner & "}"
 
 proc genLit(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A literal in Odin syntax. A number in an inferred position spells the
@@ -778,7 +778,8 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   # closure takes the value by pointer (the checker allows it on a `var`).
   var writesBack = false
   for arm in e.dispatchArms: writesBack = writesBack or arm.writesBack
-  var params = @["v: " & (if writesBack: "^" else: "") & e.dispatchIface]
+  var params = @["v: " & (if writesBack: "^" else: "") &
+                 ctx.importPrefix(e.dispatchIface) & e.dispatchIface]
   var values = @[(if writesBack: "&" else: "") & recv]
   let first = e.dispatchArms[0].call
   for i in 1 ..< first.args.len:

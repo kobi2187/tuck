@@ -660,7 +660,7 @@ object Rc:
     return self.w * self.h
 """)
   t.quietly: t.hostRuns("R11: a call through an imported interface value reaches the satisfier's member", 19)
-  t.bugOpen "R11: a call through an imported interface value reaches the satisfier's member"
+  t.bugFixed "R11: a call through an imported interface value reaches the satisfier's member"
 
   t.src """
 import lib
@@ -710,7 +710,7 @@ object Rc:
     return self.w * self.h
 """)
   t.quietly: t.hostRuns("R11: a type test on an imported interface's value", 6)
-  t.bugOpen "R11: a type test on an imported interface's value"
+  t.bugFixed "R11: a type test on an imported interface's value"
 
   t.src """
 import lib
@@ -766,7 +766,7 @@ fn main() -> int:
     c >= -273
 """)
   t.quietly: t.hostRuns("R11: an imported invariant type validates without crashing the compiler", 1)
-  t.bugOpen "R11: an imported invariant type validates without crashing the compiler"
+  t.bugFixed "R11: an imported invariant type validates without crashing the compiler"
 
   t.src """
 import scheduler

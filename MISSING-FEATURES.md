@@ -22,26 +22,21 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (15)
+## A. Open bugs (12)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
-**A26–A37 — constructs that do not cross a module boundary (R11 scan,
+**A27–A37 — constructs that do not cross a module boundary (R11 scan,
 2026-09-28).** Ruled: importing anything should work as well as the same
 module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
 failed. Tests: `cross_module`, each named "R11: …".
-- **A26** a call through an imported interface value resolves to one
-  satisfier's member ("expects Rc but got Shape").
 - **A27** an object in the importer cannot `satisfies` an imported interface.
-- **A28** a type test (`| Sq q ->`) on an imported interface's value.
 - **A29** `+ Mixin` from another module: `Self` is not bound (R11's origin).
 - **A30** `match r.err` on an imported fallible fn: the arms print as
   defaults ("multiple default clauses" / `else`), the error enum unfound.
-- **A31** an imported invariant type crashes the compiler ("id … is held by
-  two nodes").
 - **A32** an imported actor's fields and handlers are invisible to the
   importer ("no field 'total' on type Acc", #73). Distinct from A18, which is
   an imported actor never STARTED on Odin/D.
@@ -272,6 +267,17 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A26, A28, A31 — imported interfaces and invariant types.** A call
+  through an imported interface value resolved to one satisfier's member,
+  a type test on one was refused, and an imported invariant type crashed
+  the compiler ("id … is held by two nodes"). Interfaces are now injected
+  like types and objects; every injected copy is a deep copy under fresh
+  ids (`ast_ops.freshIds` — a copy that SHARED its original's nodes became
+  two objects under one id once each backend took its own copy); a copied
+  object skips conformance, which its own module checked; and Odin and D
+  qualify an imported interface's variant, tag enum and `__validated_*`
+  proc (`importPrefix`, `validatorName`). Fixed 2026-09-28. `cross_module`.
 
 - **A25 — an imported `object` could not be constructed**, so none of its
   members could be called: `injectImportedTypes` copied only `type`s into an

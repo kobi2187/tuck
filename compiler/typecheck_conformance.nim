@@ -286,7 +286,10 @@ proc checkConformance*(m: Module) =
   for d in m.decls:
     if d != nil and d.kind == dkInterface: ifaces[d.name] = d
   for d in m.decls:
-    if d == nil or d.kind != dkObject or d.satisfies.len == 0: continue
+    # An importer's copy of an imported object (R11) was checked where it
+    # was declared; its members here are signatures only.
+    if d == nil or d.kind != dkObject or d.satisfies.len == 0 or
+       isImportedCopy(d): continue
     for iname in d.satisfies:
       if iname notin ifaces:
         # A group (spec §5.5) shares interface's requirement-list body

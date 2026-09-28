@@ -1022,7 +1022,7 @@ proc moduleDeclaringType*(module: Module, name: string): string =
   ## three, and why the stdlib design's "modules rely on each other" had never
   ## been exercised.
   for d in module.decls:
-    if d == nil or d.kind notin {dkType, dkObject} or d.name != name: continue
+    if d == nil or d.kind notin {dkType, dkObject, dkInterface} or d.name != name: continue
     if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
     return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
   ""

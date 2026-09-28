@@ -136,6 +136,19 @@ proc importedTypeQualifierD*(ctx: DCodegenCtx, name: string): string =
     dAlias(origin) & "." & name
   else: name
 
+proc importPrefixD*(ctx: DCodegenCtx, name: string): string =
+  ## `alias.` when another module declares the type, object or interface
+  ## `name` (R11), else "" — for the names derived from it (`<I>Tag`,
+  ## `__validated_<T>`) that `importedTypeQualifierD` cannot look up.
+  let origin = moduleDeclaringType(ctx.module, name)
+  if origin != "" and dAlias(origin) != dAlias(ctx.moduleName): dAlias(origin) & "."
+  else: ""
+
+proc validatorNameD*(ctx: DCodegenCtx, typeName: string): string =
+  ## The function that validates an invariant-carrying type, qualified with
+  ## its module when the type is imported (R11, A31).
+  ctx.importPrefixD(typeName) & "__validated_" & typeName
+
 proc declaredGenericD*(ctx: DCodegenCtx, name: string): bool =
   ## Is `name` a type this module declares (or imports) WITH type parameters?
   ## That is what makes `Name[args]` a template instantiation rather than an
